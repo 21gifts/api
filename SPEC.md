@@ -729,9 +729,10 @@ Bearer session. Body `{ "accountId": "<uuid>" }`. Staff only. A pending
 proposal must exist (latest propose/reject is propose); the caller id must
 not equal that latest proposer's actor id (independent second staff member).
 Subject must still be `verified`. Inserts `moderator_confirm` then re-lists:
-if the pending propose-edge `id` is no longer the same (concurrent reject,
-or a same-actor same-ms re-propose), delete that confirm and
-**409** without promoting. Otherwise sets
+if the pending propose-edge `id` from `pendingModeratorProposals`
+(ignoring this confirm insert) is no longer the same (concurrent reject,
+a newer extra propose, or a same-actor same-ms re-propose), delete that
+confirm and **409** without promoting. Otherwise sets
 role to `moderator`, logs `trust.moderator_confirmed`. If the caller
 already stored `moderator_confirm` and the subject is still `verified`,
 completes the role write and returns **200**; already-moderator with that
@@ -758,8 +759,8 @@ same-actor same-ms re-propose with a different edge `id`), **200** keeps
 the reject in history and does not drop `moderator_proposal` rows. Role stays
 `verified`. Logs
 `trust.moderator_rejected` `{ subjectId, actorId }`. When pending is empty
-after insert, deletes `moderator_proposal` rows with
-`replyId === subject.id`. No notify for the
+after insert, re-lists once more and deletes `moderator_proposal` rows with
+`replyId === subject.id` only if pending is still empty. No notify for the
 reject itself. Same 401/403/400/404/409/503 JSON shapes as
 `POST /trust/verify`. **200** `{ id, name, role }` (role unchanged).
 

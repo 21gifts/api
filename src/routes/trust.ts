@@ -357,8 +357,11 @@ export function trustRoutes(deps: TrustRouteDeps): Hono {
       }
       try {
         const after = await deps.trustStore.listEdgesForSubject(subject.id);
-        const oldest = oldestOpenPropose(openProposesForSubject(after, subject.id));
-        if (oldest === undefined || oldest.id !== pending.id) {
+        const still = pendingModeratorProposals(
+          [subject],
+          after.filter((edge) => edge.id !== created.id),
+        )[0];
+        if (still === undefined || still.id !== pending.id) {
           await deps.trustStore.deleteEdgeById(created.id);
           return c.json({ error: 'Conflict' }, 409);
         }
@@ -443,7 +446,10 @@ export function trustRoutes(deps: TrustRouteDeps): Hono {
         const still = pendingModeratorProposals([subject], after);
         if (still.length === 0) {
           logEvent('trust.moderator_rejected', { subjectId: subject.id, actorId: caller.id });
-          await clearModeratorProposalNotifications(deps, subject.id);
+          const latest = await deps.trustStore.listEdgesForSubject(subject.id);
+          if (pendingModeratorProposals([subject], latest).length === 0) {
+            await clearModeratorProposalNotifications(deps, subject.id);
+          }
           return c.json(accountSummary(subject), 200);
         }
         const beforePending = pendingModeratorProposals([subject], existing)[0];
@@ -598,7 +604,11 @@ async function reconcileOpenProposalNotifications(
     if (pending === undefined) {
       return;
     }
-    await notifyStaffProposed(deps, subject, pending.proposedBy);
+    const actor = await deps.authStore.getAccount(pending.proposedBy.id);
+    await notifyStaffProposed(deps, subject, {
+      id: pending.proposedBy.id,
+      name: actor?.name ?? null,
+    });
   } catch {
     logEvent('push.enqueue.failed');
   }

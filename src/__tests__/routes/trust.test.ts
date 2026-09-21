@@ -984,7 +984,59 @@ describe('POST /trust/*', () => {
       const listed = await notifications.listByRecipient(FOUNDER, 10);
       expect(listed).toHaveLength(1);
       expect(listed[0]?.actorAccountId).toBe(MOD);
+      expect(listed[0]?.name).toBe('Mod');
       expect(await notifications.listByRecipient(MOD, 10)).toEqual([]);
+    });
+
+    it('refreshes proposal notifications when the newer proposer account is missing', async () => {
+      const missing = '99999999-9999-4999-8999-999999999999';
+      const { authStore, trustStore } = await staffed([
+        account({ id: SUBJECT, role: 'verified', name: 'Sub' }),
+      ]);
+      const notifications = new InMemoryNotificationStore();
+      let lists = 0;
+      const store: TrustStore = {
+        listEdges: () => trustStore.listEdges(),
+        listEdgesTouching: (id) => trustStore.listEdgesTouching(id),
+        listEdgesForSubject: async (id) => {
+          lists += 1;
+          const rows = await trustStore.listEdgesForSubject(id);
+          if (lists < 3) {
+            return rows;
+          }
+          return [
+            ...rows,
+            {
+              id: 'reject-during-notify',
+              subjectId: SUBJECT,
+              actorId: FOUNDER,
+              kind: 'moderator_reject',
+              createdAt: 9_000_000_000_000,
+            },
+            {
+              id: 'p-reopen-missing',
+              subjectId: SUBJECT,
+              actorId: missing,
+              kind: 'moderator_propose',
+              createdAt: 9_000_000_000_001,
+            },
+          ];
+        },
+        insertEdge: (row) => trustStore.insertEdge(row),
+        deleteEdge: (subjectId, kind) => trustStore.deleteEdge(subjectId, kind),
+        deleteEdgeById: (id) => trustStore.deleteEdgeById(id),
+      };
+      const res = await post(
+        mount(authStore, store, { notificationStore: notifications }),
+        '/trust/propose-moderator',
+        'founder',
+        { accountId: SUBJECT },
+      );
+      expect(res.status).toBe(200);
+      const listed = await notifications.listByRecipient(MOD, 10);
+      expect(listed).toHaveLength(1);
+      expect(listed[0]?.actorAccountId).toBe(missing);
+      expect(listed[0]?.name).toBe('Someone');
     });
 
     it('still 200 when reconciling proposal notifications throws', async () => {
@@ -1268,6 +1320,43 @@ describe('POST /trust/*', () => {
               actorId: FOUNDER,
               kind: 'moderator_propose',
               createdAt: 9_000_000_000_000,
+            },
+          ];
+        },
+        insertEdge: (row) => trustStore.insertEdge(row),
+        deleteEdge: (subjectId, kind) => trustStore.deleteEdge(subjectId, kind),
+        deleteEdgeById: (id) => trustStore.deleteEdgeById(id),
+      };
+      const res = await post(mount(authStore, store), '/trust/confirm-moderator', 'mod', {
+        accountId: SUBJECT,
+      });
+      expect(res.status).toBe(409);
+      expect((await authStore.getAccount(SUBJECT))?.role).toBe('verified');
+      expect((await trustStore.listEdges()).some((row) => row.kind === 'moderator_confirm')).toBe(
+        false,
+      );
+    });
+
+    it('returns 409 when a newer extra propose replaced the pending row', async () => {
+      const { authStore, trustStore } = await pending();
+      let lists = 0;
+      const store: TrustStore = {
+        listEdges: () => trustStore.listEdges(),
+        listEdgesTouching: (id) => trustStore.listEdgesTouching(id),
+        listEdgesForSubject: async (id) => {
+          lists += 1;
+          const rows = await trustStore.listEdgesForSubject(id);
+          if (lists < 2) {
+            return rows;
+          }
+          return [
+            ...rows,
+            {
+              id: 'propose-z',
+              subjectId: SUBJECT,
+              actorId: MOD,
+              kind: 'moderator_propose',
+              createdAt: 2,
             },
           ];
         },
@@ -1969,6 +2058,57 @@ describe('POST /trust/*', () => {
       expect((await trustStore.listEdges()).some((row) => row.kind === 'moderator_reject')).toBe(
         false,
       );
+    });
+
+    it('does not drop proposal rows when a re-propose lands before reject clear', async () => {
+      const { authStore, trustStore } = await pending();
+      const notifications = new InMemoryNotificationStore([
+        {
+          id: '55555555-5555-4555-8555-555555555555',
+          recipientAccountId: MOD,
+          actorAccountId: FOUNDER,
+          type: 'moderator_proposal',
+          parentId: SUBJECT,
+          replyId: SUBJECT,
+          name: 'Founder',
+          text: 'Sub',
+          createdAt: new Date(now()),
+          readAt: null,
+        },
+      ]);
+      let lists = 0;
+      const store: TrustStore = {
+        listEdges: () => trustStore.listEdges(),
+        listEdgesTouching: (id) => trustStore.listEdgesTouching(id),
+        listEdgesForSubject: async (id) => {
+          lists += 1;
+          const rows = await trustStore.listEdgesForSubject(id);
+          if (lists < 3) {
+            return rows;
+          }
+          return [
+            ...rows,
+            {
+              id: 'p-reopen',
+              subjectId: SUBJECT,
+              actorId: MOD,
+              kind: 'moderator_propose',
+              createdAt: 9_000_000_000_000,
+            },
+          ];
+        },
+        insertEdge: (row) => trustStore.insertEdge(row),
+        deleteEdge: (subjectId, kind) => trustStore.deleteEdge(subjectId, kind),
+        deleteEdgeById: (id) => trustStore.deleteEdgeById(id),
+      };
+      const res = await post(
+        mount(authStore, store, { notificationStore: notifications }),
+        '/trust/reject-moderator',
+        'founder',
+        { accountId: SUBJECT },
+      );
+      expect(res.status).toBe(200);
+      expect(await notifications.listByRecipient(MOD, 10)).toHaveLength(1);
     });
 
     it('returns 200 without dropping proposal rows when a newer propose reopened', async () => {
