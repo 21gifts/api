@@ -172,11 +172,14 @@ worker holds lightning.space LNDHub credentials and calls:
 3. `POST /invoices/proof` — preimage (`sha256` = payment hash); the api records the gift for `GET /gifts/stats` and `GET /gifts?day=`. After recording the gift, when the invoice has `messageId` the api inserts a platform-account gift-reply under a top-level post first, then `addSats`. This path does not notify (no in-app rows, no Web Push). When `messageId` is already a reply, it hides a deterministic spend marker and `addSats`s that reply (no nested gift-reply). When the invoice has `groupMessageId`, the api also inserts a platform-account conversation message in the closed Moderators group (text + paid sats, name `21.gifts`) after the triggering group message, at payment time; a missing or mismatched group reference is ignored and does not block the 200. Recorded description is `21gifts moderator` when `groupMessageId` is stored, else `21gifts daily`.
 
 Recurring **USD** gifts are paid by the external spend worker **when the
-recipient posts a top-level note**, not on a daily timer. Invoice HTTP
-(`POST /invoices` / `POST /invoices/proof`) is unchanged. Recurring donor UI
-is still a sketch. **Do not invent** `/me/donor`, `/me/recurring`, or
-scheduler paths. HTTP that exists today is only the spend-worker invoice
-pair above (`SPEC.md`).
+recipient posts a top-level note**, not on a daily timer, and only when
+that recipient is funding-eligible today. `POST /invoices` 403s
+`Funding grant required` when not eligible. `GET /invoices/eligible?address=`
+is the spend lookup and returns 200 `{ eligible }` (false when not eligible).
+`POST /invoices/proof` does not check the grant.
+Recurring donor UI is still a sketch. **Do not invent** `/me/donor`,
+`/me/recurring`, or scheduler paths. HTTP that exists today is the
+spend-worker invoice surface in `SPEC.md`.
 
 ---
 
@@ -187,9 +190,11 @@ Public comment / encouragement is a v1 surface. The composer POSTs
 (requires rules + name + username + Lightning Address — missing requirements are
 **409** `missing_requirements`);
 a **new top-level** persist pings spend (`POST {SPEND_URL}/ping` with
-`{ address, messageId }` and Bearer `SPEND_API_TOKEN`); replies and media replay do
+`{ address, messageId }` and Bearer `SPEND_API_TOKEN`) only when the author
+is funding-eligible today; otherwise log `spend.ping.skipped` /
+`not_eligible` and still 200; replies and media replay do
 not ping; unset/blank env skips the ping and still returns 200;
-the public thread is listed via `GET /messages` (requires rules; newest first, name
+the public thread is listed via `GET /messages` (requires rules; newest first, optional `hashtag` query (name without `#`; token filter on `text`), name
 snapshotted at post, `sats`, `payable`, `hasPhoto`, and live author `role`
 — never photo bytes). Bytes are public `GET /messages/:id/photo` (Nostr `imeta`). Staff hide is a public-API filter **and** a best-effort NIP-09 (`kind: 5`, signed with the note author's custodial nsec) on the durability relay plus the public relay list, plus a best-effort Cloudflare purge of public photo/video URLs. Unsigned/public GET of a hidden row stays 404. A founder/moderator session may GET the hidden row (and photo/video) so the app can show who hid it and when. Hiding a note also retracts in-app notifications whose parent or reply is that note or a direct child. `GET /notifications` drops remaining rows whose parent or reply message is missing or hidden. Operator `GET /debug/messages` (Bearer `DEBUG_TOKEN`) still lists and fetches soft-hidden forum rows and their photo bytes. Restore does not undelete Nostr. The shipped UI
 is a messenger-group thread: oldest notes at the top, newest at the bottom,
@@ -285,7 +290,11 @@ via `GET /conversations` (per-row `unread` / `unreadMessageCount`; envelope
 `POST /conversations/:id/read`. NIP-17 gift wraps and legacy kind:4
 inbound; outbound wraps with the sender nsec (platform nsec for staff on
 official threads). Forum replies stay on `/messages` and are not mixed
-with PNs. Lightning gifts in a Direct/Contact thread use
+with PNs. `moderator_group` POST may include `{ photo }` / `{ photos }`
+(JPEG/PNG/WebP, ≤10; empty text is allowed only when at least one photo is present); Direct/Contact/Damus remain
+text-only; bytes via authenticated GET
+`/conversations/:id/messages/:messageId/photo` (photo 0) and
+`/conversations/:id/messages/:messageId/photo/:file` (extras 1–9). Lightning gifts in a Direct/Contact thread use
 `POST /conversations/:id/invoice` (`{ sats, text? }`). Payment is confirmed
 when a matching zap receipt is ingested: the api appends a conversation
 message (`text` + `sats`, or empty `text` with `sats` only) and does **not**

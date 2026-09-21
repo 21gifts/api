@@ -30,6 +30,7 @@ import { debugPushRoutes } from '@/routes/debug-push';
 import { debugTrustRoutes } from '@/routes/debug-trust';
 import { trustChainRoutes } from '@/routes/trust-chain';
 import { trustRoutes } from '@/routes/trust';
+import { fundingRoutes } from '@/routes/funding';
 import { InMemoryAuthStore } from '@/lib/auth/store';
 import type { AuthStore } from '@/lib/auth/store';
 import { InMemoryBtcUsdStore, type BtcUsdRateBook } from '@/lib/btc-usd-store';
@@ -48,6 +49,7 @@ import type { NotificationStore } from '@/lib/notification-store';
 import { resolveVapidConfig } from '@/lib/push-config';
 import { InMemoryPushStore, type PushStore } from '@/lib/push-store';
 import { InMemoryTrustStore, type TrustStore } from '@/lib/trust-store';
+import { InMemoryFundingStore, type FundingStore } from '@/lib/funding-store';
 import { resolveAllowedOrigins } from '@/lib/config';
 import { UnconfiguredInvoicePayer } from '@/lib/invoice-payer';
 import type { InvoicePayer } from '@/lib/invoice-payer';
@@ -123,7 +125,7 @@ export interface AppDeps {
   passkeyCeremony?: PasskeyCeremony;
   /**
    * Spend-worker shared secret (default: `process.env.SPEND_API_TOKEN`).
-   * Unset → `GET /invoices/passkey`, `GET /invoices/posted`, `POST /invoices`,
+   * Unset → `GET /invoices/passkey`, `GET /invoices/eligible`, `GET /invoices/posted`, `POST /invoices`,
    * and `POST /invoices/proof` return 503.
    */
   spendApiToken?: string;
@@ -204,6 +206,11 @@ export interface AppDeps {
    * this store.
    */
   trustStore?: TrustStore;
+  /**
+   * Stored funding grants (default: empty {@link InMemoryFundingStore}).
+   * Boot injects {@link PostgresFundingStore} when `DATABASE_URL` is set.
+   */
+  fundingStore?: FundingStore;
 }
 
 /**
@@ -220,7 +227,9 @@ export interface AppDeps {
  *   LNURL-pay fetch, LN-Address cache, brand reader, debugToken, gift store,
  *   gift recorder, BTC-USD rates, USD-fiat rates, message store, contact store,
  *   conversation store, notification store, push store, trust store,
- *   vapidPublicKey, nostrKek, nostrPublisher, env, WebAuthn RP, spend token, spend ping, and gift invoice store.
+ *   funding store (injected into `/funding`, `/me`, `/auth`, `/members`,
+ *   `/messages`, `/conversations`, and `/invoices`), vapidPublicKey, nostrKek,
+ *   nostrPublisher, env, WebAuthn RP, spend token, spend ping, and gift invoice store.
  * @returns A Hono app with all routes and middleware attached.
  */
 export function createApp(deps: AppDeps = {}): Hono {
@@ -243,6 +252,7 @@ export function createApp(deps: AppDeps = {}): Hono {
   const notificationStore = deps.notificationStore ?? new InMemoryNotificationStore();
   const pushStore = deps.pushStore ?? new InMemoryPushStore();
   const trustStore = deps.trustStore ?? new InMemoryTrustStore();
+  const fundingStore = deps.fundingStore ?? new InMemoryFundingStore();
   const vapidPublicKey = deps.vapidPublicKey ?? resolveVapidConfig(process.env)?.publicKey;
   const webAuthnRpId = deps.webAuthnRpId ?? process.env['WEBAUTHN_RP_ID'];
   const webAuthnRpName = deps.webAuthnRpName ?? process.env['WEBAUTHN_RP_NAME'];
@@ -297,6 +307,7 @@ export function createApp(deps: AppDeps = {}): Hono {
       webAuthnRpName,
       passkeyCeremony,
       messages: messageStore,
+      fundingStore,
       ...(nostrKek === undefined ? {} : { nostrKek }),
     }),
   );
@@ -314,6 +325,7 @@ export function createApp(deps: AppDeps = {}): Hono {
       giftStore,
       rates: btcUsdRates,
       fiatRates,
+      fundingStore,
       ...(nostrKek === undefined ? {} : { nostrKek }),
     }),
   );
@@ -323,6 +335,7 @@ export function createApp(deps: AppDeps = {}): Hono {
       authStore: store,
       messageStore,
       trustStore,
+      fundingStore,
       now,
       giftStore,
       rates: btcUsdRates,
@@ -388,6 +401,15 @@ export function createApp(deps: AppDeps = {}): Hono {
       conversationStore,
     }),
   );
+  app.route(
+    '/funding',
+    fundingRoutes({
+      authStore: store,
+      fundingStore,
+      messageStore,
+      now,
+    }),
+  );
   app.route('/gifts', giftsRoutes({ store: giftStore, rates: btcUsdRates, fiatRates, now }));
   app.route(
     '/gifts/stats',
@@ -404,6 +426,7 @@ export function createApp(deps: AppDeps = {}): Hono {
       notificationStore,
       conversationStore,
       env: deps.env ?? process.env,
+      fundingStore,
       ...(nostrKek === undefined ? {} : { nostrKek }),
       ...(deps.nostrPublisher === undefined ? {} : { nostrPublisher: deps.nostrPublisher }),
       ...(spendPing === undefined ? {} : { spendPing }),
@@ -428,6 +451,7 @@ export function createApp(deps: AppDeps = {}): Hono {
       messageStore,
       now,
       fetchImpl,
+      fundingStore,
       ...(nostrKek === undefined ? {} : { nostrKek }),
       ...(spendPing === undefined ? {} : { spendPing }),
       pushStore,
@@ -453,6 +477,7 @@ export function createApp(deps: AppDeps = {}): Hono {
       now,
       fetchImpl,
       conversationStore,
+      fundingStore,
       ...(giftRecorder === undefined ? {} : { giftRecorder }),
     }),
   );

@@ -10,6 +10,7 @@ import {
 } from '@/lib/auth/passkey';
 import { serializeOwnerAccountWithPosts } from '@/lib/auth/account-json';
 import { WRONG_ACCOUNT_ERROR } from '@/lib/auth/wrong-account';
+import { InMemoryFundingStore, type FundingStore } from '@/lib/funding-store';
 import type { AuthStore } from '@/lib/auth/store';
 import type { PasskeyCeremony } from '@/lib/auth/webauthn';
 import { logEvent } from '@/lib/log';
@@ -40,6 +41,10 @@ export interface AuthRouteDeps {
   nostrKek?: Uint8Array;
   /** Optional keygen (tests). */
   nostrKeygen?: NostrKeygen;
+  /**
+   * Funding grants for owner JSON (default: empty {@link InMemoryFundingStore}).
+   */
+  fundingStore?: FundingStore;
 }
 
 /** Body schema for passkey finish (registration or authentication). */
@@ -115,7 +120,11 @@ export function authRoutes(deps: AuthRouteDeps): Hono {
       return c.json(
         {
           token: result.value.token,
-          account: await serializeOwnerAccountWithPosts(result.value.account, deps.messages),
+          account: await serializeOwnerAccountWithPosts(result.value.account, deps.messages, {
+            store: deps.fundingStore ?? new InMemoryFundingStore(),
+            nowMs: deps.now(),
+            authStore: deps.store,
+          }),
         },
         200,
       );
@@ -160,7 +169,11 @@ export function authRoutes(deps: AuthRouteDeps): Hono {
       return c.json(
         {
           token: result.value.token,
-          account: await serializeOwnerAccountWithPosts(result.value.account, deps.messages),
+          account: await serializeOwnerAccountWithPosts(result.value.account, deps.messages, {
+            store: deps.fundingStore ?? new InMemoryFundingStore(),
+            nowMs: deps.now(),
+            authStore: deps.store,
+          }),
         },
         200,
       );

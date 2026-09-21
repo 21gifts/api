@@ -3,7 +3,8 @@
  *
  * Threads are member↔member, member↔platform, member↔Damus, or the closed
  * moderator_group singleton. Member HTTP may include optional counterpart/sender
- * `accountId` for 21.gifts accounts and never exposes event ids or npubs
+ * `accountId` for 21.gifts accounts, always includes `hasPhoto` / `photoCount`,
+ * and never exposes event ids, npubs, or photo bytes
  * (Damus-only display names may use truncated npubs via the routes layer).
  */
 
@@ -79,6 +80,16 @@ export interface ConversationMessageRow {
   giftForMessageId?: string | null;
   /** Credited sats on this row; `0` for unpaid text. Gift-only rows use `text: ''` and `sats >= 1`. */
   sats: number;
+  /**
+   * Whether a still is stored for this message (bytes never on the row).
+   * Omitted on older fixtures; serializers default `false`.
+   */
+  hasPhoto?: boolean;
+  /**
+   * Still-photo count 0–10 when known (`hasPhoto` plus extra stills).
+   * Omitted on older fixtures; serializers default `hasPhoto ? 1 : 0`.
+   */
+  photoCount?: number;
   /** Signed/wrapped event id, or null until published. */
   eventId: string | null;
   /** Fan-out state. */
@@ -127,6 +138,10 @@ export interface PublicConversationMessage {
   fromMe: boolean;
   /** Credited sats; `0` for unpaid text. */
   sats: number;
+  /** Whether a still is stored for this message (bytes never in JSON). */
+  hasPhoto: boolean;
+  /** Still-photo count 0–10 (`hasPhoto` plus extra stills). */
+  photoCount: number;
   /**
    * Projected 21.gifts account id. Members always see the stored sender;
    * staff see the actor when `actorAccountId` is set. Omitted when that
@@ -213,6 +228,11 @@ export function serializeConversation(
   return json;
 }
 
+/** Public JSON `photoCount` (0–10). */
+function conversationPhotoCount(row: ConversationMessageRow): number {
+  return typeof row.photoCount === 'number' ? row.photoCount : row.hasPhoto === true ? 1 : 0;
+}
+
 /**
  * Project a message row to its public JSON shape.
  *
@@ -223,9 +243,10 @@ export function serializeConversation(
  * @param row - Persisted message.
  * @param fromMe - Whether this message was sent by the viewer.
  * @param opts - `{ staff: true }` projects actor identity when present.
- * @returns Public fields only (event id omitted; `accountId` when a
- *   21.gifts account is shown; `giftFor` when this row is a paid gift
- *   for another message).
+ * @returns Public fields only (event id omitted; `hasPhoto` / `photoCount`
+ *   always present; `accountId` when a 21.gifts account is shown; `giftFor`
+ *   when this row is a paid gift for another message). Photo bytes are never
+ *   included.
  */
 export function serializeConversationMessage(
   row: ConversationMessageRow,
@@ -247,6 +268,8 @@ export function serializeConversationMessage(
     createdAt: row.createdAt.toISOString(),
     fromMe,
     sats: row.sats,
+    hasPhoto: row.hasPhoto === true,
+    photoCount: conversationPhotoCount(row),
   };
   if (typeof accountId === 'string' && accountId !== '') {
     json.accountId = accountId;

@@ -12,6 +12,8 @@ import type { FetchFn } from '@/lib/lnurlp';
 import { MESSAGE_LIST_LIMIT, unsignedNostrDefaults } from '@/lib/message';
 import type { MessageStore } from '@/lib/message-store';
 import { preimageMatchesHash } from '@/lib/proof';
+import { eligibleToday } from '@/lib/funding';
+import { InMemoryFundingStore, type FundingStore } from '@/lib/funding-store';
 import { checkSpendAuth } from '@/lib/spend-auth';
 import {
   NoopGiftRecorder,
@@ -22,16 +24,15 @@ import { logEvent } from '@/lib/log';
 import { MESSAGE_ID_RE } from '@/routes/messages';
 
 /**
- * Spend-worker invoice routes: check passkey eligibility and a live
- * top-level forum post, fetch a recipient BOLT11 via LNURL-pay, then accept
- * the payment preimage as proof. A proof with `messageId` attaches a platform
- * gift-reply when that message is a top-level post. If `messageId` is already
- * a reply, the proof persists a deterministic `spendGiftReplyId` marker
- * under that reply, `markDeleted` so live `listReplies` omits it, then
- * `addSats`s the reply. A live existing marker is `markDeleted` only and
- * does not `addSats`. Platform gift-replies do not notify. A proof with
- * `groupMessageId` attaches a platform stipend message in the closed
- * Moderators group. The api does not pay.
+ * Spend-worker invoice routes: check passkey eligibility, a funding grant
+ * (`eligibleToday`), and a live top-level forum post, fetch a recipient
+ * BOLT11 via LNURL-pay, then accept the payment preimage as proof. A proof
+ * with `messageId` attaches a platform gift-reply when that message is a
+ * top-level post. If `messageId` is already a reply, the proof persists a
+ * deterministic `spendGiftReplyId` marker under that reply, `markDeleted`
+ * so live `listReplies` omits it, then `addSats`s the reply. A live existing
+ * marker is `markDeleted` only and does not `addSats`. Platform gift-replies
+ * do not notify. The api does not pay.
  */
 
 /** Collaborators the invoice routes need. */
@@ -79,6 +80,11 @@ export interface InvoiceRouteDeps {
    * when undefined, a `groupMessageId` is accepted but ignored (display only).
    */
   conversationStore?: Pick<ConversationStore, 'getById' | 'getMessageById' | 'appendMessage'>;
+  /**
+   * Funding grants for spend eligibility (default: empty
+   * {@link InMemoryFundingStore}).
+   */
+  fundingStore?: FundingStore;
 }
 
 const ISSUE_ERROR = 'Lightning Address did not issue an invoice';
@@ -193,11 +199,12 @@ async function addressHasPosted(
  * Build the `/invoices` route group.
  *
  * @param deps - Token, invoice store, auth store, message store, clock, fetch,
- *   optional gift recorder, optional conversation store.
+ *   optional gift recorder, optional conversation store, optional funding store.
  * @returns Hono app mounted at `/invoices`.
  */
 export function invoiceRoutes(deps: InvoiceRouteDeps): Hono {
   const giftRecorder = deps.giftRecorder ?? new NoopGiftRecorder();
+  const fundingStore = deps.fundingStore ?? new InMemoryFundingStore();
 
   async function persistProvenGift(invoice: GiftInvoice, paidAtMs: number): Promise<void> {
     try {
@@ -376,6 +383,27 @@ export function invoiceRoutes(deps: InvoiceRouteDeps): Hono {
       const hasPasskey = await addressHasPasskey(deps.authStore, address);
       return c.json({ hasPasskey }, 200);
     })
+    .get('/eligible', async (c) => {
+      const denied = authGate(
+        checkSpendAuth(deps.spendApiToken, c.req.header('Authorization')),
+        (body, status) => c.json(body, status),
+      );
+      if (denied !== null) {
+        return denied;
+      }
+
+      const address = normalizeLightningAddress(c.req.query('address') ?? '');
+      if (address === null) {
+        return c.json({ error: 'Not a valid Lightning Address (expected name@domain)' }, 400);
+      }
+
+      const account = await deps.authStore.getAccountByLightningAddress(address);
+      if (account === undefined) {
+        return c.json({ eligible: false }, 200);
+      }
+      const grant = await fundingStore.getByAccountId(account.id);
+      return c.json({ eligible: eligibleToday(account.role, grant, deps.now()) }, 200);
+    })
     .get('/posted', async (c) => {
       const denied = authGate(
         checkSpendAuth(deps.spendApiToken, c.req.header('Authorization')),
@@ -455,6 +483,12 @@ export function invoiceRoutes(deps: InvoiceRouteDeps): Hono {
       if (account === undefined || !(await deps.authStore.accountHasPasskey(account.id))) {
         logEvent('invoice.passkey_required', { address });
         return c.json({ error: 'Passkey required' }, 403);
+      }
+
+      const grant = await fundingStore.getByAccountId(account.id);
+      if (!eligibleToday(account.role, grant, deps.now())) {
+        logEvent('invoice.funding_required', { address });
+        return c.json({ error: 'Funding grant required' }, 403);
       }
 
       let resolvedGroupMessageId: string | undefined;

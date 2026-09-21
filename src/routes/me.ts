@@ -1,7 +1,8 @@
 import { Hono } from 'hono';
 import { z } from 'zod';
 import { buildAccountActivity } from '@/lib/account-activity';
-import { serializeOwnerAccountWithPosts } from '@/lib/auth/account-json';
+import { serializeOwnerAccountWithPosts, type OwnerAccountResponse } from '@/lib/auth/account-json';
+import { InMemoryFundingStore, type FundingStore } from '@/lib/funding-store';
 import { ensureProfileMessage } from '@/lib/auth/profile-message';
 import { MISSING_REQUIREMENTS_ERROR } from '@/lib/auth/requirements';
 import { resolveSession } from '@/lib/auth/service';
@@ -80,6 +81,10 @@ export interface MeRouteDeps {
    * Missing fiat never 503s the page.
    */
   fiatRates?: FiatRateBook;
+  /**
+   * Funding grants for owner JSON (default: empty {@link InMemoryFundingStore}).
+   */
+  fundingStore?: FundingStore;
 }
 
 /**
@@ -166,10 +171,19 @@ const notificationLevelBody = z.object({
   level: z.enum(['all', 'active', 'mentions']),
 });
 
+/** Owner JSON including the live funding grant. */
+function ownerJson(deps: MeRouteDeps, account: Account): Promise<OwnerAccountResponse> {
+  return serializeOwnerAccountWithPosts(account, deps.messages, {
+    store: deps.fundingStore ?? new InMemoryFundingStore(),
+    nowMs: deps.now(),
+    authStore: deps.store,
+  });
+}
+
 /**
  * Build the `/me` route group.
  *
- * @param deps - Shared store, message store, clock, payer, fetch, optional push, optional notification and conversation stores, optional gift/rate/fiat stores for activity, and optional `nostrKek` for the NIP-57 mint probe.
+ * @param deps - Shared store, message store, clock, payer, fetch, optional push, optional notification and conversation stores, optional gift/rate/fiat stores for activity, optional funding store, and optional `nostrKek` for the NIP-57 mint probe.
  * @returns A Hono app exposing account, activity, display-name, username, location, About me, setup skip, forum-laws dismiss,
  * living-room rules agreement, notification level, link/unlink, and verification routes.
  */
@@ -197,7 +211,7 @@ export function meRoutes(deps: MeRouteDeps): Hono {
       if (isWrongAccount(account)) {
         return c.json({ error: WRONG_ACCOUNT_ERROR }, 403);
       }
-      return c.json(await serializeOwnerAccountWithPosts(account, deps.messages), 200);
+      return c.json(await ownerJson(deps, account), 200);
     })
     .get('/activity', async (c) => {
       const account = await authedAccount(deps, c.req.header('authorization'));
@@ -244,7 +258,7 @@ export function meRoutes(deps: MeRouteDeps): Hono {
           : { ...current, lightningAddressSkippedAt: skippedAt };
       await deps.store.updateAccount(updated);
       logEvent('account.setup.skipped', { accountId: current.id, step: parsed.data.step });
-      return c.json(await serializeOwnerAccountWithPosts(updated, deps.messages), 200);
+      return c.json(await ownerJson(deps, updated), 200);
     })
     .post('/name', async (c) => {
       const account = await authedAccount(deps, c.req.header('authorization'));
@@ -314,7 +328,7 @@ export function meRoutes(deps: MeRouteDeps): Hono {
         return c.json({ error: 'Unauthorized' }, 401);
       }
       logEvent('account.name.set', { accountId: current.id });
-      return c.json(await serializeOwnerAccountWithPosts(stored, deps.messages), 200);
+      return c.json(await ownerJson(deps, stored), 200);
     })
     .post('/username', async (c) => {
       const account = await authedAccount(deps, c.req.header('authorization'));
@@ -359,7 +373,7 @@ export function meRoutes(deps: MeRouteDeps): Hono {
         return c.json({ error: 'Username is already in use' }, 409);
       }
       logEvent('account.username.set', { accountId: current.id });
-      return c.json(await serializeOwnerAccountWithPosts(stored, deps.messages), 200);
+      return c.json(await ownerJson(deps, stored), 200);
     })
     .post('/location', async (c) => {
       const account = await authedAccount(deps, c.req.header('authorization'));
@@ -382,7 +396,7 @@ export function meRoutes(deps: MeRouteDeps): Hono {
       const updated: Account = { ...current, location: normalized.value };
       await deps.store.updateAccount(updated);
       logEvent('account.location.set', { accountId: current.id });
-      return c.json(await serializeOwnerAccountWithPosts(updated, deps.messages), 200);
+      return c.json(await ownerJson(deps, updated), 200);
     })
     .get('/about/photo', async (c) => {
       const account = await authedAccount(deps, c.req.header('authorization'));
@@ -478,7 +492,7 @@ export function meRoutes(deps: MeRouteDeps): Hono {
             return c.json({ error: 'Unauthorized' }, 401);
           }
           logEvent('account.about.set', { accountId: latest.id });
-          return c.json(await serializeOwnerAccountWithPosts(latest, deps.messages), 200);
+          return c.json(await ownerJson(deps, latest), 200);
         }
         if (noteId === undefined) {
           const messageId = crypto.randomUUID();
@@ -609,7 +623,7 @@ export function meRoutes(deps: MeRouteDeps): Hono {
           return c.json({ error: 'Unauthorized' }, 401);
         }
         logEvent('account.about.set', { accountId: latest.id });
-        return c.json(await serializeOwnerAccountWithPosts(latest, deps.messages), 200);
+        return c.json(await ownerJson(deps, latest), 200);
       } catch {
         logEvent('account.about.failed');
         return c.json({ error: 'Messages are unavailable' }, 503);
@@ -626,12 +640,12 @@ export function meRoutes(deps: MeRouteDeps): Hono {
         return c.json({ error: 'Unauthorized' }, 401);
       }
       if (current.forumLawsDismissed === true) {
-        return c.json(await serializeOwnerAccountWithPosts(current, deps.messages), 200);
+        return c.json(await ownerJson(deps, current), 200);
       }
       const updated: Account = { ...current, forumLawsDismissed: true };
       await deps.store.updateAccount(updated);
       logEvent('account.forum_laws.dismissed', { accountId: current.id });
-      return c.json(await serializeOwnerAccountWithPosts(updated, deps.messages), 200);
+      return c.json(await ownerJson(deps, updated), 200);
     })
     .post('/notification-level', async (c) => {
       const account = await authedAccount(deps, c.req.header('authorization'));
@@ -656,7 +670,7 @@ export function meRoutes(deps: MeRouteDeps): Hono {
         accountId: current.id,
         level: parsed.data.level,
       });
-      return c.json(await serializeOwnerAccountWithPosts(updated, deps.messages), 200);
+      return c.json(await ownerJson(deps, updated), 200);
     })
     .post('/rules-agreement', async (c) => {
       const account = await authedAccount(deps, c.req.header('authorization'));
@@ -669,12 +683,12 @@ export function meRoutes(deps: MeRouteDeps): Hono {
         return c.json({ error: 'Unauthorized' }, 401);
       }
       if (current.rulesAgreedAt !== null) {
-        return c.json(await serializeOwnerAccountWithPosts(current, deps.messages), 200);
+        return c.json(await ownerJson(deps, current), 200);
       }
       const updated: Account = { ...current, rulesAgreedAt: deps.now() };
       await deps.store.updateAccount(updated);
       logEvent('account.rules_agreement.set', { accountId: current.id });
-      return c.json(await serializeOwnerAccountWithPosts(updated, deps.messages), 200);
+      return c.json(await ownerJson(deps, updated), 200);
     })
     .post('/lightning-address', async (c) => {
       const account = await authedAccount(deps, c.req.header('authorization'));
@@ -780,7 +794,7 @@ export function meRoutes(deps: MeRouteDeps): Hono {
         accountId: account.id,
         address,
       });
-      return c.json(await serializeOwnerAccountWithPosts(live, deps.messages), 200);
+      return c.json(await ownerJson(deps, live), 200);
     })
     .delete('/lightning-address', async (c) => {
       const account = await authedAccount(deps, c.req.header('authorization'));
@@ -801,7 +815,7 @@ export function meRoutes(deps: MeRouteDeps): Hono {
       await deps.store.updateAccount(updated);
       await deps.store.deleteVerification(account.id);
       logEvent('account.lightning_address.unlinked', { accountId: account.id });
-      return c.json(await serializeOwnerAccountWithPosts(updated, deps.messages), 200);
+      return c.json(await ownerJson(deps, updated), 200);
     })
     .post('/lightning-address/verification', async (c) => {
       const account = await authedAccount(deps, c.req.header('authorization'));
@@ -863,6 +877,6 @@ export function meRoutes(deps: MeRouteDeps): Hono {
         }
       }
       logEvent('account.verification.confirmed', { accountId: account.id });
-      return c.json(await serializeOwnerAccountWithPosts(result.account, deps.messages), 200);
+      return c.json(await ownerJson(deps, result.account), 200);
     });
 }

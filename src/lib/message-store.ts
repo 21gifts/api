@@ -68,6 +68,11 @@ function posixHashtagTokenPattern(name: string): string {
   return `#${name.toLowerCase().replace(POSIX_REGEX_META, '\\$&')}([^a-z0-9_]|$)`;
 }
 
+function textHasHashtagToken(text: string, name: string): boolean {
+  const escaped = name.replace(/[\\^$.|?*+()[\]{}]/g, '\\$&');
+  return new RegExp(`#${escaped}(?![A-Za-z0-9_])`, 'i').test(text);
+}
+
 function extraHashtagBindings(
   extraHashtagsByAccountId: ReadonlyMap<string, readonly string[]> | undefined,
 ): { accountIds: string[]; patterns: string[] } | null {
@@ -114,6 +119,8 @@ export type MessageFeedQuery = {
   cursor: { k: 't'; c: Date; i: string } | { k: 's'; s: number; c: Date; i: string } | null;
   /** Founder + moderator account ids; used only when mode==='active'. */
   staffAccountIds: ReadonlySet<string>;
+  /** Optional hashtag name without `#`. When set, only notes whose `text` contains that token. */
+  hashtag?: string;
 };
 
 /** Top-level list row with computed reply count. */
@@ -156,7 +163,7 @@ export interface MessageStore {
    * {@link listLatest} (live attributed direct children). Never
    * selects `photo` bytea. Replies and soft-hidden rows are excluded.
    *
-   * @param query - Mode, limit, exclusive cursor, and staff ids (`active` only).
+   * @param query - Mode, limit, exclusive cursor, staff ids (`active` only), and optional hashtag.
    * @returns At most `query.limit` list row copies.
    */
   listFeed(query: MessageFeedQuery): Promise<MessageListRow[]>;
@@ -1325,7 +1332,7 @@ export class InMemoryMessageStore implements MessageStore {
    * null), capped at `query.limit`, with `replyCount` of live attributed
    * children (`deletedAt` null and either an account or a recorded zapper pubkey).
    *
-   * @param query - Mode, limit, exclusive keyset cursor, and staff ids.
+   * @param query - Mode, limit, exclusive keyset cursor, staff ids, and optional hashtag.
    * @returns A new array of list row copies; mutating it does not change the store.
    */
   listFeed(query: MessageFeedQuery): Promise<MessageListRow[]> {
@@ -1344,7 +1351,12 @@ export class InMemoryMessageStore implements MessageStore {
       }
       return true;
     });
-    const sorted = [...topLevel].sort((a, b) => {
+    const hashtag = query.hashtag;
+    const tagged =
+      typeof hashtag === 'string' && hashtag !== ''
+        ? topLevel.filter((row) => textHasHashtagToken(row.text, hashtag))
+        : topLevel;
+    const sorted = [...tagged].sort((a, b) => {
       if (query.mode === 'popular') {
         const bySats = b.sats - a.sats;
         if (bySats !== 0) {
@@ -2688,7 +2700,7 @@ export class PostgresMessageStore implements MessageStore {
    * Same {@link MESSAGE_SELECT_COLUMNS} as {@link listLatest} — never the
    * `photo` bytea column.
    *
-   * @param query - Mode, limit, exclusive keyset cursor, and staff ids.
+   * @param query - Mode, limit, exclusive keyset cursor, staff ids, and optional hashtag.
    * @returns Mapped list rows.
    */
   async listFeed(query: MessageFeedQuery): Promise<MessageListRow[]> {
@@ -2703,6 +2715,11 @@ export class PostgresMessageStore implements MessageStore {
     } else if (query.mode === 'popular') {
       filters.push('sats > 0');
       orderBy = 'sats DESC, created_at DESC, id DESC';
+    }
+    const hashtag = query.hashtag;
+    if (typeof hashtag === 'string' && hashtag !== '') {
+      params.push(posixHashtagTokenPattern(hashtag));
+      filters.push(`text ~* $${params.length}`);
     }
     if (query.cursor !== null) {
       if (query.mode === 'popular') {

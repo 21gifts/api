@@ -247,6 +247,19 @@ test('POST /conversations/:id/read without bearer is 401', async ({ request }) =
   expect(res.status()).toBe(401);
 });
 
+test('GET /conversations/:id/messages/:messageId/photo without bearer is 401', async ({
+  request,
+}) => {
+  expect((await request.get('/conversations/:id/messages/:messageId/photo')).status()).toBe(401);
+});
+test('GET /conversations/:id/messages/:messageId/photo/:file without bearer is 401', async ({
+  request,
+}) => {
+  expect((await request.get('/conversations/:id/messages/:messageId/photo/:file')).status()).toBe(
+    401,
+  );
+});
+
 test('POST /messages with a photo without bearer is 401', async ({ request }) => {
   const res = await request.post('/messages', {
     data: {
@@ -590,6 +603,11 @@ test('GET /invoices/passkey unconfigured is 503', async ({ request }) => {
   expect(res.status()).toBe(503);
 });
 
+test('GET /invoices/eligible unconfigured is 503', async ({ request }) => {
+  const res = await request.get('/invoices/eligible');
+  expect(res.status()).toBe(503);
+});
+
 test('GET /invoices/posted unconfigured is 503', async ({ request }) => {
   const res = await request.get('/invoices/posted');
   expect(res.status()).toBe(503);
@@ -694,6 +712,36 @@ test('POST /trust/confirm-moderator without bearer is 401', async ({ request }) 
 
 test('POST /trust/appoint-moderator without bearer is 401', async ({ request }) => {
   const res = await request.post('/trust/appoint-moderator', { data: { accountId: 'x' } });
+  expect(res.status()).toBe(401);
+});
+
+test('POST /funding/apply without bearer is 401', async ({ request }) => {
+  const res = await request.post('/funding/apply');
+  expect(res.status()).toBe(401);
+});
+
+test('GET /funding/applications without bearer is 401', async ({ request }) => {
+  const res = await request.get('/funding/applications');
+  expect(res.status()).toBe(401);
+});
+
+test('GET /funding/applications/:accountId without bearer is 401', async ({ request }) => {
+  const res = await request.get('/funding/applications/:accountId');
+  expect(res.status()).toBe(401);
+});
+
+test('POST /funding/trial without bearer is 401', async ({ request }) => {
+  const res = await request.post('/funding/trial', { data: { accountId: 'x' } });
+  expect(res.status()).toBe(401);
+});
+
+test('POST /funding/admit without bearer is 401', async ({ request }) => {
+  const res = await request.post('/funding/admit', { data: { accountId: 'x' } });
+  expect(res.status()).toBe(401);
+});
+
+test('POST /funding/reject without bearer is 401', async ({ request }) => {
+  const res = await request.post('/funding/reject', { data: { accountId: 'x' } });
   expect(res.status()).toBe(401);
 });
 

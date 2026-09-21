@@ -5,10 +5,15 @@ import { GIFT_INVOICE_MAX_MSAT } from '@/lib/config';
 import { CONVERSATION_LIST_LIMIT } from '@/lib/conversation';
 import { InMemoryConversationStore } from '@/lib/conversation-store';
 import type { FetchFn } from '@/lib/lnurlp';
-import { unsignedNostrDefaults } from '@/lib/message';
+import {
+  decodeMessageFeedCursor,
+  encodeMessageFeedCursor,
+  unsignedNostrDefaults,
+} from '@/lib/message';
 import { InMemoryMessageStore, type MessageStore } from '@/lib/message-store';
 import { InvoiceRateLimiter } from '@/lib/nostr/rate-limit';
 import { InMemoryPushStore } from '@/lib/push-store';
+import { InMemoryFundingStore } from '@/lib/funding-store';
 import type { SpendPing } from '@/lib/spend-ping';
 import { conversationRoutes } from '@/routes/conversations';
 
@@ -40,6 +45,16 @@ async function flushMicrotasks(): Promise<void> {
 const AUTH = { authorization: 'Bearer tok' };
 const NOTE_ID = '00000000-0000-4000-8000-000000000001';
 const LIVING_ROOM_POST_ID = '00000000-0000-4000-8000-0000000000aa';
+const JPEG = {
+  contentType: 'image/jpeg' as const,
+  bytes: new Uint8Array([0xff, 0xd8, 0xff, 0xd9]),
+};
+const JPEG2 = {
+  contentType: 'image/jpeg' as const,
+  bytes: new Uint8Array([0xff, 0xd8, 0xff, 0x00]),
+};
+const JPEG_B64 = Buffer.from(JPEG.bytes).toString('base64');
+const JPEG2_B64 = Buffer.from(JPEG2.bytes).toString('base64');
 
 function livingRoomStore(createdAt: Date = new Date(now())): InMemoryMessageStore {
   return new InMemoryMessageStore([
@@ -55,11 +70,30 @@ function livingRoomStore(createdAt: Date = new Date(now())): InMemoryMessageStor
   ]);
 }
 
+function admittedFunding(accountId = 'acc'): InMemoryFundingStore {
+  return new InMemoryFundingStore([
+    {
+      accountId,
+      status: 'admitted',
+      appliedAt: 1,
+      decidedAt: 1,
+      decidedBy: 'staff',
+      trialUtcDate: null,
+      admittedAt: 1,
+      note: null,
+    },
+  ]);
+}
+
 function mount(
   authStore: InMemoryAuthStore,
   conversations = new InMemoryConversationStore(),
   messages = new InMemoryMessageStore(),
-  extra: { spendPing?: SpendPing; pushStore?: InMemoryPushStore } = {},
+  extra: {
+    spendPing?: SpendPing;
+    pushStore?: InMemoryPushStore;
+    fundingStore?: InMemoryFundingStore;
+  } = {},
 ): Hono {
   return new Hono().route(
     '/conversations',
@@ -70,6 +104,7 @@ function mount(
       now,
       ...(extra.spendPing === undefined ? {} : { spendPing: extra.spendPing }),
       ...(extra.pushStore === undefined ? {} : { pushStore: extra.pushStore }),
+      ...(extra.fundingStore === undefined ? {} : { fundingStore: extra.fundingStore }),
     }),
   );
 }
@@ -1406,6 +1441,129 @@ describe('GET /conversations/:id', () => {
     expect(body.messages[0]).not.toHaveProperty('senderAccountId');
   });
 
+  it('returns the newest 200 messages oldest-first by default with an older cursor', async () => {
+    const auth = await seeded();
+    await withOther(auth);
+    const conversations = new InMemoryConversationStore();
+    const thread = await conversations.openMemberMember('acc', 'other', new Date(now()));
+    const ids: string[] = [];
+    for (let i = 0; i <= CONVERSATION_LIST_LIMIT; i += 1) {
+      const id = `00000000-0000-4000-8000-${i.toString(16).padStart(12, '0')}`;
+      ids.push(id);
+      await conversations.appendMessage({
+        id,
+        conversationId: thread.id,
+        text: `message ${i}`,
+        createdAt: new Date(now() + i),
+        senderAccountId: 'acc',
+        senderPubkey: null,
+        name: 'Ada',
+        sats: 0,
+        eventId: null,
+        nostrPublishState: 'pending',
+        nostrEvent: null,
+        claimedUntil: null,
+      });
+    }
+
+    const res = await mount(auth, conversations).request(`/conversations/${thread.id}`, {
+      headers: AUTH,
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      messages: Array<{ id: string }>;
+      nextCursor?: string;
+    };
+    expect(body.messages.map((row) => row.id)).toEqual(ids.slice(1));
+    expect(body.nextCursor).toBeDefined();
+    expect(decodeMessageFeedCursor(body.nextCursor ?? '')).toEqual({
+      k: 't',
+      c: new Date(now() + 1).toISOString(),
+      i: ids[1],
+    });
+  });
+
+  it('pages older messages from the oldest row of the newest page', async () => {
+    const auth = await seeded();
+    await withOther(auth);
+    const conversations = new InMemoryConversationStore();
+    const thread = await conversations.openMemberMember('acc', 'other', new Date(now()));
+    const ids = [
+      '00000000-0000-4000-8000-000000000011',
+      '00000000-0000-4000-8000-000000000012',
+      '00000000-0000-4000-8000-000000000013',
+    ];
+    for (const [i, id] of ids.entries()) {
+      await conversations.appendMessage({
+        id,
+        conversationId: thread.id,
+        text: `message ${i}`,
+        createdAt: new Date(now() + i),
+        senderAccountId: 'acc',
+        senderPubkey: null,
+        name: 'Ada',
+        sats: 0,
+        eventId: null,
+        nostrPublishState: 'pending',
+        nostrEvent: null,
+        claimedUntil: null,
+      });
+    }
+
+    const first = await mount(auth, conversations).request(`/conversations/${thread.id}?limit=2`, {
+      headers: AUTH,
+    });
+    expect(first.status).toBe(200);
+    const firstBody = (await first.json()) as {
+      messages: Array<{ id: string }>;
+      nextCursor?: string;
+    };
+    expect(firstBody.messages.map((row) => row.id)).toEqual(ids.slice(1));
+    expect(firstBody.nextCursor).toBeDefined();
+
+    const second = await mount(auth, conversations).request(
+      `/conversations/${thread.id}?limit=2&cursor=${encodeURIComponent(firstBody.nextCursor ?? '')}`,
+      { headers: AUTH },
+    );
+    expect(second.status).toBe(200);
+    const secondBody = (await second.json()) as {
+      messages: Array<{ id: string }>;
+      nextCursor?: string;
+    };
+    expect(secondBody.messages.map((row) => row.id)).toEqual(ids.slice(0, 1));
+    expect(secondBody).not.toHaveProperty('nextCursor');
+  });
+
+  it.each(['0', '201', 'abc'])('returns 400 for invalid limit %s', async (limit) => {
+    const res = await mount(await seeded()).request(`/conversations/${NOTE_ID}?limit=${limit}`, {
+      headers: AUTH,
+    });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: 'Invalid limit' });
+  });
+
+  it.each([
+    '%%%',
+    encodeMessageFeedCursor({
+      k: 's',
+      s: 21,
+      c: new Date(now()).toISOString(),
+      i: NOTE_ID,
+    }),
+    encodeMessageFeedCursor({
+      k: 't',
+      c: new Date(now()).toISOString(),
+      i: 'not-a-uuid',
+    }),
+  ])('returns 400 for an invalid cursor', async (cursor) => {
+    const res = await mount(await seeded()).request(
+      `/conversations/${NOTE_ID}?cursor=${encodeURIComponent(cursor)}`,
+      { headers: AUTH },
+    );
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: 'Invalid cursor' });
+  });
+
   it('sets fromMe false for Damus inbound without a sender account', async () => {
     const auth = await seeded();
     const conversations = new InMemoryConversationStore();
@@ -1575,7 +1733,54 @@ describe('POST /conversations/:id', () => {
       body: 'not json',
     });
     expect(res.status).toBe(400);
-    expect(await res.json()).toEqual({ error: 'Expected a JSON body with a "text" string' });
+    expect(await res.json()).toEqual({ error: 'Expected a JSON body with text and/or photo' });
+  });
+
+  it('returns 400 when a member_member thread includes a photo', async () => {
+    const auth = await seeded();
+    await withOther(auth);
+    const conversations = new InMemoryConversationStore();
+    const thread = await conversations.openMemberMember('acc', 'other', new Date(now()));
+    const res = await mount(auth, conversations).request(`/conversations/${thread.id}`, {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({
+        photo: { contentType: 'image/jpeg', data: JPEG_B64 },
+      }),
+    });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: 'Photos are only allowed in the Moderators group' });
+  });
+
+  it('returns 400 when a member_platform thread includes a photo', async () => {
+    const auth = await seeded();
+    await withPlatform(auth);
+    const conversations = new InMemoryConversationStore();
+    const thread = await conversations.openMemberPlatform('acc', 'plat', new Date(now()));
+    const res = await mount(auth, conversations).request(`/conversations/${thread.id}`, {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({
+        photos: [{ contentType: 'image/jpeg', data: JPEG_B64 }],
+      }),
+    });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: 'Photos are only allowed in the Moderators group' });
+  });
+
+  it('returns 400 when a member_damus thread includes a photo', async () => {
+    const auth = await seeded();
+    const conversations = new InMemoryConversationStore();
+    const thread = await conversations.openMemberDamus('acc', 'aa'.repeat(32), new Date(now()));
+    const res = await mount(auth, conversations).request(`/conversations/${thread.id}`, {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({
+        photo: { contentType: 'image/jpeg', data: JPEG_B64 },
+      }),
+    });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: 'Photos are only allowed in the Moderators group' });
   });
 
   it('returns 400 for an empty text string', async () => {
@@ -2366,6 +2571,35 @@ describe('moderator_group', () => {
     const conversations = new InMemoryConversationStore();
     const thread = await conversations.ensureModeratorGroup('plat', new Date(now()));
     const spendPing = { ping: vi.fn(async () => undefined) };
+    const res = await mount(auth, conversations, livingRoomStore(), {
+      spendPing,
+      fundingStore: admittedFunding(),
+    }).request(`/conversations/${thread.id}`, {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ text: 'hello mods' }),
+    });
+    expect(res.status).toBe(200);
+    const created = (await res.json()) as { id: string };
+    expect(spendPing.ping).toHaveBeenCalledTimes(1);
+    expect(spendPing.ping).toHaveBeenCalledWith('ada@walletofsatoshi.com', created.id, 'moderator');
+  });
+
+  it('does not ping when the moderator is not funding-eligible', async () => {
+    const auth = await seeded('moderator');
+    await withPlatform(auth);
+    const existing = await auth.getAccount('acc');
+    expect(existing).toBeDefined();
+    if (existing === undefined) {
+      throw new Error('expected account');
+    }
+    await auth.updateAccount({
+      ...existing,
+      lightningAddress: 'ada@walletofsatoshi.com',
+    });
+    const conversations = new InMemoryConversationStore();
+    const thread = await conversations.ensureModeratorGroup('plat', new Date(now()));
+    const spendPing = { ping: vi.fn(async () => undefined) };
     const res = await mount(auth, conversations, livingRoomStore(), { spendPing }).request(
       `/conversations/${thread.id}`,
       {
@@ -2375,9 +2609,12 @@ describe('moderator_group', () => {
       },
     );
     expect(res.status).toBe(200);
-    const created = (await res.json()) as { id: string };
-    expect(spendPing.ping).toHaveBeenCalledTimes(1);
-    expect(spendPing.ping).toHaveBeenCalledWith('ada@walletofsatoshi.com', created.id, 'moderator');
+    expect(spendPing.ping).not.toHaveBeenCalled();
+    expect(
+      parsedEvents(warn).some(
+        (e) => e['event'] === 'spend.ping.skipped' && e['reason'] === 'not_eligible',
+      ),
+    ).toBe(true);
   });
 
   it('does not ping when the moderator has no living-room post today', async () => {
@@ -2492,14 +2729,14 @@ describe('moderator_group', () => {
         throw new Error('ping boom');
       }),
     };
-    const res = await mount(auth, conversations, livingRoomStore(), { spendPing }).request(
-      `/conversations/${thread.id}`,
-      {
-        method: 'POST',
-        headers: { ...AUTH, 'content-type': 'application/json' },
-        body: JSON.stringify({ text: 'hello mods' }),
-      },
-    );
+    const res = await mount(auth, conversations, livingRoomStore(), {
+      spendPing,
+      fundingStore: admittedFunding(),
+    }).request(`/conversations/${thread.id}`, {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ text: 'hello mods' }),
+    });
     expect(res.status).toBe(200);
     expect(spendPing.ping).toHaveBeenCalledTimes(1);
   });
@@ -2581,8 +2818,506 @@ describe('moderator_group', () => {
       },
     );
     expect(res.status).toBe(400);
-    expect(await res.json()).toEqual({ error: 'Text must be 1–500 characters' });
+    expect(await res.json()).toEqual({
+      error: 'Text must be 1–500 characters or include a photo',
+    });
     expect(spendPing.ping).not.toHaveBeenCalled();
+  });
+});
+
+describe('moderator-group photos', () => {
+  it('POST text only is hasPhoto false photoCount 0', async () => {
+    const auth = await seeded('moderator');
+    await withPlatform(auth);
+    const conversations = new InMemoryConversationStore();
+    const thread = await conversations.ensureModeratorGroup('plat', new Date(now()));
+    const res = await mount(auth, conversations).request(`/conversations/${thread.id}`, {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ text: 'hello mods' }),
+    });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ hasPhoto: false, photoCount: 0 });
+  });
+
+  it('POST photo with no text is 200 hasPhoto true photoCount 1', async () => {
+    const auth = await seeded('moderator');
+    await withPlatform(auth);
+    const conversations = new InMemoryConversationStore();
+    const thread = await conversations.ensureModeratorGroup('plat', new Date(now()));
+    const res = await mount(auth, conversations).request(`/conversations/${thread.id}`, {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({
+        photo: { contentType: 'image/jpeg', data: JPEG_B64 },
+      }),
+    });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ hasPhoto: true, photoCount: 1, text: '' });
+    const listed = await conversations.listMessages(thread.id, 10);
+    expect(listed[0]?.nostrPublishState).toBe('skipped');
+    expect(listed[0]?.eventId).toBeNull();
+  });
+
+  it('POST photos array of 10 is 200 photoCount 10', async () => {
+    const auth = await seeded('moderator');
+    await withPlatform(auth);
+    const conversations = new InMemoryConversationStore();
+    const thread = await conversations.ensureModeratorGroup('plat', new Date(now()));
+    const res = await mount(auth, conversations).request(`/conversations/${thread.id}`, {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({
+        photos: Array.from({ length: 10 }, () => ({
+          contentType: 'image/jpeg',
+          data: JPEG_B64,
+        })),
+      }),
+    });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ hasPhoto: true, photoCount: 10 });
+    const listed = await conversations.listMessages(thread.id, 10);
+    expect(listed[0]?.nostrPublishState).toBe('skipped');
+    expect(listed[0]?.eventId).toBeNull();
+  });
+
+  it('POST 11 photos is 400 At most 10 photos', async () => {
+    const auth = await seeded('moderator');
+    await withPlatform(auth);
+    const conversations = new InMemoryConversationStore();
+    const thread = await conversations.ensureModeratorGroup('plat', new Date(now()));
+    const res = await mount(auth, conversations).request(`/conversations/${thread.id}`, {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({
+        photos: Array.from({ length: 11 }, () => ({
+          contentType: 'image/jpeg',
+          data: JPEG_B64,
+        })),
+      }),
+    });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: 'At most 10 photos' });
+  });
+
+  it('POST video without text or photo is 400', async () => {
+    const auth = await seeded('moderator');
+    await withPlatform(auth);
+    const conversations = new InMemoryConversationStore();
+    const thread = await conversations.ensureModeratorGroup('plat', new Date(now()));
+    const res = await mount(auth, conversations).request(`/conversations/${thread.id}`, {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ video: { contentType: 'video/mp4', data: 'AAAA' } }),
+    });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: 'Expected a JSON body with text and/or photo' });
+  });
+
+  it('POST text plus video is 400 and does not persist', async () => {
+    const auth = await seeded('moderator');
+    await withPlatform(auth);
+    const conversations = new InMemoryConversationStore();
+    const thread = await conversations.ensureModeratorGroup('plat', new Date(now()));
+    const res = await mount(auth, conversations).request(`/conversations/${thread.id}`, {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({
+        text: 'caption',
+        video: { contentType: 'video/mp4', data: 'AAAA' },
+      }),
+    });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: 'Expected a JSON body with text and/or photo' });
+    expect(await conversations.listMessages(thread.id, 10)).toEqual([]);
+  });
+
+  it('POST photo plus video is 400 and does not persist', async () => {
+    const auth = await seeded('moderator');
+    await withPlatform(auth);
+    const conversations = new InMemoryConversationStore();
+    const thread = await conversations.ensureModeratorGroup('plat', new Date(now()));
+    const res = await mount(auth, conversations).request(`/conversations/${thread.id}`, {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({
+        photo: { contentType: 'image/jpeg', data: JPEG_B64 },
+        video: { contentType: 'video/mp4', data: 'AAAA' },
+      }),
+    });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: 'Expected a JSON body with text and/or photo' });
+    expect(await conversations.listMessages(thread.id, 10)).toEqual([]);
+  });
+
+  it('POST invalid still is 400', async () => {
+    const auth = await seeded('moderator');
+    await withPlatform(auth);
+    const conversations = new InMemoryConversationStore();
+    const thread = await conversations.ensureModeratorGroup('plat', new Date(now()));
+    const res = await mount(auth, conversations).request(`/conversations/${thread.id}`, {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({
+        photo: { contentType: 'image/jpeg', data: 'nope' },
+      }),
+    });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({
+      error: 'Photo must be a JPEG, PNG, or WebP under 1 MiB',
+    });
+  });
+
+  it('POST invalid still in photos is 400', async () => {
+    const auth = await seeded('moderator');
+    await withPlatform(auth);
+    const conversations = new InMemoryConversationStore();
+    const thread = await conversations.ensureModeratorGroup('plat', new Date(now()));
+    const res = await mount(auth, conversations).request(`/conversations/${thread.id}`, {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({
+        photos: [
+          { contentType: 'image/jpeg', data: JPEG_B64 },
+          { contentType: 'image/jpeg', data: 'nope' },
+        ],
+      }),
+    });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({
+      error: 'Photo must be a JPEG, PNG, or WebP under 1 MiB',
+    });
+  });
+
+  it('POST empty text without a photo is 400', async () => {
+    const auth = await seeded('moderator');
+    await withPlatform(auth);
+    const conversations = new InMemoryConversationStore();
+    const thread = await conversations.ensureModeratorGroup('plat', new Date(now()));
+    const res = await mount(auth, conversations).request(`/conversations/${thread.id}`, {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ text: '' }),
+    });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({
+      error: 'Text must be 1–500 characters or include a photo',
+    });
+  });
+
+  it('GET photo 0 as moderator returns JPEG bytes', async () => {
+    const auth = await seeded('moderator');
+    await withPlatform(auth);
+    const conversations = new InMemoryConversationStore();
+    const thread = await conversations.ensureModeratorGroup('plat', new Date(now()));
+    const created = (await (
+      await mount(auth, conversations).request(`/conversations/${thread.id}`, {
+        method: 'POST',
+        headers: { ...AUTH, 'content-type': 'application/json' },
+        body: JSON.stringify({
+          photo: { contentType: 'image/jpeg', data: JPEG_B64 },
+        }),
+      })
+    ).json()) as { id: string };
+    const res = await mount(auth, conversations).request(
+      `/conversations/${thread.id}/messages/${created.id}/photo`,
+      { headers: AUTH },
+    );
+    expect(res.status).toBe(200);
+    expect(res.headers.get('cache-control')).toBe('private, no-store');
+    expect(res.headers.get('access-control-allow-origin')).toBeNull();
+    expect(new Uint8Array(await res.arrayBuffer())).toEqual(JPEG.bytes);
+  });
+
+  it('GET photo as moderator without a platform account returns JPEG bytes', async () => {
+    const auth = await seeded('moderator');
+    const conversations = new InMemoryConversationStore();
+    const thread = await conversations.ensureModeratorGroup('plat', new Date(now()));
+    const created = await conversations.appendMessage(
+      {
+        id: NOTE_ID,
+        conversationId: thread.id,
+        text: '',
+        createdAt: new Date(now()),
+        senderAccountId: 'acc',
+        senderPubkey: null,
+        name: 'Ada',
+        sats: 0,
+        eventId: null,
+        nostrPublishState: 'skipped',
+        nostrEvent: null,
+        claimedUntil: null,
+      },
+      JPEG,
+    );
+    const res = await mount(auth, conversations).request(
+      `/conversations/${thread.id}/messages/${created.id}/photo`,
+      { headers: AUTH },
+    );
+    expect(res.status).toBe(200);
+    expect(new Uint8Array(await res.arrayBuffer())).toEqual(JPEG.bytes);
+  });
+
+  it('GET photo/1.jpg after two stills returns JPEG2', async () => {
+    const auth = await seeded('moderator');
+    await withPlatform(auth);
+    const conversations = new InMemoryConversationStore();
+    const thread = await conversations.ensureModeratorGroup('plat', new Date(now()));
+    const created = (await (
+      await mount(auth, conversations).request(`/conversations/${thread.id}`, {
+        method: 'POST',
+        headers: { ...AUTH, 'content-type': 'application/json' },
+        body: JSON.stringify({
+          photos: [
+            { contentType: 'image/jpeg', data: JPEG_B64 },
+            { contentType: 'image/jpeg', data: JPEG2_B64 },
+          ],
+        }),
+      })
+    ).json()) as { id: string };
+    const res = await mount(auth, conversations).request(
+      `/conversations/${thread.id}/messages/${created.id}/photo/1.jpg`,
+      { headers: AUTH },
+    );
+    expect(res.status).toBe(200);
+    expect(res.headers.get('cache-control')).toBe('private, no-store');
+    expect(res.headers.get('access-control-allow-origin')).toBeNull();
+    expect(new Uint8Array(await res.arrayBuffer())).toEqual(JPEG2.bytes);
+  });
+
+  it('GET photo with a non-UUID message id is 404 Photo not found', async () => {
+    const auth = await seeded('moderator');
+    await withPlatform(auth);
+    const conversations = new InMemoryConversationStore();
+    const thread = await conversations.ensureModeratorGroup('plat', new Date(now()));
+    const res = await mount(auth, conversations).request(
+      `/conversations/${thread.id}/messages/not-a-uuid/photo`,
+      { headers: AUTH },
+    );
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ error: 'Photo not found' });
+  });
+
+  it('GET photo for an unknown conversation UUID is 404 Not found', async () => {
+    const auth = await seeded('moderator');
+    await withPlatform(auth);
+    const res = await mount(auth, new InMemoryConversationStore()).request(
+      `/conversations/${NOTE_ID}/messages/${NOTE_ID}/photo`,
+      { headers: AUTH },
+    );
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ error: 'Not found' });
+  });
+
+  it('GET photo with a non-UUID conversation id is 404 Not found', async () => {
+    const auth = await seeded('moderator');
+    await withPlatform(auth);
+    const res = await mount(auth, new InMemoryConversationStore()).request(
+      `/conversations/not-a-uuid/messages/${NOTE_ID}/photo`,
+      { headers: AUTH },
+    );
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ error: 'Not found' });
+  });
+
+  it('GET photo missing still is 404 Photo not found', async () => {
+    const auth = await seeded('moderator');
+    await withPlatform(auth);
+    const conversations = new InMemoryConversationStore();
+    const thread = await conversations.ensureModeratorGroup('plat', new Date(now()));
+    const created = await conversations.appendMessage({
+      id: NOTE_ID,
+      conversationId: thread.id,
+      text: 'no still',
+      createdAt: new Date(now()),
+      senderAccountId: 'acc',
+      senderPubkey: null,
+      name: 'Ada',
+      sats: 0,
+      eventId: null,
+      nostrPublishState: 'skipped',
+      nostrEvent: null,
+      claimedUntil: null,
+    });
+    const res = await mount(auth, conversations).request(
+      `/conversations/${thread.id}/messages/${created.id}/photo`,
+      { headers: AUTH },
+    );
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ error: 'Photo not found' });
+  });
+
+  it('GET photo for a message in another thread is 404 Photo not found', async () => {
+    const auth = await seeded('moderator');
+    await withPlatform(auth);
+    const conversations = new InMemoryConversationStore();
+    const group = await conversations.ensureModeratorGroup('plat', new Date(now()));
+    const other = await conversations.openMemberMember('acc', 'bob', new Date(now()));
+    const created = await conversations.appendMessage({
+      id: NOTE_ID,
+      conversationId: other.id,
+      text: 'elsewhere',
+      createdAt: new Date(now()),
+      senderAccountId: 'acc',
+      senderPubkey: null,
+      name: 'Ada',
+      sats: 0,
+      eventId: null,
+      nostrPublishState: 'skipped',
+      nostrEvent: null,
+      claimedUntil: null,
+    });
+    const res = await mount(auth, conversations).request(
+      `/conversations/${group.id}/messages/${created.id}/photo`,
+      { headers: AUTH },
+    );
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ error: 'Photo not found' });
+  });
+
+  it('GET photo without bearer is 401', async () => {
+    const auth = await seeded('moderator');
+    await withPlatform(auth);
+    const conversations = new InMemoryConversationStore();
+    const thread = await conversations.ensureModeratorGroup('plat', new Date(now()));
+    const res = await mount(auth, conversations).request(
+      `/conversations/${thread.id}/messages/${NOTE_ID}/photo`,
+    );
+    expect(res.status).toBe(401);
+    const extra = await mount(auth, conversations).request(
+      `/conversations/${thread.id}/messages/${NOTE_ID}/photo/1.jpg`,
+    );
+    expect(extra.status).toBe(401);
+  });
+
+  it('GET photo as a basis non-member is 404 Not found', async () => {
+    const mod = await seeded('moderator');
+    await withPlatform(mod);
+    const conversations = new InMemoryConversationStore();
+    const thread = await conversations.ensureModeratorGroup('plat', new Date(now()));
+    const created = await conversations.appendMessage(
+      {
+        id: NOTE_ID,
+        conversationId: thread.id,
+        text: '',
+        createdAt: new Date(now()),
+        senderAccountId: 'acc',
+        senderPubkey: null,
+        name: 'Ada',
+        sats: 0,
+        eventId: null,
+        nostrPublishState: 'skipped',
+        nostrEvent: null,
+        claimedUntil: null,
+      },
+      JPEG,
+    );
+    const basis = await seeded();
+    await withPlatform(basis);
+    const res = await mount(basis, conversations).request(
+      `/conversations/${thread.id}/messages/${created.id}/photo`,
+      { headers: AUTH },
+    );
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ error: 'Not found' });
+  });
+
+  it('GET photo bad file is 404 Photo not found', async () => {
+    const auth = await seeded('moderator');
+    await withPlatform(auth);
+    const conversations = new InMemoryConversationStore();
+    const thread = await conversations.ensureModeratorGroup('plat', new Date(now()));
+    const created = await conversations.appendMessage(
+      {
+        id: NOTE_ID,
+        conversationId: thread.id,
+        text: '',
+        createdAt: new Date(now()),
+        senderAccountId: 'acc',
+        senderPubkey: null,
+        name: 'Ada',
+        sats: 0,
+        eventId: null,
+        nostrPublishState: 'skipped',
+        nostrEvent: null,
+        claimedUntil: null,
+      },
+      JPEG,
+    );
+    const app = mount(auth, conversations);
+    for (const file of ['0.jpg', '10.jpg', 'foo.png']) {
+      const res = await app.request(
+        `/conversations/${thread.id}/messages/${created.id}/photo/${file}`,
+        { headers: AUTH },
+      );
+      expect(res.status).toBe(404);
+      expect(await res.json()).toEqual({ error: 'Photo not found' });
+    }
+  });
+
+  it('GET photo 503 when getPhoto throws', async () => {
+    const auth = await seeded('moderator');
+    await withPlatform(auth);
+    const conversations = new InMemoryConversationStore();
+    const thread = await conversations.ensureModeratorGroup('plat', new Date(now()));
+    const created = await conversations.appendMessage(
+      {
+        id: NOTE_ID,
+        conversationId: thread.id,
+        text: '',
+        createdAt: new Date(now()),
+        senderAccountId: 'acc',
+        senderPubkey: null,
+        name: 'Ada',
+        sats: 0,
+        eventId: null,
+        nostrPublishState: 'skipped',
+        nostrEvent: null,
+        claimedUntil: null,
+      },
+      JPEG,
+    );
+    conversations.getPhoto = async () => {
+      throw new Error('boom');
+    };
+    const res = await mount(auth, conversations).request(
+      `/conversations/${thread.id}/messages/${created.id}/photo`,
+      { headers: AUTH },
+    );
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({ error: 'Conversations are unavailable' });
+    expect(parsedEvents(warn).some((e) => e['event'] === 'conversations.photo.failed')).toBe(true);
+  });
+
+  it('pings spend once with kind moderator for a photo-only post', async () => {
+    const auth = await seeded('moderator');
+    await withPlatform(auth);
+    const existing = await auth.getAccount('acc');
+    expect(existing).toBeDefined();
+    if (existing === undefined) {
+      throw new Error('expected account');
+    }
+    await auth.updateAccount({
+      ...existing,
+      lightningAddress: 'ada@walletofsatoshi.com',
+    });
+    const conversations = new InMemoryConversationStore();
+    const thread = await conversations.ensureModeratorGroup('plat', new Date(now()));
+    const spendPing = { ping: vi.fn(async () => undefined) };
+    const res = await mount(auth, conversations, livingRoomStore(), {
+      spendPing,
+      fundingStore: admittedFunding(),
+    }).request(`/conversations/${thread.id}`, {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({
+        photo: { contentType: 'image/jpeg', data: JPEG_B64 },
+      }),
+    });
+    expect(res.status).toBe(200);
+    const created = (await res.json()) as { id: string };
+    expect(spendPing.ping).toHaveBeenCalledTimes(1);
+    expect(spendPing.ping).toHaveBeenCalledWith('ada@walletofsatoshi.com', created.id, 'moderator');
   });
 });
 
@@ -3451,7 +4186,7 @@ describe('GET /conversations/:id?sinceMessageId=', () => {
     expect(body.messages.some((row) => row.id === giftId)).toBe(true);
   });
 
-  it('unblocks when the gift id is outside the oldest list window', async () => {
+  it('returns a newest gift immediately and pages to the remaining older row', async () => {
     const auth = await seeded();
     await withOther(auth);
     const conversations = new InMemoryConversationStore();
@@ -3509,8 +4244,26 @@ describe('GET /conversations/:id?sinceMessageId=', () => {
     });
     expect(res.status).toBe(200);
     expect(slept).toBe(0);
-    const body = (await res.json()) as { messages: Array<{ id: string }> };
+    const body = (await res.json()) as {
+      messages: Array<{ id: string }>;
+      nextCursor?: string;
+    };
     expect(body.messages).toHaveLength(CONVERSATION_LIST_LIMIT);
-    expect(body.messages.some((row) => row.id === giftId)).toBe(false);
+    expect(body.messages.some((row) => row.id === giftId)).toBe(true);
+    expect(body.nextCursor).toBeDefined();
+
+    const older = await app.request(
+      `/conversations/${thread.id}?cursor=${encodeURIComponent(body.nextCursor ?? '')}`,
+      { headers: AUTH },
+    );
+    expect(older.status).toBe(200);
+    const olderBody = (await older.json()) as {
+      messages: Array<{ id: string }>;
+      nextCursor?: string;
+    };
+    expect(olderBody.messages.map((row) => row.id)).toEqual([
+      '00000000-0000-4000-8000-000000000000',
+    ]);
+    expect(olderBody).not.toHaveProperty('nextCursor');
   });
 });

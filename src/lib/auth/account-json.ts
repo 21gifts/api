@@ -5,7 +5,9 @@ import {
   type AccountMissingField,
   type AccountSetup,
 } from '@/lib/auth/account-setup';
-import type { Account, NotificationLevel } from '@/lib/auth/store';
+import type { Account, AuthStore, NotificationLevel } from '@/lib/auth/store';
+import { serializeOwnerFunding, type OwnerFundingJson } from '@/lib/funding';
+import type { FundingStore } from '@/lib/funding-store';
 import type { MessageStore } from '@/lib/message-store';
 import { parseNotificationLevel } from '@/lib/notification';
 
@@ -42,7 +44,8 @@ export interface AccountResponse {
 /**
  * Owner-facing account JSON: the eleven public fields plus the durable
  * view-key capability secret, the next `setup` step, factual `missing`,
- * `hasPosted`, `aboutMe`, `aboutMeHasPhoto`, and `notificationLevel`.
+ * `hasPosted`, `aboutMe`, `aboutMeHasPhoto`, `notificationLevel`, and
+ * `funding`.
  */
 export interface OwnerAccountResponse extends AccountResponse {
   /** 64 lowercase hex; capability URL secret for `GET /view/:viewKey`. */
@@ -80,6 +83,11 @@ export interface OwnerAccountResponse extends AccountResponse {
    * Owner-only; omitted from public `GET /view/:viewKey` and member cards.
    */
   notificationLevel: NotificationLevel;
+  /**
+   * Funding-program grant. `null` for `basis` (do not leak grants).
+   * Otherwise always an object; no row is `{ status: 'none', … }`.
+   */
+  funding: OwnerFundingJson | null;
 }
 
 /**
@@ -170,7 +178,8 @@ export function serializeDebugAccount(account: Account): DebugAccountResponse {
  *
  * Includes `viewKey` so the owner can copy the capability URL. The second
  * argument is the live-post flag (`hasPosted`); the third is About me;
- * the fourth is whether the live profile note has a photo.
+ * the fourth is whether the live profile note has a photo; the fifth is
+ * `funding` (`null` for `basis`, default `null`).
  * This function performs no I/O. Never used by the operator debug listing.
  * Does not expose `profileMessageId`.
  *
@@ -178,15 +187,17 @@ export function serializeDebugAccount(account: Account): DebugAccountResponse {
  * @param hasPosted - True when the account has a live non-profile forum row.
  * @param aboutMe - Profile bio, or `null` when unfilled.
  * @param aboutMeHasPhoto - True when the live profile note has a photo.
- * @returns Eighteen fields including `viewKey`, `setup`, `missing`,
- * `hasPosted`, `location`, `aboutMe`, `aboutMeHasPhoto`, and
- * `notificationLevel`.
+ * @param funding - Owner funding JSON, or `null` for `basis`. Defaults to
+ *   `null` so direct test callers keep a present field.
+ * @returns Nineteen fields (eleven public + `viewKey`, `setup`, `missing`,
+ * `hasPosted`, `aboutMe`, `aboutMeHasPhoto`, `notificationLevel`, `funding`).
  */
 export function serializeOwnerAccount(
   account: Account,
   hasPosted: boolean,
   aboutMe: string | null,
   aboutMeHasPhoto: boolean,
+  funding: OwnerFundingJson | null = null,
 ): OwnerAccountResponse {
   return {
     ...serializeAccount(account),
@@ -197,7 +208,18 @@ export function serializeOwnerAccount(
     aboutMe,
     aboutMeHasPhoto,
     notificationLevel: parseNotificationLevel(account.notificationLevel),
+    funding,
   };
+}
+
+/** Funding lookup used by {@link serializeOwnerAccountWithPosts}. */
+export interface OwnerFundingLookup {
+  /** Funding-grant persistence. */
+  store: FundingStore;
+  /** Epoch milliseconds for lazy trial expiry. */
+  nowMs: number;
+  /** Account lookup for admitted `reviewedByName`. */
+  authStore: Pick<AuthStore, 'getAccount'>;
 }
 
 /**
@@ -212,15 +234,18 @@ export function serializeOwnerAccount(
  *
  * @param account - Stored account.
  * @param messages - Message store (live-post lookup and profile-note read).
+ * @param funding - Optional grant lookup; omitted → `basis` `null`, else
+ *   `{ status: 'none', … }` without I/O.
  * @returns Owner JSON including `hasPosted`, `aboutMe`, `aboutMeHasPhoto`,
- *   and `notificationLevel` (via {@link serializeOwnerAccount}). `aboutMe` is
- *   `null` when the profile note is missing or `deletedAt` is set, else
- *   `aboutMeFromNote(account.name, row.text, row.name)`.
+ *   `notificationLevel`, and `funding` (via {@link serializeOwnerAccount}).
+ *   `aboutMe` is `null` when the profile note is missing or `deletedAt` is
+ *   set, else `aboutMeFromNote(account.name, row.text, row.name)`.
  *   `aboutMeHasPhoto` is true iff the live row has `hasPhoto === true`.
  */
 export async function serializeOwnerAccountWithPosts(
   account: Account,
   messages: Pick<MessageStore, 'accountHasLivePost' | 'getById'>,
+  funding?: OwnerFundingLookup,
 ): Promise<OwnerAccountResponse> {
   const hasPosted = await messages.accountHasLivePost(account.id, account.profileMessageId ?? null);
   const profileId = account.profileMessageId;
@@ -233,7 +258,19 @@ export async function serializeOwnerAccountWithPosts(
       aboutMeHasPhoto = row.hasPhoto === true;
     }
   }
-  return serializeOwnerAccount(account, hasPosted, aboutMe, aboutMeHasPhoto);
+  let fundingJson: OwnerFundingJson | null;
+  if (funding === undefined) {
+    fundingJson = serializeOwnerFunding(account.role, undefined, 0, null);
+  } else {
+    const grant = await funding.store.getByAccountId(account.id);
+    let reviewerName: string | null = null;
+    if (grant?.decidedBy !== null && grant?.decidedBy !== undefined) {
+      const reviewer = await funding.authStore.getAccount(grant.decidedBy);
+      reviewerName = reviewer?.name ?? null;
+    }
+    fundingJson = serializeOwnerFunding(account.role, grant, funding.nowMs, reviewerName);
+  }
+  return serializeOwnerAccount(account, hasPosted, aboutMe, aboutMeHasPhoto, fundingJson);
 }
 
 /**
