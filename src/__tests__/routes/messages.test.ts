@@ -890,6 +890,116 @@ describe('GET /messages', () => {
     expect(await res.json()).toEqual({ error: 'Invalid mode' });
   });
 
+  it('returns 400 for an invalid hashtag', async () => {
+    const app = mount(await rulesStore());
+    for (const hashtag of [
+      '',
+      '%2321GiftsShop',
+      '21-gifts',
+      '_nope',
+      'a'.repeat(65),
+      '21%20gifts',
+    ]) {
+      const res = await app.request(`/messages?hashtag=${hashtag}`, { headers: AUTH });
+      expect(res.status).toBe(400);
+      expect(await res.json()).toEqual({ error: 'Invalid hashtag' });
+    }
+  });
+
+  it('lists only notes whose text contains the hashtag token', async () => {
+    const authStore = await namedStore('Ada');
+    const messageStore = new InMemoryMessageStore();
+    await messageStore.create({
+      id: '00000000-0000-4000-8000-000000000021',
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'Shop #21GiftsShop',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+    });
+    await messageStore.create({
+      id: '00000000-0000-4000-8000-000000000022',
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'living room',
+      createdAt: new Date(now() + 1),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+    });
+    const app = mount(authStore, messageStore);
+    const filtered = await app.request('/messages?hashtag=21GiftsShop', { headers: AUTH });
+    expect(filtered.status).toBe(200);
+    const filteredBody = (await filtered.json()) as { messages: Array<{ id: string }> };
+    expect(filteredBody.messages.map((row) => row.id)).toEqual([
+      '00000000-0000-4000-8000-000000000021',
+    ]);
+    const all = await app.request('/messages', { headers: AUTH });
+    expect(all.status).toBe(200);
+    const allBody = (await all.json()) as { messages: Array<{ id: string }> };
+    expect(allBody.messages.map((row) => row.id)).toEqual([
+      '00000000-0000-4000-8000-000000000022',
+      '00000000-0000-4000-8000-000000000021',
+    ]);
+  });
+
+  it('pages hashtag matches without mixing in untagged notes', async () => {
+    const authStore = await namedStore('Ada');
+    const messageStore = new InMemoryMessageStore();
+    await messageStore.create({
+      id: '00000000-0000-4000-8000-000000000023',
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'Shop #21GiftsShop',
+      createdAt: new Date(now() + 1),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+    });
+    await messageStore.create({
+      id: '00000000-0000-4000-8000-000000000024',
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'also #21giftsshop here',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+    });
+    await messageStore.create({
+      id: '00000000-0000-4000-8000-000000000025',
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'living room',
+      createdAt: new Date(now() + 2),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+    });
+    const app = mount(authStore, messageStore);
+    const first = await app.request('/messages?hashtag=21GiftsShop&limit=1', { headers: AUTH });
+    expect(first.status).toBe(200);
+    const firstBody = (await first.json()) as {
+      messages: Array<{ id: string }>;
+      nextCursor?: string;
+    };
+    expect(firstBody.messages.map((row) => row.id)).toEqual([
+      '00000000-0000-4000-8000-000000000023',
+    ]);
+    expect(typeof firstBody.nextCursor).toBe('string');
+    const cursor = firstBody.nextCursor;
+    expect(cursor).toBeDefined();
+    if (cursor === undefined) {
+      throw new Error('expected nextCursor');
+    }
+    const second = await app.request(
+      `/messages?hashtag=21GiftsShop&limit=1&cursor=${encodeURIComponent(cursor)}`,
+      { headers: AUTH },
+    );
+    expect(second.status).toBe(200);
+    const secondBody = (await second.json()) as { messages: Array<{ id: string }> };
+    expect(secondBody.messages.map((row) => row.id)).toEqual([
+      '00000000-0000-4000-8000-000000000024',
+    ]);
+  });
+
   it('returns 400 for an invalid limit', async () => {
     const app = mount(await rulesStore());
     for (const limit of ['0', '201', 'abc']) {

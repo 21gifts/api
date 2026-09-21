@@ -854,12 +854,22 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
           cursor = { k: 't', c: new Date(decoded.c), i: decoded.i };
         }
       }
+      const hashtagQuery = c.req.query('hashtag');
+      if (hashtagQuery !== undefined && !/^[A-Za-z0-9][A-Za-z0-9_]{0,63}$/.test(hashtagQuery)) {
+        return c.json({ error: 'Invalid hashtag' }, 400);
+      }
       try {
         const staffAccountIds =
           mode === 'active'
             ? new Set(await deps.authStore.listStaffAccountIds())
             : new Set<string>();
-        const rows = await deps.store.listFeed({ limit, mode, cursor, staffAccountIds });
+        const rows = await deps.store.listFeed({
+          limit,
+          mode,
+          cursor,
+          staffAccountIds,
+          ...(hashtagQuery === undefined ? {} : { hashtag: hashtagQuery }),
+        });
         const maybeKept = await Promise.all(
           rows.map(async (row) => {
             const kept = await dropMissingVideoRow(deps.store, row);

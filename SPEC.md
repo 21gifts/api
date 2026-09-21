@@ -2564,7 +2564,9 @@ Public member forum thread. Bearer session required. After auth,
 `requireAction(account, 'forum.read')` (rules). Returns **only
 top-level notes** (`parent_id IS NULL`) via `listFeed`. Query `mode`
 (`all` default, `active`, `unpaid`, `popular`), `limit` (1–200, default
-**200**), and opaque `cursor`. Response `{ messages }` plus `nextCursor`
+**200**), opaque `cursor`, and optional `hashtag` (name without `#`;
+token match on live top-level `text`; combines with mode/limit/cursor).
+Response `{ messages }` plus `nextCursor`
 only when the page is full. Newest first (`createdAt` descending, then
 `id`) except `popular` (sats descending). Replies are never listed here —
 use `GET /messages/:id/replies`. The list path does not load reply rows.
@@ -2598,7 +2600,7 @@ Missing/invalid/expired bearer → **Response** `401`:
 { "error": "Unauthorized" }
 ```
 
-Unknown `mode`, `limit` outside 1–200, or a bad/mismatched `cursor` → **Response** `400`:
+Unknown `mode`, `limit` outside 1–200, a bad/mismatched `cursor`, or an invalid `hashtag` → **Response** `400`:
 
 ```json
 { "error": "Invalid mode" }
@@ -2610,6 +2612,10 @@ Unknown `mode`, `limit` outside 1–200, or a bad/mismatched `cursor` → **Resp
 
 ```json
 { "error": "Invalid cursor" }
+```
+
+```json
+{ "error": "Invalid hashtag" }
 ```
 
 `mode=active` is paid notes plus unpaid founder/moderator notes; `unpaid` is `sats = 0`; `popular` is paid notes ordered by sats descending.
