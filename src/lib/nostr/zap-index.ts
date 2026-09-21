@@ -473,8 +473,9 @@ function zapIngestRow(args: {
  *   platform-note compose.
  * @returns The credited receipt details and resume status, or the first
  *   validation/lookup failure.
- * @throws Propagates store lookup, payment-claim, credit, and ingest-write
- *   failures; payer-auth and notification failures are logged and suppressed.
+ * @throws Propagates store lookup, note-author lookup (before claim),
+ *   payment-claim, credit, and ingest-write failures; payer-auth after credit
+ *   and notification failures are logged and suppressed.
  */
 export async function settleInvoiceManually(args: {
   store: MessageStore;

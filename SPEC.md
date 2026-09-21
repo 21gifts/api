@@ -1856,7 +1856,8 @@ receipt is persisted as `rejected` / `settled`. A payment hash already owned by
 another receipt or represented by any indexed ingest cannot be settled
 manually. If payer lookup throws after credit, the route still succeeds: it
 logs the gift-reply failure, omits payer fields from the notification, and
-skips the gift-reply.
+skips the gift-reply. Note-author lookup runs **before** `claimZapPayment`;
+a throw there fails the settle with no claim, receipt, or ingest.
 
 Failures:
 
@@ -1868,7 +1869,7 @@ Failures:
 - conversation invoice → `409 { "error": "Conversation invoices cannot be settled" }`
 - missing/hidden target message → `404 { "error": "Message not found" }`
 - already indexed/settled payment → `409 { "error": "Already settled" }`
-- store failure, including the direct ingest write → `503 { "error": "Messages are unavailable" }`
+- store failure, including the direct ingest write, or a thrown note-author lookup → `503 { "error": "Messages are unavailable" }`
 
 `DEBUG_TOKEN` unset/blank returns 503; a missing or bad Bearer returns 401.
 The payment-hash claim and credit are not one transaction, but the claim
