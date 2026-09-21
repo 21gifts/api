@@ -1177,7 +1177,7 @@
 - **Purpose:** Project a stored contact row to its operator debug JSON shape.
 - **Inputs:** `ContactRow`.
 - **Returns / side effects:** `{ id, accountId, name, text, createdAt }` with ISO-8601 `createdAt`. No I/O.
-- **Used by:** `debugContactsRoutes`.
+- **Used by:** `debugContactsRoutes` and dump table `contact` (`loadDebugTables`).
 
 ## Function: normalizeLightningAddress
 
@@ -1505,7 +1505,7 @@
 
 - **Purpose:** GET-only operator catalog at `/debug/dump` and `/debug/dump/:table`.
 - **Inputs:** `DebugCatalogRouteDeps` (auth, messages, contacts, optional other stores, debugToken).
-- **Returns / side effects:** Hono app. 503 if token unset; 401 if bearer mismatches; 404 unknown table; 200 dump JSON; 503 `{ error: 'Dump is unavailable' }` on store throw.
+- **Returns / side effects:** Hono app. 503 if token unset; 401 if bearer mismatches; 404 unknown table; 200 dump JSON (GET `/` is `{ tables }` with each allowlisted name → row array, cap 200; GET `/:table` is `{ table, rows }`); 503 `{ error: 'Dump is unavailable' }` on store throw.
 - **Used by:** `createApp` at `/debug/dump`.
 
 ## Function: aboutMeFromNote
@@ -2113,10 +2113,10 @@
 
 ## Function: serializeTrustEdge
 
-- **Purpose:** JSON projection of a stored trust edge for operator POST and DELETE `/debug/trust-edges` responses. Emits `id`, `subjectId`, `actorId`, `kind`, and `createdAt` as ISO-8601. Does not include account role or extra columns.
+- **Purpose:** JSON projection of a stored trust edge for operator GET/POST/DELETE `/debug/trust-edges` and dump table `trust_edge`. Emits `id`, `subjectId`, `actorId`, `kind`, and `createdAt` as ISO-8601. Does not include account role or extra columns.
 - **Inputs:** `TrustEdge` (epoch-ms `createdAt`).
 - **Returns / side effects:** `TrustEdgeJson`. No I/O.
-- **Used by:** `debugTrustRoutes` (`POST /debug/trust-edges` and `DELETE /debug/trust-edges` 200 body).
+- **Used by:** `debugTrustRoutes` (`GET`/`POST`/`DELETE` `/debug/trust-edges`) and dump table `trust_edge` (`loadDebugTables`).
 
 ## Function: migrateTrustSchema
 

@@ -1512,22 +1512,38 @@ for e2e and operator debugging.
 ### `GET /debug/trust-edges`
 
 Operator listing of every stored trust edge (`serializeTrustEdge`), newest
-`createdAt` then `id` descending. Same `DEBUG_TOKEN` gate as the other
-debug routes.
+`createdAt` then `id` descending. Success body is
+`{ "edges": [ serializeTrustEdge, ... ] }`. Same `DEBUG_TOKEN` gate as the
+other debug routes.
 
 ### `GET /debug/dump`
 
 Operator catalog of every allowlisted table as camelCase JSON (cap 200 per
-table), including `api_log`. Media bytes stay off JSON. `nostrNsecCiphertext`
-is envelope hex. `btc_usd_daily`, `usd_fiat_daily`, and `db_change` dump stored
-rows when those list ports are wired (in-memory boots dump `[]` for
-`db_change`). `api_log` dumps when an audit store is wired (same rows as
-`GET /debug/api-log`). Same `DEBUG_TOKEN` gate as the other debug routes.
+table). Success body is `{ "tables": { "<table>": [ ... ] } }` with one array
+per allowlisted name (cap 200): `account`, `passkey_credential`,
+`passkey_challenge`, `auth_session`, `address_verification`, `api_log`,
+`contact`, `conversation`, `conversation_message`, `conversation_read`,
+`message`, `message_extra_photo`, `message_invoice`, `nostr_zap_ingest`,
+`nostr_zap_receipt`, `nostr_zap_payment`, `nostr_zapper`,
+`nostr_blocked_pubkey`, `notification`, `push_subscription`, `push_outbox`,
+`trust_edge`, `gift`, `btc_usd_daily`, `usd_fiat_daily`, `db_change`. Media
+bytes stay off JSON. `nostrNsecCiphertext` is envelope hex. `btc_usd_daily`,
+`usd_fiat_daily`, and `db_change` dump stored rows when those list ports are
+wired (in-memory boots dump `[]` for `db_change`). `api_log` dumps when an
+audit store is wired (same rows as `GET /debug/api-log`). Same `DEBUG_TOKEN`
+gate as the other debug routes.
 
 ### `GET /debug/dump/:table`
 
 Same catalog for one allowlisted table. Response `{ "table", "rows" }`.
-Unknown table → **Response** `404`. Same `DEBUG_TOKEN` gate.
+Unknown table → **Response** `404` unless the path segment is one of
+`account`, `passkey_credential`, `passkey_challenge`, `auth_session`,
+`address_verification`, `api_log`, `contact`, `conversation`,
+`conversation_message`, `conversation_read`, `message`, `message_extra_photo`,
+`message_invoice`, `nostr_zap_ingest`, `nostr_zap_receipt`, `nostr_zap_payment`,
+`nostr_zapper`, `nostr_blocked_pubkey`, `notification`, `push_subscription`,
+`push_outbox`, `trust_edge`, `gift`, `btc_usd_daily`, `usd_fiat_daily`,
+`db_change`. Same `DEBUG_TOKEN` gate.
 
 ### `POST /debug/trust-edges`
 

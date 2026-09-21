@@ -26,6 +26,7 @@
 #   gifts-debug accounts [--raw]     # table (default) or JSON
 #   gifts-debug account <id>         # GET /debug/accounts/:id JSON
 #   gifts-debug dump [table] [--raw] # GET /debug/dump or /debug/dump/:table JSON
+#                                    # tables: account, passkey_credential, passkey_challenge, auth_session, address_verification, api_log, contact, conversation, conversation_message, conversation_read, message, message_extra_photo, message_invoice, nostr_zap_ingest, nostr_zap_receipt, nostr_zap_payment, nostr_zapper, nostr_blocked_pubkey, notification, push_subscription, push_outbox, trust_edge, gift, btc_usd_daily, usd_fiat_daily, db_change
 #   gifts-debug trust-edges [--raw]  # GET /debug/trust-edges JSON
 #   gifts-debug role <id> <role>     # set account.role; print updated account JSON
 #   gifts-debug refuse-session <id> [true|false]
