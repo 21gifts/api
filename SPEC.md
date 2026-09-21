@@ -2481,10 +2481,13 @@ Success → **Response** `200`:
 
 Public member forum thread. Bearer session required. After auth,
 `requireAction(account, 'forum.read')` (rules). Returns **only
-top-level notes** (`parent_id IS NULL`) newest first (`createdAt`
-descending, then `id`), capped at **200**. Replies are never listed here —
-use `GET /messages/:id/replies`. This is the latest-200 **window** on the
-wire; clients must render the thread as a **messenger group** (oldest at
+top-level notes** (`parent_id IS NULL`) via `listFeed`. Query `mode`
+(`all` default, `active`, `unpaid`, `popular`), `limit` (1–200, default
+**200**), and opaque `cursor`. Response `{ messages }` plus `nextCursor`
+only when the page is full. Newest first (`createdAt` descending, then
+`id`) except `popular` (sats descending). Replies are never listed here —
+use `GET /messages/:id/replies`. The list path does not load reply rows.
+Clients must render the thread as a **messenger group** (oldest at
 the top, newest at the bottom above the composer), reversing the array for
 display. Each message exposes the author **name snapshotted at post time**,
 `text` (may be empty when a photo or video is attached), ISO-8601
@@ -2513,6 +2516,22 @@ Missing/invalid/expired bearer → **Response** `401`:
 ```json
 { "error": "Unauthorized" }
 ```
+
+Unknown `mode`, `limit` outside 1–200, or a bad/mismatched `cursor` → **Response** `400`:
+
+```json
+{ "error": "Invalid mode" }
+```
+
+```json
+{ "error": "Invalid limit" }
+```
+
+```json
+{ "error": "Invalid cursor" }
+```
+
+`mode=active` is paid notes plus unpaid founder/moderator notes; `unpaid` is `sats = 0`; `popular` is paid notes ordered by sats descending.
 
 Missing rules → **Response** `409`:
 

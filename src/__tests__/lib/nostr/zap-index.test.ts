@@ -9,6 +9,7 @@ import { unsignedNostrDefaults, type MessageRow } from '@/lib/message';
 import { InMemoryConversationStore } from '@/lib/conversation-store';
 import {
   InMemoryMessageStore,
+  type MessageFeedQuery,
   type MessageInvoiceAttempt,
   type UnattributedIndexedReceipt,
   type ZapIngestRow,
@@ -3731,6 +3732,7 @@ describe('indexOpenZapReceipts', () => {
     let getByEventIdCalls = 0;
     const store = {
       listLatest: (limit: number) => base.listLatest(limit),
+      listFeed: (query: MessageFeedQuery) => base.listFeed(query),
       listDebug: (limit: number) => base.listDebug(limit),
       listHidden: (limit: number) => base.listHidden(limit),
       listDirectChildren: (parentId: string) => base.listDirectChildren(parentId),
@@ -3950,6 +3952,7 @@ describe('indexOpenZapReceipts', () => {
       let ingestCalls = 0;
       const store = {
         listLatest: (limit: number) => base.listLatest(limit),
+        listFeed: (query: MessageFeedQuery) => base.listFeed(query),
         listDebug: (limit: number) => base.listDebug(limit),
         listHidden: (limit: number) => base.listHidden(limit),
         listDirectChildren: (parentId: string) => base.listDirectChildren(parentId),
@@ -4307,6 +4310,7 @@ describe('indexOpenZapReceipts', () => {
       });
       const store = {
         listLatest: (limit: number) => base.listLatest(limit),
+        listFeed: (query: MessageFeedQuery) => base.listFeed(query),
         listDebug: (limit: number) => base.listDebug(limit),
         listHidden: (limit: number) => base.listHidden(limit),
         listDirectChildren: (parentId: string) => base.listDirectChildren(parentId),

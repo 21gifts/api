@@ -13,16 +13,20 @@ import {
   MESSAGE_LIST_LIMIT,
   MESSAGE_PHOTO_MAX_BYTES,
   decodeForumPhoto,
+  decodeMessageFeedCursor,
+  encodeMessageFeedCursor,
   forumContentFingerprint,
   forumPhotoResponse,
   normalizeForumText,
   serializeHiddenMessage,
   serializeMessage,
   unsignedNostrDefaults,
+  type ForumFeedMode,
   type ForumPhoto,
   type MessageRow,
 } from '@/lib/message';
 import type {
+  MessageFeedQuery,
   MessageInvoiceAttempt,
   MessageInvoiceResult,
   MessageStore,
@@ -787,31 +791,100 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
       if (!gate.ok) {
         return c.json({ error: MISSING_REQUIREMENTS_ERROR, missing: gate.missing }, 409);
       }
+      const modeQuery = c.req.query('mode');
+      let mode: ForumFeedMode;
+      if (modeQuery === undefined) {
+        mode = 'all';
+      } else if (
+        modeQuery === 'all' ||
+        modeQuery === 'active' ||
+        modeQuery === 'unpaid' ||
+        modeQuery === 'popular'
+      ) {
+        mode = modeQuery;
+      } else {
+        return c.json({ error: 'Invalid mode' }, 400);
+      }
+      const limitQuery = c.req.query('limit');
+      let limit: number;
+      if (limitQuery === undefined) {
+        limit = MESSAGE_LIST_LIMIT;
+      } else if (/^\d+$/.test(limitQuery)) {
+        const n = Number(limitQuery);
+        if (n < 1 || n > MESSAGE_LIST_LIMIT) {
+          return c.json({ error: 'Invalid limit' }, 400);
+        }
+        limit = n;
+      } else {
+        return c.json({ error: 'Invalid limit' }, 400);
+      }
+      const cursorQuery = c.req.query('cursor');
+      let cursor: MessageFeedQuery['cursor'] = null;
+      if (cursorQuery !== undefined) {
+        const decoded = decodeMessageFeedCursor(cursorQuery);
+        if (decoded === null) {
+          return c.json({ error: 'Invalid cursor' }, 400);
+        }
+        if (!MESSAGE_ID_RE.test(decoded.i)) {
+          return c.json({ error: 'Invalid cursor' }, 400);
+        }
+        if (mode === 'popular') {
+          if (decoded.k !== 's') {
+            return c.json({ error: 'Invalid cursor' }, 400);
+          }
+          cursor = { k: 's', s: decoded.s, c: new Date(decoded.c), i: decoded.i };
+        } else if (decoded.k !== 't') {
+          return c.json({ error: 'Invalid cursor' }, 400);
+        } else {
+          cursor = { k: 't', c: new Date(decoded.c), i: decoded.i };
+        }
+      }
       try {
-        const rows = await deps.store.listLatest(MESSAGE_LIST_LIMIT);
-        const messages = [];
-        for (const row of rows) {
-          const author =
-            row.accountId === null ? undefined : await deps.authStore.getAccount(row.accountId);
+        const staffAccountIds =
+          mode === 'active'
+            ? new Set(await deps.authStore.listStaffAccountIds())
+            : new Set<string>();
+        const rows = await deps.store.listFeed({ limit, mode, cursor, staffAccountIds });
+        const maybeKept = await Promise.all(
+          rows.map(async (row) => {
+            const kept = await dropMissingVideoRow(deps.store, row);
+            return kept === null ? null : { ...kept, replyCount: row.replyCount };
+          }),
+        );
+        const kept = maybeKept.filter((row): row is NonNullable<typeof row> => row !== null);
+        const authors = await Promise.all(
+          kept.map((row) =>
+            row.accountId === null
+              ? Promise.resolve(undefined)
+              : deps.authStore.getAccount(row.accountId),
+          ),
+        );
+        const messages = kept.map((row, i) => {
+          const author = authors[i];
           const payable = payableOf(row, author);
           const role = row.accountId === null ? undefined : (author?.role ?? 'basis');
-          const kept = await dropMissingVideoRow(deps.store, row);
-          if (kept === null) {
-            continue;
+          return serializeMessage(row, payable, role, row.replyCount, true);
+        });
+        let nextCursor: string | undefined;
+        if (rows.length === limit) {
+          const last = rows[rows.length - 1];
+          if (last !== undefined) {
+            nextCursor =
+              mode === 'popular'
+                ? encodeMessageFeedCursor({
+                    k: 's',
+                    s: last.sats,
+                    c: last.createdAt.toISOString(),
+                    i: last.id,
+                  })
+                : encodeMessageFeedCursor({
+                    k: 't',
+                    c: last.createdAt.toISOString(),
+                    i: last.id,
+                  });
           }
-          const children = await deps.store.listReplies(kept.id, MESSAGE_LIST_LIMIT);
-          let dropped = 0;
-          for (const child of children) {
-            const keptChild = await dropMissingVideoRow(deps.store, child);
-            if (keptChild === null) {
-              dropped += 1;
-            }
-          }
-          messages.push(
-            serializeMessage(kept, payable, role, Math.max(0, row.replyCount - dropped), true),
-          );
         }
-        return c.json({ messages }, 200);
+        return c.json(nextCursor === undefined ? { messages } : { messages, nextCursor }, 200);
       } catch {
         logEvent('messages.list.failed');
         return c.json({ error: 'Messages are unavailable' }, 503);

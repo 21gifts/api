@@ -5,7 +5,9 @@ import {
   MESSAGE_PHOTO_MAX_BASE64_LENGTH,
   MESSAGE_PHOTO_MAX_BYTES,
   decodeForumPhoto,
+  decodeMessageFeedCursor,
   detectImageContentType,
+  encodeMessageFeedCursor,
   forumContentFingerprint,
   forumPhotoResponse,
   normalizeForumText,
@@ -849,6 +851,54 @@ describe('decodeForumPhoto', () => {
   it('rejects wrong magic', () => {
     const gif = Buffer.from([0x47, 0x49, 0x46, 0x38]).toString('base64');
     expect(decodeForumPhoto('image/gif', gif)).toBeNull();
+  });
+});
+
+describe('encodeMessageFeedCursor / decodeMessageFeedCursor', () => {
+  it('round-trips a time cursor', () => {
+    const cursor = { k: 't' as const, c: '2026-08-01T00:00:00.000Z', i: 'note-1' };
+    expect(decodeMessageFeedCursor(encodeMessageFeedCursor(cursor))).toEqual(cursor);
+  });
+
+  it('round-trips a popular cursor', () => {
+    const cursor = { k: 's' as const, s: 21, c: '2026-08-01T00:00:00.000Z', i: 'note-1' };
+    expect(decodeMessageFeedCursor(encodeMessageFeedCursor(cursor))).toEqual(cursor);
+  });
+
+  it('returns null on garbage', () => {
+    expect(decodeMessageFeedCursor('%%%')).toBeNull();
+    expect(decodeMessageFeedCursor('not-json')).toBeNull();
+    expect(decodeMessageFeedCursor('')).toBeNull();
+  });
+
+  it('returns null on a bad ISO createdAt', () => {
+    expect(
+      decodeMessageFeedCursor(encodeMessageFeedCursor({ k: 't', c: 'not-a-date', i: 'note-1' })),
+    ).toBeNull();
+  });
+
+  it('returns null on a non-finite sats value', () => {
+    const raw = Buffer.from(
+      '{"k":"s","s":1e400,"c":"2026-08-01T00:00:00.000Z","i":"note-1"}',
+      'utf8',
+    ).toString('base64url');
+    expect(decodeMessageFeedCursor(raw)).toBeNull();
+  });
+
+  it('returns null on an array payload, missing fields, or unknown k', () => {
+    expect(decodeMessageFeedCursor(Buffer.from('[]', 'utf8').toString('base64url'))).toBeNull();
+    expect(
+      decodeMessageFeedCursor(
+        Buffer.from('{"k":"t","c":1,"i":"note-1"}', 'utf8').toString('base64url'),
+      ),
+    ).toBeNull();
+    expect(
+      decodeMessageFeedCursor(
+        Buffer.from('{"k":"x","c":"2026-08-01T00:00:00.000Z","i":"note-1"}', 'utf8').toString(
+          'base64url',
+        ),
+      ),
+    ).toBeNull();
   });
 });
 
