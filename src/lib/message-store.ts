@@ -3569,18 +3569,16 @@ export class PostgresMessageStore implements MessageStore {
        WHERE result = 'ok' AND conversation_id IS NOT NULL AND conversation_message_id IS NOT NULL
          AND NOT EXISTS (SELECT 1 FROM conversation_message m WHERE m.id = message_invoice.conversation_message_id)`,
     );
-    const seen = new Set<string>();
     const listed: { eventId: string; conversationMessageId: string }[] = [];
     for (const row of rows) {
       const eventId = zapRequestEventId(parseJsonObject(row.zap_request));
-      if (eventId === null || seen.has(eventId)) {
+      if (eventId === null) {
         continue;
       }
       const conversationMessageId = row.conversation_message_id;
       if (conversationMessageId === undefined || conversationMessageId === null) {
         continue;
       }
-      seen.add(eventId);
       listed.push({ eventId, conversationMessageId });
     }
     return listed;
