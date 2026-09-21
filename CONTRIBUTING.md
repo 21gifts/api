@@ -269,6 +269,8 @@ api/
 │   ├── check-handbook.mjs    # CI gate: missing heading → exit 1
 │   ├── check-e2e.mjs         # CI gate: missing endpoint request or Function: title → exit 1
 │   └── gifts-debug.sh        # Operator CLI: list, account-by-id, dump tables, set role, refuse-session, unlink Lightning Address, messages, external-pubkeys, video-put, restore, spend, trust-edges, trust-edge, trust-edge-delete, api-log (DEBUG_TOKEN)
+├── integration/
+│   └── sql-driver.test.ts  # Bun test:postgres; needs DATABASE_URL; text[] binding against Postgres
 ├── e2e/
 │   ├── http.spec.ts          # Playwright endpoint smokes against bun src/index.ts
 │   ├── forum-replies.spec.ts # Playwright: provision, session, note, public GET, reply, replyCount
@@ -515,12 +517,12 @@ More will be added as concrete subsystems that need runtime configuration
 
 ## CI / CD
 
-| Workflow               | Trigger               | Action                                                                       |
-| ---------------------- | --------------------- | ---------------------------------------------------------------------------- |
-| `ci.yaml`              | PR (including drafts) | Typecheck + lint + handbook + e2e-check + test (100% coverage) + build + e2e |
-| `deploy-dev.yaml`      | push to `develop`     | Docker build → push `21gifts/api:beta` → notify → wait for deploy            |
-| `deploy-prd.yaml`      | push to `main`        | Docker build → push `21gifts/api:latest` → notify → wait for deploy          |
-| `auto-release-pr.yaml` | push to `develop`     | Auto-create Release PR (`develop → main`)                                    |
+| Workflow               | Trigger               | Action                                                                                       |
+| ---------------------- | --------------------- | -------------------------------------------------------------------------------------------- |
+| `ci.yaml`              | PR (including drafts) | Typecheck + lint + handbook + e2e-check + test (100% coverage) + test:postgres + build + e2e |
+| `deploy-dev.yaml`      | push to `develop`     | Docker build → push `21gifts/api:beta` → notify → wait for deploy                            |
+| `deploy-prd.yaml`      | push to `main`        | Docker build → push `21gifts/api:latest` → notify → wait for deploy                          |
+| `auto-release-pr.yaml` | push to `develop`     | Auto-create Release PR (`develop → main`)                                                    |
 
 Images target `linux/arm64`.
 

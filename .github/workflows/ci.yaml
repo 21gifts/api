@@ -13,7 +13,7 @@ permissions:
 
 jobs:
   check:
-    name: Typecheck, Lint, Handbook, E2E-check, Test (100% coverage), Build, E2E
+    name: Typecheck, Lint, Handbook, E2E-check, Test (100% coverage), Postgres, Build, E2E
     runs-on: ubuntu-latest
     timeout-minutes: 15
     services:
