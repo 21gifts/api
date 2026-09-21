@@ -752,8 +752,9 @@ export class InMemoryAuthStore implements AuthStore {
     if (!stored) {
       return false;
     }
-    if (account !== undefined) {
-      this.#accounts.set(account.id, { ...account, walletRequired: true });
+    const current = this.#accounts.get(credential.accountId);
+    if (current !== undefined) {
+      this.#accounts.set(current.id, { ...current, walletRequired: true });
     }
     return true;
   }
