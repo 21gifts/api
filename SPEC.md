@@ -1513,8 +1513,9 @@ for e2e and operator debugging.
 
 Operator listing of every stored trust edge (`serializeTrustEdge`), newest
 `createdAt` then `id` descending. Success body is
-`{ "edges": [ serializeTrustEdge, ... ] }`. Same `DEBUG_TOKEN` gate as the
-other debug routes.
+`{ "edges": [ serializeTrustEdge, ... ] }`. Unexpected store throw → **503**
+`{ "error": "Trust chain is unavailable" }` logged as `debug.trust_edges.failed`.
+Same `DEBUG_TOKEN` gate as the other debug routes.
 
 ### `GET /debug/dump`
 
