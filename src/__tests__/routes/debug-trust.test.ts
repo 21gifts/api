@@ -374,6 +374,7 @@ describe('POST /debug/trust-edges', () => {
         throw new Error('boom');
       },
       deleteEdge: async () => undefined,
+      deleteEdgeById: async () => undefined,
     };
     const res = await post(mount(await seeded(), throwing), 'secret', {
       subjectId: SUBJECT,
@@ -486,6 +487,7 @@ describe('DELETE /debug/trust-edges', () => {
       deleteEdge: async () => {
         throw new Error('boom');
       },
+      deleteEdgeById: async () => undefined,
     };
     const res = await del(mount(await seeded(), throwing), 'secret', {
       subjectId: SUBJECT,

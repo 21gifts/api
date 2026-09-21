@@ -1518,6 +1518,19 @@ describe('notifyModeratorProposed', () => {
     ).rejects.toThrow('push.fanout.failed');
   });
 
+  it('enqueues without unreadCount when only pushStore is set', async () => {
+    const pushStore = new InMemoryPushStore();
+    await notifyModeratorProposed({
+      pushStore,
+      recipients: [{ id: 'founder', role: 'founder' }],
+      subject: { id: 'subject', name: 'Sub' },
+      actor: { id: 'actor', name: 'Mod' },
+      nowMs: NOW.getTime(),
+    });
+    const claimed = await pushStore.claimPending(10, NOW.getTime(), 60_000);
+    expect(payloadObject(claimed[0]?.payload ?? '{}')['unreadCount']).toBeUndefined();
+  });
+
   it('includes inbox unread in the push payload', async () => {
     const pushStore = new InMemoryPushStore();
     await notifyModeratorProposed({

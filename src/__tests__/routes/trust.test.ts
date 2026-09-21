@@ -126,6 +126,7 @@ const throwingList: TrustStore = {
   },
   insertEdge: async (row) => row,
   deleteEdge: async () => undefined,
+  deleteEdgeById: async () => undefined,
 };
 
 const throwingListEdges: TrustStore = {
@@ -136,6 +137,7 @@ const throwingListEdges: TrustStore = {
   listEdgesForSubject: async () => [],
   insertEdge: async (row) => row,
   deleteEdge: async () => undefined,
+  deleteEdgeById: async () => undefined,
 };
 
 const duplicateInsert: TrustStore = {
@@ -146,6 +148,7 @@ const duplicateInsert: TrustStore = {
     throw new Error('duplicate trust edge');
   },
   deleteEdge: async () => undefined,
+  deleteEdgeById: async () => undefined,
 };
 
 const boomInsert: TrustStore = {
@@ -156,6 +159,7 @@ const boomInsert: TrustStore = {
     throw new Error('insert boom');
   },
   deleteEdge: async () => undefined,
+  deleteEdgeById: async () => undefined,
 };
 
 describe('POST /trust/*', () => {
@@ -629,6 +633,7 @@ describe('POST /trust/*', () => {
         },
         insertEdge: (row) => trustStore.insertEdge(row),
         deleteEdge: (subjectId, kind) => trustStore.deleteEdge(subjectId, kind),
+        deleteEdgeById: (id) => trustStore.deleteEdgeById(id),
       };
       const res = await post(mount(authStore, store), '/trust/propose-moderator', 'founder', {
         accountId: SUBJECT,
@@ -670,6 +675,7 @@ describe('POST /trust/*', () => {
         },
         insertEdge: (row) => trustStore.insertEdge(row),
         deleteEdge: (subjectId, kind) => trustStore.deleteEdge(subjectId, kind),
+        deleteEdgeById: (id) => trustStore.deleteEdgeById(id),
       };
       const res = await post(mount(authStore, store), '/trust/propose-moderator', 'founder', {
         accountId: SUBJECT,
@@ -694,6 +700,7 @@ describe('POST /trust/*', () => {
         },
         insertEdge: (row) => trustStore.insertEdge(row),
         deleteEdge: (subjectId, kind) => trustStore.deleteEdge(subjectId, kind),
+        deleteEdgeById: (id) => trustStore.deleteEdgeById(id),
       };
       const res = await post(mount(authStore, store), '/trust/propose-moderator', 'founder', {
         accountId: SUBJECT,
@@ -721,12 +728,51 @@ describe('POST /trust/*', () => {
           return stored;
         },
         deleteEdge: (subjectId, kind) => trustStore.deleteEdge(subjectId, kind),
+        deleteEdgeById: (id) => trustStore.deleteEdgeById(id),
       };
       const res = await post(mount(authStore, store), '/trust/propose-moderator', 'founder', {
         accountId: SUBJECT,
       });
       expect(res.status).toBe(200);
       expect((await trustStore.listEdges()).map((row) => row.id)).not.toContain('newer');
+    });
+
+    it('returns 409 when a concurrent confirm closed the grant after insert', async () => {
+      const { authStore, trustStore } = await staffed([
+        account({ id: SUBJECT, role: 'verified', name: 'Sub' }),
+      ]);
+      let lists = 0;
+      const store: TrustStore = {
+        listEdges: () => trustStore.listEdges(),
+        listEdgesTouching: (id) => trustStore.listEdgesTouching(id),
+        listEdgesForSubject: async (id) => {
+          lists += 1;
+          const rows = await trustStore.listEdgesForSubject(id);
+          if (lists < 2) {
+            return rows;
+          }
+          return [
+            ...rows,
+            {
+              id: 'confirm-race',
+              subjectId: SUBJECT,
+              actorId: MOD,
+              kind: 'moderator_confirm',
+              createdAt: 9_000_000_000_000,
+            },
+          ];
+        },
+        insertEdge: (row) => trustStore.insertEdge(row),
+        deleteEdge: (subjectId, kind) => trustStore.deleteEdge(subjectId, kind),
+        deleteEdgeById: (id) => trustStore.deleteEdgeById(id),
+      };
+      const res = await post(mount(authStore, store), '/trust/propose-moderator', 'founder', {
+        accountId: SUBJECT,
+      });
+      expect(res.status).toBe(409);
+      expect((await trustStore.listEdges()).some((row) => row.kind === 'moderator_propose')).toBe(
+        false,
+      );
     });
 
     it('returns 409 when the post-insert list has no remaining open propose', async () => {
@@ -754,6 +800,7 @@ describe('POST /trust/*', () => {
         },
         insertEdge: (row) => trustStore.insertEdge(row),
         deleteEdge: (subjectId, kind) => trustStore.deleteEdge(subjectId, kind),
+        deleteEdgeById: (id) => trustStore.deleteEdgeById(id),
       };
       const res = await post(mount(authStore, store), '/trust/propose-moderator', 'founder', {
         accountId: SUBJECT,
@@ -805,6 +852,7 @@ describe('POST /trust/*', () => {
           return stored;
         },
         deleteEdge: (subjectId, kind) => trustStore.deleteEdge(subjectId, kind),
+        deleteEdgeById: (id) => trustStore.deleteEdgeById(id),
       };
       const res = await post(mount(authStore, store), '/trust/propose-moderator', 'founder', {
         accountId: SUBJECT,
@@ -1040,6 +1088,7 @@ describe('POST /trust/*', () => {
           throw new Error('duplicate trust edge');
         },
         deleteEdge: async () => undefined,
+        deleteEdgeById: async () => undefined,
       };
       const dup = await staffed(extras);
       expect(
@@ -1058,6 +1107,7 @@ describe('POST /trust/*', () => {
           throw new Error('insert boom');
         },
         deleteEdge: async () => undefined,
+        deleteEdgeById: async () => undefined,
       };
       const boom = await staffed(extras);
       expect(
@@ -1068,6 +1118,50 @@ describe('POST /trust/*', () => {
         ).status,
       ).toBe(503);
       expect((await boom.authStore.getAccount(SUBJECT))?.role).toBe('verified');
+    });
+
+    it('returns 409 and drops the confirm when a newer propose replaced the pending one', async () => {
+      const { authStore, trustStore } = await pending();
+      let lists = 0;
+      const store: TrustStore = {
+        listEdges: () => trustStore.listEdges(),
+        listEdgesTouching: (id) => trustStore.listEdgesTouching(id),
+        listEdgesForSubject: async (id) => {
+          lists += 1;
+          const rows = await trustStore.listEdgesForSubject(id);
+          if (lists < 2) {
+            return rows;
+          }
+          return [
+            ...rows,
+            {
+              id: 'r1',
+              subjectId: SUBJECT,
+              actorId: MOD,
+              kind: 'moderator_reject',
+              createdAt: 2,
+            },
+            {
+              id: 'p2',
+              subjectId: SUBJECT,
+              actorId: FOUNDER,
+              kind: 'moderator_propose',
+              createdAt: 9_000_000_000_000,
+            },
+          ];
+        },
+        insertEdge: (row) => trustStore.insertEdge(row),
+        deleteEdge: (subjectId, kind) => trustStore.deleteEdge(subjectId, kind),
+        deleteEdgeById: (id) => trustStore.deleteEdgeById(id),
+      };
+      const res = await post(mount(authStore, store), '/trust/confirm-moderator', 'mod', {
+        accountId: SUBJECT,
+      });
+      expect(res.status).toBe(409);
+      expect((await authStore.getAccount(SUBJECT))?.role).toBe('verified');
+      expect((await trustStore.listEdges()).some((row) => row.kind === 'moderator_confirm')).toBe(
+        false,
+      );
     });
 
     it('returns 409 and drops the confirm when a concurrent reject closed the proposal', async () => {
@@ -1095,6 +1189,7 @@ describe('POST /trust/*', () => {
         },
         insertEdge: (row) => trustStore.insertEdge(row),
         deleteEdge: (subjectId, kind) => trustStore.deleteEdge(subjectId, kind),
+        deleteEdgeById: (id) => trustStore.deleteEdgeById(id),
       };
       const res = await post(mount(authStore, store), '/trust/confirm-moderator', 'mod', {
         accountId: SUBJECT,
@@ -1121,6 +1216,7 @@ describe('POST /trust/*', () => {
         },
         insertEdge: (row) => trustStore.insertEdge(row),
         deleteEdge: (subjectId, kind) => trustStore.deleteEdge(subjectId, kind),
+        deleteEdgeById: (id) => trustStore.deleteEdgeById(id),
       };
       const res = await post(mount(authStore, store), '/trust/confirm-moderator', 'mod', {
         accountId: SUBJECT,
@@ -1634,6 +1730,7 @@ describe('POST /trust/*', () => {
         },
         insertEdge: (row) => trustStore.insertEdge(row),
         deleteEdge: (subjectId, kind) => trustStore.deleteEdge(subjectId, kind),
+        deleteEdgeById: (id) => trustStore.deleteEdgeById(id),
       };
       const res = await post(mount(authStore, store), '/trust/reject-moderator', 'founder', {
         accountId: SUBJECT,
@@ -1669,6 +1766,7 @@ describe('POST /trust/*', () => {
         },
         insertEdge: (row) => trustStore.insertEdge(row),
         deleteEdge: (subjectId, kind) => trustStore.deleteEdge(subjectId, kind),
+        deleteEdgeById: (id) => trustStore.deleteEdgeById(id),
       };
       const res = await post(mount(authStore, store), '/trust/reject-moderator', 'founder', {
         accountId: SUBJECT,
@@ -1694,6 +1792,7 @@ describe('POST /trust/*', () => {
         },
         insertEdge: (row) => trustStore.insertEdge(row),
         deleteEdge: (subjectId, kind) => trustStore.deleteEdge(subjectId, kind),
+        deleteEdgeById: (id) => trustStore.deleteEdgeById(id),
       };
       const res = await post(mount(authStore, store), '/trust/reject-moderator', 'founder', {
         accountId: SUBJECT,

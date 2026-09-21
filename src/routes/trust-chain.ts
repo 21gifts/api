@@ -13,12 +13,13 @@ import { bearerToken } from '@/routes/me';
  *
  * Bare `GET /trust-chain` returns founder seeds (no edges) so a thousand-person
  * chain is not dumped on first paint. `?around=<id>` returns that account plus
- * one hop of the oldest eligible public kind per subject (`createdAt` then
- * `id`). Eligible: `verify`, `moderator_appoint`, and `moderator_propose` only
- * when the live subject is a `moderator`. `moderator_confirm` is never
- * projected. Neighborhood loads all edges for each subject in the touching
- * set (`listEdgesForSubject`) so a non-touching older eligible edge still
- * wins over a touching newer one. A pending propose (subject still
+ * one hop of the oldest eligible public edge per subject (`createdAt` then
+ * `id`), skipping a non-chain oldest sibling so a later displayable contact
+ * can show. Eligible: `verify`, `moderator_appoint`, and `moderator_propose`
+ * only when the live subject is a `moderator`. `moderator_confirm` and
+ * `moderator_reject` never. Neighborhood loads all edges for each subject in
+ * the touching set (`listEdgesForSubject`) so a non-touching older eligible
+ * edge still wins over a touching newer one. A pending propose (subject still
  * `verified`) stays private and is not a hop neighbor. Later appoint,
  * confirm, or propose do not replace an earlier eligible contact.
  */
@@ -96,8 +97,8 @@ function isInvalidUuid(error: unknown): boolean {
  * accounts on those filtered edges. Loads all edges for each touching subject
  * (`listEdgesForSubject`) so a non-touching older eligible edge still wins
  * over a touching newer one. Pending-propose verified neighbors are not
- * nodes. Confirm never. Later appoint, confirm, or propose do not replace
- * an earlier eligible contact.
+ * nodes. Confirm and reject never. Later appoint, confirm, or propose do not
+ * replace an earlier eligible contact.
  *
  * @param deps - Auth and trust stores.
  * @param aroundId - Focus account id.

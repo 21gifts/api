@@ -246,24 +246,32 @@ export function trustRoutes(deps: TrustRouteDeps): Hono {
         return c.json({ error: 'Trust chain is unavailable' }, 503);
       }
       try {
-        for (;;) {
-          const after = await deps.trustStore.listEdgesForSubject(subject.id);
-          const open = openProposesForSubject(after, subject.id);
-          const oldest = oldestOpenPropose(open);
-          if (oldest === undefined || oldest.id !== created.id) {
-            await deleteMatchingPropose(deps.trustStore, subject.id, created.id);
-            return c.json({ error: 'Conflict' }, 409);
+        const after = await deps.trustStore.listEdgesForSubject(subject.id);
+        if (
+          after.some(
+            (edge) => edge.kind === 'moderator_confirm' || edge.kind === 'moderator_appoint',
+          )
+        ) {
+          await deps.trustStore.deleteEdgeById(created.id);
+          return c.json({ error: 'Conflict' }, 409);
+        }
+        const open = openProposesForSubject(after, subject.id);
+        const oldest = oldestOpenPropose(open);
+        if (oldest === undefined || oldest.id !== created.id) {
+          await deps.trustStore.deleteEdgeById(created.id);
+          return c.json({ error: 'Conflict' }, 409);
+        }
+        for (const extra of open) {
+          if (extra.id !== created.id) {
+            await deps.trustStore.deleteEdgeById(extra.id);
           }
-          if (open.length <= 1) {
-            break;
-          }
-          await deps.trustStore.deleteEdge(subject.id, 'moderator_propose');
         }
       } catch {
         logEvent('trust.write.failed');
         return c.json({ error: 'Trust chain is unavailable' }, 503);
       }
       logEvent('trust.moderator_proposed', { subjectId: subject.id, actorId: caller.id });
+      await clearModeratorProposalNotifications(deps, subject.id);
       await notifyStaffProposed(deps, subject, caller);
       return c.json(accountSummary(subject), 200);
     })
@@ -341,8 +349,13 @@ export function trustRoutes(deps: TrustRouteDeps): Hono {
       }
       try {
         const after = await deps.trustStore.listEdgesForSubject(subject.id);
-        if (openProposesForSubject(after, subject.id).length === 0) {
-          await deps.trustStore.deleteEdge(subject.id, 'moderator_confirm');
+        const oldest = oldestOpenPropose(openProposesForSubject(after, subject.id));
+        if (
+          oldest === undefined ||
+          oldest.createdAt !== pending.createdAt ||
+          oldest.actorId !== pending.proposedBy.id
+        ) {
+          await deps.trustStore.deleteEdgeById(created.id);
           return c.json({ error: 'Conflict' }, 409);
         }
       } catch {
@@ -397,8 +410,9 @@ export function trustRoutes(deps: TrustRouteDeps): Hono {
       if (pendingModeratorProposals([subject], existing).length === 0) {
         return c.json({ error: 'Conflict' }, 409);
       }
+      const created = newEdge(deps, subject.id, caller.id, 'moderator_reject');
       try {
-        await deps.trustStore.insertEdge(newEdge(deps, subject.id, caller.id, 'moderator_reject'));
+        await deps.trustStore.insertEdge(created);
       } catch (error) {
         if (isDuplicateTrustEdge(error)) {
           return c.json({ error: 'Conflict' }, 409);
@@ -413,7 +427,7 @@ export function trustRoutes(deps: TrustRouteDeps): Hono {
             (edge) => edge.kind === 'moderator_confirm' || edge.kind === 'moderator_appoint',
           )
         ) {
-          await deps.trustStore.deleteEdge(subject.id, 'moderator_reject');
+          await deps.trustStore.deleteEdgeById(created.id);
           return c.json({ error: 'Conflict' }, 409);
         }
       } catch {
@@ -557,20 +571,6 @@ async function notifySubjectAppointed(
     });
   } catch {
     logEvent('push.enqueue.failed');
-  }
-}
-
-/** Delete propose rows newest-first until `id` is gone or none remain. */
-async function deleteMatchingPropose(
-  store: TrustStore,
-  subjectId: string,
-  id: string,
-): Promise<void> {
-  for (;;) {
-    const removed = await store.deleteEdge(subjectId, 'moderator_propose');
-    if (removed === undefined || removed.id === id) {
-      return;
-    }
   }
 }
 

@@ -327,6 +327,7 @@ describe('GET /trust-chain', () => {
       },
       insertEdge: async (row) => row,
       deleteEdge: async () => undefined,
+      deleteEdgeById: async () => undefined,
     };
     const res = await mount(authStore, throwing).request('/trust-chain?around=f', {
       headers: AUTH,

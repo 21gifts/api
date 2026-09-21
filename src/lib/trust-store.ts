@@ -65,6 +65,14 @@ export interface TrustStore {
    * @returns A copy of the deleted edge, or `undefined` when none matched.
    */
   deleteEdge(subjectId: string, kind: TrustKind): Promise<TrustEdge | undefined>;
+
+  /**
+   * Delete the row with this `id`, if any.
+   *
+   * @param id - Stored edge id.
+   * @returns A copy of the deleted edge, or `undefined` when none matched.
+   */
+  deleteEdgeById(id: string): Promise<TrustEdge | undefined>;
 }
 
 /** Idempotent DDL for the trust_edge table (matches `docs/schema/trust_edge.sql`). */
@@ -196,6 +204,26 @@ export class InMemoryTrustStore implements TrustStore {
     this.#edges.splice(bestIndex, 1);
     return Promise.resolve(copyEdge(best));
   }
+
+  /**
+   * Remove the row with this `id` and return a copy, or `undefined`.
+   *
+   * @param id - Stored edge id.
+   * @returns A copy of the deleted edge, or `undefined`.
+   */
+  deleteEdgeById(id: string): Promise<TrustEdge | undefined> {
+    const index = this.#edges.findIndex((stored) => stored.id === id);
+    if (index < 0) {
+      return Promise.resolve(undefined);
+    }
+    const stored = this.#edges[index];
+    /* v8 ignore next 3 -- findIndex >= 0 means the slot exists */
+    if (stored === undefined) {
+      return Promise.resolve(undefined);
+    }
+    this.#edges.splice(index, 1);
+    return Promise.resolve(copyEdge(stored));
+  }
 }
 
 /** Row shape selected from `trust_edge`. */
@@ -312,6 +340,21 @@ export class PostgresTrustStore implements TrustStore {
     const rows = await this.#sql.query<TrustSqlRow>(
       `DELETE FROM trust_edge WHERE id = $1 RETURNING id, subject_id, actor_id, kind, created_at`,
       [found.id],
+    );
+    const row = rows[0];
+    return row === undefined ? undefined : mapTrustRow(row);
+  }
+
+  /**
+   * Delete the `trust_edge` row with this `id`.
+   *
+   * @param id - Stored edge id (`$1`).
+   * @returns The deleted row, or `undefined` when none matched.
+   */
+  async deleteEdgeById(id: string): Promise<TrustEdge | undefined> {
+    const rows = await this.#sql.query<TrustSqlRow>(
+      `DELETE FROM trust_edge WHERE id = $1 RETURNING id, subject_id, actor_id, kind, created_at`,
+      [id],
     );
     const row = rows[0];
     return row === undefined ? undefined : mapTrustRow(row);

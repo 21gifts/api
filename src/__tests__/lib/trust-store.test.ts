@@ -195,6 +195,14 @@ describe('InMemoryTrustStore', () => {
     expect((await store.listEdges()).map((row) => row.id)).toEqual(['b']);
   });
 
+  it('deleteEdgeById removes only that row', async () => {
+    const store = new InMemoryTrustStore([EARLY, LATE]);
+    const removed = await store.deleteEdgeById('b');
+    expect(removed).toEqual(LATE);
+    expect((await store.listEdges()).map((row) => row.id)).toEqual(['a']);
+    expect(await store.deleteEdgeById('missing')).toBeUndefined();
+  });
+
   it('deleteEdge returns undefined when no row matches', async () => {
     const store = new InMemoryTrustStore([EARLY]);
     expect(await store.deleteEdge('sub', 'moderator_confirm')).toBeUndefined();
@@ -410,6 +418,29 @@ describe('PostgresTrustStore', () => {
     };
     expect(await new PostgresTrustStore(sql).deleteEdge('sub', 'verify')).toBeUndefined();
     expect(sql.queries[1]?.params).toEqual(['e1']);
+  });
+
+  it('deleteEdgeById DELETEs WHERE id', async () => {
+    const sql = new MockSql();
+    sql.nextRows = [
+      {
+        id: 'e1',
+        subject_id: 'sub',
+        actor_id: 'act',
+        kind: 'moderator_propose',
+        created_at: new Date('2026-08-28T12:00:00.000Z'),
+      },
+    ];
+    const removed = await new PostgresTrustStore(sql).deleteEdgeById('e1');
+    expect(sql.queries[0]?.text).toMatch(/DELETE FROM trust_edge WHERE id = \$1/);
+    expect(sql.queries[0]?.params).toEqual(['e1']);
+    expect(removed?.id).toBe('e1');
+  });
+
+  it('deleteEdgeById returns undefined when DELETE RETURNING is empty', async () => {
+    const sql = new MockSql();
+    sql.nextRows = [];
+    expect(await new PostgresTrustStore(sql).deleteEdgeById('e1')).toBeUndefined();
   });
 
   it('propagates list query errors', async () => {

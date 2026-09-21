@@ -2156,13 +2156,13 @@
 ## Function: InMemoryTrustStore
 
 - **Purpose:** Process-local `TrustStore` for who granted which staff status. Default empty so the process boots without a database. `createApp` uses this when boot leaves `trustStore` undefined (memory `DATABASE_URL`).
-- **Inputs:** Optional seed `TrustEdge[]` (copied). `listEdges` / `listEdgesForSubject` / `listEdgesTouching` sort oldest `createdAt` then `id` ASC. `insertEdge` copies on write and throws `Error('duplicate trust edge')` only for live-unique kinds (`verify` / `moderator_confirm` / `moderator_appoint`); propose and reject may repeat. `deleteEdge(subjectId, kind)` removes the latest matching row (`createdAt` desc, then `id` desc) or returns `undefined`.
+- **Inputs:** Optional seed `TrustEdge[]` (copied). `listEdges` / `listEdgesForSubject` / `listEdgesTouching` sort oldest `createdAt` then `id` ASC. `insertEdge` copies on write and throws `Error('duplicate trust edge')` only for live-unique kinds (`verify` / `moderator_confirm` / `moderator_appoint`); propose and reject may repeat. `deleteEdge(subjectId, kind)` removes the latest matching row (`createdAt` desc, then `id` desc) or returns `undefined`. `deleteEdgeById(id)` removes that row or returns `undefined`.
 - **Returns / side effects:** Promise of edge copies; mutating results does not change the store. No I/O.
 - **Used by:** `createApp` default `trustStore`.
 
 ## Function: PostgresTrustStore
 
-- **Purpose:** Durable `TrustStore` over Postgres (`trust_edge` table). `listEdges` / `listEdgesForSubject` / `listEdgesTouching` are oldest-first; `insertEdge` binds columns without `ON CONFLICT` and maps unique violation `23505` to `Error('duplicate trust edge')` (live-unique kinds only at the index). `deleteEdge` selects the latest `(subject_id, kind)` (`ORDER BY created_at DESC, id DESC LIMIT 1`) then `DELETE FROM trust_edge WHERE id = $1 RETURNING …`; empty SELECT returns `undefined` with no delete.
+- **Purpose:** Durable `TrustStore` over Postgres (`trust_edge` table). `listEdges` / `listEdgesForSubject` / `listEdgesTouching` are oldest-first; `insertEdge` binds columns without `ON CONFLICT` and maps unique violation `23505` to `Error('duplicate trust edge')` (live-unique kinds only at the index). `deleteEdge` selects the latest `(subject_id, kind)` (`ORDER BY created_at DESC, id DESC LIMIT 1`) then `DELETE FROM trust_edge WHERE id = $1 RETURNING …`; empty SELECT returns `undefined` with no delete. `deleteEdgeById` is `DELETE FROM trust_edge WHERE id = $1 RETURNING …`; empty RETURNING is `undefined`.
 - **Inputs:** Constructor takes a shared boot `SqlClient` (already migrated). Maps `subject_id` / `actor_id` / `created_at` (Date or ISO string) onto `TrustEdge`.
 - **Returns / side effects:** Parameter-bound SQL; copies on return. Non-unique errors propagate to the route (409/503).
 - **Used by:** `openBootStores` when `DATABASE_URL` is set.
