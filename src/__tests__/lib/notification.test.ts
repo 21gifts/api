@@ -1518,7 +1518,7 @@ describe('notifyModeratorProposed', () => {
       nowMs: NOW.getTime(),
     });
     const claimed = await pushStore.claimPending(10, NOW.getTime(), 60_000);
-    expect(payloadObject(claimed[0]?.payload ?? '{}').unreadCount).toBe(3);
+    expect(payloadObject(claimed[0]?.payload ?? '{}')['unreadCount']).toBe(3);
   });
 
   it('throws push.fanout.failed when enqueue rejects', async () => {
