@@ -55,7 +55,7 @@ export interface AccountResponse {
  * Owner-facing account JSON: the eleven public fields plus the durable
  * view-key capability secret, the next `setup` step, factual `missing`,
  * `hasPosted`, `aboutMe`, `aboutMeHasPhoto`, `notificationLevel`,
- * `funding`, `walletRequired`, and `walletBackupSeenAt`.
+ * `funding`, `walletRequired`, `walletBackupSeenAt`, and `passkeyCredentialId`.
  */
 export interface OwnerAccountResponse extends AccountResponse {
   /** 64 lowercase hex; capability URL secret for `GET /view/:viewKey`. */
@@ -111,6 +111,11 @@ export interface OwnerAccountResponse extends AccountResponse {
    * or `null` when unseen.
    */
   walletBackupSeenAt: number | null;
+  /**
+   * Current passkey credential id (base64url), or `null` when none.
+   * Owner-only; used to bind PRF reveal to this account's credential.
+   */
+  passkeyCredentialId: string | null;
 }
 
 /**
@@ -466,7 +471,8 @@ export function serializeDebugAccountDetail(
  *   `null` so direct test callers keep a present field.
  * @returns Owner fields including `viewKey`, `setup`, `missing`,
  * `hasPosted`, `location`, `aboutMe`, `aboutMeHasPhoto`,
- * `notificationLevel`, `funding`, `walletRequired`, and `walletBackupSeenAt`.
+ * `notificationLevel`, `funding`, `walletRequired`, `walletBackupSeenAt`,
+ * and `passkeyCredentialId`.
  */
 export function serializeOwnerAccount(
   account: Account,
@@ -474,6 +480,7 @@ export function serializeOwnerAccount(
   aboutMe: string | null,
   aboutMeHasPhoto: boolean,
   funding: OwnerFundingJson | null = null,
+  passkeyCredentialId: string | null = null,
 ): OwnerAccountResponse {
   return {
     ...serializeAccount(account),
@@ -487,6 +494,7 @@ export function serializeOwnerAccount(
     funding,
     walletRequired: account.walletRequired === true,
     walletBackupSeenAt: account.walletBackupSeenAt ?? null,
+    passkeyCredentialId,
   };
 }
 
@@ -497,7 +505,7 @@ export interface OwnerFundingLookup {
   /** Epoch milliseconds for lazy trial expiry. */
   nowMs: number;
   /** Account lookup for admitted `reviewedByName`. */
-  authStore: Pick<AuthStore, 'getAccount'>;
+  authStore: Pick<AuthStore, 'getAccount' | 'getPasskeyCredentialForAccount'>;
 }
 
 /**
@@ -543,6 +551,7 @@ export async function serializeOwnerAccountWithPosts(
   }
   const hasPosted = livePost || aboutMe !== null;
   let fundingJson: OwnerFundingJson | null;
+  let passkeyCredentialId: string | null = null;
   if (funding === undefined) {
     fundingJson = serializeOwnerFunding(account.role, undefined, 0, null);
   } else {
@@ -553,8 +562,17 @@ export async function serializeOwnerAccountWithPosts(
       reviewerName = reviewer?.name ?? null;
     }
     fundingJson = serializeOwnerFunding(account.role, grant, funding.nowMs, reviewerName);
+    const passkey = await funding.authStore.getPasskeyCredentialForAccount(account.id);
+    passkeyCredentialId = passkey?.credentialId ?? null;
   }
-  return serializeOwnerAccount(account, hasPosted, aboutMe, aboutMeHasPhoto, fundingJson);
+  return serializeOwnerAccount(
+    account,
+    hasPosted,
+    aboutMe,
+    aboutMeHasPhoto,
+    fundingJson,
+    passkeyCredentialId,
+  );
 }
 
 /**

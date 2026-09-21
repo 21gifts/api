@@ -224,6 +224,7 @@ describe('serializeOwnerAccount', () => {
       funding: null,
       walletRequired: false,
       walletBackupSeenAt: null,
+      passkeyCredentialId: null,
     });
     expect(json.viewKey).toBe(account.viewKey);
     expect(json.setup).toBe('rules');
@@ -234,6 +235,7 @@ describe('serializeOwnerAccount', () => {
     expect(json.notificationLevel).toBe('all');
     expect(json.walletRequired).toBe(false);
     expect(json.walletBackupSeenAt).toBeNull();
+    expect(json.passkeyCredentialId).toBeNull();
     expect(json).not.toHaveProperty('isPlatform');
     expect(json).not.toHaveProperty('sessionRefused');
     expect(json).not.toHaveProperty('profileMessageId');
@@ -540,6 +542,30 @@ describe('serializeOwnerAccountWithPosts', () => {
       admittedAt: 3,
       reviewedByName: 'Mod',
     });
+    expect(json.passkeyCredentialId).toBeNull();
+  });
+
+  it('includes the current passkey credential id on owner JSON', async () => {
+    const authStore = new InMemoryAuthStore();
+    await authStore.createAccount(account);
+    expect(
+      await authStore.createPasskeyCredential({
+        credentialId: 'cred-owner',
+        publicKey: new Uint8Array([1]),
+        signCount: 0,
+        accountId: 'acc',
+        createdAt: 1,
+      }),
+    ).toBe(true);
+    const json = await serializeOwnerAccountWithPosts(
+      account,
+      {
+        accountHasLivePost: async () => false,
+        getById: async () => undefined,
+      },
+      { store: new InMemoryFundingStore(), nowMs: 1, authStore },
+    );
+    expect(json.passkeyCredentialId).toBe('cred-owner');
   });
 
   it('uses a null reviewer name when decidedBy is missing', async () => {
