@@ -725,7 +725,7 @@ describe('POST /trust/*', () => {
       expect((await trustStore.listEdges()).map((row) => row.id)).not.toContain('newer');
     });
 
-    it('returns 200 when the post-insert list has no remaining open propose', async () => {
+    it('returns 409 when the post-insert list has no remaining open propose', async () => {
       const { authStore, trustStore } = await staffed([
         account({ id: SUBJECT, role: 'verified', name: 'Sub' }),
       ]);
@@ -754,7 +754,58 @@ describe('POST /trust/*', () => {
       const res = await post(mount(authStore, store), '/trust/propose-moderator', 'founder', {
         accountId: SUBJECT,
       });
-      expect(res.status).toBe(200);
+      expect(res.status).toBe(409);
+    });
+
+    it('returns 409 when a concurrent older propose remains after extras are dropped', async () => {
+      const { authStore, trustStore } = await staffed([
+        account({ id: SUBJECT, role: 'verified', name: 'Sub' }),
+      ]);
+      let lists = 0;
+      const store: TrustStore = {
+        listEdges: () => trustStore.listEdges(),
+        listEdgesTouching: (id) => trustStore.listEdgesTouching(id),
+        listEdgesForSubject: async (id) => {
+          lists += 1;
+          const rows = await trustStore.listEdgesForSubject(id);
+          if (lists < 2) {
+            return rows;
+          }
+          return [
+            {
+              id: 'older',
+              subjectId: SUBJECT,
+              actorId: MOD,
+              kind: 'moderator_propose',
+              createdAt: 1,
+            },
+            ...rows,
+            {
+              id: 'newer-extra',
+              subjectId: SUBJECT,
+              actorId: MOD,
+              kind: 'moderator_propose',
+              createdAt: 9_000_000_000_000,
+            },
+          ];
+        },
+        insertEdge: async (row) => {
+          const stored = await trustStore.insertEdge(row);
+          await trustStore.insertEdge({
+            id: 'newer-extra',
+            subjectId: SUBJECT,
+            actorId: MOD,
+            kind: 'moderator_propose',
+            createdAt: 9_000_000_000_000,
+          });
+          return stored;
+        },
+        deleteEdge: (subjectId, kind) => trustStore.deleteEdge(subjectId, kind),
+      };
+      const res = await post(mount(authStore, store), '/trust/propose-moderator', 'founder', {
+        accountId: SUBJECT,
+      });
+      expect(res.status).toBe(409);
     });
 
     it('fans out moderator_proposal to other staff on propose 200', async () => {

@@ -570,7 +570,8 @@ Bare `GET /trust-chain` returns
 **founder seeds only** (`edges` empty) so a large chain is not dumped on
 first paint. `GET /trust-chain?around=<id>` returns that chain member plus
 one hop of **stored** public edges with at most one incoming edge per
-subject: the oldest eligible sibling (`createdAt` then `id`). Eligible:
+subject: the oldest eligible sibling (`createdAt` then `id`), skipping a
+non-chain oldest sibling so a later displayable contact can show. Eligible:
 `verify`, `moderator_appoint`, and `moderator_propose` only when the live
 subject is a `moderator`; `moderator_confirm` and `moderator_reject`
 never. Later appoint,
@@ -705,10 +706,11 @@ Otherwise insert the edge then update role, log `trust.verified`
 Bearer session. Body `{ "accountId": "<uuid>" }`. Staff only. Subject role
 must be `verified`, not self. **409** when currently pending (latest
 propose/reject is propose) or any `moderator_confirm` / `moderator_appoint`
-exists, when the subject is not `verified`, or when a concurrent older
-open propose wins after insert (that extra row is deleted). When this
-insert is the oldest open propose and extras exist, delete the latest extra
-propose and still **200**. **200** inserts a **new**
+exists, when the subject is not `verified`, or when after insert this row
+is not the oldest open propose (the insert is deleted; empty open after a
+concurrent reject is the same **409**). When this
+insert is the oldest open propose and extras exist, delete newer extra
+proposes and still **200**. **200** inserts a **new**
 `moderator_propose` after a reject (history kept; old propose/reject rows
 are not deleted). Role is unchanged. Logs `trust.moderator_proposed`.
 After **200**, wrap `notifyModeratorProposed` (in-app `moderator_proposal`

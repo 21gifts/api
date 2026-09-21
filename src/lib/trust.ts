@@ -4,9 +4,10 @@
  * `verified` is a moderator confirming this person in real life
  * (forum badge), not Lightning-Address proof-of-control. Public
  * {@link buildTrustChain} never invents edges. At most one public incoming
- * kind per subject: the oldest eligible sibling (`createdAt` then `id`).
- * Eligible: `verify`, `moderator_appoint`, and `moderator_propose` only when
- * the live subject is a `moderator`. `moderator_confirm` and
+ * edge per subject: the oldest eligible sibling (`createdAt` then `id`),
+ * skipping a non-chain oldest sibling so a later displayable contact can
+ * show. Eligible: `verify`, `moderator_appoint`, and `moderator_propose`
+ * only when the live subject is a `moderator`. `moderator_confirm` and
  * `moderator_reject` never. A pending propose (subject still `verified`)
  * stays private. Later appoint, confirm, or propose do not replace an
  * earlier eligible contact.
@@ -137,7 +138,8 @@ export function isStaffRole(role: AccountRole): boolean {
  * (never `basis`), sorted founder → moderator → verified, then oldest
  * `createdAt`, then `id`. Groups stored edges by `subjectId` and projects
  * at most one incoming edge per subject: the oldest eligible sibling
- * (`createdAt` then `id`). Eligible: `verify`, `moderator_appoint`, and
+ * (`createdAt` then `id`), skipping a non-chain oldest sibling so a later
+ * displayable contact can show. Eligible: `verify`, `moderator_appoint`, and
  * `moderator_propose` only when the live subject is a `moderator`.
  * `moderator_confirm` and `moderator_reject` never. A pending propose
  * (subject still `verified`) stays private. Later appoint, confirm, or

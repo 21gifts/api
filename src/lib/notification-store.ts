@@ -446,12 +446,13 @@ export class PostgresNotificationStore implements NotificationStore {
   }
 
   /**
-   * Stamp `read_at` when the row is unread and owned by `accountId`.
+   * Stamp `read_at` when the row is unread, owned by `accountId`, and not
+   * `moderator_proposal` (open proposals stay unread until confirm/reject).
    *
    * @param id - Notification id.
    * @param accountId - Recipient.
    * @param readAt - Read stamp.
-   * @returns The mapped row after stamping `read_at`, the already-read row unchanged, or `undefined` if missing/other recipient.
+   * @returns The mapped row after stamping `read_at`, the already-read or proposal row unchanged, or `undefined` if missing/other recipient.
    */
   async markRead(
     id: string,
@@ -472,7 +473,8 @@ export class PostgresNotificationStore implements NotificationStore {
   }
 
   /**
-   * Stamp `read_at` on every unread row for `accountId`.
+   * Stamp `read_at` on every unread row for `accountId` except
+   * `moderator_proposal` (open proposals stay unread until confirm/reject).
    *
    * @param accountId - Recipient (`$1`).
    * @param readAt - Read stamp (`$2`).

@@ -429,6 +429,7 @@ describe('PostgresNotificationStore', () => {
     const marked = await new PostgresNotificationStore(sql).markRead('n-1', 'parent', READ_AT);
     expect(sql.executes).toHaveLength(0);
     expect(sql.queries[0]?.text).toMatch(/UPDATE notification SET read_at/);
+    expect(sql.queries[0]?.text).toMatch(/type <> 'moderator_proposal'/);
     expect(sql.queries[0]?.text).toMatch(/RETURNING/);
     expect(sql.queries[0]?.params).toEqual(['n-1', 'parent', READ_AT]);
     expect(marked?.readAt).toEqual(READ_AT);

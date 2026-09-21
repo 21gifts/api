@@ -89,9 +89,10 @@ function isInvalidUuid(error: unknown): boolean {
 
 /**
  * One hop around `aroundId`: the focus account, stored public edges of the
- * oldest eligible kind per subject after `isProjectedTrustEdge` (`createdAt`
+ * oldest eligible edge per subject after `isProjectedTrustEdge` (`createdAt`
  * then `id`; `verify`, `moderator_appoint`, and `moderator_propose` only when
- * the live subject is a `moderator`; never `moderator_confirm`), and the
+ * the live subject is a `moderator`; never `moderator_confirm`), skipping a
+ * non-chain oldest sibling so a later displayable contact can show, and the
  * accounts on those filtered edges. Loads all edges for each touching subject
  * (`listEdgesForSubject`) so a non-touching older eligible edge still wins
  * over a touching newer one. Pending-propose verified neighbors are not
@@ -141,13 +142,30 @@ async function neighborhood(
       siblingsBySubject.set(subjectId, await deps.trustStore.listEdgesForSubject(subjectId));
     }),
   );
+  for (const siblings of siblingsBySubject.values()) {
+    for (const sibling of siblings) {
+      if (byId.has(sibling.actorId)) {
+        continue;
+      }
+      const account = await deps.authStore.getAccount(sibling.actorId);
+      if (account !== undefined) {
+        byId.set(sibling.actorId, account);
+      }
+    }
+  }
+  const chainActorIds = new Set<string>();
+  for (const account of byId.values()) {
+    if (isChainAccount(account)) {
+      chainActorIds.add(account.id);
+    }
+  }
   const edges = touching.filter((edge) => {
     const siblings = siblingsBySubject.get(edge.subjectId);
     /* v8 ignore next 3 -- Promise.all set a list for every touching subjectId */
     if (siblings === undefined) {
       return false;
     }
-    return isProjectedTrustEdge(edge, byId.get(edge.subjectId), siblings);
+    return isProjectedTrustEdge(edge, byId.get(edge.subjectId), siblings, chainActorIds);
   });
   const ids = new Set<string>([aroundId]);
   for (const edge of edges) {

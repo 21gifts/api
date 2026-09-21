@@ -246,14 +246,17 @@ export function trustRoutes(deps: TrustRouteDeps): Hono {
         return c.json({ error: 'Trust chain is unavailable' }, 503);
       }
       try {
-        const after = await deps.trustStore.listEdgesForSubject(subject.id);
-        const open = openProposesForSubject(after, subject.id);
-        const oldest = oldestOpenPropose(open);
-        if (open.length > 1 && oldest !== undefined && oldest.id !== created.id) {
-          await deps.trustStore.deleteEdge(subject.id, 'moderator_propose');
-          return c.json({ error: 'Conflict' }, 409);
-        }
-        if (open.length > 1 && oldest !== undefined && oldest.id === created.id) {
+        for (;;) {
+          const after = await deps.trustStore.listEdgesForSubject(subject.id);
+          const open = openProposesForSubject(after, subject.id);
+          const oldest = oldestOpenPropose(open);
+          if (oldest === undefined || oldest.id !== created.id) {
+            await deleteMatchingPropose(deps.trustStore, subject.id, created.id);
+            return c.json({ error: 'Conflict' }, 409);
+          }
+          if (open.length <= 1) {
+            break;
+          }
           await deps.trustStore.deleteEdge(subject.id, 'moderator_propose');
         }
       } catch {
@@ -554,6 +557,20 @@ async function notifySubjectAppointed(
     });
   } catch {
     logEvent('push.enqueue.failed');
+  }
+}
+
+/** Delete propose rows newest-first until `id` is gone or none remain. */
+async function deleteMatchingPropose(
+  store: TrustStore,
+  subjectId: string,
+  id: string,
+): Promise<void> {
+  for (;;) {
+    const removed = await store.deleteEdge(subjectId, 'moderator_propose');
+    if (removed === undefined || removed.id === id) {
+      return;
+    }
   }
 }
 
