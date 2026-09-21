@@ -65,16 +65,23 @@
 
 ## Endpoint: GET /debug/accounts
 
-- **Purpose:** Operator listing of registered accounts (eleven public fields plus `isPlatform` and `sessionRefused`: `id`, `linkingKey`, `role`, `name`, `username` (`string | null` LUD-16 / NIP-05 local-part), `location` (`string | null`, never omit, never `""`), lightning address fields, `forumLawsDismissed`, `createdAt`, `rulesAgreedAt`, `isPlatform`, `sessionRefused`) **without** `viewKey`.
+- **Purpose:** Operator listing of registered accounts. Same shape as `serializeDebugAccount`: public fields including `username`, plus `isPlatform`, `sessionRefused`, `viewKey`, skip stamps, `profileMessageId`, `notificationLevel`, and Nostr debug fields (`nostrNsecCiphertext` is hex of the stored envelope, never decrypted).
 - **Errors:** 503 `{ error: 'Debug is not configured' }` when `DEBUG_TOKEN` is unset or blank; 401 `{ error: 'Unauthorized' }` when the Bearer token does not match.
 - **Used by:** Operator `gifts-debug` CLI.
 - **Auth:** `Authorization: Bearer` with `DEBUG_TOKEN`. Not an end-user session.
 
 ## Endpoint: POST /debug/accounts
 
-- **Purpose:** Operator provision of accounts by display name + Lightning Address (no passkey, `rulesAgreedAt` null). Body `{ "accounts": [ { "name", "lightningAddress" } ] }` (1–100 rows). **All** new addresses are NIP-57 mint-probed (`probeNip57Mint`) first, unless `NIP57_PROBE=0` (e2e only); only then is any row persisted. Name-only updates (address already in store) do **not** probe and run after every new-address probe has passed. Creates a new `basis` row with a fresh `viewKey` and sets `provisionUsername`, or when the address already exists (`lower(trim)` match) updates **only** `name` via `updateAccountNameByLightningAddress` (other columns including `viewKey`, `role`, and `rulesAgreedAt` stay unchanged in that write) then, if stored username is blank, `maybeSetProvisionUsername` fills it (a non-blank stored username is kept). Response `{ accounts: [ { name, lightningAddress, viewKey, created } ] }` includes `viewKey` for the invite link; `GET` still omits it (provisioned `username` appears on GET `/debug/accounts`).
+- **Purpose:** Operator provision of accounts by display name + Lightning Address (no passkey, `rulesAgreedAt` null). Body `{ "accounts": [ { "name", "lightningAddress" } ] }` (1–100 rows). **All** new addresses are NIP-57 mint-probed (`probeNip57Mint`) first, unless `NIP57_PROBE=0` (e2e only); only then is any row persisted. Name-only updates (address already in store) do **not** probe and run after every new-address probe has passed. Creates a new `basis` row with a fresh `viewKey` and sets `provisionUsername`, or when the address already exists (`lower(trim)` match) updates **only** `name` via `updateAccountNameByLightningAddress` (other columns including `viewKey`, `role`, and `rulesAgreedAt` stay unchanged in that write) then, if stored username is blank, `maybeSetProvisionUsername` fills it (a non-blank stored username is kept). Response `{ accounts: [ { name, lightningAddress, viewKey, created } ] }` includes `viewKey` for the invite link. `GET /debug/accounts` and `GET /debug/accounts/:id` also include `viewKey` (and provisioned `username`).
 - **Errors:** 503 `{ error: 'Debug is not configured' }` when `DEBUG_TOKEN` is unset or blank; 401 `{ error: 'Unauthorized' }` when the Bearer token does not match; 400 `{ error: 'Expected a JSON body with an "accounts" array' }` for invalid/missing/non-JSON body, C0/DEL names, or non-LUD-16 addresses (no row is written); 400 `{ error: LIGHTNING_ADDRESS_NOT_ZAP }` when any new address fails the NIP-57 mint probe (`not_zap`; no new address in that request is saved); 400 `{ error: 'Lightning Address could not be resolved' }` when any new-address probe is unreachable (no new address in that request is saved); 500 `{ error: 'Could not save the account' }` when create does not persist the address, the name-only update matches no row, or the name-only update returns a row whose `name` is not the requested name.
 - **Used by:** Operator provisioning before passkey claim.
+- **Auth:** `Authorization: Bearer` with `DEBUG_TOKEN`. Not an end-user session.
+
+## Endpoint: GET /debug/accounts/:id
+
+- **Purpose:** Operator read of one account (`serializeDebugAccountDetail`): every account column plus nested `passkeys`, `sessions`, `addressVerification`, and matching `passkeyChallenges`. `nostrNsecCiphertext` is hex of the stored AES-GCM envelope, never decrypted. Nested `sessions[].token` is the stored plaintext token.
+- **Errors:** 503 `{ error: 'Debug is not configured' }` when `DEBUG_TOKEN` is unset or blank; 401 `{ error: 'Unauthorized' }` when the Bearer token does not match; 404 `{ error: 'Not found' }` when the id is not a UUID or the account is missing.
+- **Used by:** Operator `gifts-debug account`.
 - **Auth:** `Authorization: Bearer` with `DEBUG_TOKEN`. Not an end-user session.
 
 ## Endpoint: POST /debug/accounts/:id/session
@@ -86,7 +93,7 @@
 
 ## Endpoint: PATCH /debug/accounts/:id
 
-- **Purpose:** Operator assignment of `account.role` (`basis` \| `verified` \| `moderator` \| `founder`), hard-unlink of the Lightning Address, the official platform flag, and/or `sessionRefused`. Body may include any of `{ "role": "<AccountRole>" }`, `{ "lightningAddress": null }`, `{ "platform": true|false }`, `{ "sessionRefused": true|false }`. Unlink sets `lightningAddress` to null, `lightningAddressVerified` to false, and drops in-flight address verification. Setting `platform: true` clears any other platform flag (at most one true) and, when a conversation store is wired, points every `member_platform` thread at this account (`retargetMemberPlatform`), except a thread whose member is already this account. `sessionRefused: true` makes passkey finish and debug session mint return 403 with the wrong-account copy. Returns the updated account JSON (same shape as `GET /debug/accounts` via `serializeDebugAccount`, including `isPlatform` and `sessionRefused`; no `viewKey`). Does not set a new address here (`POST /me/lightning-address` remains the live resolve path).
+- **Purpose:** Operator assignment of `account.role` (`basis` \| `verified` \| `moderator` \| `founder`), hard-unlink of the Lightning Address, the official platform flag, and/or `sessionRefused`. Body may include any of `{ "role": "<AccountRole>" }`, `{ "lightningAddress": null }`, `{ "platform": true|false }`, `{ "sessionRefused": true|false }`. Unlink sets `lightningAddress` to null, `lightningAddressVerified` to false, and drops in-flight address verification. Setting `platform: true` clears any other platform flag (at most one true) and, when a conversation store is wired, points every `member_platform` thread at this account (`retargetMemberPlatform`), except a thread whose member is already this account. `sessionRefused: true` makes passkey finish and debug session mint return 403 with the wrong-account copy. Returns the updated account JSON (same shape as `GET /debug/accounts` via `serializeDebugAccount`, including `isPlatform`, `sessionRefused`, `viewKey`, and Nostr debug fields). Does not set a new address here (`POST /me/lightning-address` remains the live resolve path).
 - **Errors:** 503 `{ error: 'Debug is not configured' }` when `DEBUG_TOKEN` is unset or blank; 401 `{ error: 'Unauthorized' }` when the Bearer token does not match; 400 `{ error: 'Expected a JSON body with a "role" string, lightningAddress null, platform boolean, and/or sessionRefused boolean' }` for unknown/missing/non-JSON body or a non-null `lightningAddress`; 404 `{ error: 'Not found' }` when the account id is unknown.
 - **Used by:** Operator `gifts-debug role` / `gifts-debug unlink` / `gifts-debug refuse-session` CLI and platform-account setup. Does not write trust edges (`POST /debug/trust-edges` is the backfill path).
 - **Auth:** `Authorization: Bearer` with `DEBUG_TOKEN`. Not an end-user session.
@@ -107,7 +114,7 @@
 
 ## Endpoint: GET /debug/invoices
 
-- **Purpose:** Operator listing of all `message_invoice` attempts (forum `POST /messages/:id/invoice` and conversation `POST /conversations/:id/invoice`) newest-first (cap 200): result, HTTP status, BOLT11 `pr`, payment hash, description / description_hash, `isNip57Invoice`, and `lnurlResponse` (raw LNURL callback JSON object or null). ISO `createdAt`. Never includes nsec. `serializeInvoice` omits `conversationId` and `conversationMessageId`. Rejected non-NIP-57 attempts (`not_zap`) still list the rejected `pr` for debug.
+- **Purpose:** Operator listing of all `message_invoice` attempts (forum `POST /messages/:id/invoice` and conversation `POST /conversations/:id/invoice`) newest-first (cap 200): result, HTTP status, BOLT11 `pr`, payment hash, description / description_hash, `isNip57Invoice`, and `lnurlResponse` (raw LNURL callback JSON object or null). ISO `createdAt`. Never includes nsec. Includes `conversationId` and `conversationMessageId` (`null` on forum invoices). Rejected non-NIP-57 attempts (`not_zap`) still list the rejected `pr` for debug.
 - **Errors:** 503 `{ error: 'Debug is not configured' }` when `DEBUG_TOKEN` is unset or blank; 401 `{ error: 'Unauthorized' }` when the Bearer token does not match; 503 `{ error: 'Messages are unavailable' }` when listing throws (`debug.invoices.list_failed`).
 - **Used by:** Operators debugging zap invoice issuance (including rejected non-NIP-57 `not_zap` rows with `pr` and raw `lnurlResponse`).
 - **Auth:** `Authorization: Bearer` with `DEBUG_TOKEN`. Not an end-user session.
@@ -129,14 +136,14 @@
 
 ## Endpoint: GET /debug/messages
 
-- **Purpose:** Operator listing of every persisted forum row newest-first (cap 200): top-level notes **and** replies, live **and** soft-hidden (`deletedAt` set). Public hide does **not** apply. JSON via `serializeDebugMessage` (`id`, `name`, `text`, ISO `createdAt`, `sats`, optional `goalSats` (positive integer on a top-level note; omitted when unset/null/0/absent or on a reply), `hasPhoto`, `photoCount` (0–10), `hasVideo`, `videoContentType`, `parentId`, `eventId`, `nostrPublishState`, ISO-or-null `deletedAt`, `deletedBy`, `authorPubkey`, `nostrAttempts`, and `accountId` as a string or JSON `null` for Damus-only). Never includes `nostrEvent`, `claimedUntil`, `contentFp`, nsec, or photo/video bytes.
+- **Purpose:** Operator listing of every persisted forum row newest-first (cap 200): top-level notes **and** replies, live **and** soft-hidden (`deletedAt` set). Public hide does **not** apply. JSON via `serializeDebugMessage` (`id`, `name`, `text`, ISO `createdAt`, `sats`, `goalSats` (stored column; JSON `null` when unset), `hasPhoto`, `photoCount` (0–10), `hasVideo`, `videoContentType`, `parentId`, `eventId`, `nostrPublishState`, `nostrEvent`, `claimedUntil`, `nostrFirstAttemptAt`, `nostrPublishEpoch`, `contentFp`, ISO-or-null `deletedAt`, `deletedBy`, `authorPubkey`, `nostrAttempts`, `accountId` as a string or JSON `null` for Damus-only, plus photo MIME/byte lengths). Never includes nsec or photo/video payloads.
 - **Errors:** 503 `{ error: 'Debug is not configured' }` when `DEBUG_TOKEN` is unset or blank; 401 `{ error: 'Unauthorized' }` when the Bearer token does not match; 503 `{ error: 'Messages are unavailable' }` when listing throws (`debug.messages.list_failed`).
 - **Used by:** Operators inspecting hidden forum notes (`gifts-debug messages`).
 - **Auth:** `Authorization: Bearer` with `DEBUG_TOKEN`. Not an end-user session.
 
 ## Endpoint: GET /debug/messages/:id
 
-- **Purpose:** Operator single-note fetch (Bearer `DEBUG_TOKEN`). Returns the debug JSON object (not wrapped) via `serializeDebugMessage` (same optional `goalSats` as the list: omitted when unset/null/0/absent or on a reply). Soft-hidden rows (`deletedAt` set) are **200** with `deletedAt` / `deletedBy` / `text`. Public `GET /messages/:id` hide does **not** apply. Unknown or non-UUID `:id` is 404. Never includes `nostrEvent`, `contentFp`, nsec, or photo/video bytes.
+- **Purpose:** Operator single-note fetch (Bearer `DEBUG_TOKEN`). Returns the debug JSON object (not wrapped) via `serializeDebugMessage` (same columns as `GET /debug/messages`, including `nostrEvent`, `claimedUntil`, `contentFp`, photo MIME/byte lengths, and stored `goalSats` as JSON `null` when unset). Soft-hidden rows (`deletedAt` set) are **200** with `deletedAt` / `deletedBy` / `text`. Public `GET /messages/:id` hide does **not** apply. Unknown or non-UUID `:id` is 404. Never includes nsec or photo/video payloads.
 - **Errors:** 503 `{ error: 'Debug is not configured' }` when `DEBUG_TOKEN` is unset or blank; 401 `{ error: 'Unauthorized' }` when the Bearer token does not match; 404 `{ error: 'Not found' }` when `:id` is not a UUID or the row is missing; 503 `{ error: 'Messages are unavailable' }` when `getById` or serialize throws (`debug.messages.get_failed`).
 - **Used by:** Operators fetching one forum note including hidden rows (`gifts-debug message <id>`).
 - **Auth:** `Authorization: Bearer` with `DEBUG_TOKEN`. Not an end-user session.
@@ -700,6 +707,13 @@
 - **Used by:** Staff funding reject (subject may re-apply).
 - **Auth:** `Authorization: Bearer` session. Staff only.
 
+## Endpoint: GET /debug/trust-edges
+
+- **Purpose:** Operator listing of every stored trust edge (`serializeTrustEdge`), newest `createdAt` then `id` descending. Success JSON is `{ edges }` (`serializeTrustEdge` rows).
+- **Errors:** 503 `{ error: 'Debug is not configured' }` when `DEBUG_TOKEN` is unset or blank; 401 `{ error: 'Unauthorized' }` when the Bearer token does not match; 503 `{ error: 'Trust chain is unavailable' }` on unexpected store throw (`debug.trust_edges.failed`).
+- **Used by:** Operator `gifts-debug trust-edges`.
+- **Auth:** `Authorization: Bearer` with `DEBUG_TOKEN`. Not an end-user session.
+
 ## Endpoint: POST /debug/trust-edges
 
 - **Purpose:** Operator backfill of a stored trust edge. Body `{ "subjectId", "actorId", "kind" }` with `kind` one of `verify` / `moderator_propose` / `moderator_confirm` / `moderator_appoint`. Inserts the edge, logs `debug.trust_edges.inserted` `{ subjectId, actorId, kind }`, and returns `{ id, subjectId, actorId, kind, createdAt }` (`createdAt` ISO-8601). Does **not** change `account.role`. `PATCH /debug/accounts/:id` remains role-only.
@@ -712,6 +726,20 @@
 - **Purpose:** Operator delete of a stored trust edge. Body `{ "subjectId", "kind" }` with `kind` one of `verify` / `moderator_propose` / `moderator_confirm` / `moderator_appoint`. Removes the unique `(subjectId, kind)` row, logs `debug.trust_edges.deleted` `{ subjectId, kind }`, and returns the deleted `{ id, subjectId, actorId, kind, createdAt }` (`createdAt` ISO-8601). Does **not** change `account.role`.
 - **Errors:** 503 `{ error: 'Debug is not configured' }` when `DEBUG_TOKEN` is unset or blank; 401 `{ error: 'Unauthorized' }` when the Bearer token does not match; 400 `{ error: 'Expected a JSON body with "subjectId" and "kind" strings' }`; 404 `{ error: 'Not found' }` when `subjectId` is not a UUID or no row matches; 503 `{ error: 'Trust chain is unavailable' }` on unexpected store throw (`debug.trust_edges.delete_failed`).
 - **Used by:** Operator `gifts-debug trust-edge-delete` CLI.
+- **Auth:** `Authorization: Bearer` with `DEBUG_TOKEN`. Not an end-user session.
+
+## Endpoint: GET /debug/dump
+
+- **Purpose:** Operator catalog of every allowlisted Postgres table as camelCase JSON (cap 200 per table). Success JSON is `{ tables }` keyed by allowlisted table name: `account`, `passkey_credential`, `passkey_challenge`, `auth_session`, `address_verification`, `api_log`, `contact`, `conversation`, `conversation_message`, `conversation_read`, `message`, `message_extra_photo`, `message_invoice`, `nostr_zap_ingest`, `nostr_zap_receipt`, `nostr_zap_payment`, `nostr_zapper`, `nostr_blocked_pubkey`, `notification`, `push_subscription`, `push_outbox`, `trust_edge`, `gift`, `btc_usd_daily`, `usd_fiat_daily`, `db_change`. Media bytes stay off JSON (`photoBytes` / extra-photo `bytes` are lengths). `nostrNsecCiphertext` is envelope hex. `btc_usd_daily` / `usd_fiat_daily` dump stored rate rows when the rate books expose `listDebug`; `db_change` dumps when a list port is wired (in-memory boots dump `[]`). `api_log` dumps when `apiLogStore` is wired (same rows as `GET /debug/api-log`).
+- **Errors:** 503 `{ error: 'Debug is not configured' }` when `DEBUG_TOKEN` is unset or blank; 401 `{ error: 'Unauthorized' }` when the Bearer token does not match; 503 `{ error: 'Dump is unavailable' }` when a store throws.
+- **Used by:** Operator `gifts-debug dump`.
+- **Auth:** `Authorization: Bearer` with `DEBUG_TOKEN`. Not an end-user session.
+
+## Endpoint: GET /debug/dump/:table
+
+- **Purpose:** Same catalog as `GET /debug/dump` for one allowlisted table name. Response `{ table, rows }`.
+- **Errors:** 503 `{ error: 'Debug is not configured' }` when `DEBUG_TOKEN` is unset or blank; 401 `{ error: 'Unauthorized' }` when the Bearer token does not match; 404 `{ error: 'Not found' }` when the table name is not allowlisted (`account`, `passkey_credential`, `passkey_challenge`, `auth_session`, `address_verification`, `api_log`, `contact`, `conversation`, `conversation_message`, `conversation_read`, `message`, `message_extra_photo`, `message_invoice`, `nostr_zap_ingest`, `nostr_zap_receipt`, `nostr_zap_payment`, `nostr_zapper`, `nostr_blocked_pubkey`, `notification`, `push_subscription`, `push_outbox`, `trust_edge`, `gift`, `btc_usd_daily`, `usd_fiat_daily`, `db_change`); 503 `{ error: 'Dump is unavailable' }` when a store throws.
+- **Used by:** Operator `gifts-debug dump <table>`.
 - **Auth:** `Authorization: Bearer` with `DEBUG_TOKEN`. Not an end-user session.
 
 ## Endpoint: POST /me/setup/skip

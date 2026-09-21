@@ -5,7 +5,17 @@ import {
   type AccountMissingField,
   type AccountSetup,
 } from '@/lib/auth/account-setup';
-import type { Account, AuthStore, NotificationLevel } from '@/lib/auth/store';
+import { bytesToHex } from '@/lib/auth/hex';
+import type {
+  Account,
+  AddressVerification,
+  AuthStore,
+  NostrKeyListRow,
+  NotificationLevel,
+  PasskeyChallenge,
+  PasskeyCredential,
+  Session,
+} from '@/lib/auth/store';
 import { serializeOwnerFunding, type OwnerFundingJson } from '@/lib/funding';
 import type { FundingStore } from '@/lib/funding-store';
 import type { MessageStore } from '@/lib/message-store';
@@ -131,7 +141,7 @@ export interface ViewProfileResponse {
  * Shared by {@link serializeDebugAccount} and {@link serializeOwnerAccount}.
  * Debug routes (`GET /debug/accounts`, `PATCH /debug/accounts/:id`) use
  * {@link serializeDebugAccount}, not this function. Does not include
- * `viewKey` or `isPlatform`.
+ * `viewKey`, Nostr columns, or `isPlatform`.
  *
  * @param account - Stored account.
  * @returns The eleven public fields only.
@@ -152,27 +162,270 @@ export function serializeAccount(account: Account): AccountResponse {
   };
 }
 
-/** Operator JSON shape: the eleven public fields plus `isPlatform` and `sessionRefused`. */
+/** Operator Nostr columns for debug JSON. Never decrypts the nsec envelope. */
+export interface DebugNostrFields {
+  /** Custodial pubkey hex, or `null`. */
+  nostrPubkey: string | null;
+  /** Lowercase hex of the stored nsec envelope, or `null`. Never plaintext. */
+  nostrNsecCiphertext: string | null;
+  /** Envelope kek id. JSON `null` only when the list row is missing. */
+  nostrKekId: number | null;
+  /** Custody mode. JSON `null` only when the list row is missing. */
+  nostrKeyCustody: 'custodial' | 'user' | null;
+  /** Key creation time (epoch ms), or `null`. */
+  nostrKeyCreatedAt: number | null;
+}
+
+/** Empty Nostr debug fields (JSON `null`, never omitted). */
+export const EMPTY_DEBUG_NOSTR: DebugNostrFields = {
+  nostrPubkey: null,
+  nostrNsecCiphertext: null,
+  nostrKekId: null,
+  nostrKeyCustody: null,
+  nostrKeyCreatedAt: null,
+};
+
+/** Operator JSON shape: every `account` column plus Nostr debug fields. */
 export interface DebugAccountResponse extends AccountResponse {
   /** True when this is the official platform account. */
   isPlatform: boolean;
   /** True when passkey finish and debug mint must refuse a bearer. */
   sessionRefused: boolean;
+  /** Durable view-key capability secret (64 lowercase hex). */
+  viewKey: string;
+  /** Epoch ms when the owner skipped the name wizard step, or `null`. */
+  nameSkippedAt: number | null;
+  /** Epoch ms when the owner skipped the Lightning Address wizard step, or `null`. */
+  lightningAddressSkippedAt: number | null;
+  /** Id of the single top-level profile forum message, or `null`. */
+  profileMessageId: string | null;
+  /** Owner fan-out filter (`all` \| `active` \| `mentions`). */
+  notificationLevel: NotificationLevel;
+  /** Custodial pubkey hex, or `null`. */
+  nostrPubkey: string | null;
+  /** Lowercase hex of the stored nsec envelope, or `null`. Never plaintext. */
+  nostrNsecCiphertext: string | null;
+  /** Envelope kek id, or `null`. */
+  nostrKekId: number | null;
+  /** Custody mode, or `null`. */
+  nostrKeyCustody: 'custodial' | 'user' | null;
+  /** Key creation time (epoch ms), or `null`. */
+  nostrKeyCreatedAt: number | null;
+}
+
+/** Operator passkey credential JSON (`publicKey` is lowercase COSE hex). */
+export interface PasskeyDebug {
+  /** Credential id as base64url. */
+  credentialId: string;
+  /** COSE public key as lowercase hex. */
+  publicKey: string;
+  /** Authenticator signature counter. */
+  signCount: number;
+  /** Owning account id. */
+  accountId: string;
+  /** Creation time (epoch ms). */
+  createdAt: number;
+}
+
+/** Operator session JSON (plaintext stored token). */
+export interface SessionDebug {
+  /** Opaque bearer token (hex). */
+  token: string;
+  /** Owning account id. */
+  accountId: string;
+  /** Issue time (epoch ms). */
+  createdAt: number;
+}
+
+/** Operator address-verification JSON. */
+export interface AddressVerificationDebug {
+  /** Owning account id. */
+  accountId: string;
+  /** Lightning Address under proof. */
+  address: string;
+  /** One-time nonce. */
+  nonce: string;
+  /** Issue time (epoch ms). */
+  createdAt: number;
+}
+
+/** Operator passkey-challenge JSON. */
+export interface PasskeyChallengeDebug {
+  /** Opaque challenge id. */
+  id: string;
+  /** Ceremony type. */
+  type: string;
+  /** WebAuthn challenge (base64url). */
+  challenge: string;
+  /** Pending account id, or `null` for authenticate. */
+  accountId: string | null;
+  /** Whether finish has consumed this challenge. */
+  consumed: boolean;
+  /** Issue time (epoch ms). */
+  createdAt: number;
+}
+
+/** Operator GET `/debug/accounts/:id` body. */
+export interface DebugAccountDetailResponse extends DebugAccountResponse {
+  /** Passkey credentials for this account. */
+  passkeys: PasskeyDebug[];
+  /** Sessions for this account (plaintext tokens). */
+  sessions: SessionDebug[];
+  /** Pending address verification, or `null`. */
+  addressVerification: AddressVerificationDebug | null;
+  /** Passkey challenges whose `accountId` matches. */
+  passkeyChallenges: PasskeyChallengeDebug[];
+}
+
+/**
+ * Map a {@link NostrKeyListRow} onto debug Nostr JSON fields.
+ *
+ * A missing row becomes all-null {@link EMPTY_DEBUG_NOSTR}. A listed row with
+ * `pubkey === null` still emits the stored kek id and custody. Never decrypts.
+ *
+ * @param row - Listed Nostr columns, or `undefined` when the account is absent from the list.
+ * @returns Debug Nostr fields.
+ */
+export function debugNostrFieldsFromListRow(row: NostrKeyListRow | undefined): DebugNostrFields {
+  if (row === undefined) {
+    return EMPTY_DEBUG_NOSTR;
+  }
+  return {
+    nostrPubkey: row.record.pubkey,
+    nostrNsecCiphertext:
+      row.record.ciphertext.byteLength === 0 ? null : bytesToHex(row.record.ciphertext),
+    nostrKekId: row.record.kekId,
+    nostrKeyCustody: row.record.custody,
+    nostrKeyCreatedAt: row.createdAt ?? null,
+  };
+}
+
+/**
+ * Project a passkey credential for operator debug JSON.
+ *
+ * @param credential - Stored credential (`publicKey` is COSE bytes).
+ * @returns Debug fields; `publicKey` is lowercase hex.
+ */
+export function serializeDebugPasskey(credential: PasskeyCredential): PasskeyDebug {
+  const raw =
+    credential.publicKey instanceof Uint8Array
+      ? credential.publicKey
+      : new Uint8Array(credential.publicKey);
+  return {
+    credentialId: credential.credentialId,
+    publicKey: bytesToHex(raw),
+    signCount: credential.signCount,
+    accountId: credential.accountId,
+    createdAt: credential.createdAt,
+  };
+}
+
+/**
+ * Project a session for operator debug JSON.
+ *
+ * @param session - Stored session (plaintext token).
+ * @returns Debug fields including the stored token.
+ */
+export function serializeDebugSession(session: Session): SessionDebug {
+  return {
+    token: session.token,
+    accountId: session.accountId,
+    createdAt: session.createdAt,
+  };
+}
+
+/**
+ * Project a pending address verification for operator debug JSON.
+ *
+ * @param verification - Stored verification.
+ * @returns Debug fields.
+ */
+export function serializeDebugAddressVerification(
+  verification: AddressVerification,
+): AddressVerificationDebug {
+  return {
+    accountId: verification.accountId,
+    address: verification.address,
+    nonce: verification.nonce,
+    createdAt: verification.createdAt,
+  };
+}
+
+/**
+ * Project a passkey challenge for operator debug JSON.
+ *
+ * @param challenge - Stored challenge.
+ * @returns Debug fields.
+ */
+export function serializeDebugPasskeyChallenge(challenge: PasskeyChallenge): PasskeyChallengeDebug {
+  return {
+    id: challenge.id,
+    type: challenge.type,
+    challenge: challenge.challenge,
+    accountId: challenge.accountId,
+    consumed: challenge.consumed,
+    createdAt: challenge.createdAt,
+  };
 }
 
 /**
  * Project an account for `GET /debug/accounts` and `PATCH /debug/accounts/:id`.
  *
- * Includes `isPlatform` and `sessionRefused`. Never used by member `GET /me`.
+ * Includes every `account` column plus Nostr debug fields. Never used by
+ * member `GET /me`. Does not decrypt nsec.
  *
  * @param account - Stored account.
- * @returns Debug fields including `isPlatform` and `sessionRefused`.
+ * @param nostr - Optional Nostr columns (defaults to JSON `null`s).
+ * @returns Debug fields including `viewKey`, `sessionRefused`, and Nostr columns.
  */
-export function serializeDebugAccount(account: Account): DebugAccountResponse {
+export function serializeDebugAccount(
+  account: Account,
+  nostr: DebugNostrFields = EMPTY_DEBUG_NOSTR,
+): DebugAccountResponse {
   return {
     ...serializeAccount(account),
     isPlatform: account.isPlatform === true,
     sessionRefused: account.sessionRefused === true,
+    viewKey: account.viewKey,
+    nameSkippedAt: account.nameSkippedAt ?? null,
+    lightningAddressSkippedAt: account.lightningAddressSkippedAt ?? null,
+    profileMessageId: account.profileMessageId ?? null,
+    notificationLevel: parseNotificationLevel(account.notificationLevel),
+    nostrPubkey: nostr.nostrPubkey,
+    nostrNsecCiphertext: nostr.nostrNsecCiphertext,
+    nostrKekId: nostr.nostrKekId,
+    nostrKeyCustody: nostr.nostrKeyCustody,
+    nostrKeyCreatedAt: nostr.nostrKeyCreatedAt,
+  };
+}
+
+/**
+ * Project GET `/debug/accounts/:id` including nested auth rows.
+ *
+ * @param account - Stored account.
+ * @param nostr - Nostr debug fields.
+ * @param nested - Passkeys, sessions, verification, and matching challenges.
+ * @returns Detail JSON.
+ */
+export function serializeDebugAccountDetail(
+  account: Account,
+  nostr: DebugNostrFields,
+  nested: {
+    passkeys: readonly PasskeyCredential[];
+    sessions: readonly Session[];
+    addressVerification: AddressVerification | undefined;
+    passkeyChallenges: readonly PasskeyChallenge[];
+  },
+): DebugAccountDetailResponse {
+  return {
+    ...serializeDebugAccount(account, nostr),
+    passkeys: nested.passkeys.map(serializeDebugPasskey),
+    sessions: nested.sessions.map(serializeDebugSession),
+    addressVerification:
+      nested.addressVerification === undefined
+        ? null
+        : serializeDebugAddressVerification(nested.addressVerification),
+    passkeyChallenges: nested.passkeyChallenges.map(serializeDebugPasskeyChallenge),
   };
 }
 

@@ -128,6 +128,43 @@ export class InMemoryFiatStore implements FiatRateBook {
     }
     return out;
   }
+
+  /**
+   * Operator dump of seeded USD-fiat crosses, newest day first.
+   *
+   * @param limit - Maximum rows.
+   * @returns One row per stored quote.
+   */
+  listDebug(limit: number): Promise<
+    Array<{
+      day: string;
+      quote: string;
+      rate: string;
+      asOfDay: string | null;
+      source: string | null;
+      fetchedAt: string | null;
+    }>
+  > {
+    const rows: Array<{
+      day: string;
+      quote: string;
+      rate: string;
+      asOfDay: string | null;
+      source: string | null;
+      fetchedAt: string | null;
+    }> = [];
+    for (const [day, cross] of [...this.#rates.entries()].sort((a, b) =>
+      b[0].localeCompare(a[0]),
+    )) {
+      for (const quote of QUOTES) {
+        const rate = cross[quote];
+        if (rate !== undefined) {
+          rows.push({ day, quote, rate, asOfDay: null, source: null, fetchedAt: null });
+        }
+      }
+    }
+    return Promise.resolve(rows.slice(0, limit));
+  }
 }
 
 /**
@@ -147,6 +184,50 @@ export class PostgresFiatStore implements FiatRateBook {
     this.#fetchImpl = args.fetchImpl;
     this.#ratesUrl = args.ratesUrl;
     this.#source = args.source ?? FX_SOURCE_FRANKFURTER_ECB;
+  }
+
+  /**
+   * Operator dump of `usd_fiat_daily`, newest day first.
+   *
+   * @param limit - Maximum rows.
+   * @returns Stored quote rows.
+   */
+  async listDebug(limit: number): Promise<
+    Array<{
+      day: string;
+      quote: string;
+      rate: string;
+      asOfDay: string;
+      source: string;
+      fetchedAt: string;
+    }>
+  > {
+    const rows = await this.#sql.query<{
+      day: Date | string;
+      quote: string;
+      rate: string | number;
+      as_of_day: Date | string;
+      source: string;
+      fetched_at: Date | string;
+    }>(
+      `SELECT day, quote, rate, as_of_day, source, fetched_at
+       FROM usd_fiat_daily
+       ORDER BY day DESC, quote ASC
+       LIMIT $1`,
+      [limit],
+    );
+    const dayOf = (value: Date | string): string =>
+      value instanceof Date ? value.toISOString().slice(0, 10) : String(value).slice(0, 10);
+    const iso = (value: Date | string): string =>
+      value instanceof Date ? value.toISOString() : new Date(value).toISOString();
+    return rows.map((row) => ({
+      day: dayOf(row.day),
+      quote: row.quote,
+      rate: String(row.rate),
+      asOfDay: dayOf(row.as_of_day),
+      source: row.source,
+      fetchedAt: iso(row.fetched_at),
+    }));
   }
 
   /**

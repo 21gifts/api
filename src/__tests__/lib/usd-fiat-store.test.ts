@@ -79,6 +79,7 @@ describe('InMemoryFiatStore', () => {
   it('returns an empty map by default', async () => {
     const store = new InMemoryFiatStore();
     expect(await store.ensureDays(['2026-06-01'], 0)).toEqual(new Map());
+    expect(await store.listDebug(10)).toEqual([]);
   });
 
   it('returns seeded crosses for requested valid days only and omits empty crosses', async () => {
@@ -92,6 +93,26 @@ describe('InMemoryFiatStore', () => {
     const rates = await store.ensureDays(
       ['2026-06-01', 'bad', '2026-06-01', '2026-06-02', '2026-06-03', '2026-13-01', '2026-02-30'],
       0,
+    );
+    expect(await store.listDebug(10)).toEqual(
+      expect.arrayContaining([
+        {
+          day: '2026-06-01',
+          quote: 'CHF',
+          rate: '0.80',
+          asOfDay: null,
+          source: null,
+          fetchedAt: null,
+        },
+        {
+          day: '2026-06-03',
+          quote: 'CHF',
+          rate: '0.81',
+          asOfDay: null,
+          source: null,
+          fetchedAt: null,
+        },
+      ]),
     );
     expect([...rates.entries()]).toEqual([
       ['2026-06-01', { CHF: '0.80', EUR: '0.90', PHP: '50' }],
@@ -126,6 +147,46 @@ describe('PostgresFiatStore', () => {
     expect(await store.ensureDays([], 0)).toEqual(new Map());
     expect(await store.ensureDays(['nope', '2026-13-01', '2026-02-30'], 0)).toEqual(new Map());
     expect(sql.queries).toHaveLength(0);
+    sql.queryHandler = () => [
+      {
+        day: new Date('2026-06-01T00:00:00.000Z'),
+        quote: 'CHF',
+        rate: 0.8,
+        as_of_day: '2026-06-01',
+        source: 'frankfurter-ecb',
+        fetched_at: new Date('2026-06-02T00:05:00.000Z'),
+      },
+    ];
+    expect(await store.listDebug(5)).toEqual([
+      {
+        day: '2026-06-01',
+        quote: 'CHF',
+        rate: '0.8',
+        asOfDay: '2026-06-01',
+        source: 'frankfurter-ecb',
+        fetchedAt: '2026-06-02T00:05:00.000Z',
+      },
+    ]);
+    sql.queryHandler = () => [
+      {
+        day: '2026-06-03',
+        quote: 'EUR',
+        rate: '0.9',
+        as_of_day: new Date('2026-06-03T00:00:00.000Z'),
+        source: 'frankfurter-ecb',
+        fetched_at: '2026-06-04T00:00:00.000Z',
+      },
+    ];
+    expect(await store.listDebug(1)).toEqual([
+      {
+        day: '2026-06-03',
+        quote: 'EUR',
+        rate: '0.9',
+        asOfDay: '2026-06-03',
+        source: 'frankfurter-ecb',
+        fetchedAt: '2026-06-04T00:00:00.000Z',
+      },
+    ]);
   });
 
   it('returns persisted complete quotes without fetching', async () => {

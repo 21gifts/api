@@ -92,6 +92,25 @@ export class InMemoryBtcUsdStore implements BtcUsdRateBook {
     }
     return out;
   }
+
+  /**
+   * Operator dump of seeded daily closes, newest day first.
+   *
+   * @param limit - Maximum rows.
+   * @returns `{ day, usdPerBtc, source, fetchedAt }` for stored seed days (`source`/`fetchedAt` null in memory).
+   */
+  listDebug(
+    limit: number,
+  ): Promise<
+    Array<{ day: string; usdPerBtc: string; source: string | null; fetchedAt: string | null }>
+  > {
+    return Promise.resolve(
+      [...this.#rates.entries()]
+        .sort((a, b) => b[0].localeCompare(a[0]))
+        .slice(0, limit)
+        .map(([day, usdPerBtc]) => ({ day, usdPerBtc, source: null, fetchedAt: null })),
+    );
+  }
 }
 
 /**
@@ -111,6 +130,39 @@ export class PostgresBtcUsdStore implements BtcUsdRateBook {
     this.#fetchImpl = args.fetchImpl;
     this.#candlesUrl = args.candlesUrl;
     this.#source = args.source ?? FX_SOURCE_COINBASE_DAILY_CLOSE;
+  }
+
+  /**
+   * Operator dump of `btc_usd_daily`, newest day first.
+   *
+   * @param limit - Maximum rows.
+   * @returns Stored FX rows.
+   */
+  async listDebug(
+    limit: number,
+  ): Promise<Array<{ day: string; usdPerBtc: string; source: string; fetchedAt: string }>> {
+    const rows = await this.#sql.query<{
+      day: Date | string;
+      usd_per_btc: string | number;
+      source: string;
+      fetched_at: Date | string;
+    }>(
+      `SELECT day, usd_per_btc, source, fetched_at
+       FROM btc_usd_daily
+       ORDER BY day DESC
+       LIMIT $1`,
+      [limit],
+    );
+    return rows.map((row) => ({
+      day:
+        row.day instanceof Date ? row.day.toISOString().slice(0, 10) : String(row.day).slice(0, 10),
+      usdPerBtc: String(row.usd_per_btc),
+      source: row.source,
+      fetchedAt:
+        row.fetched_at instanceof Date
+          ? row.fetched_at.toISOString()
+          : new Date(row.fetched_at).toISOString(),
+    }));
   }
 
   /**

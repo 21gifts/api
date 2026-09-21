@@ -1,5 +1,37 @@
 import type { GiftRow } from '@/lib/gift';
 
+/** Operator dump of one `gift` row (every stored column). */
+export interface GiftDebugRow {
+  /** Serial id, or `null` when the adapter does not store one. */
+  id: number | null;
+  /** Paid-at ISO-8601. */
+  paidAt: string;
+  /** Always `outbound` in v1. */
+  direction: string;
+  /** Currency code, or `null` when the adapter does not store one. */
+  currency: string | null;
+  /** Whole sats. */
+  amountSats: number;
+  /** Fee sats, or `null` when the adapter does not store one. */
+  feeSats: number | null;
+  /** Wallet of Satoshi username. */
+  recipientWosUser: string;
+  /** BOLT11, or `null` when the adapter does not store one. */
+  lightningInvoice: string | null;
+  /** Wallet of Satoshi tx id. */
+  wosTransactionId: string | null;
+  /** Description, or `null` when the adapter does not store one. */
+  description: string | null;
+  /** Point-of-sale flag. */
+  pointOfSale: boolean;
+  /** Wallet of Satoshi status. */
+  wosStatus: string | null;
+  /** Source wallet, or `null` when the adapter does not store one. */
+  sourceWallet: string | null;
+  /** Import ISO-8601, or `null` when the adapter does not store one. */
+  importedAt: string | null;
+}
+
 /**
  * Persistence for outbound gifts used by public statistics.
  *
@@ -13,6 +45,14 @@ export interface GiftStore {
    * @returns Gift rows (any order; stats sorting is the aggregator's job).
    */
   listOutbound(): Promise<GiftRow[]>;
+
+  /**
+   * Operator dump of stored gift columns, newest `paidAt` first, capped at `limit`.
+   *
+   * @param limit - Maximum rows.
+   * @returns Debug rows.
+   */
+  listDebug?(limit: number): Promise<GiftDebugRow[]>;
 }
 
 /**
@@ -33,6 +73,36 @@ export class InMemoryGiftStore implements GiftStore {
   listOutbound(): Promise<GiftRow[]> {
     return Promise.resolve([...this.rows].sort((a, b) => a.paidAt.getTime() - b.paidAt.getTime()));
   }
+
+  /**
+   * Operator dump of stored gift columns, newest `paidAt` first.
+   *
+   * @param limit - Maximum rows.
+   * @returns Debug rows.
+   */
+  listDebug(limit: number): Promise<GiftDebugRow[]> {
+    return this.listOutbound().then((rows) =>
+      [...rows]
+        .sort((a, b) => b.paidAt.getTime() - a.paidAt.getTime())
+        .slice(0, limit)
+        .map((row) => ({
+          id: null,
+          paidAt: row.paidAt.toISOString(),
+          direction: 'outbound',
+          currency: null,
+          amountSats: row.amountSats,
+          feeSats: null,
+          recipientWosUser: row.recipientWosUser,
+          lightningInvoice: null,
+          wosTransactionId: null,
+          description: null,
+          pointOfSale: false,
+          wosStatus: null,
+          sourceWallet: null,
+          importedAt: null,
+        })),
+    );
+  }
 }
 
 /**
@@ -43,8 +113,12 @@ export class InMemoryGiftStore implements GiftStore {
 export class QueryGiftStore implements GiftStore {
   /**
    * @param query - Loader that returns outbound gift rows.
+   * @param debugQuery - Optional full-column dump loader.
    */
-  constructor(private readonly query: () => Promise<GiftRow[]>) {}
+  constructor(
+    private readonly query: () => Promise<GiftRow[]>,
+    private readonly debugQuery?: () => Promise<GiftDebugRow[]>,
+  ) {}
 
   /**
    * Runs the injected query.
@@ -53,5 +127,38 @@ export class QueryGiftStore implements GiftStore {
    */
   listOutbound(): Promise<GiftRow[]> {
     return this.query();
+  }
+
+  /**
+   * Operator dump of stored gift columns, newest `paidAt` first.
+   *
+   * @param limit - Maximum rows.
+   * @returns Debug rows from `debugQuery` when set, otherwise mapped outbound gifts.
+   */
+  listDebug(limit: number): Promise<GiftDebugRow[]> {
+    if (this.debugQuery !== undefined) {
+      return this.debugQuery().then((rows) => rows.slice(0, limit));
+    }
+    return this.listOutbound().then((rows) =>
+      [...rows]
+        .sort((a, b) => b.paidAt.getTime() - a.paidAt.getTime())
+        .slice(0, limit)
+        .map((row) => ({
+          id: null,
+          paidAt: row.paidAt.toISOString(),
+          direction: 'outbound',
+          currency: null,
+          amountSats: row.amountSats,
+          feeSats: null,
+          recipientWosUser: row.recipientWosUser,
+          lightningInvoice: null,
+          wosTransactionId: null,
+          description: null,
+          pointOfSale: false,
+          wosStatus: null,
+          sourceWallet: null,
+          importedAt: null,
+        })),
+    );
   }
 }

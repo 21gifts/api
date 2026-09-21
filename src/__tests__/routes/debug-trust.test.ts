@@ -80,6 +80,65 @@ function del(app: Hono, token: string | undefined, body: unknown): Promise<Respo
   );
 }
 
+describe('GET /debug/trust-edges', () => {
+  let warn: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+  });
+
+  afterEach(() => {
+    warn.mockRestore();
+  });
+
+  it('returns 401 without a matching bearer', async () => {
+    const app = mount(new InMemoryAuthStore(), new InMemoryTrustStore());
+    const res = await app.request('/debug/trust-edges');
+    expect(res.status).toBe(401);
+  });
+
+  it('lists edges newest first', async () => {
+    const store = await seeded();
+    const trustStore = new InMemoryTrustStore();
+    await trustStore.insertEdge({
+      id: 'edge-old',
+      subjectId: SUBJECT,
+      actorId: ACTOR,
+      kind: 'verify',
+      createdAt: 1,
+    });
+    const app = mount(store, trustStore);
+    const res = await app.request('/debug/trust-edges', {
+      headers: { authorization: 'Bearer secret' },
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { edges: Array<{ id: string; kind: string }> };
+    expect(body.edges).toHaveLength(1);
+    expect(body.edges[0]?.id).toBe('edge-old');
+    expect(body.edges[0]?.kind).toBe('verify');
+  });
+
+  it('returns 503 when listEdges throws', async () => {
+    const throwing: TrustStore = {
+      listEdges: async () => {
+        throw new Error('boom');
+      },
+      listEdgesForSubject: async () => [],
+      listEdgesTouching: async () => [],
+      insertEdge: async (row) => row,
+      deleteEdge: async () => undefined,
+    };
+    const res = await mount(new InMemoryAuthStore(), throwing).request('/debug/trust-edges', {
+      headers: { authorization: 'Bearer secret' },
+    });
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({ error: 'Trust chain is unavailable' });
+    expect(parsedEvents(warn).some((event) => event['event'] === 'debug.trust_edges.failed')).toBe(
+      true,
+    );
+  });
+});
+
 describe('POST /debug/trust-edges', () => {
   let warn: ReturnType<typeof vi.spyOn>;
 

@@ -3,14 +3,18 @@
 # gifts-debug — operator listing, role assignment, Lightning Address unlink,
 #               forum-note debug reads, HTTP audit log, external-pubkey inspection,
 #               forum-video restore, forum-note unhide,
-#               spend live roster, and trust-edge backfill for 21.gifts
-#               (GET /debug/accounts, PATCH /debug/accounts/:id,
+#               spend live roster, trust-edge backfill, account-by-id, and
+#               full-table dump for 21.gifts
+#               (GET /debug/accounts, GET /debug/accounts/:id,
+#               PATCH /debug/accounts/:id,
 #               GET /debug/messages, GET /debug/messages/:id,
 #               GET /debug/api-log, GET /debug/external-pubkeys,
 #               PUT /debug/messages/:id/video, POST /debug/messages/:id/restore,
 #               POST /debug/invoices/settle,
 #               GET {DEBUG_SPEND_URL}/debug/recipients,
-#               POST /debug/trust-edges, DELETE /debug/trust-edges). No raw SQL.
+#               GET /debug/trust-edges, POST /debug/trust-edges,
+#               DELETE /debug/trust-edges,
+#               GET /debug/dump, GET /debug/dump/:table). No raw SQL.
 #
 # Credentials (never in this script, never printed):
 #   ~/.config/21gifts/debug.env  ->  DEBUG_TOKEN, DEBUG_API_URL,
@@ -20,6 +24,10 @@
 # Usage:
 #   gifts-debug auth                 # check token; print account count on stderr
 #   gifts-debug accounts [--raw]     # table (default) or JSON
+#   gifts-debug account <id>         # GET /debug/accounts/:id JSON
+#   gifts-debug dump [table] [--raw] # GET /debug/dump or /debug/dump/:table JSON
+#                                    # tables: account, passkey_credential, passkey_challenge, auth_session, address_verification, api_log, contact, conversation, conversation_message, conversation_read, message, message_extra_photo, message_invoice, nostr_zap_ingest, nostr_zap_receipt, nostr_zap_payment, nostr_zapper, nostr_blocked_pubkey, notification, push_subscription, push_outbox, trust_edge, gift, btc_usd_daily, usd_fiat_daily, db_change
+#   gifts-debug trust-edges [--raw]  # GET /debug/trust-edges JSON
 #   gifts-debug role <id> <role>     # set account.role; print updated account JSON
 #   gifts-debug refuse-session <id> [true|false]
 #                                    # set account.sessionRefused; print updated account JSON
@@ -43,6 +51,10 @@
 # Example:
 #   gifts-debug accounts
 #   gifts-debug accounts --raw
+#   gifts-debug account <account-id>
+#   gifts-debug dump
+#   gifts-debug dump passkey_credential --raw
+#   gifts-debug trust-edges --raw
 #   gifts-debug role <account-id> moderator
 #   gifts-debug refuse-session <account-id>
 #   gifts-debug refuse-session <account-id> false
@@ -116,6 +128,50 @@ fetch_accounts() {
     die "HTTP ${status}: ${body}"
   fi
   printf '%s' "$body"
+}
+
+debug_get() {
+  local path="$1" tmp status body
+  tmp=$(mktemp)
+  status=$(curl -sS -o "$tmp" -w '%{http_code}' \
+    -H "Authorization: Bearer ${DEBUG_TOKEN}" \
+    "${DEBUG_API_URL}${path}") || {
+    rm -f "$tmp"
+    die "request failed"
+  }
+  body=$(cat "$tmp")
+  rm -f "$tmp"
+  if [ "$status" != "200" ]; then
+    die "HTTP ${status}: ${body}"
+  fi
+  printf '%s' "$body"
+}
+
+cmd_account() {
+  local id="${1:-}"
+  [ -n "$id" ] || die "usage: gifts-debug account <account-id>"
+  printf '%s\n' "$(debug_get "/debug/accounts/${id}")"
+}
+
+cmd_dump() {
+  local table="${1:-}" path body
+  if [ -n "$table" ]; then
+    path="/debug/dump/${table}"
+  else
+    path="/debug/dump"
+  fi
+  body=$(debug_get "$path")
+  printf '%s\n' "$body"
+}
+
+cmd_trust_edges() {
+  local body
+  body=$(debug_get "/debug/trust-edges")
+  if [ "$RAW" -eq 1 ]; then
+    printf '%s\n' "$body"
+    return
+  fi
+  printf '%s\n' "$body"
 }
 
 cmd_auth() {
@@ -510,6 +566,9 @@ set -- "${ARGS[@]+"${ARGS[@]}"}"
 case "${1:-}" in
   auth) cmd_auth ;;
   accounts) cmd_accounts ;;
+  account) shift; cmd_account "$@" ;;
+  dump) shift; cmd_dump "$@" ;;
+  trust-edges) cmd_trust_edges ;;
   role) shift; cmd_role "$@" ;;
   refuse-session) shift; cmd_refuse_session "$@" ;;
   unlink) shift; cmd_unlink "$@" ;;

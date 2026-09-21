@@ -6,6 +6,7 @@ import type {
   AccountRole,
   AddressVerification,
   AuthStore,
+  NostrKeyListRow,
   NostrKeyRecord,
   PasskeyChallenge,
   PasskeyChallengeType,
@@ -34,9 +35,12 @@ interface AccountRow {
   notification_level?: string | null;
   username?: string | null;
   session_refused?: boolean | null;
+  nostr_kek_id?: number | null;
+  nostr_key_custody?: string | null;
+  nostr_key_created_at?: Date | string | null;
 }
 
-const ACCOUNT_SELECT_COLUMNS = `id, linking_key, role, name, lightning_address, lightning_address_verified, forum_laws_dismissed, view_key, created_at, rules_agreed_at, is_platform, name_skipped_at, lightning_address_skipped_at, profile_message_id, location, notification_level, username, session_refused`;
+const ACCOUNT_SELECT_COLUMNS = `id, linking_key, role, name, lightning_address, lightning_address_verified, forum_laws_dismissed, view_key, created_at, rules_agreed_at, is_platform, name_skipped_at, lightning_address_skipped_at, profile_message_id, location, notification_level, username, session_refused, nostr_kek_id, nostr_key_custody, nostr_key_created_at`;
 
 /** Row shape of `auth_session`. */
 interface SessionRow {
@@ -301,6 +305,73 @@ export class PostgresAuthStore implements AuthStore {
       }
     }
     return accounts;
+  }
+
+  async listPasskeyCredentials(): Promise<PasskeyCredential[]> {
+    const rows = await this.#sql.query<PasskeyCredentialRow>(
+      `SELECT credential_id, public_key, sign_count, account_id, created_at
+       FROM passkey_credential
+       ORDER BY created_at DESC, credential_id DESC`,
+    );
+    return rows.map((row) => mapPasskeyCredential(row));
+  }
+
+  async listSessions(): Promise<Session[]> {
+    const rows = await this.#sql.query<SessionRow>(
+      `SELECT token, account_id, created_at FROM auth_session
+       ORDER BY created_at DESC, token DESC`,
+    );
+    return rows.map((row) => mapSession(row));
+  }
+
+  async listPasskeyChallenges(): Promise<PasskeyChallenge[]> {
+    const rows = await this.#sql.query<PasskeyChallengeRow>(
+      `SELECT id, type, challenge, account_id, consumed, created_at
+       FROM passkey_challenge
+       ORDER BY created_at DESC, id DESC`,
+    );
+    return rows.map((row) => mapPasskeyChallenge(row));
+  }
+
+  async listAddressVerifications(): Promise<AddressVerification[]> {
+    const rows = await this.#sql.query<VerificationRow>(
+      `SELECT account_id, address, nonce, created_at FROM address_verification
+       ORDER BY created_at DESC, account_id DESC`,
+    );
+    return rows.map((row) => mapVerification(row));
+  }
+
+  async listNostrKeys(): Promise<NostrKeyListRow[]> {
+    const rows = await this.#sql.query<{
+      id: string;
+      nostr_pubkey: string | null;
+      nostr_nsec_ciphertext: Uint8Array | null;
+      nostr_kek_id: number | null;
+      nostr_key_custody: string | null;
+      nostr_key_created_at: Date | string | null;
+    }>(
+      `SELECT id, nostr_pubkey, nostr_nsec_ciphertext, nostr_kek_id, nostr_key_custody, nostr_key_created_at
+       FROM account`,
+    );
+    const listed: NostrKeyListRow[] = [];
+    for (const row of rows) {
+      const blob = row.nostr_nsec_ciphertext;
+      const custody = row.nostr_key_custody === 'user' ? 'user' : 'custodial';
+      listed.push({
+        accountId: row.id,
+        record: {
+          pubkey: row.nostr_pubkey,
+          ciphertext: blob === null || blob === undefined ? new Uint8Array() : new Uint8Array(blob),
+          kekId: row.nostr_kek_id ?? 1,
+          custody,
+        },
+        createdAt:
+          row.nostr_key_created_at === null || row.nostr_key_created_at === undefined
+            ? null
+            : epochMs(row.nostr_key_created_at),
+      });
+    }
+    return listed;
   }
 
   async createSession(session: Session): Promise<void> {
@@ -650,9 +721,10 @@ function mapPasskeyChallenge(row: PasskeyChallengeRow): PasskeyChallenge {
 }
 
 function mapPasskeyCredential(row: PasskeyCredentialRow): PasskeyCredential {
+  const raw = row.public_key;
   return {
     credentialId: row.credential_id,
-    publicKey: row.public_key,
+    publicKey: raw instanceof Uint8Array ? raw : new Uint8Array(raw),
     signCount: row.sign_count,
     accountId: row.account_id,
     createdAt: epochMs(row.created_at),

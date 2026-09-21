@@ -141,6 +141,7 @@ Public base URLs used in examples:
 | POST   | `/notifications/:id/read`                            | Bearer                     | Mark one notification read                                                                                |
 | GET    | `/lightning-address`                                 | none                       | Resolve LUD-16 metadata (cached)                                                                          |
 | GET    | `/debug/accounts`                                    | `Authorization: Bearer`    | Operator account listing (`DEBUG_TOKEN`)                                                                  |
+| GET    | `/debug/accounts/:id`                                | `Authorization: Bearer`    | Operator one-account detail (`DEBUG_TOKEN`)                                                               |
 | POST   | `/debug/accounts`                                    | `Authorization: Bearer`    | Operator provision name + Lightning Address (`DEBUG_TOKEN`)                                               |
 | PATCH  | `/debug/accounts/:id`                                | `Authorization: Bearer`    | Operator set `role` / unlink Lightning Address / `platform` / `sessionRefused`                            |
 | POST   | `/debug/accounts/:id/session`                        | `Authorization: Bearer`    | Operator mint of a member bearer (`DEBUG_TOKEN`)                                                          |
@@ -155,12 +156,15 @@ Public base URLs used in examples:
 | PUT    | `/debug/messages/:id/video`                          | `Authorization: Bearer`    | Operator restore of missing forum-video bytes (`DEBUG_TOKEN`)                                             |
 | POST   | `/debug/messages/:id/restore`                        | `Authorization: Bearer`    | Operator unhide of a soft-hidden forum note (`DEBUG_TOKEN`)                                               |
 | GET    | `/debug/external-pubkeys`                            | `Authorization: Bearer`    | Operator lists entitled and blocked external pubkeys (`DEBUG_TOKEN`)                                      |
+| GET    | `/debug/trust-edges`                                 | `Authorization: Bearer`    | Operator trust-edge listing (`DEBUG_TOKEN`)                                                               |
 | POST   | `/debug/trust-edges`                                 | `Authorization: Bearer`    | Operator trust-edge backfill (`DEBUG_TOKEN`); does not change `role`                                      |
 | DELETE | `/debug/trust-edges`                                 | `Authorization: Bearer`    | Operator trust-edge delete (`DEBUG_TOKEN`); does not change `role`                                        |
 | GET    | `/push/vapid-public`                                 | Bearer                     | VAPID public key for Web Push subscribe                                                                   |
 | POST   | `/me/push-subscriptions`                             | Bearer                     | Upsert a browser PushSubscription                                                                         |
 | DELETE | `/me/push-subscriptions`                             | Bearer                     | Remove a browser PushSubscription                                                                         |
 | POST   | `/debug/push-ping`                                   | Bearer `DEBUG_TOKEN`       | Enqueue a test push for one account                                                                       |
+| GET    | `/debug/dump`                                        | `Authorization: Bearer`    | Operator catalog of allowlisted tables (`DEBUG_TOKEN`)                                                    |
+| GET    | `/debug/dump/:table`                                 | `Authorization: Bearer`    | Operator catalog of one allowlisted table (`DEBUG_TOKEN`)                                                 |
 | GET    | `/gifts`                                             | none                       | Outbound gifts for one UTC day (`?day=`)                                                                  |
 | GET    | `/gifts/stats`                                       | none                       | Aggregated outbound gift statistics                                                                       |
 | GET    | `/invoices/passkey`                                  | Bearer `SPEND_API_TOKEN`   | Whether a Lightning Address has a passkey-backed account                                                  |
@@ -1337,14 +1341,24 @@ Success → **Response** `200`:
       "createdAt": 0,
       "rulesAgreedAt": null,
       "isPlatform": false,
-      "sessionRefused": false
+      "sessionRefused": false,
+      "viewKey": "<64-hex>",
+      "nameSkippedAt": null,
+      "lightningAddressSkippedAt": null,
+      "profileMessageId": null,
+      "notificationLevel": "all",
+      "nostrPubkey": "<64-hex>",
+      "nostrNsecCiphertext": "<envelope-hex>",
+      "nostrKekId": 1,
+      "nostrKeyCustody": "custodial",
+      "nostrKeyCreatedAt": 0
     }
   ]
 }
 ```
 
-The listing uses `serializeDebugAccount` (the eleven public fields plus
-`isPlatform` and `sessionRefused`) and never includes `viewKey`. Member `GET /me` does not
+The listing uses `serializeDebugAccount` (public fields plus `isPlatform`,
+`sessionRefused`, `viewKey`, and Nostr debug fields). Member `GET /me` does not
 include `isPlatform` or `sessionRefused`.
 
 Accounts are ordered by `createdAt` ascending, then `id`. An empty store
@@ -1356,6 +1370,14 @@ Environment:
 | -------------- | ----------------------------------------------------------------------- |
 | `DATABASE_URL` | When set, auth state is stored in Postgres; when unset, in-memory only. |
 | `DEBUG_TOKEN`  | Operator bearer for this route. Unset → 503; process still boots.       |
+
+### `GET /debug/accounts/:id`
+
+Operator detail of one account via `serializeDebugAccountDetail`: every
+account column plus nested `passkeys`, `sessions`, `addressVerification`,
+and matching `passkeyChallenges`. Session tokens are plaintext. nsec is
+envelope hex, never decrypted. Unknown or non-UUID id → **Response** `404`.
+Same `DEBUG_TOKEN` gate as `GET /debug/accounts`.
 
 ### `POST /debug/accounts`
 
@@ -1403,8 +1425,8 @@ Existing address (`lower(trim)`): name-only write still goes through
 stored username is blank, `maybeSetProvisionUsername` fills it. A non-blank
 stored username is kept. `created` is `false`. New address: sets
 `provisionUsername` on the new `basis` row (fresh `viewKey`, `created` is
-`true`). GET still omits `viewKey` (provisioned `username` appears on GET
-`/debug/accounts`).
+`true`). `GET /debug/accounts` and `GET /debug/accounts/:id` also include
+`viewKey` (and provisioned `username`).
 
 ### `PATCH /debug/accounts/:id`
 
@@ -1470,7 +1492,7 @@ Unknown account id → **Response** `404`:
 
 Success → **Response** `200` with the updated account JSON (same
 `serializeDebugAccount` shape as `GET /debug/accounts`, including
-`isPlatform` and `sessionRefused`; no `viewKey`). Role changes log `debug.accounts.role_set`
+`isPlatform`, `sessionRefused`, `viewKey`, and Nostr debug fields). Role changes log `debug.accounts.role_set`
 with the account id and new role. Unlink logs
 `debug.accounts.lightning_address.cleared` with the account id (never the
 token or the previous address). Platform changes log
@@ -1488,6 +1510,45 @@ Unknown account id → **404** `{ "error": "Not found" }`. An account with
 with no minted bearer and no `debug.accounts.session_minted` log. Same
 503/401 gate as the other debug account routes. Not a member login path;
 for e2e and operator debugging.
+
+### `GET /debug/trust-edges`
+
+Operator listing of every stored trust edge (`serializeTrustEdge`), newest
+`createdAt` then `id` descending. Success body is
+`{ "edges": [ serializeTrustEdge, ... ] }`. Unexpected store throw → **503**
+`{ "error": "Trust chain is unavailable" }` logged as `debug.trust_edges.failed`.
+Same `DEBUG_TOKEN` gate as the other debug routes.
+
+### `GET /debug/dump`
+
+Operator catalog of every allowlisted table as camelCase JSON (cap 200 per
+table). Success body is `{ "tables": { "<table>": [ ... ] } }` with one array
+per allowlisted name (cap 200): `account`, `passkey_credential`,
+`passkey_challenge`, `auth_session`, `address_verification`, `api_log`,
+`contact`, `conversation`, `conversation_message`, `conversation_read`,
+`message`, `message_extra_photo`, `message_invoice`, `nostr_zap_ingest`,
+`nostr_zap_receipt`, `nostr_zap_payment`, `nostr_zapper`,
+`nostr_blocked_pubkey`, `notification`, `push_subscription`, `push_outbox`,
+`trust_edge`, `gift`, `btc_usd_daily`, `usd_fiat_daily`, `db_change`. Media
+bytes stay off JSON. `nostrNsecCiphertext` is envelope hex. `btc_usd_daily`,
+`usd_fiat_daily`, and `db_change` dump stored rows when those list ports are
+wired (in-memory boots dump `[]` for `db_change`). `api_log` dumps when an
+audit store is wired (same rows as `GET /debug/api-log`). Same `DEBUG_TOKEN`
+gate as the other debug routes. Unexpected store throw → **503**
+`{ "error": "Dump is unavailable" }`.
+
+### `GET /debug/dump/:table`
+
+Same catalog for one allowlisted table. Response `{ "table", "rows" }`.
+Unknown table → **Response** `404` unless the path segment is one of
+`account`, `passkey_credential`, `passkey_challenge`, `auth_session`,
+`address_verification`, `api_log`, `contact`, `conversation`,
+`conversation_message`, `conversation_read`, `message`, `message_extra_photo`,
+`message_invoice`, `nostr_zap_ingest`, `nostr_zap_receipt`, `nostr_zap_payment`,
+`nostr_zapper`, `nostr_blocked_pubkey`, `notification`, `push_subscription`,
+`push_outbox`, `trust_edge`, `gift`, `btc_usd_daily`, `usd_fiat_daily`,
+`db_change`. Same `DEBUG_TOKEN` gate. Unexpected store throw → **503**
+`{ "error": "Dump is unavailable" }`.
 
 ### `POST /debug/trust-edges`
 
@@ -1715,7 +1776,9 @@ Success → **Response** `200`:
       "description": null,
       "descriptionHash": "<64-hex>",
       "isNip57Invoice": true,
-      "lnurlResponse": { "pr": "lnbc21n1...", "status": "OK" }
+      "lnurlResponse": { "pr": "lnbc21n1...", "status": "OK" },
+      "conversationId": null,
+      "conversationMessageId": null
     }
   ]
 }
@@ -1723,8 +1786,8 @@ Success → **Response** `200`:
 
 `lnurlResponse` is the raw LNURL callback JSON object, or `null` when none
 was stored. Rows are newest-first, capped at **200**. Never includes nsec.
-`serializeInvoice` omits `conversationId` and `conversationMessageId` even
-when the row is a conversation invoice.
+`serializeInvoice` includes `conversationId` and `conversationMessageId`
+(`null` on forum invoices).
 `result` is one of `ok`, `noZap`, `not_zap`, `unreachable`, `no_event`,
 `no_author`, `no_key`,
 `sign_failed`, `rate_limited`, `bad_body`, `not_found`. `isNip57Invoice` is
@@ -1868,10 +1931,10 @@ Environment:
 Operator listing of every persisted forum row (top-level **and** replies,
 live **and** soft-hidden). Authenticated with `Authorization: Bearer`
 matching `DEBUG_TOKEN`. Public hide does not apply. Cap 200, newest-first.
-JSON `{ "messages": [ … ] }` via `serializeDebugMessage`. Optional `goalSats`
-is a positive integer on a top-level note and is omitted on replies and when
-the stored value is unset, null, or 0. Never includes
-`nostrEvent`, `contentFp`, nsec, or photo/video bytes.
+JSON `{ "messages": [ … ] }` via `serializeDebugMessage`, including
+`nostrEvent`, `claimedUntil`, `contentFp`, photo MIME/byte lengths, and
+stored `goalSats` (JSON `null` when unset). Never includes nsec or
+photo/video payloads.
 
 `DEBUG_TOKEN` unset or blank → **Response** `503`:
 
@@ -1901,9 +1964,9 @@ Operator single-note fetch. Soft-hidden rows are **200** with `deletedAt` /
 ```
 
 Same debug token gate as `GET /debug/messages`. Body is the debug object
-(not wrapped). Optional `goalSats` is a positive integer on a top-level note
-and is omitted on replies and when the stored value is unset, null, or 0.
-Never includes `nostrEvent`, `contentFp`, nsec, or photo/video bytes.
+(not wrapped), including `nostrEvent`, `claimedUntil`, `contentFp`, photo
+MIME/byte lengths, and stored `goalSats` (JSON `null` when unset). Never
+includes nsec or photo/video payloads.
 
 Store throw → **Response** `503`:
 

@@ -60,6 +60,34 @@ export interface ConversationStore {
   ): Promise<ConversationThread[]>;
 
   /**
+   * Every thread newest `lastMessageAt` first, then `id` desc, capped at
+   * `limit`. Operator dump; not {@link ConversationStore.listVisible}.
+   *
+   * @param limit - Maximum rows.
+   * @returns Thread copies.
+   */
+  listAll(limit: number): Promise<ConversationThread[]>;
+
+  /**
+   * Every conversation message newest `createdAt` first, then `id` desc,
+   * capped at `limit`.
+   *
+   * @param limit - Maximum rows.
+   * @returns Message copies.
+   */
+  listAllMessages(limit: number): Promise<ConversationMessageRow[]>;
+
+  /**
+   * Every last-read stamp newest `lastReadAt` first, capped at `limit`.
+   *
+   * @param limit - Maximum rows.
+   * @returns Read-row copies.
+   */
+  listAllReads(
+    limit: number,
+  ): Promise<Array<{ accountId: string; conversationId: string; lastReadAt: Date }>>;
+
+  /**
    * True when the thread has at least one inbound message for the viewer
    * (`conversationIsInbound`). Used by GET /conversations to omit empty
    * and outbound-only threads.
@@ -564,6 +592,45 @@ export class InMemoryConversationStore implements ConversationStore {
       .sort(compareThreadsNewestFirst)
       .slice(0, limit)
       .map((thread) => this.#hydrate(thread));
+    return Promise.resolve(listed);
+  }
+
+  listAll(limit: number): Promise<ConversationThread[]> {
+    const listed = [...this.#threads]
+      .sort(compareThreadsNewestFirst)
+      .slice(0, limit)
+      .map((thread) => this.#hydrate(thread));
+    return Promise.resolve(listed);
+  }
+
+  listAllMessages(limit: number): Promise<ConversationMessageRow[]> {
+    const listed = [...this.#messages]
+      .sort((a, b) => {
+        const byTime = b.createdAt.getTime() - a.createdAt.getTime();
+        if (byTime !== 0) {
+          return byTime;
+        }
+        return b.id.localeCompare(a.id);
+      })
+      .slice(0, limit)
+      .map((row) => copyMessage(row));
+    return Promise.resolve(listed);
+  }
+
+  listAllReads(
+    limit: number,
+  ): Promise<Array<{ accountId: string; conversationId: string; lastReadAt: Date }>> {
+    const listed = [...this.#lastRead.entries()]
+      .map(([key, lastReadAt]) => {
+        const split = key.indexOf('\0');
+        return {
+          accountId: key.slice(0, split),
+          conversationId: key.slice(split + 1),
+          lastReadAt: new Date(lastReadAt.getTime()),
+        };
+      })
+      .sort((a, b) => b.lastReadAt.getTime() - a.lastReadAt.getTime())
+      .slice(0, limit);
     return Promise.resolve(listed);
   }
 
@@ -1117,6 +1184,49 @@ export class PostgresConversationStore implements ConversationStore {
       [accountId, staff, platformId, limit, moderator],
     );
     return rows.map((row) => mapThread(row));
+  }
+
+  async listAll(limit: number): Promise<ConversationThread[]> {
+    const rows = await this.#sql.query<ConversationSqlRow>(
+      `SELECT ${THREAD_SELECT}
+       FROM conversation c
+       ORDER BY c.last_message_at DESC, c.id DESC
+       LIMIT $1`,
+      [limit],
+    );
+    return rows.map((row) => mapThread(row));
+  }
+
+  async listAllMessages(limit: number): Promise<ConversationMessageRow[]> {
+    const rows = await this.#sql.query<ConversationMessageSqlRow>(
+      `SELECT ${MESSAGE_SELECT}
+       FROM conversation_message
+       ORDER BY created_at DESC, id DESC
+       LIMIT $1`,
+      [limit],
+    );
+    return rows.map((row) => mapMessage(row));
+  }
+
+  async listAllReads(
+    limit: number,
+  ): Promise<Array<{ accountId: string; conversationId: string; lastReadAt: Date }>> {
+    const rows = await this.#sql.query<{
+      account_id: string;
+      conversation_id: string;
+      last_read_at: Date | string;
+    }>(
+      `SELECT account_id, conversation_id, last_read_at
+       FROM conversation_read
+       ORDER BY last_read_at DESC
+       LIMIT $1`,
+      [limit],
+    );
+    return rows.map((row) => ({
+      accountId: row.account_id,
+      conversationId: row.conversation_id,
+      lastReadAt: row.last_read_at instanceof Date ? row.last_read_at : new Date(row.last_read_at),
+    }));
   }
 
   async hasInboundMessage(

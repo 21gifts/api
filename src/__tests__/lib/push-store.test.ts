@@ -252,6 +252,32 @@ describe('PostgresPushStore', () => {
     const storedFromString = await store.upsertSubscription(SUB);
     expect(storedFromString.createdAt.toISOString()).toBe('2026-08-01T00:00:00.000Z');
 
+    sql.nextRows = [
+      {
+        endpoint: SUB.endpoint,
+        account_id: SUB.accountId,
+        p256dh: SUB.p256dh,
+        auth: SUB.auth,
+        created_at: SUB.createdAt,
+      },
+    ];
+    expect((await store.listAllSubscriptions())[0]?.endpoint).toBe(SUB.endpoint);
+    sql.nextRows = [
+      {
+        id: 'ob',
+        account_id: SUB.accountId,
+        type: 'forum',
+        message_id: null,
+        payload: '{}',
+        status: 'pending',
+        attempts: 0,
+        claimed_until: null,
+        created_at: SUB.createdAt,
+        delivered_endpoints: '[]',
+      },
+    ];
+    expect((await store.listAllOutbox(5))[0]?.id).toBe('ob');
+
     sql.nextRows = [{ endpoint: SUB.endpoint }];
     expect(await store.deleteSubscription('acc-a', SUB.endpoint)).toBe(true);
     sql.nextRows = [];

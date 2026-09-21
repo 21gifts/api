@@ -28,6 +28,7 @@ import { debugPaymentsRoutes } from '@/routes/debug-payments';
 import { pushRoutes } from '@/routes/push';
 import { debugPushRoutes } from '@/routes/debug-push';
 import { debugTrustRoutes } from '@/routes/debug-trust';
+import { debugCatalogRoutes } from '@/routes/debug-catalog';
 import { trustChainRoutes } from '@/routes/trust-chain';
 import { trustRoutes } from '@/routes/trust';
 import { fundingRoutes } from '@/routes/funding';
@@ -100,7 +101,9 @@ export interface AppDeps {
    * `GET /debug/zap-ingests`, `GET /debug/messages`,
    * `GET /debug/messages/:id`, `GET /debug/messages/:id/photo`,
    * `PUT /debug/messages/:id/video`, `POST /debug/messages/:id/restore`,
-   * `GET /debug/external-pubkeys`, and `POST /debug/trust-edges`
+   * `GET /debug/external-pubkeys`, `GET /debug/accounts/:id`,
+   * `GET /debug/trust-edges`, `GET /debug/dump`, `GET /debug/dump/:table`,
+   * and `POST /debug/trust-edges`
    * return 503.
    */
   debugToken?: string;
@@ -114,6 +117,10 @@ export interface AppDeps {
    * {@link InMemoryGiftStore}).
    */
   giftStore?: GiftStore;
+  /**
+   * Operator dump of `db_change`. Unset → dump table `db_change` is `[]`.
+   */
+  listDbChange?: (limit: number) => Promise<unknown[]>;
   /** Raw `WEBAUTHN_RP_ID` (default: `process.env.WEBAUTHN_RP_ID`). */
   webAuthnRpId?: string;
   /** Raw `WEBAUTHN_RP_NAME` (default: `process.env.WEBAUTHN_RP_NAME`). */
@@ -213,6 +220,12 @@ export interface AppDeps {
   fundingStore?: FundingStore;
 }
 
+/** Optional `listDebug` on a rate book, or `[]` when the adapter has none. */
+function debugList(store: object, limit: number): Promise<unknown[]> {
+  const list = (store as { listDebug?: (n: number) => Promise<unknown[]> }).listDebug;
+  return list === undefined ? Promise.resolve([]) : list.call(store, limit);
+}
+
 /**
  * Build a fully wired Hono application.
  *
@@ -221,7 +234,7 @@ export interface AppDeps {
  * wire-up change — middleware, routes, error handlers — flows through this
  * single factory so the test surface matches production exactly. Mounts
  * public `GET /view/:viewKey` alongside `/me`, Web Push subscription routes,
- * `/notifications`, and the rest of the surface.
+ * `/notifications`, `/debug/dump`, and the rest of the surface.
  *
  * @param deps - Optional overrides for the auth store, clock, invoice payer,
  *   LNURL-pay fetch, LN-Address cache, brand reader, debugToken, gift store,
@@ -229,7 +242,7 @@ export interface AppDeps {
  *   conversation store, notification store, push store, trust store,
  *   funding store (injected into `/funding`, `/me`, `/auth`, `/members`,
  *   `/messages`, `/conversations`, and `/invoices`), vapidPublicKey, nostrKek,
- *   nostrPublisher, env, WebAuthn RP, spend token, spend ping, and gift invoice store.
+ *   nostrPublisher, env, WebAuthn RP, spend token, spend ping, gift invoice store, and listDbChange.
  * @returns A Hono app with all routes and middleware attached.
  */
 export function createApp(deps: AppDeps = {}): Hono {
@@ -389,6 +402,24 @@ export function createApp(deps: AppDeps = {}): Hono {
     }),
   );
   app.route('/debug/trust-edges', debugTrustRoutes({ store, trustStore, debugToken, now }));
+  app.route(
+    '/debug/dump',
+    debugCatalogRoutes({
+      auth: store,
+      messages: messageStore,
+      contacts: contactStore,
+      conversations: conversationStore,
+      notifications: notificationStore,
+      push: pushStore,
+      trust: trustStore,
+      gifts: giftStore,
+      apiLog: apiLogStore,
+      listBtcUsdDaily: (limit) => debugList(btcUsdRates, limit),
+      listUsdFiatDaily: (limit) => debugList(fiatRates, limit),
+      ...(deps.listDbChange === undefined ? {} : { listDbChange: deps.listDbChange }),
+      debugToken,
+    }),
+  );
   app.route('/trust-chain', trustChainRoutes({ authStore: store, trustStore, now }));
   app.route(
     '/trust',

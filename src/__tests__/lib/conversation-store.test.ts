@@ -951,6 +951,59 @@ describe('PostgresConversationStore', () => {
     expect(sql.queries[0]?.params).toEqual(['c1']);
   });
 
+  it('listAll, listAllMessages, and listAllReads query operator dumps', async () => {
+    const sql = new MockSql();
+    const store = new PostgresConversationStore(sql);
+    sql.nextRows = [
+      {
+        id: 'c1',
+        kind: 'member_member',
+        account_a: 'a',
+        account_b: 'b',
+        counterpart_pubkey: null,
+        created_at: NOW,
+        last_message_at: NOW,
+        last_text: 'hi',
+      },
+    ];
+    expect((await store.listAll(10))[0]?.id).toBe('c1');
+    sql.nextRows = [
+      {
+        id: 'm1',
+        conversation_id: 'c1',
+        text: 'hi',
+        created_at: NOW,
+        sender_account_id: 'a',
+        sender_pubkey: null,
+        name: 'Ada',
+        sats: 0,
+        event_id: null,
+        nostr_publish_state: 'pending',
+        nostr_event: null,
+        claimed_until: null,
+      },
+    ];
+    expect((await store.listAllMessages(10))[0]?.id).toBe('m1');
+    sql.nextRows = [
+      {
+        account_id: 'a',
+        conversation_id: 'c1',
+        last_read_at: NOW,
+      },
+    ];
+    expect((await store.listAllReads(10))[0]?.accountId).toBe('a');
+    sql.nextRows = [
+      {
+        account_id: 'b',
+        conversation_id: 'c1',
+        last_read_at: '2026-09-01T00:00:00.000Z',
+      },
+    ];
+    expect((await store.listAllReads(10))[0]?.lastReadAt.toISOString()).toBe(
+      '2026-09-01T00:00:00.000Z',
+    );
+  });
+
   it('getModeratorGroup selects the singleton kind', async () => {
     const sql = new MockSql();
     sql.nextRows = [];

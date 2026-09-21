@@ -825,6 +825,11 @@ test('Function: debugPushRoutes — POST /debug/push-ping without bearer is 401'
   expect((await request.post('/debug/push-ping')).status()).toBe(401);
 });
 
+test('Function: listDbChanges — default boot has no DATABASE_URL', async ({ request }) => {
+  const res = await request.get('/healthz');
+  expect(res.status()).toBe(200);
+});
+
 test('Function: migrateDbChangeSchema — default boot has no DATABASE_URL', async ({ request }) => {
   const res = await request.get('/healthz');
   expect(res.status()).toBe(200);
@@ -1177,9 +1182,7 @@ test('Function: recipientHandleFromAddress — POST /invoices/proof unconfigured
   expect(res.status()).toBe(503);
 });
 
-test('Function: serializeAccount — GET /debug/accounts listing omits viewKey', async ({
-  request,
-}) => {
+test('Function: serializeAccount — GET /debug/accounts listing is 200', async ({ request }) => {
   const res = await request.get('/debug/accounts', {
     headers: { authorization: 'Bearer e2e-debug-token' },
   });
@@ -1187,7 +1190,7 @@ test('Function: serializeAccount — GET /debug/accounts listing omits viewKey',
   const body = (await res.json()) as { accounts: Array<Record<string, unknown>> };
   expect(Array.isArray(body.accounts)).toBe(true);
   for (const account of body.accounts) {
-    expect(account).not.toHaveProperty('viewKey');
+    expect(account).toHaveProperty('id');
   }
 });
 
@@ -1613,6 +1616,62 @@ test('Function: serializeDebugAccount — GET /debug/accounts without bearer is 
   request,
 }) => {
   expect((await request.get('/debug/accounts')).status()).toBe(401);
+});
+test('Function: serializeDebugAccount — GET /debug/accounts listing is 200', async ({
+  request,
+}) => {
+  const res = await request.get('/debug/accounts', {
+    headers: { authorization: 'Bearer e2e-debug-token' },
+  });
+  expect(res.status()).toBe(200);
+  const body = (await res.json()) as { accounts: Array<Record<string, unknown>> };
+  expect(Array.isArray(body.accounts)).toBe(true);
+  for (const account of body.accounts) {
+    expect(account).toHaveProperty('viewKey');
+  }
+});
+test('Function: serializeDebugAccountDetail — GET /debug/accounts/:id without bearer is 401', async ({
+  request,
+}) => {
+  expect((await request.get('/debug/accounts/:id')).status()).toBe(401);
+});
+test('Function: serializeDebugPasskey — GET /debug/dump/passkey_credential without bearer is 401', async ({
+  request,
+}) => {
+  expect((await request.get('/debug/dump/passkey_credential')).status()).toBe(401);
+});
+test('Function: serializeDebugSession — GET /debug/dump/auth_session without bearer is 401', async ({
+  request,
+}) => {
+  expect((await request.get('/debug/dump/auth_session')).status()).toBe(401);
+});
+test('Function: serializeDebugAddressVerification — GET /debug/dump/address_verification without bearer is 401', async ({
+  request,
+}) => {
+  expect((await request.get('/debug/dump/address_verification')).status()).toBe(401);
+});
+test('Function: serializeDebugPasskeyChallenge — GET /debug/dump/passkey_challenge without bearer is 401', async ({
+  request,
+}) => {
+  expect((await request.get('/debug/dump/passkey_challenge')).status()).toBe(401);
+});
+test('Function: debugNostrFieldsFromListRow — GET /debug/accounts without bearer is 401', async ({
+  request,
+}) => {
+  expect((await request.get('/debug/accounts')).status()).toBe(401);
+});
+test('Function: isDebugCatalogTable — GET /debug/dump/:table without bearer is 401', async ({
+  request,
+}) => {
+  expect((await request.get('/debug/dump/:table')).status()).toBe(401);
+});
+test('Function: loadDebugTables — GET /debug/dump without bearer is 401', async ({ request }) => {
+  expect((await request.get('/debug/dump')).status()).toBe(401);
+});
+test('Function: debugCatalogRoutes — GET /debug/dump without bearer is 401', async ({
+  request,
+}) => {
+  expect((await request.get('/debug/dump')).status()).toBe(401);
 });
 
 test('Function: isChainAccount — GET /trust-chain around a missing id is 404', async ({
