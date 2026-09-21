@@ -768,10 +768,12 @@ export async function indexZapReceipt(args: {
  * invoices skip `addSats`, gift-reply, and `notifyZap`. Gift-reply insert
  * runs only when the paid message is a top-level member note (`parentId`
  * null) that is not the official platform profile note; a member-note
- * gift-reply does not call `notifyForumReply`. A zap on that platform note
- * is a compose fee (payer post/reply, `sats` 0) that skips `notifyZap` and
- * fans out `notifyForumPost` / `notifyForumReply` plus a top-level
- * `spendPing`. A reply zap is `addSats` only (no nested gift-reply) and
+ * gift-reply does not call `notifyForumReply`. A member/invoice zap
+ * (`payerAccountId`) on that platform note is a compose fee (payer
+ * post/reply, `sats` 0) that skips `notifyZap` and fans out
+ * `notifyForumPost` / `notifyForumReply` plus a top-level `spendPing`.
+ * An external zap (`payerPubkey`) on that same note still inserts
+ * `insertExternalGiftReply`. A reply zap is `addSats` only (no nested gift-reply) and
  * clears `payerAccountId` so the receipt never occupies the
  * awaiting-gift-reply queue. Retries receipts that have a payer and no
  * gift-reply id yet, and drops already-queued reply receipts from that

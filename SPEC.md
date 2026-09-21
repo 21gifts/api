@@ -3098,10 +3098,11 @@ After a newly indexed **member-note** receipt, `notifyZap` runs best-effort
 payer is the official platform account, then filtered by each account's
 `notificationLevel`; Web Push only to bell subscribers with the same filter;
 missing `pushStore` still writes in-app rows when `auth` is set; enqueue
-failure logs `push.enqueue.failed`). A zap on the official platform profile
+failure logs `push.enqueue.failed`). A member/invoice zap on the official platform profile
 note skips `notifyZap` and fans out `notifyForumPost` / `notifyForumReply`
 plus a top-level `spendPing` only when `eligibleToday` (same gate as
-`POST /messages`; ineligible logs `spend.ping.skipped` / `not_eligible`). `GET /notifications` applies the same
+`POST /messages`; ineligible logs `spend.ping.skipped` / `not_eligible`).
+An external zap on that same note still inserts a gift-reply under it. `GET /notifications` applies the same
 `notificationLevel` filter to stored rows. LNURL success with a non-NIP-57 invoice
 (plaintext description, missing/mismatched `description_hash`, or malformed
 BOLT11) → persist `not_zap` (with rejected `pr` for debug) and **400**
