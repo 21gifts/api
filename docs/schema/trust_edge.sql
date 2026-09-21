@@ -1,7 +1,7 @@
 -- Trust edges: who granted which staff status to whom.
--- Session GET /trust-chain projects stored verify / moderator_confirm /
--- moderator_appoint edges only. moderator_propose is stored but not shown
--- until the subject is a moderator; moderator_reject is never shown.
+-- Session GET /trust-chain projects at most one incoming kind per subject:
+-- verify, moderator_appoint, and moderator_propose only when the live
+-- subject is a moderator. moderator_confirm and moderator_reject never.
 -- Propose and reject may repeat (append-only history). Live unique kinds
 -- stay one-per-subject: verify, moderator_confirm, moderator_appoint.
 -- Operator PATCH /debug/accounts/:id does not write this table.
