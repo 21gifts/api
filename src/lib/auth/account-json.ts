@@ -64,7 +64,10 @@ export interface OwnerAccountResponse extends AccountResponse {
    * action gates.
    */
   missing: AccountMissingField[];
-  /** True when this account has a live forum row that is not the profile note. */
+  /**
+   * True when there is a live non-profile forum row or About me is a real bio
+   * (`aboutMe` non-null). Not the spend predicate.
+   */
   hasPosted: boolean;
   /**
    * Profile-note text when it is a real bio, or `null` when empty, when
@@ -177,14 +180,17 @@ export function serializeDebugAccount(account: Account): DebugAccountResponse {
  * Project an account for the owner (`GET /me`, profile writes, passkey finish).
  *
  * Includes `viewKey` so the owner can copy the capability URL. The second
- * argument is the live-post flag (`hasPosted`); the third is About me;
+ * argument is `hasPosted`; the third is About me;
  * the fourth is whether the live profile note has a photo; the fifth is
  * `funding` (`null` for `basis`, default `null`).
  * This function performs no I/O. Never used by the operator debug listing.
  * Does not expose `profileMessageId`.
  *
  * @param account - Stored account.
- * @param hasPosted - True when the account has a live non-profile forum row.
+ * @param hasPosted - True when there is a live non-profile forum row or About
+ *   me is a real bio (`aboutMe` non-null). Name-copy, photo-only, missing, and
+ *   soft-hidden notes do not count. This owner flag is not the spend predicate
+ *   (`accountHasLiveTopLevelPost` / GET /invoices/posted stays unchanged).
  * @param aboutMe - Profile bio, or `null` when unfilled.
  * @param aboutMeHasPhoto - True when the live profile note has a photo.
  * @param funding - Owner funding JSON, or `null` for `basis`. Defaults to
@@ -229,8 +235,13 @@ export interface OwnerFundingLookup {
  * Calls {@link MessageStore.accountHasLivePost} with the account id and
  * `profileMessageId` (or `null`), loads the profile note via
  * {@link MessageStore.getById} when `profileMessageId` is non-blank, then
- * {@link serializeOwnerAccount}. HTTP callers (`meRoutes`, `authRoutes`) use
- * this helper so they cannot drift. Does not wrap store errors.
+ * {@link serializeOwnerAccount}. `hasPosted` is true when there is a live
+ * non-profile forum row or About me is a real bio (`aboutMe` non-null).
+ * Name-copy, photo-only, missing, and soft-hidden notes do not count. This
+ * owner flag is not the spend predicate (`accountHasLiveTopLevelPost` /
+ * GET /invoices/posted stays unchanged). HTTP callers (`meRoutes`,
+ * `authRoutes`) use this helper so they cannot drift. Does not wrap store
+ * errors.
  *
  * @param account - Stored account.
  * @param messages - Message store (live-post lookup and profile-note read).
@@ -247,7 +258,7 @@ export async function serializeOwnerAccountWithPosts(
   messages: Pick<MessageStore, 'accountHasLivePost' | 'getById'>,
   funding?: OwnerFundingLookup,
 ): Promise<OwnerAccountResponse> {
-  const hasPosted = await messages.accountHasLivePost(account.id, account.profileMessageId ?? null);
+  const livePost = await messages.accountHasLivePost(account.id, account.profileMessageId ?? null);
   const profileId = account.profileMessageId;
   let aboutMe: string | null = null;
   let aboutMeHasPhoto = false;
@@ -258,6 +269,7 @@ export async function serializeOwnerAccountWithPosts(
       aboutMeHasPhoto = row.hasPhoto === true;
     }
   }
+  const hasPosted = livePost || aboutMe !== null;
   let fundingJson: OwnerFundingJson | null;
   if (funding === undefined) {
     fundingJson = serializeOwnerFunding(account.role, undefined, 0, null);

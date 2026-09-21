@@ -232,6 +232,7 @@ describe('serializeOwnerAccountWithPosts', () => {
     );
     expect(json.aboutMe).toBeNull();
     expect(json.aboutMeHasPhoto).toBe(false);
+    expect(json.hasPosted).toBe(false);
   });
 
   it('sets aboutMeHasPhoto true on a name-copy note with a photo', async () => {
@@ -244,6 +245,7 @@ describe('serializeOwnerAccountWithPosts', () => {
     );
     expect(json.aboutMe).toBeNull();
     expect(json.aboutMeHasPhoto).toBe(true);
+    expect(json.hasPosted).toBe(false);
     expect(json).not.toHaveProperty('profileMessageId');
   });
 
@@ -257,6 +259,7 @@ describe('serializeOwnerAccountWithPosts', () => {
     );
     expect(json.aboutMe).toBe('I build on Bitcoin');
     expect(json.aboutMeHasPhoto).toBe(false);
+    expect(json.hasPosted).toBe(true);
   });
 
   it('sets aboutMeHasPhoto true when getById returns hasPhoto true', async () => {
@@ -269,6 +272,7 @@ describe('serializeOwnerAccountWithPosts', () => {
     );
     expect(json.aboutMe).toBe('I build on Bitcoin');
     expect(json.aboutMeHasPhoto).toBe(true);
+    expect(json.hasPosted).toBe(true);
   });
 
   it('sets aboutMe null when the note is the stored name after a rename', async () => {
@@ -281,6 +285,7 @@ describe('serializeOwnerAccountWithPosts', () => {
     );
     expect(json.aboutMe).toBeNull();
     expect(json.aboutMeHasPhoto).toBe(false);
+    expect(json.hasPosted).toBe(false);
   });
 
   it('sets aboutMe to a real bio after a display-name rename', async () => {
@@ -293,6 +298,7 @@ describe('serializeOwnerAccountWithPosts', () => {
     );
     expect(json.aboutMe).toBe('I build on Bitcoin');
     expect(json.aboutMeHasPhoto).toBe(false);
+    expect(json.hasPosted).toBe(true);
   });
 
   it('sets aboutMe null when the profile note is soft-hidden', async () => {
@@ -305,6 +311,7 @@ describe('serializeOwnerAccountWithPosts', () => {
     );
     expect(json.aboutMe).toBeNull();
     expect(json.aboutMeHasPhoto).toBe(false);
+    expect(json.hasPosted).toBe(false);
   });
 
   it('sets aboutMeHasPhoto false when the profile note is missing or hidden', async () => {
@@ -317,6 +324,7 @@ describe('serializeOwnerAccountWithPosts', () => {
     );
     expect(missing.aboutMe).toBeNull();
     expect(missing.aboutMeHasPhoto).toBe(false);
+    expect(missing.hasPosted).toBe(false);
 
     const hidden = await serializeOwnerAccountWithPosts(
       { ...account, profileMessageId: 'note-1' },
@@ -327,6 +335,7 @@ describe('serializeOwnerAccountWithPosts', () => {
     );
     expect(hidden.aboutMe).toBeNull();
     expect(hidden.aboutMeHasPhoto).toBe(false);
+    expect(hidden.hasPosted).toBe(false);
   });
 
   it('sets funding null for basis and none for verified without a row', async () => {

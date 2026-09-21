@@ -265,6 +265,29 @@ describe('GET /me', () => {
     const store = await seededStore();
     const existing = await store.getAccount('acc');
     expect(existing).toBeDefined();
+    await store.updateAccount({ ...existing!, name: 'Ada', profileMessageId: 'post-alice' });
+    const messages = new InMemoryMessageStore([
+      {
+        id: 'post-alice',
+        accountId: 'acc',
+        name: 'Ada',
+        text: 'Ada',
+        createdAt: new Date('2026-08-01T00:00:00.000Z'),
+        hasPhoto: false,
+        ...unsignedNostrDefaults(),
+      },
+    ]);
+    const res = await mount(store, { messages }).request('/me', { headers: AUTH });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { hasPosted: boolean; aboutMe: string | null };
+    expect(body.hasPosted).toBe(false);
+    expect(body.aboutMe).toBeNull();
+  });
+
+  it('returns hasPosted true when the profile note is a real bio', async () => {
+    const store = await seededStore();
+    const existing = await store.getAccount('acc');
+    expect(existing).toBeDefined();
     await store.updateAccount({ ...existing!, profileMessageId: 'post-alice' });
     const messages = new InMemoryMessageStore([
       {
@@ -279,7 +302,9 @@ describe('GET /me', () => {
     ]);
     const res = await mount(store, { messages }).request('/me', { headers: AUTH });
     expect(res.status).toBe(200);
-    expect(((await res.json()) as { hasPosted: boolean }).hasPosted).toBe(false);
+    const body = (await res.json()) as { hasPosted: boolean; aboutMe: string | null };
+    expect(body.hasPosted).toBe(true);
+    expect(body.aboutMe).toBe('first');
   });
 
   it('returns hasPosted true when the account has an extra live message', async () => {
