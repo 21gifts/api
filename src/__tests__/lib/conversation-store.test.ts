@@ -75,6 +75,26 @@ function message(partial: Partial<ConversationMessageRow> = {}): ConversationMes
   };
 }
 
+function sqlMessage(id: string, createdAt: Date): Record<string, unknown> {
+  return {
+    id,
+    conversation_id: 'c1',
+    text: id,
+    created_at: createdAt,
+    sender_account_id: 'acc',
+    sender_pubkey: null,
+    name: 'Ada',
+    sats: 0,
+    actor_account_id: null,
+    actor_name: '',
+    gift_for_message_id: null,
+    event_id: null,
+    nostr_publish_state: 'pending',
+    nostr_event: null,
+    claimed_until: null,
+  };
+}
+
 describe('CONVERSATION_SCHEMA_SQL', () => {
   it('creates conversation tables and unique indexes', () => {
     const joined = CONVERSATION_SCHEMA_SQL.join('\n');
@@ -339,6 +359,55 @@ describe('InMemoryConversationStore', () => {
       'earlier',
       'later',
     ]);
+  });
+
+  it('lists the newest thread page oldest-first with a cap and caller-owned copies', async () => {
+    const later = new Date(NOW.getTime() + 1000);
+    const newest = new Date(NOW.getTime() + 2000);
+    const store = new InMemoryConversationStore(
+      [thread()],
+      [
+        message({ id: 'm-old', createdAt: NOW, nostrEvent: { kind: 1059 } }),
+        message({ id: 'm-a', createdAt: later }),
+        message({ id: 'm-z', createdAt: later }),
+        message({ id: 'm-new', createdAt: newest }),
+        message({ id: 'm-other', conversationId: 'c-2', createdAt: newest }),
+      ],
+    );
+
+    const listed = await store.listThreadPage({ conversationId: 'c-1', limit: 3, cursor: null });
+    expect(listed.map((row) => row.id)).toEqual(['m-a', 'm-z', 'm-new']);
+    listed[0]!.text = 'changed';
+    listed[0]!.createdAt.setTime(0);
+    listed[0]!.nostrEvent = { changed: true };
+
+    const again = await store.listThreadPage({ conversationId: 'c-1', limit: 3, cursor: null });
+    expect(again[0]?.text).toBe('hello');
+    expect(again[0]?.createdAt).toEqual(later);
+    expect(again[0]?.nostrEvent).toBeNull();
+  });
+
+  it('lists rows exclusively older than a thread cursor with same-timestamp id ordering', async () => {
+    const tied = new Date(NOW.getTime() + 1000);
+    const store = new InMemoryConversationStore(
+      [thread()],
+      [
+        message({ id: 'm-old', createdAt: NOW }),
+        message({ id: 'm-a', createdAt: tied }),
+        message({ id: 'm-z', createdAt: tied }),
+        message({ id: 'm-new', createdAt: new Date(NOW.getTime() + 2000) }),
+      ],
+    );
+
+    const listed = await store.listThreadPage({
+      conversationId: 'c-1',
+      limit: 10,
+      cursor: { c: tied, i: 'm-z' },
+    });
+    expect(listed.map((row) => row.id)).toEqual(['m-old', 'm-a']);
+    expect(await store.listThreadPage({ conversationId: 'missing', limit: 10, cursor: null })).toEqual(
+      [],
+    );
   });
 
   it('caps listVisible at limit and breaks ties by id descending', async () => {
@@ -1351,6 +1420,47 @@ describe('PostgresConversationStore', () => {
     expect(sql.queries[0]?.params).toEqual(['c1', 20]);
     expect(await store.getMessageById('m1')).toBeDefined();
     expect(await store.getMessageByEventId('ab'.repeat(32))).toBeDefined();
+  });
+
+  it('lists a Postgres thread page newest-first in SQL and reverses a copy', async () => {
+    const sql = new MockSql();
+    const newest = new Date(NOW.getTime() + 1000);
+    sql.nextRows = [sqlMessage('m-new', newest), sqlMessage('m-old', NOW)];
+    const originalRows = sql.nextRows.slice();
+
+    const listed = await new PostgresConversationStore(sql).listThreadPage({
+      conversationId: 'c1',
+      limit: 2,
+      cursor: null,
+    });
+
+    expect(listed.map((row) => row.id)).toEqual(['m-old', 'm-new']);
+    expect(sql.nextRows).toEqual(originalRows);
+    expect(sql.queries[0]?.text).toMatch(/WHERE conversation_id = \$1/);
+    expect(sql.queries[0]?.text).toMatch(/ORDER BY created_at DESC, id DESC/);
+    expect(sql.queries[0]?.text).toMatch(/LIMIT \$2/);
+    expect(sql.queries[0]?.text).not.toMatch(/created_at < \$3/);
+    expect(sql.queries[0]?.params).toEqual(['c1', 2]);
+  });
+
+  it('binds the exclusive older cursor for a Postgres thread page', async () => {
+    const sql = new MockSql();
+    sql.nextRows = [sqlMessage('m-old', NOW)];
+    const cursorAt = new Date(NOW.getTime() + 1000);
+
+    const listed = await new PostgresConversationStore(sql).listThreadPage({
+      conversationId: 'c1',
+      limit: 20,
+      cursor: { c: cursorAt, i: 'm-cursor' },
+    });
+
+    expect(listed.map((row) => row.id)).toEqual(['m-old']);
+    expect(sql.queries[0]?.text).toMatch(
+      /created_at < \$3 OR \(created_at = \$3 AND id < \$4\)/,
+    );
+    expect(sql.queries[0]?.text).toMatch(/ORDER BY created_at DESC, id DESC/);
+    expect(sql.queries[0]?.text).toMatch(/LIMIT \$2/);
+    expect(sql.queries[0]?.params).toEqual(['c1', 20, cursorAt, 'm-cursor']);
   });
 
   it('getMessageById returns undefined when no row matches', async () => {

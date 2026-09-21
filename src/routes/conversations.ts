@@ -16,11 +16,17 @@ import {
   type PublicConversation,
 } from '@/lib/conversation';
 import { notifyConversationMessage } from '@/lib/conversation-push';
-import type { ConversationStore } from '@/lib/conversation-store';
+import type { ConversationStore, ConversationThreadPageQuery } from '@/lib/conversation-store';
 import { logEvent } from '@/lib/log';
 import type { FetchFn } from '@/lib/lnurlp';
 import { requestZapInvoice } from '@/lib/lnurl-pay';
-import { MESSAGE_LIST_LIMIT, normalizeForumText, truncatePubkeyDisplay } from '@/lib/message';
+import {
+  decodeMessageFeedCursor,
+  encodeMessageFeedCursor,
+  MESSAGE_LIST_LIMIT,
+  normalizeForumText,
+  truncatePubkeyDisplay,
+} from '@/lib/message';
 import type {
   MessageInvoiceAttempt,
   MessageInvoiceResult,
@@ -537,6 +543,28 @@ export function conversationRoutes(deps: ConversationRouteDeps): Hono {
       if (sinceMessageId !== undefined && !CONVERSATION_ID_RE.test(sinceMessageId)) {
         return c.json({ error: 'Expected sinceMessageId to be a UUID' }, 400);
       }
+      const limitQuery = c.req.query('limit');
+      let limit: number;
+      if (limitQuery === undefined) {
+        limit = CONVERSATION_LIST_LIMIT;
+      } else if (/^\d+$/.test(limitQuery)) {
+        const n = Number(limitQuery);
+        if (n < 1 || n > CONVERSATION_LIST_LIMIT) {
+          return c.json({ error: 'Invalid limit' }, 400);
+        }
+        limit = n;
+      } else {
+        return c.json({ error: 'Invalid limit' }, 400);
+      }
+      const cursorQuery = c.req.query('cursor');
+      let cursor: ConversationThreadPageQuery['cursor'] = null;
+      if (cursorQuery !== undefined) {
+        const decoded = decodeMessageFeedCursor(cursorQuery);
+        if (decoded === null || decoded.k !== 't' || !CONVERSATION_ID_RE.test(decoded.i)) {
+          return c.json({ error: 'Invalid cursor' }, 400);
+        }
+        cursor = { c: new Date(decoded.c), i: decoded.i };
+      }
       try {
         const thread = await deps.store.getById(id);
         const platform = await platformAccount(deps.authStore);
@@ -554,21 +582,38 @@ export function conversationRoutes(deps: ConversationRouteDeps): Hono {
           }
           await sleep(pollMs);
         }
-        const rows = await deps.store.listMessages(id, CONVERSATION_LIST_LIMIT);
+        const rows = await deps.store.listThreadPage({
+          conversationId: id,
+          limit,
+          cursor: sinceMessageId === undefined ? cursor : null,
+        });
+        const messages = rows.map((row) =>
+          serializeConversationMessage(
+            row,
+            conversationFromMe({
+              senderAccountId: row.senderAccountId,
+              actorAccountId: row.actorAccountId ?? null,
+              viewerId: account.id,
+            }),
+            { staff: roleAtLeast(account.role, 'moderator') },
+          ),
+        );
+        const oldest = rows[0];
+        const nextCursor =
+          rows.length === limit && oldest !== undefined
+            ? encodeMessageFeedCursor({
+                k: 't',
+                c: oldest.createdAt.toISOString(),
+                i: oldest.id,
+              })
+            : undefined;
         return c.json(
-          {
-            messages: rows.map((row) =>
-              serializeConversationMessage(
-                row,
-                conversationFromMe({
-                  senderAccountId: row.senderAccountId,
-                  actorAccountId: row.actorAccountId ?? null,
-                  viewerId: account.id,
-                }),
-                { staff: roleAtLeast(account.role, 'moderator') },
-              ),
-            ),
-          },
+          nextCursor === undefined
+            ? { messages }
+            : {
+                messages,
+                nextCursor,
+              },
           200,
         );
       } catch {

@@ -17,6 +17,13 @@ import {
 import type { NostrPublishState } from '@/lib/message';
 import { normalizeSignedEvent } from '@/lib/nostr/publish';
 
+/** Keyset query for one messenger-style conversation page. */
+export type ConversationThreadPageQuery = {
+  conversationId: string;
+  limit: number;
+  cursor: { c: Date; i: string } | null;
+};
+
 /**
  * Persistence port for conversation threads and messages.
  */
@@ -189,6 +196,14 @@ export interface ConversationStore {
    * @param limit - Maximum rows.
    */
   listMessages(conversationId: string, limit: number): Promise<ConversationMessageRow[]>;
+
+  /**
+   * Newest page for a conversation, returned oldest-first within the page.
+   *
+   * @param query - Conversation, page size, and exclusive older cursor.
+   * @returns At most `limit` caller-owned message rows.
+   */
+  listThreadPage(query: ConversationThreadPageQuery): Promise<ConversationMessageRow[]>;
 
   /**
    * Persist a message and bump `lastMessageAt`. Duplicate message `id` or
@@ -712,6 +727,25 @@ export class InMemoryConversationStore implements ConversationStore {
       .filter((row) => row.conversationId === conversationId)
       .sort(compareMessagesOldestFirst)
       .slice(0, limit)
+      .map((row) => copyMessage(row));
+    return Promise.resolve(listed);
+  }
+
+  listThreadPage(query: ConversationThreadPageQuery): Promise<ConversationMessageRow[]> {
+    const listed = this.#messages
+      .filter((row) => {
+        if (row.conversationId !== query.conversationId) {
+          return false;
+        }
+        if (query.cursor === null) {
+          return true;
+        }
+        const byTime = row.createdAt.getTime() - query.cursor.c.getTime();
+        return byTime < 0 || (byTime === 0 && row.id.localeCompare(query.cursor.i) < 0);
+      })
+      .sort(compareMessagesNewestFirst)
+      .slice(0, query.limit)
+      .reverse()
       .map((row) => copyMessage(row));
     return Promise.resolve(listed);
   }
@@ -1240,6 +1274,29 @@ export class PostgresConversationStore implements ConversationStore {
       [conversationId, limit],
     );
     return rows.map((row) => mapMessage(row));
+  }
+
+  async listThreadPage(query: ConversationThreadPageQuery): Promise<ConversationMessageRow[]> {
+    const rows =
+      query.cursor === null
+        ? await this.#sql.query<ConversationMessageSqlRow>(
+            `SELECT ${MESSAGE_SELECT}
+             FROM conversation_message
+             WHERE conversation_id = $1
+             ORDER BY created_at DESC, id DESC
+             LIMIT $2`,
+            [query.conversationId, query.limit],
+          )
+        : await this.#sql.query<ConversationMessageSqlRow>(
+            `SELECT ${MESSAGE_SELECT}
+             FROM conversation_message
+             WHERE conversation_id = $1
+               AND (created_at < $3 OR (created_at = $3 AND id < $4))
+             ORDER BY created_at DESC, id DESC
+             LIMIT $2`,
+            [query.conversationId, query.limit, query.cursor.c, query.cursor.i],
+          );
+    return rows.slice().reverse().map(mapMessage);
   }
 
   async appendMessage(row: ConversationMessageRow): Promise<ConversationMessageRow> {
