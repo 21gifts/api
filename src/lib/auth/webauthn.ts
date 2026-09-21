@@ -231,10 +231,7 @@ export class SimpleWebAuthnPasskeyCeremony implements PasskeyCeremony {
  */
 function ensurePrfExtension<
   T extends PublicKeyCredentialCreationOptionsJSON | PublicKeyCredentialRequestOptionsJSON,
->(
-  options: T,
-  prf: Record<string, never> | { eval: { first: string } },
-): T {
+>(options: T, prf: Record<string, never> | { eval: { first: string } }): T {
   Object.assign(options, { extensions: { ...options.extensions, prf } });
   return options;
 }
