@@ -21,11 +21,14 @@ import { logEvent } from '@/lib/log';
 import type { FetchFn } from '@/lib/lnurlp';
 import { requestZapInvoice } from '@/lib/lnurl-pay';
 import {
+  decodeForumPhoto,
   decodeMessageFeedCursor,
   encodeMessageFeedCursor,
+  forumPhotoResponse,
   MESSAGE_LIST_LIMIT,
   normalizeForumText,
   truncatePubkeyDisplay,
+  type ForumPhoto,
 } from '@/lib/message';
 import type {
   MessageInvoiceAttempt,
@@ -87,8 +90,34 @@ export interface ConversationRouteDeps {
 }
 
 const CONVERSATION_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const CONVERSATION_PHOTO_FILE_RE = /^([1-9])\.(jpg|jpeg|png|webp)$/;
 
-const textBody = z.object({ text: z.string() });
+const conversationMessageBody = z
+  .object({
+    text: z.string().optional(),
+    photo: z
+      .object({
+        contentType: z.string(),
+        data: z.string(),
+      })
+      .optional(),
+    photos: z
+      .array(
+        z.object({
+          contentType: z.string(),
+          data: z.string(),
+        }),
+      )
+      .max(10)
+      .optional(),
+    video: z.never().optional(),
+  })
+  .refine(
+    (body) =>
+      body.text !== undefined ||
+      body.photo !== undefined ||
+      (Array.isArray(body.photos) && body.photos.length > 0),
+  );
 const forumMessageBody = z.object({ forumMessageId: z.string() });
 const invoiceBody = z.object({ sats: z.number().int().positive(), text: z.string().optional() });
 const defaultInvoiceLimiter = new InvoiceRateLimiter();
@@ -351,12 +380,70 @@ async function publicThread(
 }
 
 /**
+ * Authenticated photo bytes for a conversation message still.
+ *
+ * Same handler for `/photo` (index 0) and `/photo/:file` (indices 1–9).
+ * Bearer + canAccess; bytes are never public. Index 0 is `/photo` only
+ * (no Damus `.jpg` aliases).
+ *
+ * @param deps - Conversation collaborators.
+ * @param conversationId - Path conversation id.
+ * @param messageId - Path message id.
+ * @param header - Authorization header (Bearer session).
+ * @param index - Extra still index (1–9). Omitted = photo 0 (`getPhoto`).
+ * @returns 200 bytes, 401, 404, or 503.
+ */
+async function serveConversationPhoto(
+  deps: ConversationRouteDeps,
+  conversationId: string,
+  messageId: string,
+  header: string | undefined,
+  index?: number,
+): Promise<Response> {
+  const account = await authedAccount(deps, header);
+  if (account === null) {
+    return Response.json({ error: 'Unauthorized' }, { status: 401 });
+  }
+  if (!CONVERSATION_ID_RE.test(conversationId)) {
+    return Response.json({ error: 'Not found' }, { status: 404 });
+  }
+  if (!CONVERSATION_ID_RE.test(messageId)) {
+    return Response.json({ error: 'Photo not found' }, { status: 404 });
+  }
+  try {
+    const thread = await deps.store.getById(conversationId);
+    const platform = await platformAccount(deps.authStore);
+    if (thread === undefined || !canAccess(thread, account, platform?.id ?? null)) {
+      return Response.json({ error: 'Not found' }, { status: 404 });
+    }
+    const row = await deps.store.getMessageById(messageId);
+    if (row === undefined || row.conversationId !== conversationId) {
+      return Response.json({ error: 'Photo not found' }, { status: 404 });
+    }
+    const photo =
+      index === undefined
+        ? await deps.store.getPhoto(messageId)
+        : await deps.store.getExtraPhoto(messageId, index);
+    if (photo === null) {
+      return Response.json({ error: 'Photo not found' }, { status: 404 });
+    }
+    const res = forumPhotoResponse(photo);
+    res.headers.set('Cache-Control', 'private, no-store');
+    res.headers.delete('Access-Control-Allow-Origin');
+    return res;
+  } catch {
+    logEvent('conversations.photo.failed');
+    return Response.json({ error: 'Conversations are unavailable' }, { status: 503 });
+  }
+}
+
+/**
  * Build the `/conversations` route group. `GET /` lists the inbox and never
  * pins `moderator_group`; `GET /moderator-group` is the closed-group tool
- * for anyone at least moderator.
+ * for anyone at least moderator. Photo GET routes register before `GET /:id`.
  *
  * @param deps - Stores, clock, optional spend ping, invoice collaborators, wait injects, and optional push and notification stores.
- * @returns A Hono app with list/open/read/reply/invoice routes and GET `/moderator-group`.
+ * @returns A Hono app with list/open/read/reply/invoice/photo routes and GET `/moderator-group`.
  */
 export function conversationRoutes(deps: ConversationRouteDeps): Hono {
   const invoiceLimiter = deps.invoiceLimiter ?? defaultInvoiceLimiter;
@@ -530,6 +617,30 @@ export function conversationRoutes(deps: ConversationRouteDeps): Hono {
         return c.json({ error: 'Conversations are unavailable' }, 503);
       }
     })
+    .get('/:id/messages/:messageId/photo/:file', async (c) => {
+      if ((await authedAccount(deps, c.req.header('authorization'))) === null) {
+        return c.json({ error: 'Unauthorized' }, 401);
+      }
+      const match = CONVERSATION_PHOTO_FILE_RE.exec(c.req.param('file'));
+      if (match === null) {
+        return c.json({ error: 'Photo not found' }, 404);
+      }
+      return serveConversationPhoto(
+        deps,
+        c.req.param('id'),
+        c.req.param('messageId'),
+        c.req.header('authorization'),
+        Number(match[1]),
+      );
+    })
+    .get('/:id/messages/:messageId/photo', async (c) =>
+      serveConversationPhoto(
+        deps,
+        c.req.param('id'),
+        c.req.param('messageId'),
+        c.req.header('authorization'),
+      ),
+    )
     .get('/:id', async (c) => {
       const account = await authedAccount(deps, c.req.header('authorization'));
       if (account === null) {
@@ -652,19 +763,63 @@ export function conversationRoutes(deps: ConversationRouteDeps): Hono {
       if (!CONVERSATION_ID_RE.test(id)) {
         return c.json({ error: 'Not found' }, 404);
       }
-      const parsed = textBody.safeParse(await c.req.json().catch(() => null));
-      if (!parsed.success) {
-        return c.json({ error: 'Expected a JSON body with a "text" string' }, 400);
+      const raw: unknown = await c.req.json().catch(() => null);
+      if (
+        raw !== null &&
+        typeof raw === 'object' &&
+        Array.isArray((raw as { photos?: unknown }).photos) &&
+        (raw as { photos: unknown[] }).photos.length > 10
+      ) {
+        return c.json({ error: 'At most 10 photos' }, 400);
       }
-      const text = normalizeForumText(parsed.data.text);
-      if (text === null || text === '') {
+      const parsed = conversationMessageBody.safeParse(raw);
+      if (!parsed.success) {
+        return c.json({ error: 'Expected a JSON body with text and/or photo' }, 400);
+      }
+      const text = normalizeForumText(parsed.data.text ?? '');
+      if (text === null) {
         return c.json({ error: 'Text must be 1–500 characters' }, 400);
+      }
+      let photo: ForumPhoto | undefined;
+      let extraPhotos: ForumPhoto[] = [];
+      const gallery = parsed.data.photos;
+      if (gallery !== undefined && gallery.length > 0) {
+        const decodedGallery: ForumPhoto[] = [];
+        for (const item of gallery) {
+          const decoded = decodeForumPhoto(item.contentType, item.data);
+          if (decoded === null) {
+            return c.json({ error: 'Photo must be a JPEG, PNG, or WebP under 1 MiB' }, 400);
+          }
+          decodedGallery.push(decoded);
+        }
+        const [first, ...rest] = decodedGallery;
+        /* v8 ignore next 3 -- gallery.length > 0 after successful decode */
+        if (first === undefined) {
+          return c.json({ error: 'Photo must be a JPEG, PNG, or WebP under 1 MiB' }, 400);
+        }
+        photo = first;
+        extraPhotos = rest;
+      } else if (parsed.data.photo !== undefined) {
+        const decoded = decodeForumPhoto(parsed.data.photo.contentType, parsed.data.photo.data);
+        if (decoded === null) {
+          return c.json({ error: 'Photo must be a JPEG, PNG, or WebP under 1 MiB' }, 400);
+        }
+        photo = decoded;
       }
       try {
         const thread = await deps.store.getById(id);
         const platform = await platformAccount(deps.authStore);
         if (thread === undefined || !canAccess(thread, account, platform?.id ?? null)) {
           return c.json({ error: 'Not found' }, 404);
+        }
+        if (thread.kind !== 'moderator_group' && photo !== undefined) {
+          return c.json({ error: 'Photos are only allowed in the Moderators group' }, 400);
+        }
+        if (thread.kind === 'moderator_group' && text === '' && photo === undefined) {
+          return c.json({ error: 'Text must be 1–500 characters or include a photo' }, 400);
+        }
+        if (thread.kind !== 'moderator_group' && text === '') {
+          return c.json({ error: 'Text must be 1–500 characters' }, 400);
         }
         const staffOnPlatform =
           thread.kind !== 'moderator_group' &&
@@ -680,30 +835,34 @@ export function conversationRoutes(deps: ConversationRouteDeps): Hono {
           return c.json({ error: 'Set a name before posting' }, 400);
         }
         const actorName = account.name?.trim() ?? '';
-        const created = await deps.store.appendMessage({
-          id: crypto.randomUUID(),
-          conversationId: thread.id,
-          text,
-          createdAt: new Date(deps.now()),
-          senderAccountId: sender.id,
-          senderPubkey: (await deps.authStore.getNostrPublicKey(sender.id)) ?? null,
-          name: senderName !== '' ? senderName : '21.gifts',
-          ...(thread.kind === 'moderator_group'
-            ? {
-                sats: 0,
-                eventId: null,
-                nostrPublishState: 'skipped' as const,
-                nostrEvent: null,
-                claimedUntil: null,
-                actorAccountId: account.id,
-                actorName,
-              }
-            : {
-                ...unsignedConversationDefaults(),
-                actorAccountId: account.id,
-                actorName,
-              }),
-        });
+        const created = await deps.store.appendMessage(
+          {
+            id: crypto.randomUUID(),
+            conversationId: thread.id,
+            text,
+            createdAt: new Date(deps.now()),
+            senderAccountId: sender.id,
+            senderPubkey: (await deps.authStore.getNostrPublicKey(sender.id)) ?? null,
+            name: senderName !== '' ? senderName : '21.gifts',
+            ...(thread.kind === 'moderator_group'
+              ? {
+                  sats: 0,
+                  eventId: null,
+                  nostrPublishState: 'skipped' as const,
+                  nostrEvent: null,
+                  claimedUntil: null,
+                  actorAccountId: account.id,
+                  actorName,
+                }
+              : {
+                  ...unsignedConversationDefaults(),
+                  actorAccountId: account.id,
+                  actorName,
+                }),
+          },
+          photo,
+          extraPhotos.length > 0 ? extraPhotos : undefined,
+        );
         if (thread.kind === 'moderator_group') {
           try {
             const address = account.lightningAddress?.trim() ?? '';

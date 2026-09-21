@@ -42,6 +42,14 @@ class MockSql implements SqlClient {
 }
 
 const NOW = new Date('2026-08-29T12:00:00.000Z');
+const JPEG = {
+  contentType: 'image/jpeg' as const,
+  bytes: new Uint8Array([0xff, 0xd8, 0xff, 0xd9]),
+};
+const JPEG2 = {
+  contentType: 'image/jpeg' as const,
+  bytes: new Uint8Array([0xff, 0xd8, 0xff, 0x00]),
+};
 
 function thread(partial: Partial<ConversationThread> = {}): ConversationThread {
   return {
@@ -98,7 +106,7 @@ function sqlMessage(id: string, createdAt: Date): Record<string, unknown> {
 describe('CONVERSATION_SCHEMA_SQL', () => {
   it('creates conversation tables and unique indexes', () => {
     const joined = CONVERSATION_SCHEMA_SQL.join('\n');
-    expect(CONVERSATION_SCHEMA_SQL).toHaveLength(21);
+    expect(CONVERSATION_SCHEMA_SQL).toHaveLength(24);
     expect(joined).toMatch(/CREATE TABLE IF NOT EXISTS conversation/i);
     expect(joined).toMatch(/CREATE TABLE IF NOT EXISTS conversation_message/i);
     expect(joined).toMatch(/actor_account_id/);
@@ -108,6 +116,9 @@ describe('CONVERSATION_SCHEMA_SQL', () => {
     );
     expect(joined).not.toMatch(/gift_for_message_id uuid REFERENCES/);
     expect(joined).toMatch(/CREATE TABLE IF NOT EXISTS conversation_read/i);
+    expect(joined).toMatch(/conversation_message_extra_photo/);
+    expect(joined).toMatch(/photo bytea/);
+    expect(joined).toMatch(/photo_content_type/);
     expect(joined).toMatch(/conversation_read_conversation_id_idx/);
     expect(joined).toMatch(/conversation_member_member_uidx/);
     expect(joined).toMatch(/conversation_member_platform_uidx/);
@@ -302,6 +313,89 @@ describe('InMemoryConversationStore', () => {
     );
     expect(second.id).toBe(first.id);
     expect(await store.listMessages(opened.id, 10)).toHaveLength(1);
+  });
+
+  it('seeded rows without photoCount keep hasPhoto as a still count of 1', async () => {
+    const legacy = message({ id: 'legacy-photo', conversationId: 'c-1', hasPhoto: true });
+    delete (legacy as { photoCount?: number }).photoCount;
+    const store = new InMemoryConversationStore([thread()], [legacy]);
+    const rows = await store.listMessages('c-1', 10);
+    expect(rows[0]?.hasPhoto).toBe(true);
+    expect(rows[0]?.photoCount).toBe(1);
+  });
+
+  it('append without photos is hasPhoto false and getPhoto null', async () => {
+    const store = new InMemoryConversationStore();
+    const opened = await store.openMemberMember('a', 'b', NOW);
+    const created = await store.appendMessage(message({ conversationId: opened.id }));
+    expect(created.hasPhoto).toBe(false);
+    expect(created.photoCount).toBe(0);
+    expect(await store.getPhoto(created.id)).toBeNull();
+  });
+
+  it('append with JPEG copies photo 0 so callers cannot mutate the store', async () => {
+    const store = new InMemoryConversationStore();
+    const opened = await store.openMemberMember('a', 'b', NOW);
+    const created = await store.appendMessage(message({ conversationId: opened.id }), JPEG);
+    expect(created.hasPhoto).toBe(true);
+    expect(created.photoCount).toBe(1);
+    const copy = await store.getPhoto(created.id);
+    expect(copy).toEqual(JPEG);
+    if (copy !== null) {
+      copy.bytes[0] = 0;
+    }
+    expect((await store.getPhoto(created.id))?.bytes[0]).toBe(0xff);
+    expect(await store.getExtraPhoto(created.id, 1)).toBeNull();
+  });
+
+  it('append with JPEG plus extras stores photoCount 2', async () => {
+    const store = new InMemoryConversationStore();
+    const opened = await store.openMemberMember('a', 'b', NOW);
+    const created = await store.appendMessage(message({ conversationId: opened.id }), JPEG, [
+      JPEG2,
+    ]);
+    expect(created.photoCount).toBe(2);
+    expect(await store.getExtraPhoto(created.id, 1)).toEqual(JPEG2);
+    expect(await store.getExtraPhoto(created.id, 0)).toBeNull();
+    expect(await store.getExtraPhoto(created.id, 10)).toBeNull();
+  });
+
+  it('throws when extras are set without photo 0', async () => {
+    const store = new InMemoryConversationStore();
+    const opened = await store.openMemberMember('a', 'b', NOW);
+    await expect(
+      store.appendMessage(message({ conversationId: opened.id }), undefined, [JPEG2]),
+    ).rejects.toThrow('extra photos require photo 0');
+  });
+
+  it('throws when more than 9 extra photos are given', async () => {
+    const store = new InMemoryConversationStore();
+    const opened = await store.openMemberMember('a', 'b', NOW);
+    const extras = Array.from({ length: 10 }, () => JPEG2);
+    await expect(
+      store.appendMessage(message({ conversationId: opened.id }), JPEG, extras),
+    ).rejects.toThrow('at most 9 extra photos');
+  });
+
+  it('duplicate id after a photo-less insert does not store extras', async () => {
+    const store = new InMemoryConversationStore();
+    const opened = await store.openMemberMember('a', 'b', NOW);
+    const first = await store.appendMessage(message({ id: 'm-dup', conversationId: opened.id }));
+    const second = await store.appendMessage(
+      message({ id: 'm-dup', conversationId: opened.id, text: 'other' }),
+      JPEG,
+      [JPEG2],
+    );
+    expect(second.text).toBe(first.text);
+    expect(second.hasPhoto).toBe(false);
+    expect(await store.getPhoto('m-dup')).toBeNull();
+    expect(await store.getExtraPhoto('m-dup', 1)).toBeNull();
+  });
+
+  it('getPhoto and getExtraPhoto return null for an unknown id', async () => {
+    const store = new InMemoryConversationStore();
+    expect(await store.getPhoto('missing')).toBeNull();
+    expect(await store.getExtraPhoto('missing', 1)).toBeNull();
   });
 
   it('lists visible own threads and staff platform threads newest first', async () => {
@@ -1714,5 +1808,124 @@ describe('PostgresConversationStore', () => {
     await expect(
       new PostgresConversationStore(sql).openMemberMember('a', 'b', NOW),
     ).rejects.toThrow('insert boom');
+  });
+
+  it('MESSAGE_SELECT includes computed has_photo and photo_count without listing photo bytea', async () => {
+    const sql = new MockSql();
+    sql.nextRows = [];
+    const store = new PostgresConversationStore(sql);
+    await store.getMessageById('m1');
+    await store.listMessages('c1', 10);
+    for (const query of sql.queries) {
+      expect(query.text).toMatch(/has_photo/);
+      expect(query.text).toMatch(/photo_count/);
+      expect(query.text).not.toMatch(/photo bytea/);
+    }
+  });
+
+  it('appendMessage with JPEG binds photo params and extras insert', async () => {
+    const sql = new MockSql();
+    const store = new PostgresConversationStore(sql);
+    const row = message();
+    await store.appendMessage(row, JPEG, [JPEG2]);
+    expect(sql.executes[0]?.params[12]).toBe(row.actorAccountId ?? null);
+    expect(sql.executes[0]?.params[13]).toBe(row.actorName ?? '');
+    expect(sql.executes[0]?.params[14]).toBe(row.giftForMessageId ?? null);
+    expect(sql.executes[0]?.params[15]).toEqual(JPEG.bytes);
+    expect(sql.executes[0]?.params[16]).toBe(JPEG.contentType);
+    expect(sql.executes[1]?.text).toMatch(/conversation_message_extra_photo/);
+    expect(sql.executes[1]?.params).toEqual([row.id, 1, JPEG2.bytes, JPEG2.contentType]);
+  });
+
+  it('appendMessage throws extras without photo 0 and more than 9 extras', async () => {
+    const sql = new MockSql();
+    const store = new PostgresConversationStore(sql);
+    await expect(store.appendMessage(message(), undefined, [JPEG2])).rejects.toThrow(
+      'extra photos require photo 0',
+    );
+    await expect(
+      store.appendMessage(
+        message(),
+        JPEG,
+        Array.from({ length: 10 }, () => JPEG2),
+      ),
+    ).rejects.toThrow('at most 9 extra photos');
+    expect(sql.executes).toEqual([]);
+  });
+
+  it('appendMessage deletes the message when an extra INSERT fails', async () => {
+    const extraError = new Error('extra insert boom');
+    const sql = new MockSql();
+    const execute = sql.execute.bind(sql);
+    sql.execute = async (text: string, params: readonly unknown[] = []): Promise<void> => {
+      await execute(text, params);
+      if (/INSERT INTO conversation_message_extra_photo/.test(text)) {
+        throw extraError;
+      }
+    };
+    await expect(
+      new PostgresConversationStore(sql).appendMessage(message(), JPEG, [JPEG2]),
+    ).rejects.toBe(extraError);
+    expect(sql.executes.some((item) => /DELETE FROM conversation_message/.test(item.text))).toBe(
+      true,
+    );
+  });
+
+  it('getPhoto maps bytea, number[], empty, null photo, missing type, and gif type', async () => {
+    const sql = new MockSql();
+    const store = new PostgresConversationStore(sql);
+    sql.nextRows = [{ photo: JPEG.bytes, photo_content_type: 'image/jpeg' }];
+    expect(await store.getPhoto('m1')).toEqual(JPEG);
+    expect(sql.queries[0]?.text).toMatch(
+      /SELECT photo, photo_content_type FROM conversation_message WHERE id = \$1/,
+    );
+    sql.nextRows = [{ photo: [0xff, 0xd8, 0xff, 0xd9], photo_content_type: 'image/jpeg' }];
+    expect(await store.getPhoto('m1')).toEqual(JPEG);
+    sql.nextRows = [];
+    expect(await store.getPhoto('missing')).toBeNull();
+    sql.nextRows = [{ photo: null, photo_content_type: 'image/jpeg' }];
+    expect(await store.getPhoto('m1')).toBeNull();
+    sql.nextRows = [{ photo: JPEG.bytes, photo_content_type: null }];
+    expect(await store.getPhoto('m1')).toBeNull();
+    sql.nextRows = [{ photo: JPEG.bytes, photo_content_type: 'image/gif' }];
+    expect(await store.getPhoto('m1')).toBeNull();
+  });
+
+  it('getPhoto query throw propagates', async () => {
+    const sql = new MockSql();
+    sql.queryError = new Error('photo boom');
+    await expect(new PostgresConversationStore(sql).getPhoto('m1')).rejects.toThrow('photo boom');
+  });
+
+  it('getExtraPhoto maps bytea, number[], empty, null photo, missing type, and gif type', async () => {
+    const sql = new MockSql();
+    const store = new PostgresConversationStore(sql);
+    expect(await store.getExtraPhoto('m1', 0)).toBeNull();
+    expect(await store.getExtraPhoto('m1', 10)).toBeNull();
+    expect(sql.queries).toEqual([]);
+    sql.nextRows = [{ photo: JPEG2.bytes, photo_content_type: 'image/jpeg' }];
+    expect(await store.getExtraPhoto('m1', 1)).toEqual(JPEG2);
+    expect(sql.queries[0]?.text).toMatch(
+      /SELECT photo, photo_content_type FROM conversation_message_extra_photo WHERE message_id = \$1 AND idx = \$2/,
+    );
+    expect(sql.queries[0]?.params).toEqual(['m1', 1]);
+    sql.nextRows = [{ photo: [0xff, 0xd8, 0xff, 0x00], photo_content_type: 'image/jpeg' }];
+    expect(await store.getExtraPhoto('m1', 1)).toEqual(JPEG2);
+    sql.nextRows = [];
+    expect(await store.getExtraPhoto('m1', 1)).toBeNull();
+    sql.nextRows = [{ photo: null, photo_content_type: 'image/jpeg' }];
+    expect(await store.getExtraPhoto('m1', 1)).toBeNull();
+    sql.nextRows = [{ photo: JPEG2.bytes, photo_content_type: null }];
+    expect(await store.getExtraPhoto('m1', 1)).toBeNull();
+    sql.nextRows = [{ photo: JPEG2.bytes, photo_content_type: 'image/gif' }];
+    expect(await store.getExtraPhoto('m1', 1)).toBeNull();
+  });
+
+  it('getExtraPhoto query throw propagates', async () => {
+    const sql = new MockSql();
+    sql.queryError = new Error('extra photo boom');
+    await expect(new PostgresConversationStore(sql).getExtraPhoto('m1', 1)).rejects.toThrow(
+      'extra photo boom',
+    );
   });
 });

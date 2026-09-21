@@ -196,11 +196,29 @@ describe('serializeConversationMessage', () => {
       createdAt: '2026-08-29T13:00:00.000Z',
       fromMe: false,
       sats: 0,
+      hasPhoto: false,
+      photoCount: 0,
       accountId: 'acc-a',
     });
     expect(json).not.toHaveProperty('eventId');
     expect(json).not.toHaveProperty('senderAccountId');
     expect(json).not.toHaveProperty('senderPubkey');
+    expect(json).not.toHaveProperty('bytes');
+    expect(json).not.toHaveProperty('photo');
+  });
+
+  it('defaults omitted photoCount to 1 when hasPhoto is true', () => {
+    expect(serializeConversationMessage({ ...ROW, hasPhoto: true }, false)).toMatchObject({
+      hasPhoto: true,
+      photoCount: 1,
+    });
+  });
+
+  it('defaults omitted hasPhoto and photoCount to false and 0', () => {
+    expect(serializeConversationMessage(ROW, false)).toMatchObject({
+      hasPhoto: false,
+      photoCount: 0,
+    });
   });
 
   it('omits accountId when senderAccountId is null', () => {

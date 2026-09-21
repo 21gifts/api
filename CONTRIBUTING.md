@@ -57,7 +57,7 @@ api/
 │   │   ├── messages.ts       # GET/POST /messages, public GET /messages/:id, GET /messages/hidden (session, not DEBUG_TOKEN), DELETE /messages/:id, GET /messages/:id/replies, GET /messages/:id/photo, GET /messages/:id/video.*, POST /messages/:id/invoice
 │   │   ├── well-known.ts     # GET /.well-known/nostr.json (NIP-05); GET /.well-known/lnurlp/:username (LUD-16)
 │   │   ├── contact.ts        # POST /contact (private mailbox + platform thread)
-│   │   ├── conversations.ts  # GET/POST /conversations, GET /conversations/moderator-group, GET/POST /conversations/:id, POST /conversations/:id/read, POST /conversations/:id/invoice
+│   │   ├── conversations.ts  # GET/POST /conversations, GET /conversations/moderator-group, GET/POST /conversations/:id, POST /conversations/:id/read, POST /conversations/:id/invoice, GET /conversations/:id/messages/:messageId/photo, GET /conversations/:id/messages/:messageId/photo/:file
 │   │   └── notifications.ts  # GET /notifications, POST /notifications/read-all, POST /notifications/:id/read
 │   ├── lib/
 │   │   ├── meta.ts           # Service constants (name, version, repo URL)
@@ -78,7 +78,7 @@ api/
 │   │   ├── trust-store.ts    # TrustStore port, InMemoryTrustStore, PostgresTrustStore, TRUST_SCHEMA_SQL
 │   │   ├── funding.ts        # Funding-grant types, utcDayKey, effectiveStatus, eligibleToday, serializeOwnerFunding, fundingReviewedAt, expiredTrialAsPending
 │   │   ├── funding-store.ts  # FundingStore port, InMemoryFundingStore, PostgresFundingStore, FUNDING_SCHEMA_SQL, loadGrantEffective
-│   │   ├── conversation.ts   # PN public JSON (optional counterpart/sender accountId; no eventId / npub)
+│   │   ├── conversation.ts   # PN public JSON (optional counterpart/sender accountId; hasPhoto/photoCount; no eventId / npub / bytes)
 │   │   ├── api-log.ts        # HTTP audit log store (`api_log`)
 │   │   ├── request-auth.ts   # Classify bearer for api_log (session/debug/spend/none)
 │   │   ├── conversation-store.ts  # ConversationStore port, memory + Postgres
@@ -252,7 +252,7 @@ api/
 │   ├── usd_fiat_daily.sql    # UTC daily USD→CHF/EUR/PHP ECB crosses
 │   ├── message.sql           # message + nostr_zap_receipt + nostr_zapper + nostr_blocked_pubkey + nostr_zap_payment + message_invoice + nostr_zap_ingest + message_extra_photo
 │   ├── contact.sql           # private contact mailbox table for POST /contact
-│   ├── conversation.sql      # PN threads + messages + conversation_read (per-viewer last-read; member/platform/Damus; closed moderator_group singleton, HTTP-only / skipped Nostr)
+│   ├── conversation.sql      # PN threads + messages + conversation_read (per-viewer last-read; member/platform/Damus; closed moderator_group singleton, HTTP-only / skipped Nostr) + conversation_message.photo / photo_content_type + conversation_message_extra_photo
 │   ├── api_log.sql           # HTTP audit log (who called which path)
 │   ├── push.sql              # push_subscription + push_outbox
 │   ├── notification.sql      # in-app Notifications rows (`forum_post`, `forum_reply`, `zap`)
