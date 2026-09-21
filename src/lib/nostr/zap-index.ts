@@ -793,7 +793,8 @@ export async function indexZapReceipt(args: {
  * @param args - Store, auth, querier, relay urls, timeout, clock, fetch;
  *   optional `pushStore`, `notificationStore`, and `conversations` (PN
  *   invoices append here; omitted → `rejected`/`conversation`); optional
- *   `spendPing` and `postLimiter` for platform-note compose.
+ *   `spendPing`, `postLimiter`, and `fundingStore` for platform-note compose
+ *   (`spendPing` only when `eligibleToday`, same gate as `POST /messages`).
  * @returns Resolves when the tick's ingest pass finishes.
  * @throws Propagates relay-query and unguarded store failures.
  */
@@ -949,6 +950,7 @@ async function ingestOneReceipt(
     conversations?: ConversationStore;
     spendPing?: SpendPing;
     postLimiter?: PostRateLimiter;
+    fundingStore?: FundingStore;
   },
 ): Promise<void> {
   if (event.kind !== 9735) {

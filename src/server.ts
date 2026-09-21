@@ -248,7 +248,7 @@ function debugList(store: object, limit: number): Promise<unknown[]> {
  *   gift recorder, BTC-USD rates, USD-fiat rates, message store, contact store,
  *   conversation store, notification store, push store, trust store,
  *   funding store (injected into `/funding`, `/me`, `/auth`, `/members`,
- *   `/messages`, `/conversations`, and `/invoices`), vapidPublicKey, nostrKek,
+ *   `/messages`, `/conversations`, `/invoices`, and `debugPaymentsRoutes`), vapidPublicKey, nostrKek,
  *   nostrPublisher, env, WebAuthn RP, spend token, spend ping, postLimiter
  *   (optional; default `new PostRateLimiter()`, shared with `messagesRoutes`
  *   and the Nostr worker), gift invoice store, and listDbChange.
