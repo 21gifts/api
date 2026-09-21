@@ -422,6 +422,7 @@ describe('pendingModeratorProposals', () => {
     ];
     expect(pendingModeratorProposals([subject, actor], edges)).toEqual([
       {
+        id: 'p1',
         subject: { id: 's', name: 'Ada', role: 'verified' },
         proposedBy: { id: 'm', name: 'Mod' },
         createdAt: 10,
@@ -441,6 +442,7 @@ describe('pendingModeratorProposals', () => {
     });
     expect(pendingModeratorProposals([subject, actor], [propose])).toEqual([
       {
+        id: 'p1',
         subject: { id: 's', name: null, role: 'verified' },
         proposedBy: { id: 'm', name: 'Mod' },
         createdAt: 10,
@@ -492,6 +494,7 @@ describe('pendingModeratorProposals', () => {
     });
     expect(pendingModeratorProposals([subject], [propose])).toEqual([
       {
+        id: 'p1',
         subject: { id: 's', name: 'Ada', role: 'verified' },
         proposedBy: { id: 'missing', name: null },
         createdAt: 4,
@@ -571,6 +574,7 @@ describe('pendingModeratorProposals', () => {
     ];
     expect(pendingModeratorProposals([subject, ada, bob], edges)).toEqual([
       {
+        id: 'p-new',
         subject: { id: 's', name: 'Ada', role: 'verified' },
         proposedBy: { id: 'bob', name: 'Bob' },
         createdAt: 2,
@@ -636,6 +640,7 @@ describe('pendingModeratorProposals', () => {
       pendingModeratorProposals([subject, first, second], [propose1, reject, propose3]),
     ).toEqual([
       {
+        id: 'p3',
         subject: { id: 's', name: 'Ada', role: 'verified' },
         proposedBy: { id: 'f', name: 'Founder' },
         createdAt: 3,

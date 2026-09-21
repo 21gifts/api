@@ -117,6 +117,7 @@ export function trustRoutes(deps: TrustRouteDeps): Hono {
           deps.trustStore.listEdges(),
         ]);
         const proposals = pendingModeratorProposals(accounts, edges).map((row) => ({
+          id: row.id,
           subject: row.subject,
           proposedBy: row.proposedBy,
           createdAt: new Date(row.createdAt).toISOString(),
@@ -279,6 +280,7 @@ export function trustRoutes(deps: TrustRouteDeps): Hono {
       logEvent('trust.moderator_proposed', { subjectId: subject.id, actorId: caller.id });
       await clearModeratorProposalNotifications(deps, subject.id);
       await notifyStaffProposed(deps, subject, caller);
+      await reconcileOpenProposalNotifications(deps, subject, created.id);
       return c.json(accountSummary(subject), 200);
     })
     .post('/confirm-moderator', async (c) => {
@@ -356,11 +358,7 @@ export function trustRoutes(deps: TrustRouteDeps): Hono {
       try {
         const after = await deps.trustStore.listEdgesForSubject(subject.id);
         const oldest = oldestOpenPropose(openProposesForSubject(after, subject.id));
-        if (
-          oldest === undefined ||
-          oldest.createdAt !== pending.createdAt ||
-          oldest.actorId !== pending.proposedBy.id
-        ) {
+        if (oldest === undefined || oldest.id !== pending.id) {
           await deps.trustStore.deleteEdgeById(created.id);
           return c.json({ error: 'Conflict' }, 409);
         }
@@ -450,12 +448,7 @@ export function trustRoutes(deps: TrustRouteDeps): Hono {
         }
         const beforePending = pendingModeratorProposals([subject], existing)[0];
         const open = still[0];
-        if (
-          beforePending !== undefined &&
-          open !== undefined &&
-          open.createdAt === beforePending.createdAt &&
-          open.proposedBy.id === beforePending.proposedBy.id
-        ) {
+        if (beforePending !== undefined && open !== undefined && open.id === beforePending.id) {
           await deps.trustStore.deleteEdgeById(created.id);
           return c.json({ error: 'Conflict' }, 409);
         }
@@ -564,14 +557,14 @@ async function clearModeratorProposalNotifications(
 async function notifyStaffProposed(
   deps: TrustRouteDeps,
   subject: Account,
-  caller: Account,
+  actor: { id: string; name: string | null },
 ): Promise<void> {
   try {
     const recipients = await deps.authStore.listAccounts();
     await notifyModeratorProposed({
       recipients,
       subject: { id: subject.id, name: subject.name },
-      actor: { id: caller.id, name: caller.name },
+      actor: { id: actor.id, name: actor.name },
       nowMs: deps.now(),
       ...(deps.notificationStore === undefined ? {} : { notifications: deps.notificationStore }),
       ...(deps.pushStore === undefined ? {} : { pushStore: deps.pushStore }),
@@ -580,6 +573,32 @@ async function notifyStaffProposed(
         ? {}
         : { inboxUnreadCount: inboxUnreadCountFor(deps.conversationStore, deps.authStore) }),
     });
+  } catch {
+    logEvent('push.enqueue.failed');
+  }
+}
+
+/**
+ * After propose notify, drop stale rows when this insert is no longer
+ * pending. If a newer propose already reopened, fan out for that actor.
+ * Persist is already 200; list/notify throw stays 200.
+ */
+async function reconcileOpenProposalNotifications(
+  deps: TrustRouteDeps,
+  subject: Account,
+  proposeId: string,
+): Promise<void> {
+  try {
+    const after = await deps.trustStore.listEdgesForSubject(subject.id);
+    const pending = pendingModeratorProposals([subject], after)[0];
+    if (pending !== undefined && pending.id === proposeId) {
+      return;
+    }
+    await clearModeratorProposalNotifications(deps, subject.id);
+    if (pending === undefined) {
+      return;
+    }
+    await notifyStaffProposed(deps, subject, pending.proposedBy);
   } catch {
     logEvent('push.enqueue.failed');
   }

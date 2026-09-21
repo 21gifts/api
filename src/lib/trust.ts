@@ -93,6 +93,8 @@ export interface AccountTrust {
  * `moderator_confirm` or `moderator_appoint`.
  */
 export interface ModeratorProposal {
+  /** Propose-edge id (pending identity; same-ms ties use this, not actor+time). */
+  id: string;
   /** Live subject; role is always `verified` for a pending row. */
   subject: { id: string; name: string | null; role: 'verified' };
   /** Propose-edge actor; missing account → `{ id, name: null }`. */
@@ -225,7 +227,7 @@ export function accountTrust(
  * `moderator_reject` edges, take the latest by `createdAt` then `id`.
  * Pending iff that latest edge is `moderator_propose` and the live
  * subject is `verified`. Missing subject accounts are omitted.
- * `proposedBy` / `createdAt` come from that latest propose edge.
+ * `id` / `proposedBy` / `createdAt` come from that latest propose edge.
  * `proposedBy` uses live actor names; a missing actor is
  * `{ id, name: null }`. Sorted oldest `createdAt` first, then
  * propose-edge `id` (FIFO). Never includes `basis` / `moderator` /
@@ -272,6 +274,7 @@ export function pendingModeratorProposals(
   }
   pending.sort((a, b) => compareTrustEdgesOldestFirst(a.edge, b.edge));
   return pending.map(({ edge, account }) => ({
+    id: edge.id,
     subject: { id: account.id, name: account.name, role: 'verified' },
     proposedBy: { id: edge.actorId, name: byId.get(edge.actorId)?.name ?? null },
     createdAt: edge.createdAt,

@@ -626,8 +626,8 @@ edge is `moderator_propose`, the live subject is still `verified`, and
 there is no `moderator_confirm` or `moderator_appoint`. Missing
 subjects are omitted. Oldest `createdAt` first, then propose-edge `id`
 (FIFO). JSON `{ "proposals": [ … ] }` including an empty list. Each item
-is `{ subject: { id, name, role: "verified" }, proposedBy: { id, name },
-createdAt }` with ISO-8601 `createdAt`. A missing actor is
+is `{ id, subject: { id, name, role: "verified" }, proposedBy: { id, name },
+createdAt }` with the propose-edge `id` and ISO-8601 `createdAt`. A missing actor is
 `{ id, name: null }`. `GET /trust-chain` still omits a pending
 `moderator_propose`. Once the subject is a `moderator`, that propose is
 eligible as the public incoming edge only when it is the oldest eligible
@@ -657,6 +657,7 @@ Success (including an empty list) → **Response** `200`:
 {
   "proposals": [
     {
+      "id": "<propose-edge-uuid>",
       "subject": { "id": "<uuid>", "name": "Ada", "role": "verified" },
       "proposedBy": { "id": "<uuid>", "name": "Mod" },
       "createdAt": "2026-09-16T00:00:00.000Z"
@@ -715,8 +716,10 @@ proposes and still **200**. **200** inserts a **new**
 are not deleted). Role is unchanged. Logs `trust.moderator_proposed`.
 After **200**, delete `moderator_proposal` rows with
 `replyId === subject.id`, then wrap `notifyModeratorProposed` (in-app
-`moderator_proposal` plus Web Push to other staff). HTTP still **200** if
-notify (or the purge) fails.
+`moderator_proposal` plus Web Push to other staff). Then re-list: if
+pending is empty or the pending propose-edge `id` is not this insert,
+delete those rows again; if a different propose is pending, fan out for
+that actor. HTTP still **200** if notify (or the purge) fails.
 Same 401/403/400/404/409/503 shapes as `POST /trust/verify`.
 **200** `{ id, name, role }` (role unchanged).
 
@@ -726,7 +729,8 @@ Bearer session. Body `{ "accountId": "<uuid>" }`. Staff only. A pending
 proposal must exist (latest propose/reject is propose); the caller id must
 not equal that latest proposer's actor id (independent second staff member).
 Subject must still be `verified`. Inserts `moderator_confirm` then re-lists:
-if a concurrent reject already closed the proposal, delete that confirm and
+if the pending propose-edge `id` is no longer the same (concurrent reject,
+or a same-actor same-ms re-propose), delete that confirm and
 **409** without promoting. Otherwise sets
 role to `moderator`, logs `trust.moderator_confirmed`. If the caller
 already stored `moderator_confirm` and the subject is still `verified`,
@@ -747,10 +751,11 @@ moderator+). Body `{ "accountId": "<uuid>" }`. **409** self / not pending
 (latest propose/reject is not propose, or any confirm/appoint) /
 `role !== verified`. The original proposer **may** reject. Inserts
 append-only `moderator_reject` then re-lists: if a concurrent confirm or
-appoint already closed the grant, or this reject is not the latest
-propose/reject, delete that reject and **409**. If a newer propose already
-reopened the queue, **200** keeps the reject in history and does not drop
-`moderator_proposal` rows. Role stays
+appoint already closed the grant, or the pending propose-edge `id` is still
+the same (this reject lost the same-ms id tie), delete that reject and
+**409**. If a newer propose already reopened the queue (including a
+same-actor same-ms re-propose with a different edge `id`), **200** keeps
+the reject in history and does not drop `moderator_proposal` rows. Role stays
 `verified`. Logs
 `trust.moderator_rejected` `{ subjectId, actorId }`. When pending is empty
 after insert, deletes `moderator_proposal` rows with
