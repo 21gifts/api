@@ -129,6 +129,7 @@ if (import.meta.main) {
         ...(conversationStore === undefined ? {} : { conversations: conversationStore }),
         ...(notificationStore === undefined ? {} : { notificationStore }),
         ...(spendPing === undefined ? {} : { spendPing }),
+        ...(fundingStore === undefined ? {} : { fundingStore }),
       },
       WORKER_INTERVAL_MS,
     );

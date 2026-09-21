@@ -7,6 +7,7 @@ import type { FetchFn } from '@/lib/lnurlp';
 import { unsignedConversationDefaults } from '@/lib/conversation';
 import { MESSAGE_LIST_LIMIT, unsignedNostrDefaults, type MessageRow } from '@/lib/message';
 import { InMemoryConversationStore } from '@/lib/conversation-store';
+import { InMemoryFundingStore } from '@/lib/funding-store';
 import {
   InMemoryMessageStore,
   type MessageFeedQuery,
@@ -1469,10 +1470,140 @@ describe('manual invoice settlement', () => {
     expect(created?.parentId).toBeNull();
     expect(created?.accountId).toBe('manual-payer');
     expect(created?.sats).toBe(0);
-    expect(spendPing.ping).toHaveBeenCalledTimes(1);
-    expect(spendPing.ping).toHaveBeenCalledWith('payer@example.com', created?.id);
+    expect(spendPing.ping).toHaveBeenCalledTimes(0);
     const kinds = (await notifications.listByRecipient('manual-author', 10)).map((row) => row.type);
     expect(kinds).toEqual(['forum_post']);
+  });
+
+  it('pings spend after a compose post when the payer is eligible today', async () => {
+    const store = new InMemoryMessageStore();
+    const auth = new InMemoryAuthStore();
+    const messageId = await seedStore({
+      store,
+      auth,
+      accountId: 'eligible-author',
+      messageId: 'eligible-message',
+    });
+    const platform = await auth.getAccount('eligible-author');
+    expect(platform).toBeDefined();
+    await auth.updateAccount({
+      ...platform!,
+      isPlatform: true,
+      profileMessageId: messageId,
+    });
+    await auth.createAccount({
+      id: 'eligible-payer',
+      linkingKey: null,
+      role: 'verified',
+      name: 'Ada',
+      username: 'ada-eligible',
+      lightningAddress: 'eligible@example.com',
+      lightningAddressVerified: true,
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: viewKeyFor('eligible-payer'),
+      createdAt: 2,
+      rulesAgreedAt: 1,
+    });
+    const fundingStore = new InMemoryFundingStore([
+      {
+        accountId: 'eligible-payer',
+        status: 'admitted',
+        appliedAt: 1,
+        decidedAt: 2,
+        decidedBy: 'staff',
+        trialUtcDate: null,
+        admittedAt: 2,
+        note: null,
+      },
+    ]);
+    const preimage = '13'.repeat(32);
+    const paymentHash = createHash('sha256').update(Buffer.from(preimage, 'hex')).digest('hex');
+    await seedManualInvoice(store, paymentHash, {
+      conversationId: null,
+      messageId: 'eligible-message',
+      payerAccountId: 'eligible-payer',
+      authorAccountId: 'eligible-author',
+      zapRequest: { content: 'Eligible compose' },
+    });
+    const spendPing = { ping: vi.fn(async () => undefined) };
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const result = await settleInvoiceManually({
+      store,
+      auth,
+      now: () => 1_800,
+      paymentHash,
+      note: 'eligible compose',
+      preimage,
+      spendPing,
+      fundingStore,
+      postLimiter: new PostRateLimiter(),
+    });
+    warn.mockRestore();
+    expect(result.ok).toBe(true);
+    const created = (await store.listLatest(20)).find((row) => row.text === 'Eligible compose');
+    expect(created?.accountId).toBe('eligible-payer');
+    expect(spendPing.ping).toHaveBeenCalledTimes(1);
+    expect(spendPing.ping).toHaveBeenCalledWith('eligible@example.com', created?.id);
+  });
+
+  it('logs spend.ping.failed when compose funding lookup throws', async () => {
+    const store = new InMemoryMessageStore();
+    const auth = new InMemoryAuthStore();
+    const messageId = await seedStore({
+      store,
+      auth,
+      accountId: 'throw-author',
+      messageId: 'throw-message',
+    });
+    const platform = await auth.getAccount('throw-author');
+    expect(platform).toBeDefined();
+    await auth.updateAccount({
+      ...platform!,
+      isPlatform: true,
+      profileMessageId: messageId,
+    });
+    await auth.createAccount({
+      id: 'throw-payer',
+      linkingKey: null,
+      role: 'verified',
+      name: 'Ada',
+      username: 'ada-throw',
+      lightningAddress: 'throw@example.com',
+      lightningAddressVerified: true,
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: viewKeyFor('throw-payer'),
+      createdAt: 2,
+      rulesAgreedAt: 1,
+    });
+    const preimage = '14'.repeat(32);
+    const paymentHash = createHash('sha256').update(Buffer.from(preimage, 'hex')).digest('hex');
+    await seedManualInvoice(store, paymentHash, {
+      conversationId: null,
+      messageId: 'throw-message',
+      payerAccountId: 'throw-payer',
+      authorAccountId: 'throw-author',
+      zapRequest: { content: 'Throw compose' },
+    });
+    const spendPing = { ping: vi.fn(async () => undefined) };
+    const fundingStore = new InMemoryFundingStore();
+    vi.spyOn(fundingStore, 'getByAccountId').mockRejectedValue(new Error('funding boom'));
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const result = await settleInvoiceManually({
+      store,
+      auth,
+      now: () => 1_800,
+      paymentHash,
+      note: 'throw compose',
+      preimage,
+      spendPing,
+      fundingStore,
+      postLimiter: new PostRateLimiter(),
+    });
+    warn.mockRestore();
+    expect(result.ok).toBe(true);
+    expect(spendPing.ping).toHaveBeenCalledTimes(0);
   });
 
   it('skips a platform-note compose when the payer is missing forum.post fields', async () => {
@@ -5650,8 +5781,7 @@ describe('indexOpenZapReceipts', () => {
     expect(created?.parentId).toBeNull();
     expect(created?.accountId).toBe('payer-ingest-platform');
     expect(created?.sats).toBe(0);
-    expect(spendPing.ping).toHaveBeenCalledTimes(1);
-    expect(spendPing.ping).toHaveBeenCalledWith('ada-ingest-platform@example.com', created?.id);
+    expect(spendPing.ping).toHaveBeenCalledTimes(0);
     const forPlatform = await notifications.listByRecipient('acc-ingest-platform', 10);
     expect(forPlatform.filter((row) => row.type === 'zap')).toEqual([]);
     expect(forPlatform.filter((row) => row.type === 'forum_post')).toHaveLength(1);

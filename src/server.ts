@@ -400,6 +400,7 @@ export function createApp(deps: AppDeps = {}): Hono {
       pushStore,
       notificationStore,
       ...(spendPing === undefined ? {} : { spendPing }),
+      fundingStore,
     }),
   );
   app.route(

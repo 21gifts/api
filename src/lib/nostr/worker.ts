@@ -5,6 +5,7 @@ import type { Account, AuthStore } from '@/lib/auth/store';
 import { unsignedConversationDefaults, type ConversationThread } from '@/lib/conversation';
 import { inboxUnreadCountFor, notifyConversationMessage } from '@/lib/conversation-push';
 import type { ConversationStore } from '@/lib/conversation-store';
+import type { FundingStore } from '@/lib/funding-store';
 import type { FetchFn } from '@/lib/lnurlp';
 import {
   MESSAGE_INBOUND_REPLY_MAX_LENGTH,
@@ -104,6 +105,8 @@ export interface NostrWorkerDeps {
   spendPing?: SpendPing;
   /** Optional post limiter shared with `POST /messages`. */
   postLimiter?: PostRateLimiter;
+  /** Optional funding grants; compose spend pings use the same `eligibleToday` gate as `POST /messages`. */
+  fundingStore?: FundingStore;
 }
 
 const externalLimiters = new WeakMap<MessageStore, ExternalIngestLimiter>();
@@ -239,6 +242,7 @@ export async function runNostrWorkerTick(deps: NostrWorkerDeps): Promise<void> {
     ...(deps.conversations === undefined ? {} : { conversations: deps.conversations }),
     ...(deps.spendPing === undefined ? {} : { spendPing: deps.spendPing }),
     ...(deps.postLimiter === undefined ? {} : { postLimiter: deps.postLimiter }),
+    ...(deps.fundingStore === undefined ? {} : { fundingStore: deps.fundingStore }),
   });
   const nowMs = deps.now();
   await resignLegacyKind1Tags(deps);

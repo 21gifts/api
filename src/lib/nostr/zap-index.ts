@@ -26,6 +26,8 @@ import {
   verifiedExternalZapRequest,
 } from '@/lib/nostr/external';
 import { inboxUnreadCountFor } from '@/lib/conversation-push';
+import { eligibleToday } from '@/lib/funding';
+import { InMemoryFundingStore, type FundingStore } from '@/lib/funding-store';
 import { notifyForumPost, notifyForumReply, notifyZap } from '@/lib/notification';
 import type { PostRateLimiter } from '@/lib/nostr/rate-limit';
 import type { SpendPing } from '@/lib/spend-ping';
@@ -469,7 +471,7 @@ function zapIngestRow(args: {
  * as a compose post/reply (`insertGiftReply`).
  *
  * @param args - Stores, clock, payment hash, operator note, optional preimage,
- *   and optional `spendPing`, `postLimiter`, and `conversations` for
+ *   and optional `spendPing`, `postLimiter`, `fundingStore`, and `conversations` for
  *   platform-note compose.
  * @returns The credited receipt details and resume status, or the first
  *   validation/lookup failure.
@@ -488,6 +490,7 @@ export async function settleInvoiceManually(args: {
   notificationStore?: NotificationStore;
   spendPing?: SpendPing;
   postLimiter?: PostRateLimiter;
+  fundingStore?: FundingStore;
   conversations?: ConversationStore;
 }): Promise<SettleInvoiceResult> {
   const paymentHash = normalizeHex32(args.paymentHash);
@@ -626,6 +629,7 @@ export async function settleInvoiceManually(args: {
           : { notificationStore: args.notificationStore }),
         ...(args.spendPing === undefined ? {} : { spendPing: args.spendPing }),
         ...(args.postLimiter === undefined ? {} : { postLimiter: args.postLimiter }),
+        ...(args.fundingStore === undefined ? {} : { fundingStore: args.fundingStore }),
         ...(args.conversations === undefined ? {} : { conversations: args.conversations }),
       });
     } catch {
@@ -813,6 +817,8 @@ export async function indexOpenZapReceipts(args: {
   spendPing?: SpendPing;
   /** Optional post limiter; platform-note compose counts against the same caps as `POST /messages`. */
   postLimiter?: PostRateLimiter;
+  /** Optional funding grants; compose spend pings use the same `eligibleToday` gate as `POST /messages`. */
+  fundingStore?: FundingStore;
 }): Promise<void> {
   if (args.urls.length === 0) {
     await retryGiftReplies(args);
@@ -1448,6 +1454,7 @@ interface BaseGiftReplyDeps {
   conversations?: ConversationStore;
   spendPing?: SpendPing;
   postLimiter?: PostRateLimiter;
+  fundingStore?: FundingStore;
 }
 
 /** Collaborators for creating a gift-reply after a zap is indexed. */
@@ -1962,7 +1969,14 @@ async function insertGiftReply(
   }
   if (parentId === null && args.payer.lightningAddress !== null && args.spendPing !== undefined) {
     try {
-      await args.spendPing.ping(args.payer.lightningAddress, created.id);
+      const grant = await (args.fundingStore ?? new InMemoryFundingStore()).getByAccountId(
+        args.payer.id,
+      );
+      if (!eligibleToday(args.payer.role, grant, args.now())) {
+        logEvent('spend.ping.skipped', { reason: 'not_eligible' });
+      } else {
+        await args.spendPing.ping(args.payer.lightningAddress, created.id);
+      }
     } catch {
       logEvent('spend.ping.failed');
     }

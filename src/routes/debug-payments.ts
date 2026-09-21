@@ -6,6 +6,7 @@ import type { MessageInvoiceAttempt, MessageStore, ZapIngestRow } from '@/lib/me
 import type { NotificationStore } from '@/lib/notification-store';
 import { settleInvoiceManually } from '@/lib/nostr/zap-index';
 import type { PushStore } from '@/lib/push-store';
+import type { FundingStore } from '@/lib/funding-store';
 import type { SpendPing } from '@/lib/spend-ping';
 
 /**
@@ -29,6 +30,8 @@ export interface DebugPaymentsRouteDeps {
   notificationStore?: NotificationStore;
   /** Optional spend ping after a platform-note compose creates a top-level post. */
   spendPing?: SpendPing;
+  /** Optional funding grants; compose spend pings use the same `eligibleToday` gate as `POST /messages`. */
+  fundingStore?: FundingStore;
   /** Configured operator token, or `undefined` when debug is disabled. */
   debugToken: string | undefined;
 }
@@ -144,6 +147,7 @@ export function debugPaymentsRoutes(deps: DebugPaymentsRouteDeps): Hono {
             ? {}
             : { notificationStore: deps.notificationStore }),
           ...(deps.spendPing === undefined ? {} : { spendPing: deps.spendPing }),
+          ...(deps.fundingStore === undefined ? {} : { fundingStore: deps.fundingStore }),
         });
         if (result.ok) {
           logEvent('debug.invoices.settled', {

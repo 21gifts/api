@@ -10,6 +10,7 @@ import {
 import { unsignedNostrDefaults } from '@/lib/message';
 import { InMemoryNotificationStore } from '@/lib/notification-store';
 import { InMemoryPushStore } from '@/lib/push-store';
+import { InMemoryFundingStore } from '@/lib/funding-store';
 import { debugPaymentsRoutes } from '@/routes/debug-payments';
 
 function parsedEvents(warn: ReturnType<typeof vi.spyOn>): Array<Record<string, unknown>> {
@@ -22,7 +23,10 @@ function parsedEvents(warn: ReturnType<typeof vi.spyOn>): Array<Record<string, u
 function mount(
   store: InMemoryMessageStore,
   debugToken: string | undefined,
-  extra: { spendPing?: { ping: (address: string, messageId: string) => Promise<void> } } = {},
+  extra: {
+    spendPing?: { ping: (address: string, messageId: string) => Promise<void> };
+    fundingStore?: InMemoryFundingStore;
+  } = {},
 ): Hono {
   return new Hono().route(
     '/debug',
@@ -32,6 +36,7 @@ function mount(
       now: () => Date.parse('2026-09-18T12:00:00.000Z'),
       debugToken,
       ...(extra.spendPing === undefined ? {} : { spendPing: extra.spendPing }),
+      ...(extra.fundingStore === undefined ? {} : { fundingStore: extra.fundingStore }),
     }),
   );
 }
@@ -311,7 +316,7 @@ describe('debugPaymentsRoutes', () => {
     const preimage = '00'.repeat(32);
     const paymentHash = createHash('sha256').update(Buffer.from(preimage, 'hex')).digest('hex');
     await seedSettleInvoice(store, paymentHash);
-    const app = mount(store, 'secret');
+    const app = mount(store, 'secret', { fundingStore: new InMemoryFundingStore() });
     const request = {
       method: 'POST',
       headers: { authorization: 'Bearer secret', 'content-type': 'application/json' },

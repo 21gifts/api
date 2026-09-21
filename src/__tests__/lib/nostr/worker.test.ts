@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { finalizeEvent, generateSecretKey, getPublicKey } from 'nostr-tools/pure';
 import { InMemoryAuthStore } from '@/lib/auth/store';
 import { InMemoryConversationStore } from '@/lib/conversation-store';
+import { InMemoryFundingStore } from '@/lib/funding-store';
 import { encryptKind4, unwrapNip17, wrapNip17 } from '@/lib/nostr/dm';
 import { decodeBolt11 } from '@/lib/bolt11';
 import type { FetchFn } from '@/lib/lnurlp';
@@ -128,6 +129,7 @@ async function inboundTick(
       env: {},
       conversations,
       verifyKind1: () => true,
+      fundingStore: new InMemoryFundingStore(),
       ...(notificationStore === undefined ? {} : { notificationStore }),
       ...(pushStore === undefined ? {} : { pushStore }),
     }),

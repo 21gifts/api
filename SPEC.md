@@ -1846,8 +1846,9 @@ original zap request. On the official platform profile note it skips
 `notifyZap` and treats the zap comment as a compose post/reply (`sats` 0)
 gated by `forum.post` and optional `postLimiter`; missing `forum.post`
 fields or a limiter denial dequeue the receipt without creating a row.
-A created top-level post fans out `notifyForumPost` and `spendPing`, a
-reply fans out `notifyForumReply`. If credit succeeded but the ingest write failed, that
+A created top-level post fans out `notifyForumPost` and `spendPing` only
+when `eligibleToday` (same gate as `POST /messages`; ineligible logs
+`spend.ping.skipped` / `not_eligible`), a reply fans out `notifyForumReply`. If credit succeeded but the ingest write failed, that
 failure returns 503; a retry writes the missing ingest from the current
 request, runs the post-credit effects, returns `resumed: true`, and does not
 credit again. Fresh success returns `resumed: false`.
