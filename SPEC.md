@@ -1843,8 +1843,10 @@ persists an indexed synthetic kind:9735 ingest with `manual=debug-settle` and
 the note (plus `preimage` only when it was supplied and verified). On a member
 note it then fans out `notifyZap` and inserts the payer gift-reply from the
 original zap request. On the official platform profile note it skips
-`notifyZap` and treats the zap comment as a compose post/reply (`sats` 0);
-a created top-level post fans out `notifyForumPost` and `spendPing`, a
+`notifyZap` and treats the zap comment as a compose post/reply (`sats` 0)
+gated by `forum.post` and optional `postLimiter`; missing `forum.post`
+fields or a limiter denial dequeue the receipt without creating a row.
+A created top-level post fans out `notifyForumPost` and `spendPing`, a
 reply fans out `notifyForumReply`. If credit succeeded but the ingest write failed, that
 failure returns 503; a retry writes the missing ingest from the current
 request, runs the post-credit effects, returns `resumed: true`, and does not
