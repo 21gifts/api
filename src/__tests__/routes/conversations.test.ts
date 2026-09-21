@@ -2603,7 +2603,7 @@ describe('moderator_group', () => {
     const spendPing = { ping: vi.fn(async () => undefined) };
     const gateNow = Date.parse('2026-09-25T12:00:00.000Z');
     await auth.createSession({ token: 'tok', accountId: 'acc', createdAt: gateNow });
-    const res = await mount(auth, conversations, livingRoomStore(), {
+    const res = await mount(auth, conversations, livingRoomStore(new Date(gateNow)), {
       spendPing,
       now: () => gateNow,
     }).request(`/conversations/${thread.id}`, {
