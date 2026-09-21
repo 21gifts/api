@@ -71,9 +71,10 @@ describe('effectiveStatus', () => {
 });
 
 describe('fundingGrantRequired', () => {
-  it('is false before 2026-09-25 UTC and true from that midnight', () => {
+  it('is false before 2026-09-25 UTC and true from that midnight onward', () => {
     expect(fundingGrantRequired(BEFORE_GATE_MS)).toBe(false);
     expect(fundingGrantRequired(GATE_MS)).toBe(true);
+    expect(fundingGrantRequired(Date.parse(`${GATE_TOMORROW}T00:00:00.000Z`))).toBe(true);
   });
 });
 
@@ -92,6 +93,16 @@ describe('eligibleToday', () => {
 
   it('is false when the grant is missing, from the gate day', () => {
     expect(eligibleToday(NON_BASIS, undefined, GATE_MS)).toBe(false);
+    expect(
+      eligibleToday(NON_BASIS, undefined, Date.parse(`${GATE_TOMORROW}T00:00:00.000Z`)),
+    ).toBe(false);
+  });
+
+  it('keeps admitted true and basis false the day after the gate', () => {
+    const after = Date.parse(`${GATE_TOMORROW}T00:00:00.000Z`);
+    const admitted = grant({ status: 'admitted', admittedAt: GATE_MS });
+    expect(eligibleToday(NON_BASIS, admitted, after)).toBe(true);
+    expect(eligibleToday('basis', admitted, after)).toBe(false);
   });
 
   it('is false for a pending grant on a non-basis role, from the gate day', () => {

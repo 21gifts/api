@@ -2366,8 +2366,10 @@ Success is always **200** (never 404 for an unknown address):
 { "eligible": true }
 ```
 
-or `{ "eligible": false }` when there is no account for the address, the
-role is `basis`, or the grant is not admitted / trial-today.
+or `{ "eligible": false }` when there is no account for the address or the
+role is `basis`. Until UTC 2026-09-25 a missing/pending/rejected grant on a
+non-`basis` account is `{ "eligible": true }`; from that day it is false
+unless admitted or trial-today.
 
 ### `GET /invoices/posted`
 
@@ -2397,7 +2399,7 @@ note never become `messageId`.
 
 Spend-worker invoice fetch. After address and amount validation, the api
 requires a 21.gifts account for `address` that already has a passkey
-credential, a funding grant eligible today (`eligibleToday`), and at least
+credential, `eligibleToday` (grant required from UTC 2026-09-25), and at least
 one live **top-level** forum message that is not the auto-created profile
 note. Replies do not unlock an invoice. It then resolves
 LUD-16, GETs the LNURL-pay callback, decodes the BOLT11, and stores
