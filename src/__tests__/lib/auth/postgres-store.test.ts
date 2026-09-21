@@ -271,8 +271,6 @@ describe('PostgresAuthStore', () => {
     expect(sql.executes[1]?.text).toMatch(/notification_level = \$16/);
     expect(sql.executes[1]?.text).toMatch(/username = \$17/);
     expect(sql.executes[1]?.text).not.toMatch(/session_refused = \$18/);
-    expect(sql.executes[1]?.text).toMatch(/wallet_required = \$18/);
-    expect(sql.executes[1]?.text).toMatch(/wallet_backup_seen_at = to_timestamp\(\$19/);
     expect(sql.executes[1]?.text).toMatch(/NOT EXISTS/);
     expect(sql.executes[1]?.params).toEqual([
       'acc',
@@ -291,8 +289,6 @@ describe('PostgresAuthStore', () => {
       null,
       null,
       'all',
-      null,
-      false,
       null,
     ]);
   });
