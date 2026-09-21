@@ -719,7 +719,9 @@ After **200**, delete `moderator_proposal` rows with
 `moderator_proposal` plus Web Push to other staff). Then re-list: if
 pending is empty or the pending propose-edge `id` is not this insert,
 delete those rows again; if a different propose is pending, fan out for
-that actor. HTTP still **200** if notify (or the purge) fails.
+that actor only when a second re-list still shows that same id, and
+delete the rows if a re-list after that fan-out no longer matches.
+HTTP still **200** if notify (or the purge) fails.
 Same 401/403/400/404/409/503 shapes as `POST /trust/verify`.
 **200** `{ id, name, role }` (role unchanged).
 

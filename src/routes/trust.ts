@@ -604,11 +604,21 @@ async function reconcileOpenProposalNotifications(
     if (pending === undefined) {
       return;
     }
-    const actor = await deps.authStore.getAccount(pending.proposedBy.id);
+    const beforeNotify = await deps.trustStore.listEdgesForSubject(subject.id);
+    const still = pendingModeratorProposals([subject], beforeNotify)[0];
+    if (still === undefined || still.id !== pending.id) {
+      return;
+    }
+    const actor = await deps.authStore.getAccount(still.proposedBy.id);
     await notifyStaffProposed(deps, subject, {
-      id: pending.proposedBy.id,
+      id: still.proposedBy.id,
       name: actor?.name ?? null,
     });
+    const afterNotify = await deps.trustStore.listEdgesForSubject(subject.id);
+    const now = pendingModeratorProposals([subject], afterNotify)[0];
+    if (now === undefined || now.id !== still.id) {
+      await clearModeratorProposalNotifications(deps, subject.id);
+    }
   } catch {
     logEvent('push.enqueue.failed');
   }
