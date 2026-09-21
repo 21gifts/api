@@ -340,7 +340,7 @@
 - **Purpose:** Constant-time compare of `DEBUG_TOKEN` against `Authorization: Bearer`.
 - **Inputs:** Configured token (non-empty) and raw header or `undefined`.
 - **Returns / side effects:** `true` only on an exact Bearer match (trim on the presented token).
-- **Used by:** `debugRoutes`, `debugContactsRoutes`, `debugApiLogRoutes`, `debugMessagesRoutes`, `debugPaymentsRoutes`, `debugPushRoutes`, `debugTrustRoutes`, `resolveRequestAuth`.
+- **Used by:** `debugRoutes`, `debugContactsRoutes`, `debugApiLogRoutes`, `debugMessagesRoutes`, `debugPaymentsRoutes`, `debugPushRoutes`, `debugTrustRoutes`, `debugCatalogRoutes`, `resolveRequestAuth`.
 
 ## Function: compareAccountsForList
 
