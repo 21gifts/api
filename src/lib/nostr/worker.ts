@@ -212,9 +212,10 @@ function reservedContent(
  * official platform account; Web Push only to bell subscribers).
  * Failures log `nostr.reply.notify.failed` and do not undo persist. Zap ingest
  * still calls `notifyZap` after a newly indexed **member-note** forum receipt.
- * A zap on the official platform profile note is a compose fee: skip
- * `notifyZap`, then fan out `notifyForumPost` / `notifyForumReply` plus a
- * top-level `spendPing`. PN ingest appends a conversation gift
+ * A member/invoice zap on the official platform profile note is a compose
+ * fee: skip `notifyZap`, then fan out `notifyForumPost` / `notifyForumReply`
+ * plus a top-level `spendPing`. An external zap on that same note still
+ * inserts `insertExternalGiftReply`. PN ingest appends a conversation gift
  * (`appendConversationGift`) and does not call `notifyZap`. A member-note
  * gift-reply does not call `notifyForumReply`. When a conversation store is
  * present, also

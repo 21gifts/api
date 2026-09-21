@@ -1861,10 +1861,10 @@ async function insertExternalGiftReply(
  * missing or soft-hidden. Create/link failures propagate so
  * `tryEnsureGiftReply` / `retryGiftReplies` log `nostr.zap.gift_reply.failed`.
  * Gift-replies on a member note do not call `notifyForumReply`; zap ingest
- * already called `notifyZap` after indexing. A zap on the platform profile
- * note is a compose fee: `forum.post` + `postLimiter` gate the create, then
- * `notifyForumPost` / `notifyForumReply` (not `notifyZap`) and a top-level
- * `spendPing`. When the parent is itself a reply, sets `payerAccountId`
+ * already called `notifyZap` after indexing. A member/invoice zap on the
+ * platform profile note is a compose fee: `forum.post` + `postLimiter` gate
+ * the create, then `notifyForumPost` / `notifyForumReply` (not `notifyZap`)
+ * and a top-level `spendPing`. When the parent is itself a reply, sets `payerAccountId`
  * to null and returns without `store.create` so the receipt never occupies
  * the awaiting-gift-reply queue.
  *

@@ -2846,9 +2846,10 @@ or replying:
 ```
 
 Ensures that profile note exists. The client then calls
-`POST /messages/:id/invoice` on `messageId`. A later indexed zap on that note
-turns the zap comment into the payer’s top-level post (`sats` 0 on the new
-row). The worker always includes that profile note’s `event_id` in the relay
+`POST /messages/:id/invoice` on `messageId`. A later indexed member/invoice zap
+on that note turns the zap comment into the payer’s top-level post (`sats` 0
+on the new row). An external zap on that same note still inserts a gift-reply
+under it. The worker always includes that profile note’s `event_id` in the relay
 query, even after the note ages out of `listLatest`. A comment `inReplyTo:<uuid>\n<body>` becomes a reply on that live
 top-level parent; a missing, hidden, or nested parent falls back to a
 top-level post with the remaining body. An empty comment does not create a
