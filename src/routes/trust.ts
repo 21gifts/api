@@ -432,6 +432,7 @@ export function trustRoutes(deps: TrustRouteDeps): Hono {
         logEvent('trust.write.failed');
         return c.json({ error: 'Trust chain is unavailable' }, 503);
       }
+      let dropNotifications = false;
       try {
         const after = await deps.trustStore.listEdgesForSubject(subject.id);
         if (
@@ -446,24 +447,16 @@ export function trustRoutes(deps: TrustRouteDeps): Hono {
         if (still.length === 0) {
           logEvent('trust.moderator_rejected', { subjectId: subject.id, actorId: caller.id });
           const latest = await deps.trustStore.listEdgesForSubject(subject.id);
-          if (pendingModeratorProposals([subject], latest).length === 0) {
-            await clearModeratorProposalNotifications(deps, subject.id);
-            const afterClear = await deps.trustStore.listEdgesForSubject(subject.id);
-            const reopened = pendingModeratorProposals([subject], afterClear)[0];
-            if (reopened !== undefined) {
-              await fanOutPendingProposal(deps, subject, reopened.id);
-            }
+          dropNotifications = pendingModeratorProposals([subject], latest).length === 0;
+        } else {
+          const beforePending = pendingModeratorProposals([subject], existing)[0];
+          const open = still[0];
+          if (beforePending !== undefined && open !== undefined && open.id === beforePending.id) {
+            await deps.trustStore.deleteEdgeById(created.id);
+            return c.json({ error: 'Conflict' }, 409);
           }
-          return c.json(accountSummary(subject), 200);
+          logEvent('trust.moderator_rejected', { subjectId: subject.id, actorId: caller.id });
         }
-        const beforePending = pendingModeratorProposals([subject], existing)[0];
-        const open = still[0];
-        if (beforePending !== undefined && open !== undefined && open.id === beforePending.id) {
-          await deps.trustStore.deleteEdgeById(created.id);
-          return c.json({ error: 'Conflict' }, 409);
-        }
-        logEvent('trust.moderator_rejected', { subjectId: subject.id, actorId: caller.id });
-        return c.json(accountSummary(subject), 200);
       } catch {
         /* v8 ignore next 5 -- rollback throw still 503 */
         try {
@@ -474,6 +467,19 @@ export function trustRoutes(deps: TrustRouteDeps): Hono {
         logEvent('trust.write.failed');
         return c.json({ error: 'Trust chain is unavailable' }, 503);
       }
+      if (dropNotifications) {
+        await clearModeratorProposalNotifications(deps, subject.id);
+        try {
+          const afterClear = await deps.trustStore.listEdgesForSubject(subject.id);
+          const reopened = pendingModeratorProposals([subject], afterClear)[0];
+          if (reopened !== undefined) {
+            await fanOutPendingProposal(deps, subject, reopened.id);
+          }
+        } catch {
+          logEvent('push.enqueue.failed');
+        }
+      }
+      return c.json(accountSummary(subject), 200);
     })
     .post('/appoint-moderator', async (c) => {
       const caller = await authedAccount(deps, c.req.header('authorization'));
@@ -597,6 +603,7 @@ async function fanOutPendingProposal(
   deps: TrustRouteDeps,
   subject: Account,
   proposeId: string,
+  depth = 0,
 ): Promise<void> {
   try {
     const edges = await deps.trustStore.listEdgesForSubject(subject.id);
@@ -611,8 +618,10 @@ async function fanOutPendingProposal(
     });
     const after = await deps.trustStore.listEdgesForSubject(subject.id);
     const now = pendingModeratorProposals([subject], after)[0];
-    if (now === undefined || now.id !== proposeId) {
+    if (now === undefined) {
       await clearModeratorProposalNotifications(deps, subject.id);
+    } else if (now.id !== proposeId && depth === 0) {
+      await fanOutPendingProposal(deps, subject, now.id, 1);
     }
   } catch {
     logEvent('push.enqueue.failed');
