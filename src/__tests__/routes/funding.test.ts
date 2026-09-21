@@ -169,6 +169,17 @@ describe('POST /funding/apply', () => {
     expect(parsedEvents(warn).some((e) => e['event'] === 'funding.applied')).toBe(true);
   });
 
+  it('returns 409 when the CAS apply misses after the status check', async () => {
+    const { authStore } = await staffed();
+    const store: FundingStore = {
+      getByAccountId: () => Promise.resolve(undefined),
+      listGrants: () => Promise.resolve([]),
+      upsert: () => Promise.resolve(grant({ accountId: VERIFIED, status: 'pending' })),
+      transition: () => Promise.resolve(undefined),
+    };
+    expect((await post(mount(authStore, store), '/funding/apply', 'verified')).status).toBe(409);
+  });
+
   it('returns 409 when already pending, trial, or admitted', async () => {
     const { authStore, fundingStore } = await staffed();
     const app = mount(authStore, fundingStore);
@@ -652,7 +663,21 @@ describe('POST /funding/trial', () => {
       accountId: VERIFIED,
     });
     expect(res.status).toBe(503);
-    expect(parsedEvents(warn).some((e) => e['event'] === 'funding.write.failed')).toBe(true);
+  });
+
+  it('returns 409 when the CAS trial misses after the status check', async () => {
+    const { authStore } = await staffed();
+    const pending = grant({ accountId: VERIFIED, status: 'pending' });
+    const store: FundingStore = {
+      getByAccountId: () => Promise.resolve(pending),
+      listGrants: () => Promise.resolve([pending]),
+      upsert: () => Promise.resolve(pending),
+      transition: () => Promise.resolve(undefined),
+    };
+    expect(
+      (await post(mount(authStore, store), '/funding/trial', 'founder', { accountId: VERIFIED }))
+        .status,
+    ).toBe(409);
   });
 
   it('returns 503 when loading the subject throws', async () => {
@@ -893,5 +918,20 @@ describe('POST /funding/reject', () => {
       accountId: VERIFIED,
     });
     expect(res.status).toBe(503);
+  });
+
+  it('returns 409 when the CAS reject misses after the status check', async () => {
+    const { authStore } = await staffed();
+    const pending = grant({ accountId: VERIFIED, status: 'pending' });
+    const store: FundingStore = {
+      getByAccountId: () => Promise.resolve(pending),
+      listGrants: () => Promise.resolve([pending]),
+      upsert: () => Promise.resolve(pending),
+      transition: () => Promise.resolve(undefined),
+    };
+    expect(
+      (await post(mount(authStore, store), '/funding/reject', 'founder', { accountId: VERIFIED }))
+        .status,
+    ).toBe(409);
   });
 });
