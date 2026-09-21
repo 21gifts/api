@@ -249,7 +249,9 @@ function debugList(store: object, limit: number): Promise<unknown[]> {
  *   conversation store, notification store, push store, trust store,
  *   funding store (injected into `/funding`, `/me`, `/auth`, `/members`,
  *   `/messages`, `/conversations`, and `/invoices`), vapidPublicKey, nostrKek,
- *   nostrPublisher, env, WebAuthn RP, spend token, spend ping, gift invoice store, and listDbChange.
+ *   nostrPublisher, env, WebAuthn RP, spend token, spend ping, postLimiter
+ *   (optional; default `new PostRateLimiter()`, shared with `messagesRoutes`
+ *   and the Nostr worker), gift invoice store, and listDbChange.
  * @returns A Hono app with all routes and middleware attached.
  */
 export function createApp(deps: AppDeps = {}): Hono {

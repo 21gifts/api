@@ -464,8 +464,13 @@ function zapIngestRow(args: {
  * The claim and credit are not one transaction, so the concurrent same-instant
  * race is limited to the window between them; competing different receipt ids
  * are serialised by the claim table's payment-hash primary key.
+ * On a member note, fans out `notifyZap` and attempts the payer gift-reply.
+ * On the platform profile note, skips `notifyZap` and treats the zap comment
+ * as a compose post/reply (`insertGiftReply`).
  *
- * @param args - Stores, clock, payment hash, operator note, and optional preimage.
+ * @param args - Stores, clock, payment hash, operator note, optional preimage,
+ *   and optional `spendPing`, `postLimiter`, and `conversations` for
+ *   platform-note compose.
  * @returns The credited receipt details and resume status, or the first
  *   validation/lookup failure.
  * @throws Propagates store lookup, payment-claim, credit, and ingest-write
