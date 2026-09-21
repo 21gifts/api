@@ -1449,6 +1449,17 @@ describe('notifyModeratorAppointed', () => {
 });
 
 describe('notifyModeratorProposed', () => {
+  it('is a no-op when both stores are omitted', async () => {
+    await expect(
+      notifyModeratorProposed({
+        recipients: [{ id: 'founder', role: 'founder' }],
+        subject: { id: 'subject', name: 'Sub' },
+        actor: { id: 'actor', name: 'Mod' },
+        nowMs: NOW.getTime(),
+      }),
+    ).resolves.toBeUndefined();
+  });
+
   it('creates in-app rows for staff except the actor and isPlatform', async () => {
     const notifications = new InMemoryNotificationStore();
     const founder = { id: 'founder', role: 'founder' as const };

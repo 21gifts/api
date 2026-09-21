@@ -278,6 +278,28 @@ describe('POST /debug/trust-edges', () => {
     ).toBe(true);
   });
 
+  it('returns 200 on a repeated moderator_reject and leaves role unchanged', async () => {
+    const store = await seeded();
+    const trustStore = new InMemoryTrustStore();
+    const app = mount(store, trustStore);
+    const first = await post(app, 'secret', {
+      subjectId: SUBJECT,
+      actorId: ACTOR,
+      kind: 'moderator_reject',
+    });
+    expect(first.status).toBe(200);
+    const second = await post(app, 'secret', {
+      subjectId: SUBJECT,
+      actorId: ACTOR,
+      kind: 'moderator_reject',
+    });
+    expect(second.status).toBe(200);
+    expect(
+      (await trustStore.listEdges()).filter((row) => row.kind === 'moderator_reject'),
+    ).toHaveLength(2);
+    expect((await store.getAccount(SUBJECT))?.role).toBe('basis');
+  });
+
   it('returns 200 on a repeated moderator_propose and leaves role unchanged', async () => {
     const store = await seeded();
     const trustStore = new InMemoryTrustStore();

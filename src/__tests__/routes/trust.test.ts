@@ -54,14 +54,18 @@ async function staffed(
 function mount(
   authStore: InMemoryAuthStore,
   trustStore: TrustStore,
-  extras: { notificationStore?: NotificationStore; pushStore?: PushStore } = {},
+  extras: {
+    notificationStore?: NotificationStore;
+    pushStore?: PushStore;
+    now?: () => number;
+  } = {},
 ): Hono {
   return new Hono().route(
     '/trust',
     trustRoutes({
       authStore,
       trustStore,
-      now,
+      now: extras.now ?? now,
       ...(extras.notificationStore === undefined
         ? {}
         : { notificationStore: extras.notificationStore }),
@@ -1433,14 +1437,17 @@ describe('POST /trust/*', () => {
 
     it('allows a second propose after reject', async () => {
       const { authStore, trustStore } = await pending();
-      const rejected = await post(
-        mount(authStore, trustStore),
-        '/trust/reject-moderator',
-        'founder',
-        { accountId: SUBJECT },
-      );
+      let t = now();
+      const tick = (): number => {
+        t += 1;
+        return t;
+      };
+      const app = mount(authStore, trustStore, { now: tick });
+      const rejected = await post(app, '/trust/reject-moderator', 'founder', {
+        accountId: SUBJECT,
+      });
       expect(rejected.status).toBe(200);
-      const res = await post(mount(authStore, trustStore), '/trust/propose-moderator', 'mod', {
+      const res = await post(app, '/trust/propose-moderator', 'mod', {
         accountId: SUBJECT,
       });
       expect(res.status).toBe(200);
