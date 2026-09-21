@@ -211,6 +211,10 @@ export interface DebugAccountResponse extends AccountResponse {
   profileMessageId: string | null;
   /** Owner fan-out filter (`all` \| `active` \| `mentions`). */
   notificationLevel: NotificationLevel;
+  /** True when the owner must complete the wallet setup step. */
+  walletRequired: boolean;
+  /** Epoch ms when the recovery phrase was shown, or `null`. */
+  walletBackupSeenAt: number | null;
   /** Custodial pubkey hex, or `null`. */
   nostrPubkey: string | null;
   /** Lowercase hex of the stored nsec envelope, or `null`. Never plaintext. */
@@ -401,6 +405,8 @@ export function serializeDebugAccount(
     lightningAddressSkippedAt: account.lightningAddressSkippedAt ?? null,
     profileMessageId: account.profileMessageId ?? null,
     notificationLevel: parseNotificationLevel(account.notificationLevel),
+    walletRequired: account.walletRequired === true,
+    walletBackupSeenAt: account.walletBackupSeenAt ?? null,
     nostrPubkey: nostr.nostrPubkey,
     nostrNsecCiphertext: nostr.nostrNsecCiphertext,
     nostrKekId: nostr.nostrKekId,

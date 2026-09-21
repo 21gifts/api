@@ -181,9 +181,7 @@ export class PostgresAuthStore implements AuthStore {
              profile_message_id = $14,
              location = $15,
              notification_level = $16,
-             username = $17,
-             wallet_required = $18,
-             wallet_backup_seen_at = to_timestamp($19::double precision / 1000.0)
+             username = $17
          WHERE id = $1
            AND (
              $2::text IS NULL
@@ -210,8 +208,6 @@ export class PostgresAuthStore implements AuthStore {
           account.location,
           account.notificationLevel ?? 'all',
           account.username ?? null,
-          account.walletRequired === true,
-          account.walletBackupSeenAt ?? null,
         ],
       );
     } catch (error: unknown) {

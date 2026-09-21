@@ -1279,6 +1279,9 @@ describe('InMemoryAuthStore', () => {
     const second = await store.markWalletBackupSeen('acc', 10);
     expect(second?.walletBackupSeenAt).toBe(9);
     expect(await store.markWalletBackupSeen('missing', 1)).toBeUndefined();
+    await store.updateAccount({ ...first!, name: 'Grace', walletBackupSeenAt: null });
+    expect((await store.getAccount('acc'))?.walletBackupSeenAt).toBe(9);
+    expect((await store.getAccount('acc'))?.name).toBe('Grace');
   });
 
   it('ignores a second createAccount with the same viewKey', async () => {

@@ -164,6 +164,8 @@ describe('serializeDebugAccount', () => {
     expect(json.nameSkippedAt).toBeNull();
     expect(json.lightningAddressSkippedAt).toBeNull();
     expect(json.profileMessageId).toBeNull();
+    expect(json.walletRequired).toBe(false);
+    expect(json.walletBackupSeenAt).toBeNull();
     expect(json.nostrPubkey).toBeNull();
     expect(json.nostrNsecCiphertext).toBeNull();
     expect(json).not.toHaveProperty('hasPosted');

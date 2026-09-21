@@ -482,6 +482,8 @@ export class InMemoryAuthStore implements AuthStore {
     this.#accounts.set(account.id, {
       ...account,
       sessionRefused: previous?.sessionRefused === true,
+      walletRequired: previous?.walletRequired === true,
+      walletBackupSeenAt: previous?.walletBackupSeenAt ?? null,
     });
     this.#accountsByViewKey.set(account.viewKey, account.id);
     if (account.linkingKey !== null) {
