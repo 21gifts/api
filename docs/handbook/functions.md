@@ -2099,7 +2099,7 @@
 
 ## Function: isStaffRole
 
-- **Purpose:** True when `account.role` may run staff trust routes. Delegates to `roleAtLeast(role, 'moderator')`. `basis` and `verified` return false. Used before `GET /trust/proposals`, `POST /trust/verify`, `POST /trust/propose-moderator`, and `POST /trust/confirm-moderator` (appoint requires founder separately via `roleAtLeast(..., 'founder')`).
+- **Purpose:** True when `account.role` may run staff trust routes. Delegates to `roleAtLeast(role, 'moderator')`. `basis` and `verified` return false. Used before `GET /trust/proposals`, `POST /trust/verify`, `POST /trust/propose-moderator`, `POST /trust/confirm-moderator`, and `POST /trust/reject-moderator` (appoint requires founder separately via `roleAtLeast(..., 'founder')`).
 - **Inputs:** `AccountRole` (`basis` \| `verified` \| `moderator` \| `founder`).
 - **Returns / side effects:** boolean. No I/O.
 - **Used by:** `trustRoutes`.
@@ -2137,7 +2137,7 @@
 - **Purpose:** Pure helper for the staff moderator-proposal queue. A row is pending when the latest `moderator_propose` / `moderator_reject` edge is `moderator_propose`, the live subject is `verified`, and that subject has no `moderator_confirm` and no `moderator_appoint`. A later reject closes the queue; a later propose re-opens it; confirm/appoint close forever. Missing subject accounts are omitted. Several propose/reject edges for one subject keep the latest by `createdAt` then `id` (same tie-break as `accountTrust`). `proposedBy` uses live actor names; a missing actor is `{ id, name: null }`. Sorted oldest `createdAt` first, then propose-edge `id` (FIFO). Never includes `basis` / `moderator` / `founder` subjects.
 - **Inputs:** `accounts` (`readonly Account[]`), `edges` (`readonly TrustEdge[]`).
 - **Returns / side effects:** `ModeratorProposal[]` (epoch-ms `createdAt`; subject `role` is always `"verified"`). No I/O.
-- **Used by:** `trustRoutes` (`GET /trust/proposals`).
+- **Used by:** `trustRoutes` (`GET /trust/proposals`, `POST /trust/propose-moderator`, `POST /trust/confirm-moderator`, `POST /trust/reject-moderator`).
 
 ## Function: serializeTrustEdge
 

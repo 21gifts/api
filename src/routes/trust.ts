@@ -37,7 +37,7 @@ export interface TrustRouteDeps {
   notificationStore?: NotificationStore;
   /** Optional Web Push outbox. */
   pushStore?: PushStore;
-  /** Optional conversation store so appointed push unreadCount includes inbox. */
+  /** Optional conversation store so appointed and propose push unreadCount include inbox. */
   conversationStore?: ConversationStore;
 }
 
