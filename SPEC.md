@@ -1493,6 +1493,8 @@ Success → **Response** `200`:
       "lightningAddressSkippedAt": null,
       "profileMessageId": null,
       "notificationLevel": "all",
+      "walletRequired": false,
+      "walletBackupSeenAt": null,
       "nostrPubkey": "<64-hex>",
       "nostrNsecCiphertext": "<envelope-hex>",
       "nostrKekId": 1,
@@ -1504,8 +1506,9 @@ Success → **Response** `200`:
 ```
 
 The listing uses `serializeDebugAccount` (public fields plus `isPlatform`,
-`sessionRefused`, `viewKey`, and Nostr debug fields). Member `GET /me` does not
-include `isPlatform` or `sessionRefused`.
+`sessionRefused`, `viewKey`, `walletRequired`, `walletBackupSeenAt`, and Nostr
+debug fields). Member `GET /me` does not include `isPlatform` or
+`sessionRefused`.
 
 Accounts are ordered by `createdAt` ascending, then `id`. An empty store
 returns `"accounts": []`.
@@ -1639,7 +1642,8 @@ Unknown account id → **Response** `404`:
 
 Success → **Response** `200` with the updated account JSON (same
 `serializeDebugAccount` shape as `GET /debug/accounts`, including
-`isPlatform`, `sessionRefused`, `viewKey`, and Nostr debug fields). Role changes log `debug.accounts.role_set`
+`isPlatform`, `sessionRefused`, `viewKey`, `walletRequired`,
+`walletBackupSeenAt`, and Nostr debug fields). Role changes log `debug.accounts.role_set`
 with the account id and new role. Unlink logs
 `debug.accounts.lightning_address.cleared` with the account id (never the
 token or the previous address). Platform changes log
