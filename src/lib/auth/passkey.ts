@@ -530,7 +530,8 @@ export async function finishPasskeyReplace(
   if (!replaced) {
     return { ok: false, error: 'Invalid passkey' };
   }
-  return { ok: true, account };
+  const latest = await store.getAccount(account.id);
+  return { ok: true, account: latest ?? account };
 }
 
 /**

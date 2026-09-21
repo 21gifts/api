@@ -748,14 +748,15 @@ export class InMemoryAuthStore implements AuthStore {
         return false;
       }
     }
-    const stored = await this.createPasskeyCredential(credential);
-    if (!stored) {
+    if (this.#passkeyCredentials.has(credential.credentialId)) {
       return false;
     }
     const current = this.#accounts.get(credential.accountId);
-    if (current !== undefined) {
-      this.#accounts.set(current.id, { ...current, walletRequired: true });
+    if (current === undefined) {
+      return false;
     }
+    this.#passkeyCredentials.set(credential.credentialId, credential);
+    this.#accounts.set(current.id, { ...current, walletRequired: true });
     return true;
   }
 
