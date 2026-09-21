@@ -149,9 +149,11 @@ async function loadTable(deps: DebugCatalogDeps, table: DebugCatalogTable): Prom
           debugNostrFieldsFromListRow(row),
         ]),
       );
-      return accounts.map((account) =>
-        serializeDebugAccount(account, nostrById.get(account.id) ?? EMPTY_DEBUG_NOSTR),
-      );
+      return [...accounts]
+        .sort((a, b) => b.createdAt - a.createdAt || b.id.localeCompare(a.id))
+        .map((account) =>
+          serializeDebugAccount(account, nostrById.get(account.id) ?? EMPTY_DEBUG_NOSTR),
+        );
     }
     case 'passkey_credential':
       return (await deps.auth.listPasskeyCredentials()).map(serializeDebugPasskey);
@@ -189,6 +191,7 @@ async function loadTable(deps: DebugCatalogDeps, table: DebugCatalogTable): Prom
         name: row.name,
         actorAccountId: row.actorAccountId ?? null,
         actorName: row.actorName ?? '',
+        giftForMessageId: row.giftForMessageId ?? null,
         eventId: row.eventId,
         nostrPublishState: row.nostrPublishState,
         nostrEvent: row.nostrEvent,

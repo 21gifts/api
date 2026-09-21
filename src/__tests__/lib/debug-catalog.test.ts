@@ -442,11 +442,13 @@ describe('loadDebugTables', () => {
           id: 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee',
           actorAccountId: accountId,
           actorName: 'Ada',
+          giftForMessageId: null,
         }),
         expect.objectContaining({
           id: 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeed',
           actorAccountId: null,
           actorName: '',
+          giftForMessageId: null,
         }),
       ]),
     );
@@ -616,7 +618,46 @@ describe('loadDebugTables', () => {
       'conversation_message',
     );
     expect(bareActor.conversation_message).toEqual([
-      expect.objectContaining({ actorAccountId: null, actorName: '' }),
+      expect.objectContaining({
+        actorAccountId: null,
+        actorName: '',
+        giftForMessageId: null,
+      }),
+    ]);
+    const giftFor = await loadDebugTables(
+      {
+        auth: new InMemoryAuthStore(),
+        messages: new InMemoryMessageStore(),
+        contacts: new InMemoryContactStore(),
+        conversations: {
+          listAll: async () => [],
+          listAllMessages: async () => [
+            {
+              id: 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeed',
+              conversationId: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd',
+              text: '',
+              createdAt: new Date('2026-09-01T00:00:00.000Z'),
+              senderAccountId: accountId,
+              senderPubkey: null,
+              name: 'Ada',
+              giftForMessageId: 'ffffffff-ffff-4fff-8fff-ffffffffffff',
+              sats: 21,
+              eventId: null,
+              nostrPublishState: 'pending' as const,
+              nostrEvent: null,
+              claimedUntil: null,
+            },
+          ],
+          listAllReads: async () => [],
+        } as unknown as ConversationStore,
+      },
+      'conversation_message',
+    );
+    expect(giftFor.conversation_message).toEqual([
+      expect.objectContaining({
+        giftForMessageId: 'ffffffff-ffff-4fff-8fff-ffffffffffff',
+        sats: 21,
+      }),
     ]);
     const cappedAuth = new InMemoryAuthStore();
     for (let i = 0; i < MESSAGE_LIST_LIMIT + 1; i += 1) {
@@ -632,6 +673,76 @@ describe('loadDebugTables', () => {
       contacts: new InMemoryContactStore(),
     });
     expect(capped.auth_session).toHaveLength(MESSAGE_LIST_LIMIT);
+    const newestAuth = new InMemoryAuthStore();
+    for (let i = 0; i < MESSAGE_LIST_LIMIT + 1; i += 1) {
+      await newestAuth.createAccount({
+        id: `aaaaaaaa-aaaa-4aaa-8aaa-${i.toString(16).padStart(12, '0')}`,
+        linkingKey: null,
+        role: 'basis',
+        name: null,
+        lightningAddress: null,
+        lightningAddressVerified: false,
+        forumLawsDismissed: false,
+        location: null,
+        viewKey: i.toString(16).padStart(64, '0'),
+        createdAt: i,
+        rulesAgreedAt: null,
+      });
+    }
+    const newestAccounts = await loadDebugTables(
+      {
+        auth: newestAuth,
+        messages: new InMemoryMessageStore(),
+        contacts: new InMemoryContactStore(),
+      },
+      'account',
+    );
+    expect(newestAccounts.account).toHaveLength(MESSAGE_LIST_LIMIT);
+    expect(newestAccounts.account[0]).toEqual(
+      expect.objectContaining({ createdAt: MESSAGE_LIST_LIMIT }),
+    );
+    expect(newestAccounts.account[MESSAGE_LIST_LIMIT - 1]).toEqual(
+      expect.objectContaining({ createdAt: 1 }),
+    );
+    const tieAuth = new InMemoryAuthStore();
+    await tieAuth.createAccount({
+      id: 'aaaaaaaa-aaaa-4aaa-8aaa-00000000000a',
+      linkingKey: null,
+      role: 'basis',
+      name: null,
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: 'a'.repeat(64),
+      createdAt: 5,
+      rulesAgreedAt: null,
+    });
+    await tieAuth.createAccount({
+      id: 'aaaaaaaa-aaaa-4aaa-8aaa-00000000000b',
+      linkingKey: null,
+      role: 'basis',
+      name: null,
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: 'b'.repeat(64),
+      createdAt: 5,
+      rulesAgreedAt: null,
+    });
+    const tied = await loadDebugTables(
+      {
+        auth: tieAuth,
+        messages: new InMemoryMessageStore(),
+        contacts: new InMemoryContactStore(),
+      },
+      'account',
+    );
+    expect(tied.account.map((row) => (row as { id: string }).id)).toEqual([
+      'aaaaaaaa-aaaa-4aaa-8aaa-00000000000b',
+      'aaaaaaaa-aaaa-4aaa-8aaa-00000000000a',
+    ]);
     const rates = await loadDebugTables(
       {
         auth: new InMemoryAuthStore(),
