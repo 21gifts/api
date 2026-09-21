@@ -238,7 +238,6 @@ export async function finishPasskeyRegistration(
       }
     }
     const claimed: Account = { ...existing, walletRequired: true };
-    await store.updateAccount(claimed);
     return mintSession(store, now, claimed);
   }
   const account: Account = {
