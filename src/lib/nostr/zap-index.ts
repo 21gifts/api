@@ -800,7 +800,7 @@ export async function indexOpenZapReceipts(args: {
   fetchImpl: FetchFn;
   /** Signature check; production uses nostr-tools `verifyEvent`. */
   verifyReceipt?: (event: NostrEventFrame) => boolean;
-  /** Optional push store; newly indexed receipts call `notifyZap`. */
+  /** Optional push store; newly indexed member-note receipts call `notifyZap` (not the official platform profile note). */
   pushStore?: PushStore;
   /** Optional notification store; in-app rows via `auth` even without `pushStore`. */
   notificationStore?: NotificationStore;

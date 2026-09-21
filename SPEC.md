@@ -1839,9 +1839,10 @@ Success → **Response** `200` (never includes the note or preimage):
 
 The route claims the payment hash, credits the message once, and directly
 persists an indexed synthetic kind:9735 ingest with `manual=debug-settle` and
-the note (plus `preimage` only when it was supplied and verified). It then runs
-the normal zap notification fan-out and inserts the payer gift-reply from the
-original zap request. If credit succeeded but the ingest write failed, that
+the note (plus `preimage` only when it was supplied and verified). On a member
+note it then fans out `notifyZap` and inserts the payer gift-reply from the
+original zap request. On the official platform profile note it skips
+`notifyZap` and treats the zap comment as a compose post/reply (`sats` 0). If credit succeeded but the ingest write failed, that
 failure returns 503; a retry writes the missing ingest from the current
 request, runs the post-credit effects, returns `resumed: true`, and does not
 credit again. Fresh success returns `resumed: false`.
@@ -3082,12 +3083,14 @@ a verified external payer still gains durable zapper entitlement. Gift-only
 member replies (`text === ""`) and all external gift-replies stay
 `nostrPublishState` `skipped` (no kind:1). Parent `sats` is the aggregate;
 reply `sats` is this gift.
-After a newly indexed receipt, `notifyZap` runs best-effort (in-app rows for
-every account except the resolved payer, no-op when that payer is the official
-platform account, then filtered by each account's
+After a newly indexed **member-note** receipt, `notifyZap` runs best-effort
+(in-app rows for every account except the resolved payer, no-op when that
+payer is the official platform account, then filtered by each account's
 `notificationLevel`; Web Push only to bell subscribers with the same filter;
 missing `pushStore` still writes in-app rows when `auth` is set; enqueue
-failure logs `push.enqueue.failed`). `GET /notifications` applies the same
+failure logs `push.enqueue.failed`). A zap on the official platform profile
+note skips `notifyZap` and fans out `notifyForumPost` / `notifyForumReply`
+plus a top-level `spendPing`. `GET /notifications` applies the same
 `notificationLevel` filter to stored rows. LNURL success with a non-NIP-57 invoice
 (plaintext description, missing/mismatched `description_hash`, or malformed
 BOLT11) → persist `not_zap` (with rejected `pr` for debug) and **400**
