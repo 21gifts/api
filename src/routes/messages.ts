@@ -6,6 +6,8 @@ import { roleAtLeast } from '@/lib/auth/roles';
 import type { Account, AccountRole, AuthStore } from '@/lib/auth/store';
 import { inspectBolt11, isNip57Invoice } from '@/lib/bolt11';
 import { GIFT_INVOICE_MAX_MSAT } from '@/lib/config';
+import { eligibleToday } from '@/lib/funding';
+import { InMemoryFundingStore, type FundingStore } from '@/lib/funding-store';
 import { logEvent } from '@/lib/log';
 import type { FetchFn } from '@/lib/lnurlp';
 import { requestZapInvoice } from '@/lib/lnurl-pay';
@@ -210,10 +212,16 @@ export interface MessagesRouteDeps {
   pushStore?: PushStore;
   /**
    * Optional spend ping. After a new top-level persist with a Lightning
-   * Address, the route awaits `ping(address, created.id)`. Omitted → skip.
-   * Failures are logged and do not fail the 200.
+   * Address, the route awaits `ping(address, created.id)` only when
+   * `eligibleToday`. Omitted → skip. Failures are logged and do not fail
+   * the 200.
    */
   spendPing?: SpendPing;
+  /**
+   * Funding grants for spend-ping eligibility (default: empty
+   * {@link InMemoryFundingStore}).
+   */
+  fundingStore?: FundingStore;
   /**
    * Optional in-app notification store. When present, living-room events
    * fan out via {@link notifyForumPost} / {@link notifyForumReply} to every
@@ -574,7 +582,14 @@ async function persistForumPost(
       deps.spendPing !== undefined
     ) {
       try {
-        await deps.spendPing.ping(account.lightningAddress, created.id);
+        const grant = await (deps.fundingStore ?? new InMemoryFundingStore()).getByAccountId(
+          account.id,
+        );
+        if (!eligibleToday(account.role, grant, deps.now())) {
+          logEvent('spend.ping.skipped', { reason: 'not_eligible' });
+        } else {
+          await deps.spendPing.ping(account.lightningAddress, created.id);
+        }
       } catch {
         logEvent('spend.ping.failed');
       }

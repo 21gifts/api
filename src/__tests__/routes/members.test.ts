@@ -4,6 +4,7 @@ import { InMemoryAuthStore } from '@/lib/auth/store';
 import { unsignedNostrDefaults } from '@/lib/message';
 import { InMemoryMessageStore } from '@/lib/message-store';
 import type { TrustEdge } from '@/lib/trust';
+import { InMemoryFundingStore } from '@/lib/funding-store';
 import { InMemoryTrustStore } from '@/lib/trust-store';
 import { removeForumVideo, writeForumVideo } from '@/lib/video';
 import { membersRoutes } from '@/routes/members';
@@ -38,8 +39,12 @@ function mount(
   authStore: InMemoryAuthStore,
   messageStore: InMemoryMessageStore = new InMemoryMessageStore(),
   trustStore: InMemoryTrustStore = new InMemoryTrustStore(),
+  fundingStore: InMemoryFundingStore = new InMemoryFundingStore(),
 ): Hono {
-  return new Hono().route('/members', membersRoutes({ authStore, messageStore, trustStore, now }));
+  return new Hono().route(
+    '/members',
+    membersRoutes({ authStore, messageStore, trustStore, fundingStore, now }),
+  );
 }
 
 async function seededCaller(
@@ -175,6 +180,76 @@ describe('GET /members/:accountId', () => {
     expect(body['trust']).toEqual(NULL_TRUST);
     expect(body['aboutMe']).toBeNull();
     expect(body['aboutMeHasPhoto']).toBe(false);
+    expect(body['fundingReviewedAt']).toBeNull();
+  });
+
+  it('defaults fundingStore when omitted from membersRoutes', async () => {
+    const authStore = await seededCaller();
+    await addAccount(authStore, ACCOUNT_ID, 'b'.repeat(64));
+    const res = await new Hono()
+      .route(
+        '/members',
+        membersRoutes({
+          authStore,
+          messageStore: new InMemoryMessageStore(),
+          trustStore: new InMemoryTrustStore(),
+          now,
+        }),
+      )
+      .request(`/members/${ACCOUNT_ID}`, { headers: AUTH });
+    expect(res.status).toBe(200);
+    expect(
+      ((await res.json()) as { fundingReviewedAt: number | null }).fundingReviewedAt,
+    ).toBeNull();
+  });
+
+  it('returns fundingReviewedAt only when the grant is admitted', async () => {
+    const authStore = await seededCaller();
+    await addAccount(authStore, ACCOUNT_ID, 'b'.repeat(64));
+    const fundingStore = new InMemoryFundingStore([
+      {
+        accountId: ACCOUNT_ID,
+        status: 'admitted',
+        appliedAt: 1,
+        decidedAt: now(),
+        decidedBy: 'caller',
+        trialUtcDate: null,
+        admittedAt: now(),
+        note: null,
+      },
+    ]);
+    const admitted = await mount(
+      authStore,
+      new InMemoryMessageStore(),
+      new InMemoryTrustStore(),
+      fundingStore,
+    ).request(`/members/${ACCOUNT_ID}`, { headers: AUTH });
+    expect(admitted.status).toBe(200);
+    expect(
+      ((await admitted.json()) as { fundingReviewedAt: number | null }).fundingReviewedAt,
+    ).toBe(now());
+
+    const pendingStore = new InMemoryFundingStore([
+      {
+        accountId: ACCOUNT_ID,
+        status: 'pending',
+        appliedAt: 1,
+        decidedAt: null,
+        decidedBy: null,
+        trialUtcDate: null,
+        admittedAt: now(),
+        note: null,
+      },
+    ]);
+    const pending = await mount(
+      authStore,
+      new InMemoryMessageStore(),
+      new InMemoryTrustStore(),
+      pendingStore,
+    ).request(`/members/${ACCOUNT_ID}`, { headers: AUTH });
+    expect(
+      ((await pending.json()) as { fundingReviewedAt: number | null }).fundingReviewedAt,
+    ).toBeNull();
   });
 
   it('marks the profile note not payable when eventId is empty', async () => {

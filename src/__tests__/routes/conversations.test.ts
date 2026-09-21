@@ -9,6 +9,7 @@ import { unsignedNostrDefaults } from '@/lib/message';
 import { InMemoryMessageStore, type MessageStore } from '@/lib/message-store';
 import { InvoiceRateLimiter } from '@/lib/nostr/rate-limit';
 import { InMemoryPushStore } from '@/lib/push-store';
+import { InMemoryFundingStore } from '@/lib/funding-store';
 import type { SpendPing } from '@/lib/spend-ping';
 import { conversationRoutes } from '@/routes/conversations';
 
@@ -55,11 +56,30 @@ function livingRoomStore(createdAt: Date = new Date(now())): InMemoryMessageStor
   ]);
 }
 
+function admittedFunding(accountId = 'acc'): InMemoryFundingStore {
+  return new InMemoryFundingStore([
+    {
+      accountId,
+      status: 'admitted',
+      appliedAt: 1,
+      decidedAt: 1,
+      decidedBy: 'staff',
+      trialUtcDate: null,
+      admittedAt: 1,
+      note: null,
+    },
+  ]);
+}
+
 function mount(
   authStore: InMemoryAuthStore,
   conversations = new InMemoryConversationStore(),
   messages = new InMemoryMessageStore(),
-  extra: { spendPing?: SpendPing; pushStore?: InMemoryPushStore } = {},
+  extra: {
+    spendPing?: SpendPing;
+    pushStore?: InMemoryPushStore;
+    fundingStore?: InMemoryFundingStore;
+  } = {},
 ): Hono {
   return new Hono().route(
     '/conversations',
@@ -70,6 +90,7 @@ function mount(
       now,
       ...(extra.spendPing === undefined ? {} : { spendPing: extra.spendPing }),
       ...(extra.pushStore === undefined ? {} : { pushStore: extra.pushStore }),
+      ...(extra.fundingStore === undefined ? {} : { fundingStore: extra.fundingStore }),
     }),
   );
 }
@@ -2366,6 +2387,35 @@ describe('moderator_group', () => {
     const conversations = new InMemoryConversationStore();
     const thread = await conversations.ensureModeratorGroup('plat', new Date(now()));
     const spendPing = { ping: vi.fn(async () => undefined) };
+    const res = await mount(auth, conversations, livingRoomStore(), {
+      spendPing,
+      fundingStore: admittedFunding(),
+    }).request(`/conversations/${thread.id}`, {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ text: 'hello mods' }),
+    });
+    expect(res.status).toBe(200);
+    const created = (await res.json()) as { id: string };
+    expect(spendPing.ping).toHaveBeenCalledTimes(1);
+    expect(spendPing.ping).toHaveBeenCalledWith('ada@walletofsatoshi.com', created.id, 'moderator');
+  });
+
+  it('does not ping when the moderator is not funding-eligible', async () => {
+    const auth = await seeded('moderator');
+    await withPlatform(auth);
+    const existing = await auth.getAccount('acc');
+    expect(existing).toBeDefined();
+    if (existing === undefined) {
+      throw new Error('expected account');
+    }
+    await auth.updateAccount({
+      ...existing,
+      lightningAddress: 'ada@walletofsatoshi.com',
+    });
+    const conversations = new InMemoryConversationStore();
+    const thread = await conversations.ensureModeratorGroup('plat', new Date(now()));
+    const spendPing = { ping: vi.fn(async () => undefined) };
     const res = await mount(auth, conversations, livingRoomStore(), { spendPing }).request(
       `/conversations/${thread.id}`,
       {
@@ -2375,9 +2425,12 @@ describe('moderator_group', () => {
       },
     );
     expect(res.status).toBe(200);
-    const created = (await res.json()) as { id: string };
-    expect(spendPing.ping).toHaveBeenCalledTimes(1);
-    expect(spendPing.ping).toHaveBeenCalledWith('ada@walletofsatoshi.com', created.id, 'moderator');
+    expect(spendPing.ping).not.toHaveBeenCalled();
+    expect(
+      parsedEvents(warn).some(
+        (e) => e['event'] === 'spend.ping.skipped' && e['reason'] === 'not_eligible',
+      ),
+    ).toBe(true);
   });
 
   it('does not ping when the moderator has no living-room post today', async () => {
@@ -2492,14 +2545,14 @@ describe('moderator_group', () => {
         throw new Error('ping boom');
       }),
     };
-    const res = await mount(auth, conversations, livingRoomStore(), { spendPing }).request(
-      `/conversations/${thread.id}`,
-      {
-        method: 'POST',
-        headers: { ...AUTH, 'content-type': 'application/json' },
-        body: JSON.stringify({ text: 'hello mods' }),
-      },
-    );
+    const res = await mount(auth, conversations, livingRoomStore(), {
+      spendPing,
+      fundingStore: admittedFunding(),
+    }).request(`/conversations/${thread.id}`, {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ text: 'hello mods' }),
+    });
     expect(res.status).toBe(200);
     expect(spendPing.ping).toHaveBeenCalledTimes(1);
   });

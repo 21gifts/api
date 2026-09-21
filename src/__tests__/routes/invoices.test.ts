@@ -10,7 +10,9 @@ import { InMemoryMessageStore } from '@/lib/message-store';
 import { InMemoryNotificationStore } from '@/lib/notification-store';
 import { InMemoryPushStore } from '@/lib/push-store';
 import { invoiceRoutes } from '@/routes/invoices';
-import { createApp } from '@/server';
+import { createApp as createAppRaw } from '@/server';
+import type { FundingGrant } from '@/lib/funding';
+import { InMemoryFundingStore } from '@/lib/funding-store';
 import { decodeBolt11 } from '@/lib/bolt11';
 import type { FetchFn } from '@/lib/lnurlp';
 
@@ -18,6 +20,30 @@ vi.mock('@/lib/bolt11', () => ({
   decodeBolt11: vi.fn(),
 }));
 
+function admittedStore(accountId = 'acc-alice'): InMemoryFundingStore {
+  return new InMemoryFundingStore([
+    {
+      accountId,
+      status: 'admitted',
+      appliedAt: Date.parse('2026-09-01T00:00:00.000Z'),
+      decidedAt: Date.parse('2026-09-10T08:00:00.000Z'),
+      decidedBy: 'staff',
+      trialUtcDate: null,
+      admittedAt: Date.parse('2026-09-15T18:00:00.000Z'),
+      note: null,
+    },
+  ]);
+}
+
+function createApp(deps: Parameters<typeof createAppRaw>[0] = {}): ReturnType<typeof createAppRaw> {
+  return createAppRaw({
+    fundingStore: admittedStore(),
+    ...deps,
+  });
+}
+
+const spendApp = createApp;
+const NOW_MS = Date.parse('2026-09-20T12:00:00.000Z');
 const TOKEN = 'spend-secret-token';
 const ADDRESS = 'alice@walletofsatoshi.com';
 const PR = 'lnbc1issued';
@@ -86,7 +112,7 @@ async function seedPasskeyAccount(
   await authStore.createAccount({
     id: 'acc-alice',
     linkingKey: null,
-    role: 'basis',
+    role: 'verified',
     name: 'Ada',
     lightningAddress: address,
     lightningAddressVerified: true,
@@ -108,6 +134,19 @@ async function seedPasskeyAccount(
 /**
  * Seed one live non-profile top-level forum row for `accountId` (EARLY-shaped).
  */
+function expiredTrialGrant(accountId = 'acc-alice'): FundingGrant {
+  return {
+    accountId,
+    status: 'trial',
+    appliedAt: Date.parse('2026-09-01T00:00:00.000Z'),
+    decidedAt: Date.parse('2026-09-10T08:00:00.000Z'),
+    decidedBy: 'staff',
+    trialUtcDate: '2026-09-19',
+    admittedAt: null,
+    note: 'keep',
+  };
+}
+
 function livePostStore(accountId: string = 'acc-alice'): InMemoryMessageStore {
   return new InMemoryMessageStore([
     {
@@ -695,6 +734,27 @@ describe('POST /invoices', () => {
     expect(parsedEvents(warn).some((e) => e['event'] === 'invoice.passkey_required')).toBe(true);
   });
 
+  it('returns 403 when the account has a passkey but no funding grant', async () => {
+    const authStore = new InMemoryAuthStore();
+    await seedPasskeyAccount(authStore);
+    const fetchImpl: FetchFn = async () => {
+      throw new Error('LNURL must not be called');
+    };
+    const res = await spendApp({
+      spendApiToken: TOKEN,
+      authStore,
+      messageStore: livePostStore(),
+      fetchImpl,
+      fundingStore: new InMemoryFundingStore(),
+    }).request(
+      '/invoices',
+      auth({ method: 'POST', body: JSON.stringify({ address: ADDRESS, amountMsat: 1000 }) }),
+    );
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: 'Funding grant required' });
+    expect(parsedEvents(warn).some((e) => e['event'] === 'invoice.funding_required')).toBe(true);
+  });
+
   it('returns 403 when the account has a passkey but no live forum post', async () => {
     const authStore = new InMemoryAuthStore();
     await seedPasskeyAccount(authStore);
@@ -963,7 +1023,7 @@ describe('POST /invoices', () => {
     await authStore.createAccount({
       id: 'acc-alice',
       linkingKey: null,
-      role: 'basis',
+      role: 'verified',
       name: 'Ada',
       lightningAddress: ADDRESS,
       lightningAddressVerified: true,
@@ -1473,6 +1533,7 @@ describe('POST /invoices', () => {
         store: invoiceStore,
         authStore,
         messageStore: uuidPostStore(),
+        fundingStore: admittedStore(),
         now: () => 1,
         fetchImpl: happyFetch(),
       }),
@@ -1519,6 +1580,7 @@ describe('POST /invoices', () => {
         authStore,
         messageStore: uuidPostStore(),
         conversationStore,
+        fundingStore: admittedStore(),
         now: () => 1,
         fetchImpl: happyFetch(),
       }),
@@ -2695,5 +2757,136 @@ describe('POST /invoices/proof', () => {
         sourceWallet: 'lightning.space',
       },
     ]);
+  });
+});
+describe('GET /invoices/eligible', () => {
+  it('returns 503 when the spend token is not configured', async () => {
+    const res = await spendApp({ spendApiToken: '' }).request(
+      `/invoices/eligible?address=${encodeURIComponent(ADDRESS)}`,
+    );
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({ error: 'Spend invoices are not configured' });
+  });
+
+  it('returns 401 when the bearer is missing', async () => {
+    const res = await spendApp({ spendApiToken: TOKEN }).request(
+      `/invoices/eligible?address=${encodeURIComponent(ADDRESS)}`,
+    );
+    expect(res.status).toBe(401);
+  });
+
+  it('returns 400 on a bad Lightning Address', async () => {
+    const res = await spendApp({ spendApiToken: TOKEN }).request(
+      '/invoices/eligible?address=nope',
+      auth(),
+    );
+    expect(res.status).toBe(400);
+  });
+
+  it('returns 400 when the address query is omitted', async () => {
+    const res = await spendApp({ spendApiToken: TOKEN }).request('/invoices/eligible', auth());
+    expect(res.status).toBe(400);
+  });
+
+  it('uses the default empty funding store when none is injected', async () => {
+    const res = await invoiceRoutes({
+      spendApiToken: TOKEN,
+      store: new InMemoryInvoiceStore(),
+      authStore: new InMemoryAuthStore(),
+      messageStore: new InMemoryMessageStore(),
+      now: () => 1,
+      fetchImpl: happyFetch(),
+    }).request(`/eligible?address=${encodeURIComponent(ADDRESS)}`, auth());
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ eligible: false });
+  });
+
+  it('returns eligible false for an unknown address', async () => {
+    const res = await spendApp({ spendApiToken: TOKEN }).request(
+      `/invoices/eligible?address=${encodeURIComponent(ADDRESS)}`,
+      auth(),
+    );
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ eligible: false });
+  });
+
+  it('returns eligible true when admitted today', async () => {
+    const authStore = new InMemoryAuthStore();
+    await seedPasskeyAccount(authStore);
+    const account = await authStore.getAccount('acc-alice');
+    if (account !== undefined) {
+      await authStore.updateAccount({ ...account, role: 'verified' });
+    }
+    const fundingStore = new InMemoryFundingStore([
+      {
+        accountId: 'acc-alice',
+        status: 'admitted',
+        appliedAt: Date.parse('2026-09-01T00:00:00.000Z'),
+        decidedAt: Date.parse('2026-09-10T08:00:00.000Z'),
+        decidedBy: 'staff',
+        trialUtcDate: null,
+        admittedAt: Date.parse('2026-09-15T18:00:00.000Z'),
+        note: null,
+      },
+    ]);
+    const res = await spendApp({ spendApiToken: TOKEN, authStore, fundingStore }).request(
+      `/invoices/eligible?address=${encodeURIComponent(ADDRESS)}`,
+      auth(),
+    );
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ eligible: true });
+  });
+
+  it('returns eligible false when there is no grant', async () => {
+    const authStore = new InMemoryAuthStore();
+    await seedPasskeyAccount(authStore);
+    const res = await spendApp({
+      spendApiToken: TOKEN,
+      authStore,
+      fundingStore: new InMemoryFundingStore(),
+    }).request(`/invoices/eligible?address=${encodeURIComponent(ADDRESS)}`, auth());
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ eligible: false });
+  });
+
+  it('does not persist when GET /eligible sees an expired trial', async () => {
+    const authStore = new InMemoryAuthStore();
+    await seedPasskeyAccount(authStore);
+    const stored = expiredTrialGrant();
+    const fundingStore = new InMemoryFundingStore([stored]);
+    const res = await spendApp({
+      spendApiToken: TOKEN,
+      authStore,
+      fundingStore,
+      now: () => NOW_MS,
+    }).request(`/invoices/eligible?address=${encodeURIComponent(ADDRESS)}`, auth());
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ eligible: false });
+    expect(await fundingStore.getByAccountId('acc-alice')).toEqual(stored);
+    expect((await fundingStore.getByAccountId('acc-alice'))?.status).toBe('trial');
+  });
+  it('does not persist when POST /invoices sees an expired trial', async () => {
+    const authStore = new InMemoryAuthStore();
+    await seedPasskeyAccount(authStore);
+    const stored = expiredTrialGrant();
+    const fundingStore = new InMemoryFundingStore([stored]);
+    const fetchImpl: FetchFn = async () => {
+      throw new Error('LNURL must not be called');
+    };
+    const res = await spendApp({
+      spendApiToken: TOKEN,
+      authStore,
+      messageStore: livePostStore(),
+      fetchImpl,
+      fundingStore,
+      now: () => NOW_MS,
+    }).request(
+      '/invoices',
+      auth({ method: 'POST', body: JSON.stringify({ address: ADDRESS, amountMsat: 1000 }) }),
+    );
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: 'Funding grant required' });
+    expect(await fundingStore.getByAccountId('acc-alice')).toEqual(stored);
+    expect((await fundingStore.getByAccountId('acc-alice'))?.status).toBe('trial');
   });
 });

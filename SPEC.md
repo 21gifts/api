@@ -4,7 +4,7 @@
 > Product decisions live in [`CONCEPT.md`](./CONCEPT.md); this file owns
 > request/response contracts for routes that exist in code today.
 
-**Status**: living document. Last revised 2026-09-21 (`GET /conversations` list/open rows include per-row `unreadMessageCount`; envelope `unreadCount` remains unread thread count; `GET /trust-chain` requires a member Bearer session; public graph uses at most one incoming kind per subject: the oldest eligible sibling (`createdAt` then `id`); eligible `verify`, `moderator_appoint`, and `moderator_propose` only when the subject is a moderator; `moderator_confirm` never; later appoint/confirm/propose do not replace the first eligible contact; owner `notificationLevel` on GET `/me` and `POST /me/notification-level`; fan-out filters in-app and Web Push by `all` / `active` / `mentions`; GET `/notifications` applies the same filter to stored rows (`moderator_appointed` always stays; `unreadCount` is matching unread in the newest 1000, not `store.unreadCount()`, and may exceed the 200 page); a zap that inserts a gift-reply fans out only `notifyZap`, not a second `forum_reply`; gift-reply row still lands in the thread; confirm/appoint notify the subject only with `moderator_appointed` and Web Push url `/welcome`; official platform account (`isPlatform`) never fans out living-room `forum_post` / `forum_reply` / `zap`; house daily gift-replies still persist).
+**Status**: living document. Last revised 2026-09-21 (funding-program grants independent of `account.role`; spend ping and `POST /invoices` require `eligibleToday`; `GET /invoices/eligible`; `GET /conversations` list/open rows include per-row `unreadMessageCount`; envelope `unreadCount` remains unread thread count; `GET /trust-chain` requires a member Bearer session; public graph uses at most one incoming kind per subject: the oldest eligible sibling (`createdAt` then `id`); eligible `verify`, `moderator_appoint`, and `moderator_propose` only when the subject is a moderator; `moderator_confirm` never; later appoint/confirm/propose do not replace the first eligible contact; owner `notificationLevel` on GET `/me` and `POST /me/notification-level`; fan-out filters in-app and Web Push by `all` / `active` / `mentions`; GET `/notifications` applies the same filter to stored rows (`moderator_appointed` always stays; `unreadCount` is matching unread in the newest 1000, not `store.unreadCount()`, and may exceed the 200 page); a zap that inserts a gift-reply fans out only `notifyZap`, not a second `forum_reply`; gift-reply row still lands in the thread; confirm/appoint notify the subject only with `moderator_appointed` and Web Push url `/welcome`; official platform account (`isPlatform`) never fans out living-room `forum_post` / `forum_reply` / `zap`; house daily gift-replies still persist).
 
 ---
 
@@ -36,10 +36,13 @@ verification payment requires an injected invoice payer; the default
 `GET /lightning-address` resolves LUD-16 metadata with an in-memory cache; it
 does not fetch or pay invoices.
 
-Spend-worker invoice routes (`GET /invoices/passkey`, `GET /invoices/posted`,
-`POST /invoices`, `POST /invoices/proof`) check passkey eligibility and a live
-**top-level** forum post, fetch a BOLT11 via LNURL-pay, and accept a preimage proof. Issue
-requires a passkey-backed account for the address and at least one live **top-level** forum
+Spend-worker invoice routes: `GET /invoices/passkey` and `GET /invoices/posted`
+report those gates; `GET /invoices/eligible` reports `eligibleToday`;
+`POST /invoices` requires passkey, a funding-program grant (`eligibleToday`), and a live
+**top-level** forum post, then fetches a BOLT11 via LNURL-pay;
+`POST /invoices/proof` accepts a preimage without re-checking the grant. Issue
+requires a passkey-backed account for the address that is funding-eligible today
+and at least one live **top-level** forum
 message that is not the auto-created profile note. Replies do not count. They require `SPEND_API_TOKEN`;
 when it is unset the
 routes return **503** and the process still boots. This service does not pay
@@ -108,6 +111,12 @@ Public base URLs used in examples:
 | GET    | `/trust/proposals`                           | Bearer (moderator+)        | Staff: list pending moderator proposals                                                                   |
 | POST   | `/trust/confirm-moderator`                   | Bearer (moderator+)        | Staff: second, independent confirmation → `moderator`                                                     |
 | POST   | `/trust/appoint-moderator`                   | Bearer (founder)           | Founder: appoint a moderator directly                                                                     |
+| POST   | `/funding/apply`                             | Bearer                     | Member apply (verified+; `basis` 403)                                                                     |
+| GET    | `/funding/applications`                      | Bearer (moderator+)        | Staff pending grant queue                                                                                 |
+| GET    | `/funding/applications/:accountId`           | Bearer (moderator+)        | Staff grant review                                                                                        |
+| POST   | `/funding/trial`                             | Bearer (moderator+)        | One-UTC-day trial                                                                                         |
+| POST   | `/funding/admit`                             | Bearer (moderator+)        | Admit grant                                                                                               |
+| POST   | `/funding/reject`                            | Bearer (moderator+)        | Reject grant                                                                                              |
 | GET    | `/messages`                                  | Bearer                     | List top-level forum notes (+ visible `replyCount`); 409 if rules missing                                 |
 | POST   | `/messages`                                  | Bearer                     | Post text/photo; 409 if rules/name/username/Lightning Address missing                                     |
 | GET    | `/messages/hidden`                           | Bearer (moderator+)        | Staff log of soft-hidden notes (session, not DEBUG_TOKEN)                                                 |
@@ -154,7 +163,8 @@ Public base URLs used in examples:
 | GET    | `/gifts/stats`                               | none                       | Aggregated outbound gift statistics                                                                       |
 | GET    | `/invoices/passkey`                          | Bearer `SPEND_API_TOKEN`   | Whether a Lightning Address has a passkey-backed account                                                  |
 | GET    | `/invoices/posted`                           | Bearer `SPEND_API_TOKEN`   | Whether a Lightning Address has a live top-level non-profile forum post                                   |
-| POST   | `/invoices`                                  | Bearer `SPEND_API_TOKEN`   | Fetch a recipient BOLT11 (LNURL-pay; passkey and forum post required)                                     |
+| GET    | `/invoices/eligible`                         | Bearer `SPEND_API_TOKEN`   | Whether the address is funding-eligible today                                                             |
+| POST   | `/invoices`                                  | Bearer `SPEND_API_TOKEN`   | Fetch a recipient BOLT11 (LNURL-pay; passkey, funding grant, and forum post required)                     |
 | POST   | `/invoices/proof`                            | Bearer `SPEND_API_TOKEN`   | Accept payment preimage as proof                                                                          |
 
 Auth column: "Bearer (X+)" means minimum role X — X or any higher role.
@@ -409,7 +419,8 @@ An account with `sessionRefused` and a still-valid minted token → **Response**
   "hasPosted": false,
   "aboutMe": null,
   "aboutMeHasPhoto": false,
-  "notificationLevel": "all"
+  "notificationLevel": "all",
+  "funding": null
 }
 ```
 
@@ -438,6 +449,7 @@ stays `null`)).
 | `aboutMe`                  | string \| null | Profile-note text when it is a real bio, else `null` (missing or soft-hidden (`deletedAt` set); auto name-copy is not a bio, including after a display-name rename when the note text still equals the stored profile-note `name` (Ada→Grace with text `Ada` stays `null`)) |
 | `aboutMeHasPhoto`          | boolean        | True when the live profile note has a stored JPEG/PNG/WebP. Independent of `aboutMe` (photo-only and name-copy notes can still have a photo). Bytes are `GET /me/about/photo`. Does not expose `profileMessageId`.                                                          |
 | `notificationLevel`        | string         | Owner fan-out filter: `all`, `active`, or `mentions`. Default `all`. Owner-only; omitted from public `GET /view/:viewKey` and member cards.                                                                                                                                 |
+| `funding`                  | object \| null | Funding-program grant. `null` for `basis`. Otherwise always an object; no row is `{ status: "none", trialUtcDate: null, admittedAt: null, reviewedByName: null }`. Admitted includes live `reviewedByName`.                                                                 |
 
 ### `GET /me/activity`
 
@@ -503,10 +515,12 @@ still equals the stored profile-note `name` (Ada→Grace with text `Ada`
 stays `null`); keep `profileMessage`), `aboutMeHasPhoto` (true when the
 live profile note has a stored photo; false when `profileMessage` is
 `null`), uncapped live `postCount` / `replyCount` from `countByAccount`
-(not the latest-200 window), and `trust` (`verifiedBy` / `proposedBy` /
-`confirmedBy` / `appointedBy`, each `{ id, name }` or `null`). Default
+(not the latest-200 window), `trust` (`verifiedBy` / `proposedBy` /
+`confirmedBy` / `appointedBy`, each `{ id, name }` or `null`), and
+`fundingReviewedAt` (`grant.admittedAt` when the effective grant is
+admitted, else `null`). Default
 `trust` is all-null when no stored edges exist. Never `viewKey` /
-`eventId`.
+`eventId`. Never pending/trial/rejected on the member card.
 
 ### `GET /members/:accountId/posts`
 
@@ -715,6 +729,49 @@ when the caller is not a founder). **200** `{ id, name, role }` with
 `moderator` (new grant and idempotent already-moderator same-actor
 200), the api notifies the subject only (`moderator_appointed`, Web
 Push url `/welcome`). Notify failure does not fail the POST.
+
+### `POST /funding/apply`
+
+Bearer session. Role `basis` → **403**. Effective status `none` or
+`rejected` upserts `pending` (`appliedAt` now; trial/admitted/decided
+cleared). `pending` / `trial` / `admitted` → **409**. **200**
+`{ "funding": OwnerFundingJson }`. Store throw → **503**
+`{ "error": "Funding is unavailable" }` (`funding.write.failed`).
+
+### `GET /funding/applications`
+
+Staff Bearer (moderator). Lists effective **pending** grants
+oldest `appliedAt` first (expired trials included after lazy persist).
+JSON `{ "applications": [ { accountId, name, role, appliedAt } ] }`.
+Logs `funding.applications.listed`. Same 401/403/503 shapes as
+`GET /trust/proposals` with `{ "error": "Funding is unavailable" }`.
+
+### `GET /funding/applications/:accountId`
+
+Staff Bearer. **404** when the id is not a UUID, the account is missing,
+or there is no grant. **200** `{ account: { id, name, role, lightningAddress },
+grant: { status, appliedAt, trialUtcDate, admittedAt, decidedAt },
+messages }` with **effective** grant status and the same video-drop as
+member posts (`MESSAGE_LIST_LIMIT`, `serializeMessage`).
+
+### `POST /funding/trial`
+
+Staff Bearer. Body `{ "accountId" }`. Target must be effective pending,
+not self, not `basis`. Sets `trial`, `trialUtcDate` = today UTC,
+`decidedAt`/`decidedBy` now. **200** `{ id, name, role, funding }`.
+Self / ineligible → **409**. Same 401/403/400/404/503 as
+`POST /trust/verify` with Funding-unavailable 503.
+
+### `POST /funding/admit`
+
+Staff Bearer. Target effective pending **or** trial, not self, not
+`basis`. Sets `admitted`, `admittedAt` now, `trialUtcDate` null.
+**200** same shape as trial.
+
+### `POST /funding/reject`
+
+Staff Bearer. Target effective pending or trial, not self. Sets
+`rejected` and clears trial/admitted. **200** same shape as trial.
 
 ### `GET /view/:viewKey`
 
@@ -2295,6 +2352,21 @@ Success is always **200** (never 404 for an unknown address):
 or `{ "hasPasskey": false }` when there is no account for the address or the
 account has no passkey credential.
 
+### `GET /invoices/eligible`
+
+Spend-worker funding-grant check. Query `address=name@domain.tld`. Same
+`SPEND_API_TOKEN` Bearer as `GET /invoices/passkey` (503 unconfigured /
+401 unauthorized / 400 invalid address).
+
+Success is always **200** (never 404 for an unknown address):
+
+```json
+{ "eligible": true }
+```
+
+or `{ "eligible": false }` when there is no account for the address, the
+role is `basis`, or the grant is not admitted / trial-today.
+
 ### `GET /invoices/posted`
 
 Spend-worker eligibility check. Query `address=name@domain.tld`. Same
@@ -2323,8 +2395,9 @@ note never become `messageId`.
 
 Spend-worker invoice fetch. After address and amount validation, the api
 requires a 21.gifts account for `address` that already has a passkey
-credential and at least one live **top-level** forum message that is not the
-auto-created profile note. Replies do not unlock an invoice. It then resolves
+credential, a funding grant eligible today (`eligibleToday`), and at least
+one live **top-level** forum message that is not the auto-created profile
+note. Replies do not unlock an invoice. It then resolves
 LUD-16, GETs the LNURL-pay callback, decodes the BOLT11, and stores
 `{ id, pr, paymentHash }` in memory. It does not pay.
 
@@ -2386,10 +2459,18 @@ No account for the address, or the account has no passkey credential →
 { "error": "Passkey required" }
 ```
 
+The account has a passkey but is not funding-eligible today (`eligibleToday`)
+→ **403** (after the passkey check, before the forum-post check; no invoice
+is stored):
+
+```json
+{ "error": "Funding grant required" }
+```
+
 The account has a passkey but no live **top-level** forum message other than
 the auto-created profile note, or `messageId` is set but is not that
-address's live top-level non-profile note → **403** (after the passkey check,
-before any LNURL fetch; no invoice is stored):
+address's live top-level non-profile note → **403** (after the passkey and
+grant checks, before any LNURL fetch; no invoice is stored):
 
 ```json
 { "error": "Forum post required" }
@@ -2754,7 +2835,8 @@ POST with the same account, parent, normalised text, and media bytes returns
 Text-only posts are unchanged (still **429** on burst). After a **new**
 top-level persist, the api POSTs `{ address, messageId }` to `{SPEND_URL}/ping` with
 Bearer `SPEND_API_TOKEN` (fire-and-await; `messageId` is the UUID of the new
-top-level row). Errors are logged; the POST still
+top-level row) only when `eligibleToday` for the author's funding grant.
+Otherwise no ping, log `spend.ping.skipped` / `not_eligible`. Errors are logged; the POST still
 returns **200**. Replies do not ping. Idempotent media replay does not ping
 again. Unset or blank `SPEND_URL` or `SPEND_API_TOKEN` skips the ping; the
 process still boots. The worker signs a
@@ -3538,8 +3620,10 @@ HTTP body; `groupMessageId` is the new conversation message id) only when
 Lightning Address is a non-empty
 trimmed string, `spendPing` is set, **and** the caller has a live
 living-room top-level post (not the profile note) whose `createdAt` is on
-the same UTC day. No such post → **200**, no ping,
-log `spend.ping.skipped` / `no_public_post`. Ping throw still **200**.
+the same UTC day **and** `eligibleToday` for the author's funding grant.
+No such post → **200**, no ping, log `spend.ping.skipped` /
+`no_public_post`. Public post today but not funding-eligible → **200**, no
+ping, log `spend.ping.skipped` / `not_eligible`. Ping throw still **200**.
 Living-room lookup failure after persist is still **200**, no ping, log
 `spend.ping.skipped` / `posted_unreachable`. Empty or invalid text is
 **400** and does not ping. Verified, basis and the platform account **404**

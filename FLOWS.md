@@ -172,11 +172,14 @@ worker holds lightning.space LNDHub credentials and calls:
 3. `POST /invoices/proof` — preimage (`sha256` = payment hash); the api records the gift for `GET /gifts/stats` and `GET /gifts?day=`. After recording the gift, when the invoice has `messageId` the api inserts a platform-account gift-reply under a top-level post first, then `addSats`. This path does not notify (no in-app rows, no Web Push). When `messageId` is already a reply, it hides a deterministic spend marker and `addSats`s that reply (no nested gift-reply). When the invoice has `groupMessageId`, the api also inserts a platform-account conversation message in the closed Moderators group (text + paid sats, name `21.gifts`) after the triggering group message, at payment time; a missing or mismatched group reference is ignored and does not block the 200. Recorded description is `21gifts moderator` when `groupMessageId` is stored, else `21gifts daily`.
 
 Recurring **USD** gifts are paid by the external spend worker **when the
-recipient posts a top-level note**, not on a daily timer. Invoice HTTP
-(`POST /invoices` / `POST /invoices/proof`) is unchanged. Recurring donor UI
-is still a sketch. **Do not invent** `/me/donor`, `/me/recurring`, or
-scheduler paths. HTTP that exists today is only the spend-worker invoice
-pair above (`SPEC.md`).
+recipient posts a top-level note**, not on a daily timer, and only when
+that recipient is funding-eligible today. `POST /invoices` 403s
+`Funding grant required` when not eligible. `GET /invoices/eligible?address=`
+is the spend lookup and returns 200 `{ eligible }` (false when not eligible).
+`POST /invoices/proof` does not check the grant.
+Recurring donor UI is still a sketch. **Do not invent** `/me/donor`,
+`/me/recurring`, or scheduler paths. HTTP that exists today is the
+spend-worker invoice surface in `SPEC.md`.
 
 ---
 
@@ -187,7 +190,9 @@ Public comment / encouragement is a v1 surface. The composer POSTs
 (requires rules + name + username + Lightning Address — missing requirements are
 **409** `missing_requirements`);
 a **new top-level** persist pings spend (`POST {SPEND_URL}/ping` with
-`{ address, messageId }` and Bearer `SPEND_API_TOKEN`); replies and media replay do
+`{ address, messageId }` and Bearer `SPEND_API_TOKEN`) only when the author
+is funding-eligible today; otherwise log `spend.ping.skipped` /
+`not_eligible` and still 200; replies and media replay do
 not ping; unset/blank env skips the ping and still returns 200;
 the public thread is listed via `GET /messages` (requires rules; newest first, name
 snapshotted at post, `sats`, `payable`, `hasPhoto`, and live author `role`

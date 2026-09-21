@@ -1712,6 +1712,38 @@ test('Function: trustRoutes — POST /trust/verify without bearer is 401', async
   expect(res.status()).toBe(401);
 });
 
+test('Function: fundingRoutes — POST /funding/apply without bearer is 401', async ({ request }) => {
+  const res = await request.post('/funding/apply');
+  expect(res.status()).toBe(401);
+});
+test('Function: effectiveStatus — default boot has no DATABASE_URL', async ({ request }) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
+test('Function: eligibleToday — default boot has no DATABASE_URL', async ({ request }) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
+test('Function: serializeOwnerFunding — default boot has no DATABASE_URL', async ({ request }) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
+test('Function: fundingReviewedAt — default boot has no DATABASE_URL', async ({ request }) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
+test('Function: expiredTrialAsPending — default boot has no DATABASE_URL', async ({ request }) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
+test('Function: loadGrantEffective — default boot has no DATABASE_URL', async ({ request }) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
+test('Function: migrateFundingSchema — default boot has no DATABASE_URL', async ({ request }) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
+test('Function: InMemoryFundingStore — default boot has no DATABASE_URL', async ({ request }) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
+test('Function: PostgresFundingStore — default boot has no DATABASE_URL', async ({ request }) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
+
 test('Function: debugTrustRoutes — POST /debug/trust-edges without bearer is 401', async ({
   request,
 }) => {

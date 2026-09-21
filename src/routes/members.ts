@@ -10,6 +10,8 @@ import { InMemoryFiatStore, type FiatRateBook } from '@/lib/usd-fiat-store';
 import { logEvent } from '@/lib/log';
 import { MESSAGE_LIST_LIMIT, serializeMessage, type MessageRow } from '@/lib/message';
 import type { MessageStore } from '@/lib/message-store';
+import { fundingReviewedAt } from '@/lib/funding';
+import { InMemoryFundingStore, type FundingStore } from '@/lib/funding-store';
 import { accountTrust } from '@/lib/trust';
 import type { TrustStore } from '@/lib/trust-store';
 import { forumVideoFilePresent, resolveMediaDir } from '@/lib/video';
@@ -29,6 +31,11 @@ export interface MembersRouteDeps {
   messageStore: MessageStore;
   /** Stored trust edges for the `trust` object on GET JSON. */
   trustStore: TrustStore;
+  /**
+   * Funding grants for member-card `fundingReviewedAt` (default: empty
+   * {@link InMemoryFundingStore}).
+   */
+  fundingStore?: FundingStore;
   /** Clock returning epoch milliseconds (injected for testability). */
   now: () => number;
   /**
@@ -140,13 +147,14 @@ async function loadMember(deps: MembersRouteDeps, c: Context): Promise<MemberLoa
  * `GET /members/:accountId/replies`. More-specific paths register before
  * `/:accountId`.
  *
- * @param deps - Auth store, message store, trust store, clock, and optional gift/rate/fiat stores.
+ * @param deps - Auth store, message store, trust store, funding store, clock, and optional gift/rate/fiat stores.
  * @returns A Hono app with activity, posts, replies, and member GET.
  */
 export function membersRoutes(deps: MembersRouteDeps): Hono {
   const giftStore = deps.giftStore ?? new InMemoryGiftStore();
   const rates = deps.rates ?? new InMemoryBtcUsdStore();
   const fiatRates = deps.fiatRates ?? new InMemoryFiatStore();
+  const fundingStore = deps.fundingStore ?? new InMemoryFundingStore();
 
   return new Hono()
     .get('/:accountId/activity', async (c) => {
@@ -288,6 +296,7 @@ export function membersRoutes(deps: MembersRouteDeps): Hono {
         const counts = await deps.messageStore.countByAccount(account.id);
         const edges = await deps.trustStore.listEdgesForSubject(account.id);
         const accounts = await deps.authStore.listAccounts();
+        const grant = await fundingStore.getByAccountId(account.id);
         return c.json(
           {
             id: account.id,
@@ -303,6 +312,7 @@ export function membersRoutes(deps: MembersRouteDeps): Hono {
             postCount: counts.postCount,
             replyCount: counts.replyCount,
             trust: accountTrust(account.id, accounts, edges),
+            fundingReviewedAt: fundingReviewedAt(grant, deps.now()),
           },
           200,
         );

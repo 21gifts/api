@@ -33,6 +33,8 @@ import { signEventForAccount } from '@/lib/nostr/sign';
 import { buildZapRequest } from '@/lib/nostr/zap-request';
 import type { NotificationStore } from '@/lib/notification-store';
 import type { PushStore } from '@/lib/push-store';
+import { eligibleToday } from '@/lib/funding';
+import { InMemoryFundingStore, type FundingStore } from '@/lib/funding-store';
 import type { SpendPing } from '@/lib/spend-ping';
 import { bearerToken } from '@/routes/me';
 import { WAIT_SATS_POLL_MS, WAIT_SATS_TIMEOUT_MS } from '@/routes/messages';
@@ -55,6 +57,11 @@ export interface ConversationRouteDeps {
   now: () => number;
   /** Optional spend ping after a new moderator-group message. */
   spendPing?: SpendPing;
+  /**
+   * Funding grants for moderator-group spend-ping eligibility (default:
+   * empty {@link InMemoryFundingStore}).
+   */
+  fundingStore?: FundingStore;
   /** LNURL fetch (invoice path). */
   fetchImpl?: FetchFn;
   /** Optional AES KEK; without it invoice signing is 503. */
@@ -662,10 +669,17 @@ export function conversationRoutes(deps: ConversationRouteDeps): Hono {
                 deps.now(),
               );
               if (publicToday) {
-                try {
-                  await deps.spendPing.ping(address, created.id, 'moderator');
-                } catch {
-                  /* persist must not fail */
+                const grant = await (
+                  deps.fundingStore ?? new InMemoryFundingStore()
+                ).getByAccountId(account.id);
+                if (!eligibleToday(account.role, grant, deps.now())) {
+                  logEvent('spend.ping.skipped', { reason: 'not_eligible' });
+                } else {
+                  try {
+                    await deps.spendPing.ping(address, created.id, 'moderator');
+                  } catch {
+                    /* persist must not fail */
+                  }
                 }
               } else {
                 logEvent('spend.ping.skipped', { reason: 'no_public_post' });

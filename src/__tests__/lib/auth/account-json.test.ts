@@ -6,7 +6,8 @@ import {
   serializeOwnerAccountWithPosts,
   serializeViewProfile,
 } from '@/lib/auth/account-json';
-import type { Account } from '@/lib/auth/store';
+import { InMemoryAuthStore, type Account } from '@/lib/auth/store';
+import { InMemoryFundingStore } from '@/lib/funding-store';
 import { unsignedNostrDefaults } from '@/lib/message';
 import type { MessageRow } from '@/lib/message';
 
@@ -98,6 +99,7 @@ describe('serializeOwnerAccount', () => {
       aboutMe: null,
       aboutMeHasPhoto: false,
       notificationLevel: 'all',
+      funding: null,
     });
     expect(json.viewKey).toBe(account.viewKey);
     expect(json.setup).toBe('rules');
@@ -136,6 +138,21 @@ describe('serializeOwnerAccount', () => {
     expect(json.aboutMe).toBeNull();
     expect(json.aboutMeHasPhoto).toBe(true);
     expect(json).not.toHaveProperty('profileMessageId');
+  });
+
+  it('includes an explicit funding object when provided', () => {
+    const json = serializeOwnerAccount(account, false, null, false, {
+      status: 'none',
+      trialUtcDate: null,
+      admittedAt: null,
+      reviewedByName: null,
+    });
+    expect(json.funding).toEqual({
+      status: 'none',
+      trialUtcDate: null,
+      admittedAt: null,
+      reviewedByName: null,
+    });
   });
 });
 
@@ -310,6 +327,94 @@ describe('serializeOwnerAccountWithPosts', () => {
     );
     expect(hidden.aboutMe).toBeNull();
     expect(hidden.aboutMeHasPhoto).toBe(false);
+  });
+
+  it('sets funding null for basis and none for verified without a row', async () => {
+    const none = await serializeOwnerAccountWithPosts(account, {
+      accountHasLivePost: async () => false,
+      getById: async () => undefined,
+    });
+    expect(none.funding).toBeNull();
+
+    const verified = await serializeOwnerAccountWithPosts(
+      { ...account, role: 'verified' },
+      {
+        accountHasLivePost: async () => false,
+        getById: async () => undefined,
+      },
+    );
+    expect(verified.funding).toEqual({
+      status: 'none',
+      trialUtcDate: null,
+      admittedAt: null,
+      reviewedByName: null,
+    });
+  });
+
+  it('loads admitted funding and the reviewer name', async () => {
+    const fundingStore = new InMemoryFundingStore([
+      {
+        accountId: 'acc',
+        status: 'admitted',
+        appliedAt: 1,
+        decidedAt: 2,
+        decidedBy: 'staff',
+        trialUtcDate: null,
+        admittedAt: 3,
+        note: null,
+      },
+    ]);
+    const authStore = new InMemoryAuthStore();
+    await authStore.createAccount({
+      ...account,
+      id: 'staff',
+      name: 'Mod',
+      role: 'moderator',
+      viewKey: 'b'.repeat(64),
+    });
+    const json = await serializeOwnerAccountWithPosts(
+      { ...account, role: 'verified' },
+      {
+        accountHasLivePost: async () => false,
+        getById: async () => undefined,
+      },
+      { store: fundingStore, nowMs: 4, authStore },
+    );
+    expect(json.funding).toEqual({
+      status: 'admitted',
+      trialUtcDate: null,
+      admittedAt: 3,
+      reviewedByName: 'Mod',
+    });
+  });
+
+  it('uses a null reviewer name when decidedBy is missing', async () => {
+    const fundingStore = new InMemoryFundingStore([
+      {
+        accountId: 'acc',
+        status: 'admitted',
+        appliedAt: 1,
+        decidedAt: 2,
+        decidedBy: 'ghost',
+        trialUtcDate: null,
+        admittedAt: 3,
+        note: null,
+      },
+    ]);
+    const json = await serializeOwnerAccountWithPosts(
+      { ...account, role: 'verified' },
+      {
+        accountHasLivePost: async () => false,
+        getById: async () => undefined,
+      },
+      { store: fundingStore, nowMs: 4, authStore: new InMemoryAuthStore() },
+    );
+    expect(json.funding).toEqual({
+      status: 'admitted',
+      trialUtcDate: null,
+      admittedAt: 3,
+      reviewedByName: null,
+    });
   });
 });
 
