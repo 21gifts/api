@@ -5513,6 +5513,93 @@ describe('indexOpenZapReceipts', () => {
     expect(replies[0]?.text).toBe('');
   });
 
+  it('skips notifyZap and creates a compose post for a platform-note ingest', async () => {
+    const store = new InMemoryMessageStore();
+    const auth = new InMemoryAuthStore();
+    const feeId = await seedStore({
+      store,
+      auth,
+      accountId: 'acc-ingest-platform',
+      lightningAddress: 'platform-ingest@example.com',
+      messageId: 'm-ingest-platform',
+    });
+    const platform = await auth.getAccount('acc-ingest-platform');
+    expect(platform).toBeDefined();
+    await auth.updateAccount({
+      ...platform!,
+      isPlatform: true,
+      profileMessageId: feeId,
+    });
+    await auth.createAccount({
+      id: 'payer-ingest-platform',
+      linkingKey: null,
+      role: 'basis',
+      name: 'Ada',
+      username: 'ada-ingest-platform',
+      lightningAddress: 'ada-ingest-platform@example.com',
+      lightningAddressVerified: true,
+      location: null,
+      forumLawsDismissed: false,
+      viewKey: viewKeyFor('payer-ingest-platform'),
+      createdAt: 2,
+      rulesAgreedAt: 1,
+    });
+    await store.recordInvoiceAttempt({
+      id: 'inv-ingest-platform',
+      createdAt: new Date('2026-08-28T00:00:00.000Z'),
+      messageId: feeId,
+      payerAccountId: 'payer-ingest-platform',
+      authorAccountId: 'acc-ingest-platform',
+      amountSats: 1,
+      lightningAddress: null,
+      zapRequest: { content: 'Hello from Ada' },
+      result: 'ok',
+      httpStatus: 200,
+      pr: 'lnbc-ingest-platform',
+      paymentHash: 'c1'.repeat(32),
+      description: null,
+      descriptionHash: null,
+      isNip57Invoice: true,
+      lnurlResponse: null,
+    });
+    const notifications = new InMemoryNotificationStore();
+    const spendPing = { ping: vi.fn(async () => undefined) };
+    const querier = new RecordingQuerier();
+    querier.events = [
+      {
+        id: 'r-ingest-platform',
+        pubkey: PROVIDER_PUBKEY,
+        kind: 9735,
+        tags: [
+          ['e', NOTE_EVENT_ID],
+          ['bolt11', 'lnbc-ingest-platform'],
+        ],
+      },
+    ];
+    mockedDecode.mockReturnValue({ paymentHash: 'c1'.repeat(32), amountMsat: 1000 });
+    await ingest({
+      store,
+      auth,
+      querier,
+      urls: URLS,
+      timeoutMs: 50,
+      now: () => 1,
+      fetchImpl: lnurlFetch(PROVIDER_PUBKEY),
+      notificationStore: notifications,
+      spendPing,
+      postLimiter: new PostRateLimiter(),
+    });
+    const created = (await store.listLatest(20)).find((row) => row.text === 'Hello from Ada');
+    expect(created?.parentId).toBeNull();
+    expect(created?.accountId).toBe('payer-ingest-platform');
+    expect(created?.sats).toBe(0);
+    expect(spendPing.ping).toHaveBeenCalledTimes(1);
+    expect(spendPing.ping).toHaveBeenCalledWith('ada-ingest-platform@example.com', created?.id);
+    const forPlatform = await notifications.listByRecipient('acc-ingest-platform', 10);
+    expect(forPlatform.filter((row) => row.type === 'zap')).toEqual([]);
+    expect(forPlatform.filter((row) => row.type === 'forum_post')).toHaveLength(1);
+  });
+
   it('creates one zap notification and no forum_reply for a zap with a NIP-57 comment', async () => {
     const store = new InMemoryMessageStore();
     const auth = new InMemoryAuthStore();

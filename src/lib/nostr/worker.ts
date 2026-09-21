@@ -208,10 +208,13 @@ function reservedContent(
  * (in-app every account except the actor; no-op when the actor is the
  * official platform account; Web Push only to bell subscribers).
  * Failures log `nostr.reply.notify.failed` and do not undo persist. Zap ingest
- * still calls `notifyZap` after a newly indexed forum receipt. PN ingest
- * appends a conversation gift (`appendConversationGift`) and does not call
- * `notifyZap`. It does not call `notifyForumReply` for the gift-reply. When a
- * conversation store is present, also
+ * still calls `notifyZap` after a newly indexed **member-note** forum receipt.
+ * A zap on the official platform profile note is a compose fee: skip
+ * `notifyZap`, then fan out `notifyForumPost` / `notifyForumReply` plus a
+ * top-level `spendPing`. PN ingest appends a conversation gift
+ * (`appendConversationGift`) and does not call `notifyZap`. A member-note
+ * gift-reply does not call `notifyForumReply`. When a conversation store is
+ * present, also
  * signs/publishes NIP-17 wraps and REQs inbound kind:1059 / kind:4 to member
  * and platform pubkeys.
  *

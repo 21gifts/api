@@ -2862,7 +2862,7 @@ Platform note not yet payable (unsigned or missing Lightning Address) →
 { "error": "This message cannot be paid yet" }
 ```
 
-No platform account, missing profile note, or store failure → **Response**
+No platform account, missing or soft-hidden profile note, or store failure → **Response**
 `503`:
 
 ```json

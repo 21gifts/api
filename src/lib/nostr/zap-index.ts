@@ -759,12 +759,16 @@ export async function indexZapReceipt(args: {
  * account except skip (no-op when the payer is the official platform
  * account; Web Push only to bell subscribers). Conversation
  * invoices skip `addSats`, gift-reply, and `notifyZap`. Gift-reply insert
- * runs only when the paid message is top-level (`parentId` null); a reply
- * zap is `addSats` only (no nested gift-reply) and clears `payerAccountId`
- * so the receipt never occupies the awaiting-gift-reply queue. Retries
- * receipts that have a payer and no gift-reply id yet, and drops
- * already-queued reply receipts from that queue. The gift-reply insert
- * does not call `notifyForumReply`.
+ * runs only when the paid message is a top-level member note (`parentId`
+ * null) that is not the official platform profile note; a member-note
+ * gift-reply does not call `notifyForumReply`. A zap on that platform note
+ * is a compose fee (payer post/reply, `sats` 0) that skips `notifyZap` and
+ * fans out `notifyForumPost` / `notifyForumReply` plus a top-level
+ * `spendPing`. A reply zap is `addSats` only (no nested gift-reply) and
+ * clears `payerAccountId` so the receipt never occupies the
+ * awaiting-gift-reply queue. Retries receipts that have a payer and no
+ * gift-reply id yet, and drops already-queued reply receipts from that
+ * queue.
  *
  * Receipts whose terminal decision this process already persisted (`indexed`,
  * or `rejected` with reason `duplicate`) skip note lookup, account/LNURL

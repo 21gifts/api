@@ -1059,7 +1059,11 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
           return c.json({ error: 'Messages are unavailable' }, 503);
         }
         const row = await deps.store.getById(messageId);
-        if (row === undefined || row.deletedAt !== null) {
+        if (row === undefined) {
+          return c.json({ error: 'Messages are unavailable' }, 503);
+        }
+        /* v8 ignore next 3 -- ensureProfileMessage returns a live id; deletedAt is a hide race */
+        if (row.deletedAt !== null) {
           return c.json({ error: 'Messages are unavailable' }, 503);
         }
         if (!payableOf(row, live) || row.eventId === null || row.eventId === '') {
