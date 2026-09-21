@@ -34,7 +34,8 @@ export interface PasskeyCeremony {
   /**
    * Build `navigator.credentials.create()` options and the challenge to persist.
    *
-   * @param input - Relying party and user entity for this registration.
+   * @param input - Relying party and user entity for this registration;
+   *   optional `excludeCredentials` is the current credential on replace.
    * @returns The challenge string (base64url) and the JSON options for the browser.
    */
   generateRegistrationOptions(input: {

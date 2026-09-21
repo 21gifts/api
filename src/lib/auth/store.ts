@@ -186,8 +186,12 @@ export interface AuthStore {
   updateAccount(account: Account): Promise<void>;
   /**
    * Set `walletBackupSeenAt` to `now` when it is still null. Other columns
-   * stay unchanged. Returns the stored row, or `undefined` when the id is
-   * unknown.
+   * stay unchanged.
+   *
+   * @param accountId - Account to mark.
+   * @param now - Epoch ms for the first write.
+   * @returns `{ account, wrote }`, or `undefined` when the id is unknown.
+   *   `wrote` is true only when this call stored the timestamp.
    */
   markWalletBackupSeen(
     accountId: string,
@@ -317,7 +321,8 @@ export interface AuthStore {
   /**
    * Persist the account's first passkey and set `walletRequired: true` in the
    * same write. Returns false when this account already has a credential, the
-   * credential id is taken, or the account is session-refused.
+   * credential id is taken, the account is missing, or the account is
+   * session-refused.
    */
   createFirstPasskeyCredential(credential: PasskeyCredential): Promise<boolean>;
   /** Look up a passkey credential by id, or `undefined` if unknown. */
