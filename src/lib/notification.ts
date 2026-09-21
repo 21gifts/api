@@ -8,7 +8,8 @@
  * filtered by each recipient's `notificationLevel` when `auth` is set.
  * `GET /notifications` applies the same filter to stored rows. Targeted
  * `moderator_appointed` does not fan out. `moderator_proposal` fans out to
- * other staff and stays unread until the proposal is confirmed or rejected.
+ * other staff and is not stamped by mark-read; rows drop on confirm, on
+ * reject when pending is then empty, or on appoint.
  * Web Push is still only for `push_subscription` rows. Member HTTP never
  * exposes recipient or actor account ids. Callers catch failures so persist
  * still succeeds.

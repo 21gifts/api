@@ -447,7 +447,8 @@ export class PostgresNotificationStore implements NotificationStore {
 
   /**
    * Stamp `read_at` when the row is unread, owned by `accountId`, and not
-   * `moderator_proposal` (open proposals stay unread until confirm/reject).
+   * `moderator_proposal` (mark-read does not stamp them; rows drop on
+   * confirm, on reject when pending is then empty, or on appoint).
    *
    * @param id - Notification id.
    * @param accountId - Recipient.
@@ -474,7 +475,8 @@ export class PostgresNotificationStore implements NotificationStore {
 
   /**
    * Stamp `read_at` on every unread row for `accountId` except
-   * `moderator_proposal` (open proposals stay unread until confirm/reject).
+   * `moderator_proposal` (mark-read does not stamp them; rows drop on
+   * confirm, on reject when pending is then empty, or on appoint).
    *
    * @param accountId - Recipient (`$1`).
    * @param readAt - Read stamp (`$2`).

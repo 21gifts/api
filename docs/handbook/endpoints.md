@@ -499,7 +499,7 @@
 
 ## Endpoint: POST /notifications/read-all
 
-- **Purpose:** Bearer required. 200 `{ ok: true }`. Marks every unread notification for the session account read except `moderator_proposal` (those rows stay unread until confirm or reject).
+- **Purpose:** Bearer required. 200 `{ ok: true }`. Marks every unread notification for the session account read except `moderator_proposal` (mark-read does not stamp them; rows drop on confirm, on reject when pending is then empty, or on appoint).
 - **Errors:** 401 Unauthorized; 503 Notifications are unavailable (`notifications.read_all.failed`).
 - **Used by:** App mark-all-read control.
 - **Auth:** Bearer session.
