@@ -1500,10 +1500,9 @@ describe('GET /conversations/:id', () => {
       });
     }
 
-    const first = await mount(auth, conversations).request(
-      `/conversations/${thread.id}?limit=2`,
-      { headers: AUTH },
-    );
+    const first = await mount(auth, conversations).request(`/conversations/${thread.id}?limit=2`, {
+      headers: AUTH,
+    });
     expect(first.status).toBe(200);
     const firstBody = (await first.json()) as {
       messages: Array<{ id: string }>;

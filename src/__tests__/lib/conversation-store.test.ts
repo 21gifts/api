@@ -405,9 +405,9 @@ describe('InMemoryConversationStore', () => {
       cursor: { c: tied, i: 'm-z' },
     });
     expect(listed.map((row) => row.id)).toEqual(['m-old', 'm-a']);
-    expect(await store.listThreadPage({ conversationId: 'missing', limit: 10, cursor: null })).toEqual(
-      [],
-    );
+    expect(
+      await store.listThreadPage({ conversationId: 'missing', limit: 10, cursor: null }),
+    ).toEqual([]);
   });
 
   it('caps listVisible at limit and breaks ties by id descending', async () => {
@@ -1455,9 +1455,7 @@ describe('PostgresConversationStore', () => {
     });
 
     expect(listed.map((row) => row.id)).toEqual(['m-old']);
-    expect(sql.queries[0]?.text).toMatch(
-      /created_at < \$3 OR \(created_at = \$3 AND id < \$4\)/,
-    );
+    expect(sql.queries[0]?.text).toMatch(/created_at < \$3 OR \(created_at = \$3 AND id < \$4\)/);
     expect(sql.queries[0]?.text).toMatch(/ORDER BY created_at DESC, id DESC/);
     expect(sql.queries[0]?.text).toMatch(/LIMIT \$2/);
     expect(sql.queries[0]?.params).toEqual(['c1', 20, cursorAt, 'm-cursor']);
