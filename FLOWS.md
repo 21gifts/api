@@ -194,7 +194,7 @@ a **new top-level** persist pings spend (`POST {SPEND_URL}/ping` with
 is funding-eligible today; otherwise log `spend.ping.skipped` /
 `not_eligible` and still 200; replies and media replay do
 not ping; unset/blank env skips the ping and still returns 200;
-the public thread is listed via `GET /messages` (requires rules; newest first, name
+the public thread is listed via `GET /messages` (requires rules; newest first, optional `hashtag` query (name without `#`; token filter on `text`), name
 snapshotted at post, `sats`, `payable`, `hasPhoto`, and live author `role`
 — never photo bytes). Bytes are public `GET /messages/:id/photo` (Nostr `imeta`). Staff hide is a public-API filter **and** a best-effort NIP-09 (`kind: 5`, signed with the note author's custodial nsec) on the durability relay plus the public relay list, plus a best-effort Cloudflare purge of public photo/video URLs. Unsigned/public GET of a hidden row stays 404. A founder/moderator session may GET the hidden row (and photo/video) so the app can show who hid it and when. Hiding a note also retracts in-app notifications whose parent or reply is that note or a direct child. `GET /notifications` drops remaining rows whose parent or reply message is missing or hidden. Operator `GET /debug/messages` (Bearer `DEBUG_TOKEN`) still lists and fetches soft-hidden forum rows and their photo bytes. Restore does not undelete Nostr. The shipped UI
 is a messenger-group thread: oldest notes at the top, newest at the bottom,

@@ -1028,6 +1028,111 @@ describe('InMemoryMessageStore', () => {
     expect(popularMismatchedKind.map((row) => row.id)).toEqual(['pop-high', 'paid', 'pop-low']);
   });
 
+  it('listFeed filters by hashtag token and pages only matches', async () => {
+    const untagged = {
+      ...LATE,
+      id: 'untagged',
+      text: 'living room',
+      createdAt: new Date('2026-08-10T00:00:00.000Z'),
+    };
+    const shop = {
+      ...EARLY,
+      id: 'shop',
+      text: 'Come by #21GiftsShop.',
+      createdAt: new Date('2026-08-09T00:00:00.000Z'),
+    };
+    const shopCase = {
+      ...EARLY,
+      id: 'shop-case',
+      text: 'also #21giftsshop here',
+      createdAt: new Date('2026-08-08T00:00:00.000Z'),
+    };
+    const prefix = {
+      ...EARLY,
+      id: 'prefix',
+      text: 'visit #21GiftsShopper',
+      createdAt: new Date('2026-08-07T00:00:00.000Z'),
+    };
+    const paidShop = {
+      ...EARLY,
+      id: 'paid-shop',
+      text: 'paid #21GiftsShop',
+      sats: 21,
+      createdAt: new Date('2026-08-06T00:00:00.000Z'),
+    };
+    const store = new InMemoryMessageStore([untagged, shop, shopCase, prefix, paidShop]);
+    await store.create({
+      ...LATE,
+      id: 'shop-reply',
+      parentId: 'shop',
+      text: 'reply #21GiftsShop',
+    });
+    const emptyStaff = new Set<string>();
+    const tagged = await store.listFeed({
+      limit: 10,
+      mode: 'all',
+      cursor: null,
+      staffAccountIds: emptyStaff,
+      hashtag: '21GiftsShop',
+    });
+    expect(tagged.map((row) => row.id)).toEqual(['shop', 'shop-case', 'paid-shop']);
+    const omitted = await store.listFeed({
+      limit: 10,
+      mode: 'all',
+      cursor: null,
+      staffAccountIds: emptyStaff,
+    });
+    expect(omitted.map((row) => row.id)).toEqual([
+      'untagged',
+      'shop',
+      'shop-case',
+      'prefix',
+      'paid-shop',
+    ]);
+    const emptyHashtag = await store.listFeed({
+      limit: 10,
+      mode: 'all',
+      cursor: null,
+      staffAccountIds: emptyStaff,
+      hashtag: '',
+    });
+    expect(emptyHashtag.map((row) => row.id)).toEqual([
+      'untagged',
+      'shop',
+      'shop-case',
+      'prefix',
+      'paid-shop',
+    ]);
+    const firstPage = await store.listFeed({
+      limit: 1,
+      mode: 'all',
+      cursor: null,
+      staffAccountIds: emptyStaff,
+      hashtag: '21GiftsShop',
+    });
+    expect(firstPage.map((row) => row.id)).toEqual(['shop']);
+    const last = firstPage[0];
+    if (last === undefined) {
+      throw new Error('expected last');
+    }
+    const secondPage = await store.listFeed({
+      limit: 1,
+      mode: 'all',
+      cursor: { k: 't', c: last.createdAt, i: last.id },
+      staffAccountIds: emptyStaff,
+      hashtag: '21GiftsShop',
+    });
+    expect(secondPage.map((row) => row.id)).toEqual(['shop-case']);
+    const unpaidTagged = await store.listFeed({
+      limit: 10,
+      mode: 'unpaid',
+      cursor: null,
+      staffAccountIds: emptyStaff,
+      hashtag: '21GiftsShop',
+    });
+    expect(unpaidTagged.map((row) => row.id)).toEqual(['shop', 'shop-case']);
+  });
+
   it('listFeed replyCount includes zapper children like listLatest', async () => {
     const store = new InMemoryMessageStore([EARLY]);
     await store.create({
@@ -4213,6 +4318,50 @@ describe('PostgresMessageStore', () => {
     });
     expect(mapped[0]?.id).toBe('m1');
     expect(mapped[0]?.replyCount).toBe(0);
+  });
+
+  it('listFeed SQL filters by hashtag token', async () => {
+    const sql = new MockSql();
+    sql.nextRows = [];
+    const store = new PostgresMessageStore(sql);
+    const staff = new Set(['staff-1']);
+    await store.listFeed({
+      limit: 10,
+      mode: 'all',
+      cursor: null,
+      staffAccountIds: staff,
+      hashtag: '21GiftsShop',
+    });
+    await store.listFeed({
+      limit: 10,
+      mode: 'unpaid',
+      cursor: null,
+      staffAccountIds: staff,
+      hashtag: '21GiftsShop',
+    });
+    await store.listFeed({
+      limit: 10,
+      mode: 'all',
+      cursor: null,
+      staffAccountIds: staff,
+    });
+    await store.listFeed({
+      limit: 10,
+      mode: 'all',
+      cursor: null,
+      staffAccountIds: staff,
+      hashtag: '',
+    });
+    const tagged = sql.queries[0];
+    expect(tagged?.text).toMatch(/text ~\*/);
+    expect(tagged?.text).toMatch(/parent_id IS NULL/);
+    expect(tagged?.params).toContain('#21giftsshop([^a-z0-9_]|$)');
+    const unpaidTagged = sql.queries[1];
+    expect(unpaidTagged?.text).toMatch(/sats = 0/);
+    expect(unpaidTagged?.text).toMatch(/text ~\*/);
+    expect(unpaidTagged?.params).toContain('#21giftsshop([^a-z0-9_]|$)');
+    expect(sql.queries[2]?.text).not.toMatch(/text ~\*/);
+    expect(sql.queries[3]?.text).not.toMatch(/text ~\*/);
   });
 
   it('propagates listFeed query errors', async () => {
