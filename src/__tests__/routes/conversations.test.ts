@@ -903,12 +903,100 @@ describe('GET /conversations', () => {
     const res = await mount(auth, conversations).request('/conversations', { headers: AUTH });
     expect(res.status).toBe(200);
     const body = (await res.json()) as {
-      conversations: Array<{ unread: boolean }>;
+      conversations: Array<{ unread: boolean; unreadMessageCount: number }>;
       unreadCount: number;
     };
     expect(body.conversations).toHaveLength(1);
     expect(body.conversations[0]?.unread).toBe(true);
+    expect(body.conversations[0]?.unreadMessageCount).toBe(1);
     expect(body.unreadCount).toBe(1);
+  });
+
+  it('counts two inbound and ignores outbound on a never-read thread', async () => {
+    const auth = await seeded();
+    await withOther(auth);
+    const conversations = new InMemoryConversationStore();
+    const thread = await conversations.openMemberMember('acc', 'other', new Date(now()));
+    await conversations.appendMessage({
+      id: 'm-in-1',
+      conversationId: thread.id,
+      text: 'one',
+      createdAt: new Date(now()),
+      senderAccountId: 'other',
+      senderPubkey: null,
+      name: 'Bob',
+      sats: 0,
+      eventId: null,
+      nostrPublishState: 'pending',
+      nostrEvent: null,
+      claimedUntil: null,
+    });
+    await conversations.appendMessage({
+      id: 'm-in-2',
+      conversationId: thread.id,
+      text: 'two',
+      createdAt: new Date(now()),
+      senderAccountId: 'other',
+      senderPubkey: null,
+      name: 'Bob',
+      sats: 0,
+      eventId: null,
+      nostrPublishState: 'pending',
+      nostrEvent: null,
+      claimedUntil: null,
+    });
+    await conversations.appendMessage({
+      id: 'm-out',
+      conversationId: thread.id,
+      text: 'mine',
+      createdAt: new Date(now()),
+      senderAccountId: 'acc',
+      senderPubkey: null,
+      name: 'Ada',
+      sats: 0,
+      eventId: null,
+      nostrPublishState: 'pending',
+      nostrEvent: null,
+      claimedUntil: null,
+    });
+    const res = await mount(auth, conversations).request('/conversations', { headers: AUTH });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      conversations: Array<{ unread: boolean; unreadMessageCount: number }>;
+      unreadCount: number;
+    };
+    expect(body.conversations).toHaveLength(1);
+    expect(body.conversations[0]?.unread).toBe(true);
+    expect(body.conversations[0]?.unreadMessageCount).toBe(2);
+    expect(body.unreadCount).toBe(1);
+  });
+
+  it('returns 503 when countUnread throws', async () => {
+    const auth = await seeded();
+    await withOther(auth);
+    const conversations = new InMemoryConversationStore();
+    const thread = await conversations.openMemberMember('acc', 'other', new Date(now()));
+    await conversations.appendMessage({
+      id: 'm-in',
+      conversationId: thread.id,
+      text: 'yo',
+      createdAt: new Date(now()),
+      senderAccountId: 'other',
+      senderPubkey: null,
+      name: 'Bob',
+      sats: 0,
+      eventId: null,
+      nostrPublishState: 'pending',
+      nostrEvent: null,
+      claimedUntil: null,
+    });
+    conversations.countUnread = async () => {
+      throw new Error('boom');
+    };
+    const res = await mount(auth, conversations).request('/conversations', { headers: AUTH });
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({ error: 'Conversations are unavailable' });
+    expect(parsedEvents(warn).some((e) => e['event'] === 'conversations.list.failed')).toBe(true);
   });
 
   it('omits an outbound-only member thread and reports unreadCount 0', async () => {
@@ -1093,12 +1181,16 @@ describe('POST /conversations', () => {
       kind: string;
       name: string;
       lastFromMe: boolean;
+      unread: boolean;
+      unreadMessageCount: number;
       accountId?: string;
     };
     expect(body.name).toBe('Bob');
     expect(body.kind).toBe('member_member');
     expect(body.id.length).toBeGreaterThan(8);
     expect(body.lastFromMe).toBe(false);
+    expect(body.unread).toBe(false);
+    expect(body.unreadMessageCount).toBe(0);
     expect(body.accountId).toBe('other');
     expect(body).not.toHaveProperty('accountA');
     expect(body).not.toHaveProperty('eventId');
@@ -1424,11 +1516,12 @@ describe('POST /conversations/:id/read', () => {
     const listed = await mount(auth, conversations).request('/conversations', { headers: AUTH });
     expect(listed.status).toBe(200);
     const body = (await listed.json()) as {
-      conversations: Array<{ unread: boolean }>;
+      conversations: Array<{ unread: boolean; unreadMessageCount: number }>;
       unreadCount: number;
     };
     expect(body.conversations).toHaveLength(1);
     expect(body.conversations[0]?.unread).toBe(false);
+    expect(body.conversations[0]?.unreadMessageCount).toBe(0);
     expect(body.unreadCount).toBe(0);
   });
 
@@ -1838,6 +1931,7 @@ describe('moderator_group', () => {
         lastText: string;
         lastFromMe: boolean;
         unread: boolean;
+        unreadMessageCount: number;
       };
     };
     expect(body.conversation.kind).toBe('moderator_group');
@@ -1845,6 +1939,7 @@ describe('moderator_group', () => {
     expect(body.conversation.lastText).toBe('');
     expect(body.conversation.lastFromMe).toBe(false);
     expect(body.conversation.unread).toBe(false);
+    expect(body.conversation.unreadMessageCount).toBe(0);
     const list = await mount(auth, conversations).request('/conversations', { headers: AUTH });
     expect(list.status).toBe(200);
     const listed = (await list.json()) as { conversations: Array<{ kind: string }> };
@@ -1882,9 +1977,12 @@ describe('moderator_group', () => {
       headers: AUTH,
     });
     expect(group.status).toBe(200);
-    const groupBody = (await group.json()) as { conversation: { kind: string; unread: boolean } };
+    const groupBody = (await group.json()) as {
+      conversation: { kind: string; unread: boolean; unreadMessageCount: number };
+    };
     expect(groupBody.conversation.kind).toBe('moderator_group');
     expect(groupBody.conversation.unread).toBe(true);
+    expect(groupBody.conversation.unreadMessageCount).toBe(1);
   });
 
   it('skips a moderator_group row even when listVisible returns one', async () => {
@@ -2043,6 +2141,7 @@ describe('moderator_group', () => {
         lastText: string;
         lastFromMe: boolean;
         unread: boolean;
+        unreadMessageCount: number;
       };
     };
     expect(body.conversation.kind).toBe('moderator_group');
@@ -2050,6 +2149,7 @@ describe('moderator_group', () => {
     expect(body.conversation.lastText).toBe('');
     expect(body.conversation.lastFromMe).toBe(false);
     expect(body.conversation.unread).toBe(false);
+    expect(body.conversation.unreadMessageCount).toBe(0);
     const thread = await conversations.ensureModeratorGroup('plat', new Date(now()));
     const get = await mount(auth, conversations).request(`/conversations/${thread.id}`, {
       headers: AUTH,
@@ -2141,11 +2241,17 @@ describe('moderator_group', () => {
     });
     expect(group.status).toBe(200);
     const groupBody = (await group.json()) as {
-      conversation: { lastFromMe: boolean; lastSats: number; unread: boolean };
+      conversation: {
+        lastFromMe: boolean;
+        lastSats: number;
+        unread: boolean;
+        unreadMessageCount: number;
+      };
     };
     expect(groupBody.conversation.lastFromMe).toBe(false);
     expect(groupBody.conversation.lastSats).toBe(1233);
     expect(groupBody.conversation.unread).toBe(true);
+    expect(groupBody.conversation.unreadMessageCount).toBe(1);
   });
 
   it('keeps the platform account out of the Moderators group even with a founder role', async () => {

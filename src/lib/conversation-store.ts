@@ -90,6 +90,26 @@ export interface ConversationStore {
   ): Promise<boolean>;
 
   /**
+   * Number of inbound messages on this thread whose `createdAt` is strictly
+   * greater than this viewer's last-read stamp. Missing last-read means never
+   * read (every inbound counts). Outbound-only and empty are `0`. Same inbound
+   * predicate as `hasUnread` (`hasUnread` is true when this count is greater
+   * than `0`).
+   *
+   * @param conversationId - Thread to inspect.
+   * @param viewerId - Session account.
+   * @param staff - Moderator (kept for callers; direction uses actor).
+   * @param platformId - Official platform account id, or `null` when none.
+   * @returns Non-negative inbound unread count for that viewer on this thread.
+   */
+  countUnread(
+    conversationId: string,
+    viewerId: string,
+    staff: boolean,
+    platformId: string | null,
+  ): Promise<number>;
+
+  /**
    * Count of listed inbox threads with unread inbound for this viewer.
    * Same visibility as GET `/conversations` `unreadCount`: listed threads
    * with `hasUnread`. Outbound-only own platform tickets are listed but
@@ -535,6 +555,35 @@ export class InMemoryConversationStore implements ConversationStore {
     );
   }
 
+  countUnread(
+    conversationId: string,
+    viewerId: string,
+    _staff: boolean,
+    _platformId: string | null,
+  ): Promise<number> {
+    const stamp = this.#lastRead.get(lastReadKey(viewerId, conversationId));
+    return Promise.resolve(
+      this.#messages.filter((row) => {
+        if (row.conversationId !== conversationId) {
+          return false;
+        }
+        if (
+          !conversationIsInbound({
+            senderAccountId: row.senderAccountId,
+            actorAccountId: row.actorAccountId ?? null,
+            viewerId,
+          })
+        ) {
+          return false;
+        }
+        if (stamp === undefined) {
+          return true;
+        }
+        return row.createdAt.getTime() > stamp.getTime();
+      }).length,
+    );
+  }
+
   /**
    * Count listed unread threads for this viewer (GET list rules).
    *
@@ -952,6 +1001,30 @@ export class PostgresConversationStore implements ConversationStore {
       [conversationId, viewerId, staff, platformId],
     );
     return rows[0]?.exists === true;
+  }
+
+  async countUnread(
+    conversationId: string,
+    viewerId: string,
+    staff: boolean,
+    platformId: string | null,
+  ): Promise<number> {
+    const rows = await this.#sql.query<{ count: number | string | bigint }>(
+      `SELECT COUNT(*)::bigint AS count
+       FROM conversation_message
+       LEFT JOIN conversation_read
+         ON conversation_read.account_id = $2
+        AND conversation_read.conversation_id = conversation_message.conversation_id
+       WHERE conversation_message.conversation_id = $1
+         AND COALESCE(actor_account_id, sender_account_id) IS DISTINCT FROM $2
+         AND ($3::boolean IS DISTINCT FROM NULL OR $4::uuid IS NULL OR TRUE)
+         AND (
+           conversation_read.last_read_at IS NULL
+           OR conversation_message.created_at > conversation_read.last_read_at
+         )`,
+      [conversationId, viewerId, staff, platformId],
+    );
+    return mapCount(rows[0]?.count);
   }
 
   /**
@@ -1447,4 +1520,17 @@ function mapMessage(row: ConversationMessageSqlRow): ConversationMessageRow {
     nostrEvent: normalizeSignedEvent(row.nostr_event) ?? null,
     claimedUntil: optionalEpoch(row.claimed_until),
   };
+}
+
+function mapCount(value: number | string | bigint | undefined): number {
+  if (typeof value === 'bigint') {
+    return Number(value);
+  }
+  if (typeof value === 'number') {
+    return value;
+  }
+  if (typeof value === 'string') {
+    return Number(value);
+  }
+  return 0;
 }

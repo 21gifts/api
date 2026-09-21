@@ -571,6 +571,114 @@ describe('InMemoryConversationStore', () => {
     expect(await store.hasUnread('c-1', 'a', false, null)).toBe(false);
   });
 
+  it('countUnread is 3 for three inbound never-read messages', async () => {
+    const store = new InMemoryConversationStore();
+    const opened = await store.openMemberMember('a', 'b', NOW);
+    await store.appendMessage(
+      message({ id: 'in-1', conversationId: opened.id, senderAccountId: 'b' }),
+    );
+    await store.appendMessage(
+      message({ id: 'in-2', conversationId: opened.id, senderAccountId: 'b' }),
+    );
+    await store.appendMessage(
+      message({ id: 'in-3', conversationId: opened.id, senderAccountId: 'b' }),
+    );
+    expect(await store.countUnread(opened.id, 'a', false, null)).toBe(3);
+  });
+
+  it('countUnread is 0 after markRead', async () => {
+    const store = new InMemoryConversationStore();
+    const opened = await store.openMemberMember('a', 'b', NOW);
+    await store.appendMessage(
+      message({ id: 'in-1', conversationId: opened.id, senderAccountId: 'b' }),
+    );
+    await store.appendMessage(
+      message({ id: 'in-2', conversationId: opened.id, senderAccountId: 'b' }),
+    );
+    await store.appendMessage(
+      message({ id: 'in-3', conversationId: opened.id, senderAccountId: 'b' }),
+    );
+    await store.markRead(opened.id, 'a', NOW);
+    expect(await store.countUnread(opened.id, 'a', false, null)).toBe(0);
+  });
+
+  it('countUnread is 1 for newer inbound after markRead', async () => {
+    const store = new InMemoryConversationStore();
+    const opened = await store.openMemberMember('a', 'b', NOW);
+    await store.appendMessage(message({ conversationId: opened.id, senderAccountId: 'b' }));
+    await store.markRead(opened.id, 'a', NOW);
+    await store.appendMessage(
+      message({
+        id: 'm-2',
+        conversationId: opened.id,
+        senderAccountId: 'b',
+        createdAt: new Date(NOW.getTime() + 1000),
+      }),
+    );
+    expect(await store.countUnread(opened.id, 'a', false, null)).toBe(1);
+  });
+
+  it('countUnread is 0 for outbound-only', async () => {
+    const store = new InMemoryConversationStore();
+    const opened = await store.openMemberMember('a', 'b', NOW);
+    await store.appendMessage(message({ conversationId: opened.id, senderAccountId: 'a' }));
+    expect(await store.countUnread(opened.id, 'a', false, null)).toBe(0);
+  });
+
+  it('countUnread counts only inbound in a mixed thread', async () => {
+    const store = new InMemoryConversationStore();
+    const opened = await store.openMemberMember('a', 'b', NOW);
+    await store.appendMessage(
+      message({ id: 'out', conversationId: opened.id, senderAccountId: 'a' }),
+    );
+    await store.appendMessage(
+      message({ id: 'in-1', conversationId: opened.id, senderAccountId: 'b' }),
+    );
+    await store.appendMessage(
+      message({ id: 'in-2', conversationId: opened.id, senderAccountId: 'b' }),
+    );
+    expect(await store.countUnread(opened.id, 'a', false, null)).toBe(2);
+  });
+
+  it('countUnread counts gift-only inbound', async () => {
+    const store = new InMemoryConversationStore();
+    const opened = await store.openMemberMember('a', 'b', NOW);
+    await store.appendMessage(
+      message({
+        conversationId: opened.id,
+        senderAccountId: 'b',
+        text: '',
+        sats: 1,
+      }),
+    );
+    expect(await store.countUnread(opened.id, 'a', false, null)).toBe(1);
+  });
+
+  it('countUnread counts Damus null sender inbound', async () => {
+    const store = new InMemoryConversationStore();
+    const opened = await store.openMemberDamus('acc', 'aa'.repeat(32), NOW);
+    await store.appendMessage(message({ conversationId: opened.id, senderAccountId: null }));
+    expect(await store.countUnread(opened.id, 'acc', false, null)).toBe(1);
+  });
+
+  it('countUnread skips inbound messages that belong to another thread', async () => {
+    const store = new InMemoryConversationStore();
+    const keep = await store.openMemberMember('a', 'b', NOW);
+    const other = await store.openMemberMember('c', 'd', NOW);
+    await store.appendMessage(message({ conversationId: other.id, senderAccountId: 'd' }));
+    expect(await store.countUnread(keep.id, 'a', false, null)).toBe(0);
+  });
+
+  it('countUnread excludes inbound when createdAt equals last_read_at', async () => {
+    const store = new InMemoryConversationStore();
+    const opened = await store.openMemberMember('a', 'b', NOW);
+    await store.appendMessage(
+      message({ conversationId: opened.id, senderAccountId: 'b', createdAt: NOW }),
+    );
+    await store.markRead(opened.id, 'a', NOW);
+    expect(await store.countUnread(opened.id, 'a', false, null)).toBe(0);
+  });
+
   it('markRead overwrites a previous stamp', async () => {
     const store = new InMemoryConversationStore();
     const opened = await store.openMemberMember('a', 'b', NOW);
@@ -905,6 +1013,31 @@ describe('PostgresConversationStore', () => {
     expect(await new PostgresConversationStore(sql).hasUnread('c1', 'mem', false, 'plat')).toBe(
       false,
     );
+  });
+
+  it('countUnread query text includes COUNT, conversation_read and created_at', async () => {
+    const sql = new MockSql();
+    sql.nextRows = [{ count: 1 }];
+    const store = new PostgresConversationStore(sql);
+    expect(await store.countUnread('c1', 'acc', true, 'plat')).toBe(1);
+    expect(sql.queries[0]?.params).toEqual(['c1', 'acc', true, 'plat']);
+    expect(sql.queries[0]?.text).toContain('COUNT');
+    expect(sql.queries[0]?.text).toContain('conversation_read');
+    expect(sql.queries[0]?.text).toContain('created_at');
+  });
+
+  it('countUnread maps bigint and string', async () => {
+    const sql = new MockSql();
+    sql.nextRows = [{ count: 2n }];
+    expect(await new PostgresConversationStore(sql).countUnread('c1', 'a', false, null)).toBe(2);
+    sql.nextRows = [{ count: '3' }];
+    expect(await new PostgresConversationStore(sql).countUnread('c1', 'a', false, null)).toBe(3);
+    sql.nextRows = [{ count: 4 }];
+    expect(await new PostgresConversationStore(sql).countUnread('c1', 'a', false, null)).toBe(4);
+    sql.nextRows = [];
+    expect(await new PostgresConversationStore(sql).countUnread('c1', 'a', false, null)).toBe(0);
+    sql.nextRows = [{}];
+    expect(await new PostgresConversationStore(sql).countUnread('c1', 'a', false, null)).toBe(0);
   });
 
   it('unreadCount uses listVisible then inbound/unread EXISTS', async () => {

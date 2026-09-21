@@ -319,6 +319,7 @@ async function publicThread(
   authStore: AuthStore,
   platformId: string | null,
   unread: boolean,
+  unreadMessageCount: number,
 ): Promise<PublicConversation> {
   return serializeConversation(
     {
@@ -331,6 +332,7 @@ async function publicThread(
       viewerId: account.id,
     }),
     unread,
+    unreadMessageCount,
     counterpartAccountId(thread, account.id, platformId),
   );
 }
@@ -382,9 +384,22 @@ export function conversationRoutes(deps: ConversationRouteDeps): Hono {
           if (!inbound && !ownContactTicket) {
             continue;
           }
-          const unread = await deps.store.hasUnread(thread.id, account.id, staff, platformId);
+          const unreadMessageCount = await deps.store.countUnread(
+            thread.id,
+            account.id,
+            staff,
+            platformId,
+          );
+          const unread = unreadMessageCount > 0;
           conversations.push(
-            await publicThread(thread, account, deps.authStore, platformId, unread),
+            await publicThread(
+              thread,
+              account,
+              deps.authStore,
+              platformId,
+              unread,
+              unreadMessageCount,
+            ),
           );
         }
         return c.json(
@@ -441,13 +456,23 @@ export function conversationRoutes(deps: ConversationRouteDeps): Hono {
         }
         const platform = await platformAccount(deps.authStore);
         const platformId = platform?.id ?? null;
-        const unread = await deps.store.hasUnread(
+        const unreadMessageCount = await deps.store.countUnread(
           thread.id,
           account.id,
           roleAtLeast(account.role, 'moderator'),
           platformId,
         );
-        return c.json(await publicThread(thread, account, deps.authStore, platformId, unread), 200);
+        return c.json(
+          await publicThread(
+            thread,
+            account,
+            deps.authStore,
+            platformId,
+            unreadMessageCount > 0,
+            unreadMessageCount,
+          ),
+          200,
+        );
       } catch {
         logEvent('conversations.open.failed');
         return c.json({ error: 'Conversations are unavailable' }, 503);
@@ -468,7 +493,7 @@ export function conversationRoutes(deps: ConversationRouteDeps): Hono {
           return c.json({ error: 'Conversations are unavailable' }, 503);
         }
         const thread = await deps.store.ensureModeratorGroup(platform.id, new Date(deps.now()));
-        const unread = await deps.store.hasUnread(
+        const unreadMessageCount = await deps.store.countUnread(
           thread.id,
           account.id,
           roleAtLeast(account.role, 'moderator'),
@@ -476,7 +501,14 @@ export function conversationRoutes(deps: ConversationRouteDeps): Hono {
         );
         return c.json(
           {
-            conversation: await publicThread(thread, account, deps.authStore, platform.id, unread),
+            conversation: await publicThread(
+              thread,
+              account,
+              deps.authStore,
+              platform.id,
+              unreadMessageCount > 0,
+              unreadMessageCount,
+            ),
           },
           200,
         );

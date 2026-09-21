@@ -4,7 +4,7 @@
 > Product decisions live in [`CONCEPT.md`](./CONCEPT.md); this file owns
 > request/response contracts for routes that exist in code today.
 
-**Status**: living document. Last revised 2026-09-20 (`GET /trust-chain` requires a member Bearer session; public graph uses at most one incoming kind per subject: the oldest eligible sibling (`createdAt` then `id`); eligible `verify`, `moderator_appoint`, and `moderator_propose` only when the subject is a moderator; `moderator_confirm` never; later appoint/confirm/propose do not replace the first eligible contact; owner `notificationLevel` on GET `/me` and `POST /me/notification-level`; fan-out filters in-app and Web Push by `all` / `active` / `mentions`; GET `/notifications` applies the same filter to stored rows (`moderator_appointed` always stays; `unreadCount` is matching unread in the newest 1000, not `store.unreadCount()`, and may exceed the 200 page); a zap that inserts a gift-reply fans out only `notifyZap`, not a second `forum_reply`; gift-reply row still lands in the thread; confirm/appoint notify the subject only with `moderator_appointed` and Web Push url `/welcome`; official platform account (`isPlatform`) never fans out living-room `forum_post` / `forum_reply` / `zap`; house daily gift-replies still persist).
+**Status**: living document. Last revised 2026-09-21 (`GET /conversations` list/open rows include per-row `unreadMessageCount`; envelope `unreadCount` remains unread thread count; `GET /trust-chain` requires a member Bearer session; public graph uses at most one incoming kind per subject: the oldest eligible sibling (`createdAt` then `id`); eligible `verify`, `moderator_appoint`, and `moderator_propose` only when the subject is a moderator; `moderator_confirm` never; later appoint/confirm/propose do not replace the first eligible contact; owner `notificationLevel` on GET `/me` and `POST /me/notification-level`; fan-out filters in-app and Web Push by `all` / `active` / `mentions`; GET `/notifications` applies the same filter to stored rows (`moderator_appointed` always stays; `unreadCount` is matching unread in the newest 1000, not `store.unreadCount()`, and may exceed the 200 page); a zap that inserts a gift-reply fans out only `notifyZap`, not a second `forum_reply`; gift-reply row still lands in the thread; confirm/appoint notify the subject only with `moderator_appointed` and Web Push url `/welcome`; official platform account (`isPlatform`) never fans out living-room `forum_post` / `forum_reply` / `zap`; house daily gift-replies still persist).
 
 ---
 
@@ -118,7 +118,7 @@ Public base URLs used in examples:
 | DELETE | `/messages/:id`                              | Bearer (moderator+)        | Soft-hide note + direct replies; retract in-app notifications; external target also blocks that pubkey    |
 | POST   | `/messages/:id/invoice`                      | Bearer                     | NIP-57 zap / BOLT11                                                                                       |
 | POST   | `/contact`                                   | Bearer                     | Send private in-app contact `{ text }`                                                                    |
-| GET    | `/conversations`                             | Bearer                     | List visible private threads                                                                              |
+| GET    | `/conversations`                             | Bearer                     | List visible private threads (per-row `unreadMessageCount`; envelope `unreadCount` is thread count)       |
 | GET    | `/conversations/moderator-group`             | Bearer (moderator+)        | Open/ensure closed moderator-group tool                                                                   |
 | POST   | `/conversations`                             | Bearer                     | Open thread from a forum note (`forumMessageId`)                                                          |
 | GET    | `/conversations/:id`                         | Bearer                     | Oldest-first messages (`?sinceMessageId=` long-polls until that id exists)                                |
@@ -3414,6 +3414,7 @@ Success → **Response** `200`:
       "lastFromMe": false,
       "lastSats": 0,
       "unread": true,
+      "unreadMessageCount": 1,
       "accountId": "<uuid>"
     }
   ],
@@ -3422,10 +3423,13 @@ Success → **Response** `200`:
 ```
 
 `unreadCount` is the number of listed rows with `unread: true` (same
-cap/filter, not a second uncapped query). Per-row `unread` is `hasUnread`
-(outbound-only listed contact tickets are `false`). List GET does not stamp
-last-read. `accountId` is the counterpart 21.gifts account. It is omitted
-for Damus-only counterparts (never JSON `null`).
+cap/filter, not a second uncapped query; menu/PWA badge). Per-row
+`unreadMessageCount` is the number of inbound messages strictly after
+last-read (`0` when none; gift-only inbound counts; outbound does not).
+Per-row `unread` is `unreadMessageCount > 0` (outbound-only listed contact
+tickets are `false`). List GET does not stamp last-read. `accountId` is the
+counterpart 21.gifts account. It is omitted for Damus-only counterparts
+(never JSON `null`).
 
 ### `GET /conversations/moderator-group`
 
@@ -3433,7 +3437,8 @@ Bearer session required. A session that is at least moderator (`roleAtLeast`
 `moderator`; the platform account is never a member of the group, whatever
 role it carries) opens or inserts the closed singleton and receives it as
 `{ "conversation": { ... } }` (same public row as a list item, `kind`
-`moderator_group`, `name` `Moderators`, `unread` from `hasUnread`). Verified, basis
+`moderator_group`, `name` `Moderators`, `unread` / `unreadMessageCount` from
+`countUnread`). Verified, basis
 and the platform account get
 **404** `{ "error": "Not found" }` (no existence leak). Missing platform
 account or store failure → **503** `{ "error": "Conversations are unavailable" }`.
@@ -3452,8 +3457,8 @@ Unknown / non-UUID note → **404** `{ "error": "Not found" }`. Author is
 the session account → **400** `{ "error": "Cannot message yourself" }`.
 
 Success → **Response** `200` (same public conversation object as list
-rows, including `unread` and optional counterpart `accountId`; empty new
-thread is `unread: false`).
+rows, including `unread`, `unreadMessageCount`, and optional counterpart
+`accountId`; empty new thread is `unread: false` and `unreadMessageCount: 0`).
 
 ### `GET /conversations/:id`
 
