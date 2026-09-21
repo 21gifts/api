@@ -3599,6 +3599,8 @@ Success → **Response** `200`:
       "createdAt": "2026-08-29T12:00:02.000Z",
       "fromMe": false,
       "sats": 6158,
+      "hasPhoto": false,
+      "photoCount": 0,
       "accountId": "<uuid>",
       "giftFor": "<uuid of the message above>"
     }
