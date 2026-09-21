@@ -236,8 +236,9 @@ not invent `/me/recurring`.
 
 ### NOSTR in v1
 
-Passkey login without PRF provides no client-side NOSTR key, so v1 runs NOSTR **fully
-custodially** (decided 2026-07-05, resolves Open Question #9): on sign-up the
+Passkey begin options request PRF so the client can derive a recovery phrase;
+API authentication and Nostr custody do not use it, so v1 runs NOSTR **fully
+custodially** (decided 2026-07-05, restated 2026-09-21, resolves Open Question #9): on sign-up the
 api generates a NOSTR keypair for the account, stores the `nsec` encrypted at
 rest, and signs that account's events server-side with the account's own key.
 Every profile, campaign, and comment therefore appears on the public NOSTR
@@ -974,8 +975,8 @@ repository — they're intentionally not part of this project's scope.
 2. ~~Create `21gifts/app` repo skeleton (Next.js 15 + TS strict + Tailwind +
    Zustand)~~ — done 2026-07-05: public repo exists
 3. ~~Port the passkey + PRF + key-derivation primitives from the reference
-   app~~ — deferred 2026-07-05 to the non-custodial phase (v1 login is
-   passkey without PRF; restated 2026-08-24)
+   app~~ — restated 2026-09-21: v1 begin options request PRF for client
+   phrase export; API auth and Nostr custody do not use it
 4. ~~Define the v1 api surface (passkey login, donor wallets, recurring-gift
    scheduler, address verification, custodial NOSTR identities + server-side
    event signing, feed, LN-Address resolver) — `SPEC.md` in the api repo~~ —
