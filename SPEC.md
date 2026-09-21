@@ -1490,7 +1490,7 @@ Unknown account id → **Response** `404`:
 
 Success → **Response** `200` with the updated account JSON (same
 `serializeDebugAccount` shape as `GET /debug/accounts`, including
-`isPlatform` and `sessionRefused`; no `viewKey`). Role changes log `debug.accounts.role_set`
+`isPlatform`, `sessionRefused`, `viewKey`, and Nostr debug fields). Role changes log `debug.accounts.role_set`
 with the account id and new role. Unlink logs
 `debug.accounts.lightning_address.cleared` with the account id (never the
 token or the previous address). Platform changes log
