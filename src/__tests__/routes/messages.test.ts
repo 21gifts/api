@@ -1085,6 +1085,10 @@ describe('GET /messages/compose-target', () => {
       headers: AUTH,
     });
     expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({
+      error: 'missing_requirements',
+      missing: ['rules', 'name', 'username', 'lightning-address'],
+    });
   });
 
   it('returns 503 when the platform account is missing', async () => {

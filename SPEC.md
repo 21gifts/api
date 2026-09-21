@@ -118,7 +118,8 @@ Public base URLs used in examples:
 | POST   | `/funding/admit`                                     | Bearer (moderator+)        | Admit grant                                                                                               |
 | POST   | `/funding/reject`                                    | Bearer (moderator+)        | Reject grant                                                                                              |
 | GET    | `/messages`                                          | Bearer                     | List top-level forum notes (+ visible `replyCount`); 409 if rules missing                                 |
-| POST   | `/messages`                                          | Bearer                     | Post text/photo; 409 if rules/name/username/Lightning Address missing                                     |
+| GET    | `/messages/compose-target`                           | Bearer                     | Platform profile note `{ messageId, sats }` for a 1-sat compose fee to 21.gifts                           |
+| POST   | `/messages`                                          | Bearer                     | Post text/photo; 409 if rules/name/username/Lightning Address missing; 403 unpaid below verified          |
 | GET    | `/messages/hidden`                                   | Bearer (moderator+)        | Staff log of soft-hidden notes (session, not DEBUG_TOKEN)                                                 |
 | GET    | `/messages/:id`                                      | none / Bearer (moderator+) | Live public JSON; staff hidden GET includes `deletedAt`/`deletedBy`                                       |
 | GET    | `/messages/:id/replies`                              | none / Bearer (moderator+) | Live replies; staff `listReplies(..., true)` includes hidden children even under a live parent            |
@@ -1842,7 +1843,9 @@ persists an indexed synthetic kind:9735 ingest with `manual=debug-settle` and
 the note (plus `preimage` only when it was supplied and verified). On a member
 note it then fans out `notifyZap` and inserts the payer gift-reply from the
 original zap request. On the official platform profile note it skips
-`notifyZap` and treats the zap comment as a compose post/reply (`sats` 0). If credit succeeded but the ingest write failed, that
+`notifyZap` and treats the zap comment as a compose post/reply (`sats` 0);
+a created top-level post fans out `notifyForumPost` and `spendPing`, a
+reply fans out `notifyForumReply`. If credit succeeded but the ingest write failed, that
 failure returns 503; a retry writes the missing ingest from the current
 request, runs the post-credit effects, returns `resumed: true`, and does not
 credit again. Fresh success returns `resumed: false`.
