@@ -536,14 +536,14 @@
 
 - **Purpose:** Bearer required. UUID `:id` and `:messageId`. After getById + canAccess, serve photo 0 via getPhoto + forumPhotoResponse, then override to `Cache-Control: private, no-store` and drop `Access-Control-Allow-Origin` (forum helper is public CDN; conversation stills stay private). No Damus `.jpg` alias. Missing still or message not in this thread → 404 `{ error: 'Photo not found' }`. Unknown/unauthorized thread → 404 `{ error: 'Not found' }`. Registered before GET `/:id`.
 - **Errors:** 401 `{ error: 'Unauthorized' }`; 404 `{ error: 'Not found' }` / `{ error: 'Photo not found' }`; 503 `{ error: 'Conversations are unavailable' }` (`conversations.photo.failed`).
-- **Used by:** App moderator-group composer thumbnails.
+- **Used by:** App conversation stills on Direct, Contact, Damus, and moderator-group threads.
 - **Auth:** `Authorization: Bearer` session.
 
 ## Endpoint: GET /conversations/:id/messages/:messageId/photo/:file
 
 - **Purpose:** Bearer required. Extra stills 1–9. `:file` must match `^([1-9])\.(jpg|jpeg|png|webp)$`; else 404 `{ error: 'Photo not found' }`. Same canAccess / belonging / private cache headers as photo 0. No `/photo/0.jpg`.
 - **Errors:** Same 401 / 404 / 503 as photo 0 (`conversations.photo.failed`).
-- **Used by:** App moderator-group extra stills.
+- **Used by:** App extra conversation stills on Direct, Contact, Damus, and moderator-group threads.
 - **Auth:** `Authorization: Bearer` session.
 
 ## Endpoint: POST /me/forum-laws-dismissed
