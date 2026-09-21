@@ -948,7 +948,7 @@ describe('passkey replace', () => {
     );
     expect(finish.ok).toBe(true);
     expect((await store.getAccount('existing'))?.walletRequired).toBe(false);
-    expect((await store.getAccount(accountId))?.walletBackupSeenAt).toBeNull();
+    expect((await store.getAccount('existing'))?.walletBackupSeenAt).toBeNull();
   });
 
   it('uses the account name as the WebAuthn display name', async () => {
