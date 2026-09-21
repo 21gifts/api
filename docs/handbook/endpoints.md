@@ -779,7 +779,7 @@
 
 ## Endpoint: POST /me/wallet-backup-seen
 
-- **Purpose:** Bearer required. Empty body. Sets `walletBackupSeenAt` via `markWalletBackupSeen` (`COALESCE` so a later `/me` write cannot clear a first-seen timestamp). Does not change `walletRequired`. Owner JSON including `setup` / `missing` / `funding`.
+- **Purpose:** Bearer required. Empty body. Sets `walletBackupSeenAt` via `markWalletBackupSeen` (`WHERE wallet_backup_seen_at IS NULL`; logs `account.wallet.backup_seen` `{ accountId }` only when this call wrote). Does not change `walletRequired`. Owner JSON including `setup` / `missing` / `funding`. Never a mnemonic or PRF.
 - **Errors:** 401 without session.
 - **Used by:** App `POST /me/wallet-backup-seen` after the owner confirms the recovery phrase.
 - **Auth:** `Authorization: Bearer` session.
