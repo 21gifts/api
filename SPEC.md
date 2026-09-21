@@ -1844,8 +1844,9 @@ the note (plus `preimage` only when it was supplied and verified). On a member
 note it then fans out `notifyZap` and inserts the payer gift-reply from the
 original zap request. On the official platform profile note it skips
 `notifyZap` and treats the zap comment as a compose post/reply (`sats` 0)
-gated by `forum.post` and optional `postLimiter`; missing `forum.post`
-fields or a limiter denial dequeue the receipt without creating a row.
+gated by `forum.post` only (`DEBUG_TOKEN` settle does not pass `postLimiter`;
+limiter denial applies to worker ingest that shares the `POST /messages`
+limiter). Missing `forum.post` fields dequeue the receipt without creating a row.
 A created top-level post fans out `notifyForumPost` and `spendPing` only
 when `eligibleToday` (same gate as `POST /messages`; ineligible logs
 `spend.ping.skipped` / `not_eligible`), a reply fans out `notifyForumReply`. If credit succeeded but the ingest write failed, that

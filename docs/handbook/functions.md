@@ -373,7 +373,7 @@
 ## Function: debugPaymentsRoutes
 
 - **Purpose:** Operator listing of all `message_invoice` attempts (forum and conversation invoices; JSON includes `conversationId` and `conversationMessageId`), manual forum-invoice settlement, and kind:9735 ingest decisions (`nostr_zap_ingest`).
-- **Inputs:** `DebugPaymentsRouteDeps`: message store, auth store, clock, optional push/notification stores, optional `spendPing` and optional `fundingStore` (forwarded to `settleInvoiceManually` for platform-note compose; spend pings use the same `eligibleToday` gate as `POST /messages`), and optional debugToken.
+- **Inputs:** `DebugPaymentsRouteDeps`: message store, auth store, clock, optional push/notification stores, optional `spendPing` and optional `fundingStore` (forwarded to `settleInvoiceManually` for platform-note compose; spend pings use the same `eligibleToday` gate as `POST /messages`), and optional debugToken. Does not take `postLimiter`; DEBUG_TOKEN settle is not the shared post burst limiter.
 - **Returns / side effects:** Hono app. 503 if token unset; 401 if bearer mismatches; 200 `{ invoices }` on `GET /invoices`, `{ receiptId, messageId, amountSats, resumed }` on `POST /invoices/settle`, and `{ ingests }` on `GET /zap-ingests`. Manual settle accepts `{ paymentHash, note, preimage? }` and delegates to `settleInvoiceManually`; store throws, including the direct ingest write, map to 503. Listing is newest-first (cap 200). Logs list/settle results without token, note, preimage, or nsec.
 - **Used by:** `createApp` at `/debug`.
 

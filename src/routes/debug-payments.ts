@@ -95,7 +95,10 @@ function serializeIngest(row: ZapIngestRow): Record<string, unknown> {
 /**
  * Build the `/debug` payment debug routes.
  *
- * @param deps - Stores, clock, and optional debug token.
+ * @param deps - Stores, clock, optional debug token, and optional `spendPing` /
+ *   `fundingStore` forwarded into `settleInvoiceManually` for platform-note
+ *   compose (same `eligibleToday` gate as `POST /messages`). Does not take
+ *   `postLimiter`; DEBUG_TOKEN settle is not the shared post burst limiter.
  * @returns A Hono app exposing invoice list/manual settle (including whether a
  *   successful settle resumed) and zap-ingest list.
  */
