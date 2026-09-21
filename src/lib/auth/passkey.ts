@@ -149,10 +149,11 @@ export async function startPasskeyClaim(
 /**
  * Complete passkey registration: verify attestation, persist the account and
  * credential, issue a session. When claiming a provisioned account, binds the
- * credential without creating or deleting the row. When creating a new account,
- * optional `nostr` mints a custodial nsec (rolls the account back if keygen
- * fails) and a duplicate credential id rolls the new account back via
- * `deleteAccount`.
+ * credential without creating or deleting the row and sets walletRequired
+ * true without clearing walletBackupSeenAt. When creating a new account,
+ * stores walletRequired true and walletBackupSeenAt null; optional
+ * `nostr` mints a custodial nsec (rolls the account back if keygen fails) and
+ * a duplicate credential id rolls the new account back via `deleteAccount`.
  *
  * @param store - Auth persistence port.
  * @param ceremony - WebAuthn collaborator.
@@ -163,8 +164,10 @@ export async function startPasskeyClaim(
  *   {@link startPasskeyClaim}.
  * @param credential - Browser attestation JSON.
  * @param nostr - Optional KEK (and test-only keygen) to mint a custodial nsec.
- * @returns Session + account, or `{ ok: false, error }`. An existing account
- *   with {@link isWrongAccount} is refused before session mint with
+ * @returns Session + account, or `{ ok: false, error }`. New accounts have
+ *   walletRequired true and walletBackupSeenAt null. Claim sets
+ *   walletRequired true without clearing a seen timestamp. An existing
+ *   account with {@link isWrongAccount} is refused before session mint with
  *   {@link WRONG_ACCOUNT_ERROR}.
  */
 export async function finishPasskeyRegistration(

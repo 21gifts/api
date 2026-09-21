@@ -81,7 +81,9 @@ export class SimpleWebAuthnPasskeyCeremony implements PasskeyCeremony {
    * Build WebAuthn creation options via SimpleWebAuthn.
    *
    * @param input - RP and user entity for `generateRegistrationOptions`.
-   * @returns Challenge plus creation options (residentKey required).
+   *   Optional `excludeCredentials` lists the current credential on replace.
+   * @returns Challenge plus creation options (residentKey required,
+   *   `extensions.prf: {}`).
    */
   async generateRegistrationOptions(input: {
     rpName: string;
@@ -163,7 +165,8 @@ export class SimpleWebAuthnPasskeyCeremony implements PasskeyCeremony {
    * Build WebAuthn request options via SimpleWebAuthn.
    *
    * @param input - RP id for a discoverable-credential assertion.
-   * @returns Challenge plus request options (`allowCredentials` empty).
+   * @returns Challenge plus request options (`allowCredentials` empty,
+   *   `extensions.prf.eval.first` = base64url SHA-256 of `21gifts-nostr-v1`).
    */
   async generateAuthenticationOptions(input: {
     rpID: string;
