@@ -43,6 +43,44 @@ describe('SimpleWebAuthnPasskeyCeremony', () => {
     expect((generated.options.extensions as { prf?: unknown } | undefined)?.prf).toEqual({});
   });
 
+  it('does not treat a null PRF extension as PRF results', async () => {
+    vi.mocked(verifyRegistrationResponse).mockClear();
+    vi.mocked(verifyRegistrationResponse).mockResolvedValueOnce({ verified: false });
+    const result = await ceremony.verifyRegistration({
+      response: {
+        id: 'x',
+        rawId: 'x',
+        type: 'public-key',
+        response: { clientDataJSON: 'e30' },
+        clientExtensionResults: { prf: null },
+      },
+      expectedChallenge: 'abc',
+      expectedOrigin: 'http://localhost:3000',
+      expectedRPID: 'localhost',
+    });
+    expect(result).toEqual({ ok: false, reason: 'Invalid passkey' });
+    expect(vi.mocked(verifyRegistrationResponse)).toHaveBeenCalled();
+  });
+
+  it('does not treat a non-object PRF extension as PRF results', async () => {
+    vi.mocked(verifyRegistrationResponse).mockClear();
+    vi.mocked(verifyRegistrationResponse).mockResolvedValueOnce({ verified: false });
+    const result = await ceremony.verifyRegistration({
+      response: {
+        id: 'x',
+        rawId: 'x',
+        type: 'public-key',
+        response: { clientDataJSON: 'e30' },
+        clientExtensionResults: { prf: 'enabled' },
+      },
+      expectedChallenge: 'abc',
+      expectedOrigin: 'http://localhost:3000',
+      expectedRPID: 'localhost',
+    });
+    expect(result).toEqual({ ok: false, reason: 'Invalid passkey' });
+    expect(vi.mocked(verifyRegistrationResponse)).toHaveBeenCalled();
+  });
+
   it('rejects a registration response that includes PRF results', async () => {
     vi.mocked(verifyRegistrationResponse).mockClear();
     const result = await ceremony.verifyRegistration({
