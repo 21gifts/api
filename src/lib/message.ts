@@ -173,8 +173,9 @@ export interface PublicMessage {
   /** Marks a visible external Nostr-authored row; the pubkey remains private. */
   via?: 'nostr';
   /**
-   * Number of direct replies (`parent_id` children). Present on top-level
-   * list rows (`GET /messages`); may be omitted on single-note / reply JSON.
+   * Number of direct replies (`parent_id` children). A top-level note
+   * includes `replyCount` on `GET /messages` and on `GET /messages/:id`
+   * (including 0). Only a reply omits it.
    */
   replyCount?: number;
   /**
@@ -300,7 +301,9 @@ export function truncatePubkeyDisplay(pubkeyHex: string): string {
  * @param row - Persisted message.
  * @param payable - Whether the note can accept a NIP-57 zap payment.
  * @param role - Author's live {@link AccountRole}, or `undefined` for Damus-only.
- * @param replyCount - Optional reply count for top-level list rows.
+ * @param replyCount - Reply count for a top-level `GET /messages` list row
+ * and for a top-level `GET /messages/:id`, including 0. A reply passes
+ * `undefined` so the key is omitted.
  * @param includeAccountId - When true, set `accountId` for 21gifts authors
  * (`row.accountId !== null`). Public GET leaves this unset.
  * @param hidden - When set, stamp `deletedAt` / `deletedBy` and force
