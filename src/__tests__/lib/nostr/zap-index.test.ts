@@ -9307,6 +9307,7 @@ describe('conversation zap ingest', () => {
         now: () => Date.parse('2026-08-28T00:00:00.000Z'),
         fetchImpl: lnurlFetch(PROVIDER_PUBKEY),
         conversations,
+        fiatRates: new InMemoryFiatStore(),
       });
       warn.mockClear();
       await ingest({
