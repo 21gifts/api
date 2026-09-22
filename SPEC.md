@@ -4,7 +4,7 @@
 > Product decisions live in [`CONCEPT.md`](./CONCEPT.md); this file owns
 > request/response contracts for routes that exist in code today.
 
-**Status**: living document. Last revised 2026-09-21 (`eligibleToday` does not require a grant until UTC 2026-09-25; funding-program grants independent of `account.role`; spend ping and `POST /invoices` require `eligibleToday`; `GET /invoices/eligible`; `GET /conversations` list/open rows include per-row `unreadMessageCount`; envelope `unreadCount` remains unread thread count; `GET /trust-chain` requires a member Bearer session; public graph uses at most one incoming kind per subject: the oldest eligible sibling (`createdAt` then `id`); eligible `verify`, `moderator_appoint`, and `moderator_propose` only when the subject is a moderator; `moderator_confirm` never; later appoint/confirm/propose do not replace the first eligible contact; owner `notificationLevel` on GET `/me` and `POST /me/notification-level`; fan-out filters in-app and Web Push by `all` / `active` / `mentions`; GET `/notifications` applies the same filter to stored rows (`moderator_appointed` always stays; `unreadCount` is matching unread in the newest 1000, not `store.unreadCount()`, and may exceed the 200 page); a zap that inserts a gift-reply fans out only `notifyZap`, not a second `forum_reply`; gift-reply row still lands in the thread; confirm/appoint notify the subject only with `moderator_appointed` and Web Push url `/welcome`; official platform account (`isPlatform`) never fans out living-room `forum_post` / `forum_reply` / `zap`; house daily gift-replies still persist).
+**Status**: living document. Last revised 2026-09-21 (`eligibleToday` does not require a grant until UTC 2026-09-25; funding-program grants independent of `account.role`; spend ping and `POST /invoices` require `eligibleToday`; `GET /invoices/eligible`; `GET /conversations` list/open rows include per-row `unreadMessageCount`; envelope `unreadCount` remains unread thread count; `GET /trust-chain` requires a member Bearer session; public graph uses at most one incoming edge per subject: the oldest eligible sibling (`createdAt` then `id`), skipping a non-chain oldest sibling so a later displayable contact can show; eligible `verify`, `moderator_appoint`, and `moderator_propose` only when the subject is a moderator; `moderator_confirm` and `moderator_reject` never; later appoint/confirm/propose do not replace the first eligible contact; staff may reject an open proposal (`POST /trust/reject-moderator`, append-only `moderator_reject`, role stays `verified`) and re-propose after reject (new `moderator_propose`; 409 while currently pending, any confirm/appoint, or a concurrent older open propose wins after insert); confirm/reject re-list after insert and undo when the other grant already closed; pending = latest propose/reject is propose, verified, no confirm/appoint; live-unique kinds are verify/confirm/appoint only; open proposal fans out in-app `moderator_proposal` plus Web Push to other staff until confirm, until reject when pending is then empty, or until appoint; GET `/notifications` keeps `moderator_appointed` and `moderator_proposal` (mark-read / read-all do not stamp the proposal); owner `notificationLevel` on GET `/me` and `POST /me/notification-level`; fan-out filters in-app and Web Push by `all` / `active` / `mentions`; GET `/notifications` applies the same filter to stored rows (`moderator_appointed` always stays; `unreadCount` is unread among kept rows after the hidden filter (before the 200 cap), not `store.unreadCount()` and not the unfiltered matching unread of the newest 1000); a zap that inserts a gift-reply fans out only `notifyZap`, not a second `forum_reply`; gift-reply row still lands in the thread; confirm/appoint notify the subject only with `moderator_appointed` and Web Push url `/welcome`; official platform account (`isPlatform`) never fans out living-room `forum_post` / `forum_reply` / `zap`; house daily gift-replies still persist).
 
 ---
 
@@ -110,6 +110,7 @@ Public base URLs used in examples:
 | POST   | `/trust/propose-moderator`                           | Bearer (moderator+)        | Staff: propose a verified member as moderator                                                             |
 | GET    | `/trust/proposals`                                   | Bearer (moderator+)        | Staff: list pending moderator proposals                                                                   |
 | POST   | `/trust/confirm-moderator`                           | Bearer (moderator+)        | Staff: second, independent confirmation → `moderator`                                                     |
+| POST   | `/trust/reject-moderator`                            | Bearer (moderator+)        | Staff: reject an open proposal (subject stays verified)                                                   |
 | POST   | `/trust/appoint-moderator`                           | Bearer (founder)           | Founder: appoint a moderator directly                                                                     |
 | POST   | `/funding/apply`                                     | Bearer                     | Member apply (verified+; `basis` 403)                                                                     |
 | GET    | `/funding/applications`                              | Bearer (moderator+)        | Staff pending grant queue                                                                                 |
@@ -568,10 +569,12 @@ Missing or invalid Bearer → **Response** `401`:
 Bare `GET /trust-chain` returns
 **founder seeds only** (`edges` empty) so a large chain is not dumped on
 first paint. `GET /trust-chain?around=<id>` returns that chain member plus
-one hop of **stored** public edges with at most one incoming kind per
-subject: the oldest eligible sibling (`createdAt` then `id`). Eligible:
+one hop of **stored** public edges with at most one incoming edge per
+subject: the oldest eligible sibling (`createdAt` then `id`), skipping a
+non-chain oldest sibling so a later displayable contact can show. Eligible:
 `verify`, `moderator_appoint`, and `moderator_propose` only when the live
-subject is a `moderator`; `moderator_confirm` never. Later appoint,
+subject is a `moderator`; `moderator_confirm` and `moderator_reject`
+never. Later appoint,
 confirm, or propose do not replace an earlier eligible contact. A pending
 propose (subject still `verified`) stays private and is not a hop neighbor.
 Neighborhood must consider all stored edges for each subject, not only
@@ -618,12 +621,13 @@ Staff pending-moderator queue. Bearer **session** required (moderator).
 This is **not** a `DEBUG_TOKEN` route. No `forum.read` /
 rules gate — a moderator without rules agreement is still **200**.
 
-Lists pending `moderator_propose` edges whose live subject is still
-`verified` and has no `moderator_confirm` or `moderator_appoint`. Missing
+Lists pending proposals: the latest `moderator_propose` / `moderator_reject`
+edge is `moderator_propose`, the live subject is still `verified`, and
+there is no `moderator_confirm` or `moderator_appoint`. Missing
 subjects are omitted. Oldest `createdAt` first, then propose-edge `id`
 (FIFO). JSON `{ "proposals": [ … ] }` including an empty list. Each item
-is `{ subject: { id, name, role: "verified" }, proposedBy: { id, name },
-createdAt }` with ISO-8601 `createdAt`. A missing actor is
+is `{ id, subject: { id, name, role: "verified" }, proposedBy: { id, name },
+createdAt }` with the propose-edge `id` and ISO-8601 `createdAt`. A missing actor is
 `{ id, name: null }`. `GET /trust-chain` still omits a pending
 `moderator_propose`. Once the subject is a `moderator`, that propose is
 eligible as the public incoming edge only when it is the oldest eligible
@@ -653,6 +657,7 @@ Success (including an empty list) → **Response** `200`:
 {
   "proposals": [
     {
+      "id": "<propose-edge-uuid>",
       "subject": { "id": "<uuid>", "name": "Ada", "role": "verified" },
       "proposedBy": { "id": "<uuid>", "name": "Mod" },
       "createdAt": "2026-09-16T00:00:00.000Z"
@@ -700,27 +705,69 @@ Otherwise insert the edge then update role, log `trust.verified`
 ### `POST /trust/propose-moderator`
 
 Bearer session. Body `{ "accountId": "<uuid>" }`. Staff only. Subject role
-must be `verified`, not self, and must not already have
-`moderator_propose` / `moderator_confirm` / `moderator_appoint` or be
-`moderator`/`founder`. Inserts `moderator_propose` without changing role.
-Logs `trust.moderator_proposed`. Same 401/403/400/404/409/503 shapes as
-`POST /trust/verify`. **200** `{ id, name, role }` (role unchanged).
+must be `verified`, not self. **409** when currently pending (latest
+propose/reject is propose) or any `moderator_confirm` / `moderator_appoint`
+exists, when the subject is not `verified`, or when after insert this row
+is not the oldest open propose (the insert is deleted; remaining pending is
+then best-effort cleared and fan-out for that propose-edge id, failure stays
+**409**; empty open after a concurrent reject is the same **409**). When this
+insert is the oldest open propose and extras exist, delete newer extra
+proposes and still **200**. **200** inserts a **new**
+`moderator_propose` after a reject (history kept; old propose/reject rows
+are not deleted). Role is unchanged. Logs `trust.moderator_proposed`.
+After **200**, delete `moderator_proposal` rows with
+`replyId === subject.id`, then wrap `notifyModeratorProposed` (in-app
+`moderator_proposal` plus Web Push to other staff). Then re-list: if
+pending is empty or the pending propose-edge `id` is not this insert,
+delete those rows again; if a different propose is pending, fan out for
+that actor only when a second re-list still shows that same id, and
+delete the rows if a re-list after that fan-out no longer matches.
+HTTP still **200** if notify (or the purge) fails.
+Same 401/403/400/404/409/503 shapes as `POST /trust/verify`.
+**200** `{ id, name, role }` (role unchanged).
 
 ### `POST /trust/confirm-moderator`
 
 Bearer session. Body `{ "accountId": "<uuid>" }`. Staff only. A pending
-`moderator_propose` must exist; the caller id must not equal the proposer's
-actor id (independent second staff member). Subject must still be
-`verified`. Inserts `moderator_confirm` then sets role to `moderator`, logs
-`trust.moderator_confirmed`. If the caller already stored `moderator_confirm`
-and the subject is still `verified`, completes the role write and returns
-**200**; already-moderator with that caller-owned edge is idempotent **200**.
-Same 401/403/400/404/409/503 JSON shapes (409 when a confirm edge belongs
-to someone else). **200** `{ id, name, role }` with `role: "moderator"`.
-After a 200 that leaves the subject as `moderator` (new grant and
-idempotent already-moderator same-actor 200), the api notifies the
-subject only (`moderator_appointed`, Web Push url `/welcome`). Notify
-failure does not fail the POST.
+proposal must exist (latest propose/reject is propose); the caller id must
+not equal that latest proposer's actor id (independent second staff member).
+Subject must still be `verified`. Inserts `moderator_confirm` then re-lists:
+if the pending propose-edge `id` from `pendingModeratorProposals`
+(ignoring this confirm insert) is no longer the same, or that id is not
+also the oldest open propose (an older open propose is still present), delete
+that confirm and **409** without promoting. Otherwise sets
+role to `moderator`, logs `trust.moderator_confirmed`. If the caller
+already stored `moderator_confirm` and the subject is still `verified`,
+completes the role write and returns **200**; already-moderator with that
+caller-owned edge is idempotent **200**. Same 401/403/400/404/409/503 JSON
+shapes (409 when a confirm edge belongs to someone else). **200**
+`{ id, name, role }` with `role: "moderator"`. After a 200 that leaves the
+subject as `moderator` (new grant and idempotent already-moderator
+same-actor 200), the api deletes `moderator_proposal` rows with
+`replyId === subject.id`, then notifies the subject only
+(`moderator_appointed`, Web Push url `/welcome`). Notify failure does not
+fail the POST.
+
+### `POST /trust/reject-moderator`
+
+Bearer session. Same auth as `POST /trust/propose-moderator` (staff,
+moderator+). Body `{ "accountId": "<uuid>" }`. **409** self / not pending
+(latest propose/reject is not propose, or any confirm/appoint) /
+`role !== verified`. The original proposer **may** reject. Inserts
+append-only `moderator_reject` then re-lists: if a concurrent confirm or
+appoint already closed the grant, or the pending propose-edge `id` is still
+the same (this reject lost the same-ms id tie), delete that reject and
+**409**. If a newer propose already reopened the queue (including a
+same-actor same-ms re-propose with a different edge `id`), **200** keeps
+the reject in history and does not drop `moderator_proposal` rows. Role stays
+`verified`. Logs
+`trust.moderator_rejected` `{ subjectId, actorId }`. When pending is empty
+after insert, re-lists once more and deletes `moderator_proposal` rows with
+`replyId === subject.id` only if pending is still empty; if a re-list after
+that delete shows a new pending propose, fan out for that actor and
+re-list again so a concurrent close drops those rows. No notify
+for the reject itself. Same 401/403/400/404/409/503 JSON shapes as
+`POST /trust/verify`. **200** `{ id, name, role }` (role unchanged).
 
 ### `POST /trust/appoint-moderator`
 
@@ -735,8 +782,10 @@ Same 401/403/400/404/409/503 shapes as `POST /trust/verify` (403
 when the caller is not a founder). **200** `{ id, name, role }` with
 `role: "moderator"`. After a 200 that leaves the subject as
 `moderator` (new grant and idempotent already-moderator same-actor
-200), the api notifies the subject only (`moderator_appointed`, Web
-Push url `/welcome`). Notify failure does not fail the POST.
+200), the api deletes `moderator_proposal` rows for the subject
+(`deleteByTypeAndReplyId`) then notifies the subject only
+(`moderator_appointed`, Web Push url `/welcome`). Notify failure does
+not fail the POST.
 
 ### `POST /funding/apply`
 
@@ -1589,11 +1638,13 @@ other debug routes). Does **not** change `account.role`.
 ```
 
 `kind` is one of `verify`, `moderator_propose`, `moderator_confirm`,
-`moderator_appoint`.
+`moderator_appoint`, `moderator_reject`. Propose and reject may repeat;
+**409** duplicate only for live-unique kinds (`verify`,
+`moderator_confirm`, `moderator_appoint`) or `subjectId === actorId`.
 
 Bad body → **400** `{ "error": "Expected a JSON body with \"subjectId\", \"actorId\", and \"kind\" strings" }`.
 Missing subject or actor (or a non-UUID id) → **404** `{ "error": "Not found" }`.
-Duplicate `(subjectId, kind)` or `subjectId === actorId` → **409**
+Duplicate live-unique `(subjectId, kind)` or `subjectId === actorId` → **409**
 `{ "error": "Conflict" }`.
 Unexpected store throw → **503** `{ "error": "Trust chain is unavailable" }`
 logged as `debug.trust_edges.failed`.
@@ -1617,8 +1668,9 @@ Success logs `debug.trust_edges.inserted` `{ subjectId, actorId, kind }`.
 
 Operator delete of a stored trust edge. Authenticated with
 `Authorization: Bearer` matching `DEBUG_TOKEN` (same 503/401 gate as the
-other debug routes). Does **not** change `account.role`. Unique
-`(subjectId, kind)` means one row is enough to identify.
+other debug routes). Does **not** change `account.role`. Deletes the
+latest stored row of that `(subjectId, kind)` (`createdAt` desc, then
+`id` desc).
 
 **Request**:
 
@@ -1630,7 +1682,7 @@ other debug routes). Does **not** change `account.role`. Unique
 ```
 
 `kind` is one of `verify`, `moderator_propose`, `moderator_confirm`,
-`moderator_appoint`.
+`moderator_appoint`, `moderator_reject`.
 
 Bad body → **400** `{ "error": "Expected a JSON body with \"subjectId\" and \"kind\" strings" }`.
 Non-UUID `subjectId` or no matching row → **404** `{ "error": "Not found" }`.
@@ -3896,13 +3948,15 @@ plus `unreadCount`. Fan-out already applied the owner's
 on the newest 1000). After the level filter, drop `forum_post` /
 `forum_reply` whose parent message is missing or hidden; also drop
 `forum_reply` when the child (`replyId`) is missing or hidden. Never drop
-`moderator_appointed`. Zap only checks the parent (`replyId` is a
-receipt-derived UUID, not a message id). Best-effort purge of those
-message ids. Then cap the kept list at **200**. `unreadCount` is unread
-among kept rows after the hidden filter (not the unfiltered matching
-unread of the 1000, and not necessarily the page length). Member JSON
-never includes recipient or actor account ids. Each item `type` is
-`"forum_post"`, `"forum_reply"`, `"zap"`, or `"moderator_appointed"`.
+`moderator_appointed` or `moderator_proposal` (do not look up a forum
+message; do not add the parent id to the purge set). Zap only checks the
+parent (`replyId` is a receipt-derived UUID, not a message id).
+Best-effort purge of those message ids. Then cap the kept list at **200**.
+`unreadCount` is unread among kept rows after the hidden filter (not the
+unfiltered matching unread of the 1000, and not necessarily the page
+length). Member JSON never includes recipient or actor account ids. Each
+item `type` is `"forum_post"`, `"forum_reply"`, `"zap"`,
+`"moderator_appointed"`, or `"moderator_proposal"`.
 
 Missing/invalid/expired bearer → **Response** `401`:
 
@@ -3936,14 +3990,15 @@ Success → **Response** `200`:
 }
 ```
 
-`unreadCount` is matching unread in the newest 1000 after
-`notificationsMatchingLevel`, not `store.unreadCount()`. It is not the
-page length and may exceed the 200 list cap.
+`unreadCount` is unread among kept rows after the hidden filter (before
+the 200 cap), not `store.unreadCount()` and not the unfiltered matching
+unread of the newest 1000. It is not necessarily the page length.
 
 ### `POST /notifications/read-all`
 
 Bearer session required. Marks every unread notification for the session
-account read.
+account read except `moderator_proposal` (mark-read does not stamp them;
+rows drop on confirm, on reject when pending is then empty, or on appoint).
 
 Missing/invalid/expired bearer → **401** `{ "error": "Unauthorized" }`.
 Store failure → **503** `{ "error": "Notifications are unavailable" }`.
@@ -3957,11 +4012,13 @@ Success → **Response** `200`:
 ### `POST /notifications/:id/read`
 
 Bearer session required. `:id` is a UUID. Marks one notification read and
-returns that `PublicNotification` with `readAt` set. Unknown id, another
-account's notification, or a non-uuid `:id` → **404**
+returns that `PublicNotification` with `readAt` set. A `moderator_proposal`
+row is **200** with `readAt` still `null` (mark-read does not dismiss it).
+Unknown id, another account's notification, or a non-uuid `:id` → **404**
 `{ "error": "Not found" }`. Same **401** / **503** as list.
 
-Success → **Response** `200` (one public notification with `readAt` set).
+Success → **Response** `200` (one public notification with `readAt` set,
+or still `null` for `moderator_proposal`).
 
 ---
 

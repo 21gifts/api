@@ -162,6 +162,55 @@ describe('GET /trust-chain', () => {
     });
   });
 
+  it('skips a missing oldest sibling actor so a later chain contact can show', async () => {
+    const authStore = new InMemoryAuthStore();
+    await authStore.createAccount(account({ id: 'f', role: 'founder', name: 'F', createdAt: 1 }));
+    await authStore.createAccount(account({ id: 'm', role: 'moderator', name: 'M', createdAt: 2 }));
+    await authStore.createAccount(account({ id: 'v', role: 'verified', name: 'V', createdAt: 3 }));
+    await signIn(authStore, 'f');
+    const edges: TrustEdge[] = [
+      { id: 'e-ghost', subjectId: 'v', actorId: 'ghost', kind: 'verify', createdAt: 10 },
+      { id: 'e-mod', subjectId: 'v', actorId: 'm', kind: 'verify', createdAt: 11 },
+    ];
+    const res = await mount(authStore, new InMemoryTrustStore(edges)).request(
+      '/trust-chain?around=m',
+      { headers: AUTH },
+    );
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({
+      nodes: [
+        { id: 'm', name: 'M', role: 'moderator' },
+        { id: 'v', name: 'V', role: 'verified' },
+      ],
+      edges: [{ from: 'm', to: 'v', kind: 'verify' }],
+    });
+  });
+
+  it('skips a non-chain oldest verify so a later chain contact can show', async () => {
+    const authStore = new InMemoryAuthStore();
+    await authStore.createAccount(account({ id: 'f', role: 'founder', name: 'F', createdAt: 1 }));
+    await authStore.createAccount(account({ id: 'm', role: 'moderator', name: 'M', createdAt: 2 }));
+    await authStore.createAccount(account({ id: 'v', role: 'verified', name: 'V', createdAt: 3 }));
+    await authStore.createAccount(account({ id: 'b', role: 'basis', name: 'B', createdAt: 0 }));
+    await signIn(authStore, 'f');
+    const edges: TrustEdge[] = [
+      { id: 'e-basis', subjectId: 'v', actorId: 'b', kind: 'verify', createdAt: 10 },
+      { id: 'e-mod', subjectId: 'v', actorId: 'm', kind: 'verify', createdAt: 11 },
+    ];
+    const res = await mount(authStore, new InMemoryTrustStore(edges)).request(
+      '/trust-chain?around=v',
+      { headers: AUTH },
+    );
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({
+      nodes: [
+        { id: 'm', name: 'M', role: 'moderator' },
+        { id: 'v', name: 'V', role: 'verified' },
+      ],
+      edges: [{ from: 'm', to: 'v', kind: 'verify' }],
+    });
+  });
+
   it('omits founder appoint when the subject was verified by someone else', async () => {
     const authStore = new InMemoryAuthStore();
     await authStore.createAccount(account({ id: 'f', role: 'founder', name: 'F', createdAt: 1 }));
@@ -278,6 +327,7 @@ describe('GET /trust-chain', () => {
       },
       insertEdge: async (row) => row,
       deleteEdge: async () => undefined,
+      deleteEdgeById: async () => undefined,
     };
     const res = await mount(authStore, throwing).request('/trust-chain?around=f', {
       headers: AUTH,

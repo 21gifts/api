@@ -12,6 +12,7 @@ import {
   type FundingGrant,
   type FundingStatus,
 } from '@/lib/funding';
+import { postgresTextArrayLiteral } from '@/lib/postgres-text-array';
 
 /**
  * Persistence port for funding grants.
@@ -332,6 +333,8 @@ export class PostgresFundingStore implements FundingStore {
   /**
    * Write `grant` only when the stored status is in `from`. `'none'` uses
    * `INSERT … ON CONFLICT DO UPDATE WHERE status = ANY(from without none)`.
+   * `$9` is {@link postgresTextArrayLiteral} of `from` without `'none'`, not a
+   * JavaScript array (Bun SQL cannot bind a JavaScript array to `text[]`).
    *
    * @param grant - Fully formed next grant.
    * @param from - Allowed current statuses, including `'none'` for insert.
@@ -351,7 +354,7 @@ export class PostgresFundingStore implements FundingStore {
       grant.trialUtcDate,
       grant.admittedAt === null ? null : new Date(grant.admittedAt),
       grant.note,
-      fromStatus,
+      postgresTextArrayLiteral(fromStatus),
     ];
     const rows = from.includes('none')
       ? await this.#sql.query<FundingSqlRow>(

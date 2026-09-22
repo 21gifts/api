@@ -50,7 +50,7 @@ api/
 │   │   ├── debug-trust.ts    # GET/POST/DELETE /debug/trust-edges (operator DEBUG_TOKEN; no role change)
 │   │   ├── debug-catalog.ts  # GET /debug/dump, GET /debug/dump/:table (operator DEBUG_TOKEN)
 │   │   ├── trust-chain.ts    # session GET /trust-chain (founder seeds; ?around=<id> one hop)
-│   │   ├── trust.ts          # GET /trust/proposals; POST /trust/verify, propose-moderator, confirm-moderator, appoint-moderator
+│   │   ├── trust.ts          # GET /trust/proposals; POST /trust/verify, propose-moderator, confirm-moderator, reject-moderator, appoint-moderator
 │   │   ├── funding.ts        # POST /funding/apply; GET /funding/applications; GET /funding/applications/:accountId; POST /funding/trial, admit, reject
 │   │   ├── push.ts           # GET /push/vapid-public; POST/DELETE /me/push-subscriptions
 │   │   ├── stats.ts          # GET /gifts/stats (public gift totals)
@@ -80,13 +80,14 @@ api/
 │   │   ├── trust-store.ts    # TrustStore port, InMemoryTrustStore, PostgresTrustStore, TRUST_SCHEMA_SQL
 │   │   ├── funding.ts        # Funding-grant types, utcDayKey, FUNDING_REQUIRED_FROM_UTC, fundingGrantRequired, eligibleToday, serializeOwnerFunding, fundingReviewedAt, expiredTrialAsPending
 │   │   ├── funding-store.ts  # FundingStore port, InMemoryFundingStore, PostgresFundingStore, FUNDING_SCHEMA_SQL, loadGrantEffective
+│   │   ├── postgres-text-array.ts  # postgresTextArrayLiteral (one Postgres text-array literal; Bun SQL cannot bind a JavaScript array)
 │   │   ├── conversation.ts   # PN public JSON (optional counterpart/sender accountId; hasPhoto/photoCount; no eventId / npub / bytes)
 │   │   ├── api-log.ts        # HTTP audit log store (`api_log`)
 │   │   ├── debug-db.ts       # Operator read of every public table (`GET /debug/db`)
 │   │   ├── request-auth.ts   # Classify bearer for api_log (session/debug/spend/none)
 │   │   ├── conversation-store.ts  # ConversationStore port, memory + Postgres
 │   │   ├── conversation-push.ts  # notifyConversationMessage (DM Web Push; no in-app rows)
-│   │   ├── notification.ts   # Notification public JSON + bell fan-out (`notifyForumPost` / `notifyForumReply` / `notifyZap`) filtered by `notificationLevel` (`parseNotificationLevel` / `isStaffAccount` / `wantsNotification`); targeted `notifyModeratorAppointed` and `notifyExternalForumReply` (not fan-out; the latter reaches only the parent note's author)
+│   │   ├── notification.ts   # Notification public JSON + bell fan-out (`notifyForumPost` / `notifyForumReply` / `notifyZap`) filtered by `notificationLevel` (`parseNotificationLevel` / `isStaffAccount` / `wantsNotification`); staff `notifyModeratorProposed`; targeted `notifyModeratorAppointed` and `notifyExternalForumReply` (not fan-out; the latter reaches only the parent note's author)
 │   │   ├── notification-store.ts  # NotificationStore port, memory + Postgres
 │   │   ├── push-config.ts    # resolveVapidConfig (VAPID env; missing → null)
 │   │   ├── push.ts           # parsePushSubscription + English forum/zap/conversation payloads
@@ -191,6 +192,7 @@ api/
 │       │   ├── request-auth.test.ts
 │       │   ├── funding.test.ts
 │       │   ├── funding-store.test.ts
+│       │   ├── postgres-text-array.test.ts
 │       │   ├── conversation.test.ts
 │       │   ├── conversation-store.test.ts
 │       │   ├── conversation-push.test.ts
@@ -271,6 +273,8 @@ api/
 │   ├── check-handbook.mjs    # CI gate: missing heading → exit 1
 │   ├── check-e2e.mjs         # CI gate: missing endpoint request or Function: title → exit 1
 │   └── gifts-debug.sh        # Operator CLI: list, account-by-id, dump tables, set role, refuse-session, unlink Lightning Address, messages, external-pubkeys, video-put, restore, spend, trust-edges, trust-edge, trust-edge-delete, api-log (DEBUG_TOKEN)
+├── integration/
+│   └── sql-driver.test.ts  # Bun test:postgres; needs DATABASE_URL; text[] binding against Postgres
 ├── e2e/
 │   ├── http.spec.ts          # Playwright endpoint smokes against bun src/index.ts
 │   ├── forum-replies.spec.ts # Playwright: provision, session, note, public GET, reply, replyCount
@@ -451,6 +455,10 @@ undeclared deviation and is rejected.
 - Coverage gate: 100% lines, branches, functions, statements on the activated surface
   (see `vitest.config.ts`). Unreachable defensive code can be exempted with a
   `v8 ignore` annotation that names a concrete reason — never to silence the gate.
+- Vitest stays free of `DATABASE_URL`. `bun run test:postgres` is a separate Bun test against
+  Postgres. `$n::text[]` and `$n::uuid[]` parameters must be one array-literal string
+  (`postgresTextArrayLiteral` for text). A JavaScript array is `malformed array literal` under
+  Bun `SQL.unsafe`. CI runs this script and fails if `DATABASE_URL` is missing.
 
 ### Before every push (the same checks CI runs)
 
@@ -460,6 +468,8 @@ bun run lint
 bun run handbook:check
 bun run e2e:check
 bun run test:coverage
+# Postgres driver (Bun test, not Vitest); fails if DATABASE_URL is missing
+DATABASE_URL=postgres://gifts:gifts@127.0.0.1:5432/gifts bun run test:postgres
 bun run build
 bun run e2e
 ```
@@ -512,12 +522,12 @@ More will be added as concrete subsystems that need runtime configuration
 
 ## CI / CD
 
-| Workflow               | Trigger               | Action                                                                       |
-| ---------------------- | --------------------- | ---------------------------------------------------------------------------- |
-| `ci.yaml`              | PR (including drafts) | Typecheck + lint + handbook + e2e-check + test (100% coverage) + build + e2e |
-| `deploy-dev.yaml`      | push to `develop`     | Docker build → push `21gifts/api:beta` → notify → wait for deploy            |
-| `deploy-prd.yaml`      | push to `main`        | Docker build → push `21gifts/api:latest` → notify → wait for deploy          |
-| `auto-release-pr.yaml` | push to `develop`     | Auto-create Release PR (`develop → main`)                                    |
+| Workflow               | Trigger               | Action                                                                                       |
+| ---------------------- | --------------------- | -------------------------------------------------------------------------------------------- |
+| `ci.yaml`              | PR (including drafts) | Typecheck + lint + handbook + e2e-check + test (100% coverage) + test:postgres + build + e2e |
+| `deploy-dev.yaml`      | push to `develop`     | Docker build → push `21gifts/api:beta` → notify → wait for deploy                            |
+| `deploy-prd.yaml`      | push to `main`        | Docker build → push `21gifts/api:latest` → notify → wait for deploy                          |
+| `auto-release-pr.yaml` | push to `develop`     | Auto-create Release PR (`develop → main`)                                                    |
 
 Images target `linux/arm64`.
 

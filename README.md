@@ -87,6 +87,8 @@ bun run lint            # eslint + prettier --check
 bun run handbook:check  # every function and HTTP endpoint must be documented
 bun run e2e:check       # every HTTP endpoint request and Function: <Name> title
 bun run test:coverage   # vitest with 100% threshold
+# Postgres driver (Bun test, not Vitest); fails if DATABASE_URL is missing
+DATABASE_URL=postgres://gifts:gifts@127.0.0.1:5432/gifts bun run test:postgres
 bun run build           # bun build to dist/
 bun run e2e             # Playwright against bun src/index.ts
 ```

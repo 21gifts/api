@@ -86,7 +86,7 @@ export function notificationRoutes(deps: NotificationRouteDeps): Hono {
         const kept = [];
         const droppedMessageIds = new Set<string>();
         for (const row of matched) {
-          if (row.type === 'moderator_appointed') {
+          if (row.type === 'moderator_appointed' || row.type === 'moderator_proposal') {
             kept.push(row);
             continue;
           }

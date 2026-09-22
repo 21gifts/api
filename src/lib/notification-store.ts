@@ -1,5 +1,6 @@
 /**
- * Persistence for in-app notifications (forum posts, replies, zaps, and moderator appointment).
+ * Persistence for in-app notifications (forum posts, replies, zaps,
+ * moderator appointment, and open moderator proposals).
  *
  * v1 default is in-memory. Production boot injects Postgres when
  * `DATABASE_URL` is set. New public tables are covered by `db_change` attach.
@@ -63,17 +64,18 @@ export interface NotificationStore {
   /**
    * Mark one notification read. Missing / other recipient → `undefined`.
    * Already read → return as-is (do not overwrite `readAt`).
+   * `moderator_proposal` stays unread (do not stamp `readAt`).
    *
    * @param id - Notification id.
    * @param accountId - Recipient account.
    * @param readAt - Read stamp for a previously unread row.
-   * @returns The row after stamping `readAt`, the already-read row unchanged, or `undefined` if missing/other recipient.
+   * @returns The row after stamping `readAt`, the already-read or proposal row unchanged, or `undefined` if missing/other recipient.
    */
   markRead(id: string, accountId: string, readAt: Date): Promise<NotificationRow | undefined>;
 
   /**
    * Mark every unread notification for the recipient read. Already-read rows
-   * stay unchanged.
+   * stay unchanged. `moderator_proposal` rows are skipped (stay unread).
    *
    * @param accountId - Recipient account.
    * @param readAt - Read stamp for previously unread rows.
@@ -88,6 +90,15 @@ export interface NotificationStore {
    * @returns Number of rows removed.
    */
   deleteByMessageIds(ids: readonly string[]): Promise<number>;
+
+  /**
+   * Delete notifications whose `type` and `replyId` both match.
+   *
+   * @param type - Notification kind to match.
+   * @param replyId - Event id (`reply_id`) to match.
+   * @returns Number of rows removed.
+   */
+  deleteByTypeAndReplyId(type: NotificationType, replyId: string): Promise<number>;
 }
 
 /** Idempotent DDL for the notification table (matches `docs/schema/notification.sql`). */
@@ -218,18 +229,19 @@ export class InMemoryNotificationStore implements NotificationStore {
 
   /**
    * Stamp `readAt` on an unread row owned by `accountId`.
+   * `moderator_proposal` is returned unchanged.
    *
    * @param id - Notification id.
    * @param accountId - Recipient account.
    * @param readAt - Read stamp.
-   * @returns A copy after stamping `readAt`, the already-read row unchanged, or `undefined` if missing/other recipient.
+   * @returns A copy after stamping `readAt`, the already-read or proposal row unchanged, or `undefined` if missing/other recipient.
    */
   markRead(id: string, accountId: string, readAt: Date): Promise<NotificationRow | undefined> {
     const row = this.#rows.find((item) => item.id === id && item.recipientAccountId === accountId);
     if (row === undefined) {
       return Promise.resolve(undefined);
     }
-    if (row.readAt !== null) {
+    if (row.readAt !== null || row.type === 'moderator_proposal') {
       return Promise.resolve(copyNotification(row));
     }
     row.readAt = new Date(readAt.getTime());
@@ -237,14 +249,19 @@ export class InMemoryNotificationStore implements NotificationStore {
   }
 
   /**
-   * Stamp `readAt` on every unread row for `accountId`.
+   * Stamp `readAt` on every unread row for `accountId` except
+   * `moderator_proposal`.
    *
    * @param accountId - Recipient account.
    * @param readAt - Read stamp.
    */
   markAllRead(accountId: string, readAt: Date): Promise<void> {
     for (const row of this.#rows) {
-      if (row.recipientAccountId === accountId && row.readAt === null) {
+      if (
+        row.recipientAccountId === accountId &&
+        row.readAt === null &&
+        row.type !== 'moderator_proposal'
+      ) {
         row.readAt = new Date(readAt.getTime());
       }
     }
@@ -266,6 +283,25 @@ export class InMemoryNotificationStore implements NotificationStore {
     for (let i = this.#rows.length - 1; i >= 0; i -= 1) {
       const row = this.#rows[i];
       if (row !== undefined && (match.has(row.parentId) || match.has(row.replyId))) {
+        this.#rows.splice(i, 1);
+        removed += 1;
+      }
+    }
+    return Promise.resolve(removed);
+  }
+
+  /**
+   * Remove rows whose `type` and `replyId` both match.
+   *
+   * @param type - Notification kind.
+   * @param replyId - Event id.
+   * @returns Removed count.
+   */
+  deleteByTypeAndReplyId(type: NotificationType, replyId: string): Promise<number> {
+    let removed = 0;
+    for (let i = this.#rows.length - 1; i >= 0; i -= 1) {
+      const row = this.#rows[i];
+      if (row !== undefined && row.type === type && row.replyId === replyId) {
         this.#rows.splice(i, 1);
         removed += 1;
       }
@@ -410,12 +446,14 @@ export class PostgresNotificationStore implements NotificationStore {
   }
 
   /**
-   * Stamp `read_at` when the row is unread and owned by `accountId`.
+   * Stamp `read_at` when the row is unread, owned by `accountId`, and not
+   * `moderator_proposal` (mark-read does not stamp them; rows drop on
+   * confirm, on reject when pending is then empty, or on appoint).
    *
    * @param id - Notification id.
    * @param accountId - Recipient.
    * @param readAt - Read stamp.
-   * @returns The mapped row after stamping `read_at`, the already-read row unchanged, or `undefined` if missing/other recipient.
+   * @returns The mapped row after stamping `read_at`, the already-read or proposal row unchanged, or `undefined` if missing/other recipient.
    */
   async markRead(
     id: string,
@@ -424,7 +462,7 @@ export class PostgresNotificationStore implements NotificationStore {
   ): Promise<NotificationRow | undefined> {
     const updated = await this.#sql.query<NotificationSqlRow>(
       `UPDATE notification SET read_at = $3
-       WHERE id = $1 AND recipient_account_id = $2 AND read_at IS NULL
+       WHERE id = $1 AND recipient_account_id = $2 AND read_at IS NULL AND type <> 'moderator_proposal'
        RETURNING ${NOTIFICATION_SELECT}`,
       [id, accountId, readAt],
     );
@@ -436,14 +474,16 @@ export class PostgresNotificationStore implements NotificationStore {
   }
 
   /**
-   * Stamp `read_at` on every unread row for `accountId`.
+   * Stamp `read_at` on every unread row for `accountId` except
+   * `moderator_proposal` (mark-read does not stamp them; rows drop on
+   * confirm, on reject when pending is then empty, or on appoint).
    *
    * @param accountId - Recipient (`$1`).
    * @param readAt - Read stamp (`$2`).
    */
   async markAllRead(accountId: string, readAt: Date): Promise<void> {
     await this.#sql.execute(
-      `UPDATE notification SET read_at = $2 WHERE recipient_account_id = $1 AND read_at IS NULL`,
+      `UPDATE notification SET read_at = $2 WHERE recipient_account_id = $1 AND read_at IS NULL AND type <> 'moderator_proposal'`,
       [accountId, readAt],
     );
   }
@@ -466,6 +506,21 @@ export class PostgresNotificationStore implements NotificationStore {
     const rows = await this.#sql.query<{ id: string }>(
       `DELETE FROM notification WHERE parent_id = ANY($1::uuid[]) OR reply_id = ANY($1::uuid[]) RETURNING id`,
       [`{${uuids.join(',')}}`],
+    );
+    return rows.length;
+  }
+
+  /**
+   * Delete rows whose `type` and `reply_id` both match.
+   *
+   * @param type - Notification kind (`$1`).
+   * @param replyId - Event id (`$2`).
+   * @returns Removed count from `RETURNING id`.
+   */
+  async deleteByTypeAndReplyId(type: NotificationType, replyId: string): Promise<number> {
+    const rows = await this.#sql.query<{ id: string }>(
+      `DELETE FROM notification WHERE type = $1 AND reply_id = $2 RETURNING id`,
+      [type, replyId],
     );
     return rows.length;
   }

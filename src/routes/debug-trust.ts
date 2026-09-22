@@ -30,7 +30,13 @@ export interface DebugTrustRouteDeps {
 const insertBody = z.object({
   subjectId: z.string(),
   actorId: z.string(),
-  kind: z.enum(['verify', 'moderator_propose', 'moderator_confirm', 'moderator_appoint']),
+  kind: z.enum([
+    'verify',
+    'moderator_propose',
+    'moderator_confirm',
+    'moderator_appoint',
+    'moderator_reject',
+  ]),
 });
 
 /** Shared 503/401 gate for `/debug/trust-edges`. */
@@ -50,7 +56,13 @@ function requireDebugToken(deps: DebugTrustRouteDeps): MiddlewareHandler {
 /** Body schema for operator trust-edge delete. */
 const deleteBody = z.object({
   subjectId: z.string(),
-  kind: z.enum(['verify', 'moderator_propose', 'moderator_confirm', 'moderator_appoint']),
+  kind: z.enum([
+    'verify',
+    'moderator_propose',
+    'moderator_confirm',
+    'moderator_appoint',
+    'moderator_reject',
+  ]),
 });
 
 /**
