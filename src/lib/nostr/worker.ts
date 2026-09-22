@@ -5,6 +5,7 @@ import type { Account, AuthStore } from '@/lib/auth/store';
 import { unsignedConversationDefaults, type ConversationThread } from '@/lib/conversation';
 import { inboxUnreadCountFor, notifyConversationMessage } from '@/lib/conversation-push';
 import type { ConversationStore } from '@/lib/conversation-store';
+import type { FundingStore } from '@/lib/funding-store';
 import type { FetchFn } from '@/lib/lnurlp';
 import {
   MESSAGE_INBOUND_REPLY_MAX_LENGTH,
@@ -43,8 +44,10 @@ import {
   type ResolvedWriteSet,
 } from '@/lib/nostr/relays';
 import { signEventForAccount } from '@/lib/nostr/sign';
+import type { PostRateLimiter } from '@/lib/nostr/rate-limit';
 import { indexOpenZapReceipts } from '@/lib/nostr/zap-index';
 import type { PushStore } from '@/lib/push-store';
+import type { SpendPing } from '@/lib/spend-ping';
 import {
   EXTERNAL_REPLY_FUTURE_SKEW_MS,
   EXTERNAL_REPLY_NOTIFY_MAX_AGE_MS,
@@ -98,6 +101,12 @@ export interface NostrWorkerDeps {
   conversations?: ConversationStore;
   /** Optional in-app store: inbound replies, notifyZap, profile-note notifyForumPost. */
   notificationStore?: NotificationStore;
+  /** Optional spend ping after a platform-note compose creates a top-level post. */
+  spendPing?: SpendPing;
+  /** Optional post limiter shared with `POST /messages`. */
+  postLimiter?: PostRateLimiter;
+  /** Optional funding grants; compose spend pings use the same `eligibleToday` gate as `POST /messages`. */
+  fundingStore?: FundingStore;
 }
 
 const externalLimiters = new WeakMap<MessageStore, ExternalIngestLimiter>();
@@ -202,10 +211,16 @@ function reservedContent(
  * (in-app every account except the actor; no-op when the actor is the
  * official platform account; Web Push only to bell subscribers).
  * Failures log `nostr.reply.notify.failed` and do not undo persist. Zap ingest
- * still calls `notifyZap` after a newly indexed forum receipt. PN ingest
- * appends a conversation gift (`appendConversationGift`) and does not call
- * `notifyZap`. It does not call `notifyForumReply` for the gift-reply. When a
- * conversation store is present, also
+ * still calls `notifyZap` after a newly indexed **member-note** forum receipt.
+ * A member/invoice zap on the official platform profile note is a compose
+ * fee: skip `notifyZap`, then fan out `notifyForumPost` / `notifyForumReply`
+ * plus a top-level `spendPing` only when `eligibleToday` (same gate as
+ * `POST /messages`; otherwise `spend.ping.skipped` / `not_eligible`). An
+ * external zap on that same note still
+ * inserts `insertExternalGiftReply`. PN ingest appends a conversation gift
+ * (`appendConversationGift`) and does not call `notifyZap`. A member-note
+ * gift-reply does not call `notifyForumReply`. When a conversation store is
+ * present, also
  * signs/publishes NIP-17 wraps and REQs inbound kind:1059 / kind:4 to member
  * and platform pubkeys.
  *
@@ -228,6 +243,9 @@ export async function runNostrWorkerTick(deps: NostrWorkerDeps): Promise<void> {
     ...(deps.pushStore === undefined ? {} : { pushStore: deps.pushStore }),
     ...(deps.notificationStore === undefined ? {} : { notificationStore: deps.notificationStore }),
     ...(deps.conversations === undefined ? {} : { conversations: deps.conversations }),
+    ...(deps.spendPing === undefined ? {} : { spendPing: deps.spendPing }),
+    ...(deps.postLimiter === undefined ? {} : { postLimiter: deps.postLimiter }),
+    ...(deps.fundingStore === undefined ? {} : { fundingStore: deps.fundingStore }),
   });
   const nowMs = deps.now();
   await resignLegacyKind1Tags(deps);

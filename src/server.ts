@@ -21,6 +21,8 @@ import { contactRoutes } from '@/routes/contact';
 import { conversationRoutes } from '@/routes/conversations';
 import { notificationRoutes } from '@/routes/notifications';
 import { debugApiLogRoutes } from '@/routes/debug-api-log';
+import { debugDbRoutes } from '@/routes/debug-db';
+import type { DebugDbStore } from '@/lib/debug-db';
 import { debugContactsRoutes } from '@/routes/debug-contacts';
 import { debugMessagesRoutes } from '@/routes/debug-messages';
 import { debugExternalRoutes } from '@/routes/debug-external';
@@ -28,6 +30,7 @@ import { debugPaymentsRoutes } from '@/routes/debug-payments';
 import { pushRoutes } from '@/routes/push';
 import { debugPushRoutes } from '@/routes/debug-push';
 import { debugTrustRoutes } from '@/routes/debug-trust';
+import { debugCatalogRoutes } from '@/routes/debug-catalog';
 import { trustChainRoutes } from '@/routes/trust-chain';
 import { trustRoutes } from '@/routes/trust';
 import { fundingRoutes } from '@/routes/funding';
@@ -50,6 +53,7 @@ import { resolveVapidConfig } from '@/lib/push-config';
 import { InMemoryPushStore, type PushStore } from '@/lib/push-store';
 import { InMemoryTrustStore, type TrustStore } from '@/lib/trust-store';
 import { InMemoryFundingStore, type FundingStore } from '@/lib/funding-store';
+import { PostRateLimiter } from '@/lib/nostr/rate-limit';
 import { resolveAllowedOrigins } from '@/lib/config';
 import { UnconfiguredInvoicePayer } from '@/lib/invoice-payer';
 import type { InvoicePayer } from '@/lib/invoice-payer';
@@ -100,10 +104,17 @@ export interface AppDeps {
    * `GET /debug/zap-ingests`, `GET /debug/messages`,
    * `GET /debug/messages/:id`, `GET /debug/messages/:id/photo`,
    * `PUT /debug/messages/:id/video`, `POST /debug/messages/:id/restore`,
-   * `GET /debug/external-pubkeys`, and `POST /debug/trust-edges`
+   * `GET /debug/external-pubkeys`, `GET /debug/accounts/:id`,
+   * `GET /debug/trust-edges`, `GET /debug/dump`, `GET /debug/dump/:table`,
+   * `POST /debug/trust-edges`, and `GET /debug/db`
    * return 503.
    */
   debugToken?: string;
+  /**
+   * Whole-database reader for `GET /debug/db`. Omitted on a memory boot;
+   * the route then returns 503 after the debug token matches.
+   */
+  debugDbStore?: DebugDbStore;
   /**
    * HTTP audit log (default: empty {@link InMemoryApiLogStore}). Boot
    * injects {@link PostgresApiLogStore} when `DATABASE_URL` is set.
@@ -114,6 +125,10 @@ export interface AppDeps {
    * {@link InMemoryGiftStore}).
    */
   giftStore?: GiftStore;
+  /**
+   * Operator dump of `db_change`. Unset → dump table `db_change` is `[]`.
+   */
+  listDbChange?: (limit: number) => Promise<unknown[]>;
   /** Raw `WEBAUTHN_RP_ID` (default: `process.env.WEBAUTHN_RP_ID`). */
   webAuthnRpId?: string;
   /** Raw `WEBAUTHN_RP_NAME` (default: `process.env.WEBAUTHN_RP_NAME`). */
@@ -136,6 +151,12 @@ export interface AppDeps {
    * `POST /conversations/:id` still 200.
    */
   spendPing?: SpendPing;
+  /**
+   * Forum post limiter shared with zap compose ingest (default: a new
+   * {@link PostRateLimiter}). Boot injects one instance into both
+   * `messagesRoutes` and the Nostr worker.
+   */
+  postLimiter?: PostRateLimiter;
   /** Gift invoices issued for the spend worker (default: in-memory). */
   invoiceStore?: InvoiceStore;
   /**
@@ -213,6 +234,12 @@ export interface AppDeps {
   fundingStore?: FundingStore;
 }
 
+/** Optional `listDebug` on a rate book, or `[]` when the adapter has none. */
+function debugList(store: object, limit: number): Promise<unknown[]> {
+  const list = (store as { listDebug?: (n: number) => Promise<unknown[]> }).listDebug;
+  return list === undefined ? Promise.resolve([]) : list.call(store, limit);
+}
+
 /**
  * Build a fully wired Hono application.
  *
@@ -221,15 +248,18 @@ export interface AppDeps {
  * wire-up change — middleware, routes, error handlers — flows through this
  * single factory so the test surface matches production exactly. Mounts
  * public `GET /view/:viewKey` alongside `/me`, Web Push subscription routes,
- * `/notifications`, and the rest of the surface.
+ * `/notifications`, `/debug/dump`, and the rest of the surface.
  *
  * @param deps - Optional overrides for the auth store, clock, invoice payer,
  *   LNURL-pay fetch, LN-Address cache, brand reader, debugToken, gift store,
  *   gift recorder, BTC-USD rates, USD-fiat rates, message store, contact store,
  *   conversation store, notification store, push store, trust store,
+ *   debugDbStore (`GET /debug/db`; omitted on a memory boot),
  *   funding store (injected into `/funding`, `/me`, `/auth`, `/members`,
- *   `/messages`, `/conversations`, and `/invoices`), vapidPublicKey, nostrKek,
- *   nostrPublisher, env, WebAuthn RP, spend token, spend ping, and gift invoice store.
+ *   `/messages`, `/conversations`, `/invoices`, and `debugPaymentsRoutes`), vapidPublicKey, nostrKek,
+ *   nostrPublisher, env, WebAuthn RP, spend token, spend ping, postLimiter
+ *   (optional; default `new PostRateLimiter()`, shared with `messagesRoutes`
+ *   and the Nostr worker), gift invoice store, and listDbChange.
  * @returns A Hono app with all routes and middleware attached.
  */
 export function createApp(deps: AppDeps = {}): Hono {
@@ -259,6 +289,7 @@ export function createApp(deps: AppDeps = {}): Hono {
   const passkeyCeremony = deps.passkeyCeremony ?? new SimpleWebAuthnPasskeyCeremony();
   const spendApiToken = deps.spendApiToken ?? process.env['SPEND_API_TOKEN'];
   const spendPing = deps.spendPing ?? resolveSpendPing(process.env, fetchImpl);
+  const postLimiter = deps.postLimiter ?? new PostRateLimiter();
   const invoiceStore = deps.invoiceStore ?? new InMemoryInvoiceStore();
   const giftRecorder = deps.giftRecorder;
 
@@ -365,6 +396,7 @@ export function createApp(deps: AppDeps = {}): Hono {
   );
   app.route('/debug/contacts', debugContactsRoutes({ store: contactStore, debugToken }));
   app.route('/debug/api-log', debugApiLogRoutes({ store: apiLogStore, debugToken }));
+  app.route('/debug/db', debugDbRoutes({ store: deps.debugDbStore, debugToken }));
   app.route('/debug/messages', debugMessagesRoutes({ store: messageStore, debugToken }));
   app.route('/debug/external-pubkeys', debugExternalRoutes({ store: messageStore, debugToken }));
   app.route(
@@ -376,6 +408,8 @@ export function createApp(deps: AppDeps = {}): Hono {
       debugToken,
       pushStore,
       notificationStore,
+      ...(spendPing === undefined ? {} : { spendPing }),
+      fundingStore,
     }),
   );
   app.route(
@@ -389,6 +423,24 @@ export function createApp(deps: AppDeps = {}): Hono {
     }),
   );
   app.route('/debug/trust-edges', debugTrustRoutes({ store, trustStore, debugToken, now }));
+  app.route(
+    '/debug/dump',
+    debugCatalogRoutes({
+      auth: store,
+      messages: messageStore,
+      contacts: contactStore,
+      conversations: conversationStore,
+      notifications: notificationStore,
+      push: pushStore,
+      trust: trustStore,
+      gifts: giftStore,
+      apiLog: apiLogStore,
+      listBtcUsdDaily: (limit) => debugList(btcUsdRates, limit),
+      listUsdFiatDaily: (limit) => debugList(fiatRates, limit),
+      ...(deps.listDbChange === undefined ? {} : { listDbChange: deps.listDbChange }),
+      debugToken,
+    }),
+  );
   app.route('/trust-chain', trustChainRoutes({ authStore: store, trustStore, now }));
   app.route(
     '/trust',
@@ -430,6 +482,7 @@ export function createApp(deps: AppDeps = {}): Hono {
       ...(nostrKek === undefined ? {} : { nostrKek }),
       ...(deps.nostrPublisher === undefined ? {} : { nostrPublisher: deps.nostrPublisher }),
       ...(spendPing === undefined ? {} : { spendPing }),
+      postLimiter,
     }),
   );
   app.route(

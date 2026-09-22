@@ -956,6 +956,22 @@ describe('InMemoryMessageStore', () => {
       staffAccountIds: new Set(['staff']),
     });
     expect(active.map((row) => row.id)).toEqual(['pop-high', 'pop-low', 'paid', 'staff-unpaid']);
+    const ask = await store.create({
+      ...EARLY,
+      id: 'ask-open',
+      accountId: 'basis',
+      sats: 0,
+      goalSats: 1000,
+      text: 'Need a ticket',
+    });
+    expect(ask.goalSats).toBe(1000);
+    const activeWithAsk = await store.listFeed({
+      limit: 10,
+      mode: 'active',
+      cursor: null,
+      staffAccountIds: new Set(['staff']),
+    });
+    expect(activeWithAsk.map((row) => row.id)).toContain('ask-open');
     const popular = await store.listFeed({
       limit: 10,
       mode: 'popular',
@@ -1707,6 +1723,26 @@ describe('InMemoryMessageStore', () => {
     expect(await store.claimZapPayment(paymentHash, 'receipt-a', at)).toBe(true);
     expect(await store.claimZapPayment(paymentHash, 'receipt-a', at)).toBe(true);
     expect(await store.claimZapPayment(paymentHash.toLowerCase(), 'receipt-b', at)).toBe(false);
+  });
+
+  it('lists zap receipts by event id descending', async () => {
+    const store = new InMemoryMessageStore();
+    await store.create(EARLY);
+    await store.recordZapReceipt('aa', 'a', 1);
+    await store.recordZapReceipt('cc', 'a', 3);
+    await store.recordZapReceipt('bb', 'a', 2);
+    expect((await store.listZapReceipts(10)).map((row) => row.eventId)).toEqual(['cc', 'bb', 'aa']);
+    expect(await store.listZapReceipts(2)).toHaveLength(2);
+    const older = new Date('2026-09-01T00:00:00.000Z');
+    const newer = new Date('2026-09-02T00:00:00.000Z');
+    expect(await store.claimZapPayment('aa'.repeat(32), 'aa', older)).toBe(true);
+    expect(await store.claimZapPayment('bb'.repeat(32), 'bb', newer)).toBe(true);
+    expect(await store.claimZapPayment('cc'.repeat(32), 'cc', newer)).toBe(true);
+    expect((await store.listZapPayments(10)).map((row) => row.paymentHash)).toEqual([
+      'cc'.repeat(32),
+      'bb'.repeat(32),
+      'aa'.repeat(32),
+    ]);
   });
 
   it('tracks gift-reply receipts and finds ok invoices', async () => {
@@ -3327,6 +3363,69 @@ describe('PostgresMessageStore', () => {
     expect(sql.queries[2]?.params).toEqual(['acc', 'prof']);
   });
 
+  it('lists extra-photo meta, zap receipts, and zap payments', async () => {
+    const sql = new MockSql();
+    const store = new PostgresMessageStore(sql);
+    sql.nextRows = [
+      {
+        message_id: 'm1',
+        idx: 1,
+        photo_content_type: 'image/png',
+        bytes: 3,
+      },
+    ];
+    expect(await store.listExtraPhotoMeta(10)).toEqual([
+      { messageId: 'm1', idx: 1, photoContentType: 'image/png', bytes: 3 },
+    ]);
+    sql.nextRows = [
+      {
+        event_id: 'ev',
+        message_id: 'm1',
+        sats: 21,
+        payer_account_id: null,
+        payer_pubkey: null,
+        zap_request_id: null,
+        gift_reply_id: null,
+        comment: null,
+      },
+    ];
+    expect(await store.listZapReceipts(10)).toEqual([
+      {
+        eventId: 'ev',
+        messageId: 'm1',
+        sats: 21,
+        payerAccountId: null,
+        payerPubkey: null,
+        zapRequestId: null,
+        giftReplyId: null,
+        comment: '',
+      },
+    ]);
+    expect(sql.queries.at(-1)?.text).toContain('ORDER BY event_id DESC');
+    sql.nextRows = [
+      {
+        payment_hash: 'aa'.repeat(32),
+        receipt_event_id: 'ev',
+        created_at: '2026-09-01T00:00:00.000Z',
+      },
+    ];
+    expect(await store.listZapPayments(10)).toEqual([
+      {
+        paymentHash: 'aa'.repeat(32),
+        receiptEventId: 'ev',
+        createdAt: '2026-09-01T00:00:00.000Z',
+      },
+    ]);
+    sql.nextRows = [
+      {
+        payment_hash: 'bb'.repeat(32),
+        receipt_event_id: 'ev2',
+        created_at: new Date('2026-09-02T00:00:00.000Z'),
+      },
+    ];
+    expect((await store.listZapPayments(10))[0]?.createdAt).toBe('2026-09-02T00:00:00.000Z');
+  });
+
   it('accountHasLiveTopLevelPost queries live top-level message rows for the account', async () => {
     const sql = new MockSql();
     const store = new PostgresMessageStore(sql);
@@ -4292,6 +4391,7 @@ describe('PostgresMessageStore', () => {
     }
     const active = sql.queries.filter((query) => query.text.includes('ANY('));
     expect(active).toHaveLength(2);
+    expect(active[0]?.text).toMatch(/COALESCE\(goal_sats, 0\) > 0/);
     expect(active[0]?.params).toEqual([10, '{"staff-1"}']);
     expect(active[1]?.params.slice(0, 2)).toEqual([10, '{"staff-1"}']);
     const popular = sql.queries.filter((query) => query.text.includes('sats DESC'));

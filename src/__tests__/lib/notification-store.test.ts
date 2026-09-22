@@ -267,6 +267,20 @@ describe('PostgresNotificationStore', () => {
     expect(listed[0]?.actorAccountId).toBe('actor');
   });
 
+  it('listAll dumps every recipient newest first', async () => {
+    const sql = new MockSql();
+    sql.nextRows = [
+      sqlRow({
+        id: 'n-all',
+        created_at: NOW,
+        read_at: null,
+      }),
+    ];
+    const listed = await new PostgresNotificationStore(sql).listAll(20);
+    expect(sql.queries[0]?.params).toEqual([20]);
+    expect(listed[0]?.id).toBe('n-all');
+  });
+
   it('maps null and omitted read_at to null', async () => {
     const sql = new MockSql();
     sql.nextRows = [

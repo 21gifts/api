@@ -426,7 +426,7 @@ describe('serializeMessage', () => {
 });
 
 describe('serializeDebugMessage', () => {
-  it('includes hide stamps, null accountId, and omits nostrEvent and contentFp', () => {
+  it('includes hide stamps, null accountId, nostrEvent, and contentFp', () => {
     const deletedAt = new Date('2026-09-01T12:00:00.000Z');
     const row: MessageRow = {
       id: 'msg-debug',
@@ -462,15 +462,21 @@ describe('serializeDebugMessage', () => {
       parentId: 'parent-1',
       eventId: 'ee'.repeat(32),
       nostrPublishState: 'published',
+      nostrEvent: { id: 'ee'.repeat(32) },
+      claimedUntil: null,
+      nostrFirstAttemptAt: null,
+      nostrPublishEpoch: null,
+      contentFp: 'ab'.repeat(32),
       deletedAt: '2026-09-01T12:00:00.000Z',
       deletedBy: 'staff',
       authorPubkey: 'aa'.repeat(32),
       nostrAttempts: 2,
       accountId: null,
+      goalSats: null,
+      photoContentType: null,
+      photoBytes: 0,
+      extraPhotos: [],
     });
-    expect(serializeDebugMessage(row)).not.toHaveProperty('nostrEvent');
-    expect(serializeDebugMessage(row)).not.toHaveProperty('claimedUntil');
-    expect(serializeDebugMessage(row)).not.toHaveProperty('contentFp');
   });
 
   it('emits live null deletedAt and a string accountId', () => {
@@ -545,7 +551,7 @@ describe('serializeDebugMessage', () => {
     expect(serializeDebugMessage(row)['goalSats']).toBe(21000);
   });
 
-  it('omits goalSats when unset, null, zero, or on a reply', () => {
+  it('always includes stored goalSats, JSON null when unset', () => {
     const row: MessageRow = {
       id: 'msg-debug-nogoal',
       accountId: 'acc-1',
@@ -555,12 +561,12 @@ describe('serializeDebugMessage', () => {
       hasPhoto: false,
       ...unsignedNostrDefaults(),
     };
-    expect(serializeDebugMessage(row)).not.toHaveProperty('goalSats');
-    expect(serializeDebugMessage({ ...row, goalSats: null })).not.toHaveProperty('goalSats');
-    expect(serializeDebugMessage({ ...row, goalSats: 0 })).not.toHaveProperty('goalSats');
+    expect(serializeDebugMessage(row)['goalSats']).toBeNull();
+    expect(serializeDebugMessage({ ...row, goalSats: null })['goalSats']).toBeNull();
+    expect(serializeDebugMessage({ ...row, goalSats: 0 })['goalSats']).toBe(0);
     expect(
-      serializeDebugMessage({ ...row, parentId: 'msg-top', goalSats: 21000 }),
-    ).not.toHaveProperty('goalSats');
+      serializeDebugMessage({ ...row, parentId: 'msg-top', goalSats: 21000 })['goalSats'],
+    ).toBe(21000);
   });
 });
 

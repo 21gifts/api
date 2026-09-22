@@ -10,6 +10,7 @@ import {
 import { unsignedNostrDefaults } from '@/lib/message';
 import { InMemoryNotificationStore } from '@/lib/notification-store';
 import { InMemoryPushStore } from '@/lib/push-store';
+import { InMemoryFundingStore } from '@/lib/funding-store';
 import { debugPaymentsRoutes } from '@/routes/debug-payments';
 
 function parsedEvents(warn: ReturnType<typeof vi.spyOn>): Array<Record<string, unknown>> {
@@ -19,7 +20,14 @@ function parsedEvents(warn: ReturnType<typeof vi.spyOn>): Array<Record<string, u
     .map((arg) => JSON.parse(arg) as Record<string, unknown>);
 }
 
-function mount(store: InMemoryMessageStore, debugToken: string | undefined): Hono {
+function mount(
+  store: InMemoryMessageStore,
+  debugToken: string | undefined,
+  extra: {
+    spendPing?: { ping: (address: string, messageId: string) => Promise<void> };
+    fundingStore?: InMemoryFundingStore;
+  } = {},
+): Hono {
   return new Hono().route(
     '/debug',
     debugPaymentsRoutes({
@@ -27,6 +35,8 @@ function mount(store: InMemoryMessageStore, debugToken: string | undefined): Hon
       auth: new InMemoryAuthStore(),
       now: () => Date.parse('2026-09-18T12:00:00.000Z'),
       debugToken,
+      ...(extra.spendPing === undefined ? {} : { spendPing: extra.spendPing }),
+      ...(extra.fundingStore === undefined ? {} : { fundingStore: extra.fundingStore }),
     }),
   );
 }
@@ -306,7 +316,7 @@ describe('debugPaymentsRoutes', () => {
     const preimage = '00'.repeat(32);
     const paymentHash = createHash('sha256').update(Buffer.from(preimage, 'hex')).digest('hex');
     await seedSettleInvoice(store, paymentHash);
-    const app = mount(store, 'secret');
+    const app = mount(store, 'secret', { fundingStore: new InMemoryFundingStore() });
     const request = {
       method: 'POST',
       headers: { authorization: 'Bearer secret', 'content-type': 'application/json' },
@@ -325,6 +335,21 @@ describe('debugPaymentsRoutes', () => {
     const duplicate = await app.request('/debug/invoices/settle', request);
     expect(duplicate.status).toBe(409);
     expect(await duplicate.json()).toEqual({ error: 'Already settled' });
+  });
+
+  it('does not spendPing on an ineligible debug settle', async () => {
+    const store = new InMemoryMessageStore();
+    const paymentHash = 'ab'.repeat(32);
+    await seedSettleInvoice(store, paymentHash);
+    const spendPing = { ping: vi.fn(async () => undefined) };
+    const app = mount(store, 'secret', { spendPing });
+    const settled = await app.request('/debug/invoices/settle', {
+      method: 'POST',
+      headers: { authorization: 'Bearer secret', 'content-type': 'application/json' },
+      body: JSON.stringify({ paymentHash, note: 'Wallet evidence' }),
+    });
+    expect(settled.status).toBe(200);
+    expect(spendPing.ping).not.toHaveBeenCalled();
   });
 
   it('returns resumed true when a failed ingest write is retried', async () => {

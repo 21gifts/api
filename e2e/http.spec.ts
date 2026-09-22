@@ -160,6 +160,11 @@ test('GET /messages without bearer is 401', async ({ request }) => {
   expect(res.status()).toBe(401);
 });
 
+test('GET /messages/compose-target without bearer is 401', async ({ request }) => {
+  const res = await request.get('/messages/compose-target');
+  expect(res.status()).toBe(401);
+});
+
 test('GET /messages/hidden without bearer is 401', async ({ request }) => {
   const res = await request.get('/messages/hidden');
   expect(res.status()).toBe(401);
@@ -413,6 +418,26 @@ test('POST /debug/accounts with the e2e token provisions a guest', async ({ requ
   expect(body.accounts[0]?.viewKey).toMatch(/^[0-9a-f]{64}$/);
 });
 
+test('GET /debug/accounts/:id without bearer is 401', async ({ request }) => {
+  const res = await request.get('/debug/accounts/:id');
+  expect(res.status()).toBe(401);
+});
+
+test('GET /debug/dump without bearer is 401', async ({ request }) => {
+  const res = await request.get('/debug/dump');
+  expect(res.status()).toBe(401);
+});
+
+test('GET /debug/dump/:table without bearer is 401', async ({ request }) => {
+  const res = await request.get('/debug/dump/:table');
+  expect(res.status()).toBe(401);
+});
+
+test('GET /debug/trust-edges without bearer is 401', async ({ request }) => {
+  const res = await request.get('/debug/trust-edges');
+  expect(res.status()).toBe(401);
+});
+
 test('GET /debug/accounts with the e2e token lists accounts', async ({ request }) => {
   const res = await request.get('/debug/accounts', {
     headers: { authorization: 'Bearer e2e-debug-token' },
@@ -436,6 +461,11 @@ test('GET /debug/contacts without bearer is 401', async ({ request }) => {
 
 test('GET /debug/api-log without bearer is 401', async ({ request }) => {
   const res = await request.get('/debug/api-log');
+  expect(res.status()).toBe(401);
+});
+
+test('GET /debug/db without bearer is 401', async ({ request }) => {
+  const res = await request.get('/debug/db');
   expect(res.status()).toBe(401);
 });
 

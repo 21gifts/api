@@ -204,10 +204,20 @@ notes (Damus-visible `#bitcoin` / `#21gifts` in content on first sign, plus `#<l
 the worker fans out when `NOSTR_PUBLISH=1`. Pay-on-note is
 `POST /messages/:id/invoice` (optional `text` becomes the zap comment). After a
 validated kind:9735 is indexed, a payer gift-reply is inserted only when the
-paid row is top-level (`parentId` null). A zap on a signed reply credits that
+paid row is top-level (`parentId` null) and is not the official platform
+profile note. A zap on a signed reply credits that
 reply and does not nest a gift-reply. Gift-only (empty text) replies are not published to Nostr. Unpaid
-replies from `basis` (not the parent author) are **403**; `verified` stays
-unpaid-reply exempt. Do not invent `/events` or `/comments` paths.
+posts and replies from `basis` (including the parent author) are **403** until
+the author pays 1 sat to 21.gifts (`GET /messages/compose-target` then
+`POST /messages/:id/invoice` on the platform profile note). `verified` stays
+unpaid-write exempt. A member/invoice zap on that platform note with a comment becomes the
+payer’s top-level post (`sats` 0). An external zap on that same note still
+inserts a gift-reply under it. The worker always queries that profile
+note’s event id, even after the note ages out of `listLatest`. A comment `inReplyTo:<uuid>\n<body>` becomes
+a reply on that live top-level parent; a missing, hidden, or nested parent
+falls back to a top-level post with the remaining body. An empty comment does
+not create a blank living-room post. Extra gifts on someone else’s note still
+pay that author. Do not invent `/events` or `/comments` paths.
 
 **External zap → gift reply.** A kind:9735 first credits the addressed member
 note under the existing receipt and payment-hash checks. If its embedded
@@ -290,9 +300,8 @@ via `GET /conversations` (per-row `unread` / `unreadMessageCount`; envelope
 `POST /conversations/:id/read`. NIP-17 gift wraps and legacy kind:4
 inbound; outbound wraps with the sender nsec (platform nsec for staff on
 official threads). Forum replies stay on `/messages` and are not mixed
-with PNs. `moderator_group` POST may include `{ photo }` / `{ photos }`
-(JPEG/PNG/WebP, ≤10; empty text is allowed only when at least one photo is present); Direct/Contact/Damus remain
-text-only; bytes via authenticated GET
+with PNs. Conversation POST may include `{ photo }` / `{ photos }`
+(JPEG/PNG/WebP, ≤10, every kind; empty text is allowed only when at least one photo is present). Photo-bearing rows skip Nostr; text-only Direct/Contact/Damus stay pending. Bytes via authenticated GET
 `/conversations/:id/messages/:messageId/photo` (photo 0) and
 `/conversations/:id/messages/:messageId/photo/:file` (extras 1–9). Lightning gifts in a Direct/Contact thread use
 `POST /conversations/:id/invoice` (`{ sats, text? }`). Payment is confirmed

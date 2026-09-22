@@ -137,11 +137,13 @@ function extractEndpoints() {
     'debug.ts': '/debug/accounts',
     'debug-contacts.ts': '/debug/contacts',
     'debug-api-log.ts': '/debug/api-log',
+    'debug-db.ts': '/debug/db',
     'debug-external.ts': '/debug/external-pubkeys',
     'debug-messages.ts': '/debug/messages',
     'debug-payments.ts': '/debug',
     'debug-push.ts': '/debug/push-ping',
     'debug-trust.ts': '/debug/trust-edges',
+    'debug-catalog.ts': '/debug/dump',
     'well-known.ts': '/.well-known',
   };
   const methodRe = /\.(get|post|delete|put|patch)\((['"])(\/[-A-Za-z0-9_./:]*)\2/g;

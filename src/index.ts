@@ -12,7 +12,9 @@ import { openBootStores } from './lib/boot-stores';
 import type { SqlClient } from './lib/auth/sql';
 import { WebsocketNostrPublisher } from './lib/nostr/publish';
 import { WebsocketNostrQuerier } from './lib/nostr/query';
+import { PostRateLimiter } from './lib/nostr/rate-limit';
 import { RELAY_TIMEOUT_MS, startNostrWorker, WORKER_INTERVAL_MS } from './lib/nostr/worker';
+import { resolveSpendPing } from './lib/spend-ping';
 import { resolveZapRelays } from './lib/nostr/relays';
 import { ExternalIngestLimiter } from './lib/nostr/external';
 import { resolveVapidConfig } from './lib/push-config';
@@ -65,6 +67,7 @@ if (import.meta.main) {
     notificationStore,
     trustStore,
     fundingStore,
+    debugDbStore,
   } = boot;
   const pushStore = boot.pushStore ?? new InMemoryPushStore();
   const vapid = resolveVapidConfig(process.env);
@@ -82,6 +85,8 @@ if (import.meta.main) {
     nostrKek !== undefined && messageStore !== undefined
       ? new WebsocketNostrPublisher()
       : undefined;
+  const spendPing = resolveSpendPing(process.env, globalThis.fetch);
+  const postLimiter = new PostRateLimiter();
   const app = createApp({
     authStore,
     btcUsdRates,
@@ -99,7 +104,10 @@ if (import.meta.main) {
     ...(notificationStore === undefined ? {} : { notificationStore }),
     ...(trustStore === undefined ? {} : { trustStore }),
     ...(fundingStore === undefined ? {} : { fundingStore }),
+    ...(boot.listDbChange === undefined ? {} : { listDbChange: boot.listDbChange }),
+    ...(debugDbStore === undefined ? {} : { debugDbStore }),
     vapidPublicKey: vapidPublicKey ?? '',
+    postLimiter,
   });
   Bun.serve({ fetch: app.fetch, hostname: host, port });
   console.warn(`21gifts-api listening on ${host}:${port}`);
@@ -119,8 +127,11 @@ if (import.meta.main) {
         now: Date.now,
         env: process.env,
         pushStore,
+        postLimiter,
         ...(conversationStore === undefined ? {} : { conversations: conversationStore }),
         ...(notificationStore === undefined ? {} : { notificationStore }),
+        ...(spendPing === undefined ? {} : { spendPing }),
+        ...(fundingStore === undefined ? {} : { fundingStore }),
       },
       WORKER_INTERVAL_MS,
     );

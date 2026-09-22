@@ -812,14 +812,8 @@ export function conversationRoutes(deps: ConversationRouteDeps): Hono {
         if (thread === undefined || !canAccess(thread, account, platform?.id ?? null)) {
           return c.json({ error: 'Not found' }, 404);
         }
-        if (thread.kind !== 'moderator_group' && photo !== undefined) {
-          return c.json({ error: 'Photos are only allowed in the Moderators group' }, 400);
-        }
-        if (thread.kind === 'moderator_group' && text === '' && photo === undefined) {
+        if (text === '' && photo === undefined) {
           return c.json({ error: 'Text must be 1–500 characters or include a photo' }, 400);
-        }
-        if (thread.kind !== 'moderator_group' && text === '') {
-          return c.json({ error: 'Text must be 1–500 characters' }, 400);
         }
         const staffOnPlatform =
           thread.kind !== 'moderator_group' &&
@@ -844,7 +838,7 @@ export function conversationRoutes(deps: ConversationRouteDeps): Hono {
             senderAccountId: sender.id,
             senderPubkey: (await deps.authStore.getNostrPublicKey(sender.id)) ?? null,
             name: senderName !== '' ? senderName : '21.gifts',
-            ...(thread.kind === 'moderator_group'
+            ...(thread.kind === 'moderator_group' || photo !== undefined
               ? {
                   sats: 0,
                   eventId: null,

@@ -92,7 +92,7 @@ export interface Account {
   profileMessageId?: string | null;
   /**
    * Owner fan-out filter. Omitted / unknown → `all`. Not public on member
-   * cards, view profiles, or operator debug JSON.
+   * cards or view profiles. Operator debug JSON includes the stored value.
    */
   notificationLevel?: NotificationLevel;
 }
@@ -237,9 +237,23 @@ export interface AuthStore {
   deleteAccount(id: string): Promise<void>;
   /**
    * Every stored account, oldest first (then `id` ascending).
-   * Used by the operator debug listing; never includes session tokens.
+   * Used by the operator debug listing. Does not embed session tokens
+   * (GET `/debug/accounts/:id` and dump table `auth_session` do).
    */
   listAccounts(): Promise<Account[]>;
+  /** Every stored passkey credential (operator dump / account detail). */
+  listPasskeyCredentials(): Promise<PasskeyCredential[]>;
+  /** Every stored session (operator dump / account detail). */
+  listSessions(): Promise<Session[]>;
+  /** Every stored passkey challenge (operator dump / account detail). */
+  listPasskeyChallenges(): Promise<PasskeyChallenge[]>;
+  /** Every pending address verification (operator dump / account detail). */
+  listAddressVerifications(): Promise<AddressVerification[]>;
+  /**
+   * Every account row's Nostr columns (pubkey may be null; kek/custody are the stored defaults).
+   * In-memory `createdAt` is `null` when the adapter does not store it.
+   */
+  listNostrKeys(): Promise<NostrKeyListRow[]>;
   /** Persist a new session. Does not consult `sessionRefused`. */
   createSession(session: Session): Promise<void>;
   /**
@@ -328,6 +342,25 @@ export interface NostrKeyRecord {
   kekId: number;
   /** Custody mode. v1 is always `custodial`. */
   custody: 'custodial' | 'user';
+}
+
+/** One listed Nostr column set for operator debug (every account row). */
+export interface NostrKeyListRow {
+  /** Owning account id. */
+  accountId: string;
+  /** Stored Nostr columns (ciphertext is a copy; pubkey may be null). */
+  record: {
+    /** NIP-01 pubkey, or `null` when `nostr_pubkey` is SQL null. */
+    pubkey: string | null;
+    /** AES-GCM envelope bytes (empty when the blob is missing). */
+    ciphertext: Uint8Array;
+    /** Envelope kek id (Postgres default 1). */
+    kekId: number;
+    /** Custody mode (Postgres default `custodial`). */
+    custody: 'custodial' | 'user';
+  };
+  /** Key creation time (epoch ms), or `null` when the adapter does not store it. */
+  createdAt: number | null;
 }
 
 /**
@@ -559,6 +592,54 @@ export class InMemoryAuthStore implements AuthStore {
 
   async listAccounts(): Promise<Account[]> {
     return [...this.#accounts.values()].sort(compareAccountsForList);
+  }
+
+  async listPasskeyCredentials(): Promise<PasskeyCredential[]> {
+    return [...this.#passkeyCredentials.values()].map((credential) => ({
+      ...credential,
+      publicKey: new Uint8Array(credential.publicKey),
+    }));
+  }
+
+  async listSessions(): Promise<Session[]> {
+    return [...this.#sessions.values()].map((session) => ({ ...session }));
+  }
+
+  async listPasskeyChallenges(): Promise<PasskeyChallenge[]> {
+    return [...this.#passkeyChallenges.values()].map((challenge) => ({ ...challenge }));
+  }
+
+  async listAddressVerifications(): Promise<AddressVerification[]> {
+    return [...this.#verifications.values()].map((row) => ({ ...row }));
+  }
+
+  async listNostrKeys(): Promise<NostrKeyListRow[]> {
+    const rows: NostrKeyListRow[] = [];
+    for (const account of this.#accounts.values()) {
+      const stored = this.#nostrKeys.get(account.id);
+      if (stored !== undefined) {
+        rows.push({
+          accountId: account.id,
+          record: {
+            ...stored,
+            ciphertext: new Uint8Array(stored.ciphertext),
+          },
+          createdAt: null,
+        });
+        continue;
+      }
+      rows.push({
+        accountId: account.id,
+        record: {
+          pubkey: null,
+          ciphertext: new Uint8Array(),
+          kekId: 1,
+          custody: 'custodial',
+        },
+        createdAt: null,
+      });
+    }
+    return rows;
   }
 
   async createSession(session: Session): Promise<void> {

@@ -12,7 +12,11 @@
 import { Hono } from 'hono';
 import { bearerMatchesDebugToken } from '@/lib/debug-token';
 import { logEvent } from '@/lib/log';
-import { MESSAGE_LIST_LIMIT, serializeDebugMessage } from '@/lib/message';
+import {
+  MESSAGE_LIST_LIMIT,
+  serializeDebugMessage,
+  type DebugMessagePhotoMeta,
+} from '@/lib/message';
 import type { MessageStore } from '@/lib/message-store';
 import {
   MESSAGE_VIDEO_MAX_BYTES,
@@ -44,6 +48,20 @@ function gateDebugToken(
   return { ok: true };
 }
 
+async function debugPhotoMeta(store: MessageStore, id: string): Promise<DebugMessagePhotoMeta> {
+  const photo0 = await store.getPhoto(id);
+  const extras = await store.listExtraPhotos(id);
+  return {
+    photoContentType: photo0?.contentType ?? null,
+    photoBytes: photo0?.bytes.byteLength ?? 0,
+    extraPhotos: extras.map((photo, index) => ({
+      idx: index + 1,
+      photoContentType: photo.contentType,
+      bytes: photo.bytes.byteLength,
+    })),
+  };
+}
+
 /**
  * Build the `/debug/messages` route group.
  *
@@ -64,8 +82,12 @@ export function debugMessagesRoutes(deps: DebugMessagesRouteDeps): Hono {
       }
       try {
         const rows = await deps.store.listDebug(MESSAGE_LIST_LIMIT);
+        const messages = [];
+        for (const row of rows) {
+          messages.push(serializeDebugMessage(row, await debugPhotoMeta(deps.store, row.id)));
+        }
         logEvent('debug.messages.listed', { count: rows.length });
-        return c.json({ messages: rows.map(serializeDebugMessage) }, 200);
+        return c.json({ messages }, 200);
       } catch {
         logEvent('debug.messages.list_failed');
         return c.json({ error: 'Messages are unavailable' }, 503);
@@ -126,7 +148,7 @@ export function debugMessagesRoutes(deps: DebugMessagesRouteDeps): Hono {
           return c.json({ error: 'Not found' }, 404);
         }
         logEvent('debug.messages.get', { messageId: row.id });
-        return c.json(serializeDebugMessage(row), 200);
+        return c.json(serializeDebugMessage(row, await debugPhotoMeta(deps.store, row.id)), 200);
       } catch {
         logEvent('debug.messages.get_failed');
         return c.json({ error: 'Messages are unavailable' }, 503);

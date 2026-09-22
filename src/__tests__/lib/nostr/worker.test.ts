@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { finalizeEvent, generateSecretKey, getPublicKey } from 'nostr-tools/pure';
 import { InMemoryAuthStore } from '@/lib/auth/store';
 import { InMemoryConversationStore } from '@/lib/conversation-store';
+import { InMemoryFundingStore } from '@/lib/funding-store';
 import { encryptKind4, unwrapNip17, wrapNip17 } from '@/lib/nostr/dm';
 import { decodeBolt11 } from '@/lib/bolt11';
 import type { FetchFn } from '@/lib/lnurlp';
@@ -17,6 +18,7 @@ import { decryptNostrSecret, ensureAccountNostrKey, zeroizeSecret } from '@/lib/
 import { RecordingPublisher } from '@/lib/nostr/publish';
 import { RecordingQuerier, type NostrEventFrame } from '@/lib/nostr/query';
 import { DEFAULT_RELAY_PUBLIC } from '@/lib/nostr/relays';
+import { PostRateLimiter } from '@/lib/nostr/rate-limit';
 import { runNostrWorkerTick, startNostrWorker, type NostrWorkerDeps } from '@/lib/nostr/worker';
 import { ExternalIngestLimiter } from '@/lib/nostr/external';
 import { InMemoryPushStore } from '@/lib/push-store';
@@ -127,6 +129,7 @@ async function inboundTick(
       env: {},
       conversations,
       verifyKind1: () => true,
+      fundingStore: new InMemoryFundingStore(),
       ...(notificationStore === undefined ? {} : { notificationStore }),
       ...(pushStore === undefined ? {} : { pushStore }),
     }),
@@ -164,6 +167,24 @@ describe('runNostrWorkerTick', () => {
       ['t', '21gifts'],
       ['r', 'https://21.gifts'],
     ]);
+  });
+
+  it('accepts spendPing and postLimiter when zap ingest has no receipts', async () => {
+    const { auth, messages } = await seed();
+    const spendPing = { ping: vi.fn(async () => undefined) };
+    await runNostrWorkerTick(
+      deps({
+        messages,
+        auth,
+        kek: KEK,
+        publisher: new RecordingPublisher(),
+        now: () => 1_700_000_000_000,
+        env: {},
+        spendPing,
+        postLimiter: new PostRateLimiter(),
+      }),
+    );
+    expect(spendPing.ping).not.toHaveBeenCalled();
   });
 
   it('re-signs pending rows with a null stored event', async () => {

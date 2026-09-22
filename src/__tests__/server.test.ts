@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { InMemoryAuthStore } from '@/lib/auth/store';
 import { RecordingPublisher } from '@/lib/nostr/publish';
+import { PostRateLimiter } from '@/lib/nostr/rate-limit';
 import { createApp, resolveBindAddr, parseBindAddr } from '@/server';
 
 function b64url(bytes: Uint8Array): string {
@@ -42,6 +43,12 @@ describe('createApp', () => {
 
   it('accepts an injected spendPing', async () => {
     const app = createApp({ spendPing: { ping: async () => undefined } });
+    const res = await app.request('/healthz');
+    expect(res.status).toBe(200);
+  });
+
+  it('accepts an injected postLimiter', async () => {
+    const app = createApp({ postLimiter: new PostRateLimiter() });
     const res = await app.request('/healthz');
     expect(res.status).toBe(200);
   });
@@ -94,6 +101,21 @@ describe('createApp', () => {
     const app = createApp({ debugToken: '' });
     const res = await app.request('/debug/accounts');
     expect(res.status).toBe(503);
+  });
+
+  it('dumps rate tables on GET /debug/dump', async () => {
+    const app = createApp({
+      debugToken: 'secret',
+      listDbChange: async () => [{ id: 1 }],
+      btcUsdRates: { ensureDays: async () => new Map() },
+    });
+    const res = await app.request('/debug/dump', {
+      headers: { authorization: 'Bearer secret' },
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { tables: Record<string, unknown[]> };
+    expect(Array.isArray(body.tables['btc_usd_daily'])).toBe(true);
+    expect(body.tables['db_change']).toEqual([{ id: 1 }]);
   });
 
   it('reads VAPID public key from the environment when createApp omits it', async () => {

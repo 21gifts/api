@@ -35,6 +35,15 @@ export interface NotificationStore {
   listByRecipient(accountId: string, limit: number): Promise<NotificationRow[]>;
 
   /**
+   * Newest notifications first across every recipient (`createdAt` desc,
+   * then `id` desc), capped at `limit`. Operator dump.
+   *
+   * @param limit - Maximum rows.
+   * @returns Notification copies.
+   */
+  listAll(limit: number): Promise<NotificationRow[]>;
+
+  /**
    * Count of unread rows for the recipient (not limited to a list page).
    *
    * @param accountId - Recipient account.
@@ -168,6 +177,17 @@ export class InMemoryNotificationStore implements NotificationStore {
         }
         return b.id.localeCompare(a.id);
       });
+    return Promise.resolve(sorted.slice(0, limit).map((row) => copyNotification(row)));
+  }
+
+  listAll(limit: number): Promise<NotificationRow[]> {
+    const sorted = [...this.#rows].sort((a, b) => {
+      const byTime = b.createdAt.getTime() - a.createdAt.getTime();
+      if (byTime !== 0) {
+        return byTime;
+      }
+      return b.id.localeCompare(a.id);
+    });
     return Promise.resolve(sorted.slice(0, limit).map((row) => copyNotification(row)));
   }
 
@@ -339,6 +359,22 @@ export class PostgresNotificationStore implements NotificationStore {
        ORDER BY created_at DESC, id DESC
        LIMIT $2`,
       [accountId, limit],
+    );
+    return rows.map((row) => mapNotificationRow(row));
+  }
+
+  /**
+   * Newest-first list of every notification, capped at `limit`.
+   *
+   * @param limit - Maximum rows (`$1`).
+   * @returns Mapped rows.
+   */
+  async listAll(limit: number): Promise<NotificationRow[]> {
+    const rows = await this.#sql.query<NotificationSqlRow>(
+      `SELECT ${NOTIFICATION_SELECT} FROM notification
+       ORDER BY created_at DESC, id DESC
+       LIMIT $1`,
+      [limit],
     );
     return rows.map((row) => mapNotificationRow(row));
   }

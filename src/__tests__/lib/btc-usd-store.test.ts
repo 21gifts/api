@@ -71,6 +71,14 @@ describe('InMemoryBtcUsdStore', () => {
     const rates = await store.ensureDays(['2026-06-01'], 0);
     expect(rates.get('2026-06-01')).toBe('99000');
   });
+
+  it('dumps seeded days newest-first', async () => {
+    const store = new InMemoryBtcUsdStore({ '2026-06-01': '100000', '2026-06-02': '101000' });
+    expect(await store.listDebug(10)).toEqual([
+      { day: '2026-06-02', usdPerBtc: '101000', source: null, fetchedAt: null },
+      { day: '2026-06-01', usdPerBtc: '100000', source: null, fetchedAt: null },
+    ]);
+  });
 });
 
 describe('PostgresBtcUsdStore', () => {
@@ -84,6 +92,38 @@ describe('PostgresBtcUsdStore', () => {
     expect(await store.ensureDays([], 0)).toEqual(new Map());
     expect(await store.ensureDays(['nope'], 0)).toEqual(new Map());
     expect(sql.queries).toHaveLength(0);
+    sql.queryHandler = () => [
+      {
+        day: new Date('2026-06-01T00:00:00.000Z'),
+        usd_per_btc: 100000,
+        source: FX_SOURCE_COINBASE_DAILY_CLOSE,
+        fetched_at: new Date('2026-06-02T00:05:00.000Z'),
+      },
+    ];
+    expect(await store.listDebug(5)).toEqual([
+      {
+        day: '2026-06-01',
+        usdPerBtc: '100000',
+        source: FX_SOURCE_COINBASE_DAILY_CLOSE,
+        fetchedAt: '2026-06-02T00:05:00.000Z',
+      },
+    ]);
+    sql.queryHandler = () => [
+      {
+        day: '2026-06-03',
+        usd_per_btc: '102000',
+        source: FX_SOURCE_COINBASE_DAILY_CLOSE,
+        fetched_at: '2026-06-04T00:00:00.000Z',
+      },
+    ];
+    expect(await store.listDebug(1)).toEqual([
+      {
+        day: '2026-06-03',
+        usdPerBtc: '102000',
+        source: FX_SOURCE_COINBASE_DAILY_CLOSE,
+        fetchedAt: '2026-06-04T00:00:00.000Z',
+      },
+    ]);
   });
 
   it('returns persisted rates without fetching when complete', async () => {

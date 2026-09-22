@@ -1723,7 +1723,9 @@ describe('POST /conversations/:id', () => {
       body: JSON.stringify({ text: '   ' }),
     });
     expect(res.status).toBe(400);
-    expect(await res.json()).toEqual({ error: 'Text must be 1–500 characters' });
+    expect(await res.json()).toEqual({
+      error: 'Text must be 1–500 characters or include a photo',
+    });
   });
 
   it('returns 400 for a malformed JSON body', async () => {
@@ -1737,7 +1739,7 @@ describe('POST /conversations/:id', () => {
     expect(await res.json()).toEqual({ error: 'Expected a JSON body with text and/or photo' });
   });
 
-  it('returns 400 when a member_member thread includes a photo', async () => {
+  it('returns 200 hasPhoto true when a member_member thread includes a photo', async () => {
     const auth = await seeded();
     await withOther(auth);
     const conversations = new InMemoryConversationStore();
@@ -1749,11 +1751,14 @@ describe('POST /conversations/:id', () => {
         photo: { contentType: 'image/jpeg', data: JPEG_B64 },
       }),
     });
-    expect(res.status).toBe(400);
-    expect(await res.json()).toEqual({ error: 'Photos are only allowed in the Moderators group' });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ hasPhoto: true, photoCount: 1, text: '' });
+    const listed = await conversations.listMessages(thread.id, 10);
+    expect(listed[0]?.nostrPublishState).toBe('skipped');
+    expect(listed[0]?.eventId).toBeNull();
   });
 
-  it('returns 400 when a member_platform thread includes a photo', async () => {
+  it('returns 200 hasPhoto true when a member_platform thread includes a photo', async () => {
     const auth = await seeded();
     await withPlatform(auth);
     const conversations = new InMemoryConversationStore();
@@ -1765,11 +1770,14 @@ describe('POST /conversations/:id', () => {
         photos: [{ contentType: 'image/jpeg', data: JPEG_B64 }],
       }),
     });
-    expect(res.status).toBe(400);
-    expect(await res.json()).toEqual({ error: 'Photos are only allowed in the Moderators group' });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ hasPhoto: true, photoCount: 1 });
+    const listed = await conversations.listMessages(thread.id, 10);
+    expect(listed[0]?.nostrPublishState).toBe('skipped');
+    expect(listed[0]?.eventId).toBeNull();
   });
 
-  it('returns 400 when a member_damus thread includes a photo', async () => {
+  it('returns 200 hasPhoto true when a member_damus thread includes a photo', async () => {
     const auth = await seeded();
     const conversations = new InMemoryConversationStore();
     const thread = await conversations.openMemberDamus('acc', 'aa'.repeat(32), new Date(now()));
@@ -1780,8 +1788,14 @@ describe('POST /conversations/:id', () => {
         photo: { contentType: 'image/jpeg', data: JPEG_B64 },
       }),
     });
-    expect(res.status).toBe(400);
-    expect(await res.json()).toEqual({ error: 'Photos are only allowed in the Moderators group' });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { id: string; hasPhoto: boolean; photoCount: number };
+    expect(body).toMatchObject({ hasPhoto: true, photoCount: 1 });
+    const listed = await conversations.listMessages(thread.id, 10);
+    expect(listed[0]?.nostrPublishState).toBe('skipped');
+    expect(listed[0]?.eventId).toBeNull();
+    const claimed = await conversations.claimUnsigned(10, now(), 60_000);
+    expect(claimed.map((row) => row.id)).not.toContain(body.id);
   });
 
   it('returns 400 for an empty text string', async () => {
@@ -1795,7 +1809,9 @@ describe('POST /conversations/:id', () => {
       body: JSON.stringify({ text: '' }),
     });
     expect(res.status).toBe(400);
-    expect(await res.json()).toEqual({ error: 'Text must be 1–500 characters' });
+    expect(await res.json()).toEqual({
+      error: 'Text must be 1–500 characters or include a photo',
+    });
   });
 
   it('returns 400 when text is longer than 500 characters', async () => {
@@ -1916,6 +1932,8 @@ describe('POST /conversations/:id', () => {
     expect(body.name).toBe('Ada');
     expect(body.fromMe).toBe(true);
     expect(body.accountId).toBe('acc');
+    const listed = await conversations.listMessages(thread.id, 10);
+    expect(listed[0]?.nostrPublishState).toBe('pending');
   });
 
   it('lets staff reply on a platform thread as the platform account', async () => {

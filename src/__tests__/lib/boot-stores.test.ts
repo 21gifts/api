@@ -16,6 +16,7 @@ import { PostgresPushStore } from '@/lib/push-store';
 import { PostgresTrustStore } from '@/lib/trust-store';
 import { PostgresApiLogStore } from '@/lib/api-log';
 import { PostgresFundingStore } from '@/lib/funding-store';
+import { PostgresDebugDbStore } from '@/lib/debug-db';
 
 function unusedClient(): SqlClient {
   return {
@@ -64,6 +65,8 @@ describe('openBootStores', () => {
       trustStore,
       apiLogStore,
       fundingStore,
+      listDbChange,
+      debugDbStore,
     } = await openBootStores(undefined, factory);
     expect(authStore).toBeInstanceOf(InMemoryAuthStore);
     expect(giftStore).toBeUndefined();
@@ -76,6 +79,8 @@ describe('openBootStores', () => {
     expect(trustStore).toBeUndefined();
     expect(apiLogStore).toBeUndefined();
     expect(fundingStore).toBeUndefined();
+    expect(listDbChange).toBeUndefined();
+    expect(debugDbStore).toBeUndefined();
     expect(btcUsdRates).toBeInstanceOf(InMemoryBtcUsdStore);
     expect(fiatRates).toBeInstanceOf(InMemoryFiatStore);
     expect(factory).not.toHaveBeenCalled();
@@ -99,6 +104,7 @@ describe('openBootStores', () => {
       trustStore,
       apiLogStore,
       fundingStore,
+      debugDbStore,
     } = await openBootStores('   ', factory);
     expect(authStore).toBeInstanceOf(InMemoryAuthStore);
     expect(giftStore).toBeUndefined();
@@ -111,6 +117,7 @@ describe('openBootStores', () => {
     expect(trustStore).toBeUndefined();
     expect(apiLogStore).toBeUndefined();
     expect(fundingStore).toBeUndefined();
+    expect(debugDbStore).toBeUndefined();
     expect(btcUsdRates).toBeInstanceOf(InMemoryBtcUsdStore);
     expect(fiatRates).toBeInstanceOf(InMemoryFiatStore);
     expect(factory).not.toHaveBeenCalled();
@@ -174,6 +181,7 @@ describe('openBootStores', () => {
       trustStore,
       apiLogStore,
       fundingStore,
+      debugDbStore,
     } = await openBootStores(url, factory, {
       fetchImpl: async () => new Response('[]', { status: 200 }),
       candlesUrl: 'https://example.test/candles',
@@ -197,6 +205,7 @@ describe('openBootStores', () => {
     expect(trustStore).toBeInstanceOf(PostgresTrustStore);
     expect(apiLogStore).toBeInstanceOf(PostgresApiLogStore);
     expect(fundingStore).toBeInstanceOf(PostgresFundingStore);
+    expect(debugDbStore).toBeInstanceOf(PostgresDebugDbStore);
     expect(btcUsdRates).toBeInstanceOf(PostgresBtcUsdStore);
     expect(fiatRates).toBeInstanceOf(PostgresFiatStore);
     expect(executes.length).toBeGreaterThan(0);
@@ -300,6 +309,26 @@ describe('openBootStores', () => {
         if (text.includes('min(paid_at)')) {
           throw new Error('range query failed');
         }
+        if (text.includes('lightning_invoice')) {
+          return [
+            {
+              id: 1,
+              paid_at: new Date('2026-09-01T00:00:00.000Z'),
+              direction: 'outbound',
+              currency: 'BTC',
+              amount_sats: 21,
+              fee_sats: 0,
+              recipient_wos_user: 'ada',
+              lightning_invoice: 'lnbc',
+              wos_transaction_id: null,
+              description: 'gift',
+              point_of_sale: true,
+              wos_status: null,
+              source_wallet: 'house',
+              imported_at: '2026-09-01T00:00:00.000Z',
+            },
+          ] as T[];
+        }
         return [] as T[];
       },
       execute: async () => undefined,
@@ -318,6 +347,8 @@ describe('openBootStores', () => {
       trustStore,
       apiLogStore,
       fundingStore,
+      listDbChange,
+      debugDbStore,
     } = await openBootStores('postgres://gifts21@localhost/gifts21', () => client, {
       fetchImpl: async () => new Response('[]', { status: 200 }),
       candlesUrl: 'https://example.test/candles',
@@ -333,8 +364,20 @@ describe('openBootStores', () => {
     expect(trustStore).toBeInstanceOf(PostgresTrustStore);
     expect(apiLogStore).toBeInstanceOf(PostgresApiLogStore);
     expect(fundingStore).toBeInstanceOf(PostgresFundingStore);
+    expect(debugDbStore).toBeInstanceOf(PostgresDebugDbStore);
     expect(btcUsdRates).toBeInstanceOf(PostgresBtcUsdStore);
     expect(fiatRates).toBeInstanceOf(PostgresFiatStore);
+    expect(typeof listDbChange).toBe('function');
+    expect(await listDbChange?.(10)).toEqual([]);
+    expect(await giftStore?.listDebug?.(10)).toEqual([
+      expect.objectContaining({
+        id: 1,
+        currency: 'BTC',
+        lightningInvoice: 'lnbc',
+        pointOfSale: true,
+        importedAt: '2026-09-01T00:00:00.000Z',
+      }),
+    ]);
     expect(parsedEvents(warn).some((e) => e['event'] === 'gifts.fx.boot_fill.failed')).toBe(true);
     expect(parsedEvents(warn).some((e) => e['event'] === 'gifts.fx.fiat_boot_fill.failed')).toBe(
       true,
@@ -369,6 +412,7 @@ describe('openBootStores', () => {
     expect(stores.notificationStore).toBeInstanceOf(PostgresNotificationStore);
     expect(stores.pushStore).toBeInstanceOf(PostgresPushStore);
     expect(stores.trustStore).toBeInstanceOf(PostgresTrustStore);
+    expect(stores.debugDbStore).toBeInstanceOf(PostgresDebugDbStore);
     expect(parsedEvents(warn)).toContainEqual(
       expect.objectContaining({ event: 'nostr.zapper.backfill.failed' }),
     );
@@ -379,6 +423,26 @@ describe('openBootStores', () => {
       query: async <T>(text: string): Promise<T[]> => {
         if (text.includes('min(paid_at)')) {
           return [{ min: null, max: null }] as T[];
+        }
+        if (text.includes('lightning_invoice')) {
+          return [
+            {
+              id: 1,
+              paid_at: new Date('2026-09-01T00:00:00.000Z'),
+              direction: 'outbound',
+              currency: 'BTC',
+              amount_sats: 21,
+              fee_sats: 0,
+              recipient_wos_user: 'ada',
+              lightning_invoice: 'lnbc',
+              wos_transaction_id: null,
+              description: 'gift',
+              point_of_sale: false,
+              wos_status: null,
+              source_wallet: 'house',
+              imported_at: '2026-09-01T00:00:00.000Z',
+            },
+          ] as T[];
         }
         return [] as T[];
       },
