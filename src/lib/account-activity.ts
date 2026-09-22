@@ -299,15 +299,11 @@ async function receivedZapsForAccount(
     }
     const credited = creditedByMessageId.get(message.id) ?? 0;
     if (message.sats > credited) {
+      const creditedFiat = creditedFiatByMessageId.get(message.id) ?? ZERO_FIAT;
       const fiat =
         credited === 0
           ? storedGiftFiat(message)
-          : fiatFromCents(
-              subtractFiat(
-                fiatCents(message),
-                creditedFiatByMessageId.get(message.id) ?? ZERO_FIAT,
-              ),
-            );
+          : fiatFromCents(subtractFiat(fiatCents(message), creditedFiat));
       rows.push({
         paidAt: message.createdAt,
         amountSats: message.sats - credited,
