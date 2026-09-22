@@ -3261,8 +3261,9 @@ Success → **Response** `200`:
 ### `POST /messages/:id/invoice`
 
 Signed-in pay-on-note. Bearer session required. `:id` is a UUID (`MESSAGE_ID_RE`).
-Body `{ "sats": <int 1..10_000_000>, "text"?: "<string>" }`. Optional `text` is the
+Body `{ "sats": <int 1..10_000_000>, "text"?: "<string>", "amountUsd"?: "<string>|null", "amountChf"?: "<string>|null", "amountEur"?: "<string>|null", "amountPhp"?: "<string>|null" }`. Optional `text` is the
 NIP-57 zap-request `content` (same 1–500 forum rules; omit or whitespace = gift-only).
+Omitting every amount key leaves the invoice unpinned. Any present amount key pins all four; a missing sibling is null. `"0"`, `"0.0"`, and `"0.00"` are stored as `"0.00"`. An unusable amount string is **400** `{ "error": "Expected a JSON body with a positive \"sats\" integer" }`.
 Invalid `text` → **400** `{ "error": "Text must be 1–500 characters" }`.
 The api signs a NIP-57 zap request with the
 **payer** key and returns a BOLT11 invoice for the **author** Lightning Address
@@ -4060,8 +4061,8 @@ into Notification rows.
 
 ### `POST /conversations/:id/invoice`
 
-Bearer session required. Body `{ "sats": <int 1..10_000_000>, "text"?: "<string>" }`.
-Optional `text` is the NIP-57 comment (empty = gift-only). Issues a BOLT11
+Bearer session required. Body `{ "sats": <int 1..10_000_000>, "text"?: "<string>", "amountUsd"?: "<string>|null", "amountChf"?: "<string>|null", "amountEur"?: "<string>|null", "amountPhp"?: "<string>|null" }`.
+Optional `text` is the NIP-57 comment (empty = gift-only). Omitting every amount key leaves the invoice unpinned. Any present amount key pins all four; a missing sibling is null. `"0"`, `"0.0"`, and `"0.00"` are stored as `"0.00"`. An unusable amount string is **400** `{ "error": "Expected a JSON body with a positive \"sats\" integer" }`. Issues a BOLT11
 against the counterpart's Lightning Address using their profile-note event
 id as the zap `e` tag. The conversation row is **not** inserted until the
 zap receipt is ingested.

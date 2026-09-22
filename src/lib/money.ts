@@ -138,7 +138,7 @@ export function usdCentsToString(cents: number): string {
 /**
  * USD plus optional CHF/EUR/PHP strings stored at payment time.
  *
- * `usd` is always a two-decimal string. A missing cross is `null`, not `"0.00"`.
+ * `usd` is a two-decimal string, or `null` when nothing was stored. A missing cross is `null`, not `"0.00"`.
  */
 export interface FiatAmounts {
   /** Already-normalized USD, two decimals (e.g. `"5.00"`), or `null` when none was stored. */

@@ -122,7 +122,7 @@
 ## Function: shownFiatFromBody
 
 - **Purpose:** Read the four fiat amounts the payer was shown, so a later payment stores those amounts instead of converting sats again.
-- **Inputs:** Optional `amountUsd`, `amountChf`, `amountEur`, and `amountPhp`. No key means the client did not pin a price. A present key may be a positive two-decimal string or null.
+- **Inputs:** Optional `amountUsd`, `amountChf`, `amountEur`, and `amountPhp`. No key means the client did not pin a price. A present key may be null, `"0"` / `"0.0"` / `"0.00"` (stored as `"0.00"`), or a positive amount `normalizeAmountUsd` accepts. An unusable string makes the whole result `null`.
 - **Returns / side effects:** `{ pinned: false }`, `{ pinned: true, fiat }`, or `null` when a string is unusable. No I/O.
 - **Used by:** `messageRoutes`, `conversationRoutes`.
 
