@@ -298,9 +298,7 @@ export interface MessageStore {
    * @param limit - Maximum rows to return.
    * @returns Pin rows (caller-owned copies).
    */
-  listPlaces(
-    limit: number,
-  ): Promise<
+  listPlaces(limit: number): Promise<
     Array<{
       id: string;
       name: string;
@@ -1895,9 +1893,7 @@ export class InMemoryMessageStore implements MessageStore {
    * @param limit - Maximum rows.
    * @returns Pin row copies (no photo bytes).
    */
-  listPlaces(
-    limit: number,
-  ): Promise<
+  listPlaces(limit: number): Promise<
     Array<{
       id: string;
       name: string;
@@ -3596,9 +3592,7 @@ export class PostgresMessageStore implements MessageStore {
    * @param limit - Maximum rows (`$1`).
    * @returns Pin rows (`lat` / `lng` numeric; `label` null when unset).
    */
-  async listPlaces(
-    limit: number,
-  ): Promise<
+  async listPlaces(limit: number): Promise<
     Array<{
       id: string;
       name: string;
