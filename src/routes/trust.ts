@@ -261,6 +261,17 @@ export function trustRoutes(deps: TrustRouteDeps): Hono {
         const oldest = oldestOpenPropose(open);
         if (oldest === undefined || oldest.id !== created.id) {
           await deps.trustStore.deleteEdgeById(created.id);
+          try {
+            const remaining = await deps.trustStore.listEdgesForSubject(subject.id);
+            const live = pendingModeratorProposals([subject], remaining)[0];
+            if (live === undefined) {
+              await clearModeratorProposalNotifications(deps, subject.id);
+            } else {
+              await fanOutPendingProposal(deps, subject, live.id);
+            }
+          } catch {
+            logEvent('push.enqueue.failed');
+          }
           return c.json({ error: 'Conflict' }, 409);
         }
         extras = open.filter((row) => row.id !== created.id);
