@@ -525,8 +525,8 @@ describe('notifyForumReply', () => {
     expect(claimed).toHaveLength(1);
     expect(payloadObject(claimed[0]?.payload ?? '{}')).toEqual({
       type: 'forum',
-      title: 'New reply on 21.gifts',
-      body: 'Someone replied in the living room.',
+      title: 'Ada',
+      body: 'child',
       url: '/notifications',
       tag: 'forum_reply:reply-1',
       unreadCount: 1,
@@ -838,6 +838,30 @@ describe('notifyForumReply', () => {
     expect(await notifications.listByRecipient('other', 10)).toEqual([]);
     expect(await pushStore.claimPending(10, NOW.getTime(), 60_000)).toEqual([]);
   });
+
+  it('uses the photo-and-video sentence when the reply text is empty', async () => {
+    const messages = new InMemoryMessageStore();
+    await seedParent(messages);
+    const stored = await messages.create(
+      message({ id: 'reply-media', accountId: 'actor', parentId: 'parent-note' }),
+    );
+    const created = { ...stored, text: '', hasPhoto: true, hasVideo: true };
+    const pushStore = new InMemoryPushStore();
+    await subscribe(pushStore, 'parent');
+    await notifyForumReply({
+      messages,
+      pushStore,
+      account: { id: 'actor' },
+      created,
+      parentId: 'parent-note',
+    });
+    const claimed = await pushStore.claimPending(10, NOW.getTime(), 60_000);
+    expect(payloadObject(claimed[0]?.payload ?? '{}')).toMatchObject({
+      title: 'Ada',
+      body: 'Replied with a photo and a video.',
+      tag: 'forum_reply:reply-media',
+    });
+  });
 });
 
 describe('notifyExternalForumReply', () => {
@@ -949,6 +973,34 @@ describe('notifyExternalForumReply', () => {
     expect(markFailed).toHaveBeenCalledTimes(0);
     expect(recordDelivered).toHaveBeenCalledTimes(0);
   });
+
+  it('keeps the push title Someone when an external reply is media only', async () => {
+    const parent = message({
+      id: 'parent-media',
+      accountId: 'parent',
+      name: 'Pat',
+      text: 'parent',
+    });
+    const created = message({
+      id: 'external-media',
+      accountId: null,
+      parentId: parent.id,
+      name: 'Robin',
+      text: '',
+      hasPhoto: true,
+      hasVideo: true,
+    });
+    const pushStore = new InMemoryPushStore();
+    await subscribe(pushStore, 'parent');
+    await notifyExternalForumReply({ parent, created, pushStore });
+    const claimed = await pushStore.claimPending(10, NOW.getTime(), 60_000);
+    expect(payloadObject(claimed[0]?.payload ?? '{}')).toMatchObject({
+      title: 'Someone',
+      body: 'Replied with a photo and a video.',
+      tag: 'forum_reply:external-media',
+    });
+    expect(claimed[0]?.payload).not.toContain('Robin');
+  });
 });
 
 describe('notifyForumPost', () => {
@@ -975,8 +1027,8 @@ describe('notifyForumPost', () => {
     expect(claimed).toHaveLength(1);
     expect(payloadObject(claimed[0]?.payload ?? '{}')).toEqual({
       type: 'forum',
-      title: 'New post on 21.gifts',
-      body: 'Someone posted in the living room.',
+      title: 'Ada',
+      body: 'hello',
       url: '/notifications',
       tag: 'forum_post:post-1',
       unreadCount: 1,
@@ -1068,6 +1120,30 @@ describe('notifyForumPost', () => {
     expect(await notifications.listByRecipient('all-user', 10)).toHaveLength(1);
     expect(await notifications.listByRecipient('mentions-user', 10)).toHaveLength(1);
   });
+
+  it('uses the video sentence when the post text is empty', async () => {
+    const created = message({
+      id: 'post-video',
+      accountId: 'actor',
+      name: 'Ada',
+      text: '',
+      hasPhoto: false,
+      hasVideo: true,
+    });
+    const pushStore = new InMemoryPushStore();
+    await subscribe(pushStore, 'other');
+    await notifyForumPost({
+      pushStore,
+      account: { id: 'actor' },
+      created,
+    });
+    const claimed = await pushStore.claimPending(10, NOW.getTime(), 60_000);
+    expect(payloadObject(claimed[0]?.payload ?? '{}')).toMatchObject({
+      title: 'Ada',
+      body: 'Posted a video.',
+      tag: 'forum_post:post-video',
+    });
+  });
 });
 
 describe('notifyZap', () => {
@@ -1095,8 +1171,8 @@ describe('notifyZap', () => {
     expect(claimed).toHaveLength(1);
     expect(payloadObject(claimed[0]?.payload ?? '{}')).toEqual({
       type: 'zap',
-      title: 'Bitcoin on 21.gifts',
-      body: 'Someone sent sats.',
+      title: 'Someone',
+      body: 'Sent 21 sats.',
       url: '/notifications',
       tag: `zap:${ZAP_REPLY_ID}`,
       unreadCount: 1,
@@ -1160,6 +1236,11 @@ describe('notifyZap', () => {
     expect(forAuthor[0]?.name).toBe('Bob');
     expect(forAuthor[0]?.text).toBe('7');
     expect(await notifications.listByRecipient('payer', 10)).toEqual([]);
+    const claimed = await pushStore.claimPending(10, NOW.getTime(), 60_000);
+    expect(payloadObject(claimed[0]?.payload ?? '{}')).toMatchObject({
+      title: 'Bob',
+      body: 'Sent 7 sats.',
+    });
   });
 
   it('does not notify the note author when they are the payer', async () => {
