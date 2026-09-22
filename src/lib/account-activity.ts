@@ -377,7 +377,7 @@ const ZERO_FIAT: FiatCents = { usd: 0, chf: 0, eur: 0, php: 0 };
 
 /** Parse a stored two-decimal amount. Anything else is missing. */
 function storedCents(value: string | null | undefined): number | null {
-  if (value == null || !/^-?\d+\.\d{2}$/.test(value)) {
+  if (value === undefined || value === null || !/^-?\d+\.\d{2}$/.test(value)) {
     return null;
   }
   const negative = value.startsWith('-');
