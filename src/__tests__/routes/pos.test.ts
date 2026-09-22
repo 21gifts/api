@@ -284,18 +284,18 @@ describe('POS routes', () => {
     ).request('/pos', { method: 'POST', headers: AUTH, body: '{"amountSats":21}' });
     expect(already.status).toBe(409);
 
-    const other = routes(() => Promise.reject(new Error('create boom'))).request('/pos', {
+    const other = await routes(() => Promise.reject(new Error('create boom'))).request('/pos', {
       method: 'POST',
       headers: AUTH,
       body: '{"amountSats":21}',
     });
-    await expect(other).rejects.toThrow('create boom');
+    expect(other.status).toBe(500);
 
-    const notAnError = routes(() => Promise.reject('nope')).request('/pos', {
+    const notAnError = await routes(() => Promise.reject('nope')).request('/pos', {
       method: 'POST',
       headers: AUTH,
       body: '{"amountSats":21}',
     });
-    await expect(notAnError).rejects.toBe('nope');
+    expect(notAnError.status).toBe(500);
   });
 });
