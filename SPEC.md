@@ -369,6 +369,7 @@ ID).
     "aboutMe": null,
     "aboutMeHasPhoto": false,
     "notificationLevel": "all",
+    "funding": null,
     "walletRequired": true,
     "walletBackupSeenAt": null,
     "passkeyCredentialId": "<base64url>"

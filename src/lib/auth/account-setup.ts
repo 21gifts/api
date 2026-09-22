@@ -17,7 +17,7 @@ export type AccountSetup = 'wallet' | 'name' | 'username' | 'lightning-address' 
  * Used by action gates via {@link requireAction}; order is `wallet`
  * (when required and unseen), then `name`, `username`,
  * `lightning-address`, `rules`. Wallet is not an action requirement;
- * {@link accountSetup} / OnboardingGate is the lock.
+ * {@link accountSetup} is the lock.
  */
 export type AccountMissingField = 'wallet' | 'name' | 'username' | 'lightning-address' | 'rules';
 
