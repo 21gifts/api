@@ -128,6 +128,11 @@ function serializeInvoice(row: MessageInvoiceAttempt): Record<string, unknown> {
     lnurlResponse: row.lnurlResponse,
     conversationId: row.conversationId ?? null,
     conversationMessageId: row.conversationMessageId ?? null,
+    fiatPinned: row.fiatPinned === true,
+    amountUsd: row.amountUsd ?? null,
+    amountChf: row.amountChf ?? null,
+    amountEur: row.amountEur ?? null,
+    amountPhp: row.amountPhp ?? null,
   };
 }
 

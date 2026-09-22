@@ -197,6 +197,15 @@ export function normalizeAmountUsd(raw: string): string | null {
   return usdCentsToString(cents);
 }
 
+/** Two-decimal shown CHF/EUR/PHP. Not capped at the spend-worker USD ceiling. */
+function normalizeShownCross(raw: string): string | null {
+  const cents = centsFromAmount(raw);
+  if (cents === null || cents <= 0 || !Number.isSafeInteger(cents)) {
+    return null;
+  }
+  return usdCentsToString(cents);
+}
+
 /** Optional shown amounts on an invoice body. A missing key is not the same as null. */
 export interface ShownFiatBody {
   amountUsd?: string | null | undefined;
@@ -225,19 +234,19 @@ export function shownFiatFromBody(
   if (!pinned) {
     return { pinned: false };
   }
-  const one = (value: string | null | undefined): string | null | 'bad' => {
+  const one = (value: string | null | undefined, usd: boolean): string | null | 'bad' => {
     if (value === undefined || value === null) {
       return null;
     }
     if (value === '0' || value === '0.0' || value === '0.00') {
       return '0.00';
     }
-    return normalizeAmountUsd(value) ?? 'bad';
+    return (usd ? normalizeAmountUsd(value) : normalizeShownCross(value)) ?? 'bad';
   };
-  const usd = one(body.amountUsd);
-  const chf = one(body.amountChf);
-  const eur = one(body.amountEur);
-  const php = one(body.amountPhp);
+  const usd = one(body.amountUsd, true);
+  const chf = one(body.amountChf, false);
+  const eur = one(body.amountEur, false);
+  const php = one(body.amountPhp, false);
   if (usd === 'bad' || chf === 'bad' || eur === 'bad' || php === 'bad') {
     return null;
   }

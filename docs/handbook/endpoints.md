@@ -121,7 +121,7 @@
 
 ## Endpoint: GET /debug/invoices
 
-- **Purpose:** Operator listing of all `message_invoice` attempts (forum `POST /messages/:id/invoice` and conversation `POST /conversations/:id/invoice`) newest-first (cap 200): result, HTTP status, BOLT11 `pr`, payment hash, description / description_hash, `isNip57Invoice`, and `lnurlResponse` (raw LNURL callback JSON object or null). ISO `createdAt`. Never includes nsec. Includes `conversationId` and `conversationMessageId` (`null` on forum invoices). Rejected non-NIP-57 attempts (`not_zap`) still list the rejected `pr` for debug.
+- **Purpose:** Operator listing of all `message_invoice` attempts (forum `POST /messages/:id/invoice` and conversation `POST /conversations/:id/invoice`) newest-first (cap 200): result, HTTP status, BOLT11 `pr`, payment hash, description / description_hash, `isNip57Invoice`, and `lnurlResponse` (raw LNURL callback JSON object or null). ISO `createdAt`. Never includes nsec. Includes `conversationId` and `conversationMessageId` (`null` on forum invoices), plus `fiatPinned` and `amountUsd`, `amountChf`, `amountEur`, and `amountPhp` (`null` when unset). Rejected non-NIP-57 attempts (`not_zap`) still list the rejected `pr` for debug.
 - **Errors:** 503 `{ error: 'Debug is not configured' }` when `DEBUG_TOKEN` is unset or blank; 401 `{ error: 'Unauthorized' }` when the Bearer token does not match; 503 `{ error: 'Messages are unavailable' }` when listing throws (`debug.invoices.list_failed`).
 - **Used by:** Operators debugging zap invoice issuance (including rejected non-NIP-57 `not_zap` rows with `pr` and raw `lnurlResponse`).
 - **Auth:** `Authorization: Bearer` with `DEBUG_TOKEN`. Not an end-user session.

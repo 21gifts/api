@@ -248,6 +248,11 @@ describe('loadDebugTables', () => {
       lnurlResponse: null,
       conversationId: threadId,
       conversationMessageId: 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee',
+      fiatPinned: true,
+      amountUsd: '5.00',
+      amountChf: '4.00',
+      amountEur: null,
+      amountPhp: '280.00',
     });
     await messages.recordInvoiceAttempt({
       id: 'inv-forum',
@@ -532,11 +537,21 @@ describe('loadDebugTables', () => {
           id: 'inv',
           conversationId: threadId,
           conversationMessageId: 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee',
+          fiatPinned: true,
+          amountUsd: '5.00',
+          amountChf: '4.00',
+          amountEur: null,
+          amountPhp: '280.00',
         }),
         expect.objectContaining({
           id: 'inv-forum',
           conversationId: null,
           conversationMessageId: null,
+          fiatPinned: false,
+          amountUsd: null,
+          amountChf: null,
+          amountEur: null,
+          amountPhp: null,
         }),
       ]),
     );

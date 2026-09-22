@@ -41,6 +41,16 @@ describe('shownFiatFromBody', () => {
     });
     expect(shownFiatFromBody({ amountUsd: 'nope' })).toBeNull();
   });
+
+  it('accepts a large peso and rejects an over-cap dollar or an unsafe cross', () => {
+    expect(shownFiatFromBody({ amountUsd: '5.00', amountPhp: '500000.00' })).toEqual({
+      pinned: true,
+      fiat: { usd: '5.00', chf: null, eur: null, php: '500000.00' },
+    });
+    expect(shownFiatFromBody({ amountUsd: '100000.01' })).toBeNull();
+    expect(shownFiatFromBody({ amountChf: '1.001' })).toBeNull();
+    expect(shownFiatFromBody({ amountEur: '9007199254740993' })).toBeNull();
+  });
 });
 
 describe('fiatFromUsd', () => {

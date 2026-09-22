@@ -1949,7 +1949,12 @@ Success → **Response** `200`:
       "isNip57Invoice": true,
       "lnurlResponse": { "pr": "lnbc21n1...", "status": "OK" },
       "conversationId": null,
-      "conversationMessageId": null
+      "conversationMessageId": null,
+      "fiatPinned": false,
+      "amountUsd": null,
+      "amountChf": null,
+      "amountEur": null,
+      "amountPhp": null
     }
   ]
 }
@@ -1958,7 +1963,8 @@ Success → **Response** `200`:
 `lnurlResponse` is the raw LNURL callback JSON object, or `null` when none
 was stored. Rows are newest-first, capped at **200**. Never includes nsec.
 `serializeInvoice` includes `conversationId` and `conversationMessageId`
-(`null` on forum invoices).
+(`null` on forum invoices), plus `fiatPinned` and `amountUsd`, `amountChf`,
+`amountEur`, and `amountPhp` (`null` when unset).
 `result` is one of `ok`, `noZap`, `not_zap`, `unreachable`, `no_event`,
 `no_author`, `no_key`,
 `sign_failed`, `rate_limited`, `bad_body`, `not_found`. `isNip57Invoice` is
