@@ -61,17 +61,17 @@ export interface OwnerAccountResponse extends AccountResponse {
   /** 64 lowercase hex; capability URL secret for `GET /view/:viewKey`. */
   viewKey: string;
   /**
-   * Next setup step the owner must complete (`wallet`, `name`, `username`,
-   * `lightning-address`, `rules`), or `null` when the signed-in app is
-   * allowed. Skip timestamps count as done for the wizard except
-   * username and wallet, which cannot be skipped. Computed on the api;
-   * clients must not invent a parallel sequence.
+   * Next setup step (`name`, `username`, `lightning-address`, `rules`),
+   * or `null` when the signed-in app is allowed. An unseen recovery
+   * phrase does not change setup. Skip timestamps count as done except
+   * username, which cannot be skipped. Computed on the api; clients
+   * must not invent a parallel sequence.
    */
   setup: AccountSetup;
   /**
-   * Factually unset fields (skip does not clear them). Order: `wallet`
-   * (when required and unseen), then `name`, `username`,
-   * `lightning-address`, `rules`. Used by clients alongside action gates.
+   * Factually unset fields (skip does not clear them). Does not include
+   * wallet. Order: `name`, `username`, `lightning-address`, `rules`.
+   * Used by clients alongside action gates.
    */
   missing: AccountMissingField[];
   /**

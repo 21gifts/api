@@ -421,8 +421,8 @@ ID).
     "viewKey": "<64-hex>",
     "createdAt": 0,
     "rulesAgreedAt": null,
-    "setup": "wallet",
-    "missing": ["wallet", "name", "username", "lightning-address", "rules"],
+    "setup": "name",
+    "missing": ["name", "username", "lightning-address", "rules"],
     "hasPosted": false,
     "aboutMe": null,
     "aboutMeHasPhoto": false,
@@ -435,7 +435,7 @@ ID).
 }
 ```
 
-The `account` object is the same owner JSON as `GET /me` (includes `viewKey`, `setup`, `missing`, `hasPosted`, `aboutMe`, `aboutMeHasPhoto`, `notificationLevel`, `walletRequired`, `walletBackupSeenAt`, and `passkeyCredentialId`). The example above is a new register (`walletRequired: true`, `setup: "wallet"`, `missing` starts with `"wallet"`). Existing members keep `walletRequired: false`; passkey replace and phrase export do not change these columns.
+The `account` object is the same owner JSON as `GET /me` (includes `viewKey`, `setup`, `missing`, `hasPosted`, `aboutMe`, `aboutMeHasPhoto`, `notificationLevel`, `walletRequired`, `walletBackupSeenAt`, and `passkeyCredentialId`). The example above is a new register (`walletRequired: true`, `setup: "name"` when the name is unset). An unseen recovery phrase does not put `wallet` in `setup` or `missing`. Existing members keep `walletRequired: false`; passkey replace and phrase export do not change these columns.
 
 A new register row is stored with `walletRequired: true` and `walletBackupSeenAt: null`. First-passkey claim of a provisioned row sets `walletRequired: true` in the same write as the credential (`createFirstPasskeyCredential`: Postgres CTE insert-then-update; memory store writes both in one method) and does not clear a seen timestamp. Passkey replace does not change these columns. Operator `POST /debug/accounts` provision leaves `walletRequired` false. The api never stores a mnemonic or PRF output.
 
@@ -547,8 +547,8 @@ An account with `sessionRefused` and a still-valid minted token → **Response**
 
 The example above is an existing member (`walletRequired: false`,
 `walletBackupSeenAt: null`). New register/claim owner JSON has
-`walletRequired: true` and `setup: "wallet"` with `missing` starting with
-`"wallet"`.
+`walletRequired: true` and `setup: "name"` when the name is unset.
+An unseen recovery phrase does not put `wallet` in `setup` or `missing`.
 
 About me is the profile-note text when it is a real bio, else null (auto
 name-copy is not a bio, including after a display-name rename when the note
@@ -569,14 +569,14 @@ stays `null`)).
 | `viewKey`                  | string         | Durable 64 lowercase hex capability secret for GET /view/:viewKey. Owner-only. Not a session.                                                                                                                                                                                                                                                   |
 | `createdAt`                | number         | Creation time (epoch ms)                                                                                                                                                                                                                                                                                                                        |
 | `rulesAgreedAt`            | number \| null | Epoch ms of first living-room rules agreement, or `null`                                                                                                                                                                                                                                                                                        |
-| `setup`                    | string \| null | Next wizard step: `wallet`, `name`, `username`, `lightning-address`, `rules`, or `null` when complete. Skip timestamps count as done except username and wallet, which cannot be skipped. Clients must not invent a parallel sequence.                                                                                                          |
-| `missing`                  | string[]       | Factually unset fields (`wallet` when required and unseen, then `name`, `username`, `lightning-address`, `rules`) even when skipped. Does not include `profileMessageId`.                                                                                                                                                                       |
+| `setup`                    | string \| null | Next wizard step: `name`, `username`, `lightning-address`, `rules`, or `null` when complete. The union still includes `wallet` for older clients; the api never returns it. Skip timestamps count as done except username, which cannot be skipped. Wallet backup is not a setup step. Clients must not invent a parallel sequence.               |
+| `missing`                  | string[]       | Factually unset fields (`name`, `username`, `lightning-address`, `rules`) even when skipped. Never includes `wallet`. Does not include `profileMessageId`.                                                                                                                                                                                      |
 | hasPosted                  | boolean        | True when there is a live forum row that is not the profile note (replies still count) OR when `aboutMe` is non-null. A profile note that is only the display-name copy, a photo without bio text, a missing note, and a soft-hidden note do not count. Not the same predicate as GET /invoices/posted (that stays top-level non-profile only). |
 | `aboutMe`                  | string \| null | Profile-note text when it is a real bio, else `null` (missing or soft-hidden (`deletedAt` set); auto name-copy is not a bio, including after a display-name rename when the note text still equals the stored profile-note `name` (Ada→Grace with text `Ada` stays `null`))                                                                     |
 | `aboutMeHasPhoto`          | boolean        | True when the live profile note has a stored JPEG/PNG/WebP. Independent of `aboutMe` (photo-only and name-copy notes can still have a photo). Bytes are `GET /me/about/photo`. Does not expose `profileMessageId`.                                                                                                                              |
 | `notificationLevel`        | string         | Owner fan-out filter: `all`, `active`, or `mentions`. Default `all`. Owner-only; omitted from public `GET /view/:viewKey` and member cards.                                                                                                                                                                                                     |
 | `funding`                  | object \| null | Funding-program grant. `null` for `basis`. Otherwise always an object; no row is `{ status: "none", trialUtcDate: null, admittedAt: null, reviewedByName: null }`. Admitted includes live `reviewedByName`.                                                                                                                                     |
-| `walletRequired`           | boolean        | True when the owner must complete the wallet setup step. Default false for existing members.                                                                                                                                                                                                                                                    |
+| `walletRequired`           | boolean        | True when a recovery phrase is required (new register/claim). Default false for existing members. Does not make `setup` `'wallet'`.                                                                                                                                                                                                              |
 | `walletBackupSeenAt`       | number \| null | Epoch ms when the recovery phrase was shown, or `null` when unseen.                                                                                                                                                                                                                                                                             |
 | `passkeyCredentialId`      | string \| null | WebAuthn credential id (base64url), or `null` when the account has none. Owner-only.                                                                                                                                                                                                                                                            |
 
@@ -1343,11 +1343,10 @@ Success → **Response** `200` with the updated account:
 - `lightningAddress`: `null`
 - `lightningAddressVerified`: `false`
 
-Does not clear `username`. After unlink, `setup` stays `wallet` when
-`walletRequired` is true and backup is unseen; otherwise `setup` is
-`username` if the handle is blank; `setup` is `lightning-address` only
-when wallet is done or not required, name is done or skipped, **and**
-username is set (and LN is blank / skip cleared).
+Does not clear `username`. After unlink, `setup` is `username` if the
+handle is blank; `setup` is `lightning-address` when name is done or
+skipped **and** username is set (and LN is blank / skip cleared). An
+unseen recovery phrase does not change the step.
 
 ### `POST /me/lightning-address/verification`
 
@@ -1670,12 +1669,11 @@ finish and this route's session mint return 403 with the wrong-account
 copy (`GET /me` too). Setting a new address is not supported here
 (`POST /me/lightning-address` remains the live resolve path). Unlink
 resets `lightningAddressVerified` to `false` and drops any in-flight
-verification. It does not clear `username`. `GET /me` then returns `setup: "wallet"` when
-`walletRequired` is true and backup is unseen, else `setup: "username"` if
-the handle is blank, or `setup: "lightning-address"` only when wallet is
-done or not required, name is done or skipped, **and** username is set
-(and LN is blank / skip cleared), so any client that follows `setup` shows
-the wallet, username, or address form as appropriate. `verified` as a **role** is a
+verification. It does not clear `username`. `GET /me` then returns `setup: "username"` if
+the handle is blank, or `setup: "lightning-address"` when name is done or
+skipped **and** username is set (and LN is blank / skip cleared). An unseen
+recovery phrase does not change the step, so any client that follows `setup` shows
+the username or address form as appropriate. `verified` as a **role** is a
 human-identity badge (a moderator physically met the person); it
 is not `lightningAddressVerified`. New passkey accounts stay `basis` until
 staff confirm them via `POST /trust/verify` or an operator overrides `role`

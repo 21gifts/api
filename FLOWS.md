@@ -58,20 +58,20 @@ The signed-in view currently lives on `/login` — there is no separate
 Address form, and **Sign out**. Name and Lightning Address are each
 skippable via `POST /me/setup/skip`. Username cannot skip; the app sets
 the handle with `POST /me/username`. Living-room rules stay required.
-New passkey accounts must confirm the recovery phrase first
-(`POST /me/wallet-backup-seen`); that step cannot skip.
+New passkey accounts may record the recovery phrase via
+`POST /me/wallet-backup-seen`; that is not a setup step.
 
-`GET /me` `setup` order is wallet (when `walletRequired` and the backup
-is unseen; not skippable), then name, then username (unskippable), then
-lightning-address, then rules. When username is still blank,
+`GET /me` `setup` order is name, then username (unskippable), then
+lightning-address, then rules. An unseen recovery phrase does not change
+the step. When username is still blank,
 `POST /me/name` auto-assigns `usernameFromDisplayName` if that handle is
 free; a collision or uniqueness race leaves username null and `setup` at
 username.
 
-After wallet backup (new accounts), name/skip, username, and address/skip,
+After name/skip, username, and address/skip,
 the app records living-room rules agreement via `POST /me/rules-agreement`.
 `GET /me` carries `setup` (wizard; skip counts as done for name and
-Lightning Address, not username or wallet), `missing` (facts; skip does
+Lightning Address, not username), `missing` (facts; skip does
 not), `walletRequired`, `walletBackupSeenAt`, and `rulesAgreedAt` (epoch
 ms of the first agreement, or `null`).
 
@@ -98,11 +98,10 @@ or unlink a LUD-16 Lightning Address:
   leaves the address **unverified**. Unreachable or non-zap addresses are
   rejected and not stored.
 - `DELETE /me/lightning-address` — unlink (also clears the LN skip timestamp;
-  does not clear `username`). After unlink, `setup` stays `wallet` when
-  `walletRequired` is true and backup is unseen; otherwise `setup` is
-  `username` if the handle is blank; `setup` is `lightning-address` only when
-  wallet is done or not required, name is done or skipped, **and** username is
-  set
+  does not clear `username`). After unlink, `setup` is `username` if the
+  handle is blank; `setup` is `lightning-address` when name is done or
+  skipped **and** username is set. An unseen recovery phrase does not
+  change the step.
 
 Proof-of-control of the linked Lightning Address is the flag
 `lightningAddressVerified` (not the forum role **Verified**):

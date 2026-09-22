@@ -21,10 +21,10 @@ describe('accountSetup', () => {
     expect(accountSetup(base)).toBe('name');
   });
 
-  it('asks for wallet first when required and unseen', () => {
-    expect(accountSetup({ ...base, walletRequired: true })).toBe('wallet');
+  it('asks for a name when a required wallet backup is unseen', () => {
+    expect(accountSetup({ ...base, walletRequired: true })).toBe('name');
     expect(accountSetup({ ...base, walletRequired: true, walletBackupSeenAt: null })).toBe(
-      'wallet',
+      'name',
     );
     expect(
       accountSetup({
@@ -35,7 +35,7 @@ describe('accountSetup', () => {
         lightningAddress: 'ada@walletofsatoshi.com',
         rulesAgreedAt: 2,
       }),
-    ).toBe('wallet');
+    ).toBeNull();
   });
 
   it('does not ask for wallet when required is false or omitted', () => {
@@ -144,9 +144,8 @@ describe('accountMissing', () => {
     ).toEqual(['name', 'username', 'lightning-address', 'rules']);
   });
 
-  it('lists wallet first when required and unseen', () => {
+  it('does not list wallet when required and unseen', () => {
     expect(accountMissing({ ...base, walletRequired: true })).toEqual([
-      'wallet',
       'name',
       'username',
       'lightning-address',
@@ -159,7 +158,7 @@ describe('accountMissing', () => {
         nameSkippedAt: 10,
         lightningAddressSkippedAt: 11,
       }),
-    ).toEqual(['wallet', 'name', 'username', 'lightning-address', 'rules']);
+    ).toEqual(['name', 'username', 'lightning-address', 'rules']);
   });
 
   it('omits wallet when required and seen', () => {

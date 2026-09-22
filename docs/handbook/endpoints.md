@@ -2,7 +2,7 @@
 
 ## Endpoint: DELETE /me/lightning-address
 
-- **Purpose:** Bearer required. Clears the account Lightning Address, resets `lightningAddressVerified` to false, and clears `lightningAddressSkippedAt`. Does not clear `username`. After unlink, owner `setup` stays `wallet` when `walletRequired` is true and backup is unseen; otherwise `setup` is `username` if the handle is blank; `setup` is `lightning-address` only when wallet is done or not required, name is done or skipped, **and** username is set.
+- **Purpose:** Bearer required. Clears the account Lightning Address, resets `lightningAddressVerified` to false, and clears `lightningAddressSkippedAt`. Does not clear `username`. After unlink, owner `setup` is `username` if the handle is blank; `setup` is `lightning-address` when name is done or skipped **and** username is set. An unseen recovery phrase does not change the step.
 - **Errors:** 401 without session.
 - **Used by:** `unlinkLightningAddress` in the app.
 - **Auth:** See Purpose — Bearer where stated, else public.
