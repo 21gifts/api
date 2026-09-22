@@ -170,6 +170,7 @@ Public base URLs used in examples:
 | GET    | `/debug/dump/:table`                                 | `Authorization: Bearer`    | Operator catalog of one allowlisted table (`DEBUG_TOKEN`)                                                 |
 | GET    | `/gifts`                                             | none                       | Outbound gifts for one UTC day (`?day=`)                                                                  |
 | GET    | `/gifts/stats`                                       | none                       | Aggregated outbound gift statistics                                                                       |
+| GET    | `/messages/stats`                                    | none                       | Living forum notes and replies counted together, by UTC day                                               |
 | GET    | `/invoices/passkey`                                  | Bearer `SPEND_API_TOKEN`   | Whether a Lightning Address has a passkey-backed account                                                  |
 | GET    | `/invoices/posted`                                   | Bearer `SPEND_API_TOKEN`   | Whether a Lightning Address has a live top-level non-profile forum post                                   |
 | GET    | `/invoices/eligible`                                 | Bearer `SPEND_API_TOKEN`   | Whether the address is funding-eligible today                                                             |

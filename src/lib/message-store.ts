@@ -11,6 +11,7 @@
  */
 
 import { isUniqueViolation, type SqlClient } from '@/lib/auth/sql';
+import type { PostDayCount } from '@/lib/post-stats';
 import { postgresTextArrayLiteral } from '@/lib/postgres-text-array';
 import {
   forumContentFingerprint,
@@ -196,6 +197,15 @@ export interface MessageStore {
    * @returns Message row copies.
    */
   listDebug(limit: number): Promise<MessageRow[]>;
+
+  /**
+   * Living notes and replies per UTC day (`deletedAt` null). Top-level notes
+   * and replies count the same. Soft-hidden rows are omitted. Days with no
+   * rows are absent. Photo and video bytes are not read.
+   *
+   * @returns One entry per day that has a living row, oldest day first.
+   */
+  postCountsByUtcDay(): Promise<PostDayCount[]>;
 
   /**
    * Newest-hidden-first forum rows for the staff hidden log (`deletedAt`
@@ -1488,6 +1498,22 @@ export class InMemoryMessageStore implements MessageStore {
    * @returns A new array of row copies; mutating it does not change the store.
    *   Listed objects never expose photo or video bytes.
    */
+  postCountsByUtcDay(): Promise<PostDayCount[]> {
+    const counts = new Map<string, number>();
+    for (const row of this.#rows) {
+      if (row.deletedAt !== null) {
+        continue;
+      }
+      const day = row.createdAt.toISOString().slice(0, 10);
+      counts.set(day, (counts.get(day) ?? 0) + 1);
+    }
+    return Promise.resolve(
+      [...counts.entries()]
+        .sort((left, right) => left[0].localeCompare(right[0]))
+        .map(([day, postCount]) => ({ day, postCount })),
+    );
+  }
+
   listDebug(limit: number): Promise<MessageRow[]> {
     const sorted = [...this.#rows].sort((a, b) => {
       const byTime = b.createdAt.getTime() - a.createdAt.getTime();
@@ -2926,6 +2952,18 @@ export class PostgresMessageStore implements MessageStore {
    * @param limit - Maximum rows (`$1`).
    * @returns Mapped rows.
    */
+  async postCountsByUtcDay(): Promise<PostDayCount[]> {
+    const rows = await this.#sql.query<{ day: string; post_count: number | string }>(
+      `SELECT to_char(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD') AS day,
+              count(*)::int AS post_count
+       FROM message
+       WHERE deleted_at IS NULL
+       GROUP BY 1
+       ORDER BY 1`,
+    );
+    return rows.map((row) => ({ day: row.day, postCount: Number(row.post_count) }));
+  }
+
   async listDebug(limit: number): Promise<MessageRow[]> {
     const rows = await this.#sql.query<MessageSqlRow>(
       `SELECT ${MESSAGE_SELECT_COLUMNS} FROM message ORDER BY created_at DESC, id DESC LIMIT $1`,

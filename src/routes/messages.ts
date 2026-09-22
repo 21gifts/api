@@ -10,6 +10,7 @@ import { GIFT_INVOICE_MAX_MSAT } from '@/lib/config';
 import { eligibleToday } from '@/lib/funding';
 import { InMemoryFundingStore, type FundingStore } from '@/lib/funding-store';
 import { logEvent } from '@/lib/log';
+import { buildPostStats } from '@/lib/post-stats';
 import type { FetchFn } from '@/lib/lnurlp';
 import { requestZapInvoice } from '@/lib/lnurl-pay';
 import {
@@ -1214,6 +1215,15 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
       } catch {
         logEvent('messages.delete.failed');
         return c.json({ error: 'Messages are unavailable' }, 503);
+      }
+    })
+    .get('/stats', async (c) => {
+      try {
+        const rows = await deps.store.postCountsByUtcDay();
+        return c.json(buildPostStats(rows, deps.now()), 200);
+      } catch {
+        logEvent('posts.stats.failed');
+        return c.json({ error: 'Post stats are unavailable' }, 503);
       }
     })
     .get('/hidden', async (c) => {

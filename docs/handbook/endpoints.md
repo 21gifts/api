@@ -281,6 +281,13 @@
 - **Used by:** App `/view-key/[viewKey]/activity` proxy and public view profile chart.
 - **Auth:** none.
 
+## Endpoint: GET /messages/stats
+
+- **Purpose:** Public count of living forum notes and replies together. `postCount` is the total. `postsOverTime` is one row per UTC day from the first living note through today (or a later note), with `postCount: 0` on days that had none. Soft-hidden notes are omitted. A reply counts the same as a top-level note.
+- **Errors:** 503 `{ "error": "Post stats are unavailable" }` when the count query throws (`posts.stats.failed`). An empty forum is 200 `{ postCount: 0, postsOverTime: [] }`.
+- **Used by:** The public statistics page.
+- **Auth:** Public.
+
 ## Endpoint: GET /gifts/stats
 
 - **Purpose:** Public JSON of outbound gift totals: `totalSats` / `totalBtc` / `totalUsd` plus additive `totalChf` / `totalEur` / `totalPhp`, `giftCount`, `recipientCount`, date range, `spendOverTime` (giftCount+sats+BTC+USD+fiat), `byRecipient`, `byMonth`, and `fx` (`quote` stays BTC-USD; `fx.quotes` lists USD always and CHF/EUR/PHP when at least one selected gift day has that cross). USD uses each gift's UTC-day Coinbase BTC-USD daily close (not spot); CHF/EUR/PHP are USD × that UTC day's Frankfurter ECB rate. A gift day that lacks a fiat cross returns that currency as JSON `null` (totals go null if any selected gift lacks that cross). Optional query `recipient` filters to one Wallet of Satoshi handle (case-insensitive). When `recipient` contains `@` after the first character, the local-part before `@` is used; otherwise the whole trimmed string. Missing/blank `recipient` = unfiltered. Unknown handle = empty stats **200** with zeros and USD-only `fx.quotes` (no Coinbase / Frankfurter). Empty boots are empty **200** with zeros and USD-only `fx.quotes` (no Coinbase / Frankfurter). No invoices.
