@@ -3085,9 +3085,10 @@ No platform account, missing or soft-hidden profile note, or store failure → *
 
 Post to the public member forum. Bearer session required. JSON body (not
 multipart) with text and/or one photo, optional `photos` (array, max 10,
-each `{ contentType, data }` same shape as singular `photo`), an
+each `{ contentType, data, takenAt? }` same shape as singular `photo`), an
 optional parent UUID, and optional `goalSats` (positive integer 1..10_000_000
-on a top-level note only):
+on a top-level note only). Optional `takenAt` is a civil capture time. A
+non-string, invalid, or missing value is stored null and does not return 400:
 
 Top-level with a goal:
 
@@ -3095,11 +3096,15 @@ Top-level with a goal:
 {
   "text": "…",
   "goalSats": 21000,
-  "photo": { "contentType": "image/jpeg", "data": "<base64>" }
+  "photo": {
+    "contentType": "image/jpeg",
+    "data": "<base64>",
+    "takenAt": "2026-09-22T11:40:00+08:00"
+  }
 }
 ```
 
-Reply (no `goalSats`; a positive `goalSats` with `inReplyTo` is 400):
+Reply (no `goalSats`; a positive `goalSats` with `inReplyTo` is 400). `takenAt` may be omitted:
 
 ```json
 {
