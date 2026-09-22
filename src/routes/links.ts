@@ -28,14 +28,14 @@ export function linksRoutes(deps: {
     }
     if (messageIds.length === 1) {
       const id = messageIds[0];
-      /* v8 ignore next 4 -- length === 1 on a dense array has an id */
+      /* v8 ignore next 3 -- length === 1 on a dense array has an id */
       if (id === undefined) {
         return c.json({ error: 'not_found' }, 404);
       }
       return c.json({ kind: 'message', id: id.toLowerCase() }, 200);
     }
     const id = accountIds[0];
-    /* v8 ignore next 4 -- length === 1 on a dense array has an id */
+    /* v8 ignore next 3 -- length === 1 on a dense array has an id */
     if (id === undefined) {
       return c.json({ error: 'not_found' }, 404);
     }
