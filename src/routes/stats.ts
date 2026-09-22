@@ -1,8 +1,8 @@
 import { Hono } from 'hono';
 import { buildGiftStats, giftsForRecipient } from '@/lib/gift';
 import type { GiftStore } from '@/lib/gift-store';
-import type { BtcUsdRateBook } from '@/lib/btc-usd-store';
-import type { FiatRateBook } from '@/lib/usd-fiat-store';
+import { InMemoryBtcUsdStore, type BtcUsdRateBook } from '@/lib/btc-usd-store';
+import { InMemoryFiatStore, type FiatCross, type FiatRateBook } from '@/lib/usd-fiat-store';
 import { logEvent } from '@/lib/log';
 
 /** Collaborators the public gift-stats route needs. */
@@ -34,6 +34,10 @@ export interface GiftsStatsRouteDeps {
  * @returns A Hono app with `GET /`.
  */
 export function giftsStatsRoutes(deps: GiftsStatsRouteDeps): Hono {
+  const rates = deps.rates ?? new InMemoryBtcUsdStore();
+  const fiatRates = deps.fiatRates ?? new InMemoryFiatStore();
+  const now = deps.now ?? Date.now;
+
   return new Hono().get('/', async (c) => {
     try {
       const raw = (c.req.query('recipient') ?? '').trim();
@@ -43,7 +47,30 @@ export function giftsStatsRoutes(deps: GiftsStatsRouteDeps): Hono {
         return c.json(buildGiftStats([], new Map()), 200);
       }
 
-      return c.json(buildGiftStats(selected, new Map()), 200);
+      const legacyDays = [
+        ...new Set(
+          selected
+            .filter((row) => row.amountUsd === undefined)
+            .map((row) => row.paidAt.toISOString().slice(0, 10)),
+        ),
+      ];
+      const rateMap =
+        legacyDays.length === 0 ? new Map() : await rates.ensureDays(legacyDays, now());
+      for (const day of legacyDays) {
+        if (!rateMap.has(day)) {
+          logEvent('gifts.stats.fx_incomplete');
+          return c.json({ error: 'Gift stats are unavailable' }, 503);
+        }
+      }
+      let fiatMap: ReadonlyMap<string, FiatCross> = new Map();
+      try {
+        if (legacyDays.length > 0) {
+          fiatMap = await fiatRates.ensureDays(legacyDays, now());
+        }
+      } catch {
+        logEvent('gifts.stats.fiat_failed');
+      }
+      return c.json(buildGiftStats(selected, rateMap, fiatMap), 200);
     } catch {
       logEvent('gifts.stats.failed');
       return c.json({ error: 'Gift stats are unavailable' }, 503);

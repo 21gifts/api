@@ -16,9 +16,10 @@ import {
   type SpendDay,
 } from '@/lib/gift';
 import type { GiftStore } from '@/lib/gift-store';
+import { logEvent } from '@/lib/log';
 import { usdCentsToString } from '@/lib/money';
 import type { MessageInvoiceAttempt, MessageStore, ZapIngestRow } from '@/lib/message-store';
-import type { FiatRateBook } from '@/lib/usd-fiat-store';
+import { InMemoryFiatStore, type FiatCross, type FiatRateBook } from '@/lib/usd-fiat-store';
 
 const PAYMENT_HASH_RE = /^[0-9a-f]{64}$/;
 const FALLBACK_RECIPIENT = 'zap';
@@ -179,6 +180,7 @@ export async function buildAccountActivity(args: {
   const receivedZaps = await receivedZapsForAccount(args.account, args.messages, indexed);
   const givenRows = givenZaps.concat(givenHouse);
   const receivedRows = receivedZaps.concat(receivedHouse);
+  const fiatRates = args.fiatRates ?? new InMemoryFiatStore();
 
   if (givenRows.length === 0 && receivedRows.length === 0) {
     const empty = buildGiftStats([], new Map());
@@ -191,8 +193,35 @@ export async function buildAccountActivity(args: {
     };
   }
 
-  const givenStats = buildGiftStats(givenRows, new Map());
-  const receivedStats = buildGiftStats(receivedRows, new Map());
+  const legacyDays = [
+    ...new Set(
+      givenRows
+        .concat(receivedRows)
+        .filter((row) => row.amountUsd === undefined)
+        .map((row) => row.paidAt.toISOString().slice(0, 10)),
+    ),
+  ];
+  let rateMap: ReadonlyMap<string, string> = new Map();
+  if (legacyDays.length > 0) {
+    rateMap = await args.rates.ensureDays(legacyDays, args.now());
+    for (const day of legacyDays) {
+      if (!rateMap.has(day)) {
+        throw new Error('fx.rate.missing');
+      }
+    }
+  }
+
+  let fiatMap: ReadonlyMap<string, FiatCross> = new Map();
+  try {
+    if (legacyDays.length > 0) {
+      fiatMap = await fiatRates.ensureDays(legacyDays, args.now());
+    }
+  } catch {
+    logEvent('account.activity.fiat_failed');
+  }
+
+  const givenStats = buildGiftStats(givenRows, rateMap, fiatMap);
+  const receivedStats = buildGiftStats(receivedRows, rateMap, fiatMap);
   return {
     donatedSats: givenStats.totalSats,
     receivedSats: receivedStats.totalSats,
