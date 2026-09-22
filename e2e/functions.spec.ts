@@ -2022,13 +2022,14 @@ test('Function: normalizePlace — POST /messages stores a pin and GET /messages
   request,
 }) => {
   const stamp = `${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
+  const adaName = `E2ePin${stamp}`;
   const provision = await request.post('/debug/accounts', {
     headers: DEBUG,
     data: {
       accounts: [
         {
-          name: `E2eAda${stamp.slice(0, 8)}`,
-          lightningAddress: `e2e-ada-${stamp}@walletofsatoshi.com`,
+          name: adaName,
+          lightningAddress: `e2e-pin-${stamp}@walletofsatoshi.com`,
         },
       ],
     },
@@ -2039,7 +2040,6 @@ test('Function: normalizePlace — POST /messages stores a pin and GET /messages
   expect(listed.status()).toBe(200);
   const accounts = ((await listed.json()) as { accounts: Array<{ id: string; name: string }> })
     .accounts;
-  const adaName = `E2eAda${stamp.slice(0, 8)}`;
   const ada = accounts.find((row) => row.name === adaName);
   expect(ada).toBeDefined();
 
