@@ -133,7 +133,7 @@ export interface GiftStats {
   totalSats: number;
   /** BTC string for `totalSats`. */
   totalBtc: string;
-  /** USD string (sum of per-gift historical conversions). */
+  /** Stored payment-time USD sum; `null` if any gift lacks it. Empty input is `"0.00"`. */
   totalUsd: string | null;
   /** CHF string, or `null` if any gift lacks CHF. Empty input is `"0.00"`. */
   totalChf: string | null;
@@ -167,13 +167,13 @@ export interface GiftDayGift {
   amountSats: number;
   /** BTC string for `amountSats`. */
   amountBtc: string;
-  /** USD string at this gift's UTC-day close. */
+  /** Stored payment-time USD, or `null` when this gift has none. */
   amountUsd: string | null;
-  /** CHF string at this gift's UTC-day ECB cross, or `null` when missing. */
+  /** Stored payment-time CHF, or `null` when missing. */
   amountChf: string | null;
-  /** EUR string at this gift's UTC-day ECB cross, or `null` when missing. */
+  /** Stored payment-time EUR, or `null` when missing. */
   amountEur: string | null;
-  /** PHP string at this gift's UTC-day ECB cross, or `null` when missing. */
+  /** Stored payment-time PHP, or `null` when missing. */
   amountPhp: string | null;
   /** Wallet of Satoshi username. */
   recipient: string;
