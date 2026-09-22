@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
 import { InMemoryAuthStore } from '@/lib/auth/store';
-import { InMemoryPosStore } from '@/lib/pos-store';
+import { InMemoryPosStore, type PosStore } from '@/lib/pos-store';
 import { POS_CHARGE_TTL_MS } from '@/lib/pos-charge';
 import { posRoutes } from '@/routes/pos';
 import { createApp } from '@/server';
@@ -187,6 +187,14 @@ describe('POS routes', () => {
 
   it('rejects an amount outside the wallet range and an unreachable address', async () => {
     const auth = await readyStore();
+    const low = await mount(auth, wosFetch(50_000)).request('/pos', {
+      method: 'POST',
+      headers: AUTH,
+      body: '{"amountSats":21}',
+    });
+    expect(low.status).toBe(400);
+    expect(await low.json()).toEqual({ error: 'Amount is outside the wallet range' });
+
     const high = await mount(auth, wosFetch()).request('/pos', {
       method: 'POST',
       headers: AUTH,
@@ -204,5 +212,90 @@ describe('POS routes', () => {
       body: '{"amountSats":21}',
     });
     expect(failed.status).toBe(502);
+  });
+
+  it('returns 409 when a second insert overlaps an open charge', async () => {
+    let release: () => void = () => undefined;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let fetches = 0;
+    const fetchImpl = (async () => {
+      fetches += 1;
+      if (fetches === 1) {
+        await gate;
+      }
+      return new Response(
+        JSON.stringify({
+          callback: 'https://walletofsatoshi.com/lnurlp/callback',
+          minSendable: 1000,
+          maxSendable: 100_000_000,
+          metadata: '[["text/plain","ada"]]',
+          tag: 'payRequest',
+        }),
+        { status: 200, headers: { 'content-type': 'application/json' } },
+      );
+    }) as unknown as typeof fetch;
+    const app = mount(await readyStore(), fetchImpl);
+    const first = app.request('/pos', {
+      method: 'POST',
+      headers: AUTH,
+      body: '{"amountSats":21}',
+    });
+    await vi.waitFor(() => {
+      expect(fetches).toBe(1);
+    });
+    const second = await app.request('/pos', {
+      method: 'POST',
+      headers: AUTH,
+      body: '{"amountSats":21}',
+    });
+    release();
+    const opened = await first;
+    expect([opened.status, second.status].sort()).toEqual([201, 409]);
+    const conflict = opened.status === 409 ? opened : second;
+    expect(await conflict.json()).toEqual({ error: 'A payment is already open' });
+  });
+
+  it('maps a unique violation and an already-open error to 409 and rethrows the rest', async () => {
+    const auth = await readyStore();
+    const base = new InMemoryPosStore();
+    function routes(create: PosStore['create']): Hono {
+      const store: PosStore = {
+        currentPending: (accountId, nowMs) => base.currentPending(accountId, nowMs),
+        create,
+        cancelPending: (accountId, nowMs) => base.cancelPending(accountId, nowMs),
+        listForAccount: (accountId, limit) => base.listForAccount(accountId, limit),
+        listLatest: (limit) => base.listLatest(limit),
+      };
+      return new Hono().route(
+        '/pos',
+        posRoutes({ store, authStore: auth, now, fetchImpl: wosFetch() }),
+      );
+    }
+    const unique = await routes(() =>
+      Promise.reject(Object.assign(new Error('duplicate key'), { code: '23505' })),
+    ).request('/pos', { method: 'POST', headers: AUTH, body: '{"amountSats":21}' });
+    expect(unique.status).toBe(409);
+    expect(await unique.json()).toEqual({ error: 'A payment is already open' });
+
+    const already = await routes(() =>
+      Promise.reject(new Error('A payment is already open')),
+    ).request('/pos', { method: 'POST', headers: AUTH, body: '{"amountSats":21}' });
+    expect(already.status).toBe(409);
+
+    const other = routes(() => Promise.reject(new Error('create boom'))).request('/pos', {
+      method: 'POST',
+      headers: AUTH,
+      body: '{"amountSats":21}',
+    });
+    await expect(other).rejects.toThrow('create boom');
+
+    const notAnError = routes(() => Promise.reject('nope')).request('/pos', {
+      method: 'POST',
+      headers: AUTH,
+      body: '{"amountSats":21}',
+    });
+    await expect(notAnError).rejects.toBe('nope');
   });
 });

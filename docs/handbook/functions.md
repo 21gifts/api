@@ -30,16 +30,16 @@
 
 ## Function: InMemoryPosStore
 
-- **Purpose:** Process-local `PosStore` used in tests and when no database URL is set.
-- **Inputs:** Optional seed rows.
-- **Returns / side effects:** Pending, cancel, expire, and list methods. Mutates its private array.
+- **Purpose:** Process-local `PosStore` used in tests and when no database URL is set. Always starts empty. `create` refuses a second unexpired pending row for the same account. `cancelPending` cancels every remaining pending row.
+- **Inputs:** None.
+- **Returns / side effects:** Pending, cancel, expire, and list methods. Mutates its private array. `create` throws `A payment is already open` when one is already open.
 - **Used by:** `createApp` default and unit tests.
 
 ## Function: PostgresPosStore
 
-- **Purpose:** `PosStore` against the `pos_charge` table.
+- **Purpose:** `PosStore` against the `pos_charge` table. Pending inserts are one per account via `pos_charge_account_pending_idx`. `create` expires due rows first so a finished charge does not block the next one. `cancelPending` cancels every remaining pending row.
 - **Inputs:** A `SqlClient`.
-- **Returns / side effects:** Same port as the in-memory store, persisted in Postgres.
+- **Returns / side effects:** Same port as the in-memory store, persisted in Postgres. A concurrent second pending insert raises unique violation `23505` for the route to map to 409.
 - **Used by:** `openBootStores` when `DATABASE_URL` is set.
 
 ## Function: buildGiftDay
@@ -2201,8 +2201,8 @@
 
 ## Function: wellKnownRoutes
 
-- **Purpose:** Hono `GET /nostr.json` (NIP-05, CORS `*`) and `GET /lnurlp/:username` (LUD-16 payRequest; passes through the linked Wallet of Satoshi JSON so settlement stays there).
-- **Inputs:** auth store, env, optional fetchImpl (default `globalThis.fetch`).
+- **Purpose:** Hono `GET /nostr.json` (NIP-05, CORS `*`) and `GET /lnurlp/:username` (LUD-16 payRequest). Passes through the linked Wallet of Satoshi JSON so callback and metadata stay there. While an unexpired pending point-of-sale charge exists, both `minSendable` and `maxSendable` become that amount in millisats.
+- **Inputs:** auth store, env, optional fetchImpl (default `globalThis.fetch`), optional posStore (default empty in-memory store), optional now (default `Date.now`).
 - **Returns / side effects:** Hono app mounted at `/.well-known`. LNURL-pay 404 when the username is invalid, unknown, or unlinked; 502 when WoS is unreachable or the store throws.
 - **Used by:** `createApp`.
 

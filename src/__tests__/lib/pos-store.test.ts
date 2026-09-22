@@ -65,11 +65,15 @@ function charge(partial: Partial<PosCharge> & Pick<PosCharge, 'id'>): PosCharge 
 
 describe('POS_SCHEMA_SQL', () => {
   it('creates pos_charge and its account/created_at index', () => {
-    expect(POS_SCHEMA_SQL).toHaveLength(2);
+    expect(POS_SCHEMA_SQL).toHaveLength(3);
     expect(POS_SCHEMA_SQL[0]).toMatch(/CREATE TABLE IF NOT EXISTS pos_charge/i);
     expect(POS_SCHEMA_SQL[0]).toMatch(/account_id uuid NOT NULL REFERENCES account/i);
     expect(POS_SCHEMA_SQL[0]).toMatch(/amount_sats bigint NOT NULL CHECK \(amount_sats > 0\)/);
     expect(POS_SCHEMA_SQL[1]).toMatch(/CREATE INDEX IF NOT EXISTS pos_charge_account_created_idx/i);
+    expect(POS_SCHEMA_SQL[2]).toMatch(
+      /CREATE UNIQUE INDEX IF NOT EXISTS pos_charge_account_pending_idx/i,
+    );
+    expect(POS_SCHEMA_SQL[2]).toMatch(/WHERE status = 'pending'/);
   });
 });
 
@@ -120,16 +124,16 @@ describe('InMemoryPosStore', () => {
 
   it('returns newest createdAt first and breaks ties by id descending', async () => {
     const store = new InMemoryPosStore();
-    await store.create(charge({ id: 'm', createdAt: new Date(T0 + 1) }));
-    await store.create(charge({ id: 'z', createdAt: new Date(T0 + 1) }));
-    await store.create(charge({ id: 'a', createdAt: new Date(T0) }));
+    await store.create(charge({ id: 'm', status: 'cancelled', createdAt: new Date(T0 + 1) }));
+    await store.create(charge({ id: 'z', status: 'expired', createdAt: new Date(T0 + 1) }));
+    await store.create(charge({ id: 'a', status: 'cancelled', createdAt: new Date(T0) }));
     expect((await store.listLatest(10)).map((row) => row.id)).toEqual(['z', 'm', 'a']);
     expect((await store.listForAccount('acc', 2)).map((row) => row.id)).toEqual(['z', 'm']);
   });
 
   it('keeps equal id and createdAt as a sort tie', async () => {
     const store = new InMemoryPosStore();
-    const row = charge({ id: 'z' });
+    const row = charge({ id: 'z', status: 'cancelled' });
     await store.create(row);
     await store.create(row);
     expect((await store.listLatest(10)).map((r) => r.id)).toEqual(['z', 'z']);
@@ -178,14 +182,33 @@ describe('InMemoryPosStore', () => {
     expect(parsedEvents(warn).some((e) => e['event'] === 'pos.expired')).toBe(false);
   });
 
-  it('cancelPending cancels the newest live row and logs pos.cancel', async () => {
+  it('create rejects a second unexpired pending charge for the same account', async () => {
+    const store = new InMemoryPosStore();
+    await store.create(charge({ id: 'a' }));
+    await expect(store.create(charge({ id: 'b', createdAt: new Date(T0 + 1) }))).rejects.toThrow(
+      'A payment is already open',
+    );
+    expect((await store.currentPending('acc', T0 + 1))?.id).toBe('a');
+  });
+
+  it('create replaces a due pending row with the next charge', async () => {
+    const store = new InMemoryPosStore();
+    await store.create(charge({ id: 'old', expiresAt: new Date(T0) }));
+    const created = await store.create(charge({ id: 'next', createdAt: new Date(T0) }));
+    expect(created.id).toBe('next');
+    expect((await store.listForAccount('acc', 10)).map((row) => row.status).sort()).toEqual([
+      'expired',
+      'pending',
+    ]);
+  });
+
+  it('cancelPending cancels the open row and logs pos.cancel', async () => {
     const store = new InMemoryPosStore();
     await store.create(charge({ id: 'a', createdAt: new Date(T0) }));
-    await store.create(charge({ id: 'b', createdAt: new Date(T0 + 1) }));
     const cancelled = await store.cancelPending('acc', T0);
-    expect(cancelled?.id).toBe('b');
+    expect(cancelled?.id).toBe('a');
     expect(cancelled?.status).toBe('cancelled');
-    expect((await store.currentPending('acc', T0))?.id).toBe('a');
+    expect(await store.currentPending('acc', T0)).toBeNull();
     const cancelLogs = parsedEvents(warn).filter((e) => e['event'] === 'pos.cancel');
     expect(cancelLogs).toHaveLength(1);
     expect(cancelLogs[0]).toEqual(
@@ -286,6 +309,8 @@ describe('PostgresPosStore', () => {
     const sql = new MockSql();
     const row = charge({ id: 'c1' });
     const created = await new PostgresPosStore(sql).create(row);
+    expect(sql.queries[0]?.text).toMatch(/SET status = 'expired'/);
+    expect(sql.queries[0]?.params).toEqual(['acc', row.createdAt.toISOString()]);
     expect(sql.executes[0]?.text).toMatch(
       /INSERT INTO pos_charge \(id, account_id, amount_sats, status, created_at, expires_at\)/,
     );
@@ -336,9 +361,24 @@ describe('PostgresPosStore', () => {
     expect(parsedEvents(warn).some((e) => e['event'] === 'pos.expired')).toBe(false);
   });
 
+  it('create of a non-pending row does not expire first', async () => {
+    const sql = new MockSql();
+    await new PostgresPosStore(sql).create(charge({ id: 'c1', status: 'cancelled' }));
+    expect(sql.queries).toEqual([]);
+    expect(sql.executes).toHaveLength(1);
+  });
+
   it('cancelPending logs pos.cancel when a row is returned', async () => {
     const sql = new MockSql();
     sql.cancelRows = [
+      {
+        id: 'older',
+        account_id: 'acc',
+        amount_sats: 5,
+        status: 'cancelled',
+        created_at: '2026-09-01T11:00:00.000Z',
+        expires_at: '2026-09-01T11:05:00.000Z',
+      },
       {
         id: 'c1',
         account_id: 'acc',
@@ -351,6 +391,7 @@ describe('PostgresPosStore', () => {
     const cancelled = await new PostgresPosStore(sql).cancelPending('acc', T0);
     expect(sql.queries[0]?.text).toMatch(/SET status = 'expired'/);
     expect(sql.queries[1]?.text).toMatch(/SET status = 'cancelled'/);
+    expect(sql.queries[1]?.text).not.toMatch(/LIMIT 1/);
     expect(sql.queries[1]?.params).toEqual(['acc']);
     expect(cancelled).toEqual({
       id: 'c1',

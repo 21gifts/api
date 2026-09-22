@@ -51,7 +51,7 @@
 
 ## Endpoint: GET /.well-known/lnurlp/:username
 
-- **Purpose:** LUD-16 payRequest for `username@21.gifts`. Looks up the stored username, then returns the linked Wallet of Satoshi LNURL-pay JSON (callback stays on WoS so gifts still settle there). CORS `*`.
+- **Purpose:** LUD-16 payRequest for `username@21.gifts`. Looks up the stored username, then returns the linked Wallet of Satoshi LNURL-pay JSON. Callback and metadata stay on Wallet of Satoshi so gifts still settle there. While an unexpired pending point-of-sale charge exists, both `minSendable` and `maxSendable` become that amount in millisats (`amountSats * 1000`). CORS `*`.
 - **Errors:** 404 `{ error: 'Not found' }` when the username is invalid, unknown, or has no linked address; 502 `{ error: 'Lightning Address could not be resolved' }` when WoS is unreachable or the store throws.
 - **Used by:** Lightning wallets paying `username@21.gifts`; app proxies this from the site apex.
 - **Auth:** none.
@@ -493,14 +493,14 @@
 
 ## Endpoint: POST /pos
 
-- **Purpose:** Bearer required. Body `{ amountSats }` integer ≥ 1. Requires a username and a linked Wallet of Satoshi address. Resolves that address and rejects amounts whose millisats (`amountSats * 1000`) fall outside inclusive `minSendable`..`maxSendable`. One unexpired pending charge at a time. 201 `{ charge }` with `expiresAt` five minutes after `now`. While pending, `GET /.well-known/lnurlp/:username` keeps the Wallet of Satoshi document and sets both sendable bounds to that millisat amount. Callback and metadata stay unchanged.
+- **Purpose:** Bearer required. Body `{ amountSats }` integer ≥ 1. Requires a username and a linked Wallet of Satoshi address. Resolves that address and rejects amounts whose millisats (`amountSats * 1000`) fall outside inclusive `minSendable`..`maxSendable`. One unexpired pending charge at a time. The insert enforces that again (`pos_charge_account_pending_idx`, and the in-memory store rejects before append), so a second request that already passed the earlier read is still 409. 201 `{ charge }` with `expiresAt` five minutes after `now`. While pending, `GET /.well-known/lnurlp/:username` keeps the Wallet of Satoshi document and sets both sendable bounds to that millisat amount. Callback and metadata stay unchanged.
 - **Errors:** 401 Unauthorized; 400 Expected a JSON body with an integer "amountSats"; 400 Set a username first; 400 Set a Wallet of Satoshi address first; 400 Amount is outside the wallet range; 409 A payment is already open; 502 Lightning Address could not be resolved.
 - **Used by:** App `/pos` amount form.
 - **Auth:** `Authorization: Bearer` session.
 
 ## Endpoint: DELETE /pos
 
-- **Purpose:** Bearer required. Cancels the unexpired pending charge. 200 `{ charge: null }`. An already expired row is not cancelled.
+- **Purpose:** Bearer required. Cancels every unexpired pending charge for the account, not only the newest. 200 `{ charge: null }` when at least one row was cancelled. An already expired row is not cancelled.
 - **Errors:** 401 Unauthorized; 404 No open payment.
 - **Used by:** App `/pos` cancel control.
 - **Auth:** `Authorization: Bearer` session.

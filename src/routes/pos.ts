@@ -1,5 +1,6 @@
 import { Hono } from 'hono';
 import { resolveSession } from '@/lib/auth/service';
+import { isUniqueViolation } from '@/lib/auth/sql';
 import type { Account, AuthStore } from '@/lib/auth/store';
 import type { FetchFn } from '@/lib/lnurlp';
 import { resolveLnurlp } from '@/lib/lnurlp';
@@ -105,8 +106,18 @@ export function posRoutes(deps: PosRouteDeps): Hono {
         createdAt: new Date(createdMs),
         expiresAt: new Date(createdMs + POS_CHARGE_TTL_MS),
       };
-      const created = await deps.store.create(row);
-      return c.json({ charge: serializePosCharge(created) }, 201);
+      try {
+        const created = await deps.store.create(row);
+        return c.json({ charge: serializePosCharge(created) }, 201);
+      } catch (error) {
+        if (
+          isUniqueViolation(error) ||
+          (error instanceof Error && error.message === 'A payment is already open')
+        ) {
+          return c.json({ error: 'A payment is already open' }, 409);
+        }
+        throw error;
+      }
     })
     .delete('/', async (c) => {
       const account = await authedAccount(deps, c.req.header('authorization'));

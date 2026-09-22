@@ -5,7 +5,9 @@
  * Damus and Lightning wallets fetch these from the site apex (`21.gifts` /
  * `dev.21.gifts`); the app proxies same-origin. Direct hits on the API host
  * also work. LNURL-pay settlement stays on the account's linked Wallet of
- * Satoshi address.
+ * Satoshi address. Callback and metadata stay on that document. While an
+ * unexpired pending point-of-sale charge exists, both sendable bounds
+ * become that amount in millisats.
  */
 
 import { Hono } from 'hono';
@@ -40,7 +42,7 @@ const WELL_KNOWN_CORS = {
 /**
  * Build the `/.well-known` route group.
  *
- * @param deps - Auth store, env, and fetch.
+ * @param deps - Auth store, env, optional fetch, optional pos store, and optional clock.
  * @returns Hono app with `GET /nostr.json` and `GET /lnurlp/:username`.
  */
 export function wellKnownRoutes(deps: WellKnownRouteDeps): Hono {

@@ -12,3 +12,5 @@ CREATE TABLE IF NOT EXISTS pos_charge (
 );
 CREATE INDEX IF NOT EXISTS pos_charge_account_created_idx
   ON pos_charge (account_id, created_at DESC, id DESC);
+CREATE UNIQUE INDEX IF NOT EXISTS pos_charge_account_pending_idx
+  ON pos_charge (account_id) WHERE status = 'pending';

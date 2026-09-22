@@ -23,17 +23,18 @@ export interface PosStore {
   currentPending(accountId: string, nowMs: number): Promise<PosCharge | null>;
 
   /**
-   * Persist a new charge row. Caller sets id, `pending`, and dates.
-   * Does not enforce the single-open rule.
+   * Persist a new charge row. Caller sets id, status, and dates.
+   * A second unexpired `pending` row for the same account is rejected.
    *
    * @param row - Fully formed row.
    * @returns The stored row (a copy).
+   * @throws Error `A payment is already open` when an unexpired pending row exists.
    */
   create(row: PosCharge): Promise<PosCharge>;
 
   /**
-   * Expire due pending rows, then cancel the newest remaining pending
-   * charge. Already-expired rows are never cancelled.
+   * Expire due pending rows, then cancel every remaining pending charge.
+   * Already-expired rows are never cancelled.
    *
    * @param accountId - Owner account id.
    * @param nowMs - Clock (epoch ms).
@@ -69,6 +70,8 @@ export const POS_SCHEMA_SQL: readonly string[] = [
 )`,
   `CREATE INDEX IF NOT EXISTS pos_charge_account_created_idx
   ON pos_charge (account_id, created_at DESC, id DESC)`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS pos_charge_account_pending_idx
+  ON pos_charge (account_id) WHERE status = 'pending'`,
 ];
 
 /**
@@ -166,11 +169,19 @@ export class InMemoryPosStore implements PosStore {
 
   /**
    * Append a copy of `row` and return a copy. Logs `pos.create`.
+   * Refuses a second unexpired pending row for the same account.
    *
    * @param row - Charge to store.
    * @returns A copy of the stored row.
+   * @throws Error `A payment is already open` when one is already open.
    */
   create(row: PosCharge): Promise<PosCharge> {
+    if (row.status === 'pending') {
+      this.#expireDue(row.accountId, row.createdAt.getTime());
+      if (this.#remainingPending(row.accountId, row.createdAt.getTime()) !== null) {
+        return Promise.reject(new Error('A payment is already open'));
+      }
+    }
     const stored = copyCharge(row);
     this.#rows.push(stored);
     logEvent('pos.create', { accountId: stored.accountId });
@@ -178,11 +189,11 @@ export class InMemoryPosStore implements PosStore {
   }
 
   /**
-   * Expire due rows, then cancel the newest remaining pending charge.
+   * Expire due rows, then cancel every remaining pending charge.
    *
    * @param accountId - Owner account id.
    * @param nowMs - Clock (epoch ms).
-   * @returns A copy of the cancelled row, or `null`.
+   * @returns A copy of the newest cancelled row, or `null`.
    */
   cancelPending(accountId: string, nowMs: number): Promise<PosCharge | null> {
     this.#expireDue(accountId, nowMs);
@@ -198,7 +209,9 @@ export class InMemoryPosStore implements PosStore {
     if (newest === undefined) {
       return Promise.resolve(null);
     }
-    newest.status = 'cancelled';
+    for (const row of remaining) {
+      row.status = 'cancelled';
+    }
     logEvent('pos.cancel', { accountId });
     return Promise.resolve(copyCharge(newest));
   }
@@ -314,12 +327,16 @@ LIMIT 1`,
   }
 
   /**
-   * Insert `row` into `pos_charge` and return a copy. Logs `pos.create`.
+   * Expire due pending rows, then insert `row`. Logs `pos.create`.
+   * A concurrent pending insert hits the partial unique index.
    *
    * @param row - Fully formed charge.
    * @returns A copy of the stored row.
    */
   async create(row: PosCharge): Promise<PosCharge> {
+    if (row.status === 'pending') {
+      await this.#expireDue(row.accountId, row.createdAt.getTime());
+    }
     await this.#sql.execute(
       `INSERT INTO pos_charge (id, account_id, amount_sats, status, created_at, expires_at)
 VALUES ($1,$2,$3,$4,$5,$6)`,
@@ -337,32 +354,28 @@ VALUES ($1,$2,$3,$4,$5,$6)`,
   }
 
   /**
-   * Expire due rows, then cancel the newest remaining pending charge.
+   * Expire due rows, then cancel every remaining pending charge.
    *
    * @param accountId - Owner account id (`$1` on both statements).
    * @param nowMs - Clock (epoch ms).
-   * @returns Mapped cancelled row, or `null`.
+   * @returns The newest mapped cancelled row, or `null`.
    */
   async cancelPending(accountId: string, nowMs: number): Promise<PosCharge | null> {
     await this.#expireDue(accountId, nowMs);
     const rows = await this.#sql.query<PosSqlRow>(
       `UPDATE pos_charge
 SET status = 'cancelled'
-WHERE id = (
-  SELECT id FROM pos_charge
-  WHERE account_id = $1 AND status = 'pending'
-  ORDER BY created_at DESC, id DESC
-  LIMIT 1
-)
+WHERE account_id = $1 AND status = 'pending'
 RETURNING id, account_id, amount_sats, status, created_at, expires_at`,
       [accountId],
     );
-    const row = rows[0];
-    if (row === undefined) {
+    const cancelled = newestFirst(rows.map((row) => mapPosRow(row)));
+    const newest = cancelled[0];
+    if (newest === undefined) {
       return null;
     }
     logEvent('pos.cancel', { accountId });
-    return mapPosRow(row);
+    return newest;
   }
 
   /**
