@@ -1476,8 +1476,7 @@ function matchesFeedCursor(row: MessageRow, query: MessageFeedQuery): boolean {
 /** Copy a row so callers cannot mutate store internals. */
 function copyRow(row: MessageRow): MessageRow {
   const deletedAt = row.deletedAt ?? null;
-  const photoTakenAts = row.photoTakenAts;
-  return {
+  const copy: MessageRow = {
     ...row,
     hasPhoto: row.hasPhoto === true,
     hasVideo: row.hasVideo === true,
@@ -1493,8 +1492,12 @@ function copyRow(row: MessageRow): MessageRow {
     deletedAt: deletedAt === null ? null : new Date(deletedAt.getTime()),
     deletedBy: row.deletedBy ?? null,
     nostrEvent: row.nostrEvent === null ? null : { ...row.nostrEvent },
-    photoTakenAts: photoTakenAts === undefined ? undefined : [...photoTakenAts],
   };
+  // Absent on old rows. Assigning `undefined` breaks exactOptionalPropertyTypes.
+  if (row.photoTakenAts !== undefined) {
+    copy.photoTakenAts = [...row.photoTakenAts];
+  }
+  return copy;
 }
 
 /** Newest `result === 'ok'` invoice matching `predicate`, or `undefined`. */

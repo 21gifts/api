@@ -1,5 +1,5 @@
 import { expect, test, type APIRequestContext } from '@playwright/test';
-import { normalizePhotoTakenAt } from '../src/lib/message.ts';
+import { normalizePhotoTakenAt } from '../src/lib/message';
 
 const DEBUG = { authorization: 'Bearer e2e-debug-token' };
 

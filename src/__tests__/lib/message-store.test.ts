@@ -4524,9 +4524,9 @@ describe('PostgresMessageStore', () => {
       null,
     ]);
     sql.nextRows = [{ ...base, extra_photo_taken_ats: '{"a":1}' }];
-    expect((await store.listLatest(1))[0]?.photoTakenAts[1]).toBeNull();
+    expect((await store.listLatest(1))[0]?.photoTakenAts?.[1]).toBeNull();
     sql.nextRows = [{ ...base, extra_photo_taken_ats: 4 }];
-    expect((await store.listLatest(1))[0]?.photoTakenAts[1]).toBeNull();
+    expect((await store.listLatest(1))[0]?.photoTakenAts?.[1]).toBeNull();
     sql.nextRows = [{ ...base, photo_count: 0, extra_photo_taken_ats: [] }];
     expect((await store.listLatest(1))[0]?.photoTakenAts).toEqual([]);
     sql.nextRows = [
