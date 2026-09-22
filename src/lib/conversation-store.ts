@@ -607,14 +607,17 @@ export const CONVERSATION_SCHEMA_SQL: readonly string[] = [
   ON conversation_read (conversation_id)`,
   `ALTER TABLE conversation_message ADD COLUMN IF NOT EXISTS photo bytea`,
   `ALTER TABLE conversation_message ADD COLUMN IF NOT EXISTS photo_content_type text`,
+  `ALTER TABLE conversation_message ADD COLUMN IF NOT EXISTS photo_taken_at text`,
   `CREATE TABLE IF NOT EXISTS conversation_message_extra_photo (
   message_id uuid NOT NULL REFERENCES conversation_message (id) ON DELETE CASCADE,
   idx smallint NOT NULL,
   photo bytea NOT NULL,
   photo_content_type text NOT NULL,
+  photo_taken_at text,
   PRIMARY KEY (message_id, idx),
   CONSTRAINT conversation_message_extra_photo_idx_range CHECK (idx >= 1 AND idx <= 9)
 )`,
+  `ALTER TABLE conversation_message_extra_photo ADD COLUMN IF NOT EXISTS photo_taken_at text`,
   `DO $unwrap$
    DECLARE
      repair_row RECORD;
@@ -1377,6 +1380,7 @@ interface ConversationMessageSqlRow {
 interface ConversationPhotoSqlRow {
   photo: Uint8Array | Buffer | number[] | null;
   photo_content_type: string | null;
+  photo_taken_at?: string | null;
 }
 
 const FORUM_PHOTO_TYPES: ReadonlySet<string> = new Set(['image/jpeg', 'image/png', 'image/webp']);
@@ -1838,10 +1842,10 @@ export class PostgresConversationStore implements ConversationStore {
         `INSERT INTO conversation_message (
            id, conversation_id, text, created_at, sender_account_id, sender_pubkey, name, sats,
            event_id, nostr_publish_state, nostr_event, claimed_until, actor_account_id, actor_name,
-           gift_for_message_id, photo, photo_content_type,
+           gift_for_message_id, photo, photo_content_type, photo_taken_at,
            fiat_usd, fiat_chf, fiat_eur, fiat_php
-         ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb,$12,$13,$14,$15,$16,$17,
-                   $18::numeric,$19::numeric,$20::numeric,$21::numeric)`,
+         ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb,$12,$13,$14,$15,$16,$17,$18,
+                   $19::numeric,$20::numeric,$21::numeric,$22::numeric)`,
         [
           stored.id,
           stored.conversationId,
@@ -1860,6 +1864,7 @@ export class PostgresConversationStore implements ConversationStore {
           row.giftForMessageId ?? null,
           photo === undefined ? null : photo.bytes,
           photo === undefined ? null : photo.contentType,
+          photo === undefined || typeof photo.takenAt !== 'string' ? null : photo.takenAt,
           stored.amountUsd ?? null,
           stored.amountChf ?? null,
           stored.amountEur ?? null,
@@ -1884,8 +1889,14 @@ export class PostgresConversationStore implements ConversationStore {
     for (const [i, extra] of extras.entries()) {
       try {
         await this.#sql.execute(
-          `INSERT INTO conversation_message_extra_photo (message_id, idx, photo, photo_content_type) VALUES ($1,$2,$3,$4)`,
-          [stored.id, i + 1, extra.bytes, extra.contentType],
+          `INSERT INTO conversation_message_extra_photo (message_id, idx, photo, photo_content_type, photo_taken_at) VALUES ($1,$2,$3,$4,$5)`,
+          [
+            stored.id,
+            i + 1,
+            extra.bytes,
+            extra.contentType,
+            typeof extra.takenAt === 'string' ? extra.takenAt : null,
+          ],
         );
       } catch (error: unknown) {
         await this.#sql.execute(`DELETE FROM conversation_message WHERE id = $1`, [stored.id]);
@@ -1907,7 +1918,7 @@ export class PostgresConversationStore implements ConversationStore {
    */
   async getPhoto(id: string): Promise<ForumPhoto | null> {
     const rows = await this.#sql.query<ConversationPhotoSqlRow>(
-      `SELECT photo, photo_content_type FROM conversation_message WHERE id = $1`,
+      `SELECT photo, photo_content_type, photo_taken_at FROM conversation_message WHERE id = $1`,
       [id],
     );
     const row = rows[0];
@@ -1917,10 +1928,14 @@ export class PostgresConversationStore implements ConversationStore {
     if (!FORUM_PHOTO_TYPES.has(row.photo_content_type)) {
       return null;
     }
-    return {
+    const photo: ForumPhoto = {
       contentType: row.photo_content_type as ForumPhotoContentType,
       bytes: toUint8Array(row.photo),
     };
+    if (typeof row.photo_taken_at === 'string') {
+      photo.takenAt = row.photo_taken_at;
+    }
+    return photo;
   }
 
   /**
@@ -1935,7 +1950,7 @@ export class PostgresConversationStore implements ConversationStore {
       return null;
     }
     const rows = await this.#sql.query<ConversationPhotoSqlRow>(
-      `SELECT photo, photo_content_type FROM conversation_message_extra_photo WHERE message_id = $1 AND idx = $2`,
+      `SELECT photo, photo_content_type, photo_taken_at FROM conversation_message_extra_photo WHERE message_id = $1 AND idx = $2`,
       [id, index],
     );
     const row = rows[0];
@@ -1945,10 +1960,14 @@ export class PostgresConversationStore implements ConversationStore {
     if (!FORUM_PHOTO_TYPES.has(row.photo_content_type)) {
       return null;
     }
-    return {
+    const photo: ForumPhoto = {
       contentType: row.photo_content_type as ForumPhotoContentType,
       bytes: toUint8Array(row.photo),
     };
+    if (typeof row.photo_taken_at === 'string') {
+      photo.takenAt = row.photo_taken_at;
+    }
+    return photo;
   }
 
   async claimUnsigned(
@@ -2094,7 +2113,11 @@ function copyThread(thread: ConversationThread): ConversationThread {
 }
 
 function copyPhoto(photo: ForumPhoto): ForumPhoto {
-  return { contentType: photo.contentType, bytes: photo.bytes.slice() };
+  const copy: ForumPhoto = { contentType: photo.contentType, bytes: photo.bytes.slice() };
+  if (typeof photo.takenAt === 'string') {
+    copy.takenAt = photo.takenAt;
+  }
+  return copy;
 }
 
 function copyMessage(row: ConversationMessageRow): ConversationMessageRow {

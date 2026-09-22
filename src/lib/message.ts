@@ -198,6 +198,11 @@ export interface PublicMessage {
   /** Stored video MIME when `hasVideo` is true; otherwise `null`. */
   videoContentType: ForumVideoContentType | null;
   /**
+   * Civil capture time read from the video file. Omitted when the file has none.
+   * Not included in public JSON.
+   */
+  videoTakenAt?: string | null;
+  /**
    * Author's live `account.role` (not a snapshot). Present for 21gifts
    * authors (`"basis"` when the account is missing). Omitted for Damus-only
    * authors.

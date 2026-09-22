@@ -1270,6 +1270,7 @@ WHERE message.id = ranked.id AND ranked.rn > 1`,
 )`,
   `ALTER TABLE message ADD COLUMN IF NOT EXISTS goal_sats bigint`,
   `ALTER TABLE message ADD COLUMN IF NOT EXISTS photo_taken_at text`,
+  `ALTER TABLE message ADD COLUMN IF NOT EXISTS video_taken_at text`,
   `ALTER TABLE message_extra_photo ADD COLUMN IF NOT EXISTS photo_taken_at text`,
   `CREATE INDEX IF NOT EXISTS message_feed_created_idx ON message (created_at DESC, id DESC) WHERE parent_id IS NULL AND deleted_at IS NULL`,
   `CREATE INDEX IF NOT EXISTS message_feed_popular_idx ON message (sats DESC, created_at DESC, id DESC) WHERE parent_id IS NULL AND deleted_at IS NULL AND sats > 0`,
@@ -1934,6 +1935,7 @@ export class InMemoryMessageStore implements MessageStore {
       amountEur: snapshot?.eur ?? null,
       amountPhp: snapshot?.php ?? null,
       photoTakenAts: photoTakenAtsForCreate(photo, extras),
+      ...(typeof video?.takenAt === 'string' ? { videoTakenAt: video.takenAt } : {}),
     });
     stored.goalSats = stored.parentId !== null ? null : (stored.goalSats ?? null);
     if (stored.parentId !== null) {
@@ -3054,6 +3056,7 @@ interface MessageSqlRow {
   deleted_by?: string | null;
   reply_count?: string | number | null;
   photo_taken_at?: string | null;
+  video_taken_at?: string | null;
   extra_photo_taken_ats?: unknown;
 }
 
@@ -3069,6 +3072,7 @@ interface MessagePhotoSqlRow {
   photo: Uint8Array | Buffer | number[] | null;
   photo_content_type: string | null;
   photo_taken_at?: string | null;
+  video_taken_at?: string | null;
 }
 
 const FORUM_PHOTO_TYPES: ReadonlySet<string> = new Set(['image/jpeg', 'image/png', 'image/webp']);
@@ -3164,6 +3168,9 @@ function mapMessageRow(row: MessageSqlRow): MessageRow {
           : new Date(row.deleted_at),
     deletedBy: row.deleted_by ?? null,
     photoTakenAts: mapPhotoTakenAts(photoCount, row.photo_taken_at, row.extra_photo_taken_ats),
+    ...(typeof row.video_taken_at === 'string' && row.video_taken_at !== ''
+      ? { videoTakenAt: row.video_taken_at }
+      : {}),
   };
 }
 
@@ -3186,7 +3193,7 @@ const MESSAGE_SELECT_COLUMNS = `id, account_id, name, text, created_at,
               fiat_eur::text AS fiat_eur, fiat_php::text AS fiat_php,
               nostr_event, claimed_until, nostr_first_attempt_at, nostr_publish_epoch, nostr_attempts,
               content_fp, deleted_at, deleted_by,
-              photo_taken_at,
+              photo_taken_at, video_taken_at,
               COALESCE(
                 (
                   SELECT json_agg(e.photo_taken_at ORDER BY e.idx)
@@ -3649,6 +3656,7 @@ export class PostgresMessageStore implements MessageStore {
       amountEur: snapshot?.eur ?? null,
       amountPhp: snapshot?.php ?? null,
       photoTakenAts: photoTakenAtsForCreate(photo, extras),
+      ...(typeof video?.takenAt === 'string' ? { videoTakenAt: video.takenAt } : {}),
     });
     stored.goalSats = stored.parentId !== null ? null : (stored.goalSats ?? null);
     if (video !== undefined) {
@@ -3676,6 +3684,7 @@ export class PostgresMessageStore implements MessageStore {
       stored.amountEur ?? null,
       stored.amountPhp ?? null,
       photo === undefined ? null : (photo.takenAt ?? null),
+      typeof video?.takenAt === 'string' ? video.takenAt : null,
     ];
     try {
       if (stored.parentId !== null) {
@@ -3683,10 +3692,10 @@ export class PostgresMessageStore implements MessageStore {
           `INSERT INTO message (
            id, account_id, name, text, photo, photo_content_type, video_content_type, created_at,
            nostr_publish_state, sats, parent_id, author_pubkey, event_id, nostr_event, content_fp, goal_sats,
-           fiat_usd, fiat_chf, fiat_eur, fiat_php, photo_taken_at
+           fiat_usd, fiat_chf, fiat_eur, fiat_php, photo_taken_at, video_taken_at
          )
          SELECT $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14::jsonb,$15,$16,
-                $17::numeric,$18::numeric,$19::numeric,$20::numeric,$21
+                $17::numeric,$18::numeric,$19::numeric,$20::numeric,$21,$22
          WHERE EXISTS (SELECT 1 FROM message p WHERE p.id = $11 AND p.deleted_at IS NULL)
          RETURNING id`,
           params,
@@ -3703,10 +3712,10 @@ export class PostgresMessageStore implements MessageStore {
           `INSERT INTO message (
            id, account_id, name, text, photo, photo_content_type, video_content_type, created_at,
            nostr_publish_state, sats, parent_id, author_pubkey, event_id, nostr_event, content_fp, goal_sats,
-           fiat_usd, fiat_chf, fiat_eur, fiat_php, photo_taken_at
+           fiat_usd, fiat_chf, fiat_eur, fiat_php, photo_taken_at, video_taken_at
          ) VALUES (
            $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14::jsonb,$15,$16,
-           $17::numeric,$18::numeric,$19::numeric,$20::numeric,$21
+           $17::numeric,$18::numeric,$19::numeric,$20::numeric,$21,$22
          )`,
           params,
         );
@@ -4362,6 +4371,7 @@ export class PostgresMessageStore implements MessageStore {
       photo_content_type: string;
       bytes: number | string;
       photo_taken_at?: string | null;
+  video_taken_at?: string | null;
     }>(
       `SELECT message_id, idx, photo_content_type, octet_length(photo) AS bytes, photo_taken_at
        FROM message_extra_photo

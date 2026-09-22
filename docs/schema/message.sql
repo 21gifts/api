@@ -227,4 +227,5 @@ CREATE TABLE IF NOT EXISTS message_extra_photo (
 ALTER TABLE message ADD COLUMN IF NOT EXISTS goal_sats bigint;
 -- Civil capture time as text, not timestamptz, not converted to UTC; null when no still or no usable time.
 ALTER TABLE message ADD COLUMN IF NOT EXISTS photo_taken_at text;
+ALTER TABLE message ADD COLUMN IF NOT EXISTS video_taken_at text;
 ALTER TABLE message_extra_photo ADD COLUMN IF NOT EXISTS photo_taken_at text;

@@ -107,7 +107,7 @@ function sqlMessage(id: string, createdAt: Date): Record<string, unknown> {
 describe('CONVERSATION_SCHEMA_SQL', () => {
   it('creates conversation tables and unique indexes', () => {
     const joined = CONVERSATION_SCHEMA_SQL.join('\n');
-    expect(CONVERSATION_SCHEMA_SQL).toHaveLength(28);
+    expect(CONVERSATION_SCHEMA_SQL).toHaveLength(30);
     expect(joined).toMatch(/CREATE TABLE IF NOT EXISTS conversation/i);
     expect(joined).toMatch(/CREATE TABLE IF NOT EXISTS conversation_message/i);
     expect(joined).toMatch(/actor_account_id/);
@@ -1989,7 +1989,7 @@ describe('PostgresConversationStore', () => {
     sql.nextRows = [{ photo: JPEG.bytes, photo_content_type: 'image/jpeg' }];
     expect(await store.getPhoto('m1')).toEqual(JPEG);
     expect(sql.queries[0]?.text).toMatch(
-      /SELECT photo, photo_content_type FROM conversation_message WHERE id = \$1/,
+      /SELECT photo, photo_content_type, photo_taken_at FROM conversation_message WHERE id = \$1/,
     );
     sql.nextRows = [{ photo: [0xff, 0xd8, 0xff, 0xd9], photo_content_type: 'image/jpeg' }];
     expect(await store.getPhoto('m1')).toEqual(JPEG);
@@ -2018,7 +2018,7 @@ describe('PostgresConversationStore', () => {
     sql.nextRows = [{ photo: JPEG2.bytes, photo_content_type: 'image/jpeg' }];
     expect(await store.getExtraPhoto('m1', 1)).toEqual(JPEG2);
     expect(sql.queries[0]?.text).toMatch(
-      /SELECT photo, photo_content_type FROM conversation_message_extra_photo WHERE message_id = \$1 AND idx = \$2/,
+      /SELECT photo, photo_content_type, photo_taken_at FROM conversation_message_extra_photo WHERE message_id = \$1 AND idx = \$2/,
     );
     expect(sql.queries[0]?.params).toEqual(['m1', 1]);
     sql.nextRows = [{ photo: [0xff, 0xd8, 0xff, 0x00], photo_content_type: 'image/jpeg' }];

@@ -11,11 +11,27 @@ import {
   isoBmffDisplaySize,
   parseBytesRange,
   readForumVideoBytes,
+  readVideoTakenAt,
   removeForumVideo,
   resolveMediaDir,
   videoFilePath,
   writeForumVideo,
 } from '@/lib/video';
+
+function mvhd(version: number, seconds: number): Uint8Array {
+  const payload = version === 1 ? 32 : 20;
+  const bytes = new Uint8Array(8 + payload);
+  const view = new DataView(bytes.buffer);
+  view.setUint32(0, bytes.length);
+  bytes.set([0x6d, 0x76, 0x68, 0x64], 4);
+  bytes[8] = version;
+  if (version === 1) {
+    view.setBigUint64(12, BigInt(seconds));
+  } else {
+    view.setUint32(12, seconds);
+  }
+  return bytes;
+}
 
 function concat(...parts: Uint8Array[]): Uint8Array {
   const total = parts.reduce((n, p) => n + p.byteLength, 0);
@@ -545,5 +561,18 @@ describe('video', () => {
     } finally {
       await removeForumVideo(messageId, 'video/mp4');
     }
+  });
+});
+
+describe('readVideoTakenAt', () => {
+  const seconds = Math.floor((Date.UTC(2020, 0, 1) - Date.UTC(1904, 0, 1)) / 1000);
+
+  it('reads an mvhd creation time and ignores a missing or zero time', () => {
+    expect(readVideoTakenAt(mvhd(0, seconds))).toBe('2020-01-01T00:00:00+00:00');
+    expect(readVideoTakenAt(mvhd(1, seconds))).toBe('2020-01-01T00:00:00+00:00');
+    expect(readVideoTakenAt(mvhd(0, 0))).toBeNull();
+    expect(readVideoTakenAt(mvhd(2, seconds))).toBeNull();
+    expect(readVideoTakenAt(new Uint8Array([0, 1, 2, 3]))).toBeNull();
+    expect(readVideoTakenAt(mvhd(0, 1))).toBeNull();
   });
 });

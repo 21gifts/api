@@ -52,8 +52,10 @@ const ISO_BMFF_CONTAINERS = new Set([
 export interface ForumVideo {
   /** MIME from magic bytes. */
   contentType: ForumVideoContentType;
-  /** Raw container bytes. */
+  /** Raw container bytes. The file is stored as these bytes, unchanged apart from faststart. */
   bytes: Uint8Array;
+  /** Civil capture time read from the container. Absent or null when the file has none. */
+  takenAt?: string | null;
 }
 
 /** One top-level or nested ISO-BMFF box. */
@@ -505,7 +507,89 @@ export function decodeForumVideo(bytes: Uint8Array): ForumVideo | null {
     contentType === 'video/mp4' || contentType === 'video/quicktime'
       ? faststartIsoBmff(copy)
       : copy;
-  return { contentType, bytes: remuxed };
+  return { contentType, bytes: remuxed, takenAt: readVideoTakenAt(remuxed) };
+}
+
+const MAC_EPOCH_MS = Date.UTC(1904, 0, 1);
+
+/**
+ * Read a capture time from an MP4/MOV `mvhd` box.
+ *
+ * WebM and unrecognized containers return null. The bytes are not modified.
+ *
+ * @param bytes - Video container bytes.
+ * @returns `YYYY-MM-DDTHH:MM:SS+00:00`, or null when the file has no usable time.
+ */
+export function readVideoTakenAt(bytes: Uint8Array): string | null {
+  const box = findIsoBox(bytes, 0, bytes.byteLength, 'mvhd');
+  if (box === null) {
+    return null;
+  }
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const payload = box.start + box.headerSize;
+  if (payload >= bytes.byteLength) {
+    return null;
+  }
+  const version = bytes[payload];
+  let seconds: number;
+  if (version === 0) {
+    if (payload + 8 > bytes.byteLength) {
+      return null;
+    }
+    seconds = view.getUint32(payload + 4);
+  } else if (version === 1) {
+    if (payload + 12 > bytes.byteLength) {
+      return null;
+    }
+    const raw = view.getBigUint64(payload + 4);
+    if (raw > BigInt(Number.MAX_SAFE_INTEGER)) {
+      return null;
+    }
+    seconds = Number(raw);
+  } else {
+    return null;
+  }
+  if (seconds === 0) {
+    return null;
+  }
+  const ms = MAC_EPOCH_MS + seconds * 1000;
+  const date = new Date(ms);
+  if (Number.isNaN(date.getTime())) {
+    return null;
+  }
+  const year = date.getUTCFullYear();
+  const maxYear = new Date().getUTCFullYear() + 1;
+  if (year < 1990 || year > maxYear) {
+    return null;
+  }
+  const part = (value: number): string => String(value).padStart(2, '0');
+  return `${year}-${part(date.getUTCMonth() + 1)}-${part(date.getUTCDate())}T${part(date.getUTCHours())}:${part(date.getUTCMinutes())}:${part(date.getUTCSeconds())}+00:00`;
+}
+
+function findIsoBox(
+  bytes: Uint8Array,
+  start: number,
+  end: number,
+  type: string,
+): IsoBmffBox | null {
+  let offset = start;
+  while (offset + 8 <= end) {
+    const box = readIsoBmffBox(bytes, offset, end);
+    if (box === null) {
+      return null;
+    }
+    if (box.type === type) {
+      return box;
+    }
+    if (ISO_BMFF_CONTAINERS.has(box.type)) {
+      const found = findIsoBox(bytes, box.start + box.headerSize, box.start + box.size, type);
+      if (found !== null) {
+        return found;
+      }
+    }
+    offset = box.start + box.size;
+  }
+  return null;
 }
 
 /**

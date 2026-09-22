@@ -2031,6 +2031,13 @@
 - **Returns / side effects:** JSON body.
 - **Used by:** `wellKnownRoutes`.
 
+## Function: readVideoTakenAt
+
+- **Purpose:** Read the capture time already stored in an uploaded video file. Does not change the file.
+- **Inputs:** Container bytes.
+- **Returns / side effects:** `YYYY-MM-DDTHH:MM:SS+00:00` from an MP4/MOV `mvhd` creation time, or null when the file has none. No I/O.
+- **Used by:** `decodeForumVideo`.
+
 ## Function: decodeForumVideo
 
 - **Purpose:** Size + magic-byte check for MP4/WebM/MOV (32 MiB cap). MP4/MOV bytes are passed through `faststartIsoBmff` (`moov` before `mdat` only when remux succeeds; abort cases keep the original bytes).
