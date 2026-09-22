@@ -11,6 +11,7 @@
  */
 
 import { isUniqueViolation, type SqlClient } from '@/lib/auth/sql';
+import { postgresTextArrayLiteral } from '@/lib/postgres-text-array';
 import {
   forumContentFingerprint,
   unsignedNostrDefaults,
@@ -88,12 +89,6 @@ function extraHashtagBindings(
     }
   }
   return { accountIds, patterns };
-}
-
-function postgresTextArrayLiteral(values: readonly string[]): string {
-  return `{${values
-    .map((value) => `"${value.replaceAll('\\', '\\\\').replaceAll('"', '\\"')}"`)
-    .join(',')}}`;
 }
 
 function pendingKind1LacksBitcoinTag(event: Record<string, unknown> | null): boolean {

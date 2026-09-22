@@ -1817,6 +1817,11 @@ test('Function: migrateFundingSchema — default boot has no DATABASE_URL', asyn
 test('Function: InMemoryFundingStore — default boot has no DATABASE_URL', async ({ request }) => {
   expect((await request.get('/healthz')).status()).toBe(200);
 });
+test('Function: postgresTextArrayLiteral — default boot has no DATABASE_URL', async ({
+  request,
+}) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
 test('Function: PostgresFundingStore — default boot has no DATABASE_URL', async ({ request }) => {
   expect((await request.get('/healthz')).status()).toBe(200);
 });

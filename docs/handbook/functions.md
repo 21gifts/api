@@ -2308,9 +2308,16 @@ Builds the operator-only external-pubkey inspection route.
 - **Returns / side effects:** Promise of grant copies; mutating results or the seed does not change the store. No I/O.
 - **Used by:** `createApp` default `fundingStore`.
 
+## Function: postgresTextArrayLiteral
+
+- **Purpose:** Encodes strings as one Postgres text-array literal (`{}` when empty; each value double-quoted; a backslash or double quote inside a value is escaped). Bun SQL does not encode a JavaScript array (`malformed array literal`).
+- **Inputs:** `readonly string[]`.
+- **Returns / side effects:** One text-array literal string. No I/O.
+- **Used by:** `PostgresFundingStore.transition` and `PostgresMessageStore` (active feed staff ids, missing-hashtag unnest, exclude ids).
+
 ## Function: PostgresFundingStore
 
-- **Purpose:** Durable `FundingStore` over Postgres (`funding_grant` table). `getByAccountId` binds `$1`. `listGrants` is `ORDER BY applied_at ASC, account_id ASC`. `upsert` is `INSERT … ON CONFLICT (account_id) DO UPDATE SET` every grant column. `transition` is `INSERT … ON CONFLICT DO UPDATE WHERE status = ANY($9::text[])` when `from` includes `'none'`, else `UPDATE … WHERE account_id=$1 AND status = ANY($9::text[]) RETURNING *` (0 rows → `undefined`). `expireTrialIfUnchanged` is `UPDATE … WHERE account_id=$1 AND status='trial' AND trial_utc_date=$2 RETURNING *` (0 rows → `getByAccountId`). Maps `timestamptz` (Date or ISO string) to epoch ms and `trial_utc_date` Date/string to `YYYY-MM-DD`; `null` stays `null`.
+- **Purpose:** Durable `FundingStore` over Postgres (`funding_grant` table). `getByAccountId` binds `$1`. `listGrants` is `ORDER BY applied_at ASC, account_id ASC`. `upsert` is `INSERT … ON CONFLICT (account_id) DO UPDATE SET` every grant column. `transition` is `INSERT … ON CONFLICT DO UPDATE WHERE status = ANY($9::text[])` when `from` includes `'none'`, else `UPDATE … WHERE account_id=$1 AND status = ANY($9::text[]) RETURNING *` (0 rows → `undefined`). `expireTrialIfUnchanged` is `UPDATE … WHERE account_id=$1 AND status='trial' AND trial_utc_date=$2 RETURNING *` (0 rows → `getByAccountId`). Maps `timestamptz` (Date or ISO string) to epoch ms and `trial_utc_date` Date/string to `YYYY-MM-DD`; `null` stays `null`. `$9` is one `postgresTextArrayLiteral` string, not a JavaScript array.
 - **Inputs:** Constructor takes a shared boot `SqlClient` (already migrated).
 - **Returns / side effects:** Parameter-bound SQL; copies on return. Query and execute errors propagate.
 - **Used by:** `openBootStores` when `DATABASE_URL` is set.
