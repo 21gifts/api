@@ -256,7 +256,7 @@ export async function finishPasskeyRegistration(
     lightningAddressSkippedAt: null,
     profileMessageId: null,
     notificationLevel: 'all',
-    walletRequired: true,
+    walletRequired: false,
     walletBackupSeenAt: null,
   };
   await store.createAccount(account);
@@ -275,7 +275,7 @@ export async function finishPasskeyRegistration(
       return { ok: false, error: 'Invalid passkey' };
     }
   }
-  const stored = await store.createPasskeyCredential({
+  const stored = await store.createFirstPasskeyCredential({
     credentialId: verified.credentialId,
     publicKey: verified.publicKey,
     signCount: verified.signCount,
@@ -286,7 +286,7 @@ export async function finishPasskeyRegistration(
     await store.deleteAccount(accountId);
     return { ok: false, error: 'Invalid passkey' };
   }
-  return mintSession(store, now, account);
+  return mintSession(store, now, { ...account, walletRequired: true });
 }
 
 /**

@@ -167,7 +167,7 @@ describe('passkey registration', () => {
 
   it('rejects register finish when the credential id is already stored', async () => {
     class DupStore extends InMemoryAuthStore {
-      override async createPasskeyCredential(): Promise<boolean> {
+      override async createFirstPasskeyCredential(): Promise<boolean> {
         return false;
       }
     }
