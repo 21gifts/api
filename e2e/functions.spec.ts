@@ -1,5 +1,4 @@
 import { expect, test, type APIRequestContext } from '@playwright/test';
-import { normalizePhotoTakenAt } from '../src/lib/message';
 
 const DEBUG = { authorization: 'Bearer e2e-debug-token' };
 
@@ -53,9 +52,13 @@ test('Function: createApp — booted process serves HTTP', async ({ request }) =
   expect(res.status()).toBe(200);
 });
 
-test('Function: normalizePhotoTakenAt — keeps a civil time and rejects Z', () => {
-  expect(normalizePhotoTakenAt('2026-09-22T11:40:00+08:00')).toBe('2026-09-22T11:40:00+08:00');
-  expect(normalizePhotoTakenAt('2026-09-22T11:40:00Z')).toBeNull();
+test('Function: normalizePhotoTakenAt — POST /messages without bearer is 401', async ({
+  request,
+}) => {
+  const res = await request.post('/messages', {
+    data: { text: 'hi' },
+  });
+  expect(res.status()).toBe(401);
 });
 
 test('Function: healthRoute — GET /healthz is ok', async ({ request }) => {

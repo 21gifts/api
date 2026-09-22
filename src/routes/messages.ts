@@ -741,7 +741,7 @@ const postBody = z
       .object({
         contentType: z.string(),
         data: z.string(),
-        takenAt: z.string().nullish(),
+        takenAt: z.unknown().nullish(),
       })
       .optional(),
     photos: z
@@ -749,7 +749,7 @@ const postBody = z
         z.object({
           contentType: z.string(),
           data: z.string(),
-          takenAt: z.string().nullish(),
+          takenAt: z.unknown().nullish(),
         }),
       )
       .max(10)

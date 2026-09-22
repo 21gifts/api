@@ -2269,6 +2269,50 @@ describe('POST /messages', () => {
     expect(new Uint8Array(await photo.arrayBuffer())).toEqual(JPEG_BYTES);
   });
 
+  it('keeps a civil capture time and stores junk as null', async () => {
+    const auth = await namedStore('Ada');
+    const post = async (body: unknown): Promise<Record<string, unknown>> => {
+      const res = await mount(auth).request('/messages', {
+        method: 'POST',
+        headers: { ...AUTH, 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      expect(res.status).toBe(200);
+      return (await res.json()) as Record<string, unknown>;
+    };
+    const kept = await post({
+      text: 'kept',
+      photo: {
+        contentType: 'image/jpeg',
+        data: JPEG_B64,
+        takenAt: '2026-09-22T11:40:00+08:00',
+      },
+    });
+    expect(kept['photoTakenAts']).toEqual(['2026-09-22T11:40:00+08:00']);
+    expect(kept['photoTakenAt']).toBe('2026-09-22T11:40:00+08:00');
+    for (const takenAt of ['2026-09-22T11:40:00Z', '2026-02-31T12:00:00', 20250607]) {
+      const junk = await post({
+        text: `junk-${String(takenAt)}`,
+        photo: { contentType: 'image/jpeg', data: JPEG_B64, takenAt },
+      });
+      expect(junk['photoTakenAts']).toEqual([null]);
+      expect(junk['photoTakenAt']).toBeNull();
+    }
+    const pair = await post({
+      text: 'pair',
+      photos: [
+        {
+          contentType: 'image/jpeg',
+          data: JPEG_B64,
+          takenAt: '2026-09-22T11:40:00+08:00',
+        },
+        { contentType: 'image/jpeg', data: JPEG2_B64, takenAt: null },
+      ],
+    });
+    expect(pair['photoTakenAts']).toEqual(['2026-09-22T11:40:00+08:00', null]);
+    expect(pair).not.toHaveProperty('photoTakenAt');
+  });
+
   it('collapses a repeated photo+text post to the same id without 429', async () => {
     const limiter = new PostRateLimiter();
     const store = new InMemoryMessageStore();

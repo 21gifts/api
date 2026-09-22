@@ -2847,7 +2847,10 @@ unset/null/0),
 `payable` (true when the note has a non-empty signed `eventId` and the author
 has a non-blank Lightning Address; null or empty `eventId` is not payable),
 `hasPhoto` (photo 0 exists), `photoCount` (integer 0–10 = photo 0
-plus extras 1–9; always present), `hasVideo`, `videoContentType` (`null` when
+plus extras 1–9; always present), `photoTakenAts` (always present, length
+equals `photoCount`, null when unknown, `[]` when there are no stills) and
+`photoTakenAt` only when `photoCount` is 1 (equals `photoTakenAts[0]`, null
+allowed), `hasVideo`, `videoContentType` (`null` when
 `hasVideo` is false), live `role` (the author's current `account.role`, or
 `"basis"` if the author is missing; omitted for external authors), and
 `replyCount` of live attributed children (`parent_id` match, `deleted_at`
@@ -2917,6 +2920,7 @@ Success → **Response** `200`:
       "payable": false,
       "hasPhoto": false,
       "photoCount": 0,
+      "photoTakenAts": [],
       "hasVideo": false,
       "videoContentType": null,
       "role": "basis",
@@ -3138,7 +3142,9 @@ top-level notes), and a timestamp. Text longer than **500** after trim, or
 with disallowed C0/DEL controls, is rejected. Newlines (`\n`, `\r`) are
 allowed. The **200** body is the public message object itself (not wrapped
 in `{ messages }`), including `sats`, `payable`, `hasPhoto`, `photoCount`
-(0–10; always present; `hasPhoto` still means photo 0 exists), `hasVideo`, and
+(0–10; always present; `hasPhoto` still means photo 0 exists), `photoTakenAts`
+(always; length equals `photoCount`; null when unknown; `[]` when there are no
+stills) and `photoTakenAt` only when `photoCount` is 1, `hasVideo`, and
 `videoContentType`. May include `goalSats` (positive integer on a top-level
 note; omitted when unset). May include `accountId` (21gifts author id). No
 `replyCount`, and no photo or video bytes in the JSON. `sats` is 0 and
@@ -3260,6 +3266,7 @@ Success → **Response** `200`:
   "payable": false,
   "hasPhoto": false,
   "photoCount": 0,
+  "photoTakenAts": [],
   "hasVideo": false,
   "videoContentType": null,
   "role": "verified"
@@ -3437,7 +3444,9 @@ Public (Bearer optional). Lists **direct live attributed replies**
 `:id` oldest-first (`createdAt` then `id` ascending), capped at **200**. Rows
 with no account and no recorded-zapper pubkey are omitted. Each item is the
 public message JSON (`photoCount` 0–10 always present;
-`hasPhoto` still means photo 0 exists) with
+`photoTakenAts` the same length, null when unknown, `[]` when there are no
+stills; `photoTakenAt` only when `photoCount` is 1; `hasPhoto` still means
+photo 0 exists) with
 `payable` when a member row has a non-empty `eventId` and a non-blank
 Lightning Address, and no `replyCount`. Unauthenticated items omit
 `accountId`; signed-in member replies include `accountId`. External replies
@@ -3479,6 +3488,7 @@ Success → **Response** `200`:
       "payable": false,
       "hasPhoto": false,
       "photoCount": 0,
+      "photoTakenAts": [],
       "hasVideo": false,
       "videoContentType": null,
       "role": "basis"
@@ -3536,7 +3546,9 @@ Registered **after** photo, video, `GET /messages/:id/replies`,
 those paths are not captured as `:id`. A live GET returns
 the public message JSON (`sats`, optional `goalSats` on a top-level note
 when the stored ask is a positive integer, `payable`, `hasPhoto`, `photoCount`
-(0–10; always present; `hasPhoto` still means photo 0 exists), `hasVideo`,
+(0–10; always present; `hasPhoto` still means photo 0 exists), `photoTakenAts`
+(always; length equals `photoCount`; null when unknown; `[]` when there are no
+stills) and `photoTakenAt` only when `photoCount` is 1, `hasVideo`,
 `videoContentType`; live `role` for 21gifts authors) and omits
 `accountId`, `deletedAt`, and `deletedBy`. Unsigned and non-staff GET of a
 soft-hidden row is still **404** `{ "error": "Not found" }` with no hide
@@ -3601,6 +3613,7 @@ Success (including `sinceSats` timeout with unchanged sats) → **Response**
   "payable": false,
   "hasPhoto": false,
   "photoCount": 0,
+  "photoTakenAts": [],
   "hasVideo": false,
   "videoContentType": null,
   "role": "basis",
@@ -3697,6 +3710,8 @@ desc, then `id` desc), capped at **200**. JSON `{ "messages": [ … ] }`
 via `serializeHiddenMessage`. Each item includes stored `name` (no
 empty-name pubkey fallback), ISO `createdAt` / `deletedAt`, `hasPhoto` /
 `photoCount` (0–10; always present; `hasPhoto` still means photo 0 exists) /
+`photoTakenAts` (always; length equals `photoCount`; null when unknown; `[]`
+when there are no stills) and `photoTakenAt` only when `photoCount` is 1 /
 `hasVideo` / `videoContentType`, optional `goalSats` (positive integer on a
 top-level note; omitted when unset/null/0 or on a reply), always-present `parentId` (JSON `null`
 on top-level), optional `via: "nostr"` exactly when `accountId === null &&
@@ -3742,6 +3757,7 @@ Success (including an empty list) → **Response** `200`:
       "sats": 0,
       "hasPhoto": false,
       "photoCount": 0,
+      "photoTakenAts": [],
       "hasVideo": false,
       "videoContentType": null,
       "parentId": null,
