@@ -4371,7 +4371,7 @@ export class PostgresMessageStore implements MessageStore {
       photo_content_type: string;
       bytes: number | string;
       photo_taken_at?: string | null;
-  video_taken_at?: string | null;
+      video_taken_at?: string | null;
     }>(
       `SELECT message_id, idx, photo_content_type, octet_length(photo) AS bytes, photo_taken_at
        FROM message_extra_photo

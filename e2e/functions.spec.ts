@@ -52,9 +52,7 @@ test('Function: createApp — booted process serves HTTP', async ({ request }) =
   expect(res.status()).toBe(200);
 });
 
-test('Function: readVideoTakenAt — POST /messages without bearer is 401', async ({
-  request,
-}) => {
+test('Function: readVideoTakenAt — POST /messages without bearer is 401', async ({ request }) => {
   const res = await request.post('/messages', { data: { text: 'hi' } });
   expect(res.status()).toBe(401);
 });

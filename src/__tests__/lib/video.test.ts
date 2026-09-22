@@ -575,4 +575,31 @@ describe('readVideoTakenAt', () => {
     expect(readVideoTakenAt(new Uint8Array([0, 1, 2, 3]))).toBeNull();
     expect(readVideoTakenAt(mvhd(0, 1))).toBeNull();
   });
+
+  it('ignores a truncated, nested, or out-of-range mvhd', () => {
+    expect(readVideoTakenAt(box('moov', mvhd(0, seconds)))).toBe('2020-01-01T00:00:00+00:00');
+    expect(readVideoTakenAt(box('moov', box('free', new Uint8Array(4))))).toBeNull();
+    const headerOnly = new Uint8Array(8);
+    new DataView(headerOnly.buffer).setUint32(0, 8);
+    headerOnly.set([0x6d, 0x76, 0x68, 0x64], 4);
+    expect(readVideoTakenAt(headerOnly)).toBeNull();
+    const short = new Uint8Array(12);
+    new DataView(short.buffer).setUint32(0, 12);
+    short.set([0x6d, 0x76, 0x68, 0x64], 4);
+    expect(readVideoTakenAt(short)).toBeNull();
+    short[8] = 1;
+    expect(readVideoTakenAt(short)).toBeNull();
+    const huge = mvhd(1, 0);
+    new DataView(huge.buffer).setBigUint64(12, BigInt(Number.MAX_SAFE_INTEGER) + 1n);
+    expect(readVideoTakenAt(huge)).toBeNull();
+    const overflow = mvhd(1, 0);
+    new DataView(overflow.buffer).setBigUint64(12, 9_000_000_000_000n);
+    expect(readVideoTakenAt(overflow)).toBeNull();
+    const future = Math.floor((Date.UTC(2030, 0, 1) - Date.UTC(1904, 0, 1)) / 1000);
+    expect(readVideoTakenAt(mvhd(0, future))).toBeNull();
+    const truncated = new Uint8Array(12);
+    new DataView(truncated.buffer).setUint32(0, 100);
+    truncated.set([0x66, 0x72, 0x65, 0x65], 4);
+    expect(readVideoTakenAt(truncated)).toBeNull();
+  });
 });

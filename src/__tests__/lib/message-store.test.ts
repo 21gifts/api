@@ -916,6 +916,18 @@ describe('InMemoryMessageStore', () => {
     ).rejects.toMatchObject({ code: 'ENOENT' });
   });
 
+  it('keeps a video capture time on the created row', async () => {
+    const store = new InMemoryMessageStore();
+    const mp4 = new Uint8Array(32);
+    mp4.set([0x00, 0x00, 0x00, 0x18, 0x66, 0x74, 0x79, 0x70, 0x69, 0x73, 0x6f, 0x6d]);
+    const created = await store.create({ ...EARLY, id: 'v-time', text: 'clip' }, undefined, {
+      contentType: 'video/mp4',
+      bytes: mp4,
+      takenAt: '2020-01-01T00:00:00+00:00',
+    });
+    expect(created.videoTakenAt).toBe('2020-01-01T00:00:00+00:00');
+  });
+
   it('create keeps text-only posts as separate rows', async () => {
     const store = new InMemoryMessageStore();
     await store.create({ ...EARLY, id: 't1', text: 'hi' });
@@ -4400,6 +4412,29 @@ describe('PostgresMessageStore', () => {
     expect(sql.executes[0]?.params[6]).toBe('video/mp4');
   });
 
+  it('create binds a video capture time', async () => {
+    const sql = new MockSql();
+    const store = new PostgresMessageStore(sql);
+    const mp4 = new Uint8Array(32);
+    mp4.set([0x00, 0x00, 0x00, 0x18, 0x66, 0x74, 0x79, 0x70, 0x69, 0x73, 0x6f, 0x6d]);
+    const row: MessageRow = {
+      id: 'm-vid-time',
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'clip',
+      createdAt: new Date('2026-08-28T12:00:00.000Z'),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+    };
+    const created = await store.create(row, undefined, {
+      contentType: 'video/mp4',
+      bytes: mp4,
+      takenAt: '2020-01-01T00:00:00+00:00',
+    });
+    expect(created.videoTakenAt).toBe('2020-01-01T00:00:00+00:00');
+    expect(sql.executes[0]?.params[21]).toBe('2020-01-01T00:00:00+00:00');
+  });
+
   it('create binds text together with photo bytes', async () => {
     const sql = new MockSql();
     const row: MessageRow = {
@@ -4544,6 +4579,10 @@ describe('PostgresMessageStore', () => {
       },
     ];
     expect((await store.listLatest(1))[0]?.photoTakenAts).toEqual([null, '2026-09-22T11:41:00']);
+    sql.nextRows = [{ ...base, video_taken_at: '2020-01-01T00:00:00+00:00' }];
+    expect((await store.listLatest(1))[0]?.videoTakenAt).toBe('2020-01-01T00:00:00+00:00');
+    sql.nextRows = [{ ...base, video_taken_at: '' }];
+    expect((await store.listLatest(1))[0]?.videoTakenAt).toBeUndefined();
   });
 
   it('getPhoto keeps a stored civil capture time', async () => {
