@@ -42,6 +42,7 @@ import {
 import { migratePushSchema, PostgresPushStore, type PushStore } from '@/lib/push-store';
 import { migrateTrustSchema, PostgresTrustStore, type TrustStore } from '@/lib/trust-store';
 import { migrateFundingSchema, PostgresFundingStore, type FundingStore } from '@/lib/funding-store';
+import { PostgresDebugDbStore, type DebugDbStore } from '@/lib/debug-db';
 
 /** Auth, gift, forum, contact, conversation, notification, push, trust, funding, and FX persistence produced from `DATABASE_URL`. */
 export interface BootStores {
@@ -104,6 +105,11 @@ export interface BootStores {
   fundingStore: FundingStore | undefined;
   /** Operator dump of `db_change`, or `undefined` on memory boots. */
   listDbChange: ((limit: number) => Promise<unknown[]>) | undefined;
+  /**
+   * Postgres reader for `GET /debug/db`, or `undefined` when no SQL client
+   * was opened so the route answers 503.
+   */
+  debugDbStore: DebugDbStore | undefined;
 }
 
 /** Optional boot wiring so tests never hit the network. */
@@ -135,9 +141,9 @@ export interface BootFxOptions {
  * `conversationStore: undefined`,
  * `notificationStore: undefined`, `pushStore: undefined`,
  * `trustStore: undefined`, `fundingStore: undefined`, `listDbChange: undefined`,
- * `nostrKek: undefined`, an empty {@link InMemoryBtcUsdStore}, and an empty
- * {@link InMemoryFiatStore}. A set URL asks `createClient` for one `SqlClient`,
- * migrates auth (via
+ * `debugDbStore: undefined`, `nostrKek: undefined`,
+ * an empty {@link InMemoryBtcUsdStore}, and an empty {@link InMemoryFiatStore}.
+ * A set URL asks `createClient` for one `SqlClient`, migrates auth (via
  * `openAuthStore`) then the FX tables (`btc_usd_daily` then `usd_fiat_daily`),
  * `message`, `contact`, `conversation`, `push`, `notification`, `trust_edge`,
  * `funding_grant`, `api_log`, and `db_change` schemas (notification after push, trust
@@ -159,7 +165,8 @@ export interface BootFxOptions {
  * `notificationStore`, `trustStore`, and `fundingStore`, leave `nostrKek`
  * undefined, and do not run the `db_change` migrate. SQL boots return
  * {@link PostgresNotificationStore}, {@link PostgresTrustStore},
- * {@link PostgresFundingStore}, and {@link PostgresApiLogStore}.
+ * {@link PostgresFundingStore}, {@link PostgresApiLogStore}, and
+ * {@link PostgresDebugDbStore}.
  * `migrateTrustSchema` then `migrateFundingSchema` run after auth/`account`
  * exists and before `migrateApiLogSchema` / `migrateDbChangeSchema` so
  * `trg_db_change` attaches to `trust_edge` and `funding_grant`.
@@ -207,6 +214,7 @@ export async function openBootStores(
       trustStore: undefined,
       fundingStore: undefined,
       listDbChange: undefined,
+      debugDbStore: undefined,
     };
   }
   const sql: SqlClient = sqlClient;
@@ -339,5 +347,6 @@ export async function openBootStores(
     trustStore,
     fundingStore,
     listDbChange: (limit) => listDbChanges(sql, limit),
+    debugDbStore: new PostgresDebugDbStore(sqlClient),
   };
 }

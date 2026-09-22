@@ -67,6 +67,7 @@ if (import.meta.main) {
     notificationStore,
     trustStore,
     fundingStore,
+    debugDbStore,
   } = boot;
   const pushStore = boot.pushStore ?? new InMemoryPushStore();
   const vapid = resolveVapidConfig(process.env);
@@ -104,6 +105,7 @@ if (import.meta.main) {
     ...(trustStore === undefined ? {} : { trustStore }),
     ...(fundingStore === undefined ? {} : { fundingStore }),
     ...(boot.listDbChange === undefined ? {} : { listDbChange: boot.listDbChange }),
+    ...(debugDbStore === undefined ? {} : { debugDbStore }),
     vapidPublicKey: vapidPublicKey ?? '',
     postLimiter,
   });

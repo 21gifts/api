@@ -147,6 +147,7 @@ Public base URLs used in examples:
 | PATCH  | `/debug/accounts/:id`                                | `Authorization: Bearer`    | Operator set `role` / unlink Lightning Address / `platform` / `sessionRefused`                            |
 | POST   | `/debug/accounts/:id/session`                        | `Authorization: Bearer`    | Operator mint of a member bearer (`DEBUG_TOKEN`)                                                          |
 | GET    | `/debug/api-log`                                     | `Authorization: Bearer`    | Operator HTTP audit log (`DEBUG_TOKEN`); no query string, body, or Authorization                          |
+| GET    | `/debug/db`                                          | `Authorization: Bearer`    | Operator page through every public table (`DEBUG_TOKEN`); follow `nextCursor`                             |
 | GET    | `/debug/contacts`                                    | `Authorization: Bearer`    | Operator contact listing (`DEBUG_TOKEN`)                                                                  |
 | GET    | `/debug/invoices`                                    | `Authorization: Bearer`    | Operator invoice attempts, forum and conversation (`DEBUG_TOKEN`)                                         |
 | POST   | `/debug/invoices/settle`                             | `Authorization: Bearer`    | Resumable operator settlement of a paid forum invoice (`DEBUG_TOKEN`)                                     |
@@ -1305,6 +1306,26 @@ Success → **Response** `200`:
 restart clears the cache. There is no durable (Postgres) cache yet. No auth.
 No new environment variables for this route; the process still boots with
 zero extra config when `DATABASE_URL` and `DEBUG_TOKEN` are unset.
+
+### `GET /debug/db`
+
+Operator read of every ordinary table in schema `public`. Authenticated with
+`Authorization: Bearer` matching `DEBUG_TOKEN`. This is not an end-user
+session. `DEBUG_TOKEN` unset or blank → **Response** `503`
+`{ "error": "Debug is not configured" }`. Missing or non-matching bearer →
+**Response** `401` `{ "error": "Unauthorized" }`. Token matches but this
+process has no SQL client → **Response** `503`
+`{ "error": "Database is not configured" }`. No `table` returns
+`{ tables: [{ name, rowCount }] }`. `table` returns 200 rows and
+`nextCursor` when another page exists. Follow `nextCursor` until it is
+absent. `bytea` cells, including `nostr_nsec_ciphertext`, are octet lengths.
+Text in `token`, `challenge`, `nonce`, `view_key`, `endpoint`, `p256dh`,
+`auth`, and `delivered_endpoints` is the string `"redacted"`. A primary key
+that is one of those columns is paged by `ctid`, so the cursor is not the
+secret. A cursor that does not match the key is **Response** `400`
+`{ "error": "Invalid cursor" }`. An unknown table is **Response** `404`
+`{ "error": "Not found" }`. A store failure is **Response** `503`
+`{ "error": "Database is unavailable" }`.
 
 ### `GET /debug/accounts`
 
