@@ -81,7 +81,7 @@ Public base URLs used in examples:
 | ------ | ---------------------------------------------------- | -------------------------- | ------------------------------------------------------------------------------------------------------------------- |
 | GET    | `/healthz`                                           | none                       | Liveness                                                                                                            |
 | GET    | `/info`                                              | none                       | Service identity                                                                                                    |
-| GET    | `/.well-known/lnurlp/:username`                      | none                       | LUD-16 payRequest for username@21.gifts; settlement stays on linked Wallet of Satoshi                               |
+| GET    | `/.well-known/lnurlp/:username`                      | none                       | LUD-16 payRequest; WoS callback stays; an open till charge pins both sendable bounds                               |
 | GET    | `/favicon.ico`                                       | none                       | Brand mark (favicon)                                                                                                |
 | GET    | `/favicon.svg`                                       | none                       | Brand mark (SVG favicon)                                                                                            |
 | GET    | `/apple-touch-icon.png`                              | none                       | Brand mark (Apple touch icon)                                                                                       |
@@ -139,6 +139,9 @@ Public base URLs used in examples:
 | DELETE | `/messages/:id`                                      | Bearer (moderator+)        | Soft-hide note + direct replies; retract in-app notifications; external target also blocks that pubkey              |
 | POST   | `/messages/:id/invoice`                              | Bearer                     | NIP-57 zap / BOLT11                                                                                                 |
 | POST   | `/contact`                                           | Bearer                     | Send private in-app contact `{ text }`                                                                              |
+| GET    | `/pos`                                               | Bearer                     | Open till charge or null, plus up to 20 history rows                                                               |
+| POST   | `/pos`                                               | Bearer                     | Pin one whole-sat amount for five minutes                                                                          |
+| DELETE | `/pos`                                               | Bearer                     | Cancel every unexpired pending till charge                                                                         |
 | GET    | `/conversations`                                     | Bearer                     | List visible private threads (per-row `unreadMessageCount`; envelope `unreadCount` is thread count)                 |
 | GET    | `/conversations/moderator-group`                     | Bearer (moderator+)        | Open/ensure closed moderator-group tool                                                                             |
 | POST   | `/conversations`                                     | Bearer                     | Open thread from a forum note (`forumMessageId`)                                                                    |
@@ -236,8 +239,9 @@ Service identity for clients. Does not expose runtime configuration.
 Public LUD-16 payRequest for `username@21.gifts`. No auth. Looks up the
 stored username via `getAccountByUsername` after `normalizeUsername` on
 the path param. Passes through the linked Wallet of Satoshi LNURL-pay
-JSON unchanged (`resolveLnurlpDocument`; `c.json(resolved.body, 200,
-WELL_KNOWN_CORS)`). The callback stays on Wallet of Satoshi. 21.gifts
+JSON (`resolveLnurlpDocument`). Callback and metadata stay on Wallet of
+Satoshi. While an unexpired pending `pos_charge` exists, both
+`minSendable` and `maxSendable` become `amountSats * 1000`. 21.gifts
 does not mint invoices. Settlement stays on the linked Wallet of Satoshi
 address.
 
@@ -260,9 +264,54 @@ Wallet of Satoshi unreachable (`!resolved.ok`) or the store throws →
 { "error": "Lightning Address could not be resolved" }
 ```
 
-Success → **Response** `200` with the provider payRequest JSON passed
-through unchanged. This service does not invent or rewrite Wallet of
-Satoshi fields.
+Success → **Response** `200` with the provider payRequest JSON. Callback
+and metadata are not rewritten. An unexpired pending till charge rewrites
+only `minSendable` and `maxSendable`, both to that amount in millisats.
+
+### `GET /pos`
+
+Bearer session. Returns the signed-in member's open point-of-sale charge,
+or `charge: null`, plus up to 20 newest rows of any status. A pending row
+whose `expiresAt` is not in the future is marked `expired` before the
+response and is not `charge`. Amounts are whole sats. There is no paid
+status. TTL is five minutes.
+
+**Response** `200`:
+
+```json
+{ "charge": null, "history": [] }
+```
+
+**Response** `401`: `{ "error": "Unauthorized" }`.
+
+### `POST /pos`
+
+Bearer session. Body `{ "amountSats" }` integer ≥ 1. Requires a username
+and a linked Wallet of Satoshi address. Resolves that address and rejects
+amounts whose millisats fall outside inclusive `minSendable`..`maxSendable`.
+One unexpired pending charge at a time. The insert enforces that again
+(`pos_charge_account_pending_idx`; the in-memory store rejects before
+append), so a second request that already passed the earlier read is still 409. `201` `{ "charge" }` with `expiresAt` five minutes after `now`. While
+pending, `GET /.well-known/lnurlp/:username` keeps the Wallet of Satoshi
+callback and metadata and sets both sendable bounds to that millisat amount.
+
+**Response** `400`: `{ "error": "Expected a JSON body with an integer \"amountSats\"" }`,
+`{ "error": "Set a username first" }`,
+`{ "error": "Set a Wallet of Satoshi address first" }`, or
+`{ "error": "Amount is outside the wallet range" }`.
+
+**Response** `409`: `{ "error": "A payment is already open" }`.
+
+**Response** `502`: `{ "error": "Lightning Address could not be resolved" }`.
+
+### `DELETE /pos`
+
+Bearer session. Cancels every unexpired pending charge for the account,
+not only the newest. An already expired row is not cancelled.
+
+**Response** `200`: `{ "charge": null }` when at least one row was cancelled.
+
+**Response** `404`: `{ "error": "No open payment" }`.
 
 ### `GET /favicon.ico`
 
@@ -1696,7 +1745,7 @@ Operator catalog of every allowlisted table as camelCase JSON (cap 200 per
 table). Success body is `{ "tables": { "<table>": [ ... ] } }` with one array
 per allowlisted name (cap 200): `account`, `passkey_credential`,
 `passkey_challenge`, `auth_session`, `address_verification`, `api_log`,
-`contact`, `conversation`, `conversation_message`, `conversation_read`,
+`contact`, `pos_charge`, `conversation`, `conversation_message`, `conversation_read`,
 `message`, `message_extra_photo`, `message_invoice`, `nostr_zap_ingest`,
 `nostr_zap_receipt`, `nostr_zap_payment`, `nostr_zapper`,
 `nostr_blocked_pubkey`, `notification`, `push_subscription`, `push_outbox`,
@@ -1713,7 +1762,7 @@ gate as the other debug routes. Unexpected store throw → **503**
 Same catalog for one allowlisted table. Response `{ "table", "rows" }`.
 Unknown table → **Response** `404` unless the path segment is one of
 `account`, `passkey_credential`, `passkey_challenge`, `auth_session`,
-`address_verification`, `api_log`, `contact`, `conversation`,
+`address_verification`, `api_log`, `contact`, `pos_charge`, `conversation`,
 `conversation_message`, `conversation_read`, `message`, `message_extra_photo`,
 `message_invoice`, `nostr_zap_ingest`, `nostr_zap_receipt`, `nostr_zap_payment`,
 `nostr_zapper`, `nostr_blocked_pubkey`, `notification`, `push_subscription`,
