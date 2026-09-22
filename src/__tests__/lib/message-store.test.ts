@@ -956,6 +956,22 @@ describe('InMemoryMessageStore', () => {
       staffAccountIds: new Set(['staff']),
     });
     expect(active.map((row) => row.id)).toEqual(['pop-high', 'pop-low', 'paid', 'staff-unpaid']);
+    const ask = await store.create({
+      ...EARLY,
+      id: 'ask-open',
+      accountId: 'basis',
+      sats: 0,
+      goalSats: 1000,
+      text: 'Need a ticket',
+    });
+    expect(ask.goalSats).toBe(1000);
+    const activeWithAsk = await store.listFeed({
+      limit: 10,
+      mode: 'active',
+      cursor: null,
+      staffAccountIds: new Set(['staff']),
+    });
+    expect(activeWithAsk.map((row) => row.id)).toContain('ask-open');
     const popular = await store.listFeed({
       limit: 10,
       mode: 'popular',
@@ -4375,6 +4391,7 @@ describe('PostgresMessageStore', () => {
     }
     const active = sql.queries.filter((query) => query.text.includes('ANY('));
     expect(active).toHaveLength(2);
+    expect(active[0]?.text).toMatch(/COALESCE\(goal_sats, 0\) > 0/);
     expect(active[0]?.params).toEqual([10, '{"staff-1"}']);
     expect(active[1]?.params.slice(0, 2)).toEqual([10, '{"staff-1"}']);
     const popular = sql.queries.filter((query) => query.text.includes('sats DESC'));

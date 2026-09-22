@@ -1394,7 +1394,11 @@ export class InMemoryMessageStore implements MessageStore {
         return row.sats === 0;
       }
       if (query.mode === 'active') {
-        return row.sats > 0 || (row.accountId !== null && query.staffAccountIds.has(row.accountId));
+        return (
+          row.sats > 0 ||
+          (row.accountId !== null && query.staffAccountIds.has(row.accountId)) ||
+          (typeof row.goalSats === 'number' && row.goalSats > 0)
+        );
       }
       if (query.mode === 'popular') {
         return row.sats > 0;
@@ -2828,7 +2832,9 @@ export class PostgresMessageStore implements MessageStore {
       filters.push('sats = 0');
     } else if (query.mode === 'active') {
       params.push(postgresTextArrayLiteral([...query.staffAccountIds]));
-      filters.push(`(sats > 0 OR account_id::text = ANY($${params.length}::text[]))`);
+      filters.push(
+        `(sats > 0 OR account_id::text = ANY($${params.length}::text[]) OR COALESCE(goal_sats, 0) > 0)`,
+      );
     } else if (query.mode === 'popular') {
       filters.push('sats > 0');
       orderBy = 'sats DESC, created_at DESC, id DESC';
