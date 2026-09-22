@@ -3498,7 +3498,10 @@ zapper (checked via `isZapperPubkey` on every read, including during a
 `sinceSats` poll loop); that **200** includes `via: "nostr"`, omits `role`,
 and sets `payable` false. Otherwise (no `authorPubkey`, or an `authorPubkey`
 that is not yet a recorded zapper) it is **404** `{ "error": "Not found" }`
-(same body as missing/hidden). `replyCount` is omitted. Photo and video bytes
+(same body as missing/hidden). A top-level note (parent id null), on both the
+live public body and the founder/moderator hidden body, includes `replyCount`
+of live direct children with an account or a recorded zapper pubkey; 0 is
+included, not omitted; a reply omits `replyCount`. Photo and video bytes
 are never included. Soft-hidden rows
 (`deletedAt` set) are treated as missing (404) before any missing-video
 hard-delete cleanup.
@@ -3549,7 +3552,8 @@ Success (including `sinceSats` timeout with unchanged sats) → **Response**
   "photoCount": 0,
   "hasVideo": false,
   "videoContentType": null,
-  "role": "basis"
+  "role": "basis",
+  "replyCount": 0
 }
 ```
 

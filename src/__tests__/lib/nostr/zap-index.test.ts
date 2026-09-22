@@ -4604,6 +4604,9 @@ describe('indexOpenZapReceipts', () => {
       ) => base.accountHasLiveTopLevelPost(...args),
       countByAccount: (...args: Parameters<InMemoryMessageStore['countByAccount']>) =>
         base.countByAccount(...args),
+      countAttributedReplies: (
+        ...args: Parameters<InMemoryMessageStore['countAttributedReplies']>
+      ) => base.countAttributedReplies(...args),
       listPostsByAccount: (...args: Parameters<InMemoryMessageStore['listPostsByAccount']>) =>
         base.listPostsByAccount(...args),
       listRepliesByAccount: (...args: Parameters<InMemoryMessageStore['listRepliesByAccount']>) =>
@@ -4825,6 +4828,9 @@ describe('indexOpenZapReceipts', () => {
         ) => base.accountHasLiveTopLevelPost(...args),
         countByAccount: (...args: Parameters<InMemoryMessageStore['countByAccount']>) =>
           base.countByAccount(...args),
+        countAttributedReplies: (
+          ...args: Parameters<InMemoryMessageStore['countAttributedReplies']>
+        ) => base.countAttributedReplies(...args),
         listPostsByAccount: (...args: Parameters<InMemoryMessageStore['listPostsByAccount']>) =>
           base.listPostsByAccount(...args),
         listRepliesByAccount: (...args: Parameters<InMemoryMessageStore['listRepliesByAccount']>) =>
@@ -5184,6 +5190,9 @@ describe('indexOpenZapReceipts', () => {
         ) => base.accountHasLiveTopLevelPost(...args),
         countByAccount: (...args: Parameters<InMemoryMessageStore['countByAccount']>) =>
           base.countByAccount(...args),
+        countAttributedReplies: (
+          ...args: Parameters<InMemoryMessageStore['countAttributedReplies']>
+        ) => base.countAttributedReplies(...args),
         listPostsByAccount: (...args: Parameters<InMemoryMessageStore['listPostsByAccount']>) =>
           base.listPostsByAccount(...args),
         listRepliesByAccount: (...args: Parameters<InMemoryMessageStore['listRepliesByAccount']>) =>

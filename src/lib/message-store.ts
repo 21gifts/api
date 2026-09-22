@@ -312,6 +312,18 @@ export interface MessageStore {
   countByAccount(accountId: string): Promise<AccountMessageCounts>;
 
   /**
+   * Uncapped count of live attributed direct children of `parentId`.
+   *
+   * Live = `deletedAt` null. Attributed = `accountId` not null, or
+   * `authorPubkey` is a recorded zapper. Unknown `parentId` is 0. Not
+   * derived from a capped list.
+   *
+   * @param parentId - Parent message id.
+   * @returns Count of matching children (0 when none or the id is unknown).
+   */
+  countAttributedReplies(parentId: string): Promise<number>;
+
+  /**
    * Newest live top-level notes for `accountId` (`parentId` null,
    * `deletedAt` null), capped at `limit`, with `replyCount` of live
    * attributed children (`deletedAt` null and either an account or a
@@ -1755,6 +1767,23 @@ export class InMemoryMessageStore implements MessageStore {
   }
 
   /**
+   * Uncapped count of live attributed direct children of `parentId`.
+   *
+   * @param parentId - Parent message id.
+   * @returns Count of matching children (0 when none or the id is unknown).
+   */
+  countAttributedReplies(parentId: string): Promise<number> {
+    const replyCount = this.#rows.filter(
+      (child) =>
+        child.parentId === parentId &&
+        child.deletedAt === null &&
+        (child.accountId !== null ||
+          (child.authorPubkey !== null && this.#zappers.has(child.authorPubkey.toLowerCase()))),
+    ).length;
+    return Promise.resolve(replyCount);
+  }
+
+  /**
    * Newest-first live top-level notes for `accountId`, capped at `limit`,
    * with `replyCount` of live attributed children (account or recorded zapper
    * pubkey).
@@ -3063,6 +3092,34 @@ export class PostgresMessageStore implements MessageStore {
       postCount: Number(row?.post_count ?? 0),
       replyCount: Number(row?.reply_count ?? 0),
     };
+  }
+
+  /**
+   * Uncapped count of live attributed direct children of `parentId`
+   * (`parent_id = $1` and `deleted_at IS NULL`, account or recorded zapper
+   * pubkey). Unknown id is 0.
+   *
+   * @param parentId - Parent message id (`$1`).
+   * @returns Count of matching children, mapped via `Number` (0 when none).
+   */
+  async countAttributedReplies(parentId: string): Promise<number> {
+    const rows = await this.#sql.query<{
+      reply_count: string | number | null;
+    }>(
+      `SELECT COUNT(*)::int AS reply_count
+       FROM message child
+       WHERE child.parent_id = $1
+         AND child.deleted_at IS NULL
+         AND (child.account_id IS NOT NULL
+           OR (child.author_pubkey IS NOT NULL
+             AND EXISTS (
+               SELECT 1 FROM nostr_zapper z
+               WHERE z.pubkey = lower(child.author_pubkey))))`,
+      [parentId],
+    );
+    const row = rows[0];
+    const count = row === undefined ? undefined : row.reply_count;
+    return Number(count === null || count === undefined ? 0 : count);
   }
 
   /**
