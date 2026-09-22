@@ -433,6 +433,46 @@ describe('buildAccountActivity', () => {
     expect(stats.donatedOverTime[0]?.usd).toBe('0.40');
   });
 
+  it('nulls a remainder currency that either side did not store', async () => {
+    const messages = new InMemoryMessageStore([
+      note({
+        sats: 42,
+        amountUsd: null,
+        amountChf: '0.80',
+        amountEur: null,
+        amountPhp: '50.00',
+      }),
+    ]);
+    await messages.recordInvoiceAttempt(invoice());
+    await messages.recordZapIngest(
+      ingest({ amountUsd: '0.40', amountChf: null, amountEur: '0.40', amountPhp: null }),
+    );
+    const stats = await activity({ messages, rates: new InMemoryBtcUsdStore() });
+    expect(stats.receivedOverTime[0]?.usd).toBeNull();
+    expect(stats.receivedOverTime[0]?.chf).toBeNull();
+    expect(stats.receivedOverTime[0]?.eur).toBeNull();
+    expect(stats.receivedOverTime[0]?.php).toBeNull();
+  });
+
+  it('nulls a remainder when the note stores less than the ingest', async () => {
+    const messages = new InMemoryMessageStore([
+      note({
+        sats: 42,
+        amountUsd: '0.10',
+        amountChf: '0.80',
+        amountEur: '0.90',
+        amountPhp: '50.00',
+      }),
+    ]);
+    await messages.recordInvoiceAttempt(invoice());
+    await messages.recordZapIngest(
+      ingest({ amountUsd: '0.40', amountChf: '0.30', amountEur: '0.40', amountPhp: '20.00' }),
+    );
+    const stats = await activity({ messages, rates: new InMemoryBtcUsdStore() });
+    expect(stats.receivedOverTime[0]?.usd).toBeNull();
+    expect(stats.receivedOverTime[0]?.chf).toBe('0.80');
+  });
+
   it('converts CHF/EUR/PHP on received house gifts when a fiat book is seeded', async () => {
     const gifts = new InMemoryGiftStore([
       { paidAt: PAID_AT, amountSats: 1000, recipientWosUser: 'ada' },
