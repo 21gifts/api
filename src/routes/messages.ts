@@ -1281,10 +1281,17 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
             const role = row.accountId === null ? undefined : (author?.role ?? 'basis');
             const deletedBy = await resolveDeletedBy(deps.authStore, row);
             return c.json(
-              serializeMessage(row, false, role, undefined, true, {
-                deletedAt: row.deletedAt,
-                deletedBy,
-              }),
+              serializeMessage(
+                row,
+                false,
+                role,
+                row.parentId === null ? await deps.store.countAttributedReplies(row.id) : undefined,
+                true,
+                {
+                  deletedAt: row.deletedAt,
+                  deletedBy,
+                },
+              ),
               200,
             );
           }
@@ -1307,7 +1314,15 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
           if (kept === null) {
             return c.json({ error: 'Not found' }, 404);
           }
-          return c.json(serializeMessage(kept, payable, role), 200);
+          return c.json(
+            serializeMessage(
+              kept,
+              payable,
+              role,
+              kept.parentId === null ? await deps.store.countAttributedReplies(kept.id) : undefined,
+            ),
+            200,
+          );
         }
       } catch {
         logEvent('messages.get.failed');

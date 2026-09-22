@@ -362,6 +362,67 @@ describe('InMemoryMessageStore', () => {
     expect((await store.listPostsByAccount('acc', 10)).map((row) => row.id)).toEqual(['profile']);
   });
 
+  it('countAttributedReplies counts live attributed direct children', async () => {
+    const zapperPubkey = 'aa'.repeat(32);
+    const nonZapperPubkey = 'bb'.repeat(32);
+    const store = new InMemoryMessageStore([
+      EARLY,
+      { ...LATE, id: 'other-parent', text: 'other parent' },
+    ]);
+    await store.create({
+      ...LATE,
+      id: 'r-member',
+      parentId: 'a',
+      text: 'member child',
+    });
+    await store.create({
+      ...LATE,
+      id: 'r-hidden',
+      parentId: 'a',
+      text: 'hidden child',
+    });
+    await store.markDeleted('r-hidden', new Date('2026-09-01T00:00:00.000Z'), 'staff');
+    await store.create({
+      ...LATE,
+      id: 'r-orphan',
+      parentId: 'a',
+      accountId: null,
+      authorPubkey: null,
+      text: 'orphan',
+    });
+    await store.create({
+      ...LATE,
+      id: 'r-not-zapper',
+      parentId: 'a',
+      accountId: null,
+      authorPubkey: nonZapperPubkey,
+      text: 'not zapper',
+    });
+    await store.create({
+      ...LATE,
+      id: 'r-zapper',
+      parentId: 'a',
+      accountId: null,
+      authorPubkey: zapperPubkey.toUpperCase(),
+      text: 'zapper child',
+    });
+    await store.recordZapper(zapperPubkey, 'receipt-aa', new Date('2026-09-18T10:00:00Z'));
+    await store.create({
+      ...LATE,
+      id: 'r-other',
+      parentId: 'other-parent',
+      text: 'other child',
+    });
+    await store.create({
+      ...LATE,
+      id: 'r-grand',
+      parentId: 'r-member',
+      text: 'grandchild',
+    });
+    expect(await store.countAttributedReplies('a')).toBe(2);
+    expect(await store.countAttributedReplies('missing-id')).toBe(0);
+  });
+
   it('listPostsByAccount is newest-first and honors limit', async () => {
     const store = new InMemoryMessageStore([EARLY, LATE, TIE_LOW, TIE_HIGH]);
     expect((await store.listPostsByAccount('acc', 10)).map((row) => row.id)).toEqual([
@@ -3479,6 +3540,22 @@ describe('PostgresMessageStore', () => {
     expect(sql.queries[0]?.params).toEqual(['acc']);
     sql.nextRows = [{ post_count: '3', reply_count: '12' }];
     expect(await store.countByAccount('acc')).toEqual({ postCount: 3, replyCount: 12 });
+  });
+
+  it('countAttributedReplies counts live attributed children for the parent', async () => {
+    const sql = new MockSql();
+    const store = new PostgresMessageStore(sql);
+    sql.nextRows = [];
+    expect(await store.countAttributedReplies('p1')).toBe(0);
+    expect(sql.queries[0]?.text).toMatch(/reply_count/);
+    expect(sql.queries[0]?.text).toMatch(/nostr_zapper/);
+    expect(sql.queries[0]?.params).toEqual(['p1']);
+    sql.nextRows = [{ reply_count: '2' }];
+    expect(await store.countAttributedReplies('p1')).toBe(2);
+    sql.nextRows = [{ reply_count: null }];
+    expect(await store.countAttributedReplies('p1')).toBe(0);
+    sql.nextRows = [{}];
+    expect(await store.countAttributedReplies('p1')).toBe(0);
   });
 
   it('listPostsByAccount selects live top-level notes for the account with replyCount', async () => {
