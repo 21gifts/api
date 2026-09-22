@@ -92,7 +92,7 @@ describe('ensureProfileMessage', () => {
     expect(await messages.getById(result.profileMessageId!)).toBeDefined();
   });
 
-  it('enqueues forum pushes when pushStore is passed', async () => {
+  it('does not enqueue forum pushes when pushStore is passed', async () => {
     const { auth, account } = await seededAccount();
     const messages = new InMemoryMessageStore();
     const pushStore = new InMemoryPushStore();
@@ -112,14 +112,27 @@ describe('ensureProfileMessage', () => {
     });
     expect(result.profileMessageId).toBeTruthy();
     const pending = await pushStore.claimPending(10, now(), 60_000);
-    expect(pending.some((row) => row.type === 'forum')).toBe(true);
+    expect(pending.some((row) => row.type === 'forum')).toBe(false);
   });
 
-  it('creates a forum_post row for a subscriber other than the account', async () => {
+  it('does not create a forum_post row for another subscriber', async () => {
     const { auth, account } = await seededAccount();
     const messages = new InMemoryMessageStore();
     const pushStore = new InMemoryPushStore();
     const notifications = new InMemoryNotificationStore();
+    await auth.createAccount({
+      id: 'other',
+      linkingKey: null,
+      role: 'basis',
+      name: 'Other',
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: 'b'.repeat(64),
+      createdAt: 1,
+      rulesAgreedAt: null,
+    });
     await pushStore.upsertSubscription({
       accountId: 'other',
       endpoint: 'https://push.example/1',
@@ -136,14 +149,10 @@ describe('ensureProfileMessage', () => {
       notifications,
     });
     expect(result.profileMessageId).toBeTruthy();
-    const listed = await notifications.listByRecipient('other', 10);
-    expect(listed).toHaveLength(1);
-    expect(listed[0]?.type).toBe('forum_post');
-    expect(listed[0]?.parentId).toBe(result.profileMessageId);
-    expect(listed[0]?.replyId).toBe(result.profileMessageId);
+    expect(await notifications.listByRecipient('other', 10)).toEqual([]);
     expect(await notifications.listByRecipient('acc', 10)).toEqual([]);
     const pending = await pushStore.claimPending(10, now(), 60_000);
-    expect(pending.some((row) => row.type === 'forum' && row.accountId === 'other')).toBe(true);
+    expect(pending.some((row) => row.type === 'forum' && row.accountId === 'other')).toBe(false);
   });
 
   it('deletes the insert when the account disappears before update', async () => {
@@ -178,18 +187,11 @@ describe('ensureProfileMessage', () => {
     expect(await messages.getById(winnerId)).toBeDefined();
   });
 
-  it('keeps the note when forum push enqueue throws', async () => {
+  it('does not call enqueue when creating the profile note', async () => {
     const { auth, account } = await seededAccount();
     const messages = new InMemoryMessageStore();
     const pushStore = new InMemoryPushStore();
-    await pushStore.upsertSubscription({
-      accountId: 'other',
-      endpoint: 'https://push.example/1',
-      p256dh: 'p',
-      auth: 'a',
-      createdAt: new Date(now()),
-    });
-    vi.spyOn(pushStore, 'enqueue').mockRejectedValueOnce(new Error('fail'));
+    const enqueue = vi.spyOn(pushStore, 'enqueue');
     const result = await ensureProfileMessage({
       auth,
       messages,
@@ -198,7 +200,7 @@ describe('ensureProfileMessage', () => {
       pushStore,
     });
     expect(typeof result.profileMessageId).toBe('string');
-    expect(await messages.getById(result.profileMessageId!)).toBeDefined();
+    expect(enqueue).not.toHaveBeenCalled();
   });
 
   it('deletes the insert when a later write wins the profile pointer', async () => {
