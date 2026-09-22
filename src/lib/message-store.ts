@@ -24,7 +24,6 @@ import type { PostDayCount } from '@/lib/post-stats';
 import { postgresTextArrayLiteral } from '@/lib/postgres-text-array';
 import {
   forumContentFingerprint,
-  stampJpegTakenAt,
   unsignedNostrDefaults,
   type ForumFeedMode,
   type ForumPhoto,
@@ -1415,18 +1414,8 @@ async function backfillMessageFiat(
 }
 
 /** Copy a {@link ForumPhoto} so callers cannot mutate store buffers. */
-function storedPhotoBytes(photo: ForumPhoto): Uint8Array {
-  if (photo.contentType !== 'image/jpeg' || typeof photo.takenAt !== 'string') {
-    return photo.bytes;
-  }
-  return stampJpegTakenAt(photo.bytes, photo.takenAt);
-}
-
 function copyPhoto(photo: ForumPhoto): ForumPhoto {
-  const copy: ForumPhoto = {
-    contentType: photo.contentType,
-    bytes: storedPhotoBytes(photo).slice(),
-  };
+  const copy: ForumPhoto = { contentType: photo.contentType, bytes: photo.bytes.slice() };
   if (photo.takenAt === null || photo.takenAt === undefined) {
     return copy;
   }
@@ -3670,7 +3659,7 @@ export class PostgresMessageStore implements MessageStore {
       stored.accountId,
       stored.name,
       stored.text,
-      photo === undefined ? null : storedPhotoBytes(photo),
+      photo === undefined ? null : photo.bytes,
       photo === undefined ? null : photo.contentType,
       stored.videoContentType,
       stored.createdAt,
@@ -3748,7 +3737,7 @@ export class PostgresMessageStore implements MessageStore {
       try {
         await this.#sql.execute(
           `INSERT INTO message_extra_photo (message_id, idx, photo, photo_content_type, photo_taken_at) VALUES ($1,$2,$3,$4,$5)`,
-          [stored.id, i + 1, storedPhotoBytes(extra), extra.contentType, extra.takenAt ?? null],
+          [stored.id, i + 1, extra.bytes, extra.contentType, extra.takenAt ?? null],
         );
       } catch (err) {
         await this.deleteById(stored.id);
@@ -4104,11 +4093,7 @@ export class PostgresMessageStore implements MessageStore {
   async updatePhoto(id: string, photo: ForumPhoto | null): Promise<MessageRow | undefined> {
     const rows = await this.#sql.query<MessageSqlRow>(
       `UPDATE message SET photo = $2, photo_content_type = $3 WHERE id = $1 RETURNING ${MESSAGE_SELECT_COLUMNS}`,
-      [
-        id,
-        photo === null ? null : storedPhotoBytes(photo),
-        photo === null ? null : photo.contentType,
-      ],
+      [id, photo === null ? null : photo.bytes, photo === null ? null : photo.contentType],
     );
     const row = rows[0];
     return row === undefined ? undefined : mapMessageRow(row);

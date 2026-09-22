@@ -3186,24 +3186,18 @@ describe('InMemoryMessageStore', () => {
     expect(created.photoCount).toBe(2);
     expect(created.hasPhoto).toBe(true);
     expect(created.photoTakenAts).toEqual([photo.takenAt, extra.takenAt]);
-    const stored = await store.getPhoto('a');
-    const storedExtra = await store.getExtraPhoto('a', 1);
-    expect(stored?.takenAt).toBe(photo.takenAt);
-    expect(storedExtra?.takenAt).toBe(extra.takenAt);
-    expect(Buffer.from(stored?.bytes ?? []).toString('latin1')).toContain('2025:06:07 08:09:10');
-    expect(Buffer.from(storedExtra?.bytes ?? []).toString('latin1')).toContain(
-      '2025:06:07 08:09:11',
-    );
+    expect(await store.getPhoto('a')).toEqual(photo);
+    expect(await store.getExtraPhoto('a', 1)).toEqual(extra);
     expect(await store.getExtraPhoto('a', 0)).toBeNull();
     expect(await store.getExtraPhoto('a', 10)).toBeNull();
     const listed = await store.listExtraPhotos('a');
-    expect(listed).toEqual([storedExtra]);
+    expect(listed).toEqual([extra]);
     expect(await store.listExtraPhotoMeta(10)).toEqual([
       {
         messageId: 'a',
         idx: 1,
         photoContentType: 'image/jpeg',
-        bytes: storedExtra?.bytes.byteLength,
+        bytes: extra.bytes.byteLength,
         photoTakenAt: extra.takenAt,
       },
     ]);

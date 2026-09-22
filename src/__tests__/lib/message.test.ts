@@ -12,7 +12,6 @@ import {
   forumPhotoResponse,
   normalizeForumText,
   normalizePhotoTakenAt,
-  stampJpegTakenAt,
   serializeDebugMessage,
   serializeHiddenMessage,
   serializeMessage,
@@ -75,27 +74,6 @@ describe('normalizeForumText', () => {
 
   it('rejects a DEL character', () => {
     expect(normalizeForumText(`hello${String.fromCharCode(127)}`)).toBeNull();
-  });
-});
-
-describe('stampJpegTakenAt', () => {
-  it('writes the civil time into a jpeg and leaves other bytes alone', () => {
-    const jpeg = new Uint8Array([0xff, 0xd8, 0xff, 0xd9]);
-    const stamped = stampJpegTakenAt(jpeg, '2026-09-22T11:40:00+08:00');
-    const text = Buffer.from(stamped).toString('latin1');
-    expect(stamped[0]).toBe(0xff);
-    expect(stamped[1]).toBe(0xd8);
-    expect(stamped[2]).toBe(0xff);
-    expect(stamped[3]).toBe(0xe1);
-    expect(text).toContain('2026:09:22 11:40:00');
-    expect(text).toContain('+08:00');
-    expect(stampJpegTakenAt(stamped, '2026-09-22T11:40:00+08:00')).toBe(stamped);
-    expect(stampJpegTakenAt(jpeg, null)).toBe(jpeg);
-    const png = new Uint8Array([0x89, 0x50]);
-    expect(stampJpegTakenAt(png, '2026-09-22T11:40:00')).toBe(png);
-    const plain = stampJpegTakenAt(jpeg, '2026-09-22T11:40:00');
-    expect(Buffer.from(plain).toString('latin1')).toContain('2026:09:22 11:40:00');
-    expect(Buffer.from(plain).toString('latin1')).not.toContain('+');
   });
 });
 

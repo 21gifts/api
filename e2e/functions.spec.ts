@@ -52,11 +52,6 @@ test('Function: createApp — booted process serves HTTP', async ({ request }) =
   expect(res.status()).toBe(200);
 });
 
-test('Function: stampJpegTakenAt — POST /messages without bearer is 401', async ({ request }) => {
-  const res = await request.post('/messages', { data: { text: 'hi' } });
-  expect(res.status()).toBe(401);
-});
-
 test('Function: normalizePhotoTakenAt — POST /messages without bearer is 401', async ({
   request,
 }) => {

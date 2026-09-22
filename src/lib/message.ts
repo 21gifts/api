@@ -31,8 +31,7 @@ export type ForumFeedMode = 'all' | 'active' | 'unpaid' | 'popular';
 
 /** Opaque keyset cursor JSON before base64url encoding. */
 export type MessageFeedCursorJson =
-  | { k: 't'; c: string; i: string }
-  | { k: 's'; s: number; c: string; i: string };
+  { k: 't'; c: string; i: string } | { k: 's'; s: number; c: string; i: string };
 
 /** Worker publish state for a forum row. */
 export type NostrPublishState = 'pending' | 'published' | 'failed' | 'skipped';
@@ -350,119 +349,6 @@ export function normalizePhotoTakenAt(value: unknown): string | null {
     return null;
   }
   return value;
-}
-
-/**
- * Write a civil capture time into a JPEG as Exif DateTimeOriginal.
- *
- * The stored photo bytes are the file. Canvas re-encode drops the original
- * metadata, so the time is written back before those bytes are saved.
- * A non-JPEG or a time already present in the bytes is left unchanged.
- *
- * @param bytes - Image bytes about to be stored.
- * @param takenAt - Normalized civil time, or null.
- * @returns Bytes that contain the time, or the original buffer.
- */
-export function stampJpegTakenAt(bytes: Uint8Array, takenAt: string | null): Uint8Array {
-  if (takenAt === null || bytes.length < 2 || bytes[0] !== 0xff || bytes[1] !== 0xd8) {
-    return bytes;
-  }
-  const match = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}:\d{2}:\d{2})([+-]\d{2}:\d{2})?$/.exec(takenAt);
-  if (match === null) {
-    return bytes;
-  }
-  const clock = `${match[1]}:${match[2]}:${match[3]} ${match[4]}\0`;
-  if (bytesIncludesAscii(bytes, clock.slice(0, 19))) {
-    return bytes;
-  }
-  const offset = match[5] === undefined ? null : `${match[5]}\0`;
-  const app1 = exifApp1(clock, offset);
-  const out = new Uint8Array(bytes.length + app1.length);
-  out[0] = 0xff;
-  out[1] = 0xd8;
-  out.set(app1, 2);
-  out.set(bytes.subarray(2), 2 + app1.length);
-  return out;
-}
-
-function bytesIncludesAscii(bytes: Uint8Array, text: string): boolean {
-  const needle = text.length;
-  if (needle === 0 || bytes.length < needle) {
-    return false;
-  }
-  for (let i = 0; i <= bytes.length - needle; i += 1) {
-    let found = true;
-    for (let j = 0; j < needle; j += 1) {
-      if (bytes[i + j] !== text.charCodeAt(j)) {
-        found = false;
-        break;
-      }
-    }
-    if (found) {
-      return true;
-    }
-  }
-  return false;
-}
-
-function exifApp1(clock: string, offset: string | null): Uint8Array {
-  const clockBytes = asciiBytes(clock);
-  const offsetBytes = offset === null ? null : asciiBytes(offset);
-  const entryCount = offsetBytes === null ? 1 : 2;
-  const tiffHeader = 8;
-  const ifd0 = 2 + 24 + 4;
-  const clockAt = tiffHeader + ifd0;
-  const exifAt = clockAt + clockBytes.length;
-  const exifSize = 2 + entryCount * 12 + 4;
-  const offsetAt = exifAt + exifSize;
-  const tiffSize = offsetAt + (offsetBytes === null ? 0 : offsetBytes.length);
-  const body = new Uint8Array(6 + tiffSize);
-  body.set(asciiBytes('Exif\0\0'), 0);
-  const view = new DataView(body.buffer);
-  body[6] = 0x49;
-  body[7] = 0x49;
-  view.setUint16(8, 42, true);
-  view.setUint32(10, 8, true);
-  view.setUint16(14, 2, true);
-  writeIfdEntry(view, 16, 0x0132, 2, clockBytes.length, clockAt);
-  writeIfdEntry(view, 28, 0x8769, 4, 1, exifAt);
-  view.setUint32(40, 0, true);
-  body.set(clockBytes, 6 + clockAt);
-  view.setUint16(6 + exifAt, entryCount, true);
-  writeIfdEntry(view, 6 + exifAt + 2, 0x9003, 2, clockBytes.length, clockAt);
-  if (offsetBytes !== null) {
-    writeIfdEntry(view, 6 + exifAt + 14, 0x9011, 2, offsetBytes.length, offsetAt);
-    body.set(offsetBytes, 6 + offsetAt);
-  }
-  view.setUint32(6 + exifAt + 2 + entryCount * 12, 0, true);
-  const segment = new Uint8Array(2 + 2 + body.length);
-  segment[0] = 0xff;
-  segment[1] = 0xe1;
-  new DataView(segment.buffer).setUint16(2, segment.length - 2, false);
-  segment.set(body, 4);
-  return segment;
-}
-
-function writeIfdEntry(
-  view: DataView,
-  offset: number,
-  tag: number,
-  type: number,
-  count: number,
-  value: number,
-): void {
-  view.setUint16(offset, tag, true);
-  view.setUint16(offset + 2, type, true);
-  view.setUint32(offset + 4, count, true);
-  view.setUint32(offset + 8, value, true);
-}
-
-function asciiBytes(text: string): Uint8Array {
-  const out = new Uint8Array(text.length);
-  for (let i = 0; i < text.length; i += 1) {
-    out[i] = text.charCodeAt(i);
-  }
-  return out;
 }
 
 /**
