@@ -165,6 +165,7 @@ describe('POS routes', () => {
 
     const lnurl = await app.request('/.well-known/lnurlp/ada');
     expect(lnurl.status).toBe(200);
+    expect(lnurl.headers.get('Cache-Control')).toBe('no-store');
     const pay = (await lnurl.json()) as {
       minSendable: number;
       maxSendable: number;

@@ -51,7 +51,7 @@
 
 ## Endpoint: GET /.well-known/lnurlp/:username
 
-- **Purpose:** LUD-16 payRequest for `username@21.gifts`. Looks up the stored username, then returns the linked Wallet of Satoshi LNURL-pay JSON. Callback and metadata stay on Wallet of Satoshi so gifts still settle there. While an unexpired pending point-of-sale charge exists, both `minSendable` and `maxSendable` become that amount in millisats (`amountSats * 1000`). CORS `*`.
+- **Purpose:** LUD-16 payRequest for `username@21.gifts`. Looks up the stored username, then returns the linked Wallet of Satoshi LNURL-pay JSON. Callback and metadata stay on Wallet of Satoshi so gifts still settle there. While an unexpired pending point-of-sale charge exists, both `minSendable` and `maxSendable` become that amount in millisats (`amountSats * 1000`). CORS `*`. `Cache-Control: no-store` so a public cache cannot keep the pin or the unpinned range.
 - **Errors:** 404 `{ error: 'Not found' }` when the username is invalid, unknown, or has no linked address; 502 `{ error: 'Lightning Address could not be resolved' }` when WoS is unreachable or the store throws.
 - **Used by:** Lightning wallets paying `username@21.gifts`; app proxies this from the site apex.
 - **Auth:** none.

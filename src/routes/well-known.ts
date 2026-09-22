@@ -39,6 +39,12 @@ const WELL_KNOWN_CORS = {
   'Cache-Control': 'public, max-age=60',
 };
 
+/** LNURL-pay must not be cached: a till pin appears and disappears within minutes. */
+const LNURLP_HEADERS = {
+  ...WELL_KNOWN_CORS,
+  'Cache-Control': 'no-store',
+};
+
 /**
  * Build the `/.well-known` route group.
  *
@@ -65,14 +71,14 @@ export function wellKnownRoutes(deps: WellKnownRouteDeps): Hono {
     .get('/lnurlp/:username', async (c) => {
       const username = normalizeUsername(c.req.param('username'));
       if (username === null) {
-        return c.json({ error: 'Not found' }, 404, WELL_KNOWN_CORS);
+        return c.json({ error: 'Not found' }, 404, LNURLP_HEADERS);
       }
       try {
         const account = await deps.auth.getAccountByUsername(username);
         const linked = account?.lightningAddress?.trim() ?? '';
         if (account === undefined || linked === '') {
           logEvent('lnurlp.unknown', { username });
-          return c.json({ error: 'Not found' }, 404, WELL_KNOWN_CORS);
+          return c.json({ error: 'Not found' }, 404, LNURLP_HEADERS);
         }
         const resolved = await resolveLnurlpDocument({
           address: linked,
@@ -80,7 +86,7 @@ export function wellKnownRoutes(deps: WellKnownRouteDeps): Hono {
         });
         if (!resolved.ok) {
           logEvent('lnurlp.unreachable', { username });
-          return c.json({ error: 'Lightning Address could not be resolved' }, 502, WELL_KNOWN_CORS);
+          return c.json({ error: 'Lightning Address could not be resolved' }, 502, LNURLP_HEADERS);
         }
         logEvent('lnurlp.resolved', { username });
         const pending = await posStore.currentPending(account.id, now());
@@ -89,7 +95,7 @@ export function wellKnownRoutes(deps: WellKnownRouteDeps): Hono {
           const maxSendable = resolved.body['maxSendable'];
           /* v8 ignore start -- resolveLnurlpDocument only yields numeric minSendable and maxSendable */
           if (typeof minSendable !== 'number' || typeof maxSendable !== 'number') {
-            return c.json(resolved.body, 200, WELL_KNOWN_CORS);
+            return c.json(resolved.body, 200, LNURLP_HEADERS);
           }
           /* v8 ignore stop */
           return c.json(
@@ -99,13 +105,13 @@ export function wellKnownRoutes(deps: WellKnownRouteDeps): Hono {
               maxSendable: pending.amountSats * 1000,
             },
             200,
-            WELL_KNOWN_CORS,
+            LNURLP_HEADERS,
           );
         }
-        return c.json(resolved.body, 200, WELL_KNOWN_CORS);
+        return c.json(resolved.body, 200, LNURLP_HEADERS);
       } catch {
         logEvent('lnurlp.failed', { username });
-        return c.json({ error: 'Lightning Address could not be resolved' }, 502, WELL_KNOWN_CORS);
+        return c.json({ error: 'Lightning Address could not be resolved' }, 502, LNURLP_HEADERS);
       }
     });
 }

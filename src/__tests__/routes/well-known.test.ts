@@ -103,6 +103,7 @@ describe('GET /.well-known/lnurlp/:username', () => {
     expect(unpinned.status).toBe(200);
     expect(res.status).toBe(200);
     expect(res.headers.get('Access-Control-Allow-Origin')).toBe('*');
+    expect(res.headers.get('Cache-Control')).toBe('no-store');
     const body = (await res.json()) as { tag: string; callback: string };
     expect(body.tag).toBe('payRequest');
     expect(body.callback).toBe('https://walletofsatoshi.com/lnurlp/callback');

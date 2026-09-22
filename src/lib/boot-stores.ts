@@ -150,7 +150,8 @@ export interface BootFxOptions {
  *
  * Blank or unset URL yields in-memory auth, `giftStore: undefined`,
  * `giftRecorder: undefined`, `messageStore: undefined`,
- * `contactStore: undefined`, `apiLogStore: undefined`,
+ * `contactStore: undefined`, a fresh {@link InMemoryPosStore} as `posStore`,
+ * `apiLogStore: undefined`,
  * `conversationStore: undefined`,
  * `notificationStore: undefined`, `pushStore: undefined`,
  * `trustStore: undefined`, `fundingStore: undefined`, `listDbChange: undefined`,
@@ -158,12 +159,12 @@ export interface BootFxOptions {
  * an empty {@link InMemoryBtcUsdStore}, and an empty {@link InMemoryFiatStore}.
  * A set URL asks `createClient` for one `SqlClient`, migrates auth (via
  * `openAuthStore`) then the FX tables (`btc_usd_daily` then `usd_fiat_daily`),
- * `message`, `contact`, `conversation`, `push`, `notification`, `trust_edge`,
+ * `message`, `contact`, `pos_charge` (via `migratePosSchema`), `conversation`, `push`, `notification`, `trust_edge`,
  * `funding_grant`, `api_log`, and `db_change` schemas (notification after push, trust
  * after notification, funding after trust, `api_log` immediately before
  * `db_change` so `trg_db_change` attaches), builds a {@link QueryGiftStore},
  * {@link SqlGiftRecorder}, {@link PostgresMessageStore},
- * {@link PostgresContactStore}, {@link PostgresConversationStore},
+ * {@link PostgresContactStore}, {@link PostgresPosStore}, {@link PostgresConversationStore},
  * {@link PostgresNotificationStore}, {@link PostgresPushStore},
  * {@link PostgresTrustStore}, and {@link PostgresFundingStore}, parses
  * `NOSTR_NSEC_KEK` into `nostrKek`, constructs {@link PostgresBtcUsdStore} and
@@ -320,26 +321,28 @@ export async function openBootStores(
       );
       const iso = (value: Date | string): string =>
         value instanceof Date ? value.toISOString() : new Date(value).toISOString();
-      return rows.map((row): GiftDebugRow => ({
-        id: Number(row.id),
-        paidAt: iso(row.paid_at),
-        direction: row.direction,
-        currency: row.currency,
-        amountSats: Number(row.amount_sats),
-        amountUsd: row.fiat_usd === null ? null : String(row.fiat_usd),
-        amountChf: row.fiat_chf === null ? null : String(row.fiat_chf),
-        amountEur: row.fiat_eur === null ? null : String(row.fiat_eur),
-        amountPhp: row.fiat_php === null ? null : String(row.fiat_php),
-        feeSats: Number(row.fee_sats),
-        recipientWosUser: row.recipient_wos_user,
-        lightningInvoice: row.lightning_invoice,
-        wosTransactionId: row.wos_transaction_id,
-        description: row.description,
-        pointOfSale: row.point_of_sale === true,
-        wosStatus: row.wos_status,
-        sourceWallet: row.source_wallet,
-        importedAt: iso(row.imported_at),
-      }));
+      return rows.map(
+        (row): GiftDebugRow => ({
+          id: Number(row.id),
+          paidAt: iso(row.paid_at),
+          direction: row.direction,
+          currency: row.currency,
+          amountSats: Number(row.amount_sats),
+          amountUsd: row.fiat_usd === null ? null : String(row.fiat_usd),
+          amountChf: row.fiat_chf === null ? null : String(row.fiat_chf),
+          amountEur: row.fiat_eur === null ? null : String(row.fiat_eur),
+          amountPhp: row.fiat_php === null ? null : String(row.fiat_php),
+          feeSats: Number(row.fee_sats),
+          recipientWosUser: row.recipient_wos_user,
+          lightningInvoice: row.lightning_invoice,
+          wosTransactionId: row.wos_transaction_id,
+          description: row.description,
+          pointOfSale: row.point_of_sale === true,
+          wosStatus: row.wos_status,
+          sourceWallet: row.source_wallet,
+          importedAt: iso(row.imported_at),
+        }),
+      );
     },
   );
   const giftRecorder = new SqlGiftRecorder(giftSql);
