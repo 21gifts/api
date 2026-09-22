@@ -229,6 +229,15 @@ export interface AuthStore {
   /** Look up an account by id, or `undefined` if unknown. */
   getAccount(id: string): Promise<Account | undefined>;
   /**
+   * Up to two stored account ids whose string form starts with `prefix`
+   * (case-insensitive). Does not consult view keys, linking keys, or pubkeys.
+   * Does not require a UUID.
+   *
+   * @param prefix - Hex prefix; lowercased, not trimmed.
+   * @returns At most two id strings in stored form.
+   */
+  listIdsByPrefix(prefix: string): Promise<string[]>;
+  /**
    * Look up an account by its durable view key, or `undefined` if unknown.
    * Used by the public capability URL; never mints a session.
    */
@@ -550,6 +559,27 @@ export class InMemoryAuthStore implements AuthStore {
 
   async getAccount(id: string): Promise<Account | undefined> {
     return this.#accounts.get(id);
+  }
+
+  /**
+   * Up to two stored account ids whose string form starts with `prefix`
+   * (case-insensitive). Scans `#accounts` values only.
+   *
+   * @param prefix - Hex prefix; lowercased, not trimmed.
+   * @returns At most two id strings in stored form.
+   */
+  async listIdsByPrefix(prefix: string): Promise<string[]> {
+    const needle = prefix.toLowerCase();
+    const ids: string[] = [];
+    for (const account of this.#accounts.values()) {
+      if (account.id.toLowerCase().startsWith(needle)) {
+        ids.push(account.id);
+        if (ids.length === 2) {
+          break;
+        }
+      }
+    }
+    return ids;
   }
 
   async getAccountByViewKey(viewKey: string): Promise<Account | undefined> {

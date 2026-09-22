@@ -126,6 +126,7 @@ Public base URLs used in examples:
 | POST   | `/messages`                                          | Bearer                     | Post text/photo; 409 if rules/name/username/Lightning Address missing; 403 text-only below verified       |
 | GET    | `/messages/hidden`                                   | Bearer (moderator+)        | Staff log of soft-hidden notes (session, not DEBUG_TOKEN)                                                 |
 | GET    | `/messages/:id`                                      | none / Bearer (moderator+) | Live public JSON; staff hidden GET includes `deletedAt`/`deletedBy`                                       |
+| GET    | `/links/:code`                                       | none                       | Public 8-hex prefix of exactly one message or account id                                                  |
 | GET    | `/messages/:id/replies`                              | none / Bearer (moderator+) | Live replies; staff `listReplies(..., true)` includes hidden children even under a live parent            |
 | GET    | `/messages/:id/photo`                                | none / Bearer (moderator+) | Live photo bytes; staff hidden bytes `Cache-Control: private, no-store`                                   |
 | GET    | `/messages/:id/video.*`                              | none / Bearer (moderator+) | Live video bytes; staff hidden bytes `Cache-Control: private, no-store`                                   |
@@ -3477,6 +3478,18 @@ Days with no row are filled with `postCount` 0. The series sums to
 
 **Response** `503`: `{ "error": "Post stats are unavailable" }` when the count
 query throws.
+
+### `GET /links/:code`
+
+Public. No Bearer. `:code` is lowercased and not trimmed. Anything other than
+exactly eight hex digits is **400** `{ "error": "invalid_code" }` and does not
+query the stores. Zero matches is **404** `{ "error": "not_found" }`. Two or
+more matches (two messages, two accounts, or one of each) is **409**
+`{ "error": "ambiguous" }` and the body does not list ids. Exactly one message
+is **200** `{ "kind": "message", "id" }` with the id lowercased. Exactly one
+account is **200** `{ "kind": "member", "id" }` with the id lowercased.
+Soft-hidden messages count. The prefix match is case-insensitive and stops at
+two ids per store.
 
 ### `GET /messages/:id`
 

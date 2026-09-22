@@ -272,6 +272,22 @@ export class PostgresAuthStore implements AuthStore {
     return row === undefined ? undefined : mapAccount(row);
   }
 
+  /**
+   * Up to two stored ids whose `lower(id::text)` starts with `$1`.
+   *
+   * @param prefix - Hex prefix; lowercased, not trimmed (`$1`).
+   * @returns At most two id strings.
+   */
+  async listIdsByPrefix(prefix: string): Promise<string[]> {
+    const rows = await this.#sql.query<{ id: string }>(
+      `SELECT id::text AS id FROM account
+       WHERE lower(id::text) LIKE $1 || '%'
+       LIMIT 2`,
+      [prefix.toLowerCase()],
+    );
+    return rows.map((row) => row.id);
+  }
+
   async getAccountByViewKey(viewKey: string): Promise<Account | undefined> {
     const rows = await this.#sql.query<AccountRow>(
       `SELECT ${ACCOUNT_SELECT_COLUMNS}

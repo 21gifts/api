@@ -188,6 +188,7 @@ function throwingStore(overrides: Partial<MessageStore> = {}): MessageStore {
     listDebug: boom,
     postCountsByUtcDay: boom,
     listHidden: boom,
+    listIdsByPrefix: boom,
     listDirectChildren: boom,
     listChildIds: boom,
     listPublishedEventIds: boom,
@@ -2662,6 +2663,7 @@ describe('POST /messages', () => {
       listDebug: (limit) => base.listDebug(limit),
       postCountsByUtcDay: () => base.postCountsByUtcDay(),
       listHidden: (limit) => base.listHidden(limit),
+      listIdsByPrefix: (prefix) => base.listIdsByPrefix(prefix),
       listDirectChildren: (parentId) => base.listDirectChildren(parentId),
       listChildIds: (parentId) => base.listChildIds(parentId),
       listReplies: (parentId, limit, includeHidden) =>
@@ -2771,6 +2773,7 @@ describe('POST /messages', () => {
       listDebug: (limit) => base.listDebug(limit),
       postCountsByUtcDay: () => base.postCountsByUtcDay(),
       listHidden: (limit) => base.listHidden(limit),
+      listIdsByPrefix: (prefix) => base.listIdsByPrefix(prefix),
       listDirectChildren: (parentId) => base.listDirectChildren(parentId),
       listChildIds: (parentId) => base.listChildIds(parentId),
       listReplies: (parentId, limit, includeHidden) =>
@@ -4329,6 +4332,7 @@ describe('POST /messages/:id/invoice', () => {
       listDebug: (limit) => base.listDebug(limit),
       postCountsByUtcDay: () => base.postCountsByUtcDay(),
       listHidden: (limit) => base.listHidden(limit),
+      listIdsByPrefix: (prefix) => base.listIdsByPrefix(prefix),
       listDirectChildren: (parentId) => base.listDirectChildren(parentId),
       listChildIds: (parentId) => base.listChildIds(parentId),
       listReplies: (parentId, limit, includeHidden) =>

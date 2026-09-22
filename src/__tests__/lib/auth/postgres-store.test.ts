@@ -95,6 +95,23 @@ describe('PostgresAuthStore nostr keys', () => {
     );
     expect(ids).toEqual(['f1', 'm1']);
   });
+
+  it('listIdsByPrefix selects matching account ids', async () => {
+    const sql = new MockSql();
+    sql.nextRows = [{ id: 'D70C4763-3033-43da-817a-2c7de9938f27' }];
+    const listed = await new PostgresAuthStore(sql).listIdsByPrefix('D70C4763');
+    expect(sql.queries[0]?.text).toMatch(/SELECT id::text AS id FROM account/);
+    expect(sql.queries[0]?.text).toMatch(/WHERE lower\(id::text\) LIKE \$1 \|\| '%'/);
+    expect(sql.queries[0]?.text).toMatch(/LIMIT 2/);
+    expect(sql.queries[0]?.params).toEqual(['d70c4763']);
+    expect(listed).toEqual(['D70C4763-3033-43da-817a-2c7de9938f27']);
+  });
+
+  it('listIdsByPrefix returns [] when empty', async () => {
+    const sql = new MockSql();
+    sql.nextRows = [];
+    expect(await new PostgresAuthStore(sql).listIdsByPrefix('d70c4763')).toEqual([]);
+  });
 });
 
 describe('migrateAuthSchema', () => {

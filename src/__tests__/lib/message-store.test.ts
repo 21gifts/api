@@ -1540,6 +1540,67 @@ describe('InMemoryMessageStore', () => {
     expect(photoRow).not.toHaveProperty('photo');
   });
 
+  it('listIdsByPrefix returns [] when empty', async () => {
+    expect(await new InMemoryMessageStore().listIdsByPrefix('d70c4763')).toEqual([]);
+  });
+
+  it('listIdsByPrefix matches a mixed-case stored id against a lowercase prefix', async () => {
+    const store = new InMemoryMessageStore([
+      { ...EARLY, id: 'D70C4763-3033-43da-817a-2c7de9938f27' },
+    ]);
+    expect(await store.listIdsByPrefix('d70c4763')).toEqual([
+      'D70C4763-3033-43da-817a-2c7de9938f27',
+    ]);
+  });
+
+  it('listIdsByPrefix matches a lowercase stored id against an uppercase prefix', async () => {
+    const store = new InMemoryMessageStore([
+      { ...EARLY, id: 'd70c4763-3033-43da-817a-2c7de9938f27' },
+    ]);
+    expect(await store.listIdsByPrefix('D70C4763')).toEqual([
+      'd70c4763-3033-43da-817a-2c7de9938f27',
+    ]);
+  });
+
+  it('listIdsByPrefix matches a non-UUID id', async () => {
+    const store = new InMemoryMessageStore([{ ...EARLY, id: 'd70c4763not-a-uuid' }]);
+    expect(await store.listIdsByPrefix('d70c4763')).toEqual(['d70c4763not-a-uuid']);
+  });
+
+  it('listIdsByPrefix includes a soft-hidden row', async () => {
+    const store = new InMemoryMessageStore([
+      {
+        ...EARLY,
+        id: 'd70c4763-3033-43da-817a-2c7de9938f27',
+        deletedAt: new Date('2026-09-01T00:00:00.000Z'),
+        deletedBy: 'staff',
+      },
+    ]);
+    expect(await store.listIdsByPrefix('d70c4763')).toEqual([
+      'd70c4763-3033-43da-817a-2c7de9938f27',
+    ]);
+  });
+
+  it('listIdsByPrefix does not match a different prefix', async () => {
+    const store = new InMemoryMessageStore([
+      { ...EARLY, id: 'd70c4763-3033-43da-817a-2c7de9938f27' },
+    ]);
+    expect(await store.listIdsByPrefix('ffffffff')).toEqual([]);
+  });
+
+  it('listIdsByPrefix stops at two matches', async () => {
+    const store = new InMemoryMessageStore([
+      { ...EARLY, id: 'd70c4763-1' },
+      { ...EARLY, id: 'd70c4763-2' },
+      { ...EARLY, id: 'd70c4763-3' },
+    ]);
+    const ids = await store.listIdsByPrefix('d70c4763');
+    const allowed = ['d70c4763-1', 'd70c4763-2', 'd70c4763-3'];
+    expect(ids).toHaveLength(2);
+    expect(new Set(ids).size).toBe(2);
+    expect(ids.every((id) => allowed.includes(id))).toBe(true);
+  });
+
   it('breaks reply ties by id when createdAt matches', async () => {
     const store = new InMemoryMessageStore([EARLY]);
     const same = new Date('2026-08-01T12:00:00.000Z');
@@ -3826,6 +3887,24 @@ describe('PostgresMessageStore', () => {
     expect(listed[0]).not.toHaveProperty('photo');
     expect(listed[1]?.hasVideo).toBe(true);
     expect(listed[1]?.videoContentType).toBe('video/mp4');
+  });
+
+  it('listIdsByPrefix selects matching ids without photo bytes', async () => {
+    const sql = new MockSql();
+    sql.nextRows = [{ id: 'D70C4763-3033-43da-817a-2c7de9938f27' }];
+    const listed = await new PostgresMessageStore(sql).listIdsByPrefix('D70C4763');
+    expect(sql.queries[0]?.text).toMatch(/SELECT id::text AS id FROM message/);
+    expect(sql.queries[0]?.text).toMatch(/WHERE lower\(id::text\) LIKE \$1 \|\| '%'/);
+    expect(sql.queries[0]?.text).toMatch(/LIMIT 2/);
+    expect(sql.queries[0]?.params).toEqual(['d70c4763']);
+    expect(sql.queries[0]?.text).not.toMatch(/photo/);
+    expect(listed).toEqual(['D70C4763-3033-43da-817a-2c7de9938f27']);
+  });
+
+  it('listIdsByPrefix returns [] when empty', async () => {
+    const sql = new MockSql();
+    sql.nextRows = [];
+    expect(await new PostgresMessageStore(sql).listIdsByPrefix('d70c4763')).toEqual([]);
   });
 
   it('create binds sixteen params including content_fp, video_content_type, parent_id, author_pubkey and goal_sats', async () => {

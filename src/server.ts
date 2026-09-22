@@ -9,6 +9,7 @@ import { SimpleWebAuthnPasskeyCeremony } from '@/lib/auth/webauthn';
 import type { PasskeyCeremony } from '@/lib/auth/webauthn';
 import { meRoutes } from '@/routes/me';
 import { membersRoutes } from '@/routes/members';
+import { linksRoutes } from '@/routes/links';
 import { viewRoutes } from '@/routes/view';
 import { lightningAddressRoutes } from '@/routes/lightning-address';
 import { debugRoutes } from '@/routes/debug';
@@ -373,6 +374,7 @@ export function createApp(deps: AppDeps = {}): Hono {
       fiatRates,
     }),
   );
+  app.route('/links', linksRoutes({ messages: messageStore, accounts: store }));
   app.route(
     '/view',
     viewRoutes({ store, messageStore, giftStore, rates: btcUsdRates, fiatRates, now }),
