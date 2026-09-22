@@ -264,9 +264,8 @@ export function trustRoutes(deps: TrustRouteDeps): Hono {
           try {
             const remaining = await deps.trustStore.listEdgesForSubject(subject.id);
             const live = pendingModeratorProposals([subject], remaining)[0];
-            if (live === undefined) {
-              await clearModeratorProposalNotifications(deps, subject.id);
-            } else {
+            await clearModeratorProposalNotifications(deps, subject.id);
+            if (live !== undefined) {
               await fanOutPendingProposal(deps, subject, live.id);
             }
           } catch {
