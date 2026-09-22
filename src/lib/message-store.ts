@@ -2355,11 +2355,6 @@ export class InMemoryMessageStore implements MessageStore {
           row.amountChf = delta?.chf ?? null;
           row.amountEur = delta?.eur ?? null;
           row.amountPhp = delta?.php ?? null;
-        } else if (oldSats > 0 && oldUsd === null) {
-          row.amountUsd = null;
-          row.amountChf = null;
-          row.amountEur = null;
-          row.amountPhp = null;
         } else if (delta === null) {
           row.amountUsd = null;
           row.amountChf = null;
@@ -4027,29 +4022,25 @@ export class PostgresMessageStore implements MessageStore {
            fiat_usd = CASE
              WHEN $2::bigint = 0 THEN fiat_usd
              WHEN sats = 0 AND fiat_usd IS NULL THEN $3::numeric
-             WHEN sats > 0 AND fiat_usd IS NULL THEN NULL
              WHEN $3::numeric IS NULL THEN NULL
              ELSE fiat_usd + $3::numeric
            END,
            fiat_chf = CASE
              WHEN $2::bigint = 0 THEN fiat_chf
              WHEN sats = 0 AND fiat_usd IS NULL THEN $4::numeric
-             WHEN sats > 0 AND fiat_usd IS NULL THEN NULL
-             WHEN $3::numeric IS NULL THEN NULL
+             WHEN $4::numeric IS NULL THEN NULL
              ELSE fiat_chf + $4::numeric
            END,
            fiat_eur = CASE
              WHEN $2::bigint = 0 THEN fiat_eur
              WHEN sats = 0 AND fiat_usd IS NULL THEN $5::numeric
-             WHEN sats > 0 AND fiat_usd IS NULL THEN NULL
-             WHEN $3::numeric IS NULL THEN NULL
+             WHEN $5::numeric IS NULL THEN NULL
              ELSE fiat_eur + $5::numeric
            END,
            fiat_php = CASE
              WHEN $2::bigint = 0 THEN fiat_php
              WHEN sats = 0 AND fiat_usd IS NULL THEN $6::numeric
-             WHEN sats > 0 AND fiat_usd IS NULL THEN NULL
-             WHEN $3::numeric IS NULL THEN NULL
+             WHEN $6::numeric IS NULL THEN NULL
              ELSE fiat_php + $6::numeric
            END
        WHERE id = $1`,
@@ -4109,29 +4100,25 @@ export class PostgresMessageStore implements MessageStore {
            fiat_usd = CASE
              WHEN inserted.sats = 0 THEN message.fiat_usd
              WHEN message.sats = 0 AND message.fiat_usd IS NULL THEN $4::numeric
-             WHEN message.sats > 0 AND message.fiat_usd IS NULL THEN NULL
              WHEN $4::numeric IS NULL THEN NULL
              ELSE message.fiat_usd + $4::numeric
            END,
            fiat_chf = CASE
              WHEN inserted.sats = 0 THEN message.fiat_chf
              WHEN message.sats = 0 AND message.fiat_usd IS NULL THEN $5::numeric
-             WHEN message.sats > 0 AND message.fiat_usd IS NULL THEN NULL
-             WHEN $4::numeric IS NULL THEN NULL
+             WHEN $5::numeric IS NULL THEN NULL
              ELSE message.fiat_chf + $5::numeric
            END,
            fiat_eur = CASE
              WHEN inserted.sats = 0 THEN message.fiat_eur
              WHEN message.sats = 0 AND message.fiat_usd IS NULL THEN $6::numeric
-             WHEN message.sats > 0 AND message.fiat_usd IS NULL THEN NULL
-             WHEN $4::numeric IS NULL THEN NULL
+             WHEN $6::numeric IS NULL THEN NULL
              ELSE message.fiat_eur + $6::numeric
            END,
            fiat_php = CASE
              WHEN inserted.sats = 0 THEN message.fiat_php
              WHEN message.sats = 0 AND message.fiat_usd IS NULL THEN $7::numeric
-             WHEN message.sats > 0 AND message.fiat_usd IS NULL THEN NULL
-             WHEN $4::numeric IS NULL THEN NULL
+             WHEN $7::numeric IS NULL THEN NULL
              ELSE message.fiat_php + $7::numeric
            END
        FROM inserted

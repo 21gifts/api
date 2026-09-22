@@ -6530,4 +6530,30 @@ describe('message payment fiat snapshot', () => {
       void store.addSats('m-add', 1, { usd: 'nope', chf: null, eur: null, php: null });
     }).toThrow('stored fiat amount must have two decimals');
   });
+
+  it('keeps a stored sibling when a later credit has no dollar amount', async () => {
+    const store = new InMemoryMessageStore([
+      {
+        ...EARLY,
+        id: 'm-sibling',
+        sats: 21,
+        amountUsd: null,
+        amountChf: '4.00',
+        amountEur: null,
+        amountPhp: '1.00',
+      },
+    ]);
+    await store.addSats('m-sibling', 21, {
+      usd: null,
+      chf: '4.00',
+      eur: '1.00',
+      php: null,
+    });
+    const row = await store.getById('m-sibling');
+    expect(row?.sats).toBe(42);
+    expect(row?.amountUsd).toBeNull();
+    expect(row?.amountChf).toBe('8.00');
+    expect(row?.amountEur).toBeNull();
+    expect(row?.amountPhp).toBeNull();
+  });
 });
