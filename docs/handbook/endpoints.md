@@ -806,3 +806,10 @@ Operator inspection of external Nostr identities that have earned visibility or 
 - **Response:** Returns `{ zappers, blocked }`, with lowercase pubkeys, receipt/message references, staff id, and ISO timestamps; both arrays are newest first.
 - **Limits:** Each array is independently capped at 200 rows, matching the other operator debug listings.
 - **Failure:** A store read failure returns 503 `{ "error": "External pubkeys are unavailable" }` and no partial list.
+
+## Endpoint: GET /links/:code
+
+- **Purpose:** Public resolver: an 8-hex prefix of a forum-message UUID or account UUID becomes exactly one full id. Website short links are `https://<origin>/l/<8 hex>` and call this to learn where that code points (`kind` is `message` or `member`).
+- **Errors:** 400 `{ error: 'invalid_code' }` when `:code` is not exactly eight hex digits after `toLowerCase()` (no trim); 404 `{ error: 'not_found' }` when neither store has a match; 409 `{ error: 'ambiguous' }` when two or more ids match (two messages, two accounts, or one of each). No ids in error bodies. No 503 path.
+- **Used by:** Website short-link landing (`/l/<8 hex>`).
+- **Auth:** none. Public. Soft-hidden messages are included; the public message page decides who may see them.

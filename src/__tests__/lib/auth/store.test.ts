@@ -1749,6 +1749,134 @@ describe('InMemoryAuthStore', () => {
     expect(ids.sort()).toEqual(['founder-1', 'mod-1']);
   });
 
+  it('listIdsByPrefix returns [] when empty', async () => {
+    expect(await new InMemoryAuthStore().listIdsByPrefix('d70c4763')).toEqual([]);
+  });
+
+  it('listIdsByPrefix matches a mixed-case stored id against a lowercase prefix', async () => {
+    const store = new InMemoryAuthStore();
+    await store.createAccount({
+      id: 'D70C4763-3033-43da-817a-2c7de9938f27',
+      linkingKey: null,
+      role: 'basis',
+      name: null,
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: 'a'.repeat(64),
+      createdAt: 1,
+      rulesAgreedAt: null,
+    });
+    expect(await store.listIdsByPrefix('d70c4763')).toEqual([
+      'D70C4763-3033-43da-817a-2c7de9938f27',
+    ]);
+  });
+
+  it('listIdsByPrefix matches a lowercase stored id against an uppercase prefix', async () => {
+    const store = new InMemoryAuthStore();
+    await store.createAccount({
+      id: 'd70c4763-3033-43da-817a-2c7de9938f27',
+      linkingKey: null,
+      role: 'basis',
+      name: null,
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: 'a'.repeat(64),
+      createdAt: 1,
+      rulesAgreedAt: null,
+    });
+    expect(await store.listIdsByPrefix('D70C4763')).toEqual([
+      'd70c4763-3033-43da-817a-2c7de9938f27',
+    ]);
+  });
+
+  it('listIdsByPrefix matches a non-UUID id', async () => {
+    const store = new InMemoryAuthStore();
+    await store.createAccount({
+      id: 'd70c4763not-a-uuid',
+      linkingKey: null,
+      role: 'basis',
+      name: null,
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: 'a'.repeat(64),
+      createdAt: 1,
+      rulesAgreedAt: null,
+    });
+    expect(await store.listIdsByPrefix('d70c4763')).toEqual(['d70c4763not-a-uuid']);
+  });
+
+  it('listIdsByPrefix does not match a different prefix', async () => {
+    const store = new InMemoryAuthStore();
+    await store.createAccount({
+      id: 'd70c4763-3033-43da-817a-2c7de9938f27',
+      linkingKey: null,
+      role: 'basis',
+      name: null,
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: 'a'.repeat(64),
+      createdAt: 1,
+      rulesAgreedAt: null,
+    });
+    expect(await store.listIdsByPrefix('ffffffff')).toEqual([]);
+  });
+
+  it('listIdsByPrefix stops at two matches', async () => {
+    const store = new InMemoryAuthStore();
+    await store.createAccount({
+      id: 'd70c4763-1',
+      linkingKey: null,
+      role: 'basis',
+      name: null,
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: 'a'.repeat(64),
+      createdAt: 1,
+      rulesAgreedAt: null,
+    });
+    await store.createAccount({
+      id: 'd70c4763-2',
+      linkingKey: null,
+      role: 'basis',
+      name: null,
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: 'b'.repeat(64),
+      createdAt: 2,
+      rulesAgreedAt: null,
+    });
+    await store.createAccount({
+      id: 'd70c4763-3',
+      linkingKey: null,
+      role: 'basis',
+      name: null,
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: 'c'.repeat(64),
+      createdAt: 3,
+      rulesAgreedAt: null,
+    });
+    const ids = await store.listIdsByPrefix('d70c4763');
+    const allowed = ['d70c4763-1', 'd70c4763-2', 'd70c4763-3'];
+    expect(ids).toHaveLength(2);
+    expect(new Set(ids).size).toBe(2);
+    expect(ids.every((id) => allowed.includes(id))).toBe(true);
+  });
+
   it('claimProfileMessageId sets the pointer only when it still matches', async () => {
     const store = new InMemoryAuthStore();
     expect(await store.claimProfileMessageId('missing', null, 'note-1')).toBe(false);

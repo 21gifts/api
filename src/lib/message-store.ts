@@ -219,6 +219,16 @@ export interface MessageStore {
   listHidden(limit: number): Promise<MessageRow[]>;
 
   /**
+   * Up to two stored message ids whose string form starts with `prefix`
+   * (case-insensitive). Includes soft-hidden rows (`deletedAt` set). Does
+   * not require a UUID.
+   *
+   * @param prefix - Hex prefix; lowercased, not trimmed.
+   * @returns At most two id strings in stored form.
+   */
+  listIdsByPrefix(prefix: string): Promise<string[]>;
+
+  /**
    * Persist a new message row and optional photo, video, and extra stills.
    *
    * When `photo` or `video` is present, `row.accountId` is not null, and
@@ -1561,6 +1571,27 @@ export class InMemoryMessageStore implements MessageStore {
       return b.id.localeCompare(a.id);
     });
     return Promise.resolve(sorted.slice(0, limit).map((row) => this.#withListedMedia(row)));
+  }
+
+  /**
+   * Up to two stored ids whose string form starts with `prefix`
+   * (case-insensitive), including soft-hidden rows.
+   *
+   * @param prefix - Hex prefix; lowercased, not trimmed.
+   * @returns At most two id strings in stored form.
+   */
+  listIdsByPrefix(prefix: string): Promise<string[]> {
+    const needle = prefix.toLowerCase();
+    const ids: string[] = [];
+    for (const row of this.#rows) {
+      if (row.id.toLowerCase().startsWith(needle)) {
+        ids.push(row.id);
+        if (ids.length === 2) {
+          break;
+        }
+      }
+    }
+    return Promise.resolve(ids);
   }
 
   /**
@@ -3026,6 +3057,23 @@ export class PostgresMessageStore implements MessageStore {
       [limit],
     );
     return rows.map((row) => mapMessageRow(row));
+  }
+
+  /**
+   * Up to two stored ids whose `lower(id::text)` starts with `$1`.
+   * Includes soft-hidden rows. Never selects `photo` bytea.
+   *
+   * @param prefix - Hex prefix; lowercased, not trimmed (`$1`).
+   * @returns At most two id strings.
+   */
+  async listIdsByPrefix(prefix: string): Promise<string[]> {
+    const rows = await this.#sql.query<{ id: string }>(
+      `SELECT id::text AS id FROM message
+       WHERE lower(id::text) LIKE $1 || '%'
+       LIMIT 2`,
+      [prefix.toLowerCase()],
+    );
+    return rows.map((row) => row.id);
   }
 
   /**

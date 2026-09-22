@@ -836,3 +836,10 @@ test('GET /debug/external-pubkeys without bearer is 401', async ({ request }) =>
   const res = await request.get('/debug/external-pubkeys');
   expect(res.status()).toBe(401);
 });
+
+test('Function: linksRoutes — GET /links/:code with a non-hex path is 400', async ({ request }) => {
+  const res = await request.get('/links/:code');
+  expect(res.status()).toBe(400);
+  const body = (await res.json()) as { error: string };
+  expect(body.error).toBe('invalid_code');
+});

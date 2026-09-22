@@ -2360,3 +2360,10 @@ Builds the operator-only external-pubkey inspection route.
 - **Inputs:** Constructor takes a shared boot `SqlClient` (already migrated).
 - **Returns / side effects:** Parameter-bound SQL; copies on return. Query and execute errors propagate.
 - **Used by:** `openBootStores` when `DATABASE_URL` is set.
+
+## Function: linksRoutes
+
+- **Purpose:** Public `GET /links/:code`. An 8-hex prefix maps to exactly one forum-message id or account id.
+- **Inputs:** Path param `code` (lowercased, not trimmed). Collaborators `messages.listIdsByPrefix` and `accounts.listIdsByPrefix`.
+- **Returns / side effects:** 400 `{ error: 'invalid_code' }` when `code` is not eight hex digits; 404 `{ error: 'not_found' }` when nothing matches; 409 `{ error: 'ambiguous' }` when two or more ids match (no ids in the body); 200 `{ kind: 'message' | 'member', id }` for exactly one match. No new log event. Soft-hidden messages are included.
+- **Used by:** Website short-link redirect (`/l/<8 hex>` calls this). `createApp`.
