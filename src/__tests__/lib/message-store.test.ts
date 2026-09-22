@@ -1848,6 +1848,11 @@ describe('InMemoryMessageStore', () => {
     expect(await store.updatePhoto('missing', JPEG)).toBeUndefined();
   });
 
+  it('pads a listed photo that has no stored capture time', async () => {
+    const store = new InMemoryMessageStore([{ ...EARLY, hasPhoto: true }]);
+    expect((await store.getById('a'))?.photoTakenAts).toEqual([null]);
+  });
+
   it('getById and claimUnsigned lease a row', async () => {
     const store = new InMemoryMessageStore();
     await store.create(EARLY);
