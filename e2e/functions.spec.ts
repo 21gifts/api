@@ -965,6 +965,13 @@ test('Function: satsToUsdCents — empty stats skip USD conversion', async ({ re
   expect(body.totalUsd).toBe('0.00');
 });
 
+test('Function: shownFiatFromBody — invoice without a session is 401', async ({ request }) => {
+  const res = await request.post('/messages/00000000-0000-4000-8000-000000000001/invoice', {
+    data: { sats: 21, amountUsd: '5.00', amountChf: null, amountEur: null, amountPhp: null },
+  });
+  expect(res.status()).toBe(401);
+});
+
 test('Function: normalizeAmountUsd — empty stats skip USD conversion', async ({ request }) => {
   const res = await request.get('/gifts/stats');
   expect(res.status()).toBe(200);
