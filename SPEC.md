@@ -131,6 +131,7 @@ Public base URLs used in examples:
 | POST   | `/funding/reject`                                    | Bearer (moderator+)        | Reject grant                                                                                                                                 |
 | GET    | `/messages`                                          | Bearer                     | List top-level forum notes (+ visible `replyCount`); 409 if rules missing                                                                    |
 | GET    | `/messages/compose-target`                           | Bearer                     | Platform profile note `{ messageId, sats }` for a 1-sat compose fee to 21.gifts                                                              |
+| GET    | `/messages/places`                                   | Bearer                     | Live top-level forum pins; 409 if rules missing                                                                                              |
 | POST   | `/messages`                                          | Bearer                     | Post text/photo; 409 if rules/name/username/Lightning Address missing; 403 text-only below verified                                          |
 | GET    | `/messages/hidden`                                   | Bearer (moderator+)        | Staff log of soft-hidden notes (session, not DEBUG_TOKEN)                                                                                    |
 | GET    | `/messages/:id`                                      | none / Bearer (moderator+) | Live public JSON; staff hidden GET includes `deletedAt`/`deletedBy`                                                                          |
@@ -2217,8 +2218,9 @@ Operator listing of every persisted forum row (top-level **and** replies,
 live **and** soft-hidden). Authenticated with `Authorization: Bearer`
 matching `DEBUG_TOKEN`. Public hide does not apply. Cap 200, newest-first.
 JSON `{ "messages": [ … ] }` via `serializeDebugMessage`, including
-`nostrEvent`, `claimedUntil`, `contentFp`, photo MIME/byte lengths, and
-stored `goalSats` (JSON `null` when unset). Never includes nsec or
+`nostrEvent`, `claimedUntil`, `contentFp`, photo MIME/byte lengths,
+stored `goalSats` (JSON `null` when unset), and always-present `placeLat`,
+`placeLng`, and `placeLabel` (JSON `null` when unset). Never includes nsec or
 photo/video payloads.
 
 `DEBUG_TOKEN` unset or blank → **Response** `503`:
@@ -2250,7 +2252,9 @@ Operator single-note fetch. Soft-hidden rows are **200** with `deletedAt` /
 
 Same debug token gate as `GET /debug/messages`. Body is the debug object
 (not wrapped), including `nostrEvent`, `claimedUntil`, `contentFp`, photo
-MIME/byte lengths, and stored `goalSats` (JSON `null` when unset). Never
+MIME/byte lengths, stored `goalSats` (JSON `null` when unset), and
+always-present `placeLat`, `placeLng`, and `placeLabel` (JSON `null` when
+unset). Never
 includes nsec or photo/video payloads.
 
 Store throw → **Response** `503`:
