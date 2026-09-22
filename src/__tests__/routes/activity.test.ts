@@ -271,9 +271,12 @@ describe('account activity routes', () => {
     const giftStore = new InMemoryGiftStore([
       { paidAt: new Date(now()), amountSats: 21, recipientWosUser: 'zap' },
     ]);
-    const res = await createApp({ authStore, messageStore, giftStore, now }).request('/me/activity', {
-      headers: AUTH,
-    });
+    const res = await createApp({ authStore, messageStore, giftStore, now }).request(
+      '/me/activity',
+      {
+        headers: AUTH,
+      },
+    );
     expect(res.status).toBe(503);
     expect(await res.json()).toEqual({ error: 'Gift stats are unavailable' });
     expect(parsedEvents(warn).some((e) => e['event'] === 'account.activity.fx_incomplete')).toBe(
