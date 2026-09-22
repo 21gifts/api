@@ -54,6 +54,8 @@ export interface ForumPhoto {
   contentType: ForumPhotoContentType;
   /** Raw image bytes (caller-owned copy). */
   bytes: Uint8Array;
+  /** Civil capture time as sent by the client. Absent means null. */
+  takenAt?: string | null;
 }
 
 /** Persisted forum row (store-internal; includes `accountId`). */
@@ -133,6 +135,11 @@ export interface MessageRow {
    * null; otherwise `null` / omitted. Never included in {@link PublicMessage}.
    */
   contentFp?: string | null;
+  /**
+   * Civil capture times aligned with still index 0..photoCount-1. Missing on
+   * old fixtures means no stored times.
+   */
+  photoTakenAts?: (string | null)[];
 }
 
 /**
@@ -176,6 +183,16 @@ export interface PublicMessage {
    * 1 + extra count. A video poster is photo 0 (`hasPhoto` true, `photoCount` 1).
    */
   photoCount: number;
+  /**
+   * Civil capture times aligned with stills 0..photoCount-1. Always present;
+   * length === photoCount; null slots when unknown; `[]` when no stills.
+   */
+  photoTakenAts: (string | null)[];
+  /**
+   * Civil capture time of the only still. Present only when photoCount === 1
+   * (null allowed). Omitted otherwise.
+   */
+  photoTakenAt?: string | null;
   /** True when a video can be fetched via GET `/messages/:id/video.mp4|.webm|.mov`. */
   hasVideo: boolean;
   /** Stored video MIME when `hasVideo` is true; otherwise `null`. */
@@ -245,6 +262,28 @@ function photoCountOf(row: MessageRow): number {
 }
 
 /**
+ * Public/debug/hidden JSON capture times. Length === photoCount; missing
+ * stored times become that many nulls; no stills → `[]`. `photoTakenAt` is
+ * present only when photoCount === 1.
+ */
+function photoTakenJson(row: MessageRow): {
+  photoTakenAts: (string | null)[];
+  photoTakenAt?: string | null;
+} {
+  const count = photoCountOf(row);
+  const stored = row.photoTakenAts;
+  const photoTakenAts: (string | null)[] = [];
+  for (let i = 0; i < count; i += 1) {
+    const slot = stored === undefined ? undefined : stored[i];
+    photoTakenAts.push(typeof slot === 'string' ? slot : null);
+  }
+  if (count === 1) {
+    return { photoTakenAts, photoTakenAt: photoTakenAts[0] ?? null };
+  }
+  return { photoTakenAts };
+}
+
+/**
  * Public/debug/hidden JSON `goalSats` when the stored value is a positive
  * integer on a top-level note. Omitted on replies and when unset/0.
  */
@@ -254,6 +293,62 @@ function publicGoalSats(row: MessageRow): number | undefined {
   }
   const value = row.goalSats;
   return typeof value === 'number' && Number.isInteger(value) && value > 0 ? value : undefined;
+}
+
+/**
+ * Civil camera capture time as sent by the client. Not converted to UTC.
+ *
+ * Accepts `YYYY-MM-DDTHH:MM:SS` optionally with a `±HH:MM` offset. Rejects
+ * `Z`, fractional seconds, leap seconds, and impossible calendar dates.
+ * A missing or invalid value is `null` (the post still succeeds).
+ *
+ * @param value - Client `takenAt` (any JSON type).
+ * @returns The original string when valid; otherwise `null`. Never appends `Z`.
+ */
+export function normalizePhotoTakenAt(value: unknown): string | null {
+  if (value === null || value === undefined || value === '') {
+    return null;
+  }
+  if (typeof value !== 'string') {
+    return null;
+  }
+  const match = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})([+-]\d{2}:\d{2})?$/.exec(value);
+  if (match === null) {
+    return null;
+  }
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const hour = Number(match[4]);
+  const minute = Number(match[5]);
+  const second = Number(match[6]);
+  const offset = match[7];
+  const maxYear = new Date().getUTCFullYear() + 1;
+  if (year < 1990 || year > maxYear) {
+    return null;
+  }
+  if (month < 1 || month > 12) {
+    return null;
+  }
+  if (hour > 23 || minute > 59 || second > 59) {
+    return null;
+  }
+  if (offset !== undefined) {
+    const offsetHours = Number(offset.slice(1, 3));
+    const offsetMinutes = Number(offset.slice(4, 6));
+    if (offsetHours > 23 || offsetMinutes > 59) {
+      return null;
+    }
+  }
+  const utc = new Date(Date.UTC(year, month - 1, day));
+  if (
+    utc.getUTCFullYear() !== year ||
+    utc.getUTCMonth() !== month - 1 ||
+    utc.getUTCDate() !== day
+  ) {
+    return null;
+  }
+  return value;
 }
 
 /**
@@ -327,7 +422,10 @@ export function truncatePubkeyDisplay(pubkeyHex: string): string {
  * those keys are absent.
  *
  * @returns Public fields (`sats`, `payable`, `hasPhoto`, `photoCount`,
- * `hasVideo`, `videoContentType`; live `role` for 21gifts authors; optional
+ * `photoTakenAts` (always, length === photoCount, nulls when unknown, `[]`
+ * when no stills), optional `photoTakenAt` only when photoCount === 1
+ * (equal to slot 0, null allowed; omitted otherwise), `hasVideo`,
+ * `videoContentType`; live `role` for 21gifts authors; optional
  * `via: 'nostr'` when `row.accountId === null && row.authorPubkey !== null`;
  * optional `accountId` when requested; optional `parentId` when
  * `row.parentId !== null`; optional `goalSats` when the stored value is a
@@ -349,6 +447,7 @@ export function serializeMessage(
     deletedBy: { id: string | null; name: string | null; role: AccountRole | null };
   },
 ): PublicMessage {
+  const taken = photoTakenJson(row);
   const body: PublicMessage = {
     id: row.id,
     name: row.name.trim() === '' ? truncatePubkeyDisplay(row.authorPubkey ?? '') : row.name,
@@ -362,9 +461,13 @@ export function serializeMessage(
     payable: hidden === undefined ? payable : false,
     hasPhoto: row.hasPhoto,
     photoCount: photoCountOf(row),
+    photoTakenAts: taken.photoTakenAts,
     hasVideo: row.hasVideo === true,
     videoContentType: row.videoContentType ?? null,
   };
+  if (taken.photoTakenAt !== undefined) {
+    body.photoTakenAt = taken.photoTakenAt;
+  }
   if (role !== undefined) {
     body.role = role;
   }
@@ -397,8 +500,13 @@ export interface DebugMessagePhotoMeta {
   photoContentType: string | null;
   /** Photo 0 byte length, or `0`. */
   photoBytes: number;
-  /** Extra stills (indices 1–9) with lengths only. */
-  extraPhotos: Array<{ idx: number; photoContentType: string | null; bytes: number }>;
+  /** Extra stills (indices 1–9) with lengths and civil capture time. */
+  extraPhotos: Array<{
+    idx: number;
+    photoContentType: string | null;
+    bytes: number;
+    photoTakenAt: string | null;
+  }>;
 }
 
 /**
@@ -412,8 +520,11 @@ export interface DebugMessagePhotoMeta {
  *
  * @param row - Persisted message (including hidden rows and replies).
  * @param photo - Optional photo 0 / extra-still lengths (defaults: `null` / `0` / `[]`).
- * @returns Debug fields; `createdAt` / `deletedAt` ISO-8601 (`deletedAt` null
- *   when live). `goalSats` is the stored column (JSON `null` when unset).
+ * @returns Debug fields including `photoTakenAts` (always, length ===
+ *   photoCount, nulls when unknown, `[]` when no stills) and `photoTakenAt`
+ *   only when photoCount === 1 (equal to slot 0, null allowed; omitted
+ *   otherwise); `createdAt` / `deletedAt` ISO-8601 (`deletedAt` null when
+ *   live). `goalSats` is the stored column (JSON `null` when unset).
  * @throws RangeError (or Error) when `createdAt` or `deletedAt` is invalid.
  */
 export function serializeDebugMessage(
@@ -421,6 +532,7 @@ export function serializeDebugMessage(
   photo?: DebugMessagePhotoMeta,
 ): Record<string, unknown> {
   const deletedAt = row.deletedAt ?? null;
+  const taken = photoTakenJson(row);
   return {
     id: row.id,
     name: row.name,
@@ -433,6 +545,8 @@ export function serializeDebugMessage(
     amountPhp: row.amountPhp ?? null,
     hasPhoto: row.hasPhoto === true,
     photoCount: photoCountOf(row),
+    photoTakenAts: taken.photoTakenAts,
+    ...(taken.photoTakenAt === undefined ? {} : { photoTakenAt: taken.photoTakenAt }),
     hasVideo: row.hasVideo === true,
     videoContentType: row.videoContentType ?? null,
     parentId: row.parentId ?? null,
@@ -469,10 +583,13 @@ export function serializeDebugMessage(
  * @param row - Persisted message (including hidden rows and replies).
  * @param deletedBy - Resolved deleter `{ id, name, role }` from the route.
  * @returns Hidden-log fields (`id`, `name`, `text`, `createdAt`, `sats`,
- *   media flags, `parentId`, `deletedAt`, `deletedBy`, optional `via`, and
- *   optional `goalSats`); `createdAt` / `deletedAt` are ISO-8601
- *   (`deletedAt` null when live). Optional `goalSats` when the stored value
- *   is a positive integer on a top-level note (omitted otherwise).
+ *   media flags, `photoTakenAts` (always, length === photoCount, nulls when
+ *   unknown, `[]` when no stills), optional `photoTakenAt` only when
+ *   photoCount === 1 (equal to slot 0, null allowed; omitted otherwise),
+ *   `parentId`, `deletedAt`, `deletedBy`, optional `via`, and optional
+ *   `goalSats`); `createdAt` / `deletedAt` are ISO-8601 (`deletedAt` null
+ *   when live). Optional `goalSats` when the stored value is a positive
+ *   integer on a top-level note (omitted otherwise).
  * @throws RangeError (or Error) when `createdAt` or `deletedAt` is invalid.
  */
 export function serializeHiddenMessage(
@@ -481,6 +598,7 @@ export function serializeHiddenMessage(
 ): Record<string, unknown> & { via?: 'nostr' } {
   const deletedAt = row.deletedAt ?? null;
   const goalSats = publicGoalSats(row);
+  const taken = photoTakenJson(row);
   const body: Record<string, unknown> & { via?: 'nostr' } = {
     id: row.id,
     name: row.name,
@@ -493,6 +611,8 @@ export function serializeHiddenMessage(
     amountPhp: row.amountPhp ?? null,
     hasPhoto: row.hasPhoto === true,
     photoCount: photoCountOf(row),
+    photoTakenAts: taken.photoTakenAts,
+    ...(taken.photoTakenAt === undefined ? {} : { photoTakenAt: taken.photoTakenAt }),
     hasVideo: row.hasVideo === true,
     videoContentType: row.videoContentType ?? null,
     parentId: row.parentId ?? null,

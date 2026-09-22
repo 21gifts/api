@@ -23,6 +23,7 @@ import {
   forumContentFingerprint,
   forumPhotoResponse,
   normalizeForumText,
+  normalizePhotoTakenAt,
   serializeHiddenMessage,
   serializeMessage,
   unsignedNostrDefaults,
@@ -740,6 +741,7 @@ const postBody = z
       .object({
         contentType: z.string(),
         data: z.string(),
+        takenAt: z.string().nullish(),
       })
       .optional(),
     photos: z
@@ -747,6 +749,7 @@ const postBody = z
         z.object({
           contentType: z.string(),
           data: z.string(),
+          takenAt: z.string().nullish(),
         }),
       )
       .max(10)
@@ -985,6 +988,7 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
           if (decoded === null) {
             return c.json({ error: 'Photo must be a JPEG, PNG, or WebP under 1 MiB' }, 400);
           }
+          decoded.takenAt = normalizePhotoTakenAt(item.takenAt);
           decodedGallery.push(decoded);
         }
         photo = decodedGallery[0];
@@ -994,6 +998,7 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
         if (decoded === null) {
           return c.json({ error: 'Photo must be a JPEG, PNG, or WebP under 1 MiB' }, 400);
         }
+        decoded.takenAt = normalizePhotoTakenAt(parsed.data.photo.takenAt);
         photo = decoded;
       }
       if (text === '' && photo === undefined) {

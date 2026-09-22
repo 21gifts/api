@@ -11,6 +11,7 @@ import {
   forumContentFingerprint,
   forumPhotoResponse,
   normalizeForumText,
+  normalizePhotoTakenAt,
   serializeDebugMessage,
   serializeHiddenMessage,
   serializeMessage,
@@ -73,6 +74,35 @@ describe('normalizeForumText', () => {
 
   it('rejects a DEL character', () => {
     expect(normalizeForumText(`hello${String.fromCharCode(127)}`)).toBeNull();
+  });
+});
+
+describe('normalizePhotoTakenAt', () => {
+  it('keeps valid offset and naive civil times unchanged', () => {
+    expect(normalizePhotoTakenAt('2024-02-29T23:59:59+05:30')).toBe('2024-02-29T23:59:59+05:30');
+    expect(normalizePhotoTakenAt('2025-06-07T08:09:10')).toBe('2025-06-07T08:09:10');
+  });
+
+  it('returns null for invalid dates, years, types, and a Z suffix', () => {
+    expect(normalizePhotoTakenAt('2026-02-31T12:00:00')).toBeNull();
+    expect(normalizePhotoTakenAt('1989-12-31T23:59:59')).toBeNull();
+    expect(normalizePhotoTakenAt(20250607)).toBeNull();
+    expect(normalizePhotoTakenAt('2025-06-07T08:09:10Z')).toBeNull();
+  });
+
+  it('returns null for missing values and out-of-range date-time fields', () => {
+    const futureYear = new Date().getUTCFullYear() + 2;
+    expect(normalizePhotoTakenAt(null)).toBeNull();
+    expect(normalizePhotoTakenAt(undefined)).toBeNull();
+    expect(normalizePhotoTakenAt('')).toBeNull();
+    expect(normalizePhotoTakenAt(`${futureYear}-01-01T00:00:00`)).toBeNull();
+    expect(normalizePhotoTakenAt('2025-00-01T00:00:00')).toBeNull();
+    expect(normalizePhotoTakenAt('2025-13-01T00:00:00')).toBeNull();
+    expect(normalizePhotoTakenAt('2025-01-01T24:00:00')).toBeNull();
+    expect(normalizePhotoTakenAt('2025-01-01T23:60:00')).toBeNull();
+    expect(normalizePhotoTakenAt('2025-01-01T23:59:60')).toBeNull();
+    expect(normalizePhotoTakenAt('2025-01-01T00:00:00+24:00')).toBeNull();
+    expect(normalizePhotoTakenAt('2025-01-01T00:00:00+23:60')).toBeNull();
   });
 });
 
@@ -157,6 +187,7 @@ describe('serializeMessage', () => {
       payable: true,
       hasPhoto: false,
       photoCount: 0,
+      photoTakenAts: [],
       hasVideo: false,
       videoContentType: null,
       role: 'moderator',
@@ -325,7 +356,10 @@ describe('serializeMessage', () => {
       hasPhoto: false,
       ...unsignedNostrDefaults(),
     };
-    expect(serializeMessage(row, false, 'basis').photoCount).toBe(0);
+    const body = serializeMessage(row, false, 'basis');
+    expect(body.photoCount).toBe(0);
+    expect(body.photoTakenAts).toEqual([]);
+    expect(body).not.toHaveProperty('photoTakenAt');
   });
 
   it('emits photoCount 1 when the row omits photoCount and hasPhoto is true', () => {
@@ -338,7 +372,10 @@ describe('serializeMessage', () => {
       hasPhoto: true,
       ...unsignedNostrDefaults(),
     };
-    expect(serializeMessage(row, false, 'basis').photoCount).toBe(1);
+    const body = serializeMessage(row, false, 'basis');
+    expect(body.photoCount).toBe(1);
+    expect(body.photoTakenAts).toEqual([null]);
+    expect(body.photoTakenAt).toBeNull();
   });
 
   it('emits an explicit photoCount of 3 when hasPhoto is true', () => {
@@ -350,9 +387,13 @@ describe('serializeMessage', () => {
       createdAt: new Date('2026-08-28T12:00:00.000Z'),
       hasPhoto: true,
       photoCount: 3,
+      photoTakenAts: ['2025-06-07T08:09:10', null, '2025-06-07T10:09:10+02:00'],
       ...unsignedNostrDefaults(),
     };
-    expect(serializeMessage(row, false, 'basis').photoCount).toBe(3);
+    const body = serializeMessage(row, false, 'basis');
+    expect(body.photoCount).toBe(3);
+    expect(body.photoTakenAts).toEqual(['2025-06-07T08:09:10', null, '2025-06-07T10:09:10+02:00']);
+    expect(body).not.toHaveProperty('photoTakenAt');
   });
 
   it('includes goalSats when the stored value is a positive integer', () => {
@@ -465,6 +506,8 @@ describe('serializeDebugMessage', () => {
       amountPhp: null,
       hasPhoto: true,
       photoCount: 1,
+      photoTakenAts: [null],
+      photoTakenAt: null,
       hasVideo: true,
       videoContentType: 'video/mp4',
       parentId: 'parent-1',
@@ -515,7 +558,10 @@ describe('serializeDebugMessage', () => {
       hasPhoto: false,
       ...unsignedNostrDefaults(),
     };
-    expect(serializeDebugMessage(row)['photoCount']).toBe(0);
+    const body = serializeDebugMessage(row);
+    expect(body['photoCount']).toBe(0);
+    expect(body['photoTakenAts']).toEqual([]);
+    expect(body).not.toHaveProperty('photoTakenAt');
   });
 
   it('emits photoCount 1 when the row omits photoCount and hasPhoto is true', () => {
@@ -528,7 +574,10 @@ describe('serializeDebugMessage', () => {
       hasPhoto: true,
       ...unsignedNostrDefaults(),
     };
-    expect(serializeDebugMessage(row)['photoCount']).toBe(1);
+    const body = serializeDebugMessage(row);
+    expect(body['photoCount']).toBe(1);
+    expect(body['photoTakenAts']).toEqual([null]);
+    expect(body['photoTakenAt']).toBeNull();
   });
 
   it('emits an explicit photoCount of 3 when hasPhoto is true', () => {
@@ -540,9 +589,13 @@ describe('serializeDebugMessage', () => {
       createdAt: new Date('2026-08-28T12:00:00.000Z'),
       hasPhoto: true,
       photoCount: 3,
+      photoTakenAts: ['2025-06-07T08:09:10', null, null],
       ...unsignedNostrDefaults(),
     };
-    expect(serializeDebugMessage(row)['photoCount']).toBe(3);
+    const body = serializeDebugMessage(row);
+    expect(body['photoCount']).toBe(3);
+    expect(body['photoTakenAts']).toEqual(['2025-06-07T08:09:10', null, null]);
+    expect(body).not.toHaveProperty('photoTakenAt');
   });
 
   it('includes goalSats when the stored value is a positive integer', () => {
@@ -614,6 +667,8 @@ describe('serializeHiddenMessage', () => {
       amountPhp: null,
       hasPhoto: true,
       photoCount: 1,
+      photoTakenAts: [null],
+      photoTakenAt: null,
       hasVideo: true,
       videoContentType: 'video/mp4',
       parentId: 'parent-1',
@@ -706,7 +761,10 @@ describe('serializeHiddenMessage', () => {
       hasPhoto: false,
       ...unsignedNostrDefaults(),
     };
-    expect(serializeHiddenMessage(row, { id: null, name: null, role: null })['photoCount']).toBe(0);
+    const body = serializeHiddenMessage(row, { id: null, name: null, role: null });
+    expect(body['photoCount']).toBe(0);
+    expect(body['photoTakenAts']).toEqual([]);
+    expect(body).not.toHaveProperty('photoTakenAt');
   });
 
   it('emits photoCount 1 when the row omits photoCount and hasPhoto is true', () => {
@@ -719,9 +777,14 @@ describe('serializeHiddenMessage', () => {
       hasPhoto: true,
       ...unsignedNostrDefaults(),
     };
-    expect(
-      serializeHiddenMessage(row, { id: 'staff', name: 'Mod', role: 'moderator' })['photoCount'],
-    ).toBe(1);
+    const body = serializeHiddenMessage(row, {
+      id: 'staff',
+      name: 'Mod',
+      role: 'moderator',
+    });
+    expect(body['photoCount']).toBe(1);
+    expect(body['photoTakenAts']).toEqual([null]);
+    expect(body['photoTakenAt']).toBeNull();
   });
 
   it('emits an explicit photoCount of 3 when hasPhoto is true', () => {
@@ -733,11 +796,17 @@ describe('serializeHiddenMessage', () => {
       createdAt: new Date('2026-08-28T12:00:00.000Z'),
       hasPhoto: true,
       photoCount: 3,
+      photoTakenAts: ['2025-06-07T08:09:10', null, null],
       ...unsignedNostrDefaults(),
     };
-    expect(
-      serializeHiddenMessage(row, { id: 'staff', name: 'Mod', role: 'moderator' })['photoCount'],
-    ).toBe(3);
+    const body = serializeHiddenMessage(row, {
+      id: 'staff',
+      name: 'Mod',
+      role: 'moderator',
+    });
+    expect(body['photoCount']).toBe(3);
+    expect(body['photoTakenAts']).toEqual(['2025-06-07T08:09:10', null, null]);
+    expect(body).not.toHaveProperty('photoTakenAt');
   });
 
   it('includes goalSats when the stored value is a positive integer', () => {

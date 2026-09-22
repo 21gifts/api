@@ -694,11 +694,17 @@ export interface MessageStore {
    * `limit`. Operator dump.
    *
    * @param limit - Maximum rows.
-   * @returns `{ messageId, idx, photoContentType, bytes }` lengths.
+   * @returns `{ messageId, idx, photoContentType, bytes, photoTakenAt }` lengths.
    */
-  listExtraPhotoMeta?(
-    limit: number,
-  ): Promise<Array<{ messageId: string; idx: number; photoContentType: string; bytes: number }>>;
+  listExtraPhotoMeta?(limit: number): Promise<
+    Array<{
+      messageId: string;
+      idx: number;
+      photoContentType: string;
+      bytes: number;
+      photoTakenAt: string | null;
+    }>
+  >;
 
   /**
    * Zap receipts by `eventId` descending, capped at `limit`. Operator dump.
@@ -1097,6 +1103,7 @@ export const MESSAGE_SCHEMA_SQL: readonly string[] = [
   text text NOT NULL,
   photo bytea,
   photo_content_type text,
+  photo_taken_at text,
   created_at timestamptz NOT NULL
 )`,
   `CREATE INDEX IF NOT EXISTS message_created_at_idx ON message (created_at DESC, id DESC)`,
@@ -1257,10 +1264,13 @@ WHERE message.id = ranked.id AND ranked.rn > 1`,
   idx smallint NOT NULL,
   photo bytea NOT NULL,
   photo_content_type text NOT NULL,
+  photo_taken_at text,
   PRIMARY KEY (message_id, idx),
   CONSTRAINT message_extra_photo_idx_range CHECK (idx >= 1 AND idx <= 9)
 )`,
   `ALTER TABLE message ADD COLUMN IF NOT EXISTS goal_sats bigint`,
+  `ALTER TABLE message ADD COLUMN IF NOT EXISTS photo_taken_at text`,
+  `ALTER TABLE message_extra_photo ADD COLUMN IF NOT EXISTS photo_taken_at text`,
   `CREATE INDEX IF NOT EXISTS message_feed_created_idx ON message (created_at DESC, id DESC) WHERE parent_id IS NULL AND deleted_at IS NULL`,
   `CREATE INDEX IF NOT EXISTS message_feed_popular_idx ON message (sats DESC, created_at DESC, id DESC) WHERE parent_id IS NULL AND deleted_at IS NULL AND sats > 0`,
   `DO $unwrap$
@@ -1405,7 +1415,39 @@ async function backfillMessageFiat(
 
 /** Copy a {@link ForumPhoto} so callers cannot mutate store buffers. */
 function copyPhoto(photo: ForumPhoto): ForumPhoto {
-  return { contentType: photo.contentType, bytes: photo.bytes.slice() };
+  const copy: ForumPhoto = { contentType: photo.contentType, bytes: photo.bytes.slice() };
+  if (photo.takenAt === null || photo.takenAt === undefined) {
+    return copy;
+  }
+  copy.takenAt = photo.takenAt;
+  return copy;
+}
+
+/** Civil capture times of length `photoCount` (null slots when omitted). */
+function padPhotoTakenAts(
+  stored: (string | null)[] | undefined,
+  photoCount: number,
+): (string | null)[] {
+  if (photoCount === 0) {
+    return [];
+  }
+  const times: (string | null)[] = [];
+  for (let i = 0; i < photoCount; i += 1) {
+    const slot = stored === undefined ? undefined : stored[i];
+    times.push(typeof slot === 'string' ? slot : null);
+  }
+  return times;
+}
+
+/** Capture times stored on create (video already cleared extras). */
+function photoTakenAtsForCreate(
+  photo: ForumPhoto | undefined,
+  extras: readonly ForumPhoto[],
+): (string | null)[] {
+  if (photo === undefined) {
+    return [];
+  }
+  return [photo.takenAt ?? null, ...extras.map((item) => item.takenAt ?? null)];
 }
 
 /** Exclusive keyset predicate matching Postgres `(created_at, id) <` / `(sats, created_at, id) <`. */
@@ -1434,6 +1476,7 @@ function matchesFeedCursor(row: MessageRow, query: MessageFeedQuery): boolean {
 /** Copy a row so callers cannot mutate store internals. */
 function copyRow(row: MessageRow): MessageRow {
   const deletedAt = row.deletedAt ?? null;
+  const photoTakenAts = row.photoTakenAts;
   return {
     ...row,
     hasPhoto: row.hasPhoto === true,
@@ -1450,6 +1493,7 @@ function copyRow(row: MessageRow): MessageRow {
     deletedAt: deletedAt === null ? null : new Date(deletedAt.getTime()),
     deletedBy: row.deletedBy ?? null,
     nostrEvent: row.nostrEvent === null ? null : { ...row.nostrEvent },
+    photoTakenAts: photoTakenAts === undefined ? undefined : [...photoTakenAts],
   };
 }
 
@@ -1561,6 +1605,7 @@ export class InMemoryMessageStore implements MessageStore {
     copy.hasVideo = row.hasVideo === true;
     copy.videoContentType = row.videoContentType ?? null;
     copy.photoCount = (hasPhoto0 ? 1 : 0) + (this.#extraPhotos.get(row.id)?.length ?? 0);
+    copy.photoTakenAts = padPhotoTakenAts(row.photoTakenAts, copy.photoCount);
     return copy;
   }
 
@@ -1885,6 +1930,7 @@ export class InMemoryMessageStore implements MessageStore {
       amountChf: snapshot?.chf ?? null,
       amountEur: snapshot?.eur ?? null,
       amountPhp: snapshot?.php ?? null,
+      photoTakenAts: photoTakenAtsForCreate(photo, extras),
     });
     stored.goalSats = stored.parentId !== null ? null : (stored.goalSats ?? null);
     if (stored.parentId !== null) {
@@ -2448,14 +2494,21 @@ export class InMemoryMessageStore implements MessageStore {
     return Promise.resolve(sorted.slice(0, limit).map((row) => copyZapIngest(row)));
   }
 
-  listExtraPhotoMeta(
-    limit: number,
-  ): Promise<Array<{ messageId: string; idx: number; photoContentType: string; bytes: number }>> {
+  listExtraPhotoMeta(limit: number): Promise<
+    Array<{
+      messageId: string;
+      idx: number;
+      photoContentType: string;
+      bytes: number;
+      photoTakenAt: string | null;
+    }>
+  > {
     const rows: Array<{
       messageId: string;
       idx: number;
       photoContentType: string;
       bytes: number;
+      photoTakenAt: string | null;
     }> = [];
     for (const [messageId, extras] of this.#extraPhotos) {
       extras.forEach((photo, index) => {
@@ -2464,6 +2517,7 @@ export class InMemoryMessageStore implements MessageStore {
           idx: index + 1,
           photoContentType: photo.contentType,
           bytes: photo.bytes.byteLength,
+          photoTakenAt: photo.takenAt ?? null,
         });
       });
     }
@@ -2996,6 +3050,8 @@ interface MessageSqlRow {
   deleted_at?: Date | string | null;
   deleted_by?: string | null;
   reply_count?: string | number | null;
+  photo_taken_at?: string | null;
+  extra_photo_taken_ats?: unknown;
 }
 
 function optionalDate(value: Date | string | null | undefined): number | null {
@@ -3009,6 +3065,7 @@ function optionalDate(value: Date | string | null | undefined): number | null {
 interface MessagePhotoSqlRow {
   photo: Uint8Array | Buffer | number[] | null;
   photo_content_type: string | null;
+  photo_taken_at?: string | null;
 }
 
 const FORUM_PHOTO_TYPES: ReadonlySet<string> = new Set(['image/jpeg', 'image/png', 'image/webp']);
@@ -3020,10 +3077,50 @@ function parseVideoContentType(value: string | null | undefined): ForumVideoCont
   return null;
 }
 
+/** Extra still capture times from `json_agg` (string or already-parsed). */
+function parseExtraPhotoTakenAts(value: unknown): (string | null)[] {
+  const raw = value ?? [];
+  if (typeof raw === 'string') {
+    try {
+      const parsed: unknown = JSON.parse(raw);
+      if (!Array.isArray(parsed)) {
+        return [];
+      }
+      return parsed.map((item) => (typeof item === 'string' ? item : null));
+    } catch {
+      return [];
+    }
+  }
+  if (!Array.isArray(raw)) {
+    return [];
+  }
+  return raw.map((item) => (typeof item === 'string' ? item : null));
+}
+
+/** Build `photoTakenAts` of length `photoCount` from SQL columns. */
+function mapPhotoTakenAts(
+  photoCount: number,
+  photoTakenAt: string | null | undefined,
+  extraRaw: unknown,
+): (string | null)[] {
+  if (photoCount === 0) {
+    return [];
+  }
+  const extras = parseExtraPhotoTakenAts(extraRaw);
+  const slot0 = typeof photoTakenAt === 'string' ? photoTakenAt : null;
+  const times: (string | null)[] = [slot0];
+  for (let i = 1; i < photoCount; i += 1) {
+    const extra = extras[i - 1];
+    times.push(typeof extra === 'string' ? extra : null);
+  }
+  return times;
+}
+
 /** Map a SQL list row onto {@link MessageRow}. Unexported. */
 function mapMessageRow(row: MessageSqlRow): MessageRow {
   const defaults = unsignedNostrDefaults();
   const state = row.nostr_publish_state;
+  const photoCount = Number(row.photo_count ?? (row.has_photo ? 1 : 0));
   return {
     id: row.id,
     accountId: row.account_id,
@@ -3031,7 +3128,7 @@ function mapMessageRow(row: MessageSqlRow): MessageRow {
     text: row.text,
     createdAt: row.created_at instanceof Date ? row.created_at : new Date(row.created_at),
     hasPhoto: Boolean(row.has_photo),
-    photoCount: Number(row.photo_count ?? (row.has_photo ? 1 : 0)),
+    photoCount,
     hasVideo:
       row.video_content_type !== null &&
       row.video_content_type !== undefined &&
@@ -3063,6 +3160,7 @@ function mapMessageRow(row: MessageSqlRow): MessageRow {
           ? row.deleted_at
           : new Date(row.deleted_at),
     deletedBy: row.deleted_by ?? null,
+    photoTakenAts: mapPhotoTakenAts(photoCount, row.photo_taken_at, row.extra_photo_taken_ats),
   };
 }
 
@@ -3084,7 +3182,16 @@ const MESSAGE_SELECT_COLUMNS = `id, account_id, name, text, created_at,
               fiat_usd::text AS fiat_usd, fiat_chf::text AS fiat_chf,
               fiat_eur::text AS fiat_eur, fiat_php::text AS fiat_php,
               nostr_event, claimed_until, nostr_first_attempt_at, nostr_publish_epoch, nostr_attempts,
-              content_fp, deleted_at, deleted_by`;
+              content_fp, deleted_at, deleted_by,
+              photo_taken_at,
+              COALESCE(
+                (
+                  SELECT json_agg(e.photo_taken_at ORDER BY e.idx)
+                  FROM message_extra_photo e
+                  WHERE e.message_id = message.id
+                ),
+                '[]'::json
+              ) AS extra_photo_taken_ats`;
 
 /**
  * Durable {@link MessageStore} backed by Postgres.
@@ -3538,6 +3645,7 @@ export class PostgresMessageStore implements MessageStore {
       amountChf: snapshot?.chf ?? null,
       amountEur: snapshot?.eur ?? null,
       amountPhp: snapshot?.php ?? null,
+      photoTakenAts: photoTakenAtsForCreate(photo, extras),
     });
     stored.goalSats = stored.parentId !== null ? null : (stored.goalSats ?? null);
     if (video !== undefined) {
@@ -3564,6 +3672,7 @@ export class PostgresMessageStore implements MessageStore {
       stored.amountChf ?? null,
       stored.amountEur ?? null,
       stored.amountPhp ?? null,
+      photo === undefined ? null : (photo.takenAt ?? null),
     ];
     try {
       if (stored.parentId !== null) {
@@ -3571,10 +3680,10 @@ export class PostgresMessageStore implements MessageStore {
           `INSERT INTO message (
            id, account_id, name, text, photo, photo_content_type, video_content_type, created_at,
            nostr_publish_state, sats, parent_id, author_pubkey, event_id, nostr_event, content_fp, goal_sats,
-           fiat_usd, fiat_chf, fiat_eur, fiat_php
+           fiat_usd, fiat_chf, fiat_eur, fiat_php, photo_taken_at
          )
          SELECT $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14::jsonb,$15,$16,
-                $17::numeric,$18::numeric,$19::numeric,$20::numeric
+                $17::numeric,$18::numeric,$19::numeric,$20::numeric,$21
          WHERE EXISTS (SELECT 1 FROM message p WHERE p.id = $11 AND p.deleted_at IS NULL)
          RETURNING id`,
           params,
@@ -3591,10 +3700,10 @@ export class PostgresMessageStore implements MessageStore {
           `INSERT INTO message (
            id, account_id, name, text, photo, photo_content_type, video_content_type, created_at,
            nostr_publish_state, sats, parent_id, author_pubkey, event_id, nostr_event, content_fp, goal_sats,
-           fiat_usd, fiat_chf, fiat_eur, fiat_php
+           fiat_usd, fiat_chf, fiat_eur, fiat_php, photo_taken_at
          ) VALUES (
            $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14::jsonb,$15,$16,
-           $17::numeric,$18::numeric,$19::numeric,$20::numeric
+           $17::numeric,$18::numeric,$19::numeric,$20::numeric,$21
          )`,
           params,
         );
@@ -3624,8 +3733,8 @@ export class PostgresMessageStore implements MessageStore {
     for (const [i, extra] of extras.entries()) {
       try {
         await this.#sql.execute(
-          `INSERT INTO message_extra_photo (message_id, idx, photo, photo_content_type) VALUES ($1,$2,$3,$4)`,
-          [stored.id, i + 1, extra.bytes, extra.contentType],
+          `INSERT INTO message_extra_photo (message_id, idx, photo, photo_content_type, photo_taken_at) VALUES ($1,$2,$3,$4,$5)`,
+          [stored.id, i + 1, extra.bytes, extra.contentType, extra.takenAt ?? null],
         );
       } catch (err) {
         await this.deleteById(stored.id);
@@ -4235,16 +4344,23 @@ export class PostgresMessageStore implements MessageStore {
     return rows.map((row) => mapZapIngestRow(row));
   }
 
-  async listExtraPhotoMeta(
-    limit: number,
-  ): Promise<Array<{ messageId: string; idx: number; photoContentType: string; bytes: number }>> {
+  async listExtraPhotoMeta(limit: number): Promise<
+    Array<{
+      messageId: string;
+      idx: number;
+      photoContentType: string;
+      bytes: number;
+      photoTakenAt: string | null;
+    }>
+  > {
     const rows = await this.#sql.query<{
       message_id: string;
       idx: number | string;
       photo_content_type: string;
       bytes: number | string;
+      photo_taken_at?: string | null;
     }>(
-      `SELECT message_id, idx, photo_content_type, octet_length(photo) AS bytes
+      `SELECT message_id, idx, photo_content_type, octet_length(photo) AS bytes, photo_taken_at
        FROM message_extra_photo
        ORDER BY (SELECT created_at FROM message m WHERE m.id = message_extra_photo.message_id) DESC NULLS LAST,
                 idx ASC
@@ -4256,6 +4372,7 @@ export class PostgresMessageStore implements MessageStore {
       idx: Number(row.idx),
       photoContentType: row.photo_content_type,
       bytes: Number(row.bytes),
+      photoTakenAt: typeof row.photo_taken_at === 'string' ? row.photo_taken_at : null,
     }));
   }
 
@@ -4714,7 +4831,7 @@ export class PostgresMessageStore implements MessageStore {
    */
   async getPhoto(id: string): Promise<ForumPhoto | null> {
     const rows = await this.#sql.query<MessagePhotoSqlRow>(
-      `SELECT photo, photo_content_type FROM message WHERE id = $1`,
+      `SELECT photo, photo_content_type, photo_taken_at FROM message WHERE id = $1`,
       [id],
     );
     const row = rows[0];
@@ -4724,10 +4841,14 @@ export class PostgresMessageStore implements MessageStore {
     if (!FORUM_PHOTO_TYPES.has(row.photo_content_type)) {
       return null;
     }
-    return {
+    const photo: ForumPhoto = {
       contentType: row.photo_content_type as ForumPhotoContentType,
       bytes: toUint8Array(row.photo),
     };
+    if (typeof row.photo_taken_at === 'string') {
+      photo.takenAt = row.photo_taken_at;
+    }
+    return photo;
   }
 
   /**
@@ -4742,7 +4863,7 @@ export class PostgresMessageStore implements MessageStore {
       return null;
     }
     const rows = await this.#sql.query<MessagePhotoSqlRow>(
-      `SELECT photo, photo_content_type FROM message_extra_photo WHERE message_id = $1 AND idx = $2`,
+      `SELECT photo, photo_content_type, photo_taken_at FROM message_extra_photo WHERE message_id = $1 AND idx = $2`,
       [id, index],
     );
     const row = rows[0];
@@ -4752,10 +4873,14 @@ export class PostgresMessageStore implements MessageStore {
     if (!FORUM_PHOTO_TYPES.has(row.photo_content_type)) {
       return null;
     }
-    return {
+    const photo: ForumPhoto = {
       contentType: row.photo_content_type as ForumPhotoContentType,
       bytes: toUint8Array(row.photo),
     };
+    if (typeof row.photo_taken_at === 'string') {
+      photo.takenAt = row.photo_taken_at;
+    }
+    return photo;
   }
 
   /**
@@ -4766,7 +4891,7 @@ export class PostgresMessageStore implements MessageStore {
    */
   async listExtraPhotos(id: string): Promise<ForumPhoto[]> {
     const rows = await this.#sql.query<MessagePhotoSqlRow & { idx: number | string }>(
-      `SELECT idx, photo, photo_content_type FROM message_extra_photo WHERE message_id = $1 ORDER BY idx ASC`,
+      `SELECT idx, photo, photo_content_type, photo_taken_at FROM message_extra_photo WHERE message_id = $1 ORDER BY idx ASC`,
       [id],
     );
     const extras: ForumPhoto[] = [];
@@ -4777,10 +4902,14 @@ export class PostgresMessageStore implements MessageStore {
       if (!FORUM_PHOTO_TYPES.has(row.photo_content_type)) {
         continue;
       }
-      extras.push({
+      const photo: ForumPhoto = {
         contentType: row.photo_content_type as ForumPhotoContentType,
         bytes: toUint8Array(row.photo),
-      });
+      };
+      if (typeof row.photo_taken_at === 'string') {
+        photo.takenAt = row.photo_taken_at;
+      }
+      extras.push(photo);
     }
     return extras;
   }
