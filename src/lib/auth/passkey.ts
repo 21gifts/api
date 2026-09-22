@@ -476,7 +476,7 @@ export async function startPasskeyReplace(
  * @param challengeId - Id returned by {@link startPasskeyReplace}.
  * @param credential - Browser attestation JSON.
  * @param account - Signed-in account from the Bearer session.
- * @returns The same account, or a 400 error string.
+ * @returns `{ ok: true, account }` or `{ ok: false, error: string }`. Does not mint a session.
  */
 export async function finishPasskeyReplace(
   store: AuthStore,
