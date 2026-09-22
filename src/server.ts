@@ -51,6 +51,7 @@ import { resolveVapidConfig } from '@/lib/push-config';
 import { InMemoryPushStore, type PushStore } from '@/lib/push-store';
 import { InMemoryTrustStore, type TrustStore } from '@/lib/trust-store';
 import { InMemoryFundingStore, type FundingStore } from '@/lib/funding-store';
+import { PostRateLimiter } from '@/lib/nostr/rate-limit';
 import { resolveAllowedOrigins } from '@/lib/config';
 import { UnconfiguredInvoicePayer } from '@/lib/invoice-payer';
 import type { InvoicePayer } from '@/lib/invoice-payer';
@@ -143,6 +144,12 @@ export interface AppDeps {
    * `POST /conversations/:id` still 200.
    */
   spendPing?: SpendPing;
+  /**
+   * Forum post limiter shared with zap compose ingest (default: a new
+   * {@link PostRateLimiter}). Boot injects one instance into both
+   * `messagesRoutes` and the Nostr worker.
+   */
+  postLimiter?: PostRateLimiter;
   /** Gift invoices issued for the spend worker (default: in-memory). */
   invoiceStore?: InvoiceStore;
   /**
@@ -241,8 +248,10 @@ function debugList(store: object, limit: number): Promise<unknown[]> {
  *   gift recorder, BTC-USD rates, USD-fiat rates, message store, contact store,
  *   conversation store, notification store, push store, trust store,
  *   funding store (injected into `/funding`, `/me`, `/auth`, `/members`,
- *   `/messages`, `/conversations`, and `/invoices`), vapidPublicKey, nostrKek,
- *   nostrPublisher, env, WebAuthn RP, spend token, spend ping, gift invoice store, and listDbChange.
+ *   `/messages`, `/conversations`, `/invoices`, and `debugPaymentsRoutes`), vapidPublicKey, nostrKek,
+ *   nostrPublisher, env, WebAuthn RP, spend token, spend ping, postLimiter
+ *   (optional; default `new PostRateLimiter()`, shared with `messagesRoutes`
+ *   and the Nostr worker), gift invoice store, and listDbChange.
  * @returns A Hono app with all routes and middleware attached.
  */
 export function createApp(deps: AppDeps = {}): Hono {
@@ -272,6 +281,7 @@ export function createApp(deps: AppDeps = {}): Hono {
   const passkeyCeremony = deps.passkeyCeremony ?? new SimpleWebAuthnPasskeyCeremony();
   const spendApiToken = deps.spendApiToken ?? process.env['SPEND_API_TOKEN'];
   const spendPing = deps.spendPing ?? resolveSpendPing(process.env, fetchImpl);
+  const postLimiter = deps.postLimiter ?? new PostRateLimiter();
   const invoiceStore = deps.invoiceStore ?? new InMemoryInvoiceStore();
   const giftRecorder = deps.giftRecorder;
 
@@ -389,6 +399,8 @@ export function createApp(deps: AppDeps = {}): Hono {
       debugToken,
       pushStore,
       notificationStore,
+      ...(spendPing === undefined ? {} : { spendPing }),
+      fundingStore,
     }),
   );
   app.route(
@@ -461,6 +473,7 @@ export function createApp(deps: AppDeps = {}): Hono {
       ...(nostrKek === undefined ? {} : { nostrKek }),
       ...(deps.nostrPublisher === undefined ? {} : { nostrPublisher: deps.nostrPublisher }),
       ...(spendPing === undefined ? {} : { spendPing }),
+      postLimiter,
     }),
   );
   app.route(

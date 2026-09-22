@@ -160,6 +160,11 @@ test('GET /messages without bearer is 401', async ({ request }) => {
   expect(res.status()).toBe(401);
 });
 
+test('GET /messages/compose-target without bearer is 401', async ({ request }) => {
+  const res = await request.get('/messages/compose-target');
+  expect(res.status()).toBe(401);
+});
+
 test('GET /messages/hidden without bearer is 401', async ({ request }) => {
   const res = await request.get('/messages/hidden');
   expect(res.status()).toBe(401);

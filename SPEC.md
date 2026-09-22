@@ -118,7 +118,8 @@ Public base URLs used in examples:
 | POST   | `/funding/admit`                                     | Bearer (moderator+)        | Admit grant                                                                                               |
 | POST   | `/funding/reject`                                    | Bearer (moderator+)        | Reject grant                                                                                              |
 | GET    | `/messages`                                          | Bearer                     | List top-level forum notes (+ visible `replyCount`); 409 if rules missing                                 |
-| POST   | `/messages`                                          | Bearer                     | Post text/photo; 409 if rules/name/username/Lightning Address missing                                     |
+| GET    | `/messages/compose-target`                           | Bearer                     | Platform profile note `{ messageId, sats }` for a 1-sat compose fee to 21.gifts                           |
+| POST   | `/messages`                                          | Bearer                     | Post text/photo; 409 if rules/name/username/Lightning Address missing; 403 unpaid below verified          |
 | GET    | `/messages/hidden`                                   | Bearer (moderator+)        | Staff log of soft-hidden notes (session, not DEBUG_TOKEN)                                                 |
 | GET    | `/messages/:id`                                      | none / Bearer (moderator+) | Live public JSON; staff hidden GET includes `deletedAt`/`deletedBy`                                       |
 | GET    | `/messages/:id/replies`                              | none / Bearer (moderator+) | Live replies; staff `listReplies(..., true)` includes hidden children even under a live parent            |
@@ -1839,9 +1840,16 @@ Success → **Response** `200` (never includes the note or preimage):
 
 The route claims the payment hash, credits the message once, and directly
 persists an indexed synthetic kind:9735 ingest with `manual=debug-settle` and
-the note (plus `preimage` only when it was supplied and verified). It then runs
-the normal zap notification fan-out and inserts the payer gift-reply from the
-original zap request. If credit succeeded but the ingest write failed, that
+the note (plus `preimage` only when it was supplied and verified). On a member
+note it then fans out `notifyZap` and inserts the payer gift-reply from the
+original zap request. On the official platform profile note it skips
+`notifyZap` and treats the zap comment as a compose post/reply (`sats` 0)
+gated by `forum.post` only (`DEBUG_TOKEN` settle does not pass `postLimiter`;
+limiter denial applies to worker ingest that shares the `POST /messages`
+limiter). Missing `forum.post` fields dequeue the receipt without creating a row.
+A created top-level post fans out `notifyForumPost` and `spendPing` only
+when `eligibleToday` (same gate as `POST /messages`; ineligible logs
+`spend.ping.skipped` / `not_eligible`), a reply fans out `notifyForumReply`. If credit succeeded but the ingest write failed, that
 failure returns 503; a retry writes the missing ingest from the current
 request, runs the post-credit effects, returns `resumed: true`, and does not
 credit again. Fresh success returns `resumed: false`.
@@ -1852,7 +1860,8 @@ receipt is persisted as `rejected` / `settled`. A payment hash already owned by
 another receipt or represented by any indexed ingest cannot be settled
 manually. If payer lookup throws after credit, the route still succeeds: it
 logs the gift-reply failure, omits payer fields from the notification, and
-skips the gift-reply.
+skips the gift-reply. Note-author lookup runs **before** `claimZapPayment`;
+a throw there fails the settle with no claim, receipt, or ingest.
 
 Failures:
 
@@ -1864,7 +1873,7 @@ Failures:
 - conversation invoice → `409 { "error": "Conversation invoices cannot be settled" }`
 - missing/hidden target message → `404 { "error": "Message not found" }`
 - already indexed/settled payment → `409 { "error": "Already settled" }`
-- store failure, including the direct ingest write → `503 { "error": "Messages are unavailable" }`
+- store failure, including the direct ingest write, or a thrown note-author lookup → `503 { "error": "Messages are unavailable" }`
 
 `DEBUG_TOKEN` unset/blank returns 503; a missing or bad Bearer returns 401.
 The payment-hash claim and credit are not one transaction, but the claim
@@ -2735,8 +2744,10 @@ column.
 The nostr worker, each tick, queries zap relays (space plus the public
 list, including when `NOSTR_PUBLISH_PUBLIC` is unset) for kind:9735
 receipts whose `e` tag matches a non-empty `event_id` from `listLatest`
-or a non-null `listReplies` child of those rows (unioned with open
-conversation zap event ids). Empty `event_id` rows are skipped. A receipt is
+or a non-null `listReplies` child of those rows (unioned with the official
+platform profile note's `event_id` even after that note ages out of
+`listLatest`, and with open conversation zap event ids). Empty `event_id`
+rows are skipped. A receipt is
 indexed when the signer pubkey matches the author's LNURL-pay
 `nostrPubkey`, the bolt11 amount is at least 1 sat, the receipt id is
 new, and the bolt11 payment hash is not already claimed by another
@@ -2824,6 +2835,53 @@ external zapper gains no website visibility. Operator manual settlement
 covers member-created forum invoices only; it cannot create an external
 zapper entitlement.
 
+### `GET /messages/compose-target`
+
+Bearer session required. After auth, `requireAction(account, 'forum.post')`
+(rules + name + username + Lightning Address). Returns the official platform
+profile note so a basis account can invoice 1 sat to 21.gifts before posting
+or replying:
+
+```json
+{ "messageId": "<uuid>", "sats": 0 }
+```
+
+Ensures that profile note exists. The client then calls
+`POST /messages/:id/invoice` on `messageId`. A later indexed member/invoice zap
+on that note turns the zap comment into the payer’s top-level post (`sats` 0
+on the new row). An external zap on that same note still inserts a gift-reply
+under it. The worker always includes that profile note’s `event_id` in the relay
+query, even after the note ages out of `listLatest`. A comment `inReplyTo:<uuid>\n<body>` becomes a reply on that live
+top-level parent; a missing, hidden, or nested parent falls back to a
+top-level post with the remaining body. An empty comment does not create a
+blank living-room post.
+
+Missing/invalid/expired bearer → **Response** `401`:
+
+```json
+{ "error": "Unauthorized" }
+```
+
+Missing required fields → **Response** `409`:
+
+```json
+{ "error": "missing_requirements", "missing": ["rules", "name", "username", "lightning-address"] }
+```
+
+Platform note not yet payable (unsigned or missing Lightning Address) →
+**Response** `400`:
+
+```json
+{ "error": "This message cannot be paid yet" }
+```
+
+No platform account, missing or soft-hidden profile note, or store failure → **Response**
+`503`:
+
+```json
+{ "error": "Messages are unavailable" }
+```
+
 ### `POST /messages`
 
 Post to the public member forum. Bearer session required. JSON body (not
@@ -2862,14 +2920,15 @@ non-empty `photos`) is required. Optional `inReplyTo`
 is a **top-level** parent message UUID (JSON only; sets `parentId` for a
 one-level NIP-10 reply). Missing or non-UUID `inReplyTo`, a parent that
 is not in the store, or a parent that is itself a reply (`parentId` not
-null) → **404** `{ "error": "Not found" }`. A valid parent where the
-caller is neither the parent author nor `verified` → **403**
-`{ "error": "A reply needs a Bitcoin payment" }` (pay via
-`POST /messages/:id/invoice` instead). Optional `goalSats` omitted, JSON
-`null`, or a missing/empty multipart field means no goal. Multipart accepts
-`goalSats` as a decimal digit string. A positive `goalSats` together with
-`inReplyTo` → **400** `{ "error": "A reply cannot ask for a goal" }`. An
-invalid multipart `goalSats` → **400** `{ "error": "Goal must be a positive whole-sat amount" }`.
+null) → **404** `{ "error": "Not found" }`. Anyone below `verified`
+(including the parent author) → **403** `{ "error": "A post needs a
+Bitcoin payment" }` or `{ "error": "A reply needs a Bitcoin payment" }`
+for `inReplyTo`. Pay 1 sat to 21.gifts first (`GET /messages/compose-target`
+then `POST /messages/:id/invoice` on that platform profile note). Optional
+`goalSats` omitted, JSON `null`, or a missing/empty multipart field means
+no goal. Multipart accepts `goalSats` as a decimal digit string. A positive
+`goalSats` together with `inReplyTo` → **400** `{ "error": "A reply cannot ask for a goal" }`.
+An invalid multipart `goalSats` → **400** `{ "error": "Goal must be a positive whole-sat amount" }`.
 JSON type/range errors keep **400** `{ "error": "Expected a JSON body with text and/or photo" }`.
 Above 10_000_000 is rejected, not clamped. Multipart video posts do not
 accept `inReplyTo` (they are always top-level).
@@ -2973,8 +3032,14 @@ is itself a reply →
 { "error": "Not found" }
 ```
 
-Valid parent, but the caller is not the parent author and not
-`verified` →
+Anyone below `verified` posting a top-level note →
+**Response** `403`:
+
+```json
+{ "error": "A post needs a Bitcoin payment" }
+```
+
+Anyone below `verified` posting a reply (`inReplyTo`) →
 **Response** `403`:
 
 ```json
@@ -3001,7 +3066,7 @@ Success → **Response** `200`:
   "photoCount": 0,
   "hasVideo": false,
   "videoContentType": null,
-  "role": "basis"
+  "role": "verified"
 }
 ```
 
@@ -3018,7 +3083,10 @@ zap-request JSON (`isNip57Invoice`). A validated kind:9735 receipt credits the
 paid row (`:id`, which may be a reply). After that increment (never in the same
 SQL CTE), the worker inserts a reply from the payer (`text` from the zap-request
 comment or `""`, `sats` = this zap) only when the paid row is top-level
-(`parentId` null). Member invoices keep the existing relaxed signed-request
+(`parentId` null) and is not the official platform profile note. A zap on
+that platform note (`GET /messages/compose-target`) instead creates the
+payer’s post or `inReplyTo:` reply with `sats` 0 — the sat paid 21.gifts,
+not the new row. Member invoices keep the existing relaxed signed-request
 attribution. An external payer must pass the strict description-hash, target,
 amount, signature, replay, and block checks described under `GET /messages`;
 its gift-reply has `accountId` null, `via: "nostr"`, and is never signed by the
@@ -3027,12 +3095,16 @@ a verified external payer still gains durable zapper entitlement. Gift-only
 member replies (`text === ""`) and all external gift-replies stay
 `nostrPublishState` `skipped` (no kind:1). Parent `sats` is the aggregate;
 reply `sats` is this gift.
-After a newly indexed receipt, `notifyZap` runs best-effort (in-app rows for
-every account except the resolved payer, no-op when that payer is the official
-platform account, then filtered by each account's
+After a newly indexed **member-note** receipt, `notifyZap` runs best-effort
+(in-app rows for every account except the resolved payer, no-op when that
+payer is the official platform account, then filtered by each account's
 `notificationLevel`; Web Push only to bell subscribers with the same filter;
 missing `pushStore` still writes in-app rows when `auth` is set; enqueue
-failure logs `push.enqueue.failed`). `GET /notifications` applies the same
+failure logs `push.enqueue.failed`). A member/invoice zap on the official platform profile
+note skips `notifyZap` and fans out `notifyForumPost` / `notifyForumReply`
+plus a top-level `spendPing` only when `eligibleToday` (same gate as
+`POST /messages`; ineligible logs `spend.ping.skipped` / `not_eligible`).
+An external zap on that same note still inserts a gift-reply under it. `GET /notifications` applies the same
 `notificationLevel` filter to stored rows. LNURL success with a non-NIP-57 invoice
 (plaintext description, missing/mismatched `description_hash`, or malformed
 BOLT11) → persist `not_zap` (with rejected `pr` for debug) and **400**

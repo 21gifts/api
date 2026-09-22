@@ -123,6 +123,7 @@ async function namedStore(name: string): Promise<InMemoryAuthStore> {
   }
   await store.updateAccount({
     ...existing,
+    role: 'verified',
     name,
     username: (() => {
       const slug = name
@@ -498,7 +499,7 @@ describe('GET /messages', () => {
     expect(res.status).toBe(200);
     const body = (await res.json()) as { messages: Array<{ payable: boolean; role: string }> };
     expect(body.messages[0]?.payable).toBe(true);
-    expect(body.messages[0]?.role).toBe('basis');
+    expect(body.messages[0]?.role).toBe('verified');
   });
 
   it('includes the live author role for moderator, founder, and verified', async () => {
@@ -1050,14 +1051,167 @@ describe('GET /messages', () => {
   });
 });
 
+describe('GET /messages/compose-target', () => {
+  async function withPlatform(
+    authStore: InMemoryAuthStore,
+    overrides: { name?: string | null; lightningAddress?: string | null } = {},
+  ): Promise<void> {
+    await authStore.createAccount({
+      id: 'plat',
+      linkingKey: null,
+      role: 'basis',
+      name: overrides.name === undefined ? '21.gifts' : overrides.name,
+      lightningAddress:
+        overrides.lightningAddress === undefined
+          ? 'gifts@walletofsatoshi.com'
+          : overrides.lightningAddress,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: 'b'.repeat(64),
+      createdAt: 2,
+      rulesAgreedAt: now(),
+      isPlatform: true,
+    });
+  }
+
+  it('returns 401 without a session', async () => {
+    const res = await mount(await namedStore('Ada')).request('/messages/compose-target');
+    expect(res.status).toBe(401);
+  });
+
+  it('returns 409 when forum.post requirements are missing', async () => {
+    const res = await mount(await seededStore()).request('/messages/compose-target', {
+      headers: AUTH,
+    });
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({
+      error: 'missing_requirements',
+      missing: ['rules', 'name', 'username', 'lightning-address'],
+    });
+  });
+
+  it('returns 503 when the platform account is missing', async () => {
+    const res = await mount(await namedStore('Ada')).request('/messages/compose-target', {
+      headers: AUTH,
+    });
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({ error: 'Messages are unavailable' });
+  });
+
+  it('returns 503 when the platform profile note is missing', async () => {
+    const authStore = await namedStore('Ada');
+    await withPlatform(authStore, { name: null, lightningAddress: null });
+    const res = await mount(authStore).request('/messages/compose-target', { headers: AUTH });
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({ error: 'Messages are unavailable' });
+  });
+
+  it('returns 400 when the platform profile note is not payable', async () => {
+    const authStore = await namedStore('Ada');
+    await withPlatform(authStore);
+    const res = await mount(authStore).request('/messages/compose-target', { headers: AUTH });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: 'This message cannot be paid yet' });
+  });
+
+  it('returns the platform profile note when it is payable', async () => {
+    const authStore = await namedStore('Ada');
+    await withPlatform(authStore);
+    const platform = await authStore.getAccount('plat');
+    expect(platform).toBeDefined();
+    const noteId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+    await authStore.updateAccount({ ...platform!, profileMessageId: noteId });
+    const messageStore = new InMemoryMessageStore();
+    await messageStore.create({
+      id: noteId,
+      accountId: 'plat',
+      name: '21.gifts',
+      text: '21.gifts',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      hasVideo: false,
+      videoContentType: null,
+      ...unsignedNostrDefaults(),
+      eventId: 'ee'.repeat(32),
+    });
+    const res = await mount(authStore, messageStore).request('/messages/compose-target', {
+      headers: AUTH,
+    });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ messageId: noteId, sats: 0 });
+  });
+
+  it('returns 503 when listing accounts throws', async () => {
+    const authStore = await namedStore('Ada');
+    authStore.listAccounts = async () => {
+      throw new Error('boom');
+    };
+    const res = await mount(authStore).request('/messages/compose-target', { headers: AUTH });
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({ error: 'Messages are unavailable' });
+  });
+
+  it('returns 503 when the stored profile row is gone', async () => {
+    const authStore = await namedStore('Ada');
+    await withPlatform(authStore);
+    const platform = await authStore.getAccount('plat');
+    expect(platform).toBeDefined();
+    const noteId = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+    await authStore.updateAccount({ ...platform!, profileMessageId: noteId });
+    const messageStore = new InMemoryMessageStore();
+    messageStore.getById = async () => undefined;
+    const res = await mount(authStore, messageStore).request('/messages/compose-target', {
+      headers: AUTH,
+    });
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({ error: 'Messages are unavailable' });
+  });
+});
+
 describe('POST /messages', () => {
+  it('uses the default post limiter when omitted', async () => {
+    const app = new Hono().route(
+      '/messages',
+      messagesRoutes({
+        store: new InMemoryMessageStore(),
+        authStore: await namedStore('Ada'),
+        now,
+      }),
+    );
+    const hit = async (): Promise<number> =>
+      (
+        await app.request('/messages', {
+          method: 'POST',
+          headers: { ...AUTH, 'content-type': 'application/json' },
+          body: JSON.stringify({ text: 'hi' }),
+        })
+      ).status;
+    expect(await hit()).toBe(200);
+    expect(await hit()).toBe(429);
+  });
+
+  it('returns 403 when a basis account posts without paying', async () => {
+    const store = await namedStore('Ada');
+    const acc = await store.getAccount('acc');
+    expect(acc).toBeDefined();
+    await store.updateAccount({ ...acc!, role: 'basis' });
+    const res = await mount(store).request('/messages', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ text: 'hi' }),
+    });
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: 'A post needs a Bitcoin payment' });
+  });
+
   it('returns 429 on a burst of posts', async () => {
     const limiter = new PostRateLimiter();
     const app = new Hono().route(
       '/messages',
       messagesRoutes({
         store: new InMemoryMessageStore(),
-        authStore: await namedStore('Ada'),
+        authStore: await staffStore('Ada'),
         now,
         postLimiter: limiter,
         invoiceLimiter: new InvoiceRateLimiter(),
@@ -1140,7 +1294,7 @@ describe('POST /messages', () => {
     expect(created.createdAt).toBe(new Date(now()).toISOString());
     expect(created.sats).toBe(0);
     expect(created.payable).toBe(false);
-    expect(created.role).toBe('basis');
+    expect(created.role).toBe('verified');
     expect(created.accountId).toBe('acc');
     expect(created).not.toHaveProperty('goalSats');
     expect(created.id.length).toBeGreaterThan(8);
@@ -1435,7 +1589,7 @@ describe('POST /messages', () => {
       videoContentType: null,
       ...unsignedNostrDefaults(),
     });
-    const res = await mount(await namedStore('Ada'), messageStore).request('/messages', {
+    const res = await mount(await staffStore('Ada'), messageStore).request('/messages', {
       method: 'POST',
       headers: { ...AUTH, 'content-type': 'application/json' },
       body: JSON.stringify({ text: 'child', inReplyTo: parentId }),
@@ -1475,6 +1629,9 @@ describe('POST /messages', () => {
 
   it('returns 403 when a basis account replies without paying', async () => {
     const authStore = await namedStore('Ada');
+    const poster = await authStore.getAccount('acc');
+    expect(poster).toBeDefined();
+    await authStore.updateAccount({ ...poster!, role: 'basis' });
     await authStore.createAccount({
       id: 'parent',
       linkingKey: null,
@@ -1494,6 +1651,32 @@ describe('POST /messages', () => {
       id: parentId,
       accountId: 'parent',
       name: 'Pat',
+      text: 'parent',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+    });
+    const res = await mount(authStore, messageStore).request('/messages', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ text: 'child', inReplyTo: parentId }),
+    });
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: 'A reply needs a Bitcoin payment' });
+    expect(await messageStore.listReplies(parentId)).toEqual([]);
+  });
+
+  it('returns 403 when the parent author is below verified', async () => {
+    const authStore = await namedStore('Ada');
+    const poster = await authStore.getAccount('acc');
+    expect(poster).toBeDefined();
+    await authStore.updateAccount({ ...poster!, role: 'basis' });
+    const messageStore = new InMemoryMessageStore();
+    const parentId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+    await messageStore.create({
+      id: parentId,
+      accountId: 'acc',
+      name: 'Ada',
       text: 'parent',
       createdAt: new Date(now()),
       hasPhoto: false,
@@ -1814,6 +1997,10 @@ describe('POST /messages', () => {
   });
 
   it('rejects an unpaid reply to a Damus-only parent', async () => {
+    const authStore = await namedStore('Ada');
+    const poster = await authStore.getAccount('acc');
+    expect(poster).toBeDefined();
+    await authStore.updateAccount({ ...poster!, role: 'basis' });
     const messageStore = new InMemoryMessageStore();
     const parentId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
     await messageStore.create({
@@ -1836,7 +2023,7 @@ describe('POST /messages', () => {
       auth: 'authkey',
       createdAt: new Date(now()),
     });
-    const res = await mount(await namedStore('Ada'), messageStore, {
+    const res = await mount(authStore, messageStore, {
       notificationStore,
       pushStore,
     }).request('/messages', {
@@ -4616,7 +4803,7 @@ describe('GET /messages/:id', () => {
     expect(res.status).toBe(200);
     const body = (await res.json()) as { payable: boolean; role: string };
     expect(body.payable).toBe(true);
-    expect(body.role).toBe('basis');
+    expect(body.role).toBe('verified');
   });
 
   it('marks a signed reply with a Lightning Address as payable', async () => {
@@ -4662,7 +4849,7 @@ describe('GET /messages/:id', () => {
     expect(res.status).toBe(200);
     const body = (await res.json()) as { payable: boolean; role: string; parentId?: string };
     expect(body.payable).toBe(true);
-    expect(body.role).toBe('basis');
+    expect(body.role).toBe('verified');
     expect(body.parentId).toBe(parentId);
   });
 
@@ -5304,11 +5491,11 @@ describe('GET /messages/:id/replies', () => {
     expect(external).not.toHaveProperty('role');
     expect(external).not.toHaveProperty('accountId');
     const member = body.messages.find((row) => row.text === 'member reply');
-    expect(member?.role).toBe('basis');
+    expect(member?.role).toBe('verified');
     expect(member?.accountId).toBe('acc');
     expect(member).not.toHaveProperty('via');
     const giftReply = body.messages.find((row) => row.text === 'member gift reply');
-    expect(giftReply?.role).toBe('basis');
+    expect(giftReply?.role).toBe('verified');
     expect(giftReply?.accountId).toBe('acc');
     expect(giftReply).not.toHaveProperty('via');
     const orphan = body.messages.find((row) => row.text === 'orphan reply');

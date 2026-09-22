@@ -6,6 +6,8 @@ import type { MessageInvoiceAttempt, MessageStore, ZapIngestRow } from '@/lib/me
 import type { NotificationStore } from '@/lib/notification-store';
 import { settleInvoiceManually } from '@/lib/nostr/zap-index';
 import type { PushStore } from '@/lib/push-store';
+import type { FundingStore } from '@/lib/funding-store';
+import type { SpendPing } from '@/lib/spend-ping';
 
 /**
  * Operator debug surface for `message_invoice` attempts (forum and
@@ -26,6 +28,10 @@ export interface DebugPaymentsRouteDeps {
   pushStore?: PushStore;
   /** Optional in-app notification persistence. */
   notificationStore?: NotificationStore;
+  /** Optional spend ping after a platform-note compose creates a top-level post. */
+  spendPing?: SpendPing;
+  /** Optional funding grants; compose spend pings use the same `eligibleToday` gate as `POST /messages`. */
+  fundingStore?: FundingStore;
   /** Configured operator token, or `undefined` when debug is disabled. */
   debugToken: string | undefined;
 }
@@ -89,7 +95,10 @@ function serializeIngest(row: ZapIngestRow): Record<string, unknown> {
 /**
  * Build the `/debug` payment debug routes.
  *
- * @param deps - Stores, clock, and optional debug token.
+ * @param deps - Stores, clock, optional debug token, and optional `spendPing` /
+ *   `fundingStore` forwarded into `settleInvoiceManually` for platform-note
+ *   compose (same `eligibleToday` gate as `POST /messages`). Does not take
+ *   `postLimiter`; DEBUG_TOKEN settle is not the shared post burst limiter.
  * @returns A Hono app exposing invoice list/manual settle (including whether a
  *   successful settle resumed) and zap-ingest list.
  */
@@ -140,6 +149,8 @@ export function debugPaymentsRoutes(deps: DebugPaymentsRouteDeps): Hono {
           ...(deps.notificationStore === undefined
             ? {}
             : { notificationStore: deps.notificationStore }),
+          ...(deps.spendPing === undefined ? {} : { spendPing: deps.spendPing }),
+          ...(deps.fundingStore === undefined ? {} : { fundingStore: deps.fundingStore }),
         });
         if (result.ok) {
           logEvent('debug.invoices.settled', {

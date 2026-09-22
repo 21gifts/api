@@ -1,6 +1,14 @@
-import { expect, test } from '@playwright/test';
+import { expect, test, type APIRequestContext } from '@playwright/test';
 
 const DEBUG = { authorization: 'Bearer e2e-debug-token' };
+
+async function promoteVerified(request: APIRequestContext, accountId: string): Promise<void> {
+  const promoted = await request.patch(`/debug/accounts/${accountId}`, {
+    headers: DEBUG,
+    data: { role: 'verified' },
+  });
+  expect(promoted.status()).toBe(200);
+}
 
 test.describe.configure({ mode: 'serial' });
 
@@ -35,6 +43,7 @@ test('e2e: forum note, public read, reply, and replyCount against the booted API
   const auth = { authorization: `Bearer ${token}` };
   const agreed = await request.post('/me/rules-agreement', { headers: auth });
   expect(agreed.status()).toBe(200);
+  await promoteVerified(request, ada!.id);
 
   const posted = await request.post('/messages', {
     headers: { ...auth, 'content-type': 'application/json' },
@@ -137,6 +146,7 @@ test('Function: markDeleted — DELETE /messages/:id hides the note', async ({ r
   const auth = { authorization: `Bearer ${token}` };
   const agreed = await request.post('/me/rules-agreement', { headers: auth });
   expect(agreed.status()).toBe(200);
+  await promoteVerified(request, account!.id);
 
   const posted = await request.post('/messages', {
     headers: { ...auth, 'content-type': 'application/json' },
@@ -207,6 +217,7 @@ test('Function: listHidden — GET /messages/hidden lists soft-hidden notes', as
   const auth = { authorization: `Bearer ${token}` };
   const agreed = await request.post('/me/rules-agreement', { headers: auth });
   expect(agreed.status()).toBe(200);
+  await promoteVerified(request, account!.id);
 
   const posted = await request.post('/messages', {
     headers: { ...auth, 'content-type': 'application/json' },
@@ -277,6 +288,7 @@ test('Function: markUndeleted — POST /debug/messages/:id/restore unhides the n
   const auth = { authorization: `Bearer ${token}` };
   const agreed = await request.post('/me/rules-agreement', { headers: auth });
   expect(agreed.status()).toBe(200);
+  await promoteVerified(request, account!.id);
 
   const posted = await request.post('/messages', {
     headers: { ...auth, 'content-type': 'application/json' },

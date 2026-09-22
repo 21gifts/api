@@ -55,7 +55,7 @@ api/
 │   │   ├── stats.ts          # GET /gifts/stats (public gift totals)
 │   │   ├── gifts.ts          # GET /gifts?day= (public per-day gift list)
 │   │   ├── invoices.ts       # GET /invoices/passkey, GET /invoices/eligible, GET /invoices/posted, POST /invoices, POST /invoices/proof (spend worker)
-│   │   ├── messages.ts       # GET/POST /messages, public GET /messages/:id, GET /messages/hidden (session, not DEBUG_TOKEN), DELETE /messages/:id, GET /messages/:id/replies, GET /messages/:id/photo, GET /messages/:id/video.*, POST /messages/:id/invoice
+│   │   ├── messages.ts       # GET/POST /messages, GET /messages/compose-target, public GET /messages/:id, GET /messages/hidden (session, not DEBUG_TOKEN), DELETE /messages/:id, GET /messages/:id/replies, GET /messages/:id/photo, GET /messages/:id/video.*, POST /messages/:id/invoice
 │   │   ├── well-known.ts     # GET /.well-known/nostr.json (NIP-05); GET /.well-known/lnurlp/:username (LUD-16)
 │   │   ├── contact.ts        # POST /contact (private mailbox + platform thread)
 │   │   ├── conversations.ts  # GET/POST /conversations, GET /conversations/moderator-group, GET/POST /conversations/:id, POST /conversations/:id/read, POST /conversations/:id/invoice, GET /conversations/:id/messages/:messageId/photo, GET /conversations/:id/messages/:messageId/photo/:file

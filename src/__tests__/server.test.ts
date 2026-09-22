@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { InMemoryAuthStore } from '@/lib/auth/store';
 import { RecordingPublisher } from '@/lib/nostr/publish';
+import { PostRateLimiter } from '@/lib/nostr/rate-limit';
 import { createApp, resolveBindAddr, parseBindAddr } from '@/server';
 
 function b64url(bytes: Uint8Array): string {
@@ -42,6 +43,12 @@ describe('createApp', () => {
 
   it('accepts an injected spendPing', async () => {
     const app = createApp({ spendPing: { ping: async () => undefined } });
+    const res = await app.request('/healthz');
+    expect(res.status).toBe(200);
+  });
+
+  it('accepts an injected postLimiter', async () => {
+    const app = createApp({ postLimiter: new PostRateLimiter() });
     const res = await app.request('/healthz');
     expect(res.status).toBe(200);
   });
