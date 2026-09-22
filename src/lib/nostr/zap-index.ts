@@ -1504,9 +1504,16 @@ async function ingestOneReceipt(
     return;
   }
 
-  const pinnedForum = pinnedInvoiceFiat(
-    await args.store.findOkInvoiceByPaymentHash(decoded.paymentHash),
-  );
+  // A thrown lookup must not reject a receipt that already passed validation.
+  // Gift-reply retry looks the invoice up again.
+  let pinnedForum: FiatAmounts | undefined;
+  try {
+    pinnedForum = pinnedInvoiceFiat(
+      await args.store.findOkInvoiceByPaymentHash(decoded.paymentHash),
+    );
+  } catch {
+    pinnedForum = undefined;
+  }
   const indexed = await indexZapReceipt({
     store: args.store,
     messageId: row.id,

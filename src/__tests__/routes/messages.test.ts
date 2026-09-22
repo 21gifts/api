@@ -3277,6 +3277,46 @@ describe('POST /messages/:id/invoice', () => {
     expect(attempts[0]?.result).toBe('bad_body');
   });
 
+  it('stores the fiat shown with the invoice even when the text is rejected', async () => {
+    const messageStore = new InMemoryMessageStore();
+    const app = mount(await namedStore('Ada'), messageStore);
+    const res = await app.request('/messages/11111111-1111-4111-8111-111111111111/invoice', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({
+        sats: 21,
+        text: 'A'.repeat(MESSAGE_MAX_LENGTH + 1),
+        amountUsd: '5.00',
+        amountChf: '4.00',
+        amountEur: '4.50',
+        amountPhp: '280.00',
+      }),
+    });
+    expect(res.status).toBe(400);
+    const attempt = (await messageStore.listInvoiceAttempts(1))[0];
+    expect(attempt?.result).toBe('bad_body');
+    expect(attempt?.fiatPinned).toBe(true);
+    expect(attempt?.amountUsd).toBe('5.00');
+    expect(attempt?.amountChf).toBe('4.00');
+    expect(attempt?.amountEur).toBe('4.50');
+    expect(attempt?.amountPhp).toBe('280.00');
+  });
+
+  it('rejects a shown amount that is not a fiat string', async () => {
+    const messageStore = new InMemoryMessageStore();
+    const app = mount(await namedStore('Ada'), messageStore);
+    const res = await app.request('/messages/11111111-1111-4111-8111-111111111111/invoice', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ sats: 21, amountUsd: 'nope' }),
+    });
+    expect(res.status).toBe(400);
+    const attempt = (await messageStore.listInvoiceAttempts(1))[0];
+    expect(attempt?.result).toBe('bad_body');
+    expect(attempt?.fiatPinned).toBe(false);
+    expect(attempt?.amountUsd).toBeNull();
+  });
+
   it('returns 401 without a session', async () => {
     const res = await mount(new InMemoryAuthStore()).request('/messages/m1/invoice', {
       method: 'POST',
