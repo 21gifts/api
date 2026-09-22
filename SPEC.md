@@ -123,7 +123,7 @@ Public base URLs used in examples:
 | POST   | `/funding/reject`                                    | Bearer (moderator+)        | Reject grant                                                                                              |
 | GET    | `/messages`                                          | Bearer                     | List top-level forum notes (+ visible `replyCount`); 409 if rules missing                                 |
 | GET    | `/messages/compose-target`                           | Bearer                     | Platform profile note `{ messageId, sats }` for a 1-sat compose fee to 21.gifts                           |
-| POST   | `/messages`                                          | Bearer                     | Post text/photo; 409 if rules/name/username/Lightning Address missing; 403 unpaid text-only below verified; photo/video from basis allowed |
+| POST   | `/messages`                                          | Bearer                     | Post text/photo; 409 if rules/name/username/Lightning Address missing; 403 text-only below verified       |
 | GET    | `/messages/hidden`                                   | Bearer (moderator+)        | Staff log of soft-hidden notes (session, not DEBUG_TOKEN)                                                 |
 | GET    | `/messages/:id`                                      | none / Bearer (moderator+) | Live public JSON; staff hidden GET includes `deletedAt`/`deletedBy`                                       |
 | GET    | `/messages/:id/replies`                              | none / Bearer (moderator+) | Live replies; staff `listReplies(..., true)` includes hidden children even under a live parent            |
@@ -3081,7 +3081,8 @@ is not in the store, or a parent that is itself a reply (`parentId` not
 null) → **404** `{ "error": "Not found" }`. Anyone below `verified`
 (including the parent author) posting unpaid **text-only** → **403**
 `{ "error": "A post needs a Bitcoin payment" }` or `{ "error": "A reply needs a Bitcoin payment" }`
-for `inReplyTo`. A photo or video body from `basis` is **200**. Pay 1 sat to 21.gifts first (`GET /messages/compose-target`
+for `inReplyTo`. A photo or video body from `basis` is **200**. Pay 1 sat to
+21.gifts first (`GET /messages/compose-target`
 then `POST /messages/:id/invoice` on that platform profile note). Optional
 `goalSats` omitted, JSON `null`, or a missing/empty multipart field means
 no goal. Multipart accepts `goalSats` as a decimal digit string. A positive
