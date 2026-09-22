@@ -1662,7 +1662,7 @@
 ## Function: debugCatalogRoutes
 
 - **Purpose:** GET-only operator catalog at `/debug/dump` and `/debug/dump/:table`.
-- **Inputs:** `DebugCatalogRouteDeps` (auth, messages, contacts, optional other stores, debugToken).
+- **Inputs:** `DebugCatalogRouteDeps` (auth, messages, contacts, optional `pos` and other stores, debugToken). Missing `pos` dumps `pos_charge` as `[]`.
 - **Returns / side effects:** Hono app. 503 if token unset; 401 if bearer mismatches; 404 unknown table; 200 dump JSON (GET `/` is `{ tables }` with each allowlisted name → row array, cap 200; GET `/:table` is `{ table, rows }`); 503 `{ error: 'Dump is unavailable' }` on store throw.
 - **Used by:** `createApp` at `/debug/dump`.
 

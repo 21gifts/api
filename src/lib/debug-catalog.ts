@@ -193,7 +193,7 @@ async function loadTable(deps: DebugCatalogDeps, table: DebugCatalogTable): Prom
     case 'contact':
       return (await deps.contacts.listLatest(MESSAGE_LIST_LIMIT)).map(serializeDebugContact);
     case 'pos_charge':
-      return (await deps.pos?.listLatest(MESSAGE_LIST_LIMIT) ?? []).map(serializeDebugPosCharge);
+      return ((await deps.pos?.listLatest(MESSAGE_LIST_LIMIT)) ?? []).map(serializeDebugPosCharge);
     case 'conversation': {
       const rows = (await deps.conversations?.listAll(MESSAGE_LIST_LIMIT)) ?? [];
       return rows.map((row) => ({

@@ -1,9 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import {
-  serializePosCharge,
-  serializeDebugPosCharge,
-  type PosCharge,
-} from '@/lib/pos-charge';
+import { serializePosCharge, serializeDebugPosCharge, type PosCharge } from '@/lib/pos-charge';
 
 const ROW: PosCharge = {
   id: 'p-1',

@@ -21,7 +21,7 @@ function wosFetch(minSendable = 1000, maxSendable = 100_000_000): typeof fetch {
         tag: 'payRequest',
       }),
       { status: 200, headers: { 'content-type': 'application/json' } },
-    )) as typeof fetch;
+    )) as unknown as typeof fetch;
 }
 
 async function readyStore(): Promise<InMemoryAuthStore> {
@@ -78,6 +78,21 @@ describe('POS routes', () => {
       body: '{"amountSats":1.5}',
     });
     expect(bad.status).toBe(400);
+    for (const body of [
+      'not-json',
+      'null',
+      '[]',
+      '"21"',
+      '{}',
+      '{"amountSats":"21"}',
+      '{"amountSats":0}',
+    ]) {
+      const res = await app.request('/pos', { method: 'POST', headers: AUTH, body });
+      expect(res.status).toBe(400);
+      expect(await res.json()).toEqual({
+        error: 'Expected a JSON body with an integer "amountSats"',
+      });
+    }
 
     const noName = new InMemoryAuthStore();
     await noName.createAccount({
@@ -121,13 +136,18 @@ describe('POS routes', () => {
     const pos = new InMemoryPosStore();
     const fetchImpl = wosFetch();
     const app = createApp({ authStore: auth, posStore: pos, now, fetchImpl });
+    const empty = await app.request('/pos', { headers: AUTH });
+    expect(empty.status).toBe(200);
+    expect(await empty.json()).toEqual({ charge: null, history: [] });
     const created = await app.request('/pos', {
       method: 'POST',
       headers: { ...AUTH, 'content-type': 'application/json' },
       body: JSON.stringify({ amountSats: 21 }),
     });
     expect(created.status).toBe(201);
-    const createdBody = (await created.json()) as { charge: { amountSats: number; expiresAt: string } };
+    const createdBody = (await created.json()) as {
+      charge: { amountSats: number; expiresAt: string };
+    };
     expect(createdBody.charge.amountSats).toBe(21);
     expect(Date.parse(createdBody.charge.expiresAt) - nowMs).toBe(POS_CHARGE_TTL_MS);
 
@@ -145,7 +165,11 @@ describe('POS routes', () => {
 
     const lnurl = await app.request('/.well-known/lnurlp/ada');
     expect(lnurl.status).toBe(200);
-    const pay = (await lnurl.json()) as { minSendable: number; maxSendable: number; callback: string };
+    const pay = (await lnurl.json()) as {
+      minSendable: number;
+      maxSendable: number;
+      callback: string;
+    };
     expect(pay.minSendable).toBe(21_000);
     expect(pay.maxSendable).toBe(21_000);
     expect(pay.callback).toBe('https://walletofsatoshi.com/lnurlp/callback');
@@ -173,7 +197,7 @@ describe('POS routes', () => {
 
     const down = (async () => {
       throw new Error('offline');
-    }) as typeof fetch;
+    }) as unknown as typeof fetch;
     const failed = await mount(await readyStore(), down).request('/pos', {
       method: 'POST',
       headers: AUTH,

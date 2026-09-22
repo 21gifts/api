@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
+import { Hono } from 'hono';
 import { createApp } from '@/server';
 import { InMemoryAuthStore } from '@/lib/auth/store';
+import { wellKnownRoutes } from '@/routes/well-known';
 
 describe('GET /.well-known/nostr.json', () => {
   it('returns names and CORS', async () => {
@@ -96,6 +98,9 @@ describe('GET /.well-known/lnurlp/:username', () => {
     };
     const app = createApp({ authStore: auth, fetchImpl });
     const res = await app.request('/.well-known/lnurlp/Ada');
+    const bare = new Hono().route('/.well-known', wellKnownRoutes({ auth, fetchImpl }));
+    const unpinned = await bare.request('/.well-known/lnurlp/ada');
+    expect(unpinned.status).toBe(200);
     expect(res.status).toBe(200);
     expect(res.headers.get('Access-Control-Allow-Origin')).toBe('*');
     const body = (await res.json()) as { tag: string; callback: string };

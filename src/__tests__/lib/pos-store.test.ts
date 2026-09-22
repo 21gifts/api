@@ -154,9 +154,7 @@ describe('InMemoryPosStore', () => {
 
   it('currentPending expires due rows once, logs pos.expired, and returns the live row', async () => {
     const store = new InMemoryPosStore();
-    await store.create(
-      charge({ id: 'old', expiresAt: new Date(T0), createdAt: new Date(T0 - 1) }),
-    );
+    await store.create(charge({ id: 'old', expiresAt: new Date(T0), createdAt: new Date(T0 - 1) }));
     await store.create(charge({ id: 'live', createdAt: new Date(T0) }));
     const pending = await store.currentPending('acc', T0);
     expect(pending?.id).toBe('live');

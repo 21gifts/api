@@ -85,10 +85,11 @@ export function wellKnownRoutes(deps: WellKnownRouteDeps): Hono {
         if (pending !== null) {
           const minSendable = resolved.body['minSendable'];
           const maxSendable = resolved.body['maxSendable'];
-          /* v8 ignore next -- resolveLnurlpDocument only yields numeric minSendable and maxSendable */
+          /* v8 ignore start -- resolveLnurlpDocument only yields numeric minSendable and maxSendable */
           if (typeof minSendable !== 'number' || typeof maxSendable !== 'number') {
             return c.json(resolved.body, 200, WELL_KNOWN_CORS);
           }
+          /* v8 ignore stop */
           return c.json(
             {
               ...resolved.body,
