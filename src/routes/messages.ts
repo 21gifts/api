@@ -489,7 +489,7 @@ async function serveForumVideo(
  * @param extraPhotos - Optional extra stills (indices 1..n). Omit when empty.
  * @param goalSats - Optional whole-sat ask for a top-level note. Default `null`
  *   (no goal). Stored as `null` when `parentId` is set.
- * @returns 200 / 403 / 429 / 503.
+ * @returns 200 / 403 (unpaid text-only below verified) / 429 / 503.
  */
 async function persistForumPost(
   deps: MessagesRouteDeps,
@@ -529,7 +529,7 @@ async function persistForumPost(
       return c.json({ error: 'Messages are unavailable' }, 503);
     }
   }
-  if (!roleAtLeast(account.role, 'verified')) {
+  if (!roleAtLeast(account.role, 'verified') && photo === undefined && video === undefined) {
     return c.json(
       {
         error:

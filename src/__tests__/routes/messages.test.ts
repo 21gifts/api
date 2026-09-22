@@ -1207,6 +1207,24 @@ describe('POST /messages', () => {
     expect(await res.json()).toEqual({ error: 'A post needs a Bitcoin payment' });
   });
 
+  it('allows a basis account to post a photo', async () => {
+    const store = await namedStore('Ada');
+    const acc = await store.getAccount('acc');
+    expect(acc).toBeDefined();
+    await store.updateAccount({ ...acc!, role: 'basis' });
+    const res = await mount(store).request('/messages', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({
+        text: 'hi',
+        photo: { contentType: 'image/jpeg', data: JPEG_B64 },
+      }),
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { hasPhoto: boolean };
+    expect(body.hasPhoto).toBe(true);
+  });
+
   it('returns 429 on a burst of posts', async () => {
     const limiter = new PostRateLimiter();
     const app = new Hono().route(
