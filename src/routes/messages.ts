@@ -10,6 +10,7 @@ import { GIFT_INVOICE_MAX_MSAT } from '@/lib/config';
 import { eligibleToday } from '@/lib/funding';
 import { InMemoryFundingStore, type FundingStore } from '@/lib/funding-store';
 import { logEvent } from '@/lib/log';
+import { buildPostStats } from '@/lib/post-stats';
 import type { FetchFn } from '@/lib/lnurlp';
 import { requestZapInvoice } from '@/lib/lnurl-pay';
 import {
@@ -769,11 +770,12 @@ const invoiceBody = z.object({
  * plus best-effort NIP-09 and Cloudflare media purge when publisher+kek are
  * set),
  * staff `GET /messages/hidden` (moderator session log), public
- * `GET /messages/:id` (optional `?sinceSats=` non-negative integer
+ * `GET /messages/stats` (no session; living notes and replies as one count),
+ * public `GET /messages/:id` (optional `?sinceSats=` non-negative integer
  * long-polls until `sats` is strictly greater; timeout still returns 200 with
  * the current body; invalid value 400), and `POST /messages/:id/invoice`.
- * Photo, video, replies, DELETE, and `GET /hidden` register before the public
- * single-note `GET /:id`. Soft-hidden rows (`deletedAt`) are omitted from
+ * Photo, video, replies, DELETE, `GET /stats`, and `GET /hidden` register
+ * before the public single-note `GET /:id`. Soft-hidden rows (`deletedAt`) are omitted from
  * lists and 404 on unsigned/non-staff reads; a founder/moderator session may
  * GET the hidden permalink, its replies (including hidden children), and
  * photo/video bytes. `getById` still returns hidden rows for workers. Public
@@ -801,7 +803,7 @@ const invoiceBody = z.object({
  * `GET /:id/video.mp4|.webm|.mov`, public `GET /:id/replies` (optional Bearer
  * for `accountId`), `DELETE /:id`, staff `GET /hidden` (moderator session; no
  * `forum.read`), public `GET /:id` (optional `?sinceSats=`), and
- * `POST /:id/invoice`.
+ * `POST /:id/invoice`, and public `GET /stats`.
  */
 export function messagesRoutes(deps: MessagesRouteDeps): Hono {
   const postLimiter = deps.postLimiter ?? defaultPostLimiter;
@@ -1214,6 +1216,15 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
       } catch {
         logEvent('messages.delete.failed');
         return c.json({ error: 'Messages are unavailable' }, 503);
+      }
+    })
+    .get('/stats', async (c) => {
+      try {
+        const rows = await deps.store.postCountsByUtcDay();
+        return c.json(buildPostStats(rows, deps.now()), 200);
+      } catch {
+        logEvent('posts.stats.failed');
+        return c.json({ error: 'Post stats are unavailable' }, 503);
       }
     })
     .get('/hidden', async (c) => {
