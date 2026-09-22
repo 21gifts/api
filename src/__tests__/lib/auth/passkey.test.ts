@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vitest';
+import { afterEach, describe, it, expect, vi } from 'vitest';
 import { InMemoryAuthStore } from '@/lib/auth/store';
 import { CHALLENGE_TTL_MS } from '@/lib/config';
 import type { WebAuthnRuntimeConfig } from '@/lib/config';
@@ -6,9 +6,11 @@ import {
   credentialIdFrom,
   finishPasskeyAuthentication,
   finishPasskeyRegistration,
+  finishPasskeyReplace,
   startPasskeyAuthentication,
   startPasskeyClaim,
   startPasskeyRegistration,
+  startPasskeyReplace,
 } from '@/lib/auth/passkey';
 import * as authService from '@/lib/auth/service';
 import { WRONG_ACCOUNT_ERROR } from '@/lib/auth/wrong-account';
@@ -22,6 +24,10 @@ const CONFIG: WebAuthnRuntimeConfig = {
   expectedOrigins: ['http://localhost:3000'],
 };
 const ORIGIN = 'http://localhost:3000';
+
+afterEach(() => {
+  vi.restoreAllMocks();
+});
 
 describe('credentialIdFrom', () => {
   it('returns null for non-objects and missing ids', () => {
@@ -57,7 +63,10 @@ describe('passkey registration', () => {
     }
     expect(finish.value.account.linkingKey).toBeNull();
     expect(finish.value.account.viewKey).toMatch(/^[0-9a-f]{64}$/);
+    expect(finish.value.account.walletRequired).toBe(true);
+    expect(finish.value.account.walletBackupSeenAt).toBeNull();
     expect((await store.getPasskeyCredential('cred-1'))?.accountId).toBe(finish.value.account.id);
+    expect((await store.getAccount(finish.value.account.id))?.walletRequired).toBe(true);
   });
 
   it('generates a Nostr key when a KEK is provided', async () => {
@@ -158,7 +167,7 @@ describe('passkey registration', () => {
 
   it('rejects register finish when the credential id is already stored', async () => {
     class DupStore extends InMemoryAuthStore {
-      override async createPasskeyCredential(): Promise<boolean> {
+      override async createFirstPasskeyCredential(): Promise<boolean> {
         return false;
       }
     }
@@ -304,8 +313,41 @@ describe('passkey claim', () => {
       name: 'Ada',
       lightningAddress: 'guest@walletofsatoshi.com',
       viewKey: VIEW_KEY,
+      walletRequired: true,
     });
+    expect(finish.value.account.walletBackupSeenAt).toBeUndefined();
     expect((await store.listAccounts()).map((row) => row.id)).toEqual(['provisioned']);
+  });
+
+  it('sets walletRequired on claim without clearing a seen backup', async () => {
+    const store = await provisionedStore();
+    const existing = await store.getAccount('provisioned');
+    expect(existing).toBeDefined();
+    expect(await store.markWalletBackupSeen('provisioned', 99)).toMatchObject({
+      wrote: true,
+      account: { walletBackupSeenAt: 99 },
+    });
+    const begin = await startPasskeyClaim(store, new FakePasskeyCeremony(), CONFIG, T0, VIEW_KEY);
+    expect(begin.ok).toBe(true);
+    if (!begin.ok) {
+      return;
+    }
+    const finish = await finishPasskeyRegistration(
+      store,
+      new FakePasskeyCeremony(),
+      CONFIG,
+      T0,
+      ORIGIN,
+      begin.value.challengeId,
+      { test: 'ok' },
+    );
+    expect(finish.ok).toBe(true);
+    if (!finish.ok) {
+      return;
+    }
+    expect(finish.value.account.walletRequired).toBe(true);
+    expect(finish.value.account.walletBackupSeenAt).toBe(99);
+    expect((await store.getAccount('provisioned'))?.walletBackupSeenAt).toBe(99);
   });
 
   it('does not delete a provisioned account when credential insert races', async () => {
@@ -767,5 +809,447 @@ describe('passkey authentication', () => {
         id: 'cred-1',
       }),
     ).rejects.toThrow('disk');
+  });
+});
+
+describe('passkey replace', () => {
+  async function seed(): Promise<{
+    store: InMemoryAuthStore;
+    ceremony: FakePasskeyCeremony;
+    accountId: string;
+  }> {
+    const store = new InMemoryAuthStore();
+    const ceremony = new FakePasskeyCeremony();
+    const begin = await startPasskeyRegistration(store, ceremony, CONFIG, T0);
+    const finish = await finishPasskeyRegistration(
+      store,
+      ceremony,
+      CONFIG,
+      T0,
+      ORIGIN,
+      begin.challengeId,
+      { test: 'ok' },
+    );
+    if (!finish.ok) {
+      throw new Error('seed register failed');
+    }
+    return { store, ceremony, accountId: finish.value.account.id };
+  }
+
+  it('returns no-passkey when the account has no credential', async () => {
+    const store = new InMemoryAuthStore();
+    await store.createAccount({
+      id: 'provisioned',
+      linkingKey: null,
+      role: 'basis',
+      name: 'Ada',
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: 'a'.repeat(64),
+      createdAt: T0,
+      rulesAgreedAt: null,
+    });
+    const account = await store.getAccount('provisioned');
+    if (account === undefined) {
+      throw new Error('missing account');
+    }
+    const started = await startPasskeyReplace(
+      store,
+      new FakePasskeyCeremony(),
+      CONFIG,
+      T0,
+      account,
+    );
+    expect(started).toEqual({ ok: false, error: 'No passkey to replace' });
+  });
+
+  it('replaces cred-1 with cred-2', async () => {
+    const { store, ceremony, accountId } = await seed();
+    const account = await store.getAccount(accountId);
+    if (account === undefined) {
+      throw new Error('missing account');
+    }
+    const begin = await startPasskeyReplace(store, ceremony, CONFIG, T0, account);
+    expect('challengeId' in begin).toBe(true);
+    if (!('challengeId' in begin)) {
+      return;
+    }
+    const options = begin.options as {
+      excludeCredentials?: Array<{ id: string; type: string }>;
+      user: { displayName: string };
+    };
+    expect(options.excludeCredentials).toEqual([{ id: 'cred-1', type: 'public-key' }]);
+    expect(options.user.displayName).toBe('21.gifts');
+    const finish = await finishPasskeyReplace(
+      store,
+      ceremony,
+      CONFIG,
+      T0,
+      ORIGIN,
+      begin.challengeId,
+      { test: 'replace' },
+      account,
+    );
+    expect(finish.ok).toBe(true);
+    if (!finish.ok) {
+      return;
+    }
+    expect(finish.account.id).toBe(accountId);
+    expect(await store.getPasskeyCredential('cred-1')).toBeUndefined();
+    expect((await store.getPasskeyCredential('cred-2'))?.accountId).toBe(accountId);
+    expect((await store.getAccount(accountId))?.walletRequired).toBe(true);
+  });
+
+  it('does not set walletRequired on replace', async () => {
+    const store = new InMemoryAuthStore();
+    const ceremony = new FakePasskeyCeremony();
+    await store.createAccount({
+      id: 'existing',
+      linkingKey: null,
+      role: 'basis',
+      name: 'Ada',
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: 'b'.repeat(64),
+      createdAt: T0,
+      rulesAgreedAt: null,
+      walletRequired: false,
+    });
+    expect(
+      await store.createPasskeyCredential({
+        credentialId: 'cred-1',
+        publicKey: new Uint8Array([1]),
+        signCount: 0,
+        accountId: 'existing',
+        createdAt: T0,
+      }),
+    ).toBe(true);
+    const current = await store.getAccount('existing');
+    if (current === undefined) {
+      throw new Error('missing account');
+    }
+    const begin = await startPasskeyReplace(store, ceremony, CONFIG, T0, current);
+    expect('challengeId' in begin).toBe(true);
+    if (!('challengeId' in begin)) {
+      return;
+    }
+    const finish = await finishPasskeyReplace(
+      store,
+      ceremony,
+      CONFIG,
+      T0,
+      ORIGIN,
+      begin.challengeId,
+      { test: 'replace' },
+      current,
+    );
+    expect(finish.ok).toBe(true);
+    expect((await store.getAccount('existing'))?.walletRequired).toBe(false);
+    expect((await store.getAccount('existing'))?.walletBackupSeenAt ?? null).toBeNull();
+  });
+
+  it('uses the account name as the WebAuthn display name', async () => {
+    const { store, ceremony, accountId } = await seed();
+    const account = await store.getAccount(accountId);
+    if (account === undefined) {
+      throw new Error('missing account');
+    }
+    account.name = 'Ada';
+    await store.updateAccount(account);
+    const named = await store.getAccount(accountId);
+    if (named === undefined) {
+      throw new Error('missing named account');
+    }
+    const begin = await startPasskeyReplace(store, ceremony, CONFIG, T0, named);
+    if (!('challengeId' in begin)) {
+      throw new Error('expected begin');
+    }
+    const options = begin.options as { user: { displayName: string } };
+    expect(options.user.displayName).toBe('Ada');
+  });
+
+  it('rejects replace finish with the current credential id', async () => {
+    const { store, ceremony, accountId } = await seed();
+    const account = await store.getAccount(accountId);
+    if (account === undefined) {
+      throw new Error('missing account');
+    }
+    const begin = await startPasskeyReplace(store, ceremony, CONFIG, T0, account);
+    if (!('challengeId' in begin)) {
+      throw new Error('expected begin');
+    }
+    const finish = await finishPasskeyReplace(
+      store,
+      ceremony,
+      CONFIG,
+      T0,
+      ORIGIN,
+      begin.challengeId,
+      { test: 'ok' },
+      account,
+    );
+    expect(finish).toEqual({ ok: false, error: 'Invalid passkey' });
+    expect((await store.getPasskeyCredential('cred-1'))?.accountId).toBe(accountId);
+  });
+
+  it('rejects a register challenge on replace finish', async () => {
+    const { store, ceremony, accountId } = await seed();
+    const account = await store.getAccount(accountId);
+    if (account === undefined) {
+      throw new Error('missing account');
+    }
+    const register = await startPasskeyRegistration(store, ceremony, CONFIG, T0);
+    const finish = await finishPasskeyReplace(
+      store,
+      ceremony,
+      CONFIG,
+      T0,
+      ORIGIN,
+      register.challengeId,
+      { test: 'replace' },
+      account,
+    );
+    expect(finish).toEqual({ ok: false, error: 'Wrong challenge type' });
+  });
+
+  it('rejects another account finishing this replace challenge', async () => {
+    const { store, ceremony, accountId } = await seed();
+    const account = await store.getAccount(accountId);
+    if (account === undefined) {
+      throw new Error('missing account');
+    }
+    const begin = await startPasskeyReplace(store, ceremony, CONFIG, T0, account);
+    if (!('challengeId' in begin)) {
+      throw new Error('expected begin');
+    }
+    const other = {
+      ...account,
+      id: 'other',
+      viewKey: 'b'.repeat(64),
+    };
+    const finish = await finishPasskeyReplace(
+      store,
+      ceremony,
+      CONFIG,
+      T0,
+      ORIGIN,
+      begin.challengeId,
+      { test: 'replace' },
+      other,
+    );
+    expect(finish).toEqual({ ok: false, error: 'Unknown or expired challenge' });
+  });
+
+  it('rejects replace finish when the challenge has no account id', async () => {
+    const { store, ceremony, accountId } = await seed();
+    const account = await store.getAccount(accountId);
+    if (account === undefined) {
+      throw new Error('missing account');
+    }
+    await store.createPasskeyChallenge({
+      id: 'ch',
+      type: 'replace',
+      challenge: 'test-challenge',
+      accountId: null,
+      consumed: false,
+      createdAt: T0,
+    });
+    const finish = await finishPasskeyReplace(
+      store,
+      ceremony,
+      CONFIG,
+      T0,
+      ORIGIN,
+      'ch',
+      { test: 'replace' },
+      account,
+    );
+    expect(finish).toEqual({ ok: false, error: 'Unknown or expired challenge' });
+  });
+
+  it('rejects replace finish with a missing origin', async () => {
+    const { store, ceremony, accountId } = await seed();
+    const account = await store.getAccount(accountId);
+    if (account === undefined) {
+      throw new Error('missing account');
+    }
+    const begin = await startPasskeyReplace(store, ceremony, CONFIG, T0, account);
+    if (!('challengeId' in begin)) {
+      throw new Error('expected begin');
+    }
+    const finish = await finishPasskeyReplace(
+      store,
+      ceremony,
+      CONFIG,
+      T0,
+      undefined,
+      begin.challengeId,
+      { test: 'replace' },
+      account,
+    );
+    expect(finish).toEqual({ ok: false, error: 'Invalid origin' });
+  });
+
+  it('rejects an invalid attestation on replace finish', async () => {
+    const { store, ceremony, accountId } = await seed();
+    const account = await store.getAccount(accountId);
+    if (account === undefined) {
+      throw new Error('missing account');
+    }
+    const begin = await startPasskeyReplace(store, ceremony, CONFIG, T0, account);
+    if (!('challengeId' in begin)) {
+      throw new Error('expected begin');
+    }
+    const finish = await finishPasskeyReplace(
+      store,
+      ceremony,
+      CONFIG,
+      T0,
+      ORIGIN,
+      begin.challengeId,
+      { test: 'nope' },
+      account,
+    );
+    expect(finish).toEqual({ ok: false, error: 'Invalid passkey' });
+  });
+
+  it('rejects replace when the new id belongs to another account', async () => {
+    const { store, ceremony, accountId } = await seed();
+    const account = await store.getAccount(accountId);
+    if (account === undefined) {
+      throw new Error('missing account');
+    }
+    await store.createPasskeyCredential({
+      credentialId: 'cred-2',
+      publicKey: new Uint8Array([4, 5, 6]),
+      signCount: 0,
+      accountId: 'other',
+      createdAt: T0,
+    });
+    const begin = await startPasskeyReplace(store, ceremony, CONFIG, T0, account);
+    if (!('challengeId' in begin)) {
+      throw new Error('expected begin');
+    }
+    const finish = await finishPasskeyReplace(
+      store,
+      ceremony,
+      CONFIG,
+      T0,
+      ORIGIN,
+      begin.challengeId,
+      { test: 'replace' },
+      account,
+    );
+    expect(finish).toEqual({ ok: false, error: 'Invalid passkey' });
+  });
+
+  it('rejects replace finish when consume loses the race', async () => {
+    const { store: seeded, ceremony, accountId } = await seed();
+    class RaceStore extends InMemoryAuthStore {
+      override async updatePasskeyChallenge(): Promise<boolean> {
+        return false;
+      }
+    }
+    const store = new RaceStore();
+    const account = await seeded.getAccount(accountId);
+    if (account === undefined) {
+      throw new Error('missing account');
+    }
+    await store.createAccount(account);
+    await store.createPasskeyCredential({
+      credentialId: 'cred-1',
+      publicKey: new Uint8Array([1, 2, 3]),
+      signCount: 0,
+      accountId,
+      createdAt: T0,
+    });
+    const begin = await startPasskeyReplace(store, ceremony, CONFIG, T0, account);
+    if (!('challengeId' in begin)) {
+      throw new Error('expected begin');
+    }
+    const finish = await finishPasskeyReplace(
+      store,
+      ceremony,
+      CONFIG,
+      T0,
+      ORIGIN,
+      begin.challengeId,
+      { test: 'replace' },
+      account,
+    );
+    expect(finish).toEqual({ ok: false, error: 'Challenge already used' });
+  });
+
+  it('rejects replace finish when replacePasskeyCredential returns false', async () => {
+    const { ceremony, accountId } = await seed();
+    class FailStore extends InMemoryAuthStore {
+      override async replacePasskeyCredential(): Promise<boolean> {
+        return false;
+      }
+    }
+    const store = new FailStore();
+    const account = {
+      id: accountId,
+      linkingKey: null,
+      role: 'basis' as const,
+      name: null,
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: 'a'.repeat(64),
+      createdAt: T0,
+      rulesAgreedAt: null,
+    };
+    await store.createAccount(account);
+    await store.createPasskeyCredential({
+      credentialId: 'cred-1',
+      publicKey: new Uint8Array([1, 2, 3]),
+      signCount: 0,
+      accountId,
+      createdAt: T0,
+    });
+    const begin = await startPasskeyReplace(store, ceremony, CONFIG, T0, account);
+    if (!('challengeId' in begin)) {
+      throw new Error('expected begin');
+    }
+    const finish = await finishPasskeyReplace(
+      store,
+      ceremony,
+      CONFIG,
+      T0,
+      ORIGIN,
+      begin.challengeId,
+      { test: 'replace' },
+      account,
+    );
+    expect(finish).toEqual({ ok: false, error: 'Invalid passkey' });
+  });
+
+  it('rejects an expired replace challenge', async () => {
+    const { store, ceremony, accountId } = await seed();
+    const account = await store.getAccount(accountId);
+    if (account === undefined) {
+      throw new Error('missing account');
+    }
+    const begin = await startPasskeyReplace(store, ceremony, CONFIG, T0, account);
+    if (!('challengeId' in begin)) {
+      throw new Error('expected begin');
+    }
+    const finish = await finishPasskeyReplace(
+      store,
+      ceremony,
+      CONFIG,
+      T0 + CHALLENGE_TTL_MS + 1,
+      ORIGIN,
+      begin.challengeId,
+      { test: 'replace' },
+      account,
+    );
+    expect(finish).toEqual({ ok: false, error: 'Challenge expired' });
   });
 });

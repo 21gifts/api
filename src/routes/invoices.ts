@@ -3,6 +3,7 @@ import { Hono } from 'hono';
 import { z } from 'zod';
 import type { AuthStore } from '@/lib/auth/store';
 import { decodeBolt11 } from '@/lib/bolt11';
+import { fetchBtcUsdSpot } from '@/lib/btc-usd-spot';
 import { GIFT_INVOICE_MAX_MSAT, GIFT_INVOICE_MIN_MSAT, GIFT_INVOICE_TTL_MS } from '@/lib/config';
 import type { ConversationStore } from '@/lib/conversation-store';
 import { requestGiftInvoice } from '@/lib/gift-invoice';
@@ -11,7 +12,15 @@ import { normalizeLightningAddress } from '@/lib/lightning-address';
 import type { FetchFn } from '@/lib/lnurlp';
 import { MESSAGE_LIST_LIMIT, unsignedNostrDefaults } from '@/lib/message';
 import type { MessageStore } from '@/lib/message-store';
+import {
+  fiatFromSats,
+  fiatFromUsd,
+  normalizeAmountUsd,
+  type FiatAmounts,
+  type FiatCrossRates,
+} from '@/lib/money';
 import { preimageMatchesHash } from '@/lib/proof';
+import { InMemoryFiatStore, type FiatRateBook } from '@/lib/usd-fiat-store';
 import { eligibleToday } from '@/lib/funding';
 import { InMemoryFundingStore, type FundingStore } from '@/lib/funding-store';
 import { checkSpendAuth } from '@/lib/spend-auth';
@@ -85,6 +94,12 @@ export interface InvoiceRouteDeps {
    * {@link InMemoryFundingStore}).
    */
   fundingStore?: FundingStore;
+  /**
+   * USD→CHF/EUR/PHP crosses for the payment-time snapshot (default: empty
+   * {@link InMemoryFiatStore}). A missing cross or a Frankfurter failure
+   * leaves that currency null and does not fail proof.
+   */
+  fiatRates?: FiatRateBook;
 }
 
 const ISSUE_ERROR = 'Lightning Address did not issue an invoice';
@@ -95,6 +110,7 @@ const issueBodySchema = z.object({
   comment: z.string().max(255).optional(),
   messageId: z.string().optional(),
   groupMessageId: z.string().optional(),
+  amountUsd: z.string().optional(),
 });
 
 const proofBodySchema = z.object({
@@ -205,8 +221,57 @@ async function addressHasPosted(
 export function invoiceRoutes(deps: InvoiceRouteDeps): Hono {
   const giftRecorder = deps.giftRecorder ?? new NoopGiftRecorder();
   const fundingStore = deps.fundingStore ?? new InMemoryFundingStore();
+  const fiatRates = deps.fiatRates ?? new InMemoryFiatStore();
 
-  async function persistProvenGift(invoice: GiftInvoice, paidAtMs: number): Promise<void> {
+  /**
+   * One payment-time snapshot for the gift, the forum credit, and the group row.
+   *
+   * A caller-supplied `amountUsd` stays the USD string (not a sats conversion).
+   * Otherwise one Coinbase spot is used. A missing cross, a spot failure, or
+   * a Frankfurter failure yields null amounts and does not throw.
+   *
+   * @param invoice - Proven invoice.
+   * @param paidAtMs - Proof clock, epoch milliseconds.
+   * @returns Snapshot, or `null` when pricing is unavailable.
+   */
+  async function paymentFiat(invoice: GiftInvoice, paidAtMs: number): Promise<FiatAmounts | null> {
+    const day = new Date(paidAtMs).toISOString().slice(0, 10);
+    let crosses: FiatCrossRates = {};
+    try {
+      const found = (await fiatRates.ensureDays([day], paidAtMs)).get(day);
+      if (found !== undefined) {
+        crosses = found;
+      }
+    } catch {
+      logEvent('invoice.fiat_failed', { id: invoice.id });
+    }
+    if (invoice.amountUsd !== undefined) {
+      try {
+        return fiatFromUsd(invoice.amountUsd, crosses);
+      } catch {
+        return null;
+      }
+    }
+    const sats = Math.floor(invoice.amountMsat / 1000);
+    if (sats <= 0) {
+      return null;
+    }
+    const spot = await fetchBtcUsdSpot(deps.fetchImpl);
+    if (spot === null) {
+      return null;
+    }
+    try {
+      return fiatFromSats(sats, spot, crosses);
+    } catch {
+      return null;
+    }
+  }
+
+  async function persistProvenGift(
+    invoice: GiftInvoice,
+    paidAtMs: number,
+    fiat: FiatAmounts | null,
+  ): Promise<void> {
     try {
       await giftRecorder.recordOutbound({
         paidAt: new Date(paidAtMs),
@@ -216,13 +281,18 @@ export function invoiceRoutes(deps: InvoiceRouteDeps): Hono {
         lightningInvoice: invoice.pr,
         description: invoice.groupMessageId !== undefined ? '21gifts moderator' : '21gifts daily',
         sourceWallet: 'lightning.space',
+        fiat,
       });
     } catch {
       logEvent('gifts.record_failed', { id: invoice.id });
     }
   }
 
-  async function attachSpendGiftReply(invoice: GiftInvoice, paidAtMs: number): Promise<void> {
+  async function attachSpendGiftReply(
+    invoice: GiftInvoice,
+    paidAtMs: number,
+    fiat: FiatAmounts | null,
+  ): Promise<void> {
     if (invoice.messageId === undefined) {
       return;
     }
@@ -249,7 +319,37 @@ export function invoiceRoutes(deps: InvoiceRouteDeps): Hono {
           await deps.messageStore.markDeleted(replyId, new Date(paidAtMs), platform.id);
           return;
         }
-        await deps.messageStore.create({
+        await deps.messageStore.create(
+          {
+            id: replyId,
+            accountId: platform.id,
+            name,
+            text,
+            createdAt: new Date(paidAtMs),
+            hasPhoto: false,
+            hasVideo: false,
+            videoContentType: null,
+            contentFp: null,
+            ...unsignedNostrDefaults(),
+            parentId: invoice.messageId,
+            sats,
+            nostrPublishState: 'skipped',
+            authorPubkey,
+          },
+          undefined,
+          undefined,
+          undefined,
+          fiat,
+        );
+        await deps.messageStore.markDeleted(replyId, new Date(paidAtMs), platform.id);
+        await deps.messageStore.addSats(invoice.messageId, sats, fiat);
+        return;
+      }
+      if (existing !== undefined) {
+        return;
+      }
+      await deps.messageStore.create(
+        {
           id: replyId,
           accountId: platform.id,
           name,
@@ -262,33 +362,15 @@ export function invoiceRoutes(deps: InvoiceRouteDeps): Hono {
           ...unsignedNostrDefaults(),
           parentId: invoice.messageId,
           sats,
-          nostrPublishState: 'skipped',
+          nostrPublishState: text === '' ? 'skipped' : 'pending',
           authorPubkey,
-        });
-        await deps.messageStore.markDeleted(replyId, new Date(paidAtMs), platform.id);
-        await deps.messageStore.addSats(invoice.messageId, sats);
-        return;
-      }
-      if (existing !== undefined) {
-        return;
-      }
-      await deps.messageStore.create({
-        id: replyId,
-        accountId: platform.id,
-        name,
-        text,
-        createdAt: new Date(paidAtMs),
-        hasPhoto: false,
-        hasVideo: false,
-        videoContentType: null,
-        contentFp: null,
-        ...unsignedNostrDefaults(),
-        parentId: invoice.messageId,
-        sats,
-        nostrPublishState: text === '' ? 'skipped' : 'pending',
-        authorPubkey,
-      });
-      await deps.messageStore.addSats(invoice.messageId, sats);
+        },
+        undefined,
+        undefined,
+        undefined,
+        fiat,
+      );
+      await deps.messageStore.addSats(invoice.messageId, sats, fiat);
     } catch {
       logEvent('invoice.gift_reply.failed');
     }
@@ -301,8 +383,13 @@ export function invoiceRoutes(deps: InvoiceRouteDeps): Hono {
    *
    * @param invoice - Proven gift invoice.
    * @param paidAtMs - Proof clock, epoch milliseconds.
+   * @param fiat - Same snapshot as the gift row and forum credit.
    */
-  async function attachSpendGroupGift(invoice: GiftInvoice, paidAtMs: number): Promise<void> {
+  async function attachSpendGroupGift(
+    invoice: GiftInvoice,
+    paidAtMs: number,
+    fiat: FiatAmounts | null,
+  ): Promise<void> {
     if (invoice.groupMessageId === undefined || deps.conversationStore === undefined) {
       return;
     }
@@ -338,21 +425,26 @@ export function invoiceRoutes(deps: InvoiceRouteDeps): Hono {
             : recipientName;
       const platformNameTrim = platform.name?.trim() ?? '';
       const platformName = platformNameTrim !== '' ? platformNameTrim : '21.gifts';
-      await conversationStore.appendMessage({
-        id,
-        conversationId: thread.id,
-        text,
-        createdAt: new Date(paidAtMs),
-        senderAccountId: platform.id,
-        senderPubkey: (await deps.authStore.getNostrPublicKey(platform.id)) ?? null,
-        name: platformName,
-        sats: Math.floor(invoice.amountMsat / 1000),
-        eventId: null,
-        nostrPublishState: 'skipped',
-        nostrEvent: null,
-        claimedUntil: null,
-        giftForMessageId: invoice.groupMessageId,
-      });
+      await conversationStore.appendMessage(
+        {
+          id,
+          conversationId: thread.id,
+          text,
+          createdAt: new Date(paidAtMs),
+          senderAccountId: platform.id,
+          senderPubkey: (await deps.authStore.getNostrPublicKey(platform.id)) ?? null,
+          name: platformName,
+          sats: Math.floor(invoice.amountMsat / 1000),
+          eventId: null,
+          nostrPublishState: 'skipped',
+          nostrEvent: null,
+          claimedUntil: null,
+          giftForMessageId: invoice.groupMessageId,
+        },
+        undefined,
+        undefined,
+        fiat,
+      );
       logEvent('invoice.group_gift.attached', { id: invoice.id });
     } catch {
       logEvent('invoice.group_gift.failed');
@@ -360,9 +452,10 @@ export function invoiceRoutes(deps: InvoiceRouteDeps): Hono {
   }
 
   async function finishPaid(invoice: GiftInvoice, paidAtMs: number): Promise<void> {
-    await persistProvenGift(invoice, paidAtMs);
-    await attachSpendGiftReply(invoice, paidAtMs);
-    await attachSpendGroupGift(invoice, paidAtMs);
+    const fiat = await paymentFiat(invoice, paidAtMs);
+    await persistProvenGift(invoice, paidAtMs, fiat);
+    await attachSpendGiftReply(invoice, paidAtMs, fiat);
+    await attachSpendGroupGift(invoice, paidAtMs, fiat);
   }
 
   return new Hono()
@@ -460,6 +553,14 @@ export function invoiceRoutes(deps: InvoiceRouteDeps): Hono {
       const parsed = issueBodySchema.safeParse(raw);
       if (!parsed.success) {
         return c.json({ error: 'Expected a JSON body with address and amountMsat' }, 400);
+      }
+      let amountUsd: string | undefined;
+      if (parsed.data.amountUsd !== undefined) {
+        const normalized = normalizeAmountUsd(parsed.data.amountUsd);
+        if (normalized === null) {
+          return c.json({ error: 'Expected a JSON body with address and amountMsat' }, 400);
+        }
+        amountUsd = normalized;
       }
       if (
         (parsed.data.messageId !== undefined && !MESSAGE_ID_RE.test(parsed.data.messageId)) ||
@@ -600,6 +701,7 @@ export function invoiceRoutes(deps: InvoiceRouteDeps): Hono {
         ...(resolvedGroupMessageId === undefined
           ? {}
           : { groupMessageId: resolvedGroupMessageId, comment: parsed.data.comment ?? '' }),
+        ...(amountUsd === undefined ? {} : { amountUsd }),
       });
       logEvent('invoice.issued', { id, address, amountMsat });
       return c.json(

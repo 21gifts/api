@@ -34,9 +34,10 @@ api/
 │   │   ├── health.ts         # GET /healthz
 │   │   ├── info.ts           # GET /info
 │   │   ├── brand.ts          # GET /favicon.ico, /favicon.svg, /apple-touch-icon.png
-│   │   ├── auth.ts           # Passkey: /auth/passkey/register|authenticate begin/finish
-│   │   ├── me.ts             # GET /me; GET /me/activity; PUT /me/about; GET /me/about/photo; POST /me/setup/skip; POST /me/name; POST /me/username; POST /me/location; POST /me/forum-laws-dismissed; POST /me/notification-level; POST /me/rules-agreement; link/unlink + address verification
+│   │   ├── auth.ts           # Passkey: /auth/passkey/register|authenticate|replace begin/finish
+│   │   ├── me.ts             # GET /me; GET /me/activity; PUT /me/about; GET /me/about/photo; POST /me/wallet-backup-seen; POST /me/setup/skip; POST /me/name; POST /me/username; POST /me/location; POST /me/forum-laws-dismissed; POST /me/notification-level; POST /me/rules-agreement; link/unlink + address verification
 │   │   ├── members.ts        # GET /members/:accountId (Bearer; live identity + profile note + counts + trust + fundingReviewedAt); GET /members/:accountId/activity; GET /members/:accountId/posts; GET /members/:accountId/replies
+│   │   ├── links.ts          # GET /links/:code (public; 8-hex prefix of a message or account id)
 │   │   ├── view.ts           # GET /view/:viewKey (public profile card); GET /view/:viewKey/about/photo; GET /view/:viewKey/activity
 │   │   ├── lightning-address.ts  # GET /lightning-address (public LUD-16 resolve)
 │   │   ├── debug.ts          # GET/POST /debug/accounts; GET/PATCH /debug/accounts/:id; POST /debug/accounts/:id/session (DEBUG_TOKEN)
@@ -128,7 +129,8 @@ api/
 │   │       ├── roles.ts       # ROLE_ORDER, roleRank, roleAtLeast, isModeratorGroupMember (caller-role hierarchy)
 │   │       ├── profile-message.ts # Profile forum note when name + LN set (`ensureProfileMessage`)
 │   │       ├── hex.ts        # CSPRNG hex tokens
-│   │       ├── passkey.ts    # WebAuthn register/authenticate domain logic
+│   │       ├── prf.ts        # Frozen WebAuthn PRF eval.first salt
+│   │       ├── passkey.ts    # WebAuthn register/authenticate/replace domain logic
 │   │       ├── service.ts    # Session issuance and bearer resolution
 │   │       ├── wrong-account.ts  # sessionRefused: refuse a bearer when the account flag is set
 │   │       ├── store.ts      # AuthStore port + in-memory adapter (+ passkey records)
@@ -210,6 +212,7 @@ api/
 │       │       ├── roles.test.ts
 │       │       ├── profile-message.test.ts
 │       │       ├── hex.test.ts
+│       │       ├── prf.test.ts
 │       │       ├── passkey.test.ts
 │       │       ├── service.test.ts
 │       │       ├── wrong-account.test.ts
@@ -228,6 +231,7 @@ api/
 │           ├── me-about.test.ts
 │           ├── activity.test.ts
 │           ├── members.test.ts
+│           ├── links.test.ts
 │           ├── lightning-address.test.ts
 │           ├── debug.test.ts
 │           ├── stats.test.ts

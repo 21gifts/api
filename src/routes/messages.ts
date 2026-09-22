@@ -489,7 +489,7 @@ async function serveForumVideo(
  * @param extraPhotos - Optional extra stills (indices 1..n). Omit when empty.
  * @param goalSats - Optional whole-sat ask for a top-level note. Default `null`
  *   (no goal). Stored as `null` when `parentId` is set.
- * @returns 200 / 403 / 429 / 503.
+ * @returns 200 / 403 (unpaid text-only below verified) / 429 / 503.
  */
 async function persistForumPost(
   deps: MessagesRouteDeps,
@@ -529,7 +529,7 @@ async function persistForumPost(
       return c.json({ error: 'Messages are unavailable' }, 503);
     }
   }
-  if (!roleAtLeast(account.role, 'verified')) {
+  if (!roleAtLeast(account.role, 'verified') && photo === undefined && video === undefined) {
     return c.json(
       {
         error:
@@ -1281,10 +1281,17 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
             const role = row.accountId === null ? undefined : (author?.role ?? 'basis');
             const deletedBy = await resolveDeletedBy(deps.authStore, row);
             return c.json(
-              serializeMessage(row, false, role, undefined, true, {
-                deletedAt: row.deletedAt,
-                deletedBy,
-              }),
+              serializeMessage(
+                row,
+                false,
+                role,
+                row.parentId === null ? await deps.store.countAttributedReplies(row.id) : undefined,
+                true,
+                {
+                  deletedAt: row.deletedAt,
+                  deletedBy,
+                },
+              ),
               200,
             );
           }
@@ -1307,7 +1314,15 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
           if (kept === null) {
             return c.json({ error: 'Not found' }, 404);
           }
-          return c.json(serializeMessage(kept, payable, role), 200);
+          return c.json(
+            serializeMessage(
+              kept,
+              payable,
+              role,
+              kept.parentId === null ? await deps.store.countAttributedReplies(kept.id) : undefined,
+            ),
+            200,
+          );
         }
       } catch {
         logEvent('messages.get.failed');

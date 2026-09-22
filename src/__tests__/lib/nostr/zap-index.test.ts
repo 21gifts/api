@@ -31,6 +31,7 @@ import {
 } from '@/lib/nostr/zap-index';
 import { PostRateLimiter } from '@/lib/nostr/rate-limit';
 import { InMemoryPushStore } from '@/lib/push-store';
+import { InMemoryFiatStore } from '@/lib/usd-fiat-store';
 
 vi.mock('@/lib/bolt11', () => ({
   decodeBolt11: vi.fn(),
@@ -580,7 +581,7 @@ describe('backfillExternalZappers', () => {
     });
     for (let index = 0; index < 450; index += 1) {
       const receiptId = `newer-unattributable-${index.toString().padStart(3, '0')}`;
-      await store.recordZapReceipt(receiptId, parentId, 1);
+      await store.recordZapReceipt(receiptId, parentId, 1, null);
       await store.recordZapIngest({
         id: `newer-ingest-${index.toString().padStart(3, '0')}`,
         createdAt: new Date('2026-09-18T11:00:00.000Z'),
@@ -604,7 +605,7 @@ describe('backfillExternalZappers', () => {
       bolt11: 'lnbc-older-valid',
       content: 'older gift',
     });
-    await store.recordZapReceipt(fixture.receipt.id, parentId, 21);
+    await store.recordZapReceipt(fixture.receipt.id, parentId, 21, null);
     await store.recordZapIngest({
       id: 'older-valid-ingest',
       createdAt: new Date('2026-09-18T10:00:00.000Z'),
@@ -777,7 +778,7 @@ describe('backfillExternalZappers', () => {
       descriptionHash: hash,
       expirySeconds: null,
     });
-    await store.recordZapReceipt('backfill-receipt', parentId, 21);
+    await store.recordZapReceipt('backfill-receipt', parentId, 21, null);
     await store.recordZapIngest({
       id: 'backfill-ingest',
       createdAt: new Date('2026-09-18T10:00:00Z'),
@@ -828,7 +829,7 @@ describe('backfillExternalZappers', () => {
     });
     const secondStore = new InMemoryMessageStore();
     await secondStore.create((await store.getById(parentId))!);
-    await secondStore.recordZapReceipt('member-receipt', parentId, 21);
+    await secondStore.recordZapReceipt('member-receipt', parentId, 21, null);
     await secondStore.recordZapIngest({
       ...(await store.listZapIngests(1))[0]!,
       id: 'member-ingest',
@@ -873,7 +874,7 @@ describe('backfillExternalZappers', () => {
       descriptionHash: fixture.descriptionHash,
       expirySeconds: null,
     });
-    await store.recordZapReceipt(fixture.receipt.id, parentId, 0);
+    await store.recordZapReceipt(fixture.receipt.id, parentId, 0, null);
     await store.recordZapIngest({
       id: 'backfill-zero-ingest',
       createdAt: new Date('2026-09-18T10:00:00Z'),
@@ -1074,7 +1075,7 @@ describe('backfillExternalZappers', () => {
       accountId: 'optional-backfill-author',
       messageId: row.messageId,
     });
-    await store.recordZapReceipt(fixture.receipt.id, parentId, 21);
+    await store.recordZapReceipt(fixture.receipt.id, parentId, 21, null);
     mockedDecode.mockReturnValue({ paymentHash: '95'.repeat(32), amountMsat: 21_000 });
     mockedInspect.mockReturnValue({
       paymentHash: '95'.repeat(32),
@@ -1126,7 +1127,7 @@ describe('backfillExternalZappers', () => {
       kekId: 1,
       custody: 'custodial',
     });
-    await store.recordZapReceipt(fixture.receipt.id, parentId, 21);
+    await store.recordZapReceipt(fixture.receipt.id, parentId, 21, null);
     mockedDecode.mockReturnValue({ paymentHash: '96'.repeat(32), amountMsat: 21_000 });
     mockedInspect.mockReturnValue({
       paymentHash: '96'.repeat(32),
@@ -1325,6 +1326,7 @@ describe('manual invoice settlement', () => {
       preimage: preimage.toUpperCase(),
       notificationStore: notifications,
       pushStore,
+      fiatRates: new InMemoryFiatStore(),
     });
     warn.mockRestore();
     expect(result).toEqual({
@@ -2625,6 +2627,123 @@ describe('indexZapReceipt', () => {
     expect((await store.getById(row.id))?.sats).toBe(21);
   });
 
+  function spotFetch(amount: string): FetchFn {
+    return async () =>
+      new Response(JSON.stringify({ data: { amount } }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+  }
+
+  it('freezes spot crosses onto the zapped note and the ingest row', async () => {
+    const store = new InMemoryMessageStore();
+    const row = await store.create({
+      id: 'm-spot',
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'hi',
+      createdAt: new Date('2026-06-01T00:00:00.000Z'),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+    });
+    const ok = await indexZapReceipt({
+      store,
+      messageId: row.id,
+      receipt: { id: 'r-spot', pubkey: PROVIDER_PUBKEY, tags: [] },
+      providerPubkey: PROVIDER_PUBKEY,
+      amountSats: 1000,
+      fetchImpl: spotFetch('100000'),
+      now: () => Date.parse('2026-06-01T12:00:00.000Z'),
+      fiatRates: new InMemoryFiatStore({
+        '2026-06-01': { CHF: '0.80', EUR: '0.90', PHP: '50' },
+      }),
+    });
+    expect(ok).toBe(true);
+    expect((await store.getById(row.id))?.amountUsd).toBe('1.00');
+    expect((await store.getById(row.id))?.amountChf).toBe('0.80');
+    expect((await store.listZapIngests(5))[0]?.amountUsd).toBe('1.00');
+    expect((await store.listZapIngests(5))[0]?.amountChf).toBe('0.80');
+  });
+
+  it('freezes USD with empty crosses when the rate book has no day', async () => {
+    const store = new InMemoryMessageStore();
+    const row = await store.create({
+      id: 'm-empty-cross',
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'hi',
+      createdAt: new Date('2026-06-01T00:00:00.000Z'),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+    });
+    const ok = await indexZapReceipt({
+      store,
+      messageId: row.id,
+      receipt: { id: 'r-empty-cross', pubkey: PROVIDER_PUBKEY, tags: [] },
+      providerPubkey: PROVIDER_PUBKEY,
+      amountSats: 1000,
+      fetchImpl: spotFetch('100000'),
+      now: () => Date.parse('2026-06-01T12:00:00.000Z'),
+      fiatRates: new InMemoryFiatStore(),
+    });
+    expect(ok).toBe(true);
+    expect((await store.getById(row.id))?.amountUsd).toBe('1.00');
+    expect((await store.getById(row.id))?.amountChf).toBeNull();
+  });
+
+  it('still freezes USD when ensureDays throws', async () => {
+    const store = new InMemoryMessageStore();
+    const row = await store.create({
+      id: 'm-fx-down',
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'hi',
+      createdAt: new Date('2026-06-01T00:00:00.000Z'),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+    });
+    const ok = await indexZapReceipt({
+      store,
+      messageId: row.id,
+      receipt: { id: 'r-fx-down', pubkey: PROVIDER_PUBKEY, tags: [] },
+      providerPubkey: PROVIDER_PUBKEY,
+      amountSats: 1000,
+      fetchImpl: spotFetch('100000'),
+      fiatRates: {
+        ensureDays: async () => {
+          throw new Error('frankfurter down');
+        },
+      },
+    });
+    expect(ok).toBe(true);
+    expect((await store.getById(row.id))?.amountUsd).toBe('1.00');
+    expect((await store.getById(row.id))?.amountChf).toBeNull();
+  });
+
+  it('indexes the zap with null fiat when the spot text cannot be priced', async () => {
+    const store = new InMemoryMessageStore();
+    const row = await store.create({
+      id: 'm-bad-spot',
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'hi',
+      createdAt: new Date('2026-06-01T00:00:00.000Z'),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+    });
+    const ok = await indexZapReceipt({
+      store,
+      messageId: row.id,
+      receipt: { id: 'r-bad-spot', pubkey: PROVIDER_PUBKEY, tags: [] },
+      providerPubkey: PROVIDER_PUBKEY,
+      amountSats: 1000,
+      fetchImpl: spotFetch('1e2'),
+    });
+    expect(ok).toBe(true);
+    expect((await store.getById(row.id))?.sats).toBe(1000);
+    expect((await store.getById(row.id))?.amountUsd).toBeNull();
+  });
+
   it('returns false on duplicate receipt id without adding sats again', async () => {
     const store = new InMemoryMessageStore();
     const row = await store.create({
@@ -2764,6 +2883,7 @@ describe('indexOpenZapReceipts', () => {
       timeoutMs: 50,
       now: () => nowMs,
       fetchImpl: lnurlFetch(PROVIDER_PUBKEY),
+      fiatRates: new InMemoryFiatStore(),
     });
     expect((await store.getById(parentId))?.sats).toBe(42);
     expect(await store.listZapperPubkeys()).toEqual([first.pubkey]);
@@ -2905,7 +3025,7 @@ describe('indexOpenZapReceipts', () => {
       receiptId: 'external-below-minimum-receipt',
       bolt11: 'lnbc-external-below-minimum',
     });
-    await store.recordZapReceipt(fixture.receipt.id, parentId, 0);
+    await store.recordZapReceipt(fixture.receipt.id, parentId, 0, null);
     mockedDecode.mockReturnValue({ paymentHash: '74'.repeat(32), amountMsat: 21_000 });
     mockedInspect.mockReturnValue({
       paymentHash: '74'.repeat(32),
@@ -2985,13 +3105,13 @@ describe('indexOpenZapReceipts', () => {
       messageId: parentId,
     });
     for (const row of backfillRows) {
-      await store.recordZapReceipt(row.receiptEventId, parentId, row.sats);
+      await store.recordZapReceipt(row.receiptEventId, parentId, row.sats, null);
     }
     const oldest = externalZapFixture({
       receiptId: 'terminal-external-oldest',
       bolt11: 'lnbc-terminal-external-oldest',
     });
-    await store.recordZapReceipt(oldest.receipt.id, parentId, 0);
+    await store.recordZapReceipt(oldest.receipt.id, parentId, 0, null);
     mockedDecode.mockReturnValue({ paymentHash: '75'.repeat(32), amountMsat: 21_000 });
     mockedInspect.mockReturnValue({
       paymentHash: '75'.repeat(32),
@@ -3015,7 +3135,7 @@ describe('indexOpenZapReceipts', () => {
     });
 
     const claimedRequestReceiptId = 'terminal-external-claimed-request';
-    await store.recordZapReceipt(claimedRequestReceiptId, parentId, 21);
+    await store.recordZapReceipt(claimedRequestReceiptId, parentId, 21, null);
     await expect(
       store.attributeZapReceipt(claimedRequestReceiptId, {
         payerPubkey: fillerFixture.pubkey,
@@ -4206,7 +4326,7 @@ describe('indexOpenZapReceipts', () => {
     });
     const paymentHash = '27'.repeat(32);
     mockedDecode.mockReturnValue({ paymentHash, amountMsat: 21_000 });
-    await store.recordZapReceipt('legacy-receipt-control', messageId, 21);
+    await store.recordZapReceipt('legacy-receipt-control', messageId, 21, null);
     await store.recordZapIngest(
       indexedZapIngest({
         id: 'legacy-ingest-control',
@@ -4258,7 +4378,7 @@ describe('indexOpenZapReceipts', () => {
     });
     const paymentHash = '28'.repeat(32);
     mockedDecode.mockReturnValue({ paymentHash, amountMsat: 21_000 });
-    await store.recordZapReceipt('legacy-receipt-backfill', messageId, 21);
+    await store.recordZapReceipt('legacy-receipt-backfill', messageId, 21, null);
     await store.recordZapIngest(
       indexedZapIngest({
         id: 'legacy-ingest-backfill',
@@ -4580,7 +4700,7 @@ describe('indexOpenZapReceipts', () => {
       accountId: 'acc-known-dup',
       lightningAddress: 'zap-known-dup@example.com',
     });
-    await base.recordZapReceipt('r-known-dup', messageId, 21);
+    await base.recordZapReceipt('r-known-dup', messageId, 21, null);
     let getByEventIdCalls = 0;
     const store = {
       listLatest: (limit: number) => base.listLatest(limit),
@@ -4588,6 +4708,7 @@ describe('indexOpenZapReceipts', () => {
       listDebug: (limit: number) => base.listDebug(limit),
       postCountsByUtcDay: () => base.postCountsByUtcDay(),
       listHidden: (limit: number) => base.listHidden(limit),
+      listIdsByPrefix: (prefix: string) => base.listIdsByPrefix(prefix),
       listDirectChildren: (parentId: string) => base.listDirectChildren(parentId),
       listChildIds: (parentId: string) => base.listChildIds(parentId),
       listReplies: (parentId: string, limit?: number, includeHidden?: boolean) =>
@@ -4604,6 +4725,9 @@ describe('indexOpenZapReceipts', () => {
       ) => base.accountHasLiveTopLevelPost(...args),
       countByAccount: (...args: Parameters<InMemoryMessageStore['countByAccount']>) =>
         base.countByAccount(...args),
+      countAttributedReplies: (
+        ...args: Parameters<InMemoryMessageStore['countAttributedReplies']>
+      ) => base.countAttributedReplies(...args),
       listPostsByAccount: (...args: Parameters<InMemoryMessageStore['listPostsByAccount']>) =>
         base.listPostsByAccount(...args),
       listRepliesByAccount: (...args: Parameters<InMemoryMessageStore['listRepliesByAccount']>) =>
@@ -4809,6 +4933,7 @@ describe('indexOpenZapReceipts', () => {
         listDebug: (limit: number) => base.listDebug(limit),
         postCountsByUtcDay: () => base.postCountsByUtcDay(),
         listHidden: (limit: number) => base.listHidden(limit),
+        listIdsByPrefix: (prefix: string) => base.listIdsByPrefix(prefix),
         listDirectChildren: (parentId: string) => base.listDirectChildren(parentId),
         listChildIds: (parentId: string) => base.listChildIds(parentId),
         listReplies: (parentId: string, limit?: number, includeHidden?: boolean) =>
@@ -4825,6 +4950,9 @@ describe('indexOpenZapReceipts', () => {
         ) => base.accountHasLiveTopLevelPost(...args),
         countByAccount: (...args: Parameters<InMemoryMessageStore['countByAccount']>) =>
           base.countByAccount(...args),
+        countAttributedReplies: (
+          ...args: Parameters<InMemoryMessageStore['countAttributedReplies']>
+        ) => base.countAttributedReplies(...args),
         listPostsByAccount: (...args: Parameters<InMemoryMessageStore['listPostsByAccount']>) =>
           base.listPostsByAccount(...args),
         listRepliesByAccount: (...args: Parameters<InMemoryMessageStore['listRepliesByAccount']>) =>
@@ -5010,8 +5138,13 @@ describe('indexOpenZapReceipts', () => {
       lightningAddress: address,
     });
     let fetchCount = 0;
-    const countingFetch: FetchFn = async () => {
-      fetchCount += 1;
+    const spotUrl = 'https://api.coinbase.com/v2/prices/BTC-USD/spot';
+    const countingFetch: FetchFn = async (input) => {
+      const url =
+        typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
+      if (url !== spotUrl) {
+        fetchCount += 1;
+      }
       return new Response(
         JSON.stringify({
           callback: 'https://example.com/lnurlp/callback',
@@ -5168,6 +5301,7 @@ describe('indexOpenZapReceipts', () => {
         listDebug: (limit: number) => base.listDebug(limit),
         postCountsByUtcDay: () => base.postCountsByUtcDay(),
         listHidden: (limit: number) => base.listHidden(limit),
+        listIdsByPrefix: (prefix: string) => base.listIdsByPrefix(prefix),
         listDirectChildren: (parentId: string) => base.listDirectChildren(parentId),
         listChildIds: (parentId: string) => base.listChildIds(parentId),
         listReplies: (parentId: string, limit?: number, includeHidden?: boolean) =>
@@ -5184,6 +5318,9 @@ describe('indexOpenZapReceipts', () => {
         ) => base.accountHasLiveTopLevelPost(...args),
         countByAccount: (...args: Parameters<InMemoryMessageStore['countByAccount']>) =>
           base.countByAccount(...args),
+        countAttributedReplies: (
+          ...args: Parameters<InMemoryMessageStore['countAttributedReplies']>
+        ) => base.countAttributedReplies(...args),
         listPostsByAccount: (...args: Parameters<InMemoryMessageStore['listPostsByAccount']>) =>
           base.listPostsByAccount(...args),
         listRepliesByAccount: (...args: Parameters<InMemoryMessageStore['listRepliesByAccount']>) =>
@@ -6406,7 +6543,7 @@ describe('indexOpenZapReceipts', () => {
       eventId: 'ce'.repeat(32),
       createAccount: false,
     });
-    await store.recordZapReceipt('r-queue-drop-top', topAwaitId, 7);
+    await store.recordZapReceipt('r-queue-drop-top', topAwaitId, 7, null);
     await store.updateZapReceiptGift('r-queue-drop-top', {
       payerAccountId: 'payer-queue-drop-top',
     });
@@ -6642,7 +6779,7 @@ describe('indexOpenZapReceipts', () => {
       createdAt: 2,
       rulesAgreedAt: null,
     });
-    await store.recordZapReceipt('r-retry', parentId, 7);
+    await store.recordZapReceipt('r-retry', parentId, 7, null);
     await store.updateZapReceiptGift('r-retry', {
       payerAccountId: 'payer-retry',
       comment: 'keep going',
@@ -6698,7 +6835,7 @@ describe('indexOpenZapReceipts', () => {
       createdAt: 2,
       rulesAgreedAt: null,
     });
-    await store.recordZapReceipt('r-retry-reply', replyId, 7);
+    await store.recordZapReceipt('r-retry-reply', replyId, 7, null);
     await store.updateZapReceiptGift('r-retry-reply', {
       payerAccountId: 'payer-retry-reply',
       comment: 'keep going',
@@ -6731,7 +6868,7 @@ describe('indexOpenZapReceipts', () => {
     });
     const receiptId = 'retry-hidden-external-receipt';
     const payerPubkey = 'b6'.repeat(32);
-    await store.recordZapReceipt(receiptId, parentId, 21);
+    await store.recordZapReceipt(receiptId, parentId, 21, null);
     await store.attributeZapReceipt(receiptId, {
       payerPubkey,
       zapRequestId: 'b7'.repeat(32),
@@ -6776,7 +6913,7 @@ describe('indexOpenZapReceipts', () => {
       eventId: NOTE_EVENT_ID,
     });
     const receiptId = 'retry-reply-external-receipt';
-    await store.recordZapReceipt(receiptId, replyId, 21);
+    await store.recordZapReceipt(receiptId, replyId, 21, null);
     await store.attributeZapReceipt(receiptId, {
       payerPubkey: 'b9'.repeat(32),
       zapRequestId: 'ba'.repeat(32),
@@ -6809,7 +6946,7 @@ describe('indexOpenZapReceipts', () => {
     const receiptId = 'retry-blocked-external-receipt';
     const payerPubkey = '9c67a2e14d8f305b71c694e2af83d0574b2e9c116fd37a508ce429db65f184aa';
 
-    await store.recordZapReceipt(receiptId, parentId, 21);
+    await store.recordZapReceipt(receiptId, parentId, 21, null);
     await store.attributeZapReceipt(receiptId, {
       payerPubkey,
       zapRequestId: '2a8d5e71c4930fb6e17c4a925bd8603f74e1a9c50d6b328fac9574e163b20df8',
@@ -6864,7 +7001,7 @@ describe('indexOpenZapReceipts', () => {
     });
     const receiptId = 'retry-block-race-receipt';
     const payerPubkey = getPublicKey(generateSecretKey());
-    await store.recordZapReceipt(receiptId, parentId, 21);
+    await store.recordZapReceipt(receiptId, parentId, 21, null);
     await store.attributeZapReceipt(receiptId, {
       payerPubkey,
       zapRequestId: '53'.repeat(32),
@@ -6923,7 +7060,7 @@ describe('indexOpenZapReceipts', () => {
     });
     const receiptId = 'retry-live-external-receipt';
     const payerPubkey = 'bb'.repeat(32);
-    await store.recordZapReceipt(receiptId, parentId, 21);
+    await store.recordZapReceipt(receiptId, parentId, 21, null);
     await store.recordZapper(payerPubkey, receiptId, new Date(1_700_000_100_000));
     await store.attributeZapReceipt(receiptId, {
       payerPubkey,
@@ -7193,7 +7330,7 @@ describe('indexOpenZapReceipts', () => {
       lightningAddress: 'zap-skip-parent@example.com',
       messageId: 'm-skip-parent',
     });
-    await store.recordZapReceipt('r-skip-deleted', parentId, 3);
+    await store.recordZapReceipt('r-skip-deleted', parentId, 3, null);
     await store.updateZapReceiptGift('r-skip-deleted', { payerAccountId: 'ghost' });
     await store.markDeleted(parentId, new Date(1), 'acc-skip-parent');
     await store.create({
@@ -7206,7 +7343,7 @@ describe('indexOpenZapReceipts', () => {
       ...unsignedNostrDefaults(),
       eventId: `${'01'.repeat(32)}`,
     });
-    await store.recordZapReceipt('r-skip-ghost', 'm-skip-live', 3);
+    await store.recordZapReceipt('r-skip-ghost', 'm-skip-live', 3, null);
     await store.updateZapReceiptGift('r-skip-ghost', { payerAccountId: 'ghost' });
     await auth.createAccount({
       id: 'payer-no-inv',
@@ -7221,7 +7358,7 @@ describe('indexOpenZapReceipts', () => {
       createdAt: 3,
       rulesAgreedAt: null,
     });
-    await store.recordZapReceipt('r-no-inv', 'm-skip-live', 2);
+    await store.recordZapReceipt('r-no-inv', 'm-skip-live', 2, null);
     await store.updateZapReceiptGift('r-no-inv', { payerAccountId: 'payer-no-inv' });
     class RetryBoomStore extends InMemoryMessageStore {
       override create(
@@ -7235,7 +7372,7 @@ describe('indexOpenZapReceipts', () => {
     }
     const boomStore = new RetryBoomStore();
     await boomStore.create((await store.getById('m-skip-live'))!);
-    await boomStore.recordZapReceipt('r-no-inv', 'm-skip-live', 2);
+    await boomStore.recordZapReceipt('r-no-inv', 'm-skip-live', 2, null);
     await boomStore.updateZapReceiptGift('r-no-inv', { payerAccountId: 'payer-no-inv' });
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     await ingest({
@@ -8965,6 +9102,7 @@ describe('conversation zap ingest', () => {
       now: () => Date.parse('2026-08-28T00:00:00.000Z'),
       fetchImpl: lnurlFetch(PROVIDER_PUBKEY),
       conversations,
+      fiatRates: new InMemoryFiatStore(),
     });
     expect((await store.getById(profileId))?.sats).toBe(0);
     expect(await store.listReplies(profileId)).toEqual([]);
@@ -9395,7 +9533,7 @@ describe('conversation zap ingest', () => {
       ),
     ).toBe(true);
     expect(append).toHaveBeenCalledTimes(1);
-    expect(append).toHaveBeenCalledWith(expect.objectContaining({ id: secondGiftId }));
+    expect(append.mock.calls[0]?.[0]).toEqual(expect.objectContaining({ id: secondGiftId }));
     expect((await conversations.listMessages(thread.id, 10)).map((row) => row.id)).toEqual([
       firstGiftId,
       secondGiftId,

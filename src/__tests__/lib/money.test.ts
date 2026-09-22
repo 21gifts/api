@@ -1,12 +1,55 @@
 import { describe, expect, it } from 'vitest';
 import {
   SATS_PER_BTC,
+  fiatFromSats,
+  fiatFromUsd,
+  normalizeAmountUsd,
   parseUsdPerBtc,
   satsToBtcString,
   satsToUsdCents,
   usdCentsToFiatCents,
   usdCentsToString,
 } from '@/lib/money';
+
+describe('normalizeAmountUsd', () => {
+  it('normalizes integer-cent USD values and rejects unusable values', () => {
+    expect(normalizeAmountUsd('5')).toBe('5.00');
+    expect(normalizeAmountUsd('5.1')).toBe('5.10');
+    expect(normalizeAmountUsd('0')).toBeNull();
+    expect(normalizeAmountUsd('100000.01')).toBeNull();
+    expect(normalizeAmountUsd('5.001')).toBeNull();
+  });
+});
+
+describe('fiatFromUsd', () => {
+  it('freezes USD and available crosses', () => {
+    expect(fiatFromUsd('5.00', { CHF: '0.80', EUR: '0.90', PHP: '50' })).toEqual({
+      usd: '5.00',
+      chf: '4.00',
+      eur: '4.50',
+      php: '250.00',
+    });
+  });
+
+  it('keeps missing crosses null', () => {
+    expect(fiatFromUsd('5.00', {})).toEqual({ usd: '5.00', chf: null, eur: null, php: null });
+  });
+
+  it('rejects a non-normalized amount', () => {
+    expect(() => fiatFromUsd('nope', {})).toThrow('amountUsd must be normalized');
+  });
+});
+
+describe('fiatFromSats', () => {
+  it('freezes spot USD and available crosses', () => {
+    expect(fiatFromSats(1000, '100000', { CHF: '0.80' })).toEqual({
+      usd: '1.00',
+      chf: '0.80',
+      eur: null,
+      php: null,
+    });
+  });
+});
 
 describe('SATS_PER_BTC', () => {
   it('is 100 million', () => {

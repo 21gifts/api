@@ -236,8 +236,9 @@ not invent `/me/recurring`.
 
 ### NOSTR in v1
 
-Passkey login without PRF provides no client-side NOSTR key, so v1 runs NOSTR **fully
-custodially** (decided 2026-07-05, resolves Open Question #9): on sign-up the
+Passkey begin options request PRF so the client can derive a recovery phrase;
+API authentication and Nostr custody do not use it, so v1 runs NOSTR **fully
+custodially** (decided 2026-07-05, restated 2026-09-21, resolves Open Question #9): on sign-up the
 api generates a NOSTR keypair for the account, stores the `nsec` encrypted at
 rest, and signs that account's events server-side with the account's own key.
 Every profile, campaign, and comment therefore appears on the public NOSTR
@@ -253,9 +254,11 @@ Open Question #9.
 
 ### Identity & Keys
 
-> **Post-v1 target architecture.** v1 login is passkey without PRF, so there is
-> no client-side key material — see "v1 Transitional Model" above. Everything in
-> this section describes the non-custodial phase that replaces it.
+> **Post-v1 target architecture.** v1 login is still a server-issued session
+> after passkey. Begin options request WebAuthn PRF so the client can derive a
+> recovery phrase in tab memory; PRF is not used for API authentication or
+> server-side Nostr custody — see "v1 Transitional Model" above. Everything in
+> this section describes the non-custodial phase that replaces that custody.
 
 The full key flow, end-to-end:
 
@@ -471,9 +474,10 @@ other columns including `name` stay plaintext.
 
 ### Storage (client-side)
 
-> **Post-v1 target architecture** (like "Identity & Keys" above). v1 stores
-> no client-side key material; the v1 session is a server-issued token bound
-> to `account.id` after passkey authentication.
+> **Post-v1 target architecture** (like "Identity & Keys" above). The api
+> never stores a mnemonic or PRF output. The v1 session is a server-issued
+> token bound to `account.id` after passkey authentication. The client may
+> hold a PRF-derived 12-word phrase in tab memory only.
 
 IndexedDB, two object stores:
 
@@ -509,7 +513,7 @@ Encryption: AES-GCM 256, with two key-derivation paths:
 
 **In** — api:
 
-- Passkey endpoints: register/authenticate begin and finish, session issuance
+- Passkey endpoints: register/authenticate/replace begin and finish, session issuance; `POST /me/wallet-backup-seen`
 - Spend-worker invoice HTTP: `POST /invoices` / `POST /invoices/proof`
   (paying and LNDHub stay in the external worker)
 - Receiver address verification: micro-payment with one-time nonce in the
@@ -564,8 +568,10 @@ Encryption: AES-GCM 256, with two key-derivation paths:
 ## Open Questions
 
 1. ~~PRF fallback — what happens if the user's browser doesn't support PRF?~~
-   **Deferred 2026-07-05, restated 2026-08-24**: v1 login is passkey without
-   PRF; this question returns with the non-custodial phase.
+   **Restated 2026-09-21**: v1 begin options request PRF so the client can
+   derive a recovery phrase. Missing PRF aborts register before finish. API
+   authentication still does not consume PRF; server-side Nostr keys stay
+   custodial until the non-custodial phase.
 2. **Verification rigor beyond the external-identity floor** — the website now
    shows an external NOSTR identity only after a verified zap of at least 1 sat,
    while the protocol remains open. Which additional reputation or
@@ -621,9 +627,10 @@ Goal: smallest viable browser bundle. Only what _must_ run client-side.
 | Lint                | `next lint` + Prettier                                      | Standard                                                                |
 
 > The WebAuthn/PRF, BIP-32/39, and client-side signing rows describe the
-> non-custodial phase. v1 ships without client-side key material; the app's
-> v1 crypto surface is limited to what passkey login and LNURL-pay
-> require.
+> non-custodial phase. v1 already requests PRF so the app can show a
+> recovery phrase in tab memory; API auth and server-side Nostr keys do
+> not use it. The rest of the app crypto surface is passkey login and
+> LNURL-pay.
 
 **Dependency philosophy**: stay minimal. Target ~12 runtime dependencies. The
 app does UI plus — in the non-custodial phase — crypto + signing; everything
@@ -959,6 +966,7 @@ repository — they're intentionally not part of this project's scope.
 | 2026-09-20 | Staff may reject an open moderator proposal. Reject is append-only `moderator_reject` (role stays `verified`). Re-propose after reject inserts a new `moderator_propose` (history kept). Pending = latest propose/reject is propose, subject still verified, no confirm/appoint. Unique live kinds are verify/confirm/appoint only (propose/reject may repeat). An open proposal fans out in-app `moderator_proposal` plus Web Push to other staff until confirm, until reject when pending is then empty, or until appoint; mark-read does not dismiss it. **Supersedes** the 2026-09-17 pending-propose list row (pending was any propose without confirm/appoint). |
 | 2026-09-21 | Optional `GET /messages?hashtag=` token filter on live top-level `text` (name without `#`; token match; combines with `mode`/`limit`/`cursor`). No new entity, table, or index. A shops page of 20 is 20 matching notes, not 20 mixed notes filtered later.                                                                                                                                                                                                                                                                                                                                                                                                           |
 | 2026-09-21 | Propose/confirm/reject re-list after insert so a concurrent older propose, a concurrent reject, or a concurrent confirm/appoint cannot leave two live outcomes. Confirm and reject compare the pending propose by edge id (same-actor same-ms re-propose is a different row). After propose notify, re-list and drop or refresh `moderator_proposal` rows when that insert is no longer pending. The public graph projects at most one incoming edge per subject (winning id), skipping non-chain oldest siblings. **Supersedes** the 2026-09-17 “one incoming kind” / first-contact-wins row.                                                                        |
+| 2026-09-22 | Payments store USD/CHF/EUR/PHP at payment time. A USD stipend keeps the USD amount that was sent.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
 
 ## Next Steps
 
@@ -968,8 +976,8 @@ repository — they're intentionally not part of this project's scope.
 2. ~~Create `21gifts/app` repo skeleton (Next.js 15 + TS strict + Tailwind +
    Zustand)~~ — done 2026-07-05: public repo exists
 3. ~~Port the passkey + PRF + key-derivation primitives from the reference
-   app~~ — deferred 2026-07-05 to the non-custodial phase (v1 login is
-   passkey without PRF; restated 2026-08-24)
+   app~~ — restated 2026-09-21: v1 begin options request PRF for client
+   phrase export; API auth and Nostr custody do not use it
 4. ~~Define the v1 api surface (passkey login, donor wallets, recurring-gift
    scheduler, address verification, custodial NOSTR identities + server-side
    event signing, feed, LN-Address resolver) — `SPEC.md` in the api repo~~ —

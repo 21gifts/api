@@ -35,6 +35,9 @@ export interface PasskeyFinishErr {
 /** Outcome of a passkey finish step. */
 export type PasskeyFinishResult = { ok: true; value: PasskeyFinishOk } | PasskeyFinishErr;
 
+/** Outcome of passkey replace finish: existing session stays valid (no new token). */
+export type PasskeyReplaceFinishResult = { ok: true; account: Account } | PasskeyFinishErr;
+
 /**
  * Read the WebAuthn credential `id` from an untyped browser payload.
  *
@@ -146,10 +149,11 @@ export async function startPasskeyClaim(
 /**
  * Complete passkey registration: verify attestation, persist the account and
  * credential, issue a session. When claiming a provisioned account, binds the
- * credential without creating or deleting the row. When creating a new account,
- * optional `nostr` mints a custodial nsec (rolls the account back if keygen
- * fails) and a duplicate credential id rolls the new account back via
- * `deleteAccount`.
+ * credential without creating or deleting the row and sets walletRequired
+ * true without clearing walletBackupSeenAt. When creating a new account,
+ * stores walletRequired true and walletBackupSeenAt null; optional
+ * `nostr` mints a custodial nsec (rolls the account back if keygen fails) and
+ * a duplicate credential id rolls the new account back via `deleteAccount`.
  *
  * @param store - Auth persistence port.
  * @param ceremony - WebAuthn collaborator.
@@ -160,8 +164,10 @@ export async function startPasskeyClaim(
  *   {@link startPasskeyClaim}.
  * @param credential - Browser attestation JSON.
  * @param nostr - Optional KEK (and test-only keygen) to mint a custodial nsec.
- * @returns Session + account, or `{ ok: false, error }`. An existing account
- *   with {@link isWrongAccount} is refused before session mint with
+ * @returns Session + account, or `{ ok: false, error }`. New accounts have
+ *   walletRequired true and walletBackupSeenAt null. Claim sets
+ *   walletRequired true without clearing a seen timestamp. An existing
+ *   account with {@link isWrongAccount} is refused before session mint with
  *   {@link WRONG_ACCOUNT_ERROR}.
  */
 export async function finishPasskeyRegistration(
@@ -231,7 +237,8 @@ export async function finishPasskeyRegistration(
         logEvent('nostr.keygen.backfill.failed', { accountId: existing.id });
       }
     }
-    return mintSession(store, now, existing);
+    const claimed: Account = { ...existing, walletRequired: true };
+    return mintSession(store, now, claimed);
   }
   const account: Account = {
     id: accountId,
@@ -249,6 +256,8 @@ export async function finishPasskeyRegistration(
     lightningAddressSkippedAt: null,
     profileMessageId: null,
     notificationLevel: 'all',
+    walletRequired: false,
+    walletBackupSeenAt: null,
   };
   await store.createAccount(account);
   if (nostr !== undefined) {
@@ -266,7 +275,7 @@ export async function finishPasskeyRegistration(
       return { ok: false, error: 'Invalid passkey' };
     }
   }
-  const stored = await store.createPasskeyCredential({
+  const stored = await store.createFirstPasskeyCredential({
     credentialId: verified.credentialId,
     publicKey: verified.publicKey,
     signCount: verified.signCount,
@@ -277,7 +286,7 @@ export async function finishPasskeyRegistration(
     await store.deleteAccount(accountId);
     return { ok: false, error: 'Invalid passkey' };
   }
-  return mintSession(store, now, account);
+  return mintSession(store, now, { ...account, walletRequired: true });
 }
 
 /**
@@ -415,6 +424,118 @@ async function mintSession(
 }
 
 /**
+ * Start passkey replace: mint creation options that exclude the current credential.
+ *
+ * @param store - Auth persistence port.
+ * @param ceremony - WebAuthn collaborator.
+ * @param config - RP ID, name, and allowed origins.
+ * @param now - Current time in epoch milliseconds.
+ * @param account - Signed-in account that owns the credential to replace.
+ * @returns Creation options, or `{ ok: false, error: string }` when the account has no passkey.
+ */
+export async function startPasskeyReplace(
+  store: AuthStore,
+  ceremony: PasskeyCeremony,
+  config: WebAuthnRuntimeConfig,
+  now: number,
+  account: Account,
+): Promise<PasskeyBeginResult | { ok: false; error: string }> {
+  const existing = await store.getPasskeyCredentialForAccount(account.id);
+  if (existing === undefined) {
+    return { ok: false, error: 'No passkey to replace' };
+  }
+  const generated = await ceremony.generateRegistrationOptions({
+    rpName: config.rpName,
+    rpID: config.rpId,
+    userID: new TextEncoder().encode(account.id),
+    userName: account.id,
+    userDisplayName: account.name ?? '21.gifts',
+    excludeCredentials: [{ id: existing.credentialId, type: 'public-key' }],
+  });
+  const challengeId = randomHex(32);
+  await store.createPasskeyChallenge({
+    id: challengeId,
+    type: 'replace',
+    challenge: generated.challenge,
+    accountId: account.id,
+    consumed: false,
+    createdAt: now,
+  });
+  return { challengeId, options: generated.options };
+}
+
+/**
+ * Complete passkey replace: verify a new attestation and swap the one credential.
+ * Does not mint a session; the existing Bearer stays valid.
+ *
+ * @param store - Auth persistence port.
+ * @param ceremony - WebAuthn collaborator.
+ * @param config - RP ID, name, and allowed origins.
+ * @param now - Current time in epoch milliseconds.
+ * @param origin - Request `Origin` header (must match `expectedOrigins`).
+ * @param challengeId - Id returned by {@link startPasskeyReplace}.
+ * @param credential - Browser attestation JSON.
+ * @param account - Signed-in account from the Bearer session.
+ * @returns `{ ok: true, account }` or `{ ok: false, error: string }`. Does not mint a session.
+ */
+export async function finishPasskeyReplace(
+  store: AuthStore,
+  ceremony: PasskeyCeremony,
+  config: WebAuthnRuntimeConfig,
+  now: number,
+  origin: string | undefined,
+  challengeId: string,
+  credential: unknown,
+  account: Account,
+): Promise<PasskeyReplaceFinishResult> {
+  const originErr = requireOrigin(origin, config.expectedOrigins);
+  if (originErr !== null) {
+    return { ok: false, error: originErr };
+  }
+  const loaded = await loadChallenge(store, now, challengeId, 'replace');
+  if (!loaded.ok) {
+    return loaded;
+  }
+  const challenge = loaded.challenge;
+  if (challenge.accountId === null || challenge.accountId !== account.id) {
+    return { ok: false, error: 'Unknown or expired challenge' };
+  }
+  if (!(await consumeChallenge(store, challenge))) {
+    return { ok: false, error: 'Challenge already used' };
+  }
+  const verified = await ceremony.verifyRegistration({
+    response: credential,
+    expectedChallenge: challenge.challenge,
+    expectedOrigin: config.expectedOrigins,
+    expectedRPID: config.rpId,
+  });
+  if (!verified.ok) {
+    return { ok: false, error: 'Invalid passkey' };
+  }
+  const other = await store.getPasskeyCredential(verified.credentialId);
+  if (other !== undefined && other.accountId !== account.id) {
+    return { ok: false, error: 'Invalid passkey' };
+  }
+  const current = await store.getPasskeyCredentialForAccount(account.id);
+  if (current !== undefined && current.credentialId === verified.credentialId) {
+    return { ok: false, error: 'Invalid passkey' };
+  }
+  const replaced = await store.replacePasskeyCredential({
+    credentialId: verified.credentialId,
+    publicKey: verified.publicKey,
+    signCount: verified.signCount,
+    accountId: account.id,
+    createdAt: now,
+  });
+  if (!replaced) {
+    return { ok: false, error: 'Invalid passkey' };
+  }
+  const latest = await store.getAccount(account.id);
+  /* v8 ignore next -- the account row cannot vanish after a successful replace */
+  return { ok: true, account: latest ?? account };
+}
+
+/**
  * Reject a missing or disallowed Origin header.
  *
  * @param origin - Raw `Origin` header, or `undefined`.
@@ -437,7 +558,7 @@ type LoadedChallenge = { ok: true; challenge: PasskeyChallenge } | { ok: false; 
  * @param store - Auth persistence port.
  * @param now - Current time in epoch milliseconds.
  * @param challengeId - Client-supplied challenge id.
- * @param expectedType - Register vs authenticate.
+ * @param expectedType - Register, authenticate, or replace.
  * @returns The challenge, or a 400 error string.
  */
 async function loadChallenge(

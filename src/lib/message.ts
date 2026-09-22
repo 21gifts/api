@@ -95,6 +95,14 @@ export interface MessageRow {
   nostrPublishState: NostrPublishState;
   /** Validated zap total in whole sats. */
   sats: number;
+  /** USD snapshot frozen when sats were credited. */
+  amountUsd?: string | null;
+  /** CHF snapshot frozen when sats were credited. */
+  amountChf?: string | null;
+  /** EUR snapshot frozen when sats were credited. */
+  amountEur?: string | null;
+  /** PHP snapshot frozen when sats were credited. */
+  amountPhp?: string | null;
   /**
    * Optional whole-sat ask on a top-level note. Omit or `null` means no goal.
    */
@@ -146,6 +154,14 @@ export interface PublicMessage {
   createdAt: string;
   /** Validated zap total in whole sats (always present). */
   sats: number;
+  /** Stored USD snapshot, or null when pricing was unavailable. */
+  amountUsd: string | null;
+  /** Stored CHF snapshot, or null when pricing was unavailable. */
+  amountChf: string | null;
+  /** Stored EUR snapshot, or null when pricing was unavailable. */
+  amountEur: string | null;
+  /** Stored PHP snapshot, or null when pricing was unavailable. */
+  amountPhp: string | null;
   /**
    * Optional whole-sat ask on a top-level note. Included only when the stored
    * value is a positive integer; omitted on replies and when unset.
@@ -173,8 +189,9 @@ export interface PublicMessage {
   /** Marks a visible external Nostr-authored row; the pubkey remains private. */
   via?: 'nostr';
   /**
-   * Number of direct replies (`parent_id` children). Present on top-level
-   * list rows (`GET /messages`); may be omitted on single-note / reply JSON.
+   * Number of direct replies (`parent_id` children). A top-level note
+   * includes `replyCount` on `GET /messages` and on `GET /messages/:id`
+   * (including 0). Only a reply omits it.
    */
   replyCount?: number;
   /**
@@ -300,7 +317,9 @@ export function truncatePubkeyDisplay(pubkeyHex: string): string {
  * @param row - Persisted message.
  * @param payable - Whether the note can accept a NIP-57 zap payment.
  * @param role - Author's live {@link AccountRole}, or `undefined` for Damus-only.
- * @param replyCount - Optional reply count for top-level list rows.
+ * @param replyCount - Reply count for a top-level `GET /messages` list row
+ * and for a top-level `GET /messages/:id`, including 0. A reply passes
+ * `undefined` so the key is omitted.
  * @param includeAccountId - When true, set `accountId` for 21gifts authors
  * (`row.accountId !== null`). Public GET leaves this unset.
  * @param hidden - When set, stamp `deletedAt` / `deletedBy` and force
@@ -336,6 +355,10 @@ export function serializeMessage(
     text: row.text,
     createdAt: row.createdAt.toISOString(),
     sats: row.sats,
+    amountUsd: row.amountUsd ?? null,
+    amountChf: row.amountChf ?? null,
+    amountEur: row.amountEur ?? null,
+    amountPhp: row.amountPhp ?? null,
     payable: hidden === undefined ? payable : false,
     hasPhoto: row.hasPhoto,
     photoCount: photoCountOf(row),
@@ -404,6 +427,10 @@ export function serializeDebugMessage(
     text: row.text,
     createdAt: row.createdAt.toISOString(),
     sats: row.sats,
+    amountUsd: row.amountUsd ?? null,
+    amountChf: row.amountChf ?? null,
+    amountEur: row.amountEur ?? null,
+    amountPhp: row.amountPhp ?? null,
     hasPhoto: row.hasPhoto === true,
     photoCount: photoCountOf(row),
     hasVideo: row.hasVideo === true,
@@ -460,6 +487,10 @@ export function serializeHiddenMessage(
     text: row.text,
     createdAt: row.createdAt.toISOString(),
     sats: row.sats,
+    amountUsd: row.amountUsd ?? null,
+    amountChf: row.amountChf ?? null,
+    amountEur: row.amountEur ?? null,
+    amountPhp: row.amountPhp ?? null,
     hasPhoto: row.hasPhoto === true,
     photoCount: photoCountOf(row),
     hasVideo: row.hasVideo === true,
@@ -485,6 +516,10 @@ export function unsignedNostrDefaults(): Pick<
   | 'eventId'
   | 'nostrPublishState'
   | 'sats'
+  | 'amountUsd'
+  | 'amountChf'
+  | 'amountEur'
+  | 'amountPhp'
   | 'goalSats'
   | 'nostrEvent'
   | 'claimedUntil'
@@ -500,6 +535,10 @@ export function unsignedNostrDefaults(): Pick<
     eventId: null,
     nostrPublishState: 'pending',
     sats: 0,
+    amountUsd: null,
+    amountChf: null,
+    amountEur: null,
+    amountPhp: null,
     goalSats: null,
     nostrEvent: null,
     claimedUntil: null,

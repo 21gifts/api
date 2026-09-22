@@ -6,6 +6,7 @@ import { unsignedConversationDefaults, type ConversationThread } from '@/lib/con
 import { inboxUnreadCountFor, notifyConversationMessage } from '@/lib/conversation-push';
 import type { ConversationStore } from '@/lib/conversation-store';
 import type { FundingStore } from '@/lib/funding-store';
+import type { FiatRateBook } from '@/lib/usd-fiat-store';
 import type { FetchFn } from '@/lib/lnurlp';
 import {
   MESSAGE_INBOUND_REPLY_MAX_LENGTH,
@@ -107,6 +108,8 @@ export interface NostrWorkerDeps {
   postLimiter?: PostRateLimiter;
   /** Optional funding grants; compose spend pings use the same `eligibleToday` gate as `POST /messages`. */
   fundingStore?: FundingStore;
+  /** Optional crosses for the one spot taken per newly indexed zap. */
+  fiatRates?: FiatRateBook;
 }
 
 const externalLimiters = new WeakMap<MessageStore, ExternalIngestLimiter>();
@@ -246,6 +249,7 @@ export async function runNostrWorkerTick(deps: NostrWorkerDeps): Promise<void> {
     ...(deps.spendPing === undefined ? {} : { spendPing: deps.spendPing }),
     ...(deps.postLimiter === undefined ? {} : { postLimiter: deps.postLimiter }),
     ...(deps.fundingStore === undefined ? {} : { fundingStore: deps.fundingStore }),
+    ...(deps.fiatRates === undefined ? {} : { fiatRates: deps.fiatRates }),
   });
   const nowMs = deps.now();
   await resignLegacyKind1Tags(deps);

@@ -38,9 +38,11 @@ interface AccountRow {
   nostr_kek_id?: number | null;
   nostr_key_custody?: string | null;
   nostr_key_created_at?: Date | string | null;
+  wallet_required?: boolean | null;
+  wallet_backup_seen_at?: Date | string | null;
 }
 
-const ACCOUNT_SELECT_COLUMNS = `id, linking_key, role, name, lightning_address, lightning_address_verified, forum_laws_dismissed, view_key, created_at, rules_agreed_at, is_platform, name_skipped_at, lightning_address_skipped_at, profile_message_id, location, notification_level, username, session_refused, nostr_kek_id, nostr_key_custody, nostr_key_created_at`;
+const ACCOUNT_SELECT_COLUMNS = `id, linking_key, role, name, lightning_address, lightning_address_verified, forum_laws_dismissed, view_key, created_at, rules_agreed_at, is_platform, name_skipped_at, lightning_address_skipped_at, profile_message_id, location, notification_level, username, session_refused, nostr_kek_id, nostr_key_custody, nostr_key_created_at, wallet_required, wallet_backup_seen_at`;
 
 /** Row shape of `auth_session`. */
 interface SessionRow {
@@ -110,8 +112,8 @@ export class PostgresAuthStore implements AuthStore {
         );
       }
       await this.#sql.execute(
-        `INSERT INTO account (id, linking_key, role, name, lightning_address, lightning_address_verified, forum_laws_dismissed, created_at, view_key, rules_agreed_at, is_platform, name_skipped_at, lightning_address_skipped_at, profile_message_id, location, notification_level, username, session_refused)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, to_timestamp($8::double precision / 1000.0), $9, to_timestamp($10::double precision / 1000.0), $11, to_timestamp($12::double precision / 1000.0), to_timestamp($13::double precision / 1000.0), $14, $15, $16, $17, $18)
+        `INSERT INTO account (id, linking_key, role, name, lightning_address, lightning_address_verified, forum_laws_dismissed, created_at, view_key, rules_agreed_at, is_platform, name_skipped_at, lightning_address_skipped_at, profile_message_id, location, notification_level, username, session_refused, wallet_required, wallet_backup_seen_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, to_timestamp($8::double precision / 1000.0), $9, to_timestamp($10::double precision / 1000.0), $11, to_timestamp($12::double precision / 1000.0), to_timestamp($13::double precision / 1000.0), $14, $15, $16, $17, $18, $19, to_timestamp($20::double precision / 1000.0))
          ON CONFLICT (linking_key) DO NOTHING`,
         [
           account.id,
@@ -132,6 +134,8 @@ export class PostgresAuthStore implements AuthStore {
           account.notificationLevel ?? 'all',
           account.username ?? null,
           account.sessionRefused === true,
+          account.walletRequired === true,
+          account.walletBackupSeenAt ?? null,
         ],
       );
     } catch (error: unknown) {
@@ -140,6 +144,34 @@ export class PostgresAuthStore implements AuthStore {
       }
       throw error;
     }
+  }
+
+  async markWalletBackupSeen(
+    accountId: string,
+    now: number,
+  ): Promise<{ account: Account; wrote: boolean } | undefined> {
+    const written = await this.#sql.query<AccountRow>(
+      `UPDATE account
+       SET wallet_backup_seen_at = to_timestamp($2::double precision / 1000.0)
+       WHERE id = $1 AND wallet_backup_seen_at IS NULL
+       RETURNING ${ACCOUNT_SELECT_COLUMNS}`,
+      [accountId, now],
+    );
+    const wroteRow = written[0];
+    if (wroteRow !== undefined) {
+      const account = mapAccount(wroteRow);
+      return account === undefined ? undefined : { account, wrote: true };
+    }
+    const existing = await this.#sql.query<AccountRow>(
+      `SELECT ${ACCOUNT_SELECT_COLUMNS} FROM account WHERE id = $1`,
+      [accountId],
+    );
+    const row = existing[0];
+    if (row === undefined) {
+      return undefined;
+    }
+    const account = mapAccount(row);
+    return account === undefined ? undefined : { account, wrote: false };
   }
 
   async updateAccount(account: Account): Promise<void> {
@@ -238,6 +270,22 @@ export class PostgresAuthStore implements AuthStore {
     );
     const row = rows[0];
     return row === undefined ? undefined : mapAccount(row);
+  }
+
+  /**
+   * Up to two stored ids whose `lower(id::text)` starts with `$1`.
+   *
+   * @param prefix - Hex prefix; lowercased, not trimmed (`$1`).
+   * @returns At most two id strings.
+   */
+  async listIdsByPrefix(prefix: string): Promise<string[]> {
+    const rows = await this.#sql.query<{ id: string }>(
+      `SELECT id::text AS id FROM account
+       WHERE lower(id::text) LIKE $1 || '%'
+       LIMIT 2`,
+      [prefix.toLowerCase()],
+    );
+    return rows.map((row) => row.id);
   }
 
   async getAccountByViewKey(viewKey: string): Promise<Account | undefined> {
@@ -511,17 +559,27 @@ export class PostgresAuthStore implements AuthStore {
 
   async createFirstPasskeyCredential(credential: PasskeyCredential): Promise<boolean> {
     try {
-      const rows = await this.#sql.query<{ credential_id: string }>(
-        `INSERT INTO passkey_credential (credential_id, public_key, sign_count, account_id, created_at)
-         SELECT $1, $2, $3, $4, to_timestamp($5::double precision / 1000.0)
-         WHERE NOT EXISTS (
-           SELECT 1 FROM passkey_credential WHERE account_id = $4
-         )
-           AND EXISTS (
-             SELECT 1 FROM account WHERE id = $4 AND session_refused IS NOT TRUE
+      const rows = await this.#sql.query<{ id: string }>(
+        `WITH inserted AS (
+           INSERT INTO passkey_credential (credential_id, public_key, sign_count, account_id, created_at)
+           SELECT $1, $2, $3, $4, to_timestamp($5::double precision / 1000.0)
+           WHERE NOT EXISTS (
+             SELECT 1 FROM passkey_credential WHERE account_id = $4
            )
-         ON CONFLICT (credential_id) DO NOTHING
-         RETURNING credential_id`,
+             AND EXISTS (
+               SELECT 1 FROM account WHERE id = $4 AND session_refused IS NOT TRUE
+             )
+           ON CONFLICT (credential_id) DO NOTHING
+           RETURNING credential_id, account_id
+         ),
+         flagged AS (
+           UPDATE account
+           SET wallet_required = TRUE
+           FROM inserted
+           WHERE account.id = inserted.account_id
+           RETURNING account.id
+         )
+         SELECT id FROM flagged`,
         [
           credential.credentialId,
           credential.publicKey,
@@ -547,6 +605,43 @@ export class PostgresAuthStore implements AuthStore {
     );
     const row = rows[0];
     return row === undefined ? undefined : mapPasskeyCredential(row);
+  }
+
+  async getPasskeyCredentialForAccount(accountId: string): Promise<PasskeyCredential | undefined> {
+    const rows = await this.#sql.query<PasskeyCredentialRow>(
+      `SELECT credential_id, public_key, sign_count, account_id, created_at
+       FROM passkey_credential WHERE account_id = $1`,
+      [accountId],
+    );
+    const row = rows[0];
+    return row === undefined ? undefined : mapPasskeyCredential(row);
+  }
+
+  async replacePasskeyCredential(credential: PasskeyCredential): Promise<boolean> {
+    try {
+      const rows = await this.#sql.query<{ credential_id: string }>(
+        `WITH deleted AS (
+           DELETE FROM passkey_credential WHERE account_id = $4 RETURNING credential_id
+         )
+         INSERT INTO passkey_credential (credential_id, public_key, sign_count, account_id, created_at)
+         SELECT $1, $2, $3, $4, to_timestamp($5::double precision / 1000.0)
+         WHERE EXISTS (SELECT 1 FROM deleted)
+         RETURNING credential_id`,
+        [
+          credential.credentialId,
+          credential.publicKey,
+          credential.signCount,
+          credential.accountId,
+          credential.createdAt,
+        ],
+      );
+      return rows[0] !== undefined;
+    } catch (error: unknown) {
+      if (isUniqueViolation(error)) {
+        return false;
+      }
+      throw error;
+    }
   }
 
   async updatePasskeyCredential(credential: PasskeyCredential): Promise<boolean> {
@@ -682,6 +777,11 @@ function mapAccount(row: AccountRow): Account | undefined {
     notificationLevel: parseNotificationLevel(row.notification_level),
     username: row.username ?? null,
     sessionRefused: row.session_refused === true,
+    walletRequired: row.wallet_required === true,
+    walletBackupSeenAt:
+      row.wallet_backup_seen_at === null || row.wallet_backup_seen_at === undefined
+        ? null
+        : epochMs(row.wallet_backup_seen_at),
   };
 }
 
@@ -703,7 +803,7 @@ function mapVerification(row: VerificationRow): AddressVerification {
 }
 
 function parsePasskeyChallengeType(raw: string): PasskeyChallengeType {
-  if (raw === 'register' || raw === 'authenticate') {
+  if (raw === 'register' || raw === 'authenticate' || raw === 'replace') {
     return raw;
   }
   throw new Error(`Unknown passkey challenge type "${raw}"`);

@@ -7,6 +7,8 @@
  */
 
 import { isUniqueViolation, type SqlClient } from '@/lib/auth/sql';
+import { fetchBtcUsdSpot } from '@/lib/btc-usd-spot';
+import type { FetchFn } from '@/lib/btc-usd-candles';
 import {
   CONVERSATION_LIST_LIMIT,
   conversationIsInbound,
@@ -15,7 +17,201 @@ import {
   type ConversationThread,
 } from '@/lib/conversation';
 import type { ForumPhoto, ForumPhotoContentType, NostrPublishState } from '@/lib/message';
+import {
+  fiatFromSats,
+  satsToUsdCents,
+  usdCentsToFiatCents,
+  usdCentsToString,
+  type FiatAmounts,
+} from '@/lib/money';
 import { normalizeSignedEvent } from '@/lib/nostr/publish';
+import { InMemoryFiatStore, type FiatRateBook } from '@/lib/usd-fiat-store';
+
+/** Spot + daily crosses used when a conversation payment omits an explicit snapshot. */
+interface PaymentFiatStoreOptions {
+  fetchImpl?: FetchFn;
+  fiatRates?: FiatRateBook;
+  now?: () => number;
+}
+
+interface ConversationFiatBackfillRow {
+  id: string;
+  created_at: Date | string;
+  amount_sats: number | string | bigint;
+}
+
+interface ConversationFiatBackfillRateRow {
+  day: Date | string;
+  usd_per_btc: string | number;
+  quote: string | null;
+  rate: string | number | null;
+}
+
+/**
+ * Resolve the optional payment snapshot.
+ *
+ * An explicit `null` stays null (caller already tried). Omitted fiat on a
+ * positive-sat row fetches one spot; a null spot or a Frankfurter failure
+ * does not throw.
+ *
+ * @param sats - Whole sats on the row.
+ * @param createdAt - Row creation instant (UTC day for crosses).
+ * @param supplied - Caller snapshot, `null`, or omitted.
+ * @param options - Spot fetch, rate book, and clock.
+ * @returns Snapshot, `null` when pricing failed, or `undefined` when the row is unpaid
+ *   and the caller omitted fiat.
+ */
+async function resolveConversationFiat(
+  sats: number,
+  createdAt: Date,
+  supplied: FiatAmounts | null | undefined,
+  options: Required<PaymentFiatStoreOptions>,
+): Promise<FiatAmounts | null | undefined> {
+  if (supplied !== undefined) {
+    return supplied;
+  }
+  if (sats <= 0) {
+    return undefined;
+  }
+  const spot = await fetchBtcUsdSpot(options.fetchImpl);
+  if (spot === null) {
+    return null;
+  }
+  const day = createdAt.toISOString().slice(0, 10);
+  try {
+    const crosses = (await options.fiatRates.ensureDays([day], options.now())).get(day) ?? {};
+    return fiatFromSats(sats, spot, crosses);
+  } catch {
+    try {
+      return fiatFromSats(sats, spot, {});
+    } catch {
+      return null;
+    }
+  }
+}
+
+/**
+ * Copy amount fields from an explicit snapshot. `undefined` leaves the row.
+ *
+ * @param row - Message being stored.
+ * @param fiat - Snapshot, `null`, or omitted.
+ * @returns Row with payment-time amounts applied when `fiat` was passed.
+ */
+function withConversationFiat(
+  row: ConversationMessageRow,
+  fiat: FiatAmounts | null | undefined,
+): ConversationMessageRow {
+  if (fiat === undefined) {
+    return row;
+  }
+  if (fiat === null) {
+    return {
+      ...row,
+      amountUsd: null,
+      amountChf: null,
+      amountEur: null,
+      amountPhp: null,
+    };
+  }
+  return {
+    ...row,
+    amountUsd: fiat.usd,
+    amountChf: fiat.chf,
+    amountEur: fiat.eur,
+    amountPhp: fiat.php,
+  };
+}
+
+function paymentFiatOptions(options: PaymentFiatStoreOptions): Required<PaymentFiatStoreOptions> {
+  return {
+    fetchImpl: options.fetchImpl ?? globalThis.fetch,
+    fiatRates: options.fiatRates ?? new InMemoryFiatStore(),
+    now: options.now ?? Date.now,
+  };
+}
+
+function textOrNull(value: string | number | null | undefined): string | null {
+  if (value === null || value === undefined) {
+    return null;
+  }
+  return String(value);
+}
+
+/** UTC day, or `null` when `created_at` is not a real timestamp. */
+function utcDayOrNull(value: Date | string): string | null {
+  const date = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return null;
+  }
+  return date.toISOString().slice(0, 10);
+}
+
+/**
+ * Network-free backfill of conversation payments from daily rate tables.
+ *
+ * Rows that already have `fiat_usd`, or whose UTC day has no BTC close, stay
+ * untouched. A `created_at` that is not a real timestamp is skipped. Idempotent.
+ *
+ * @param sql - Parameter-bound SQL client.
+ */
+async function backfillConversationFiat(sql: SqlClient): Promise<void> {
+  const candidates = await sql.query<ConversationFiatBackfillRow>(
+    `SELECT id, created_at, sats AS amount_sats
+     FROM conversation_message
+     WHERE sats > 0 AND fiat_usd IS NULL`,
+  );
+  const days = [
+    ...new Set(
+      candidates.flatMap((row) => {
+        const day = utcDayOrNull(row.created_at);
+        return day === null ? [] : [day];
+      }),
+    ),
+  ];
+  if (days.length === 0) {
+    return;
+  }
+  const placeholders = days.map((_, index) => `$${index + 1}::date`).join(', ');
+  const rateRows = await sql.query<ConversationFiatBackfillRateRow>(
+    `SELECT b.day::text AS day, b.usd_per_btc::text AS usd_per_btc,
+            f.quote, f.rate::text AS rate
+     FROM btc_usd_daily b
+     LEFT JOIN usd_fiat_daily f ON f.day = b.day AND f.quote IN ('CHF', 'EUR', 'PHP')
+     WHERE b.day IN (${placeholders})`,
+    days,
+  );
+  const rates = new Map<string, { usdPerBtc: string; crosses: Record<string, string> }>();
+  for (const row of rateRows) {
+    const day = String(row.day).slice(0, 10);
+    const value = rates.get(day) ?? { usdPerBtc: String(row.usd_per_btc), crosses: {} };
+    if (row.quote !== null && row.rate !== null) {
+      value.crosses[row.quote] = String(row.rate);
+    }
+    rates.set(day, value);
+  }
+  for (const row of candidates) {
+    const day = utcDayOrNull(row.created_at);
+    if (day === null) {
+      continue;
+    }
+    const rate = rates.get(day);
+    if (rate === undefined) {
+      continue;
+    }
+    const usdCents = satsToUsdCents(Number(row.amount_sats), rate.usdPerBtc);
+    const quote = (code: 'CHF' | 'EUR' | 'PHP'): string | null => {
+      const cross = rate.crosses[code];
+      return cross === undefined ? null : usdCentsToString(usdCentsToFiatCents(usdCents, cross));
+    };
+    await sql.execute(
+      `UPDATE conversation_message
+       SET fiat_usd = $2::numeric, fiat_chf = $3::numeric,
+           fiat_eur = $4::numeric, fiat_php = $5::numeric
+       WHERE id = $1 AND fiat_usd IS NULL`,
+      [row.id, usdCentsToString(usdCents), quote('CHF'), quote('EUR'), quote('PHP')],
+    );
+  }
+}
 
 /** Keyset query for one messenger-style conversation page. */
 export type ConversationThreadPageQuery = {
@@ -243,6 +439,8 @@ export interface ConversationStore {
    * @param row - Fully formed message.
    * @param photo - Optional decoded photo (copied into storage; index 0).
    * @param extraPhotos - Optional extra stills (indices 1..n, max 9).
+   * @param fiat - Payment-time snapshot. `null` stores null amounts. Omit on
+   *   a positive-sat row to freeze one spot (null spot still stores the row).
    * @returns The stored row (a copy) with `hasPhoto` / `photoCount` from
    *   stored stills. On duplicate id / eventId, the existing row.
    * @throws When extras are present without photo 0, when extras exceed 9,
@@ -252,6 +450,7 @@ export interface ConversationStore {
     row: ConversationMessageRow,
     photo?: ForumPhoto,
     extraPhotos?: readonly ForumPhoto[],
+    fiat?: FiatAmounts | null,
   ): Promise<ConversationMessageRow>;
 
   /**
@@ -383,6 +582,10 @@ export const CONVERSATION_SCHEMA_SQL: readonly string[] = [
   claimed_until timestamptz
 )`,
   `ALTER TABLE conversation_message ADD COLUMN IF NOT EXISTS sats bigint NOT NULL DEFAULT 0`,
+  `ALTER TABLE conversation_message ADD COLUMN IF NOT EXISTS fiat_usd numeric(20, 2)`,
+  `ALTER TABLE conversation_message ADD COLUMN IF NOT EXISTS fiat_chf numeric(20, 2)`,
+  `ALTER TABLE conversation_message ADD COLUMN IF NOT EXISTS fiat_eur numeric(20, 2)`,
+  `ALTER TABLE conversation_message ADD COLUMN IF NOT EXISTS fiat_php numeric(20, 2)`,
   `ALTER TABLE conversation_message ADD COLUMN IF NOT EXISTS actor_account_id uuid REFERENCES account (id)`,
   `ALTER TABLE conversation_message ADD COLUMN IF NOT EXISTS actor_name text NOT NULL DEFAULT ''`,
   `ALTER TABLE conversation_message ADD COLUMN IF NOT EXISTS gift_for_message_id uuid`,
@@ -515,9 +718,27 @@ const THREAD_SELECT = `c.id, c.kind, c.account_a, c.account_b, c.counterpart_pub
     WHERE m.conversation_id = c.id
     ORDER BY m.created_at DESC, m.id DESC
     LIMIT 1
-  ), 0) AS last_sats`;
+  ), 0) AS last_sats,
+  (SELECT m.fiat_usd::text FROM conversation_message m
+   WHERE m.conversation_id = c.id
+   ORDER BY m.created_at DESC, m.id DESC
+   LIMIT 1) AS last_fiat_usd,
+  (SELECT m.fiat_chf::text FROM conversation_message m
+   WHERE m.conversation_id = c.id
+   ORDER BY m.created_at DESC, m.id DESC
+   LIMIT 1) AS last_fiat_chf,
+  (SELECT m.fiat_eur::text FROM conversation_message m
+   WHERE m.conversation_id = c.id
+   ORDER BY m.created_at DESC, m.id DESC
+   LIMIT 1) AS last_fiat_eur,
+  (SELECT m.fiat_php::text FROM conversation_message m
+   WHERE m.conversation_id = c.id
+   ORDER BY m.created_at DESC, m.id DESC
+   LIMIT 1) AS last_fiat_php`;
 
 const MESSAGE_SELECT = `id, conversation_id, text, created_at, sender_account_id, sender_pubkey, name, sats,
+  fiat_usd::text AS fiat_usd, fiat_chf::text AS fiat_chf,
+  fiat_eur::text AS fiat_eur, fiat_php::text AS fiat_php,
   event_id, nostr_publish_state, nostr_event, claimed_until, actor_account_id, actor_name, gift_for_message_id,
   (photo IS NOT NULL) AS has_photo,
   ((photo IS NOT NULL)::int + COALESCE((SELECT COUNT(*)::int FROM conversation_message_extra_photo e WHERE e.message_id = conversation_message.id), 0)) AS photo_count`;
@@ -532,6 +753,7 @@ export async function migrateConversationSchema(sql: SqlClient): Promise<void> {
   for (const statement of CONVERSATION_SCHEMA_SQL) {
     await sql.execute(statement);
   }
+  await backfillConversationFiat(sql);
 }
 
 /**
@@ -545,11 +767,13 @@ export class InMemoryConversationStore implements ConversationStore {
   readonly #photos = new Map<string, ForumPhoto>();
   /** Extra stills; array index 0 = idx 1. */
   readonly #extraPhotos = new Map<string, ForumPhoto[]>();
+  readonly #paymentFiat: Required<PaymentFiatStoreOptions>;
 
   /**
    * @param seedThreads - Optional seed threads; copied into private storage.
    * @param seedMessages - Optional seed messages; copied into private storage.
    * @param seedLastRead - Optional last-read stamps; Dates copied into a private map.
+   * @param options - Spot fetch and fiat book used when `appendMessage` omits fiat.
    */
   constructor(
     seedThreads: readonly ConversationThread[] = [],
@@ -559,9 +783,11 @@ export class InMemoryConversationStore implements ConversationStore {
       conversationId: string;
       lastReadAt: Date;
     }[] = [],
+    options: PaymentFiatStoreOptions = {},
   ) {
     this.#threads = seedThreads.map((thread) => copyThread(thread));
     this.#messages = seedMessages.map((row) => copyMessage(row));
+    this.#paymentFiat = paymentFiatOptions(options);
     this.#lastRead = new Map(
       seedLastRead.map((row) => [
         lastReadKey(row.accountId, row.conversationId),
@@ -877,15 +1103,17 @@ export class InMemoryConversationStore implements ConversationStore {
    * @param row - Message to store.
    * @param photo - Optional photo (bytes copied; index 0).
    * @param extraPhotos - Optional extra stills (indices 1..n, max 9).
+   * @param fiat - Payment-time snapshot, or `null`. Omit to freeze a spot when `sats > 0`.
    * @returns A copy of the stored row with `hasPhoto` / `photoCount` from
    *   stored stills. Duplicate `id` / `eventId` returns the existing row
    *   without inserting extras.
    * @throws When extras are present without photo 0 or extras exceed 9.
    */
-  appendMessage(
+  async appendMessage(
     row: ConversationMessageRow,
     photo?: ForumPhoto,
     extraPhotos?: readonly ForumPhoto[],
+    fiat?: FiatAmounts | null,
   ): Promise<ConversationMessageRow> {
     const existingById = this.#messages.find((item) => item.id === row.id);
     if (existingById !== undefined) {
@@ -905,11 +1133,22 @@ export class InMemoryConversationStore implements ConversationStore {
       return Promise.reject(new Error('at most 9 extra photos'));
     }
     const hasPhoto = photo !== undefined;
-    const stored = copyMessage({
-      ...row,
-      hasPhoto,
-      photoCount: (hasPhoto ? 1 : 0) + extras.length,
-    });
+    const snapshot = await resolveConversationFiat(
+      row.sats,
+      row.createdAt,
+      fiat,
+      this.#paymentFiat,
+    );
+    const stored = copyMessage(
+      withConversationFiat(
+        {
+          ...row,
+          hasPhoto,
+          photoCount: (hasPhoto ? 1 : 0) + extras.length,
+        },
+        snapshot,
+      ),
+    );
     this.#messages.push(stored);
     if (photo !== undefined) {
       this.#photos.set(stored.id, copyPhoto(photo));
@@ -1057,6 +1296,10 @@ export class InMemoryConversationStore implements ConversationStore {
       lastText: last?.text ?? '',
       lastSenderAccountId: last?.senderAccountId ?? null,
       lastSats: last?.sats ?? 0,
+      lastAmountUsd: last?.amountUsd ?? null,
+      lastAmountChf: last?.amountChf ?? null,
+      lastAmountEur: last?.amountEur ?? null,
+      lastAmountPhp: last?.amountPhp ?? null,
       lastActorAccountId: last?.actorAccountId ?? null,
     };
   }
@@ -1099,6 +1342,10 @@ interface ConversationSqlRow {
   last_sender_account_id?: string | null;
   last_actor_account_id?: string | null;
   last_sats?: string | number | null;
+  last_fiat_usd?: string | number | null;
+  last_fiat_chf?: string | number | null;
+  last_fiat_eur?: string | number | null;
+  last_fiat_php?: string | number | null;
 }
 
 /** Row shape selected from `conversation_message`. */
@@ -1111,6 +1358,10 @@ interface ConversationMessageSqlRow {
   sender_pubkey: string | null;
   name: string;
   sats?: string | number | null;
+  fiat_usd?: string | number | null;
+  fiat_chf?: string | number | null;
+  fiat_eur?: string | number | null;
+  fiat_php?: string | number | null;
   event_id: string | null;
   nostr_publish_state: string | null;
   nostr_event: Record<string, unknown> | string | null;
@@ -1135,12 +1386,15 @@ const FORUM_PHOTO_TYPES: ReadonlySet<string> = new Set(['image/jpeg', 'image/png
  */
 export class PostgresConversationStore implements ConversationStore {
   readonly #sql: SqlClient;
+  readonly #paymentFiat: Required<PaymentFiatStoreOptions>;
 
   /**
    * @param sql - Parameter-bound SQL client (already migrated).
+   * @param options - Spot fetch and fiat book used when `appendMessage` omits fiat.
    */
-  constructor(sql: SqlClient) {
+  constructor(sql: SqlClient, options: PaymentFiatStoreOptions = {}) {
     this.#sql = sql;
+    this.#paymentFiat = paymentFiatOptions(options);
   }
 
   async getById(id: string): Promise<ConversationThread | undefined> {
@@ -1542,6 +1796,7 @@ export class PostgresConversationStore implements ConversationStore {
    * @param row - Message to store.
    * @param photo - Optional photo (bytes copied; index 0).
    * @param extraPhotos - Optional extra stills (indices 1..n, max 9).
+   * @param fiat - Payment-time snapshot, or `null`. Omit to freeze a spot when `sats > 0`.
    * @returns The stored row with `hasPhoto` / `photoCount` from stored
    *   stills. Duplicate `id` / `eventId` returns the existing row without
    *   inserting extras.
@@ -1552,6 +1807,7 @@ export class PostgresConversationStore implements ConversationStore {
     row: ConversationMessageRow,
     photo?: ForumPhoto,
     extraPhotos?: readonly ForumPhoto[],
+    fiat?: FiatAmounts | null,
   ): Promise<ConversationMessageRow> {
     const extras = [...(extraPhotos ?? [])];
     if (extras.length > 0 && photo === undefined) {
@@ -1561,18 +1817,31 @@ export class PostgresConversationStore implements ConversationStore {
       throw new Error('at most 9 extra photos');
     }
     const hasPhoto = photo !== undefined;
-    const stored = copyMessage({
-      ...row,
-      hasPhoto,
-      photoCount: (hasPhoto ? 1 : 0) + extras.length,
-    });
+    const snapshot = await resolveConversationFiat(
+      row.sats,
+      row.createdAt,
+      fiat,
+      this.#paymentFiat,
+    );
+    const stored = copyMessage(
+      withConversationFiat(
+        {
+          ...row,
+          hasPhoto,
+          photoCount: (hasPhoto ? 1 : 0) + extras.length,
+        },
+        snapshot,
+      ),
+    );
     try {
       await this.#sql.execute(
         `INSERT INTO conversation_message (
            id, conversation_id, text, created_at, sender_account_id, sender_pubkey, name, sats,
            event_id, nostr_publish_state, nostr_event, claimed_until, actor_account_id, actor_name,
-           gift_for_message_id, photo, photo_content_type
-         ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb,$12,$13,$14,$15,$16,$17)`,
+           gift_for_message_id, photo, photo_content_type,
+           fiat_usd, fiat_chf, fiat_eur, fiat_php
+         ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb,$12,$13,$14,$15,$16,$17,
+                   $18::numeric,$19::numeric,$20::numeric,$21::numeric)`,
         [
           stored.id,
           stored.conversationId,
@@ -1591,6 +1860,10 @@ export class PostgresConversationStore implements ConversationStore {
           row.giftForMessageId ?? null,
           photo === undefined ? null : photo.bytes,
           photo === undefined ? null : photo.contentType,
+          stored.amountUsd ?? null,
+          stored.amountChf ?? null,
+          stored.amountEur ?? null,
+          stored.amountPhp ?? null,
         ],
       );
     } catch (error: unknown) {
@@ -1880,6 +2153,10 @@ function mapThread(row: ConversationSqlRow): ConversationThread {
     lastText: row.last_text ?? '',
     lastSenderAccountId: row.last_sender_account_id ?? null,
     lastSats: Number(row.last_sats ?? 0),
+    lastAmountUsd: textOrNull(row.last_fiat_usd),
+    lastAmountChf: textOrNull(row.last_fiat_chf),
+    lastAmountEur: textOrNull(row.last_fiat_eur),
+    lastAmountPhp: textOrNull(row.last_fiat_php),
     lastActorAccountId: row.last_actor_account_id ?? null,
   };
 }
@@ -1915,6 +2192,10 @@ function mapMessage(row: ConversationMessageSqlRow): ConversationMessageRow {
     actorName: row.actor_name ?? '',
     giftForMessageId: row.gift_for_message_id,
     sats: Number(row.sats ?? 0),
+    amountUsd: textOrNull(row.fiat_usd),
+    amountChf: textOrNull(row.fiat_chf),
+    amountEur: textOrNull(row.fiat_eur),
+    amountPhp: textOrNull(row.fiat_php),
     hasPhoto,
     /* v8 ignore next -- photo_count is selected; null only on a pre-migration row */
     photoCount: Number(row.photo_count ?? (hasPhoto ? 1 : 0)),

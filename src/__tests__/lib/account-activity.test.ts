@@ -98,6 +98,10 @@ function note(
     createdAt?: Date;
     text?: string;
     parentId?: string | null;
+    amountUsd?: string | null;
+    amountChf?: string | null;
+    amountEur?: string | null;
+    amountPhp?: string | null;
   } = {},
 ): {
   id: string;
@@ -117,6 +121,10 @@ function note(
     ...unsignedNostrDefaults(),
     parentId: overrides.parentId === undefined ? null : overrides.parentId,
     sats: overrides.sats ?? 0,
+    ...(overrides.amountUsd !== undefined ? { amountUsd: overrides.amountUsd } : {}),
+    ...(overrides.amountChf !== undefined ? { amountChf: overrides.amountChf } : {}),
+    ...(overrides.amountEur !== undefined ? { amountEur: overrides.amountEur } : {}),
+    ...(overrides.amountPhp !== undefined ? { amountPhp: overrides.amountPhp } : {}),
     deletedAt: overrides.deletedAt === undefined ? null : overrides.deletedAt,
   };
 }
@@ -178,7 +186,17 @@ describe('matchConfirmedGivenZaps', () => {
 
   it('joins an ok invoice to an indexed ingest by payment hash', () => {
     const given = matchConfirmedGivenZaps([invoice()], [ingest()]);
-    expect(given).toEqual([{ paidAt: PAID_AT, amountSats: 21, recipientWosUser: 'ada' }]);
+    expect(given).toEqual([
+      {
+        paidAt: PAID_AT,
+        amountSats: 21,
+        recipientWosUser: 'ada',
+        amountUsd: null,
+        amountChf: null,
+        amountEur: null,
+        amountPhp: null,
+      },
+    ]);
   });
 
   it('uses the invoice amount when the ingest amountSats is null', () => {
@@ -186,7 +204,17 @@ describe('matchConfirmedGivenZaps', () => {
       [invoice({ lightningAddress: 'plainhandle' })],
       [ingest({ amountSats: null })],
     );
-    expect(given).toEqual([{ paidAt: PAID_AT, amountSats: 21, recipientWosUser: 'plainhandle' }]);
+    expect(given).toEqual([
+      {
+        paidAt: PAID_AT,
+        amountSats: 21,
+        recipientWosUser: 'plainhandle',
+        amountUsd: null,
+        amountChf: null,
+        amountEur: null,
+        amountPhp: null,
+      },
+    ]);
   });
 
   it('decodes pr when paymentHash is not 64 hex', () => {
@@ -377,11 +405,72 @@ describe('buildAccountActivity', () => {
     expect(stats.receivedSats).toBe(21);
   });
 
-  it('throws fx.rate.missing when a remainder day has no rate', async () => {
+  it('keeps a remainder with no stored amount null when the day has no close', async () => {
     const messages = new InMemoryMessageStore([note({ sats: 21 })]);
-    await expect(activity({ messages, rates: new InMemoryBtcUsdStore() })).rejects.toThrow(
-      'fx.rate.missing',
+    const stats = await activity({ messages, rates: new InMemoryBtcUsdStore() });
+    expect(stats.receivedSats).toBe(21);
+    expect(stats.receivedOverTime[0]?.usd).toBeNull();
+  });
+
+  it('uses the ingest snapshot and subtracts it from a larger note snapshot', async () => {
+    const messages = new InMemoryMessageStore([
+      note({
+        sats: 42,
+        amountUsd: '1.00',
+        amountChf: '0.80',
+        amountEur: '0.90',
+        amountPhp: '50.00',
+      }),
+    ]);
+    await messages.recordInvoiceAttempt(invoice());
+    await messages.recordZapIngest(
+      ingest({ amountUsd: '0.40', amountChf: '0.30', amountEur: '0.40', amountPhp: '20.00' }),
     );
+    const stats = await activity({ messages, rates: new InMemoryBtcUsdStore() });
+    expect(stats.receivedSats).toBe(42);
+    expect(stats.receivedOverTime[0]?.usd).toBe('1.00');
+    expect(stats.receivedOverTime[0]?.chf).toBe('0.80');
+    expect(stats.donatedOverTime[0]?.usd).toBe('0.40');
+  });
+
+  it('nulls a remainder currency that either side did not store', async () => {
+    const messages = new InMemoryMessageStore([
+      note({
+        sats: 42,
+        amountUsd: null,
+        amountChf: '0.80',
+        amountEur: null,
+        amountPhp: '50.00',
+      }),
+    ]);
+    await messages.recordInvoiceAttempt(invoice());
+    await messages.recordZapIngest(
+      ingest({ amountUsd: '0.40', amountChf: null, amountEur: '0.40', amountPhp: null }),
+    );
+    const stats = await activity({ messages, rates: new InMemoryBtcUsdStore() });
+    expect(stats.receivedOverTime[0]?.usd).toBeNull();
+    expect(stats.receivedOverTime[0]?.chf).toBeNull();
+    expect(stats.receivedOverTime[0]?.eur).toBeNull();
+    expect(stats.receivedOverTime[0]?.php).toBeNull();
+  });
+
+  it('nulls a remainder when the note stores less than the ingest', async () => {
+    const messages = new InMemoryMessageStore([
+      note({
+        sats: 42,
+        amountUsd: '0.10',
+        amountChf: '0.80',
+        amountEur: '0.90',
+        amountPhp: '50.00',
+      }),
+    ]);
+    await messages.recordInvoiceAttempt(invoice());
+    await messages.recordZapIngest(
+      ingest({ amountUsd: '0.40', amountChf: '0.30', amountEur: '0.40', amountPhp: '20.00' }),
+    );
+    const stats = await activity({ messages, rates: new InMemoryBtcUsdStore() });
+    expect(stats.receivedOverTime[0]?.usd).toBeNull();
+    expect(stats.receivedOverTime[0]?.chf).toBe('0.80');
   });
 
   it('converts CHF/EUR/PHP on received house gifts when a fiat book is seeded', async () => {

@@ -78,6 +78,45 @@ describe('InMemoryAuthStore', () => {
     expect((await store.getAccount('acc'))?.lightningAddress).toBe('a@b.com');
   });
 
+  it('persists walletRequired and walletBackupSeenAt on create and update', async () => {
+    const store = new InMemoryAuthStore();
+    await store.createAccount({
+      id: 'acc',
+      linkingKey: KEY,
+      role: 'basis',
+      name: null,
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: 'a'.repeat(64),
+      createdAt: 1,
+      rulesAgreedAt: null,
+      walletRequired: true,
+      walletBackupSeenAt: null,
+    });
+    expect((await store.getAccount('acc'))?.walletRequired).toBe(true);
+    expect((await store.getAccount('acc'))?.walletBackupSeenAt).toBeNull();
+    expect((await store.markWalletBackupSeen('acc', 42))?.account.walletBackupSeenAt).toBe(42);
+    await store.updateAccount({
+      id: 'acc',
+      linkingKey: KEY,
+      role: 'basis',
+      name: null,
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: 'a'.repeat(64),
+      createdAt: 1,
+      rulesAgreedAt: null,
+      walletRequired: false,
+      walletBackupSeenAt: null,
+    });
+    expect((await store.getAccount('acc'))?.walletRequired).toBe(true);
+    expect((await store.getAccount('acc'))?.walletBackupSeenAt).toBe(42);
+  });
+
   it('round-trips forumLawsDismissed false and true', async () => {
     const store = new InMemoryAuthStore();
     await store.createAccount({
@@ -1002,8 +1041,117 @@ describe('InMemoryAuthStore', () => {
     ).toBe(false);
   });
 
+  it('looks up and replaces the account passkey credential', async () => {
+    const store = new InMemoryAuthStore();
+    expect(await store.getPasskeyCredentialForAccount('acc')).toBeUndefined();
+    expect(
+      await store.replacePasskeyCredential({
+        credentialId: 'cred-b',
+        publicKey: new Uint8Array([2]),
+        signCount: 0,
+        accountId: 'acc',
+        createdAt: 2,
+      }),
+    ).toBe(false);
+    const first = {
+      credentialId: 'cred-a',
+      publicKey: new Uint8Array([1]),
+      signCount: 0,
+      accountId: 'acc',
+      createdAt: 1,
+    };
+    expect(await store.createPasskeyCredential(first)).toBe(true);
+    expect((await store.getPasskeyCredentialForAccount('acc'))?.credentialId).toBe('cred-a');
+    expect(
+      await store.createPasskeyCredential({
+        credentialId: 'cred-other',
+        publicKey: new Uint8Array([9]),
+        signCount: 0,
+        accountId: 'other',
+        createdAt: 1,
+      }),
+    ).toBe(true);
+    expect(
+      await store.replacePasskeyCredential({
+        credentialId: 'cred-other',
+        publicKey: new Uint8Array([2]),
+        signCount: 0,
+        accountId: 'acc',
+        createdAt: 2,
+      }),
+    ).toBe(false);
+    expect((await store.getPasskeyCredential('cred-a'))?.accountId).toBe('acc');
+    expect(
+      await store.replacePasskeyCredential({
+        credentialId: 'cred-b',
+        publicKey: new Uint8Array([2]),
+        signCount: 0,
+        accountId: 'acc',
+        createdAt: 2,
+      }),
+    ).toBe(true);
+    expect(await store.getPasskeyCredential('cred-a')).toBeUndefined();
+    expect(await store.getPasskeyCredentialForAccount('acc')).toEqual({
+      credentialId: 'cred-b',
+      publicKey: new Uint8Array([2]),
+      signCount: 0,
+      accountId: 'acc',
+      createdAt: 2,
+    });
+  });
+
+  it('keeps one passkey when two replaces run together', async () => {
+    const store = new InMemoryAuthStore();
+    expect(
+      await store.createPasskeyCredential({
+        credentialId: 'cred-a',
+        publicKey: new Uint8Array([1]),
+        signCount: 0,
+        accountId: 'acc',
+        createdAt: 1,
+      }),
+    ).toBe(true);
+    const [first, second] = await Promise.all([
+      store.replacePasskeyCredential({
+        credentialId: 'cred-b',
+        publicKey: new Uint8Array([2]),
+        signCount: 0,
+        accountId: 'acc',
+        createdAt: 2,
+      }),
+      store.replacePasskeyCredential({
+        credentialId: 'cred-c',
+        publicKey: new Uint8Array([3]),
+        signCount: 0,
+        accountId: 'acc',
+        createdAt: 3,
+      }),
+    ]);
+    expect(first || second).toBe(true);
+    const remaining = [
+      await store.getPasskeyCredential('cred-a'),
+      await store.getPasskeyCredential('cred-b'),
+      await store.getPasskeyCredential('cred-c'),
+    ].filter((row) => row !== undefined);
+    expect(remaining).toHaveLength(1);
+    expect(remaining[0]?.accountId).toBe('acc');
+  });
+
   it('refuses a second first-passkey for the same account', async () => {
     const store = new InMemoryAuthStore();
+    await store.createAccount({
+      id: 'acc',
+      linkingKey: KEY,
+      role: 'basis',
+      name: null,
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: 'a'.repeat(64),
+      createdAt: 1,
+      rulesAgreedAt: null,
+    });
     const first = {
       credentialId: 'cred-a',
       publicKey: new Uint8Array([1]),
@@ -1019,6 +1167,20 @@ describe('InMemoryAuthStore', () => {
         publicKey: new Uint8Array([2]),
       }),
     ).toBe(false);
+  });
+
+  it('createFirstPasskeyCredential returns false when the account is missing', async () => {
+    const store = new InMemoryAuthStore();
+    expect(
+      await store.createFirstPasskeyCredential({
+        credentialId: 'cred-a',
+        publicKey: new Uint8Array([1]),
+        signCount: 0,
+        accountId: 'acc',
+        createdAt: 1,
+      }),
+    ).toBe(false);
+    expect(await store.getPasskeyCredential('cred-a')).toBeUndefined();
   });
 
   it('createFirstPasskeyCredential returns false when the account is refused', async () => {
@@ -1046,6 +1208,83 @@ describe('InMemoryAuthStore', () => {
         createdAt: 1,
       }),
     ).toBe(false);
+  });
+
+  it('createFirstPasskeyCredential sets walletRequired and refuses a taken credential id', async () => {
+    const store = new InMemoryAuthStore();
+    await store.createAccount({
+      id: 'acc-a',
+      linkingKey: KEY,
+      role: 'basis',
+      name: null,
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: 'a'.repeat(64),
+      createdAt: 1,
+      rulesAgreedAt: null,
+    });
+    await store.createAccount({
+      id: 'acc-b',
+      linkingKey: null,
+      role: 'basis',
+      name: null,
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: 'b'.repeat(64),
+      createdAt: 2,
+      rulesAgreedAt: null,
+    });
+    expect(
+      await store.createFirstPasskeyCredential({
+        credentialId: 'cred-shared',
+        publicKey: new Uint8Array([1]),
+        signCount: 0,
+        accountId: 'acc-a',
+        createdAt: 1,
+      }),
+    ).toBe(true);
+    expect((await store.getAccount('acc-a'))?.walletRequired).toBe(true);
+    expect(
+      await store.createFirstPasskeyCredential({
+        credentialId: 'cred-shared',
+        publicKey: new Uint8Array([2]),
+        signCount: 0,
+        accountId: 'acc-b',
+        createdAt: 2,
+      }),
+    ).toBe(false);
+  });
+
+  it('markWalletBackupSeen sets only the timestamp', async () => {
+    const store = new InMemoryAuthStore();
+    await store.createAccount({
+      id: 'acc',
+      linkingKey: KEY,
+      role: 'basis',
+      name: 'Ada',
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: 'a'.repeat(64),
+      createdAt: 1,
+      rulesAgreedAt: null,
+    });
+    const first = await store.markWalletBackupSeen('acc', 9);
+    expect(first?.wrote).toBe(true);
+    expect(first?.account.walletBackupSeenAt).toBe(9);
+    expect(first?.account.name).toBe('Ada');
+    const second = await store.markWalletBackupSeen('acc', 10);
+    expect(second?.wrote).toBe(false);
+    expect(second?.account.walletBackupSeenAt).toBe(9);
+    expect(await store.markWalletBackupSeen('missing', 1)).toBeUndefined();
+    await store.updateAccount({ ...first!.account, name: 'Grace', walletBackupSeenAt: null });
+    expect((await store.getAccount('acc'))?.walletBackupSeenAt).toBe(9);
+    expect((await store.getAccount('acc'))?.name).toBe('Grace');
   });
 
   it('ignores a second createAccount with the same viewKey', async () => {
@@ -1508,6 +1747,134 @@ describe('InMemoryAuthStore', () => {
     });
     const ids = await store.listStaffAccountIds();
     expect(ids.sort()).toEqual(['founder-1', 'mod-1']);
+  });
+
+  it('listIdsByPrefix returns [] when empty', async () => {
+    expect(await new InMemoryAuthStore().listIdsByPrefix('d70c4763')).toEqual([]);
+  });
+
+  it('listIdsByPrefix matches a mixed-case stored id against a lowercase prefix', async () => {
+    const store = new InMemoryAuthStore();
+    await store.createAccount({
+      id: 'D70C4763-3033-43da-817a-2c7de9938f27',
+      linkingKey: null,
+      role: 'basis',
+      name: null,
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: 'a'.repeat(64),
+      createdAt: 1,
+      rulesAgreedAt: null,
+    });
+    expect(await store.listIdsByPrefix('d70c4763')).toEqual([
+      'D70C4763-3033-43da-817a-2c7de9938f27',
+    ]);
+  });
+
+  it('listIdsByPrefix matches a lowercase stored id against an uppercase prefix', async () => {
+    const store = new InMemoryAuthStore();
+    await store.createAccount({
+      id: 'd70c4763-3033-43da-817a-2c7de9938f27',
+      linkingKey: null,
+      role: 'basis',
+      name: null,
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: 'a'.repeat(64),
+      createdAt: 1,
+      rulesAgreedAt: null,
+    });
+    expect(await store.listIdsByPrefix('D70C4763')).toEqual([
+      'd70c4763-3033-43da-817a-2c7de9938f27',
+    ]);
+  });
+
+  it('listIdsByPrefix matches a non-UUID id', async () => {
+    const store = new InMemoryAuthStore();
+    await store.createAccount({
+      id: 'd70c4763not-a-uuid',
+      linkingKey: null,
+      role: 'basis',
+      name: null,
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: 'a'.repeat(64),
+      createdAt: 1,
+      rulesAgreedAt: null,
+    });
+    expect(await store.listIdsByPrefix('d70c4763')).toEqual(['d70c4763not-a-uuid']);
+  });
+
+  it('listIdsByPrefix does not match a different prefix', async () => {
+    const store = new InMemoryAuthStore();
+    await store.createAccount({
+      id: 'd70c4763-3033-43da-817a-2c7de9938f27',
+      linkingKey: null,
+      role: 'basis',
+      name: null,
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: 'a'.repeat(64),
+      createdAt: 1,
+      rulesAgreedAt: null,
+    });
+    expect(await store.listIdsByPrefix('ffffffff')).toEqual([]);
+  });
+
+  it('listIdsByPrefix stops at two matches', async () => {
+    const store = new InMemoryAuthStore();
+    await store.createAccount({
+      id: 'd70c4763-1',
+      linkingKey: null,
+      role: 'basis',
+      name: null,
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: 'a'.repeat(64),
+      createdAt: 1,
+      rulesAgreedAt: null,
+    });
+    await store.createAccount({
+      id: 'd70c4763-2',
+      linkingKey: null,
+      role: 'basis',
+      name: null,
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: 'b'.repeat(64),
+      createdAt: 2,
+      rulesAgreedAt: null,
+    });
+    await store.createAccount({
+      id: 'd70c4763-3',
+      linkingKey: null,
+      role: 'basis',
+      name: null,
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: 'c'.repeat(64),
+      createdAt: 3,
+      rulesAgreedAt: null,
+    });
+    const ids = await store.listIdsByPrefix('d70c4763');
+    const allowed = ['d70c4763-1', 'd70c4763-2', 'd70c4763-3'];
+    expect(ids).toHaveLength(2);
+    expect(new Set(ids).size).toBe(2);
+    expect(ids.every((id) => allowed.includes(id))).toBe(true);
   });
 
   it('claimProfileMessageId sets the pointer only when it still matches', async () => {

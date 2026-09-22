@@ -15,6 +15,7 @@ const RECORD: GiftRecord = {
   lightningInvoice: 'lnbc1test',
   description: '21gifts daily',
   sourceWallet: 'lightning.space',
+  fiat: null,
 };
 
 describe('recipientHandleFromAddress', () => {
@@ -46,7 +47,46 @@ describe('SqlGiftRecorder', () => {
     expect(execute).toHaveBeenCalledTimes(1);
     expect(execute).toHaveBeenCalledWith(
       expect.stringMatching(/INSERT INTO gift[\s\S]*ON CONFLICT \(lightning_invoice\) DO NOTHING/),
-      [RECORD.paidAt, 1000, 0, 'alice', 'lnbc1test', '21gifts daily', 'lightning.space'],
+      [
+        RECORD.paidAt,
+        1000,
+        0,
+        'alice',
+        'lnbc1test',
+        '21gifts daily',
+        'lightning.space',
+        null,
+        null,
+        null,
+        null,
+      ],
     );
+  });
+
+  it('binds a payment-time snapshot when fiat is present', async () => {
+    const execute = vi.fn(async () => undefined);
+    const sql: SqlClient = {
+      query: async () => {
+        throw new Error('unused');
+      },
+      execute,
+    };
+    await new SqlGiftRecorder(sql).recordOutbound({
+      ...RECORD,
+      fiat: { usd: '5.00', chf: '4.00', eur: '4.50', php: '250.00' },
+    });
+    expect(execute).toHaveBeenCalledWith(expect.stringMatching(/fiat_usd/), [
+      RECORD.paidAt,
+      1000,
+      0,
+      'alice',
+      'lnbc1test',
+      '21gifts daily',
+      'lightning.space',
+      '5.00',
+      '4.00',
+      '4.50',
+      '250.00',
+    ]);
   });
 });

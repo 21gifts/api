@@ -188,6 +188,7 @@ function throwingStore(overrides: Partial<MessageStore> = {}): MessageStore {
     listDebug: boom,
     postCountsByUtcDay: boom,
     listHidden: boom,
+    listIdsByPrefix: boom,
     listDirectChildren: boom,
     listChildIds: boom,
     listPublishedEventIds: boom,
@@ -196,6 +197,7 @@ function throwingStore(overrides: Partial<MessageStore> = {}): MessageStore {
     accountHasLivePost: boom,
     accountHasLiveTopLevelPost: boom,
     countByAccount: boom,
+    countAttributedReplies: boom,
     listPostsByAccount: boom,
     listRepliesByAccount: boom,
     getPhoto: boom,
@@ -1206,6 +1208,24 @@ describe('POST /messages', () => {
     expect(await res.json()).toEqual({ error: 'A post needs a Bitcoin payment' });
   });
 
+  it('allows a basis account to post a photo', async () => {
+    const store = await namedStore('Ada');
+    const acc = await store.getAccount('acc');
+    expect(acc).toBeDefined();
+    await store.updateAccount({ ...acc!, role: 'basis' });
+    const res = await mount(store).request('/messages', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({
+        text: 'hi',
+        photo: { contentType: 'image/jpeg', data: JPEG_B64 },
+      }),
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { hasPhoto: boolean };
+    expect(body.hasPhoto).toBe(true);
+  });
+
   it('returns 429 on a burst of posts', async () => {
     const limiter = new PostRateLimiter();
     const app = new Hono().route(
@@ -1873,7 +1893,8 @@ describe('POST /messages', () => {
     expect(claimed).toHaveLength(1);
     expect(claimed[0]?.accountId).toBe('parent');
     expect(JSON.parse(claimed[0]?.payload ?? '{}')).toMatchObject({
-      title: 'New reply on 21.gifts',
+      title: 'Ada',
+      body: 'child',
       url: '/notifications',
       tag: `forum_reply:${listed[0]?.replyId}`,
     });
@@ -2083,7 +2104,8 @@ describe('POST /messages', () => {
     const claimed = await pushStore.claimPending(10, now() + 1, 60_000);
     expect(claimed).toHaveLength(1);
     expect(JSON.parse(claimed[0]?.payload ?? '{}')).toMatchObject({
-      title: 'New reply on 21.gifts',
+      title: 'Ada',
+      body: 'child',
       url: '/notifications',
       tag: `forum_reply:${claimed[0]?.messageId}`,
     });
@@ -2641,6 +2663,7 @@ describe('POST /messages', () => {
       listDebug: (limit) => base.listDebug(limit),
       postCountsByUtcDay: () => base.postCountsByUtcDay(),
       listHidden: (limit) => base.listHidden(limit),
+      listIdsByPrefix: (prefix) => base.listIdsByPrefix(prefix),
       listDirectChildren: (parentId) => base.listDirectChildren(parentId),
       listChildIds: (parentId) => base.listChildIds(parentId),
       listReplies: (parentId, limit, includeHidden) =>
@@ -2653,6 +2676,7 @@ describe('POST /messages', () => {
       accountHasLiveTopLevelPost: (accountId, excludeId) =>
         base.accountHasLiveTopLevelPost(accountId, excludeId),
       countByAccount: (accountId) => base.countByAccount(accountId),
+      countAttributedReplies: (parentId) => base.countAttributedReplies(parentId),
       listPostsByAccount: (accountId, limit) => base.listPostsByAccount(accountId, limit),
       listRepliesByAccount: (accountId, limit) => base.listRepliesByAccount(accountId, limit),
       getPhoto: (id) => base.getPhoto(id),
@@ -2677,10 +2701,10 @@ describe('POST /messages', () => {
       updateSignedEvent: (id, eventId, nostrEvent) =>
         base.updateSignedEvent(id, eventId, nostrEvent),
       updatePublishState: (id, state, epoch) => base.updatePublishState(id, state, epoch),
-      addSats: (id, extra) => base.addSats(id, extra),
+      addSats: (id, extra, delta) => base.addSats(id, extra, delta),
       claimZapPayment: (hash, receiptId, at) => base.claimZapPayment(hash, receiptId, at),
-      recordZapReceipt: (receiptId, messageId, sats) =>
-        base.recordZapReceipt(receiptId, messageId, sats),
+      recordZapReceipt: (receiptId, messageId, sats, delta) =>
+        base.recordZapReceipt(receiptId, messageId, sats, delta),
       recordInvoiceAttempt: (row) => base.recordInvoiceAttempt(row),
       listInvoiceAttempts: (limit) => base.listInvoiceAttempts(limit),
       recordZapIngest: (row) => base.recordZapIngest(row),
@@ -2749,6 +2773,7 @@ describe('POST /messages', () => {
       listDebug: (limit) => base.listDebug(limit),
       postCountsByUtcDay: () => base.postCountsByUtcDay(),
       listHidden: (limit) => base.listHidden(limit),
+      listIdsByPrefix: (prefix) => base.listIdsByPrefix(prefix),
       listDirectChildren: (parentId) => base.listDirectChildren(parentId),
       listChildIds: (parentId) => base.listChildIds(parentId),
       listReplies: (parentId, limit, includeHidden) =>
@@ -2758,6 +2783,7 @@ describe('POST /messages', () => {
       accountHasLiveTopLevelPost: (accountId, excludeId) =>
         base.accountHasLiveTopLevelPost(accountId, excludeId),
       countByAccount: (accountId) => base.countByAccount(accountId),
+      countAttributedReplies: (parentId) => base.countAttributedReplies(parentId),
       listPostsByAccount: (accountId, limit) => base.listPostsByAccount(accountId, limit),
       listRepliesByAccount: (accountId, limit) => base.listRepliesByAccount(accountId, limit),
       create: async () => ({ ...existing, createdAt: new Date(existing.createdAt.getTime()) }),
@@ -2783,10 +2809,10 @@ describe('POST /messages', () => {
       updateSignedEvent: (id, eventId, nostrEvent) =>
         base.updateSignedEvent(id, eventId, nostrEvent),
       updatePublishState: (id, state, epoch) => base.updatePublishState(id, state, epoch),
-      addSats: (id, extra) => base.addSats(id, extra),
+      addSats: (id, extra, delta) => base.addSats(id, extra, delta),
       claimZapPayment: (hash, receiptId, at) => base.claimZapPayment(hash, receiptId, at),
-      recordZapReceipt: (receiptId, messageId, sats) =>
-        base.recordZapReceipt(receiptId, messageId, sats),
+      recordZapReceipt: (receiptId, messageId, sats, delta) =>
+        base.recordZapReceipt(receiptId, messageId, sats, delta),
       recordInvoiceAttempt: (row) => base.recordInvoiceAttempt(row),
       listInvoiceAttempts: (limit) => base.listInvoiceAttempts(limit),
       recordZapIngest: (row) => base.recordZapIngest(row),
@@ -4306,6 +4332,7 @@ describe('POST /messages/:id/invoice', () => {
       listDebug: (limit) => base.listDebug(limit),
       postCountsByUtcDay: () => base.postCountsByUtcDay(),
       listHidden: (limit) => base.listHidden(limit),
+      listIdsByPrefix: (prefix) => base.listIdsByPrefix(prefix),
       listDirectChildren: (parentId) => base.listDirectChildren(parentId),
       listChildIds: (parentId) => base.listChildIds(parentId),
       listReplies: (parentId, limit, includeHidden) =>
@@ -4317,6 +4344,7 @@ describe('POST /messages/:id/invoice', () => {
       accountHasLiveTopLevelPost: (accountId, excludeId) =>
         base.accountHasLiveTopLevelPost(accountId, excludeId),
       countByAccount: (accountId) => base.countByAccount(accountId),
+      countAttributedReplies: (parentId) => base.countAttributedReplies(parentId),
       listPostsByAccount: (accountId, limit) => base.listPostsByAccount(accountId, limit),
       listRepliesByAccount: (accountId, limit) => base.listRepliesByAccount(accountId, limit),
       getPhoto: (id) => base.getPhoto(id),
@@ -4574,6 +4602,30 @@ describe('GET /messages/:id', () => {
     expect(parsedEvents(warn).some((e) => e['event'] === 'messages.get.failed')).toBe(true);
   });
 
+  it('returns 503 when countAttributedReplies throws', async () => {
+    const noteId = 'd0d0d0d0-d0d0-40d0-80d0-d0d0d0d0d0d0';
+    const base = new InMemoryMessageStore();
+    await base.create({
+      id: noteId,
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'hi',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      hasVideo: false,
+      videoContentType: null,
+      ...unsignedNostrDefaults(),
+    });
+    warn.mockClear();
+    const res = await mount(
+      await seededStore(),
+      throwingStore({ getById: (id) => base.getById(id) }),
+    ).request(`/messages/${noteId}`);
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({ error: 'Messages are unavailable' });
+    expect(parsedEvents(warn).some((e) => e['event'] === 'messages.get.failed')).toBe(true);
+  });
+
   it('returns 200 with via nostr for a live external reply', async () => {
     const messageStore = new InMemoryMessageStore();
     await messageStore.create({
@@ -4714,16 +4766,100 @@ describe('GET /messages/:id', () => {
       text: 'from damus',
       createdAt: new Date(now()).toISOString(),
       sats: 0,
+      amountUsd: null,
+      amountChf: null,
+      amountEur: null,
+      amountPhp: null,
       payable: false,
       hasPhoto: false,
       photoCount: 0,
       hasVideo: false,
       videoContentType: null,
       via: 'nostr',
+      replyCount: 0,
     });
     expect(body).not.toHaveProperty('role');
     expect(body).not.toHaveProperty('accountId');
-    expect(body).not.toHaveProperty('replyCount');
+  });
+
+  it('includes replyCount of live attributed children on a top-level note', async () => {
+    const parentId = 'a0a0a0a0-a0a0-40a0-80a0-a0a0a0a0a0a0';
+    const replyA = 'a1a1a1a1-a1a1-41a1-81a1-a1a1a1a1a1a1';
+    const replyB = 'a2a2a2a2-a2a2-42a2-82a2-a2a2a2a2a2a2';
+    const hiddenReply = 'a3a3a3a3-a3a3-43a3-83a3-a3a3a3a3a3a3';
+    const unattributed = 'a4a4a4a4-a4a4-44a4-84a4-a4a4a4a4a4a4';
+    const messageStore = new InMemoryMessageStore();
+    await messageStore.create({
+      id: parentId,
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'parent',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      hasVideo: false,
+      videoContentType: null,
+      ...unsignedNostrDefaults(),
+    });
+    await messageStore.create({
+      id: replyA,
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'reply a',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      hasVideo: false,
+      videoContentType: null,
+      ...unsignedNostrDefaults(),
+      parentId,
+    });
+    await messageStore.create({
+      id: replyB,
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'reply b',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      hasVideo: false,
+      videoContentType: null,
+      ...unsignedNostrDefaults(),
+      parentId,
+    });
+    await messageStore.create({
+      id: hiddenReply,
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'hidden reply',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      hasVideo: false,
+      videoContentType: null,
+      ...unsignedNostrDefaults(),
+      parentId,
+    });
+    expect(await messageStore.markDeleted(hiddenReply, new Date(now()), 'acc')).toBe(true);
+    await messageStore.create({
+      id: unattributed,
+      accountId: null,
+      name: 'Legacy',
+      text: 'unattributed',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      hasVideo: false,
+      videoContentType: null,
+      ...unsignedNostrDefaults(),
+      parentId,
+      authorPubkey: null,
+    });
+    const parentRes = await mount(await namedStore('Ada'), messageStore).request(
+      `/messages/${parentId}`,
+    );
+    expect(parentRes.status).toBe(200);
+    expect(((await parentRes.json()) as { replyCount: number }).replyCount).toBe(2);
+    const replyRes = await mount(await namedStore('Ada'), messageStore).request(
+      `/messages/${replyA}`,
+    );
+    expect(replyRes.status).toBe(200);
+    expect(await replyRes.json()).not.toHaveProperty('replyCount');
   });
 
   it('deletes a hasVideo note when the file is missing on disk', async () => {
@@ -4916,14 +5052,16 @@ describe('GET /messages/:id', () => {
       videoContentType: null,
       ...unsignedNostrDefaults(),
     });
-    await messageStore.addSats(noteId, 21);
+    await messageStore.addSats(noteId, 21, null);
     const res = await mount(await seededStore(), messageStore, {
       waitSatsSleep: async () => {
         throw new Error('waitSatsSleep must not be called');
       },
     }).request(`/messages/${noteId}?sinceSats=20`);
     expect(res.status).toBe(200);
-    expect(((await res.json()) as { sats: number }).sats).toBe(21);
+    const body = (await res.json()) as { sats: number; replyCount: number };
+    expect(body.sats).toBe(21);
+    expect(body.replyCount).toBe(0);
   });
 
   it('waits until sats increase past sinceSats', async () => {
@@ -4942,7 +5080,7 @@ describe('GET /messages/:id', () => {
     });
     const res = await mount(await seededStore(), messageStore, {
       waitSatsSleep: async () => {
-        await messageStore.addSats(noteId, 7);
+        await messageStore.addSats(noteId, 7, null);
       },
     }).request(`/messages/${noteId}?sinceSats=0`);
     expect(res.status).toBe(200);
@@ -5173,6 +5311,93 @@ describe('GET /messages/:id', () => {
     const body = (await res.json()) as Record<string, unknown>;
     expect(body['role']).toBe('basis');
     expect(body['accountId']).toBe('gone');
+  });
+
+  it('includes replyCount of live children on a staff hidden top-level note', async () => {
+    const parentId = 'b0b0b0b0-b0b0-40b0-80b0-b0b0b0b0b0b0';
+    const replyA = 'b1b1b1b1-b1b1-41b1-81b1-b1b1b1b1b1b1';
+    const replyB = 'b2b2b2b2-b2b2-42b2-82b2-b2b2b2b2b2b2';
+    const auth = await staffStore('Ada');
+    const messageStore = new InMemoryMessageStore();
+    await messageStore.create({
+      id: parentId,
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'hidden parent',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      hasVideo: false,
+      videoContentType: null,
+      ...unsignedNostrDefaults(),
+    });
+    await messageStore.create({
+      id: replyA,
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'reply a',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      hasVideo: false,
+      videoContentType: null,
+      ...unsignedNostrDefaults(),
+      parentId,
+    });
+    await messageStore.create({
+      id: replyB,
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'reply b',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      hasVideo: false,
+      videoContentType: null,
+      ...unsignedNostrDefaults(),
+      parentId,
+    });
+    expect(await messageStore.markDeleted(parentId, new Date(now()), 'acc')).toBe(true);
+    expect(await messageStore.markUndeleted(replyA)).toBe(true);
+    expect(await messageStore.markUndeleted(replyB)).toBe(true);
+    const res = await mount(auth, messageStore).request(`/messages/${parentId}`, {
+      headers: AUTH,
+    });
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as { replyCount: number }).replyCount).toBe(2);
+  });
+
+  it('omits replyCount on a staff hidden reply', async () => {
+    const parentId = 'c0c0c0c0-c0c0-40c0-80c0-c0c0c0c0c0c0';
+    const replyId = 'c1c1c1c1-c1c1-41c1-81c1-c1c1c1c1c1c1';
+    const auth = await staffStore('Ada');
+    const messageStore = new InMemoryMessageStore();
+    await messageStore.create({
+      id: parentId,
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'parent',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      hasVideo: false,
+      videoContentType: null,
+      ...unsignedNostrDefaults(),
+    });
+    await messageStore.create({
+      id: replyId,
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'hidden reply',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      hasVideo: false,
+      videoContentType: null,
+      ...unsignedNostrDefaults(),
+      parentId,
+    });
+    expect(await messageStore.markDeleted(replyId, new Date(now()), 'acc')).toBe(true);
+    const res = await mount(auth, messageStore).request(`/messages/${replyId}`, {
+      headers: AUTH,
+    });
+    expect(res.status).toBe(200);
+    expect(await res.json()).not.toHaveProperty('replyCount');
   });
 
   it('omits deletedAt and deletedBy on a live note', async () => {
@@ -7722,6 +7947,10 @@ describe('GET /messages/hidden', () => {
           text: 'hide me',
           createdAt: new Date(now()).toISOString(),
           sats: 0,
+          amountUsd: null,
+          amountChf: null,
+          amountEur: null,
+          amountPhp: null,
           hasPhoto: false,
           photoCount: 0,
           hasVideo: false,

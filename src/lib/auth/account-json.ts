@@ -54,24 +54,24 @@ export interface AccountResponse {
 /**
  * Owner-facing account JSON: the eleven public fields plus the durable
  * view-key capability secret, the next `setup` step, factual `missing`,
- * `hasPosted`, `aboutMe`, `aboutMeHasPhoto`, `notificationLevel`, and
- * `funding`.
+ * `hasPosted`, `aboutMe`, `aboutMeHasPhoto`, `notificationLevel`,
+ * `funding`, `walletRequired`, `walletBackupSeenAt`, and `passkeyCredentialId`.
  */
 export interface OwnerAccountResponse extends AccountResponse {
   /** 64 lowercase hex; capability URL secret for `GET /view/:viewKey`. */
   viewKey: string;
   /**
-   * Next setup step the owner must complete (`name`, `username`,
+   * Next setup step the owner must complete (`wallet`, `name`, `username`,
    * `lightning-address`, `rules`), or `null` when the signed-in app is
    * allowed. Skip timestamps count as done for the wizard except
-   * username, which cannot be skipped. Computed on the api; clients must
-   * not invent a parallel sequence.
+   * username and wallet, which cannot be skipped. Computed on the api;
+   * clients must not invent a parallel sequence.
    */
   setup: AccountSetup;
   /**
-   * Factually unset fields (skip does not clear them). Order: `name`,
-   * `username`, `lightning-address`, `rules`. Used by clients alongside
-   * action gates.
+   * Factually unset fields (skip does not clear them). Order: `wallet`
+   * (when required and unseen), then `name`, `username`,
+   * `lightning-address`, `rules`. Used by clients alongside action gates.
    */
   missing: AccountMissingField[];
   /**
@@ -101,6 +101,21 @@ export interface OwnerAccountResponse extends AccountResponse {
    * Otherwise always an object; no row is `{ status: 'none', … }`.
    */
   funding: OwnerFundingJson | null;
+  /**
+   * True when the owner must complete the wallet setup step. Default
+   * false when omitted in storage (existing members).
+   */
+  walletRequired: boolean;
+  /**
+   * Epoch ms when the owner posted that the recovery phrase was shown,
+   * or `null` when unseen.
+   */
+  walletBackupSeenAt: number | null;
+  /**
+   * Current passkey credential id (base64url), or `null` when none.
+   * Owner-only; used to bind PRF reveal to this account's credential.
+   */
+  passkeyCredentialId: string | null;
 }
 
 /**
@@ -201,6 +216,10 @@ export interface DebugAccountResponse extends AccountResponse {
   profileMessageId: string | null;
   /** Owner fan-out filter (`all` \| `active` \| `mentions`). */
   notificationLevel: NotificationLevel;
+  /** True when the owner must complete the wallet setup step. */
+  walletRequired: boolean;
+  /** Epoch ms when the recovery phrase was shown, or `null`. */
+  walletBackupSeenAt: number | null;
   /** Custodial pubkey hex, or `null`. */
   nostrPubkey: string | null;
   /** Lowercase hex of the stored nsec envelope, or `null`. Never plaintext. */
@@ -257,7 +276,7 @@ export interface PasskeyChallengeDebug {
   type: string;
   /** WebAuthn challenge (base64url). */
   challenge: string;
-  /** Pending account id, or `null` for authenticate. */
+  /** Register pending id, replace signed-in id, or `null` for authenticate. */
   accountId: string | null;
   /** Whether finish has consumed this challenge. */
   consumed: boolean;
@@ -391,6 +410,8 @@ export function serializeDebugAccount(
     lightningAddressSkippedAt: account.lightningAddressSkippedAt ?? null,
     profileMessageId: account.profileMessageId ?? null,
     notificationLevel: parseNotificationLevel(account.notificationLevel),
+    walletRequired: account.walletRequired === true,
+    walletBackupSeenAt: account.walletBackupSeenAt ?? null,
     nostrPubkey: nostr.nostrPubkey,
     nostrNsecCiphertext: nostr.nostrNsecCiphertext,
     nostrKekId: nostr.nostrKekId,
@@ -435,7 +456,8 @@ export function serializeDebugAccountDetail(
  * Includes `viewKey` so the owner can copy the capability URL. The second
  * argument is `hasPosted`; the third is About me;
  * the fourth is whether the live profile note has a photo; the fifth is
- * `funding` (`null` for `basis`, default `null`).
+ * `funding` (`null` for `basis`, default `null`); the sixth is
+ * `passkeyCredentialId` (base64url or `null`, default `null`).
  * This function performs no I/O. Never used by the operator debug listing.
  * Does not expose `profileMessageId`.
  *
@@ -448,8 +470,11 @@ export function serializeDebugAccountDetail(
  * @param aboutMeHasPhoto - True when the live profile note has a photo.
  * @param funding - Owner funding JSON, or `null` for `basis`. Defaults to
  *   `null` so direct test callers keep a present field.
- * @returns Nineteen fields (eleven public + `viewKey`, `setup`, `missing`,
- * `hasPosted`, `aboutMe`, `aboutMeHasPhoto`, `notificationLevel`, `funding`).
+ * @param passkeyCredentialId - Current passkey id (base64url), or `null`.
+ * @returns Owner fields including `viewKey`, `setup`, `missing`,
+ * `hasPosted`, `location`, `aboutMe`, `aboutMeHasPhoto`,
+ * `notificationLevel`, `funding`, `walletRequired`, `walletBackupSeenAt`,
+ * and `passkeyCredentialId`.
  */
 export function serializeOwnerAccount(
   account: Account,
@@ -457,6 +482,7 @@ export function serializeOwnerAccount(
   aboutMe: string | null,
   aboutMeHasPhoto: boolean,
   funding: OwnerFundingJson | null = null,
+  passkeyCredentialId: string | null = null,
 ): OwnerAccountResponse {
   return {
     ...serializeAccount(account),
@@ -468,6 +494,9 @@ export function serializeOwnerAccount(
     aboutMeHasPhoto,
     notificationLevel: parseNotificationLevel(account.notificationLevel),
     funding,
+    walletRequired: account.walletRequired === true,
+    walletBackupSeenAt: account.walletBackupSeenAt ?? null,
+    passkeyCredentialId,
   };
 }
 
@@ -477,8 +506,8 @@ export interface OwnerFundingLookup {
   store: FundingStore;
   /** Epoch milliseconds for lazy trial expiry. */
   nowMs: number;
-  /** Account lookup for admitted `reviewedByName`. */
-  authStore: Pick<AuthStore, 'getAccount'>;
+  /** Account lookup for admitted `reviewedByName` and owner `passkeyCredentialId`. */
+  authStore: Pick<AuthStore, 'getAccount' | 'getPasskeyCredentialForAccount'>;
 }
 
 /**
@@ -498,10 +527,12 @@ export interface OwnerFundingLookup {
  *
  * @param account - Stored account.
  * @param messages - Message store (live-post lookup and profile-note read).
- * @param funding - Optional grant lookup; omitted → `basis` `null`, else
- *   `{ status: 'none', … }` without I/O.
+ * @param funding - Optional grant lookup; omitted → `basis` `null` and
+ *   `passkeyCredentialId` null. When present, loads the grant and
+ *   `authStore.getPasskeyCredentialForAccount` for `passkeyCredentialId`.
  * @returns Owner JSON including `hasPosted`, `aboutMe`, `aboutMeHasPhoto`,
- *   `notificationLevel`, and `funding` (via {@link serializeOwnerAccount}).
+ *   `notificationLevel`, `funding`, `walletRequired`, `walletBackupSeenAt`,
+ *   and `passkeyCredentialId` (via {@link serializeOwnerAccount}).
  *   `aboutMe` is `null` when the profile note is missing or `deletedAt` is
  *   set, else `aboutMeFromNote(account.name, row.text, row.name)`.
  *   `aboutMeHasPhoto` is true iff the live row has `hasPhoto === true`.
@@ -524,6 +555,7 @@ export async function serializeOwnerAccountWithPosts(
   }
   const hasPosted = livePost || aboutMe !== null;
   let fundingJson: OwnerFundingJson | null;
+  let passkeyCredentialId: string | null = null;
   if (funding === undefined) {
     fundingJson = serializeOwnerFunding(account.role, undefined, 0, null);
   } else {
@@ -534,8 +566,17 @@ export async function serializeOwnerAccountWithPosts(
       reviewerName = reviewer?.name ?? null;
     }
     fundingJson = serializeOwnerFunding(account.role, grant, funding.nowMs, reviewerName);
+    const passkey = await funding.authStore.getPasskeyCredentialForAccount(account.id);
+    passkeyCredentialId = passkey?.credentialId ?? null;
   }
-  return serializeOwnerAccount(account, hasPosted, aboutMe, aboutMeHasPhoto, fundingJson);
+  return serializeOwnerAccount(
+    account,
+    hasPosted,
+    aboutMe,
+    aboutMeHasPhoto,
+    fundingJson,
+    passkeyCredentialId,
+  );
 }
 
 /**

@@ -20,15 +20,21 @@ database URL that is set is fail-loud at boot. On the SQL path,
 KEK throws at boot. Public gift statistics
 (`GET /gifts/stats` and `GET /gifts?day=`) read the `gift` table when `DATABASE_URL` is set;
 without it the process still boots and returns empty stats. Amounts are
-also expressed as BTC and historical USD using the UTC-calendar-day
-BTC-USD daily close from Coinbase Exchange (persisted in `btc_usd_daily`),
-plus additive CHF/EUR/PHP (USD × that UTC day's Frankfurter ECB rate,
-persisted in `usd_fiat_daily`; last business day if the market is closed).
-GET fetches Coinbase only for missing gift days, UTC-today when `fetched_at`
+also expressed as BTC and as the USD/CHF/EUR/PHP stored at payment time
+(that stored value is what is returned). A USD stipend keeps the USD amount
+that was sent. A SQL row stores those four amounts as text or SQL NULL.
+SQL NULL is JSON `null` on read: it is not recomputed from the day's close
+and it is not **503**. Backfill freezes a historical close once, at migrate
+time, and leaves the row null when that day has no rate. Only an in-memory
+gift row that omits the field entirely (`undefined`, not SQL NULL) still uses
+the UTC-calendar-day BTC-USD daily close from Coinbase Exchange (persisted in
+`btc_usd_daily`), plus additive CHF/EUR/PHP (USD × that UTC day's Frankfurter
+ECB rate, persisted in `usd_fiat_daily`; last business day if the market is closed).
+GET fetches Coinbase only for those omitted-field rows, UTC-today when `fetched_at`
 is older than one hour, and a past day whose `fetched_at` is still on that
 same UTC calendar day (intraday print not yet the settled close). Settled
-stored days are not re-fetched. A missing BTC-USD rate after ensure/fetch is
-**503**. A missing CHF/EUR/PHP cross is JSON `null`, never 503.
+stored days are not re-fetched. A missing BTC-USD rate after that ensure is
+**503** only for an omitted-field row. A missing CHF/EUR/PHP cross is JSON `null`, never 503.
 
 Lightning Address verification HTTP routes are implemented. A live
 verification payment requires an injected invoice payer; the default
@@ -83,8 +89,11 @@ Public base URLs used in examples:
 | POST   | `/auth/passkey/register/finish`                      | none                       | Verify attestation, issue session                                                                         |
 | POST   | `/auth/passkey/authenticate/begin`                   | none                       | Issue WebAuthn request options                                                                            |
 | POST   | `/auth/passkey/authenticate/finish`                  | none                       | Verify assertion, issue session                                                                           |
+| POST   | `/auth/passkey/replace/begin`                        | Bearer                     | Issue WebAuthn creation options that exclude the current credential                                       |
+| POST   | `/auth/passkey/replace/finish`                       | Bearer                     | Verify attestation, replace the one credential, keep the session                                          |
 | GET    | `/me`                                                | `Authorization: Bearer`    | Account (`setup` + factual `missing` + `hasPosted` + `aboutMe` + `aboutMeHasPhoto` + `notificationLevel`) |
 | GET    | `/me/activity`                                       | Bearer                     | Given + received series (forum zaps + house gifts; platform given = all outbound)                         |
+| POST   | `/me/wallet-backup-seen`                             | Bearer                     | Record that the recovery phrase was shown (empty body)                                                    |
 | GET    | `/view/:viewKey`                                     | none                       | Public profile card by view key                                                                           |
 | GET    | `/view/:viewKey/about/photo`                         | none                       | Profile-note photo bytes for the view-key card                                                            |
 | GET    | `/view/:viewKey/activity`                            | none                       | Public given/received payload for the account behind the view key                                         |
@@ -112,7 +121,7 @@ Public base URLs used in examples:
 | POST   | `/trust/confirm-moderator`                           | Bearer (moderator+)        | Staff: second, independent confirmation → `moderator`                                                     |
 | POST   | `/trust/reject-moderator`                            | Bearer (moderator+)        | Staff: reject an open proposal (subject stays verified)                                                   |
 | POST   | `/trust/appoint-moderator`                           | Bearer (founder)           | Founder: appoint a moderator directly                                                                     |
-| POST   | `/funding/apply`                                     | Bearer                     | Member apply (verified+; `basis` 403)                                                                     |
+| POST   | `/funding/apply`                                     | Bearer                     | Member apply (verified+; `basis` 403; About me + photo + location required)                               |
 | GET    | `/funding/applications`                              | Bearer (moderator+)        | Staff pending grant queue                                                                                 |
 | GET    | `/funding/applications/:accountId`                   | Bearer (moderator+)        | Staff grant review                                                                                        |
 | POST   | `/funding/trial`                                     | Bearer (moderator+)        | One-UTC-day trial                                                                                         |
@@ -120,9 +129,10 @@ Public base URLs used in examples:
 | POST   | `/funding/reject`                                    | Bearer (moderator+)        | Reject grant                                                                                              |
 | GET    | `/messages`                                          | Bearer                     | List top-level forum notes (+ visible `replyCount`); 409 if rules missing                                 |
 | GET    | `/messages/compose-target`                           | Bearer                     | Platform profile note `{ messageId, sats }` for a 1-sat compose fee to 21.gifts                           |
-| POST   | `/messages`                                          | Bearer                     | Post text/photo; 409 if rules/name/username/Lightning Address missing; 403 unpaid below verified          |
+| POST   | `/messages`                                          | Bearer                     | Post text/photo; 409 if rules/name/username/Lightning Address missing; 403 text-only below verified       |
 | GET    | `/messages/hidden`                                   | Bearer (moderator+)        | Staff log of soft-hidden notes (session, not DEBUG_TOKEN)                                                 |
 | GET    | `/messages/:id`                                      | none / Bearer (moderator+) | Live public JSON; staff hidden GET includes `deletedAt`/`deletedBy`                                       |
+| GET    | `/links/:code`                                       | none                       | Public 8-hex prefix of exactly one message or account id                                                  |
 | GET    | `/messages/:id/replies`                              | none / Bearer (moderator+) | Live replies; staff `listReplies(..., true)` includes hidden children even under a live parent            |
 | GET    | `/messages/:id/photo`                                | none / Bearer (moderator+) | Live photo bytes; staff hidden bytes `Cache-Control: private, no-store`                                   |
 | GET    | `/messages/:id/video.*`                              | none / Bearer (moderator+) | Live video bytes; staff hidden bytes `Cache-Control: private, no-store`                                   |
@@ -311,10 +321,11 @@ Otherwise **Response** `200`:
 ```
 
 `options` is `PublicKeyCredentialCreationOptionsJSON` (`residentKey` and
-`userVerification` required, attestation `none`). `user.id` is the pending
-account UUID encoded as UTF-8 (the provisioned account when claiming by
-`viewKey`). The process still boots without
-`WEBAUTHN_RP_ID` — only these routes fail closed.
+`userVerification` required, attestation `none`). `options.extensions.prf`
+is `{}` so a capable authenticator enables hmac-secret. The api never sees
+PRF output or a mnemonic. `user.id` is the pending account UUID encoded as
+UTF-8 (the provisioned account when claiming by `viewKey`). The process
+still boots without `WEBAUTHN_RP_ID` — only these routes fail closed.
 
 ### `POST /auth/passkey/register/finish`
 
@@ -360,17 +371,23 @@ ID).
     "viewKey": "<64-hex>",
     "createdAt": 0,
     "rulesAgreedAt": null,
-    "setup": "name",
-    "missing": ["name", "username", "lightning-address", "rules"],
+    "setup": "wallet",
+    "missing": ["wallet", "name", "username", "lightning-address", "rules"],
     "hasPosted": false,
     "aboutMe": null,
     "aboutMeHasPhoto": false,
-    "notificationLevel": "all"
+    "notificationLevel": "all",
+    "funding": null,
+    "walletRequired": true,
+    "walletBackupSeenAt": null,
+    "passkeyCredentialId": "<base64url>"
   }
 }
 ```
 
-The `account` object is the same owner JSON as `GET /me` (includes `viewKey`, `setup`, `missing`, `hasPosted`, `aboutMe`, `aboutMeHasPhoto`, and `notificationLevel`).
+The `account` object is the same owner JSON as `GET /me` (includes `viewKey`, `setup`, `missing`, `hasPosted`, `aboutMe`, `aboutMeHasPhoto`, `notificationLevel`, `walletRequired`, `walletBackupSeenAt`, and `passkeyCredentialId`). The example above is a new register (`walletRequired: true`, `setup: "wallet"`, `missing` starts with `"wallet"`). Existing members keep `walletRequired: false`; passkey replace and phrase export do not change these columns.
+
+A new register row is stored with `walletRequired: true` and `walletBackupSeenAt: null`. First-passkey claim of a provisioned row sets `walletRequired: true` in the same write as the credential (`createFirstPasskeyCredential`: Postgres CTE insert-then-update; memory store writes both in one method) and does not clear a seen timestamp. Passkey replace does not change these columns. Operator `POST /debug/accounts` provision leaves `walletRequired` false. The api never stores a mnemonic or PRF output.
 
 ### `POST /auth/passkey/authenticate/begin`
 
@@ -378,7 +395,9 @@ Starts a discoverable-credential assertion. `allowCredentials` is empty.
 Same 500 as register begin when WebAuthn is unconfigured.
 
 **Response** `200`: `{ "challengeId", "options" }` where `options` is
-`PublicKeyCredentialRequestOptionsJSON`.
+`PublicKeyCredentialRequestOptionsJSON`. `options.extensions.prf.eval.first`
+is the base64url SHA-256 of `21gifts-nostr-v1`. The api never sees PRF
+output or a mnemonic.
 
 ### `POST /auth/passkey/authenticate/finish`
 
@@ -391,6 +410,45 @@ not stored. An account with `sessionRefused` is **403**
 `{ "error": "You signed in with the wrong account. Please try again with the correct account." }`
 and does not persist a bearer. Success body matches register finish
 (`linkingKey` is whatever the account currently has).
+
+### `POST /auth/passkey/replace/begin`
+
+Signed-in members replace their one passkey. Requires `Authorization: Bearer`.
+Issues WebAuthn creation options with `excludeCredentials` set to the current
+credential and `extensions.prf` present so a PRF-capable authenticator can
+own the account. The api never sees PRF output or a mnemonic.
+
+Missing or invalid bearer → **Response** `401`: `{ "error": "Unauthorized" }`.
+
+Same **500** as register begin when WebAuthn is unconfigured.
+
+When the account has no credential → **Response** `400`:
+`{ "error": "No passkey to replace" }`.
+
+**Response** `200`: `{ "challengeId", "options" }` like register begin.
+
+### `POST /auth/passkey/replace/finish`
+
+Verifies a new registration attestation and replaces the account's one
+credential. Does not mint a session; the existing Bearer stays valid.
+
+Body matches register finish (`challengeId`, `credential`). Requires `Origin`.
+
+| Status | Body                                                                  | When                                                       |
+| ------ | --------------------------------------------------------------------- | ---------------------------------------------------------- |
+| 500    | `{ "error": "Server auth is not configured" }`                        | RP ID missing, not on the allowlist, or no matching origin |
+| 401    | `{ "error": "Unauthorized" }`                                         | Missing or invalid Bearer                                  |
+| 400    | `{ "error": "Expected a JSON body with challengeId and credential" }` | Body parse fail                                            |
+| 400    | `{ "error": "Unknown or expired challenge" }`                         | Unknown `challengeId` or Bearer is not the challenge owner |
+| 400    | `{ "error": "Challenge expired" }`                                    | Past challenge TTL                                         |
+| 400    | `{ "error": "Challenge already used" }`                               | Finish already attempted                                   |
+| 400    | `{ "error": "Wrong challenge type" }`                                 | Challenge is not `replace`                                 |
+| 400    | `{ "error": "Invalid origin" }`                                       | Missing or disallowed `Origin`                             |
+| 400    | `{ "error": "Invalid passkey" }`                                      | Attestation verify failed, same id, or duplicate           |
+
+**Response** `200`: `{ "account": { ... } }` — owner JSON via
+`serializeOwnerAccountWithPosts`, same shape as register finish minus `token`.
+Does not change `walletRequired` or `walletBackupSeenAt`.
 
 ### `GET /me`
 
@@ -430,9 +488,17 @@ An account with `sessionRefused` and a still-valid minted token → **Response**
   "aboutMe": null,
   "aboutMeHasPhoto": false,
   "notificationLevel": "all",
-  "funding": null
+  "funding": null,
+  "walletRequired": false,
+  "walletBackupSeenAt": null,
+  "passkeyCredentialId": null
 }
 ```
+
+The example above is an existing member (`walletRequired: false`,
+`walletBackupSeenAt: null`). New register/claim owner JSON has
+`walletRequired: true` and `setup: "wallet"` with `missing` starting with
+`"wallet"`.
 
 About me is the profile-note text when it is a real bio, else null (auto
 name-copy is not a bio, including after a display-name rename when the note
@@ -453,13 +519,16 @@ stays `null`)).
 | `viewKey`                  | string         | Durable 64 lowercase hex capability secret for GET /view/:viewKey. Owner-only. Not a session.                                                                                                                                                                                                                                                   |
 | `createdAt`                | number         | Creation time (epoch ms)                                                                                                                                                                                                                                                                                                                        |
 | `rulesAgreedAt`            | number \| null | Epoch ms of first living-room rules agreement, or `null`                                                                                                                                                                                                                                                                                        |
-| `setup`                    | string \| null | Next wizard step: `name`, `username`, `lightning-address`, `rules`, or `null` when complete. Skip timestamps count as done except username, which cannot be skipped. Clients must not invent a parallel sequence.                                                                                                                               |
-| `missing`                  | string[]       | Factually unset fields (`name`, `username`, `lightning-address`, `rules`) even when skipped. Does not include `profileMessageId`.                                                                                                                                                                                                               |
+| `setup`                    | string \| null | Next wizard step: `wallet`, `name`, `username`, `lightning-address`, `rules`, or `null` when complete. Skip timestamps count as done except username and wallet, which cannot be skipped. Clients must not invent a parallel sequence.                                                                                                          |
+| `missing`                  | string[]       | Factually unset fields (`wallet` when required and unseen, then `name`, `username`, `lightning-address`, `rules`) even when skipped. Does not include `profileMessageId`.                                                                                                                                                                       |
 | hasPosted                  | boolean        | True when there is a live forum row that is not the profile note (replies still count) OR when `aboutMe` is non-null. A profile note that is only the display-name copy, a photo without bio text, a missing note, and a soft-hidden note do not count. Not the same predicate as GET /invoices/posted (that stays top-level non-profile only). |
 | `aboutMe`                  | string \| null | Profile-note text when it is a real bio, else `null` (missing or soft-hidden (`deletedAt` set); auto name-copy is not a bio, including after a display-name rename when the note text still equals the stored profile-note `name` (Ada→Grace with text `Ada` stays `null`))                                                                     |
 | `aboutMeHasPhoto`          | boolean        | True when the live profile note has a stored JPEG/PNG/WebP. Independent of `aboutMe` (photo-only and name-copy notes can still have a photo). Bytes are `GET /me/about/photo`. Does not expose `profileMessageId`.                                                                                                                              |
 | `notificationLevel`        | string         | Owner fan-out filter: `all`, `active`, or `mentions`. Default `all`. Owner-only; omitted from public `GET /view/:viewKey` and member cards.                                                                                                                                                                                                     |
 | `funding`                  | object \| null | Funding-program grant. `null` for `basis`. Otherwise always an object; no row is `{ status: "none", trialUtcDate: null, admittedAt: null, reviewedByName: null }`. Admitted includes live `reviewedByName`.                                                                                                                                     |
+| `walletRequired`           | boolean        | True when the owner must complete the wallet setup step. Default false for existing members.                                                                                                                                                                                                                                                    |
+| `walletBackupSeenAt`       | number \| null | Epoch ms when the recovery phrase was shown, or `null` when unseen.                                                                                                                                                                                                                                                                             |
+| `passkeyCredentialId`      | string \| null | WebAuthn credential id (base64url), or `null` when the account has none. Owner-only.                                                                                                                                                                                                                                                            |
 
 ### `GET /me/activity`
 
@@ -494,7 +563,19 @@ Store throw or missing BTC-USD day → **Response** `503`:
 }
 ```
 
-`donatedOverTime` / `receivedOverTime` reuse the `spendOverTime` day objects from `GET /gifts/stats`, including additive CHF/EUR/PHP. USD = per-gift UTC-day Coinbase BTC-USD close. CHF/EUR/PHP = USD × that UTC day's Frankfurter ECB cross. Missing fiat is JSON `null`, never 503 (`account.activity.fiat_failed` still 200). Empty activity is 200 zeros with USD-only `fx.quotes` (no Coinbase / Frankfurter). Given = confirmed forum zaps this account paid, plus every outbound house gift when `isPlatform` is true. Received = indexed zaps on notes this account authored (including hidden and replies), plus `message.sats` remainder on **top-level** notes only (so a visible ₿21 post is never empty; gift-as-reply `sats` are not Received), plus house gifts to the account Lightning Address handle. Forum zaps are not mixed into `GET /gifts/stats`.
+`donatedOverTime` / `receivedOverTime` reuse the `spendOverTime` day objects from `GET /gifts/stats`, including additive CHF/EUR/PHP. The stored payment-time USD/CHF/EUR/PHP is what is returned. Missing fiat is JSON `null`, never 503 (`account.activity.fiat_failed` still 200). Empty activity is 200 zeros with USD-only `fx.quotes` (no Coinbase / Frankfurter). Given = confirmed forum zaps this account paid, plus every outbound house gift when `isPlatform` is true. Received = indexed zaps on notes this account authored (including hidden and replies), plus `message.sats` remainder on **top-level** notes only (so a visible ₿21 post is never empty; gift-as-reply `sats` are not Received), plus house gifts to the account Lightning Address handle. Forum zaps are not mixed into `GET /gifts/stats`.
+
+### `POST /me/wallet-backup-seen`
+
+Bearer required. Empty body. Records that the recovery phrase was shown.
+
+Missing/invalid bearer → **Response** `401` `{ "error": "Unauthorized" }`.
+
+Success → **Response** `200` with the owner JSON (same shape as `GET /me`).
+The first successful POST sets `walletBackupSeenAt` to the server clock
+(epoch ms). Later POSTs return the original timestamp unchanged
+(idempotent; no second write). Logs `account.wallet.backup_seen` with
+`{ accountId }` only. Never stores or logs a mnemonic or PRF output.
 
 ### `POST /me/setup/skip`
 
@@ -504,9 +585,12 @@ Skip a skippable wizard step. Body:
 { "step": "name" }
 ```
 
-or `{ "step": "lightning-address" }`. Sets the matching skip timestamp to now;
-does not clear `name` / `lightningAddress`. `step: "rules"` and unknown steps
-are **400**. Success → **200** owner JSON.
+or `{ "step": "lightning-address" }`. Still only `name` or `lightning-address`.
+Sets the matching skip timestamp to now; does not clear `name` /
+`lightningAddress`. `step: "wallet"` is **400** with the same copy as an
+invalid step: `{ "error": "Expected a JSON body with step \"name\" or \"lightning-address\"" }`.
+`step: "rules"` and unknown steps are the same **400**. Success → **200**
+owner JSON.
 
 ### `GET /members/:accountId`
 
@@ -790,7 +874,12 @@ not fail the POST.
 
 ### `POST /funding/apply`
 
-Bearer session. Role `basis` → **403**. Effective status `none` or
+Bearer session. Role `basis` → **403**. Apply requires a filled About
+me (real bio, not empty/name-only), an About me photo, and a non-empty
+location, checked in that order: missing About me → **400**
+`{ "error": "About me is required" }`; missing photo → **400**
+`{ "error": "About me photo is required" }`; missing location → **400**
+`{ "error": "Location is required" }`. Effective status `none` or
 `rejected` upserts `pending` (`appliedAt` now; trial/admitted/decided
 cleared). `pending` / `trial` / `admitted` → **409**. **200**
 `{ "funding": OwnerFundingJson }`. Store throw → **503**
@@ -1201,9 +1290,11 @@ Success → **Response** `200` with the updated account:
 - `lightningAddress`: `null`
 - `lightningAddressVerified`: `false`
 
-Does not clear `username`. After unlink, `setup` is `username` if the
-handle is blank; `setup` is `lightning-address` only when name is done or
-skipped **and** username is set (and LN is blank / skip cleared).
+Does not clear `username`. After unlink, `setup` stays `wallet` when
+`walletRequired` is true and backup is unseen; otherwise `setup` is
+`username` if the handle is blank; `setup` is `lightning-address` only
+when wallet is done or not required, name is done or skipped, **and**
+username is set (and LN is blank / skip cleared).
 
 ### `POST /me/lightning-address/verification`
 
@@ -1419,6 +1510,8 @@ Success → **Response** `200`:
       "lightningAddressSkippedAt": null,
       "profileMessageId": null,
       "notificationLevel": "all",
+      "walletRequired": false,
+      "walletBackupSeenAt": null,
       "nostrPubkey": "<64-hex>",
       "nostrNsecCiphertext": "<envelope-hex>",
       "nostrKekId": 1,
@@ -1430,8 +1523,9 @@ Success → **Response** `200`:
 ```
 
 The listing uses `serializeDebugAccount` (public fields plus `isPlatform`,
-`sessionRefused`, `viewKey`, and Nostr debug fields). Member `GET /me` does not
-include `isPlatform` or `sessionRefused`.
+`sessionRefused`, `viewKey`, `walletRequired`, `walletBackupSeenAt`, and Nostr
+debug fields). Member `GET /me` does not include `isPlatform` or
+`sessionRefused`.
 
 Accounts are ordered by `createdAt` ascending, then `id`. An empty store
 returns `"accounts": []`.
@@ -1523,11 +1617,12 @@ finish and this route's session mint return 403 with the wrong-account
 copy (`GET /me` too). Setting a new address is not supported here
 (`POST /me/lightning-address` remains the live resolve path). Unlink
 resets `lightningAddressVerified` to `false` and drops any in-flight
-verification. It does not clear `username`. `GET /me` then returns
-`setup: "username"` if the handle is blank, or `setup: "lightning-address"`
-only when name is done or skipped **and** username is set (and LN is blank
-/ skip cleared), so any client that follows `setup` shows the username or
-address form as appropriate. `verified` as a **role** is a
+verification. It does not clear `username`. `GET /me` then returns `setup: "wallet"` when
+`walletRequired` is true and backup is unseen, else `setup: "username"` if
+the handle is blank, or `setup: "lightning-address"` only when wallet is
+done or not required, name is done or skipped, **and** username is set
+(and LN is blank / skip cleared), so any client that follows `setup` shows
+the wallet, username, or address form as appropriate. `verified` as a **role** is a
 human-identity badge (a moderator physically met the person); it
 is not `lightningAddressVerified`. New passkey accounts stay `basis` until
 staff confirm them via `POST /trust/verify` or an operator overrides `role`
@@ -1564,7 +1659,8 @@ Unknown account id → **Response** `404`:
 
 Success → **Response** `200` with the updated account JSON (same
 `serializeDebugAccount` shape as `GET /debug/accounts`, including
-`isPlatform`, `sessionRefused`, `viewKey`, and Nostr debug fields). Role changes log `debug.accounts.role_set`
+`isPlatform`, `sessionRefused`, `viewKey`, `walletRequired`,
+`walletBackupSeenAt`, and Nostr debug fields). Role changes log `debug.accounts.role_set`
 with the account id and new role. Unlink logs
 `debug.accounts.lightning_address.cleared` with the account id (never the
 token or the previous address). Platform changes log
@@ -2303,12 +2399,13 @@ Missing, blank, or impossible `day` (`2026-02-31`) → **400**
 When `DATABASE_URL` is unset the in-memory gift store is empty — **200** with
 zeros (`totalUsd` / `totalChf` / `totalEur` / `totalPhp` `"0.00"`), `gifts: []`,
 and `fx` with USD-only `quotes` (no Coinbase / Frankfurter). When gifts exist
-for that day, the api ensures a BTC-USD close for that UTC day and converts
-each gift at **that day's** close. CHF/EUR/PHP are USD × that UTC day's
-Frankfurter ECB rate (last business day if closed). An empty matching set is
-200 without Coinbase or Frankfurter. A query failure or a still-missing
-BTC-USD rate is **503**. A missing CHF/EUR/PHP cross is JSON `null` on the
-matching total and per-gift amount, never 503.
+for that day, the stored payment-time USD/CHF/EUR/PHP is what is returned.
+A SQL NULL snapshot is JSON `null` and does not fetch a close. The api ensures
+a BTC-USD close for that UTC day only for an in-memory gift that omits the
+field (`undefined`). An empty matching set is
+200 without Coinbase or Frankfurter. A query failure is **503**. A still-missing
+BTC-USD rate is **503** only for that omitted-field row. A missing stored amount
+or CHF/EUR/PHP cross is JSON `null` on the matching total and per-gift amount, never 503.
 
 **Response** `200` (empty day):
 
@@ -2376,25 +2473,25 @@ matching total and per-gift amount, never 503.
 | `giftCount` | number                                                                                       | Number of gifts that UTC day                                                                              |
 | `totalSats` | number                                                                                       | Sum of gift amounts (sats; fees excluded)                                                                 |
 | `totalBtc`  | string                                                                                       | `totalSats` as BTC with eight decimals                                                                    |
-| `totalUsd`  | string                                                                                       | Sum of per-gift USD at **this** day's close (`"1.00"`)                                                    |
-| `totalChf`  | string or null                                                                               | USD × this day's ECB CHF; `"0.00"` when empty; `null` if this day lacks CHF                               |
-| `totalEur`  | string or null                                                                               | USD × this day's ECB EUR; `"0.00"` when empty; `null` if this day lacks EUR                               |
-| `totalPhp`  | string or null                                                                               | USD × this day's ECB PHP; `"0.00"` when empty; `null` if this day lacks PHP                               |
+| `totalUsd`  | string or null                                                                               | Sum of stored payment-time USD (`"1.00"`); `"0.00"` when empty; `null` if any gift lacks stored USD       |
+| `totalChf`  | string or null                                                                               | Sum of stored payment-time CHF; `"0.00"` when empty; `null` if any gift lacks stored CHF                  |
+| `totalEur`  | string or null                                                                               | Sum of stored payment-time EUR; `"0.00"` when empty; `null` if any gift lacks stored EUR                  |
+| `totalPhp`  | string or null                                                                               | Sum of stored payment-time PHP; `"0.00"` when empty; `null` if any gift lacks stored PHP                  |
 | `gifts`     | `{ paidAt, amountSats, amountBtc, amountUsd, amountChf, amountEur, amountPhp, recipient }[]` | Ordered by `paidAt` ascending, then `recipient`                                                           |
 | `fx`        | `{ quote, dayBasis, source, quotes }`                                                        | Always present; `quote` is BTC-USD; `quotes` lists USD always and CHF/EUR/PHP when that day has the cross |
 
 `gifts[]` item:
 
-| Field        | Type           | Meaning                                                 |
-| ------------ | -------------- | ------------------------------------------------------- |
-| `paidAt`     | string         | ISO-8601 instant (`toISOString`, UTC `Z`)               |
-| `amountSats` | number         | Gift amount in sats                                     |
-| `amountBtc`  | string         | Same amount as BTC with eight decimals                  |
-| `amountUsd`  | string         | USD at this UTC day's close (`"1.00"`)                  |
-| `amountChf`  | string or null | CHF at this UTC day's ECB cross, or `null` when missing |
-| `amountEur`  | string or null | EUR at this UTC day's ECB cross, or `null` when missing |
-| `amountPhp`  | string or null | PHP at this UTC day's ECB cross, or `null` when missing |
-| `recipient`  | string         | Recipient handle (`recipient_wos_user`)                 |
+| Field        | Type           | Meaning                                         |
+| ------------ | -------------- | ----------------------------------------------- |
+| `paidAt`     | string         | ISO-8601 instant (`toISOString`, UTC `Z`)       |
+| `amountSats` | number         | Gift amount in sats                             |
+| `amountBtc`  | string         | Same amount as BTC with eight decimals          |
+| `amountUsd`  | string or null | Stored payment-time USD (`"1.00"`), or `null`   |
+| `amountChf`  | string or null | Stored payment-time CHF, or `null` when missing |
+| `amountEur`  | string or null | Stored payment-time EUR, or `null` when missing |
+| `amountPhp`  | string or null | Stored payment-time PHP, or `null` when missing |
+| `recipient`  | string         | Recipient handle (`recipient_wos_user`)         |
 
 **Response** `503`: `{ "error": "Gift stats are unavailable" }` (store failure or missing BTC-USD only; missing fiat is never 503).
 
@@ -2407,19 +2504,20 @@ When `DATABASE_URL` is unset the in-memory gift and FX stores are empty —
 **200** with zeros, empty series, `totalBtc` `"0.00000000"`, `totalUsd` /
 `totalChf` / `totalEur` / `totalPhp` `"0.00"`, and `fx` with USD-only
 `quotes` (no Coinbase / Frankfurter call). When it is set, the process
-queries the `gift` table (`paid_at`, `amount_sats`, `recipient_wos_user`
-only) and ensures a BTC-USD daily close for each gift's UTC calendar day
-(from `btc_usd_daily`, fetching Coinbase only for missing days / stale
-UTC-today / after-midnight finalize of an intraday print). Each gift's sats
-are converted at **that day's** close (not spot). CHF/EUR/PHP are USD × that
-UTC day's Frankfurter ECB rate (last business day if closed; persisted in
-`usd_fiat_daily`). A gift day that lacks a cross returns that currency as
+queries the `gift` table (`paid_at`, `amount_sats`, `recipient_wos_user`,
+and the stored payment-time fiat columns) and returns that stored
+USD/CHF/EUR/PHP (not recomputed from the day's close). A SQL NULL snapshot
+is JSON `null` and does not fetch a close. It ensures a BTC-USD
+daily close only for an in-memory gift that omits the field (`undefined`)
+(from `btc_usd_daily`, fetching Coinbase only for missing days /
+stale UTC-today / after-midnight finalize of an intraday print). A gift that
+lacks a stored amount returns that currency as
 JSON `null`; a running total goes `null` if any selected gift lacks that
-cross. Gap days in `spendOverTime` are zero `giftCount`/sats/BTC/USD and `"0.00"` fiat
+currency. Gap days in `spendOverTime` are zero `giftCount`/sats/BTC/USD and `"0.00"` fiat
 and need no rate. Gap months in `byMonth` are zero sats/BTC/USD and
 `"0.00"` fiat and need no rate.
-A query failure or a still-missing BTC-USD rate after ensure is **503**.
-A missing CHF/EUR/PHP cross is never 503.
+A query failure is **503**. A still-missing BTC-USD rate is **503** only for
+an omitted-field row. A missing stored amount is never 503.
 
 Optional query `recipient` filters to one Wallet of Satoshi handle
 (case-insensitive). The value is trimmed first. When the trimmed value
@@ -2460,10 +2558,10 @@ gifts' UTC days.
 | ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------- |
 | `totalSats`      | number                                                                                                                                           | Sum of gift amounts (sats; fees excluded)                                                                                    |
 | `totalBtc`       | string                                                                                                                                           | `totalSats` as BTC with eight decimals                                                                                       |
-| `totalUsd`       | string                                                                                                                                           | Sum of per-gift USD at each gift's UTC-day close (`"1234.56"`)                                                               |
-| `totalChf`       | string or null                                                                                                                                   | USD × each gift day's ECB CHF; `"0.00"` when empty; `null` if any gift day lacks CHF                                         |
-| `totalEur`       | string or null                                                                                                                                   | USD × each gift day's ECB EUR; `"0.00"` when empty; `null` if any gift day lacks EUR                                         |
-| `totalPhp`       | string or null                                                                                                                                   | USD × each gift day's ECB PHP; `"0.00"` when empty; `null` if any gift day lacks PHP                                         |
+| `totalUsd`       | string or null                                                                                                                                   | Sum of stored payment-time USD (`"1234.56"`); `"0.00"` when empty; `null` if any gift lacks stored USD                       |
+| `totalChf`       | string or null                                                                                                                                   | Sum of stored payment-time CHF; `"0.00"` when empty; `null` if any gift lacks stored CHF                                     |
+| `totalEur`       | string or null                                                                                                                                   | Sum of stored payment-time EUR; `"0.00"` when empty; `null` if any gift lacks stored EUR                                     |
+| `totalPhp`       | string or null                                                                                                                                   | Sum of stored payment-time PHP; `"0.00"` when empty; `null` if any gift lacks stored PHP                                     |
 | `giftCount`      | number                                                                                                                                           | Number of outbound gifts                                                                                                     |
 | `recipientCount` | number                                                                                                                                           | Distinct recipient handles                                                                                                   |
 | `firstPaidAt`    | string or null                                                                                                                                   | ISO-8601 of the earliest gift                                                                                                |
@@ -2554,7 +2652,13 @@ LUD-16, GETs the LNURL-pay callback, decodes the BOLT11, and stores
 **Body:**
 
 ```json
-{ "address": "name@domain.tld", "amountMsat": 100000, "comment": "optional", "messageId": "<uuid>" }
+{
+  "address": "name@domain.tld",
+  "amountMsat": 100000,
+  "amountUsd": "5.00",
+  "comment": "optional",
+  "messageId": "<uuid>"
+}
 ```
 
 Moderator stipend form (never together with `messageId`):
@@ -2563,12 +2667,17 @@ Moderator stipend form (never together with `messageId`):
 {
   "address": "name@domain.tld",
   "amountMsat": 100000,
+  "amountUsd": "5.00",
   "comment": "optional",
   "groupMessageId": "<uuid>"
 }
 ```
 
-`comment` is optional and at most 255 characters. `amountMsat` must be an
+`amountUsd` is optional. When present it is a positive decimal with at most
+two fractional digits and at most 100000, normalized to two decimals (`"5"`
+becomes `"5.00"`) and stored as that payment's USD. A present value that
+cannot be normalized is the same **400** as a bad body. An absent key stays
+unset and proof may use the spot. `comment` is optional and at most 255 characters. `amountMsat` must be an
 integer in `1000..10000000000`. `messageId` is optional (current spend without
 the field still works). `groupMessageId` is optional and mutually exclusive
 with `messageId` (both set → **400**). Invalid UUID on either field → **400**
@@ -2793,6 +2902,10 @@ Success → **Response** `200`:
       "text": "Thank you!",
       "createdAt": "2026-08-28T12:00:00.000Z",
       "sats": 0,
+      "amountUsd": null,
+      "amountChf": null,
+      "amountEur": null,
+      "amountPhp": null,
       "payable": false,
       "hasPhoto": false,
       "photoCount": 0,
@@ -2995,9 +3108,10 @@ is a **top-level** parent message UUID (JSON only; sets `parentId` for a
 one-level NIP-10 reply). Missing or non-UUID `inReplyTo`, a parent that
 is not in the store, or a parent that is itself a reply (`parentId` not
 null) → **404** `{ "error": "Not found" }`. Anyone below `verified`
-(including the parent author) → **403** `{ "error": "A post needs a
-Bitcoin payment" }` or `{ "error": "A reply needs a Bitcoin payment" }`
-for `inReplyTo`. Pay 1 sat to 21.gifts first (`GET /messages/compose-target`
+(including the parent author) posting unpaid **text-only** → **403**
+`{ "error": "A post needs a Bitcoin payment" }` or `{ "error": "A reply needs a Bitcoin payment" }`
+for `inReplyTo`. A photo or video body from `basis` is **200**. Pay 1 sat to
+21.gifts first (`GET /messages/compose-target`
 then `POST /messages/:id/invoice` on that platform profile note). Optional
 `goalSats` omitted, JSON `null`, or a missing/empty multipart field means
 no goal. Multipart accepts `goalSats` as a decimal digit string. A positive
@@ -3106,14 +3220,14 @@ is itself a reply →
 { "error": "Not found" }
 ```
 
-Anyone below `verified` posting a top-level note →
+Anyone below `verified` posting an unpaid text-only top-level note →
 **Response** `403`:
 
 ```json
 { "error": "A post needs a Bitcoin payment" }
 ```
 
-Anyone below `verified` posting a reply (`inReplyTo`) →
+Anyone below `verified` posting an unpaid text-only reply (`inReplyTo`) →
 **Response** `403`:
 
 ```json
@@ -3393,6 +3507,18 @@ Days with no row are filled with `postCount` 0. The series sums to
 **Response** `503`: `{ "error": "Post stats are unavailable" }` when the count
 query throws.
 
+### `GET /links/:code`
+
+Public. No Bearer. `:code` is lowercased and not trimmed. Anything other than
+exactly eight hex digits is **400** `{ "error": "invalid_code" }` and does not
+query the stores. Zero matches is **404** `{ "error": "not_found" }`. Two or
+more matches (two messages, two accounts, or one of each) is **409**
+`{ "error": "ambiguous" }` and the body does not list ids. Exactly one message
+is **200** `{ "kind": "message", "id" }` with the id lowercased. Exactly one
+account is **200** `{ "kind": "member", "id" }` with the id lowercased.
+Soft-hidden messages count. The prefix match is case-insensitive and stops at
+two ids per store.
+
 ### `GET /messages/:id`
 
 Public single-note fetch. Live rows need **no Bearer.** `:id` is a UUID.
@@ -3414,7 +3540,10 @@ zapper (checked via `isZapperPubkey` on every read, including during a
 `sinceSats` poll loop); that **200** includes `via: "nostr"`, omits `role`,
 and sets `payable` false. Otherwise (no `authorPubkey`, or an `authorPubkey`
 that is not yet a recorded zapper) it is **404** `{ "error": "Not found" }`
-(same body as missing/hidden). `replyCount` is omitted. Photo and video bytes
+(same body as missing/hidden). A top-level note (parent id null), on both the
+live public body and the founder/moderator hidden body, includes `replyCount`
+of live direct children with an account or a recorded zapper pubkey; 0 is
+included, not omitted; a reply omits `replyCount`. Photo and video bytes
 are never included. Soft-hidden rows
 (`deletedAt` set) are treated as missing (404) before any missing-video
 hard-delete cleanup.
@@ -3465,7 +3594,8 @@ Success (including `sinceSats` timeout with unchanged sats) → **Response**
   "photoCount": 0,
   "hasVideo": false,
   "videoContentType": null,
-  "role": "basis"
+  "role": "basis",
+  "replyCount": 0
 }
 ```
 
@@ -3823,6 +3953,10 @@ Success → **Response** `200`:
       "createdAt": "2026-08-29T12:00:00.000Z",
       "fromMe": true,
       "sats": 0,
+      "amountUsd": null,
+      "amountChf": null,
+      "amountEur": null,
+      "amountPhp": null,
       "hasPhoto": false,
       "photoCount": 0,
       "accountId": "<uuid>"
@@ -3834,6 +3968,10 @@ Success → **Response** `200`:
       "createdAt": "2026-08-29T12:00:02.000Z",
       "fromMe": false,
       "sats": 6158,
+      "amountUsd": null,
+      "amountChf": null,
+      "amountEur": null,
+      "amountPhp": null,
       "hasPhoto": false,
       "photoCount": 0,
       "accountId": "<uuid>",

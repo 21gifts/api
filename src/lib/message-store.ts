@@ -11,6 +11,15 @@
  */
 
 import { isUniqueViolation, type SqlClient } from '@/lib/auth/sql';
+import { fetchBtcUsdSpot } from '@/lib/btc-usd-spot';
+import type { FetchFn } from '@/lib/btc-usd-candles';
+import {
+  fiatFromSats,
+  satsToUsdCents,
+  usdCentsToFiatCents,
+  usdCentsToString,
+  type FiatAmounts,
+} from '@/lib/money';
 import type { PostDayCount } from '@/lib/post-stats';
 import { postgresTextArrayLiteral } from '@/lib/postgres-text-array';
 import {
@@ -26,6 +35,7 @@ import {
 export type { ForumFeedMode };
 import { kind1ContentWithHashtags } from '@/lib/nostr/event';
 import { normalizeSignedEvent } from '@/lib/nostr/publish';
+import { InMemoryFiatStore, type FiatRateBook } from '@/lib/usd-fiat-store';
 import {
   removeForumVideo,
   writeForumVideo,
@@ -34,6 +44,56 @@ import {
 } from '@/lib/video';
 
 const MAX_PUBLISH_ATTEMPTS = 5;
+
+interface PaymentFiatStoreOptions {
+  fetchImpl?: FetchFn;
+  fiatRates?: FiatRateBook;
+  now?: () => number;
+}
+
+function centsFromStoredAmount(value: string): bigint {
+  if (!/^\d+\.\d{2}$/.test(value)) {
+    throw new Error('stored fiat amount must have two decimals');
+  }
+  return BigInt(value.replace('.', ''));
+}
+
+function storedAmountFromCents(value: bigint): string {
+  const digits = value.toString().padStart(3, '0');
+  return `${digits.slice(0, -2)}.${digits.slice(-2)}`;
+}
+
+function addStoredAmount(left: string | null, right: string | null): string | null {
+  if (left === null || right === null) {
+    return null;
+  }
+  return storedAmountFromCents(centsFromStoredAmount(left) + centsFromStoredAmount(right));
+}
+
+async function resolvePaymentFiat(
+  sats: number,
+  createdAt: Date,
+  supplied: FiatAmounts | null | undefined,
+  options: Required<PaymentFiatStoreOptions>,
+): Promise<FiatAmounts | null> {
+  if (supplied !== undefined) {
+    return supplied;
+  }
+  if (sats === 0) {
+    return null;
+  }
+  const spot = await fetchBtcUsdSpot(options.fetchImpl);
+  if (spot === null) {
+    return null;
+  }
+  const day = createdAt.toISOString().slice(0, 10);
+  try {
+    const crosses = (await options.fiatRates.ensureDays([day], options.now())).get(day) ?? {};
+    return fiatFromSats(sats, spot, crosses);
+  } catch {
+    return fiatFromSats(sats, spot, {});
+  }
+}
 
 function kind1MissingPhotoUrl(event: Record<string, unknown> | null, messageId: string): boolean {
   if (event === null) {
@@ -219,6 +279,16 @@ export interface MessageStore {
   listHidden(limit: number): Promise<MessageRow[]>;
 
   /**
+   * Up to two stored message ids whose string form starts with `prefix`
+   * (case-insensitive). Includes soft-hidden rows (`deletedAt` set). Does
+   * not require a UUID.
+   *
+   * @param prefix - Hex prefix; lowercased, not trimmed.
+   * @returns At most two id strings in stored form.
+   */
+  listIdsByPrefix(prefix: string): Promise<string[]>;
+
+  /**
    * Persist a new message row and optional photo, video, and extra stills.
    *
    * When `photo` or `video` is present, `row.accountId` is not null, and
@@ -254,6 +324,7 @@ export interface MessageStore {
     photo?: ForumPhoto,
     video?: ForumVideo,
     extraPhotos?: readonly ForumPhoto[],
+    fiat?: FiatAmounts | null,
   ): Promise<MessageRow>;
 
   /**
@@ -310,6 +381,18 @@ export interface MessageStore {
    * @returns `{ postCount, replyCount }` (zeros when the account has no live rows).
    */
   countByAccount(accountId: string): Promise<AccountMessageCounts>;
+
+  /**
+   * Uncapped count of live attributed direct children of `parentId`.
+   *
+   * Live = `deletedAt` null. Attributed = `accountId` not null, or
+   * `authorPubkey` is a recorded zapper. Unknown `parentId` is 0. Not
+   * derived from a capped list.
+   *
+   * @param parentId - Parent message id.
+   * @returns Count of matching children (0 when none or the id is unknown).
+   */
+  countAttributedReplies(parentId: string): Promise<number>;
 
   /**
    * Newest live top-level notes for `accountId` (`parentId` null,
@@ -550,8 +633,8 @@ export interface MessageStore {
   /** Mark space ACK (park) or published after public quorum. */
   updatePublishState(id: string, state: NostrPublishState, epoch: string | null): Promise<void>;
 
-  /** Add validated zap sats (idempotent receipt id is the caller's job). */
-  addSats(id: string, extraSats: number): Promise<void>;
+  /** Add validated zap sats and the matching payment-time fiat delta. */
+  addSats(id: string, extraSats: number, delta: FiatAmounts | null): Promise<void>;
 
   /**
    * Claim a lowercase payment hash for one receipt, preserving the claim
@@ -577,7 +660,12 @@ export interface MessageStore {
    * @returns `true` when the receipt was new and sats were added; `false` on
    *   duplicate receipt id (no second add).
    */
-  recordZapReceipt(receiptEventId: string, messageId: string, sats: number): Promise<boolean>;
+  recordZapReceipt(
+    receiptEventId: string,
+    messageId: string,
+    sats: number,
+    delta: FiatAmounts | null,
+  ): Promise<boolean>;
 
   /** Append one POST /messages/:id/invoice attempt (success or failure). */
   recordInvoiceAttempt(row: MessageInvoiceAttempt): Promise<void>;
@@ -976,6 +1064,10 @@ export interface ZapIngestRow {
   outcome: 'indexed' | 'rejected';
   reason: string | null;
   amountSats: number | null;
+  amountUsd?: string | null;
+  amountChf?: string | null;
+  amountEur?: string | null;
+  amountPhp?: string | null;
   receiptPubkey: string | null;
   receipt: Record<string, unknown>;
 }
@@ -1004,6 +1096,10 @@ export const MESSAGE_SCHEMA_SQL: readonly string[] = [
   `ALTER TABLE message ADD COLUMN IF NOT EXISTS event_id text`,
   `ALTER TABLE message ADD COLUMN IF NOT EXISTS nostr_publish_state text NOT NULL DEFAULT 'pending'`,
   `ALTER TABLE message ADD COLUMN IF NOT EXISTS sats bigint NOT NULL DEFAULT 0`,
+  `ALTER TABLE message ADD COLUMN IF NOT EXISTS fiat_usd numeric(20, 2)`,
+  `ALTER TABLE message ADD COLUMN IF NOT EXISTS fiat_chf numeric(20, 2)`,
+  `ALTER TABLE message ADD COLUMN IF NOT EXISTS fiat_eur numeric(20, 2)`,
+  `ALTER TABLE message ADD COLUMN IF NOT EXISTS fiat_php numeric(20, 2)`,
   `ALTER TABLE message ADD COLUMN IF NOT EXISTS nostr_event jsonb`,
   `ALTER TABLE message ADD COLUMN IF NOT EXISTS claimed_until timestamptz`,
   `ALTER TABLE message ADD COLUMN IF NOT EXISTS nostr_first_attempt_at timestamptz`,
@@ -1078,7 +1174,11 @@ export const MESSAGE_SCHEMA_SQL: readonly string[] = [
   amount_sats bigint,
   receipt_pubkey text,
   receipt jsonb NOT NULL
-)`,
+  )`,
+  `ALTER TABLE nostr_zap_ingest ADD COLUMN IF NOT EXISTS fiat_usd numeric(20, 2)`,
+  `ALTER TABLE nostr_zap_ingest ADD COLUMN IF NOT EXISTS fiat_chf numeric(20, 2)`,
+  `ALTER TABLE nostr_zap_ingest ADD COLUMN IF NOT EXISTS fiat_eur numeric(20, 2)`,
+  `ALTER TABLE nostr_zap_ingest ADD COLUMN IF NOT EXISTS fiat_php numeric(20, 2)`,
   `CREATE INDEX IF NOT EXISTS nostr_zap_ingest_receipt_id_idx
   ON nostr_zap_ingest (receipt_id)`,
   `CREATE INDEX IF NOT EXISTS nostr_zap_ingest_created_at_idx
@@ -1199,6 +1299,94 @@ export async function migrateMessageSchema(sql: SqlClient): Promise<void> {
   for (const statement of MESSAGE_SCHEMA_SQL) {
     await sql.execute(statement);
   }
+  await backfillMessageFiat(sql, 'message', 'sats');
+  await backfillMessageFiat(sql, 'nostr_zap_ingest', 'amount_sats');
+}
+
+interface MessageFiatBackfillRow {
+  id: string;
+  created_at: Date | string;
+  amount_sats: number | string | bigint;
+}
+
+interface MessageFiatBackfillRateRow {
+  day: Date | string;
+  usd_per_btc: string | number;
+  quote: string | null;
+  rate: string | number | null;
+}
+
+/** UTC day, or `null` when the stored instant is not a real timestamp. */
+function utcDayOrNull(value: Date | string): string | null {
+  const date = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return null;
+  }
+  return date.toISOString().slice(0, 10);
+}
+
+/** Network-free, idempotent stored-fiat backfill for one message payment table. */
+async function backfillMessageFiat(
+  sql: SqlClient,
+  table: 'message' | 'nostr_zap_ingest',
+  satsColumn: 'sats' | 'amount_sats',
+): Promise<void> {
+  const candidates = await sql.query<MessageFiatBackfillRow>(
+    `SELECT id, created_at, ${satsColumn} AS amount_sats
+     FROM ${table}
+     WHERE ${satsColumn} > 0 AND fiat_usd IS NULL`,
+  );
+  const days = [
+    ...new Set(
+      candidates.flatMap((row) => {
+        const day = utcDayOrNull(row.created_at);
+        return day === null ? [] : [day];
+      }),
+    ),
+  ];
+  if (days.length === 0) {
+    return;
+  }
+  const placeholders = days.map((_, index) => `$${index + 1}::date`).join(', ');
+  const rateRows = await sql.query<MessageFiatBackfillRateRow>(
+    `SELECT b.day::text AS day, b.usd_per_btc::text AS usd_per_btc,
+            f.quote, f.rate::text AS rate
+     FROM btc_usd_daily b
+     LEFT JOIN usd_fiat_daily f ON f.day = b.day AND f.quote IN ('CHF', 'EUR', 'PHP')
+     WHERE b.day IN (${placeholders})`,
+    days,
+  );
+  const rates = new Map<string, { usdPerBtc: string; crosses: Record<string, string> }>();
+  for (const row of rateRows) {
+    const day = String(row.day).slice(0, 10);
+    const value = rates.get(day) ?? { usdPerBtc: String(row.usd_per_btc), crosses: {} };
+    if (row.quote !== null && row.rate !== null) {
+      value.crosses[row.quote] = String(row.rate);
+    }
+    rates.set(day, value);
+  }
+  for (const row of candidates) {
+    const day = utcDayOrNull(row.created_at);
+    if (day === null) {
+      continue;
+    }
+    const rate = rates.get(day);
+    if (rate === undefined) {
+      continue;
+    }
+    const usdCents = satsToUsdCents(Number(row.amount_sats), rate.usdPerBtc);
+    const quote = (code: 'CHF' | 'EUR' | 'PHP'): string | null => {
+      const cross = rate.crosses[code];
+      return cross === undefined ? null : usdCentsToString(usdCentsToFiatCents(usdCents, cross));
+    };
+    await sql.execute(
+      `UPDATE ${table}
+       SET fiat_usd = $2::numeric, fiat_chf = $3::numeric,
+           fiat_eur = $4::numeric, fiat_php = $5::numeric
+       WHERE id = $1 AND fiat_usd IS NULL`,
+      [row.id, usdCentsToString(usdCents), quote('CHF'), quote('EUR'), quote('PHP')],
+    );
+  }
 }
 
 /** Copy a {@link ForumPhoto} so callers cannot mutate store buffers. */
@@ -1240,6 +1428,10 @@ function copyRow(row: MessageRow): MessageRow {
     parentId: row.parentId ?? null,
     authorPubkey: row.authorPubkey ?? null,
     accountId: row.accountId ?? null,
+    amountUsd: row.amountUsd ?? null,
+    amountChf: row.amountChf ?? null,
+    amountEur: row.amountEur ?? null,
+    amountPhp: row.amountPhp ?? null,
     createdAt: new Date(row.createdAt.getTime()),
     deletedAt: deletedAt === null ? null : new Date(deletedAt.getTime()),
     deletedBy: row.deletedBy ?? null,
@@ -1294,6 +1486,10 @@ function zapRequestEventId(zapRequest: Record<string, unknown> | null): string |
 function copyZapIngest(row: ZapIngestRow): ZapIngestRow {
   return {
     ...row,
+    amountUsd: row.amountUsd ?? null,
+    amountChf: row.amountChf ?? null,
+    amountEur: row.amountEur ?? null,
+    amountPhp: row.amountPhp ?? null,
     createdAt: new Date(row.createdAt.getTime()),
     receipt: { ...row.receipt },
   };
@@ -1328,13 +1524,19 @@ export class InMemoryMessageStore implements MessageStore {
   readonly #zapIngests: ZapIngestRow[] = [];
   readonly #zappers = new Map<string, NostrZapperRow>();
   readonly #blockedPubkeys = new Map<string, NostrBlockedPubkeyRow>();
+  readonly #paymentFiat: Required<PaymentFiatStoreOptions>;
 
   /**
    * @param seed - Optional seed rows; copied into private storage. Seeded rows
    * default to `hasPhoto: false` when omitted on the input object.
    */
-  constructor(seed: readonly MessageRow[] = []) {
+  constructor(seed: readonly MessageRow[] = [], options: PaymentFiatStoreOptions = {}) {
     this.#rows = seed.map((row) => copyRow(row));
+    this.#paymentFiat = {
+      fetchImpl: options.fetchImpl ?? globalThis.fetch,
+      fiatRates: options.fiatRates ?? new InMemoryFiatStore(),
+      now: options.now ?? Date.now,
+    };
   }
 
   /** Copy a row and set `hasPhoto` / `photoCount` from the photo maps. */
@@ -1552,6 +1754,27 @@ export class InMemoryMessageStore implements MessageStore {
   }
 
   /**
+   * Up to two stored ids whose string form starts with `prefix`
+   * (case-insensitive), including soft-hidden rows.
+   *
+   * @param prefix - Hex prefix; lowercased, not trimmed.
+   * @returns At most two id strings in stored form.
+   */
+  listIdsByPrefix(prefix: string): Promise<string[]> {
+    const needle = prefix.toLowerCase();
+    const ids: string[] = [];
+    for (const row of this.#rows) {
+      if (row.id.toLowerCase().startsWith(needle)) {
+        ids.push(row.id);
+        if (ids.length === 2) {
+          break;
+        }
+      }
+    }
+    return Promise.resolve(ids);
+  }
+
+  /**
    * Non-null event ids for published/pending signed notes (inbound reply REQ).
    * Top-level only (`parentId` null). Newest `createdAt` then `id` first.
    *
@@ -1595,6 +1818,7 @@ export class InMemoryMessageStore implements MessageStore {
     photo?: ForumPhoto,
     video?: ForumVideo,
     extraPhotos?: readonly ForumPhoto[],
+    fiat?: FiatAmounts | null,
   ): Promise<MessageRow> {
     const existingById = this.#rows.find((item) => item.id === row.id);
     if (existingById !== undefined) {
@@ -1634,6 +1858,7 @@ export class InMemoryMessageStore implements MessageStore {
     }
     const hasPhoto = photo !== undefined;
     const hasVideo = video !== undefined;
+    const snapshot = await resolvePaymentFiat(row.sats, row.createdAt, fiat, this.#paymentFiat);
     const stored = copyRow({
       ...unsignedNostrDefaults(),
       ...row,
@@ -1642,6 +1867,10 @@ export class InMemoryMessageStore implements MessageStore {
       videoContentType: video === undefined ? null : video.contentType,
       contentFp,
       photoCount: (hasPhoto ? 1 : 0) + extras.length,
+      amountUsd: snapshot?.usd ?? null,
+      amountChf: snapshot?.chf ?? null,
+      amountEur: snapshot?.eur ?? null,
+      amountPhp: snapshot?.php ?? null,
     });
     stored.goalSats = stored.parentId !== null ? null : (stored.goalSats ?? null);
     if (stored.parentId !== null) {
@@ -1752,6 +1981,23 @@ export class InMemoryMessageStore implements MessageStore {
       }
     }
     return Promise.resolve({ postCount, replyCount });
+  }
+
+  /**
+   * Uncapped count of live attributed direct children of `parentId`.
+   *
+   * @param parentId - Parent message id.
+   * @returns Count of matching children (0 when none or the id is unknown).
+   */
+  countAttributedReplies(parentId: string): Promise<number> {
+    const replyCount = this.#rows.filter(
+      (child) =>
+        child.parentId === parentId &&
+        child.deletedAt === null &&
+        (child.accountId !== null ||
+          (child.authorPubkey !== null && this.#zappers.has(child.authorPubkey.toLowerCase()))),
+    ).length;
+    return Promise.resolve(replyCount);
   }
 
   /**
@@ -2084,9 +2330,34 @@ export class InMemoryMessageStore implements MessageStore {
     return Promise.resolve();
   }
 
-  addSats(id: string, extraSats: number): Promise<void> {
+  addSats(id: string, extraSats: number, delta: FiatAmounts | null): Promise<void> {
     const row = this.#rows.find((item) => item.id === id);
     if (row !== undefined) {
+      if (extraSats !== 0) {
+        const oldSats = row.sats;
+        const oldUsd = row.amountUsd ?? null;
+        if (oldSats === 0 && oldUsd === null) {
+          row.amountUsd = delta?.usd ?? null;
+          row.amountChf = delta?.chf ?? null;
+          row.amountEur = delta?.eur ?? null;
+          row.amountPhp = delta?.php ?? null;
+        } else if (oldSats > 0 && oldUsd === null) {
+          row.amountUsd = null;
+          row.amountChf = null;
+          row.amountEur = null;
+          row.amountPhp = null;
+        } else if (delta === null) {
+          row.amountUsd = null;
+          row.amountChf = null;
+          row.amountEur = null;
+          row.amountPhp = null;
+        } else {
+          row.amountUsd = addStoredAmount(oldUsd, delta.usd);
+          row.amountChf = addStoredAmount(row.amountChf ?? null, delta.chf);
+          row.amountEur = addStoredAmount(row.amountEur ?? null, delta.eur);
+          row.amountPhp = addStoredAmount(row.amountPhp ?? null, delta.php);
+        }
+      }
       row.sats += extraSats;
     }
     return Promise.resolve();
@@ -2118,6 +2389,7 @@ export class InMemoryMessageStore implements MessageStore {
     receiptEventId: string,
     messageId: string,
     sats: number,
+    delta: FiatAmounts | null,
   ): Promise<boolean> {
     if (this.#receipts.has(receiptEventId)) {
       return false;
@@ -2131,7 +2403,7 @@ export class InMemoryMessageStore implements MessageStore {
       giftReplyId: null,
       comment: '',
     });
-    await this.addSats(messageId, sats);
+    await this.addSats(messageId, sats, delta);
     return true;
   }
 
@@ -2701,6 +2973,10 @@ interface MessageSqlRow {
   event_id?: string | null;
   nostr_publish_state?: string | null;
   sats?: string | number | null;
+  fiat_usd?: string | number | null;
+  fiat_chf?: string | number | null;
+  fiat_eur?: string | number | null;
+  fiat_php?: string | number | null;
   goal_sats?: string | number | null;
   nostr_event?: Record<string, unknown> | string | null;
   claimed_until?: Date | string | null;
@@ -2760,6 +3036,10 @@ function mapMessageRow(row: MessageSqlRow): MessageRow {
         ? state
         : defaults.nostrPublishState,
     sats: Number(row.sats ?? defaults.sats),
+    amountUsd: row.fiat_usd === null || row.fiat_usd === undefined ? null : String(row.fiat_usd),
+    amountChf: row.fiat_chf === null || row.fiat_chf === undefined ? null : String(row.fiat_chf),
+    amountEur: row.fiat_eur === null || row.fiat_eur === undefined ? null : String(row.fiat_eur),
+    amountPhp: row.fiat_php === null || row.fiat_php === undefined ? null : String(row.fiat_php),
     goalSats: row.goal_sats === null || row.goal_sats === undefined ? null : Number(row.goal_sats),
     nostrEvent: normalizeSignedEvent(row.nostr_event) ?? null,
     claimedUntil: optionalDate(row.claimed_until),
@@ -2792,6 +3072,8 @@ const MESSAGE_SELECT_COLUMNS = `id, account_id, name, text, created_at,
               video_content_type,
               parent_id, author_pubkey,
               event_id, nostr_publish_state, sats, goal_sats,
+              fiat_usd::text AS fiat_usd, fiat_chf::text AS fiat_chf,
+              fiat_eur::text AS fiat_eur, fiat_php::text AS fiat_php,
               nostr_event, claimed_until, nostr_first_attempt_at, nostr_publish_epoch, nostr_attempts,
               content_fp, deleted_at, deleted_by`;
 
@@ -2800,12 +3082,18 @@ const MESSAGE_SELECT_COLUMNS = `id, account_id, name, text, created_at,
  */
 export class PostgresMessageStore implements MessageStore {
   readonly #sql: SqlClient;
+  readonly #paymentFiat: Required<PaymentFiatStoreOptions>;
 
   /**
    * @param sql - Parameter-bound SQL client (already migrated).
    */
-  constructor(sql: SqlClient) {
+  constructor(sql: SqlClient, options: PaymentFiatStoreOptions = {}) {
     this.#sql = sql;
+    this.#paymentFiat = {
+      fetchImpl: options.fetchImpl ?? globalThis.fetch,
+      fiatRates: options.fiatRates ?? new InMemoryFiatStore(),
+      now: options.now ?? Date.now,
+    };
   }
 
   /**
@@ -3000,6 +3288,23 @@ export class PostgresMessageStore implements MessageStore {
   }
 
   /**
+   * Up to two stored ids whose `lower(id::text)` starts with `$1`.
+   * Includes soft-hidden rows. Never selects `photo` bytea.
+   *
+   * @param prefix - Hex prefix; lowercased, not trimmed (`$1`).
+   * @returns At most two id strings.
+   */
+  async listIdsByPrefix(prefix: string): Promise<string[]> {
+    const rows = await this.#sql.query<{ id: string }>(
+      `SELECT id::text AS id FROM message
+       WHERE lower(id::text) LIKE $1 || '%'
+       LIMIT 2`,
+      [prefix.toLowerCase()],
+    );
+    return rows.map((row) => row.id);
+  }
+
+  /**
    * Whether `accountId` has at least one live forum row that is not `excludeId`.
    *
    * @param accountId - Author account id (`$1`).
@@ -3063,6 +3368,34 @@ export class PostgresMessageStore implements MessageStore {
       postCount: Number(row?.post_count ?? 0),
       replyCount: Number(row?.reply_count ?? 0),
     };
+  }
+
+  /**
+   * Uncapped count of live attributed direct children of `parentId`
+   * (`parent_id = $1` and `deleted_at IS NULL`, account or recorded zapper
+   * pubkey). Unknown id is 0.
+   *
+   * @param parentId - Parent message id (`$1`).
+   * @returns Count of matching children, mapped via `Number` (0 when none).
+   */
+  async countAttributedReplies(parentId: string): Promise<number> {
+    const rows = await this.#sql.query<{
+      reply_count: string | number | null;
+    }>(
+      `SELECT COUNT(*)::int AS reply_count
+       FROM message child
+       WHERE child.parent_id = $1
+         AND child.deleted_at IS NULL
+         AND (child.account_id IS NOT NULL
+           OR (child.author_pubkey IS NOT NULL
+             AND EXISTS (
+               SELECT 1 FROM nostr_zapper z
+               WHERE z.pubkey = lower(child.author_pubkey))))`,
+      [parentId],
+    );
+    const row = rows[0];
+    const count = row === undefined ? undefined : row.reply_count;
+    return Number(count === null || count === undefined ? 0 : count);
   }
 
   /**
@@ -3163,6 +3496,7 @@ export class PostgresMessageStore implements MessageStore {
     photo?: ForumPhoto,
     video?: ForumVideo,
     extraPhotos?: readonly ForumPhoto[],
+    fiat?: FiatAmounts | null,
   ): Promise<MessageRow> {
     const extras = video !== undefined ? [] : [...(extraPhotos ?? [])];
     if (extras.length > 0 && photo === undefined) {
@@ -3170,6 +3504,7 @@ export class PostgresMessageStore implements MessageStore {
     }
     const hasPhoto = photo !== undefined;
     const hasVideo = video !== undefined;
+    const snapshot = await resolvePaymentFiat(row.sats, row.createdAt, fiat, this.#paymentFiat);
     const contentFp =
       (photo !== undefined || video !== undefined) && row.accountId !== null && row.eventId === null
         ? video !== undefined
@@ -3190,6 +3525,10 @@ export class PostgresMessageStore implements MessageStore {
       videoContentType: video === undefined ? null : video.contentType,
       contentFp,
       photoCount: (hasPhoto ? 1 : 0) + extras.length,
+      amountUsd: snapshot?.usd ?? null,
+      amountChf: snapshot?.chf ?? null,
+      amountEur: snapshot?.eur ?? null,
+      amountPhp: snapshot?.php ?? null,
     });
     stored.goalSats = stored.parentId !== null ? null : (stored.goalSats ?? null);
     if (video !== undefined) {
@@ -3212,15 +3551,21 @@ export class PostgresMessageStore implements MessageStore {
       stored.nostrEvent,
       contentFp,
       stored.goalSats ?? null,
+      stored.amountUsd ?? null,
+      stored.amountChf ?? null,
+      stored.amountEur ?? null,
+      stored.amountPhp ?? null,
     ];
     try {
       if (stored.parentId !== null) {
         const inserted = await this.#sql.query<{ id: string }>(
           `INSERT INTO message (
            id, account_id, name, text, photo, photo_content_type, video_content_type, created_at,
-           nostr_publish_state, sats, parent_id, author_pubkey, event_id, nostr_event, content_fp, goal_sats
+           nostr_publish_state, sats, parent_id, author_pubkey, event_id, nostr_event, content_fp, goal_sats,
+           fiat_usd, fiat_chf, fiat_eur, fiat_php
          )
-         SELECT $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14::jsonb,$15,$16
+         SELECT $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14::jsonb,$15,$16,
+                $17::numeric,$18::numeric,$19::numeric,$20::numeric
          WHERE EXISTS (SELECT 1 FROM message p WHERE p.id = $11 AND p.deleted_at IS NULL)
          RETURNING id`,
           params,
@@ -3236,9 +3581,11 @@ export class PostgresMessageStore implements MessageStore {
         await this.#sql.execute(
           `INSERT INTO message (
            id, account_id, name, text, photo, photo_content_type, video_content_type, created_at,
-           nostr_publish_state, sats, parent_id, author_pubkey, event_id, nostr_event, content_fp, goal_sats
+           nostr_publish_state, sats, parent_id, author_pubkey, event_id, nostr_event, content_fp, goal_sats,
+           fiat_usd, fiat_chf, fiat_eur, fiat_php
          ) VALUES (
-           $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14::jsonb,$15,$16
+           $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14::jsonb,$15,$16,
+           $17::numeric,$18::numeric,$19::numeric,$20::numeric
          )`,
           params,
         );
@@ -3659,8 +4006,48 @@ export class PostgresMessageStore implements MessageStore {
     );
   }
 
-  async addSats(id: string, extraSats: number): Promise<void> {
-    await this.#sql.execute(`UPDATE message SET sats = sats + $2 WHERE id = $1`, [id, extraSats]);
+  async addSats(id: string, extraSats: number, delta: FiatAmounts | null): Promise<void> {
+    await this.#sql.execute(
+      `UPDATE message
+       SET sats = sats + $2,
+           fiat_usd = CASE
+             WHEN $2::bigint = 0 THEN fiat_usd
+             WHEN sats = 0 AND fiat_usd IS NULL THEN $3::numeric
+             WHEN sats > 0 AND fiat_usd IS NULL THEN NULL
+             WHEN $3::numeric IS NULL THEN NULL
+             ELSE fiat_usd + $3::numeric
+           END,
+           fiat_chf = CASE
+             WHEN $2::bigint = 0 THEN fiat_chf
+             WHEN sats = 0 AND fiat_usd IS NULL THEN $4::numeric
+             WHEN sats > 0 AND fiat_usd IS NULL THEN NULL
+             WHEN $3::numeric IS NULL THEN NULL
+             ELSE fiat_chf + $4::numeric
+           END,
+           fiat_eur = CASE
+             WHEN $2::bigint = 0 THEN fiat_eur
+             WHEN sats = 0 AND fiat_usd IS NULL THEN $5::numeric
+             WHEN sats > 0 AND fiat_usd IS NULL THEN NULL
+             WHEN $3::numeric IS NULL THEN NULL
+             ELSE fiat_eur + $5::numeric
+           END,
+           fiat_php = CASE
+             WHEN $2::bigint = 0 THEN fiat_php
+             WHEN sats = 0 AND fiat_usd IS NULL THEN $6::numeric
+             WHEN sats > 0 AND fiat_usd IS NULL THEN NULL
+             WHEN $3::numeric IS NULL THEN NULL
+             ELSE fiat_php + $6::numeric
+           END
+       WHERE id = $1`,
+      [
+        id,
+        extraSats,
+        delta?.usd ?? null,
+        delta?.chf ?? null,
+        delta?.eur ?? null,
+        delta?.php ?? null,
+      ],
+    );
   }
 
   /**
@@ -3694,6 +4081,7 @@ export class PostgresMessageStore implements MessageStore {
     receiptEventId: string,
     messageId: string,
     sats: number,
+    delta: FiatAmounts | null,
   ): Promise<boolean> {
     const inserted = await this.#sql.query<{ event_id: string }>(
       `WITH inserted AS (
@@ -3702,11 +4090,48 @@ export class PostgresMessageStore implements MessageStore {
          ON CONFLICT (event_id) DO NOTHING
          RETURNING event_id, message_id, sats
        )
-       UPDATE message SET sats = message.sats + inserted.sats
+       UPDATE message
+       SET sats = message.sats + inserted.sats,
+           fiat_usd = CASE
+             WHEN inserted.sats = 0 THEN message.fiat_usd
+             WHEN message.sats = 0 AND message.fiat_usd IS NULL THEN $4::numeric
+             WHEN message.sats > 0 AND message.fiat_usd IS NULL THEN NULL
+             WHEN $4::numeric IS NULL THEN NULL
+             ELSE message.fiat_usd + $4::numeric
+           END,
+           fiat_chf = CASE
+             WHEN inserted.sats = 0 THEN message.fiat_chf
+             WHEN message.sats = 0 AND message.fiat_usd IS NULL THEN $5::numeric
+             WHEN message.sats > 0 AND message.fiat_usd IS NULL THEN NULL
+             WHEN $4::numeric IS NULL THEN NULL
+             ELSE message.fiat_chf + $5::numeric
+           END,
+           fiat_eur = CASE
+             WHEN inserted.sats = 0 THEN message.fiat_eur
+             WHEN message.sats = 0 AND message.fiat_usd IS NULL THEN $6::numeric
+             WHEN message.sats > 0 AND message.fiat_usd IS NULL THEN NULL
+             WHEN $4::numeric IS NULL THEN NULL
+             ELSE message.fiat_eur + $6::numeric
+           END,
+           fiat_php = CASE
+             WHEN inserted.sats = 0 THEN message.fiat_php
+             WHEN message.sats = 0 AND message.fiat_usd IS NULL THEN $7::numeric
+             WHEN message.sats > 0 AND message.fiat_usd IS NULL THEN NULL
+             WHEN $4::numeric IS NULL THEN NULL
+             ELSE message.fiat_php + $7::numeric
+           END
        FROM inserted
        WHERE message.id = inserted.message_id
        RETURNING inserted.event_id`,
-      [receiptEventId, messageId, sats],
+      [
+        receiptEventId,
+        messageId,
+        sats,
+        delta?.usd ?? null,
+        delta?.chf ?? null,
+        delta?.eur ?? null,
+        delta?.php ?? null,
+      ],
     );
     return inserted[0] !== undefined;
   }
@@ -3762,9 +4187,10 @@ export class PostgresMessageStore implements MessageStore {
     await this.#sql.execute(
       `INSERT INTO nostr_zap_ingest (
          id, created_at, receipt_id, note_event_id, message_id,
-         outcome, reason, amount_sats, receipt_pubkey, receipt
+         outcome, reason, amount_sats, receipt_pubkey, receipt,
+         fiat_usd, fiat_chf, fiat_eur, fiat_php
        ) VALUES (
-         $1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb
+         $1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb,$11::numeric,$12::numeric,$13::numeric,$14::numeric
        )`,
       [
         row.id,
@@ -3777,6 +4203,10 @@ export class PostgresMessageStore implements MessageStore {
         row.amountSats,
         row.receiptPubkey,
         row.receipt,
+        row.amountUsd ?? null,
+        row.amountChf ?? null,
+        row.amountEur ?? null,
+        row.amountPhp ?? null,
       ],
     );
   }
@@ -3784,7 +4214,9 @@ export class PostgresMessageStore implements MessageStore {
   async listZapIngests(limit: number): Promise<ZapIngestRow[]> {
     const rows = await this.#sql.query<ZapIngestSqlRow>(
       `SELECT id, created_at, receipt_id, note_event_id, message_id,
-              outcome, reason, amount_sats, receipt_pubkey, receipt
+              outcome, reason, amount_sats, receipt_pubkey, receipt,
+              fiat_usd::text AS fiat_usd, fiat_chf::text AS fiat_chf,
+              fiat_eur::text AS fiat_eur, fiat_php::text AS fiat_php
        FROM nostr_zap_ingest
        ORDER BY created_at DESC, id DESC
        LIMIT $1`,
@@ -3888,7 +4320,9 @@ export class PostgresMessageStore implements MessageStore {
   async listIndexedZapIngests(): Promise<ZapIngestRow[]> {
     const rows = await this.#sql.query<ZapIngestSqlRow>(
       `SELECT id, created_at, receipt_id, note_event_id, message_id,
-              outcome, reason, amount_sats, receipt_pubkey, receipt
+              outcome, reason, amount_sats, receipt_pubkey, receipt,
+              fiat_usd::text AS fiat_usd, fiat_chf::text AS fiat_chf,
+              fiat_eur::text AS fiat_eur, fiat_php::text AS fiat_php
        FROM nostr_zap_ingest
        WHERE outcome = 'indexed'
        ORDER BY created_at DESC, id DESC`,
@@ -4368,6 +4802,10 @@ interface ZapIngestSqlRow {
   outcome: string;
   reason: string | null;
   amount_sats: string | number | null;
+  fiat_usd: string | number | null;
+  fiat_chf: string | number | null;
+  fiat_eur: string | number | null;
+  fiat_php: string | number | null;
   receipt_pubkey: string | null;
   receipt: Record<string, unknown> | string;
 }
@@ -4430,6 +4868,10 @@ function mapZapIngestRow(row: ZapIngestSqlRow): ZapIngestRow {
     outcome: row.outcome === 'indexed' ? 'indexed' : 'rejected',
     reason: row.reason,
     amountSats: row.amount_sats === null ? null : Number(row.amount_sats),
+    amountUsd: row.fiat_usd === null ? null : String(row.fiat_usd),
+    amountChf: row.fiat_chf === null ? null : String(row.fiat_chf),
+    amountEur: row.fiat_eur === null ? null : String(row.fiat_eur),
+    amountPhp: row.fiat_php === null ? null : String(row.fiat_php),
     receiptPubkey: row.receipt_pubkey,
     receipt,
   };

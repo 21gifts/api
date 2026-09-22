@@ -1,4 +1,103 @@
 import type { GiftRow } from '@/lib/gift';
+import type { SqlClient } from '@/lib/auth/sql';
+import { satsToUsdCents, usdCentsToFiatCents, usdCentsToString } from '@/lib/money';
+
+const GIFT_FIAT_COLUMNS_SQL: readonly string[] = [
+  `ALTER TABLE gift ADD COLUMN IF NOT EXISTS fiat_usd numeric(20, 2)`,
+  `ALTER TABLE gift ADD COLUMN IF NOT EXISTS fiat_chf numeric(20, 2)`,
+  `ALTER TABLE gift ADD COLUMN IF NOT EXISTS fiat_eur numeric(20, 2)`,
+  `ALTER TABLE gift ADD COLUMN IF NOT EXISTS fiat_php numeric(20, 2)`,
+];
+
+interface GiftBackfillRow {
+  id: number | string;
+  paid_at: Date | string;
+  amount_sats: number | string | bigint;
+}
+
+interface GiftBackfillRateRow {
+  day: Date | string;
+  usd_per_btc: string | number;
+  quote: string | null;
+  rate: string | number | null;
+}
+
+/** UTC day, or `null` when `paid_at` is not a real timestamp. */
+function utcDayOrNull(value: Date | string): string | null {
+  const date = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return null;
+  }
+  return date.toISOString().slice(0, 10);
+}
+
+/**
+ * Add stored fiat columns and backfill priceable legacy gifts from daily tables.
+ *
+ * The backfill is network-free and idempotent: rows whose `fiat_usd` is already
+ * set are never selected or rewritten, and rows without a BTC daily rate remain null.
+ * A `paid_at` that is not a real timestamp is skipped.
+ *
+ * @param sql - Parameter-bound SQL client.
+ */
+export async function migrateGiftSchema(sql: SqlClient): Promise<void> {
+  for (const statement of GIFT_FIAT_COLUMNS_SQL) {
+    await sql.execute(statement);
+  }
+  const candidates = await sql.query<GiftBackfillRow>(
+    `SELECT id, paid_at, amount_sats FROM gift WHERE amount_sats > 0 AND fiat_usd IS NULL`,
+  );
+  const days = [
+    ...new Set(
+      candidates.flatMap((row) => {
+        const day = utcDayOrNull(row.paid_at);
+        return day === null ? [] : [day];
+      }),
+    ),
+  ];
+  if (days.length === 0) {
+    return;
+  }
+  const placeholders = days.map((_, index) => `$${index + 1}::date`).join(', ');
+  const rateRows = await sql.query<GiftBackfillRateRow>(
+    `SELECT b.day::text AS day, b.usd_per_btc::text AS usd_per_btc,
+            f.quote, f.rate::text AS rate
+     FROM btc_usd_daily b
+     LEFT JOIN usd_fiat_daily f ON f.day = b.day AND f.quote IN ('CHF', 'EUR', 'PHP')
+     WHERE b.day IN (${placeholders})`,
+    days,
+  );
+  const rates = new Map<string, { usdPerBtc: string; crosses: Record<string, string> }>();
+  for (const row of rateRows) {
+    const day = String(row.day).slice(0, 10);
+    const value = rates.get(day) ?? { usdPerBtc: String(row.usd_per_btc), crosses: {} };
+    if (row.quote !== null && row.rate !== null) {
+      value.crosses[row.quote] = String(row.rate);
+    }
+    rates.set(day, value);
+  }
+  for (const row of candidates) {
+    const day = utcDayOrNull(row.paid_at);
+    if (day === null) {
+      continue;
+    }
+    const rate = rates.get(day);
+    if (rate === undefined) {
+      continue;
+    }
+    const usdCents = satsToUsdCents(Number(row.amount_sats), rate.usdPerBtc);
+    const quote = (code: 'CHF' | 'EUR' | 'PHP'): string | null => {
+      const cross = rate.crosses[code];
+      return cross === undefined ? null : usdCentsToString(usdCentsToFiatCents(usdCents, cross));
+    };
+    await sql.execute(
+      `UPDATE gift SET fiat_usd = $2::numeric, fiat_chf = $3::numeric,
+         fiat_eur = $4::numeric, fiat_php = $5::numeric
+       WHERE id = $1 AND fiat_usd IS NULL`,
+      [row.id, usdCentsToString(usdCents), quote('CHF'), quote('EUR'), quote('PHP')],
+    );
+  }
+}
 
 /** Operator dump of one `gift` row (every stored column). */
 export interface GiftDebugRow {
@@ -12,6 +111,14 @@ export interface GiftDebugRow {
   currency: string | null;
   /** Whole sats. */
   amountSats: number;
+  /** Stored USD snapshot. */
+  amountUsd: string | null;
+  /** Stored CHF snapshot. */
+  amountChf: string | null;
+  /** Stored EUR snapshot. */
+  amountEur: string | null;
+  /** Stored PHP snapshot. */
+  amountPhp: string | null;
   /** Fee sats, or `null` when the adapter does not store one. */
   feeSats: number | null;
   /** Wallet of Satoshi username. */
@@ -91,6 +198,10 @@ export class InMemoryGiftStore implements GiftStore {
           direction: 'outbound',
           currency: null,
           amountSats: row.amountSats,
+          amountUsd: row.amountUsd ?? null,
+          amountChf: row.amountChf ?? null,
+          amountEur: row.amountEur ?? null,
+          amountPhp: row.amountPhp ?? null,
           feeSats: null,
           recipientWosUser: row.recipientWosUser,
           lightningInvoice: null,
@@ -149,6 +260,10 @@ export class QueryGiftStore implements GiftStore {
           direction: 'outbound',
           currency: null,
           amountSats: row.amountSats,
+          amountUsd: row.amountUsd ?? null,
+          amountChf: row.amountChf ?? null,
+          amountEur: row.amountEur ?? null,
+          amountPhp: row.amountPhp ?? null,
           feeSats: null,
           recipientWosUser: row.recipientWosUser,
           lightningInvoice: null,

@@ -8,13 +8,18 @@ class MockSql implements SqlClient {
   executes: { text: string; params: readonly unknown[] }[] = [];
   queries: { text: string; params: readonly unknown[] }[] = [];
   nextRows: unknown[] = [];
+  nextQueryRows: unknown[][] = [];
   executeError: unknown | undefined;
   queryError: unknown | undefined;
+  queryErrorAfter = 0;
 
   async query<T>(text: string, params: readonly unknown[] = []): Promise<T[]> {
     this.queries.push({ text, params });
-    if (this.queryError !== undefined) {
+    if (this.queryError !== undefined && this.queries.length > this.queryErrorAfter) {
       throw this.queryError;
+    }
+    if (this.nextQueryRows.length > 0) {
+      return this.nextQueryRows.shift() as T[];
     }
     return this.nextRows as T[];
   }
@@ -90,6 +95,23 @@ describe('PostgresAuthStore nostr keys', () => {
     );
     expect(ids).toEqual(['f1', 'm1']);
   });
+
+  it('listIdsByPrefix selects matching account ids', async () => {
+    const sql = new MockSql();
+    sql.nextRows = [{ id: 'D70C4763-3033-43da-817a-2c7de9938f27' }];
+    const listed = await new PostgresAuthStore(sql).listIdsByPrefix('D70C4763');
+    expect(sql.queries[0]?.text).toMatch(/SELECT id::text AS id FROM account/);
+    expect(sql.queries[0]?.text).toMatch(/WHERE lower\(id::text\) LIKE \$1 \|\| '%'/);
+    expect(sql.queries[0]?.text).toMatch(/LIMIT 2/);
+    expect(sql.queries[0]?.params).toEqual(['d70c4763']);
+    expect(listed).toEqual(['D70C4763-3033-43da-817a-2c7de9938f27']);
+  });
+
+  it('listIdsByPrefix returns [] when empty', async () => {
+    const sql = new MockSql();
+    sql.nextRows = [];
+    expect(await new PostgresAuthStore(sql).listIdsByPrefix('d70c4763')).toEqual([]);
+  });
 });
 
 describe('migrateAuthSchema', () => {
@@ -116,6 +138,8 @@ describe('PostgresAuthStore', () => {
     expect(mapped?.location).toBeNull();
     expect(mapped?.notificationLevel).toBe('all');
     expect(mapped?.username).toBeNull();
+    expect(mapped?.walletRequired).toBe(false);
+    expect(mapped?.walletBackupSeenAt).toBeNull();
     const account = await store.getAccount('acc');
     expect(account?.linkingKey).toBe(ACCOUNT_ROW.linking_key);
     expect(account?.viewKey).toBe(VIEW_KEY);
@@ -126,6 +150,8 @@ describe('PostgresAuthStore', () => {
     expect(sql.queries[0]?.text).toMatch(/location/);
     expect(sql.queries[0]?.text).toMatch(/notification_level/);
     expect(sql.queries[0]?.text).toMatch(/username/);
+    expect(sql.queries[0]?.text).toMatch(/wallet_required/);
+    expect(sql.queries[0]?.text).toMatch(/wallet_backup_seen_at/);
     const listed = await store.listAccounts();
     expect(listed).toHaveLength(1);
     expect(sql.queries[2]?.text).toMatch(/ORDER BY created_at ASC, id ASC/);
@@ -152,6 +178,8 @@ describe('PostgresAuthStore', () => {
     const mapped = await new PostgresAuthStore(sql).getAccount('acc');
     expect(mapped?.nameSkippedAt).toBeNull();
     expect(mapped?.lightningAddressSkippedAt).toBeNull();
+    expect(mapped?.walletRequired).toBe(false);
+    expect(mapped?.walletBackupSeenAt).toBeNull();
   });
 
   it('maps non-null skip timestamps', async () => {
@@ -166,6 +194,20 @@ describe('PostgresAuthStore', () => {
     const mapped = await new PostgresAuthStore(sql).getAccount('acc');
     expect(mapped?.nameSkippedAt).toBe(2_000);
     expect(mapped?.lightningAddressSkippedAt).toBe(3_000);
+  });
+
+  it('maps wallet_required and wallet_backup_seen_at', async () => {
+    const sql = new MockSql();
+    sql.nextRows = [
+      {
+        ...ACCOUNT_ROW,
+        wallet_required: true,
+        wallet_backup_seen_at: new Date(4_000),
+      },
+    ];
+    const mapped = await new PostgresAuthStore(sql).getAccount('acc');
+    expect(mapped?.walletRequired).toBe(true);
+    expect(mapped?.walletBackupSeenAt).toBe(4_000);
   });
 
   it('maps a non-null rules_agreed_at timestamp', async () => {
@@ -227,9 +269,15 @@ describe('PostgresAuthStore', () => {
     expect(sql.executes[0]?.params[15]).toBe('all');
     expect(sql.executes[0]?.params[16]).toBeNull();
     expect(sql.executes[0]?.params[17]).toBe(false);
+    expect(sql.executes[0]?.params[18]).toBe(false);
+    expect(sql.executes[0]?.params[19]).toBeNull();
     expect(sql.executes[0]?.text).toMatch(/username/);
     expect(sql.executes[0]?.text).toMatch(/session_refused/);
+    expect(sql.executes[0]?.text).toMatch(/wallet_required/);
+    expect(sql.executes[0]?.text).toMatch(/wallet_backup_seen_at/);
     expect(sql.executes[1]?.text).toMatch(/UPDATE account/);
+    expect(sql.executes[1]?.text).not.toMatch(/wallet_required/);
+    expect(sql.executes[1]?.text).not.toMatch(/wallet_backup_seen_at/);
     expect(sql.executes[1]?.text).toMatch(/forum_laws_dismissed/);
     expect(sql.executes[1]?.text).toMatch(/view_key = \$9/);
     expect(sql.executes[1]?.text).toMatch(/rules_agreed_at/);
@@ -814,6 +862,28 @@ describe('PostgresAuthStore', () => {
     });
   });
 
+  it('maps a replace passkey challenge row', async () => {
+    const sql = new MockSql();
+    sql.nextRows = [
+      {
+        id: 'ch',
+        type: 'replace',
+        challenge: 'c',
+        account_id: 'acc',
+        consumed: false,
+        created_at: new Date(1_000),
+      },
+    ];
+    expect(await new PostgresAuthStore(sql).getPasskeyChallenge('ch')).toEqual({
+      id: 'ch',
+      type: 'replace',
+      challenge: 'c',
+      accountId: 'acc',
+      consumed: false,
+      createdAt: 1_000,
+    });
+  });
+
   it('returns undefined for a missing passkey challenge', async () => {
     expect(await new PostgresAuthStore(new MockSql()).getPasskeyChallenge('x')).toBeUndefined();
   });
@@ -940,7 +1010,7 @@ describe('PostgresAuthStore', () => {
   it('inserts a first passkey only when the account has none', async () => {
     const sql = new MockSql();
     const store = new PostgresAuthStore(sql);
-    sql.nextRows = [{ credential_id: 'cred' }];
+    sql.nextRows = [{ id: 'acc' }];
     expect(
       await store.createFirstPasskeyCredential({
         credentialId: 'cred',
@@ -950,6 +1020,9 @@ describe('PostgresAuthStore', () => {
         createdAt: 1,
       }),
     ).toBe(true);
+    expect(sql.queries[0]?.text).toMatch(/WITH inserted/);
+    expect(sql.queries[0]?.text).toMatch(/wallet_required = TRUE/);
+    expect(sql.queries[0]?.text).toMatch(/SELECT id FROM flagged/);
     expect(sql.queries[0]?.text).toMatch(/WHERE NOT EXISTS/);
     expect(sql.queries[0]?.text).toMatch(/session_refused IS NOT TRUE/);
     sql.nextRows = [];
@@ -992,6 +1065,118 @@ describe('PostgresAuthStore', () => {
         createdAt: 1,
       }),
     ).rejects.toThrow(/disk full/);
+  });
+
+  it('looks up a passkey credential by account id', async () => {
+    const sql = new MockSql();
+    const key = new Uint8Array([1, 2, 3]);
+    sql.nextRows = [
+      {
+        credential_id: 'cred',
+        public_key: key,
+        sign_count: 0,
+        account_id: 'acc',
+        created_at: new Date(1),
+      },
+    ];
+    expect(await new PostgresAuthStore(sql).getPasskeyCredentialForAccount('acc')).toEqual({
+      credentialId: 'cred',
+      publicKey: key,
+      signCount: 0,
+      accountId: 'acc',
+      createdAt: 1,
+    });
+    expect(sql.queries[0]?.text).toMatch(/WHERE account_id = \$1/);
+    sql.nextRows = [];
+    expect(
+      await new PostgresAuthStore(sql).getPasskeyCredentialForAccount('missing'),
+    ).toBeUndefined();
+  });
+
+  it('replaces a passkey credential in one statement', async () => {
+    const sql = new MockSql();
+    const store = new PostgresAuthStore(sql);
+    const next = {
+      credentialId: 'cred-2',
+      publicKey: new Uint8Array([4, 5, 6]),
+      signCount: 0,
+      accountId: 'acc',
+      createdAt: 2,
+    };
+    sql.nextRows = [{ credential_id: 'cred-2' }];
+    expect(await store.replacePasskeyCredential(next)).toBe(true);
+    expect(sql.executes).toEqual([]);
+    expect(sql.queries).toHaveLength(1);
+    const query = sql.queries[0];
+    expect(query?.text).toMatch(/WITH deleted AS/);
+    expect(query?.text).toMatch(/DELETE FROM passkey_credential WHERE account_id = \$4/);
+    expect(query?.text).toMatch(/INSERT INTO passkey_credential/);
+    expect(query?.text).toMatch(/WHERE EXISTS \(SELECT 1 FROM deleted\)/);
+    expect(query?.text).not.toMatch(/ON CONFLICT/);
+    expect(query?.text).toMatch(/RETURNING credential_id/);
+    expect(query?.params).toEqual(['cred-2', new Uint8Array([4, 5, 6]), 0, 'acc', 2]);
+  });
+
+  it('returns false when replace deletes no credential', async () => {
+    const sql = new MockSql();
+    sql.nextRows = [];
+    expect(
+      await new PostgresAuthStore(sql).replacePasskeyCredential({
+        credentialId: 'cred-2',
+        publicKey: new Uint8Array([4]),
+        signCount: 0,
+        accountId: 'acc',
+        createdAt: 2,
+      }),
+    ).toBe(false);
+    expect(sql.executes).toEqual([]);
+    expect(sql.queries).toHaveLength(1);
+  });
+
+  it('returns false when replace insert lands on no row', async () => {
+    const sql = new MockSql();
+    sql.nextRows = [];
+    expect(
+      await new PostgresAuthStore(sql).replacePasskeyCredential({
+        credentialId: 'cred-2',
+        publicKey: new Uint8Array([4]),
+        signCount: 0,
+        accountId: 'acc',
+        createdAt: 2,
+      }),
+    ).toBe(false);
+    expect(sql.executes).toEqual([]);
+    expect(sql.queries[0]?.text).not.toMatch(/ON CONFLICT/);
+  });
+
+  it('returns false when replace insert hits unique_violation', async () => {
+    const sql = new MockSql();
+    sql.queryError = Object.assign(new Error('duplicate key'), { code: '23505' });
+    expect(
+      await new PostgresAuthStore(sql).replacePasskeyCredential({
+        credentialId: 'cred-2',
+        publicKey: new Uint8Array([4]),
+        signCount: 0,
+        accountId: 'acc',
+        createdAt: 2,
+      }),
+    ).toBe(false);
+    expect(sql.executes).toEqual([]);
+  });
+
+  it('rethrows replace errors that are not unique_violation', async () => {
+    const sql = new MockSql();
+    sql.queryError = new Error('disk full');
+    await expect(
+      new PostgresAuthStore(sql).replacePasskeyCredential({
+        credentialId: 'cred-2',
+        publicKey: new Uint8Array([4]),
+        signCount: 0,
+        accountId: 'acc',
+        createdAt: 2,
+      }),
+    ).rejects.toThrow(/disk full/);
+    expect(sql.executes).toEqual([]);
   });
 
   it('returns undefined for a missing passkey credential', async () => {
@@ -1123,5 +1308,45 @@ describe('PostgresAuthStore', () => {
     expect(undef?.record.custody).toBe('custodial');
     expect(undef?.record.ciphertext).toEqual(new Uint8Array());
     expect(undef?.createdAt).toBeNull();
+  });
+
+  it('markWalletBackupSeen writes only when the timestamp is still null', async () => {
+    const sql = new MockSql();
+    sql.nextRows = [{ ...ACCOUNT_ROW, wallet_backup_seen_at: new Date(10) }];
+    const stored = await new PostgresAuthStore(sql).markWalletBackupSeen('acc', 10);
+    expect(sql.queries[0]?.text).toMatch(/wallet_backup_seen_at IS NULL/);
+    expect(stored?.wrote).toBe(true);
+    expect(stored?.account.walletBackupSeenAt).toBe(10);
+  });
+
+  it('markWalletBackupSeen returns undefined when no row is updated', async () => {
+    const sql = new MockSql();
+    sql.nextRows = [];
+    expect(await new PostgresAuthStore(sql).markWalletBackupSeen('missing', 10)).toBeUndefined();
+  });
+
+  it('markWalletBackupSeen returns the existing row when the timestamp is already set', async () => {
+    const sql = new MockSql();
+    sql.nextQueryRows = [[], [{ ...ACCOUNT_ROW, wallet_backup_seen_at: new Date(9) }]];
+    const stored = await new PostgresAuthStore(sql).markWalletBackupSeen('acc', 10);
+    expect(sql.queries).toHaveLength(2);
+    expect(sql.queries[1]?.text).toMatch(/SELECT/);
+    expect(stored?.wrote).toBe(false);
+    expect(stored?.account.walletBackupSeenAt).toBe(9);
+  });
+
+  it('markWalletBackupSeen returns undefined when the written row has no view key', async () => {
+    const sql = new MockSql();
+    sql.nextRows = [{ ...ACCOUNT_ROW, view_key: null, wallet_backup_seen_at: new Date(10) }];
+    expect(await new PostgresAuthStore(sql).markWalletBackupSeen('acc', 10)).toBeUndefined();
+  });
+
+  it('markWalletBackupSeen returns undefined when the existing row has no view key', async () => {
+    const sql = new MockSql();
+    sql.nextQueryRows = [
+      [],
+      [{ ...ACCOUNT_ROW, view_key: null, wallet_backup_seen_at: new Date(9) }],
+    ];
+    expect(await new PostgresAuthStore(sql).markWalletBackupSeen('acc', 10)).toBeUndefined();
   });
 });

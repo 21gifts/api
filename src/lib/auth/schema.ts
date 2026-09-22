@@ -2,8 +2,8 @@
  * Idempotent DDL for the auth tables. Applied once at process boot when
  * `DATABASE_URL` is set. `CREATE TABLE IF NOT EXISTS` is safe to re-run;
  * `ALTER TABLE` backfills `account.name`, nullable `linking_key`,
- * `forum_laws_dismissed`, `rules_agreed_at`, `notification_level`, and
- * `session_refused` on
+ * `forum_laws_dismissed`, `rules_agreed_at`, `notification_level`,
+ * `session_refused`, `wallet_required`, and `wallet_backup_seen_at` on
  * databases created before those columns existed.
  * Drops leftover `auth_challenge` from LNURL-auth.
  */
@@ -83,4 +83,6 @@ export const AUTH_SCHEMA_SQL: readonly string[] = [
   `CREATE UNIQUE INDEX IF NOT EXISTS account_username_uidx
     ON account (lower(trim(username))) WHERE username IS NOT NULL AND trim(username) <> ''`,
   `ALTER TABLE account ADD COLUMN IF NOT EXISTS session_refused boolean NOT NULL DEFAULT false`,
+  `ALTER TABLE account ADD COLUMN IF NOT EXISTS wallet_required boolean NOT NULL DEFAULT false`,
+  `ALTER TABLE account ADD COLUMN IF NOT EXISTS wallet_backup_seen_at timestamptz`,
 ];

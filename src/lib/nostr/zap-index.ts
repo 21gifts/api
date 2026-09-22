@@ -3,6 +3,7 @@ import { paymentHashFromReceipt } from '@/lib/account-activity';
 import { requireAction } from '@/lib/auth/requirements';
 import type { Account, AuthStore } from '@/lib/auth/store';
 import { decodeBolt11, inspectBolt11 } from '@/lib/bolt11';
+import { fetchBtcUsdSpot } from '@/lib/btc-usd-spot';
 import { LN_ADDRESS_CACHE_TTL_MS } from '@/lib/config';
 import { unsignedConversationDefaults } from '@/lib/conversation';
 import type { ConversationStore } from '@/lib/conversation-store';
@@ -16,7 +17,9 @@ import {
   type MessageRow,
 } from '@/lib/message';
 import type { MessageInvoiceAttempt, MessageStore, ZapIngestRow } from '@/lib/message-store';
+import { fiatFromSats, type FiatAmounts, type FiatCrossRates } from '@/lib/money';
 import type { FetchFn } from '@/lib/lnurlp';
+import type { FiatRateBook } from '@/lib/usd-fiat-store';
 import { resolveLnurlp } from '@/lib/lnurlp';
 import type { NostrEventFrame, NostrQuerier } from '@/lib/nostr/query';
 import {
@@ -430,6 +433,63 @@ function zapIngestCatchFields(error: unknown): LogFields {
  *
  * @param args - Outcome fields plus the receipt frame.
  */
+/**
+ * One Coinbase spot for a new zap. Null spot or a cross-book failure is null,
+ * never a throw.
+ *
+ * @param args - Sats, instant, fetch, optional rate book, and clock.
+ * @returns Payment-time snapshot, or `null`.
+ */
+async function snapshotSatsFiat(args: {
+  sats: number;
+  at: Date;
+  fetchImpl: FetchFn;
+  now: () => number;
+  fiatRates?: FiatRateBook;
+}): Promise<FiatAmounts | null> {
+  const spot = await fetchBtcUsdSpot(args.fetchImpl);
+  if (spot === null) {
+    return null;
+  }
+  let crosses: FiatCrossRates = {};
+  if (args.fiatRates !== undefined) {
+    try {
+      const day = args.at.toISOString().slice(0, 10);
+      const found = (await args.fiatRates.ensureDays([day], args.now())).get(day);
+      if (found !== undefined) {
+        crosses = found;
+      }
+    } catch {
+      crosses = {};
+    }
+  }
+  try {
+    return fiatFromSats(args.sats, spot, crosses);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Attach a non-null snapshot onto an ingest row. Null leaves the row unchanged.
+ *
+ * @param row - Ingest row.
+ * @param fiat - Snapshot, or `null`.
+ * @returns The same row, or a copy with amount fields.
+ */
+function applyIngestFiat(row: ZapIngestRow, fiat: FiatAmounts | null): ZapIngestRow {
+  if (fiat === null) {
+    return row;
+  }
+  return {
+    ...row,
+    amountUsd: fiat.usd,
+    amountChf: fiat.chf,
+    amountEur: fiat.eur,
+    amountPhp: fiat.php,
+  };
+}
+
 function zapIngestRow(args: {
   receiptId: string;
   noteEventId: string | null;
@@ -492,6 +552,10 @@ export async function settleInvoiceManually(args: {
   postLimiter?: PostRateLimiter;
   fundingStore?: FundingStore;
   conversations?: ConversationStore;
+  /** Spot fetch. Default `fetch`. A failure does not fail the settle. */
+  fetchImpl?: FetchFn;
+  /** Optional crosses for the payment-time snapshot. */
+  fiatRates?: FiatRateBook;
 }): Promise<SettleInvoiceResult> {
   const paymentHash = normalizeHex32(args.paymentHash);
   if (paymentHash === null) {
@@ -548,7 +612,18 @@ export async function settleInvoiceManually(args: {
   if (!(await args.store.claimZapPayment(paymentHash, receiptId, new Date(args.now())))) {
     return { ok: false, reason: 'duplicate' };
   }
-  if (!resumed && !(await args.store.recordZapReceipt(receiptId, message.id, invoice.amountSats))) {
+  const paidAt = new Date(args.now());
+  const delta = await snapshotSatsFiat({
+    sats: invoice.amountSats,
+    at: paidAt,
+    fetchImpl: args.fetchImpl ?? fetch,
+    now: args.now,
+    ...(args.fiatRates === undefined ? {} : { fiatRates: args.fiatRates }),
+  });
+  if (
+    !resumed &&
+    !(await args.store.recordZapReceipt(receiptId, message.id, invoice.amountSats, delta))
+  ) {
     return { ok: false, reason: 'duplicate' };
   }
 
@@ -573,16 +648,19 @@ export async function settleInvoiceManually(args: {
     sig: '',
     tags,
   } satisfies Record<string, unknown>;
-  const ingest = zapIngestRow({
-    receiptId,
-    noteEventId: message.eventId,
-    messageId: message.id,
-    outcome: 'indexed',
-    reason: null,
-    amountSats: invoice.amountSats,
-    receiptPubkey: null,
-    receipt,
-  });
+  const ingest = applyIngestFiat(
+    zapIngestRow({
+      receiptId,
+      noteEventId: message.eventId,
+      messageId: message.id,
+      outcome: 'indexed',
+      reason: null,
+      amountSats: invoice.amountSats,
+      receiptPubkey: null,
+      receipt,
+    }),
+    delta,
+  );
   await args.store.recordZapIngest(ingest);
   decisionsFor(args.store).set(receiptId, decisionKey(ingest.outcome, ingest.reason));
   logEvent('nostr.zap.settled_manually', { messageId: message.id, sats: invoice.amountSats });
@@ -675,6 +753,12 @@ export async function indexZapReceipt(args: {
   /** Full kind:9735 frame for debug ingest rows. */
   receiptEvent?: Record<string, unknown>;
   noteEventId?: string | null;
+  /** Spot fetch. Default `fetch`. A failure does not reject the receipt. */
+  fetchImpl?: FetchFn;
+  /** Optional crosses for the one spot taken for this zap. */
+  fiatRates?: FiatRateBook;
+  /** Clock for the cross day. Default `Date.now`. */
+  now?: () => number;
 }): Promise<boolean> {
   const receipt =
     args.receiptEvent ??
@@ -723,7 +807,20 @@ export async function indexZapReceipt(args: {
     );
     return false;
   }
-  const added = await args.store.recordZapReceipt(args.receipt.id, args.messageId, args.amountSats);
+  const now = args.now ?? Date.now;
+  const delta = await snapshotSatsFiat({
+    sats: args.amountSats,
+    at: new Date(now()),
+    fetchImpl: args.fetchImpl ?? fetch,
+    now,
+    ...(args.fiatRates === undefined ? {} : { fiatRates: args.fiatRates }),
+  });
+  const added = await args.store.recordZapReceipt(
+    args.receipt.id,
+    args.messageId,
+    args.amountSats,
+    delta,
+  );
   if (!added) {
     await persistZapIngest(
       args.store,
@@ -743,16 +840,19 @@ export async function indexZapReceipt(args: {
   logEvent('nostr.zap.indexed', { messageId: args.messageId, sats: args.amountSats });
   await persistZapIngest(
     args.store,
-    zapIngestRow({
-      receiptId: args.receipt.id,
-      noteEventId,
-      messageId: args.messageId,
-      outcome: 'indexed',
-      reason: null,
-      amountSats: args.amountSats,
-      receiptPubkey: args.receipt.pubkey,
-      receipt,
-    }),
+    applyIngestFiat(
+      zapIngestRow({
+        receiptId: args.receipt.id,
+        noteEventId,
+        messageId: args.messageId,
+        outcome: 'indexed',
+        reason: null,
+        amountSats: args.amountSats,
+        receiptPubkey: args.receipt.pubkey,
+        receipt,
+      }),
+      delta,
+    ),
   );
   return true;
 }
@@ -824,6 +924,8 @@ export async function indexOpenZapReceipts(args: {
   postLimiter?: PostRateLimiter;
   /** Optional funding grants; compose spend pings use the same `eligibleToday` gate as `POST /messages`. */
   fundingStore?: FundingStore;
+  /** Optional crosses for the one spot taken per newly indexed zap. */
+  fiatRates?: FiatRateBook;
 }): Promise<void> {
   if (args.urls.length === 0) {
     await retryGiftReplies(args);
@@ -955,6 +1057,8 @@ async function ingestOneReceipt(
     spendPing?: SpendPing;
     postLimiter?: PostRateLimiter;
     fundingStore?: FundingStore;
+    /** Optional crosses. Absent means the spot snapshot uses empty crosses. */
+    fiatRates?: FiatRateBook;
   },
 ): Promise<void> {
   if (event.kind !== 9735) {
@@ -1129,24 +1233,35 @@ async function ingestOneReceipt(
       );
       return;
     }
+    const conversationDelta = await snapshotSatsFiat({
+      sats: conversationInvoice.amountSats,
+      at: new Date(args.now()),
+      fetchImpl: args.fetchImpl,
+      now: args.now,
+      ...(args.fiatRates === undefined ? {} : { fiatRates: args.fiatRates }),
+    });
     await appendConversationGift({
       conversations: args.conversations,
       auth: args.auth,
       now: args.now,
       invoice: conversationInvoice,
+      fiat: conversationDelta,
     });
     await persistZapIngest(
       args.store,
-      zapIngestRow({
-        receiptId: event.id,
-        noteEventId: null,
-        messageId: null,
-        outcome: 'indexed',
-        reason: null,
-        amountSats: conversationInvoice.amountSats,
-        receiptPubkey: event.pubkey,
-        receipt,
-      }),
+      applyIngestFiat(
+        zapIngestRow({
+          receiptId: event.id,
+          noteEventId: null,
+          messageId: null,
+          outcome: 'indexed',
+          reason: null,
+          amountSats: conversationInvoice.amountSats,
+          receiptPubkey: event.pubkey,
+          receipt,
+        }),
+        conversationDelta,
+      ),
     );
     return;
   }
@@ -1368,6 +1483,9 @@ async function ingestOneReceipt(
     amountSats,
     receiptEvent: receipt,
     noteEventId,
+    fetchImpl: args.fetchImpl,
+    now: args.now,
+    ...(args.fiatRates === undefined ? {} : { fiatRates: args.fiatRates }),
   });
   if (indexed && row.accountId !== null) {
     let payer: Account | undefined;
@@ -2085,6 +2203,7 @@ async function appendConversationGift(args: {
   auth: AuthStore;
   now: () => number;
   invoice: MessageInvoiceAttempt;
+  fiat: FiatAmounts | null;
 }): Promise<void> {
   /* v8 ignore start -- conversationInvoiceFromReceipt already requires both ids */
   const conversationId = args.invoice.conversationId;
@@ -2103,20 +2222,25 @@ async function appendConversationGift(args: {
   const nameTrim = payer?.name?.trim() ?? '';
   const name = nameTrim !== '' ? nameTrim : truncatePubkeyDisplay(pubkey === '' ? 'npub' : pubkey);
   const text = commentFromZapRequest(args.invoice.zapRequest);
-  await args.conversations.appendMessage({
-    id: conversationMessageId,
-    conversationId,
-    text,
-    createdAt: new Date(args.now()),
-    senderAccountId: args.invoice.payerAccountId,
-    senderPubkey: pubkey === '' ? null : pubkey,
-    name,
-    ...unsignedConversationDefaults(),
-    actorAccountId: args.invoice.payerAccountId,
-    actorName: name,
-    sats: args.invoice.amountSats,
-    nostrPublishState: text === '' ? 'skipped' : 'pending',
-  });
+  await args.conversations.appendMessage(
+    {
+      id: conversationMessageId,
+      conversationId,
+      text,
+      createdAt: new Date(args.now()),
+      senderAccountId: args.invoice.payerAccountId,
+      senderPubkey: pubkey === '' ? null : pubkey,
+      name,
+      ...unsignedConversationDefaults(),
+      actorAccountId: args.invoice.payerAccountId,
+      actorName: name,
+      sats: args.invoice.amountSats,
+      nostrPublishState: text === '' ? 'skipped' : 'pending',
+    },
+    undefined,
+    undefined,
+    args.fiat,
+  );
 }
 
 /**

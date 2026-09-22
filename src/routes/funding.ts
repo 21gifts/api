@@ -1,5 +1,6 @@
 import { Hono } from 'hono';
 import { z } from 'zod';
+import { serializeOwnerAccountWithPosts } from '@/lib/auth/account-json';
 import { resolveSession } from '@/lib/auth/service';
 import type { Account, AuthStore } from '@/lib/auth/store';
 import {
@@ -170,6 +171,17 @@ export function fundingRoutes(deps: FundingRouteDeps): Hono {
       }
       const nowMs = deps.now();
       try {
+        const owner = await serializeOwnerAccountWithPosts(caller, deps.messageStore);
+        if (owner.aboutMe === null) {
+          return c.json({ error: 'About me is required' }, 400);
+        }
+        if (!owner.aboutMeHasPhoto) {
+          return c.json({ error: 'About me photo is required' }, 400);
+        }
+        const location = caller.location;
+        if (location === null || location.trim() === '') {
+          return c.json({ error: 'Location is required' }, 400);
+        }
         const observed = await loadGrantEffective(deps.fundingStore, caller.id, nowMs);
         const status = effectiveStatus(observed, nowMs);
         if (status === 'pending' || status === 'trial' || status === 'admitted') {

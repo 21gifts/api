@@ -49,22 +49,30 @@ clears the token; a transient failure does not.
 
 Login is passkey-only. LNURL-auth has been removed.
 
+A signed-in member can replace their one passkey (`POST /auth/passkey/replace/begin`
+then `…/finish` with Bearer) so a PRF-capable authenticator can own the account.
+The existing session stays valid. The api never sees PRF output or a mnemonic.
+
 The signed-in view currently lives on `/login` — there is no separate
 `/profile` route yet. It shows a name form, a username form, a Lightning
 Address form, and **Sign out**. Name and Lightning Address are each
 skippable via `POST /me/setup/skip`. Username cannot skip; the app sets
 the handle with `POST /me/username`. Living-room rules stay required.
+New passkey accounts must confirm the recovery phrase first
+(`POST /me/wallet-backup-seen`); that step cannot skip.
 
-`GET /me` `setup` order is name, then username (unskippable), then
+`GET /me` `setup` order is wallet (when `walletRequired` and the backup
+is unseen; not skippable), then name, then username (unskippable), then
 lightning-address, then rules. When username is still blank,
 `POST /me/name` auto-assigns `usernameFromDisplayName` if that handle is
 free; a collision or uniqueness race leaves username null and `setup` at
 username.
 
-After name/skip, username, and address/skip, the app records living-room
-rules agreement via `POST /me/rules-agreement`. `GET /me` carries
-`setup` (wizard; skip counts as done for name and Lightning Address, not
-username), `missing` (facts; skip does not), and `rulesAgreedAt` (epoch
+After wallet backup (new accounts), name/skip, username, and address/skip,
+the app records living-room rules agreement via `POST /me/rules-agreement`.
+`GET /me` carries `setup` (wizard; skip counts as done for name and
+Lightning Address, not username or wallet), `missing` (facts; skip does
+not), `walletRequired`, `walletBackupSeenAt`, and `rulesAgreedAt` (epoch
 ms of the first agreement, or `null`).
 
 No email, no password. Losing the passkey (and platform sync) loses the
@@ -72,7 +80,9 @@ account.
 
 HTTP cited: `/auth/passkey/register/begin`, `/auth/passkey/register/finish`,
 `/auth/passkey/authenticate/begin`, `/auth/passkey/authenticate/finish`,
-`/me`, `/me/setup/skip`, `/me/name`, `/me/username`, `/me/rules-agreement`.
+`/auth/passkey/replace/begin`, `/auth/passkey/replace/finish`,
+`/me`, `/me/wallet-backup-seen`, `/me/setup/skip`, `/me/name`, `/me/username`,
+`/me/rules-agreement`.
 
 ---
 
@@ -88,9 +98,11 @@ or unlink a LUD-16 Lightning Address:
   leaves the address **unverified**. Unreachable or non-zap addresses are
   rejected and not stored.
 - `DELETE /me/lightning-address` — unlink (also clears the LN skip timestamp;
-  does not clear `username`). After unlink, `setup` is `username` if the handle
-  is blank; `setup` is `lightning-address` only when name is done or skipped
-  **and** username is set
+  does not clear `username`). After unlink, `setup` stays `wallet` when
+  `walletRequired` is true and backup is unseen; otherwise `setup` is
+  `username` if the handle is blank; `setup` is `lightning-address` only when
+  wallet is done or not required, name is done or skipped, **and** username is
+  set
 
 Proof-of-control of the linked Lightning Address is the flag
 `lightningAddressVerified` (not the forum role **Verified**):
@@ -348,10 +360,10 @@ enqueues (does not send inline) one Web Push to every remaining bell subscriber
 (an account with at least one `push_subscription`) except the actor. External
 replies use the targeted exception below:
 
-- a **forum post** payload when someone else posts (`title` New post on 21.gifts, `url: /notifications`, `tag: forum_post:<postId>`)
-- a **reply** payload when someone replies (`title` New reply on 21.gifts, `url: /notifications`, `tag: forum_reply:<replyId>`). Damus-only parents still fan out; a self-reply skips only the actor. That includes an unpaid `POST /messages` reply and an inbound member reply the worker persisted.
-- an **external reply** payload only for the parent note's member author, never a broadcast, and only when numeric `created_at` is at most one hour old and no more than ten minutes in the future. Missing/non-numeric, farther-future, and older event times do not notify. Its notification actor is the generic "Someone", not the reply's own name. The persisted row remains visible in every suppressed-notification case.
-- a **zap** payload when a zap receipt is newly indexed (`title` Bitcoin on 21.gifts, `body` Someone sent sats., `url: /notifications`, `tag: zap:<id>`). The note author is notified unless they are the payer. A platform-account payer does not notify anyone.
+- a **forum post** payload when someone else posts (title is the author display name, or Someone when blank; the body is the note text on one line, cut at 180 code points, or the photo/video sentence when the text is empty; `url: /notifications`, `tag: forum_post:<postId>`)
+- a **reply** payload when someone replies (title and body follow the post rules; `url: /notifications`, `tag: forum_reply:<replyId>`). Damus-only parents still fan out; a self-reply skips only the actor. That includes an unpaid `POST /messages` reply and an inbound member reply the worker persisted.
+- an **external reply** payload only for the parent note's member author, never a broadcast, and only when numeric `created_at` is at most one hour old and no more than ten minutes in the future. Missing/non-numeric, farther-future, and older event times do not notify. Its notification actor and push title stay the generic "Someone", not the reply's own name. The body is the reply text on one line, cut at 180 code points, or the photo/video sentence when the text is empty. The persisted row remains visible in every suppressed-notification case.
+- a **zap** payload when a zap receipt is newly indexed (title is the payer name, or Someone when blank; body is `Sent <amount> sats.`; `url: /notifications`, `tag: zap:<id>`). The note author is notified unless they are the payer. A platform-account payer does not notify anyone.
 
 Missing `pushStore` still writes in-app rows. If persist or enqueue
 fails, the living-room write still succeeds (HTTP 200 on `POST /messages`;

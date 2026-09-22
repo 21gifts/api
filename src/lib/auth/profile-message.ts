@@ -1,10 +1,7 @@
 import type { Account, AuthStore } from '@/lib/auth/store';
-import { logEvent } from '@/lib/log';
 import { unsignedNostrDefaults, type MessageRow } from '@/lib/message';
 import type { MessageStore } from '@/lib/message-store';
-import { inboxUnreadCountFor } from '@/lib/conversation-push';
 import type { ConversationStore } from '@/lib/conversation-store';
-import { notifyForumPost } from '@/lib/notification';
 import type { NotificationStore } from '@/lib/notification-store';
 import type { PushStore } from '@/lib/push-store';
 
@@ -24,7 +21,8 @@ import type { PushStore } from '@/lib/push-store';
  * winner when one exists. A hidden winner is missing: the created live note
  * is kept and `profileMessageId` is claimed onto it. A failed insert returns
  * the input account (name may still be persisted by the caller; worker
- * backfill creates the missing note once LN is linked).
+ * backfill creates the missing note once LN is linked). A won insert does
+ * not fan out `notifyForumPost`: the note text is the display name.
  *
  * @param args - Auth store, message store, account snapshot, clock, optional
  *   push, notification, and conversation stores.
@@ -122,20 +120,5 @@ export async function ensureProfileMessage(args: {
     return confirmed === undefined ? live : confirmed;
   }
 
-  try {
-    await notifyForumPost({
-      account: args.account,
-      created,
-      auth: args.auth,
-      ...(args.notifications === undefined ? {} : { notifications: args.notifications }),
-      ...(args.pushStore === undefined ? {} : { pushStore: args.pushStore }),
-      /* v8 ignore next 3 -- createApp always injects conversationStore */
-      ...(args.conversations === undefined
-        ? {}
-        : { inboxUnreadCount: inboxUnreadCountFor(args.conversations, args.auth) }),
-    });
-  } catch {
-    logEvent('push.enqueue.failed');
-  }
   return { ...live, profileMessageId: created.id };
 }
