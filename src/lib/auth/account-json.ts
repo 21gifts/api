@@ -102,8 +102,8 @@ export interface OwnerAccountResponse extends AccountResponse {
    */
   funding: OwnerFundingJson | null;
   /**
-   * True when the owner must complete the wallet setup step. Default
-   * false when omitted in storage (existing members).
+   * True when a recovery phrase is required. Does not set `setup` to
+   * `wallet`. Default false when omitted in storage (existing members).
    */
   walletRequired: boolean;
   /**
@@ -216,7 +216,7 @@ export interface DebugAccountResponse extends AccountResponse {
   profileMessageId: string | null;
   /** Owner fan-out filter (`all` \| `active` \| `mentions`). */
   notificationLevel: NotificationLevel;
-  /** True when the owner must complete the wallet setup step. */
+  /** True when a recovery phrase is required. Does not set `setup` to `wallet`. */
   walletRequired: boolean;
   /** Epoch ms when the recovery phrase was shown, or `null`. */
   walletBackupSeenAt: number | null;
