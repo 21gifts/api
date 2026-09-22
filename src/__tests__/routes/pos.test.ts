@@ -291,11 +291,12 @@ describe('POS routes', () => {
     });
     expect(other.status).toBe(500);
 
-    const notAnError = await routes(() => Promise.reject('nope')).request('/pos', {
-      method: 'POST',
-      headers: AUTH,
-      body: '{"amountSats":21}',
-    });
-    expect(notAnError.status).toBe(500);
+    await expect(
+      routes(() => Promise.reject('nope')).request('/pos', {
+        method: 'POST',
+        headers: AUTH,
+        body: '{"amountSats":21}',
+      }),
+    ).rejects.toBe('nope');
   });
 });
