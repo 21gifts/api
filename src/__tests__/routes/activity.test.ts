@@ -255,7 +255,7 @@ describe('account activity routes', () => {
   });
 
   it('returns 503 when a remainder day has no FX rate', async () => {
-    const authStore = await seedSession();
+    const authStore = await seedSession({ lightningAddress: 'ada@walletofsatoshi.com' });
     const messageStore = new InMemoryMessageStore([
       {
         id: 'cccccccccccccccc-cccc-4ccc-8ccc-cccccccccccc'.slice(0, 36),
@@ -269,7 +269,7 @@ describe('account activity routes', () => {
       },
     ]);
     const giftStore = new InMemoryGiftStore([
-      { paidAt: new Date(now()), amountSats: 21, recipientWosUser: 'zap' },
+      { paidAt: new Date(now()), amountSats: 21, recipientWosUser: 'ada' },
     ]);
     const res = await createApp({ authStore, messageStore, giftStore, now }).request(
       '/me/activity',
