@@ -17,6 +17,7 @@ import {
 } from '@/lib/gift';
 import type { GiftStore } from '@/lib/gift-store';
 import { logEvent } from '@/lib/log';
+import { usdCentsToString } from '@/lib/money';
 import type { MessageInvoiceAttempt, MessageStore, ZapIngestRow } from '@/lib/message-store';
 import { InMemoryFiatStore, type FiatCross, type FiatRateBook } from '@/lib/usd-fiat-store';
 
@@ -192,19 +193,29 @@ export async function buildAccountActivity(args: {
     };
   }
 
-  const days = [
-    ...new Set(givenRows.concat(receivedRows).map((row) => row.paidAt.toISOString().slice(0, 10))),
+  const legacyDays = [
+    ...new Set(
+      givenRows
+        .concat(receivedRows)
+        .filter((row) => row.amountUsd === undefined)
+        .map((row) => row.paidAt.toISOString().slice(0, 10)),
+    ),
   ];
-  const rateMap = await args.rates.ensureDays(days, args.now());
-  for (const day of days) {
-    if (!rateMap.has(day)) {
-      throw new Error('fx.rate.missing');
+  let rateMap: ReadonlyMap<string, string> = new Map();
+  if (legacyDays.length > 0) {
+    rateMap = await args.rates.ensureDays(legacyDays, args.now());
+    for (const day of legacyDays) {
+      if (!rateMap.has(day)) {
+        throw new Error('fx.rate.missing');
+      }
     }
   }
 
   let fiatMap: ReadonlyMap<string, FiatCross> = new Map();
   try {
-    fiatMap = await fiatRates.ensureDays(days, args.now());
+    if (legacyDays.length > 0) {
+      fiatMap = await fiatRates.ensureDays(legacyDays, args.now());
+    }
   } catch {
     logEvent('account.activity.fiat_failed');
   }
@@ -252,6 +263,7 @@ async function receivedZapsForAccount(
   const seenReceipts = new Set<string>();
   const rows: GiftRow[] = [];
   const creditedByMessageId = new Map<string, number>();
+  const creditedFiatByMessageId = new Map<string, FiatCents>();
   const recipientWosUser = recipientHandle(account.lightningAddress);
   for (const ingest of oldestFirst) {
     if (seenReceipts.has(ingest.receiptId)) {
@@ -271,9 +283,12 @@ async function receivedZapsForAccount(
       paidAt: ingest.createdAt,
       amountSats: ingest.amountSats,
       recipientWosUser,
+      ...storedGiftFiat(ingest),
     });
     const prev = creditedByMessageId.get(ingest.messageId) ?? 0;
     creditedByMessageId.set(ingest.messageId, prev + ingest.amountSats);
+    const prevFiat = creditedFiatByMessageId.get(ingest.messageId) ?? ZERO_FIAT;
+    creditedFiatByMessageId.set(ingest.messageId, addFiat(prevFiat, fiatCents(ingest)));
   }
   for (const message of authored) {
     if (message.parentId !== null) {
@@ -284,10 +299,15 @@ async function receivedZapsForAccount(
     }
     const credited = creditedByMessageId.get(message.id) ?? 0;
     if (message.sats > credited) {
+      const fiat =
+        credited === 0
+          ? storedGiftFiat(message)
+          : fiatFromCents(subtractFiat(fiatCents(message), creditedFiatByMessageId.get(message.id) ?? ZERO_FIAT));
       rows.push({
         paidAt: message.createdAt,
         amountSats: message.sats - credited,
         recipientWosUser,
+        ...fiat,
       });
     }
   }
@@ -341,6 +361,85 @@ function zapGiftRow(invoice: MessageInvoiceAttempt, ingest: ZapIngestRow): GiftR
     paidAt: ingest.createdAt,
     amountSats: ingest.amountSats ?? invoice.amountSats,
     recipientWosUser: recipientHandle(invoice.lightningAddress),
+    ...storedGiftFiat(ingest),
+  };
+}
+
+/** Four stored cent totals. `null` means that currency cannot be summed. */
+interface FiatCents {
+  usd: number | null;
+  chf: number | null;
+  eur: number | null;
+  php: number | null;
+}
+
+const ZERO_FIAT: FiatCents = { usd: 0, chf: 0, eur: 0, php: 0 };
+
+/** Parse a stored two-decimal amount. Anything else is missing. */
+function storedCents(value: string | null | undefined): number | null {
+  if (value == null || !/^-?\d+\.\d{2}$/.test(value)) {
+    return null;
+  }
+  const negative = value.startsWith('-');
+  const cents = Number(value.replace('-', '').replace('.', ''));
+  return negative ? -cents : cents;
+}
+
+function fiatCents(row: {
+  amountUsd?: string | null;
+  amountChf?: string | null;
+  amountEur?: string | null;
+  amountPhp?: string | null;
+}): FiatCents {
+  return {
+    usd: storedCents(row.amountUsd),
+    chf: storedCents(row.amountChf),
+    eur: storedCents(row.amountEur),
+    php: storedCents(row.amountPhp),
+  };
+}
+
+function addFiat(left: FiatCents, right: FiatCents): FiatCents {
+  return {
+    usd: left.usd === null || right.usd === null ? null : left.usd + right.usd,
+    chf: left.chf === null || right.chf === null ? null : left.chf + right.chf,
+    eur: left.eur === null || right.eur === null ? null : left.eur + right.eur,
+    php: left.php === null || right.php === null ? null : left.php + right.php,
+  };
+}
+
+function subtractFiat(left: FiatCents, right: FiatCents): FiatCents {
+  return {
+    usd: left.usd === null || right.usd === null ? null : left.usd - right.usd,
+    chf: left.chf === null || right.chf === null ? null : left.chf - right.chf,
+    eur: left.eur === null || right.eur === null ? null : left.eur - right.eur,
+    php: left.php === null || right.php === null ? null : left.php - right.php,
+  };
+}
+
+function fiatFromCents(cents: FiatCents): Pick<GiftRow, 'amountUsd' | 'amountChf' | 'amountEur' | 'amountPhp'> {
+  const text = (value: number | null): string | null =>
+    value === null || value < 0 ? null : usdCentsToString(value);
+  return {
+    amountUsd: text(cents.usd),
+    amountChf: text(cents.chf),
+    amountEur: text(cents.eur),
+    amountPhp: text(cents.php),
+  };
+}
+
+/** Copy a snapshot onto a gift row. A missing field becomes `null`, not omitted. */
+function storedGiftFiat(row: {
+  amountUsd?: string | null;
+  amountChf?: string | null;
+  amountEur?: string | null;
+  amountPhp?: string | null;
+}): Pick<GiftRow, 'amountUsd' | 'amountChf' | 'amountEur' | 'amountPhp'> {
+  return {
+    amountUsd: row.amountUsd ?? null,
+    amountChf: row.amountChf ?? null,
+    amountEur: row.amountEur ?? null,
+    amountPhp: row.amountPhp ?? null,
   };
 }
 

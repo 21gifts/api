@@ -483,6 +483,20 @@ function addMaybe(acc: number | null, next: number | null): number | null {
 }
 
 /**
+ * Fold one gift into a day map. A missing day starts at 0. A stored `null`
+ * stays `null` (`null ?? 0` would hide it and under-count the next gift).
+ *
+ * @param map - Day → cents, `null` once any gift that day lacked the currency.
+ * @param day - UTC day.
+ * @param next - This gift's cents, or `null`.
+ * @returns The new day total.
+ */
+function foldDay(map: Map<string, number | null>, day: string, next: number | null): number | null {
+  const prev = map.has(day) ? (map.get(day) ?? null) : 0;
+  return addMaybe(prev, next);
+}
+
+/**
  * Format quote cents, or `null` when the sum is incomplete.
  *
  * @param cents - Cents, or `null`.
@@ -662,10 +676,10 @@ export function buildGiftStats(
     totalPhpCents = addMaybe(totalPhpCents, converted.php);
     byDaySats.set(day, (byDaySats.get(day) ?? 0) + row.amountSats);
     byDayGiftCount.set(day, (byDayGiftCount.get(day) ?? 0) + 1);
-    byDayUsdCents.set(day, addMaybe(byDayUsdCents.get(day) ?? 0, usdCents));
-    byDayChfCents.set(day, addMaybe(byDayChfCents.get(day) ?? 0, converted.chf));
-    byDayEurCents.set(day, addMaybe(byDayEurCents.get(day) ?? 0, converted.eur));
-    byDayPhpCents.set(day, addMaybe(byDayPhpCents.get(day) ?? 0, converted.php));
+    byDayUsdCents.set(day, foldDay(byDayUsdCents, day, usdCents));
+    byDayChfCents.set(day, foldDay(byDayChfCents, day, converted.chf));
+    byDayEurCents.set(day, foldDay(byDayEurCents, day, converted.eur));
+    byDayPhpCents.set(day, foldDay(byDayPhpCents, day, converted.php));
 
     const rec = byRecipient.get(row.recipientWosUser) ?? emptyFiatBucket();
     addToBucket(rec, row.amountSats, usdCents, converted);
@@ -688,7 +702,7 @@ export function buildGiftStats(
   for (let ms = startMs; ms <= endMs; ms += MS_PER_DAY) {
     const day = new Date(ms).toISOString().slice(0, 10);
     const sats = byDaySats.get(day) ?? 0;
-    const usdCents = byDayUsdCents.get(day) ?? 0;
+    const usdCents = byDayUsdCents.has(day) ? (byDayUsdCents.get(day) ?? null) : 0;
     cumulativeSats += sats;
     cumulativeUsdCents = addMaybe(cumulativeUsdCents, usdCents);
     const hasGifts = byDaySats.has(day);
@@ -738,13 +752,12 @@ export function buildGiftStats(
     const totals = byMonth.get(month);
     const sats = totals?.sats ?? 0;
     const giftCount = totals?.giftCount ?? 0;
-    const usdCents = totals?.usdCents ?? 0;
     return {
       month,
       giftCount,
       sats,
       btc: satsToBtcString(sats),
-      usd: formatMaybeCents(usdCents),
+      usd: seriesFiat(totals !== undefined, totals?.usdCents),
       chf: seriesFiat(totals !== undefined, totals?.chfCents),
       eur: seriesFiat(totals !== undefined, totals?.eurCents),
       php: seriesFiat(totals !== undefined, totals?.phpCents),

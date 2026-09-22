@@ -682,6 +682,46 @@ describe('buildGiftDay', () => {
     expect(listed.gifts[0]?.amountUsd).toBe('1.50');
   });
 
+  it('does not rebuild a day total after a null stored amount', () => {
+    const stats = buildGiftStats(
+      [
+        {
+          paidAt: new Date('2026-06-01T01:00:00.000Z'),
+          amountSats: 1000,
+          recipientWosUser: 'ada',
+          amountUsd: null,
+          amountChf: null,
+          amountEur: null,
+          amountPhp: null,
+        },
+        {
+          paidAt: new Date('2026-06-01T02:00:00.000Z'),
+          amountSats: 1000,
+          recipientWosUser: 'bob',
+          amountUsd: '1.00',
+          amountChf: '0.80',
+          amountEur: '0.90',
+          amountPhp: '50.00',
+        },
+        {
+          paidAt: new Date('2026-06-03T00:00:00.000Z'),
+          amountSats: 0,
+          recipientWosUser: 'cara',
+          amountUsd: null,
+          amountChf: null,
+          amountEur: null,
+          amountPhp: null,
+        },
+      ],
+      new Map(),
+    );
+    expect(stats.totalUsd).toBeNull();
+    expect(stats.spendOverTime[0]?.usd).toBeNull();
+    expect(stats.spendOverTime[1]?.usd).toBe('0.00');
+    expect(stats.spendOverTime[0]?.cumulativeUsd).toBeNull();
+    expect(stats.byMonth[0]?.usd).toBeNull();
+  });
+
   it('keeps a missing stored franc amount null', () => {
     const listed = buildGiftDay(
       '2026-06-01',
