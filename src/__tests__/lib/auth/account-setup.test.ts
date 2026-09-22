@@ -23,9 +23,7 @@ describe('accountSetup', () => {
 
   it('asks for a name when a required wallet backup is unseen', () => {
     expect(accountSetup({ ...base, walletRequired: true })).toBe('name');
-    expect(accountSetup({ ...base, walletRequired: true, walletBackupSeenAt: null })).toBe(
-      'name',
-    );
+    expect(accountSetup({ ...base, walletRequired: true, walletBackupSeenAt: null })).toBe('name');
     expect(
       accountSetup({
         ...base,
