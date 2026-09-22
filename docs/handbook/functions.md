@@ -1033,6 +1033,13 @@
 - **Returns / side effects:** Promise of the oldest matching live `MessageRow` (`deletedAt` null), or `undefined`. Soft-deleted matches are ignored. No public JSON.
 - **Used by:** `POST /messages` media collapse; Postgres `create` on unique violation `23505`.
 
+## Function: stampJpegTakenAt
+
+- **Purpose:** Write a civil capture time into the JPEG bytes that are stored, so the file itself keeps DateTimeOriginal after re-encode.
+- **Inputs:** Image bytes and a normalized civil time, or null.
+- **Returns / side effects:** A JPEG with an Exif segment, or the same buffer when the input is not a JPEG, the time is missing, or the clock text is already in the bytes. No I/O.
+- **Used by:** `MessageStore` when it saves a forum photo.
+
 ## Function: normalizePhotoTakenAt
 
 - **Purpose:** Keep a client-sent civil camera time, or drop it. Not converted to UTC. A bad value does not reject the post.
