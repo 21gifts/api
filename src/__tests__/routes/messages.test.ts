@@ -189,6 +189,7 @@ function throwingStore(overrides: Partial<MessageStore> = {}): MessageStore {
     postCountsByUtcDay: boom,
     listHidden: boom,
     listIdsByPrefix: boom,
+    listPlaces: async () => [],
     listDirectChildren: boom,
     listChildIds: boom,
     listPublishedEventIds: boom,
@@ -1347,6 +1348,48 @@ describe('POST /messages', () => {
     expect(body.messages[0]?.goalSats).toBe(21000);
   });
 
+  it('posts a top-level note with a place pin', async () => {
+    const app = mount(await namedStore('Ada'));
+    const post = await app.request('/messages', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ text: 'pin', place: { lat: 47.3, lng: 8.5, label: 'Zürich' } }),
+    });
+    expect(post.status).toBe(200);
+    const body = (await post.json()) as { place?: { lat: number; lng: number; label: string } };
+    expect(body.place).toEqual({ lat: 47.3, lng: 8.5, label: 'Zürich' });
+  });
+
+  it('omits place when JSON has no pin', async () => {
+    const post = await mount(await namedStore('Ada')).request('/messages', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ text: 'plain' }),
+    });
+    expect(post.status).toBe(200);
+    expect(await post.json()).not.toHaveProperty('place');
+  });
+
+  it('returns 400 when JSON place is missing longitude', async () => {
+    const res = await mount(await namedStore('Ada')).request('/messages', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ text: 'bad', place: { lat: 47.3 } }),
+    });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: 'Place must be a latitude and longitude' });
+  });
+
+  it('returns 400 when JSON place label is too long', async () => {
+    const res = await mount(await namedStore('Ada')).request('/messages', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ text: 'bad', place: { lat: 1, lng: 2, label: 'A'.repeat(81) } }),
+    });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: 'Place label must be at most 80 characters' });
+  });
+
   it('returns 400 when JSON goalSats is above the max', async () => {
     const res = await mount(await namedStore('Ada')).request('/messages', {
       method: 'POST',
@@ -1646,6 +1689,34 @@ describe('POST /messages', () => {
     });
     expect(res.status).toBe(400);
     expect(await res.json()).toEqual({ error: 'A reply cannot ask for a goal' });
+    expect(await messageStore.listReplies(parentId)).toEqual([]);
+  });
+
+  it('returns 400 when a reply includes a place', async () => {
+    const messageStore = new InMemoryMessageStore();
+    const parentId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+    await messageStore.create({
+      id: parentId,
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'parent',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      hasVideo: false,
+      videoContentType: null,
+      ...unsignedNostrDefaults(),
+    });
+    const res = await mount(await namedStore('Ada'), messageStore).request('/messages', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({
+        text: 'child',
+        inReplyTo: parentId,
+        place: { lat: 47.3, lng: 8.5, label: 'Zürich' },
+      }),
+    });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: 'A reply cannot include a place' });
     expect(await messageStore.listReplies(parentId)).toEqual([]);
   });
 
@@ -2919,6 +2990,7 @@ describe('POST /messages', () => {
       postCountsByUtcDay: () => base.postCountsByUtcDay(),
       listHidden: (limit) => base.listHidden(limit),
       listIdsByPrefix: (prefix) => base.listIdsByPrefix(prefix),
+      listPlaces: (limit) => base.listPlaces(limit),
       listDirectChildren: (parentId) => base.listDirectChildren(parentId),
       listChildIds: (parentId) => base.listChildIds(parentId),
       listReplies: (parentId, limit, includeHidden) =>
@@ -3031,6 +3103,7 @@ describe('POST /messages', () => {
       postCountsByUtcDay: () => base.postCountsByUtcDay(),
       listHidden: (limit) => base.listHidden(limit),
       listIdsByPrefix: (prefix) => base.listIdsByPrefix(prefix),
+      listPlaces: (limit) => base.listPlaces(limit),
       listDirectChildren: (parentId) => base.listDirectChildren(parentId),
       listChildIds: (parentId) => base.listChildIds(parentId),
       listReplies: (parentId, limit, includeHidden) =>
@@ -4632,6 +4705,7 @@ describe('POST /messages/:id/invoice', () => {
       postCountsByUtcDay: () => base.postCountsByUtcDay(),
       listHidden: (limit) => base.listHidden(limit),
       listIdsByPrefix: (prefix) => base.listIdsByPrefix(prefix),
+      listPlaces: (limit) => base.listPlaces(limit),
       listDirectChildren: (parentId) => base.listDirectChildren(parentId),
       listChildIds: (parentId) => base.listChildIds(parentId),
       listReplies: (parentId, limit, includeHidden) =>
@@ -4876,6 +4950,206 @@ describe('POST /messages/:id/invoice', () => {
     } finally {
       spy.mockRestore();
     }
+  });
+});
+
+describe('GET /messages/places', () => {
+  it('returns 401 without an Authorization header', async () => {
+    const res = await mount(new InMemoryAuthStore()).request('/messages/places');
+    expect(res.status).toBe(401);
+    expect(await res.json()).toEqual({ error: 'Unauthorized' });
+  });
+
+  it('returns 409 when rules are not agreed', async () => {
+    const res = await mount(await seededStore()).request('/messages/places', { headers: AUTH });
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({ error: 'missing_requirements', missing: ['rules'] });
+  });
+
+  it('lists live top-level pins and excludes replies, hidden notes, and rows with no place', async () => {
+    const hiddenAt = new Date('2026-09-01T00:00:00.000Z');
+    const same = new Date('2026-08-03T00:00:00.000Z');
+    const store = new InMemoryMessageStore([
+      {
+        id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+        accountId: 'acc',
+        name: 'Ada',
+        text: 'pin',
+        createdAt: new Date('2026-08-01T00:00:00.000Z'),
+        hasPhoto: false,
+        hasVideo: false,
+        videoContentType: null,
+        ...unsignedNostrDefaults(),
+        place: { lat: 1, lng: 2, label: null },
+      },
+      {
+        id: 'plain',
+        accountId: 'acc',
+        name: 'Ada',
+        text: 'plain',
+        createdAt: same,
+        hasPhoto: false,
+        hasVideo: false,
+        videoContentType: null,
+        ...unsignedNostrDefaults(),
+      },
+      {
+        id: 'reply',
+        accountId: 'acc',
+        name: 'Ada',
+        text: 'reply',
+        createdAt: same,
+        hasPhoto: false,
+        hasVideo: false,
+        videoContentType: null,
+        ...unsignedNostrDefaults(),
+        parentId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+        place: { lat: 3, lng: 4, label: 'reply' },
+      },
+      {
+        id: 'hidden',
+        accountId: 'acc',
+        name: 'Ada',
+        text: 'hidden',
+        createdAt: same,
+        hasPhoto: false,
+        hasVideo: false,
+        videoContentType: null,
+        ...unsignedNostrDefaults(),
+        deletedAt: hiddenAt,
+        deletedBy: 'staff',
+        place: { lat: 5, lng: 6, label: 'hid' },
+      },
+      {
+        id: 'za',
+        accountId: 'acc',
+        name: 'Ada',
+        text: 'za',
+        createdAt: same,
+        hasPhoto: false,
+        hasVideo: false,
+        videoContentType: null,
+        ...unsignedNostrDefaults(),
+        place: { lat: 7, lng: 8, label: 'A' },
+      },
+      {
+        id: 'zb',
+        accountId: 'acc',
+        name: 'Ada',
+        text: 'zb',
+        createdAt: same,
+        hasPhoto: false,
+        hasVideo: false,
+        videoContentType: null,
+        ...unsignedNostrDefaults(),
+        place: { lat: 9, lng: 10, label: 'B' },
+      },
+    ]);
+    const res = await mount(await namedStore('Ada'), store).request('/messages/places', {
+      headers: AUTH,
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      places: Array<{
+        id: string;
+        name: string;
+        createdAt: string;
+        lat: number;
+        lng: number;
+        label: string | null;
+      }>;
+    };
+    expect(body.places.map((row) => row.id)).toEqual([
+      'zb',
+      'za',
+      'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+    ]);
+    expect(body.places[0]).toEqual({
+      id: 'zb',
+      name: 'Ada',
+      createdAt: same.toISOString(),
+      lat: 9,
+      lng: 10,
+      label: 'B',
+    });
+    expect(body.places[1]?.label).toBe('A');
+    expect(body.places[2]?.label).toBeNull();
+    expect(body.places[2]?.createdAt).toBe(new Date('2026-08-01T00:00:00.000Z').toISOString());
+  });
+
+  it('defaults limit to 1000', async () => {
+    let seen: number | undefined;
+    const res = await mount(
+      await rulesStore(),
+      throwingStore({
+        listPlaces: async (limit: number) => {
+          seen = limit;
+          return [];
+        },
+      }),
+    ).request('/messages/places', { headers: AUTH });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ places: [] });
+    expect(seen).toBe(1000);
+  });
+
+  it('honours limit=1', async () => {
+    const same = new Date(now());
+    const store = new InMemoryMessageStore([
+      {
+        id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+        accountId: 'acc',
+        name: 'Ada',
+        text: 'pin a',
+        createdAt: same,
+        hasPhoto: false,
+        hasVideo: false,
+        videoContentType: null,
+        ...unsignedNostrDefaults(),
+        place: { lat: 1, lng: 2, label: null },
+      },
+      {
+        id: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+        accountId: 'acc',
+        name: 'Ada',
+        text: 'pin b',
+        createdAt: same,
+        hasPhoto: false,
+        hasVideo: false,
+        videoContentType: null,
+        ...unsignedNostrDefaults(),
+        place: { lat: 47.3, lng: 8.5, label: 'Zürich' },
+      },
+    ]);
+    const res = await mount(await namedStore('Ada'), store).request('/messages/places?limit=1', {
+      headers: AUTH,
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { places: Array<{ id: string }> };
+    expect(body.places).toHaveLength(1);
+    expect(body.places[0]?.id).toBe('bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb');
+  });
+
+  it('returns 400 for an invalid limit', async () => {
+    const app = mount(await rulesStore());
+    for (const limit of ['0', '1001', 'abc']) {
+      const res = await app.request(`/messages/places?limit=${limit}`, { headers: AUTH });
+      expect(res.status).toBe(400);
+      expect(await res.json()).toEqual({ error: 'Invalid limit' });
+    }
+  });
+
+  it('returns 503 when listPlaces throws', async () => {
+    const res = await mount(
+      await rulesStore(),
+      throwingStore({
+        listPlaces: async () => {
+          throw new Error('boom');
+        },
+      }),
+    ).request('/messages/places', { headers: AUTH });
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({ error: 'Messages are unavailable' });
   });
 });
 
@@ -7258,6 +7532,120 @@ describe('forum video', () => {
     });
     expect(omitted.status).toBe(200);
     expect(await omitted.json()).not.toHaveProperty('goalSats');
+  });
+
+  it('posts a multipart note with a valid place pin', async () => {
+    const form = new FormData();
+    form.set('text', 'pin');
+    form.set('placeLat', '47.3');
+    form.set('placeLng', '8.5');
+    form.set('placeLabel', 'Zürich');
+    const res = await mount(await namedStore('Ada')).request('/messages', {
+      method: 'POST',
+      headers: AUTH,
+      body: form,
+    });
+    expect(res.status).toBe(200);
+    expect(
+      ((await res.json()) as { place?: { lat: number; lng: number; label: string } }).place,
+    ).toEqual({ lat: 47.3, lng: 8.5, label: 'Zürich' });
+  });
+
+  it('returns 400 when multipart place is incomplete or out of range', async () => {
+    const onlyLat = new FormData();
+    onlyLat.set('text', 'pin');
+    onlyLat.set('placeLat', '47.3');
+    const onlyLatRes = await mount(await namedStore('Ada')).request('/messages', {
+      method: 'POST',
+      headers: AUTH,
+      body: onlyLat,
+    });
+    expect(onlyLatRes.status).toBe(400);
+    expect(await onlyLatRes.json()).toEqual({ error: 'Place must be a latitude and longitude' });
+
+    const onlyLng = new FormData();
+    onlyLng.set('text', 'pin');
+    onlyLng.set('placeLng', '8.5');
+    const onlyLngRes = await mount(await namedStore('Ada')).request('/messages', {
+      method: 'POST',
+      headers: AUTH,
+      body: onlyLng,
+    });
+    expect(onlyLngRes.status).toBe(400);
+    expect(await onlyLngRes.json()).toEqual({ error: 'Place must be a latitude and longitude' });
+
+    const outOfRange = new FormData();
+    outOfRange.set('text', 'pin');
+    outOfRange.set('placeLat', '999');
+    outOfRange.set('placeLng', '8.5');
+    const outOfRangeRes = await mount(await namedStore('Ada')).request('/messages', {
+      method: 'POST',
+      headers: AUTH,
+      body: outOfRange,
+    });
+    expect(outOfRangeRes.status).toBe(400);
+    expect(await outOfRangeRes.json()).toEqual({ error: 'Place must be a latitude and longitude' });
+  });
+
+  it('omits place when multipart placeLat and placeLng are empty', async () => {
+    const form = new FormData();
+    form.set('text', 'pin');
+    form.set('placeLat', '');
+    form.set('placeLng', '');
+    const res = await mount(await namedStore('Ada')).request('/messages', {
+      method: 'POST',
+      headers: AUTH,
+      body: form,
+    });
+    expect(res.status).toBe(200);
+    expect(await res.json()).not.toHaveProperty('place');
+  });
+
+  it('returns 400 when multipart placeLat is empty and placeLng is set', async () => {
+    const form = new FormData();
+    form.set('text', 'pin');
+    form.set('placeLat', '');
+    form.set('placeLng', '8.5');
+    const res = await mount(await namedStore('Ada')).request('/messages', {
+      method: 'POST',
+      headers: AUTH,
+      body: form,
+    });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: 'Place must be a latitude and longitude' });
+  });
+
+  it('posts a multipart place pin without a placeLabel', async () => {
+    const form = new FormData();
+    form.set('text', 'pin');
+    form.set('placeLat', '47.3');
+    form.set('placeLng', '8.5');
+    const res = await mount(await namedStore('Ada')).request('/messages', {
+      method: 'POST',
+      headers: AUTH,
+      body: form,
+    });
+    expect(res.status).toBe(200);
+    expect(
+      ((await res.json()) as { place?: { lat: number; lng: number; label: string | null } }).place,
+    ).toEqual({ lat: 47.3, lng: 8.5, label: null });
+  });
+
+  it('maps an empty multipart placeLabel to null', async () => {
+    const form = new FormData();
+    form.set('text', 'pin');
+    form.set('placeLat', '47.3');
+    form.set('placeLng', '8.5');
+    form.set('placeLabel', '');
+    const res = await mount(await namedStore('Ada')).request('/messages', {
+      method: 'POST',
+      headers: AUTH,
+      body: form,
+    });
+    expect(res.status).toBe(200);
+    expect(
+      ((await res.json()) as { place?: { label: string | null } }).place?.label,
+    ).toBeNull();
   });
 
   it('rejects a multipart note with an invalid goalSats', async () => {

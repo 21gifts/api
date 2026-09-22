@@ -1026,6 +1026,13 @@
 - **Returns / side effects:** Trimmed text (possibly empty) or `null`. No I/O.
 - **Used by:** `POST /messages`, `POST /contact`, `POST /conversations/:id`, `PUT /me/about`, `runNostrWorkerTick` inbound indexing.
 
+## Function: normalizePlace
+
+- **Purpose:** Validate an optional map pin for a top-level forum note. `undefined` or `null` is no pin. Otherwise a plain object with finite numeric `lat` in [-90, 90] and `lng` in [-180, 180], rounded to 6 decimal places (`Math.round(n * 1e6) / 1e6`), with `-0` collapsed to `0`. Label absent, null, or trim-empty becomes null. A label never removes the pin.
+- **Inputs:** `input` unknown (JSON `place` or a multipart-derived object).
+- **Returns / side effects:** `{ ok: true, value: ForumPlace | null }` or `{ ok: false, error }` where error is `Place must be a latitude and longitude` (missing/non-numeric/NaN/Infinity/out of range, or a non-string label) or `Place label must be at most 80 characters` (trimmed length > 80, or any charCode < 32 or === 127). No I/O.
+- **Used by:** `POST /messages`.
+
 ## Function: detectImageContentType
 
 - **Purpose:** Detect JPEG / PNG / WebP from magic bytes for forum photo storage.

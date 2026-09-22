@@ -432,6 +432,41 @@ describe('serializeMessage', () => {
     ).not.toHaveProperty('goalSats');
   });
 
+  it('omits place when unset or null', () => {
+    const row: MessageRow = {
+      id: 'msg-noplace',
+      accountId: 'acc-1',
+      name: 'Ada',
+      text: 'hi',
+      createdAt: new Date('2026-08-28T12:00:00.000Z'),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+    };
+    expect(serializeMessage(row, false, 'basis')).not.toHaveProperty('place');
+    expect(serializeMessage({ ...row, place: null }, false, 'basis')).not.toHaveProperty('place');
+  });
+
+  it('includes place when set, including a null label', () => {
+    const row: MessageRow = {
+      id: 'msg-place',
+      accountId: 'acc-1',
+      name: 'Ada',
+      text: 'hi',
+      createdAt: new Date('2026-08-28T12:00:00.000Z'),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+      place: { lat: 47.3, lng: 8.5, label: 'Zürich' },
+    };
+    expect(serializeMessage(row, false, 'basis').place).toEqual({
+      lat: 47.3,
+      lng: 8.5,
+      label: 'Zürich',
+    });
+    expect(
+      serializeMessage({ ...row, place: { lat: 1, lng: 2, label: null } }, false, 'basis').place,
+    ).toEqual({ lat: 1, lng: 2, label: null });
+  });
+
   it('stamps deletedAt / deletedBy and forces payable false when hidden is set', () => {
     const row: MessageRow = {
       id: 'msg-hidden-opt',
@@ -524,6 +559,9 @@ describe('serializeDebugMessage', () => {
       nostrAttempts: 2,
       accountId: null,
       goalSats: null,
+      placeLat: null,
+      placeLng: null,
+      placeLabel: null,
       photoContentType: null,
       photoBytes: 0,
       extraPhotos: [],
@@ -628,6 +666,36 @@ describe('serializeDebugMessage', () => {
     expect(
       serializeDebugMessage({ ...row, parentId: 'msg-top', goalSats: 21000 })['goalSats'],
     ).toBe(21000);
+  });
+
+  it('always includes placeLat, placeLng, and placeLabel, JSON null when unset', () => {
+    const row: MessageRow = {
+      id: 'msg-debug-place',
+      accountId: 'acc-1',
+      name: 'Ada',
+      text: 'hi',
+      createdAt: new Date('2026-08-28T12:00:00.000Z'),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+    };
+    expect(serializeDebugMessage(row)['placeLat']).toBeNull();
+    expect(serializeDebugMessage(row)['placeLng']).toBeNull();
+    expect(serializeDebugMessage(row)['placeLabel']).toBeNull();
+    expect(serializeDebugMessage({ ...row, place: null })['placeLat']).toBeNull();
+    const pinned = serializeDebugMessage({
+      ...row,
+      place: { lat: 47.3, lng: 8.5, label: 'Zürich' },
+    });
+    expect(pinned['placeLat']).toBe(47.3);
+    expect(pinned['placeLng']).toBe(8.5);
+    expect(pinned['placeLabel']).toBe('Zürich');
+    const unlabeled = serializeDebugMessage({
+      ...row,
+      place: { lat: 1, lng: 2, label: null },
+    });
+    expect(unlabeled['placeLat']).toBe(1);
+    expect(unlabeled['placeLng']).toBe(2);
+    expect(unlabeled['placeLabel']).toBeNull();
   });
 });
 
@@ -846,6 +914,32 @@ describe('serializeHiddenMessage', () => {
     expect(
       serializeHiddenMessage({ ...row, parentId: 'msg-top', goalSats: 21000 }, deletedBy),
     ).not.toHaveProperty('goalSats');
+  });
+
+  it('includes place only when set', () => {
+    const row: MessageRow = {
+      id: 'msg-hidden-place',
+      accountId: 'acc-1',
+      name: 'Ada',
+      text: 'hi',
+      createdAt: new Date('2026-08-28T12:00:00.000Z'),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+    };
+    const deletedBy = { id: null, name: null, role: null };
+    expect(serializeHiddenMessage(row, deletedBy)).not.toHaveProperty('place');
+    expect(serializeHiddenMessage({ ...row, place: null }, deletedBy)).not.toHaveProperty('place');
+    expect(
+      serializeHiddenMessage(
+        { ...row, place: { lat: 47.3, lng: 8.5, label: 'Zürich' } },
+        deletedBy,
+      )['place'],
+    ).toEqual({ lat: 47.3, lng: 8.5, label: 'Zürich' });
+    expect(
+      serializeHiddenMessage({ ...row, place: { lat: 1, lng: 2, label: null } }, deletedBy)[
+        'place'
+      ],
+    ).toEqual({ lat: 1, lng: 2, label: null });
   });
 });
 

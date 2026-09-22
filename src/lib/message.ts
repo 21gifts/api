@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import type { AccountRole } from '@/lib/auth/store';
+import type { ForumPlace } from '@/lib/place';
 import type { ForumVideoContentType } from '@/lib/video';
 
 /**
@@ -109,6 +110,10 @@ export interface MessageRow {
    * Optional whole-sat ask on a top-level note. Omit or `null` means no goal.
    */
   goalSats?: number | null;
+  /**
+   * Optional map pin on a top-level note. Omit or `null` means no place.
+   */
+  place?: ForumPlace | null;
   /** Stored signed event JSON, or `null` until signed. */
   nostrEvent: Record<string, unknown> | null;
   /** Lease expiry (epoch ms), or `null`. */
@@ -179,6 +184,11 @@ export interface PublicMessage {
    * value is a positive integer; omitted on replies and when unset.
    */
   goalSats?: number;
+  /**
+   * Optional map pin. Included only when stored; omitted when unset (same
+   * omit rule as `parentId`). `label` is a string or JSON `null`.
+   */
+  place?: ForumPlace;
   /** Whether `POST /messages/:id/invoice` can run. */
   payable: boolean;
   /** True when a photo can be fetched via GET `/messages/:id/photo`. */
@@ -298,6 +308,18 @@ function publicGoalSats(row: MessageRow): number | undefined {
   }
   const value = row.goalSats;
   return typeof value === 'number' && Number.isInteger(value) && value > 0 ? value : undefined;
+}
+
+/**
+ * Public/debug/hidden JSON `place` when both coordinates are stored.
+ * Omitted when unset or null (same omit rule as `parentId`).
+ */
+function publicPlace(row: MessageRow): ForumPlace | undefined {
+  const place = row.place;
+  if (place === undefined || place === null) {
+    return undefined;
+  }
+  return { lat: place.lat, lng: place.lng, label: place.label };
 }
 
 /**
@@ -434,10 +456,12 @@ export function truncatePubkeyDisplay(pubkeyHex: string): string {
  * `via: 'nostr'` when `row.accountId === null && row.authorPubkey !== null`;
  * optional `accountId` when requested; optional `parentId` when
  * `row.parentId !== null`; optional `goalSats` when the stored value is a
- * positive integer on a top-level note; optional hide stamps when `hidden`
+ * positive integer on a top-level note; optional `place` when stored;
+ * optional hide stamps when `hidden`
  * is set); `createdAt` ISO-8601. Never includes photo or video bytes, and
  * never includes `contentFp`. Omits the `parentId` key on top-level notes.
  * Omits `goalSats` on replies and when the stored value is null, 0, or unset.
+ * Omits `place` when unset or null.
  * Live serialize omits `deletedAt` / `deletedBy`.
  * @throws RangeError (or Error) when createdAt is invalid.
  */
@@ -492,6 +516,10 @@ export function serializeMessage(
   if (goalSats !== undefined) {
     body.goalSats = goalSats;
   }
+  const place = publicPlace(row);
+  if (place !== undefined) {
+    body.place = place;
+  }
   if (hidden !== undefined) {
     body.deletedAt = hidden.deletedAt.toISOString();
     body.deletedBy = hidden.deletedBy;
@@ -530,6 +558,8 @@ export interface DebugMessagePhotoMeta {
  *   only when photoCount === 1 (equal to slot 0, null allowed; omitted
  *   otherwise); `createdAt` / `deletedAt` ISO-8601 (`deletedAt` null when
  *   live). `goalSats` is the stored column (JSON `null` when unset).
+ *   Always includes `placeLat` / `placeLng` / `placeLabel` (JSON `null` when
+ *   unset).
  * @throws RangeError (or Error) when `createdAt` or `deletedAt` is invalid.
  */
 export function serializeDebugMessage(
@@ -568,6 +598,9 @@ export function serializeDebugMessage(
     nostrAttempts: row.nostrAttempts,
     accountId: row.accountId ?? null,
     goalSats: row.goalSats ?? null,
+    placeLat: row.place === undefined || row.place === null ? null : row.place.lat,
+    placeLng: row.place === undefined || row.place === null ? null : row.place.lng,
+    placeLabel: row.place === undefined || row.place === null ? null : row.place.label,
     photoContentType: photo?.photoContentType ?? null,
     photoBytes: photo?.photoBytes ?? 0,
     extraPhotos: photo?.extraPhotos ?? [],
@@ -591,10 +624,11 @@ export function serializeDebugMessage(
  *   media flags, `photoTakenAts` (always, length === photoCount, nulls when
  *   unknown, `[]` when no stills), optional `photoTakenAt` only when
  *   photoCount === 1 (equal to slot 0, null allowed; omitted otherwise),
- *   `parentId`, `deletedAt`, `deletedBy`, optional `via`, and optional
- *   `goalSats`); `createdAt` / `deletedAt` are ISO-8601 (`deletedAt` null
- *   when live). Optional `goalSats` when the stored value is a positive
- *   integer on a top-level note (omitted otherwise).
+ *   `parentId`, `deletedAt`, `deletedBy`, optional `via`, optional
+ *   `goalSats`, and optional `place`); `createdAt` / `deletedAt` are
+ *   ISO-8601 (`deletedAt` null when live). Optional `goalSats` when the
+ *   stored value is a positive integer on a top-level note (omitted
+ *   otherwise). Optional `place` when stored (omitted when unset).
  * @throws RangeError (or Error) when `createdAt` or `deletedAt` is invalid.
  */
 export function serializeHiddenMessage(
@@ -604,6 +638,7 @@ export function serializeHiddenMessage(
   const deletedAt = row.deletedAt ?? null;
   const goalSats = publicGoalSats(row);
   const taken = photoTakenJson(row);
+  const place = publicPlace(row);
   const body: Record<string, unknown> & { via?: 'nostr' } = {
     id: row.id,
     name: row.name,
@@ -624,6 +659,7 @@ export function serializeHiddenMessage(
     deletedAt: deletedAt === null ? null : deletedAt.toISOString(),
     deletedBy,
     ...(goalSats === undefined ? {} : { goalSats }),
+    ...(place === undefined ? {} : { place }),
   };
   if (row.accountId === null && row.authorPubkey !== null) {
     body.via = 'nostr';

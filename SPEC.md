@@ -3137,6 +3137,17 @@ external zapper gains no website visibility. Operator manual settlement
 covers member-created forum invoices only; it cannot create an external
 zapper entitlement.
 
+### `GET /messages/places`
+
+Bearer session required. After auth, the same `forum.read` gate as
+`GET /messages` (401 without a session; 409 `missing_requirements` when
+rules are missing). Query `limit` is an integer 1..1000 (default **1000**);
+otherwise **400** `{ "error": "Invalid limit" }`. Body
+`{ "places": [{ "id", "name", "createdAt", "lat", "lng", "label" }] }`.
+`createdAt` is ISO-8601. Newest first (`created_at` desc, `id` desc). Only
+live top-level rows with both coordinates. Replies and hidden notes are
+excluded.
+
 ### `GET /messages/compose-target`
 
 Bearer session required. After auth, `requireAction(account, 'forum.post')`
@@ -3238,6 +3249,14 @@ then `POST /messages/:id/invoice` on that platform profile note). Optional
 `goalSats` omitted, JSON `null`, or a missing/empty multipart field means
 no goal. Multipart accepts `goalSats` as a decimal digit string. A positive
 `goalSats` together with `inReplyTo` → **400** `{ "error": "A reply cannot ask for a goal" }`.
+Optional `place` is `{ lat, lng, label? }`. Omitted or null stores no pin
+and the 200 JSON omits `place`. Invalid place is 400 with `Place must be a
+latitude and longitude` or `Place label must be at most 80 characters`.
+`inReplyTo` together with a non-null place is 400
+`{ "error": "A reply cannot include a place" }`. Multipart fields are
+`placeLat`, `placeLng`, and optional `placeLabel` (always top-level). Both
+coordinates empty means no pin. Exactly one of them set is 400
+`Place must be a latitude and longitude`.
 An invalid multipart `goalSats` → **400** `{ "error": "Goal must be a positive whole-sat amount" }`.
 JSON type/range errors keep **400** `{ "error": "Expected a JSON body with text and/or photo" }`.
 Above 10_000_000 is rejected, not clamped. Multipart video posts do not

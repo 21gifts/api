@@ -2017,3 +2017,67 @@ test('Function: debugExternalRoutes — GET /debug/external-pubkeys without bear
 }) => {
   expect((await request.get('/debug/external-pubkeys')).status()).toBe(401);
 });
+
+test('Function: normalizePlace — POST /messages stores a pin and GET /messages/places lists it', async ({
+  request,
+}) => {
+  const stamp = `${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
+  const provision = await request.post('/debug/accounts', {
+    headers: DEBUG,
+    data: {
+      accounts: [
+        {
+          name: `E2eAda${stamp.slice(0, 8)}`,
+          lightningAddress: `e2e-ada-${stamp}@walletofsatoshi.com`,
+        },
+      ],
+    },
+  });
+  expect(provision.status()).toBe(200);
+
+  const listed = await request.get('/debug/accounts', { headers: DEBUG });
+  expect(listed.status()).toBe(200);
+  const accounts = ((await listed.json()) as { accounts: Array<{ id: string; name: string }> })
+    .accounts;
+  const adaName = `E2eAda${stamp.slice(0, 8)}`;
+  const ada = accounts.find((row) => row.name === adaName);
+  expect(ada).toBeDefined();
+
+  const session = await request.post(`/debug/accounts/${ada?.id}/session`, { headers: DEBUG });
+  expect(session.status()).toBe(200);
+  const token = ((await session.json()) as { token: string }).token;
+  const auth = { authorization: `Bearer ${token}` };
+  const agreed = await request.post('/me/rules-agreement', { headers: auth });
+  expect(agreed.status()).toBe(200);
+  const promoted = await request.patch(`/debug/accounts/${ada!.id}`, {
+    headers: DEBUG,
+    data: { role: 'verified' },
+  });
+  expect(promoted.status()).toBe(200);
+
+  const unauth = await request.get('/messages/places');
+  expect(unauth.status()).toBe(401);
+
+  const posted = await request.post('/messages', {
+    headers: { ...auth, 'content-type': 'application/json' },
+    data: { text: 'pin', place: { lat: 47.3, lng: 8.5, label: 'Zürich' } },
+  });
+  expect(posted.status()).toBe(200);
+  const note = (await posted.json()) as {
+    id: string;
+    place?: { lat: number; lng: number; label: string };
+  };
+  expect(note.place).toEqual({ lat: 47.3, lng: 8.5, label: 'Zürich' });
+
+  const pins = await request.get('/messages/places', { headers: auth });
+  expect(pins.status()).toBe(200);
+  const body = (await pins.json()) as {
+    places: Array<{ id: string; lat: number; lng: number; label: string | null }>;
+  };
+  expect(
+    body.places.some(
+      (row) =>
+        row.id === note.id && row.lat === 47.3 && row.lng === 8.5 && row.label === 'Zürich',
+    ),
+  ).toBe(true);
+});
