@@ -272,6 +272,7 @@ api/
 │   ├── notification.sql      # in-app Notifications rows (`forum_post`, `forum_reply`, `zap`)
 │   ├── trust_edge.sql        # who granted which staff status (GET /trust-chain)
 │   ├── funding_grant.sql     # funding-program grant (one row per account; spend ping / invoice gate)
+│   ├── pos_charge.sql        # point-of-sale charges (GET/POST/DELETE /pos)
 │   └── db_change.sql         # append-only row-change log
 ├── scripts/
 │   ├── check-handbook.mjs    # CI gate: missing heading → exit 1
