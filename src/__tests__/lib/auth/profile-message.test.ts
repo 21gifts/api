@@ -282,6 +282,23 @@ describe('ensureProfileMessage', () => {
     expect(second.profileMessageId).toBe(live[0]?.id);
   });
 
+  it('does not fan out a forum-post notification for the profile note', async () => {
+    const { auth, account } = await seededAccount();
+    const messages = new InMemoryMessageStore();
+    const notifications = new InMemoryNotificationStore();
+    const pushStore = new InMemoryPushStore();
+    await ensureProfileMessage({
+      auth,
+      messages,
+      account,
+      now,
+      notifications,
+      pushStore,
+    });
+    expect(await notifications.listByRecipient('acc', 10)).toEqual([]);
+    expect(await pushStore.listAllOutbox(10)).toEqual([]);
+  });
+
   it('does not set profileMessageId when create throws', async () => {
     const { auth, account } = await seededAccount();
     const messages = new InMemoryMessageStore();
