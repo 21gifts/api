@@ -12,6 +12,7 @@ import { Hono } from 'hono';
 import type { AuthStore } from '@/lib/auth/store';
 import type { FetchFn } from '@/lib/lnurlp';
 import { resolveLnurlpDocument } from '@/lib/lnurlp';
+import { InMemoryPosStore, type PosStore } from '@/lib/pos-store';
 import { buildNostrJson } from '@/lib/nip05';
 import { logEvent } from '@/lib/log';
 import { normalizeUsername } from '@/lib/username';
@@ -24,6 +25,10 @@ export interface WellKnownRouteDeps {
   env?: Record<string, string | undefined>;
   /** Injected `fetch` for Wallet of Satoshi LNURL-pay. Default `globalThis.fetch`. */
   fetchImpl?: FetchFn;
+  /** Open point-of-sale charges. Default empty in-memory store. */
+  posStore?: PosStore;
+  /** Clock in epoch milliseconds. Default `Date.now`. */
+  now?: () => number;
 }
 
 const WELL_KNOWN_CORS = {
@@ -42,6 +47,8 @@ export function wellKnownRoutes(deps: WellKnownRouteDeps): Hono {
   const env = deps.env ?? process.env;
   /* v8 ignore next -- createApp always injects fetchImpl */
   const fetchImpl = deps.fetchImpl ?? globalThis.fetch;
+  const posStore = deps.posStore ?? new InMemoryPosStore();
+  const now = deps.now ?? (() => Date.now());
   return new Hono()
     .get('/nostr.json', async (c) => {
       try {
@@ -74,6 +81,24 @@ export function wellKnownRoutes(deps: WellKnownRouteDeps): Hono {
           return c.json({ error: 'Lightning Address could not be resolved' }, 502, WELL_KNOWN_CORS);
         }
         logEvent('lnurlp.resolved', { username });
+        const pending = await posStore.currentPending(account.id, now());
+        if (pending !== null) {
+          const minSendable = resolved.body['minSendable'];
+          const maxSendable = resolved.body['maxSendable'];
+          /* v8 ignore next -- resolveLnurlpDocument only yields numeric minSendable and maxSendable */
+          if (typeof minSendable !== 'number' || typeof maxSendable !== 'number') {
+            return c.json(resolved.body, 200, WELL_KNOWN_CORS);
+          }
+          return c.json(
+            {
+              ...resolved.body,
+              minSendable: pending.amountSats * 1000,
+              maxSendable: pending.amountSats * 1000,
+            },
+            200,
+            WELL_KNOWN_CORS,
+          );
+        }
         return c.json(resolved.body, 200, WELL_KNOWN_CORS);
       } catch {
         logEvent('lnurlp.failed', { username });

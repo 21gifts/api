@@ -19,6 +19,7 @@ import { invoiceRoutes } from '@/routes/invoices';
 import { messagesRoutes } from '@/routes/messages';
 import { wellKnownRoutes } from '@/routes/well-known';
 import { contactRoutes } from '@/routes/contact';
+import { posRoutes } from '@/routes/pos';
 import { conversationRoutes } from '@/routes/conversations';
 import { notificationRoutes } from '@/routes/notifications';
 import { debugApiLogRoutes } from '@/routes/debug-api-log';
@@ -44,6 +45,7 @@ import type { GiftStore } from '@/lib/gift-store';
 import { InMemoryApiLogStore, type ApiLogStore } from '@/lib/api-log';
 import { InMemoryContactStore } from '@/lib/contact-store';
 import type { ContactStore } from '@/lib/contact-store';
+import { InMemoryPosStore, type PosStore } from '@/lib/pos-store';
 import { InMemoryConversationStore } from '@/lib/conversation-store';
 import type { ConversationStore } from '@/lib/conversation-store';
 import { InMemoryMessageStore } from '@/lib/message-store';
@@ -200,6 +202,11 @@ export interface AppDeps {
    */
   contactStore?: ContactStore;
   /**
+   * Point-of-sale charges (default: empty {@link InMemoryPosStore}).
+   * Boot injects {@link PostgresPosStore} when `DATABASE_URL` is set.
+   */
+  posStore?: PosStore;
+  /**
    * Private messaging threads (default: empty
    * {@link InMemoryConversationStore}). Boot injects
    * {@link PostgresConversationStore} when `DATABASE_URL` is set.
@@ -278,6 +285,7 @@ export function createApp(deps: AppDeps = {}): Hono {
   const messageStore = deps.messageStore ?? new InMemoryMessageStore();
   const nostrKek = deps.nostrKek;
   const contactStore = deps.contactStore ?? new InMemoryContactStore();
+  const posStore = deps.posStore ?? new InMemoryPosStore();
   const apiLogStore = deps.apiLogStore ?? new InMemoryApiLogStore();
   const conversationStore = deps.conversationStore ?? new InMemoryConversationStore();
   const notificationStore = deps.notificationStore ?? new InMemoryNotificationStore();
@@ -328,7 +336,7 @@ export function createApp(deps: AppDeps = {}): Hono {
   app.route('/', pushRoutes({ authStore: store, pushStore, now, vapidPublicKey }));
   app.route('/healthz', healthRoute);
   app.route('/info', infoRoute);
-  app.route('/.well-known', wellKnownRoutes({ auth: store, fetchImpl }));
+  app.route('/.well-known', wellKnownRoutes({ auth: store, fetchImpl, posStore, now }));
   app.route(
     '/auth',
     authRoutes({
@@ -431,6 +439,7 @@ export function createApp(deps: AppDeps = {}): Hono {
       auth: store,
       messages: messageStore,
       contacts: contactStore,
+      pos: posStore,
       conversations: conversationStore,
       notifications: notificationStore,
       push: pushStore,
@@ -498,6 +507,7 @@ export function createApp(deps: AppDeps = {}): Hono {
       notificationStore,
     }),
   );
+  app.route('/pos', posRoutes({ store: posStore, authStore: store, now, fetchImpl }));
   app.route(
     '/conversations',
     conversationRoutes({

@@ -484,6 +484,27 @@
 - **Used by:** App pay sheet and paid reply composer for forum notes.
 - **Auth:** `Authorization: Bearer` session.
 
+## Endpoint: GET /pos
+
+- **Purpose:** Bearer required. Returns the signed-in member's open point-of-sale charge, or `charge: null`, plus up to 20 newest rows of any status. A pending row whose `expiresAt` is not in the future is marked `expired` before the response and is not `charge`. Amounts are whole sats. There is no paid status: Wallet of Satoshi settles the invoice and this API does not see it. TTL is five minutes (`POS_CHARGE_TTL_MS`).
+- **Errors:** 401 Unauthorized.
+- **Used by:** App `/pos` page.
+- **Auth:** `Authorization: Bearer` session.
+
+## Endpoint: POST /pos
+
+- **Purpose:** Bearer required. Body `{ amountSats }` integer ≥ 1. Requires a username and a linked Wallet of Satoshi address. Resolves that address and rejects amounts whose millisats (`amountSats * 1000`) fall outside inclusive `minSendable`..`maxSendable`. One unexpired pending charge at a time. 201 `{ charge }` with `expiresAt` five minutes after `now`. While pending, `GET /.well-known/lnurlp/:username` keeps the Wallet of Satoshi document and sets both sendable bounds to that millisat amount. Callback and metadata stay unchanged.
+- **Errors:** 401 Unauthorized; 400 Expected a JSON body with an integer "amountSats"; 400 Set a username first; 400 Set a Wallet of Satoshi address first; 400 Amount is outside the wallet range; 409 A payment is already open; 502 Lightning Address could not be resolved.
+- **Used by:** App `/pos` amount form.
+- **Auth:** `Authorization: Bearer` session.
+
+## Endpoint: DELETE /pos
+
+- **Purpose:** Bearer required. Cancels the unexpired pending charge. 200 `{ charge: null }`. An already expired row is not cancelled.
+- **Errors:** 401 Unauthorized; 404 No open payment.
+- **Used by:** App `/pos` cancel control.
+- **Auth:** `Authorization: Bearer` session.
+
 ## Endpoint: POST /contact
 
 - **Purpose:** Bearer required. After auth, `requireAction(account, 'contact.post')` (needs rules + name + username). Body `{ text }`. Private mailbox to 21.gifts — never listed publicly. Name snapshot as forum messages; text uses `normalizeForumText` then still requires 1–500 characters (forum photo-only empty text does not apply). After the platform account exists, persists the contact row first, then opens/appends the member→platform conversation thread so the message is readable via `GET /conversations`. A successful append enqueues a conversation Web Push to bell-subscribed counterparts (`notifyConversationMessage`; failure logs `conversations.push.failed`). Conversation append failure logs `conversations.contact_sync.failed` and still returns 200 (contact is the product surface). 200 is the public contact object (no `accountId`).

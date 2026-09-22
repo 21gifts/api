@@ -1,5 +1,47 @@
 # Functions
 
+## Function: posRoutes
+
+- **Purpose:** Hono routes `GET /pos`, `POST /pos`, and `DELETE /pos` for one open point-of-sale amount in whole sats. Pins nothing itself; the well-known route reads the store.
+- **Inputs:** `PosRouteDeps` (`store`, `authStore`, `now`, `fetchImpl`).
+- **Returns / side effects:** A Hono app. Writes charges through `PosStore`. No paid status.
+- **Used by:** `createApp`.
+
+## Function: serializePosCharge
+
+- **Purpose:** Public JSON for a charge without `accountId`. Timestamps are ISO-8601.
+- **Inputs:** A `PosCharge` row.
+- **Returns / side effects:** `PublicPosCharge`. No I/O.
+- **Used by:** `posRoutes`.
+
+## Function: serializeDebugPosCharge
+
+- **Purpose:** Operator JSON for a charge including `accountId`.
+- **Inputs:** A `PosCharge` row.
+- **Returns / side effects:** `DebugPosCharge`. No I/O.
+- **Used by:** Debug catalog table `pos_charge`.
+
+## Function: migratePosSchema
+
+- **Purpose:** Apply idempotent `CREATE TABLE pos_charge` DDL.
+- **Inputs:** A `SqlClient`.
+- **Returns / side effects:** Resolves when the statements have run.
+- **Used by:** `openBootStores` when `DATABASE_URL` is set.
+
+## Function: InMemoryPosStore
+
+- **Purpose:** Process-local `PosStore` used in tests and when no database URL is set.
+- **Inputs:** Optional seed rows.
+- **Returns / side effects:** Pending, cancel, expire, and list methods. Mutates its private array.
+- **Used by:** `createApp` default and unit tests.
+
+## Function: PostgresPosStore
+
+- **Purpose:** `PosStore` against the `pos_charge` table.
+- **Inputs:** A `SqlClient`.
+- **Returns / side effects:** Same port as the in-memory store, persisted in Postgres.
+- **Used by:** `openBootStores` when `DATABASE_URL` is set.
+
 ## Function: buildGiftDay
 
 - **Purpose:** Pure list of outbound gifts that fall on one UTC calendar day. The stored payment-time USD/CHF/EUR/PHP is what is returned; a legacy row with no snapshot still uses that day's close.

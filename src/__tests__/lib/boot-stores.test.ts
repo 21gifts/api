@@ -8,6 +8,7 @@ import { InMemoryFiatStore, PostgresFiatStore } from '@/lib/usd-fiat-store';
 import { QueryGiftStore } from '@/lib/gift-store';
 import { SqlGiftRecorder } from '@/lib/gift-recorder';
 import { PostgresContactStore } from '@/lib/contact-store';
+import { InMemoryPosStore, PostgresPosStore } from '@/lib/pos-store';
 import { PostgresConversationStore } from '@/lib/conversation-store';
 import { PostgresMessageStore } from '@/lib/message-store';
 import { PostgresNotificationStore } from '@/lib/notification-store';
@@ -59,6 +60,7 @@ describe('openBootStores', () => {
       fiatRates,
       messageStore,
       contactStore,
+      posStore,
       conversationStore,
       notificationStore,
       pushStore,
@@ -73,6 +75,7 @@ describe('openBootStores', () => {
     expect(giftRecorder).toBeUndefined();
     expect(messageStore).toBeUndefined();
     expect(contactStore).toBeUndefined();
+    expect(posStore).toBeInstanceOf(InMemoryPosStore);
     expect(conversationStore).toBeUndefined();
     expect(notificationStore).toBeUndefined();
     expect(pushStore).toBeUndefined();
@@ -98,6 +101,7 @@ describe('openBootStores', () => {
       fiatRates,
       messageStore,
       contactStore,
+      posStore,
       conversationStore,
       notificationStore,
       pushStore,
@@ -111,6 +115,7 @@ describe('openBootStores', () => {
     expect(giftRecorder).toBeUndefined();
     expect(messageStore).toBeUndefined();
     expect(contactStore).toBeUndefined();
+    expect(posStore).toBeInstanceOf(InMemoryPosStore);
     expect(conversationStore).toBeUndefined();
     expect(notificationStore).toBeUndefined();
     expect(pushStore).toBeUndefined();
@@ -175,6 +180,7 @@ describe('openBootStores', () => {
       fiatRates,
       messageStore,
       contactStore,
+      posStore,
       conversationStore,
       notificationStore,
       pushStore,
@@ -199,6 +205,7 @@ describe('openBootStores', () => {
     expect(giftRecorder).toBeInstanceOf(SqlGiftRecorder);
     expect(messageStore).toBeInstanceOf(PostgresMessageStore);
     expect(contactStore).toBeInstanceOf(PostgresContactStore);
+    expect(posStore).toBeInstanceOf(PostgresPosStore);
     expect(conversationStore).toBeInstanceOf(PostgresConversationStore);
     expect(notificationStore).toBeInstanceOf(PostgresNotificationStore);
     expect(pushStore).toBeInstanceOf(PostgresPushStore);
@@ -211,6 +218,7 @@ describe('openBootStores', () => {
     expect(executes.length).toBeGreaterThan(0);
     expect(executes.some((q) => q.includes('message'))).toBe(true);
     expect(executes.some((q) => q.includes('contact'))).toBe(true);
+    expect(executes.some((q) => q.includes('pos_charge'))).toBe(true);
     expect(executes.some((q) => q.includes('conversation'))).toBe(true);
     expect(executes.some((q) => q.includes('push_subscription'))).toBe(true);
     expect(executes.some((q) => q.includes('notification'))).toBe(true);
@@ -369,6 +377,7 @@ describe('openBootStores', () => {
       fiatRates,
       messageStore,
       contactStore,
+      posStore,
       conversationStore,
       notificationStore,
       pushStore,
@@ -386,6 +395,7 @@ describe('openBootStores', () => {
     expect(giftRecorder).toBeInstanceOf(SqlGiftRecorder);
     expect(messageStore).toBeInstanceOf(PostgresMessageStore);
     expect(contactStore).toBeInstanceOf(PostgresContactStore);
+    expect(posStore).toBeInstanceOf(PostgresPosStore);
     expect(conversationStore).toBeInstanceOf(PostgresConversationStore);
     expect(notificationStore).toBeInstanceOf(PostgresNotificationStore);
     expect(pushStore).toBeInstanceOf(PostgresPushStore);
@@ -448,6 +458,7 @@ describe('openBootStores', () => {
 
     expect(stores.messageStore).toBeInstanceOf(PostgresMessageStore);
     expect(stores.contactStore).toBeInstanceOf(PostgresContactStore);
+    expect(stores.posStore).toBeInstanceOf(PostgresPosStore);
     expect(stores.conversationStore).toBeInstanceOf(PostgresConversationStore);
     expect(stores.notificationStore).toBeInstanceOf(PostgresNotificationStore);
     expect(stores.pushStore).toBeInstanceOf(PostgresPushStore);

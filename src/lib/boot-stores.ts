@@ -34,6 +34,12 @@ import { logEvent } from '@/lib/log';
 import { migrateApiLogSchema, PostgresApiLogStore, type ApiLogStore } from '@/lib/api-log';
 import { migrateContactSchema, PostgresContactStore, type ContactStore } from '@/lib/contact-store';
 import {
+  InMemoryPosStore,
+  PostgresPosStore,
+  migratePosSchema,
+  type PosStore,
+} from '@/lib/pos-store';
+import {
   migrateConversationSchema,
   PostgresConversationStore,
   type ConversationStore,
@@ -79,6 +85,8 @@ export interface BootStores {
    * opened so `createApp` keeps the empty in-memory default.
    */
   contactStore: ContactStore | undefined;
+  /** POS charge store (memory when no SQL; Postgres otherwise). */
+  posStore: PosStore;
   /**
    * Postgres-backed HTTP audit log, or `undefined` when no SQL client was
    * opened so `createApp` keeps the empty in-memory default.
@@ -212,6 +220,7 @@ export async function openBootStores(
       messageStore: undefined,
       nostrKek: undefined,
       contactStore: undefined,
+      posStore: new InMemoryPosStore(),
       apiLogStore: undefined,
       conversationStore: undefined,
       notificationStore: undefined,
@@ -231,6 +240,7 @@ export async function openBootStores(
   await migrateGiftSchema(sqlClient);
   await migrateMessageSchema(sqlClient);
   await migrateContactSchema(sqlClient);
+  await migratePosSchema(sqlClient);
   await migrateConversationSchema(sqlClient);
   await migratePushSchema(sqlClient);
   await migrateNotificationSchema(sqlClient);
@@ -347,6 +357,7 @@ export async function openBootStores(
     logEvent('nostr.zapper.backfill.failed');
   }
   const contactStore = new PostgresContactStore(sqlClient);
+  const posStore = new PostgresPosStore(sqlClient);
   const apiLogStore = new PostgresApiLogStore(sqlClient);
   const conversationStore = new PostgresConversationStore(sqlClient, { fetchImpl, fiatRates, now });
   const pushStore = new PostgresPushStore(sqlClient);
@@ -362,6 +373,7 @@ export async function openBootStores(
     messageStore,
     nostrKek,
     contactStore,
+    posStore,
     apiLogStore,
     conversationStore,
     notificationStore,
