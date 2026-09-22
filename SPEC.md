@@ -1083,8 +1083,11 @@ Set or clear About me on the profile forum note. Body:
 ```
 
 `text` is required. `photo` is optional: omitted leaves a stored photo;
-JSON `null` clears it; `{ contentType, data }` is decoded with
+JSON `null` clears it and clears the stored capture time;
+`{ contentType, data, takenAt? }` is decoded with
 `decodeForumPhoto` (same JPEG/PNG/WebP under 1 MiB as `POST /messages`).
+Optional `takenAt` follows the same civil-time rule as `POST /messages`
+(invalid or missing is stored null and does not 400).
 
 Missing/invalid bearer → **Response** `401` `{ "error": "Unauthorized" }`.
 
@@ -1095,7 +1098,7 @@ Body is not JSON with a `text` string → **Response** `400`:
 ```
 
 `text` is a string but `photo` is present and neither `null` nor
-`{ contentType, data }`, or decode fails → **Response** `400`:
+`{ contentType, data, takenAt? }`, or decode fails → **Response** `400`:
 
 ```json
 { "error": "Photo must be a JPEG, PNG, or WebP under 1 MiB" }
@@ -4044,8 +4047,8 @@ and 401/404/503 JSON as photo 0.
 
 ### `POST /conversations/:id`
 
-Bearer session required. Body `{ "text"?: "…", "photo"?: { "contentType", "data" }, "photos"?: [{ "contentType", "data" }] }`
-(at most 10 stills; non-empty `photos` wins over singular `photo`). Text 1–500 via
+Bearer session required. Body `{ "text"?: "…", "photo"?: { "contentType", "data", "takenAt?" }, "photos"?: [{ "contentType", "data", "takenAt?" }] }`
+(at most 10 stills; non-empty `photos` wins over singular `photo`). Optional `takenAt` follows the same civil-time rule as `POST /messages` (invalid or missing is stored null and does not 400). Conversation JSON does not return it. Text 1–500 via
 `normalizeForumText`. Empty text is allowed on every kind when a still is present.
 Photo-bearing rows persist `nostrPublishState` skipped (never Nostr); text-only
 Direct/Contact/Damus stay `pending`. Moderator replies on a
