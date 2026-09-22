@@ -439,13 +439,14 @@ test('Function: buildGiftDay — GET /gifts for an empty day is 200', async ({ r
   expect(res.status()).toBe(200);
 });
 
-test('Function: buildPostStats — GET /messages/stats is empty on default boot', async ({
+test('Function: buildPostStats — GET /messages/stats returns a posts total', async ({
   request,
 }) => {
   const res = await request.get('/messages/stats');
   expect(res.status()).toBe(200);
-  const body = (await res.json()) as { postCount: number };
-  expect(body.postCount).toBe(0);
+  const body = (await res.json()) as { postCount: number; postsOverTime: unknown[] };
+  expect(body.postCount).toBeGreaterThanOrEqual(0);
+  expect(Array.isArray(body.postsOverTime)).toBe(true);
 });
 
 test('Function: giftsStatsRoutes — GET /gifts/stats is empty on default boot', async ({

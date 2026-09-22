@@ -526,10 +526,15 @@ test('GET /gifts without a day is 400', async ({ request }) => {
   expect(res.status()).toBe(400);
 });
 
-test('GET /messages/stats is empty without a database', async ({ request }) => {
+test('GET /messages/stats returns a posts total', async ({ request }) => {
   const res = await request.get('/messages/stats');
   expect(res.status()).toBe(200);
-  expect(await res.json()).toEqual({ postCount: 0, postsOverTime: [] });
+  const body = (await res.json()) as {
+    postCount: number;
+    postsOverTime: { day: string; postCount: number }[];
+  };
+  expect(body.postCount).toBeGreaterThanOrEqual(0);
+  expect(body.postsOverTime.reduce((sum, row) => sum + row.postCount, 0)).toBe(body.postCount);
 });
 
 test('GET /gifts/stats is empty without a database', async ({ request }) => {
