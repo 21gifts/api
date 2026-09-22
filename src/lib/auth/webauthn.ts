@@ -8,6 +8,23 @@ import {
   type PublicKeyCredentialRequestOptionsJSON,
   type RegistrationResponseJSON,
 } from '@simplewebauthn/server';
+import { prfEvalFirstSalt } from '@/lib/auth/prf';
+
+/** True when the browser payload includes PRF output. The api must not see it. */
+function credentialHasPrfResults(response: unknown): boolean {
+  if (typeof response !== 'object' || response === null) {
+    return false;
+  }
+  const extensions = (response as { clientExtensionResults?: unknown }).clientExtensionResults;
+  if (typeof extensions !== 'object' || extensions === null) {
+    return false;
+  }
+  const prf = (extensions as { prf?: unknown }).prf;
+  if (typeof prf !== 'object' || prf === null) {
+    return false;
+  }
+  return Object.prototype.hasOwnProperty.call(prf, 'results');
+}
 
 /**
  * Collaborator that talks to the WebAuthn library. Tests inject a fake so HTTP
@@ -17,7 +34,8 @@ export interface PasskeyCeremony {
   /**
    * Build `navigator.credentials.create()` options and the challenge to persist.
    *
-   * @param input - Relying party and user entity for this registration.
+   * @param input - Relying party and user entity for this registration;
+   *   optional `excludeCredentials` is the current credential on replace.
    * @returns The challenge string (base64url) and the JSON options for the browser.
    */
   generateRegistrationOptions(input: {
@@ -26,6 +44,7 @@ export interface PasskeyCeremony {
     userID: Uint8Array;
     userName: string;
     userDisplayName: string;
+    excludeCredentials?: Array<{ id: string; type: 'public-key' }>;
   }): Promise<{ challenge: string; options: PublicKeyCredentialCreationOptionsJSON }>;
 
   /**
@@ -79,7 +98,9 @@ export class SimpleWebAuthnPasskeyCeremony implements PasskeyCeremony {
    * Build WebAuthn creation options via SimpleWebAuthn.
    *
    * @param input - RP and user entity for `generateRegistrationOptions`.
-   * @returns Challenge plus creation options (residentKey required).
+   *   Optional `excludeCredentials` lists the current credential on replace.
+   * @returns Challenge plus creation options (residentKey required,
+   *   `extensions.prf: {}`).
    */
   async generateRegistrationOptions(input: {
     rpName: string;
@@ -87,6 +108,7 @@ export class SimpleWebAuthnPasskeyCeremony implements PasskeyCeremony {
     userID: Uint8Array;
     userName: string;
     userDisplayName: string;
+    excludeCredentials?: Array<{ id: string; type: 'public-key' }>;
   }): Promise<{ challenge: string; options: PublicKeyCredentialCreationOptionsJSON }> {
     const options = await generateRegistrationOptions({
       rpName: input.rpName,
@@ -99,8 +121,18 @@ export class SimpleWebAuthnPasskeyCeremony implements PasskeyCeremony {
         residentKey: 'required',
         userVerification: 'required',
       },
+      ...(input.excludeCredentials === undefined
+        ? {}
+        : {
+            excludeCredentials: input.excludeCredentials.map((credential) => ({
+              id: credential.id,
+            })),
+          }),
     });
-    return { challenge: options.challenge, options };
+    return {
+      challenge: options.challenge,
+      options: ensurePrfExtension(options, {}),
+    };
   }
 
   /**
@@ -118,6 +150,9 @@ export class SimpleWebAuthnPasskeyCeremony implements PasskeyCeremony {
     | { ok: true; credentialId: string; publicKey: Uint8Array; signCount: number }
     | { ok: false; reason: string }
   > {
+    if (credentialHasPrfResults(input.response)) {
+      return { ok: false, reason: 'Invalid passkey' };
+    }
     if (!isRegistrationResponse(input.response)) {
       return { ok: false, reason: 'Invalid passkey' };
     }
@@ -148,17 +183,22 @@ export class SimpleWebAuthnPasskeyCeremony implements PasskeyCeremony {
    * Build WebAuthn request options via SimpleWebAuthn.
    *
    * @param input - RP id for a discoverable-credential assertion.
-   * @returns Challenge plus request options (`allowCredentials` empty).
+   * @returns Challenge plus request options (`allowCredentials` empty,
+   *   `extensions.prf.eval.first` = base64url SHA-256 of `21gifts-nostr-v1`).
    */
   async generateAuthenticationOptions(input: {
     rpID: string;
   }): Promise<{ challenge: string; options: PublicKeyCredentialRequestOptionsJSON }> {
+    const prfEval = { eval: { first: Buffer.from(prfEvalFirstSalt()).toString('base64url') } };
     const options = await generateAuthenticationOptions({
       rpID: input.rpID,
       userVerification: 'required',
       allowCredentials: [],
     });
-    return { challenge: options.challenge, options };
+    return {
+      challenge: options.challenge,
+      options: ensurePrfExtension(options, prfEval),
+    };
   }
 
   /**
@@ -176,6 +216,9 @@ export class SimpleWebAuthnPasskeyCeremony implements PasskeyCeremony {
     publicKey: Uint8Array;
     signCount: number;
   }): Promise<{ ok: true; newSignCount: number } | { ok: false; reason: string }> {
+    if (credentialHasPrfResults(input.response)) {
+      return { ok: false, reason: 'Invalid passkey' };
+    }
     if (!isAuthenticationResponse(input.response)) {
       return { ok: false, reason: 'Invalid passkey' };
     }
@@ -200,6 +243,20 @@ export class SimpleWebAuthnPasskeyCeremony implements PasskeyCeremony {
       return { ok: false, reason: 'Invalid passkey' };
     }
   }
+}
+
+/**
+ * Guarantee `extensions.prf` is present on generated options JSON.
+ *
+ * @param options - SimpleWebAuthn creation or request options.
+ * @param prf - Registration `{}` or authentication `{ eval: { first } }`.
+ * @returns The same options object with `extensions.prf` set.
+ */
+function ensurePrfExtension<
+  T extends PublicKeyCredentialCreationOptionsJSON | PublicKeyCredentialRequestOptionsJSON,
+>(options: T, prf: Record<string, never> | { eval: { first: string } }): T {
+  Object.assign(options, { extensions: { ...options.extensions, prf } });
+  return options;
 }
 
 /**

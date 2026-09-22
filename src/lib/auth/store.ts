@@ -95,6 +95,17 @@ export interface Account {
    * cards or view profiles. Operator debug JSON includes the stored value.
    */
   notificationLevel?: NotificationLevel;
+  /**
+   * True when this account must complete the wallet (recovery phrase)
+   * setup step. Omit / false = existing member (not gated). New passkey
+   * register and first-passkey claim set true; replace does not.
+   */
+  walletRequired?: boolean;
+  /**
+   * Epoch ms when the owner posted that the recovery phrase was shown,
+   * or null/omitted when unseen.
+   */
+  walletBackupSeenAt?: number | null;
 }
 
 /**
@@ -127,11 +138,12 @@ export interface PasskeyCredential {
 }
 
 /** Kind of outstanding WebAuthn ceremony. */
-export type PasskeyChallengeType = 'register' | 'authenticate';
+export type PasskeyChallengeType = 'register' | 'authenticate' | 'replace';
 
 /**
  * A one-time WebAuthn challenge. Registration stores the pending account id;
- * authentication looks the account up from the asserted credential.
+ * authentication looks the account up from the asserted credential; replace
+ * stores the signed-in account id (never null).
  */
 export interface PasskeyChallenge {
   /** Opaque id returned to the client as `challengeId`. */
@@ -140,7 +152,7 @@ export interface PasskeyChallenge {
   type: PasskeyChallengeType;
   /** WebAuthn challenge (base64url) from the ceremony generator. */
   challenge: string;
-  /** Pending account id for register; `null` for authenticate. */
+  /** Pending account id for register; signed-in id for replace; `null` for authenticate. */
   accountId: string | null;
   /** Whether finish has already consumed this challenge. */
   consumed: boolean;
@@ -172,6 +184,19 @@ export interface AuthStore {
    * matching no row or swallowed unique_violation).
    */
   updateAccount(account: Account): Promise<void>;
+  /**
+   * Set `walletBackupSeenAt` to `now` when it is still null. Other columns
+   * stay unchanged.
+   *
+   * @param accountId - Account to mark.
+   * @param now - Epoch ms for the first write.
+   * @returns `{ account, wrote }`, or `undefined` when the id is unknown.
+   *   `wrote` is true only when this call stored the timestamp.
+   */
+  markWalletBackupSeen(
+    accountId: string,
+    now: number,
+  ): Promise<{ account: Account; wrote: boolean } | undefined>;
   /**
    * Set only `name` on the account that owns this Lightning Address
    * (`lower(trim)` match). Other columns stay unchanged.
@@ -294,12 +319,26 @@ export interface AuthStore {
    */
   createPasskeyCredential(credential: PasskeyCredential): Promise<boolean>;
   /**
-   * Persist the account's first passkey. Returns false when this account
-   * already has a credential or the credential id is taken.
+   * Persist the account's first passkey and set `walletRequired: true` in the
+   * same write. Returns false when this account already has a credential, the
+   * credential id is taken, the account is missing, or the account is
+   * session-refused.
    */
   createFirstPasskeyCredential(credential: PasskeyCredential): Promise<boolean>;
   /** Look up a passkey credential by id, or `undefined` if unknown. */
   getPasskeyCredential(credentialId: string): Promise<PasskeyCredential | undefined>;
+  /**
+   * Look up this account's single passkey credential, or `undefined` if none.
+   */
+  getPasskeyCredentialForAccount(accountId: string): Promise<PasskeyCredential | undefined>;
+  /**
+   * Replace this account's single credential.
+   * Returns false when the account has no credential, when the new
+   * credentialId is already stored for a different account, or when the
+   * delete+insert does not land.
+   * On success the old row is gone and `credential` is stored.
+   */
+  replacePasskeyCredential(credential: PasskeyCredential): Promise<boolean>;
   /**
    * Atomically advance `signCount` for clone detection.
    * Succeeds only when `(newCount === 0 && stored === 0)` or `newCount > stored`.
@@ -404,6 +443,22 @@ export class InMemoryAuthStore implements AuthStore {
     }
   }
 
+  async markWalletBackupSeen(
+    accountId: string,
+    now: number,
+  ): Promise<{ account: Account; wrote: boolean } | undefined> {
+    const current = this.#accounts.get(accountId);
+    if (current === undefined) {
+      return undefined;
+    }
+    if (current.walletBackupSeenAt !== null && current.walletBackupSeenAt !== undefined) {
+      return { account: current, wrote: false };
+    }
+    const updated: Account = { ...current, walletBackupSeenAt: now };
+    this.#accounts.set(accountId, updated);
+    return { account: updated, wrote: true };
+  }
+
   async updateAccount(account: Account): Promise<void> {
     if (account.linkingKey !== null) {
       const ownerId = this.#accountsByLinkingKey.get(account.linkingKey);
@@ -438,6 +493,8 @@ export class InMemoryAuthStore implements AuthStore {
     this.#accounts.set(account.id, {
       ...account,
       sessionRefused: previous?.sessionRefused === true,
+      walletRequired: previous?.walletRequired === true,
+      walletBackupSeenAt: previous?.walletBackupSeenAt ?? null,
     });
     this.#accountsByViewKey.set(account.viewKey, account.id);
     if (account.linkingKey !== null) {
@@ -723,11 +780,49 @@ export class InMemoryAuthStore implements AuthStore {
         return false;
       }
     }
-    return this.createPasskeyCredential(credential);
+    if (this.#passkeyCredentials.has(credential.credentialId)) {
+      return false;
+    }
+    const current = this.#accounts.get(credential.accountId);
+    if (current === undefined) {
+      return false;
+    }
+    this.#passkeyCredentials.set(credential.credentialId, credential);
+    this.#accounts.set(current.id, { ...current, walletRequired: true });
+    return true;
   }
 
   async getPasskeyCredential(credentialId: string): Promise<PasskeyCredential | undefined> {
     return this.#passkeyCredentials.get(credentialId);
+  }
+
+  async getPasskeyCredentialForAccount(accountId: string): Promise<PasskeyCredential | undefined> {
+    for (const credential of this.#passkeyCredentials.values()) {
+      if (credential.accountId === accountId) {
+        return credential;
+      }
+    }
+    return undefined;
+  }
+
+  async replacePasskeyCredential(credential: PasskeyCredential): Promise<boolean> {
+    let current: PasskeyCredential | undefined;
+    for (const stored of this.#passkeyCredentials.values()) {
+      if (stored.accountId === credential.accountId) {
+        current = stored;
+        break;
+      }
+    }
+    if (current === undefined) {
+      return false;
+    }
+    const taken = this.#passkeyCredentials.get(credential.credentialId);
+    if (taken !== undefined && taken.accountId !== credential.accountId) {
+      return false;
+    }
+    this.#passkeyCredentials.delete(current.credentialId);
+    this.#passkeyCredentials.set(credential.credentialId, credential);
+    return true;
   }
 
   async updatePasskeyCredential(credential: PasskeyCredential): Promise<boolean> {

@@ -83,8 +83,11 @@ Public base URLs used in examples:
 | POST   | `/auth/passkey/register/finish`                      | none                       | Verify attestation, issue session                                                                         |
 | POST   | `/auth/passkey/authenticate/begin`                   | none                       | Issue WebAuthn request options                                                                            |
 | POST   | `/auth/passkey/authenticate/finish`                  | none                       | Verify assertion, issue session                                                                           |
+| POST   | `/auth/passkey/replace/begin`                        | Bearer                     | Issue WebAuthn creation options that exclude the current credential                                       |
+| POST   | `/auth/passkey/replace/finish`                       | Bearer                     | Verify attestation, replace the one credential, keep the session                                          |
 | GET    | `/me`                                                | `Authorization: Bearer`    | Account (`setup` + factual `missing` + `hasPosted` + `aboutMe` + `aboutMeHasPhoto` + `notificationLevel`) |
 | GET    | `/me/activity`                                       | Bearer                     | Given + received series (forum zaps + house gifts; platform given = all outbound)                         |
+| POST   | `/me/wallet-backup-seen`                             | Bearer                     | Record that the recovery phrase was shown (empty body)                                                    |
 | GET    | `/view/:viewKey`                                     | none                       | Public profile card by view key                                                                           |
 | GET    | `/view/:viewKey/about/photo`                         | none                       | Profile-note photo bytes for the view-key card                                                            |
 | GET    | `/view/:viewKey/activity`                            | none                       | Public given/received payload for the account behind the view key                                         |
@@ -311,10 +314,11 @@ Otherwise **Response** `200`:
 ```
 
 `options` is `PublicKeyCredentialCreationOptionsJSON` (`residentKey` and
-`userVerification` required, attestation `none`). `user.id` is the pending
-account UUID encoded as UTF-8 (the provisioned account when claiming by
-`viewKey`). The process still boots without
-`WEBAUTHN_RP_ID` — only these routes fail closed.
+`userVerification` required, attestation `none`). `options.extensions.prf`
+is `{}` so a capable authenticator enables hmac-secret. The api never sees
+PRF output or a mnemonic. `user.id` is the pending account UUID encoded as
+UTF-8 (the provisioned account when claiming by `viewKey`). The process
+still boots without `WEBAUTHN_RP_ID` — only these routes fail closed.
 
 ### `POST /auth/passkey/register/finish`
 
@@ -360,17 +364,23 @@ ID).
     "viewKey": "<64-hex>",
     "createdAt": 0,
     "rulesAgreedAt": null,
-    "setup": "name",
-    "missing": ["name", "username", "lightning-address", "rules"],
+    "setup": "wallet",
+    "missing": ["wallet", "name", "username", "lightning-address", "rules"],
     "hasPosted": false,
     "aboutMe": null,
     "aboutMeHasPhoto": false,
-    "notificationLevel": "all"
+    "notificationLevel": "all",
+    "funding": null,
+    "walletRequired": true,
+    "walletBackupSeenAt": null,
+    "passkeyCredentialId": "<base64url>"
   }
 }
 ```
 
-The `account` object is the same owner JSON as `GET /me` (includes `viewKey`, `setup`, `missing`, `hasPosted`, `aboutMe`, `aboutMeHasPhoto`, and `notificationLevel`).
+The `account` object is the same owner JSON as `GET /me` (includes `viewKey`, `setup`, `missing`, `hasPosted`, `aboutMe`, `aboutMeHasPhoto`, `notificationLevel`, `walletRequired`, `walletBackupSeenAt`, and `passkeyCredentialId`). The example above is a new register (`walletRequired: true`, `setup: "wallet"`, `missing` starts with `"wallet"`). Existing members keep `walletRequired: false`; passkey replace and phrase export do not change these columns.
+
+A new register row is stored with `walletRequired: true` and `walletBackupSeenAt: null`. First-passkey claim of a provisioned row sets `walletRequired: true` in the same write as the credential (`createFirstPasskeyCredential`: Postgres CTE insert-then-update; memory store writes both in one method) and does not clear a seen timestamp. Passkey replace does not change these columns. Operator `POST /debug/accounts` provision leaves `walletRequired` false. The api never stores a mnemonic or PRF output.
 
 ### `POST /auth/passkey/authenticate/begin`
 
@@ -378,7 +388,9 @@ Starts a discoverable-credential assertion. `allowCredentials` is empty.
 Same 500 as register begin when WebAuthn is unconfigured.
 
 **Response** `200`: `{ "challengeId", "options" }` where `options` is
-`PublicKeyCredentialRequestOptionsJSON`.
+`PublicKeyCredentialRequestOptionsJSON`. `options.extensions.prf.eval.first`
+is the base64url SHA-256 of `21gifts-nostr-v1`. The api never sees PRF
+output or a mnemonic.
 
 ### `POST /auth/passkey/authenticate/finish`
 
@@ -391,6 +403,45 @@ not stored. An account with `sessionRefused` is **403**
 `{ "error": "You signed in with the wrong account. Please try again with the correct account." }`
 and does not persist a bearer. Success body matches register finish
 (`linkingKey` is whatever the account currently has).
+
+### `POST /auth/passkey/replace/begin`
+
+Signed-in members replace their one passkey. Requires `Authorization: Bearer`.
+Issues WebAuthn creation options with `excludeCredentials` set to the current
+credential and `extensions.prf` present so a PRF-capable authenticator can
+own the account. The api never sees PRF output or a mnemonic.
+
+Missing or invalid bearer → **Response** `401`: `{ "error": "Unauthorized" }`.
+
+Same **500** as register begin when WebAuthn is unconfigured.
+
+When the account has no credential → **Response** `400`:
+`{ "error": "No passkey to replace" }`.
+
+**Response** `200`: `{ "challengeId", "options" }` like register begin.
+
+### `POST /auth/passkey/replace/finish`
+
+Verifies a new registration attestation and replaces the account's one
+credential. Does not mint a session; the existing Bearer stays valid.
+
+Body matches register finish (`challengeId`, `credential`). Requires `Origin`.
+
+| Status | Body                                                                  | When                                                       |
+| ------ | --------------------------------------------------------------------- | ---------------------------------------------------------- |
+| 500    | `{ "error": "Server auth is not configured" }`                        | RP ID missing, not on the allowlist, or no matching origin |
+| 401    | `{ "error": "Unauthorized" }`                                         | Missing or invalid Bearer                                  |
+| 400    | `{ "error": "Expected a JSON body with challengeId and credential" }` | Body parse fail                                            |
+| 400    | `{ "error": "Unknown or expired challenge" }`                         | Unknown `challengeId` or Bearer is not the challenge owner |
+| 400    | `{ "error": "Challenge expired" }`                                    | Past challenge TTL                                         |
+| 400    | `{ "error": "Challenge already used" }`                               | Finish already attempted                                   |
+| 400    | `{ "error": "Wrong challenge type" }`                                 | Challenge is not `replace`                                 |
+| 400    | `{ "error": "Invalid origin" }`                                       | Missing or disallowed `Origin`                             |
+| 400    | `{ "error": "Invalid passkey" }`                                      | Attestation verify failed, same id, or duplicate           |
+
+**Response** `200`: `{ "account": { ... } }` — owner JSON via
+`serializeOwnerAccountWithPosts`, same shape as register finish minus `token`.
+Does not change `walletRequired` or `walletBackupSeenAt`.
 
 ### `GET /me`
 
@@ -430,9 +481,17 @@ An account with `sessionRefused` and a still-valid minted token → **Response**
   "aboutMe": null,
   "aboutMeHasPhoto": false,
   "notificationLevel": "all",
-  "funding": null
+  "funding": null,
+  "walletRequired": false,
+  "walletBackupSeenAt": null,
+  "passkeyCredentialId": null
 }
 ```
+
+The example above is an existing member (`walletRequired: false`,
+`walletBackupSeenAt: null`). New register/claim owner JSON has
+`walletRequired: true` and `setup: "wallet"` with `missing` starting with
+`"wallet"`.
 
 About me is the profile-note text when it is a real bio, else null (auto
 name-copy is not a bio, including after a display-name rename when the note
@@ -453,13 +512,16 @@ stays `null`)).
 | `viewKey`                  | string         | Durable 64 lowercase hex capability secret for GET /view/:viewKey. Owner-only. Not a session.                                                                                                                                                                                                                                                   |
 | `createdAt`                | number         | Creation time (epoch ms)                                                                                                                                                                                                                                                                                                                        |
 | `rulesAgreedAt`            | number \| null | Epoch ms of first living-room rules agreement, or `null`                                                                                                                                                                                                                                                                                        |
-| `setup`                    | string \| null | Next wizard step: `name`, `username`, `lightning-address`, `rules`, or `null` when complete. Skip timestamps count as done except username, which cannot be skipped. Clients must not invent a parallel sequence.                                                                                                                               |
-| `missing`                  | string[]       | Factually unset fields (`name`, `username`, `lightning-address`, `rules`) even when skipped. Does not include `profileMessageId`.                                                                                                                                                                                                               |
+| `setup`                    | string \| null | Next wizard step: `wallet`, `name`, `username`, `lightning-address`, `rules`, or `null` when complete. Skip timestamps count as done except username and wallet, which cannot be skipped. Clients must not invent a parallel sequence.                                                                                                          |
+| `missing`                  | string[]       | Factually unset fields (`wallet` when required and unseen, then `name`, `username`, `lightning-address`, `rules`) even when skipped. Does not include `profileMessageId`.                                                                                                                                                                       |
 | hasPosted                  | boolean        | True when there is a live forum row that is not the profile note (replies still count) OR when `aboutMe` is non-null. A profile note that is only the display-name copy, a photo without bio text, a missing note, and a soft-hidden note do not count. Not the same predicate as GET /invoices/posted (that stays top-level non-profile only). |
 | `aboutMe`                  | string \| null | Profile-note text when it is a real bio, else `null` (missing or soft-hidden (`deletedAt` set); auto name-copy is not a bio, including after a display-name rename when the note text still equals the stored profile-note `name` (Ada→Grace with text `Ada` stays `null`))                                                                     |
 | `aboutMeHasPhoto`          | boolean        | True when the live profile note has a stored JPEG/PNG/WebP. Independent of `aboutMe` (photo-only and name-copy notes can still have a photo). Bytes are `GET /me/about/photo`. Does not expose `profileMessageId`.                                                                                                                              |
 | `notificationLevel`        | string         | Owner fan-out filter: `all`, `active`, or `mentions`. Default `all`. Owner-only; omitted from public `GET /view/:viewKey` and member cards.                                                                                                                                                                                                     |
 | `funding`                  | object \| null | Funding-program grant. `null` for `basis`. Otherwise always an object; no row is `{ status: "none", trialUtcDate: null, admittedAt: null, reviewedByName: null }`. Admitted includes live `reviewedByName`.                                                                                                                                     |
+| `walletRequired`           | boolean        | True when the owner must complete the wallet setup step. Default false for existing members.                                                                                                                                                                                                                                                    |
+| `walletBackupSeenAt`       | number \| null | Epoch ms when the recovery phrase was shown, or `null` when unseen.                                                                                                                                                                                                                                                                             |
+| `passkeyCredentialId`      | string \| null | WebAuthn credential id (base64url), or `null` when the account has none. Owner-only.                                                                                                                                                                                                                                                            |
 
 ### `GET /me/activity`
 
@@ -496,6 +558,18 @@ Store throw or missing BTC-USD day → **Response** `503`:
 
 `donatedOverTime` / `receivedOverTime` reuse the `spendOverTime` day objects from `GET /gifts/stats`, including additive CHF/EUR/PHP. USD = per-gift UTC-day Coinbase BTC-USD close. CHF/EUR/PHP = USD × that UTC day's Frankfurter ECB cross. Missing fiat is JSON `null`, never 503 (`account.activity.fiat_failed` still 200). Empty activity is 200 zeros with USD-only `fx.quotes` (no Coinbase / Frankfurter). Given = confirmed forum zaps this account paid, plus every outbound house gift when `isPlatform` is true. Received = indexed zaps on notes this account authored (including hidden and replies), plus `message.sats` remainder on **top-level** notes only (so a visible ₿21 post is never empty; gift-as-reply `sats` are not Received), plus house gifts to the account Lightning Address handle. Forum zaps are not mixed into `GET /gifts/stats`.
 
+### `POST /me/wallet-backup-seen`
+
+Bearer required. Empty body. Records that the recovery phrase was shown.
+
+Missing/invalid bearer → **Response** `401` `{ "error": "Unauthorized" }`.
+
+Success → **Response** `200` with the owner JSON (same shape as `GET /me`).
+The first successful POST sets `walletBackupSeenAt` to the server clock
+(epoch ms). Later POSTs return the original timestamp unchanged
+(idempotent; no second write). Logs `account.wallet.backup_seen` with
+`{ accountId }` only. Never stores or logs a mnemonic or PRF output.
+
 ### `POST /me/setup/skip`
 
 Skip a skippable wizard step. Body:
@@ -504,9 +578,12 @@ Skip a skippable wizard step. Body:
 { "step": "name" }
 ```
 
-or `{ "step": "lightning-address" }`. Sets the matching skip timestamp to now;
-does not clear `name` / `lightningAddress`. `step: "rules"` and unknown steps
-are **400**. Success → **200** owner JSON.
+or `{ "step": "lightning-address" }`. Still only `name` or `lightning-address`.
+Sets the matching skip timestamp to now; does not clear `name` /
+`lightningAddress`. `step: "wallet"` is **400** with the same copy as an
+invalid step: `{ "error": "Expected a JSON body with step \"name\" or \"lightning-address\"" }`.
+`step: "rules"` and unknown steps are the same **400**. Success → **200**
+owner JSON.
 
 ### `GET /members/:accountId`
 
@@ -1201,9 +1278,11 @@ Success → **Response** `200` with the updated account:
 - `lightningAddress`: `null`
 - `lightningAddressVerified`: `false`
 
-Does not clear `username`. After unlink, `setup` is `username` if the
-handle is blank; `setup` is `lightning-address` only when name is done or
-skipped **and** username is set (and LN is blank / skip cleared).
+Does not clear `username`. After unlink, `setup` stays `wallet` when
+`walletRequired` is true and backup is unseen; otherwise `setup` is
+`username` if the handle is blank; `setup` is `lightning-address` only
+when wallet is done or not required, name is done or skipped, **and**
+username is set (and LN is blank / skip cleared).
 
 ### `POST /me/lightning-address/verification`
 
@@ -1419,6 +1498,8 @@ Success → **Response** `200`:
       "lightningAddressSkippedAt": null,
       "profileMessageId": null,
       "notificationLevel": "all",
+      "walletRequired": false,
+      "walletBackupSeenAt": null,
       "nostrPubkey": "<64-hex>",
       "nostrNsecCiphertext": "<envelope-hex>",
       "nostrKekId": 1,
@@ -1430,8 +1511,9 @@ Success → **Response** `200`:
 ```
 
 The listing uses `serializeDebugAccount` (public fields plus `isPlatform`,
-`sessionRefused`, `viewKey`, and Nostr debug fields). Member `GET /me` does not
-include `isPlatform` or `sessionRefused`.
+`sessionRefused`, `viewKey`, `walletRequired`, `walletBackupSeenAt`, and Nostr
+debug fields). Member `GET /me` does not include `isPlatform` or
+`sessionRefused`.
 
 Accounts are ordered by `createdAt` ascending, then `id`. An empty store
 returns `"accounts": []`.
@@ -1523,11 +1605,12 @@ finish and this route's session mint return 403 with the wrong-account
 copy (`GET /me` too). Setting a new address is not supported here
 (`POST /me/lightning-address` remains the live resolve path). Unlink
 resets `lightningAddressVerified` to `false` and drops any in-flight
-verification. It does not clear `username`. `GET /me` then returns
-`setup: "username"` if the handle is blank, or `setup: "lightning-address"`
-only when name is done or skipped **and** username is set (and LN is blank
-/ skip cleared), so any client that follows `setup` shows the username or
-address form as appropriate. `verified` as a **role** is a
+verification. It does not clear `username`. `GET /me` then returns `setup: "wallet"` when
+`walletRequired` is true and backup is unseen, else `setup: "username"` if
+the handle is blank, or `setup: "lightning-address"` only when wallet is
+done or not required, name is done or skipped, **and** username is set
+(and LN is blank / skip cleared), so any client that follows `setup` shows
+the wallet, username, or address form as appropriate. `verified` as a **role** is a
 human-identity badge (a moderator physically met the person); it
 is not `lightningAddressVerified`. New passkey accounts stay `basis` until
 staff confirm them via `POST /trust/verify` or an operator overrides `role`
@@ -1564,7 +1647,8 @@ Unknown account id → **Response** `404`:
 
 Success → **Response** `200` with the updated account JSON (same
 `serializeDebugAccount` shape as `GET /debug/accounts`, including
-`isPlatform`, `sessionRefused`, `viewKey`, and Nostr debug fields). Role changes log `debug.accounts.role_set`
+`isPlatform`, `sessionRefused`, `viewKey`, `walletRequired`,
+`walletBackupSeenAt`, and Nostr debug fields). Role changes log `debug.accounts.role_set`
 with the account id and new role. Unlink logs
 `debug.accounts.lightning_address.cleared` with the account id (never the
 token or the previous address). Platform changes log

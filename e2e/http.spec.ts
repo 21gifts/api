@@ -125,6 +125,11 @@ test('POST /me/setup/skip without bearer is 401', async ({ request }) => {
   expect(res.status()).toBe(401);
 });
 
+test('POST /me/wallet-backup-seen without bearer is 401', async ({ request }) => {
+  const res = await request.post('/me/wallet-backup-seen');
+  expect(res.status()).toBe(401);
+});
+
 test('GET /members/:accountId without bearer is 401', async ({ request }) => {
   const res = await request.get('/members/:accountId');
   expect(res.status()).toBe(401);
@@ -637,6 +642,16 @@ test('POST /auth/passkey/authenticate/begin issues options', async ({ request })
 test('POST /auth/passkey/authenticate/finish without body is 400', async ({ request }) => {
   const res = await request.post('/auth/passkey/authenticate/finish');
   expect(res.status()).toBe(400);
+});
+
+test('POST /auth/passkey/replace/begin without bearer is 401', async ({ request }) => {
+  const res = await request.post('/auth/passkey/replace/begin');
+  expect(res.status()).toBe(401);
+});
+
+test('POST /auth/passkey/replace/finish without bearer is 401', async ({ request }) => {
+  const res = await request.post('/auth/passkey/replace/finish');
+  expect(res.status()).toBe(401);
 });
 
 test('GET /invoices/passkey unconfigured is 503', async ({ request }) => {

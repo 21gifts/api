@@ -224,11 +224,13 @@ describe('GET /me', () => {
       lightningAddressVerified: boolean;
       viewKey: string;
       rulesAgreedAt: number | null;
-      setup: 'name' | 'username' | 'lightning-address' | 'rules' | null;
+      setup: 'wallet' | 'name' | 'username' | 'lightning-address' | 'rules' | null;
       missing: string[];
       hasPosted: boolean;
       notificationLevel: 'all' | 'active' | 'mentions';
       funding: null;
+      walletRequired: boolean;
+      walletBackupSeenAt: number | null;
     };
     expect(body.id).toBe('acc');
     expect(body.role).toBe('basis');
@@ -244,6 +246,8 @@ describe('GET /me', () => {
     expect(body.hasPosted).toBe(false);
     expect(body.notificationLevel).toBe('all');
     expect(body.funding).toBeNull();
+    expect(body.walletRequired).toBe(false);
+    expect(body.walletBackupSeenAt).toBeNull();
   });
 
   it('returns funding none for a verified account without a grant', async () => {
@@ -253,12 +257,19 @@ describe('GET /me', () => {
     await store.updateAccount({ ...existing!, role: 'verified' });
     const res = await mount(store).request('/me', { headers: AUTH });
     expect(res.status).toBe(200);
-    expect(((await res.json()) as { funding: unknown }).funding).toEqual({
+    const funded = (await res.json()) as {
+      funding: unknown;
+      walletRequired: boolean;
+      walletBackupSeenAt: number | null;
+    };
+    expect(funded.funding).toEqual({
       status: 'none',
       trialUtcDate: null,
       admittedAt: null,
       reviewedByName: null,
     });
+    expect(funded.walletRequired).toBe(false);
+    expect(funded.walletBackupSeenAt).toBeNull();
   });
 
   it('returns hasPosted false when the only live row is the profile note', async () => {
@@ -352,6 +363,19 @@ describe('POST /me/setup/skip', () => {
     expect(bad.status).toBe(400);
   });
 
+  it('rejects step wallet with the same copy as an invalid step', async () => {
+    const store = await seededStore();
+    const res = await mount(store).request('/me/setup/skip', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ step: 'wallet' }),
+    });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({
+      error: 'Expected a JSON body with step "name" or "lightning-address"',
+    });
+  });
+
   it('skips name then GET /me advances setup to username', async () => {
     const store = await seededStore();
     const res = await mount(store).request('/me/setup/skip', {
@@ -408,6 +432,70 @@ describe('POST /me/setup/skip', () => {
     expect(res.status).toBe(200);
     expect(((await res.json()) as { setup: string }).setup).toBe('rules');
     expect((await store.getAccount('acc'))?.lightningAddressSkippedAt).toBe(now());
+  });
+});
+
+describe('POST /me/wallet-backup-seen', () => {
+  it('returns 401 without a session', async () => {
+    const res = await mount(new InMemoryAuthStore()).request('/me/wallet-backup-seen', {
+      method: 'POST',
+    });
+    expect(res.status).toBe(401);
+    expect(await res.json()).toEqual({ error: 'Unauthorized' });
+  });
+
+  it('sets walletBackupSeenAt and returns owner JSON', async () => {
+    const store = await seededStore();
+    const existing = await store.getAccount('acc');
+    expect(existing).toBeDefined();
+    expect(
+      await store.createFirstPasskeyCredential({
+        credentialId: 'cred-wallet',
+        publicKey: new Uint8Array([1]),
+        signCount: 0,
+        accountId: 'acc',
+        createdAt: 1,
+      }),
+    ).toBe(true);
+    const res = await mount(store).request('/me/wallet-backup-seen', {
+      method: 'POST',
+      headers: AUTH,
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      walletRequired: boolean;
+      walletBackupSeenAt: number | null;
+      setup: string | null;
+    };
+    expect(body.walletRequired).toBe(true);
+    expect(body.walletBackupSeenAt).toBe(now());
+    expect(body.setup).toBe('name');
+    expect((await store.getAccount('acc'))?.walletBackupSeenAt).toBe(now());
+    const events = parsedEvents(warn).filter((e) => e['event'] === 'account.wallet.backup_seen');
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({ event: 'account.wallet.backup_seen', accountId: 'acc' });
+    expect(events[0]).not.toHaveProperty('mnemonic');
+    expect(events[0]).not.toHaveProperty('prf');
+  });
+
+  it('keeps the original timestamp on a second POST', async () => {
+    const store = await seededStore();
+    const existing = await store.getAccount('acc');
+    expect(existing).toBeDefined();
+    expect(await store.markWalletBackupSeen('acc', 1_000_000)).toMatchObject({
+      wrote: true,
+      account: { walletBackupSeenAt: 1_000_000 },
+    });
+    const res = await mount(store, { clock: () => 2_000_000 }).request('/me/wallet-backup-seen', {
+      method: 'POST',
+      headers: AUTH,
+    });
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as { walletBackupSeenAt: number | null }).walletBackupSeenAt).toBe(
+      1_000_000,
+    );
+    expect((await store.getAccount('acc'))?.walletBackupSeenAt).toBe(1_000_000);
+    expect(parsedEvents(warn).some((e) => e['event'] === 'account.wallet.backup_seen')).toBe(false);
   });
 });
 

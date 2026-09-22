@@ -4,11 +4,14 @@ import { resolveWebAuthnConfig } from '@/lib/config';
 import {
   finishPasskeyAuthentication,
   finishPasskeyRegistration,
+  finishPasskeyReplace,
   startPasskeyAuthentication,
   startPasskeyClaim,
   startPasskeyRegistration,
+  startPasskeyReplace,
 } from '@/lib/auth/passkey';
 import { serializeOwnerAccountWithPosts } from '@/lib/auth/account-json';
+import { resolveSession } from '@/lib/auth/service';
 import { WRONG_ACCOUNT_ERROR } from '@/lib/auth/wrong-account';
 import { InMemoryFundingStore, type FundingStore } from '@/lib/funding-store';
 import type { AuthStore } from '@/lib/auth/store';
@@ -16,6 +19,7 @@ import type { PasskeyCeremony } from '@/lib/auth/webauthn';
 import { logEvent } from '@/lib/log';
 import type { MessageStore } from '@/lib/message-store';
 import type { NostrKeygen } from '@/lib/nostr/keys';
+import { bearerToken } from '@/routes/me';
 
 /**
  * Passkey (WebAuthn) HTTP surface. Login is passkey-only; LNURL-auth is gone.
@@ -57,7 +61,7 @@ const passkeyFinishBody = z.object({
  * Build the `/auth` route group.
  *
  * @param deps - Shared store, message store, clock, and passkey collaborators.
- * @returns A Hono app exposing passkey register and authenticate routes.
+ * @returns A Hono app exposing passkey register, authenticate, and replace routes.
  */
 export function authRoutes(deps: AuthRouteDeps): Hono {
   return new Hono()
@@ -170,6 +174,73 @@ export function authRoutes(deps: AuthRouteDeps): Hono {
         {
           token: result.value.token,
           account: await serializeOwnerAccountWithPosts(result.value.account, deps.messages, {
+            store: deps.fundingStore ?? new InMemoryFundingStore(),
+            nowMs: deps.now(),
+            authStore: deps.store,
+          }),
+        },
+        200,
+      );
+    })
+    .post('/passkey/replace/begin', async (c) => {
+      const config = webAuthnConfig(deps);
+      if (config === null) {
+        return c.json({ error: 'Server auth is not configured' }, 500);
+      }
+      const token = bearerToken(c.req.header('authorization'));
+      if (token === null) {
+        return c.json({ error: 'Unauthorized' }, 401);
+      }
+      const account = await resolveSession(deps.store, deps.now(), token);
+      if (account === null) {
+        return c.json({ error: 'Unauthorized' }, 401);
+      }
+      const started = await startPasskeyReplace(
+        deps.store,
+        deps.passkeyCeremony,
+        config,
+        deps.now(),
+        account,
+      );
+      if (!('challengeId' in started)) {
+        return c.json({ error: started.error }, 400);
+      }
+      return c.json(started, 200);
+    })
+    .post('/passkey/replace/finish', async (c) => {
+      const config = webAuthnConfig(deps);
+      if (config === null) {
+        return c.json({ error: 'Server auth is not configured' }, 500);
+      }
+      const token = bearerToken(c.req.header('authorization'));
+      if (token === null) {
+        return c.json({ error: 'Unauthorized' }, 401);
+      }
+      const account = await resolveSession(deps.store, deps.now(), token);
+      if (account === null) {
+        return c.json({ error: 'Unauthorized' }, 401);
+      }
+      const parsed = passkeyFinishBody.safeParse(await c.req.json().catch(() => null));
+      if (!parsed.success) {
+        return c.json({ error: 'Expected a JSON body with challengeId and credential' }, 400);
+      }
+      const result = await finishPasskeyReplace(
+        deps.store,
+        deps.passkeyCeremony,
+        config,
+        deps.now(),
+        c.req.header('origin'),
+        parsed.data.challengeId,
+        parsed.data.credential,
+        account,
+      );
+      if (!result.ok) {
+        return c.json({ error: result.error }, 400);
+      }
+      logEvent('auth.passkey.replace.ok', { accountId: result.account.id });
+      return c.json(
+        {
+          account: await serializeOwnerAccountWithPosts(result.account, deps.messages, {
             store: deps.fundingStore ?? new InMemoryFundingStore(),
             nowMs: deps.now(),
             authStore: deps.store,

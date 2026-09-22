@@ -49,22 +49,30 @@ clears the token; a transient failure does not.
 
 Login is passkey-only. LNURL-auth has been removed.
 
+A signed-in member can replace their one passkey (`POST /auth/passkey/replace/begin`
+then `…/finish` with Bearer) so a PRF-capable authenticator can own the account.
+The existing session stays valid. The api never sees PRF output or a mnemonic.
+
 The signed-in view currently lives on `/login` — there is no separate
 `/profile` route yet. It shows a name form, a username form, a Lightning
 Address form, and **Sign out**. Name and Lightning Address are each
 skippable via `POST /me/setup/skip`. Username cannot skip; the app sets
 the handle with `POST /me/username`. Living-room rules stay required.
+New passkey accounts must confirm the recovery phrase first
+(`POST /me/wallet-backup-seen`); that step cannot skip.
 
-`GET /me` `setup` order is name, then username (unskippable), then
+`GET /me` `setup` order is wallet (when `walletRequired` and the backup
+is unseen; not skippable), then name, then username (unskippable), then
 lightning-address, then rules. When username is still blank,
 `POST /me/name` auto-assigns `usernameFromDisplayName` if that handle is
 free; a collision or uniqueness race leaves username null and `setup` at
 username.
 
-After name/skip, username, and address/skip, the app records living-room
-rules agreement via `POST /me/rules-agreement`. `GET /me` carries
-`setup` (wizard; skip counts as done for name and Lightning Address, not
-username), `missing` (facts; skip does not), and `rulesAgreedAt` (epoch
+After wallet backup (new accounts), name/skip, username, and address/skip,
+the app records living-room rules agreement via `POST /me/rules-agreement`.
+`GET /me` carries `setup` (wizard; skip counts as done for name and
+Lightning Address, not username or wallet), `missing` (facts; skip does
+not), `walletRequired`, `walletBackupSeenAt`, and `rulesAgreedAt` (epoch
 ms of the first agreement, or `null`).
 
 No email, no password. Losing the passkey (and platform sync) loses the
@@ -72,7 +80,9 @@ account.
 
 HTTP cited: `/auth/passkey/register/begin`, `/auth/passkey/register/finish`,
 `/auth/passkey/authenticate/begin`, `/auth/passkey/authenticate/finish`,
-`/me`, `/me/setup/skip`, `/me/name`, `/me/username`, `/me/rules-agreement`.
+`/auth/passkey/replace/begin`, `/auth/passkey/replace/finish`,
+`/me`, `/me/wallet-backup-seen`, `/me/setup/skip`, `/me/name`, `/me/username`,
+`/me/rules-agreement`.
 
 ---
 
@@ -88,9 +98,11 @@ or unlink a LUD-16 Lightning Address:
   leaves the address **unverified**. Unreachable or non-zap addresses are
   rejected and not stored.
 - `DELETE /me/lightning-address` — unlink (also clears the LN skip timestamp;
-  does not clear `username`). After unlink, `setup` is `username` if the handle
-  is blank; `setup` is `lightning-address` only when name is done or skipped
-  **and** username is set
+  does not clear `username`). After unlink, `setup` stays `wallet` when
+  `walletRequired` is true and backup is unseen; otherwise `setup` is
+  `username` if the handle is blank; `setup` is `lightning-address` only when
+  wallet is done or not required, name is done or skipped, **and** username is
+  set
 
 Proof-of-control of the linked Lightning Address is the flag
 `lightningAddressVerified` (not the forum role **Verified**):

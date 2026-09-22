@@ -143,6 +143,20 @@ test('Function: meRoutes — GET /me without bearer is 401', async ({ request })
   expect(me.status()).toBe(401);
 });
 
+test('Function: meRoutes — POST /me/wallet-backup-seen without bearer is 401', async ({
+  request,
+}) => {
+  const res = await request.post('/me/wallet-backup-seen');
+  expect(res.status()).toBe(401);
+});
+
+test('Function: markWalletBackupSeen — POST /me/wallet-backup-seen without bearer is 401', async ({
+  request,
+}) => {
+  const res = await request.post('/me/wallet-backup-seen');
+  expect(res.status()).toBe(401);
+});
+
 test('Function: aboutMeFromNote — PUT /me/about without bearer is 401', async ({ request }) => {
   const res = await request.put('/me/about', { data: { text: 'Hi' } });
   expect(res.status()).toBe(401);
@@ -1062,6 +1076,27 @@ test('Function: startPasskeyAuthentication — POST begin returns a challenge', 
   const res = await request.post('/auth/passkey/authenticate/begin');
   expect(res.status()).toBe(200);
   expect(((await res.json()) as { challengeId: string }).challengeId.length).toBeGreaterThan(8);
+});
+
+test('Function: startPasskeyReplace — POST replace begin without Bearer is 401', async ({
+  request,
+}) => {
+  const res = await request.post('/auth/passkey/replace/begin');
+  expect(res.status()).toBe(401);
+});
+
+test('Function: finishPasskeyReplace — POST replace finish without Bearer is 401', async ({
+  request,
+}) => {
+  const res = await request.post('/auth/passkey/replace/finish');
+  expect(res.status()).toBe(401);
+});
+
+test('Function: prfEvalFirstSalt — POST authenticate begin returns a challenge', async ({
+  request,
+}) => {
+  const res = await request.post('/auth/passkey/authenticate/begin');
+  expect(res.status()).toBe(200);
 });
 
 test('Function: finishPasskeyAuthentication — POST finish without credential id is 400', async ({

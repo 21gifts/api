@@ -2,7 +2,7 @@
 
 ## Endpoint: DELETE /me/lightning-address
 
-- **Purpose:** Bearer required. Clears the account Lightning Address, resets `lightningAddressVerified` to false, and clears `lightningAddressSkippedAt`. Does not clear `username`. After unlink, owner `setup` is `username` if the handle is blank; `setup` is `lightning-address` only when name is done or skipped **and** username is set.
+- **Purpose:** Bearer required. Clears the account Lightning Address, resets `lightningAddressVerified` to false, and clears `lightningAddressSkippedAt`. Does not clear `username`. After unlink, owner `setup` stays `wallet` when `walletRequired` is true and backup is unseen; otherwise `setup` is `username` if the handle is blank; `setup` is `lightning-address` only when wallet is done or not required, name is done or skipped, **and** username is set.
 - **Errors:** 401 without session.
 - **Used by:** `unlinkLightningAddress` in the app.
 - **Auth:** See Purpose — Bearer where stated, else public.
@@ -65,7 +65,7 @@
 
 ## Endpoint: GET /debug/accounts
 
-- **Purpose:** Operator listing of registered accounts. Same shape as `serializeDebugAccount`: public fields including `username`, plus `isPlatform`, `sessionRefused`, `viewKey`, skip stamps, `profileMessageId`, `notificationLevel`, and Nostr debug fields (`nostrNsecCiphertext` is hex of the stored envelope, never decrypted).
+- **Purpose:** Operator listing of registered accounts. Same shape as `serializeDebugAccount`: public fields including `username`, plus `isPlatform`, `sessionRefused`, `viewKey`, skip stamps, `profileMessageId`, `notificationLevel`, `walletRequired`, `walletBackupSeenAt`, and Nostr debug fields (`nostrNsecCiphertext` is hex of the stored envelope, never decrypted).
 - **Errors:** 503 `{ error: 'Debug is not configured' }` when `DEBUG_TOKEN` is unset or blank; 401 `{ error: 'Unauthorized' }` when the Bearer token does not match.
 - **Used by:** Operator `gifts-debug` CLI.
 - **Auth:** `Authorization: Bearer` with `DEBUG_TOKEN`. Not an end-user session.
@@ -93,7 +93,7 @@
 
 ## Endpoint: PATCH /debug/accounts/:id
 
-- **Purpose:** Operator assignment of `account.role` (`basis` \| `verified` \| `moderator` \| `founder`), hard-unlink of the Lightning Address, the official platform flag, and/or `sessionRefused`. Body may include any of `{ "role": "<AccountRole>" }`, `{ "lightningAddress": null }`, `{ "platform": true|false }`, `{ "sessionRefused": true|false }`. Unlink sets `lightningAddress` to null, `lightningAddressVerified` to false, and drops in-flight address verification. Setting `platform: true` clears any other platform flag (at most one true) and, when a conversation store is wired, points every `member_platform` thread at this account (`retargetMemberPlatform`), except a thread whose member is already this account. `sessionRefused: true` makes passkey finish and debug session mint return 403 with the wrong-account copy. Returns the updated account JSON (same shape as `GET /debug/accounts` via `serializeDebugAccount`, including `isPlatform`, `sessionRefused`, `viewKey`, and Nostr debug fields). Does not set a new address here (`POST /me/lightning-address` remains the live resolve path).
+- **Purpose:** Operator assignment of `account.role` (`basis` \| `verified` \| `moderator` \| `founder`), hard-unlink of the Lightning Address, the official platform flag, and/or `sessionRefused`. Body may include any of `{ "role": "<AccountRole>" }`, `{ "lightningAddress": null }`, `{ "platform": true|false }`, `{ "sessionRefused": true|false }`. Unlink sets `lightningAddress` to null, `lightningAddressVerified` to false, and drops in-flight address verification. Setting `platform: true` clears any other platform flag (at most one true) and, when a conversation store is wired, points every `member_platform` thread at this account (`retargetMemberPlatform`), except a thread whose member is already this account. `sessionRefused: true` makes passkey finish and debug session mint return 403 with the wrong-account copy. Returns the updated account JSON (same shape as `GET /debug/accounts` via `serializeDebugAccount`, including `isPlatform`, `sessionRefused`, `viewKey`, `walletRequired`, `walletBackupSeenAt`, and Nostr debug fields). Does not set a new address here (`POST /me/lightning-address` remains the live resolve path).
 - **Errors:** 503 `{ error: 'Debug is not configured' }` when `DEBUG_TOKEN` is unset or blank; 401 `{ error: 'Unauthorized' }` when the Bearer token does not match; 400 `{ error: 'Expected a JSON body with a "role" string, lightningAddress null, platform boolean, and/or sessionRefused boolean' }` for unknown/missing/non-JSON body or a non-null `lightningAddress`; 404 `{ error: 'Not found' }` when the account id is unknown.
 - **Used by:** Operator `gifts-debug role` / `gifts-debug unlink` / `gifts-debug refuse-session` CLI and platform-account setup. Does not write trust edges (`POST /debug/trust-edges` is the backfill path).
 - **Auth:** `Authorization: Bearer` with `DEBUG_TOKEN`. Not an end-user session.
@@ -213,31 +213,45 @@
 
 ## Endpoint: POST /auth/passkey/authenticate/begin
 
-- **Purpose:** Issues WebAuthn request options for a discoverable credential. JSON: challengeId, options.
+- **Purpose:** Issues WebAuthn request options for a discoverable credential. JSON: challengeId, options (`extensions.prf.eval.first` = base64url SHA-256 of `21gifts-nostr-v1`).
 - **Errors:** HTTP 500 `{ error: 'Server auth is not configured' }` if `WEBAUTHN_RP_ID` is unset, blank, not on the allowlist, or no CORS origin matches it.
 - **Used by:** App passkey sign-in.
 - **Auth:** Public.
 
 ## Endpoint: POST /auth/passkey/authenticate/finish
 
-- **Purpose:** Verifies the assertion and issues `{ token, account }` immediately. Requires `Origin`. `{ token, account }` uses owner JSON including `hasPosted`, `aboutMe`, `aboutMeHasPhoto`, `notificationLevel`, and `funding`. An account with `sessionRefused` is refused with no bearer.
+- **Purpose:** Verifies the assertion and issues `{ token, account }` immediately. Requires `Origin`. `{ token, account }` uses owner JSON including `hasPosted`, `aboutMe`, `aboutMeHasPhoto`, `notificationLevel`, `funding`, `walletRequired`, `walletBackupSeenAt`, and `passkeyCredentialId`. An account with `sessionRefused` is refused with no bearer.
 - **Errors:** 400 invalid body/origin/challenge/credential; 403 `{ error: 'You signed in with the wrong account. Please try again with the correct account.' }` when `sessionRefused` is true; 500 if WebAuthn is unconfigured.
 - **Used by:** App passkey sign-in.
 - **Auth:** Public (proof is the assertion).
 
 ## Endpoint: POST /auth/passkey/register/begin
 
-- **Purpose:** Issues WebAuthn creation options. JSON: challengeId, options. Empty body / no `viewKey` mints a pending new account id (row created only on finish). Optional body `{ "viewKey": "<64-hex>" }` claims an operator-provisioned account (same id/name/lightningAddress/viewKey).
+- **Purpose:** Issues WebAuthn creation options. JSON: challengeId, options (`extensions.prf: {}`). Empty body / no `viewKey` mints a pending new account id (row created only on finish). Optional body `{ "viewKey": "<64-hex>" }` claims an operator-provisioned account (same id/name/lightningAddress/viewKey).
 - **Errors:** HTTP 500 `{ error: 'Server auth is not configured' }` if `WEBAUTHN_RP_ID` is unset, blank, not on the allowlist, or no CORS origin matches it; 400 `{ error: 'Expected a JSON body with an optional "viewKey" string' }` when `viewKey` is present but not a string; 404 `{ error: 'This profile could not be found.' }` for a malformed/unknown view key; 409 `{ error: 'This profile already has a passkey' }` when the provisioned account already has a credential.
 - **Used by:** App passkey account creation and claim-by-viewKey.
 - **Auth:** Public.
 
 ## Endpoint: POST /auth/passkey/register/finish
 
-- **Purpose:** Verifies the attestation, creates a `linkingKey: null` account (or binds a passkey to a provisioned account without recreating it), issues `{ token, account }`. Requires `Origin`. `{ token, account }` uses owner JSON including `hasPosted`, `aboutMe`, `aboutMeHasPhoto`, `notificationLevel`, and `funding`. An account with `sessionRefused` is refused with no bearer.
+- **Purpose:** Verifies the attestation, creates a `linkingKey: null` account (or binds a passkey to a provisioned account without recreating it), issues `{ token, account }`. Requires `Origin`. `{ token, account }` uses owner JSON including `hasPosted`, `aboutMe`, `aboutMeHasPhoto`, `notificationLevel`, `funding`, `walletRequired`, `walletBackupSeenAt`, and `passkeyCredentialId`. An account with `sessionRefused` is refused with no bearer.
 - **Errors:** 400 invalid body/origin/challenge/passkey; 403 `{ error: 'You signed in with the wrong account. Please try again with the correct account.' }` when `sessionRefused` is true; 500 if WebAuthn is unconfigured.
 - **Used by:** App passkey account creation and claim-by-viewKey.
 - **Auth:** Public (proof is the attestation).
+
+## Endpoint: POST /auth/passkey/replace/begin
+
+- **Purpose:** Issues WebAuthn creation options that exclude the signed-in account's current credential. JSON: challengeId, options (`excludeCredentials`, `extensions.prf`). The api never sees PRF output.
+- **Errors:** 401 `{ error: 'Unauthorized' }` missing/invalid Bearer; 400 `{ error: 'No passkey to replace' }` when the account has no credential; 500 `{ error: 'Server auth is not configured' }` if WebAuthn is unconfigured.
+- **Used by:** App passkey replace so a PRF-capable authenticator can own the account.
+- **Auth:** `Authorization: Bearer` session.
+
+## Endpoint: POST /auth/passkey/replace/finish
+
+- **Purpose:** Verifies the new attestation and replaces the account's one credential. Success JSON is `{ account }` owner JSON (same as register finish minus `token`). Existing session stays valid. Requires `Origin`.
+- **Errors:** 401 without session; 400 invalid body/origin/challenge/passkey; 500 if WebAuthn is unconfigured.
+- **Used by:** App passkey replace.
+- **Auth:** `Authorization: Bearer` session.
 
 ## Endpoint: GET /favicon.ico
 
@@ -353,7 +367,7 @@
 
 ## Endpoint: GET /me
 
-- **Purpose:** Bearer session. Current owner account JSON (id, linkingKey, role, name, `username` (`string | null` LUD-16 / NIP-05 local-part), `location` (`string | null`, never omit, never `""`), lightning address, verified flag, forumLawsDismissed, `createdAt`, `rulesAgreedAt`, owner `viewKey`, `setup`, `missing`, `hasPosted`, `aboutMe`, `aboutMeHasPhoto`, `notificationLevel`, `funding`). `hasPosted` is true when the account has a live forum row that is not the profile note (replies still count) OR when `aboutMe` is non-null. A profile note that is only the display-name copy, a photo without bio text, a missing note, and a soft-hidden note do not count. Not the same predicate as GET /invoices/posted (that stays top-level non-profile only). `aboutMe` is the profile-note text when it is a real bio, else `null` (missing or soft-hidden (`deletedAt` set); auto name-copy is not a bio). `aboutMeHasPhoto` is true when the live profile note has a stored photo. `notificationLevel` is the owner fan-out filter (`all` \| `active` \| `mentions`, default `all`, owner-only). `funding` is `null` for `basis`; otherwise always an object (`status: 'none'` when there is no row). `setup` is the next wizard step (`name` \| `username` \| `lightning-address` \| `rules`) or `null` when complete; username is not skippable; skip timestamps count as done for name and Lightning Address, not username. `missing` lists factually unset fields (`name`, `username`, `lightning-address`, `rules`) even when skipped. Does not expose `profileMessageId`. Location is not a setup step. An account with `sessionRefused` is 403 (not 401) so the client can sign the visitor out.
+- **Purpose:** Bearer session. Current owner account JSON (id, linkingKey, role, name, `username` (`string | null` LUD-16 / NIP-05 local-part), `location` (`string | null`, never omit, never `""`), lightning address, verified flag, forumLawsDismissed, `createdAt`, `rulesAgreedAt`, owner `viewKey`, `setup`, `missing`, `hasPosted`, `aboutMe`, `aboutMeHasPhoto`, `notificationLevel`, `funding`, `walletRequired`, `walletBackupSeenAt`, `passkeyCredentialId`). `hasPosted` is true when the account has a live forum row that is not the profile note (replies still count) OR when `aboutMe` is non-null. A profile note that is only the display-name copy, a photo without bio text, a missing note, and a soft-hidden note do not count. Not the same predicate as GET /invoices/posted (that stays top-level non-profile only). `aboutMe` is the profile-note text when it is a real bio, else `null` (missing or soft-hidden (`deletedAt` set); auto name-copy is not a bio). `aboutMeHasPhoto` is true when the live profile note has a stored photo. `notificationLevel` is the owner fan-out filter (`all` \| `active` \| `mentions`, default `all`, owner-only). `funding` is `null` for `basis`; otherwise always an object (`status: 'none'` when there is no row). `setup` is the next wizard step (`wallet` \| `name` \| `username` \| `lightning-address` \| `rules`) or `null` when complete; username is not skippable; skip timestamps count as done for name and Lightning Address, not username or wallet. `missing` lists factually unset fields (`wallet` when required and unseen, then `name`, `username`, `lightning-address`, `rules`) even when skipped. Does not expose `profileMessageId`. Location is not a setup step. An account with `sessionRefused` is 403 (not 401) so the client can sign the visitor out.
 - **Errors:** 401 if missing/expired; 403 `{ error: 'You signed in with the wrong account. Please try again with the correct account.' }` when the bearer belongs to an account with `sessionRefused`.
 - **Used by:** App `fetchMe`.
 - **Auth:** See Purpose — Bearer where stated, else public.
@@ -770,10 +784,17 @@
 - **Used by:** Operator `gifts-debug dump <table>`.
 - **Auth:** `Authorization: Bearer` with `DEBUG_TOKEN`. Not an end-user session.
 
+## Endpoint: POST /me/wallet-backup-seen
+
+- **Purpose:** Bearer required. Empty body. Sets `walletBackupSeenAt` via `markWalletBackupSeen` (`WHERE wallet_backup_seen_at IS NULL`; logs `account.wallet.backup_seen` `{ accountId }` only when this call wrote). Does not change `walletRequired`. Owner JSON including `setup` / `missing` / `funding`. Never a mnemonic or PRF.
+- **Errors:** 401 without session.
+- **Used by:** App `POST /me/wallet-backup-seen` after the owner confirms the recovery phrase.
+- **Auth:** `Authorization: Bearer` session.
+
 ## Endpoint: POST /me/setup/skip
 
-- **Purpose:** Bearer required. Body `{ step: "name" | "lightning-address" }`. Sets `nameSkippedAt` or `lightningAddressSkippedAt` to now so owner `setup` advances; does not clear or change `name` / `lightningAddress`. Skipping an already-set field is allowed (writes the skip timestamp). Rules cannot be skipped.
-- **Errors:** 401 without session; 400 for unknown step, `step: "rules"`, or bad JSON.
+- **Purpose:** Bearer required. Body `{ step: "name" | "lightning-address" }`. Sets `nameSkippedAt` or `lightningAddressSkippedAt` to now so owner `setup` advances; does not clear or change `name` / `lightningAddress`. Skipping an already-set field is allowed (writes the skip timestamp). Rules cannot be skipped. `step: "wallet"` is 400 like an unknown step.
+- **Errors:** 401 without session; 400 for unknown step, `step: "wallet"`, `step: "rules"`, or bad JSON (same copy as an invalid step).
 - **Used by:** App onboarding skip controls (api-first; app proxy may follow later).
 - **Auth:** `Authorization: Bearer` session.
 
