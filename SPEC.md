@@ -3087,8 +3087,10 @@ Post to the public member forum. Bearer session required. JSON body (not
 multipart) with text and/or one photo, optional `photos` (array, max 10,
 each `{ contentType, data, takenAt? }` same shape as singular `photo`), an
 optional parent UUID, and optional `goalSats` (positive integer 1..10_000_000
-on a top-level note only). Optional `takenAt` is a civil capture time. A
-non-string, invalid, or missing value is stored null and does not return 400:
+on a top-level note only). Optional `takenAt` is `YYYY-MM-DDTHH:MM:SS` with an optional `±HH:MM`
+offset, a real calendar date, and a year from 1990 through the current UTC
+year + 1. `Z`, a fractional second, a leap second, a non-string, or a missing
+value is stored null and does not return 400:
 
 Top-level with a goal:
 
