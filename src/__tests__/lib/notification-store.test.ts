@@ -182,6 +182,15 @@ describe('InMemoryNotificationStore', () => {
     expect(marked?.readAt?.toISOString()).toBe(original.toISOString());
   });
 
+  it('markRead on a moderator_proposal leaves readAt null', async () => {
+    const store = new InMemoryNotificationStore([
+      row({ type: 'moderator_proposal', replyId: 'subject' }),
+    ]);
+    const marked = await store.markRead('n-1', 'parent', READ_AT);
+    expect(marked?.readAt).toBeNull();
+    expect((await store.getByIdForRecipient('n-1', 'parent'))?.readAt).toBeNull();
+  });
+
   it('markAllRead stamps unread rows only', async () => {
     const original = new Date('2026-08-29T18:00:00.000Z');
     const store = new InMemoryNotificationStore([
@@ -196,6 +205,20 @@ describe('InMemoryNotificationStore', () => {
     expect((await store.getByIdForRecipient('read', 'parent'))?.readAt?.toISOString()).toBe(
       original.toISOString(),
     );
+    expect((await store.getByIdForRecipient('other', 'other'))?.readAt).toBeNull();
+  });
+
+  it('markAllRead skips moderator_proposal and stamps other unread types', async () => {
+    const store = new InMemoryNotificationStore([
+      row({ id: 'reply', type: 'forum_reply', replyId: 'r-unread' }),
+      row({ id: 'proposal', type: 'moderator_proposal', replyId: 'subject' }),
+      row({ id: 'other', recipientAccountId: 'other', replyId: 'r-other' }),
+    ]);
+    await store.markAllRead('parent', READ_AT);
+    expect((await store.getByIdForRecipient('reply', 'parent'))?.readAt?.toISOString()).toBe(
+      READ_AT.toISOString(),
+    );
+    expect((await store.getByIdForRecipient('proposal', 'parent'))?.readAt).toBeNull();
     expect((await store.getByIdForRecipient('other', 'other'))?.readAt).toBeNull();
   });
 
@@ -236,6 +259,19 @@ describe('InMemoryNotificationStore', () => {
     ]);
     expect(await store.deleteByMessageIds(['hit'])).toBe(3);
     expect((await store.listByRecipient('parent', 10)).map((item) => item.id)).toEqual(['neither']);
+  });
+
+  it('deleteByTypeAndReplyId removes matching type and replyId and returns the count', async () => {
+    const store = new InMemoryNotificationStore([
+      row({ id: 'hit', type: 'moderator_proposal', replyId: 'subject' }),
+      row({ id: 'wrong-type', type: 'moderator_appointed', replyId: 'subject' }),
+      row({ id: 'wrong-reply', type: 'moderator_proposal', replyId: 'other' }),
+    ]);
+    expect(await store.deleteByTypeAndReplyId('moderator_proposal', 'subject')).toBe(1);
+    expect((await store.listByRecipient('parent', 10)).map((item) => item.id).sort()).toEqual([
+      'wrong-reply',
+      'wrong-type',
+    ]);
   });
 });
 
@@ -393,6 +429,7 @@ describe('PostgresNotificationStore', () => {
     const marked = await new PostgresNotificationStore(sql).markRead('n-1', 'parent', READ_AT);
     expect(sql.executes).toHaveLength(0);
     expect(sql.queries[0]?.text).toMatch(/UPDATE notification SET read_at/);
+    expect(sql.queries[0]?.text).toMatch(/type <> 'moderator_proposal'/);
     expect(sql.queries[0]?.text).toMatch(/RETURNING/);
     expect(sql.queries[0]?.params).toEqual(['n-1', 'parent', READ_AT]);
     expect(marked?.readAt).toEqual(READ_AT);
@@ -429,6 +466,7 @@ describe('PostgresNotificationStore', () => {
     await new PostgresNotificationStore(sql).markAllRead('parent', READ_AT);
     expect(sql.executes).toHaveLength(1);
     expect(sql.executes[0]?.text).toMatch(/UPDATE notification SET read_at = \$2/);
+    expect(sql.executes[0]?.text).toMatch(/type <> 'moderator_proposal'/);
     expect(sql.executes[0]?.params).toEqual(['parent', READ_AT]);
   });
 
@@ -462,6 +500,21 @@ describe('PostgresNotificationStore', () => {
     expect(sql.queries[0]?.params).toEqual([
       '{11111111-1111-4111-8111-111111111111,22222222-2222-4222-8222-222222222222}',
     ]);
+    expect(sql.executes).toEqual([]);
+  });
+
+  it('deleteByTypeAndReplyId deletes by type and reply_id', async () => {
+    const sql = new MockSql();
+    sql.nextRows = [{ id: 'n-1' }, { id: 'n-2' }];
+    const removed = await new PostgresNotificationStore(sql).deleteByTypeAndReplyId(
+      'moderator_proposal',
+      'r-1',
+    );
+    expect(removed).toBe(2);
+    expect(sql.queries[0]?.text).toBe(
+      `DELETE FROM notification WHERE type = $1 AND reply_id = $2 RETURNING id`,
+    );
+    expect(sql.queries[0]?.params).toEqual(['moderator_proposal', 'r-1']);
     expect(sql.executes).toEqual([]);
   });
 });

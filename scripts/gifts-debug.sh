@@ -45,7 +45,7 @@
 #   gifts-debug trust-edge <subject-id> <actor-id> <kind>
 #                                      # POST a stored trust edge; print edge JSON
 #                                      # kind: verify | moderator_propose |
-#                                      #       moderator_confirm | moderator_appoint
+#                                      #       moderator_confirm | moderator_appoint | moderator_reject
 #   gifts-debug trust-edge-delete <subject-id> <kind>
 #                                      # DELETE a stored trust edge; print edge JSON
 #                                      # Does not change account.role

@@ -50,7 +50,7 @@ api/
 │   │   ├── debug-trust.ts    # GET/POST/DELETE /debug/trust-edges (operator DEBUG_TOKEN; no role change)
 │   │   ├── debug-catalog.ts  # GET /debug/dump, GET /debug/dump/:table (operator DEBUG_TOKEN)
 │   │   ├── trust-chain.ts    # session GET /trust-chain (founder seeds; ?around=<id> one hop)
-│   │   ├── trust.ts          # GET /trust/proposals; POST /trust/verify, propose-moderator, confirm-moderator, appoint-moderator
+│   │   ├── trust.ts          # GET /trust/proposals; POST /trust/verify, propose-moderator, confirm-moderator, reject-moderator, appoint-moderator
 │   │   ├── funding.ts        # POST /funding/apply; GET /funding/applications; GET /funding/applications/:accountId; POST /funding/trial, admit, reject
 │   │   ├── push.ts           # GET /push/vapid-public; POST/DELETE /me/push-subscriptions
 │   │   ├── stats.ts          # GET /gifts/stats (public gift totals)
@@ -87,7 +87,7 @@ api/
 │   │   ├── request-auth.ts   # Classify bearer for api_log (session/debug/spend/none)
 │   │   ├── conversation-store.ts  # ConversationStore port, memory + Postgres
 │   │   ├── conversation-push.ts  # notifyConversationMessage (DM Web Push; no in-app rows)
-│   │   ├── notification.ts   # Notification public JSON + bell fan-out (`notifyForumPost` / `notifyForumReply` / `notifyZap`) filtered by `notificationLevel` (`parseNotificationLevel` / `isStaffAccount` / `wantsNotification`); targeted `notifyModeratorAppointed` and `notifyExternalForumReply` (not fan-out; the latter reaches only the parent note's author)
+│   │   ├── notification.ts   # Notification public JSON + bell fan-out (`notifyForumPost` / `notifyForumReply` / `notifyZap`) filtered by `notificationLevel` (`parseNotificationLevel` / `isStaffAccount` / `wantsNotification`); staff `notifyModeratorProposed`; targeted `notifyModeratorAppointed` and `notifyExternalForumReply` (not fan-out; the latter reaches only the parent note's author)
 │   │   ├── notification-store.ts  # NotificationStore port, memory + Postgres
 │   │   ├── push-config.ts    # resolveVapidConfig (VAPID env; missing → null)
 │   │   ├── push.ts           # parsePushSubscription + English forum/zap/conversation payloads

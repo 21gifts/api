@@ -740,6 +740,11 @@ test('POST /trust/confirm-moderator without bearer is 401', async ({ request }) 
   expect(res.status()).toBe(401);
 });
 
+test('POST /trust/reject-moderator without bearer is 401', async ({ request }) => {
+  const res = await request.post('/trust/reject-moderator', { data: { accountId: 'x' } });
+  expect(res.status()).toBe(401);
+});
+
 test('POST /trust/appoint-moderator without bearer is 401', async ({ request }) => {
   const res = await request.post('/trust/appoint-moderator', { data: { accountId: 'x' } });
   expect(res.status()).toBe(401);

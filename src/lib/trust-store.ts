@@ -8,8 +8,15 @@
 import { isUniqueViolation, type SqlClient } from '@/lib/auth/sql';
 import type { TrustEdge, TrustKind } from '@/lib/trust';
 
-/** Message thrown when `(subjectId, kind)` is already stored. */
+/** Message thrown when a live-unique `(subjectId, kind)` is already stored. */
 const DUPLICATE_TRUST_EDGE = 'duplicate trust edge';
+
+/** One-per-subject kinds. Propose and reject may repeat. */
+const LIVE_UNIQUE_TRUST_KINDS: ReadonlySet<TrustKind> = new Set([
+  'verify',
+  'moderator_confirm',
+  'moderator_appoint',
+]);
 
 /**
  * Persistence port for trust edges.
@@ -39,7 +46,9 @@ export interface TrustStore {
   listEdgesTouching(accountId: string): Promise<TrustEdge[]>;
 
   /**
-   * Insert. Rejects a duplicate `(subjectId, kind)`.
+   * Insert. Rejects a duplicate live-unique `(subjectId, kind)`
+   * (`verify`, `moderator_confirm`, `moderator_appoint`). Propose and reject
+   * may repeat.
    *
    * @param edge - Fully formed edge (id, subject, actor, kind, time).
    * @returns The stored edge (a copy is fine).
@@ -48,13 +57,22 @@ export interface TrustStore {
   insertEdge(edge: TrustEdge): Promise<TrustEdge>;
 
   /**
-   * Delete the stored `(subjectId, kind)` row, if any.
+   * Delete the latest stored row of `(subjectId, kind)` (`createdAt` desc,
+   * then `id` desc), if any.
    *
    * @param subjectId - Account that received the status.
    * @param kind - Grant kind to remove.
    * @returns A copy of the deleted edge, or `undefined` when none matched.
    */
   deleteEdge(subjectId: string, kind: TrustKind): Promise<TrustEdge | undefined>;
+
+  /**
+   * Delete the row with this `id`, if any.
+   *
+   * @param id - Stored edge id.
+   * @returns A copy of the deleted edge, or `undefined` when none matched.
+   */
+  deleteEdgeById(id: string): Promise<TrustEdge | undefined>;
 }
 
 /** Idempotent DDL for the trust_edge table (matches `docs/schema/trust_edge.sql`). */
@@ -63,11 +81,14 @@ export const TRUST_SCHEMA_SQL: readonly string[] = [
   id uuid PRIMARY KEY,
   subject_id uuid NOT NULL REFERENCES account (id),
   actor_id uuid NOT NULL REFERENCES account (id),
-  kind text NOT NULL CHECK (kind IN ('verify', 'moderator_propose', 'moderator_confirm', 'moderator_appoint')),
+  kind text NOT NULL CHECK (kind IN ('verify', 'moderator_propose', 'moderator_confirm', 'moderator_appoint', 'moderator_reject')),
   created_at timestamptz NOT NULL,
   CHECK (subject_id <> actor_id)
 )`,
-  `CREATE UNIQUE INDEX IF NOT EXISTS trust_edge_subject_kind_uidx ON trust_edge (subject_id, kind)`,
+  `ALTER TABLE trust_edge DROP CONSTRAINT IF EXISTS trust_edge_kind_check`,
+  `ALTER TABLE trust_edge ADD CONSTRAINT trust_edge_kind_check CHECK (kind IN ('verify', 'moderator_propose', 'moderator_confirm', 'moderator_appoint', 'moderator_reject'))`,
+  `DROP INDEX IF EXISTS trust_edge_subject_kind_uidx`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS trust_edge_subject_kind_live_uidx ON trust_edge (subject_id, kind) WHERE kind IN ('verify', 'moderator_confirm', 'moderator_appoint')`,
   `CREATE INDEX IF NOT EXISTS trust_edge_actor_idx ON trust_edge (actor_id)`,
 ];
 
@@ -137,14 +158,16 @@ export class InMemoryTrustStore implements TrustStore {
    *
    * @param edge - Edge to store.
    * @returns A copy of the stored edge.
-   * @throws Error with message {@link DUPLICATE_TRUST_EDGE} when that pair exists.
+   * @throws Error with message {@link DUPLICATE_TRUST_EDGE} when a live-unique pair exists.
    */
   async insertEdge(edge: TrustEdge): Promise<TrustEdge> {
-    const duplicate = this.#edges.some(
-      (stored) => stored.subjectId === edge.subjectId && stored.kind === edge.kind,
-    );
-    if (duplicate) {
-      throw new Error(DUPLICATE_TRUST_EDGE);
+    if (LIVE_UNIQUE_TRUST_KINDS.has(edge.kind)) {
+      const duplicate = this.#edges.some(
+        (stored) => stored.subjectId === edge.subjectId && stored.kind === edge.kind,
+      );
+      if (duplicate) {
+        throw new Error(DUPLICATE_TRUST_EDGE);
+      }
     }
     const stored = copyEdge(edge);
     this.#edges.push(stored);
@@ -152,26 +175,54 @@ export class InMemoryTrustStore implements TrustStore {
   }
 
   /**
-   * Remove the `(subjectId, kind)` row and return a copy, or `undefined`.
+   * Remove the latest `(subjectId, kind)` row and return a copy, or `undefined`.
    *
    * @param subjectId - Account that received the status.
    * @param kind - Grant kind to remove.
    * @returns A copy of the deleted edge, or `undefined`.
    */
   deleteEdge(subjectId: string, kind: TrustKind): Promise<TrustEdge | undefined> {
-    const index = this.#edges.findIndex(
-      (stored) => stored.subjectId === subjectId && stored.kind === kind,
-    );
+    let bestIndex = -1;
+    let best: TrustEdge | undefined;
+    for (let i = 0; i < this.#edges.length; i += 1) {
+      const stored = this.#edges[i];
+      if (stored === undefined || stored.subjectId !== subjectId || stored.kind !== kind) {
+        continue;
+      }
+      if (
+        best === undefined ||
+        stored.createdAt > best.createdAt ||
+        (stored.createdAt === best.createdAt && stored.id > best.id)
+      ) {
+        best = stored;
+        bestIndex = i;
+      }
+    }
+    if (bestIndex < 0 || best === undefined) {
+      return Promise.resolve(undefined);
+    }
+    this.#edges.splice(bestIndex, 1);
+    return Promise.resolve(copyEdge(best));
+  }
+
+  /**
+   * Remove the row with this `id` and return a copy, or `undefined`.
+   *
+   * @param id - Stored edge id.
+   * @returns A copy of the deleted edge, or `undefined`.
+   */
+  deleteEdgeById(id: string): Promise<TrustEdge | undefined> {
+    const index = this.#edges.findIndex((stored) => stored.id === id);
     if (index < 0) {
       return Promise.resolve(undefined);
     }
-    const removed = this.#edges[index];
-    /* v8 ignore next 3 -- findIndex ≥ 0 always yields a row */
-    if (removed === undefined) {
+    const stored = this.#edges[index];
+    /* v8 ignore next 3 -- findIndex >= 0 means the slot exists */
+    if (stored === undefined) {
       return Promise.resolve(undefined);
     }
     this.#edges.splice(index, 1);
-    return Promise.resolve(copyEdge(removed));
+    return Promise.resolve(copyEdge(stored));
   }
 }
 
@@ -271,16 +322,39 @@ export class PostgresTrustStore implements TrustStore {
   }
 
   /**
-   * Delete the `(subjectId, kind)` row from `trust_edge`.
+   * Delete the latest `(subjectId, kind)` row from `trust_edge`.
    *
-   * @param subjectId - Account that received the status (`$1`).
-   * @param kind - Grant kind (`$2`).
+   * @param subjectId - Account that received the status (`$1` on the select).
+   * @param kind - Grant kind (`$2` on the select).
    * @returns The deleted row, or `undefined` when none matched.
    */
   async deleteEdge(subjectId: string, kind: TrustKind): Promise<TrustEdge | undefined> {
-    const rows = await this.#sql.query<TrustSqlRow>(
-      `DELETE FROM trust_edge WHERE subject_id = $1 AND kind = $2 RETURNING id, subject_id, actor_id, kind, created_at`,
+    const latest = await this.#sql.query<TrustSqlRow>(
+      `SELECT id, subject_id, actor_id, kind, created_at FROM trust_edge WHERE subject_id = $1 AND kind = $2 ORDER BY created_at DESC, id DESC LIMIT 1`,
       [subjectId, kind],
+    );
+    const found = latest[0];
+    if (found === undefined) {
+      return undefined;
+    }
+    const rows = await this.#sql.query<TrustSqlRow>(
+      `DELETE FROM trust_edge WHERE id = $1 RETURNING id, subject_id, actor_id, kind, created_at`,
+      [found.id],
+    );
+    const row = rows[0];
+    return row === undefined ? undefined : mapTrustRow(row);
+  }
+
+  /**
+   * Delete the `trust_edge` row with this `id`.
+   *
+   * @param id - Stored edge id (`$1`).
+   * @returns The deleted row, or `undefined` when none matched.
+   */
+  async deleteEdgeById(id: string): Promise<TrustEdge | undefined> {
+    const rows = await this.#sql.query<TrustSqlRow>(
+      `DELETE FROM trust_edge WHERE id = $1 RETURNING id, subject_id, actor_id, kind, created_at`,
+      [id],
     );
     const row = rows[0];
     return row === undefined ? undefined : mapTrustRow(row);
