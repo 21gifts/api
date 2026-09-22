@@ -51,7 +51,9 @@ export async function enqueueForumPushes(
   nowMs: number,
 ): Promise<void> {
   const accountIds = await store.listAccountIdsWithSubscriptions();
-  const payload = JSON.stringify(buildForumPushPayload(messageId));
+  const payload = JSON.stringify(
+    buildForumPushPayload({ postId: messageId, name: 'Someone', text: '' }),
+  );
   const createdAt = new Date(nowMs);
   for (const accountId of accountIds) {
     if (accountId === authorId) {
@@ -95,7 +97,9 @@ export async function enqueueReplyPush(
 ): Promise<void> {
   void parentId;
   const accountIds = await store.listAccountIdsWithSubscriptions();
-  const payload = JSON.stringify(buildReplyPushPayload(messageId));
+  const payload = JSON.stringify(
+    buildReplyPushPayload({ replyId: messageId, name: 'Someone', text: '' }),
+  );
   const createdAt = new Date(nowMs);
   for (const accountId of accountIds) {
     if (accountId === authorId) {
@@ -138,7 +142,9 @@ export async function enqueueZapPush(
   nowMs: number,
 ): Promise<void> {
   const accountIds = await store.listAccountIdsWithSubscriptions();
-  const payload = JSON.stringify(buildZapPushPayload(messageId));
+  const payload = JSON.stringify(
+    buildZapPushPayload({ messageId, name: 'Someone', amountSats: 0 }),
+  );
   const createdAt = new Date(nowMs);
   for (const accountId of accountIds) {
     if (accountId === authorId) {

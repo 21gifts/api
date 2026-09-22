@@ -490,7 +490,15 @@ export async function notifyForumPost(args: {
     },
     outboxType: 'forum',
     outboxMessageId: args.created.id,
-    payload: JSON.stringify(buildForumPushPayload(args.created.id)),
+    payload: JSON.stringify(
+      buildForumPushPayload({
+        postId: args.created.id,
+        name: args.created.name,
+        text: args.created.text,
+        hasPhoto: args.created.hasPhoto,
+        hasVideo: args.created.hasVideo === true,
+      }),
+    ),
     nowMs: args.created.createdAt.getTime(),
   });
 }
@@ -561,7 +569,15 @@ export async function notifyForumReply(args: {
     },
     outboxType: 'forum',
     outboxMessageId: args.created.id,
-    payload: JSON.stringify(buildReplyPushPayload(args.created.id)),
+    payload: JSON.stringify(
+      buildReplyPushPayload({
+        replyId: args.created.id,
+        name: args.created.name,
+        text: args.created.text,
+        hasPhoto: args.created.hasPhoto,
+        hasVideo: args.created.hasVideo === true,
+      }),
+    ),
     nowMs: args.created.createdAt.getTime(),
   });
 }
@@ -622,7 +638,15 @@ export async function notifyExternalForumReply(args: {
     },
     outboxType: 'forum',
     outboxMessageId: args.created.id,
-    payload: JSON.stringify(buildReplyPushPayload(args.created.id)),
+    payload: JSON.stringify(
+      buildReplyPushPayload({
+        replyId: args.created.id,
+        name: 'Someone',
+        text: args.created.text,
+        hasPhoto: args.created.hasPhoto,
+        hasVideo: args.created.hasVideo === true,
+      }),
+    ),
     nowMs: args.created.createdAt.getTime(),
   });
 }
@@ -702,7 +726,13 @@ export async function notifyZap(args: {
     },
     outboxType: 'zap',
     outboxMessageId: args.note.id,
-    payload: JSON.stringify(buildZapPushPayload(replyId)),
+    payload: JSON.stringify(
+      buildZapPushPayload({
+        messageId: replyId,
+        name: args.payerName ?? 'Someone',
+        amountSats: args.amountSats,
+      }),
+    ),
     nowMs: args.nowMs,
   });
 }

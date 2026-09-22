@@ -90,7 +90,8 @@ describe('enqueueForumPushes', () => {
     expect(JSON.parse(claimed[0]?.payload ?? '{}')).toMatchObject({
       type: 'forum',
       tag: 'forum_post:msg-1',
-      title: 'New post on 21.gifts',
+      title: 'Someone',
+      body: 'Posted in the living room.',
       url: '/notifications',
     });
   });
@@ -116,7 +117,8 @@ describe('enqueueReplyPush', () => {
     expect(claimed[0]?.type).toBe('forum');
     expect(claimed[0]?.messageId).toBe('reply-1');
     expect(JSON.parse(claimed[0]?.payload ?? '{}')).toMatchObject({
-      title: 'New reply on 21.gifts',
+      title: 'Someone',
+      body: 'Replied in the living room.',
       url: '/notifications',
       tag: 'forum_reply:reply-1',
     });
@@ -143,8 +145,8 @@ describe('enqueueZapPush', () => {
     expect(claimed[0]?.type).toBe('zap');
     expect(claimed[0]?.deliveredEndpoints).toEqual([]);
     expect(JSON.parse(claimed[0]?.payload ?? '{}')).toMatchObject({
-      title: 'Bitcoin on 21.gifts',
-      body: 'Someone sent sats.',
+      title: 'Someone',
+      body: 'Sent 0 sats.',
       url: '/notifications',
       tag: 'zap:msg-9',
     });
