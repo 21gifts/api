@@ -2946,7 +2946,8 @@ display. Each message exposes the author **name snapshotted at post time**,
 `text` (may be empty when a photo or video is attached), ISO-8601
 `createdAt`, `sats` (validated Lightning receipts on that note, default 0),
 optional `goalSats` (positive integer on a top-level note; omitted when
-unset/null/0),
+unset/null/0), optional `place` (`{ lat, lng, label }` when a pin is stored;
+the key is omitted when unset),
 `payable` (true when the note has a non-empty signed `eventId` and the author
 has a non-blank Lightning Address; null or empty `eventId` is not payable),
 `hasPhoto` (photo 0 exists), `photoCount` (integer 0–10 = photo 0
@@ -3677,10 +3678,12 @@ two ids per store.
 
 Public single-note fetch. Live rows need **no Bearer.** `:id` is a UUID.
 Registered **after** photo, video, `GET /messages/:id/replies`,
-`DELETE /messages/:id`, `GET /messages/stats`, and `GET /messages/hidden` so
+`DELETE /messages/:id`, `GET /messages/stats`, `GET /messages/hidden`, and
+`GET /messages/places` so
 those paths are not captured as `:id`. A live GET returns
 the public message JSON (`sats`, optional `goalSats` on a top-level note
-when the stored ask is a positive integer, `payable`, `hasPhoto`, `photoCount`
+when the stored ask is a positive integer, optional `place` when a pin is
+stored and omitted when unset, `payable`, `hasPhoto`, `photoCount`
 (0–10; always present; `hasPhoto` still means photo 0 exists), `photoTakenAts`
 (always; length equals `photoCount`; null when unknown; `[]` when there are no
 stills) and `photoTakenAt` only when `photoCount` is 1, `hasVideo`,
@@ -3848,7 +3851,8 @@ empty-name pubkey fallback), ISO `createdAt` / `deletedAt`, `hasPhoto` /
 `photoTakenAts` (always; length equals `photoCount`; null when unknown; `[]`
 when there are no stills) and `photoTakenAt` only when `photoCount` is 1 /
 `hasVideo` / `videoContentType`, optional `goalSats` (positive integer on a
-top-level note; omitted when unset/null/0 or on a reply), always-present `parentId` (JSON `null`
+top-level note; omitted when unset/null/0 or on a reply), optional `place`
+when a pin is stored (omitted when unset), always-present `parentId` (JSON `null`
 on top-level), optional `via: "nostr"` exactly when `accountId === null &&
 authorPubkey !== null` (the same rule as public message JSON), and
 `deletedBy: { id, name, role }` resolved from
