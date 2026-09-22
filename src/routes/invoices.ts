@@ -21,7 +21,7 @@ import {
 } from '@/lib/money';
 import { preimageMatchesHash } from '@/lib/proof';
 import { InMemoryFiatStore, type FiatRateBook } from '@/lib/usd-fiat-store';
-import { eligibleToday } from '@/lib/funding';
+import { effectiveStatus, eligibleToday } from '@/lib/funding';
 import { InMemoryFundingStore, type FundingStore } from '@/lib/funding-store';
 import { checkSpendAuth } from '@/lib/spend-auth';
 import {
@@ -491,11 +491,17 @@ export function invoiceRoutes(deps: InvoiceRouteDeps): Hono {
       }
 
       const account = await deps.authStore.getAccountByLightningAddress(address);
-      if (account === undefined) {
-        return c.json({ eligible: false }, 200);
+      if (account === undefined || account.role === 'basis') {
+        return c.json({ eligible: false, status: 'none' }, 200);
       }
       const grant = await fundingStore.getByAccountId(account.id);
-      return c.json({ eligible: eligibleToday(account.role, grant, deps.now()) }, 200);
+      return c.json(
+        {
+          eligible: eligibleToday(account.role, grant, deps.now()),
+          status: effectiveStatus(grant, deps.now()),
+        },
+        200,
+      );
     })
     .get('/posted', async (c) => {
       const denied = authGate(
