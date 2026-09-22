@@ -1108,7 +1108,7 @@
 - **Purpose:** Build the fan-out `inboxUnreadCount` callback: listed GET `/conversations` unread for one account. Staff comes from `getAccount` + `roleAtLeast(role, 'moderator')`, the `moderator` flag from `isModeratorGroupMember` (at least moderator and not the platform account). GET `/conversations` never lists `moderator_group` (fifth argument always false); this helper still pins that thread in the badge unread count for every group member. Platform id from `listAccounts` / `isPlatform`. Lookup failure yields staff false, moderator false, and `platformId` null.
 - **Inputs:** `ConversationStore`, `Pick<AuthStore, 'getAccount' | 'listAccounts'>`.
 - **Returns / side effects:** `(accountId) => Promise<number>` calling `conversations.unreadCount`.
-- **Used by:** `notifyConversationMessage`; `notifyForumPost` / `notifyForumReply` / `notifyZap` / `notifyModeratorAppointed` / `notifyModeratorProposed` callers that have a conversation store (`messagesRoutes`, `meRoutes`, `ensureProfileMessage`, `indexOpenZapReceipts`, `runNostrWorkerTick`, `trustRoutes`).
+- **Used by:** `notifyConversationMessage`; `notifyForumPost` / `notifyForumReply` / `notifyZap` / `notifyModeratorAppointed` / `notifyModeratorProposed` callers that have a conversation store (`messagesRoutes`, `meRoutes`, `indexOpenZapReceipts`, `runNostrWorkerTick`, `trustRoutes`).
 
 ## Function: notifyConversationMessage
 

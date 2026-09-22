@@ -829,7 +829,7 @@ describe('POST /me/name', () => {
     expect(note?.parentId).toBeNull();
   });
 
-  it('enqueues forum pushes when a push store is configured and LN is linked', async () => {
+  it('does not enqueue forum pushes when a name is set with LN already linked', async () => {
     const store = await seededStore({ lightningAddress: ADDRESS });
     const messages = new InMemoryMessageStore();
     const pushStore = new InMemoryPushStore();
@@ -851,7 +851,7 @@ describe('POST /me/name', () => {
     });
     expect(res.status).toBe(200);
     const pending = await pushStore.claimPending(10, now(), 60_000);
-    expect(pending.some((row) => row.type === 'forum')).toBe(true);
+    expect(pending.some((row) => row.type === 'forum')).toBe(false);
   });
 
   it('does not create a second profile note or change its text on rename', async () => {
