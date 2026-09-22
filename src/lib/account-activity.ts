@@ -302,7 +302,12 @@ async function receivedZapsForAccount(
       const fiat =
         credited === 0
           ? storedGiftFiat(message)
-          : fiatFromCents(subtractFiat(fiatCents(message), creditedFiatByMessageId.get(message.id) ?? ZERO_FIAT));
+          : fiatFromCents(
+              subtractFiat(
+                fiatCents(message),
+                creditedFiatByMessageId.get(message.id) ?? ZERO_FIAT,
+              ),
+            );
       rows.push({
         paidAt: message.createdAt,
         amountSats: message.sats - credited,
@@ -417,7 +422,9 @@ function subtractFiat(left: FiatCents, right: FiatCents): FiatCents {
   };
 }
 
-function fiatFromCents(cents: FiatCents): Pick<GiftRow, 'amountUsd' | 'amountChf' | 'amountEur' | 'amountPhp'> {
+function fiatFromCents(
+  cents: FiatCents,
+): Pick<GiftRow, 'amountUsd' | 'amountChf' | 'amountEur' | 'amountPhp'> {
   const text = (value: number | null): string | null =>
     value === null || value < 0 ? null : usdCentsToString(value);
   return {

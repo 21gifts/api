@@ -2647,7 +2647,13 @@ LUD-16, GETs the LNURL-pay callback, decodes the BOLT11, and stores
 **Body:**
 
 ```json
-{ "address": "name@domain.tld", "amountMsat": 100000, "amountUsd": "5.00", "comment": "optional", "messageId": "<uuid>" }
+{
+  "address": "name@domain.tld",
+  "amountMsat": 100000,
+  "amountUsd": "5.00",
+  "comment": "optional",
+  "messageId": "<uuid>"
+}
 ```
 
 Moderator stipend form (never together with `messageId`):
