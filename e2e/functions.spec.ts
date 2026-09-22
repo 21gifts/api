@@ -2076,8 +2076,7 @@ test('Function: normalizePlace — POST /messages stores a pin and GET /messages
   };
   expect(
     body.places.some(
-      (row) =>
-        row.id === note.id && row.lat === 47.3 && row.lng === 8.5 && row.label === 'Zürich',
+      (row) => row.id === note.id && row.lat === 47.3 && row.lng === 8.5 && row.label === 'Zürich',
     ),
   ).toBe(true);
 });

@@ -301,7 +301,14 @@ export interface MessageStore {
   listPlaces(
     limit: number,
   ): Promise<
-    Array<{ id: string; name: string; createdAt: Date; lat: number; lng: number; label: string | null }>
+    Array<{
+      id: string;
+      name: string;
+      createdAt: Date;
+      lat: number;
+      lng: number;
+      label: string | null;
+    }>
   >;
 
   /**
@@ -1891,7 +1898,14 @@ export class InMemoryMessageStore implements MessageStore {
   listPlaces(
     limit: number,
   ): Promise<
-    Array<{ id: string; name: string; createdAt: Date; lat: number; lng: number; label: string | null }>
+    Array<{
+      id: string;
+      name: string;
+      createdAt: Date;
+      lat: number;
+      lng: number;
+      label: string | null;
+    }>
   > {
     const pinned = this.#rows.filter((row) => {
       if (row.parentId !== null || row.deletedAt !== null) {
@@ -3585,7 +3599,14 @@ export class PostgresMessageStore implements MessageStore {
   async listPlaces(
     limit: number,
   ): Promise<
-    Array<{ id: string; name: string; createdAt: Date; lat: number; lng: number; label: string | null }>
+    Array<{
+      id: string;
+      name: string;
+      createdAt: Date;
+      lat: number;
+      lng: number;
+      label: string | null;
+    }>
   > {
     const rows = await this.#sql.query<{
       id: string;

@@ -4138,6 +4138,55 @@ describe('PostgresMessageStore', () => {
     expect(await new PostgresMessageStore(sql).listIdsByPrefix('d70c4763')).toEqual([]);
   });
 
+  it('maps a SQL place pin and drops a non-numeric or empty label', async () => {
+    const sql = new MockSql();
+    sql.nextRows = [
+      {
+        id: 'pin',
+        account_id: 'acc',
+        name: 'Ada',
+        text: 'here',
+        created_at: new Date('2026-08-01T00:00:00.000Z'),
+        has_photo: false,
+        place_lat: '14.6',
+        place_lng: 120.98,
+        place_label: 'Happyland',
+        deleted_at: new Date('2026-09-01T00:00:00.000Z'),
+        deleted_by: 'staff',
+      },
+      {
+        id: 'blank',
+        account_id: 'acc',
+        name: 'Ada',
+        text: 'x',
+        created_at: new Date('2026-08-02T00:00:00.000Z'),
+        has_photo: false,
+        place_lat: 1,
+        place_lng: 2,
+        place_label: '',
+        deleted_at: new Date('2026-09-01T00:00:00.000Z'),
+        deleted_by: 'staff',
+      },
+      {
+        id: 'bad',
+        account_id: 'acc',
+        name: 'Ada',
+        text: 'x',
+        created_at: new Date('2026-08-03T00:00:00.000Z'),
+        has_photo: false,
+        place_lat: 'nope',
+        place_lng: 2,
+        place_label: 'x',
+        deleted_at: new Date('2026-09-01T00:00:00.000Z'),
+        deleted_by: 'staff',
+      },
+    ];
+    const listed = await new PostgresMessageStore(sql).listHidden(10);
+    expect(listed[0]?.place).toEqual({ lat: 14.6, lng: 120.98, label: 'Happyland' });
+    expect(listed[1]?.place).toEqual({ lat: 1, lng: 2, label: null });
+    expect(listed[2]?.place).toBeNull();
+  });
+
   it('listPlaces selects live top-level pins newest-first without photo', async () => {
     const sql = new MockSql();
     const createdAt = new Date('2026-08-28T12:00:00.000Z');

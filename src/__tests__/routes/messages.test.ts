@@ -7643,9 +7643,7 @@ describe('forum video', () => {
       body: form,
     });
     expect(res.status).toBe(200);
-    expect(
-      ((await res.json()) as { place?: { label: string | null } }).place?.label,
-    ).toBeNull();
+    expect(((await res.json()) as { place?: { label: string | null } }).place?.label).toBeNull();
   });
 
   it('rejects a multipart note with an invalid goalSats', async () => {
