@@ -491,7 +491,7 @@ The example above is an existing member (`walletRequired: false`,
 `walletRequired: true` and `setup: "wallet"` with `missing` starting with
 `"wallet"`.
 
-About me is the profile-note text when it is a real bio, else null (auto)
+About me is the profile-note text when it is a real bio, else null (auto
 name-copy is not a bio, including after a display-name rename when the note
 text still equals the stored profile-note `name` (Ada→Grace with text `Ada`
 stays `null`)).
