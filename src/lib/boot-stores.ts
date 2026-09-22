@@ -23,7 +23,12 @@ import {
 } from '@/lib/usd-fiat-store';
 import { listDbChanges, migrateDbChangeSchema } from '@/lib/db-change';
 import { mapGiftQueryRow } from '@/lib/gift';
-import { QueryGiftStore, type GiftDebugRow, type GiftStore } from '@/lib/gift-store';
+import {
+  migrateGiftSchema,
+  QueryGiftStore,
+  type GiftDebugRow,
+  type GiftStore,
+} from '@/lib/gift-store';
 import { SqlGiftRecorder, type GiftRecorder } from '@/lib/gift-recorder';
 import { logEvent } from '@/lib/log';
 import { migrateApiLogSchema, PostgresApiLogStore, type ApiLogStore } from '@/lib/api-log';
@@ -223,6 +228,7 @@ export async function openBootStores(
 
   await migrateBtcUsdSchema(sqlClient);
   await migrateFiatSchema(sqlClient);
+  await migrateGiftSchema(sqlClient);
   await migrateMessageSchema(sqlClient);
   await migrateContactSchema(sqlClient);
   await migrateConversationSchema(sqlClient);
@@ -259,8 +265,14 @@ export async function openBootStores(
         paid_at: Date | string;
         amount_sats: number | string | bigint;
         recipient_wos_user: string;
+        fiat_usd: string | number | null;
+        fiat_chf: string | number | null;
+        fiat_eur: string | number | null;
+        fiat_php: string | number | null;
       }>(
-        `SELECT paid_at, amount_sats, recipient_wos_user
+        `SELECT paid_at, amount_sats, recipient_wos_user,
+                fiat_usd::text AS fiat_usd, fiat_chf::text AS fiat_chf,
+                fiat_eur::text AS fiat_eur, fiat_php::text AS fiat_php
              FROM gift
              WHERE direction = 'outbound'
              ORDER BY paid_at ASC`,
@@ -283,10 +295,16 @@ export async function openBootStores(
         wos_status: string | null;
         source_wallet: string;
         imported_at: Date | string;
+        fiat_usd: string | number | null;
+        fiat_chf: string | number | null;
+        fiat_eur: string | number | null;
+        fiat_php: string | number | null;
       }>(
         `SELECT id, paid_at, direction, currency, amount_sats, fee_sats, recipient_wos_user,
                 lightning_invoice, wos_transaction_id, description, point_of_sale, wos_status,
-                source_wallet, imported_at
+                source_wallet, imported_at, fiat_usd::text AS fiat_usd,
+                fiat_chf::text AS fiat_chf, fiat_eur::text AS fiat_eur,
+                fiat_php::text AS fiat_php
          FROM gift
          ORDER BY paid_at DESC, id DESC`,
       );
@@ -298,6 +316,10 @@ export async function openBootStores(
         direction: row.direction,
         currency: row.currency,
         amountSats: Number(row.amount_sats),
+        amountUsd: row.fiat_usd === null ? null : String(row.fiat_usd),
+        amountChf: row.fiat_chf === null ? null : String(row.fiat_chf),
+        amountEur: row.fiat_eur === null ? null : String(row.fiat_eur),
+        amountPhp: row.fiat_php === null ? null : String(row.fiat_php),
         feeSats: Number(row.fee_sats),
         recipientWosUser: row.recipient_wos_user,
         lightningInvoice: row.lightning_invoice,
@@ -311,7 +333,7 @@ export async function openBootStores(
     },
   );
   const giftRecorder = new SqlGiftRecorder(giftSql);
-  const messageStore = new PostgresMessageStore(sqlClient);
+  const messageStore = new PostgresMessageStore(sqlClient, { fetchImpl, fiatRates, now });
   await backfillZapPayments(messageStore);
   try {
     await backfillExternalZappers(messageStore, {
@@ -326,7 +348,7 @@ export async function openBootStores(
   }
   const contactStore = new PostgresContactStore(sqlClient);
   const apiLogStore = new PostgresApiLogStore(sqlClient);
-  const conversationStore = new PostgresConversationStore(sqlClient);
+  const conversationStore = new PostgresConversationStore(sqlClient, { fetchImpl, fiatRates, now });
   const pushStore = new PostgresPushStore(sqlClient);
   const notificationStore = new PostgresNotificationStore(sqlClient);
   const trustStore = new PostgresTrustStore(sqlClient);

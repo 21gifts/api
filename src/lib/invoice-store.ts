@@ -35,6 +35,11 @@ export interface GiftInvoice {
   groupMessageId?: string;
   /** LUD-12 comment / gift-reply text (may be `''`). */
   comment?: string;
+  /**
+   * Spend-worker USD amount already normalized to two decimals (`"5.00"`).
+   * Absent when the issue request did not send `amountUsd`.
+   */
+  amountUsd?: string;
 }
 
 /**

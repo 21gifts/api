@@ -20,15 +20,21 @@ database URL that is set is fail-loud at boot. On the SQL path,
 KEK throws at boot. Public gift statistics
 (`GET /gifts/stats` and `GET /gifts?day=`) read the `gift` table when `DATABASE_URL` is set;
 without it the process still boots and returns empty stats. Amounts are
-also expressed as BTC and historical USD using the UTC-calendar-day
-BTC-USD daily close from Coinbase Exchange (persisted in `btc_usd_daily`),
-plus additive CHF/EUR/PHP (USD × that UTC day's Frankfurter ECB rate,
-persisted in `usd_fiat_daily`; last business day if the market is closed).
-GET fetches Coinbase only for missing gift days, UTC-today when `fetched_at`
+also expressed as BTC and as the USD/CHF/EUR/PHP stored at payment time
+(that stored value is what is returned). A USD stipend keeps the USD amount
+that was sent. A SQL row stores those four amounts as text or SQL NULL.
+SQL NULL is JSON `null` on read: it is not recomputed from the day's close
+and it is not **503**. Backfill freezes a historical close once, at migrate
+time, and leaves the row null when that day has no rate. Only an in-memory
+gift row that omits the field entirely (`undefined`, not SQL NULL) still uses
+the UTC-calendar-day BTC-USD daily close from Coinbase Exchange (persisted in
+`btc_usd_daily`), plus additive CHF/EUR/PHP (USD × that UTC day's Frankfurter
+ECB rate, persisted in `usd_fiat_daily`; last business day if the market is closed).
+GET fetches Coinbase only for those omitted-field rows, UTC-today when `fetched_at`
 is older than one hour, and a past day whose `fetched_at` is still on that
 same UTC calendar day (intraday print not yet the settled close). Settled
-stored days are not re-fetched. A missing BTC-USD rate after ensure/fetch is
-**503**. A missing CHF/EUR/PHP cross is JSON `null`, never 503.
+stored days are not re-fetched. A missing BTC-USD rate after that ensure is
+**503** only for an omitted-field row. A missing CHF/EUR/PHP cross is JSON `null`, never 503.
 
 Lightning Address verification HTTP routes are implemented. A live
 verification payment requires an injected invoice payer; the default
@@ -557,7 +563,7 @@ Store throw or missing BTC-USD day → **Response** `503`:
 }
 ```
 
-`donatedOverTime` / `receivedOverTime` reuse the `spendOverTime` day objects from `GET /gifts/stats`, including additive CHF/EUR/PHP. USD = per-gift UTC-day Coinbase BTC-USD close. CHF/EUR/PHP = USD × that UTC day's Frankfurter ECB cross. Missing fiat is JSON `null`, never 503 (`account.activity.fiat_failed` still 200). Empty activity is 200 zeros with USD-only `fx.quotes` (no Coinbase / Frankfurter). Given = confirmed forum zaps this account paid, plus every outbound house gift when `isPlatform` is true. Received = indexed zaps on notes this account authored (including hidden and replies), plus `message.sats` remainder on **top-level** notes only (so a visible ₿21 post is never empty; gift-as-reply `sats` are not Received), plus house gifts to the account Lightning Address handle. Forum zaps are not mixed into `GET /gifts/stats`.
+`donatedOverTime` / `receivedOverTime` reuse the `spendOverTime` day objects from `GET /gifts/stats`, including additive CHF/EUR/PHP. The stored payment-time USD/CHF/EUR/PHP is what is returned. Missing fiat is JSON `null`, never 503 (`account.activity.fiat_failed` still 200). Empty activity is 200 zeros with USD-only `fx.quotes` (no Coinbase / Frankfurter). Given = confirmed forum zaps this account paid, plus every outbound house gift when `isPlatform` is true. Received = indexed zaps on notes this account authored (including hidden and replies), plus `message.sats` remainder on **top-level** notes only (so a visible ₿21 post is never empty; gift-as-reply `sats` are not Received), plus house gifts to the account Lightning Address handle. Forum zaps are not mixed into `GET /gifts/stats`.
 
 ### `POST /me/wallet-backup-seen`
 
@@ -2388,12 +2394,13 @@ Missing, blank, or impossible `day` (`2026-02-31`) → **400**
 When `DATABASE_URL` is unset the in-memory gift store is empty — **200** with
 zeros (`totalUsd` / `totalChf` / `totalEur` / `totalPhp` `"0.00"`), `gifts: []`,
 and `fx` with USD-only `quotes` (no Coinbase / Frankfurter). When gifts exist
-for that day, the api ensures a BTC-USD close for that UTC day and converts
-each gift at **that day's** close. CHF/EUR/PHP are USD × that UTC day's
-Frankfurter ECB rate (last business day if closed). An empty matching set is
-200 without Coinbase or Frankfurter. A query failure or a still-missing
-BTC-USD rate is **503**. A missing CHF/EUR/PHP cross is JSON `null` on the
-matching total and per-gift amount, never 503.
+for that day, the stored payment-time USD/CHF/EUR/PHP is what is returned.
+A SQL NULL snapshot is JSON `null` and does not fetch a close. The api ensures
+a BTC-USD close for that UTC day only for an in-memory gift that omits the
+field (`undefined`). An empty matching set is
+200 without Coinbase or Frankfurter. A query failure is **503**. A still-missing
+BTC-USD rate is **503** only for that omitted-field row. A missing stored amount
+or CHF/EUR/PHP cross is JSON `null` on the matching total and per-gift amount, never 503.
 
 **Response** `200` (empty day):
 
@@ -2461,25 +2468,25 @@ matching total and per-gift amount, never 503.
 | `giftCount` | number                                                                                       | Number of gifts that UTC day                                                                              |
 | `totalSats` | number                                                                                       | Sum of gift amounts (sats; fees excluded)                                                                 |
 | `totalBtc`  | string                                                                                       | `totalSats` as BTC with eight decimals                                                                    |
-| `totalUsd`  | string                                                                                       | Sum of per-gift USD at **this** day's close (`"1.00"`)                                                    |
-| `totalChf`  | string or null                                                                               | USD × this day's ECB CHF; `"0.00"` when empty; `null` if this day lacks CHF                               |
-| `totalEur`  | string or null                                                                               | USD × this day's ECB EUR; `"0.00"` when empty; `null` if this day lacks EUR                               |
-| `totalPhp`  | string or null                                                                               | USD × this day's ECB PHP; `"0.00"` when empty; `null` if this day lacks PHP                               |
+| `totalUsd`  | string or null                                                                               | Sum of stored payment-time USD (`"1.00"`); `"0.00"` when empty; `null` if any gift lacks stored USD       |
+| `totalChf`  | string or null                                                                               | Sum of stored payment-time CHF; `"0.00"` when empty; `null` if any gift lacks stored CHF                  |
+| `totalEur`  | string or null                                                                               | Sum of stored payment-time EUR; `"0.00"` when empty; `null` if any gift lacks stored EUR                  |
+| `totalPhp`  | string or null                                                                               | Sum of stored payment-time PHP; `"0.00"` when empty; `null` if any gift lacks stored PHP                  |
 | `gifts`     | `{ paidAt, amountSats, amountBtc, amountUsd, amountChf, amountEur, amountPhp, recipient }[]` | Ordered by `paidAt` ascending, then `recipient`                                                           |
 | `fx`        | `{ quote, dayBasis, source, quotes }`                                                        | Always present; `quote` is BTC-USD; `quotes` lists USD always and CHF/EUR/PHP when that day has the cross |
 
 `gifts[]` item:
 
-| Field        | Type           | Meaning                                                 |
-| ------------ | -------------- | ------------------------------------------------------- |
-| `paidAt`     | string         | ISO-8601 instant (`toISOString`, UTC `Z`)               |
-| `amountSats` | number         | Gift amount in sats                                     |
-| `amountBtc`  | string         | Same amount as BTC with eight decimals                  |
-| `amountUsd`  | string         | USD at this UTC day's close (`"1.00"`)                  |
-| `amountChf`  | string or null | CHF at this UTC day's ECB cross, or `null` when missing |
-| `amountEur`  | string or null | EUR at this UTC day's ECB cross, or `null` when missing |
-| `amountPhp`  | string or null | PHP at this UTC day's ECB cross, or `null` when missing |
-| `recipient`  | string         | Recipient handle (`recipient_wos_user`)                 |
+| Field        | Type           | Meaning                                         |
+| ------------ | -------------- | ----------------------------------------------- |
+| `paidAt`     | string         | ISO-8601 instant (`toISOString`, UTC `Z`)       |
+| `amountSats` | number         | Gift amount in sats                             |
+| `amountBtc`  | string         | Same amount as BTC with eight decimals          |
+| `amountUsd`  | string or null | Stored payment-time USD (`"1.00"`), or `null`   |
+| `amountChf`  | string or null | Stored payment-time CHF, or `null` when missing |
+| `amountEur`  | string or null | Stored payment-time EUR, or `null` when missing |
+| `amountPhp`  | string or null | Stored payment-time PHP, or `null` when missing |
+| `recipient`  | string         | Recipient handle (`recipient_wos_user`)         |
 
 **Response** `503`: `{ "error": "Gift stats are unavailable" }` (store failure or missing BTC-USD only; missing fiat is never 503).
 
@@ -2492,19 +2499,20 @@ When `DATABASE_URL` is unset the in-memory gift and FX stores are empty —
 **200** with zeros, empty series, `totalBtc` `"0.00000000"`, `totalUsd` /
 `totalChf` / `totalEur` / `totalPhp` `"0.00"`, and `fx` with USD-only
 `quotes` (no Coinbase / Frankfurter call). When it is set, the process
-queries the `gift` table (`paid_at`, `amount_sats`, `recipient_wos_user`
-only) and ensures a BTC-USD daily close for each gift's UTC calendar day
-(from `btc_usd_daily`, fetching Coinbase only for missing days / stale
-UTC-today / after-midnight finalize of an intraday print). Each gift's sats
-are converted at **that day's** close (not spot). CHF/EUR/PHP are USD × that
-UTC day's Frankfurter ECB rate (last business day if closed; persisted in
-`usd_fiat_daily`). A gift day that lacks a cross returns that currency as
+queries the `gift` table (`paid_at`, `amount_sats`, `recipient_wos_user`,
+and the stored payment-time fiat columns) and returns that stored
+USD/CHF/EUR/PHP (not recomputed from the day's close). A SQL NULL snapshot
+is JSON `null` and does not fetch a close. It ensures a BTC-USD
+daily close only for an in-memory gift that omits the field (`undefined`)
+(from `btc_usd_daily`, fetching Coinbase only for missing days /
+stale UTC-today / after-midnight finalize of an intraday print). A gift that
+lacks a stored amount returns that currency as
 JSON `null`; a running total goes `null` if any selected gift lacks that
-cross. Gap days in `spendOverTime` are zero `giftCount`/sats/BTC/USD and `"0.00"` fiat
+currency. Gap days in `spendOverTime` are zero `giftCount`/sats/BTC/USD and `"0.00"` fiat
 and need no rate. Gap months in `byMonth` are zero sats/BTC/USD and
 `"0.00"` fiat and need no rate.
-A query failure or a still-missing BTC-USD rate after ensure is **503**.
-A missing CHF/EUR/PHP cross is never 503.
+A query failure is **503**. A still-missing BTC-USD rate is **503** only for
+an omitted-field row. A missing stored amount is never 503.
 
 Optional query `recipient` filters to one Wallet of Satoshi handle
 (case-insensitive). The value is trimmed first. When the trimmed value
@@ -2545,10 +2553,10 @@ gifts' UTC days.
 | ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------- |
 | `totalSats`      | number                                                                                                                                           | Sum of gift amounts (sats; fees excluded)                                                                                    |
 | `totalBtc`       | string                                                                                                                                           | `totalSats` as BTC with eight decimals                                                                                       |
-| `totalUsd`       | string                                                                                                                                           | Sum of per-gift USD at each gift's UTC-day close (`"1234.56"`)                                                               |
-| `totalChf`       | string or null                                                                                                                                   | USD × each gift day's ECB CHF; `"0.00"` when empty; `null` if any gift day lacks CHF                                         |
-| `totalEur`       | string or null                                                                                                                                   | USD × each gift day's ECB EUR; `"0.00"` when empty; `null` if any gift day lacks EUR                                         |
-| `totalPhp`       | string or null                                                                                                                                   | USD × each gift day's ECB PHP; `"0.00"` when empty; `null` if any gift day lacks PHP                                         |
+| `totalUsd`       | string or null                                                                                                                                   | Sum of stored payment-time USD (`"1234.56"`); `"0.00"` when empty; `null` if any gift lacks stored USD                       |
+| `totalChf`       | string or null                                                                                                                                   | Sum of stored payment-time CHF; `"0.00"` when empty; `null` if any gift lacks stored CHF                                     |
+| `totalEur`       | string or null                                                                                                                                   | Sum of stored payment-time EUR; `"0.00"` when empty; `null` if any gift lacks stored EUR                                     |
+| `totalPhp`       | string or null                                                                                                                                   | Sum of stored payment-time PHP; `"0.00"` when empty; `null` if any gift lacks stored PHP                                     |
 | `giftCount`      | number                                                                                                                                           | Number of outbound gifts                                                                                                     |
 | `recipientCount` | number                                                                                                                                           | Distinct recipient handles                                                                                                   |
 | `firstPaidAt`    | string or null                                                                                                                                   | ISO-8601 of the earliest gift                                                                                                |
@@ -2639,7 +2647,13 @@ LUD-16, GETs the LNURL-pay callback, decodes the BOLT11, and stores
 **Body:**
 
 ```json
-{ "address": "name@domain.tld", "amountMsat": 100000, "comment": "optional", "messageId": "<uuid>" }
+{
+  "address": "name@domain.tld",
+  "amountMsat": 100000,
+  "amountUsd": "5.00",
+  "comment": "optional",
+  "messageId": "<uuid>"
+}
 ```
 
 Moderator stipend form (never together with `messageId`):
@@ -2648,12 +2662,17 @@ Moderator stipend form (never together with `messageId`):
 {
   "address": "name@domain.tld",
   "amountMsat": 100000,
+  "amountUsd": "5.00",
   "comment": "optional",
   "groupMessageId": "<uuid>"
 }
 ```
 
-`comment` is optional and at most 255 characters. `amountMsat` must be an
+`amountUsd` is optional. When present it is a positive decimal with at most
+two fractional digits and at most 100000, normalized to two decimals (`"5"`
+becomes `"5.00"`) and stored as that payment's USD. A present value that
+cannot be normalized is the same **400** as a bad body. An absent key stays
+unset and proof may use the spot. `comment` is optional and at most 255 characters. `amountMsat` must be an
 integer in `1000..10000000000`. `messageId` is optional (current spend without
 the field still works). `groupMessageId` is optional and mutually exclusive
 with `messageId` (both set → **400**). Invalid UUID on either field → **400**
@@ -2878,6 +2897,10 @@ Success → **Response** `200`:
       "text": "Thank you!",
       "createdAt": "2026-08-28T12:00:00.000Z",
       "sats": 0,
+      "amountUsd": null,
+      "amountChf": null,
+      "amountEur": null,
+      "amountPhp": null,
       "payable": false,
       "hasPhoto": false,
       "photoCount": 0,
@@ -3925,6 +3948,10 @@ Success → **Response** `200`:
       "createdAt": "2026-08-29T12:00:00.000Z",
       "fromMe": true,
       "sats": 0,
+      "amountUsd": null,
+      "amountChf": null,
+      "amountEur": null,
+      "amountPhp": null,
       "hasPhoto": false,
       "photoCount": 0,
       "accountId": "<uuid>"
@@ -3936,6 +3963,10 @@ Success → **Response** `200`:
       "createdAt": "2026-08-29T12:00:02.000Z",
       "fromMe": false,
       "sats": 6158,
+      "amountUsd": null,
+      "amountChf": null,
+      "amountEur": null,
+      "amountPhp": null,
       "hasPhoto": false,
       "photoCount": 0,
       "accountId": "<uuid>",

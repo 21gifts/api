@@ -608,6 +608,11 @@ test('Function: migrateMessageSchema — default boot has no DATABASE_URL', asyn
   expect(res.status()).toBe(200);
 });
 
+test('Function: migrateGiftSchema — default boot has no DATABASE_URL', async ({ request }) => {
+  const res = await request.get('/healthz');
+  expect(res.status()).toBe(200);
+});
+
 test('Function: contactRoutes — POST /contact without bearer is 401', async ({ request }) => {
   const res = await request.post('/contact', {
     data: { text: 'hi' },
@@ -953,6 +958,38 @@ test('Function: resolveFrankfurterUrl — default boot has no DATABASE_URL', asy
 });
 
 test('Function: satsToUsdCents — empty stats skip USD conversion', async ({ request }) => {
+  const res = await request.get('/gifts/stats');
+  expect(res.status()).toBe(200);
+  const body = (await res.json()) as { giftCount: number; totalUsd: string };
+  expect(body.giftCount).toBe(0);
+  expect(body.totalUsd).toBe('0.00');
+});
+
+test('Function: normalizeAmountUsd — empty stats skip USD conversion', async ({ request }) => {
+  const res = await request.get('/gifts/stats');
+  expect(res.status()).toBe(200);
+  const body = (await res.json()) as { giftCount: number; totalUsd: string };
+  expect(body.giftCount).toBe(0);
+  expect(body.totalUsd).toBe('0.00');
+});
+
+test('Function: fiatFromUsd — empty stats skip USD conversion', async ({ request }) => {
+  const res = await request.get('/gifts/stats');
+  expect(res.status()).toBe(200);
+  const body = (await res.json()) as { giftCount: number; totalUsd: string };
+  expect(body.giftCount).toBe(0);
+  expect(body.totalUsd).toBe('0.00');
+});
+
+test('Function: fiatFromSats — empty stats skip USD conversion', async ({ request }) => {
+  const res = await request.get('/gifts/stats');
+  expect(res.status()).toBe(200);
+  const body = (await res.json()) as { giftCount: number; totalUsd: string };
+  expect(body.giftCount).toBe(0);
+  expect(body.totalUsd).toBe('0.00');
+});
+
+test('Function: fetchBtcUsdSpot — empty stats skip USD conversion', async ({ request }) => {
   const res = await request.get('/gifts/stats');
   expect(res.status()).toBe(200);
   const body = (await res.json()) as { giftCount: number; totalUsd: string };

@@ -134,3 +134,130 @@ export function usdCentsToString(cents: number): string {
   const rem = cents % 100;
   return `${dollars}.${String(rem).padStart(2, '0')}`;
 }
+
+/**
+ * USD plus optional CHF/EUR/PHP strings stored at payment time.
+ *
+ * `usd` is always a two-decimal string. A missing cross is `null`, not `"0.00"`.
+ */
+export interface FiatAmounts {
+  /** Already-normalized USD, two decimals (e.g. `"5.00"`). */
+  usd: string;
+  /** CHF at the stored USD, or `null` when that cross is missing. */
+  chf: string | null;
+  /** EUR at the stored USD, or `null` when that cross is missing. */
+  eur: string | null;
+  /** PHP at the stored USD, or `null` when that cross is missing. */
+  php: string | null;
+}
+
+/** Quote-per-USD crosses used when freezing a snapshot. Missing keys stay null. */
+export interface FiatCrossRates {
+  /** CHF per 1 USD. */
+  CHF?: string;
+  /** EUR per 1 USD. */
+  EUR?: string;
+  /** PHP per 1 USD. */
+  PHP?: string;
+}
+
+const AMOUNT_USD_RE = /^(?:0|[1-9]\d*)(?:\.\d{1,2})?$/;
+const MAX_AMOUNT_USD_CENTS = 10_000_000;
+
+/**
+ * Parse a two-decimal money string into integer cents without IEEE float.
+ *
+ * @param raw - Decimal text (`"5.00"`, `"5.1"`, `"5"`).
+ * @returns Integer cents, or `null` when the shape is not integer cents.
+ */
+function centsFromAmount(raw: string): number | null {
+  if (!AMOUNT_USD_RE.test(raw)) {
+    return null;
+  }
+  const dot = raw.indexOf('.');
+  const dollars = dot < 0 ? raw : raw.slice(0, dot);
+  const frac = (dot < 0 ? '' : raw.slice(dot + 1)).padEnd(2, '0');
+  return Number(dollars) * 100 + Number(frac);
+}
+
+/**
+ * Normalize a spend-worker USD amount to two decimals.
+ *
+ * Accepts `"5"` / `"5.1"` / `"5.00"` with value `> 0` and `<= 100000`.
+ * Integer cents only — no IEEE float.
+ *
+ * @param raw - Caller-supplied USD text.
+ * @returns `"5.00"`-style string, or `null` when the value is unusable.
+ */
+export function normalizeAmountUsd(raw: string): string | null {
+  const cents = centsFromAmount(raw);
+  if (cents === null || cents <= 0 || cents > MAX_AMOUNT_USD_CENTS) {
+    return null;
+  }
+  return usdCentsToString(cents);
+}
+
+/**
+ * Convert one quote, or `null` when that cross is missing.
+ *
+ * @param usdCents - Integer USD cents.
+ * @param rate - Quote-per-USD decimal, or `undefined`.
+ * @returns Two-decimal quote string, or `null`.
+ */
+function quoteFromUsdCents(usdCents: number, rate: string | undefined): string | null {
+  if (rate === undefined) {
+    return null;
+  }
+  return usdCentsToString(usdCentsToFiatCents(usdCents, rate));
+}
+
+/**
+ * Freeze CHF/EUR/PHP from an already-normalized USD amount.
+ *
+ * The USD string is the value stored at payment time (the caller-supplied
+ * spend amount), not a later UTC-day close. A missing cross is `null`; this
+ * function does not throw when a cross is missing.
+ *
+ * @param amountUsd - Already-normalized two-decimal USD (e.g. `"5.00"`).
+ * @param crosses - Optional CHF/EUR/PHP per 1 USD.
+ * @returns Snapshot whose `usd` is `amountUsd`.
+ */
+export function fiatFromUsd(amountUsd: string, crosses: FiatCrossRates): FiatAmounts {
+  const usdCents = centsFromAmount(amountUsd);
+  if (usdCents === null) {
+    throw new Error('amountUsd must be normalized');
+  }
+  return {
+    usd: amountUsd,
+    chf: quoteFromUsdCents(usdCents, crosses.CHF),
+    eur: quoteFromUsdCents(usdCents, crosses.EUR),
+    php: quoteFromUsdCents(usdCents, crosses.PHP),
+  };
+}
+
+/**
+ * Freeze USD/CHF/EUR/PHP from sats at one Coinbase spot.
+ *
+ * The USD is the spot conversion stored at payment time, not a later UTC-day
+ * close. Zero sats is not called. A missing cross is `null`; this function
+ * does not throw when a cross is missing.
+ *
+ * @param sats - Whole sats (`> 0`).
+ * @param usdPerBtc - Coinbase `data.amount` decimal text.
+ * @param crosses - Optional CHF/EUR/PHP per 1 USD.
+ * @returns Snapshot at this spot.
+ */
+export function fiatFromSats(
+  sats: number,
+  usdPerBtc: string,
+  crosses: FiatCrossRates,
+): FiatAmounts {
+  const usdCents = satsToUsdCents(sats, usdPerBtc);
+  const usd = usdCentsToString(usdCents);
+  return {
+    usd,
+    chf: quoteFromUsdCents(usdCents, crosses.CHF),
+    eur: quoteFromUsdCents(usdCents, crosses.EUR),
+    php: quoteFromUsdCents(usdCents, crosses.PHP),
+  };
+}
