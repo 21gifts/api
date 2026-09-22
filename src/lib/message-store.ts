@@ -1491,12 +1491,10 @@ export class InMemoryMessageStore implements MessageStore {
   }
 
   /**
-   * Newest-first forum rows for operator debug, including replies and
-   * soft-hidden notes, capped at `limit`.
+   * Living notes and replies per UTC day. Soft-hidden rows are omitted.
+   * Days with no rows are absent.
    *
-   * @param limit - Maximum rows.
-   * @returns A new array of row copies; mutating it does not change the store.
-   *   Listed objects never expose photo or video bytes.
+   * @returns One entry per day that has a living row, oldest day first.
    */
   postCountsByUtcDay(): Promise<PostDayCount[]> {
     const counts = new Map<string, number>();
@@ -1514,6 +1512,14 @@ export class InMemoryMessageStore implements MessageStore {
     );
   }
 
+  /**
+   * Newest-first forum rows for operator debug, including replies and
+   * soft-hidden notes, capped at `limit`.
+   *
+   * @param limit - Maximum rows.
+   * @returns A new array of row copies; mutating it does not change the store.
+   *   Listed objects never expose photo or video bytes.
+   */
   listDebug(limit: number): Promise<MessageRow[]> {
     const sorted = [...this.#rows].sort((a, b) => {
       const byTime = b.createdAt.getTime() - a.createdAt.getTime();
@@ -2945,12 +2951,10 @@ export class PostgresMessageStore implements MessageStore {
   }
 
   /**
-   * Newest-first forum rows for operator debug (`created_at` desc, `id`
-   * desc), including replies and soft-hidden notes. Never selects `photo`
-   * bytea.
+   * Living notes and replies per UTC day. Soft-hidden rows are omitted.
+   * Days with no rows are absent. Never selects photo or video bytes.
    *
-   * @param limit - Maximum rows (`$1`).
-   * @returns Mapped rows.
+   * @returns One entry per day that has a living row, oldest day first.
    */
   async postCountsByUtcDay(): Promise<PostDayCount[]> {
     const rows = await this.#sql.query<{ day: string; post_count: number | string }>(
@@ -2964,6 +2968,14 @@ export class PostgresMessageStore implements MessageStore {
     return rows.map((row) => ({ day: row.day, postCount: Number(row.post_count) }));
   }
 
+  /**
+   * Newest-first forum rows for operator debug (`created_at` desc, `id`
+   * desc), including replies and soft-hidden notes. Never selects `photo`
+   * bytea.
+   *
+   * @param limit - Maximum rows (`$1`).
+   * @returns Mapped rows.
+   */
   async listDebug(limit: number): Promise<MessageRow[]> {
     const rows = await this.#sql.query<MessageSqlRow>(
       `SELECT ${MESSAGE_SELECT_COLUMNS} FROM message ORDER BY created_at DESC, id DESC LIMIT $1`,
