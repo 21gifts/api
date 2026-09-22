@@ -134,7 +134,7 @@ Public base URLs used in examples:
 | GET    | `/conversations/:id`                                 | Bearer                     | Oldest-first messages (`?sinceMessageId=` long-polls until that id exists)                                |
 | GET    | `/conversations/:id/messages/:messageId/photo`       | Bearer                     | Private photo 0 bytes                                                                                     |
 | GET    | `/conversations/:id/messages/:messageId/photo/:file` | Bearer                     | Private extra stills 1–9 (`{1-9}.{jpg, jpeg, png, webp}`)                                                 |
-| POST   | `/conversations/:id`                                 | Bearer                     | Send `{ text?, photo?, photos? }` (photos only on moderator_group)                                        |
+| POST   | `/conversations/:id`                                 | Bearer                     | Send `{ text?, photo?, photos? }` (stills on every kind; photo rows skip Nostr)                           |
 | POST   | `/conversations/:id/invoice`                         | Bearer                     | NIP-57 zap / BOLT11 for a private gift (`{ sats, text? }` → `{ pr, amountSats, messageId }`)              |
 | POST   | `/conversations/:id/read`                            | Bearer                     | Stamp last-read for the viewer                                                                            |
 | GET    | `/notifications`                                     | Bearer                     | List + unreadCount; drop leftover hidden forum_post/forum_reply (zap checks parent only)                  |
@@ -3799,8 +3799,9 @@ and 401/404/503 JSON as photo 0.
 
 Bearer session required. Body `{ "text"?: "…", "photo"?: { "contentType", "data" }, "photos"?: [{ "contentType", "data" }] }`
 (at most 10 stills; non-empty `photos` wins over singular `photo`). Text 1–500 via
-`normalizeForumText`. Empty text is allowed only on `moderator_group` when a still is present;
-photos on Direct/Contact/Damus are 400. Moderator replies on a
+`normalizeForumText`. Empty text is allowed on every kind when a still is present.
+Photo-bearing rows persist `nostrPublishState` skipped (never Nostr); text-only
+Direct/Contact/Damus stay `pending`. Moderator replies on a
 platform thread persist as the platform account (sender + Nostr nsec) and
 record the logged-in staff as `actorAccountId` / `actorName`. Staff JSON
 uses the actor; members still see `21.gifts`. The worker signs with the
@@ -3827,9 +3828,8 @@ Same 401 / 404 / 503 shapes as the list/get routes, plus
 (including any `video` field; stills only),
 **400** `{ "error": "At most 10 photos" }`,
 **400** `{ "error": "Photo must be a JPEG, PNG, or WebP under 1 MiB" }`,
-**400** `{ "error": "Photos are only allowed in the Moderators group" }`,
 **400** `{ "error": "Text must be 1–500 characters or include a photo" }`
-(moderator-group empty text without a still),
+(empty text without a still),
 **400** `{ "error": "Text must be 1–500 characters" }`,
 **400** `{ "error": "Set a name before posting" }` when the sending member
 has no display name.
