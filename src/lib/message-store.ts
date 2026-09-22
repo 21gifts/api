@@ -2366,6 +2366,13 @@ export class InMemoryMessageStore implements MessageStore {
       this.#photos.set(id, copyPhoto(photo));
       row.hasPhoto = true;
     }
+    const extras = this.#extraPhotos.get(id) ?? [];
+    const hasPhoto0 = this.#photos.has(id);
+    row.photoCount = (hasPhoto0 ? 1 : 0) + extras.length;
+    row.photoTakenAts = [
+      ...(hasPhoto0 ? [typeof photo?.takenAt === 'string' ? photo.takenAt : null] : []),
+      ...extras.map((item) => (typeof item.takenAt === 'string' ? item.takenAt : null)),
+    ];
     return Promise.resolve(copyRow(row));
   }
 
@@ -4101,8 +4108,13 @@ export class PostgresMessageStore implements MessageStore {
 
   async updatePhoto(id: string, photo: ForumPhoto | null): Promise<MessageRow | undefined> {
     const rows = await this.#sql.query<MessageSqlRow>(
-      `UPDATE message SET photo = $2, photo_content_type = $3 WHERE id = $1 RETURNING ${MESSAGE_SELECT_COLUMNS}`,
-      [id, photo === null ? null : photo.bytes, photo === null ? null : photo.contentType],
+      `UPDATE message SET photo = $2, photo_content_type = $3, photo_taken_at = $4 WHERE id = $1 RETURNING ${MESSAGE_SELECT_COLUMNS}`,
+      [
+        id,
+        photo === null ? null : photo.bytes,
+        photo === null ? null : photo.contentType,
+        photo === null || typeof photo.takenAt !== 'string' ? null : photo.takenAt,
+      ],
     );
     const row = rows[0];
     return row === undefined ? undefined : mapMessageRow(row);

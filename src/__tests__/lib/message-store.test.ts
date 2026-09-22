@@ -1817,6 +1817,7 @@ describe('InMemoryMessageStore', () => {
     await store.create({ ...EARLY, eventId: 'ee'.repeat(32), sats: 21 });
     const updated = await store.updatePhoto('a', JPEG);
     expect(updated?.hasPhoto).toBe(true);
+    expect(updated?.photoTakenAts).toEqual([null]);
     expect(updated?.sats).toBe(21);
     expect(updated?.eventId).toBe('ee'.repeat(32));
     expect(updated?.text).toBe('first');
@@ -1828,8 +1829,18 @@ describe('InMemoryMessageStore', () => {
     expect(stored?.sats).toBe(21);
     expect(stored?.eventId).toBe('ee'.repeat(32));
     expect(updated).not.toBe(stored);
+    const timed = await store.updatePhoto('a', {
+      ...JPEG,
+      takenAt: '2020-01-01T00:00:00+00:00',
+    });
+    expect(timed?.photoTakenAts).toEqual(['2020-01-01T00:00:00+00:00']);
+    expect(await store.getPhoto('a')).toEqual({
+      ...JPEG,
+      takenAt: '2020-01-01T00:00:00+00:00',
+    });
     const cleared = await store.updatePhoto('a', null);
     expect(cleared?.hasPhoto).toBe(false);
+    expect(cleared?.photoTakenAts).toEqual([]);
     expect(cleared?.sats).toBe(21);
     expect(cleared?.eventId).toBe('ee'.repeat(32));
     expect(await store.getPhoto('a')).toBeNull();
@@ -5279,14 +5290,22 @@ describe('PostgresMessageStore', () => {
       },
     ];
     const store = new PostgresMessageStore(sql);
-    const updated = await store.updatePhoto('m1', JPEG);
+    const updated = await store.updatePhoto('m1', {
+      ...JPEG,
+      takenAt: '2020-01-01T00:00:00+00:00',
+    });
     expect(updated?.hasPhoto).toBe(true);
     expect(updated?.sats).toBe(21);
     expect(updated?.eventId).toBe('ee'.repeat(32));
     expect(sql.queries[0]?.text).toMatch(
-      /UPDATE message SET photo = \$2, photo_content_type = \$3 WHERE id = \$1 RETURNING/,
+      /UPDATE message SET photo = \$2, photo_content_type = \$3, photo_taken_at = \$4 WHERE id = \$1 RETURNING/,
     );
-    expect(sql.queries[0]?.params).toEqual(['m1', JPEG.bytes, 'image/jpeg']);
+    expect(sql.queries[0]?.params).toEqual([
+      'm1',
+      JPEG.bytes,
+      'image/jpeg',
+      '2020-01-01T00:00:00+00:00',
+    ]);
     sql.nextRows = [
       {
         id: 'm1',
@@ -5302,7 +5321,7 @@ describe('PostgresMessageStore', () => {
     ];
     const cleared = await store.updatePhoto('m1', null);
     expect(cleared?.hasPhoto).toBe(false);
-    expect(sql.queries[1]?.params).toEqual(['m1', null, null]);
+    expect(sql.queries[1]?.params).toEqual(['m1', null, null, null]);
     sql.nextRows = [];
     expect(await store.updatePhoto('missing', JPEG)).toBeUndefined();
   });

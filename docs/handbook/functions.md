@@ -1014,7 +1014,7 @@
 
 ## Function: updatePhoto
 
-- **Purpose:** `MessageStore` port method: replace or clear stored photo bytes without changing text, sats, or event ids, and without recomputing `content_fp` (same as `updateText`). In-memory copies bytes into a private map; Postgres `UPDATE message SET photo = $2, photo_content_type = $3 WHERE id = $1 RETURNING` list columns.
+- **Purpose:** `MessageStore` port method: replace or clear stored photo bytes and `photo_taken_at` without changing text, sats, or event ids, and without recomputing `content_fp` (same as `updateText`). In-memory copies bytes into a private map and sets still 0's capture time (null when the photo has none, or when the photo is cleared). Postgres `UPDATE message SET photo = $2, photo_content_type = $3, photo_taken_at = $4 WHERE id = $1 RETURNING` list columns.
 - **Inputs:** Message `id` and `ForumPhoto | null` (`null` clears).
 - **Returns / side effects:** Updated row copy with `hasPhoto` true iff photo is non-null, or `undefined` when no row has that id.
 - **Used by:** `PUT /me/about` when the `photo` key is present on an already-live profile note.
@@ -2042,7 +2042,7 @@
 
 - **Purpose:** Size + magic-byte check for MP4/WebM/MOV (32 MiB cap). MP4/MOV bytes are passed through `faststartIsoBmff` (`moov` before `mdat` only when remux succeeds; abort cases keep the original bytes).
 - **Inputs:** raw bytes.
-- **Returns / side effects:** `{ contentType, bytes }` or null.
+- **Returns / side effects:** `{ contentType, bytes, takenAt }` or null. `takenAt` is `YYYY-MM-DDTHH:MM:SS+00:00` or null. Bytes stay as `faststartIsoBmff` left them.
 - **Used by:** `POST /messages` multipart.
 
 ## Function: detectVideoContentType
