@@ -203,6 +203,30 @@ describe('migrateMessageSchema', () => {
   });
 });
 
+describe('post counts', () => {
+  it('counts living notes and replies on the UTC day and skips hidden rows', async () => {
+    const store = new InMemoryMessageStore([
+      EARLY,
+      { ...LATE, parentId: 'a' },
+      { ...EARLY, id: 'hidden', deletedAt: new Date('2026-08-02T00:00:00.000Z') },
+    ]);
+    await expect(store.postCountsByUtcDay()).resolves.toEqual([
+      { day: '2026-08-01', postCount: 1 },
+      { day: '2026-08-02', postCount: 1 },
+    ]);
+  });
+
+  it('asks Postgres for living rows only and does not split replies', async () => {
+    const sql = new MockSql();
+    sql.nextRows = [{ day: '2026-08-01', post_count: '3' }];
+    const rows = await new PostgresMessageStore(sql).postCountsByUtcDay();
+    expect(rows).toEqual([{ day: '2026-08-01', postCount: 3 }]);
+    const query = sql.queries[0]?.text ?? '';
+    expect(query).toContain('deleted_at IS NULL');
+    expect(query).not.toContain('parent_id');
+  });
+});
+
 describe('InMemoryMessageStore', () => {
   it('lists nothing when constructed empty', async () => {
     expect(await new InMemoryMessageStore().listLatest(10)).toEqual([]);

@@ -170,6 +170,7 @@ Public base URLs used in examples:
 | GET    | `/debug/dump/:table`                                 | `Authorization: Bearer`    | Operator catalog of one allowlisted table (`DEBUG_TOKEN`)                                                 |
 | GET    | `/gifts`                                             | none                       | Outbound gifts for one UTC day (`?day=`)                                                                  |
 | GET    | `/gifts/stats`                                       | none                       | Aggregated outbound gift statistics                                                                       |
+| GET    | `/messages/stats`                                    | none                       | Living forum notes and replies counted together, by UTC day                                               |
 | GET    | `/invoices/passkey`                                  | Bearer `SPEND_API_TOKEN`   | Whether a Lightning Address has a passkey-backed account                                                  |
 | GET    | `/invoices/posted`                                   | Bearer `SPEND_API_TOKEN`   | Whether a Lightning Address has a live top-level non-profile forum post                                   |
 | GET    | `/invoices/eligible`                                 | Bearer `SPEND_API_TOKEN`   | Whether the address is funding-eligible today                                                             |
@@ -3368,12 +3369,36 @@ unattributed null-account children (`accountId` and `authorPubkey` both null)
 are omitted from the list, as is a null-account child whose `authorPubkey` is
 set but is not a recorded zapper (retroactively included once that pubkey zaps).
 
+### `GET /messages/stats`
+
+Public count of living forum notes and replies as one number. No auth.
+`postCount` is every `message` row with `deleted_at` null, including replies
+and profile notes. `postsOverTime` is that count for each UTC day from the
+earliest living row through today, or through a later row when one exists.
+Days with no row are filled with `postCount` 0. The series sums to
+`postCount`. An empty forum is **200** `{ "postCount": 0, "postsOverTime": [] }`.
+
+**Response** `200`:
+
+```json
+{
+  "postCount": 2,
+  "postsOverTime": [
+    { "day": "2026-08-01", "postCount": 2 },
+    { "day": "2026-08-02", "postCount": 0 }
+  ]
+}
+```
+
+**Response** `503`: `{ "error": "Post stats are unavailable" }` when the count
+query throws.
+
 ### `GET /messages/:id`
 
 Public single-note fetch. Live rows need **no Bearer.** `:id` is a UUID.
 Registered **after** photo, video, `GET /messages/:id/replies`,
-`DELETE /messages/:id`, and `GET /messages/hidden` so those paths are not
-captured as `:id`. A live GET returns
+`DELETE /messages/:id`, `GET /messages/stats`, and `GET /messages/hidden` so
+those paths are not captured as `:id`. A live GET returns
 the public message JSON (`sats`, optional `goalSats` on a top-level note
 when the stored ask is a positive integer, `payable`, `hasPhoto`, `photoCount`
 (0–10; always present; `hasPhoto` still means photo 0 exists), `hasVideo`,
