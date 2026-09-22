@@ -495,10 +495,11 @@ export function invoiceRoutes(deps: InvoiceRouteDeps): Hono {
         return c.json({ eligible: false, status: 'none' }, 200);
       }
       const grant = await fundingStore.getByAccountId(account.id);
+      const nowMs = deps.now();
       return c.json(
         {
-          eligible: eligibleToday(account.role, grant, deps.now()),
-          status: effectiveStatus(grant, deps.now()),
+          eligible: eligibleToday(account.role, grant, nowMs),
+          status: effectiveStatus(grant, nowMs),
         },
         200,
       );
