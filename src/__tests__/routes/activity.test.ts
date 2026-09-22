@@ -181,8 +181,11 @@ describe('account activity routes', () => {
 
   it('GET /members/:accountId/activity returns 503 when a remainder day has no FX rate', async () => {
     const authStore = await seedSession();
-    const messageStore = await seedMember(authStore, { sats: 21 });
-    const res = await createApp({ authStore, messageStore, now }).request(
+    const messageStore = await seedMember(authStore);
+    const giftStore = new InMemoryGiftStore([
+      { paidAt: new Date(now()), amountSats: 21, recipientWosUser: 'ada' },
+    ]);
+    const res = await createApp({ authStore, messageStore, giftStore, now }).request(
       `/members/${ACCOUNT_ID}/activity`,
       { headers: AUTH },
     );
@@ -195,8 +198,11 @@ describe('account activity routes', () => {
 
   it('GET /view/:viewKey/activity returns 503 when a remainder day has no FX rate', async () => {
     const authStore = await seedSession();
-    const messageStore = await seedMember(authStore, { sats: 21 });
-    const res = await createApp({ authStore, messageStore, now }).request(
+    const messageStore = await seedMember(authStore);
+    const giftStore = new InMemoryGiftStore([
+      { paidAt: new Date(now()), amountSats: 21, recipientWosUser: 'ada' },
+    ]);
+    const res = await createApp({ authStore, messageStore, giftStore, now }).request(
       `/view/${VIEW_KEY}/activity`,
     );
     expect(res.status).toBe(503);
@@ -262,7 +268,10 @@ describe('account activity routes', () => {
         sats: 21,
       },
     ]);
-    const res = await createApp({ authStore, messageStore, now }).request('/me/activity', {
+    const giftStore = new InMemoryGiftStore([
+      { paidAt: new Date(now()), amountSats: 21, recipientWosUser: 'zap' },
+    ]);
+    const res = await createApp({ authStore, messageStore, giftStore, now }).request('/me/activity', {
       headers: AUTH,
     });
     expect(res.status).toBe(503);

@@ -186,7 +186,17 @@ describe('matchConfirmedGivenZaps', () => {
 
   it('joins an ok invoice to an indexed ingest by payment hash', () => {
     const given = matchConfirmedGivenZaps([invoice()], [ingest()]);
-    expect(given).toEqual([{ paidAt: PAID_AT, amountSats: 21, recipientWosUser: 'ada' }]);
+    expect(given).toEqual([
+      {
+        paidAt: PAID_AT,
+        amountSats: 21,
+        recipientWosUser: 'ada',
+        amountUsd: null,
+        amountChf: null,
+        amountEur: null,
+        amountPhp: null,
+      },
+    ]);
   });
 
   it('uses the invoice amount when the ingest amountSats is null', () => {
@@ -194,7 +204,17 @@ describe('matchConfirmedGivenZaps', () => {
       [invoice({ lightningAddress: 'plainhandle' })],
       [ingest({ amountSats: null })],
     );
-    expect(given).toEqual([{ paidAt: PAID_AT, amountSats: 21, recipientWosUser: 'plainhandle' }]);
+    expect(given).toEqual([
+      {
+        paidAt: PAID_AT,
+        amountSats: 21,
+        recipientWosUser: 'plainhandle',
+        amountUsd: null,
+        amountChf: null,
+        amountEur: null,
+        amountPhp: null,
+      },
+    ]);
   });
 
   it('decodes pr when paymentHash is not 64 hex', () => {
