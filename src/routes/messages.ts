@@ -1694,7 +1694,7 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
           payerAccountId: account.id,
           authorAccountId: author.id,
           amountSats: parsed.data.sats,
-            shown,
+          shown,
           lightningAddress: author.lightningAddress,
           zapRequest,
           result: 'ok',
