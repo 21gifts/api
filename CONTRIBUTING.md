@@ -60,6 +60,7 @@ api/
 │   │   ├── messages.ts       # GET/POST /messages, GET /messages/compose-target, public GET /messages/:id, GET /messages/hidden (session, not DEBUG_TOKEN), DELETE /messages/:id, GET /messages/:id/replies, GET /messages/:id/photo, GET /messages/:id/video.*, POST /messages/:id/invoice
 │   │   ├── well-known.ts     # GET /.well-known/nostr.json (NIP-05); GET /.well-known/lnurlp/:username (LUD-16)
 │   │   ├── contact.ts        # POST /contact (private mailbox + platform thread)
+│   │   ├── pos.ts            # GET/POST/DELETE /pos (one exact sat amount on the Lightning address)
 │   │   ├── conversations.ts  # GET/POST /conversations, GET /conversations/moderator-group, GET/POST /conversations/:id, POST /conversations/:id/read, POST /conversations/:id/invoice, GET /conversations/:id/messages/:messageId/photo, GET /conversations/:id/messages/:messageId/photo/:file
 │   │   └── notifications.ts  # GET /notifications, POST /notifications/read-all, POST /notifications/:id/read
 │   ├── lib/
@@ -77,6 +78,8 @@ api/
 │   │   ├── message-store.ts  # MessageStore port, InMemoryMessageStore, PostgresMessageStore
 │   │   ├── contact.ts        # Contact public/debug JSON projection (reuses forum text rules)
 │   │   ├── contact-store.ts  # ContactStore port, InMemoryContactStore, PostgresContactStore
+│   │   ├── pos-charge.ts     # Point-of-sale charge types, TTL, and JSON
+│   │   ├── pos-store.ts      # PosStore port, InMemoryPosStore, PostgresPosStore, POS_SCHEMA_SQL
 │   │   ├── trust.ts          # Trust-chain types, buildTrustChain, accountTrust, serializeTrustEdge
 │   │   ├── trust-store.ts    # TrustStore port, InMemoryTrustStore, PostgresTrustStore, TRUST_SCHEMA_SQL
 │   │   ├── funding.ts        # Funding-grant types, utcDayKey, FUNDING_REQUIRED_FROM_UTC, fundingGrantRequired, eligibleToday, serializeOwnerFunding, fundingReviewedAt, expiredTrialAsPending
@@ -187,6 +190,8 @@ api/
 │       │   ├── nostr/            # kek, keys, publish, worker, dm, relays, zap, event, retract, sign, rate-limit
 │       │   ├── contact.test.ts
 │       │   ├── contact-store.test.ts
+│       │   ├── pos-charge.test.ts
+│       │   ├── pos-store.test.ts
 │       │   ├── trust.test.ts
 │       │   ├── trust-store.test.ts
 │       │   ├── api-log.test.ts
@@ -240,6 +245,7 @@ api/
 │           ├── messages.test.ts
 │           ├── well-known.test.ts
 │           ├── contact.test.ts
+│           ├── pos.test.ts
 │           ├── conversations.test.ts
 │           ├── notifications.test.ts
 │           ├── debug-contacts.test.ts
