@@ -3,6 +3,7 @@ import { finalizeEvent, generateSecretKey, getPublicKey } from 'nostr-tools/pure
 import { InMemoryAuthStore } from '@/lib/auth/store';
 import { InMemoryConversationStore } from '@/lib/conversation-store';
 import { InMemoryFundingStore } from '@/lib/funding-store';
+import { InMemoryFiatStore } from '@/lib/usd-fiat-store';
 import { encryptKind4, unwrapNip17, wrapNip17 } from '@/lib/nostr/dm';
 import { decodeBolt11 } from '@/lib/bolt11';
 import type { FetchFn } from '@/lib/lnurlp';
@@ -337,7 +338,7 @@ describe('runNostrWorkerTick', () => {
       created_at: 1,
     });
     await messages.updatePublishState('m-loc-zapped', 'published', 'space');
-    await messages.addSats('m-loc-zapped', 21);
+    await messages.addSats('m-loc-zapped', 21, null);
     const tick = deps({
       messages,
       auth,
@@ -466,7 +467,7 @@ describe('runNostrWorkerTick', () => {
       created_at: 1,
     });
     await messages.updatePublishState('m-hashtag-zapped', 'published', 'space');
-    await messages.addSats('m-hashtag-zapped', 21);
+    await messages.addSats('m-hashtag-zapped', 21, null);
     const tick = deps({
       messages,
       auth,
@@ -1548,7 +1549,7 @@ describe('runNostrWorkerTick', () => {
       ],
     });
     await messages.updatePublishState('m-zapped-photo', 'published', 'space');
-    await messages.addSats('m-zapped-photo', 21);
+    await messages.addSats('m-zapped-photo', 21, null);
     await runNostrWorkerTick(
       deps({
         messages,
@@ -1695,7 +1696,7 @@ describe('runNostrWorkerTick', () => {
         ['r', 'https://21.gifts'],
       ],
     });
-    await messages.addSats('m-zap-pending', 7);
+    await messages.addSats('m-zap-pending', 7, null);
     messages.listSignedMissingPhoto = async () => [];
     messages.listSignedMissingVideo = async () => [];
     messages.listSignedMissingHashtags = async () => [];
@@ -6215,5 +6216,20 @@ describe('startNostrWorker', () => {
       60_000,
     );
     handle.stop();
+  });
+
+  it('forwards a fiat rate book into zap ingest', async () => {
+    const { auth, messages } = await seed();
+    await runNostrWorkerTick(
+      deps({
+        messages,
+        auth,
+        kek: KEK,
+        publisher: new RecordingPublisher(),
+        now: () => 1_700_000_000_000,
+        env: {},
+        fiatRates: new InMemoryFiatStore(),
+      }),
+    );
   });
 });

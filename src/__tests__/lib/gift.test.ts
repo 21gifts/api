@@ -53,8 +53,57 @@ describe('mapGiftQueryRow', () => {
         paid_at: paidAt,
         amount_sats: 21,
         recipient_wos_user: 'alice',
+        fiat_usd: null,
+        fiat_chf: null,
+        fiat_eur: null,
+        fiat_php: null,
       }),
-    ).toEqual({ paidAt, amountSats: 21, recipientWosUser: 'alice' });
+    ).toEqual({
+      paidAt,
+      amountSats: 21,
+      recipientWosUser: 'alice',
+      amountUsd: null,
+      amountChf: null,
+      amountEur: null,
+      amountPhp: null,
+    });
+  });
+
+  it('formats a whole number and a one-decimal stored amount', () => {
+    const paidAt = new Date('2026-06-01T12:00:00.000Z');
+    expect(
+      mapGiftQueryRow({
+        paid_at: paidAt,
+        amount_sats: 1,
+        recipient_wos_user: 'ada',
+        fiat_usd: 5,
+        fiat_chf: '5.1',
+        fiat_eur: '5',
+        fiat_php: null,
+      }),
+    ).toEqual({
+      paidAt,
+      amountSats: 1,
+      recipientWosUser: 'ada',
+      amountUsd: '5.00',
+      amountChf: '5.10',
+      amountEur: '5.00',
+      amountPhp: null,
+    });
+  });
+
+  it('throws when a stored fiat string is not a decimal amount', () => {
+    expect(() =>
+      mapGiftQueryRow({
+        paid_at: new Date('2026-06-01T12:00:00.000Z'),
+        amount_sats: 1,
+        recipient_wos_user: 'ada',
+        fiat_usd: 'nope',
+        fiat_chf: null,
+        fiat_eur: null,
+        fiat_php: null,
+      }),
+    ).toThrow('invalid stored fiat amount');
   });
 
   it('parses string paid_at and bigint amount_sats', () => {
@@ -62,6 +111,10 @@ describe('mapGiftQueryRow', () => {
       paid_at: '2026-06-01T12:00:00.000Z',
       amount_sats: 42n,
       recipient_wos_user: 'bob',
+      fiat_usd: null,
+      fiat_chf: null,
+      fiat_eur: null,
+      fiat_php: null,
     });
     expect(mapped.paidAt.toISOString()).toBe('2026-06-01T12:00:00.000Z');
     expect(mapped.amountSats).toBe(42);
@@ -606,6 +659,61 @@ describe('buildGiftDay', () => {
       RATE_100K,
     );
     expect(listed.gifts.map((g) => g.recipient)).toEqual(['alpha', 'zeta']);
+  });
+
+  it('returns the stored payment-time amounts without a day close', () => {
+    const listed = buildGiftDay(
+      '2026-06-01',
+      [
+        {
+          paidAt: new Date('2026-06-01T15:00:00.000Z'),
+          amountSats: 1000,
+          recipientWosUser: 'alice',
+          amountUsd: '1.50',
+          amountChf: '1.20',
+        },
+      ],
+      new Map(),
+    );
+    expect(listed.totalUsd).toBe('1.50');
+    expect(listed.totalChf).toBe('1.20');
+    expect(listed.totalEur).toBeNull();
+    expect(listed.totalPhp).toBeNull();
+    expect(listed.gifts[0]?.amountUsd).toBe('1.50');
+  });
+
+  it('keeps a missing stored franc amount null', () => {
+    const listed = buildGiftDay(
+      '2026-06-01',
+      [
+        {
+          paidAt: new Date('2026-06-01T15:00:00.000Z'),
+          amountSats: 1000,
+          recipientWosUser: 'alice',
+          amountUsd: '1.00',
+        },
+      ],
+      new Map(),
+    );
+    expect(listed.totalUsd).toBe('1.00');
+    expect(listed.totalChf).toBeNull();
+  });
+
+  it('throws when a stored payment-time amount is not two decimals', () => {
+    expect(() =>
+      buildGiftDay(
+        '2026-06-01',
+        [
+          {
+            paidAt: new Date('2026-06-01T15:00:00.000Z'),
+            amountSats: 1000,
+            recipientWosUser: 'alice',
+            amountUsd: '1.5',
+          },
+        ],
+        new Map(),
+      ),
+    ).toThrow('invalid stored fiat amount');
   });
 
   it('throws fx.rate.missing when a listed gift has no rate', () => {

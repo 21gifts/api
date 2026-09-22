@@ -16,6 +16,7 @@ import {
   type ZapIngestRow,
 } from '@/lib/message-store';
 import { resolveMediaDir, videoFilePath } from '@/lib/video';
+import { InMemoryFiatStore } from '@/lib/usd-fiat-store';
 
 class MockSql implements SqlClient {
   executes: { text: string; params: readonly unknown[] }[] = [];
@@ -95,7 +96,7 @@ const JPEG2: ForumPhoto = {
 
 describe('MESSAGE_SCHEMA_SQL', () => {
   it('creates message with photo columns, Nostr columns, index, and additive ALTERs', () => {
-    expect(MESSAGE_SCHEMA_SQL).toHaveLength(56);
+    expect(MESSAGE_SCHEMA_SQL).toHaveLength(64);
     expect(MESSAGE_SCHEMA_SQL[0]).toMatch(/CREATE TABLE IF NOT EXISTS message/i);
     expect(MESSAGE_SCHEMA_SQL[0]).toMatch(/account_id uuid NOT NULL REFERENCES account/i);
     expect(MESSAGE_SCHEMA_SQL[0]).toMatch(/photo bytea/i);
@@ -546,7 +547,7 @@ describe('InMemoryMessageStore', () => {
       lnurlResponse: null,
     };
     await store.recordInvoiceAttempt(invoice);
-    expect(await store.recordZapReceipt('receipt-hide', 'p-hide', 21)).toBe(true);
+    expect(await store.recordZapReceipt('receipt-hide', 'p-hide', 21, null)).toBe(true);
     const at = new Date('2026-09-01T12:00:00.000Z');
     expect(await store.markDeleted('missing', at, 'staff')).toBe(false);
     expect(await store.markDeleted('p-hide', at, 'staff')).toBe(true);
@@ -558,7 +559,7 @@ describe('InMemoryMessageStore', () => {
     expect(child?.deletedBy).toBe('staff');
     expect(await store.getPhoto('p-hide')).toEqual(JPEG);
     expect((await store.listInvoiceAttempts(10)).map((row) => row.id)).toContain('inv-hide');
-    expect(await store.recordZapReceipt('receipt-hide', 'p-hide', 1)).toBe(false);
+    expect(await store.recordZapReceipt('receipt-hide', 'p-hide', 1, null)).toBe(false);
     expect((await store.listLatest(10)).map((row) => row.id)).not.toContain('p-hide');
     expect(await store.listReplies('p-hide')).toEqual([]);
   });
@@ -652,7 +653,7 @@ describe('InMemoryMessageStore', () => {
       lnurlResponse: null,
     };
     await store.recordInvoiceAttempt(invoice);
-    expect(await store.recordZapReceipt('receipt-unhide', 'p-unhide', 21)).toBe(true);
+    expect(await store.recordZapReceipt('receipt-unhide', 'p-unhide', 21, null)).toBe(true);
     expect(await store.markDeleted('c-mismatch', later, 'other-staff')).toBe(true);
     expect(await store.markDeleted('g-unhide', later, 'other-staff')).toBe(true);
     expect(await store.markDeleted('p-unhide', at, 'staff')).toBe(true);
@@ -674,7 +675,7 @@ describe('InMemoryMessageStore', () => {
     expect(other?.deletedAt).toBeNull();
     expect(await store.getPhoto('p-unhide')).toEqual(JPEG);
     expect((await store.listInvoiceAttempts(10)).map((row) => row.id)).toContain('inv-unhide');
-    expect(await store.recordZapReceipt('receipt-unhide', 'p-unhide', 1)).toBe(false);
+    expect(await store.recordZapReceipt('receipt-unhide', 'p-unhide', 1, null)).toBe(false);
     expect((await store.listLatest(10)).map((row) => row.id)).toContain('p-unhide');
     expect((await store.listReplies('p-unhide')).map((row) => row.id)).toEqual(['c-match']);
   });
@@ -786,11 +787,11 @@ describe('InMemoryMessageStore', () => {
       lnurlResponse: null,
     };
     await store.recordInvoiceAttempt(invoice);
-    expect(await store.recordZapReceipt('receipt-del', 'p-del', 21)).toBe(true);
-    expect(await store.recordZapReceipt('receipt-del', 'p-del', 21)).toBe(false);
+    expect(await store.recordZapReceipt('receipt-del', 'p-del', 21, null)).toBe(true);
+    expect(await store.recordZapReceipt('receipt-del', 'p-del', 21, null)).toBe(false);
     expect(await store.claimZapPayment('AB'.repeat(32), 'receipt-del', new Date(0))).toBe(true);
     await store.create({ ...LATE });
-    expect(await store.recordZapReceipt('receipt-keep', LATE.id, 1)).toBe(true);
+    expect(await store.recordZapReceipt('receipt-keep', LATE.id, 1, null)).toBe(true);
     const videoPath = videoFilePath(resolveMediaDir(), 'p-del', 'video/mp4');
     await readFile(videoPath);
     expect(await store.deleteById('p-del')).toBe(true);
@@ -799,8 +800,8 @@ describe('InMemoryMessageStore', () => {
     expect(
       (await store.listInvoiceAttempts(10)).filter((row) => row.messageId === 'p-del'),
     ).toEqual([]);
-    expect(await store.recordZapReceipt('receipt-del', 'p-del', 7)).toBe(true);
-    expect(await store.recordZapReceipt('receipt-keep', 'b', 1)).toBe(false);
+    expect(await store.recordZapReceipt('receipt-del', 'p-del', 7, null)).toBe(true);
+    expect(await store.recordZapReceipt('receipt-keep', 'b', 1, null)).toBe(false);
     expect(await store.claimZapPayment('ab'.repeat(32), 'receipt-other', new Date(1))).toBe(false);
     expect(await store.getPhoto('p-del')).toBeNull();
     await expect(readFile(videoPath)).rejects.toMatchObject({ code: 'ENOENT' });
@@ -1769,7 +1770,7 @@ describe('InMemoryMessageStore', () => {
     );
     expect(await store.updateSignedEvent('missing', 'ff'.repeat(32), {})).toBe(false);
     await store.updatePublishState('a', 'published', 'public');
-    await store.addSats('a', 21);
+    await store.addSats('a', 21, null);
     const row = await store.getById('a');
     expect(row?.eventId).toBe('ee'.repeat(32));
     expect(row?.nostrPublishState).toBe('published');
@@ -1856,9 +1857,9 @@ describe('InMemoryMessageStore', () => {
   it('recordZapReceipt adds sats once per receiptEventId', async () => {
     const store = new InMemoryMessageStore();
     await store.create(EARLY);
-    expect(await store.recordZapReceipt('r1', 'a', 21)).toBe(true);
+    expect(await store.recordZapReceipt('r1', 'a', 21, null)).toBe(true);
     expect((await store.getById('a'))?.sats).toBe(21);
-    expect(await store.recordZapReceipt('r1', 'a', 21)).toBe(false);
+    expect(await store.recordZapReceipt('r1', 'a', 21, null)).toBe(false);
     expect((await store.getById('a'))?.sats).toBe(21);
   });
 
@@ -1874,9 +1875,9 @@ describe('InMemoryMessageStore', () => {
   it('lists zap receipts by event id descending', async () => {
     const store = new InMemoryMessageStore();
     await store.create(EARLY);
-    await store.recordZapReceipt('aa', 'a', 1);
-    await store.recordZapReceipt('cc', 'a', 3);
-    await store.recordZapReceipt('bb', 'a', 2);
+    await store.recordZapReceipt('aa', 'a', 1, null);
+    await store.recordZapReceipt('cc', 'a', 3, null);
+    await store.recordZapReceipt('bb', 'a', 2, null);
     expect((await store.listZapReceipts(10)).map((row) => row.eventId)).toEqual(['cc', 'bb', 'aa']);
     expect(await store.listZapReceipts(2)).toHaveLength(2);
     const older = new Date('2026-09-01T00:00:00.000Z');
@@ -1894,7 +1895,7 @@ describe('InMemoryMessageStore', () => {
   it('tracks gift-reply receipts and finds ok invoices', async () => {
     const store = new InMemoryMessageStore();
     await store.create(EARLY);
-    await store.recordZapReceipt('r-gift', 'a', 21);
+    await store.recordZapReceipt('r-gift', 'a', 21, null);
     await store.updateZapReceiptGift('r-gift', { payerAccountId: 'payer' });
     expect(await store.listZapReceiptsAwaitingGiftReply(10)).toEqual([
       {
@@ -1967,7 +1968,7 @@ describe('InMemoryMessageStore', () => {
     const store = new InMemoryMessageStore();
     const receiptCreatedAtSeconds = 1_758_196_800;
     await store.create(EARLY);
-    await store.recordZapReceipt('r-external-gift', 'a', 21);
+    await store.recordZapReceipt('r-external-gift', 'a', 21, null);
     await store.updateZapReceiptGift('r-external-gift', { payerPubkey: '81'.repeat(32) });
     await store.recordZapIngest({
       id: 'ingest-external-gift',
@@ -2001,7 +2002,7 @@ describe('InMemoryMessageStore', () => {
     const olderSeconds = 1_758_196_800;
     const newerSeconds = 1_758_200_400;
     await store.create(EARLY);
-    await store.recordZapReceipt('r-gift-newest', 'a', 21);
+    await store.recordZapReceipt('r-gift-newest', 'a', 21, null);
     await store.updateZapReceiptGift('r-gift-newest', { payerAccountId: 'payer' });
     await store.recordZapIngest({
       id: 'ingest-gift-older',
@@ -2056,8 +2057,8 @@ describe('InMemoryMessageStore', () => {
   it('attributes external receipts once and keeps entitlement through dequeue', async () => {
     const store = new InMemoryMessageStore();
     await store.create(EARLY);
-    await store.recordZapReceipt('receipt-a', 'a', 21);
-    await store.recordZapReceipt('receipt-b', 'a', 1);
+    await store.recordZapReceipt('receipt-a', 'a', 21, null);
+    await store.recordZapReceipt('receipt-b', 'a', 1, null);
     expect(
       await store.attributeZapReceipt('receipt-a', {
         payerPubkey: 'AA',
@@ -2105,7 +2106,7 @@ describe('InMemoryMessageStore', () => {
   it('allows idempotent re-attribution of an in-memory receipt and refreshes payer details', async () => {
     const store = new InMemoryMessageStore();
     await store.create(EARLY);
-    await store.recordZapReceipt('receipt-a', 'a', 21);
+    await store.recordZapReceipt('receipt-a', 'a', 21, null);
     await store.attributeZapReceipt('receipt-a', {
       payerPubkey: 'AA',
       zapRequestId: 'request-1',
@@ -2134,7 +2135,7 @@ describe('InMemoryMessageStore', () => {
   it('rejects a different request id for an attributed in-memory receipt without changes', async () => {
     const store = new InMemoryMessageStore();
     await store.create(EARLY);
-    await store.recordZapReceipt('receipt-a', 'a', 21);
+    await store.recordZapReceipt('receipt-a', 'a', 21, null);
     await store.attributeZapReceipt('receipt-a', {
       payerPubkey: 'AA',
       zapRequestId: 'request-1',
@@ -2160,7 +2161,7 @@ describe('InMemoryMessageStore', () => {
   it('lists unattributed indexed receipts and manages external blocks', async () => {
     const store = new InMemoryMessageStore();
     await store.create(EARLY);
-    await store.recordZapReceipt('receipt-a', 'a', 21);
+    await store.recordZapReceipt('receipt-a', 'a', 21, null);
     await store.recordZapIngest({
       id: 'ingest-a',
       createdAt: new Date('2026-09-18T10:00:00Z'),
@@ -2173,7 +2174,7 @@ describe('InMemoryMessageStore', () => {
       receiptPubkey: 'ff'.repeat(32),
       receipt: { id: 'receipt-a' },
     });
-    await store.recordZapReceipt('receipt-attributed', 'a', 2);
+    await store.recordZapReceipt('receipt-attributed', 'a', 2, null);
     await store.updateZapReceiptGift('receipt-attributed', { payerAccountId: 'payer' });
     await store.recordZapIngest({
       id: 'ingest-attributed',
@@ -2187,7 +2188,7 @@ describe('InMemoryMessageStore', () => {
       receiptPubkey: '94'.repeat(32),
       receipt: { id: 'receipt-attributed' },
     });
-    await store.recordZapReceipt('receipt-rejected', 'a', 1);
+    await store.recordZapReceipt('receipt-rejected', 'a', 1, null);
     await store.recordZapIngest({
       id: 'ingest-rejected',
       createdAt: new Date('2026-09-18T10:02:00Z'),
@@ -2241,7 +2242,7 @@ describe('InMemoryMessageStore', () => {
   it('lists one unattributed indexed receipt from the newest ingest', async () => {
     const store = new InMemoryMessageStore();
     await store.create(EARLY);
-    await store.recordZapReceipt('receipt-dup', 'a', 21);
+    await store.recordZapReceipt('receipt-dup', 'a', 21, null);
     await store.recordZapIngest({
       id: 'ingest-older',
       createdAt: new Date('2026-09-18T10:00:00Z'),
@@ -2266,7 +2267,7 @@ describe('InMemoryMessageStore', () => {
       receiptPubkey: 'ff'.repeat(32),
       receipt: { id: 'newer' },
     });
-    await store.recordZapReceipt('receipt-tie', 'a', 7);
+    await store.recordZapReceipt('receipt-tie', 'a', 7, null);
     const tiedAt = new Date('2026-09-18T10:00:00Z');
     await store.recordZapIngest({
       id: 'ingest-tie-a',
@@ -2339,7 +2340,7 @@ describe('InMemoryMessageStore', () => {
     await store.create(EARLY);
     const tiedAt = new Date('2026-09-18T10:00:00Z');
     for (const receiptId of ['receipt-a', 'receipt-z']) {
-      await store.recordZapReceipt(receiptId, 'a', 21);
+      await store.recordZapReceipt(receiptId, 'a', 21, null);
       await store.recordZapIngest({
         id: `ingest-${receiptId}`,
         createdAt: tiedAt,
@@ -2702,7 +2703,7 @@ describe('InMemoryMessageStore', () => {
     expect((await store.listSignedMissingPhoto(10)).map((row) => row.id)).not.toContain(
       'pending-photo',
     );
-    await store.addSats('z', 21);
+    await store.addSats('z', 21, null);
     expect((await store.listSignedMissingPhoto(10)).map((row) => row.id)).toEqual([
       'n',
       'a',
@@ -2814,7 +2815,7 @@ describe('InMemoryMessageStore', () => {
     expect((await store.listSignedMissingVideo(10)).map((row) => row.id)).not.toContain(
       'pending-video',
     );
-    await store.addSats('z', 21);
+    await store.addSats('z', 21, null);
     expect((await store.listSignedMissingVideo(10)).map((row) => row.id)).toEqual([
       'n',
       'a',
@@ -3040,7 +3041,7 @@ describe('InMemoryMessageStore', () => {
       'z',
     ]);
     expect((await store.listSignedMissingHashtags(2)).map((row) => row.id)).toEqual(['n', 'a']);
-    await store.addSats('z', 21);
+    await store.addSats('z', 21, null);
     expect((await store.listSignedMissingHashtags(10)).map((row) => row.id)).toEqual([
       'n',
       'a',
@@ -3921,9 +3922,11 @@ describe('PostgresMessageStore', () => {
     };
     const created = await store.create(row);
     expect(sql.executes[0]?.text).toMatch(
-      /INSERT INTO message \(\s*id, account_id, name, text, photo, photo_content_type, video_content_type, created_at,\s*nostr_publish_state, sats, parent_id, author_pubkey, event_id, nostr_event, content_fp, goal_sats\s*\)/,
+      /INSERT INTO message \(\s*id, account_id, name, text, photo, photo_content_type, video_content_type, created_at,\s*nostr_publish_state, sats, parent_id, author_pubkey, event_id, nostr_event, content_fp, goal_sats,\s*fiat_usd, fiat_chf, fiat_eur, fiat_php\s*\)/,
     );
-    expect(sql.executes[0]?.text).toMatch(/\$14::jsonb,\$15,\$16/);
+    expect(sql.executes[0]?.text).toMatch(
+      /\$14::jsonb,\$15,\$16,\s*\$17::numeric,\$18::numeric,\$19::numeric,\$20::numeric/,
+    );
     expect(sql.executes[0]?.text).not.toMatch(/ON CONFLICT/i);
     expect(sql.executes[0]?.params).toEqual([
       'm1',
@@ -3942,12 +3945,28 @@ describe('PostgresMessageStore', () => {
       null,
       null,
       null,
+      null,
+      null,
+      null,
+      null,
     ]);
-    expect(sql.executes[0]?.params).toHaveLength(16);
+    expect(sql.executes[0]?.params).toHaveLength(20);
     expect(created.id).toBe(row.id);
     expect(created.hasVideo).toBe(false);
     expect(created.goalSats).toBeNull();
     expect(created).not.toBe(row);
+    const priced = await store.create(
+      { ...row, id: 'm-priced', sats: 1000 },
+      undefined,
+      undefined,
+      undefined,
+      { usd: '1.00', chf: null, eur: '0.90', php: null },
+    );
+    expect(priced.amountUsd).toBe('1.00');
+    expect(priced.amountChf).toBeNull();
+    expect(priced.amountEur).toBe('0.90');
+    expect(priced.amountPhp).toBeNull();
+    expect(sql.executes[1]?.params.slice(16)).toEqual(['1.00', null, '0.90', null]);
   });
 
   it('create binds a positive goalSats and listLatest maps goal_sats', async () => {
@@ -3998,10 +4017,10 @@ describe('PostgresMessageStore', () => {
     const created = await store.create(row);
     expect(sql.executes).toEqual([]);
     expect(sql.queries[0]?.text).toMatch(
-      /INSERT INTO message \(\s*id, account_id, name, text, photo, photo_content_type, video_content_type, created_at,\s*nostr_publish_state, sats, parent_id, author_pubkey, event_id, nostr_event, content_fp, goal_sats\s*\)/,
+      /INSERT INTO message \(\s*id, account_id, name, text, photo, photo_content_type, video_content_type, created_at,\s*nostr_publish_state, sats, parent_id, author_pubkey, event_id, nostr_event, content_fp, goal_sats,\s*fiat_usd, fiat_chf, fiat_eur, fiat_php\s*\)/,
     );
     expect(sql.queries[0]?.text).toMatch(
-      /SELECT \$1,\$2,\$3,\$4,\$5,\$6,\$7,\$8,\$9,\$10,\$11,\$12,\$13,\$14::jsonb,\$15,\$16/,
+      /SELECT \$1,\$2,\$3,\$4,\$5,\$6,\$7,\$8,\$9,\$10,\$11,\$12,\$13,\$14::jsonb,\$15,\$16,\s*\$17::numeric,\$18::numeric,\$19::numeric,\$20::numeric/,
     );
     expect(sql.queries[0]?.text).toMatch(
       /WHERE EXISTS \(SELECT 1 FROM message p WHERE p\.id = \$11 AND p\.deleted_at IS NULL\)/,
@@ -4025,8 +4044,12 @@ describe('PostgresMessageStore', () => {
       null,
       null,
       null,
+      null,
+      null,
+      null,
+      null,
     ]);
-    expect(sql.queries[0]?.params).toHaveLength(16);
+    expect(sql.queries[0]?.params).toHaveLength(20);
     expect(created.id).toBe('child-1');
     expect(created.parentId).toBe('parent-1');
   });
@@ -4705,6 +4728,28 @@ describe('PostgresMessageStore', () => {
       },
     ];
     expect((await store.getById('m-skipped'))?.nostrPublishState).toBe('skipped');
+    sql.nextRows = [
+      {
+        id: 'm-fiat',
+        account_id: 'acc',
+        name: 'Ada',
+        text: 'hi',
+        created_at: new Date(0),
+        has_photo: false,
+        event_id: null,
+        nostr_publish_state: 'pending',
+        sats: 1000,
+        fiat_usd: '1.00',
+        fiat_chf: '0.80',
+        fiat_eur: '0.90',
+        fiat_php: '50.00',
+      },
+    ];
+    const priced = await store.getById('m-fiat');
+    expect(priced?.amountUsd).toBe('1.00');
+    expect(priced?.amountChf).toBe('0.80');
+    expect(priced?.amountEur).toBe('0.90');
+    expect(priced?.amountPhp).toBe('50.00');
     expect(mapped?.claimedUntil).toBe(Date.parse('2026-08-28T00:01:00.000Z'));
     sql.nextRows = [];
     expect(await store.claimUnsigned(5, 1_000, 60_000)).toEqual([]);
@@ -4715,8 +4760,10 @@ describe('PostgresMessageStore', () => {
     expect(typeof sql.queries.at(-1)?.params[2]).not.toBe('string');
     expect(sql.queries.at(-1)?.params[2]).toStrictEqual(nostrEvent);
     await store.updatePublishState('m1', 'published', 'public');
-    await store.addSats('m1', 7);
+    await store.addSats('m1', 7, null);
     expect(sql.executes.some((e) => e.text.includes('sats = sats +'))).toBe(true);
+    await store.addSats('m1', 7, { usd: '1.00', chf: null, eur: '0.90', php: null });
+    expect(sql.executes.at(-1)?.params).toEqual(['m1', 7, '1.00', null, '0.90', null]);
   });
 
   it('getById maps deleted_at Date and ISO string', async () => {
@@ -4962,7 +5009,16 @@ describe('PostgresMessageStore', () => {
     const sql = new MockSql();
     sql.nextRows = [{ event_id: 'r1' }];
     const store = new PostgresMessageStore(sql);
-    expect(await store.recordZapReceipt('r1', 'm1', 21)).toBe(true);
+    expect(await store.recordZapReceipt('r1', 'm1', 21, null)).toBe(true);
+    expect(
+      await store.recordZapReceipt('r2', 'm1', 21, {
+        usd: '1.00',
+        chf: null,
+        eur: '0.90',
+        php: null,
+      }),
+    ).toBe(true);
+    expect(sql.queries[1]?.params.slice(3)).toEqual(['1.00', null, '0.90', null]);
     expect(sql.queries[0]?.text).toMatch(/nostr_zap_receipt/);
     expect(sql.queries[0]?.text).toMatch(/ON CONFLICT/);
     expect(sql.queries[0]?.text).toMatch(/message\.sats \+ inserted\.sats/);
@@ -5004,7 +5060,7 @@ describe('PostgresMessageStore', () => {
     const sql = new MockSql();
     sql.nextRows = [];
     const store = new PostgresMessageStore(sql);
-    expect(await store.recordZapReceipt('r1', 'm1', 21)).toBe(false);
+    expect(await store.recordZapReceipt('r1', 'm1', 21, null)).toBe(false);
     expect(sql.executes).toEqual([]);
   });
 
@@ -5580,6 +5636,10 @@ describe('PostgresMessageStore', () => {
         amount_sats: '21',
         receipt_pubkey: 'aa'.repeat(32),
         receipt: JSON.stringify({ id: 'r1', kind: 9735 }),
+        fiat_usd: '1.00',
+        fiat_chf: '0.80',
+        fiat_eur: '0.90',
+        fiat_php: '50.00',
       },
       {
         id: 'zi-2',
@@ -5592,6 +5652,10 @@ describe('PostgresMessageStore', () => {
         amount_sats: null,
         receipt_pubkey: null,
         receipt: 'not-json',
+        fiat_usd: null,
+        fiat_chf: null,
+        fiat_eur: null,
+        fiat_php: null,
       },
       {
         id: 'zi-3',
@@ -5624,6 +5688,10 @@ describe('PostgresMessageStore', () => {
     expect(sql.queries[0]?.text).toMatch(/ORDER BY created_at DESC, id DESC/);
     expect(listed[0]?.outcome).toBe('indexed');
     expect(listed[0]?.amountSats).toBe(21);
+    expect(listed[0]?.amountUsd).toBe('1.00');
+    expect(listed[0]?.amountPhp).toBe('50.00');
+    expect(listed[1]?.amountUsd).toBeNull();
+    expect(listed[1]?.amountChf).toBeNull();
     expect(listed[0]?.receipt).toEqual({ id: 'r1', kind: 9735 });
     expect(listed[1]?.outcome).toBe('rejected');
     expect(listed[1]?.amountSats).toBeNull();
@@ -6229,5 +6297,149 @@ describe('PostgresMessageStore', () => {
     expect(sql.queries[0]?.text).toContain('WHERE account_id = $1');
     expect(sql.queries[0]?.text).not.toContain('LIMIT');
     expect(sql.queries[0]?.params).toEqual(['acc']);
+  });
+});
+
+describe('migrateMessageSchema fiat backfill', () => {
+  function fiatUpdates(sql: MockSql): { text: string; params: readonly unknown[] }[] {
+    return sql.executes.filter((row) => row.text.includes('SET fiat_usd'));
+  }
+
+  it('writes stored fiat for a priced message and skips a bad timestamp and a day without a rate', async () => {
+    const sql = new MockSql();
+    sql.queryQueue = [
+      [
+        { id: 'm-priced', created_at: new Date('2026-06-01T12:00:00.000Z'), amount_sats: 1000 },
+        { id: 'm-bad', created_at: 'not-a-date', amount_sats: 1000 },
+        { id: 'm-norate', created_at: '2026-07-01T00:00:00.000Z', amount_sats: 1000 },
+      ],
+      [
+        { day: '2026-06-01', usd_per_btc: '100000', quote: null, rate: null },
+        { day: '2026-06-01', usd_per_btc: '100000', quote: 'EUR', rate: null },
+        { day: '2026-06-01', usd_per_btc: '100000', quote: 'CHF', rate: '0.80' },
+        { day: '2026-06-01', usd_per_btc: '100000', quote: 'PHP', rate: '50' },
+      ],
+      [],
+    ];
+    await migrateMessageSchema(sql);
+    expect(fiatUpdates(sql)).toEqual([
+      expect.objectContaining({
+        params: ['m-priced', '1.00', '0.80', null, '50.00'],
+      }),
+    ]);
+  });
+
+  it('does not update when every created_at is invalid', async () => {
+    const sql = new MockSql();
+    sql.queryQueue = [[{ id: 'm-bad', created_at: 'nope', amount_sats: 21 }]];
+    await migrateMessageSchema(sql);
+    expect(fiatUpdates(sql)).toEqual([]);
+  });
+
+  it('does not update when the day has no BTC rate', async () => {
+    const sql = new MockSql();
+    sql.queryQueue = [
+      [{ id: 'm-open', created_at: new Date('2026-06-01T00:00:00.000Z'), amount_sats: 21 }],
+      [],
+      [],
+    ];
+    await migrateMessageSchema(sql);
+    expect(fiatUpdates(sql)).toEqual([]);
+  });
+});
+
+describe('message payment fiat snapshot', () => {
+  function spotFetch(amount: string): (input: string | URL | Request) => Promise<Response> {
+    return async () =>
+      new Response(JSON.stringify({ data: { amount } }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+  }
+
+  it('freezes spot crosses when a paid note omits fiat', async () => {
+    const store = new InMemoryMessageStore([], {
+      fetchImpl: spotFetch('100000'),
+      fiatRates: new InMemoryFiatStore({
+        '2026-06-01': { CHF: '0.80', EUR: '0.90', PHP: '50' },
+      }),
+      now: () => Date.parse('2026-06-01T00:00:00.000Z'),
+    });
+    const created = await store.create({
+      ...EARLY,
+      id: 'm-spot',
+      sats: 1000,
+      createdAt: new Date('2026-06-01T12:00:00.000Z'),
+    });
+    expect(created.amountUsd).toBe('1.00');
+    expect(created.amountChf).toBe('0.80');
+    expect(created.amountEur).toBe('0.90');
+    expect(created.amountPhp).toBe('50.00');
+  });
+
+  it('still freezes USD when the cross book throws', async () => {
+    const store = new InMemoryMessageStore([], {
+      fetchImpl: spotFetch('100000'),
+      fiatRates: {
+        ensureDays: async () => {
+          throw new Error('frankfurter down');
+        },
+      },
+    });
+    const created = await store.create({
+      ...EARLY,
+      id: 'm-cross-down',
+      sats: 1000,
+      createdAt: new Date('2026-06-01T12:00:00.000Z'),
+    });
+    expect(created.amountUsd).toBe('1.00');
+    expect(created.amountChf).toBeNull();
+  });
+
+  it('adds a later snapshot onto stored fiat and rejects a bad amount', async () => {
+    const store = new InMemoryMessageStore([
+      {
+        ...EARLY,
+        id: 'm-add',
+        sats: 1000,
+        amountUsd: '0.01',
+        amountChf: null,
+        amountEur: '0.90',
+        amountPhp: '1.00',
+      },
+      {
+        ...EARLY,
+        id: 'm-cross',
+        sats: 1000,
+        amountUsd: '1.00',
+        amountChf: '0.80',
+        amountEur: null,
+        amountPhp: null,
+      },
+    ]);
+    await store.addSats('m-add', 1000, {
+      usd: '0.01',
+      chf: '0.40',
+      eur: null,
+      php: '0.01',
+    });
+    const row = await store.getById('m-add');
+    expect(row?.amountUsd).toBe('0.02');
+    expect(row?.amountChf).toBeNull();
+    expect(row?.amountEur).toBeNull();
+    expect(row?.amountPhp).toBe('1.01');
+    await store.addSats('m-cross', 1000, {
+      usd: '1.00',
+      chf: '0.80',
+      eur: '0.90',
+      php: null,
+    });
+    const crossed = await store.getById('m-cross');
+    expect(crossed?.amountChf).toBe('1.60');
+    expect(crossed?.amountEur).toBeNull();
+    expect(crossed?.amountPhp).toBeNull();
+    expect(() => {
+      void store.addSats('m-add', 1, { usd: 'nope', chf: null, eur: null, php: null });
+    }).toThrow('stored fiat amount must have two decimals');
   });
 });

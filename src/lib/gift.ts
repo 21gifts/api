@@ -23,6 +23,14 @@ export interface GiftRow {
   amountSats: number;
   /** Wallet of Satoshi username the gift was paid to. */
   recipientWosUser: string;
+  /** Stored payment-time USD. `undefined` selects the legacy daily-close path. */
+  amountUsd?: string | null;
+  /** Stored payment-time CHF. */
+  amountChf?: string | null;
+  /** Stored payment-time EUR. */
+  amountEur?: string | null;
+  /** Stored payment-time PHP. */
+  amountPhp?: string | null;
 }
 
 /** Daily spend point, including days with zero gifts between first and last. */
@@ -40,9 +48,9 @@ export interface SpendDay {
   /** BTC string for `cumulativeSats`. */
   cumulativeBtc: string;
   /** USD string for that day's gifts at each gift's UTC-day rate. */
-  usd: string;
+  usd: string | null;
   /** Running USD total through this day inclusive. */
-  cumulativeUsd: string;
+  cumulativeUsd: string | null;
   /** CHF string for that day's gifts, or `null` if any gift that day lacks CHF. */
   chf: string | null;
   /** Running CHF total through this day inclusive, or `null` once a gap appears. */
@@ -68,7 +76,7 @@ export interface RecipientSpend {
   /** BTC string for `sats`. */
   btc: string;
   /** USD string (sum of per-gift historical conversions). */
-  usd: string;
+  usd: string | null;
   /** CHF string, or `null` if any gift to this recipient lacks CHF. */
   chf: string | null;
   /** EUR string, or `null` if any gift to this recipient lacks EUR. */
@@ -88,7 +96,7 @@ export interface MonthSpend {
   /** BTC string for `sats`. */
   btc: string;
   /** USD string (sum of per-gift historical conversions). */
-  usd: string;
+  usd: string | null;
   /** CHF string, or `null` if any gift in this month lacks CHF. Zero-sats gap months are `"0.00"`. */
   chf: string | null;
   /** EUR string, or `null` if any gift in this month lacks EUR. Zero-sats gap months are `"0.00"`. */
@@ -126,7 +134,7 @@ export interface GiftStats {
   /** BTC string for `totalSats`. */
   totalBtc: string;
   /** USD string (sum of per-gift historical conversions). */
-  totalUsd: string;
+  totalUsd: string | null;
   /** CHF string, or `null` if any gift lacks CHF. Empty input is `"0.00"`. */
   totalChf: string | null;
   /** EUR string, or `null` if any gift lacks EUR. Empty input is `"0.00"`. */
@@ -160,7 +168,7 @@ export interface GiftDayGift {
   /** BTC string for `amountSats`. */
   amountBtc: string;
   /** USD string at this gift's UTC-day close. */
-  amountUsd: string;
+  amountUsd: string | null;
   /** CHF string at this gift's UTC-day ECB cross, or `null` when missing. */
   amountChf: string | null;
   /** EUR string at this gift's UTC-day ECB cross, or `null` when missing. */
@@ -182,7 +190,7 @@ export interface GiftDay {
   /** BTC string for `totalSats`. */
   totalBtc: string;
   /** USD string for that day's gifts. */
-  totalUsd: string;
+  totalUsd: string | null;
   /** CHF string, or `null` if any gift that day lacks CHF. Empty day is `"0.00"`. */
   totalChf: string | null;
   /** EUR string, or `null` if any gift that day lacks EUR. Empty day is `"0.00"`. */
@@ -203,6 +211,14 @@ export interface GiftQueryRow {
   amount_sats: number | string | bigint;
   /** `recipient_wos_user` column. */
   recipient_wos_user: string;
+  /** Stored USD snapshot. */
+  fiat_usd: string | number | null;
+  /** Stored CHF snapshot. */
+  fiat_chf: string | number | null;
+  /** Stored EUR snapshot. */
+  fiat_eur: string | number | null;
+  /** Stored PHP snapshot. */
+  fiat_php: string | number | null;
 }
 
 /** Per-gift historical quote cents (null when that cross is missing). */
@@ -216,7 +232,7 @@ interface GiftFiatCents {
 interface FiatBucket {
   giftCount: number;
   sats: number;
-  usdCents: number;
+  usdCents: number | null;
   chfCents: number | null;
   eurCents: number | null;
   phpCents: number | null;
@@ -335,7 +351,36 @@ export function mapGiftQueryRow(row: GiftQueryRow): GiftRow {
     paidAt,
     amountSats: Number(row.amount_sats),
     recipientWosUser: row.recipient_wos_user,
+    amountUsd: storedMoney(row.fiat_usd),
+    amountChf: storedMoney(row.fiat_chf),
+    amountEur: storedMoney(row.fiat_eur),
+    amountPhp: storedMoney(row.fiat_php),
   };
+}
+
+/** Format a numeric driver value as an exact two-decimal stored amount. */
+function storedMoney(value: string | number | null | undefined): string | null {
+  if (value === null || value === undefined) {
+    return null;
+  }
+  const raw = String(value);
+  const match = /^(\d+)(?:\.(\d{0,2}))?$/.exec(raw);
+  if (match === null) {
+    throw new Error('invalid stored fiat amount');
+  }
+  return `${match[1]}.${(match[2] ?? '').padEnd(2, '0')}`;
+}
+
+/** Parse a stored two-decimal amount into cents without floating-point money math. */
+function storedCents(value: string | null): number | null {
+  if (value === null) {
+    return null;
+  }
+  const match = /^(\d+)\.(\d{2})$/.exec(value);
+  if (match === null) {
+    throw new Error('invalid stored fiat amount');
+  }
+  return Number(match[1]) * 100 + Number(match[2]);
 }
 
 /**
@@ -396,6 +441,31 @@ function giftFiatCents(
     eur: quoteCents(usdCents, cross?.EUR),
     php: quoteCents(usdCents, cross?.PHP),
   };
+}
+
+/** Resolve stored payment-time amounts, falling back only for legacy rows. */
+function giftAmounts(
+  row: GiftRow,
+  day: string,
+  rates: ReadonlyMap<string, string>,
+  fiatRates: ReadonlyMap<string, FiatCross>,
+): { usd: number | null; fiat: GiftFiatCents } {
+  if (row.amountUsd !== undefined) {
+    return {
+      usd: storedCents(row.amountUsd),
+      fiat: {
+        chf: storedCents(row.amountChf ?? null),
+        eur: storedCents(row.amountEur ?? null),
+        php: storedCents(row.amountPhp ?? null),
+      },
+    };
+  }
+  const rate = rates.get(day);
+  if (rate === undefined) {
+    throw new Error('fx.rate.missing');
+  }
+  const usd = satsToUsdCents(row.amountSats, rate);
+  return { usd, fiat: giftFiatCents(usd, day, fiatRates) };
 }
 
 /**
@@ -482,12 +552,12 @@ function emptyFiatBucket(): FiatBucket {
 function addToBucket(
   bucket: FiatBucket,
   amountSats: number,
-  usdCents: number,
+  usdCents: number | null,
   fiat: GiftFiatCents,
 ): void {
   bucket.giftCount += 1;
   bucket.sats += amountSats;
-  bucket.usdCents += usdCents;
+  bucket.usdCents = addMaybe(bucket.usdCents, usdCents);
   bucket.chfCents = addMaybe(bucket.chfCents, fiat.chf);
   bucket.eurCents = addMaybe(bucket.eurCents, fiat.eur);
   bucket.phpCents = addMaybe(bucket.phpCents, fiat.php);
@@ -568,34 +638,31 @@ export function buildGiftStats(
 
   const byDaySats = new Map<string, number>();
   const byDayGiftCount = new Map<string, number>();
-  const byDayUsdCents = new Map<string, number>();
+  const byDayUsdCents = new Map<string, number | null>();
   const byDayChfCents = new Map<string, number | null>();
   const byDayEurCents = new Map<string, number | null>();
   const byDayPhpCents = new Map<string, number | null>();
   const byRecipient = new Map<string, FiatBucket>();
   const byMonth = new Map<string, FiatBucket>();
   let totalSats = 0;
-  let totalUsdCents = 0;
+  let totalUsdCents: number | null = 0;
   let totalChfCents: number | null = 0;
   let totalEurCents: number | null = 0;
   let totalPhpCents: number | null = 0;
 
   for (const row of sorted) {
     const day = utcDayString(row.paidAt);
-    const rate = rates.get(day);
-    if (rate === undefined) {
-      throw new Error('fx.rate.missing');
-    }
-    const usdCents = satsToUsdCents(row.amountSats, rate);
-    const converted = giftFiatCents(usdCents, day, fiat);
+    const amounts = giftAmounts(row, day, rates, fiat);
+    const usdCents = amounts.usd;
+    const converted = amounts.fiat;
     totalSats += row.amountSats;
-    totalUsdCents += usdCents;
+    totalUsdCents = addMaybe(totalUsdCents, usdCents);
     totalChfCents = addMaybe(totalChfCents, converted.chf);
     totalEurCents = addMaybe(totalEurCents, converted.eur);
     totalPhpCents = addMaybe(totalPhpCents, converted.php);
     byDaySats.set(day, (byDaySats.get(day) ?? 0) + row.amountSats);
     byDayGiftCount.set(day, (byDayGiftCount.get(day) ?? 0) + 1);
-    byDayUsdCents.set(day, (byDayUsdCents.get(day) ?? 0) + usdCents);
+    byDayUsdCents.set(day, addMaybe(byDayUsdCents.get(day) ?? 0, usdCents));
     byDayChfCents.set(day, addMaybe(byDayChfCents.get(day) ?? 0, converted.chf));
     byDayEurCents.set(day, addMaybe(byDayEurCents.get(day) ?? 0, converted.eur));
     byDayPhpCents.set(day, addMaybe(byDayPhpCents.get(day) ?? 0, converted.php));
@@ -612,7 +679,7 @@ export function buildGiftStats(
 
   const spendOverTime: SpendDay[] = [];
   let cumulativeSats = 0;
-  let cumulativeUsdCents = 0;
+  let cumulativeUsdCents: number | null = 0;
   let cumulativeChfCents: number | null = 0;
   let cumulativeEurCents: number | null = 0;
   let cumulativePhpCents: number | null = 0;
@@ -623,7 +690,7 @@ export function buildGiftStats(
     const sats = byDaySats.get(day) ?? 0;
     const usdCents = byDayUsdCents.get(day) ?? 0;
     cumulativeSats += sats;
-    cumulativeUsdCents += usdCents;
+    cumulativeUsdCents = addMaybe(cumulativeUsdCents, usdCents);
     const hasGifts = byDaySats.has(day);
     if (hasGifts) {
       const dayChf = byDayChfCents.get(day) ?? null;
@@ -640,8 +707,8 @@ export function buildGiftStats(
       cumulativeSats,
       btc: satsToBtcString(sats),
       cumulativeBtc: satsToBtcString(cumulativeSats),
-      usd: usdCentsToString(usdCents),
-      cumulativeUsd: usdCentsToString(cumulativeUsdCents),
+      usd: formatMaybeCents(usdCents),
+      cumulativeUsd: formatMaybeCents(cumulativeUsdCents),
       chf: seriesFiat(hasGifts, byDayChfCents.get(day)),
       cumulativeChf: cumulativeFiat(cumulativeChfCents),
       eur: seriesFiat(hasGifts, byDayEurCents.get(day)),
@@ -657,7 +724,7 @@ export function buildGiftStats(
       giftCount: totals.giftCount,
       sats: totals.sats,
       btc: satsToBtcString(totals.sats),
-      usd: usdCentsToString(totals.usdCents),
+      usd: formatMaybeCents(totals.usdCents),
       chf: formatMaybeCents(totals.chfCents),
       eur: formatMaybeCents(totals.eurCents),
       php: formatMaybeCents(totals.phpCents),
@@ -677,7 +744,7 @@ export function buildGiftStats(
       giftCount,
       sats,
       btc: satsToBtcString(sats),
-      usd: usdCentsToString(usdCents),
+      usd: formatMaybeCents(usdCents),
       chf: seriesFiat(totals !== undefined, totals?.chfCents),
       eur: seriesFiat(totals !== undefined, totals?.eurCents),
       php: seriesFiat(totals !== undefined, totals?.phpCents),
@@ -687,7 +754,7 @@ export function buildGiftStats(
   return {
     totalSats,
     totalBtc: satsToBtcString(totalSats),
-    totalUsd: usdCentsToString(totalUsdCents),
+    totalUsd: formatMaybeCents(totalUsdCents),
     totalChf: formatMaybeCents(totalChfCents),
     totalEur: formatMaybeCents(totalEurCents),
     totalPhp: formatMaybeCents(totalPhpCents),
@@ -753,20 +820,17 @@ export function buildGiftDay(
   }
 
   let totalSats = 0;
-  let totalUsdCents = 0;
+  let totalUsdCents: number | null = 0;
   let totalChfCents: number | null = 0;
   let totalEurCents: number | null = 0;
   let totalPhpCents: number | null = 0;
   const gifts: GiftDayGift[] = [];
   for (const row of matching) {
-    const rate = rates.get(day);
-    if (rate === undefined) {
-      throw new Error('fx.rate.missing');
-    }
-    const usdCents = satsToUsdCents(row.amountSats, rate);
-    const converted = giftFiatCents(usdCents, day, fiat);
+    const amounts = giftAmounts(row, day, rates, fiat);
+    const usdCents = amounts.usd;
+    const converted = amounts.fiat;
     totalSats += row.amountSats;
-    totalUsdCents += usdCents;
+    totalUsdCents = addMaybe(totalUsdCents, usdCents);
     totalChfCents = addMaybe(totalChfCents, converted.chf);
     totalEurCents = addMaybe(totalEurCents, converted.eur);
     totalPhpCents = addMaybe(totalPhpCents, converted.php);
@@ -774,7 +838,7 @@ export function buildGiftDay(
       paidAt: row.paidAt.toISOString(),
       amountSats: row.amountSats,
       amountBtc: satsToBtcString(row.amountSats),
-      amountUsd: usdCentsToString(usdCents),
+      amountUsd: formatMaybeCents(usdCents),
       amountChf: formatMaybeCents(converted.chf),
       amountEur: formatMaybeCents(converted.eur),
       amountPhp: formatMaybeCents(converted.php),
@@ -787,7 +851,7 @@ export function buildGiftDay(
     giftCount: matching.length,
     totalSats,
     totalBtc: satsToBtcString(totalSats),
-    totalUsd: usdCentsToString(totalUsdCents),
+    totalUsd: formatMaybeCents(totalUsdCents),
     totalChf: formatMaybeCents(totalChfCents),
     totalEur: formatMaybeCents(totalEurCents),
     totalPhp: formatMaybeCents(totalPhpCents),

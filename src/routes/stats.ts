@@ -47,9 +47,16 @@ export function giftsStatsRoutes(deps: GiftsStatsRouteDeps): Hono {
         return c.json(buildGiftStats([], new Map()), 200);
       }
 
-      const giftDays = [...new Set(selected.map((row) => row.paidAt.toISOString().slice(0, 10)))];
-      const rateMap = await rates.ensureDays(giftDays, now());
-      for (const day of giftDays) {
+      const legacyDays = [
+        ...new Set(
+          selected
+            .filter((row) => row.amountUsd === undefined)
+            .map((row) => row.paidAt.toISOString().slice(0, 10)),
+        ),
+      ];
+      const rateMap =
+        legacyDays.length === 0 ? new Map() : await rates.ensureDays(legacyDays, now());
+      for (const day of legacyDays) {
         if (!rateMap.has(day)) {
           logEvent('gifts.stats.fx_incomplete');
           return c.json({ error: 'Gift stats are unavailable' }, 503);
@@ -57,7 +64,9 @@ export function giftsStatsRoutes(deps: GiftsStatsRouteDeps): Hono {
       }
       let fiatMap: ReadonlyMap<string, FiatCross> = new Map();
       try {
-        fiatMap = await fiatRates.ensureDays(giftDays, now());
+        if (legacyDays.length > 0) {
+          fiatMap = await fiatRates.ensureDays(legacyDays, now());
+        }
       } catch {
         logEvent('gifts.stats.fiat_failed');
       }

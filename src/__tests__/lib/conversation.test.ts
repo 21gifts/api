@@ -131,6 +131,10 @@ describe('serializeConversation', () => {
       lastAt: '2026-08-29T13:00:00.000Z',
       lastFromMe: false,
       lastSats: 0,
+      amountUsd: null,
+      amountChf: null,
+      amountEur: null,
+      amountPhp: null,
       unread: false,
       unreadMessageCount: 0,
     });
@@ -180,6 +184,10 @@ describe('serializeConversation', () => {
       lastAt: '2026-08-29T13:00:00.000Z',
       lastFromMe: true,
       lastSats: 0,
+      amountUsd: null,
+      amountChf: null,
+      amountEur: null,
+      amountPhp: null,
       unread: false,
       unreadMessageCount: 0,
     });
@@ -196,6 +204,10 @@ describe('serializeConversationMessage', () => {
       createdAt: '2026-08-29T13:00:00.000Z',
       fromMe: false,
       sats: 0,
+      amountUsd: null,
+      amountChf: null,
+      amountEur: null,
+      amountPhp: null,
       hasPhoto: false,
       photoCount: 0,
       accountId: 'acc-a',
@@ -314,6 +326,10 @@ describe('unsignedConversationDefaults', () => {
   it('returns pending columns with a null event id', () => {
     expect(unsignedConversationDefaults()).toEqual({
       sats: 0,
+      amountUsd: null,
+      amountChf: null,
+      amountEur: null,
+      amountPhp: null,
       eventId: null,
       nostrPublishState: 'pending',
       nostrEvent: null,

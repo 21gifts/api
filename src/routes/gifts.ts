@@ -51,14 +51,19 @@ export function giftsRoutes(deps: GiftsRouteDeps): Hono {
         return c.json(buildGiftDay(day, [], new Map()), 200);
       }
 
-      const rateMap = await rates.ensureDays([day], now());
-      if (!rateMap.has(day)) {
-        logEvent('gifts.day.fx_incomplete');
-        return c.json({ error: 'Gift stats are unavailable' }, 503);
+      let rateMap: ReadonlyMap<string, string> = new Map();
+      if (matching.some((row) => row.amountUsd === undefined)) {
+        rateMap = await rates.ensureDays([day], now());
+        if (!rateMap.has(day)) {
+          logEvent('gifts.day.fx_incomplete');
+          return c.json({ error: 'Gift stats are unavailable' }, 503);
+        }
       }
       let fiatMap: ReadonlyMap<string, FiatCross> = new Map();
       try {
-        fiatMap = await fiatRates.ensureDays([day], now());
+        if (matching.some((row) => row.amountUsd === undefined)) {
+          fiatMap = await fiatRates.ensureDays([day], now());
+        }
       } catch {
         logEvent('gifts.day.fiat_failed');
       }

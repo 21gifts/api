@@ -132,6 +132,7 @@ if (import.meta.main) {
         ...(notificationStore === undefined ? {} : { notificationStore }),
         ...(spendPing === undefined ? {} : { spendPing }),
         ...(fundingStore === undefined ? {} : { fundingStore }),
+        fiatRates,
       },
       WORKER_INTERVAL_MS,
     );

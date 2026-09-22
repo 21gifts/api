@@ -2701,10 +2701,10 @@ describe('POST /messages', () => {
       updateSignedEvent: (id, eventId, nostrEvent) =>
         base.updateSignedEvent(id, eventId, nostrEvent),
       updatePublishState: (id, state, epoch) => base.updatePublishState(id, state, epoch),
-      addSats: (id, extra) => base.addSats(id, extra),
+      addSats: (id, extra, delta) => base.addSats(id, extra, delta),
       claimZapPayment: (hash, receiptId, at) => base.claimZapPayment(hash, receiptId, at),
-      recordZapReceipt: (receiptId, messageId, sats) =>
-        base.recordZapReceipt(receiptId, messageId, sats),
+      recordZapReceipt: (receiptId, messageId, sats, delta) =>
+        base.recordZapReceipt(receiptId, messageId, sats, delta),
       recordInvoiceAttempt: (row) => base.recordInvoiceAttempt(row),
       listInvoiceAttempts: (limit) => base.listInvoiceAttempts(limit),
       recordZapIngest: (row) => base.recordZapIngest(row),
@@ -2809,10 +2809,10 @@ describe('POST /messages', () => {
       updateSignedEvent: (id, eventId, nostrEvent) =>
         base.updateSignedEvent(id, eventId, nostrEvent),
       updatePublishState: (id, state, epoch) => base.updatePublishState(id, state, epoch),
-      addSats: (id, extra) => base.addSats(id, extra),
+      addSats: (id, extra, delta) => base.addSats(id, extra, delta),
       claimZapPayment: (hash, receiptId, at) => base.claimZapPayment(hash, receiptId, at),
-      recordZapReceipt: (receiptId, messageId, sats) =>
-        base.recordZapReceipt(receiptId, messageId, sats),
+      recordZapReceipt: (receiptId, messageId, sats, delta) =>
+        base.recordZapReceipt(receiptId, messageId, sats, delta),
       recordInvoiceAttempt: (row) => base.recordInvoiceAttempt(row),
       listInvoiceAttempts: (limit) => base.listInvoiceAttempts(limit),
       recordZapIngest: (row) => base.recordZapIngest(row),
@@ -4766,6 +4766,10 @@ describe('GET /messages/:id', () => {
       text: 'from damus',
       createdAt: new Date(now()).toISOString(),
       sats: 0,
+      amountUsd: null,
+      amountChf: null,
+      amountEur: null,
+      amountPhp: null,
       payable: false,
       hasPhoto: false,
       photoCount: 0,
@@ -5048,7 +5052,7 @@ describe('GET /messages/:id', () => {
       videoContentType: null,
       ...unsignedNostrDefaults(),
     });
-    await messageStore.addSats(noteId, 21);
+    await messageStore.addSats(noteId, 21, null);
     const res = await mount(await seededStore(), messageStore, {
       waitSatsSleep: async () => {
         throw new Error('waitSatsSleep must not be called');
@@ -5076,7 +5080,7 @@ describe('GET /messages/:id', () => {
     });
     const res = await mount(await seededStore(), messageStore, {
       waitSatsSleep: async () => {
-        await messageStore.addSats(noteId, 7);
+        await messageStore.addSats(noteId, 7, null);
       },
     }).request(`/messages/${noteId}?sinceSats=0`);
     expect(res.status).toBe(200);
@@ -7943,6 +7947,10 @@ describe('GET /messages/hidden', () => {
           text: 'hide me',
           createdAt: new Date(now()).toISOString(),
           sats: 0,
+          amountUsd: null,
+          amountChf: null,
+          amountEur: null,
+          amountPhp: null,
           hasPhoto: false,
           photoCount: 0,
           hasVideo: false,

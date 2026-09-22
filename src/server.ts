@@ -533,6 +533,7 @@ export function createApp(deps: AppDeps = {}): Hono {
       fetchImpl,
       conversationStore,
       fundingStore,
+      fiatRates,
       ...(giftRecorder === undefined ? {} : { giftRecorder }),
     }),
   );

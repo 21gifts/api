@@ -279,7 +279,12 @@ describe('loadDebugTables', () => {
       receiptPubkey: null,
       receipt: {},
     });
-    await messages.recordZapReceipt('receipt-event', 'ffffffff-ffff-4fff-8fff-ffffffffffff', 21);
+    await messages.recordZapReceipt(
+      'receipt-event',
+      'ffffffff-ffff-4fff-8fff-ffffffffffff',
+      21,
+      null,
+    );
     await messages.recordZapper(
       'aa'.repeat(32),
       'receipt-event',

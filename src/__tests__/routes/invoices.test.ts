@@ -13,11 +13,18 @@ import { invoiceRoutes } from '@/routes/invoices';
 import { createApp as createAppRaw } from '@/server';
 import { FUNDING_REQUIRED_FROM_UTC, type FundingGrant } from '@/lib/funding';
 import { InMemoryFundingStore } from '@/lib/funding-store';
+import type { GiftRecord } from '@/lib/gift-recorder';
+import { InMemoryFiatStore } from '@/lib/usd-fiat-store';
 import { decodeBolt11 } from '@/lib/bolt11';
+import { fetchBtcUsdSpot } from '@/lib/btc-usd-spot';
 import type { FetchFn } from '@/lib/lnurlp';
 
 vi.mock('@/lib/bolt11', () => ({
   decodeBolt11: vi.fn(),
+}));
+
+vi.mock('@/lib/btc-usd-spot', () => ({
+  fetchBtcUsdSpot: vi.fn(async () => null),
 }));
 
 function admittedStore(accountId = 'acc-alice'): InMemoryFundingStore {
@@ -62,6 +69,7 @@ const GROUP_MSG_ID = '11111111-1111-4111-8111-111111111111';
 const OTHER_GROUP_MSG_ID = '22222222-2222-4222-8222-222222222222';
 
 const mockedDecode = vi.mocked(decodeBolt11);
+const mockedSpot = vi.mocked(fetchBtcUsdSpot);
 
 function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
@@ -920,6 +928,85 @@ describe('POST /invoices', () => {
     const body = (await res.json()) as { id: string };
     expect(invoiceStore.get(body.id)?.messageId).toBe(POST_ID);
     expect(invoiceStore.get(body.id)?.comment).toBe('');
+  });
+
+  it('stores normalized amountUsd and freezes that USD on the proven gift', async () => {
+    mockedDecode.mockReturnValue({ paymentHash: MATCHING_HASH, amountMsat: 1000 });
+    const authStore = new InMemoryAuthStore();
+    await seedPasskeyAndPlatform(authStore);
+    const invoiceStore = new InMemoryInvoiceStore();
+    const conversationStore = new InMemoryConversationStore();
+    await seedGroupTrigger(conversationStore);
+    const recorded: GiftRecord[] = [];
+    const paidAt = Date.parse('2026-09-22T15:00:00.000Z');
+    const app = createApp({
+      spendApiToken: TOKEN,
+      authStore,
+      messageStore: livePostStore(),
+      invoiceStore,
+      conversationStore,
+      fetchImpl: happyFetch(),
+      now: () => paidAt,
+      fiatRates: new InMemoryFiatStore({
+        '2026-09-22': { CHF: '0.80', EUR: '0.90', PHP: '50' },
+      }),
+      giftRecorder: {
+        recordOutbound: async (row) => {
+          recorded.push(row);
+        },
+      },
+    });
+    const issued = await app.request(
+      '/invoices',
+      auth({
+        method: 'POST',
+        body: JSON.stringify({
+          address: ADDRESS,
+          amountMsat: 1000,
+          amountUsd: '5',
+          groupMessageId: GROUP_MSG_ID,
+        }),
+      }),
+    );
+    expect(issued.status).toBe(200);
+    const body = (await issued.json()) as { id: string };
+    expect(invoiceStore.get(body.id)?.amountUsd).toBe('5.00');
+    const proved = await app.request(
+      '/invoices/proof',
+      auth({
+        method: 'POST',
+        body: JSON.stringify({ id: body.id, preimage: PREIMAGE }),
+      }),
+    );
+    expect(proved.status).toBe(200);
+    expect(recorded[0]?.fiat?.usd).toBe('5.00');
+    expect(recorded[0]?.fiat?.chf).toBe('4.00');
+    const attached = await conversationStore.getMessageById(spendGroupGiftId(body.id));
+    expect(attached?.amountUsd).toBe('5.00');
+    expect(attached?.amountChf).toBe('4.00');
+  });
+
+  it('returns 400 when amountUsd cannot be normalized', async () => {
+    const authStore = new InMemoryAuthStore();
+    await seedPasskeyAccount(authStore);
+    const fetchImpl = vi.fn<FetchFn>(happyFetch());
+    const res = await createApp({
+      spendApiToken: TOKEN,
+      authStore,
+      messageStore: livePostStore(),
+      fetchImpl,
+    }).request(
+      '/invoices',
+      auth({
+        method: 'POST',
+        body: JSON.stringify({ address: ADDRESS, amountMsat: 1000, amountUsd: 'nope' }),
+      }),
+    );
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({
+      error: 'Expected a JSON body with address and amountMsat',
+    });
+    expect(fetchImpl).not.toHaveBeenCalled();
   });
 
   it('returns 400 when messageId is not a UUID', async () => {
@@ -1824,6 +1911,7 @@ describe('POST /invoices/proof', () => {
         lightningInvoice: PR,
         description: '21gifts daily',
         sourceWallet: 'lightning.space',
+        fiat: null,
       },
     ]);
   });
@@ -1873,6 +1961,7 @@ describe('POST /invoices/proof', () => {
         lightningInvoice: PR,
         description: '21gifts daily',
         sourceWallet: 'lightning.space',
+        fiat: null,
       },
     ]);
   });
@@ -2757,6 +2846,7 @@ describe('POST /invoices/proof', () => {
         lightningInvoice: PR,
         description: '21gifts moderator',
         sourceWallet: 'lightning.space',
+        fiat: null,
       },
     ]);
   });
@@ -2904,5 +2994,183 @@ describe('GET /invoices/eligible', () => {
     expect(await res.json()).toEqual({ error: 'Funding grant required' });
     expect(await fundingStore.getByAccountId('acc-alice')).toEqual(stored);
     expect((await fundingStore.getByAccountId('acc-alice'))?.status).toBe('trial');
+  });
+});
+
+describe('POST /invoices/proof payment fiat', () => {
+  let warn: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    mockedSpot.mockReset();
+    mockedSpot.mockResolvedValue(null);
+  });
+
+  afterEach(() => {
+    warn.mockRestore();
+  });
+
+  it('stays 200 when ensureDays throws and still keeps the sent USD', async () => {
+    const invoice: GiftInvoice = {
+      id: 'cd'.repeat(16),
+      address: ADDRESS,
+      pr: PR,
+      paymentHash: MATCHING_HASH,
+      amountMsat: 1000,
+      createdAt: 1,
+      expiresAt: 1_000_000,
+      amountUsd: '5.00',
+    };
+    const recorded: GiftRecord[] = [];
+    const invoiceStore = new InMemoryInvoiceStore();
+    invoiceStore.put(invoice);
+    const res = await createApp({
+      spendApiToken: TOKEN,
+      invoiceStore,
+      now: () => Date.parse('2026-06-01T12:00:00.000Z'),
+      fiatRates: {
+        ensureDays: async () => {
+          throw new Error('frankfurter down');
+        },
+      },
+      giftRecorder: {
+        recordOutbound: async (row) => {
+          recorded.push(row);
+        },
+      },
+    }).request(
+      '/invoices/proof',
+      auth({ method: 'POST', body: JSON.stringify({ id: invoice.id, preimage: PREIMAGE }) }),
+    );
+    expect(res.status).toBe(200);
+    expect(parsedEvents(warn).some((event) => event['event'] === 'invoice.fiat_failed')).toBe(true);
+    expect(recorded[0]?.fiat?.usd).toBe('5.00');
+    expect(recorded[0]?.fiat?.chf).toBeNull();
+  });
+
+  it('stores null fiat when amountUsd is not normalized', async () => {
+    const invoice: GiftInvoice = {
+      id: 'ce'.repeat(16),
+      address: ADDRESS,
+      pr: PR,
+      paymentHash: MATCHING_HASH,
+      amountMsat: 1000,
+      createdAt: 1,
+      expiresAt: 1_000_000,
+      amountUsd: 'nope',
+    };
+    const recorded: GiftRecord[] = [];
+    const invoiceStore = new InMemoryInvoiceStore();
+    invoiceStore.put(invoice);
+    const res = await createApp({
+      spendApiToken: TOKEN,
+      invoiceStore,
+      giftRecorder: {
+        recordOutbound: async (row) => {
+          recorded.push(row);
+        },
+      },
+    }).request(
+      '/invoices/proof',
+      auth({ method: 'POST', body: JSON.stringify({ id: invoice.id, preimage: PREIMAGE }) }),
+    );
+    expect(res.status).toBe(200);
+    expect(recorded[0]?.fiat).toBeNull();
+  });
+
+  it('stores null fiat when the invoice has no sats and no USD amount', async () => {
+    const invoice: GiftInvoice = {
+      id: 'cf'.repeat(16),
+      address: ADDRESS,
+      pr: PR,
+      paymentHash: MATCHING_HASH,
+      amountMsat: 0,
+      createdAt: 1,
+      expiresAt: 1_000_000,
+    };
+    const recorded: GiftRecord[] = [];
+    const invoiceStore = new InMemoryInvoiceStore();
+    invoiceStore.put(invoice);
+    const res = await createApp({
+      spendApiToken: TOKEN,
+      invoiceStore,
+      giftRecorder: {
+        recordOutbound: async (row) => {
+          recorded.push(row);
+        },
+      },
+    }).request(
+      '/invoices/proof',
+      auth({ method: 'POST', body: JSON.stringify({ id: invoice.id, preimage: PREIMAGE }) }),
+    );
+    expect(res.status).toBe(200);
+    expect(recorded[0]?.fiat).toBeNull();
+    expect(mockedSpot).not.toHaveBeenCalled();
+  });
+
+  it('freezes spot crosses when the invoice has no amountUsd', async () => {
+    mockedSpot.mockResolvedValueOnce('100000');
+    const invoice: GiftInvoice = {
+      id: 'd0'.repeat(16),
+      address: ADDRESS,
+      pr: PR,
+      paymentHash: MATCHING_HASH,
+      amountMsat: 1_000_000,
+      createdAt: 1,
+      expiresAt: 1_000_000,
+    };
+    const recorded: GiftRecord[] = [];
+    const invoiceStore = new InMemoryInvoiceStore();
+    invoiceStore.put(invoice);
+    const res = await createApp({
+      spendApiToken: TOKEN,
+      invoiceStore,
+      now: () => Date.parse('2026-06-01T12:00:00.000Z'),
+      fiatRates: new InMemoryFiatStore({
+        '2026-06-01': { CHF: '0.80', EUR: '0.90', PHP: '50' },
+      }),
+      giftRecorder: {
+        recordOutbound: async (row) => {
+          recorded.push(row);
+        },
+      },
+    }).request(
+      '/invoices/proof',
+      auth({ method: 'POST', body: JSON.stringify({ id: invoice.id, preimage: PREIMAGE }) }),
+    );
+    expect(res.status).toBe(200);
+    expect(recorded[0]?.fiat?.usd).toBe('1.00');
+    expect(recorded[0]?.fiat?.chf).toBe('0.80');
+  });
+
+  it('stores null fiat when the spot text cannot be priced', async () => {
+    mockedSpot.mockResolvedValueOnce('1e2');
+    const invoice: GiftInvoice = {
+      id: 'd1'.repeat(16),
+      address: ADDRESS,
+      pr: PR,
+      paymentHash: MATCHING_HASH,
+      amountMsat: 1_000_000,
+      createdAt: 1,
+      expiresAt: 1_000_000,
+    };
+    const recorded: GiftRecord[] = [];
+    const invoiceStore = new InMemoryInvoiceStore();
+    invoiceStore.put(invoice);
+    const res = await createApp({
+      spendApiToken: TOKEN,
+      invoiceStore,
+      now: () => Date.parse('2026-06-01T12:00:00.000Z'),
+      giftRecorder: {
+        recordOutbound: async (row) => {
+          recorded.push(row);
+        },
+      },
+    }).request(
+      '/invoices/proof',
+      auth({ method: 'POST', body: JSON.stringify({ id: invoice.id, preimage: PREIMAGE }) }),
+    );
+    expect(res.status).toBe(200);
+    expect(recorded[0]?.fiat).toBeNull();
   });
 });

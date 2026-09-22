@@ -278,4 +278,25 @@ describe('GET /gifts/stats', () => {
     expect(await res.json()).toEqual(EMPTY_STATS);
     expect(ensureDays).not.toHaveBeenCalled();
   });
+
+  it('returns stored payment-time fiat without asking for a day close', async () => {
+    const ensureDays = vi.fn(async () => new Map<string, string>());
+    const res = await createApp({
+      giftStore: new InMemoryGiftStore([
+        {
+          ...GIFT,
+          amountUsd: '1.00',
+          amountChf: '0.80',
+          amountEur: '0.90',
+          amountPhp: '50.00',
+        },
+      ]),
+      btcUsdRates: { ensureDays },
+    }).request('/gifts/stats');
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { totalUsd: string; totalChf: string };
+    expect(body.totalUsd).toBe('1.00');
+    expect(body.totalChf).toBe('0.80');
+    expect(ensureDays).not.toHaveBeenCalled();
+  });
 });

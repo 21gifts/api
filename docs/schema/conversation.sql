@@ -57,6 +57,10 @@ CREATE TABLE IF NOT EXISTS conversation_message (
   claimed_until timestamptz
 );
 ALTER TABLE conversation_message ADD COLUMN IF NOT EXISTS sats bigint NOT NULL DEFAULT 0;
+ALTER TABLE conversation_message ADD COLUMN IF NOT EXISTS fiat_usd numeric(20, 2);
+ALTER TABLE conversation_message ADD COLUMN IF NOT EXISTS fiat_chf numeric(20, 2);
+ALTER TABLE conversation_message ADD COLUMN IF NOT EXISTS fiat_eur numeric(20, 2);
+ALTER TABLE conversation_message ADD COLUMN IF NOT EXISTS fiat_php numeric(20, 2);
 ALTER TABLE conversation_message ADD COLUMN IF NOT EXISTS actor_account_id uuid REFERENCES account (id);
 ALTER TABLE conversation_message ADD COLUMN IF NOT EXISTS actor_name text NOT NULL DEFAULT '';
 ALTER TABLE conversation_message ADD COLUMN IF NOT EXISTS gift_for_message_id uuid;

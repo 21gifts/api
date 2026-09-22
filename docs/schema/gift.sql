@@ -24,3 +24,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS gift_invoice_uidx
 CREATE INDEX IF NOT EXISTS gift_paid_at_idx ON gift (paid_at);
 CREATE INDEX IF NOT EXISTS gift_recipient_idx ON gift (recipient_wos_user);
 CREATE INDEX IF NOT EXISTS gift_source_wallet_idx ON gift (source_wallet);
+ALTER TABLE gift ADD COLUMN IF NOT EXISTS fiat_usd numeric(20, 2);
+ALTER TABLE gift ADD COLUMN IF NOT EXISTS fiat_chf numeric(20, 2);
+ALTER TABLE gift ADD COLUMN IF NOT EXISTS fiat_eur numeric(20, 2);
+ALTER TABLE gift ADD COLUMN IF NOT EXISTS fiat_php numeric(20, 2);

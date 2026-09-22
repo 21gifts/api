@@ -2,14 +2,14 @@
 
 ## Function: buildGiftDay
 
-- **Purpose:** Pure list of outbound gifts that fall on one UTC calendar day, with BTC/USD at that day's close and additive CHF/EUR/PHP from that UTC day's USD cross.
+- **Purpose:** Pure list of outbound gifts that fall on one UTC calendar day. The stored payment-time USD/CHF/EUR/PHP is what is returned; a legacy row with no snapshot still uses that day's close.
 - **Inputs:** `day` (`YYYY-MM-DD`), `readonly GiftRow[]` (other days ignored), `ReadonlyMap` of UTC day → USD-per-BTC, optional `ReadonlyMap` of UTC day → USD→CHF/EUR/PHP. Empty matching set needs no rates.
 - **Returns / side effects:** `GiftDay` (`gifts` sorted by `paidAt` then `recipient`) with `totalChf`/`totalEur`/`totalPhp` and `fx.quotes`. Empty day is `"0.00"` fiat and USD-only `quotes`. Throws `Error('fx.rate.missing')` when a listed gift has no BTC-USD rate. Missing CHF/EUR/PHP is JSON `null`, never a throw. No I/O.
 - **Used by:** `giftsRoutes`.
 
 ## Function: buildAccountActivity
 
-- **Purpose:** Aggregate given and received sats for one account: confirmed forum zaps paid by the account, indexed zaps on notes it authored including hidden, plus `message.sats` remainder on **top-level** notes only (gift-as-reply `sats` are not Received), house gifts to its Lightning handle, and every outbound house gift when `isPlatform` is true. Does not change `GET /gifts/stats`. Activity series (`donatedOverTime` / `receivedOverTime`) are the same `spendOverTime` day objects as `GET /gifts/stats` including additive CHF/EUR/PHP. USD = per-gift UTC-day Coinbase BTC-USD close. CHF/EUR/PHP = USD × that UTC day's Frankfurter ECB cross.
+- **Purpose:** Aggregate given and received sats for one account: confirmed forum zaps paid by the account, indexed zaps on notes it authored including hidden, plus `message.sats` remainder on **top-level** notes only (gift-as-reply `sats` are not Received), house gifts to its Lightning handle, and every outbound house gift when `isPlatform` is true. Does not change `GET /gifts/stats`. Activity series (`donatedOverTime` / `receivedOverTime`) are the same `spendOverTime` day objects as `GET /gifts/stats` including additive CHF/EUR/PHP. The stored payment-time USD/CHF/EUR/PHP is what is returned.
 - **Inputs:** `{ account, gifts, messages, rates, now, fiatRates? }`. Uses `listInvoiceAttemptsForPayer`, `listIndexedZapIngests`, `listAuthoredMessages`, `listOutbound`, and `giftsForRecipient`. Optional `fiatRates` defaults to an empty `InMemoryFiatStore`.
 - **Returns / side effects:** `AccountActivity` (`donatedSats`, `receivedSats`, `donatedOverTime`, `receivedOverTime`, `fx`). Empty input is zeros with USD-only `fx.quotes`, without Coinbase and without Frankfurter. Throws `Error('fx.rate.missing')` when a gift day has no BTC-USD rate after `ensureDays`. Missing CHF/EUR/PHP is JSON `null`, never a throw (`account.activity.fiat_failed` still returns USD).
 - **Used by:** `GET /me/activity`, `GET /members/:accountId/activity`, `GET /view/:viewKey/activity`.
@@ -30,7 +30,7 @@
 
 ## Function: buildGiftStats
 
-- **Purpose:** Pure aggregation of outbound gifts into the public stats JSON (UTC daily series with gap days and per-day `giftCount`, months with gap months, recipients) including BTC strings, historical USD from per-gift day rates, and additive CHF/EUR/PHP from each gift day's USD cross.
+- **Purpose:** Pure aggregation of outbound gifts into the public stats JSON (UTC daily series with gap days and per-day `giftCount`, months with gap months, recipients) including BTC strings. The stored payment-time USD/CHF/EUR/PHP is what is returned; a legacy row with no snapshot still uses that day's close.
 - **Inputs:** `readonly GiftRow[]` (`paidAt`, `amountSats`, `recipientWosUser`), `ReadonlyMap<string, string>` of UTC day → USD-per-BTC, optional `ReadonlyMap` of UTC day → USD→CHF/EUR/PHP. Empty rows need no rates.
 - **Returns / side effects:** `GiftStats` with `totalBtc`, `totalUsd`, `totalChf`/`totalEur`/`totalPhp`, `fx` (including `fx.quotes`), and BTC/USD/fiat on series/buckets. Throws `Error('fx.rate.missing')` when a gift day has no BTC-USD rate. Missing CHF/EUR/PHP is JSON `null`, never a throw. Gap days and gap months are zero sats/BTC/USD and `"0.00"` fiat without a rate. No I/O.
 - **Used by:** `giftsStatsRoutes`.
@@ -112,6 +112,34 @@
 - **Returns / side effects:** Integer quote cents. Throws on bad cents/rate or if rounded cents exceed `Number.MAX_SAFE_INTEGER`. No I/O.
 - **Used by:** `buildGiftStats`, `buildGiftDay`.
 
+## Function: normalizeAmountUsd
+
+- **Purpose:** Normalize a spend-worker USD amount to a two-decimal string without IEEE float.
+- **Inputs:** Caller text such as `"5"`, `"5.1"`, or `"5.00"`. Value must be `> 0` and `<= 100000`, integer cents only.
+- **Returns / side effects:** `"5.00"`-style string, or `null` when the value is unusable. No I/O.
+- **Used by:** `invoiceRoutes`.
+
+## Function: fiatFromUsd
+
+- **Purpose:** Freeze CHF/EUR/PHP from an already-normalized USD amount. The USD string is the amount stored at payment time, not a later UTC-day close.
+- **Inputs:** `amountUsd` (`"5.00"`) and optional CHF/EUR/PHP per 1 USD. A missing cross stays null.
+- **Returns / side effects:** `FiatAmounts` whose `usd` is `amountUsd`. Throws `amountUsd must be normalized` on a bad USD string. No I/O.
+- **Used by:** `invoiceRoutes`.
+
+## Function: fiatFromSats
+
+- **Purpose:** Freeze USD/CHF/EUR/PHP from whole sats at one Coinbase spot. The USD is that spot, not a later UTC-day close.
+- **Inputs:** Positive whole `sats`, Coinbase `data.amount` text, and optional CHF/EUR/PHP per 1 USD. A missing cross stays null.
+- **Returns / side effects:** `FiatAmounts` at this spot. Throws on a bad rate. No I/O.
+- **Used by:** `invoiceRoutes`, message create, zap indexing.
+
+## Function: fetchBtcUsdSpot
+
+- **Purpose:** Fetch the current positive BTC-USD spot used to freeze fiat at payment time, without ever throwing.
+- **Inputs:** Optional fetch implementation and optional URL (blank falls through to `BTC_USD_SPOT_URL`, then the Coinbase default).
+- **Returns / side effects:** Coinbase decimal text, or `null` for every transport, shape, or value failure. Does not throw.
+- **Used by:** `invoiceRoutes`, message create, zap indexing.
+
 ## Function: resolveCandlesUrl
 
 - **Purpose:** Resolve the Coinbase (or override) candles HTTP URL from env.
@@ -168,6 +196,13 @@
 - **Returns / side effects:** Void; idempotent DDL execute matching `docs/schema/usd_fiat_daily.sql`.
 - **Used by:** `openBootStores` when SQL opens, after `migrateBtcUsdSchema` and before `migrateDbChangeSchema`.
 
+## Function: migrateGiftSchema
+
+- **Purpose:** Adds nullable `fiat_usd`, `fiat_chf`, `fiat_eur`, and `fiat_php` on `gift`, then backfills rows with `amount_sats > 0` and `fiat_usd IS NULL` from `btc_usd_daily` and `usd_fiat_daily` for `paid_at`'s UTC day. No HTTP. A missing BTC day leaves the row null. Rows that already have `fiat_usd` are not rewritten.
+- **Inputs:** `SqlClient`.
+- **Returns / side effects:** Void; idempotent DDL plus a one-time historical freeze.
+- **Used by:** `openBootStores` when SQL opens.
+
 ## Function: migrateMessageSchema
 
 - **Purpose:** Applies `MESSAGE_SCHEMA_SQL` in order (`CREATE TABLE IF NOT EXISTS message` with nullable `photo`/`photo_content_type`, newest-first index, additive `ALTER … ADD COLUMN IF NOT EXISTS` for existing databases including `video_content_type` (MIME in Postgres; video bytes on disk under `MEDIA_DIR`, not bytea), `parent_id uuid REFERENCES message (id)`, `author_pubkey text`, then `ALTER TABLE message ALTER COLUMN account_id DROP NOT NULL` and immediately `CREATE INDEX IF NOT EXISTS message_parent_id_idx ON message (parent_id, created_at ASC, id ASC)`). Later, immediately after `CREATE TABLE message_extra_photo` and immediately before the last unwrap `DO $unwrap$`, an additive `goal_sats bigint` (nullable; SQL null means no ask). It next creates `nostr_zap_receipt`, additively adds `payer_account_id`, `payer_pubkey`, `zap_request_id`, `gift_reply_id`, and `comment`, and creates partial unique indexes including `nostr_zap_receipt_request_uidx` on non-null `zap_request_id`; this is followed by `nostr_zapper`, `nostr_blocked_pubkey`, and `nostr_zap_payment`, then `message_invoice` and `nostr_zap_ingest` without FKs plus `ALTER TABLE message_invoice ADD COLUMN IF NOT EXISTS lnurl_response jsonb`, `conversation_id uuid`, `conversation_message_id uuid` and their `created_at`/`message_id` and `receipt_id` indexes. After `message` exists, adds `account_profile_message_id_fkey` (`ON DELETE SET NULL`) and unique partial index `account_profile_message_uidx`, then soft-hide columns `deleted_at timestamptz` and `deleted_by uuid`. Then additive `content_fp text`, photo-only backfill via `digest(photo, 'sha256')` (`video_content_type` IS NULL), salt of extra live duplicates (`content_fp || ':' || message.id`), and partial unique indexes `message_live_top_content_fp_uidx` / `message_live_reply_content_fp_uidx` (live rows with non-null account + fingerprint). The partial index `message_nostr_event_unrepaired_idx` supports the boot repair's predicate so a converged table can be confirmed without a sequential scan. On every boot, the array also runs an idempotent repair unwrapping `nostr_event` values stored as jsonb string scalars (`jsonb_typeof(nostr_event) = 'string'`), which matches no rows once complete. It is skipped while the `db_change` audit trigger is not attached and retried on the next boot; a row whose value cannot be parsed is skipped with a warning instead of failing the migration. Successfully repaired rows have `nostr_attempts` cleared for a fresh repair budget. The unwrap `DO $unwrap$` block remains last in `MESSAGE_SCHEMA_SQL` only (not mirrored in `docs/schema/message.sql`).
@@ -187,7 +222,7 @@
 
 - **Purpose:** Applies `CONVERSATION_SCHEMA_SQL` in order (`conversation` + `conversation_message` + `conversation_read` tables and unique indexes, including `conversation_read_conversation_id_idx`). CREATE CHECK includes `moderator_group`; ALTER DROP/ADD `conversation_kind_check`; unique partial index `conversation_moderator_group_uidx`. Additive `ALTER TABLE conversation_message ADD COLUMN IF NOT EXISTS sats bigint NOT NULL DEFAULT 0`, `actor_account_id uuid REFERENCES account (id)`, and `actor_name text NOT NULL DEFAULT ''` (logged-in staff on a platform send; sender stays the platform account), and `gift_for_message_id uuid` (no foreign key; id of the group message a paid moderator stipend belongs to). Additive `ALTER TABLE conversation_message ADD COLUMN IF NOT EXISTS photo bytea` and `photo_content_type text`, then `CREATE TABLE IF NOT EXISTS conversation_message_extra_photo` (idx 1–9, ON DELETE CASCADE). Unwrap `DO` block is followed by a last stipend-repair `DO` that backfills `gift_for_message_id` on `moderator_group` house stipend rows written before the column existed (idempotent; links a row only when exactly one message of someone else precedes it within five minutes, leaves an ambiguous row `NULL` without writing it, and never touches a row that already has the column set; skipped until the `db_change` audit trigger is attached; the partial index `conversation_message_gift_unlinked_idx` keeps its per-boot check off a sequential scan). The partial index `conversation_message_nostr_event_unrepaired_idx` supports the nostr-event boot repair's predicate so a converged table can be confirmed without a sequential scan. On every boot, the array runs an idempotent repair unwrapping `conversation_message.nostr_event` values stored as jsonb string scalars (`jsonb_typeof(nostr_event) = 'string'`); it matches no rows once complete. The unwrap is skipped while the `db_change` audit trigger is not attached and retried on the next boot; a row whose value cannot be parsed is skipped with a warning instead of failing the migration. `db_change` attach runs later and covers the new public tables.
 - **Inputs:** `SqlClient`.
-- **Returns / side effects:** Void; idempotent SQL execute; `docs/schema/conversation.sql` mirrors the DDL and documents the boot repair statements by comment (the `DO $unwrap$` and stipend-repair `DO` blocks live only in `CONVERSATION_SCHEMA_SQL`).
+- **Returns / side effects:** Void; idempotent SQL execute; `docs/schema/conversation.sql` mirrors the DDL and documents the boot repair statements by comment (the `DO $unwrap$` and stipend-repair `DO` blocks live only in `CONVERSATION_SCHEMA_SQL`). After the DDL, rows with `sats > 0` and `fiat_usd IS NULL` are backfilled from `btc_usd_daily` / `usd_fiat_daily` for `created_at`'s UTC day (`satsToUsdCents` / `usdCentsToFiatCents`). No HTTP. Idempotent.
 - **Used by:** `openBootStores` when SQL opens, after `migrateContactSchema` and before `migrateDbChangeSchema`.
 
 ## Function: migratePushSchema
@@ -733,7 +768,7 @@
 ## Function: SqlGiftRecorder
 
 - **Purpose:** Persist a proven outbound gift into Postgres `gift` for `GET /gifts` and `GET /gifts/stats`.
-- **Inputs:** Shared boot `SqlClient`. `recordOutbound` inserts `paid_at`, sats, recipient handle, BOLT11 `pr`, description, `source_wallet`.
+- **Inputs:** Shared boot `SqlClient`. `recordOutbound` inserts `paid_at`, sats, recipient handle, BOLT11 `pr`, description, `source_wallet`, and stored `fiat_usd` / `fiat_chf` / `fiat_eur` / `fiat_php` (null when the snapshot is null).
 - **Returns / side effects:** `INSERT … ON CONFLICT (lightning_invoice) DO NOTHING`. Errors propagate to the route, which logs and still returns 200.
 - **Used by:** `openBootStores` when `DATABASE_URL` is set.
 

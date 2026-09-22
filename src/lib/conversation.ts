@@ -50,6 +50,14 @@ export interface ConversationThread {
   lastActorAccountId: string | null;
   /** Last message sats; `0` when the thread has no messages or the last row is unpaid text. */
   lastSats: number;
+  /** Last message stored USD snapshot. */
+  lastAmountUsd?: string | null;
+  /** Last message stored CHF snapshot. */
+  lastAmountChf?: string | null;
+  /** Last message stored EUR snapshot. */
+  lastAmountEur?: string | null;
+  /** Last message stored PHP snapshot. */
+  lastAmountPhp?: string | null;
 }
 
 /** Persisted conversation message row (store-internal). */
@@ -80,6 +88,14 @@ export interface ConversationMessageRow {
   giftForMessageId?: string | null;
   /** Credited sats on this row; `0` for unpaid text. Gift-only rows use `text: ''` and `sats >= 1`. */
   sats: number;
+  /** Stored USD snapshot, or null. */
+  amountUsd?: string | null;
+  /** Stored CHF snapshot, or null. */
+  amountChf?: string | null;
+  /** Stored EUR snapshot, or null. */
+  amountEur?: string | null;
+  /** Stored PHP snapshot, or null. */
+  amountPhp?: string | null;
   /**
    * Whether a still is stored for this message (bytes never on the row).
    * Omitted on older fixtures; serializers default `false`.
@@ -116,6 +132,14 @@ export interface PublicConversation {
   lastFromMe: boolean;
   /** Last message sats; `0` when none / unpaid text. */
   lastSats: number;
+  /** Last message stored USD snapshot. */
+  amountUsd: string | null;
+  /** Last message stored CHF snapshot. */
+  amountChf: string | null;
+  /** Last message stored EUR snapshot. */
+  amountEur: string | null;
+  /** Last message stored PHP snapshot. */
+  amountPhp: string | null;
   /** True when the viewer has inbound messages newer than last-read. */
   unread: boolean;
   /** Inbound messages after last-read for this viewer; `0` when none. */
@@ -138,6 +162,14 @@ export interface PublicConversationMessage {
   fromMe: boolean;
   /** Credited sats; `0` for unpaid text. */
   sats: number;
+  /** Stored USD snapshot, or null. */
+  amountUsd: string | null;
+  /** Stored CHF snapshot, or null. */
+  amountChf: string | null;
+  /** Stored EUR snapshot, or null. */
+  amountEur: string | null;
+  /** Stored PHP snapshot, or null. */
+  amountPhp: string | null;
   /** Whether a still is stored for this message (bytes never in JSON). */
   hasPhoto: boolean;
   /** Still-photo count 0–10 (`hasPhoto` plus extra stills). */
@@ -219,6 +251,10 @@ export function serializeConversation(
     lastAt: thread.lastMessageAt.toISOString(),
     lastFromMe,
     lastSats: thread.lastSats,
+    amountUsd: thread.lastAmountUsd ?? null,
+    amountChf: thread.lastAmountChf ?? null,
+    amountEur: thread.lastAmountEur ?? null,
+    amountPhp: thread.lastAmountPhp ?? null,
     unread,
     unreadMessageCount,
   };
@@ -268,6 +304,10 @@ export function serializeConversationMessage(
     createdAt: row.createdAt.toISOString(),
     fromMe,
     sats: row.sats,
+    amountUsd: row.amountUsd ?? null,
+    amountChf: row.amountChf ?? null,
+    amountEur: row.amountEur ?? null,
+    amountPhp: row.amountPhp ?? null,
     hasPhoto: row.hasPhoto === true,
     photoCount: conversationPhotoCount(row),
   };
@@ -288,6 +328,10 @@ export function serializeConversationMessage(
 export function unsignedConversationDefaults(): Pick<
   ConversationMessageRow,
   | 'sats'
+  | 'amountUsd'
+  | 'amountChf'
+  | 'amountEur'
+  | 'amountPhp'
   | 'eventId'
   | 'nostrPublishState'
   | 'nostrEvent'
@@ -297,6 +341,10 @@ export function unsignedConversationDefaults(): Pick<
 > {
   return {
     sats: 0,
+    amountUsd: null,
+    amountChf: null,
+    amountEur: null,
+    amountPhp: null,
     eventId: null,
     nostrPublishState: 'pending',
     nostrEvent: null,
