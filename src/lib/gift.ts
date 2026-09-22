@@ -455,33 +455,15 @@ function formatMaybeCents(cents: number | null): string | null {
 }
 
 /**
- * `fx.quotes` for a non-empty selection: USD always, then CHF/EUR/PHP when at
- * least one gift day has that cross (even if another day is missing).
+ * `fx.quotes` from stored amounts: USD always, then a currency when any gift stored it.
  *
- * @param giftDays - UTC days that actually have gifts (not gap days).
- * @param fiatRates - Optional day → cross map.
+ * @param hasChf - A gift stored CHF.
+ * @param hasEur - A gift stored EUR.
+ * @param hasPhp - A gift stored PHP.
  * @returns Quotes in USD, CHF, EUR, PHP order.
  */
-function quotesForGiftDays(
-  giftDays: readonly string[],
-  fiatRates: ReadonlyMap<string, FiatCross>,
-): GiftFxQuote[] {
+function quotesFromStored(hasChf: boolean, hasEur: boolean, hasPhp: boolean): GiftFxQuote[] {
   const quotes: GiftFxQuote[] = [USD_FX_QUOTE];
-  let hasChf = false;
-  let hasEur = false;
-  let hasPhp = false;
-  for (const day of giftDays) {
-    const cross = fiatRates.get(day);
-    if (typeof cross?.CHF === 'string') {
-      hasChf = true;
-    }
-    if (typeof cross?.EUR === 'string') {
-      hasEur = true;
-    }
-    if (typeof cross?.PHP === 'string') {
-      hasPhp = true;
-    }
-  }
   if (hasChf) {
     quotes.push({ code: 'CHF', pair: 'USD-CHF', source: FX_SOURCE_FRANKFURTER_ECB });
   }
@@ -607,6 +589,9 @@ export function buildGiftStats(
   let totalChfCents: number | null = 0;
   let totalEurCents: number | null = 0;
   let totalPhpCents: number | null = 0;
+  let anyChf = false;
+  let anyEur = false;
+  let anyPhp = false;
 
   for (const row of sorted) {
     const day = utcDayString(row.paidAt);
@@ -618,6 +603,15 @@ export function buildGiftStats(
     totalChfCents = addMaybe(totalChfCents, converted.chf);
     totalEurCents = addMaybe(totalEurCents, converted.eur);
     totalPhpCents = addMaybe(totalPhpCents, converted.php);
+    if (converted.chf !== null) {
+      anyChf = true;
+    }
+    if (converted.eur !== null) {
+      anyEur = true;
+    }
+    if (converted.php !== null) {
+      anyPhp = true;
+    }
     byDaySats.set(day, (byDaySats.get(day) ?? 0) + row.amountSats);
     byDayGiftCount.set(day, (byDayGiftCount.get(day) ?? 0) + 1);
     byDayUsdCents.set(day, foldDay(byDayUsdCents, day, usdCents));
@@ -726,7 +720,7 @@ export function buildGiftStats(
       quote: 'BTC-USD',
       dayBasis: 'utc',
       source: FX_SOURCE_COINBASE_DAILY_CLOSE,
-      quotes: quotesForGiftDays([...byDaySats.keys()], fiat),
+      quotes: quotesFromStored(anyChf, anyEur, anyPhp),
     },
   };
 }
@@ -779,6 +773,9 @@ export function buildGiftDay(
   let totalChfCents: number | null = 0;
   let totalEurCents: number | null = 0;
   let totalPhpCents: number | null = 0;
+  let anyChf = false;
+  let anyEur = false;
+  let anyPhp = false;
   const gifts: GiftDayGift[] = [];
   for (const row of matching) {
     const amounts = giftAmounts(row);
@@ -789,6 +786,15 @@ export function buildGiftDay(
     totalChfCents = addMaybe(totalChfCents, converted.chf);
     totalEurCents = addMaybe(totalEurCents, converted.eur);
     totalPhpCents = addMaybe(totalPhpCents, converted.php);
+    if (converted.chf !== null) {
+      anyChf = true;
+    }
+    if (converted.eur !== null) {
+      anyEur = true;
+    }
+    if (converted.php !== null) {
+      anyPhp = true;
+    }
     gifts.push({
       paidAt: row.paidAt.toISOString(),
       amountSats: row.amountSats,
@@ -815,7 +821,7 @@ export function buildGiftDay(
       quote: 'BTC-USD',
       dayBasis: 'utc',
       source: FX_SOURCE_COINBASE_DAILY_CLOSE,
-      quotes: quotesForGiftDays([day], fiat),
+      quotes: quotesFromStored(anyChf, anyEur, anyPhp),
     },
   };
 }

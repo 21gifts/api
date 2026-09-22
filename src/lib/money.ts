@@ -141,8 +141,8 @@ export function usdCentsToString(cents: number): string {
  * `usd` is always a two-decimal string. A missing cross is `null`, not `"0.00"`.
  */
 export interface FiatAmounts {
-  /** Already-normalized USD, two decimals (e.g. `"5.00"`). */
-  usd: string;
+  /** Already-normalized USD, two decimals (e.g. `"5.00"`), or `null` when none was stored. */
+  usd: string | null;
   /** CHF at the stored USD, or `null` when that cross is missing. */
   chf: string | null;
   /** EUR at the stored USD, or `null` when that cross is missing. */
@@ -199,10 +199,10 @@ export function normalizeAmountUsd(raw: string): string | null {
 
 /** Optional shown amounts on an invoice body. A missing key is not the same as null. */
 export interface ShownFiatBody {
-  amountUsd?: string | null;
-  amountChf?: string | null;
-  amountEur?: string | null;
-  amountPhp?: string | null;
+  amountUsd?: string | null | undefined;
+  amountChf?: string | null | undefined;
+  amountEur?: string | null | undefined;
+  amountPhp?: string | null | undefined;
 }
 
 /**
