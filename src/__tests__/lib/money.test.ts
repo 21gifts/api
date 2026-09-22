@@ -4,6 +4,7 @@ import {
   fiatFromSats,
   fiatFromUsd,
   normalizeAmountUsd,
+  shownFiatFromBody,
   parseUsdPerBtc,
   satsToBtcString,
   satsToUsdCents,
@@ -18,6 +19,27 @@ describe('normalizeAmountUsd', () => {
     expect(normalizeAmountUsd('0')).toBeNull();
     expect(normalizeAmountUsd('100000.01')).toBeNull();
     expect(normalizeAmountUsd('5.001')).toBeNull();
+  });
+});
+
+describe('shownFiatFromBody', () => {
+  it('stays unpinned when the client sends no fiat keys', () => {
+    expect(shownFiatFromBody({})).toEqual({ pinned: false });
+  });
+
+  it('pins the shown amounts and treats a missing sibling as null', () => {
+    expect(shownFiatFromBody({ amountUsd: '5', amountChf: null })).toEqual({
+      pinned: true,
+      fiat: { usd: '5.00', chf: null, eur: null, php: null },
+    });
+  });
+
+  it('accepts a zero shown amount and rejects an unusable string', () => {
+    expect(shownFiatFromBody({ amountUsd: '0.00' })).toEqual({
+      pinned: true,
+      fiat: { usd: '0.00', chf: null, eur: null, php: null },
+    });
+    expect(shownFiatFromBody({ amountUsd: 'nope' })).toBeNull();
   });
 });
 

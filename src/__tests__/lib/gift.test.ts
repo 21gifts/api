@@ -420,10 +420,10 @@ describe('buildGiftStats', () => {
     expect(stats.totalPhp).toBe('100.00');
   });
 
-  it('throws fx.rate.missing when a gift day has no rate', () => {
-    expect(() =>
-      buildGiftStats([row('2026-06-01T15:00:00.000Z', 1000, 'alice')], new Map()),
-    ).toThrow('fx.rate.missing');
+  it('leaves fiat null when a gift has no stored amount', () => {
+    const stats = buildGiftStats([row('2026-06-01T15:00:00.000Z', 1000, 'alice')], new Map());
+    expect(stats.totalSats).toBe(1000);
+    expect(stats.totalUsd).toBeNull();
   });
 
   it('sorts recipients by sats descending then name', () => {
@@ -756,9 +756,13 @@ describe('buildGiftDay', () => {
     ).toThrow('invalid stored fiat amount');
   });
 
-  it('throws fx.rate.missing when a listed gift has no rate', () => {
-    expect(() =>
-      buildGiftDay('2026-06-01', [row('2026-06-01T15:00:00.000Z', 1000, 'alice')], new Map()),
-    ).toThrow('fx.rate.missing');
+  it('leaves a listed gift null when it has no stored amount', () => {
+    const listed = buildGiftDay(
+      '2026-06-01',
+      [row('2026-06-01T15:00:00.000Z', 1000, 'alice')],
+      new Map(),
+    );
+    expect(listed.totalSats).toBe(1000);
+    expect(listed.totalUsd).toBeNull();
   });
 });

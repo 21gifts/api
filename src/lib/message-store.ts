@@ -1052,6 +1052,15 @@ export interface MessageInvoiceAttempt {
   conversationId?: string | null;
   /** Predetermined private-message row id; null/omitted for forum invoices. */
   conversationMessageId?: string | null;
+  /**
+   * True when the payer sent the four amounts they were shown.
+   * A pinned snapshot is stored as-is, including nulls, and is not replaced by a later spot.
+   */
+  fiatPinned?: boolean;
+  amountUsd?: string | null;
+  amountChf?: string | null;
+  amountEur?: string | null;
+  amountPhp?: string | null;
 }
 
 /** One persisted kind:9735 ingest decision for operator debug. */
@@ -1159,6 +1168,11 @@ export const MESSAGE_SCHEMA_SQL: readonly string[] = [
   `ALTER TABLE message_invoice ADD COLUMN IF NOT EXISTS lnurl_response jsonb`,
   `ALTER TABLE message_invoice ADD COLUMN IF NOT EXISTS conversation_id uuid`,
   `ALTER TABLE message_invoice ADD COLUMN IF NOT EXISTS conversation_message_id uuid`,
+  `ALTER TABLE message_invoice ADD COLUMN IF NOT EXISTS fiat_pinned boolean NOT NULL DEFAULT false`,
+  `ALTER TABLE message_invoice ADD COLUMN IF NOT EXISTS fiat_usd numeric(20, 2)`,
+  `ALTER TABLE message_invoice ADD COLUMN IF NOT EXISTS fiat_chf numeric(20, 2)`,
+  `ALTER TABLE message_invoice ADD COLUMN IF NOT EXISTS fiat_eur numeric(20, 2)`,
+  `ALTER TABLE message_invoice ADD COLUMN IF NOT EXISTS fiat_php numeric(20, 2)`,
   `CREATE INDEX IF NOT EXISTS message_invoice_created_at_idx
   ON message_invoice (created_at DESC, id DESC)`,
   `CREATE INDEX IF NOT EXISTS message_invoice_message_id_idx
@@ -4142,9 +4156,11 @@ export class PostgresMessageStore implements MessageStore {
          id, created_at, message_id, payer_account_id, author_account_id,
          amount_sats, lightning_address, zap_request, result, http_status,
          pr, payment_hash, description, description_hash, is_nip57_invoice,
-         lnurl_response, conversation_id, conversation_message_id
+         lnurl_response, conversation_id, conversation_message_id,
+         fiat_pinned, fiat_usd, fiat_chf, fiat_eur, fiat_php
        ) VALUES (
-         $1,$2,$3,$4,$5,$6,$7,$8::jsonb,$9,$10,$11,$12,$13,$14,$15,$16::jsonb,$17,$18
+         $1,$2,$3,$4,$5,$6,$7,$8::jsonb,$9,$10,$11,$12,$13,$14,$15,$16::jsonb,$17,$18,
+         $19,$20::numeric,$21::numeric,$22::numeric,$23::numeric
        )`,
       [
         row.id,
@@ -4165,6 +4181,11 @@ export class PostgresMessageStore implements MessageStore {
         row.lnurlResponse,
         row.conversationId,
         row.conversationMessageId,
+        row.fiatPinned === true,
+        row.amountUsd ?? null,
+        row.amountChf ?? null,
+        row.amountEur ?? null,
+        row.amountPhp ?? null,
       ],
     );
   }
@@ -4174,7 +4195,9 @@ export class PostgresMessageStore implements MessageStore {
       `SELECT id, created_at, message_id, payer_account_id, author_account_id,
               amount_sats, lightning_address, zap_request, result, http_status,
               pr, payment_hash, description, description_hash, is_nip57_invoice,
-              lnurl_response, conversation_id, conversation_message_id
+              lnurl_response, conversation_id, conversation_message_id,
+              fiat_pinned, fiat_usd::text AS fiat_usd, fiat_chf::text AS fiat_chf,
+              fiat_eur::text AS fiat_eur, fiat_php::text AS fiat_php
        FROM message_invoice
        ORDER BY created_at DESC, id DESC
        LIMIT $1`,
@@ -4308,7 +4331,9 @@ export class PostgresMessageStore implements MessageStore {
       `SELECT id, created_at, message_id, payer_account_id, author_account_id,
               amount_sats, lightning_address, zap_request, result, http_status,
               pr, payment_hash, description, description_hash, is_nip57_invoice,
-              lnurl_response, conversation_id, conversation_message_id
+              lnurl_response, conversation_id, conversation_message_id,
+              fiat_pinned, fiat_usd::text AS fiat_usd, fiat_chf::text AS fiat_chf,
+              fiat_eur::text AS fiat_eur, fiat_php::text AS fiat_php
        FROM message_invoice
        WHERE payer_account_id = $1
        ORDER BY created_at DESC, id DESC`,
@@ -4391,7 +4416,9 @@ export class PostgresMessageStore implements MessageStore {
       `SELECT id, created_at, message_id, payer_account_id, author_account_id,
               amount_sats, lightning_address, zap_request, result, http_status,
               pr, payment_hash, description, description_hash, is_nip57_invoice,
-              lnurl_response, conversation_id, conversation_message_id
+              lnurl_response, conversation_id, conversation_message_id,
+              fiat_pinned, fiat_usd::text AS fiat_usd, fiat_chf::text AS fiat_chf,
+              fiat_eur::text AS fiat_eur, fiat_php::text AS fiat_php
        FROM message_invoice
        WHERE payment_hash = $1 AND result = 'ok'
        ORDER BY created_at DESC, id DESC
@@ -4407,7 +4434,9 @@ export class PostgresMessageStore implements MessageStore {
       `SELECT id, created_at, message_id, payer_account_id, author_account_id,
               amount_sats, lightning_address, zap_request, result, http_status,
               pr, payment_hash, description, description_hash, is_nip57_invoice,
-              lnurl_response, conversation_id, conversation_message_id
+              lnurl_response, conversation_id, conversation_message_id,
+              fiat_pinned, fiat_usd::text AS fiat_usd, fiat_chf::text AS fiat_chf,
+              fiat_eur::text AS fiat_eur, fiat_php::text AS fiat_php
        FROM message_invoice
        WHERE pr = $1 AND result = 'ok'
        ORDER BY created_at DESC, id DESC
@@ -4790,6 +4819,11 @@ interface MessageInvoiceSqlRow {
   lnurl_response?: Record<string, unknown> | string | null;
   conversation_id?: string | null;
   conversation_message_id?: string | null;
+  fiat_pinned?: boolean | null;
+  fiat_usd?: string | number | null;
+  fiat_chf?: string | number | null;
+  fiat_eur?: string | number | null;
+  fiat_php?: string | number | null;
 }
 
 /** SQL row shape for `nostr_zap_ingest`. */
@@ -4853,6 +4887,11 @@ function mapInvoiceAttemptRow(row: MessageInvoiceSqlRow): MessageInvoiceAttempt 
     lnurlResponse: parseJsonObject(row.lnurl_response),
     conversationId: row.conversation_id ?? null,
     conversationMessageId: row.conversation_message_id ?? null,
+    fiatPinned: row.fiat_pinned === true,
+    amountUsd: row.fiat_usd === null || row.fiat_usd === undefined ? null : String(row.fiat_usd),
+    amountChf: row.fiat_chf === null || row.fiat_chf === undefined ? null : String(row.fiat_chf),
+    amountEur: row.fiat_eur === null || row.fiat_eur === undefined ? null : String(row.fiat_eur),
+    amountPhp: row.fiat_php === null || row.fiat_php === undefined ? null : String(row.fiat_php),
   };
 }
 

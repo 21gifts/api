@@ -440,6 +440,19 @@ function zapIngestCatchFields(error: unknown): LogFields {
  * @param args - Sats, instant, fetch, optional rate book, and clock.
  * @returns Payment-time snapshot, or `null`.
  */
+/** Stored amounts from an invoice the payer already priced. Undefined when not pinned. */
+function pinnedInvoiceFiat(invoice: MessageInvoiceAttempt | undefined): FiatAmounts | undefined {
+  if (invoice?.fiatPinned !== true) {
+    return undefined;
+  }
+  return {
+    usd: invoice.amountUsd ?? null,
+    chf: invoice.amountChf ?? null,
+    eur: invoice.amountEur ?? null,
+    php: invoice.amountPhp ?? null,
+  };
+}
+
 async function snapshotSatsFiat(args: {
   sats: number;
   at: Date;
@@ -613,13 +626,17 @@ export async function settleInvoiceManually(args: {
     return { ok: false, reason: 'duplicate' };
   }
   const paidAt = new Date(args.now());
-  const delta = await snapshotSatsFiat({
-    sats: invoice.amountSats,
-    at: paidAt,
-    fetchImpl: args.fetchImpl ?? fetch,
-    now: args.now,
-    ...(args.fiatRates === undefined ? {} : { fiatRates: args.fiatRates }),
-  });
+  const pinned = pinnedInvoiceFiat(invoice);
+  const delta =
+    pinned !== undefined
+      ? pinned
+      : await snapshotSatsFiat({
+          sats: invoice.amountSats,
+          at: paidAt,
+          fetchImpl: args.fetchImpl ?? fetch,
+          now: args.now,
+          ...(args.fiatRates === undefined ? {} : { fiatRates: args.fiatRates }),
+        });
   if (
     !resumed &&
     !(await args.store.recordZapReceipt(receiptId, message.id, invoice.amountSats, delta))
@@ -759,6 +776,11 @@ export async function indexZapReceipt(args: {
   fiatRates?: FiatRateBook;
   /** Clock for the cross day. Default `Date.now`. */
   now?: () => number;
+  /**
+   * Amounts already stored for this payment. When set, including all nulls,
+   * the receipt is not priced from a new spot.
+   */
+  fiat?: FiatAmounts;
 }): Promise<boolean> {
   const receipt =
     args.receiptEvent ??
@@ -808,13 +830,16 @@ export async function indexZapReceipt(args: {
     return false;
   }
   const now = args.now ?? Date.now;
-  const delta = await snapshotSatsFiat({
-    sats: args.amountSats,
-    at: new Date(now()),
-    fetchImpl: args.fetchImpl ?? fetch,
-    now,
-    ...(args.fiatRates === undefined ? {} : { fiatRates: args.fiatRates }),
-  });
+  const delta =
+    args.fiat !== undefined
+      ? args.fiat
+      : await snapshotSatsFiat({
+          sats: args.amountSats,
+          at: new Date(now()),
+          fetchImpl: args.fetchImpl ?? fetch,
+          now,
+          ...(args.fiatRates === undefined ? {} : { fiatRates: args.fiatRates }),
+        });
   const added = await args.store.recordZapReceipt(
     args.receipt.id,
     args.messageId,
@@ -1233,13 +1258,17 @@ async function ingestOneReceipt(
       );
       return;
     }
-    const conversationDelta = await snapshotSatsFiat({
-      sats: conversationInvoice.amountSats,
-      at: new Date(args.now()),
-      fetchImpl: args.fetchImpl,
-      now: args.now,
-      ...(args.fiatRates === undefined ? {} : { fiatRates: args.fiatRates }),
-    });
+    const pinnedConversation = pinnedInvoiceFiat(conversationInvoice);
+    const conversationDelta =
+      pinnedConversation !== undefined
+        ? pinnedConversation
+        : await snapshotSatsFiat({
+            sats: conversationInvoice.amountSats,
+            at: new Date(args.now()),
+            fetchImpl: args.fetchImpl,
+            now: args.now,
+            ...(args.fiatRates === undefined ? {} : { fiatRates: args.fiatRates }),
+          });
     await appendConversationGift({
       conversations: args.conversations,
       auth: args.auth,
@@ -1475,6 +1504,9 @@ async function ingestOneReceipt(
     return;
   }
 
+  const pinnedForum = pinnedInvoiceFiat(
+    await args.store.findOkInvoiceByPaymentHash(decoded.paymentHash),
+  );
   const indexed = await indexZapReceipt({
     store: args.store,
     messageId: row.id,
@@ -1486,6 +1518,7 @@ async function ingestOneReceipt(
     fetchImpl: args.fetchImpl,
     now: args.now,
     ...(args.fiatRates === undefined ? {} : { fiatRates: args.fiatRates }),
+    ...(pinnedForum === undefined ? {} : { fiat: pinnedForum }),
   });
   if (indexed && row.accountId !== null) {
     let payer: Account | undefined;

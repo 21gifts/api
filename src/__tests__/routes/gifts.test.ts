@@ -106,14 +106,15 @@ describe('GET /gifts', () => {
     expect(body.gifts[0]?.amountSats).toBe(500);
   });
 
-  it('returns 503 when a listed gift day has no rate', async () => {
+  it('returns null fiat when a listed gift has no stored amount', async () => {
     const res = await createApp({
       giftStore: new InMemoryGiftStore([ALICE]),
       btcUsdRates: new InMemoryBtcUsdStore(),
     }).request('/gifts?day=2026-06-01');
-    expect(res.status).toBe(503);
-    expect(await res.json()).toEqual({ error: 'Gift stats are unavailable' });
-    expect(parsedEvents(warn).some((e) => e['event'] === 'gifts.day.fx_incomplete')).toBe(true);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { totalSats: number; totalUsd: string | null };
+    expect(body.totalSats).toBe(1000);
+    expect(body.totalUsd).toBeNull();
   });
 
   it('returns 503 when the store throws', async () => {

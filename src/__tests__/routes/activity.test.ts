@@ -189,11 +189,13 @@ describe('account activity routes', () => {
       `/members/${ACCOUNT_ID}/activity`,
       { headers: AUTH },
     );
-    expect(res.status).toBe(503);
-    expect(await res.json()).toEqual({ error: 'Gift stats are unavailable' });
-    expect(parsedEvents(warn).some((e) => e['event'] === 'account.activity.fx_incomplete')).toBe(
-      true,
-    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      receivedSats: number;
+      receivedOverTime: Array<{ usd: string | null }>;
+    };
+    expect(body.receivedSats).toBe(21);
+    expect(body.receivedOverTime[0]?.usd).toBeNull();
   });
 
   it('GET /view/:viewKey/activity returns 503 when a remainder day has no FX rate', async () => {
@@ -205,8 +207,13 @@ describe('account activity routes', () => {
     const res = await createApp({ authStore, messageStore, giftStore, now }).request(
       `/view/${VIEW_KEY}/activity`,
     );
-    expect(res.status).toBe(503);
-    expect(await res.json()).toEqual({ error: 'Gift stats are unavailable' });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      receivedSats: number;
+      receivedOverTime: Array<{ usd: string | null }>;
+    };
+    expect(body.receivedSats).toBe(21);
+    expect(body.receivedOverTime[0]?.usd).toBeNull();
   });
 
   it('GET /members/:accountId/activity returns 503 when the gift store throws', async () => {
@@ -277,11 +284,13 @@ describe('account activity routes', () => {
         headers: AUTH,
       },
     );
-    expect(res.status).toBe(503);
-    expect(await res.json()).toEqual({ error: 'Gift stats are unavailable' });
-    expect(parsedEvents(warn).some((e) => e['event'] === 'account.activity.fx_incomplete')).toBe(
-      true,
-    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      receivedSats: number;
+      receivedOverTime: Array<{ usd: string | null }>;
+    };
+    expect(body.receivedSats).toBe(21);
+    expect(body.receivedOverTime[0]?.usd).toBeNull();
   });
 
   it('GET /me/activity converts CHF from a seeded fiat book', async () => {

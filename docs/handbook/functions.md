@@ -119,6 +119,13 @@
 - **Returns / side effects:** `"5.00"`-style string, or `null` when the value is unusable. No I/O.
 - **Used by:** `invoiceRoutes`.
 
+## Function: shownFiatFromBody
+
+- **Purpose:** Read the four fiat amounts the payer was shown, so a later payment stores those amounts instead of converting sats again.
+- **Inputs:** Optional `amountUsd`, `amountChf`, `amountEur`, and `amountPhp`. No key means the client did not pin a price. A present key may be a positive two-decimal string or null.
+- **Returns / side effects:** `{ pinned: false }`, `{ pinned: true, fiat }`, or `null` when a string is unusable. No I/O.
+- **Used by:** `messageRoutes`, `conversationRoutes`.
+
 ## Function: fiatFromUsd
 
 - **Purpose:** Freeze CHF/EUR/PHP from an already-normalized USD amount. The USD string is the amount stored at payment time, not a later UTC-day close.

@@ -7,12 +7,7 @@
  */
 
 import { FX_SOURCE_COINBASE_DAILY_CLOSE } from '@/lib/btc-usd-store';
-import {
-  satsToBtcString,
-  satsToUsdCents,
-  usdCentsToFiatCents,
-  usdCentsToString,
-} from '@/lib/money';
+import { satsToBtcString, usdCentsToString } from '@/lib/money';
 import { FX_SOURCE_FRANKFURTER_ECB, type FiatCross } from '@/lib/usd-fiat-store';
 
 /** One outbound gift used as stats input. No invoice fields. */
@@ -406,66 +401,19 @@ export function giftsForRecipient(rows: readonly GiftRow[], recipient: string): 
 }
 
 /**
- * Convert USD cents to one quote, or `null` when that day's cross is missing.
+ * Stored payment-time amounts only.
  *
- * @param usdCents - Historical USD cents for the gift.
- * @param rate - Quote-per-USD decimal string, or `undefined` when missing.
- * @returns Quote cents, or `null`.
+ * A missing or null snapshot stays null. Sats are never converted again.
  */
-function quoteCents(usdCents: number, rate: string | undefined): number | null {
-  if (rate === undefined) {
-    return null;
-  }
-  return usdCentsToFiatCents(usdCents, rate);
-}
-
-/**
- * Per-gift CHF/EUR/PHP cents from that UTC day's USD-cross book.
- *
- * Missing keys are omitted on {@link FiatCross}; those quotes are `null`.
- * Does not throw.
- *
- * @param usdCents - Historical USD cents for the gift.
- * @param day - Gift UTC day.
- * @param fiatRates - Optional day → cross map.
- * @returns Quote cents (`null` when that currency cannot be converted).
- */
-function giftFiatCents(
-  usdCents: number,
-  day: string,
-  fiatRates: ReadonlyMap<string, FiatCross>,
-): GiftFiatCents {
-  const cross = fiatRates.get(day);
+function giftAmounts(row: GiftRow): { usd: number | null; fiat: GiftFiatCents } {
   return {
-    chf: quoteCents(usdCents, cross?.CHF),
-    eur: quoteCents(usdCents, cross?.EUR),
-    php: quoteCents(usdCents, cross?.PHP),
+    usd: storedCents(row.amountUsd ?? null),
+    fiat: {
+      chf: storedCents(row.amountChf ?? null),
+      eur: storedCents(row.amountEur ?? null),
+      php: storedCents(row.amountPhp ?? null),
+    },
   };
-}
-
-/** Resolve stored payment-time amounts, falling back only for legacy rows. */
-function giftAmounts(
-  row: GiftRow,
-  day: string,
-  rates: ReadonlyMap<string, string>,
-  fiatRates: ReadonlyMap<string, FiatCross>,
-): { usd: number | null; fiat: GiftFiatCents } {
-  if (row.amountUsd !== undefined) {
-    return {
-      usd: storedCents(row.amountUsd),
-      fiat: {
-        chf: storedCents(row.amountChf ?? null),
-        eur: storedCents(row.amountEur ?? null),
-        php: storedCents(row.amountPhp ?? null),
-      },
-    };
-  }
-  const rate = rates.get(day);
-  if (rate === undefined) {
-    throw new Error('fx.rate.missing');
-  }
-  const usd = satsToUsdCents(row.amountSats, rate);
-  return { usd, fiat: giftFiatCents(usd, day, fiatRates) };
 }
 
 /**
@@ -608,25 +556,21 @@ function cumulativeFiat(running: number | null): string | null {
  * Aggregate outbound gifts into the public stats payload.
  *
  * Empty input yields zeros (including `totalChf`/`totalEur`/`totalPhp`
- * `"0.00"`), null dates, empty series, and `fx` with USD-only `quotes` — no
- * rates required. Non-empty input looks up each gift's UTC-day BTC-USD rate;
- * a missing BTC-USD rate throws `Error('fx.rate.missing')`. Missing CHF/EUR/PHP
- * does **not** throw: those fields are `null`. Gap days in `spendOverTime` and
- * gap months in `byMonth` use zero `giftCount`/sats/BTC/USD and `"0.00"` fiat
- * without needing a rate.
+ * `"0.00"`), null dates, empty series, and `fx` with USD-only `quotes`.
+ * Amounts come only from each gift's stored fiat. A missing snapshot is null
+ * and is not converted from sats. Gap days in `spendOverTime` and gap months
+ * in `byMonth` use zero `giftCount`/sats/BTC/USD and `"0.00"` fiat.
  *
  * @param rows - Outbound gifts (order does not matter).
- * @param rates - UTC day → USD-per-BTC string for every gift day.
- * @param fiatRates - Optional UTC day → USD-cross map. Omitted/empty is allowed.
+ * @param _rates - Ignored. Kept so existing callers still compile.
+ * @param _fiatRates - Ignored. Kept so existing callers still compile.
  * @returns Aggregated {@link GiftStats}.
- * @throws `Error('fx.rate.missing')` when a gift day has no BTC-USD rate.
  */
 export function buildGiftStats(
   rows: readonly GiftRow[],
-  rates: ReadonlyMap<string, string>,
-  fiatRates?: ReadonlyMap<string, FiatCross>,
+  _rates: ReadonlyMap<string, string>,
+  _fiatRates?: ReadonlyMap<string, FiatCross>,
 ): GiftStats {
-  const fiat = fiatRates ?? new Map<string, FiatCross>();
   if (rows.length === 0) {
     return {
       totalSats: 0,
@@ -666,7 +610,7 @@ export function buildGiftStats(
 
   for (const row of sorted) {
     const day = utcDayString(row.paidAt);
-    const amounts = giftAmounts(row, day, rates, fiat);
+    const amounts = giftAmounts(row);
     const usdCents = amounts.usd;
     const converted = amounts.fiat;
     totalSats += row.amountSats;
@@ -798,18 +742,16 @@ export function buildGiftStats(
  *
  * @param day - UTC `YYYY-MM-DD` (caller already validated).
  * @param rows - Outbound gifts (any days; other days are ignored).
- * @param rates - UTC day → USD-per-BTC string.
- * @param fiatRates - Optional UTC day → USD-cross map. Omitted/empty is allowed.
- * @returns {@link GiftDay} for `day`.
- * @throws `Error('fx.rate.missing')` when a listed gift has no BTC-USD rate.
+ * @param _rates - Ignored. Kept so existing callers still compile.
+ * @param _fiatRates - Ignored. Kept so existing callers still compile.
+ * @returns {@link GiftDay} for `day`. Amounts are the stored snapshot only.
  */
 export function buildGiftDay(
   day: string,
   rows: readonly GiftRow[],
-  rates: ReadonlyMap<string, string>,
-  fiatRates?: ReadonlyMap<string, FiatCross>,
+  _rates: ReadonlyMap<string, string>,
+  _fiatRates?: ReadonlyMap<string, FiatCross>,
 ): GiftDay {
-  const fiat = fiatRates ?? new Map<string, FiatCross>();
   const matching = rows
     .filter((row) => utcDayFromPaidAt(row.paidAt) === day)
     .sort(
@@ -839,7 +781,7 @@ export function buildGiftDay(
   let totalPhpCents: number | null = 0;
   const gifts: GiftDayGift[] = [];
   for (const row of matching) {
-    const amounts = giftAmounts(row, day, rates, fiat);
+    const amounts = giftAmounts(row);
     const usdCents = amounts.usd;
     const converted = amounts.fiat;
     totalSats += row.amountSats;

@@ -10,6 +10,7 @@ import { GIFT_INVOICE_MAX_MSAT } from '@/lib/config';
 import { eligibleToday } from '@/lib/funding';
 import { InMemoryFundingStore, type FundingStore } from '@/lib/funding-store';
 import { logEvent } from '@/lib/log';
+import { shownFiatFromBody, type FiatAmounts } from '@/lib/money';
 import { buildPostStats } from '@/lib/post-stats';
 import type { FetchFn } from '@/lib/lnurlp';
 import { requestZapInvoice } from '@/lib/lnurl-pay';
@@ -164,7 +165,9 @@ function invoiceAttemptBase(args: {
   descriptionHash: string | null;
   isNip57Invoice: boolean;
   lnurlResponse?: Record<string, unknown> | null;
+  shown?: { pinned: false } | { pinned: true; fiat: FiatAmounts };
 }): MessageInvoiceAttempt {
+  const shown = args.shown?.pinned === true ? args.shown : undefined;
   return {
     id: crypto.randomUUID(),
     createdAt: new Date(),
@@ -184,6 +187,11 @@ function invoiceAttemptBase(args: {
     lnurlResponse: args.lnurlResponse ?? null,
     conversationId: null,
     conversationMessageId: null,
+    fiatPinned: shown !== undefined,
+    amountUsd: shown?.fiat.usd ?? null,
+    amountChf: shown?.fiat.chf ?? null,
+    amountEur: shown?.fiat.eur ?? null,
+    amountPhp: shown?.fiat.php ?? null,
   };
 }
 
@@ -755,6 +763,10 @@ const postBody = z
 const invoiceBody = z.object({
   sats: z.number().int().positive(),
   text: z.string().optional(),
+  amountUsd: z.string().nullable().optional(),
+  amountChf: z.string().nullable().optional(),
+  amountEur: z.string().nullable().optional(),
+  amountPhp: z.string().nullable().optional(),
 });
 
 /**
@@ -1343,7 +1355,8 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
         return c.json({ error: 'Not found' }, 404);
       }
       const parsed = invoiceBody.safeParse(await c.req.json().catch(() => null));
-      if (!parsed.success) {
+      const shown = parsed.success ? shownFiatFromBody(parsed.data) : { pinned: false as const };
+      if (!parsed.success || shown === null) {
         await persistInvoiceAttempt(
           deps.store,
           invoiceAttemptBase({
@@ -1374,6 +1387,7 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
             payerAccountId: account.id,
             authorAccountId: UNKNOWN_ACCOUNT_ID,
             amountSats: parsed.data.sats,
+            shown,
             lightningAddress: null,
             zapRequest: null,
             result: 'bad_body',
@@ -1417,6 +1431,7 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
             payerAccountId: account.id,
             authorAccountId: UNKNOWN_ACCOUNT_ID,
             amountSats: parsed.data.sats,
+            shown,
             lightningAddress: null,
             zapRequest: null,
             result: 'not_found',
@@ -1438,6 +1453,7 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
             payerAccountId: account.id,
             authorAccountId: account.id,
             amountSats: parsed.data.sats,
+            shown,
             lightningAddress: null,
             zapRequest: null,
             result: 'no_author',
@@ -1459,6 +1475,7 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
             payerAccountId: account.id,
             authorAccountId: row.accountId,
             amountSats: parsed.data.sats,
+            shown,
             lightningAddress: null,
             zapRequest: null,
             result: 'no_event',
@@ -1485,6 +1502,7 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
             payerAccountId: account.id,
             authorAccountId: row.accountId,
             amountSats: parsed.data.sats,
+            shown,
             lightningAddress: author?.lightningAddress ?? null,
             zapRequest: null,
             result: 'no_author',
@@ -1508,6 +1526,7 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
             payerAccountId: account.id,
             authorAccountId: author.id,
             amountSats: parsed.data.sats,
+            shown,
             lightningAddress: author.lightningAddress,
             zapRequest: null,
             result: 'no_key',
@@ -1531,6 +1550,7 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
             payerAccountId: account.id,
             authorAccountId: author.id,
             amountSats: parsed.data.sats,
+            shown,
             lightningAddress: author.lightningAddress,
             zapRequest: null,
             result: 'no_key',
@@ -1553,6 +1573,7 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
             payerAccountId: account.id,
             authorAccountId: author.id,
             amountSats: parsed.data.sats,
+            shown,
             lightningAddress: author.lightningAddress,
             zapRequest: null,
             result: 'rate_limited',
@@ -1588,6 +1609,7 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
             payerAccountId: account.id,
             authorAccountId: author.id,
             amountSats: parsed.data.sats,
+            shown,
             lightningAddress: author.lightningAddress,
             zapRequest: null,
             result: 'sign_failed',
@@ -1620,6 +1642,7 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
             payerAccountId: account.id,
             authorAccountId: author.id,
             amountSats: parsed.data.sats,
+            shown,
             lightningAddress: author.lightningAddress,
             zapRequest,
             result: zap.reason,
@@ -1649,6 +1672,7 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
             payerAccountId: account.id,
             authorAccountId: author.id,
             amountSats: parsed.data.sats,
+            shown,
             lightningAddress: author.lightningAddress,
             zapRequest,
             result: 'not_zap',
@@ -1670,6 +1694,7 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
           payerAccountId: account.id,
           authorAccountId: author.id,
           amountSats: parsed.data.sats,
+            shown,
           lightningAddress: author.lightningAddress,
           zapRequest,
           result: 'ok',

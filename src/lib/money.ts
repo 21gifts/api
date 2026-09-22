@@ -197,6 +197,53 @@ export function normalizeAmountUsd(raw: string): string | null {
   return usdCentsToString(cents);
 }
 
+/** Optional shown amounts on an invoice body. A missing key is not the same as null. */
+export interface ShownFiatBody {
+  amountUsd?: string | null;
+  amountChf?: string | null;
+  amountEur?: string | null;
+  amountPhp?: string | null;
+}
+
+/**
+ * Read the four amounts the payer was shown.
+ *
+ * No key present means the client did not pin a price. Any present key pins
+ * all four: a missing sibling is null, and a bad string is rejected.
+ *
+ * @param body - Parsed invoice fields.
+ * @returns Pinned snapshot, an unpinned marker, or `null` when a string is unusable.
+ */
+export function shownFiatFromBody(
+  body: ShownFiatBody,
+): { pinned: false } | { pinned: true; fiat: FiatAmounts } | null {
+  const pinned =
+    body.amountUsd !== undefined ||
+    body.amountChf !== undefined ||
+    body.amountEur !== undefined ||
+    body.amountPhp !== undefined;
+  if (!pinned) {
+    return { pinned: false };
+  }
+  const one = (value: string | null | undefined): string | null | 'bad' => {
+    if (value === undefined || value === null) {
+      return null;
+    }
+    if (value === '0' || value === '0.0' || value === '0.00') {
+      return '0.00';
+    }
+    return normalizeAmountUsd(value) ?? 'bad';
+  };
+  const usd = one(body.amountUsd);
+  const chf = one(body.amountChf);
+  const eur = one(body.amountEur);
+  const php = one(body.amountPhp);
+  if (usd === 'bad' || chf === 'bad' || eur === 'bad' || php === 'bad') {
+    return null;
+  }
+  return { pinned: true, fiat: { usd, chf, eur, php } };
+}
+
 /**
  * Convert one quote, or `null` when that cross is missing.
  *
