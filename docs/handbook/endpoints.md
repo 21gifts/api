@@ -709,8 +709,8 @@
 
 ## Endpoint: POST /funding/apply
 
-- **Purpose:** Bearer session. Role `basis` → 403. Effective `none` or `rejected` upserts `pending` (`appliedAt` now; trial/admitted/decided cleared). `pending` / `trial` / `admitted` → 409. 200 `{ funding: OwnerFundingJson }`. Logs `funding.applied`.
-- **Errors:** 401 `{ error: 'Unauthorized' }`; 403 `{ error: 'Forbidden' }` for `basis`; 409 `{ error: 'Conflict' }`; 503 `{ error: 'Funding is unavailable' }` (`funding.write.failed`).
+- **Purpose:** Bearer session. Role `basis` → 403. Apply also requires a filled About me (real bio, not empty/name-only), an About me photo, and a non-empty location, checked in that order before the grant 409. Effective `none` or `rejected` upserts `pending` (`appliedAt` now; trial/admitted/decided cleared). `pending` / `trial` / `admitted` → 409. 200 `{ funding: OwnerFundingJson }`. Logs `funding.applied`.
+- **Errors:** 401 `{ error: 'Unauthorized' }`; 403 `{ error: 'Forbidden' }` for `basis`; 400 `{ error: 'About me is required' }`; 400 `{ error: 'About me photo is required' }`; 400 `{ error: 'Location is required' }`; 409 `{ error: 'Conflict' }`; 503 `{ error: 'Funding is unavailable' }` (`funding.write.failed`).
 - **Used by:** App funding apply.
 - **Auth:** `Authorization: Bearer` session. Not `basis`.
 

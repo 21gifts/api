@@ -121,7 +121,7 @@ Public base URLs used in examples:
 | POST   | `/trust/confirm-moderator`                           | Bearer (moderator+)        | Staff: second, independent confirmation → `moderator`                                                     |
 | POST   | `/trust/reject-moderator`                            | Bearer (moderator+)        | Staff: reject an open proposal (subject stays verified)                                                   |
 | POST   | `/trust/appoint-moderator`                           | Bearer (founder)           | Founder: appoint a moderator directly                                                                     |
-| POST   | `/funding/apply`                                     | Bearer                     | Member apply (verified+; `basis` 403)                                                                     |
+| POST   | `/funding/apply`                                     | Bearer                     | Member apply (verified+; `basis` 403; About me + photo + location required)                               |
 | GET    | `/funding/applications`                              | Bearer (moderator+)        | Staff pending grant queue                                                                                 |
 | GET    | `/funding/applications/:accountId`                   | Bearer (moderator+)        | Staff grant review                                                                                        |
 | POST   | `/funding/trial`                                     | Bearer (moderator+)        | One-UTC-day trial                                                                                         |
@@ -874,7 +874,12 @@ not fail the POST.
 
 ### `POST /funding/apply`
 
-Bearer session. Role `basis` → **403**. Effective status `none` or
+Bearer session. Role `basis` → **403**. Apply requires a filled About
+me (real bio, not empty/name-only), an About me photo, and a non-empty
+location, checked in that order: missing About me → **400**
+`{ "error": "About me is required" }`; missing photo → **400**
+`{ "error": "About me photo is required" }`; missing location → **400**
+`{ "error": "Location is required" }`. Effective status `none` or
 `rejected` upserts `pending` (`appliedAt` now; trial/admitted/decided
 cleared). `pending` / `trial` / `admitted` → **409**. **200**
 `{ "funding": OwnerFundingJson }`. Store throw → **503**
