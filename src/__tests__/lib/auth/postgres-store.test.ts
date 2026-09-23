@@ -1020,7 +1020,8 @@ describe('PostgresAuthStore', () => {
         createdAt: 1,
       }),
     ).toBe(true);
-    expect(sql.queries[0]?.text).toMatch(/WITH inserted/);
+    expect(sql.queries[0]?.text).toMatch(/WITH locked AS/);
+    expect(sql.queries[0]?.text).toMatch(/inserted AS/);
     expect(sql.queries[0]?.text).toMatch(/wallet_required = TRUE/);
     expect(sql.queries[0]?.text).toMatch(/SELECT id FROM flagged/);
     expect(sql.queries[0]?.text).toMatch(/FOR UPDATE/);
