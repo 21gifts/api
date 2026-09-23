@@ -545,7 +545,7 @@ describe('serializeOwnerAccountWithPosts', () => {
     expect(json.passkeyCredentialId).toBeNull();
   });
 
-  it('includes the current passkey credential id on owner JSON', async () => {
+  it('leaves passkeyCredentialId null when walletRequired is not true', async () => {
     const authStore = new InMemoryAuthStore();
     await authStore.createAccount(account);
     expect(
