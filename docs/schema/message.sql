@@ -162,6 +162,11 @@ ALTER TABLE message ADD COLUMN IF NOT EXISTS content_fp text;
 -- Do not hash poster-on-video rows; those stay content_fp null (runtime
 -- fingerprints video bytes, not the poster). On-disk videos have no bytea.
 CREATE EXTENSION IF NOT EXISTS pgcrypto;
+-- A later photo can still have a null content_fp. Filling it while the
+-- unique indexes exist aborts before duplicate salting, so drop them
+-- first. The CREATE UNIQUE INDEX statements below recreate them.
+DROP INDEX IF EXISTS message_live_top_content_fp_uidx;
+DROP INDEX IF EXISTS message_live_reply_content_fp_uidx;
 UPDATE message
 SET content_fp = encode(
   digest(
