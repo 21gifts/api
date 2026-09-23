@@ -1,13 +1,11 @@
+import type { FetchFn } from '@/lib/lnurlp';
 import { translateViaDeepl, TranslateUpstreamError } from '@/lib/translate-deepl';
 import {
   resolveTranslateUpstream,
   type TranslateTarget,
   type TranslateUpstream,
 } from '@/lib/translate-config';
-import {
-  translationSourceHash,
-  type TranslationStore,
-} from '@/lib/translation-store';
+import { translationSourceHash, type TranslationStore } from '@/lib/translation-store';
 
 /** Result of {@link translateForumNote}. */
 export interface TranslateNoteResult {
@@ -49,7 +47,7 @@ export async function translateForumNote(
   messageId: string,
   text: string,
   target: TranslateTarget,
-  fetchImpl: typeof fetch = globalThis.fetch,
+  fetchImpl: FetchFn = globalThis.fetch,
 ): Promise<TranslateNoteResult> {
   const sourceSha256 = translationSourceHash(text);
   const existing = await store.get(messageId, target);
@@ -81,7 +79,7 @@ async function runDeeplAndStore(
   text: string,
   target: TranslateTarget,
   sourceSha256: string,
-  fetchImpl: typeof fetch,
+  fetchImpl: FetchFn,
 ): Promise<TranslateNoteResult> {
   const again = await store.get(messageId, target);
   if (again !== null && again.sourceSha256 === sourceSha256) {

@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import type { FetchFn } from '@/lib/lnurlp';
 import {
   deeplTargetLang,
   type TranslateTarget,
@@ -37,7 +38,7 @@ export async function translateViaDeepl(
   upstream: TranslateUpstream,
   text: string,
   target: TranslateTarget,
-  fetchImpl: typeof fetch = globalThis.fetch,
+  fetchImpl: FetchFn = globalThis.fetch,
 ): Promise<string> {
   const controller = new AbortController();
   const timeout = setTimeout(() => {

@@ -57,10 +57,7 @@ export class InMemoryTranslationStore implements TranslationStore {
   private readonly rows = new Map<string, MessageTranslation>();
 
   /** @inheritdoc */
-  async get(
-    messageId: string,
-    targetLang: TranslateTarget,
-  ): Promise<MessageTranslation | null> {
+  async get(messageId: string, targetLang: TranslateTarget): Promise<MessageTranslation | null> {
     return this.rows.get(rowKey(messageId, targetLang)) ?? null;
   }
 
@@ -99,10 +96,7 @@ export class PostgresTranslationStore implements TranslationStore {
   constructor(private readonly sql: SqlClient) {}
 
   /** @inheritdoc */
-  async get(
-    messageId: string,
-    targetLang: TranslateTarget,
-  ): Promise<MessageTranslation | null> {
+  async get(messageId: string, targetLang: TranslateTarget): Promise<MessageTranslation | null> {
     const rows = await this.sql.query<{ source_sha256: string; translated_text: string }>(
       `SELECT source_sha256, translated_text
          FROM message_translation

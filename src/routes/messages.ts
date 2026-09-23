@@ -43,10 +43,7 @@ import {
   TranslateUpstreamError,
   translateForumNote,
 } from '@/lib/translate-note';
-import {
-  InMemoryTranslationStore,
-  type TranslationStore,
-} from '@/lib/translation-store';
+import { InMemoryTranslationStore, type TranslationStore } from '@/lib/translation-store';
 import { ensureAccountNostrKey } from '@/lib/nostr/keys';
 import type { NostrPublisher } from '@/lib/nostr/publish';
 import { InvoiceRateLimiter, PostRateLimiter } from '@/lib/nostr/rate-limit';
@@ -1455,10 +1452,7 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
           target,
           fetchImpl,
         );
-        return c.json(
-          { translatedText: result.translatedText, cached: result.cached },
-          200,
-        );
+        return c.json({ translatedText: result.translatedText, cached: result.cached }, 200);
       } catch (err) {
         if (err instanceof TranslateNotConfiguredError) {
           return c.json({ error: 'Translate is not configured' }, 503);

@@ -38,12 +38,7 @@ describe('POST /messages/:id/translate', () => {
     });
     const translations = new InMemoryTranslationStore();
     const { translationSourceHash } = await import('@/lib/translation-store');
-    await translations.put(
-      NOTE_ID,
-      'en',
-      translationSourceHash('Hallo Welt'),
-      'Hello, World',
-    );
+    await translations.put(NOTE_ID, 'en', translationSourceHash('Hallo Welt'), 'Hello, World');
     const fetchImpl = async () => {
       throw new Error('DeepL must not be called');
     };
