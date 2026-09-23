@@ -917,6 +917,32 @@ describe('auth routes', () => {
       });
     });
 
+    it('returns 400 when seed finish rejects the attestation', async () => {
+      const store = new InMemoryAuthStore();
+      const { app, token } = await legacySignedIn(store);
+      const begin = (await (
+        await app.request('/auth/passkey/seed/begin', {
+          method: 'POST',
+          headers: { authorization: `Bearer ${token}` },
+        })
+      ).json()) as { challengeId: string };
+      const res = await app.request('/auth/passkey/seed/finish', {
+        method: 'POST',
+        headers: {
+          origin: ORIGIN,
+          'content-type': 'application/json',
+          authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          challengeId: begin.challengeId,
+          credential: { test: 'nope' },
+        }),
+      });
+      expect(res.status).toBe(400);
+      expect(await res.json()).toEqual({ error: 'Invalid passkey' });
+      expect(await store.getPasskeyCredential('cred-2')).toBeUndefined();
+    });
+
     it('returns 409 when finish finds the credential id already stored', async () => {
       const store = new InMemoryAuthStore();
       const { app, token } = await legacySignedIn(store);

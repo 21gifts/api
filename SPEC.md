@@ -507,9 +507,11 @@ Body is `challengeId` plus `credential`. Requires `Origin`. Does not mint a
 session; the existing Bearer stays valid.
 
 When `walletRequired` is already true (body not parsed), or when the
-credential id is taken, the account is missing, `sessionRefused`, or the
-insert does not land → **Response** `409`:
+credential id is taken, the account is missing, or the insert does not
+land → **Response** `409`:
 `{ "error": "This account already has a recovery phrase" }`.
+A `sessionRefused` bearer is **401** `{ "error": "Unauthorized" }` from
+session resolution, before finish runs.
 
 Other ceremony failures stay **400** with the same strings as the old
 replace finish: Invalid origin, Unknown or expired challenge, Challenge
