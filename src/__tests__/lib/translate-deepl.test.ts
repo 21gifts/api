@@ -122,4 +122,35 @@ describe('translateViaDeepl', () => {
     await vi.advanceTimersByTimeAsync(TRANSLATE_UPSTREAM_TIMEOUT_MS);
     await rejected;
   });
+
+  it('aborts hanging response.json after TRANSLATE_UPSTREAM_TIMEOUT_MS', async () => {
+    vi.useFakeTimers();
+    const fetchImpl: FetchFn = async (_input, init) => {
+      const signal = init?.signal;
+      if (signal === undefined || signal === null) {
+        throw new Error('missing abort signal');
+      }
+      return {
+        ok: true,
+        json: async () =>
+          await new Promise<never>((_resolve, reject) => {
+            const fail = (): void => {
+              const err = new Error('The operation was aborted');
+              err.name = 'AbortError';
+              reject(err);
+            };
+            if (signal.aborted) {
+              fail();
+              return;
+            }
+            signal.addEventListener('abort', fail, { once: true });
+          }),
+      } as Response;
+    };
+
+    const pending = translateViaDeepl(UPSTREAM, SOURCE, 'en', fetchImpl);
+    const rejected = expect(pending).rejects.toBeInstanceOf(TranslateUpstreamError);
+    await vi.advanceTimersByTimeAsync(TRANSLATE_UPSTREAM_TIMEOUT_MS);
+    await rejected;
+  });
 });

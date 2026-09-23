@@ -1430,7 +1430,7 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
       }
       const target: TranslateTarget = parsed.data.target;
       try {
-        const row = await deps.store.getById(id);
+        let row = await deps.store.getById(id);
         if (row === undefined) {
           return c.json({ error: 'Not found' }, 404);
         }
@@ -1441,6 +1441,12 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
           }
         } else if (await withheldFromPublic(deps, row)) {
           return c.json({ error: 'Not found' }, 404);
+        } else {
+          const kept = await dropMissingVideoRow(deps.store, row);
+          if (kept === null) {
+            return c.json({ error: 'Not found' }, 404);
+          }
+          row = kept;
         }
         if (row.text.trim() === '') {
           return c.json({ error: 'Invalid body' }, 400);

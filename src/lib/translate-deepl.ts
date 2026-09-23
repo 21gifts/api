@@ -41,12 +41,9 @@ export async function translateViaDeepl(
   fetchImpl: FetchFn = globalThis.fetch,
 ): Promise<string> {
   const controller = new AbortController();
-  const timeout = setTimeout(() => {
-    controller.abort();
-  }, TRANSLATE_UPSTREAM_TIMEOUT_MS);
-  let response: Response;
+  const timeout = setTimeout(() => controller.abort(), TRANSLATE_UPSTREAM_TIMEOUT_MS);
   try {
-    response = await fetchImpl(upstream.url, {
+    const response = await fetchImpl(upstream.url, {
       method: 'POST',
       headers: {
         'content-type': 'application/json',
@@ -58,23 +55,14 @@ export async function translateViaDeepl(
       }),
       signal: controller.signal,
     });
+    if (!response.ok) throw new TranslateUpstreamError();
+    const body: unknown = await response.json();
+    const parsed = translatedBodySchema.safeParse(body);
+    if (!parsed.success) throw new TranslateUpstreamError();
+    return parsed.data.translations[0].text;
   } catch {
     throw new TranslateUpstreamError();
   } finally {
     clearTimeout(timeout);
   }
-  if (!response.ok) {
-    throw new TranslateUpstreamError();
-  }
-  let body: unknown;
-  try {
-    body = await response.json();
-  } catch {
-    throw new TranslateUpstreamError();
-  }
-  const parsed = translatedBodySchema.safeParse(body);
-  if (!parsed.success) {
-    throw new TranslateUpstreamError();
-  }
-  return parsed.data.translations[0].text;
 }

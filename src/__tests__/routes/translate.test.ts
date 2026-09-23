@@ -365,4 +365,38 @@ describe('POST /messages/:id/translate', () => {
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ translatedText: 'Hello, World', cached: true });
   });
+
+  it('returns 404 and deletes a live hasVideo note when the file is missing on disk', async () => {
+    const id = '7a7a7a7a-7a7a-47a7-87a7-7a7a7a7a7a7a';
+    const messageStore = new InMemoryMessageStore([
+      {
+        id,
+        accountId: 'acc',
+        name: 'Ada',
+        text: 'clip gone',
+        createdAt: new Date('2026-09-01T00:00:00.000Z'),
+        ...unsignedNostrDefaults(),
+        hasPhoto: false,
+        hasVideo: true,
+        videoContentType: 'video/mp4',
+      },
+    ]);
+    const app = new Hono().route(
+      '/messages',
+      messagesRoutes({
+        store: messageStore,
+        authStore: new InMemoryAuthStore(),
+        now: () => 1,
+        env: ENV,
+      }),
+    );
+    const res = await app.request(`/messages/${id}/translate`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ target: 'en' }),
+    });
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ error: 'Not found' });
+    expect(await messageStore.getById(id)).toBeUndefined();
+  });
 });
