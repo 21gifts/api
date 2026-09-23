@@ -2699,6 +2699,25 @@ describe('POST /messages', () => {
     ).toBe(true);
   });
 
+  it('pings spend once on a top-level post with extra stills only', async () => {
+    const spendPing = { ping: vi.fn(async (_address: string, _messageId: string) => undefined) };
+    const res = await mount(await staffStore('Ada'), new InMemoryMessageStore(), {
+      spendPing,
+      fundingStore: admittedFunding(),
+    }).request('/messages', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({
+        text: 'hello',
+        photos: [{ contentType: 'image/jpeg', data: JPEG_B64 }],
+      }),
+    });
+    expect(res.status).toBe(200);
+    const created = (await res.json()) as { id: string };
+    expect(spendPing.ping).toHaveBeenCalledTimes(1);
+    expect(spendPing.ping).toHaveBeenCalledWith('ada@walletofsatoshi.com', created.id);
+  });
+
   it('pings spend once on a multipart video top-level post', async () => {
     const spendPing = { ping: vi.fn(async (_address: string, _messageId: string) => undefined) };
     const mp4 = (): Uint8Array => {

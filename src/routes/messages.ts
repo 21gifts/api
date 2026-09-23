@@ -610,7 +610,7 @@ async function persistForumPost(
         } else if (
           created.hasPhoto === true ||
           created.hasVideo === true ||
-          (created.photoCount ?? 0) > 0
+          Number(created.photoCount) > 0
         ) {
           await deps.spendPing.ping(account.lightningAddress, created.id);
         } else {

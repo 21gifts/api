@@ -360,6 +360,12 @@ describe('InMemoryMessageStore', () => {
     expect(await store.accountHasLiveTopLevelMediaPost('acc', null)).toBe(true);
   });
 
+  it('accountHasLiveTopLevelMediaPost is true after create with extra stills only', async () => {
+    const store = new InMemoryMessageStore();
+    await store.create({ ...EARLY }, undefined, undefined, [JPEG2]);
+    expect(await store.accountHasLiveTopLevelMediaPost('acc', null)).toBe(true);
+  });
+
   it('accountHasLiveTopLevelMediaPost is true for a live top-level row with hasVideo', async () => {
     expect(
       await new InMemoryMessageStore([

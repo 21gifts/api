@@ -1054,6 +1054,41 @@ describe('POST /invoices', () => {
     expect(invoiceStore.get(body.id)?.messageId).toBe(POST_ID);
   });
 
+  it('returns 200 when messageId has extra stills only', async () => {
+    const authStore = new InMemoryAuthStore();
+    await seedPasskeyAndPlatform(authStore);
+    const invoiceStore = new InMemoryInvoiceStore();
+    const inner = await uuidMediaPostStore();
+    const messageStore: InvoiceRouteDeps['messageStore'] = {
+      ...inner,
+      getById: async (id) => {
+        const row = await inner.getById(id);
+        if (row === undefined) {
+          return undefined;
+        }
+        return { ...row, hasPhoto: false, hasVideo: false, photoCount: 2 };
+      },
+    };
+    const res = await createApp({
+      spendApiToken: TOKEN,
+      authStore,
+      messageStore,
+      invoiceStore,
+      fetchImpl: happyFetch(),
+    }).request(
+      '/invoices',
+      auth({
+        method: 'POST',
+        body: JSON.stringify({
+          address: ADDRESS,
+          amountMsat: 1000,
+          messageId: POST_ID,
+        }),
+      }),
+    );
+    expect(res.status).toBe(200);
+  });
+
   it('stores normalized amountUsd and freezes that USD on the proven gift', async () => {
     mockedDecode.mockReturnValue({ paymentHash: MATCHING_HASH, amountMsat: 1000 });
     const authStore = new InMemoryAuthStore();

@@ -627,7 +627,7 @@ export function invoiceRoutes(deps: InvoiceRouteDeps): Hono {
         if (
           message.hasPhoto !== true &&
           message.hasVideo !== true &&
-          (message.photoCount ?? 0) === 0
+          !(Number(message.photoCount) > 0)
         ) {
           logEvent('invoice.forum_post_required', { address });
           return c.json({ error: 'Forum post required' }, 403);
