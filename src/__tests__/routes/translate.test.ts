@@ -208,4 +208,70 @@ describe('POST /messages/:id/translate', () => {
     expect(unexpected.status).toBe(503);
     expect(await unexpected.json()).toEqual({ error: 'Messages are unavailable' });
   });
+
+  it('returns 404 for a hidden note and for a withheld inbound reply', async () => {
+    const hiddenId = '4a4a4a4a-4a4a-44a4-84a4-4a4a4a4a4a4a';
+    const parentId = '5a5a5a5a-5a5a-45a5-85a5-5a5a5a5a5a5a';
+    const replyId = '6a6a6a6a-6a6a-46a6-86a6-6a6a6a6a6a6a';
+    const messages = new InMemoryMessageStore();
+    await messages.create({
+      id: hiddenId,
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'Hallo Welt',
+      createdAt: new Date('2026-09-01T00:00:00.000Z'),
+      ...unsignedNostrDefaults(),
+      hasPhoto: false,
+      hasVideo: false,
+      videoContentType: null,
+    });
+    expect(await messages.markDeleted(hiddenId, new Date('2026-09-02T00:00:00.000Z'), 'acc')).toBe(
+      true,
+    );
+    await messages.create({
+      id: parentId,
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'parent',
+      createdAt: new Date('2026-09-01T00:00:00.000Z'),
+      ...unsignedNostrDefaults(),
+      hasPhoto: false,
+      hasVideo: false,
+      videoContentType: null,
+    });
+    await messages.create({
+      id: replyId,
+      accountId: null,
+      name: 'npub',
+      text: 'Hallo Welt',
+      createdAt: new Date('2026-09-01T00:00:00.000Z'),
+      ...unsignedNostrDefaults(),
+      parentId,
+      authorPubkey: null,
+      hasPhoto: false,
+      hasVideo: false,
+      videoContentType: null,
+    });
+    const app = new Hono().route(
+      '/messages',
+      messagesRoutes({
+        store: messages,
+        authStore: new InMemoryAuthStore(),
+        now: () => 1,
+        env: ENV,
+      }),
+    );
+    const hidden = await app.request(`/messages/${hiddenId}/translate`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ target: 'en' }),
+    });
+    expect(hidden.status).toBe(404);
+    const withheld = await app.request(`/messages/${replyId}/translate`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ target: 'en' }),
+    });
+    expect(withheld.status).toBe(404);
+  });
 });

@@ -100,7 +100,7 @@ describe('translateViaDeepl', () => {
     vi.useFakeTimers();
     const fetchImpl: FetchFn = async (_input, init) => {
       const signal = init?.signal;
-      if (signal == null) {
+      if (signal === undefined || signal === null) {
         throw new Error('missing abort signal');
       }
       return await new Promise<Response>((_resolve, reject) => {
