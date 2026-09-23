@@ -220,6 +220,9 @@ export interface MessageStore {
    * `deletedAt` null) for GET `/messages`. Same `replyCount` as
    * {@link listLatest} (live attributed direct children). Never
    * selects `photo` bytea. Replies and soft-hidden rows are excluded.
+   * Profile notes are omitted (Postgres via
+   * `NOT EXISTS (SELECT 1 FROM account WHERE account.profile_message_id = message.id)`;
+   * in-memory when `useProfileNoteIds` was set).
    *
    * @param query - Mode, limit, exclusive cursor, staff ids (`active` only), and optional hashtag.
    * @returns At most `query.limit` list row copies.
@@ -1629,6 +1632,8 @@ interface MemoryZapReceipt {
  */
 export class InMemoryMessageStore implements MessageStore {
   readonly #rows: MessageRow[];
+  #profileNoteIds: (() => Promise<ReadonlySet<string>> | ReadonlySet<string>) | undefined =
+    undefined;
   /** Kind:9735 event id → receipt; cleared when that parent message is deleted. */
   readonly #receipts = new Map<string, MemoryZapReceipt>();
   /** Lowercase payment hash → durable-for-process receipt ownership tombstone. */
@@ -1702,16 +1707,31 @@ export class InMemoryMessageStore implements MessageStore {
   }
 
   /**
+   * Bind a provider of profile-note message ids omitted by {@link listFeed}.
+   *
+   * @param provider - Returns ids stored as `account.profileMessageId`.
+   */
+  useProfileNoteIds(provider: () => Promise<ReadonlySet<string>> | ReadonlySet<string>): void {
+    this.#profileNoteIds = provider;
+  }
+
+  /**
    * Live top-level notes for a forum feed page (`parentId` null, `deletedAt`
    * null), capped at `query.limit`, with `replyCount` of live attributed
    * children (`deletedAt` null and either an account or a recorded zapper pubkey).
+   * Profile notes are omitted when {@link useProfileNoteIds} was set.
    *
    * @param query - Mode, limit, exclusive keyset cursor, staff ids, and optional hashtag.
    * @returns A new array of list row copies; mutating it does not change the store.
    */
-  listFeed(query: MessageFeedQuery): Promise<MessageListRow[]> {
+  async listFeed(query: MessageFeedQuery): Promise<MessageListRow[]> {
+    const profileNoteIds =
+      this.#profileNoteIds === undefined ? undefined : await this.#profileNoteIds();
     const topLevel = this.#rows.filter((row) => {
       if (row.parentId !== null || row.deletedAt !== null) {
+        return false;
+      }
+      if (profileNoteIds !== undefined && profileNoteIds.has(row.id)) {
         return false;
       }
       if (query.mode === 'unpaid') {
@@ -1748,19 +1768,17 @@ export class InMemoryMessageStore implements MessageStore {
       return b.id.localeCompare(a.id);
     });
     const afterCursor = sorted.filter((row) => matchesFeedCursor(row, query));
-    return Promise.resolve(
-      afterCursor.slice(0, query.limit).map((row) => {
-        const copy = this.#withListedMedia(row);
-        const replyCount = this.#rows.filter(
-          (child) =>
-            child.parentId === row.id &&
-            child.deletedAt === null &&
-            (child.accountId !== null ||
-              (child.authorPubkey !== null && this.#zappers.has(child.authorPubkey.toLowerCase()))),
-        ).length;
-        return { ...copy, replyCount };
-      }),
-    );
+    return afterCursor.slice(0, query.limit).map((row) => {
+      const copy = this.#withListedMedia(row);
+      const replyCount = this.#rows.filter(
+        (child) =>
+          child.parentId === row.id &&
+          child.deletedAt === null &&
+          (child.accountId !== null ||
+            (child.authorPubkey !== null && this.#zappers.has(child.authorPubkey.toLowerCase()))),
+      ).length;
+      return { ...copy, replyCount };
+    });
   }
 
   /**
@@ -3426,14 +3444,19 @@ export class PostgresMessageStore implements MessageStore {
    * `query.limit`, with `replyCount` of live attributed children
    * (`deleted_at IS NULL` and either an account or a recorded zapper pubkey).
    * Same {@link MESSAGE_SELECT_COLUMNS} as {@link listLatest} — never the
-   * `photo` bytea column.
+   * `photo` bytea column. Profile notes are omitted via
+   * `NOT EXISTS (SELECT 1 FROM account WHERE account.profile_message_id = message.id)`.
    *
    * @param query - Mode, limit, exclusive keyset cursor, staff ids, and optional hashtag.
    * @returns Mapped list rows.
    */
   async listFeed(query: MessageFeedQuery): Promise<MessageListRow[]> {
     const params: unknown[] = [query.limit];
-    const filters: string[] = ['parent_id IS NULL', 'deleted_at IS NULL'];
+    const filters: string[] = [
+      'parent_id IS NULL',
+      'deleted_at IS NULL',
+      'NOT EXISTS (SELECT 1 FROM account WHERE account.profile_message_id = message.id)',
+    ];
     let orderBy = 'created_at DESC, id DESC';
     if (query.mode === 'unpaid') {
       filters.push('sats = 0');

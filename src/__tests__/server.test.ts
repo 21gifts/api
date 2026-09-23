@@ -1,5 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { InMemoryAuthStore } from '@/lib/auth/store';
+import { unsignedNostrDefaults } from '@/lib/message';
+import { InMemoryMessageStore, PostgresMessageStore } from '@/lib/message-store';
 import { RecordingPublisher } from '@/lib/nostr/publish';
 import { PostRateLimiter } from '@/lib/nostr/rate-limit';
 import { createApp, resolveBindAddr, parseBindAddr } from '@/server';
@@ -242,6 +244,97 @@ describe('createApp', () => {
     const app = createApp();
     const res = await app.request('/messages');
     expect(res.status).toBe(401);
+  });
+
+  it('omits profile notes from GET /messages after binding useProfileNoteIds', async () => {
+    const authStore = new InMemoryAuthStore();
+    await authStore.createAccount({
+      id: 'acc-null',
+      linkingKey: `02${'a'.repeat(64)}`,
+      role: 'basis',
+      name: 'Ada',
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: 'a'.repeat(64),
+      createdAt: 1_000_000,
+      rulesAgreedAt: 1_000_001,
+      profileMessageId: null,
+    });
+    await authStore.createAccount({
+      id: 'acc-spaces',
+      linkingKey: `02${'b'.repeat(64)}`,
+      role: 'basis',
+      name: 'Bea',
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: 'b'.repeat(64),
+      createdAt: 1_000_002,
+      rulesAgreedAt: 1_000_003,
+      profileMessageId: '   ',
+    });
+    await authStore.createAccount({
+      id: 'acc-profile',
+      linkingKey: `02${'c'.repeat(64)}`,
+      role: 'basis',
+      name: 'Ada',
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: 'c'.repeat(64),
+      createdAt: 1_000_004,
+      rulesAgreedAt: 1_000_005,
+      profileMessageId: 'profile-note',
+    });
+    await authStore.createSession({
+      token: 'tok',
+      accountId: 'acc-profile',
+      createdAt: Date.now(),
+    });
+    const messageStore = new InMemoryMessageStore([
+      {
+        id: 'real-post',
+        accountId: 'acc-profile',
+        name: 'Ada',
+        text: 'Ada',
+        createdAt: new Date('2026-08-01T00:00:00.000Z'),
+        hasPhoto: false,
+        ...unsignedNostrDefaults(),
+      },
+      {
+        id: 'profile-note',
+        accountId: 'acc-profile',
+        name: 'Ada',
+        text: 'Ada',
+        createdAt: new Date('2026-08-02T00:00:00.000Z'),
+        hasPhoto: false,
+        ...unsignedNostrDefaults(),
+      },
+    ]);
+    const app = createApp({ authStore, messageStore });
+    const res = await app.request('/messages', {
+      headers: { authorization: 'Bearer tok' },
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { messages: Array<{ id: string }> };
+    const ids = body.messages.map((row) => row.id);
+    expect(ids).toContain('real-post');
+    expect(ids).not.toContain('profile-note');
+  });
+
+  it('leaves a non-in-memory message store unbound', async () => {
+    const app = createApp({
+      messageStore: new PostgresMessageStore({
+        query: async () => [],
+        execute: async () => undefined,
+      }),
+    });
+    const res = await app.request('/healthz');
+    expect(res.status).toBe(200);
   });
 
   it('returns 401 for unauthenticated GET /conversations', async () => {

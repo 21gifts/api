@@ -295,6 +295,18 @@ export function createApp(deps: AppDeps = {}): Hono {
   const messageStore = deps.messageStore ?? new InMemoryMessageStore();
   const translationStore = deps.translationStore ?? new InMemoryTranslationStore();
   const env = deps.env ?? process.env;
+  if (messageStore instanceof InMemoryMessageStore) {
+    messageStore.useProfileNoteIds(async () => {
+      const ids = new Set<string>();
+      for (const account of await store.listAccounts()) {
+        const id = account.profileMessageId;
+        if (typeof id === 'string' && id.trim() !== '') {
+          ids.add(id.trim());
+        }
+      }
+      return ids;
+    });
+  }
   const nostrKek = deps.nostrKek;
   const contactStore = deps.contactStore ?? new InMemoryContactStore();
   const posStore = deps.posStore ?? new InMemoryPosStore();

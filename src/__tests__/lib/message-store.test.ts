@@ -1296,6 +1296,42 @@ describe('InMemoryMessageStore', () => {
     expect(popularMismatchedKind.map((row) => row.id)).toEqual(['pop-high', 'paid', 'pop-low']);
   });
 
+  it('listFeed omits provider profile-note ids without spending a page slot', async () => {
+    const realPost = { ...EARLY, id: 'real-post', name: 'Ada', text: 'Ada' };
+    const profileNote = {
+      ...LATE,
+      id: 'profile-note',
+      name: 'Ada',
+      text: 'Ada',
+      createdAt: new Date('2026-08-03T00:00:00.000Z'),
+    };
+    const store = new InMemoryMessageStore([realPost, profileNote]);
+    store.useProfileNoteIds(() => new Set(['profile-note']));
+    const emptyStaff = new Set<string>();
+    const listed = await store.listFeed({
+      limit: 10,
+      mode: 'all',
+      cursor: null,
+      staffAccountIds: emptyStaff,
+    });
+    expect(listed.map((row) => row.id)).toEqual(['real-post']);
+    const afterExcluded = await store.listFeed({
+      limit: 1,
+      mode: 'all',
+      cursor: { k: 't', c: new Date('2026-08-04T00:00:00.000Z'), i: 'zzz' },
+      staffAccountIds: emptyStaff,
+    });
+    expect(afterExcluded.map((row) => row.id)).toEqual(['real-post']);
+    const unbound = new InMemoryMessageStore([realPost, profileNote]);
+    const both = await unbound.listFeed({
+      limit: 10,
+      mode: 'all',
+      cursor: null,
+      staffAccountIds: emptyStaff,
+    });
+    expect(both.map((row) => row.id)).toEqual(['profile-note', 'real-post']);
+  });
+
   it('listFeed filters by hashtag token and pages only matches', async () => {
     const untagged = {
       ...LATE,
@@ -5245,6 +5281,9 @@ describe('PostgresMessageStore', () => {
     for (const query of sql.queries) {
       expect(query.text).toMatch(/parent_id IS NULL/);
       expect(query.text).toMatch(/deleted_at IS NULL/);
+      expect(query.text).toMatch(
+        /NOT EXISTS \(SELECT 1 FROM account WHERE account\.profile_message_id = message\.id\)/,
+      );
       expect(query.text).not.toMatch(/SELECT[^;]*\bphoto\b(?!\s+IS\s+NOT\s+NULL)/i);
     }
     const active = sql.queries.filter((query) => query.text.includes('ANY('));
