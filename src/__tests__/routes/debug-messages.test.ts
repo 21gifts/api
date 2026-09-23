@@ -364,7 +364,7 @@ describe('debugMessagesRoutes', () => {
       forumRow({ id: HIDDEN_PHOTO_ID, hasPhoto: true, text: 'still' }),
       JPEG,
       undefined,
-      [JPEG2],
+      [{ ...JPEG2, takenAt: '2025-06-07T08:09:10' }, JPEG2],
     );
     const app = mount(store, 'secret');
     const listed = await app.request('/debug/messages', {
@@ -377,7 +377,20 @@ describe('debugMessagesRoutes', () => {
         id: HIDDEN_PHOTO_ID,
         photoContentType: 'image/jpeg',
         photoBytes: JPEG.bytes.byteLength,
-        extraPhotos: [{ idx: 1, photoContentType: 'image/jpeg', bytes: JPEG2.bytes.byteLength }],
+        extraPhotos: [
+          {
+            idx: 1,
+            photoContentType: 'image/jpeg',
+            bytes: JPEG2.bytes.byteLength,
+            photoTakenAt: '2025-06-07T08:09:10',
+          },
+          {
+            idx: 2,
+            photoContentType: 'image/jpeg',
+            bytes: JPEG2.bytes.byteLength,
+            photoTakenAt: null,
+          },
+        ],
       }),
     );
     const one = await app.request(`/debug/messages/${HIDDEN_PHOTO_ID}`, {
@@ -387,7 +400,20 @@ describe('debugMessagesRoutes', () => {
     expect(await one.json()).toEqual(
       expect.objectContaining({
         photoBytes: JPEG.bytes.byteLength,
-        extraPhotos: [{ idx: 1, photoContentType: 'image/jpeg', bytes: JPEG2.bytes.byteLength }],
+        extraPhotos: [
+          {
+            idx: 1,
+            photoContentType: 'image/jpeg',
+            bytes: JPEG2.bytes.byteLength,
+            photoTakenAt: '2025-06-07T08:09:10',
+          },
+          {
+            idx: 2,
+            photoContentType: 'image/jpeg',
+            bytes: JPEG2.bytes.byteLength,
+            photoTakenAt: null,
+          },
+        ],
       }),
     );
   });

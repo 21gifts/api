@@ -96,7 +96,7 @@ const JPEG2: ForumPhoto = {
 
 describe('MESSAGE_SCHEMA_SQL', () => {
   it('creates message with photo columns, Nostr columns, index, and additive ALTERs', () => {
-    expect(MESSAGE_SCHEMA_SQL).toHaveLength(69);
+    expect(MESSAGE_SCHEMA_SQL).toHaveLength(72);
     expect(MESSAGE_SCHEMA_SQL[0]).toMatch(/CREATE TABLE IF NOT EXISTS message/i);
     expect(MESSAGE_SCHEMA_SQL[0]).toMatch(/account_id uuid NOT NULL REFERENCES account/i);
     expect(MESSAGE_SCHEMA_SQL[0]).toMatch(/photo bytea/i);
@@ -109,6 +109,12 @@ describe('MESSAGE_SCHEMA_SQL', () => {
     );
     expect(MESSAGE_SCHEMA_SQL.join('\n')).toMatch(
       /ALTER TABLE message ADD COLUMN IF NOT EXISTS photo_content_type text/i,
+    );
+    expect(MESSAGE_SCHEMA_SQL.join('\n')).toMatch(
+      /ALTER TABLE message ADD COLUMN IF NOT EXISTS photo_taken_at text/i,
+    );
+    expect(MESSAGE_SCHEMA_SQL.join('\n')).toMatch(
+      /ALTER TABLE message_extra_photo ADD COLUMN IF NOT EXISTS photo_taken_at text/i,
     );
     expect(MESSAGE_SCHEMA_SQL.join('\n')).toMatch(/event_id/);
     expect(MESSAGE_SCHEMA_SQL.join('\n')).toMatch(/nostr_zap_receipt/);
@@ -908,6 +914,18 @@ describe('InMemoryMessageStore', () => {
     await expect(
       readFile(videoFilePath(resolveMediaDir(), 'v2', 'video/mp4')),
     ).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  it('keeps a video capture time on the created row', async () => {
+    const store = new InMemoryMessageStore();
+    const mp4 = new Uint8Array(32);
+    mp4.set([0x00, 0x00, 0x00, 0x18, 0x66, 0x74, 0x79, 0x70, 0x69, 0x73, 0x6f, 0x6d]);
+    const created = await store.create({ ...EARLY, id: 'v-time', text: 'clip' }, undefined, {
+      contentType: 'video/mp4',
+      bytes: mp4,
+      takenAt: '2020-01-01T00:00:00+00:00',
+    });
+    expect(created.videoTakenAt).toBe('2020-01-01T00:00:00+00:00');
   });
 
   it('create keeps text-only posts as separate rows', async () => {
@@ -1799,6 +1817,7 @@ describe('InMemoryMessageStore', () => {
     await store.create({ ...EARLY, eventId: 'ee'.repeat(32), sats: 21 });
     const updated = await store.updatePhoto('a', JPEG);
     expect(updated?.hasPhoto).toBe(true);
+    expect(updated?.photoTakenAts).toEqual([null]);
     expect(updated?.sats).toBe(21);
     expect(updated?.eventId).toBe('ee'.repeat(32));
     expect(updated?.text).toBe('first');
@@ -1810,13 +1829,28 @@ describe('InMemoryMessageStore', () => {
     expect(stored?.sats).toBe(21);
     expect(stored?.eventId).toBe('ee'.repeat(32));
     expect(updated).not.toBe(stored);
+    const timed = await store.updatePhoto('a', {
+      ...JPEG,
+      takenAt: '2020-01-01T00:00:00+00:00',
+    });
+    expect(timed?.photoTakenAts).toEqual(['2020-01-01T00:00:00+00:00']);
+    expect(await store.getPhoto('a')).toEqual({
+      ...JPEG,
+      takenAt: '2020-01-01T00:00:00+00:00',
+    });
     const cleared = await store.updatePhoto('a', null);
     expect(cleared?.hasPhoto).toBe(false);
+    expect(cleared?.photoTakenAts).toEqual([]);
     expect(cleared?.sats).toBe(21);
     expect(cleared?.eventId).toBe('ee'.repeat(32));
     expect(await store.getPhoto('a')).toBeNull();
     expect((await store.getById('a'))?.hasPhoto).toBe(false);
     expect(await store.updatePhoto('missing', JPEG)).toBeUndefined();
+  });
+
+  it('pads a listed photo that has no stored capture time', async () => {
+    const store = new InMemoryMessageStore([{ ...EARLY, hasPhoto: true }]);
+    expect((await store.getById('a'))?.photoTakenAts).toEqual([null]);
   });
 
   it('getById and claimUnsigned lease a row', async () => {
@@ -3172,17 +3206,29 @@ describe('InMemoryMessageStore', () => {
     expect(again?.bytes[0]).toBe(0xff);
   });
 
-  it('create with two stills stores photo 0 and extra index 1', async () => {
+  it('create with two stills keeps capture times on photo 0 and extra index 1', async () => {
     const store = new InMemoryMessageStore();
-    const created = await store.create({ ...EARLY, text: '' }, JPEG, undefined, [JPEG2]);
+    const photo = { ...JPEG, takenAt: '2025-06-07T08:09:10+02:00' };
+    const extra = { ...JPEG2, takenAt: '2025-06-07T08:09:11' };
+    const created = await store.create({ ...EARLY, text: '' }, photo, undefined, [extra]);
     expect(created.photoCount).toBe(2);
     expect(created.hasPhoto).toBe(true);
-    expect(await store.getPhoto('a')).toEqual(JPEG);
-    expect(await store.getExtraPhoto('a', 1)).toEqual(JPEG2);
+    expect(created.photoTakenAts).toEqual([photo.takenAt, extra.takenAt]);
+    expect(await store.getPhoto('a')).toEqual(photo);
+    expect(await store.getExtraPhoto('a', 1)).toEqual(extra);
     expect(await store.getExtraPhoto('a', 0)).toBeNull();
     expect(await store.getExtraPhoto('a', 10)).toBeNull();
     const listed = await store.listExtraPhotos('a');
-    expect(listed).toEqual([JPEG2]);
+    expect(listed).toEqual([extra]);
+    expect(await store.listExtraPhotoMeta(10)).toEqual([
+      {
+        messageId: 'a',
+        idx: 1,
+        photoContentType: 'image/jpeg',
+        bytes: extra.bytes.byteLength,
+        photoTakenAt: extra.takenAt,
+      },
+    ]);
     listed[0]!.bytes[0] = 0;
     expect((await store.getExtraPhoto('a', 1))?.bytes[0]).toBe(0xff);
   });
@@ -3519,10 +3565,30 @@ describe('PostgresMessageStore', () => {
         idx: 1,
         photo_content_type: 'image/png',
         bytes: 3,
+        photo_taken_at: '2025-06-07T08:09:10+02:00',
+      },
+      {
+        message_id: 'm2',
+        idx: 2,
+        photo_content_type: 'image/jpeg',
+        bytes: 4,
       },
     ];
     expect(await store.listExtraPhotoMeta(10)).toEqual([
-      { messageId: 'm1', idx: 1, photoContentType: 'image/png', bytes: 3 },
+      {
+        messageId: 'm1',
+        idx: 1,
+        photoContentType: 'image/png',
+        bytes: 3,
+        photoTakenAt: '2025-06-07T08:09:10+02:00',
+      },
+      {
+        messageId: 'm2',
+        idx: 2,
+        photoContentType: 'image/jpeg',
+        bytes: 4,
+        photoTakenAt: null,
+      },
     ]);
     sql.nextRows = [
       {
@@ -3908,7 +3974,7 @@ describe('PostgresMessageStore', () => {
     expect(await new PostgresMessageStore(sql).listIdsByPrefix('d70c4763')).toEqual([]);
   });
 
-  it('create binds sixteen params including content_fp, video_content_type, parent_id, author_pubkey and goal_sats', async () => {
+  it('create binds seventeen params including photo_taken_at', async () => {
     const sql = new MockSql();
     const store = new PostgresMessageStore(sql);
     const row: MessageRow = {
@@ -3922,10 +3988,10 @@ describe('PostgresMessageStore', () => {
     };
     const created = await store.create(row);
     expect(sql.executes[0]?.text).toMatch(
-      /INSERT INTO message \(\s*id, account_id, name, text, photo, photo_content_type, video_content_type, created_at,\s*nostr_publish_state, sats, parent_id, author_pubkey, event_id, nostr_event, content_fp, goal_sats,\s*fiat_usd, fiat_chf, fiat_eur, fiat_php\s*\)/,
+      /INSERT INTO message \(\s*id, account_id, name, text, photo, photo_content_type, video_content_type, created_at,\s*nostr_publish_state, sats, parent_id, author_pubkey, event_id, nostr_event, content_fp, goal_sats,\s*fiat_usd, fiat_chf, fiat_eur, fiat_php, photo_taken_at, video_taken_at\s*\)/,
     );
     expect(sql.executes[0]?.text).toMatch(
-      /\$14::jsonb,\$15,\$16,\s*\$17::numeric,\$18::numeric,\$19::numeric,\$20::numeric/,
+      /\$14::jsonb,\$15,\$16,\s*\$17::numeric,\$18::numeric,\$19::numeric,\$20::numeric,\$21,\$22/,
     );
     expect(sql.executes[0]?.text).not.toMatch(/ON CONFLICT/i);
     expect(sql.executes[0]?.params).toEqual([
@@ -3949,8 +4015,10 @@ describe('PostgresMessageStore', () => {
       null,
       null,
       null,
+      null,
+      null,
     ]);
-    expect(sql.executes[0]?.params).toHaveLength(20);
+    expect(sql.executes[0]?.params).toHaveLength(22);
     expect(created.id).toBe(row.id);
     expect(created.hasVideo).toBe(false);
     expect(created.goalSats).toBeNull();
@@ -3966,7 +4034,7 @@ describe('PostgresMessageStore', () => {
     expect(priced.amountChf).toBeNull();
     expect(priced.amountEur).toBe('0.90');
     expect(priced.amountPhp).toBeNull();
-    expect(sql.executes[1]?.params.slice(16)).toEqual(['1.00', null, '0.90', null]);
+    expect(sql.executes[1]?.params.slice(16)).toEqual(['1.00', null, '0.90', null, null, null]);
   });
 
   it('create binds a positive goalSats and listLatest maps goal_sats', async () => {
@@ -3984,6 +4052,7 @@ describe('PostgresMessageStore', () => {
     };
     const created = await store.create(row);
     expect(sql.executes[0]?.params[15]).toBe(21000);
+    expect(sql.executes[0]?.params[16]).toBeNull();
     expect(created.goalSats).toBe(21000);
     sql.nextRows = [
       {
@@ -4017,10 +4086,10 @@ describe('PostgresMessageStore', () => {
     const created = await store.create(row);
     expect(sql.executes).toEqual([]);
     expect(sql.queries[0]?.text).toMatch(
-      /INSERT INTO message \(\s*id, account_id, name, text, photo, photo_content_type, video_content_type, created_at,\s*nostr_publish_state, sats, parent_id, author_pubkey, event_id, nostr_event, content_fp, goal_sats,\s*fiat_usd, fiat_chf, fiat_eur, fiat_php\s*\)/,
+      /INSERT INTO message \(\s*id, account_id, name, text, photo, photo_content_type, video_content_type, created_at,\s*nostr_publish_state, sats, parent_id, author_pubkey, event_id, nostr_event, content_fp, goal_sats,\s*fiat_usd, fiat_chf, fiat_eur, fiat_php, photo_taken_at, video_taken_at\s*\)/,
     );
     expect(sql.queries[0]?.text).toMatch(
-      /SELECT \$1,\$2,\$3,\$4,\$5,\$6,\$7,\$8,\$9,\$10,\$11,\$12,\$13,\$14::jsonb,\$15,\$16,\s*\$17::numeric,\$18::numeric,\$19::numeric,\$20::numeric/,
+      /SELECT \$1,\$2,\$3,\$4,\$5,\$6,\$7,\$8,\$9,\$10,\$11,\$12,\$13,\$14::jsonb,\$15,\$16,\s*\$17::numeric,\$18::numeric,\$19::numeric,\$20::numeric,\$21,\$22/,
     );
     expect(sql.queries[0]?.text).toMatch(
       /WHERE EXISTS \(SELECT 1 FROM message p WHERE p\.id = \$11 AND p\.deleted_at IS NULL\)/,
@@ -4048,8 +4117,10 @@ describe('PostgresMessageStore', () => {
       null,
       null,
       null,
+      null,
+      null,
     ]);
-    expect(sql.queries[0]?.params).toHaveLength(20);
+    expect(sql.queries[0]?.params).toHaveLength(22);
     expect(created.id).toBe('child-1');
     expect(created.parentId).toBe('parent-1');
   });
@@ -4357,6 +4428,29 @@ describe('PostgresMessageStore', () => {
     expect(sql.executes[0]?.params[6]).toBe('video/mp4');
   });
 
+  it('create binds a video capture time', async () => {
+    const sql = new MockSql();
+    const store = new PostgresMessageStore(sql);
+    const mp4 = new Uint8Array(32);
+    mp4.set([0x00, 0x00, 0x00, 0x18, 0x66, 0x74, 0x79, 0x70, 0x69, 0x73, 0x6f, 0x6d]);
+    const row: MessageRow = {
+      id: 'm-vid-time',
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'clip',
+      createdAt: new Date('2026-08-28T12:00:00.000Z'),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+    };
+    const created = await store.create(row, undefined, {
+      contentType: 'video/mp4',
+      bytes: mp4,
+      takenAt: '2020-01-01T00:00:00+00:00',
+    });
+    expect(created.videoTakenAt).toBe('2020-01-01T00:00:00+00:00');
+    expect(sql.executes[0]?.params[21]).toBe('2020-01-01T00:00:00+00:00');
+  });
+
   it('create binds text together with photo bytes', async () => {
     const sql = new MockSql();
     const row: MessageRow = {
@@ -4405,9 +4499,13 @@ describe('PostgresMessageStore', () => {
     await new PostgresMessageStore(sql).create(row, JPEG, undefined, [JPEG2]);
     expect(sql.executes[0]?.text).toMatch(/INSERT INTO message \(/);
     expect(sql.executes[1]?.text).toMatch(/INSERT INTO message_extra_photo/);
-    expect(sql.executes[1]?.text).toMatch(/\(message_id, idx, photo, photo_content_type\)/);
-    expect(sql.executes[1]?.text).toMatch(/VALUES \(\s*\$1\s*,\s*\$2\s*,\s*\$3\s*,\s*\$4\s*\)/);
-    expect(sql.executes[1]?.params).toEqual([row.id, 1, JPEG2.bytes, JPEG2.contentType]);
+    expect(sql.executes[1]?.text).toMatch(
+      /\(message_id, idx, photo, photo_content_type, photo_taken_at\)/,
+    );
+    expect(sql.executes[1]?.text).toMatch(
+      /VALUES \(\s*\$1\s*,\s*\$2\s*,\s*\$3\s*,\s*\$4\s*,\s*\$5\s*\)/,
+    );
+    expect(sql.executes[1]?.params).toEqual([row.id, 1, JPEG2.bytes, JPEG2.contentType, null]);
   });
 
   it('create deletes the row and rethrows when an extra INSERT fails', async () => {
@@ -4447,10 +4545,73 @@ describe('PostgresMessageStore', () => {
     const store = new PostgresMessageStore(sql);
     const photo = await store.getPhoto('m1');
     expect(sql.queries[0]?.text).toMatch(
-      /SELECT photo, photo_content_type FROM message WHERE id = \$1/,
+      /SELECT photo, photo_content_type, photo_taken_at FROM message WHERE id = \$1/,
     );
     expect(sql.queries[0]?.params).toEqual(['m1']);
     expect(photo).toEqual(JPEG);
+  });
+
+  it('maps sql capture times from text, arrays, and junk', async () => {
+    const sql = new MockSql();
+    const store = new PostgresMessageStore(sql);
+    const base = {
+      id: 'm1',
+      account_id: 'acc',
+      name: 'Ada',
+      text: 'hi',
+      created_at: new Date('2026-08-28T12:00:00.000Z'),
+      has_photo: true,
+      photo_count: 3,
+      photo_taken_at: '2026-09-22T11:40:00',
+    };
+    sql.nextRows = [{ ...base, extra_photo_taken_ats: '["2026-09-22T11:41:00", 1]' }];
+    expect((await store.listLatest(1))[0]?.photoTakenAts).toEqual([
+      '2026-09-22T11:40:00',
+      '2026-09-22T11:41:00',
+      null,
+    ]);
+    sql.nextRows = [{ ...base, extra_photo_taken_ats: 'not-json' }];
+    expect((await store.listLatest(1))[0]?.photoTakenAts).toEqual([
+      '2026-09-22T11:40:00',
+      null,
+      null,
+    ]);
+    sql.nextRows = [{ ...base, extra_photo_taken_ats: '{"a":1}' }];
+    expect((await store.listLatest(1))[0]?.photoTakenAts?.[1]).toBeNull();
+    sql.nextRows = [{ ...base, extra_photo_taken_ats: 4 }];
+    expect((await store.listLatest(1))[0]?.photoTakenAts?.[1]).toBeNull();
+    sql.nextRows = [{ ...base, photo_count: 0, extra_photo_taken_ats: [] }];
+    expect((await store.listLatest(1))[0]?.photoTakenAts).toEqual([]);
+    sql.nextRows = [
+      { ...base, photo_count: 2, photo_taken_at: null, extra_photo_taken_ats: [null] },
+    ];
+    expect((await store.listLatest(1))[0]?.photoTakenAts).toEqual([null, null]);
+    sql.nextRows = [
+      {
+        ...base,
+        photo_count: 2,
+        photo_taken_at: null,
+        extra_photo_taken_ats: ['2026-09-22T11:41:00'],
+      },
+    ];
+    expect((await store.listLatest(1))[0]?.photoTakenAts).toEqual([null, '2026-09-22T11:41:00']);
+    sql.nextRows = [{ ...base, video_taken_at: '2020-01-01T00:00:00+00:00' }];
+    expect((await store.listLatest(1))[0]?.videoTakenAt).toBe('2020-01-01T00:00:00+00:00');
+    sql.nextRows = [{ ...base, video_taken_at: '' }];
+    expect((await store.listLatest(1))[0]?.videoTakenAt).toBeUndefined();
+  });
+
+  it('getPhoto keeps a stored civil capture time', async () => {
+    const sql = new MockSql();
+    sql.nextRows = [
+      {
+        photo: JPEG.bytes,
+        photo_content_type: 'image/jpeg',
+        photo_taken_at: '2026-09-22T11:40:00+08:00',
+      },
+    ];
+    const photo = await new PostgresMessageStore(sql).getPhoto('m1');
+    expect(photo).toEqual({ ...JPEG, takenAt: '2026-09-22T11:40:00+08:00' });
   });
 
   it('getPhoto maps a number[] bytea payload', async () => {
@@ -4504,10 +4665,37 @@ describe('PostgresMessageStore', () => {
     const store = new PostgresMessageStore(sql);
     const photo = await store.getExtraPhoto('m1', 1);
     expect(sql.queries[0]?.text).toMatch(
-      /SELECT photo, photo_content_type FROM message_extra_photo WHERE message_id = \$1 AND idx = \$2/,
+      /SELECT photo, photo_content_type, photo_taken_at FROM message_extra_photo WHERE message_id = \$1 AND idx = \$2/,
     );
     expect(sql.queries[0]?.params).toEqual(['m1', 1]);
     expect(photo).toEqual(JPEG2);
+  });
+
+  it('getExtraPhoto and listExtraPhotos keep a stored civil capture time', async () => {
+    const sql = new MockSql();
+    sql.nextRows = [
+      {
+        photo: JPEG2.bytes,
+        photo_content_type: 'image/jpeg',
+        photo_taken_at: '2026-09-22T11:40:00',
+      },
+    ];
+    const store = new PostgresMessageStore(sql);
+    expect(await store.getExtraPhoto('m1', 1)).toEqual({
+      ...JPEG2,
+      takenAt: '2026-09-22T11:40:00',
+    });
+    sql.nextRows = [
+      {
+        idx: 1,
+        photo: JPEG2.bytes,
+        photo_content_type: 'image/jpeg',
+        photo_taken_at: '2026-09-22T11:41:00',
+      },
+    ];
+    expect(await store.listExtraPhotos('m1')).toEqual([
+      { ...JPEG2, takenAt: '2026-09-22T11:41:00' },
+    ]);
   });
 
   it('getExtraPhoto maps a number[] bytea payload', async () => {
@@ -4522,7 +4710,7 @@ describe('PostgresMessageStore', () => {
     sql.nextRows = [{ idx: 1, photo: JPEG2.bytes, photo_content_type: 'image/jpeg' }];
     const listed = await new PostgresMessageStore(sql).listExtraPhotos('m1');
     expect(sql.queries[0]?.text).toMatch(
-      /SELECT idx, photo, photo_content_type FROM message_extra_photo WHERE message_id = \$1 ORDER BY idx ASC/,
+      /SELECT idx, photo, photo_content_type, photo_taken_at FROM message_extra_photo WHERE message_id = \$1 ORDER BY idx ASC/,
     );
     expect(sql.queries[0]?.params).toEqual(['m1']);
     expect(listed).toEqual([JPEG2]);
@@ -5107,14 +5295,22 @@ describe('PostgresMessageStore', () => {
       },
     ];
     const store = new PostgresMessageStore(sql);
-    const updated = await store.updatePhoto('m1', JPEG);
+    const updated = await store.updatePhoto('m1', {
+      ...JPEG,
+      takenAt: '2020-01-01T00:00:00+00:00',
+    });
     expect(updated?.hasPhoto).toBe(true);
     expect(updated?.sats).toBe(21);
     expect(updated?.eventId).toBe('ee'.repeat(32));
     expect(sql.queries[0]?.text).toMatch(
-      /UPDATE message SET photo = \$2, photo_content_type = \$3 WHERE id = \$1 RETURNING/,
+      /UPDATE message SET photo = \$2, photo_content_type = \$3, photo_taken_at = \$4 WHERE id = \$1 RETURNING/,
     );
-    expect(sql.queries[0]?.params).toEqual(['m1', JPEG.bytes, 'image/jpeg']);
+    expect(sql.queries[0]?.params).toEqual([
+      'm1',
+      JPEG.bytes,
+      'image/jpeg',
+      '2020-01-01T00:00:00+00:00',
+    ]);
     sql.nextRows = [
       {
         id: 'm1',
@@ -5130,7 +5326,7 @@ describe('PostgresMessageStore', () => {
     ];
     const cleared = await store.updatePhoto('m1', null);
     expect(cleared?.hasPhoto).toBe(false);
-    expect(sql.queries[1]?.params).toEqual(['m1', null, null]);
+    expect(sql.queries[1]?.params).toEqual(['m1', null, null, null]);
     sql.nextRows = [];
     expect(await store.updatePhoto('missing', JPEG)).toBeUndefined();
   });

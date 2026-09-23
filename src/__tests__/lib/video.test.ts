@@ -11,11 +11,27 @@ import {
   isoBmffDisplaySize,
   parseBytesRange,
   readForumVideoBytes,
+  readVideoTakenAt,
   removeForumVideo,
   resolveMediaDir,
   videoFilePath,
   writeForumVideo,
 } from '@/lib/video';
+
+function mvhd(version: number, seconds: number): Uint8Array {
+  const payload = version === 1 ? 32 : 20;
+  const bytes = new Uint8Array(8 + payload);
+  const view = new DataView(bytes.buffer);
+  view.setUint32(0, bytes.length);
+  bytes.set([0x6d, 0x76, 0x68, 0x64], 4);
+  bytes[8] = version;
+  if (version === 1) {
+    view.setBigUint64(12, BigInt(seconds));
+  } else {
+    view.setUint32(12, seconds);
+  }
+  return bytes;
+}
 
 function concat(...parts: Uint8Array[]): Uint8Array {
   const total = parts.reduce((n, p) => n + p.byteLength, 0);
@@ -545,5 +561,53 @@ describe('video', () => {
     } finally {
       await removeForumVideo(messageId, 'video/mp4');
     }
+  });
+});
+
+describe('readVideoTakenAt', () => {
+  const seconds = Math.floor((Date.UTC(2020, 0, 1) - Date.UTC(1904, 0, 1)) / 1000);
+
+  it('reads an mvhd creation time and ignores a missing or zero time', () => {
+    expect(readVideoTakenAt(mvhd(0, seconds))).toBe('2020-01-01T00:00:00+00:00');
+    expect(readVideoTakenAt(mvhd(1, seconds))).toBe('2020-01-01T00:00:00+00:00');
+    expect(readVideoTakenAt(mvhd(0, 0))).toBeNull();
+    expect(readVideoTakenAt(mvhd(2, seconds))).toBeNull();
+    expect(readVideoTakenAt(new Uint8Array([0, 1, 2, 3]))).toBeNull();
+    expect(readVideoTakenAt(mvhd(0, 1))).toBeNull();
+  });
+
+  it('ignores a truncated, nested, or out-of-range mvhd', () => {
+    expect(readVideoTakenAt(box('moov', mvhd(0, seconds)))).toBe('2020-01-01T00:00:00+00:00');
+    expect(readVideoTakenAt(box('moov', box('free', new Uint8Array(4))))).toBeNull();
+    const headerOnly = new Uint8Array(8);
+    new DataView(headerOnly.buffer).setUint32(0, 8);
+    headerOnly.set([0x6d, 0x76, 0x68, 0x64], 4);
+    expect(readVideoTakenAt(headerOnly)).toBeNull();
+    const short = new Uint8Array(12);
+    new DataView(short.buffer).setUint32(0, 12);
+    short.set([0x6d, 0x76, 0x68, 0x64], 4);
+    expect(readVideoTakenAt(short)).toBeNull();
+    short[8] = 1;
+    expect(readVideoTakenAt(short)).toBeNull();
+    const huge = mvhd(1, 0);
+    new DataView(huge.buffer).setBigUint64(12, BigInt(Number.MAX_SAFE_INTEGER) + 1n);
+    expect(readVideoTakenAt(huge)).toBeNull();
+    const overflow = mvhd(1, 0);
+    new DataView(overflow.buffer).setBigUint64(12, 9_000_000_000_000n);
+    expect(readVideoTakenAt(overflow)).toBeNull();
+    const future = Math.floor((Date.UTC(2030, 0, 1) - Date.UTC(1904, 0, 1)) / 1000);
+    expect(readVideoTakenAt(mvhd(0, future))).toBeNull();
+    const truncated = new Uint8Array(12);
+    new DataView(truncated.buffer).setUint32(0, 100);
+    truncated.set([0x66, 0x72, 0x65, 0x65], 4);
+    expect(readVideoTakenAt(truncated)).toBeNull();
+    const followed = new Uint8Array(32);
+    new DataView(followed.buffer).setUint32(0, 12);
+    followed.set([0x6d, 0x76, 0x68, 0x64], 4);
+    new DataView(followed.buffer).setUint32(12, seconds);
+    expect(readVideoTakenAt(followed)).toBeNull();
+    followed[8] = 1;
+    new DataView(followed.buffer).setBigUint64(12, BigInt(seconds));
+    expect(readVideoTakenAt(followed)).toBeNull();
   });
 });

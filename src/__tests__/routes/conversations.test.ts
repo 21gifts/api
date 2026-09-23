@@ -1758,6 +1758,45 @@ describe('POST /conversations/:id', () => {
     expect(listed[0]?.eventId).toBeNull();
   });
 
+  it('stores a photo capture time and leaves it out of the conversation JSON', async () => {
+    const auth = await seeded();
+    await withOther(auth);
+    const conversations = new InMemoryConversationStore();
+    const thread = await conversations.openMemberMember('acc', 'other', new Date(now()));
+    const res = await mount(auth, conversations).request(`/conversations/${thread.id}`, {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({
+        photo: {
+          contentType: 'image/jpeg',
+          data: JPEG_B64,
+          takenAt: '2020-01-01T00:00:00+00:00',
+        },
+      }),
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(body).not.toHaveProperty('takenAt');
+    expect(body).not.toHaveProperty('photoTakenAt');
+    expect(body).not.toHaveProperty('photoTakenAts');
+    const stored = await conversations.listMessages(thread.id, 10);
+    expect((await conversations.getPhoto(stored[0]!.id))?.takenAt).toBe(
+      '2020-01-01T00:00:00+00:00',
+    );
+    const invalid = await mount(auth, conversations).request(`/conversations/${thread.id}`, {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({
+        text: 'other',
+        photo: { contentType: 'image/jpeg', data: JPEG_B64, takenAt: 'not-a-time' },
+      }),
+    });
+    expect(invalid.status).toBe(200);
+    const again = await conversations.listMessages(thread.id, 10);
+    const other = again.find((row) => row.text === 'other');
+    expect((await conversations.getPhoto(other!.id))?.takenAt).toBeUndefined();
+  });
+
   it('returns 200 hasPhoto true when a member_platform thread includes a photo', async () => {
     const auth = await seeded();
     await withPlatform(auth);

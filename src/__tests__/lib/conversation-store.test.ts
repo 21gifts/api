@@ -107,7 +107,7 @@ function sqlMessage(id: string, createdAt: Date): Record<string, unknown> {
 describe('CONVERSATION_SCHEMA_SQL', () => {
   it('creates conversation tables and unique indexes', () => {
     const joined = CONVERSATION_SCHEMA_SQL.join('\n');
-    expect(CONVERSATION_SCHEMA_SQL).toHaveLength(28);
+    expect(CONVERSATION_SCHEMA_SQL).toHaveLength(30);
     expect(joined).toMatch(/CREATE TABLE IF NOT EXISTS conversation/i);
     expect(joined).toMatch(/CREATE TABLE IF NOT EXISTS conversation_message/i);
     expect(joined).toMatch(/actor_account_id/);
@@ -415,6 +415,19 @@ describe('InMemoryConversationStore', () => {
     ]);
     expect(created.photoCount).toBe(2);
     expect(await store.getExtraPhoto(created.id, 1)).toEqual(JPEG2);
+    const stamped = await store.appendMessage(
+      message({ id: 'm-stamped', conversationId: opened.id }),
+      { ...JPEG, takenAt: '2026-09-22T11:40:00+08:00' },
+      [{ ...JPEG2, takenAt: '2026-09-22T11:41:00+08:00' }],
+    );
+    expect(await store.getPhoto(stamped.id)).toEqual({
+      ...JPEG,
+      takenAt: '2026-09-22T11:40:00+08:00',
+    });
+    expect(await store.getExtraPhoto(stamped.id, 1)).toEqual({
+      ...JPEG2,
+      takenAt: '2026-09-22T11:41:00+08:00',
+    });
     expect(await store.getExtraPhoto(created.id, 0)).toBeNull();
     expect(await store.getExtraPhoto(created.id, 10)).toBeNull();
   });
@@ -1945,8 +1958,21 @@ describe('PostgresConversationStore', () => {
     expect(sql.executes[0]?.params[14]).toBe(row.giftForMessageId ?? null);
     expect(sql.executes[0]?.params[15]).toEqual(JPEG.bytes);
     expect(sql.executes[0]?.params[16]).toBe(JPEG.contentType);
+    expect(sql.executes[0]?.params[17]).toBeNull();
     expect(sql.executes[1]?.text).toMatch(/conversation_message_extra_photo/);
-    expect(sql.executes[1]?.params).toEqual([row.id, 1, JPEG2.bytes, JPEG2.contentType]);
+    expect(sql.executes[1]?.params).toEqual([row.id, 1, JPEG2.bytes, JPEG2.contentType, null]);
+    const timed = message({ id: 'm-timed' });
+    await store.appendMessage(timed, { ...JPEG, takenAt: '2026-09-22T11:40:00+08:00' }, [
+      { ...JPEG2, takenAt: '2026-09-22T11:41:00+08:00' },
+    ]);
+    const timedInsert = sql.executes.find((item) =>
+      item.params.includes('2026-09-22T11:40:00+08:00'),
+    );
+    expect(timedInsert?.params[17]).toBe('2026-09-22T11:40:00+08:00');
+    const extraInsert = sql.executes.find((item) =>
+      item.params.includes('2026-09-22T11:41:00+08:00'),
+    );
+    expect(extraInsert?.params[4]).toBe('2026-09-22T11:41:00+08:00');
   });
 
   it('appendMessage throws extras without photo 0 and more than 9 extras', async () => {
@@ -1989,7 +2015,7 @@ describe('PostgresConversationStore', () => {
     sql.nextRows = [{ photo: JPEG.bytes, photo_content_type: 'image/jpeg' }];
     expect(await store.getPhoto('m1')).toEqual(JPEG);
     expect(sql.queries[0]?.text).toMatch(
-      /SELECT photo, photo_content_type FROM conversation_message WHERE id = \$1/,
+      /SELECT photo, photo_content_type, photo_taken_at FROM conversation_message WHERE id = \$1/,
     );
     sql.nextRows = [{ photo: [0xff, 0xd8, 0xff, 0xd9], photo_content_type: 'image/jpeg' }];
     expect(await store.getPhoto('m1')).toEqual(JPEG);
@@ -2001,6 +2027,17 @@ describe('PostgresConversationStore', () => {
     expect(await store.getPhoto('m1')).toBeNull();
     sql.nextRows = [{ photo: JPEG.bytes, photo_content_type: 'image/gif' }];
     expect(await store.getPhoto('m1')).toBeNull();
+    sql.nextRows = [
+      {
+        photo: JPEG.bytes,
+        photo_content_type: 'image/jpeg',
+        photo_taken_at: '2026-09-22T11:40:00+08:00',
+      },
+    ];
+    expect(await store.getPhoto('m1')).toEqual({
+      ...JPEG,
+      takenAt: '2026-09-22T11:40:00+08:00',
+    });
   });
 
   it('getPhoto query throw propagates', async () => {
@@ -2018,7 +2055,7 @@ describe('PostgresConversationStore', () => {
     sql.nextRows = [{ photo: JPEG2.bytes, photo_content_type: 'image/jpeg' }];
     expect(await store.getExtraPhoto('m1', 1)).toEqual(JPEG2);
     expect(sql.queries[0]?.text).toMatch(
-      /SELECT photo, photo_content_type FROM conversation_message_extra_photo WHERE message_id = \$1 AND idx = \$2/,
+      /SELECT photo, photo_content_type, photo_taken_at FROM conversation_message_extra_photo WHERE message_id = \$1 AND idx = \$2/,
     );
     expect(sql.queries[0]?.params).toEqual(['m1', 1]);
     sql.nextRows = [{ photo: [0xff, 0xd8, 0xff, 0x00], photo_content_type: 'image/jpeg' }];
@@ -2031,6 +2068,17 @@ describe('PostgresConversationStore', () => {
     expect(await store.getExtraPhoto('m1', 1)).toBeNull();
     sql.nextRows = [{ photo: JPEG2.bytes, photo_content_type: 'image/gif' }];
     expect(await store.getExtraPhoto('m1', 1)).toBeNull();
+    sql.nextRows = [
+      {
+        photo: JPEG2.bytes,
+        photo_content_type: 'image/jpeg',
+        photo_taken_at: '2026-09-22T11:40:00+08:00',
+      },
+    ];
+    expect(await store.getExtraPhoto('m1', 1)).toEqual({
+      ...JPEG2,
+      takenAt: '2026-09-22T11:40:00+08:00',
+    });
   });
 
   it('getExtraPhoto query throw propagates', async () => {

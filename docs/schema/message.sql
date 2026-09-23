@@ -22,6 +22,7 @@ CREATE TABLE IF NOT EXISTS message (
   text text NOT NULL,
   photo bytea,
   photo_content_type text,
+  photo_taken_at text,
   created_at timestamptz NOT NULL
 );
 CREATE INDEX IF NOT EXISTS message_created_at_idx ON message (created_at DESC, id DESC);
@@ -217,9 +218,14 @@ CREATE TABLE IF NOT EXISTS message_extra_photo (
   idx smallint NOT NULL,
   photo bytea NOT NULL,
   photo_content_type text NOT NULL,
+  photo_taken_at text,
   PRIMARY KEY (message_id, idx),
   CONSTRAINT message_extra_photo_idx_range CHECK (idx >= 1 AND idx <= 9)
 );
 
 -- Optional whole-sat ask on top-level notes; null means no goal.
 ALTER TABLE message ADD COLUMN IF NOT EXISTS goal_sats bigint;
+-- Civil capture time as text, not timestamptz, not converted to UTC; null when no still or no usable time.
+ALTER TABLE message ADD COLUMN IF NOT EXISTS photo_taken_at text;
+ALTER TABLE message ADD COLUMN IF NOT EXISTS video_taken_at text;
+ALTER TABLE message_extra_photo ADD COLUMN IF NOT EXISTS photo_taken_at text;

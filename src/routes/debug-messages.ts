@@ -58,6 +58,7 @@ async function debugPhotoMeta(store: MessageStore, id: string): Promise<DebugMes
       idx: index + 1,
       photoContentType: photo.contentType,
       bytes: photo.bytes.byteLength,
+      photoTakenAt: photo.takenAt ?? null,
     })),
   };
 }

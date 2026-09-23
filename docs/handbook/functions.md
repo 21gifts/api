@@ -1014,7 +1014,7 @@
 
 ## Function: updatePhoto
 
-- **Purpose:** `MessageStore` port method: replace or clear stored photo bytes without changing text, sats, or event ids, and without recomputing `content_fp` (same as `updateText`). In-memory copies bytes into a private map; Postgres `UPDATE message SET photo = $2, photo_content_type = $3 WHERE id = $1 RETURNING` list columns.
+- **Purpose:** `MessageStore` port method: replace or clear stored photo bytes and `photo_taken_at` without changing text, sats, or event ids, and without recomputing `content_fp` (same as `updateText`). In-memory copies bytes into a private map and sets still 0's capture time (null when the photo has none, or when the photo is cleared). Postgres `UPDATE message SET photo = $2, photo_content_type = $3, photo_taken_at = $4 WHERE id = $1 RETURNING` list columns.
 - **Inputs:** Message `id` and `ForumPhoto | null` (`null` clears).
 - **Returns / side effects:** Updated row copy with `hasPhoto` true iff photo is non-null, or `undefined` when no row has that id.
 - **Used by:** `PUT /me/about` when the `photo` key is present on an already-live profile note.
@@ -1033,25 +1033,32 @@
 - **Returns / side effects:** Promise of the oldest matching live `MessageRow` (`deletedAt` null), or `undefined`. Soft-deleted matches are ignored. No public JSON.
 - **Used by:** `POST /messages` media collapse; Postgres `create` on unique violation `23505`.
 
+## Function: normalizePhotoTakenAt
+
+- **Purpose:** Keep a client-sent civil camera time, or drop it. Not converted to UTC. A bad value does not reject the post.
+- **Inputs:** Unknown JSON (`takenAt` on a forum photo).
+- **Returns / side effects:** The original string when it is `YYYY-MM-DDTHH:MM:SS` with an optional `±HH:MM` offset, a real calendar date, and a year from 1990 through the current UTC year + 1. Otherwise null. No I/O.
+- **Used by:** `POST /messages`.
+
 ## Function: serializeMessage
 
 - **Purpose:** Project a stored forum row to its public JSON shape including zap totals, payability, `hasPhoto`, `photoCount` (0–10; from `row.photoCount` or `hasPhoto ? 1 : 0`), `hasVideo`, `videoContentType`, live author role, optional `via`, optional `replyCount`, optional `accountId`, optional `parentId`, optional `goalSats` (included when the stored value is a positive integer on a top-level note; omitted on replies and when unset, null, or 0), and optional hide stamps. When stored `name` is empty after trim, JSON `name` is `truncatePubkeyDisplay(row.authorPubkey ?? '')` (`'npub'` when the pubkey is missing); non-empty names are unchanged. Invalid `createdAt` is not guarded here: `toISOString()` still throws. `GET /messages/:id/replies` and `GET /members/:accountId/replies` omit that child (200, siblings remain); `GET /messages` (list), `GET /members/:accountId/posts`, and public `GET /messages/:id` return 503. Member feeds reuse this: `GET /members/:accountId/posts` is newest-first like signed-in `GET /messages`; `GET /members/:accountId/replies` is newest-first with `payable` when a non-empty `eventId` and a non-blank Lightning Address are set. Callers that serve list/GET/replies delete a `hasVideo` row when the file is missing or empty on disk (`forumVideoFilePresent`) so no empty note remains. Last optional `hidden?: { deletedAt: Date; deletedBy: { id, name, role } }`: when set, JSON `deletedAt` is ISO, `deletedBy` is copied, and `payable` is false (ignore the payable arg). When omitted, do not set those keys (live JSON has no `deletedAt` / `deletedBy`). Store-internal `contentFp` is never included.
 - **Inputs:** `MessageRow` (includes `accountId` and private `authorPubkey`; never photo/video bytes), `payable` boolean, optional `role` (`AccountRole`; omitted for external Nostr authors), optional `replyCount` (top-level `GET /messages` and `GET /members/:accountId/posts` list rows, and single-note `GET /messages/:id` for a top-level note), optional `includeAccountId` (signed-in list/replies/create, member feeds, and staff hidden GET pass true; public live GET omits), and last optional `hidden?: { deletedAt: Date; deletedBy: { id, name, role } }`.
-- **Returns / side effects:** `{ id, name, text, createdAt, sats, amountUsd, amountChf, amountEur, amountPhp, payable, hasPhoto, photoCount, hasVideo, videoContentType }` with ISO-8601 `createdAt`; the four amounts are always present (string or null); `name` uses the blank-name fallback when stored `name` trims empty; `photoCount` is 0–10 (from `row.photoCount` or `hasPhoto ? 1 : 0`); `videoContentType` is null when `hasVideo` is false; `via: 'nostr'` is set exactly when `row.accountId === null && row.authorPubkey !== null`; those external rows have `payable` false and omit `role`; the pubkey itself is private and never appears in public JSON. `role` is otherwise omitted when undefined; `replyCount` is omitted when undefined; `accountId` is set only when `includeAccountId` is true and `row.accountId !== null` (external rows and public GET omit it); `parentId` is set only when `row.parentId !== null` (omitted on top-level notes); `goalSats` included only when the stored value is a positive integer on a top-level note (omitted on replies and when unset, null, or 0); when `hidden` is set, `deletedAt` ISO, `deletedBy` copied, `payable` false; when omitted, those keys are not set; never photo/video bytes or `contentFp`. No I/O.
+- **Returns / side effects:** `{ id, name, text, createdAt, sats, amountUsd, amountChf, amountEur, amountPhp, payable, hasPhoto, photoCount, photoTakenAts, hasVideo, videoContentType }` with ISO-8601 `createdAt`; the four amounts are always present (string or null); `photoTakenAts` length equals `photoCount` (null slots when unknown, `[]` when there are no stills); `photoTakenAt` is included only when `photoCount === 1` and equals `photoTakenAts[0]`; `name` uses the blank-name fallback when stored `name` trims empty; `photoCount` is 0–10 (from `row.photoCount` or `hasPhoto ? 1 : 0`); `videoContentType` is null when `hasVideo` is false; `via: 'nostr'` is set exactly when `row.accountId === null && row.authorPubkey !== null`; those external rows have `payable` false and omit `role`; the pubkey itself is private and never appears in public JSON. `role` is otherwise omitted when undefined; `replyCount` is omitted when undefined; `accountId` is set only when `includeAccountId` is true and `row.accountId !== null` (external rows and public GET omit it); `parentId` is set only when `row.parentId !== null` (omitted on top-level notes); `goalSats` included only when the stored value is a positive integer on a top-level note (omitted on replies and when unset, null, or 0); when `hidden` is set, `deletedAt` ISO, `deletedBy` copied, `payable` false; when omitted, those keys are not set; never photo/video bytes or `contentFp`. No I/O.
 - **Used by:** `messagesRoutes`, `membersRoutes`.
 
 ## Function: serializeDebugMessage
 
 - **Purpose:** Project a stored forum row to operator debug JSON, including soft-hide stamps, Damus-only `accountId: null`, `photoCount`, every `MessageRow` Nostr column (`nostrEvent`, `claimedUntil`, `nostrFirstAttemptAt`, `nostrPublishEpoch`, `contentFp`), photo MIME/byte lengths, and stored `goalSats` (JSON `null` when unset). Public hide does not apply: hidden rows keep `text` and ISO `deletedAt`. Never includes nsec or photo/video payloads.
 - **Inputs:** `MessageRow` (includes hidden rows and replies; never photo/video bytes) and optional `DebugMessagePhotoMeta` (`photoContentType`, `photoBytes`, `extraPhotos`; omitted → `null` / `0` / `[]`).
-- **Returns / side effects:** `{ id, name, text, createdAt, sats, amountUsd, amountChf, amountEur, amountPhp, hasPhoto, photoCount, hasVideo, videoContentType, parentId, eventId, nostrPublishState, nostrEvent, claimedUntil, nostrFirstAttemptAt, nostrPublishEpoch, contentFp, deletedAt, deletedBy, authorPubkey, nostrAttempts, accountId, goalSats, photoContentType, photoBytes, extraPhotos }` with ISO-8601 `createdAt` / `deletedAt`; the four amounts are always present (string or null); (`deletedAt` JSON `null` when live); `photoCount` is 0–10 (from `row.photoCount` or `hasPhoto ? 1 : 0`); `accountId` is a string or JSON `null` (never omitted); `goalSats` is the stored column (JSON `null` when unset). Invalid `createdAt` / `deletedAt` still throws from `toISOString()`. No I/O.
+- **Returns / side effects:** `{ id, name, text, createdAt, sats, amountUsd, amountChf, amountEur, amountPhp, hasPhoto, photoCount, photoTakenAts, hasVideo, videoContentType, parentId, eventId, nostrPublishState, nostrEvent, claimedUntil, nostrFirstAttemptAt, nostrPublishEpoch, contentFp, deletedAt, deletedBy, authorPubkey, nostrAttempts, accountId, goalSats, photoContentType, photoBytes, extraPhotos }` (`photoTakenAts` length equals `photoCount`; `photoTakenAt` only when `photoCount === 1`; each extra still includes `photoTakenAt`) with ISO-8601 `createdAt` / `deletedAt`; the four amounts are always present (string or null); (`deletedAt` JSON `null` when live); `photoCount` is 0–10 (from `row.photoCount` or `hasPhoto ? 1 : 0`); `accountId` is a string or JSON `null` (never omitted); `goalSats` is the stored column (JSON `null` when unset). Invalid `createdAt` / `deletedAt` still throws from `toISOString()`. No I/O.
 - **Used by:** `debugMessagesRoutes`, `loadDebugTables`.
 
 ## Function: serializeHiddenMessage
 
 - **Purpose:** Project a stored forum row to staff hidden-log JSON (who hid it and when). JSON `name` is the stored `row.name` (no empty-name pubkey fallback). Always includes `parentId` (JSON `null` on top-level notes), ISO `deletedAt` (JSON `null` when live), and `photoCount` (0–10; from `row.photoCount` or `hasPhoto ? 1 : 0`). Optional `goalSats` when the stored value is a positive integer on a top-level note (omitted on replies and when unset, null, or 0). Optional `via: 'nostr'` is set exactly when `row.accountId === null && row.authorPubkey !== null`; the pubkey itself is private and never appears in this JSON. Never includes `accountId`, `eventId`, `nostrPublishState`, `payable`, author `role`, `nostrEvent`, `claimedUntil`, `contentFp`, nsec, or photo/video bytes. Deleter `{ id, name, role }` is resolved in `messagesRoutes`, not here.
 - **Inputs:** `MessageRow` (includes hidden rows and replies; never photo/video bytes) and `deletedBy: { id, name, role }` (`AccountRole | null`; `id` / `name` may be null).
-- **Returns / side effects:** `{ id, name, text, createdAt, sats, amountUsd, amountChf, amountEur, amountPhp, hasPhoto, photoCount, hasVideo, videoContentType, parentId, deletedAt, deletedBy, via? }` with ISO-8601 `createdAt` / `deletedAt`; the four amounts are always present (string or null); (`deletedAt` JSON `null` when live); `photoCount` is 0–10 (from `row.photoCount` or `hasPhoto ? 1 : 0`); `via: 'nostr'` is set exactly when `row.accountId === null && row.authorPubkey !== null`, while the pubkey itself is never included; optional `goalSats` when the stored value is a positive integer on a top-level note (omitted on replies and when unset, null, or 0). Invalid `createdAt` / `deletedAt` still throws from `toISOString()`. No I/O.
+- **Returns / side effects:** `{ id, name, text, createdAt, sats, amountUsd, amountChf, amountEur, amountPhp, hasPhoto, photoCount, photoTakenAts, hasVideo, videoContentType, parentId, deletedAt, deletedBy, via? }` (`photoTakenAts` length equals `photoCount`; `photoTakenAt` only when `photoCount === 1`) with ISO-8601 `createdAt` / `deletedAt`; the four amounts are always present (string or null); (`deletedAt` JSON `null` when live); `photoCount` is 0–10 (from `row.photoCount` or `hasPhoto ? 1 : 0`); `via: 'nostr'` is set exactly when `row.accountId === null && row.authorPubkey !== null`, while the pubkey itself is never included; optional `goalSats` when the stored value is a positive integer on a top-level note (omitted on replies and when unset, null, or 0). Invalid `createdAt` / `deletedAt` still throws from `toISOString()`. No I/O.
 - **Used by:** `messagesRoutes` (`GET /messages/hidden`).
 
 ## Function: serializeConversation
@@ -1598,7 +1605,7 @@
 
 ## Function: loadDebugTables
 
-- **Purpose:** Load operator dump rows for one table or every allowlisted table (cap 200). The `conversation_message` dump includes stored still metadata as lengths/MIME only (`photoContentType`, `photoBytes`, nested `extraPhotos: [{ idx, photoContentType, bytes }]`), matching forum `message`; no payloads; missing photo is `null` / `0` / `[]`.
+- **Purpose:** Load operator dump rows for one table or every allowlisted table (cap 200). The forum `message` dump includes stored still metadata as lengths/MIME only (`photoContentType`, `photoBytes`, nested `extraPhotos: [{ idx, photoContentType, bytes, photoTakenAt }]`). The `conversation_message` dump uses that length/MIME shape without `photoTakenAt`. No payloads; missing photo is `null` / `0` / `[]`.
 - **Inputs:** `DebugCatalogDeps` and optional table name.
 - **Returns / side effects:** `Record<DebugCatalogTable, unknown[]>`. Missing optional stores dump as `[]`.
 - **Used by:** `debugCatalogRoutes`.
@@ -2024,11 +2031,18 @@
 - **Returns / side effects:** JSON body.
 - **Used by:** `wellKnownRoutes`.
 
+## Function: readVideoTakenAt
+
+- **Purpose:** Read the capture time already stored in an uploaded video file. Does not change the file.
+- **Inputs:** Container bytes.
+- **Returns / side effects:** `YYYY-MM-DDTHH:MM:SS+00:00` from an MP4/MOV `mvhd` creation time, or null when the file has none. No I/O.
+- **Used by:** `decodeForumVideo`.
+
 ## Function: decodeForumVideo
 
 - **Purpose:** Size + magic-byte check for MP4/WebM/MOV (32 MiB cap). MP4/MOV bytes are passed through `faststartIsoBmff` (`moov` before `mdat` only when remux succeeds; abort cases keep the original bytes).
 - **Inputs:** raw bytes.
-- **Returns / side effects:** `{ contentType, bytes }` or null.
+- **Returns / side effects:** `{ contentType, bytes, takenAt }` or null. `takenAt` is `YYYY-MM-DDTHH:MM:SS+00:00` or null. Bytes stay as `faststartIsoBmff` left them.
 - **Used by:** `POST /messages` multipart.
 
 ## Function: detectVideoContentType

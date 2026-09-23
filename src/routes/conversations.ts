@@ -28,6 +28,7 @@ import {
   forumPhotoResponse,
   MESSAGE_LIST_LIMIT,
   normalizeForumText,
+  normalizePhotoTakenAt,
   truncatePubkeyDisplay,
   type ForumPhoto,
 } from '@/lib/message';
@@ -100,6 +101,7 @@ const conversationMessageBody = z
       .object({
         contentType: z.string(),
         data: z.string(),
+        takenAt: z.unknown().nullish(),
       })
       .optional(),
     photos: z
@@ -107,6 +109,7 @@ const conversationMessageBody = z
         z.object({
           contentType: z.string(),
           data: z.string(),
+          takenAt: z.unknown().nullish(),
         }),
       )
       .max(10)
@@ -805,6 +808,7 @@ export function conversationRoutes(deps: ConversationRouteDeps): Hono {
           if (decoded === null) {
             return c.json({ error: 'Photo must be a JPEG, PNG, or WebP under 1 MiB' }, 400);
           }
+          decoded.takenAt = normalizePhotoTakenAt(item.takenAt);
           decodedGallery.push(decoded);
         }
         const [first, ...rest] = decodedGallery;
@@ -819,6 +823,7 @@ export function conversationRoutes(deps: ConversationRouteDeps): Hono {
         if (decoded === null) {
           return c.json({ error: 'Photo must be a JPEG, PNG, or WebP under 1 MiB' }, 400);
         }
+        decoded.takenAt = normalizePhotoTakenAt(parsed.data.photo.takenAt);
         photo = decoded;
       }
       try {

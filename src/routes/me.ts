@@ -21,6 +21,7 @@ import {
   decodeForumPhoto,
   forumPhotoResponse,
   normalizeForumText,
+  normalizePhotoTakenAt,
   unsignedNostrDefaults,
   type ForumPhoto,
   type MessageRow,
@@ -157,6 +158,7 @@ const aboutBody = z.object({
       z.object({
         contentType: z.string(),
         data: z.string(),
+        takenAt: z.unknown().nullish(),
       }),
       z.null(),
     ])
@@ -466,7 +468,11 @@ export function meRoutes(deps: MeRouteDeps): Hono {
       if (photoKeyPresent) {
         // Zod types optional `photo` as T | null | undefined. A present JSON
         // key is T | null (`undefined` cannot appear in JSON).
-        const incoming = parsed.data.photo as { contentType: string; data: string } | null;
+        const incoming = parsed.data.photo as {
+          contentType: string;
+          data: string;
+          takenAt?: unknown;
+        } | null;
         if (incoming === null) {
           decodedPhoto = null;
         } else {
@@ -474,6 +480,7 @@ export function meRoutes(deps: MeRouteDeps): Hono {
           if (decoded === null) {
             return c.json({ error: ABOUT_PHOTO_ERROR }, 400);
           }
+          decoded.takenAt = normalizePhotoTakenAt(incoming.takenAt);
           decodedPhoto = decoded;
         }
       }

@@ -269,6 +269,7 @@ async function loadTable(deps: DebugCatalogDeps, table: DebugCatalogTable): Prom
               idx: index + 1,
               photoContentType: photo.contentType,
               bytes: photo.bytes.byteLength,
+              photoTakenAt: photo.takenAt ?? null,
             })),
           }),
         );
