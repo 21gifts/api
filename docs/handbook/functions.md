@@ -2201,7 +2201,7 @@
 
 ## Function: wellKnownRoutes
 
-- **Purpose:** Hono `GET /nostr.json` (NIP-05, CORS `*`) and `GET /lnurlp/:username` (LUD-16 payRequest). Passes through the linked Wallet of Satoshi JSON so callback and metadata stay there. While an unexpired pending point-of-sale charge exists, both `minSendable` and `maxSendable` become that amount in millisats.
+- **Purpose:** Hono `GET /nostr.json` (NIP-05, CORS `*`) and `GET /lnurlp/:username` (LUD-16 payRequest). Passes through the linked Wallet of Satoshi JSON so callback and metadata stay there. While an unexpired pending point-of-sale charge exists, both `minSendable` and `maxSendable` become that amount in millisats. `GET /lnurlp/:username` is `Cache-Control: no-store`; `GET /nostr.json` keeps `Cache-Control: public, max-age=60`.
 - **Inputs:** auth store, env, optional fetchImpl (default `globalThis.fetch`), optional posStore (default empty in-memory store), optional now (default `Date.now`).
 - **Returns / side effects:** Hono app mounted at `/.well-known`. LNURL-pay 404 when the username is invalid, unknown, or unlinked; 502 when WoS is unreachable or the store throws.
 - **Used by:** `createApp`.
