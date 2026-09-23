@@ -1058,17 +1058,21 @@ describe('POST /invoices', () => {
     const authStore = new InMemoryAuthStore();
     await seedPasskeyAndPlatform(authStore);
     const invoiceStore = new InMemoryInvoiceStore();
-    const inner = await uuidMediaPostStore();
-    const messageStore: InvoiceRouteDeps['messageStore'] = {
-      ...inner,
-      getById: async (id) => {
-        const row = await inner.getById(id);
-        if (row === undefined) {
-          return undefined;
-        }
-        return { ...row, hasPhoto: false, hasVideo: false, photoCount: 2 };
+    const messageStore = new InMemoryMessageStore();
+    await messageStore.create(
+      {
+        id: POST_ID,
+        accountId: 'acc-alice',
+        name: 'Ada',
+        text: 'first',
+        createdAt: new Date('2026-08-01T00:00:00.000Z'),
+        hasPhoto: false,
+        ...unsignedNostrDefaults(),
       },
-    };
+      undefined,
+      undefined,
+      [JPEG],
+    );
     const res = await createApp({
       spendApiToken: TOKEN,
       authStore,
