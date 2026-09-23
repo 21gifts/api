@@ -42,28 +42,29 @@ export async function translateViaDeepl(
 ): Promise<string> {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), TRANSLATE_UPSTREAM_TIMEOUT_MS);
+  const remap = (): never => {
+    throw new TranslateUpstreamError();
+  };
   try {
-    const response = await fetchImpl(upstream.url, {
-      method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        authorization: `DeepL-Auth-Key ${upstream.apiKey}`,
-      },
-      body: JSON.stringify({
-        text: [text],
-        target_lang: deeplTargetLang(target),
+    const response = await Promise.resolve(
+      fetchImpl(upstream.url, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          authorization: `DeepL-Auth-Key ${upstream.apiKey}`,
+        },
+        body: JSON.stringify({
+          text: [text],
+          target_lang: deeplTargetLang(target),
+        }),
+        signal: controller.signal,
       }),
-      signal: controller.signal,
-    });
+    ).catch(remap);
     if (!response.ok) throw new TranslateUpstreamError();
-    const body: unknown = await response.json();
+    const body: unknown = await Promise.resolve(response.json()).catch(remap);
     const parsed = translatedBodySchema.safeParse(body);
     if (!parsed.success) throw new TranslateUpstreamError();
     return parsed.data.translations[0].text;
-    /* v8 ignore start -- remap AbortError/TypeError/SyntaxError; catch cannot complete */
-  } catch {
-    throw new TranslateUpstreamError();
-    /* v8 ignore stop */
   } finally {
     clearTimeout(timeout);
   }
