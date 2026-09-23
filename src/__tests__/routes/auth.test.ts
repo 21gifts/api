@@ -917,6 +917,34 @@ describe('auth routes', () => {
       });
     });
 
+    it('returns 409 when finish finds the credential id already stored', async () => {
+      const store = new InMemoryAuthStore();
+      const { app, token } = await legacySignedIn(store);
+      const begin = (await (
+        await app.request('/auth/passkey/seed/begin', {
+          method: 'POST',
+          headers: { authorization: `Bearer ${token}` },
+        })
+      ).json()) as { challengeId: string };
+      const res = await app.request('/auth/passkey/seed/finish', {
+        method: 'POST',
+        headers: {
+          origin: ORIGIN,
+          'content-type': 'application/json',
+          authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          challengeId: begin.challengeId,
+          credential: { test: 'ok' },
+        }),
+      });
+      expect(res.status).toBe(409);
+      expect(await res.json()).toEqual({
+        error: 'This account already has a recovery phrase',
+      });
+      expect(await store.getPasskeyCredential('cred-2')).toBeUndefined();
+    });
+
     it('rejects a missing finish body on a legacy account', async () => {
       const store = new InMemoryAuthStore();
       const { app, token } = await legacySignedIn(store);
