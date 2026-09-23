@@ -82,6 +82,8 @@ Public base URLs used in examples:
 | GET    | `/healthz`                                           | none                       | Liveness                                                                                                                                     |
 | GET    | `/info`                                              | none                       | Service identity                                                                                                                             |
 | GET    | `/.well-known/lnurlp/:username`                      | none                       | LUD-16 payRequest; WoS callback stays; an open till charge pins both sendable bounds                                                         |
+| GET    | `/pay/:username`                                     | none                       | Public pay-link card: display name and satoshi bounds                                                                                        |
+| POST   | `/pay/:username/invoice`                             | none                       | One BOLT11 invoice for an exact satoshi amount on the linked address                                                                         |
 | GET    | `/favicon.ico`                                       | none                       | Brand mark (favicon)                                                                                                                         |
 | GET    | `/favicon.svg`                                       | none                       | Brand mark (SVG favicon)                                                                                                                     |
 | GET    | `/apple-touch-icon.png`                              | none                       | Brand mark (Apple touch icon)                                                                                                                |
@@ -313,6 +315,52 @@ not only the newest. An already expired row is not cancelled.
 **Response** `200`: `{ "charge": null }` when at least one row was cancelled.
 
 **Response** `404`: `{ "error": "No open payment" }`.
+
+### `GET /pay/:username`
+
+Public pay-link card. No auth. Normalises `:username`, loads the account,
+and returns the trimmed display name (or the normalised username when the
+name is blank) plus `minSats` and `maxSats` from the linked Lightning
+Address. Does not return the callback, the address, or provider metadata.
+
+**Response** `200`:
+
+```json
+{ "name": "Ada", "username": "ada", "minSats": 1, "maxSats": 100000000 }
+```
+
+Invalid username, unknown account, or blank `lightningAddress` →
+**Response** `404` `{ "error": "Not found" }`.
+
+The stored address is not a LUD-16 address, the provider is unreachable,
+the store throws, `minSendable` or `maxSendable` is not a safe integer, or
+`maxSats < minSats` → **Response** `502`
+`{ "error": "Lightning Address could not be resolved" }`.
+
+### `POST /pay/:username/invoice`
+
+One BOLT11 invoice for an exact satoshi amount. No auth. Same account
+lookup as `GET /pay/:username`. Body `{ "amountSats": <integer> }` must sit
+inside `[minSats, maxSats]` and the millisatoshi value must sit inside the
+provider window. Settlement calls the stored address, never
+`username@21.gifts`. No comment. No spend token.
+
+**Response** `200`:
+
+```json
+{ "pr": "lnbc...", "amountSats": 21 }
+```
+
+The `pr` is returned only when it decodes to exactly `amountSats * 1000`
+millisatoshis.
+
+Invalid username, unknown account, or blank address → **Response** `404`
+`{ "error": "Not found" }`. Missing or invalid JSON, a non-integer, or an
+amount outside the window → **Response** `400`
+`{ "error": "Enter a whole number of sats" }`. Resolve or store failure, an
+empty or non-safe-integer window, a failed invoice fetch, or a BOLT11 that
+is missing, not a safe integer amount, or not the requested amount →
+**Response** `502` `{ "error": "Lightning Address could not be resolved" }`.
 
 ### `GET /favicon.ico`
 
