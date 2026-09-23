@@ -853,6 +853,10 @@ const invoiceBody = z.object({
   amountPhp: z.string().nullable().optional(),
 });
 
+const translateBody = z.object({
+  target: z.enum(['en', 'de', 'es', 'fil']),
+});
+
 /**
  * Build the `/messages` route group.
  *
@@ -870,8 +874,8 @@ const invoiceBody = z.object({
  * `GET /messages/stats` (no session; living notes and replies as one count),
  * public `GET /messages/:id` (optional `?sinceSats=` non-negative integer
  * long-polls until `sats` is strictly greater; timeout still returns 200 with
- * the current body; invalid value 400), `POST /messages/:id/translate`, and
- * `POST /messages/:id/invoice`.
+ * the current body; invalid value 400), `POST /messages/:id/invoice`, and
+ * `POST /:id/translate` / `POST /messages/:id/translate`.
  * Photo, video, replies, DELETE, `GET /stats`, `GET /hidden`, and `GET /places`
  * register before the public single-note `GET /:id`. Soft-hidden rows (`deletedAt`) are omitted from
  * lists and 404 on unsigned/non-staff reads; a founder/moderator session may
@@ -892,7 +896,8 @@ const invoiceBody = z.object({
  * `hidden` count.
  *
  * @param deps - Message store, auth store, clock, optional `pushStore` /
- * `notificationStore` / `conversationStore` / `nostrPublisher` / `env`, and
+ * `notificationStore` / `conversationStore` / `nostrPublisher` / `env`,
+ * optional `translationStore` (default `InMemoryTranslationStore`), and
  * test injects `waitSatsSleep` / `waitSatsTimeoutMs` / `waitSatsPollMs`
  * (defaults `defaultWaitSatsSleep` / `WAIT_SATS_TIMEOUT_MS` /
  * `WAIT_SATS_POLL_MS`).
@@ -901,12 +906,8 @@ const invoiceBody = z.object({
  * `GET /:id/video.mp4|.webm|.mov`, public `GET /:id/replies` (optional Bearer
  * for `accountId`), `DELETE /:id`, staff `GET /hidden` (moderator session; no
  * `forum.read`), public `GET /:id` (optional `?sinceSats=`), and
- * `POST /:id/invoice`, and public `GET /stats`.
+ * `POST /:id/invoice`, `POST /:id/translate`, and public `GET /stats`.
  */
-const translateBody = z.object({
-  target: z.enum(['en', 'de', 'es', 'fil']),
-});
-
 export function messagesRoutes(deps: MessagesRouteDeps): Hono {
   const postLimiter = deps.postLimiter ?? defaultPostLimiter;
   const invoiceLimiter = deps.invoiceLimiter ?? defaultInvoiceLimiter;

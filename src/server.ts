@@ -268,7 +268,9 @@ function debugList(store: object, limit: number): Promise<unknown[]> {
  *
  * @param deps - Optional overrides for the auth store, clock, invoice payer,
  *   LNURL-pay fetch, LN-Address cache, brand reader, debugToken, gift store,
- *   gift recorder, BTC-USD rates, USD-fiat rates, message store, contact store,
+ *   gift recorder, BTC-USD rates, USD-fiat rates, message store,
+ *   translationStore (optional; default InMemoryTranslationStore; SQL boot
+ *   injects PostgresTranslationStore), contact store,
  *   conversation store, notification store, push store, trust store,
  *   debugDbStore (`GET /debug/db`; omitted on a memory boot),
  *   funding store (injected into `/funding`, `/me`, `/auth`, `/members`,

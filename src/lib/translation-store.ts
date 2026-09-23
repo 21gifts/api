@@ -56,12 +56,12 @@ function rowKey(messageId: string, targetLang: TranslateTarget): string {
 export class InMemoryTranslationStore implements TranslationStore {
   private readonly rows = new Map<string, MessageTranslation>();
 
-  /** @inheritdoc */
+  /** {@inheritdoc} */
   async get(messageId: string, targetLang: TranslateTarget): Promise<MessageTranslation | null> {
     return this.rows.get(rowKey(messageId, targetLang)) ?? null;
   }
 
-  /** @inheritdoc */
+  /** {@inheritdoc} */
   async put(
     messageId: string,
     targetLang: TranslateTarget,
@@ -95,7 +95,7 @@ export class PostgresTranslationStore implements TranslationStore {
    */
   constructor(private readonly sql: SqlClient) {}
 
-  /** @inheritdoc */
+  /** {@inheritdoc} */
   async get(messageId: string, targetLang: TranslateTarget): Promise<MessageTranslation | null> {
     const rows = await this.sql.query<{ source_sha256: string; translated_text: string }>(
       `SELECT source_sha256, translated_text
@@ -110,7 +110,7 @@ export class PostgresTranslationStore implements TranslationStore {
     return { sourceSha256: row.source_sha256, translatedText: row.translated_text };
   }
 
-  /** @inheritdoc */
+  /** {@inheritdoc} */
   async put(
     messageId: string,
     targetLang: TranslateTarget,

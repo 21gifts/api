@@ -156,6 +156,7 @@ export interface BootFxOptions {
  *
  * Blank or unset URL yields in-memory auth, `giftStore: undefined`,
  * `giftRecorder: undefined`, `messageStore: undefined`,
+ * `translationStore: undefined`,
  * `contactStore: undefined`, a fresh {@link InMemoryPosStore} as `posStore`,
  * `apiLogStore: undefined`,
  * `conversationStore: undefined`,
@@ -170,6 +171,7 @@ export interface BootFxOptions {
  * after notification, funding after trust, `api_log` immediately before
  * `db_change` so `trg_db_change` attaches), builds a {@link QueryGiftStore},
  * {@link SqlGiftRecorder}, {@link PostgresMessageStore},
+ * {@link PostgresTranslationStore},
  * {@link PostgresContactStore}, {@link PostgresPosStore}, {@link PostgresConversationStore},
  * {@link PostgresNotificationStore}, {@link PostgresPushStore},
  * {@link PostgresTrustStore}, and {@link PostgresFundingStore}, parses
