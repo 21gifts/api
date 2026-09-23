@@ -19,6 +19,12 @@ describe('resolveTranslateUpstream', () => {
         TRANSLATE_API_KEY: 'k',
       }),
     ).toBeNull();
+    expect(
+      resolveTranslateUpstream({
+        TRANSLATE_URL: 'http://[',
+        TRANSLATE_API_KEY: 'k',
+      }),
+    ).toBeNull();
   });
 
   it('returns a trimmed key and parsed http(s) URL', () => {

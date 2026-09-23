@@ -50,6 +50,37 @@ describe('translateForumNote', () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
+  it('returns cached true when a writer fills the row during DeepL', async () => {
+    const text = 'Hallo Welt';
+    const hash = translationSourceHash(text);
+    let gets = 0;
+    const store = {
+      async get(): Promise<{ sourceSha256: string; translatedText: string } | null> {
+        gets += 1;
+        if (gets === 1) {
+          return null;
+        }
+        return { sourceSha256: hash, translatedText: 'Hello, World' };
+      },
+      async put(): Promise<string> {
+        throw new Error('put must not run');
+      },
+    };
+    const fetchMock = vi.fn(async () => {
+      throw new Error('DeepL must not run after the second get');
+    });
+    const result = await translateForumNote(
+      store,
+      ENV,
+      'mid',
+      text,
+      'en',
+      fetchMock as unknown as FetchFn,
+    );
+    expect(result).toEqual({ translatedText: 'Hello, World', cached: true });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it('throws when DeepL is not configured', async () => {
     await expect(
       translateForumNote(new InMemoryTranslationStore(), {}, 'mid', 'Hallo', 'en'),

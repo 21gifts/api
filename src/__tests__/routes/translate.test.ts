@@ -86,6 +86,15 @@ describe('POST /messages/:id/translate', () => {
         await app.request(`/messages/${NOTE_ID}/translate`, {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ target: 'en' }),
+        })
+      ).status,
+    ).toBe(404);
+    expect(
+      (
+        await app.request(`/messages/${NOTE_ID}/translate`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
           body: JSON.stringify({ target: 'fr' }),
         })
       ).status,

@@ -59,4 +59,20 @@ describe('PostgresTranslationStore', () => {
     });
     expect(await store.put('mid', 'en', 'h', 'Hello 2')).toBe('Hello');
   });
+
+  it('returns null on an empty select and throws when upsert returns no row', async () => {
+    const empty: SqlClient = {
+      async query<T>(): Promise<T[]> {
+        return [];
+      },
+      async execute(): Promise<void> {
+        throw new Error('execute unused');
+      },
+    };
+    const store = new PostgresTranslationStore(empty);
+    expect(await store.get('mid', 'en')).toBeNull();
+    await expect(store.put('mid', 'en', 'h', 'Hello')).rejects.toThrow(
+      'message_translation upsert returned no row',
+    );
+  });
 });
