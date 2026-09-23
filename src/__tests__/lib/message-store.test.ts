@@ -1005,6 +1005,29 @@ describe('InMemoryMessageStore', () => {
     expect(await store.listLatest(10)).toHaveLength(1);
   });
 
+  it('create collapses a reply even when the incoming row still carries a pin', async () => {
+    const store = new InMemoryMessageStore();
+    await store.create({ ...EARLY, id: 'parent', text: 'parent' });
+    const first = await store.create(
+      { ...EARLY, id: 'r1', parentId: 'parent', text: 'same' },
+      JPEG,
+    );
+    const second = await store.create(
+      {
+        ...EARLY,
+        id: 'r2',
+        parentId: 'parent',
+        text: 'same',
+        place: { lat: 47.3, lng: 8.5, label: 'Stall' },
+      },
+      JPEG,
+    );
+    expect(second.id).toBe(first.id);
+    expect(second.place ?? null).toBeNull();
+    expect(await store.getById('r2')).toBeUndefined();
+    expect(await store.listLatest(10)).toHaveLength(1);
+  });
+
   it('create throws when the same photo is posted with a different place', async () => {
     const store = new InMemoryMessageStore();
     await store.create({ ...EARLY, id: 'm1', text: 'same' }, JPEG);

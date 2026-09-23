@@ -3298,8 +3298,10 @@ notifies. Missing `pushStore` still writes in-app rows. Notification or
 push failure does not fail the **200**. Over-limit posters
 get **429** `{ "error": "Too many messages" }`
 with `Retry-After: 10` (1/10s, 6/h, 20/UTC-day). A second **live** photo/video
-POST with the same account, parent, normalised text, and media bytes returns
+POST with the same account, parent, normalised text, media bytes, and pin returns
 **200** with the existing row (no extra burst slot, no second top-level push).
+The same media with a different pin is **409**
+`{ "error": "A live note with this media already exists" }`.
 Text-only posts are unchanged (still **429** on burst). After a **new**
 top-level persist, the api POSTs `{ address, messageId }` to `{SPEND_URL}/ping` with
 Bearer `SPEND_API_TOKEN` (fire-and-await; `messageId` is the UUID of the new

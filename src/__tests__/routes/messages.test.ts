@@ -3348,6 +3348,44 @@ describe('POST /messages', () => {
     });
   });
 
+  it('returns 409 when a raced create reports a conflicting place', async () => {
+    const res = await mount(
+      await namedStore('Ada'),
+      throwingStore({
+        findLiveByAccountContent: async () => undefined,
+        create: async () => {
+          throw new Error('place conflicts with live media');
+        },
+      }),
+    ).request('/messages', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({
+        text: 'same caption',
+        photo: { contentType: 'image/jpeg', data: JPEG_B64 },
+      }),
+    });
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({ error: 'A live note with this media already exists' });
+  });
+
+  it('returns 503 when create throws a non-error', async () => {
+    const res = await mount(
+      await namedStore('Ada'),
+      throwingStore({
+        create: async () => {
+          throw 'boom';
+        },
+      }),
+    ).request('/messages', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ text: 'hi' }),
+    });
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({ error: 'Messages are unavailable' });
+  });
+
   it('returns 503 and logs when create throws', async () => {
     const res = await mount(
       await namedStore('Ada'),

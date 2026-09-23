@@ -503,7 +503,8 @@ async function serveForumVideo(
  *   (no goal). Stored as `null` when `parentId` is set.
  * @param place - Optional map pin for a top-level note. Default `null`.
  *   Stored as `null` when `parentId` is set.
- * @returns 200 / 403 (unpaid text-only below verified) / 429 / 503.
+ * @returns 200 / 403 (unpaid text-only below verified) / 409 (same live
+ *   media, different pin) / 429 / 503.
  */
 async function persistForumPost(
   deps: MessagesRouteDeps,
@@ -669,7 +670,10 @@ async function persistForumPost(
       serializeMessage(created, payableOf(created, account), account.role, undefined, true),
       200,
     );
-  } catch {
+  } catch (err) {
+    if (err instanceof Error && err.message === 'place conflicts with live media') {
+      return c.json({ error: 'A live note with this media already exists' }, 409);
+    }
     logEvent('messages.create.failed');
     return c.json({ error: 'Messages are unavailable' }, 503);
   }

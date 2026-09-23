@@ -1962,7 +1962,9 @@ export class InMemoryMessageStore implements MessageStore {
    * `message_event_id_uidx` and conversation `appendMessage`). Live unsigned
    * media (`eventId` null) with the same account, parent, fingerprint, and place
    * returns the existing row without appending or writing a second video file.
-   * A different place throws `place conflicts with live media`.
+   * A different place throws `place conflicts with live media`. A reply is
+   * compared after its pin is cleared, so an incoming reply pin does not
+   * conflict with the stored null.
    * A non-null `parentId` requires a live parent (`deletedAt` null); a missing
    * or soft-hidden parent throws and does not append. Replies store
    * `goalSats` null even when the row carried a positive ask, and store
@@ -2016,7 +2018,8 @@ export class InMemoryMessageStore implements MessageStore {
         contentFp,
       );
       if (existing !== undefined) {
-        if (!placesMatch(existing.place ?? null, row.place ?? null)) {
+        const placeForMatch = row.parentId !== null ? null : (row.place ?? null);
+        if (!placesMatch(existing.place ?? null, placeForMatch)) {
           throw new Error('place conflicts with live media');
         }
         return existing;

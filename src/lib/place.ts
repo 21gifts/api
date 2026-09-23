@@ -30,21 +30,15 @@ function roundCoord(n: number): number {
 }
 
 /**
- * Validate an optional forum place pin.
+ * Compare two optional pins.
  *
- * `undefined` or `null` means no pin. Otherwise a plain object with finite
- * numeric `lat` in `[-90, 90]` and `lng` in `[-180, 180]`. Coordinates are
- * rounded to 6 decimal places (`Math.round(n * 1e6) / 1e6`); `-0` becomes
- * `0`. `label` absent, `null`, or trim-empty becomes `null`. A non-string
- * label is the latitude error. A trimmed label longer than
- * {@link PLACE_LABEL_MAX}, or any character with `charCode < 32` or
- * `=== 127`, is the label-length error. A label never removes the pin:
- * both coordinates or no pin.
+ * Both absent matches. One absent does not. Otherwise latitude, longitude,
+ * and label must all be equal.
  *
- * @param input - JSON `place`, multipart-derived object, or omitted/null.
- * @returns `{ ok: true, value: ForumPlace | null }` or `{ ok: false, error }`.
+ * @param a - One pin, or `null` when that side has none.
+ * @param b - The other pin, or `null` when that side has none.
+ * @returns `true` when the pins are the same.
  */
-/** True when both pins are absent or carry the same rounded coordinates and label. */
 export function placesMatch(a: ForumPlace | null, b: ForumPlace | null): boolean {
   if (a === null || b === null) {
     return a === b;
@@ -53,8 +47,13 @@ export function placesMatch(a: ForumPlace | null, b: ForumPlace | null): boolean
 }
 
 /**
- * A multipart coordinate. Blank or missing is `missing`. Anything that is not
- * an explicit decimal is `invalid` (`Number(" ")` is 0 and must not become a pin).
+ * Read one multipart coordinate.
+ *
+ * Blank or missing is `missing`. Anything that is not an explicit decimal is
+ * `invalid`, so `Number(" ")` cannot become a pin at zero.
+ *
+ * @param raw - Multipart field value (`placeLat` or `placeLng`).
+ * @returns `'missing'`, `'invalid'`, or a finite number.
  */
 export function parseMultipartCoord(raw: unknown): 'missing' | 'invalid' | number {
   if (raw === null || raw === undefined) {
@@ -73,6 +72,21 @@ export function parseMultipartCoord(raw: unknown): 'missing' | 'invalid' | numbe
   return Number(trimmed);
 }
 
+/**
+ * Validate an optional forum place pin.
+ *
+ * `undefined` or `null` means no pin. Otherwise a plain object with finite
+ * numeric `lat` in `[-90, 90]` and `lng` in `[-180, 180]`. Coordinates are
+ * rounded to 6 decimal places (`Math.round(n * 1e6) / 1e6`); `-0` becomes
+ * `0`. `label` absent, `null`, or trim-empty becomes `null`. A non-string
+ * label is the latitude error. A trimmed label longer than
+ * {@link PLACE_LABEL_MAX}, or any character with `charCode < 32` or
+ * `=== 127`, is the label-length error. A label never removes the pin:
+ * both coordinates or no pin.
+ *
+ * @param input - JSON `place`, multipart-derived object, or omitted/null.
+ * @returns `{ ok: true, value: ForumPlace | null }` or `{ ok: false, error }`.
+ */
 export function normalizePlace(
   input: unknown,
 ):
