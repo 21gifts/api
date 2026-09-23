@@ -1023,6 +1023,7 @@ describe('PostgresAuthStore', () => {
     expect(sql.queries[0]?.text).toMatch(/WITH inserted/);
     expect(sql.queries[0]?.text).toMatch(/wallet_required = TRUE/);
     expect(sql.queries[0]?.text).toMatch(/SELECT id FROM flagged/);
+    expect(sql.queries[0]?.text).toMatch(/FOR UPDATE/);
     expect(sql.queries[0]?.text).toMatch(/WHERE NOT EXISTS/);
     expect(sql.queries[0]?.text).toMatch(/session_refused IS NOT TRUE/);
     sql.nextRows = [];
@@ -1160,7 +1161,9 @@ describe('PostgresAuthStore', () => {
       createdAt: 1,
     });
     expect(sql.queries[0]?.text).toMatch(/WHERE account_id = \$1/);
-    expect(sql.queries[0]?.text).toMatch(/ORDER BY created_at DESC, credential_id DESC/);
+    expect(sql.queries[0]?.text).toMatch(
+      /ORDER BY created_at DESC, credential_id COLLATE "C" DESC/,
+    );
     expect(sql.queries[0]?.text).toMatch(/LIMIT 1/);
     sql.nextRows = [];
     expect(
