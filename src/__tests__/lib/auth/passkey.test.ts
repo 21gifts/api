@@ -1326,20 +1326,12 @@ describe('passkey seed', () => {
     if (account === undefined) {
       throw new Error('missing account');
     }
-    const started = await startPasskeySeed(
-      store,
-      new FakePasskeyCeremony(),
-      CONFIG,
-      T0,
-      account,
-    );
+    const started = await startPasskeySeed(store, new FakePasskeyCeremony(), CONFIG, T0, account);
     expect(started).toEqual({
       ok: false,
       error: 'This account already has a recovery phrase',
     });
-    expect(
-      (await store.listPasskeyChallenges()).some((row) => row.type === 'seed'),
-    ).toBe(false);
+    expect((await store.listPasskeyChallenges()).some((row) => row.type === 'seed')).toBe(false);
   });
 
   it('issues seed options without excludeCredentials', async () => {

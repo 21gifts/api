@@ -886,9 +886,7 @@ describe('auth routes', () => {
       const rows = await store.listPasskeyCredentials();
       const forAccount = rows.filter((row) => row.accountId === accountId);
       expect(forAccount).toHaveLength(2);
-      expect(
-        parsedEvents(warn).some((e) => e['event'] === 'auth.passkey.seed.ok'),
-      ).toBe(false);
+      expect(parsedEvents(warn).some((e) => e['event'] === 'auth.passkey.seed.ok')).toBe(false);
     });
 
     it('returns 409 on seed begin for an account that already has a seed', async () => {

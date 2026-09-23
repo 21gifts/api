@@ -270,8 +270,7 @@ export function authRoutes(deps: AuthRouteDeps): Hono {
         account,
       );
       if (!result.ok) {
-        const status =
-          result.error === 'This account already has a recovery phrase' ? 409 : 400;
+        const status = result.error === 'This account already has a recovery phrase' ? 409 : 400;
         return c.json({ error: result.error }, status);
       }
       logEvent('auth.passkey.seed.ok', { accountId: result.account.id });
