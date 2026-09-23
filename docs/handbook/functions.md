@@ -1577,7 +1577,7 @@
 
 ## Function: requireAction
 
-- **Purpose:** Gate a signed-in action on factual account fields (skip does not satisfy). Filters `accountMissing` to the action's needs, preserving `actionRequirements` order. Does not add wallet to ACTION_NEEDS; `accountSetup` is the lock.
+- **Purpose:** Gate a signed-in action on factual account fields (skip does not satisfy). Filters `accountMissing` to the action's needs, preserving `actionRequirements` order. Wallet backup is neither a setup step nor an action requirement.
 - **Inputs:** `Account`, `AccountAction`.
 - **Returns / side effects:** `{ ok: true }` or `{ ok: false, missing }` (never empty). No I/O. Routes respond 409 `{ error: 'missing_requirements', missing }` when `ok` is false.
 - **Used by:** `messagesRoutes`, `contactRoutes`, `membersRoutes`.

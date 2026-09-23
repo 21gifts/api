@@ -96,9 +96,9 @@ export interface Account {
    */
   notificationLevel?: NotificationLevel;
   /**
-   * True when this account must complete the wallet (recovery phrase)
-   * setup step. Omit / false = existing member (not gated). New passkey
-   * register and first-passkey claim set true; replace does not.
+   * True when a recovery phrase is required. Does not set `setup` to
+   * `wallet`. Omit / false = existing member. New passkey register and
+   * first-passkey claim set true; replace does not.
    */
   walletRequired?: boolean;
   /**
