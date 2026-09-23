@@ -819,6 +819,37 @@ describe('PUT /me/about', () => {
     expect((await messages.getById(NOTE_ID))?.hasPhoto).toBe(true);
   });
 
+  it('stores a capture time on create and replace, and clears it with the photo', async () => {
+    const store = await seededStore({ name: 'Ada' });
+    const messages = new InMemoryMessageStore();
+    const created = await putAbout(
+      store,
+      { text: 'Hi', photo: { ...JPEG_PHOTO, takenAt: '2020-01-01T00:00:00+00:00' } },
+      messages,
+    );
+    expect(created.status).toBe(200);
+    const id = (await store.getAccount('acc'))?.profileMessageId;
+    expect(id).toEqual(expect.any(String));
+    expect((await messages.getById(id!))?.photoTakenAts).toEqual(['2020-01-01T00:00:00+00:00']);
+    const replaced = await putAbout(
+      store,
+      { text: 'Hi', photo: { ...JPEG_PHOTO, takenAt: '2021-02-03T04:05:06' } },
+      messages,
+    );
+    expect(replaced.status).toBe(200);
+    expect((await messages.getById(id!))?.photoTakenAts).toEqual(['2021-02-03T04:05:06']);
+    const invalid = await putAbout(
+      store,
+      { text: 'Hi', photo: { ...JPEG_PHOTO, takenAt: 12 } },
+      messages,
+    );
+    expect(invalid.status).toBe(200);
+    expect((await messages.getById(id!))?.photoTakenAts).toEqual([null]);
+    const cleared = await putAbout(store, { text: 'Hi', photo: null }, messages);
+    expect(cleared.status).toBe(200);
+    expect((await messages.getById(id!))?.photoTakenAts).toEqual([]);
+  });
+
   it('clears a stored photo when photo is null', async () => {
     const store = await seededStore({ name: 'Ada' });
     await patchAccount(store, { profileMessageId: NOTE_ID });

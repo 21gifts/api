@@ -52,6 +52,20 @@ test('Function: createApp — booted process serves HTTP', async ({ request }) =
   expect(res.status()).toBe(200);
 });
 
+test('Function: readVideoTakenAt — POST /messages without bearer is 401', async ({ request }) => {
+  const res = await request.post('/messages', { data: { text: 'hi' } });
+  expect(res.status()).toBe(401);
+});
+
+test('Function: normalizePhotoTakenAt — POST /messages without bearer is 401', async ({
+  request,
+}) => {
+  const res = await request.post('/messages', {
+    data: { text: 'hi' },
+  });
+  expect(res.status()).toBe(401);
+});
+
 test('Function: healthRoute — GET /healthz is ok', async ({ request }) => {
   const res = await request.get('/healthz');
   expect(res.status()).toBe(200);
@@ -963,6 +977,13 @@ test('Function: satsToUsdCents — empty stats skip USD conversion', async ({ re
   const body = (await res.json()) as { giftCount: number; totalUsd: string };
   expect(body.giftCount).toBe(0);
   expect(body.totalUsd).toBe('0.00');
+});
+
+test('Function: shownFiatFromBody — invoice without a session is 401', async ({ request }) => {
+  const res = await request.post('/messages/00000000-0000-4000-8000-000000000001/invoice', {
+    data: { sats: 21, amountUsd: '5.00', amountChf: null, amountEur: null, amountPhp: null },
+  });
+  expect(res.status()).toBe(401);
 });
 
 test('Function: normalizeAmountUsd — empty stats skip USD conversion', async ({ request }) => {

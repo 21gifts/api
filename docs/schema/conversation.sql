@@ -88,11 +88,14 @@ CREATE INDEX IF NOT EXISTS conversation_read_conversation_id_idx
   ON conversation_read (conversation_id);
 ALTER TABLE conversation_message ADD COLUMN IF NOT EXISTS photo bytea;
 ALTER TABLE conversation_message ADD COLUMN IF NOT EXISTS photo_content_type text;
+ALTER TABLE conversation_message ADD COLUMN IF NOT EXISTS photo_taken_at text;
 CREATE TABLE IF NOT EXISTS conversation_message_extra_photo (
   message_id uuid NOT NULL REFERENCES conversation_message (id) ON DELETE CASCADE,
   idx smallint NOT NULL,
   photo bytea NOT NULL,
   photo_content_type text NOT NULL,
+  photo_taken_at text,
   PRIMARY KEY (message_id, idx),
   CONSTRAINT conversation_message_extra_photo_idx_range CHECK (idx >= 1 AND idx <= 9)
 );
+ALTER TABLE conversation_message_extra_photo ADD COLUMN IF NOT EXISTS photo_taken_at text;

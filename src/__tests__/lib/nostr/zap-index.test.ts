@@ -1289,6 +1289,42 @@ describe('manual invoice settlement', () => {
     ).resolves.toEqual({ ok: false, reason: 'message' });
   });
 
+  it('keeps an all-null pinned snapshot and does not ask for a new spot', async () => {
+    const store = new InMemoryMessageStore();
+    const auth = new InMemoryAuthStore();
+    await seedStore({
+      store,
+      auth,
+      accountId: 'manual-author',
+      messageId: 'manual-message',
+    });
+    const paymentHash = 'a1'.repeat(32);
+    await seedManualInvoice(store, paymentHash, {
+      fiatPinned: true,
+      amountUsd: null,
+      amountChf: null,
+      amountEur: null,
+      amountPhp: null,
+    });
+    const fetchImpl = vi.fn(async () => new Response('no', { status: 500 }));
+    const result = await settleInvoiceManually({
+      store,
+      auth,
+      now: () => 1,
+      paymentHash,
+      note: 'pinned empty',
+      fetchImpl,
+    });
+    expect(result.ok).toBe(true);
+    expect(fetchImpl).not.toHaveBeenCalled();
+    const note = await store.getById('manual-message');
+    expect(note?.sats).toBe(210_000);
+    expect(note?.amountUsd).toBeNull();
+    expect(note?.amountChf).toBeNull();
+    expect(note?.amountEur).toBeNull();
+    expect(note?.amountPhp).toBeNull();
+  });
+
   it('settles with verified preimage, receipt evidence, notification, and gift reply', async () => {
     const store = new InMemoryMessageStore();
     const auth = new InMemoryAuthStore();
@@ -7928,6 +7964,80 @@ describe('indexOpenZapReceipts', () => {
     expect(replies[0]?.text).toBe('later');
   });
 
+  it('copies pinned invoice amounts onto the note instead of a new spot', async () => {
+    const store = new InMemoryMessageStore();
+    const auth = new InMemoryAuthStore();
+    const parentId = await seedStore({
+      store,
+      auth,
+      accountId: 'acc-pin-parent',
+      lightningAddress: 'zap-pin-parent@example.com',
+      messageId: 'm-pin-parent',
+    });
+    await store.recordInvoiceAttempt({
+      id: 'inv-pin-note',
+      createdAt: new Date('2026-08-28T00:00:00.000Z'),
+      messageId: parentId,
+      payerAccountId: 'acc-pin-parent',
+      authorAccountId: 'acc-pin-parent',
+      amountSats: 21,
+      lightningAddress: null,
+      zapRequest: null,
+      result: 'ok',
+      httpStatus: 200,
+      pr: 'lnbc-pin-note',
+      paymentHash: 'f1'.repeat(32),
+      description: null,
+      descriptionHash: null,
+      isNip57Invoice: true,
+      lnurlResponse: null,
+      fiatPinned: true,
+      amountUsd: '5.00',
+      amountChf: null,
+      amountEur: '4.50',
+      amountPhp: null,
+    });
+    const querier = new RecordingQuerier();
+    querier.events = [
+      {
+        id: 'r-pin-note',
+        pubkey: PROVIDER_PUBKEY,
+        kind: 9735,
+        tags: [
+          ['e', NOTE_EVENT_ID],
+          ['bolt11', 'lnbc-pin-note'],
+        ],
+      },
+    ];
+    mockedDecode.mockReturnValue({ paymentHash: 'f1'.repeat(32), amountMsat: 21_000 });
+    const spotUrls: string[] = [];
+    const fetchImpl: FetchFn = async (input, init) => {
+      const url =
+        typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
+      if (url.includes('coinbase.com') || url.includes('frankfurter.app')) {
+        spotUrls.push(url);
+        return new Response('no', { status: 500 });
+      }
+      return lnurlFetch(PROVIDER_PUBKEY)(input, init);
+    };
+    await ingest({
+      store,
+      auth,
+      querier,
+      urls: URLS,
+      timeoutMs: 50,
+      now: () => 1,
+      fetchImpl,
+    });
+    const note = await store.getById(parentId);
+    expect(note?.sats).toBe(21);
+    expect(note?.amountUsd).toBe('5.00');
+    expect(note?.amountChf).toBeNull();
+    expect(note?.amountEur).toBe('4.50');
+    expect(note?.amountPhp).toBeNull();
+    expect(spotUrls).toEqual([]);
+  });
+
   it('does not reject ingest when gift-reply lookup throws on a remembered indexed receipt', async () => {
     let giftLookupBlows = false;
     class GiftLookupBoomStore extends InMemoryMessageStore {
@@ -9072,6 +9182,11 @@ describe('conversation zap ingest', () => {
       result: 'ok',
       httpStatus: 200,
       pr: 'lnbc-pn',
+      fiatPinned: true,
+      amountUsd: '5.00',
+      amountChf: '4.00',
+      amountEur: '4.50',
+      amountPhp: '280.00',
       paymentHash: 'ab'.repeat(32),
       description: null,
       descriptionHash: null,
@@ -9111,6 +9226,10 @@ describe('conversation zap ingest', () => {
     expect(rows[0]?.id).toBe(giftId);
     expect(rows[0]?.text).toBe('thanks');
     expect(rows[0]?.sats).toBe(21);
+    expect(rows[0]?.amountUsd).toBe('5.00');
+    expect(rows[0]?.amountChf).toBe('4.00');
+    expect(rows[0]?.amountEur).toBe('4.50');
+    expect(rows[0]?.amountPhp).toBe('280.00');
     expect(rows[0]?.nostrPublishState).toBe('pending');
   });
 
@@ -9188,6 +9307,7 @@ describe('conversation zap ingest', () => {
         now: () => Date.parse('2026-08-28T00:00:00.000Z'),
         fetchImpl: lnurlFetch(PROVIDER_PUBKEY),
         conversations,
+        fiatRates: new InMemoryFiatStore(),
       });
       warn.mockClear();
       await ingest({

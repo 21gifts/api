@@ -138,11 +138,11 @@ export function usdCentsToString(cents: number): string {
 /**
  * USD plus optional CHF/EUR/PHP strings stored at payment time.
  *
- * `usd` is always a two-decimal string. A missing cross is `null`, not `"0.00"`.
+ * `usd` is a two-decimal string, or `null` when nothing was stored. A missing cross is `null`, not `"0.00"`.
  */
 export interface FiatAmounts {
-  /** Already-normalized USD, two decimals (e.g. `"5.00"`). */
-  usd: string;
+  /** Already-normalized USD, two decimals (e.g. `"5.00"`), or `null` when none was stored. */
+  usd: string | null;
   /** CHF at the stored USD, or `null` when that cross is missing. */
   chf: string | null;
   /** EUR at the stored USD, or `null` when that cross is missing. */
@@ -195,6 +195,62 @@ export function normalizeAmountUsd(raw: string): string | null {
     return null;
   }
   return usdCentsToString(cents);
+}
+
+/** Two-decimal shown CHF/EUR/PHP. Not capped at the spend-worker USD ceiling. */
+function normalizeShownCross(raw: string): string | null {
+  const cents = centsFromAmount(raw);
+  if (cents === null || cents <= 0 || !Number.isSafeInteger(cents)) {
+    return null;
+  }
+  return usdCentsToString(cents);
+}
+
+/** Optional shown amounts on an invoice body. A missing key is not the same as null. */
+export interface ShownFiatBody {
+  amountUsd?: string | null | undefined;
+  amountChf?: string | null | undefined;
+  amountEur?: string | null | undefined;
+  amountPhp?: string | null | undefined;
+}
+
+/**
+ * Read the four amounts the payer was shown.
+ *
+ * No key present means the client did not pin a price. Any present key pins
+ * all four: a missing sibling is null, and a bad string is rejected.
+ *
+ * @param body - Parsed invoice fields.
+ * @returns Pinned snapshot, an unpinned marker, or `null` when a string is unusable.
+ */
+export function shownFiatFromBody(
+  body: ShownFiatBody,
+): { pinned: false } | { pinned: true; fiat: FiatAmounts } | null {
+  const pinned =
+    body.amountUsd !== undefined ||
+    body.amountChf !== undefined ||
+    body.amountEur !== undefined ||
+    body.amountPhp !== undefined;
+  if (!pinned) {
+    return { pinned: false };
+  }
+  const one = (value: string | null | undefined, usd: boolean): string | null | 'bad' => {
+    if (value === undefined || value === null) {
+      return null;
+    }
+    if (value === '0' || value === '0.0' || value === '0.00') {
+      return '0.00';
+    }
+    return (usd ? normalizeAmountUsd(value) : normalizeShownCross(value)) ?? 'bad';
+  };
+  const usd = one(body.amountUsd, true);
+  const chf = one(body.amountChf, false);
+  const eur = one(body.amountEur, false);
+  const php = one(body.amountPhp, false);
+  if (usd === 'bad' || chf === 'bad' || eur === 'bad' || php === 'bad') {
+    return null;
+  }
+  return { pinned: true, fiat: { usd, chf, eur, php } };
 }
 
 /**

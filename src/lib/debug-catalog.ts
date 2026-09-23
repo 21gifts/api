@@ -128,6 +128,11 @@ function serializeInvoice(row: MessageInvoiceAttempt): Record<string, unknown> {
     lnurlResponse: row.lnurlResponse,
     conversationId: row.conversationId ?? null,
     conversationMessageId: row.conversationMessageId ?? null,
+    fiatPinned: row.fiatPinned === true,
+    amountUsd: row.amountUsd ?? null,
+    amountChf: row.amountChf ?? null,
+    amountEur: row.amountEur ?? null,
+    amountPhp: row.amountPhp ?? null,
   };
 }
 
@@ -264,6 +269,7 @@ async function loadTable(deps: DebugCatalogDeps, table: DebugCatalogTable): Prom
               idx: index + 1,
               photoContentType: photo.contentType,
               bytes: photo.bytes.byteLength,
+              photoTakenAt: photo.takenAt ?? null,
             })),
           }),
         );

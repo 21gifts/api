@@ -127,8 +127,8 @@ export async function loadGrantEffective(
 /**
  * Rewrite expired trial → pending only while the row is still that trial.
  * Both stores use {@link FundingStore.expireTrialIfUnchanged} (InMemory
- * compares the map without yielding; Postgres `UPDATE … WHERE status='trial'
- * AND trial_utc_date`).
+ * compares the map without yielding; Postgres UPDATE … WHERE status='trial'
+ * AND trial_utc_date.
  *
  * @param store - Funding persistence.
  * @param grant - Expired trial from the first read.

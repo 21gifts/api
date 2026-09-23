@@ -43,7 +43,7 @@ verification payment requires an injected invoice payer; the default
 does not fetch or pay invoices.
 
 Spend-worker invoice routes: `GET /invoices/passkey` and `GET /invoices/posted`
-report those gates; `GET /invoices/eligible` reports `eligibleToday` (grant required from UTC 2026-09-25);
+report those gates; `GET /invoices/eligible` reports `{ eligible, status }` (`eligibleToday` plus `effectiveStatus`; grant required from UTC 2026-09-25);
 `POST /invoices` requires passkey, `eligibleToday` (grant required from UTC 2026-09-25), and a live
 **top-level** forum post, then fetches a BOLT11 via LNURL-pay;
 `POST /invoices/proof` accepts a preimage without re-checking the grant. Issue
@@ -183,7 +183,7 @@ Public base URLs used in examples:
 | GET    | `/messages/stats`                                    | none                       | Living forum notes and replies counted together, by UTC day                                               |
 | GET    | `/invoices/passkey`                                  | Bearer `SPEND_API_TOKEN`   | Whether a Lightning Address has a passkey-backed account                                                  |
 | GET    | `/invoices/posted`                                   | Bearer `SPEND_API_TOKEN`   | Whether a Lightning Address has a live top-level non-profile forum post                                   |
-| GET    | `/invoices/eligible`                                 | Bearer `SPEND_API_TOKEN`   | Whether the address is funding-eligible today                                                             |
+| GET    | `/invoices/eligible`                                 | Bearer `SPEND_API_TOKEN`   | Whether the address is funding-eligible today, plus effective grant `status`                              |
 | POST   | `/invoices`                                          | Bearer `SPEND_API_TOKEN`   | Fetch a recipient BOLT11 (LNURL-pay; passkey, funding grant, and forum post required)                     |
 | POST   | `/invoices/proof`                                    | Bearer `SPEND_API_TOKEN`   | Accept payment preimage as proof                                                                          |
 
@@ -1083,8 +1083,11 @@ Set or clear About me on the profile forum note. Body:
 ```
 
 `text` is required. `photo` is optional: omitted leaves a stored photo;
-JSON `null` clears it; `{ contentType, data }` is decoded with
+JSON `null` clears it and clears the stored capture time;
+`{ contentType, data, takenAt? }` is decoded with
 `decodeForumPhoto` (same JPEG/PNG/WebP under 1 MiB as `POST /messages`).
+Optional `takenAt` follows the same civil-time rule as `POST /messages`
+(invalid or missing is stored null and does not 400).
 
 Missing/invalid bearer → **Response** `401` `{ "error": "Unauthorized" }`.
 
@@ -1095,7 +1098,7 @@ Body is not JSON with a `text` string → **Response** `400`:
 ```
 
 `text` is a string but `photo` is present and neither `null` nor
-`{ contentType, data }`, or decode fails → **Response** `400`:
+`{ contentType, data, takenAt? }`, or decode fails → **Response** `400`:
 
 ```json
 { "error": "Photo must be a JPEG, PNG, or WebP under 1 MiB" }
@@ -1949,7 +1952,12 @@ Success → **Response** `200`:
       "isNip57Invoice": true,
       "lnurlResponse": { "pr": "lnbc21n1...", "status": "OK" },
       "conversationId": null,
-      "conversationMessageId": null
+      "conversationMessageId": null,
+      "fiatPinned": false,
+      "amountUsd": null,
+      "amountChf": null,
+      "amountEur": null,
+      "amountPhp": null
     }
   ]
 }
@@ -1958,7 +1966,8 @@ Success → **Response** `200`:
 `lnurlResponse` is the raw LNURL callback JSON object, or `null` when none
 was stored. Rows are newest-first, capped at **200**. Never includes nsec.
 `serializeInvoice` includes `conversationId` and `conversationMessageId`
-(`null` on forum invoices).
+(`null` on forum invoices), plus `fiatPinned` and `amountUsd`, `amountChf`,
+`amountEur`, and `amountPhp` (`null` when unset).
 `result` is one of `ok`, `noZap`, `not_zap`, `unreachable`, `no_event`,
 `no_author`, `no_key`,
 `sign_failed`, `rate_limited`, `bad_body`, `not_found`. `isNip57Invoice` is
@@ -2607,13 +2616,15 @@ Spend-worker funding-grant check. Query `address=name@domain.tld`. Same
 Success is always **200** (never 404 for an unknown address):
 
 ```json
-{ "eligible": true }
+{ "eligible": true, "status": "admitted" }
 ```
 
-or `{ "eligible": false }` when there is no account for the address or the
-role is `basis`. Until UTC 2026-09-25 a missing/pending/rejected grant on a
-non-`basis` account is `{ "eligible": true }`; from that day it is false
-unless admitted or trial-today.
+`status` is `effectiveStatus`: `none`, `pending`, `trial`, `admitted`, or
+`rejected`. Unknown address and `basis` are always
+`{ "eligible": false, "status": "none" }` with no grant lookup. Until UTC
+2026-09-25 a missing/pending/rejected grant on a non-`basis` account is
+`eligible: true` with `status` still from `effectiveStatus`; from that day
+`eligible` is false unless admitted or trial-today.
 
 ### `GET /invoices/posted`
 
@@ -2839,7 +2850,10 @@ unset/null/0),
 `payable` (true when the note has a non-empty signed `eventId` and the author
 has a non-blank Lightning Address; null or empty `eventId` is not payable),
 `hasPhoto` (photo 0 exists), `photoCount` (integer 0–10 = photo 0
-plus extras 1–9; always present), `hasVideo`, `videoContentType` (`null` when
+plus extras 1–9; always present), `photoTakenAts` (always present, length
+equals `photoCount`, null when unknown, `[]` when there are no stills) and
+`photoTakenAt` only when `photoCount` is 1 (equals `photoTakenAts[0]`, null
+allowed), `hasVideo`, `videoContentType` (`null` when
 `hasVideo` is false), live `role` (the author's current `account.role`, or
 `"basis"` if the author is missing; omitted for external authors), and
 `replyCount` of live attributed children (`parent_id` match, `deleted_at`
@@ -2909,6 +2923,7 @@ Success → **Response** `200`:
       "payable": false,
       "hasPhoto": false,
       "photoCount": 0,
+      "photoTakenAts": [],
       "hasVideo": false,
       "videoContentType": null,
       "role": "basis",
@@ -3073,9 +3088,12 @@ No platform account, missing or soft-hidden profile note, or store failure → *
 
 Post to the public member forum. Bearer session required. JSON body (not
 multipart) with text and/or one photo, optional `photos` (array, max 10,
-each `{ contentType, data }` same shape as singular `photo`), an
+each `{ contentType, data, takenAt? }` same shape as singular `photo`), an
 optional parent UUID, and optional `goalSats` (positive integer 1..10_000_000
-on a top-level note only):
+on a top-level note only). Optional `takenAt` is `YYYY-MM-DDTHH:MM:SS` with an optional `±HH:MM`
+offset, a real calendar date, and a year from 1990 through the current UTC
+year + 1. `Z`, a fractional second, a leap second, a non-string, or a missing
+value is stored null and does not return 400:
 
 Top-level with a goal:
 
@@ -3083,11 +3101,15 @@ Top-level with a goal:
 {
   "text": "…",
   "goalSats": 21000,
-  "photo": { "contentType": "image/jpeg", "data": "<base64>" }
+  "photo": {
+    "contentType": "image/jpeg",
+    "data": "<base64>",
+    "takenAt": "2026-09-22T11:40:00+08:00"
+  }
 }
 ```
 
-Reply (no `goalSats`; a positive `goalSats` with `inReplyTo` is 400):
+Reply (no `goalSats`; a positive `goalSats` with `inReplyTo` is 400). `takenAt` may be omitted:
 
 ```json
 {
@@ -3130,7 +3152,9 @@ top-level notes), and a timestamp. Text longer than **500** after trim, or
 with disallowed C0/DEL controls, is rejected. Newlines (`\n`, `\r`) are
 allowed. The **200** body is the public message object itself (not wrapped
 in `{ messages }`), including `sats`, `payable`, `hasPhoto`, `photoCount`
-(0–10; always present; `hasPhoto` still means photo 0 exists), `hasVideo`, and
+(0–10; always present; `hasPhoto` still means photo 0 exists), `photoTakenAts`
+(always; length equals `photoCount`; null when unknown; `[]` when there are no
+stills) and `photoTakenAt` only when `photoCount` is 1, `hasVideo`, and
 `videoContentType`. May include `goalSats` (positive integer on a top-level
 note; omitted when unset). May include `accountId` (21gifts author id). No
 `replyCount`, and no photo or video bytes in the JSON. `sats` is 0 and
@@ -3252,6 +3276,7 @@ Success → **Response** `200`:
   "payable": false,
   "hasPhoto": false,
   "photoCount": 0,
+  "photoTakenAts": [],
   "hasVideo": false,
   "videoContentType": null,
   "role": "verified"
@@ -3261,8 +3286,9 @@ Success → **Response** `200`:
 ### `POST /messages/:id/invoice`
 
 Signed-in pay-on-note. Bearer session required. `:id` is a UUID (`MESSAGE_ID_RE`).
-Body `{ "sats": <int 1..10_000_000>, "text"?: "<string>" }`. Optional `text` is the
+Body `{ "sats": <int 1..10_000_000>, "text"?: "<string>", "amountUsd"?: "<string>|null", "amountChf"?: "<string>|null", "amountEur"?: "<string>|null", "amountPhp"?: "<string>|null" }`. Optional `text` is the
 NIP-57 zap-request `content` (same 1–500 forum rules; omit or whitespace = gift-only).
+Omitting every amount key leaves the invoice unpinned. Any present amount key pins all four; a missing sibling is null. `"0"`, `"0.0"`, and `"0.00"` are stored as `"0.00"`. An unusable amount string is **400** `{ "error": "Expected a JSON body with a positive \"sats\" integer" }`.
 Invalid `text` → **400** `{ "error": "Text must be 1–500 characters" }`.
 The api signs a NIP-57 zap request with the
 **payer** key and returns a BOLT11 invoice for the **author** Lightning Address
@@ -3428,7 +3454,9 @@ Public (Bearer optional). Lists **direct live attributed replies**
 `:id` oldest-first (`createdAt` then `id` ascending), capped at **200**. Rows
 with no account and no recorded-zapper pubkey are omitted. Each item is the
 public message JSON (`photoCount` 0–10 always present;
-`hasPhoto` still means photo 0 exists) with
+`photoTakenAts` the same length, null when unknown, `[]` when there are no
+stills; `photoTakenAt` only when `photoCount` is 1; `hasPhoto` still means
+photo 0 exists) with
 `payable` when a member row has a non-empty `eventId` and a non-blank
 Lightning Address, and no `replyCount`. Unauthenticated items omit
 `accountId`; signed-in member replies include `accountId`. External replies
@@ -3470,6 +3498,7 @@ Success → **Response** `200`:
       "payable": false,
       "hasPhoto": false,
       "photoCount": 0,
+      "photoTakenAts": [],
       "hasVideo": false,
       "videoContentType": null,
       "role": "basis"
@@ -3527,7 +3556,9 @@ Registered **after** photo, video, `GET /messages/:id/replies`,
 those paths are not captured as `:id`. A live GET returns
 the public message JSON (`sats`, optional `goalSats` on a top-level note
 when the stored ask is a positive integer, `payable`, `hasPhoto`, `photoCount`
-(0–10; always present; `hasPhoto` still means photo 0 exists), `hasVideo`,
+(0–10; always present; `hasPhoto` still means photo 0 exists), `photoTakenAts`
+(always; length equals `photoCount`; null when unknown; `[]` when there are no
+stills) and `photoTakenAt` only when `photoCount` is 1, `hasVideo`,
 `videoContentType`; live `role` for 21gifts authors) and omits
 `accountId`, `deletedAt`, and `deletedBy`. Unsigned and non-staff GET of a
 soft-hidden row is still **404** `{ "error": "Not found" }` with no hide
@@ -3592,6 +3623,7 @@ Success (including `sinceSats` timeout with unchanged sats) → **Response**
   "payable": false,
   "hasPhoto": false,
   "photoCount": 0,
+  "photoTakenAts": [],
   "hasVideo": false,
   "videoContentType": null,
   "role": "basis",
@@ -3688,6 +3720,8 @@ desc, then `id` desc), capped at **200**. JSON `{ "messages": [ … ] }`
 via `serializeHiddenMessage`. Each item includes stored `name` (no
 empty-name pubkey fallback), ISO `createdAt` / `deletedAt`, `hasPhoto` /
 `photoCount` (0–10; always present; `hasPhoto` still means photo 0 exists) /
+`photoTakenAts` (always; length equals `photoCount`; null when unknown; `[]`
+when there are no stills) and `photoTakenAt` only when `photoCount` is 1 /
 `hasVideo` / `videoContentType`, optional `goalSats` (positive integer on a
 top-level note; omitted when unset/null/0 or on a reply), always-present `parentId` (JSON `null`
 on top-level), optional `via: "nostr"` exactly when `accountId === null &&
@@ -3733,6 +3767,7 @@ Success (including an empty list) → **Response** `200`:
       "sats": 0,
       "hasPhoto": false,
       "photoCount": 0,
+      "photoTakenAts": [],
       "hasVideo": false,
       "videoContentType": null,
       "parentId": null,
@@ -4012,8 +4047,8 @@ and 401/404/503 JSON as photo 0.
 
 ### `POST /conversations/:id`
 
-Bearer session required. Body `{ "text"?: "…", "photo"?: { "contentType", "data" }, "photos"?: [{ "contentType", "data" }] }`
-(at most 10 stills; non-empty `photos` wins over singular `photo`). Text 1–500 via
+Bearer session required. Body `{ "text"?: "…", "photo"?: { "contentType", "data", "takenAt?" }, "photos"?: [{ "contentType", "data", "takenAt?" }] }`
+(at most 10 stills; non-empty `photos` wins over singular `photo`). Optional `takenAt` follows the same civil-time rule as `POST /messages` (invalid or missing is stored null and does not 400). Conversation JSON does not return it. Text 1–500 via
 `normalizeForumText`. Empty text is allowed on every kind when a still is present.
 Photo-bearing rows persist `nostrPublishState` skipped (never Nostr); text-only
 Direct/Contact/Damus stay `pending`. Moderator replies on a
@@ -4060,8 +4095,8 @@ into Notification rows.
 
 ### `POST /conversations/:id/invoice`
 
-Bearer session required. Body `{ "sats": <int 1..10_000_000>, "text"?: "<string>" }`.
-Optional `text` is the NIP-57 comment (empty = gift-only). Issues a BOLT11
+Bearer session required. Body `{ "sats": <int 1..10_000_000>, "text"?: "<string>", "amountUsd"?: "<string>|null", "amountChf"?: "<string>|null", "amountEur"?: "<string>|null", "amountPhp"?: "<string>|null" }`.
+Optional `text` is the NIP-57 comment (empty = gift-only). Omitting every amount key leaves the invoice unpinned. Any present amount key pins all four; a missing sibling is null. `"0"`, `"0.0"`, and `"0.00"` are stored as `"0.00"`. An unusable amount string is **400** `{ "error": "Expected a JSON body with a positive \"sats\" integer" }`. Issues a BOLT11
 against the counterpart's Lightning Address using their profile-note event
 id as the zap `e` tag. The conversation row is **not** inserted until the
 zap receipt is ingested.
