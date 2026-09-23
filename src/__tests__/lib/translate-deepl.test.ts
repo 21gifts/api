@@ -87,6 +87,18 @@ describe('translateViaDeepl', () => {
     }
   });
 
+  it('uses globalThis.fetch when fetchImpl is omitted', async () => {
+    const spy = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValue(jsonResponse({ translations: [{ text: 'Hello, World' }] }));
+    try {
+      await expect(translateViaDeepl(UPSTREAM, SOURCE, 'en')).resolves.toBe('Hello, World');
+      expect(spy).toHaveBeenCalledTimes(1);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
   it('throws TranslateUpstreamError when fetch throws', async () => {
     const fetchImpl: FetchFn = async () => {
       throw new Error('network down');
@@ -152,14 +164,5 @@ describe('translateViaDeepl', () => {
     const rejected = expect(pending).rejects.toBeInstanceOf(TranslateUpstreamError);
     await vi.advanceTimersByTimeAsync(TRANSLATE_UPSTREAM_TIMEOUT_MS);
     await rejected;
-  });
-
-  it('maps a thrown fetch error to TranslateUpstreamError', async () => {
-    const fetchImpl: FetchFn = async () => {
-      throw new Error('network down');
-    };
-    await expect(translateViaDeepl(UPSTREAM, SOURCE, 'en', fetchImpl)).rejects.toBeInstanceOf(
-      TranslateUpstreamError,
-    );
   });
 });
