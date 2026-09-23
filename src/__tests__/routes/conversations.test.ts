@@ -1787,13 +1787,14 @@ describe('POST /conversations/:id', () => {
       method: 'POST',
       headers: { ...AUTH, 'content-type': 'application/json' },
       body: JSON.stringify({
+        text: 'other',
         photo: { contentType: 'image/jpeg', data: JPEG_B64, takenAt: 'not-a-time' },
       }),
     });
     expect(invalid.status).toBe(200);
     const again = await conversations.listMessages(thread.id, 10);
-    const latest = again[again.length - 1];
-    expect((await conversations.getPhoto(latest!.id))?.takenAt).toBeUndefined();
+    const other = again.find((row) => row.text === 'other');
+    expect((await conversations.getPhoto(other!.id))?.takenAt).toBeUndefined();
   });
 
   it('returns 200 hasPhoto true when a member_platform thread includes a photo', async () => {
