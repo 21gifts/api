@@ -82,7 +82,7 @@ function paymentHashAndAmount(sections: Bolt11Section[]): DecodedBolt11 | null {
     return null;
   }
   const amountMsat = Number(amountSection.value);
-  if (!Number.isInteger(amountMsat) || amountMsat <= 0) {
+  if (!Number.isSafeInteger(amountMsat) || amountMsat <= 0) {
     return null;
   }
   return { paymentHash, amountMsat };

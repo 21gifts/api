@@ -63,6 +63,13 @@ async function lookupPayAccount(
       return { ok: false, status: 502, error: 'Lightning Address could not be resolved' };
     }
     const metadata = resolved.metadata;
+    if (
+      !Number.isSafeInteger(metadata.minSendable) ||
+      !Number.isSafeInteger(metadata.maxSendable)
+    ) {
+      logEvent('pay.unreachable', { username });
+      return { ok: false, status: 502, error: 'Lightning Address could not be resolved' };
+    }
     const minSats = Math.max(1, Math.ceil(metadata.minSendable / 1000));
     const maxSats = Math.floor(metadata.maxSendable / 1000);
     if (maxSats < minSats) {
