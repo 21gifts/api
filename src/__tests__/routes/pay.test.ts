@@ -347,16 +347,15 @@ describe('POST /pay/:username/invoice', () => {
   });
 
   it('returns 502 when the provider window is not a safe integer', async () => {
-    const unsafe = Number.MAX_SAFE_INTEGER + 2;
-    const minUnsafe = await seededApp({ minSendable: unsafe, maxSendable: unsafe });
+    const unsafeMin = Number.MAX_SAFE_INTEGER + 2;
+    const wideUnsafeMax = 1e16;
+    const minUnsafe = await seededApp({ minSendable: unsafeMin, maxSendable: wideUnsafeMax });
     const minRes = await minUnsafe.app.request('/pay/ada');
     expect(minRes.status).toBe(502);
     expect(await minRes.json()).toEqual({ error: 'Lightning Address could not be resolved' });
+    expect(minUnsafe.urls).toEqual([WELL_KNOWN_URL]);
 
-    const maxUnsafe = await seededApp({
-      minSendable: 1000,
-      maxSendable: unsafe,
-    });
+    const maxUnsafe = await seededApp({ minSendable: 1000, maxSendable: wideUnsafeMax });
     const maxRes = await maxUnsafe.app.request('/pay/ada/invoice', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
@@ -364,6 +363,7 @@ describe('POST /pay/:username/invoice', () => {
     });
     expect(maxRes.status).toBe(502);
     expect(await maxRes.json()).toEqual({ error: 'Lightning Address could not be resolved' });
+    expect(maxUnsafe.urls).toEqual([WELL_KNOWN_URL]);
   });
 
   it('returns 502 when the BOLT11 amount is not the requested amount', async () => {
