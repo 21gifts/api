@@ -224,6 +224,8 @@ export interface MessagesRouteDeps {
   /**
    * Optional spend ping. After a new top-level persist with a Lightning
    * Address, the route awaits `ping(address, created.id)` only when
+   * `eligibleToday`, and `ping(address, created.id, 'welcome')` when
+   * `role === 'verified'` and the row has media, independent of
    * `eligibleToday`. Omitted → skip. Failures are logged and do not fail
    * the 200.
    */
@@ -618,6 +620,18 @@ async function persistForumPost(
         }
       } catch {
         logEvent('spend.ping.failed');
+      }
+      if (
+        (created.hasPhoto === true ||
+          created.hasVideo === true ||
+          Number(created.photoCount) > 0) &&
+        account.role === 'verified'
+      ) {
+        try {
+          await deps.spendPing.ping(account.lightningAddress, created.id, 'welcome');
+        } catch {
+          logEvent('spend.ping.failed');
+        }
       }
     }
     if (!isReplay && parentId !== null) {

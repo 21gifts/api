@@ -8,7 +8,7 @@
 > paths, JSON fields, or status codes**. When a journey has no route in
 > `SPEC.md`, say so and stop.
 
-**Status**: living document. Last revised 2026-09-20.
+**Status**: living document. Last revised 2026-09-23.
 
 ---
 
@@ -210,7 +210,10 @@ a **new top-level** persist pings spend (`POST {SPEND_URL}/ping` with
 `{ address, messageId }` and Bearer `SPEND_API_TOKEN`) only when the author
 is funding-eligible today and the new row has media (`hasPhoto` /
 `hasVideo` / `photoCount > 0`); otherwise log `spend.ping.skipped` /
-`not_eligible` or `no_media` and still 200; replies and media replay do
+`not_eligible` or `no_media` and still 200; a **new** top-level media post
+from `role === 'verified'` also pings `{ address, messageId, kind: "welcome" }`
+independent of `eligibleToday` (Spend pays once lifetime; this API may ping
+again; replies / text-only / moderator / founder do not welcome-ping); replies and media replay do
 not ping; unset/blank env skips the ping and still returns 200;
 the public thread is listed via `GET /messages` (requires rules; newest first, optional `hashtag` query (name without `#`; token filter on `text`), name
 snapshotted at post, `sats`, `payable`, `hasPhoto`, and live author `role`

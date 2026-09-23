@@ -182,4 +182,32 @@ describe('HttpSpendPing', () => {
       parsedEvents(warn).some((e) => e['event'] === 'spend.ping.ok' && e['address'] === ADDRESS),
     ).toBe(true);
   });
+
+  it('POSTs JSON { address, messageId, kind: "welcome" } with messageId', async () => {
+    let seenInit: RequestInit | undefined;
+    const fetchImpl: FetchFn = async (_input, init) => {
+      seenInit = init;
+      return new Response(null, { status: 200 });
+    };
+    await new HttpSpendPing({ spendUrl: SPEND_URL, token: TOKEN, fetchImpl }).ping(
+      ADDRESS,
+      MESSAGE_ID,
+      'welcome',
+    );
+    expect(seenInit?.method).toBe('POST');
+    expect(new Headers(seenInit?.headers).get('Authorization')).toBe(`Bearer ${TOKEN}`);
+    expect(new Headers(seenInit?.headers).get('Content-Type')).toBe('application/json');
+    expect(seenInit?.body).toBe(
+      JSON.stringify({
+        address: ADDRESS,
+        messageId: MESSAGE_ID,
+        kind: 'welcome',
+      }),
+    );
+    expect(String(seenInit?.body)).toContain('messageId');
+    expect(String(seenInit?.body)).toContain('"kind":"welcome"');
+    expect(
+      parsedEvents(warn).some((e) => e['event'] === 'spend.ping.ok' && e['address'] === ADDRESS),
+    ).toBe(true);
+  });
 });

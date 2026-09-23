@@ -2743,6 +2743,172 @@ describe('POST /messages', () => {
     expect(spendPing.ping).toHaveBeenCalledWith('ada@walletofsatoshi.com', created.id);
   });
 
+  it('pings spend daily and welcome on a verified top-level JPEG', async () => {
+    const spendPing = {
+      ping: vi.fn(async (_address: string, _messageId: string, _kind?: string) => undefined),
+    };
+    const res = await mount(await namedStore('Ada'), new InMemoryMessageStore(), {
+      spendPing,
+    }).request('/messages', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({
+        text: 'hello',
+        photo: { contentType: 'image/jpeg', data: JPEG_B64 },
+      }),
+    });
+    expect(res.status).toBe(200);
+    const created = (await res.json()) as { id: string };
+    expect(spendPing.ping).toHaveBeenCalledTimes(2);
+    expect(spendPing.ping).toHaveBeenCalledWith('ada@walletofsatoshi.com', created.id);
+    expect(spendPing.ping).toHaveBeenCalledWith('ada@walletofsatoshi.com', created.id, 'welcome');
+  });
+
+  it('does not welcome-ping spend on a verified text-only post', async () => {
+    const spendPing = {
+      ping: vi.fn(async (_address: string, _messageId: string, _kind?: string) => undefined),
+    };
+    const res = await mount(await namedStore('Ada'), new InMemoryMessageStore(), {
+      spendPing,
+    }).request('/messages', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ text: 'hello' }),
+    });
+    expect(res.status).toBe(200);
+    expect(spendPing.ping).not.toHaveBeenCalled();
+    expect(spendPing.ping).not.toHaveBeenCalledWith(
+      'ada@walletofsatoshi.com',
+      expect.anything(),
+      'welcome',
+    );
+  });
+
+  it('does not welcome-ping spend on a verified reply', async () => {
+    const spendPing = {
+      ping: vi.fn(async (_address: string, _messageId: string, _kind?: string) => undefined),
+    };
+    const messageStore = new InMemoryMessageStore();
+    const parentId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+    await messageStore.create({
+      id: parentId,
+      accountId: 'parent',
+      name: 'Pat',
+      text: 'parent',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      hasVideo: false,
+      videoContentType: null,
+      ...unsignedNostrDefaults(),
+    });
+    const res = await mount(await namedStore('Ada'), messageStore, { spendPing }).request(
+      '/messages',
+      {
+        method: 'POST',
+        headers: { ...AUTH, 'content-type': 'application/json' },
+        body: JSON.stringify({
+          text: 'child',
+          inReplyTo: parentId,
+          photo: { contentType: 'image/jpeg', data: JPEG_B64 },
+        }),
+      },
+    );
+    expect(res.status).toBe(200);
+    expect(spendPing.ping).not.toHaveBeenCalled();
+    expect(spendPing.ping).not.toHaveBeenCalledWith(
+      'ada@walletofsatoshi.com',
+      expect.anything(),
+      'welcome',
+    );
+  });
+
+  it('does not welcome-ping spend on a founder top-level JPEG', async () => {
+    const spendPing = {
+      ping: vi.fn(async (_address: string, _messageId: string, _kind?: string) => undefined),
+    };
+    const auth = await namedStore('Ada');
+    const existing = await auth.getAccount('acc');
+    expect(existing).toBeDefined();
+    if (existing === undefined) {
+      throw new Error('expected account');
+    }
+    await auth.updateAccount({ ...existing, role: 'founder' });
+    const res = await mount(auth, new InMemoryMessageStore(), {
+      spendPing,
+      fundingStore: admittedFunding(),
+    }).request('/messages', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({
+        text: 'hello',
+        photo: { contentType: 'image/jpeg', data: JPEG_B64 },
+      }),
+    });
+    expect(res.status).toBe(200);
+    const created = (await res.json()) as { id: string };
+    expect(spendPing.ping).toHaveBeenCalledTimes(1);
+    expect(spendPing.ping).toHaveBeenCalledWith('ada@walletofsatoshi.com', created.id);
+    expect(spendPing.ping).not.toHaveBeenCalledWith(
+      'ada@walletofsatoshi.com',
+      created.id,
+      'welcome',
+    );
+  });
+
+  it('welcome-pings spend when a verified poster is not funding-eligible', async () => {
+    const spendPing = {
+      ping: vi.fn(async (_address: string, _messageId: string, _kind?: string) => undefined),
+    };
+    const gateNow = Date.parse('2026-09-25T12:00:00.000Z');
+    const auth = await namedStore('Ada');
+    await auth.createSession({ token: 'tok', accountId: 'acc', createdAt: gateNow });
+    const res = await mount(auth, new InMemoryMessageStore(), {
+      spendPing,
+      now: () => gateNow,
+    }).request('/messages', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({
+        text: 'hello',
+        photo: { contentType: 'image/jpeg', data: JPEG_B64 },
+      }),
+    });
+    expect(res.status).toBe(200);
+    const created = (await res.json()) as { id: string };
+    expect(spendPing.ping).toHaveBeenCalledTimes(1);
+    expect(spendPing.ping).toHaveBeenCalledWith('ada@walletofsatoshi.com', created.id, 'welcome');
+    expect(spendPing.ping).not.toHaveBeenCalledWith('ada@walletofsatoshi.com', created.id);
+    expect(
+      parsedEvents(warn).some(
+        (e) => e['event'] === 'spend.ping.skipped' && e['reason'] === 'not_eligible',
+      ),
+    ).toBe(true);
+  });
+
+  it('still welcome-pings when the daily spend ping throws', async () => {
+    const spendPing = {
+      ping: vi.fn(async (_address: string, _messageId: string, _kind?: string) => {
+        throw new Error('ping boom');
+      }),
+    };
+    const res = await mount(await namedStore('Ada'), new InMemoryMessageStore(), {
+      spendPing,
+    }).request('/messages', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({
+        text: 'hello',
+        photo: { contentType: 'image/jpeg', data: JPEG_B64 },
+      }),
+    });
+    expect(res.status).toBe(200);
+    const created = (await res.json()) as { id: string };
+    expect(spendPing.ping).toHaveBeenCalledTimes(2);
+    expect(spendPing.ping).toHaveBeenCalledWith('ada@walletofsatoshi.com', created.id);
+    expect(spendPing.ping).toHaveBeenCalledWith('ada@walletofsatoshi.com', created.id, 'welcome');
+    expect(parsedEvents(warn).some((e) => e['event'] === 'spend.ping.failed')).toBe(true);
+  });
+
   it('returns 503 when findLiveByAccountContent throws', async () => {
     const base = new InMemoryMessageStore();
     const store: MessageStore = {
