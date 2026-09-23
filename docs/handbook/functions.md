@@ -1033,6 +1033,20 @@
 - **Returns / side effects:** `{ ok: true, value: ForumPlace | null }` or `{ ok: false, error }` where error is `Place must be a latitude and longitude` (missing/non-numeric/NaN/Infinity/out of range, or a non-string label) or `Place label must be at most 80 characters` (trimmed length > 80, or any charCode < 32 or === 127). No I/O.
 - **Used by:** `POST /messages`.
 
+## Function: parseMultipartCoord
+
+- **Purpose:** Read one multipart coordinate. Blank or missing is no coordinate. A value that is not an explicit decimal is invalid, so whitespace cannot become a pin at zero.
+- **Inputs:** `raw` unknown from a multipart field (`placeLat` or `placeLng`).
+- **Returns / side effects:** `'missing'`, `'invalid'`, or a finite number. No I/O.
+- **Used by:** `POST /messages` multipart parsing, then `normalizePlace`.
+
+## Function: placesMatch
+
+- **Purpose:** Compare two optional pins. Both absent matches. One absent does not. Otherwise latitude, longitude, and label must all be equal.
+- **Inputs:** Two `ForumPlace | null` values.
+- **Returns / side effects:** `true` when the pins are the same, otherwise `false`. No I/O.
+- **Used by:** `POST /messages` and `MessageStore.create`, which reject a repeated live photo when the pin differs.
+
 ## Function: detectImageContentType
 
 - **Purpose:** Detect JPEG / PNG / WebP from magic bytes for forum photo storage.

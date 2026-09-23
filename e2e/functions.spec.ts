@@ -2080,3 +2080,85 @@ test('Function: normalizePlace — POST /messages stores a pin and GET /messages
     ),
   ).toBe(true);
 });
+
+async function verifiedPinSession(
+  request: APIRequestContext,
+  stamp: string,
+): Promise<{ authorization: string }> {
+  const adaName = `E2ePin${stamp}`;
+  const provision = await request.post('/debug/accounts', {
+    headers: DEBUG,
+    data: {
+      accounts: [
+        {
+          name: adaName,
+          lightningAddress: `e2e-pin-${stamp}@walletofsatoshi.com`,
+        },
+      ],
+    },
+  });
+  expect(provision.status()).toBe(200);
+  const listed = await request.get('/debug/accounts', { headers: DEBUG });
+  expect(listed.status()).toBe(200);
+  const accounts = ((await listed.json()) as { accounts: Array<{ id: string; name: string }> })
+    .accounts;
+  const ada = accounts.find((row) => row.name === adaName);
+  expect(ada).toBeDefined();
+  const session = await request.post(`/debug/accounts/${ada?.id}/session`, { headers: DEBUG });
+  expect(session.status()).toBe(200);
+  const token = ((await session.json()) as { token: string }).token;
+  const auth = { authorization: `Bearer ${token}` };
+  const agreed = await request.post('/me/rules-agreement', { headers: auth });
+  expect(agreed.status()).toBe(200);
+  const promoted = await request.patch(`/debug/accounts/${ada!.id}`, {
+    headers: DEBUG,
+    data: { role: 'verified' },
+  });
+  expect(promoted.status()).toBe(200);
+  return auth;
+}
+
+test('Function: placesMatch — a repeated photo with a different pin is 409', async ({
+  request,
+}) => {
+  const stamp = `${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
+  const auth = await verifiedPinSession(request, stamp);
+  const photo = { contentType: 'image/jpeg', data: '/9j/2Q==' };
+  const first = await request.post('/messages', {
+    headers: { ...auth, 'content-type': 'application/json' },
+    data: { text: 'same caption', photo },
+  });
+  expect(first.status()).toBe(200);
+  const firstId = ((await first.json()) as { id: string }).id;
+  const again = await request.post('/messages', {
+    headers: { ...auth, 'content-type': 'application/json' },
+    data: { text: 'same caption', photo },
+  });
+  expect(again.status()).toBe(200);
+  expect(((await again.json()) as { id: string }).id).toBe(firstId);
+  const moved = await request.post('/messages', {
+    headers: { ...auth, 'content-type': 'application/json' },
+    data: { text: 'same caption', photo, place: { lat: 47.3, lng: 8.5, label: 'Stall' } },
+  });
+  expect(moved.status()).toBe(409);
+  expect(await moved.json()).toEqual({ error: 'A live note with this media already exists' });
+});
+
+test('Function: parseMultipartCoord — blank coordinates are no pin and a word is rejected', async ({
+  request,
+}) => {
+  const stamp = `${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
+  const auth = await verifiedPinSession(request, stamp);
+  const blank = await request.post('/messages', {
+    headers: auth,
+    multipart: { text: 'pin', placeLat: ' ', placeLng: ' ' },
+  });
+  expect(blank.status()).toBe(200);
+  expect(await blank.json()).not.toHaveProperty('place');
+  const bad = await request.post('/messages', {
+    headers: auth,
+    multipart: { text: 'pin', placeLat: 'north', placeLng: '8.5' },
+  });
+  expect(bad.status()).toBe(400);
+  expect(await bad.json()).toEqual({ error: 'Place must be a latitude and longitude' });
+});
