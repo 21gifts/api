@@ -59,6 +59,7 @@ api/
 │   │   ├── invoices.ts       # GET /invoices/passkey, GET /invoices/eligible, GET /invoices/posted, POST /invoices, POST /invoices/proof (spend worker)
 │   │   ├── messages.ts       # GET/POST /messages, GET /messages/compose-target, public GET /messages/:id, GET /messages/hidden (session, not DEBUG_TOKEN), DELETE /messages/:id, GET /messages/:id/replies, GET /messages/:id/photo, GET /messages/:id/video.*, POST /messages/:id/invoice
 │   │   ├── well-known.ts     # GET /.well-known/nostr.json (NIP-05); GET /.well-known/lnurlp/:username (LUD-16)
+│   │   ├── pay.ts            # GET /pay/:username; POST /pay/:username/invoice
 │   │   ├── contact.ts        # POST /contact (private mailbox + platform thread)
 │   │   ├── pos.ts            # GET/POST/DELETE /pos (one exact sat amount on the Lightning address)
 │   │   ├── conversations.ts  # GET/POST /conversations, GET /conversations/moderator-group, GET/POST /conversations/:id, POST /conversations/:id/read, POST /conversations/:id/invoice, GET /conversations/:id/messages/:messageId/photo, GET /conversations/:id/messages/:messageId/photo/:file
@@ -244,6 +245,7 @@ api/
 │           ├── invoices.test.ts
 │           ├── messages.test.ts
 │           ├── well-known.test.ts
+│           ├── pay.test.ts
 │           ├── contact.test.ts
 │           ├── pos.test.ts
 │           ├── conversations.test.ts

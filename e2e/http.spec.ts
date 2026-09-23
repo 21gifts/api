@@ -335,6 +335,18 @@ test('GET /.well-known/lnurlp/:username is 404 when unknown', async ({ request }
   expect(res.status()).toBe(404);
 });
 
+test('GET /pay/:username is 404 when unknown', async ({ request }) => {
+  const res = await request.get('/pay/:username');
+  expect(res.status()).toBe(404);
+});
+
+test('POST /pay/:username/invoice is 404 when unknown', async ({ request }) => {
+  const res = await request.post('/pay/:username/invoice', {
+    data: { amountSats: 1 },
+  });
+  expect(res.status()).toBe(404);
+});
+
 test('POST /me/name without bearer is 401', async ({ request }) => {
   const res = await request.post('/me/name', {
     data: { name: 'Ada' },

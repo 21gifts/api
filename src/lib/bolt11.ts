@@ -82,7 +82,7 @@ function paymentHashAndAmount(sections: Bolt11Section[]): DecodedBolt11 | null {
     return null;
   }
   const amountMsat = Number(amountSection.value);
-  if (!Number.isInteger(amountMsat) || amountMsat <= 0) {
+  if (!Number.isSafeInteger(amountMsat) || amountMsat <= 0) {
     return null;
   }
   return { paymentHash, amountMsat };
@@ -91,8 +91,9 @@ function paymentHashAndAmount(sections: Bolt11Section[]): DecodedBolt11 | null {
 /**
  * Decode a BOLT11 payment request into payment hash and amount.
  *
- * Zero-amount invoices and malformed strings yield `null`. The caller maps
- * that to a 502 so provider failures stay collapsed.
+ * Zero-amount invoices, amounts that are not safe integers, and malformed
+ * strings yield `null`. The caller maps that to a 502 so provider failures
+ * stay collapsed.
  *
  * @param pr - BOLT11 string from the LNURL-pay callback.
  * @param decodeImpl - Optional decoder (tests inject a fake; production uses the library).
@@ -112,7 +113,8 @@ export function decodeBolt11(
 /**
  * Inspect a BOLT11 for payment hash, amount, and description fields.
  *
- * Malformed invoices yield `null`. Does not change {@link decodeBolt11}.
+ * Malformed invoices, zero-amount invoices, and amounts that are not safe
+ * integers yield `null`. Does not change {@link decodeBolt11}.
  *
  * @param pr - BOLT11 string.
  * @param decodeImpl - Optional decoder (tests inject a fake).

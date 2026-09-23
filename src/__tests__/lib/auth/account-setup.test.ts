@@ -21,11 +21,9 @@ describe('accountSetup', () => {
     expect(accountSetup(base)).toBe('name');
   });
 
-  it('asks for wallet first when required and unseen', () => {
-    expect(accountSetup({ ...base, walletRequired: true })).toBe('wallet');
-    expect(accountSetup({ ...base, walletRequired: true, walletBackupSeenAt: null })).toBe(
-      'wallet',
-    );
+  it('asks for a name when a recovery phrase is required', () => {
+    expect(accountSetup({ ...base, walletRequired: true })).toBe('name');
+    expect(accountSetup({ ...base, walletRequired: true, walletBackupSeenAt: null })).toBe('name');
     expect(
       accountSetup({
         ...base,
@@ -35,7 +33,7 @@ describe('accountSetup', () => {
         lightningAddress: 'ada@walletofsatoshi.com',
         rulesAgreedAt: 2,
       }),
-    ).toBe('wallet');
+    ).toBeNull();
   });
 
   it('does not ask for wallet when required is false or omitted', () => {
@@ -43,7 +41,7 @@ describe('accountSetup', () => {
     expect(accountSetup(base)).toBe('name');
   });
 
-  it('asks for a name after a required wallet backup is seen', () => {
+  it('asks for a name when a recovery phrase is required and the marker is set', () => {
     expect(accountSetup({ ...base, walletRequired: true, walletBackupSeenAt: 10 })).toBe('name');
   });
 
@@ -118,7 +116,7 @@ describe('accountSetup', () => {
     ).toBeNull();
   });
 
-  it('is complete when a required wallet is seen and the other steps are done', () => {
+  it('is complete when a recovery phrase is required and the other steps are done', () => {
     expect(
       accountSetup({
         ...base,
@@ -144,9 +142,8 @@ describe('accountMissing', () => {
     ).toEqual(['name', 'username', 'lightning-address', 'rules']);
   });
 
-  it('lists wallet first when required and unseen', () => {
+  it('does not list wallet when a recovery phrase is required', () => {
     expect(accountMissing({ ...base, walletRequired: true })).toEqual([
-      'wallet',
       'name',
       'username',
       'lightning-address',
@@ -159,10 +156,10 @@ describe('accountMissing', () => {
         nameSkippedAt: 10,
         lightningAddressSkippedAt: 11,
       }),
-    ).toEqual(['wallet', 'name', 'username', 'lightning-address', 'rules']);
+    ).toEqual(['name', 'username', 'lightning-address', 'rules']);
   });
 
-  it('omits wallet when required and seen', () => {
+  it('omits wallet when a recovery phrase is required and the marker is set', () => {
     expect(
       accountMissing({
         ...base,

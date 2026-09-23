@@ -16,15 +16,18 @@ const DEFAULT_TIMEOUT_MS = 5_000;
 export interface SpendPing {
   /**
    * Notify spend that `address` just created a top-level forum post
-   * (`kind` omitted or `'daily'`) or a moderator-group message
-   * (`kind === 'moderator'`).
+   * (`kind` omitted or `'daily'`), a moderator-group message
+   * (`kind === 'moderator'`), or a verified welcome media post
+   * (`kind === 'welcome'`). Daily JSON uses `messageId`; welcome JSON is
+   * `{ address, messageId, kind: "welcome" }`.
    *
    * @param address - Recipient Lightning Address.
-   * @param messageId - Forum post id (daily JSON `messageId`) or
-   *   conversation message id (moderator JSON `groupMessageId`).
-   * @param kind - `'daily'` (default) or `'moderator'`.
+   * @param messageId - Forum post id (daily JSON `messageId` / welcome
+   *   JSON `messageId`) or conversation message id (moderator JSON
+   *   `groupMessageId`).
+   * @param kind - `'daily'` (default), `'moderator'`, or `'welcome'`.
    */
-  ping(address: string, messageId: string, kind?: 'daily' | 'moderator'): Promise<void>;
+  ping(address: string, messageId: string, kind?: 'daily' | 'moderator' | 'welcome'): Promise<void>;
 }
 
 /**
@@ -32,20 +35,25 @@ export interface SpendPing {
  */
 export class NoopSpendPing implements SpendPing {
   /**
-   * Ignore the address, message id (daily `messageId` / moderator
-   * `groupMessageId`), and optional kind.
+   * Ignore the address, message id (daily `messageId` / welcome
+   * `messageId` / moderator `groupMessageId`), and optional kind.
    *
    * @param _address - Unused.
    * @param _messageId - Unused.
    * @param _kind - Unused.
    */
-  ping(_address: string, _messageId: string, _kind?: 'daily' | 'moderator'): Promise<void> {
+  ping(
+    _address: string,
+    _messageId: string,
+    _kind?: 'daily' | 'moderator' | 'welcome',
+  ): Promise<void> {
     return Promise.resolve();
   }
 }
 
 /**
- * POST `{ address, messageId }` (daily) or
+ * POST `{ address, messageId }` (daily),
+ * `{ address, messageId, kind: "welcome" }` (welcome), or
  * `{ address, kind: "moderator", groupMessageId }` to `{spendUrl}/ping`
  * with Bearer `SPEND_API_TOKEN`.
  *
@@ -71,20 +79,28 @@ export class HttpSpendPing implements SpendPing {
   }
 
   /**
-   * POST `{ address, messageId }` (daily) or
+   * POST `{ address, messageId }` (daily),
+   * `{ address, messageId, kind: "welcome" }` (welcome), or
    * `{ address, kind: "moderator", groupMessageId }` to `{spendUrl}/ping`.
    * Resolves on success and failure.
    *
    * @param address - Recipient Lightning Address (JSON body).
-   * @param messageId - Forum post id for daily pings (JSON `messageId`);
-   *   conversation message id for moderator pings (JSON `groupMessageId`).
-   * @param kind - `'daily'` (default) or `'moderator'`.
+   * @param messageId - Forum post id for daily/welcome pings (JSON
+   *   `messageId`); conversation message id for moderator pings (JSON
+   *   `groupMessageId`).
+   * @param kind - `'daily'` (default), `'moderator'`, or `'welcome'`.
    */
-  async ping(address: string, messageId: string, kind?: 'daily' | 'moderator'): Promise<void> {
+  async ping(
+    address: string,
+    messageId: string,
+    kind?: 'daily' | 'moderator' | 'welcome',
+  ): Promise<void> {
     const body =
       kind === 'moderator'
         ? { address, kind: 'moderator', groupMessageId: messageId }
-        : { address, messageId };
+        : kind === 'welcome'
+          ? { address, messageId, kind: 'welcome' }
+          : { address, messageId };
     try {
       const response = await this.#fetchImpl(`${this.#spendUrl}/ping`, {
         method: 'POST',

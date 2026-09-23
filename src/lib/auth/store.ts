@@ -96,14 +96,16 @@ export interface Account {
    */
   notificationLevel?: NotificationLevel;
   /**
-   * True when this account must complete the wallet (recovery phrase)
-   * setup step. Omit / false = existing member (not gated). New passkey
-   * register and first-passkey claim set true; replace does not.
+   * True when a recovery phrase is required. Does not set `setup` to
+   * `wallet`. Omit / false = existing member. New passkey register and
+   * first-passkey claim set true; replace does not.
    */
   walletRequired?: boolean;
   /**
-   * Epoch ms when the owner posted that the recovery phrase was shown,
-   * or null/omitted when unseen.
+   * Epoch ms recorded after an existing member activates a passkey that
+   * can show a recovery phrase, so the app can offer Show recovery
+   * phrase next time instead of Activate. Not a confirmation. Null when
+   * that has not been recorded.
    */
   walletBackupSeenAt?: number | null;
 }
