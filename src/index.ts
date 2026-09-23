@@ -98,6 +98,7 @@ if (import.meta.main) {
     ...(giftStore === undefined ? {} : { giftStore }),
     ...(giftRecorder === undefined ? {} : { giftRecorder }),
     ...(messageStore === undefined ? {} : { messageStore }),
+    ...(boot.translationStore === undefined ? {} : { translationStore: boot.translationStore }),
     ...(nostrKek === undefined ? {} : { nostrKek }),
     ...(publisher === undefined ? {} : { nostrPublisher: publisher }),
     ...(contactStore === undefined ? {} : { contactStore }),

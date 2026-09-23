@@ -17,6 +17,11 @@ import { giftsStatsRoutes } from '@/routes/stats';
 import { giftsRoutes } from '@/routes/gifts';
 import { invoiceRoutes } from '@/routes/invoices';
 import { messagesRoutes } from '@/routes/messages';
+import { translateRoutes } from '@/routes/translate';
+import {
+  InMemoryTranslationStore,
+  type TranslationStore,
+} from '@/lib/translation-store';
 import { wellKnownRoutes } from '@/routes/well-known';
 import { payRoutes } from '@/routes/pay';
 import { contactRoutes } from '@/routes/contact';
@@ -197,6 +202,11 @@ export interface AppDeps {
    */
   env?: Record<string, string | undefined>;
   /**
+   * Cached DeepL output (default: empty {@link InMemoryTranslationStore}).
+   * Boot injects {@link PostgresTranslationStore} when `DATABASE_URL` is set.
+   */
+  translationStore?: TranslationStore;
+  /**
    * Private in-app contact mailbox (default: empty
    * {@link InMemoryContactStore}). Boot injects
    * {@link PostgresContactStore} when `DATABASE_URL` is set.
@@ -284,6 +294,8 @@ export function createApp(deps: AppDeps = {}): Hono {
   const btcUsdRates = deps.btcUsdRates ?? new InMemoryBtcUsdStore();
   const fiatRates = deps.fiatRates ?? new InMemoryFiatStore();
   const messageStore = deps.messageStore ?? new InMemoryMessageStore();
+  const translationStore = deps.translationStore ?? new InMemoryTranslationStore();
+  const env = deps.env ?? process.env;
   const nostrKek = deps.nostrKek;
   const contactStore = deps.contactStore ?? new InMemoryContactStore();
   const posStore = deps.posStore ?? new InMemoryPosStore();
@@ -337,6 +349,7 @@ export function createApp(deps: AppDeps = {}): Hono {
   app.route('/', pushRoutes({ authStore: store, pushStore, now, vapidPublicKey }));
   app.route('/healthz', healthRoute);
   app.route('/info', infoRoute);
+  app.route('/translate', translateRoutes({ env }));
   app.route('/.well-known', wellKnownRoutes({ auth: store, fetchImpl, posStore, now }));
   app.route('/pay', payRoutes({ auth: store, fetchImpl }));
   app.route(
@@ -490,7 +503,8 @@ export function createApp(deps: AppDeps = {}): Hono {
       pushStore,
       notificationStore,
       conversationStore,
-      env: deps.env ?? process.env,
+      env,
+      translationStore,
       fundingStore,
       ...(nostrKek === undefined ? {} : { nostrKek }),
       ...(deps.nostrPublisher === undefined ? {} : { nostrPublisher: deps.nostrPublisher }),

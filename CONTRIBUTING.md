@@ -57,7 +57,8 @@ api/
 │   │   ├── stats.ts          # GET /gifts/stats (public gift totals)
 │   │   ├── gifts.ts          # GET /gifts?day= (public per-day gift list)
 │   │   ├── invoices.ts       # GET /invoices/passkey, GET /invoices/eligible, GET /invoices/posted, POST /invoices, POST /invoices/proof (spend worker)
-│   │   ├── messages.ts       # GET/POST /messages, GET /messages/compose-target, public GET /messages/:id, GET /messages/hidden (session, not DEBUG_TOKEN), DELETE /messages/:id, GET /messages/:id/replies, GET /messages/:id/photo, GET /messages/:id/video.*, POST /messages/:id/invoice
+│   │   ├── messages.ts       # GET/POST /messages, GET /messages/compose-target, public GET /messages/:id, GET /messages/hidden (session, not DEBUG_TOKEN), DELETE /messages/:id, GET /messages/:id/replies, GET /messages/:id/photo, GET /messages/:id/video.*, POST /messages/:id/invoice, POST /messages/:id/translate
+│   │   ├── translate.ts      # GET /translate (DeepL configured?)
 │   │   ├── well-known.ts     # GET /.well-known/nostr.json (NIP-05); GET /.well-known/lnurlp/:username (LUD-16)
 │   │   ├── pay.ts            # GET /pay/:username; POST /pay/:username/invoice
 │   │   ├── contact.ts        # POST /contact (private mailbox + platform thread)
@@ -77,6 +78,10 @@ api/
 │   │   ├── about-me.ts       # Profile-note text → About me (name-copy is not a bio)
 │   │   ├── account-activity.ts # Given/received sats: forum zaps, house gifts, message.sats remainder
 │   │   ├── message-store.ts  # MessageStore port, InMemoryMessageStore, PostgresMessageStore
+│   │   ├── translation-store.ts # message_translation cache (InMemory + Postgres)
+│   │   ├── translate-config.ts # TRANSLATE_URL / TRANSLATE_API_KEY (optional; boot still)
+│   │   ├── translate-deepl.ts # DeepL v2 POST
+│   │   ├── translate-note.ts # cache lookup, in-flight coalesce, DeepL, upsert
 │   │   ├── contact.ts        # Contact public/debug JSON projection (reuses forum text rules)
 │   │   ├── contact-store.ts  # ContactStore port, InMemoryContactStore, PostgresContactStore
 │   │   ├── pos-charge.ts     # Point-of-sale charge types, TTL, and JSON

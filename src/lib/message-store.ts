@@ -11,6 +11,7 @@
  */
 
 import { isUniqueViolation, type SqlClient } from '@/lib/auth/sql';
+import { TRANSLATION_SCHEMA_SQL } from '@/lib/translation-store';
 import { fetchBtcUsdSpot } from '@/lib/btc-usd-spot';
 import type { FetchFn } from '@/lib/btc-usd-candles';
 import {
@@ -1321,6 +1322,7 @@ WHERE message.id = ranked.id AND ranked.rn > 1`,
   `ALTER TABLE message ADD COLUMN IF NOT EXISTS place_label text`,
   `CREATE INDEX IF NOT EXISTS message_feed_created_idx ON message (created_at DESC, id DESC) WHERE parent_id IS NULL AND deleted_at IS NULL`,
   `CREATE INDEX IF NOT EXISTS message_feed_popular_idx ON message (sats DESC, created_at DESC, id DESC) WHERE parent_id IS NULL AND deleted_at IS NULL AND sats > 0`,
+  TRANSLATION_SCHEMA_SQL,
   `DO $unwrap$
    DECLARE
      repair_row RECORD;

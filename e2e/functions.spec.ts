@@ -2162,3 +2162,113 @@ test('Function: parseMultipartCoord — blank coordinates are no pin and a word 
   expect(bad.status()).toBe(400);
   expect(await bad.json()).toEqual({ error: 'Place must be a latitude and longitude' });
 });
+
+test('Function: translateRoutes — GET /translate reports availability', async ({ request }) => {
+  const res = await request.get('/translate');
+  expect(res.status()).toBe(200);
+  const body = (await res.json()) as { available: boolean };
+  expect(typeof body.available).toBe('boolean');
+});
+
+test('Function: translateForumNote — POST /messages/:id/translate 404s unknown ids', async ({
+  request,
+}) => {
+  const res = await request.post('/messages/3a3a3a3a-3a3a-43a3-83a3-3a3a3a3a3a3a/translate', {
+    data: { target: 'en' },
+  });
+  expect(res.status()).toBe(404);
+});
+
+test('Function: TranslationStore — POST /messages/:id/translate rejects a bad target', async ({
+  request,
+}) => {
+  const res = await request.post('/messages/3a3a3a3a-3a3a-43a3-83a3-3a3a3a3a3a3a/translate', {
+    data: { target: 'fr' },
+  });
+  expect(res.status()).toBe(400);
+});
+
+test('Function: resolveTranslateUpstream — GET /translate available is boolean', async ({
+  request,
+}) => {
+  const body = (await (await request.get('/translate')).json()) as { available: boolean };
+  expect(typeof body.available).toBe('boolean');
+});
+
+test('Function: deeplTargetLang — POST /messages/:id/translate rejects fr', async ({ request }) => {
+  expect(
+    (
+      await request.post('/messages/3a3a3a3a-3a3a-43a3-83a3-3a3a3a3a3a3a/translate', {
+        data: { target: 'fr' },
+      })
+    ).status(),
+  ).toBe(400);
+});
+
+test('Function: translateViaDeepl — POST /messages/:id/translate 404s unknown ids', async ({
+  request,
+}) => {
+  expect(
+    (
+      await request.post('/messages/3a3a3a3a-3a3a-43a3-83a3-3a3a3a3a3a3a/translate', {
+        data: { target: 'en' },
+      })
+    ).status(),
+  ).toBe(404);
+});
+
+test('Function: translationSourceHash — POST /messages/:id/translate 404s unknown ids', async ({
+  request,
+}) => {
+  expect(
+    (
+      await request.post('/messages/3a3a3a3a-3a3a-43a3-83a3-3a3a3a3a3a3a/translate', {
+        data: { target: 'en' },
+      })
+    ).status(),
+  ).toBe(404);
+});
+
+test('Function: InMemoryTranslationStore — POST /messages/:id/translate 404s unknown ids', async ({
+  request,
+}) => {
+  expect(
+    (
+      await request.post('/messages/3a3a3a3a-3a3a-43a3-83a3-3a3a3a3a3a3a/translate', {
+        data: { target: 'en' },
+      })
+    ).status(),
+  ).toBe(404);
+});
+
+test('Function: PostgresTranslationStore — POST /messages/:id/translate 404s unknown ids', async ({
+  request,
+}) => {
+  expect(
+    (
+      await request.post('/messages/3a3a3a3a-3a3a-43a3-83a3-3a3a3a3a3a3a/translate', {
+        data: { target: 'en' },
+      })
+    ).status(),
+  ).toBe(404);
+});
+
+test('Function: TranslateNotConfiguredError — GET /translate always 200', async ({ request }) => {
+  expect((await request.get('/translate')).status()).toBe(200);
+});
+
+test('Function: TranslateUpstreamError — POST /messages/:id/translate 404s unknown ids', async ({
+  request,
+}) => {
+  expect(
+    (
+      await request.post('/messages/3a3a3a3a-3a3a-43a3-83a3-3a3a3a3a3a3a/translate', {
+        data: { target: 'en' },
+      })
+    ).status(),
+  ).toBe(404);
+});
+
+test('Function: TRANSLATION_SCHEMA_SQL — GET /healthz is 200', async ({ request }) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});

@@ -37,6 +37,16 @@ import type {
   MessageInvoiceResult,
   MessageStore,
 } from '@/lib/message-store';
+import type { TranslateTarget } from '@/lib/translate-config';
+import {
+  TranslateNotConfiguredError,
+  TranslateUpstreamError,
+  translateForumNote,
+} from '@/lib/translate-note';
+import {
+  InMemoryTranslationStore,
+  type TranslationStore,
+} from '@/lib/translation-store';
 import { ensureAccountNostrKey } from '@/lib/nostr/keys';
 import type { NostrPublisher } from '@/lib/nostr/publish';
 import { InvoiceRateLimiter, PostRateLimiter } from '@/lib/nostr/rate-limit';
@@ -255,6 +265,11 @@ export interface MessagesRouteDeps {
    * purge. Omitted → `{}` on the DELETE retract path.
    */
   env?: Record<string, string | undefined>;
+  /**
+   * Cached DeepL output per message and locale (default: empty
+   * {@link InMemoryTranslationStore}).
+   */
+  translationStore?: TranslationStore;
   /** Sleep between `sinceSats` polls (tests inject). */
   waitSatsSleep?: (ms: number) => Promise<void>;
   /** Max wait for `sinceSats` (tests inject; default {@link WAIT_SATS_TIMEOUT_MS}). */
@@ -858,7 +873,8 @@ const invoiceBody = z.object({
  * `GET /messages/stats` (no session; living notes and replies as one count),
  * public `GET /messages/:id` (optional `?sinceSats=` non-negative integer
  * long-polls until `sats` is strictly greater; timeout still returns 200 with
- * the current body; invalid value 400), and `POST /messages/:id/invoice`.
+ * the current body; invalid value 400), `POST /messages/:id/translate`, and
+ * `POST /messages/:id/invoice`.
  * Photo, video, replies, DELETE, `GET /stats`, `GET /hidden`, and `GET /places`
  * register before the public single-note `GET /:id`. Soft-hidden rows (`deletedAt`) are omitted from
  * lists and 404 on unsigned/non-staff reads; a founder/moderator session may
@@ -890,10 +906,15 @@ const invoiceBody = z.object({
  * `forum.read`), public `GET /:id` (optional `?sinceSats=`), and
  * `POST /:id/invoice`, and public `GET /stats`.
  */
+const translateBody = z.object({
+  target: z.enum(['en', 'de', 'es', 'fil']),
+});
+
 export function messagesRoutes(deps: MessagesRouteDeps): Hono {
   const postLimiter = deps.postLimiter ?? defaultPostLimiter;
   const invoiceLimiter = deps.invoiceLimiter ?? defaultInvoiceLimiter;
   const fetchImpl = deps.fetchImpl ?? globalThis.fetch;
+  const translationStore = deps.translationStore ?? new InMemoryTranslationStore();
 
   return new Hono()
     .get('/', async (c) => {
@@ -1397,6 +1418,55 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
         );
       } catch {
         logEvent('messages.places.failed');
+        return c.json({ error: 'Messages are unavailable' }, 503);
+      }
+    })
+    .post('/:id/translate', async (c) => {
+      const id = c.req.param('id');
+      if (!MESSAGE_ID_RE.test(id)) {
+        return c.json({ error: 'Not found' }, 404);
+      }
+      const parsed = translateBody.safeParse(await c.req.json().catch(() => null));
+      if (!parsed.success) {
+        return c.json({ error: 'Invalid body' }, 400);
+      }
+      const target: TranslateTarget = parsed.data.target;
+      try {
+        const row = await deps.store.getById(id);
+        if (row === undefined) {
+          return c.json({ error: 'Not found' }, 404);
+        }
+        if (row.deletedAt !== null) {
+          const account = await authedAccount(deps, c.req.header('authorization'));
+          if (account === null || !roleAtLeast(account.role, 'moderator')) {
+            return c.json({ error: 'Not found' }, 404);
+          }
+        } else if (await withheldFromPublic(deps, row)) {
+          return c.json({ error: 'Not found' }, 404);
+        }
+        if (row.text.trim() === '') {
+          return c.json({ error: 'Invalid body' }, 400);
+        }
+        const result = await translateForumNote(
+          translationStore,
+          deps.env ?? {},
+          id,
+          row.text,
+          target,
+          fetchImpl,
+        );
+        return c.json(
+          { translatedText: result.translatedText, cached: result.cached },
+          200,
+        );
+      } catch (err) {
+        if (err instanceof TranslateNotConfiguredError) {
+          return c.json({ error: 'Translate is not configured' }, 503);
+        }
+        if (err instanceof TranslateUpstreamError) {
+          return c.json({ error: 'Translate upstream failed' }, 502);
+        }
+        logEvent('messages.translate.failed');
         return c.json({ error: 'Messages are unavailable' }, 503);
       }
     })

@@ -45,6 +45,7 @@ import {
   type ConversationStore,
 } from '@/lib/conversation-store';
 import { migrateMessageSchema, PostgresMessageStore, type MessageStore } from '@/lib/message-store';
+import { PostgresTranslationStore, type TranslationStore } from '@/lib/translation-store';
 import {
   migrateNotificationSchema,
   PostgresNotificationStore,
@@ -78,6 +79,11 @@ export interface BootStores {
    * opened so `createApp` keeps the empty in-memory default.
    */
   messageStore: MessageStore | undefined;
+  /**
+   * Postgres-backed translation cache, or `undefined` when no SQL client was
+   * opened so `createApp` keeps the empty in-memory default.
+   */
+  translationStore: TranslationStore | undefined;
   /** Parsed KEK when DATABASE_URL is set; `undefined` on memory boots. */
   nostrKek: Uint8Array | undefined;
   /**
@@ -219,6 +225,7 @@ export async function openBootStores(
       btcUsdRates: new InMemoryBtcUsdStore(),
       fiatRates: new InMemoryFiatStore(),
       messageStore: undefined,
+      translationStore: undefined,
       nostrKek: undefined,
       contactStore: undefined,
       posStore: new InMemoryPosStore(),
@@ -345,6 +352,7 @@ export async function openBootStores(
   );
   const giftRecorder = new SqlGiftRecorder(giftSql);
   const messageStore = new PostgresMessageStore(sqlClient, { fetchImpl, fiatRates, now });
+  const translationStore = new PostgresTranslationStore(sqlClient);
   await backfillZapPayments(messageStore);
   try {
     await backfillExternalZappers(messageStore, {
@@ -372,6 +380,7 @@ export async function openBootStores(
     btcUsdRates,
     fiatRates,
     messageStore,
+    translationStore,
     nostrKek,
     contactStore,
     posStore,

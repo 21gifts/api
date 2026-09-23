@@ -148,6 +148,8 @@ describe('MESSAGE_SCHEMA_SQL', () => {
     expect(zapPaymentDdl).toMatch(/created_at timestamptz NOT NULL/);
     expect(zapPaymentDdl).not.toMatch(/REFERENCES message/);
     expect(MESSAGE_SCHEMA_SQL.join('\n')).toMatch(/CREATE TABLE IF NOT EXISTS message_invoice/i);
+    expect(MESSAGE_SCHEMA_SQL.join('\n')).toMatch(/CREATE TABLE IF NOT EXISTS message_translation/i);
+    expect(MESSAGE_SCHEMA_SQL.join('\n')).toMatch(/source_sha256/);
     expect(MESSAGE_SCHEMA_SQL.join('\n')).toMatch(/CREATE TABLE IF NOT EXISTS nostr_zap_ingest/i);
     expect(MESSAGE_SCHEMA_SQL.join('\n')).toMatch(/message_invoice_created_at_idx/i);
     expect(MESSAGE_SCHEMA_SQL.join('\n')).toMatch(/nostr_zap_ingest_receipt_id_idx/i);

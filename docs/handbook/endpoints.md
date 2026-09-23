@@ -436,6 +436,20 @@
 - **Used by:** App map of live forum pins.
 - **Auth:** `Authorization: Bearer` session.
 
+## Endpoint: GET /translate
+
+- **Purpose:** `{ available: boolean }` is true only when `TRANSLATE_URL` is a valid http(s) URL and `TRANSLATE_API_KEY` is non-blank after trim. No DeepL call. Always 200.
+- **Errors:** none.
+- **Used by:** App `GET /translate` proxy; `NoteTranslate` availability.
+- **Auth:** Public.
+
+## Endpoint: POST /messages/:id/translate
+
+- **Purpose:** `{ target: en|de|es|fil }` translates the stored `message.text`. Looks up `message_translation` for `(message_id, target_lang)` first; a matching `source_sha256` of that text is returned as `{ translatedText, cached: true }` with no DeepL call. A miss or a changed source hashes, then one DeepL POST (concurrent callers of the same key share it), then upsert (first writer for a hash wins). `fil` → DeepL `TL`. Empty text 400. Same visibility as `GET /messages/:id` (unsigned 404 for hidden/withheld; staff may translate a hidden permalink).
+- **Errors:** 400 `{ error: 'Invalid body' }` bad JSON, unknown target, or empty text; 404 `{ error: 'Not found' }` bad id / missing / withheld / unsigned hidden; 502 `{ error: 'Translate upstream failed' }`; 503 `{ error: 'Translate is not configured' }` missing URL/key; 503 `{ error: 'Messages are unavailable' }` store throw (`messages.translate.failed`).
+- **Used by:** App `POST /translate` with `{ messageId, target }`.
+- **Auth:** none for a live public note; founder/moderator Bearer for a hidden permalink.
+
 ## Endpoint: GET /messages/:id
 
 - **Purpose:** Public single-note fetch (no Bearer for a live row). Returns the public message JSON via `serializeMessage` (`sats`, optional `goalSats` on a top-level note when the stored ask is a positive integer, optional `place` when a pin is stored and omitted when unset, `payable`, `hasPhoto`, `photoCount` (0–10; `hasPhoto` still means photo 0 exists), `photoTakenAts` (always; length equals `photoCount`; null when unknown; `[]` when there are no stills), `photoTakenAt` only when `photoCount === 1`, `hasVideo`, `videoContentType`; live `role` for 21gifts authors; `payable` is true when a non-empty `eventId` and a non-blank author Lightning Address are set (top-level or signed reply); an external Nostr-authored row with `accountId` null and a recorded `authorPubkey` omits `role`, sets `payable` false, and includes `via: 'nostr'`). A live reply with `accountId` null is 200 only when `authorPubkey` is set AND recorded as a zapper (checked via `isZapperPubkey`, including on every `sinceSats` poll iteration); otherwise — no `authorPubkey`, or one not yet a recorded zapper — it is 404 `{ "error": "Not found" }` (same body as missing/hidden). Live GET omits `deletedAt` / `deletedBy`; unauthenticated live GET still omits `accountId`. Omits `goalSats` when unset (null/0/absent); includes the key only when a positive whole-sat goal is stored on a top-level note. Photo/video bytes are never included. Unsigned visitors and non-staff still 404 `{ error: 'Not found' }` for soft-hidden rows (`deletedAt` set) before any missing-video cleanup (same body as today; no `deletedAt` in the 404 body). A founder or moderator Bearer (`roleAtLeast(..., 'moderator')`, no `forum.read`) is 200 public JSON plus `deletedAt` ISO, `deletedBy.{id,name,role}`, `payable: false`, and `accountId` for 21gifts authors; skip missing-video drop; do not long-poll `sinceSats` on hidden rows. A live `hasVideo` row whose file is missing or empty is deleted (`messages.video.dropped`) and then 404. Optional query `sinceSats` (non-negative integer) long-polls until `sats` is strictly greater than that value (pay sheet / Lightning zap confirmation); timeout still returns 200 with the current body. A top-level note (parent id null), whether the live public body or the founder/moderator hidden body, includes `replyCount` of live direct children with an account or a recorded zapper pubkey; a reply omits `replyCount`.
