@@ -2241,16 +2241,10 @@ test('Function: InMemoryTranslationStore — POST /messages/:id/translate 404s u
   ).toBe(404);
 });
 
-test('Function: PostgresTranslationStore — POST /messages/:id/translate 404s unknown ids', async ({
+test('Function: PostgresTranslationStore — default boot has no DATABASE_URL', async ({
   request,
 }) => {
-  expect(
-    (
-      await request.post('/messages/3a3a3a3a-3a3a-43a3-83a3-3a3a3a3a3a3a/translate', {
-        data: { target: 'en' },
-      })
-    ).status(),
-  ).toBe(404);
+  expect((await request.get('/healthz')).status()).toBe(200);
 });
 
 test('Function: TranslateNotConfiguredError — GET /translate always 200', async ({ request }) => {

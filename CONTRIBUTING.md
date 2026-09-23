@@ -421,8 +421,8 @@ not invoked (verification `503`, spend invoices unconfigured `503`, or a
 healthy process with `DATABASE_URL` blank). Playwright `webServer.env` pins
 `DATABASE_URL`, `SPEND_API_TOKEN`, `NOSTR_NSEC_KEK`, `NOSTR_PUBLISH`,
 `NOSTR_PUBLISH_PUBLIC`, `NOSTR_RELAY_URL`, `NOSTR_RELAY_SPACE`,
-`NOSTR_RELAY_PUBLIC`, `VAPID_PUBLIC_KEY`, `VAPID_PRIVATE_KEY`, and
-`VAPID_SUBJECT` to blank, and `NIP57_PROBE` to `0`,
+`NOSTR_RELAY_PUBLIC`, `VAPID_PUBLIC_KEY`, `VAPID_PRIVATE_KEY`,
+`VAPID_SUBJECT`, `TRANSLATE_URL`, and `TRANSLATE_API_KEY` to blank, and `NIP57_PROBE` to `0`,
 so those outcomes do not depend on the host environment.
 `bun run e2e:check` **fails the PR** if an endpoint has no matching
 `request.get/post/delete` or a function has no matching
