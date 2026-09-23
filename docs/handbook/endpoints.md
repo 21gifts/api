@@ -332,7 +332,7 @@
 
 ## Endpoint: GET /invoices/eligible
 
-- **Purpose:** Spend-worker only. Query `address=local@domain`. Returns `{ eligible: boolean }` so spend can filter before issue. Unknown address and `basis` are always `eligible: false`. Before UTC `2026-09-25` (`FUNDING_REQUIRED_FROM_UTC`), every other role is `eligible: true` without a grant. From that day, fail closed unless admitted or trial-today (always HTTP 200 on success; never 404).
+- **Purpose:** Spend-worker only. Query `address=local@domain`. Returns `{ eligible: boolean, status }` so spend can filter before issue and pay admitted members without a roster entry (1 USD). `status` is `effectiveStatus` (`'none' | 'pending' | 'trial' | 'admitted' | 'rejected'`). Unknown address and `basis` are always `{ eligible: false, status: 'none' }` (`basis` must not leak a stored grant). Before UTC `2026-09-25` (`FUNDING_REQUIRED_FROM_UTC`), every other role is `eligible: true` without a grant (`status` still follows `effectiveStatus`). From that day, fail closed unless admitted or trial-today (always HTTP 200 on success; never 404). Expired trial is `status: 'pending'` and `eligible: false` on the gate day.
 - **Errors:** 503 if the token env is unset; 401 wrong/missing Bearer; 400 missing or invalid Lightning Address (`Not a valid Lightning Address (expected name@domain)`).
 - **Used by:** the external spend worker before issuing a gift invoice.
 - **Auth:** `Authorization: Bearer` matching `SPEND_API_TOKEN`.

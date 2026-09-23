@@ -43,7 +43,7 @@ verification payment requires an injected invoice payer; the default
 does not fetch or pay invoices.
 
 Spend-worker invoice routes: `GET /invoices/passkey` and `GET /invoices/posted`
-report those gates; `GET /invoices/eligible` reports `eligibleToday` (grant required from UTC 2026-09-25);
+report those gates; `GET /invoices/eligible` reports `{ eligible, status }` (`eligibleToday` plus `effectiveStatus`; grant required from UTC 2026-09-25);
 `POST /invoices` requires passkey, `eligibleToday` (grant required from UTC 2026-09-25), and a live
 **top-level** forum post, then fetches a BOLT11 via LNURL-pay;
 `POST /invoices/proof` accepts a preimage without re-checking the grant. Issue
@@ -183,7 +183,7 @@ Public base URLs used in examples:
 | GET    | `/messages/stats`                                    | none                       | Living forum notes and replies counted together, by UTC day                                               |
 | GET    | `/invoices/passkey`                                  | Bearer `SPEND_API_TOKEN`   | Whether a Lightning Address has a passkey-backed account                                                  |
 | GET    | `/invoices/posted`                                   | Bearer `SPEND_API_TOKEN`   | Whether a Lightning Address has a live top-level non-profile forum post                                   |
-| GET    | `/invoices/eligible`                                 | Bearer `SPEND_API_TOKEN`   | Whether the address is funding-eligible today                                                             |
+| GET    | `/invoices/eligible`                                 | Bearer `SPEND_API_TOKEN`   | Whether the address is funding-eligible today, plus effective grant `status`                              |
 | POST   | `/invoices`                                          | Bearer `SPEND_API_TOKEN`   | Fetch a recipient BOLT11 (LNURL-pay; passkey, funding grant, and forum post required)                     |
 | POST   | `/invoices/proof`                                    | Bearer `SPEND_API_TOKEN`   | Accept payment preimage as proof                                                                          |
 
@@ -2613,13 +2613,15 @@ Spend-worker funding-grant check. Query `address=name@domain.tld`. Same
 Success is always **200** (never 404 for an unknown address):
 
 ```json
-{ "eligible": true }
+{ "eligible": true, "status": "admitted" }
 ```
 
-or `{ "eligible": false }` when there is no account for the address or the
-role is `basis`. Until UTC 2026-09-25 a missing/pending/rejected grant on a
-non-`basis` account is `{ "eligible": true }`; from that day it is false
-unless admitted or trial-today.
+`status` is `effectiveStatus`: `none`, `pending`, `trial`, `admitted`, or
+`rejected`. Unknown address and `basis` are always
+`{ "eligible": false, "status": "none" }` with no grant lookup. Until UTC
+2026-09-25 a missing/pending/rejected grant on a non-`basis` account is
+`eligible: true` with `status` still from `effectiveStatus`; from that day
+`eligible` is false unless admitted or trial-today.
 
 ### `GET /invoices/posted`
 

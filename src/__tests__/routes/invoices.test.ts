@@ -2890,7 +2890,7 @@ describe('GET /invoices/eligible', () => {
       fetchImpl: happyFetch(),
     }).request(`/eligible?address=${encodeURIComponent(ADDRESS)}`, auth());
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ eligible: false });
+    expect(await res.json()).toEqual({ eligible: false, status: 'none' });
   });
 
   it('returns eligible false for an unknown address', async () => {
@@ -2899,7 +2899,7 @@ describe('GET /invoices/eligible', () => {
       auth(),
     );
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ eligible: false });
+    expect(await res.json()).toEqual({ eligible: false, status: 'none' });
   });
 
   it('returns eligible true when admitted today', async () => {
@@ -2926,7 +2926,7 @@ describe('GET /invoices/eligible', () => {
       auth(),
     );
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ eligible: true });
+    expect(await res.json()).toEqual({ eligible: true, status: 'admitted' });
   });
 
   it('returns eligible false when there is no grant', async () => {
@@ -2939,7 +2939,7 @@ describe('GET /invoices/eligible', () => {
       now: () => GATE_MS,
     }).request(`/invoices/eligible?address=${encodeURIComponent(ADDRESS)}`, auth());
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ eligible: false });
+    expect(await res.json()).toEqual({ eligible: false, status: 'none' });
   });
 
   it('returns eligible true without a grant before the gate day', async () => {
@@ -2952,7 +2952,7 @@ describe('GET /invoices/eligible', () => {
       now: () => NOW_MS,
     }).request(`/invoices/eligible?address=${encodeURIComponent(ADDRESS)}`, auth());
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ eligible: true });
+    expect(await res.json()).toEqual({ eligible: true, status: 'none' });
   });
 
   it('does not persist when GET /eligible sees an expired trial', async () => {
@@ -2967,10 +2967,35 @@ describe('GET /invoices/eligible', () => {
       now: () => GATE_MS,
     }).request(`/invoices/eligible?address=${encodeURIComponent(ADDRESS)}`, auth());
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ eligible: false });
+    expect(await res.json()).toEqual({ eligible: false, status: 'pending' });
     expect(await fundingStore.getByAccountId('acc-alice')).toEqual(stored);
     expect((await fundingStore.getByAccountId('acc-alice'))?.status).toBe('trial');
   });
+
+  it('returns eligible false and status none for a basis account', async () => {
+    const authStore = new InMemoryAuthStore();
+    await authStore.createAccount({
+      id: 'acc-alice',
+      linkingKey: null,
+      role: 'basis',
+      name: 'Ada',
+      lightningAddress: ADDRESS,
+      lightningAddressVerified: true,
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: 'a'.repeat(64),
+      createdAt: 1,
+      rulesAgreedAt: null,
+    });
+    const fundingStore = admittedStore();
+    const res = await spendApp({ spendApiToken: TOKEN, authStore, fundingStore }).request(
+      `/invoices/eligible?address=${encodeURIComponent(ADDRESS)}`,
+      auth(),
+    );
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ eligible: false, status: 'none' });
+  });
+
   it('does not persist when POST /invoices sees an expired trial', async () => {
     const authStore = new InMemoryAuthStore();
     await seedPasskeyAccount(authStore);
