@@ -711,10 +711,7 @@ export function meRoutes(deps: MeRouteDeps): Hono {
       }
       const parsed = amountUnitBody.safeParse(await c.req.json().catch(() => null));
       if (!parsed.success) {
-        return c.json(
-          { error: 'Expected a JSON body with a unit of btc or fiat' },
-          400,
-        );
+        return c.json({ error: 'Expected a JSON body with a unit of btc or fiat' }, 400);
       }
       const current = await storedAccount(deps, account.id);
       /* v8 ignore next 3 -- the account row cannot vanish mid-request after auth */
