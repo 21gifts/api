@@ -3071,9 +3071,7 @@ Success → **Response** `200`:
 An empty thread is **200** with `"messages": []`. When `DATABASE_URL` is
 unset the default in-memory store starts empty; when set, rows come from
 Postgres `message`. List queries select top-level rows only
-(`parent_id IS NULL`), and omit rows whose id is `account.profile_message_id`
-(`NOT EXISTS (SELECT 1 FROM account WHERE account.profile_message_id = message.id)`),
-`(photo IS NOT NULL) AS has_photo`, and a
+(`parent_id IS NULL`), `(photo IS NOT NULL) AS has_photo`, and a
 `replyCount` of live attributed children
 (`account_id IS NOT NULL OR (author_pubkey IS NOT NULL AND EXISTS
 (SELECT 1 FROM nostr_zapper WHERE pubkey = lower(author_pubkey)))`),
