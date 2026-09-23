@@ -245,9 +245,10 @@ Satoshi. While an unexpired pending `pos_charge` exists, both
 does not mint invoices. Settlement stays on the linked Wallet of Satoshi
 address.
 
-CORS is the same `WELL_KNOWN_CORS` as `/.well-known/nostr.json`:
-`Access-Control-Allow-Origin: *`, methods `GET` / `OPTIONS`,
-`Cache-Control: public, max-age=60`.
+CORS origin and methods match `/.well-known/nostr.json`
+(`Access-Control-Allow-Origin: *`, methods `GET` / `OPTIONS`).
+The pay request itself is `Cache-Control: no-store`. `public, max-age=60`
+stays on `GET /.well-known/nostr.json` only.
 
 Username invalid (`normalizeUsername` returns null), unknown
 (`getAccountByUsername` undefined), or unlinked (no non-blank
