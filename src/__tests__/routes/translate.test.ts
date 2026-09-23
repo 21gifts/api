@@ -283,4 +283,86 @@ describe('POST /messages/:id/translate', () => {
     });
     expect(withheld.status).toBe(404);
   });
+
+  it('returns 404 for a hidden note when the session is not staff', async () => {
+    const messages = new InMemoryMessageStore();
+    await messages.create({
+      id: NOTE_ID,
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'Hallo Welt',
+      createdAt: new Date('2026-09-01T00:00:00.000Z'),
+      ...unsignedNostrDefaults(),
+      hasPhoto: false,
+      hasVideo: false,
+      videoContentType: null,
+    });
+    expect(await messages.markDeleted(NOTE_ID, new Date('2026-09-02T00:00:00.000Z'), 'acc')).toBe(
+      true,
+    );
+    const authStore = new InMemoryAuthStore();
+    await authStore.createAccount({
+      id: 'acc',
+      linkingKey: `02${'a'.repeat(64)}`,
+      role: 'verified',
+      name: 'Ada',
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: 'a'.repeat(64),
+      createdAt: 1,
+      rulesAgreedAt: 1,
+    });
+    await authStore.createSession({ token: 'tok', accountId: 'acc', createdAt: 1 });
+    const app = new Hono().route(
+      '/messages',
+      messagesRoutes({
+        store: messages,
+        authStore,
+        now: () => 1,
+        env: ENV,
+      }),
+    );
+    const res = await app.request(`/messages/${NOTE_ID}/translate`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: 'Bearer tok' },
+      body: JSON.stringify({ target: 'en' }),
+    });
+    expect(res.status).toBe(404);
+  });
+
+  it('uses an empty env object when deps.env is omitted on a cache hit', async () => {
+    const messages = new InMemoryMessageStore();
+    await messages.create({
+      id: NOTE_ID,
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'Hallo Welt',
+      createdAt: new Date('2026-09-01T00:00:00.000Z'),
+      ...unsignedNostrDefaults(),
+      hasPhoto: false,
+      hasVideo: false,
+      videoContentType: null,
+    });
+    const translations = new InMemoryTranslationStore();
+    const { translationSourceHash } = await import('@/lib/translation-store');
+    await translations.put(NOTE_ID, 'en', translationSourceHash('Hallo Welt'), 'Hello, World');
+    const app = new Hono().route(
+      '/messages',
+      messagesRoutes({
+        store: messages,
+        authStore: new InMemoryAuthStore(),
+        now: () => 1,
+        translationStore: translations,
+      }),
+    );
+    const res = await app.request(`/messages/${NOTE_ID}/translate`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ target: 'en' }),
+    });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ translatedText: 'Hello, World', cached: true });
+  });
 });
