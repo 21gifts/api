@@ -527,18 +527,19 @@ export function readVideoTakenAt(bytes: Uint8Array): string | null {
   }
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   const payload = box.start + box.headerSize;
-  if (payload >= bytes.byteLength) {
+  const boxEnd = box.start + box.size;
+  if (payload >= boxEnd) {
     return null;
   }
   const version = bytes[payload];
   let seconds: number;
   if (version === 0) {
-    if (payload + 8 > bytes.byteLength) {
+    if (payload + 8 > boxEnd) {
       return null;
     }
     seconds = view.getUint32(payload + 4);
   } else if (version === 1) {
-    if (payload + 12 > bytes.byteLength) {
+    if (payload + 12 > boxEnd) {
       return null;
     }
     const raw = view.getBigUint64(payload + 4);

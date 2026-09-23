@@ -601,5 +601,13 @@ describe('readVideoTakenAt', () => {
     new DataView(truncated.buffer).setUint32(0, 100);
     truncated.set([0x66, 0x72, 0x65, 0x65], 4);
     expect(readVideoTakenAt(truncated)).toBeNull();
+    const followed = new Uint8Array(32);
+    new DataView(followed.buffer).setUint32(0, 12);
+    followed.set([0x6d, 0x76, 0x68, 0x64], 4);
+    new DataView(followed.buffer).setUint32(12, seconds);
+    expect(readVideoTakenAt(followed)).toBeNull();
+    followed[8] = 1;
+    new DataView(followed.buffer).setBigUint64(12, BigInt(seconds));
+    expect(readVideoTakenAt(followed)).toBeNull();
   });
 });
