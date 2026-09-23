@@ -781,15 +781,15 @@
 
 ## Function: HttpSpendPing
 
-- **Purpose:** POST `{ address, messageId }` (omitted/`daily`) or `{ address, kind: "moderator", groupMessageId }` (no `messageId` key) to `{spendUrl}/ping` with Bearer `SPEND_API_TOKEN`. 2xx logs `spend.ping.ok`. Network, abort, and non-2xx log `spend.ping.failed` and resolve. Never throws. Never logs the token.
-- **Inputs:** Constructor `{ spendUrl, token, fetchImpl, timeoutMs? }` (already-trimmed base URL, no trailing slash; default timeout 5000 ms). `ping(address, messageId, kind?: 'daily' | 'moderator')`. omitted/`daily` → `{ address, messageId }`; `'moderator'` → `{ address, kind: "moderator", groupMessageId: messageId }` without a `messageId` key.
+- **Purpose:** POST `{ address, messageId }` (omitted/`daily`), `{ address, messageId, kind: "welcome" }` (`'welcome'`), or `{ address, kind: "moderator", groupMessageId }` (no `messageId` key) to `{spendUrl}/ping` with Bearer `SPEND_API_TOKEN`. 2xx logs `spend.ping.ok`. Network, abort, and non-2xx log `spend.ping.failed` and resolve. Never throws. Never logs the token.
+- **Inputs:** Constructor `{ spendUrl, token, fetchImpl, timeoutMs? }` (already-trimmed base URL, no trailing slash; default timeout 5000 ms). `ping(address, messageId, kind?: 'daily' | 'moderator' | 'welcome')`. omitted/`daily` → `{ address, messageId }` (no `kind` key); `'welcome'` → `{ address, messageId, kind: "welcome" }`; `'moderator'` → `{ address, kind: "moderator", groupMessageId: messageId }` without a `messageId` key.
 - **Returns / side effects:** `Promise<void>`. HTTP POST; logs `spend.ping.ok` or `spend.ping.failed`.
 - **Used by:** `resolveSpendPing`.
 
 ## Function: NoopSpendPing
 
 - **Purpose:** `SpendPing` that ignores address, `messageId`, and optional kind — used when tests inject a collaborator that must not call HTTP.
-- **Inputs:** `ping(_address, _messageId, _kind?)`. Accepts optional 3rd arg, ignores it.
+- **Inputs:** `ping(_address, _messageId, _kind?: 'daily' | 'moderator' | 'welcome')`. Accepts optional 3rd arg, ignores it.
 - **Returns / side effects:** Resolves immediately. No HTTP.
 - **Used by:** Tests.
 
