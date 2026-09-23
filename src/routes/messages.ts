@@ -607,8 +607,14 @@ async function persistForumPost(
         );
         if (!eligibleToday(account.role, grant, deps.now())) {
           logEvent('spend.ping.skipped', { reason: 'not_eligible' });
-        } else {
+        } else if (
+          created.hasPhoto === true ||
+          created.hasVideo === true ||
+          Number(created.photoCount) > 0
+        ) {
           await deps.spendPing.ping(account.lightningAddress, created.id);
+        } else {
+          logEvent('spend.ping.skipped', { reason: 'no_media' });
         }
       } catch {
         logEvent('spend.ping.failed');

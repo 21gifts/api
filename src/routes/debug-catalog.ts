@@ -10,6 +10,7 @@ import type { GiftStore } from '@/lib/gift-store';
 import { logEvent } from '@/lib/log';
 import type { MessageStore } from '@/lib/message-store';
 import type { NotificationStore } from '@/lib/notification-store';
+import type { PosStore } from '@/lib/pos-store';
 import type { PushStore } from '@/lib/push-store';
 import type { TrustStore } from '@/lib/trust-store';
 
@@ -21,6 +22,8 @@ export interface DebugCatalogRouteDeps {
   messages: MessageStore;
   /** Contact mailbox. */
   contacts: ContactStore;
+  /** Optional point-of-sale charges. Omitted dumps `pos_charge` as `[]`. */
+  pos?: PosStore;
   /** Optional HTTP audit log. */
   apiLog?: ApiLogStore;
   /** Optional private threads. */
@@ -62,6 +65,9 @@ function catalogDeps(deps: DebugCatalogRouteDeps): DebugCatalogDeps {
     messages: deps.messages,
     contacts: deps.contacts,
   };
+  if (deps.pos !== undefined) {
+    catalog.pos = deps.pos;
+  }
   if (deps.apiLog !== undefined) {
     catalog.apiLog = deps.apiLog;
   }

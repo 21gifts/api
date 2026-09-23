@@ -10,6 +10,8 @@ import {
 import type { AuthStore } from '@/lib/auth/store';
 import { serializeDebugApiLog, type ApiLogStore } from '@/lib/api-log';
 import { serializeDebugContact } from '@/lib/contact';
+import { serializeDebugPosCharge } from '@/lib/pos-charge';
+import type { PosStore } from '@/lib/pos-store';
 import type { ContactStore } from '@/lib/contact-store';
 import type { ConversationStore } from '@/lib/conversation-store';
 import type { GiftStore } from '@/lib/gift-store';
@@ -29,6 +31,7 @@ export const DEBUG_CATALOG_TABLES = [
   'address_verification',
   'api_log',
   'contact',
+  'pos_charge',
   'conversation',
   'conversation_message',
   'conversation_read',
@@ -73,6 +76,8 @@ export interface DebugCatalogDeps {
   messages: MessageStore;
   /** Contact mailbox. */
   contacts: ContactStore;
+  /** Point-of-sale charges. Omitted dumps as `[]`. */
+  pos?: PosStore;
   /** HTTP audit log (`api_log`). */
   apiLog?: ApiLogStore;
   /** Private threads (operator listAll, not listVisible). */
@@ -187,6 +192,8 @@ async function loadTable(deps: DebugCatalogDeps, table: DebugCatalogTable): Prom
       return ((await deps.apiLog?.listLatest(MESSAGE_LIST_LIMIT)) ?? []).map(serializeDebugApiLog);
     case 'contact':
       return (await deps.contacts.listLatest(MESSAGE_LIST_LIMIT)).map(serializeDebugContact);
+    case 'pos_charge':
+      return ((await deps.pos?.listLatest(MESSAGE_LIST_LIMIT)) ?? []).map(serializeDebugPosCharge);
     case 'conversation': {
       const rows = (await deps.conversations?.listAll(MESSAGE_LIST_LIMIT)) ?? [];
       return rows.map((row) => ({

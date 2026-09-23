@@ -1,6 +1,7 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 import { Hono } from 'hono';
 import { InMemoryApiLogStore } from '@/lib/api-log';
+import { InMemoryPosStore } from '@/lib/pos-store';
 import { InMemoryAuthStore } from '@/lib/auth/store';
 import { InMemoryContactStore } from '@/lib/contact-store';
 import { InMemoryConversationStore } from '@/lib/conversation-store';
@@ -103,6 +104,48 @@ describe('debugCatalogRoutes', () => {
     expect(body.tables['db_change']).toEqual([]);
     expect(body.tables['auth_session']).toEqual([]);
     expect(body.tables['api_log']).toEqual([]);
+    expect(body.tables['pos_charge']).toEqual([]);
+  });
+
+  it('dumps pos_charge rows when the store is wired', async () => {
+    const pos = new InMemoryPosStore();
+    const createdAt = new Date('2026-09-22T00:00:00.000Z');
+    await pos.create({
+      id: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
+      accountId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+      amountSats: 21,
+      status: 'pending',
+      createdAt,
+      expiresAt: new Date('2026-09-22T00:05:00.000Z'),
+    });
+    const res = await new Hono()
+      .route(
+        '/debug/dump',
+        debugCatalogRoutes({
+          auth: new InMemoryAuthStore(),
+          messages: new InMemoryMessageStore(),
+          contacts: new InMemoryContactStore(),
+          pos,
+          debugToken: 'secret',
+        }),
+      )
+      .request('/debug/dump/pos_charge', {
+        headers: { authorization: 'Bearer secret' },
+      });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({
+      table: 'pos_charge',
+      rows: [
+        {
+          id: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
+          accountId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+          amountSats: 21,
+          status: 'pending',
+          createdAt: createdAt.toISOString(),
+          expiresAt: '2026-09-22T00:05:00.000Z',
+        },
+      ],
+    });
   });
 
   it('dumps wired rate and db_change list ports', async () => {

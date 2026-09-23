@@ -196,6 +196,7 @@ function throwingStore(overrides: Partial<MessageStore> = {}): MessageStore {
     findLiveByAccountContent: boom,
     accountHasLivePost: boom,
     accountHasLiveTopLevelPost: boom,
+    accountHasLiveTopLevelMediaPost: boom,
     countByAccount: boom,
     countAttributedReplies: boom,
     listPostsByAccount: boom,
@@ -2557,7 +2558,10 @@ describe('POST /messages', () => {
     }).request('/messages', {
       method: 'POST',
       headers: { ...AUTH, 'content-type': 'application/json' },
-      body: JSON.stringify({ text: 'hello' }),
+      body: JSON.stringify({
+        text: 'hello',
+        photo: { contentType: 'image/jpeg', data: JPEG_B64 },
+      }),
     });
     expect(res.status).toBe(200);
     const created = (await res.json()) as { id: string };
@@ -2664,13 +2668,54 @@ describe('POST /messages', () => {
     }).request('/messages', {
       method: 'POST',
       headers: { ...AUTH, 'content-type': 'application/json' },
-      body: JSON.stringify({ text: 'hello' }),
+      body: JSON.stringify({
+        text: 'hello',
+        photo: { contentType: 'image/jpeg', data: JPEG_B64 },
+      }),
     });
     expect(res.status).toBe(200);
     const created = (await res.json()) as { id: string };
     expect(spendPing.ping).toHaveBeenCalledTimes(1);
     expect(spendPing.ping).toHaveBeenCalledWith('ada@walletofsatoshi.com', created.id);
     expect(parsedEvents(warn).some((e) => e['event'] === 'spend.ping.failed')).toBe(true);
+  });
+
+  it('skips spend ping when a top-level post has no media', async () => {
+    const spendPing = { ping: vi.fn(async (_address: string, _messageId: string) => undefined) };
+    const res = await mount(await staffStore('Ada'), new InMemoryMessageStore(), {
+      spendPing,
+      fundingStore: admittedFunding(),
+    }).request('/messages', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ text: 'hello' }),
+    });
+    expect(res.status).toBe(200);
+    expect(spendPing.ping).not.toHaveBeenCalled();
+    expect(
+      parsedEvents(warn).some(
+        (e) => e['event'] === 'spend.ping.skipped' && e['reason'] === 'no_media',
+      ),
+    ).toBe(true);
+  });
+
+  it('pings spend once on a top-level post with extra stills only', async () => {
+    const spendPing = { ping: vi.fn(async (_address: string, _messageId: string) => undefined) };
+    const res = await mount(await staffStore('Ada'), new InMemoryMessageStore(), {
+      spendPing,
+      fundingStore: admittedFunding(),
+    }).request('/messages', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({
+        text: 'hello',
+        photos: [{ contentType: 'image/jpeg', data: JPEG_B64 }],
+      }),
+    });
+    expect(res.status).toBe(200);
+    const created = (await res.json()) as { id: string };
+    expect(spendPing.ping).toHaveBeenCalledTimes(1);
+    expect(spendPing.ping).toHaveBeenCalledWith('ada@walletofsatoshi.com', created.id);
   });
 
   it('pings spend once on a multipart video top-level post', async () => {
@@ -2719,6 +2764,8 @@ describe('POST /messages', () => {
       accountHasLivePost: (accountId, excludeId) => base.accountHasLivePost(accountId, excludeId),
       accountHasLiveTopLevelPost: (accountId, excludeId) =>
         base.accountHasLiveTopLevelPost(accountId, excludeId),
+      accountHasLiveTopLevelMediaPost: (accountId, excludeId) =>
+        base.accountHasLiveTopLevelMediaPost(accountId, excludeId),
       countByAccount: (accountId) => base.countByAccount(accountId),
       countAttributedReplies: (parentId) => base.countAttributedReplies(parentId),
       listPostsByAccount: (accountId, limit) => base.listPostsByAccount(accountId, limit),
@@ -2826,6 +2873,8 @@ describe('POST /messages', () => {
       accountHasLivePost: (accountId, excludeId) => base.accountHasLivePost(accountId, excludeId),
       accountHasLiveTopLevelPost: (accountId, excludeId) =>
         base.accountHasLiveTopLevelPost(accountId, excludeId),
+      accountHasLiveTopLevelMediaPost: (accountId, excludeId) =>
+        base.accountHasLiveTopLevelMediaPost(accountId, excludeId),
       countByAccount: (accountId) => base.countByAccount(accountId),
       countAttributedReplies: (parentId) => base.countAttributedReplies(parentId),
       listPostsByAccount: (accountId, limit) => base.listPostsByAccount(accountId, limit),
@@ -4427,6 +4476,8 @@ describe('POST /messages/:id/invoice', () => {
       accountHasLivePost: (accountId, excludeId) => base.accountHasLivePost(accountId, excludeId),
       accountHasLiveTopLevelPost: (accountId, excludeId) =>
         base.accountHasLiveTopLevelPost(accountId, excludeId),
+      accountHasLiveTopLevelMediaPost: (accountId, excludeId) =>
+        base.accountHasLiveTopLevelMediaPost(accountId, excludeId),
       countByAccount: (accountId) => base.countByAccount(accountId),
       countAttributedReplies: (parentId) => base.countAttributedReplies(parentId),
       listPostsByAccount: (accountId, limit) => base.listPostsByAccount(accountId, limit),
