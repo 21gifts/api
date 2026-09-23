@@ -263,7 +263,7 @@
 ## Endpoint: POST /auth/passkey/seed/finish
 
 - **Purpose:** Bearer session. Verifies a `seed` attestation and inserts an additional passkey, setting `walletRequired` true. Does not delete the login passkey, does not change `walletBackupSeenAt`, and does not mint a session. Success JSON is `{ account }` owner JSON. `passkeyCredentialId` is the new credential id. `walletBackupSeenAt` does not decide whether a seed exists.
-- **Errors:** 401 without a session; 409 `{ error: 'This account already has a recovery phrase' }` when `walletRequired` is already true, the credential id is taken, the account is missing, or the insert does not land; 400 invalid body, origin, challenge, or attestation; 500 if WebAuthn is unconfigured.
+- **Errors:** 401 without a session, including a `sessionRefused` bearer (resolved before finish, not 409); 409 `{ error: 'This account already has a recovery phrase' }` when `walletRequired` is already true, the credential id is taken, the account is missing, or the insert does not land; 400 invalid body, origin, challenge, or attestation; 500 if WebAuthn is unconfigured.
 - **Used by:** App add-recovery-phrase finish.
 - **Auth:** `Authorization: Bearer` session.
 
