@@ -993,6 +993,30 @@ describe('InMemoryMessageStore', () => {
     expect(await store.listLatest(10)).toHaveLength(1);
   });
 
+  it('create keeps the first row when the same photo is posted with the same place', async () => {
+    const store = new InMemoryMessageStore();
+    const place = { lat: 47.3, lng: 8.5, label: 'Stall' };
+    const first = await store.create({ ...EARLY, id: 'm1', text: 'same', place }, JPEG);
+    const second = await store.create(
+      { ...EARLY, id: 'm2', text: 'same', place: { ...place } },
+      JPEG,
+    );
+    expect(second.id).toBe(first.id);
+    expect(await store.listLatest(10)).toHaveLength(1);
+  });
+
+  it('create throws when the same photo is posted with a different place', async () => {
+    const store = new InMemoryMessageStore();
+    await store.create({ ...EARLY, id: 'm1', text: 'same' }, JPEG);
+    await expect(
+      store.create(
+        { ...EARLY, id: 'm2', text: 'same', place: { lat: 47.3, lng: 8.5, label: 'Stall' } },
+        JPEG,
+      ),
+    ).rejects.toThrow('place conflicts with live media');
+    expect(await store.listLatest(10)).toHaveLength(1);
+  });
+
   it('create does not write a second video file on media collapse', async () => {
     const store = new InMemoryMessageStore();
     const mp4 = new Uint8Array(32);
@@ -4723,6 +4747,42 @@ describe('PostgresMessageStore', () => {
       ...unsignedNostrDefaults(),
     });
     expect(created.id).toBe('m1');
+  });
+
+  it('create on 23505 throws when the stored place differs', async () => {
+    const sql = new MockSql();
+    sql.executeError = Object.assign(new Error('duplicate key'), { code: '23505' });
+    sql.nextRows = [
+      {
+        id: 'existing-id',
+        account_id: 'acc',
+        name: 'Ada',
+        text: 'same',
+        created_at: new Date(0),
+        has_photo: true,
+        event_id: null,
+        nostr_publish_state: 'pending',
+        sats: 0,
+        place_lat: 47.3,
+        place_lng: 8.5,
+        place_label: 'Stall',
+      },
+    ];
+    await expect(
+      new PostgresMessageStore(sql).create(
+        {
+          id: 'm-new',
+          accountId: 'acc',
+          name: 'Ada',
+          text: 'same',
+          createdAt: new Date(0),
+          hasPhoto: true,
+          place: { lat: 1, lng: 2, label: null },
+          ...unsignedNostrDefaults(),
+        },
+        JPEG,
+      ),
+    ).rejects.toThrow('place conflicts with live media');
   });
 
   it('create on 23505 rethrows when findLiveByAccountContent misses', async () => {

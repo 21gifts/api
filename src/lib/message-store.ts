@@ -31,7 +31,7 @@ import {
   type MessageRow,
   type NostrPublishState,
 } from '@/lib/message';
-import type { ForumPlace } from '@/lib/place';
+import { placesMatch, type ForumPlace } from '@/lib/place';
 
 export type { ForumFeedMode };
 import { kind1ContentWithHashtags } from '@/lib/nostr/event';
@@ -1960,8 +1960,9 @@ export class InMemoryMessageStore implements MessageStore {
    * row's parent was later deleted. A non-null `eventId` that already exists
    * returns the stored row (same uniqueness as
    * `message_event_id_uidx` and conversation `appendMessage`). Live unsigned
-   * media (`eventId` null) with the same account, parent, and fingerprint
+   * media (`eventId` null) with the same account, parent, fingerprint, and place
    * returns the existing row without appending or writing a second video file.
+   * A different place throws `place conflicts with live media`.
    * A non-null `parentId` requires a live parent (`deletedAt` null); a missing
    * or soft-hidden parent throws and does not append. Replies store
    * `goalSats` null even when the row carried a positive ask, and store
@@ -2015,6 +2016,9 @@ export class InMemoryMessageStore implements MessageStore {
         contentFp,
       );
       if (existing !== undefined) {
+        if (!placesMatch(existing.place ?? null, row.place ?? null)) {
+          throw new Error('place conflicts with live media');
+        }
         return existing;
       }
     }
@@ -3833,7 +3837,8 @@ export class PostgresMessageStore implements MessageStore {
    * violation (`23505`), if `getById(stored.id)` matches that id, return that
    * row (no unlink — gift-reply retry). Otherwise unlink any video written for
    * the new id and return the existing live row from
-   * {@link findLiveByAccountContent}.
+   * {@link findLiveByAccountContent} when its place matches. A different place
+   * throws `place conflicts with live media`.
    *
    * @param row - Fully formed message.
    * @param photo - Optional decoded photo.
@@ -3971,6 +3976,9 @@ export class PostgresMessageStore implements MessageStore {
           contentFp,
         );
         if (existing !== undefined) {
+          if (!placesMatch(existing.place ?? null, stored.place ?? null)) {
+            throw new Error('place conflicts with live media');
+          }
           return existing;
         }
       }

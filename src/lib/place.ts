@@ -44,6 +44,35 @@ function roundCoord(n: number): number {
  * @param input - JSON `place`, multipart-derived object, or omitted/null.
  * @returns `{ ok: true, value: ForumPlace | null }` or `{ ok: false, error }`.
  */
+/** True when both pins are absent or carry the same rounded coordinates and label. */
+export function placesMatch(a: ForumPlace | null, b: ForumPlace | null): boolean {
+  if (a === null || b === null) {
+    return a === b;
+  }
+  return a.lat === b.lat && a.lng === b.lng && a.label === b.label;
+}
+
+/**
+ * A multipart coordinate. Blank or missing is `missing`. Anything that is not
+ * an explicit decimal is `invalid` (`Number(" ")` is 0 and must not become a pin).
+ */
+export function parseMultipartCoord(raw: unknown): 'missing' | 'invalid' | number {
+  if (raw === null || raw === undefined) {
+    return 'missing';
+  }
+  if (typeof raw !== 'string') {
+    return 'invalid';
+  }
+  const trimmed = raw.trim();
+  if (trimmed === '') {
+    return 'missing';
+  }
+  if (!/^[+-]?(?:\d+(?:\.\d+)?|\.\d+)$/.test(trimmed)) {
+    return 'invalid';
+  }
+  return Number(trimmed);
+}
+
 export function normalizePlace(
   input: unknown,
 ):

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { PLACE_LABEL_MAX, normalizePlace } from '@/lib/place';
+import { PLACE_LABEL_MAX, normalizePlace, parseMultipartCoord, placesMatch } from '@/lib/place';
 
 const COORD_ERROR = 'Place must be a latitude and longitude';
 const LABEL_ERROR = 'Place label must be at most 80 characters';
@@ -149,5 +149,39 @@ describe('normalizePlace', () => {
       ok: true,
       value: { lat: 47.3, lng: 8.5, label: 'Zürich' },
     });
+  });
+});
+
+describe('placesMatch', () => {
+  const pin = { lat: 47.3, lng: 8.5, label: 'Stall' as string | null };
+
+  it('matches only when both pins are absent or identical', () => {
+    expect(placesMatch(null, null)).toBe(true);
+    expect(placesMatch(null, pin)).toBe(false);
+    expect(placesMatch(pin, null)).toBe(false);
+    expect(placesMatch(pin, { ...pin })).toBe(true);
+    expect(placesMatch(pin, { ...pin, lat: 1 })).toBe(false);
+    expect(placesMatch(pin, { ...pin, lng: 1 })).toBe(false);
+    expect(placesMatch(pin, { ...pin, label: 'Other' })).toBe(false);
+    expect(placesMatch(pin, { ...pin, label: null })).toBe(false);
+  });
+});
+
+describe('parseMultipartCoord', () => {
+  it('treats blank values as missing and anything else non-decimal as invalid', () => {
+    expect(parseMultipartCoord(null)).toBe('missing');
+    expect(parseMultipartCoord(undefined)).toBe('missing');
+    expect(parseMultipartCoord('')).toBe('missing');
+    expect(parseMultipartCoord('  ')).toBe('missing');
+    expect(parseMultipartCoord(1)).toBe('invalid');
+    expect(parseMultipartCoord(true)).toBe('invalid');
+    expect(parseMultipartCoord('north')).toBe('invalid');
+    expect(parseMultipartCoord('1e2')).toBe('invalid');
+    expect(parseMultipartCoord('+')).toBe('invalid');
+    expect(parseMultipartCoord('.')).toBe('invalid');
+    expect(parseMultipartCoord('47.3')).toBe(47.3);
+    expect(parseMultipartCoord(' +8 ')).toBe(8);
+    expect(parseMultipartCoord('-0.5')).toBe(-0.5);
+    expect(parseMultipartCoord('.5')).toBe(0.5);
   });
 });

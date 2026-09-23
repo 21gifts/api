@@ -2464,6 +2464,41 @@ describe('POST /messages', () => {
     expect(await store.listLatest(10)).toHaveLength(1);
   });
 
+  it('rejects a repeated photo when the place pin differs', async () => {
+    const store = new InMemoryMessageStore();
+    const app = new Hono().route(
+      '/messages',
+      messagesRoutes({
+        store,
+        authStore: await namedStore('Ada'),
+        now,
+        postLimiter: new PostRateLimiter(),
+        invoiceLimiter: new InvoiceRateLimiter(),
+      }),
+    );
+    const first = await app.request('/messages', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({
+        text: 'same caption',
+        photo: { contentType: 'image/jpeg', data: JPEG_B64 },
+      }),
+    });
+    expect(first.status).toBe(200);
+    const second = await app.request('/messages', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({
+        text: 'same caption',
+        photo: { contentType: 'image/jpeg', data: JPEG_B64 },
+        place: { lat: 47.3, lng: 8.5, label: 'Stall' },
+      }),
+    });
+    expect(second.status).toBe(409);
+    expect(await second.json()).toEqual({ error: 'A live note with this media already exists' });
+    expect(await store.listLatest(10)).toHaveLength(1);
+  });
+
   it('collapses onto a signed note as payable when the account has a Lightning Address', async () => {
     const store = new InMemoryMessageStore();
     const seeded = await store.create(
@@ -7585,6 +7620,60 @@ describe('forum video', () => {
     });
     expect(outOfRangeRes.status).toBe(400);
     expect(await outOfRangeRes.json()).toEqual({ error: 'Place must be a latitude and longitude' });
+  });
+
+  it('returns 400 when a multipart coordinate is not a decimal', async () => {
+    const badLat = new FormData();
+    badLat.set('text', 'pin');
+    badLat.set('placeLat', 'north');
+    badLat.set('placeLng', '8.5');
+    const badLatRes = await mount(await namedStore('Ada')).request('/messages', {
+      method: 'POST',
+      headers: AUTH,
+      body: badLat,
+    });
+    expect(badLatRes.status).toBe(400);
+    expect(await badLatRes.json()).toEqual({ error: 'Place must be a latitude and longitude' });
+
+    const badLng = new FormData();
+    badLng.set('text', 'pin');
+    badLng.set('placeLat', '47.3');
+    badLng.set('placeLng', 'east');
+    const badLngRes = await mount(await namedStore('Ada')).request('/messages', {
+      method: 'POST',
+      headers: AUTH,
+      body: badLng,
+    });
+    expect(badLngRes.status).toBe(400);
+    expect(await badLngRes.json()).toEqual({ error: 'Place must be a latitude and longitude' });
+  });
+
+  it('omits place when multipart coordinates are blank', async () => {
+    const form = new FormData();
+    form.set('text', 'pin');
+    form.set('placeLat', ' ');
+    form.set('placeLng', ' ');
+    const res = await mount(await namedStore('Ada')).request('/messages', {
+      method: 'POST',
+      headers: AUTH,
+      body: form,
+    });
+    expect(res.status).toBe(200);
+    expect(await res.json()).not.toHaveProperty('place');
+  });
+
+  it('returns 400 when one multipart coordinate is blank', async () => {
+    const form = new FormData();
+    form.set('text', 'pin');
+    form.set('placeLat', ' ');
+    form.set('placeLng', '8.5');
+    const res = await mount(await namedStore('Ada')).request('/messages', {
+      method: 'POST',
+      headers: AUTH,
+      body: form,
+    });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: 'Place must be a latitude and longitude' });
   });
 
   it('omits place when multipart placeLat and placeLng are empty', async () => {

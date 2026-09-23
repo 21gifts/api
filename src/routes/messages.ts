@@ -50,7 +50,7 @@ import { notifyForumPost, notifyForumReply } from '@/lib/notification';
 import type { NotificationStore } from '@/lib/notification-store';
 import type { PushStore } from '@/lib/push-store';
 import type { SpendPing } from '@/lib/spend-ping';
-import { normalizePlace, type ForumPlace } from '@/lib/place';
+import { normalizePlace, parseMultipartCoord, placesMatch, type ForumPlace } from '@/lib/place';
 import { bearerToken } from '@/routes/me';
 import {
   MESSAGE_VIDEO_MAX_BYTES,
@@ -534,6 +534,9 @@ async function persistForumPost(
     try {
       const existing = await deps.store.findLiveByAccountContent(account.id, parentId, fp);
       if (existing !== undefined) {
+        if (!placesMatch(existing.place ?? null, place)) {
+          return c.json({ error: 'A live note with this media already exists' }, 409);
+        }
         return c.json(
           serializeMessage(existing, payableOf(existing, account), account.role, undefined, true),
           200,
@@ -742,15 +745,17 @@ async function postMultipartMessage(
   const placeLat = form.get('placeLat');
   const placeLng = form.get('placeLng');
   const placeLabel = form.get('placeLabel');
-  const latMissing = placeLat === null || placeLat === '';
-  const lngMissing = placeLng === null || placeLng === '';
+  const latParsed = parseMultipartCoord(placeLat);
+  const lngParsed = parseMultipartCoord(placeLng);
+  const latMissing = latParsed === 'missing';
+  const lngMissing = lngParsed === 'missing';
   if (!latMissing || !lngMissing) {
-    if (latMissing || lngMissing) {
+    if (latMissing || lngMissing || latParsed === 'invalid' || lngParsed === 'invalid') {
       return c.json({ error: 'Place must be a latitude and longitude' }, 400);
     }
     const parsedPlace = normalizePlace({
-      lat: Number(placeLat),
-      lng: Number(placeLng),
+      lat: latParsed,
+      lng: lngParsed,
       ...(placeLabel === null || placeLabel === '' ? {} : { label: placeLabel }),
     });
     if (!parsedPlace.ok) {
