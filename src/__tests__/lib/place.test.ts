@@ -179,6 +179,7 @@ describe('parseMultipartCoord', () => {
     expect(parseMultipartCoord('1e2')).toBe('invalid');
     expect(parseMultipartCoord('+')).toBe('invalid');
     expect(parseMultipartCoord('.')).toBe('invalid');
+    expect(parseMultipartCoord('9'.repeat(400))).toBe('invalid');
     expect(parseMultipartCoord('47.3')).toBe(47.3);
     expect(parseMultipartCoord(' +8 ')).toBe(8);
     expect(parseMultipartCoord('-0.5')).toBe(-0.5);

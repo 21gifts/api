@@ -53,7 +53,8 @@ export function placesMatch(a: ForumPlace | null, b: ForumPlace | null): boolean
  * `invalid`, so `Number(" ")` cannot become a pin at zero.
  *
  * @param raw - Multipart field value (`placeLat` or `placeLng`).
- * @returns `'missing'`, `'invalid'`, or a finite number.
+ * @returns `'missing'`, `'invalid'`, or a finite number. Overflow to
+ *   `Infinity` is `'invalid'`.
  */
 export function parseMultipartCoord(raw: unknown): 'missing' | 'invalid' | number {
   if (raw === null || raw === undefined) {
@@ -69,7 +70,8 @@ export function parseMultipartCoord(raw: unknown): 'missing' | 'invalid' | numbe
   if (!/^[+-]?(?:\d+(?:\.\d+)?|\.\d+)$/.test(trimmed)) {
     return 'invalid';
   }
-  return Number(trimmed);
+  const value = Number(trimmed);
+  return Number.isFinite(value) ? value : 'invalid';
 }
 
 /**
