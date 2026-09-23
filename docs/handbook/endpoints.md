@@ -66,7 +66,7 @@
 ## Endpoint: POST /pay/:username/invoice
 
 - **Purpose:** Public, unauthenticated BOLT11 mint for an exact satoshi amount. Same account lookup as `GET /pay/:username`, then `{ amountSats: number }` must be an integer inside `[minSats, maxSats]` whose millisatoshi value sits inside the provider window. Settlement calls `requestGiftInvoice` on the stored Wallet of Satoshi address only — never `username@21.gifts`. Response is `{ pr, amountSats }` with no comment sent. No spend token.
-- **Errors:** 404 `{ error: 'Not found' }` for an invalid username, unknown account, or blank Lightning Address; 400 `{ error: 'Enter a whole number of sats' }` for missing or invalid JSON, a non-integer, or an amount outside the window; 502 `{ error: 'Lightning Address could not be resolved' }` when the address cannot be resolved, the store throws, the sat window is empty, or the invoice fetch fails.
+- **Errors:** 404 `{ error: 'Not found' }` for an invalid username, unknown account, or blank Lightning Address; 400 `{ error: 'Enter a whole number of sats' }` for missing or invalid JSON, a non-integer, or an amount outside the window; 502 `{ error: 'Lightning Address could not be resolved' }` when the address cannot be resolved, the store throws, the sat window is empty, the invoice fetch fails, or the BOLT11 is missing or not for that exact millisatoshi amount.
 - **Used by:** The browser pay page minting one invoice for the typed satoshi amount.
 - **Auth:** none.
 

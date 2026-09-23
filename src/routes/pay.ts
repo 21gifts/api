@@ -9,6 +9,7 @@
 import { Hono } from 'hono';
 import { z } from 'zod';
 import type { AuthStore } from '@/lib/auth/store';
+import { decodeBolt11 } from '@/lib/bolt11';
 import { requestGiftInvoice } from '@/lib/gift-invoice';
 import { normalizeLightningAddress } from '@/lib/lightning-address';
 import type { FetchFn } from '@/lib/lnurlp';
@@ -127,6 +128,11 @@ export function payRoutes(deps: { auth: AuthStore; fetchImpl: FetchFn }): Hono {
         fetchImpl: deps.fetchImpl,
       });
       if (!invoice.ok) {
+        logEvent('pay.invoice_failed', { username });
+        return c.json({ error: 'Lightning Address could not be resolved' }, 502);
+      }
+      const decoded = decodeBolt11(invoice.pr);
+      if (decoded === null || decoded.amountMsat !== amountMsat) {
         logEvent('pay.invoice_failed', { username });
         return c.json({ error: 'Lightning Address could not be resolved' }, 502);
       }

@@ -6,7 +6,10 @@ const ADA_ID = '00000000-0000-4000-8000-000000000001';
 const WIDE_MAX_SENDABLE = 100_000_000_000;
 const CALLBACK = 'https://walletofsatoshi.com/lnurlp/callback';
 const WELL_KNOWN_URL = 'https://walletofsatoshi.com/.well-known/lnurlp/alice';
-const PR = 'lnbc1paylink';
+/** BOLT11 for 2500 uBTC = 250_000 sats = 250_000_000 msat. */
+const PR =
+  'lnbc2500u1pvjluezpp5qqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqypqdq5xysxxatsyp3k7enxv4jsxqzpuaztrnwngzn3kdzw5hydlzf03qdgm2hdq27cqv3agm2awhz5se903vruatfhq77w3ls4evs3ch9zw97j25emudupq63nyw24cg27h2rspfj9srp';
+const PR_SATS = 250_000;
 
 function createAccount(
   overrides: {
@@ -213,18 +216,18 @@ describe('POST /pay/:username/invoice', () => {
     const res = await app.request('/pay/ada/invoice', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ amountSats: 21 }),
+      body: JSON.stringify({ amountSats: PR_SATS }),
     });
     expect(res.status).toBe(200);
     const body = (await res.json()) as Record<string, unknown>;
-    expect(body).toEqual({ pr: PR, amountSats: 21 });
+    expect(body).toEqual({ pr: PR, amountSats: PR_SATS });
     expect(Object.keys(body).sort()).toEqual(['amountSats', 'pr']);
     expect(urls.length).toBeGreaterThan(1);
     expect(urls[0]).toBe(WELL_KNOWN_URL);
     expect(urls[1]).toBe(WELL_KNOWN_URL);
     const callback = urls[2] ?? '';
     const callbackUrl = new URL(callback);
-    expect(callbackUrl.searchParams.get('amount')).toBe('21000');
+    expect(callbackUrl.searchParams.get('amount')).toBe(String(PR_SATS * 1000));
     expect(callbackUrl.searchParams.has('comment')).toBe(false);
     expect(urls.some((url) => url.includes('21.gifts'))).toBe(false);
   });
@@ -312,6 +315,39 @@ describe('POST /pay/:username/invoice', () => {
         throw new Error('offline');
       },
     });
+    const res = await app.request('/pay/ada/invoice', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ amountSats: 21 }),
+    });
+    expect(res.status).toBe(502);
+    expect(await res.json()).toEqual({ error: 'Lightning Address could not be resolved' });
+  });
+
+  it('returns 502 when the invoice is not a BOLT11 for that amount', async () => {
+    const { app } = await seededApp({
+      fetchImpl: async (input: string | URL | Request) => {
+        const url = String(input);
+        if (url.includes('/.well-known/lnurlp/')) {
+          return metadataResponse(1000, WIDE_MAX_SENDABLE);
+        }
+        return new Response(JSON.stringify({ pr: 'lnbc1not-an-invoice' }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      },
+    });
+    const res = await app.request('/pay/ada/invoice', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ amountSats: 21 }),
+    });
+    expect(res.status).toBe(502);
+    expect(await res.json()).toEqual({ error: 'Lightning Address could not be resolved' });
+  });
+
+  it('returns 502 when the BOLT11 amount is not the requested amount', async () => {
+    const { app } = await seededApp();
     const res = await app.request('/pay/ada/invoice', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
