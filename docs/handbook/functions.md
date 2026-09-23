@@ -473,7 +473,7 @@
 
 - **Purpose:** Decode BOLT11 payment hash, amount, plaintext description, description_hash, and expiry for operator debug (does not change `decodeBolt11`).
 - **Inputs:** BOLT11 string; optional decoder inject for tests.
-- **Returns / side effects:** `InspectedBolt11` or `null` when malformed / zero-amount.
+- **Returns / side effects:** `InspectedBolt11` or `null` when malformed, zero-amount, or the amount is not a safe integer.
 - **Used by:** `POST /messages/:id/invoice` for the NIP-57 gate (reject before returning `pr`) and when persisting ok / `not_zap` attempts.
 
 ## Function: isNip57Invoice
@@ -797,7 +797,7 @@
 
 - **Purpose:** Read payment hash and millisat amount from a BOLT11 string via `light-bolt11-decoder`.
 - **Inputs:** `pr` string; optional test decoder.
-- **Returns / side effects:** `{ paymentHash, amountMsat }` or `null` on any decode failure.
+- **Returns / side effects:** `{ paymentHash, amountMsat }` or `null` on any decode failure (malformed, zero-amount, or an amount that is not a safe integer).
 - **Used by:** `invoiceRoutes` after LNURL-pay returns `pr`.
 
 ## Function: InMemoryInvoiceStore
