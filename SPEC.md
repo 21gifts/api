@@ -2963,7 +2963,10 @@ Success → **Response** `200`:
 
 Public member forum thread. Bearer session required. After auth,
 `requireAction(account, 'forum.read')` (rules). Returns **only
-top-level notes** (`parent_id IS NULL`) via `listFeed`. Query `mode`
+top-level notes** (`parent_id IS NULL`) via `listFeed`. Rows whose id
+is `account.profile_message_id` are omitted. Postgres uses
+`NOT EXISTS (SELECT 1 FROM account WHERE account.profile_message_id = message.id)`.
+Those rows stay stored. `GET /messages/:id` is unchanged. Query `mode`
 (`all` default, `active`, `unpaid`, `popular`), `limit` (1–200, default
 **200**), opaque `cursor`, and optional `hashtag` (name without `#`;
 token match on live top-level `text`; combines with mode/limit/cursor).
@@ -3068,7 +3071,9 @@ Success → **Response** `200`:
 An empty thread is **200** with `"messages": []`. When `DATABASE_URL` is
 unset the default in-memory store starts empty; when set, rows come from
 Postgres `message`. List queries select top-level rows only
-(`parent_id IS NULL`), `(photo IS NOT NULL) AS has_photo`, and a
+(`parent_id IS NULL`), and omit rows whose id is `account.profile_message_id`
+(`NOT EXISTS (SELECT 1 FROM account WHERE account.profile_message_id = message.id)`),
+`(photo IS NOT NULL) AS has_photo`, and a
 `replyCount` of live attributed children
 (`account_id IS NOT NULL OR (author_pubkey IS NOT NULL AND EXISTS
 (SELECT 1 FROM nostr_zapper WHERE pubkey = lower(author_pubkey)))`),
