@@ -315,8 +315,10 @@ export interface MessageStore {
    * When `photo` or `video` is present, `row.accountId` is not null, and
    * `row.eventId` is null, stores `content_fp` from
    * {@link forumContentFingerprint} (video bytes win when both exist; extras
-   * are hashed only for a still gallery). A live unique-index hit returns the
-   * existing row instead of inserting a second note and does not insert extras.
+   * are hashed only for a still gallery). A live unique-index hit with the
+   * same pin returns the existing row instead of inserting a second note and
+   * does not insert extras. A different pin throws
+   * `place conflicts with live media`.
    * Rows that already carry an `eventId` leave `content_fp` null.
    *
    * `extraPhotos` are indices 1..length (max 9). Empty/omitted = none. When
