@@ -79,7 +79,7 @@
 
 ## Endpoint: GET /debug/accounts
 
-- **Purpose:** Operator listing of registered accounts. Same shape as `serializeDebugAccount`: public fields including `username`, plus `isPlatform`, `sessionRefused`, `viewKey`, skip stamps, `profileMessageId`, `notificationLevel`, `walletRequired`, `walletBackupSeenAt`, and Nostr debug fields (`nostrNsecCiphertext` is hex of the stored envelope, never decrypted).
+- **Purpose:** Operator listing of registered accounts. Same shape as `serializeDebugAccount`: public fields including `username`, plus `isPlatform`, `sessionRefused`, `viewKey`, skip stamps, `profileMessageId`, `notificationLevel`, `amountUnit`, `walletRequired`, `walletBackupSeenAt`, and Nostr debug fields (`nostrNsecCiphertext` is hex of the stored envelope, never decrypted).
 - **Errors:** 503 `{ error: 'Debug is not configured' }` when `DEBUG_TOKEN` is unset or blank; 401 `{ error: 'Unauthorized' }` when the Bearer token does not match.
 - **Used by:** Operator `gifts-debug` CLI.
 - **Auth:** `Authorization: Bearer` with `DEBUG_TOKEN`. Not an end-user session.

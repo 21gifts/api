@@ -228,6 +228,8 @@ export interface DebugAccountResponse extends AccountResponse {
   profileMessageId: string | null;
   /** Owner fan-out filter (`all` \| `active` \| `mentions`). */
   notificationLevel: NotificationLevel;
+  /** Owner amount-entry unit (`btc` \| `fiat`). Default `btc`. */
+  amountUnit: AmountUnit;
   /** True when a seed-bearing passkey exists. Does not set `setup` to `wallet`. */
   walletRequired: boolean;
   /**
@@ -427,6 +429,7 @@ export function serializeDebugAccount(
     lightningAddressSkippedAt: account.lightningAddressSkippedAt ?? null,
     profileMessageId: account.profileMessageId ?? null,
     notificationLevel: parseNotificationLevel(account.notificationLevel),
+    amountUnit: parseAmountUnit(account.amountUnit),
     walletRequired: account.walletRequired === true,
     walletBackupSeenAt: account.walletBackupSeenAt ?? null,
     nostrPubkey: nostr.nostrPubkey,

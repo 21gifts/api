@@ -1736,7 +1736,7 @@
 
 - **Purpose:** Operator account JSON: every stored account column plus Nostr debug fields. Never used by member `GET /me`.
 - **Inputs:** `Account` and optional `DebugNostrFields` (defaults to all-null).
-- **Returns / side effects:** `DebugAccountResponse` including `username`, `viewKey`, `sessionRefused`, skip stamps, `profileMessageId`, `notificationLevel`, `walletRequired`, `walletBackupSeenAt`, and envelope hex `nostrNsecCiphertext`. Never decrypts. No I/O.
+- **Returns / side effects:** `DebugAccountResponse` including `username`, `viewKey`, `sessionRefused`, skip stamps, `profileMessageId`, `notificationLevel`, `amountUnit`, `walletRequired`, `walletBackupSeenAt`, and envelope hex `nostrNsecCiphertext`. Never decrypts. No I/O.
 - **Used by:** `GET /debug/accounts`, `PATCH /debug/accounts/:id`, and the operator dump.
 
 ## Function: serializeDebugAccountDetail

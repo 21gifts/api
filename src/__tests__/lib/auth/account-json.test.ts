@@ -162,7 +162,7 @@ describe('serializeDebugAccount', () => {
     expect(json.isPlatform).toBe(true);
     expect(json.viewKey).toBe(account.viewKey);
     expect(json.notificationLevel).toBe('all');
-    expect(json).not.toHaveProperty('amountUnit');
+    expect(json.amountUnit).toBe('btc');
     expect(json.nameSkippedAt).toBeNull();
     expect(json.lightningAddressSkippedAt).toBeNull();
     expect(json.profileMessageId).toBeNull();
