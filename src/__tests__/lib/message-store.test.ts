@@ -4497,7 +4497,17 @@ describe('PostgresMessageStore', () => {
     };
     const created = await store.create(row);
     expect(sql.queries[0]?.params[15]).toBeNull();
-    expect(sql.queries[0]?.params.slice(16)).toEqual([null, null, null, null, null, null, null]);
+    expect(sql.queries[0]?.params.slice(16)).toEqual([
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+    ]);
     expect(created.goalSats).toBeNull();
   });
 
@@ -4516,6 +4526,8 @@ describe('PostgresMessageStore', () => {
     };
     const created = await store.create(row);
     expect(sql.executes[0]?.params.slice(16)).toEqual([
+      null,
+      null,
       null,
       null,
       null,
@@ -4543,7 +4555,17 @@ describe('PostgresMessageStore', () => {
       place: { lat: 47.3, lng: 8.5, label: 'Zürich' },
     };
     const created = await store.create(row);
-    expect(sql.queries[0]?.params.slice(16)).toEqual([null, null, null, null, null, null, null]);
+    expect(sql.queries[0]?.params.slice(16)).toEqual([
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+    ]);
     expect(created.place).toBeNull();
   });
 
