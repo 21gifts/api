@@ -96,7 +96,7 @@ const JPEG2: ForumPhoto = {
 
 describe('MESSAGE_SCHEMA_SQL', () => {
   it('creates message with photo columns, Nostr columns, index, and additive ALTERs', () => {
-    expect(MESSAGE_SCHEMA_SQL).toHaveLength(64);
+    expect(MESSAGE_SCHEMA_SQL).toHaveLength(69);
     expect(MESSAGE_SCHEMA_SQL[0]).toMatch(/CREATE TABLE IF NOT EXISTS message/i);
     expect(MESSAGE_SCHEMA_SQL[0]).toMatch(/account_id uuid NOT NULL REFERENCES account/i);
     expect(MESSAGE_SCHEMA_SQL[0]).toMatch(/photo bytea/i);
@@ -5481,6 +5481,38 @@ describe('PostgresMessageStore', () => {
     await store.recordInvoiceAttempt(row);
     expect(sql.executes[0]?.params[7]).toBeNull();
     expect(sql.executes[0]?.params[15]).toBeNull();
+    expect(sql.executes[0]?.params[18]).toBe(false);
+    expect(sql.executes[0]?.params[19]).toBeNull();
+  });
+
+  it('recordInvoiceAttempt binds a pinned fiat snapshot', async () => {
+    const sql = new MockSql();
+    const store = new PostgresMessageStore(sql);
+    const row: MessageInvoiceAttempt = {
+      id: 'inv-pin',
+      createdAt: new Date('2026-08-28T00:00:00.000Z'),
+      messageId: 'm1',
+      payerAccountId: 'payer',
+      authorAccountId: 'author',
+      amountSats: 21,
+      lightningAddress: null,
+      zapRequest: null,
+      result: 'ok',
+      httpStatus: 200,
+      pr: 'lnbc1',
+      paymentHash: 'aa'.repeat(32),
+      description: null,
+      descriptionHash: null,
+      isNip57Invoice: true,
+      lnurlResponse: null,
+      fiatPinned: true,
+      amountUsd: '5.00',
+      amountChf: '4.00',
+      amountEur: '4.50',
+      amountPhp: '280.00',
+    };
+    await store.recordInvoiceAttempt(row);
+    expect(sql.executes[0]?.params.slice(18)).toEqual([true, '5.00', '4.00', '4.50', '280.00']);
   });
 
   it('listInvoiceAttempts maps Date/string created_at, numeric amount, and JSON zap_request', async () => {
@@ -5576,6 +5608,52 @@ describe('PostgresMessageStore', () => {
         is_nip57_invoice: false,
         lnurl_response: '[1,2]',
       },
+      {
+        id: 'inv-pin',
+        created_at: new Date('2026-08-23T12:00:00.000Z'),
+        message_id: 'm6',
+        payer_account_id: 'payer',
+        author_account_id: 'author',
+        amount_sats: 21,
+        lightning_address: null,
+        zap_request: null,
+        result: 'ok',
+        http_status: 200,
+        pr: 'lnbc-pin',
+        payment_hash: 'cc'.repeat(32),
+        description: null,
+        description_hash: null,
+        is_nip57_invoice: true,
+        lnurl_response: null,
+        fiat_pinned: true,
+        fiat_usd: '5.00',
+        fiat_chf: '4.00',
+        fiat_eur: '4.50',
+        fiat_php: '280.00',
+      },
+      {
+        id: 'inv-pin-null',
+        created_at: new Date('2026-08-22T12:00:00.000Z'),
+        message_id: 'm7',
+        payer_account_id: 'payer',
+        author_account_id: 'author',
+        amount_sats: 21,
+        lightning_address: null,
+        zap_request: null,
+        result: 'ok',
+        http_status: 200,
+        pr: 'lnbc-null',
+        payment_hash: 'dd'.repeat(32),
+        description: null,
+        description_hash: null,
+        is_nip57_invoice: true,
+        lnurl_response: null,
+        fiat_pinned: false,
+        fiat_usd: null,
+        fiat_chf: null,
+        fiat_eur: null,
+        fiat_php: null,
+      },
     ];
     const store = new PostgresMessageStore(sql);
     const listed = await store.listInvoiceAttempts(50);
@@ -5598,6 +5676,16 @@ describe('PostgresMessageStore', () => {
     expect(listed[3]?.lnurlResponse).toBeNull();
     expect(listed[4]?.zapRequest).toBeNull();
     expect(listed[4]?.lnurlResponse).toBeNull();
+    expect(listed[0]?.fiatPinned).toBe(false);
+    expect(listed[0]?.amountUsd).toBeNull();
+    expect(listed[5]?.fiatPinned).toBe(true);
+    expect(listed[5]?.amountUsd).toBe('5.00');
+    expect(listed[5]?.amountChf).toBe('4.00');
+    expect(listed[5]?.amountEur).toBe('4.50');
+    expect(listed[5]?.amountPhp).toBe('280.00');
+    expect(listed[6]?.fiatPinned).toBe(false);
+    expect(listed[6]?.amountUsd).toBeNull();
+    expect(listed[6]?.amountPhp).toBeNull();
   });
 
   it('recordZapIngest inserts into nostr_zap_ingest', async () => {
@@ -6441,5 +6529,31 @@ describe('message payment fiat snapshot', () => {
     expect(() => {
       void store.addSats('m-add', 1, { usd: 'nope', chf: null, eur: null, php: null });
     }).toThrow('stored fiat amount must have two decimals');
+  });
+
+  it('keeps a stored sibling when a later credit has no dollar amount', async () => {
+    const store = new InMemoryMessageStore([
+      {
+        ...EARLY,
+        id: 'm-sibling',
+        sats: 21,
+        amountUsd: null,
+        amountChf: '4.00',
+        amountEur: null,
+        amountPhp: '1.00',
+      },
+    ]);
+    await store.addSats('m-sibling', 21, {
+      usd: null,
+      chf: '4.00',
+      eur: '1.00',
+      php: null,
+    });
+    const row = await store.getById('m-sibling');
+    expect(row?.sats).toBe(42);
+    expect(row?.amountUsd).toBeNull();
+    expect(row?.amountChf).toBe('8.00');
+    expect(row?.amountEur).toBeNull();
+    expect(row?.amountPhp).toBeNull();
   });
 });

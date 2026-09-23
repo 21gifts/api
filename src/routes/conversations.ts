@@ -18,6 +18,7 @@ import {
 import { notifyConversationMessage } from '@/lib/conversation-push';
 import type { ConversationStore, ConversationThreadPageQuery } from '@/lib/conversation-store';
 import { logEvent } from '@/lib/log';
+import { shownFiatFromBody, type FiatAmounts } from '@/lib/money';
 import type { FetchFn } from '@/lib/lnurlp';
 import { requestZapInvoice } from '@/lib/lnurl-pay';
 import {
@@ -119,7 +120,14 @@ const conversationMessageBody = z
       (Array.isArray(body.photos) && body.photos.length > 0),
   );
 const forumMessageBody = z.object({ forumMessageId: z.string() });
-const invoiceBody = z.object({ sats: z.number().int().positive(), text: z.string().optional() });
+const invoiceBody = z.object({
+  sats: z.number().int().positive(),
+  text: z.string().optional(),
+  amountUsd: z.string().nullable().optional(),
+  amountChf: z.string().nullable().optional(),
+  amountEur: z.string().nullable().optional(),
+  amountPhp: z.string().nullable().optional(),
+});
 const defaultInvoiceLimiter = new InvoiceRateLimiter();
 const UNKNOWN_ACCOUNT_ID = '00000000-0000-0000-0000-000000000000';
 const AUTHOR_WALLET_CANNOT_RECEIVE = "The author's wallet cannot receive this Bitcoin payment";
@@ -163,7 +171,9 @@ function invoiceAttemptBase(args: {
   conversationId: string | null;
   conversationMessageId: string | null;
   lnurlResponse?: Record<string, unknown> | null;
+  shown?: { pinned: false } | { pinned: true; fiat: FiatAmounts };
 }): MessageInvoiceAttempt {
+  const shown = args.shown?.pinned === true ? args.shown : undefined;
   return {
     id: crypto.randomUUID(),
     createdAt: new Date(args.now),
@@ -183,6 +193,11 @@ function invoiceAttemptBase(args: {
     lnurlResponse: args.lnurlResponse ?? null,
     conversationId: args.conversationId,
     conversationMessageId: args.conversationMessageId,
+    fiatPinned: shown !== undefined,
+    amountUsd: shown?.fiat.usd ?? null,
+    amountChf: shown?.fiat.chf ?? null,
+    amountEur: shown?.fiat.eur ?? null,
+    amountPhp: shown?.fiat.php ?? null,
   };
 }
 
@@ -930,7 +945,8 @@ export function conversationRoutes(deps: ConversationRouteDeps): Hono {
         return c.json({ error: 'Not found' }, 404);
       }
       const parsed = invoiceBody.safeParse(await c.req.json().catch(() => null));
-      if (!parsed.success) {
+      const shown = parsed.success ? shownFiatFromBody(parsed.data) : { pinned: false as const };
+      if (!parsed.success || shown === null) {
         await persistInvoiceAttempt(
           deps.messageStore,
           invoiceAttemptBase({
@@ -965,6 +981,7 @@ export function conversationRoutes(deps: ConversationRouteDeps): Hono {
             payerAccountId: account.id,
             authorAccountId: UNKNOWN_ACCOUNT_ID,
             amountSats: parsed.data.sats,
+            shown,
             lightningAddress: null,
             zapRequest: null,
             result: 'bad_body',
@@ -989,6 +1006,7 @@ export function conversationRoutes(deps: ConversationRouteDeps): Hono {
             payerAccountId: account.id,
             authorAccountId: UNKNOWN_ACCOUNT_ID,
             amountSats: parsed.data.sats,
+            shown,
             lightningAddress: null,
             zapRequest: null,
             result: 'bad_body',
@@ -1030,6 +1048,7 @@ export function conversationRoutes(deps: ConversationRouteDeps): Hono {
             messageId: UNKNOWN_ACCOUNT_ID,
             authorAccountId: UNKNOWN_ACCOUNT_ID,
             amountSats: parsed.data.sats,
+            shown,
             lightningAddress: null,
             zapRequest: null,
             result: 'no_author',
@@ -1049,6 +1068,7 @@ export function conversationRoutes(deps: ConversationRouteDeps): Hono {
             messageId: UNKNOWN_ACCOUNT_ID,
             authorAccountId: UNKNOWN_ACCOUNT_ID,
             amountSats: parsed.data.sats,
+            shown,
             lightningAddress: null,
             zapRequest: null,
             result: 'no_author',
@@ -1076,6 +1096,7 @@ export function conversationRoutes(deps: ConversationRouteDeps): Hono {
             messageId: profileId ?? UNKNOWN_ACCOUNT_ID,
             authorAccountId: counterpart.id,
             amountSats: parsed.data.sats,
+            shown,
             lightningAddress: address,
             zapRequest: null,
             result: 'no_author',
@@ -1095,6 +1116,7 @@ export function conversationRoutes(deps: ConversationRouteDeps): Hono {
             messageId: profileId,
             authorAccountId: counterpart.id,
             amountSats: parsed.data.sats,
+            shown,
             lightningAddress: address,
             zapRequest: null,
             result: 'no_event',
@@ -1114,6 +1136,7 @@ export function conversationRoutes(deps: ConversationRouteDeps): Hono {
             messageId: profile.id,
             authorAccountId: counterpart.id,
             amountSats: parsed.data.sats,
+            shown,
             lightningAddress: address,
             zapRequest: null,
             result: 'no_key',
@@ -1133,6 +1156,7 @@ export function conversationRoutes(deps: ConversationRouteDeps): Hono {
             messageId: profile.id,
             authorAccountId: counterpart.id,
             amountSats: parsed.data.sats,
+            shown,
             lightningAddress: address,
             zapRequest: null,
             result: 'no_key',
@@ -1152,6 +1176,7 @@ export function conversationRoutes(deps: ConversationRouteDeps): Hono {
             messageId: profile.id,
             authorAccountId: counterpart.id,
             amountSats: parsed.data.sats,
+            shown,
             lightningAddress: address,
             zapRequest: null,
             result: 'rate_limited',
@@ -1184,6 +1209,7 @@ export function conversationRoutes(deps: ConversationRouteDeps): Hono {
             messageId: profile.id,
             authorAccountId: counterpart.id,
             amountSats: parsed.data.sats,
+            shown,
             lightningAddress: address,
             zapRequest: null,
             result: 'sign_failed',
@@ -1214,6 +1240,7 @@ export function conversationRoutes(deps: ConversationRouteDeps): Hono {
             messageId: profile.id,
             authorAccountId: counterpart.id,
             amountSats: parsed.data.sats,
+            shown,
             lightningAddress: address,
             zapRequest,
             result: zap.reason,
@@ -1240,6 +1267,7 @@ export function conversationRoutes(deps: ConversationRouteDeps): Hono {
             messageId: profile.id,
             authorAccountId: counterpart.id,
             amountSats: parsed.data.sats,
+            shown,
             lightningAddress: address,
             zapRequest,
             result: 'not_zap',
@@ -1262,6 +1290,7 @@ export function conversationRoutes(deps: ConversationRouteDeps): Hono {
             messageId: profile.id,
             authorAccountId: counterpart.id,
             amountSats: parsed.data.sats,
+            shown,
             lightningAddress: address,
             zapRequest,
             result: 'ok',

@@ -3409,6 +3409,50 @@ describe('POST /conversations/:id/invoice', () => {
     expect(await res.json()).toEqual({ error: 'Text must be 1–500 characters' });
   });
 
+  it('stores the fiat shown with the invoice even when the text is rejected', async () => {
+    const { auth, conversations, messages, threadId } = await payableThread();
+    const res = await mount(auth, conversations, messages).request(
+      `/conversations/${threadId}/invoice`,
+      {
+        method: 'POST',
+        headers: { ...AUTH, 'content-type': 'application/json' },
+        body: JSON.stringify({
+          sats: 21,
+          text: 'a'.repeat(501),
+          amountUsd: '5.00',
+          amountChf: '4.00',
+          amountEur: '4.50',
+          amountPhp: '280.00',
+        }),
+      },
+    );
+    expect(res.status).toBe(400);
+    const attempt = (await messages.listInvoiceAttempts(1))[0];
+    expect(attempt?.result).toBe('bad_body');
+    expect(attempt?.fiatPinned).toBe(true);
+    expect(attempt?.amountUsd).toBe('5.00');
+    expect(attempt?.amountChf).toBe('4.00');
+    expect(attempt?.amountEur).toBe('4.50');
+    expect(attempt?.amountPhp).toBe('280.00');
+  });
+
+  it('rejects a shown amount that is not a fiat string', async () => {
+    const { auth, conversations, messages, threadId } = await payableThread();
+    const res = await mount(auth, conversations, messages).request(
+      `/conversations/${threadId}/invoice`,
+      {
+        method: 'POST',
+        headers: { ...AUTH, 'content-type': 'application/json' },
+        body: JSON.stringify({ sats: 21, amountUsd: 'nope' }),
+      },
+    );
+    expect(res.status).toBe(400);
+    const attempt = (await messages.listInvoiceAttempts(1))[0];
+    expect(attempt?.result).toBe('bad_body');
+    expect(attempt?.fiatPinned).toBe(false);
+    expect(attempt?.amountUsd).toBeNull();
+  });
+
   it('returns 400 when sats exceed the gift cap', async () => {
     const { auth, conversations, messages, threadId } = await payableThread();
     const res = await mount(auth, conversations, messages).request(
