@@ -77,118 +77,118 @@ Public base URLs used in examples:
 | PRD         | `https://api.21.gifts`     | `https://21.gifts`     |
 | DEV         | `https://dev-api.21.gifts` | `https://dev.21.gifts` |
 
-| Method | Path                                                 | Auth                       | Purpose                                                                                                             |
-| ------ | ---------------------------------------------------- | -------------------------- | ------------------------------------------------------------------------------------------------------------------- |
-| GET    | `/healthz`                                           | none                       | Liveness                                                                                                            |
-| GET    | `/info`                                              | none                       | Service identity                                                                                                    |
-| GET    | `/.well-known/lnurlp/:username`                      | none                       | LUD-16 payRequest; WoS callback stays; an open till charge pins both sendable bounds                                |
-| GET    | `/favicon.ico`                                       | none                       | Brand mark (favicon)                                                                                                |
-| GET    | `/favicon.svg`                                       | none                       | Brand mark (SVG favicon)                                                                                            |
-| GET    | `/apple-touch-icon.png`                              | none                       | Brand mark (Apple touch icon)                                                                                       |
-| POST   | `/auth/passkey/register/begin`                       | none                       | Issue WebAuthn creation options                                                                                     |
-| POST   | `/auth/passkey/register/finish`                      | none                       | Verify attestation, issue session                                                                                   |
-| POST   | `/auth/passkey/authenticate/begin`                   | none                       | Issue WebAuthn request options                                                                                      |
-| POST   | `/auth/passkey/authenticate/finish`                  | none                       | Verify assertion, issue session                                                                                     |
-| POST   | `/auth/passkey/replace/begin`                        | Bearer                     | Issue WebAuthn creation options that exclude the current credential                                                 |
-| POST   | `/auth/passkey/replace/finish`                       | Bearer                     | Verify attestation, replace the one credential, keep the session                                                    |
-| GET    | `/me`                                                | `Authorization: Bearer`    | Account (`setup` + factual `missing` + `hasPosted` + `aboutMe` + `aboutMeHasPhoto` + `notificationLevel`)           |
-| GET    | `/me/activity`                                       | Bearer                     | Given + received series (forum zaps + house gifts; platform given = all outbound)                                   |
-| POST   | `/me/wallet-backup-seen`                             | Bearer                     | Record that the recovery phrase was shown (empty body)                                                              |
-| GET    | `/view/:viewKey`                                     | none                       | Public profile card by view key                                                                                     |
-| GET    | `/view/:viewKey/about/photo`                         | none                       | Profile-note photo bytes for the view-key card                                                                      |
-| GET    | `/view/:viewKey/activity`                            | none                       | Public given/received payload for the account behind the view key                                                   |
-| POST   | `/me/setup/skip`                                     | Bearer                     | Skip name or Lightning Address wizard step                                                                          |
-| POST   | `/me/name`                                           | Bearer                     | Set/replace display name (profile note when name + LN are both set); auto-assign username when free                 |
-| POST   | `/me/username`                                       | Bearer                     | Set unique LUD-16 / NIP-05 local-part (cannot skip)                                                                 |
-| POST   | `/me/location`                                       | Bearer                     | Set, change, or clear free-text profile location                                                                    |
-| PUT    | `/me/about`                                          | Bearer                     | Set/clear About me text and optional photo on the profile note                                                      |
-| GET    | `/me/about/photo`                                    | Bearer                     | Owner profile-note photo bytes                                                                                      |
-| POST   | `/me/forum-laws-dismissed`                           | Bearer                     | Dismiss welcome-forum living-room laws                                                                              |
-| POST   | `/me/notification-level`                             | Bearer                     | Set owner fan-out filter (`all` / `active` / `mentions`)                                                            |
-| POST   | `/me/rules-agreement`                                | Bearer                     | Record living-room rules agreement                                                                                  |
-| POST   | `/me/lightning-address`                              | Bearer                     | Link/replace after live LNURL resolve + NIP-57 mint probe                                                           |
-| DELETE | `/me/lightning-address`                              | Bearer                     | Unlink address (clears LN skip)                                                                                     |
-| POST   | `/me/lightning-address/verification`                 | Bearer                     | Start address proof-of-control payment                                                                              |
-| POST   | `/me/lightning-address/verification/confirm`         | Bearer                     | Confirm nonce from wallet history                                                                                   |
-| GET    | `/members/:accountId`                                | Bearer                     | Live member identity + profile note + `aboutMeHasPhoto` + counts + `trust`                                          |
-| GET    | `/members/:accountId/activity`                       | Bearer                     | Same given/received payload as `/me/activity` for that member                                                       |
-| GET    | `/members/:accountId/posts`                          | Bearer                     | Live member top-level notes (latest 200)                                                                            |
-| GET    | `/members/:accountId/replies`                        | Bearer                     | Live member replies (latest 200)                                                                                    |
-| GET    | `/trust-chain`                                       | Bearer                     | Founder seeds (empty edges); `?around=<id>` one hop of stored public edges                                          |
-| POST   | `/trust/verify`                                      | Bearer (moderator+)        | Staff: confirm a person in real life (`verified`)                                                                   |
-| POST   | `/trust/propose-moderator`                           | Bearer (moderator+)        | Staff: propose a verified member as moderator                                                                       |
-| GET    | `/trust/proposals`                                   | Bearer (moderator+)        | Staff: list pending moderator proposals                                                                             |
-| POST   | `/trust/confirm-moderator`                           | Bearer (moderator+)        | Staff: second, independent confirmation → `moderator`                                                               |
-| POST   | `/trust/reject-moderator`                            | Bearer (moderator+)        | Staff: reject an open proposal (subject stays verified)                                                             |
-| POST   | `/trust/appoint-moderator`                           | Bearer (founder)           | Founder: appoint a moderator directly                                                                               |
-| POST   | `/funding/apply`                                     | Bearer                     | Member apply (verified+; `basis` 403; About me + photo + location required)                                         |
-| GET    | `/funding/applications`                              | Bearer (moderator+)        | Staff pending grant queue                                                                                           |
-| GET    | `/funding/applications/:accountId`                   | Bearer (moderator+)        | Staff grant review                                                                                                  |
-| POST   | `/funding/trial`                                     | Bearer (moderator+)        | One-UTC-day trial                                                                                                   |
-| POST   | `/funding/admit`                                     | Bearer (moderator+)        | Admit grant                                                                                                         |
-| POST   | `/funding/reject`                                    | Bearer (moderator+)        | Reject grant                                                                                                        |
-| GET    | `/messages`                                          | Bearer                     | List top-level forum notes (+ visible `replyCount`); 409 if rules missing                                           |
-| GET    | `/messages/compose-target`                           | Bearer                     | Platform profile note `{ messageId, sats }` for a 1-sat compose fee to 21.gifts                                     |
-| POST   | `/messages`                                          | Bearer                     | Post text/photo; 409 if rules/name/username/Lightning Address missing; 403 text-only below verified                 |
-| GET    | `/messages/hidden`                                   | Bearer (moderator+)        | Staff log of soft-hidden notes (session, not DEBUG_TOKEN)                                                           |
-| GET    | `/messages/:id`                                      | none / Bearer (moderator+) | Live public JSON; staff hidden GET includes `deletedAt`/`deletedBy`                                                 |
-| GET    | `/links/:code`                                       | none                       | Public 8-hex prefix of exactly one message or account id                                                            |
-| GET    | `/messages/:id/replies`                              | none / Bearer (moderator+) | Live replies; staff `listReplies(..., true)` includes hidden children even under a live parent                      |
-| GET    | `/messages/:id/photo`                                | none / Bearer (moderator+) | Live photo bytes; staff hidden bytes `Cache-Control: private, no-store`                                             |
-| GET    | `/messages/:id/video.*`                              | none / Bearer (moderator+) | Live video bytes; staff hidden bytes `Cache-Control: private, no-store`                                             |
-| DELETE | `/messages/:id`                                      | Bearer (moderator+)        | Soft-hide note + direct replies; retract in-app notifications; external target also blocks that pubkey              |
-| POST   | `/messages/:id/invoice`                              | Bearer                     | NIP-57 zap / BOLT11                                                                                                 |
-| POST   | `/contact`                                           | Bearer                     | Send private in-app contact `{ text }`                                                                              |
-| GET    | `/pos`                                               | Bearer                     | Open till charge or null, plus up to 20 history rows                                                                |
-| POST   | `/pos`                                               | Bearer                     | Pin one whole-sat amount for five minutes                                                                           |
-| DELETE | `/pos`                                               | Bearer                     | Cancel every unexpired pending till charge                                                                          |
-| GET    | `/conversations`                                     | Bearer                     | List visible private threads (per-row `unreadMessageCount`; envelope `unreadCount` is thread count)                 |
-| GET    | `/conversations/moderator-group`                     | Bearer (moderator+)        | Open/ensure closed moderator-group tool                                                                             |
-| POST   | `/conversations`                                     | Bearer                     | Open thread from a forum note (`forumMessageId`)                                                                    |
-| GET    | `/conversations/:id`                                 | Bearer                     | Oldest-first messages (`?sinceMessageId=` long-polls until that id exists)                                          |
-| GET    | `/conversations/:id/messages/:messageId/photo`       | Bearer                     | Private photo 0 bytes                                                                                               |
-| GET    | `/conversations/:id/messages/:messageId/photo/:file` | Bearer                     | Private extra stills 1–9 (`{1-9}.{jpg, jpeg, png, webp}`)                                                           |
-| POST   | `/conversations/:id`                                 | Bearer                     | Send `{ text?, photo?, photos? }` (stills on every kind; photo rows skip Nostr)                                     |
-| POST   | `/conversations/:id/invoice`                         | Bearer                     | NIP-57 zap / BOLT11 for a private gift (`{ sats, text? }` → `{ pr, amountSats, messageId }`)                        |
-| POST   | `/conversations/:id/read`                            | Bearer                     | Stamp last-read for the viewer                                                                                      |
-| GET    | `/notifications`                                     | Bearer                     | List + unreadCount; drop leftover hidden forum_post/forum_reply (zap checks parent only)                            |
-| POST   | `/notifications/read-all`                            | Bearer                     | Mark all notifications read                                                                                         |
-| POST   | `/notifications/:id/read`                            | Bearer                     | Mark one notification read                                                                                          |
-| GET    | `/lightning-address`                                 | none                       | Resolve LUD-16 metadata (cached)                                                                                    |
-| GET    | `/debug/accounts`                                    | `Authorization: Bearer`    | Operator account listing (`DEBUG_TOKEN`)                                                                            |
-| GET    | `/debug/accounts/:id`                                | `Authorization: Bearer`    | Operator one-account detail (`DEBUG_TOKEN`)                                                                         |
-| POST   | `/debug/accounts`                                    | `Authorization: Bearer`    | Operator provision name + Lightning Address (`DEBUG_TOKEN`)                                                         |
-| PATCH  | `/debug/accounts/:id`                                | `Authorization: Bearer`    | Operator set `role` / unlink Lightning Address / `platform` / `sessionRefused`                                      |
-| POST   | `/debug/accounts/:id/session`                        | `Authorization: Bearer`    | Operator mint of a member bearer (`DEBUG_TOKEN`)                                                                    |
-| GET    | `/debug/api-log`                                     | `Authorization: Bearer`    | Operator HTTP audit log (`DEBUG_TOKEN`); no query string, body, or Authorization                                    |
-| GET    | `/debug/db`                                          | `Authorization: Bearer`    | Operator page through every public table (`DEBUG_TOKEN`); follow `nextCursor`                                       |
-| GET    | `/debug/contacts`                                    | `Authorization: Bearer`    | Operator contact listing (`DEBUG_TOKEN`)                                                                            |
-| GET    | `/debug/invoices`                                    | `Authorization: Bearer`    | Operator invoice attempts, forum and conversation (`DEBUG_TOKEN`)                                                   |
-| POST   | `/debug/invoices/settle`                             | `Authorization: Bearer`    | Resumable operator settlement of a paid forum invoice (`DEBUG_TOKEN`)                                               |
-| GET    | `/debug/zap-ingests`                                 | `Authorization: Bearer`    | Operator kind:9735 ingest log (`DEBUG_TOKEN`)                                                                       |
-| GET    | `/debug/messages`                                    | `Authorization: Bearer`    | Operator forum listing including hidden rows and replies (`DEBUG_TOKEN`)                                            |
-| GET    | `/debug/messages/:id`                                | `Authorization: Bearer`    | Operator single-note fetch including hidden rows (`DEBUG_TOKEN`)                                                    |
-| GET    | `/debug/messages/:id/photo`                          | `Authorization: Bearer`    | Operator photo bytes including hidden notes (`DEBUG_TOKEN`)                                                         |
-| PUT    | `/debug/messages/:id/video`                          | `Authorization: Bearer`    | Operator restore of missing forum-video bytes (`DEBUG_TOKEN`)                                                       |
-| POST   | `/debug/messages/:id/restore`                        | `Authorization: Bearer`    | Operator unhide of a soft-hidden forum note (`DEBUG_TOKEN`)                                                         |
-| GET    | `/debug/external-pubkeys`                            | `Authorization: Bearer`    | Operator lists entitled and blocked external pubkeys (`DEBUG_TOKEN`)                                                |
-| GET    | `/debug/trust-edges`                                 | `Authorization: Bearer`    | Operator trust-edge listing (`DEBUG_TOKEN`)                                                                         |
-| POST   | `/debug/trust-edges`                                 | `Authorization: Bearer`    | Operator trust-edge backfill (`DEBUG_TOKEN`); does not change `role`                                                |
-| DELETE | `/debug/trust-edges`                                 | `Authorization: Bearer`    | Operator trust-edge delete (`DEBUG_TOKEN`); does not change `role`                                                  |
-| GET    | `/push/vapid-public`                                 | Bearer                     | VAPID public key for Web Push subscribe                                                                             |
-| POST   | `/me/push-subscriptions`                             | Bearer                     | Upsert a browser PushSubscription                                                                                   |
-| DELETE | `/me/push-subscriptions`                             | Bearer                     | Remove a browser PushSubscription                                                                                   |
-| POST   | `/debug/push-ping`                                   | Bearer `DEBUG_TOKEN`       | Enqueue a test push for one account                                                                                 |
-| GET    | `/debug/dump`                                        | `Authorization: Bearer`    | Operator catalog of allowlisted tables (`DEBUG_TOKEN`)                                                              |
-| GET    | `/debug/dump/:table`                                 | `Authorization: Bearer`    | Operator catalog of one allowlisted table (`DEBUG_TOKEN`)                                                           |
-| GET    | `/gifts`                                             | none                       | Outbound gifts for one UTC day (`?day=`)                                                                            |
-| GET    | `/gifts/stats`                                       | none                       | Aggregated outbound gift statistics                                                                                 |
-| GET    | `/messages/stats`                                    | none                       | Living forum notes and replies counted together, by UTC day                                                         |
-| GET    | `/invoices/passkey`                                  | Bearer `SPEND_API_TOKEN`   | Whether a Lightning Address has a passkey-backed account                                                            |
-| GET    | `/invoices/posted`                                   | Bearer `SPEND_API_TOKEN`   | Whether a Lightning Address has a live top-level non-profile forum post (`hasMedia` when that post has photo/video) |
-| GET    | `/invoices/eligible`                                 | Bearer `SPEND_API_TOKEN`   | Whether the address is funding-eligible today, plus effective grant `status`                                        |
-| POST   | `/invoices`                                          | Bearer `SPEND_API_TOKEN`   | Fetch a recipient BOLT11 (LNURL-pay; passkey, funding grant, and forum post required)                               |
-| POST   | `/invoices/proof`                                    | Bearer `SPEND_API_TOKEN`   | Accept payment preimage as proof                                                                                    |
+| Method | Path                                                 | Auth                       | Purpose                                                                                                                                      |
+| ------ | ---------------------------------------------------- | -------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
+| GET    | `/healthz`                                           | none                       | Liveness                                                                                                                                     |
+| GET    | `/info`                                              | none                       | Service identity                                                                                                                             |
+| GET    | `/.well-known/lnurlp/:username`                      | none                       | LUD-16 payRequest; WoS callback stays; an open till charge pins both sendable bounds                                                         |
+| GET    | `/favicon.ico`                                       | none                       | Brand mark (favicon)                                                                                                                         |
+| GET    | `/favicon.svg`                                       | none                       | Brand mark (SVG favicon)                                                                                                                     |
+| GET    | `/apple-touch-icon.png`                              | none                       | Brand mark (Apple touch icon)                                                                                                                |
+| POST   | `/auth/passkey/register/begin`                       | none                       | Issue WebAuthn creation options                                                                                                              |
+| POST   | `/auth/passkey/register/finish`                      | none                       | Verify attestation, issue session                                                                                                            |
+| POST   | `/auth/passkey/authenticate/begin`                   | none                       | Issue WebAuthn request options                                                                                                               |
+| POST   | `/auth/passkey/authenticate/finish`                  | none                       | Verify assertion, issue session                                                                                                              |
+| POST   | `/auth/passkey/replace/begin`                        | Bearer                     | Issue WebAuthn creation options that exclude the current credential                                                                          |
+| POST   | `/auth/passkey/replace/finish`                       | Bearer                     | Verify attestation, replace the one credential, keep the session                                                                             |
+| GET    | `/me`                                                | `Authorization: Bearer`    | Account (`setup` + factual `missing` + `hasPosted` + `aboutMe` + `aboutMeHasPhoto` + `notificationLevel`)                                    |
+| GET    | `/me/activity`                                       | Bearer                     | Given + received series (forum zaps + house gifts; platform given = all outbound)                                                            |
+| POST   | `/me/wallet-backup-seen`                             | Bearer                     | Records that this account can show a recovery phrase. Not a confirmation and not a setup step. Empty body. Does not change `walletRequired`. |
+| GET    | `/view/:viewKey`                                     | none                       | Public profile card by view key                                                                                                              |
+| GET    | `/view/:viewKey/about/photo`                         | none                       | Profile-note photo bytes for the view-key card                                                                                               |
+| GET    | `/view/:viewKey/activity`                            | none                       | Public given/received payload for the account behind the view key                                                                            |
+| POST   | `/me/setup/skip`                                     | Bearer                     | Skip name or Lightning Address wizard step                                                                                                   |
+| POST   | `/me/name`                                           | Bearer                     | Set/replace display name (profile note when name + LN are both set); auto-assign username when free                                          |
+| POST   | `/me/username`                                       | Bearer                     | Set unique LUD-16 / NIP-05 local-part (cannot skip)                                                                                          |
+| POST   | `/me/location`                                       | Bearer                     | Set, change, or clear free-text profile location                                                                                             |
+| PUT    | `/me/about`                                          | Bearer                     | Set/clear About me text and optional photo on the profile note                                                                               |
+| GET    | `/me/about/photo`                                    | Bearer                     | Owner profile-note photo bytes                                                                                                               |
+| POST   | `/me/forum-laws-dismissed`                           | Bearer                     | Dismiss welcome-forum living-room laws                                                                                                       |
+| POST   | `/me/notification-level`                             | Bearer                     | Set owner fan-out filter (`all` / `active` / `mentions`)                                                                                     |
+| POST   | `/me/rules-agreement`                                | Bearer                     | Record living-room rules agreement                                                                                                           |
+| POST   | `/me/lightning-address`                              | Bearer                     | Link/replace after live LNURL resolve + NIP-57 mint probe                                                                                    |
+| DELETE | `/me/lightning-address`                              | Bearer                     | Unlink address (clears LN skip)                                                                                                              |
+| POST   | `/me/lightning-address/verification`                 | Bearer                     | Start address proof-of-control payment                                                                                                       |
+| POST   | `/me/lightning-address/verification/confirm`         | Bearer                     | Confirm nonce from wallet history                                                                                                            |
+| GET    | `/members/:accountId`                                | Bearer                     | Live member identity + profile note + `aboutMeHasPhoto` + counts + `trust`                                                                   |
+| GET    | `/members/:accountId/activity`                       | Bearer                     | Same given/received payload as `/me/activity` for that member                                                                                |
+| GET    | `/members/:accountId/posts`                          | Bearer                     | Live member top-level notes (latest 200)                                                                                                     |
+| GET    | `/members/:accountId/replies`                        | Bearer                     | Live member replies (latest 200)                                                                                                             |
+| GET    | `/trust-chain`                                       | Bearer                     | Founder seeds (empty edges); `?around=<id>` one hop of stored public edges                                                                   |
+| POST   | `/trust/verify`                                      | Bearer (moderator+)        | Staff: confirm a person in real life (`verified`)                                                                                            |
+| POST   | `/trust/propose-moderator`                           | Bearer (moderator+)        | Staff: propose a verified member as moderator                                                                                                |
+| GET    | `/trust/proposals`                                   | Bearer (moderator+)        | Staff: list pending moderator proposals                                                                                                      |
+| POST   | `/trust/confirm-moderator`                           | Bearer (moderator+)        | Staff: second, independent confirmation → `moderator`                                                                                        |
+| POST   | `/trust/reject-moderator`                            | Bearer (moderator+)        | Staff: reject an open proposal (subject stays verified)                                                                                      |
+| POST   | `/trust/appoint-moderator`                           | Bearer (founder)           | Founder: appoint a moderator directly                                                                                                        |
+| POST   | `/funding/apply`                                     | Bearer                     | Member apply (verified+; `basis` 403; About me + photo + location required)                                                                  |
+| GET    | `/funding/applications`                              | Bearer (moderator+)        | Staff pending grant queue                                                                                                                    |
+| GET    | `/funding/applications/:accountId`                   | Bearer (moderator+)        | Staff grant review                                                                                                                           |
+| POST   | `/funding/trial`                                     | Bearer (moderator+)        | One-UTC-day trial                                                                                                                            |
+| POST   | `/funding/admit`                                     | Bearer (moderator+)        | Admit grant                                                                                                                                  |
+| POST   | `/funding/reject`                                    | Bearer (moderator+)        | Reject grant                                                                                                                                 |
+| GET    | `/messages`                                          | Bearer                     | List top-level forum notes (+ visible `replyCount`); 409 if rules missing                                                                    |
+| GET    | `/messages/compose-target`                           | Bearer                     | Platform profile note `{ messageId, sats }` for a 1-sat compose fee to 21.gifts                                                              |
+| POST   | `/messages`                                          | Bearer                     | Post text/photo; 409 if rules/name/username/Lightning Address missing; 403 text-only below verified                                          |
+| GET    | `/messages/hidden`                                   | Bearer (moderator+)        | Staff log of soft-hidden notes (session, not DEBUG_TOKEN)                                                                                    |
+| GET    | `/messages/:id`                                      | none / Bearer (moderator+) | Live public JSON; staff hidden GET includes `deletedAt`/`deletedBy`                                                                          |
+| GET    | `/links/:code`                                       | none                       | Public 8-hex prefix of exactly one message or account id                                                                                     |
+| GET    | `/messages/:id/replies`                              | none / Bearer (moderator+) | Live replies; staff `listReplies(..., true)` includes hidden children even under a live parent                                               |
+| GET    | `/messages/:id/photo`                                | none / Bearer (moderator+) | Live photo bytes; staff hidden bytes `Cache-Control: private, no-store`                                                                      |
+| GET    | `/messages/:id/video.*`                              | none / Bearer (moderator+) | Live video bytes; staff hidden bytes `Cache-Control: private, no-store`                                                                      |
+| DELETE | `/messages/:id`                                      | Bearer (moderator+)        | Soft-hide note + direct replies; retract in-app notifications; external target also blocks that pubkey                                       |
+| POST   | `/messages/:id/invoice`                              | Bearer                     | NIP-57 zap / BOLT11                                                                                                                          |
+| POST   | `/contact`                                           | Bearer                     | Send private in-app contact `{ text }`                                                                                                       |
+| GET    | `/pos`                                               | Bearer                     | Open till charge or null, plus up to 20 history rows                                                                                         |
+| POST   | `/pos`                                               | Bearer                     | Pin one whole-sat amount for five minutes                                                                                                    |
+| DELETE | `/pos`                                               | Bearer                     | Cancel every unexpired pending till charge                                                                                                   |
+| GET    | `/conversations`                                     | Bearer                     | List visible private threads (per-row `unreadMessageCount`; envelope `unreadCount` is thread count)                                          |
+| GET    | `/conversations/moderator-group`                     | Bearer (moderator+)        | Open/ensure closed moderator-group tool                                                                                                      |
+| POST   | `/conversations`                                     | Bearer                     | Open thread from a forum note (`forumMessageId`)                                                                                             |
+| GET    | `/conversations/:id`                                 | Bearer                     | Oldest-first messages (`?sinceMessageId=` long-polls until that id exists)                                                                   |
+| GET    | `/conversations/:id/messages/:messageId/photo`       | Bearer                     | Private photo 0 bytes                                                                                                                        |
+| GET    | `/conversations/:id/messages/:messageId/photo/:file` | Bearer                     | Private extra stills 1–9 (`{1-9}.{jpg, jpeg, png, webp}`)                                                                                    |
+| POST   | `/conversations/:id`                                 | Bearer                     | Send `{ text?, photo?, photos? }` (stills on every kind; photo rows skip Nostr)                                                              |
+| POST   | `/conversations/:id/invoice`                         | Bearer                     | NIP-57 zap / BOLT11 for a private gift (`{ sats, text? }` → `{ pr, amountSats, messageId }`)                                                 |
+| POST   | `/conversations/:id/read`                            | Bearer                     | Stamp last-read for the viewer                                                                                                               |
+| GET    | `/notifications`                                     | Bearer                     | List + unreadCount; drop leftover hidden forum_post/forum_reply (zap checks parent only)                                                     |
+| POST   | `/notifications/read-all`                            | Bearer                     | Mark all notifications read                                                                                                                  |
+| POST   | `/notifications/:id/read`                            | Bearer                     | Mark one notification read                                                                                                                   |
+| GET    | `/lightning-address`                                 | none                       | Resolve LUD-16 metadata (cached)                                                                                                             |
+| GET    | `/debug/accounts`                                    | `Authorization: Bearer`    | Operator account listing (`DEBUG_TOKEN`)                                                                                                     |
+| GET    | `/debug/accounts/:id`                                | `Authorization: Bearer`    | Operator one-account detail (`DEBUG_TOKEN`)                                                                                                  |
+| POST   | `/debug/accounts`                                    | `Authorization: Bearer`    | Operator provision name + Lightning Address (`DEBUG_TOKEN`)                                                                                  |
+| PATCH  | `/debug/accounts/:id`                                | `Authorization: Bearer`    | Operator set `role` / unlink Lightning Address / `platform` / `sessionRefused`                                                               |
+| POST   | `/debug/accounts/:id/session`                        | `Authorization: Bearer`    | Operator mint of a member bearer (`DEBUG_TOKEN`)                                                                                             |
+| GET    | `/debug/api-log`                                     | `Authorization: Bearer`    | Operator HTTP audit log (`DEBUG_TOKEN`); no query string, body, or Authorization                                                             |
+| GET    | `/debug/db`                                          | `Authorization: Bearer`    | Operator page through every public table (`DEBUG_TOKEN`); follow `nextCursor`                                                                |
+| GET    | `/debug/contacts`                                    | `Authorization: Bearer`    | Operator contact listing (`DEBUG_TOKEN`)                                                                                                     |
+| GET    | `/debug/invoices`                                    | `Authorization: Bearer`    | Operator invoice attempts, forum and conversation (`DEBUG_TOKEN`)                                                                            |
+| POST   | `/debug/invoices/settle`                             | `Authorization: Bearer`    | Resumable operator settlement of a paid forum invoice (`DEBUG_TOKEN`)                                                                        |
+| GET    | `/debug/zap-ingests`                                 | `Authorization: Bearer`    | Operator kind:9735 ingest log (`DEBUG_TOKEN`)                                                                                                |
+| GET    | `/debug/messages`                                    | `Authorization: Bearer`    | Operator forum listing including hidden rows and replies (`DEBUG_TOKEN`)                                                                     |
+| GET    | `/debug/messages/:id`                                | `Authorization: Bearer`    | Operator single-note fetch including hidden rows (`DEBUG_TOKEN`)                                                                             |
+| GET    | `/debug/messages/:id/photo`                          | `Authorization: Bearer`    | Operator photo bytes including hidden notes (`DEBUG_TOKEN`)                                                                                  |
+| PUT    | `/debug/messages/:id/video`                          | `Authorization: Bearer`    | Operator restore of missing forum-video bytes (`DEBUG_TOKEN`)                                                                                |
+| POST   | `/debug/messages/:id/restore`                        | `Authorization: Bearer`    | Operator unhide of a soft-hidden forum note (`DEBUG_TOKEN`)                                                                                  |
+| GET    | `/debug/external-pubkeys`                            | `Authorization: Bearer`    | Operator lists entitled and blocked external pubkeys (`DEBUG_TOKEN`)                                                                         |
+| GET    | `/debug/trust-edges`                                 | `Authorization: Bearer`    | Operator trust-edge listing (`DEBUG_TOKEN`)                                                                                                  |
+| POST   | `/debug/trust-edges`                                 | `Authorization: Bearer`    | Operator trust-edge backfill (`DEBUG_TOKEN`); does not change `role`                                                                         |
+| DELETE | `/debug/trust-edges`                                 | `Authorization: Bearer`    | Operator trust-edge delete (`DEBUG_TOKEN`); does not change `role`                                                                           |
+| GET    | `/push/vapid-public`                                 | Bearer                     | VAPID public key for Web Push subscribe                                                                                                      |
+| POST   | `/me/push-subscriptions`                             | Bearer                     | Upsert a browser PushSubscription                                                                                                            |
+| DELETE | `/me/push-subscriptions`                             | Bearer                     | Remove a browser PushSubscription                                                                                                            |
+| POST   | `/debug/push-ping`                                   | Bearer `DEBUG_TOKEN`       | Enqueue a test push for one account                                                                                                          |
+| GET    | `/debug/dump`                                        | `Authorization: Bearer`    | Operator catalog of allowlisted tables (`DEBUG_TOKEN`)                                                                                       |
+| GET    | `/debug/dump/:table`                                 | `Authorization: Bearer`    | Operator catalog of one allowlisted table (`DEBUG_TOKEN`)                                                                                    |
+| GET    | `/gifts`                                             | none                       | Outbound gifts for one UTC day (`?day=`)                                                                                                     |
+| GET    | `/gifts/stats`                                       | none                       | Aggregated outbound gift statistics                                                                                                          |
+| GET    | `/messages/stats`                                    | none                       | Living forum notes and replies counted together, by UTC day                                                                                  |
+| GET    | `/invoices/passkey`                                  | Bearer `SPEND_API_TOKEN`   | Whether a Lightning Address has a passkey-backed account                                                                                     |
+| GET    | `/invoices/posted`                                   | Bearer `SPEND_API_TOKEN`   | Whether a Lightning Address has a live top-level non-profile forum post (`hasMedia` when that post has photo/video)                          |
+| GET    | `/invoices/eligible`                                 | Bearer `SPEND_API_TOKEN`   | Whether the address is funding-eligible today, plus effective grant `status`                                                                 |
+| POST   | `/invoices`                                          | Bearer `SPEND_API_TOKEN`   | Fetch a recipient BOLT11 (LNURL-pay; passkey, funding grant, and forum post required)                                                        |
+| POST   | `/invoices/proof`                                    | Bearer `SPEND_API_TOKEN`   | Accept payment preimage as proof                                                                                                             |
 
 Auth column: "Bearer (X+)" means minimum role X — X or any higher role.
 
@@ -421,8 +421,8 @@ ID).
     "viewKey": "<64-hex>",
     "createdAt": 0,
     "rulesAgreedAt": null,
-    "setup": "wallet",
-    "missing": ["wallet", "name", "username", "lightning-address", "rules"],
+    "setup": "name",
+    "missing": ["name", "username", "lightning-address", "rules"],
     "hasPosted": false,
     "aboutMe": null,
     "aboutMeHasPhoto": false,
@@ -435,7 +435,7 @@ ID).
 }
 ```
 
-The `account` object is the same owner JSON as `GET /me` (includes `viewKey`, `setup`, `missing`, `hasPosted`, `aboutMe`, `aboutMeHasPhoto`, `notificationLevel`, `walletRequired`, `walletBackupSeenAt`, and `passkeyCredentialId`). The example above is a new register (`walletRequired: true`, `setup: "wallet"`, `missing` starts with `"wallet"`). Existing members keep `walletRequired: false`; passkey replace and phrase export do not change these columns.
+The `account` object is the same owner JSON as `GET /me` (includes `viewKey`, `setup`, `missing`, `hasPosted`, `aboutMe`, `aboutMeHasPhoto`, `notificationLevel`, `walletRequired`, `walletBackupSeenAt`, and `passkeyCredentialId`). The example above is a new register (`walletRequired: true`, `setup: "name"` when the name is unset). The recovery phrase is not a setup step and does not change `setup` or `missing`. Existing members keep `walletRequired: false`; passkey replace and phrase export do not change these columns.
 
 A new register row is stored with `walletRequired: true` and `walletBackupSeenAt: null`. First-passkey claim of a provisioned row sets `walletRequired: true` in the same write as the credential (`createFirstPasskeyCredential`: Postgres CTE insert-then-update; memory store writes both in one method) and does not clear a seen timestamp. Passkey replace does not change these columns. Operator `POST /debug/accounts` provision leaves `walletRequired` false. The api never stores a mnemonic or PRF output.
 
@@ -547,8 +547,8 @@ An account with `sessionRefused` and a still-valid minted token → **Response**
 
 The example above is an existing member (`walletRequired: false`,
 `walletBackupSeenAt: null`). New register/claim owner JSON has
-`walletRequired: true` and `setup: "wallet"` with `missing` starting with
-`"wallet"`.
+`walletRequired: true` and `setup: "name"` when the name is unset.
+The recovery phrase is not a setup step and does not change `setup` or `missing`.
 
 About me is the profile-note text when it is a real bio, else null (auto
 name-copy is not a bio, including after a display-name rename when the note
@@ -569,15 +569,15 @@ stays `null`)).
 | `viewKey`                  | string         | Durable 64 lowercase hex capability secret for GET /view/:viewKey. Owner-only. Not a session.                                                                                                                                                                                                                                                   |
 | `createdAt`                | number         | Creation time (epoch ms)                                                                                                                                                                                                                                                                                                                        |
 | `rulesAgreedAt`            | number \| null | Epoch ms of first living-room rules agreement, or `null`                                                                                                                                                                                                                                                                                        |
-| `setup`                    | string \| null | Next wizard step: `wallet`, `name`, `username`, `lightning-address`, `rules`, or `null` when complete. Skip timestamps count as done except username and wallet, which cannot be skipped. Clients must not invent a parallel sequence.                                                                                                          |
-| `missing`                  | string[]       | Factually unset fields (`wallet` when required and unseen, then `name`, `username`, `lightning-address`, `rules`) even when skipped. Does not include `profileMessageId`.                                                                                                                                                                       |
+| `setup`                    | string \| null | Next wizard step: `name`, `username`, `lightning-address`, `rules`, or `null` when complete. The union still includes `wallet` for older clients; the api never returns it. Skip timestamps count as done except username, which cannot be skipped. Wallet backup is not a setup step. Clients must not invent a parallel sequence.             |
+| `missing`                  | string[]       | Factually unset fields (`name`, `username`, `lightning-address`, `rules`) even when skipped. Never includes `wallet`. Does not include `profileMessageId`.                                                                                                                                                                                      |
 | hasPosted                  | boolean        | True when there is a live forum row that is not the profile note (replies still count) OR when `aboutMe` is non-null. A profile note that is only the display-name copy, a photo without bio text, a missing note, and a soft-hidden note do not count. Not the same predicate as GET /invoices/posted (that stays top-level non-profile only). |
 | `aboutMe`                  | string \| null | Profile-note text when it is a real bio, else `null` (missing or soft-hidden (`deletedAt` set); auto name-copy is not a bio, including after a display-name rename when the note text still equals the stored profile-note `name` (Ada→Grace with text `Ada` stays `null`))                                                                     |
 | `aboutMeHasPhoto`          | boolean        | True when the live profile note has a stored JPEG/PNG/WebP. Independent of `aboutMe` (photo-only and name-copy notes can still have a photo). Bytes are `GET /me/about/photo`. Does not expose `profileMessageId`.                                                                                                                              |
 | `notificationLevel`        | string         | Owner fan-out filter: `all`, `active`, or `mentions`. Default `all`. Owner-only; omitted from public `GET /view/:viewKey` and member cards.                                                                                                                                                                                                     |
 | `funding`                  | object \| null | Funding-program grant. `null` for `basis`. Otherwise always an object; no row is `{ status: "none", trialUtcDate: null, admittedAt: null, reviewedByName: null }`. Admitted includes live `reviewedByName`.                                                                                                                                     |
-| `walletRequired`           | boolean        | True when the owner must complete the wallet setup step. Default false for existing members.                                                                                                                                                                                                                                                    |
-| `walletBackupSeenAt`       | number \| null | Epoch ms when the recovery phrase was shown, or `null` when unseen.                                                                                                                                                                                                                                                                             |
+| `walletRequired`           | boolean        | True when a recovery phrase is required (new register/claim). Default false for existing members. Does not make `setup` `'wallet'`.                                                                                                                                                                                                             |
+| `walletBackupSeenAt`       | number \| null | Epoch ms recorded after an existing member activates a passkey that can show a recovery phrase, so the app can offer Show recovery phrase next time instead of Activate. Not a confirmation. Null when that has not been recorded.                                                                                                              |
 | `passkeyCredentialId`      | string \| null | WebAuthn credential id (base64url), or `null` when the account has none. Owner-only.                                                                                                                                                                                                                                                            |
 
 ### `GET /me/activity`
@@ -617,7 +617,7 @@ Store throw or missing BTC-USD day → **Response** `503`:
 
 ### `POST /me/wallet-backup-seen`
 
-Bearer required. Empty body. Records that the recovery phrase was shown.
+Bearer required. Records that this account can show a recovery phrase. Not a confirmation and not a setup step. Empty body. Does not change `walletRequired`.
 
 Missing/invalid bearer → **Response** `401` `{ "error": "Unauthorized" }`.
 
@@ -1343,11 +1343,11 @@ Success → **Response** `200` with the updated account:
 - `lightningAddress`: `null`
 - `lightningAddressVerified`: `false`
 
-Does not clear `username`. After unlink, `setup` stays `wallet` when
-`walletRequired` is true and backup is unseen; otherwise `setup` is
-`username` if the handle is blank; `setup` is `lightning-address` only
-when wallet is done or not required, name is done or skipped, **and**
-username is set (and LN is blank / skip cleared).
+Does not clear `username`. After unlink, `setup` is `username` if the
+handle is blank; `setup` is `lightning-address` when name is done or
+skipped **and** username is set (and LN is blank / skip cleared). The
+recovery phrase is not a setup step and does not change `setup` or
+`missing`.
 
 ### `POST /me/lightning-address/verification`
 
@@ -1670,12 +1670,11 @@ finish and this route's session mint return 403 with the wrong-account
 copy (`GET /me` too). Setting a new address is not supported here
 (`POST /me/lightning-address` remains the live resolve path). Unlink
 resets `lightningAddressVerified` to `false` and drops any in-flight
-verification. It does not clear `username`. `GET /me` then returns `setup: "wallet"` when
-`walletRequired` is true and backup is unseen, else `setup: "username"` if
-the handle is blank, or `setup: "lightning-address"` only when wallet is
-done or not required, name is done or skipped, **and** username is set
-(and LN is blank / skip cleared), so any client that follows `setup` shows
-the wallet, username, or address form as appropriate. `verified` as a **role** is a
+verification. It does not clear `username`. `GET /me` then returns `setup: "username"` if
+the handle is blank, or `setup: "lightning-address"` when name is done or
+skipped **and** username is set (and LN is blank / skip cleared). The recovery
+phrase is not a setup step and does not change `setup` or `missing`, so any
+client that follows `setup` shows the username or address form as appropriate. `verified` as a **role** is a
 human-identity badge (a moderator physically met the person); it
 is not `lightningAddressVerified`. New passkey accounts stay `basis` until
 staff confirm them via `POST /trust/verify` or an operator overrides `role`

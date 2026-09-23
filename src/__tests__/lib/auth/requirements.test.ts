@@ -103,7 +103,7 @@ describe('requireAction', () => {
       lightningAddress: 'ada@walletofsatoshi.com',
       rulesAgreedAt: 2,
     };
-    expect(accountMissing(account)).toEqual(['wallet']);
+    expect(accountMissing(account)).toEqual([]);
     expect(requireAction(account, 'forum.post')).toEqual({ ok: true });
     expect(requireAction(account, 'forum.read')).toEqual({ ok: true });
   });

@@ -61,17 +61,17 @@ export interface OwnerAccountResponse extends AccountResponse {
   /** 64 lowercase hex; capability URL secret for `GET /view/:viewKey`. */
   viewKey: string;
   /**
-   * Next setup step the owner must complete (`wallet`, `name`, `username`,
-   * `lightning-address`, `rules`), or `null` when the signed-in app is
-   * allowed. Skip timestamps count as done for the wizard except
-   * username and wallet, which cannot be skipped. Computed on the api;
-   * clients must not invent a parallel sequence.
+   * Next setup step (`name`, `username`, `lightning-address`, `rules`),
+   * or `null` when the signed-in app is allowed. The recovery phrase is
+   * not a setup step and does not change `setup` or `missing`. Skip
+   * timestamps count as done except username, which cannot be skipped.
+   * Computed on the api; clients must not invent a parallel sequence.
    */
   setup: AccountSetup;
   /**
-   * Factually unset fields (skip does not clear them). Order: `wallet`
-   * (when required and unseen), then `name`, `username`,
-   * `lightning-address`, `rules`. Used by clients alongside action gates.
+   * Factually unset fields (skip does not clear them). Does not include
+   * wallet. Order: `name`, `username`, `lightning-address`, `rules`.
+   * Used by clients alongside action gates.
    */
   missing: AccountMissingField[];
   /**
@@ -102,13 +102,15 @@ export interface OwnerAccountResponse extends AccountResponse {
    */
   funding: OwnerFundingJson | null;
   /**
-   * True when the owner must complete the wallet setup step. Default
-   * false when omitted in storage (existing members).
+   * True when a recovery phrase is required. Does not set `setup` to
+   * `wallet`. Default false when omitted in storage (existing members).
    */
   walletRequired: boolean;
   /**
-   * Epoch ms when the owner posted that the recovery phrase was shown,
-   * or `null` when unseen.
+   * Epoch ms recorded after an existing member activates a passkey that
+   * can show a recovery phrase, so the app can offer Show recovery
+   * phrase next time instead of Activate. Not a confirmation. Null when
+   * that has not been recorded.
    */
   walletBackupSeenAt: number | null;
   /**
@@ -216,9 +218,14 @@ export interface DebugAccountResponse extends AccountResponse {
   profileMessageId: string | null;
   /** Owner fan-out filter (`all` \| `active` \| `mentions`). */
   notificationLevel: NotificationLevel;
-  /** True when the owner must complete the wallet setup step. */
+  /** True when a recovery phrase is required. Does not set `setup` to `wallet`. */
   walletRequired: boolean;
-  /** Epoch ms when the recovery phrase was shown, or `null`. */
+  /**
+   * Epoch ms recorded after an existing member activates a passkey that
+   * can show a recovery phrase, so the app can offer Show recovery
+   * phrase next time instead of Activate. Not a confirmation. Null when
+   * that has not been recorded.
+   */
   walletBackupSeenAt: number | null;
   /** Custodial pubkey hex, or `null`. */
   nostrPubkey: string | null;

@@ -1556,16 +1556,16 @@
 
 ## Function: accountSetup
 
-- **Purpose:** Next owner wizard step from stored account fields. Wallet is first when `walletRequired === true` and `walletBackupSeenAt` is null/undefined; it cannot be skipped. Then name → username (not skippable) → lightning-address → rules. Skip timestamps count as done for name and Lightning Address only. The api is the source of truth; clients only route.
+- **Purpose:** Next owner wizard step from stored account fields. Order is name → username (not skippable) → lightning-address → rules. The recovery phrase is not a setup step and does not change `setup` or `missing`. Wallet backup is not a setup step. Skip timestamps count as done for name and Lightning Address only. The api is the source of truth; clients only route.
 - **Inputs:** `Account`.
-- **Returns / side effects:** `'wallet'` when `walletRequired === true` and `walletBackupSeenAt` is null/undefined, else `'name'` when name is null/blank and `nameSkippedAt` is unset, else `'username'` when username is null/undefined/blank (cannot skip), else `'lightning-address'` when Lightning Address is null/blank and `lightningAddressSkippedAt` is unset, else `'rules'` when `rulesAgreedAt` is null, else `null`. No I/O.
+- **Returns / side effects:** `'name'` when name is null/blank and `nameSkippedAt` is unset, else `'username'` when username is null/undefined/blank (cannot skip), else `'lightning-address'` when Lightning Address is null/blank and `lightningAddressSkippedAt` is unset, else `'rules'` when `rulesAgreedAt` is null, else `null`. Never `'wallet'`. No I/O.
 - **Used by:** `serializeOwnerAccount`.
 
 ## Function: accountMissing
 
 - **Purpose:** Factually unset account fields for action gates. Skip timestamps do not clear a field from this list.
 - **Inputs:** `Account`.
-- **Returns / side effects:** `AccountMissingField[]` in order `wallet` first when required and unseen, then `name`, `username`, `lightning-address`, `rules` (only those that are null/blank or rules unset). Skip timestamps still do not clear name/username/lightning-address/rules. No I/O.
+- **Returns / side effects:** `AccountMissingField[]` in order `name`, `username`, `lightning-address`, `rules` (only those that are null/blank or rules unset). Never includes `wallet`. Skip timestamps still do not clear name/username/lightning-address/rules. No I/O.
 - **Used by:** `serializeOwnerAccount`, `requireAction`.
 
 ## Function: actionRequirements
@@ -1577,7 +1577,7 @@
 
 ## Function: requireAction
 
-- **Purpose:** Gate a signed-in action on factual account fields (skip does not satisfy). Filters `accountMissing` to the action's needs, preserving `actionRequirements` order. Does not add wallet to ACTION_NEEDS; `accountSetup` is the lock.
+- **Purpose:** Gate a signed-in action on factual account fields (skip does not satisfy). Filters `accountMissing` to the action's needs, preserving `actionRequirements` order. Wallet backup is neither a setup step nor an action requirement.
 - **Inputs:** `Account`, `AccountAction`.
 - **Returns / side effects:** `{ ok: true }` or `{ ok: false, missing }` (never empty). No I/O. Routes respond 409 `{ error: 'missing_requirements', missing }` when `ok` is false.
 - **Used by:** `messagesRoutes`, `contactRoutes`, `membersRoutes`.
