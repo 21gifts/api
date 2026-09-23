@@ -96,7 +96,7 @@ const JPEG2: ForumPhoto = {
 
 describe('MESSAGE_SCHEMA_SQL', () => {
   it('creates message with photo columns, Nostr columns, index, and additive ALTERs', () => {
-    expect(MESSAGE_SCHEMA_SQL).toHaveLength(72);
+    expect(MESSAGE_SCHEMA_SQL).toHaveLength(74);
     expect(MESSAGE_SCHEMA_SQL[0]).toMatch(/CREATE TABLE IF NOT EXISTS message/i);
     expect(MESSAGE_SCHEMA_SQL[0]).toMatch(/account_id uuid NOT NULL REFERENCES account/i);
     expect(MESSAGE_SCHEMA_SQL[0]).toMatch(/photo bytea/i);
@@ -161,6 +161,17 @@ describe('MESSAGE_SCHEMA_SQL', () => {
     expect(MESSAGE_SCHEMA_SQL.join('\n')).toMatch(/message_nostr_event_unrepaired_idx/);
     expect(MESSAGE_SCHEMA_SQL.join('\n')).toMatch(/content_fp/);
     expect(MESSAGE_SCHEMA_SQL.join('\n')).toMatch(/CREATE EXTENSION IF NOT EXISTS pgcrypto/);
+    const schemaSql = MESSAGE_SCHEMA_SQL.join('\n');
+    const dropTop = schemaSql.indexOf('DROP INDEX IF EXISTS message_live_top_content_fp_uidx');
+    const dropReply = schemaSql.indexOf('DROP INDEX IF EXISTS message_live_reply_content_fp_uidx');
+    const hashFill = schemaSql.indexOf('SET content_fp = encode(');
+    const createTop = schemaSql.indexOf(
+      'CREATE UNIQUE INDEX IF NOT EXISTS message_live_top_content_fp_uidx',
+    );
+    expect(dropTop).toBeGreaterThan(-1);
+    expect(dropReply).toBeGreaterThan(dropTop);
+    expect(hashFill).toBeGreaterThan(dropReply);
+    expect(createTop).toBeGreaterThan(hashFill);
     expect(MESSAGE_SCHEMA_SQL.join('\n')).toMatch(/digest\(photo, 'sha256'\)/);
     expect(MESSAGE_SCHEMA_SQL.join('\n')).toMatch(
       /digest\(photo, 'sha256'\)[\s\S]*?video_content_type IS NULL/,
