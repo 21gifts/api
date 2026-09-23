@@ -4,8 +4,8 @@ import type { Account } from '@/lib/auth/store';
  * Next owner setup step. The api is the source of truth; clients only route.
  *
  * Order is name, username, Lightning Address, then living-room rules.
- * An unseen recovery phrase does not change the step and cannot block
- * the rest of the app. Username cannot be skipped. Wallet backup is not
+ * The recovery phrase is not a setup step and does not change `setup`
+ * or `missing`. Username cannot be skipped. Wallet backup is not
  * a setup step and not an action requirement. Skip timestamps count as
  * done for the name and Lightning Address wizard steps. `null` means
  * the account may use the signed-in app.
@@ -25,8 +25,8 @@ export type AccountMissingField = 'wallet' | 'name' | 'username' | 'lightning-ad
  * Compute the next setup step from stored account fields.
  *
  * A skip timestamp counts as completing that wizard step. Blank strings
- * after trim count as missing unless skipped. An unseen recovery phrase
- * does not change the step.
+ * after trim count as missing unless skipped. The recovery phrase is not
+ * a setup step and does not change `setup` or `missing`.
  *
  * @param account - Stored account.
  * @returns The next required step, or `null` when setup is complete.

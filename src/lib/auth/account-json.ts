@@ -62,10 +62,10 @@ export interface OwnerAccountResponse extends AccountResponse {
   viewKey: string;
   /**
    * Next setup step (`name`, `username`, `lightning-address`, `rules`),
-   * or `null` when the signed-in app is allowed. An unseen recovery
-   * phrase does not change setup. Skip timestamps count as done except
-   * username, which cannot be skipped. Computed on the api; clients
-   * must not invent a parallel sequence.
+   * or `null` when the signed-in app is allowed. The recovery phrase is
+   * not a setup step and does not change `setup` or `missing`. Skip
+   * timestamps count as done except username, which cannot be skipped.
+   * Computed on the api; clients must not invent a parallel sequence.
    */
   setup: AccountSetup;
   /**
@@ -107,8 +107,10 @@ export interface OwnerAccountResponse extends AccountResponse {
    */
   walletRequired: boolean;
   /**
-   * Epoch ms when the owner posted that the recovery phrase was shown,
-   * or `null` when unseen.
+   * Epoch ms recorded after an existing member activates a passkey that
+   * can show a recovery phrase, so the app can offer Show recovery
+   * phrase next time instead of Activate. Not a confirmation. Null when
+   * that has not been recorded.
    */
   walletBackupSeenAt: number | null;
   /**
@@ -218,7 +220,12 @@ export interface DebugAccountResponse extends AccountResponse {
   notificationLevel: NotificationLevel;
   /** True when a recovery phrase is required. Does not set `setup` to `wallet`. */
   walletRequired: boolean;
-  /** Epoch ms when the recovery phrase was shown, or `null`. */
+  /**
+   * Epoch ms recorded after an existing member activates a passkey that
+   * can show a recovery phrase, so the app can offer Show recovery
+   * phrase next time instead of Activate. Not a confirmation. Null when
+   * that has not been recorded.
+   */
   walletBackupSeenAt: number | null;
   /** Custodial pubkey hex, or `null`. */
   nostrPubkey: string | null;

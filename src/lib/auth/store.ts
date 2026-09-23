@@ -102,8 +102,10 @@ export interface Account {
    */
   walletRequired?: boolean;
   /**
-   * Epoch ms when the owner posted that the recovery phrase was shown,
-   * or null/omitted when unseen.
+   * Epoch ms recorded after an existing member activates a passkey that
+   * can show a recovery phrase, so the app can offer Show recovery
+   * phrase next time instead of Activate. Not a confirmation. Null when
+   * that has not been recorded.
    */
   walletBackupSeenAt?: number | null;
 }

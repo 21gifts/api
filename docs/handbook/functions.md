@@ -1556,7 +1556,7 @@
 
 ## Function: accountSetup
 
-- **Purpose:** Next owner wizard step from stored account fields. Order is name → username (not skippable) → lightning-address → rules. An unseen recovery phrase does not change the step and cannot block the rest of the app. Wallet backup is not a setup step. Skip timestamps count as done for name and Lightning Address only. The api is the source of truth; clients only route.
+- **Purpose:** Next owner wizard step from stored account fields. Order is name → username (not skippable) → lightning-address → rules. The recovery phrase is not a setup step and does not change `setup` or `missing`. Wallet backup is not a setup step. Skip timestamps count as done for name and Lightning Address only. The api is the source of truth; clients only route.
 - **Inputs:** `Account`.
 - **Returns / side effects:** `'name'` when name is null/blank and `nameSkippedAt` is unset, else `'username'` when username is null/undefined/blank (cannot skip), else `'lightning-address'` when Lightning Address is null/blank and `lightningAddressSkippedAt` is unset, else `'rules'` when `rulesAgreedAt` is null, else `null`. Never `'wallet'`. No I/O.
 - **Used by:** `serializeOwnerAccount`.

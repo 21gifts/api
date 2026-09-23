@@ -58,12 +58,13 @@ The signed-in view currently lives on `/login` — there is no separate
 Address form, and **Sign out**. Name and Lightning Address are each
 skippable via `POST /me/setup/skip`. Username cannot skip; the app sets
 the handle with `POST /me/username`. Living-room rules stay required.
-New passkey accounts may record the recovery phrase via
-`POST /me/wallet-backup-seen`; that is not a setup step.
+An existing member records that the account can show a recovery phrase via
+`POST /me/wallet-backup-seen` after activating a phrase-capable passkey. That
+is not a confirmation and not a setup step.
 
 `GET /me` `setup` order is name, then username (unskippable), then
-lightning-address, then rules. An unseen recovery phrase does not change
-the step. When username is still blank,
+lightning-address, then rules. The recovery phrase is not a setup step
+and does not change `setup` or `missing`. When username is still blank,
 `POST /me/name` auto-assigns `usernameFromDisplayName` if that handle is
 free; a collision or uniqueness race leaves username null and `setup` at
 username.
@@ -100,8 +101,8 @@ or unlink a LUD-16 Lightning Address:
 - `DELETE /me/lightning-address` — unlink (also clears the LN skip timestamp;
   does not clear `username`). After unlink, `setup` is `username` if the
   handle is blank; `setup` is `lightning-address` when name is done or
-  skipped **and** username is set. An unseen recovery phrase does not
-  change the step.
+  skipped **and** username is set. The recovery phrase is not a setup
+  step and does not change `setup` or `missing`.
 
 Proof-of-control of the linked Lightning Address is the flag
 `lightningAddressVerified` (not the forum role **Verified**):
