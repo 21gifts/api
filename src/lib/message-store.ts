@@ -2055,8 +2055,8 @@ export class InMemoryMessageStore implements MessageStore {
         row.deletedAt === null &&
         row.parentId === null &&
         (excludeId === null || row.id !== excludeId) &&
-        (this.#photos.has(row.id) ||
-          (this.#extraPhotos.get(row.id)?.length ?? 0) > 0 ||
+        ((this.#extraPhotos.get(row.id)?.length ?? 0) > 0 ||
+          this.#photos.has(row.id) ||
           row.hasVideo === true),
     );
     return Promise.resolve(found);
