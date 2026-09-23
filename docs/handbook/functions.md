@@ -2206,6 +2206,13 @@
 - **Returns / side effects:** Hono app mounted at `/.well-known`. LNURL-pay 404 when the username is invalid, unknown, or unlinked; 502 when WoS is unreachable or the store throws.
 - **Used by:** `createApp`.
 
+## Function: payRoutes
+
+- **Purpose:** Hono sub-app for the public pay link: `GET /:username` (display name and satoshi bounds) and `POST /:username/invoice` (one BOLT11 via `requestGiftInvoice`). Mounted at `/pay`. No auth and no extra CORS headers.
+- **Inputs:** `{ auth: AuthStore, fetchImpl: FetchFn }`. `fetchImpl` is required; `createApp` passes the shared LNURL-pay fetch.
+- **Returns / side effects:** Hono app. Logs `pay.unknown`, `pay.unreachable`, `pay.failed`, `pay.invoice_failed`, and `pay.invoice`. Never calls `username@21.gifts`.
+- **Used by:** `createApp`.
+
 ## Function: writeForumVideo
 
 - **Purpose:** Persist video bytes under `MEDIA_DIR` (caller should already faststart MP4/MOV via `decodeForumVideo`).

@@ -56,6 +56,20 @@
 - **Used by:** Lightning wallets paying `username@21.gifts`; app proxies this from the site apex.
 - **Auth:** none.
 
+## Endpoint: GET /pay/:username
+
+- **Purpose:** Public, unauthenticated pay-link card for a member. Normalises `:username`, loads the account, and returns `name`, `username`, `minSats`, and `maxSats` from the linked Wallet of Satoshi LNURL-pay metadata. `name` is the trimmed display name, or the normalised username when the display name is blank. Does not return the callback, the Lightning Address, or provider metadata. No spend token.
+- **Errors:** 404 `{ error: 'Not found' }` when the username is invalid, the account is unknown, or `lightningAddress` is blank; 502 `{ error: 'Lightning Address could not be resolved' }` when the stored address is not a LUD-16 address, Wallet of Satoshi is unreachable, the store throws, or `maxSats < minSats`.
+- **Used by:** A browser pay page that shows the member and the allowed satoshi range.
+- **Auth:** none.
+
+## Endpoint: POST /pay/:username/invoice
+
+- **Purpose:** Public, unauthenticated BOLT11 mint for an exact satoshi amount. Same account lookup as `GET /pay/:username`, then `{ amountSats: number }` must be an integer inside `[minSats, maxSats]` whose millisatoshi value sits inside the provider window. Settlement calls `requestGiftInvoice` on the stored Wallet of Satoshi address only — never `username@21.gifts`. Response is `{ pr, amountSats }` with no comment sent. No spend token.
+- **Errors:** 404 `{ error: 'Not found' }` for an invalid username, unknown account, or blank Lightning Address; 400 `{ error: 'Enter a whole number of sats' }` for missing or invalid JSON, a non-integer, or an amount outside the window; 502 `{ error: 'Lightning Address could not be resolved' }` when the address cannot be resolved, the store throws, the sat window is empty, or the invoice fetch fails.
+- **Used by:** The browser pay page minting one invoice for the typed satoshi amount.
+- **Auth:** none.
+
 ## Endpoint: GET /apple-touch-icon.png
 
 - **Purpose:** PNG brand mark (apple-touch). `Cache-Control: public, max-age=86400`.
