@@ -1216,6 +1216,11 @@ export const MESSAGE_SCHEMA_SQL: readonly string[] = [
   WHERE nostr_event IS NOT NULL AND jsonb_typeof(nostr_event) = 'string'`,
   `ALTER TABLE message ADD COLUMN IF NOT EXISTS content_fp text`,
   `CREATE EXTENSION IF NOT EXISTS pgcrypto`,
+  // A photo row can still have a null fingerprint after the indexes exist
+  // (`updatePhoto` does not recompute it). Filling that null while the
+  // unique indexes are present aborts boot before duplicate salting.
+  `DROP INDEX IF EXISTS message_live_top_content_fp_uidx`,
+  `DROP INDEX IF EXISTS message_live_reply_content_fp_uidx`,
   `UPDATE message
 SET content_fp = encode(
   digest(
