@@ -81,7 +81,7 @@ Public base URLs used in examples:
 | ------ | ---------------------------------------------------- | -------------------------- | ------------------------------------------------------------------------------------------------------------------- |
 | GET    | `/healthz`                                           | none                       | Liveness                                                                                                            |
 | GET    | `/info`                                              | none                       | Service identity                                                                                                    |
-| GET    | `/.well-known/lnurlp/:username`                      | none                       | LUD-16 payRequest; WoS callback stays; an open till charge pins both sendable bounds                               |
+| GET    | `/.well-known/lnurlp/:username`                      | none                       | LUD-16 payRequest; WoS callback stays; an open till charge pins both sendable bounds                                |
 | GET    | `/favicon.ico`                                       | none                       | Brand mark (favicon)                                                                                                |
 | GET    | `/favicon.svg`                                       | none                       | Brand mark (SVG favicon)                                                                                            |
 | GET    | `/apple-touch-icon.png`                              | none                       | Brand mark (Apple touch icon)                                                                                       |
@@ -139,9 +139,9 @@ Public base URLs used in examples:
 | DELETE | `/messages/:id`                                      | Bearer (moderator+)        | Soft-hide note + direct replies; retract in-app notifications; external target also blocks that pubkey              |
 | POST   | `/messages/:id/invoice`                              | Bearer                     | NIP-57 zap / BOLT11                                                                                                 |
 | POST   | `/contact`                                           | Bearer                     | Send private in-app contact `{ text }`                                                                              |
-| GET    | `/pos`                                               | Bearer                     | Open till charge or null, plus up to 20 history rows                                                               |
-| POST   | `/pos`                                               | Bearer                     | Pin one whole-sat amount for five minutes                                                                          |
-| DELETE | `/pos`                                               | Bearer                     | Cancel every unexpired pending till charge                                                                         |
+| GET    | `/pos`                                               | Bearer                     | Open till charge or null, plus up to 20 history rows                                                                |
+| POST   | `/pos`                                               | Bearer                     | Pin one whole-sat amount for five minutes                                                                           |
+| DELETE | `/pos`                                               | Bearer                     | Cancel every unexpired pending till charge                                                                          |
 | GET    | `/conversations`                                     | Bearer                     | List visible private threads (per-row `unreadMessageCount`; envelope `unreadCount` is thread count)                 |
 | GET    | `/conversations/moderator-group`                     | Bearer (moderator+)        | Open/ensure closed moderator-group tool                                                                             |
 | POST   | `/conversations`                                     | Bearer                     | Open thread from a forum note (`forumMessageId`)                                                                    |
