@@ -2,8 +2,8 @@
  * `GET /pay/:username` — public pay-link card (display name and satoshi bounds).
  * `POST /pay/:username/invoice` — one BOLT11 invoice via `requestGiftInvoice`.
  *
- * Settlement stays on the member's linked Wallet of Satoshi address. No spend
- * token.
+ * Settlement stays on the member's linked Lightning Address, never
+ * `username@21.gifts`. No spend token.
  */
 
 import { Hono } from 'hono';
@@ -30,7 +30,7 @@ type PayLookup =
   | { ok: false; status: 404 | 502; error: string };
 
 /**
- * Load the member and the linked Wallet of Satoshi LNURL-pay satoshi bounds.
+ * Load the member and the linked Lightning Address LNURL-pay satoshi bounds.
  *
  * @param rawUsername - Path parameter before normalisation.
  * @param deps - Auth store and LNURL-pay fetch.
