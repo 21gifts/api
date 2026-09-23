@@ -145,7 +145,7 @@ describe('translateViaDeepl', () => {
             }
             signal.addEventListener('abort', fail, { once: true });
           }),
-      } as Response;
+      } as unknown as Response;
     };
 
     const pending = translateViaDeepl(UPSTREAM, SOURCE, 'en', fetchImpl);

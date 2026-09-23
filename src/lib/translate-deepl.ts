@@ -60,7 +60,10 @@ export async function translateViaDeepl(
     const parsed = translatedBodySchema.safeParse(body);
     if (!parsed.success) throw new TranslateUpstreamError();
     return parsed.data.translations[0].text;
-  } catch {
+  } catch (err) {
+    if (err instanceof TranslateUpstreamError) {
+      throw err;
+    }
     throw new TranslateUpstreamError();
   } finally {
     clearTimeout(timeout);
