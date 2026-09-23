@@ -5,7 +5,7 @@ import { GIFT_INVOICE_MAX_MSAT } from '@/lib/config';
 import { InMemoryAuthStore } from '@/lib/auth/store';
 import { InMemoryConversationStore, type ConversationStore } from '@/lib/conversation-store';
 import { InMemoryInvoiceStore, type GiftInvoice } from '@/lib/invoice-store';
-import { unsignedNostrDefaults } from '@/lib/message';
+import { unsignedNostrDefaults, type ForumPhoto } from '@/lib/message';
 import { InMemoryMessageStore } from '@/lib/message-store';
 import { InMemoryNotificationStore } from '@/lib/notification-store';
 import { InMemoryPushStore } from '@/lib/push-store';
@@ -220,6 +220,45 @@ function uuidPostStore(): InMemoryMessageStore {
   ]);
 }
 
+const JPEG: ForumPhoto = {
+  contentType: 'image/jpeg',
+  bytes: new Uint8Array([0xff, 0xd8, 0xff, 0xd9]),
+};
+
+async function uuidMediaPostStore(): Promise<InMemoryMessageStore> {
+  const store = new InMemoryMessageStore();
+  await store.create(
+    {
+      id: POST_ID,
+      accountId: 'acc-alice',
+      name: 'Ada',
+      text: 'first',
+      createdAt: new Date('2026-08-01T00:00:00.000Z'),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+    },
+    JPEG,
+  );
+  return store;
+}
+
+async function liveMediaPostStore(accountId: string = 'acc-alice'): Promise<InMemoryMessageStore> {
+  const store = new InMemoryMessageStore();
+  await store.create(
+    {
+      id: 'post-alice',
+      accountId,
+      name: 'Ada',
+      text: 'first',
+      createdAt: new Date('2026-08-01T00:00:00.000Z'),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+    },
+    JPEG,
+  );
+  return store;
+}
+
 /** Same derivation as production `spendGiftReplyId` (not exported). */
 function spendGiftReplyId(invoiceId: string): string {
   const hex = createHash('sha256').update(`21gifts-spend-gift:${invoiceId}`).digest('hex');
@@ -403,7 +442,12 @@ describe('GET /invoices/posted', () => {
       auth(),
     );
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ hasPosted: false, messageId: null, postedAt: null });
+    expect(await res.json()).toEqual({
+      hasPosted: false,
+      messageId: null,
+      postedAt: null,
+      hasMedia: false,
+    });
   });
 
   it('returns hasPosted false for an account without messages', async () => {
@@ -426,7 +470,12 @@ describe('GET /invoices/posted', () => {
       auth(),
     );
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ hasPosted: false, messageId: null, postedAt: null });
+    expect(await res.json()).toEqual({
+      hasPosted: false,
+      messageId: null,
+      postedAt: null,
+      hasMedia: false,
+    });
   });
 
   it('returns hasPosted true when the account has a live top-level non-profile message', async () => {
@@ -454,6 +503,7 @@ describe('GET /invoices/posted', () => {
       hasPosted: true,
       messageId: 'post-alice',
       postedAt: '2026-08-01T00:00:00.000Z',
+      hasMedia: false,
     });
   });
 
@@ -489,7 +539,12 @@ describe('GET /invoices/posted', () => {
       auth(),
     );
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ hasPosted: true, messageId: null, postedAt: null });
+    expect(await res.json()).toEqual({
+      hasPosted: true,
+      messageId: null,
+      postedAt: null,
+      hasMedia: false,
+    });
   });
 
   it('returns hasPosted false when the account has only a profile note', async () => {
@@ -525,7 +580,12 @@ describe('GET /invoices/posted', () => {
       auth(),
     );
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ hasPosted: false, messageId: null, postedAt: null });
+    expect(await res.json()).toEqual({
+      hasPosted: false,
+      messageId: null,
+      postedAt: null,
+      hasMedia: false,
+    });
   });
 
   it('returns hasPosted false when the account has only a live reply', async () => {
@@ -549,7 +609,12 @@ describe('GET /invoices/posted', () => {
       messageStore: liveReplyStore(),
     }).request(`/invoices/posted?address=${encodeURIComponent(ADDRESS)}`, auth());
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ hasPosted: false, messageId: null, postedAt: null });
+    expect(await res.json()).toEqual({
+      hasPosted: false,
+      messageId: null,
+      postedAt: null,
+      hasMedia: false,
+    });
   });
 
   it('returns the live top-level post id as messageId', async () => {
@@ -577,6 +642,7 @@ describe('GET /invoices/posted', () => {
       hasPosted: true,
       messageId: POST_ID,
       postedAt: '2026-08-01T00:00:00.000Z',
+      hasMedia: false,
     });
   });
 
@@ -625,6 +691,36 @@ describe('GET /invoices/posted', () => {
       hasPosted: true,
       messageId: NEWER_POST_ID,
       postedAt: '2026-08-02T00:00:00.000Z',
+      hasMedia: false,
+    });
+  });
+
+  it('returns hasPosted true and hasMedia true when the account has a live top-level photo post', async () => {
+    const authStore = new InMemoryAuthStore();
+    await authStore.createAccount({
+      id: 'acc-alice',
+      linkingKey: null,
+      role: 'basis',
+      name: 'Ada',
+      lightningAddress: ADDRESS,
+      lightningAddressVerified: true,
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: 'a'.repeat(64),
+      createdAt: 1,
+      rulesAgreedAt: null,
+    });
+    const res = await createApp({
+      spendApiToken: TOKEN,
+      authStore,
+      messageStore: await liveMediaPostStore(),
+    }).request(`/invoices/posted?address=${encodeURIComponent(ADDRESS)}`, auth());
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({
+      hasPosted: true,
+      messageId: 'post-alice',
+      postedAt: '2026-08-01T00:00:00.000Z',
+      hasMedia: true,
     });
   });
 });
@@ -886,7 +982,7 @@ describe('POST /invoices', () => {
     const res = await createApp({
       spendApiToken: TOKEN,
       authStore,
-      messageStore: uuidPostStore(),
+      messageStore: await uuidMediaPostStore(),
       invoiceStore,
       fetchImpl,
     }).request(
@@ -914,7 +1010,7 @@ describe('POST /invoices', () => {
     const res = await createApp({
       spendApiToken: TOKEN,
       authStore,
-      messageStore: uuidPostStore(),
+      messageStore: await uuidMediaPostStore(),
       invoiceStore,
       fetchImpl: happyFetch(),
     }).request(
@@ -928,6 +1024,34 @@ describe('POST /invoices', () => {
     const body = (await res.json()) as { id: string };
     expect(invoiceStore.get(body.id)?.messageId).toBe(POST_ID);
     expect(invoiceStore.get(body.id)?.comment).toBe('');
+  });
+
+  it('returns 200 when messageId is a live top-level photo post', async () => {
+    const authStore = new InMemoryAuthStore();
+    await seedPasskeyAndPlatform(authStore);
+    const invoiceStore = new InMemoryInvoiceStore();
+    const fetchImpl = vi.fn<FetchFn>(happyFetch());
+    const res = await createApp({
+      spendApiToken: TOKEN,
+      authStore,
+      messageStore: await uuidMediaPostStore(),
+      invoiceStore,
+      fetchImpl,
+    }).request(
+      '/invoices',
+      auth({
+        method: 'POST',
+        body: JSON.stringify({
+          address: ADDRESS,
+          amountMsat: 1000,
+          messageId: POST_ID,
+        }),
+      }),
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { id: string };
+    expect(fetchImpl).toHaveBeenCalled();
+    expect(invoiceStore.get(body.id)?.messageId).toBe(POST_ID);
   });
 
   it('stores normalized amountUsd and freezes that USD on the proven gift', async () => {
@@ -1244,6 +1368,32 @@ describe('POST /invoices', () => {
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 
+  it('returns 403 when messageId is a live top-level text-only post', async () => {
+    const authStore = new InMemoryAuthStore();
+    await seedPasskeyAndPlatform(authStore);
+    const fetchImpl = vi.fn<FetchFn>(happyFetch());
+    const res = await createApp({
+      spendApiToken: TOKEN,
+      authStore,
+      messageStore: uuidPostStore(),
+      fetchImpl,
+    }).request(
+      '/invoices',
+      auth({
+        method: 'POST',
+        body: JSON.stringify({
+          address: ADDRESS,
+          amountMsat: 1000,
+          messageId: POST_ID,
+        }),
+      }),
+    );
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: 'Forum post required' });
+    expect(parsedEvents(warn).some((e) => e['event'] === 'invoice.forum_post_required')).toBe(true);
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
   it('returns 503 when messageId is set and the platform account is missing', async () => {
     const authStore = new InMemoryAuthStore();
     await seedPasskeyAccount(authStore);
@@ -1253,7 +1403,7 @@ describe('POST /invoices', () => {
     const res = await createApp({
       spendApiToken: TOKEN,
       authStore,
-      messageStore: uuidPostStore(),
+      messageStore: await uuidMediaPostStore(),
       invoiceStore,
       fetchImpl,
     }).request(

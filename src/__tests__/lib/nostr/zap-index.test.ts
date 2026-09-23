@@ -4759,6 +4759,9 @@ describe('indexOpenZapReceipts', () => {
       accountHasLiveTopLevelPost: (
         ...args: Parameters<InMemoryMessageStore['accountHasLiveTopLevelPost']>
       ) => base.accountHasLiveTopLevelPost(...args),
+      accountHasLiveTopLevelMediaPost: (
+        ...args: Parameters<InMemoryMessageStore['accountHasLiveTopLevelMediaPost']>
+      ) => base.accountHasLiveTopLevelMediaPost(...args),
       countByAccount: (...args: Parameters<InMemoryMessageStore['countByAccount']>) =>
         base.countByAccount(...args),
       countAttributedReplies: (
@@ -4984,6 +4987,9 @@ describe('indexOpenZapReceipts', () => {
         accountHasLiveTopLevelPost: (
           ...args: Parameters<InMemoryMessageStore['accountHasLiveTopLevelPost']>
         ) => base.accountHasLiveTopLevelPost(...args),
+        accountHasLiveTopLevelMediaPost: (
+          ...args: Parameters<InMemoryMessageStore['accountHasLiveTopLevelMediaPost']>
+        ) => base.accountHasLiveTopLevelMediaPost(...args),
         countByAccount: (...args: Parameters<InMemoryMessageStore['countByAccount']>) =>
           base.countByAccount(...args),
         countAttributedReplies: (
@@ -5352,6 +5358,9 @@ describe('indexOpenZapReceipts', () => {
         accountHasLiveTopLevelPost: (
           ...args: Parameters<InMemoryMessageStore['accountHasLiveTopLevelPost']>
         ) => base.accountHasLiveTopLevelPost(...args),
+        accountHasLiveTopLevelMediaPost: (
+          ...args: Parameters<InMemoryMessageStore['accountHasLiveTopLevelMediaPost']>
+        ) => base.accountHasLiveTopLevelMediaPost(...args),
         countByAccount: (...args: Parameters<InMemoryMessageStore['countByAccount']>) =>
           base.countByAccount(...args),
         countAttributedReplies: (

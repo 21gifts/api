@@ -63,12 +63,14 @@ export interface InvoiceRouteDeps {
     | 'getAccount'
   >;
   /**
-   * Forum store for live top-level post lookup, gift-reply insert, and
-   * GET `/posted` `messageId`. Distinct from {@link InvoiceStore} (`store`).
+   * Forum store for live top-level post lookup, GET `/posted` `hasMedia`,
+   * gift-reply insert, and GET `/posted` `messageId`. Distinct from
+   * {@link InvoiceStore} (`store`).
    */
   messageStore: Pick<
     MessageStore,
     | 'accountHasLiveTopLevelPost'
+    | 'accountHasLiveTopLevelMediaPost'
     | 'getById'
     | 'addSats'
     | 'create'
@@ -520,23 +522,25 @@ export function invoiceRoutes(deps: InvoiceRouteDeps): Hono {
 
       const account = await deps.authStore.getAccountByLightningAddress(address);
       if (account === undefined) {
-        return c.json({ hasPosted: false, messageId: null, postedAt: null }, 200);
+        return c.json({ hasPosted: false, messageId: null, postedAt: null, hasMedia: false }, 200);
       }
-      const hasPosted = await deps.messageStore.accountHasLiveTopLevelPost(
-        account.id,
-        account.profileMessageId ?? null,
-      );
+      const excludeId = account.profileMessageId ?? null;
+      const hasPosted = await deps.messageStore.accountHasLiveTopLevelPost(account.id, excludeId);
       if (!hasPosted) {
-        return c.json({ hasPosted: false, messageId: null, postedAt: null }, 200);
+        return c.json({ hasPosted: false, messageId: null, postedAt: null, hasMedia: false }, 200);
       }
+      const hasMedia = await deps.messageStore.accountHasLiveTopLevelMediaPost(
+        account.id,
+        excludeId,
+      );
       const posts = await deps.messageStore.listPostsByAccount(account.id, MESSAGE_LIST_LIMIT);
-      const profileId = account.profileMessageId ?? null;
-      const newest = posts.find((row) => row.id !== profileId);
+      const newest = posts.find((row) => row.id !== excludeId);
       return c.json(
         {
           hasPosted: true,
           messageId: newest === undefined ? null : newest.id,
           postedAt: newest === undefined ? null : newest.createdAt.toISOString(),
+          hasMedia,
         },
         200,
       );
@@ -617,6 +621,14 @@ export function invoiceRoutes(deps: InvoiceRouteDeps): Hono {
         const authorAddress =
           author === undefined ? null : normalizeLightningAddress(author.lightningAddress ?? '');
         if (author === undefined || authorAddress !== address) {
+          logEvent('invoice.forum_post_required', { address });
+          return c.json({ error: 'Forum post required' }, 403);
+        }
+        if (
+          message.hasPhoto !== true &&
+          message.hasVideo !== true &&
+          (message.photoCount ?? 0) === 0
+        ) {
           logEvent('invoice.forum_post_required', { address });
           return c.json({ error: 'Forum post required' }, 403);
         }

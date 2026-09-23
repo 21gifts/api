@@ -336,6 +336,72 @@ describe('InMemoryMessageStore', () => {
     );
   });
 
+  it('accountHasLiveTopLevelMediaPost is false on an empty store', async () => {
+    expect(await new InMemoryMessageStore().accountHasLiveTopLevelMediaPost('acc', null)).toBe(
+      false,
+    );
+  });
+
+  it('accountHasLiveTopLevelMediaPost is false for a live text-only top-level row', async () => {
+    expect(await new InMemoryMessageStore([EARLY]).accountHasLiveTopLevelMediaPost('acc', null)).toBe(
+      false,
+    );
+  });
+
+  it('accountHasLiveTopLevelMediaPost is true after create with photo 0', async () => {
+    const store = new InMemoryMessageStore();
+    await store.create({ ...EARLY }, JPEG);
+    expect(await store.accountHasLiveTopLevelMediaPost('acc', null)).toBe(true);
+  });
+
+  it('accountHasLiveTopLevelMediaPost is true after create with extra stills', async () => {
+    const store = new InMemoryMessageStore();
+    await store.create({ ...EARLY }, JPEG, undefined, [JPEG2]);
+    expect(await store.accountHasLiveTopLevelMediaPost('acc', null)).toBe(true);
+  });
+
+  it('accountHasLiveTopLevelMediaPost is true for a live top-level row with hasVideo', async () => {
+    expect(
+      await new InMemoryMessageStore([{ ...EARLY, hasVideo: true }]).accountHasLiveTopLevelMediaPost(
+        'acc',
+        null,
+      ),
+    ).toBe(true);
+  });
+
+  it('accountHasLiveTopLevelMediaPost is false for a live reply even with photo', async () => {
+    const store = new InMemoryMessageStore();
+    await store.create({ ...EARLY, id: 'parent', text: 'parent' });
+    await store.create({ ...LATE, parentId: 'parent' }, JPEG);
+    expect(await store.accountHasLiveTopLevelMediaPost('acc', null)).toBe(false);
+  });
+
+  it('accountHasLiveTopLevelMediaPost is false when only the excluded profile id has media', async () => {
+    const store = new InMemoryMessageStore();
+    await store.create({ ...EARLY }, JPEG);
+    expect(await store.accountHasLiveTopLevelMediaPost('acc', 'a')).toBe(false);
+  });
+
+  it('accountHasLiveTopLevelMediaPost is false for soft-deleted top-level media', async () => {
+    const store = new InMemoryMessageStore();
+    await store.create({ ...EARLY }, JPEG);
+    await store.markDeleted('a', new Date('2026-08-02T00:00:00.000Z'), 'staff');
+    expect(await store.accountHasLiveTopLevelMediaPost('acc', null)).toBe(false);
+  });
+
+  it('accountHasLiveTopLevelMediaPost is false for a Damus-only row', async () => {
+    const store = new InMemoryMessageStore();
+    await store.create({ ...EARLY, accountId: null }, JPEG);
+    expect(await store.accountHasLiveTopLevelMediaPost('acc', null)).toBe(false);
+    expect(await store.accountHasLiveTopLevelMediaPost('other', null)).toBe(false);
+  });
+
+  it('accountHasLiveTopLevelMediaPost is false for another account live top-level media', async () => {
+    const store = new InMemoryMessageStore();
+    await store.create({ ...EARLY }, JPEG);
+    expect(await store.accountHasLiveTopLevelMediaPost('other', null)).toBe(false);
+  });
+
   it('countByAccount and member feeds are empty on an empty store', async () => {
     const store = new InMemoryMessageStore();
     expect(await store.countByAccount('acc')).toEqual({ postCount: 0, replyCount: 0 });
@@ -3653,6 +3719,28 @@ describe('PostgresMessageStore', () => {
     sql.nextRows = [{ '?column?': 1 }];
     expect(await store.accountHasLiveTopLevelPost('acc', null)).toBe(true);
     expect(await store.accountHasLiveTopLevelPost('acc', 'prof')).toBe(true);
+    expect(sql.queries[2]?.params).toEqual(['acc', 'prof']);
+  });
+
+  it('accountHasLiveTopLevelMediaPost queries live top-level media rows for the account', async () => {
+    const sql = new MockSql();
+    const store = new PostgresMessageStore(sql);
+    sql.nextRows = [];
+    expect(await store.accountHasLiveTopLevelMediaPost('acc', null)).toBe(false);
+    expect(sql.queries[0]?.text).toMatch(/FROM message/);
+    expect(sql.queries[0]?.text).toMatch(/account_id = \$1/);
+    expect(sql.queries[0]?.text).toMatch(/deleted_at IS NULL/);
+    expect(sql.queries[0]?.text).toMatch(/parent_id IS NULL/);
+    expect(sql.queries[0]?.text).toMatch(/\$2::uuid IS NULL OR id <> \$2::uuid/);
+    expect(sql.queries[0]?.text).toMatch(/photo IS NOT NULL/);
+    expect(sql.queries[0]?.text).toMatch(
+      /video_content_type IS NOT NULL AND video_content_type <> ''/,
+    );
+    expect(sql.queries[0]?.text).toMatch(/message_extra_photo/);
+    expect(sql.queries[0]?.params).toEqual(['acc', null]);
+    sql.nextRows = [{ '?column?': 1 }];
+    expect(await store.accountHasLiveTopLevelMediaPost('acc', null)).toBe(true);
+    expect(await store.accountHasLiveTopLevelMediaPost('acc', 'prof')).toBe(true);
     expect(sql.queries[2]?.params).toEqual(['acc', 'prof']);
   });
 
