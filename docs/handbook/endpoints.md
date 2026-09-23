@@ -234,7 +234,7 @@
 
 ## Endpoint: POST /auth/passkey/authenticate/finish
 
-- **Purpose:** Verifies the assertion and issues `{ token, account }` immediately. Requires `Origin`. `{ token, account }` uses owner JSON including `hasPosted`, `aboutMe`, `aboutMeHasPhoto`, `notificationLevel`, `funding`, `walletRequired`, `walletBackupSeenAt`, and `passkeyCredentialId`. An account with `sessionRefused` is refused with no bearer.
+- **Purpose:** Verifies the assertion and issues `{ token, account }` immediately. Requires `Origin`. `{ token, account }` uses owner JSON including `hasPosted`, `aboutMe`, `aboutMeHasPhoto`, `notificationLevel`, `amountUnit`, `funding`, `walletRequired`, `walletBackupSeenAt`, and `passkeyCredentialId`. An account with `sessionRefused` is refused with no bearer.
 - **Errors:** 400 invalid body/origin/challenge/credential; 403 `{ error: 'You signed in with the wrong account. Please try again with the correct account.' }` when `sessionRefused` is true; 500 if WebAuthn is unconfigured.
 - **Used by:** App passkey sign-in.
 - **Auth:** Public (proof is the assertion).
@@ -248,7 +248,7 @@
 
 ## Endpoint: POST /auth/passkey/register/finish
 
-- **Purpose:** Verifies the attestation, creates a `linkingKey: null` account (or binds a passkey to a provisioned account without recreating it), issues `{ token, account }`. Requires `Origin`. `{ token, account }` uses owner JSON including `hasPosted`, `aboutMe`, `aboutMeHasPhoto`, `notificationLevel`, `funding`, `walletRequired`, `walletBackupSeenAt`, and `passkeyCredentialId`. An account with `sessionRefused` is refused with no bearer.
+- **Purpose:** Verifies the attestation, creates a `linkingKey: null` account (or binds a passkey to a provisioned account without recreating it), issues `{ token, account }`. Requires `Origin`. `{ token, account }` uses owner JSON including `hasPosted`, `aboutMe`, `aboutMeHasPhoto`, `notificationLevel`, `amountUnit`, `funding`, `walletRequired`, `walletBackupSeenAt`, and `passkeyCredentialId`. An account with `sessionRefused` is refused with no bearer.
 - **Errors:** 400 invalid body/origin/challenge/passkey; 403 `{ error: 'You signed in with the wrong account. Please try again with the correct account.' }` when `sessionRefused` is true; 500 if WebAuthn is unconfigured.
 - **Used by:** App passkey account creation and claim-by-viewKey.
 - **Auth:** Public (proof is the attestation).
@@ -395,7 +395,7 @@
 
 ## Endpoint: GET /me
 
-- **Purpose:** Bearer session. Current owner account JSON (id, linkingKey, role, name, `username` (`string | null` LUD-16 / NIP-05 local-part), `location` (`string | null`, never omit, never `""`), lightning address, verified flag, forumLawsDismissed, `createdAt`, `rulesAgreedAt`, owner `viewKey`, `setup`, `missing`, `hasPosted`, `aboutMe`, `aboutMeHasPhoto`, `notificationLevel`, `funding`, `walletRequired`, `walletBackupSeenAt`, `passkeyCredentialId`). `hasPosted` is true when the account has a live forum row that is not the profile note (replies still count) OR when `aboutMe` is non-null. A profile note that is only the display-name copy, a photo without bio text, a missing note, and a soft-hidden note do not count. Not the same predicate as GET /invoices/posted (that stays top-level non-profile only). `aboutMe` is the profile-note text when it is a real bio, else `null` (missing or soft-hidden (`deletedAt` set); auto name-copy is not a bio). `aboutMeHasPhoto` is true when the live profile note has a stored photo. `notificationLevel` is the owner fan-out filter (`all` \| `active` \| `mentions`, default `all`, owner-only). `funding` is `null` for `basis`; otherwise always an object (`status: 'none'` when there is no row). `setup` is the next wizard step (`name` \| `username` \| `lightning-address` \| `rules`) or `null` when complete; the api never returns `wallet`. Username is not skippable. The recovery phrase is not a setup step and does not change `setup` or `missing`. Skip timestamps count as done for name and Lightning Address, not username. `missing` lists factually unset fields (`name`, `username`, `lightning-address`, `rules`) even when skipped, and never includes `wallet`. Does not expose `profileMessageId`. Location is not a setup step. An account with `sessionRefused` is 403 (not 401) so the client can sign the visitor out.
+- **Purpose:** Bearer session. Current owner account JSON (id, linkingKey, role, name, `username` (`string | null` LUD-16 / NIP-05 local-part), `location` (`string | null`, never omit, never `""`), lightning address, verified flag, forumLawsDismissed, `createdAt`, `rulesAgreedAt`, owner `viewKey`, `setup`, `missing`, `hasPosted`, `aboutMe`, `aboutMeHasPhoto`, `notificationLevel`, `amountUnit`, `funding`, `walletRequired`, `walletBackupSeenAt`, `passkeyCredentialId`). `hasPosted` is true when the account has a live forum row that is not the profile note (replies still count) OR when `aboutMe` is non-null. A profile note that is only the display-name copy, a photo without bio text, a missing note, and a soft-hidden note do not count. Not the same predicate as GET /invoices/posted (that stays top-level non-profile only). `aboutMe` is the profile-note text when it is a real bio, else `null` (missing or soft-hidden (`deletedAt` set); auto name-copy is not a bio). `aboutMeHasPhoto` is true when the live profile note has a stored photo. `notificationLevel` is the owner fan-out filter (`all` \| `active` \| `mentions`, default `all`, owner-only). `amountUnit` is the owner amount-entry unit (`btc` \| `fiat`, default `btc`, owner-only). `funding` is `null` for `basis`; otherwise always an object (`status: 'none'` when there is no row). `setup` is the next wizard step (`name` \| `username` \| `lightning-address` \| `rules`) or `null` when complete; the api never returns `wallet`. Username is not skippable. The recovery phrase is not a setup step and does not change `setup` or `missing`. Skip timestamps count as done for name and Lightning Address, not username. `missing` lists factually unset fields (`name`, `username`, `lightning-address`, `rules`) even when skipped, and never includes `wallet`. Does not expose `profileMessageId`. Location is not a setup step. An account with `sessionRefused` is 403 (not 401) so the client can sign the visitor out.
 - **Errors:** 401 if missing/expired; 403 `{ error: 'You signed in with the wrong account. Please try again with the correct account.' }` when the bearer belongs to an account with `sessionRefused`.
 - **Used by:** App `fetchMe`.
 - **Auth:** See Purpose — Bearer where stated, else public.
@@ -658,6 +658,13 @@
 - **Errors:** 401 `{ error: "Unauthorized" }` without a session; 400 `{ error: "Expected a JSON body with a level of all, active, or mentions" }` when the body is missing, not JSON, or `level` is not one of those three strings.
 - **Used by:** App notification-level control on the signed-in profile.
 - **Auth:** `Authorization: Bearer` session.
+
+## Endpoint: POST /me/amount-unit
+
+- **Purpose:** Bearer required like `POST /me/notification-level`. Body `{ "unit": "btc" | "fiat" }`. Stores the signed-in member's amount-entry unit on the account (`amountUnit`). Default for new and omitted rows is `btc`. Success is owner JSON including `amountUnit`. The same unit again is still 200 (idempotent write). Logs `account.amount_unit.set` `{ accountId, unit }`. Payment amounts stay whole sats; this route does not change invoices.
+- **Errors:** 401 `{ error: "Unauthorized" }` without a session; 400 `{ error: "Expected a JSON body with a unit of btc or fiat" }` when the body is missing, not JSON, or `unit` is not one of those two strings.
+- **Used by:** App amount-entry unit control on the signed-in profile so the member's preferred `btc` or `fiat` unit is stored on the account.
+- **Auth:** `Authorization: Bearer` session required; unauthenticated callers receive 401 `{ error: "Unauthorized" }` and the account row is not written.
 
 ## Endpoint: POST /me/lightning-address
 

@@ -64,6 +64,10 @@ describe('AUTH_SCHEMA_SQL', () => {
     );
     expect(AUTH_SCHEMA_SQL.join('\n')).toMatch(/account_notification_level_chk/);
     expect(AUTH_SCHEMA_SQL.join('\n')).toMatch(
+      /ALTER TABLE account ADD COLUMN IF NOT EXISTS amount_unit/i,
+    );
+    expect(AUTH_SCHEMA_SQL.join('\n')).toMatch(/account_amount_unit_chk/);
+    expect(AUTH_SCHEMA_SQL.join('\n')).toMatch(
       /ALTER TABLE account ADD COLUMN IF NOT EXISTS username text/i,
     );
     expect(AUTH_SCHEMA_SQL.join('\n')).toMatch(

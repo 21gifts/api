@@ -259,6 +259,7 @@ export async function finishPasskeyRegistration(
     lightningAddressSkippedAt: null,
     profileMessageId: null,
     notificationLevel: 'all',
+    amountUnit: 'btc',
     walletRequired: false,
     walletBackupSeenAt: null,
   };

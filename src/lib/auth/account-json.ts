@@ -6,15 +6,17 @@ import {
   type AccountSetup,
 } from '@/lib/auth/account-setup';
 import { bytesToHex } from '@/lib/auth/hex';
-import type {
-  Account,
-  AddressVerification,
-  AuthStore,
-  NostrKeyListRow,
-  NotificationLevel,
-  PasskeyChallenge,
-  PasskeyCredential,
-  Session,
+import {
+  parseAmountUnit,
+  type Account,
+  type AddressVerification,
+  type AmountUnit,
+  type AuthStore,
+  type NostrKeyListRow,
+  type NotificationLevel,
+  type PasskeyChallenge,
+  type PasskeyCredential,
+  type Session,
 } from '@/lib/auth/store';
 import { serializeOwnerFunding, type OwnerFundingJson } from '@/lib/funding';
 import type { FundingStore } from '@/lib/funding-store';
@@ -55,7 +57,8 @@ export interface AccountResponse {
  * Owner-facing account JSON: the eleven public fields plus the durable
  * view-key capability secret, the next `setup` step, factual `missing`,
  * `hasPosted`, `aboutMe`, `aboutMeHasPhoto`, `notificationLevel`,
- * `funding`, `walletRequired`, `walletBackupSeenAt`, and `passkeyCredentialId`.
+ * `amountUnit`, `funding`, `walletRequired`, `walletBackupSeenAt`, and
+ * `passkeyCredentialId`.
  */
 export interface OwnerAccountResponse extends AccountResponse {
   /** 64 lowercase hex; capability URL secret for `GET /view/:viewKey`. */
@@ -96,6 +99,11 @@ export interface OwnerAccountResponse extends AccountResponse {
    * Owner-only; omitted from public `GET /view/:viewKey` and member cards.
    */
   notificationLevel: NotificationLevel;
+  /**
+   * Owner amount-entry unit (`btc` \| `fiat`). Default `btc`. Owner-only;
+   * omitted from public member cards and view profiles.
+   */
+  amountUnit: AmountUnit;
   /**
    * Funding-program grant. `null` for `basis` (do not leak grants).
    * Otherwise always an object; no row is `{ status: 'none', … }`.
@@ -482,8 +490,8 @@ export function serializeDebugAccountDetail(
  * @param passkeyCredentialId - Current passkey id (base64url), or `null`.
  * @returns Owner fields including `viewKey`, `setup`, `missing`,
  * `hasPosted`, `location`, `aboutMe`, `aboutMeHasPhoto`,
- * `notificationLevel`, `funding`, `walletRequired`, `walletBackupSeenAt`,
- * and `passkeyCredentialId`.
+ * `notificationLevel`, `amountUnit`, `funding`, `walletRequired`,
+ * `walletBackupSeenAt`, and `passkeyCredentialId`.
  */
 export function serializeOwnerAccount(
   account: Account,
@@ -502,6 +510,7 @@ export function serializeOwnerAccount(
     aboutMe,
     aboutMeHasPhoto,
     notificationLevel: parseNotificationLevel(account.notificationLevel),
+    amountUnit: parseAmountUnit(account.amountUnit),
     funding,
     walletRequired: account.walletRequired === true,
     walletBackupSeenAt: account.walletBackupSeenAt ?? null,
@@ -541,8 +550,8 @@ export interface OwnerFundingLookup {
  *   `authStore.getPasskeyCredentialForAccount` for `passkeyCredentialId`
  *   only when `walletRequired` is true (otherwise that field is null).
  * @returns Owner JSON including `hasPosted`, `aboutMe`, `aboutMeHasPhoto`,
- *   `notificationLevel`, `funding`, `walletRequired`, `walletBackupSeenAt`,
- *   and `passkeyCredentialId` (via {@link serializeOwnerAccount}).
+ *   `notificationLevel`, `amountUnit`, `funding`, `walletRequired`,
+ *   `walletBackupSeenAt`, and `passkeyCredentialId` (via {@link serializeOwnerAccount}).
  *   `aboutMe` is `null` when the profile note is missing or `deletedAt` is
  *   set, else `aboutMeFromNote(account.name, row.text, row.name)`.
  *   `aboutMeHasPhoto` is true iff the live row has `hasPhoto === true`.

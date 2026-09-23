@@ -1709,6 +1709,9 @@ test('Function: fanoutToBellSubscribers — POST /messages without bearer is 401
 test('Function: parseNotificationLevel — GET /me without bearer is 401', async ({ request }) => {
   expect((await request.get('/me')).status()).toBe(401);
 });
+test('Function: parseAmountUnit — GET /me without bearer is 401', async ({ request }) => {
+  expect((await request.get('/me')).status()).toBe(401);
+});
 test('Function: isStaffAccount — GET /me without bearer is 401', async ({ request }) => {
   expect((await request.get('/me')).status()).toBe(401);
 });
