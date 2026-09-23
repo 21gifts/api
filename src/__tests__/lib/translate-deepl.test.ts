@@ -153,4 +153,13 @@ describe('translateViaDeepl', () => {
     await vi.advanceTimersByTimeAsync(TRANSLATE_UPSTREAM_TIMEOUT_MS);
     await rejected;
   });
+
+  it('maps a thrown fetch error to TranslateUpstreamError', async () => {
+    const fetchImpl: FetchFn = async () => {
+      throw new Error('network down');
+    };
+    await expect(translateViaDeepl(UPSTREAM, SOURCE, 'en', fetchImpl)).rejects.toBeInstanceOf(
+      TranslateUpstreamError,
+    );
+  });
 });
