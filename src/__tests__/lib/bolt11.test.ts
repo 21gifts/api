@@ -65,6 +65,17 @@ describe('decodeBolt11', () => {
     ).toBeNull();
   });
 
+  it('returns null when the amount is not a safe integer', () => {
+    expect(
+      decodeBolt11('lnbc1', () => ({
+        sections: [
+          { name: 'payment_hash', value: HASH },
+          { name: 'amount', value: Number.MAX_SAFE_INTEGER + 2 },
+        ],
+      })),
+    ).toBeNull();
+  });
+
   it('returns null when the amount is not a positive integer', () => {
     expect(
       decodeBolt11('lnbc1', () => ({

@@ -1625,6 +1625,9 @@ test('Function: forumVideoFilePresent — GET /messages/:id without a file is 40
 test('Function: wellKnownRoutes — GET /.well-known/nostr.json is 200', async ({ request }) => {
   expect((await request.get('/.well-known/nostr.json')).status()).toBe(200);
 });
+test('Function: payRoutes — GET /pay/:username is 404 when unknown', async ({ request }) => {
+  expect((await request.get('/pay/:username')).status()).toBe(404);
+});
 test('Function: writeForumVideo — POST /messages without bearer is 401', async ({ request }) => {
   const res = await request.post('/messages', {
     data: { text: 'hi' },

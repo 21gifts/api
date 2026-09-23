@@ -473,7 +473,7 @@
 
 - **Purpose:** Decode BOLT11 payment hash, amount, plaintext description, description_hash, and expiry for operator debug (does not change `decodeBolt11`).
 - **Inputs:** BOLT11 string; optional decoder inject for tests.
-- **Returns / side effects:** `InspectedBolt11` or `null` when malformed / zero-amount.
+- **Returns / side effects:** `InspectedBolt11` or `null` when malformed, zero-amount, or the amount is not a safe integer.
 - **Used by:** `POST /messages/:id/invoice` for the NIP-57 gate (reject before returning `pr`) and when persisting ok / `not_zap` attempts.
 
 ## Function: isNip57Invoice
@@ -797,7 +797,7 @@
 
 - **Purpose:** Read payment hash and millisat amount from a BOLT11 string via `light-bolt11-decoder`.
 - **Inputs:** `pr` string; optional test decoder.
-- **Returns / side effects:** `{ paymentHash, amountMsat }` or `null` on any decode failure.
+- **Returns / side effects:** `{ paymentHash, amountMsat }` or `null` on any decode failure (malformed, zero-amount, or an amount that is not a safe integer).
 - **Used by:** `invoiceRoutes` after LNURL-pay returns `pr`.
 
 ## Function: InMemoryInvoiceStore
@@ -893,7 +893,7 @@
 
 ## Function: createApp
 
-- **Purpose:** Wires CORS, requestLog, brand, health, info, auth, me, `/view`, lightning-address, `/debug/accounts`, `/debug/contacts`, `/debug/api-log`, `/debug/db`, `/debug/external-pubkeys`, `/debug/messages`, `/debug/invoices`, `/debug/invoices/settle`, `/debug/zap-ingests`, `/debug/push-ping`, `/debug/trust-edges`, `/debug/dump`, `/trust-chain`, `/trust` (verify / propose-moderator / confirm-moderator / reject-moderator / appoint-moderator), `/funding` (apply / applications / trial / admit / reject), Web Push subscription routes, `/gifts`, `/gifts/stats`, `/messages` (incl. invoice and `/messages/stats`), `/members/:accountId`, `/.well-known` NIP-05 `nostr.json` (CORS `*`), `/contact`, `/pos`, `/conversations`, `/notifications`, and invoices.
+- **Purpose:** Wires CORS, requestLog, brand, health, info, auth, me, `/view`, `/pay`, lightning-address, `/debug/accounts`, `/debug/contacts`, `/debug/api-log`, `/debug/db`, `/debug/external-pubkeys`, `/debug/messages`, `/debug/invoices`, `/debug/invoices/settle`, `/debug/zap-ingests`, `/debug/push-ping`, `/debug/trust-edges`, `/debug/dump`, `/trust-chain`, `/trust` (verify / propose-moderator / confirm-moderator / reject-moderator / appoint-moderator), `/funding` (apply / applications / trial / admit / reject), Web Push subscription routes, `/gifts`, `/gifts/stats`, `/messages` (incl. invoice and `/messages/stats`), `/members/:accountId`, `/.well-known` NIP-05 `nostr.json` (CORS `*`), `/contact`, `/pos`, `/conversations`, `/notifications`, and invoices.
 - **Inputs:** Optional `AppDeps` (store, clock, payer, fetch, cache, readBrand, origins, `debugToken`, giftStore, `giftRecorder`, `btcUsdRates`, `fiatRates`, `messageStore`, `contactStore`, optional `conversationStore` (default `InMemoryConversationStore`), optional `notificationStore` (default `InMemoryNotificationStore`), optional `apiLogStore` (default `InMemoryApiLogStore`), optional `debugDbStore` (omitted on a memory boot; `GET /debug/db` then 503 after the token matches), `pushStore`, `trustStore`, optional `fundingStore` (default `InMemoryFundingStore`; also forwarded to `debugPaymentsRoutes`), optional `listDbChange`, `vapidPublicKey`, `nostrKek`, optional `nostrPublisher` (without `nostrKek` staff hide skips NIP-09), optional `env` (default `process.env`; relays / `PUBLIC_BASE_URL` / Cloudflare on `DELETE /messages/:id`), spendApiToken, `spendPing` (default `resolveSpendPing(process.env, fetchImpl)`; unset/blank `SPEND_URL` or `SPEND_API_TOKEN` omits it; `POST /messages` still 200; daily/omitted kind body `{ address, messageId }`; `conversationRoutes` gets the same `spendPing`; moderator-group POST body `{ address, kind: "moderator", groupMessageId }` without `messageId`; forum `POST /messages` still two-arg daily ping; verified top-level media also three-arg `'welcome'`), optional `postLimiter` (default a new `PostRateLimiter`; passed to `messagesRoutes`; boot shares one instance with the Nostr worker), invoiceStore, `webAuthnRpId`, `webAuthnRpName`, `passkeyCeremony`). `debugPaymentsRoutes` receives the same optional `spendPing`. Omitted `giftRecorder` → `invoiceRoutes` uses `NoopGiftRecorder`; omitted `messageStore` → `InMemoryMessageStore`; omitted `contactStore` → `InMemoryContactStore`; omitted `posStore` → `InMemoryPosStore`; omitted `conversationStore` → `InMemoryConversationStore`; omitted `notificationStore` → `InMemoryNotificationStore`; omitted `pushStore` → `InMemoryPushStore`; omitted `trustStore` → `InMemoryTrustStore`; omitted `fundingStore` → `InMemoryFundingStore`; omitted `apiLogStore` → `InMemoryApiLogStore`; omitted/blank `vapidPublicKey` → push HTTP 503 after session; omitted `nostrKek` → unsigned forum + invoice 503; SQL boot injects `SqlGiftRecorder`, `PostgresMessageStore`, `PostgresContactStore`, `PostgresPosStore`, `PostgresConversationStore`, `PostgresNotificationStore`, `PostgresPushStore`, `PostgresTrustStore`, `PostgresFundingStore`, `PostgresApiLogStore`, `PostgresDebugDbStore`, and parsed KEK. `messagesRoutes`, `meRoutes`, `invoiceRoutes`, and `trustRoutes` receive `conversationStore`. `fundingRoutes`, `invoiceRoutes`, `messagesRoutes`, `conversationRoutes`, `meRoutes`, `membersRoutes`, and auth finish receive `fundingStore`. `contactRoutes` and `conversationRoutes` receive `pushStore` plus `notificationStore`. Mounts `notificationRoutes` at `/notifications`. Does not take a push sender (worker owns delivery).
 - **Returns / side effects:** Hono app. Default `btcUsdRates` is an empty `InMemoryBtcUsdStore`. Default `fiatRates` is an empty `InMemoryFiatStore`. `createApp` passes the same `fiatRates` object into `/gifts`, `/gifts/stats`, `/me`, `/members`, and `/view`. Used by Bun.serve in `index.ts` and by tests via `app.request()`.
 - **Used by:** Boot path and every HTTP test.
@@ -2204,6 +2204,13 @@
 - **Purpose:** Hono `GET /nostr.json` (NIP-05, CORS `*`) and `GET /lnurlp/:username` (LUD-16 payRequest). Passes through the linked Wallet of Satoshi JSON so callback and metadata stay there. While an unexpired pending point-of-sale charge exists, both `minSendable` and `maxSendable` become that amount in millisats. `GET /lnurlp/:username` is `Cache-Control: no-store`; `GET /nostr.json` keeps `Cache-Control: public, max-age=60`.
 - **Inputs:** auth store, env, optional fetchImpl (default `globalThis.fetch`), optional posStore (default empty in-memory store), optional now (default `Date.now`).
 - **Returns / side effects:** Hono app mounted at `/.well-known`. LNURL-pay 404 when the username is invalid, unknown, or unlinked; 502 when WoS is unreachable or the store throws.
+- **Used by:** `createApp`.
+
+## Function: payRoutes
+
+- **Purpose:** Hono sub-app for the public pay link: `GET /:username` (display name and satoshi bounds) and `POST /:username/invoice` (one BOLT11 via `requestGiftInvoice`). Mounted at `/pay`. No auth and no extra CORS headers.
+- **Inputs:** `{ auth: AuthStore, fetchImpl: FetchFn }`. `fetchImpl` is required; `createApp` passes the shared LNURL-pay fetch.
+- **Returns / side effects:** Hono app. Logs `pay.unknown`, `pay.unreachable`, `pay.failed`, `pay.invoice_failed`, and `pay.invoice`. Never calls `username@21.gifts`.
 - **Used by:** `createApp`.
 
 ## Function: writeForumVideo
