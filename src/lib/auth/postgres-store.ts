@@ -563,7 +563,9 @@ export class PostgresAuthStore implements AuthStore {
       const rows = await this.#sql.query<{ id: string }>(
         `WITH locked AS (
            SELECT id FROM account
-           WHERE id = $4 AND session_refused IS NOT TRUE
+           WHERE id = $4
+             AND session_refused IS NOT TRUE
+             AND wallet_required IS NOT TRUE
            FOR UPDATE
          ),
          inserted AS (
