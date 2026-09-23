@@ -321,28 +321,26 @@ export async function openBootStores(
       );
       const iso = (value: Date | string): string =>
         value instanceof Date ? value.toISOString() : new Date(value).toISOString();
-      return rows.map(
-        (row): GiftDebugRow => ({
-          id: Number(row.id),
-          paidAt: iso(row.paid_at),
-          direction: row.direction,
-          currency: row.currency,
-          amountSats: Number(row.amount_sats),
-          amountUsd: row.fiat_usd === null ? null : String(row.fiat_usd),
-          amountChf: row.fiat_chf === null ? null : String(row.fiat_chf),
-          amountEur: row.fiat_eur === null ? null : String(row.fiat_eur),
-          amountPhp: row.fiat_php === null ? null : String(row.fiat_php),
-          feeSats: Number(row.fee_sats),
-          recipientWosUser: row.recipient_wos_user,
-          lightningInvoice: row.lightning_invoice,
-          wosTransactionId: row.wos_transaction_id,
-          description: row.description,
-          pointOfSale: row.point_of_sale === true,
-          wosStatus: row.wos_status,
-          sourceWallet: row.source_wallet,
-          importedAt: iso(row.imported_at),
-        }),
-      );
+      return rows.map((row): GiftDebugRow => ({
+        id: Number(row.id),
+        paidAt: iso(row.paid_at),
+        direction: row.direction,
+        currency: row.currency,
+        amountSats: Number(row.amount_sats),
+        amountUsd: row.fiat_usd === null ? null : String(row.fiat_usd),
+        amountChf: row.fiat_chf === null ? null : String(row.fiat_chf),
+        amountEur: row.fiat_eur === null ? null : String(row.fiat_eur),
+        amountPhp: row.fiat_php === null ? null : String(row.fiat_php),
+        feeSats: Number(row.fee_sats),
+        recipientWosUser: row.recipient_wos_user,
+        lightningInvoice: row.lightning_invoice,
+        wosTransactionId: row.wos_transaction_id,
+        description: row.description,
+        pointOfSale: row.point_of_sale === true,
+        wosStatus: row.wos_status,
+        sourceWallet: row.source_wallet,
+        importedAt: iso(row.imported_at),
+      }));
     },
   );
   const giftRecorder = new SqlGiftRecorder(giftSql);
