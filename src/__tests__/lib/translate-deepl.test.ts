@@ -26,6 +26,12 @@ describe('TranslateUpstreamError', () => {
     expect(err.message).toBe('translate upstream failed');
     expect(err.name).toBe('TranslateUpstreamError');
   });
+
+  it('keeps an explicit message', () => {
+    const err = new TranslateUpstreamError('upstream timeout');
+    expect(err.message).toBe('upstream timeout');
+    expect(err.name).toBe('TranslateUpstreamError');
+  });
 });
 
 describe('translateViaDeepl', () => {

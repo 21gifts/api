@@ -61,6 +61,7 @@ export async function translateViaDeepl(
     if (!parsed.success) throw new TranslateUpstreamError();
     return parsed.data.translations[0].text;
   } catch {
+    /* v8 ignore next -- remap AbortError/TypeError/SyntaxError; catch cannot complete */
     throw new TranslateUpstreamError();
   } finally {
     clearTimeout(timeout);
