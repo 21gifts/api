@@ -627,8 +627,9 @@ test('Function: migrateGiftSchema — default boot has no DATABASE_URL', async (
   expect(res.status()).toBe(200);
 });
 
-test('Function: posRoutes — GET /pos without bearer is 401', async ({ request }) => {
+test('Function: posRoutes — GET and DELETE /pos without bearer are 401', async ({ request }) => {
   expect((await request.get('/pos')).status()).toBe(401);
+  expect((await request.delete('/pos')).status()).toBe(401);
 });
 
 test('Function: serializePosCharge — GET /pos without bearer is 401', async ({ request }) => {
@@ -647,10 +648,8 @@ test('Function: InMemoryPosStore — POST /pos without bearer is 401', async ({ 
   expect((await request.post('/pos', { data: { amountSats: 21 } })).status()).toBe(401);
 });
 
-test('Function: PostgresPosStore — DELETE /pos without bearer is 404 or 401', async ({
-  request,
-}) => {
-  expect((await request.delete('/pos')).status()).toBe(401);
+test('Function: PostgresPosStore — default boot has no DATABASE_URL', async ({ request }) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
 });
 
 test('Function: contactRoutes — POST /contact without bearer is 401', async ({ request }) => {
