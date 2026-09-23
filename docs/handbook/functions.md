@@ -409,7 +409,7 @@
 
 - **Purpose:** Applies `AUTH_SCHEMA_SQL` in order (`CREATE TABLE IF NOT EXISTS` plus `ALTER` backfills for existing databases).
 - **Inputs:** `SqlClient`.
-- **Returns / side effects:** Void; creates `account`, `auth_session`, `address_verification`, `passkey_challenge`, `passkey_credential`; drops leftover `auth_challenge`; backfills `account.name` / nullable `linking_key`; adds `nostr_pubkey` / nsec ciphertext / kek id / custody plus unique index and CHECK; adds `view_key` ALTER, uuid-concat backfill, and unique index; adds nullable `rules_agreed_at`; unique index `account_lightning_address_uidx` on `lower(trim(lightning_address))` where not null; unique index `passkey_credential_account_uidx` on `account_id`; adds `is_platform boolean NOT NULL DEFAULT false` and unique index `account_is_platform_uidx` on `(is_platform) WHERE is_platform`; adds nullable `name_skipped_at`, `lightning_address_skipped_at`, and `profile_message_id uuid` (**no** FK to `message` here — message migrates later); adds nullable `location text` (no unique index, same as `name`); adds `notification_level text NOT NULL DEFAULT 'all'` plus `DROP`/`ADD` `account_notification_level_chk` (`all` / `active` / `mentions`); adds nullable `username text`; `DROP INDEX IF EXISTS account_username_uidx` then `CREATE UNIQUE INDEX IF NOT EXISTS account_username_uidx` on `lower(trim(username))` WHERE username IS NOT NULL AND trim(username) <> '' (expression unique index); adds `session_refused boolean NOT NULL DEFAULT false`; adds `wallet_required boolean NOT NULL DEFAULT false` and nullable `wallet_backup_seen_at timestamptz`.
+- **Returns / side effects:** Void; creates `account`, `auth_session`, `address_verification`, `passkey_challenge`, `passkey_credential`; drops leftover `auth_challenge`; backfills `account.name` / nullable `linking_key`; adds `nostr_pubkey` / nsec ciphertext / kek id / custody plus unique index and CHECK; adds `view_key` ALTER, uuid-concat backfill, and unique index; adds nullable `rules_agreed_at`; unique index `account_lightning_address_uidx` on `lower(trim(lightning_address))` where not null; `DROP INDEX IF EXISTS passkey_credential_account_uidx` so a login passkey may stay beside one later seed passkey; adds `is_platform boolean NOT NULL DEFAULT false` and unique index `account_is_platform_uidx` on `(is_platform) WHERE is_platform`; adds nullable `name_skipped_at`, `lightning_address_skipped_at`, and `profile_message_id uuid` (**no** FK to `message` here — message migrates later); adds nullable `location text` (no unique index, same as `name`); adds `notification_level text NOT NULL DEFAULT 'all'` plus `DROP`/`ADD` `account_notification_level_chk` (`all` / `active` / `mentions`); adds nullable `username text`; `DROP INDEX IF EXISTS account_username_uidx` then `CREATE UNIQUE INDEX IF NOT EXISTS account_username_uidx` on `lower(trim(username))` WHERE username IS NOT NULL AND trim(username) <> '' (expression unique index); adds `session_refused boolean NOT NULL DEFAULT false`; adds `wallet_required boolean NOT NULL DEFAULT false` and nullable `wallet_backup_seen_at timestamptz`.
 - **Used by:** `openAuthStore`.
 
 ## Function: openAuthStore
@@ -1536,7 +1536,7 @@
 - **Inputs:** store, ceremony, config, now, account.
 - **Returns / side effects:** `{ challengeId, options }` or `{ ok: false, error: 'No passkey to replace' }`. Persists a replace challenge. Does not mint a session.
 - **Actions:** Load the account credential; refuse when missing; generate registration options with `excludeCredentials`; store a `replace` challenge with the signed-in account id.
-- **Used by:** `POST /auth/passkey/replace/begin`.
+- **Used by:** Domain tests. The HTTP route `POST /auth/passkey/replace/begin` returns 409 and does not create a challenge.
 
 ## Function: finishPasskeyReplace
 
@@ -1544,7 +1544,30 @@
 - **Inputs:** store, ceremony, config, now, origin, challengeId, credential, account.
 - **Returns / side effects:** `{ ok: true, account }` or `{ ok: false, error }`. Old credential row is gone on success. Challenge is consume-once.
 - **Actions:** Check origin; load a `replace` challenge; require challenge `accountId` to match the Bearer account; verify registration; refuse same id or an id owned by another account; `replacePasskeyCredential`.
-- **Used by:** `POST /auth/passkey/replace/finish`.
+- **Used by:** Domain tests. The HTTP route `POST /auth/passkey/replace/finish` does not call it and deletes nothing.
+
+## Function: startPasskeySeed
+
+- **Purpose:** Mints WebAuthn creation options for one extra seed passkey. Does not set `excludeCredentials`. Does not delete a credential. `walletRequired: true` means a seed passkey already exists. `walletBackupSeenAt` is not read.
+- **Inputs:** store, ceremony, config, now, account.
+- **Returns / side effects:** `{ challengeId, options }` or `{ ok: false, error: 'This account already has a recovery phrase' }`. Persists a `seed` challenge bound to the account id only when `walletRequired` is not true. Does not mint a session.
+- **Actions:** Refuse when `account.walletRequired === true`. Otherwise generate registration options with the account id as user id and user name (`userDisplayName` is `account.name ?? '21.gifts'`) and store a `seed` challenge.
+- **Used by:** `POST /auth/passkey/seed/begin`.
+
+## Function: finishPasskeySeed
+
+- **Purpose:** Verifies a new attestation and inserts an additional passkey. Sets `walletRequired` true. Does not delete the login passkey, does not change `walletBackupSeenAt`, and does not mint a session. A recovery phrase is never replaced.
+- **Inputs:** store, ceremony, config, now, origin, challengeId, credential, account.
+- **Returns / side effects:** `{ ok: true, account }` with the reloaded account (`walletRequired` true) or `{ ok: false, error }`. Ceremony failures use the same 400 strings as replace finish. A taken credential id, a refused or missing account, or a failed insert uses `'This account already has a recovery phrase'`.
+- **Actions:** Check origin; refuse when `walletRequired` or `sessionRefused`; load a `seed` challenge; require `accountId` to match; verify registration; refuse an id that is already stored; `addSeedPasskeyCredential`; reload the account.
+- **Used by:** `POST /auth/passkey/seed/finish`.
+
+## Function: addSeedPasskeyCredential
+
+- **Purpose:** Insert one more passkey_credential and set `walletRequired` true in the same write. Allowed when the account already has a login passkey. Refuses when the account is missing, `sessionRefused`, `walletRequired` is already true, or the credential id exists. Does not delete. Does not change `walletBackupSeenAt`.
+- **Inputs:** `credential` (`PasskeyCredential`) on `AuthStore`.
+- **Returns / side effects:** `true` when the row landed and `walletRequired` is true. `false` with no write otherwise. Postgres is one CTE (`FOR UPDATE` on the account, insert, then `SET wallet_required = TRUE`). No `DELETE`.
+- **Used by:** `finishPasskeySeed`.
 
 ## Function: prfEvalFirstSalt
 
@@ -1675,7 +1698,7 @@
 
 ## Function: serializeOwnerAccount
 
-- **Purpose:** Owner JSON for authenticated account responses: the eleven public fields (including username and location) plus `viewKey`, `setup`, `missing`, `hasPosted`, `aboutMe`, `aboutMeHasPhoto`, `notificationLevel` (`all` / `active` / `mentions`, default `all`, owner-only), `funding` (`null` for `basis`), `walletRequired` (false when omitted), `walletBackupSeenAt` (null when omitted), and `passkeyCredentialId` (base64url or null), so the owner can copy the capability URL and the client can route onboarding, action gates, the introduce-yourself popup, About me photo display, living-room notify filter, funding status, and recovery-phrase reveal. Used by `GET /me`, `/me` writes including `POST /me/username`, `POST /me/rules-agreement`, `POST /me/setup/skip`, `POST /me/wallet-backup-seen`, `POST /me/location`, `POST /me/notification-level`, and `PUT /me/about`, and passkey finish — never by the debug listing. Does not expose `profileMessageId`.
+- **Purpose:** Owner JSON for authenticated account responses: the eleven public fields (including username and location) plus `viewKey`, `setup`, `missing`, `hasPosted`, `aboutMe`, `aboutMeHasPhoto`, `notificationLevel` (`all` / `active` / `mentions`, default `all`, owner-only), `funding` (`null` for `basis`), `walletRequired` (false when omitted), `walletBackupSeenAt` (null when omitted), and `passkeyCredentialId` (base64url or null; null when `walletRequired` is not true even if a login passkey exists, and the newest id when `walletRequired` is true), so the owner can copy the capability URL and the client can route onboarding, action gates, the introduce-yourself popup, About me photo display, living-room notify filter, funding status, and recovery-phrase reveal. Used by `GET /me`, `/me` writes including `POST /me/username`, `POST /me/rules-agreement`, `POST /me/setup/skip`, `POST /me/wallet-backup-seen`, `POST /me/location`, `POST /me/notification-level`, and `PUT /me/about`, and passkey finish — never by the debug listing. Does not expose `profileMessageId`.
 - **Inputs:** `Account` plus `hasPosted: boolean` plus `aboutMe: string | null` plus `aboutMeHasPhoto: boolean` plus optional `funding` (`OwnerFundingJson | null`, default `null`) plus optional `passkeyCredentialId` (`string | null`, default `null`).
 - **Returns / side effects:** `OwnerAccountResponse` (twenty-two fields: eleven public + `viewKey`, `setup`, `missing`, `hasPosted`, `aboutMe`, `aboutMeHasPhoto`, `notificationLevel`, `funding`, `walletRequired`, `walletBackupSeenAt`, `passkeyCredentialId`). No I/O. Does not expose `profileMessageId`.
 - **Used by:** `serializeOwnerAccountWithPosts` (`meRoutes` including `POST /me/username`).

@@ -537,7 +537,8 @@ export class PostgresAuthStore implements AuthStore {
     try {
       const rows = await this.#sql.query<{ credential_id: string }>(
         `INSERT INTO passkey_credential (credential_id, public_key, sign_count, account_id, created_at)
-         VALUES ($1, $2, $3, $4, to_timestamp($5::double precision / 1000.0))
+         SELECT $1, $2, $3, $4, to_timestamp($5::double precision / 1000.0)
+         WHERE NOT EXISTS (SELECT 1 FROM passkey_credential WHERE account_id = $4)
          ON CONFLICT (credential_id) DO NOTHING
          RETURNING credential_id`,
         [
@@ -597,6 +598,49 @@ export class PostgresAuthStore implements AuthStore {
     }
   }
 
+  async addSeedPasskeyCredential(credential: PasskeyCredential): Promise<boolean> {
+    try {
+      const rows = await this.#sql.query<{ id: string }>(
+        // FOR UPDATE is on the account CTE: PostgreSQL rejects FOR UPDATE inside WHERE EXISTS.
+        `WITH locked AS (
+           SELECT id FROM account
+           WHERE id = $4
+             AND wallet_required IS NOT TRUE
+             AND session_refused IS NOT TRUE
+           FOR UPDATE
+         ),
+         inserted AS (
+           INSERT INTO passkey_credential (credential_id, public_key, sign_count, account_id, created_at)
+           SELECT $1, $2, $3, locked.id, to_timestamp($5::double precision / 1000.0)
+           FROM locked
+           ON CONFLICT (credential_id) DO NOTHING
+           RETURNING credential_id, account_id
+         ),
+         flagged AS (
+           UPDATE account
+           SET wallet_required = TRUE
+           FROM inserted
+           WHERE account.id = inserted.account_id
+           RETURNING account.id
+         )
+         SELECT id FROM flagged`,
+        [
+          credential.credentialId,
+          credential.publicKey,
+          credential.signCount,
+          credential.accountId,
+          credential.createdAt,
+        ],
+      );
+      return rows[0] !== undefined;
+    } catch (error: unknown) {
+      if (isUniqueViolation(error)) {
+        return false;
+      }
+      throw error;
+    }
+  }
+
   async getPasskeyCredential(credentialId: string): Promise<PasskeyCredential | undefined> {
     const rows = await this.#sql.query<PasskeyCredentialRow>(
       `SELECT credential_id, public_key, sign_count, account_id, created_at
@@ -610,7 +654,9 @@ export class PostgresAuthStore implements AuthStore {
   async getPasskeyCredentialForAccount(accountId: string): Promise<PasskeyCredential | undefined> {
     const rows = await this.#sql.query<PasskeyCredentialRow>(
       `SELECT credential_id, public_key, sign_count, account_id, created_at
-       FROM passkey_credential WHERE account_id = $1`,
+       FROM passkey_credential WHERE account_id = $1
+       ORDER BY created_at DESC, credential_id DESC
+       LIMIT 1`,
       [accountId],
     );
     const row = rows[0];
@@ -803,7 +849,7 @@ function mapVerification(row: VerificationRow): AddressVerification {
 }
 
 function parsePasskeyChallengeType(raw: string): PasskeyChallengeType {
-  if (raw === 'register' || raw === 'authenticate' || raw === 'replace') {
+  if (raw === 'register' || raw === 'authenticate' || raw === 'replace' || raw === 'seed') {
     return raw;
   }
   throw new Error(`Unknown passkey challenge type "${raw}"`);

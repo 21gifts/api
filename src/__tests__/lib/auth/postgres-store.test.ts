@@ -1067,6 +1067,79 @@ describe('PostgresAuthStore', () => {
     ).rejects.toThrow(/disk full/);
   });
 
+  it('addSeedPasskeyCredential inserts without deleting', async () => {
+    const sql = new MockSql();
+    const store = new PostgresAuthStore(sql);
+    const key = new Uint8Array([1]);
+    sql.nextRows = [{ id: 'acc' }];
+    expect(
+      await store.addSeedPasskeyCredential({
+        credentialId: 'cred',
+        publicKey: key,
+        signCount: 0,
+        accountId: 'acc',
+        createdAt: 1,
+      }),
+    ).toBe(true);
+    expect(sql.executes).toEqual([]);
+    expect(sql.queries).toHaveLength(1);
+    const query = sql.queries[0];
+    expect(query?.text).toMatch(/WITH locked/);
+    expect(query?.text).toMatch(/FOR UPDATE/);
+    expect(query?.text).toMatch(/wallet_required IS NOT TRUE/);
+    expect(query?.text).toMatch(/session_refused IS NOT TRUE/);
+    expect(query?.text).toMatch(/INSERT INTO passkey_credential/);
+    expect(query?.text).toMatch(/ON CONFLICT \(credential_id\) DO NOTHING/);
+    expect(query?.text).toMatch(/SET wallet_required = TRUE/);
+    expect(query?.text).toMatch(/SELECT id FROM flagged/);
+    expect(query?.text).not.toMatch(/DELETE/);
+    expect(query?.params).toEqual(['cred', key, 0, 'acc', 1]);
+  });
+
+  it('addSeedPasskeyCredential returns false when the insert matches no row', async () => {
+    const sql = new MockSql();
+    sql.nextRows = [];
+    expect(
+      await new PostgresAuthStore(sql).addSeedPasskeyCredential({
+        credentialId: 'cred',
+        publicKey: new Uint8Array([1]),
+        signCount: 0,
+        accountId: 'acc',
+        createdAt: 1,
+      }),
+    ).toBe(false);
+  });
+
+  it('addSeedPasskeyCredential treats a unique_violation as false', async () => {
+    const sql = new MockSql();
+    const store = new PostgresAuthStore(sql);
+    sql.queryError = Object.assign(new Error('duplicate key'), { code: '23505' });
+    expect(
+      await store.addSeedPasskeyCredential({
+        credentialId: 'cred',
+        publicKey: new Uint8Array([1]),
+        signCount: 0,
+        accountId: 'acc',
+        createdAt: 1,
+      }),
+    ).toBe(false);
+  });
+
+  it('addSeedPasskeyCredential rethrows errors that are not unique_violation', async () => {
+    const sql = new MockSql();
+    const store = new PostgresAuthStore(sql);
+    sql.queryError = new Error('disk full');
+    await expect(
+      store.addSeedPasskeyCredential({
+        credentialId: 'cred',
+        publicKey: new Uint8Array([1]),
+        signCount: 0,
+        accountId: 'acc',
+        createdAt: 1,
+      }),
+    ).rejects.toThrow(/disk full/);
+  });
+
   it('looks up a passkey credential by account id', async () => {
     const sql = new MockSql();
     const key = new Uint8Array([1, 2, 3]);
@@ -1087,6 +1160,8 @@ describe('PostgresAuthStore', () => {
       createdAt: 1,
     });
     expect(sql.queries[0]?.text).toMatch(/WHERE account_id = \$1/);
+    expect(sql.queries[0]?.text).toMatch(/ORDER BY created_at DESC, credential_id DESC/);
+    expect(sql.queries[0]?.text).toMatch(/LIMIT 1/);
     sql.nextRows = [];
     expect(
       await new PostgresAuthStore(sql).getPasskeyCredentialForAccount('missing'),
@@ -1198,6 +1273,28 @@ describe('PostgresAuthStore', () => {
     await expect(new PostgresAuthStore(sql).getPasskeyChallenge('ch')).rejects.toThrow(
       /Unknown passkey challenge type/,
     );
+  });
+
+  it('maps a seed passkey challenge row', async () => {
+    const sql = new MockSql();
+    sql.nextRows = [
+      {
+        id: 'ch',
+        type: 'seed',
+        challenge: 'c',
+        account_id: 'acc',
+        consumed: false,
+        created_at: new Date(1_000),
+      },
+    ];
+    expect(await new PostgresAuthStore(sql).getPasskeyChallenge('ch')).toEqual({
+      id: 'ch',
+      type: 'seed',
+      challenge: 'c',
+      accountId: 'acc',
+      consumed: false,
+      createdAt: 1_000,
+    });
   });
 
   it('maps a passkey challenge timestamp from an ISO string', async () => {

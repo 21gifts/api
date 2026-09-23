@@ -61,6 +61,9 @@ const CLAIM_NOT_FOUND = 'This profile could not be found.';
 /** Stable 409 copy when a provisioned profile already has a passkey. */
 const CLAIM_ALREADY_HAS_PASSKEY = 'This profile already has a passkey';
 
+/** Stable 409 copy when the account already has a seed-bearing passkey. */
+const SEED_ALREADY_HAS_PHRASE = 'This account already has a recovery phrase';
+
 /**
  * Start passkey registration: mint a pending account id and creation options.
  *
@@ -536,6 +539,119 @@ export async function finishPasskeyReplace(
 }
 
 /**
+ * Start passkey seed: mint creation options for an extra seed-bearing credential.
+ * Does not set `excludeCredentials`. Does not mint a session.
+ *
+ * @param store - Auth persistence port.
+ * @param ceremony - WebAuthn collaborator.
+ * @param config - RP ID, name, and allowed origins.
+ * @param now - Current time in epoch milliseconds.
+ * @param account - Signed-in account that may add a seed passkey.
+ * @returns Creation options, or `{ ok: false, error: string }` when the account
+ *   already has a seed-bearing passkey (`walletRequired === true`).
+ */
+export async function startPasskeySeed(
+  store: AuthStore,
+  ceremony: PasskeyCeremony,
+  config: WebAuthnRuntimeConfig,
+  now: number,
+  account: Account,
+): Promise<PasskeyBeginResult | { ok: false; error: string }> {
+  if (account.walletRequired === true) {
+    return { ok: false, error: SEED_ALREADY_HAS_PHRASE };
+  }
+  const generated = await ceremony.generateRegistrationOptions({
+    rpName: config.rpName,
+    rpID: config.rpId,
+    userID: new TextEncoder().encode(account.id),
+    userName: account.id,
+    userDisplayName: account.name ?? '21.gifts',
+  });
+  const challengeId = randomHex(32);
+  await store.createPasskeyChallenge({
+    id: challengeId,
+    type: 'seed',
+    challenge: generated.challenge,
+    accountId: account.id,
+    consumed: false,
+    createdAt: now,
+  });
+  return { challengeId, options: generated.options };
+}
+
+/**
+ * Complete passkey seed: verify a new attestation and insert an additional
+ * credential. Sets `walletRequired` true. Does not delete the login passkey,
+ * does not change `walletBackupSeenAt`, and does not mint a session.
+ *
+ * @param store - Auth persistence port.
+ * @param ceremony - WebAuthn collaborator.
+ * @param config - RP ID, name, and allowed origins.
+ * @param now - Current time in epoch milliseconds.
+ * @param origin - Request `Origin` header (must match `expectedOrigins`).
+ * @param challengeId - Id returned by {@link startPasskeySeed}.
+ * @param credential - Browser attestation JSON.
+ * @param account - Signed-in account from the Bearer session.
+ * @returns `{ ok: true, account }` or `{ ok: false, error: string }`. Does not mint a session.
+ */
+export async function finishPasskeySeed(
+  store: AuthStore,
+  ceremony: PasskeyCeremony,
+  config: WebAuthnRuntimeConfig,
+  now: number,
+  origin: string | undefined,
+  challengeId: string,
+  credential: unknown,
+  account: Account,
+): Promise<PasskeyReplaceFinishResult> {
+  const originErr = requireOrigin(origin, config.expectedOrigins);
+  if (originErr !== null) {
+    return { ok: false, error: originErr };
+  }
+  if (account.walletRequired === true || account.sessionRefused === true) {
+    return { ok: false, error: SEED_ALREADY_HAS_PHRASE };
+  }
+  const loaded = await loadChallenge(store, now, challengeId, 'seed');
+  if (!loaded.ok) {
+    return loaded;
+  }
+  const challenge = loaded.challenge;
+  if (challenge.accountId === null || challenge.accountId !== account.id) {
+    return { ok: false, error: 'Unknown or expired challenge' };
+  }
+  if (!(await consumeChallenge(store, challenge))) {
+    return { ok: false, error: 'Challenge already used' };
+  }
+  const verified = await ceremony.verifyRegistration({
+    response: credential,
+    expectedChallenge: challenge.challenge,
+    expectedOrigin: config.expectedOrigins,
+    expectedRPID: config.rpId,
+  });
+  if (!verified.ok) {
+    return { ok: false, error: 'Invalid passkey' };
+  }
+  if ((await store.getPasskeyCredential(verified.credentialId)) !== undefined) {
+    return { ok: false, error: SEED_ALREADY_HAS_PHRASE };
+  }
+  const stored = await store.addSeedPasskeyCredential({
+    credentialId: verified.credentialId,
+    publicKey: verified.publicKey,
+    signCount: verified.signCount,
+    accountId: account.id,
+    createdAt: now,
+  });
+  if (!stored) {
+    return { ok: false, error: SEED_ALREADY_HAS_PHRASE };
+  }
+  const latest = await store.getAccount(account.id);
+  if (latest === undefined) {
+    return { ok: false, error: SEED_ALREADY_HAS_PHRASE };
+  }
+  return { ok: true, account: latest };
+}
+
+/**
  * Reject a missing or disallowed Origin header.
  *
  * @param origin - Raw `Origin` header, or `undefined`.
@@ -558,7 +674,7 @@ type LoadedChallenge = { ok: true; challenge: PasskeyChallenge } | { ok: false; 
  * @param store - Auth persistence port.
  * @param now - Current time in epoch milliseconds.
  * @param challengeId - Client-supplied challenge id.
- * @param expectedType - Register, authenticate, or replace.
+ * @param expectedType - Register, authenticate, replace, or seed.
  * @returns The challenge, or a 400 error string.
  */
 async function loadChallenge(

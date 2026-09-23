@@ -36,7 +36,10 @@ describe('AUTH_SCHEMA_SQL', () => {
       /CREATE UNIQUE INDEX IF NOT EXISTS account_lightning_address_uidx/i,
     );
     expect(AUTH_SCHEMA_SQL.join('\n')).toMatch(
-      /CREATE UNIQUE INDEX IF NOT EXISTS passkey_credential_account_uidx ON passkey_credential \(account_id\)/i,
+      /DROP INDEX IF EXISTS passkey_credential_account_uidx/i,
+    );
+    expect(AUTH_SCHEMA_SQL.join('\n')).not.toMatch(
+      /CREATE UNIQUE INDEX IF NOT EXISTS passkey_credential_account_uidx/i,
     );
     expect(AUTH_SCHEMA_SQL.join('\n')).toMatch(
       /ALTER TABLE account ADD COLUMN IF NOT EXISTS is_platform boolean NOT NULL DEFAULT false/i,

@@ -102,7 +102,7 @@ export interface OwnerAccountResponse extends AccountResponse {
    */
   funding: OwnerFundingJson | null;
   /**
-   * True when a recovery phrase is required. Does not set `setup` to
+   * True when a seed-bearing passkey exists. Does not set `setup` to
    * `wallet`. Default false when omitted in storage (existing members).
    */
   walletRequired: boolean;
@@ -114,8 +114,10 @@ export interface OwnerAccountResponse extends AccountResponse {
    */
   walletBackupSeenAt: number | null;
   /**
-   * Current passkey credential id (base64url), or `null` when none.
-   * Owner-only; used to bind PRF reveal to this account's credential.
+   * Newest passkey credential id (base64url) when `walletRequired` is true,
+   * or `null` when `walletRequired` is not true even if a login passkey
+   * exists. Owner-only; used to bind PRF reveal to this account's seed
+   * credential.
    */
   passkeyCredentialId: string | null;
 }
@@ -218,7 +220,7 @@ export interface DebugAccountResponse extends AccountResponse {
   profileMessageId: string | null;
   /** Owner fan-out filter (`all` \| `active` \| `mentions`). */
   notificationLevel: NotificationLevel;
-  /** True when a recovery phrase is required. Does not set `setup` to `wallet`. */
+  /** True when a seed-bearing passkey exists. Does not set `setup` to `wallet`. */
   walletRequired: boolean;
   /**
    * Epoch ms recorded after an existing member activates a passkey that
@@ -536,7 +538,8 @@ export interface OwnerFundingLookup {
  * @param messages - Message store (live-post lookup and profile-note read).
  * @param funding - Optional grant lookup; omitted → `basis` `null` and
  *   `passkeyCredentialId` null. When present, loads the grant and
- *   `authStore.getPasskeyCredentialForAccount` for `passkeyCredentialId`.
+ *   `authStore.getPasskeyCredentialForAccount` for `passkeyCredentialId`
+ *   only when `walletRequired` is true (otherwise that field is null).
  * @returns Owner JSON including `hasPosted`, `aboutMe`, `aboutMeHasPhoto`,
  *   `notificationLevel`, `funding`, `walletRequired`, `walletBackupSeenAt`,
  *   and `passkeyCredentialId` (via {@link serializeOwnerAccount}).
@@ -573,8 +576,10 @@ export async function serializeOwnerAccountWithPosts(
       reviewerName = reviewer?.name ?? null;
     }
     fundingJson = serializeOwnerFunding(account.role, grant, funding.nowMs, reviewerName);
-    const passkey = await funding.authStore.getPasskeyCredentialForAccount(account.id);
-    passkeyCredentialId = passkey?.credentialId ?? null;
+    if (account.walletRequired === true) {
+      const passkey = await funding.authStore.getPasskeyCredentialForAccount(account.id);
+      passkeyCredentialId = passkey?.credentialId ?? null;
+    }
   }
   return serializeOwnerAccount(
     account,
