@@ -343,9 +343,9 @@ describe('InMemoryMessageStore', () => {
   });
 
   it('accountHasLiveTopLevelMediaPost is false for a live text-only top-level row', async () => {
-    expect(await new InMemoryMessageStore([EARLY]).accountHasLiveTopLevelMediaPost('acc', null)).toBe(
-      false,
-    );
+    expect(
+      await new InMemoryMessageStore([EARLY]).accountHasLiveTopLevelMediaPost('acc', null),
+    ).toBe(false);
   });
 
   it('accountHasLiveTopLevelMediaPost is true after create with photo 0', async () => {
@@ -362,10 +362,9 @@ describe('InMemoryMessageStore', () => {
 
   it('accountHasLiveTopLevelMediaPost is true for a live top-level row with hasVideo', async () => {
     expect(
-      await new InMemoryMessageStore([{ ...EARLY, hasVideo: true }]).accountHasLiveTopLevelMediaPost(
-        'acc',
-        null,
-      ),
+      await new InMemoryMessageStore([
+        { ...EARLY, hasVideo: true },
+      ]).accountHasLiveTopLevelMediaPost('acc', null),
     ).toBe(true);
   });
 
