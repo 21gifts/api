@@ -60,8 +60,7 @@ describe('translateViaDeepl', () => {
   });
 
   it('throws TranslateUpstreamError on non-2xx', async () => {
-    const fetchImpl: FetchFn = async () =>
-      jsonResponse({ translations: [{ text: 'x' }] }, 500);
+    const fetchImpl: FetchFn = async () => jsonResponse({ translations: [{ text: 'x' }] }, 500);
     await expect(translateViaDeepl(UPSTREAM, SOURCE, 'en', fetchImpl)).rejects.toBeInstanceOf(
       TranslateUpstreamError,
     );
@@ -79,11 +78,7 @@ describe('translateViaDeepl', () => {
   });
 
   it('throws TranslateUpstreamError when JSON misses the translation schema', async () => {
-    const bodies: unknown[] = [
-      { translations: [] },
-      { foo: 1 },
-      { translations: [{ text: '' }] },
-    ];
+    const bodies: unknown[] = [{ translations: [] }, { foo: 1 }, { translations: [{ text: '' }] }];
     for (const body of bodies) {
       const fetchImpl: FetchFn = async () => jsonResponse(body);
       await expect(translateViaDeepl(UPSTREAM, SOURCE, 'en', fetchImpl)).rejects.toBeInstanceOf(
@@ -105,7 +100,7 @@ describe('translateViaDeepl', () => {
     vi.useFakeTimers();
     const fetchImpl: FetchFn = async (_input, init) => {
       const signal = init?.signal;
-      if (signal === undefined) {
+      if (signal == null) {
         throw new Error('missing abort signal');
       }
       return await new Promise<Response>((_resolve, reject) => {
@@ -123,7 +118,8 @@ describe('translateViaDeepl', () => {
     };
 
     const pending = translateViaDeepl(UPSTREAM, SOURCE, 'en', fetchImpl);
+    const rejected = expect(pending).rejects.toBeInstanceOf(TranslateUpstreamError);
     await vi.advanceTimersByTimeAsync(TRANSLATE_UPSTREAM_TIMEOUT_MS);
-    await expect(pending).rejects.toBeInstanceOf(TranslateUpstreamError);
+    await rejected;
   });
 });

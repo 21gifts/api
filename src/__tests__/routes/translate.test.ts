@@ -122,4 +122,90 @@ describe('POST /messages/:id/translate', () => {
     expect(res.status).toBe(503);
     expect(await res.json()).toEqual({ error: 'Translate is not configured' });
   });
+
+  it('returns 400 when the note text is empty', async () => {
+    const messages = new InMemoryMessageStore();
+    await messages.create({
+      id: NOTE_ID,
+      accountId: 'acc',
+      name: 'Ada',
+      text: '   ',
+      createdAt: new Date('2026-09-01T00:00:00.000Z'),
+      ...unsignedNostrDefaults(),
+      hasPhoto: false,
+      hasVideo: false,
+      videoContentType: null,
+    });
+    const app = new Hono().route(
+      '/messages',
+      messagesRoutes({
+        store: messages,
+        authStore: new InMemoryAuthStore(),
+        now: () => 1,
+        env: ENV,
+      }),
+    );
+    const res = await app.request(`/messages/${NOTE_ID}/translate`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ target: 'en' }),
+    });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: 'Invalid body' });
+  });
+
+  it('returns 502 when DeepL fails and 503 on an unexpected store error', async () => {
+    const messages = new InMemoryMessageStore();
+    await messages.create({
+      id: NOTE_ID,
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'Hallo Welt',
+      createdAt: new Date('2026-09-01T00:00:00.000Z'),
+      ...unsignedNostrDefaults(),
+      hasPhoto: false,
+      hasVideo: false,
+      videoContentType: null,
+    });
+    const fetchImpl = async () =>
+      new Response('nope', { status: 500, headers: { 'content-type': 'application/json' } });
+    const app = new Hono().route(
+      '/messages',
+      messagesRoutes({
+        store: messages,
+        authStore: new InMemoryAuthStore(),
+        now: () => 1,
+        env: ENV,
+        fetchImpl,
+      }),
+    );
+    const res = await app.request(`/messages/${NOTE_ID}/translate`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ target: 'en' }),
+    });
+    expect(res.status).toBe(502);
+    expect(await res.json()).toEqual({ error: 'Translate upstream failed' });
+
+    const brokenStore = new InMemoryMessageStore();
+    brokenStore.getById = async (): Promise<never> => {
+      throw new Error('db down');
+    };
+    const broken = new Hono().route(
+      '/messages',
+      messagesRoutes({
+        store: brokenStore,
+        authStore: new InMemoryAuthStore(),
+        now: () => 1,
+        env: ENV,
+      }),
+    );
+    const unexpected = await broken.request(`/messages/${NOTE_ID}/translate`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ target: 'en' }),
+    });
+    expect(unexpected.status).toBe(503);
+    expect(await unexpected.json()).toEqual({ error: 'Messages are unavailable' });
+  });
 });

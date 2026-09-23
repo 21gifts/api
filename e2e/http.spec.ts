@@ -207,9 +207,7 @@ test('POST /messages/:id/invoice without bearer is 401', async ({ request }) => 
   expect(res.status()).toBe(401);
 });
 
-test('POST /messages/:id/translate without bearer is 404 on default boot', async ({
-  request,
-}) => {
+test('POST /messages/:id/translate without bearer is 404 on default boot', async ({ request }) => {
   const res = await request.post('/messages/:id/translate', { data: { target: 'en' } });
   expect(res.status()).toBe(404);
 });
