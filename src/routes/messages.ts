@@ -50,6 +50,7 @@ import { notifyForumPost, notifyForumReply } from '@/lib/notification';
 import type { NotificationStore } from '@/lib/notification-store';
 import type { PushStore } from '@/lib/push-store';
 import type { SpendPing } from '@/lib/spend-ping';
+import { normalizePlace, parseMultipartCoord, placesMatch, type ForumPlace } from '@/lib/place';
 import { bearerToken } from '@/routes/me';
 import {
   MESSAGE_VIDEO_MAX_BYTES,
@@ -500,7 +501,10 @@ async function serveForumVideo(
  * @param extraPhotos - Optional extra stills (indices 1..n). Omit when empty.
  * @param goalSats - Optional whole-sat ask for a top-level note. Default `null`
  *   (no goal). Stored as `null` when `parentId` is set.
- * @returns 200 / 403 (unpaid text-only below verified) / 429 / 503.
+ * @param place - Optional map pin for a top-level note. Default `null`.
+ *   Stored as `null` when `parentId` is set.
+ * @returns 200 / 403 (unpaid text-only below verified) / 409 (same live
+ *   media, different pin) / 429 / 503.
  */
 async function persistForumPost(
   deps: MessagesRouteDeps,
@@ -514,6 +518,7 @@ async function persistForumPost(
   video?: ForumVideo,
   extraPhotos?: readonly ForumPhoto[],
   goalSats: number | null = null,
+  place: ForumPlace | null = null,
 ): Promise<Response> {
   const extras = video !== undefined ? [] : [...(extraPhotos ?? [])];
   if (photo !== undefined || video !== undefined) {
@@ -530,6 +535,9 @@ async function persistForumPost(
     try {
       const existing = await deps.store.findLiveByAccountContent(account.id, parentId, fp);
       if (existing !== undefined) {
+        if (!placesMatch(existing.place ?? null, place)) {
+          return c.json({ error: 'A live note with this media already exists' }, 409);
+        }
         return c.json(
           serializeMessage(existing, payableOf(existing, account), account.role, undefined, true),
           200,
@@ -567,6 +575,7 @@ async function persistForumPost(
     ...unsignedNostrDefaults(),
     parentId,
     goalSats: parentId === null ? goalSats : null,
+    place: parentId === null ? place : null,
   };
   try {
     const created =
@@ -661,7 +670,10 @@ async function persistForumPost(
       serializeMessage(created, payableOf(created, account), account.role, undefined, true),
       200,
     );
-  } catch {
+  } catch (err) {
+    if (err instanceof Error && err.message === 'place conflicts with live media') {
+      return c.json({ error: 'A live note with this media already exists' }, 409);
+    }
     logEvent('messages.create.failed');
     return c.json({ error: 'Messages are unavailable' }, 503);
   }
@@ -733,8 +745,43 @@ async function postMultipartMessage(
     }
     goalSats = parsedGoal;
   }
+  let place: ForumPlace | null = null;
+  const placeLat = form.get('placeLat');
+  const placeLng = form.get('placeLng');
+  const placeLabel = form.get('placeLabel');
+  const latParsed = parseMultipartCoord(placeLat);
+  const lngParsed = parseMultipartCoord(placeLng);
+  const latMissing = latParsed === 'missing';
+  const lngMissing = lngParsed === 'missing';
+  if (!latMissing || !lngMissing) {
+    if (latMissing || lngMissing || latParsed === 'invalid' || lngParsed === 'invalid') {
+      return c.json({ error: 'Place must be a latitude and longitude' }, 400);
+    }
+    const parsedPlace = normalizePlace({
+      lat: latParsed,
+      lng: lngParsed,
+      ...(placeLabel === null || placeLabel === '' ? {} : { label: placeLabel }),
+    });
+    if (!parsedPlace.ok) {
+      return c.json({ error: parsedPlace.error }, 400);
+    }
+    place = parsedPlace.value;
+  }
   if (goalSats === null) {
-    return persistForumPost(deps, postLimiter, c, account, authorName, text, null, photo, video);
+    return persistForumPost(
+      deps,
+      postLimiter,
+      c,
+      account,
+      authorName,
+      text,
+      null,
+      photo,
+      video,
+      undefined,
+      null,
+      place,
+    );
   }
   return persistForumPost(
     deps,
@@ -748,6 +795,7 @@ async function postMultipartMessage(
     video,
     undefined,
     goalSats,
+    place,
   );
 }
 
@@ -757,6 +805,7 @@ const postBody = z
     text: z.string().optional(),
     inReplyTo: z.string().optional(),
     goalSats: z.number().int().positive().max(GOAL_SATS_MAX).nullish(),
+    place: z.unknown().nullish(),
     photo: z
       .object({
         contentType: z.string(),
@@ -798,6 +847,7 @@ const invoiceBody = z.object({
  * Mounted at `/messages` so the public paths are `GET /messages`,
  * `POST /messages` (JSON photo or multipart `video` + optional `poster`,
  * optional `goalSats` whole-sat ask on a top-level note; replies 400),
+ * `GET /messages/places` (live top-level map pins),
  * `GET /messages/compose-target` (platform profile note for a 1-sat write),
  * `GET /messages/:id/photo` (and `.jpg` / `.jpeg` / `.png` / `.webp`),
  * `GET /messages/:id/video.mp4|.webm|.mov`, public `GET /messages/:id/replies`
@@ -809,8 +859,8 @@ const invoiceBody = z.object({
  * public `GET /messages/:id` (optional `?sinceSats=` non-negative integer
  * long-polls until `sats` is strictly greater; timeout still returns 200 with
  * the current body; invalid value 400), and `POST /messages/:id/invoice`.
- * Photo, video, replies, DELETE, `GET /stats`, and `GET /hidden` register
- * before the public single-note `GET /:id`. Soft-hidden rows (`deletedAt`) are omitted from
+ * Photo, video, replies, DELETE, `GET /stats`, `GET /hidden`, and `GET /places`
+ * register before the public single-note `GET /:id`. Soft-hidden rows (`deletedAt`) are omitted from
  * lists and 404 on unsigned/non-staff reads; a founder/moderator session may
  * GET the hidden permalink, its replies (including hidden children), and
  * photo/video bytes. `getById` still returns hidden rows for workers. Public
@@ -834,7 +884,7 @@ const invoiceBody = z.object({
  * (defaults `defaultWaitSatsSleep` / `WAIT_SATS_TIMEOUT_MS` /
  * `WAIT_SATS_POLL_MS`).
  * @returns A Hono app with `GET /`, `POST /`, `GET /compose-target`,
- * `GET /:id/photo` plus `.jpg` / `.jpeg` / `.png` / `.webp`,
+ * `GET /places`, `GET /:id/photo` plus `.jpg` / `.jpeg` / `.png` / `.webp`,
  * `GET /:id/video.mp4|.webm|.mov`, public `GET /:id/replies` (optional Bearer
  * for `accountId`), `DELETE /:id`, staff `GET /hidden` (moderator session; no
  * `forum.read`), public `GET /:id` (optional `?sinceSats=`), and
@@ -993,6 +1043,14 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
       if (!parsed.success) {
         return c.json({ error: 'Expected a JSON body with text and/or photo' }, 400);
       }
+      const parsedPlace = normalizePlace(parsed.data.place);
+      if (!parsedPlace.ok) {
+        return c.json({ error: parsedPlace.error }, 400);
+      }
+      if (parsedPlace.value !== null && parsed.data.inReplyTo !== undefined) {
+        return c.json({ error: 'A reply cannot include a place' }, 400);
+      }
+      const place = parsedPlace.value;
       const rawText = parsed.data.text ?? '';
       const text = normalizeForumText(rawText);
       if (text === null) {
@@ -1053,6 +1111,7 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
           undefined,
           extraPhotos,
           goalSats,
+          place,
         );
       }
       if (goalSats !== null) {
@@ -1068,9 +1127,23 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
           undefined,
           undefined,
           goalSats,
+          place,
         );
       }
-      return persistForumPost(deps, postLimiter, c, account, authorName, text, parentId, photo);
+      return persistForumPost(
+        deps,
+        postLimiter,
+        c,
+        account,
+        authorName,
+        text,
+        parentId,
+        photo,
+        undefined,
+        undefined,
+        goalSats,
+        place,
+      );
     })
     .get('/compose-target', async (c) => {
       const account = await authedAccount(deps, c.req.header('authorization'));
@@ -1282,6 +1355,48 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
         return c.json({ messages }, 200);
       } catch {
         logEvent('messages.hidden.list_failed');
+        return c.json({ error: 'Messages are unavailable' }, 503);
+      }
+    })
+    .get('/places', async (c) => {
+      const account = await authedAccount(deps, c.req.header('authorization'));
+      if (account === null) {
+        return c.json({ error: 'Unauthorized' }, 401);
+      }
+      const gate = requireAction(account, 'forum.read');
+      if (!gate.ok) {
+        return c.json({ error: MISSING_REQUIREMENTS_ERROR, missing: gate.missing }, 409);
+      }
+      const limitQuery = c.req.query('limit');
+      let limit: number;
+      if (limitQuery === undefined) {
+        limit = 1000;
+      } else if (/^\d+$/.test(limitQuery)) {
+        const n = Number(limitQuery);
+        if (n < 1 || n > 1000) {
+          return c.json({ error: 'Invalid limit' }, 400);
+        }
+        limit = n;
+      } else {
+        return c.json({ error: 'Invalid limit' }, 400);
+      }
+      try {
+        const rows = await deps.store.listPlaces(limit);
+        return c.json(
+          {
+            places: rows.map((row) => ({
+              id: row.id,
+              name: row.name,
+              createdAt: row.createdAt.toISOString(),
+              lat: row.lat,
+              lng: row.lng,
+              label: row.label,
+            })),
+          },
+          200,
+        );
+      } catch {
+        logEvent('messages.places.failed');
         return c.json({ error: 'Messages are unavailable' }, 503);
       }
     })

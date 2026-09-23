@@ -14,6 +14,7 @@
 -- and retried on the next boot. A value that cannot be parsed is skipped with a
 -- warning instead of failing the migration. The statement lives in the store's
 -- MESSAGE_SCHEMA_SQL array, not in this file.
+-- Top-level notes may store place_lat, place_lng, and place_label.
 
 CREATE TABLE IF NOT EXISTS message (
   id uuid PRIMARY KEY,
@@ -234,3 +235,8 @@ ALTER TABLE message ADD COLUMN IF NOT EXISTS goal_sats bigint;
 ALTER TABLE message ADD COLUMN IF NOT EXISTS photo_taken_at text;
 ALTER TABLE message ADD COLUMN IF NOT EXISTS video_taken_at text;
 ALTER TABLE message_extra_photo ADD COLUMN IF NOT EXISTS photo_taken_at text;
+-- Optional map pin on a top-level note is place_lat / place_lng / place_label
+-- (null lat or lng means no pin; label is not a Nostr hashtag).
+ALTER TABLE message ADD COLUMN IF NOT EXISTS place_lat double precision;
+ALTER TABLE message ADD COLUMN IF NOT EXISTS place_lng double precision;
+ALTER TABLE message ADD COLUMN IF NOT EXISTS place_label text;

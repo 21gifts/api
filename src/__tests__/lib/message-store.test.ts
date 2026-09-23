@@ -96,7 +96,16 @@ const JPEG2: ForumPhoto = {
 
 describe('MESSAGE_SCHEMA_SQL', () => {
   it('creates message with photo columns, Nostr columns, index, and additive ALTERs', () => {
-    expect(MESSAGE_SCHEMA_SQL).toHaveLength(74);
+    expect(MESSAGE_SCHEMA_SQL).toHaveLength(77);
+    expect(MESSAGE_SCHEMA_SQL.join('\n')).toMatch(
+      /ALTER TABLE message ADD COLUMN IF NOT EXISTS place_lat double precision/i,
+    );
+    expect(MESSAGE_SCHEMA_SQL.join('\n')).toMatch(
+      /ALTER TABLE message ADD COLUMN IF NOT EXISTS place_lng double precision/i,
+    );
+    expect(MESSAGE_SCHEMA_SQL.join('\n')).toMatch(
+      /ALTER TABLE message ADD COLUMN IF NOT EXISTS place_label text/i,
+    );
     expect(MESSAGE_SCHEMA_SQL[0]).toMatch(/CREATE TABLE IF NOT EXISTS message/i);
     expect(MESSAGE_SCHEMA_SQL[0]).toMatch(/account_id uuid NOT NULL REFERENCES account/i);
     expect(MESSAGE_SCHEMA_SQL[0]).toMatch(/photo bytea/i);
@@ -187,6 +196,15 @@ describe('MESSAGE_SCHEMA_SQL', () => {
     expect(MESSAGE_SCHEMA_SQL.join('\n')).toMatch(/message_live_reply_content_fp_uidx/);
     expect(MESSAGE_SCHEMA_SQL.join('\n')).toMatch(
       /ALTER TABLE message ADD COLUMN IF NOT EXISTS goal_sats bigint/,
+    );
+    expect(MESSAGE_SCHEMA_SQL.join('\n')).toMatch(
+      /ALTER TABLE message ADD COLUMN IF NOT EXISTS place_lat double precision/,
+    );
+    expect(MESSAGE_SCHEMA_SQL.join('\n')).toMatch(
+      /ALTER TABLE message ADD COLUMN IF NOT EXISTS place_lng double precision/,
+    );
+    expect(MESSAGE_SCHEMA_SQL.join('\n')).toMatch(
+      /ALTER TABLE message ADD COLUMN IF NOT EXISTS place_label text/,
     );
     expect(MESSAGE_SCHEMA_SQL.at(-1)).toContain('FROM pg_trigger');
     expect(MESSAGE_SCHEMA_SQL.at(-1)).toContain("tgname = 'trg_db_change'");
@@ -975,6 +993,53 @@ describe('InMemoryMessageStore', () => {
     expect(await store.listLatest(10)).toHaveLength(1);
   });
 
+  it('create keeps the first row when the same photo is posted with the same place', async () => {
+    const store = new InMemoryMessageStore();
+    const place = { lat: 47.3, lng: 8.5, label: 'Stall' };
+    const first = await store.create({ ...EARLY, id: 'm1', text: 'same', place }, JPEG);
+    const second = await store.create(
+      { ...EARLY, id: 'm2', text: 'same', place: { ...place } },
+      JPEG,
+    );
+    expect(second.id).toBe(first.id);
+    expect(await store.listLatest(10)).toHaveLength(1);
+  });
+
+  it('create collapses a reply even when the incoming row still carries a pin', async () => {
+    const store = new InMemoryMessageStore();
+    await store.create({ ...EARLY, id: 'parent', text: 'parent' });
+    const first = await store.create(
+      { ...EARLY, id: 'r1', parentId: 'parent', text: 'same' },
+      JPEG,
+    );
+    const second = await store.create(
+      {
+        ...EARLY,
+        id: 'r2',
+        parentId: 'parent',
+        text: 'same',
+        place: { lat: 47.3, lng: 8.5, label: 'Stall' },
+      },
+      JPEG,
+    );
+    expect(second.id).toBe(first.id);
+    expect(second.place ?? null).toBeNull();
+    expect(await store.getById('r2')).toBeUndefined();
+    expect(await store.listLatest(10)).toHaveLength(1);
+  });
+
+  it('create throws when the same photo is posted with a different place', async () => {
+    const store = new InMemoryMessageStore();
+    await store.create({ ...EARLY, id: 'm1', text: 'same' }, JPEG);
+    await expect(
+      store.create(
+        { ...EARLY, id: 'm2', text: 'same', place: { lat: 47.3, lng: 8.5, label: 'Stall' } },
+        JPEG,
+      ),
+    ).rejects.toThrow('place conflicts with live media');
+    expect(await store.listLatest(10)).toHaveLength(1);
+  });
+
   it('create does not write a second video file on media collapse', async () => {
     const store = new InMemoryMessageStore();
     const mp4 = new Uint8Array(32);
@@ -1694,6 +1759,54 @@ describe('InMemoryMessageStore', () => {
     expect(ids).toHaveLength(2);
     expect(new Set(ids).size).toBe(2);
     expect(ids.every((id) => allowed.includes(id))).toBe(true);
+  });
+
+  it('listPlaces excludes replies, hidden notes, and rows with no place', async () => {
+    const hiddenAt = new Date('2026-09-01T00:00:00.000Z');
+    const same = new Date('2026-08-03T00:00:00.000Z');
+    const store = new InMemoryMessageStore([
+      { ...EARLY, place: { lat: 1, lng: 2, label: null } },
+      { ...LATE, id: 'plain' },
+      {
+        ...LATE,
+        id: 'reply',
+        parentId: 'a',
+        place: { lat: 3, lng: 4, label: 'reply' },
+      },
+      {
+        ...LATE,
+        id: 'hidden',
+        deletedAt: hiddenAt,
+        deletedBy: 'staff',
+        place: { lat: 5, lng: 6, label: 'hid' },
+      },
+      { ...LATE, id: 'za', createdAt: same, place: { lat: 7, lng: 8, label: 'A' } },
+      { ...LATE, id: 'zb', createdAt: same, place: { lat: 9, lng: 10, label: 'B' } },
+    ]);
+    const listed = await store.listPlaces(10);
+    expect(listed.map((row) => row.id)).toEqual(['zb', 'za', 'a']);
+    expect(listed[0]).toEqual({
+      id: 'zb',
+      name: 'Ada',
+      createdAt: same,
+      lat: 9,
+      lng: 10,
+      label: 'B',
+    });
+    expect((await store.listPlaces(1)).map((row) => row.id)).toEqual(['zb']);
+  });
+
+  it('create nulls place on a reply even when the input row carried a pin', async () => {
+    const store = new InMemoryMessageStore([EARLY]);
+    const created = await store.create({
+      ...LATE,
+      id: 'child',
+      parentId: 'a',
+      text: 'reply',
+      place: { lat: 47.3, lng: 8.5, label: 'Zürich' },
+    });
+    expect(created.place).toBeNull();
+    expect(await store.listPlaces(10)).toEqual([]);
   });
 
   it('breaks reply ties by id when createdAt matches', async () => {
@@ -4072,7 +4185,125 @@ describe('PostgresMessageStore', () => {
     expect(await new PostgresMessageStore(sql).listIdsByPrefix('d70c4763')).toEqual([]);
   });
 
-  it('create binds seventeen params including photo_taken_at', async () => {
+  it('maps a SQL place pin and drops a non-numeric or empty label', async () => {
+    const sql = new MockSql();
+    sql.nextRows = [
+      {
+        id: 'pin',
+        account_id: 'acc',
+        name: 'Ada',
+        text: 'here',
+        created_at: new Date('2026-08-01T00:00:00.000Z'),
+        has_photo: false,
+        place_lat: '14.6',
+        place_lng: 120.98,
+        place_label: 'Happyland',
+        deleted_at: new Date('2026-09-01T00:00:00.000Z'),
+        deleted_by: 'staff',
+      },
+      {
+        id: 'blank',
+        account_id: 'acc',
+        name: 'Ada',
+        text: 'x',
+        created_at: new Date('2026-08-02T00:00:00.000Z'),
+        has_photo: false,
+        place_lat: 1,
+        place_lng: 2,
+        place_label: '',
+        deleted_at: new Date('2026-09-01T00:00:00.000Z'),
+        deleted_by: 'staff',
+      },
+      {
+        id: 'bad',
+        account_id: 'acc',
+        name: 'Ada',
+        text: 'x',
+        created_at: new Date('2026-08-03T00:00:00.000Z'),
+        has_photo: false,
+        place_lat: 'nope',
+        place_lng: 2,
+        place_label: 'x',
+        deleted_at: new Date('2026-09-01T00:00:00.000Z'),
+        deleted_by: 'staff',
+      },
+    ];
+    const listed = await new PostgresMessageStore(sql).listHidden(10);
+    expect(listed[0]?.place).toEqual({ lat: 14.6, lng: 120.98, label: 'Happyland' });
+    expect(listed[1]?.place).toEqual({ lat: 1, lng: 2, label: null });
+    expect(listed[2]?.place).toBeNull();
+  });
+
+  it('listPlaces selects live top-level pins newest-first without photo', async () => {
+    const sql = new MockSql();
+    const createdAt = new Date('2026-08-28T12:00:00.000Z');
+    sql.nextRows = [
+      {
+        id: 'pin-1',
+        name: 'Ada',
+        created_at: createdAt,
+        place_lat: '47.3',
+        place_lng: '8.5',
+        place_label: 'Zürich',
+      },
+    ];
+    const listed = await new PostgresMessageStore(sql).listPlaces(10);
+    expect(sql.queries[0]?.text).toMatch(
+      /SELECT id, name, created_at, place_lat, place_lng, place_label/,
+    );
+    expect(sql.queries[0]?.text).toMatch(
+      /WHERE parent_id IS NULL AND deleted_at IS NULL\s+AND place_lat IS NOT NULL AND place_lng IS NOT NULL/,
+    );
+    expect(sql.queries[0]?.text).toMatch(/ORDER BY created_at DESC, id DESC\s+LIMIT \$1/);
+    expect(sql.queries[0]?.text).not.toMatch(/photo/);
+    expect(sql.queries[0]?.params).toEqual([10]);
+    expect(listed).toEqual([
+      {
+        id: 'pin-1',
+        name: 'Ada',
+        createdAt,
+        lat: 47.3,
+        lng: 8.5,
+        label: 'Zürich',
+      },
+    ]);
+  });
+
+  it('listPlaces maps a string created_at and a null label', async () => {
+    const sql = new MockSql();
+    sql.nextRows = [
+      {
+        id: 'pin-2',
+        name: 'Ada',
+        created_at: '2026-08-28T12:00:00.000Z',
+        place_lat: 1,
+        place_lng: 2,
+        place_label: null,
+      },
+    ];
+    const listed = await new PostgresMessageStore(sql).listPlaces(1);
+    expect(listed[0]?.createdAt.toISOString()).toBe('2026-08-28T12:00:00.000Z');
+    expect(listed[0]?.lat).toBe(1);
+    expect(listed[0]?.lng).toBe(2);
+    expect(listed[0]?.label).toBeNull();
+  });
+
+  it('listPlaces maps an undefined place_label to null', async () => {
+    const sql = new MockSql();
+    sql.nextRows = [
+      {
+        id: 'pin-2',
+        name: 'Ada',
+        created_at: '2026-08-28T12:00:00.000Z',
+        place_lat: 1,
+        place_lng: 2,
+      },
+    ];
+    const listed = await new PostgresMessageStore(sql).listPlaces(1);
+    expect(listed[0]?.label).toBeNull();
+  });
+
+  it('create binds capture time and place', async () => {
     const sql = new MockSql();
     const store = new PostgresMessageStore(sql);
     const row: MessageRow = {
@@ -4086,10 +4317,10 @@ describe('PostgresMessageStore', () => {
     };
     const created = await store.create(row);
     expect(sql.executes[0]?.text).toMatch(
-      /INSERT INTO message \(\s*id, account_id, name, text, photo, photo_content_type, video_content_type, created_at,\s*nostr_publish_state, sats, parent_id, author_pubkey, event_id, nostr_event, content_fp, goal_sats,\s*fiat_usd, fiat_chf, fiat_eur, fiat_php, photo_taken_at, video_taken_at\s*\)/,
+      /INSERT INTO message \(\s*id, account_id, name, text, photo, photo_content_type, video_content_type, created_at,\s*nostr_publish_state, sats, parent_id, author_pubkey, event_id, nostr_event, content_fp, goal_sats,\s*fiat_usd, fiat_chf, fiat_eur, fiat_php, photo_taken_at, video_taken_at,\s*place_lat, place_lng, place_label\s*\)/,
     );
     expect(sql.executes[0]?.text).toMatch(
-      /\$14::jsonb,\$15,\$16,\s*\$17::numeric,\$18::numeric,\$19::numeric,\$20::numeric,\$21,\$22/,
+      /\$14::jsonb,\$15,\$16,\s*\$17::numeric,\$18::numeric,\$19::numeric,\$20::numeric,\$21,\$22,\$23,\$24,\$25/,
     );
     expect(sql.executes[0]?.text).not.toMatch(/ON CONFLICT/i);
     expect(sql.executes[0]?.params).toEqual([
@@ -4115,8 +4346,11 @@ describe('PostgresMessageStore', () => {
       null,
       null,
       null,
+      null,
+      null,
+      null,
     ]);
-    expect(sql.executes[0]?.params).toHaveLength(22);
+    expect(sql.executes[0]?.params).toHaveLength(25);
     expect(created.id).toBe(row.id);
     expect(created.hasVideo).toBe(false);
     expect(created.goalSats).toBeNull();
@@ -4132,7 +4366,17 @@ describe('PostgresMessageStore', () => {
     expect(priced.amountChf).toBeNull();
     expect(priced.amountEur).toBe('0.90');
     expect(priced.amountPhp).toBeNull();
-    expect(sql.executes[1]?.params.slice(16)).toEqual(['1.00', null, '0.90', null, null, null]);
+    expect(sql.executes[1]?.params.slice(16)).toEqual([
+      '1.00',
+      null,
+      '0.90',
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+    ]);
   });
 
   it('create binds a positive goalSats and listLatest maps goal_sats', async () => {
@@ -4150,7 +4394,17 @@ describe('PostgresMessageStore', () => {
     };
     const created = await store.create(row);
     expect(sql.executes[0]?.params[15]).toBe(21000);
-    expect(sql.executes[0]?.params[16]).toBeNull();
+    expect(sql.executes[0]?.params.slice(16)).toEqual([
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+    ]);
     expect(created.goalSats).toBe(21000);
     sql.nextRows = [
       {
@@ -4184,10 +4438,10 @@ describe('PostgresMessageStore', () => {
     const created = await store.create(row);
     expect(sql.executes).toEqual([]);
     expect(sql.queries[0]?.text).toMatch(
-      /INSERT INTO message \(\s*id, account_id, name, text, photo, photo_content_type, video_content_type, created_at,\s*nostr_publish_state, sats, parent_id, author_pubkey, event_id, nostr_event, content_fp, goal_sats,\s*fiat_usd, fiat_chf, fiat_eur, fiat_php, photo_taken_at, video_taken_at\s*\)/,
+      /INSERT INTO message \(\s*id, account_id, name, text, photo, photo_content_type, video_content_type, created_at,\s*nostr_publish_state, sats, parent_id, author_pubkey, event_id, nostr_event, content_fp, goal_sats,\s*fiat_usd, fiat_chf, fiat_eur, fiat_php, photo_taken_at, video_taken_at,\s*place_lat, place_lng, place_label\s*\)/,
     );
     expect(sql.queries[0]?.text).toMatch(
-      /SELECT \$1,\$2,\$3,\$4,\$5,\$6,\$7,\$8,\$9,\$10,\$11,\$12,\$13,\$14::jsonb,\$15,\$16,\s*\$17::numeric,\$18::numeric,\$19::numeric,\$20::numeric,\$21,\$22/,
+      /SELECT \$1,\$2,\$3,\$4,\$5,\$6,\$7,\$8,\$9,\$10,\$11,\$12,\$13,\$14::jsonb,\$15,\$16,\s*\$17::numeric,\$18::numeric,\$19::numeric,\$20::numeric,\$21,\$22,\$23,\$24,\$25/,
     );
     expect(sql.queries[0]?.text).toMatch(
       /WHERE EXISTS \(SELECT 1 FROM message p WHERE p\.id = \$11 AND p\.deleted_at IS NULL\)/,
@@ -4217,8 +4471,11 @@ describe('PostgresMessageStore', () => {
       null,
       null,
       null,
+      null,
+      null,
+      null,
     ]);
-    expect(sql.queries[0]?.params).toHaveLength(22);
+    expect(sql.queries[0]?.params).toHaveLength(25);
     expect(created.id).toBe('child-1');
     expect(created.parentId).toBe('parent-1');
   });
@@ -4239,8 +4496,77 @@ describe('PostgresMessageStore', () => {
       goalSats: 21000,
     };
     const created = await store.create(row);
-    expect(sql.queries[0]?.params.at(-1)).toBeNull();
+    expect(sql.queries[0]?.params[15]).toBeNull();
+    expect(sql.queries[0]?.params.slice(16)).toEqual([
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+    ]);
     expect(created.goalSats).toBeNull();
+  });
+
+  it('create binds place lat, lng, and label', async () => {
+    const sql = new MockSql();
+    const store = new PostgresMessageStore(sql);
+    const row: MessageRow = {
+      id: 'm-place',
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'pin',
+      createdAt: new Date('2026-08-28T12:00:00.000Z'),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+      place: { lat: 47.3, lng: 8.5, label: 'Zürich' },
+    };
+    const created = await store.create(row);
+    expect(sql.executes[0]?.params.slice(16)).toEqual([
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      47.3,
+      8.5,
+      'Zürich',
+    ]);
+    expect(created.place).toEqual({ lat: 47.3, lng: 8.5, label: 'Zürich' });
+  });
+
+  it('create with non-null parentId binds place null even when the row carried a pin', async () => {
+    const sql = new MockSql();
+    sql.nextRows = [{ id: 'child-place' }];
+    const store = new PostgresMessageStore(sql);
+    const row: MessageRow = {
+      id: 'child-place',
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'reply',
+      createdAt: new Date('2026-08-28T12:00:00.000Z'),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+      parentId: 'parent-1',
+      place: { lat: 47.3, lng: 8.5, label: 'Zürich' },
+    };
+    const created = await store.create(row);
+    expect(sql.queries[0]?.params.slice(16)).toEqual([
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+    ]);
+    expect(created.place).toBeNull();
   });
 
   it('create with non-null parentId throws when the query returns zero rows and unlinks video', async () => {
@@ -4466,6 +4792,42 @@ describe('PostgresMessageStore', () => {
       ...unsignedNostrDefaults(),
     });
     expect(created.id).toBe('m1');
+  });
+
+  it('create on 23505 throws when the stored place differs', async () => {
+    const sql = new MockSql();
+    sql.executeError = Object.assign(new Error('duplicate key'), { code: '23505' });
+    sql.nextRows = [
+      {
+        id: 'existing-id',
+        account_id: 'acc',
+        name: 'Ada',
+        text: 'same',
+        created_at: new Date(0),
+        has_photo: true,
+        event_id: null,
+        nostr_publish_state: 'pending',
+        sats: 0,
+        place_lat: 47.3,
+        place_lng: 8.5,
+        place_label: 'Stall',
+      },
+    ];
+    await expect(
+      new PostgresMessageStore(sql).create(
+        {
+          id: 'm-new',
+          accountId: 'acc',
+          name: 'Ada',
+          text: 'same',
+          createdAt: new Date(0),
+          hasPhoto: true,
+          place: { lat: 1, lng: 2, label: null },
+          ...unsignedNostrDefaults(),
+        },
+        JPEG,
+      ),
+    ).rejects.toThrow('place conflicts with live media');
   });
 
   it('create on 23505 rethrows when findLiveByAccountContent misses', async () => {

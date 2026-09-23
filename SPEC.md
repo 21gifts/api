@@ -131,6 +131,7 @@ Public base URLs used in examples:
 | POST   | `/funding/reject`                                    | Bearer (moderator+)        | Reject grant                                                                                                                                 |
 | GET    | `/messages`                                          | Bearer                     | List top-level forum notes (+ visible `replyCount`); 409 if rules missing                                                                    |
 | GET    | `/messages/compose-target`                           | Bearer                     | Platform profile note `{ messageId, sats }` for a 1-sat compose fee to 21.gifts                                                              |
+| GET    | `/messages/places`                                   | Bearer                     | Live top-level forum pins; 409 if rules missing                                                                                              |
 | POST   | `/messages`                                          | Bearer                     | Post text/photo; 409 if rules/name/username/Lightning Address missing; 403 text-only below verified                                          |
 | GET    | `/messages/hidden`                                   | Bearer (moderator+)        | Staff log of soft-hidden notes (session, not DEBUG_TOKEN)                                                                                    |
 | GET    | `/messages/:id`                                      | none / Bearer (moderator+) | Live public JSON; staff hidden GET includes `deletedAt`/`deletedBy`                                                                          |
@@ -2217,8 +2218,9 @@ Operator listing of every persisted forum row (top-level **and** replies,
 live **and** soft-hidden). Authenticated with `Authorization: Bearer`
 matching `DEBUG_TOKEN`. Public hide does not apply. Cap 200, newest-first.
 JSON `{ "messages": [ … ] }` via `serializeDebugMessage`, including
-`nostrEvent`, `claimedUntil`, `contentFp`, photo MIME/byte lengths, and
-stored `goalSats` (JSON `null` when unset). Never includes nsec or
+`nostrEvent`, `claimedUntil`, `contentFp`, photo MIME/byte lengths,
+stored `goalSats` (JSON `null` when unset), and always-present `placeLat`,
+`placeLng`, and `placeLabel` (JSON `null` when unset). Never includes nsec or
 photo/video payloads.
 
 `DEBUG_TOKEN` unset or blank → **Response** `503`:
@@ -2250,7 +2252,9 @@ Operator single-note fetch. Soft-hidden rows are **200** with `deletedAt` /
 
 Same debug token gate as `GET /debug/messages`. Body is the debug object
 (not wrapped), including `nostrEvent`, `claimedUntil`, `contentFp`, photo
-MIME/byte lengths, and stored `goalSats` (JSON `null` when unset). Never
+MIME/byte lengths, stored `goalSats` (JSON `null` when unset), and
+always-present `placeLat`, `placeLng`, and `placeLabel` (JSON `null` when
+unset). Never
 includes nsec or photo/video payloads.
 
 Store throw → **Response** `503`:
@@ -2946,7 +2950,8 @@ display. Each message exposes the author **name snapshotted at post time**,
 `text` (may be empty when a photo or video is attached), ISO-8601
 `createdAt`, `sats` (validated Lightning receipts on that note, default 0),
 optional `goalSats` (positive integer on a top-level note; omitted when
-unset/null/0),
+unset/null/0), optional `place` (`{ lat, lng, label }` when a pin is stored;
+the key is omitted when unset),
 `payable` (true when the note has a non-empty signed `eventId` and the author
 has a non-blank Lightning Address; null or empty `eventId` is not payable),
 `hasPhoto` (photo 0 exists), `photoCount` (integer 0–10 = photo 0
@@ -3137,6 +3142,17 @@ external zapper gains no website visibility. Operator manual settlement
 covers member-created forum invoices only; it cannot create an external
 zapper entitlement.
 
+### `GET /messages/places`
+
+Bearer session required. After auth, the same `forum.read` gate as
+`GET /messages` (401 without a session; 409 `missing_requirements` when
+rules are missing). Query `limit` is an integer 1..1000 (default **1000**);
+otherwise **400** `{ "error": "Invalid limit" }`. Body
+`{ "places": [{ "id", "name", "createdAt", "lat", "lng", "label" }] }`.
+`createdAt` is ISO-8601. Newest first (`created_at` desc, `id` desc). Only
+live top-level rows with both coordinates. Replies and hidden notes are
+excluded.
+
 ### `GET /messages/compose-target`
 
 Bearer session required. After auth, `requireAction(account, 'forum.post')`
@@ -3238,6 +3254,14 @@ then `POST /messages/:id/invoice` on that platform profile note). Optional
 `goalSats` omitted, JSON `null`, or a missing/empty multipart field means
 no goal. Multipart accepts `goalSats` as a decimal digit string. A positive
 `goalSats` together with `inReplyTo` → **400** `{ "error": "A reply cannot ask for a goal" }`.
+Optional `place` is `{ lat, lng, label? }`. Omitted or null stores no pin
+and the 200 JSON omits `place`. Invalid place is 400 with `Place must be a
+latitude and longitude` or `Place label must be at most 80 characters`.
+`inReplyTo` together with a non-null place is 400
+`{ "error": "A reply cannot include a place" }`. Multipart fields are
+`placeLat`, `placeLng`, and optional `placeLabel` (always top-level). Both
+coordinates empty means no pin. Exactly one of them set is 400
+`Place must be a latitude and longitude`.
 An invalid multipart `goalSats` → **400** `{ "error": "Goal must be a positive whole-sat amount" }`.
 JSON type/range errors keep **400** `{ "error": "Expected a JSON body with text and/or photo" }`.
 Above 10_000_000 is rejected, not clamped. Multipart video posts do not
@@ -3274,8 +3298,10 @@ notifies. Missing `pushStore` still writes in-app rows. Notification or
 push failure does not fail the **200**. Over-limit posters
 get **429** `{ "error": "Too many messages" }`
 with `Retry-After: 10` (1/10s, 6/h, 20/UTC-day). A second **live** photo/video
-POST with the same account, parent, normalised text, and media bytes returns
+POST with the same account, parent, normalised text, media bytes, and pin returns
 **200** with the existing row (no extra burst slot, no second top-level push).
+The same media with a different pin is **409**
+`{ "error": "A live note with this media already exists" }`.
 Text-only posts are unchanged (still **429** on burst). After a **new**
 top-level persist, the api POSTs `{ address, messageId }` to `{SPEND_URL}/ping` with
 Bearer `SPEND_API_TOKEN` (fire-and-await; `messageId` is the UUID of the new
@@ -3658,10 +3684,12 @@ two ids per store.
 
 Public single-note fetch. Live rows need **no Bearer.** `:id` is a UUID.
 Registered **after** photo, video, `GET /messages/:id/replies`,
-`DELETE /messages/:id`, `GET /messages/stats`, and `GET /messages/hidden` so
+`DELETE /messages/:id`, `GET /messages/stats`, `GET /messages/hidden`, and
+`GET /messages/places` so
 those paths are not captured as `:id`. A live GET returns
 the public message JSON (`sats`, optional `goalSats` on a top-level note
-when the stored ask is a positive integer, `payable`, `hasPhoto`, `photoCount`
+when the stored ask is a positive integer, optional `place` when a pin is
+stored and omitted when unset, `payable`, `hasPhoto`, `photoCount`
 (0–10; always present; `hasPhoto` still means photo 0 exists), `photoTakenAts`
 (always; length equals `photoCount`; null when unknown; `[]` when there are no
 stills) and `photoTakenAt` only when `photoCount` is 1, `hasVideo`,
@@ -3829,7 +3857,8 @@ empty-name pubkey fallback), ISO `createdAt` / `deletedAt`, `hasPhoto` /
 `photoTakenAts` (always; length equals `photoCount`; null when unknown; `[]`
 when there are no stills) and `photoTakenAt` only when `photoCount` is 1 /
 `hasVideo` / `videoContentType`, optional `goalSats` (positive integer on a
-top-level note; omitted when unset/null/0 or on a reply), always-present `parentId` (JSON `null`
+top-level note; omitted when unset/null/0 or on a reply), optional `place`
+when a pin is stored (omitted when unset), always-present `parentId` (JSON `null`
 on top-level), optional `via: "nostr"` exactly when `accountId === null &&
 authorPubkey !== null` (the same rule as public message JSON), and
 `deletedBy: { id, name, role }` resolved from

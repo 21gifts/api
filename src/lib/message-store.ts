@@ -31,6 +31,7 @@ import {
   type MessageRow,
   type NostrPublishState,
 } from '@/lib/message';
+import { placesMatch, type ForumPlace } from '@/lib/place';
 
 export type { ForumFeedMode };
 import { kind1ContentWithHashtags } from '@/lib/nostr/event';
@@ -289,13 +290,35 @@ export interface MessageStore {
   listIdsByPrefix(prefix: string): Promise<string[]>;
 
   /**
+   * Live top-level notes that have both place coordinates (`parent_id` null,
+   * `deleted_at` null, both `place_lat` and `place_lng` set), newest
+   * `createdAt` then `id` first, capped at `limit`. Never selects `photo`
+   * bytea. Replies and hidden notes are excluded.
+   *
+   * @param limit - Maximum rows to return.
+   * @returns Pin rows (caller-owned copies).
+   */
+  listPlaces(limit: number): Promise<
+    Array<{
+      id: string;
+      name: string;
+      createdAt: Date;
+      lat: number;
+      lng: number;
+      label: string | null;
+    }>
+  >;
+
+  /**
    * Persist a new message row and optional photo, video, and extra stills.
    *
    * When `photo` or `video` is present, `row.accountId` is not null, and
    * `row.eventId` is null, stores `content_fp` from
    * {@link forumContentFingerprint} (video bytes win when both exist; extras
-   * are hashed only for a still gallery). A live unique-index hit returns the
-   * existing row instead of inserting a second note and does not insert extras.
+   * are hashed only for a still gallery). A live unique-index hit with the
+   * same pin returns the existing row instead of inserting a second note and
+   * does not insert extras. A different pin throws
+   * `place conflicts with live media`.
    * Rows that already carry an `eventId` leave `content_fp` null.
    *
    * `extraPhotos` are indices 1..length (max 9). Empty/omitted = none. When
@@ -308,7 +331,9 @@ export interface MessageStore {
    *
    * Top-level rows persist `goalSats` when the value is a positive integer.
    * A non-null `parentId` stores `goalSats` null even when the incoming row
-   * carried a positive ask.
+   * carried a positive ask. Top-level rows persist `place` when set. A
+   * non-null `parentId` stores `place` null even when the incoming row
+   * carried a pin.
    *
    * @param row - Fully formed row (id, account, name snapshot, text, time, hasPhoto).
    * @param photo - Optional decoded photo (copied into storage; index 0).
@@ -1291,6 +1316,9 @@ WHERE message.id = ranked.id AND ranked.rn > 1`,
   `ALTER TABLE message ADD COLUMN IF NOT EXISTS photo_taken_at text`,
   `ALTER TABLE message ADD COLUMN IF NOT EXISTS video_taken_at text`,
   `ALTER TABLE message_extra_photo ADD COLUMN IF NOT EXISTS photo_taken_at text`,
+  `ALTER TABLE message ADD COLUMN IF NOT EXISTS place_lat double precision`,
+  `ALTER TABLE message ADD COLUMN IF NOT EXISTS place_lng double precision`,
+  `ALTER TABLE message ADD COLUMN IF NOT EXISTS place_label text`,
   `CREATE INDEX IF NOT EXISTS message_feed_created_idx ON message (created_at DESC, id DESC) WHERE parent_id IS NULL AND deleted_at IS NULL`,
   `CREATE INDEX IF NOT EXISTS message_feed_popular_idx ON message (sats DESC, created_at DESC, id DESC) WHERE parent_id IS NULL AND deleted_at IS NULL AND sats > 0`,
   `DO $unwrap$
@@ -1496,6 +1524,7 @@ function matchesFeedCursor(row: MessageRow, query: MessageFeedQuery): boolean {
 /** Copy a row so callers cannot mutate store internals. */
 function copyRow(row: MessageRow): MessageRow {
   const deletedAt = row.deletedAt ?? null;
+  const place = row.place;
   const copy: MessageRow = {
     ...row,
     hasPhoto: row.hasPhoto === true,
@@ -1512,6 +1541,10 @@ function copyRow(row: MessageRow): MessageRow {
     deletedAt: deletedAt === null ? null : new Date(deletedAt.getTime()),
     deletedBy: row.deletedBy ?? null,
     nostrEvent: row.nostrEvent === null ? null : { ...row.nostrEvent },
+    place:
+      place === undefined || place === null
+        ? null
+        : { lat: place.lat, lng: place.lng, label: place.label },
   };
   // Absent on old rows. Assigning `undefined` breaks exactOptionalPropertyTypes.
   if (row.photoTakenAts !== undefined) {
@@ -1857,6 +1890,54 @@ export class InMemoryMessageStore implements MessageStore {
   }
 
   /**
+   * Live top-level notes with both place coordinates, newest first.
+   *
+   * @param limit - Maximum rows.
+   * @returns Pin row copies (no photo bytes).
+   */
+  listPlaces(limit: number): Promise<
+    Array<{
+      id: string;
+      name: string;
+      createdAt: Date;
+      lat: number;
+      lng: number;
+      label: string | null;
+    }>
+  > {
+    const pinned = this.#rows.filter((row) => {
+      if (row.parentId !== null || row.deletedAt !== null) {
+        return false;
+      }
+      const place = row.place;
+      if (place === undefined || place === null) {
+        return false;
+      }
+      return typeof place.lat === 'number' && typeof place.lng === 'number';
+    });
+    const sorted = [...pinned].sort((a, b) => {
+      const byTime = b.createdAt.getTime() - a.createdAt.getTime();
+      if (byTime !== 0) {
+        return byTime;
+      }
+      return b.id.localeCompare(a.id);
+    });
+    return Promise.resolve(
+      sorted.slice(0, limit).map((row) => {
+        const place = row.place as ForumPlace;
+        return {
+          id: row.id,
+          name: row.name,
+          createdAt: new Date(row.createdAt.getTime()),
+          lat: place.lat,
+          lng: place.lng,
+          label: place.label,
+        };
+      }),
+    );
+  }
+
+  /**
    * Non-null event ids for published/pending signed notes (inbound reply REQ).
    * Top-level only (`parentId` null). Newest `createdAt` then `id` first.
    *
@@ -1881,11 +1962,15 @@ export class InMemoryMessageStore implements MessageStore {
    * row's parent was later deleted. A non-null `eventId` that already exists
    * returns the stored row (same uniqueness as
    * `message_event_id_uidx` and conversation `appendMessage`). Live unsigned
-   * media (`eventId` null) with the same account, parent, and fingerprint
+   * media (`eventId` null) with the same account, parent, fingerprint, and place
    * returns the existing row without appending or writing a second video file.
+   * A different place throws `place conflicts with live media`. A reply is
+   * compared after its pin is cleared, so an incoming reply pin does not
+   * conflict with the stored null.
    * A non-null `parentId` requires a live parent (`deletedAt` null); a missing
    * or soft-hidden parent throws and does not append. Replies store
-   * `goalSats` null even when the row carried a positive ask.
+   * `goalSats` null even when the row carried a positive ask, and store
+   * `place` null even when the row carried a pin.
    *
    * @param row - Message to store.
    * @param photo - Optional photo (bytes copied).
@@ -1935,6 +2020,10 @@ export class InMemoryMessageStore implements MessageStore {
         contentFp,
       );
       if (existing !== undefined) {
+        const placeForMatch = row.parentId !== null ? null : (row.place ?? null);
+        if (!placesMatch(existing.place ?? null, placeForMatch)) {
+          throw new Error('place conflicts with live media');
+        }
         return existing;
       }
     }
@@ -1957,6 +2046,7 @@ export class InMemoryMessageStore implements MessageStore {
       ...(typeof video?.takenAt === 'string' ? { videoTakenAt: video.takenAt } : {}),
     });
     stored.goalSats = stored.parentId !== null ? null : (stored.goalSats ?? null);
+    stored.place = stored.parentId !== null ? null : (stored.place ?? null);
     if (stored.parentId !== null) {
       const parent = this.#rows.find((item) => item.id === stored.parentId);
       if (parent === undefined || parent.deletedAt !== null) {
@@ -3094,6 +3184,9 @@ interface MessageSqlRow {
   fiat_eur?: string | number | null;
   fiat_php?: string | number | null;
   goal_sats?: string | number | null;
+  place_lat?: string | number | null;
+  place_lng?: string | number | null;
+  place_label?: string | null;
   nostr_event?: Record<string, unknown> | string | null;
   claimed_until?: Date | string | null;
   nostr_first_attempt_at?: Date | string | null;
@@ -3130,6 +3223,27 @@ function parseVideoContentType(value: string | null | undefined): ForumVideoCont
     return value;
   }
   return null;
+}
+
+/** Map SQL place columns onto {@link ForumPlace}. A null pair (or one side) is no pin. */
+function placeFromSql(
+  lat: string | number | null | undefined,
+  lng: string | number | null | undefined,
+  label: string | null | undefined,
+): ForumPlace | null {
+  if (lat === null || lat === undefined || lng === null || lng === undefined) {
+    return null;
+  }
+  const latN = Number(lat);
+  const lngN = Number(lng);
+  if (!Number.isFinite(latN) || !Number.isFinite(lngN)) {
+    return null;
+  }
+  return {
+    lat: latN,
+    lng: lngN,
+    label: label === null || label === undefined || label === '' ? null : label,
+  };
 }
 
 /** Extra still capture times from `json_agg` (string or already-parsed). */
@@ -3202,6 +3316,7 @@ function mapMessageRow(row: MessageSqlRow): MessageRow {
     amountEur: row.fiat_eur === null || row.fiat_eur === undefined ? null : String(row.fiat_eur),
     amountPhp: row.fiat_php === null || row.fiat_php === undefined ? null : String(row.fiat_php),
     goalSats: row.goal_sats === null || row.goal_sats === undefined ? null : Number(row.goal_sats),
+    place: placeFromSql(row.place_lat, row.place_lng, row.place_label),
     nostrEvent: normalizeSignedEvent(row.nostr_event) ?? null,
     claimedUntil: optionalDate(row.claimed_until),
     nostrFirstAttemptAt: optionalDate(row.nostr_first_attempt_at),
@@ -3239,6 +3354,7 @@ const MESSAGE_SELECT_COLUMNS = `id, account_id, name, text, created_at,
               event_id, nostr_publish_state, sats, goal_sats,
               fiat_usd::text AS fiat_usd, fiat_chf::text AS fiat_chf,
               fiat_eur::text AS fiat_eur, fiat_php::text AS fiat_php,
+              place_lat, place_lng, place_label,
               nostr_event, claimed_until, nostr_first_attempt_at, nostr_publish_epoch, nostr_attempts,
               content_fp, deleted_at, deleted_by,
               photo_taken_at, video_taken_at,
@@ -3479,6 +3595,49 @@ export class PostgresMessageStore implements MessageStore {
   }
 
   /**
+   * Live top-level notes with both place coordinates, newest `created_at`
+   * then `id` first. Never selects `photo` bytea.
+   *
+   * @param limit - Maximum rows (`$1`).
+   * @returns Pin rows (`lat` / `lng` numeric; `label` null when unset).
+   */
+  async listPlaces(limit: number): Promise<
+    Array<{
+      id: string;
+      name: string;
+      createdAt: Date;
+      lat: number;
+      lng: number;
+      label: string | null;
+    }>
+  > {
+    const rows = await this.#sql.query<{
+      id: string;
+      name: string;
+      created_at: Date | string;
+      place_lat: string | number | null;
+      place_lng: string | number | null;
+      place_label: string | null;
+    }>(
+      `SELECT id, name, created_at, place_lat, place_lng, place_label
+       FROM message
+       WHERE parent_id IS NULL AND deleted_at IS NULL
+         AND place_lat IS NOT NULL AND place_lng IS NOT NULL
+       ORDER BY created_at DESC, id DESC
+       LIMIT $1`,
+      [limit],
+    );
+    return rows.map((row) => ({
+      id: row.id,
+      name: row.name,
+      createdAt: row.created_at instanceof Date ? row.created_at : new Date(row.created_at),
+      lat: Number(row.place_lat),
+      lng: Number(row.place_lng),
+      label: row.place_label === null || row.place_label === undefined ? null : row.place_label,
+    }));
+  }
+
+  /**
    * Whether `accountId` has at least one live forum row that is not `excludeId`.
    *
    * @param accountId - Author account id (`$1`).
@@ -3676,13 +3835,15 @@ export class PostgresMessageStore implements MessageStore {
    * Writes `content_fp` when media is present, `accountId` is not null, and
    * `eventId` is null. A non-null `parentId` requires a live parent
    * (`deletedAt` null): INSERT SELECT WHERE EXISTS. Replies bind `goal_sats`
-   * SQL null even when the row carried a positive `goalSats`. A 0-row insert calls
+   * SQL null even when the row carried a positive `goalSats`, and bind place
+   * columns SQL null even when the row carried a pin. A 0-row insert calls
    * `getById(stored.id)` and returns that row when present (gift-reply retry
    * after the parent was later deleted); otherwise throws, no insert. On unique
    * violation (`23505`), if `getById(stored.id)` matches that id, return that
    * row (no unlink — gift-reply retry). Otherwise unlink any video written for
    * the new id and return the existing live row from
-   * {@link findLiveByAccountContent}.
+   * {@link findLiveByAccountContent} when its place matches. A different place
+   * throws `place conflicts with live media`.
    *
    * @param row - Fully formed message.
    * @param photo - Optional decoded photo.
@@ -3736,6 +3897,7 @@ export class PostgresMessageStore implements MessageStore {
       ...(typeof video?.takenAt === 'string' ? { videoTakenAt: video.takenAt } : {}),
     });
     stored.goalSats = stored.parentId !== null ? null : (stored.goalSats ?? null);
+    stored.place = stored.parentId !== null ? null : (stored.place ?? null);
     if (video !== undefined) {
       await writeForumVideo(stored.id, video);
     }
@@ -3762,6 +3924,9 @@ export class PostgresMessageStore implements MessageStore {
       stored.amountPhp ?? null,
       photo === undefined ? null : (photo.takenAt ?? null),
       typeof video?.takenAt === 'string' ? video.takenAt : null,
+      stored.place === null ? null : stored.place.lat,
+      stored.place === null ? null : stored.place.lng,
+      stored.place === null ? null : stored.place.label,
     ];
     try {
       if (stored.parentId !== null) {
@@ -3769,10 +3934,11 @@ export class PostgresMessageStore implements MessageStore {
           `INSERT INTO message (
            id, account_id, name, text, photo, photo_content_type, video_content_type, created_at,
            nostr_publish_state, sats, parent_id, author_pubkey, event_id, nostr_event, content_fp, goal_sats,
-           fiat_usd, fiat_chf, fiat_eur, fiat_php, photo_taken_at, video_taken_at
+           fiat_usd, fiat_chf, fiat_eur, fiat_php, photo_taken_at, video_taken_at,
+           place_lat, place_lng, place_label
          )
          SELECT $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14::jsonb,$15,$16,
-                $17::numeric,$18::numeric,$19::numeric,$20::numeric,$21,$22
+                $17::numeric,$18::numeric,$19::numeric,$20::numeric,$21,$22,$23,$24,$25
          WHERE EXISTS (SELECT 1 FROM message p WHERE p.id = $11 AND p.deleted_at IS NULL)
          RETURNING id`,
           params,
@@ -3789,10 +3955,11 @@ export class PostgresMessageStore implements MessageStore {
           `INSERT INTO message (
            id, account_id, name, text, photo, photo_content_type, video_content_type, created_at,
            nostr_publish_state, sats, parent_id, author_pubkey, event_id, nostr_event, content_fp, goal_sats,
-           fiat_usd, fiat_chf, fiat_eur, fiat_php, photo_taken_at, video_taken_at
+           fiat_usd, fiat_chf, fiat_eur, fiat_php, photo_taken_at, video_taken_at,
+           place_lat, place_lng, place_label
          ) VALUES (
            $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14::jsonb,$15,$16,
-           $17::numeric,$18::numeric,$19::numeric,$20::numeric,$21,$22
+           $17::numeric,$18::numeric,$19::numeric,$20::numeric,$21,$22,$23,$24,$25
          )`,
           params,
         );
@@ -3814,6 +3981,9 @@ export class PostgresMessageStore implements MessageStore {
           contentFp,
         );
         if (existing !== undefined) {
+          if (!placesMatch(existing.place ?? null, stored.place ?? null)) {
+            throw new Error('place conflicts with live media');
+          }
           return existing;
         }
       }
