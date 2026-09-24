@@ -8,7 +8,10 @@ import type { ConversationStore } from '@/lib/conversation-store';
 import { logEvent } from '@/lib/log';
 import { notifyModeratorAppointed, notifyModeratorProposed } from '@/lib/notification';
 import type { NotificationStore } from '@/lib/notification-store';
+import type { MessageStore } from '@/lib/message-store';
 import type { PushStore } from '@/lib/push-store';
+import type { SpendPing } from '@/lib/spend-ping';
+import { syncWelcomePing } from '@/lib/welcome-media';
 import {
   isStaffRole,
   pendingModeratorProposals,
@@ -39,6 +42,28 @@ export interface TrustRouteDeps {
   pushStore?: PushStore;
   /** Optional conversation store so appointed and propose push unreadCount include inbox. */
   conversationStore?: ConversationStore;
+  /** Forum notes. Present → a new or repeat verify welcome-pings an existing photo. */
+  messages?: MessageStore;
+  /** Optional spend ping. Omitted → skip the welcome ping. Failures do not fail the 200. */
+  spendPing?: SpendPing;
+}
+
+/**
+ * Welcome-ping when `account` is verified and already has a photo or video.
+ * No forum store → no-op. Does not throw.
+ *
+ * @param deps - Trust route collaborators.
+ * @param account - Subject after the verify write, or the already-verified row.
+ */
+async function welcomeVerified(deps: TrustRouteDeps, account: Account): Promise<void> {
+  if (deps.messages === undefined) {
+    return;
+  }
+  await syncWelcomePing({
+    ...(deps.spendPing === undefined ? {} : { spendPing: deps.spendPing }),
+    messages: deps.messages,
+    account,
+  });
 }
 
 /** Body schema for staff POSTs that target one account. */
@@ -165,6 +190,7 @@ export function trustRoutes(deps: TrustRouteDeps): Hono {
           return c.json({ error: 'Conflict' }, 409);
         }
         if (subject.role === 'verified') {
+          await welcomeVerified(deps, subject);
           return c.json(accountSummary(subject), 200);
         }
         if (subject.role !== 'basis') {
@@ -178,6 +204,7 @@ export function trustRoutes(deps: TrustRouteDeps): Hono {
           return c.json({ error: 'Trust chain is unavailable' }, 503);
         }
         logEvent('trust.verified', { subjectId: subject.id, actorId: caller.id });
+        await welcomeVerified(deps, updated);
         return c.json(accountSummary(updated), 200);
       }
       if (subject.role !== 'basis') {
@@ -195,6 +222,7 @@ export function trustRoutes(deps: TrustRouteDeps): Hono {
         return c.json({ error: 'Trust chain is unavailable' }, 503);
       }
       logEvent('trust.verified', { subjectId: subject.id, actorId: caller.id });
+      await welcomeVerified(deps, updated);
       return c.json(accountSummary(updated), 200);
     })
     .post('/propose-moderator', async (c) => {
