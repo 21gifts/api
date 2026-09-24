@@ -1341,6 +1341,33 @@ Success → **Response** `200` with the updated account (same owner JSON as
 **200** (idempotent). Logs `account.notification_level.set` with
 `accountId` and `level`.
 
+### `POST /me/amount-unit`
+
+Set the owner amount-entry unit. Bearer session required (same as
+`POST /me/notification-level`). Body:
+
+```json
+{ "unit": "fiat" }
+```
+
+`unit` must be `btc` or `fiat`. Default for a new account, and for a stored
+value that is neither, is `btc`. This route does not change invoices.
+Payment amounts stay whole sats.
+
+Missing/invalid bearer → **Response** `401` `{ "error": "Unauthorized" }`.
+
+Body is missing, not JSON, or `unit` is not one of those two strings
+→ **Response** `400`:
+
+```json
+{ "error": "Expected a JSON body with a unit of btc or fiat" }
+```
+
+Success → **Response** `200` with the updated account (same owner JSON as
+`GET /me`), including `amountUnit`. The same unit again is still **200**.
+Public member cards and `GET /view/:viewKey` omit `amountUnit`. Logs
+`account.amount_unit.set` with `accountId` and `unit`.
+
 ### `POST /me/rules-agreement`
 
 Record that the signed-in account agreed to the living-room rules. No body
