@@ -727,6 +727,16 @@ export interface MessageStore {
   listInvoiceAttempts(limit: number): Promise<MessageInvoiceAttempt[]>;
 
   /**
+   * Newest `result = 'ok'` invoice attempts created at or after `since`, capped at `limit`.
+   * Same sort as {@link MessageStore.listInvoiceAttempts} (`createdAt` DESC, `id` DESC).
+   *
+   * @param since - Inclusive lower bound on `createdAt`.
+   * @param limit - Maximum rows.
+   * @returns Matching attempts (caller-owned copies).
+   */
+  listRecentOkInvoiceAttempts(since: Date, limit: number): Promise<MessageInvoiceAttempt[]>;
+
+  /**
    * Invoice attempts for one payer, newest-first, **no debug cap**.
    * Same sort as {@link MessageStore.listInvoiceAttempts}
    * (`createdAt` DESC, `id` DESC).
@@ -2673,6 +2683,19 @@ export class InMemoryMessageStore implements MessageStore {
       }
       return b.id.localeCompare(a.id);
     });
+    return Promise.resolve(sorted.slice(0, limit).map((row) => copyInvoiceAttempt(row)));
+  }
+
+  listRecentOkInvoiceAttempts(since: Date, limit: number): Promise<MessageInvoiceAttempt[]> {
+    const sorted = this.#invoiceAttempts
+      .filter((row) => row.result === 'ok' && row.createdAt.getTime() >= since.getTime())
+      .sort((a, b) => {
+        const byTime = b.createdAt.getTime() - a.createdAt.getTime();
+        if (byTime !== 0) {
+          return byTime;
+        }
+        return b.id.localeCompare(a.id);
+      });
     return Promise.resolve(sorted.slice(0, limit).map((row) => copyInvoiceAttempt(row)));
   }
 
@@ -4663,6 +4686,23 @@ export class PostgresMessageStore implements MessageStore {
        ORDER BY created_at DESC, id DESC
        LIMIT $1`,
       [limit],
+    );
+    return rows.map((row) => mapInvoiceAttemptRow(row));
+  }
+
+  async listRecentOkInvoiceAttempts(since: Date, limit: number): Promise<MessageInvoiceAttempt[]> {
+    const rows = await this.#sql.query<MessageInvoiceSqlRow>(
+      `SELECT id, created_at, message_id, payer_account_id, author_account_id,
+              amount_sats, lightning_address, zap_request, result, http_status,
+              pr, payment_hash, description, description_hash, is_nip57_invoice,
+              lnurl_response, conversation_id, conversation_message_id,
+              fiat_pinned, fiat_usd::text AS fiat_usd, fiat_chf::text AS fiat_chf,
+              fiat_eur::text AS fiat_eur, fiat_php::text AS fiat_php
+       FROM message_invoice
+       WHERE result = 'ok' AND created_at >= $1
+       ORDER BY created_at DESC, id DESC
+       LIMIT $2`,
+      [since, limit],
     );
     return rows.map((row) => mapInvoiceAttemptRow(row));
   }

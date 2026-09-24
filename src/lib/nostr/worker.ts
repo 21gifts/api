@@ -72,6 +72,21 @@ export const RELAY_TIMEOUT_MS = 5_000;
 /** Tick interval. */
 export const WORKER_INTERVAL_MS = 2_000;
 
+/** Pause between full relay-ingest passes (zap receipts, inbound replies, inbound DMs). */
+export const WORKER_INGEST_INTERVAL_MS = 30_000;
+
+/** Look-back for in-app invoices whose zap receipt the fast lane polls. */
+export const HOT_ZAP_WINDOW_MS = 60 * 60_000;
+
+/** Seconds subtracted from the oldest hot invoice for the receipt `since` filter. */
+export const HOT_ZAP_SINCE_SLACK_S = 600;
+
+/** Newest invoice attempts scanned for hot zap targets. */
+export const HOT_ZAP_INVOICE_LIMIT = 50;
+
+/** Which part of the worker a tick runs. */
+export type NostrWorkerTickMode = 'all' | 'fast' | 'ingest';
+
 /** Collaborators for one worker tick. */
 export interface NostrWorkerDeps {
   /** Forum store. */
@@ -177,64 +192,17 @@ function reservedContent(
 }
 
 /**
- * Ingest zap receipts, then sign unsigned rows and optionally fan out to relays.
+ * Build the shared `indexOpenZapReceipts` argument object for full and hot calls.
  *
- * Always signs. Publishes only when `NOSTR_PUBLISH=1`. Public relays only
- * when `NOSTR_PUBLISH_PUBLIC=1`. Space ACK with public off is terminal
- * `published`/`space`. With public on, space-only ACK parks `pending`/`space`
- * until a public ACK makes `published`/`public`. Pending kind:1 JSON without
- * `t=bitcoin` is dropped and re-signed before fan-out. Then unsigned rows are
- * signed. Then published unpaid rows missing a photo URL or a video URL
- * (`PUBLIC_BASE_URL` set) or Damus `#bitcoin`/`#21gifts` (and, when
- * `account.location` is set, the location hashtag) in content are reset
- * for the next tick (`profileMessageId` rows are skipped so a name note is
- * not rewritten with those hashtags; location is never applied to profile
- * notes). Pending rows EVENT as-is — resetting them first renews
- * the 60s sign lease and they never reach a relay. Zapped rows (`sats !== 0`)
- * keep their event id so receipts still resolve. An empty API base skips
- * photo- and video-URL resign so it cannot un-publish and loop. When
- * publishing, also fans out a replaceable kind:0 profile (`name` /
- * `display_name` / `picture`, optional `nip05`) and a NIP-65 kind:10002
- * relay list. Kind:1 photo and video posts include the public media URL and
- * an `imeta` tag (video may add poster `image`). Kind:0
- * `created_at` is `max(wall clock, last issued + 1)` so an in-flight older
- * profile cannot win a same-second replaceable-event tie. Zap ingest
- * (`indexOpenZapReceipts`) runs at the **start** of each tick, before
- * resign/sign/publish, so receipt indexing is not delayed by relay publish
- * timeouts. `nowMs` for sign/publish leases is sampled only after zap ingest
- * returns, so an overlapping tick cannot reclaim with a later clock while this
- * tick still signs/publishes under a stale lease time. It queries zap relays
- * (space plus the public list, even when `NOSTR_PUBLISH_PUBLIC` is off) for
- * kind:9735 receipts and indexes validated ones onto `sats`, even when publish
- * is off. After sign/publish, each tick also REQs kind:1 replies (`#e` = our
- * note event ids) and persists inbound replies whose pubkey maps to a
- * 21.gifts account or to an entitled, unblocked external zapper (even when
- * publish is off). Other npubs are skipped.
- * After a member reply is stored, `notifyForumReply` always runs with `auth`
- * (in-app every account except the actor; no-op when the actor is the
- * official platform account; Web Push only to bell subscribers).
- * Failures log `nostr.reply.notify.failed` and do not undo persist. Zap ingest
- * still calls `notifyZap` after a newly indexed **member-note** forum receipt.
- * A member/invoice zap on the official platform profile note is a compose
- * fee: skip `notifyZap`, then fan out `notifyForumPost` / `notifyForumReply`
- * plus a top-level `spendPing` only when `eligibleToday` (same gate as
- * `POST /messages`; otherwise `spend.ping.skipped` / `not_eligible`). An
- * external zap on that same note still
- * inserts `insertExternalGiftReply`. PN ingest appends a conversation gift
- * (`appendConversationGift`) and does not call `notifyZap`. A member-note
- * gift-reply does not call `notifyForumReply`. When a conversation store is
- * present, also
- * signs/publishes NIP-17 wraps and REQs inbound kind:1059 / kind:4 to member
- * and platform pubkeys.
- *
- * @param deps - Stores, kek, publisher, querier, fetch, clock, env.
- * @returns Resolves when the tick's zap ingest, sign/publish, and inbound
- *   index work have finished (notify failures are swallowed).
+ * @param deps - Worker collaborators.
+ * @param urls - Zap relay URLs (space + public list).
+ * @returns Args object with identical optional collaborators for every call site.
  */
-export async function runNostrWorkerTick(deps: NostrWorkerDeps): Promise<void> {
-  const writeSet = resolveWriteSet(deps.env);
-  const urls = resolveZapRelays(deps.env);
-  await indexOpenZapReceipts({
+function indexOpenZapReceiptsArgs(
+  deps: NostrWorkerDeps,
+  urls: readonly string[],
+): Parameters<typeof indexOpenZapReceipts>[0] {
+  return {
     store: deps.messages,
     auth: deps.auth,
     querier: deps.querier,
@@ -250,7 +218,159 @@ export async function runNostrWorkerTick(deps: NostrWorkerDeps): Promise<void> {
     ...(deps.postLimiter === undefined ? {} : { postLimiter: deps.postLimiter }),
     ...(deps.fundingStore === undefined ? {} : { fundingStore: deps.fundingStore }),
     ...(deps.fiatRates === undefined ? {} : { fiatRates: deps.fiatRates }),
+  };
+}
+
+/**
+ * First non-empty NIP-57 `e` tag from a stored invoice zap request.
+ *
+ * Same semantics as the private `zapRequestEventId` in `message-store.ts`:
+ * `tags` must be an array; each tag an array with `tag[0] === 'e'` and a
+ * non-empty string `tag[1]`.
+ *
+ * @param zapRequest - Stored zap request JSON, or null.
+ * @returns First matching event id, or null.
+ */
+function zapRequestEventIdFromAttempt(zapRequest: Record<string, unknown> | null): string | null {
+  const tags = zapRequest?.['tags'];
+  if (!Array.isArray(tags)) {
+    return null;
+  }
+  for (const tag of tags) {
+    if (Array.isArray(tag) && tag[0] === 'e' && typeof tag[1] === 'string' && tag[1] !== '') {
+      return tag[1];
+    }
+  }
+  return null;
+}
+
+/**
+ * Hot-lane zap ingest: poll receipts for recent in-app invoice e-tags only.
+ * Targets come from {@link MessageStore.listRecentOkInvoiceAttempts}, which already
+ * filters to `result = 'ok'` attempts created at or after the window start, so this
+ * function does not re-check either condition.
+ *
+ * @param deps - Worker collaborators.
+ * @param nowMs - Clock sample taken at the start of the fast tick.
+ */
+async function indexHotZapReceipts(deps: NostrWorkerDeps, nowMs: number): Promise<void> {
+  const attempts = await deps.messages.listRecentOkInvoiceAttempts(
+    new Date(nowMs - HOT_ZAP_WINDOW_MS),
+    HOT_ZAP_INVOICE_LIMIT,
+  );
+  const eventIds: string[] = [];
+  const seen = new Set<string>();
+  let oldestKeptCreatedAtMs: number | undefined;
+  for (const attempt of attempts) {
+    const createdAtMs = attempt.createdAt.getTime();
+    const eventId = zapRequestEventIdFromAttempt(attempt.zapRequest);
+    if (eventId === null) {
+      continue;
+    }
+    if (oldestKeptCreatedAtMs === undefined || createdAtMs < oldestKeptCreatedAtMs) {
+      oldestKeptCreatedAtMs = createdAtMs;
+    }
+    if (seen.has(eventId)) {
+      continue;
+    }
+    seen.add(eventId);
+    eventIds.push(eventId);
+  }
+  if (oldestKeptCreatedAtMs === undefined) {
+    return;
+  }
+  const urls = resolveZapRelays(deps.env);
+  const since = Math.floor(oldestKeptCreatedAtMs / 1000) - HOT_ZAP_SINCE_SLACK_S;
+  await indexOpenZapReceipts({
+    ...indexOpenZapReceiptsArgs(deps, urls),
+    eventIds,
+    since,
   });
+}
+
+/**
+ * Ingest zap receipts, then sign unsigned rows and optionally fan out to relays.
+ *
+ * Modes (`mode`, default `'all'`):
+ * - `'all'`: today's full sequence — full `indexOpenZapReceipts`, resign/sign,
+ *   publish when enabled, inbound kind:1 replies, inbound DMs, then
+ *   `backfillProfileMessages`.
+ * - `'fast'`: hot zap ingest for recent in-app invoice e-tags, then the same
+ *   resign/sign/publish/`backfillProfileMessages` path. No full zap enumeration,
+ *   no inbound replies, no inbound DMs.
+ * - `'ingest'`: full `indexOpenZapReceipts` (incl. `retryGiftReplies`), then
+ *   inbound replies and DMs. No sign, publish, or `backfillProfileMessages`.
+ *
+ * Always signs on `'all'` / `'fast'`. Publishes only when `NOSTR_PUBLISH=1`.
+ * Public relays only when `NOSTR_PUBLISH_PUBLIC=1`. Space ACK with public off
+ * is terminal `published`/`space`. With public on, space-only ACK parks
+ * `pending`/`space` until a public ACK makes `published`/`public`. Pending
+ * kind:1 JSON without `t=bitcoin` is dropped and re-signed before fan-out.
+ * Then unsigned rows are signed. Then published unpaid rows missing a photo
+ * URL or a video URL (`PUBLIC_BASE_URL` set) or Damus `#bitcoin`/`#21gifts`
+ * (and, when `account.location` is set, the location hashtag) in content are
+ * reset for the next tick (`profileMessageId` rows are skipped so a name note
+ * is not rewritten with those hashtags; location is never applied to profile
+ * notes). Pending rows EVENT as-is — resetting them first renews the 60s sign
+ * lease and they never reach a relay. Zapped rows (`sats !== 0`) keep their
+ * event id so receipts still resolve. An empty API base skips photo- and
+ * video-URL resign so it cannot un-publish and loop. When publishing, also
+ * fans out a replaceable kind:0 profile (`name` / `display_name` / `picture`,
+ * optional `nip05`) and a NIP-65 kind:10002 relay list. Kind:1 photo and video
+ * posts include the public media URL and an `imeta` tag (video may add poster
+ * `image`). Kind:0 `created_at` is `max(wall clock, last issued + 1)` so an
+ * in-flight older profile cannot win a same-second replaceable-event tie.
+ * Zap ingest runs at the **start** of `'all'` / `'fast'` ticks (full or hot),
+ * before resign/sign/publish, so receipt indexing is not delayed by relay
+ * publish timeouts. `nowMs` for sign/publish leases is sampled only after zap
+ * ingest returns, so an overlapping fast tick cannot reclaim with a later
+ * clock while this tick still signs/publishes under a stale lease time. Full
+ * ingest queries zap relays (space plus the public list, even when
+ * `NOSTR_PUBLISH_PUBLIC` is off) for kind:9735 receipts and indexes validated
+ * ones onto `sats`, even when publish is off. After sign/publish, `'all'` (and
+ * the ingest lane) also REQs kind:1 replies (`#e` = our note event ids) and
+ * persists inbound replies whose pubkey maps to a 21.gifts account or to an
+ * entitled, unblocked external zapper (even when publish is off). Other npubs
+ * are skipped. After a member reply is stored, `notifyForumReply` always runs
+ * with `auth` (in-app every account except the actor; no-op when the actor is
+ * the official platform account; Web Push only to bell subscribers). Failures
+ * log `nostr.reply.notify.failed` and do not undo persist. Zap ingest still
+ * calls `notifyZap` after a newly indexed **member-note** forum receipt. A
+ * member/invoice zap on the official platform profile note is a compose fee:
+ * skip `notifyZap`, then fan out `notifyForumPost` / `notifyForumReply` plus a
+ * top-level `spendPing` only when `eligibleToday` (same gate as
+ * `POST /messages`; otherwise `spend.ping.skipped` / `not_eligible`). An
+ * external zap on that same note still inserts `insertExternalGiftReply`. PN
+ * ingest appends a conversation gift (`appendConversationGift`) and does not
+ * call `notifyZap`. A member-note gift-reply does not call `notifyForumReply`.
+ * When a conversation store is present, `'all'` / `'fast'` also
+ * signs/publishes NIP-17 wraps; `'all'` / `'ingest'` REQs inbound kind:1059 /
+ * kind:4 to member and platform pubkeys. Fast-lane ticks are not serialised
+ * (`setInterval` does not await the previous tick); the ingest lane waits for
+ * each pass to settle before scheduling the next.
+ *
+ * @param deps - Stores, kek, publisher, querier, fetch, clock, env.
+ * @param mode - Which lane work to run (default `'all'`).
+ * @returns Resolves when the selected work has finished (notify failures are
+ *   swallowed).
+ */
+export async function runNostrWorkerTick(
+  deps: NostrWorkerDeps,
+  mode: NostrWorkerTickMode = 'all',
+): Promise<void> {
+  const writeSet = resolveWriteSet(deps.env);
+  const urls = resolveZapRelays(deps.env);
+  if (mode === 'ingest') {
+    await indexOpenZapReceipts(indexOpenZapReceiptsArgs(deps, urls));
+    await indexInboundForumReplies(deps, urls);
+    await indexInboundDirectMessages(deps, urls);
+    return;
+  }
+  if (mode === 'fast') {
+    await indexHotZapReceipts(deps, deps.now());
+  } else {
+    await indexOpenZapReceipts(indexOpenZapReceiptsArgs(deps, urls));
+  }
   const nowMs = deps.now();
   await resignLegacyKind1Tags(deps);
   await signBatch(deps, nowMs);
@@ -264,8 +384,10 @@ export async function runNostrWorkerTick(deps: NostrWorkerDeps): Promise<void> {
     await publishBatch(deps, writeSet, nowMs);
     await publishConversationBatch(deps, writeSet, nowMs);
   }
-  await indexInboundForumReplies(deps, urls);
-  await indexInboundDirectMessages(deps, urls);
+  if (mode === 'all') {
+    await indexInboundForumReplies(deps, urls);
+    await indexInboundDirectMessages(deps, urls);
+  }
   await backfillProfileMessages(deps);
 }
 
@@ -353,14 +475,14 @@ function pickParentNoteEventId(tags: string[][], noteEventIds: ReadonlySet<strin
  * REQ kind:1 replies referencing our published top-level notes and persist
  * those whose pubkey maps to a member or an entitled external zapper.
  *
- * Runs every tick (even when `NOSTR_PUBLISH` is off). Does not require
- * `t=21gifts`. Skips invalid signatures, already-stored event ids, empty /
- * over-long content, events that equal the parent note id, and unknown or
- * blocked npubs (same silent skip as an empty event id). Member replies posted
- * from Damus with the custodial key still persist (named, or nameless via
- * {@link truncatePubkeyDisplay}). After a successful persist, fans out via
- * {@link notifyForumReply} (in-app every account except the actor; no-op when
- * the actor is the official platform account; Web Push only to bell
+ * Runs on the ingest lane / mode `'all'` (even when `NOSTR_PUBLISH` is off).
+ * Does not require `t=21gifts`. Skips invalid signatures, already-stored event
+ * ids, empty / over-long content, events that equal the parent note id, and
+ * unknown or blocked npubs (same silent skip as an empty event id). Member
+ * replies posted from Damus with the custodial key still persist (named, or
+ * nameless via {@link truncatePubkeyDisplay}). After a successful persist, fans
+ * out via {@link notifyForumReply} (in-app every account except the actor;
+ * no-op when the actor is the official platform account; Web Push only to bell
  * subscribers); notify failure logs `nostr.reply.notify.failed`
  * and does not fail persist.
  *
@@ -1281,25 +1403,71 @@ async function indexInboundDirectMessages(
 }
 
 /**
- * Start an interval worker. Returns a stop function.
+ * Start the two-lane Nostr worker. Returns a stop function.
+ *
+ * Fast lane: `setInterval(intervalMs)` (default {@link WORKER_INTERVAL_MS})
+ * runs `runNostrWorkerTick(deps, 'fast')` with no in-flight guard — overlapping
+ * ticks stay safe via sign/publish leases, and a guard would couple unpaid
+ * latency to 5 s publish timeouts. A rejecting fast tick logs
+ * `nostr.worker.tick.failed`.
+ *
+ * Ingest lane: starts one `runNostrWorkerTick(deps, 'ingest')` pass
+ * synchronously on call (before the handle returns). When that pass settles
+ * (success or failure) and the handle was not stopped, schedules the next with
+ * `setTimeout(ingestIntervalMs)` (default {@link WORKER_INGEST_INTERVAL_MS}).
+ * At most one ingest pass is ever in flight. A rejecting pass logs
+ * `nostr.worker.ingest.failed` and still reschedules.
+ *
+ * `stop()` clears the fast interval, clears a pending ingest timeout, and marks
+ * the handle stopped so an in-flight ingest pass that settles later does not
+ * schedule another one.
  *
  * @param deps - Worker collaborators.
- * @param intervalMs - Tick period.
+ * @param intervalMs - Fast-lane tick period.
+ * @param ingestIntervalMs - Pause after an ingest pass settles before the next.
  * @returns Stop handle.
  */
 export function startNostrWorker(
   deps: NostrWorkerDeps,
   intervalMs: number = WORKER_INTERVAL_MS,
+  ingestIntervalMs: number = WORKER_INGEST_INTERVAL_MS,
 ): { stop: () => void } {
-  /* v8 ignore next 5 -- interval callback */
+  let stopped = false;
+  let ingestTimer: ReturnType<typeof setTimeout> | undefined;
+
+  const scheduleIngest = (): void => {
+    ingestTimer = setTimeout(() => {
+      void runIngestPass();
+    }, ingestIntervalMs);
+  };
+
+  const runIngestPass = (): Promise<void> =>
+    runNostrWorkerTick(deps, 'ingest')
+      .catch((error: unknown) => {
+        logEvent('nostr.worker.ingest.failed', errorLogFields(error));
+      })
+      .finally(() => {
+        if (!stopped) {
+          scheduleIngest();
+        }
+      });
+
+  void runIngestPass();
+
   const timer = setInterval(() => {
-    void runNostrWorkerTick(deps).catch((error: unknown) => {
+    void runNostrWorkerTick(deps, 'fast').catch((error: unknown) => {
       logEvent('nostr.worker.tick.failed', errorLogFields(error));
     });
   }, intervalMs);
+
   return {
     stop: () => {
+      stopped = true;
       clearInterval(timer);
+      if (ingestTimer !== undefined) {
+        clearTimeout(ingestTimer);
+        ingestTimer = undefined;
+      }
     },
   };
 }

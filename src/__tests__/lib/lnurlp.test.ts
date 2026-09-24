@@ -1,5 +1,10 @@
-import { describe, it, expect } from 'vitest';
-import { resolveLnurlp, resolveLnurlpDocument, type FetchFn } from '@/lib/lnurlp';
+import { describe, it, expect, vi } from 'vitest';
+import {
+  resolveLnurlp,
+  resolveLnurlpDocument,
+  LNURLP_METADATA_TIMEOUT_MS,
+  type FetchFn,
+} from '@/lib/lnurlp';
 
 const ADDRESS = 'alice@walletofsatoshi.com';
 const MAX_SENDABLE = 100_000_000_000;
@@ -15,7 +20,7 @@ describe('resolveLnurlp', () => {
   it('returns metadata on the happy path (https callback, min/max, commentAllowed)', async () => {
     const fetchImpl: FetchFn = async (input, init) => {
       expect(String(input)).toBe('https://walletofsatoshi.com/.well-known/lnurlp/alice');
-      expect(init).toEqual({ redirect: 'error' });
+      expect(init).toEqual({ redirect: 'error', signal: expect.any(AbortSignal) });
       return jsonResponse({
         callback: 'https://walletofsatoshi.com/lnurlp/callback',
         minSendable: 1000,
@@ -104,6 +109,14 @@ describe('resolveLnurlp', () => {
     expect(result).toEqual({ ok: false, reason: 'unreachable' });
   });
 
+  it('maps a timed-out fetch to unreachable', async () => {
+    const fetchImpl: FetchFn = async () => {
+      throw new DOMException('The operation was aborted.', 'TimeoutError');
+    };
+    const result = await resolveLnurlp({ address: ADDRESS, fetchImpl });
+    expect(result).toEqual({ ok: false, reason: 'unreachable' });
+  });
+
   it('rejects non-OK HTTP', async () => {
     const fetchImpl: FetchFn = async () => jsonResponse({}, 404);
     const result = await resolveLnurlp({ address: ADDRESS, fetchImpl });
@@ -157,7 +170,7 @@ describe('resolveLnurlp', () => {
       });
     };
     await resolveLnurlp({ address: ADDRESS, fetchImpl });
-    expect(seenInit).toEqual({ redirect: 'error' });
+    expect(seenInit).toEqual({ redirect: 'error', signal: expect.any(AbortSignal) });
   });
 
   it('encodes the local part in the well-known path', async () => {
@@ -172,6 +185,43 @@ describe('resolveLnurlp', () => {
     };
     await resolveLnurlp({ address: 'a+b@example.com', fetchImpl });
     expect(calls[0]).toBe('https://example.com/.well-known/lnurlp/a%2Bb');
+  });
+
+  it('uses AbortSignal.timeout of LNURLP_METADATA_TIMEOUT_MS', async () => {
+    const timeoutSpy = vi.spyOn(AbortSignal, 'timeout');
+    const fetchImpl: FetchFn = async () =>
+      jsonResponse({
+        callback: 'https://walletofsatoshi.com/lnurlp/callback',
+        minSendable: 1000,
+        maxSendable: MAX_SENDABLE,
+      });
+    await resolveLnurlp({ address: ADDRESS, fetchImpl });
+    expect(timeoutSpy).toHaveBeenCalledWith(LNURLP_METADATA_TIMEOUT_MS);
+    expect(LNURLP_METADATA_TIMEOUT_MS).toBe(10_000);
+    timeoutSpy.mockRestore();
+  });
+
+  it('resolves a hanging fetch via the abort signal to unreachable', async () => {
+    const timeoutSpy = vi
+      .spyOn(AbortSignal, 'timeout')
+      .mockReturnValue(
+        AbortSignal.abort(new DOMException('The operation timed out.', 'TimeoutError')),
+      );
+    try {
+      const fetchImpl: FetchFn = (_input, init) =>
+        new Promise((_resolve, reject) => {
+          const signal = init?.signal;
+          if (signal?.aborted) {
+            reject(signal.reason);
+            return;
+          }
+          signal?.addEventListener('abort', () => reject(signal.reason));
+        });
+      const result = await resolveLnurlp({ address: ADDRESS, fetchImpl });
+      expect(result).toEqual({ ok: false, reason: 'unreachable' });
+    } finally {
+      timeoutSpy.mockRestore();
+    }
   });
 });
 
