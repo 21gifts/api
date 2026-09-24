@@ -15,7 +15,7 @@ describe('GET /healthz', () => {
     expect(typeof body.version).toBe('string');
   });
 
-  it('mounts a conversation translation store when one is provided', async () => {
+  it('answers health when a conversation translation store is passed', async () => {
     const app = createApp({ conversationTranslationStore: new InMemoryTranslationStore() });
     const res = await app.request('/healthz');
     expect(res.status).toBe(200);
