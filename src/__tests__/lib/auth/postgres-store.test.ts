@@ -138,6 +138,7 @@ describe('PostgresAuthStore', () => {
     expect(mapped?.profileMessageId).toBeNull();
     expect(mapped?.location).toBeNull();
     expect(mapped?.notificationLevel).toBe('all');
+    expect(mapped?.amountUnit).toBe('btc');
     expect(mapped?.username).toBeNull();
     expect(mapped?.walletRequired).toBe(false);
     expect(mapped?.walletBackupSeenAt).toBeNull();
@@ -150,6 +151,7 @@ describe('PostgresAuthStore', () => {
     expect(sql.queries[0]?.text).toMatch(/profile_message_id/);
     expect(sql.queries[0]?.text).toMatch(/location/);
     expect(sql.queries[0]?.text).toMatch(/notification_level/);
+    expect(sql.queries[0]?.text).toMatch(/amount_unit/);
     expect(sql.queries[0]?.text).toMatch(/username/);
     expect(sql.queries[0]?.text).toMatch(/wallet_required/);
     expect(sql.queries[0]?.text).toMatch(/wallet_backup_seen_at/);
@@ -272,7 +274,9 @@ describe('PostgresAuthStore', () => {
     expect(sql.executes[0]?.params[17]).toBe(false);
     expect(sql.executes[0]?.params[18]).toBe(false);
     expect(sql.executes[0]?.params[19]).toBeNull();
+    expect(sql.executes[0]?.params[20]).toBe('btc');
     expect(sql.executes[0]?.text).toMatch(/username/);
+    expect(sql.executes[0]?.text).toMatch(/amount_unit/);
     expect(sql.executes[0]?.text).toMatch(/session_refused/);
     expect(sql.executes[0]?.text).toMatch(/wallet_required/);
     expect(sql.executes[0]?.text).toMatch(/wallet_backup_seen_at/);
@@ -288,6 +292,7 @@ describe('PostgresAuthStore', () => {
     expect(sql.executes[1]?.text).toMatch(/location = \$15/);
     expect(sql.executes[1]?.text).toMatch(/notification_level = \$16/);
     expect(sql.executes[1]?.text).toMatch(/username = \$17/);
+    expect(sql.executes[1]?.text).toMatch(/amount_unit = \$18/);
     expect(sql.executes[1]?.text).not.toMatch(/session_refused = \$18/);
     expect(sql.executes[1]?.text).toMatch(/NOT EXISTS/);
     expect(sql.executes[1]?.params).toEqual([
@@ -308,6 +313,7 @@ describe('PostgresAuthStore', () => {
       null,
       'all',
       null,
+      'btc',
     ]);
   });
 
@@ -336,6 +342,46 @@ describe('PostgresAuthStore', () => {
     expect(sql.executes[1]?.text).toMatch(/username = \$17/);
     expect(sql.executes[1]?.params[15]).toBe('active');
     expect(sql.executes[1]?.params[16]).toBeNull();
+  });
+
+  it('maps amount_unit stored texts via parseAmountUnit', async () => {
+    const sql = new MockSql();
+    const store = new PostgresAuthStore(sql);
+    sql.nextRows = [{ ...ACCOUNT_ROW, amount_unit: 'btc' }];
+    expect((await store.getAccount('acc'))?.amountUnit).toBe('btc');
+    sql.nextRows = [{ ...ACCOUNT_ROW, amount_unit: 'fiat' }];
+    expect((await store.getAccount('acc'))?.amountUnit).toBe('fiat');
+    sql.nextRows = [{ ...ACCOUNT_ROW, amount_unit: 'sats' }];
+    expect((await store.getAccount('acc'))?.amountUnit).toBe('btc');
+    sql.nextRows = [{ ...ACCOUNT_ROW, amount_unit: null }];
+    expect((await store.getAccount('acc'))?.amountUnit).toBe('btc');
+    expect(sql.queries[0]?.text).toMatch(/amount_unit/);
+  });
+
+  it('writes a stored amountUnit as $21 on insert and $18 on update', async () => {
+    const sql = new MockSql();
+    const store = new PostgresAuthStore(sql);
+    const account = {
+      id: 'acc',
+      linkingKey: ACCOUNT_ROW.linking_key,
+      role: 'basis' as const,
+      name: null,
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: VIEW_KEY,
+      createdAt: 1,
+      rulesAgreedAt: null,
+      amountUnit: 'fiat' as const,
+    };
+    await store.createAccount(account);
+    expect(sql.executes[0]?.text).toMatch(/amount_unit/);
+    expect(sql.executes[0]?.params[20]).toBe('fiat');
+    await store.updateAccount({ ...account, amountUnit: 'btc' });
+    expect(sql.executes[1]?.text).toMatch(/amount_unit = \$18/);
+    expect(sql.executes[1]?.text).toMatch(/username = \$17/);
+    expect(sql.executes[1]?.params[17]).toBe('btc');
   });
 
   it('clears other platform flags before inserting or updating is_platform true', async () => {

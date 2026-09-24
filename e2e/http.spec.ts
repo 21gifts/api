@@ -383,6 +383,11 @@ test('POST /me/notification-level without bearer is 401', async ({ request }) =>
   expect(res.status()).toBe(401);
 });
 
+test('POST /me/amount-unit without bearer is 401', async ({ request }) => {
+  const res = await request.post('/me/amount-unit');
+  expect(res.status()).toBe(401);
+});
+
 test('POST /me/rules-agreement without bearer is 401', async ({ request }) => {
   const res = await request.post('/me/rules-agreement');
   expect(res.status()).toBe(401);

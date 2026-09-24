@@ -1,9 +1,18 @@
 import { describe, it, expect } from 'vitest';
-import { compareAccountsForList, InMemoryAuthStore } from '@/lib/auth/store';
+import { compareAccountsForList, InMemoryAuthStore, parseAmountUnit } from '@/lib/auth/store';
 import { CHALLENGE_TTL_MS, SESSION_TTL_MS } from '@/lib/config';
 
 const KEY = `02${'a'.repeat(64)}`;
 const T0 = 1_000_000;
+
+describe('parseAmountUnit', () => {
+  it('returns exact btc and fiat and fail-opens everything else to btc', () => {
+    expect(parseAmountUnit('btc')).toBe('btc');
+    expect(parseAmountUnit('fiat')).toBe('fiat');
+    expect(parseAmountUnit('sats')).toBe('btc');
+    expect(parseAmountUnit(null)).toBe('btc');
+  });
+});
 
 describe('InMemoryAuthStore', () => {
   it('ignores a second createAccount with the same linkingKey', async () => {

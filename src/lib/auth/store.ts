@@ -30,6 +30,27 @@ export type AccountRole = 'basis' | 'verified' | 'moderator' | 'initiator' | 'fo
 export type NotificationLevel = 'all' | 'active' | 'mentions';
 
 /**
+ * Owner amount-entry unit. Omitted / unknown → `btc`.
+ *
+ * - `btc` — enter amounts in bitcoin (default).
+ * - `fiat` — enter amounts in the member's fiat display currency.
+ */
+export type AmountUnit = 'btc' | 'fiat';
+
+/**
+ * Parse a stored or request value into an {@link AmountUnit}.
+ *
+ * @param raw - Unknown input (DB text, JSON, omitted).
+ * @returns `btc` or `fiat`; anything else → `btc`.
+ */
+export function parseAmountUnit(raw: unknown): AmountUnit {
+  if (raw === 'btc' || raw === 'fiat') {
+    return raw;
+  }
+  return 'btc';
+}
+
+/**
  * A registered account.
  *
  * Identity is {@link Account.id}. `linkingKey` is `null` for passkey accounts
@@ -96,6 +117,11 @@ export interface Account {
    * cards or view profiles. Operator debug JSON includes the stored value.
    */
   notificationLevel?: NotificationLevel;
+  /**
+   * Owner amount-entry unit. Omitted / unknown → `btc`. Not public on member
+   * cards or view profiles.
+   */
+  amountUnit?: AmountUnit;
   /**
    * True when a seed-bearing passkey exists. Does not set `setup` to
    * `wallet`. Omit / false = no seed yet. New passkey register and

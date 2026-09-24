@@ -3,7 +3,8 @@
  * `DATABASE_URL` is set. `CREATE TABLE IF NOT EXISTS` is safe to re-run;
  * `ALTER TABLE` backfills `account.name`, nullable `linking_key`,
  * `forum_laws_dismissed`, `rules_agreed_at`, `notification_level`,
- * `session_refused`, `wallet_required`, and `wallet_backup_seen_at` on
+ * `amount_unit`, `session_refused`, `wallet_required`, and
+ * `wallet_backup_seen_at` on
  * databases created before those columns existed.
  * Drops leftover `auth_challenge` from LNURL-auth.
  */
@@ -78,6 +79,10 @@ export const AUTH_SCHEMA_SQL: readonly string[] = [
   `ALTER TABLE account DROP CONSTRAINT IF EXISTS account_notification_level_chk`,
   `ALTER TABLE account ADD CONSTRAINT account_notification_level_chk
     CHECK (notification_level IN ('all', 'active', 'mentions'))`,
+  `ALTER TABLE account ADD COLUMN IF NOT EXISTS amount_unit text NOT NULL DEFAULT 'btc'`,
+  `ALTER TABLE account DROP CONSTRAINT IF EXISTS account_amount_unit_chk`,
+  `ALTER TABLE account ADD CONSTRAINT account_amount_unit_chk
+    CHECK (amount_unit IN ('btc', 'fiat'))`,
   `ALTER TABLE account ADD COLUMN IF NOT EXISTS username text`,
   `CREATE UNIQUE INDEX IF NOT EXISTS account_username_uidx
     ON account (lower(trim(username))) WHERE username IS NOT NULL AND trim(username) <> ''`,

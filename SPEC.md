@@ -95,7 +95,8 @@ Public base URLs used in examples:
 | POST   | `/auth/passkey/replace/finish`                       | Bearer                     | 409 refusal that deletes nothing and keeps the session                                                                                                            |
 | POST   | `/auth/passkey/seed/begin`                           | Bearer                     | Creation options for one extra seed passkey; 409 when walletRequired is already true; no excludeCredentials.                                                      |
 | POST   | `/auth/passkey/seed/finish`                          | Bearer                     | Verify attestation, insert an additional passkey, set walletRequired true, keep the login passkey and the session.                                                |
-| GET    | `/me`                                                | `Authorization: Bearer`    | Account (`setup` + factual `missing` + `hasPosted` + `aboutMe` + `aboutMeHasPhoto` + `notificationLevel`)                                                         |
+| GET    | `/me`                                                | `Authorization: Bearer`    | Account (`setup` + factual `missing` + `hasPosted` + `aboutMe` + `aboutMeHasPhoto` + `notificationLevel` + `amountUnit`)                                          |
+| POST   | `/me/amount-unit`                                    | Bearer                     | Set owner amount-entry unit (`btc` or `fiat`, default `btc`)                                                                                                      |
 | GET    | `/me/activity`                                       | Bearer                     | Given + received series (forum zaps + house gifts; platform given = all outbound)                                                                                 |
 | POST   | `/me/wallet-backup-seen`                             | Bearer                     | Records that this account can show a recovery phrase. Not a confirmation and not a setup step. Empty body. Does not change `walletRequired`.                      |
 | GET    | `/view/:viewKey`                                     | none                       | Public profile card by view key                                                                                                                                   |
@@ -485,6 +486,7 @@ ID).
     "aboutMe": null,
     "aboutMeHasPhoto": false,
     "notificationLevel": "all",
+    "amountUnit": "btc",
     "funding": null,
     "walletRequired": true,
     "walletBackupSeenAt": null,
@@ -493,7 +495,7 @@ ID).
 }
 ```
 
-The `account` object is the same owner JSON as `GET /me` (includes `viewKey`, `setup`, `missing`, `hasPosted`, `aboutMe`, `aboutMeHasPhoto`, `notificationLevel`, `walletRequired`, `walletBackupSeenAt`, and `passkeyCredentialId`). The example above is a new register (`walletRequired: true`, `setup: "name"` when the name is unset). The recovery phrase is not a setup step and does not change `setup` or `missing`. Existing members start with `walletRequired: false`. Seed finish sets `walletRequired: true` and does not change `walletBackupSeenAt`. Replace refuses and changes nothing. `walletBackupSeenAt` does not decide whether a seed exists.
+The `account` object is the same owner JSON as `GET /me` (includes `viewKey`, `setup`, `missing`, `hasPosted`, `aboutMe`, `aboutMeHasPhoto`, `notificationLevel`, `amountUnit`, `walletRequired`, `walletBackupSeenAt`, and `passkeyCredentialId`). The example above is a new register (`walletRequired: true`, `setup: "name"` when the name is unset). The recovery phrase is not a setup step and does not change `setup` or `missing`. Existing members start with `walletRequired: false`. Seed finish sets `walletRequired: true` and does not change `walletBackupSeenAt`. Replace refuses and changes nothing. `walletBackupSeenAt` does not decide whether a seed exists.
 
 A new register row is stored with `walletRequired: true` and `walletBackupSeenAt: null`. First-passkey claim of a provisioned row sets `walletRequired: true` in the same write as the credential (`createFirstPasskeyCredential`: Postgres CTE locks the account row with `FOR UPDATE`, then inserts and sets `wallet_required`; memory store writes both in one method) and does not clear a seen timestamp. Passkey replace refuses and does not change these columns. Seed finish sets `walletRequired: true` without changing `walletBackupSeenAt`. Operator `POST /debug/accounts` provision leaves `walletRequired` false. The api never stores a mnemonic or PRF output.
 
@@ -621,6 +623,7 @@ An account with `sessionRefused` and a still-valid minted token → **Response**
   "aboutMe": null,
   "aboutMeHasPhoto": false,
   "notificationLevel": "all",
+  "amountUnit": "btc",
   "funding": null,
   "walletRequired": false,
   "walletBackupSeenAt": null,
@@ -658,6 +661,7 @@ stays `null`)).
 | `aboutMe`                  | string \| null | Profile-note text when it is a real bio, else `null` (missing or soft-hidden (`deletedAt` set); auto name-copy is not a bio, including after a display-name rename when the note text still equals the stored profile-note `name` (Ada→Grace with text `Ada` stays `null`))                                                                     |
 | `aboutMeHasPhoto`          | boolean        | True when the live profile note has a stored JPEG/PNG/WebP. Independent of `aboutMe` (photo-only and name-copy notes can still have a photo). Bytes are `GET /me/about/photo`. Does not expose `profileMessageId`.                                                                                                                              |
 | `notificationLevel`        | string         | Owner fan-out filter: `all`, `active`, or `mentions`. Default `all`. Owner-only; omitted from public `GET /view/:viewKey` and member cards.                                                                                                                                                                                                     |
+| `amountUnit`               | string         | Owner amount-entry unit: `btc` or `fiat`. Default `btc`. Owner-only; omitted from public `GET /view/:viewKey` and member cards. The last unit the member chose on any amount field.                                                                                                                                                             |
 | `funding`                  | object \| null | Funding-program grant. `null` for `basis`. Otherwise always an object; no row is `{ status: "none", trialUtcDate: null, admittedAt: null, reviewedByName: null }`. Admitted includes live `reviewedByName`.                                                                                                                                     |
 | `walletRequired`           | boolean        | True when a seed-bearing passkey exists (new register/claim, or seed finish). Default false does not mean a seed is present. It does not make `setup` `'wallet'`.                                                                                                                                                                               |
 | `walletBackupSeenAt`       | number \| null | Epoch ms recorded after an existing member activates a passkey that can show a recovery phrase, so the app can offer Show recovery phrase next time instead of Activate. Not a confirmation. Not a seed check; it does not decide whether a seed exists. Null when that has not been recorded.                                                  |
@@ -1337,6 +1341,33 @@ Success → **Response** `200` with the updated account (same owner JSON as
 **200** (idempotent). Logs `account.notification_level.set` with
 `accountId` and `level`.
 
+### `POST /me/amount-unit`
+
+Set the owner amount-entry unit. Bearer session required (same as
+`POST /me/notification-level`). Body:
+
+```json
+{ "unit": "fiat" }
+```
+
+`unit` must be `btc` or `fiat`. Default for a new account, and for a stored
+value that is neither, is `btc`. This route does not change invoices.
+Payment amounts stay whole sats.
+
+Missing/invalid bearer → **Response** `401` `{ "error": "Unauthorized" }`.
+
+Body is missing, not JSON, or `unit` is not one of those two strings
+→ **Response** `400`:
+
+```json
+{ "error": "Expected a JSON body with a unit of btc or fiat" }
+```
+
+Success → **Response** `200` with the updated account (same owner JSON as
+`GET /me`), including `amountUnit`. The same unit again is still **200**.
+Public member cards and `GET /view/:viewKey` omit `amountUnit`. Logs
+`account.amount_unit.set` with `accountId` and `unit`.
+
 ### `POST /me/rules-agreement`
 
 Record that the signed-in account agreed to the living-room rules. No body
@@ -1652,6 +1683,7 @@ Success → **Response** `200`:
       "lightningAddressSkippedAt": null,
       "profileMessageId": null,
       "notificationLevel": "all",
+      "amountUnit": "btc",
       "walletRequired": false,
       "walletBackupSeenAt": null,
       "nostrPubkey": "<64-hex>",

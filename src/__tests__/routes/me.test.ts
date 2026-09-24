@@ -228,6 +228,7 @@ describe('GET /me', () => {
       missing: string[];
       hasPosted: boolean;
       notificationLevel: 'all' | 'active' | 'mentions';
+      amountUnit: 'btc' | 'fiat';
       funding: null;
       walletRequired: boolean;
       walletBackupSeenAt: number | null;
@@ -245,6 +246,7 @@ describe('GET /me', () => {
     expect(body.missing).toEqual(['name', 'username', 'lightning-address', 'rules']);
     expect(body.hasPosted).toBe(false);
     expect(body.notificationLevel).toBe('all');
+    expect(body.amountUnit).toBe('btc');
     expect(body.funding).toBeNull();
     expect(body.walletRequired).toBe(false);
     expect(body.walletBackupSeenAt).toBeNull();
@@ -645,6 +647,85 @@ describe('POST /me/notification-level', () => {
     expect(res.status).toBe(200);
     expect(((await res.json()) as { notificationLevel: string }).notificationLevel).toBe('active');
     expect((await store.getAccount('acc'))?.notificationLevel).toBe('active');
+  });
+});
+
+describe('POST /me/amount-unit', () => {
+  it('returns 401 without a valid session', async () => {
+    const res = await mount(new InMemoryAuthStore()).request('/me/amount-unit', {
+      method: 'POST',
+    });
+    expect(res.status).toBe(401);
+    expect(await res.json()).toEqual({ error: 'Unauthorized' });
+  });
+
+  it('rejects a missing body', async () => {
+    const res = await mount(await seededStore()).request('/me/amount-unit', {
+      method: 'POST',
+      headers: AUTH,
+    });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({
+      error: 'Expected a JSON body with a unit of btc or fiat',
+    });
+  });
+
+  it('rejects an invalid unit', async () => {
+    const res = await mount(await seededStore()).request('/me/amount-unit', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ unit: 'sats' }),
+    });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({
+      error: 'Expected a JSON body with a unit of btc or fiat',
+    });
+  });
+
+  it('sets amountUnit on first POST and logs', async () => {
+    const store = await seededStore();
+    const res = await mount(store).request('/me/amount-unit', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ unit: 'fiat' }),
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { amountUnit: string };
+    expect(body.amountUnit).toBe('fiat');
+    expect((await store.getAccount('acc'))?.amountUnit).toBe('fiat');
+    expect(
+      parsedEvents(warn).some(
+        (e) =>
+          e['event'] === 'account.amount_unit.set' &&
+          e['accountId'] === 'acc' &&
+          e['unit'] === 'fiat',
+      ),
+    ).toBe(true);
+  });
+
+  it('includes amountUnit fiat on GET /me after POST', async () => {
+    const store = await seededStore();
+    const app = mount(store);
+    await app.request('/me/amount-unit', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ unit: 'fiat' }),
+    });
+    const res = await app.request('/me', { headers: AUTH });
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as { amountUnit: string }).amountUnit).toBe('fiat');
+  });
+
+  it('is idempotent on a second POST of the same unit', async () => {
+    const store = await seededStore();
+    const app = mount(store);
+    const headers = { ...AUTH, 'content-type': 'application/json' };
+    const body = JSON.stringify({ unit: 'fiat' });
+    await app.request('/me/amount-unit', { method: 'POST', headers, body });
+    const res = await app.request('/me/amount-unit', { method: 'POST', headers, body });
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as { amountUnit: string }).amountUnit).toBe('fiat');
+    expect((await store.getAccount('acc'))?.amountUnit).toBe('fiat');
   });
 });
 
