@@ -63,7 +63,7 @@ api/
 │   │   ├── pay.ts            # GET /pay/:username; POST /pay/:username/invoice
 │   │   ├── contact.ts        # POST /contact (private mailbox + platform thread)
 │   │   ├── pos.ts            # GET/POST/DELETE /pos (one exact sat amount on the Lightning address)
-│   │   ├── conversations.ts  # GET/POST /conversations, GET /conversations/moderator-group, GET/POST /conversations/:id, POST /conversations/:id/read, POST /conversations/:id/invoice, GET /conversations/:id/messages/:messageId/photo, GET /conversations/:id/messages/:messageId/photo/:file
+│   │   ├── conversations.ts  # GET/POST /conversations, GET /conversations/moderator-group, GET/POST /conversations/:id, POST /conversations/:id/read, POST /conversations/:id/invoice, GET /conversations/:id/messages/:messageId/photo, GET /conversations/:id/messages/:messageId/photo/:file, POST /conversations/:id/messages/:messageId/translate
 │   │   └── notifications.ts  # GET /notifications, POST /notifications/read-all, POST /notifications/:id/read
 │   ├── lib/
 │   │   ├── meta.ts           # Service constants (name, version, repo URL)

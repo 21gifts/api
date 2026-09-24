@@ -61,6 +61,7 @@ describe('openBootStores', () => {
       fiatRates,
       messageStore,
       translationStore,
+      conversationTranslationStore,
       contactStore,
       posStore,
       conversationStore,
@@ -77,6 +78,7 @@ describe('openBootStores', () => {
     expect(giftRecorder).toBeUndefined();
     expect(messageStore).toBeUndefined();
     expect(translationStore).toBeUndefined();
+    expect(conversationTranslationStore).toBeUndefined();
     expect(contactStore).toBeUndefined();
     expect(posStore).toBeInstanceOf(InMemoryPosStore);
     expect(conversationStore).toBeUndefined();
@@ -104,6 +106,7 @@ describe('openBootStores', () => {
       fiatRates,
       messageStore,
       translationStore,
+      conversationTranslationStore,
       contactStore,
       posStore,
       conversationStore,
@@ -119,6 +122,7 @@ describe('openBootStores', () => {
     expect(giftRecorder).toBeUndefined();
     expect(messageStore).toBeUndefined();
     expect(translationStore).toBeUndefined();
+    expect(conversationTranslationStore).toBeUndefined();
     expect(contactStore).toBeUndefined();
     expect(posStore).toBeInstanceOf(InMemoryPosStore);
     expect(conversationStore).toBeUndefined();
@@ -185,6 +189,7 @@ describe('openBootStores', () => {
       fiatRates,
       messageStore,
       translationStore,
+      conversationTranslationStore,
       contactStore,
       posStore,
       conversationStore,
@@ -211,6 +216,8 @@ describe('openBootStores', () => {
     expect(giftRecorder).toBeInstanceOf(SqlGiftRecorder);
     expect(messageStore).toBeInstanceOf(PostgresMessageStore);
     expect(translationStore).toBeInstanceOf(PostgresTranslationStore);
+    expect(conversationTranslationStore).toBeInstanceOf(PostgresTranslationStore);
+    expect(conversationTranslationStore).not.toBe(translationStore);
     expect(contactStore).toBeInstanceOf(PostgresContactStore);
     expect(posStore).toBeInstanceOf(PostgresPosStore);
     expect(conversationStore).toBeInstanceOf(PostgresConversationStore);
@@ -384,6 +391,7 @@ describe('openBootStores', () => {
       fiatRates,
       messageStore,
       translationStore,
+      conversationTranslationStore,
       contactStore,
       posStore,
       conversationStore,
@@ -403,6 +411,8 @@ describe('openBootStores', () => {
     expect(giftRecorder).toBeInstanceOf(SqlGiftRecorder);
     expect(messageStore).toBeInstanceOf(PostgresMessageStore);
     expect(translationStore).toBeInstanceOf(PostgresTranslationStore);
+    expect(conversationTranslationStore).toBeInstanceOf(PostgresTranslationStore);
+    expect(conversationTranslationStore).not.toBe(translationStore);
     expect(contactStore).toBeInstanceOf(PostgresContactStore);
     expect(posStore).toBeInstanceOf(PostgresPosStore);
     expect(conversationStore).toBeInstanceOf(PostgresConversationStore);
@@ -467,6 +477,8 @@ describe('openBootStores', () => {
 
     expect(stores.messageStore).toBeInstanceOf(PostgresMessageStore);
     expect(stores.translationStore).toBeInstanceOf(PostgresTranslationStore);
+    expect(stores.conversationTranslationStore).toBeInstanceOf(PostgresTranslationStore);
+    expect(stores.conversationTranslationStore).not.toBe(stores.translationStore);
     expect(stores.contactStore).toBeInstanceOf(PostgresContactStore);
     expect(stores.posStore).toBeInstanceOf(PostgresPosStore);
     expect(stores.conversationStore).toBeInstanceOf(PostgresConversationStore);
