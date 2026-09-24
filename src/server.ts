@@ -308,8 +308,8 @@ export function createApp(deps: AppDeps = {}): Hono {
         if (
           note !== undefined &&
           note.deletedAt === null &&
-          note.hasPhoto !== true &&
           note.hasVideo !== true &&
+          note.photoCount === 0 &&
           note.text.trim() !== '' &&
           aboutMeFromNote(account.name ?? null, note.text, note.name) === null
         ) {
