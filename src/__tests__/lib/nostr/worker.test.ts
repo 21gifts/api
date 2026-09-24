@@ -3123,7 +3123,7 @@ describe('runNostrWorkerTick', () => {
     );
     expect(
       querier.calls.some((call) => {
-        const kinds = call.filter.kinds;
+        const kinds = call.filter['kinds'];
         return Array.isArray(kinds) && kinds.some((kind) => kind === 1059);
       }),
     ).toBe(false);
@@ -4314,7 +4314,7 @@ describe('runNostrWorkerTick', () => {
     await inboundTick(auth, new InMemoryMessageStore(), new InMemoryConversationStore(), querier);
     expect(
       querier.calls.some((call) => {
-        const kinds = call.filter.kinds;
+        const kinds = call.filter['kinds'];
         return Array.isArray(kinds) && kinds.some((kind) => kind === 1059);
       }),
     ).toBe(false);
