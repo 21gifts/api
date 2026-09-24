@@ -44,12 +44,10 @@ does not fetch or pay invoices.
 
 Spend-worker invoice routes: `GET /invoices/passkey` and `GET /invoices/posted`
 report those gates; `GET /invoices/eligible` reports `{ eligible, status }` (`eligibleToday` plus `effectiveStatus`; grant required from UTC 2026-09-25);
-`POST /invoices` requires passkey, `eligibleToday` (grant required from UTC 2026-09-25), and a live
-**top-level** forum post, then fetches a BOLT11 via LNURL-pay;
-`POST /invoices/proof` accepts a preimage without re-checking the grant. Issue
-requires a passkey-backed account for the address that is funding-eligible today
-and at least one live **top-level** forum
-message that is not the auto-created profile note. Replies do not count. They require `SPEND_API_TOKEN`;
+`POST /invoices` requires passkey and `eligibleToday` (grant required from UTC 2026-09-25), then fetches a BOLT11 via LNURL-pay.
+When `messageId` is set, that note must be the address's live top-level note, including About me, and have a photo or video.
+When `messageId` is omitted, issue requires at least one live **top-level** forum message that is not the auto-created profile note.
+`POST /invoices/proof` accepts a preimage without re-checking the grant. Replies do not count. They require `SPEND_API_TOKEN`;
 when it is unset the
 routes return **503** and the process still boots. This service does not pay
 invoices (no LNDHub client). A matching proof inserts an outbound row into
@@ -2843,9 +2841,11 @@ note never become `messageId`. A text-only newest row can still pair with
 
 Spend-worker invoice fetch. After address and amount validation, the api
 requires a 21.gifts account for `address` that already has a passkey
-credential, `eligibleToday` (grant required from UTC 2026-09-25), and at least
-one live **top-level** forum message that is not the auto-created profile
-note. Replies do not unlock an invoice. It then resolves
+credential and `eligibleToday` (grant required from UTC 2026-09-25).
+When `messageId` is omitted, it also requires at least one live **top-level**
+forum message that is not the auto-created profile note. When `messageId` is
+set, that note must be this address's live top-level note, including About me,
+and have a photo or video. Replies do not unlock an invoice. It then resolves
 LUD-16, GETs the LNURL-pay callback, decodes the BOLT11, and stores
 `{ id, pr, paymentHash }` in memory. It does not pay.
 
@@ -2929,9 +2929,10 @@ is stored):
 { "error": "Funding grant required" }
 ```
 
-The account has a passkey but no live **top-level** forum message other than
-the auto-created profile note, or `messageId` is set but is not that
-address's live top-level note (About me included) with a photo or video →
+When `messageId` is omitted, the account has a passkey and is eligible but
+has no live **top-level** forum message other than the auto-created profile
+note. When `messageId` is set, that id is not this address's live top-level
+note (About me included) with a photo or video. Either case →
 **403** (after the passkey and grant checks, before any LNURL fetch; no
 invoice is stored):
 
