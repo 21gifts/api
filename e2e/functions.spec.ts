@@ -1881,6 +1881,73 @@ test('Function: roleRank — a basis member ranks below staff on GET /trust/prop
   expect((await request.get('/trust/proposals', { headers: auth })).status()).toBe(403);
 });
 
+test('Function: sameRoleRank — confirm leaves an initiator unchanged when the caller already confirmed them', async ({
+  request,
+}) => {
+  const stamp = `${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
+  const callerName = `E2eRankCaller${stamp.slice(0, 8)}`;
+  const subjectName = `E2eRankSubject${stamp.slice(0, 8)}`;
+  const provision = await request.post('/debug/accounts', {
+    headers: DEBUG,
+    data: {
+      accounts: [
+        {
+          name: callerName,
+          lightningAddress: `e2e-rank-caller-${stamp}@walletofsatoshi.com`,
+        },
+        {
+          name: subjectName,
+          lightningAddress: `e2e-rank-subject-${stamp}@walletofsatoshi.com`,
+        },
+      ],
+    },
+  });
+  expect(provision.status()).toBe(200);
+  const listed = await request.get('/debug/accounts', { headers: DEBUG });
+  expect(listed.status()).toBe(200);
+  const accounts = ((await listed.json()) as { accounts: Array<{ id: string; name: string }> })
+    .accounts;
+  const caller = accounts.find((row) => row.name === callerName);
+  const subject = accounts.find((row) => row.name === subjectName);
+  expect(caller).toBeDefined();
+  expect(subject).toBeDefined();
+  const callerId = caller?.id ?? '';
+  const subjectId = subject?.id ?? '';
+  expect(
+    (
+      await request.patch(`/debug/accounts/${callerId}`, {
+        headers: DEBUG,
+        data: { role: 'moderator' },
+      })
+    ).status(),
+  ).toBe(200);
+  expect(
+    (
+      await request.patch(`/debug/accounts/${subjectId}`, {
+        headers: DEBUG,
+        data: { role: 'initiator' },
+      })
+    ).status(),
+  ).toBe(200);
+  const session = await request.post(`/debug/accounts/${callerId}/session`, { headers: DEBUG });
+  expect(session.status()).toBe(200);
+  const token = ((await session.json()) as { token: string }).token;
+  const edge = await request.post('/debug/trust-edges', {
+    headers: DEBUG,
+    data: { subjectId, actorId: callerId, kind: 'moderator_confirm' },
+  });
+  expect(edge.status()).toBe(200);
+  const res = await request.post('/trust/confirm-moderator', {
+    headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+    data: { accountId: subjectId },
+  });
+  expect(res.status()).toBe(200);
+  expect((await res.json()) as { id: string; role: string }).toMatchObject({
+    id: subjectId,
+    role: 'initiator',
+  });
+});
+
 test('Function: isProjectedTrustEdge — GET /trust-chain is empty on default boot', async ({
   request,
 }) => {

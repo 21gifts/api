@@ -12,6 +12,7 @@ const FOUNDER = '11111111-1111-4111-8111-111111111111';
 const MOD = '22222222-2222-4222-8222-222222222222';
 const SUBJECT = '33333333-3333-4333-8333-333333333333';
 const OTHER = '44444444-4444-4444-8444-444444444444';
+const INITIATOR = '66666666-6666-4666-8666-666666666666';
 
 function parsedEvents(warn: ReturnType<typeof vi.spyOn>): Array<Record<string, unknown>> {
   return warn.mock.calls
@@ -2151,6 +2152,56 @@ describe('POST /trust/*', () => {
       expect((await authStore.getAccount(SUBJECT))?.role).toBe('verified');
     });
 
+    it('returns 200 and leaves role initiator when the caller already confirmed the subject', async () => {
+      const { authStore, trustStore } = await staffed([
+        account({ id: SUBJECT, role: 'initiator', name: 'Sub' }),
+      ]);
+      await trustStore.insertEdge({
+        id: 'confirm',
+        subjectId: SUBJECT,
+        actorId: MOD,
+        kind: 'moderator_confirm',
+        createdAt: 1,
+      });
+      const res = await post(mount(authStore, trustStore), '/trust/confirm-moderator', 'mod', {
+        accountId: SUBJECT,
+      });
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ id: SUBJECT, name: 'Sub', role: 'initiator' });
+      expect((await authStore.getAccount(SUBJECT))?.role).toBe('initiator');
+      expect((await trustStore.listEdges()).map((row) => row.id)).toEqual(['confirm']);
+    });
+
+    it('returns 409 and leaves role founder when the caller already confirmed a founder', async () => {
+      const { authStore, trustStore } = await staffed([
+        account({ id: SUBJECT, role: 'founder', name: 'Sub' }),
+      ]);
+      await trustStore.insertEdge({
+        id: 'confirm',
+        subjectId: SUBJECT,
+        actorId: MOD,
+        kind: 'moderator_confirm',
+        createdAt: 1,
+      });
+      const res = await post(mount(authStore, trustStore), '/trust/confirm-moderator', 'mod', {
+        accountId: SUBJECT,
+      });
+      expect(res.status).toBe(409);
+      expect((await authStore.getAccount(SUBJECT))?.role).toBe('founder');
+    });
+
+    it('returns 409 when confirming an initiator subject with no caller-owned confirm edge', async () => {
+      const { authStore, trustStore } = await staffed([
+        account({ id: SUBJECT, role: 'initiator', name: 'Sub' }),
+      ]);
+      const res = await post(mount(authStore, trustStore), '/trust/confirm-moderator', 'mod', {
+        accountId: SUBJECT,
+      });
+      expect(res.status).toBe(409);
+      expect((await authStore.getAccount(SUBJECT))?.role).toBe('initiator');
+      expect(await trustStore.listEdges()).toEqual([]);
+    });
+
     it('returns 200 idempotently when the caller already confirmed the subject', async () => {
       const { authStore, trustStore } = await staffed([
         account({ id: SUBJECT, role: 'moderator', name: 'Sub' }),
@@ -3053,6 +3104,10 @@ describe('POST /trust/*', () => {
   describe('POST /trust/appoint-moderator', () => {
     it('returns 401 without a session and 403 when the caller is not a founder', async () => {
       const { authStore, trustStore } = await staffed();
+      await authStore.createAccount(
+        account({ id: INITIATOR, role: 'initiator', name: 'Initiator' }),
+      );
+      await authStore.createSession({ token: 'initiator', accountId: INITIATOR, createdAt: now() });
       expect(
         (
           await post(mount(authStore, trustStore), '/trust/appoint-moderator', undefined, {
@@ -3063,6 +3118,13 @@ describe('POST /trust/*', () => {
       expect(
         (
           await post(mount(authStore, trustStore), '/trust/appoint-moderator', 'mod', {
+            accountId: SUBJECT,
+          })
+        ).status,
+      ).toBe(403);
+      expect(
+        (
+          await post(mount(authStore, trustStore), '/trust/appoint-moderator', 'initiator', {
             accountId: SUBJECT,
           })
         ).status,
@@ -3366,6 +3428,38 @@ describe('POST /trust/*', () => {
       );
     });
 
+    it('returns 409 when appointing an initiator subject with no caller-owned appoint edge', async () => {
+      const { authStore, trustStore } = await staffed([
+        account({ id: SUBJECT, role: 'initiator', name: 'Sub' }),
+      ]);
+      const res = await post(mount(authStore, trustStore), '/trust/appoint-moderator', 'founder', {
+        accountId: SUBJECT,
+      });
+      expect(res.status).toBe(409);
+      expect((await authStore.getAccount(SUBJECT))?.role).toBe('initiator');
+      expect(await trustStore.listEdges()).toEqual([]);
+    });
+
+    it('returns 200 and leaves role initiator when the caller already appointed the subject', async () => {
+      const { authStore, trustStore } = await staffed([
+        account({ id: SUBJECT, role: 'initiator', name: 'Sub' }),
+      ]);
+      await trustStore.insertEdge({
+        id: 'appoint',
+        subjectId: SUBJECT,
+        actorId: FOUNDER,
+        kind: 'moderator_appoint',
+        createdAt: 1,
+      });
+      const res = await post(mount(authStore, trustStore), '/trust/appoint-moderator', 'founder', {
+        accountId: SUBJECT,
+      });
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ id: SUBJECT, name: 'Sub', role: 'initiator' });
+      expect((await authStore.getAccount(SUBJECT))?.role).toBe('initiator');
+      expect((await trustStore.listEdges()).map((row) => row.id)).toEqual(['appoint']);
+    });
+
     it('still returns 200 when push enqueue throws', async () => {
       const { authStore, trustStore } = await staffed([
         account({ id: SUBJECT, role: 'basis', name: 'Sub' }),
@@ -3419,8 +3513,10 @@ describe('GET /trust/proposals', () => {
 
   it('returns 200 with an empty list from moderator upwards', async () => {
     const { authStore, trustStore } = await staffed();
+    await authStore.createAccount(account({ id: INITIATOR, role: 'initiator', name: 'Initiator' }));
+    await authStore.createSession({ token: 'initiator', accountId: INITIATOR, createdAt: now() });
     const app = mount(authStore, trustStore);
-    for (const token of ['founder', 'mod'] as const) {
+    for (const token of ['founder', 'mod', 'initiator'] as const) {
       const res = await get(app, '/trust/proposals', token);
       expect(res.status).toBe(200);
       expect(await res.json()).toEqual({ proposals: [] });
@@ -3428,7 +3524,7 @@ describe('GET /trust/proposals', () => {
     const listed = parsedEvents(warn).filter(
       (event) => event['event'] === 'trust.proposals.listed',
     );
-    expect(listed).toHaveLength(2);
+    expect(listed).toHaveLength(3);
     expect(listed.every((event) => event['count'] === 0)).toBe(true);
   });
 
