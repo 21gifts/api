@@ -14,6 +14,7 @@ import { WebsocketNostrPublisher } from './lib/nostr/publish';
 import { WebsocketNostrQuerier } from './lib/nostr/query';
 import { PostRateLimiter } from './lib/nostr/rate-limit';
 import { RELAY_TIMEOUT_MS, startNostrWorker, WORKER_INTERVAL_MS } from './lib/nostr/worker';
+import { InMemoryMessageStore } from './lib/message-store';
 import { resolveSpendPing } from './lib/spend-ping';
 import { syncWelcomePing } from './lib/welcome-media';
 import { resolveZapRelays } from './lib/nostr/relays';
@@ -89,6 +90,7 @@ if (import.meta.main) {
       : undefined;
   const spendPing = resolveSpendPing(process.env, globalThis.fetch);
   const postLimiter = new PostRateLimiter();
+  const forumMessages = messageStore ?? new InMemoryMessageStore();
   const app = createApp({
     authStore,
     btcUsdRates,
@@ -96,9 +98,9 @@ if (import.meta.main) {
     pushStore,
     posStore,
     env: process.env,
+    messageStore: forumMessages,
     ...(giftStore === undefined ? {} : { giftStore }),
     ...(giftRecorder === undefined ? {} : { giftRecorder }),
-    ...(messageStore === undefined ? {} : { messageStore }),
     ...(boot.translationStore === undefined ? {} : { translationStore: boot.translationStore }),
     ...(nostrKek === undefined ? {} : { nostrKek }),
     ...(publisher === undefined ? {} : { nostrPublisher: publisher }),
@@ -115,17 +117,15 @@ if (import.meta.main) {
   });
   Bun.serve({ fetch: app.fetch, hostname: host, port });
   console.warn(`21gifts-api listening on ${host}:${port}`);
-  if (messageStore !== undefined) {
-    const welcomeCatchUp = (): void => {
-      void syncWelcomePing({
-        ...(spendPing === undefined ? {} : { spendPing }),
-        messages: messageStore,
-        auth: authStore,
-      });
-    };
-    welcomeCatchUp();
-    setInterval(welcomeCatchUp, 15 * 60 * 1000).unref();
-  }
+  const welcomeCatchUp = (): void => {
+    void syncWelcomePing({
+      ...(spendPing === undefined ? {} : { spendPing }),
+      messages: forumMessages,
+      auth: authStore,
+    });
+  };
+  welcomeCatchUp();
+  setInterval(welcomeCatchUp, 15 * 60 * 1000).unref();
   if (sender.isConfigured()) {
     startPushWorker({ store: pushStore, sender, now: Date.now }, PUSH_WORKER_INTERVAL_MS);
   }
