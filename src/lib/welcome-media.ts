@@ -94,13 +94,13 @@ async function pingOne(args: {
 }
 
 /**
- * Welcome-ping verified accounts whose only photo or video is the About-me
- * note. A separate living-room photo is left alone (that path already pings
- * when the photo is posted while verified). Failures are logged per account.
+ * Welcome-ping every verified account that already has a live top-level
+ * photo or video, including About me and a living-room post. Spend pays
+ * once per address. Failures are logged per account.
  *
  * @param args - Spend ping, auth store, and forum store.
  */
-async function catchUpAboutWelcome(args: {
+async function catchUpVerifiedMedia(args: {
   spendPing: SpendPing | undefined;
   auth: AuthStore;
   messages: MessageStore;
@@ -119,13 +119,9 @@ async function catchUpAboutWelcome(args: {
     if (account.role !== 'verified') {
       continue;
     }
-    const profileId = account.profileMessageId;
-    if (typeof profileId !== 'string' || profileId.trim() === '') {
-      continue;
-    }
     try {
-      const otherMedia = await args.messages.accountHasLiveTopLevelMediaPost(account.id, profileId);
-      if (otherMedia) {
+      const hasMedia = await args.messages.accountHasLiveTopLevelMediaPost(account.id, null);
+      if (!hasMedia) {
         continue;
       }
       await pingOne({ spendPing: args.spendPing, messages: args.messages, account });
@@ -139,10 +135,10 @@ async function catchUpAboutWelcome(args: {
  * Tell spend a verified account is owed the one-time welcome gift.
  *
  * Pass `account` after a new top-level post, an About-me save, or a
- * verification. Pass `auth` (and no `account`) to catch up people who were
- * already verified with only an About-me photo. Omitted spend ping, a role
- * other than `verified`, a blank Lightning Address, or no photo/video is a
- * no-op. Spend pays once per address.
+ * verification. Pass `auth` (and no `account`) to catch up people who are
+ * already verified and already have a photo or video post. Omitted spend
+ * ping, a role other than `verified`, a blank Lightning Address, or no
+ * photo/video is a no-op. Spend pays once per address.
  *
  * @param args - Spend ping plus either one account or the auth store.
  */
@@ -161,7 +157,7 @@ export async function syncWelcomePing(args: {
     return;
   }
   if (args.auth !== undefined) {
-    await catchUpAboutWelcome({
+    await catchUpVerifiedMedia({
       spendPing: args.spendPing,
       auth: args.auth,
       messages: args.messages,

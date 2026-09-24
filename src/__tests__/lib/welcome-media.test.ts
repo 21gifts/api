@@ -332,7 +332,7 @@ describe('syncWelcomePing', () => {
     ).toHaveLength(2);
   });
 
-  it('catches up a verified About-me photo and skips everyone else', async () => {
+  it('catches up a verified photo post, including About me and a living-room photo', async () => {
     const ping = vi.fn(async () => undefined);
     const auth = new InMemoryAuthStore();
     await auth.createAccount(
@@ -410,8 +410,13 @@ describe('syncWelcomePing', () => {
       JPEG,
     );
     await syncWelcomePing({ spendPing: { ping }, messages, auth });
-    expect(ping).toHaveBeenCalledTimes(1);
+    expect(ping).toHaveBeenCalledTimes(2);
     expect(ping).toHaveBeenCalledWith('ada@walletofsatoshi.com', PHOTO_ID, 'welcome');
+    expect(ping).toHaveBeenCalledWith(
+      'both@walletofsatoshi.com',
+      'dddddddd-dddd-4ddd-8ddd-dddddddddddd',
+      'welcome',
+    );
   });
 
   it('logs when the account list or the media check throws during catch-up', async () => {

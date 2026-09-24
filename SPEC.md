@@ -3390,9 +3390,10 @@ top-level photo or video exists, including the About-me note, the api also
 POSTs `{ address, messageId, kind: "welcome" }` for that note, independent
 of `eligibleToday` and independent of whether the new row itself has media.
 The same ping runs when the account becomes verified and when About me is
-saved while verified. On boot, and every 15 minutes, verified accounts whose
-only photo or video is the About-me note are welcome-pinged so a photo saved
-before verification is still paid. Spend pays once per Lightning Address;
+saved while verified. On boot, and every 15 minutes, every verified account
+that already has a live top-level photo or video (About me or a living-room
+post) is welcome-pinged, so the gift still goes out when the photo post and
+verification happened in either order. Spend pays once per Lightning Address;
 this API may ping again. Replies, and any role other than `verified`, do not
 welcome-ping. A verified text-only post with no photo or video anywhere does
 not welcome-ping.

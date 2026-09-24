@@ -774,7 +774,7 @@
 
 ## Function: syncWelcomePing
 
-- **Purpose:** Tell spend a verified account is owed the one-time 1 USD welcome gift. The note is the newest live top-level photo or video, including About me. Pass one account after a top-level post, an About-me save, or a verification. Pass the auth store with no account to catch up people already verified whose only photo or video is About me. A separate living-room photo is not caught up. Omitted spend ping, a role other than `verified`, a blank Lightning Address, or no media is a no-op. Spend pays once per address.
+- **Purpose:** Tell spend a verified account is owed the one-time 1 USD welcome gift. The note is the newest live top-level photo or video, including About me. Pass one account after a top-level post, an About-me save, or a verification. Pass the auth store with no account to catch up every already verified account that has a live top-level photo or video, whether that note is About me or a living-room post. Omitted spend ping, a role other than `verified`, a blank Lightning Address, or no media is a no-op. Spend pays once per address.
 - **Inputs:** `{ spendPing?, messages, account?, auth? }`. `account` wins over `auth`.
 - **Returns / side effects:** `Promise<void>`. May POST spend `kind: "welcome"`. Failures log `spend.ping.failed` and do not throw.
 - **Used by:** `POST /messages`, `PUT /me/about`, `POST /trust/verify`, and the process boot catch-up.

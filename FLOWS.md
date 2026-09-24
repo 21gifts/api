@@ -221,7 +221,7 @@ for the newest live top-level photo or video, including an About-me note,
 independent of `eligibleToday` (the new row itself need not have media;
 Spend pays once per Lightning Address; this API may ping again; becoming
 verified and saving About me while verified also welcome-ping; boot and a
-15-minute timer welcome-ping verified accounts whose only photo is About me;
+15-minute timer welcome-ping every verified account that already has a photo or video post;
 replies and any role other than `verified` do not welcome-ping); replies and media replay do
 not ping; unset/blank env skips the ping and still returns 200;
 the public thread is listed via `GET /messages` (requires rules; newest first, optional `hashtag` query (name without `#`; token filter on `text`), name
