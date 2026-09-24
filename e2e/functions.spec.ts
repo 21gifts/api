@@ -540,9 +540,7 @@ test('Function: loadGiftStatsSnapshot — GET /gifts/stats has no spend on defau
   expect(body.spendOverTime).toEqual([]);
 });
 
-async function verifiedAskSession(
-  request: APIRequestContext,
-): Promise<{ authorization: string }> {
+async function verifiedAskSession(request: APIRequestContext): Promise<{ authorization: string }> {
   const stamp = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
   const name = `Ask${stamp.replace(/[^a-z0-9]/gi, '')}`;
   const provision = await request.post('/debug/accounts', {
