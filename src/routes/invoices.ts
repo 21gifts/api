@@ -64,13 +64,14 @@ export interface InvoiceRouteDeps {
   >;
   /**
    * Forum store for live top-level post lookup, GET `/posted` `hasMedia`,
-   * gift-reply insert, and GET `/posted` `messageId`. Distinct from
-   * {@link InvoiceStore} (`store`).
+   * welcome media, gift-reply insert, and GET `/posted` `messageId`. Distinct
+   * from {@link InvoiceStore} (`store`).
    */
   messageStore: Pick<
     MessageStore,
     | 'accountHasLiveTopLevelPost'
     | 'accountHasLiveTopLevelMediaPost'
+    | 'latestLiveTopLevelMediaId'
     | 'getById'
     | 'addSats'
     | 'create'
@@ -200,34 +201,14 @@ async function addressHasPasskey(
  * @returns `welcomeHasMedia` and the newest media note id (or null).
  */
 async function welcomePostedFields(
-  store: Pick<MessageStore, 'accountHasLiveTopLevelMediaPost' | 'listPostsByAccount' | 'getById'>,
-  account: { id: string; profileMessageId?: string | null },
+  store: Pick<MessageStore, 'latestLiveTopLevelMediaId'>,
+  account: { id: string },
 ): Promise<{ welcomeHasMedia: boolean; welcomeMessageId: string | null }> {
-  const welcomeHasMedia = await store.accountHasLiveTopLevelMediaPost(account.id, null);
-  if (!welcomeHasMedia) {
-    return { welcomeHasMedia: false, welcomeMessageId: null };
-  }
-  const posts = await store.listPostsByAccount(account.id, MESSAGE_LIST_LIMIT);
-  const media = posts.find(
-    (row) => row.hasPhoto === true || row.hasVideo === true || Number(row.photoCount) > 0,
-  );
-  if (media !== undefined) {
-    return { welcomeHasMedia: true, welcomeMessageId: media.id };
-  }
-  const profileId = account.profileMessageId;
-  if (typeof profileId === 'string' && profileId.trim() !== '') {
-    const profile = await store.getById(profileId);
-    if (
-      profile !== undefined &&
-      profile.deletedAt === null &&
-      profile.parentId === null &&
-      profile.accountId === account.id &&
-      (profile.hasPhoto === true || profile.hasVideo === true || Number(profile.photoCount) > 0)
-    ) {
-      return { welcomeHasMedia: true, welcomeMessageId: profile.id };
-    }
-  }
-  return { welcomeHasMedia: true, welcomeMessageId: null };
+  const welcomeMessageId = await store.latestLiveTopLevelMediaId(account.id);
+  return {
+    welcomeHasMedia: welcomeMessageId !== null,
+    welcomeMessageId,
+  };
 }
 
 /**
@@ -670,7 +651,6 @@ export function invoiceRoutes(deps: InvoiceRouteDeps): Hono {
           message === undefined ||
           message.deletedAt !== null ||
           message.parentId !== null ||
-          message.id === (account.profileMessageId ?? null) ||
           message.accountId === null ||
           message.accountId !== account.id
         ) {

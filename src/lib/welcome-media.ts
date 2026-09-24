@@ -1,33 +1,11 @@
 import type { Account, AuthStore } from '@/lib/auth/store';
 import { logEvent } from '@/lib/log';
-import { MESSAGE_LIST_LIMIT } from '@/lib/message';
 import type { MessageStore } from '@/lib/message-store';
 import type { SpendPing } from '@/lib/spend-ping';
 
 /**
- * Whether a listed note has a photo, extra stills, or a video.
- *
- * @param row - Live top-level row from the message store.
- * @returns `true` when the note has media.
- */
-function noteHasMedia(row: {
-  hasPhoto: boolean;
-  hasVideo?: boolean;
-  photoCount?: number;
-}): boolean {
-  if (row.hasPhoto === true) {
-    return true;
-  }
-  if (row.hasVideo === true) {
-    return true;
-  }
-  return (row.photoCount ?? 0) > 0;
-}
-
-/**
  * Newest live top-level photo or video for a verified account, including
- * the About-me note. The list is newest-first and capped; an older About-me
- * photo still counts when it is the profile note.
+ * the About-me note. Not limited to the newest page of notes.
  *
  * @param messages - Forum store.
  * @param account - Account whose media would earn the welcome gift.
@@ -41,26 +19,7 @@ async function welcomeMediaMessageId(
   if (account.role !== 'verified') {
     return null;
   }
-  const posts = await messages.listPostsByAccount(account.id, MESSAGE_LIST_LIMIT);
-  const listed = posts.find((row) => noteHasMedia(row));
-  if (listed !== undefined) {
-    return listed.id;
-  }
-  const profileId = account.profileMessageId;
-  if (typeof profileId !== 'string' || profileId.trim() === '') {
-    return null;
-  }
-  const profile = await messages.getById(profileId);
-  if (
-    profile === undefined ||
-    profile.deletedAt !== null ||
-    profile.parentId !== null ||
-    profile.accountId !== account.id ||
-    !noteHasMedia(profile)
-  ) {
-    return null;
-  }
-  return profile.id;
+  return messages.latestLiveTopLevelMediaId(account.id);
 }
 
 /**
@@ -120,8 +79,8 @@ async function catchUpVerifiedMedia(args: {
       continue;
     }
     try {
-      const hasMedia = await args.messages.accountHasLiveTopLevelMediaPost(account.id, null);
-      if (!hasMedia) {
+      const mediaId = await args.messages.latestLiveTopLevelMediaId(account.id);
+      if (mediaId === null) {
         continue;
       }
       await pingOne({ spendPing: args.spendPing, messages: args.messages, account });

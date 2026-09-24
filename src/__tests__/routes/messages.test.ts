@@ -198,6 +198,7 @@ function throwingStore(overrides: Partial<MessageStore> = {}): MessageStore {
     accountHasLivePost: boom,
     accountHasLiveTopLevelPost: boom,
     accountHasLiveTopLevelMediaPost: boom,
+    latestLiveTopLevelMediaId: boom,
     countByAccount: boom,
     countAttributedReplies: boom,
     listPostsByAccount: boom,
@@ -3076,6 +3077,7 @@ describe('POST /messages', () => {
         base.accountHasLiveTopLevelPost(accountId, excludeId),
       accountHasLiveTopLevelMediaPost: (accountId, excludeId) =>
         base.accountHasLiveTopLevelMediaPost(accountId, excludeId),
+      latestLiveTopLevelMediaId: (accountId) => base.latestLiveTopLevelMediaId(accountId),
       countByAccount: (accountId) => base.countByAccount(accountId),
       countAttributedReplies: (parentId) => base.countAttributedReplies(parentId),
       listPostsByAccount: (accountId, limit) => base.listPostsByAccount(accountId, limit),
@@ -3186,6 +3188,7 @@ describe('POST /messages', () => {
         base.accountHasLiveTopLevelPost(accountId, excludeId),
       accountHasLiveTopLevelMediaPost: (accountId, excludeId) =>
         base.accountHasLiveTopLevelMediaPost(accountId, excludeId),
+      latestLiveTopLevelMediaId: (accountId) => base.latestLiveTopLevelMediaId(accountId),
       countByAccount: (accountId) => base.countByAccount(accountId),
       countAttributedReplies: (parentId) => base.countAttributedReplies(parentId),
       listPostsByAccount: (accountId, limit) => base.listPostsByAccount(accountId, limit),
@@ -4828,6 +4831,7 @@ describe('POST /messages/:id/invoice', () => {
         base.accountHasLiveTopLevelPost(accountId, excludeId),
       accountHasLiveTopLevelMediaPost: (accountId, excludeId) =>
         base.accountHasLiveTopLevelMediaPost(accountId, excludeId),
+      latestLiveTopLevelMediaId: (accountId) => base.latestLiveTopLevelMediaId(accountId),
       countByAccount: (accountId) => base.countByAccount(accountId),
       countAttributedReplies: (parentId) => base.countAttributedReplies(parentId),
       listPostsByAccount: (accountId, limit) => base.listPostsByAccount(accountId, limit),

@@ -855,6 +855,9 @@ describe('GET /invoices/posted', () => {
           if (prop === 'getById') {
             return async () => item.profile;
           }
+          if (prop === 'latestLiveTopLevelMediaId') {
+            return async () => item.welcomeMessageId;
+          }
           const value = Reflect.get(target, prop, receiver) as unknown;
           return typeof value === 'function'
             ? (value as (...args: never[]) => unknown).bind(target)
@@ -871,7 +874,7 @@ describe('GET /invoices/posted', () => {
         messageId: null,
         postedAt: null,
         hasMedia: false,
-        welcomeHasMedia: true,
+        welcomeHasMedia: item.welcomeMessageId !== null,
         welcomeMessageId: item.welcomeMessageId,
       });
     }
@@ -1495,6 +1498,76 @@ describe('POST /invoices', () => {
     expect(res.status).toBe(403);
     expect(await res.json()).toEqual({ error: 'Forum post required' });
     expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it('returns 200 when messageId is a profile note that has a photo', async () => {
+    const authStore = new InMemoryAuthStore();
+    await authStore.createAccount({
+      id: 'acc-alice',
+      linkingKey: null,
+      role: 'verified',
+      name: 'Ada',
+      lightningAddress: ADDRESS,
+      lightningAddressVerified: true,
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: 'a'.repeat(64),
+      createdAt: 1,
+      rulesAgreedAt: null,
+      profileMessageId: PROFILE_NOTE_ID,
+    });
+    await authStore.createPasskeyCredential({
+      credentialId: 'cred-alice',
+      publicKey: new Uint8Array([1]),
+      signCount: 0,
+      accountId: 'acc-alice',
+      createdAt: 1,
+    });
+    await authStore.createAccount({
+      id: 'plat',
+      linkingKey: null,
+      role: 'founder',
+      name: '21.gifts',
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: 'b'.repeat(64),
+      createdAt: 2,
+      rulesAgreedAt: null,
+      isPlatform: true,
+    });
+    const fetchImpl = vi.fn<FetchFn>(happyFetch());
+    const messageStore = new InMemoryMessageStore([
+      {
+        id: PROFILE_NOTE_ID,
+        accountId: 'acc-alice',
+        name: 'Ada',
+        text: 'about',
+        createdAt: new Date('2026-08-01T00:00:00.000Z'),
+        hasPhoto: true,
+        ...unsignedNostrDefaults(),
+      },
+    ]);
+    const res = await createApp({
+      spendApiToken: TOKEN,
+      authStore,
+      messageStore,
+      fetchImpl,
+    }).request(
+      '/invoices',
+      auth({
+        method: 'POST',
+        body: JSON.stringify({
+          address: ADDRESS,
+          amountMsat: 1000,
+          messageId: PROFILE_NOTE_ID,
+          comment: 'Welcome',
+        }),
+      }),
+    );
+    expect(res.status).toBe(200);
+    expect(fetchImpl).toHaveBeenCalled();
   });
 
   it("returns 403 when messageId is another account's post", async () => {

@@ -372,6 +372,97 @@ describe('InMemoryMessageStore', () => {
     );
   });
 
+  it('latestLiveTopLevelMediaId returns the newest live top-level media id', async () => {
+    const store = new InMemoryMessageStore();
+    expect(await store.latestLiveTopLevelMediaId('acc')).toBeNull();
+    await store.create({ ...EARLY, id: 'parent' });
+    await store.create(
+      {
+        ...EARLY,
+        id: 'reply-photo',
+        parentId: 'parent',
+        text: 'reply',
+        createdAt: new Date(9),
+      },
+      JPEG,
+    );
+    await store.create(
+      {
+        ...EARLY,
+        id: 'hidden-photo',
+        text: 'hidden',
+        createdAt: new Date(8),
+      },
+      JPEG,
+    );
+    await store.markDeleted('hidden-photo', new Date(8), 'staff');
+    await store.create(
+      {
+        ...EARLY,
+        id: 'other-photo',
+        accountId: 'other',
+        text: 'other',
+        createdAt: new Date(7),
+      },
+      JPEG,
+    );
+    expect(await store.latestLiveTopLevelMediaId('acc')).toBeNull();
+    await store.create(
+      {
+        ...EARLY,
+        id: 'old-photo',
+        text: 'old',
+        createdAt: new Date(1),
+      },
+      JPEG,
+    );
+    await store.create({
+      ...EARLY,
+      id: 'new-text',
+      text: 'later',
+      createdAt: new Date(2),
+      hasPhoto: false,
+      hasVideo: false,
+    });
+    expect(await store.latestLiveTopLevelMediaId('acc')).toBe('old-photo');
+    await store.create(
+      {
+        ...EARLY,
+        id: 'new-photo',
+        text: 'newer',
+        createdAt: new Date(3),
+      },
+      JPEG,
+    );
+    expect(await store.latestLiveTopLevelMediaId('acc')).toBe('new-photo');
+    await store.create(
+      { ...EARLY, id: 'stills', text: 'stills', createdAt: new Date(4) },
+      JPEG,
+      undefined,
+      [JPEG2],
+    );
+    expect(await store.latestLiveTopLevelMediaId('acc')).toBe('stills');
+    const mp4 = new Uint8Array(32);
+    mp4.set([0x00, 0x00, 0x00, 0x18, 0x66, 0x74, 0x79, 0x70, 0x69, 0x73, 0x6f, 0x6d]);
+    await store.create(
+      {
+        ...EARLY,
+        id: 'clip',
+        text: 'clip',
+        createdAt: new Date(5),
+        hasVideo: true,
+        videoContentType: 'video/mp4',
+      },
+      undefined,
+      { contentType: 'video/mp4', bytes: mp4 },
+    );
+    expect(await store.latestLiveTopLevelMediaId('acc')).toBe('clip');
+    const same = new Date(6);
+    await store.create({ ...EARLY, id: 'tie-m', text: 'tie-m', createdAt: same }, JPEG);
+    await store.create({ ...EARLY, id: 'tie-z', text: 'tie-z', createdAt: same }, JPEG2);
+    expect(await store.latestLiveTopLevelMediaId('acc')).toBe('tie-z');
+  });
+
   it('accountHasLiveTopLevelMediaPost is false on an empty store', async () => {
     expect(await new InMemoryMessageStore().accountHasLiveTopLevelMediaPost('acc', null)).toBe(
       false,
@@ -3886,6 +3977,24 @@ describe('PostgresMessageStore', () => {
     expect(await store.accountHasLiveTopLevelPost('acc', null)).toBe(true);
     expect(await store.accountHasLiveTopLevelPost('acc', 'prof')).toBe(true);
     expect(sql.queries[2]?.params).toEqual(['acc', 'prof']);
+  });
+
+  it('latestLiveTopLevelMediaId returns the newest live top-level media id', async () => {
+    const sql = new MockSql();
+    const store = new PostgresMessageStore(sql);
+    sql.nextRows = [];
+    expect(await store.latestLiveTopLevelMediaId('acc')).toBeNull();
+    expect(sql.queries[0]?.text).toMatch(/SELECT id FROM message/);
+    expect(sql.queries[0]?.text).toMatch(/photo IS NOT NULL/);
+    expect(sql.queries[0]?.text).toMatch(/ORDER BY created_at DESC, id DESC/);
+    expect(sql.queries[0]?.text).toMatch(/LIMIT 1/);
+    expect(sql.queries[0]?.params).toEqual(['acc']);
+    sql.nextRows = [{ id: 'photo-1' }];
+    expect(await store.latestLiveTopLevelMediaId('acc')).toBe('photo-1');
+    sql.nextRows = [{ id: '' }];
+    expect(await store.latestLiveTopLevelMediaId('acc')).toBeNull();
+    sql.nextRows = [{}];
+    expect(await store.latestLiveTopLevelMediaId('acc')).toBeNull();
   });
 
   it('accountHasLiveTopLevelMediaPost queries live top-level media rows for the account', async () => {

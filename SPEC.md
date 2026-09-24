@@ -913,6 +913,10 @@ logged as `trust.write.failed`.
 Idempotent **200** when the existing verify edge's actor is the caller and
 the subject is already `verified` (no second insert). If that caller-owned
 edge exists and the subject is still `basis`, completes the role write and
+returns **200**. After a **200** that leaves the subject `verified` (new
+edge, completed role write, or this idempotent repeat), the subject is
+welcome-pinged when a live top-level photo or video exists, including About
+me. Omitted messages or spend ping skips that ping. A ping failure still
 returns **200**.
 
 Otherwise insert the edge then update role, log `trust.verified`
@@ -1283,7 +1287,9 @@ About me is the profile-note text when it is a real bio, else null (auto
 name-copy is not a bio, including after a display-name rename when the
 note text still equals the stored profile-note `name` (Ada→Grace with
 text `Ada` stays `null`)). `aboutMeHasPhoto` is true when the live note
-has a stored photo.
+has a stored photo. After that successful save, a verified account with a
+live top-level photo or video (including this note) is welcome-pinged.
+Omitted spend ping skips. A ping failure still returns **200**.
 
 ### `GET /me/about/photo`
 
@@ -2822,7 +2828,9 @@ Success is always **200** (never 404 for an unknown address):
 ```
 
 or `{ "hasPosted": false, "messageId": null, "postedAt": null, "hasMedia": false, "welcomeHasMedia": false, "welcomeMessageId": null }` when there is no account for the
-address, or the account has no live top-level photo or video (a profile note that is text-only does not count). A profile note that has a photo or video keeps `hasPosted: false` and sets `welcomeHasMedia: true` with that note as `welcomeMessageId`. Replies do not count. Photo-only / empty-text
+address, or the account has no live top-level note other than a text-only profile note.
+`hasPosted` is still any live top-level note that is not the profile note, including text-only.
+A profile note that has a photo or video keeps `hasPosted: false` and sets `welcomeHasMedia: true` with that note as `welcomeMessageId`. Replies do not count. Photo-only / empty-text
 top-level notes still count for `hasPosted`. `hasMedia` is true only when such a
 post has photo 0, extra stills, or video. `welcomeHasMedia` is true when any live top-level photo or video exists, including the About-me note, even when `hasPosted` is false. `welcomeMessageId` is that newest note's id, or null. When `hasPosted` is true, `messageId` is usually
 the newest live top-level non-profile post id; it can still be `null` if
@@ -2874,9 +2882,11 @@ integer in `1000..10000000000`. `messageId` is optional (current spend without
 the field still works). `groupMessageId` is optional and mutually exclusive
 with `messageId` (both set → **400**). Invalid UUID on either field → **400**
 `{ "error": "Expected a JSON body with address and amountMsat" }`. When
-`messageId` is set, the post must be that address's live top-level
-non-profile note **and** have a photo or video (else **403** `Forum post required` before LNURL). Omitted `messageId` stays any live top-level
-non-profile post (no media requirement). Missing
+`messageId` is set, the post must be that address's live top-level note,
+including the About-me profile note, **and** have a photo or video (else
+**403** `Forum post required` before LNURL). A text-only profile note stays
+**403**. Omitted `messageId` stays any live top-level non-profile post (no
+media requirement). Missing
 `isPlatform` account → **503** `{ "error": "Platform account is not configured" }`
 (no LNURL). Stores `messageId` and `comment` (or `''`) on the invoice.
 When `groupMessageId` is set (no `messageId`), the living-room post gate
@@ -2921,8 +2931,9 @@ is stored):
 
 The account has a passkey but no live **top-level** forum message other than
 the auto-created profile note, or `messageId` is set but is not that
-address's live top-level non-profile note with a photo or video → **403** (after the passkey and
-grant checks, before any LNURL fetch; no invoice is stored):
+address's live top-level note (About me included) with a photo or video →
+**403** (after the passkey and grant checks, before any LNURL fetch; no
+invoice is stored):
 
 ```json
 { "error": "Forum post required" }

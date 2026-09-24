@@ -191,7 +191,8 @@ worker holds lightning.space LNDHub credentials and calls:
 Recurring **USD** gifts are paid by the external spend worker **when the
 recipient posts a top-level note with a photo or video**, not on a daily timer, and only when
 that recipient is funding-eligible today. `POST /invoices` with `messageId`
-requires that photo or video (else 403 `Forum post required`); omitted
+requires that photo or video, and the About-me note counts when it has that
+media (else 403 `Forum post required`); omitted
 `messageId` (moderator stipend) stays any live top-level non-profile post.
 `GET /invoices/posted` returns additive `hasMedia` (`hasPosted` unchanged).
 `POST /invoices` 403s

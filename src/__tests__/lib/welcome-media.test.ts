@@ -186,7 +186,7 @@ describe('syncWelcomePing', () => {
     await syncWelcomePing({
       spendPing: { ping },
       messages,
-      account: account({ id: 'acc', role: 'verified', profileMessageId: PHOTO_ID }),
+      account: account({ id: 'acc', role: 'verified' }),
     });
     expect(ping).toHaveBeenCalledTimes(1);
     expect(ping).toHaveBeenCalledWith('ada@walletofsatoshi.com', PHOTO_ID, 'welcome');
@@ -263,18 +263,8 @@ describe('syncWelcomePing', () => {
   it('counts a note that only has extra stills and ignores a missing still count', async () => {
     const ping = vi.fn(async () => undefined);
     const stills = {
-      async listPostsByAccount() {
-        return [
-          {
-            id: PHOTO_ID,
-            hasPhoto: false,
-            hasVideo: false,
-            photoCount: 2,
-          },
-        ];
-      },
-      async getById() {
-        return undefined;
+      async latestLiveTopLevelMediaId() {
+        return PHOTO_ID;
       },
     } as unknown as MessageStore;
     await syncWelcomePing({
@@ -285,18 +275,8 @@ describe('syncWelcomePing', () => {
     expect(ping).toHaveBeenCalledWith('ada@walletofsatoshi.com', PHOTO_ID, 'welcome');
 
     const missingCount = {
-      async listPostsByAccount() {
-        return [{ id: TEXT_ID, hasPhoto: false, hasVideo: false }];
-      },
-      async getById() {
-        return {
-          id: PHOTO_ID,
-          accountId: 'acc',
-          deletedAt: null,
-          parentId: null,
-          hasPhoto: false,
-          hasVideo: false,
-        };
+      async latestLiveTopLevelMediaId() {
+        return null;
       },
     } as unknown as MessageStore;
     ping.mockClear();
@@ -310,7 +290,7 @@ describe('syncWelcomePing', () => {
 
   it('logs and resolves when the lookup or the ping throws', async () => {
     const messages = {
-      async listPostsByAccount() {
+      async latestLiveTopLevelMediaId() {
         throw new Error('list boom');
       },
     } as unknown as MessageStore;
@@ -430,7 +410,7 @@ describe('syncWelcomePing', () => {
     const live = new InMemoryAuthStore();
     await live.createAccount(account({ id: 'acc', role: 'verified', profileMessageId: PHOTO_ID }));
     const messages = {
-      async accountHasLiveTopLevelMediaPost() {
+      async latestLiveTopLevelMediaId() {
         throw new Error('media boom');
       },
     } as unknown as MessageStore;
