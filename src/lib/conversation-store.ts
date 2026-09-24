@@ -618,6 +618,14 @@ export const CONVERSATION_SCHEMA_SQL: readonly string[] = [
   CONSTRAINT conversation_message_extra_photo_idx_range CHECK (idx >= 1 AND idx <= 9)
 )`,
   `ALTER TABLE conversation_message_extra_photo ADD COLUMN IF NOT EXISTS photo_taken_at text`,
+  `CREATE TABLE IF NOT EXISTS conversation_message_translation (
+  message_id uuid NOT NULL REFERENCES conversation_message (id) ON DELETE CASCADE,
+  target_lang text NOT NULL,
+  source_sha256 text NOT NULL,
+  translated_text text NOT NULL,
+  created_at timestamptz NOT NULL,
+  PRIMARY KEY (message_id, target_lang)
+)`,
   `DO $unwrap$
    DECLARE
      repair_row RECORD;
@@ -708,6 +716,10 @@ const THREAD_SELECT = `c.id, c.kind, c.account_a, c.account_b, c.counterpart_pub
     ORDER BY m.created_at DESC, m.id DESC
     LIMIT 1
   ), '') AS last_text,
+  (SELECT m.id FROM conversation_message m
+   WHERE m.conversation_id = c.id
+   ORDER BY m.created_at DESC, m.id DESC
+   LIMIT 1) AS last_id,
   (SELECT m.sender_account_id FROM conversation_message m
    WHERE m.conversation_id = c.id
    ORDER BY m.created_at DESC, m.id DESC
@@ -1282,6 +1294,7 @@ export class InMemoryConversationStore implements ConversationStore {
       lastMessageAt: new Date(args.now.getTime()),
       name: '',
       lastText: '',
+      lastMessageId: null,
       lastSenderAccountId: null,
       lastSats: 0,
       lastActorAccountId: null,
@@ -1297,6 +1310,7 @@ export class InMemoryConversationStore implements ConversationStore {
     return {
       ...copyThread(thread),
       lastText: last?.text ?? '',
+      lastMessageId: last?.id ?? null,
       lastSenderAccountId: last?.senderAccountId ?? null,
       lastSats: last?.sats ?? 0,
       lastAmountUsd: last?.amountUsd ?? null,
@@ -1342,6 +1356,7 @@ interface ConversationSqlRow {
   created_at: Date | string;
   last_message_at: Date | string;
   last_text?: string | null;
+  last_id?: string | null;
   last_sender_account_id?: string | null;
   last_actor_account_id?: string | null;
   last_sats?: string | number | null;
@@ -2174,6 +2189,7 @@ function mapThread(row: ConversationSqlRow): ConversationThread {
     lastMessageAt: asDate(row.last_message_at),
     name: '',
     lastText: row.last_text ?? '',
+    lastMessageId: row.last_id ?? null,
     lastSenderAccountId: row.last_sender_account_id ?? null,
     lastSats: Number(row.last_sats ?? 0),
     lastAmountUsd: textOrNull(row.last_fiat_usd),

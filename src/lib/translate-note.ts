@@ -24,12 +24,31 @@ export class TranslateNotConfiguredError extends Error {
 }
 
 const inflight = new Map<string, Promise<TranslateNoteResult>>();
+const storeInflightId = new WeakMap<object, string>();
+let nextStoreInflightId = 0;
+
+function inflightKey(
+  store: TranslationStore,
+  messageId: string,
+  target: TranslateTarget,
+  sourceSha256: string,
+): string {
+  let storeId = storeInflightId.get(store);
+  if (storeId === undefined) {
+    nextStoreInflightId += 1;
+    storeId = String(nextStoreInflightId);
+    storeInflightId.set(store, storeId);
+  }
+  return `${storeId}\0${messageId}\0${target}\0${sourceSha256}`;
+}
 
 /**
- * Return a cached translation or call DeepL once per (message, locale, source).
+ * Return a cached translation or call DeepL once per store, message, locale, and source.
  *
- * Concurrent callers for the same key share one DeepL POST. A stored row for
- * the current source hash is returned without contacting DeepL.
+ * Concurrent callers for the same store and key share one DeepL POST. A different
+ * store does not share that call, so the forum cache and the conversation cache
+ * each record the result. A stored row for the current source hash is returned
+ * without contacting DeepL.
  *
  * @param store - Translation cache.
  * @param env - Process env for DeepL config.
@@ -58,7 +77,7 @@ export async function translateForumNote(
   if (upstream === null) {
     throw new TranslateNotConfiguredError();
   }
-  const key = `${messageId}\0${target}\0${sourceSha256}`;
+  const key = inflightKey(store, messageId, target, sourceSha256);
   const pending = inflight.get(key);
   if (pending !== undefined) {
     return pending;

@@ -47,6 +47,13 @@ import type { PushStore } from '@/lib/push-store';
 import { eligibleToday } from '@/lib/funding';
 import { InMemoryFundingStore, type FundingStore } from '@/lib/funding-store';
 import type { SpendPing } from '@/lib/spend-ping';
+import type { TranslateTarget } from '@/lib/translate-config';
+import {
+  TranslateNotConfiguredError,
+  TranslateUpstreamError,
+  translateForumNote,
+} from '@/lib/translate-note';
+import { InMemoryTranslationStore, type TranslationStore } from '@/lib/translation-store';
 import { bearerToken } from '@/routes/me';
 import { WAIT_SATS_POLL_MS, WAIT_SATS_TIMEOUT_MS } from '@/routes/messages';
 
@@ -89,6 +96,17 @@ export interface ConversationRouteDeps {
   pushStore?: PushStore;
   /** Optional in-app unread source for push badge counts. */
   notificationStore?: NotificationStore;
+  /**
+   * Cached DeepL output (default: empty {@link InMemoryTranslationStore}).
+   * SQL boot injects a second {@link PostgresTranslationStore} aimed at
+   * `conversation_message_translation`. Never the forum store instance.
+   */
+  translationStore?: TranslationStore;
+  /**
+   * Optional env slice for DeepL (`TRANSLATE_URL` / `TRANSLATE_API_KEY`).
+   * Default `{}`.
+   */
+  env?: Record<string, string | undefined>;
 }
 
 const CONVERSATION_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -123,6 +141,9 @@ const conversationMessageBody = z
       (Array.isArray(body.photos) && body.photos.length > 0),
   );
 const forumMessageBody = z.object({ forumMessageId: z.string() });
+const translateBody = z.object({
+  target: z.enum(['en', 'de', 'es', 'fil']),
+});
 const invoiceBody = z.object({
   sats: z.number().int().positive(),
   text: z.string().optional(),
@@ -458,14 +479,16 @@ async function serveConversationPhoto(
 /**
  * Build the `/conversations` route group. `GET /` lists the inbox and never
  * pins `moderator_group`; `GET /moderator-group` is the closed-group tool
- * for anyone at least moderator. Photo GET routes register before `GET /:id`.
+ * for anyone at least moderator. Photo GET routes and
+ * `POST /:id/messages/:messageId/translate` register before `GET /:id`.
  *
- * @param deps - Stores, clock, optional spend ping, invoice collaborators, wait injects, and optional push and notification stores.
- * @returns A Hono app with list/open/read/reply/invoice/photo routes and GET `/moderator-group`.
+ * @param deps - Stores, clock, optional spend ping, invoice collaborators, wait injects, optional push and notification stores, optional `translationStore` (default empty `InMemoryTranslationStore`), and optional `env`.
+ * @returns A Hono app with list/open/read/reply/invoice/photo/translate routes and GET `/moderator-group`.
  */
 export function conversationRoutes(deps: ConversationRouteDeps): Hono {
   const invoiceLimiter = deps.invoiceLimiter ?? defaultInvoiceLimiter;
   const fetchImpl = deps.fetchImpl ?? globalThis.fetch;
+  const translationStore = deps.translationStore ?? new InMemoryTranslationStore();
 
   return new Hono()
     .get('/', async (c) => {
@@ -659,6 +682,57 @@ export function conversationRoutes(deps: ConversationRouteDeps): Hono {
         c.req.header('authorization'),
       ),
     )
+    .post('/:id/messages/:messageId/translate', async (c) => {
+      const account = await authedAccount(deps, c.req.header('authorization'));
+      if (account === null) {
+        return c.json({ error: 'Unauthorized' }, 401);
+      }
+      const id = c.req.param('id');
+      if (!CONVERSATION_ID_RE.test(id)) {
+        return c.json({ error: 'Not found' }, 404);
+      }
+      const messageId = c.req.param('messageId');
+      if (!CONVERSATION_ID_RE.test(messageId)) {
+        return c.json({ error: 'Not found' }, 404);
+      }
+      const parsed = translateBody.safeParse(await c.req.json().catch(() => null));
+      if (!parsed.success) {
+        return c.json({ error: 'Invalid body' }, 400);
+      }
+      const target: TranslateTarget = parsed.data.target;
+      try {
+        const thread = await deps.store.getById(id);
+        const platform = await platformAccount(deps.authStore);
+        if (thread === undefined || !canAccess(thread, account, platform?.id ?? null)) {
+          return c.json({ error: 'Not found' }, 404);
+        }
+        const row = await deps.store.getMessageById(messageId);
+        if (row === undefined || row.conversationId !== id) {
+          return c.json({ error: 'Not found' }, 404);
+        }
+        if (row.text.trim() === '') {
+          return c.json({ error: 'Invalid body' }, 400);
+        }
+        const result = await translateForumNote(
+          translationStore,
+          deps.env ?? {},
+          messageId,
+          row.text,
+          target,
+          fetchImpl,
+        );
+        return c.json({ translatedText: result.translatedText, cached: result.cached }, 200);
+      } catch (err) {
+        if (err instanceof TranslateNotConfiguredError) {
+          return c.json({ error: 'Translate is not configured' }, 503);
+        }
+        if (err instanceof TranslateUpstreamError) {
+          return c.json({ error: 'Translate upstream failed' }, 502);
+        }
+        logEvent('conversations.translate.failed');
+        return c.json({ error: 'Conversations are unavailable' }, 503);
+      }
+    })
     .get('/:id', async (c) => {
       const account = await authedAccount(deps, c.req.header('authorization'));
       if (account === null) {

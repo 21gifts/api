@@ -44,6 +44,11 @@ export interface ConversationThread {
   name: string;
   /** Last message body, or empty when the thread has no messages yet. */
   lastText: string;
+  /**
+   * Id of the newest message (`created_at DESC, id DESC`), or `null` when
+   * the thread has no messages.
+   */
+  lastMessageId: string | null;
   /** Sender account of the newest message, or null when the thread has no messages / Damus inbound. */
   lastSenderAccountId: string | null;
   /** Actor account of the newest message, or null when the thread has no messages / no actor. */
@@ -126,6 +131,11 @@ export interface PublicConversation {
   name: string;
   /** Last message text. */
   lastText: string;
+  /**
+   * Id of the same newest row that supplies `lastText`, or `null` when the
+   * thread has no messages. Always present. Not translated at the list layer.
+   */
+  lastMessageId: string | null;
   /** ISO-8601 last message time. */
   lastAt: string;
   /** True when the last message's actor (else sender) is the viewer. */
@@ -248,6 +258,7 @@ export function serializeConversation(
     kind: thread.kind,
     name: thread.name,
     lastText: thread.lastText,
+    lastMessageId: thread.lastMessageId,
     lastAt: thread.lastMessageAt.toISOString(),
     lastFromMe,
     lastSats: thread.lastSats,

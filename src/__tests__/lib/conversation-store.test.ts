@@ -63,6 +63,7 @@ function thread(partial: Partial<ConversationThread> = {}): ConversationThread {
     lastMessageAt: NOW,
     name: '',
     lastText: '',
+    lastMessageId: null,
     lastSenderAccountId: null,
     lastActorAccountId: null,
     lastSats: 0,
@@ -107,9 +108,11 @@ function sqlMessage(id: string, createdAt: Date): Record<string, unknown> {
 describe('CONVERSATION_SCHEMA_SQL', () => {
   it('creates conversation tables and unique indexes', () => {
     const joined = CONVERSATION_SCHEMA_SQL.join('\n');
-    expect(CONVERSATION_SCHEMA_SQL).toHaveLength(30);
+    expect(CONVERSATION_SCHEMA_SQL).toHaveLength(31);
     expect(joined).toMatch(/CREATE TABLE IF NOT EXISTS conversation/i);
     expect(joined).toMatch(/CREATE TABLE IF NOT EXISTS conversation_message/i);
+    expect(joined).toMatch(/CREATE TABLE IF NOT EXISTS conversation_message_translation/i);
+    expect(joined).toMatch(/REFERENCES conversation_message \(id\) ON DELETE CASCADE/);
     expect(joined).toMatch(/actor_account_id/);
     expect(joined).toMatch(/actor_name/);
     expect(joined).toMatch(
@@ -330,6 +333,7 @@ describe('InMemoryConversationStore', () => {
   it('appends messages, hydrates lastText, and copies so callers cannot mutate', async () => {
     const store = new InMemoryConversationStore();
     const opened = await store.openMemberMember('a', 'b', NOW);
+    expect((await store.getById(opened.id))?.lastMessageId).toBeNull();
     const created = await store.appendMessage(message({ conversationId: opened.id, text: 'hi' }));
     created.text = 'mutated';
     const listed = await store.listMessages(opened.id, 10);
@@ -337,6 +341,7 @@ describe('InMemoryConversationStore', () => {
     expect(listed[0]?.text).toBe('hi');
     const got = await store.getById(opened.id);
     expect(got?.lastText).toBe('hi');
+    expect(got?.lastMessageId).toBe(created.id);
     expect(got?.lastSenderAccountId).toBe('acc-a');
   });
 
@@ -507,6 +512,7 @@ describe('InMemoryConversationStore', () => {
     );
     expect((await store.listMessages(opened.id, 10)).map((r) => r.id)).toEqual(['m-a', 'm-z']);
     expect((await store.getById(opened.id))?.lastText).toBe('later-id');
+    expect((await store.getById(opened.id))?.lastMessageId).toBe('m-z');
     const claimed = await store.claimUnsigned(1, 1_000, 60_000);
     expect(claimed.map((r) => r.id)).toEqual(['m-a']);
   });
@@ -1012,13 +1018,17 @@ describe('PostgresConversationStore', () => {
         created_at: NOW,
         last_message_at: '2026-08-29T13:00:00.000Z',
         last_text: 'hi',
+        last_id: 'm-last',
       },
     ];
     const store = new PostgresConversationStore(sql);
     const got = await store.getById('c1');
     expect(got?.accountA).toBe('a');
     expect(got?.lastText).toBe('hi');
+    expect(got?.lastMessageId).toBe('m-last');
     expect(got?.lastSenderAccountId).toBeNull();
+    expect(sql.queries[0]?.text).toMatch(/AS last_text/);
+    expect(sql.queries[0]?.text).toMatch(/AS last_id/);
     expect(got?.lastMessageAt.toISOString()).toBe('2026-08-29T13:00:00.000Z');
     expect(sql.queries[0]?.params).toEqual(['c1']);
   });
@@ -1125,6 +1135,7 @@ describe('PostgresConversationStore', () => {
     ];
     const got = await new PostgresConversationStore(sql).getById('c1');
     expect(got?.lastText).toBe('');
+    expect(got?.lastMessageId).toBeNull();
     expect(got?.lastSenderAccountId).toBeNull();
   });
 

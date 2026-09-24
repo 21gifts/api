@@ -41,6 +41,7 @@ function thread(partial: Partial<ConversationThread> = {}): ConversationThread {
     lastMessageAt: NOW,
     name: 'Bob',
     lastText: 'hi',
+    lastMessageId: null,
     lastSenderAccountId: 'acc-a',
     lastActorAccountId: null,
     lastSats: 0,

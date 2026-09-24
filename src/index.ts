@@ -102,6 +102,9 @@ if (import.meta.main) {
     ...(giftStore === undefined ? {} : { giftStore }),
     ...(giftRecorder === undefined ? {} : { giftRecorder }),
     ...(boot.translationStore === undefined ? {} : { translationStore: boot.translationStore }),
+    ...(boot.conversationTranslationStore === undefined
+      ? {}
+      : { conversationTranslationStore: boot.conversationTranslationStore }),
     ...(nostrKek === undefined ? {} : { nostrKek }),
     ...(publisher === undefined ? {} : { nostrPublisher: publisher }),
     ...(contactStore === undefined ? {} : { contactStore }),

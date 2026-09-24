@@ -205,6 +205,13 @@ export interface AppDeps {
    */
   translationStore?: TranslationStore;
   /**
+   * Cached DeepL output for conversation messages. Omitted so
+   * `conversationRoutes` constructs one {@link InMemoryTranslationStore}.
+   * SQL boot injects a second {@link PostgresTranslationStore} aimed at
+   * `conversation_message_translation`. Never the forum store instance.
+   */
+  conversationTranslationStore?: TranslationStore;
+  /**
    * Private in-app contact mailbox (default: empty
    * {@link InMemoryContactStore}). Boot injects
    * {@link PostgresContactStore} when `DATABASE_URL` is set.
@@ -559,8 +566,12 @@ export function createApp(deps: AppDeps = {}): Hono {
       now,
       fetchImpl,
       fundingStore,
+      env,
       ...(nostrKek === undefined ? {} : { nostrKek }),
       ...(spendPing === undefined ? {} : { spendPing }),
+      ...(deps.conversationTranslationStore === undefined
+        ? {}
+        : { translationStore: deps.conversationTranslationStore }),
       pushStore,
       notificationStore,
     }),

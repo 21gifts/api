@@ -15,6 +15,7 @@ import { InvoiceRateLimiter } from '@/lib/nostr/rate-limit';
 import { InMemoryPushStore } from '@/lib/push-store';
 import { InMemoryFundingStore } from '@/lib/funding-store';
 import type { SpendPing } from '@/lib/spend-ping';
+import { InMemoryTranslationStore, translationSourceHash } from '@/lib/translation-store';
 import { conversationRoutes } from '@/routes/conversations';
 
 function parsedEvents(warn: ReturnType<typeof vi.spyOn>): Array<Record<string, unknown>> {
@@ -94,6 +95,9 @@ function mount(
     pushStore?: InMemoryPushStore;
     fundingStore?: InMemoryFundingStore;
     now?: () => number;
+    translationStore?: InMemoryTranslationStore;
+    env?: Record<string, string | undefined>;
+    fetchImpl?: FetchFn;
   } = {},
 ): Hono {
   return new Hono().route(
@@ -106,6 +110,9 @@ function mount(
       ...(extra.spendPing === undefined ? {} : { spendPing: extra.spendPing }),
       ...(extra.pushStore === undefined ? {} : { pushStore: extra.pushStore }),
       ...(extra.fundingStore === undefined ? {} : { fundingStore: extra.fundingStore }),
+      ...(extra.translationStore === undefined ? {} : { translationStore: extra.translationStore }),
+      ...(extra.env === undefined ? {} : { env: extra.env }),
+      ...(extra.fetchImpl === undefined ? {} : { fetchImpl: extra.fetchImpl }),
     }),
   );
 }
@@ -293,6 +300,7 @@ describe('GET /conversations', () => {
         kind: string;
         lastFromMe: boolean;
         lastText: string;
+        lastMessageId: string | null;
         accountId?: string;
       }>;
     };
@@ -300,6 +308,7 @@ describe('GET /conversations', () => {
     expect(body.conversations[0]?.kind).toBe('member_platform');
     expect(body.conversations[0]?.lastFromMe).toBe(true);
     expect(body.conversations[0]?.lastText).toBe('help');
+    expect(body.conversations[0]?.lastMessageId).toBe('m1');
     expect(body.conversations[0]?.accountId).toBe('plat');
   });
 
@@ -803,6 +812,7 @@ describe('GET /conversations', () => {
           lastMessageAt: new Date(now()),
           name: '',
           lastText: '',
+          lastMessageId: null,
           lastSenderAccountId: null,
           lastActorAccountId: null,
           lastSats: 0,
@@ -850,6 +860,7 @@ describe('GET /conversations', () => {
           lastMessageAt: new Date(now()),
           name: '',
           lastText: '',
+          lastMessageId: null,
           lastSenderAccountId: null,
           lastActorAccountId: null,
           lastSats: 0,
@@ -1604,6 +1615,389 @@ describe('GET /conversations/:id', () => {
       headers: AUTH,
     });
     expect(res.status).toBe(503);
+  });
+});
+
+const TRANSLATE_ENV = {
+  TRANSLATE_URL: 'https://api.deepl.com/v2/translate',
+  TRANSLATE_API_KEY: 'deepl-secret-key',
+};
+const MISSING_UUID = '00000000-0000-4000-8000-0000000000ff';
+
+async function memberThreadWithText(
+  text: string,
+  role: 'basis' | 'moderator' | 'founder' = 'basis',
+): Promise<{
+  auth: InMemoryAuthStore;
+  conversations: InMemoryConversationStore;
+  threadId: string;
+}> {
+  const auth = await seeded(role);
+  await withOther(auth);
+  const conversations = new InMemoryConversationStore();
+  const thread = await conversations.openMemberMember('acc', 'other', new Date(now()));
+  await conversations.appendMessage({
+    id: NOTE_ID,
+    conversationId: thread.id,
+    text,
+    createdAt: new Date(now()),
+    senderAccountId: 'acc',
+    senderPubkey: null,
+    name: 'Ada',
+    sats: 0,
+    eventId: null,
+    nostrPublishState: 'pending',
+    nostrEvent: null,
+    claimedUntil: null,
+  });
+  return { auth, conversations, threadId: thread.id };
+}
+
+describe('POST /conversations/:id/messages/:messageId/translate', () => {
+  it('returns 401 without a session', async () => {
+    const res = await mount(new InMemoryAuthStore()).request(
+      `/conversations/${NOTE_ID}/messages/${NOTE_ID}/translate`,
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ target: 'en' }),
+      },
+    );
+    expect(res.status).toBe(401);
+  });
+
+  it('returns 404 when the conversation id is not a UUID', async () => {
+    const res = await mount(await seeded()).request(
+      `/conversations/not-a-uuid/messages/${NOTE_ID}/translate`,
+      {
+        method: 'POST',
+        headers: { ...AUTH, 'content-type': 'application/json' },
+        body: JSON.stringify({ target: 'en' }),
+      },
+    );
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ error: 'Not found' });
+  });
+
+  it('returns 404 when the message id is not a UUID', async () => {
+    const res = await mount(await seeded()).request(
+      `/conversations/${NOTE_ID}/messages/not-a-uuid/translate`,
+      {
+        method: 'POST',
+        headers: { ...AUTH, 'content-type': 'application/json' },
+        body: JSON.stringify({ target: 'en' }),
+      },
+    );
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ error: 'Not found' });
+  });
+
+  it('returns 400 when the body is missing target or is not en|de|es|fil', async () => {
+    const auth = await seeded();
+    const missing = await mount(auth).request(
+      `/conversations/${NOTE_ID}/messages/${NOTE_ID}/translate`,
+      {
+        method: 'POST',
+        headers: { ...AUTH, 'content-type': 'application/json' },
+        body: JSON.stringify({}),
+      },
+    );
+    expect(missing.status).toBe(400);
+    expect(await missing.json()).toEqual({ error: 'Invalid body' });
+    const bad = await mount(auth).request(
+      `/conversations/${NOTE_ID}/messages/${NOTE_ID}/translate`,
+      {
+        method: 'POST',
+        headers: { ...AUTH, 'content-type': 'application/json' },
+        body: JSON.stringify({ target: 'fr' }),
+      },
+    );
+    expect(bad.status).toBe(400);
+    expect(await bad.json()).toEqual({ error: 'Invalid body' });
+  });
+
+  it('returns 400 when the body is not JSON', async () => {
+    const res = await mount(await seeded()).request(
+      `/conversations/${NOTE_ID}/messages/${NOTE_ID}/translate`,
+      {
+        method: 'POST',
+        headers: { ...AUTH, 'content-type': 'application/json' },
+        body: 'not-json',
+      },
+    );
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: 'Invalid body' });
+  });
+
+  it('returns 404 when the thread is missing', async () => {
+    const res = await mount(await seeded()).request(
+      `/conversations/${MISSING_UUID}/messages/${NOTE_ID}/translate`,
+      {
+        method: 'POST',
+        headers: { ...AUTH, 'content-type': 'application/json' },
+        body: JSON.stringify({ target: 'en' }),
+      },
+    );
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ error: 'Not found' });
+  });
+
+  it('returns 404 when canAccess is false and lets a moderator translate moderator_group', async () => {
+    const conversations = new InMemoryConversationStore();
+    const thread = await conversations.openMemberMember('acc', 'other', new Date(now()));
+    await conversations.appendMessage({
+      id: NOTE_ID,
+      conversationId: thread.id,
+      text: 'Hallo Welt',
+      createdAt: new Date(now()),
+      senderAccountId: 'acc',
+      senderPubkey: null,
+      name: 'Ada',
+      sats: 0,
+      eventId: null,
+      nostrPublishState: 'pending',
+      nostrEvent: null,
+      claimedUntil: null,
+    });
+    const stranger = new InMemoryAuthStore();
+    await stranger.createAccount({
+      id: 'stranger',
+      linkingKey: null,
+      role: 'basis',
+      name: 'Eve',
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: 'e'.repeat(64),
+      createdAt: 4,
+      rulesAgreedAt: null,
+    });
+    await stranger.createSession({ token: 'tok', accountId: 'stranger', createdAt: now() });
+    const foreign = await mount(stranger, conversations).request(
+      `/conversations/${thread.id}/messages/${NOTE_ID}/translate`,
+      {
+        method: 'POST',
+        headers: { ...AUTH, 'content-type': 'application/json' },
+        body: JSON.stringify({ target: 'en' }),
+      },
+    );
+    expect(foreign.status).toBe(404);
+    expect(await foreign.json()).toEqual({ error: 'Not found' });
+
+    const basis = await seeded();
+    await withPlatform(basis);
+    const groupStore = new InMemoryConversationStore();
+    const group = await groupStore.ensureModeratorGroup('plat', new Date(now()));
+    await groupStore.appendMessage({
+      id: NOTE_ID,
+      conversationId: group.id,
+      text: 'Hallo Welt',
+      createdAt: new Date(now()),
+      senderAccountId: 'acc',
+      senderPubkey: null,
+      name: 'Ada',
+      sats: 0,
+      eventId: null,
+      nostrPublishState: 'skipped',
+      nostrEvent: null,
+      claimedUntil: null,
+    });
+    const basisDenied = await mount(basis, groupStore).request(
+      `/conversations/${group.id}/messages/${NOTE_ID}/translate`,
+      {
+        method: 'POST',
+        headers: { ...AUTH, 'content-type': 'application/json' },
+        body: JSON.stringify({ target: 'en' }),
+      },
+    );
+    expect(basisDenied.status).toBe(404);
+    expect(await basisDenied.json()).toEqual({ error: 'Not found' });
+
+    const mod = await seeded('moderator');
+    await withPlatform(mod);
+    const translations = new InMemoryTranslationStore();
+    await translations.put(NOTE_ID, 'en', translationSourceHash('Hallo Welt'), 'Hello, World');
+    const allowed = await mount(mod, groupStore, new InMemoryMessageStore(), {
+      env: TRANSLATE_ENV,
+      translationStore: translations,
+    }).request(`/conversations/${group.id}/messages/${NOTE_ID}/translate`, {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ target: 'en' }),
+    });
+    expect(allowed.status).toBe(200);
+    expect(await allowed.json()).toEqual({ translatedText: 'Hello, World', cached: true });
+  });
+
+  it('returns 404 when the message is missing', async () => {
+    const { auth, conversations, threadId } = await memberThreadWithText('Hallo Welt');
+    const res = await mount(auth, conversations).request(
+      `/conversations/${threadId}/messages/${MISSING_UUID}/translate`,
+      {
+        method: 'POST',
+        headers: { ...AUTH, 'content-type': 'application/json' },
+        body: JSON.stringify({ target: 'en' }),
+      },
+    );
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ error: 'Not found' });
+  });
+
+  it('returns 404 when the message belongs to another conversation', async () => {
+    const auth = await seeded();
+    await withOther(auth);
+    const conversations = new InMemoryConversationStore();
+    const mine = await conversations.openMemberMember('acc', 'other', new Date(now()));
+    const theirs = await conversations.openMemberMember('other', 'third', new Date(now()));
+    await conversations.appendMessage({
+      id: NOTE_ID,
+      conversationId: theirs.id,
+      text: 'Hallo Welt',
+      createdAt: new Date(now()),
+      senderAccountId: 'other',
+      senderPubkey: null,
+      name: 'Bob',
+      sats: 0,
+      eventId: null,
+      nostrPublishState: 'pending',
+      nostrEvent: null,
+      claimedUntil: null,
+    });
+    const res = await mount(auth, conversations).request(
+      `/conversations/${mine.id}/messages/${NOTE_ID}/translate`,
+      {
+        method: 'POST',
+        headers: { ...AUTH, 'content-type': 'application/json' },
+        body: JSON.stringify({ target: 'en' }),
+      },
+    );
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ error: 'Not found' });
+  });
+
+  it('returns 400 when stored text trims empty', async () => {
+    const { auth, conversations, threadId } = await memberThreadWithText('   ');
+    const res = await mount(auth, conversations).request(
+      `/conversations/${threadId}/messages/${NOTE_ID}/translate`,
+      {
+        method: 'POST',
+        headers: { ...AUTH, 'content-type': 'application/json' },
+        body: JSON.stringify({ target: 'en' }),
+      },
+    );
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: 'Invalid body' });
+  });
+
+  it('returns cached true from stored text and ignores a client text field', async () => {
+    const { auth, conversations, threadId } = await memberThreadWithText('Hallo Welt');
+    const translations = new InMemoryTranslationStore();
+    await translations.put(NOTE_ID, 'en', translationSourceHash('Hallo Welt'), 'Hello, World');
+    let fetchCalls = 0;
+    const fetchImpl: FetchFn = async () => {
+      fetchCalls += 1;
+      throw new Error('DeepL must not be called');
+    };
+    const res = await mount(auth, conversations, new InMemoryMessageStore(), {
+      env: TRANSLATE_ENV,
+      translationStore: translations,
+      fetchImpl,
+    }).request(`/conversations/${threadId}/messages/${NOTE_ID}/translate`, {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ target: 'en', text: 'client source' }),
+    });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ translatedText: 'Hello, World', cached: true });
+    expect(fetchCalls).toBe(0);
+  });
+
+  it('returns cached false when DeepL JSON is fetched', async () => {
+    const { auth, conversations, threadId } = await memberThreadWithText('Hallo Welt');
+    let fetchCalls = 0;
+    const fetchImpl: FetchFn = async () => {
+      fetchCalls += 1;
+      return new Response(JSON.stringify({ translations: [{ text: 'Hello world' }] }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    };
+    const res = await mount(auth, conversations, new InMemoryMessageStore(), {
+      env: TRANSLATE_ENV,
+      translationStore: new InMemoryTranslationStore(),
+      fetchImpl,
+    }).request(`/conversations/${threadId}/messages/${NOTE_ID}/translate`, {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ target: 'en' }),
+    });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ translatedText: 'Hello world', cached: false });
+    expect(fetchCalls).toBe(1);
+  });
+
+  it('returns 503 when translate is not configured', async () => {
+    const { auth, conversations, threadId } = await memberThreadWithText('Hallo Welt');
+    const res = await mount(auth, conversations, new InMemoryMessageStore(), {
+      env: {},
+    }).request(`/conversations/${threadId}/messages/${NOTE_ID}/translate`, {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ target: 'en' }),
+    });
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({ error: 'Translate is not configured' });
+  });
+
+  it('returns 503 when translate is not configured and env is omitted', async () => {
+    const { auth, conversations, threadId } = await memberThreadWithText('Hallo Welt');
+    const res = await mount(auth, conversations).request(
+      `/conversations/${threadId}/messages/${NOTE_ID}/translate`,
+      {
+        method: 'POST',
+        headers: { ...AUTH, 'content-type': 'application/json' },
+        body: JSON.stringify({ target: 'en' }),
+      },
+    );
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({ error: 'Translate is not configured' });
+  });
+
+  it('returns 502 when DeepL fails', async () => {
+    const { auth, conversations, threadId } = await memberThreadWithText('Hallo Welt');
+    const fetchImpl: FetchFn = async () =>
+      new Response('nope', { status: 500, headers: { 'content-type': 'application/json' } });
+    const res = await mount(auth, conversations, new InMemoryMessageStore(), {
+      env: TRANSLATE_ENV,
+      fetchImpl,
+    }).request(`/conversations/${threadId}/messages/${NOTE_ID}/translate`, {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ target: 'en' }),
+    });
+    expect(res.status).toBe(502);
+    expect(await res.json()).toEqual({ error: 'Translate upstream failed' });
+  });
+
+  it('returns 503 Conversations are unavailable when getById throws', async () => {
+    const { auth, conversations, threadId } = await memberThreadWithText('Hallo Welt');
+    conversations.getById = async (): Promise<never> => {
+      throw new Error('db down');
+    };
+    const res = await mount(auth, conversations, new InMemoryMessageStore(), {
+      env: TRANSLATE_ENV,
+    }).request(`/conversations/${threadId}/messages/${NOTE_ID}/translate`, {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ target: 'en', text: 'Hallo Welt' }),
+    });
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({ error: 'Conversations are unavailable' });
+    const logged = warn.mock.calls.map((call) => String(call[0])).join('\n');
+    expect(logged).toContain('conversations.translate.failed');
+    expect(logged).not.toContain('Hallo Welt');
+    expect(logged).not.toContain(TRANSLATE_ENV.TRANSLATE_API_KEY);
   });
 });
 

@@ -21,6 +21,7 @@ const THREAD: ConversationThread = {
   lastMessageAt: new Date('2026-08-29T13:00:00.000Z'),
   name: 'Ada',
   lastText: 'hello',
+  lastMessageId: 'm-1',
   lastSenderAccountId: 'acc-a',
   lastActorAccountId: null,
   lastSats: 0,
@@ -128,6 +129,7 @@ describe('serializeConversation', () => {
       kind: 'member_member',
       name: 'Ada',
       lastText: 'hello',
+      lastMessageId: 'm-1',
       lastAt: '2026-08-29T13:00:00.000Z',
       lastFromMe: false,
       lastSats: 0,
@@ -143,6 +145,17 @@ describe('serializeConversation', () => {
     expect(json).not.toHaveProperty('eventId');
     expect(json).not.toHaveProperty('npub');
     expect(json).not.toHaveProperty('lastSenderAccountId');
+  });
+
+  it('emits lastMessageId null when the thread has no last message', () => {
+    const json = serializeConversation(
+      { ...THREAD, lastText: '', lastMessageId: null },
+      false,
+      false,
+      0,
+    );
+    expect(json.lastMessageId).toBeNull();
+    expect(json.lastText).toBe('');
   });
 
   it('includes unreadMessageCount 3 when passed 3', () => {
@@ -181,6 +194,7 @@ describe('serializeConversation', () => {
       kind: 'member_platform',
       name: 'Ada',
       lastText: 'hello',
+      lastMessageId: 'm-1',
       lastAt: '2026-08-29T13:00:00.000Z',
       lastFromMe: true,
       lastSats: 0,

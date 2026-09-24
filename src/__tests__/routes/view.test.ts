@@ -78,7 +78,7 @@ describe('GET /view/:viewKey', () => {
     expect(await res.json()).toEqual({ error: 'Not found' });
   });
 
-  it('returns the nine-field public profile without Authorization', async () => {
+  it('returns the ten-field public profile without Authorization', async () => {
     const store = new InMemoryAuthStore();
     await adaAccount(store);
     const res = await mount(store).request(`/view/${VIEW_KEY}`);
@@ -94,9 +94,10 @@ describe('GET /view/:viewKey', () => {
       hasPasskey: false,
       aboutMe: null,
       aboutMeHasPhoto: false,
+      aboutMessageId: null,
     });
     const raw = JSON.stringify(body);
-    expect(raw).not.toContain('id');
+    expect(body).not.toHaveProperty('id');
     expect(raw).not.toContain('linkingKey');
     expect(raw).not.toContain('role');
     expect(raw).not.toContain('viewKey');
@@ -104,6 +105,7 @@ describe('GET /view/:viewKey', () => {
     expect(Object.keys(body).sort()).toEqual([
       'aboutMe',
       'aboutMeHasPhoto',
+      'aboutMessageId',
       'createdAt',
       'hasPasskey',
       'lightningAddress',
@@ -136,6 +138,7 @@ describe('GET /view/:viewKey', () => {
       hasPasskey: true,
       aboutMe: null,
       aboutMeHasPhoto: false,
+      aboutMessageId: null,
     });
   });
 
@@ -183,9 +186,14 @@ describe('GET /view/:viewKey', () => {
     ]);
     const bioRes = await mount(bioStore, bioMessages).request(`/view/${VIEW_KEY}`);
     expect(bioRes.status).toBe(200);
-    const bioBody = (await bioRes.json()) as { aboutMe: string | null; aboutMeHasPhoto: boolean };
+    const bioBody = (await bioRes.json()) as {
+      aboutMe: string | null;
+      aboutMeHasPhoto: boolean;
+      aboutMessageId: string | null;
+    };
     expect(bioBody.aboutMe).toBe('I build on Bitcoin');
     expect(bioBody.aboutMeHasPhoto).toBe(false);
+    expect(bioBody.aboutMessageId).toBe(NOTE_ID);
 
     const nameStore = new InMemoryAuthStore();
     await adaAccount(nameStore, { profileMessageId: NOTE_ID });
@@ -202,7 +210,12 @@ describe('GET /view/:viewKey', () => {
     ]);
     const nameRes = await mount(nameStore, nameMessages).request(`/view/${VIEW_KEY}`);
     expect(nameRes.status).toBe(200);
-    expect(((await nameRes.json()) as { aboutMe: string | null }).aboutMe).toBeNull();
+    const nameBody = (await nameRes.json()) as {
+      aboutMe: string | null;
+      aboutMessageId: string | null;
+    };
+    expect(nameBody.aboutMe).toBeNull();
+    expect(nameBody.aboutMessageId).toBeNull();
   });
 
   it('returns aboutMe null when the note is the stored name after a rename', async () => {
@@ -363,9 +376,14 @@ describe('GET /view/:viewKey/about/photo', () => {
     );
     const res = await mount(store, messages).request(`/view/${VIEW_KEY}`);
     expect(res.status).toBe(200);
-    const body = (await res.json()) as { aboutMe: string | null; aboutMeHasPhoto: boolean };
+    const body = (await res.json()) as {
+      aboutMe: string | null;
+      aboutMeHasPhoto: boolean;
+      aboutMessageId: string | null;
+    };
     expect(body.aboutMe).toBe('I build on Bitcoin');
     expect(body.aboutMeHasPhoto).toBe(true);
+    expect(body.aboutMessageId).toBe(NOTE_ID);
     expect(body).not.toHaveProperty('profileMessageId');
   });
 

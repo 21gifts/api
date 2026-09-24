@@ -93,6 +93,7 @@ describe('loadDebugTables', () => {
           lastMessageAt: new Date('2026-09-01T01:00:00.000Z'),
           name: 'Ada',
           lastText: 'hi',
+          lastMessageId: null,
           lastSenderAccountId: accountId,
           lastActorAccountId: accountId,
           lastSats: 0,
