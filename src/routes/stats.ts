@@ -28,6 +28,12 @@ export interface GiftsStatsRouteDeps {
  * Same aggregation as `GET /gifts/stats`: legacy days (no stored USD) load
  * BTC-USD, then fiat crosses. A missing BTC-USD day is `fx-incomplete`.
  * A fiat-book throw is logged and does not fail the snapshot.
+ *
+ * @param rows - Outbound gifts to aggregate.
+ * @param rates - BTC-USD book for legacy days.
+ * @param fiatRates - USD-cross book for those same days.
+ * @param nowMs - Clock passed to both books.
+ * @returns The stats, or `fx-incomplete` when a legacy day has no BTC-USD rate.
  */
 export async function loadGiftStatsSnapshot(
   rows: readonly GiftRow[],
@@ -65,6 +71,10 @@ export async function loadGiftStatsSnapshot(
 /**
  * Last `spendOverTime` day with `sats > 0`, using the gift-stats FX path.
  * Empty history is `null`. A missing BTC-USD legacy day throws.
+ *
+ * @param deps - Gift store, both rate books, and the clock.
+ * @returns That day's sats and four fiat totals, or `null` when no day has sats.
+ * @throws Error `fx.rate.missing` when a legacy day has no BTC-USD rate.
  */
 export async function loadLatestGoalRateDay(deps: {
   store: GiftStore;
@@ -84,7 +94,12 @@ export async function loadLatestGoalRateDay(deps: {
   return { sats: day.sats, usd: day.usd, chf: day.chf, eur: day.eur, php: day.php };
 }
 
-/** `goalRateDay` for `messagesRoutes`: one call of {@link loadLatestGoalRateDay}. */
+/**
+ * `goalRateDay` for `messagesRoutes`: one call of {@link loadLatestGoalRateDay}.
+ *
+ * @param deps - The same collaborators as {@link loadLatestGoalRateDay}.
+ * @returns A function that loads the latest gift-day on each call.
+ */
 export function bindGoalRateDay(deps: {
   store: GiftStore;
   rates: BtcUsdRateBook;
