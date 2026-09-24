@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { ROLE_ORDER, isModeratorGroupMember, roleAtLeast, roleRank } from '@/lib/auth/roles';
+import {
+  ROLE_ORDER,
+  isModeratorGroupMember,
+  roleAtLeast,
+  roleRank,
+  sameRoleRank,
+} from '@/lib/auth/roles';
 import type { AccountRole } from '@/lib/auth/store';
 
 const roles: readonly AccountRole[] = ['basis', 'verified', 'moderator', 'initiator', 'founder'];
@@ -54,6 +60,15 @@ describe('roleAtLeast', () => {
       expect(roleAtLeast(role, min)).toBe(want);
       expect(roleAtLeast(role, min)).toBe(roleRank(role) >= roleRank(min));
     }
+  });
+});
+
+describe('sameRoleRank', () => {
+  it('is true only when the numeric ranks are equal', () => {
+    expect(sameRoleRank('moderator', 'initiator')).toBe(true);
+    expect(sameRoleRank('initiator', 'moderator')).toBe(true);
+    expect(sameRoleRank('founder', 'moderator')).toBe(false);
+    expect(sameRoleRank('verified', 'moderator')).toBe(false);
   });
 });
 

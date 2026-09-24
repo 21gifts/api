@@ -409,7 +409,7 @@
 
 - **Purpose:** Applies `AUTH_SCHEMA_SQL` in order (`CREATE TABLE IF NOT EXISTS` plus `ALTER` backfills for existing databases).
 - **Inputs:** `SqlClient`.
-- **Returns / side effects:** Void; creates `account`, `auth_session`, `address_verification`, `passkey_challenge`, `passkey_credential`; drops leftover `auth_challenge`; backfills `account.name` / nullable `linking_key`; adds `nostr_pubkey` / nsec ciphertext / kek id / custody plus unique index and CHECK; adds `view_key` ALTER, uuid-concat backfill, and unique index; adds nullable `rules_agreed_at`; unique index `account_lightning_address_uidx` on `lower(trim(lightning_address))` where not null; `DROP INDEX IF EXISTS passkey_credential_account_uidx` so a login passkey may stay beside one later seed passkey; adds `is_platform boolean NOT NULL DEFAULT false` and unique index `account_is_platform_uidx` on `(is_platform) WHERE is_platform`; adds nullable `name_skipped_at`, `lightning_address_skipped_at`, and `profile_message_id uuid` (**no** FK to `message` here — message migrates later); adds nullable `location text` (no unique index, same as `name`); adds `notification_level text NOT NULL DEFAULT 'all'` plus `DROP`/`ADD` `account_notification_level_chk` (`all` / `active` / `mentions`); adds nullable `username text`; `DROP INDEX IF EXISTS account_username_uidx` then `CREATE UNIQUE INDEX IF NOT EXISTS account_username_uidx` on `lower(trim(username))` WHERE username IS NOT NULL AND trim(username) <> '' (expression unique index); adds `session_refused boolean NOT NULL DEFAULT false`; adds `wallet_required boolean NOT NULL DEFAULT false` and nullable `wallet_backup_seen_at timestamptz`.
+- **Returns / side effects:** Void; creates `account`, `auth_session`, `address_verification`, `passkey_challenge`, `passkey_credential`; drops leftover `auth_challenge`; backfills `account.name` / nullable `linking_key`; adds `nostr_pubkey` / nsec ciphertext / kek id / custody plus unique index and CHECK; adds `view_key` ALTER, uuid-concat backfill, and unique index; adds nullable `rules_agreed_at`; unique index `account_lightning_address_uidx` on `lower(trim(lightning_address))` where not null; `DROP INDEX IF EXISTS passkey_credential_account_uidx` so a login passkey may stay beside one later seed passkey; adds `is_platform boolean NOT NULL DEFAULT false` and unique index `account_is_platform_uidx` on `(is_platform) WHERE is_platform`; adds nullable `name_skipped_at`, `lightning_address_skipped_at`, and `profile_message_id uuid` (**no** FK to `message` here — message migrates later); adds nullable `location text` (no unique index, same as `name`); adds `notification_level text NOT NULL DEFAULT 'all'` plus `DROP`/`ADD` `account_notification_level_chk` (`all` / `active` / `mentions`); adds nullable `username text`; `DROP INDEX IF EXISTS account_username_uidx` then `CREATE UNIQUE INDEX IF NOT EXISTS account_username_uidx` on `lower(trim(username))` WHERE username IS NOT NULL AND trim(username) <> '' (expression unique index); adds `session_refused boolean NOT NULL DEFAULT false`; adds `wallet_required boolean NOT NULL DEFAULT false` and nullable `wallet_backup_seen_at timestamptz`; then `UPDATE account SET role = 'initiator' WHERE lower(trim(username)) = 'pater-severin' AND role = 'moderator'` (no-op unless that row is still moderator).
 - **Used by:** `openAuthStore`.
 
 ## Function: openAuthStore
@@ -2354,14 +2354,21 @@
 - **Purpose:** Integer rank of a live `AccountRole` from the rank map (`basis` = 0, `verified` = 1, `moderator` = 2, `initiator` = 2, `founder` = 3). `ROLE_ORDER` is the identity list, not the rank.
 - **Inputs:** `role` (`AccountRole`).
 - **Returns / side effects:** Integer 0–3. No I/O.
-- **Used by:** `roleAtLeast`.
+- **Used by:** `roleAtLeast`, `sameRoleRank`.
 
 ## Function: roleAtLeast
 
-- **Purpose:** Whether a caller's live role meets a minimum, including equal rank. Initiator has the same rank as moderator; founder stays strictly above. True when `roleRank(role)` is ≥ `roleRank(min)`. Every permission names a minimum role; an equality test on the caller's role is a defect. Checks on the _subject_ of an action stay exact (state, not permission).
+- **Purpose:** Whether a caller's live role meets a minimum, including equal rank. Initiator has the same rank as moderator; founder stays strictly above. True when `roleRank(role)` is ≥ `roleRank(min)`. Every permission names a minimum role; an equality test on the caller's role is a defect. Subject rank equality uses `sameRoleRank`, not this caller check.
 - **Inputs:** `role` (caller's live `AccountRole`), `min` (minimum `AccountRole` that may proceed).
 - **Returns / side effects:** boolean. No I/O.
 - **Used by:** `isStaffRole`, `isStaffAccount`, `isChainAccount`, `conversationRoutes`, `messagesRoutes`, `trustRoutes` (`POST /trust/appoint-moderator`), `inboxUnreadCountFor`, `isModeratorGroupMember`.
+
+## Function: sameRoleRank
+
+- **Purpose:** Whether two live roles share a numeric rank. True when `roleRank(role)` equals `roleRank(other)`. The moderator rank matches initiator and does not match founder. Used for subject state on confirm and appoint so a stored role at that rank is left unchanged.
+- **Inputs:** `role` and `other`, both `AccountRole`.
+- **Returns / side effects:** boolean. No I/O.
+- **Used by:** `trustRoutes` confirm and appoint, when deciding whether the subject is already at the moderator rank.
 
 ## Function: isModeratorGroupMember
 

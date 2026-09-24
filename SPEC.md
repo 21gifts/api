@@ -209,7 +209,9 @@ minimum rank only. Do not write "moderator or initiator" or „Moderator oder
 Initiator“. Permission checks use `roleAtLeast` (`src/lib/auth/roles.ts`); an
 equality test on the caller's role is a defect. Checks on the _subject_ of an
 action (for example "only a verified member can be proposed as moderator") are
-state rules, not permissions, and stay exact. Initiator is not created by
+state rules, not permissions, and stay exact. A subject already at the
+moderator rank is `sameRoleRank(role, 'moderator')`, which does not include
+founder. Initiator is not created by
 propose, confirm, or appoint. Only the boot UPDATE and operator
 `PATCH /debug/accounts/:id` set it.
 
@@ -954,12 +956,15 @@ also the oldest open propose (an older open propose is still present), delete
 that confirm and **409** without promoting. Otherwise sets
 role to `moderator`, logs `trust.moderator_confirmed`. If the caller
 already stored `moderator_confirm` and the subject is still `verified`,
-completes the role write and returns **200**; already-moderator with that
-caller-owned edge is idempotent **200**. Same 401/403/400/404/409/503 JSON
-shapes (409 when a confirm edge belongs to someone else). **200**
-`{ id, name, role }` with `role: "moderator"`. After a 200 that leaves the
-subject as `moderator` (new grant and idempotent already-moderator
-same-actor 200), the api deletes `moderator_proposal` rows with
+completes the role write and returns **200**. If the caller already stored
+that edge and the subject's rank equals the moderator rank, returns **200**
+with the stored role unchanged. A founder subject is **409** and stays
+`founder`. Same 401/403/400/404/409/503 JSON shapes (409 when a confirm
+edge belongs to someone else). A new grant returns **200**
+`{ id, name, role }` with `role: "moderator"`. An idempotent **200**
+returns the stored role. After a 200 that leaves the subject at the
+moderator rank (new grant and idempotent same-actor 200), the api deletes
+`moderator_proposal` rows with
 `replyId === subject.id`, then notifies the subject only
 (`moderator_appointed`, Web Push url `/welcome`). Notify failure does not
 fail the POST.
@@ -989,16 +994,19 @@ for the reject itself. Same 401/403/400/404/409/503 JSON shapes as
 
 Bearer session. Body `{ "accountId": "<uuid>" }`. Caller must be `founder`
 (moderators → **403**). Subject must not be self, not `founder`, and not
-already `moderator`; subject may be `basis` or `verified`. Inserts
+already at the moderator rank; subject may be `basis` or `verified`. Inserts
 `moderator_appoint` then sets role to `moderator`, logs
 `trust.moderator_appointed`. If the caller already stored `moderator_appoint`
-and the subject is not yet `moderator`, completes the role write and returns
-**200**; already-moderator with that caller-owned edge is idempotent **200**.
+and the subject's rank equals the moderator rank, returns **200** with the
+stored role unchanged. If that edge exists and the subject is not yet at
+that rank, completes the role write and returns **200**. A subject already
+at the moderator rank with no caller-owned appoint edge is **409**.
 Same 401/403/400/404/409/503 shapes as `POST /trust/verify` (403
-when the caller is not a founder). **200** `{ id, name, role }` with
-`role: "moderator"`. After a 200 that leaves the subject as
-`moderator` (new grant and idempotent already-moderator same-actor
-200), the api deletes `moderator_proposal` rows for the subject
+when the caller is not a founder). A new grant returns **200**
+`{ id, name, role }` with `role: "moderator"`. An idempotent **200**
+returns the stored role. After a 200 that leaves the subject at the
+moderator rank (new grant and idempotent same-actor 200), the api deletes
+`moderator_proposal` rows for the subject
 (`deleteByTypeAndReplyId`) then notifies the subject only
 (`moderator_appointed`, Web Push url `/welcome`). Notify failure does
 not fail the POST.

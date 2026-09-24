@@ -34,7 +34,7 @@ export function roleRank(role: AccountRole): number {
  * the same rank as moderator. A higher rank can do everything a lower
  * rank can; equal ranks can do the same things. Every permission check
  * names a minimum role — an equality test on the caller's role is a
- * defect. Checks on the *subject* of an action stay exact (state, not
+ * defect. Subject rank equality uses {@link sameRoleRank} (state, not
  * permission).
  *
  * @param role - Caller's live role.
@@ -43,6 +43,20 @@ export function roleRank(role: AccountRole): number {
  */
 export function roleAtLeast(role: AccountRole, min: AccountRole): boolean {
   return roleRank(role) >= roleRank(min);
+}
+
+/**
+ * Whether two roles share a numeric rank.
+ *
+ * Subject-state checks use this. Caller permission checks stay on
+ * {@link roleAtLeast}. Founder is not the moderator rank.
+ *
+ * @param role - Live role.
+ * @param other - Role whose rank is the comparison.
+ * @returns `true` when {@link roleRank} values are equal.
+ */
+export function sameRoleRank(role: AccountRole, other: AccountRole): boolean {
+  return roleRank(role) === roleRank(other);
 }
 
 /**

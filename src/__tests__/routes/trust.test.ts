@@ -2172,6 +2172,24 @@ describe('POST /trust/*', () => {
       expect((await trustStore.listEdges()).map((row) => row.id)).toEqual(['confirm']);
     });
 
+    it('returns 409 and leaves role founder when the caller already confirmed a founder', async () => {
+      const { authStore, trustStore } = await staffed([
+        account({ id: SUBJECT, role: 'founder', name: 'Sub' }),
+      ]);
+      await trustStore.insertEdge({
+        id: 'confirm',
+        subjectId: SUBJECT,
+        actorId: MOD,
+        kind: 'moderator_confirm',
+        createdAt: 1,
+      });
+      const res = await post(mount(authStore, trustStore), '/trust/confirm-moderator', 'mod', {
+        accountId: SUBJECT,
+      });
+      expect(res.status).toBe(409);
+      expect((await authStore.getAccount(SUBJECT))?.role).toBe('founder');
+    });
+
     it('returns 409 when confirming an initiator subject with no caller-owned confirm edge', async () => {
       const { authStore, trustStore } = await staffed([
         account({ id: SUBJECT, role: 'initiator', name: 'Sub' }),
