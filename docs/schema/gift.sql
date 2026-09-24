@@ -29,6 +29,7 @@ ALTER TABLE gift ADD COLUMN IF NOT EXISTS fiat_chf numeric(20, 2);
 ALTER TABLE gift ADD COLUMN IF NOT EXISTS fiat_eur numeric(20, 2);
 ALTER TABLE gift ADD COLUMN IF NOT EXISTS fiat_php numeric(20, 2);
 ALTER TABLE gift ADD COLUMN IF NOT EXISTS kind text;
+-- Classification runs in repairGiftKind only after trg_db_change is on gift.
 -- NULL rows with description 21gifts moderator become moderator; remaining NULL
 -- rows are matched one-to-one only to platform replies whose trimmed text is
 -- Welcome or 21gifts daily (same sats, lightning local-part, within 3 seconds),

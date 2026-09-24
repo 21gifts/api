@@ -1,7 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import type { SqlClient } from '@/lib/auth/sql';
 import type { GiftRow } from '@/lib/gift';
-import { InMemoryGiftStore, migrateGiftSchema, QueryGiftStore } from '@/lib/gift-store';
+import {
+  InMemoryGiftStore,
+  migrateGiftSchema,
+  QueryGiftStore,
+  repairGiftKind,
+} from '@/lib/gift-store';
 
 const EARLY: GiftRow = {
   paidAt: new Date('2026-06-02T00:00:00.000Z'),
@@ -203,6 +208,9 @@ describe('migrateGiftSchema kind backfill', () => {
           const remaining = gifts.find((row) => row.kind === null);
           return (remaining === undefined ? [] : [{ id: remaining.id }]) as T[];
         }
+        if (text.includes('pg_trigger')) {
+          return [{ present: 1 }] as T[];
+        }
         if (text.includes('message_text')) {
           const nullIds = new Set(
             gifts.filter((row) => row.kind === null).map((row) => String(row.id)),
@@ -251,7 +259,7 @@ describe('migrateGiftSchema kind backfill', () => {
     const sql = kindSql(gifts, [
       { gift_id: 1, message_id: 'm-welcome', message_text: 'Welcome', abs_seconds: 0 },
     ]);
-    await migrateGiftSchema(sql);
+    await repairGiftKind(sql);
     expect(gifts[0]?.kind).toBe('moderator');
     expect(sql.executes.some((row) => row.text.includes("SET kind = 'welcome'"))).toBe(false);
   });
@@ -261,7 +269,7 @@ describe('migrateGiftSchema kind backfill', () => {
     const sql = kindSql(gifts, [
       { gift_id: 1, message_id: 'm-welcome', message_text: 'Welcome', abs_seconds: 1 },
     ]);
-    await migrateGiftSchema(sql);
+    await repairGiftKind(sql);
     expect(gifts[0]?.kind).toBe('welcome');
   });
 
@@ -276,7 +284,7 @@ describe('migrateGiftSchema kind backfill', () => {
       { gift_id: 2, message_id: 'm-welcome', message_text: 'Welcome', abs_seconds: 1.5 },
       { gift_id: 1, message_id: 'm-welcome', message_text: 'Welcome', abs_seconds: 0.5 },
     ]);
-    await migrateGiftSchema(sql);
+    await repairGiftKind(sql);
     expect(gifts.map((row) => row.kind)).toEqual(['welcome', 'daily']);
     const welcomeUpdates = sql.executes.filter((row) => row.text.includes("SET kind = 'welcome'"));
     expect(welcomeUpdates).toEqual([expect.objectContaining({ params: [1] })]);
@@ -285,7 +293,7 @@ describe('migrateGiftSchema kind backfill', () => {
   it('sets a NULL row with no reply to daily', async () => {
     const gifts: KindGift[] = [{ id: 1, description: '21gifts daily', kind: null }];
     const sql = kindSql(gifts);
-    await migrateGiftSchema(sql);
+    await repairGiftKind(sql);
     expect(gifts[0]?.kind).toBe('daily');
     expect(sql.executes.some((row) => row.text.includes("SET kind = 'welcome'"))).toBe(false);
   });
@@ -295,11 +303,11 @@ describe('migrateGiftSchema kind backfill', () => {
     const sql = kindSql(gifts, [
       { gift_id: 1, message_id: 'm-welcome', message_text: 'Welcome', abs_seconds: 0 },
     ]);
-    await migrateGiftSchema(sql);
+    await repairGiftKind(sql);
     expect(gifts[0]?.kind).toBe('welcome');
     const afterFirst = sql.executes.length;
     const kinds = gifts.map((row) => row.kind);
-    await migrateGiftSchema(sql);
+    await repairGiftKind(sql);
     expect(gifts.map((row) => row.kind)).toEqual(kinds);
     expect(
       sql.executes.slice(afterFirst).some((row) => row.text.includes("SET kind = 'welcome'")),
@@ -307,5 +315,19 @@ describe('migrateGiftSchema kind backfill', () => {
     expect(
       sql.executes.filter((row) => row.text.includes('ADD CONSTRAINT gift_kind_check')),
     ).toHaveLength(1);
+  });
+
+  it('does not write kind until the audit trigger is attached', async () => {
+    const gifts: KindGift[] = [{ id: 1, description: '21gifts daily', kind: null }];
+    const sql = kindSql(gifts);
+    sql.query = async <T>(text: string): Promise<T[]> => {
+      if (text.includes('pg_trigger')) {
+        return [] as T[];
+      }
+      return [{ present: 1 }] as T[];
+    };
+    await repairGiftKind(sql);
+    expect(gifts[0]?.kind).toBeNull();
+    expect(sql.executes.some((row) => row.text.includes('SET kind'))).toBe(false);
   });
 });

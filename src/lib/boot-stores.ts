@@ -25,6 +25,7 @@ import { listDbChanges, migrateDbChangeSchema } from '@/lib/db-change';
 import { mapGiftQueryRow } from '@/lib/gift';
 import {
   migrateGiftSchema,
+  repairGiftKind,
   QueryGiftStore,
   type GiftDebugRow,
   type GiftStore,
@@ -266,6 +267,7 @@ export async function openBootStores(
   await migrateFundingSchema(sqlClient);
   await migrateApiLogSchema(sqlClient);
   await migrateDbChangeSchema(sqlClient);
+  await repairGiftKind(sqlClient);
 
   const fetchImpl = fx?.fetchImpl ?? globalThis.fetch;
   const candlesUrl = fx?.candlesUrl ?? resolveCandlesUrl(process.env);

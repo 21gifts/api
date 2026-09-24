@@ -56,16 +56,28 @@ const GIFT_KIND_MATCH_SQL = `SELECT g.id AS gift_id, m.id AS message_id, trim(m.
       AND lower(split_part(parent_author.lightning_address, '@', 1)) = lower(g.recipient_wos_user)
      WHERE g.kind IS NULL`;
 
+const GIFT_KIND_TRIGGER_SQL = `SELECT 1
+     FROM pg_trigger
+     WHERE tgrelid = 'gift'::regclass
+       AND tgname = 'trg_db_change'
+       AND NOT tgisinternal`;
+
 /**
  * Classify NULL `gift.kind` rows, then require the column.
  *
+ * Skips until `trg_db_change` is attached to `gift`, so the UPDATEs land in
+ * `db_change` and a boot that is still attaching the trigger retries next time.
  * Description `21gifts moderator` is moderator. Remaining NULL rows are matched
- * one-to-one against platform Welcome / `21gifts daily` replies; only an assigned
- * Welcome sets `welcome`. Everything still NULL becomes `daily`.
+ * one-to-one against platform replies whose text is `Welcome` or `21gifts daily`;
+ * only an assigned Welcome sets `welcome`. Everything still NULL becomes `daily`.
  *
  * @param sql - Parameter-bound SQL client.
  */
-async function backfillGiftKind(sql: SqlClient): Promise<void> {
+export async function repairGiftKind(sql: SqlClient): Promise<void> {
+  const trigger = await sql.query<{ present: number }>(GIFT_KIND_TRIGGER_SQL);
+  if (trigger.length === 0) {
+    return;
+  }
   await sql.execute(
     `UPDATE gift SET kind = 'moderator' WHERE kind IS NULL AND description = '21gifts moderator'`,
   );
@@ -109,8 +121,8 @@ async function backfillGiftKind(sql: SqlClient): Promise<void> {
  *
  * The backfill is network-free and idempotent: rows whose `fiat_usd` is already
  * set are never selected or rewritten, and rows without a BTC daily rate remain null.
- * A `paid_at` that is not a real timestamp is skipped. `kind` is added, backfilled,
- * constrained, and set NOT NULL before the fiat freeze.
+ * A `paid_at` that is not a real timestamp is skipped. `kind` is added here as a
+ * nullable column. {@link repairGiftKind} classifies it after the audit trigger.
  *
  * @param sql - Parameter-bound SQL client.
  */
@@ -119,7 +131,6 @@ export async function migrateGiftSchema(sql: SqlClient): Promise<void> {
     await sql.execute(statement);
   }
   await sql.execute(`ALTER TABLE gift ADD COLUMN IF NOT EXISTS kind text`);
-  await backfillGiftKind(sql);
   const candidates = await sql.query<GiftBackfillRow>(
     `SELECT id, paid_at, amount_sats FROM gift WHERE amount_sats > 0 AND fiat_usd IS NULL`,
   );
