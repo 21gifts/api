@@ -2562,14 +2562,14 @@ Builds the operator-only external-pubkey inspection route.
 
 ## Function: fundingGrantRequired
 
-- **Purpose:** Whether the funding-grant gate is in force on this UTC day. True on and after `FUNDING_REQUIRED_FROM_UTC` (`2026-09-25`).
+- **Purpose:** Whether the funding-grant gate is in force on this UTC day. True on and after `FUNDING_REQUIRED_FROM_UTC` (`2026-09-30`).
 - **Inputs:** `nowMs` epoch milliseconds.
 - **Returns / side effects:** `boolean`. No I/O.
 - **Used by:** `eligibleToday`.
 
 ## Function: eligibleToday
 
-- **Purpose:** Whether the account may receive a spend ping / spend invoice today. `basis` is always false. Before UTC `2026-09-25` (`FUNDING_REQUIRED_FROM_UTC`), every other role is true (passkey and living-room post still gate issue). From that UTC day, true iff admitted, or a trial whose `trialUtcDate` equals today's UTC key. Expired, future, pending, rejected, and missing grants are then false.
+- **Purpose:** Whether the account may receive a spend ping / spend invoice today. `basis` is always false. Before UTC `2026-09-30` (`FUNDING_REQUIRED_FROM_UTC`), every other role is true (passkey and living-room post still gate issue). From that UTC day, true iff admitted, or a trial whose `trialUtcDate` equals today's UTC key. Expired, future, pending, rejected, and missing grants are then false.
 - **Inputs:** `role` (`AccountRole`), `grant` (`FundingGrant | undefined`), `nowMs`.
 - **Returns / side effects:** `boolean`. No I/O.
 - **Used by:** `messagesRoutes` spend ping, `conversationRoutes` moderator ping, `invoiceRoutes` `GET /eligible` and `POST /`. Domain tests cover the matrix.

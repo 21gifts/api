@@ -14,6 +14,7 @@ import {
   unsignedNostrDefaults,
 } from '@/lib/message';
 import { InvoiceRateLimiter, PostRateLimiter } from '@/lib/nostr/rate-limit';
+import { FUNDING_REQUIRED_FROM_UTC } from '@/lib/funding';
 import { InMemoryFundingStore } from '@/lib/funding-store';
 import { messagesRoutes, type MessagesRouteDeps } from '@/routes/messages';
 import { parseNostrKek } from '@/lib/nostr/kek';
@@ -2734,7 +2735,7 @@ describe('POST /messages', () => {
 
   it('skips spend ping when the poster is not funding-eligible', async () => {
     const spendPing = { ping: vi.fn(async (_address: string, _messageId: string) => undefined) };
-    const gateNow = Date.parse('2026-09-25T12:00:00.000Z');
+    const gateNow = Date.parse(`${FUNDING_REQUIRED_FROM_UTC}T12:00:00.000Z`);
     const auth = await namedStore('Ada');
     await auth.createSession({ token: 'tok', accountId: 'acc', createdAt: gateNow });
     const res = await mount(auth, new InMemoryMessageStore(), {
@@ -3003,7 +3004,7 @@ describe('POST /messages', () => {
     const spendPing = {
       ping: vi.fn(async (_address: string, _messageId: string, _kind?: string) => undefined),
     };
-    const gateNow = Date.parse('2026-09-25T12:00:00.000Z');
+    const gateNow = Date.parse(`${FUNDING_REQUIRED_FROM_UTC}T12:00:00.000Z`);
     const auth = await namedStore('Ada');
     await auth.createSession({ token: 'tok', accountId: 'acc', createdAt: gateNow });
     const res = await mount(auth, new InMemoryMessageStore(), {
