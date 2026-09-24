@@ -15,6 +15,7 @@ import { WebsocketNostrQuerier } from './lib/nostr/query';
 import { PostRateLimiter } from './lib/nostr/rate-limit';
 import { RELAY_TIMEOUT_MS, startNostrWorker, WORKER_INTERVAL_MS } from './lib/nostr/worker';
 import { resolveSpendPing } from './lib/spend-ping';
+import { syncWelcomePing } from './lib/welcome-media';
 import { resolveZapRelays } from './lib/nostr/relays';
 import { ExternalIngestLimiter } from './lib/nostr/external';
 import { resolveVapidConfig } from './lib/push-config';
@@ -114,6 +115,17 @@ if (import.meta.main) {
   });
   Bun.serve({ fetch: app.fetch, hostname: host, port });
   console.warn(`21gifts-api listening on ${host}:${port}`);
+  if (messageStore !== undefined) {
+    const welcomeCatchUp = (): void => {
+      void syncWelcomePing({
+        ...(spendPing === undefined ? {} : { spendPing }),
+        messages: messageStore,
+        auth: authStore,
+      });
+    };
+    welcomeCatchUp();
+    setInterval(welcomeCatchUp, 15 * 60 * 1000).unref();
+  }
   if (sender.isConfigured()) {
     startPushWorker({ store: pushStore, sender, now: Date.now }, PUSH_WORKER_INTERVAL_MS);
   }

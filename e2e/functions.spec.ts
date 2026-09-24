@@ -37,6 +37,11 @@ async function passkeyBegin(request: APIRequestContext): Promise<{ challengeId: 
   return body;
 }
 
+test('Function: syncWelcomePing — posted lookup is up', async ({ request }) => {
+  const res = await request.get('/invoices/posted');
+  expect(res.status()).toBe(503);
+});
+
 test('Function: parseBindAddr — process listens on BIND_ADDR', async ({ request }) => {
   const res = await request.get('/healthz');
   expect(res.status()).toBe(200);

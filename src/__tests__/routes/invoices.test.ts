@@ -447,6 +447,8 @@ describe('GET /invoices/posted', () => {
       messageId: null,
       postedAt: null,
       hasMedia: false,
+      welcomeHasMedia: false,
+      welcomeMessageId: null,
     });
   });
 
@@ -475,6 +477,8 @@ describe('GET /invoices/posted', () => {
       messageId: null,
       postedAt: null,
       hasMedia: false,
+      welcomeHasMedia: false,
+      welcomeMessageId: null,
     });
   });
 
@@ -504,6 +508,8 @@ describe('GET /invoices/posted', () => {
       messageId: 'post-alice',
       postedAt: '2026-08-01T00:00:00.000Z',
       hasMedia: false,
+      welcomeHasMedia: false,
+      welcomeMessageId: null,
     });
   });
 
@@ -544,6 +550,8 @@ describe('GET /invoices/posted', () => {
       messageId: null,
       postedAt: null,
       hasMedia: false,
+      welcomeHasMedia: false,
+      welcomeMessageId: null,
     });
   });
 
@@ -585,6 +593,8 @@ describe('GET /invoices/posted', () => {
       messageId: null,
       postedAt: null,
       hasMedia: false,
+      welcomeHasMedia: false,
+      welcomeMessageId: null,
     });
   });
 
@@ -614,6 +624,8 @@ describe('GET /invoices/posted', () => {
       messageId: null,
       postedAt: null,
       hasMedia: false,
+      welcomeHasMedia: false,
+      welcomeMessageId: null,
     });
   });
 
@@ -643,6 +655,8 @@ describe('GET /invoices/posted', () => {
       messageId: POST_ID,
       postedAt: '2026-08-01T00:00:00.000Z',
       hasMedia: false,
+      welcomeHasMedia: false,
+      welcomeMessageId: null,
     });
   });
 
@@ -692,6 +706,8 @@ describe('GET /invoices/posted', () => {
       messageId: NEWER_POST_ID,
       postedAt: '2026-08-02T00:00:00.000Z',
       hasMedia: false,
+      welcomeHasMedia: false,
+      welcomeMessageId: null,
     });
   });
 
@@ -721,7 +737,144 @@ describe('GET /invoices/posted', () => {
       messageId: 'post-alice',
       postedAt: '2026-08-01T00:00:00.000Z',
       hasMedia: true,
+      welcomeHasMedia: true,
+      welcomeMessageId: 'post-alice',
     });
+  });
+
+  it('reports welcome media on an About-me photo and ignores a note that is not that photo', async () => {
+    const authStore = new InMemoryAuthStore();
+    const profileId = 'prof-alice';
+    await authStore.createAccount({
+      id: 'acc-alice',
+      linkingKey: null,
+      role: 'basis',
+      name: 'Ada',
+      lightningAddress: ADDRESS,
+      lightningAddressVerified: true,
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: 'a'.repeat(64),
+      createdAt: 1,
+      rulesAgreedAt: null,
+      profileMessageId: profileId,
+    });
+    const profile = {
+      id: profileId,
+      accountId: 'acc-alice',
+      deletedAt: null,
+      parentId: null,
+      hasPhoto: true,
+      hasVideo: false,
+      photoCount: 1,
+    };
+    const cases: Array<{
+      posts: Array<{ id: string; hasPhoto: boolean; hasVideo: boolean; photoCount: number }>;
+      profile: typeof profile | undefined;
+      profileMessageId?: string | null;
+      welcomeMessageId: string | null;
+    }> = [
+      {
+        posts: [
+          { id: 'text-row', hasPhoto: false, hasVideo: false, photoCount: 0 },
+          { id: 'photo-row', hasPhoto: true, hasVideo: false, photoCount: 1 },
+        ],
+        profile,
+        welcomeMessageId: 'photo-row',
+      },
+      {
+        posts: [{ id: 'video-row', hasPhoto: false, hasVideo: true, photoCount: 0 }],
+        profile,
+        welcomeMessageId: 'video-row',
+      },
+      {
+        posts: [{ id: 'stills-row', hasPhoto: false, hasVideo: false, photoCount: 2 }],
+        profile,
+        welcomeMessageId: 'stills-row',
+      },
+      { posts: [], profile, welcomeMessageId: profileId },
+      {
+        posts: [],
+        profile: { ...profile, hasPhoto: false, hasVideo: true, photoCount: 0 },
+        welcomeMessageId: profileId,
+      },
+      {
+        posts: [],
+        profile: { ...profile, hasPhoto: false, hasVideo: false, photoCount: 3 },
+        welcomeMessageId: profileId,
+      },
+      { posts: [], profile: undefined, welcomeMessageId: null },
+      {
+        posts: [],
+        profile: { ...profile, deletedAt: new Date(1) as unknown as null },
+        welcomeMessageId: null,
+      },
+      {
+        posts: [],
+        profile: { ...profile, parentId: 'parent' as unknown as null },
+        welcomeMessageId: null,
+      },
+      {
+        posts: [],
+        profile: { ...profile, accountId: 'other' },
+        welcomeMessageId: null,
+      },
+      {
+        posts: [],
+        profile: { ...profile, hasPhoto: false, hasVideo: false, photoCount: 0 },
+        welcomeMessageId: null,
+      },
+      { posts: [], profile, profileMessageId: '   ', welcomeMessageId: null },
+      { posts: [], profile, profileMessageId: null, welcomeMessageId: null },
+    ];
+    for (const item of cases) {
+      if (item.profileMessageId !== undefined) {
+        const current = await authStore.getAccount('acc-alice');
+        expect(current).toBeDefined();
+        if (current !== undefined) {
+          await authStore.updateAccount({ ...current, profileMessageId: item.profileMessageId });
+        }
+      } else {
+        const current = await authStore.getAccount('acc-alice');
+        if (current !== undefined && current.profileMessageId !== profileId) {
+          await authStore.updateAccount({ ...current, profileMessageId: profileId });
+        }
+      }
+      const inner = new InMemoryMessageStore();
+      const messageStore = new Proxy(inner, {
+        get(target, prop, receiver) {
+          if (prop === 'accountHasLiveTopLevelMediaPost') {
+            return async () => true;
+          }
+          if (prop === 'accountHasLiveTopLevelPost') {
+            return async () => false;
+          }
+          if (prop === 'listPostsByAccount') {
+            return async () => item.posts;
+          }
+          if (prop === 'getById') {
+            return async () => item.profile;
+          }
+          const value = Reflect.get(target, prop, receiver) as unknown;
+          return typeof value === 'function'
+            ? (value as (...args: never[]) => unknown).bind(target)
+            : value;
+        },
+      });
+      const res = await createApp({ spendApiToken: TOKEN, authStore, messageStore }).request(
+        `/invoices/posted?address=${encodeURIComponent(ADDRESS)}`,
+        auth(),
+      );
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({
+        hasPosted: false,
+        messageId: null,
+        postedAt: null,
+        hasMedia: false,
+        welcomeHasMedia: true,
+        welcomeMessageId: item.welcomeMessageId,
+      });
+    }
   });
 });
 

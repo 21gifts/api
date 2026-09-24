@@ -3385,10 +3385,17 @@ Bearer `SPEND_API_TOKEN` (fire-and-await; `messageId` is the UUID of the new
 top-level row) only when `eligibleToday` for the author's funding grant
 **and** the new row has media (`hasPhoto` / `hasVideo` / `photoCount > 0`).
 Otherwise no ping, log `spend.ping.skipped` / `not_eligible` (ineligible) or
-`no_media` (eligible text-only). A **new** top-level media post from
-`role === 'verified'` also POSTs `{ address, messageId, kind: "welcome" }`
-independent of `eligibleToday`. Spend pays once (lifetime); this API may
-ping again. Replies, text-only, moderator, and founder do not welcome-ping.
+`no_media` (eligible text-only). When `role === 'verified'` and any live
+top-level photo or video exists, including the About-me note, the api also
+POSTs `{ address, messageId, kind: "welcome" }` for that note, independent
+of `eligibleToday` and independent of whether the new row itself has media.
+The same ping runs when the account becomes verified and when About me is
+saved while verified. On boot, and every 15 minutes, verified accounts whose
+only photo or video is the About-me note are welcome-pinged so a photo saved
+before verification is still paid. Spend pays once per Lightning Address;
+this API may ping again. Replies, and any role other than `verified`, do not
+welcome-ping. A verified text-only post with no photo or video anywhere does
+not welcome-ping.
 Errors are logged; the POST still
 returns **200**. Replies do not ping. Idempotent media replay does not ping
 again. Unset or blank `SPEND_URL` or `SPEND_API_TOKEN` skips the ping; the

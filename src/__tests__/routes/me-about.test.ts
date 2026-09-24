@@ -46,6 +46,7 @@ interface MountOpts {
   messages?: InMemoryMessageStore;
   pushStore?: InMemoryPushStore;
   notificationStore?: InMemoryNotificationStore;
+  spendPing?: { ping: (address: string, messageId: string, kind?: string) => Promise<void> };
 }
 
 function mount(store: InMemoryAuthStore, opts: MountOpts = {}): Hono {
@@ -62,6 +63,7 @@ function mount(store: InMemoryAuthStore, opts: MountOpts = {}): Hono {
       ...(opts.notificationStore === undefined
         ? {}
         : { notificationStore: opts.notificationStore }),
+      ...(opts.spendPing === undefined ? {} : { spendPing: opts.spendPing }),
     }),
   );
 }
@@ -201,6 +203,37 @@ describe('PUT /me/about', () => {
         (e) => e['event'] === 'account.about.set' && e['accountId'] === 'acc',
       ),
     ).toBe(true);
+  });
+
+  it('welcome-pings when a verified member saves an About-me photo', async () => {
+    const ping = vi.fn(async () => undefined);
+    const store = await seededStore({ name: 'Ada', lightningAddress: ADDRESS });
+    const existing = await store.getAccount('acc');
+    expect(existing).toBeDefined();
+    if (existing === undefined) {
+      throw new Error('expected account');
+    }
+    await store.updateAccount({ ...existing, role: 'verified' });
+    const res = await mount(store, { spendPing: { ping } }).request('/me/about', {
+      method: 'PUT',
+      headers: JSON_HEADERS,
+      body: JSON.stringify({ text: BIO, photo: JPEG_PHOTO }),
+    });
+    expect(res.status).toBe(200);
+    expect(ping).toHaveBeenCalledTimes(1);
+    expect(ping).toHaveBeenCalledWith(ADDRESS, expect.any(String), 'welcome');
+  });
+
+  it('does not welcome-ping an About-me photo while the role is basis', async () => {
+    const ping = vi.fn(async () => undefined);
+    const store = await seededStore({ name: 'Ada', lightningAddress: ADDRESS });
+    const res = await mount(store, { spendPing: { ping } }).request('/me/about', {
+      method: 'PUT',
+      headers: JSON_HEADERS,
+      body: JSON.stringify({ text: BIO, photo: JPEG_PHOTO }),
+    });
+    expect(res.status).toBe(200);
+    expect(ping).not.toHaveBeenCalled();
   });
 
   it('clears About me when text is empty', async () => {

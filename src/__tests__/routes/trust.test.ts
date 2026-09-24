@@ -1,6 +1,8 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 import { Hono } from 'hono';
 import { InMemoryAuthStore, type Account } from '@/lib/auth/store';
+import { unsignedNostrDefaults } from '@/lib/message';
+import { InMemoryMessageStore } from '@/lib/message-store';
 import { InMemoryNotificationStore, type NotificationStore } from '@/lib/notification-store';
 import { InMemoryPushStore, type PushStore } from '@/lib/push-store';
 import type { TrustEdge } from '@/lib/trust';
@@ -59,6 +61,8 @@ function mount(
     notificationStore?: NotificationStore;
     pushStore?: PushStore;
     now?: () => number;
+    messages?: InMemoryMessageStore;
+    spendPing?: { ping: (address: string, messageId: string, kind?: string) => Promise<void> };
   } = {},
 ): Hono {
   return new Hono().route(
@@ -71,6 +75,8 @@ function mount(
         ? {}
         : { notificationStore: extras.notificationStore }),
       ...(extras.pushStore === undefined ? {} : { pushStore: extras.pushStore }),
+      ...(extras.messages === undefined ? {} : { messages: extras.messages }),
+      ...(extras.spendPing === undefined ? {} : { spendPing: extras.spendPing }),
     }),
   );
 }
@@ -324,6 +330,60 @@ describe('POST /trust/*', () => {
             event['actorId'] === MOD,
         ),
       ).toBe(true);
+    });
+
+    it('welcome-pings an About-me photo when the subject becomes verified', async () => {
+      const photoId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+      const { authStore, trustStore } = await staffed([
+        account({
+          id: SUBJECT,
+          role: 'basis',
+          name: 'Sub',
+          lightningAddress: 'sub@walletofsatoshi.com',
+          profileMessageId: photoId,
+        }),
+      ]);
+      const messages = new InMemoryMessageStore();
+      await messages.create(
+        {
+          id: photoId,
+          accountId: SUBJECT,
+          name: 'Sub',
+          text: 'about',
+          createdAt: new Date(1),
+          hasPhoto: true,
+          hasVideo: false,
+          videoContentType: null,
+          ...unsignedNostrDefaults(),
+        },
+        { contentType: 'image/jpeg', bytes: new Uint8Array([0xff, 0xd8, 0xff, 0xd9]) },
+      );
+      const ping = vi.fn(async () => undefined);
+      const res = await post(
+        mount(authStore, trustStore, { messages, spendPing: { ping } }),
+        '/trust/verify',
+        'mod',
+        { accountId: SUBJECT },
+      );
+      expect(res.status).toBe(200);
+      expect(ping).toHaveBeenCalledWith('sub@walletofsatoshi.com', photoId, 'welcome');
+    });
+
+    it('still verifies when the welcome ping collaborator is omitted', async () => {
+      const { authStore, trustStore } = await staffed([
+        account({
+          id: SUBJECT,
+          role: 'basis',
+          name: 'Sub',
+          lightningAddress: 'sub@walletofsatoshi.com',
+        }),
+      ]);
+      const messages = new InMemoryMessageStore();
+      const res = await post(mount(authStore, trustStore, { messages }), '/trust/verify', 'mod', {
+        accountId: SUBJECT,
+      });
+      expect(res.status).toBe(200);
+      expect((await authStore.getAccount(SUBJECT))?.role).toBe('verified');
     });
 
     it('returns 503 when listing edges throws', async () => {

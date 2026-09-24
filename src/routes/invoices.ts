@@ -192,6 +192,45 @@ async function addressHasPasskey(
 }
 
 /**
+ * Welcome media flag for `GET /invoices/posted`. Includes the About-me note.
+ * Daily `hasMedia` still excludes that note.
+ *
+ * @param store - Forum store.
+ * @param account - Address owner.
+ * @returns `welcomeHasMedia` and the newest media note id (or null).
+ */
+async function welcomePostedFields(
+  store: Pick<MessageStore, 'accountHasLiveTopLevelMediaPost' | 'listPostsByAccount' | 'getById'>,
+  account: { id: string; profileMessageId?: string | null },
+): Promise<{ welcomeHasMedia: boolean; welcomeMessageId: string | null }> {
+  const welcomeHasMedia = await store.accountHasLiveTopLevelMediaPost(account.id, null);
+  if (!welcomeHasMedia) {
+    return { welcomeHasMedia: false, welcomeMessageId: null };
+  }
+  const posts = await store.listPostsByAccount(account.id, MESSAGE_LIST_LIMIT);
+  const media = posts.find(
+    (row) => row.hasPhoto === true || row.hasVideo === true || Number(row.photoCount) > 0,
+  );
+  if (media !== undefined) {
+    return { welcomeHasMedia: true, welcomeMessageId: media.id };
+  }
+  const profileId = account.profileMessageId;
+  if (typeof profileId === 'string' && profileId.trim() !== '') {
+    const profile = await store.getById(profileId);
+    if (
+      profile !== undefined &&
+      profile.deletedAt === null &&
+      profile.parentId === null &&
+      profile.accountId === account.id &&
+      (profile.hasPhoto === true || profile.hasVideo === true || Number(profile.photoCount) > 0)
+    ) {
+      return { welcomeHasMedia: true, welcomeMessageId: profile.id };
+    }
+  }
+  return { welcomeHasMedia: true, welcomeMessageId: null };
+}
+
+/**
  * Whether a normalised Lightning Address belongs to an account that has at
  * least one live top-level forum row that is not the auto-created profile
  * note. Replies do not count. Missing account → false (fail closed).
@@ -522,12 +561,32 @@ export function invoiceRoutes(deps: InvoiceRouteDeps): Hono {
 
       const account = await deps.authStore.getAccountByLightningAddress(address);
       if (account === undefined) {
-        return c.json({ hasPosted: false, messageId: null, postedAt: null, hasMedia: false }, 200);
+        return c.json(
+          {
+            hasPosted: false,
+            messageId: null,
+            postedAt: null,
+            hasMedia: false,
+            welcomeHasMedia: false,
+            welcomeMessageId: null,
+          },
+          200,
+        );
       }
+      const welcome = await welcomePostedFields(deps.messageStore, account);
       const excludeId = account.profileMessageId ?? null;
       const hasPosted = await deps.messageStore.accountHasLiveTopLevelPost(account.id, excludeId);
       if (!hasPosted) {
-        return c.json({ hasPosted: false, messageId: null, postedAt: null, hasMedia: false }, 200);
+        return c.json(
+          {
+            hasPosted: false,
+            messageId: null,
+            postedAt: null,
+            hasMedia: false,
+            ...welcome,
+          },
+          200,
+        );
       }
       const hasMedia = await deps.messageStore.accountHasLiveTopLevelMediaPost(
         account.id,
@@ -541,6 +600,7 @@ export function invoiceRoutes(deps: InvoiceRouteDeps): Hono {
           messageId: newest === undefined ? null : newest.id,
           postedAt: newest === undefined ? null : newest.createdAt.toISOString(),
           hasMedia,
+          ...welcome,
         },
         200,
       );

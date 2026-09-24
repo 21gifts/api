@@ -217,8 +217,12 @@ is funding-eligible today and the new row has media (`hasPhoto` /
 `hasVideo` / `photoCount > 0`); otherwise log `spend.ping.skipped` /
 `not_eligible` or `no_media` and still 200; a **new** top-level media post
 from `role === 'verified'` also pings `{ address, messageId, kind: "welcome" }`
-independent of `eligibleToday` (Spend pays once lifetime; this API may ping
-again; replies / text-only / moderator / founder do not welcome-ping); replies and media replay do
+for the newest live top-level photo or video, including an About-me note,
+independent of `eligibleToday` (the new row itself need not have media;
+Spend pays once per Lightning Address; this API may ping again; becoming
+verified and saving About me while verified also welcome-ping; boot and a
+15-minute timer welcome-ping verified accounts whose only photo is About me;
+replies and any role other than `verified` do not welcome-ping); replies and media replay do
 not ping; unset/blank env skips the ping and still returns 200;
 the public thread is listed via `GET /messages` (requires rules; newest first, optional `hashtag` query (name without `#`; token filter on `text`), name
 snapshotted at post, `sats`, `payable`, `hasPhoto`, and live author `role`
