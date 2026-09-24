@@ -35,7 +35,7 @@ api/
 │   │   ├── info.ts           # GET /info
 │   │   ├── brand.ts          # GET /favicon.ico, /favicon.svg, /apple-touch-icon.png
 │   │   ├── auth.ts           # Passkey: /auth/passkey/register|authenticate|replace begin/finish
-│   │   ├── me.ts             # GET /me; GET /me/activity; PUT /me/about; GET /me/about/photo; POST /me/wallet-backup-seen; POST /me/setup/skip; POST /me/name; POST /me/username; POST /me/location; POST /me/forum-laws-dismissed; POST /me/notification-level; POST /me/rules-agreement; link/unlink + address verification
+│   │   ├── me.ts             # GET /me; GET /me/activity; PUT /me/about; GET /me/about/photo; POST /me/wallet-backup-seen; POST /me/setup/skip; POST /me/name; POST /me/username; POST /me/location; POST /me/forum-laws-dismissed; POST /me/notification-level; POST /me/amount-unit; POST /me/rules-agreement; link/unlink + address verification
 │   │   ├── members.ts        # GET /members/:accountId (Bearer; live identity + profile note + counts + trust + fundingReviewedAt); GET /members/:accountId/activity; GET /members/:accountId/posts; GET /members/:accountId/replies
 │   │   ├── links.ts          # GET /links/:code (public; 8-hex prefix of a message or account id)
 │   │   ├── view.ts           # GET /view/:viewKey (public profile card); GET /view/:viewKey/about/photo; GET /view/:viewKey/activity

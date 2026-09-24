@@ -2,17 +2,18 @@ import { ROLE_ORDER } from '@/lib/auth/roles';
 import { AUTH_SCHEMA_SQL } from '@/lib/auth/schema';
 import { CHALLENGE_TTL_MS, SESSION_TTL_MS } from '@/lib/config';
 import { isUniqueViolation, type SqlClient } from '@/lib/auth/sql';
-import type {
-  Account,
-  AccountRole,
-  AddressVerification,
-  AuthStore,
-  NostrKeyListRow,
-  NostrKeyRecord,
-  PasskeyChallenge,
-  PasskeyChallengeType,
-  PasskeyCredential,
-  Session,
+import {
+  parseAmountUnit,
+  type Account,
+  type AccountRole,
+  type AddressVerification,
+  type AuthStore,
+  type NostrKeyListRow,
+  type NostrKeyRecord,
+  type PasskeyChallenge,
+  type PasskeyChallengeType,
+  type PasskeyCredential,
+  type Session,
 } from '@/lib/auth/store';
 import { parseNotificationLevel } from '@/lib/notification';
 
@@ -41,9 +42,10 @@ interface AccountRow {
   nostr_key_created_at?: Date | string | null;
   wallet_required?: boolean | null;
   wallet_backup_seen_at?: Date | string | null;
+  amount_unit?: string | null;
 }
 
-const ACCOUNT_SELECT_COLUMNS = `id, linking_key, role, name, lightning_address, lightning_address_verified, forum_laws_dismissed, view_key, created_at, rules_agreed_at, is_platform, name_skipped_at, lightning_address_skipped_at, profile_message_id, location, notification_level, username, session_refused, nostr_kek_id, nostr_key_custody, nostr_key_created_at, wallet_required, wallet_backup_seen_at`;
+const ACCOUNT_SELECT_COLUMNS = `id, linking_key, role, name, lightning_address, lightning_address_verified, forum_laws_dismissed, view_key, created_at, rules_agreed_at, is_platform, name_skipped_at, lightning_address_skipped_at, profile_message_id, location, notification_level, username, session_refused, nostr_kek_id, nostr_key_custody, nostr_key_created_at, wallet_required, wallet_backup_seen_at, amount_unit`;
 
 /** Row shape of `auth_session`. */
 interface SessionRow {
@@ -113,8 +115,8 @@ export class PostgresAuthStore implements AuthStore {
         );
       }
       await this.#sql.execute(
-        `INSERT INTO account (id, linking_key, role, name, lightning_address, lightning_address_verified, forum_laws_dismissed, created_at, view_key, rules_agreed_at, is_platform, name_skipped_at, lightning_address_skipped_at, profile_message_id, location, notification_level, username, session_refused, wallet_required, wallet_backup_seen_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, to_timestamp($8::double precision / 1000.0), $9, to_timestamp($10::double precision / 1000.0), $11, to_timestamp($12::double precision / 1000.0), to_timestamp($13::double precision / 1000.0), $14, $15, $16, $17, $18, $19, to_timestamp($20::double precision / 1000.0))
+        `INSERT INTO account (id, linking_key, role, name, lightning_address, lightning_address_verified, forum_laws_dismissed, created_at, view_key, rules_agreed_at, is_platform, name_skipped_at, lightning_address_skipped_at, profile_message_id, location, notification_level, username, session_refused, wallet_required, wallet_backup_seen_at, amount_unit)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, to_timestamp($8::double precision / 1000.0), $9, to_timestamp($10::double precision / 1000.0), $11, to_timestamp($12::double precision / 1000.0), to_timestamp($13::double precision / 1000.0), $14, $15, $16, $17, $18, $19, to_timestamp($20::double precision / 1000.0), $21)
          ON CONFLICT (linking_key) DO NOTHING`,
         [
           account.id,
@@ -137,6 +139,7 @@ export class PostgresAuthStore implements AuthStore {
           account.sessionRefused === true,
           account.walletRequired === true,
           account.walletBackupSeenAt ?? null,
+          account.amountUnit ?? 'btc',
         ],
       );
     } catch (error: unknown) {
@@ -195,7 +198,8 @@ export class PostgresAuthStore implements AuthStore {
              profile_message_id = $14,
              location = $15,
              notification_level = $16,
-             username = $17
+             username = $17,
+             amount_unit = $18
          WHERE id = $1
            AND (
              $2::text IS NULL
@@ -222,6 +226,7 @@ export class PostgresAuthStore implements AuthStore {
           account.location,
           account.notificationLevel ?? 'all',
           account.username ?? null,
+          account.amountUnit ?? 'btc',
         ],
       );
     } catch (error: unknown) {
@@ -829,6 +834,7 @@ function mapAccount(row: AccountRow): Account | undefined {
         : epochMs(row.lightning_address_skipped_at),
     profileMessageId: row.profile_message_id ?? null,
     notificationLevel: parseNotificationLevel(row.notification_level),
+    amountUnit: parseAmountUnit(row.amount_unit),
     username: row.username ?? null,
     sessionRefused: row.session_refused === true,
     walletRequired: row.wallet_required === true,

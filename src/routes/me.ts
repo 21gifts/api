@@ -42,7 +42,7 @@ import { confirmVerification, startVerification } from '@/lib/verification';
 /**
  * `/me` — the authenticated account and its editable profile (display name,
  * unique username, optional location, About me, welcome-forum laws dismiss,
- * living-room rules agreement, notification level, wallet backup seen,
+ * living-room rules agreement, notification level, amount-entry unit, wallet backup seen,
  * and the receiver's Lightning Address), including proof-of-control
  * verification. Shares the {@link AuthStore} instance with `/auth`.
  */
@@ -173,6 +173,11 @@ const notificationLevelBody = z.object({
   level: z.enum(['all', 'active', 'mentions']),
 });
 
+/** Body schema for setting the owner amount-entry unit. */
+const amountUnitBody = z.object({
+  unit: z.enum(['btc', 'fiat']),
+});
+
 /** Owner JSON including the live funding grant. */
 function ownerJson(deps: MeRouteDeps, account: Account): Promise<OwnerAccountResponse> {
   return serializeOwnerAccountWithPosts(account, deps.messages, {
@@ -187,7 +192,7 @@ function ownerJson(deps: MeRouteDeps, account: Account): Promise<OwnerAccountRes
  *
  * @param deps - Shared store, message store, clock, payer, fetch, optional push, optional notification and conversation stores, optional gift/rate/fiat stores for activity, optional funding store, and optional `nostrKek` for the NIP-57 mint probe.
  * @returns A Hono app exposing account, activity, display-name, username, location, About me, wallet-backup-seen, setup skip, forum-laws dismiss,
- * living-room rules agreement, notification level, link/unlink, and verification routes.
+ * living-room rules agreement, notification level, amount-entry unit, link/unlink, and verification routes.
  */
 export function meRoutes(deps: MeRouteDeps): Hono {
   const giftStore = deps.giftStore ?? new InMemoryGiftStore();
@@ -696,6 +701,28 @@ export function meRoutes(deps: MeRouteDeps): Hono {
       logEvent('account.notification_level.set', {
         accountId: current.id,
         level: parsed.data.level,
+      });
+      return c.json(await ownerJson(deps, updated), 200);
+    })
+    .post('/amount-unit', async (c) => {
+      const account = await authedAccount(deps, c.req.header('authorization'));
+      if (account === null) {
+        return c.json({ error: 'Unauthorized' }, 401);
+      }
+      const parsed = amountUnitBody.safeParse(await c.req.json().catch(() => null));
+      if (!parsed.success) {
+        return c.json({ error: 'Expected a JSON body with a unit of btc or fiat' }, 400);
+      }
+      const current = await storedAccount(deps, account.id);
+      /* v8 ignore next 3 -- the account row cannot vanish mid-request after auth */
+      if (current === null) {
+        return c.json({ error: 'Unauthorized' }, 401);
+      }
+      const updated: Account = { ...current, amountUnit: parsed.data.unit };
+      await deps.store.updateAccount(updated);
+      logEvent('account.amount_unit.set', {
+        accountId: current.id,
+        unit: parsed.data.unit,
       });
       return c.json(await ownerJson(deps, updated), 200);
     })

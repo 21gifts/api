@@ -62,6 +62,7 @@ describe('serializeAccount', () => {
     expect(json).not.toHaveProperty('hasPosted');
     expect(json).not.toHaveProperty('aboutMe');
     expect(json).not.toHaveProperty('notificationLevel');
+    expect(json).not.toHaveProperty('amountUnit');
     expect(json).not.toHaveProperty('walletRequired');
     expect(json).not.toHaveProperty('walletBackupSeenAt');
     expect(Object.keys(json)).toHaveLength(11);
@@ -161,6 +162,7 @@ describe('serializeDebugAccount', () => {
     expect(json.isPlatform).toBe(true);
     expect(json.viewKey).toBe(account.viewKey);
     expect(json.notificationLevel).toBe('all');
+    expect(json.amountUnit).toBe('btc');
     expect(json.nameSkippedAt).toBeNull();
     expect(json.lightningAddressSkippedAt).toBeNull();
     expect(json.profileMessageId).toBeNull();
@@ -221,6 +223,7 @@ describe('serializeOwnerAccount', () => {
       aboutMe: null,
       aboutMeHasPhoto: false,
       notificationLevel: 'all',
+      amountUnit: 'btc',
       funding: null,
       walletRequired: false,
       walletBackupSeenAt: null,
@@ -233,6 +236,7 @@ describe('serializeOwnerAccount', () => {
     expect(json.aboutMe).toBeNull();
     expect(json.aboutMeHasPhoto).toBe(false);
     expect(json.notificationLevel).toBe('all');
+    expect(json.amountUnit).toBe('btc');
     expect(json.walletRequired).toBe(false);
     expect(json.walletBackupSeenAt).toBeNull();
     expect(json.passkeyCredentialId).toBeNull();
@@ -268,6 +272,11 @@ describe('serializeOwnerAccount', () => {
       false,
     );
     expect(json.notificationLevel).toBe('active');
+  });
+
+  it('includes a stored amountUnit on owner JSON', () => {
+    const json = serializeOwnerAccount({ ...account, amountUnit: 'fiat' }, false, null, false);
+    expect(json.amountUnit).toBe('fiat');
   });
 
   it('passes hasPosted and aboutMe through', () => {
@@ -665,6 +674,7 @@ describe('serializeViewProfile', () => {
     expect(json).not.toHaveProperty('hasPosted');
     expect(json).not.toHaveProperty('profileMessageId');
     expect(json).not.toHaveProperty('notificationLevel');
+    expect(json).not.toHaveProperty('amountUnit');
     expect(Object.keys(json)).toHaveLength(9);
   });
 
