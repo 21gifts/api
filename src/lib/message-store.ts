@@ -220,8 +220,9 @@ export interface MessageStore {
    * `deletedAt` null) for GET `/messages`. Same `replyCount` as
    * {@link listLatest} (live attributed direct children). Never
    * selects `photo` bytea. Replies and soft-hidden rows are excluded.
-   * Name-copy profile notes without photo or video are omitted (Postgres via
-   * the name-copy NOT EXISTS; in-memory when the provider returns those ids).
+   * Name-copy profile notes without a photo, extra stills, or video are omitted
+   * (Postgres via the name-copy NOT EXISTS; in-memory when the provider returns
+   * those ids).
    * A real About me stays.
    *
    * @param query - Mode, limit, exclusive cursor, staff ids (`active` only), and optional hashtag.
@@ -3446,8 +3447,8 @@ export class PostgresMessageStore implements MessageStore {
    * `query.limit`, with `replyCount` of live attributed children
    * (`deleted_at IS NULL` and either an account or a recorded zapper pubkey).
    * Same {@link MESSAGE_SELECT_COLUMNS} as {@link listLatest} — never the
-   * `photo` bytea column. Name-copy profile notes without photo or video are
-   * omitted. A real About me stays.
+   * `photo` bytea column. Name-copy profile notes without a photo, extra
+   * stills, or video are omitted. A real About me stays.
    *
    * @param query - Mode, limit, exclusive keyset cursor, staff ids, and optional hashtag.
    * @returns Mapped list rows.
