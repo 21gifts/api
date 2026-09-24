@@ -78,7 +78,7 @@ api/
 │   │   ├── about-me.ts       # Profile-note text → About me (name-copy is not a bio)
 │   │   ├── account-activity.ts # Given/received sats: forum zaps, house gifts, message.sats remainder
 │   │   ├── message-store.ts  # MessageStore port, InMemoryMessageStore, PostgresMessageStore
-│   │   ├── translation-store.ts # message_translation cache (InMemory + Postgres)
+│   │   ├── translation-store.ts # message_translation + conversation_message_translation cache (InMemory + Postgres)
 │   │   ├── translate-config.ts # TRANSLATE_URL / TRANSLATE_API_KEY (optional; boot still)
 │   │   ├── translate-deepl.ts # DeepL v2 POST
 │   │   ├── translate-note.ts # cache lookup, in-flight coalesce, DeepL, upsert
@@ -284,7 +284,7 @@ api/
 │   ├── usd_fiat_daily.sql    # UTC daily USD→CHF/EUR/PHP ECB crosses
 │   ├── message.sql           # message + nostr_zap_receipt + nostr_zapper + nostr_blocked_pubkey + nostr_zap_payment + message_invoice + message_translation + nostr_zap_ingest + message_extra_photo
 │   ├── contact.sql           # private contact mailbox table for POST /contact
-│   ├── conversation.sql      # PN threads + messages + conversation_read (per-viewer last-read; member/platform/Damus; closed moderator_group singleton, HTTP-only / skipped Nostr) + conversation_message.photo / photo_content_type + conversation_message_extra_photo
+│   ├── conversation.sql      # PN threads + messages + conversation_read (per-viewer last-read; member/platform/Damus; closed moderator_group singleton, HTTP-only / skipped Nostr) + conversation_message.photo / photo_content_type + conversation_message_extra_photo + conversation_message_translation
 │   ├── api_log.sql           # HTTP audit log (who called which path)
 │   ├── push.sql              # push_subscription + push_outbox
 │   ├── notification.sql      # in-app Notifications rows (`forum_post`, `forum_reply`, `zap`)

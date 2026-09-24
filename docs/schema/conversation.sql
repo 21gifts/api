@@ -99,3 +99,15 @@ CREATE TABLE IF NOT EXISTS conversation_message_extra_photo (
   CONSTRAINT conversation_message_extra_photo_idx_range CHECK (idx >= 1 AND idx <= 9)
 );
 ALTER TABLE conversation_message_extra_photo ADD COLUMN IF NOT EXISTS photo_taken_at text;
+
+-- Cached DeepL output per conversation message and UI locale. source_sha256 is
+-- SHA-256 of the stored `conversation_message.text` so an edit invalidates the
+-- row. ON DELETE CASCADE with the parent message. First writer for a hash wins.
+CREATE TABLE IF NOT EXISTS conversation_message_translation (
+  message_id uuid NOT NULL REFERENCES conversation_message (id) ON DELETE CASCADE,
+  target_lang text NOT NULL,
+  source_sha256 text NOT NULL,
+  translated_text text NOT NULL,
+  created_at timestamptz NOT NULL,
+  PRIMARY KEY (message_id, target_lang)
+);

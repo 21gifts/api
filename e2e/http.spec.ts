@@ -275,6 +275,15 @@ test('GET /conversations/:id/messages/:messageId/photo/:file without bearer is 4
   );
 });
 
+test('POST /conversations/:id/messages/:messageId/translate without bearer is 401', async ({
+  request,
+}) => {
+  const res = await request.post('/conversations/:id/messages/:messageId/translate', {
+    data: { target: 'en' },
+  });
+  expect(res.status()).toBe(401);
+});
+
 test('POST /messages with a photo without bearer is 401', async ({ request }) => {
   const res = await request.post('/messages', {
     data: {

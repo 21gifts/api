@@ -4136,6 +4136,7 @@ describe('runNostrWorkerTick', () => {
         lastMessageAt: new Date(0),
         name: '',
         lastText: '',
+        lastMessageId: null,
         lastSenderAccountId: null,
         lastActorAccountId: null,
         lastSats: 0,

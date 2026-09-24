@@ -84,6 +84,12 @@ export interface BootStores {
    * opened so `createApp` keeps the empty in-memory default.
    */
   translationStore: TranslationStore | undefined;
+  /**
+   * Postgres-backed conversation translation cache, or `undefined` when no
+   * SQL client was opened so `conversationRoutes` constructs one
+   * {@link InMemoryTranslationStore}. Aimed at `conversation_message_translation`.
+   */
+  conversationTranslationStore: TranslationStore | undefined;
   /** Parsed KEK when DATABASE_URL is set; `undefined` on memory boots. */
   nostrKek: Uint8Array | undefined;
   /**
@@ -157,6 +163,7 @@ export interface BootFxOptions {
  * Blank or unset URL yields in-memory auth, `giftStore: undefined`,
  * `giftRecorder: undefined`, `messageStore: undefined`,
  * `translationStore: undefined`,
+ * `conversationTranslationStore: undefined`,
  * `contactStore: undefined`, a fresh {@link InMemoryPosStore} as `posStore`,
  * `apiLogStore: undefined`,
  * `conversationStore: undefined`,
@@ -228,6 +235,7 @@ export async function openBootStores(
       fiatRates: new InMemoryFiatStore(),
       messageStore: undefined,
       translationStore: undefined,
+      conversationTranslationStore: undefined,
       nostrKek: undefined,
       contactStore: undefined,
       posStore: new InMemoryPosStore(),
@@ -355,6 +363,10 @@ export async function openBootStores(
   const giftRecorder = new SqlGiftRecorder(giftSql);
   const messageStore = new PostgresMessageStore(sqlClient, { fetchImpl, fiatRates, now });
   const translationStore = new PostgresTranslationStore(sqlClient);
+  const conversationTranslationStore = new PostgresTranslationStore(
+    sqlClient,
+    'conversation_message_translation',
+  );
   await backfillZapPayments(messageStore);
   try {
     await backfillExternalZappers(messageStore, {
@@ -383,6 +395,7 @@ export async function openBootStores(
     fiatRates,
     messageStore,
     translationStore,
+    conversationTranslationStore,
     nostrKek,
     contactStore,
     posStore,
