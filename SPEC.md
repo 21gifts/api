@@ -4,7 +4,7 @@
 > Product decisions live in [`CONCEPT.md`](./CONCEPT.md); this file owns
 > request/response contracts for routes that exist in code today.
 
-**Status**: living document. Last revised 2026-09-23 (`eligibleToday` does not require a grant until UTC 2026-09-25; funding-program grants independent of `account.role`; spend ping and `POST /invoices` require `eligibleToday`; verified top-level media also welcome-pings independent of `eligibleToday`; `GET /invoices/eligible`; `GET /conversations` list/open rows include per-row `unreadMessageCount`; envelope `unreadCount` remains unread thread count; `GET /trust-chain` requires a member Bearer session; public graph uses at most one incoming edge per subject: the oldest eligible sibling (`createdAt` then `id`), skipping a non-chain oldest sibling so a later displayable contact can show; eligible `verify`, `moderator_appoint`, and `moderator_propose` only when the subject is a moderator; `moderator_confirm` and `moderator_reject` never; later appoint/confirm/propose do not replace the first eligible contact; staff may reject an open proposal (`POST /trust/reject-moderator`, append-only `moderator_reject`, role stays `verified`) and re-propose after reject (new `moderator_propose`; 409 while currently pending, any confirm/appoint, or a concurrent older open propose wins after insert); confirm/reject re-list after insert and undo when the other grant already closed; pending = latest propose/reject is propose, verified, no confirm/appoint; live-unique kinds are verify/confirm/appoint only; open proposal fans out in-app `moderator_proposal` plus Web Push to other staff until confirm, until reject when pending is then empty, or until appoint; GET `/notifications` keeps `moderator_appointed` and `moderator_proposal` (mark-read / read-all do not stamp the proposal); owner `notificationLevel` on GET `/me` and `POST /me/notification-level`; fan-out filters in-app and Web Push by `all` / `active` / `mentions`; GET `/notifications` applies the same filter to stored rows (`moderator_appointed` always stays; `unreadCount` is unread among kept rows after the hidden filter (before the 200 cap), not `store.unreadCount()` and not the unfiltered matching unread of the newest 1000); a zap that inserts a gift-reply fans out only `notifyZap`, not a second `forum_reply`; gift-reply row still lands in the thread; confirm/appoint notify the subject only with `moderator_appointed` and Web Push url `/welcome`; official platform account (`isPlatform`) never fans out living-room `forum_post` / `forum_reply` / `zap`; house daily gift-replies still persist; GET /messages omits name-copy profile notes and About me text stays).
+**Status**: living document. Last revised 2026-09-24 (`POST /conversations/:id/messages/:messageId/translate`; owner and view JSON include `aboutMessageId`; conversation rows include `lastMessageId`. 2026-09-23: `eligibleToday` does not require a grant until UTC 2026-09-25; funding-program grants independent of `account.role`; spend ping and `POST /invoices` require `eligibleToday`; verified top-level media also welcome-pings independent of `eligibleToday`; `GET /invoices/eligible`; `GET /conversations` list/open rows include per-row `unreadMessageCount`; envelope `unreadCount` remains unread thread count; `GET /trust-chain` requires a member Bearer session; public graph uses at most one incoming edge per subject: the oldest eligible sibling (`createdAt` then `id`), skipping a non-chain oldest sibling so a later displayable contact can show; eligible `verify`, `moderator_appoint`, and `moderator_propose` only when the subject is a moderator; `moderator_confirm` and `moderator_reject` never; later appoint/confirm/propose do not replace the first eligible contact; staff may reject an open proposal (`POST /trust/reject-moderator`, append-only `moderator_reject`, role stays `verified`) and re-propose after reject (new `moderator_propose`; 409 while currently pending, any confirm/appoint, or a concurrent older open propose wins after insert); confirm/reject re-list after insert and undo when the other grant already closed; pending = latest propose/reject is propose, verified, no confirm/appoint; live-unique kinds are verify/confirm/appoint only; open proposal fans out in-app `moderator_proposal` plus Web Push to other staff until confirm, until reject when pending is then empty, or until appoint; GET `/notifications` keeps `moderator_appointed` and `moderator_proposal` (mark-read / read-all do not stamp the proposal); owner `notificationLevel` on GET `/me` and `POST /me/notification-level`; fan-out filters in-app and Web Push by `all` / `active` / `mentions`; GET `/notifications` applies the same filter to stored rows (`moderator_appointed` always stays; `unreadCount` is unread among kept rows after the hidden filter (before the 200 cap), not `store.unreadCount()` and not the unfiltered matching unread of the newest 1000); a zap that inserts a gift-reply fans out only `notifyZap`, not a second `forum_reply`; gift-reply row still lands in the thread; confirm/appoint notify the subject only with `moderator_appointed` and Web Push url `/welcome`; official platform account (`isPlatform`) never fans out living-room `forum_post` / `forum_reply` / `zap`; house daily gift-replies still persist; GET /messages omits name-copy profile notes and About me text stays).
 
 ---
 
@@ -93,7 +93,7 @@ Public base URLs used in examples:
 | POST   | `/auth/passkey/replace/finish`                       | Bearer                     | 409 refusal that deletes nothing and keeps the session                                                                                                            |
 | POST   | `/auth/passkey/seed/begin`                           | Bearer                     | Creation options for one extra seed passkey; 409 when walletRequired is already true; no excludeCredentials.                                                      |
 | POST   | `/auth/passkey/seed/finish`                          | Bearer                     | Verify attestation, insert an additional passkey, set walletRequired true, keep the login passkey and the session.                                                |
-| GET    | `/me`                                                | `Authorization: Bearer`    | Account (`setup` + factual `missing` + `hasPosted` + `aboutMe` + `aboutMeHasPhoto` + `notificationLevel` + `amountUnit`)                                          |
+| GET    | `/me`                                                | `Authorization: Bearer`    | Account (`setup` + factual `missing` + `hasPosted` + `aboutMe` + `aboutMeHasPhoto` + `aboutMessageId` + `notificationLevel` + `amountUnit`)                        |
 | POST   | `/me/amount-unit`                                    | Bearer                     | Set owner amount-entry unit (`btc` or `fiat`, default `btc`)                                                                                                      |
 | GET    | `/me/activity`                                       | Bearer                     | Given + received series (forum zaps + house gifts; platform given = all outbound)                                                                                 |
 | POST   | `/me/wallet-backup-seen`                             | Bearer                     | Records that this account can show a recovery phrase. Not a confirmation and not a setup step. Empty body. Does not change `walletRequired`.                      |
@@ -155,6 +155,7 @@ Public base URLs used in examples:
 | POST   | `/conversations/:id`                                 | Bearer                     | Send `{ text?, photo?, photos? }` (stills on every kind; photo rows skip Nostr)                                                                                   |
 | POST   | `/conversations/:id/invoice`                         | Bearer                     | NIP-57 zap / BOLT11 for a private gift (`{ sats, text? }` → `{ pr, amountSats, messageId }`)                                                                      |
 | POST   | `/conversations/:id/read`                            | Bearer                     | Stamp last-read for the viewer                                                                                                                                    |
+| POST   | `/conversations/:id/messages/:messageId/translate`   | Bearer                     | Translate stored conversation text (`{ target }` → `{ translatedText, cached }`)                                                                                  |
 | GET    | `/notifications`                                     | Bearer                     | List + unreadCount; drop leftover hidden forum_post/forum_reply (zap checks parent only)                                                                          |
 | POST   | `/notifications/read-all`                            | Bearer                     | Mark all notifications read                                                                                                                                       |
 | POST   | `/notifications/:id/read`                            | Bearer                     | Mark one notification read                                                                                                                                        |
@@ -483,6 +484,7 @@ ID).
     "hasPosted": false,
     "aboutMe": null,
     "aboutMeHasPhoto": false,
+    "aboutMessageId": null,
     "notificationLevel": "all",
     "amountUnit": "btc",
     "funding": null,
@@ -493,7 +495,7 @@ ID).
 }
 ```
 
-The `account` object is the same owner JSON as `GET /me` (includes `viewKey`, `setup`, `missing`, `hasPosted`, `aboutMe`, `aboutMeHasPhoto`, `notificationLevel`, `amountUnit`, `walletRequired`, `walletBackupSeenAt`, and `passkeyCredentialId`). The example above is a new register (`walletRequired: true`, `setup: "name"` when the name is unset). The recovery phrase is not a setup step and does not change `setup` or `missing`. Existing members start with `walletRequired: false`. Seed finish sets `walletRequired: true` and does not change `walletBackupSeenAt`. Replace refuses and changes nothing. `walletBackupSeenAt` does not decide whether a seed exists.
+The `account` object is the same owner JSON as `GET /me` (includes `viewKey`, `setup`, `missing`, `hasPosted`, `aboutMe`, `aboutMeHasPhoto`, `aboutMessageId`, `notificationLevel`, `amountUnit`, `walletRequired`, `walletBackupSeenAt`, and `passkeyCredentialId`). The example above is a new register (`walletRequired: true`, `setup: "name"` when the name is unset). The recovery phrase is not a setup step and does not change `setup` or `missing`. Existing members start with `walletRequired: false`. Seed finish sets `walletRequired: true` and does not change `walletBackupSeenAt`. Replace refuses and changes nothing. `walletBackupSeenAt` does not decide whether a seed exists.
 
 A new register row is stored with `walletRequired: true` and `walletBackupSeenAt: null`. First-passkey claim of a provisioned row sets `walletRequired: true` in the same write as the credential (`createFirstPasskeyCredential`: Postgres CTE locks the account row with `FOR UPDATE`, then inserts and sets `wallet_required`; memory store writes both in one method) and does not clear a seen timestamp. Passkey replace refuses and does not change these columns. Seed finish sets `walletRequired: true` without changing `walletBackupSeenAt`. Operator `POST /debug/accounts` provision leaves `walletRequired` false. The api never stores a mnemonic or PRF output.
 
@@ -620,6 +622,7 @@ An account with `sessionRefused` and a still-valid minted token → **Response**
   "hasPosted": false,
   "aboutMe": null,
   "aboutMeHasPhoto": false,
+  "aboutMessageId": null,
   "notificationLevel": "all",
   "amountUnit": "btc",
   "funding": null,
@@ -658,6 +661,7 @@ stays `null`)).
 | hasPosted                  | boolean        | True when there is a live forum row that is not the profile note (replies still count) OR when `aboutMe` is non-null. A profile note that is only the display-name copy, a photo without bio text, a missing note, and a soft-hidden note do not count. Not the same predicate as GET /invoices/posted (that stays top-level non-profile only). |
 | `aboutMe`                  | string \| null | Profile-note text when it is a real bio, else `null` (missing or soft-hidden (`deletedAt` set); auto name-copy is not a bio, including after a display-name rename when the note text still equals the stored profile-note `name` (Ada→Grace with text `Ada` stays `null`))                                                                     |
 | `aboutMeHasPhoto`          | boolean        | True when the live profile note has a stored JPEG/PNG/WebP. Independent of `aboutMe` (photo-only and name-copy notes can still have a photo). Bytes are `GET /me/about/photo`. Does not expose `profileMessageId`.                                                                                                                              |
+| `aboutMessageId`           | string \| null | Id of the stored About me note when `aboutMe` is non-null. `null` when `aboutMe` is `null` (including a name-copy note). Not a display name.                                                                                                                                                                                                   |
 | `notificationLevel`        | string         | Owner fan-out filter: `all`, `active`, or `mentions`. Default `all`. Owner-only; omitted from public `GET /view/:viewKey` and member cards.                                                                                                                                                                                                     |
 | `amountUnit`               | string         | Owner amount-entry unit: `btc` or `fiat`. Default `btc`. Owner-only; omitted from public `GET /view/:viewKey` and member cards. The last unit the member chose on any amount field.                                                                                                                                                             |
 | `funding`                  | object \| null | Funding-program grant. `null` for `basis`. Otherwise always an object; no row is `{ status: "none", trialUtcDate: null, admittedAt: null, reviewedByName: null }`. Admitted includes live `reviewedByName`.                                                                                                                                     |
@@ -1077,7 +1081,7 @@ Param not matching `/^[0-9a-f]{64}$/` or an unknown key → **Response** `404`:
 { "error": "Not found" }
 ```
 
-**Response** `200` (nine fields including `username` (`string | null`);
+**Response** `200` (ten fields including `username` (`string | null`);
 omits `id`, `linkingKey`, `role`, `viewKey`):
 
 ```json
@@ -1090,7 +1094,8 @@ omits `id`, `linkingKey`, `role`, `viewKey`):
   "createdAt": 0,
   "hasPasskey": false,
   "aboutMe": null,
-  "aboutMeHasPhoto": false
+  "aboutMeHasPhoto": false,
+  "aboutMessageId": null
 }
 ```
 
@@ -4138,6 +4143,7 @@ Success → **Response** `200`:
       "kind": "member_member",
       "name": "Ada",
       "lastText": "Hello",
+      "lastMessageId": "<uuid>",
       "lastAt": "2026-08-29T12:00:00.000Z",
       "lastFromMe": false,
       "lastSats": 0,
@@ -4150,6 +4156,8 @@ Success → **Response** `200`:
 }
 ```
 
+`lastMessageId` is the id of the same newest row as `lastText` (`created_at`
+then `id`, both descending), or `null` when the thread has no message.
 `unreadCount` is the number of listed rows with `unread: true` (same
 cap/filter, not a second uncapped query; menu/PWA badge). Per-row
 `unreadMessageCount` is the number of inbound messages strictly after
@@ -4373,6 +4381,33 @@ Success → **Response** `200`:
 
 ```json
 { "ok": true }
+```
+
+### `POST /conversations/:id/messages/:messageId/translate`
+
+Bearer session required. `:id` and `:messageId` are UUIDs. Body is only
+`{ "target": "en" | "de" | "es" | "fil" }`. The server loads the stored
+`conversation_message.text`. The client does not send source text. A cache
+hit on `conversation_message_translation` for that text returns
+`{ "translatedText", "cached": true }` with no upstream call. Access matches
+`GET /conversations/:id` (`moderator_group` only for a moderator-group
+member; initiator has the same rank as moderator).
+
+Missing or invalid bearer → **401** `{ "error": "Unauthorized" }`.
+Non-uuid `:id` or `:messageId`, missing thread, no access, missing message,
+or a message from another thread → **404** `{ "error": "Not found" }`.
+Malformed JSON, unknown `target`, or stored text that trims empty → **400**
+`{ "error": "Invalid body" }`.
+Translate not configured → **503** `{ "error": "Translate is not configured" }`.
+Upstream failure → **502** `{ "error": "Translate upstream failed" }`.
+Store or other unexpected failure → **503**
+`{ "error": "Conversations are unavailable" }`. The log line does not include
+the API key or the message text.
+
+Success → **Response** `200`:
+
+```json
+{ "translatedText": "Hello", "cached": false }
 ```
 
 ### `GET /notifications`
