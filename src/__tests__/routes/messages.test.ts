@@ -9306,6 +9306,22 @@ describe('GET /messages/hidden', () => {
       expect(called).toBe(false);
     });
 
+    it('stores a BTC ask when the gift-day loader throws', async () => {
+      const { res, json } = await post(
+        { text: 'btc', goalCurrency: 'BTC', goalAmount: '10' },
+        {
+          goalRateDay: async () => {
+            throw new Error('fx.rate.missing');
+          },
+        },
+      );
+      expect(res.status).toBe(200);
+      expect(json['goalSats']).toBe(10);
+      expect(json['goalCurrency']).toBe('BTC');
+      expect(json['goalAmount']).toBe('10');
+      expect(json['goalAmountUsd']).toBeNull();
+    });
+
     it('returns 503 when the gift-day loader throws', async () => {
       const { res, json } = await post(
         { text: 'usd', goalCurrency: 'USD', goalAmount: '1' },

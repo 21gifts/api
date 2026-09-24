@@ -600,8 +600,9 @@ function freezeSnapshots(
 type AskOutcome = { ok: true; goal: FrozenAsk } | { ok: false; status: 400 | 503; error: string };
 
 /**
- * Freeze a top-level ask. Legacy sats skip the loader. Currency asks use
- * `goalRateDay` when it is set; a missing day does not reject BTC.
+ * Freeze a top-level ask. Legacy sats skip the loader. A BTC ask still stores
+ * the typed sats when the loader throws or returns no day. A fiat ask is 503
+ * when the loader throws and 400 when the day cannot price it.
  */
 async function freezeAsk(
   deps: MessagesRouteDeps,
@@ -621,7 +622,9 @@ async function freezeAsk(
     try {
       day = await deps.goalRateDay();
     } catch {
-      return { ok: false, status: 503, error: 'Messages are unavailable' };
+      if (currency !== 'BTC') {
+        return { ok: false, status: 503, error: 'Messages are unavailable' };
+      }
     }
   }
   if (currency === 'BTC') {
