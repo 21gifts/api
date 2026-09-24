@@ -5,12 +5,16 @@ import type { FetchFn } from '@/lib/btc-usd-candles';
 /** Default Coinbase spot endpoint. */
 const DEFAULT_BTC_USD_SPOT_URL = 'https://api.coinbase.com/v2/prices/BTC-USD/spot';
 
+/** Abort the BTC-USD spot fetch after this many milliseconds. */
+export const BTC_USD_SPOT_TIMEOUT_MS = 10_000;
+
 /**
  * Fetch the current positive BTC-USD spot without ever throwing.
  *
  * @param fetchImpl - Fetch implementation (injectable for tests).
  * @param url - Explicit endpoint; a blank value falls through to env/default.
- * @returns Coinbase decimal text, or `null` for every transport/shape/value failure.
+ * @returns Coinbase decimal text, or `null` for every transport/shape/value failure,
+ * including a fetch that times out.
  */
 export async function fetchBtcUsdSpot(
   fetchImpl: FetchFn = fetch,
@@ -20,7 +24,9 @@ export async function fetchBtcUsdSpot(
   const env = process.env['BTC_USD_SPOT_URL']?.trim() ?? '';
   const endpoint = explicit !== '' ? explicit : env !== '' ? env : DEFAULT_BTC_USD_SPOT_URL;
   try {
-    const response = await fetchImpl(endpoint);
+    const response = await fetchImpl(endpoint, {
+      signal: AbortSignal.timeout(BTC_USD_SPOT_TIMEOUT_MS),
+    });
     if (!response.ok) {
       return null;
     }

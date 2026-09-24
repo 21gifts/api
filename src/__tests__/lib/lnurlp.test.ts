@@ -15,7 +15,7 @@ describe('resolveLnurlp', () => {
   it('returns metadata on the happy path (https callback, min/max, commentAllowed)', async () => {
     const fetchImpl: FetchFn = async (input, init) => {
       expect(String(input)).toBe('https://walletofsatoshi.com/.well-known/lnurlp/alice');
-      expect(init).toEqual({ redirect: 'error' });
+      expect(init).toEqual({ redirect: 'error', signal: expect.any(AbortSignal) });
       return jsonResponse({
         callback: 'https://walletofsatoshi.com/lnurlp/callback',
         minSendable: 1000,
@@ -104,6 +104,14 @@ describe('resolveLnurlp', () => {
     expect(result).toEqual({ ok: false, reason: 'unreachable' });
   });
 
+  it('maps a timed-out fetch to unreachable', async () => {
+    const fetchImpl: FetchFn = async () => {
+      throw new DOMException('The operation was aborted.', 'TimeoutError');
+    };
+    const result = await resolveLnurlp({ address: ADDRESS, fetchImpl });
+    expect(result).toEqual({ ok: false, reason: 'unreachable' });
+  });
+
   it('rejects non-OK HTTP', async () => {
     const fetchImpl: FetchFn = async () => jsonResponse({}, 404);
     const result = await resolveLnurlp({ address: ADDRESS, fetchImpl });
@@ -157,7 +165,7 @@ describe('resolveLnurlp', () => {
       });
     };
     await resolveLnurlp({ address: ADDRESS, fetchImpl });
-    expect(seenInit).toEqual({ redirect: 'error' });
+    expect(seenInit).toEqual({ redirect: 'error', signal: expect.any(AbortSignal) });
   });
 
   it('encodes the local part in the well-known path', async () => {

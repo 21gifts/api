@@ -186,7 +186,7 @@
 
 - **Purpose:** Fetch the current positive BTC-USD spot used to freeze fiat at payment time, without ever throwing.
 - **Inputs:** Optional fetch implementation and optional URL (blank falls through to `BTC_USD_SPOT_URL`, then the Coinbase default).
-- **Returns / side effects:** Coinbase decimal text, or `null` for every transport, shape, or value failure. Does not throw.
+- **Returns / side effects:** Coinbase decimal text, or `null` for every transport, shape, or value failure, including a fetch that aborts after 10 seconds (`BTC_USD_SPOT_TIMEOUT_MS`). Does not throw.
 - **Used by:** `invoiceRoutes`, message create, zap indexing.
 
 ## Function: resolveCandlesUrl
@@ -931,7 +931,7 @@
 - **Purpose:** Allowlisted scalar fields for a caught error so a log line never carries free text. Database messages embed offending values (`invalid input syntax for type uuid: "…"`) and fetch errors can embed a callback URL; a length cut is not redaction.
 - **Inputs:** Any caught value.
 - **Returns / side effects:** `LogFields` with optional `name` (an `Error` name of 1–40 ASCII letters), `code` and `errno` (strings of 1–40 ASCII alphanumerics or underscores, e.g. `ERR_POSTGRES_SERVER_ERROR` and `23505`). Primitives, `null`, and values outside the patterns yield `{}`. Never reads `message`, `detail`, or `cause`. Pure.
-- **Used by:** `indexOpenZapReceipts` (per-receipt catch, `nostr.zap.rejected`) and `startNostrWorker` (`nostr.worker.tick.failed`).
+- **Used by:** `indexOpenZapReceipts` (per-receipt catch, `nostr.zap.rejected`) and `startNostrWorker` (`nostr.worker.tick.failed`, `nostr.worker.ingest.failed`).
 
 ## Function: meRoutes
 
@@ -1533,16 +1533,16 @@
 
 ## Function: resolveLnurlp
 
-- **Purpose:** GET `https://domain/.well-known/lnurlp/local` and parse metadata.
+- **Purpose:** GET `https://domain/.well-known/lnurlp/local` and parse metadata. The well-known metadata fetch aborts after 10 seconds (`LNURLP_METADATA_TIMEOUT_MS`); the abort collapses into `{ ok: false, reason: 'unreachable' }` like any other unreachable failure.
 - **Inputs:** address + fetchImpl.
-- **Returns / side effects:** Callback URL, min/max sendable, optional NIP-57 `allowsNostr` / `nostrPubkey`, or error.
+- **Returns / side effects:** Callback URL, min/max sendable, optional NIP-57 `allowsNostr` / `nostrPubkey`, or `{ ok: false, reason: 'unreachable' }` (including timeout).
 - **Used by:** `lightningAddressRoutes`, `POST /me/lightning-address` (`meRoutes`), `requestPayInvoice`, `requestGiftInvoice`, `requestZapInvoice`.
 
 ## Function: resolveLnurlpDocument
 
-- **Purpose:** Same well-known fetch as `resolveLnurlp`, but returns the provider JSON object so `GET /.well-known/lnurlp/:username` can pass Wallet of Satoshi through unchanged (invoice hashes stay valid; settlement stays at WoS).
+- **Purpose:** Same well-known fetch as `resolveLnurlp`, but returns the provider JSON object so `GET /.well-known/lnurlp/:username` can pass Wallet of Satoshi through unchanged (invoice hashes stay valid; settlement stays at WoS). The well-known metadata fetch aborts after 10 seconds (`LNURLP_METADATA_TIMEOUT_MS`); the abort collapses into `{ ok: false, reason: 'unreachable' }` like any other unreachable failure.
 - **Inputs:** address + fetchImpl.
-- **Returns / side effects:** `{ ok: true, body }` or `{ ok: false, reason: 'unreachable' }`. No I/O besides the injected fetch.
+- **Returns / side effects:** `{ ok: true, body }` or `{ ok: false, reason: 'unreachable' }` (including timeout). No I/O besides the injected fetch.
 - **Used by:** `wellKnownRoutes`.
 
 ## Function: resolveSession

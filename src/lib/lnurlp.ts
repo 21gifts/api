@@ -7,6 +7,9 @@ import { z } from 'zod';
  * request so the HTTPS well-known fetch is not duplicated.
  */
 
+/** Abort the LUD-16 metadata fetch after this many milliseconds. */
+export const LNURLP_METADATA_TIMEOUT_MS = 10_000;
+
 /** Minimal fetch used by LNURL-pay (tests inject a stub). */
 export type FetchFn = (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
 
@@ -74,7 +77,10 @@ async function loadLnurlpJson(args: {
 
   let response: Response;
   try {
-    response = await args.fetchImpl(metadataUrl, { redirect: 'error' });
+    response = await args.fetchImpl(metadataUrl, {
+      redirect: 'error',
+      signal: AbortSignal.timeout(LNURLP_METADATA_TIMEOUT_MS),
+    });
   } catch {
     return { ok: false, reason: 'unreachable' };
   }

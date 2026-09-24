@@ -48,24 +48,37 @@ describe('fetchBtcUsdSpot', () => {
     await expect(fetchBtcUsdSpot(fetchImpl)).resolves.toBeNull();
   });
 
+  it('returns null when fetch times out', async () => {
+    const fetchImpl = vi.fn(async () => {
+      throw new DOMException('The operation was aborted.', 'TimeoutError');
+    });
+    await expect(fetchBtcUsdSpot(fetchImpl)).resolves.toBeNull();
+  });
+
   it('prefers the explicit URL', async () => {
     process.env['BTC_USD_SPOT_URL'] = 'https://env.example/spot';
     const fetchImpl = vi.fn(async () => response({ data: { amount: '1' } }));
     await fetchBtcUsdSpot(fetchImpl, ' https://explicit.example/spot ');
-    expect(fetchImpl).toHaveBeenCalledWith('https://explicit.example/spot');
+    expect(fetchImpl).toHaveBeenCalledWith('https://explicit.example/spot', {
+      signal: expect.any(AbortSignal),
+    });
   });
 
   it('uses BTC_USD_SPOT_URL', async () => {
     process.env['BTC_USD_SPOT_URL'] = ' https://env.example/spot ';
     const fetchImpl = vi.fn(async () => response({ data: { amount: '1' } }));
     await fetchBtcUsdSpot(fetchImpl);
-    expect(fetchImpl).toHaveBeenCalledWith('https://env.example/spot');
+    expect(fetchImpl).toHaveBeenCalledWith('https://env.example/spot', {
+      signal: expect.any(AbortSignal),
+    });
   });
 
   it('uses Coinbase when BTC_USD_SPOT_URL is blank', async () => {
     process.env['BTC_USD_SPOT_URL'] = '   ';
     const fetchImpl = vi.fn(async () => response({ data: { amount: '1' } }));
     await fetchBtcUsdSpot(fetchImpl);
-    expect(fetchImpl).toHaveBeenCalledWith('https://api.coinbase.com/v2/prices/BTC-USD/spot');
+    expect(fetchImpl).toHaveBeenCalledWith('https://api.coinbase.com/v2/prices/BTC-USD/spot', {
+      signal: expect.any(AbortSignal),
+    });
   });
 });
