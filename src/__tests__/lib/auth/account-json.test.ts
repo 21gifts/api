@@ -545,7 +545,7 @@ describe('serializeOwnerAccountWithPosts', () => {
     expect(json.passkeyCredentialId).toBeNull();
   });
 
-  it('includes the current passkey credential id on owner JSON', async () => {
+  it('leaves passkeyCredentialId null when walletRequired is not true', async () => {
     const authStore = new InMemoryAuthStore();
     await authStore.createAccount(account);
     expect(
@@ -565,7 +565,53 @@ describe('serializeOwnerAccountWithPosts', () => {
       },
       { store: new InMemoryFundingStore(), nowMs: 1, authStore },
     );
-    expect(json.passkeyCredentialId).toBe('cred-owner');
+    expect(json.passkeyCredentialId).toBeNull();
+  });
+
+  it('surfaces the newest credential id when walletRequired is true', async () => {
+    const authStore = new InMemoryAuthStore();
+    await authStore.createAccount(account);
+    expect(
+      await authStore.createPasskeyCredential({
+        credentialId: 'cred-old',
+        publicKey: new Uint8Array([1]),
+        signCount: 0,
+        accountId: 'acc',
+        createdAt: 1,
+      }),
+    ).toBe(true);
+    expect(
+      await authStore.addSeedPasskeyCredential({
+        credentialId: 'cred-new',
+        publicKey: new Uint8Array([2]),
+        signCount: 0,
+        accountId: 'acc',
+        createdAt: 2,
+      }),
+    ).toBe(true);
+    const json = await serializeOwnerAccountWithPosts(
+      { ...account, walletRequired: true },
+      {
+        accountHasLivePost: async () => false,
+        getById: async () => undefined,
+      },
+      { store: new InMemoryFundingStore(), nowMs: 1, authStore },
+    );
+    expect(json.passkeyCredentialId).toBe('cred-new');
+  });
+
+  it('emits null passkeyCredentialId when walletRequired is true and none is stored', async () => {
+    const authStore = new InMemoryAuthStore();
+    await authStore.createAccount({ ...account, walletRequired: true });
+    const json = await serializeOwnerAccountWithPosts(
+      { ...account, walletRequired: true },
+      {
+        accountHasLivePost: async () => false,
+        getById: async () => undefined,
+      },
+      { store: new InMemoryFundingStore(), nowMs: 1, authStore },
+    );
+    expect(json.passkeyCredentialId).toBeNull();
   });
 
   it('uses a null reviewer name when decidedBy is missing', async () => {

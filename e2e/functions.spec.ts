@@ -1175,6 +1175,25 @@ test('Function: finishPasskeyReplace — POST replace finish without Bearer is 4
   expect(res.status()).toBe(401);
 });
 
+test('Function: startPasskeySeed — POST seed begin without Bearer is 401', async ({ request }) => {
+  const res = await request.post('/auth/passkey/seed/begin');
+  expect(res.status()).toBe(401);
+});
+
+test('Function: finishPasskeySeed — POST seed finish without Bearer is 401', async ({
+  request,
+}) => {
+  const res = await request.post('/auth/passkey/seed/finish');
+  expect(res.status()).toBe(401);
+});
+
+test('Function: addSeedPasskeyCredential — POST seed begin without Bearer is 401', async ({
+  request,
+}) => {
+  const res = await request.post('/auth/passkey/seed/begin');
+  expect(res.status()).toBe(401);
+});
+
 test('Function: prfEvalFirstSalt — POST authenticate begin returns a challenge', async ({
   request,
 }) => {

@@ -4,11 +4,11 @@ import { resolveWebAuthnConfig } from '@/lib/config';
 import {
   finishPasskeyAuthentication,
   finishPasskeyRegistration,
-  finishPasskeyReplace,
+  finishPasskeySeed,
   startPasskeyAuthentication,
   startPasskeyClaim,
   startPasskeyRegistration,
-  startPasskeyReplace,
+  startPasskeySeed,
 } from '@/lib/auth/passkey';
 import { serializeOwnerAccountWithPosts } from '@/lib/auth/account-json';
 import { resolveSession } from '@/lib/auth/service';
@@ -61,7 +61,7 @@ const passkeyFinishBody = z.object({
  * Build the `/auth` route group.
  *
  * @param deps - Shared store, message store, clock, and passkey collaborators.
- * @returns A Hono app exposing passkey register, authenticate, and replace routes.
+ * @returns A Hono app exposing passkey register, authenticate, replace, and seed routes.
  */
 export function authRoutes(deps: AuthRouteDeps): Hono {
   return new Hono()
@@ -195,17 +195,8 @@ export function authRoutes(deps: AuthRouteDeps): Hono {
       if (account === null) {
         return c.json({ error: 'Unauthorized' }, 401);
       }
-      const started = await startPasskeyReplace(
-        deps.store,
-        deps.passkeyCeremony,
-        config,
-        deps.now(),
-        account,
-      );
-      if (!('challengeId' in started)) {
-        return c.json({ error: started.error }, 400);
-      }
-      return c.json(started, 200);
+      logEvent('auth.passkey.replace.refused', { accountId: account.id });
+      return c.json({ error: 'A recovery phrase cannot be replaced' }, 409);
     })
     .post('/passkey/replace/finish', async (c) => {
       const config = webAuthnConfig(deps);
@@ -220,11 +211,55 @@ export function authRoutes(deps: AuthRouteDeps): Hono {
       if (account === null) {
         return c.json({ error: 'Unauthorized' }, 401);
       }
+      logEvent('auth.passkey.replace.refused', { accountId: account.id });
+      return c.json({ error: 'A recovery phrase cannot be replaced' }, 409);
+    })
+    .post('/passkey/seed/begin', async (c) => {
+      const config = webAuthnConfig(deps);
+      if (config === null) {
+        return c.json({ error: 'Server auth is not configured' }, 500);
+      }
+      const token = bearerToken(c.req.header('authorization'));
+      if (token === null) {
+        return c.json({ error: 'Unauthorized' }, 401);
+      }
+      const account = await resolveSession(deps.store, deps.now(), token);
+      if (account === null) {
+        return c.json({ error: 'Unauthorized' }, 401);
+      }
+      const started = await startPasskeySeed(
+        deps.store,
+        deps.passkeyCeremony,
+        config,
+        deps.now(),
+        account,
+      );
+      if (!('challengeId' in started)) {
+        return c.json({ error: started.error }, 409);
+      }
+      return c.json(started, 200);
+    })
+    .post('/passkey/seed/finish', async (c) => {
+      const config = webAuthnConfig(deps);
+      if (config === null) {
+        return c.json({ error: 'Server auth is not configured' }, 500);
+      }
+      const token = bearerToken(c.req.header('authorization'));
+      if (token === null) {
+        return c.json({ error: 'Unauthorized' }, 401);
+      }
+      const account = await resolveSession(deps.store, deps.now(), token);
+      if (account === null) {
+        return c.json({ error: 'Unauthorized' }, 401);
+      }
+      if (account.walletRequired === true) {
+        return c.json({ error: 'This account already has a recovery phrase' }, 409);
+      }
       const parsed = passkeyFinishBody.safeParse(await c.req.json().catch(() => null));
       if (!parsed.success) {
         return c.json({ error: 'Expected a JSON body with challengeId and credential' }, 400);
       }
-      const result = await finishPasskeyReplace(
+      const result = await finishPasskeySeed(
         deps.store,
         deps.passkeyCeremony,
         config,
@@ -235,9 +270,10 @@ export function authRoutes(deps: AuthRouteDeps): Hono {
         account,
       );
       if (!result.ok) {
-        return c.json({ error: result.error }, 400);
+        const status = result.error === 'This account already has a recovery phrase' ? 409 : 400;
+        return c.json({ error: result.error }, status);
       }
-      logEvent('auth.passkey.replace.ok', { accountId: result.account.id });
+      logEvent('auth.passkey.seed.ok', { accountId: result.account.id });
       return c.json(
         {
           account: await serializeOwnerAccountWithPosts(result.account, deps.messages, {

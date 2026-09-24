@@ -91,8 +91,10 @@ Public base URLs used in examples:
 | POST   | `/auth/passkey/register/finish`                      | none                       | Verify attestation, issue session                                                                                                            |
 | POST   | `/auth/passkey/authenticate/begin`                   | none                       | Issue WebAuthn request options                                                                                                               |
 | POST   | `/auth/passkey/authenticate/finish`                  | none                       | Verify assertion, issue session                                                                                                              |
-| POST   | `/auth/passkey/replace/begin`                        | Bearer                     | Issue WebAuthn creation options that exclude the current credential                                                                          |
-| POST   | `/auth/passkey/replace/finish`                       | Bearer                     | Verify attestation, replace the one credential, keep the session                                                                             |
+| POST   | `/auth/passkey/replace/begin`                        | Bearer                     | 409 refusal after a valid Bearer (a recovery phrase cannot be replaced; no challenge)                                                        |
+| POST   | `/auth/passkey/replace/finish`                       | Bearer                     | 409 refusal that deletes nothing and keeps the session                                                                                       |
+| POST   | `/auth/passkey/seed/begin`                           | Bearer                     | Creation options for one extra seed passkey; 409 when walletRequired is already true; no excludeCredentials.                                 |
+| POST   | `/auth/passkey/seed/finish`                          | Bearer                     | Verify attestation, insert an additional passkey, set walletRequired true, keep the login passkey and the session.                           |
 | GET    | `/me`                                                | `Authorization: Bearer`    | Account (`setup` + factual `missing` + `hasPosted` + `aboutMe` + `aboutMeHasPhoto` + `notificationLevel`)                                    |
 | GET    | `/me/activity`                                       | Bearer                     | Given + received series (forum zaps + house gifts; platform given = all outbound)                                                            |
 | POST   | `/me/wallet-backup-seen`                             | Bearer                     | Records that this account can show a recovery phrase. Not a confirmation and not a setup step. Empty body. Does not change `walletRequired`. |
@@ -484,9 +486,9 @@ ID).
 }
 ```
 
-The `account` object is the same owner JSON as `GET /me` (includes `viewKey`, `setup`, `missing`, `hasPosted`, `aboutMe`, `aboutMeHasPhoto`, `notificationLevel`, `walletRequired`, `walletBackupSeenAt`, and `passkeyCredentialId`). The example above is a new register (`walletRequired: true`, `setup: "name"` when the name is unset). The recovery phrase is not a setup step and does not change `setup` or `missing`. Existing members keep `walletRequired: false`; passkey replace and phrase export do not change these columns.
+The `account` object is the same owner JSON as `GET /me` (includes `viewKey`, `setup`, `missing`, `hasPosted`, `aboutMe`, `aboutMeHasPhoto`, `notificationLevel`, `walletRequired`, `walletBackupSeenAt`, and `passkeyCredentialId`). The example above is a new register (`walletRequired: true`, `setup: "name"` when the name is unset). The recovery phrase is not a setup step and does not change `setup` or `missing`. Existing members start with `walletRequired: false`. Seed finish sets `walletRequired: true` and does not change `walletBackupSeenAt`. Replace refuses and changes nothing. `walletBackupSeenAt` does not decide whether a seed exists.
 
-A new register row is stored with `walletRequired: true` and `walletBackupSeenAt: null`. First-passkey claim of a provisioned row sets `walletRequired: true` in the same write as the credential (`createFirstPasskeyCredential`: Postgres CTE insert-then-update; memory store writes both in one method) and does not clear a seen timestamp. Passkey replace does not change these columns. Operator `POST /debug/accounts` provision leaves `walletRequired` false. The api never stores a mnemonic or PRF output.
+A new register row is stored with `walletRequired: true` and `walletBackupSeenAt: null`. First-passkey claim of a provisioned row sets `walletRequired: true` in the same write as the credential (`createFirstPasskeyCredential`: Postgres CTE locks the account row with `FOR UPDATE`, then inserts and sets `wallet_required`; memory store writes both in one method) and does not clear a seen timestamp. Passkey replace refuses and does not change these columns. Seed finish sets `walletRequired: true` without changing `walletBackupSeenAt`. Operator `POST /debug/accounts` provision leaves `walletRequired` false. The api never stores a mnemonic or PRF output.
 
 ### `POST /auth/passkey/authenticate/begin`
 
@@ -512,42 +514,67 @@ and does not persist a bearer. Success body matches register finish
 
 ### `POST /auth/passkey/replace/begin`
 
-Signed-in members replace their one passkey. Requires `Authorization: Bearer`.
-Issues WebAuthn creation options with `excludeCredentials` set to the current
-credential and `extensions.prf` present so a PRF-capable authenticator can
-own the account. The api never sees PRF output or a mnemonic.
+After a valid Bearer this returns **409**
+`{ "error": "A recovery phrase cannot be replaced" }`.
+It does not create a challenge, does not delete or insert a passkey, and
+does not mint a session.
 
-Missing or invalid bearer → **Response** `401`: `{ "error": "Unauthorized" }`.
-
-Same **500** as register begin when WebAuthn is unconfigured.
-
-When the account has no credential → **Response** `400`:
-`{ "error": "No passkey to replace" }`.
-
-**Response** `200`: `{ "challengeId", "options" }` like register begin.
+Missing or invalid Bearer stays **401** `{ "error": "Unauthorized" }`.
+Unconfigured WebAuthn stays **500** `{ "error": "Server auth is not configured" }`,
+checked before the bearer.
 
 ### `POST /auth/passkey/replace/finish`
 
-Verifies a new registration attestation and replaces the account's one
-credential. Does not mint a session; the existing Bearer stays valid.
+After a valid Bearer this returns **409**
+`{ "error": "A recovery phrase cannot be replaced" }`.
+It does not parse a ceremony once the session is valid. It does not create
+a challenge, does not delete or insert a passkey, and does not mint a session.
 
-Body matches register finish (`challengeId`, `credential`). Requires `Origin`.
+Missing or invalid Bearer stays **401** `{ "error": "Unauthorized" }`.
+Unconfigured WebAuthn stays **500** `{ "error": "Server auth is not configured" }`,
+checked before the bearer.
 
-| Status | Body                                                                  | When                                                       |
-| ------ | --------------------------------------------------------------------- | ---------------------------------------------------------- |
-| 500    | `{ "error": "Server auth is not configured" }`                        | RP ID missing, not on the allowlist, or no matching origin |
-| 401    | `{ "error": "Unauthorized" }`                                         | Missing or invalid Bearer                                  |
-| 400    | `{ "error": "Expected a JSON body with challengeId and credential" }` | Body parse fail                                            |
-| 400    | `{ "error": "Unknown or expired challenge" }`                         | Unknown `challengeId` or Bearer is not the challenge owner |
-| 400    | `{ "error": "Challenge expired" }`                                    | Past challenge TTL                                         |
-| 400    | `{ "error": "Challenge already used" }`                               | Finish already attempted                                   |
-| 400    | `{ "error": "Wrong challenge type" }`                                 | Challenge is not `replace`                                 |
-| 400    | `{ "error": "Invalid origin" }`                                       | Missing or disallowed `Origin`                             |
-| 400    | `{ "error": "Invalid passkey" }`                                      | Attestation verify failed, same id, or duplicate           |
+### `POST /auth/passkey/seed/begin`
+
+Requires `Authorization: Bearer`. Issues WebAuthn creation options for one
+extra seed passkey. No `excludeCredentials`. WebAuthn user id and user name
+are the account id.
+
+When `walletRequired` is true → **Response** `409`:
+`{ "error": "This account already has a recovery phrase" }` (no challenge).
+
+Missing or invalid Bearer stays **401** `{ "error": "Unauthorized" }`.
+Unconfigured WebAuthn stays **500** `{ "error": "Server auth is not configured" }`,
+checked before the bearer.
+
+**Response** `200`: `{ "challengeId", "options" }` like register begin, with
+no `excludeCredentials`.
+
+### `POST /auth/passkey/seed/finish`
+
+Body is `challengeId` plus `credential`. Requires `Origin`. Does not mint a
+session; the existing Bearer stays valid.
+
+When `walletRequired` is already true (body not parsed), or when the
+credential id is taken, the account is missing, or the insert does not
+land → **Response** `409`:
+`{ "error": "This account already has a recovery phrase" }`.
+A `sessionRefused` bearer is **401** `{ "error": "Unauthorized" }` from
+session resolution, before finish runs.
+
+Other ceremony failures stay **400** with the same strings as the old
+replace finish: Invalid origin, Unknown or expired challenge, Challenge
+expired, Challenge already used, Wrong challenge type, Invalid passkey,
+and `{ "error": "Expected a JSON body with challengeId and credential" }`.
 
 **Response** `200`: `{ "account": { ... } }` — owner JSON via
-`serializeOwnerAccountWithPosts`, same shape as register finish minus `token`.
-Does not change `walletRequired` or `walletBackupSeenAt`.
+`serializeOwnerAccountWithPosts`, no `token`. `passkeyCredentialId` is the
+new credential id, `walletRequired` is true, `walletBackupSeenAt` is
+unchanged. Logs `auth.passkey.seed.ok` only on success.
+
+Missing or invalid Bearer stays **401** `{ "error": "Unauthorized" }`.
+Unconfigured WebAuthn stays **500** `{ "error": "Server auth is not configured" }`,
+checked before the bearer.
 
 ### `GET /me`
 
@@ -625,9 +652,9 @@ stays `null`)).
 | `aboutMeHasPhoto`          | boolean        | True when the live profile note has a stored JPEG/PNG/WebP. Independent of `aboutMe` (photo-only and name-copy notes can still have a photo). Bytes are `GET /me/about/photo`. Does not expose `profileMessageId`.                                                                                                                              |
 | `notificationLevel`        | string         | Owner fan-out filter: `all`, `active`, or `mentions`. Default `all`. Owner-only; omitted from public `GET /view/:viewKey` and member cards.                                                                                                                                                                                                     |
 | `funding`                  | object \| null | Funding-program grant. `null` for `basis`. Otherwise always an object; no row is `{ status: "none", trialUtcDate: null, admittedAt: null, reviewedByName: null }`. Admitted includes live `reviewedByName`.                                                                                                                                     |
-| `walletRequired`           | boolean        | True when a recovery phrase is required (new register/claim). Default false for existing members. Does not make `setup` `'wallet'`.                                                                                                                                                                                                             |
-| `walletBackupSeenAt`       | number \| null | Epoch ms recorded after an existing member activates a passkey that can show a recovery phrase, so the app can offer Show recovery phrase next time instead of Activate. Not a confirmation. Null when that has not been recorded.                                                                                                              |
-| `passkeyCredentialId`      | string \| null | WebAuthn credential id (base64url), or `null` when the account has none. Owner-only.                                                                                                                                                                                                                                                            |
+| `walletRequired`           | boolean        | True when a seed-bearing passkey exists (new register/claim, or seed finish). Default false does not mean a seed is present. It does not make `setup` `'wallet'`.                                                                                                                                                                               |
+| `walletBackupSeenAt`       | number \| null | Epoch ms recorded after an existing member activates a passkey that can show a recovery phrase, so the app can offer Show recovery phrase next time instead of Activate. Not a confirmation. Not a seed check; it does not decide whether a seed exists. Null when that has not been recorded.                                                  |
+| `passkeyCredentialId`      | string \| null | Null when `walletRequired` is not true, even if a login passkey exists. When `walletRequired` is true it is the newest credential id (`created_at` desc, `credential_id` desc with `COLLATE "C"`). Owner-only.                                                                                                                                  |
 
 ### `GET /me/activity`
 

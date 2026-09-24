@@ -67,7 +67,6 @@ export const AUTH_SCHEMA_SQL: readonly string[] = [
   `ALTER TABLE account ADD COLUMN IF NOT EXISTS rules_agreed_at timestamptz`,
   `CREATE UNIQUE INDEX IF NOT EXISTS account_lightning_address_uidx
     ON account (lower(trim(lightning_address))) WHERE lightning_address IS NOT NULL`,
-  `CREATE UNIQUE INDEX IF NOT EXISTS passkey_credential_account_uidx ON passkey_credential (account_id)`,
   `ALTER TABLE account ADD COLUMN IF NOT EXISTS is_platform boolean NOT NULL DEFAULT false`,
   `CREATE UNIQUE INDEX IF NOT EXISTS account_is_platform_uidx ON account (is_platform) WHERE is_platform`,
   // Skip / profile-note columns: no FK to message here (auth migrates before message).
@@ -85,4 +84,6 @@ export const AUTH_SCHEMA_SQL: readonly string[] = [
   `ALTER TABLE account ADD COLUMN IF NOT EXISTS session_refused boolean NOT NULL DEFAULT false`,
   `ALTER TABLE account ADD COLUMN IF NOT EXISTS wallet_required boolean NOT NULL DEFAULT false`,
   `ALTER TABLE account ADD COLUMN IF NOT EXISTS wallet_backup_seen_at timestamptz`,
+  // One account may hold a login passkey plus one later seed passkey.
+  `DROP INDEX IF EXISTS passkey_credential_account_uidx`,
 ];

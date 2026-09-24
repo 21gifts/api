@@ -1259,6 +1259,285 @@ describe('InMemoryAuthStore', () => {
     ).toBe(false);
   });
 
+  it('addSeedPasskeyCredential inserts a second credential and sets walletRequired', async () => {
+    const store = new InMemoryAuthStore();
+    await store.createAccount({
+      id: 'acc',
+      linkingKey: KEY,
+      role: 'basis',
+      name: 'Ada',
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: 'a'.repeat(64),
+      createdAt: 1,
+      rulesAgreedAt: null,
+      walletBackupSeenAt: 9,
+    });
+    expect(
+      await store.createPasskeyCredential({
+        credentialId: 'cred-a',
+        publicKey: new Uint8Array([1]),
+        signCount: 0,
+        accountId: 'acc',
+        createdAt: 1,
+      }),
+    ).toBe(true);
+    expect(
+      await store.addSeedPasskeyCredential({
+        credentialId: 'cred-b',
+        publicKey: new Uint8Array([2]),
+        signCount: 0,
+        accountId: 'acc',
+        createdAt: 2,
+      }),
+    ).toBe(true);
+    expect((await store.getAccount('acc'))?.walletRequired).toBe(true);
+    expect((await store.getAccount('acc'))?.walletBackupSeenAt).toBe(9);
+    expect((await store.getPasskeyCredential('cred-a'))?.accountId).toBe('acc');
+    expect((await store.getPasskeyCredential('cred-b'))?.accountId).toBe('acc');
+    expect((await store.getPasskeyCredentialForAccount('acc'))?.credentialId).toBe('cred-b');
+    expect(
+      await store.createPasskeyCredential({
+        credentialId: 'cred-c',
+        publicKey: new Uint8Array([3]),
+        signCount: 0,
+        accountId: 'acc',
+        createdAt: 3,
+      }),
+    ).toBe(false);
+  });
+
+  it('addSeedPasskeyCredential refuses missing, refused, flagged, and taken ids', async () => {
+    const store = new InMemoryAuthStore();
+    const seed = {
+      credentialId: 'cred-b',
+      publicKey: new Uint8Array([2]),
+      signCount: 0,
+      accountId: 'missing',
+      createdAt: 2,
+    };
+    expect(await store.addSeedPasskeyCredential(seed)).toBe(false);
+    await store.createAccount({
+      id: 'refused',
+      linkingKey: null,
+      role: 'basis',
+      name: null,
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: 'a'.repeat(64),
+      createdAt: 1,
+      rulesAgreedAt: null,
+      sessionRefused: true,
+    });
+    expect(await store.addSeedPasskeyCredential({ ...seed, accountId: 'refused' })).toBe(false);
+    await store.createAccount({
+      id: 'flagged',
+      linkingKey: null,
+      role: 'basis',
+      name: null,
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: 'b'.repeat(64),
+      createdAt: 2,
+      rulesAgreedAt: null,
+      walletRequired: true,
+    });
+    expect(await store.addSeedPasskeyCredential({ ...seed, accountId: 'flagged' })).toBe(false);
+    await store.createAccount({
+      id: 'acc-a',
+      linkingKey: KEY,
+      role: 'basis',
+      name: null,
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: 'c'.repeat(64),
+      createdAt: 3,
+      rulesAgreedAt: null,
+    });
+    await store.createAccount({
+      id: 'acc-b',
+      linkingKey: null,
+      role: 'basis',
+      name: null,
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: 'd'.repeat(64),
+      createdAt: 4,
+      rulesAgreedAt: null,
+    });
+    expect(
+      await store.createPasskeyCredential({
+        credentialId: 'cred-shared',
+        publicKey: new Uint8Array([1]),
+        signCount: 0,
+        accountId: 'acc-a',
+        createdAt: 1,
+      }),
+    ).toBe(true);
+    expect(
+      await store.addSeedPasskeyCredential({
+        credentialId: 'cred-shared',
+        publicKey: new Uint8Array([2]),
+        signCount: 0,
+        accountId: 'acc-b',
+        createdAt: 2,
+      }),
+    ).toBe(false);
+    expect(await store.getPasskeyCredentialForAccount('acc-b')).toBeUndefined();
+    expect((await store.getAccount('acc-b'))?.walletRequired === true).toBe(false);
+  });
+
+  it('getPasskeyCredentialForAccount prefers a later createdAt', async () => {
+    const store = new InMemoryAuthStore();
+    await store.createAccount({
+      id: 'acc',
+      linkingKey: KEY,
+      role: 'basis',
+      name: null,
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: 'a'.repeat(64),
+      createdAt: 1,
+      rulesAgreedAt: null,
+    });
+    expect(
+      await store.createPasskeyCredential({
+        credentialId: 'cred-a',
+        publicKey: new Uint8Array([1]),
+        signCount: 0,
+        accountId: 'acc',
+        createdAt: 1,
+      }),
+    ).toBe(true);
+    expect(
+      await store.addSeedPasskeyCredential({
+        credentialId: 'cred-b',
+        publicKey: new Uint8Array([2]),
+        signCount: 0,
+        accountId: 'acc',
+        createdAt: 2,
+      }),
+    ).toBe(true);
+    expect((await store.getPasskeyCredentialForAccount('acc'))?.credentialId).toBe('cred-b');
+  });
+
+  it('getPasskeyCredentialForAccount does not let an older createdAt replace a newer row', async () => {
+    const store = new InMemoryAuthStore();
+    await store.createAccount({
+      id: 'acc',
+      linkingKey: KEY,
+      role: 'basis',
+      name: null,
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: 'a'.repeat(64),
+      createdAt: 1,
+      rulesAgreedAt: null,
+    });
+    expect(
+      await store.createPasskeyCredential({
+        credentialId: 'cred-new',
+        publicKey: new Uint8Array([2]),
+        signCount: 0,
+        accountId: 'acc',
+        createdAt: 2,
+      }),
+    ).toBe(true);
+    expect(
+      await store.addSeedPasskeyCredential({
+        credentialId: 'cred-old',
+        publicKey: new Uint8Array([1]),
+        signCount: 0,
+        accountId: 'acc',
+        createdAt: 1,
+      }),
+    ).toBe(true);
+    expect((await store.getPasskeyCredentialForAccount('acc'))?.credentialId).toBe('cred-new');
+  });
+
+  it('getPasskeyCredentialForAccount breaks createdAt ties by credentialId descending', async () => {
+    const store = new InMemoryAuthStore();
+    await store.createAccount({
+      id: 'acc-high',
+      linkingKey: KEY,
+      role: 'basis',
+      name: null,
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: 'a'.repeat(64),
+      createdAt: 1,
+      rulesAgreedAt: null,
+    });
+    expect(
+      await store.createPasskeyCredential({
+        credentialId: 'cred-a',
+        publicKey: new Uint8Array([1]),
+        signCount: 0,
+        accountId: 'acc-high',
+        createdAt: 1,
+      }),
+    ).toBe(true);
+    expect(
+      await store.addSeedPasskeyCredential({
+        credentialId: 'cred-z',
+        publicKey: new Uint8Array([2]),
+        signCount: 0,
+        accountId: 'acc-high',
+        createdAt: 1,
+      }),
+    ).toBe(true);
+    expect((await store.getPasskeyCredentialForAccount('acc-high'))?.credentialId).toBe('cred-z');
+    const lower = new InMemoryAuthStore();
+    await lower.createAccount({
+      id: 'acc-low',
+      linkingKey: KEY,
+      role: 'basis',
+      name: null,
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: 'b'.repeat(64),
+      createdAt: 1,
+      rulesAgreedAt: null,
+    });
+    expect(
+      await lower.createPasskeyCredential({
+        credentialId: 'cred-z',
+        publicKey: new Uint8Array([2]),
+        signCount: 0,
+        accountId: 'acc-low',
+        createdAt: 1,
+      }),
+    ).toBe(true);
+    expect(
+      await lower.addSeedPasskeyCredential({
+        credentialId: 'cred-a',
+        publicKey: new Uint8Array([1]),
+        signCount: 0,
+        accountId: 'acc-low',
+        createdAt: 1,
+      }),
+    ).toBe(true);
+    expect((await lower.getPasskeyCredentialForAccount('acc-low'))?.credentialId).toBe('cred-z');
+  });
+
   it('markWalletBackupSeen sets only the timestamp', async () => {
     const store = new InMemoryAuthStore();
     await store.createAccount({

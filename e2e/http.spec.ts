@@ -666,6 +666,16 @@ test('POST /auth/passkey/replace/finish without bearer is 401', async ({ request
   expect(res.status()).toBe(401);
 });
 
+test('POST /auth/passkey/seed/begin without bearer is 401', async ({ request }) => {
+  const res = await request.post('/auth/passkey/seed/begin');
+  expect(res.status()).toBe(401);
+});
+
+test('POST /auth/passkey/seed/finish without bearer is 401', async ({ request }) => {
+  const res = await request.post('/auth/passkey/seed/finish');
+  expect(res.status()).toBe(401);
+});
+
 test('GET /invoices/passkey unconfigured is 503', async ({ request }) => {
   const res = await request.get('/invoices/passkey');
   expect(res.status()).toBe(503);
