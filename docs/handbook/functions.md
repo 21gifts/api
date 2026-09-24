@@ -1033,10 +1033,10 @@
 
 ## Function: translateForumNote
 
-- **Purpose:** Cache-first translation of one stored forum body. Matching `message_translation` hash returns without DeepL. Concurrent misses share one DeepL POST. Upsert keeps the first writer for a hash.
+- **Purpose:** Cache-first translation of one stored body in the given store. A matching hash returns without DeepL. Concurrent misses on the same store share one DeepL POST. A different store does not share that call, so the forum cache and the conversation cache each record the result. Upsert keeps the first writer for a hash.
 - **Inputs:** `TranslationStore`, env, message id, source text, target locale, fetch.
 - **Returns / side effects:** `{ translatedText, cached }`. Throws `TranslateNotConfiguredError` or `TranslateUpstreamError`.
-- **Used by:** `POST /messages/:id/translate`.
+- **Used by:** `POST /messages/:id/translate` and `POST /conversations/:id/messages/:messageId/translate`.
 
 ## Function: TranslationStore
 
