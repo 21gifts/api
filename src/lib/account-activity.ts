@@ -283,6 +283,7 @@ async function receivedZapsForAccount(
       paidAt: ingest.createdAt,
       amountSats: ingest.amountSats,
       recipientWosUser,
+      kind: 'other',
       ...storedGiftFiat(ingest),
     });
     const prev = creditedByMessageId.get(ingest.messageId) ?? 0;
@@ -308,6 +309,7 @@ async function receivedZapsForAccount(
         paidAt: message.createdAt,
         amountSats: message.sats - credited,
         recipientWosUser,
+        kind: 'other',
         ...fiat,
       });
     }
@@ -362,6 +364,7 @@ function zapGiftRow(invoice: MessageInvoiceAttempt, ingest: ZapIngestRow): GiftR
     paidAt: ingest.createdAt,
     amountSats: ingest.amountSats ?? invoice.amountSats,
     recipientWosUser: recipientHandle(invoice.lightningAddress),
+    kind: 'other',
     ...storedGiftFiat(ingest),
   };
 }

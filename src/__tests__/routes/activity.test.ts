@@ -183,7 +183,12 @@ describe('account activity routes', () => {
     const authStore = await seedSession();
     const messageStore = await seedMember(authStore);
     const giftStore = new InMemoryGiftStore([
-      { paidAt: new Date(now()), amountSats: 21, recipientWosUser: 'ada' },
+      {
+        paidAt: new Date(now()),
+        amountSats: 21,
+        recipientWosUser: 'ada',
+        kind: 'daily',
+      },
     ]);
     const res = await createApp({ authStore, messageStore, giftStore, now }).request(
       `/members/${ACCOUNT_ID}/activity`,
@@ -200,7 +205,12 @@ describe('account activity routes', () => {
     const authStore = await seedSession();
     const messageStore = await seedMember(authStore);
     const giftStore = new InMemoryGiftStore([
-      { paidAt: new Date(now()), amountSats: 21, recipientWosUser: 'ada' },
+      {
+        paidAt: new Date(now()),
+        amountSats: 21,
+        recipientWosUser: 'ada',
+        kind: 'daily',
+      },
     ]);
     const res = await createApp({ authStore, messageStore, giftStore, now }).request(
       `/view/${VIEW_KEY}/activity`,
@@ -269,7 +279,12 @@ describe('account activity routes', () => {
       },
     ]);
     const giftStore = new InMemoryGiftStore([
-      { paidAt: new Date(now()), amountSats: 21, recipientWosUser: 'ada' },
+      {
+        paidAt: new Date(now()),
+        amountSats: 21,
+        recipientWosUser: 'ada',
+        kind: 'daily',
+      },
     ]);
     const res = await createApp({ authStore, messageStore, giftStore, now }).request(
       '/me/activity',
@@ -287,7 +302,12 @@ describe('account activity routes', () => {
   it('GET /me/activity converts CHF from a seeded fiat book', async () => {
     const authStore = await seedSession({ lightningAddress: 'ada@walletofsatoshi.com' });
     const giftStore = new InMemoryGiftStore([
-      { paidAt: new Date('2026-06-01T12:00:00.000Z'), amountSats: 1000, recipientWosUser: 'ada' },
+      {
+        paidAt: new Date('2026-06-01T12:00:00.000Z'),
+        amountSats: 1000,
+        recipientWosUser: 'ada',
+        kind: 'daily',
+      },
     ]);
     const btcUsdRates = new InMemoryBtcUsdStore({ '2026-06-01': '100000' });
     const fiatRates = new InMemoryFiatStore({
@@ -319,7 +339,12 @@ describe('account activity routes', () => {
     const authStore = await seedSession();
     const messageStore = await seedMember(authStore);
     const giftStore = new InMemoryGiftStore([
-      { paidAt: new Date('2026-06-01T12:00:00.000Z'), amountSats: 1000, recipientWosUser: 'ada' },
+      {
+        paidAt: new Date('2026-06-01T12:00:00.000Z'),
+        amountSats: 1000,
+        recipientWosUser: 'ada',
+        kind: 'daily',
+      },
     ]);
     const btcUsdRates = new InMemoryBtcUsdStore({ '2026-06-01': '100000' });
     const fiatRates = new InMemoryFiatStore({
@@ -345,7 +370,12 @@ describe('account activity routes', () => {
   it('GET /me/activity stays 200 with null CHF when fiat ensureDays throws', async () => {
     const authStore = await seedSession({ lightningAddress: 'ada@walletofsatoshi.com' });
     const giftStore = new InMemoryGiftStore([
-      { paidAt: new Date('2026-06-01T12:00:00.000Z'), amountSats: 1000, recipientWosUser: 'ada' },
+      {
+        paidAt: new Date('2026-06-01T12:00:00.000Z'),
+        amountSats: 1000,
+        recipientWosUser: 'ada',
+        kind: 'daily',
+      },
     ]);
     const btcUsdRates = new InMemoryBtcUsdStore({ '2026-06-01': '100000' });
     const res = await createApp({

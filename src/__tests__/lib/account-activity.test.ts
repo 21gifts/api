@@ -191,6 +191,7 @@ describe('matchConfirmedGivenZaps', () => {
         paidAt: PAID_AT,
         amountSats: 21,
         recipientWosUser: 'ada',
+        kind: 'other',
         amountUsd: null,
         amountChf: null,
         amountEur: null,
@@ -209,6 +210,7 @@ describe('matchConfirmedGivenZaps', () => {
         paidAt: PAID_AT,
         amountSats: 21,
         recipientWosUser: 'plainhandle',
+        kind: 'other',
         amountUsd: null,
         amountChf: null,
         amountEur: null,
@@ -303,7 +305,7 @@ describe('buildAccountActivity', () => {
 
   it('counts house gifts received by the account handle', async () => {
     const gifts = new InMemoryGiftStore([
-      { paidAt: PAID_AT, amountSats: 1000, recipientWosUser: 'ada' },
+      { paidAt: PAID_AT, amountSats: 1000, recipientWosUser: 'ada', kind: 'daily' },
     ]);
     const stats = await activity({ gifts });
     expect(stats.receivedSats).toBe(1000);
@@ -323,7 +325,7 @@ describe('buildAccountActivity', () => {
 
   it('includes house outbound as donated only for the platform account', async () => {
     const gifts = new InMemoryGiftStore([
-      { paidAt: PAID_AT, amountSats: 500, recipientWosUser: 'bob' },
+      { paidAt: PAID_AT, amountSats: 500, recipientWosUser: 'bob', kind: 'daily' },
     ]);
     const platform = await activity({ acc: account({ isPlatform: true }), gifts });
     expect(platform.donatedSats).toBe(500);
@@ -475,7 +477,7 @@ describe('buildAccountActivity', () => {
 
   it('converts CHF/EUR/PHP on received house gifts when a fiat book is seeded', async () => {
     const gifts = new InMemoryGiftStore([
-      { paidAt: PAID_AT, amountSats: 1000, recipientWosUser: 'ada' },
+      { paidAt: PAID_AT, amountSats: 1000, recipientWosUser: 'ada', kind: 'daily' },
     ]);
     const stats = await activity({
       gifts,
@@ -502,7 +504,7 @@ describe('buildAccountActivity', () => {
 
   it('logs account.activity.fiat_failed and still returns USD when fiat throws', async () => {
     const gifts = new InMemoryGiftStore([
-      { paidAt: PAID_AT, amountSats: 1000, recipientWosUser: 'ada' },
+      { paidAt: PAID_AT, amountSats: 1000, recipientWosUser: 'ada', kind: 'daily' },
     ]);
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     try {

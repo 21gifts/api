@@ -1,5 +1,5 @@
 -- Outbound gifts recorded for public statistics (GET /gifts/stats).
--- The api reads paid_at, amount_sats, recipient_wos_user only.
+-- The api reads paid_at, amount_sats, recipient_wos_user, and kind.
 
 CREATE TABLE IF NOT EXISTS gift (
   id                 bigserial PRIMARY KEY,
@@ -28,3 +28,9 @@ ALTER TABLE gift ADD COLUMN IF NOT EXISTS fiat_usd numeric(20, 2);
 ALTER TABLE gift ADD COLUMN IF NOT EXISTS fiat_chf numeric(20, 2);
 ALTER TABLE gift ADD COLUMN IF NOT EXISTS fiat_eur numeric(20, 2);
 ALTER TABLE gift ADD COLUMN IF NOT EXISTS fiat_php numeric(20, 2);
+ALTER TABLE gift ADD COLUMN IF NOT EXISTS kind text;
+-- NULL rows with description 21gifts moderator become moderator; remaining NULL
+-- rows are matched one-to-one to platform replies and only Welcome becomes welcome;
+-- remaining NULL becomes daily; then, only if absent, gift_kind_check CHECK
+-- (kind IN ('daily','welcome','moderator')); then kind is SET NOT NULL.
+-- 'other' is not a database value.

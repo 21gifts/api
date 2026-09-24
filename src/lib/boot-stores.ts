@@ -293,12 +293,13 @@ export async function openBootStores(
         paid_at: Date | string;
         amount_sats: number | string | bigint;
         recipient_wos_user: string;
+        kind: string;
         fiat_usd: string | number | null;
         fiat_chf: string | number | null;
         fiat_eur: string | number | null;
         fiat_php: string | number | null;
       }>(
-        `SELECT paid_at, amount_sats, recipient_wos_user,
+        `SELECT paid_at, amount_sats, recipient_wos_user, kind,
                 fiat_usd::text AS fiat_usd, fiat_chf::text AS fiat_chf,
                 fiat_eur::text AS fiat_eur, fiat_php::text AS fiat_php
              FROM gift
@@ -316,6 +317,7 @@ export async function openBootStores(
         amount_sats: number | string | bigint;
         fee_sats: number | string | bigint;
         recipient_wos_user: string;
+        kind: string;
         lightning_invoice: string;
         wos_transaction_id: string | null;
         description: string;
@@ -328,7 +330,7 @@ export async function openBootStores(
         fiat_eur: string | number | null;
         fiat_php: string | number | null;
       }>(
-        `SELECT id, paid_at, direction, currency, amount_sats, fee_sats, recipient_wos_user,
+        `SELECT id, paid_at, direction, currency, amount_sats, fee_sats, recipient_wos_user, kind,
                 lightning_invoice, wos_transaction_id, description, point_of_sale, wos_status,
                 source_wallet, imported_at, fiat_usd::text AS fiat_usd,
                 fiat_chf::text AS fiat_chf, fiat_eur::text AS fiat_eur,
@@ -350,6 +352,16 @@ export async function openBootStores(
         amountPhp: row.fiat_php === null ? null : String(row.fiat_php),
         feeSats: Number(row.fee_sats),
         recipientWosUser: row.recipient_wos_user,
+        kind: mapGiftQueryRow({
+          paid_at: row.paid_at,
+          amount_sats: row.amount_sats,
+          recipient_wos_user: row.recipient_wos_user,
+          kind: row.kind,
+          fiat_usd: null,
+          fiat_chf: null,
+          fiat_eur: null,
+          fiat_php: null,
+        }).kind as 'daily' | 'welcome' | 'moderator',
         lightningInvoice: row.lightning_invoice,
         wosTransactionId: row.wos_transaction_id,
         description: row.description,

@@ -2320,6 +2320,39 @@ describe('POST /invoices/proof', () => {
         recipientWosUser: 'alice',
         lightningInvoice: PR,
         description: '21gifts daily',
+        kind: 'daily',
+        sourceWallet: 'lightning.space',
+        fiat: null,
+      },
+    ]);
+  });
+
+  it('records kind welcome when the comment is Welcome and groupMessageId is unset', async () => {
+    store.put(unpaid({ comment: 'Welcome' }));
+    const recorded: unknown[] = [];
+    const res = await createApp({
+      spendApiToken: TOKEN,
+      invoiceStore: store,
+      now: () => 100,
+      giftRecorder: {
+        recordOutbound: async (row) => {
+          recorded.push(row);
+        },
+      },
+    }).request(
+      '/invoices/proof',
+      auth({ method: 'POST', body: JSON.stringify({ id: unpaid().id, preimage: PREIMAGE }) }),
+    );
+    expect(res.status).toBe(200);
+    expect(recorded).toEqual([
+      {
+        paidAt: new Date(100),
+        amountSats: 1,
+        feeSats: 0,
+        recipientWosUser: 'alice',
+        lightningInvoice: PR,
+        description: '21gifts daily',
+        kind: 'welcome',
         sourceWallet: 'lightning.space',
         fiat: null,
       },
@@ -2370,6 +2403,7 @@ describe('POST /invoices/proof', () => {
         recipientWosUser: 'alice',
         lightningInvoice: PR,
         description: '21gifts daily',
+        kind: 'daily',
         sourceWallet: 'lightning.space',
         fiat: null,
       },
@@ -3255,6 +3289,7 @@ describe('POST /invoices/proof', () => {
         recipientWosUser: 'alice',
         lightningInvoice: PR,
         description: '21gifts moderator',
+        kind: 'moderator',
         sourceWallet: 'lightning.space',
         fiat: null,
       },

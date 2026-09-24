@@ -1,4 +1,5 @@
 import type { SqlClient } from '@/lib/auth/sql';
+import type { GiftKind } from '@/lib/gift';
 import type { FiatAmounts } from '@/lib/money';
 
 /** One outbound gift to persist for public statistics. */
@@ -15,6 +16,8 @@ export interface GiftRecord {
   lightningInvoice: string;
   /** Spend comment / description. */
   description: string;
+  /** Daily funding, welcome gift, or moderator stipend. */
+  kind: GiftKind;
   /** Paying wallet label. */
   sourceWallet: string;
   /** Fiat snapshot frozen when payment settled, or null when pricing failed. */
@@ -70,9 +73,9 @@ export class SqlGiftRecorder implements GiftRecorder {
          paid_at, direction, currency, amount_sats, fee_sats,
          recipient_wos_user, lightning_invoice, wos_transaction_id,
          description, point_of_sale, wos_status, source_wallet
-         , fiat_usd, fiat_chf, fiat_eur, fiat_php
+         , fiat_usd, fiat_chf, fiat_eur, fiat_php, kind
        ) VALUES ($1, 'outbound', 'LIGHTNING', $2, $3, $4, $5, NULL, $6, false, NULL, $7,
-                 $8::numeric, $9::numeric, $10::numeric, $11::numeric)
+                 $8::numeric, $9::numeric, $10::numeric, $11::numeric, $12)
        ON CONFLICT (lightning_invoice) DO NOTHING`,
       [
         record.paidAt,
@@ -86,6 +89,7 @@ export class SqlGiftRecorder implements GiftRecorder {
         record.fiat?.chf ?? null,
         record.fiat?.eur ?? null,
         record.fiat?.php ?? null,
+        record.kind,
       ],
     );
   }
