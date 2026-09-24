@@ -6377,6 +6377,53 @@ describe('runNostrWorkerTick modes', () => {
     ).toBe(false);
   });
 
+  it('fast mode still finds an ok invoice when many newer non-ok attempts exist', async () => {
+    const { auth, messages } = await seed();
+    const noteA = 'c3'.repeat(32);
+    const nowMs = 1_700_000_000_000;
+    const okAt = new Date(nowMs - 30 * 60_000);
+    await messages.recordInvoiceAttempt(
+      hotInvoice({
+        id: 'inv-ok-buried',
+        createdAt: okAt,
+        zapRequest: { tags: [['e', noteA]] },
+      }),
+    );
+    for (let i = 0; i < 60; i += 1) {
+      await messages.recordInvoiceAttempt(
+        hotInvoice({
+          id: `inv-bad-${i}`,
+          result: 'bad_body',
+          createdAt: new Date(nowMs - 5 * 60_000 + i),
+          zapRequest: { tags: [['e', 'dd'.repeat(32)]] },
+          httpStatus: 400,
+          pr: null,
+          isNip57Invoice: false,
+        }),
+      );
+    }
+    const querier = new RecordingQuerier();
+    await runNostrWorkerTick(
+      deps({
+        messages,
+        auth,
+        kek: KEK,
+        publisher: new RecordingPublisher(),
+        querier,
+        now: () => nowMs,
+        env: { NOSTR_RELAY_SPACE: 'wss://space' },
+      }),
+      'fast',
+    );
+    const zapCalls = querier.calls.filter((call) => {
+      const kinds = call.filter['kinds'];
+      return Array.isArray(kinds) && kinds.includes(9735);
+    });
+    expect(zapCalls).toHaveLength(1);
+    const eTags = zapCalls[0]?.filter['#e'];
+    expect(Array.isArray(eTags) && eTags.includes(noteA)).toBe(true);
+  });
+
   it('fast mode indexes a matching hot receipt onto sats', async () => {
     const eventId = 'ab'.repeat(32);
     const providerPubkey = 'cd'.repeat(32);
