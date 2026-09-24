@@ -187,7 +187,7 @@
 - **Purpose:** Fetch the current positive BTC-USD spot used to freeze fiat at payment time, without ever throwing.
 - **Inputs:** Optional fetch implementation and optional URL (blank falls through to `BTC_USD_SPOT_URL`, then the Coinbase default).
 - **Returns / side effects:** Coinbase decimal text, or `null` for every transport, shape, or value failure, including a fetch that aborts after 10 seconds (`BTC_USD_SPOT_TIMEOUT_MS`). Does not throw.
-- **Used by:** `invoiceRoutes`, message create, zap indexing.
+- **Used by:** `invoiceRoutes`, message create, zap indexing, conversation message append (`InMemoryConversationStore` / `PostgresConversationStore` `appendMessage`).
 
 ## Function: resolveCandlesUrl
 
@@ -1536,7 +1536,7 @@
 - **Purpose:** GET `https://domain/.well-known/lnurlp/local` and parse metadata. The well-known metadata fetch aborts after 10 seconds (`LNURLP_METADATA_TIMEOUT_MS`); the abort collapses into `{ ok: false, reason: 'unreachable' }` like any other unreachable failure.
 - **Inputs:** address + fetchImpl.
 - **Returns / side effects:** Callback URL, min/max sendable, optional NIP-57 `allowsNostr` / `nostrPubkey`, or `{ ok: false, reason: 'unreachable' }` (including timeout).
-- **Used by:** `lightningAddressRoutes`, `POST /me/lightning-address` (`meRoutes`), `requestPayInvoice`, `requestGiftInvoice`, `requestZapInvoice`.
+- **Used by:** `lightningAddressRoutes`, `POST /me/lightning-address` (`meRoutes`), `requestPayInvoice`, `requestGiftInvoice`, `requestZapInvoice`, `indexOpenZapReceipts` (provider-pubkey check via `resolveProviderPubkey`), `probeNip57Mint`, `payRoutes`, `posRoutes`.
 
 ## Function: resolveLnurlpDocument
 
