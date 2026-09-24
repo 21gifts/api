@@ -93,7 +93,7 @@ export function effectiveStatus(
  * for spend pings and invoices. Until that morning, non-`basis` accounts
  * stay eligible without a grant so the community can apply.
  */
-export const FUNDING_REQUIRED_FROM_UTC = '2026-09-25';
+export const FUNDING_REQUIRED_FROM_UTC = '2026-09-30';
 
 /**
  * Whether the grant gate is in force on this UTC day.

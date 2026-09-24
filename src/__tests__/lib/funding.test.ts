@@ -16,9 +16,9 @@ const YESTERDAY = '2026-09-19';
 const TOMORROW = '2026-09-21';
 const GATE_MS = Date.parse(`${FUNDING_REQUIRED_FROM_UTC}T00:00:00.000Z`);
 const GATE_TODAY = FUNDING_REQUIRED_FROM_UTC;
-const GATE_YESTERDAY = '2026-09-24';
-const GATE_TOMORROW = '2026-09-26';
-const BEFORE_GATE_MS = Date.parse('2026-09-24T23:59:59.999Z');
+const GATE_YESTERDAY = '2026-09-29';
+const GATE_TOMORROW = '2026-10-01';
+const BEFORE_GATE_MS = Date.parse('2026-09-29T23:59:59.999Z');
 const NON_BASIS: AccountRole = 'verified';
 
 function grant(overrides: Partial<FundingGrant> = {}): FundingGrant {
@@ -71,7 +71,7 @@ describe('effectiveStatus', () => {
 });
 
 describe('fundingGrantRequired', () => {
-  it('is false before 2026-09-25 UTC and true from that midnight onward', () => {
+  it('is false before 2026-09-30 UTC and true from that midnight onward', () => {
     expect(fundingGrantRequired(BEFORE_GATE_MS)).toBe(false);
     expect(fundingGrantRequired(GATE_MS)).toBe(true);
     expect(fundingGrantRequired(Date.parse(`${GATE_TOMORROW}T00:00:00.000Z`))).toBe(true);
