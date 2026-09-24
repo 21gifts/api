@@ -1999,6 +1999,19 @@ describe('InMemoryAuthStore', () => {
       rulesAgreedAt: null,
     });
     await store.createAccount({
+      id: 'initiator-1',
+      linkingKey: null,
+      role: 'initiator',
+      name: 'Initiator',
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: 'e'.repeat(64),
+      createdAt: 5,
+      rulesAgreedAt: null,
+    });
+    await store.createAccount({
       id: 'basis-1',
       linkingKey: null,
       role: 'basis',
@@ -2025,7 +2038,7 @@ describe('InMemoryAuthStore', () => {
       rulesAgreedAt: null,
     });
     const ids = await store.listStaffAccountIds();
-    expect(ids.sort()).toEqual(['founder-1', 'mod-1']);
+    expect(ids.sort()).toEqual(['founder-1', 'initiator-1', 'mod-1']);
   });
 
   it('listIdsByPrefix returns [] when empty', async () => {

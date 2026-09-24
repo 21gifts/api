@@ -1,3 +1,4 @@
+import { ROLE_ORDER } from '@/lib/auth/roles';
 import { AUTH_SCHEMA_SQL } from '@/lib/auth/schema';
 import { CHALLENGE_TTL_MS, SESSION_TTL_MS } from '@/lib/config';
 import { isUniqueViolation, type SqlClient } from '@/lib/auth/sql';
@@ -756,13 +757,13 @@ export class PostgresAuthStore implements AuthStore {
   }
 
   /**
-   * Account ids whose live `role` is founder or moderator.
+   * Account ids at the moderator rank or above.
    *
-   * @returns Ids from `SELECT id FROM account WHERE role IN ('founder', 'moderator')`.
+   * @returns Ids from `SELECT id FROM account WHERE role IN ('founder', 'moderator', 'initiator')`.
    */
   async listStaffAccountIds(): Promise<string[]> {
     const rows = await this.#sql.query<{ id: string }>(
-      `SELECT id FROM account WHERE role IN ('founder', 'moderator')`,
+      `SELECT id FROM account WHERE role IN ('founder', 'moderator', 'initiator')`,
     );
     return rows.map((row) => row.id);
   }
@@ -788,9 +789,11 @@ function epochMs(value: Date | string): number {
   return value instanceof Date ? value.getTime() : Date.parse(value);
 }
 
+const ACCOUNT_ROLES: ReadonlySet<string> = new Set(ROLE_ORDER);
+
 function parseRole(raw: string): AccountRole {
-  if (raw === 'basis' || raw === 'verified' || raw === 'moderator' || raw === 'founder') {
-    return raw;
+  if (ACCOUNT_ROLES.has(raw)) {
+    return raw as AccountRole;
   }
   throw new Error(`Unknown account role "${raw}"`);
 }

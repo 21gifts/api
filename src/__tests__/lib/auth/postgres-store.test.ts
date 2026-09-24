@@ -91,8 +91,9 @@ describe('PostgresAuthStore nostr keys', () => {
     sql.nextRows = [{ id: 'f1' }, { id: 'm1' }];
     const ids = await new PostgresAuthStore(sql).listStaffAccountIds();
     expect(sql.queries[0]?.text).toBe(
-      `SELECT id FROM account WHERE role IN ('founder', 'moderator')`,
+      `SELECT id FROM account WHERE role IN ('founder', 'moderator', 'initiator')`,
     );
+    expect(sql.queries[0]?.text).toContain('initiator');
     expect(ids).toEqual(['f1', 'm1']);
   });
 
@@ -814,6 +815,8 @@ describe('PostgresAuthStore', () => {
     expect((await store.getAccount('acc'))?.role).toBe('verified');
     sql.nextRows = [{ ...ACCOUNT_ROW, role: 'founder' }];
     expect((await store.getAccount('acc'))?.role).toBe('founder');
+    sql.nextRows = [{ ...ACCOUNT_ROW, role: 'initiator' }];
+    expect((await store.getAccount('acc'))?.role).toBe('initiator');
   });
 
   it('rejects an unknown account role', async () => {

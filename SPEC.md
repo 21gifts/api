@@ -199,14 +199,21 @@ Auth column: "Bearer (X+)" means minimum role X — X or any higher role.
 
 ## Role hierarchy
 
-Roles are ordered `founder > moderator > verified > basis`. A higher role can
-always do and see everything a lower role can; there are no exceptions. Every
-route that names a role names the **minimum** role: "Bearer (moderator+)" means
-moderator **or founder**, "Bearer (verified+)" means verified, moderator or
-founder. Permission checks use `roleAtLeast` (`src/lib/auth/roles.ts`); an
+Roles have explicit ranks: `basis` 0, `verified` 1, `moderator` 2, `initiator`
+2, `founder` 3. Initiator has the same rank as moderator; founder stays
+strictly above. A higher rank can always do and see everything a lower rank
+can; equal ranks can do the same things. Every route that names a role names
+the **minimum** role: "Bearer (moderator+)" means that rank or higher,
+"Bearer (verified+)" means that rank or higher. Permission text names the
+minimum rank only. Do not write "moderator or initiator" or „Moderator oder
+Initiator“. Permission checks use `roleAtLeast` (`src/lib/auth/roles.ts`); an
 equality test on the caller's role is a defect. Checks on the _subject_ of an
 action (for example "only a verified member can be proposed as moderator") are
-state rules, not permissions, and stay exact.
+state rules, not permissions, and stay exact. A subject already at the
+moderator rank is `sameRoleRank(role, 'moderator')`, which does not include
+founder. Initiator is not created by
+propose, confirm, or appoint. Only the boot UPDATE and operator
+`PATCH /debug/accounts/:id` set it.
 
 ### `GET /healthz`
 
@@ -635,7 +642,7 @@ stays `null`)).
 | -------------------------- | -------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `id`                       | string         | Opaque account id                                                                                                                                                                                                                                                                                                                               |
 | `linkingKey`               | string \| null | Historical LNURL-auth linking key (hex), or `null` for passkey accounts                                                                                                                                                                                                                                                                         |
-| `role`                     | string         | `basis`, `verified`, `moderator`, or `founder`                                                                                                                                                                                                                                                                                                  |
+| `role`                     | string         | `basis`, `verified`, `moderator`, `initiator`, or `founder`                                                                                                                                                                                                                                                                                     |
 | `name`                     | string \| null | Display name, or `null` until set                                                                                                                                                                                                                                                                                                               |
 | `username`                 | string \| null | Unique LUD-16 / NIP-05 local-part (`a-z0-9-_.`), or `null` until set. Cannot skip.                                                                                                                                                                                                                                                              |
 | `location`                 | string \| null | Free-text location set by the owner, or `null` when unset. Not unique. Not a setup step.                                                                                                                                                                                                                                                        |
@@ -789,8 +796,8 @@ never. Later appoint,
 confirm, or propose do not replace an earlier eligible contact. A pending
 propose (subject still `verified`) stays private and is not a hop neighbor.
 Neighborhood must consider all stored edges for each subject, not only
-edges that touch `around`. Nodes are `founder` / `moderator` / `verified`
-(never `basis`).
+edges that touch `around`. Nodes are accounts at least verified (never
+`basis`).
 No synthetic or inferred edges. Lightning addresses, view keys, and
 linking keys are omitted. Omitting `around` (or empty) is founder seeds.
 A supplied `around` that is not a uuid (including Postgres `22P02`),
@@ -949,12 +956,15 @@ also the oldest open propose (an older open propose is still present), delete
 that confirm and **409** without promoting. Otherwise sets
 role to `moderator`, logs `trust.moderator_confirmed`. If the caller
 already stored `moderator_confirm` and the subject is still `verified`,
-completes the role write and returns **200**; already-moderator with that
-caller-owned edge is idempotent **200**. Same 401/403/400/404/409/503 JSON
-shapes (409 when a confirm edge belongs to someone else). **200**
-`{ id, name, role }` with `role: "moderator"`. After a 200 that leaves the
-subject as `moderator` (new grant and idempotent already-moderator
-same-actor 200), the api deletes `moderator_proposal` rows with
+completes the role write and returns **200**. If the caller already stored
+that edge and the subject's rank equals the moderator rank, returns **200**
+with the stored role unchanged. A founder subject is **409** and stays
+`founder`. Same 401/403/400/404/409/503 JSON shapes (409 when a confirm
+edge belongs to someone else). A new grant returns **200**
+`{ id, name, role }` with `role: "moderator"`. An idempotent **200**
+returns the stored role. After a 200 that leaves the subject at the
+moderator rank (new grant and idempotent same-actor 200), the api deletes
+`moderator_proposal` rows with
 `replyId === subject.id`, then notifies the subject only
 (`moderator_appointed`, Web Push url `/welcome`). Notify failure does not
 fail the POST.
@@ -984,16 +994,19 @@ for the reject itself. Same 401/403/400/404/409/503 JSON shapes as
 
 Bearer session. Body `{ "accountId": "<uuid>" }`. Caller must be `founder`
 (moderators → **403**). Subject must not be self, not `founder`, and not
-already `moderator`; subject may be `basis` or `verified`. Inserts
+already at the moderator rank; subject may be `basis` or `verified`. Inserts
 `moderator_appoint` then sets role to `moderator`, logs
 `trust.moderator_appointed`. If the caller already stored `moderator_appoint`
-and the subject is not yet `moderator`, completes the role write and returns
-**200**; already-moderator with that caller-owned edge is idempotent **200**.
+and the subject's rank equals the moderator rank, returns **200** with the
+stored role unchanged. If that edge exists and the subject is not yet at
+that rank, completes the role write and returns **200**. A subject already
+at the moderator rank with no caller-owned appoint edge is **409**.
 Same 401/403/400/404/409/503 shapes as `POST /trust/verify` (403
-when the caller is not a founder). **200** `{ id, name, role }` with
-`role: "moderator"`. After a 200 that leaves the subject as
-`moderator` (new grant and idempotent already-moderator same-actor
-200), the api deletes `moderator_proposal` rows for the subject
+when the caller is not a founder). A new grant returns **200**
+`{ id, name, role }` with `role: "moderator"`. An idempotent **200**
+returns the stored role. After a 200 that leaves the subject at the
+moderator rank (new grant and idempotent same-actor 200), the api deletes
+`moderator_proposal` rows for the subject
 (`deleteByTypeAndReplyId`) then notifies the subject only
 (`moderator_appointed`, Web Push url `/welcome`). Notify failure does
 not fail the POST.
@@ -1736,7 +1749,7 @@ session refusal (`sessionRefused`). Authenticated with
 { "role": "basis", "lightningAddress": null, "platform": true, "sessionRefused": true }
 ```
 
-`role` must be one of `basis`, `verified`, `moderator`, or `founder`.
+`role` must be one of `basis`, `verified`, `moderator`, `initiator`, or `founder`.
 `lightningAddress` may only be JSON `null` (unlink). `platform` is a
 boolean; `true` clears any other platform flag (at most one `isPlatform`
 account) and, when a conversation store is wired, points every
