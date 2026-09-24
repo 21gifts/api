@@ -13,6 +13,7 @@ import {
 import { InMemoryMessageStore, type MessageStore } from '@/lib/message-store';
 import { InvoiceRateLimiter } from '@/lib/nostr/rate-limit';
 import { InMemoryPushStore } from '@/lib/push-store';
+import { FUNDING_REQUIRED_FROM_UTC } from '@/lib/funding';
 import { InMemoryFundingStore } from '@/lib/funding-store';
 import type { SpendPing } from '@/lib/spend-ping';
 import { InMemoryTranslationStore, translationSourceHash } from '@/lib/translation-store';
@@ -3052,7 +3053,7 @@ describe('moderator_group', () => {
     const conversations = new InMemoryConversationStore();
     const thread = await conversations.ensureModeratorGroup('plat', new Date(now()));
     const spendPing = { ping: vi.fn(async () => undefined) };
-    const gateNow = Date.parse('2026-09-25T12:00:00.000Z');
+    const gateNow = Date.parse(`${FUNDING_REQUIRED_FROM_UTC}T12:00:00.000Z`);
     await auth.createSession({ token: 'tok', accountId: 'acc', createdAt: gateNow });
     const res = await mount(auth, conversations, livingRoomStore(new Date(gateNow)), {
       spendPing,
