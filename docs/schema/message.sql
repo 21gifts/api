@@ -252,3 +252,17 @@ ALTER TABLE message_extra_photo ADD COLUMN IF NOT EXISTS photo_taken_at text;
 ALTER TABLE message ADD COLUMN IF NOT EXISTS place_lat double precision;
 ALTER TABLE message ADD COLUMN IF NOT EXISTS place_lng double precision;
 ALTER TABLE message ADD COLUMN IF NOT EXISTS place_label text;
+-- Frozen ask: currency + typed amount + gift-day snapshots. All null when there is no currency ask.
+ALTER TABLE message ADD COLUMN IF NOT EXISTS goal_currency text;
+ALTER TABLE message ADD COLUMN IF NOT EXISTS goal_amount numeric(20, 8);
+ALTER TABLE message ADD COLUMN IF NOT EXISTS goal_fiat_usd numeric(20, 2);
+ALTER TABLE message ADD COLUMN IF NOT EXISTS goal_fiat_chf numeric(20, 2);
+ALTER TABLE message ADD COLUMN IF NOT EXISTS goal_fiat_eur numeric(20, 2);
+ALTER TABLE message ADD COLUMN IF NOT EXISTS goal_fiat_php numeric(20, 2);
+DO $message_goal_currency$
+BEGIN
+  ALTER TABLE message DROP CONSTRAINT IF EXISTS message_goal_currency_check;
+  ALTER TABLE message ADD CONSTRAINT message_goal_currency_check
+    CHECK (goal_currency IS NULL OR goal_currency IN ('BTC','USD','CHF','EUR','PHP'));
+END
+$message_goal_currency$;

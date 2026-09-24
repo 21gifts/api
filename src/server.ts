@@ -13,7 +13,7 @@ import { linksRoutes } from '@/routes/links';
 import { viewRoutes } from '@/routes/view';
 import { lightningAddressRoutes } from '@/routes/lightning-address';
 import { debugRoutes } from '@/routes/debug';
-import { giftsStatsRoutes } from '@/routes/stats';
+import { bindGoalRateDay, giftsStatsRoutes } from '@/routes/stats';
 import { giftsRoutes } from '@/routes/gifts';
 import { invoiceRoutes } from '@/routes/invoices';
 import { messagesRoutes } from '@/routes/messages';
@@ -539,6 +539,12 @@ export function createApp(deps: AppDeps = {}): Hono {
       env,
       translationStore,
       fundingStore,
+      goalRateDay: bindGoalRateDay({
+        store: giftStore,
+        rates: btcUsdRates,
+        fiatRates,
+        now,
+      }),
       ...(nostrKek === undefined ? {} : { nostrKek }),
       ...(deps.nostrPublisher === undefined ? {} : { nostrPublisher: deps.nostrPublisher }),
       ...(spendPing === undefined ? {} : { spendPing }),

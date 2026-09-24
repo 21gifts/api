@@ -7,6 +7,14 @@ import { roleAtLeast } from '@/lib/auth/roles';
 import type { Account, AccountRole, AuthStore } from '@/lib/auth/store';
 import { inspectBolt11, isNip57Invoice } from '@/lib/bolt11';
 import { GIFT_INVOICE_MAX_MSAT } from '@/lib/config';
+import {
+  canonicalGoalAmount,
+  fiatToSats,
+  satsToFiatAmount,
+  type GoalCurrency,
+  type GoalFiatCode,
+  type GoalRateDay,
+} from '@/lib/goal-rate';
 import { eligibleToday } from '@/lib/funding';
 import { InMemoryFundingStore, type FundingStore } from '@/lib/funding-store';
 import { logEvent } from '@/lib/log';
@@ -275,6 +283,11 @@ export interface MessagesRouteDeps {
   waitSatsTimeoutMs?: number;
   /** Poll interval for `sinceSats` (tests inject; default {@link WAIT_SATS_POLL_MS}). */
   waitSatsPollMs?: number;
+  /**
+   * Latest gift-day used to freeze a currency ask. Omitted means no day:
+   * a BTC ask still posts; a fiat ask is 400. Rejection is 503.
+   */
+  goalRateDay?: () => Promise<GoalRateDay | null>;
 }
 
 const defaultPostLimiter = new PostRateLimiter();
@@ -496,6 +509,152 @@ async function serveForumVideo(
   }
 }
 
+const GOAL_PAIR_ERROR = 'Send either goalSats or both goalCurrency and goalAmount';
+const ASK_UNAVAILABLE = 'Ask amount is unavailable';
+
+/** Frozen ask stored on a top-level note. All null when there is no goal. */
+interface FrozenAsk {
+  goalSats: number | null;
+  goalCurrency: GoalCurrency | null;
+  goalAmount: string | null;
+  goalAmountUsd: string | null;
+  goalAmountChf: string | null;
+  goalAmountEur: string | null;
+  goalAmountPhp: string | null;
+}
+
+const NO_ASK: FrozenAsk = {
+  goalSats: null,
+  goalCurrency: null,
+  goalAmount: null,
+  goalAmountUsd: null,
+  goalAmountChf: null,
+  goalAmountEur: null,
+  goalAmountPhp: null,
+};
+
+function isGoalCurrency(value: unknown): value is GoalCurrency {
+  return (
+    value === 'BTC' || value === 'USD' || value === 'CHF' || value === 'EUR' || value === 'PHP'
+  );
+}
+
+function goalFieldPresent(value: unknown): boolean {
+  return value !== undefined && value !== null;
+}
+
+type GoalPair =
+  | { ok: true; legacy: number | null; currency: GoalCurrency | null; amount: string | null }
+  | { ok: false; error: string };
+
+/** Legacy `goalSats` alone, or both new fields. Anything else is 400. */
+function readGoalPair(legacy: number | null, currency: unknown, amount: unknown): GoalPair {
+  const currencyPresent = goalFieldPresent(currency);
+  const amountPresent = goalFieldPresent(amount);
+  if (!currencyPresent && !amountPresent) {
+    return { ok: true, legacy, currency: null, amount: null };
+  }
+  if (
+    legacy !== null ||
+    !currencyPresent ||
+    !amountPresent ||
+    !isGoalCurrency(currency) ||
+    typeof amount !== 'string'
+  ) {
+    return { ok: false, error: GOAL_PAIR_ERROR };
+  }
+  return { ok: true, legacy: null, currency, amount };
+}
+
+function readFormGoalField(value: unknown): string | null | 'invalid' {
+  if (value === null || value === undefined || value === '') {
+    return null;
+  }
+  if (typeof value !== 'string') {
+    return 'invalid';
+  }
+  if (value.trim() === '') {
+    return null;
+  }
+  return value;
+}
+
+function freezeSnapshots(
+  sats: number,
+  currency: GoalCurrency,
+  amount: string,
+  day: GoalRateDay | null,
+): FrozenAsk {
+  const quote = (code: GoalFiatCode): string | null => satsToFiatAmount(sats, day, code);
+  return {
+    goalSats: sats,
+    goalCurrency: currency,
+    goalAmount: amount,
+    goalAmountUsd: quote('USD'),
+    goalAmountChf: quote('CHF'),
+    goalAmountEur: quote('EUR'),
+    goalAmountPhp: quote('PHP'),
+  };
+}
+
+type AskOutcome = { ok: true; goal: FrozenAsk } | { ok: false; status: 400 | 503; error: string };
+
+/**
+ * Freeze a top-level ask. Legacy sats skip the loader. Currency asks use
+ * `goalRateDay` when it is set; a missing day does not reject BTC.
+ */
+async function freezeAsk(
+  deps: MessagesRouteDeps,
+  legacy: number | null,
+  currency: GoalCurrency | null,
+  amount: string | null,
+): Promise<AskOutcome> {
+  if (currency === null || amount === null) {
+    return { ok: true, goal: { ...NO_ASK, goalSats: legacy } };
+  }
+  const canonical = canonicalGoalAmount(amount);
+  if (canonical === null) {
+    return { ok: false, status: 400, error: GOAL_PAIR_ERROR };
+  }
+  let day: GoalRateDay | null = null;
+  if (deps.goalRateDay !== undefined) {
+    try {
+      day = await deps.goalRateDay();
+    } catch {
+      return { ok: false, status: 503, error: 'Messages are unavailable' };
+    }
+  }
+  if (currency === 'BTC') {
+    const sats = Number(canonical);
+    if (!/^\d+$/.test(canonical) || !Number.isInteger(sats) || sats < 1 || sats > GOAL_SATS_MAX) {
+      return { ok: false, status: 400, error: 'Goal must be a positive whole-sat amount' };
+    }
+    return { ok: true, goal: freezeSnapshots(sats, 'BTC', canonical, day) };
+  }
+  const sats = fiatToSats(Number(canonical), day, currency);
+  if (sats === null || !Number.isInteger(sats) || sats < 1 || sats > GOAL_SATS_MAX) {
+    return { ok: false, status: 400, error: ASK_UNAVAILABLE };
+  }
+  return { ok: true, goal: freezeSnapshots(sats, currency, canonical, day) };
+}
+
+async function frozenAskResponse(
+  deps: MessagesRouteDeps,
+  c: Context,
+  legacy: number | null,
+  currency: GoalCurrency | null,
+  amount: string | null,
+): Promise<{ goal: FrozenAsk } | Response> {
+  const frozen = await freezeAsk(deps, legacy, currency, amount);
+  if (!frozen.ok) {
+    if (frozen.status === 503) {
+      logEvent('messages.create.failed');
+    }
+    return c.json({ error: frozen.error }, frozen.status);
+  }
+  return { goal: frozen.goal };
+}
+
 /**
  * Media collapse → burst limiter → create → optional {@link notifyForumPost}
  * (every account except the actor; no-op when the actor is the official
@@ -513,8 +672,7 @@ async function serveForumVideo(
  * @param photo - Optional decoded photo / poster.
  * @param video - Optional decoded video.
  * @param extraPhotos - Optional extra stills (indices 1..n). Omit when empty.
- * @param goalSats - Optional whole-sat ask for a top-level note. Default `null`
- *   (no goal). Stored as `null` when `parentId` is set.
+ * @param goal - Frozen ask. Default is no goal. Stored null when `parentId` is set.
  * @param place - Optional map pin for a top-level note. Default `null`.
  *   Stored as `null` when `parentId` is set.
  * @returns 200 / 403 (unpaid text-only below verified) / 409 (same live
@@ -531,7 +689,7 @@ async function persistForumPost(
   photo?: ForumPhoto,
   video?: ForumVideo,
   extraPhotos?: readonly ForumPhoto[],
-  goalSats: number | null = null,
+  goal: FrozenAsk = NO_ASK,
   place: ForumPlace | null = null,
 ): Promise<Response> {
   const extras = video !== undefined ? [] : [...(extraPhotos ?? [])];
@@ -588,7 +746,13 @@ async function persistForumPost(
     videoContentType: video === undefined ? null : video.contentType,
     ...unsignedNostrDefaults(),
     parentId,
-    goalSats: parentId === null ? goalSats : null,
+    goalSats: parentId === null ? goal.goalSats : null,
+    goalCurrency: parentId === null ? goal.goalCurrency : null,
+    goalAmount: parentId === null ? goal.goalAmount : null,
+    goalAmountUsd: parentId === null ? goal.goalAmountUsd : null,
+    goalAmountChf: parentId === null ? goal.goalAmountChf : null,
+    goalAmountEur: parentId === null ? goal.goalAmountEur : null,
+    goalAmountPhp: parentId === null ? goal.goalAmountPhp : null,
     place: parentId === null ? place : null,
   };
   try {
@@ -744,7 +908,7 @@ async function postMultipartMessage(
     );
   }
   const rawGoal = form.get('goalSats');
-  let goalSats: number | null = null;
+  let legacySats: number | null = null;
   if (rawGoal !== null && rawGoal !== '') {
     if (typeof rawGoal !== 'string' || !/^\d+$/.test(rawGoal)) {
       return c.json({ error: 'Goal must be a positive whole-sat amount' }, 400);
@@ -753,7 +917,16 @@ async function postMultipartMessage(
     if (parsedGoal < 1 || parsedGoal > GOAL_SATS_MAX) {
       return c.json({ error: 'Goal must be a positive whole-sat amount' }, 400);
     }
-    goalSats = parsedGoal;
+    legacySats = parsedGoal;
+  }
+  const currencyField = readFormGoalField(form.get('goalCurrency'));
+  const amountField = readFormGoalField(form.get('goalAmount'));
+  if (currencyField === 'invalid' || amountField === 'invalid') {
+    return c.json({ error: GOAL_PAIR_ERROR }, 400);
+  }
+  const shaped = readGoalPair(legacySats, currencyField, amountField);
+  if (!shaped.ok) {
+    return c.json({ error: shaped.error }, 400);
   }
   let place: ForumPlace | null = null;
   const placeLat = form.get('placeLat');
@@ -777,21 +950,9 @@ async function postMultipartMessage(
     }
     place = parsedPlace.value;
   }
-  if (goalSats === null) {
-    return persistForumPost(
-      deps,
-      postLimiter,
-      c,
-      account,
-      authorName,
-      text,
-      null,
-      photo,
-      video,
-      undefined,
-      null,
-      place,
-    );
+  const frozen = await frozenAskResponse(deps, c, shaped.legacy, shaped.currency, shaped.amount);
+  if (frozen instanceof Response) {
+    return frozen;
   }
   return persistForumPost(
     deps,
@@ -804,7 +965,7 @@ async function postMultipartMessage(
     photo,
     video,
     undefined,
-    goalSats,
+    frozen.goal,
     place,
   );
 }
@@ -815,6 +976,8 @@ const postBody = z
     text: z.string().optional(),
     inReplyTo: z.string().optional(),
     goalSats: z.number().int().positive().max(GOAL_SATS_MAX).nullish(),
+    goalCurrency: z.unknown().nullish(),
+    goalAmount: z.unknown().nullish(),
     place: z.unknown().nullish(),
     photo: z
       .object({
@@ -1102,7 +1265,12 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
           400,
         );
       }
-      if (parsed.data.inReplyTo !== undefined && typeof parsed.data.goalSats === 'number') {
+      if (
+        parsed.data.inReplyTo !== undefined &&
+        (typeof parsed.data.goalSats === 'number' ||
+          goalFieldPresent(parsed.data.goalCurrency) ||
+          goalFieldPresent(parsed.data.goalAmount))
+      ) {
         return c.json({ error: 'A reply cannot ask for a goal' }, 400);
       }
       let parentId: string | null = null;
@@ -1117,38 +1285,23 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
         }
         parentId = parent.id;
       }
-      const goalSats = parsed.data.goalSats ?? null;
-      if (extraPhotos.length > 0) {
-        return persistForumPost(
-          deps,
-          postLimiter,
-          c,
-          account,
-          authorName,
-          text,
-          parentId,
-          photo,
-          undefined,
-          extraPhotos,
-          goalSats,
-          place,
-        );
+      const shaped = readGoalPair(
+        parsed.data.goalSats ?? null,
+        parsed.data.goalCurrency,
+        parsed.data.goalAmount,
+      );
+      if (!shaped.ok) {
+        return c.json({ error: shaped.error }, 400);
       }
-      if (goalSats !== null) {
-        return persistForumPost(
-          deps,
-          postLimiter,
-          c,
-          account,
-          authorName,
-          text,
-          parentId,
-          photo,
-          undefined,
-          undefined,
-          goalSats,
-          place,
-        );
+      const frozen = await frozenAskResponse(
+        deps,
+        c,
+        shaped.legacy,
+        shaped.currency,
+        shaped.amount,
+      );
+      if (frozen instanceof Response) {
+        return frozen;
       }
       return persistForumPost(
         deps,
@@ -1160,8 +1313,8 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
         parentId,
         photo,
         undefined,
-        undefined,
-        goalSats,
+        extraPhotos.length > 0 ? extraPhotos : undefined,
+        frozen.goal,
         place,
       );
     })
