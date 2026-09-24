@@ -281,7 +281,7 @@ idempotent, and its failure is logged without stopping the rest of boot.
 has no `since`. Before entitlement, a kind:1 reply from an unknown pubkey is
 silently skipped. Membership, or zapper entitlement plus not-blocked status, is
 decided before the event signature check and before event-specific store reads.
-On the first worker tick after that pubkey's first verified zap, the same older
+On the first ingest pass after that pubkey's first verified zap, the same older
 event is queried again. A per-store in-flight event-id guard prevents overlapping
 ticks from storing it concurrently. Only signed kind:0 profiles up to 64 KiB
 can supply its name. Control characters, explicit bidirectional controls, names

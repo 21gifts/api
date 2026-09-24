@@ -906,25 +906,34 @@ export async function indexZapReceipt(args: {
  * gift-reply id yet, and drops already-queued reply receipts from that
  * queue.
  *
+ * Hot mode (`eventIds` set): skip the whole note/conversation enumeration,
+ * dedupe the given ids (drop empty strings, keep first-seen order), query
+ * those ids in `QUERY_CHUNK` batches with the same receipt filter (plus
+ * optional `since`), run the same per-receipt ingest path, and **do not**
+ * call `retryGiftReplies` (the worker ingest lane does that on the full
+ * pass). Empty `urls` or no remaining ids return immediately.
+ *
  * Receipts whose terminal decision this process already persisted (`indexed`,
  * or `rejected` with reason `duplicate`) skip note lookup, account/LNURL
  * validation, and ingest persist. They still run `verifyReceipt` then
  * `tryEnsureGiftReply` unless the receipt matches a conversation invoice.
  * A forum receipt whose payment hash was already manually settled is rejected
  * with reason `settled` before author/provider lookup and cannot add sats again.
- * Every other rejection reason is re-validated on each tick and writes again
- * whenever the decision changes. The memory is process-local, so the first
- * tick after a restart may re-persist decisions it has forgotten, bounded by
- * the receipts that tick queries. Ticks are not serialised (`setInterval`
- * does not await the previous tick), so the ingest skip is per tick, not a
- * guarantee across concurrent ticks.
+ * Every other rejection reason is re-validated on each full ingest pass and
+ * writes again whenever the decision changes. The memory is process-local, so
+ * the first ingest pass after a restart may re-persist decisions it has
+ * forgotten, bounded by the receipts that pass queries. Fast-lane ticks are
+ * not serialised (`setInterval` does not await the previous tick); the ingest
+ * lane waits for each pass to settle, so the ingest skip is per pass, not a
+ * guarantee across concurrent fast ticks.
  *
  * @param args - Store, auth, querier, relay urls, timeout, clock, fetch;
- *   optional `pushStore`, `notificationStore`, and `conversations` (PN
- *   invoices append here; omitted → `rejected`/`conversation`); optional
- *   `spendPing`, `postLimiter`, and `fundingStore` for platform-note compose
- *   (`spendPing` only when `eligibleToday`, same gate as `POST /messages`).
- * @returns Resolves when the tick's ingest pass finishes.
+ *   optional `eventIds` / `since` for hot mode; optional `pushStore`,
+ *   `notificationStore`, and `conversations` (PN invoices append here;
+ *   omitted → `rejected`/`conversation`); optional `spendPing`, `postLimiter`,
+ *   and `fundingStore` for platform-note compose (`spendPing` only when
+ *   `eligibleToday`, same gate as `POST /messages`).
+ * @returns Resolves when the ingest pass finishes.
  * @throws Propagates relay-query and unguarded store failures.
  */
 export async function indexOpenZapReceipts(args: {
@@ -951,7 +960,31 @@ export async function indexOpenZapReceipts(args: {
   fundingStore?: FundingStore;
   /** Optional crosses for the one spot taken per newly indexed zap. */
   fiatRates?: FiatRateBook;
+  /** Hot mode: query exactly these note event ids instead of enumerating recent notes. */
+  eventIds?: readonly string[];
+  /** Unix seconds added as `since` to every kind:9735 receipt filter. */
+  since?: number;
 }): Promise<void> {
+  if (args.eventIds !== undefined) {
+    if (args.urls.length === 0) {
+      return;
+    }
+    const eventIds: string[] = [];
+    const seen = new Set<string>();
+    for (const id of args.eventIds) {
+      if (id === '' || seen.has(id)) {
+        continue;
+      }
+      seen.add(id);
+      eventIds.push(id);
+    }
+    if (eventIds.length === 0) {
+      return;
+    }
+    await queryAndIngestZapReceipts(args, eventIds);
+    return;
+  }
+
   if (args.urls.length === 0) {
     await retryGiftReplies(args);
     return;
@@ -1013,10 +1046,46 @@ export async function indexOpenZapReceipts(args: {
     return;
   }
 
+  await queryAndIngestZapReceipts(args, eventIds);
+  await retryGiftReplies(args);
+}
+
+/**
+ * Query kind:9735 receipts for `eventIds` in chunks and run per-receipt ingest.
+ *
+ * @param args - Ingest collaborators (including optional `since`).
+ * @param eventIds - Deduped note event ids to put in `#e`.
+ */
+async function queryAndIngestZapReceipts(
+  args: {
+    store: MessageStore;
+    auth: AuthStore;
+    querier: NostrQuerier;
+    urls: readonly string[];
+    timeoutMs: number;
+    now: () => number;
+    fetchImpl: FetchFn;
+    verifyReceipt?: (event: NostrEventFrame) => boolean;
+    pushStore?: PushStore;
+    notificationStore?: NotificationStore;
+    conversations?: ConversationStore;
+    spendPing?: SpendPing;
+    postLimiter?: PostRateLimiter;
+    fundingStore?: FundingStore;
+    fiatRates?: FiatRateBook;
+    since?: number;
+  },
+  eventIds: readonly string[],
+): Promise<void> {
   for (let i = 0; i < eventIds.length; i += QUERY_CHUNK) {
     const chunk = eventIds.slice(i, i + QUERY_CHUNK);
     const events = await args.querier.query(
-      { kinds: [9735], '#e': chunk, limit: 200 },
+      {
+        kinds: [9735],
+        '#e': chunk,
+        limit: 200,
+        ...(args.since === undefined ? {} : { since: args.since }),
+      },
       args.urls,
       args.timeoutMs,
     );
@@ -1045,7 +1114,6 @@ export async function indexOpenZapReceipts(args: {
       }
     }
   }
-  await retryGiftReplies(args);
 }
 
 /**

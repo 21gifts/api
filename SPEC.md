@@ -3125,7 +3125,7 @@ Postgres `message`. List queries select top-level rows only
 and must not select the `photo` bytea
 column.
 
-The nostr worker, each tick, queries zap relays (space plus the public
+The nostr worker's ingest lane, each pass, queries zap relays (space plus the public
 list, including when `NOSTR_PUBLISH_PUBLIC` is unset) for kind:9735
 receipts whose `e` tag matches a non-empty `event_id` from `listLatest`
 or a non-null `listReplies` child of those rows (unioned with the official
@@ -3193,7 +3193,7 @@ non-Latin script otherwise remain eligible.
 Inbound kind:1 `#e` replies continue unchanged for account-owned pubkeys. An
 unowned pubkey is persisted only after it is recorded in `nostr_zapper`, while
 unblocked, and within both per-pubkey and global ingest limits. The reply REQ
-has no `since`, so older replies become visible on the first tick after the
+has no `since`, so older replies become visible on the first ingest pass after the
 first verified zap. Member ownership or external zapper entitlement plus
 not-blocked status is decided before verifying the inbound kind:1 signature and
 before any event-specific message-store read. A per-store in-flight event-id

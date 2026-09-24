@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { finalizeEvent, generateSecretKey, getPublicKey } from 'nostr-tools/pure';
 import { InMemoryAuthStore } from '@/lib/auth/store';
 import { InMemoryConversationStore } from '@/lib/conversation-store';
@@ -12,7 +12,7 @@ import {
   truncatePubkeyDisplay,
   unsignedNostrDefaults,
 } from '@/lib/message';
-import { InMemoryMessageStore } from '@/lib/message-store';
+import { InMemoryMessageStore, type MessageInvoiceAttempt } from '@/lib/message-store';
 import { InMemoryNotificationStore } from '@/lib/notification-store';
 import { parseNostrKek } from '@/lib/nostr/kek';
 import { decryptNostrSecret, ensureAccountNostrKey, zeroizeSecret } from '@/lib/nostr/keys';
@@ -20,7 +20,13 @@ import { RecordingPublisher } from '@/lib/nostr/publish';
 import { RecordingQuerier, type NostrEventFrame } from '@/lib/nostr/query';
 import { DEFAULT_RELAY_PUBLIC } from '@/lib/nostr/relays';
 import { PostRateLimiter } from '@/lib/nostr/rate-limit';
-import { runNostrWorkerTick, startNostrWorker, type NostrWorkerDeps } from '@/lib/nostr/worker';
+import {
+  HOT_ZAP_SINCE_SLACK_S,
+  HOT_ZAP_WINDOW_MS,
+  runNostrWorkerTick,
+  startNostrWorker,
+  type NostrWorkerDeps,
+} from '@/lib/nostr/worker';
 import { ExternalIngestLimiter } from '@/lib/nostr/external';
 import { InMemoryPushStore } from '@/lib/push-store';
 import { removeForumVideo } from '@/lib/video';
@@ -36,6 +42,13 @@ const KEK = parseNostrKek('cd'.repeat(32));
 /** Dummy fetch that never resolves LNURL metadata. */
 function dummyFetch(): FetchFn {
   return async () => new Response('{}', { status: 500 });
+}
+
+/** Drain queued promise callbacks without advancing fake time. */
+async function drainMicrotasks(rounds = 200): Promise<void> {
+  for (let i = 0; i < rounds; i += 1) {
+    await Promise.resolve();
+  }
 }
 
 /** Build worker deps with querier + fetch defaults so existing cases stay short. */
@@ -6202,7 +6215,335 @@ describe('runNostrWorkerTick', () => {
   });
 });
 
+/** Forum invoice attempt fixture for hot-lane zap tests. */
+function hotInvoice(overrides: Partial<MessageInvoiceAttempt> = {}): MessageInvoiceAttempt {
+  return {
+    id: 'inv-hot',
+    createdAt: new Date(1_700_000_000_000),
+    messageId: 'm1',
+    payerAccountId: 'acc',
+    authorAccountId: 'acc',
+    amountSats: 21,
+    lightningAddress: 'ada@example.com',
+    zapRequest: { tags: [['e', 'ab'.repeat(32)]] },
+    result: 'ok',
+    httpStatus: 200,
+    pr: 'lnbc-hot',
+    paymentHash: '11'.repeat(32),
+    description: null,
+    descriptionHash: null,
+    isNip57Invoice: true,
+    lnurlResponse: null,
+    ...overrides,
+  };
+}
+
+describe('runNostrWorkerTick modes', () => {
+  it('fast mode skips receipt query when no ok hot invoices and still signs', async () => {
+    const { auth, messages } = await seed();
+    const querier = new RecordingQuerier();
+    await runNostrWorkerTick(
+      deps({
+        messages,
+        auth,
+        kek: KEK,
+        publisher: new RecordingPublisher(),
+        querier,
+        now: () => 1_700_000_000_000,
+        env: {},
+      }),
+      'fast',
+    );
+    expect(
+      querier.calls.some((call) => {
+        const kinds = call.filter['kinds'];
+        return Array.isArray(kinds) && kinds.includes(9735);
+      }),
+    ).toBe(false);
+    expect((await messages.getById('m1'))?.eventId).toMatch(/^[0-9a-f]{64}$/);
+  });
+
+  it('fast mode queries hot receipt filters with deduped e-tags and since', async () => {
+    const { auth, messages } = await seed();
+    const noteA = 'a1'.repeat(32);
+    const noteB = 'b2'.repeat(32);
+    const nowMs = 1_700_000_000_000;
+    const older = new Date(nowMs - 30 * 60_000);
+    const newer = new Date(nowMs - 5 * 60_000);
+    await messages.recordInvoiceAttempt(
+      hotInvoice({
+        id: 'inv-skip-result',
+        result: 'noZap',
+        zapRequest: { tags: [['e', noteA]] },
+        createdAt: newer,
+      }),
+    );
+    await messages.recordInvoiceAttempt(
+      hotInvoice({
+        id: 'inv-old',
+        createdAt: new Date(nowMs - HOT_ZAP_WINDOW_MS - 1_000),
+        zapRequest: { tags: [['e', noteA]] },
+      }),
+    );
+    await messages.recordInvoiceAttempt(
+      hotInvoice({
+        id: 'inv-null-zr',
+        zapRequest: null,
+        createdAt: newer,
+      }),
+    );
+    await messages.recordInvoiceAttempt(
+      hotInvoice({
+        id: 'inv-tags-not-array',
+        zapRequest: { tags: 'nope' },
+        createdAt: newer,
+      }),
+    );
+    await messages.recordInvoiceAttempt(
+      hotInvoice({
+        id: 'inv-no-e',
+        zapRequest: { tags: [['p', 'aa'.repeat(32)]] },
+        createdAt: newer,
+      }),
+    );
+    await messages.recordInvoiceAttempt(
+      hotInvoice({
+        id: 'inv-empty-e',
+        zapRequest: { tags: [['e', '']] },
+        createdAt: newer,
+      }),
+    );
+    await messages.recordInvoiceAttempt(
+      hotInvoice({
+        id: 'inv-older-ok',
+        createdAt: older,
+        zapRequest: { tags: [['e', noteA]] },
+      }),
+    );
+    await messages.recordInvoiceAttempt(
+      hotInvoice({
+        id: 'inv-dup',
+        createdAt: newer,
+        zapRequest: {
+          tags: [
+            ['e', noteA],
+            ['e', noteB],
+          ],
+        },
+      }),
+    );
+    await messages.recordInvoiceAttempt(
+      hotInvoice({
+        id: 'inv-b',
+        createdAt: newer,
+        zapRequest: { tags: [['e', noteB]] },
+      }),
+    );
+    const querier = new RecordingQuerier();
+    await runNostrWorkerTick(
+      deps({
+        messages,
+        auth,
+        kek: KEK,
+        publisher: new RecordingPublisher(),
+        querier,
+        now: () => nowMs,
+        env: { NOSTR_RELAY_SPACE: 'wss://space' },
+      }),
+      'fast',
+    );
+    const zapCalls = querier.calls.filter((call) => {
+      const kinds = call.filter['kinds'];
+      return Array.isArray(kinds) && kinds.includes(9735);
+    });
+    expect(zapCalls).toHaveLength(1);
+    expect(zapCalls[0]?.filter).toEqual({
+      kinds: [9735],
+      '#e': [noteA, noteB],
+      limit: 200,
+      since: Math.floor(older.getTime() / 1000) - HOT_ZAP_SINCE_SLACK_S,
+    });
+    expect(
+      querier.calls.some((call) => {
+        const kinds = call.filter['kinds'];
+        return Array.isArray(kinds) && kinds.includes(1);
+      }),
+    ).toBe(false);
+    expect(
+      querier.calls.some((call) => {
+        const kinds = call.filter['kinds'];
+        return Array.isArray(kinds) && kinds.includes(4);
+      }),
+    ).toBe(false);
+  });
+
+  it('fast mode indexes a matching hot receipt onto sats', async () => {
+    const eventId = 'ab'.repeat(32);
+    const providerPubkey = 'cd'.repeat(32);
+    const receiptId = 'ef'.repeat(32);
+    const auth = new InMemoryAuthStore();
+    await auth.createAccount({
+      id: 'acc-hot',
+      linkingKey: null,
+      role: 'basis',
+      name: 'Ada',
+      lightningAddress: 'hot-zap@example.com',
+      lightningAddressVerified: true,
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: 'e'.repeat(64),
+      createdAt: 1,
+      rulesAgreedAt: null,
+    });
+    await ensureAccountNostrKey(auth, 'acc-hot', KEK);
+    const messages = new InMemoryMessageStore();
+    await messages.create({
+      id: 'm-hot',
+      accountId: 'acc-hot',
+      name: 'Ada',
+      text: 'hello',
+      createdAt: new Date('2026-08-28T00:00:00.000Z'),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+      eventId,
+      nostrEvent: { ...BITCOIN_KIND1, id: eventId },
+    });
+    const nowMs = 1_700_000_000_000;
+    await messages.recordInvoiceAttempt(
+      hotInvoice({
+        id: 'inv-hot-ok',
+        messageId: 'm-hot',
+        payerAccountId: 'acc-hot',
+        authorAccountId: 'acc-hot',
+        lightningAddress: 'hot-zap@example.com',
+        createdAt: new Date(nowMs - 60_000),
+        zapRequest: { tags: [['e', eventId]] },
+      }),
+    );
+    const querier = new RecordingQuerier();
+    querier.events = [
+      {
+        id: receiptId,
+        pubkey: providerPubkey,
+        kind: 9735,
+        tags: [
+          ['e', eventId],
+          ['bolt11', 'lnbc-hot'],
+        ],
+      },
+    ];
+    mockedDecode.mockReturnValue({ paymentHash: '22'.repeat(32), amountMsat: 21_000 });
+    const fetchImpl: FetchFn = async () =>
+      new Response(
+        JSON.stringify({
+          callback: 'https://example.com/lnurlp/callback',
+          minSendable: 1000,
+          maxSendable: 10_000_000,
+          allowsNostr: true,
+          nostrPubkey: providerPubkey,
+        }),
+        { status: 200, headers: { 'content-type': 'application/json' } },
+      );
+    await runNostrWorkerTick(
+      deps({
+        messages,
+        auth,
+        kek: KEK,
+        publisher: new RecordingPublisher(),
+        querier,
+        fetchImpl,
+        verifyReceipt: () => true,
+        now: () => nowMs,
+        env: {},
+      }),
+      'fast',
+    );
+    expect((await messages.getById('m-hot'))?.sats).toBe(21);
+  });
+
+  it('fast mode publishes only when NOSTR_PUBLISH=1', async () => {
+    const { auth, messages } = await seed();
+    const publisherOff = new RecordingPublisher();
+    await runNostrWorkerTick(
+      deps({
+        messages,
+        auth,
+        kek: KEK,
+        publisher: publisherOff,
+        now: () => 1_700_000_000_000,
+        env: {},
+      }),
+      'fast',
+    );
+    expect(publisherOff.calls).toHaveLength(0);
+
+    const { auth: authOn, messages: messagesOn } = await seed();
+    const publisherOn = new RecordingPublisher();
+    await runNostrWorkerTick(
+      deps({
+        messages: messagesOn,
+        auth: authOn,
+        kek: KEK,
+        publisher: publisherOn,
+        now: () => 1_700_000_000_000,
+        env: { NOSTR_PUBLISH: '1', NOSTR_RELAY_SPACE: 'wss://relay.nostr.space' },
+      }),
+      'fast',
+    );
+    expect(publisherOn.calls.length).toBeGreaterThan(0);
+  });
+
+  it('ingest mode runs full receipt, reply, and DM queries without signing', async () => {
+    const { auth, messages } = await seed();
+    const conversations = new InMemoryConversationStore();
+    const querier = new RecordingQuerier();
+    const publisher = new RecordingPublisher();
+    await runNostrWorkerTick(
+      deps({
+        messages,
+        auth,
+        kek: KEK,
+        publisher,
+        querier,
+        now: () => 1_700_000_000_000,
+        env: { NOSTR_RELAY_SPACE: 'wss://space' },
+        conversations,
+        verifyKind1: () => true,
+      }),
+      'ingest',
+    );
+    const zapFilter = querier.calls.find((call) => {
+      const kinds = call.filter['kinds'];
+      return Array.isArray(kinds) && kinds.includes(9735);
+    })?.filter;
+    expect(zapFilter).toEqual({
+      kinds: [9735],
+      '#e': expect.any(Array),
+      limit: 200,
+    });
+    expect('since' in (zapFilter ?? {})).toBe(false);
+    expect(
+      querier.calls.some((call) => {
+        const kinds = call.filter['kinds'];
+        return Array.isArray(kinds) && kinds.includes(1);
+      }),
+    ).toBe(true);
+    expect(
+      querier.calls.some((call) => {
+        const kinds = call.filter['kinds'];
+        return Array.isArray(kinds) && (kinds.includes(4) || kinds.includes(1059));
+      }),
+    ).toBe(true);
+    expect((await messages.getById('m1'))?.eventId).toBeNull();
+    expect(publisher.calls).toHaveLength(0);
+  });
+});
+
 describe('startNostrWorker', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   it('returns a stop handle', () => {
     const handle = startNostrWorker(
       deps({
@@ -6231,5 +6572,193 @@ describe('startNostrWorker', () => {
         fiatRates: new InMemoryFiatStore(),
       }),
     );
+  });
+
+  it('starts ingest immediately and waits for settle before the next pass', async () => {
+    vi.useFakeTimers();
+    const { auth, messages } = await seed();
+    let release: (() => void) | undefined;
+    const hold = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let holding = true;
+    let zapQueries = 0;
+    const querier = new RecordingQuerier();
+    const inner = querier.query.bind(querier);
+    querier.query = async (filter, urls, timeoutMs) => {
+      const kinds = (filter as { kinds?: number[] }).kinds;
+      if (Array.isArray(kinds) && kinds.includes(9735)) {
+        zapQueries += 1;
+        if (holding) {
+          await hold;
+        }
+      }
+      return inner(filter, urls, timeoutMs);
+    };
+    const handle = startNostrWorker(
+      deps({
+        messages,
+        auth,
+        kek: KEK,
+        publisher: new RecordingPublisher(),
+        querier,
+        now: () => 1_700_000_000_000,
+        env: { NOSTR_RELAY_SPACE: 'wss://space' },
+      }),
+      60_000,
+      5_000,
+    );
+    await drainMicrotasks();
+    expect(zapQueries).toBe(1);
+    await vi.advanceTimersByTimeAsync(5_000 * 3);
+    expect(zapQueries).toBe(1);
+    holding = false;
+    release!();
+    await drainMicrotasks();
+    expect(zapQueries).toBe(1);
+    await vi.advanceTimersByTimeAsync(5_000);
+    await drainMicrotasks();
+    expect(zapQueries).toBe(2);
+    handle.stop();
+  });
+
+  it('logs nostr.worker.ingest.failed and still reschedules', async () => {
+    vi.useFakeTimers();
+    const { auth, messages } = await seed();
+    const querier = new RecordingQuerier();
+    let calls = 0;
+    querier.query = async () => {
+      calls += 1;
+      throw new Error('ingest boom');
+    };
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      const handle = startNostrWorker(
+        deps({
+          messages,
+          auth,
+          kek: KEK,
+          publisher: new RecordingPublisher(),
+          querier,
+          now: () => 1_700_000_000_000,
+          env: { NOSTR_RELAY_SPACE: 'wss://space' },
+        }),
+        60_000,
+        1_000,
+      );
+      await drainMicrotasks();
+      const events = warn.mock.calls
+        .map((call) => call[0])
+        .filter((arg): arg is string => typeof arg === 'string' && arg.startsWith('{'))
+        .map((arg) => JSON.parse(arg) as Record<string, unknown>);
+      expect(events.some((row) => row['event'] === 'nostr.worker.ingest.failed')).toBe(true);
+      const afterFirst = calls;
+      await vi.advanceTimersByTimeAsync(1_000);
+      await drainMicrotasks();
+      expect(calls).toBeGreaterThan(afterFirst);
+      handle.stop();
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('fires overlapping fast ticks and logs nostr.worker.tick.failed', async () => {
+    vi.useFakeTimers();
+    const { auth, messages } = await seed();
+    let release: (() => void) | undefined;
+    const hold = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let fastStarts = 0;
+    const originalClaim = messages.claimUnsigned.bind(messages);
+    messages.claimUnsigned = async (limit, nowMs, leaseMs) => {
+      fastStarts += 1;
+      if (fastStarts === 1) {
+        await hold;
+      }
+      return originalClaim(limit, nowMs, leaseMs);
+    };
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      const handle = startNostrWorker(
+        deps({
+          messages,
+          auth,
+          kek: KEK,
+          publisher: new RecordingPublisher(),
+          now: () => 1_700_000_000_000,
+          env: {},
+        }),
+        100,
+        60_000,
+      );
+      await drainMicrotasks();
+      await vi.advanceTimersByTimeAsync(100);
+      await drainMicrotasks();
+      await vi.advanceTimersByTimeAsync(100);
+      await drainMicrotasks();
+      expect(fastStarts).toBeGreaterThanOrEqual(2);
+      release!();
+      await drainMicrotasks();
+
+      messages.claimUnsigned = async () => {
+        throw new Error('fast boom');
+      };
+      await vi.advanceTimersByTimeAsync(100);
+      await drainMicrotasks();
+      const events = warn.mock.calls
+        .map((call) => call[0])
+        .filter((arg): arg is string => typeof arg === 'string' && arg.startsWith('{'))
+        .map((arg) => JSON.parse(arg) as Record<string, unknown>);
+      expect(events.some((row) => row['event'] === 'nostr.worker.tick.failed')).toBe(true);
+      handle.stop();
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('stop prevents a further ingest pass after an in-flight pass settles', async () => {
+    vi.useFakeTimers();
+    const { auth, messages } = await seed();
+    let release: (() => void) | undefined;
+    const hold = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let holding = true;
+    let zapQueries = 0;
+    const querier = new RecordingQuerier();
+    const inner = querier.query.bind(querier);
+    querier.query = async (filter, urls, timeoutMs) => {
+      const kinds = (filter as { kinds?: number[] }).kinds;
+      if (Array.isArray(kinds) && kinds.includes(9735)) {
+        zapQueries += 1;
+        if (holding) {
+          await hold;
+        }
+      }
+      return inner(filter, urls, timeoutMs);
+    };
+    const handle = startNostrWorker(
+      deps({
+        messages,
+        auth,
+        kek: KEK,
+        publisher: new RecordingPublisher(),
+        querier,
+        now: () => 1_700_000_000_000,
+        env: { NOSTR_RELAY_SPACE: 'wss://space' },
+      }),
+      60_000,
+      1_000,
+    );
+    await drainMicrotasks();
+    expect(zapQueries).toBe(1);
+    handle.stop();
+    holding = false;
+    release!();
+    await drainMicrotasks();
+    await vi.advanceTimersByTimeAsync(5_000);
+    await drainMicrotasks();
+    expect(zapQueries).toBe(1);
   });
 });
