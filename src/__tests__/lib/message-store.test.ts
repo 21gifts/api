@@ -3674,6 +3674,84 @@ describe('InMemoryMessageStore', () => {
     expect(again[2]?.lnurlResponse).toEqual({ pr: 'lnbc1', status: 'OK' });
   });
 
+  it('listRecentOkInvoiceAttempts filters ok+since, sorts, limits, and copies', async () => {
+    const store = new InMemoryMessageStore();
+    const since = new Date('2026-08-02T00:00:00.000Z');
+    const base: MessageInvoiceAttempt = {
+      id: 'inv-base',
+      createdAt: since,
+      messageId: 'm1',
+      payerAccountId: 'payer',
+      authorAccountId: 'author',
+      amountSats: 21,
+      lightningAddress: 'a@b.com',
+      zapRequest: { kind: 9734 },
+      result: 'ok',
+      httpStatus: 200,
+      pr: 'lnbc1',
+      paymentHash: 'aa'.repeat(32),
+      description: null,
+      descriptionHash: 'bb'.repeat(32),
+      isNip57Invoice: true,
+      lnurlResponse: { pr: 'lnbc1', status: 'OK' },
+    };
+    await store.recordInvoiceAttempt({
+      ...base,
+      id: 'inv-nozap',
+      result: 'noZap',
+      httpStatus: 400,
+      pr: null,
+      isNip57Invoice: false,
+      lnurlResponse: null,
+      createdAt: new Date('2026-08-03T00:00:00.000Z'),
+    });
+    await store.recordInvoiceAttempt({
+      ...base,
+      id: 'inv-before',
+      createdAt: new Date('2026-08-01T23:59:59.999Z'),
+    });
+    await store.recordInvoiceAttempt({
+      ...base,
+      id: 'inv-boundary-a',
+      createdAt: since,
+    });
+    await store.recordInvoiceAttempt({
+      ...base,
+      id: 'inv-boundary-z',
+      createdAt: since,
+    });
+    await store.recordInvoiceAttempt({
+      ...base,
+      id: 'inv-newer',
+      createdAt: new Date('2026-08-03T00:00:00.000Z'),
+    });
+    await store.recordInvoiceAttempt({
+      ...base,
+      id: 'inv-mid',
+      createdAt: new Date('2026-08-02T12:00:00.000Z'),
+    });
+    const listed = await store.listRecentOkInvoiceAttempts(since, 3);
+    expect(listed.map((row) => row.id)).toEqual(['inv-newer', 'inv-mid', 'inv-boundary-z']);
+    expect(listed.every((row) => row.result === 'ok')).toBe(true);
+    if (listed[0] !== undefined) {
+      listed[0].result = 'bad_body';
+      listed[0].zapRequest = { mutated: true };
+      if (listed[0].lnurlResponse !== null) {
+        listed[0].lnurlResponse['mutated'] = true;
+      }
+    }
+    const again = await store.listRecentOkInvoiceAttempts(since, 10);
+    expect(again.map((row) => row.id)).toEqual([
+      'inv-newer',
+      'inv-mid',
+      'inv-boundary-z',
+      'inv-boundary-a',
+    ]);
+    expect(again[0]?.result).toBe('ok');
+    expect(again[0]?.zapRequest).toEqual({ kind: 9734 });
+    expect(again[0]?.lnurlResponse).toEqual({ pr: 'lnbc1', status: 'OK' });
+  });
+
   it('recordZapIngest lists newest-first and copies rows', async () => {
     const store = new InMemoryMessageStore();
     const early: ZapIngestRow = {
@@ -6497,6 +6575,43 @@ describe('PostgresMessageStore', () => {
     expect(listed[6]?.fiatPinned).toBe(false);
     expect(listed[6]?.amountUsd).toBeNull();
     expect(listed[6]?.amountPhp).toBeNull();
+  });
+
+  it('listRecentOkInvoiceAttempts filters ok since window and maps rows', async () => {
+    const sql = new MockSql();
+    sql.nextRows = [
+      {
+        id: 'inv-1',
+        created_at: new Date('2026-08-28T12:00:00.000Z'),
+        message_id: 'm1',
+        payer_account_id: 'payer',
+        author_account_id: 'author',
+        amount_sats: '21',
+        lightning_address: 'a@b.com',
+        zap_request: { kind: 9734 },
+        result: 'ok',
+        http_status: 200,
+        pr: 'lnbc1',
+        payment_hash: 'aa'.repeat(32),
+        description: null,
+        description_hash: 'bb'.repeat(32),
+        is_nip57_invoice: true,
+        lnurl_response: { pr: 'lnbc1' },
+      },
+    ];
+    const store = new PostgresMessageStore(sql);
+    const since = new Date('2026-08-28T00:00:00.000Z');
+    const listed = await store.listRecentOkInvoiceAttempts(since, 50);
+    expect(sql.queries[0]?.text).toMatch(/FROM message_invoice/);
+    expect(sql.queries[0]?.text).toMatch(/result = 'ok'/);
+    expect(sql.queries[0]?.text).toMatch(/created_at >= \$1/);
+    expect(sql.queries[0]?.text).toMatch(/ORDER BY created_at DESC, id DESC/);
+    expect(sql.queries[0]?.text).toMatch(/LIMIT \$2/);
+    expect(sql.queries[0]?.params).toEqual([since, 50]);
+    expect(listed[0]?.amountSats).toBe(21);
+    expect(listed[0]?.zapRequest).toEqual({ kind: 9734 });
+    expect(listed[0]?.isNip57Invoice).toBe(true);
+    expect(listed[0]?.lnurlResponse).toEqual({ pr: 'lnbc1' });
   });
 
   it('recordZapIngest inserts into nostr_zap_ingest', async () => {

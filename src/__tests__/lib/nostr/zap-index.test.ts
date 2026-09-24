@@ -4815,6 +4815,8 @@ describe('indexOpenZapReceipts', () => {
       recordInvoiceAttempt: (...args: Parameters<InMemoryMessageStore['recordInvoiceAttempt']>) =>
         base.recordInvoiceAttempt(...args),
       listInvoiceAttempts: (limit: number) => base.listInvoiceAttempts(limit),
+      listRecentOkInvoiceAttempts: (since: Date, limit: number) =>
+        base.listRecentOkInvoiceAttempts(since, limit),
       recordZapIngest: (...args: Parameters<InMemoryMessageStore['recordZapIngest']>) =>
         base.recordZapIngest(...args),
       listZapIngests: (limit: number) => base.listZapIngests(limit),
@@ -5044,6 +5046,8 @@ describe('indexOpenZapReceipts', () => {
         recordInvoiceAttempt: (...args: Parameters<InMemoryMessageStore['recordInvoiceAttempt']>) =>
           base.recordInvoiceAttempt(...args),
         listInvoiceAttempts: (limit: number) => base.listInvoiceAttempts(limit),
+        listRecentOkInvoiceAttempts: (since: Date, limit: number) =>
+          base.listRecentOkInvoiceAttempts(since, limit),
         recordZapIngest: async (...args: Parameters<InMemoryMessageStore['recordZapIngest']>) => {
           ingestCalls += 1;
           if (ingestCalls === 1) {
@@ -5419,6 +5423,8 @@ describe('indexOpenZapReceipts', () => {
         recordInvoiceAttempt: (...args: Parameters<InMemoryMessageStore['recordInvoiceAttempt']>) =>
           base.recordInvoiceAttempt(...args),
         listInvoiceAttempts: (limit: number) => base.listInvoiceAttempts(limit),
+        listRecentOkInvoiceAttempts: (since: Date, limit: number) =>
+          base.listRecentOkInvoiceAttempts(since, limit),
         recordZapIngest: async () => {
           throw new Error('ingest persist boom');
         },

@@ -246,24 +246,23 @@ function zapRequestEventIdFromAttempt(zapRequest: Record<string, unknown> | null
 
 /**
  * Hot-lane zap ingest: poll receipts for recent in-app invoice e-tags only.
+ * Targets come from {@link MessageStore.listRecentOkInvoiceAttempts}, which already
+ * filters to `result = 'ok'` attempts created at or after the window start, so this
+ * function does not re-check either condition.
  *
  * @param deps - Worker collaborators.
  * @param nowMs - Clock sample taken at the start of the fast tick.
  */
 async function indexHotZapReceipts(deps: NostrWorkerDeps, nowMs: number): Promise<void> {
-  const attempts = await deps.messages.listInvoiceAttempts(HOT_ZAP_INVOICE_LIMIT);
-  const cutoff = nowMs - HOT_ZAP_WINDOW_MS;
+  const attempts = await deps.messages.listRecentOkInvoiceAttempts(
+    new Date(nowMs - HOT_ZAP_WINDOW_MS),
+    HOT_ZAP_INVOICE_LIMIT,
+  );
   const eventIds: string[] = [];
   const seen = new Set<string>();
   let oldestKeptCreatedAtMs: number | undefined;
   for (const attempt of attempts) {
-    if (attempt.result !== 'ok') {
-      continue;
-    }
     const createdAtMs = attempt.createdAt.getTime();
-    if (createdAtMs < cutoff) {
-      continue;
-    }
     const eventId = zapRequestEventIdFromAttempt(attempt.zapRequest);
     if (eventId === null) {
       continue;
