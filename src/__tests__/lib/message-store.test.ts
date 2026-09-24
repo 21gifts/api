@@ -96,7 +96,7 @@ const JPEG2: ForumPhoto = {
 
 describe('MESSAGE_SCHEMA_SQL', () => {
   it('creates message with photo columns, Nostr columns, index, and additive ALTERs', () => {
-    expect(MESSAGE_SCHEMA_SQL).toHaveLength(77);
+    expect(MESSAGE_SCHEMA_SQL).toHaveLength(78);
     expect(MESSAGE_SCHEMA_SQL.join('\n')).toMatch(
       /ALTER TABLE message ADD COLUMN IF NOT EXISTS place_lat double precision/i,
     );
@@ -105,6 +105,9 @@ describe('MESSAGE_SCHEMA_SQL', () => {
     );
     expect(MESSAGE_SCHEMA_SQL.join('\n')).toMatch(
       /ALTER TABLE message ADD COLUMN IF NOT EXISTS place_label text/i,
+    );
+    expect(MESSAGE_SCHEMA_SQL.join('\n')).toMatch(
+      /CREATE TABLE IF NOT EXISTS message_translation/i,
     );
     expect(MESSAGE_SCHEMA_SQL[0]).toMatch(/CREATE TABLE IF NOT EXISTS message/i);
     expect(MESSAGE_SCHEMA_SQL[0]).toMatch(/account_id uuid NOT NULL REFERENCES account/i);
@@ -148,6 +151,10 @@ describe('MESSAGE_SCHEMA_SQL', () => {
     expect(zapPaymentDdl).toMatch(/created_at timestamptz NOT NULL/);
     expect(zapPaymentDdl).not.toMatch(/REFERENCES message/);
     expect(MESSAGE_SCHEMA_SQL.join('\n')).toMatch(/CREATE TABLE IF NOT EXISTS message_invoice/i);
+    expect(MESSAGE_SCHEMA_SQL.join('\n')).toMatch(
+      /CREATE TABLE IF NOT EXISTS message_translation/i,
+    );
+    expect(MESSAGE_SCHEMA_SQL.join('\n')).toMatch(/source_sha256/);
     expect(MESSAGE_SCHEMA_SQL.join('\n')).toMatch(/CREATE TABLE IF NOT EXISTS nostr_zap_ingest/i);
     expect(MESSAGE_SCHEMA_SQL.join('\n')).toMatch(/message_invoice_created_at_idx/i);
     expect(MESSAGE_SCHEMA_SQL.join('\n')).toMatch(/nostr_zap_ingest_receipt_id_idx/i);
