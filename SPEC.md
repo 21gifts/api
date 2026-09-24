@@ -61,7 +61,7 @@ not notify (no in-app rows, no Web Push). When that
 `messageId` is a reply, proof persists a hidden `spendGiftReplyId` marker
 under the reply, then `addSats` the reply (a live existing marker is hidden
 only and does not `addSats`; no `notifyForumReply`). Optional `messageId` on
-`POST /invoices`. `GET /invoices/posted` returns `{ hasPosted, messageId, postedAt, hasMedia }`.
+`POST /invoices`. `GET /invoices/posted` returns `{ hasPosted, messageId, postedAt, hasMedia, welcomeHasMedia, welcomeMessageId }`.
 
 CORS allows the configured origins (`CORS_ALLOWED_ORIGINS`, or the default
 surfaces `https://21.gifts`, `https://dev.21.gifts`, `https://app.21.gifts`,
@@ -191,7 +191,7 @@ Public base URLs used in examples:
 | GET    | `/gifts/stats`                                       | none                       | Aggregated outbound gift statistics                                                                                                                               |
 | GET    | `/messages/stats`                                    | none                       | Living forum notes and replies counted together, by UTC day                                                                                                       |
 | GET    | `/invoices/passkey`                                  | Bearer `SPEND_API_TOKEN`   | Whether a Lightning Address has a passkey-backed account                                                                                                          |
-| GET    | `/invoices/posted`                                   | Bearer `SPEND_API_TOKEN`   | Whether a Lightning Address has a live top-level non-profile forum post (`hasMedia` when that post has photo/video)                                               |
+| GET    | `/invoices/posted`                                   | Bearer `SPEND_API_TOKEN`   | Live top-level post flag plus welcome media (`welcomeHasMedia` includes About me)                                                                                 |
 | GET    | `/invoices/eligible`                                 | Bearer `SPEND_API_TOKEN`   | Whether the address is funding-eligible today, plus effective grant `status`                                                                                      |
 | POST   | `/invoices`                                          | Bearer `SPEND_API_TOKEN`   | Fetch a recipient BOLT11 (LNURL-pay; passkey, funding grant, and forum post required)                                                                             |
 | POST   | `/invoices/proof`                                    | Bearer `SPEND_API_TOKEN`   | Accept payment preimage as proof                                                                                                                                  |
@@ -2811,14 +2811,20 @@ Missing or invalid Lightning Address → **400**
 Success is always **200** (never 404 for an unknown address):
 
 ```json
-{ "hasPosted": true, "messageId": "<uuid>", "postedAt": "<iso-8601>", "hasMedia": false }
+{
+  "hasPosted": true,
+  "messageId": "<uuid>",
+  "postedAt": "<iso-8601>",
+  "hasMedia": false,
+  "welcomeHasMedia": false,
+  "welcomeMessageId": null
+}
 ```
 
-or `{ "hasPosted": false, "messageId": null, "postedAt": null, "hasMedia": false }` when there is no account for the
-address or the account has no live **top-level** forum message other than the
-auto-created profile note. Replies do not count. Photo-only / empty-text
+or `{ "hasPosted": false, "messageId": null, "postedAt": null, "hasMedia": false, "welcomeHasMedia": false, "welcomeMessageId": null }` when there is no account for the
+address, or the account has no live top-level photo or video (a profile note that is text-only does not count). A profile note that has a photo or video keeps `hasPosted: false` and sets `welcomeHasMedia: true` with that note as `welcomeMessageId`. Replies do not count. Photo-only / empty-text
 top-level notes still count for `hasPosted`. `hasMedia` is true only when such a
-post has photo 0, extra stills, or video. When `hasPosted` is true, `messageId` is usually
+post has photo 0, extra stills, or video. `welcomeHasMedia` is true when any live top-level photo or video exists, including the About-me note, even when `hasPosted` is false. `welcomeMessageId` is that newest note's id, or null. When `hasPosted` is true, `messageId` is usually
 the newest live top-level non-profile post id; it can still be `null` if
 `listPostsByAccount` yields no non-profile row. `postedAt` is that row's
 `createdAt` (ISO-8601) or `null` when `messageId` is null. Replies and the auto profile

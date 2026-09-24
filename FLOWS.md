@@ -215,8 +215,7 @@ a **new top-level** persist pings spend (`POST {SPEND_URL}/ping` with
 `{ address, messageId }` and Bearer `SPEND_API_TOKEN`) only when the author
 is funding-eligible today and the new row has media (`hasPhoto` /
 `hasVideo` / `photoCount > 0`); otherwise log `spend.ping.skipped` /
-`not_eligible` or `no_media` and still 200; a **new** top-level media post
-from `role === 'verified'` also pings `{ address, messageId, kind: "welcome" }`
+`not_eligible` or `no_media` and still 200; when `role === 'verified'` and any live top-level photo or video exists, including About me, the api also pings `{ address, messageId, kind: "welcome" }`
 for the newest live top-level photo or video, including an About-me note,
 independent of `eligibleToday` (the new row itself need not have media;
 Spend pays once per Lightning Address; this API may ping again; becoming
