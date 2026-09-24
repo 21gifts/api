@@ -40,7 +40,7 @@ describe('isStaffRole', () => {
 });
 
 describe('isChainAccount', () => {
-  it('is true for founder, moderator, and verified only', () => {
+  it('is true for every role at least verified', () => {
     const roles: AccountRole[] = ['basis', 'verified', 'moderator', 'initiator', 'founder'];
     expect(roles.filter((role) => isChainAccount(account({ id: role, role })))).toEqual([
       'verified',
