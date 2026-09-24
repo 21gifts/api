@@ -3121,7 +3121,12 @@ describe('runNostrWorkerTick', () => {
         verifyKind1: () => true,
       }),
     );
-    expect(querier.calls.some((call) => JSON.stringify(call.filter).includes('1059'))).toBe(false);
+    expect(
+      querier.calls.some((call) => {
+        const kinds = call.filter['kinds'];
+        return Array.isArray(kinds) && kinds.some((kind) => kind === 1059);
+      }),
+    ).toBe(false);
   });
 
   it('ingests an inbound NIP-17 wrap into a Damus thread', async () => {
@@ -4136,6 +4141,7 @@ describe('runNostrWorkerTick', () => {
         lastMessageAt: new Date(0),
         name: '',
         lastText: '',
+        lastMessageId: null,
         lastSenderAccountId: null,
         lastActorAccountId: null,
         lastSats: 0,
@@ -4306,7 +4312,12 @@ describe('runNostrWorkerTick', () => {
       },
     ];
     await inboundTick(auth, new InMemoryMessageStore(), new InMemoryConversationStore(), querier);
-    expect(querier.calls.some((call) => JSON.stringify(call.filter).includes('1059'))).toBe(false);
+    expect(
+      querier.calls.some((call) => {
+        const kinds = call.filter['kinds'];
+        return Array.isArray(kinds) && kinds.some((kind) => kind === 1059);
+      }),
+    ).toBe(false);
   });
 
   it('skips inbound DMs that are the wrong kind, lack an id, or tag someone else', async () => {

@@ -75,4 +75,45 @@ describe('PostgresTranslationStore', () => {
       'message_translation upsert returned no row',
     );
   });
+
+  it('selects and upserts conversation_message_translation when that table is set', async () => {
+    const sql: SqlClient = {
+      async query<T>(text: string, params: readonly unknown[] = []): Promise<T[]> {
+        if (text.includes('SELECT source_sha256')) {
+          expect(text).toMatch(/FROM conversation_message_translation/);
+          expect(params).toEqual(['mid', 'en']);
+          return [{ source_sha256: 'h', translated_text: 'Hello' }] as T[];
+        }
+        expect(text).toMatch(/INSERT INTO conversation_message_translation/);
+        expect(text).toMatch(/ON CONFLICT \(message_id, target_lang\) DO UPDATE/);
+        expect(params[3]).toBe('Hello 2');
+        return [{ translated_text: 'Hello' }] as T[];
+      },
+      async execute(): Promise<void> {
+        throw new Error('execute unused');
+      },
+    };
+    const store = new PostgresTranslationStore(sql, 'conversation_message_translation');
+    expect(await store.get('mid', 'en')).toEqual({
+      sourceSha256: 'h',
+      translatedText: 'Hello',
+    });
+    expect(await store.put('mid', 'en', 'h', 'Hello 2')).toBe('Hello');
+  });
+
+  it('throws when conversation_message_translation upsert returns no row', async () => {
+    const empty: SqlClient = {
+      async query<T>(): Promise<T[]> {
+        return [];
+      },
+      async execute(): Promise<void> {
+        throw new Error('execute unused');
+      },
+    };
+    const store = new PostgresTranslationStore(empty, 'conversation_message_translation');
+    expect(await store.get('mid', 'en')).toBeNull();
+    await expect(store.put('mid', 'en', 'h', 'Hello')).rejects.toThrow(
+      'conversation_message_translation upsert returned no row',
+    );
+  });
 });

@@ -222,6 +222,7 @@ describe('serializeOwnerAccount', () => {
       hasPosted: false,
       aboutMe: null,
       aboutMeHasPhoto: false,
+      aboutMessageId: null,
       notificationLevel: 'all',
       amountUnit: 'btc',
       funding: null,
@@ -284,15 +285,44 @@ describe('serializeOwnerAccount', () => {
     expect(json.hasPosted).toBe(true);
     expect(json.aboutMe).toBe('I build on Bitcoin');
     expect(json.aboutMeHasPhoto).toBe(false);
+    expect(json.aboutMessageId).toBeNull();
     expect(json).not.toHaveProperty('isPlatform');
     expect(json).not.toHaveProperty('sessionRefused');
     expect(json).not.toHaveProperty('profileMessageId');
+  });
+
+  it('sets aboutMessageId to the live profile-note id only when aboutMe is set', () => {
+    const withId = serializeOwnerAccount(
+      { ...account, profileMessageId: 'note-1' },
+      true,
+      'I build on Bitcoin',
+      false,
+    );
+    expect(withId.aboutMe).toBe('I build on Bitcoin');
+    expect(withId.aboutMessageId).toBe('note-1');
+    expect(withId).not.toHaveProperty('profileMessageId');
+    const nameCopy = serializeOwnerAccount(
+      { ...account, profileMessageId: 'note-1' },
+      false,
+      null,
+      true,
+    );
+    expect(nameCopy.aboutMe).toBeNull();
+    expect(nameCopy.aboutMessageId).toBeNull();
+    const blank = serializeOwnerAccount(
+      { ...account, profileMessageId: '  ' },
+      true,
+      'I build on Bitcoin',
+      false,
+    );
+    expect(blank.aboutMessageId).toBeNull();
   });
 
   it('passes aboutMeHasPhoto independently of aboutMe', () => {
     const json = serializeOwnerAccount(account, false, null, true);
     expect(json.aboutMe).toBeNull();
     expect(json.aboutMeHasPhoto).toBe(true);
+    expect(json.aboutMessageId).toBeNull();
     expect(json).not.toHaveProperty('profileMessageId');
   });
 
@@ -331,6 +361,7 @@ describe('serializeOwnerAccountWithPosts', () => {
     expect(json.hasPosted).toBe(false);
     expect(json.aboutMe).toBeNull();
     expect(json.aboutMeHasPhoto).toBe(false);
+    expect(json.aboutMessageId).toBeNull();
     expect(json).not.toHaveProperty('profileMessageId');
     expect(json).not.toHaveProperty('isPlatform');
     expect(json).not.toHaveProperty('sessionRefused');
@@ -388,6 +419,7 @@ describe('serializeOwnerAccountWithPosts', () => {
     );
     expect(json.aboutMe).toBeNull();
     expect(json.aboutMeHasPhoto).toBe(false);
+    expect(json.aboutMessageId).toBeNull();
     expect(json.hasPosted).toBe(false);
   });
 
@@ -401,6 +433,7 @@ describe('serializeOwnerAccountWithPosts', () => {
     );
     expect(json.aboutMe).toBeNull();
     expect(json.aboutMeHasPhoto).toBe(true);
+    expect(json.aboutMessageId).toBeNull();
     expect(json.hasPosted).toBe(false);
     expect(json).not.toHaveProperty('profileMessageId');
   });
@@ -415,6 +448,7 @@ describe('serializeOwnerAccountWithPosts', () => {
     );
     expect(json.aboutMe).toBe('I build on Bitcoin');
     expect(json.aboutMeHasPhoto).toBe(false);
+    expect(json.aboutMessageId).toBe('note-1');
     expect(json.hasPosted).toBe(true);
   });
 
@@ -428,6 +462,7 @@ describe('serializeOwnerAccountWithPosts', () => {
     );
     expect(json.aboutMe).toBe('I build on Bitcoin');
     expect(json.aboutMeHasPhoto).toBe(true);
+    expect(json.aboutMessageId).toBe('note-1');
     expect(json.hasPosted).toBe(true);
   });
 
@@ -441,6 +476,7 @@ describe('serializeOwnerAccountWithPosts', () => {
     );
     expect(json.aboutMe).toBeNull();
     expect(json.aboutMeHasPhoto).toBe(false);
+    expect(json.aboutMessageId).toBeNull();
     expect(json.hasPosted).toBe(false);
   });
 
@@ -454,6 +490,7 @@ describe('serializeOwnerAccountWithPosts', () => {
     );
     expect(json.aboutMe).toBe('I build on Bitcoin');
     expect(json.aboutMeHasPhoto).toBe(false);
+    expect(json.aboutMessageId).toBe('note-1');
     expect(json.hasPosted).toBe(true);
   });
 
@@ -654,7 +691,7 @@ describe('serializeOwnerAccountWithPosts', () => {
 });
 
 describe('serializeViewProfile', () => {
-  it('emits exactly nine public profile fields', () => {
+  it('emits exactly ten public profile fields', () => {
     const json = serializeViewProfile(account, false, null, false);
     expect(json).toEqual({
       name: 'Ada',
@@ -666,6 +703,7 @@ describe('serializeViewProfile', () => {
       hasPasskey: false,
       aboutMe: null,
       aboutMeHasPhoto: false,
+      aboutMessageId: null,
     });
     expect(json).not.toHaveProperty('id');
     expect(json).not.toHaveProperty('linkingKey');
@@ -675,7 +713,7 @@ describe('serializeViewProfile', () => {
     expect(json).not.toHaveProperty('profileMessageId');
     expect(json).not.toHaveProperty('notificationLevel');
     expect(json).not.toHaveProperty('amountUnit');
-    expect(Object.keys(json)).toHaveLength(9);
+    expect(Object.keys(json)).toHaveLength(10);
   });
 
   it('passes through hasPasskey and aboutMe', () => {
@@ -683,5 +721,26 @@ describe('serializeViewProfile', () => {
     expect(json.hasPasskey).toBe(true);
     expect(json.aboutMe).toBe('Hello');
     expect(json.aboutMeHasPhoto).toBe(true);
+    expect(json.aboutMessageId).toBeNull();
+  });
+
+  it('sets aboutMessageId to the live profile-note id only when aboutMe is set', () => {
+    const withId = serializeViewProfile(
+      { ...account, profileMessageId: 'note-1' },
+      false,
+      'Hello',
+      false,
+    );
+    expect(withId.aboutMe).toBe('Hello');
+    expect(withId.aboutMessageId).toBe('note-1');
+    expect(withId).not.toHaveProperty('profileMessageId');
+    const nameCopy = serializeViewProfile(
+      { ...account, profileMessageId: 'note-1' },
+      false,
+      null,
+      true,
+    );
+    expect(nameCopy.aboutMe).toBeNull();
+    expect(nameCopy.aboutMessageId).toBeNull();
   });
 });

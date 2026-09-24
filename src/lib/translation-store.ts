@@ -10,6 +10,9 @@ export interface MessageTranslation {
   translatedText: string;
 }
 
+/** Durable table for {@link PostgresTranslationStore}. */
+export type TranslationTable = 'message_translation' | 'conversation_message_translation';
+
 /** Persistence for per-message, per-locale DeepL results. */
 export interface TranslationStore {
   /**
@@ -90,16 +93,25 @@ export const TRANSLATION_SCHEMA_SQL = `CREATE TABLE IF NOT EXISTS message_transl
 
 /** Postgres-backed translation cache. */
 export class PostgresTranslationStore implements TranslationStore {
+  private readonly table: TranslationTable;
+
   /**
    * @param sql - Parameter-bound SQL client.
+   * @param table - Durable table. Default `message_translation`. Conversation
+   *   boot passes `conversation_message_translation`.
    */
-  constructor(private readonly sql: SqlClient) {}
+  constructor(
+    private readonly sql: SqlClient,
+    table: TranslationTable = 'message_translation',
+  ) {
+    this.table = table;
+  }
 
   /** {@inheritdoc} */
   async get(messageId: string, targetLang: TranslateTarget): Promise<MessageTranslation | null> {
     const rows = await this.sql.query<{ source_sha256: string; translated_text: string }>(
       `SELECT source_sha256, translated_text
-         FROM message_translation
+         FROM ${this.table}
         WHERE message_id = $1::uuid AND target_lang = $2`,
       [messageId, targetLang],
     );
@@ -118,19 +130,19 @@ export class PostgresTranslationStore implements TranslationStore {
     translatedText: string,
   ): Promise<string> {
     const rows = await this.sql.query<{ translated_text: string }>(
-      `INSERT INTO message_translation (
+      `INSERT INTO ${this.table} (
          message_id, target_lang, source_sha256, translated_text, created_at
        ) VALUES ($1::uuid, $2, $3, $4, NOW())
        ON CONFLICT (message_id, target_lang) DO UPDATE
          SET source_sha256 = EXCLUDED.source_sha256,
              translated_text = CASE
-               WHEN message_translation.source_sha256 = EXCLUDED.source_sha256
-               THEN message_translation.translated_text
+               WHEN ${this.table}.source_sha256 = EXCLUDED.source_sha256
+               THEN ${this.table}.translated_text
                ELSE EXCLUDED.translated_text
              END,
              created_at = CASE
-               WHEN message_translation.source_sha256 = EXCLUDED.source_sha256
-               THEN message_translation.created_at
+               WHEN ${this.table}.source_sha256 = EXCLUDED.source_sha256
+               THEN ${this.table}.created_at
                ELSE NOW()
              END
        RETURNING translated_text`,
@@ -138,7 +150,7 @@ export class PostgresTranslationStore implements TranslationStore {
     );
     const stored = rows[0]?.translated_text;
     if (stored === undefined) {
-      throw new Error('message_translation upsert returned no row');
+      throw new Error(`${this.table} upsert returned no row`);
     }
     return stored;
   }

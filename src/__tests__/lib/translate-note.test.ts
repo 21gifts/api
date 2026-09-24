@@ -81,6 +81,36 @@ describe('translateForumNote', () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
+  it('stores the result in each cache when two stores miss together', async () => {
+    const forum = new InMemoryTranslationStore();
+    const conversation = new InMemoryTranslationStore();
+    const fetchMock = vi.fn(async () => {
+      await new Promise((resolve) => {
+        setTimeout(resolve, 20);
+      });
+      return new Response(JSON.stringify({ translations: [{ text: 'Hello, World' }] }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    });
+    const fetchImpl = fetchMock as unknown as FetchFn;
+    const [forumResult, conversationResult] = await Promise.all([
+      translateForumNote(forum, ENV, 'mid', 'Hallo Welt', 'en', fetchImpl),
+      translateForumNote(conversation, ENV, 'mid', 'Hallo Welt', 'en', fetchImpl),
+    ]);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(forumResult.translatedText).toBe('Hello, World');
+    expect(conversationResult.translatedText).toBe('Hello, World');
+    expect(await forum.get('mid', 'en')).toEqual({
+      sourceSha256: translationSourceHash('Hallo Welt'),
+      translatedText: 'Hello, World',
+    });
+    expect(await conversation.get('mid', 'en')).toEqual({
+      sourceSha256: translationSourceHash('Hallo Welt'),
+      translatedText: 'Hello, World',
+    });
+  });
+
   it('throws when DeepL is not configured', async () => {
     await expect(
       translateForumNote(new InMemoryTranslationStore(), {}, 'mid', 'Hallo', 'en'),

@@ -95,6 +95,12 @@ export interface OwnerAccountResponse extends AccountResponse {
    */
   aboutMeHasPhoto: boolean;
   /**
+   * Live profile-note id when `aboutMe` is a real bio, else `null`.
+   * Name-copy, missing, and soft-hidden notes stay `null`. Always present.
+   * Never exposes `profileMessageId` under another name.
+   */
+  aboutMessageId: string | null;
+  /**
    * Owner fan-out filter (`all` \| `active` \| `mentions`). Default `all`.
    * Owner-only; omitted from public `GET /view/:viewKey` and member cards.
    */
@@ -160,6 +166,11 @@ export interface ViewProfileResponse {
    * photo. False when there is no live note.
    */
   aboutMeHasPhoto: boolean;
+  /**
+   * Live profile-note id when `aboutMe` is a real bio, else `null`.
+   * Name-copy, missing, and soft-hidden notes stay `null`. Always present.
+   */
+  aboutMessageId: string | null;
 }
 
 /**
@@ -407,6 +418,24 @@ export function serializeDebugPasskeyChallenge(challenge: PasskeyChallenge): Pas
 }
 
 /**
+ * Live profile-note id for About me JSON. Null when there is no real bio.
+ *
+ * @param account - Stored account.
+ * @param aboutMe - Profile bio, or `null` when unfilled.
+ * @returns The live profile-note id, or `null`.
+ */
+function aboutMessageIdFor(account: Account, aboutMe: string | null): string | null {
+  if (aboutMe === null) {
+    return null;
+  }
+  const id = account.profileMessageId;
+  if (typeof id !== 'string' || id.trim() === '') {
+    return null;
+  }
+  return id;
+}
+
+/**
  * Project an account for `GET /debug/accounts` and `PATCH /debug/accounts/:id`.
  *
  * Includes every `account` column plus Nostr debug fields. Never used by
@@ -512,6 +541,7 @@ export function serializeOwnerAccount(
     hasPosted,
     aboutMe,
     aboutMeHasPhoto,
+    aboutMessageId: aboutMessageIdFor(account, aboutMe),
     notificationLevel: parseNotificationLevel(account.notificationLevel),
     amountUnit: parseAmountUnit(account.amountUnit),
     funding,
@@ -612,8 +642,8 @@ export async function serializeOwnerAccountWithPosts(
  * @param hasPasskey - Whether the account already has a passkey credential.
  * @param aboutMe - Profile bio, or `null` when unfilled.
  * @param aboutMeHasPhoto - True when the live profile note has a photo.
- * @returns Nine public profile fields (including username, location, aboutMe, and
- *   aboutMeHasPhoto).
+ * @returns Ten public profile fields (including username, location, aboutMe,
+ *   aboutMeHasPhoto, and aboutMessageId).
  */
 export function serializeViewProfile(
   account: Account,
@@ -631,5 +661,6 @@ export function serializeViewProfile(
     hasPasskey,
     aboutMe,
     aboutMeHasPhoto,
+    aboutMessageId: aboutMessageIdFor(account, aboutMe),
   };
 }
