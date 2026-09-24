@@ -356,6 +356,8 @@ function utcDayMs(day: string): number {
  *
  * @param row - Columns selected for stats.
  * @returns The domain row (`paidAt` is always a `Date`).
+ * @throws Error('invalid gift kind') when `kind` is missing or not
+ *   `daily`, `welcome`, or `moderator`, including `'other'`.
  */
 export function mapGiftQueryRow(row: GiftQueryRow): GiftRow {
   const paidAt = row.paid_at instanceof Date ? row.paid_at : new Date(row.paid_at);

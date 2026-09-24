@@ -249,7 +249,7 @@
 
 - **Purpose:** Adds nullable `fiat_usd`, `fiat_chf`, `fiat_eur`, and `fiat_php` on `gift`, then backfills rows with `amount_sats > 0` and `fiat_usd IS NULL` from `btc_usd_daily` and `usd_fiat_daily` for `paid_at`'s UTC day. Also adds `kind text`, classifies rows whose `kind` is still null, adds `gift_kind_check` only when that constraint is absent, then sets `kind` NOT NULL. No HTTP. A missing BTC day leaves the fiat row null. Rows that already have `fiat_usd` are not rewritten. Rows that already have `kind` are not reclassified. `'other'` is not a database value.
 - **Inputs:** `SqlClient`.
-- **Returns / side effects:** Void; idempotent DDL plus a one-time historical freeze. Kind backfill: `description = '21gifts moderator'` becomes `moderator`; remaining null rows are matched one-to-one to platform replies (same sats, lightning local-part, within 3 seconds), and only an assigned `Welcome` becomes `welcome`; everything still null becomes `daily`. The check allows only `daily`, `welcome`, and `moderator`.
+- **Returns / side effects:** Void; idempotent DDL plus a one-time historical freeze. Kind backfill: `description = '21gifts moderator'` becomes `moderator`; remaining null rows are matched one-to-one only to platform replies whose trimmed text is `Welcome` or `21gifts daily` (same sats, lightning local-part, within 3 seconds), and only an assigned `Welcome` becomes `welcome`; everything still null becomes `daily`. The check allows only `daily`, `welcome`, and `moderator`.
 - **Used by:** `openBootStores` when SQL opens.
 
 ## Function: migrateMessageSchema
