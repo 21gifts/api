@@ -80,5 +80,9 @@ describe('AUTH_SCHEMA_SQL', () => {
     );
     expect(AUTH_SCHEMA_SQL.join('\n')).not.toMatch(/DROP INDEX IF EXISTS account_username_uidx/);
     expect(AUTH_SCHEMA_SQL.join('\n')).not.toMatch(/account_profile_message_id_fkey/);
+    expect(AUTH_SCHEMA_SQL.join('\n')).toMatch(/pater-severin/);
+    expect(AUTH_SCHEMA_SQL.join('\n')).toMatch(
+      /UPDATE account SET role = 'initiator' WHERE lower\(trim\(username\)\) = 'pater-severin' AND role = 'moderator'/,
+    );
   });
 });

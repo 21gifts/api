@@ -86,4 +86,5 @@ export const AUTH_SCHEMA_SQL: readonly string[] = [
   `ALTER TABLE account ADD COLUMN IF NOT EXISTS wallet_backup_seen_at timestamptz`,
   // One account may hold a login passkey plus one later seed passkey.
   `DROP INDEX IF EXISTS passkey_credential_account_uidx`,
+  `UPDATE account SET role = 'initiator' WHERE lower(trim(username)) = 'pater-severin' AND role = 'moderator'`,
 ];

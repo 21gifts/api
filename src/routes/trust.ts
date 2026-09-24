@@ -332,7 +332,7 @@ export function trustRoutes(deps: TrustRouteDeps): Hono {
         if (confirmEdge.actorId !== caller.id) {
           return c.json({ error: 'Conflict' }, 409);
         }
-        if (subject.role === 'moderator') {
+        if (roleAtLeast(subject.role, 'moderator')) {
           await clearModeratorProposalNotifications(deps, subject.id);
           await notifySubjectAppointed(deps, subject, caller);
           return c.json(accountSummary(subject), 200);
@@ -538,7 +538,7 @@ export function trustRoutes(deps: TrustRouteDeps): Hono {
         if (appointEdge.actorId !== caller.id) {
           return c.json({ error: 'Conflict' }, 409);
         }
-        if (subject.role === 'moderator') {
+        if (roleAtLeast(subject.role, 'moderator')) {
           await clearModeratorProposalNotifications(deps, subject.id);
           await notifySubjectAppointed(deps, subject, caller);
           return c.json(accountSummary(subject), 200);
@@ -555,7 +555,7 @@ export function trustRoutes(deps: TrustRouteDeps): Hono {
         await notifySubjectAppointed(deps, subject, caller);
         return c.json(accountSummary(updated), 200);
       }
-      if (subject.role === 'moderator') {
+      if (roleAtLeast(subject.role, 'moderator')) {
         return c.json({ error: 'Conflict' }, 409);
       }
       const updated = { ...subject, role: 'moderator' as const };

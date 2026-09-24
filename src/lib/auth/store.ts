@@ -1,3 +1,4 @@
+import { roleAtLeast } from '@/lib/auth/roles';
 import { CHALLENGE_TTL_MS, SESSION_TTL_MS } from '@/lib/config';
 
 /**
@@ -17,7 +18,7 @@ import { CHALLENGE_TTL_MS, SESSION_TTL_MS } from '@/lib/config';
  * `verified` is a moderator confirming this person in real
  * life (forum badge), not `lightningAddressVerified`.
  */
-export type AccountRole = 'basis' | 'verified' | 'moderator' | 'founder';
+export type AccountRole = 'basis' | 'verified' | 'moderator' | 'initiator' | 'founder';
 
 /**
  * Owner fan-out filter. Omitted / unknown → `all`.
@@ -381,12 +382,12 @@ export interface AuthStore {
    */
   listAccountIdsWithoutNostrKey(limit: number): Promise<string[]>;
   /**
-   * Account ids whose live `role` is founder or moderator.
+   * Account ids at the moderator rank or above.
    *
    * `verified` is not staff. Used by GET `/messages?mode=active` so unpaid
    * staff notes stay on the Active feed without selecting `account` per row.
    *
-   * @returns Founder and moderator account ids (order unspecified).
+   * @returns Ids at the moderator rank or above (order unspecified).
    */
   listStaffAccountIds(): Promise<string[]>;
 }
@@ -952,14 +953,14 @@ export class InMemoryAuthStore implements AuthStore {
   }
 
   /**
-   * Account ids whose live `role` is founder or moderator.
+   * Account ids at the moderator rank or above.
    *
-   * @returns Founder and moderator ids from the in-memory map (`verified` omitted).
+   * @returns Ids at the moderator rank or above from the in-memory map.
    */
   async listStaffAccountIds(): Promise<string[]> {
     const ids: string[] = [];
     for (const account of this.#accounts.values()) {
-      if (account.role === 'founder' || account.role === 'moderator') {
+      if (roleAtLeast(account.role, 'moderator')) {
         ids.push(account.id);
       }
     }

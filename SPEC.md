@@ -199,14 +199,19 @@ Auth column: "Bearer (X+)" means minimum role X — X or any higher role.
 
 ## Role hierarchy
 
-Roles are ordered `founder > moderator > verified > basis`. A higher role can
-always do and see everything a lower role can; there are no exceptions. Every
-route that names a role names the **minimum** role: "Bearer (moderator+)" means
-moderator **or founder**, "Bearer (verified+)" means verified, moderator or
-founder. Permission checks use `roleAtLeast` (`src/lib/auth/roles.ts`); an
+Roles have explicit ranks: `basis` 0, `verified` 1, `moderator` 2, `initiator`
+2, `founder` 3. Initiator has the same rank as moderator; founder stays
+strictly above. A higher rank can always do and see everything a lower rank
+can; equal ranks can do the same things. Every route that names a role names
+the **minimum** role: "Bearer (moderator+)" means that rank or higher,
+"Bearer (verified+)" means that rank or higher. Permission text names the
+minimum rank only. Do not write "moderator or initiator" or „Moderator oder
+Initiator“. Permission checks use `roleAtLeast` (`src/lib/auth/roles.ts`); an
 equality test on the caller's role is a defect. Checks on the _subject_ of an
 action (for example "only a verified member can be proposed as moderator") are
-state rules, not permissions, and stay exact.
+state rules, not permissions, and stay exact. Initiator is not created by
+propose, confirm, or appoint. Only the boot UPDATE and operator
+`PATCH /debug/accounts/:id` set it.
 
 ### `GET /healthz`
 
@@ -635,7 +640,7 @@ stays `null`)).
 | -------------------------- | -------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `id`                       | string         | Opaque account id                                                                                                                                                                                                                                                                                                                               |
 | `linkingKey`               | string \| null | Historical LNURL-auth linking key (hex), or `null` for passkey accounts                                                                                                                                                                                                                                                                         |
-| `role`                     | string         | `basis`, `verified`, `moderator`, or `founder`                                                                                                                                                                                                                                                                                                  |
+| `role`                     | string         | `basis`, `verified`, `moderator`, `initiator`, or `founder`                                                                                                                                                                                                                                                                                     |
 | `name`                     | string \| null | Display name, or `null` until set                                                                                                                                                                                                                                                                                                               |
 | `username`                 | string \| null | Unique LUD-16 / NIP-05 local-part (`a-z0-9-_.`), or `null` until set. Cannot skip.                                                                                                                                                                                                                                                              |
 | `location`                 | string \| null | Free-text location set by the owner, or `null` when unset. Not unique. Not a setup step.                                                                                                                                                                                                                                                        |
@@ -789,8 +794,8 @@ never. Later appoint,
 confirm, or propose do not replace an earlier eligible contact. A pending
 propose (subject still `verified`) stays private and is not a hop neighbor.
 Neighborhood must consider all stored edges for each subject, not only
-edges that touch `around`. Nodes are `founder` / `moderator` / `verified`
-(never `basis`).
+edges that touch `around`. Nodes are accounts at least verified (never
+`basis`).
 No synthetic or inferred edges. Lightning addresses, view keys, and
 linking keys are omitted. Omitting `around` (or empty) is founder seeds.
 A supplied `around` that is not a uuid (including Postgres `22P02`),
@@ -1736,7 +1741,7 @@ session refusal (`sessionRefused`). Authenticated with
 { "role": "basis", "lightningAddress": null, "platform": true, "sessionRefused": true }
 ```
 
-`role` must be one of `basis`, `verified`, `moderator`, or `founder`.
+`role` must be one of `basis`, `verified`, `moderator`, `initiator`, or `founder`.
 `lightningAddress` may only be JSON `null` (unlink). `platform` is a
 boolean; `true` clears any other platform flag (at most one `isPlatform`
 account) and, when a conversation store is wired, points every

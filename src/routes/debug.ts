@@ -139,7 +139,7 @@ async function maybeSetProvisionUsername(
 /** Body schema for operator role, Lightning Address unlink, platform flag, and session refusal. */
 const patchBody = z
   .object({
-    role: z.enum(['basis', 'verified', 'moderator', 'founder']).optional(),
+    role: z.enum(['basis', 'verified', 'moderator', 'initiator', 'founder']).optional(),
     lightningAddress: z.null().optional(),
     platform: z.boolean().optional(),
     sessionRefused: z.boolean().optional(),

@@ -37,14 +37,14 @@ export interface TrustEdge {
   createdAt: number;
 }
 
-/** Public graph node (staff or verified; never `basis`). */
+/** Public graph node (at least verified; never `basis`). */
 export interface TrustChainNode {
   /** Account id. */
   id: string;
   /** Display name, or `null` when unset. */
   name: string | null;
   /** Forum display role on the chain. */
-  role: 'verified' | 'moderator' | 'founder';
+  role: 'verified' | 'moderator' | 'initiator' | 'founder';
 }
 
 /** Public graph edge (stored only; actor → subject). */
@@ -59,7 +59,7 @@ export interface TrustChainEdge {
 
 /** Public trust graph. */
 export interface TrustChain {
-  /** Chain nodes (founder, then moderator, then verified). */
+  /** Chain nodes (founder, then the moderator rank, then verified). */
   nodes: TrustChainNode[];
   /** Stored public edges whose endpoints are in `nodes`. */
   edges: TrustChainEdge[];
@@ -120,6 +120,7 @@ export interface TrustEdgeJson {
 const ROLE_RANK: Record<TrustChainNode['role'], number> = {
   founder: 0,
   moderator: 1,
+  initiator: 1,
   verified: 2,
 };
 
@@ -136,9 +137,9 @@ export function isStaffRole(role: AccountRole): boolean {
 /**
  * Project stored accounts and edges to the public trust graph.
  *
- * Nodes are accounts whose role is `founder`, `moderator`, or `verified`
- * (never `basis`), sorted founder → moderator → verified, then oldest
- * `createdAt`, then `id`. Groups stored edges by `subjectId` and projects
+ * Nodes are accounts at least verified (never `basis`), sorted founder →
+ * the moderator rank → verified, then oldest `createdAt`, then `id`.
+ * Groups stored edges by `subjectId` and projects
  * at most one incoming edge per subject: the oldest eligible sibling
  * (`createdAt` then `id`), skipping a non-chain oldest sibling so a later
  * displayable contact can show. Eligible: `verify`, `moderator_appoint`, and
@@ -391,7 +392,7 @@ function compareTrustEdgesOldestFirst(a: TrustEdge, b: TrustEdge): number {
   return 0;
 }
 
-/** Founder, then moderator, then verified; oldest `createdAt`, then `id`. */
+/** Founder, then the moderator rank, then verified; oldest `createdAt`, then `id`. */
 function compareChainAccounts(a: Account, b: Account): number {
   const aRole = a.role as TrustChainNode['role'];
   const bRole = b.role as TrustChainNode['role'];
