@@ -7,10 +7,12 @@ import {
   finishPasskeyAuthentication,
   finishPasskeyRegistration,
   finishPasskeyReplace,
+  finishPasskeySeed,
   startPasskeyAuthentication,
   startPasskeyClaim,
   startPasskeyRegistration,
   startPasskeyReplace,
+  startPasskeySeed,
 } from '@/lib/auth/passkey';
 import * as authService from '@/lib/auth/service';
 import { WRONG_ACCOUNT_ERROR } from '@/lib/auth/wrong-account';
@@ -1251,5 +1253,363 @@ describe('passkey replace', () => {
       account,
     );
     expect(finish).toEqual({ ok: false, error: 'Challenge expired' });
+  });
+});
+
+describe('passkey seed', () => {
+  async function legacy(): Promise<{
+    store: InMemoryAuthStore;
+    ceremony: FakePasskeyCeremony;
+    account: {
+      id: string;
+      linkingKey: null;
+      role: 'basis';
+      name: null;
+      lightningAddress: null;
+      lightningAddressVerified: boolean;
+      forumLawsDismissed: boolean;
+      location: null;
+      viewKey: string;
+      createdAt: number;
+      rulesAgreedAt: null;
+      walletRequired: boolean;
+      walletBackupSeenAt: number;
+    };
+  }> {
+    const store = new InMemoryAuthStore();
+    const ceremony = new FakePasskeyCeremony();
+    const account = {
+      id: 'legacy',
+      linkingKey: null,
+      role: 'basis' as const,
+      name: null,
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: 'a'.repeat(64),
+      createdAt: T0,
+      rulesAgreedAt: null,
+      walletRequired: false,
+      walletBackupSeenAt: 9,
+    };
+    await store.createAccount(account);
+    expect(
+      await store.createPasskeyCredential({
+        credentialId: 'cred-1',
+        publicKey: new Uint8Array([1, 2, 3]),
+        signCount: 0,
+        accountId: account.id,
+        createdAt: T0,
+      }),
+    ).toBe(true);
+    return { store, ceremony, account };
+  }
+
+  it('refuses start when walletRequired is true', async () => {
+    const store = new InMemoryAuthStore();
+    await store.createAccount({
+      id: 'seeded',
+      linkingKey: null,
+      role: 'basis',
+      name: null,
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: 'a'.repeat(64),
+      createdAt: T0,
+      rulesAgreedAt: null,
+      walletRequired: true,
+    });
+    const account = await store.getAccount('seeded');
+    if (account === undefined) {
+      throw new Error('missing account');
+    }
+    const started = await startPasskeySeed(store, new FakePasskeyCeremony(), CONFIG, T0, account);
+    expect(started).toEqual({
+      ok: false,
+      error: 'This account already has a recovery phrase',
+    });
+    expect((await store.listPasskeyChallenges()).some((row) => row.type === 'seed')).toBe(false);
+  });
+
+  it('issues seed options without excludeCredentials', async () => {
+    const { store, ceremony, account } = await legacy();
+    const begin = await startPasskeySeed(store, ceremony, CONFIG, T0, account);
+    expect('challengeId' in begin).toBe(true);
+    if (!('challengeId' in begin)) {
+      return;
+    }
+    const options = begin.options as {
+      excludeCredentials?: unknown;
+      user: { name: string };
+    };
+    expect(options).not.toHaveProperty('excludeCredentials');
+    expect(options.user.name).toBe(account.id);
+  });
+
+  it('rejects seed finish with a missing origin', async () => {
+    const { store, ceremony, account } = await legacy();
+    const finish = await finishPasskeySeed(
+      store,
+      ceremony,
+      CONFIG,
+      T0,
+      undefined,
+      'x',
+      { test: 'replace' },
+      account,
+    );
+    expect(finish).toEqual({ ok: false, error: 'Invalid origin' });
+  });
+
+  it('rejects an unknown seed challenge', async () => {
+    const { store, ceremony, account } = await legacy();
+    const finish = await finishPasskeySeed(
+      store,
+      ceremony,
+      CONFIG,
+      T0,
+      ORIGIN,
+      'nope',
+      { test: 'replace' },
+      account,
+    );
+    expect(finish).toEqual({ ok: false, error: 'Unknown or expired challenge' });
+  });
+
+  it('rejects a register challenge on seed finish', async () => {
+    const { store, ceremony, account } = await legacy();
+    const register = await startPasskeyRegistration(store, ceremony, CONFIG, T0);
+    const finish = await finishPasskeySeed(
+      store,
+      ceremony,
+      CONFIG,
+      T0,
+      ORIGIN,
+      register.challengeId,
+      { test: 'replace' },
+      account,
+    );
+    expect(finish).toEqual({ ok: false, error: 'Wrong challenge type' });
+  });
+
+  it('rejects an invalid attestation on seed finish', async () => {
+    const { store, ceremony, account } = await legacy();
+    const begin = await startPasskeySeed(store, ceremony, CONFIG, T0, account);
+    if (!('challengeId' in begin)) {
+      throw new Error('expected begin');
+    }
+    const finish = await finishPasskeySeed(
+      store,
+      ceremony,
+      CONFIG,
+      T0,
+      ORIGIN,
+      begin.challengeId,
+      { test: 'nope' },
+      account,
+    );
+    expect(finish).toEqual({ ok: false, error: 'Invalid passkey' });
+  });
+
+  it('rejects seed finish when the credential id is already stored', async () => {
+    const { store, ceremony, account } = await legacy();
+    await store.createPasskeyCredential({
+      credentialId: 'cred-2',
+      publicKey: new Uint8Array([4, 5, 6]),
+      signCount: 0,
+      accountId: 'other',
+      createdAt: T0,
+    });
+    const begin = await startPasskeySeed(store, ceremony, CONFIG, T0, account);
+    if (!('challengeId' in begin)) {
+      throw new Error('expected begin');
+    }
+    const finish = await finishPasskeySeed(
+      store,
+      ceremony,
+      CONFIG,
+      T0,
+      ORIGIN,
+      begin.challengeId,
+      { test: 'replace' },
+      account,
+    );
+    expect(finish).toEqual({
+      ok: false,
+      error: 'This account already has a recovery phrase',
+    });
+    expect((await store.getPasskeyCredential('cred-1'))?.accountId).toBe(account.id);
+    expect((await store.getPasskeyCredential('cred-2'))?.accountId).toBe('other');
+    expect((await store.getAccount(account.id))?.walletBackupSeenAt).toBe(9);
+    expect(
+      (await store.listPasskeyCredentials()).filter((row) => row.accountId === account.id),
+    ).toHaveLength(1);
+  });
+
+  it('rejects seed finish when addSeedPasskeyCredential returns false', async () => {
+    const { ceremony, account } = await legacy();
+    class FailStore extends InMemoryAuthStore {
+      override async addSeedPasskeyCredential(): Promise<boolean> {
+        return false;
+      }
+    }
+    const store = new FailStore();
+    await store.createAccount(account);
+    await store.createPasskeyCredential({
+      credentialId: 'cred-1',
+      publicKey: new Uint8Array([1, 2, 3]),
+      signCount: 0,
+      accountId: account.id,
+      createdAt: T0,
+    });
+    const begin = await startPasskeySeed(store, ceremony, CONFIG, T0, account);
+    if (!('challengeId' in begin)) {
+      throw new Error('expected begin');
+    }
+    const finish = await finishPasskeySeed(
+      store,
+      ceremony,
+      CONFIG,
+      T0,
+      ORIGIN,
+      begin.challengeId,
+      { test: 'replace' },
+      account,
+    );
+    expect(finish).toEqual({
+      ok: false,
+      error: 'This account already has a recovery phrase',
+    });
+    expect(await store.getPasskeyCredential('cred-2')).toBeUndefined();
+  });
+
+  it('rejects seed finish when sessionRefused is true', async () => {
+    const { store, ceremony, account } = await legacy();
+    const finish = await finishPasskeySeed(
+      store,
+      ceremony,
+      CONFIG,
+      T0,
+      ORIGIN,
+      'x',
+      { test: 'replace' },
+      { ...account, sessionRefused: true },
+    );
+    expect(finish).toEqual({
+      ok: false,
+      error: 'This account already has a recovery phrase',
+    });
+  });
+
+  it('rejects seed finish when walletRequired is true', async () => {
+    const { store, ceremony, account } = await legacy();
+    const finish = await finishPasskeySeed(
+      store,
+      ceremony,
+      CONFIG,
+      T0,
+      ORIGIN,
+      'x',
+      { test: 'replace' },
+      { ...account, walletRequired: true },
+    );
+    expect(finish).toEqual({
+      ok: false,
+      error: 'This account already has a recovery phrase',
+    });
+  });
+
+  it('rejects another account finishing this seed challenge', async () => {
+    const { store, ceremony, account } = await legacy();
+    const begin = await startPasskeySeed(store, ceremony, CONFIG, T0, account);
+    if (!('challengeId' in begin)) {
+      throw new Error('expected begin');
+    }
+    const finish = await finishPasskeySeed(
+      store,
+      ceremony,
+      CONFIG,
+      T0,
+      ORIGIN,
+      begin.challengeId,
+      { test: 'replace' },
+      { ...account, id: 'other' },
+    );
+    expect(finish).toEqual({ ok: false, error: 'Unknown or expired challenge' });
+  });
+
+  it('rejects seed finish when consume loses the race', async () => {
+    const { ceremony, account } = await legacy();
+    class RaceStore extends InMemoryAuthStore {
+      override async updatePasskeyChallenge(): Promise<boolean> {
+        return false;
+      }
+    }
+    const store = new RaceStore();
+    await store.createAccount(account);
+    await store.createPasskeyCredential({
+      credentialId: 'cred-1',
+      publicKey: new Uint8Array([1, 2, 3]),
+      signCount: 0,
+      accountId: account.id,
+      createdAt: T0,
+    });
+    const begin = await startPasskeySeed(store, ceremony, CONFIG, T0, account);
+    if (!('challengeId' in begin)) {
+      throw new Error('expected begin');
+    }
+    const finish = await finishPasskeySeed(
+      store,
+      ceremony,
+      CONFIG,
+      T0,
+      ORIGIN,
+      begin.challengeId,
+      { test: 'replace' },
+      account,
+    );
+    expect(finish).toEqual({ ok: false, error: 'Challenge already used' });
+  });
+
+  it('rejects seed finish when the account is missing after insert', async () => {
+    const { ceremony, account } = await legacy();
+    class MissingStore extends InMemoryAuthStore {
+      override async addSeedPasskeyCredential(): Promise<boolean> {
+        return true;
+      }
+      override async getAccount(): Promise<undefined> {
+        return undefined;
+      }
+    }
+    const store = new MissingStore();
+    await store.createAccount(account);
+    await store.createPasskeyCredential({
+      credentialId: 'cred-1',
+      publicKey: new Uint8Array([1, 2, 3]),
+      signCount: 0,
+      accountId: account.id,
+      createdAt: T0,
+    });
+    const begin = await startPasskeySeed(store, ceremony, CONFIG, T0, account);
+    if (!('challengeId' in begin)) {
+      throw new Error('expected begin');
+    }
+    const finish = await finishPasskeySeed(
+      store,
+      ceremony,
+      CONFIG,
+      T0,
+      ORIGIN,
+      begin.challengeId,
+      { test: 'replace' },
+      account,
+    );
+    expect(finish).toEqual({
+      ok: false,
+      error: 'This account already has a recovery phrase',
+    });
   });
 });

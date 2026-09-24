@@ -96,9 +96,9 @@ export interface Account {
    */
   notificationLevel?: NotificationLevel;
   /**
-   * True when a recovery phrase is required. Does not set `setup` to
-   * `wallet`. Omit / false = existing member. New passkey register and
-   * first-passkey claim set true; replace does not.
+   * True when a seed-bearing passkey exists. Does not set `setup` to
+   * `wallet`. Omit / false = no seed yet. New passkey register and
+   * first-passkey claim set true; seed finish sets true; replace does not.
    */
   walletRequired?: boolean;
   /**
@@ -140,12 +140,12 @@ export interface PasskeyCredential {
 }
 
 /** Kind of outstanding WebAuthn ceremony. */
-export type PasskeyChallengeType = 'register' | 'authenticate' | 'replace';
+export type PasskeyChallengeType = 'register' | 'authenticate' | 'replace' | 'seed';
 
 /**
  * A one-time WebAuthn challenge. Registration stores the pending account id;
  * authentication looks the account up from the asserted credential; replace
- * stores the signed-in account id (never null).
+ * and seed store the signed-in account id (never null).
  */
 export interface PasskeyChallenge {
   /** Opaque id returned to the client as `challengeId`. */
@@ -154,7 +154,7 @@ export interface PasskeyChallenge {
   type: PasskeyChallengeType;
   /** WebAuthn challenge (base64url) from the ceremony generator. */
   challenge: string;
-  /** Pending account id for register; signed-in id for replace; `null` for authenticate. */
+  /** Pending account id for register; signed-in id for replace/seed; `null` for authenticate. */
   accountId: string | null;
   /** Whether finish has already consumed this challenge. */
   consumed: boolean;
@@ -336,10 +336,19 @@ export interface AuthStore {
    * session-refused.
    */
   createFirstPasskeyCredential(credential: PasskeyCredential): Promise<boolean>;
+  /**
+   * Persist an additional passkey for an account that does not yet have a
+   * seed (`walletRequired` not true) and set `walletRequired: true` in the
+   * same write. Leaves `walletBackupSeenAt` unchanged. Returns false when
+   * the account is missing, session-refused, already `walletRequired`, or
+   * the credential id is taken.
+   */
+  addSeedPasskeyCredential(credential: PasskeyCredential): Promise<boolean>;
   /** Look up a passkey credential by id, or `undefined` if unknown. */
   getPasskeyCredential(credentialId: string): Promise<PasskeyCredential | undefined>;
   /**
-   * Look up this account's single passkey credential, or `undefined` if none.
+   * Look up this account's newest passkey credential (`createdAt` descending,
+   * then `credentialId` descending), or `undefined` if none.
    */
   getPasskeyCredentialForAccount(accountId: string): Promise<PasskeyCredential | undefined>;
   /**
@@ -824,17 +833,49 @@ export class InMemoryAuthStore implements AuthStore {
     return true;
   }
 
+  async addSeedPasskeyCredential(credential: PasskeyCredential): Promise<boolean> {
+    const account = this.#accounts.get(credential.accountId);
+    if (
+      account === undefined ||
+      account.sessionRefused === true ||
+      account.walletRequired === true
+    ) {
+      return false;
+    }
+    if (this.#passkeyCredentials.has(credential.credentialId)) {
+      return false;
+    }
+    this.#passkeyCredentials.set(credential.credentialId, credential);
+    this.#accounts.set(account.id, { ...account, walletRequired: true });
+    return true;
+  }
+
   async getPasskeyCredential(credentialId: string): Promise<PasskeyCredential | undefined> {
     return this.#passkeyCredentials.get(credentialId);
   }
 
   async getPasskeyCredentialForAccount(accountId: string): Promise<PasskeyCredential | undefined> {
+    let newest: PasskeyCredential | undefined;
     for (const credential of this.#passkeyCredentials.values()) {
-      if (credential.accountId === accountId) {
-        return credential;
+      if (credential.accountId !== accountId) {
+        continue;
+      }
+      if (newest === undefined) {
+        newest = credential;
+        continue;
+      }
+      if (credential.createdAt > newest.createdAt) {
+        newest = credential;
+        continue;
+      }
+      if (
+        credential.createdAt === newest.createdAt &&
+        credential.credentialId > newest.credentialId
+      ) {
+        newest = credential;
       }
     }
-    return undefined;
+    return newest;
   }
 
   async replacePasskeyCredential(credential: PasskeyCredential): Promise<boolean> {

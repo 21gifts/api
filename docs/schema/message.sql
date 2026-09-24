@@ -14,6 +14,7 @@
 -- and retried on the next boot. A value that cannot be parsed is skipped with a
 -- warning instead of failing the migration. The statement lives in the store's
 -- MESSAGE_SCHEMA_SQL array, not in this file.
+-- Top-level notes may store place_lat, place_lng, and place_label.
 
 CREATE TABLE IF NOT EXISTS message (
   id uuid PRIMARY KEY,
@@ -115,6 +116,18 @@ CREATE INDEX IF NOT EXISTS message_invoice_created_at_idx
   ON message_invoice (created_at DESC, id DESC);
 CREATE INDEX IF NOT EXISTS message_invoice_message_id_idx
   ON message_invoice (message_id, created_at DESC);
+
+-- Cached DeepL output per message and UI locale. source_sha256 is SHA-256 of
+-- the stored `message.text` so an edit invalidates the row. ON DELETE CASCADE
+-- with the parent note. First writer for a hash wins.
+CREATE TABLE IF NOT EXISTS message_translation (
+  message_id uuid NOT NULL REFERENCES message (id) ON DELETE CASCADE,
+  target_lang text NOT NULL,
+  source_sha256 text NOT NULL,
+  translated_text text NOT NULL,
+  created_at timestamptz NOT NULL,
+  PRIMARY KEY (message_id, target_lang)
+);
 
 -- kind:9735 ingest decisions (indexed or rejected) for operator debug.
 CREATE TABLE IF NOT EXISTS nostr_zap_ingest (
@@ -234,3 +247,8 @@ ALTER TABLE message ADD COLUMN IF NOT EXISTS goal_sats bigint;
 ALTER TABLE message ADD COLUMN IF NOT EXISTS photo_taken_at text;
 ALTER TABLE message ADD COLUMN IF NOT EXISTS video_taken_at text;
 ALTER TABLE message_extra_photo ADD COLUMN IF NOT EXISTS photo_taken_at text;
+-- Optional map pin on a top-level note is place_lat / place_lng / place_label
+-- (null lat or lng means no pin; label is not a Nostr hashtag).
+ALTER TABLE message ADD COLUMN IF NOT EXISTS place_lat double precision;
+ALTER TABLE message ADD COLUMN IF NOT EXISTS place_lng double precision;
+ALTER TABLE message ADD COLUMN IF NOT EXISTS place_label text;

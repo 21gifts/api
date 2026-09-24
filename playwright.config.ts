@@ -34,6 +34,8 @@ export default defineConfig({
       VAPID_PUBLIC_KEY: '',
       VAPID_PRIVATE_KEY: '',
       VAPID_SUBJECT: '',
+      TRANSLATE_URL: '',
+      TRANSLATE_API_KEY: '',
       DEBUG_TOKEN: 'e2e-debug-token',
       NIP57_PROBE: '0',
       WEBAUTHN_RP_ID: 'localhost',

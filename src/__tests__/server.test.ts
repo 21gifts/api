@@ -1,5 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { InMemoryAuthStore } from '@/lib/auth/store';
+import { unsignedNostrDefaults } from '@/lib/message';
+import { InMemoryMessageStore, PostgresMessageStore } from '@/lib/message-store';
 import { RecordingPublisher } from '@/lib/nostr/publish';
 import { PostRateLimiter } from '@/lib/nostr/rate-limit';
 import { createApp, resolveBindAddr, parseBindAddr } from '@/server';
@@ -242,6 +244,275 @@ describe('createApp', () => {
     const app = createApp();
     const res = await app.request('/messages');
     expect(res.status).toBe(401);
+  });
+
+  it('omits profile notes from GET /messages after binding useProfileNoteIds', async () => {
+    const authStore = new InMemoryAuthStore();
+    await authStore.createAccount({
+      id: 'acc-null',
+      linkingKey: `02${'a'.repeat(64)}`,
+      role: 'basis',
+      name: 'Ada',
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: 'a'.repeat(64),
+      createdAt: 1_000_000,
+      rulesAgreedAt: 1_000_001,
+      profileMessageId: null,
+    });
+    await authStore.createAccount({
+      id: 'acc-spaces',
+      linkingKey: `02${'b'.repeat(64)}`,
+      role: 'basis',
+      name: 'Bea',
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: 'b'.repeat(64),
+      createdAt: 1_000_002,
+      rulesAgreedAt: 1_000_003,
+      profileMessageId: '   ',
+    });
+    await authStore.createAccount({
+      id: 'acc-missing',
+      linkingKey: `02${'d'.repeat(64)}`,
+      role: 'basis',
+      name: 'Ada',
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: 'd'.repeat(64),
+      createdAt: 1_000_004,
+      rulesAgreedAt: 1_000_005,
+      profileMessageId: 'missing-note',
+    });
+    await authStore.createAccount({
+      id: 'acc-hidden',
+      linkingKey: `02${'e'.repeat(64)}`,
+      role: 'basis',
+      name: 'Ada',
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: 'e'.repeat(64),
+      createdAt: 1_000_006,
+      rulesAgreedAt: 1_000_007,
+      profileMessageId: 'hidden-name-copy',
+    });
+    await authStore.createAccount({
+      id: 'acc-photo',
+      linkingKey: `02${'f'.repeat(64)}`,
+      role: 'basis',
+      name: 'Ada',
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: 'f'.repeat(64),
+      createdAt: 1_000_008,
+      rulesAgreedAt: 1_000_009,
+      profileMessageId: 'photo-name-copy',
+    });
+    await authStore.createAccount({
+      id: 'acc-video',
+      linkingKey: `02${'0'.repeat(64)}`,
+      role: 'basis',
+      name: 'Ada',
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: '0'.repeat(64),
+      createdAt: 1_000_010,
+      rulesAgreedAt: 1_000_011,
+      profileMessageId: 'video-name-copy',
+    });
+    await authStore.createAccount({
+      id: 'acc-empty',
+      linkingKey: `02${'1'.repeat(64)}`,
+      role: 'basis',
+      name: 'Ada',
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: '1'.repeat(64),
+      createdAt: 1_000_012,
+      rulesAgreedAt: 1_000_013,
+      profileMessageId: 'empty-about',
+    });
+    await authStore.createAccount({
+      id: 'acc-about',
+      linkingKey: `02${'2'.repeat(64)}`,
+      role: 'basis',
+      name: 'Ada',
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: '2'.repeat(64),
+      createdAt: 1_000_014,
+      rulesAgreedAt: 1_000_015,
+      profileMessageId: 'about-note',
+    });
+    await authStore.createAccount({
+      id: 'acc-noname',
+      linkingKey: `02${'3'.repeat(64)}`,
+      role: 'basis',
+      name: null,
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: '3'.repeat(64),
+      createdAt: 1_000_016,
+      rulesAgreedAt: 1_000_017,
+      profileMessageId: 'noname-about',
+    });
+    await authStore.createAccount({
+      id: 'acc-profile',
+      linkingKey: `02${'c'.repeat(64)}`,
+      role: 'basis',
+      name: 'Ada',
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: 'c'.repeat(64),
+      createdAt: 1_000_018,
+      rulesAgreedAt: 1_000_019,
+      profileMessageId: 'profile-note',
+    });
+    await authStore.createSession({
+      token: 'tok',
+      accountId: 'acc-profile',
+      createdAt: Date.now(),
+    });
+    const messageStore = new InMemoryMessageStore([
+      {
+        id: 'real-post',
+        accountId: 'acc-profile',
+        name: 'Ada',
+        text: 'Ada',
+        createdAt: new Date('2026-08-01T00:00:00.000Z'),
+        ...unsignedNostrDefaults(),
+        hasPhoto: false,
+        hasVideo: false,
+        deletedAt: null,
+      },
+      {
+        id: 'profile-note',
+        accountId: 'acc-profile',
+        name: 'Ada',
+        text: 'Ada',
+        createdAt: new Date('2026-08-02T00:00:00.000Z'),
+        ...unsignedNostrDefaults(),
+        hasPhoto: false,
+        hasVideo: false,
+        deletedAt: null,
+      },
+      {
+        id: 'hidden-name-copy',
+        accountId: 'acc-hidden',
+        name: 'Ada',
+        text: 'Ada',
+        createdAt: new Date('2026-08-03T00:00:00.000Z'),
+        ...unsignedNostrDefaults(),
+        hasPhoto: false,
+        hasVideo: false,
+        deletedAt: new Date('2026-08-04T00:00:00.000Z'),
+        deletedBy: null,
+      },
+      {
+        id: 'photo-name-copy',
+        accountId: 'acc-photo',
+        name: 'Ada',
+        text: 'Ada',
+        createdAt: new Date('2026-08-05T00:00:00.000Z'),
+        ...unsignedNostrDefaults(),
+        hasPhoto: true,
+        hasVideo: false,
+        deletedAt: null,
+      },
+      {
+        id: 'video-name-copy',
+        accountId: 'acc-video',
+        name: 'Ada',
+        text: 'Ada',
+        createdAt: new Date('2026-08-06T00:00:00.000Z'),
+        ...unsignedNostrDefaults(),
+        hasPhoto: false,
+        hasVideo: true,
+        deletedAt: null,
+      },
+      {
+        id: 'empty-about',
+        accountId: 'acc-empty',
+        name: 'Ada',
+        text: '',
+        createdAt: new Date('2026-08-07T00:00:00.000Z'),
+        ...unsignedNostrDefaults(),
+        hasPhoto: false,
+        hasVideo: false,
+        deletedAt: null,
+      },
+      {
+        id: 'about-note',
+        accountId: 'acc-about',
+        name: 'Ada',
+        text: 'Good afternoon everyone',
+        createdAt: new Date('2026-08-08T00:00:00.000Z'),
+        ...unsignedNostrDefaults(),
+        hasPhoto: false,
+        hasVideo: false,
+        deletedAt: null,
+      },
+      {
+        id: 'noname-about',
+        accountId: 'acc-noname',
+        name: 'Ada',
+        text: 'Good afternoon everyone',
+        createdAt: new Date('2026-08-09T00:00:00.000Z'),
+        ...unsignedNostrDefaults(),
+        hasPhoto: false,
+        hasVideo: false,
+        deletedAt: null,
+      },
+    ]);
+    const app = createApp({ authStore, messageStore });
+    const res = await app.request('/messages', {
+      headers: { authorization: 'Bearer tok' },
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { messages: Array<{ id: string }> };
+    const ids = body.messages.map((row) => row.id);
+    expect([...ids].sort()).toEqual(
+      [
+        'about-note',
+        'empty-about',
+        'noname-about',
+        'photo-name-copy',
+        'real-post',
+        'video-name-copy',
+      ].sort(),
+    );
+    expect(ids).not.toContain('profile-note');
+  });
+
+  it('leaves a non-in-memory message store unbound', async () => {
+    const app = createApp({
+      messageStore: new PostgresMessageStore({
+        query: async () => [],
+        execute: async () => undefined,
+      }),
+    });
+    const res = await app.request('/healthz');
+    expect(res.status).toBe(200);
   });
 
   it('returns 401 for unauthenticated GET /conversations', async () => {

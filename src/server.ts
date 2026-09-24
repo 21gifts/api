@@ -17,6 +17,8 @@ import { giftsStatsRoutes } from '@/routes/stats';
 import { giftsRoutes } from '@/routes/gifts';
 import { invoiceRoutes } from '@/routes/invoices';
 import { messagesRoutes } from '@/routes/messages';
+import { translateRoutes } from '@/routes/translate';
+import { InMemoryTranslationStore, type TranslationStore } from '@/lib/translation-store';
 import { wellKnownRoutes } from '@/routes/well-known';
 import { payRoutes } from '@/routes/pay';
 import { contactRoutes } from '@/routes/contact';
@@ -49,6 +51,7 @@ import type { ContactStore } from '@/lib/contact-store';
 import { InMemoryPosStore, type PosStore } from '@/lib/pos-store';
 import { InMemoryConversationStore } from '@/lib/conversation-store';
 import type { ConversationStore } from '@/lib/conversation-store';
+import { aboutMeFromNote } from '@/lib/about-me';
 import { InMemoryMessageStore } from '@/lib/message-store';
 import type { MessageStore } from '@/lib/message-store';
 import { InMemoryNotificationStore } from '@/lib/notification-store';
@@ -197,6 +200,11 @@ export interface AppDeps {
    */
   env?: Record<string, string | undefined>;
   /**
+   * Cached DeepL output (default: empty {@link InMemoryTranslationStore}).
+   * Boot injects {@link PostgresTranslationStore} when `DATABASE_URL` is set.
+   */
+  translationStore?: TranslationStore;
+  /**
    * Private in-app contact mailbox (default: empty
    * {@link InMemoryContactStore}). Boot injects
    * {@link PostgresContactStore} when `DATABASE_URL` is set.
@@ -261,7 +269,9 @@ function debugList(store: object, limit: number): Promise<unknown[]> {
  *
  * @param deps - Optional overrides for the auth store, clock, invoice payer,
  *   LNURL-pay fetch, LN-Address cache, brand reader, debugToken, gift store,
- *   gift recorder, BTC-USD rates, USD-fiat rates, message store, contact store,
+ *   gift recorder, BTC-USD rates, USD-fiat rates, message store,
+ *   translationStore (optional; default InMemoryTranslationStore; SQL boot
+ *   injects PostgresTranslationStore), contact store,
  *   conversation store, notification store, push store, trust store,
  *   debugDbStore (`GET /debug/db`; omitted on a memory boot),
  *   funding store (injected into `/funding`, `/me`, `/auth`, `/members`,
@@ -284,6 +294,31 @@ export function createApp(deps: AppDeps = {}): Hono {
   const btcUsdRates = deps.btcUsdRates ?? new InMemoryBtcUsdStore();
   const fiatRates = deps.fiatRates ?? new InMemoryFiatStore();
   const messageStore = deps.messageStore ?? new InMemoryMessageStore();
+  const translationStore = deps.translationStore ?? new InMemoryTranslationStore();
+  const env = deps.env ?? process.env;
+  if (messageStore instanceof InMemoryMessageStore) {
+    messageStore.useProfileNoteIds(async () => {
+      const ids = new Set<string>();
+      for (const account of await store.listAccounts()) {
+        const raw = account.profileMessageId;
+        if (typeof raw !== 'string' || raw.trim() === '') {
+          continue;
+        }
+        const note = await messageStore.getById(raw.trim());
+        if (
+          note !== undefined &&
+          note.deletedAt === null &&
+          note.hasVideo !== true &&
+          note.photoCount === 0 &&
+          note.text.trim() !== '' &&
+          aboutMeFromNote(account.name ?? null, note.text, note.name) === null
+        ) {
+          ids.add(raw.trim());
+        }
+      }
+      return ids;
+    });
+  }
   const nostrKek = deps.nostrKek;
   const contactStore = deps.contactStore ?? new InMemoryContactStore();
   const posStore = deps.posStore ?? new InMemoryPosStore();
@@ -337,6 +372,7 @@ export function createApp(deps: AppDeps = {}): Hono {
   app.route('/', pushRoutes({ authStore: store, pushStore, now, vapidPublicKey }));
   app.route('/healthz', healthRoute);
   app.route('/info', infoRoute);
+  app.route('/translate', translateRoutes({ env }));
   app.route('/.well-known', wellKnownRoutes({ auth: store, fetchImpl, posStore, now }));
   app.route('/pay', payRoutes({ auth: store, fetchImpl }));
   app.route(
@@ -490,7 +526,8 @@ export function createApp(deps: AppDeps = {}): Hono {
       pushStore,
       notificationStore,
       conversationStore,
-      env: deps.env ?? process.env,
+      env,
+      translationStore,
       fundingStore,
       ...(nostrKek === undefined ? {} : { nostrKek }),
       ...(deps.nostrPublisher === undefined ? {} : { nostrPublisher: deps.nostrPublisher }),

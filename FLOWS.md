@@ -49,9 +49,13 @@ clears the token; a transient failure does not.
 
 Login is passkey-only. LNURL-auth has been removed.
 
-A signed-in member can replace their one passkey (`POST /auth/passkey/replace/begin`
-then `…/finish` with Bearer) so a PRF-capable authenticator can own the account.
-The existing session stays valid. The api never sees PRF output or a mnemonic.
+A recovery phrase is never replaced. `POST /auth/passkey/replace/begin` and
+`/finish` with a valid Bearer return 409
+`{ "error": "A recovery phrase cannot be replaced" }` and delete nothing.
+An account whose `walletRequired` is not true can add one seed passkey via
+`POST /auth/passkey/seed/begin` then `/finish`. The login credential stays.
+The session stays. `walletBackupSeenAt` does not decide whether a seed exists.
+`walletRequired` true means a seed passkey exists.
 
 The signed-in view currently lives on `/login` — there is no separate
 `/profile` route yet. It shows a name form, a username form, a Lightning
@@ -82,6 +86,7 @@ account.
 HTTP cited: `/auth/passkey/register/begin`, `/auth/passkey/register/finish`,
 `/auth/passkey/authenticate/begin`, `/auth/passkey/authenticate/finish`,
 `/auth/passkey/replace/begin`, `/auth/passkey/replace/finish`,
+`/auth/passkey/seed/begin`, `/auth/passkey/seed/finish`,
 `/me`, `/me/wallet-backup-seen`, `/me/setup/skip`, `/me/name`, `/me/username`,
 `/me/rules-agreement`.
 
