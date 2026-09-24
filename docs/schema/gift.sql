@@ -33,7 +33,8 @@ ALTER TABLE gift ADD COLUMN IF NOT EXISTS kind text;
 -- NULL rows with description 21gifts moderator become moderator; remaining NULL
 -- rows are matched one-to-one only to platform replies whose trimmed text is
 -- Welcome or 21gifts daily (same sats, lightning local-part, within 3 seconds),
--- and only an assigned Welcome becomes welcome;
--- remaining NULL becomes daily; then, only if absent, gift_kind_check CHECK
+-- and only an assigned Welcome becomes welcome. That Welcome write and the
+-- remaining NULL-to-daily write are one UPDATE. Then, only if gift itself has
+-- no check constraint of that name, gift_kind_check CHECK
 -- (kind IN ('daily','welcome','moderator')); then kind is SET NOT NULL.
 -- 'other' is not a database value.

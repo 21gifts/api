@@ -217,7 +217,11 @@ describe('migrateGiftSchema kind backfill', () => {
           );
           return matches.filter((row) => nullIds.has(String(row.gift_id))) as T[];
         }
-        if (text.includes('pg_constraint') || text.includes('gift_kind_check')) {
+        if (
+          text.includes('pg_constraint') &&
+          text.includes("conrelid = 'gift'::regclass") &&
+          text.includes("contype = 'c'")
+        ) {
           return (constraintExists ? [{ conname: 'gift_kind_check' }] : []) as T[];
         }
         if (text.includes('fiat_usd IS NULL')) {
@@ -233,11 +237,16 @@ describe('migrateGiftSchema kind backfill', () => {
               row.kind = 'moderator';
             }
           }
-        } else if (text.includes("SET kind = 'welcome'")) {
-          const id = String(params[0]);
+        } else if (text.includes("THEN 'welcome'") && text.includes('ANY($1::bigint[])')) {
+          const ids = new Set(
+            String(params[0] ?? '')
+              .replace(/[{}]/g, '')
+              .split(',')
+              .filter((id) => id.length > 0),
+          );
           for (const row of gifts) {
-            if (String(row.id) === id && row.kind === null) {
-              row.kind = 'welcome';
+            if (row.kind === null) {
+              row.kind = ids.has(String(row.id)) ? 'welcome' : 'daily';
             }
           }
         } else if (text.includes("SET kind = 'daily'") && text.includes('kind IS NULL')) {
@@ -286,8 +295,9 @@ describe('migrateGiftSchema kind backfill', () => {
     ]);
     await repairGiftKind(sql);
     expect(gifts.map((row) => row.kind)).toEqual(['welcome', 'daily']);
-    const welcomeUpdates = sql.executes.filter((row) => row.text.includes("SET kind = 'welcome'"));
-    expect(welcomeUpdates).toEqual([expect.objectContaining({ params: [1] })]);
+    const welcomeUpdates = sql.executes.filter((row) => row.text.includes("THEN 'welcome'"));
+    expect(welcomeUpdates).toEqual([expect.objectContaining({ params: ['{1}'] })]);
+    expect(sql.executes.some((row) => row.text.includes("SET kind = 'daily'"))).toBe(false);
   });
 
   it('sets a NULL row with no reply to daily', async () => {

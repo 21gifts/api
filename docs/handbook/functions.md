@@ -256,7 +256,7 @@
 
 - **Purpose:** Classifies `gift.kind` where it is still null, then adds `gift_kind_check` if absent and sets the column NOT NULL. Skips the whole repair when `trg_db_change` is not yet attached to `gift`, so the UPDATEs are audited and the next boot retries.
 - **Inputs:** `SqlClient`.
-- **Returns / side effects:** Void. `description = '21gifts moderator'` becomes `moderator`. Remaining null rows are matched one-to-one only to platform replies whose trimmed text is `Welcome` or `21gifts daily` (same sats, lightning local-part, within 3 seconds); only an assigned `Welcome` becomes `welcome`. Everything still null becomes `daily`. The check allows only `daily`, `welcome`, and `moderator`.
+- **Returns / side effects:** Void. `description = '21gifts moderator'` becomes `moderator`. Remaining null rows are matched one-to-one only to platform replies whose trimmed text is `Welcome` or `21gifts daily` (same sats, lightning local-part, within 3 seconds); only an assigned `Welcome` becomes `welcome`. That assignment and every other still-null row are one `UPDATE` (`'{id,…}'` bound as `bigint[]`, because the driver rejects a JavaScript array). A stopped boot therefore cannot attach the same Welcome reply to a different still-null gift. The check allows only `daily`, `welcome`, and `moderator`, and it is recognized only as a check constraint on `gift` (`conrelid = 'gift'::regclass` and `contype = 'c'`).
 - **Used by:** `openBootStores` immediately after `migrateDbChangeSchema`.
 
 ## Function: migrateMessageSchema

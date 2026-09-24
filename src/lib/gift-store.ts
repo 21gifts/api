@@ -69,7 +69,9 @@ const GIFT_KIND_TRIGGER_SQL = `SELECT 1
  * `db_change` and a boot that is still attaching the trigger retries next time.
  * Description `21gifts moderator` is moderator. Remaining NULL rows are matched
  * one-to-one against platform replies whose text is `Welcome` or `21gifts daily`;
- * only an assigned Welcome sets `welcome`. Everything still NULL becomes `daily`.
+ * only an assigned Welcome sets `welcome`. Welcome and every other still-NULL row
+ * are one UPDATE, so a stopped boot cannot reuse that Welcome reply. The check
+ * constraint counts only when it is on `gift`.
  *
  * @param sql - Parameter-bound SQL client.
  */
@@ -84,11 +86,13 @@ export async function repairGiftKind(sql: SqlClient): Promise<void> {
   const remaining = await sql.query<{ id: number | string }>(
     `SELECT id FROM gift WHERE kind IS NULL LIMIT 1`,
   );
+  let classified = false;
   if (remaining.length > 0) {
     const matches = await sql.query<GiftKindMatchRow>(GIFT_KIND_MATCH_SQL);
     const sorted = [...matches].sort((a, b) => Number(a.abs_seconds) - Number(b.abs_seconds));
     const usedGifts = new Set<string>();
     const usedMessages = new Set<string>();
+    const welcomeIds: string[] = [];
     for (const row of sorted) {
       const giftId = String(row.gift_id);
       const messageId = String(row.message_id);
@@ -98,15 +102,26 @@ export async function repairGiftKind(sql: SqlClient): Promise<void> {
       usedGifts.add(giftId);
       usedMessages.add(messageId);
       if (row.message_text === 'Welcome') {
-        await sql.execute(`UPDATE gift SET kind = 'welcome' WHERE id = $1 AND kind IS NULL`, [
-          row.gift_id,
-        ]);
+        welcomeIds.push(giftId);
       }
     }
+    if (welcomeIds.length > 0) {
+      // Bun SQL sends a JS array as a malformed array literal, so the ids are `{1,2}`.
+      await sql.execute(
+        `UPDATE gift SET kind = CASE WHEN id = ANY($1::bigint[]) THEN 'welcome' ELSE 'daily' END WHERE kind IS NULL`,
+        [`{${welcomeIds.join(',')}}`],
+      );
+      classified = true;
+    }
   }
-  await sql.execute(`UPDATE gift SET kind = 'daily' WHERE kind IS NULL`);
+  if (!classified) {
+    await sql.execute(`UPDATE gift SET kind = 'daily' WHERE kind IS NULL`);
+  }
   const existing = await sql.query<{ conname: string }>(
-    `SELECT conname FROM pg_constraint WHERE conname = 'gift_kind_check'`,
+    `SELECT conname FROM pg_constraint
+     WHERE conname = 'gift_kind_check'
+       AND conrelid = 'gift'::regclass
+       AND contype = 'c'`,
   );
   if (existing.length === 0) {
     await sql.execute(
