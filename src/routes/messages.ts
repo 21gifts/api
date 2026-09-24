@@ -57,6 +57,7 @@ import { notifyForumPost, notifyForumReply } from '@/lib/notification';
 import type { NotificationStore } from '@/lib/notification-store';
 import type { PushStore } from '@/lib/push-store';
 import type { SpendPing } from '@/lib/spend-ping';
+import { syncWelcomePing } from '@/lib/welcome-media';
 import { normalizePlace, parseMultipartCoord, placesMatch, type ForumPlace } from '@/lib/place';
 import { bearerToken } from '@/routes/me';
 import {
@@ -232,10 +233,10 @@ export interface MessagesRouteDeps {
   /**
    * Optional spend ping. After a new top-level persist with a Lightning
    * Address, the route awaits `ping(address, created.id)` only when
-   * `eligibleToday`, and `ping(address, created.id, 'welcome')` when
-   * `role === 'verified'` and the row has media, independent of
-   * `eligibleToday`. Omitted → skip. Failures are logged and do not fail
-   * the 200.
+   * `eligibleToday` and the new row has media. A verified account also
+   * welcome-pings the newest live top-level photo or video, including an
+   * About-me note that already existed, independent of `eligibleToday`.
+   * Omitted → skip. Failures are logged and do not fail the 200.
    */
   spendPing?: SpendPing;
   /**
@@ -642,18 +643,11 @@ async function persistForumPost(
       } catch {
         logEvent('spend.ping.failed');
       }
-      if (
-        (created.hasPhoto === true ||
-          created.hasVideo === true ||
-          Number(created.photoCount) > 0) &&
-        account.role === 'verified'
-      ) {
-        try {
-          await deps.spendPing.ping(account.lightningAddress, created.id, 'welcome');
-        } catch {
-          logEvent('spend.ping.failed');
-        }
-      }
+      await syncWelcomePing({
+        spendPing: deps.spendPing,
+        messages: deps.store,
+        account,
+      });
     }
     if (!isReplay && parentId !== null) {
       try {

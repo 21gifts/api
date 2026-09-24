@@ -405,6 +405,7 @@ export function createApp(deps: AppDeps = {}): Hono {
       fiatRates,
       fundingStore,
       ...(nostrKek === undefined ? {} : { nostrKek }),
+      ...(spendPing === undefined ? {} : { spendPing }),
     }),
   );
   app.route(
@@ -500,6 +501,8 @@ export function createApp(deps: AppDeps = {}): Hono {
       notificationStore,
       pushStore,
       conversationStore,
+      messages: messageStore,
+      ...(spendPing === undefined ? {} : { spendPing }),
     }),
   );
   app.route(

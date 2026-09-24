@@ -414,6 +414,15 @@ export interface MessageStore {
   accountHasLiveTopLevelMediaPost(accountId: string, excludeId: string | null): Promise<boolean>;
 
   /**
+   * Newest live top-level photo or video for `accountId`, including the
+   * About-me note. Not capped by the public list size.
+   *
+   * @param accountId - Author account id.
+   * @returns Message id, or `null` when none.
+   */
+  latestLiveTopLevelMediaId(accountId: string): Promise<string | null>;
+
+  /**
    * Live post/reply totals for one 21.gifts author.
    *
    * Live = `deletedAt` null and `accountId` equals the argument (Damus-only
@@ -2181,6 +2190,29 @@ export class InMemoryMessageStore implements MessageStore {
   }
 
   /**
+   * Newest live top-level photo or video for `accountId`, including About me.
+   *
+   * @param accountId - Author account id.
+   * @returns Message id, or `null` when none.
+   */
+  latestLiveTopLevelMediaId(accountId: string): Promise<string | null> {
+    const matches = this.#rows.filter(
+      (row) =>
+        row.accountId === accountId &&
+        row.deletedAt === null &&
+        row.parentId === null &&
+        ((this.#extraPhotos.get(row.id)?.length ?? 0) > 0 ||
+          this.#photos.has(row.id) ||
+          row.hasVideo === true),
+    );
+    matches.sort((a, b) => {
+      const byTime = b.createdAt.getTime() - a.createdAt.getTime();
+      return byTime !== 0 ? byTime : b.id.localeCompare(a.id);
+    });
+    return Promise.resolve(matches[0]?.id ?? null);
+  }
+
+  /**
    * Live post/reply totals for one 21.gifts author.
    *
    * @param accountId - Author account id.
@@ -3748,6 +3780,31 @@ export class PostgresMessageStore implements MessageStore {
       [accountId, excludeId],
     );
     return rows[0] !== undefined;
+  }
+
+  /**
+   * Newest live top-level photo or video id for `accountId`, including About me.
+   *
+   * @param accountId - Author account id (`$1`).
+   * @returns Message id, or `null` when none.
+   */
+  async latestLiveTopLevelMediaId(accountId: string): Promise<string | null> {
+    const rows = await this.#sql.query<{ id?: string }>(
+      `SELECT id FROM message
+       WHERE account_id = $1
+         AND deleted_at IS NULL
+         AND parent_id IS NULL
+         AND (
+           photo IS NOT NULL
+           OR (video_content_type IS NOT NULL AND video_content_type <> '')
+           OR EXISTS (SELECT 1 FROM message_extra_photo e WHERE e.message_id = message.id)
+         )
+       ORDER BY created_at DESC, id DESC
+       LIMIT 1`,
+      [accountId],
+    );
+    const id = rows[0]?.id;
+    return typeof id === 'string' && id !== '' ? id : null;
   }
 
   /**

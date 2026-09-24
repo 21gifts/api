@@ -191,7 +191,8 @@ worker holds lightning.space LNDHub credentials and calls:
 Recurring **USD** gifts are paid by the external spend worker **when the
 recipient posts a top-level note with a photo or video**, not on a daily timer, and only when
 that recipient is funding-eligible today. `POST /invoices` with `messageId`
-requires that photo or video (else 403 `Forum post required`); omitted
+requires that photo or video, and the About-me note counts when it has that
+media (else 403 `Forum post required`); omitted
 `messageId` (moderator stipend) stays any live top-level non-profile post.
 `GET /invoices/posted` returns additive `hasMedia` (`hasPosted` unchanged).
 `POST /invoices` 403s
@@ -215,10 +216,13 @@ a **new top-level** persist pings spend (`POST {SPEND_URL}/ping` with
 `{ address, messageId }` and Bearer `SPEND_API_TOKEN`) only when the author
 is funding-eligible today and the new row has media (`hasPhoto` /
 `hasVideo` / `photoCount > 0`); otherwise log `spend.ping.skipped` /
-`not_eligible` or `no_media` and still 200; a **new** top-level media post
-from `role === 'verified'` also pings `{ address, messageId, kind: "welcome" }`
-independent of `eligibleToday` (Spend pays once lifetime; this API may ping
-again; replies / text-only / moderator / founder do not welcome-ping); replies and media replay do
+`not_eligible` or `no_media` and still 200; when `role === 'verified'` and any live top-level photo or video exists, including About me, the api also pings `{ address, messageId, kind: "welcome" }`
+for the newest live top-level photo or video, including an About-me note,
+independent of `eligibleToday` (the new row itself need not have media;
+Spend pays once per Lightning Address; this API may ping again; becoming
+verified and saving About me while verified also welcome-ping; boot and a
+15-minute timer welcome-ping every verified account that already has a photo or video post;
+replies and any role other than `verified` do not welcome-ping); replies and media replay do
 not ping; unset/blank env skips the ping and still returns 200;
 the public thread is listed via `GET /messages` (requires rules; newest first, optional `hashtag` query (name without `#`; token filter on `text`), name
 snapshotted at post, `sats`, `payable`, `hasPhoto`, and live author `role`

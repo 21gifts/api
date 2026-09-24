@@ -44,12 +44,10 @@ does not fetch or pay invoices.
 
 Spend-worker invoice routes: `GET /invoices/passkey` and `GET /invoices/posted`
 report those gates; `GET /invoices/eligible` reports `{ eligible, status }` (`eligibleToday` plus `effectiveStatus`; grant required from UTC 2026-09-25);
-`POST /invoices` requires passkey, `eligibleToday` (grant required from UTC 2026-09-25), and a live
-**top-level** forum post, then fetches a BOLT11 via LNURL-pay;
-`POST /invoices/proof` accepts a preimage without re-checking the grant. Issue
-requires a passkey-backed account for the address that is funding-eligible today
-and at least one live **top-level** forum
-message that is not the auto-created profile note. Replies do not count. They require `SPEND_API_TOKEN`;
+`POST /invoices` requires passkey and `eligibleToday` (grant required from UTC 2026-09-25), then fetches a BOLT11 via LNURL-pay.
+When `messageId` is set, that note must be the address's live top-level note, including About me, and have a photo or video.
+When `messageId` is omitted, issue requires at least one live **top-level** forum message that is not the auto-created profile note.
+`POST /invoices/proof` accepts a preimage without re-checking the grant. Replies do not count. They require `SPEND_API_TOKEN`;
 when it is unset the
 routes return **503** and the process still boots. This service does not pay
 invoices (no LNDHub client). A matching proof inserts an outbound row into
@@ -61,7 +59,7 @@ not notify (no in-app rows, no Web Push). When that
 `messageId` is a reply, proof persists a hidden `spendGiftReplyId` marker
 under the reply, then `addSats` the reply (a live existing marker is hidden
 only and does not `addSats`; no `notifyForumReply`). Optional `messageId` on
-`POST /invoices`. `GET /invoices/posted` returns `{ hasPosted, messageId, postedAt, hasMedia }`.
+`POST /invoices`. `GET /invoices/posted` returns `{ hasPosted, messageId, postedAt, hasMedia, welcomeHasMedia, welcomeMessageId }`.
 
 CORS allows the configured origins (`CORS_ALLOWED_ORIGINS`, or the default
 surfaces `https://21.gifts`, `https://dev.21.gifts`, `https://app.21.gifts`,
@@ -191,7 +189,7 @@ Public base URLs used in examples:
 | GET    | `/gifts/stats`                                       | none                       | Aggregated outbound gift statistics                                                                                                                               |
 | GET    | `/messages/stats`                                    | none                       | Living forum notes and replies counted together, by UTC day                                                                                                       |
 | GET    | `/invoices/passkey`                                  | Bearer `SPEND_API_TOKEN`   | Whether a Lightning Address has a passkey-backed account                                                                                                          |
-| GET    | `/invoices/posted`                                   | Bearer `SPEND_API_TOKEN`   | Whether a Lightning Address has a live top-level non-profile forum post (`hasMedia` when that post has photo/video)                                               |
+| GET    | `/invoices/posted`                                   | Bearer `SPEND_API_TOKEN`   | Live top-level post flag plus welcome media (`welcomeHasMedia` includes About me)                                                                                 |
 | GET    | `/invoices/eligible`                                 | Bearer `SPEND_API_TOKEN`   | Whether the address is funding-eligible today, plus effective grant `status`                                                                                      |
 | POST   | `/invoices`                                          | Bearer `SPEND_API_TOKEN`   | Fetch a recipient BOLT11 (LNURL-pay; passkey, funding grant, and forum post required)                                                                             |
 | POST   | `/invoices/proof`                                    | Bearer `SPEND_API_TOKEN`   | Accept payment preimage as proof                                                                                                                                  |
@@ -913,6 +911,10 @@ logged as `trust.write.failed`.
 Idempotent **200** when the existing verify edge's actor is the caller and
 the subject is already `verified` (no second insert). If that caller-owned
 edge exists and the subject is still `basis`, completes the role write and
+returns **200**. After a **200** that leaves the subject `verified` (new
+edge, completed role write, or this idempotent repeat), the subject is
+welcome-pinged when a live top-level photo or video exists, including About
+me. Omitted messages or spend ping skips that ping. A ping failure still
 returns **200**.
 
 Otherwise insert the edge then update role, log `trust.verified`
@@ -1283,7 +1285,9 @@ About me is the profile-note text when it is a real bio, else null (auto
 name-copy is not a bio, including after a display-name rename when the
 note text still equals the stored profile-note `name` (Ada→Grace with
 text `Ada` stays `null`)). `aboutMeHasPhoto` is true when the live note
-has a stored photo.
+has a stored photo. After that successful save, a verified account with a
+live top-level photo or video (including this note) is welcome-pinged.
+Omitted spend ping skips. A ping failure still returns **200**.
 
 ### `GET /me/about/photo`
 
@@ -2811,14 +2815,22 @@ Missing or invalid Lightning Address → **400**
 Success is always **200** (never 404 for an unknown address):
 
 ```json
-{ "hasPosted": true, "messageId": "<uuid>", "postedAt": "<iso-8601>", "hasMedia": false }
+{
+  "hasPosted": true,
+  "messageId": "<uuid>",
+  "postedAt": "<iso-8601>",
+  "hasMedia": false,
+  "welcomeHasMedia": false,
+  "welcomeMessageId": null
+}
 ```
 
-or `{ "hasPosted": false, "messageId": null, "postedAt": null, "hasMedia": false }` when there is no account for the
-address or the account has no live **top-level** forum message other than the
-auto-created profile note. Replies do not count. Photo-only / empty-text
+or `{ "hasPosted": false, "messageId": null, "postedAt": null, "hasMedia": false, "welcomeHasMedia": false, "welcomeMessageId": null }` when there is no account for the
+address, or the account has no live top-level note other than a text-only profile note.
+`hasPosted` is still any live top-level note that is not the profile note, including text-only.
+A profile note that has a photo or video keeps `hasPosted: false` and sets `welcomeHasMedia: true` with that note as `welcomeMessageId`. Replies do not count. Photo-only / empty-text
 top-level notes still count for `hasPosted`. `hasMedia` is true only when such a
-post has photo 0, extra stills, or video. When `hasPosted` is true, `messageId` is usually
+post has photo 0, extra stills, or video. `welcomeHasMedia` is true when any live top-level photo or video exists, including the About-me note, even when `hasPosted` is false. `welcomeMessageId` is that newest note's id, or null. When `hasPosted` is true, `messageId` is usually
 the newest live top-level non-profile post id; it can still be `null` if
 `listPostsByAccount` yields no non-profile row. `postedAt` is that row's
 `createdAt` (ISO-8601) or `null` when `messageId` is null. Replies and the auto profile
@@ -2829,9 +2841,11 @@ note never become `messageId`. A text-only newest row can still pair with
 
 Spend-worker invoice fetch. After address and amount validation, the api
 requires a 21.gifts account for `address` that already has a passkey
-credential, `eligibleToday` (grant required from UTC 2026-09-25), and at least
-one live **top-level** forum message that is not the auto-created profile
-note. Replies do not unlock an invoice. It then resolves
+credential and `eligibleToday` (grant required from UTC 2026-09-25).
+When `messageId` is omitted, it also requires at least one live **top-level**
+forum message that is not the auto-created profile note. When `messageId` is
+set, that note must be this address's live top-level note, including About me,
+and have a photo or video. Replies do not unlock an invoice. It then resolves
 LUD-16, GETs the LNURL-pay callback, decodes the BOLT11, and stores
 `{ id, pr, paymentHash }` in memory. It does not pay.
 
@@ -2868,9 +2882,11 @@ integer in `1000..10000000000`. `messageId` is optional (current spend without
 the field still works). `groupMessageId` is optional and mutually exclusive
 with `messageId` (both set → **400**). Invalid UUID on either field → **400**
 `{ "error": "Expected a JSON body with address and amountMsat" }`. When
-`messageId` is set, the post must be that address's live top-level
-non-profile note **and** have a photo or video (else **403** `Forum post required` before LNURL). Omitted `messageId` stays any live top-level
-non-profile post (no media requirement). Missing
+`messageId` is set, the post must be that address's live top-level note,
+including the About-me profile note, **and** have a photo or video (else
+**403** `Forum post required` before LNURL). A text-only profile note stays
+**403**. Omitted `messageId` stays any live top-level non-profile post (no
+media requirement). Missing
 `isPlatform` account → **503** `{ "error": "Platform account is not configured" }`
 (no LNURL). Stores `messageId` and `comment` (or `''`) on the invoice.
 When `groupMessageId` is set (no `messageId`), the living-room post gate
@@ -2913,10 +2929,12 @@ is stored):
 { "error": "Funding grant required" }
 ```
 
-The account has a passkey but no live **top-level** forum message other than
-the auto-created profile note, or `messageId` is set but is not that
-address's live top-level non-profile note with a photo or video → **403** (after the passkey and
-grant checks, before any LNURL fetch; no invoice is stored):
+When `messageId` is omitted, the account has a passkey and is eligible but
+has no live **top-level** forum message other than the auto-created profile
+note. When `messageId` is set, that id is not this address's live top-level
+note (About me included) with a photo or video. Either case →
+**403** (after the passkey and grant checks, before any LNURL fetch; no
+invoice is stored):
 
 ```json
 { "error": "Forum post required" }
@@ -3385,10 +3403,18 @@ Bearer `SPEND_API_TOKEN` (fire-and-await; `messageId` is the UUID of the new
 top-level row) only when `eligibleToday` for the author's funding grant
 **and** the new row has media (`hasPhoto` / `hasVideo` / `photoCount > 0`).
 Otherwise no ping, log `spend.ping.skipped` / `not_eligible` (ineligible) or
-`no_media` (eligible text-only). A **new** top-level media post from
-`role === 'verified'` also POSTs `{ address, messageId, kind: "welcome" }`
-independent of `eligibleToday`. Spend pays once (lifetime); this API may
-ping again. Replies, text-only, moderator, and founder do not welcome-ping.
+`no_media` (eligible text-only). When `role === 'verified'` and any live
+top-level photo or video exists, including the About-me note, the api also
+POSTs `{ address, messageId, kind: "welcome" }` for that note, independent
+of `eligibleToday` and independent of whether the new row itself has media.
+The same ping runs when the account becomes verified and when About me is
+saved while verified. On boot, and every 15 minutes, every verified account
+that already has a live top-level photo or video (About me or a living-room
+post) is welcome-pinged, so the gift still goes out when the photo post and
+verification happened in either order. Spend pays once per Lightning Address;
+this API may ping again. Replies, and any role other than `verified`, do not
+welcome-ping. A verified text-only post with no photo or video anywhere does
+not welcome-ping.
 Errors are logged; the POST still
 returns **200**. Replies do not ping. Idempotent media replay does not ping
 again. Unset or blank `SPEND_URL` or `SPEND_API_TOKEN` skips the ping; the

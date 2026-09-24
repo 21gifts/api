@@ -64,13 +64,14 @@ export interface InvoiceRouteDeps {
   >;
   /**
    * Forum store for live top-level post lookup, GET `/posted` `hasMedia`,
-   * gift-reply insert, and GET `/posted` `messageId`. Distinct from
-   * {@link InvoiceStore} (`store`).
+   * welcome media, gift-reply insert, and GET `/posted` `messageId`. Distinct
+   * from {@link InvoiceStore} (`store`).
    */
   messageStore: Pick<
     MessageStore,
     | 'accountHasLiveTopLevelPost'
     | 'accountHasLiveTopLevelMediaPost'
+    | 'latestLiveTopLevelMediaId'
     | 'getById'
     | 'addSats'
     | 'create'
@@ -189,6 +190,25 @@ async function addressHasPasskey(
 ): Promise<boolean> {
   const account = await authStore.getAccountByLightningAddress(address);
   return account !== undefined && (await authStore.accountHasPasskey(account.id));
+}
+
+/**
+ * Welcome media flag for `GET /invoices/posted`. Includes the About-me note.
+ * Daily `hasMedia` still excludes that note.
+ *
+ * @param store - Forum store.
+ * @param account - Address owner.
+ * @returns `welcomeHasMedia` and the newest media note id (or null).
+ */
+async function welcomePostedFields(
+  store: Pick<MessageStore, 'latestLiveTopLevelMediaId'>,
+  account: { id: string },
+): Promise<{ welcomeHasMedia: boolean; welcomeMessageId: string | null }> {
+  const welcomeMessageId = await store.latestLiveTopLevelMediaId(account.id);
+  return {
+    welcomeHasMedia: welcomeMessageId !== null,
+    welcomeMessageId,
+  };
 }
 
 /**
@@ -522,12 +542,32 @@ export function invoiceRoutes(deps: InvoiceRouteDeps): Hono {
 
       const account = await deps.authStore.getAccountByLightningAddress(address);
       if (account === undefined) {
-        return c.json({ hasPosted: false, messageId: null, postedAt: null, hasMedia: false }, 200);
+        return c.json(
+          {
+            hasPosted: false,
+            messageId: null,
+            postedAt: null,
+            hasMedia: false,
+            welcomeHasMedia: false,
+            welcomeMessageId: null,
+          },
+          200,
+        );
       }
+      const welcome = await welcomePostedFields(deps.messageStore, account);
       const excludeId = account.profileMessageId ?? null;
       const hasPosted = await deps.messageStore.accountHasLiveTopLevelPost(account.id, excludeId);
       if (!hasPosted) {
-        return c.json({ hasPosted: false, messageId: null, postedAt: null, hasMedia: false }, 200);
+        return c.json(
+          {
+            hasPosted: false,
+            messageId: null,
+            postedAt: null,
+            hasMedia: false,
+            ...welcome,
+          },
+          200,
+        );
       }
       const hasMedia = await deps.messageStore.accountHasLiveTopLevelMediaPost(
         account.id,
@@ -541,6 +581,7 @@ export function invoiceRoutes(deps: InvoiceRouteDeps): Hono {
           messageId: newest === undefined ? null : newest.id,
           postedAt: newest === undefined ? null : newest.createdAt.toISOString(),
           hasMedia,
+          ...welcome,
         },
         200,
       );
@@ -610,7 +651,6 @@ export function invoiceRoutes(deps: InvoiceRouteDeps): Hono {
           message === undefined ||
           message.deletedAt !== null ||
           message.parentId !== null ||
-          message.id === (account.profileMessageId ?? null) ||
           message.accountId === null ||
           message.accountId !== account.id
         ) {

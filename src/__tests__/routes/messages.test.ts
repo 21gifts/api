@@ -198,6 +198,7 @@ function throwingStore(overrides: Partial<MessageStore> = {}): MessageStore {
     accountHasLivePost: boom,
     accountHasLiveTopLevelPost: boom,
     accountHasLiveTopLevelMediaPost: boom,
+    latestLiveTopLevelMediaId: boom,
     countByAccount: boom,
     countAttributedReplies: boom,
     listPostsByAccount: boom,
@@ -2890,6 +2891,43 @@ describe('POST /messages', () => {
     );
   });
 
+  it('welcome-pings an existing About-me photo when the new post is text', async () => {
+    const spendPing = {
+      ping: vi.fn(async (_address: string, _messageId: string, _kind?: string) => undefined),
+    };
+    const auth = await namedStore('Ada');
+    const existing = await auth.getAccount('acc');
+    expect(existing).toBeDefined();
+    if (existing === undefined) {
+      throw new Error('expected account');
+    }
+    const photoId = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+    const messageStore = new InMemoryMessageStore();
+    await messageStore.create(
+      {
+        id: photoId,
+        accountId: 'acc',
+        name: 'Ada',
+        text: 'about',
+        createdAt: new Date(now() - 1_000),
+        hasPhoto: true,
+        hasVideo: false,
+        videoContentType: null,
+        ...unsignedNostrDefaults(),
+      },
+      { contentType: 'image/jpeg', bytes: JPEG_BYTES },
+    );
+    await auth.updateAccount({ ...existing, profileMessageId: photoId });
+    const res = await mount(auth, messageStore, { spendPing }).request('/messages', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ text: 'hello again' }),
+    });
+    expect(res.status).toBe(200);
+    expect(spendPing.ping).toHaveBeenCalledTimes(1);
+    expect(spendPing.ping).toHaveBeenCalledWith('ada@walletofsatoshi.com', photoId, 'welcome');
+  });
+
   it('does not welcome-ping spend on a verified reply', async () => {
     const spendPing = {
       ping: vi.fn(async (_address: string, _messageId: string, _kind?: string) => undefined),
@@ -3039,6 +3077,7 @@ describe('POST /messages', () => {
         base.accountHasLiveTopLevelPost(accountId, excludeId),
       accountHasLiveTopLevelMediaPost: (accountId, excludeId) =>
         base.accountHasLiveTopLevelMediaPost(accountId, excludeId),
+      latestLiveTopLevelMediaId: (accountId) => base.latestLiveTopLevelMediaId(accountId),
       countByAccount: (accountId) => base.countByAccount(accountId),
       countAttributedReplies: (parentId) => base.countAttributedReplies(parentId),
       listPostsByAccount: (accountId, limit) => base.listPostsByAccount(accountId, limit),
@@ -3149,6 +3188,7 @@ describe('POST /messages', () => {
         base.accountHasLiveTopLevelPost(accountId, excludeId),
       accountHasLiveTopLevelMediaPost: (accountId, excludeId) =>
         base.accountHasLiveTopLevelMediaPost(accountId, excludeId),
+      latestLiveTopLevelMediaId: (accountId) => base.latestLiveTopLevelMediaId(accountId),
       countByAccount: (accountId) => base.countByAccount(accountId),
       countAttributedReplies: (parentId) => base.countAttributedReplies(parentId),
       listPostsByAccount: (accountId, limit) => base.listPostsByAccount(accountId, limit),
@@ -4791,6 +4831,7 @@ describe('POST /messages/:id/invoice', () => {
         base.accountHasLiveTopLevelPost(accountId, excludeId),
       accountHasLiveTopLevelMediaPost: (accountId, excludeId) =>
         base.accountHasLiveTopLevelMediaPost(accountId, excludeId),
+      latestLiveTopLevelMediaId: (accountId) => base.latestLiveTopLevelMediaId(accountId),
       countByAccount: (accountId) => base.countByAccount(accountId),
       countAttributedReplies: (parentId) => base.countAttributedReplies(parentId),
       listPostsByAccount: (accountId, limit) => base.listPostsByAccount(accountId, limit),

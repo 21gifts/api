@@ -27,6 +27,8 @@ import {
   type MessageRow,
 } from '@/lib/message';
 import type { MessageStore } from '@/lib/message-store';
+import type { SpendPing } from '@/lib/spend-ping';
+import { syncWelcomePing } from '@/lib/welcome-media';
 import { normalizeDisplayName } from '@/lib/name';
 import { normalizeUsername, usernameFromDisplayName } from '@/lib/username';
 import { inboxUnreadCountFor } from '@/lib/conversation-push';
@@ -86,6 +88,12 @@ export interface MeRouteDeps {
    * Funding grants for owner JSON (default: empty {@link InMemoryFundingStore}).
    */
   fundingStore?: FundingStore;
+  /**
+   * Optional spend ping. After About me is saved, a verified account with a
+   * live top-level photo or video (including this note) is welcome-pinged.
+   * Omitted → skip. Failures do not fail the 200.
+   */
+  spendPing?: SpendPing;
 }
 
 /**
@@ -655,6 +663,11 @@ export function meRoutes(deps: MeRouteDeps): Hono {
           return c.json({ error: 'Unauthorized' }, 401);
         }
         logEvent('account.about.set', { accountId: latest.id });
+        await syncWelcomePing({
+          ...(deps.spendPing === undefined ? {} : { spendPing: deps.spendPing }),
+          messages: deps.messages,
+          account: latest,
+        });
         return c.json(await ownerJson(deps, latest), 200);
       } catch {
         logEvent('account.about.failed');
