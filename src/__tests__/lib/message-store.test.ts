@@ -5281,10 +5281,10 @@ describe('PostgresMessageStore', () => {
     for (const query of sql.queries) {
       expect(query.text).toMatch(/parent_id IS NULL/);
       expect(query.text).toMatch(/deleted_at IS NULL/);
-      expect(query.text).toMatch(
-        /NOT EXISTS \(SELECT 1 FROM account WHERE account\.profile_message_id = message\.id\)/,
-      );
-      expect(query.text).not.toMatch(/SELECT[^;]*\bphoto\b(?!\s+IS\s+NOT\s+NULL)/i);
+      expect(query.text).toContain('message.photo IS NULL');
+      expect(query.text).toContain('lower(trim(message.text)) = lower(trim(account.name))');
+      expect(query.text).toContain('lower(trim(message.name))');
+      expect(query.text).not.toMatch(/SELECT[^;]*\bphoto\b(?!\s+IS\s+(?:NOT\s+)?NULL)/i);
     }
     const active = sql.queries.filter((query) => query.text.includes('ANY('));
     expect(active).toHaveLength(2);

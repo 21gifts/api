@@ -51,6 +51,7 @@ import type { ContactStore } from '@/lib/contact-store';
 import { InMemoryPosStore, type PosStore } from '@/lib/pos-store';
 import { InMemoryConversationStore } from '@/lib/conversation-store';
 import type { ConversationStore } from '@/lib/conversation-store';
+import { aboutMeFromNote } from '@/lib/about-me';
 import { InMemoryMessageStore } from '@/lib/message-store';
 import type { MessageStore } from '@/lib/message-store';
 import { InMemoryNotificationStore } from '@/lib/notification-store';
@@ -299,9 +300,20 @@ export function createApp(deps: AppDeps = {}): Hono {
     messageStore.useProfileNoteIds(async () => {
       const ids = new Set<string>();
       for (const account of await store.listAccounts()) {
-        const id = account.profileMessageId;
-        if (typeof id === 'string' && id.trim() !== '') {
-          ids.add(id.trim());
+        const raw = account.profileMessageId;
+        if (typeof raw !== 'string' || raw.trim() === '') {
+          continue;
+        }
+        const note = await messageStore.getById(raw.trim());
+        if (
+          note !== undefined &&
+          note.deletedAt === null &&
+          note.hasPhoto !== true &&
+          note.hasVideo !== true &&
+          note.text.trim() !== '' &&
+          aboutMeFromNote(account.name ?? null, note.text, note.name) === null
+        ) {
+          ids.add(raw.trim());
         }
       }
       return ids;

@@ -220,9 +220,9 @@ export interface MessageStore {
    * `deletedAt` null) for GET `/messages`. Same `replyCount` as
    * {@link listLatest} (live attributed direct children). Never
    * selects `photo` bytea. Replies and soft-hidden rows are excluded.
-   * Profile notes are omitted (Postgres via
-   * `NOT EXISTS (SELECT 1 FROM account WHERE account.profile_message_id = message.id)`;
-   * in-memory when `useProfileNoteIds` was set).
+   * Name-copy profile notes without photo or video are omitted (Postgres via
+   * the name-copy NOT EXISTS; in-memory when the provider returns those ids).
+   * A real About me stays.
    *
    * @param query - Mode, limit, exclusive cursor, staff ids (`active` only), and optional hashtag.
    * @returns At most `query.limit` list row copies.
@@ -1707,9 +1707,11 @@ export class InMemoryMessageStore implements MessageStore {
   }
 
   /**
-   * Bind a provider of profile-note message ids omitted by {@link listFeed}.
+   * Bind a provider of name-copy profile-note ids omitted by {@link listFeed}.
+   * The provider should return name-copy ids, not every profile note. A real
+   * About me id is not included.
    *
-   * @param provider - Returns ids stored as `account.profileMessageId`.
+   * @param provider - Returns name-copy ids stored as `account.profileMessageId`.
    */
   useProfileNoteIds(provider: () => Promise<ReadonlySet<string>> | ReadonlySet<string>): void {
     this.#profileNoteIds = provider;
@@ -3444,8 +3446,8 @@ export class PostgresMessageStore implements MessageStore {
    * `query.limit`, with `replyCount` of live attributed children
    * (`deleted_at IS NULL` and either an account or a recorded zapper pubkey).
    * Same {@link MESSAGE_SELECT_COLUMNS} as {@link listLatest} — never the
-   * `photo` bytea column. Profile notes are omitted via
-   * `NOT EXISTS (SELECT 1 FROM account WHERE account.profile_message_id = message.id)`.
+   * `photo` bytea column. Name-copy profile notes without photo or video are
+   * omitted. A real About me stays.
    *
    * @param query - Mode, limit, exclusive keyset cursor, staff ids, and optional hashtag.
    * @returns Mapped list rows.
@@ -3455,7 +3457,23 @@ export class PostgresMessageStore implements MessageStore {
     const filters: string[] = [
       'parent_id IS NULL',
       'deleted_at IS NULL',
-      'NOT EXISTS (SELECT 1 FROM account WHERE account.profile_message_id = message.id)',
+      `NOT EXISTS (
+         SELECT 1 FROM account
+         WHERE account.profile_message_id = message.id
+           AND message.photo IS NULL
+           AND (message.video_content_type IS NULL OR trim(message.video_content_type) = '')
+           AND NOT EXISTS (
+             SELECT 1 FROM message_extra_photo extra
+             WHERE extra.message_id = message.id
+           )
+           AND trim(message.text) <> ''
+           AND (
+             (trim(coalesce(account.name, '')) <> ''
+               AND lower(trim(message.text)) = lower(trim(account.name)))
+             OR (trim(coalesce(message.name, '')) <> ''
+               AND lower(trim(message.text)) = lower(trim(message.name)))
+           )
+       )`,
     ];
     let orderBy = 'created_at DESC, id DESC';
     if (query.mode === 'unpaid') {
