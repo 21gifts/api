@@ -12,6 +12,7 @@ import {
   InMemoryMessageStore,
   type MessageFeedQuery,
   type MessageInvoiceAttempt,
+  type MessageListRow,
   type UnattributedIndexedReceipt,
   type ZapIngestRow,
   type ZapReceiptGiftRow,
@@ -10708,5 +10709,211 @@ describe('conversation zap ingest', () => {
     expect(await conversations.listMessages(thread.id, 10)).toEqual([]);
     expect((await store.getById(profileId))?.sats).toBe(0);
     expect(await store.listReplies(profileId)).toEqual([]);
+  });
+
+  it('hot mode skips enumeration and does not retry gift replies', async () => {
+    const auth = new InMemoryAuthStore();
+    await auth.createAccount({
+      id: 'hot-author',
+      linkingKey: null,
+      role: 'basis',
+      name: 'Ada',
+      lightningAddress: 'hot@example.com',
+      lightningAddressVerified: true,
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: viewKeyFor('hot-author'),
+      createdAt: 1,
+      rulesAgreedAt: null,
+    });
+    await auth.createAccount({
+      id: 'hot-payer',
+      linkingKey: null,
+      role: 'basis',
+      name: 'Pat',
+      lightningAddress: 'pat-hot@example.com',
+      lightningAddressVerified: true,
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: viewKeyFor('hot-payer'),
+      createdAt: 2,
+      rulesAgreedAt: null,
+    });
+    class BoomListLatestStore extends InMemoryMessageStore {
+      override listLatest(_limit: number): Promise<MessageListRow[]> {
+        throw new Error('listLatest must not run in hot mode');
+      }
+    }
+    const store = new BoomListLatestStore();
+    await store.create({
+      id: 'm-hot-parent',
+      accountId: 'hot-author',
+      name: 'Ada',
+      text: 'hi',
+      createdAt: new Date('2026-08-28T00:00:00.000Z'),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+      eventId: NOTE_EVENT_ID,
+    });
+    await store.recordZapReceipt('r-hot-pending', 'm-hot-parent', 7, null);
+    await store.updateZapReceiptGift('r-hot-pending', {
+      payerAccountId: 'hot-payer',
+      comment: 'pending gift',
+    });
+    const querier = new RecordingQuerier();
+    await ingest({
+      store,
+      auth,
+      querier,
+      urls: URLS,
+      timeoutMs: 50,
+      now: () => 1,
+      fetchImpl: failFetch(),
+      eventIds: [NOTE_EVENT_ID, '', NOTE_EVENT_ID],
+    });
+    expect(querier.calls).toHaveLength(1);
+    expect(querier.calls[0]?.filter).toEqual({
+      kinds: [9735],
+      '#e': [NOTE_EVENT_ID],
+      limit: 200,
+    });
+    expect(await store.listReplies('m-hot-parent')).toEqual([]);
+    expect(await store.listZapReceiptsAwaitingGiftReply(10)).toHaveLength(1);
+  });
+
+  it('hot mode returns when urls are empty or no ids remain', async () => {
+    const store = new InMemoryMessageStore();
+    const auth = new InMemoryAuthStore();
+    const querier = new RecordingQuerier();
+    await ingest({
+      store,
+      auth,
+      querier,
+      urls: [],
+      timeoutMs: 50,
+      now: () => 1,
+      fetchImpl: failFetch(),
+      eventIds: [NOTE_EVENT_ID],
+    });
+    expect(querier.calls).toHaveLength(0);
+    await ingest({
+      store,
+      auth,
+      querier,
+      urls: URLS,
+      timeoutMs: 50,
+      now: () => 1,
+      fetchImpl: failFetch(),
+      eventIds: ['', ''],
+    });
+    expect(querier.calls).toHaveLength(0);
+  });
+
+  it('hot mode chunks event ids and includes since in the filter', async () => {
+    const store = new InMemoryMessageStore();
+    const auth = new InMemoryAuthStore();
+    const querier = new RecordingQuerier();
+    const ids = Array.from({ length: 21 }, (_, i) =>
+      `${i.toString(16).padStart(2, '0')}`.repeat(32),
+    );
+    await ingest({
+      store,
+      auth,
+      querier,
+      urls: URLS,
+      timeoutMs: 50,
+      now: () => 1,
+      fetchImpl: failFetch(),
+      eventIds: ids,
+      since: 1_700_000_000,
+    });
+    expect(querier.calls).toHaveLength(2);
+    expect(querier.calls[0]?.filter).toEqual({
+      kinds: [9735],
+      '#e': ids.slice(0, 20),
+      limit: 200,
+      since: 1_700_000_000,
+    });
+    expect(querier.calls[1]?.filter).toEqual({
+      kinds: [9735],
+      '#e': ids.slice(20),
+      limit: 200,
+      since: 1_700_000_000,
+    });
+  });
+
+  it('hot mode persists rejected/error when a receipt throws', async () => {
+    const store = new InMemoryMessageStore();
+    const auth = new InMemoryAuthStore();
+    await seedStore({
+      store,
+      auth,
+      accountId: 'hot-err',
+      lightningAddress: 'hot-err@example.com',
+    });
+    const querier = new RecordingQuerier();
+    querier.events = [
+      {
+        id: 'r-hot-err',
+        pubkey: PROVIDER_PUBKEY,
+        kind: 9735,
+        tags: [
+          ['e', NOTE_EVENT_ID],
+          ['bolt11', 'lnbc-hot-err'],
+        ],
+      },
+    ];
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      await ingest({
+        store,
+        auth,
+        querier,
+        urls: URLS,
+        timeoutMs: 50,
+        now: () => 1,
+        fetchImpl: lnurlFetch(PROVIDER_PUBKEY),
+        eventIds: [NOTE_EVENT_ID],
+        verifyReceipt: () => {
+          throw new Error('hot verify boom');
+        },
+      });
+      const ingests = await store.listZapIngests(10);
+      expect(ingests[0]?.outcome).toBe('rejected');
+      expect(ingests[0]?.reason).toBe('error');
+      const events = loggedEvents(warn);
+      expect(events.some((row) => row['event'] === 'nostr.zap.rejected')).toBe(true);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('non-hot call with since adds it to every receipt filter', async () => {
+    const store = new InMemoryMessageStore();
+    const auth = new InMemoryAuthStore();
+    await seedStore({
+      store,
+      auth,
+      accountId: 'since-full',
+      lightningAddress: 'since-full@example.com',
+    });
+    const querier = new RecordingQuerier();
+    await ingest({
+      store,
+      auth,
+      querier,
+      urls: URLS,
+      timeoutMs: 50,
+      now: () => 1,
+      fetchImpl: failFetch(),
+      since: 1_234_567,
+    });
+    expect(querier.calls.length).toBeGreaterThan(0);
+    for (const call of querier.calls) {
+      const kinds = call.filter['kinds'];
+      if (Array.isArray(kinds) && kinds.includes(9735)) {
+        expect(call.filter['since']).toBe(1_234_567);
+      }
+    }
   });
 });
