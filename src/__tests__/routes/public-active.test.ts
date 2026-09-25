@@ -266,6 +266,25 @@ describe('public active window', () => {
     expect(failed.status).toBe(200);
   });
 
+  it('treats a created note with no mark list as unmarked', async () => {
+    const auth = await poster();
+    class BareStore extends InMemoryMessageStore {
+      override async create(row: MessageRow): Promise<MessageRow> {
+        const created = await super.create(row);
+        const rest = { ...created };
+        delete rest.mentions;
+        return rest;
+      }
+    }
+    const res = await mount(auth, new BareStore()).request('/messages', {
+      method: 'POST',
+      headers: { authorization: 'Bearer tok', 'content-type': 'application/json' },
+      body: JSON.stringify({ text: 'plain' }),
+    });
+    expect(res.status).toBe(200);
+    expect((await res.json()) as { mentions?: unknown }).not.toHaveProperty('mentions');
+  });
+
   it('pages a short public list, an external pin, and the odd cursors', async () => {
     const auth = await poster();
     const store = new InMemoryMessageStore([
