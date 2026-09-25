@@ -2380,8 +2380,8 @@
 
 ## Function: payRoutes
 
-- **Purpose:** Hono sub-app for the public pay link: `GET /:username` (display name and satoshi bounds) and `POST /:username/invoice` (one BOLT11 via `requestGiftInvoice`). Mounted at `/pay`. No auth and no extra CORS headers.
-- **Inputs:** `{ auth: AuthStore, fetchImpl: FetchFn }`. `fetchImpl` is required; `createApp` passes the shared LNURL-pay fetch.
+- **Purpose:** Hono sub-app for the public pay link: `GET /:username` (name, username, minSats, maxSats, and charge) and `POST /:username/invoice` (one BOLT11 via `requestGiftInvoice`; rejects any other amount while a charge is open). `charge` is `null`, or `{ amountSats, expiresAt }` when an unexpired pending point-of-sale charge exists; then both sat bounds are that amount. Mounted at `/pay`. No auth and no extra CORS headers.
+- **Inputs:** `{ auth: AuthStore, fetchImpl: FetchFn, posStore: PosStore, now: () => number }`. All four are required; there is no default store and no default clock inside `payRoutes`. `createApp` passes the same `posStore` and `now` already used by `/.well-known` and `/pos`, and the shared LNURL-pay fetch as `fetchImpl`.
 - **Returns / side effects:** Hono app. Logs `pay.unknown`, `pay.unreachable`, `pay.failed`, `pay.invoice_failed`, and `pay.invoice`. Never calls `username@21.gifts`.
 - **Used by:** `createApp`.
 

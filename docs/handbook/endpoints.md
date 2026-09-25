@@ -58,16 +58,16 @@
 
 ## Endpoint: GET /pay/:username
 
-- **Purpose:** Public, unauthenticated pay-link card for a member. Normalises `:username`, loads the account, and returns `name`, `username`, `minSats`, and `maxSats` from the linked Lightning Address LNURL-pay metadata. `name` is the trimmed display name, or the normalised username when the display name is blank. Does not return the callback, the Lightning Address, or provider metadata. No spend token.
-- **Errors:** 404 `{ error: 'Not found' }` when the username is invalid, the account is unknown, or `lightningAddress` is blank; 502 `{ error: 'Lightning Address could not be resolved' }` when the stored address is not a LUD-16 address, the provider is unreachable, the store throws, `minSendable` or `maxSendable` is not a safe integer, or `maxSats < minSats`.
-- **Used by:** A browser pay page that shows the member and the allowed satoshi range.
+- **Purpose:** Public, unauthenticated pay-link card for a member. Normalises `:username`, loads the account, and returns `name`, `username`, `minSats`, `maxSats`, and `charge` from the linked Lightning Address LNURL-pay metadata. `name` is the trimmed display name, or the normalised username when the display name is blank. No charge → `charge: null` and the wallet sat range. Unexpired pending → both bounds equal that amount and `charge` is `{ amountSats, expiresAt }` only. A bad wallet window is still 502 before any pin. Does not return the callback, the Lightning Address, or provider metadata. No spend token.
+- **Errors:** 404 `{ error: 'Not found' }` when the username is invalid, the account is unknown, or `lightningAddress` is blank; 502 `{ error: 'Lightning Address could not be resolved' }` when the stored address is not a LUD-16 address, the provider is unreachable, the store throws, `currentPending` throws, `minSendable` or `maxSendable` is not a safe integer, or `maxSats < minSats`.
+- **Used by:** A browser pay page that uses GET /pay/:username to show an open till instead of a free amount.
 - **Auth:** none.
 
 ## Endpoint: POST /pay/:username/invoice
 
-- **Purpose:** Public, unauthenticated BOLT11 mint for an exact satoshi amount. Same account lookup as `GET /pay/:username`, then `{ amountSats: number }` must be an integer inside `[minSats, maxSats]` whose millisatoshi value sits inside the provider window. Settlement calls `requestGiftInvoice` on the stored Lightning Address only — never `username@21.gifts`. Response is `{ pr, amountSats }` with no comment sent. No spend token.
-- **Errors:** 404 `{ error: 'Not found' }` for an invalid username, unknown account, or blank Lightning Address; 400 `{ error: 'Enter a whole number of sats' }` for missing or invalid JSON, a non-integer, or an amount outside the window; 502 `{ error: 'Lightning Address could not be resolved' }` when the address cannot be resolved, the store throws, the sat window is empty or not a safe integer, the invoice fetch fails, or the BOLT11 is missing, not a safe integer amount, or not for that exact millisatoshi amount.
-- **Used by:** The browser pay page minting one invoice for the typed satoshi amount.
+- **Purpose:** Public, unauthenticated BOLT11 mint for an exact satoshi amount. Same account lookup as `GET /pay/:username`, then `{ amountSats: number }` must be an integer inside `[minSats, maxSats]` whose millisatoshi value sits inside the provider window. A different POST amount while a charge is open is the existing 400 and does not call the invoice callback. The charge amount must still sit in the provider millisatoshi window or that same 400 is returned and the callback is not called. Settlement calls `requestGiftInvoice` on the stored Lightning Address only — never `username@21.gifts`. Response is `{ pr, amountSats }` with no comment sent. No spend token.
+- **Errors:** 404 `{ error: 'Not found' }` for an invalid username, unknown account, or blank Lightning Address; 400 `{ error: 'Enter a whole number of sats' }` for missing or invalid JSON, a non-integer, or an amount outside the window; 502 `{ error: 'Lightning Address could not be resolved' }` when the address cannot be resolved, the store throws, `currentPending` throws, the sat window is empty or not a safe integer, the invoice fetch fails, or the BOLT11 is missing, not a safe integer amount, or not for that exact millisatoshi amount.
+- **Used by:** The browser pay page minting the open till amount when a charge is present, not a freely typed amount.
 - **Auth:** none.
 
 ## Endpoint: GET /apple-touch-icon.png
