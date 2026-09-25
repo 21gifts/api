@@ -2645,6 +2645,34 @@ Builds the operator-only external-pubkey inspection route.
 - **Returns / side effects:** Admission epoch ms, or `null`. No I/O.
 - **Used by:** `membersRoutes` `GET /:accountId`.
 
+## Function: fundingReviewedByName
+
+- **Purpose:** Member-card reviewer name. The live display name of `decidedBy` when `fundingReviewedAt` is a number and the trimmed name is non-empty. Otherwise `null`. Does not expose pending, trial, or rejected.
+- **Inputs:** `grant`, `nowMs`, and `lookup(accountId)`.
+- **Returns / side effects:** Display name, or `null`. One account read when a decider id is set.
+- **Used by:** `membersRoutes` `GET /:accountId`.
+
+## Function: mentionUsernames
+
+- **Purpose:** Unique `@username` tokens in forum text, first-seen order, normalised lowercase. A mark starts at `@` only when the previous character is not a username character. The longest run is kept only when `normalizeUsername` accepts it. `name@21.gifts` is not a mark.
+- **Inputs:** Forum body text.
+- **Returns / side effects:** `string[]`. No I/O.
+- **Used by:** `persistForumPost`.
+
+## Function: notifyForumMentions
+
+- **Purpose:** One `forum_mention` notification per mentioned account except the author. Level `all` always, `active` only when `isActive`, `mentions` because the recipient is the mark. Push body uses that account's locale.
+- **Inputs:** Author, created row (with `mentions`), top-level `parentId`, `isActive`, optional notification, push, and auth stores.
+- **Returns / side effects:** Writes in-app rows and push outbox rows. No-op when every mark is the author.
+- **Used by:** `persistForumPost`.
+
+## Function: buildForumMentionPushPayload
+
+- **Purpose:** Web Push payload for one `@username` mark. Body is `{name} marked you`, `{name} hat dich markiert`, `{name} te marcó`, or `Minarkahan ka ni {name}`. Tag `forum_mention:<messageId>`. URL `/notifications`.
+- **Inputs:** `messageId`, author `name`, recipient `locale` (`de`, `es`, `fil`, or anything else including null for English).
+- **Returns / side effects:** `PushPayload`. No I/O.
+- **Used by:** `notifyForumMentions`.
+
 ## Function: expiredTrialAsPending
 
 - **Purpose:** Pending projection of an expired trial. Keeps `appliedAt` and the last decision actor/time/note; sets `status: 'pending'`, `trialUtcDate: null`, `admittedAt: null`.
