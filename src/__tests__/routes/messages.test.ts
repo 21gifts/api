@@ -5194,6 +5194,7 @@ describe('GET /messages/places', () => {
       lat: 9,
       lng: 10,
       label: 'B',
+      accountId: 'acc',
     });
     expect(body.places[1]?.label).toBe('A');
     expect(body.places[2]?.label).toBeNull();

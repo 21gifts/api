@@ -108,6 +108,11 @@ export interface MessageRow {
   /** PHP snapshot frozen when sats were credited. */
   amountPhp?: string | null;
   /**
+   * `@username` marks resolved when the note was sent. Empty or omitted
+   * means none. A later username change does not rewrite this list.
+   */
+  mentions?: readonly { accountId: string; username: string }[];
+  /**
    * Optional whole-sat ask on a top-level note. Omit or `null` means no goal.
    */
   goalSats?: number | null;
@@ -179,6 +184,11 @@ export interface PublicMessage {
    * 21gifts author id; omitted for Damus-only rows and on public GET.
    */
   accountId?: string;
+  /**
+   * `@username` marks resolved at send time. Present only when `accountId`
+   * is included and at least one mark hit an account.
+   */
+  mentions?: { username: string; accountId: string }[];
   /** Author display name at post time. */
   name: string;
   /** Message body (may be empty when `hasPhoto` or `hasVideo` is true). */
@@ -572,6 +582,12 @@ export function serializeMessage(
   if (includeAccountId === true && row.accountId !== null) {
     body.accountId = row.accountId;
   }
+  if (includeAccountId === true && row.mentions !== undefined && row.mentions.length > 0) {
+    body.mentions = row.mentions.map((mark) => ({
+      username: mark.username,
+      accountId: mark.accountId,
+    }));
+  }
   if (row.parentId !== null) {
     body.parentId = row.parentId;
   }
@@ -698,7 +714,8 @@ export function serializeDebugMessage(
  * Always includes `parentId` (JSON `null` on top-level notes) and
  * `deletedAt` (JSON `null` when live). Optional `via: 'nostr'` is present
  * exactly when `row.accountId === null && row.authorPubkey !== null`; the
- * pubkey itself never appears in this JSON. Never includes `accountId`,
+ * pubkey itself never appears in this JSON. Includes `accountId` for a
+ * 21.gifts author and omits it for an external row. Never includes
  * `eventId`, `nostrPublishState`, `payable`, author `role`, `nostrEvent`,
  * `claimedUntil`, `contentFp`, nsec, or photo/video bytes.
  *
@@ -759,6 +776,9 @@ export function serializeHiddenMessage(
   };
   if (row.accountId === null && row.authorPubkey !== null) {
     body.via = 'nostr';
+  }
+  if (row.accountId !== null) {
+    body.accountId = row.accountId;
   }
   return body;
 }
