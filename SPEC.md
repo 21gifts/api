@@ -64,7 +64,7 @@ only and does not `addSats`; no `notifyForumReply`). Optional `messageId` on
 CORS allows the configured origins (`CORS_ALLOWED_ORIGINS`, or the default
 surfaces `https://21.gifts`, `https://dev.21.gifts`, `https://app.21.gifts`,
 `https://dev-app.21.gifts`, and `http://localhost:3000`) and methods `GET`,
-`POST`, `PUT`, `DELETE`, `OPTIONS`, with headers `Authorization` and `Content-Type`.
+`POST`, `PUT`, `PATCH`, `DELETE`, `OPTIONS`, with headers `Authorization` and `Content-Type`.
 Sessions are sent as `Authorization: Bearer` headers — no cookies,
 credentials not enabled.
 
