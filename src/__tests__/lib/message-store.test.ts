@@ -897,6 +897,37 @@ describe('InMemoryMessageStore', () => {
     expect(child?.deletedBy).toBe('staff');
   });
 
+  it('setPlace returns false when missing', async () => {
+    const store = new InMemoryMessageStore();
+    expect(await store.setPlace('missing', { lat: 1, lng: 2, label: null })).toBe(false);
+  });
+
+  it('setPlace sets and clears without changing other columns', async () => {
+    const store = new InMemoryMessageStore();
+    const eventId = '11'.repeat(32);
+    await store.create({
+      ...EARLY,
+      id: 'p-place',
+      text: 'shop',
+      sats: 21,
+      eventId,
+    });
+    expect(await store.setPlace('p-place', { lat: 47.3, lng: 8.5, label: 'Stall' })).toBe(true);
+    const set = await store.getById('p-place');
+    expect(set?.place).toEqual({ lat: 47.3, lng: 8.5, label: 'Stall' });
+    expect(set?.text).toBe('shop');
+    expect(set?.sats).toBe(21);
+    expect(set?.eventId).toBe(eventId);
+    expect(set?.deletedAt).toBeNull();
+    expect(await store.setPlace('p-place', null)).toBe(true);
+    const cleared = await store.getById('p-place');
+    expect(cleared?.place).toBeNull();
+    expect(cleared?.text).toBe('shop');
+    expect(cleared?.sats).toBe(21);
+    expect(cleared?.eventId).toBe(eventId);
+    expect(cleared?.deletedAt).toBeNull();
+  });
+
   it('replyCount and worker scans omit soft-deleted rows', async () => {
     const store = new InMemoryMessageStore();
     const eventId = '11'.repeat(32);
@@ -5804,6 +5835,28 @@ describe('PostgresMessageStore', () => {
     const missing = new MockSql();
     missing.nextRows = [];
     expect(await new PostgresMessageStore(missing).markUndeleted('gone')).toBe(false);
+  });
+
+  it('setPlace issues an UPDATE of the three place columns and returns false when missing', async () => {
+    const sql = new MockSql();
+    sql.nextRows = [{ id: 'm1' }];
+    const pin = { lat: 47.3, lng: 8.5, label: 'Stall' };
+    expect(await new PostgresMessageStore(sql).setPlace('m1', pin)).toBe(true);
+    expect(sql.executes).toEqual([]);
+    expect(sql.queries).toHaveLength(1);
+    const text = sql.queries[0]?.text ?? '';
+    expect(text).toMatch(
+      /UPDATE message SET place_lat = \$2, place_lng = \$3, place_label = \$4 WHERE id = \$1/,
+    );
+    expect(text).toMatch(/RETURNING id/);
+    expect(sql.queries[0]?.params).toEqual(['m1', 47.3, 8.5, 'Stall']);
+
+    expect(await new PostgresMessageStore(sql).setPlace('m1', null)).toBe(true);
+    expect(sql.queries[1]?.params).toEqual(['m1', null, null, null]);
+
+    const missing = new MockSql();
+    missing.nextRows = [];
+    expect(await new PostgresMessageStore(missing).setPlace('gone', pin)).toBe(false);
   });
 
   it('list and claim SQL require deleted_at IS NULL', async () => {

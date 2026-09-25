@@ -200,7 +200,16 @@ function posixHashtagTokenPattern(name: string): string {
   return `#${name.toLowerCase().replace(POSIX_REGEX_META, '\\$&')}([^a-z0-9_]|$)`;
 }
 
-function textHasHashtagToken(text: string, name: string): boolean {
+/**
+ * Whether `text` contains a hashtag token `#name` (case-insensitive).
+ * The next character must not be `[A-Za-z0-9_]`, so `#bitcoiners` does
+ * not match `bitcoin`.
+ *
+ * @param text - Stored note body.
+ * @param name - Hashtag name without `#`.
+ * @returns `true` when the token is present.
+ */
+export function textHasHashtagToken(text: string, name: string): boolean {
   const escaped = name.replace(/[\\^$.|?*+()[\]{}]/g, '\\$&');
   return new RegExp(`#${escaped}(?![A-Za-z0-9_])`, 'i').test(text);
 }
@@ -598,6 +607,18 @@ export interface MessageStore {
    *   (hidden or already live).
    */
   markUndeleted(id: string): Promise<boolean>;
+
+  /**
+   * Set, replace, or clear the stored map pin. Writes only `place_lat` /
+   * `place_lng` / `place_label` (in-memory `place`). Does not change text,
+   * sats, goals, media, hide stamps, event ids, or publish state.
+   *
+   * @param id - Message id.
+   * @param place - Pin to store, or `null` to store SQL NULL / `place: null`.
+   * @returns `false` when no row has that id; `true` when the three columns
+   *   were written.
+   */
+  setPlace(id: string, place: ForumPlace | null): Promise<boolean>;
 
   /**
    * Direct children of `parentId` (`parentId` match), including hidden,
@@ -3269,6 +3290,16 @@ export class InMemoryMessageStore implements MessageStore {
     return Promise.resolve(true);
   }
 
+  setPlace(id: string, place: ForumPlace | null): Promise<boolean> {
+    const row = this.#rows.find((item) => item.id === id);
+    if (row === undefined) {
+      return Promise.resolve(false);
+    }
+    row.place =
+      place === null ? null : { lat: place.lat, lng: place.lng, label: place.label };
+    return Promise.resolve(true);
+  }
+
   /**
    * Direct children of `parentId`, including hidden, Damus-only, and
    * gift-only rows. Oldest `createdAt` then `id` first. Missing parent → `[]`.
@@ -4331,6 +4362,19 @@ export class PostgresMessageStore implements MessageStore {
        )
        SELECT id FROM target`,
       [id],
+    );
+    return rows[0] !== undefined;
+  }
+
+  async setPlace(id: string, place: ForumPlace | null): Promise<boolean> {
+    const rows = await this.#sql.query<{ id: string }>(
+      `UPDATE message SET place_lat = $2, place_lng = $3, place_label = $4 WHERE id = $1 RETURNING id`,
+      [
+        id,
+        place === null ? null : place.lat,
+        place === null ? null : place.lng,
+        place === null ? null : place.label,
+      ],
     );
     return rows[0] !== undefined;
   }

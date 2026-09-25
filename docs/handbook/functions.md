@@ -700,6 +700,20 @@
 - **Returns / side effects:** `Promise<boolean>` — `false` when no row has that id; `true` when the id exists (hidden or already live). In-memory mutates store rows; Postgres uses one UPDATE CTE (`IS NOT DISTINCT FROM` stamp match on direct children).
 - **Used by:** `debugMessagesRoutes` (`POST /debug/messages/:id/restore`).
 
+## Function: setPlace
+
+- **Purpose:** Write only the three place columns (`place_lat` / `place_lng` / `place_label`) on an existing forum row. Does not change text, event ids, hide stamps, sats, media, or publish state.
+- **Inputs:** `id` (message id string) and `place` (`ForumPlace | null`).
+- **Returns / side effects:** `Promise<boolean>` — `true` when the id existed and the three columns were written; `false` when no row has that id. `null` stores SQL NULL / in-memory `place: null`. No other column changes.
+- **Used by:** `messagesRoutes` (`PATCH /messages/:id/place`).
+
+## Function: textHasHashtagToken
+
+- **Purpose:** Whether `text` contains a `#name` hashtag token. Match is case-insensitive and the token must not be followed by `[A-Za-z0-9_]`, so `#21GiftsShopper` does not match `21GiftsShop`.
+- **Inputs:** `text` string and `name` (token without the leading `#`).
+- **Returns / side effects:** `boolean`. No I/O. `#21giftsshop` matches `21GiftsShop`; `#21GiftsShopper` does not.
+- **Used by:** `messagesRoutes` (`PATCH /messages/:id/place`).
+
 ## Function: isPubkeyBlocked
 
 - **Purpose:** Check the current external-pubkey kill switch without loading the complete block list. Input is lowercased before lookup in both stores.
