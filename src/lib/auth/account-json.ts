@@ -8,7 +8,11 @@ import {
 import { bytesToHex } from '@/lib/auth/hex';
 import {
   parseAmountUnit,
+  parseStoredFiat,
+  parseStoredLocale,
   type Account,
+  type AccountFiat,
+  type AccountLocale,
   type AddressVerification,
   type AmountUnit,
   type AuthStore,
@@ -57,8 +61,8 @@ export interface AccountResponse {
  * Owner-facing account JSON: the eleven public fields plus the durable
  * view-key capability secret, the next `setup` step, factual `missing`,
  * `hasPosted`, `aboutMe`, `aboutMeHasPhoto`, `notificationLevel`,
- * `amountUnit`, `funding`, `walletRequired`, `walletBackupSeenAt`, and
- * `passkeyCredentialId`.
+ * `amountUnit`, `locale`, `fiat`, `funding`, `walletRequired`,
+ * `walletBackupSeenAt`, and `passkeyCredentialId`.
  */
 export interface OwnerAccountResponse extends AccountResponse {
   /** 64 lowercase hex; capability URL secret for `GET /view/:viewKey`. */
@@ -110,6 +114,16 @@ export interface OwnerAccountResponse extends AccountResponse {
    * omitted from public member cards and view profiles.
    */
   amountUnit: AmountUnit;
+  /**
+   * Owner UI language (`en` \| `de` \| `es` \| `fil`), or `null` when unset.
+   * Owner-only; omitted from public member cards and view profiles.
+   */
+  locale: AccountLocale | null;
+  /**
+   * Owner fiat display currency (`CHF` \| `EUR` \| `USD` \| `PHP`), or `null`
+   * when unset. Owner-only; omitted from public member cards and view profiles.
+   */
+  fiat: AccountFiat | null;
   /**
    * Funding-program grant. `null` for `basis` (do not leak grants).
    * Otherwise always an object; no row is `{ status: 'none', … }`.
@@ -241,6 +255,15 @@ export interface DebugAccountResponse extends AccountResponse {
   notificationLevel: NotificationLevel;
   /** Owner amount-entry unit (`btc` \| `fiat`). Default `btc`. */
   amountUnit: AmountUnit;
+  /**
+   * Owner UI language (`en` \| `de` \| `es` \| `fil`), or `null` when unset.
+   */
+  locale: AccountLocale | null;
+  /**
+   * Owner fiat display currency (`CHF` \| `EUR` \| `USD` \| `PHP`), or `null`
+   * when unset.
+   */
+  fiat: AccountFiat | null;
   /** True when a seed-bearing passkey exists. Does not set `setup` to `wallet`. */
   walletRequired: boolean;
   /**
@@ -443,7 +466,8 @@ function aboutMessageIdFor(account: Account, aboutMe: string | null): string | n
  *
  * @param account - Stored account.
  * @param nostr - Optional Nostr columns (defaults to JSON `null`s).
- * @returns Debug fields including `viewKey`, `sessionRefused`, and Nostr columns.
+ * @returns Debug fields including `viewKey`, `sessionRefused`, `locale`,
+ * `fiat`, and Nostr columns.
  */
 export function serializeDebugAccount(
   account: Account,
@@ -459,6 +483,8 @@ export function serializeDebugAccount(
     profileMessageId: account.profileMessageId ?? null,
     notificationLevel: parseNotificationLevel(account.notificationLevel),
     amountUnit: parseAmountUnit(account.amountUnit),
+    locale: parseStoredLocale(account.locale),
+    fiat: parseStoredFiat(account.fiat),
     walletRequired: account.walletRequired === true,
     walletBackupSeenAt: account.walletBackupSeenAt ?? null,
     nostrPubkey: nostr.nostrPubkey,
@@ -522,8 +548,8 @@ export function serializeDebugAccountDetail(
  * @param passkeyCredentialId - Current passkey id (base64url), or `null`.
  * @returns Owner fields including `viewKey`, `setup`, `missing`,
  * `hasPosted`, `location`, `aboutMe`, `aboutMeHasPhoto`,
- * `notificationLevel`, `amountUnit`, `funding`, `walletRequired`,
- * `walletBackupSeenAt`, and `passkeyCredentialId`.
+ * `notificationLevel`, `amountUnit`, `locale`, `fiat`, `funding`,
+ * `walletRequired`, `walletBackupSeenAt`, and `passkeyCredentialId`.
  */
 export function serializeOwnerAccount(
   account: Account,
@@ -544,6 +570,8 @@ export function serializeOwnerAccount(
     aboutMessageId: aboutMessageIdFor(account, aboutMe),
     notificationLevel: parseNotificationLevel(account.notificationLevel),
     amountUnit: parseAmountUnit(account.amountUnit),
+    locale: parseStoredLocale(account.locale),
+    fiat: parseStoredFiat(account.fiat),
     funding,
     walletRequired: account.walletRequired === true,
     walletBackupSeenAt: account.walletBackupSeenAt ?? null,
@@ -583,8 +611,9 @@ export interface OwnerFundingLookup {
  *   `authStore.getPasskeyCredentialForAccount` for `passkeyCredentialId`
  *   only when `walletRequired` is true (otherwise that field is null).
  * @returns Owner JSON including `hasPosted`, `aboutMe`, `aboutMeHasPhoto`,
- *   `notificationLevel`, `amountUnit`, `funding`, `walletRequired`,
- *   `walletBackupSeenAt`, and `passkeyCredentialId` (via {@link serializeOwnerAccount}).
+ *   `notificationLevel`, `amountUnit`, `locale`, `fiat`, `funding`,
+ *   `walletRequired`, `walletBackupSeenAt`, and `passkeyCredentialId`
+ *   (via {@link serializeOwnerAccount}).
  *   `aboutMe` is `null` when the profile note is missing or `deletedAt` is
  *   set, else `aboutMeFromNote(account.name, row.text, row.name)`.
  *   `aboutMeHasPhoto` is true iff the live row has `hasPhoto === true`.

@@ -3,9 +3,11 @@
  * `DATABASE_URL` is set. `CREATE TABLE IF NOT EXISTS` is safe to re-run;
  * `ALTER TABLE` backfills `account.name`, nullable `linking_key`,
  * `forum_laws_dismissed`, `rules_agreed_at`, `notification_level`,
- * `amount_unit`, `session_refused`, `wallet_required`, and
+ * `amount_unit`, `locale`, `fiat`, `session_refused`, `wallet_required`, and
  * `wallet_backup_seen_at` on
  * databases created before those columns existed.
+ * `locale` and `fiat` are backfilled as nullable (no value backfill of
+ * existing rows).
  * Drops leftover `auth_challenge` from LNURL-auth.
  */
 
@@ -83,6 +85,14 @@ export const AUTH_SCHEMA_SQL: readonly string[] = [
   `ALTER TABLE account DROP CONSTRAINT IF EXISTS account_amount_unit_chk`,
   `ALTER TABLE account ADD CONSTRAINT account_amount_unit_chk
     CHECK (amount_unit IN ('btc', 'fiat'))`,
+  `ALTER TABLE account ADD COLUMN IF NOT EXISTS locale text`,
+  `ALTER TABLE account DROP CONSTRAINT IF EXISTS account_locale_chk`,
+  `ALTER TABLE account ADD CONSTRAINT account_locale_chk
+    CHECK (locale IS NULL OR locale IN ('en', 'de', 'es', 'fil'))`,
+  `ALTER TABLE account ADD COLUMN IF NOT EXISTS fiat text`,
+  `ALTER TABLE account DROP CONSTRAINT IF EXISTS account_fiat_chk`,
+  `ALTER TABLE account ADD CONSTRAINT account_fiat_chk
+    CHECK (fiat IS NULL OR fiat IN ('CHF', 'EUR', 'USD', 'PHP'))`,
   `ALTER TABLE account ADD COLUMN IF NOT EXISTS username text`,
   `CREATE UNIQUE INDEX IF NOT EXISTS account_username_uidx
     ON account (lower(trim(username))) WHERE username IS NOT NULL AND trim(username) <> ''`,

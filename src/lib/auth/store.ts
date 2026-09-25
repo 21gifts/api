@@ -38,6 +38,17 @@ export type NotificationLevel = 'all' | 'active' | 'mentions';
 export type AmountUnit = 'btc' | 'fiat';
 
 /**
+ * Owner UI language stored on the account. Null on the row means not defined.
+ */
+export type AccountLocale = 'en' | 'de' | 'es' | 'fil';
+
+/**
+ * Owner fiat display currency stored on the account. Null on the row means
+ * not defined.
+ */
+export type AccountFiat = 'CHF' | 'EUR' | 'USD' | 'PHP';
+
+/**
  * Parse a stored or request value into an {@link AmountUnit}.
  *
  * @param raw - Unknown input (DB text, JSON, omitted).
@@ -48,6 +59,32 @@ export function parseAmountUnit(raw: unknown): AmountUnit {
     return raw;
   }
   return 'btc';
+}
+
+/**
+ * Parse a stored locale into an {@link AccountLocale} or null.
+ *
+ * @param raw - Unknown input (DB text, JSON, omitted).
+ * @returns Exact `en`, `de`, `es`, or `fil`; anything else → `null`.
+ */
+export function parseStoredLocale(raw: unknown): AccountLocale | null {
+  if (raw === 'en' || raw === 'de' || raw === 'es' || raw === 'fil') {
+    return raw;
+  }
+  return null;
+}
+
+/**
+ * Parse a stored fiat currency into an {@link AccountFiat} or null.
+ *
+ * @param raw - Unknown input (DB text, JSON, omitted).
+ * @returns Exact `CHF`, `EUR`, `USD`, or `PHP`; anything else → `null`.
+ */
+export function parseStoredFiat(raw: unknown): AccountFiat | null {
+  if (raw === 'CHF' || raw === 'EUR' || raw === 'USD' || raw === 'PHP') {
+    return raw;
+  }
+  return null;
 }
 
 /**
@@ -122,6 +159,16 @@ export interface Account {
    * cards or view profiles.
    */
   amountUnit?: AmountUnit;
+  /**
+   * Owner UI language. Null / omitted means not defined yet. Not public on
+   * member cards or view profiles.
+   */
+  locale?: AccountLocale | null;
+  /**
+   * Owner fiat display currency. Null / omitted means not defined yet. Not
+   * public on member cards or view profiles.
+   */
+  fiat?: AccountFiat | null;
   /**
    * True when a seed-bearing passkey exists. Does not set `setup` to
    * `wallet`. Omit / false = no seed yet. New passkey register and
@@ -225,6 +272,36 @@ export interface AuthStore {
   markWalletBackupSeen(
     accountId: string,
     now: number,
+  ): Promise<{ account: Account; wrote: boolean } | undefined>;
+  /**
+   * Set `locale` on the account. When `onlyIfUnset` is true, write only while
+   * the stored value is still null. Other columns stay unchanged.
+   *
+   * @param accountId - Account to update.
+   * @param locale - UI language to store.
+   * @param onlyIfUnset - When true, skip the write if a value is already stored.
+   * @returns `{ account, wrote }`, or `undefined` when the id is unknown.
+   *   `wrote` is true when this call stored `locale`.
+   */
+  setAccountLocale(
+    accountId: string,
+    locale: AccountLocale,
+    onlyIfUnset: boolean,
+  ): Promise<{ account: Account; wrote: boolean } | undefined>;
+  /**
+   * Set `fiat` on the account. When `onlyIfUnset` is true, write only while
+   * the stored value is still null. Other columns stay unchanged.
+   *
+   * @param accountId - Account to update.
+   * @param fiat - Fiat display currency to store.
+   * @param onlyIfUnset - When true, skip the write if a value is already stored.
+   * @returns `{ account, wrote }`, or `undefined` when the id is unknown.
+   *   `wrote` is true when this call stored `fiat`.
+   */
+  setAccountFiat(
+    accountId: string,
+    fiat: AccountFiat,
+    onlyIfUnset: boolean,
   ): Promise<{ account: Account; wrote: boolean } | undefined>;
   /**
    * Set only `name` on the account that owns this Lightning Address
@@ -483,6 +560,8 @@ export class InMemoryAuthStore implements AuthStore {
     this.#accounts.set(account.id, {
       ...account,
       sessionRefused: account.sessionRefused === true,
+      locale: null,
+      fiat: null,
     });
     this.#accountsByViewKey.set(account.viewKey, account.id);
     if (account.linkingKey !== null) {
@@ -502,6 +581,40 @@ export class InMemoryAuthStore implements AuthStore {
       return { account: current, wrote: false };
     }
     const updated: Account = { ...current, walletBackupSeenAt: now };
+    this.#accounts.set(accountId, updated);
+    return { account: updated, wrote: true };
+  }
+
+  async setAccountLocale(
+    accountId: string,
+    locale: AccountLocale,
+    onlyIfUnset: boolean,
+  ): Promise<{ account: Account; wrote: boolean } | undefined> {
+    const current = this.#accounts.get(accountId);
+    if (current === undefined) {
+      return undefined;
+    }
+    if (onlyIfUnset && current.locale !== null && current.locale !== undefined) {
+      return { account: current, wrote: false };
+    }
+    const updated: Account = { ...current, locale };
+    this.#accounts.set(accountId, updated);
+    return { account: updated, wrote: true };
+  }
+
+  async setAccountFiat(
+    accountId: string,
+    fiat: AccountFiat,
+    onlyIfUnset: boolean,
+  ): Promise<{ account: Account; wrote: boolean } | undefined> {
+    const current = this.#accounts.get(accountId);
+    if (current === undefined) {
+      return undefined;
+    }
+    if (onlyIfUnset && current.fiat !== null && current.fiat !== undefined) {
+      return { account: current, wrote: false };
+    }
+    const updated: Account = { ...current, fiat };
     this.#accounts.set(accountId, updated);
     return { account: updated, wrote: true };
   }
@@ -542,6 +655,8 @@ export class InMemoryAuthStore implements AuthStore {
       sessionRefused: previous?.sessionRefused === true,
       walletRequired: previous?.walletRequired === true,
       walletBackupSeenAt: previous?.walletBackupSeenAt ?? null,
+      locale: previous?.locale ?? null,
+      fiat: previous?.fiat ?? null,
     });
     this.#accountsByViewKey.set(account.viewKey, account.id);
     if (account.linkingKey !== null) {

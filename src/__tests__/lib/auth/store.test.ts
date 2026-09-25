@@ -1,5 +1,11 @@
 import { describe, it, expect } from 'vitest';
-import { compareAccountsForList, InMemoryAuthStore, parseAmountUnit } from '@/lib/auth/store';
+import {
+  compareAccountsForList,
+  InMemoryAuthStore,
+  parseAmountUnit,
+  parseStoredFiat,
+  parseStoredLocale,
+} from '@/lib/auth/store';
 import { CHALLENGE_TTL_MS, SESSION_TTL_MS } from '@/lib/config';
 
 const KEY = `02${'a'.repeat(64)}`;
@@ -11,6 +17,34 @@ describe('parseAmountUnit', () => {
     expect(parseAmountUnit('fiat')).toBe('fiat');
     expect(parseAmountUnit('sats')).toBe('btc');
     expect(parseAmountUnit(null)).toBe('btc');
+  });
+});
+
+describe('parseStoredLocale', () => {
+  it('returns exact en, de, es, and fil and maps everything else to null', () => {
+    expect(parseStoredLocale('en')).toBe('en');
+    expect(parseStoredLocale('de')).toBe('de');
+    expect(parseStoredLocale('es')).toBe('es');
+    expect(parseStoredLocale('fil')).toBe('fil');
+    expect(parseStoredLocale('fr')).toBeNull();
+    expect(parseStoredLocale('EN')).toBeNull();
+    expect(parseStoredLocale(null)).toBeNull();
+    expect(parseStoredLocale(undefined)).toBeNull();
+    expect(parseStoredLocale(1)).toBeNull();
+  });
+});
+
+describe('parseStoredFiat', () => {
+  it('returns exact CHF, EUR, USD, and PHP and maps everything else to null', () => {
+    expect(parseStoredFiat('CHF')).toBe('CHF');
+    expect(parseStoredFiat('EUR')).toBe('EUR');
+    expect(parseStoredFiat('USD')).toBe('USD');
+    expect(parseStoredFiat('PHP')).toBe('PHP');
+    expect(parseStoredFiat('GBP')).toBeNull();
+    expect(parseStoredFiat('chf')).toBeNull();
+    expect(parseStoredFiat(null)).toBeNull();
+    expect(parseStoredFiat(undefined)).toBeNull();
+    expect(parseStoredFiat(1)).toBeNull();
   });
 });
 
@@ -1573,6 +1607,175 @@ describe('InMemoryAuthStore', () => {
     await store.updateAccount({ ...first!.account, name: 'Grace', walletBackupSeenAt: null });
     expect((await store.getAccount('acc'))?.walletBackupSeenAt).toBe(9);
     expect((await store.getAccount('acc'))?.name).toBe('Grace');
+  });
+
+  it('createAccount stores locale and fiat null even when the argument includes them', async () => {
+    const store = new InMemoryAuthStore();
+    await store.createAccount({
+      id: 'acc',
+      linkingKey: KEY,
+      role: 'basis',
+      name: 'Ada',
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: 'a'.repeat(64),
+      createdAt: 1,
+      rulesAgreedAt: null,
+      locale: 'de',
+      fiat: 'EUR',
+    });
+    expect((await store.getAccount('acc'))?.locale).toBeNull();
+    expect((await store.getAccount('acc'))?.fiat).toBeNull();
+  });
+
+  it('setAccountLocale writes onlyIfUnset and unconditional values', async () => {
+    const store = new InMemoryAuthStore();
+    expect(await store.setAccountLocale('missing', 'en', false)).toBeUndefined();
+    await store.createAccount({
+      id: 'acc',
+      linkingKey: KEY,
+      role: 'basis',
+      name: 'Ada',
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: 'a'.repeat(64),
+      createdAt: 1,
+      rulesAgreedAt: null,
+    });
+    const first = await store.setAccountLocale('acc', 'en', true);
+    expect(first?.wrote).toBe(true);
+    expect(first?.account.locale).toBe('en');
+    const skipped = await store.setAccountLocale('acc', 'de', true);
+    expect(skipped?.wrote).toBe(false);
+    expect(skipped?.account.locale).toBe('en');
+    const replaced = await store.setAccountLocale('acc', 'de', false);
+    expect(replaced?.wrote).toBe(true);
+    expect(replaced?.account.locale).toBe('de');
+    const same = await store.setAccountLocale('acc', 'de', false);
+    expect(same?.wrote).toBe(true);
+    expect(same?.account.locale).toBe('de');
+    const late = await store.setAccountLocale('acc', 'es', true);
+    expect(late?.wrote).toBe(false);
+    expect(late?.account.locale).toBe('de');
+    const stored = await store.getAccount('acc');
+    delete stored!.locale;
+    const fromUnset = await store.setAccountLocale('acc', 'fil', true);
+    expect(fromUnset?.wrote).toBe(true);
+    expect(fromUnset?.account.locale).toBe('fil');
+  });
+
+  it('setAccountFiat writes onlyIfUnset and unconditional values', async () => {
+    const store = new InMemoryAuthStore();
+    expect(await store.setAccountFiat('missing', 'CHF', false)).toBeUndefined();
+    await store.createAccount({
+      id: 'acc',
+      linkingKey: KEY,
+      role: 'basis',
+      name: 'Ada',
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: 'a'.repeat(64),
+      createdAt: 1,
+      rulesAgreedAt: null,
+    });
+    const first = await store.setAccountFiat('acc', 'CHF', true);
+    expect(first?.wrote).toBe(true);
+    expect(first?.account.fiat).toBe('CHF');
+    const skipped = await store.setAccountFiat('acc', 'EUR', true);
+    expect(skipped?.wrote).toBe(false);
+    expect(skipped?.account.fiat).toBe('CHF');
+    const replaced = await store.setAccountFiat('acc', 'EUR', false);
+    expect(replaced?.wrote).toBe(true);
+    expect(replaced?.account.fiat).toBe('EUR');
+    const same = await store.setAccountFiat('acc', 'EUR', false);
+    expect(same?.wrote).toBe(true);
+    expect(same?.account.fiat).toBe('EUR');
+    const late = await store.setAccountFiat('acc', 'USD', true);
+    expect(late?.wrote).toBe(false);
+    expect(late?.account.fiat).toBe('EUR');
+    const stored = await store.getAccount('acc');
+    delete stored!.fiat;
+    const fromUnset = await store.setAccountFiat('acc', 'PHP', true);
+    expect(fromUnset?.wrote).toBe(true);
+    expect(fromUnset?.account.fiat).toBe('PHP');
+  });
+
+  it('updateAccount preserves locale and fiat from the previous row', async () => {
+    const store = new InMemoryAuthStore();
+    await store.createAccount({
+      id: 'acc',
+      linkingKey: KEY,
+      role: 'basis',
+      name: 'Ada',
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: 'a'.repeat(64),
+      createdAt: 1,
+      rulesAgreedAt: null,
+    });
+    await store.setAccountLocale('acc', 'de', false);
+    await store.setAccountFiat('acc', 'EUR', false);
+    const current = await store.getAccount('acc');
+    await store.updateAccount({
+      ...current!,
+      name: 'Grace',
+      locale: 'en',
+      fiat: 'USD',
+    });
+    expect((await store.getAccount('acc'))?.name).toBe('Grace');
+    expect((await store.getAccount('acc'))?.locale).toBe('de');
+    expect((await store.getAccount('acc'))?.fiat).toBe('EUR');
+  });
+
+  it('updateAccount of an unknown id stores locale null and fiat null', async () => {
+    const store = new InMemoryAuthStore();
+    await store.updateAccount({
+      id: 'never',
+      linkingKey: null,
+      role: 'basis',
+      name: 'Ada',
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: 'c'.repeat(64),
+      createdAt: 1,
+      rulesAgreedAt: null,
+      locale: 'es',
+      fiat: 'PHP',
+    });
+    expect((await store.getAccount('never'))?.locale).toBeNull();
+    expect((await store.getAccount('never'))?.fiat).toBeNull();
+  });
+
+  it('updateAccount leaves unset locale and fiat null', async () => {
+    const store = new InMemoryAuthStore();
+    await store.createAccount({
+      id: 'acc',
+      linkingKey: KEY,
+      role: 'basis',
+      name: 'Ada',
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: 'a'.repeat(64),
+      createdAt: 1,
+      rulesAgreedAt: null,
+    });
+    const current = await store.getAccount('acc');
+    await store.updateAccount({ ...current!, name: 'Grace', locale: 'en', fiat: 'USD' });
+    expect((await store.getAccount('acc'))?.name).toBe('Grace');
+    expect((await store.getAccount('acc'))?.locale).toBeNull();
+    expect((await store.getAccount('acc'))?.fiat).toBeNull();
   });
 
   it('ignores a second createAccount with the same viewKey', async () => {

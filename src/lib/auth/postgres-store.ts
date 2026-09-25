@@ -4,7 +4,11 @@ import { CHALLENGE_TTL_MS, SESSION_TTL_MS } from '@/lib/config';
 import { isUniqueViolation, type SqlClient } from '@/lib/auth/sql';
 import {
   parseAmountUnit,
+  parseStoredFiat,
+  parseStoredLocale,
   type Account,
+  type AccountFiat,
+  type AccountLocale,
   type AccountRole,
   type AddressVerification,
   type AuthStore,
@@ -43,9 +47,11 @@ interface AccountRow {
   wallet_required?: boolean | null;
   wallet_backup_seen_at?: Date | string | null;
   amount_unit?: string | null;
+  locale?: string | null;
+  fiat?: string | null;
 }
 
-const ACCOUNT_SELECT_COLUMNS = `id, linking_key, role, name, lightning_address, lightning_address_verified, forum_laws_dismissed, view_key, created_at, rules_agreed_at, is_platform, name_skipped_at, lightning_address_skipped_at, profile_message_id, location, notification_level, username, session_refused, nostr_kek_id, nostr_key_custody, nostr_key_created_at, wallet_required, wallet_backup_seen_at, amount_unit`;
+const ACCOUNT_SELECT_COLUMNS = `id, linking_key, role, name, lightning_address, lightning_address_verified, forum_laws_dismissed, view_key, created_at, rules_agreed_at, is_platform, name_skipped_at, lightning_address_skipped_at, profile_message_id, location, notification_level, username, session_refused, nostr_kek_id, nostr_key_custody, nostr_key_created_at, wallet_required, wallet_backup_seen_at, amount_unit, locale, fiat`;
 
 /** Row shape of `auth_session`. */
 interface SessionRow {
@@ -160,6 +166,62 @@ export class PostgresAuthStore implements AuthStore {
        WHERE id = $1 AND wallet_backup_seen_at IS NULL
        RETURNING ${ACCOUNT_SELECT_COLUMNS}`,
       [accountId, now],
+    );
+    const wroteRow = written[0];
+    if (wroteRow !== undefined) {
+      const account = mapAccount(wroteRow);
+      return account === undefined ? undefined : { account, wrote: true };
+    }
+    const existing = await this.#sql.query<AccountRow>(
+      `SELECT ${ACCOUNT_SELECT_COLUMNS} FROM account WHERE id = $1`,
+      [accountId],
+    );
+    const row = existing[0];
+    if (row === undefined) {
+      return undefined;
+    }
+    const account = mapAccount(row);
+    return account === undefined ? undefined : { account, wrote: false };
+  }
+
+  async setAccountLocale(
+    accountId: string,
+    locale: AccountLocale,
+    onlyIfUnset: boolean,
+  ): Promise<{ account: Account; wrote: boolean } | undefined> {
+    const written = await this.#sql.query<AccountRow>(
+      onlyIfUnset
+        ? `UPDATE account SET locale = $2 WHERE id = $1 AND locale IS NULL RETURNING ${ACCOUNT_SELECT_COLUMNS}`
+        : `UPDATE account SET locale = $2 WHERE id = $1 RETURNING ${ACCOUNT_SELECT_COLUMNS}`,
+      [accountId, locale],
+    );
+    const wroteRow = written[0];
+    if (wroteRow !== undefined) {
+      const account = mapAccount(wroteRow);
+      return account === undefined ? undefined : { account, wrote: true };
+    }
+    const existing = await this.#sql.query<AccountRow>(
+      `SELECT ${ACCOUNT_SELECT_COLUMNS} FROM account WHERE id = $1`,
+      [accountId],
+    );
+    const row = existing[0];
+    if (row === undefined) {
+      return undefined;
+    }
+    const account = mapAccount(row);
+    return account === undefined ? undefined : { account, wrote: false };
+  }
+
+  async setAccountFiat(
+    accountId: string,
+    fiat: AccountFiat,
+    onlyIfUnset: boolean,
+  ): Promise<{ account: Account; wrote: boolean } | undefined> {
+    const written = await this.#sql.query<AccountRow>(
+      onlyIfUnset
+        ? `UPDATE account SET fiat = $2 WHERE id = $1 AND fiat IS NULL RETURNING ${ACCOUNT_SELECT_COLUMNS}`
+        : `UPDATE account SET fiat = $2 WHERE id = $1 RETURNING ${ACCOUNT_SELECT_COLUMNS}`,
+      [accountId, fiat],
     );
     const wroteRow = written[0];
     if (wroteRow !== undefined) {
@@ -835,6 +897,8 @@ function mapAccount(row: AccountRow): Account | undefined {
     profileMessageId: row.profile_message_id ?? null,
     notificationLevel: parseNotificationLevel(row.notification_level),
     amountUnit: parseAmountUnit(row.amount_unit),
+    locale: parseStoredLocale(row.locale),
+    fiat: parseStoredFiat(row.fiat),
     username: row.username ?? null,
     sessionRefused: row.session_refused === true,
     walletRequired: row.wallet_required === true,
