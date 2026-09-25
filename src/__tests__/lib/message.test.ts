@@ -432,6 +432,66 @@ describe('serializeMessage', () => {
     ).not.toHaveProperty('goalSats');
   });
 
+  it('omits currency keys when goalCurrency or goalAmount is missing', () => {
+    const base: MessageRow = {
+      id: 'msg-legacy',
+      accountId: 'acc-1',
+      name: 'Ada',
+      text: 'hi',
+      createdAt: new Date('2026-08-28T12:00:00.000Z'),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+      goalSats: 21000,
+    };
+    expect(serializeMessage(base, false, 'basis')).not.toHaveProperty('goalCurrency');
+    expect(serializeMessage(base, false, 'basis').goalSats).toBe(21000);
+    const missingAmount = serializeMessage(
+      { ...base, goalCurrency: 'USD', goalAmount: null },
+      false,
+      'basis',
+    );
+    expect(missingAmount).not.toHaveProperty('goalCurrency');
+    expect(missingAmount).not.toHaveProperty('goalAmount');
+    const debug = serializeDebugMessage({ ...base, goalCurrency: 'CHF' });
+    expect(debug).not.toHaveProperty('goalCurrency');
+    expect(debug['goalSats']).toBe(21000);
+  });
+
+  it('includes frozen currency keys even when a snapshot is null', () => {
+    const row: MessageRow = {
+      id: 'msg-usd',
+      accountId: 'acc-1',
+      name: 'Ada',
+      text: 'ask',
+      createdAt: new Date('2026-08-28T12:00:00.000Z'),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+      goalSats: 2000,
+      goalCurrency: 'USD',
+      goalAmount: '1.5',
+      goalAmountUsd: '1.50',
+      goalAmountChf: null,
+      goalAmountEur: '1.40',
+      goalAmountPhp: null,
+    };
+    const body = serializeMessage(row, false, 'basis');
+    expect(body.goalCurrency).toBe('USD');
+    expect(body.goalAmount).toBe('1.5');
+    expect(body.goalSats).toBe(2000);
+    expect(body.goalAmountUsd).toBe('1.50');
+    expect(body.goalAmountChf).toBeNull();
+    expect(body.goalAmountEur).toBe('1.40');
+    expect(body.goalAmountPhp).toBeNull();
+    const hidden = serializeHiddenMessage(row, { id: 's', name: 'Sam', role: 'moderator' });
+    expect(hidden['goalAmount']).toBe('1.5');
+    expect(hidden['goalAmountChf']).toBeNull();
+    const debug = serializeDebugMessage(row);
+    expect(debug['goalCurrency']).toBe('USD');
+    expect(debug['goalAmount']).toBe('1.5');
+    expect(debug['goalAmountChf']).toBeNull();
+    expect(debug['goalAmountUsd']).toBe('1.50');
+  });
+
   it('omits place when unset or null', () => {
     const row: MessageRow = {
       id: 'msg-noplace',

@@ -23,6 +23,7 @@ import {
 } from '@/lib/money';
 import type { PostDayCount } from '@/lib/post-stats';
 import { postgresTextArrayLiteral } from '@/lib/postgres-text-array';
+import { canonicalGoalAmount, type GoalCurrency } from '@/lib/goal-rate';
 import {
   forumContentFingerprint,
   unsignedNostrDefaults,
@@ -66,10 +67,77 @@ function storedAmountFromCents(value: bigint): string {
 }
 
 function addStoredAmount(left: string | null, right: string | null): string | null {
+  /* v8 ignore next 3 -- foldFiatColumn only calls this with two amounts */
   if (left === null || right === null) {
     return null;
   }
   return storedAmountFromCents(centsFromStoredAmount(left) + centsFromStoredAmount(right));
+}
+
+/**
+ * One payment-fiat column. Extra sats of 0 or a null delta leave it.
+ * A null column takes the delta as-is. Both sides add. Never assigns NULL
+ * over a stored total.
+ */
+function foldFiatColumn(
+  current: string | null | undefined,
+  delta: string | null,
+  extraSats: number,
+): string | null {
+  const stored = current ?? null;
+  if (extraSats === 0 || delta === null) {
+    return stored;
+  }
+  if (stored === null) {
+    return delta;
+  }
+  return addStoredAmount(stored, delta);
+}
+
+/** Replies persist no ask. Top-level rows keep a legacy goalSats with null currency columns. */
+function applyStoredGoal(stored: MessageRow): void {
+  if (stored.parentId !== null) {
+    stored.goalSats = null;
+    stored.goalCurrency = null;
+    stored.goalAmount = null;
+    stored.goalAmountUsd = null;
+    stored.goalAmountChf = null;
+    stored.goalAmountEur = null;
+    stored.goalAmountPhp = null;
+    return;
+  }
+  stored.goalSats = stored.goalSats ?? null;
+  stored.goalCurrency = stored.goalCurrency ?? null;
+  stored.goalAmount = stored.goalAmount ?? null;
+  stored.goalAmountUsd = stored.goalAmountUsd ?? null;
+  stored.goalAmountChf = stored.goalAmountChf ?? null;
+  stored.goalAmountEur = stored.goalAmountEur ?? null;
+  stored.goalAmountPhp = stored.goalAmountPhp ?? null;
+}
+
+function mapGoalCurrency(value: string | null | undefined): GoalCurrency | null {
+  if (value === 'BTC' || value === 'USD' || value === 'CHF' || value === 'EUR' || value === 'PHP') {
+    return value;
+  }
+  return null;
+}
+
+function mapGoalAmountText(value: string | number | null | undefined): string | null {
+  if (value === null || value === undefined) {
+    return null;
+  }
+  return canonicalGoalAmount(String(value));
+}
+
+function mapGoalFiatText(value: string | number | null | undefined): string | null {
+  if (value === null || value === undefined || value === '') {
+    return null;
+  }
+  const amount = Number(value);
+  if (!Number.isFinite(amount)) {
+    return null;
+  }
+  return amount.toFixed(2);
 }
 
 async function resolvePaymentFiat(
@@ -1343,6 +1411,19 @@ WHERE message.id = ranked.id AND ranked.rn > 1`,
   `ALTER TABLE message ADD COLUMN IF NOT EXISTS place_lat double precision`,
   `ALTER TABLE message ADD COLUMN IF NOT EXISTS place_lng double precision`,
   `ALTER TABLE message ADD COLUMN IF NOT EXISTS place_label text`,
+  `ALTER TABLE message ADD COLUMN IF NOT EXISTS goal_currency text`,
+  `ALTER TABLE message ADD COLUMN IF NOT EXISTS goal_amount numeric(20, 8)`,
+  `ALTER TABLE message ADD COLUMN IF NOT EXISTS goal_fiat_usd numeric(20, 2)`,
+  `ALTER TABLE message ADD COLUMN IF NOT EXISTS goal_fiat_chf numeric(20, 2)`,
+  `ALTER TABLE message ADD COLUMN IF NOT EXISTS goal_fiat_eur numeric(20, 2)`,
+  `ALTER TABLE message ADD COLUMN IF NOT EXISTS goal_fiat_php numeric(20, 2)`,
+  `DO $message_goal_currency$
+BEGIN
+  ALTER TABLE message DROP CONSTRAINT IF EXISTS message_goal_currency_check;
+  ALTER TABLE message ADD CONSTRAINT message_goal_currency_check
+    CHECK (goal_currency IS NULL OR goal_currency IN ('BTC','USD','CHF','EUR','PHP'));
+END
+$message_goal_currency$`,
   `CREATE INDEX IF NOT EXISTS message_feed_created_idx ON message (created_at DESC, id DESC) WHERE parent_id IS NULL AND deleted_at IS NULL`,
   `CREATE INDEX IF NOT EXISTS message_feed_popular_idx ON message (sats DESC, created_at DESC, id DESC) WHERE parent_id IS NULL AND deleted_at IS NULL AND sats > 0`,
   TRANSLATION_SCHEMA_SQL,
@@ -1562,6 +1643,13 @@ function copyRow(row: MessageRow): MessageRow {
     amountChf: row.amountChf ?? null,
     amountEur: row.amountEur ?? null,
     amountPhp: row.amountPhp ?? null,
+    goalSats: row.goalSats ?? null,
+    goalCurrency: row.goalCurrency ?? null,
+    goalAmount: row.goalAmount ?? null,
+    goalAmountUsd: row.goalAmountUsd ?? null,
+    goalAmountChf: row.goalAmountChf ?? null,
+    goalAmountEur: row.goalAmountEur ?? null,
+    goalAmountPhp: row.goalAmountPhp ?? null,
     createdAt: new Date(row.createdAt.getTime()),
     deletedAt: deletedAt === null ? null : new Date(deletedAt.getTime()),
     deletedBy: row.deletedBy ?? null,
@@ -2087,7 +2175,7 @@ export class InMemoryMessageStore implements MessageStore {
       photoTakenAts: photoTakenAtsForCreate(photo, extras),
       ...(typeof video?.takenAt === 'string' ? { videoTakenAt: video.takenAt } : {}),
     });
-    stored.goalSats = stored.parentId !== null ? null : (stored.goalSats ?? null);
+    applyStoredGoal(stored);
     stored.place = stored.parentId !== null ? null : (stored.place ?? null);
     if (stored.parentId !== null) {
       const parent = this.#rows.find((item) => item.id === stored.parentId);
@@ -2601,26 +2689,10 @@ export class InMemoryMessageStore implements MessageStore {
   addSats(id: string, extraSats: number, delta: FiatAmounts | null): Promise<void> {
     const row = this.#rows.find((item) => item.id === id);
     if (row !== undefined) {
-      if (extraSats !== 0) {
-        const oldSats = row.sats;
-        const oldUsd = row.amountUsd ?? null;
-        if (oldSats === 0 && oldUsd === null) {
-          row.amountUsd = delta?.usd ?? null;
-          row.amountChf = delta?.chf ?? null;
-          row.amountEur = delta?.eur ?? null;
-          row.amountPhp = delta?.php ?? null;
-        } else if (delta === null) {
-          row.amountUsd = null;
-          row.amountChf = null;
-          row.amountEur = null;
-          row.amountPhp = null;
-        } else {
-          row.amountUsd = addStoredAmount(oldUsd, delta.usd);
-          row.amountChf = addStoredAmount(row.amountChf ?? null, delta.chf);
-          row.amountEur = addStoredAmount(row.amountEur ?? null, delta.eur);
-          row.amountPhp = addStoredAmount(row.amountPhp ?? null, delta.php);
-        }
-      }
+      row.amountUsd = foldFiatColumn(row.amountUsd, delta?.usd ?? null, extraSats);
+      row.amountChf = foldFiatColumn(row.amountChf, delta?.chf ?? null, extraSats);
+      row.amountEur = foldFiatColumn(row.amountEur, delta?.eur ?? null, extraSats);
+      row.amountPhp = foldFiatColumn(row.amountPhp, delta?.php ?? null, extraSats);
       row.sats += extraSats;
     }
     return Promise.resolve();
@@ -3262,6 +3334,12 @@ interface MessageSqlRow {
   fiat_eur?: string | number | null;
   fiat_php?: string | number | null;
   goal_sats?: string | number | null;
+  goal_currency?: string | null;
+  goal_amount?: string | number | null;
+  goal_fiat_usd?: string | number | null;
+  goal_fiat_chf?: string | number | null;
+  goal_fiat_eur?: string | number | null;
+  goal_fiat_php?: string | number | null;
   place_lat?: string | number | null;
   place_lng?: string | number | null;
   place_label?: string | null;
@@ -3394,6 +3472,12 @@ function mapMessageRow(row: MessageSqlRow): MessageRow {
     amountEur: row.fiat_eur === null || row.fiat_eur === undefined ? null : String(row.fiat_eur),
     amountPhp: row.fiat_php === null || row.fiat_php === undefined ? null : String(row.fiat_php),
     goalSats: row.goal_sats === null || row.goal_sats === undefined ? null : Number(row.goal_sats),
+    goalCurrency: mapGoalCurrency(row.goal_currency),
+    goalAmount: mapGoalAmountText(row.goal_amount),
+    goalAmountUsd: mapGoalFiatText(row.goal_fiat_usd),
+    goalAmountChf: mapGoalFiatText(row.goal_fiat_chf),
+    goalAmountEur: mapGoalFiatText(row.goal_fiat_eur),
+    goalAmountPhp: mapGoalFiatText(row.goal_fiat_php),
     place: placeFromSql(row.place_lat, row.place_lng, row.place_label),
     nostrEvent: normalizeSignedEvent(row.nostr_event) ?? null,
     claimedUntil: optionalDate(row.claimed_until),
@@ -3436,6 +3520,12 @@ const MESSAGE_SELECT_COLUMNS = `id, account_id, name, text, created_at,
               nostr_event, claimed_until, nostr_first_attempt_at, nostr_publish_epoch, nostr_attempts,
               content_fp, deleted_at, deleted_by,
               photo_taken_at, video_taken_at,
+              goal_currency,
+              goal_amount::text AS goal_amount,
+              goal_fiat_usd::text AS goal_fiat_usd,
+              goal_fiat_chf::text AS goal_fiat_chf,
+              goal_fiat_eur::text AS goal_fiat_eur,
+              goal_fiat_php::text AS goal_fiat_php,
               COALESCE(
                 (
                   SELECT json_agg(e.photo_taken_at ORDER BY e.idx)
@@ -4020,7 +4110,7 @@ export class PostgresMessageStore implements MessageStore {
       photoTakenAts: photoTakenAtsForCreate(photo, extras),
       ...(typeof video?.takenAt === 'string' ? { videoTakenAt: video.takenAt } : {}),
     });
-    stored.goalSats = stored.parentId !== null ? null : (stored.goalSats ?? null);
+    applyStoredGoal(stored);
     stored.place = stored.parentId !== null ? null : (stored.place ?? null);
     if (video !== undefined) {
       await writeForumVideo(stored.id, video);
@@ -4051,6 +4141,12 @@ export class PostgresMessageStore implements MessageStore {
       stored.place === null ? null : stored.place.lat,
       stored.place === null ? null : stored.place.lng,
       stored.place === null ? null : stored.place.label,
+      stored.goalCurrency ?? null,
+      stored.goalAmount ?? null,
+      stored.goalAmountUsd ?? null,
+      stored.goalAmountChf ?? null,
+      stored.goalAmountEur ?? null,
+      stored.goalAmountPhp ?? null,
     ];
     try {
       if (stored.parentId !== null) {
@@ -4059,10 +4155,12 @@ export class PostgresMessageStore implements MessageStore {
            id, account_id, name, text, photo, photo_content_type, video_content_type, created_at,
            nostr_publish_state, sats, parent_id, author_pubkey, event_id, nostr_event, content_fp, goal_sats,
            fiat_usd, fiat_chf, fiat_eur, fiat_php, photo_taken_at, video_taken_at,
-           place_lat, place_lng, place_label
+           place_lat, place_lng, place_label,
+           goal_currency, goal_amount, goal_fiat_usd, goal_fiat_chf, goal_fiat_eur, goal_fiat_php
          )
          SELECT $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14::jsonb,$15,$16,
-                $17::numeric,$18::numeric,$19::numeric,$20::numeric,$21,$22,$23,$24,$25
+                $17::numeric,$18::numeric,$19::numeric,$20::numeric,$21,$22,$23,$24,$25,
+                $26,$27::numeric,$28::numeric,$29::numeric,$30::numeric,$31::numeric
          WHERE EXISTS (SELECT 1 FROM message p WHERE p.id = $11 AND p.deleted_at IS NULL)
          RETURNING id`,
           params,
@@ -4080,10 +4178,12 @@ export class PostgresMessageStore implements MessageStore {
            id, account_id, name, text, photo, photo_content_type, video_content_type, created_at,
            nostr_publish_state, sats, parent_id, author_pubkey, event_id, nostr_event, content_fp, goal_sats,
            fiat_usd, fiat_chf, fiat_eur, fiat_php, photo_taken_at, video_taken_at,
-           place_lat, place_lng, place_label
+           place_lat, place_lng, place_label,
+           goal_currency, goal_amount, goal_fiat_usd, goal_fiat_chf, goal_fiat_eur, goal_fiat_php
          ) VALUES (
            $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14::jsonb,$15,$16,
-           $17::numeric,$18::numeric,$19::numeric,$20::numeric,$21,$22,$23,$24,$25
+           $17::numeric,$18::numeric,$19::numeric,$20::numeric,$21,$22,$23,$24,$25,
+           $26,$27::numeric,$28::numeric,$29::numeric,$30::numeric,$31::numeric
          )`,
           params,
         );
@@ -4518,26 +4618,26 @@ export class PostgresMessageStore implements MessageStore {
        SET sats = sats + $2,
            fiat_usd = CASE
              WHEN $2::bigint = 0 THEN fiat_usd
-             WHEN sats = 0 AND fiat_usd IS NULL THEN $3::numeric
-             WHEN $3::numeric IS NULL THEN NULL
+             WHEN $3::numeric IS NULL THEN fiat_usd
+             WHEN fiat_usd IS NULL THEN $3::numeric
              ELSE fiat_usd + $3::numeric
            END,
            fiat_chf = CASE
              WHEN $2::bigint = 0 THEN fiat_chf
-             WHEN sats = 0 AND fiat_usd IS NULL THEN $4::numeric
-             WHEN $4::numeric IS NULL THEN NULL
+             WHEN $4::numeric IS NULL THEN fiat_chf
+             WHEN fiat_chf IS NULL THEN $4::numeric
              ELSE fiat_chf + $4::numeric
            END,
            fiat_eur = CASE
              WHEN $2::bigint = 0 THEN fiat_eur
-             WHEN sats = 0 AND fiat_usd IS NULL THEN $5::numeric
-             WHEN $5::numeric IS NULL THEN NULL
+             WHEN $5::numeric IS NULL THEN fiat_eur
+             WHEN fiat_eur IS NULL THEN $5::numeric
              ELSE fiat_eur + $5::numeric
            END,
            fiat_php = CASE
              WHEN $2::bigint = 0 THEN fiat_php
-             WHEN sats = 0 AND fiat_usd IS NULL THEN $6::numeric
-             WHEN $6::numeric IS NULL THEN NULL
+             WHEN $6::numeric IS NULL THEN fiat_php
+             WHEN fiat_php IS NULL THEN $6::numeric
              ELSE fiat_php + $6::numeric
            END
        WHERE id = $1`,
@@ -4596,26 +4696,26 @@ export class PostgresMessageStore implements MessageStore {
        SET sats = message.sats + inserted.sats,
            fiat_usd = CASE
              WHEN inserted.sats = 0 THEN message.fiat_usd
-             WHEN message.sats = 0 AND message.fiat_usd IS NULL THEN $4::numeric
-             WHEN $4::numeric IS NULL THEN NULL
+             WHEN $4::numeric IS NULL THEN message.fiat_usd
+             WHEN message.fiat_usd IS NULL THEN $4::numeric
              ELSE message.fiat_usd + $4::numeric
            END,
            fiat_chf = CASE
              WHEN inserted.sats = 0 THEN message.fiat_chf
-             WHEN message.sats = 0 AND message.fiat_usd IS NULL THEN $5::numeric
-             WHEN $5::numeric IS NULL THEN NULL
+             WHEN $5::numeric IS NULL THEN message.fiat_chf
+             WHEN message.fiat_chf IS NULL THEN $5::numeric
              ELSE message.fiat_chf + $5::numeric
            END,
            fiat_eur = CASE
              WHEN inserted.sats = 0 THEN message.fiat_eur
-             WHEN message.sats = 0 AND message.fiat_usd IS NULL THEN $6::numeric
-             WHEN $6::numeric IS NULL THEN NULL
+             WHEN $6::numeric IS NULL THEN message.fiat_eur
+             WHEN message.fiat_eur IS NULL THEN $6::numeric
              ELSE message.fiat_eur + $6::numeric
            END,
            fiat_php = CASE
              WHEN inserted.sats = 0 THEN message.fiat_php
-             WHEN message.sats = 0 AND message.fiat_usd IS NULL THEN $7::numeric
-             WHEN $7::numeric IS NULL THEN NULL
+             WHEN $7::numeric IS NULL THEN message.fiat_php
+             WHEN message.fiat_php IS NULL THEN $7::numeric
              ELSE message.fiat_php + $7::numeric
            END
        FROM inserted

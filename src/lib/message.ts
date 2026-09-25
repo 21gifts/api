@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import type { AccountRole } from '@/lib/auth/store';
+import type { GoalCurrency } from '@/lib/goal-rate';
 import type { ForumPlace } from '@/lib/place';
 import type { ForumVideoContentType } from '@/lib/video';
 
@@ -111,6 +112,21 @@ export interface MessageRow {
    */
   goalSats?: number | null;
   /**
+   * Frozen ask currency. Omit or `null` means no currency ask (legacy
+   * `goalSats` may still be set).
+   */
+  goalCurrency?: GoalCurrency | null;
+  /** Canonical typed ask amount (dot decimal). Null when there is no currency ask. */
+  goalAmount?: string | null;
+  /** Gift-day USD snapshot of the frozen ask, or null. */
+  goalAmountUsd?: string | null;
+  /** Gift-day CHF snapshot of the frozen ask, or null. */
+  goalAmountChf?: string | null;
+  /** Gift-day EUR snapshot of the frozen ask, or null. */
+  goalAmountEur?: string | null;
+  /** Gift-day PHP snapshot of the frozen ask, or null. */
+  goalAmountPhp?: string | null;
+  /**
    * Optional map pin on a top-level note. Omit or `null` means no place.
    */
   place?: ForumPlace | null;
@@ -184,6 +200,21 @@ export interface PublicMessage {
    * value is a positive integer; omitted on replies and when unset.
    */
   goalSats?: number;
+  /**
+   * Frozen ask currency. Included only when `goalCurrency` is stored; omitted
+   * on legacy rows (they still expose `goalSats` as today).
+   */
+  goalCurrency?: GoalCurrency;
+  /** Canonical typed ask amount. Present only with `goalCurrency`. */
+  goalAmount?: string;
+  /** Frozen USD snapshot. Key present with `goalCurrency` even when null. */
+  goalAmountUsd?: string | null;
+  /** Frozen CHF snapshot. Key present with `goalCurrency` even when null. */
+  goalAmountChf?: string | null;
+  /** Frozen EUR snapshot. Key present with `goalCurrency` even when null. */
+  goalAmountEur?: string | null;
+  /** Frozen PHP snapshot. Key present with `goalCurrency` even when null. */
+  goalAmountPhp?: string | null;
   /**
    * Optional map pin. Included only when stored; omitted when unset (same
    * omit rule as `parentId`). `label` is a string or JSON `null`.
@@ -323,6 +354,35 @@ function publicPlace(row: MessageRow): ForumPlace | undefined {
 }
 
 /**
+ * Public/debug/hidden JSON currency-ask keys when `goalCurrency` is stored.
+ * Omitted on legacy rows so they stay unchanged.
+ */
+function publicGoalCurrency(row: MessageRow):
+  | {
+      goalCurrency: GoalCurrency;
+      goalAmount: string;
+      goalAmountUsd: string | null;
+      goalAmountChf: string | null;
+      goalAmountEur: string | null;
+      goalAmountPhp: string | null;
+    }
+  | undefined {
+  const currency = row.goalCurrency;
+  const amount = row.goalAmount;
+  if (currency === undefined || currency === null || typeof amount !== 'string' || amount === '') {
+    return undefined;
+  }
+  return {
+    goalCurrency: currency,
+    goalAmount: amount,
+    goalAmountUsd: row.goalAmountUsd ?? null,
+    goalAmountChf: row.goalAmountChf ?? null,
+    goalAmountEur: row.goalAmountEur ?? null,
+    goalAmountPhp: row.goalAmountPhp ?? null,
+  };
+}
+
+/**
  * Civil camera capture time as sent by the client. Not converted to UTC.
  *
  * Accepts `YYYY-MM-DDTHH:MM:SS` optionally with a `±HH:MM` offset. Rejects
@@ -456,11 +516,14 @@ export function truncatePubkeyDisplay(pubkeyHex: string): string {
  * `via: 'nostr'` when `row.accountId === null && row.authorPubkey !== null`;
  * optional `accountId` when requested; optional `parentId` when
  * `row.parentId !== null`; optional `goalSats` when the stored value is a
- * positive integer on a top-level note; optional `place` when stored;
+ * positive integer on a top-level note; optional currency-ask keys when
+ * `goalCurrency` is stored; optional `place` when stored;
  * optional hide stamps when `hidden`
  * is set); `createdAt` ISO-8601. Never includes photo or video bytes, and
  * never includes `contentFp`. Omits the `parentId` key on top-level notes.
  * Omits `goalSats` on replies and when the stored value is null, 0, or unset.
+ * Omits `goalCurrency` / `goalAmount` / `goalAmountUsd` / `goalAmountChf` /
+ * `goalAmountEur` / `goalAmountPhp` when `goalCurrency` is null.
  * Omits `place` when unset or null.
  * Live serialize omits `deletedAt` / `deletedBy`.
  * @throws RangeError (or Error) when createdAt is invalid.
@@ -516,6 +579,15 @@ export function serializeMessage(
   if (goalSats !== undefined) {
     body.goalSats = goalSats;
   }
+  const goalCurrency = publicGoalCurrency(row);
+  if (goalCurrency !== undefined) {
+    body.goalCurrency = goalCurrency.goalCurrency;
+    body.goalAmount = goalCurrency.goalAmount;
+    body.goalAmountUsd = goalCurrency.goalAmountUsd;
+    body.goalAmountChf = goalCurrency.goalAmountChf;
+    body.goalAmountEur = goalCurrency.goalAmountEur;
+    body.goalAmountPhp = goalCurrency.goalAmountPhp;
+  }
   const place = publicPlace(row);
   if (place !== undefined) {
     body.place = place;
@@ -558,6 +630,7 @@ export interface DebugMessagePhotoMeta {
  *   only when photoCount === 1 (equal to slot 0, null allowed; omitted
  *   otherwise); `createdAt` / `deletedAt` ISO-8601 (`deletedAt` null when
  *   live). `goalSats` is the stored column (JSON `null` when unset).
+ *   Currency-ask keys are included only when `goalCurrency` is stored.
  *   Always includes `placeLat` / `placeLng` / `placeLabel` (JSON `null` when
  *   unset).
  * @throws RangeError (or Error) when `createdAt` or `deletedAt` is invalid.
@@ -568,6 +641,7 @@ export function serializeDebugMessage(
 ): Record<string, unknown> {
   const deletedAt = row.deletedAt ?? null;
   const taken = photoTakenJson(row);
+  const goalCurrency = publicGoalCurrency(row);
   return {
     id: row.id,
     name: row.name,
@@ -598,6 +672,16 @@ export function serializeDebugMessage(
     nostrAttempts: row.nostrAttempts,
     accountId: row.accountId ?? null,
     goalSats: row.goalSats ?? null,
+    ...(goalCurrency === undefined
+      ? {}
+      : {
+          goalCurrency: goalCurrency.goalCurrency,
+          goalAmount: goalCurrency.goalAmount,
+          goalAmountUsd: goalCurrency.goalAmountUsd,
+          goalAmountChf: goalCurrency.goalAmountChf,
+          goalAmountEur: goalCurrency.goalAmountEur,
+          goalAmountPhp: goalCurrency.goalAmountPhp,
+        }),
     placeLat: row.place === undefined || row.place === null ? null : row.place.lat,
     placeLng: row.place === undefined || row.place === null ? null : row.place.lng,
     placeLabel: row.place === undefined || row.place === null ? null : row.place.label,
@@ -625,10 +709,11 @@ export function serializeDebugMessage(
  *   unknown, `[]` when no stills), optional `photoTakenAt` only when
  *   photoCount === 1 (equal to slot 0, null allowed; omitted otherwise),
  *   `parentId`, `deletedAt`, `deletedBy`, optional `via`, optional
- *   `goalSats`, and optional `place`); `createdAt` / `deletedAt` are
+ *   `goalSats`, optional currency-ask keys, and optional `place`); `createdAt` / `deletedAt` are
  *   ISO-8601 (`deletedAt` null when live). Optional `goalSats` when the
  *   stored value is a positive integer on a top-level note (omitted
- *   otherwise). Optional `place` when stored (omitted when unset).
+ *   otherwise). Optional currency-ask keys when `goalCurrency` is stored
+ *   (omitted on legacy rows). Optional `place` when stored (omitted when unset).
  * @throws RangeError (or Error) when `createdAt` or `deletedAt` is invalid.
  */
 export function serializeHiddenMessage(
@@ -637,6 +722,7 @@ export function serializeHiddenMessage(
 ): Record<string, unknown> & { via?: 'nostr' } {
   const deletedAt = row.deletedAt ?? null;
   const goalSats = publicGoalSats(row);
+  const goalCurrency = publicGoalCurrency(row);
   const taken = photoTakenJson(row);
   const place = publicPlace(row);
   const body: Record<string, unknown> & { via?: 'nostr' } = {
@@ -659,6 +745,16 @@ export function serializeHiddenMessage(
     deletedAt: deletedAt === null ? null : deletedAt.toISOString(),
     deletedBy,
     ...(goalSats === undefined ? {} : { goalSats }),
+    ...(goalCurrency === undefined
+      ? {}
+      : {
+          goalCurrency: goalCurrency.goalCurrency,
+          goalAmount: goalCurrency.goalAmount,
+          goalAmountUsd: goalCurrency.goalAmountUsd,
+          goalAmountChf: goalCurrency.goalAmountChf,
+          goalAmountEur: goalCurrency.goalAmountEur,
+          goalAmountPhp: goalCurrency.goalAmountPhp,
+        }),
     ...(place === undefined ? {} : { place }),
   };
   if (row.accountId === null && row.authorPubkey !== null) {
@@ -670,7 +766,8 @@ export function serializeHiddenMessage(
 /**
  * Default Nostr columns for a freshly posted row (unsigned, pending).
  *
- * @returns The unsigned/pending defaults (`goalSats: null`).
+ * @returns The unsigned/pending defaults (`goalSats: null`, currency-ask
+ *   columns null).
  */
 export function unsignedNostrDefaults(): Pick<
   MessageRow,
@@ -682,6 +779,12 @@ export function unsignedNostrDefaults(): Pick<
   | 'amountEur'
   | 'amountPhp'
   | 'goalSats'
+  | 'goalCurrency'
+  | 'goalAmount'
+  | 'goalAmountUsd'
+  | 'goalAmountChf'
+  | 'goalAmountEur'
+  | 'goalAmountPhp'
   | 'nostrEvent'
   | 'claimedUntil'
   | 'nostrFirstAttemptAt'
@@ -701,6 +804,12 @@ export function unsignedNostrDefaults(): Pick<
     amountEur: null,
     amountPhp: null,
     goalSats: null,
+    goalCurrency: null,
+    goalAmount: null,
+    goalAmountUsd: null,
+    goalAmountChf: null,
+    goalAmountEur: null,
+    goalAmountPhp: null,
     nostrEvent: null,
     claimedUntil: null,
     nostrFirstAttemptAt: null,

@@ -7630,6 +7630,57 @@ describe('forum video', () => {
     expect(res.status).toBe(400);
   });
 
+  it('rejects a multipart ask that mixes styles or cannot be priced', async () => {
+    const both = new FormData();
+    both.set('text', 'ask');
+    both.set('goalSats', '21');
+    both.set('goalCurrency', 'USD');
+    both.set('goalAmount', '1');
+    const mixed = await mount(await namedStore('Ada')).request('/messages', {
+      method: 'POST',
+      headers: AUTH,
+      body: both,
+    });
+    expect(mixed.status).toBe(400);
+    expect(await mixed.json()).toEqual({
+      error: 'Send either goalSats or both goalCurrency and goalAmount',
+    });
+    const blank = new FormData();
+    blank.set('text', 'ask');
+    blank.set('goalCurrency', '   ');
+    blank.set('goalAmount', '1');
+    const spaced = await mount(await namedStore('Ada')).request('/messages', {
+      method: 'POST',
+      headers: AUTH,
+      body: blank,
+    });
+    expect(spaced.status).toBe(400);
+    const file = new FormData();
+    file.set('text', 'ask');
+    file.set('goalCurrency', new File(['USD'], 'currency.txt', { type: 'text/plain' }));
+    file.set('goalAmount', '1');
+    const uploaded = await mount(await namedStore('Ada')).request('/messages', {
+      method: 'POST',
+      headers: AUTH,
+      body: file,
+    });
+    expect(uploaded.status).toBe(400);
+    expect(await uploaded.json()).toEqual({
+      error: 'Send either goalSats or both goalCurrency and goalAmount',
+    });
+    const fiat = new FormData();
+    fiat.set('text', 'ask');
+    fiat.set('goalCurrency', 'USD');
+    fiat.set('goalAmount', '1');
+    const unpriced = await mount(await namedStore('Ada')).request('/messages', {
+      method: 'POST',
+      headers: AUTH,
+      body: fiat,
+    });
+    expect(unpriced.status).toBe(400);
+    expect(await unpriced.json()).toEqual({ error: 'Ask amount is unavailable' });
+  });
+
   it('posts a multipart note with a valid goalSats', async () => {
     const form = new FormData();
     form.set('text', 'ask');
@@ -9094,5 +9145,209 @@ describe('GET /messages/hidden', () => {
     const res = await mount(auth).request('/messages/hidden', { headers: AUTH });
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ messages: [] });
+  });
+
+  describe('currency ask', () => {
+    const day = {
+      sats: 100_000_000,
+      usd: '50000.00',
+      chf: '45000.00',
+      eur: '46000.00',
+      php: '2800000.00',
+    };
+
+    async function post(
+      body: unknown,
+      routeDeps: Partial<MessagesRouteDeps> = {},
+      messageStore = new InMemoryMessageStore(),
+    ) {
+      const res = await mount(await namedStore('Ada'), messageStore, routeDeps).request(
+        '/messages',
+        {
+          method: 'POST',
+          headers: { ...AUTH, 'content-type': 'application/json' },
+          body: JSON.stringify(body),
+        },
+      );
+      return { res, messageStore, json: (await res.json()) as Record<string, unknown> };
+    }
+
+    it('stores legacy goalSats and does not call the gift-day loader', async () => {
+      let called = false;
+      const { res, json, messageStore } = await post(
+        { text: 'ask', goalSats: 21000 },
+        {
+          goalRateDay: async () => {
+            called = true;
+            throw new Error('down');
+          },
+        },
+      );
+      expect(called).toBe(false);
+      expect(res.status).toBe(200);
+      expect(json['goalSats']).toBe(21000);
+      expect(json).not.toHaveProperty('goalCurrency');
+      const stored = (await messageStore.listLatest(10))[0];
+      expect(stored?.goalSats).toBe(21000);
+      expect(stored?.goalCurrency).toBeNull();
+      expect(stored?.goalAmount).toBeNull();
+    });
+
+    it('freezes a BTC ask without a day and with an injected day', async () => {
+      const bare = await post({ text: 'btc', goalCurrency: 'BTC', goalAmount: '10.0' });
+      expect(bare.res.status).toBe(200);
+      expect(bare.json['goalSats']).toBe(10);
+      expect(bare.json['goalCurrency']).toBe('BTC');
+      expect(bare.json['goalAmount']).toBe('10');
+      expect(bare.json['goalAmountUsd']).toBeNull();
+      expect(bare.json).toHaveProperty('goalAmountPhp');
+      const priced = await post(
+        { text: 'btc-day', goalCurrency: 'BTC', goalAmount: '10' },
+        { goalRateDay: async () => day },
+      );
+      expect(priced.res.status).toBe(200);
+      expect(priced.json['goalAmountUsd']).toBe('0.01');
+    });
+
+    it('freezes a fiat ask from the gift-day and keeps the typed amount', async () => {
+      const { res, json } = await post(
+        { text: 'usd', goalCurrency: 'USD', goalAmount: '1,5' },
+        { goalRateDay: async () => day },
+      );
+      expect(res.status).toBe(200);
+      expect(json['goalAmount']).toBe('1.5');
+      expect(json['goalSats']).toBe(3000);
+      expect(json['goalAmountUsd']).toBe('1.50');
+      expect(json['goalAmountChf']).toBe('1.35');
+      expect(json['goalAmountEur']).toBe('1.38');
+      expect(json['goalAmountPhp']).toBe('84.00');
+      const php = await post(
+        { text: 'php', goalCurrency: 'PHP', goalAmount: '56' },
+        { goalRateDay: async () => day },
+      );
+      expect(php.res.status).toBe(200);
+      expect(php.json['goalCurrency']).toBe('PHP');
+      expect(php.json['goalAmount']).toBe('56');
+    });
+
+    it('rejects a fiat ask when the day is missing, unusable, or out of range', async () => {
+      const omitted = await post({ text: 'usd', goalCurrency: 'USD', goalAmount: '1' });
+      expect(omitted.res.status).toBe(400);
+      expect(omitted.json).toEqual({ error: 'Ask amount is unavailable' });
+      const empty = await post(
+        { text: 'usd', goalCurrency: 'CHF', goalAmount: '1' },
+        { goalRateDay: async () => null },
+      );
+      expect(empty.res.status).toBe(400);
+      expect(empty.json).toEqual({ error: 'Ask amount is unavailable' });
+      const huge = await post(
+        { text: 'usd', goalCurrency: 'USD', goalAmount: '100000000' },
+        { goalRateDay: async () => ({ ...day, usd: '1.00' }) },
+      );
+      expect(huge.res.status).toBe(400);
+      expect(huge.json).toEqual({ error: 'Ask amount is unavailable' });
+    });
+
+    it('rejects both styles, half a pair, a bad amount, and a non-string amount', async () => {
+      const both = await post({ text: 'x', goalSats: 21, goalCurrency: 'USD', goalAmount: '1' });
+      expect(both.res.status).toBe(400);
+      expect(both.json).toEqual({
+        error: 'Send either goalSats or both goalCurrency and goalAmount',
+      });
+      const half = await post({ text: 'x', goalCurrency: 'USD' });
+      expect(half.json).toEqual({
+        error: 'Send either goalSats or both goalCurrency and goalAmount',
+      });
+      const grammar = await post({ text: 'x', goalCurrency: 'BTC', goalAmount: '1e2' });
+      expect(grammar.json).toEqual({
+        error: 'Send either goalSats or both goalCurrency and goalAmount',
+      });
+      const fractionalBtc = await post({ text: 'x', goalCurrency: 'BTC', goalAmount: '1.5' });
+      expect(fractionalBtc.res.status).toBe(400);
+      expect(fractionalBtc.json).toEqual({ error: 'Goal must be a positive whole-sat amount' });
+      const numberAmount = await post({ text: 'x', goalCurrency: 'USD', goalAmount: 1 });
+      expect(numberAmount.json).toEqual({
+        error: 'Send either goalSats or both goalCurrency and goalAmount',
+      });
+    });
+
+    it('rejects a reply that sends a currency ask', async () => {
+      const messageStore = new InMemoryMessageStore();
+      const parentId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+      await messageStore.create({
+        id: parentId,
+        accountId: 'acc',
+        name: 'Ada',
+        text: 'parent',
+        createdAt: new Date(now()),
+        hasPhoto: false,
+        hasVideo: false,
+        videoContentType: null,
+        ...unsignedNostrDefaults(),
+      });
+      let called = false;
+      const res = await mount(await namedStore('Ada'), messageStore, {
+        goalRateDay: async () => {
+          called = true;
+          return day;
+        },
+      }).request('/messages', {
+        method: 'POST',
+        headers: { ...AUTH, 'content-type': 'application/json' },
+        body: JSON.stringify({
+          text: 'child',
+          inReplyTo: parentId,
+          goalCurrency: 'USD',
+          goalAmount: '1',
+        }),
+      });
+      expect(res.status).toBe(400);
+      expect(await res.json()).toEqual({ error: 'A reply cannot ask for a goal' });
+      expect(called).toBe(false);
+    });
+
+    it('stores a BTC ask when the gift-day loader throws', async () => {
+      const { res, json } = await post(
+        { text: 'btc', goalCurrency: 'BTC', goalAmount: '10' },
+        {
+          goalRateDay: async () => {
+            throw new Error('fx.rate.missing');
+          },
+        },
+      );
+      expect(res.status).toBe(200);
+      expect(json['goalSats']).toBe(10);
+      expect(json['goalCurrency']).toBe('BTC');
+      expect(json['goalAmount']).toBe('10');
+      expect(json['goalAmountUsd']).toBeNull();
+    });
+
+    it('returns 503 when the gift-day loader throws', async () => {
+      const { res, json } = await post(
+        { text: 'usd', goalCurrency: 'USD', goalAmount: '1' },
+        {
+          goalRateDay: async () => {
+            throw new Error('fx down');
+          },
+        },
+      );
+      expect(res.status).toBe(503);
+      expect(json).toEqual({ error: 'Messages are unavailable' });
+    });
+
+    it('accepts a multipart currency ask', async () => {
+      const form = new FormData();
+      form.set('text', 'clip');
+      form.set('goalCurrency', 'USD');
+      form.set('goalAmount', '1.0');
+      const res = await mount(await namedStore('Ada'), new InMemoryMessageStore(), {
+        goalRateDay: async () => day,
+      }).request('/messages', { method: 'POST', headers: AUTH, body: form });
+      expect(res.status).toBe(200);
+      const json = (await res.json()) as Record<string, unknown>;
+      expect(json['goalCurrency']).toBe('USD');
+      expect(json['goalAmount']).toBe('1');
+      expect(json['goalSats']).toBe(2000);
+    });
   });
 });

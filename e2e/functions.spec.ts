@@ -2,7 +2,9 @@ import { expect, test, type APIRequestContext } from '@playwright/test';
 
 const DEBUG = { authorization: 'Bearer e2e-debug-token' };
 
-async function memberSession(request: APIRequestContext): Promise<{ authorization: string }> {
+async function memberSession(
+  request: APIRequestContext,
+): Promise<{ authorization: string; id: string }> {
   const stamp = `${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
   const name = `E2eFnTrust${stamp.slice(0, 8)}`;
   const provision = await request.post('/debug/accounts', {
@@ -25,7 +27,7 @@ async function memberSession(request: APIRequestContext): Promise<{ authorizatio
   const session = await request.post(`/debug/accounts/${row?.id}/session`, { headers: DEBUG });
   expect(session.status()).toBe(200);
   const token = ((await session.json()) as { token: string }).token;
-  return { authorization: `Bearer ${token}` };
+  return { authorization: `Bearer ${token}`, id: row?.id ?? '' };
 }
 
 async function passkeyBegin(request: APIRequestContext): Promise<{ challengeId: string }> {
@@ -526,6 +528,128 @@ test('Function: buildGiftStats — GET /gifts/stats is empty on default boot', a
   };
   expect(body.spendOverTime).toEqual([]);
   expect(body.firstPaidAt).toBeNull();
+});
+
+test('Function: loadGiftStatsSnapshot — GET /gifts/stats has no spend on default boot', async ({
+  request,
+}) => {
+  const res = await request.get('/gifts/stats');
+  expect(res.status()).toBe(200);
+  const body = (await res.json()) as { giftCount: number; spendOverTime: unknown[] };
+  expect(body.giftCount).toBe(0);
+  expect(body.spendOverTime).toEqual([]);
+});
+
+async function verifiedAskSession(request: APIRequestContext): Promise<{ authorization: string }> {
+  const stamp = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  const name = `Ask${stamp.replace(/[^a-z0-9]/gi, '')}`;
+  const provision = await request.post('/debug/accounts', {
+    headers: DEBUG,
+    data: {
+      accounts: [
+        {
+          name,
+          lightningAddress: `ask-${stamp}@walletofsatoshi.com`,
+        },
+      ],
+    },
+  });
+  expect(provision.status()).toBe(200);
+  const listed = await request.get('/debug/accounts', { headers: DEBUG });
+  const accounts = ((await listed.json()) as { accounts: Array<{ id: string; name: string }> })
+    .accounts;
+  const row = accounts.find((item) => item.name === name);
+  expect(row).toBeDefined();
+  const minted = await request.post(`/debug/accounts/${row?.id}/session`, { headers: DEBUG });
+  expect(minted.status()).toBe(200);
+  const token = ((await minted.json()) as { token: string }).token;
+  const auth = { authorization: `Bearer ${token}` };
+  const agreed = await request.post('/me/rules-agreement', { headers: auth });
+  expect(agreed.status()).toBe(200);
+  const promoted = await request.patch(`/debug/accounts/${row?.id}`, {
+    headers: DEBUG,
+    data: { role: 'verified' },
+  });
+  expect(promoted.status()).toBe(200);
+  return auth;
+}
+
+test('Function: loadLatestGoalRateDay — a fiat ask without gifts is unavailable', async ({
+  request,
+}) => {
+  const auth = await verifiedAskSession(request);
+  const res = await request.post('/messages', {
+    headers: auth,
+    data: { text: 'pesos', goalCurrency: 'PHP', goalAmount: '200' },
+  });
+  expect(res.status()).toBe(400);
+  expect(((await res.json()) as { error: string }).error).toBe('Ask amount is unavailable');
+});
+
+test('Function: bindGoalRateDay — a bitcoin ask is stored without a gift-day rate', async ({
+  request,
+}) => {
+  const auth = await verifiedAskSession(request);
+  const res = await request.post('/messages', {
+    headers: auth,
+    data: { text: 'sats', goalCurrency: 'BTC', goalAmount: '21' },
+  });
+  expect(res.status()).toBe(200);
+  const body = (await res.json()) as {
+    goalCurrency: string;
+    goalAmount: string;
+    goalSats: number;
+    goalAmountUsd: string | null;
+  };
+  expect(body.goalCurrency).toBe('BTC');
+  expect(body.goalAmount).toBe('21');
+  expect(body.goalSats).toBe(21);
+  expect(body.goalAmountUsd).toBeNull();
+});
+
+test('Function: canonicalGoalAmount — a malformed ask amount is rejected', async ({ request }) => {
+  const auth = await verifiedAskSession(request);
+  const res = await request.post('/messages', {
+    headers: auth,
+    data: { text: 'bad', goalCurrency: 'USD', goalAmount: '1e2' },
+  });
+  expect(res.status()).toBe(400);
+  expect(((await res.json()) as { error: string }).error).toBe(
+    'Send either goalSats or both goalCurrency and goalAmount',
+  );
+});
+
+test('Function: fiatToSats — fiat and bitcoin ask fields together are rejected', async ({
+  request,
+}) => {
+  const auth = await verifiedAskSession(request);
+  const res = await request.post('/messages', {
+    headers: auth,
+    data: { text: 'both', goalSats: 21, goalCurrency: 'USD', goalAmount: '1' },
+  });
+  expect(res.status()).toBe(400);
+  expect(((await res.json()) as { error: string }).error).toBe(
+    'Send either goalSats or both goalCurrency and goalAmount',
+  );
+});
+
+test('Function: satsToFiatAmount — a bitcoin ask freezes null fiat when no day exists', async ({
+  request,
+}) => {
+  const auth = await verifiedAskSession(request);
+  const res = await request.post('/messages', {
+    headers: auth,
+    data: { text: 'freeze', goalCurrency: 'BTC', goalAmount: '21' },
+  });
+  expect(res.status()).toBe(200);
+  const body = (await res.json()) as {
+    goalAmountChf: string | null;
+    goalAmountEur: string | null;
+    goalAmountPhp: string | null;
+  };
+  expect(body.goalAmountChf).toBeNull();
+  expect(body.goalAmountEur).toBeNull();
+  expect(body.goalAmountPhp).toBeNull();
 });
 
 test('Function: QueryGiftStore — default boot has no DATABASE_URL', async ({ request }) => {
