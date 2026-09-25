@@ -347,7 +347,7 @@ row exists. Damus threads cannot be invoiced.
 
 Private mailbox so members can write to 21.gifts without a published email.
 Signed-in members POST `{ text }` to `POST /contact` (name snapshot as
-forum messages; `normalizeForumText` plus a required 1–500 character body —
+forum messages; `normalizeForumText` plus a required 1–8000 character body —
 forum photo-only empty text does not apply). After the platform account
 exists, the contact row is persisted first, then the same text is appended
 to the member→platform conversation thread (`GET /conversations`).

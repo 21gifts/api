@@ -27,6 +27,7 @@ import {
   encodeMessageFeedCursor,
   forumPhotoResponse,
   MESSAGE_LIST_LIMIT,
+  MESSAGE_MAX_LENGTH,
   normalizeForumText,
   normalizePhotoTakenAt,
   truncatePubkeyDisplay,
@@ -870,7 +871,7 @@ export function conversationRoutes(deps: ConversationRouteDeps): Hono {
       }
       const text = normalizeForumText(parsed.data.text ?? '');
       if (text === null) {
-        return c.json({ error: 'Text must be 1–500 characters' }, 400);
+        return c.json({ error: `Text must be 1–${MESSAGE_MAX_LENGTH} characters` }, 400);
       }
       let photo: ForumPhoto | undefined;
       let extraPhotos: ForumPhoto[] = [];
@@ -907,7 +908,10 @@ export function conversationRoutes(deps: ConversationRouteDeps): Hono {
           return c.json({ error: 'Not found' }, 404);
         }
         if (text === '' && photo === undefined) {
-          return c.json({ error: 'Text must be 1–500 characters or include a photo' }, 400);
+          return c.json(
+            { error: `Text must be 1–${MESSAGE_MAX_LENGTH} characters or include a photo` },
+            400,
+          );
         }
         const staffOnPlatform =
           thread.kind !== 'moderator_group' &&
@@ -1074,7 +1078,7 @@ export function conversationRoutes(deps: ConversationRouteDeps): Hono {
             conversationMessageId: null,
           }),
         );
-        return c.json({ error: 'Text must be 1–500 characters' }, 400);
+        return c.json({ error: `Text must be 1–${MESSAGE_MAX_LENGTH} characters` }, 400);
       }
       if (amountMsat > GIFT_INVOICE_MAX_MSAT) {
         await persistInvoiceAttempt(

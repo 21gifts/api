@@ -18,6 +18,7 @@ import { normalizeLocation } from '@/lib/location';
 import { logEvent } from '@/lib/log';
 import { resolveLnurlp, type FetchFn } from '@/lib/lnurlp';
 import {
+  MESSAGE_MAX_LENGTH,
   decodeForumPhoto,
   forumPhotoResponse,
   normalizeForumText,
@@ -499,7 +500,7 @@ export function meRoutes(deps: MeRouteDeps): Hono {
       }
       const normalized = normalizeForumText(parsed.data.text);
       if (normalized === null) {
-        return c.json({ error: 'About me must be at most 500 characters' }, 400);
+        return c.json({ error: `About me must be at most ${MESSAGE_MAX_LENGTH} characters` }, 400);
       }
       const current = await storedAccount(deps, account.id);
       /* v8 ignore next 3 -- the account row cannot vanish mid-request after auth */
