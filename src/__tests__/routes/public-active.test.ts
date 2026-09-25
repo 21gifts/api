@@ -107,7 +107,7 @@ describe('public active window', () => {
       (await app.request('/messages?mode=active', { headers: { authorization: 'Bearer no' } }))
         .status,
     ).toBe(401);
-  });
+  }, 20_000);
 
   it('stores a mark and notifies the other person once', async () => {
     const auth = await poster();

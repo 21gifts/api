@@ -8876,6 +8876,7 @@ describe('GET /messages/hidden', () => {
           parentId: null,
           deletedAt: HIDDEN_AT.toISOString(),
           deletedBy: { id: 'acc', name: 'Ada', role: 'founder' },
+          accountId: 'acc',
         },
       ],
     });

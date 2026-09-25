@@ -96,7 +96,7 @@ const JPEG2: ForumPhoto = {
 
 describe('MESSAGE_SCHEMA_SQL', () => {
   it('creates message with photo columns, Nostr columns, index, and additive ALTERs', () => {
-    expect(MESSAGE_SCHEMA_SQL).toHaveLength(85);
+    expect(MESSAGE_SCHEMA_SQL).toHaveLength(86);
     expect(MESSAGE_SCHEMA_SQL.join('\n')).toMatch(
       /ALTER TABLE message ADD COLUMN IF NOT EXISTS place_lat double precision/i,
     );
@@ -1961,6 +1961,7 @@ describe('InMemoryMessageStore', () => {
       lat: 9,
       lng: 10,
       label: 'B',
+      accountId: 'acc',
     });
     expect((await store.listPlaces(1)).map((row) => row.id)).toEqual(['zb']);
   });
