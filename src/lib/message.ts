@@ -778,7 +778,7 @@ export function serializeHiddenMessage(
     body.via = 'nostr';
   }
   if (row.accountId !== null) {
-    body.accountId = row.accountId;
+    body['accountId'] = row.accountId;
   }
   return body;
 }

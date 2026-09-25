@@ -84,7 +84,6 @@ describe('public active window', () => {
         text: `n${n}`,
         createdAt: new Date(n * 1000),
         hasPhoto: false,
-        parentId: null,
         ...unsignedNostrDefaults(),
         sats: 1,
       });
