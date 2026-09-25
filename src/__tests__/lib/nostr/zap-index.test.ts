@@ -5,7 +5,12 @@ import { decodeBolt11, inspectBolt11 } from '@/lib/bolt11';
 import { LN_ADDRESS_CACHE_TTL_MS } from '@/lib/config';
 import type { FetchFn } from '@/lib/lnurlp';
 import { unsignedConversationDefaults } from '@/lib/conversation';
-import { MESSAGE_LIST_LIMIT, unsignedNostrDefaults, type MessageRow } from '@/lib/message';
+import {
+  MESSAGE_LIST_LIMIT,
+  MESSAGE_MAX_LENGTH,
+  unsignedNostrDefaults,
+  type MessageRow,
+} from '@/lib/message';
 import { InMemoryConversationStore } from '@/lib/conversation-store';
 import { InMemoryFundingStore } from '@/lib/funding-store';
 import {
@@ -1187,7 +1192,7 @@ describe('manual invoice settlement', () => {
       ok: false,
       reason: 'note',
     });
-    await expect(settle('aa'.repeat(32), 'a'.repeat(501))).resolves.toEqual({
+    await expect(settle('aa'.repeat(32), 'a'.repeat(MESSAGE_MAX_LENGTH + 1))).resolves.toEqual({
       ok: false,
       reason: 'note',
     });
@@ -7633,7 +7638,7 @@ describe('indexOpenZapReceipts', () => {
               finalizeEvent(
                 {
                   kind: 9734,
-                  content: 'A'.repeat(501),
+                  content: 'A'.repeat(MESSAGE_MAX_LENGTH + 1),
                   created_at: 1_700_000_000,
                   tags: [['p', 'aa'.repeat(32)]],
                 },
@@ -7761,7 +7766,7 @@ describe('indexOpenZapReceipts', () => {
       authorAccountId: 'acc-notify-parent',
       amountSats: 21,
       lightningAddress: null,
-      zapRequest: { content: 'A'.repeat(501) },
+      zapRequest: { content: 'A'.repeat(MESSAGE_MAX_LENGTH + 1) },
       result: 'ok',
       httpStatus: 200,
       pr: 'lnbc-notify',

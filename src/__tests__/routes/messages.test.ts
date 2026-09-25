@@ -1596,7 +1596,7 @@ describe('POST /messages', () => {
     });
     expect(res.status).toBe(400);
     expect(await res.json()).toEqual({
-      error: 'Text must be 1–500 characters or include a photo',
+      error: `Text must be 1–${MESSAGE_MAX_LENGTH} characters or include a photo`,
     });
   });
 
@@ -1607,7 +1607,7 @@ describe('POST /messages', () => {
       body: JSON.stringify({ text: 'A'.repeat(MESSAGE_MAX_LENGTH + 1) }),
     });
     expect(res.status).toBe(400);
-    expect(await res.json()).toEqual({ error: 'Text must be 1–500 characters' });
+    expect(await res.json()).toEqual({ error: `Text must be 1–${MESSAGE_MAX_LENGTH} characters` });
   });
 
   it('rejects a tab in text', async () => {
@@ -1617,7 +1617,7 @@ describe('POST /messages', () => {
       body: JSON.stringify({ text: 'hello\tworld' }),
     });
     expect(res.status).toBe(400);
-    expect(await res.json()).toEqual({ error: 'Text must be 1–500 characters' });
+    expect(await res.json()).toEqual({ error: `Text must be 1–${MESSAGE_MAX_LENGTH} characters` });
   });
 
   it('returns 404 when inReplyTo is not a uuid', async () => {
@@ -3721,7 +3721,7 @@ describe('POST /messages/:id/invoice', () => {
       body: JSON.stringify({ sats: 21, text: 'A'.repeat(MESSAGE_MAX_LENGTH + 1) }),
     });
     expect(res.status).toBe(400);
-    expect(await res.json()).toEqual({ error: 'Text must be 1–500 characters' });
+    expect(await res.json()).toEqual({ error: `Text must be 1–${MESSAGE_MAX_LENGTH} characters` });
     const attempts = await messageStore.listInvoiceAttempts(10);
     expect(attempts[0]?.result).toBe('bad_body');
   });
@@ -7610,7 +7610,7 @@ describe('forum video', () => {
 
   it('rejects overlong multipart text', async () => {
     const form = new FormData();
-    form.set('text', 'a'.repeat(501));
+    form.set('text', 'a'.repeat(MESSAGE_MAX_LENGTH + 1));
     const res = await mount(await namedStore('Ada')).request('/messages', {
       method: 'POST',
       headers: AUTH,

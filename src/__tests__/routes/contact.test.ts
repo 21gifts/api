@@ -276,7 +276,7 @@ describe('POST /contact', () => {
       body: JSON.stringify({ text: '   ' }),
     });
     expect(res.status).toBe(400);
-    expect(await res.json()).toEqual({ error: 'Text must be 1–500 characters' });
+    expect(await res.json()).toEqual({ error: `Text must be 1–${MESSAGE_MAX_LENGTH} characters` });
   });
 
   it('rejects too-long text', async () => {
@@ -286,7 +286,7 @@ describe('POST /contact', () => {
       body: JSON.stringify({ text: 'A'.repeat(MESSAGE_MAX_LENGTH + 1) }),
     });
     expect(res.status).toBe(400);
-    expect(await res.json()).toEqual({ error: 'Text must be 1–500 characters' });
+    expect(await res.json()).toEqual({ error: `Text must be 1–${MESSAGE_MAX_LENGTH} characters` });
   });
 
   it('rejects a tab in text', async () => {
@@ -296,7 +296,7 @@ describe('POST /contact', () => {
       body: JSON.stringify({ text: 'hello\tworld' }),
     });
     expect(res.status).toBe(400);
-    expect(await res.json()).toEqual({ error: 'Text must be 1–500 characters' });
+    expect(await res.json()).toEqual({ error: `Text must be 1–${MESSAGE_MAX_LENGTH} characters` });
   });
 
   it('rejects a DEL character in text', async () => {
@@ -306,7 +306,7 @@ describe('POST /contact', () => {
       body: JSON.stringify({ text: `hello${String.fromCharCode(127)}` }),
     });
     expect(res.status).toBe(400);
-    expect(await res.json()).toEqual({ error: 'Text must be 1–500 characters' });
+    expect(await res.json()).toEqual({ error: `Text must be 1–${MESSAGE_MAX_LENGTH} characters` });
   });
 
   it('returns 503 when no platform account is configured', async () => {

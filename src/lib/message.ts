@@ -19,9 +19,9 @@ import type { ForumVideoContentType } from '@/lib/video';
  */
 
 /** Maximum stored length after trim (member posts and member replies). */
-export const MESSAGE_MAX_LENGTH = 500;
+export const MESSAGE_MAX_LENGTH = 8000;
 
-/** Hard cap for inbound Damus reply content (may exceed member 500). */
+/** Hard cap for inbound Damus reply content (may exceed member 8000). */
 export const MESSAGE_INBOUND_REPLY_MAX_LENGTH = 8192;
 
 /** Cap for `listLatest` / GET `/messages` (top-level notes only). Default and max `listFeed` page size. */

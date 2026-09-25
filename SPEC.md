@@ -1262,11 +1262,11 @@ Body is not JSON with a `text` string → **Response** `400`:
 { "error": "Photo must be a JPEG, PNG, or WebP under 1 MiB" }
 ```
 
-Text longer than 500 characters after trim (or containing a disallowed
+Text longer than 8000 characters after trim (or containing a disallowed
 control character) → **Response** `400`:
 
 ```json
-{ "error": "About me must be at most 500 characters" }
+{ "error": "About me must be at most 8000 characters" }
 ```
 
 Display name is blank → **Response** `409`:
@@ -2229,7 +2229,7 @@ or entitle an external payer. The request body is:
 ```
 
 `paymentHash` and `note` are required strings. `note` is trimmed and must be
-1–500 characters without C0/DEL controls. `preimage` must be absent or a
+1–8000 characters without C0/DEL controls. `preimage` must be absent or a
 string; when present it must be 32-byte hex whose SHA-256 equals
 `paymentHash`. The optional proof reflects production wallet behaviour:
 wallet-internal payments can display a “preimage” that does not hash to the
@@ -3423,7 +3423,7 @@ a non-blank display name, a non-blank username, and a non-blank Lightning
 Address (skip timestamps do not satisfy; username cannot be skipped). The api stores a **name snapshot** (trimmed account name at
 post time), normalised text (possibly `""` for photo-only), optional
 JPEG/PNG/WebP bytes (≤ 1 MiB; MIME from magic bytes), `parentId` (null for
-top-level notes), and a timestamp. Text longer than **500** after trim, or
+top-level notes), and a timestamp. Text longer than **8000** after trim, or
 with disallowed C0/DEL controls, is rejected. Newlines (`\n`, `\r`) are
 allowed. The **200** body is the public message object itself (not wrapped
 in `{ messages }`), including `sats`, `payable`, `hasPhoto`, `photoCount`
@@ -3500,18 +3500,18 @@ Body is not JSON with `text` and/or `photo` → **Response** `400`:
 { "error": "Expected a JSON body with text and/or photo" }
 ```
 
-Text longer than 500 after trim, or contains a disallowed control →
+Text longer than 8000 after trim, or contains a disallowed control →
 **Response** `400`:
 
 ```json
-{ "error": "Text must be 1–500 characters" }
+{ "error": "Text must be 1–8000 characters" }
 ```
 
 Whitespace-only / empty text with no photo and no non-empty `photos` →
 **Response** `400`:
 
 ```json
-{ "error": "Text must be 1–500 characters or include a photo" }
+{ "error": "Text must be 1–8000 characters or include a photo" }
 ```
 
 `photo` present but invalid base64, wrong magic (not JPEG/PNG/WebP), empty,
@@ -3578,9 +3578,9 @@ Success → **Response** `200`:
 
 Signed-in pay-on-note. Bearer session required. `:id` is a UUID (`MESSAGE_ID_RE`).
 Body `{ "sats": <int 1..10_000_000>, "text"?: "<string>", "amountUsd"?: "<string>|null", "amountChf"?: "<string>|null", "amountEur"?: "<string>|null", "amountPhp"?: "<string>|null" }`. Optional `text` is the
-NIP-57 zap-request `content` (same 1–500 forum rules; omit or whitespace = gift-only).
+NIP-57 zap-request `content` (same 1–8000 forum rules; omit or whitespace = gift-only).
 Omitting every amount key leaves the invoice unpinned. Any present amount key pins all four; a missing sibling is null. `"0"`, `"0.0"`, and `"0.00"` are stored as `"0.00"`. An unusable amount string is **400** `{ "error": "Expected a JSON body with a positive \"sats\" integer" }`.
-Invalid `text` → **400** `{ "error": "Text must be 1–500 characters" }`.
+Invalid `text` → **400** `{ "error": "Text must be 1–8000 characters" }`.
 The api signs a NIP-57 zap request with the
 **payer** key and returns a BOLT11 invoice for the **author** Lightning Address
 **only** when the minted invoice's `description_hash` equals SHA-256 of the
@@ -4088,7 +4088,7 @@ The account must already have a non-blank display name. The api stores a
 **name snapshot** (trimmed account name at post time), the normalised text,
 and a timestamp. Text goes through `normalizeForumText` (newlines `\n`/`\r`
 allowed; other C0 and DEL rejected), then contact still requires trimmed
-length **1–500**. Forum photo-only empty text is not accepted here. The
+length **1–8000**. Forum photo-only empty text is not accepted here. The
 **200** body is the public contact object itself (not wrapped). No
 `accountId` in the member-facing JSON. Contacts are **never** listed
 publicly — operators still read the mailbox via `GET /debug/contacts`
@@ -4130,11 +4130,11 @@ Missing required fields (`requireAction` `contact.post`) → **Response** `409`:
 { "error": "missing_requirements", "missing": ["rules", "name", "username"] }
 ```
 
-Text empty, longer than 500 after trim, or contains a disallowed control →
+Text empty, longer than 8000 after trim, or contains a disallowed control →
 **Response** `400`:
 
 ```json
-{ "error": "Text must be 1–500 characters" }
+{ "error": "Text must be 1–8000 characters" }
 ```
 
 Store failure → **Response** `503`:
@@ -4345,7 +4345,7 @@ and 401/404/503 JSON as photo 0.
 ### `POST /conversations/:id`
 
 Bearer session required. Body `{ "text"?: "…", "photo"?: { "contentType", "data", "takenAt?" }, "photos"?: [{ "contentType", "data", "takenAt?" }] }`
-(at most 10 stills; non-empty `photos` wins over singular `photo`). Optional `takenAt` follows the same civil-time rule as `POST /messages` (invalid or missing is stored null and does not 400). Conversation JSON does not return it. Text 1–500 via
+(at most 10 stills; non-empty `photos` wins over singular `photo`). Optional `takenAt` follows the same civil-time rule as `POST /messages` (invalid or missing is stored null and does not 400). Conversation JSON does not return it. Text 1–8000 via
 `normalizeForumText`. Empty text is allowed on every kind when a still is present.
 Photo-bearing rows persist `nostrPublishState` skipped (never Nostr); text-only
 Direct/Contact/Damus stay `pending`. Moderator replies on a
@@ -4375,9 +4375,9 @@ Same 401 / 404 / 503 shapes as the list/get routes, plus
 (including any `video` field; stills only),
 **400** `{ "error": "At most 10 photos" }`,
 **400** `{ "error": "Photo must be a JPEG, PNG, or WebP under 1 MiB" }`,
-**400** `{ "error": "Text must be 1–500 characters or include a photo" }`
+**400** `{ "error": "Text must be 1–8000 characters or include a photo" }`
 (empty text without a still),
-**400** `{ "error": "Text must be 1–500 characters" }`,
+**400** `{ "error": "Text must be 1–8000 characters" }`,
 **400** `{ "error": "Set a name before posting" }` when the sending member
 has no display name.
 

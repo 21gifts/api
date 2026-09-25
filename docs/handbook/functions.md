@@ -1128,7 +1128,7 @@
 ## Function: normalizeForumText
 
 - **Purpose:** Trim and validate forum message text. Empty/whitespace becomes `''` (valid for photo-only or video-only posts). Over-long (after trim, longer than `maxLength`) or disallowed C0/DEL still reject; newlines `\n`/`\r` allowed.
-- **Inputs:** `raw` string; optional `maxLength` (default `MESSAGE_MAX_LENGTH` 500). Inbound Nostr worker passes `MESSAGE_INBOUND_REPLY_MAX_LENGTH` (8192) for Damus kind:1 replies and NIP-17/kind:4 plaintext.
+- **Inputs:** `raw` string; optional `maxLength` (default `MESSAGE_MAX_LENGTH` 8000). Inbound Nostr worker passes `MESSAGE_INBOUND_REPLY_MAX_LENGTH` (8192) for Damus kind:1 replies and NIP-17/kind:4 plaintext.
 - **Returns / side effects:** Trimmed text (possibly empty) or `null`. No I/O.
 - **Used by:** `POST /messages`, `POST /contact`, `POST /conversations/:id`, `PUT /me/about`, `runNostrWorkerTick` inbound indexing.
 
@@ -2186,7 +2186,7 @@
 
 ## Function: settleInvoiceManually
 
-- **Purpose:** Settle a successful forum invoice by payment hash after its LNURL provider failed to publish a kind:9735 receipt. The required trimmed `note` (1–500 characters, no C0/DEL controls) is durable operator evidence. `DEBUG_TOKEN` is the route authority; an optional preimage adds cryptographic evidence only when it is 32-byte hex and hashes to the payment hash. It is intentionally optional because some wallet-internal payments expose a wallet “preimage” that does not match the invoice hash.
+- **Purpose:** Settle a successful forum invoice by payment hash after its LNURL provider failed to publish a kind:9735 receipt. The required trimmed `note` (1–8000 characters, no C0/DEL controls) is durable operator evidence. `DEBUG_TOKEN` is the route authority; an optional preimage adds cryptographic evidence only when it is 32-byte hex and hashes to the payment hash. It is intentionally optional because some wallet-internal payments expose a wallet “preimage” that does not match the invoice hash.
 - **Checks:** Normalises the payment hash, validates the note and optional preimage, requires an `ok` invoice with positive whole sats and non-empty BOLT11, rejects conversation invoices and missing/hidden messages, loads the note author (`auth.getAccount(message.accountId)`) **before** claiming, checks historical indexed ingests, and claims the lowercase payment hash through `claimZapPayment`. A thrown author lookup propagates (no claim, no receipt, no ingest). A claim owned by another receipt is `duplicate`.
 - **Returns / side effects:** On a fresh success returns `{ ok: true, receiptId, messageId, amountSats, resumed: false }`, credits via `recordZapReceipt`, and writes an indexed synthetic 9735 ingest directly through `store.recordZapIngest`. If the synthetic receipt was already credited but its indexed ingest is missing, the current request's note/preimage rebuilds that ingest without another credit, notification and gift-reply processing run, and the result has `resumed: true`. An already complete settle returns `duplicate`.
 - **Durability / errors:** The payment-hash claim is a durable tombstone that protects against a second credit even if a prior ingest write failed or the forum message was later deleted. Claim, lookup, credit, and direct ingest-write failures propagate (the route maps them to 503); the decision memory is updated only after the ingest write succeeds. The claim and credit are not one transaction, but the payment-hash primary key serialises competing receipt ids.
