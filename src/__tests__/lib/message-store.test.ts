@@ -3993,6 +3993,27 @@ describe('PostgresMessageStore', () => {
       },
     ];
     expect((await new PostgresMessageStore(sql).getById('m-mark'))?.mentions).toBeUndefined();
+    sql.nextRows = [
+      {
+        id: 'm-mark',
+        account_id: 'acc',
+        name: 'Ada',
+        text: 'hi @bob',
+        created_at: new Date(0),
+        has_photo: false,
+        mentions: [
+          null,
+          1,
+          'nope',
+          { accountId: 2 },
+          { username: 'x' },
+          { accountId: 'ada', username: 'ada' },
+        ],
+      },
+    ];
+    expect((await new PostgresMessageStore(sql).getById('m-mark'))?.mentions).toEqual([
+      { accountId: 'ada', username: 'ada' },
+    ]);
   });
 
   it('listDirectChildren selects every child of parent_id including hidden', async () => {
