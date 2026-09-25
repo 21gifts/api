@@ -285,7 +285,8 @@ export interface MessagesRouteDeps {
   waitSatsPollMs?: number;
   /**
    * Latest gift-day used to freeze a currency ask. Omitted means no day:
-   * a BTC ask still posts; a fiat ask is 400. Rejection is 503.
+   * a BTC ask still posts; a fiat ask is 400. A throw is 503 for a fiat
+   * ask; a BTC ask still stores the typed sats.
    */
   goalRateDay?: () => Promise<GoalRateDay | null>;
 }
