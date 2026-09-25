@@ -268,20 +268,21 @@ describe('public active window', () => {
 
   it('pages a short public list, an external pin, and the odd cursors', async () => {
     const auth = await poster();
-    const store = new InMemoryMessageStore();
-    await store.create({
-      id: id(30),
-      accountId: null,
-      name: 'Visitor',
-      text: 'clip',
-      createdAt: new Date(5_000),
-      hasPhoto: false,
-      hasVideo: true,
-      videoContentType: 'video/mp4',
-      ...unsignedNostrDefaults(),
-      authorPubkey: 'cd'.repeat(32),
-      sats: 1,
-    });
+    const store = new InMemoryMessageStore([
+      {
+        id: id(30),
+        accountId: null,
+        name: 'Visitor',
+        text: 'clip',
+        createdAt: new Date(5_000),
+        hasPhoto: false,
+        ...unsignedNostrDefaults(),
+        hasVideo: true,
+        videoContentType: 'video/mp4',
+        authorPubkey: 'cd'.repeat(32),
+        sats: 1,
+      },
+    ]);
     await store.create({
       id: id(31),
       accountId: 'ada',
