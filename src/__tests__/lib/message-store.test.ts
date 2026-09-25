@@ -96,7 +96,7 @@ const JPEG2: ForumPhoto = {
 
 describe('MESSAGE_SCHEMA_SQL', () => {
   it('creates message with photo columns, Nostr columns, index, and additive ALTERs', () => {
-    expect(MESSAGE_SCHEMA_SQL).toHaveLength(78);
+    expect(MESSAGE_SCHEMA_SQL).toHaveLength(85);
     expect(MESSAGE_SCHEMA_SQL.join('\n')).toMatch(
       /ALTER TABLE message ADD COLUMN IF NOT EXISTS place_lat double precision/i,
     );
@@ -213,6 +213,10 @@ describe('MESSAGE_SCHEMA_SQL', () => {
     expect(MESSAGE_SCHEMA_SQL.join('\n')).toMatch(
       /ALTER TABLE message ADD COLUMN IF NOT EXISTS place_label text/,
     );
+    expect(MESSAGE_SCHEMA_SQL.join('\n')).toMatch(
+      /ALTER TABLE message ADD COLUMN IF NOT EXISTS goal_currency text/,
+    );
+    expect(MESSAGE_SCHEMA_SQL.join('\n')).toMatch(/message_goal_currency_check/);
     expect(MESSAGE_SCHEMA_SQL.at(-1)).toContain('FROM pg_trigger');
     expect(MESSAGE_SCHEMA_SQL.at(-1)).toContain("tgname = 'trg_db_change'");
     expect(MESSAGE_SCHEMA_SQL.at(-1)).toContain("jsonb_typeof(nostr_event) = 'string'");
@@ -4547,10 +4551,10 @@ describe('PostgresMessageStore', () => {
     };
     const created = await store.create(row);
     expect(sql.executes[0]?.text).toMatch(
-      /INSERT INTO message \(\s*id, account_id, name, text, photo, photo_content_type, video_content_type, created_at,\s*nostr_publish_state, sats, parent_id, author_pubkey, event_id, nostr_event, content_fp, goal_sats,\s*fiat_usd, fiat_chf, fiat_eur, fiat_php, photo_taken_at, video_taken_at,\s*place_lat, place_lng, place_label\s*\)/,
+      /INSERT INTO message \(\s*id, account_id, name, text, photo, photo_content_type, video_content_type, created_at,\s*nostr_publish_state, sats, parent_id, author_pubkey, event_id, nostr_event, content_fp, goal_sats,\s*fiat_usd, fiat_chf, fiat_eur, fiat_php, photo_taken_at, video_taken_at,\s*place_lat, place_lng, place_label,\s*goal_currency, goal_amount, goal_fiat_usd, goal_fiat_chf, goal_fiat_eur, goal_fiat_php\s*\)/,
     );
     expect(sql.executes[0]?.text).toMatch(
-      /\$14::jsonb,\$15,\$16,\s*\$17::numeric,\$18::numeric,\$19::numeric,\$20::numeric,\$21,\$22,\$23,\$24,\$25/,
+      /\$14::jsonb,\$15,\$16,\s*\$17::numeric,\$18::numeric,\$19::numeric,\$20::numeric,\$21,\$22,\$23,\$24,\$25,\s*\$26,\$27::numeric,\$28::numeric,\$29::numeric,\$30::numeric,\$31::numeric/,
     );
     expect(sql.executes[0]?.text).not.toMatch(/ON CONFLICT/i);
     expect(sql.executes[0]?.params).toEqual([
@@ -4579,8 +4583,14 @@ describe('PostgresMessageStore', () => {
       null,
       null,
       null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
     ]);
-    expect(sql.executes[0]?.params).toHaveLength(25);
+    expect(sql.executes[0]?.params).toHaveLength(31);
     expect(created.id).toBe(row.id);
     expect(created.hasVideo).toBe(false);
     expect(created.goalSats).toBeNull();
@@ -4606,6 +4616,12 @@ describe('PostgresMessageStore', () => {
       null,
       null,
       null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
     ]);
   });
 
@@ -4625,6 +4641,12 @@ describe('PostgresMessageStore', () => {
     const created = await store.create(row);
     expect(sql.executes[0]?.params[15]).toBe(21000);
     expect(sql.executes[0]?.params.slice(16)).toEqual([
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
       null,
       null,
       null,
@@ -4668,10 +4690,10 @@ describe('PostgresMessageStore', () => {
     const created = await store.create(row);
     expect(sql.executes).toEqual([]);
     expect(sql.queries[0]?.text).toMatch(
-      /INSERT INTO message \(\s*id, account_id, name, text, photo, photo_content_type, video_content_type, created_at,\s*nostr_publish_state, sats, parent_id, author_pubkey, event_id, nostr_event, content_fp, goal_sats,\s*fiat_usd, fiat_chf, fiat_eur, fiat_php, photo_taken_at, video_taken_at,\s*place_lat, place_lng, place_label\s*\)/,
+      /INSERT INTO message \(\s*id, account_id, name, text, photo, photo_content_type, video_content_type, created_at,\s*nostr_publish_state, sats, parent_id, author_pubkey, event_id, nostr_event, content_fp, goal_sats,\s*fiat_usd, fiat_chf, fiat_eur, fiat_php, photo_taken_at, video_taken_at,\s*place_lat, place_lng, place_label,\s*goal_currency, goal_amount, goal_fiat_usd, goal_fiat_chf, goal_fiat_eur, goal_fiat_php\s*\)/,
     );
     expect(sql.queries[0]?.text).toMatch(
-      /SELECT \$1,\$2,\$3,\$4,\$5,\$6,\$7,\$8,\$9,\$10,\$11,\$12,\$13,\$14::jsonb,\$15,\$16,\s*\$17::numeric,\$18::numeric,\$19::numeric,\$20::numeric,\$21,\$22,\$23,\$24,\$25/,
+      /SELECT \$1,\$2,\$3,\$4,\$5,\$6,\$7,\$8,\$9,\$10,\$11,\$12,\$13,\$14::jsonb,\$15,\$16,\s*\$17::numeric,\$18::numeric,\$19::numeric,\$20::numeric,\$21,\$22,\$23,\$24,\$25,\s*\$26,\$27::numeric,\$28::numeric,\$29::numeric,\$30::numeric,\$31::numeric/,
     );
     expect(sql.queries[0]?.text).toMatch(
       /WHERE EXISTS \(SELECT 1 FROM message p WHERE p\.id = \$11 AND p\.deleted_at IS NULL\)/,
@@ -4704,8 +4726,14 @@ describe('PostgresMessageStore', () => {
       null,
       null,
       null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
     ]);
-    expect(sql.queries[0]?.params).toHaveLength(25);
+    expect(sql.queries[0]?.params).toHaveLength(31);
     expect(created.id).toBe('child-1');
     expect(created.parentId).toBe('parent-1');
   });
@@ -4728,6 +4756,12 @@ describe('PostgresMessageStore', () => {
     const created = await store.create(row);
     expect(sql.queries[0]?.params[15]).toBeNull();
     expect(sql.queries[0]?.params.slice(16)).toEqual([
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
       null,
       null,
       null,
@@ -4765,6 +4799,12 @@ describe('PostgresMessageStore', () => {
       47.3,
       8.5,
       'Zürich',
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
     ]);
     expect(created.place).toEqual({ lat: 47.3, lng: 8.5, label: 'Zürich' });
   });
@@ -4786,6 +4826,12 @@ describe('PostgresMessageStore', () => {
     };
     const created = await store.create(row);
     expect(sql.queries[0]?.params.slice(16)).toEqual([
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
       null,
       null,
       null,
@@ -7439,8 +7485,8 @@ describe('message payment fiat snapshot', () => {
     });
     const row = await store.getById('m-add');
     expect(row?.amountUsd).toBe('0.02');
-    expect(row?.amountChf).toBeNull();
-    expect(row?.amountEur).toBeNull();
+    expect(row?.amountChf).toBe('0.40');
+    expect(row?.amountEur).toBe('0.90');
     expect(row?.amountPhp).toBe('1.01');
     await store.addSats('m-cross', 1000, {
       usd: '1.00',
@@ -7450,7 +7496,7 @@ describe('message payment fiat snapshot', () => {
     });
     const crossed = await store.getById('m-cross');
     expect(crossed?.amountChf).toBe('1.60');
-    expect(crossed?.amountEur).toBeNull();
+    expect(crossed?.amountEur).toBe('0.90');
     expect(crossed?.amountPhp).toBeNull();
     expect(() => {
       void store.addSats('m-add', 1, { usd: 'nope', chf: null, eur: null, php: null });
@@ -7479,7 +7525,157 @@ describe('message payment fiat snapshot', () => {
     expect(row?.sats).toBe(42);
     expect(row?.amountUsd).toBeNull();
     expect(row?.amountChf).toBe('8.00');
-    expect(row?.amountEur).toBeNull();
-    expect(row?.amountPhp).toBeNull();
+    expect(row?.amountEur).toBe('1.00');
+    expect(row?.amountPhp).toBe('1.00');
+  });
+
+  it('leaves each fiat column alone when extra sats are 0 or that delta is null', async () => {
+    const store = new InMemoryMessageStore([
+      {
+        ...EARLY,
+        id: 'm-keep',
+        sats: 21,
+        amountUsd: '1.00',
+        amountChf: null,
+        amountEur: '0.90',
+        amountPhp: '1.00',
+      },
+    ]);
+    await store.addSats('m-keep', 0, { usd: '9.00', chf: '9.00', eur: '9.00', php: '9.00' });
+    const held = await store.getById('m-keep');
+    expect(held?.sats).toBe(21);
+    expect(held?.amountUsd).toBe('1.00');
+    expect(held?.amountChf).toBeNull();
+    expect(held?.amountEur).toBe('0.90');
+    expect(held?.amountPhp).toBe('1.00');
+    await store.addSats('m-keep', 5, { usd: null, chf: '0.40', eur: null, php: null });
+    const row = await store.getById('m-keep');
+    expect(row?.sats).toBe(26);
+    expect(row?.amountUsd).toBe('1.00');
+    expect(row?.amountChf).toBe('0.40');
+    expect(row?.amountEur).toBe('0.90');
+    expect(row?.amountPhp).toBe('1.00');
+  });
+});
+
+describe('message fiat accumulator SQL', () => {
+  it('keeps a null delta and assigns onto a null column', async () => {
+    const sql = new MockSql();
+    const store = new PostgresMessageStore(sql);
+    await store.addSats('m1', 7, { usd: '1.00', chf: null, eur: '0.90', php: null });
+    const added = sql.executes.at(-1)?.text ?? '';
+    expect(added).toContain('WHEN $2::bigint = 0 THEN fiat_usd');
+    expect(added).toContain('WHEN $3::numeric IS NULL THEN fiat_usd');
+    expect(added).toContain('WHEN fiat_usd IS NULL THEN $3::numeric');
+    expect(added).toContain('WHEN fiat_chf IS NULL THEN $4::numeric');
+    expect(added).not.toContain('THEN NULL');
+    expect(added).not.toContain('sats = 0 AND fiat_usd IS NULL');
+    await store.recordZapReceipt('evt', 'm1', 7, { usd: null, chf: '1.00', eur: null, php: null });
+    const zap = sql.queries.at(-1)?.text ?? '';
+    expect(zap).toContain('WHEN inserted.sats = 0 THEN message.fiat_usd');
+    expect(zap).toContain('WHEN $4::numeric IS NULL THEN message.fiat_usd');
+    expect(zap).toContain('WHEN message.fiat_usd IS NULL THEN $4::numeric');
+    expect(zap).toContain('WHEN message.fiat_chf IS NULL THEN $5::numeric');
+    expect(zap).not.toContain('THEN NULL');
+  });
+
+  it('stores a currency ask and nulls it on a reply', async () => {
+    const sql = new MockSql();
+    const store = new PostgresMessageStore(sql);
+    const row: MessageRow = {
+      id: 'm-cur',
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'ask',
+      createdAt: new Date('2026-08-28T12:00:00.000Z'),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+      goalSats: 2000,
+      goalCurrency: 'USD',
+      goalAmount: '1.5',
+      goalAmountUsd: '1.50',
+      goalAmountChf: null,
+      goalAmountEur: '1.40',
+      goalAmountPhp: null,
+    };
+    await store.create(row);
+    expect(sql.executes[0]?.params.slice(25)).toEqual(['USD', '1.5', '1.50', null, '1.40', null]);
+    sql.nextRows = [{ id: 'child-cur' }];
+    await store.create({ ...row, id: 'child-cur', parentId: 'm-cur', text: 'reply' });
+    expect(sql.queries[0]?.params[15]).toBeNull();
+    expect(sql.queries[0]?.params.slice(25)).toEqual([null, null, null, null, null, null]);
+    sql.nextRows = [
+      {
+        id: 'm-cur',
+        account_id: 'acc',
+        name: 'Ada',
+        text: 'ask',
+        created_at: new Date('2026-08-28T12:00:00.000Z'),
+        has_photo: false,
+        goal_sats: '2000',
+        goal_currency: 'USD',
+        goal_amount: '1.50000000',
+        goal_fiat_usd: '1.50',
+        goal_fiat_chf: null,
+        goal_fiat_eur: '1.4',
+        goal_fiat_php: null,
+      },
+    ];
+    const mapped = await store.getById('m-cur');
+    expect(mapped?.goalCurrency).toBe('USD');
+    expect(mapped?.goalAmount).toBe('1.5');
+    expect(mapped?.goalAmountUsd).toBe('1.50');
+    expect(mapped?.goalAmountEur).toBe('1.40');
+    expect(mapped?.goalAmountChf).toBeNull();
+    sql.nextRows = [
+      {
+        id: 'm-cur',
+        account_id: 'acc',
+        name: 'Ada',
+        text: 'ask',
+        created_at: new Date('2026-08-28T12:00:00.000Z'),
+        has_photo: false,
+        goal_sats: '2000',
+        goal_currency: 'USD',
+        goal_amount: '1.5',
+        goal_fiat_usd: 'nope',
+        goal_fiat_chf: '',
+        goal_fiat_eur: null,
+        goal_fiat_php: null,
+      },
+    ];
+    const unusable = await store.getById('m-cur');
+    expect(unusable?.goalAmountUsd).toBeNull();
+    expect(unusable?.goalAmountChf).toBeNull();
+  });
+
+  it('keeps a currency ask in memory and clears it on a reply', async () => {
+    const store = new InMemoryMessageStore();
+    const created = await store.create({
+      ...EARLY,
+      id: 'ask',
+      goalSats: 2000,
+      goalCurrency: 'USD',
+      goalAmount: '1.5',
+      goalAmountUsd: '1.50',
+      goalAmountChf: null,
+      goalAmountEur: null,
+      goalAmountPhp: null,
+    });
+    expect(created.goalCurrency).toBe('USD');
+    expect(created.goalAmount).toBe('1.5');
+    const child = await store.create({
+      ...EARLY,
+      id: 'child',
+      parentId: 'ask',
+      text: 'reply',
+      goalSats: 2000,
+      goalCurrency: 'USD',
+      goalAmount: '1.5',
+    });
+    expect(child.goalSats).toBeNull();
+    expect(child.goalCurrency).toBeNull();
+    expect(child.goalAmount).toBeNull();
+    expect(child.goalAmountUsd).toBeNull();
   });
 });
