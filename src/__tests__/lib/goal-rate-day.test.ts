@@ -8,6 +8,7 @@ import { bindGoalRateDay, loadLatestGoalRateDay } from '@/routes/stats';
 const priced = (day: string, sats: number): GiftRow => ({
   paidAt: new Date(`${day}T12:00:00.000Z`),
   amountSats: sats,
+  kind: 'daily',
   recipientWosUser: 'ada',
   amountUsd: '1.00',
   amountChf: '0.90',
@@ -56,6 +57,7 @@ describe('loadLatestGoalRateDay', () => {
     const legacy: GiftRow = {
       paidAt: new Date('2026-06-01T12:00:00.000Z'),
       amountSats: 1000,
+      kind: 'daily',
       recipientWosUser: 'ada',
     };
     await expect(
@@ -74,6 +76,7 @@ describe('loadLatestGoalRateDay', () => {
       const legacy: GiftRow = {
         paidAt: new Date('2026-06-01T12:00:00.000Z'),
         amountSats: 1000,
+        kind: 'daily',
         recipientWosUser: 'ada',
       };
       const day = await loadLatestGoalRateDay({
