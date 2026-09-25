@@ -54,7 +54,7 @@ describe('normalizeForumText', () => {
     expect(normalizeForumText('A'.repeat(MESSAGE_MAX_LENGTH + 1))).toBeNull();
   });
 
-  it('accepts 501 characters when maxLength is the inbound reply cap', () => {
+  it('accepts a string one over the member cap when maxLength is the inbound reply cap', () => {
     const text = 'A'.repeat(MESSAGE_MAX_LENGTH + 1);
     expect(normalizeForumText(text, MESSAGE_INBOUND_REPLY_MAX_LENGTH)).toBe(text);
   });

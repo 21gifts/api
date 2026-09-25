@@ -16,6 +16,7 @@ import type { FetchFn } from '@/lib/lnurlp';
 import { requestZapInvoice } from '@/lib/lnurl-pay';
 import {
   MESSAGE_LIST_LIMIT,
+  MESSAGE_MAX_LENGTH,
   MESSAGE_PHOTO_MAX_BYTES,
   decodeForumPhoto,
   decodeMessageFeedCursor,
@@ -709,7 +710,7 @@ async function postMultipartMessage(
   const rawText = String(form.get('text') ?? '');
   const text = normalizeForumText(rawText);
   if (text === null) {
-    return c.json({ error: 'Text must be 1–500 characters' }, 400);
+    return c.json({ error: `Text must be 1–${MESSAGE_MAX_LENGTH} characters` }, 400);
   }
   const videoPart = form.get('video');
   let video: ForumVideo | undefined;
@@ -737,7 +738,10 @@ async function postMultipartMessage(
     photo = decoded;
   }
   if (text === '' && photo === undefined && video === undefined) {
-    return c.json({ error: 'Text must be 1–500 characters or include a photo or video' }, 400);
+    return c.json(
+      { error: `Text must be 1–${MESSAGE_MAX_LENGTH} characters or include a photo or video` },
+      400,
+    );
   }
   const rawGoal = form.get('goalSats');
   let goalSats: number | null = null;
@@ -1067,7 +1071,7 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
       const rawText = parsed.data.text ?? '';
       const text = normalizeForumText(rawText);
       if (text === null) {
-        return c.json({ error: 'Text must be 1–500 characters' }, 400);
+        return c.json({ error: `Text must be 1–${MESSAGE_MAX_LENGTH} characters` }, 400);
       }
       let photo: ForumPhoto | undefined;
       let extraPhotos: ForumPhoto[] = [];
@@ -1093,7 +1097,10 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
         photo = decoded;
       }
       if (text === '' && photo === undefined) {
-        return c.json({ error: 'Text must be 1–500 characters or include a photo' }, 400);
+        return c.json(
+          { error: `Text must be 1–${MESSAGE_MAX_LENGTH} characters or include a photo` },
+          400,
+        );
       }
       if (parsed.data.inReplyTo !== undefined && typeof parsed.data.goalSats === 'number') {
         return c.json({ error: 'A reply cannot ask for a goal' }, 400);
@@ -1604,7 +1611,7 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
             isNip57Invoice: false,
           }),
         );
-        return c.json({ error: 'Text must be 1–500 characters' }, 400);
+        return c.json({ error: `Text must be 1–${MESSAGE_MAX_LENGTH} characters` }, 400);
       }
       if (amountMsat > GIFT_INVOICE_MAX_MSAT) {
         await persistInvoiceAttempt(

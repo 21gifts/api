@@ -1500,4 +1500,104 @@ describe('PostgresAuthStore', () => {
     ];
     expect(await new PostgresAuthStore(sql).markWalletBackupSeen('acc', 10)).toBeUndefined();
   });
+
+  it('setAccountLocale writes only when locale is still null', async () => {
+    const sql = new MockSql();
+    sql.nextRows = [{ ...ACCOUNT_ROW, locale: 'de' }];
+    const stored = await new PostgresAuthStore(sql).setAccountLocale('acc', 'de', true);
+    expect(sql.queries[0]?.text).toMatch(/locale IS NULL/);
+    expect(sql.queries[0]?.params).toEqual(['acc', 'de']);
+    expect(stored?.wrote).toBe(true);
+    expect(stored?.account.locale).toBe('de');
+  });
+
+  it('setAccountLocale writes unconditionally when onlyIfUnset is false', async () => {
+    const sql = new MockSql();
+    sql.nextRows = [{ ...ACCOUNT_ROW, locale: 'de' }];
+    const stored = await new PostgresAuthStore(sql).setAccountLocale('acc', 'de', false);
+    expect(sql.queries[0]?.text).not.toMatch(/IS NULL/);
+    expect(sql.queries[0]?.params).toEqual(['acc', 'de']);
+    expect(stored?.wrote).toBe(true);
+    expect(stored?.account.locale).toBe('de');
+  });
+
+  it('setAccountLocale returns undefined when no row is updated', async () => {
+    const sql = new MockSql();
+    sql.nextRows = [];
+    expect(
+      await new PostgresAuthStore(sql).setAccountLocale('missing', 'de', false),
+    ).toBeUndefined();
+  });
+
+  it('setAccountLocale returns the existing row when locale is already set', async () => {
+    const sql = new MockSql();
+    sql.nextQueryRows = [[], [{ ...ACCOUNT_ROW, locale: 'de' }]];
+    const stored = await new PostgresAuthStore(sql).setAccountLocale('acc', 'en', true);
+    expect(sql.queries).toHaveLength(2);
+    expect(sql.queries[1]?.text).toMatch(/SELECT/);
+    expect(stored?.wrote).toBe(false);
+    expect(stored?.account.locale).toBe('de');
+  });
+
+  it('setAccountLocale returns undefined when the written row has no view key', async () => {
+    const sql = new MockSql();
+    sql.nextRows = [{ ...ACCOUNT_ROW, view_key: null, locale: 'de' }];
+    expect(await new PostgresAuthStore(sql).setAccountLocale('acc', 'de', false)).toBeUndefined();
+  });
+
+  it('setAccountLocale returns undefined when the existing row has no view key', async () => {
+    const sql = new MockSql();
+    sql.nextQueryRows = [[], [{ ...ACCOUNT_ROW, view_key: null, locale: 'de' }]];
+    expect(await new PostgresAuthStore(sql).setAccountLocale('acc', 'en', true)).toBeUndefined();
+  });
+
+  it('setAccountFiat writes only when fiat is still null', async () => {
+    const sql = new MockSql();
+    sql.nextRows = [{ ...ACCOUNT_ROW, fiat: 'CHF' }];
+    const stored = await new PostgresAuthStore(sql).setAccountFiat('acc', 'CHF', true);
+    expect(sql.queries[0]?.text).toMatch(/fiat IS NULL/);
+    expect(sql.queries[0]?.params).toEqual(['acc', 'CHF']);
+    expect(stored?.wrote).toBe(true);
+    expect(stored?.account.fiat).toBe('CHF');
+  });
+
+  it('setAccountFiat writes unconditionally when onlyIfUnset is false', async () => {
+    const sql = new MockSql();
+    sql.nextRows = [{ ...ACCOUNT_ROW, fiat: 'CHF' }];
+    const stored = await new PostgresAuthStore(sql).setAccountFiat('acc', 'CHF', false);
+    expect(sql.queries[0]?.text).not.toMatch(/IS NULL/);
+    expect(sql.queries[0]?.params).toEqual(['acc', 'CHF']);
+    expect(stored?.wrote).toBe(true);
+    expect(stored?.account.fiat).toBe('CHF');
+  });
+
+  it('setAccountFiat returns undefined when no row is updated', async () => {
+    const sql = new MockSql();
+    sql.nextRows = [];
+    expect(
+      await new PostgresAuthStore(sql).setAccountFiat('missing', 'CHF', false),
+    ).toBeUndefined();
+  });
+
+  it('setAccountFiat returns the existing row when fiat is already set', async () => {
+    const sql = new MockSql();
+    sql.nextQueryRows = [[], [{ ...ACCOUNT_ROW, fiat: 'CHF' }]];
+    const stored = await new PostgresAuthStore(sql).setAccountFiat('acc', 'EUR', true);
+    expect(sql.queries).toHaveLength(2);
+    expect(sql.queries[1]?.text).toMatch(/SELECT/);
+    expect(stored?.wrote).toBe(false);
+    expect(stored?.account.fiat).toBe('CHF');
+  });
+
+  it('setAccountFiat returns undefined when the written row has no view key', async () => {
+    const sql = new MockSql();
+    sql.nextRows = [{ ...ACCOUNT_ROW, view_key: null, fiat: 'CHF' }];
+    expect(await new PostgresAuthStore(sql).setAccountFiat('acc', 'CHF', false)).toBeUndefined();
+  });
+
+  it('setAccountFiat returns undefined when the existing row has no view key', async () => {
+    const sql = new MockSql();
+    sql.nextQueryRows = [[], [{ ...ACCOUNT_ROW, view_key: null, fiat: 'CHF' }]];
+    expect(await new PostgresAuthStore(sql).setAccountFiat('acc', 'EUR', true)).toBeUndefined();
+  });
 });

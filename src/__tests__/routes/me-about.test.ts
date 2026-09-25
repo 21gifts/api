@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { Hono } from 'hono';
 import { InMemoryAuthStore } from '@/lib/auth/store';
 import { UnconfiguredInvoicePayer } from '@/lib/invoice-payer';
-import { unsignedNostrDefaults } from '@/lib/message';
+import { MESSAGE_MAX_LENGTH, unsignedNostrDefaults } from '@/lib/message';
 import { InMemoryMessageStore } from '@/lib/message-store';
 import { parseNostrKek } from '@/lib/nostr/kek';
 import { InMemoryNotificationStore } from '@/lib/notification-store';
@@ -168,11 +168,13 @@ describe('PUT /me/about', () => {
     });
   });
 
-  it('returns 400 when text is longer than 500 characters', async () => {
+  it(`returns 400 when text is longer than ${MESSAGE_MAX_LENGTH} characters`, async () => {
     const store = await seededStore({ name: 'Ada' });
-    const res = await putAbout(store, { text: 'A'.repeat(501) });
+    const res = await putAbout(store, { text: 'A'.repeat(MESSAGE_MAX_LENGTH + 1) });
     expect(res.status).toBe(400);
-    expect(await res.json()).toEqual({ error: 'About me must be at most 500 characters' });
+    expect(await res.json()).toEqual({
+      error: `About me must be at most ${MESSAGE_MAX_LENGTH} characters`,
+    });
   });
 
   it('returns 409 missing name even when a Lightning Address is linked', async () => {

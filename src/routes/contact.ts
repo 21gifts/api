@@ -9,7 +9,7 @@ import { unsignedConversationDefaults } from '@/lib/conversation';
 import { notifyConversationMessage } from '@/lib/conversation-push';
 import type { ConversationStore } from '@/lib/conversation-store';
 import { logEvent } from '@/lib/log';
-import { normalizeForumText } from '@/lib/message';
+import { MESSAGE_MAX_LENGTH, normalizeForumText } from '@/lib/message';
 import type { NotificationStore } from '@/lib/notification-store';
 import type { PushStore } from '@/lib/push-store';
 import { bearerToken } from '@/routes/me';
@@ -77,9 +77,9 @@ export function contactRoutes(deps: ContactRouteDeps): Hono {
     }
     const text = normalizeForumText(parsed.data.text);
     // Forum photo-only posts may be empty; contact has no photo and still
-    // requires 1–500 characters.
+    // requires 1–8000 characters.
     if (text === null || text === '') {
-      return c.json({ error: 'Text must be 1–500 characters' }, 400);
+      return c.json({ error: `Text must be 1–${MESSAGE_MAX_LENGTH} characters` }, 400);
     }
     const createdAt = new Date(deps.now());
     const row: ContactRow = {

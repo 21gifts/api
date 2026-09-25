@@ -1722,6 +1722,12 @@ test('Function: parseNotificationLevel — GET /me without bearer is 401', async
 test('Function: parseAmountUnit — GET /me without bearer is 401', async ({ request }) => {
   expect((await request.get('/me')).status()).toBe(401);
 });
+test('Function: parseStoredLocale — GET /me without bearer is 401', async ({ request }) => {
+  expect((await request.get('/me')).status()).toBe(401);
+});
+test('Function: parseStoredFiat — GET /me without bearer is 401', async ({ request }) => {
+  expect((await request.get('/me')).status()).toBe(401);
+});
 test('Function: isStaffAccount — GET /me without bearer is 401', async ({ request }) => {
   expect((await request.get('/me')).status()).toBe(401);
 });

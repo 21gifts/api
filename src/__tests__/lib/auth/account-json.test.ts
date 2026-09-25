@@ -63,6 +63,8 @@ describe('serializeAccount', () => {
     expect(json).not.toHaveProperty('aboutMe');
     expect(json).not.toHaveProperty('notificationLevel');
     expect(json).not.toHaveProperty('amountUnit');
+    expect(json).not.toHaveProperty('locale');
+    expect(json).not.toHaveProperty('fiat');
     expect(json).not.toHaveProperty('walletRequired');
     expect(json).not.toHaveProperty('walletBackupSeenAt');
     expect(Object.keys(json)).toHaveLength(11);
@@ -187,6 +189,28 @@ describe('serializeDebugAccount', () => {
     });
     expect(json.publicKey).toMatch(/^[0-9a-f]+$/);
   });
+
+  it('serializes omitted locale and fiat as null on debug JSON', () => {
+    const json = serializeDebugAccount(account);
+    expect(json.locale).toBeNull();
+    expect(json.fiat).toBeNull();
+  });
+
+  it('includes stored locale and fiat on debug JSON', () => {
+    const json = serializeDebugAccount({ ...account, locale: 'de', fiat: 'CHF' });
+    expect(json.locale).toBe('de');
+    expect(json.fiat).toBe('CHF');
+  });
+
+  it('serializes an unknown stored locale and fiat as null on debug JSON', () => {
+    const json = serializeDebugAccount({
+      ...account,
+      locale: 'fr' as unknown as Exclude<Account['locale'], undefined>,
+      fiat: 'GBP' as unknown as Exclude<Account['fiat'], undefined>,
+    });
+    expect(json.locale).toBeNull();
+    expect(json.fiat).toBeNull();
+  });
 });
 
 describe('serializeDebugAccountDetail', () => {
@@ -225,6 +249,8 @@ describe('serializeOwnerAccount', () => {
       aboutMessageId: null,
       notificationLevel: 'all',
       amountUnit: 'btc',
+      locale: null,
+      fiat: null,
       funding: null,
       walletRequired: false,
       walletBackupSeenAt: null,
@@ -238,6 +264,8 @@ describe('serializeOwnerAccount', () => {
     expect(json.aboutMeHasPhoto).toBe(false);
     expect(json.notificationLevel).toBe('all');
     expect(json.amountUnit).toBe('btc');
+    expect(json.locale).toBeNull();
+    expect(json.fiat).toBeNull();
     expect(json.walletRequired).toBe(false);
     expect(json.walletBackupSeenAt).toBeNull();
     expect(json.passkeyCredentialId).toBeNull();
@@ -278,6 +306,38 @@ describe('serializeOwnerAccount', () => {
   it('includes a stored amountUnit on owner JSON', () => {
     const json = serializeOwnerAccount({ ...account, amountUnit: 'fiat' }, false, null, false);
     expect(json.amountUnit).toBe('fiat');
+  });
+
+  it('serializes omitted locale and fiat as null on owner JSON', () => {
+    const json = serializeOwnerAccount(account, false, null, false);
+    expect(json.locale).toBeNull();
+    expect(json.fiat).toBeNull();
+  });
+
+  it('includes stored locale and fiat on owner JSON', () => {
+    const json = serializeOwnerAccount(
+      { ...account, locale: 'de', fiat: 'CHF' },
+      false,
+      null,
+      false,
+    );
+    expect(json.locale).toBe('de');
+    expect(json.fiat).toBe('CHF');
+  });
+
+  it('serializes an unknown stored locale and fiat as null on owner JSON', () => {
+    const json = serializeOwnerAccount(
+      {
+        ...account,
+        locale: 'fr' as unknown as Exclude<Account['locale'], undefined>,
+        fiat: 'GBP' as unknown as Exclude<Account['fiat'], undefined>,
+      },
+      false,
+      null,
+      false,
+    );
+    expect(json.locale).toBeNull();
+    expect(json.fiat).toBeNull();
   });
 
   it('passes hasPosted and aboutMe through', () => {
@@ -713,6 +773,8 @@ describe('serializeViewProfile', () => {
     expect(json).not.toHaveProperty('profileMessageId');
     expect(json).not.toHaveProperty('notificationLevel');
     expect(json).not.toHaveProperty('amountUnit');
+    expect(json).not.toHaveProperty('locale');
+    expect(json).not.toHaveProperty('fiat');
     expect(Object.keys(json)).toHaveLength(10);
   });
 

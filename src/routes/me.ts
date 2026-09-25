@@ -18,6 +18,7 @@ import { normalizeLocation } from '@/lib/location';
 import { logEvent } from '@/lib/log';
 import { resolveLnurlp, type FetchFn } from '@/lib/lnurlp';
 import {
+  MESSAGE_MAX_LENGTH,
   decodeForumPhoto,
   forumPhotoResponse,
   normalizeForumText,
@@ -186,6 +187,18 @@ const amountUnitBody = z.object({
   unit: z.enum(['btc', 'fiat']),
 });
 
+/** Body schema for setting the owner UI language. */
+const localeBody = z.object({
+  locale: z.enum(['en', 'de', 'es', 'fil']),
+  onlyIfUnset: z.boolean().optional(),
+});
+
+/** Body schema for setting the owner fiat display currency. */
+const fiatBody = z.object({
+  fiat: z.enum(['CHF', 'EUR', 'USD', 'PHP']),
+  onlyIfUnset: z.boolean().optional(),
+});
+
 /** Owner JSON including the live funding grant. */
 function ownerJson(deps: MeRouteDeps, account: Account): Promise<OwnerAccountResponse> {
   return serializeOwnerAccountWithPosts(account, deps.messages, {
@@ -200,7 +213,7 @@ function ownerJson(deps: MeRouteDeps, account: Account): Promise<OwnerAccountRes
  *
  * @param deps - Shared store, message store, clock, payer, fetch, optional push, optional notification and conversation stores, optional gift/rate/fiat stores for activity, optional funding store, and optional `nostrKek` for the NIP-57 mint probe.
  * @returns A Hono app exposing account, activity, display-name, username, location, About me, wallet-backup-seen, setup skip, forum-laws dismiss,
- * living-room rules agreement, notification level, amount-entry unit, link/unlink, and verification routes.
+ * living-room rules agreement, notification level, amount-entry unit, locale, fiat, link/unlink, and verification routes.
  */
 export function meRoutes(deps: MeRouteDeps): Hono {
   const giftStore = deps.giftStore ?? new InMemoryGiftStore();
@@ -499,7 +512,7 @@ export function meRoutes(deps: MeRouteDeps): Hono {
       }
       const normalized = normalizeForumText(parsed.data.text);
       if (normalized === null) {
-        return c.json({ error: 'About me must be at most 500 characters' }, 400);
+        return c.json({ error: `About me must be at most ${MESSAGE_MAX_LENGTH} characters` }, 400);
       }
       const current = await storedAccount(deps, account.id);
       /* v8 ignore next 3 -- the account row cannot vanish mid-request after auth */
@@ -738,6 +751,62 @@ export function meRoutes(deps: MeRouteDeps): Hono {
         unit: parsed.data.unit,
       });
       return c.json(await ownerJson(deps, updated), 200);
+    })
+    .post('/locale', async (c) => {
+      const account = await authedAccount(deps, c.req.header('authorization'));
+      if (account === null) {
+        return c.json({ error: 'Unauthorized' }, 401);
+      }
+      const parsed = localeBody.safeParse(await c.req.json().catch(() => null));
+      if (!parsed.success) {
+        return c.json({ error: 'Expected a JSON body with a locale of en, de, es, or fil' }, 400);
+      }
+      const current = await storedAccount(deps, account.id);
+      /* v8 ignore next 3 -- the account row cannot vanish mid-request after auth */
+      if (current === null) {
+        return c.json({ error: 'Unauthorized' }, 401);
+      }
+      const onlyIfUnset = parsed.data.onlyIfUnset ?? false;
+      const result = await deps.store.setAccountLocale(current.id, parsed.data.locale, onlyIfUnset);
+      /* v8 ignore next 3 -- the account row cannot vanish mid-request after auth */
+      if (result === undefined) {
+        return c.json({ error: 'Unauthorized' }, 401);
+      }
+      logEvent('account.locale.set', {
+        accountId: current.id,
+        locale: parsed.data.locale,
+        onlyIfUnset,
+        wrote: result.wrote,
+      });
+      return c.json(await ownerJson(deps, result.account), 200);
+    })
+    .post('/fiat', async (c) => {
+      const account = await authedAccount(deps, c.req.header('authorization'));
+      if (account === null) {
+        return c.json({ error: 'Unauthorized' }, 401);
+      }
+      const parsed = fiatBody.safeParse(await c.req.json().catch(() => null));
+      if (!parsed.success) {
+        return c.json({ error: 'Expected a JSON body with a fiat of CHF, EUR, USD, or PHP' }, 400);
+      }
+      const current = await storedAccount(deps, account.id);
+      /* v8 ignore next 3 -- the account row cannot vanish mid-request after auth */
+      if (current === null) {
+        return c.json({ error: 'Unauthorized' }, 401);
+      }
+      const onlyIfUnset = parsed.data.onlyIfUnset ?? false;
+      const result = await deps.store.setAccountFiat(current.id, parsed.data.fiat, onlyIfUnset);
+      /* v8 ignore next 3 -- the account row cannot vanish mid-request after auth */
+      if (result === undefined) {
+        return c.json({ error: 'Unauthorized' }, 401);
+      }
+      logEvent('account.fiat.set', {
+        accountId: current.id,
+        fiat: parsed.data.fiat,
+        onlyIfUnset,
+        wrote: result.wrote,
+      });
+      return c.json(await ownerJson(deps, result.account), 200);
     })
     .post('/rules-agreement', async (c) => {
       const account = await authedAccount(deps, c.req.header('authorization'));

@@ -68,6 +68,16 @@ describe('AUTH_SCHEMA_SQL', () => {
     );
     expect(AUTH_SCHEMA_SQL.join('\n')).toMatch(/account_amount_unit_chk/);
     expect(AUTH_SCHEMA_SQL.join('\n')).toMatch(
+      /ALTER TABLE account ADD COLUMN IF NOT EXISTS locale/i,
+    );
+    expect(AUTH_SCHEMA_SQL.join('\n')).toMatch(/account_locale_chk/);
+    expect(AUTH_SCHEMA_SQL.join('\n')).toMatch(
+      /ALTER TABLE account ADD COLUMN IF NOT EXISTS fiat/i,
+    );
+    expect(AUTH_SCHEMA_SQL.join('\n')).toMatch(/account_fiat_chk/);
+    expect(AUTH_SCHEMA_SQL.join('\n')).not.toMatch(/UPDATE account SET locale/);
+    expect(AUTH_SCHEMA_SQL.join('\n')).not.toMatch(/UPDATE account SET fiat/);
+    expect(AUTH_SCHEMA_SQL.join('\n')).toMatch(
       /ALTER TABLE account ADD COLUMN IF NOT EXISTS username text/i,
     );
     expect(AUTH_SCHEMA_SQL.join('\n')).toMatch(

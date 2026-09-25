@@ -6,6 +6,7 @@ import { CONVERSATION_LIST_LIMIT } from '@/lib/conversation';
 import { InMemoryConversationStore } from '@/lib/conversation-store';
 import type { FetchFn } from '@/lib/lnurlp';
 import {
+  MESSAGE_MAX_LENGTH,
   decodeMessageFeedCursor,
   encodeMessageFeedCursor,
   unsignedNostrDefaults,
@@ -2119,7 +2120,7 @@ describe('POST /conversations/:id', () => {
     });
     expect(res.status).toBe(400);
     expect(await res.json()).toEqual({
-      error: 'Text must be 1–500 characters or include a photo',
+      error: `Text must be 1–${MESSAGE_MAX_LENGTH} characters or include a photo`,
     });
   });
 
@@ -2244,11 +2245,11 @@ describe('POST /conversations/:id', () => {
     });
     expect(res.status).toBe(400);
     expect(await res.json()).toEqual({
-      error: 'Text must be 1–500 characters or include a photo',
+      error: `Text must be 1–${MESSAGE_MAX_LENGTH} characters or include a photo`,
     });
   });
 
-  it('returns 400 when text is longer than 500 characters', async () => {
+  it(`returns 400 when text is longer than ${MESSAGE_MAX_LENGTH} characters`, async () => {
     const auth = await seeded();
     await withOther(auth);
     const conversations = new InMemoryConversationStore();
@@ -2256,10 +2257,10 @@ describe('POST /conversations/:id', () => {
     const res = await mount(auth, conversations).request(`/conversations/${thread.id}`, {
       method: 'POST',
       headers: { ...AUTH, 'content-type': 'application/json' },
-      body: JSON.stringify({ text: 'a'.repeat(501) }),
+      body: JSON.stringify({ text: 'a'.repeat(MESSAGE_MAX_LENGTH + 1) }),
     });
     expect(res.status).toBe(400);
-    expect(await res.json()).toEqual({ error: 'Text must be 1–500 characters' });
+    expect(await res.json()).toEqual({ error: `Text must be 1–${MESSAGE_MAX_LENGTH} characters` });
   });
 
   it('returns 404 when the thread is missing', async () => {
@@ -3274,7 +3275,7 @@ describe('moderator_group', () => {
     );
     expect(res.status).toBe(400);
     expect(await res.json()).toEqual({
-      error: 'Text must be 1–500 characters or include a photo',
+      error: `Text must be 1–${MESSAGE_MAX_LENGTH} characters or include a photo`,
     });
     expect(spendPing.ping).not.toHaveBeenCalled();
   });
@@ -3456,7 +3457,7 @@ describe('moderator-group photos', () => {
     });
     expect(res.status).toBe(400);
     expect(await res.json()).toEqual({
-      error: 'Text must be 1–500 characters or include a photo',
+      error: `Text must be 1–${MESSAGE_MAX_LENGTH} characters or include a photo`,
     });
   });
 
@@ -3836,11 +3837,11 @@ describe('POST /conversations/:id/invoice', () => {
       {
         method: 'POST',
         headers: { ...AUTH, 'content-type': 'application/json' },
-        body: JSON.stringify({ sats: 21, text: 'a'.repeat(501) }),
+        body: JSON.stringify({ sats: 21, text: 'a'.repeat(MESSAGE_MAX_LENGTH + 1) }),
       },
     );
     expect(res.status).toBe(400);
-    expect(await res.json()).toEqual({ error: 'Text must be 1–500 characters' });
+    expect(await res.json()).toEqual({ error: `Text must be 1–${MESSAGE_MAX_LENGTH} characters` });
   });
 
   it('stores the fiat shown with the invoice even when the text is rejected', async () => {
@@ -3852,7 +3853,7 @@ describe('POST /conversations/:id/invoice', () => {
         headers: { ...AUTH, 'content-type': 'application/json' },
         body: JSON.stringify({
           sats: 21,
-          text: 'a'.repeat(501),
+          text: 'a'.repeat(MESSAGE_MAX_LENGTH + 1),
           amountUsd: '5.00',
           amountChf: '4.00',
           amountEur: '4.50',

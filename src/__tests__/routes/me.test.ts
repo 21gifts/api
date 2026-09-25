@@ -229,6 +229,8 @@ describe('GET /me', () => {
       hasPosted: boolean;
       notificationLevel: 'all' | 'active' | 'mentions';
       amountUnit: 'btc' | 'fiat';
+      locale: 'en' | 'de' | 'es' | 'fil' | null;
+      fiat: 'CHF' | 'EUR' | 'USD' | 'PHP' | null;
       funding: null;
       walletRequired: boolean;
       walletBackupSeenAt: number | null;
@@ -247,6 +249,8 @@ describe('GET /me', () => {
     expect(body.hasPosted).toBe(false);
     expect(body.notificationLevel).toBe('all');
     expect(body.amountUnit).toBe('btc');
+    expect(body.locale).toBeNull();
+    expect(body.fiat).toBeNull();
     expect(body.funding).toBeNull();
     expect(body.walletRequired).toBe(false);
     expect(body.walletBackupSeenAt).toBeNull();
@@ -726,6 +730,228 @@ describe('POST /me/amount-unit', () => {
     expect(res.status).toBe(200);
     expect(((await res.json()) as { amountUnit: string }).amountUnit).toBe('fiat');
     expect((await store.getAccount('acc'))?.amountUnit).toBe('fiat');
+  });
+});
+
+describe('POST /me/locale', () => {
+  it('returns 401 without a valid session', async () => {
+    const res = await mount(new InMemoryAuthStore()).request('/me/locale', {
+      method: 'POST',
+    });
+    expect(res.status).toBe(401);
+    expect(await res.json()).toEqual({ error: 'Unauthorized' });
+  });
+
+  it('rejects a missing body', async () => {
+    const res = await mount(await seededStore()).request('/me/locale', {
+      method: 'POST',
+      headers: AUTH,
+    });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({
+      error: 'Expected a JSON body with a locale of en, de, es, or fil',
+    });
+  });
+
+  it('rejects a non-boolean onlyIfUnset', async () => {
+    const store = await seededStore();
+    const res = await mount(store).request('/me/locale', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ locale: 'de', onlyIfUnset: 'yes' }),
+    });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({
+      error: 'Expected a JSON body with a locale of en, de, es, or fil',
+    });
+    expect((await store.getAccount('acc'))?.locale).toBeNull();
+  });
+
+  it('sets locale on first POST and logs', async () => {
+    const store = await seededStore();
+    const res = await mount(store).request('/me/locale', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ locale: 'de' }),
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { locale: string | null };
+    expect(body.locale).toBe('de');
+    expect((await store.getAccount('acc'))?.locale).toBe('de');
+    expect(
+      parsedEvents(warn).some(
+        (e) =>
+          e['event'] === 'account.locale.set' &&
+          e['accountId'] === 'acc' &&
+          e['locale'] === 'de' &&
+          e['onlyIfUnset'] === false &&
+          e['wrote'] === true,
+      ),
+    ).toBe(true);
+  });
+
+  it('writes when onlyIfUnset is true and locale is still unset', async () => {
+    const store = await seededStore();
+    const res = await mount(store).request('/me/locale', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ locale: 'de', onlyIfUnset: true }),
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { locale: string | null };
+    expect(body.locale).toBe('de');
+    expect((await store.getAccount('acc'))?.locale).toBe('de');
+    expect(
+      parsedEvents(warn).some(
+        (e) =>
+          e['event'] === 'account.locale.set' &&
+          e['accountId'] === 'acc' &&
+          e['locale'] === 'de' &&
+          e['onlyIfUnset'] === true &&
+          e['wrote'] === true,
+      ),
+    ).toBe(true);
+  });
+
+  it('keeps a stored locale when onlyIfUnset is true', async () => {
+    const store = await seededStore();
+    const app = mount(store);
+    const headers = { ...AUTH, 'content-type': 'application/json' };
+    await app.request('/me/locale', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ locale: 'de' }),
+    });
+    const res = await app.request('/me/locale', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ locale: 'en', onlyIfUnset: true }),
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { locale: string | null };
+    expect(body.locale).toBe('de');
+    expect((await store.getAccount('acc'))?.locale).toBe('de');
+    expect(
+      parsedEvents(warn).some(
+        (e) =>
+          e['event'] === 'account.locale.set' &&
+          e['accountId'] === 'acc' &&
+          e['locale'] === 'en' &&
+          e['onlyIfUnset'] === true &&
+          e['wrote'] === false,
+      ),
+    ).toBe(true);
+  });
+});
+
+describe('POST /me/fiat', () => {
+  it('returns 401 without a valid session', async () => {
+    const res = await mount(new InMemoryAuthStore()).request('/me/fiat', {
+      method: 'POST',
+    });
+    expect(res.status).toBe(401);
+    expect(await res.json()).toEqual({ error: 'Unauthorized' });
+  });
+
+  it('rejects a missing body', async () => {
+    const res = await mount(await seededStore()).request('/me/fiat', {
+      method: 'POST',
+      headers: AUTH,
+    });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({
+      error: 'Expected a JSON body with a fiat of CHF, EUR, USD, or PHP',
+    });
+  });
+
+  it('rejects a non-boolean onlyIfUnset', async () => {
+    const store = await seededStore();
+    const res = await mount(store).request('/me/fiat', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ fiat: 'CHF', onlyIfUnset: 'yes' }),
+    });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({
+      error: 'Expected a JSON body with a fiat of CHF, EUR, USD, or PHP',
+    });
+    expect((await store.getAccount('acc'))?.fiat).toBeNull();
+  });
+
+  it('sets fiat on first POST and logs', async () => {
+    const store = await seededStore();
+    const res = await mount(store).request('/me/fiat', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ fiat: 'CHF' }),
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { fiat: string | null };
+    expect(body.fiat).toBe('CHF');
+    expect((await store.getAccount('acc'))?.fiat).toBe('CHF');
+    expect(
+      parsedEvents(warn).some(
+        (e) =>
+          e['event'] === 'account.fiat.set' &&
+          e['accountId'] === 'acc' &&
+          e['fiat'] === 'CHF' &&
+          e['onlyIfUnset'] === false &&
+          e['wrote'] === true,
+      ),
+    ).toBe(true);
+  });
+
+  it('writes when onlyIfUnset is true and fiat is still unset', async () => {
+    const store = await seededStore();
+    const res = await mount(store).request('/me/fiat', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ fiat: 'CHF', onlyIfUnset: true }),
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { fiat: string | null };
+    expect(body.fiat).toBe('CHF');
+    expect((await store.getAccount('acc'))?.fiat).toBe('CHF');
+    expect(
+      parsedEvents(warn).some(
+        (e) =>
+          e['event'] === 'account.fiat.set' &&
+          e['accountId'] === 'acc' &&
+          e['fiat'] === 'CHF' &&
+          e['onlyIfUnset'] === true &&
+          e['wrote'] === true,
+      ),
+    ).toBe(true);
+  });
+
+  it('keeps a stored fiat when onlyIfUnset is true', async () => {
+    const store = await seededStore();
+    const app = mount(store);
+    const headers = { ...AUTH, 'content-type': 'application/json' };
+    await app.request('/me/fiat', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ fiat: 'CHF' }),
+    });
+    const res = await app.request('/me/fiat', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ fiat: 'EUR', onlyIfUnset: true }),
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { fiat: string | null };
+    expect(body.fiat).toBe('CHF');
+    expect((await store.getAccount('acc'))?.fiat).toBe('CHF');
+    expect(
+      parsedEvents(warn).some(
+        (e) =>
+          e['event'] === 'account.fiat.set' &&
+          e['accountId'] === 'acc' &&
+          e['fiat'] === 'EUR' &&
+          e['onlyIfUnset'] === true &&
+          e['wrote'] === false,
+      ),
+    ).toBe(true);
   });
 });
 

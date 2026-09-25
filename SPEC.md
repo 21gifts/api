@@ -93,8 +93,10 @@ Public base URLs used in examples:
 | POST   | `/auth/passkey/replace/finish`                       | Bearer                     | 409 refusal that deletes nothing and keeps the session                                                                                                            |
 | POST   | `/auth/passkey/seed/begin`                           | Bearer                     | Creation options for one extra seed passkey; 409 when walletRequired is already true; no excludeCredentials.                                                      |
 | POST   | `/auth/passkey/seed/finish`                          | Bearer                     | Verify attestation, insert an additional passkey, set walletRequired true, keep the login passkey and the session.                                                |
-| GET    | `/me`                                                | `Authorization: Bearer`    | Account (`setup` + factual `missing` + `hasPosted` + `aboutMe` + `aboutMeHasPhoto` + `aboutMessageId` + `notificationLevel` + `amountUnit`)                       |
+| GET    | `/me`                                                | `Authorization: Bearer`    | Account (`setup` + factual `missing` + `hasPosted` + `aboutMe` + `aboutMeHasPhoto` + `aboutMessageId` + `notificationLevel` + `amountUnit` + `locale` + `fiat`)   |
 | POST   | `/me/amount-unit`                                    | Bearer                     | Set owner amount-entry unit (`btc` or `fiat`, default `btc`)                                                                                                      |
+| POST   | `/me/locale`                                         | Bearer                     | Set owner UI language (`en`, `de`, `es`, or `fil`). Null until set. `onlyIfUnset` does not overwrite a stored value.                                              |
+| POST   | `/me/fiat`                                           | Bearer                     | Set owner fiat (`CHF`, `EUR`, `USD`, or `PHP`). Null until set. `onlyIfUnset` does not overwrite a stored value.                                                  |
 | GET    | `/me/activity`                                       | Bearer                     | Given + received series (forum zaps + house gifts; platform given = all outbound)                                                                                 |
 | POST   | `/me/wallet-backup-seen`                             | Bearer                     | Records that this account can show a recovery phrase. Not a confirmation and not a setup step. Empty body. Does not change `walletRequired`.                      |
 | GET    | `/view/:viewKey`                                     | none                       | Public profile card by view key                                                                                                                                   |
@@ -487,6 +489,8 @@ ID).
     "aboutMessageId": null,
     "notificationLevel": "all",
     "amountUnit": "btc",
+    "locale": null,
+    "fiat": null,
     "funding": null,
     "walletRequired": true,
     "walletBackupSeenAt": null,
@@ -495,7 +499,7 @@ ID).
 }
 ```
 
-The `account` object is the same owner JSON as `GET /me` (includes `viewKey`, `setup`, `missing`, `hasPosted`, `aboutMe`, `aboutMeHasPhoto`, `aboutMessageId`, `notificationLevel`, `amountUnit`, `walletRequired`, `walletBackupSeenAt`, and `passkeyCredentialId`). The example above is a new register (`walletRequired: true`, `setup: "name"` when the name is unset). The recovery phrase is not a setup step and does not change `setup` or `missing`. Existing members start with `walletRequired: false`. Seed finish sets `walletRequired: true` and does not change `walletBackupSeenAt`. Replace refuses and changes nothing. `walletBackupSeenAt` does not decide whether a seed exists.
+The `account` object is the same owner JSON as `GET /me` (includes `viewKey`, `setup`, `missing`, `hasPosted`, `aboutMe`, `aboutMeHasPhoto`, `aboutMessageId`, `notificationLevel`, `amountUnit`, `locale`, `fiat`, `walletRequired`, `walletBackupSeenAt`, and `passkeyCredentialId`). `locale` and `fiat` are null until the member's app stores them. The example above is a new register (`walletRequired: true`, `setup: "name"` when the name is unset). The recovery phrase is not a setup step and does not change `setup` or `missing`. Existing members start with `walletRequired: false`. Seed finish sets `walletRequired: true` and does not change `walletBackupSeenAt`. Replace refuses and changes nothing. `walletBackupSeenAt` does not decide whether a seed exists.
 
 A new register row is stored with `walletRequired: true` and `walletBackupSeenAt: null`. First-passkey claim of a provisioned row sets `walletRequired: true` in the same write as the credential (`createFirstPasskeyCredential`: Postgres CTE locks the account row with `FOR UPDATE`, then inserts and sets `wallet_required`; memory store writes both in one method) and does not clear a seen timestamp. Passkey replace refuses and does not change these columns. Seed finish sets `walletRequired: true` without changing `walletBackupSeenAt`. Operator `POST /debug/accounts` provision leaves `walletRequired` false. The api never stores a mnemonic or PRF output.
 
@@ -625,6 +629,8 @@ An account with `sessionRefused` and a still-valid minted token → **Response**
   "aboutMessageId": null,
   "notificationLevel": "all",
   "amountUnit": "btc",
+  "locale": null,
+  "fiat": null,
   "funding": null,
   "walletRequired": false,
   "walletBackupSeenAt": null,
@@ -664,6 +670,8 @@ stays `null`)).
 | `aboutMessageId`           | string \| null | Id of the stored About me note when `aboutMe` is non-null. `null` when `aboutMe` is `null` (including a name-copy note). Not a display name.                                                                                                                                                                                                    |
 | `notificationLevel`        | string         | Owner fan-out filter: `all`, `active`, or `mentions`. Default `all`. Owner-only; omitted from public `GET /view/:viewKey` and member cards.                                                                                                                                                                                                     |
 | `amountUnit`               | string         | Owner amount-entry unit: `btc` or `fiat`. Default `btc`. Owner-only; omitted from public `GET /view/:viewKey` and member cards. The last unit the member chose on any amount field.                                                                                                                                                             |
+| `locale`                   | string \| null | Owner UI language: `en`, `de`, `es`, or `fil`, or `null` when not stored yet. Owner-only; omitted from public `GET /view/:viewKey` and member cards. A stored value wins over the browser.                                                                                                                                                      |
+| `fiat`                     | string \| null | Owner fiat: `CHF`, `EUR`, `USD`, or `PHP`, or `null` when not stored yet. Owner-only; omitted from public `GET /view/:viewKey` and member cards. A stored value wins over the language default.                                                                                                                                                 |
 | `funding`                  | object \| null | Funding-program grant. `null` for `basis`. Otherwise always an object; no row is `{ status: "none", trialUtcDate: null, admittedAt: null, reviewedByName: null }`. Admitted includes live `reviewedByName`.                                                                                                                                     |
 | `walletRequired`           | boolean        | True when a seed-bearing passkey exists (new register/claim, or seed finish). Default false does not mean a seed is present. It does not make `setup` `'wallet'`.                                                                                                                                                                               |
 | `walletBackupSeenAt`       | number \| null | Epoch ms recorded after an existing member activates a passkey that can show a recovery phrase, so the app can offer Show recovery phrase next time instead of Activate. Not a confirmation. Not a seed check; it does not decide whether a seed exists. Null when that has not been recorded.                                                  |
@@ -1254,11 +1262,11 @@ Body is not JSON with a `text` string → **Response** `400`:
 { "error": "Photo must be a JPEG, PNG, or WebP under 1 MiB" }
 ```
 
-Text longer than 500 characters after trim (or containing a disallowed
+Text longer than 8000 characters after trim (or containing a disallowed
 control character) → **Response** `400`:
 
 ```json
-{ "error": "About me must be at most 500 characters" }
+{ "error": "About me must be at most 8000 characters" }
 ```
 
 Display name is blank → **Response** `409`:
@@ -1376,6 +1384,46 @@ Success → **Response** `200` with the updated account (same owner JSON as
 `GET /me`), including `amountUnit`. The same unit again is still **200**.
 Public member cards and `GET /view/:viewKey` omit `amountUnit`. Logs
 `account.amount_unit.set` with `accountId` and `unit`.
+
+### `POST /me/locale`
+
+Set the owner UI language. Bearer session required. Body:
+
+```json
+{ "locale": "de", "onlyIfUnset": true }
+```
+
+`locale` must be `en`, `de`, `es`, or `fil`. `onlyIfUnset` is optional and defaults to false. When true, the write happens only while the stored locale is null; a stored value is returned unchanged. When false, the stored value is replaced. New accounts start with null. This route does not backfill existing rows.
+
+Missing/invalid bearer → **Response** `401` `{ "error": "Unauthorized" }`.
+
+Body is missing, not JSON, `locale` is not one of those four strings, or `onlyIfUnset` is present and not a boolean → **Response** `400`:
+
+```json
+{ "error": "Expected a JSON body with a locale of en, de, es, or fil" }
+```
+
+Success → **Response** `200` with the owner account, including `locale`. `onlyIfUnset` on an already stored locale returns that stored locale and logs `wrote: false`. Public member cards and `GET /view/:viewKey` omit `locale`. Logs `account.locale.set` with `accountId`, `locale`, `onlyIfUnset`, and `wrote`.
+
+### `POST /me/fiat`
+
+Set the owner fiat currency. Bearer session required. Body:
+
+```json
+{ "fiat": "CHF", "onlyIfUnset": true }
+```
+
+`fiat` must be `CHF`, `EUR`, `USD`, or `PHP`. `onlyIfUnset` is optional and defaults to false. When true, the write happens only while the stored fiat is null. When false, the stored value is replaced. New accounts start with null. This route does not backfill existing rows.
+
+Missing/invalid bearer → **Response** `401` `{ "error": "Unauthorized" }`.
+
+Body is missing, not JSON, `fiat` is not one of those four strings, or `onlyIfUnset` is present and not a boolean → **Response** `400`:
+
+```json
+{ "error": "Expected a JSON body with a fiat of CHF, EUR, USD, or PHP" }
+```
+
+Success → **Response** `200` with the owner account, including `fiat`. Public member cards and `GET /view/:viewKey` omit `fiat`. Logs `account.fiat.set` with `accountId`, `fiat`, `onlyIfUnset`, and `wrote`.
 
 ### `POST /me/rules-agreement`
 
@@ -1693,6 +1741,8 @@ Success → **Response** `200`:
       "profileMessageId": null,
       "notificationLevel": "all",
       "amountUnit": "btc",
+      "locale": null,
+      "fiat": null,
       "walletRequired": false,
       "walletBackupSeenAt": null,
       "nostrPubkey": "<64-hex>",
@@ -1706,9 +1756,10 @@ Success → **Response** `200`:
 ```
 
 The listing uses `serializeDebugAccount` (public fields plus `isPlatform`,
-`sessionRefused`, `viewKey`, `walletRequired`, `walletBackupSeenAt`, and Nostr
-debug fields). Member `GET /me` does not include `isPlatform` or
-`sessionRefused`.
+`sessionRefused`, `viewKey`, `locale`, `fiat`, `walletRequired`,
+`walletBackupSeenAt`, and Nostr debug fields). `locale` and `fiat` are null
+until stored. Member `GET /me` does not include `isPlatform` or
+`sessionRefused`. Public member cards omit `locale` and `fiat`.
 
 Accounts are ordered by `createdAt` ascending, then `id`. An empty store
 returns `"accounts": []`.
@@ -2178,7 +2229,7 @@ or entitle an external payer. The request body is:
 ```
 
 `paymentHash` and `note` are required strings. `note` is trimmed and must be
-1–500 characters without C0/DEL controls. `preimage` must be absent or a
+1–8000 characters without C0/DEL controls. `preimage` must be absent or a
 string; when present it must be 32-byte hex whose SHA-256 equals
 `paymentHash`. The optional proof reflects production wallet behaviour:
 wallet-internal payments can display a “preimage” that does not hash to the
@@ -3372,7 +3423,7 @@ a non-blank display name, a non-blank username, and a non-blank Lightning
 Address (skip timestamps do not satisfy; username cannot be skipped). The api stores a **name snapshot** (trimmed account name at
 post time), normalised text (possibly `""` for photo-only), optional
 JPEG/PNG/WebP bytes (≤ 1 MiB; MIME from magic bytes), `parentId` (null for
-top-level notes), and a timestamp. Text longer than **500** after trim, or
+top-level notes), and a timestamp. Text longer than **8000** after trim, or
 with disallowed C0/DEL controls, is rejected. Newlines (`\n`, `\r`) are
 allowed. The **200** body is the public message object itself (not wrapped
 in `{ messages }`), including `sats`, `payable`, `hasPhoto`, `photoCount`
@@ -3449,18 +3500,18 @@ Body is not JSON with `text` and/or `photo` → **Response** `400`:
 { "error": "Expected a JSON body with text and/or photo" }
 ```
 
-Text longer than 500 after trim, or contains a disallowed control →
+Text longer than 8000 after trim, or contains a disallowed control →
 **Response** `400`:
 
 ```json
-{ "error": "Text must be 1–500 characters" }
+{ "error": "Text must be 1–8000 characters" }
 ```
 
 Whitespace-only / empty text with no photo and no non-empty `photos` →
 **Response** `400`:
 
 ```json
-{ "error": "Text must be 1–500 characters or include a photo" }
+{ "error": "Text must be 1–8000 characters or include a photo" }
 ```
 
 `photo` present but invalid base64, wrong magic (not JPEG/PNG/WebP), empty,
@@ -3527,9 +3578,9 @@ Success → **Response** `200`:
 
 Signed-in pay-on-note. Bearer session required. `:id` is a UUID (`MESSAGE_ID_RE`).
 Body `{ "sats": <int 1..10_000_000>, "text"?: "<string>", "amountUsd"?: "<string>|null", "amountChf"?: "<string>|null", "amountEur"?: "<string>|null", "amountPhp"?: "<string>|null" }`. Optional `text` is the
-NIP-57 zap-request `content` (same 1–500 forum rules; omit or whitespace = gift-only).
+NIP-57 zap-request `content` (same 1–8000 forum rules; omit or whitespace = gift-only).
 Omitting every amount key leaves the invoice unpinned. Any present amount key pins all four; a missing sibling is null. `"0"`, `"0.0"`, and `"0.00"` are stored as `"0.00"`. An unusable amount string is **400** `{ "error": "Expected a JSON body with a positive \"sats\" integer" }`.
-Invalid `text` → **400** `{ "error": "Text must be 1–500 characters" }`.
+Invalid `text` → **400** `{ "error": "Text must be 1–8000 characters" }`.
 The api signs a NIP-57 zap request with the
 **payer** key and returns a BOLT11 invoice for the **author** Lightning Address
 **only** when the minted invoice's `description_hash` equals SHA-256 of the
@@ -4037,7 +4088,7 @@ The account must already have a non-blank display name. The api stores a
 **name snapshot** (trimmed account name at post time), the normalised text,
 and a timestamp. Text goes through `normalizeForumText` (newlines `\n`/`\r`
 allowed; other C0 and DEL rejected), then contact still requires trimmed
-length **1–500**. Forum photo-only empty text is not accepted here. The
+length **1–8000**. Forum photo-only empty text is not accepted here. The
 **200** body is the public contact object itself (not wrapped). No
 `accountId` in the member-facing JSON. Contacts are **never** listed
 publicly — operators still read the mailbox via `GET /debug/contacts`
@@ -4079,11 +4130,11 @@ Missing required fields (`requireAction` `contact.post`) → **Response** `409`:
 { "error": "missing_requirements", "missing": ["rules", "name", "username"] }
 ```
 
-Text empty, longer than 500 after trim, or contains a disallowed control →
+Text empty, longer than 8000 after trim, or contains a disallowed control →
 **Response** `400`:
 
 ```json
-{ "error": "Text must be 1–500 characters" }
+{ "error": "Text must be 1–8000 characters" }
 ```
 
 Store failure → **Response** `503`:
@@ -4294,7 +4345,7 @@ and 401/404/503 JSON as photo 0.
 ### `POST /conversations/:id`
 
 Bearer session required. Body `{ "text"?: "…", "photo"?: { "contentType", "data", "takenAt?" }, "photos"?: [{ "contentType", "data", "takenAt?" }] }`
-(at most 10 stills; non-empty `photos` wins over singular `photo`). Optional `takenAt` follows the same civil-time rule as `POST /messages` (invalid or missing is stored null and does not 400). Conversation JSON does not return it. Text 1–500 via
+(at most 10 stills; non-empty `photos` wins over singular `photo`). Optional `takenAt` follows the same civil-time rule as `POST /messages` (invalid or missing is stored null and does not 400). Conversation JSON does not return it. Text 1–8000 via
 `normalizeForumText`. Empty text is allowed on every kind when a still is present.
 Photo-bearing rows persist `nostrPublishState` skipped (never Nostr); text-only
 Direct/Contact/Damus stay `pending`. Moderator replies on a
@@ -4324,9 +4375,9 @@ Same 401 / 404 / 503 shapes as the list/get routes, plus
 (including any `video` field; stills only),
 **400** `{ "error": "At most 10 photos" }`,
 **400** `{ "error": "Photo must be a JPEG, PNG, or WebP under 1 MiB" }`,
-**400** `{ "error": "Text must be 1–500 characters or include a photo" }`
+**400** `{ "error": "Text must be 1–8000 characters or include a photo" }`
 (empty text without a still),
-**400** `{ "error": "Text must be 1–500 characters" }`,
+**400** `{ "error": "Text must be 1–8000 characters" }`,
 **400** `{ "error": "Set a name before posting" }` when the sending member
 has no display name.
 
@@ -4537,6 +4588,6 @@ exist on the account model; `GET /debug/accounts` and
 
 - Passkey + PRF + NIP-06 user-owned keys (non-custodial phase)
 - Email/password login (or any second login method)
-- Internationalization of the api (responses and push payloads stay English; visitor-UI locales live in the app catalog)
+- Internationalization of api response text and push payloads (they stay English). A signed-in account may store `locale` and `fiat`; that is not translated copy.
 - Platform custody of **receiver** funds (receiving stays LUD-16 only)
 - Arbitrary LNDHub URLs (the external spend worker uses lightning.space only)
