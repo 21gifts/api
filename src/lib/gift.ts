@@ -15,6 +15,9 @@ import {
 } from '@/lib/money';
 import { FX_SOURCE_FRANKFURTER_ECB, type FiatCross } from '@/lib/usd-fiat-store';
 
+/** Outbound gift classification stored on `gift.kind`. */
+export type GiftKind = 'daily' | 'welcome' | 'moderator';
+
 /** One outbound gift used as stats input. No invoice fields. */
 export interface GiftRow {
   /** Instant the gift was paid. */
@@ -23,6 +26,8 @@ export interface GiftRow {
   amountSats: number;
   /** Wallet of Satoshi username the gift was paid to. */
   recipientWosUser: string;
+  /** Daily funding, welcome gift, moderator stipend, or in-memory member zap (`other`). */
+  kind: GiftKind | 'other';
   /** Stored payment-time USD. `undefined` selects the legacy daily-close path. */
   amountUsd?: string | null;
   /** Stored payment-time CHF. */
@@ -39,6 +44,11 @@ export interface SpendDay {
   day: string;
   /** Number of outbound gifts that UTC day (zero on gap days). */
   giftCount: number;
+  /**
+   * Distinct case-insensitive recipient handles that UTC day whose kind is
+   * `daily` or `welcome` (zero on gap days; moderator stipends excluded).
+   */
+  officialCount: number;
   /** Sats paid that UTC day. */
   sats: number;
   /** Running total of sats through this day inclusive. */
@@ -211,6 +221,8 @@ export interface GiftQueryRow {
   amount_sats: number | string | bigint;
   /** `recipient_wos_user` column. */
   recipient_wos_user: string;
+  /** `kind` column. */
+  kind: string;
   /** Stored USD snapshot. */
   fiat_usd: string | number | null;
   /** Stored CHF snapshot. */
@@ -344,6 +356,8 @@ function utcDayMs(day: string): number {
  *
  * @param row - Columns selected for stats.
  * @returns The domain row (`paidAt` is always a `Date`).
+ * @throws Error('invalid gift kind') when `kind` is missing or not
+ *   `daily`, `welcome`, or `moderator`, including `'other'`.
  */
 export function mapGiftQueryRow(row: GiftQueryRow): GiftRow {
   const paidAt = row.paid_at instanceof Date ? row.paid_at : new Date(row.paid_at);
@@ -351,11 +365,20 @@ export function mapGiftQueryRow(row: GiftQueryRow): GiftRow {
     paidAt,
     amountSats: Number(row.amount_sats),
     recipientWosUser: row.recipient_wos_user,
+    kind: parseGiftKind(row.kind),
     amountUsd: storedMoney(row.fiat_usd),
     amountChf: storedMoney(row.fiat_chf),
     amountEur: storedMoney(row.fiat_eur),
     amountPhp: storedMoney(row.fiat_php),
   };
+}
+
+/** Require a stored `gift.kind` value; unknown or missing is not treated as daily. */
+function parseGiftKind(value: unknown): GiftKind {
+  if (value === 'daily' || value === 'welcome' || value === 'moderator') {
+    return value;
+  }
+  throw new Error('invalid gift kind');
 }
 
 /** Format a numeric driver value as an exact two-decimal stored amount. */
@@ -613,7 +636,10 @@ function cumulativeFiat(running: number | null): string | null {
  * a missing BTC-USD rate throws `Error('fx.rate.missing')`. Missing CHF/EUR/PHP
  * does **not** throw: those fields are `null`. Gap days in `spendOverTime` and
  * gap months in `byMonth` use zero `giftCount`/sats/BTC/USD and `"0.00"` fiat
- * without needing a rate.
+ * without needing a rate. `spendOverTime[].officialCount` is the number of
+ * distinct case-insensitive recipient handles that UTC day with kind `daily`
+ * or `welcome` (gap days 0; moderator excluded). `giftCount` remains every
+ * outbound row.
  *
  * @param rows - Outbound gifts (order does not matter).
  * @param rates - UTC day → USD-per-BTC string for every gift day.
@@ -652,6 +678,7 @@ export function buildGiftStats(
 
   const byDaySats = new Map<string, number>();
   const byDayGiftCount = new Map<string, number>();
+  const byDayOfficial = new Map<string, Set<string>>();
   const byDayUsdCents = new Map<string, number | null>();
   const byDayChfCents = new Map<string, number | null>();
   const byDayEurCents = new Map<string, number | null>();
@@ -676,6 +703,11 @@ export function buildGiftStats(
     totalPhpCents = addMaybe(totalPhpCents, converted.php);
     byDaySats.set(day, (byDaySats.get(day) ?? 0) + row.amountSats);
     byDayGiftCount.set(day, (byDayGiftCount.get(day) ?? 0) + 1);
+    if (row.kind === 'daily' || row.kind === 'welcome') {
+      const official = byDayOfficial.get(day) ?? new Set<string>();
+      official.add(row.recipientWosUser.toLowerCase());
+      byDayOfficial.set(day, official);
+    }
     byDayUsdCents.set(day, foldDay(byDayUsdCents, day, usdCents));
     byDayChfCents.set(day, foldDay(byDayChfCents, day, converted.chf));
     byDayEurCents.set(day, foldDay(byDayEurCents, day, converted.eur));
@@ -717,6 +749,7 @@ export function buildGiftStats(
     spendOverTime.push({
       day,
       giftCount: byDayGiftCount.get(day) ?? 0,
+      officialCount: byDayOfficial.get(day)?.size ?? 0,
       sats,
       cumulativeSats,
       btc: satsToBtcString(sats),

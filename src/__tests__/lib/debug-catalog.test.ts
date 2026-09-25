@@ -436,6 +436,7 @@ describe('loadDebugTables', () => {
         paidAt: new Date('2026-09-01T00:00:00.000Z'),
         amountSats: 1000,
         recipientWosUser: 'ada',
+        kind: 'daily',
       },
     ]);
     const tables = await loadDebugTables({

@@ -632,6 +632,11 @@ test('Function: migrateGiftSchema — default boot has no DATABASE_URL', async (
   expect(res.status()).toBe(200);
 });
 
+test('Function: repairGiftKind — default boot has no DATABASE_URL', async ({ request }) => {
+  const res = await request.get('/healthz');
+  expect(res.status()).toBe(200);
+});
+
 test('Function: posRoutes — GET and DELETE /pos without bearer are 401', async ({ request }) => {
   expect((await request.get('/pos')).status()).toBe(401);
   expect((await request.delete('/pos')).status()).toBe(401);
