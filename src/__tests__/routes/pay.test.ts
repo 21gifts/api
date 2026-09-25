@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { createApp } from '@/server';
 import { InMemoryAuthStore } from '@/lib/auth/store';
+import { InMemoryPosStore, type PosStore } from '@/lib/pos-store';
 
 const ADA_ID = '00000000-0000-4000-8000-000000000001';
 const WIDE_MAX_SENDABLE = 100_000_000_000;
@@ -62,6 +63,8 @@ async function seededApp(
     maxSendable?: number;
     fetchImpl?: (input: string | URL | Request) => Promise<Response>;
     throwOnLookup?: boolean;
+    posStore?: PosStore;
+    now?: () => number;
   } = {},
 ) {
   const authStore = new InMemoryAuthStore();
@@ -85,7 +88,19 @@ async function seededApp(
       }
       return invoiceResponse();
     });
-  return { app: createApp({ authStore, fetchImpl }), urls };
+  const appOpts: {
+    authStore: InMemoryAuthStore;
+    fetchImpl: (input: string | URL | Request) => Promise<Response>;
+    posStore?: PosStore;
+    now?: () => number;
+  } = { authStore, fetchImpl };
+  if (overrides.posStore !== undefined) {
+    appOpts.posStore = overrides.posStore;
+  }
+  if (overrides.now !== undefined) {
+    appOpts.now = overrides.now;
+  }
+  return { app: createApp(appOpts), urls };
 }
 
 describe('GET /pay/:username', () => {
@@ -99,8 +114,9 @@ describe('GET /pay/:username', () => {
       username: 'ada',
       minSats: 1,
       maxSats: 100000000,
+      charge: null,
     });
-    expect(Object.keys(body).sort()).toEqual(['maxSats', 'minSats', 'name', 'username']);
+    expect(Object.keys(body).sort()).toEqual(['charge', 'maxSats', 'minSats', 'name', 'username']);
     expect(urls[0]).toBe(WELL_KNOWN_URL);
     expect(urls.some((url) => url.includes('21.gifts'))).toBe(false);
   });
@@ -114,6 +130,7 @@ describe('GET /pay/:username', () => {
       username: 'ada',
       minSats: 1,
       maxSats: 100000000,
+      charge: null,
     });
   });
 
@@ -126,6 +143,7 @@ describe('GET /pay/:username', () => {
       username: 'ada',
       minSats: 1,
       maxSats: 100000000,
+      charge: null,
     });
   });
 
@@ -138,6 +156,7 @@ describe('GET /pay/:username', () => {
       username: 'ada',
       minSats: 1,
       maxSats: 100000000,
+      charge: null,
     });
   });
 
@@ -204,6 +223,95 @@ describe('GET /pay/:username', () => {
 
   it('returns 502 when maxSats is below minSats', async () => {
     const { app } = await seededApp({ minSendable: 1500, maxSendable: 1999 });
+    const res = await app.request('/pay/ada');
+    expect(res.status).toBe(502);
+    expect(await res.json()).toEqual({ error: 'Lightning Address could not be resolved' });
+  });
+
+  it('pins minSats and maxSats to an unexpired pending charge', async () => {
+    const nowMs = 1_700_000_000_000;
+    const now = (): number => nowMs;
+    const expiresAt = new Date(nowMs + 60_000);
+    const posStore = new InMemoryPosStore();
+    await posStore.create({
+      id: '11111111-1111-4111-8111-111111111111',
+      accountId: ADA_ID,
+      amountSats: 21,
+      status: 'pending',
+      createdAt: new Date(nowMs),
+      expiresAt,
+    });
+    const { app } = await seededApp({ posStore, now });
+    const res = await app.request('/pay/ada');
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(body).toEqual({
+      name: 'Ada',
+      username: 'ada',
+      minSats: 21,
+      maxSats: 21,
+      charge: { amountSats: 21, expiresAt: expiresAt.toISOString() },
+    });
+    expect(body).not.toHaveProperty('id');
+    expect(body).not.toHaveProperty('status');
+    expect(body).not.toHaveProperty('createdAt');
+    expect(body).not.toHaveProperty('accountId');
+  });
+
+  it('returns charge null and the wallet range when the pending charge is expired', async () => {
+    const nowMs = 1_700_000_000_000;
+    const now = (): number => nowMs;
+    const posStore = new InMemoryPosStore();
+    await posStore.create({
+      id: '22222222-2222-4222-8222-222222222222',
+      accountId: ADA_ID,
+      amountSats: 21,
+      status: 'pending',
+      createdAt: new Date(nowMs - 1),
+      expiresAt: new Date(nowMs),
+    });
+    const { app } = await seededApp({ posStore, now });
+    const res = await app.request('/pay/ada');
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({
+      name: 'Ada',
+      username: 'ada',
+      minSats: 1,
+      maxSats: 100000000,
+      charge: null,
+    });
+  });
+
+  it('returns charge null and the wallet range when the row is cancelled', async () => {
+    const nowMs = 1_700_000_000_000;
+    const now = (): number => nowMs;
+    const posStore = new InMemoryPosStore();
+    await posStore.create({
+      id: '33333333-3333-4333-8333-333333333333',
+      accountId: ADA_ID,
+      amountSats: 21,
+      status: 'cancelled',
+      createdAt: new Date(nowMs),
+      expiresAt: new Date(nowMs + 60_000),
+    });
+    const { app } = await seededApp({ posStore, now });
+    const res = await app.request('/pay/ada');
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({
+      name: 'Ada',
+      username: 'ada',
+      minSats: 1,
+      maxSats: 100000000,
+      charge: null,
+    });
+  });
+
+  it('returns 502 when currentPending throws', async () => {
+    const posStore = new InMemoryPosStore();
+    posStore.currentPending = async () => {
+      throw new Error('till');
+    };
+    const { app } = await seededApp({ posStore });
     const res = await app.request('/pay/ada');
     expect(res.status).toBe(502);
     expect(await res.json()).toEqual({ error: 'Lightning Address could not be resolved' });
@@ -416,5 +524,82 @@ describe('POST /pay/:username/invoice', () => {
     });
     expect(res.status).toBe(502);
     expect(await res.json()).toEqual({ error: 'Lightning Address could not be resolved' });
+  });
+
+  it('rejects a different amount while a charge is open without fetching the callback', async () => {
+    const nowMs = 1_700_000_000_000;
+    const now = (): number => nowMs;
+    const posStore = new InMemoryPosStore();
+    await posStore.create({
+      id: '44444444-4444-4444-8444-444444444444',
+      accountId: ADA_ID,
+      amountSats: 21,
+      status: 'pending',
+      createdAt: new Date(nowMs),
+      expiresAt: new Date(nowMs + 60_000),
+    });
+    const { app, urls } = await seededApp({ posStore, now });
+    const res = await app.request('/pay/ada/invoice', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ amountSats: 1 }),
+    });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: 'Enter a whole number of sats' });
+    expect(urls.some((url) => url.includes(CALLBACK))).toBe(false);
+  });
+
+  it('mints the open charge amount of 250000 sats', async () => {
+    const nowMs = 1_700_000_000_000;
+    const now = (): number => nowMs;
+    const posStore = new InMemoryPosStore();
+    await posStore.create({
+      id: '55555555-5555-4555-8555-555555555555',
+      accountId: ADA_ID,
+      amountSats: PR_SATS,
+      status: 'pending',
+      createdAt: new Date(nowMs),
+      expiresAt: new Date(nowMs + 60_000),
+    });
+    const { app } = await seededApp({ posStore, now });
+    const res = await app.request('/pay/ada/invoice', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ amountSats: PR_SATS }),
+    });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ pr: PR, amountSats: PR_SATS });
+  });
+
+  it('pins GET to a charge outside the provider window and rejects that POST amount', async () => {
+    const nowMs = 1_700_000_000_000;
+    const now = (): number => nowMs;
+    const posStore = new InMemoryPosStore();
+    await posStore.create({
+      id: '66666666-6666-4666-8666-666666666666',
+      accountId: ADA_ID,
+      amountSats: 21,
+      status: 'pending',
+      createdAt: new Date(nowMs),
+      expiresAt: new Date(nowMs + 60_000),
+    });
+    const { app, urls } = await seededApp({ posStore, now, maxSendable: 5000 });
+    const getRes = await app.request('/pay/ada');
+    expect(getRes.status).toBe(200);
+    expect(await getRes.json()).toEqual({
+      name: 'Ada',
+      username: 'ada',
+      minSats: 21,
+      maxSats: 21,
+      charge: { amountSats: 21, expiresAt: new Date(nowMs + 60_000).toISOString() },
+    });
+    const postRes = await app.request('/pay/ada/invoice', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ amountSats: 21 }),
+    });
+    expect(postRes.status).toBe(400);
+    expect(await postRes.json()).toEqual({ error: 'Enter a whole number of sats' });
+    expect(urls.some((url) => url.includes(CALLBACK))).toBe(false);
   });
 });

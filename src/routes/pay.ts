@@ -1,9 +1,12 @@
 /**
- * `GET /pay/:username` — public pay-link card (display name and satoshi bounds).
+ * `GET /pay/:username` — public pay-link card (display name, satoshi bounds,
+ * and an open till when one is pending).
  * `POST /pay/:username/invoice` — one BOLT11 invoice via `requestGiftInvoice`.
  *
  * Settlement stays on the member's linked Lightning Address, never
- * `username@21.gifts`. No spend token.
+ * `username@21.gifts`. No spend token. An unexpired pending point-of-sale
+ * charge pins both returned sat bounds to that amount; provider metadata
+ * used for the millisatoshi check is not mutated.
  */
 
 import { Hono } from 'hono';
@@ -15,6 +18,7 @@ import { normalizeLightningAddress } from '@/lib/lightning-address';
 import type { FetchFn } from '@/lib/lnurlp';
 import { resolveLnurlp } from '@/lib/lnurlp';
 import { logEvent } from '@/lib/log';
+import type { PosStore } from '@/lib/pos-store';
 import { normalizeUsername } from '@/lib/username';
 
 type PayLookup =
@@ -26,19 +30,29 @@ type PayLookup =
       minSats: number;
       maxSats: number;
       metadata: { minSendable: number; maxSendable: number };
+      charge: { amountSats: number; expiresAt: string } | null;
     }
   | { ok: false; status: 404 | 502; error: string };
 
 /**
  * Load the member and the linked Lightning Address LNURL-pay satoshi bounds.
+ * After a valid wallet window, an unexpired pending point-of-sale charge
+ * pins both sat bounds to that amount and sets `charge`. Provider
+ * `minSendable` / `maxSendable` are left unchanged. `currentPending` is
+ * not called when account or LNURL resolution already failed.
  *
  * @param rawUsername - Path parameter before normalisation.
- * @param deps - Auth store and LNURL-pay fetch.
- * @returns Display fields and bounds, or an HTTP error payload.
+ * @param deps - Auth store, LNURL-pay fetch, POS store, and clock.
+ * @returns Display fields, bounds, and `charge`, or an HTTP error payload.
  */
 async function lookupPayAccount(
   rawUsername: string,
-  deps: { auth: AuthStore; fetchImpl: FetchFn },
+  deps: {
+    auth: AuthStore;
+    fetchImpl: FetchFn;
+    posStore: PosStore;
+    now: () => number;
+  },
 ): Promise<PayLookup> {
   const username = normalizeUsername(rawUsername);
   if (username === null) {
@@ -78,7 +92,23 @@ async function lookupPayAccount(
     }
     const trimmedName = account.name?.trim() ?? '';
     const name = trimmedName === '' ? username : trimmedName;
-    return { ok: true, username, name, address, minSats, maxSats, metadata };
+    const pending = await deps.posStore.currentPending(account.id, deps.now());
+    if (pending === null) {
+      return { ok: true, username, name, address, minSats, maxSats, metadata, charge: null };
+    }
+    return {
+      ok: true,
+      username,
+      name,
+      address,
+      minSats: pending.amountSats,
+      maxSats: pending.amountSats,
+      metadata,
+      charge: {
+        amountSats: pending.amountSats,
+        expiresAt: pending.expiresAt.toISOString(),
+      },
+    };
   } catch {
     logEvent('pay.failed', { username });
     return { ok: false, status: 502, error: 'Lightning Address could not be resolved' };
@@ -88,10 +118,15 @@ async function lookupPayAccount(
 /**
  * Build the `/pay` route group.
  *
- * @param deps - Auth store and fetch.
+ * @param deps - Auth store, fetch, POS store, and clock. All required.
  * @returns Hono app with `GET /:username` and `POST /:username/invoice`.
  */
-export function payRoutes(deps: { auth: AuthStore; fetchImpl: FetchFn }): Hono {
+export function payRoutes(deps: {
+  auth: AuthStore;
+  fetchImpl: FetchFn;
+  posStore: PosStore;
+  now: () => number;
+}): Hono {
   return new Hono()
     .get('/:username', async (c) => {
       const lookup = await lookupPayAccount(c.req.param('username'), deps);
@@ -103,6 +138,7 @@ export function payRoutes(deps: { auth: AuthStore; fetchImpl: FetchFn }): Hono {
         username: lookup.username,
         minSats: lookup.minSats,
         maxSats: lookup.maxSats,
+        charge: lookup.charge,
       });
     })
     .post('/:username/invoice', async (c) => {

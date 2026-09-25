@@ -381,7 +381,7 @@ export function createApp(deps: AppDeps = {}): Hono {
   app.route('/info', infoRoute);
   app.route('/translate', translateRoutes({ env }));
   app.route('/.well-known', wellKnownRoutes({ auth: store, fetchImpl, posStore, now }));
-  app.route('/pay', payRoutes({ auth: store, fetchImpl }));
+  app.route('/pay', payRoutes({ auth: store, fetchImpl, posStore, now }));
   app.route(
     '/auth',
     authRoutes({

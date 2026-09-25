@@ -332,30 +332,51 @@ not only the newest. An already expired row is not cancelled.
 
 Public pay-link card. No auth. Normalises `:username`, loads the account,
 and returns the trimmed display name (or the normalised username when the
-name is blank) plus `minSats` and `maxSats` from the linked Lightning
-Address. Does not return the callback, the address, or provider metadata.
+name is blank) plus `minSats`, `maxSats`, and `charge` from the linked
+Lightning Address. No open charge → `charge` is `null` and the bounds stay
+the wallet sat range. An unexpired pending point-of-sale charge → both
+bounds equal that amount and `charge` is `{ amountSats, expiresAt }` only
+(`expiresAt` is ISO-8601). A bad wallet window is still 502 before any pin.
+`currentPending` throwing is the existing 502. Does not return the
+callback, the address, or provider metadata.
 
-**Response** `200`:
+**Response** `200` (no open charge):
 
 ```json
-{ "name": "Ada", "username": "ada", "minSats": 1, "maxSats": 100000000 }
+{ "name": "Ada", "username": "ada", "minSats": 1, "maxSats": 100000000, "charge": null }
+```
+
+**Response** `200` (unexpired pending charge):
+
+```json
+{
+  "name": "Ada",
+  "username": "ada",
+  "minSats": 21,
+  "maxSats": 21,
+  "charge": { "amountSats": 21, "expiresAt": "2026-09-01T12:05:00.000Z" }
+}
 ```
 
 Invalid username, unknown account, or blank `lightningAddress` →
 **Response** `404` `{ "error": "Not found" }`.
 
 The stored address is not a LUD-16 address, the provider is unreachable,
-the store throws, `minSendable` or `maxSendable` is not a safe integer, or
-`maxSats < minSats` → **Response** `502`
+the store throws, `currentPending` throws, `minSendable` or `maxSendable`
+is not a safe integer, or `maxSats < minSats` → **Response** `502`
 `{ "error": "Lightning Address could not be resolved" }`.
 
 ### `POST /pay/:username/invoice`
 
 One BOLT11 invoice for an exact satoshi amount. No auth. Same account
-lookup as `GET /pay/:username`. Body `{ "amountSats": <integer> }` must sit
-inside `[minSats, maxSats]` and the millisatoshi value must sit inside the
-provider window. Settlement calls the stored address, never
-`username@21.gifts`. No comment. No spend token.
+lookup as `GET /pay/:username` (including the till pin). Body
+`{ "amountSats": <integer> }` must sit inside `[minSats, maxSats]` and the
+millisatoshi value must sit inside the provider window. A different amount
+while a charge is open is the existing 400 and does not call the invoice
+callback. The charge amount must still sit in the provider millisatoshi
+window or that same 400 is returned and the callback is not called.
+Settlement calls the stored address, never `username@21.gifts`. No comment.
+No spend token.
 
 **Response** `200`:
 
