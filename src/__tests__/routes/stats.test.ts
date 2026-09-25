@@ -17,12 +17,14 @@ const GIFT: GiftRow = {
   paidAt: new Date('2026-06-01T12:00:00.000Z'),
   amountSats: 1000,
   recipientWosUser: 'alice',
+  kind: 'daily',
 };
 
 const BOB_GIFT: GiftRow = {
   paidAt: new Date('2026-06-03T12:00:00.000Z'),
   amountSats: 2000,
   recipientWosUser: 'bob',
+  kind: 'daily',
 };
 
 const EMPTY_STATS = {

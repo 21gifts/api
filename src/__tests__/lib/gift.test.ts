@@ -9,8 +9,13 @@ import {
   type GiftRow,
 } from '@/lib/gift';
 
-function row(paidAt: string, amountSats: number, recipientWosUser: string): GiftRow {
-  return { paidAt: new Date(paidAt), amountSats, recipientWosUser };
+function row(
+  paidAt: string,
+  amountSats: number,
+  recipientWosUser: string,
+  kind: GiftRow['kind'] = 'daily',
+): GiftRow {
+  return { paidAt: new Date(paidAt), amountSats, recipientWosUser, kind };
 }
 
 const FX = {
@@ -53,6 +58,7 @@ describe('mapGiftQueryRow', () => {
         paid_at: paidAt,
         amount_sats: 21,
         recipient_wos_user: 'alice',
+        kind: 'daily',
         fiat_usd: null,
         fiat_chf: null,
         fiat_eur: null,
@@ -62,6 +68,7 @@ describe('mapGiftQueryRow', () => {
       paidAt,
       amountSats: 21,
       recipientWosUser: 'alice',
+      kind: 'daily',
       amountUsd: null,
       amountChf: null,
       amountEur: null,
@@ -76,6 +83,7 @@ describe('mapGiftQueryRow', () => {
         paid_at: paidAt,
         amount_sats: 1,
         recipient_wos_user: 'ada',
+        kind: 'welcome',
         fiat_usd: 5,
         fiat_chf: '5.1',
         fiat_eur: '5',
@@ -85,6 +93,7 @@ describe('mapGiftQueryRow', () => {
       paidAt,
       amountSats: 1,
       recipientWosUser: 'ada',
+      kind: 'welcome',
       amountUsd: '5.00',
       amountChf: '5.10',
       amountEur: '5.00',
@@ -98,6 +107,7 @@ describe('mapGiftQueryRow', () => {
         paid_at: new Date('2026-06-01T12:00:00.000Z'),
         amount_sats: 1,
         recipient_wos_user: 'ada',
+        kind: 'daily',
         fiat_usd: 'nope',
         fiat_chf: null,
         fiat_eur: null,
@@ -106,11 +116,30 @@ describe('mapGiftQueryRow', () => {
     ).toThrow('invalid stored fiat amount');
   });
 
+  it('throws when kind is missing or not daily, welcome, or moderator', () => {
+    const base = {
+      paid_at: new Date('2026-06-01T12:00:00.000Z'),
+      amount_sats: 1,
+      recipient_wos_user: 'ada',
+      fiat_usd: null,
+      fiat_chf: null,
+      fiat_eur: null,
+      fiat_php: null,
+    };
+    expect(() => mapGiftQueryRow({ ...base, kind: 'nope' })).toThrow('invalid gift kind');
+    expect(() => mapGiftQueryRow({ ...base, kind: 'Daily' })).toThrow('invalid gift kind');
+    expect(() => mapGiftQueryRow({ ...base, kind: 'other' })).toThrow('invalid gift kind');
+    expect(() => mapGiftQueryRow({ ...base, kind: undefined as unknown as string })).toThrow(
+      'invalid gift kind',
+    );
+  });
+
   it('parses string paid_at and bigint amount_sats', () => {
     const mapped = mapGiftQueryRow({
       paid_at: '2026-06-01T12:00:00.000Z',
       amount_sats: 42n,
       recipient_wos_user: 'bob',
+      kind: 'moderator',
       fiat_usd: null,
       fiat_chf: null,
       fiat_eur: null,
@@ -119,6 +148,7 @@ describe('mapGiftQueryRow', () => {
     expect(mapped.paidAt.toISOString()).toBe('2026-06-01T12:00:00.000Z');
     expect(mapped.amountSats).toBe(42);
     expect(mapped.recipientWosUser).toBe('bob');
+    expect(mapped.kind).toBe('moderator');
   });
 });
 
@@ -190,6 +220,7 @@ describe('buildGiftStats', () => {
       {
         day: '2026-06-01',
         giftCount: 1,
+        officialCount: 1,
         sats: 1000,
         cumulativeSats: 1000,
         btc: '0.00001000',
@@ -252,6 +283,7 @@ describe('buildGiftStats', () => {
       {
         day: '2026-06-01',
         giftCount: 1,
+        officialCount: 1,
         sats: 1000,
         cumulativeSats: 1000,
         btc: '0.00001000',
@@ -341,6 +373,7 @@ describe('buildGiftStats', () => {
       {
         day: '2026-06-01',
         giftCount: 1,
+        officialCount: 1,
         sats: 10,
         cumulativeSats: 10,
         btc: '0.00000010',
@@ -352,6 +385,7 @@ describe('buildGiftStats', () => {
       {
         day: '2026-06-02',
         giftCount: 0,
+        officialCount: 0,
         sats: 0,
         cumulativeSats: 10,
         btc: '0.00000000',
@@ -368,6 +402,7 @@ describe('buildGiftStats', () => {
       {
         day: '2026-06-03',
         giftCount: 1,
+        officialCount: 1,
         sats: 30,
         cumulativeSats: 40,
         btc: '0.00000030',
@@ -402,6 +437,7 @@ describe('buildGiftStats', () => {
     expect(stats.spendOverTime[1]).toEqual({
       day: '2026-06-02',
       giftCount: 0,
+      officialCount: 0,
       sats: 0,
       cumulativeSats: 1000,
       btc: '0.00000000',
@@ -450,6 +486,7 @@ describe('buildGiftStats', () => {
       {
         day: '2026-06-01',
         giftCount: 2,
+        officialCount: 2,
         sats: 1500,
         cumulativeSats: 1500,
         btc: '0.00001500',
@@ -459,6 +496,110 @@ describe('buildGiftStats', () => {
         ...NULL_FIAT_DAY,
       },
     ]);
+  });
+
+  it('counts one official person for daily and welcome on the same UTC day', () => {
+    const stats = buildGiftStats(
+      [
+        row('2026-06-01T08:00:00.000Z', 1000, 'alice', 'daily'),
+        row('2026-06-01T20:00:00.000Z', 500, 'alice', 'welcome'),
+      ],
+      RATE_100K,
+    );
+    expect(stats.giftCount).toBe(2);
+    expect(stats.spendOverTime[0]?.officialCount).toBe(1);
+  });
+
+  it('counts two official people', () => {
+    const stats = buildGiftStats(
+      [
+        row('2026-06-01T08:00:00.000Z', 1000, 'alice', 'daily'),
+        row('2026-06-01T20:00:00.000Z', 500, 'bob', 'welcome'),
+      ],
+      RATE_100K,
+    );
+    expect(stats.spendOverTime[0]?.officialCount).toBe(2);
+    expect(stats.giftCount).toBe(2);
+  });
+
+  it('counts a welcome-only day as one official person', () => {
+    const stats = buildGiftStats(
+      [row('2026-06-01T12:00:00.000Z', 1000, 'alice', 'welcome')],
+      RATE_100K,
+    );
+    expect(stats.spendOverTime[0]?.officialCount).toBe(1);
+    expect(stats.giftCount).toBe(1);
+  });
+
+  it('excludes moderator from officialCount', () => {
+    const stats = buildGiftStats(
+      [row('2026-06-01T12:00:00.000Z', 1000, 'alice', 'moderator')],
+      RATE_100K,
+    );
+    expect(stats.spendOverTime[0]?.officialCount).toBe(0);
+    expect(stats.giftCount).toBe(1);
+  });
+
+  it('counts daily plus moderator for the same person as one official', () => {
+    const stats = buildGiftStats(
+      [
+        row('2026-06-01T08:00:00.000Z', 1000, 'alice', 'daily'),
+        row('2026-06-01T20:00:00.000Z', 500, 'alice', 'moderator'),
+      ],
+      RATE_100K,
+    );
+    expect(stats.spendOverTime[0]?.officialCount).toBe(1);
+    expect(stats.giftCount).toBe(2);
+  });
+
+  it('counts two daily rows for the same person on the same day as one official', () => {
+    const stats = buildGiftStats(
+      [
+        row('2026-06-01T08:00:00.000Z', 1000, 'alice', 'daily'),
+        row('2026-06-01T20:00:00.000Z', 500, 'alice', 'daily'),
+      ],
+      RATE_100K,
+    );
+    expect(stats.spendOverTime[0]?.officialCount).toBe(1);
+    expect(stats.giftCount).toBe(2);
+  });
+
+  it('treats Ada and ada as one official person', () => {
+    const stats = buildGiftStats(
+      [
+        row('2026-06-01T08:00:00.000Z', 1000, 'Ada', 'daily'),
+        row('2026-06-01T20:00:00.000Z', 500, 'ada', 'welcome'),
+      ],
+      RATE_100K,
+    );
+    expect(stats.spendOverTime[0]?.officialCount).toBe(1);
+  });
+
+  it('keeps officialCount 0 on a gap day between gift days', () => {
+    const rates = new Map([
+      ['2026-06-01', '100000'],
+      ['2026-06-03', '100000'],
+    ]);
+    const stats = buildGiftStats(
+      [
+        row('2026-06-01T12:00:00.000Z', 1000, 'alice', 'daily'),
+        row('2026-06-03T12:00:00.000Z', 1000, 'bob', 'welcome'),
+      ],
+      rates,
+    );
+    expect(stats.spendOverTime[1]?.day).toBe('2026-06-02');
+    expect(stats.spendOverTime[1]?.officialCount).toBe(0);
+    expect(stats.spendOverTime[1]?.giftCount).toBe(0);
+  });
+
+  it('increments giftCount for kind other and not officialCount', () => {
+    const stats = buildGiftStats(
+      [row('2026-06-01T12:00:00.000Z', 1000, 'alice', 'other')],
+      RATE_100K,
+    );
+    expect(stats.giftCount).toBe(1);
+    expect(stats.spendOverTime[0]?.giftCount).toBe(1);
+    expect(stats.spendOverTime[0]?.officialCount).toBe(0);
   });
 
   it('groups months chronologically with BTC and USD', () => {
@@ -669,6 +810,7 @@ describe('buildGiftDay', () => {
           paidAt: new Date('2026-06-01T15:00:00.000Z'),
           amountSats: 1000,
           recipientWosUser: 'alice',
+          kind: 'daily',
           amountUsd: '1.50',
           amountChf: '1.20',
         },
@@ -689,6 +831,7 @@ describe('buildGiftDay', () => {
           paidAt: new Date('2026-06-01T01:00:00.000Z'),
           amountSats: 1000,
           recipientWosUser: 'ada',
+          kind: 'daily',
           amountUsd: null,
           amountChf: null,
           amountEur: null,
@@ -698,6 +841,7 @@ describe('buildGiftDay', () => {
           paidAt: new Date('2026-06-01T02:00:00.000Z'),
           amountSats: 1000,
           recipientWosUser: 'bob',
+          kind: 'daily',
           amountUsd: '1.00',
           amountChf: '0.80',
           amountEur: '0.90',
@@ -707,6 +851,7 @@ describe('buildGiftDay', () => {
           paidAt: new Date('2026-06-03T00:00:00.000Z'),
           amountSats: 0,
           recipientWosUser: 'cara',
+          kind: 'daily',
           amountUsd: null,
           amountChf: null,
           amountEur: null,
@@ -730,6 +875,7 @@ describe('buildGiftDay', () => {
           paidAt: new Date('2026-06-01T15:00:00.000Z'),
           amountSats: 1000,
           recipientWosUser: 'alice',
+          kind: 'daily',
           amountUsd: '1.00',
         },
       ],
@@ -748,6 +894,7 @@ describe('buildGiftDay', () => {
             paidAt: new Date('2026-06-01T15:00:00.000Z'),
             amountSats: 1000,
             recipientWosUser: 'alice',
+            kind: 'daily',
             amountUsd: '1.5',
           },
         ],

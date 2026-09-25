@@ -302,6 +302,12 @@ export function invoiceRoutes(deps: InvoiceRouteDeps): Hono {
         recipientWosUser: recipientHandleFromAddress(invoice.address),
         lightningInvoice: invoice.pr,
         description: invoice.groupMessageId !== undefined ? '21gifts moderator' : '21gifts daily',
+        kind:
+          invoice.groupMessageId !== undefined
+            ? 'moderator'
+            : invoice.comment === 'Welcome'
+              ? 'welcome'
+              : 'daily',
         sourceWallet: 'lightning.space',
         fiat,
       });

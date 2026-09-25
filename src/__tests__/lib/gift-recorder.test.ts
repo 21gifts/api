@@ -14,6 +14,7 @@ const RECORD: GiftRecord = {
   recipientWosUser: 'alice',
   lightningInvoice: 'lnbc1test',
   description: '21gifts daily',
+  kind: 'daily',
   sourceWallet: 'lightning.space',
   fiat: null,
 };
@@ -59,6 +60,7 @@ describe('SqlGiftRecorder', () => {
         null,
         null,
         null,
+        'daily',
       ],
     );
   });
@@ -87,6 +89,7 @@ describe('SqlGiftRecorder', () => {
       '4.00',
       '4.50',
       '250.00',
+      'daily',
     ]);
   });
 });

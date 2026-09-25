@@ -21,18 +21,21 @@ const ALICE: GiftRow = {
   paidAt: new Date('2026-06-01T12:00:00.000Z'),
   amountSats: 1000,
   recipientWosUser: 'alice',
+  kind: 'daily',
 };
 
 const BOB: GiftRow = {
   paidAt: new Date('2026-06-01T08:00:00.000Z'),
   amountSats: 500,
   recipientWosUser: 'bob',
+  kind: 'daily',
 };
 
 const OTHER_DAY: GiftRow = {
   paidAt: new Date('2026-06-02T12:00:00.000Z'),
   amountSats: 2000,
   recipientWosUser: 'carol',
+  kind: 'daily',
 };
 
 const EMPTY_DAY = {
