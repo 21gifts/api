@@ -118,8 +118,8 @@ describe('public active window', () => {
       text: 'outside',
       createdAt: new Date(1_000),
       hasPhoto: false,
-      authorPubkey: 'ab'.repeat(32),
       ...unsignedNostrDefaults(),
+      authorPubkey: 'ab'.repeat(32),
       sats: 1,
     });
     for (let n = 2; n <= 4; n += 1) {
