@@ -29,7 +29,7 @@ export function mentionUsernames(text: string): string[] {
     if (text[i] !== '@') {
       continue;
     }
-    const previous = i === 0 ? '' : (text[i - 1] ?? '');
+    const previous = i === 0 ? '' : text.charAt(i - 1);
     if (previous !== '' && USERNAME_CHAR.test(previous)) {
       continue;
     }

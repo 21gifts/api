@@ -109,6 +109,58 @@ describe('public active window', () => {
     ).toBe(401);
   }, 20_000);
 
+  it('serves an external author, a short page, and the error paths', async () => {
+    const store = new InMemoryMessageStore();
+    await store.create({
+      id: id(1),
+      accountId: null,
+      name: 'Visitor',
+      text: 'outside',
+      createdAt: new Date(1_000),
+      hasPhoto: false,
+      authorPubkey: 'ab'.repeat(32),
+      ...unsignedNostrDefaults(),
+      sats: 1,
+    });
+    for (let n = 2; n <= 4; n += 1) {
+      await store.create({
+        id: id(n),
+        accountId: 'ada',
+        name: 'Ada',
+        text: `n${String(n)}`,
+        createdAt: new Date(n * 1000),
+        hasPhoto: false,
+        ...unsignedNostrDefaults(),
+        sats: 1,
+      });
+    }
+    const app = mount(new InMemoryAuthStore(), store);
+    const first = await app.request('/messages?mode=active&limit=1');
+    expect(first.status).toBe(200);
+    const page = (await first.json()) as {
+      messages: Array<{ accountId?: string }>;
+      nextCursor?: string;
+    };
+    expect(page.messages[0]).not.toHaveProperty('accountId');
+    expect(page.nextCursor).toBeTypeOf('string');
+    const inside = await app.request(
+      `/messages?mode=active&limit=1&cursor=${page.nextCursor ?? ''}`,
+    );
+    expect(inside.status).toBe(200);
+    expect((await app.request('/messages?mode=active&limit=0')).status).toBe(400);
+    expect((await app.request('/messages?mode=active&limit=no')).status).toBe(400);
+    expect((await app.request('/messages?mode=active&cursor=nope')).status).toBe(400);
+    expect((await app.request('/messages?mode=nope')).status).toBe(401);
+    class Boom extends InMemoryMessageStore {
+      override listFeed(): Promise<never> {
+        return Promise.reject(new Error('boom'));
+      }
+    }
+    expect(
+      (await mount(new InMemoryAuthStore(), new Boom()).request('/messages?mode=active')).status,
+    ).toBe(503);
+  });
+
   it('stores a mark and notifies the other person once', async () => {
     const auth = await poster();
     const notes = new InMemoryNotificationStore();

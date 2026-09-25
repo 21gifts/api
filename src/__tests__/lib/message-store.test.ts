@@ -3967,6 +3967,34 @@ describe('InMemoryMessageStore', () => {
 });
 
 describe('PostgresMessageStore', () => {
+  it('stores mention json on create and maps it back', async () => {
+    const sql = new MockSql();
+    const created = await new PostgresMessageStore(sql).create({
+      id: 'm-mark',
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'hi @bob',
+      createdAt: new Date(0),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+      mentions: [{ accountId: 'bob', username: 'bob' }],
+    });
+    expect(created.mentions).toEqual([{ accountId: 'bob', username: 'bob' }]);
+    expect(sql.executes.some((item) => item.text.includes('SET mentions'))).toBe(true);
+    sql.nextRows = [
+      {
+        id: 'm-mark',
+        account_id: 'acc',
+        name: 'Ada',
+        text: 'hi @bob',
+        created_at: new Date(0),
+        has_photo: false,
+        mentions: 'not-json',
+      },
+    ];
+    expect((await new PostgresMessageStore(sql).getById('m-mark'))?.mentions).toBeUndefined();
+  });
+
   it('listDirectChildren selects every child of parent_id including hidden', async () => {
     const sql = new MockSql();
     sql.nextRows = [];
@@ -5652,10 +5680,11 @@ describe('PostgresMessageStore', () => {
         event_id: null,
         nostr_publish_state: 'pending',
         sats: 0,
+        mentions: [{ accountId: 'acc', username: 'ada' }],
       },
     ];
     const store = new PostgresMessageStore(sql);
-    expect((await store.getById('m1'))?.id).toBe('m1');
+    expect((await store.getById('m1'))?.mentions).toEqual([{ accountId: 'acc', username: 'ada' }]);
     sql.nextRows = [];
     expect(await store.getById('missing')).toBeUndefined();
     sql.nextRows = [
