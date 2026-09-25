@@ -3295,8 +3295,7 @@ export class InMemoryMessageStore implements MessageStore {
     if (row === undefined) {
       return Promise.resolve(false);
     }
-    row.place =
-      place === null ? null : { lat: place.lat, lng: place.lng, label: place.label };
+    row.place = place === null ? null : { lat: place.lat, lng: place.lng, label: place.label };
     return Promise.resolve(true);
   }
 
