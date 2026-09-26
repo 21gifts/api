@@ -1224,6 +1224,18 @@ async function servePublicActiveList(deps: MessagesRouteDeps, c: Context): Promi
   }
 }
 
+/**
+ * Build the `/messages` route group.
+ *
+ * `GET /` with no Authorization header and `mode=active` and no hashtag is
+ * the public window (`servePublicActiveList`). Any present Authorization
+ * header must be a live session, or the response is 401. A session still
+ * needs `forum.read`.
+ *
+ * @param deps - Stores, clock, and optional push, notification, and inbox
+ * dependencies.
+ * @returns Hono app mounted at `/messages`.
+ */
 export function messagesRoutes(deps: MessagesRouteDeps): Hono {
   const postLimiter = deps.postLimiter ?? defaultPostLimiter;
   const invoiceLimiter = deps.invoiceLimiter ?? defaultInvoiceLimiter;
