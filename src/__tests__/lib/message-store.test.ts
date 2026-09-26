@@ -7274,6 +7274,22 @@ describe('PostgresMessageStore', () => {
     ).toBeUndefined();
   });
 
+  it('sums sats that have no payer account', async () => {
+    const store = new InMemoryMessageStore();
+    await store.recordZapReceipt('anon', 'm1', 5, null);
+    await store.recordZapReceipt('named', 'm1', 21, null);
+    await store.updateZapReceiptGift('named', { payerAccountId: 'giver' });
+    expect(await store.sumUnassignedCreditSats('m1')).toBe(5);
+    expect(await store.sumUnassignedCreditSats('other')).toBe(0);
+    const sql = new MockSql();
+    sql.queryQueue = [[], [{ sats: null }], [{ sats: '4' }]];
+    const postgres = new PostgresMessageStore(sql);
+    expect(await postgres.sumUnassignedCreditSats('m1')).toBe(0);
+    expect(await postgres.sumUnassignedCreditSats('m1')).toBe(0);
+    expect(await postgres.sumUnassignedCreditSats('m1')).toBe(4);
+    expect(sql.queries[0]?.text).toMatch(/payer_account_id IS NULL/);
+  });
+
   it('listCreditPayers sums sats and recorded fiat', async () => {
     const sql = new MockSql();
     sql.nextRows = [

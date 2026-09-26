@@ -6,6 +6,7 @@ import {
   parseRepaymentDescription,
   payerDebtUnits,
   repaymentDescription,
+  repaymentLedger,
   repaymentSchedule,
   repaymentStartMs,
   shareSats,
@@ -100,6 +101,38 @@ describe('credit repayment', () => {
     ]);
     expect(sumFor(flipped, 'tiny')).toBe(1n);
     expect(sumFor(flipped, 'big')).toBe(20_999n);
+    const open = repaymentLedger(
+      2,
+      [
+        { accountId: 'a', units: 1n },
+        { accountId: 'b', units: 1n },
+      ],
+      [],
+      null,
+      Date.UTC(2026, 8, 28),
+    );
+    expect(open.every((line) => line.dueOn === null && line.status === 'scheduled')).toBe(true);
+    const funded = Date.UTC(2026, 8, 26, 12);
+    const now = Date.UTC(2026, 8, 28, 12);
+    const plan = repaymentLedger(
+      2,
+      [{ accountId: 'a', units: 2n }],
+      [{ dayIndex: 0, accountId: 'a' }],
+      funded,
+      now,
+    );
+    expect(plan).toEqual([
+      { dayIndex: 0, dueOn: '2026-09-27', accountId: 'a', units: 1n, status: 'paid' },
+      { dayIndex: 1, dueOn: '2026-09-28', accountId: 'a', units: 1n, status: 'due' },
+    ]);
+    const later = repaymentLedger(
+      2,
+      [{ accountId: 'a', units: 2n }],
+      [],
+      funded,
+      Date.UTC(2026, 8, 27, 1),
+    );
+    expect(later[1]?.status).toBe('scheduled');
   });
 
   it('owes recorded cents, including one cent beside a zero', () => {

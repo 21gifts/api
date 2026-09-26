@@ -25,6 +25,8 @@ async function readyCredit(options?: {
   rate?: boolean;
   authorId?: string;
   giverAccount?: boolean;
+  giverName?: string | null;
+  giverUsername?: string | null;
   fetch?: boolean;
   pr?: string;
 }): Promise<{
@@ -54,7 +56,7 @@ async function readyCredit(options?: {
       id: GIVER,
       linkingKey: `02${'cd'.repeat(32)}`,
       role: 'verified',
-      name: 'Bea',
+      name: options?.giverName === undefined ? 'Bea' : options.giverName,
       lightningAddress:
         options?.giverAddress === undefined ? 'bea@walletofsatoshi.com' : options.giverAddress,
       lightningAddressVerified: true,
@@ -63,7 +65,7 @@ async function readyCredit(options?: {
       viewKey: 'b'.repeat(64),
       createdAt: 1,
       rulesAgreedAt: now(),
-      username: 'bea',
+      username: options?.giverUsername === undefined ? 'bea' : options.giverUsername,
     });
   }
   await auth.createSession({ token: authorId, accountId: authorId, createdAt: now() });
@@ -142,11 +144,41 @@ async function readyCredit(options?: {
 
 describe('credit repayment', () => {
   it('rejects a missing session', async () => {
-    const { app } = await readyCredit();
+    const { app, messages } = await readyCredit();
+    await messages.recordZapReceipt('r-anon', CREDIT, 5, null);
     const res = await app.request(`/messages/${CREDIT}/repayment`);
-    expect(res.status).toBe(401);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      currency: string;
+      unassignedSats: number;
+      givers: { name: string; givenSats: number }[];
+      repayments: { dueOn: string; sats: number; status: string; via: string }[];
+    };
+    expect(body.currency).toBe('BTC');
+    expect(body.unassignedSats).toBe(5);
+    expect(body.givers).toEqual([
+      { accountId: GIVER, name: 'Bea', username: 'bea', givenSats: 21, givenAmount: null },
+    ]);
+    expect(body.repayments[0]).toMatchObject({
+      dueOn: '2026-09-27',
+      sats: 21,
+      status: 'due',
+      via: 'lightning',
+      amount: null,
+      name: 'Bea',
+    });
     const post = await app.request(`/messages/${CREDIT}/repayment`, { method: 'POST' });
     expect(post.status).toBe(401);
+    const badPost = await app.request(`/messages/${CREDIT}/repayment`, {
+      method: 'POST',
+      headers: { authorization: 'Bearer nope' },
+    });
+    expect(badPost.status).toBe(401);
+    const badId = await app.request('/messages/not-a-uuid/repayment', {
+      method: 'POST',
+      headers: { authorization: 'Bearer acc' },
+    });
+    expect(badId.status).toBe(404);
   });
 
   it('shows the due share and invoices the giver Wallet of Satoshi address', async () => {
@@ -326,10 +358,24 @@ describe('credit repayment', () => {
       headers: { authorization: 'Bearer acc-paid' },
     });
     expect(missing.status).toBe(404);
+    await messages.create({
+      id: '33333333-3333-4333-8333-333333333333',
+      accountId: 'acc-paid',
+      name: 'Ada',
+      text: 'plain',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+    });
+    const plain = await app.request('/messages/33333333-3333-4333-8333-333333333333/repayment');
+    expect(plain.status).toBe(404);
     const badToken = await app.request(`/messages/${CREDIT}/repayment`, {
       headers: { authorization: 'Bearer nope' },
     });
-    expect(badToken.status).toBe(401);
+    expect(badToken.status).toBe(200);
+    await messages.markDeleted(CREDIT, new Date(now()), 'acc-paid');
+    const hidden = await app.request(`/messages/${CREDIT}/repayment`);
+    expect(hidden.status).toBe(404);
   });
 
   it('prices a fiat day and rejects a bad id', async () => {
@@ -371,15 +417,34 @@ describe('credit repayment', () => {
       headers: { authorization: 'Bearer acc-blank' },
     });
     expect(blankRes.status).toBe(503);
+    const blankPost = await blank.app.request(`/messages/${CREDIT}/repayment`, {
+      method: 'POST',
+      headers: { authorization: 'Bearer acc-blank' },
+    });
+    expect(blankPost.status).toBe(503);
   });
 
   it('refuses a missing giver and an undecodable invoice', async () => {
     const ghost = await readyCredit({ authorId: 'acc-ghost', giverAccount: false });
+    const listed = await ghost.app.request(`/messages/${CREDIT}/repayment`);
+    expect(listed.status).toBe(200);
+    expect((await listed.json()) as { givers: { name: string }[] }).toMatchObject({
+      givers: [{ name: '', username: null }],
+    });
     const missingGiver = await ghost.app.request(`/messages/${CREDIT}/repayment`, {
       method: 'POST',
       headers: { authorization: 'Bearer acc-ghost' },
     });
     expect(missingGiver.status).toBe(400);
+    const unnamed = await readyCredit({
+      authorId: 'acc-noname',
+      giverName: null,
+      giverUsername: null,
+    });
+    const blankName = await unnamed.app.request(`/messages/${CREDIT}/repayment`);
+    expect((await blankName.json()) as { givers: { name: string }[] }).toMatchObject({
+      givers: [{ name: '', username: null }],
+    });
     const bolt11 = await import('@/lib/bolt11');
     const nip57 = vi.spyOn(bolt11, 'isNip57Invoice').mockReturnValue(true);
     const decoded = vi.spyOn(bolt11, 'inspectBolt11').mockReturnValue({
@@ -416,7 +481,17 @@ describe('credit repayment', () => {
     const open = await unfunded.app.request(`/messages/${CREDIT}/repayment`, {
       headers: { authorization: 'Bearer acc-open' },
     });
-    expect(open.status).toBe(404);
+    expect(open.status).toBe(200);
+    expect((await open.json()) as { fundedAt: null; next: null }).toMatchObject({
+      fundedAt: null,
+      next: null,
+      repayments: [{ dueOn: null, status: 'scheduled', sats: 21 }],
+    });
+    const pay = await unfunded.app.request(`/messages/${CREDIT}/repayment`, {
+      method: 'POST',
+      headers: { authorization: 'Bearer acc-open' },
+    });
+    expect(pay.status).toBe(404);
     const noTerm = await readyCredit({ authorId: 'acc-noterm', termDays: null });
     const missingTerm = await noTerm.app.request(`/messages/${CREDIT}/repayment`, {
       headers: { authorization: 'Bearer acc-noterm' },
@@ -455,6 +530,22 @@ describe('credit repayment', () => {
     expect(status.status).toBe(200);
     expect((await status.json()) as { next: { sats: number } }).toMatchObject({
       next: { sats: 10, recipientAccountId: GIVER },
+      givers: [{ givenAmount: '0.01' }],
+      repayments: [{ amount: '0.01', sats: null, status: 'due' }],
+    });
+    await messages.markRepaymentPaid({
+      messageId: CREDIT,
+      dayIndex: 0,
+      recipientAccountId: GIVER,
+      dueSats: 10,
+      paidAt: new Date(now()),
+    });
+    const again = await app.request(`/messages/${CREDIT}/repayment`, {
+      headers: { authorization: 'Bearer acc-cent' },
+    });
+    expect((await again.json()) as { repayments: { sats: number }[] }).toMatchObject({
+      repayments: [{ amount: '0.01', sats: 10, status: 'paid' }],
+      next: null,
     });
   });
 });

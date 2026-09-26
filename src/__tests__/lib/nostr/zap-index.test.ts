@@ -4818,6 +4818,7 @@ describe('indexOpenZapReceipts', () => {
         base.updatePublishState(...args),
       addSats: (...args: Parameters<InMemoryMessageStore['addSats']>) => base.addSats(...args),
       listCreditPayers: (messageId: string) => base.listCreditPayers(messageId),
+      sumUnassignedCreditSats: (messageId: string) => base.sumUnassignedCreditSats(messageId),
       listRepayments: (messageId: string) => base.listRepayments(messageId),
       markRepaymentPaid: (row: Parameters<InMemoryMessageStore['markRepaymentPaid']>[0]) =>
         base.markRepaymentPaid(row),
@@ -5056,6 +5057,7 @@ describe('indexOpenZapReceipts', () => {
           base.updatePublishState(...args),
         addSats: (...args: Parameters<InMemoryMessageStore['addSats']>) => base.addSats(...args),
       listCreditPayers: (messageId: string) => base.listCreditPayers(messageId),
+      sumUnassignedCreditSats: (messageId: string) => base.sumUnassignedCreditSats(messageId),
       listRepayments: (messageId: string) => base.listRepayments(messageId),
       markRepaymentPaid: (row: Parameters<InMemoryMessageStore['markRepaymentPaid']>[0]) =>
         base.markRepaymentPaid(row),
@@ -5519,6 +5521,7 @@ describe('indexOpenZapReceipts', () => {
           base.updatePublishState(...args),
         addSats: (...args: Parameters<InMemoryMessageStore['addSats']>) => base.addSats(...args),
       listCreditPayers: (messageId: string) => base.listCreditPayers(messageId),
+      sumUnassignedCreditSats: (messageId: string) => base.sumUnassignedCreditSats(messageId),
       listRepayments: (messageId: string) => base.listRepayments(messageId),
       markRepaymentPaid: (row: Parameters<InMemoryMessageStore['markRepaymentPaid']>[0]) =>
         base.markRepaymentPaid(row),

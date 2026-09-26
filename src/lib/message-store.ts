@@ -821,6 +821,14 @@ export interface MessageStore {
   >;
 
   /**
+   * Sats on this note whose zap has no 21.gifts payer account.
+   *
+   * @param messageId - Forum note.
+   * @returns Those sats. They are not part of the repayment plan.
+   */
+  sumUnassignedCreditSats(messageId: string): Promise<number>;
+
+  /**
    * Repayment shares already paid on one credit.
    *
    * @param messageId - Credit note.
@@ -2919,6 +2927,16 @@ export class InMemoryMessageStore implements MessageStore {
         php: total.php === null ? null : centsToAmount(total.php),
       })),
     );
+  }
+
+  sumUnassignedCreditSats(messageId: string): Promise<number> {
+    let sats = 0;
+    for (const receipt of this.#receipts.values()) {
+      if (receipt.messageId === messageId && receipt.payerAccountId === null) {
+        sats += receipt.sats;
+      }
+    }
+    return Promise.resolve(sats);
   }
 
   listRepayments(
@@ -5104,6 +5122,16 @@ export class PostgresMessageStore implements MessageStore {
       eur: row.eur,
       php: row.php,
     }));
+  }
+
+  async sumUnassignedCreditSats(messageId: string): Promise<number> {
+    const rows = await this.#sql.query<{ sats: string | number | null }>(
+      `SELECT COALESCE(SUM(sats), 0)::bigint AS sats
+       FROM nostr_zap_receipt
+       WHERE message_id = $1 AND payer_account_id IS NULL`,
+      [messageId],
+    );
+    return Number(rows[0]?.sats ?? 0);
   }
 
   async listRepayments(
