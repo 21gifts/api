@@ -60,8 +60,9 @@ export function imageBlurhash(bytes: Uint8Array, mime: Kind1Photo['mime']): stri
 }
 
 /**
- * Optional `dim` and `blurhash` for one still. Empty when the bytes do not
- * decode. Does not throw.
+ * Optional `dim` and `blurhash` for one still. A readable header can set
+ * `dim` alone. The object is empty only when neither field is produced.
+ * Does not throw.
  *
  * @param bytes - Stored image bytes.
  * @param mime - Stored still MIME.
