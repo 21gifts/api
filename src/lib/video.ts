@@ -567,6 +567,59 @@ export function readVideoTakenAt(bytes: Uint8Array): string | null {
   return `${year}-${part(date.getUTCMonth() + 1)}-${part(date.getUTCDate())}T${part(date.getUTCHours())}:${part(date.getUTCMinutes())}:${part(date.getUTCSeconds())}+00:00`;
 }
 
+/**
+ * Seconds from the first mvhd, or null (including WebM).
+ *
+ * Version 0: timescale at payload+12, duration at payload+16 (uint32).
+ * Version 1: timescale at payload+20 (uint32), duration at payload+24 (uint64).
+ * Returns the rounded quotient only when that integer is from 1 through 86400.
+ *
+ * @param bytes - Container bytes. Not modified.
+ * @returns Whole seconds, or null when mvhd is missing or unusable.
+ */
+export function isoBmffDurationSeconds(bytes: Uint8Array): number | null {
+  const box = findIsoBox(bytes, 0, bytes.byteLength, 'mvhd');
+  if (box === null) {
+    return null;
+  }
+  const payload = box.start + box.headerSize;
+  const boxEnd = box.start + box.size;
+  if (payload >= boxEnd) {
+    return null;
+  }
+  const version = bytes[payload];
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  let timescale: number;
+  let duration: number;
+  if (version === 0) {
+    if (payload + 20 > boxEnd) {
+      return null;
+    }
+    timescale = view.getUint32(payload + 12);
+    duration = view.getUint32(payload + 16);
+  } else if (version === 1) {
+    if (payload + 32 > boxEnd) {
+      return null;
+    }
+    timescale = view.getUint32(payload + 20);
+    const raw = view.getBigUint64(payload + 24);
+    if (raw > BigInt(Number.MAX_SAFE_INTEGER)) {
+      return null;
+    }
+    duration = Number(raw);
+  } else {
+    return null;
+  }
+  if (timescale === 0 || duration === 0) {
+    return null;
+  }
+  const rounded = Math.round(duration / timescale);
+  if (rounded < 1 || rounded > 86400) {
+    return null;
+  }
+  return rounded;
+}
+
 function findIsoBox(
   bytes: Uint8Array,
   start: number,
