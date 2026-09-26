@@ -29,9 +29,11 @@ import {
   buildKind10002Event,
   forumExtraPhotoUrl,
   forumPhotoUrl,
+  notePageUrl,
   type Kind1Photo,
   type Kind1ReplyTo,
 } from '@/lib/nostr/event';
+import { stillLook } from '@/lib/nostr/image';
 import { nip05Domain, nip05Identifier } from '@/lib/nip05';
 import {
   forumVideoUrl,
@@ -334,11 +336,16 @@ async function indexHotZapReceipts(deps: NostrWorkerDeps, nowMs: number): Promis
  * lease and they never reach a relay. Zapped rows (`sats !== 0`) keep their
  * event id so receipts still resolve. An empty API base skips photo- and
  * video-URL resign so it cannot un-publish and loop. When publishing, also
- * fans out a replaceable kind:0 profile (`name` / `display_name` / `picture`,
- * optional `nip05`) and a NIP-65 kind:10002 relay list. Kind:1 photo and video
- * posts include the public media URL and an `imeta` tag (video may add poster
- * `image`). Kind:0 `created_at` is `max(wall clock, last issued + 1)` so an
- * in-flight older profile cannot win a same-second replaceable-event tie.
+ * fans out a replaceable kind:0 profile (`name` / `display_name` / `picture` /
+ * `banner`, optional `nip05`). `picture` and `banner` are the profile-note
+ * photo when one is stored and the API origin is non-empty, otherwise the
+ * shared icon and `https://21.gifts/og.png`. Unsigned non-profile kind:1 notes
+ * get `notePageUrl(PUBLIC_BASE_URL)` as their page link. Already published
+ * kind:1 rows are not rewritten for that link. Also fans out a NIP-65
+ * kind:10002 relay list. Kind:1 photo and video posts include the public media
+ * URL and an `imeta` tag (video may add poster `image`). Kind:0
+ * `created_at` is `max(wall clock, last issued + 1)` so an in-flight older
+ * profile cannot win a same-second replaceable-event tie.
  * Zap ingest runs at the **start** of `'all'` / `'fast'` ticks (full or hot),
  * before resign/sign/publish, so receipt indexing is not delayed by relay
  * publish timeouts. `nowMs` for sign/publish leases is sampled only after zap
@@ -808,19 +815,30 @@ async function signBatch(deps: NostrWorkerDeps, nowMs: number): Promise<void> {
           } catch {
             /* missing or unreadable file — omit dim, size, hash, and duration */
           }
+          if (storedPhoto !== null) {
+            const poster = stillLook(storedPhoto.bytes, storedPhoto.contentType);
+            if (poster.blurhash !== undefined) {
+              photo.blurhash = poster.blurhash;
+            }
+          }
         } else if (storedPhoto !== null) {
           photo = {
             url: forumPhotoUrl(apiBase, row.id, storedPhoto.contentType),
             mime: storedPhoto.contentType,
             ...(storedPhoto.bytes.byteLength > 0 ? { hash: sha256Hex(storedPhoto.bytes) } : {}),
           };
+          Object.assign(photo, stillLook(storedPhoto.bytes, storedPhoto.contentType));
           const storedExtras = await deps.messages.listExtraPhotos(row.id);
           if (storedExtras.length > 0) {
-            extraPhotos = storedExtras.map((item, i) => ({
-              url: forumExtraPhotoUrl(apiBase, row.id, i + 1, item.contentType),
-              mime: item.contentType,
-              ...(item.bytes.byteLength > 0 ? { hash: sha256Hex(item.bytes) } : {}),
-            }));
+            extraPhotos = storedExtras.map((item, i) => {
+              const extra: Kind1Photo = {
+                url: forumExtraPhotoUrl(apiBase, row.id, i + 1, item.contentType),
+                mime: item.contentType,
+                ...(item.bytes.byteLength > 0 ? { hash: sha256Hex(item.bytes) } : {}),
+              };
+              Object.assign(extra, stillLook(item.bytes, item.contentType));
+              return extra;
+            });
           }
         } else if (row.hasPhoto) {
           logEvent('nostr.sign.photo_url_missing', { messageId: row.id });
@@ -850,13 +868,22 @@ async function signBatch(deps: NostrWorkerDeps, nowMs: number): Promise<void> {
       const account = await deps.auth.getAccount(row.accountId);
       const isProfile = account?.profileMessageId === row.id;
       const location = isProfile ? null : (account?.location ?? null);
+      const pageUrl = isProfile ? null : notePageUrl(deps.env['PUBLIC_BASE_URL'] ?? '', row.id);
       for (let attempt = 0; attempt < 2 && !stored; attempt += 1) {
         const unsigned =
           extraPhotos !== undefined
-            ? buildKind1Event(row.text, createdAt, photo, replyTo, location, extraPhotos)
+            ? buildKind1Event(row.text, createdAt, photo, replyTo, location, extraPhotos, pageUrl)
             : photo === undefined
-              ? buildKind1Event(row.text, createdAt, undefined, replyTo, location)
-              : buildKind1Event(row.text, createdAt, photo, replyTo, location);
+              ? buildKind1Event(
+                  row.text,
+                  createdAt,
+                  undefined,
+                  replyTo,
+                  location,
+                  undefined,
+                  pageUrl,
+                )
+              : buildKind1Event(row.text, createdAt, photo, replyTo, location, undefined, pageUrl);
         const signed = await signEventForAccount(deps.auth, row.accountId, deps.kek, unsigned);
         stored = await deps.messages.updateSignedEvent(
           row.id,
@@ -1089,14 +1116,26 @@ async function publishProfiles(deps: NostrWorkerDeps, writeSet: ResolvedWriteSet
     const namedForLive = named.map((row) => (row.id === live.id ? live : row));
     const nip05 = domain === null ? null : nip05Identifier(live, namedForLive, domain);
     let about = '21.gifts';
+    let picture: string | null = null;
+    let banner: string | null = null;
     const profileId = live.profileMessageId;
     if (typeof profileId === 'string' && profileId.trim() !== '') {
       const note = await deps.messages.getById(profileId);
       if (note !== undefined) {
         about = note.text;
+        const apiBase = resolvePublicApiBase(deps.env);
+        if (apiBase !== '') {
+          const photo = await deps.messages.getPhoto(profileId);
+          if (photo !== null) {
+            const url = forumPhotoUrl(apiBase, profileId, photo.contentType);
+            picture = url;
+            banner = url;
+          }
+        }
       }
     }
-    const content = buildKind0Content(live.name, live.lightningAddress, nip05, about);
+    const images = { picture, banner };
+    const content = buildKind0Content(live.name, live.lightningAddress, nip05, about, images);
     if (reservedContent(cache, live.id) === content) {
       continue;
     }
@@ -1127,6 +1166,7 @@ async function publishProfiles(deps: NostrWorkerDeps, writeSet: ResolvedWriteSet
         reservation.createdAt,
         nip05,
         about,
+        images,
       );
       const signed = await signEventForAccount(deps.auth, live.id, deps.kek, unsigned);
       if (cache.get(live.id) !== reservation) {

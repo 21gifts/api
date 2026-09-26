@@ -720,6 +720,48 @@ describe('runNostrWorkerTick', () => {
     expect(publisher.calls.length).toBe(afterFirst);
   });
 
+  it('publishes the profile-note photo as the avatar and the banner', async () => {
+    const { auth, messages } = await seed();
+    const acc = await auth.getAccount('acc');
+    expect(acc).toBeDefined();
+    const profileId = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd';
+    await messages.create(
+      {
+        id: profileId,
+        accountId: 'acc',
+        name: 'Ada',
+        text: 'about Ada',
+        createdAt: new Date('2026-08-27T00:00:00.000Z'),
+        hasPhoto: true,
+        ...unsignedNostrDefaults(),
+      },
+      { contentType: 'image/jpeg', bytes: new Uint8Array([0xff, 0xd8, 0xff, 0xd9]) },
+    );
+    await auth.updateAccount({ ...acc!, profileMessageId: profileId });
+    const publisher = new RecordingPublisher();
+    const env = {
+      NOSTR_PUBLISH: '1',
+      NOSTR_RELAY_SPACE: 'wss://relay.nostr.space',
+      PUBLIC_BASE_URL: 'https://21.gifts',
+    };
+    await runNostrWorkerTick(
+      deps({ messages, auth, kek: KEK, publisher, now: () => 1_700_000_000_000, env }),
+    );
+    await runNostrWorkerTick(
+      deps({ messages, auth, kek: KEK, publisher, now: () => 1_700_000_060_000, env }),
+    );
+    const profile = publisher.calls.find((call) => call.event['kind'] === 0);
+    const body = JSON.parse(String(profile?.event['content'])) as {
+      picture: string;
+      banner: string;
+      about: string;
+    };
+    const photo = `https://api.21.gifts/messages/${profileId}/photo.jpg`;
+    expect(body.picture).toBe(photo);
+    expect(body.banner).toBe(photo);
+    expect(body.about).toBe('about Ada');
+  });
+
   it('publishes kind:0 with the database name before kind:1', async () => {
     const { auth, messages } = await seed();
     const publisher = new RecordingPublisher();
@@ -750,6 +792,7 @@ describe('runNostrWorkerTick', () => {
       name: 'Ada',
       display_name: 'Ada',
       website: 'https://21.gifts',
+      banner: 'https://21.gifts/og.png',
       picture: 'https://21.gifts/apple-touch-icon.png',
       about: 'Ada',
     });
@@ -935,6 +978,66 @@ describe('runNostrWorkerTick', () => {
     expect(Number(lists[1]?.event['created_at'])).toBeGreaterThan(
       Number(lists[0]?.event['created_at']),
     );
+  });
+
+  it('puts the public note link on a new kind:1 and a poster blurhash on video', async () => {
+    const { encode: encodeJpeg } = await import('jpeg-js');
+    const { auth, messages } = await seed();
+    const poster = new Uint8Array(
+      encodeJpeg({ data: new Uint8Array([255, 0, 0, 255]), width: 1, height: 1 }, 50).data,
+    );
+    const mp4 = new Uint8Array(32);
+    mp4.set([0x00, 0x00, 0x00, 0x18, 0x66, 0x74, 0x79, 0x70, 0x69, 0x73, 0x6f, 0x6d]);
+    await messages.create({
+      id: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'gift',
+      createdAt: new Date('2026-08-28T00:01:00.000Z'),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+    });
+    await messages.create(
+      {
+        id: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
+        accountId: 'acc',
+        name: 'Ada',
+        text: 'clip',
+        createdAt: new Date('2026-08-28T00:01:30.000Z'),
+        hasPhoto: true,
+        hasVideo: true,
+        videoContentType: 'video/mp4',
+        ...unsignedNostrDefaults(),
+      },
+      { contentType: 'image/jpeg', bytes: poster },
+      { contentType: 'video/mp4', bytes: mp4 },
+    );
+    const publisher = new RecordingPublisher();
+    const env = {
+      NOSTR_PUBLISH: '1',
+      NOSTR_RELAY_SPACE: 'wss://relay.nostr.space',
+      PUBLIC_BASE_URL: 'https://21.gifts',
+    };
+    await runNostrWorkerTick(
+      deps({ messages, auth, kek: KEK, publisher, now: () => 1_700_000_000_000, env }),
+    );
+    await runNostrWorkerTick(
+      deps({ messages, auth, kek: KEK, publisher, now: () => 1_700_000_060_000, env }),
+    );
+    const note = publisher.calls.find(
+      (call) => call.event['kind'] === 1 && String(call.event['content']).startsWith('gift'),
+    );
+    expect(String(note?.event['content'])).toBe(
+      'gift\nhttps://21.gifts/l/bbbbbbbb\n\n#bitcoin #21gifts',
+    );
+    expect(note?.event['tags']).toContainEqual(['r', 'https://21.gifts/l/bbbbbbbb']);
+    const video = publisher.calls.find(
+      (call) => call.event['kind'] === 1 && String(call.event['content']).includes('/video.mp4'),
+    );
+    const imeta = (video?.event['tags'] as string[][] | undefined)?.find(
+      (tag) => tag[0] === 'imeta',
+    );
+    expect(imeta?.some((part) => part.startsWith('blurhash '))).toBe(true);
   });
 
   it('embeds a public photo URL and imeta on kind:1', async () => {

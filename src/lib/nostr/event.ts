@@ -26,8 +26,14 @@ export const KIND1_CONTENT_HASHTAGS: readonly ['#bitcoin', '#21gifts'] = [
   '#21gifts',
 ] as const;
 
-/** Public PNG used as every kind:0 `picture` so Damus shows 21.gifts branding. */
+/** Fallback kind:0 `picture` when no profile photo is stored. */
 export const KIND0_PICTURE_URL = 'https://21.gifts/apple-touch-icon.png';
+
+/** Fallback kind:0 `banner` when no profile photo is stored (1200×630). */
+export const KIND0_BANNER_URL = 'https://21.gifts/og.png';
+
+const NOTE_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const BLURHASH_RE = /^[0-9A-Za-z#$%*+,\-.:;=?@[\]^_{|}~]{6,}$/;
 
 /** Optional NIP-92 media (image or video) attached to a kind:1. */
 export interface Kind1Photo {
@@ -45,6 +51,8 @@ export interface Kind1Photo {
   hash?: string;
   /** Optional whole seconds for `imeta` `duration` (1–86400). */
   durationSeconds?: number;
+  /** Optional BlurHash placeholder for `imeta`. */
+  blurhash?: string;
 }
 
 /** NIP-10 reply pointers for a forum reply kind:1 (not used on top-level notes). */
@@ -93,6 +101,21 @@ export function forumPhotoUrl(
   mime: Kind1Photo['mime'] = 'image/jpeg',
 ): string {
   return `${apiBase.replace(/\/$/, '')}/messages/${messageId}/photo.${forumPhotoExt(mime)}`;
+}
+
+/**
+ * Public page for one forum message, matching the app's `/l/<8 hex>` link.
+ *
+ * @param siteOrigin - `PUBLIC_BASE_URL` without caring about a trailing slash.
+ * @param messageId - Message id. Only a UUID is shortened.
+ * @returns `<siteOrigin>/l/<8 hex>`, or `null` when the origin or id is unusable.
+ */
+export function notePageUrl(siteOrigin: string, messageId: string): string | null {
+  const origin = siteOrigin.trim().replace(/\/$/, '');
+  if (origin === '' || !NOTE_ID_RE.test(messageId)) {
+    return null;
+  }
+  return `${origin}/l/${messageId.slice(0, 8).toLowerCase()}`;
 }
 
 /**
@@ -210,6 +233,13 @@ export function kind1ContentWithHashtags(
 /** 64 lowercase hex sha256 for a NIP-92 `imeta` `x` field. */
 const IMETA_HASH_RE = /^[0-9a-f]{64}$/;
 
+/** Append a valid BlurHash after `m`. Invalid text is omitted. */
+function appendBlurhash(imeta: string[], photo: Kind1Photo): void {
+  if (photo.blurhash !== undefined && BLURHASH_RE.test(photo.blurhash)) {
+    imeta.push(`blurhash ${photo.blurhash}`);
+  }
+}
+
 /**
  * Append optional `x` and `duration` after the other `imeta` fields.
  *
@@ -252,10 +282,13 @@ export interface UnsignedKind1 {
  *
  * @param content - Already-normalised forum text (may be empty when `photo` is set).
  * @param createdAtUnix - Unix seconds for the event.
- * @param photo - Optional public media (image or video URL + MIME; optional poster, dim, size, hash, duration).
+ * @param photo - Optional public media (image or video URL + MIME; optional poster, dim, size, hash, duration, blurhash).
  * @param replyTo - Optional NIP-10 parent pointers (replies only).
  * @param location - Optional account location; null/omitted/unusable → same as four-arg HEAD.
  * @param extraPhotos - Optional extra stills (indices 1..n). Omit or empty for N=1 bit-identical events.
+ * @param pageUrl - Optional `<siteOrigin>/l/<8 hex>` for this message. Omitted,
+ *   null, or empty keeps the homepage `r` tag and does not add a link line.
+ *   The URL is appended unless that exact URL is already its own token.
  * @returns Unsigned event fields for `finalizeEvent`.
  */
 export function buildKind1Event(
@@ -265,6 +298,7 @@ export function buildKind1Event(
   replyTo?: Kind1ReplyTo,
   location?: string | null,
   extraPhotos?: readonly Kind1Photo[],
+  pageUrl?: string | null,
 ): UnsignedKind1 {
   const name = locationHashtagName(location ?? null);
   const extras = name === null ? [] : [name];
@@ -273,6 +307,7 @@ export function buildKind1Event(
   if (photo !== undefined) {
     body = content === '' ? photo.url : `${content}\n${photo.url}`;
     const imeta = ['imeta', `url ${photo.url}`, `m ${photo.mime}`];
+    appendBlurhash(imeta, photo);
     if (photo.dim !== undefined) {
       imeta.push(`dim ${photo.dim}`);
     }
@@ -289,6 +324,7 @@ export function buildKind1Event(
     for (const extra of extraPhotos) {
       body = body === '' ? extra.url : `${body}\n${extra.url}`;
       const imeta = ['imeta', `url ${extra.url}`, `m ${extra.mime}`];
+      appendBlurhash(imeta, extra);
       if (extra.dim !== undefined) {
         imeta.push(`dim ${extra.dim}`);
       }
@@ -303,6 +339,16 @@ export function buildKind1Event(
     tags.push(['e', replyTo.noteEventId, replyTo.spaceRelay, 'root']);
     tags.push(['e', replyTo.noteEventId, replyTo.spaceRelay, 'reply']);
     tags.push(['p', replyTo.noteAuthorPubkey]);
+  }
+  if (pageUrl !== undefined && pageUrl !== null && pageUrl !== '') {
+    for (const tag of tags) {
+      if (tag[0] === 'r' && tag[1] === 'https://21.gifts') {
+        tag[1] = pageUrl;
+      }
+    }
+    if (!contentHasUrlToken(body, pageUrl)) {
+      body = body === '' ? pageUrl : `${body}\n${pageUrl}`;
+    }
   }
   body = kind1ContentWithHashtags(body, extras);
   return {
@@ -353,7 +399,9 @@ export interface Kind0ProfileContent {
   display_name: string;
   /** Fixed site URL. */
   website: string;
-  /** 21.gifts icon so Damus shows a branded avatar. */
+  /** Wide header: the profile photo, or the shared 1200×630 image. */
+  banner: string;
+  /** Avatar: the profile photo, or the shared 21.gifts icon. */
   picture: string;
   /** LUD-16 when the account has a linked address. */
   lud16?: string;
@@ -366,15 +414,17 @@ export interface Kind0ProfileContent {
 /**
  * Build kind:0 `content` JSON (no extra whitespace).
  *
- * Omit `lud16` when the account has no Lightning Address. Always set `picture`
- * to {@link KIND0_PICTURE_URL}. `about` defaults to `21.gifts` and is the
- * profile-note text when the worker passes it. Set `nip05` when a public host
- * is available. Never set `bot`.
+ * Omit `lud16` when the account has no Lightning Address. `picture` and
+ * `banner` use the personal profile-note photo when the worker passes those
+ * URLs, otherwise {@link KIND0_PICTURE_URL} and {@link KIND0_BANNER_URL}.
+ * `about` defaults to `21.gifts` and is the profile-note text when the worker
+ * passes it. Set `nip05` when a public host is available. Never set `bot`.
  *
  * @param name - Non-null display name.
  * @param lightningAddress - Linked LUD-16, or `null`.
  * @param nip05 - NIP-05 identifier, or `null`.
  * @param about - Kind:0 about text (profile note, or default `21.gifts`).
+ * @param images - Optional personal `picture` and `banner` URLs. Blank values fall back to the shared images.
  * @returns JSON string for the kind:0 `content` field.
  */
 export function buildKind0Content(
@@ -382,12 +432,14 @@ export function buildKind0Content(
   lightningAddress: string | null,
   nip05: string | null = null,
   about: string = '21.gifts',
+  images: { picture?: string | null; banner?: string | null } | null = null,
 ): string {
   const body: Kind0ProfileContent = {
     name,
     display_name: name,
     website: 'https://21.gifts',
-    picture: KIND0_PICTURE_URL,
+    banner: profileImageUrl(images?.banner, KIND0_BANNER_URL),
+    picture: profileImageUrl(images?.picture, KIND0_PICTURE_URL),
     about,
   };
   if (lightningAddress !== null) {
@@ -419,6 +471,7 @@ export interface UnsignedKind0 {
  * @param createdAtUnix - Unix seconds at enqueue/publish.
  * @param nip05 - NIP-05 identifier, or `null`.
  * @param about - Kind:0 about text (profile note, or default `21.gifts`).
+ * @param images - Optional personal `picture` and `banner` URLs.
  * @returns Unsigned event fields for `finalizeEvent`.
  */
 export function buildKind0Event(
@@ -427,13 +480,38 @@ export function buildKind0Event(
   createdAtUnix: number,
   nip05: string | null = null,
   about: string = '21.gifts',
+  images: { picture?: string | null; banner?: string | null } | null = null,
 ): UnsignedKind0 {
   return {
     kind: 0,
-    content: buildKind0Content(name, lightningAddress, nip05, about),
+    content: buildKind0Content(name, lightningAddress, nip05, about, images),
     tags: [],
     created_at: createdAtUnix,
   };
+}
+
+/** True when `url` occurs with no letter, digit, or `_` immediately after it. */
+function contentHasUrlToken(content: string, url: string): boolean {
+  let from = 0;
+  while (from < content.length) {
+    const index = content.indexOf(url, from);
+    if (index === -1) {
+      return false;
+    }
+    const after = content[index + url.length];
+    if (after === undefined || !/[A-Za-z0-9_]/.test(after)) {
+      return true;
+    }
+    from = index + 1;
+  }
+  return false;
+}
+
+function profileImageUrl(value: string | null | undefined, fallback: string): string {
+  if (value === undefined || value === null || value.trim() === '') {
+    return fallback;
+  }
+  return value;
 }
 
 /** Unsigned kind:10002 (NIP-65) fields before `finalizeEvent`. */
