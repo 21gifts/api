@@ -411,15 +411,17 @@ export interface Kind0ProfileContent {
 /**
  * Build kind:0 `content` JSON (no extra whitespace).
  *
- * Omit `lud16` when the account has no Lightning Address. Always set `picture`
- * to {@link KIND0_PICTURE_URL} and `banner` to {@link KIND0_BANNER_URL}. `about` defaults to `21.gifts` and is the
- * profile-note text when the worker passes it. Set `nip05` when a public host
- * is available. Never set `bot`.
+ * Omit `lud16` when the account has no Lightning Address. `picture` and
+ * `banner` use the personal profile-note photo when the worker passes those
+ * URLs, otherwise {@link KIND0_PICTURE_URL} and {@link KIND0_BANNER_URL}.
+ * `about` defaults to `21.gifts` and is the profile-note text when the worker
+ * passes it. Set `nip05` when a public host is available. Never set `bot`.
  *
  * @param name - Non-null display name.
  * @param lightningAddress - Linked LUD-16, or `null`.
  * @param nip05 - NIP-05 identifier, or `null`.
  * @param about - Kind:0 about text (profile note, or default `21.gifts`).
+ * @param images - Optional personal `picture` and `banner` URLs. Blank values fall back to the shared images.
  * @returns JSON string for the kind:0 `content` field.
  */
 export function buildKind0Content(
@@ -427,13 +429,14 @@ export function buildKind0Content(
   lightningAddress: string | null,
   nip05: string | null = null,
   about: string = '21.gifts',
+  images: { picture?: string | null; banner?: string | null } | null = null,
 ): string {
   const body: Kind0ProfileContent = {
     name,
     display_name: name,
     website: 'https://21.gifts',
-    banner: KIND0_BANNER_URL,
-    picture: KIND0_PICTURE_URL,
+    banner: profileImageUrl(images?.banner, KIND0_BANNER_URL),
+    picture: profileImageUrl(images?.picture, KIND0_PICTURE_URL),
     about,
   };
   if (lightningAddress !== null) {
@@ -465,6 +468,7 @@ export interface UnsignedKind0 {
  * @param createdAtUnix - Unix seconds at enqueue/publish.
  * @param nip05 - NIP-05 identifier, or `null`.
  * @param about - Kind:0 about text (profile note, or default `21.gifts`).
+ * @param images - Optional personal `picture` and `banner` URLs.
  * @returns Unsigned event fields for `finalizeEvent`.
  */
 export function buildKind0Event(
@@ -473,13 +477,21 @@ export function buildKind0Event(
   createdAtUnix: number,
   nip05: string | null = null,
   about: string = '21.gifts',
+  images: { picture?: string | null; banner?: string | null } | null = null,
 ): UnsignedKind0 {
   return {
     kind: 0,
-    content: buildKind0Content(name, lightningAddress, nip05, about),
+    content: buildKind0Content(name, lightningAddress, nip05, about, images),
     tags: [],
     created_at: createdAtUnix,
   };
+}
+
+function profileImageUrl(value: string | null | undefined, fallback: string): string {
+  if (value === undefined || value === null || value.trim() === '') {
+    return fallback;
+  }
+  return value;
 }
 
 /** Unsigned kind:10002 (NIP-65) fields before `finalizeEvent`. */

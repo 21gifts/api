@@ -2045,14 +2045,14 @@
 ## Function: buildKind0Content
 
 - **Purpose:** Kind:0 JSON without extra whitespace (`name`, `display_name`, `website`, `banner`, `picture`, `about`, optional `lud16`, optional `nip05`).
-- **Inputs:** name, lightningAddress or null, optional nip05 or null, optional `about` (default `'21.gifts'`; worker passes profile-note text when present).
-- **Returns / side effects:** JSON string; `picture` is always the 21.gifts icon; `banner` is always `https://21.gifts/og.png`; `about` is the fourth argument; `lud16` only when address set; `nip05` only when a public identifier is passed.
+- **Inputs:** name, lightningAddress or null, optional nip05 or null, optional `about` (default `'21.gifts'`; worker passes profile-note text when present), optional `images` with personal `picture` and `banner` URLs.
+- **Returns / side effects:** JSON string. `picture` and `banner` are the personal profile-note photo when those URLs are non-blank, otherwise the 21.gifts icon and `https://21.gifts/og.png`. `about` is the fourth argument. `lud16` only when address set. `nip05` only when a public identifier is passed.
 - **Used by:** `buildKind0Event`, worker `publishProfiles`.
 
 ## Function: buildKind0Event
 
-- **Purpose:** Unsigned replaceable kind:0, including optional `nip05` and optional `about`.
-- **Inputs:** name, lightningAddress, unix created_at, optional nip05, optional about (default `'21.gifts'`).
+- **Purpose:** Unsigned replaceable kind:0, including optional `nip05`, optional `about`, and optional personal `picture` and `banner`.
+- **Inputs:** name, lightningAddress, unix created_at, optional nip05, optional about (default `'21.gifts'`), optional images.
 - **Returns / side effects:** Unsigned fields.
 - **Used by:** Worker `publishProfiles`.
 
