@@ -240,13 +240,13 @@ export async function repaymentInvoice(deps: RepaymentDeps, c: Context): Promise
   });
   if (!zap.ok) {
     if (zap.reason === 'noZap') {
-      return c.json({ error: "The author's wallet cannot receive this Bitcoin payment" }, 400);
+      return c.json({ error: "The recipient's wallet cannot receive this Bitcoin payment" }, 400);
     }
     return c.json({ error: 'Could not start the Bitcoin payment' }, 400);
   }
   const inspected = inspectBolt11(zap.pr);
   if (!isNip57Invoice(inspected?.descriptionHash ?? null, zapRequestJson)) {
-    return c.json({ error: "The author's wallet cannot receive this Bitcoin payment" }, 400);
+    return c.json({ error: "The recipient's wallet cannot receive this Bitcoin payment" }, 400);
   }
   const attempt: MessageInvoiceAttempt = {
     id: crypto.randomUUID(),

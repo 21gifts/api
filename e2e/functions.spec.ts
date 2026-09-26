@@ -2651,7 +2651,9 @@ test('Function: repaymentDescription — marks the day and the giver', async () 
   const { repaymentDescription, parseRepaymentDescription } =
     await import('../src/lib/credit-repayment');
   const id = '11111111-1111-4111-8111-111111111111';
-  expect(parseRepaymentDescription(repaymentDescription(1, id))?.recipientAccountId).toBe(id);
+  const parsed = parseRepaymentDescription(repaymentDescription(1, id));
+  expect(parsed?.recipientAccountId).toBe(id);
+  expect(parsed?.dayIndex).toBe(1);
 });
 
 test('Function: parseRepaymentDescription — ignores a normal gift', async () => {

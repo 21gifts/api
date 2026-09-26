@@ -424,7 +424,7 @@ describe('credit repayment', () => {
     expect(blankPost.status).toBe(503);
   });
 
-  it('refuses a missing giver and an undecodable invoice', async () => {
+  it('refuses a missing giver, rejects an undecodable invoice, and returns a payable one', async () => {
     const ghost = await readyCredit({ authorId: 'acc-ghost', giverAccount: false });
     const listed = await ghost.app.request(`/messages/${CREDIT}/repayment`);
     expect(listed.status).toBe(200);
