@@ -1,3 +1,4 @@
+import { isSundayRest } from './sunday-rest';
 /**
  * Enqueue helpers and the Web Push outbox worker.
  */
@@ -217,6 +218,7 @@ export interface PushWorkerDeps {
  * @param deps - Store, sender, clock.
  */
 export async function runPushWorkerTick(deps: PushWorkerDeps): Promise<void> {
+  if (isSundayRest(deps.now())) return;
   if (!deps.sender.isConfigured()) {
     return;
   }

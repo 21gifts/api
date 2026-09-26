@@ -2714,3 +2714,19 @@ Builds the operator-only external-pubkey inspection route.
 - **Inputs:** `{ store, rates, fiatRates, now }` — the same collaborators as {@link loadLatestGoalRateDay}.
 - **Returns / side effects:** A function that calls `loadLatestGoalRateDay` with those collaborators.
 - **Used by:** `createApp`.
+
+## Function: isSundayRest
+
+- **Purpose:** Determine whether a timestamp is Sunday in Asia/Manila.
+- **Inputs:** Unix milliseconds from the server clock.
+- **Returns:** True on Sunday, false on all other days. It does not use the host timezone.
+
+The Sunday interval is Sunday 00:00 inclusive through Monday 00:00 exclusive in Asia/Manila, irrespective of visitor or server timezone.
+
+## Function: sundayRetryAfter
+
+- **Purpose:** Tell callers when Sunday rest ends.
+- **Inputs:** A Unix timestamp during Manila Sunday.
+- **Returns:** Seconds until Monday midnight, rounded up; the full interval is 86400 seconds.
+
+The Sunday interval is Sunday 00:00 inclusive through Monday 00:00 exclusive in Asia/Manila, irrespective of visitor or server timezone.

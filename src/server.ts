@@ -1,3 +1,4 @@
+import { isSundayRest, sundayRetryAfter } from './lib/sunday-rest';
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
 import { healthRoute } from '@/routes/health';
@@ -346,6 +347,25 @@ export function createApp(deps: AppDeps = {}): Hono {
   const giftRecorder = deps.giftRecorder;
 
   const app = new Hono();
+
+  // Reject before logging, authentication, storage, or application handlers.
+  app.use('*', async (c, next) => {
+    const timestamp = now();
+    if (isSundayRest(timestamp)) {
+      c.header('Cache-Control', 'no-store');
+      c.header('Retry-After', String(sundayRetryAfter(timestamp)));
+      return c.json(
+        {
+          error: 'SUNDAY_REST',
+          message:
+            'Christ is risen! Rejoice in the risen Lord, visit him at Holy Mass, rest and set work and shopping aside. 21.gifts returns on Monday.',
+          timeZone: 'Asia/Manila',
+        },
+        503,
+      );
+    }
+    await next();
+  });
 
   app.use('*', requestLog({ apiLogStore, authStore: store, debugToken, spendApiToken, now }));
   // NIP-05 must stay CORS `*` for any Origin (Damus / browsers). Register this

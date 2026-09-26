@@ -1,3 +1,4 @@
+import { isSundayRest, sundayRetryAfter } from './lib/sunday-rest';
 /**
  * Service entry point.
  *
@@ -43,6 +44,29 @@ function createBunSqlClient(databaseUrl: string): SqlClient {
 if (import.meta.main) {
   const addr = resolveBindAddr(undefined, process.env);
   const { host, port } = parseBindAddr(addr);
+  if (isSundayRest(Date.now())) {
+    const restingServer = Bun.serve({
+      hostname: host,
+      port,
+      fetch: () =>
+        new Response(
+          'Christ is risen! Rejoice in the risen Lord, visit him at Holy Mass, rest and set work and shopping aside. 21.gifts returns on Monday (Manila time).',
+          {
+            status: 503,
+            headers: {
+              'Cache-Control': 'no-store',
+              'Retry-After': String(sundayRetryAfter(Date.now())),
+            },
+          },
+        ),
+    });
+    while (isSundayRest(Date.now())) {
+      await new Promise<void>((resolve) =>
+        setTimeout(resolve, Math.min(60_000, sundayRetryAfter(Date.now()) * 1000)),
+      );
+    }
+    await restingServer.stop();
+  }
   resolveMediaDir(process.env);
   const databaseUrl = process.env['DATABASE_URL'];
   // BTC_USD_CANDLES_URL and FRANKFURTER_RATES_URL are optional — resolvers
@@ -121,6 +145,7 @@ if (import.meta.main) {
   Bun.serve({ fetch: app.fetch, hostname: host, port });
   console.warn(`21gifts-api listening on ${host}:${port}`);
   const welcomeCatchUp = (): void => {
+    if (isSundayRest(Date.now())) return;
     void syncWelcomePing({
       ...(spendPing === undefined ? {} : { spendPing }),
       messages: forumMessages,

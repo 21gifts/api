@@ -1,3 +1,4 @@
+import { isSundayRest } from '../sunday-rest';
 import { readFile } from 'node:fs/promises';
 import { verifyEvent, type NostrEvent } from 'nostr-tools/pure';
 import { ensureProfileMessage } from '@/lib/auth/profile-message';
@@ -358,36 +359,55 @@ export async function runNostrWorkerTick(
   deps: NostrWorkerDeps,
   mode: NostrWorkerTickMode = 'all',
 ): Promise<void> {
+  if (isSundayRest(deps.now())) return;
   const writeSet = resolveWriteSet(deps.env);
   const urls = resolveZapRelays(deps.env);
   if (mode === 'ingest') {
+    if (isSundayRest(deps.now())) return;
     await indexOpenZapReceipts(indexOpenZapReceiptsArgs(deps, urls));
+    if (isSundayRest(deps.now())) return;
     await indexInboundForumReplies(deps, urls);
+    if (isSundayRest(deps.now())) return;
     await indexInboundDirectMessages(deps, urls);
     return;
   }
   if (mode === 'fast') {
+    if (isSundayRest(deps.now())) return;
     await indexHotZapReceipts(deps, deps.now());
   } else {
+    if (isSundayRest(deps.now())) return;
     await indexOpenZapReceipts(indexOpenZapReceiptsArgs(deps, urls));
   }
   const nowMs = deps.now();
+  if (isSundayRest(deps.now())) return;
   await resignLegacyKind1Tags(deps);
+  if (isSundayRest(deps.now())) return;
   await signBatch(deps, nowMs);
+  if (isSundayRest(deps.now())) return;
   await signConversationBatch(deps, nowMs);
+  if (isSundayRest(deps.now())) return;
   await resignPhotoKind1(deps);
+  if (isSundayRest(deps.now())) return;
   await resignVideoKind1(deps);
+  if (isSundayRest(deps.now())) return;
   await resignHashtagKind1(deps);
   if (writeSet.publishEnabled) {
+    if (isSundayRest(deps.now())) return;
     await publishProfiles(deps, writeSet);
+    if (isSundayRest(deps.now())) return;
     await publishRelayLists(deps, writeSet);
+    if (isSundayRest(deps.now())) return;
     await publishBatch(deps, writeSet, nowMs);
+    if (isSundayRest(deps.now())) return;
     await publishConversationBatch(deps, writeSet, nowMs);
   }
   if (mode === 'all') {
+    if (isSundayRest(deps.now())) return;
     await indexInboundForumReplies(deps, urls);
+    if (isSundayRest(deps.now())) return;
     await indexInboundDirectMessages(deps, urls);
   }
+  if (isSundayRest(deps.now())) return;
   await backfillProfileMessages(deps);
 }
 
