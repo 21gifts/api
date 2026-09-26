@@ -143,7 +143,7 @@ async function readyCredit(options?: {
 }
 
 describe('credit repayment', () => {
-  it('rejects a missing session', async () => {
+  it('lists the public ledger without a session', async () => {
     const { app, messages } = await readyCredit();
     await messages.recordZapReceipt('r-anon', CREDIT, 5, null);
     const res = await app.request(`/messages/${CREDIT}/repayment`);
@@ -476,7 +476,7 @@ describe('credit repayment', () => {
     }
   });
 
-  it('hides a credit that is not funded or has no term', async () => {
+  it('shows an open credit and refuses payment until it is funded', async () => {
     const unfunded = await readyCredit({ authorId: 'acc-open', fundedAt: null });
     const open = await unfunded.app.request(`/messages/${CREDIT}/repayment`, {
       headers: { authorization: 'Bearer acc-open' },
