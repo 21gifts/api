@@ -15,6 +15,7 @@
 -- warning instead of failing the migration. The statement lives in the store's
 -- MESSAGE_SCHEMA_SQL array, not in this file.
 -- Top-level notes may store place_lat, place_lng, and place_label.
+-- Top-level shop notes may store shop_account_id (not the note author).
 
 CREATE TABLE IF NOT EXISTS message (
   id uuid PRIMARY KEY,
@@ -252,6 +253,8 @@ ALTER TABLE message_extra_photo ADD COLUMN IF NOT EXISTS photo_taken_at text;
 ALTER TABLE message ADD COLUMN IF NOT EXISTS place_lat double precision;
 ALTER TABLE message ADD COLUMN IF NOT EXISTS place_lng double precision;
 ALTER TABLE message ADD COLUMN IF NOT EXISTS place_label text;
+-- Optional 21.gifts account on a top-level shop note. Not the author.
+ALTER TABLE message ADD COLUMN IF NOT EXISTS shop_account_id uuid REFERENCES account (id) ON DELETE SET NULL;
 -- Frozen ask: currency + typed amount + gift-day snapshots. All null when there is no currency ask.
 ALTER TABLE message ADD COLUMN IF NOT EXISTS goal_currency text;
 ALTER TABLE message ADD COLUMN IF NOT EXISTS goal_amount numeric(20, 8);

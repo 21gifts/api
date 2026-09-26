@@ -631,6 +631,20 @@ export interface MessageStore {
   setPlace(id: string, place: ForumPlace | null): Promise<boolean>;
 
   /**
+   * Set, replace, or clear the linked 21.gifts shop account. Writes only
+   * `shop_account_id` (in-memory `shopAccount`). Does not change text, sats,
+   * goals, place, media, hide stamps, event ids, or publish state.
+   *
+   * @param id - Message id.
+   * @param account - Account snapshot to store, or `null` to clear.
+   * @returns `false` when no row has that id; `true` when the column was written.
+   */
+  setShopAccount(
+    id: string,
+    account: { id: string; username: string; name: string } | null,
+  ): Promise<boolean>;
+
+  /**
    * Direct children of `parentId` (`parentId` match), including hidden,
    * Damus-only (`accountId` null), and gift-only rows. Oldest `createdAt`
    * then `id` first. Missing parent → `[]`.
@@ -1442,6 +1456,7 @@ WHERE message.id = ranked.id AND ranked.rn > 1`,
   `ALTER TABLE message ADD COLUMN IF NOT EXISTS place_lat double precision`,
   `ALTER TABLE message ADD COLUMN IF NOT EXISTS place_lng double precision`,
   `ALTER TABLE message ADD COLUMN IF NOT EXISTS place_label text`,
+  `ALTER TABLE message ADD COLUMN IF NOT EXISTS shop_account_id uuid REFERENCES account (id) ON DELETE SET NULL`,
   `ALTER TABLE message ADD COLUMN IF NOT EXISTS mentions jsonb NOT NULL DEFAULT '[]'::jsonb`,
   `ALTER TABLE message ADD COLUMN IF NOT EXISTS goal_currency text`,
   `ALTER TABLE message ADD COLUMN IF NOT EXISTS goal_amount numeric(20, 8)`,
@@ -1719,6 +1734,11 @@ function copyRow(row: MessageRow): MessageRow {
   if (row.photoTakenAts !== undefined) {
     copy.photoTakenAts = [...row.photoTakenAts];
   }
+  const shopAccount = row.shopAccount;
+  copy.shopAccount =
+    shopAccount === undefined || shopAccount === null
+      ? null
+      : { id: shopAccount.id, username: shopAccount.username, name: shopAccount.name };
   return copy;
 }
 
@@ -2237,6 +2257,8 @@ export class InMemoryMessageStore implements MessageStore {
     });
     applyStoredGoal(stored);
     stored.place = stored.parentId !== null ? null : (stored.place ?? null);
+    // Create does not assign a shop account.
+    stored.shopAccount = null;
     if (stored.parentId !== null) {
       const parent = this.#rows.find((item) => item.id === stored.parentId);
       if (parent === undefined || parent.deletedAt !== null) {
@@ -3338,6 +3360,19 @@ export class InMemoryMessageStore implements MessageStore {
     return Promise.resolve(true);
   }
 
+  setShopAccount(
+    id: string,
+    account: { id: string; username: string; name: string } | null,
+  ): Promise<boolean> {
+    const row = this.#rows.find((item) => item.id === id);
+    if (row === undefined) {
+      return Promise.resolve(false);
+    }
+    row.shopAccount =
+      account === null ? null : { id: account.id, username: account.username, name: account.name };
+    return Promise.resolve(true);
+  }
+
   /**
    * Direct children of `parentId`, including hidden, Damus-only, and
    * gift-only rows. Oldest `createdAt` then `id` first. Missing parent → `[]`.
@@ -3414,6 +3449,9 @@ interface MessageSqlRow {
   place_lat?: string | number | null;
   place_lng?: string | number | null;
   place_label?: string | null;
+  shop_account_id?: string | null;
+  shop_username?: string | null;
+  shop_name?: string | null;
   mentions?: unknown;
   nostr_event?: Record<string, unknown> | string | null;
   claimed_until?: Date | string | null;
@@ -3541,6 +3579,22 @@ function safeJson(value: string): unknown {
   }
 }
 
+/** Shop account columns. A blank joined username is no account. `name` may be empty. */
+function shopAccountFromSql(
+  row: MessageSqlRow,
+): { id: string; username: string; name: string } | null {
+  const id = row.shop_account_id;
+  const username = row.shop_username;
+  if (typeof id !== 'string' || id === '') {
+    return null;
+  }
+  if (typeof username !== 'string' || username.trim() === '') {
+    return null;
+  }
+  const name = row.shop_name;
+  return { id, username, name: typeof name === 'string' ? name : '' };
+}
+
 /** Map a SQL list row onto {@link MessageRow}. Unexported. */
 function mapMessageRow(row: MessageSqlRow): MessageRow {
   const defaults = unsignedNostrDefaults();
@@ -3584,6 +3638,7 @@ function mapMessageRow(row: MessageSqlRow): MessageRow {
     goalAmountEur: mapGoalFiatText(row.goal_fiat_eur),
     goalAmountPhp: mapGoalFiatText(row.goal_fiat_php),
     place: placeFromSql(row.place_lat, row.place_lng, row.place_label),
+    shopAccount: shopAccountFromSql(row),
     nostrEvent: normalizeSignedEvent(row.nostr_event) ?? null,
     claimedUntil: optionalDate(row.claimed_until),
     nostrFirstAttemptAt: optionalDate(row.nostr_first_attempt_at),
@@ -3626,7 +3681,11 @@ const MESSAGE_SELECT_COLUMNS = `id, account_id, name, text, created_at,
               event_id, nostr_publish_state, sats, goal_sats, goal_repayable, goal_term_days,
               fiat_usd::text AS fiat_usd, fiat_chf::text AS fiat_chf,
               fiat_eur::text AS fiat_eur, fiat_php::text AS fiat_php,
-              place_lat, place_lng, place_label, mentions,
+              place_lat, place_lng, place_label,
+              shop_account_id,
+              (SELECT username FROM account WHERE account.id = message.shop_account_id) AS shop_username,
+              (SELECT name FROM account WHERE account.id = message.shop_account_id) AS shop_name,
+              mentions,
               nostr_event, claimed_until, nostr_first_attempt_at, nostr_publish_epoch, nostr_attempts,
               content_fp, deleted_at, deleted_by,
               photo_taken_at, video_taken_at,
@@ -4227,6 +4286,8 @@ export class PostgresMessageStore implements MessageStore {
     });
     applyStoredGoal(stored);
     stored.place = stored.parentId !== null ? null : (stored.place ?? null);
+    // Create does not assign a shop account.
+    stored.shopAccount = null;
     if (video !== undefined) {
       await writeForumVideo(stored.id, video);
     }
@@ -4468,6 +4529,17 @@ export class PostgresMessageStore implements MessageStore {
         place === null ? null : place.lng,
         place === null ? null : place.label,
       ],
+    );
+    return rows[0] !== undefined;
+  }
+
+  async setShopAccount(
+    id: string,
+    account: { id: string; username: string; name: string } | null,
+  ): Promise<boolean> {
+    const rows = await this.#sql.query<{ id: string }>(
+      `UPDATE message SET shop_account_id = $2 WHERE id = $1 RETURNING id`,
+      [id, account === null ? null : account.id],
     );
     return rows[0] !== undefined;
   }

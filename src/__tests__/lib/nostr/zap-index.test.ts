@@ -4788,6 +4788,8 @@ describe('indexOpenZapReceipts', () => {
       markDeleted: (id: string, at: Date, by: string) => base.markDeleted(id, at, by),
       markUndeleted: (id: string) => base.markUndeleted(id),
       setPlace: (...args: Parameters<InMemoryMessageStore['setPlace']>) => base.setPlace(...args),
+      setShopAccount: (...args: Parameters<InMemoryMessageStore['setShopAccount']>) =>
+        base.setShopAccount(...args),
       getById: (id: string) => base.getById(id),
       getByEventId: async (id: string) => {
         getByEventIdCalls += 1;
@@ -5023,6 +5025,8 @@ describe('indexOpenZapReceipts', () => {
         markDeleted: (id: string, at: Date, by: string) => base.markDeleted(id, at, by),
         markUndeleted: (id: string) => base.markUndeleted(id),
         setPlace: (...args: Parameters<InMemoryMessageStore['setPlace']>) => base.setPlace(...args),
+        setShopAccount: (...args: Parameters<InMemoryMessageStore['setShopAccount']>) =>
+          base.setShopAccount(...args),
         getById: (id: string) => base.getById(id),
         getByEventId: (id: string) => base.getByEventId(id),
         claimUnsigned: (...args: Parameters<InMemoryMessageStore['claimUnsigned']>) =>
@@ -5401,6 +5405,8 @@ describe('indexOpenZapReceipts', () => {
         markDeleted: (id: string, at: Date, by: string) => base.markDeleted(id, at, by),
         markUndeleted: (id: string) => base.markUndeleted(id),
         setPlace: (...args: Parameters<InMemoryMessageStore['setPlace']>) => base.setPlace(...args),
+        setShopAccount: (...args: Parameters<InMemoryMessageStore['setShopAccount']>) =>
+          base.setShopAccount(...args),
         getById: (id: string) => base.getById(id),
         getByEventId: (id: string) => base.getByEventId(id),
         claimUnsigned: (...args: Parameters<InMemoryMessageStore['claimUnsigned']>) =>
