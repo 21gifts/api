@@ -2002,7 +2002,7 @@
 
 ## Function: imageDisplaySize
 
-- **Purpose:** Read `WIDTHxHEIGHT` from a PNG, JPEG, or WebP header. Video MIME and truncated images return null. JPEG and WebP also return null when the size is outside 1..20000. A PNG returns the size the decoder reports.
+- **Purpose:** Read `WIDTHxHEIGHT` from a PNG, JPEG, or WebP header. Video MIME returns null. JPEG and WebP return null when the dimension header is missing or truncated, or when the size is outside 1..20000. A complete JPEG or WebP header still sets the size when later bytes are cut off. A PNG returns the size the decoder reports; a decoder throw is null.
 - **Inputs:** image bytes, MIME.
 - **Returns / side effects:** `dim` string or null. No I/O.
 - **Used by:** `stillLook`.
