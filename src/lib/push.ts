@@ -171,6 +171,40 @@ export function buildForumPushPayload(args: {
 }
 
 /**
+ * Forum `@username` mark payload for one mentioned recipient.
+ *
+ * Title matches a forum post. Body is locale copy of "marked you".
+ * `url` `/notifications` and `type: 'forum'` match the other forum pushes.
+ *
+ * @param args - Created message id, author name, and recipient locale.
+ * @returns Payload object; callers `JSON.stringify`. Omits `unreadCount`.
+ */
+export function buildForumMentionPushPayload(args: {
+  messageId: string;
+  name: string;
+  locale?: string | null;
+}): PushPayload {
+  const locale = args.locale;
+  let body: string;
+  if (locale === 'de') {
+    body = `${args.name} hat dich markiert`;
+  } else if (locale === 'es') {
+    body = `${args.name} te marcó`;
+  } else if (locale === 'fil') {
+    body = `Minarkahan ka ni ${args.name}`;
+  } else {
+    body = `${args.name} marked you`;
+  }
+  return {
+    type: 'forum',
+    title: pushTitle(args.name),
+    body,
+    url: '/notifications',
+    tag: `forum_mention:${args.messageId}`,
+  };
+}
+
+/**
  * Zap payload for every bell subscriber except the payer skip id.
  *
  * Title is the collapsed payer name, or `Someone` when blank. Body is

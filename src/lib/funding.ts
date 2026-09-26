@@ -184,6 +184,36 @@ export function fundingReviewedAt(grant: FundingGrant | undefined, nowMs: number
 }
 
 /**
+ * Member-card `fundingReviewedByName`: live display name of `decidedBy`
+ * when {@link fundingReviewedAt} is a number and the trimmed name is
+ * non-empty. Otherwise `null`. Does not expose pending, trial, or rejected.
+ *
+ * @param grant - Stored grant, or `undefined`.
+ * @param nowMs - Epoch milliseconds.
+ * @param lookup - Account lookup by id (`authStore.getAccount`).
+ * @returns Reviewer display name, or `null`.
+ */
+export async function fundingReviewedByName(
+  grant: FundingGrant | undefined,
+  nowMs: number,
+  lookup: (accountId: string) => Promise<{ name: string | null } | undefined>,
+): Promise<string | null> {
+  if (typeof fundingReviewedAt(grant, nowMs) !== 'number') {
+    return null;
+  }
+  const decidedBy = grant?.decidedBy;
+  if (decidedBy === null || decidedBy === undefined) {
+    return null;
+  }
+  const reviewer = await lookup(decidedBy);
+  const name = reviewer?.name ?? null;
+  if (name === null || name.trim() === '') {
+    return null;
+  }
+  return name;
+}
+
+/**
  * Pending projection of an expired trial. Keeps `appliedAt` and the last
  * decision actor/time; clears `trialUtcDate`; leaves `admittedAt` null.
  *

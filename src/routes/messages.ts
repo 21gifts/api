@@ -63,7 +63,8 @@ import { signEventForAccount } from '@/lib/nostr/sign';
 import { buildZapRequest } from '@/lib/nostr/zap-request';
 import { inboxUnreadCountFor } from '@/lib/conversation-push';
 import type { ConversationStore } from '@/lib/conversation-store';
-import { notifyForumPost, notifyForumReply } from '@/lib/notification';
+import { mentionUsernames } from '@/lib/mention';
+import { notifyForumMentions, notifyForumPost, notifyForumReply } from '@/lib/notification';
 import type { NotificationStore } from '@/lib/notification-store';
 import type { PushStore } from '@/lib/push-store';
 import type { SpendPing } from '@/lib/spend-ping';
@@ -740,11 +741,19 @@ async function persistForumPost(
     return c.json({ error: 'Too many messages' }, 429);
   }
   const id = crypto.randomUUID();
+  const mentions: { accountId: string; username: string }[] = [];
+  for (const username of mentionUsernames(text)) {
+    const marked = await deps.authStore.getAccountByUsername(username);
+    if (marked !== undefined) {
+      mentions.push({ accountId: marked.id, username });
+    }
+  }
   const row: MessageRow = {
     id,
     accountId: account.id,
     name: authorName,
     text,
+    mentions,
     createdAt: new Date(deps.now()),
     hasPhoto: photo !== undefined,
     hasVideo: video !== undefined,
@@ -840,6 +849,35 @@ async function persistForumPost(
         });
       } catch {
         logEvent('messages.reply.notify.failed');
+      }
+    }
+    if (!isReplay && (created.mentions ?? []).length > 0) {
+      try {
+        let isActive = created.sats > 0;
+        let threadId = created.id;
+        if (parentId !== null) {
+          const parent = await deps.store.getById(parentId);
+          isActive = parent !== undefined && parent.sats > 0;
+          threadId = parent?.id ?? parentId;
+        }
+        await notifyForumMentions({
+          account,
+          created,
+          parentId: threadId,
+          isActive,
+          auth: deps.authStore,
+          ...(deps.notificationStore === undefined
+            ? {}
+            : { notifications: deps.notificationStore }),
+          ...(deps.pushStore === undefined ? {} : { pushStore: deps.pushStore }),
+          ...(deps.conversationStore === undefined
+            ? {}
+            : {
+                inboxUnreadCount: inboxUnreadCountFor(deps.conversationStore, deps.authStore),
+              }),
+        });
+      } catch {
+        logEvent('messages.mention.notify.failed');
       }
     }
     return c.json(
@@ -1075,6 +1113,129 @@ const translateBody = z.object({
  * `forum.read`), public `GET /:id` (optional `?sinceSats=`), and
  * `POST /:id/invoice`, `POST /:id/translate`, and public `GET /stats`.
  */
+/**
+ * Unsigned `GET /messages` window: `mode=active` only, first 200 raw rows.
+ *
+ * A cursor that points at the 200th row is 401. A cursor whose id is gone
+ * continues at the first row strictly older than its timestamp, or is 401
+ * when nothing in the window is older. Anything other than `mode=active`
+ * without a hashtag is 401.
+ * Malformed limit or cursor stays 400.
+ *
+ * @param deps - Route collaborators.
+ * @param c - Hono context (no bearer).
+ * @returns The public page, 400, or 401.
+ */
+async function servePublicActiveList(deps: MessagesRouteDeps, c: Context): Promise<Response> {
+  if (c.req.query('mode') !== 'active' || c.req.query('hashtag') !== undefined) {
+    return c.json({ error: 'Unauthorized' }, 401);
+  }
+  const limitQuery = c.req.query('limit');
+  let limit: number;
+  if (limitQuery === undefined) {
+    limit = MESSAGE_LIST_LIMIT;
+  } else if (/^\d+$/.test(limitQuery)) {
+    const n = Number(limitQuery);
+    if (n < 1 || n > MESSAGE_LIST_LIMIT) {
+      return c.json({ error: 'Invalid limit' }, 400);
+    }
+    limit = n;
+  } else {
+    return c.json({ error: 'Invalid limit' }, 400);
+  }
+  const cursorQuery = c.req.query('cursor');
+  let cursorId: string | null = null;
+  let cursorAtMs = Number.NaN;
+  if (cursorQuery !== undefined) {
+    const decoded = decodeMessageFeedCursor(cursorQuery);
+    if (decoded === null || decoded.k !== 't' || !MESSAGE_ID_RE.test(decoded.i)) {
+      return c.json({ error: 'Invalid cursor' }, 400);
+    }
+    cursorId = decoded.i;
+    cursorAtMs = Date.parse(decoded.c);
+  }
+  try {
+    const staffAccountIds = new Set(await deps.authStore.listStaffAccountIds());
+    const rows = await deps.store.listFeed({
+      limit: MESSAGE_LIST_LIMIT + 1,
+      mode: 'active',
+      cursor: null,
+      staffAccountIds,
+    });
+    const window = rows.slice(0, MESSAGE_LIST_LIMIT);
+    const more = rows.length > MESSAGE_LIST_LIMIT;
+    let start = 0;
+    if (cursorId !== null) {
+      const index = window.findIndex((row) => row.id === cursorId);
+      if (index === MESSAGE_LIST_LIMIT - 1) {
+        return c.json({ error: 'Unauthorized' }, 401);
+      }
+      if (index >= 0) {
+        start = index + 1;
+      } else {
+        const older = window.findIndex((row) => row.createdAt.getTime() < cursorAtMs);
+        if (older < 0) {
+          return c.json({ error: 'Unauthorized' }, 401);
+        }
+        start = older;
+      }
+    }
+    const page = window.slice(start, start + limit);
+    const maybeKept = await Promise.all(
+      page.map(async (row) => {
+        const kept = await dropMissingVideoRow(deps.store, row);
+        return kept === null ? null : { ...kept, replyCount: row.replyCount };
+      }),
+    );
+    const kept = maybeKept.filter((row): row is NonNullable<typeof row> => row !== null);
+    const authors = await Promise.all(
+      kept.map((row) =>
+        row.accountId === null
+          ? Promise.resolve(undefined)
+          : deps.authStore.getAccount(row.accountId),
+      ),
+    );
+    const messages = kept.map((row, i) => {
+      const author = authors[i];
+      const payable = payableOf(row, author);
+      const role = row.accountId === null ? undefined : (author?.role ?? 'basis');
+      return serializeMessage(row, payable, role, row.replyCount);
+    });
+    const last = page[page.length - 1];
+    const anchor = kept.length > 0 ? kept[kept.length - 1] : last;
+    let nextCursor: string | undefined;
+    if (anchor !== undefined) {
+      const lastIndex = window.findIndex((row) => row.id === anchor.id);
+      const pageFull = page.length === limit;
+      const reachesEnd = lastIndex === window.length - 1;
+      const includesBoundary = lastIndex === MESSAGE_LIST_LIMIT - 1;
+      if ((pageFull && !reachesEnd) || (includesBoundary && more)) {
+        nextCursor = encodeMessageFeedCursor({
+          k: 't',
+          c: anchor.createdAt.toISOString(),
+          i: anchor.id,
+        });
+      }
+    }
+    return c.json(nextCursor === undefined ? { messages } : { messages, nextCursor }, 200);
+  } catch {
+    logEvent('messages.list.failed');
+    return c.json({ error: 'Messages are unavailable' }, 503);
+  }
+}
+
+/**
+ * Build the `/messages` route group.
+ *
+ * `GET /` with no Authorization header and `mode=active` and no hashtag is
+ * the public window (`servePublicActiveList`). Any present Authorization
+ * header must be a live session, or the response is 401. A session still
+ * needs `forum.read`.
+ *
+ * @param deps - Stores, clock, and optional push, notification, and inbox
+ * dependencies.
+ * @returns Hono app mounted at `/messages`.
+ */
 export function messagesRoutes(deps: MessagesRouteDeps): Hono {
   const postLimiter = deps.postLimiter ?? defaultPostLimiter;
   const invoiceLimiter = deps.invoiceLimiter ?? defaultInvoiceLimiter;
@@ -1083,7 +1244,13 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
 
   return new Hono()
     .get('/', async (c) => {
-      const account = await authedAccount(deps, c.req.header('authorization'));
+      const header = c.req.header('authorization');
+      if (header === undefined) {
+        return servePublicActiveList(deps, c);
+      }
+      const token = bearerToken(header);
+      const account =
+        token === null ? null : await resolveSession(deps.authStore, deps.now(), token);
       if (account === null) {
         return c.json({ error: 'Unauthorized' }, 401);
       }
@@ -1639,6 +1806,7 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
               lat: row.lat,
               lng: row.lng,
               label: row.label,
+              ...(row.accountId === null ? {} : { accountId: row.accountId }),
             })),
           },
           200,
@@ -1713,6 +1881,7 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
         }
         sinceSats = Number(sinceSatsRaw);
       }
+      const viewer = await authedAccount(deps, c.req.header('authorization'));
       const started = deps.now();
       const timeoutMs = deps.waitSatsTimeoutMs ?? WAIT_SATS_TIMEOUT_MS;
       const pollMs = deps.waitSatsPollMs ?? WAIT_SATS_POLL_MS;
@@ -1772,6 +1941,7 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
               payable,
               role,
               kept.parentId === null ? await deps.store.countAttributedReplies(kept.id) : undefined,
+              viewer !== null,
             ),
             200,
           );

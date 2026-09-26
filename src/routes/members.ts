@@ -10,7 +10,7 @@ import { InMemoryFiatStore, type FiatRateBook } from '@/lib/usd-fiat-store';
 import { logEvent } from '@/lib/log';
 import { MESSAGE_LIST_LIMIT, serializeMessage, type MessageRow } from '@/lib/message';
 import type { MessageStore } from '@/lib/message-store';
-import { fundingReviewedAt } from '@/lib/funding';
+import { fundingReviewedAt, fundingReviewedByName } from '@/lib/funding';
 import { InMemoryFundingStore, type FundingStore } from '@/lib/funding-store';
 import { accountTrust } from '@/lib/trust';
 import type { TrustStore } from '@/lib/trust-store';
@@ -313,6 +313,9 @@ export function membersRoutes(deps: MembersRouteDeps): Hono {
             replyCount: counts.replyCount,
             trust: accountTrust(account.id, accounts, edges),
             fundingReviewedAt: fundingReviewedAt(grant, deps.now()),
+            fundingReviewedByName: await fundingReviewedByName(grant, deps.now(), (accountId) =>
+              deps.authStore.getAccount(accountId),
+            ),
           },
           200,
         );

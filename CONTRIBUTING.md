@@ -72,6 +72,7 @@ api/
 │   │   ├── username.ts       # LUD-16 / NIP-05 username trim/validate + boot backfill
 │   │   ├── location.ts       # Profile location trim/validate (C0/DEL; empty clears)
 │   │   ├── message.ts        # Forum text/photo/video validate + public JSON (hasPhoto/hasVideo; no bytes)
+│   │   ├── mention.ts        # @username marks stored on a note at send time
 │   │   ├── video.ts          # Forum video magic-bytes, faststart, MEDIA_DIR, Range parse
 │   │   ├── nip05.ts          # NIP-05 slugs, nostr.json names, kind:0 identifier
 │   │   ├── nip57-probe.ts    # NIP-57 mint probe before linking a Lightning Address
@@ -186,6 +187,10 @@ api/
 │       │   ├── gift.test.ts
 │       │   ├── gift-store.test.ts
 │       │   ├── message.test.ts
+│       │   ├── mention.test.ts
+│       │   ├── mention-notify.test.ts
+│       │   ├── funding-reviewed-by-name.test.ts
+│       │   ├── push-mention.test.ts
 │       │   ├── video.test.ts
 │       │   ├── nip05.test.ts
 │       │   ├── nip57-probe.test.ts
@@ -253,6 +258,7 @@ api/
 │           ├── gifts.test.ts
 │           ├── invoices.test.ts
 │           ├── messages.test.ts
+│           ├── public-active.test.ts
 │           ├── translate.test.ts
 │           ├── well-known.test.ts
 │           ├── pay.test.ts
