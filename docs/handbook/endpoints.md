@@ -836,14 +836,14 @@
 
 ## Endpoint: POST /funding/trial
 
-- **Purpose:** Staff Bearer. Body `{ accountId }`. Target must be effective pending, not self, not `basis`. Sets `trial`, `trialUtcDate` = today UTC, `decidedAt`/`decidedBy` now, `admittedAt` null. 200 `{ id, name, role, funding }`. Logs `funding.trial`.
+- **Purpose:** Staff Bearer. Body `{ accountId }`. Target must be effective pending, not self, not `basis`. Sets `trial`, `trialUtcDate` = today UTC, `decidedAt`/`decidedBy` now, `admittedAt` null. 200 `{ id, name, role, funding }`. Logs `funding.trial`. After the 200, when `spendPing` is configured, ping it once with the trimmed Lightning address and the newest live top-level photo or video (including About me) whose `createdAt` falls on today's UTC day. Two arguments, daily kind. A blank address, no such post, or a post from an earlier UTC day does not ping. A thrown lookup or ping logs `funding.daily_ping.failed` and the HTTP status stays 200.
 - **Errors:** 401/403 as list; 400 `{ error: 'Expected a JSON body with an "accountId" string' }`; 404 `{ error: 'Not found' }`; 409 `{ error: 'Conflict' }` for self / not pending / `basis`; 503 `{ error: 'Funding is unavailable' }` (`funding.write.failed`).
 - **Used by:** Staff one-day trial.
 - **Auth:** `Authorization: Bearer` session. Staff only.
 
 ## Endpoint: POST /funding/admit
 
-- **Purpose:** Staff Bearer. Body `{ accountId }`. Target effective pending or trial, not self, not `basis`. Sets `admitted`, `admittedAt` now, `trialUtcDate` null. 200 `{ id, name, role, funding }`. Logs `funding.admitted`.
+- **Purpose:** Staff Bearer. Body `{ accountId }`. Target effective pending or trial, not self, not `basis`. Sets `admitted`, `admittedAt` now, `trialUtcDate` null. 200 `{ id, name, role, funding }`. Logs `funding.admitted`. A 200 from effective pending uses that same daily ping. A 200 from an active trial does not ping.
 - **Errors:** Same 401/403/400/404/409/503 JSON as `POST /funding/trial`.
 - **Used by:** Staff recurring admission.
 - **Auth:** `Authorization: Bearer` session. Staff only.
