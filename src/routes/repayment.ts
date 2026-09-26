@@ -4,11 +4,10 @@ import { resolveSession } from '@/lib/auth/service';
 import { MISSING_REQUIREMENTS_ERROR, requireAction } from '@/lib/auth/requirements';
 import { inspectBolt11, isNip57Invoice } from '@/lib/bolt11';
 import {
-  dayUnits,
   dueDayCount,
-  fiatAmountToCents,
+  payerDebtUnits,
   repaymentDescription,
-  shareSats,
+  repaymentSchedule,
 } from '@/lib/credit-repayment';
 import { fiatToSats, type GoalFiatCode, type GoalRateDay } from '@/lib/goal-rate';
 import { normalizeLightningAddress } from '@/lib/lightning-address';
@@ -56,7 +55,7 @@ export async function repaymentStatus(deps: RepaymentDeps, c: Context): Promise<
   }
   return c.json(
     {
-      fundedAt: opened.row.goalFundedAt?.toISOString() ?? null,
+      fundedAt: (opened.row.goalFundedAt as Date).toISOString(),
       termDays: opened.row.goalTermDays,
       daysDue: next.daysDue,
       daysPaid: next.daysPaid,
@@ -197,7 +196,7 @@ async function openCredit(
   if (account === null) {
     return c.json({ error: 'Unauthorized' }, 401);
   }
-  const id = c.req.param('id') ?? '';
+  const id = c.req.param('id') as string;
   if (!MESSAGE_ID_RE.test(id)) {
     return c.json({ error: 'Not found' }, 404);
   }
@@ -206,8 +205,12 @@ async function openCredit(
     row === undefined ||
     row.deletedAt !== null ||
     row.goalRepayable !== true ||
-    row.goalTermDays == null ||
-    row.goalFundedAt == null ||
+    row.goalTermDays === null ||
+    /* v8 ignore next -- copyRow stores null, never undefined */
+    row.goalTermDays === undefined ||
+    row.goalFundedAt === null ||
+    /* v8 ignore next -- copyRow stores null, never undefined */
+    row.goalFundedAt === undefined ||
     row.accountId !== account.id
   ) {
     return c.json({ error: 'Not found' }, 404);
@@ -226,72 +229,59 @@ async function nextShare(
   error: string | null;
   status: 400 | 503;
 }> {
-  const termDays = row.goalTermDays ?? 0;
-  const fundedAt = row.goalFundedAt ?? new Date(0);
+  const termDays = row.goalTermDays as number;
+  const fundedAt = row.goalFundedAt as Date;
   const daysDue = dueDayCount(fundedAt.getTime(), nowMs, termDays);
   const payers = await deps.store.listCreditPayers(row.id);
   const paid = await deps.store.listRepayments(row.id);
-  const rateDay =
-    row.goalCurrency !== null &&
-    row.goalCurrency !== undefined &&
-    row.goalCurrency !== 'BTC' &&
-    deps.goalRateDay !== undefined
-      ? await deps.goalRateDay()
-      : null;
+  const owed = payerDebtUnits(row.goalCurrency, row.goalAmount, payers);
+  if (owed === 'unavailable') {
+    return {
+      daysDue,
+      daysPaid: 0,
+      share: null,
+      error: 'Ask amount is unavailable',
+      status: 503,
+    };
+  }
+  const schedule = repaymentSchedule(termDays, owed);
+  const fiat = isFiatCredit(row);
+  const rateDay = fiat && deps.goalRateDay !== undefined ? await deps.goalRateDay() : null;
   let daysPaid = 0;
   for (let day = 0; day < daysDue; day += 1) {
-    const shares = sharesForDay(row, payers, day, rateDay);
-    if (shares === 'unavailable') {
+    const unpaid = schedule.find(
+      (slice) =>
+        slice.dayIndex === day &&
+        !paid.some((item) => item.dayIndex === day && item.recipientAccountId === slice.accountId),
+    );
+    if (unpaid !== undefined) {
+      const sats = fiat
+        ? fiatToSats(Number(unpaid.units) / 100, rateDay, row.goalCurrency as GoalFiatCode)
+        : Number(unpaid.units);
+      if (sats === null) {
+        return {
+          daysDue,
+          daysPaid,
+          share: null,
+          error: 'Ask amount is unavailable',
+          status: 503,
+        };
+      }
       return {
         daysDue,
         daysPaid,
-        share: null,
-        error: 'Ask amount is unavailable',
-        status: 503,
+        share: { dayIndex: day, accountId: unpaid.accountId, sats },
+        error: null,
+        status: 400,
       };
     }
-    const unpaid = shares.find(
-      (share) =>
-        !paid.some((item) => item.dayIndex === day && item.recipientAccountId === share.accountId),
-    );
-    if (unpaid !== undefined) {
-      return { daysDue, daysPaid, share: { dayIndex: day, ...unpaid }, error: null, status: 400 };
-    }
-    if (shares.length > 0 || dayUnits(debtUnits(row) ?? 0n, termDays, day) === 0n) {
-      daysPaid += 1;
-    }
+    daysPaid += 1;
   }
   return { daysDue, daysPaid, share: null, error: null, status: 400 };
 }
 
-function debtUnits(row: MessageRow): bigint | null {
-  if (row.goalCurrency === null || row.goalCurrency === undefined || row.goalCurrency === 'BTC') {
-    return BigInt(row.goalSats ?? 0);
-  }
-  if (row.goalAmount === null || row.goalAmount === undefined) {
-    return null;
-  }
-  return fiatAmountToCents(row.goalAmount);
-}
+const FIAT_CURRENCIES = new Set(['USD', 'CHF', 'EUR', 'PHP']);
 
-function sharesForDay(
-  row: MessageRow,
-  payers: { accountId: string; sats: number }[],
-  day: number,
-  rateDay: GoalRateDay | null,
-): { accountId: string; sats: number }[] | 'unavailable' {
-  const termDays = row.goalTermDays ?? 0;
-  const debt = debtUnits(row);
-  if (debt === null) {
-    return 'unavailable';
-  }
-  const units = dayUnits(debt, termDays, day) ?? 0n;
-  if (row.goalCurrency === null || row.goalCurrency === undefined || row.goalCurrency === 'BTC') {
-    return shareSats(Number(units), payers);
-  }
-  const priced = fiatToSats(Number(units) / 100, rateDay, row.goalCurrency as GoalFiatCode);
-  if (priced === null) {
-    return 'unavailable';
-  }
-  return shareSats(priced, payers);
+function isFiatCredit(row: MessageRow): boolean {
+  return FIAT_CURRENCIES.has(row.goalCurrency ?? '');
 }

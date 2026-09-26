@@ -11,6 +11,7 @@
  */
 
 import { isUniqueViolation, type SqlClient } from '@/lib/auth/sql';
+import { fiatAmountToCents } from '@/lib/credit-repayment';
 import { TRANSLATION_SCHEMA_SQL } from '@/lib/translation-store';
 import { fetchBtcUsdSpot } from '@/lib/btc-usd-spot';
 import type { FetchFn } from '@/lib/btc-usd-candles';
@@ -808,7 +809,16 @@ export interface MessageStore {
    * @param messageId - Forum note.
    * @returns Positive contributions. External payers without an account are omitted.
    */
-  listCreditPayers(messageId: string): Promise<{ accountId: string; sats: number }[]>;
+  listCreditPayers(messageId: string): Promise<
+    {
+      accountId: string;
+      sats: number;
+      usd: string | null;
+      chf: string | null;
+      eur: string | null;
+      php: string | null;
+    }[]
+  >;
 
   /**
    * Repayment shares already paid on one credit.
@@ -1842,6 +1852,23 @@ function copyZapIngest(row: ZapIngestRow): ZapIngestRow {
   };
 }
 
+function addPayerCents(current: bigint | null, amount: string | null | undefined): bigint | null {
+  if (current === null || amount === null || amount === undefined) {
+    return null;
+  }
+  const cents = fiatAmountToCents(amount);
+  if (cents === null) {
+    return null;
+  }
+  return current + cents;
+}
+
+function centsToAmount(cents: bigint): string {
+  const whole = cents / 100n;
+  const frac = (cents % 100n).toString().padStart(2, '0');
+  return `${whole}.${frac}`;
+}
+
 /** In-memory zap receipt (parent credit + optional gift-reply link). */
 interface MemoryZapReceipt {
   messageId: string;
@@ -2829,8 +2856,8 @@ export class InMemoryMessageStore implements MessageStore {
       row.sats += extraSats;
       if (
         row.goalRepayable === true &&
-        row.goalFundedAt == null &&
-        row.goalSats != null &&
+        row.goalFundedAt === null &&
+        row.goalSats !== null &&
         row.goalSats > 0 &&
         row.sats >= row.goalSats
       ) {
@@ -2840,15 +2867,58 @@ export class InMemoryMessageStore implements MessageStore {
     return Promise.resolve();
   }
 
-  listCreditPayers(messageId: string): Promise<{ accountId: string; sats: number }[]> {
-    const totals = new Map<string, number>();
-    for (const receipt of this.#receipts.values()) {
+  listCreditPayers(messageId: string): Promise<
+    {
+      accountId: string;
+      sats: number;
+      usd: string | null;
+      chf: string | null;
+      eur: string | null;
+      php: string | null;
+    }[]
+  > {
+    const totals = new Map<
+      string,
+      {
+        sats: number;
+        usd: bigint | null;
+        chf: bigint | null;
+        eur: bigint | null;
+        php: bigint | null;
+      }
+    >();
+    for (const [eventId, receipt] of this.#receipts) {
       if (receipt.messageId !== messageId || receipt.payerAccountId === null) {
         continue;
       }
-      totals.set(receipt.payerAccountId, (totals.get(receipt.payerAccountId) ?? 0) + receipt.sats);
+      const ingest = this.#zapIngests.find(
+        (row) =>
+          row.receiptId === eventId && row.outcome === 'indexed' && row.messageId === messageId,
+      );
+      const current = totals.get(receipt.payerAccountId) ?? {
+        sats: 0,
+        usd: 0n,
+        chf: 0n,
+        eur: 0n,
+        php: 0n,
+      };
+      current.sats += receipt.sats;
+      current.usd = addPayerCents(current.usd, ingest?.amountUsd);
+      current.chf = addPayerCents(current.chf, ingest?.amountChf);
+      current.eur = addPayerCents(current.eur, ingest?.amountEur);
+      current.php = addPayerCents(current.php, ingest?.amountPhp);
+      totals.set(receipt.payerAccountId, current);
     }
-    return Promise.resolve([...totals.entries()].map(([accountId, sats]) => ({ accountId, sats })));
+    return Promise.resolve(
+      [...totals.entries()].map(([accountId, total]) => ({
+        accountId,
+        sats: total.sats,
+        usd: total.usd === null ? null : centsToAmount(total.usd),
+        chf: total.chf === null ? null : centsToAmount(total.chf),
+        eur: total.eur === null ? null : centsToAmount(total.eur),
+        php: total.php === null ? null : centsToAmount(total.php),
+      })),
+    );
   }
 
   listRepayments(
@@ -4988,15 +5058,52 @@ export class PostgresMessageStore implements MessageStore {
     );
   }
 
-  async listCreditPayers(messageId: string): Promise<{ accountId: string; sats: number }[]> {
-    const rows = await this.#sql.query<{ account_id: string; sats: string | number }>(
-      `SELECT payer_account_id AS account_id, SUM(sats)::bigint AS sats
-       FROM nostr_zap_receipt
-       WHERE message_id = $1 AND payer_account_id IS NOT NULL
-       GROUP BY payer_account_id`,
+  async listCreditPayers(messageId: string): Promise<
+    {
+      accountId: string;
+      sats: number;
+      usd: string | null;
+      chf: string | null;
+      eur: string | null;
+      php: string | null;
+    }[]
+  > {
+    const rows = await this.#sql.query<{
+      account_id: string;
+      sats: string | number;
+      usd: string | null;
+      chf: string | null;
+      eur: string | null;
+      php: string | null;
+    }>(
+      `SELECT r.payer_account_id AS account_id,
+              SUM(r.sats)::bigint AS sats,
+              CASE WHEN COUNT(i.fiat_usd) = COUNT(*) THEN SUM(i.fiat_usd)::text ELSE NULL END AS usd,
+              CASE WHEN COUNT(i.fiat_chf) = COUNT(*) THEN SUM(i.fiat_chf)::text ELSE NULL END AS chf,
+              CASE WHEN COUNT(i.fiat_eur) = COUNT(*) THEN SUM(i.fiat_eur)::text ELSE NULL END AS eur,
+              CASE WHEN COUNT(i.fiat_php) = COUNT(*) THEN SUM(i.fiat_php)::text ELSE NULL END AS php
+       FROM nostr_zap_receipt r
+       LEFT JOIN LATERAL (
+         SELECT fiat_usd, fiat_chf, fiat_eur, fiat_php
+         FROM nostr_zap_ingest
+         WHERE receipt_id = r.event_id
+           AND outcome = 'indexed'
+           AND message_id = r.message_id
+         ORDER BY created_at DESC, id DESC
+         LIMIT 1
+       ) i ON true
+       WHERE r.message_id = $1 AND r.payer_account_id IS NOT NULL
+       GROUP BY r.payer_account_id`,
       [messageId],
     );
-    return rows.map((row) => ({ accountId: row.account_id, sats: Number(row.sats) }));
+    return rows.map((row) => ({
+      accountId: row.account_id,
+      sats: Number(row.sats),
+      usd: row.usd,
+      chf: row.chf,
+      eur: row.eur,
+      php: row.php,
+    }));
   }
 
   async listRepayments(

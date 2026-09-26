@@ -2178,6 +2178,29 @@ describe('InMemoryMessageStore', () => {
     });
     expect(withTerm.goalTermDays).toBe(30);
     expect((await store.getById('term'))?.goalTermDays).toBe(30);
+    await store.addSats('term', 10, null);
+    expect((await store.getById('term'))?.goalFundedAt).toBeNull();
+    await store.addSats('term', 20_990, null);
+    const fundedAt = (await store.getById('term'))?.goalFundedAt;
+    expect(fundedAt).toBeInstanceOf(Date);
+    await store.addSats('term', 1, null);
+    expect((await store.getById('term'))?.goalFundedAt?.getTime()).toBe(fundedAt?.getTime());
+    const unpaid = await store.create({
+      ...LATE,
+      id: 'unpriced',
+      goalRepayable: true,
+      goalSats: null,
+    });
+    await store.addSats(unpaid.id, 21, null);
+    expect((await store.getById(unpaid.id))?.goalFundedAt).toBeNull();
+    const zero = await store.create({
+      ...LATE,
+      id: 'zerogoal',
+      goalRepayable: true,
+      goalSats: 0,
+    });
+    await store.addSats(zero.id, 21, null);
+    expect((await store.getById(zero.id))?.goalFundedAt).toBeNull();
     const without = await store.create({ ...LATE, id: 'nogoal', goalSats: 21000 });
     expect(without.goalTermDays).toBeNull();
     expect((await store.getById('nogoal'))?.goalTermDays).toBeNull();
@@ -7249,6 +7272,25 @@ describe('PostgresMessageStore', () => {
     expect(
       await new PostgresMessageStore(new MockSql()).findOkInvoiceByPaymentHash('x'),
     ).toBeUndefined();
+  });
+
+  it('listCreditPayers sums sats and recorded fiat', async () => {
+    const sql = new MockSql();
+    sql.nextRows = [
+      {
+        account_id: 'giver',
+        sats: '21',
+        usd: '0.01',
+        chf: null,
+        eur: null,
+        php: null,
+      },
+    ];
+    const store = new PostgresMessageStore(sql);
+    expect(await store.listCreditPayers('m1')).toEqual([
+      { accountId: 'giver', sats: 21, usd: '0.01', chf: null, eur: null, php: null },
+    ]);
+    expect(sql.queries[0]?.text).toMatch(/nostr_zap_ingest/);
   });
 
   it('listOpenConversationZapEventIds maps zap_request e-tags', async () => {
