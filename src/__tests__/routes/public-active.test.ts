@@ -197,7 +197,7 @@ describe('public active window', () => {
     expect(rows).toHaveLength(1);
     const self = await notes.listByRecipient('ada', 10);
     expect(self.filter((row) => row.type === 'forum_mention')).toHaveLength(0);
-    const own = await app.request('/messages', {
+    const own = await mount(auth, new InMemoryMessageStore(), notes).request('/messages', {
       method: 'POST',
       headers: { authorization: 'Bearer tok', 'content-type': 'application/json' },
       body: JSON.stringify({ text: 'hi @ada' }),
