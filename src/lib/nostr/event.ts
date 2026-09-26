@@ -282,7 +282,7 @@ export interface UnsignedKind1 {
  *
  * @param content - Already-normalised forum text (may be empty when `photo` is set).
  * @param createdAtUnix - Unix seconds for the event.
- * @param photo - Optional public media (image or video URL + MIME; optional poster, dim, size, hash, duration).
+ * @param photo - Optional public media (image or video URL + MIME; optional poster, dim, size, hash, duration, blurhash).
  * @param replyTo - Optional NIP-10 parent pointers (replies only).
  * @param location - Optional account location; null/omitted/unusable → same as four-arg HEAD.
  * @param extraPhotos - Optional extra stills (indices 1..n). Omit or empty for N=1 bit-identical events.
