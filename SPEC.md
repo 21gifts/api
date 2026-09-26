@@ -144,6 +144,7 @@ Public base URLs used in examples:
 | GET    | `/messages/:id/video.*`                              | none / Bearer (moderator+) | Live video bytes; staff hidden bytes `Cache-Control: private, no-store`                                                                                                                                            |
 | DELETE | `/messages/:id`                                      | Bearer (moderator+)        | Soft-hide note + direct replies; retract in-app notifications; external target also blocks that pubkey                                                                                                             |
 | PATCH  | `/messages/:id/place`                                | Bearer (moderator+)        | Set, replace, or clear the map pin on a live top-level shop note                                                                                                                                                   |
+| PATCH  | `/messages/:id/shop-account`                         | Bearer (moderator+)        | Set, replace, or clear the 21.gifts account on a live top-level shop note                                                                                                                                          |
 | POST   | `/messages/:id/invoice`                              | Bearer                     | NIP-57 zap / BOLT11                                                                                                                                                                                                |
 | POST   | `/contact`                                           | Bearer                     | Send private in-app contact `{ text }`                                                                                                                                                                             |
 | GET    | `/pos`                                               | Bearer                     | Open till charge or null, plus up to 20 history rows                                                                                                                                                               |
@@ -2386,7 +2387,8 @@ the stored column is true (omitted when null; never false), `goalTermDays`
 only when the stored column is not null (omitted when null), `goalCurrency`,
 `goalAmount`, and the four `goalAmount*` snapshots when `goalCurrency` is
 stored (omitted on a legacy row; a snapshot may be null), and always-present
-`placeLat`, `placeLng`, and `placeLabel` (JSON `null` when unset). Never
+`placeLat`, `placeLng`, `placeLabel`, and `shopAccountId` (JSON `null` when
+unset). Never
 includes nsec or photo/video payloads.
 
 `DEBUG_TOKEN` unset or blank → **Response** `503`:
@@ -2423,8 +2425,8 @@ MIME/byte lengths, stored `goalSats` (JSON `null` when unset),
 never false), `goalTermDays` only when the stored column is not null (omitted
 when null), `goalCurrency`, `goalAmount`, and the four `goalAmount*`
 snapshots when `goalCurrency` is stored (omitted on a legacy row; a snapshot
-may be null), and always-present `placeLat`, `placeLng`, and `placeLabel`
-(JSON `null` when unset). Never
+may be null), and always-present `placeLat`, `placeLng`, `placeLabel`, and
+`shopAccountId` (JSON `null` when unset). Never
 includes nsec or photo/video payloads.
 
 Store throw → **Response** `503`:
@@ -3904,7 +3906,7 @@ two ids per store.
 
 Public single-note fetch. Live rows need **no Bearer.** `:id` is a UUID.
 Registered **after** photo, video, `GET /messages/:id/replies`,
-`DELETE /messages/:id`, `PATCH /messages/:id/place`, `GET /messages/stats`, `GET /messages/hidden`, and
+`DELETE /messages/:id`, `PATCH /messages/:id/place`, `PATCH /messages/:id/shop-account`, `GET /messages/stats`, `GET /messages/hidden`, and
 `GET /messages/places` so
 those paths are not captured as `:id`. A live GET returns
 the public message JSON (`sats`, optional `goalSats` on a top-level note
@@ -3914,6 +3916,8 @@ when the stored column is true (omitted when null; never false), optional
 `goalCurrency` is stored also `goalCurrency`, `goalAmount`, and the four
 `goalAmount*` snapshots — a snapshot may be null, a legacy row omits those
 keys — optional `place` when a pin is stored and omitted when unset,
+optional `shopAccount` (`{ id, username, name }`) when a shop account is
+stored and omitted when unset, even when `accountId` is omitted,
 `payable`, `hasPhoto`, `photoCount`
 (0–10; always present; `hasPhoto` still means photo 0 exists), `photoTakenAts`
 (always; length equals `photoCount`; null when unknown; `[]` when there are no
@@ -4086,6 +4090,32 @@ count, no hide stamps). Logs `messages.place.updated` with
 `messageId`, `accountId`, and `role` only. Text and publish state are
 unchanged.
 
+### `PATCH /messages/:id/shop-account`
+
+Staff assignment of a 21.gifts account on a live top-level shop note
+(`#21GiftsShop`). The assignment is not the note author. Bearer session
+required. Live role must be at least `moderator`. No rules gate. `:id`
+must match `MESSAGE_ID_RE` or the response is **404**. Body is JSON via
+`c.req.json()`; a non-JSON body or an object with no `username` key is
+**400** `{ "error": "Invalid body" }`. `username: null` clears. A string
+is trimmed, one leading `@` is stripped, then `normalizeUsername`. An
+invalid username is **400** `{ "error": "Username is not valid" }`.
+Unknown username, or a stored username that is null or blank, is **404**
+`{ "error": "No account with that username" }`. Missing or hidden row →
+**404** and no write. A reply → **400**
+`{ "error": "A reply cannot include a shop account" }`. A non-shop
+top-level note → **400**
+`{ "error": "Only a shop note can set a shop account" }`.
+`setShopAccount` false, or a row that disappears before reload, → **404**.
+Store throw → **503** `{ "error": "Messages are unavailable" }` and
+`messages.shop_account.failed`.
+
+Success → **200** live public message JSON (optional `shopAccount`
+`{ id, username, name }`, omitted when cleared, reply count, no hide
+stamps). Logs `messages.shop_account.updated` with `messageId`,
+`accountId`, and `role` only. Text, place, and publish state are
+unchanged. The write stores only `shop_account_id`.
+
 ### `GET /messages/hidden`
 
 Staff hidden-note log. Inverse **read** of `DELETE /messages/:id`. Bearer
@@ -4111,7 +4141,9 @@ never false), optional `goalTermDays` when the stored column is not null
 (omitted when null), and when `goalCurrency` is stored also `goalCurrency`,
 `goalAmount`, and the four `goalAmount*` snapshots (a snapshot may be null;
 a legacy row omits those keys), optional `place`
-when a pin is stored (omitted when unset), always-present `parentId` (JSON `null`
+when a pin is stored (omitted when unset), optional `shopAccount`
+(`{ id, username, name }`) when a shop account is stored (omitted when
+unset), always-present `parentId` (JSON `null`
 on top-level), optional `via: "nostr"` exactly when `accountId === null &&
 authorPubkey !== null` (the same rule as public message JSON), and
 `deletedBy: { id, name, role }` resolved from
