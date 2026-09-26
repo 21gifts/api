@@ -52,12 +52,6 @@ import {
   type ConversationStore,
 } from '@/lib/conversation-store';
 import { migrateMessageSchema, PostgresMessageStore, type MessageStore } from '@/lib/message-store';
-import {
-  InMemoryOcpPlaceStore,
-  migrateOcpPlaceSchema,
-  PostgresOcpPlaceStore,
-  type OcpPlaceStore,
-} from '@/lib/ocp-place-store';
 import { PostgresTranslationStore, type TranslationStore } from '@/lib/translation-store';
 import {
   migrateNotificationSchema,
@@ -92,11 +86,6 @@ export interface BootStores {
    * opened so `createApp` keeps the empty in-memory default.
    */
   messageStore: MessageStore | undefined;
-  /**
-   * OpenCryptoPay place store. Always set: {@link InMemoryOcpPlaceStore} on
-   * memory boots, {@link PostgresOcpPlaceStore} when SQL is open.
-   */
-  ocpPlaces: OcpPlaceStore;
   /**
    * Postgres-backed translation cache, or `undefined` when no SQL client was
    * opened so `createApp` keeps the empty in-memory default.
@@ -190,8 +179,7 @@ export interface BootFxOptions {
  * books from `DATABASE_URL`.
  *
  * Blank or unset URL yields in-memory auth, `giftStore: undefined`,
- * `giftRecorder: undefined`, `messageStore: undefined`, a fresh
- * {@link InMemoryOcpPlaceStore} as `ocpPlaces`,
+ * `giftRecorder: undefined`, `messageStore: undefined`,
  * `translationStore: undefined`,
  * `conversationTranslationStore: undefined`,
  * `contactStore: undefined`, a fresh {@link InMemoryPosStore} as `posStore`,
@@ -205,13 +193,11 @@ export interface BootFxOptions {
  * an empty {@link InMemoryBtcUsdStore}, and an empty {@link InMemoryFiatStore}.
  * A set URL asks `createClient` for one `SqlClient`, migrates auth (via
  * `openAuthStore`) then the FX tables (`btc_usd_daily` then `usd_fiat_daily`),
- * `message`, `ocp_place` (via `migrateOcpPlaceSchema` immediately after
- * `migrateMessageSchema`), `contact`, `pos_charge` (via `migratePosSchema`), `conversation`, `push`, `notification`, `trust_edge`,
+ * `message`, `contact`, `pos_charge` (via `migratePosSchema`), `conversation`, `push`, `notification`, `trust_edge`,
  * `funding_grant`, `api_log`, `account_image`, `diagnostic_event`, and `db_change` schemas (notification after push, trust
  * after notification, funding after trust, `api_log` then `account_image` via
  * `migrateBannerSchema`, then `diagnostic_event` between `account_image` and `db_change` so `trg_db_change` attaches), builds a {@link QueryGiftStore},
  * {@link SqlGiftRecorder}, {@link PostgresMessageStore},
- * {@link PostgresOcpPlaceStore},
  * {@link PostgresTranslationStore},
  * {@link PostgresContactStore}, {@link PostgresPosStore}, {@link PostgresConversationStore},
  * {@link PostgresNotificationStore}, {@link PostgresPushStore},
@@ -271,7 +257,6 @@ export async function openBootStores(
       btcUsdRates: new InMemoryBtcUsdStore(),
       fiatRates: new InMemoryFiatStore(),
       messageStore: undefined,
-      ocpPlaces: new InMemoryOcpPlaceStore(),
       translationStore: undefined,
       conversationTranslationStore: undefined,
       nostrKek: undefined,
@@ -297,7 +282,6 @@ export async function openBootStores(
   await migrateFiatSchema(sqlClient);
   await migrateGiftSchema(sqlClient);
   await migrateMessageSchema(sqlClient);
-  await migrateOcpPlaceSchema(sqlClient);
   await migrateContactSchema(sqlClient);
   await migratePosSchema(sqlClient);
   await migrateConversationSchema(sqlClient);
@@ -434,7 +418,6 @@ export async function openBootStores(
   );
   const giftRecorder = new SqlGiftRecorder(giftSql);
   const messageStore = new PostgresMessageStore(sqlClient, { fetchImpl, fiatRates, now });
-  const ocpPlaces = new PostgresOcpPlaceStore(sqlClient);
   const translationStore = new PostgresTranslationStore(sqlClient);
   const conversationTranslationStore = new PostgresTranslationStore(
     sqlClient,
@@ -467,7 +450,6 @@ export async function openBootStores(
     btcUsdRates,
     fiatRates,
     messageStore,
-    ocpPlaces,
     translationStore,
     conversationTranslationStore,
     nostrKek,

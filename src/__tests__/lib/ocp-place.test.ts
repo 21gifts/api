@@ -2,11 +2,13 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import {
   normalizeOcpPlace,
   recordFirstShopOcpPlace,
+  resolveMapPush,
   shopOcpPlaceInput,
   shopOcpPlaceName,
+  type MapFetch,
+  type MapPush,
 } from '@/lib/ocp-place';
-import { InMemoryOcpPlaceStore } from '@/lib/ocp-place-store';
-import type { BtcMapPush } from '@/lib/btcmap-push';
+import { createApp } from '@/server';
 
 const COORD_ERROR = 'Place must be a latitude and longitude';
 const ORIGIN_ERROR = 'Place origin is invalid';
@@ -197,6 +199,51 @@ describe('shopOcpPlaceName / shopOcpPlaceInput', () => {
   });
 });
 
+function recordingPush(status = 201): { mapPush: MapPush; calls: string[] } {
+  const calls: string[] = [];
+  const fetchImpl: MapFetch = async (input, init) => {
+    calls.push(String(init.body));
+    return new Response('{}', { status });
+  };
+  return {
+    mapPush: { baseUrl: 'http://map.test/', token: ' ingest ', fetchImpl },
+    calls,
+  };
+}
+
+describe('resolveMapPush', () => {
+  it('returns undefined when the url or token is missing', () => {
+    const fetchImpl: MapFetch = async () => new Response('{}');
+    expect(resolveMapPush({}, fetchImpl)).toBeUndefined();
+    expect(resolveMapPush({ OCP_MAP_BASE_URL: '  ' }, fetchImpl)).toBeUndefined();
+    expect(
+      resolveMapPush(
+        { OCP_MAP_BASE_URL: 'http://map.test', OCP_PLACE_INGEST_TOKEN: ' ' },
+        fetchImpl,
+      ),
+    ).toBeUndefined();
+  });
+
+  it('trims the url and the token', () => {
+    const fetchImpl: MapFetch = async () => new Response('{}');
+    expect(
+      resolveMapPush(
+        { OCP_MAP_BASE_URL: ' http://map.test/// ', OCP_PLACE_INGEST_TOKEN: ' secret ' },
+        fetchImpl,
+      ),
+    ).toMatchObject({ baseUrl: 'http://map.test', token: 'secret' });
+  });
+});
+
+describe('createApp map push', () => {
+  it('forwards a configured map push into the app', async () => {
+    const app = createApp({
+      env: { OCP_MAP_BASE_URL: 'http://map.test', OCP_PLACE_INGEST_TOKEN: 'secret' },
+    });
+    expect((await app.request('/healthz')).status).toBe(200);
+  });
+});
+
 describe('recordFirstShopOcpPlace', () => {
   let warn: ReturnType<typeof vi.spyOn>;
 
@@ -208,13 +255,10 @@ describe('recordFirstShopOcpPlace', () => {
     warn.mockRestore();
   });
 
-  it('inserts and pushes only for a first top-level shop pin', async () => {
-    const places = new InMemoryOcpPlaceStore();
-    const submit = vi.fn<BtcMapPush['submit']>().mockResolvedValue('sent');
-    const push: BtcMapPush = { submit };
+  it('posts a first top-level shop pin to /map/places', async () => {
+    const { mapPush, calls } = recordingPush();
     await recordFirstShopOcpPlace({
-      places,
-      btcMapPush: push,
+      mapPush,
       messageId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
       text: 'Open #21GiftsShop',
       parentId: null,
@@ -223,32 +267,19 @@ describe('recordFirstShopOcpPlace', () => {
       hadPlaceBefore: false,
       textHasHashtagToken: (text, name) => text.includes(`#${name}`),
     });
-    const listed = await places.list(10);
-    expect(listed).toHaveLength(1);
-    expect(listed[0]?.origin).toBe('21gifts');
-    expect(submit).toHaveBeenCalledTimes(1);
-
-    await recordFirstShopOcpPlace({
-      places,
-      btcMapPush: push,
-      messageId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
-      text: 'Open #21GiftsShop',
-      parentId: null,
-      place: { lat: 9, lng: 9, label: 'Other' },
-      authorName: 'Ada',
-      hadPlaceBefore: false,
-      textHasHashtagToken: (text, name) => text.includes(`#${name}`),
+    expect(calls).toHaveLength(1);
+    expect(JSON.parse(calls[0] ?? '{}')).toMatchObject({
+      origin: '21gifts',
+      name: 'Stall',
+      category: 'shopping',
+      paymentMethods: 'lightning',
     });
-    expect(submit).toHaveBeenCalledTimes(1);
-    expect((await places.list(10))[0]?.lat).toBe(1);
   });
 
-  it('skips replies, non-shops, missing pins, and prior pins', async () => {
-    const places = new InMemoryOcpPlaceStore();
-    const submit = vi.fn<BtcMapPush['submit']>().mockResolvedValue('sent');
+  it('skips replies, non-shops, missing pins, prior pins, and a missing push', async () => {
+    const { mapPush, calls } = recordingPush();
     const base = {
-      places,
-      btcMapPush: { submit } satisfies BtcMapPush,
+      mapPush,
       messageId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
       text: 'Open #21GiftsShop',
       place: { lat: 1, lng: 2, label: null } as const,
@@ -269,21 +300,41 @@ describe('recordFirstShopOcpPlace', () => {
       hadPlaceBefore: false,
     });
     await recordFirstShopOcpPlace({ ...base, parentId: null, hadPlaceBefore: true });
-    expect(await places.list(10)).toEqual([]);
-    expect(submit).not.toHaveBeenCalled();
+    await recordFirstShopOcpPlace({
+      messageId: base.messageId,
+      text: base.text,
+      place: base.place,
+      authorName: base.authorName,
+      textHasHashtagToken: base.textHasHashtagToken,
+      parentId: null,
+      hadPlaceBefore: false,
+    });
+    expect(calls).toEqual([]);
   });
 
-  it('logs ocp.place.failed and swallows store errors', async () => {
-    const places: InMemoryOcpPlaceStore = {
-      insertIfNew: async () => {
-        throw new Error('boom');
+  it('logs ocp.place.failed when the map answers an error or the call throws', async () => {
+    const { mapPush } = recordingPush(500);
+    await recordFirstShopOcpPlace({
+      mapPush,
+      messageId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
+      text: '#21GiftsShop',
+      parentId: null,
+      place: { lat: 1, lng: 2, label: null },
+      authorName: null,
+      hadPlaceBefore: false,
+      textHasHashtagToken: () => true,
+    });
+    const throwing: MapPush = {
+      baseUrl: 'http://map.test',
+      token: 'secret',
+      fetchImpl: async () => {
+        throw new Error('down');
       },
-      list: async () => [],
-    } as unknown as InMemoryOcpPlaceStore;
+    };
     await expect(
       recordFirstShopOcpPlace({
-        places,
-        messageId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
+        mapPush: throwing,
+        messageId: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd',
         text: '#21GiftsShop',
         parentId: null,
         place: { lat: 1, lng: 2, label: null },
@@ -292,6 +343,6 @@ describe('recordFirstShopOcpPlace', () => {
         textHasHashtagToken: () => true,
       }),
     ).resolves.toBeUndefined();
-    expect(parsedEvents(warn).some((e) => e['event'] === 'ocp.place.failed')).toBe(true);
+    expect(parsedEvents(warn).filter((e) => e['event'] === 'ocp.place.failed')).toHaveLength(2);
   });
 });

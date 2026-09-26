@@ -71,9 +71,7 @@ import type { PushStore } from '@/lib/push-store';
 import type { SpendPing } from '@/lib/spend-ping';
 import { syncWelcomePing } from '@/lib/welcome-media';
 import { normalizePlace, parseMultipartCoord, placesMatch, type ForumPlace } from '@/lib/place';
-import { recordFirstShopOcpPlace } from '@/lib/ocp-place';
-import { InMemoryOcpPlaceStore, type OcpPlaceStore } from '@/lib/ocp-place-store';
-import type { BtcMapPush } from '@/lib/btcmap-push';
+import { recordFirstShopOcpPlace, type MapPush } from '@/lib/ocp-place';
 import { repaymentInvoice, repaymentStatus } from '@/routes/repayment';
 import { bearerToken } from '@/routes/me';
 import {
@@ -256,16 +254,10 @@ export interface MessagesRouteDeps {
    */
   spendPing?: SpendPing;
   /**
-   * OpenCryptoPay places for a first `#21GiftsShop` pin (default: empty
-   * {@link InMemoryOcpPlaceStore}). Failures are logged and do not fail the
-   * forum response.
+   * Optional push of a first `#21GiftsShop` pin to the OpenCryptoPay map.
+   * Omitted → the forum write still succeeds and nothing is sent.
    */
-  ocpPlaces?: OcpPlaceStore;
-  /**
-   * Optional BTC Map push after a newly created shop OCP place. Omitted →
-   * store only.
-   */
-  btcMapPush?: BtcMapPush;
+  mapPush?: MapPush;
   /**
    * Funding grants for spend-ping eligibility (default: empty
    * {@link InMemoryFundingStore}).
@@ -980,8 +972,7 @@ async function persistForumPost(
     }
     if (!isReplay) {
       await recordFirstShopOcpPlace({
-        places: deps.ocpPlaces ?? new InMemoryOcpPlaceStore(),
-        ...(deps.btcMapPush === undefined ? {} : { btcMapPush: deps.btcMapPush }),
+        ...(deps.mapPush === undefined ? {} : { mapPush: deps.mapPush }),
         messageId: created.id,
         text: created.text,
         parentId: created.parentId ?? null,
@@ -1881,8 +1872,7 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
         });
         if (!hadPlaceBefore && parsed.value !== null) {
           await recordFirstShopOcpPlace({
-            places: deps.ocpPlaces ?? new InMemoryOcpPlaceStore(),
-            ...(deps.btcMapPush === undefined ? {} : { btcMapPush: deps.btcMapPush }),
+            ...(deps.mapPush === undefined ? {} : { mapPush: deps.mapPush }),
             messageId: updated.id,
             text: updated.text,
             parentId: updated.parentId ?? null,
