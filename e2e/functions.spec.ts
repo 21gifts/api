@@ -1733,6 +1733,14 @@ test('Function: nip05Identifier — GET /.well-known/nostr.json is 200', async (
 test('Function: nip05Slug — GET /.well-known/nostr.json is 200', async ({ request }) => {
   expect((await request.get('/.well-known/nostr.json')).status()).toBe(200);
 });
+test('Function: normalizeIsoBmffDisplayMatrix — POST /messages without bearer is 401', async ({
+  request,
+}) => {
+  const res = await request.post('/messages', {
+    data: { text: 'hi' },
+  });
+  expect(res.status()).toBe(401);
+});
 test('Function: parseBytesRange — POST /messages without bearer is 401', async ({ request }) => {
   const res = await request.post('/messages', {
     data: { text: 'hi' },
