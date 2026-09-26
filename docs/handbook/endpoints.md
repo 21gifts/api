@@ -920,3 +920,17 @@ Operator inspection of external Nostr identities that have earned visibility or 
 - **Errors:** 400 `{ error: 'invalid_code' }` when `:code` is not exactly eight hex digits after `toLowerCase()` (no trim); 404 `{ error: 'not_found' }` when neither store has a match; 409 `{ error: 'ambiguous' }` when two or more ids match (two messages, two accounts, or one of each). No ids in error bodies. No 503 path.
 - **Used by:** Website short-link landing (`/l/<8 hex>`).
 - **Auth:** none. Public. Soft-hidden messages are included; the public message page decides who may see them.
+
+## Endpoint: GET /ocp/places
+
+- **Purpose:** Public list of OpenCryptoPay places, newest first. Each item is `id`, `origin`, `name`, `lat`, `lon`, and `category`. No external id and no payment methods.
+- **Errors:** 400 `{ error: "Invalid limit" }` when `limit` is not an integer from 1 to 1000. 503 `{ error: "Places are unavailable" }` when the store throws. Omitted `limit` means 1000.
+- **Used by:** The OpenCryptoPay map. `createApp` mounts this under `/ocp`.
+- **Auth:** none.
+
+## Endpoint: POST /ocp/places
+
+- **Purpose:** Create one place. A duplicate `(origin, externalId)` returns the existing row and does not call BTC Map again. A new row is pushed once when `BTCMAP_ACCESS_TOKEN` is set.
+- **Errors:** 503 `{ error: "Place ingest is not configured" }` when the ingest token is unset or blank. 401 `{ error: "Unauthorized" }` when the Bearer does not match. 400 with the validator message for a bad body. 503 `{ error: "Places are unavailable" }` when the store throws. A BTC Map failure still returns 201 with `btcmap: "failed"`.
+- **Used by:** Trusted callers (dfx.swiss later, and the shop-pin hook uses the store directly). `createApp`.
+- **Auth:** `Authorization: Bearer` must equal `OCP_PLACE_INGEST_TOKEN`. The response is `{ created, id, btcmap }` with status 201 when new and 200 when the pair already exists.
