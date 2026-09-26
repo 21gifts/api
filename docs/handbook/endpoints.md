@@ -669,7 +669,7 @@
 
 ## Endpoint: POST /me/notification-level
 
-- **Purpose:** Bearer required like `POST /me/forum-laws-dismissed`. Body `{ "level": "all" | "active" | "mentions" }`. Stores the owner fan-out filter on the account (`notificationLevel`). Default for new and omitted rows is `all` (current every-account behaviour). `active` is the related top-level post with sats>0 (zaps also when amountSats>0). `mentions` is a staff/platform actor or a reply/zap on the recipient's own note. Success is owner JSON including `notificationLevel`. Same level again is still 200. Logs `account.notification_level.set` `{ accountId, level }`.
+- **Purpose:** Bearer required like `POST /me/forum-laws-dismissed`. Body `{ "level": "all" | "active" | "mentions" }`. Stores the owner fan-out filter on the account (`notificationLevel`). Default for new and omitted rows is `all` (current every-account behaviour). `active` is the related top-level post with sats>0 (zaps also when amountSats>0). `mentions` is a staff/platform actor, a reply/zap on the recipient's own note, or a stored `@username` mark (`forum_mention`) for that recipient. Success is owner JSON including `notificationLevel`. Same level again is still 200. Logs `account.notification_level.set` `{ accountId, level }`.
 - **Errors:** 401 `{ error: "Unauthorized" }` without a session; 400 `{ error: "Expected a JSON body with a level of all, active, or mentions" }` when the body is missing, not JSON, or `level` is not one of those three strings.
 - **Used by:** App notification-level control on the signed-in profile.
 - **Auth:** `Authorization: Bearer` session.
