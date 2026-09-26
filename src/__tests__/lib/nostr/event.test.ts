@@ -434,6 +434,23 @@ describe('kind0', () => {
     );
   });
 
+  it('uses a personal photo for the avatar and the banner', () => {
+    const photo = 'https://api.21.gifts/messages/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/photo.jpg';
+    const parsed = JSON.parse(
+      buildKind0Content('Ada', null, null, 'Ada', { picture: photo, banner: photo }),
+    ) as { picture: string; banner: string };
+    expect(parsed.picture).toBe(photo);
+    expect(parsed.banner).toBe(photo);
+    const fallback = JSON.parse(
+      buildKind0Content('Ada', null, null, 'Ada', { picture: null, banner: '  ' }),
+    ) as { picture: string; banner: string };
+    expect(fallback.picture).toBe(KIND0_PICTURE_URL);
+    expect(fallback.banner).toBe('https://21.gifts/og.png');
+    expect(JSON.parse(buildKind0Event('Ada', null, 1, null, 'Ada', null).content).picture).toBe(
+      KIND0_PICTURE_URL,
+    );
+  });
+
   it('uses the optional about argument for kind:0 content', () => {
     expect(JSON.parse(buildKind0Content('Ada', null, null, 'Hello from Ada')).about).toBe(
       'Hello from Ada',

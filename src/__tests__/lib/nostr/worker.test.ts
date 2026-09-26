@@ -720,6 +720,48 @@ describe('runNostrWorkerTick', () => {
     expect(publisher.calls.length).toBe(afterFirst);
   });
 
+  it('publishes the profile-note photo as the avatar and the banner', async () => {
+    const { auth, messages } = await seed();
+    const acc = await auth.getAccount('acc');
+    expect(acc).toBeDefined();
+    const profileId = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd';
+    await messages.create(
+      {
+        id: profileId,
+        accountId: 'acc',
+        name: 'Ada',
+        text: 'about Ada',
+        createdAt: new Date('2026-08-27T00:00:00.000Z'),
+        hasPhoto: true,
+        ...unsignedNostrDefaults(),
+      },
+      { contentType: 'image/jpeg', bytes: new Uint8Array([0xff, 0xd8, 0xff, 0xd9]) },
+    );
+    await auth.updateAccount({ ...acc!, profileMessageId: profileId });
+    const publisher = new RecordingPublisher();
+    const env = {
+      NOSTR_PUBLISH: '1',
+      NOSTR_RELAY_SPACE: 'wss://relay.nostr.space',
+      PUBLIC_BASE_URL: 'https://21.gifts',
+    };
+    await runNostrWorkerTick(
+      deps({ messages, auth, kek: KEK, publisher, now: () => 1_700_000_000_000, env }),
+    );
+    await runNostrWorkerTick(
+      deps({ messages, auth, kek: KEK, publisher, now: () => 1_700_000_060_000, env }),
+    );
+    const profile = publisher.calls.find((call) => call.event['kind'] === 0);
+    const body = JSON.parse(String(profile?.event['content'])) as {
+      picture: string;
+      banner: string;
+      about: string;
+    };
+    const photo = `https://api.21.gifts/messages/${profileId}/photo.jpg`;
+    expect(body.picture).toBe(photo);
+    expect(body.banner).toBe(photo);
+    expect(body.about).toBe('about Ada');
+  });
+
   it('publishes kind:0 with the database name before kind:1', async () => {
     const { auth, messages } = await seed();
     const publisher = new RecordingPublisher();

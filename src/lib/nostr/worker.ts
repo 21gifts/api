@@ -1114,14 +1114,26 @@ async function publishProfiles(deps: NostrWorkerDeps, writeSet: ResolvedWriteSet
     const namedForLive = named.map((row) => (row.id === live.id ? live : row));
     const nip05 = domain === null ? null : nip05Identifier(live, namedForLive, domain);
     let about = '21.gifts';
+    let picture: string | null = null;
+    let banner: string | null = null;
     const profileId = live.profileMessageId;
     if (typeof profileId === 'string' && profileId.trim() !== '') {
       const note = await deps.messages.getById(profileId);
       if (note !== undefined) {
         about = note.text;
+        const apiBase = resolvePublicApiBase(deps.env);
+        if (apiBase !== '') {
+          const photo = await deps.messages.getPhoto(profileId);
+          if (photo !== null) {
+            const url = forumPhotoUrl(apiBase, profileId, photo.contentType);
+            picture = url;
+            banner = url;
+          }
+        }
       }
     }
-    const content = buildKind0Content(live.name, live.lightningAddress, nip05, about);
+    const images = { picture, banner };
+    const content = buildKind0Content(live.name, live.lightningAddress, nip05, about, images);
     if (reservedContent(cache, live.id) === content) {
       continue;
     }
@@ -1152,6 +1164,7 @@ async function publishProfiles(deps: NostrWorkerDeps, writeSet: ResolvedWriteSet
         reservation.createdAt,
         nip05,
         about,
+        images,
       );
       const signed = await signEventForAccount(deps.auth, live.id, deps.kek, unsigned);
       if (cache.get(live.id) !== reservation) {
