@@ -2624,6 +2624,20 @@ Builds the operator-only external-pubkey inspection route.
 - **Returns / side effects:** `boolean`. No I/O.
 - **Used by:** `eligibleToday`.
 
+## Function: comparePayoutRows
+
+- **Purpose:** Sort key for the staff payout matrix. Named rows come before unnamed ones. Names use base English comparison. When names tie, a row with an account id comes before an unmatched handle, then account ids ascending.
+- **Inputs:** Two {@link PayoutMatrixRow} values.
+- **Returns / side effects:** Negative when the first row comes first, positive when the second does, otherwise 0. No I/O.
+- **Used by:** `buildFundingPayoutMatrix`.
+
+## Function: buildFundingPayoutMatrix
+
+- **Purpose:** Staff matrix of theoretical grant entitlement versus collected daily payouts for seven UTC days ending on `nowMs` (oldest first). `basis` is never entitled. Admitted is entitled from `admittedAt`'s UTC day, or every day when `admittedAt` is null. A stored `trialUtcDate` entitles that one day even if status is no longer `trial`. A `gift.kind === 'daily'` on that UTC day, matched by Lightning local-part, is `paid` and wins over entitlement. Welcome gifts and moderator stipends are ignored. This is the post-gate grant rule: it does not use `eligibleToday`, and it does not reconstruct a cleared trial, a cleared admission, or the spend roster. A row is included only when some day is `missed` or `paid`.
+- **Inputs:** `nowMs`, live accounts (`id`, `name`, `role`, `lightningAddress`), stored grants, and outbound gifts.
+- **Returns / side effects:** `{ days, rows }` where each row is `accountId`, trimmed `name`, and seven cells `blocked` | `missed` | `paid`. No I/O. Named rows sort first (`en`, base), then account id. An unmatched daily handle is its own row (`accountId` null).
+- **Used by:** `fundingRoutes` `GET /funding/payout-days`.
+
 ## Function: eligibleToday
 
 - **Purpose:** Whether the account may receive a spend ping / spend invoice today. `basis` is always false. Before UTC `2026-09-30` (`FUNDING_REQUIRED_FROM_UTC`), every other role is true (passkey and living-room post still gate issue). From that UTC day, true iff admitted, or a trial whose `trialUtcDate` equals today's UTC key. Expired, future, pending, rejected, and missing grants are then false.

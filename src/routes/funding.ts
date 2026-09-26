@@ -11,6 +11,8 @@ import {
   type OwnerFundingJson,
 } from '@/lib/funding';
 import { loadGrantEffective, type FundingStore } from '@/lib/funding-store';
+import { buildFundingPayoutMatrix } from '@/lib/funding-payouts';
+import type { GiftStore } from '@/lib/gift-store';
 import { logEvent } from '@/lib/log';
 import { MESSAGE_LIST_LIMIT, serializeMessage, type MessageRow } from '@/lib/message';
 import type { MessageStore } from '@/lib/message-store';
@@ -39,6 +41,8 @@ export interface FundingRouteDeps {
   now: () => number;
   /** Optional spend ping. Omitted → skip the daily post ping after trial/admit. */
   spendPing?: SpendPing;
+  /** Outbound gifts. Daily rows mark a payout day collected. */
+  gifts: GiftStore;
 }
 
 /** Body schema for staff POSTs that target one account. */
@@ -509,6 +513,36 @@ export function fundingRoutes(deps: FundingRouteDeps): Hono {
         return c.json(decisionBody(subject, grant, nowMs, staff.caller.name), 200);
       } catch {
         logEvent('funding.write.failed');
+        return c.json({ error: 'Funding is unavailable' }, 503);
+      }
+    })
+    .get('/payout-days', async (c) => {
+      const staff = await requireStaff(deps, c.req.header('authorization'));
+      if ('status' in staff) {
+        return c.json({ error: staff.error }, staff.status);
+      }
+      const nowMs = deps.now();
+      try {
+        const [grants, accounts, giftRows] = await Promise.all([
+          deps.fundingStore.listGrants(),
+          deps.authStore.listAccounts(),
+          deps.gifts.listOutbound(),
+        ]);
+        const matrix = buildFundingPayoutMatrix({
+          nowMs,
+          accounts: accounts.map((account) => ({
+            id: account.id,
+            name: account.name,
+            role: account.role,
+            lightningAddress: account.lightningAddress,
+          })),
+          grants,
+          gifts: giftRows,
+        });
+        logEvent('funding.payouts.listed', { count: matrix.rows.length });
+        return c.json(matrix, 200);
+      } catch {
+        logEvent('funding.payouts.failed');
         return c.json({ error: 'Funding is unavailable' }, 503);
       }
     });

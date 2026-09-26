@@ -821,6 +821,13 @@
 - **Used by:** App funding apply.
 - **Auth:** `Authorization: Bearer` session. Not `basis`.
 
+## Endpoint: GET /funding/payout-days
+
+- **Purpose:** Staff Bearer. Seven UTC days ending today (oldest first) and one row per person who was entitled to the grant or received a daily payout in that window. JSON `{ days, rows }` where each row is `{ accountId, name, days }` and each cell is `blocked` (not entitled), `missed` (entitled, no daily gift), or `paid` (kind `daily` that UTC day). Welcome gifts and moderator stipends do not mark a day paid. Does not call lazy trial expiry. Logs `funding.payouts.listed` `{ count }`.
+- **Errors:** 401 `{ error: 'Unauthorized' }` without a bearer session; 403 `{ error: 'Forbidden' }` when the live role is not at least moderator; 503 `{ error: 'Funding is unavailable' }` (`funding.payouts.failed`).
+- **Used by:** Staff payout-per-person table.
+- **Auth:** `Authorization: Bearer` session (moderator).
+
 ## Endpoint: GET /funding/applications
 
 - **Purpose:** Staff Bearer. Effective pending grants only (expired trials after lazy persist). JSON `{ applications: [{ accountId, name, role, appliedAt }] }` oldest `appliedAt` first. Logs `funding.applications.listed` `{ count }`.
