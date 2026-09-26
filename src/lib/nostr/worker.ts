@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { isSundayRest } from '../sunday-rest';
 import { readFile } from 'node:fs/promises';
 import { verifyEvent, type NostrEvent } from 'nostr-tools/pure';
 import { ensureProfileMessage } from '@/lib/auth/profile-message';
@@ -380,37 +381,44 @@ export async function runNostrWorkerTick(
   deps: NostrWorkerDeps,
   mode: NostrWorkerTickMode = 'all',
 ): Promise<void> {
+  if (isSundayRest(deps.now())) return;
   const writeSet = resolveWriteSet(deps.env);
   const urls = resolveZapRelays(deps.env);
-  if (mode === 'ingest') {
-    await indexOpenZapReceipts(indexOpenZapReceiptsArgs(deps, urls));
-    await indexInboundForumReplies(deps, urls);
-    await indexInboundDirectMessages(deps, urls);
-    return;
+  const receiptPhase =
+    mode === 'fast'
+      ? (nowMs: number) => indexHotZapReceipts(deps, nowMs)
+      : () => indexOpenZapReceipts(indexOpenZapReceiptsArgs(deps, urls));
+  const inboundPhases = [
+    () => indexInboundForumReplies(deps, urls),
+    () => indexInboundDirectMessages(deps, urls),
+  ];
+  const phases: Array<(nowMs: number) => Promise<unknown>> = [receiptPhase];
+  if (mode !== 'ingest') {
+    phases.push(
+      () => resignLegacyKind1Tags(deps),
+      (nowMs) => signBatch(deps, nowMs),
+      (nowMs) => signConversationBatch(deps, nowMs),
+      () => resignPhotoKind1(deps),
+      () => resignVideoKind1(deps),
+      () => resignHashtagKind1(deps),
+    );
+    if (writeSet.publishEnabled) {
+      phases.push(
+        () => publishProfiles(deps, writeSet),
+        () => publishRelayLists(deps, writeSet),
+        (nowMs) => publishBatch(deps, writeSet, nowMs),
+        (nowMs) => publishConversationBatch(deps, writeSet, nowMs),
+      );
+    }
   }
-  if (mode === 'fast') {
-    await indexHotZapReceipts(deps, deps.now());
-  } else {
-    await indexOpenZapReceipts(indexOpenZapReceiptsArgs(deps, urls));
+  if (mode !== 'fast') phases.push(...inboundPhases);
+  if (mode !== 'ingest') phases.push(() => backfillProfileMessages(deps));
+  // A phase may span midnight; never start the following phase during rest.
+  for (const phase of phases) {
+    const nowMs = deps.now();
+    if (isSundayRest(nowMs)) return;
+    await phase(nowMs);
   }
-  const nowMs = deps.now();
-  await resignLegacyKind1Tags(deps);
-  await signBatch(deps, nowMs);
-  await signConversationBatch(deps, nowMs);
-  await resignPhotoKind1(deps);
-  await resignVideoKind1(deps);
-  await resignHashtagKind1(deps);
-  if (writeSet.publishEnabled) {
-    await publishProfiles(deps, writeSet);
-    await publishRelayLists(deps, writeSet);
-    await publishBatch(deps, writeSet, nowMs);
-    await publishConversationBatch(deps, writeSet, nowMs);
-  }
-  if (mode === 'all') {
-    await indexInboundForumReplies(deps, urls);
-    await indexInboundDirectMessages(deps, urls);
-  }
-  await backfillProfileMessages(deps);
 }
 
 /**

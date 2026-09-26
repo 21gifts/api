@@ -1,3 +1,4 @@
+import { isSundayRest } from './sunday-rest';
 /**
  * Enqueue helpers and the Web Push outbox worker.
  */
@@ -217,12 +218,14 @@ export interface PushWorkerDeps {
  * @param deps - Store, sender, clock.
  */
 export async function runPushWorkerTick(deps: PushWorkerDeps): Promise<void> {
+  if (isSundayRest(deps.now())) return;
   if (!deps.sender.isConfigured()) {
     return;
   }
   const nowMs = deps.now();
   const rows = await deps.store.claimPending(PUSH_WORKER_BATCH, nowMs, PUSH_WORKER_LEASE_MS);
   for (const row of rows) {
+    if (isSundayRest(deps.now())) return;
     const subs = await deps.store.listByAccount(row.accountId);
     if (subs.length === 0) {
       await deps.store.markSent(row.id);
@@ -231,9 +234,14 @@ export async function runPushWorkerTick(deps: PushWorkerDeps): Promise<void> {
     const delivered = new Set(row.deliveredEndpoints);
     const newlyDelivered: string[] = [];
     let anyFail = false;
+    let paused = false;
     for (const sub of subs) {
       if (delivered.has(sub.endpoint)) {
         continue;
+      }
+      if (isSundayRest(deps.now())) {
+        paused = true;
+        break;
       }
       const result = await deps.sender.send(sub, row.payload);
       if (result.ok) {
@@ -255,6 +263,8 @@ export async function runPushWorkerTick(deps: PushWorkerDeps): Promise<void> {
     if (newlyDelivered.length > 0) {
       await deps.store.recordDelivered(row.id, newlyDelivered);
     }
+    // Keep the lease and retry budget intact; it expires before Monday.
+    if (paused) return;
     if (anyFail) {
       await deps.store.markFailed(row.id);
     } else {

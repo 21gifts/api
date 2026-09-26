@@ -1,3 +1,4 @@
+import { isSundayRest, sundayRestResponse } from './lib/sunday-rest';
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
 import { healthRoute } from '@/routes/health';
@@ -347,6 +348,16 @@ export function createApp(deps: AppDeps = {}): Hono {
 
   const app = new Hono();
 
+  // Reject before logging, authentication, storage, or application handlers.
+  app.use('*', async (c, next) => {
+    const timestamp = now();
+    if (isSundayRest(timestamp)) {
+      if (c.req.path === '/healthz') return healthRoute.request('/');
+      return sundayRestResponse(timestamp);
+    }
+    await next();
+  });
+
   app.use('*', requestLog({ apiLogStore, authStore: store, debugToken, spendApiToken, now }));
   // NIP-05 must stay CORS `*` for any Origin (Damus / browsers). Register this
   // before the restrictive allowlist cors so `*` is applied last on the way out
@@ -375,9 +386,9 @@ export function createApp(deps: AppDeps = {}): Hono {
     })(c, next);
   });
 
+  app.route('/healthz', healthRoute);
   app.route('/', brandRoutes({ read: readBrand }));
   app.route('/', pushRoutes({ authStore: store, pushStore, now, vapidPublicKey }));
-  app.route('/healthz', healthRoute);
   app.route('/info', infoRoute);
   app.route('/translate', translateRoutes({ env }));
   app.route('/.well-known', wellKnownRoutes({ auth: store, fetchImpl, posStore, now }));

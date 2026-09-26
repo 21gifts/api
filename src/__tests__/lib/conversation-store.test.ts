@@ -2162,6 +2162,21 @@ describe('conversation payment fiat snapshot', () => {
     expect(created.amountPhp).toBe('50.00');
   });
 
+  it('keeps USD when the requested day has no cross rates', async () => {
+    const store = new InMemoryConversationStore([], [], [], {
+      fetchImpl: spotFetch('100000'),
+      fiatRates: { ensureDays: async () => new Map() },
+    });
+    const thread = await store.openMemberMember('a', 'b', NOW);
+    const created = await store.appendMessage(
+      message({ conversationId: thread.id, sats: 1000, createdAt: NOW }),
+    );
+    expect(created.amountUsd).toBe('1.00');
+    expect(created.amountChf).toBeNull();
+    expect(created.amountEur).toBeNull();
+    expect(created.amountPhp).toBeNull();
+  });
+
   it('stores null fiat when the spot lookup fails', async () => {
     const store = new InMemoryConversationStore([], [], [], {
       fetchImpl: async () => new Response('no', { status: 500 }),

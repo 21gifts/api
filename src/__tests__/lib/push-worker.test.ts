@@ -335,3 +335,59 @@ describe('startPushWorker', () => {
     vi.useRealTimers();
   });
 });
+
+describe('Sunday delivery boundary', () => {
+  it('retains unfinished deliveries across Sunday without sending successful endpoints twice', async () => {
+    let clock = Date.parse('2026-09-26T15:59:59Z');
+    const store = new InMemoryPushStore();
+    await store.upsertSubscription(SUB_A);
+    await store.upsertSubscription({ ...SUB_B, accountId: SUB_A.accountId });
+    await enqueueDebugPush(store, SUB_A.accountId, clock);
+    const [pending] = await store.claimPending(1, clock, PUSH_WORKER_LEASE_MS);
+    for (let attempt = 0; attempt < 7; attempt += 1) await store.markFailed(pending!.id);
+    await enqueueDebugPush(store, SUB_A.accountId, clock + 1);
+    const sender = new FakeSender();
+    const originalSend = sender.send.bind(sender);
+    vi.spyOn(sender, 'send').mockImplementation(async (sub, payload) => {
+      const result = await originalSend(sub, payload);
+      clock = Date.parse('2026-09-26T16:00:00Z');
+      return result;
+    });
+    const input = { store, sender, now: () => clock };
+    await runPushWorkerTick(input);
+    expect(sender.calls.map((call) => call.endpoint)).toEqual([SUB_A.endpoint]);
+    await runPushWorkerTick(input);
+    expect(sender.calls).toHaveLength(1);
+    vi.mocked(sender.send).mockImplementation(originalSend);
+    clock = Date.parse('2026-09-27T16:00:00Z');
+    await runPushWorkerTick(input);
+    expect(sender.calls.map((call) => call.endpoint)).toEqual([
+      SUB_A.endpoint,
+      SUB_B.endpoint,
+      SUB_A.endpoint,
+      SUB_B.endpoint,
+    ]);
+    await runPushWorkerTick(input);
+    expect(sender.calls).toHaveLength(4);
+  });
+});
+
+it('does not begin a delivery when claiming a batch crosses into Sunday', async () => {
+  let clock = Date.parse('2026-09-26T15:59:59Z');
+  const store = new InMemoryPushStore();
+  await store.upsertSubscription(SUB_A);
+  await enqueueDebugPush(store, SUB_A.accountId, clock);
+  const claim = store.claimPending.bind(store);
+  vi.spyOn(store, 'claimPending').mockImplementation(async (...args) => {
+    const rows = await claim(...args);
+    clock = Date.parse('2026-09-26T16:00:00Z');
+    return rows;
+  });
+  const sender = new FakeSender();
+  await runPushWorkerTick({ store, sender, now: () => clock });
+  expect(sender.calls).toHaveLength(0);
+  vi.mocked(store.claimPending).mockImplementation(claim);
+  clock = Date.parse('2026-09-27T16:00:00Z');
+  await runPushWorkerTick({ store, sender, now: () => clock });
+  expect(sender.calls).toHaveLength(1);
+});

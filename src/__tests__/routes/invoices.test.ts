@@ -3394,7 +3394,7 @@ describe('GET /invoices/eligible', () => {
       spendApiToken: TOKEN,
       authStore,
       fundingStore: new InMemoryFundingStore(),
-      now: () => NOW_MS,
+      now: () => NOW_MS + 24 * 60 * 60 * 1000,
     }).request(`/invoices/eligible?address=${encodeURIComponent(ADDRESS)}`, auth());
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ eligible: true, status: 'none' });

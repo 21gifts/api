@@ -39,7 +39,7 @@ describe('GET /messages/stats', () => {
     ]);
     const app = createApp({
       messageStore: store,
-      now: () => Date.parse('2026-08-02T12:00:00.000Z'),
+      now: () => Date.parse('2026-08-02T16:00:00.000Z'),
     });
     const res = await app.request('/messages/stats');
     expect(res.status).toBe(200);
