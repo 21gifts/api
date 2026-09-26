@@ -1620,6 +1620,14 @@ test('Function: resolveWriteSet — default boot has no DATABASE_URL', async ({ 
 test('Function: writeRelayUrls — default boot has no DATABASE_URL', async ({ request }) => {
   expect((await request.get('/healthz')).status()).toBe(200);
 });
+test('Function: replyHintRelay — default boot has no DATABASE_URL', async ({ request }) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
+test('Function: readRelaysFromKind10002 — default boot has no DATABASE_URL', async ({
+  request,
+}) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
 test('Function: resolvePublicApiBase — default boot has no DATABASE_URL', async ({ request }) => {
   expect((await request.get('/healthz')).status()).toBe(200);
 });
@@ -1744,6 +1752,14 @@ test('Function: faststartIsoBmff — POST /messages without bearer is 401', asyn
   expect(res.status()).toBe(401);
 });
 test('Function: isoBmffDisplaySize — POST /messages without bearer is 401', async ({ request }) => {
+  const res = await request.post('/messages', {
+    data: { text: 'hi' },
+  });
+  expect(res.status()).toBe(401);
+});
+test('Function: isoBmffDurationSeconds — POST /messages without bearer is 401', async ({
+  request,
+}) => {
   const res = await request.post('/messages', {
     data: { text: 'hi' },
   });

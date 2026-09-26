@@ -926,7 +926,7 @@ describe('runNostrWorkerTick', () => {
       }),
     );
     const lists = publisher.calls.filter((call) => call.event['kind'] === 10002);
-    expect(lists).toHaveLength(2);
+    expect(lists).toHaveLength(3);
     expect(lists[0]?.event['tags']).toEqual([['r', 'wss://relay.nostr.space']]);
     expect(lists[1]?.event['tags']).toEqual([
       ['r', 'wss://relay.nostr.space'],
@@ -990,7 +990,12 @@ describe('runNostrWorkerTick', () => {
       ['t', 'bitcoin'],
       ['t', '21gifts'],
       ['r', 'https://21.gifts'],
-      ['imeta', 'url https://dev-api.21.gifts/messages/m-pic/photo.jpg', 'm image/jpeg'],
+      [
+        'imeta',
+        'url https://dev-api.21.gifts/messages/m-pic/photo.jpg',
+        'm image/jpeg',
+        expect.stringMatching(/^x [0-9a-f]{64}$/),
+      ],
     ]);
   });
 
@@ -1049,8 +1054,18 @@ describe('runNostrWorkerTick', () => {
       ['t', 'bitcoin'],
       ['t', '21gifts'],
       ['r', 'https://21.gifts'],
-      ['imeta', 'url https://dev-api.21.gifts/messages/m-pics/photo.jpg', 'm image/jpeg'],
-      ['imeta', 'url https://dev-api.21.gifts/messages/m-pics/photo/1.jpg', 'm image/jpeg'],
+      [
+        'imeta',
+        'url https://dev-api.21.gifts/messages/m-pics/photo.jpg',
+        'm image/jpeg',
+        expect.stringMatching(/^x [0-9a-f]{64}$/),
+      ],
+      [
+        'imeta',
+        'url https://dev-api.21.gifts/messages/m-pics/photo/1.jpg',
+        'm image/jpeg',
+        expect.stringMatching(/^x [0-9a-f]{64}$/),
+      ],
     ]);
   });
 
@@ -1111,7 +1126,9 @@ describe('runNostrWorkerTick', () => {
           'imeta',
           'url https://dev-api.21.gifts/messages/m-vid/video.mp4',
           'm video/mp4',
+          `size ${mp4.byteLength}`,
           'image https://dev-api.21.gifts/messages/m-vid/photo.jpg',
+          expect.stringMatching(/^x [0-9a-f]{64}$/),
         ],
       ]),
     );
@@ -1210,7 +1227,13 @@ describe('runNostrWorkerTick', () => {
     );
     expect(note?.event['tags']).toEqual(
       expect.arrayContaining([
-        ['imeta', 'url https://dev-api.21.gifts/messages/m-vid2/video.mp4', 'm video/mp4'],
+        [
+          'imeta',
+          'url https://dev-api.21.gifts/messages/m-vid2/video.mp4',
+          'm video/mp4',
+          `size ${mp4.byteLength}`,
+          expect.stringMatching(/^x [0-9a-f]{64}$/),
+        ],
       ]),
     );
   });
@@ -1284,6 +1307,7 @@ describe('runNostrWorkerTick', () => {
           'm video/mp4',
           'dim 720x1280',
           `size ${parseable.byteLength}`,
+          expect.stringMatching(/^x [0-9a-f]{64}$/),
         ],
       ]),
     );
@@ -6818,6 +6842,720 @@ describe('startNostrWorker', () => {
     await vi.advanceTimersByTimeAsync(5_000);
     await drainMicrotasks();
     expect(zapQueries).toBe(1);
+  });
+
+  const publicEnv = {
+    NOSTR_PUBLISH: '1',
+    NOSTR_PUBLISH_PUBLIC: '1',
+    NOSTR_RELAY_SPACE: 'wss://relay.nostr.space',
+    NOSTR_RELAY_PUBLIC: 'wss://relay.damus.io',
+  };
+
+  function loggedEvents(warn: { mock: { calls: unknown[][] } }): Record<string, unknown>[] {
+    return warn.mock.calls
+      .map((call) => call[0])
+      .filter((arg): arg is string => typeof arg === 'string' && arg.startsWith('{'))
+      .map((arg) => JSON.parse(arg) as Record<string, unknown>);
+  }
+
+  async function tickTwice(
+    messages: InMemoryMessageStore,
+    auth: InMemoryAuthStore,
+    publisher: RecordingPublisher,
+    env: Record<string, string>,
+    querier?: RecordingQuerier,
+  ): Promise<void> {
+    await runNostrWorkerTick(
+      deps({
+        messages,
+        auth,
+        kek: KEK,
+        publisher,
+        ...(querier === undefined ? {} : { querier }),
+        now: () => 1_700_000_000_000,
+        env,
+      }),
+    );
+    await runNostrWorkerTick(
+      deps({
+        messages,
+        auth,
+        kek: KEK,
+        publisher,
+        ...(querier === undefined ? {} : { querier }),
+        now: () => 1_700_000_060_000,
+        env,
+      }),
+    );
+  }
+
+  it('publishes a public kind:1 again to the search relay and still marks it published', async () => {
+    const { auth, messages } = await seed();
+    const publisher = new RecordingPublisher();
+    await tickTwice(messages, auth, publisher, publicEnv);
+    const notes = publisher.calls.filter((call) => call.event['kind'] === 1);
+    expect(notes.some((call) => call.urls.includes('wss://relay.nostr.band'))).toBe(true);
+    const primary = notes.find((call) => call.urls.includes('wss://relay.nostr.space'));
+    expect(primary?.urls).not.toContain('wss://relay.nostr.band');
+    expect((await messages.getById('m1'))?.nostrPublishState).toBe('published');
+    expect((await messages.getById('m1'))?.nostrPublishEpoch).toBe('public');
+  });
+
+  it('does not copy a kind:1 to the search relay when space nacks', async () => {
+    const { auth, messages } = await seed();
+    const publisher = new RecordingPublisher();
+    publisher.ok = false;
+    await tickTwice(messages, auth, publisher, publicEnv);
+    expect(publisher.calls.some((call) => call.urls.includes('wss://relay.nostr.band'))).toBe(
+      false,
+    );
+    expect((await messages.getById('m1'))?.nostrPublishState).toBe('pending');
+  });
+
+  it('publishes a reply to the parent read relay and the search relay', async () => {
+    const { auth, messages } = await seed();
+    const parentId = 'ab'.repeat(32);
+    await messages.updateSignedEvent('m1', parentId, {
+      kind: 1,
+      content: 'hello\n\n#bitcoin #21gifts',
+      tags: [
+        ['t', 'bitcoin'],
+        ['t', '21gifts'],
+        ['r', 'https://21.gifts'],
+      ],
+      created_at: 1,
+    });
+    await messages.updatePublishState('m1', 'published', 'public');
+    await messages.create({
+      id: 'm-reply',
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'reply',
+      createdAt: new Date('2026-08-28T00:05:00.000Z'),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+      parentId: 'm1',
+    });
+    const pubkey = (await auth.getNostrPublicKey('acc')) as string;
+    const querier = new RecordingQuerier();
+    const inner = querier.query.bind(querier);
+    querier.query = async (filter, urls, timeoutMs) => {
+      await inner(filter, urls, timeoutMs);
+      const kinds = (filter as { kinds?: number[] }).kinds;
+      if (Array.isArray(kinds) && kinds.includes(10002)) {
+        return [
+          {
+            id: 'c1'.repeat(32),
+            pubkey,
+            kind: 10002,
+            created_at: 10,
+            tags: [['r', 'wss://inbox.example', 'read']],
+          },
+        ];
+      }
+      return [];
+    };
+    const publisher = new RecordingPublisher();
+    await tickTwice(messages, auth, publisher, publicEnv, querier);
+    const reply = await messages.getById('m-reply');
+    expect(reply?.nostrPublishState).toBe('published');
+    expect(reply?.nostrEvent?.['tags']).toEqual(
+      expect.arrayContaining([
+        ['e', parentId, 'wss://relay.damus.io', 'root'],
+        ['e', parentId, 'wss://relay.damus.io', 'reply'],
+      ]),
+    );
+    const reach = publisher.calls.find(
+      (call) => call.event['kind'] === 1 && call.urls.includes('wss://relay.nostr.band'),
+    );
+    expect(reach?.urls).toEqual(['wss://relay.nostr.band', 'wss://inbox.example']);
+  });
+
+  it('still publishes the reply to the search relay when the inbox query throws', async () => {
+    const { auth, messages } = await seed();
+    await messages.updateSignedEvent('m1', 'ab'.repeat(32), {
+      kind: 1,
+      content: 'hello\n\n#bitcoin #21gifts',
+      tags: [
+        ['t', 'bitcoin'],
+        ['t', '21gifts'],
+        ['r', 'https://21.gifts'],
+      ],
+      created_at: 1,
+    });
+    await messages.updatePublishState('m1', 'published', 'public');
+    await messages.create({
+      id: 'm-reply',
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'reply',
+      createdAt: new Date('2026-08-28T00:05:00.000Z'),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+      parentId: 'm1',
+    });
+    const querier = new RecordingQuerier();
+    const inner = querier.query.bind(querier);
+    querier.query = async (filter, urls, timeoutMs) => {
+      const kinds = (filter as { kinds?: number[] }).kinds;
+      if (Array.isArray(kinds) && kinds.includes(10002)) {
+        throw new Error('inbox down');
+      }
+      return inner(filter, urls, timeoutMs);
+    };
+    const publisher = new RecordingPublisher();
+    await tickTwice(messages, auth, publisher, publicEnv, querier);
+    expect((await messages.getById('m-reply'))?.nostrPublishState).toBe('published');
+    const reach = publisher.calls.find((call) => call.urls.includes('wss://relay.nostr.band'));
+    expect(reach?.urls).toEqual(['wss://relay.nostr.band']);
+  });
+
+  it('copies a successful profile and relay list to the indexer', async () => {
+    const { auth, messages } = await seed();
+    const publisher = new RecordingPublisher();
+    await runNostrWorkerTick(
+      deps({
+        messages,
+        auth,
+        kek: KEK,
+        publisher,
+        now: () => 1_700_000_000_000,
+        env: publicEnv,
+      }),
+    );
+    expect(
+      publisher.calls.some(
+        (call) =>
+          call.event['kind'] === 0 &&
+          call.urls.length === 1 &&
+          call.urls[0] === 'wss://purplepag.es',
+      ),
+    ).toBe(true);
+    expect(
+      publisher.calls.some(
+        (call) =>
+          call.event['kind'] === 10002 &&
+          call.urls.length === 1 &&
+          call.urls[0] === 'wss://purplepag.es',
+      ),
+    ).toBe(true);
+    const listed = publisher.calls.find((call) => call.event['kind'] === 10002);
+    expect(listed?.event['tags']).toEqual([
+      ['r', 'wss://relay.nostr.space'],
+      ['r', 'wss://relay.damus.io'],
+    ]);
+  });
+
+  it('keeps profile and relay-list success when the indexer nacks', async () => {
+    const { auth, messages } = await seed();
+    const publisher = new RecordingPublisher();
+    publisher.publish = async (event, urls) => {
+      publisher.calls.push({ event, urls: [...urls] });
+      if (urls.length === 1 && urls[0] === 'wss://purplepag.es') {
+        if (event['kind'] === 0) {
+          return [];
+        }
+        return [{ url: 'wss://purplepag.es', ok: false }];
+      }
+      return urls.map((url) => ({ url, ok: true }));
+    };
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      await tickTwice(messages, auth, publisher, publicEnv);
+      const events = loggedEvents(warn);
+      expect(events.some((event) => event['event'] === 'nostr.profile.ok')).toBe(true);
+      expect(events.some((event) => event['event'] === 'nostr.profile.indexer_nack')).toBe(true);
+      expect(events.some((event) => event['event'] === 'nostr.relays.ok')).toBe(true);
+      expect(events.some((event) => event['event'] === 'nostr.relays.indexer_nack')).toBe(true);
+    } finally {
+      warn.mockRestore();
+    }
+    const primary = (kind: number) =>
+      publisher.calls.filter(
+        (call) => call.event['kind'] === kind && call.urls.includes('wss://relay.nostr.space'),
+      );
+    expect(primary(0)).toHaveLength(1);
+    expect(primary(10002)).toHaveLength(1);
+  });
+
+  it('logs an indexer nack when the indexer publish throws and keeps the reservation', async () => {
+    const { auth, messages } = await seed();
+    const publisher = new RecordingPublisher();
+    publisher.publish = async (event, urls) => {
+      publisher.calls.push({ event, urls: [...urls] });
+      if (urls.length === 1 && urls[0] === 'wss://purplepag.es') {
+        throw new Error('indexer down');
+      }
+      return urls.map((url) => ({ url, ok: true }));
+    };
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      await tickTwice(messages, auth, publisher, publicEnv);
+      const events = loggedEvents(warn);
+      expect(events.some((event) => event['event'] === 'nostr.profile.indexer_nack')).toBe(true);
+      expect(events.some((event) => event['event'] === 'nostr.relays.indexer_nack')).toBe(true);
+      expect(events.some((event) => event['event'] === 'nostr.profile.ok')).toBe(true);
+    } finally {
+      warn.mockRestore();
+    }
+    expect(
+      publisher.calls.filter(
+        (call) => call.event['kind'] === 0 && call.urls.includes('wss://relay.nostr.space'),
+      ),
+    ).toHaveLength(1);
+  });
+
+  it('logs a search nack when the search ack is missing and still publishes the note', async () => {
+    const { auth, messages } = await seed();
+    const publisher = new RecordingPublisher();
+    publisher.publish = async (event, urls) => {
+      publisher.calls.push({ event, urls: [...urls] });
+      if (urls.includes('wss://relay.nostr.band')) {
+        return [];
+      }
+      return urls.map((url) => ({ url, ok: true }));
+    };
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      await tickTwice(messages, auth, publisher, publicEnv);
+      const events = loggedEvents(warn);
+      expect(events.some((event) => event['event'] === 'nostr.publish.search_nack')).toBe(true);
+      expect(events.some((event) => event['event'] === 'nostr.publish.inbox_nack')).toBe(false);
+    } finally {
+      warn.mockRestore();
+    }
+    expect((await messages.getById('m1'))?.nostrPublishState).toBe('published');
+  });
+
+  it('logs a search nack when the reach publish throws', async () => {
+    const { auth, messages } = await seed();
+    const publisher = new RecordingPublisher();
+    publisher.publish = async (event, urls) => {
+      publisher.calls.push({ event, urls: [...urls] });
+      if (urls.includes('wss://relay.nostr.band')) {
+        throw new Error('search down');
+      }
+      return urls.map((url) => ({ url, ok: true }));
+    };
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      await tickTwice(messages, auth, publisher, publicEnv);
+      const events = loggedEvents(warn);
+      expect(events.some((event) => event['event'] === 'nostr.publish.search_nack')).toBe(true);
+      expect(events.some((event) => event['event'] === 'nostr.publish.inbox_nack')).toBe(false);
+    } finally {
+      warn.mockRestore();
+    }
+    expect((await messages.getById('m1'))?.nostrPublishState).toBe('published');
+  });
+
+  it('logs an inbox nack without undoing publish when a read relay nacks', async () => {
+    const { auth, messages } = await seed();
+    await messages.updateSignedEvent('m1', 'ab'.repeat(32), {
+      kind: 1,
+      content: 'hello\n\n#bitcoin #21gifts',
+      tags: [
+        ['t', 'bitcoin'],
+        ['t', '21gifts'],
+        ['r', 'https://21.gifts'],
+      ],
+      created_at: 1,
+    });
+    await messages.updatePublishState('m1', 'published', 'public');
+    await messages.create({
+      id: 'm-reply',
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'reply',
+      createdAt: new Date('2026-08-28T00:05:00.000Z'),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+      parentId: 'm1',
+    });
+    const pubkey = (await auth.getNostrPublicKey('acc')) as string;
+    const querier = new RecordingQuerier();
+    const inner = querier.query.bind(querier);
+    querier.query = async (filter, urls, timeoutMs) => {
+      await inner(filter, urls, timeoutMs);
+      const kinds = (filter as { kinds?: number[] }).kinds;
+      if (Array.isArray(kinds) && kinds.includes(10002)) {
+        return [
+          {
+            id: 'c2'.repeat(32),
+            pubkey,
+            kind: 10002,
+            created_at: 1,
+            tags: [['r', 'wss://inbox.example']],
+          },
+        ];
+      }
+      return [];
+    };
+    const publisher = new RecordingPublisher();
+    publisher.publish = async (event, urls) => {
+      publisher.calls.push({ event, urls: [...urls] });
+      return urls.map((url) => ({ url, ok: url !== 'wss://inbox.example' }));
+    };
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      await tickTwice(messages, auth, publisher, publicEnv, querier);
+      const events = loggedEvents(warn);
+      expect(events.some((event) => event['event'] === 'nostr.publish.inbox_nack')).toBe(true);
+      expect(events.some((event) => event['event'] === 'nostr.publish.search_nack')).toBe(false);
+    } finally {
+      warn.mockRestore();
+    }
+    expect((await messages.getById('m-reply'))?.nostrPublishState).toBe('published');
+  });
+
+  it('logs search and inbox nacks when reach publish throws after inbox relays are known', async () => {
+    const { auth, messages } = await seed();
+    await messages.updateSignedEvent('m1', 'ab'.repeat(32), {
+      kind: 1,
+      content: 'hello\n\n#bitcoin #21gifts',
+      tags: [
+        ['t', 'bitcoin'],
+        ['t', '21gifts'],
+        ['r', 'https://21.gifts'],
+      ],
+      created_at: 1,
+    });
+    await messages.updatePublishState('m1', 'published', 'public');
+    await messages.create({
+      id: 'm-reply',
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'reply',
+      createdAt: new Date('2026-08-28T00:05:00.000Z'),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+      parentId: 'm1',
+    });
+    const pubkey = (await auth.getNostrPublicKey('acc')) as string;
+    const querier = new RecordingQuerier();
+    const inner = querier.query.bind(querier);
+    querier.query = async (filter, urls, timeoutMs) => {
+      await inner(filter, urls, timeoutMs);
+      const kinds = (filter as { kinds?: number[] }).kinds;
+      if (Array.isArray(kinds) && kinds.includes(10002)) {
+        return [
+          {
+            id: 'c3'.repeat(32),
+            pubkey,
+            kind: 10002,
+            tags: [['r', 'wss://inbox.example', 'read']],
+          },
+        ];
+      }
+      return [];
+    };
+    const publisher = new RecordingPublisher();
+    publisher.publish = async (event, urls) => {
+      publisher.calls.push({ event, urls: [...urls] });
+      if (urls.includes('wss://relay.nostr.band')) {
+        throw new Error('reach down');
+      }
+      return urls.map((url) => ({ url, ok: true }));
+    };
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      await tickTwice(messages, auth, publisher, publicEnv, querier);
+      const events = loggedEvents(warn);
+      expect(events.some((event) => event['event'] === 'nostr.publish.search_nack')).toBe(true);
+      expect(events.some((event) => event['event'] === 'nostr.publish.inbox_nack')).toBe(true);
+    } finally {
+      warn.mockRestore();
+    }
+    expect((await messages.getById('m-reply'))?.nostrPublishState).toBe('published');
+  });
+
+  it('caps inbox relays and keeps the newest kind:10002 per pubkey', async () => {
+    const { auth, messages } = await seed();
+    const pk = (n: number): string => `${'ab'.repeat(31)}${n.toString(16).padStart(2, '0')}`;
+    const tags: unknown[] = [
+      ['t', 'bitcoin'],
+      ['t', '21gifts'],
+      ['r', 'https://21.gifts'],
+      'nope',
+      ['p', 1],
+      ['p', 'ab'],
+      ['p', 'AB'.repeat(32)],
+      ['p', pk(1)],
+      ['p', pk(1)],
+      ['p', pk(8)],
+      ['p', pk(2)],
+      ['p', pk(3)],
+      ['p', pk(4)],
+      ['p', pk(5)],
+      ['p', pk(6)],
+      ['p', pk(7)],
+      ['p', pk(9)],
+    ];
+    await messages.updateSignedEvent('m1', 'cd'.repeat(32), {
+      kind: 1,
+      content: 'hello\n\n#bitcoin #21gifts',
+      tags: tags as string[][],
+      created_at: 1,
+    });
+    const relay = (name: string): string[] => ['r', `wss://${name}.example`];
+    const four = (prefix: string): string[][] =>
+      [1, 2, 3, 4].map((n) => ['r', `wss://${prefix}-${n}.example`]);
+    const frames: NostrEventFrame[] = [
+      {
+        id: '11'.repeat(32),
+        pubkey: pk(1),
+        kind: 10002,
+        created_at: 1,
+        tags: [relay('old')],
+      },
+      {
+        id: '12'.repeat(32),
+        pubkey: pk(1),
+        kind: 10002,
+        created_at: 5,
+        tags: [relay('new')],
+      },
+      {
+        id: '13'.repeat(32),
+        pubkey: pk(1),
+        kind: 10002,
+        created_at: 3,
+        tags: [relay('stale')],
+      },
+      {
+        id: '21'.repeat(32),
+        pubkey: pk(2),
+        kind: 10002,
+        tags: [relay('missing-at')],
+      },
+      {
+        id: '22'.repeat(32),
+        pubkey: pk(2),
+        kind: 10002,
+        created_at: 2,
+        tags: [relay('later')],
+      },
+      {
+        id: '23'.repeat(32),
+        pubkey: pk(2).toUpperCase(),
+        kind: 10002,
+        created_at: 9,
+        tags: [relay('upper')],
+      },
+      {
+        id: '31'.repeat(32),
+        pubkey: pk(3),
+        kind: 10002,
+        created_at: 0,
+        tags: undefined as unknown as string[][],
+      },
+      {
+        id: '32'.repeat(32),
+        pubkey: pk(3),
+        kind: 10002,
+        created_at: 4,
+        tags: [relay('keep')],
+      },
+      {
+        id: '33'.repeat(32),
+        pubkey: pk(3),
+        kind: 10002,
+        tags: [relay('lose')],
+      },
+      {
+        id: '41'.repeat(32),
+        pubkey: pk(4),
+        kind: 10002,
+        created_at: 1,
+        tags: [
+          ['r', 'wss://relay.nostr.space'],
+          ['r', 'wss://relay.damus.io'],
+          ['r', 'wss://relay.nostr.band'],
+          relay('new'),
+          relay('inbox-a'),
+        ],
+      },
+      { id: '51'.repeat(32), pubkey: pk(5), kind: 10002, created_at: 1, tags: four('e5') },
+      { id: '61'.repeat(32), pubkey: pk(6), kind: 10002, created_at: 1, tags: four('e6') },
+      { id: '71'.repeat(32), pubkey: pk(7), kind: 10002, created_at: 1, tags: four('e7') },
+      {
+        id: '81'.repeat(32),
+        pubkey: pk(15),
+        kind: 10002,
+        created_at: 50,
+        tags: [relay('stranger')],
+      },
+      {
+        id: '91'.repeat(32),
+        pubkey: pk(1),
+        kind: 1,
+        created_at: 99,
+        tags: [relay('not-a-list')],
+      },
+      {
+        id: 'a1'.repeat(32),
+        pubkey: 4 as unknown as string,
+        kind: 10002,
+        tags: [relay('bad-pubkey')],
+      },
+    ];
+    const querier = new RecordingQuerier();
+    const inner = querier.query.bind(querier);
+    querier.query = async (filter, urls, timeoutMs) => {
+      await inner(filter, urls, timeoutMs);
+      const kinds = (filter as { kinds?: number[] }).kinds;
+      if (Array.isArray(kinds) && kinds.includes(10002)) {
+        return frames;
+      }
+      return [];
+    };
+    const publisher = new RecordingPublisher();
+    await runNostrWorkerTick(
+      deps({
+        messages,
+        auth,
+        kek: KEK,
+        publisher,
+        querier,
+        now: () => 1_700_000_000_000,
+        env: publicEnv,
+      }),
+    );
+    const inboxQuery = querier.calls.find((call) => {
+      const kinds = (call.filter as { kinds?: number[] }).kinds;
+      return Array.isArray(kinds) && kinds.includes(10002);
+    });
+    expect(inboxQuery?.timeoutMs).toBe(5000);
+    expect(inboxQuery?.urls).toEqual([
+      'wss://relay.nostr.space',
+      'wss://relay.damus.io',
+      'wss://purplepag.es',
+    ]);
+    expect((inboxQuery?.filter as { authors?: string[] }).authors).toEqual([
+      pk(1),
+      pk(8),
+      pk(2),
+      pk(3),
+      pk(4),
+      pk(5),
+      pk(6),
+      pk(7),
+    ]);
+    const reach = publisher.calls.find((call) => call.urls.includes('wss://relay.nostr.band'));
+    expect(reach?.urls).toEqual([
+      'wss://relay.nostr.band',
+      'wss://new.example',
+      'wss://upper.example',
+      'wss://keep.example',
+      'wss://inbox-a.example',
+      ...[1, 2, 3, 4].map((n) => `wss://e5-${n}.example`),
+      ...[1, 2, 3, 4].map((n) => `wss://e6-${n}.example`),
+      ...[1, 2, 3, 4].map((n) => `wss://e7-${n}.example`),
+    ]);
+    expect((await messages.getById('m1'))?.nostrPublishState).toBe('published');
+  });
+
+  it('omits imeta x when photo bytes are empty', async () => {
+    const { auth, messages } = await seed();
+    await messages.create(
+      {
+        id: 'm-empty',
+        accountId: 'acc',
+        name: 'Ada',
+        text: 'empty',
+        createdAt: new Date('2026-08-28T00:06:00.000Z'),
+        hasPhoto: true,
+        ...unsignedNostrDefaults(),
+      },
+      { contentType: 'image/jpeg', bytes: new Uint8Array([0xff, 0xd8, 0xff, 0xd9]) },
+    );
+    const photos = messages.getPhoto.bind(messages);
+    messages.getPhoto = async (id) => {
+      if (id === 'm-empty') {
+        return { contentType: 'image/jpeg', bytes: new Uint8Array() };
+      }
+      return photos(id);
+    };
+    const extras = messages.listExtraPhotos.bind(messages);
+    messages.listExtraPhotos = async (id) => {
+      if (id === 'm-empty') {
+        return [{ contentType: 'image/jpeg', bytes: new Uint8Array() }];
+      }
+      return extras(id);
+    };
+    await runNostrWorkerTick(
+      deps({
+        messages,
+        auth,
+        kek: KEK,
+        publisher: new RecordingPublisher(),
+        now: () => 1_700_000_000_000,
+        env: { PUBLIC_BASE_URL: 'https://dev.21.gifts' },
+      }),
+    );
+    const tags = (await messages.getById('m-empty'))?.nostrEvent?.['tags'] as string[][];
+    const imeta = tags.filter((tag) => tag[0] === 'imeta');
+    expect(imeta).toHaveLength(2);
+    expect(imeta.some((tag) => tag.some((part) => part.startsWith('x ')))).toBe(false);
+  });
+
+  it('adds duration and size on video imeta when mvhd is present', async () => {
+    const { auth, messages } = await seed();
+    const box = (type: string, payload: Uint8Array): Uint8Array => {
+      const out = new Uint8Array(8 + payload.byteLength);
+      const view = new DataView(out.buffer);
+      view.setUint32(0, out.byteLength);
+      out[4] = type.charCodeAt(0);
+      out[5] = type.charCodeAt(1);
+      out[6] = type.charCodeAt(2);
+      out[7] = type.charCodeAt(3);
+      out.set(payload, 8);
+      return out;
+    };
+    const ftypPayload = new Uint8Array(16);
+    ftypPayload.set([0x69, 0x73, 0x6f, 0x6d], 0);
+    const mvhd = new Uint8Array(20);
+    const mvhdView = new DataView(mvhd.buffer);
+    mvhdView.setUint32(12, 1000);
+    mvhdView.setUint32(16, 2500);
+    const ftyp = box('ftyp', ftypPayload);
+    const moov = box('moov', box('mvhd', mvhd));
+    const mdat = box('mdat', new Uint8Array([1, 2, 3, 4]));
+    const bytes = new Uint8Array(ftyp.byteLength + moov.byteLength + mdat.byteLength);
+    bytes.set(ftyp, 0);
+    bytes.set(moov, ftyp.byteLength);
+    bytes.set(mdat, ftyp.byteLength + moov.byteLength);
+    await messages.create(
+      {
+        id: 'm-dur',
+        accountId: 'acc',
+        name: 'Ada',
+        text: 'dur',
+        createdAt: new Date('2026-08-28T00:07:00.000Z'),
+        hasPhoto: false,
+        hasVideo: true,
+        videoContentType: 'video/mp4',
+        ...unsignedNostrDefaults(),
+      },
+      undefined,
+      { contentType: 'video/mp4', bytes },
+    );
+    await runNostrWorkerTick(
+      deps({
+        messages,
+        auth,
+        kek: KEK,
+        publisher: new RecordingPublisher(),
+        now: () => 1_700_000_000_000,
+        env: { PUBLIC_BASE_URL: 'https://dev.21.gifts' },
+      }),
+    );
+    const tags = (await messages.getById('m-dur'))?.nostrEvent?.['tags'] as string[][];
+    const imeta = tags.find((tag) => tag[0] === 'imeta');
+    expect(imeta).toContain('duration 3');
+    expect(imeta?.some((part) => part.startsWith('size '))).toBe(true);
+    expect(imeta?.some((part) => /^x [0-9a-f]{64}$/.test(part))).toBe(true);
+    expect(imeta?.some((part) => part.startsWith('dim '))).toBe(false);
   });
 });
 
