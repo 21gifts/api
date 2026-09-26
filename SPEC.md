@@ -794,9 +794,11 @@ Bearer required. Same 401 / 409 / 404 / 503 as `GET /members/:accountId`
 newest-first, capped at 200. Body `{ "messages": [...] }` via
 `serializeMessage` like signed-in `GET /messages` (`accountId`,
 `replyCount`, `payable` when a non-empty `eventId` and a non-blank Lightning Address are set;
-optional `goalSats` omitted when unset, and when `goalCurrency` is stored
-also `goalCurrency`, `goalAmount`, and the four `goalAmount*` snapshots — a
-snapshot may be null, a legacy row omits those keys).
+optional `goalSats` omitted when unset, optional `goalRepayable: true` when
+the stored column is true (omitted when null; never false), and when
+`goalCurrency` is stored also `goalCurrency`, `goalAmount`, and the four
+`goalAmount*` snapshots — a snapshot may be null, a legacy row omits those
+keys).
 Omits `parentId`. Replies by that member are not listed.
 
 ### `GET /members/:accountId/replies`
@@ -805,7 +807,8 @@ Bearer required. Same 401 / 409 / 404 / 503 as `GET /members/:accountId`
 (`members.replies.failed` on 503). Live-only replies by the member,
 newest-first, capped at 200. Body `{ "messages": [...] }` via
 `serializeMessage` with `payable` when a non-empty `eventId` and a non-blank Lightning Address are set, `accountId`, and optional
-`parentId` when set; omits `replyCount`. Replies never include `goalSats`.
+`parentId` when set; omits `replyCount`. Replies never include `goalSats` or
+`goalRepayable`.
 Top-level notes by that member are not listed.
 
 ### `GET /members/:accountId/activity`
@@ -2377,11 +2380,12 @@ live **and** soft-hidden). Authenticated with `Authorization: Bearer`
 matching `DEBUG_TOKEN`. Public hide does not apply. Cap 200, newest-first.
 JSON `{ "messages": [ … ] }` via `serializeDebugMessage`, including
 `nostrEvent`, `claimedUntil`, `contentFp`, photo MIME/byte lengths,
-stored `goalSats` (JSON `null` when unset), `goalCurrency`, `goalAmount`,
-and the four `goalAmount*` snapshots when `goalCurrency` is stored (omitted
-on a legacy row; a snapshot may be null), and always-present `placeLat`,
-`placeLng`, and `placeLabel` (JSON `null` when unset). Never includes nsec or
-photo/video payloads.
+stored `goalSats` (JSON `null` when unset), `goalRepayable: true` only when
+the stored column is true (omitted when null; never false), `goalCurrency`,
+`goalAmount`, and the four `goalAmount*` snapshots when `goalCurrency` is
+stored (omitted on a legacy row; a snapshot may be null), and always-present
+`placeLat`, `placeLng`, and `placeLabel` (JSON `null` when unset). Never
+includes nsec or photo/video payloads.
 
 `DEBUG_TOKEN` unset or blank → **Response** `503`:
 
@@ -2412,11 +2416,12 @@ Operator single-note fetch. Soft-hidden rows are **200** with `deletedAt` /
 
 Same debug token gate as `GET /debug/messages`. Body is the debug object
 (not wrapped), including `nostrEvent`, `claimedUntil`, `contentFp`, photo
-MIME/byte lengths, stored `goalSats` (JSON `null` when unset), `goalCurrency`,
-`goalAmount`, and the four `goalAmount*` snapshots when `goalCurrency` is
-stored (omitted on a legacy row; a snapshot may be null), and
-always-present `placeLat`, `placeLng`, and `placeLabel` (JSON `null` when
-unset). Never
+MIME/byte lengths, stored `goalSats` (JSON `null` when unset),
+`goalRepayable: true` only when the stored column is true (omitted when null;
+never false), `goalCurrency`, `goalAmount`, and the four `goalAmount*`
+snapshots when `goalCurrency` is stored (omitted on a legacy row; a snapshot
+may be null), and always-present `placeLat`, `placeLng`, and `placeLabel`
+(JSON `null` when unset). Never
 includes nsec or photo/video payloads.
 
 Store throw → **Response** `503`:
@@ -3134,9 +3139,11 @@ display. Each message exposes the author **name snapshotted at post time**,
 `text` (may be empty when a photo or video is attached), ISO-8601
 `createdAt`, `sats` (validated Lightning receipts on that note, default 0),
 optional `goalSats` (positive integer on a top-level note; omitted when
-unset/null/0), and when `goalCurrency` is stored also `goalCurrency`,
-`goalAmount`, and `goalAmountUsd` / `goalAmountChf` / `goalAmountEur` /
-`goalAmountPhp` (a snapshot may be null; a legacy row omits those keys),
+unset/null/0), optional `goalRepayable: true` when the stored column is true
+(omitted when null; never false), and when `goalCurrency` is stored also
+`goalCurrency`, `goalAmount`, and `goalAmountUsd` / `goalAmountChf` /
+`goalAmountEur` / `goalAmountPhp` (a snapshot may be null; a legacy row omits
+those keys),
 optional `place` (`{ lat, lng, label }` when a pin is stored;
 the key is omitted when unset),
 `payable` (true when the note has a non-empty signed `eventId` and the author
@@ -3458,7 +3465,7 @@ latitude and longitude` or `Place label must be at most 80 characters`.
 coordinates empty means no pin. Exactly one of them set is 400
 `Place must be a latitude and longitude`.
 An invalid multipart `goalSats` → **400** `{ "error": "Goal must be a positive whole-sat amount" }`.
-A post sends either legacy `goalSats` alone, or both `goalCurrency` (`BTC`, `USD`, `CHF`, `EUR`, or `PHP`) and `goalAmount` (trimmed decimal string, comma or dot, at most eight fractional digits). Both styles together, only one of the new pair, a non-string `goalAmount`, or a string that fails that grammar → **400** `{ "error": "Send either goalSats or both goalCurrency and goalAmount" }`. A reply that sends `goalSats`, `goalCurrency`, or `goalAmount` → **400** `{ "error": "A reply cannot ask for a goal" }`. The canonical stored `goalAmount` uses a dot, no exponent, no leading zeros, and no trailing fractional zeros (`10.` and `10.0` are `10`). `goal_sats` is that integer for `BTC` (1..10_000_000; a missing gift-day does not reject it) or `Math.round(amount * day.sats / dayFiat)` for fiat, with a rounded 0 raised to 1. Fiat needs a usable latest gift-day (`GET /gifts/stats` `spendOverTime`, last day with `sats > 0`) and a result in 1..10_000_000; otherwise **400** `{ "error": "Ask amount is unavailable" }`. If that loader throws for a fiat ask → **503** `{ "error": "Messages are unavailable" }`. A BTC ask still stores the typed sats when the loader throws. Frozen columns `goal_currency`, `goal_amount`, and `goal_fiat_usd` / `goal_fiat_chf` / `goal_fiat_eur` / `goal_fiat_php` are null when there is no currency ask. Legacy rows keep `goal_sats` and leave the new columns null (no backfill). Public and debug JSON omit the new keys when `goal_currency` is null. When it is set they include `goalCurrency`, `goalAmount` (the typed canonical string, not the two-decimal snapshot), `goalSats`, and `goalAmountUsd` / `goalAmountChf` / `goalAmountEur` / `goalAmountPhp` (two-decimal string or null). Payment progress fiat stays the sum of per-payment gift-day snapshots. A null component on a later payment does not wipe a stored total; a null stored column is assigned the next non-null snapshot and is not rebuilt. One-time and Daily are still not stored. Settlement is not moved onto Coinbase spot.
+A post sends either legacy `goalSats` alone, or both `goalCurrency` (`BTC`, `USD`, `CHF`, `EUR`, or `PHP`) and `goalAmount` (trimmed decimal string, comma or dot, at most eight fractional digits). Both styles together, only one of the new pair, a non-string `goalAmount`, or a string that fails that grammar → **400** `{ "error": "Send either goalSats or both goalCurrency and goalAmount" }`. A reply that sends `goalSats`, `goalCurrency`, `goalAmount`, or `goalRepayable` → **400** `{ "error": "A reply cannot ask for a goal" }`. Optional `goalRepayable` (JSON boolean or multipart string) marks a top-level ask as repayable. Absent, JSON `null`, or a missing/empty multipart field stores SQL NULL and the 200 JSON omits the key. JSON `true` or multipart `"true"` stores `true` only when this create also stores an ask (`goalSats`, or both `goalCurrency` and `goalAmount`); the 200 JSON then includes `goalRepayable: true`. JSON `false`, any other type, or any other string → **400** `{ "error": "Ask obligation must be true" }`. `true` without an ask → **400** `{ "error": "A repayment obligation needs an ask" }`. Stored values are SQL NULL or TRUE, never `false`. There is no due date, repayment ledger, interest, or partial-repayment status. Money capture and collection stay unchanged. The flag is not written into Nostr event content or the note text. The canonical stored `goalAmount` uses a dot, no exponent, no leading zeros, and no trailing fractional zeros (`10.` and `10.0` are `10`). `goal_sats` is that integer for `BTC` (1..10_000_000; a missing gift-day does not reject it) or `Math.round(amount * day.sats / dayFiat)` for fiat, with a rounded 0 raised to 1. Fiat needs a usable latest gift-day (`GET /gifts/stats` `spendOverTime`, last day with `sats > 0`) and a result in 1..10_000_000; otherwise **400** `{ "error": "Ask amount is unavailable" }`. If that loader throws for a fiat ask → **503** `{ "error": "Messages are unavailable" }`. A BTC ask still stores the typed sats when the loader throws. Frozen columns `goal_currency`, `goal_amount`, and `goal_fiat_usd` / `goal_fiat_chf` / `goal_fiat_eur` / `goal_fiat_php` are null when there is no currency ask. Legacy rows keep `goal_sats` and leave the new columns null (no backfill). Public, debug, and hidden JSON include `goalRepayable: true` only when the column is true and omit the key when null (never emit `false`). Public and debug JSON omit the currency-ask keys when `goal_currency` is null. When it is set they include `goalCurrency`, `goalAmount` (the typed canonical string, not the two-decimal snapshot), `goalSats`, and `goalAmountUsd` / `goalAmountChf` / `goalAmountEur` / `goalAmountPhp` (two-decimal string or null). Payment progress fiat stays the sum of per-payment gift-day snapshots. A null component on a later payment does not wipe a stored total; a null stored column is assigned the next non-null snapshot and is not rebuilt. One-time and Daily are still not stored. Settlement is not moved onto Coinbase spot.
 JSON type/range errors keep **400** `{ "error": "Expected a JSON body with text and/or photo" }`.
 Above 10_000_000 is rejected, not clamped. Multipart video posts do not
 accept `inReplyTo` (they are always top-level).
@@ -3476,7 +3483,8 @@ in `{ messages }`), including `sats`, `payable`, `hasPhoto`, `photoCount`
 (always; length equals `photoCount`; null when unknown; `[]` when there are no
 stills) and `photoTakenAt` only when `photoCount` is 1, `hasVideo`, and
 `videoContentType`. May include `goalSats` (positive integer on a top-level
-note; omitted when unset). May include `accountId` (21gifts author id) and `mentions`
+note; omitted when unset). May include `goalRepayable: true` when the stored
+column is true (omitted when null; never false). May include `accountId` (21gifts author id) and `mentions`
 (`{ accountId, username }[]`, only when that list is non-empty). A stored
 self mark does not notify the author. Other marks fan out one
 `forum_mention` per person. No
@@ -3800,7 +3808,7 @@ photo 0 exists) with
 Lightning Address, and no `replyCount`. Unauthenticated items omit
 `accountId`; signed-in member replies include `accountId`. External replies
 set `via: "nostr"`, keep `payable: false`, and omit `accountId`, `role`, and the
-pubkey. Replies never include `goalSats`.
+pubkey. Replies never include `goalSats` or `goalRepayable`.
 Photo and video bytes are never included. `:id` is a UUID
 (`MESSAGE_ID_RE`).
 
@@ -3895,10 +3903,12 @@ Registered **after** photo, video, `GET /messages/:id/replies`,
 `GET /messages/places` so
 those paths are not captured as `:id`. A live GET returns
 the public message JSON (`sats`, optional `goalSats` on a top-level note
-when the stored ask is a positive integer, and when `goalCurrency` is stored
-also `goalCurrency`, `goalAmount`, and the four `goalAmount*` snapshots — a
-snapshot may be null, a legacy row omits those keys — optional `place` when a pin is
-stored and omitted when unset, `payable`, `hasPhoto`, `photoCount`
+when the stored ask is a positive integer, optional `goalRepayable: true`
+when the stored column is true (omitted when null; never false), and when
+`goalCurrency` is stored also `goalCurrency`, `goalAmount`, and the four
+`goalAmount*` snapshots — a snapshot may be null, a legacy row omits those
+keys — optional `place` when a pin is stored and omitted when unset,
+`payable`, `hasPhoto`, `photoCount`
 (0–10; always present; `hasPhoto` still means photo 0 exists), `photoTakenAts`
 (always; length equals `photoCount`; null when unknown; `[]` when there are no
 stills) and `photoTakenAt` only when `photoCount` is 1, `hasVideo`,
@@ -4089,10 +4099,11 @@ empty-name pubkey fallback), ISO `createdAt` / `deletedAt`, `hasPhoto` /
 `photoTakenAts` (always; length equals `photoCount`; null when unknown; `[]`
 when there are no stills) and `photoTakenAt` only when `photoCount` is 1 /
 `hasVideo` / `videoContentType`, optional `goalSats` (positive integer on a
-top-level note; omitted when unset/null/0 or on a reply), and when
-`goalCurrency` is stored also `goalCurrency`, `goalAmount`, and the four
-`goalAmount*` snapshots (a snapshot may be null; a legacy row omits those
-keys), optional `place`
+top-level note; omitted when unset/null/0 or on a reply), optional
+`goalRepayable: true` when the stored column is true (omitted when null;
+never false), and when `goalCurrency` is stored also `goalCurrency`,
+`goalAmount`, and the four `goalAmount*` snapshots (a snapshot may be null;
+a legacy row omits those keys), optional `place`
 when a pin is stored (omitted when unset), always-present `parentId` (JSON `null`
 on top-level), optional `via: "nostr"` exactly when `accountId === null &&
 authorPubkey !== null` (the same rule as public message JSON), and

@@ -98,6 +98,7 @@ function foldFiatColumn(
 function applyStoredGoal(stored: MessageRow): void {
   if (stored.parentId !== null) {
     stored.goalSats = null;
+    stored.goalRepayable = null;
     stored.goalCurrency = null;
     stored.goalAmount = null;
     stored.goalAmountUsd = null;
@@ -107,6 +108,7 @@ function applyStoredGoal(stored: MessageRow): void {
     return;
   }
   stored.goalSats = stored.goalSats ?? null;
+  stored.goalRepayable = stored.goalRepayable === true ? true : null;
   stored.goalCurrency = stored.goalCurrency ?? null;
   stored.goalAmount = stored.goalAmount ?? null;
   stored.goalAmountUsd = stored.goalAmountUsd ?? null;
@@ -414,9 +416,11 @@ export interface MessageStore {
    *
    * Top-level rows persist `goalSats` when the value is a positive integer.
    * A non-null `parentId` stores `goalSats` null even when the incoming row
-   * carried a positive ask. Top-level rows persist `place` when set. A
-   * non-null `parentId` stores `place` null even when the incoming row
-   * carried a pin.
+   * carried a positive ask. Top-level rows persist `goalRepayable` as `true`
+   * or SQL NULL (never `false`). A non-null `parentId` stores `goalRepayable`
+   * null even when the incoming row carried `true`. Top-level rows persist
+   * `place` when set. A non-null `parentId` stores `place` null even when the
+   * incoming row carried a pin.
    *
    * @param row - Fully formed row (id, account, name snapshot, text, time, hasPhoto).
    * @param photo - Optional decoded photo (copied into storage; index 0).
@@ -1447,6 +1451,14 @@ BEGIN
     CHECK (goal_currency IS NULL OR goal_currency IN ('BTC','USD','CHF','EUR','PHP'));
 END
 $message_goal_currency$`,
+  `ALTER TABLE message ADD COLUMN IF NOT EXISTS goal_repayable boolean`,
+  `DO $message_goal_repayable$
+BEGIN
+  ALTER TABLE message DROP CONSTRAINT IF EXISTS message_goal_repayable_chk;
+  ALTER TABLE message ADD CONSTRAINT message_goal_repayable_chk
+    CHECK (goal_repayable IS NOT TRUE OR (parent_id IS NULL AND goal_sats IS NOT NULL));
+END
+$message_goal_repayable$`,
   `CREATE INDEX IF NOT EXISTS message_feed_created_idx ON message (created_at DESC, id DESC) WHERE parent_id IS NULL AND deleted_at IS NULL`,
   `CREATE INDEX IF NOT EXISTS message_feed_popular_idx ON message (sats DESC, created_at DESC, id DESC) WHERE parent_id IS NULL AND deleted_at IS NULL AND sats > 0`,
   TRANSLATION_SCHEMA_SQL,
@@ -1667,6 +1679,7 @@ function copyRow(row: MessageRow): MessageRow {
     amountEur: row.amountEur ?? null,
     amountPhp: row.amountPhp ?? null,
     goalSats: row.goalSats ?? null,
+    goalRepayable: row.goalRepayable === true ? true : null,
     goalCurrency: row.goalCurrency ?? null,
     goalAmount: row.goalAmount ?? null,
     goalAmountUsd: row.goalAmountUsd ?? null,
@@ -2130,7 +2143,8 @@ export class InMemoryMessageStore implements MessageStore {
    * conflict with the stored null.
    * A non-null `parentId` requires a live parent (`deletedAt` null); a missing
    * or soft-hidden parent throws and does not append. Replies store
-   * `goalSats` null even when the row carried a positive ask, and store
+   * `goalSats` null even when the row carried a positive ask, store
+   * `goalRepayable` null even when the row carried `true`, and store
    * `place` null even when the row carried a pin.
    *
    * @param row - Message to store.
@@ -3374,6 +3388,7 @@ interface MessageSqlRow {
   fiat_eur?: string | number | null;
   fiat_php?: string | number | null;
   goal_sats?: string | number | null;
+  goal_repayable?: boolean | string | number | null;
   goal_currency?: string | null;
   goal_amount?: string | number | null;
   goal_fiat_usd?: string | number | null;
@@ -3541,6 +3556,7 @@ function mapMessageRow(row: MessageSqlRow): MessageRow {
     amountEur: row.fiat_eur === null || row.fiat_eur === undefined ? null : String(row.fiat_eur),
     amountPhp: row.fiat_php === null || row.fiat_php === undefined ? null : String(row.fiat_php),
     goalSats: row.goal_sats === null || row.goal_sats === undefined ? null : Number(row.goal_sats),
+    goalRepayable: row.goal_repayable === true ? true : null,
     goalCurrency: mapGoalCurrency(row.goal_currency),
     goalAmount: mapGoalAmountText(row.goal_amount),
     goalAmountUsd: mapGoalFiatText(row.goal_fiat_usd),
@@ -3587,7 +3603,7 @@ const MESSAGE_SELECT_COLUMNS = `id, account_id, name, text, created_at,
               ((photo IS NOT NULL)::int + COALESCE((SELECT COUNT(*)::int FROM message_extra_photo e WHERE e.message_id = message.id), 0)) AS photo_count,
               video_content_type,
               parent_id, author_pubkey,
-              event_id, nostr_publish_state, sats, goal_sats,
+              event_id, nostr_publish_state, sats, goal_sats, goal_repayable,
               fiat_usd::text AS fiat_usd, fiat_chf::text AS fiat_chf,
               fiat_eur::text AS fiat_eur, fiat_php::text AS fiat_php,
               place_lat, place_lng, place_label, mentions,
@@ -4126,7 +4142,8 @@ export class PostgresMessageStore implements MessageStore {
    * Writes `content_fp` when media is present, `accountId` is not null, and
    * `eventId` is null. A non-null `parentId` requires a live parent
    * (`deletedAt` null): INSERT SELECT WHERE EXISTS. Replies bind `goal_sats`
-   * SQL null even when the row carried a positive `goalSats`, and bind place
+   * SQL null even when the row carried a positive `goalSats`, bind
+   * `goal_repayable` SQL null even when the row carried `true`, and bind place
    * columns SQL null even when the row carried a pin. A 0-row insert calls
    * `getById(stored.id)` and returns that row when present (gift-reply retry
    * after the parent was later deleted); otherwise throws, no insert. On unique
@@ -4224,6 +4241,7 @@ export class PostgresMessageStore implements MessageStore {
       stored.goalAmountChf ?? null,
       stored.goalAmountEur ?? null,
       stored.goalAmountPhp ?? null,
+      stored.goalRepayable === true ? true : null,
     ];
     try {
       if (stored.parentId !== null) {
@@ -4233,11 +4251,11 @@ export class PostgresMessageStore implements MessageStore {
            nostr_publish_state, sats, parent_id, author_pubkey, event_id, nostr_event, content_fp, goal_sats,
            fiat_usd, fiat_chf, fiat_eur, fiat_php, photo_taken_at, video_taken_at,
            place_lat, place_lng, place_label,
-           goal_currency, goal_amount, goal_fiat_usd, goal_fiat_chf, goal_fiat_eur, goal_fiat_php
+           goal_currency, goal_amount, goal_fiat_usd, goal_fiat_chf, goal_fiat_eur, goal_fiat_php, goal_repayable
          )
          SELECT $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14::jsonb,$15,$16,
                 $17::numeric,$18::numeric,$19::numeric,$20::numeric,$21,$22,$23,$24,$25,
-                $26,$27::numeric,$28::numeric,$29::numeric,$30::numeric,$31::numeric
+                $26,$27::numeric,$28::numeric,$29::numeric,$30::numeric,$31::numeric,$32
          WHERE EXISTS (SELECT 1 FROM message p WHERE p.id = $11 AND p.deleted_at IS NULL)
          RETURNING id`,
           params,
@@ -4256,11 +4274,11 @@ export class PostgresMessageStore implements MessageStore {
            nostr_publish_state, sats, parent_id, author_pubkey, event_id, nostr_event, content_fp, goal_sats,
            fiat_usd, fiat_chf, fiat_eur, fiat_php, photo_taken_at, video_taken_at,
            place_lat, place_lng, place_label,
-           goal_currency, goal_amount, goal_fiat_usd, goal_fiat_chf, goal_fiat_eur, goal_fiat_php
+           goal_currency, goal_amount, goal_fiat_usd, goal_fiat_chf, goal_fiat_eur, goal_fiat_php, goal_repayable
          ) VALUES (
            $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14::jsonb,$15,$16,
            $17::numeric,$18::numeric,$19::numeric,$20::numeric,$21,$22,$23,$24,$25,
-           $26,$27::numeric,$28::numeric,$29::numeric,$30::numeric,$31::numeric
+           $26,$27::numeric,$28::numeric,$29::numeric,$30::numeric,$31::numeric,$32
          )`,
           params,
         );

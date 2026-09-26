@@ -266,3 +266,12 @@ BEGIN
     CHECK (goal_currency IS NULL OR goal_currency IN ('BTC','USD','CHF','EUR','PHP'));
 END
 $message_goal_currency$;
+-- Optional repayment obligation on a top-level ask; SQL NULL or true only.
+ALTER TABLE message ADD COLUMN IF NOT EXISTS goal_repayable boolean;
+DO $message_goal_repayable$
+BEGIN
+  ALTER TABLE message DROP CONSTRAINT IF EXISTS message_goal_repayable_chk;
+  ALTER TABLE message ADD CONSTRAINT message_goal_repayable_chk
+    CHECK (goal_repayable IS NOT TRUE OR (parent_id IS NULL AND goal_sats IS NOT NULL));
+END
+$message_goal_repayable$;
