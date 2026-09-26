@@ -551,7 +551,7 @@
 
 ## Endpoint: GET /messages/:id/repayment
 
-- **Purpose:** Bearer session of the credit's author. 401 without a session. 404 unless the note is that author's live repayable ask and `goal_funded_at` is set. 200 `{ fundedAt, termDays, daysDue, daysPaid, next }`. `next` is the next unpaid giver share `{ dayIndex, sats, recipientAccountId }`, or null. Fiat days are priced at the current gift-day rate. 503 `{ error: 'Ask amount is unavailable' }` when that rate is missing.
+- **Purpose:** Bearer session of the credit's author. 401 without a session. 404 unless the note is that author's live repayable ask and `goal_funded_at` is set. 200 `{ fundedAt, termDays, daysDue, daysPaid, next }`. `next` is the next unpaid giver share `{ dayIndex, sats, recipientAccountId }`, or null. Each giver is repaid exactly the sats they paid, or the cents recorded in the goal currency. A fraction below one sat or one cent is carried until it is a whole unit, so a gift of 1 sat or 1 cent comes back in full. Fiat shares are priced at the gift-day rate of the day they are paid. 503 `{ error: 'Ask amount is unavailable' }` when that rate or amount is missing.
 - **Errors:** 401 Unauthorized. 404 Not found. 503 Ask amount is unavailable.
 - **Auth:** `Authorization: Bearer` session.
 - **Used by:** The author's credit card.

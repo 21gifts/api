@@ -112,6 +112,189 @@ export function fiatAmountToCents(amount: string): bigint | null {
   return cents;
 }
 
+/** One giver's exact repayment on one day, in sats or cents. */
+export interface RepaymentSlice {
+  /** Zero-based day in the term. */
+  dayIndex: number;
+  /** Giver account id. */
+  accountId: string;
+  /** Whole sats or whole cents. Never zero. */
+  units: bigint;
+}
+
+/**
+ * Schedule that pays every giver back exactly what they gave.
+ *
+ * Each day pays `dayUnits` of the total. A giver's fraction is carried to
+ * the next day until it reaches one whole unit, so a 1-sat or 1-cent gift
+ * is returned in full over the term.
+ *
+ * @param days - Term length.
+ * @param payers - Positive contributions. Their units are the debt.
+ * @returns The non-zero payments, in day order.
+ */
+export function repaymentSchedule(
+  days: number,
+  payers: readonly { accountId: string; units: bigint }[],
+): RepaymentSlice[] {
+  const usable = payers.filter((payer) => payer.units > 0n && payer.accountId !== '');
+  const total = usable.reduce((sum, payer) => sum + payer.units, 0n);
+  if (total <= 0n || !Number.isInteger(days) || days < 1) {
+    return [];
+  }
+  const ordered = [...usable].sort((a, b) => {
+    if (a.units !== b.units) {
+      return a.units > b.units ? -1 : 1;
+    }
+    return a.accountId.localeCompare(b.accountId);
+  });
+  const numer = new Map<string, bigint>(ordered.map((payer) => [payer.accountId, 0n]));
+  const slices: RepaymentSlice[] = [];
+  for (let day = 0; day < days; day += 1) {
+    const due = dayUnits(total, days, day) as bigint;
+    if (due === 0n) {
+      continue;
+    }
+    const pays = ordered.map((payer) => {
+      const next = (numer.get(payer.accountId) as bigint) + due * payer.units;
+      const units = next / total;
+      const rem = next % total;
+      numer.set(payer.accountId, rem);
+      return { accountId: payer.accountId, units, rem };
+    });
+    let leftover = due - pays.reduce((sum, pay) => sum + pay.units, 0n);
+    while (leftover > 0n) {
+      pays.sort((a, b) => {
+        if (a.rem !== b.rem) {
+          return a.rem > b.rem ? -1 : 1;
+        }
+        return a.accountId.localeCompare(b.accountId);
+      });
+      const winner = pays[0] as (typeof pays)[number];
+      winner.units += 1n;
+      winner.rem -= total;
+      numer.set(winner.accountId, winner.rem);
+      leftover -= 1n;
+    }
+    const byAccount = new Map(pays.map((pay) => [pay.accountId, pay]));
+    for (const payer of ordered) {
+      const pay = byAccount.get(payer.accountId) as (typeof pays)[number];
+      if (pay.units > 0n) {
+        slices.push({ dayIndex: day, accountId: payer.accountId, units: pay.units });
+      }
+    }
+  }
+  return slices;
+}
+
+/** One giver's recorded payment, used to decide what they are owed. */
+export interface PayerContribution {
+  /** 21.gifts account id. Empty ids are not payable. */
+  accountId: string;
+  /** Sats this giver paid. */
+  sats: number;
+  /** Recorded USD of those payments, or null when a snapshot is missing. */
+  usd?: string | null;
+  /** Recorded CHF of those payments, or null when a snapshot is missing. */
+  chf?: string | null;
+  /** Recorded EUR of those payments, or null when a snapshot is missing. */
+  eur?: string | null;
+  /** Recorded PHP of those payments, or null when a snapshot is missing. */
+  php?: string | null;
+}
+
+const FIAT_CENTS = {
+  USD: 'usd',
+  CHF: 'chf',
+  EUR: 'eur',
+  PHP: 'php',
+} as const;
+
+type FiatCode = keyof typeof FIAT_CENTS;
+
+/**
+ * Whole units each giver is owed.
+ *
+ * Bitcoin asks use the sats they paid. Fiat asks use the cents recorded in
+ * the goal currency, including a 1-cent gift. When a snapshot is missing,
+ * the typed amount is split by sat weight so the shares still add up.
+ *
+ * @param goalCurrency - Ask currency, or null.
+ * @param goalAmount - Typed fiat amount, used only when a snapshot is missing.
+ * @param payers - Contributions with an account id.
+ * @returns Units per giver, or `unavailable` when a fiat ask has no amount.
+ */
+export function payerDebtUnits(
+  goalCurrency: string | null | undefined,
+  goalAmount: string | null | undefined,
+  payers: readonly PayerContribution[],
+): { accountId: string; units: bigint }[] | 'unavailable' {
+  if (goalCurrency !== null && goalCurrency !== undefined && goalCurrency in FIAT_CENTS) {
+    const field = FIAT_CENTS[goalCurrency as FiatCode];
+    const priced = payers.map((payer) => ({
+      accountId: payer.accountId,
+      cents: payer[field],
+    }));
+    if (priced.every((payer) => typeof payer.cents === 'string')) {
+      const parsed = priced.map((payer) => ({
+        accountId: payer.accountId,
+        units: fiatAmountToCents(payer.cents as string),
+      }));
+      if (parsed.every((payer) => payer.units !== null)) {
+        return parsed.map((payer) => ({
+          accountId: payer.accountId,
+          units: payer.units as bigint,
+        }));
+      }
+    }
+    if (goalAmount === null || goalAmount === undefined) {
+      return 'unavailable';
+    }
+    const goal = fiatAmountToCents(goalAmount);
+    if (goal === null) {
+      return 'unavailable';
+    }
+    return allocateByWeight(
+      goal,
+      payers.map((payer) => ({ accountId: payer.accountId, units: BigInt(payer.sats) })),
+    );
+  }
+  return payers.map((payer) => ({ accountId: payer.accountId, units: BigInt(payer.sats) }));
+}
+
+function allocateByWeight(
+  total: bigint,
+  weights: readonly { accountId: string; units: bigint }[],
+): { accountId: string; units: bigint }[] {
+  const usable = weights.filter((weight) => weight.units > 0n && weight.accountId !== '');
+  const sum = usable.reduce((acc, weight) => acc + weight.units, 0n);
+  if (sum <= 0n || total <= 0n) {
+    return [];
+  }
+  const shares = usable.map((weight) => ({
+    accountId: weight.accountId,
+    units: (total * weight.units) / sum,
+    rem: (total * weight.units) % sum,
+  }));
+  let leftover = total - shares.reduce((acc, share) => acc + share.units, 0n);
+  const order = [...shares].sort((a, b) => {
+    if (a.rem !== b.rem) {
+      return a.rem > b.rem ? -1 : 1;
+    }
+    return a.accountId.localeCompare(b.accountId);
+  });
+  for (const share of order) {
+    if (leftover <= 0n) {
+      break;
+    }
+    share.units += 1n;
+    leftover -= 1n;
+  }
+  return shares
+    .filter((share) => share.units > 0n)
+    .map((share) => ({ accountId: share.accountId, units: share.units }));
+}
+
 /**
  * Split a day's sats across givers in proportion to what they paid.
  * The largest giver, then the lowest account id, receives any leftover sat.

@@ -1289,6 +1289,20 @@
 - **Inputs:** Canonical amount text.
 - **Returns / side effects:** Cents, or null. No I/O.
 
+## Function: repaymentSchedule
+
+- **Purpose:** Plan every repayment so each giver gets back exactly the sats or cents they paid. A fraction below one unit carries to a later day.
+- **Inputs:** Term in days, and each giver's positive units.
+- **Returns / side effects:** The non-zero payments in day order. No I/O.
+- **Used by:** `repaymentStatus`, `repaymentInvoice`.
+
+## Function: payerDebtUnits
+
+- **Purpose:** Units each giver is owed. Bitcoin asks use sats. Fiat asks use recorded cents of the goal currency, so one cent is owed as one cent. A missing snapshot splits the typed amount by sat weight.
+- **Inputs:** Goal currency, typed amount, and each giver's sats plus recorded fiat.
+- **Returns / side effects:** Units per giver, or `unavailable`. No I/O.
+- **Used by:** `repaymentStatus`, `repaymentInvoice`.
+
 ## Function: shareSats
 
 - **Purpose:** Split a day's sats across givers in proportion to what they paid.

@@ -9,7 +9,6 @@ import { InvoiceRateLimiter, PostRateLimiter } from '@/lib/nostr/rate-limit';
 import { messagesRoutes } from '@/routes/messages';
 
 const now = (): number => Date.UTC(2026, 8, 28, 12);
-const AUTH = { authorization: 'Bearer tok' };
 const CREDIT = '55555555-5555-4555-8555-555555555555';
 const GIVER = '11111111-1111-4111-8111-111111111111';
 
@@ -19,11 +18,15 @@ async function readyCredit(options?: {
   giverAddress?: string | null;
   giverKey?: boolean;
   kek?: boolean;
-  fundedAt?: Date;
+  fundedAt?: Date | null;
+  termDays?: number | null;
   goalCurrency?: 'USD';
   goalAmount?: string | null;
   rate?: boolean;
   authorId?: string;
+  giverAccount?: boolean;
+  fetch?: boolean;
+  pr?: string;
 }): Promise<{
   app: Hono;
   messages: InMemoryMessageStore;
@@ -46,24 +49,26 @@ async function readyCredit(options?: {
     rulesAgreedAt: options?.rules === false ? null : now(),
     username: 'ada',
   });
-  await auth.createAccount({
-    id: GIVER,
-    linkingKey: `02${'cd'.repeat(32)}`,
-    role: 'verified',
-    name: 'Bea',
-    lightningAddress:
-      options?.giverAddress === undefined ? 'bea@walletofsatoshi.com' : options.giverAddress,
-    lightningAddressVerified: true,
-    forumLawsDismissed: false,
-    location: null,
-    viewKey: 'b'.repeat(64),
-    createdAt: 1,
-    rulesAgreedAt: now(),
-    username: 'bea',
-  });
+  if (options?.giverAccount !== false) {
+    await auth.createAccount({
+      id: GIVER,
+      linkingKey: `02${'cd'.repeat(32)}`,
+      role: 'verified',
+      name: 'Bea',
+      lightningAddress:
+        options?.giverAddress === undefined ? 'bea@walletofsatoshi.com' : options.giverAddress,
+      lightningAddressVerified: true,
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: 'b'.repeat(64),
+      createdAt: 1,
+      rulesAgreedAt: now(),
+      username: 'bea',
+    });
+  }
   await auth.createSession({ token: authorId, accountId: authorId, createdAt: now() });
   await ensureAccountNostrKey(auth, authorId, kek);
-  if (options?.giverKey !== false) {
+  if (options?.giverAccount !== false && options?.giverKey !== false) {
     await ensureAccountNostrKey(auth, GIVER, kek);
   }
   const messages = new InMemoryMessageStore();
@@ -77,10 +82,11 @@ async function readyCredit(options?: {
     ...unsignedNostrDefaults(),
     eventId: options?.eventId === undefined ? 'ee'.repeat(32) : options.eventId,
     sats: 21,
-    goalSats: 21,
+    goalSats: options?.fundedAt === null ? 1000 : 21,
     goalRepayable: true,
-    goalTermDays: 1,
-    goalFundedAt: options?.fundedAt ?? new Date(Date.UTC(2026, 8, 26, 12)),
+    goalTermDays: options?.termDays === undefined ? 1 : options.termDays,
+    goalFundedAt:
+      options?.fundedAt === undefined ? new Date(Date.UTC(2026, 8, 26, 12)) : options.fundedAt,
     ...(options?.goalCurrency === undefined
       ? {}
       : {
@@ -104,7 +110,7 @@ async function readyCredit(options?: {
         { headers: { 'content-type': 'application/json' } },
       );
     }
-    return new Response(JSON.stringify({ pr: 'lnbc21n1repay' }), {
+    return new Response(JSON.stringify({ pr: options?.pr ?? 'lnbc21n1repay' }), {
       headers: { 'content-type': 'application/json' },
     });
   };
@@ -126,7 +132,7 @@ async function readyCredit(options?: {
             }),
           }
         : {}),
-      fetchImpl,
+      ...(options?.fetch === false ? {} : { fetchImpl }),
       postLimiter: new PostRateLimiter(),
       invoiceLimiter: new InvoiceRateLimiter(),
     }),
@@ -365,5 +371,90 @@ describe('credit repayment', () => {
       headers: { authorization: 'Bearer acc-blank' },
     });
     expect(blankRes.status).toBe(503);
+  });
+
+  it('refuses a missing giver and an undecodable invoice', async () => {
+    const ghost = await readyCredit({ authorId: 'acc-ghost', giverAccount: false });
+    const missingGiver = await ghost.app.request(`/messages/${CREDIT}/repayment`, {
+      method: 'POST',
+      headers: { authorization: 'Bearer acc-ghost' },
+    });
+    expect(missingGiver.status).toBe(400);
+    const bolt11 = await import('@/lib/bolt11');
+    const nip57 = vi.spyOn(bolt11, 'isNip57Invoice').mockReturnValue(true);
+    const decoded = vi.spyOn(bolt11, 'inspectBolt11').mockReturnValue({
+      paymentHash: 'ab'.repeat(32),
+      amountMsat: 21_000,
+      description: null,
+      descriptionHash: 'cd'.repeat(32),
+      expirySeconds: null,
+    });
+    const offline = vi.spyOn(globalThis, 'fetch').mockRejectedValue(new Error('offline'));
+    try {
+      const native = await readyCredit({ authorId: 'acc-native', fetch: false });
+      const nativeRes = await native.app.request(`/messages/${CREDIT}/repayment`, {
+        method: 'POST',
+        headers: { authorization: 'Bearer acc-native' },
+      });
+      expect(nativeRes.status).toBe(400);
+      const blank = await readyCredit({ authorId: 'acc-blankpr' });
+      const blankRes = await blank.app.request(`/messages/${CREDIT}/repayment`, {
+        method: 'POST',
+        headers: { authorization: 'Bearer acc-blankpr' },
+      });
+      expect(blankRes.status).toBe(200);
+      expect(await blankRes.json()).toEqual({ pr: 'lnbc21n1repay', amountSats: 21 });
+    } finally {
+      nip57.mockRestore();
+      decoded.mockRestore();
+      offline.mockRestore();
+    }
+  });
+
+  it('hides a credit that is not funded or has no term', async () => {
+    const unfunded = await readyCredit({ authorId: 'acc-open', fundedAt: null });
+    const open = await unfunded.app.request(`/messages/${CREDIT}/repayment`, {
+      headers: { authorization: 'Bearer acc-open' },
+    });
+    expect(open.status).toBe(404);
+    const noTerm = await readyCredit({ authorId: 'acc-noterm', termDays: null });
+    const missingTerm = await noTerm.app.request(`/messages/${CREDIT}/repayment`, {
+      headers: { authorization: 'Bearer acc-noterm' },
+    });
+    expect(missingTerm.status).toBe(404);
+  });
+
+  it('repays the recorded cent, not a rounded-away share', async () => {
+    const { app, messages } = await readyCredit({
+      authorId: 'acc-cent',
+      goalCurrency: 'USD',
+      goalAmount: '0.01',
+      rate: true,
+    });
+    await messages.recordZapIngest({
+      id: '11111111-1111-4111-8111-111111111112',
+      createdAt: new Date(now()),
+      receiptId: 'r1',
+      noteEventId: null,
+      messageId: CREDIT,
+      outcome: 'indexed',
+      reason: null,
+      amountSats: 21,
+      amountUsd: '0.01',
+      amountChf: '0.01',
+      amountEur: '0.01',
+      amountPhp: '0.01',
+      receiptPubkey: null,
+      receipt: {},
+    });
+    const payers = await messages.listCreditPayers(CREDIT);
+    expect(payers[0]?.usd).toBe('0.01');
+    const status = await app.request(`/messages/${CREDIT}/repayment`, {
+      headers: { authorization: 'Bearer acc-cent' },
+    });
+    expect(status.status).toBe(200);
+    expect((await status.json()) as { next: { sats: number } }).toMatchObject({
+      next: { sats: 10, recipientAccountId: GIVER },
+    });
   });
 });
