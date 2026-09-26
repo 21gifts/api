@@ -39,6 +39,15 @@ describe('sunday rest routes', () => {
     expect(((await res.json()) as { error?: string }).error).not.toBe('SUNDAY_REST');
   });
 
+  it('refuses the next credit repayment when the device zone is Sunday', async () => {
+    const res = await app().request('/messages/note-1/repayment', {
+      method: 'POST',
+      headers: { 'Time-Zone': 'Europe/Zurich' },
+    });
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: 'SUNDAY_REST' });
+  });
+
   it('refuses a zap invoice on a forum note when the device zone is Sunday', async () => {
     const res = await app().request('/messages/note-1/invoice', {
       method: 'POST',
