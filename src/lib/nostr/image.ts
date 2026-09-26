@@ -97,30 +97,42 @@ function jpegSize(bytes: Uint8Array): string | null {
     return null;
   }
   let i = 2;
-  while (i + 8 < bytes.length) {
+  while (i < bytes.length) {
     if (bytes[i] !== 0xff) {
       return null;
     }
-    const marker = bytes[i + 1]!;
+    while (i < bytes.length && bytes[i] === 0xff) {
+      i += 1;
+    }
+    const marker = bytes[i];
+    if (marker === undefined) {
+      return null;
+    }
+    i += 1;
     if (
       marker === 0x01 ||
       marker === 0xd8 ||
       marker === 0xd9 ||
       (marker >= 0xd0 && marker <= 0xd7)
     ) {
-      i += 2;
       continue;
     }
-    if (marker === 0xc0 || marker === 0xc1 || marker === 0xc2) {
-      const height = (bytes[i + 5]! << 8) | bytes[i + 6]!;
-      const width = (bytes[i + 7]! << 8) | bytes[i + 8]!;
-      return dimText(width, height);
-    }
-    const length = (bytes[i + 2]! << 8) | bytes[i + 3]!;
-    if (length < 2) {
+    if (i + 1 >= bytes.length) {
       return null;
     }
-    i += 2 + length;
+    const length = (bytes[i]! << 8) | bytes[i + 1]!;
+    if (length < 2 || i + length > bytes.length) {
+      return null;
+    }
+    if (marker === 0xc0 || marker === 0xc1 || marker === 0xc2) {
+      if (length < 7) {
+        return null;
+      }
+      const height = (bytes[i + 3]! << 8) | bytes[i + 4]!;
+      const width = (bytes[i + 5]! << 8) | bytes[i + 6]!;
+      return dimText(width, height);
+    }
+    i += length;
   }
   return null;
 }
