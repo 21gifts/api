@@ -1,6 +1,12 @@
 import type { MiddlewareHandler } from 'hono';
 
-/** True when a non-empty `Time-Zone` header names a zone that is in Sunday. */
+/**
+ * True when a non-empty `Time-Zone` header names a zone that is in Sunday.
+ *
+ * @param nowMs - Epoch milliseconds on the server clock.
+ * @param timeZoneHeader - Raw `Time-Zone` header. Missing, blank, or invalid does not count as Sunday.
+ * @returns True only when the header names a valid IANA zone whose local calendar day is Sunday.
+ */
 export function isSundayRestHeader(nowMs: number, timeZoneHeader: string | undefined): boolean {
   const zone = (timeZoneHeader ?? '').trim();
   if (zone === '') {
@@ -12,6 +18,10 @@ export function isSundayRestHeader(nowMs: number, timeZoneHeader: string | undef
 /**
  * Sunday 00:00 inclusive through Monday 00:00 exclusive in an IANA zone.
  * Invalid timeZone returns false. Does not default to Asia/Manila.
+ *
+ * @param nowMs - Epoch milliseconds.
+ * @param timeZone - IANA zone name.
+ * @returns True when that zone's local weekday is Sunday. False for an invalid zone.
  */
 export function isSundayInZone(nowMs: number, timeZone: string): boolean {
   try {
