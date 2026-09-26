@@ -558,7 +558,7 @@
 
 ## Endpoint: POST /messages/:id/repayment
 
-- **Purpose:** Same author session. Issues `{ pr, amountSats }` for the next giver share. The author pays that invoice from their own wallet. The zap tags the credit note. When indexed, the share is stored on `message_repayment` and the ask total does not rise. 409 `missing_requirements` without forum pay. 429 when rate limited. 400 `Nothing is due`, `This message cannot be paid yet`, `A giver has no Lightning address`, or when the wallet cannot take a zap. 503 `{ error: 'Ask amount is unavailable' }` when the fiat share cannot be priced, and 503 `{ error: 'Messages are unavailable' }` when signing keys are missing or storing the invoice attempt fails.
+- **Purpose:** Same author session. Issues `{ pr, amountSats }` for the next giver share. The author pays that invoice from their own wallet. The zap tags the credit note. When indexed, the share is stored on `message_repayment` and the ask total does not rise. 409 `missing_requirements` without forum pay. 403 `{ error: 'SUNDAY_REST' }` when the device `Time-Zone` is in Sunday. 429 when rate limited. 400 `Nothing is due`, `This message cannot be paid yet`, `A giver has no Lightning address`, or when the wallet cannot take a zap. 503 `{ error: 'Ask amount is unavailable' }` when the fiat share cannot be priced, and 503 `{ error: 'Messages are unavailable' }` when signing keys are missing or storing the invoice attempt fails.
 - **Errors:** 401, 404, 400, 409, 429, 503 as in the purpose.
 - **Auth:** `Authorization: Bearer` session.
 - **Used by:** The author's credit card.
