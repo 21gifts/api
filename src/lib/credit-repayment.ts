@@ -295,14 +295,6 @@ function allocateByWeight(
     .map((share) => ({ accountId: share.accountId, units: share.units }));
 }
 
-/**
- * Split a day's sats across givers in proportion to what they paid.
- * The largest giver, then the lowest account id, receives any leftover sat.
- *
- * @param dueSats - Sats due that day.
- * @param payers - Positive contributions with an account id.
- * @returns Shares that add up to `dueSats`.
- */
 /** Whether a planned share is still ahead, due, or already paid. */
 export type RepaymentLineStatus = 'scheduled' | 'due' | 'paid';
 
@@ -377,6 +369,14 @@ export function repaymentLedger(
   }));
 }
 
+/**
+ * Split a day's sats across givers in proportion to what they paid.
+ * The largest giver, then the lowest account id, receives any leftover sat.
+ *
+ * @param dueSats - Sats due that day.
+ * @param payers - Positive contributions with an account id.
+ * @returns Shares that add up to `dueSats`.
+ */
 export function shareSats(
   dueSats: number,
   payers: readonly { accountId: string; sats: number }[],
