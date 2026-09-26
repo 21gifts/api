@@ -7290,6 +7290,43 @@ describe('PostgresMessageStore', () => {
     expect(sql.queries[0]?.text).toMatch(/payer_account_id IS NULL/);
   });
 
+  it('lists stored repayments and records a share once', async () => {
+    const sql = new MockSql();
+    sql.nextRows = [
+      {
+        day_index: 0,
+        recipient_account_id: 'giver',
+        due_sats: '10',
+        paid_at: '2026-09-27T00:00:00.000Z',
+      },
+      {
+        day_index: 1,
+        recipient_account_id: 'giver',
+        due_sats: 1,
+        paid_at: new Date('2026-09-28T00:00:00.000Z'),
+      },
+    ];
+    const postgres = new PostgresMessageStore(sql);
+    const rows = await postgres.listRepayments('m1');
+    expect(rows[0]).toEqual({
+      dayIndex: 0,
+      recipientAccountId: 'giver',
+      dueSats: 10,
+      paidAt: new Date('2026-09-27T00:00:00.000Z'),
+    });
+    expect(rows[1]?.paidAt).toEqual(new Date('2026-09-28T00:00:00.000Z'));
+    expect(sql.queries[0]?.text).toMatch(/FROM message_repayment/);
+    await postgres.markRepaymentPaid({
+      messageId: 'm1',
+      dayIndex: 0,
+      recipientAccountId: 'giver',
+      dueSats: 10,
+      paidAt: new Date('2026-09-27T00:00:00.000Z'),
+    });
+    expect(sql.executes[0]?.text).toMatch(/INSERT INTO message_repayment/);
+    expect(sql.executes[0]?.text).toMatch(/ON CONFLICT/);
+  });
+
   it('listCreditPayers sums sats and recorded fiat', async () => {
     const sql = new MockSql();
     sql.nextRows = [
