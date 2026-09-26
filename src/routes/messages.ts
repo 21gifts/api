@@ -1173,9 +1173,7 @@ async function servePublicActiveList(deps: MessagesRouteDeps, c: Context): Promi
       if (index >= 0) {
         start = index + 1;
       } else {
-        const older = window.findIndex(
-          (row) => row.createdAt.getTime() < cursorAtMs,
-        );
+        const older = window.findIndex((row) => row.createdAt.getTime() < cursorAtMs);
         if (older < 0) {
           return c.json({ error: 'Unauthorized' }, 401);
         }
