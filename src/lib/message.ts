@@ -121,6 +121,16 @@ export interface MessageRow {
    * `goalSats` may still be set).
    */
   goalCurrency?: GoalCurrency | null;
+  /**
+   * Optional repayment obligation on a top-level ask. Stored as SQL NULL or
+   * `true` only; never `false`. Omit or `null` means no obligation.
+   */
+  goalRepayable?: true | null;
+  /**
+   * Optional agreed repayment term in whole days on a repayable ask.
+   * Stored as SQL NULL or 1..3650. Omit or `null` means no term.
+   */
+  goalTermDays?: number | null;
   /** Canonical typed ask amount (dot decimal). Null when there is no currency ask. */
   goalAmount?: string | null;
   /** Gift-day USD snapshot of the frozen ask, or null. */
@@ -215,6 +225,16 @@ export interface PublicMessage {
    * on legacy rows (they still expose `goalSats` as today).
    */
   goalCurrency?: GoalCurrency;
+  /**
+   * Repayment obligation. Included only when the stored column is `true`;
+   * omitted when null. Never `false`.
+   */
+  goalRepayable?: true;
+  /**
+   * Agreed repayment term in whole days. Included only when the stored
+   * column is not null; omitted when null.
+   */
+  goalTermDays?: number;
   /** Canonical typed ask amount. Present only with `goalCurrency`. */
   goalAmount?: string;
   /** Frozen USD snapshot. Key present with `goalCurrency` even when null. */
@@ -349,6 +369,23 @@ function publicGoalSats(row: MessageRow): number | undefined {
   }
   const value = row.goalSats;
   return typeof value === 'number' && Number.isInteger(value) && value > 0 ? value : undefined;
+}
+
+/**
+ * Public/debug/hidden JSON `goalRepayable` when the stored column is true.
+ * Omitted when null. Never `false`.
+ */
+function publicGoalRepayable(row: MessageRow): true | undefined {
+  return row.goalRepayable === true ? true : undefined;
+}
+
+/**
+ * Public/debug/hidden JSON `goalTermDays` when the stored column is not null.
+ * Omitted when null.
+ */
+function publicGoalTermDays(row: MessageRow): number | undefined {
+  const value = row.goalTermDays;
+  return typeof value === 'number' && Number.isInteger(value) ? value : undefined;
 }
 
 /**
@@ -526,12 +563,16 @@ export function truncatePubkeyDisplay(pubkeyHex: string): string {
  * `via: 'nostr'` when `row.accountId === null && row.authorPubkey !== null`;
  * optional `accountId` when requested; optional `parentId` when
  * `row.parentId !== null`; optional `mentions` (`{ username, accountId }[]`) when `includeAccountId` is true and the stored list is non-empty; optional `goalSats` when the stored value is a
- * positive integer on a top-level note; optional currency-ask keys when
- * `goalCurrency` is stored; optional `place` when stored;
+ * positive integer on a top-level note; optional `goalRepayable: true` when
+ * the stored column is true (omitted when null; never false); optional
+ * `goalTermDays` when the stored column is not null (omitted when null);
+ * optional currency-ask keys when `goalCurrency` is stored; optional `place` when stored;
  * optional hide stamps when `hidden`
  * is set); `createdAt` ISO-8601. Never includes photo or video bytes, and
  * never includes `contentFp`. Omits the `parentId` key on top-level notes.
  * Omits `goalSats` on replies and when the stored value is null, 0, or unset.
+ * Omits `goalRepayable` when the stored column is null.
+ * Omits `goalTermDays` when the stored column is null.
  * Omits `goalCurrency` / `goalAmount` / `goalAmountUsd` / `goalAmountChf` /
  * `goalAmountEur` / `goalAmountPhp` when `goalCurrency` is null.
  * Omits `place` when unset or null.
@@ -595,6 +636,14 @@ export function serializeMessage(
   if (goalSats !== undefined) {
     body.goalSats = goalSats;
   }
+  const goalRepayable = publicGoalRepayable(row);
+  if (goalRepayable !== undefined) {
+    body.goalRepayable = goalRepayable;
+  }
+  const goalTermDays = publicGoalTermDays(row);
+  if (goalTermDays !== undefined) {
+    body.goalTermDays = goalTermDays;
+  }
   const goalCurrency = publicGoalCurrency(row);
   if (goalCurrency !== undefined) {
     body.goalCurrency = goalCurrency.goalCurrency;
@@ -646,9 +695,11 @@ export interface DebugMessagePhotoMeta {
  *   only when photoCount === 1 (equal to slot 0, null allowed; omitted
  *   otherwise); `createdAt` / `deletedAt` ISO-8601 (`deletedAt` null when
  *   live). `goalSats` is the stored column (JSON `null` when unset).
- *   Currency-ask keys are included only when `goalCurrency` is stored.
- *   Always includes `placeLat` / `placeLng` / `placeLabel` (JSON `null` when
- *   unset).
+ *   `goalRepayable` is included only when the stored column is true (omitted
+ *   when null; never false). `goalTermDays` is included only when the stored
+ *   column is not null (omitted when null). Currency-ask keys are included only when
+ *   `goalCurrency` is stored. Always includes `placeLat` / `placeLng` /
+ *   `placeLabel` (JSON `null` when unset).
  * @throws RangeError (or Error) when `createdAt` or `deletedAt` is invalid.
  */
 export function serializeDebugMessage(
@@ -688,6 +739,10 @@ export function serializeDebugMessage(
     nostrAttempts: row.nostrAttempts,
     accountId: row.accountId ?? null,
     goalSats: row.goalSats ?? null,
+    ...(row.goalRepayable === true ? { goalRepayable: true } : {}),
+    ...(typeof row.goalTermDays === 'number' && Number.isInteger(row.goalTermDays)
+      ? { goalTermDays: row.goalTermDays }
+      : {}),
     ...(goalCurrency === undefined
       ? {}
       : {
@@ -726,7 +781,10 @@ export function serializeDebugMessage(
  *   unknown, `[]` when no stills), optional `photoTakenAt` only when
  *   photoCount === 1 (equal to slot 0, null allowed; omitted otherwise),
  *   `parentId`, `deletedAt`, `deletedBy`, optional `via`, optional
- *   `goalSats`, optional currency-ask keys, and optional `place`); `createdAt` / `deletedAt` are
+ *   `goalSats`, optional `goalRepayable: true` when the stored column is true
+ *   (omitted when null; never false), optional `goalTermDays` when the stored
+ *   column is not null (omitted when null), optional currency-ask keys, and optional
+ *   `place`); `createdAt` / `deletedAt` are
  *   ISO-8601 (`deletedAt` null when live). Optional `goalSats` when the
  *   stored value is a positive integer on a top-level note (omitted
  *   otherwise). Optional currency-ask keys when `goalCurrency` is stored
@@ -739,6 +797,8 @@ export function serializeHiddenMessage(
 ): Record<string, unknown> & { via?: 'nostr' } {
   const deletedAt = row.deletedAt ?? null;
   const goalSats = publicGoalSats(row);
+  const goalRepayable = publicGoalRepayable(row);
+  const goalTermDays = publicGoalTermDays(row);
   const goalCurrency = publicGoalCurrency(row);
   const taken = photoTakenJson(row);
   const place = publicPlace(row);
@@ -762,6 +822,8 @@ export function serializeHiddenMessage(
     deletedAt: deletedAt === null ? null : deletedAt.toISOString(),
     deletedBy,
     ...(goalSats === undefined ? {} : { goalSats }),
+    ...(goalRepayable === undefined ? {} : { goalRepayable }),
+    ...(goalTermDays === undefined ? {} : { goalTermDays }),
     ...(goalCurrency === undefined
       ? {}
       : {
@@ -786,8 +848,8 @@ export function serializeHiddenMessage(
 /**
  * Default Nostr columns for a freshly posted row (unsigned, pending).
  *
- * @returns The unsigned/pending defaults (`goalSats: null`, currency-ask
- *   columns null).
+ * @returns The unsigned/pending defaults (`goalSats: null`, `goalRepayable:
+ *   null`, `goalTermDays: null`, currency-ask columns null).
  */
 export function unsignedNostrDefaults(): Pick<
   MessageRow,
@@ -799,6 +861,8 @@ export function unsignedNostrDefaults(): Pick<
   | 'amountEur'
   | 'amountPhp'
   | 'goalSats'
+  | 'goalRepayable'
+  | 'goalTermDays'
   | 'goalCurrency'
   | 'goalAmount'
   | 'goalAmountUsd'
@@ -824,6 +888,8 @@ export function unsignedNostrDefaults(): Pick<
     amountEur: null,
     amountPhp: null,
     goalSats: null,
+    goalRepayable: null,
+    goalTermDays: null,
     goalCurrency: null,
     goalAmount: null,
     goalAmountUsd: null,

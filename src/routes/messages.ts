@@ -514,6 +514,11 @@ async function serveForumVideo(
 
 const GOAL_PAIR_ERROR = 'Send either goalSats or both goalCurrency and goalAmount';
 const ASK_UNAVAILABLE = 'Ask amount is unavailable';
+const ASK_OBLIGATION_TRUE = 'Ask obligation must be true';
+const ASK_OBLIGATION_NEEDS_ASK = 'A repayment obligation needs an ask';
+const ASK_TERM_RANGE = 'Ask term must be a whole number of days from 1 to 3650';
+const ASK_TERM_NEEDS_REPAYABLE = 'A repayment term needs a repayable ask';
+const ASK_REPAYABLE_NEEDS_TERM = 'A repayable ask needs a term in days';
 
 /** Frozen ask stored on a top-level note. All null when there is no goal. */
 interface FrozenAsk {
@@ -524,6 +529,8 @@ interface FrozenAsk {
   goalAmountChf: string | null;
   goalAmountEur: string | null;
   goalAmountPhp: string | null;
+  goalRepayable: true | null;
+  goalTermDays: number | null;
 }
 
 const NO_ASK: FrozenAsk = {
@@ -534,7 +541,76 @@ const NO_ASK: FrozenAsk = {
   goalAmountChf: null,
   goalAmountEur: null,
   goalAmountPhp: null,
+  goalRepayable: null,
+  goalTermDays: null,
 };
+
+type GoalRepayableParse = { ok: true; value: true | null } | { ok: false };
+
+/**
+ * JSON `true` or multipart `"true"` is an obligation. Absent, JSON `null`,
+ * or multipart empty is none. Any other value is 400.
+ */
+function parseGoalRepayable(value: unknown, source: 'json' | 'multipart'): GoalRepayableParse {
+  if (value === undefined || value === null || (source === 'multipart' && value === '')) {
+    return { ok: true, value: null };
+  }
+  if (source === 'json' ? value === true : value === 'true') {
+    return { ok: true, value: true };
+  }
+  return { ok: false };
+}
+
+type GoalTermDaysParse = { ok: true; value: number | null } | { ok: false };
+
+/**
+ * JSON whole number or multipart digits in 1..3650 is a term. Absent, JSON
+ * `null`, or multipart empty is none. Any other value is 400.
+ */
+function parseGoalTermDays(value: unknown, source: 'json' | 'multipart'): GoalTermDaysParse {
+  if (value === undefined || value === null) {
+    return { ok: true, value: null };
+  }
+  if (source === 'multipart') {
+    if (value === '') {
+      return { ok: true, value: null };
+    }
+    if (typeof value === 'string' && /^\d+$/.test(value)) {
+      const n = Number(value);
+      if (n >= 1 && n <= 3650) {
+        return { ok: true, value: n };
+      }
+    }
+    return { ok: false };
+  }
+  if (typeof value === 'number' && Number.isInteger(value) && value >= 1 && value <= 3650) {
+    return { ok: true, value };
+  }
+  return { ok: false };
+}
+
+function withGoalRepayable(
+  goal: FrozenAsk,
+  repayable: true | null,
+): { ok: true; goal: FrozenAsk } | { ok: false } {
+  if (repayable === true && goal.goalSats === null) {
+    return { ok: false };
+  }
+  return { ok: true, goal: { ...goal, goalRepayable: repayable } };
+}
+
+function withGoalTermDays(
+  goal: FrozenAsk,
+  term: number | null,
+): { ok: true; goal: FrozenAsk } | { ok: false; error: string } {
+  if (term !== null && goal.goalRepayable !== true) {
+    return { ok: false, error: ASK_TERM_NEEDS_REPAYABLE };
+  }
+  if (goal.goalRepayable === true && term === null) {
+    return { ok: false, error: ASK_REPAYABLE_NEEDS_TERM };
+  }
+  return { ok: true, goal: { ...goal, goalTermDays: term } };
+}
 
 function isGoalCurrency(value: unknown): value is GoalCurrency {
   return (
@@ -597,6 +673,8 @@ function freezeSnapshots(
     goalAmountChf: quote('CHF'),
     goalAmountEur: quote('EUR'),
     goalAmountPhp: quote('PHP'),
+    goalRepayable: null,
+    goalTermDays: null,
   };
 }
 
@@ -679,6 +757,8 @@ async function frozenAskResponse(
  * @param video - Optional decoded video.
  * @param extraPhotos - Optional extra stills (indices 1..n). Omit when empty.
  * @param goal - Frozen ask. Default is no goal. Stored null when `parentId` is set.
+ *   `goalRepayable` is `true` or null; `goalTermDays` is 1..3650 or null;
+ *   replies store null.
  * @param place - Optional map pin for a top-level note. Default `null`.
  *   Stored as `null` when `parentId` is set.
  * @returns 200 / 403 (unpaid text-only below verified) / 409 (same live
@@ -761,6 +841,8 @@ async function persistForumPost(
     ...unsignedNostrDefaults(),
     parentId,
     goalSats: parentId === null ? goal.goalSats : null,
+    goalRepayable: parentId === null ? goal.goalRepayable : null,
+    goalTermDays: parentId === null ? goal.goalTermDays : null,
     goalCurrency: parentId === null ? goal.goalCurrency : null,
     goalAmount: parentId === null ? goal.goalAmount : null,
     goalAmountUsd: parentId === null ? goal.goalAmountUsd : null,
@@ -993,9 +1075,25 @@ async function postMultipartMessage(
     }
     place = parsedPlace.value;
   }
+  const repayableParsed = parseGoalRepayable(form.get('goalRepayable'), 'multipart');
+  if (!repayableParsed.ok) {
+    return c.json({ error: ASK_OBLIGATION_TRUE }, 400);
+  }
+  const termParsed = parseGoalTermDays(form.get('goalTermDays'), 'multipart');
+  if (!termParsed.ok) {
+    return c.json({ error: ASK_TERM_RANGE }, 400);
+  }
   const frozen = await frozenAskResponse(deps, c, shaped.legacy, shaped.currency, shaped.amount);
   if (frozen instanceof Response) {
     return frozen;
+  }
+  const obligated = withGoalRepayable(frozen.goal, repayableParsed.value);
+  if (!obligated.ok) {
+    return c.json({ error: ASK_OBLIGATION_NEEDS_ASK }, 400);
+  }
+  const termed = withGoalTermDays(obligated.goal, termParsed.value);
+  if (!termed.ok) {
+    return c.json({ error: termed.error }, 400);
   }
   return persistForumPost(
     deps,
@@ -1008,7 +1106,7 @@ async function postMultipartMessage(
     photo,
     video,
     undefined,
-    frozen.goal,
+    termed.goal,
     place,
   );
 }
@@ -1021,6 +1119,8 @@ const postBody = z
     goalSats: z.number().int().positive().max(GOAL_SATS_MAX).nullish(),
     goalCurrency: z.unknown().nullish(),
     goalAmount: z.unknown().nullish(),
+    goalRepayable: z.unknown().nullish(),
+    goalTermDays: z.unknown().nullish(),
     place: z.unknown().nullish(),
     photo: z
       .object({
@@ -1066,7 +1166,8 @@ const translateBody = z.object({
  *
  * Mounted at `/messages` so the public paths are `GET /messages`,
  * `POST /messages` (JSON photo or multipart `video` + optional `poster`,
- * optional `goalSats` whole-sat ask on a top-level note; replies 400),
+ * optional `goalSats` whole-sat ask on a top-level note; optional
+ * `goalRepayable` and `goalTermDays` on that ask; replies 400),
  * `GET /messages/places` (live top-level map pins),
  * `GET /messages/compose-target` (platform profile note for a 1-sat write),
  * `GET /messages/:id/photo` (and `.jpg` / `.jpeg` / `.png` / `.webp`),
@@ -1438,11 +1539,21 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
           400,
         );
       }
+      const repayableParsed = parseGoalRepayable(parsed.data.goalRepayable, 'json');
+      if (!repayableParsed.ok) {
+        return c.json({ error: ASK_OBLIGATION_TRUE }, 400);
+      }
+      const termParsed = parseGoalTermDays(parsed.data.goalTermDays, 'json');
+      if (!termParsed.ok) {
+        return c.json({ error: ASK_TERM_RANGE }, 400);
+      }
       if (
         parsed.data.inReplyTo !== undefined &&
         (typeof parsed.data.goalSats === 'number' ||
           goalFieldPresent(parsed.data.goalCurrency) ||
-          goalFieldPresent(parsed.data.goalAmount))
+          goalFieldPresent(parsed.data.goalAmount) ||
+          repayableParsed.value === true ||
+          termParsed.value !== null)
       ) {
         return c.json({ error: 'A reply cannot ask for a goal' }, 400);
       }
@@ -1476,6 +1587,14 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
       if (frozen instanceof Response) {
         return frozen;
       }
+      const obligated = withGoalRepayable(frozen.goal, repayableParsed.value);
+      if (!obligated.ok) {
+        return c.json({ error: ASK_OBLIGATION_NEEDS_ASK }, 400);
+      }
+      const termed = withGoalTermDays(obligated.goal, termParsed.value);
+      if (!termed.ok) {
+        return c.json({ error: termed.error }, 400);
+      }
       return persistForumPost(
         deps,
         postLimiter,
@@ -1487,7 +1606,7 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
         photo,
         undefined,
         extraPhotos.length > 0 ? extraPhotos : undefined,
-        frozen.goal,
+        termed.goal,
         place,
       );
     })
