@@ -1348,11 +1348,15 @@ describe('POST /messages', () => {
     const created = (await post.json()) as { goalSats?: number };
     expect(created.goalSats).toBe(21000);
     expect(created).not.toHaveProperty('goalRepayable');
+    expect(created).not.toHaveProperty('goalTermDays');
     const list = await app.request('/messages', { headers: AUTH });
     expect(list.status).toBe(200);
-    const body = (await list.json()) as { messages: { goalSats?: number; goalRepayable?: true }[] };
+    const body = (await list.json()) as {
+      messages: { goalSats?: number; goalRepayable?: true; goalTermDays?: number }[];
+    };
     expect(body.messages[0]?.goalSats).toBe(21000);
     expect(body.messages[0]).not.toHaveProperty('goalRepayable');
+    expect(body.messages[0]).not.toHaveProperty('goalTermDays');
   });
 
   it('posts a top-level note with goalSats and goalRepayable true', async () => {
@@ -1360,12 +1364,22 @@ describe('POST /messages', () => {
     const post = await app.request('/messages', {
       method: 'POST',
       headers: { ...AUTH, 'content-type': 'application/json' },
-      body: JSON.stringify({ text: 'ask', goalSats: 21000, goalRepayable: true }),
+      body: JSON.stringify({
+        text: 'ask',
+        goalSats: 21000,
+        goalRepayable: true,
+        goalTermDays: 30,
+      }),
     });
     expect(post.status).toBe(200);
-    const created = (await post.json()) as { goalSats?: number; goalRepayable?: true };
+    const created = (await post.json()) as {
+      goalSats?: number;
+      goalRepayable?: true;
+      goalTermDays?: number;
+    };
     expect(created.goalSats).toBe(21000);
     expect(created.goalRepayable).toBe(true);
+    expect(created.goalTermDays).toBe(30);
   });
 
   it('omits goalRepayable when JSON goalRepayable is null on an ask', async () => {
@@ -1375,7 +1389,9 @@ describe('POST /messages', () => {
       body: JSON.stringify({ text: 'ask', goalSats: 21000, goalRepayable: null }),
     });
     expect(post.status).toBe(200);
-    expect(await post.json()).not.toHaveProperty('goalRepayable');
+    const created = await post.json();
+    expect(created).not.toHaveProperty('goalRepayable');
+    expect(created).not.toHaveProperty('goalTermDays');
   });
 
   it('returns 400 when JSON goalRepayable is not true', async () => {
@@ -1395,10 +1411,67 @@ describe('POST /messages', () => {
     const res = await mount(await namedStore('Ada')).request('/messages', {
       method: 'POST',
       headers: { ...AUTH, 'content-type': 'application/json' },
-      body: JSON.stringify({ text: 'ask', goalRepayable: true }),
+      body: JSON.stringify({ text: 'ask', goalRepayable: true, goalTermDays: 30 }),
     });
     expect(res.status).toBe(400);
     expect(await res.json()).toEqual({ error: 'A repayment obligation needs an ask' });
+  });
+
+  it('posts a top-level note with goalSats, goalRepayable true, and goalTermDays 3650', async () => {
+    const app = mount(await namedStore('Ada'));
+    const post = await app.request('/messages', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({
+        text: 'ask',
+        goalSats: 21000,
+        goalRepayable: true,
+        goalTermDays: 3650,
+      }),
+    });
+    expect(post.status).toBe(200);
+    const created = (await post.json()) as { goalTermDays?: number };
+    expect(created.goalTermDays).toBe(3650);
+  });
+
+  it('returns 400 when JSON goalTermDays is not a whole number of days from 1 to 3650', async () => {
+    const app = mount(await namedStore('Ada'));
+    for (const goalTermDays of [0, 3651, 1.5, 'no']) {
+      const res = await app.request('/messages', {
+        method: 'POST',
+        headers: { ...AUTH, 'content-type': 'application/json' },
+        body: JSON.stringify({
+          text: 'ask',
+          goalSats: 21000,
+          goalRepayable: true,
+          goalTermDays,
+        }),
+      });
+      expect(res.status).toBe(400);
+      expect(await res.json()).toEqual({
+        error: 'Ask term must be a whole number of days from 1 to 3650',
+      });
+    }
+  });
+
+  it('returns 400 when JSON goalTermDays is set without goalRepayable', async () => {
+    const res = await mount(await namedStore('Ada')).request('/messages', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ text: 'ask', goalSats: 21000, goalTermDays: 30 }),
+    });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: 'A repayment term needs a repayable ask' });
+  });
+
+  it('returns 400 when JSON goalRepayable is true without a term', async () => {
+    const res = await mount(await namedStore('Ada')).request('/messages', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ text: 'ask', goalSats: 21000, goalRepayable: true }),
+    });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: 'A repayable ask needs a term in days' });
   });
 
   it('posts a top-level note with a place pin', async () => {
@@ -1738,7 +1811,36 @@ describe('POST /messages', () => {
     const res = await mount(await namedStore('Ada'), messageStore).request('/messages', {
       method: 'POST',
       headers: { ...AUTH, 'content-type': 'application/json' },
-      body: JSON.stringify({ text: 'child', inReplyTo: parentId, goalRepayable: true }),
+      body: JSON.stringify({
+        text: 'child',
+        inReplyTo: parentId,
+        goalRepayable: true,
+        goalTermDays: 30,
+      }),
+    });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: 'A reply cannot ask for a goal' });
+    expect(await messageStore.listReplies(parentId)).toEqual([]);
+  });
+
+  it('returns 400 when a reply sends goalTermDays', async () => {
+    const messageStore = new InMemoryMessageStore();
+    const parentId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+    await messageStore.create({
+      id: parentId,
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'parent',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      hasVideo: false,
+      videoContentType: null,
+      ...unsignedNostrDefaults(),
+    });
+    const res = await mount(await namedStore('Ada'), messageStore).request('/messages', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ text: 'child', inReplyTo: parentId, goalTermDays: 30 }),
     });
     expect(res.status).toBe(400);
     expect(await res.json()).toEqual({ error: 'A reply cannot ask for a goal' });
@@ -7772,6 +7874,7 @@ describe('forum video', () => {
     const created = (await res.json()) as { goalSats?: number };
     expect(created.goalSats).toBe(21000);
     expect(created).not.toHaveProperty('goalRepayable');
+    expect(created).not.toHaveProperty('goalTermDays');
     const emptyGoal = new FormData();
     emptyGoal.set('text', 'plain');
     emptyGoal.set('goalSats', '');
@@ -7789,15 +7892,21 @@ describe('forum video', () => {
     form.set('text', 'ask');
     form.set('goalSats', '21000');
     form.set('goalRepayable', 'true');
+    form.set('goalTermDays', '30');
     const res = await mount(await namedStore('Ada')).request('/messages', {
       method: 'POST',
       headers: AUTH,
       body: form,
     });
     expect(res.status).toBe(200);
-    const created = (await res.json()) as { goalSats?: number; goalRepayable?: true };
+    const created = (await res.json()) as {
+      goalSats?: number;
+      goalRepayable?: true;
+      goalTermDays?: number;
+    };
     expect(created.goalSats).toBe(21000);
     expect(created.goalRepayable).toBe(true);
+    expect(created.goalTermDays).toBe(30);
   });
 
   it('omits goalRepayable when multipart goalRepayable is empty on an ask', async () => {
@@ -7811,7 +7920,9 @@ describe('forum video', () => {
       body: form,
     });
     expect(res.status).toBe(200);
-    expect(await res.json()).not.toHaveProperty('goalRepayable');
+    const created = await res.json();
+    expect(created).not.toHaveProperty('goalRepayable');
+    expect(created).not.toHaveProperty('goalTermDays');
   });
 
   it('returns 400 when multipart goalRepayable is not true', async () => {
@@ -7835,6 +7946,7 @@ describe('forum video', () => {
     const form = new FormData();
     form.set('text', 'ask');
     form.set('goalRepayable', 'true');
+    form.set('goalTermDays', '30');
     const res = await mount(await namedStore('Ada')).request('/messages', {
       method: 'POST',
       headers: AUTH,
@@ -7842,6 +7954,85 @@ describe('forum video', () => {
     });
     expect(res.status).toBe(400);
     expect(await res.json()).toEqual({ error: 'A repayment obligation needs an ask' });
+  });
+
+  it('posts a multipart note with goalSats, goalRepayable true, and goalTermDays 3650', async () => {
+    const form = new FormData();
+    form.set('text', 'ask');
+    form.set('goalSats', '21000');
+    form.set('goalRepayable', 'true');
+    form.set('goalTermDays', '3650');
+    const res = await mount(await namedStore('Ada')).request('/messages', {
+      method: 'POST',
+      headers: AUTH,
+      body: form,
+    });
+    expect(res.status).toBe(200);
+    const created = (await res.json()) as { goalTermDays?: number };
+    expect(created.goalTermDays).toBe(3650);
+  });
+
+  it('returns 400 when multipart goalTermDays is not a whole number of days from 1 to 3650', async () => {
+    const app = mount(await namedStore('Ada'));
+    for (const goalTermDays of ['0', 'no', '3651']) {
+      const form = new FormData();
+      form.set('text', 'ask');
+      form.set('goalSats', '21000');
+      form.set('goalRepayable', 'true');
+      form.set('goalTermDays', goalTermDays);
+      const res = await app.request('/messages', {
+        method: 'POST',
+        headers: AUTH,
+        body: form,
+      });
+      expect(res.status).toBe(400);
+      expect(await res.json()).toEqual({
+        error: 'Ask term must be a whole number of days from 1 to 3650',
+      });
+    }
+  });
+
+  it('treats an empty multipart goalTermDays as no term', async () => {
+    const form = new FormData();
+    form.set('text', 'ask');
+    form.set('goalSats', '21000');
+    form.set('goalRepayable', 'true');
+    form.set('goalTermDays', '');
+    const res = await mount(await namedStore('Ada')).request('/messages', {
+      method: 'POST',
+      headers: AUTH,
+      body: form,
+    });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: 'A repayable ask needs a term in days' });
+  });
+
+  it('returns 400 when multipart goalTermDays is set without goalRepayable', async () => {
+    const form = new FormData();
+    form.set('text', 'ask');
+    form.set('goalSats', '21000');
+    form.set('goalTermDays', '30');
+    const res = await mount(await namedStore('Ada')).request('/messages', {
+      method: 'POST',
+      headers: AUTH,
+      body: form,
+    });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: 'A repayment term needs a repayable ask' });
+  });
+
+  it('returns 400 when multipart goalRepayable is true without a term', async () => {
+    const form = new FormData();
+    form.set('text', 'ask');
+    form.set('goalSats', '21000');
+    form.set('goalRepayable', 'true');
+    const res = await mount(await namedStore('Ada')).request('/messages', {
+      method: 'POST',
+      headers: AUTH,
+      body: form,
+    });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: 'A repayable ask needs a term in days' });
   });
 
   it('posts a multipart note with a valid place pin', async () => {
@@ -9373,11 +9564,18 @@ describe('GET /messages/hidden', () => {
 
     it('stores goalRepayable true on a currency ask', async () => {
       const { res, json } = await post(
-        { text: 'usd', goalCurrency: 'USD', goalAmount: '1', goalRepayable: true },
+        {
+          text: 'usd',
+          goalCurrency: 'USD',
+          goalAmount: '1',
+          goalRepayable: true,
+          goalTermDays: 30,
+        },
         { goalRateDay: async () => day },
       );
       expect(res.status).toBe(200);
       expect(json['goalRepayable']).toBe(true);
+      expect(json['goalTermDays']).toBe(30);
     });
 
     it('rejects a fiat ask when the day is missing, unusable, or out of range', async () => {

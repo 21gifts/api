@@ -409,6 +409,7 @@ describe('serializeMessage', () => {
     };
     expect(serializeMessage(row, false, 'basis').goalSats).toBe(21000);
     expect(serializeMessage(row, false, 'basis')).not.toHaveProperty('goalRepayable');
+    expect(serializeMessage(row, false, 'basis')).not.toHaveProperty('goalTermDays');
   });
 
   it('includes goalRepayable only when the stored column is true', () => {
@@ -440,6 +441,38 @@ describe('serializeMessage', () => {
         { id: 'staff', name: 'Mod', role: 'moderator' },
       ),
     ).not.toHaveProperty('goalRepayable');
+  });
+
+  it('includes goalTermDays only when the stored column is not null', () => {
+    const row: MessageRow = {
+      id: 'msg-term',
+      accountId: 'acc-1',
+      name: 'Ada',
+      text: 'ask',
+      createdAt: new Date('2026-08-28T12:00:00.000Z'),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+      goalSats: 21000,
+      goalRepayable: true,
+      goalTermDays: 30,
+    };
+    expect(serializeMessage(row, false, 'basis').goalTermDays).toBe(30);
+    expect(serializeMessage({ ...row, goalTermDays: null }, false, 'basis')).not.toHaveProperty(
+      'goalTermDays',
+    );
+    expect(serializeDebugMessage(row)['goalTermDays']).toBe(30);
+    expect(serializeDebugMessage({ ...row, goalTermDays: null })).not.toHaveProperty(
+      'goalTermDays',
+    );
+    expect(
+      serializeHiddenMessage(row, { id: 'staff', name: 'Mod', role: 'moderator' })['goalTermDays'],
+    ).toBe(30);
+    expect(
+      serializeHiddenMessage(
+        { ...row, goalTermDays: null },
+        { id: 'staff', name: 'Mod', role: 'moderator' },
+      ),
+    ).not.toHaveProperty('goalTermDays');
   });
 
   it('omits goalSats when unset, null, zero, or on a reply', () => {
@@ -1046,6 +1079,7 @@ describe('unsignedNostrDefaults', () => {
       sats: 0,
       goalSats: null,
       goalRepayable: null,
+      goalTermDays: null,
     });
   });
 });

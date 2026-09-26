@@ -268,6 +268,8 @@ END
 $message_goal_currency$;
 -- Optional repayment obligation on a top-level ask; SQL NULL or true only.
 ALTER TABLE message ADD COLUMN IF NOT EXISTS goal_repayable boolean;
+-- Optional agreed repayment term in whole days on a repayable ask; SQL NULL or 1..3650.
+ALTER TABLE message ADD COLUMN IF NOT EXISTS goal_term_days integer;
 DO $message_goal_repayable$
 BEGIN
   ALTER TABLE message DROP CONSTRAINT IF EXISTS message_goal_repayable_chk;
@@ -275,3 +277,10 @@ BEGIN
     CHECK (goal_repayable IS NOT TRUE OR (parent_id IS NULL AND goal_sats IS NOT NULL));
 END
 $message_goal_repayable$;
+DO $message_goal_term_days$
+BEGIN
+  ALTER TABLE message DROP CONSTRAINT IF EXISTS message_goal_term_days_chk;
+  ALTER TABLE message ADD CONSTRAINT message_goal_term_days_chk
+    CHECK (goal_term_days IS NULL OR (goal_repayable IS TRUE AND goal_term_days BETWEEN 1 AND 3650));
+END
+$message_goal_term_days$;
