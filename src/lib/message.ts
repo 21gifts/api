@@ -722,7 +722,7 @@ export function serializeDebugMessage(
  * @param row - Persisted message (including hidden rows and replies).
  * @param deletedBy - Resolved deleter `{ id, name, role }` from the route.
  * @returns Hidden-log fields (`id`, `name`, `text`, `createdAt`, `sats`,
- *   media flags, `photoTakenAts` (always, length === photoCount, nulls when
+ *   optional `accountId` when the author is a 21.gifts account, media flags, `photoTakenAts` (always, length === photoCount, nulls when
  *   unknown, `[]` when no stills), optional `photoTakenAt` only when
  *   photoCount === 1 (equal to slot 0, null allowed; omitted otherwise),
  *   `parentId`, `deletedAt`, `deletedBy`, optional `via`, optional

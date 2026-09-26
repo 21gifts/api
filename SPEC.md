@@ -132,7 +132,7 @@ Public base URLs used in examples:
 | POST   | `/funding/trial`                                     | Bearer (moderator+)        | One-UTC-day trial                                                                                                                                                 |
 | POST   | `/funding/admit`                                     | Bearer (moderator+)        | Admit grant                                                                                                                                                       |
 | POST   | `/funding/reject`                                    | Bearer (moderator+)        | Reject grant                                                                                                                                                      |
-| GET    | `/messages`                                          | Bearer                     | List top-level forum notes (+ visible `replyCount`); 409 if rules missing; name-copy notes without photo, extra stills, or video are omitted; About me text stays |
+| GET    | `/messages`                                          | none for active / Bearer  | Public active window with no header; otherwise Bearer. List top-level notes (+ visible `replyCount`); 409 if rules missing; name-copy notes without photo, extra stills, or video are omitted; About me text stays |
 | GET    | `/messages/compose-target`                           | Bearer                     | Platform profile note `{ messageId, sats }` for a 1-sat compose fee to 21.gifts                                                                                   |
 | GET    | `/messages/places`                                   | Bearer                     | Live top-level forum pins; 409 if rules missing                                                                                                                   |
 | POST   | `/messages`                                          | Bearer                     | Post text/photo; 409 if rules/name/username/Lightning Address missing; 403 text-only below verified                                                               |
@@ -781,7 +781,9 @@ live profile note has a stored photo; false when `profileMessage` is
 (not the latest-200 window), `trust` (`verifiedBy` / `proposedBy` /
 `confirmedBy` / `appointedBy`, each `{ id, name }` or `null`), and
 `fundingReviewedAt` (`grant.admittedAt` when the effective grant is
-admitted, else `null`). Default
+admitted, else `null`) and `fundingReviewedByName` (the live display name
+of `decidedBy` when that time is set and the trimmed name is non-empty,
+otherwise `null`). Default
 `trust` is all-null when no stored edges exist. Never `viewKey` /
 `eventId`. Never pending/trial/rejected on the member card.
 
@@ -3108,7 +3110,10 @@ Success → **Response** `200`:
 
 ### `GET /messages`
 
-Public member forum thread. Bearer session required. After auth,
+Public member forum thread. With no `Authorization` header, `mode=active`,
+and no hashtag, this is the public window: the first 200 active rows, no
+`accountId` and no `mentions`, 200 not 401. A present header that is not a
+live session is 401 and does not use that window. A session still needs
 `requireAction(account, 'forum.read')` (rules). Returns **only
 top-level notes** (`parent_id IS NULL`) via `listFeed`. A profile note
 is omitted only when its trimmed text equals the display name or the
@@ -3151,10 +3156,17 @@ include `"via": "nostr"`; their pubkey, `role`, and `accountId` remain omitted,
 and `payable` is false. Rows with neither an account nor an author pubkey stay
 invisible. List JSON never includes photo
 or video bytes. Signed-in list/replies/create may include `accountId`
-(21gifts author id; omitted for external rows); public GET `/messages/:id`
-never includes it. Nostr event ids are never included in the JSON.
+(21gifts author id; omitted for external rows) and `mentions`
+(`{ username, accountId }[]`, only when `accountId` is included and the
+stored list is non-empty). The public window omits both. Public GET
+`/messages/:id` omits `accountId` when unsigned; a session sets it for a
+21gifts author and omits it for an external author. Nostr event ids are never included in the JSON.
 
-Missing/invalid/expired bearer → **Response** `401`:
+A present Authorization header that is not a live session, a signed-out
+request that is not `mode=active` without a hashtag, or a public cursor
+outside the window → **Response** `401`. A missing header on that public
+window is not 401. Missing/invalid/expired bearer on the signed-in list
+→ **Response** `401`:
 
 ```json
 { "error": "Unauthorized" }
@@ -3330,7 +3342,8 @@ Bearer session required. After auth, the same `forum.read` gate as
 `GET /messages` (401 without a session; 409 `missing_requirements` when
 rules are missing). Query `limit` is an integer 1..1000 (default **1000**);
 otherwise **400** `{ "error": "Invalid limit" }`. Body
-`{ "places": [{ "id", "name", "createdAt", "lat", "lng", "label" }] }`.
+`{ "places": [{ "id", "name", "createdAt", "lat", "lng", "label", "accountId?" }] }`.
+`accountId` is set for a 21gifts author and omitted for an external pin.
 `createdAt` is ISO-8601. Newest first (`created_at` desc, `id` desc). Only
 live top-level rows with both coordinates. Replies and hidden notes are
 excluded.
@@ -3463,7 +3476,10 @@ in `{ messages }`), including `sats`, `payable`, `hasPhoto`, `photoCount`
 (always; length equals `photoCount`; null when unknown; `[]` when there are no
 stills) and `photoTakenAt` only when `photoCount` is 1, `hasVideo`, and
 `videoContentType`. May include `goalSats` (positive integer on a top-level
-note; omitted when unset). May include `accountId` (21gifts author id). No
+note; omitted when unset). May include `accountId` (21gifts author id) and `mentions`
+(`{ accountId, username }[]`, only when that list is non-empty). A stored
+self mark does not notify the author. Other marks fan out one
+`forum_mention` per person. No
 `replyCount`, and no photo or video bytes in the JSON. `sats` is 0 and
 `payable` is false until the worker signs the note (and stays false without
 author LN). `role` is the posting session account's live `account.role`. Web Push and in-app rows for a **top-level** note (`notifyForumPost`, kind
@@ -3886,8 +3902,10 @@ stored and omitted when unset, `payable`, `hasPhoto`, `photoCount`
 (0–10; always present; `hasPhoto` still means photo 0 exists), `photoTakenAts`
 (always; length equals `photoCount`; null when unknown; `[]` when there are no
 stills) and `photoTakenAt` only when `photoCount` is 1, `hasVideo`,
-`videoContentType`; live `role` for 21gifts authors) and omits
-`accountId`, `deletedAt`, and `deletedBy`. Unsigned and non-staff GET of a
+`videoContentType`; live `role` for 21gifts authors). Unsigned JSON omits
+`accountId`. A session sets `accountId` for a 21gifts author and omits it
+for an external author. Live JSON also omits
+`deletedAt` and `deletedBy`. Unsigned and non-staff GET of a
 soft-hidden row is still **404** `{ "error": "Not found" }` with no hide
 stamps in the body. A founder/moderator Bearer (`roleAtLeast(...,
 'moderator')`, no `forum.read`) of a hidden row is **200** public JSON plus
@@ -4081,7 +4099,8 @@ authorPubkey !== null` (the same rule as public message JSON), and
 `deletedBy: { id, name, role }` resolved from
 `authStore.getAccount` (missing account keeps that id with `name` /
 `role` null; null `deletedBy` is `{ id: null, name: null, role: null }`).
-Never includes `accountId`, `authorPubkey`, `eventId`, `nostrPublishState`,
+Includes `accountId` for a 21gifts author and omits it for an external row.
+Never includes `authorPubkey`, `eventId`, `nostrPublishState`,
 `payable`, author `role`, `nostrEvent`, `claimedUntil`, `contentFp`, nsec,
 or photo/video bytes. Public list/GET/photo stay **404** for hidden rows.
 A founder/moderator session may GET the hidden permalink and photo/video.
@@ -4526,7 +4545,7 @@ plus `unreadCount`. Fan-out already applied the owner's
 `notificationLevel` when the row was written; this list applies the same
 `notificationLevel` filter to stored rows (`notificationsMatchingLevel`
 on the newest 1000). After the level filter, drop `forum_post` /
-`forum_reply` whose parent message is missing or hidden; also drop
+`forum_reply` / `forum_mention` whose parent message is missing or hidden; also drop
 `forum_reply` when the child (`replyId`) is missing or hidden. Never drop
 `moderator_appointed` or `moderator_proposal` (do not look up a forum
 message; do not add the parent id to the purge set). Zap only checks the
@@ -4535,7 +4554,7 @@ Best-effort purge of those message ids. Then cap the kept list at **200**.
 `unreadCount` is unread among kept rows after the hidden filter (not the
 unfiltered matching unread of the 1000, and not necessarily the page
 length). Member JSON never includes recipient or actor account ids. Each
-item `type` is `"forum_post"`, `"forum_reply"`, `"zap"`,
+item `type` is `"forum_post"`, `"forum_reply"`, `"forum_mention"`, `"zap"`,
 `"moderator_appointed"`, or `"moderator_proposal"`.
 
 Missing/invalid/expired bearer → **Response** `401`:
