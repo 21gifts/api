@@ -2584,7 +2584,13 @@ test('Function: repaymentInvoice — POST /messages/:id/repayment without bearer
 
 test('Function: repaymentLedger — a 1-sat gift is repaid in full', async () => {
   const { repaymentLedger } = await import('../src/lib/credit-repayment');
-  const rows = repaymentLedger(30, [{ accountId: 'tiny', units: 1n }], [], Date.UTC(2026, 8, 26), Date.UTC(2026, 8, 27));
+  const rows = repaymentLedger(
+    30,
+    [{ accountId: 'tiny', units: 1n }],
+    [],
+    Date.UTC(2026, 8, 26),
+    Date.UTC(2026, 8, 27),
+  );
   expect(rows.some((row) => row.accountId === 'tiny' && row.units === 1n)).toBe(true);
 });
 
@@ -2642,9 +2648,8 @@ test('Function: shareSats — a day split keeps the total', async () => {
 });
 
 test('Function: repaymentDescription — marks the day and the giver', async () => {
-  const { repaymentDescription, parseRepaymentDescription } = await import(
-    '../src/lib/credit-repayment.ts'
-  );
+  const { repaymentDescription, parseRepaymentDescription } =
+    await import('../src/lib/credit-repayment');
   const id = '11111111-1111-4111-8111-111111111111';
   expect(parseRepaymentDescription(repaymentDescription(1, id))?.recipientAccountId).toBe(id);
 });
