@@ -199,6 +199,13 @@ test('Function: textHasHashtagToken — PATCH /messages/:id/place without bearer
   expect(res.status()).toBe(401);
 });
 
+test('PATCH /messages/:id/shop-account without bearer is 401', async ({ request }) => {
+  const res = await request.patch('/messages/:id/shop-account', {
+    data: { username: null },
+  });
+  expect(res.status()).toBe(401);
+});
+
 test('GET /messages/:id/replies without bearer is 404', async ({ request }) => {
   const res = await request.get('/messages/:id/replies');
   expect(res.status()).toBe(404);

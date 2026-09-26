@@ -592,6 +592,49 @@ describe('serializeMessage', () => {
     ).toEqual({ lat: 1, lng: 2, label: null });
   });
 
+  it('omits shopAccount when unset or null', () => {
+    const row: MessageRow = {
+      id: 'msg-noshop',
+      accountId: 'acc-1',
+      name: 'Ada',
+      text: 'hi',
+      createdAt: new Date('2026-08-28T12:00:00.000Z'),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+    };
+    expect(serializeMessage(row, false, 'basis', undefined, false)).not.toHaveProperty(
+      'shopAccount',
+    );
+    expect(
+      serializeMessage({ ...row, shopAccount: null }, false, 'basis', undefined, false),
+    ).not.toHaveProperty('shopAccount');
+  });
+
+  it('includes shopAccount when set, even without accountId, and allows an empty name', () => {
+    const row: MessageRow = {
+      id: 'msg-shop',
+      accountId: 'acc-1',
+      name: 'Ada',
+      text: 'hi',
+      createdAt: new Date('2026-08-28T12:00:00.000Z'),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+      shopAccount: { id: 'shop-acc', username: 'ada', name: 'Ada' },
+    };
+    const body = serializeMessage(row, false, 'basis', undefined, false);
+    expect(body.shopAccount).toEqual({ id: 'shop-acc', username: 'ada', name: 'Ada' });
+    expect(body).not.toHaveProperty('accountId');
+    expect(
+      serializeMessage(
+        { ...row, shopAccount: { id: 'shop-acc', username: 'ada', name: '' } },
+        false,
+        'basis',
+        undefined,
+        true,
+      ).shopAccount,
+    ).toEqual({ id: 'shop-acc', username: 'ada', name: '' });
+  });
+
   it('stamps deletedAt / deletedBy and forces payable false when hidden is set', () => {
     const row: MessageRow = {
       id: 'msg-hidden-opt',
@@ -687,6 +730,7 @@ describe('serializeDebugMessage', () => {
       placeLat: null,
       placeLng: null,
       placeLabel: null,
+      shopAccountId: null,
       photoContentType: null,
       photoBytes: 0,
       extraPhotos: [],
@@ -821,6 +865,29 @@ describe('serializeDebugMessage', () => {
     expect(unlabeled['placeLat']).toBe(1);
     expect(unlabeled['placeLng']).toBe(2);
     expect(unlabeled['placeLabel']).toBeNull();
+  });
+
+  it('always includes shopAccountId, JSON null when unset, and omits username', () => {
+    const row: MessageRow = {
+      id: 'msg-debug-shop',
+      accountId: 'acc-1',
+      name: 'Ada',
+      text: 'hi',
+      createdAt: new Date('2026-08-28T12:00:00.000Z'),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+    };
+    expect(serializeDebugMessage(row)['shopAccountId']).toBeNull();
+    expect(serializeDebugMessage(row)).not.toHaveProperty('shopAccount');
+    expect(serializeDebugMessage({ ...row, shopAccount: null })['shopAccountId']).toBeNull();
+    const linked = serializeDebugMessage({
+      ...row,
+      shopAccount: { id: 'shop-acc', username: 'ada', name: 'Ada' },
+    });
+    expect(linked['shopAccountId']).toBe('shop-acc');
+    expect(linked).not.toHaveProperty('shopAccount');
+    expect(linked).not.toHaveProperty('username');
+    expect(JSON.stringify(linked)).not.toContain('ada');
   });
 });
 
@@ -1066,6 +1133,29 @@ describe('serializeHiddenMessage', () => {
         'place'
       ],
     ).toEqual({ lat: 1, lng: 2, label: null });
+  });
+
+  it('includes shopAccount only when set', () => {
+    const row: MessageRow = {
+      id: 'msg-hidden-shop',
+      accountId: 'acc-1',
+      name: 'Ada',
+      text: 'hi',
+      createdAt: new Date('2026-08-28T12:00:00.000Z'),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+    };
+    const deletedBy = { id: null, name: null, role: null };
+    expect(serializeHiddenMessage(row, deletedBy)).not.toHaveProperty('shopAccount');
+    expect(serializeHiddenMessage({ ...row, shopAccount: null }, deletedBy)).not.toHaveProperty(
+      'shopAccount',
+    );
+    expect(
+      serializeHiddenMessage(
+        { ...row, shopAccount: { id: 'shop-acc', username: 'ada', name: '' } },
+        deletedBy,
+      )['shopAccount'],
+    ).toEqual({ id: 'shop-acc', username: 'ada', name: '' });
   });
 });
 

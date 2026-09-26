@@ -145,6 +145,11 @@ export interface MessageRow {
    * Optional map pin on a top-level note. Omit or `null` means no place.
    */
   place?: ForumPlace | null;
+  /**
+   * Optional 21.gifts account linked to a shop note. Not the author.
+   * Omit or `null` means none.
+   */
+  shopAccount?: { id: string; username: string; name: string } | null;
   /** Stored signed event JSON, or `null` until signed. */
   nostrEvent: Record<string, unknown> | null;
   /** Lease expiry (epoch ms), or `null`. */
@@ -250,6 +255,12 @@ export interface PublicMessage {
    * omit rule as `parentId`). `label` is a string or JSON `null`.
    */
   place?: ForumPlace;
+  /**
+   * Optional 21.gifts account linked to a shop note. Not the author.
+   * Included only when stored; omitted when unset (same omit rule as `place`).
+   * Present even when `accountId` is omitted.
+   */
+  shopAccount?: { id: string; username: string; name: string };
   /** Whether `POST /messages/:id/invoice` can run. */
   payable: boolean;
   /** True when a photo can be fetched via GET `/messages/:id/photo`. */
@@ -398,6 +409,21 @@ function publicPlace(row: MessageRow): ForumPlace | undefined {
     return undefined;
   }
   return { lat: place.lat, lng: place.lng, label: place.label };
+}
+
+/**
+ * Public/hidden JSON `shopAccount` when one is stored. Omitted when unset
+ * or null (same omit rule as `place`). Included even when `includeAccountId`
+ * is false. `name` may be empty.
+ */
+function publicShopAccount(
+  row: MessageRow,
+): { id: string; username: string; name: string } | undefined {
+  const shop = row.shopAccount;
+  if (shop === undefined || shop === null) {
+    return undefined;
+  }
+  return { id: shop.id, username: shop.username, name: shop.name };
 }
 
 /**
@@ -567,6 +593,7 @@ export function truncatePubkeyDisplay(pubkeyHex: string): string {
  * the stored column is true (omitted when null; never false); optional
  * `goalTermDays` when the stored column is not null (omitted when null);
  * optional currency-ask keys when `goalCurrency` is stored; optional `place` when stored;
+ * optional `shopAccount` when stored (also when `includeAccountId` is false);
  * optional hide stamps when `hidden`
  * is set); `createdAt` ISO-8601. Never includes photo or video bytes, and
  * never includes `contentFp`. Omits the `parentId` key on top-level notes.
@@ -576,6 +603,7 @@ export function truncatePubkeyDisplay(pubkeyHex: string): string {
  * Omits `goalCurrency` / `goalAmount` / `goalAmountUsd` / `goalAmountChf` /
  * `goalAmountEur` / `goalAmountPhp` when `goalCurrency` is null.
  * Omits `place` when unset or null.
+ * Omits `shopAccount` when unset or null.
  * Live serialize omits `deletedAt` / `deletedBy`.
  * @throws RangeError (or Error) when createdAt is invalid.
  */
@@ -657,6 +685,10 @@ export function serializeMessage(
   if (place !== undefined) {
     body.place = place;
   }
+  const shopAccount = publicShopAccount(row);
+  if (shopAccount !== undefined) {
+    body.shopAccount = shopAccount;
+  }
   if (hidden !== undefined) {
     body.deletedAt = hidden.deletedAt.toISOString();
     body.deletedBy = hidden.deletedBy;
@@ -699,7 +731,8 @@ export interface DebugMessagePhotoMeta {
  *   when null; never false). `goalTermDays` is included only when the stored
  *   column is not null (omitted when null). Currency-ask keys are included only when
  *   `goalCurrency` is stored. Always includes `placeLat` / `placeLng` /
- *   `placeLabel` (JSON `null` when unset).
+ *   `placeLabel` (JSON `null` when unset). Always includes `shopAccountId`
+ *   (`null` when unset). Does not include the shop username or name.
  * @throws RangeError (or Error) when `createdAt` or `deletedAt` is invalid.
  */
 export function serializeDebugMessage(
@@ -756,6 +789,8 @@ export function serializeDebugMessage(
     placeLat: row.place === undefined || row.place === null ? null : row.place.lat,
     placeLng: row.place === undefined || row.place === null ? null : row.place.lng,
     placeLabel: row.place === undefined || row.place === null ? null : row.place.label,
+    shopAccountId:
+      row.shopAccount === undefined || row.shopAccount === null ? null : row.shopAccount.id,
     photoContentType: photo?.photoContentType ?? null,
     photoBytes: photo?.photoBytes ?? 0,
     extraPhotos: photo?.extraPhotos ?? [],
@@ -789,6 +824,7 @@ export function serializeDebugMessage(
  *   stored value is a positive integer on a top-level note (omitted
  *   otherwise). Optional currency-ask keys when `goalCurrency` is stored
  *   (omitted on legacy rows). Optional `place` when stored (omitted when unset).
+ *   Optional `shopAccount` when stored (omitted when unset).
  * @throws RangeError (or Error) when `createdAt` or `deletedAt` is invalid.
  */
 export function serializeHiddenMessage(
@@ -802,6 +838,7 @@ export function serializeHiddenMessage(
   const goalCurrency = publicGoalCurrency(row);
   const taken = photoTakenJson(row);
   const place = publicPlace(row);
+  const shopAccount = publicShopAccount(row);
   const body: Record<string, unknown> & { via?: 'nostr' } = {
     id: row.id,
     name: row.name,
@@ -835,6 +872,7 @@ export function serializeHiddenMessage(
           goalAmountPhp: goalCurrency.goalAmountPhp,
         }),
     ...(place === undefined ? {} : { place }),
+    ...(shopAccount === undefined ? {} : { shopAccount }),
   };
   if (row.accountId === null && row.authorPubkey !== null) {
     body.via = 'nostr';

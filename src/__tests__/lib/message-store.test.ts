@@ -96,7 +96,7 @@ const JPEG2: ForumPhoto = {
 
 describe('MESSAGE_SCHEMA_SQL', () => {
   it('creates message with photo columns, Nostr columns, index, and additive ALTERs', () => {
-    expect(MESSAGE_SCHEMA_SQL).toHaveLength(90);
+    expect(MESSAGE_SCHEMA_SQL).toHaveLength(91);
     expect(MESSAGE_SCHEMA_SQL.join('\n')).toMatch(
       /ALTER TABLE message ADD COLUMN IF NOT EXISTS place_lat double precision/i,
     );
@@ -105,6 +105,9 @@ describe('MESSAGE_SCHEMA_SQL', () => {
     );
     expect(MESSAGE_SCHEMA_SQL.join('\n')).toMatch(
       /ALTER TABLE message ADD COLUMN IF NOT EXISTS place_label text/i,
+    );
+    expect(MESSAGE_SCHEMA_SQL.join('\n')).toMatch(
+      /ALTER TABLE message ADD COLUMN IF NOT EXISTS shop_account_id uuid REFERENCES account \(id\) ON DELETE SET NULL/,
     );
     expect(MESSAGE_SCHEMA_SQL.join('\n')).toMatch(
       /CREATE TABLE IF NOT EXISTS message_translation/i,
@@ -212,6 +215,9 @@ describe('MESSAGE_SCHEMA_SQL', () => {
     );
     expect(MESSAGE_SCHEMA_SQL.join('\n')).toMatch(
       /ALTER TABLE message ADD COLUMN IF NOT EXISTS place_label text/,
+    );
+    expect(MESSAGE_SCHEMA_SQL.join('\n')).toMatch(
+      /ALTER TABLE message ADD COLUMN IF NOT EXISTS shop_account_id uuid REFERENCES account \(id\) ON DELETE SET NULL/,
     );
     expect(MESSAGE_SCHEMA_SQL.join('\n')).toMatch(
       /ALTER TABLE message ADD COLUMN IF NOT EXISTS goal_currency text/,
@@ -938,6 +944,69 @@ describe('InMemoryMessageStore', () => {
     expect(cleared?.sats).toBe(21);
     expect(cleared?.eventId).toBe(eventId);
     expect(cleared?.deletedAt).toBeNull();
+  });
+
+  it('setShopAccount returns false when missing', async () => {
+    const store = new InMemoryMessageStore();
+    expect(await store.setShopAccount('missing', null)).toBe(false);
+  });
+
+  it('setShopAccount sets and clears without changing other columns', async () => {
+    const store = new InMemoryMessageStore();
+    const eventId = '11'.repeat(32);
+    await store.create({
+      ...EARLY,
+      id: 'p-shop',
+      text: 'shop',
+      sats: 21,
+      eventId,
+      place: { lat: 1, lng: 2, label: 'Pin' },
+    });
+    const snap = { id: 'shop-acc', username: 'ada', name: 'Ada' };
+    expect(await store.setShopAccount('p-shop', snap)).toBe(true);
+    snap.name = 'changed';
+    const set = await store.getById('p-shop');
+    expect(set?.shopAccount).toEqual({ id: 'shop-acc', username: 'ada', name: 'Ada' });
+    expect(set?.text).toBe('shop');
+    expect(set?.sats).toBe(21);
+    expect(set?.eventId).toBe(eventId);
+    expect(set?.place).toEqual({ lat: 1, lng: 2, label: 'Pin' });
+    expect(set?.deletedAt).toBeNull();
+    expect(await store.setShopAccount('p-shop', null)).toBe(true);
+    const cleared = await store.getById('p-shop');
+    expect(cleared?.shopAccount).toBeNull();
+    expect(cleared?.text).toBe('shop');
+    expect(cleared?.sats).toBe(21);
+    expect(cleared?.eventId).toBe(eventId);
+    expect(cleared?.place).toEqual({ lat: 1, lng: 2, label: 'Pin' });
+  });
+
+  it('create leaves shopAccount null and copyRow copies a snapshot', async () => {
+    const seeded = new InMemoryMessageStore([
+      EARLY,
+      {
+        ...EARLY,
+        id: 'seed-shop',
+        shopAccount: { id: 'a', username: 'ada', name: 'Ada' },
+      },
+      { ...LATE, id: 'seed-null', shopAccount: null },
+    ]);
+    const copied = await seeded.getById('seed-shop');
+    expect(copied?.shopAccount).toEqual({ id: 'a', username: 'ada', name: 'Ada' });
+    if (copied?.shopAccount) {
+      copied.shopAccount.name = 'mutated';
+    }
+    expect((await seeded.getById('seed-shop'))?.shopAccount?.name).toBe('Ada');
+    expect((await seeded.getById('seed-null'))?.shopAccount).toBeNull();
+    expect((await seeded.getById('a'))?.shopAccount).toBeNull();
+
+    const store = new InMemoryMessageStore();
+    await store.create({
+      ...EARLY,
+      id: 'created-shop',
+      shopAccount: { id: 'a', username: 'ada', name: 'Ada' },
+    });
+    expect((await store.getById('created-shop'))?.shopAccount).toBeNull();
   });
 
   it('replyCount and worker scans omit soft-deleted rows', async () => {
@@ -4630,6 +4699,97 @@ describe('PostgresMessageStore', () => {
     expect(listed[2]?.place).toBeNull();
   });
 
+  it('maps a shop account only when id and username are non-empty', async () => {
+    const sql = new MockSql();
+    const hiddenAt = new Date('2026-09-01T00:00:00.000Z');
+    const base = {
+      account_id: 'acc',
+      name: 'Ada',
+      text: 'shop',
+      created_at: new Date('2026-08-01T00:00:00.000Z'),
+      has_photo: false,
+      deleted_at: hiddenAt,
+      deleted_by: 'staff',
+    };
+    sql.nextRows = [
+      {
+        ...base,
+        id: 'full',
+        shop_account_id: 'shop-acc',
+        shop_username: 'ada',
+        shop_name: 'Ada',
+      },
+      {
+        ...base,
+        id: 'empty-name',
+        shop_account_id: 'shop-acc',
+        shop_username: 'ada',
+        shop_name: '',
+      },
+      {
+        ...base,
+        id: 'null-name',
+        shop_account_id: 'shop-acc',
+        shop_username: 'ada',
+        shop_name: null,
+      },
+      {
+        ...base,
+        id: 'padded-user',
+        shop_account_id: 'shop-acc',
+        shop_username: ' ada ',
+        shop_name: 'Ada',
+      },
+      {
+        ...base,
+        id: 'blank-user',
+        shop_account_id: 'shop-acc',
+        shop_username: '   ',
+        shop_name: 'Ada',
+      },
+      {
+        ...base,
+        id: 'null-user',
+        shop_account_id: 'shop-acc',
+        shop_username: null,
+        shop_name: 'Ada',
+      },
+      {
+        ...base,
+        id: 'empty-id',
+        shop_account_id: '',
+        shop_username: 'ada',
+        shop_name: 'Ada',
+      },
+      {
+        ...base,
+        id: 'null-id',
+        shop_account_id: null,
+        shop_username: 'ada',
+        shop_name: 'Ada',
+      },
+      { ...base, id: 'absent' },
+    ];
+    const listed = await new PostgresMessageStore(sql).listHidden(20);
+    expect(sql.queries[0]?.text).toMatch(/shop_account_id/);
+    expect(sql.queries[0]?.text).toMatch(
+      /\(SELECT username FROM account WHERE account\.id = message\.shop_account_id\) AS shop_username/,
+    );
+    expect(sql.queries[0]?.text).toMatch(
+      /\(SELECT name FROM account WHERE account\.id = message\.shop_account_id\) AS shop_name/,
+    );
+    const byId = new Map(listed.map((row) => [row.id, row.shopAccount]));
+    expect(byId.get('full')).toEqual({ id: 'shop-acc', username: 'ada', name: 'Ada' });
+    expect(byId.get('empty-name')).toEqual({ id: 'shop-acc', username: 'ada', name: '' });
+    expect(byId.get('null-name')).toEqual({ id: 'shop-acc', username: 'ada', name: '' });
+    expect(byId.get('padded-user')).toEqual({ id: 'shop-acc', username: ' ada ', name: 'Ada' });
+    expect(byId.get('blank-user')).toBeNull();
+    expect(byId.get('null-user')).toBeNull();
+    expect(byId.get('empty-id')).toBeNull();
+    expect(byId.get('null-id')).toBeNull();
+    expect(byId.get('absent')).toBeNull();
+  });
+
   it('listPlaces selects live top-level pins newest-first without photo', async () => {
     const sql = new MockSql();
     const createdAt = new Date('2026-08-28T12:00:00.000Z');
@@ -6083,6 +6243,27 @@ describe('PostgresMessageStore', () => {
     const missing = new MockSql();
     missing.nextRows = [];
     expect(await new PostgresMessageStore(missing).setPlace('gone', pin)).toBe(false);
+  });
+
+  it('setShopAccount updates only shop_account_id and returns false when missing', async () => {
+    const sql = new MockSql();
+    sql.nextRows = [{ id: 'm1' }];
+    const account = { id: 'shop-acc', username: 'ada', name: 'Ada' };
+    expect(await new PostgresMessageStore(sql).setShopAccount('m1', account)).toBe(true);
+    expect(sql.executes).toEqual([]);
+    expect(sql.queries).toHaveLength(1);
+    const text = sql.queries[0]?.text ?? '';
+    expect(text).toMatch(/UPDATE message SET shop_account_id = \$2 WHERE id = \$1/);
+    expect(text).toMatch(/RETURNING id/);
+    expect(text).not.toMatch(/place_lat/);
+    expect(sql.queries[0]?.params).toEqual(['m1', 'shop-acc']);
+
+    expect(await new PostgresMessageStore(sql).setShopAccount('m1', null)).toBe(true);
+    expect(sql.queries[1]?.params).toEqual(['m1', null]);
+
+    const missing = new MockSql();
+    missing.nextRows = [];
+    expect(await new PostgresMessageStore(missing).setShopAccount('gone', account)).toBe(false);
   });
 
   it('list and claim SQL require deleted_at IS NULL', async () => {
