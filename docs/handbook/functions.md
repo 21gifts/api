@@ -2548,8 +2548,8 @@
 
 ## Function: fundingRoutes
 
-- **Purpose:** Hono sub-app for member `POST /apply` and staff `GET /applications`, `GET /applications/:accountId`, `POST /trial`, `POST /admit`, and `POST /reject`. `basis` cannot apply (403). Apply requires a filled About me (real bio, not empty/name-only), an About me photo, and a non-empty location; missing fields are 400 `{ error: 'About me is required' }`, `{ error: 'About me photo is required' }`, `{ error: 'Location is required' }` in that order. Apply from effective none/rejected only. Staff list is effective pending (expired trials after `loadGrantEffective`). Trial from pending; admit from pending or trial; reject from pending or trial. Writes go through `FundingStore.transition` (apply `from` none/rejected; trial pending; admit/reject pending or trial); 0 matching rows is 409 so a concurrent decision cannot overwrite. Staff cannot target themselves (409). UUID check reuses `MESSAGE_ID_RE`. Logs `funding.applied` / `funding.trial` / `funding.admitted` / `funding.rejected` / `funding.applications.listed`. Store throw → 503 `{ error: 'Funding is unavailable' }`. After a 200 on `POST /trial`, when `spendPing` is configured, ping it once with the trimmed Lightning address and the newest live top-level photo or video (including About me) whose `createdAt` falls on today's UTC day. Two arguments, daily kind. A blank address, no such post, or a post from an earlier UTC day does not ping. A thrown lookup or ping logs `funding.daily_ping.failed` and the HTTP status stays 200. A 200 on `POST /admit` from effective pending uses that same daily ping. A 200 from an active trial does not ping.
-- **Inputs:** `FundingRouteDeps`: `authStore`, `fundingStore`, `messageStore`, `now`, optional `spendPing`.
+- **Purpose:** Hono sub-app for member `POST /apply` and staff `GET /applications`, `GET /applications/:accountId`, `POST /trial`, `POST /admit`, `POST /reject`, and `GET /payout-days`. `basis` cannot apply (403). Apply requires a filled About me (real bio, not empty/name-only), an About me photo, and a non-empty location; missing fields are 400 `{ error: 'About me is required' }`, `{ error: 'About me photo is required' }`, `{ error: 'Location is required' }` in that order. Apply from effective none/rejected only. Staff list is effective pending (expired trials after `loadGrantEffective`). Trial from pending; admit from pending or trial; reject from pending or trial. Writes go through `FundingStore.transition` (apply `from` none/rejected; trial pending; admit/reject pending or trial); 0 matching rows is 409 so a concurrent decision cannot overwrite. Staff cannot target themselves (409). UUID check reuses `MESSAGE_ID_RE`. Logs `funding.applied` / `funding.trial` / `funding.admitted` / `funding.rejected` / `funding.applications.listed` / `funding.payouts.listed` / `funding.payouts.failed`. `GET /payout-days` returns `{ days, rows }` for the last seven UTC days (staff only; daily gifts only; no lazy trial expiry). Store throw → 503 `{ error: 'Funding is unavailable' }`. After a 200 on `POST /trial`, when `spendPing` is configured, ping it once with the trimmed Lightning address and the newest live top-level photo or video (including About me) whose `createdAt` falls on today's UTC day. Two arguments, daily kind. A blank address, no such post, or a post from an earlier UTC day does not ping. A thrown lookup or ping logs `funding.daily_ping.failed` and the HTTP status stays 200. A 200 on `POST /admit` from effective pending uses that same daily ping. A 200 from an active trial does not ping.
+- **Inputs:** `FundingRouteDeps`: `authStore`, `fundingStore`, `messageStore`, `gifts`, `now`, optional `spendPing`.
 - **Returns / side effects:** Hono app mounted at `/funding`. 401/403/400/404/409/503 with the documented `{ error }` strings; apply 200 `{ funding }`; list 200 `{ applications }`; detail 200 `{ account, grant, messages }`; staff POSTs 200 `{ id, name, role, funding }`.
 - **Used by:** `createApp`.
 
@@ -2630,6 +2630,20 @@ Builds the operator-only external-pubkey inspection route.
 - **Inputs:** `nowMs` epoch milliseconds.
 - **Returns / side effects:** `boolean`. No I/O.
 - **Used by:** `eligibleToday`.
+
+## Function: comparePayoutRows
+
+- **Purpose:** Sort key for the staff payout matrix. Named rows come before unnamed ones. Names use base English comparison. When names tie, a row with an account id comes before an unmatched handle, then account ids ascending.
+- **Inputs:** Two {@link PayoutMatrixRow} values.
+- **Returns / side effects:** Negative when the first row comes first, positive when the second does, otherwise 0. No I/O.
+- **Used by:** `buildFundingPayoutMatrix`.
+
+## Function: buildFundingPayoutMatrix
+
+- **Purpose:** Staff matrix of theoretical grant entitlement versus collected daily payouts for seven UTC days ending on `nowMs` (oldest first). `basis` is never entitled. Admitted is entitled from `admittedAt`'s UTC day, or every day when `admittedAt` is null. A stored `trialUtcDate` entitles that one day even if status is no longer `trial`. A `gift.kind === 'daily'` on that UTC day, matched by Lightning local-part, is `paid` and wins over entitlement. Welcome gifts and moderator stipends are ignored. This is the post-gate grant rule: it does not use `eligibleToday`, and it does not reconstruct a cleared trial, a cleared admission, or the spend roster. A row is included only when some day is `missed` or `paid`.
+- **Inputs:** `nowMs`, live accounts (`id`, `name`, `role`, `lightningAddress`), stored grants, and outbound gifts.
+- **Returns / side effects:** `{ days, rows }` where each row is `accountId`, trimmed `name`, and seven cells `blocked` | `missed` | `paid`. No I/O. Named rows sort first (`en`, base), then account id. An unmatched daily handle is its own row (`accountId` null).
+- **Used by:** `fundingRoutes` `GET /funding/payout-days`.
 
 ## Function: eligibleToday
 

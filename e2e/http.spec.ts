@@ -853,6 +853,11 @@ test('GET /funding/applications without bearer is 401', async ({ request }) => {
   expect(res.status()).toBe(401);
 });
 
+test('GET /funding/payout-days without bearer is 401', async ({ request }) => {
+  const res = await request.get('/funding/payout-days');
+  expect(res.status()).toBe(401);
+});
+
 test('GET /funding/applications/:accountId without bearer is 401', async ({ request }) => {
   const res = await request.get('/funding/applications/:accountId');
   expect(res.status()).toBe(401);

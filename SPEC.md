@@ -132,6 +132,7 @@ Public base URLs used in examples:
 | POST   | `/funding/trial`                                     | Bearer (moderator+)        | One-UTC-day trial                                                                                                                                                                                                  |
 | POST   | `/funding/admit`                                     | Bearer (moderator+)        | Admit grant                                                                                                                                                                                                        |
 | POST   | `/funding/reject`                                    | Bearer (moderator+)        | Reject grant                                                                                                                                                                                                       |
+| GET    | `/funding/payout-days`                               | Bearer (moderator+)        | Staff seven-UTC-day grant payout matrix (`blocked` / `missed` / `paid`)                                                                                                                                            |
 | GET    | `/messages`                                          | none for active / Bearer   | Public active window with no header; otherwise Bearer. List top-level notes (+ visible `replyCount`); 409 if rules missing; name-copy notes without photo, extra stills, or video are omitted; About me text stays |
 | GET    | `/messages/compose-target`                           | Bearer                     | Platform profile note `{ messageId, sats }` for a 1-sat compose fee to 21.gifts                                                                                                                                    |
 | GET    | `/messages/places`                                   | Bearer                     | Live top-level forum pins; 409 if rules missing                                                                                                                                                                    |
@@ -1107,6 +1108,20 @@ Staff Bearer. Target effective pending **or** trial, not self, not
 
 Staff Bearer. Target effective pending or trial, not self. Sets
 `rejected` and clears trial/admitted. **200** same shape as trial.
+
+### `GET /funding/payout-days`
+
+Staff Bearer (moderator). Seven UTC days ending today, oldest first,
+and one row per person who was entitled to the grant or received a
+daily payout in that window. Does not use the pre-2026-09-30 open
+gate and does not run lazy trial expiry. JSON
+`{ "days": [ "YYYY-MM-DD", … ], "rows": [ { accountId, name, days } ] }`
+where each cell is `blocked`, `missed`, or `paid`. A day is `paid`
+only for `gift.kind === "daily"`. Welcome gifts and moderator
+stipends do not count. Logs `funding.payouts.listed` `{ count }`.
+No session → **401** `{ "error": "Unauthorized" }`. Below moderator →
+**403** `{ "error": "Forbidden" }`. Store throw → **503**
+`{ "error": "Funding is unavailable" }` (`funding.payouts.failed`).
 
 ### `GET /view/:viewKey`
 
