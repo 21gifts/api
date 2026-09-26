@@ -4,11 +4,11 @@ import { runPushWorkerTick } from '../lib/push-worker';
 import { runNostrWorkerTick } from '../lib/nostr/worker';
 
 describe('Sunday service gate', () => {
-  it('blocks reads, writes, health and unknown paths, then resumes the same instance', async () => {
+  it('blocks reads, writes, info and unknown paths, then resumes the same instance', async () => {
     let now = Date.parse('2026-09-26T16:00:00Z');
     const app = createApp({ now: () => now });
     for (const [method, path] of [
-      ['GET', '/healthz'],
+      ['GET', '/info'],
       ['POST', '/messages'],
       ['GET', '/invoices'],
       ['GET', '/unknown'],
@@ -19,6 +19,7 @@ describe('Sunday service gate', () => {
       expect(res.headers.get('cache-control')).toBe('no-store');
       expect(await res.json()).toMatchObject({ error: 'SUNDAY_REST', timeZone: 'Asia/Manila' });
     }
+    expect((await app.request('/healthz')).status).toBe(200);
     now = Date.parse('2026-09-27T16:00:00Z');
     expect((await app.request('/healthz')).status).toBe(200);
   });

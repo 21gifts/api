@@ -4654,7 +4654,7 @@ exist on the account model; `GET /debug/accounts` and
 
 Sunday 00:00 through Monday 00:00 is a single worldwide 24-hour rest period (UTC Saturday 16:00 through Sunday 16:00). Deploy the matching app, api and spend PRs together. The frontend includes the website and installed PWA; no separate native app code was found in these repositories.
 
-The server rejects new application requests with 503, no-store and Retry-After. Health endpoints also report the scheduled pause: deployment monitoring must recognize this as planned unavailability, not repeatedly restart the services. Static assets and the clock necessary to display/end the pause remain active.
+The server rejects new application requests with 503, no-store and Retry-After. The technical `/healthz` liveness probe stays available to prevent restart loops during the planned pause. Static assets and the clock necessary to display/end the pause remain active.
 
 No new background ticks or payouts start on Sunday. Work admitted before midnight may finish; an already submitted external payment cannot be cancelled. Payment reconciliation must remain durable. Already open obsolete app versions require a reload/update for the new message, but the API still rejects their requests.
 

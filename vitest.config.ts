@@ -16,7 +16,7 @@ export default defineConfig({
   test: {
     environment: 'node',
     include: ['src/__tests__/**/*.test.ts'],
-    setupFiles: ['src/__tests__/setup-media-dir.ts'],
+    setupFiles: ['./e2e/server-clock.mjs', 'src/__tests__/setup-media-dir.ts'],
     coverage: {
       provider: 'v8',
       reporter: ['text', 'text-summary', 'html', 'lcov'],

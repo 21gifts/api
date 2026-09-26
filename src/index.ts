@@ -1,4 +1,5 @@
-import { isSundayRest, sundayRetryAfter } from './lib/sunday-rest';
+import { healthRoute } from './routes/health';
+import { isSundayRest, sundayRetryAfter, sundayRestResponse } from './lib/sunday-rest';
 /**
  * Service entry point.
  *
@@ -48,17 +49,10 @@ if (import.meta.main) {
     const restingServer = Bun.serve({
       hostname: host,
       port,
-      fetch: () =>
-        new Response(
-          'Christ is risen! Rejoice in the risen Lord, visit him at Holy Mass, rest and set work and shopping aside. 21.gifts returns on Monday (Manila time).',
-          {
-            status: 503,
-            headers: {
-              'Cache-Control': 'no-store',
-              'Retry-After': String(sundayRetryAfter(Date.now())),
-            },
-          },
-        ),
+      fetch: (request) =>
+        new URL(request.url).pathname === '/healthz'
+          ? healthRoute.request('/')
+          : sundayRestResponse(Date.now()),
     });
     while (isSundayRest(Date.now())) {
       await new Promise<void>((resolve) =>

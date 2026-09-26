@@ -23,3 +23,23 @@ export function sundayRetryAfter(now: number): number {
   const manilaOffsetMs = 8 * 60 * 60 * 1000;
   return Math.ceil((dayMs - ((now + manilaOffsetMs) % dayMs)) / 1000);
 }
+
+/**
+ * Consistent API response both before boot and during a running service's Sunday pause.
+ * @param now - Unix timestamp during Manila Sunday.
+ * @returns A non-cacheable 503 with the reopening delay and rest invitation.
+ */
+export function sundayRestResponse(now: number): Response {
+  return Response.json(
+    {
+      error: 'SUNDAY_REST',
+      message:
+        'Christ is risen! Rejoice in the risen Lord, visit him at Holy Mass, rest and set work and shopping aside. 21.gifts returns on Monday.',
+      timeZone: 'Asia/Manila',
+    },
+    {
+      status: 503,
+      headers: { 'Cache-Control': 'no-store', 'Retry-After': String(sundayRetryAfter(now)) },
+    },
+  );
+}

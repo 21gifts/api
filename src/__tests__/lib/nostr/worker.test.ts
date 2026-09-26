@@ -6820,3 +6820,37 @@ describe('startNostrWorker', () => {
     expect(zapQueries).toBe(1);
   });
 });
+
+describe('Sunday phase boundaries', () => {
+  it.each(['all', 'fast', 'ingest'] as const)(
+    'stops %s work after a phase crosses midnight, and resumes Monday',
+    async (mode) => {
+      let clock = Date.parse('2026-09-26T15:59:59Z');
+      const auth = new InMemoryAuthStore();
+      const messages = new InMemoryMessageStore();
+      const publisher = new RecordingPublisher();
+      const phases = vi.spyOn(messages, 'claimUnsigned');
+      const query = vi
+        .spyOn(messages, mode === 'fast' ? 'listRecentOkInvoiceAttempts' : 'listLatest')
+        .mockImplementation(async () => {
+          clock = Date.parse('2026-09-26T16:00:00Z');
+          return [];
+        });
+      const input = deps({
+        messages,
+        auth,
+        kek: KEK,
+        publisher,
+        now: () => clock,
+        env: { NOSTR_RELAY_SPACE: 'wss://space' },
+      });
+      await runNostrWorkerTick(input, mode);
+      expect(phases).not.toHaveBeenCalled();
+      expect(publisher.calls).toHaveLength(0);
+      query.mockRestore();
+      clock = Date.parse('2026-09-27T16:00:00Z');
+      await runNostrWorkerTick(input, mode);
+      if (mode !== 'ingest') expect(phases).toHaveBeenCalled();
+    },
+  );
+});

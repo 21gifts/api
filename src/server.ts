@@ -1,4 +1,4 @@
-import { isSundayRest, sundayRetryAfter } from './lib/sunday-rest';
+import { isSundayRest, sundayRestResponse } from './lib/sunday-rest';
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
 import { healthRoute } from '@/routes/health';
@@ -352,17 +352,8 @@ export function createApp(deps: AppDeps = {}): Hono {
   app.use('*', async (c, next) => {
     const timestamp = now();
     if (isSundayRest(timestamp)) {
-      c.header('Cache-Control', 'no-store');
-      c.header('Retry-After', String(sundayRetryAfter(timestamp)));
-      return c.json(
-        {
-          error: 'SUNDAY_REST',
-          message:
-            'Christ is risen! Rejoice in the risen Lord, visit him at Holy Mass, rest and set work and shopping aside. 21.gifts returns on Monday.',
-          timeZone: 'Asia/Manila',
-        },
-        503,
-      );
+      if (c.req.path === '/healthz') return healthRoute.request('/');
+      return sundayRestResponse(timestamp);
     }
     await next();
   });
@@ -395,9 +386,9 @@ export function createApp(deps: AppDeps = {}): Hono {
     })(c, next);
   });
 
+  app.route('/healthz', healthRoute);
   app.route('/', brandRoutes({ read: readBrand }));
   app.route('/', pushRoutes({ authStore: store, pushStore, now, vapidPublicKey }));
-  app.route('/healthz', healthRoute);
   app.route('/info', infoRoute);
   app.route('/translate', translateRoutes({ env }));
   app.route('/.well-known', wellKnownRoutes({ auth: store, fetchImpl, posStore, now }));

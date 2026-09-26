@@ -7490,6 +7490,18 @@ describe('message payment fiat snapshot', () => {
     expect(created.amountPhp).toBe('50.00');
   });
 
+  it('keeps USD when the requested day has no cross rates', async () => {
+    const store = new InMemoryMessageStore([], {
+      fetchImpl: spotFetch('100000'),
+      fiatRates: { ensureDays: async () => new Map() },
+    });
+    const created = await store.create({ ...EARLY, id: 'm-no-crosses', sats: 1000 });
+    expect(created.amountUsd).toBe('1.00');
+    expect(created.amountChf).toBeNull();
+    expect(created.amountEur).toBeNull();
+    expect(created.amountPhp).toBeNull();
+  });
+
   it('still freezes USD when the cross book throws', async () => {
     const store = new InMemoryMessageStore([], {
       fetchImpl: spotFetch('100000'),

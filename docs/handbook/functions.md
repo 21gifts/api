@@ -2730,3 +2730,10 @@ The Sunday interval is Sunday 00:00 inclusive through Monday 00:00 exclusive in 
 - **Returns:** Seconds until Monday midnight, rounded up; the full interval is 86400 seconds.
 
 The Sunday interval is Sunday 00:00 inclusive through Monday 00:00 exclusive in Asia/Manila, irrespective of visitor or server timezone.
+
+## Function: sundayRestResponse
+
+- **Purpose:** Return the same Sunday pause response before service boot and from the running API.
+- **Inputs:** A Unix timestamp during Manila Sunday.
+- **Returns:** JSON HTTP 503 with `SUNDAY_REST`, the invitation to rest, `Asia/Manila`, `Cache-Control: no-store` and a positive `Retry-After` delay until Monday.
+- **Used by:** Service boot and the first HTTP middleware. No stores or external services are accessed.

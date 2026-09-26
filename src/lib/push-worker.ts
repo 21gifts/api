@@ -225,6 +225,7 @@ export async function runPushWorkerTick(deps: PushWorkerDeps): Promise<void> {
   const nowMs = deps.now();
   const rows = await deps.store.claimPending(PUSH_WORKER_BATCH, nowMs, PUSH_WORKER_LEASE_MS);
   for (const row of rows) {
+    if (isSundayRest(deps.now())) return;
     const subs = await deps.store.listByAccount(row.accountId);
     if (subs.length === 0) {
       await deps.store.markSent(row.id);
@@ -236,6 +237,10 @@ export async function runPushWorkerTick(deps: PushWorkerDeps): Promise<void> {
     for (const sub of subs) {
       if (delivered.has(sub.endpoint)) {
         continue;
+      }
+      if (isSundayRest(deps.now())) {
+        anyFail = true;
+        break;
       }
       const result = await deps.sender.send(sub, row.payload);
       if (result.ok) {
