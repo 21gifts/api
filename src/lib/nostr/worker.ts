@@ -336,10 +336,14 @@ async function indexHotZapReceipts(deps: NostrWorkerDeps, nowMs: number): Promis
  * lease and they never reach a relay. Zapped rows (`sats !== 0`) keep their
  * event id so receipts still resolve. An empty API base skips photo- and
  * video-URL resign so it cannot un-publish and loop. When publishing, also
- * fans out a replaceable kind:0 profile (`name` / `display_name` / `picture`,
- * optional `nip05`) and a NIP-65 kind:10002 relay list. Kind:1 photo and video
- * posts include the public media URL and an `imeta` tag (video may add poster
- * `image`). Kind:0 `created_at` is `max(wall clock, last issued + 1)` so an
+ * fans out a replaceable kind:0 profile (`name` / `display_name` / `picture` /
+ * `banner`, optional `nip05`). `picture` and `banner` are the profile-note
+ * photo when one is stored and the API origin is non-empty, otherwise the
+ * shared icon and `https://21.gifts/og.png`. Unsigned non-profile kind:1 notes
+ * get `notePageUrl(PUBLIC_BASE_URL)` as their page link. Already published
+ * kind:1 rows are not rewritten for that link. Also fans out a NIP-65
+ * kind:10002 relay list. Kind:1 photo and video posts include the public media
+ * URL and an `imeta` tag (video may add poster `image`). Kind:0 `created_at` is `max(wall clock, last issued + 1)` so an
  * in-flight older profile cannot win a same-second replaceable-event tie.
  * Zap ingest runs at the **start** of `'all'` / `'fast'` ticks (full or hot),
  * before resign/sign/publish, so receipt indexing is not delayed by relay

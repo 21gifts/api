@@ -397,9 +397,9 @@ export interface Kind0ProfileContent {
   display_name: string;
   /** Fixed site URL. */
   website: string;
-  /** Wide banner so Damus does not show an empty header. */
+  /** Wide header: the profile photo, or the shared 1200×630 image. */
   banner: string;
-  /** 21.gifts icon so Damus shows a branded avatar. */
+  /** Avatar: the profile photo, or the shared 21.gifts icon. */
   picture: string;
   /** LUD-16 when the account has a linked address. */
   lud16?: string;
