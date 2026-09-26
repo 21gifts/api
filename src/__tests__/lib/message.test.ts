@@ -408,6 +408,71 @@ describe('serializeMessage', () => {
       goalSats: 21000,
     };
     expect(serializeMessage(row, false, 'basis').goalSats).toBe(21000);
+    expect(serializeMessage(row, false, 'basis')).not.toHaveProperty('goalRepayable');
+    expect(serializeMessage(row, false, 'basis')).not.toHaveProperty('goalTermDays');
+  });
+
+  it('includes goalRepayable only when the stored column is true', () => {
+    const row: MessageRow = {
+      id: 'msg-repay',
+      accountId: 'acc-1',
+      name: 'Ada',
+      text: 'ask',
+      createdAt: new Date('2026-08-28T12:00:00.000Z'),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+      goalSats: 21000,
+      goalRepayable: true,
+    };
+    expect(serializeMessage(row, false, 'basis').goalRepayable).toBe(true);
+    expect(serializeMessage({ ...row, goalRepayable: null }, false, 'basis')).not.toHaveProperty(
+      'goalRepayable',
+    );
+    expect(serializeDebugMessage(row)['goalRepayable']).toBe(true);
+    expect(serializeDebugMessage({ ...row, goalRepayable: null })).not.toHaveProperty(
+      'goalRepayable',
+    );
+    expect(
+      serializeHiddenMessage(row, { id: 'staff', name: 'Mod', role: 'moderator' })['goalRepayable'],
+    ).toBe(true);
+    expect(
+      serializeHiddenMessage(
+        { ...row, goalRepayable: null },
+        { id: 'staff', name: 'Mod', role: 'moderator' },
+      ),
+    ).not.toHaveProperty('goalRepayable');
+  });
+
+  it('includes goalTermDays only when the stored column is not null', () => {
+    const row: MessageRow = {
+      id: 'msg-term',
+      accountId: 'acc-1',
+      name: 'Ada',
+      text: 'ask',
+      createdAt: new Date('2026-08-28T12:00:00.000Z'),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+      goalSats: 21000,
+      goalRepayable: true,
+      goalTermDays: 30,
+    };
+    expect(serializeMessage(row, false, 'basis').goalTermDays).toBe(30);
+    expect(serializeMessage({ ...row, goalTermDays: null }, false, 'basis')).not.toHaveProperty(
+      'goalTermDays',
+    );
+    expect(serializeDebugMessage(row)['goalTermDays']).toBe(30);
+    expect(serializeDebugMessage({ ...row, goalTermDays: null })).not.toHaveProperty(
+      'goalTermDays',
+    );
+    expect(
+      serializeHiddenMessage(row, { id: 'staff', name: 'Mod', role: 'moderator' })['goalTermDays'],
+    ).toBe(30);
+    expect(
+      serializeHiddenMessage(
+        { ...row, goalTermDays: null },
+        { id: 'staff', name: 'Mod', role: 'moderator' },
+      ),
+    ).not.toHaveProperty('goalTermDays');
   });
 
   it('omits goalSats when unset, null, zero, or on a reply', () => {
@@ -527,6 +592,49 @@ describe('serializeMessage', () => {
     ).toEqual({ lat: 1, lng: 2, label: null });
   });
 
+  it('omits shopAccount when unset or null', () => {
+    const row: MessageRow = {
+      id: 'msg-noshop',
+      accountId: 'acc-1',
+      name: 'Ada',
+      text: 'hi',
+      createdAt: new Date('2026-08-28T12:00:00.000Z'),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+    };
+    expect(serializeMessage(row, false, 'basis', undefined, false)).not.toHaveProperty(
+      'shopAccount',
+    );
+    expect(
+      serializeMessage({ ...row, shopAccount: null }, false, 'basis', undefined, false),
+    ).not.toHaveProperty('shopAccount');
+  });
+
+  it('includes shopAccount when set, even without accountId, and allows an empty name', () => {
+    const row: MessageRow = {
+      id: 'msg-shop',
+      accountId: 'acc-1',
+      name: 'Ada',
+      text: 'hi',
+      createdAt: new Date('2026-08-28T12:00:00.000Z'),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+      shopAccount: { id: 'shop-acc', username: 'ada', name: 'Ada' },
+    };
+    const body = serializeMessage(row, false, 'basis', undefined, false);
+    expect(body.shopAccount).toEqual({ id: 'shop-acc', username: 'ada', name: 'Ada' });
+    expect(body).not.toHaveProperty('accountId');
+    expect(
+      serializeMessage(
+        { ...row, shopAccount: { id: 'shop-acc', username: 'ada', name: '' } },
+        false,
+        'basis',
+        undefined,
+        true,
+      ).shopAccount,
+    ).toEqual({ id: 'shop-acc', username: 'ada', name: '' });
+  });
+
   it('stamps deletedAt / deletedBy and forces payable false when hidden is set', () => {
     const row: MessageRow = {
       id: 'msg-hidden-opt',
@@ -622,6 +730,7 @@ describe('serializeDebugMessage', () => {
       placeLat: null,
       placeLng: null,
       placeLabel: null,
+      shopAccountId: null,
       photoContentType: null,
       photoBytes: 0,
       extraPhotos: [],
@@ -756,6 +865,29 @@ describe('serializeDebugMessage', () => {
     expect(unlabeled['placeLat']).toBe(1);
     expect(unlabeled['placeLng']).toBe(2);
     expect(unlabeled['placeLabel']).toBeNull();
+  });
+
+  it('always includes shopAccountId, JSON null when unset, and omits username', () => {
+    const row: MessageRow = {
+      id: 'msg-debug-shop',
+      accountId: 'acc-1',
+      name: 'Ada',
+      text: 'hi',
+      createdAt: new Date('2026-08-28T12:00:00.000Z'),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+    };
+    expect(serializeDebugMessage(row)['shopAccountId']).toBeNull();
+    expect(serializeDebugMessage(row)).not.toHaveProperty('shopAccount');
+    expect(serializeDebugMessage({ ...row, shopAccount: null })['shopAccountId']).toBeNull();
+    const linked = serializeDebugMessage({
+      ...row,
+      shopAccount: { id: 'shop-acc', username: 'ada', name: 'Ada' },
+    });
+    expect(linked['shopAccountId']).toBe('shop-acc');
+    expect(linked).not.toHaveProperty('shopAccount');
+    expect(linked).not.toHaveProperty('username');
+    expect(JSON.stringify(linked)).not.toContain('ada');
   });
 });
 
@@ -1002,6 +1134,29 @@ describe('serializeHiddenMessage', () => {
       ],
     ).toEqual({ lat: 1, lng: 2, label: null });
   });
+
+  it('includes shopAccount only when set', () => {
+    const row: MessageRow = {
+      id: 'msg-hidden-shop',
+      accountId: 'acc-1',
+      name: 'Ada',
+      text: 'hi',
+      createdAt: new Date('2026-08-28T12:00:00.000Z'),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+    };
+    const deletedBy = { id: null, name: null, role: null };
+    expect(serializeHiddenMessage(row, deletedBy)).not.toHaveProperty('shopAccount');
+    expect(serializeHiddenMessage({ ...row, shopAccount: null }, deletedBy)).not.toHaveProperty(
+      'shopAccount',
+    );
+    expect(
+      serializeHiddenMessage(
+        { ...row, shopAccount: { id: 'shop-acc', username: 'ada', name: '' } },
+        deletedBy,
+      )['shopAccount'],
+    ).toEqual({ id: 'shop-acc', username: 'ada', name: '' });
+  });
 });
 
 describe('unsignedNostrDefaults', () => {
@@ -1013,6 +1168,8 @@ describe('unsignedNostrDefaults', () => {
       nostrPublishState: 'pending',
       sats: 0,
       goalSats: null,
+      goalRepayable: null,
+      goalTermDays: null,
     });
   });
 });

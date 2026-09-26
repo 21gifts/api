@@ -64,6 +64,7 @@ import { buildZapRequest } from '@/lib/nostr/zap-request';
 import { inboxUnreadCountFor } from '@/lib/conversation-push';
 import type { ConversationStore } from '@/lib/conversation-store';
 import { mentionUsernames } from '@/lib/mention';
+import { normalizeUsername } from '@/lib/username';
 import { notifyForumMentions, notifyForumPost, notifyForumReply } from '@/lib/notification';
 import type { NotificationStore } from '@/lib/notification-store';
 import type { PushStore } from '@/lib/push-store';
@@ -514,6 +515,11 @@ async function serveForumVideo(
 
 const GOAL_PAIR_ERROR = 'Send either goalSats or both goalCurrency and goalAmount';
 const ASK_UNAVAILABLE = 'Ask amount is unavailable';
+const ASK_OBLIGATION_TRUE = 'Ask obligation must be true';
+const ASK_OBLIGATION_NEEDS_ASK = 'A repayment obligation needs an ask';
+const ASK_TERM_RANGE = 'Ask term must be a whole number of days from 1 to 3650';
+const ASK_TERM_NEEDS_REPAYABLE = 'A repayment term needs a repayable ask';
+const ASK_REPAYABLE_NEEDS_TERM = 'A repayable ask needs a term in days';
 
 /** Frozen ask stored on a top-level note. All null when there is no goal. */
 interface FrozenAsk {
@@ -524,6 +530,8 @@ interface FrozenAsk {
   goalAmountChf: string | null;
   goalAmountEur: string | null;
   goalAmountPhp: string | null;
+  goalRepayable: true | null;
+  goalTermDays: number | null;
 }
 
 const NO_ASK: FrozenAsk = {
@@ -534,7 +542,76 @@ const NO_ASK: FrozenAsk = {
   goalAmountChf: null,
   goalAmountEur: null,
   goalAmountPhp: null,
+  goalRepayable: null,
+  goalTermDays: null,
 };
+
+type GoalRepayableParse = { ok: true; value: true | null } | { ok: false };
+
+/**
+ * JSON `true` or multipart `"true"` is an obligation. Absent, JSON `null`,
+ * or multipart empty is none. Any other value is 400.
+ */
+function parseGoalRepayable(value: unknown, source: 'json' | 'multipart'): GoalRepayableParse {
+  if (value === undefined || value === null || (source === 'multipart' && value === '')) {
+    return { ok: true, value: null };
+  }
+  if (source === 'json' ? value === true : value === 'true') {
+    return { ok: true, value: true };
+  }
+  return { ok: false };
+}
+
+type GoalTermDaysParse = { ok: true; value: number | null } | { ok: false };
+
+/**
+ * JSON whole number or multipart digits in 1..3650 is a term. Absent, JSON
+ * `null`, or multipart empty is none. Any other value is 400.
+ */
+function parseGoalTermDays(value: unknown, source: 'json' | 'multipart'): GoalTermDaysParse {
+  if (value === undefined || value === null) {
+    return { ok: true, value: null };
+  }
+  if (source === 'multipart') {
+    if (value === '') {
+      return { ok: true, value: null };
+    }
+    if (typeof value === 'string' && /^\d+$/.test(value)) {
+      const n = Number(value);
+      if (n >= 1 && n <= 3650) {
+        return { ok: true, value: n };
+      }
+    }
+    return { ok: false };
+  }
+  if (typeof value === 'number' && Number.isInteger(value) && value >= 1 && value <= 3650) {
+    return { ok: true, value };
+  }
+  return { ok: false };
+}
+
+function withGoalRepayable(
+  goal: FrozenAsk,
+  repayable: true | null,
+): { ok: true; goal: FrozenAsk } | { ok: false } {
+  if (repayable === true && goal.goalSats === null) {
+    return { ok: false };
+  }
+  return { ok: true, goal: { ...goal, goalRepayable: repayable } };
+}
+
+function withGoalTermDays(
+  goal: FrozenAsk,
+  term: number | null,
+): { ok: true; goal: FrozenAsk } | { ok: false; error: string } {
+  if (term !== null && goal.goalRepayable !== true) {
+    return { ok: false, error: ASK_TERM_NEEDS_REPAYABLE };
+  }
+  if (goal.goalRepayable === true && term === null) {
+    return { ok: false, error: ASK_REPAYABLE_NEEDS_TERM };
+  }
+  return { ok: true, goal: { ...goal, goalTermDays: term } };
+}
 
 function isGoalCurrency(value: unknown): value is GoalCurrency {
   return (
@@ -597,6 +674,8 @@ function freezeSnapshots(
     goalAmountChf: quote('CHF'),
     goalAmountEur: quote('EUR'),
     goalAmountPhp: quote('PHP'),
+    goalRepayable: null,
+    goalTermDays: null,
   };
 }
 
@@ -679,6 +758,8 @@ async function frozenAskResponse(
  * @param video - Optional decoded video.
  * @param extraPhotos - Optional extra stills (indices 1..n). Omit when empty.
  * @param goal - Frozen ask. Default is no goal. Stored null when `parentId` is set.
+ *   `goalRepayable` is `true` or null; `goalTermDays` is 1..3650 or null;
+ *   replies store null.
  * @param place - Optional map pin for a top-level note. Default `null`.
  *   Stored as `null` when `parentId` is set.
  * @returns 200 / 403 (unpaid text-only below verified) / 409 (same live
@@ -761,6 +842,8 @@ async function persistForumPost(
     ...unsignedNostrDefaults(),
     parentId,
     goalSats: parentId === null ? goal.goalSats : null,
+    goalRepayable: parentId === null ? goal.goalRepayable : null,
+    goalTermDays: parentId === null ? goal.goalTermDays : null,
     goalCurrency: parentId === null ? goal.goalCurrency : null,
     goalAmount: parentId === null ? goal.goalAmount : null,
     goalAmountUsd: parentId === null ? goal.goalAmountUsd : null,
@@ -993,9 +1076,25 @@ async function postMultipartMessage(
     }
     place = parsedPlace.value;
   }
+  const repayableParsed = parseGoalRepayable(form.get('goalRepayable'), 'multipart');
+  if (!repayableParsed.ok) {
+    return c.json({ error: ASK_OBLIGATION_TRUE }, 400);
+  }
+  const termParsed = parseGoalTermDays(form.get('goalTermDays'), 'multipart');
+  if (!termParsed.ok) {
+    return c.json({ error: ASK_TERM_RANGE }, 400);
+  }
   const frozen = await frozenAskResponse(deps, c, shaped.legacy, shaped.currency, shaped.amount);
   if (frozen instanceof Response) {
     return frozen;
+  }
+  const obligated = withGoalRepayable(frozen.goal, repayableParsed.value);
+  if (!obligated.ok) {
+    return c.json({ error: ASK_OBLIGATION_NEEDS_ASK }, 400);
+  }
+  const termed = withGoalTermDays(obligated.goal, termParsed.value);
+  if (!termed.ok) {
+    return c.json({ error: termed.error }, 400);
   }
   return persistForumPost(
     deps,
@@ -1008,7 +1107,7 @@ async function postMultipartMessage(
     photo,
     video,
     undefined,
-    frozen.goal,
+    termed.goal,
     place,
   );
 }
@@ -1021,6 +1120,8 @@ const postBody = z
     goalSats: z.number().int().positive().max(GOAL_SATS_MAX).nullish(),
     goalCurrency: z.unknown().nullish(),
     goalAmount: z.unknown().nullish(),
+    goalRepayable: z.unknown().nullish(),
+    goalTermDays: z.unknown().nullish(),
     place: z.unknown().nullish(),
     photo: z
       .object({
@@ -1066,7 +1167,8 @@ const translateBody = z.object({
  *
  * Mounted at `/messages` so the public paths are `GET /messages`,
  * `POST /messages` (JSON photo or multipart `video` + optional `poster`,
- * optional `goalSats` whole-sat ask on a top-level note; replies 400),
+ * optional `goalSats` whole-sat ask on a top-level note; optional
+ * `goalRepayable` and `goalTermDays` on that ask; replies 400),
  * `GET /messages/places` (live top-level map pins),
  * `GET /messages/compose-target` (platform profile note for a 1-sat write),
  * `GET /messages/:id/photo` (and `.jpg` / `.jpeg` / `.png` / `.webp`),
@@ -1108,9 +1210,10 @@ const translateBody = z.object({
  * @returns A Hono app with `GET /`, `POST /`, `GET /compose-target`,
  * `GET /places`, `GET /:id/photo` plus `.jpg` / `.jpeg` / `.png` / `.webp`,
  * `GET /:id/video.mp4|.webm|.mov`, public `GET /:id/replies` (optional Bearer
- * for `accountId`), `DELETE /:id`, staff `PATCH /:id/place` (moderator session;
- * no `forum.read`), staff `GET /hidden` (moderator session; no
- * `forum.read`), public `GET /:id` (optional `?sinceSats=`), and
+ * for `accountId`), `DELETE /:id`, staff `PATCH /:id/place` and
+ * staff `PATCH /:id/shop-account` (moderator session; no `forum.read`),
+ * staff `GET /hidden` (moderator session; no `forum.read`), public
+ * `GET /:id` (optional `?sinceSats=`), and
  * `POST /:id/invoice`, `POST /:id/translate`, and public `GET /stats`.
  */
 /**
@@ -1438,11 +1541,21 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
           400,
         );
       }
+      const repayableParsed = parseGoalRepayable(parsed.data.goalRepayable, 'json');
+      if (!repayableParsed.ok) {
+        return c.json({ error: ASK_OBLIGATION_TRUE }, 400);
+      }
+      const termParsed = parseGoalTermDays(parsed.data.goalTermDays, 'json');
+      if (!termParsed.ok) {
+        return c.json({ error: ASK_TERM_RANGE }, 400);
+      }
       if (
         parsed.data.inReplyTo !== undefined &&
         (typeof parsed.data.goalSats === 'number' ||
           goalFieldPresent(parsed.data.goalCurrency) ||
-          goalFieldPresent(parsed.data.goalAmount))
+          goalFieldPresent(parsed.data.goalAmount) ||
+          repayableParsed.value === true ||
+          termParsed.value !== null)
       ) {
         return c.json({ error: 'A reply cannot ask for a goal' }, 400);
       }
@@ -1476,6 +1589,14 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
       if (frozen instanceof Response) {
         return frozen;
       }
+      const obligated = withGoalRepayable(frozen.goal, repayableParsed.value);
+      if (!obligated.ok) {
+        return c.json({ error: ASK_OBLIGATION_NEEDS_ASK }, 400);
+      }
+      const termed = withGoalTermDays(obligated.goal, termParsed.value);
+      if (!termed.ok) {
+        return c.json({ error: termed.error }, 400);
+      }
       return persistForumPost(
         deps,
         postLimiter,
@@ -1487,7 +1608,7 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
         photo,
         undefined,
         extraPhotos.length > 0 ? extraPhotos : undefined,
-        frozen.goal,
+        termed.goal,
         place,
       );
     })
@@ -1740,6 +1861,100 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
         );
       } catch {
         logEvent('messages.place.failed');
+        return c.json({ error: 'Messages are unavailable' }, 503);
+      }
+    })
+    .patch('/:id/shop-account', async (c) => {
+      const account = await authedAccount(deps, c.req.header('authorization'));
+      if (account === null) {
+        return c.json({ error: 'Unauthorized' }, 401);
+      }
+      if (!roleAtLeast(account.role, 'moderator')) {
+        return c.json({ error: 'Forbidden' }, 403);
+      }
+      const id = c.req.param('id');
+      if (!MESSAGE_ID_RE.test(id)) {
+        return c.json({ error: 'Not found' }, 404);
+      }
+      const raw: unknown = await c.req.json().catch(() => null);
+      if (
+        raw === null ||
+        typeof raw !== 'object' ||
+        Array.isArray(raw) ||
+        !Object.prototype.hasOwnProperty.call(raw, 'username')
+      ) {
+        return c.json({ error: 'Invalid body' }, 400);
+      }
+      const usernameValue = (raw as { username: unknown }).username;
+      let normalizedUsername: string | null;
+      if (usernameValue === null) {
+        normalizedUsername = null;
+      } else if (typeof usernameValue !== 'string') {
+        return c.json({ error: 'Username is not valid' }, 400);
+      } else {
+        const normalized = normalizeUsername(usernameValue.trim().replace(/^@/, ''));
+        if (normalized === null) {
+          return c.json({ error: 'Username is not valid' }, 400);
+        }
+        normalizedUsername = normalized;
+      }
+      try {
+        const row = await deps.store.getById(id);
+        if (row === undefined || row.deletedAt !== null) {
+          return c.json({ error: 'Not found' }, 404);
+        }
+        if (row.parentId !== null) {
+          return c.json({ error: 'A reply cannot include a shop account' }, 400);
+        }
+        if (!textHasHashtagToken(row.text, '21GiftsShop')) {
+          return c.json({ error: 'Only a shop note can set a shop account' }, 400);
+        }
+        let snapshot: { id: string; username: string; name: string } | null = null;
+        if (normalizedUsername !== null) {
+          const found = await deps.authStore.getAccountByUsername(normalizedUsername);
+          if (found === undefined) {
+            return c.json({ error: 'No account with that username' }, 404);
+          }
+          const storedUsername = found.username;
+          if (typeof storedUsername !== 'string' || storedUsername.trim() === '') {
+            return c.json({ error: 'No account with that username' }, 404);
+          }
+          snapshot = {
+            id: found.id,
+            username: storedUsername,
+            name: found.name ?? '',
+          };
+        }
+        const written = await deps.store.setShopAccount(id, snapshot);
+        if (!written) {
+          return c.json({ error: 'Not found' }, 404);
+        }
+        const updated = await deps.store.getById(id);
+        if (updated === undefined) {
+          return c.json({ error: 'Not found' }, 404);
+        }
+        const author =
+          updated.accountId === null
+            ? undefined
+            : await deps.authStore.getAccount(updated.accountId);
+        const payable = updated.accountId === null ? false : payableOf(updated, author);
+        const role = updated.accountId === null ? undefined : (author?.role ?? 'basis');
+        logEvent('messages.shop_account.updated', {
+          messageId: id,
+          accountId: account.id,
+          role: account.role,
+        });
+        return c.json(
+          serializeMessage(
+            updated,
+            payable,
+            role,
+            await deps.store.countAttributedReplies(updated.id),
+          ),
+          200,
+        );
+      } catch {
+        logEvent('messages.shop_account.failed');
         return c.json({ error: 'Messages are unavailable' }, 503);
       }
     })

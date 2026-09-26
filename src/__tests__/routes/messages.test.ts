@@ -211,6 +211,7 @@ function throwingStore(overrides: Partial<MessageStore> = {}): MessageStore {
     markDeleted: boom,
     markUndeleted: boom,
     setPlace: boom,
+    setShopAccount: boom,
     getById: boom,
     getByEventId: boom,
     claimUnsigned: boom,
@@ -1324,6 +1325,7 @@ describe('POST /messages', () => {
     expect(created.role).toBe('verified');
     expect(created.accountId).toBe('acc');
     expect(created).not.toHaveProperty('goalSats');
+    expect(created).not.toHaveProperty('goalRepayable');
     expect(created.id.length).toBeGreaterThan(8);
     expect(created).not.toHaveProperty('via');
 
@@ -1346,10 +1348,131 @@ describe('POST /messages', () => {
     expect(post.status).toBe(200);
     const created = (await post.json()) as { goalSats?: number };
     expect(created.goalSats).toBe(21000);
+    expect(created).not.toHaveProperty('goalRepayable');
+    expect(created).not.toHaveProperty('goalTermDays');
     const list = await app.request('/messages', { headers: AUTH });
     expect(list.status).toBe(200);
-    const body = (await list.json()) as { messages: { goalSats?: number }[] };
+    const body = (await list.json()) as {
+      messages: { goalSats?: number; goalRepayable?: true; goalTermDays?: number }[];
+    };
     expect(body.messages[0]?.goalSats).toBe(21000);
+    expect(body.messages[0]).not.toHaveProperty('goalRepayable');
+    expect(body.messages[0]).not.toHaveProperty('goalTermDays');
+  });
+
+  it('posts a top-level note with goalSats and goalRepayable true', async () => {
+    const app = mount(await namedStore('Ada'));
+    const post = await app.request('/messages', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({
+        text: 'ask',
+        goalSats: 21000,
+        goalRepayable: true,
+        goalTermDays: 30,
+      }),
+    });
+    expect(post.status).toBe(200);
+    const created = (await post.json()) as {
+      goalSats?: number;
+      goalRepayable?: true;
+      goalTermDays?: number;
+    };
+    expect(created.goalSats).toBe(21000);
+    expect(created.goalRepayable).toBe(true);
+    expect(created.goalTermDays).toBe(30);
+  });
+
+  it('omits goalRepayable when JSON goalRepayable is null on an ask', async () => {
+    const post = await mount(await namedStore('Ada')).request('/messages', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ text: 'ask', goalSats: 21000, goalRepayable: null }),
+    });
+    expect(post.status).toBe(200);
+    const created = await post.json();
+    expect(created).not.toHaveProperty('goalRepayable');
+    expect(created).not.toHaveProperty('goalTermDays');
+  });
+
+  it('returns 400 when JSON goalRepayable is not true', async () => {
+    const app = mount(await namedStore('Ada'));
+    for (const goalRepayable of [false, 1, 'true', '']) {
+      const res = await app.request('/messages', {
+        method: 'POST',
+        headers: { ...AUTH, 'content-type': 'application/json' },
+        body: JSON.stringify({ text: 'ask', goalSats: 21000, goalRepayable }),
+      });
+      expect(res.status).toBe(400);
+      expect(await res.json()).toEqual({ error: 'Ask obligation must be true' });
+    }
+  });
+
+  it('returns 400 when JSON goalRepayable is true without an ask', async () => {
+    const res = await mount(await namedStore('Ada')).request('/messages', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ text: 'ask', goalRepayable: true, goalTermDays: 30 }),
+    });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: 'A repayment obligation needs an ask' });
+  });
+
+  it('posts a top-level note with goalSats, goalRepayable true, and goalTermDays 3650', async () => {
+    const app = mount(await namedStore('Ada'));
+    const post = await app.request('/messages', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({
+        text: 'ask',
+        goalSats: 21000,
+        goalRepayable: true,
+        goalTermDays: 3650,
+      }),
+    });
+    expect(post.status).toBe(200);
+    const created = (await post.json()) as { goalTermDays?: number };
+    expect(created.goalTermDays).toBe(3650);
+  });
+
+  it('returns 400 when JSON goalTermDays is not a whole number of days from 1 to 3650', async () => {
+    const app = mount(await namedStore('Ada'));
+    for (const goalTermDays of [0, 3651, 1.5, 'no']) {
+      const res = await app.request('/messages', {
+        method: 'POST',
+        headers: { ...AUTH, 'content-type': 'application/json' },
+        body: JSON.stringify({
+          text: 'ask',
+          goalSats: 21000,
+          goalRepayable: true,
+          goalTermDays,
+        }),
+      });
+      expect(res.status).toBe(400);
+      expect(await res.json()).toEqual({
+        error: 'Ask term must be a whole number of days from 1 to 3650',
+      });
+    }
+  });
+
+  it('returns 400 when JSON goalTermDays is set without goalRepayable', async () => {
+    const res = await mount(await namedStore('Ada')).request('/messages', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ text: 'ask', goalSats: 21000, goalTermDays: 30 }),
+    });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: 'A repayment term needs a repayable ask' });
+  });
+
+  it('returns 400 when JSON goalRepayable is true without a term', async () => {
+    const res = await mount(await namedStore('Ada')).request('/messages', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ text: 'ask', goalSats: 21000, goalRepayable: true }),
+    });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: 'A repayable ask needs a term in days' });
   });
 
   it('posts a top-level note with a place pin', async () => {
@@ -1670,6 +1793,59 @@ describe('POST /messages', () => {
     expect(replies).toHaveLength(1);
     expect(replies[0]?.parentId).toBe(parentId);
     expect(replies[0]?.text).toBe('child');
+  });
+
+  it('returns 400 when a reply sends goalRepayable', async () => {
+    const messageStore = new InMemoryMessageStore();
+    const parentId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+    await messageStore.create({
+      id: parentId,
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'parent',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      hasVideo: false,
+      videoContentType: null,
+      ...unsignedNostrDefaults(),
+    });
+    const res = await mount(await namedStore('Ada'), messageStore).request('/messages', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({
+        text: 'child',
+        inReplyTo: parentId,
+        goalRepayable: true,
+        goalTermDays: 30,
+      }),
+    });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: 'A reply cannot ask for a goal' });
+    expect(await messageStore.listReplies(parentId)).toEqual([]);
+  });
+
+  it('returns 400 when a reply sends goalTermDays', async () => {
+    const messageStore = new InMemoryMessageStore();
+    const parentId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+    await messageStore.create({
+      id: parentId,
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'parent',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      hasVideo: false,
+      videoContentType: null,
+      ...unsignedNostrDefaults(),
+    });
+    const res = await mount(await namedStore('Ada'), messageStore).request('/messages', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ text: 'child', inReplyTo: parentId, goalTermDays: 30 }),
+    });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: 'A reply cannot ask for a goal' });
+    expect(await messageStore.listReplies(parentId)).toEqual([]);
   });
 
   it('returns 400 when a reply asks for a goal', async () => {
@@ -3092,6 +3268,7 @@ describe('POST /messages', () => {
       markDeleted: (id, at, by) => base.markDeleted(id, at, by),
       markUndeleted: (id) => base.markUndeleted(id),
       setPlace: (id, place) => base.setPlace(id, place),
+      setShopAccount: (id, account) => base.setShopAccount(id, account),
       getById: (id) => base.getById(id),
       getByEventId: (eventId) => base.getByEventId(eventId),
       listPublishedEventIds: (limit) => base.listPublishedEventIds(limit),
@@ -3206,6 +3383,7 @@ describe('POST /messages', () => {
       markDeleted: (id, at, by) => base.markDeleted(id, at, by),
       markUndeleted: (id) => base.markUndeleted(id),
       setPlace: (id, place) => base.setPlace(id, place),
+      setShopAccount: (id, account) => base.setShopAccount(id, account),
       getById: (id) => base.getById(id),
       getByEventId: (eventId) => base.getByEventId(eventId),
       listPublishedEventIds: (limit) => base.listPublishedEventIds(limit),
@@ -4851,6 +5029,7 @@ describe('POST /messages/:id/invoice', () => {
       markDeleted: (id, at, by) => base.markDeleted(id, at, by),
       markUndeleted: (id) => base.markUndeleted(id),
       setPlace: (id, place) => base.setPlace(id, place),
+      setShopAccount: (id, account) => base.setShopAccount(id, account),
       getByEventId: (id) => base.getByEventId(id),
       claimUnsigned: (...args) => base.claimUnsigned(...args),
       claimUnpublished: (...args) => base.claimUnpublished(...args),
@@ -7696,7 +7875,10 @@ describe('forum video', () => {
       body: form,
     });
     expect(res.status).toBe(200);
-    expect(((await res.json()) as { goalSats?: number }).goalSats).toBe(21000);
+    const created = (await res.json()) as { goalSats?: number };
+    expect(created.goalSats).toBe(21000);
+    expect(created).not.toHaveProperty('goalRepayable');
+    expect(created).not.toHaveProperty('goalTermDays');
     const emptyGoal = new FormData();
     emptyGoal.set('text', 'plain');
     emptyGoal.set('goalSats', '');
@@ -7707,6 +7889,154 @@ describe('forum video', () => {
     });
     expect(omitted.status).toBe(200);
     expect(await omitted.json()).not.toHaveProperty('goalSats');
+  });
+
+  it('posts a multipart note with goalSats and goalRepayable true', async () => {
+    const form = new FormData();
+    form.set('text', 'ask');
+    form.set('goalSats', '21000');
+    form.set('goalRepayable', 'true');
+    form.set('goalTermDays', '30');
+    const res = await mount(await namedStore('Ada')).request('/messages', {
+      method: 'POST',
+      headers: AUTH,
+      body: form,
+    });
+    expect(res.status).toBe(200);
+    const created = (await res.json()) as {
+      goalSats?: number;
+      goalRepayable?: true;
+      goalTermDays?: number;
+    };
+    expect(created.goalSats).toBe(21000);
+    expect(created.goalRepayable).toBe(true);
+    expect(created.goalTermDays).toBe(30);
+  });
+
+  it('omits goalRepayable when multipart goalRepayable is empty on an ask', async () => {
+    const form = new FormData();
+    form.set('text', 'ask');
+    form.set('goalSats', '21000');
+    form.set('goalRepayable', '');
+    const res = await mount(await namedStore('Ada')).request('/messages', {
+      method: 'POST',
+      headers: AUTH,
+      body: form,
+    });
+    expect(res.status).toBe(200);
+    const created = await res.json();
+    expect(created).not.toHaveProperty('goalRepayable');
+    expect(created).not.toHaveProperty('goalTermDays');
+  });
+
+  it('returns 400 when multipart goalRepayable is not true', async () => {
+    const app = mount(await namedStore('Ada'));
+    for (const goalRepayable of ['false', 'yes']) {
+      const form = new FormData();
+      form.set('text', 'ask');
+      form.set('goalSats', '21000');
+      form.set('goalRepayable', goalRepayable);
+      const res = await app.request('/messages', {
+        method: 'POST',
+        headers: AUTH,
+        body: form,
+      });
+      expect(res.status).toBe(400);
+      expect(await res.json()).toEqual({ error: 'Ask obligation must be true' });
+    }
+  });
+
+  it('returns 400 when multipart goalRepayable is true without an ask', async () => {
+    const form = new FormData();
+    form.set('text', 'ask');
+    form.set('goalRepayable', 'true');
+    form.set('goalTermDays', '30');
+    const res = await mount(await namedStore('Ada')).request('/messages', {
+      method: 'POST',
+      headers: AUTH,
+      body: form,
+    });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: 'A repayment obligation needs an ask' });
+  });
+
+  it('posts a multipart note with goalSats, goalRepayable true, and goalTermDays 3650', async () => {
+    const form = new FormData();
+    form.set('text', 'ask');
+    form.set('goalSats', '21000');
+    form.set('goalRepayable', 'true');
+    form.set('goalTermDays', '3650');
+    const res = await mount(await namedStore('Ada')).request('/messages', {
+      method: 'POST',
+      headers: AUTH,
+      body: form,
+    });
+    expect(res.status).toBe(200);
+    const created = (await res.json()) as { goalTermDays?: number };
+    expect(created.goalTermDays).toBe(3650);
+  });
+
+  it('returns 400 when multipart goalTermDays is not a whole number of days from 1 to 3650', async () => {
+    const app = mount(await namedStore('Ada'));
+    for (const goalTermDays of ['0', 'no', '3651']) {
+      const form = new FormData();
+      form.set('text', 'ask');
+      form.set('goalSats', '21000');
+      form.set('goalRepayable', 'true');
+      form.set('goalTermDays', goalTermDays);
+      const res = await app.request('/messages', {
+        method: 'POST',
+        headers: AUTH,
+        body: form,
+      });
+      expect(res.status).toBe(400);
+      expect(await res.json()).toEqual({
+        error: 'Ask term must be a whole number of days from 1 to 3650',
+      });
+    }
+  });
+
+  it('treats an empty multipart goalTermDays as no term', async () => {
+    const form = new FormData();
+    form.set('text', 'ask');
+    form.set('goalSats', '21000');
+    form.set('goalRepayable', 'true');
+    form.set('goalTermDays', '');
+    const res = await mount(await namedStore('Ada')).request('/messages', {
+      method: 'POST',
+      headers: AUTH,
+      body: form,
+    });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: 'A repayable ask needs a term in days' });
+  });
+
+  it('returns 400 when multipart goalTermDays is set without goalRepayable', async () => {
+    const form = new FormData();
+    form.set('text', 'ask');
+    form.set('goalSats', '21000');
+    form.set('goalTermDays', '30');
+    const res = await mount(await namedStore('Ada')).request('/messages', {
+      method: 'POST',
+      headers: AUTH,
+      body: form,
+    });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: 'A repayment term needs a repayable ask' });
+  });
+
+  it('returns 400 when multipart goalRepayable is true without a term', async () => {
+    const form = new FormData();
+    form.set('text', 'ask');
+    form.set('goalSats', '21000');
+    form.set('goalRepayable', 'true');
+    const res = await mount(await namedStore('Ada')).request('/messages', {
+      method: 'POST',
+      headers: AUTH,
+      body: form,
+    });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: 'A repayable ask needs a term in days' });
   });
 
   it('posts a multipart note with a valid place pin', async () => {
@@ -9236,6 +9566,22 @@ describe('GET /messages/hidden', () => {
       expect(php.json['goalAmount']).toBe('56');
     });
 
+    it('stores goalRepayable true on a currency ask', async () => {
+      const { res, json } = await post(
+        {
+          text: 'usd',
+          goalCurrency: 'USD',
+          goalAmount: '1',
+          goalRepayable: true,
+          goalTermDays: 30,
+        },
+        { goalRateDay: async () => day },
+      );
+      expect(res.status).toBe(200);
+      expect(json['goalRepayable']).toBe(true);
+      expect(json['goalTermDays']).toBe(30);
+    });
+
     it('rejects a fiat ask when the day is missing, unusable, or out of range', async () => {
       const omitted = await post({ text: 'usd', goalCurrency: 'USD', goalAmount: '1' });
       expect(omitted.res.status).toBe(400);
@@ -9925,6 +10271,581 @@ describe('PATCH /messages/:id/place', () => {
       headers: { ...AUTH, 'content-type': 'application/json' },
       body: JSON.stringify({ place: PIN }),
     });
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as { role: string }).role).toBe('basis');
+  });
+});
+
+describe('PATCH /messages/:id/shop-account', () => {
+  const SHOP_ID = '11111111-1111-4111-8111-111111111111';
+  const PARENT_ID = '22222222-2222-4222-8222-222222222222';
+  const REPLY_ID = '33333333-3333-4333-8333-333333333333';
+  const DAMUS_ID = '44444444-4444-4444-8444-444444444444';
+  const GHOST_ID = '55555555-5555-4555-8555-555555555555';
+  const SHOP_ACCOUNT = { id: 'shop-acc', username: 'shopkeep', name: 'Shop Name' };
+  const OTHER_ACCOUNT = { id: 'other-acc', username: 'otherkeep', name: 'Other' };
+
+  async function addAccount(
+    auth: InMemoryAuthStore,
+    account: { id: string; username: string; name: string | null },
+    viewKey: string,
+  ): Promise<void> {
+    await auth.createAccount({
+      id: account.id,
+      linkingKey: null,
+      role: 'basis',
+      name: account.name,
+      username: account.username,
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      location: null,
+      viewKey,
+      createdAt: 2_000_000,
+      rulesAgreedAt: null,
+    });
+  }
+
+  function patchShop(
+    auth: InMemoryAuthStore,
+    id: string,
+    body: unknown,
+    messages?: InMemoryMessageStore,
+  ) {
+    const headers = { ...AUTH, 'content-type': 'application/json' };
+    return mount(auth, messages ?? new InMemoryMessageStore()).request(
+      '/messages/' + id + '/shop-account',
+      {
+        method: 'PATCH',
+        headers,
+        body: JSON.stringify(body),
+      },
+    );
+  }
+
+  it('returns 401 without a session', async () => {
+    const res = await mount(await seededStore()).request('/messages/' + SHOP_ID + '/shop-account', {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ username: null }),
+    });
+    expect(res.status).toBe(401);
+    expect(await res.json()).toEqual({ error: 'Unauthorized' });
+  });
+
+  it('returns 403 for basis', async () => {
+    const res = await patchShop(await seededStore(), SHOP_ID, { username: 'shopkeep' });
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: 'Forbidden' });
+  });
+
+  it('returns 403 for verified', async () => {
+    const res = await patchShop(await namedStore('Ada'), SHOP_ID, { username: 'shopkeep' });
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: 'Forbidden' });
+  });
+
+  it('returns 200 with shopAccount and leaves text, place, and eventId', async () => {
+    const auth = await staffStore('Ada');
+    await addAccount(auth, SHOP_ACCOUNT, 'c'.repeat(64));
+    const messages = new InMemoryMessageStore();
+    await messages.create({
+      id: SHOP_ID,
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'Shop #21GiftsShop',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+      eventId: 'ee'.repeat(32),
+    });
+    await messages.setPlace(SHOP_ID, { lat: 47.1, lng: 8.5, label: 'Pin' });
+    warn.mockClear();
+    const res = await patchShop(auth, SHOP_ID, { username: '  @ShopKeep  ' }, messages);
+    expect(res.status).toBe(200);
+    const json = (await res.json()) as Record<string, unknown>;
+    expect(json['shopAccount']).toEqual(SHOP_ACCOUNT);
+    expect(json).not.toHaveProperty('deletedAt');
+    expect(json).not.toHaveProperty('deletedBy');
+    expect(json).toHaveProperty('replyCount');
+    const stored = await messages.getById(SHOP_ID);
+    expect(stored?.shopAccount).toEqual(SHOP_ACCOUNT);
+    expect(stored?.eventId).toBe('ee'.repeat(32));
+    expect(stored?.text).toBe('Shop #21GiftsShop');
+    expect(stored?.place).toEqual({ lat: 47.1, lng: 8.5, label: 'Pin' });
+    const logged = parsedEvents(warn).find((e) => e['event'] === 'messages.shop_account.updated');
+    expect(logged).toMatchObject({
+      messageId: SHOP_ID,
+      accountId: 'acc',
+      role: 'moderator',
+    });
+    expect(JSON.stringify(logged)).not.toContain('Shop #21GiftsShop');
+    const publicRes = await mount(new InMemoryAuthStore(), messages).request(
+      '/messages/' + SHOP_ID,
+    );
+    expect(publicRes.status).toBe(200);
+    const publicJson = (await publicRes.json()) as Record<string, unknown>;
+    expect(publicJson['shopAccount']).toEqual(SHOP_ACCOUNT);
+    expect(publicJson).not.toHaveProperty('accountId');
+  });
+
+  it('returns 200 when replacing the shop account', async () => {
+    const auth = await staffStore('Ada');
+    await addAccount(auth, SHOP_ACCOUNT, 'c'.repeat(64));
+    await addAccount(auth, OTHER_ACCOUNT, 'd'.repeat(64));
+    const messages = new InMemoryMessageStore();
+    await messages.create({
+      id: SHOP_ID,
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'Shop #21GiftsShop',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+    });
+    await messages.setShopAccount(SHOP_ID, SHOP_ACCOUNT);
+    const res = await patchShop(auth, SHOP_ID, { username: 'otherkeep' }, messages);
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as { shopAccount: unknown }).shopAccount).toEqual(OTHER_ACCOUNT);
+    expect((await messages.getById(SHOP_ID))?.shopAccount).toEqual(OTHER_ACCOUNT);
+  });
+
+  it('returns 200 when username null clears the shop account', async () => {
+    const auth = await staffStore('Ada');
+    const messages = new InMemoryMessageStore();
+    await messages.create({
+      id: SHOP_ID,
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'Shop #21GiftsShop',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+    });
+    await messages.setPlace(SHOP_ID, { lat: 47.1, lng: 8.5, label: 'Pin' });
+    await messages.setShopAccount(SHOP_ID, SHOP_ACCOUNT);
+    const res = await patchShop(auth, SHOP_ID, { username: null }, messages);
+    expect(res.status).toBe(200);
+    const json = (await res.json()) as Record<string, unknown>;
+    expect(json).not.toHaveProperty('shopAccount');
+    expect((await messages.getById(SHOP_ID))?.shopAccount).toBeNull();
+    expect((await messages.getById(SHOP_ID))?.place).toEqual({ lat: 47.1, lng: 8.5, label: 'Pin' });
+    expect((await messages.getById(SHOP_ID))?.text).toBe('Shop #21GiftsShop');
+  });
+
+  it('returns 200 when the text is #21giftsshop', async () => {
+    const auth = await staffStore('Ada');
+    await addAccount(auth, SHOP_ACCOUNT, 'c'.repeat(64));
+    const messages = new InMemoryMessageStore();
+    await messages.create({
+      id: SHOP_ID,
+      accountId: 'acc',
+      name: 'Ada',
+      text: '#21giftsshop',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+    });
+    const res = await patchShop(auth, SHOP_ID, { username: '@shopkeep' }, messages);
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as { shopAccount: unknown }).shopAccount).toEqual(SHOP_ACCOUNT);
+  });
+
+  it('returns 200 with an empty name when the account name is null', async () => {
+    const auth = await staffStore('Ada');
+    const staff = await auth.getAccount('acc');
+    expect(staff).toBeDefined();
+    if (staff === undefined) {
+      throw new Error('expected account');
+    }
+    vi.spyOn(auth, 'getAccountByUsername').mockResolvedValue({
+      ...staff,
+      id: 'nameless',
+      username: 'shopkeep',
+      name: null,
+    });
+    const messages = new InMemoryMessageStore();
+    await messages.create({
+      id: SHOP_ID,
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'Shop #21GiftsShop',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+    });
+    const res = await patchShop(auth, SHOP_ID, { username: 'shopkeep' }, messages);
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as { shopAccount: { name: string } }).shopAccount.name).toBe('');
+  });
+
+  it('returns 400 for #21GiftsShopper and leaves the stored shop account unchanged', async () => {
+    const auth = await staffStore('Ada');
+    const messages = new InMemoryMessageStore();
+    await messages.create({
+      id: SHOP_ID,
+      accountId: 'acc',
+      name: 'Ada',
+      text: '#21GiftsShopper',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+    });
+    await messages.setShopAccount(SHOP_ID, SHOP_ACCOUNT);
+    const res = await patchShop(auth, SHOP_ID, { username: 'shopkeep' }, messages);
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: 'Only a shop note can set a shop account' });
+    expect((await messages.getById(SHOP_ID))?.shopAccount).toEqual(SHOP_ACCOUNT);
+  });
+
+  it('returns 400 for a reply whose text contains the shop hashtag', async () => {
+    const auth = await staffStore('Ada');
+    const messages = new InMemoryMessageStore();
+    await messages.create({
+      id: PARENT_ID,
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'parent',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+    });
+    await messages.create({
+      id: REPLY_ID,
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'Shop #21GiftsShop',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+      parentId: PARENT_ID,
+    });
+    await messages.setShopAccount(REPLY_ID, SHOP_ACCOUNT);
+    const res = await patchShop(auth, REPLY_ID, { username: 'shopkeep' }, messages);
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: 'A reply cannot include a shop account' });
+    expect((await messages.getById(REPLY_ID))?.shopAccount).toEqual(SHOP_ACCOUNT);
+  });
+
+  it('returns 400 for a top-level note without a shop hashtag', async () => {
+    const auth = await staffStore('Ada');
+    const messages = new InMemoryMessageStore();
+    await messages.create({
+      id: SHOP_ID,
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'hello',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+    });
+    await messages.setShopAccount(SHOP_ID, SHOP_ACCOUNT);
+    const res = await patchShop(auth, SHOP_ID, { username: 'shopkeep' }, messages);
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: 'Only a shop note can set a shop account' });
+    expect((await messages.getById(SHOP_ID))?.shopAccount).toEqual(SHOP_ACCOUNT);
+  });
+
+  it('returns 404 for an unknown UUID, a non-UUID id, and a hidden shop row', async () => {
+    const auth = await staffStore('Ada');
+    await addAccount(auth, SHOP_ACCOUNT, 'c'.repeat(64));
+    const unknown = await patchShop(auth, SHOP_ID, { username: 'shopkeep' });
+    expect(unknown.status).toBe(404);
+    expect(await unknown.json()).toEqual({ error: 'Not found' });
+
+    const badId = await patchShop(auth, 'not-a-uuid', { username: 'shopkeep' });
+    expect(badId.status).toBe(404);
+    expect(await badId.json()).toEqual({ error: 'Not found' });
+
+    const messages = new InMemoryMessageStore();
+    await messages.create({
+      id: SHOP_ID,
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'Shop #21GiftsShop',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+    });
+    await messages.setShopAccount(SHOP_ID, SHOP_ACCOUNT);
+    expect(await messages.markDeleted(SHOP_ID, new Date(now()), 'acc')).toBe(true);
+    const hidden = await patchShop(auth, SHOP_ID, { username: 'other' }, messages);
+    expect(hidden.status).toBe(404);
+    expect(await hidden.json()).toEqual({ error: 'Not found' });
+    expect((await messages.getById(SHOP_ID))?.shopAccount).toEqual(SHOP_ACCOUNT);
+  });
+
+  it('returns 400 for a non-JSON body', async () => {
+    const auth = await staffStore('Ada');
+    for (const body of ['not-json', 'null', '[]', '1']) {
+      const res = await mount(auth).request('/messages/' + SHOP_ID + '/shop-account', {
+        method: 'PATCH',
+        headers: { ...AUTH, 'content-type': 'application/json' },
+        body,
+      });
+      expect(res.status).toBe(400);
+      expect(await res.json()).toEqual({ error: 'Invalid body' });
+    }
+  });
+
+  it('returns 400 when the JSON object has no username key', async () => {
+    const auth = await staffStore('Ada');
+    const messages = new InMemoryMessageStore();
+    await messages.create({
+      id: SHOP_ID,
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'Shop #21GiftsShop',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+    });
+    await messages.setShopAccount(SHOP_ID, SHOP_ACCOUNT);
+    const res = await patchShop(auth, SHOP_ID, { name: 'shopkeep' }, messages);
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: 'Invalid body' });
+    expect((await messages.getById(SHOP_ID))?.shopAccount).toEqual(SHOP_ACCOUNT);
+  });
+
+  it('returns 400 when the username is not valid', async () => {
+    const auth = await staffStore('Ada');
+    const messages = new InMemoryMessageStore();
+    await messages.create({
+      id: SHOP_ID,
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'Shop #21GiftsShop',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+    });
+    await messages.setShopAccount(SHOP_ID, SHOP_ACCOUNT);
+    for (const username of ['not a user', 1, '']) {
+      const res = await patchShop(auth, SHOP_ID, { username }, messages);
+      expect(res.status).toBe(400);
+      expect(await res.json()).toEqual({ error: 'Username is not valid' });
+    }
+    expect((await messages.getById(SHOP_ID))?.shopAccount).toEqual(SHOP_ACCOUNT);
+  });
+
+  it('returns 404 when no account has that username', async () => {
+    const auth = await staffStore('Ada');
+    const messages = new InMemoryMessageStore();
+    await messages.create({
+      id: SHOP_ID,
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'Shop #21GiftsShop',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+    });
+    const res = await patchShop(auth, SHOP_ID, { username: 'missing' }, messages);
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ error: 'No account with that username' });
+    expect((await messages.getById(SHOP_ID))?.shopAccount).toBeNull();
+  });
+
+  it('returns 404 when the stored username is blank', async () => {
+    const auth = await staffStore('Ada');
+    const staff = await auth.getAccount('acc');
+    expect(staff).toBeDefined();
+    if (staff === undefined) {
+      throw new Error('expected account');
+    }
+    vi.spyOn(auth, 'getAccountByUsername').mockResolvedValue({
+      ...staff,
+      username: '   ',
+    });
+    const messages = new InMemoryMessageStore();
+    await messages.create({
+      id: SHOP_ID,
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'Shop #21GiftsShop',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+    });
+    await messages.setShopAccount(SHOP_ID, SHOP_ACCOUNT);
+    const res = await patchShop(auth, SHOP_ID, { username: 'shopkeep' }, messages);
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ error: 'No account with that username' });
+    expect((await messages.getById(SHOP_ID))?.shopAccount).toEqual(SHOP_ACCOUNT);
+  });
+
+  it('returns 404 when the stored username is null', async () => {
+    const auth = await staffStore('Ada');
+    const staff = await auth.getAccount('acc');
+    expect(staff).toBeDefined();
+    if (staff === undefined) {
+      throw new Error('expected account');
+    }
+    vi.spyOn(auth, 'getAccountByUsername').mockResolvedValue({
+      ...staff,
+      username: null,
+    });
+    const messages = new InMemoryMessageStore();
+    await messages.create({
+      id: SHOP_ID,
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'Shop #21GiftsShop',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+    });
+    await messages.setShopAccount(SHOP_ID, SHOP_ACCOUNT);
+    const res = await patchShop(auth, SHOP_ID, { username: 'shopkeep' }, messages);
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ error: 'No account with that username' });
+    expect((await messages.getById(SHOP_ID))?.shopAccount).toEqual(SHOP_ACCOUNT);
+  });
+
+  it('returns 503 and logs messages.shop_account.failed when setShopAccount throws', async () => {
+    const base = new InMemoryMessageStore();
+    await base.create({
+      id: SHOP_ID,
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'Shop #21GiftsShop',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+    });
+    const liveShopRow = await base.getById(SHOP_ID);
+    expect(liveShopRow).toBeDefined();
+    if (liveShopRow === undefined) {
+      throw new Error('expected shop');
+    }
+    warn.mockClear();
+    const res = await mount(
+      await staffStore('Ada'),
+      throwingStore({
+        getById: async () => liveShopRow,
+        setShopAccount: async () => {
+          throw new Error('boom');
+        },
+      }),
+    ).request('/messages/' + SHOP_ID + '/shop-account', {
+      method: 'PATCH',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ username: null }),
+    });
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({ error: 'Messages are unavailable' });
+    expect(parsedEvents(warn).some((e) => e['event'] === 'messages.shop_account.failed')).toBe(
+      true,
+    );
+  });
+
+  it('returns 404 when setShopAccount returns false', async () => {
+    const base = new InMemoryMessageStore();
+    await base.create({
+      id: SHOP_ID,
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'Shop #21GiftsShop',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+    });
+    const liveShopRow = await base.getById(SHOP_ID);
+    expect(liveShopRow).toBeDefined();
+    if (liveShopRow === undefined) {
+      throw new Error('expected shop');
+    }
+    const res = await mount(
+      await staffStore('Ada'),
+      throwingStore({
+        getById: async () => liveShopRow,
+        setShopAccount: async () => false,
+      }),
+    ).request('/messages/' + SHOP_ID + '/shop-account', {
+      method: 'PATCH',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ username: null }),
+    });
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ error: 'Not found' });
+  });
+
+  it('returns 404 when setShopAccount succeeds but the row is gone on reload', async () => {
+    const base = new InMemoryMessageStore();
+    await base.create({
+      id: SHOP_ID,
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'Shop #21GiftsShop',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+    });
+    const liveShopRow = await base.getById(SHOP_ID);
+    expect(liveShopRow).toBeDefined();
+    if (liveShopRow === undefined) {
+      throw new Error('expected shop');
+    }
+    let remaining = 1;
+    const res = await mount(
+      await staffStore('Ada'),
+      throwingStore({
+        getById: async () => {
+          if (remaining > 0) {
+            remaining -= 1;
+            return liveShopRow;
+          }
+          return undefined;
+        },
+        setShopAccount: async () => true,
+      }),
+    ).request('/messages/' + SHOP_ID + '/shop-account', {
+      method: 'PATCH',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ username: null }),
+    });
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ error: 'Not found' });
+  });
+
+  it('returns 200 for a Damus-only shop row with no role', async () => {
+    const auth = await staffStore('Ada');
+    await addAccount(auth, SHOP_ACCOUNT, 'c'.repeat(64));
+    const messages = new InMemoryMessageStore();
+    await messages.create({
+      id: DAMUS_ID,
+      accountId: null,
+      name: 'aabbccdd…8899',
+      text: 'Shop #21GiftsShop',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      hasVideo: false,
+      videoContentType: null,
+      ...unsignedNostrDefaults(),
+      authorPubkey: 'ab'.repeat(32),
+      eventId: 'ee'.repeat(32),
+    });
+    const res = await patchShop(auth, DAMUS_ID, { username: 'shopkeep' }, messages);
+    expect(res.status).toBe(200);
+    const json = (await res.json()) as Record<string, unknown>;
+    expect(json).not.toHaveProperty('role');
+    expect(json['shopAccount']).toEqual(SHOP_ACCOUNT);
+  });
+
+  it('returns 200 with role basis when the shop author account is missing', async () => {
+    const auth = await staffStore('Ada');
+    await addAccount(auth, SHOP_ACCOUNT, 'c'.repeat(64));
+    const messages = new InMemoryMessageStore();
+    await messages.create({
+      id: GHOST_ID,
+      accountId: 'gone',
+      name: 'Ada',
+      text: 'Shop #21GiftsShop',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+    });
+    const res = await patchShop(auth, GHOST_ID, { username: 'shopkeep' }, messages);
     expect(res.status).toBe(200);
     expect(((await res.json()) as { role: string }).role).toBe('basis');
   });
