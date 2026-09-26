@@ -202,7 +202,7 @@ api/
 │       │   ├── translation-store.test.ts
 │       │   ├── translate-deepl.test.ts
 │       │   ├── cloudflare-purge.test.ts
-│       │   ├── nostr/            # kek, keys, publish, worker, dm, relays, zap, event, retract, sign, rate-limit
+│       │   ├── nostr/            # kek, keys, publish, worker, dm, relays, zap, event, image, retract, sign, rate-limit
 │       │   ├── contact.test.ts
 │       │   ├── contact-store.test.ts
 │       │   ├── pos-charge.test.ts

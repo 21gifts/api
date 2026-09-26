@@ -29,9 +29,11 @@ import {
   buildKind10002Event,
   forumExtraPhotoUrl,
   forumPhotoUrl,
+  notePageUrl,
   type Kind1Photo,
   type Kind1ReplyTo,
 } from '@/lib/nostr/event';
+import { stillLook } from '@/lib/nostr/image';
 import { nip05Domain, nip05Identifier } from '@/lib/nip05';
 import {
   forumVideoUrl,
@@ -808,19 +810,30 @@ async function signBatch(deps: NostrWorkerDeps, nowMs: number): Promise<void> {
           } catch {
             /* missing or unreadable file — omit dim, size, hash, and duration */
           }
+          if (storedPhoto !== null) {
+            const poster = stillLook(storedPhoto.bytes, storedPhoto.contentType);
+            if (poster.blurhash !== undefined) {
+              photo.blurhash = poster.blurhash;
+            }
+          }
         } else if (storedPhoto !== null) {
           photo = {
             url: forumPhotoUrl(apiBase, row.id, storedPhoto.contentType),
             mime: storedPhoto.contentType,
             ...(storedPhoto.bytes.byteLength > 0 ? { hash: sha256Hex(storedPhoto.bytes) } : {}),
           };
+          Object.assign(photo, stillLook(storedPhoto.bytes, storedPhoto.contentType));
           const storedExtras = await deps.messages.listExtraPhotos(row.id);
           if (storedExtras.length > 0) {
-            extraPhotos = storedExtras.map((item, i) => ({
-              url: forumExtraPhotoUrl(apiBase, row.id, i + 1, item.contentType),
-              mime: item.contentType,
-              ...(item.bytes.byteLength > 0 ? { hash: sha256Hex(item.bytes) } : {}),
-            }));
+            extraPhotos = storedExtras.map((item, i) => {
+              const extra: Kind1Photo = {
+                url: forumExtraPhotoUrl(apiBase, row.id, i + 1, item.contentType),
+                mime: item.contentType,
+                ...(item.bytes.byteLength > 0 ? { hash: sha256Hex(item.bytes) } : {}),
+              };
+              Object.assign(extra, stillLook(item.bytes, item.contentType));
+              return extra;
+            });
           }
         } else if (row.hasPhoto) {
           logEvent('nostr.sign.photo_url_missing', { messageId: row.id });
@@ -850,13 +863,22 @@ async function signBatch(deps: NostrWorkerDeps, nowMs: number): Promise<void> {
       const account = await deps.auth.getAccount(row.accountId);
       const isProfile = account?.profileMessageId === row.id;
       const location = isProfile ? null : (account?.location ?? null);
+      const pageUrl = isProfile ? null : notePageUrl(deps.env['PUBLIC_BASE_URL'] ?? '', row.id);
       for (let attempt = 0; attempt < 2 && !stored; attempt += 1) {
         const unsigned =
           extraPhotos !== undefined
-            ? buildKind1Event(row.text, createdAt, photo, replyTo, location, extraPhotos)
+            ? buildKind1Event(row.text, createdAt, photo, replyTo, location, extraPhotos, pageUrl)
             : photo === undefined
-              ? buildKind1Event(row.text, createdAt, undefined, replyTo, location)
-              : buildKind1Event(row.text, createdAt, photo, replyTo, location);
+              ? buildKind1Event(
+                  row.text,
+                  createdAt,
+                  undefined,
+                  replyTo,
+                  location,
+                  undefined,
+                  pageUrl,
+                )
+              : buildKind1Event(row.text, createdAt, photo, replyTo, location, undefined, pageUrl);
         const signed = await signEventForAccount(deps.auth, row.accountId, deps.kek, unsigned);
         stored = await deps.messages.updateSignedEvent(
           row.id,
