@@ -18,6 +18,7 @@ import {
 import { notifyConversationMessage } from '@/lib/conversation-push';
 import type { ConversationStore, ConversationThreadPageQuery } from '@/lib/conversation-store';
 import { logEvent } from '@/lib/log';
+import { isSundayRestHeader } from '@/lib/sunday-rest';
 import { shownFiatFromBody, type FiatAmounts } from '@/lib/money';
 import type { FetchFn } from '@/lib/lnurlp';
 import { requestZapInvoice } from '@/lib/lnurl-pay';
@@ -775,6 +776,12 @@ export function conversationRoutes(deps: ConversationRouteDeps): Hono {
         if (thread === undefined || !canAccess(thread, account, platform?.id ?? null)) {
           return c.json({ error: 'Not found' }, 404);
         }
+        if (
+          thread.kind === 'moderator_group' &&
+          isSundayRestHeader(deps.now(), c.req.header('Time-Zone'))
+        ) {
+          return c.json({ error: 'SUNDAY_REST' }, 403);
+        }
         const started = deps.now();
         const timeoutMs = deps.waitTimeoutMs ?? WAIT_SATS_TIMEOUT_MS;
         const pollMs = deps.waitPollMs ?? WAIT_SATS_POLL_MS;
@@ -839,6 +846,12 @@ export function conversationRoutes(deps: ConversationRouteDeps): Hono {
         const platform = await platformAccount(deps.authStore);
         if (thread === undefined || !canAccess(thread, account, platform?.id ?? null)) {
           return c.json({ error: 'Not found' }, 404);
+        }
+        if (
+          thread.kind === 'moderator_group' &&
+          isSundayRestHeader(deps.now(), c.req.header('Time-Zone'))
+        ) {
+          return c.json({ error: 'SUNDAY_REST' }, 403);
         }
         await deps.store.markRead(id, account.id, new Date(deps.now()));
         return c.json({ ok: true }, 200);
@@ -906,6 +919,12 @@ export function conversationRoutes(deps: ConversationRouteDeps): Hono {
         const platform = await platformAccount(deps.authStore);
         if (thread === undefined || !canAccess(thread, account, platform?.id ?? null)) {
           return c.json({ error: 'Not found' }, 404);
+        }
+        if (
+          thread.kind === 'moderator_group' &&
+          isSundayRestHeader(deps.now(), c.req.header('Time-Zone'))
+        ) {
+          return c.json({ error: 'SUNDAY_REST' }, 403);
         }
         if (text === '' && photo === undefined) {
           return c.json(

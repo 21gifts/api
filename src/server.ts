@@ -70,6 +70,7 @@ import type { GiftRecorder } from '@/lib/gift-recorder';
 import { InMemoryLnAddressCache } from '@/lib/ln-address-cache';
 import type { LnAddressCache } from '@/lib/ln-address-cache';
 import { requestLog } from '@/lib/log';
+import { sundayRest } from '@/lib/sunday-rest';
 import type { FetchFn } from '@/lib/lnurlp';
 import type { NostrPublisher } from '@/lib/nostr/publish';
 import { resolveSpendPing, type SpendPing } from '@/lib/spend-ping';
@@ -370,10 +371,11 @@ export function createApp(deps: AppDeps = {}): Hono {
     return cors({
       origin: allowedOrigins,
       allowMethods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-      allowHeaders: ['Authorization', 'Content-Type'],
+      allowHeaders: ['Authorization', 'Content-Type', 'Time-Zone'],
       maxAge: 86400,
     })(c, next);
   });
+  app.use('*', sundayRest(now));
 
   app.route('/', brandRoutes({ read: readBrand }));
   app.route('/', pushRoutes({ authStore: store, pushStore, now, vapidPublicKey }));

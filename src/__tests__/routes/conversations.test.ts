@@ -2832,6 +2832,53 @@ describe('moderator_group', () => {
     expect(rows[0]?.eventId).toBeNull();
   });
 
+  it('refuses moderator-group open, send, and mark-read on the device Sunday', async () => {
+    const sundayMs = Date.parse('2026-09-26T22:30:00.000Z');
+    const auth = new InMemoryAuthStore();
+    await auth.createAccount({
+      id: 'acc',
+      linkingKey: null,
+      role: 'founder',
+      name: 'Ada',
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: 'a'.repeat(64),
+      createdAt: sundayMs,
+      rulesAgreedAt: null,
+    });
+    await auth.createSession({ token: 'tok', accountId: 'acc', createdAt: sundayMs });
+    await withPlatform(auth);
+    const conversations = new InMemoryConversationStore();
+    const sunday = (): number => sundayMs;
+    const app = mount(auth, conversations, new InMemoryMessageStore(), { now: sunday });
+    const opened = await app.request('/conversations/moderator-group', { headers: AUTH });
+    expect(opened.status).toBe(200);
+    const id = ((await opened.json()) as { conversation: { id: string } }).conversation.id;
+    const sundayHeaders = { ...AUTH, 'Time-Zone': 'Europe/Zurich' };
+    const thread = await app.request(`/conversations/${id}`, { headers: sundayHeaders });
+    expect(thread.status).toBe(403);
+    expect(await thread.json()).toEqual({ error: 'SUNDAY_REST' });
+    const post = await app.request(`/conversations/${id}`, {
+      method: 'POST',
+      headers: { ...sundayHeaders, 'content-type': 'application/json' },
+      body: JSON.stringify({ text: 'nope' }),
+    });
+    expect(post.status).toBe(403);
+    expect(await post.json()).toEqual({ error: 'SUNDAY_REST' });
+    const read = await app.request(`/conversations/${id}/read`, {
+      method: 'POST',
+      headers: sundayHeaders,
+    });
+    expect(read.status).toBe(403);
+    expect(await read.json()).toEqual({ error: 'SUNDAY_REST' });
+    const saturday = await app.request(`/conversations/${id}`, {
+      headers: { ...AUTH, 'Time-Zone': 'Pacific/Honolulu' },
+    });
+    expect(saturday.status).toBe(200);
+  });
+
   it('shows a platform stipend row in the group as the house, not as the viewer', async () => {
     const auth = await seeded('moderator');
     await withPlatform(auth);
