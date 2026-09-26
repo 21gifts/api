@@ -1145,18 +1145,14 @@ async function servePublicActiveList(deps: MessagesRouteDeps, c: Context): Promi
   }
   const cursorQuery = c.req.query('cursor');
   let cursorId: string | null = null;
-  let cursorAtMs: number | null = null;
+  let cursorAtMs = Number.NaN;
   if (cursorQuery !== undefined) {
     const decoded = decodeMessageFeedCursor(cursorQuery);
     if (decoded === null || decoded.k !== 't' || !MESSAGE_ID_RE.test(decoded.i)) {
       return c.json({ error: 'Invalid cursor' }, 400);
     }
-    const parsed = Date.parse(decoded.c);
-    if (!Number.isFinite(parsed)) {
-      return c.json({ error: 'Invalid cursor' }, 400);
-    }
     cursorId = decoded.i;
-    cursorAtMs = parsed;
+    cursorAtMs = Date.parse(decoded.c);
   }
   try {
     const staffAccountIds = new Set(await deps.authStore.listStaffAccountIds());
@@ -1178,7 +1174,7 @@ async function servePublicActiveList(deps: MessagesRouteDeps, c: Context): Promi
         start = index + 1;
       } else {
         const older = window.findIndex(
-          (row) => row.createdAt.getTime() < (cursorAtMs ?? Number.POSITIVE_INFINITY),
+          (row) => row.createdAt.getTime() < cursorAtMs,
         );
         if (older < 0) {
           return c.json({ error: 'Unauthorized' }, 401);
