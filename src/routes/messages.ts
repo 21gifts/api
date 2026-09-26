@@ -40,11 +40,12 @@ import {
   type ForumPhoto,
   type MessageRow,
 } from '@/lib/message';
-import type {
-  MessageFeedQuery,
-  MessageInvoiceAttempt,
-  MessageInvoiceResult,
-  MessageStore,
+import {
+  textHasHashtagToken,
+  type MessageFeedQuery,
+  type MessageInvoiceAttempt,
+  type MessageInvoiceResult,
+  type MessageStore,
 } from '@/lib/message-store';
 import type { TranslateTarget } from '@/lib/translate-config';
 import {
@@ -1069,7 +1070,8 @@ const translateBody = z.object({
  * @returns A Hono app with `GET /`, `POST /`, `GET /compose-target`,
  * `GET /places`, `GET /:id/photo` plus `.jpg` / `.jpeg` / `.png` / `.webp`,
  * `GET /:id/video.mp4|.webm|.mov`, public `GET /:id/replies` (optional Bearer
- * for `accountId`), `DELETE /:id`, staff `GET /hidden` (moderator session; no
+ * for `accountId`), `DELETE /:id`, staff `PATCH /:id/place` (moderator session;
+ * no `forum.read`), staff `GET /hidden` (moderator session; no
  * `forum.read`), public `GET /:id` (optional `?sinceSats=`), and
  * `POST /:id/invoice`, `POST /:id/translate`, and public `GET /stats`.
  */
@@ -1502,6 +1504,75 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
         return c.body(null, 204);
       } catch {
         logEvent('messages.delete.failed');
+        return c.json({ error: 'Messages are unavailable' }, 503);
+      }
+    })
+    .patch('/:id/place', async (c) => {
+      const account = await authedAccount(deps, c.req.header('authorization'));
+      if (account === null) {
+        return c.json({ error: 'Unauthorized' }, 401);
+      }
+      if (!roleAtLeast(account.role, 'moderator')) {
+        return c.json({ error: 'Forbidden' }, 403);
+      }
+      const id = c.req.param('id');
+      if (!MESSAGE_ID_RE.test(id)) {
+        return c.json({ error: 'Not found' }, 404);
+      }
+      const raw: unknown = await c.req.json().catch(() => null);
+      if (
+        raw === null ||
+        typeof raw !== 'object' ||
+        Array.isArray(raw) ||
+        !Object.prototype.hasOwnProperty.call(raw, 'place')
+      ) {
+        return c.json({ error: 'Invalid body' }, 400);
+      }
+      const parsed = normalizePlace((raw as { place: unknown }).place);
+      if (!parsed.ok) {
+        return c.json({ error: parsed.error }, 400);
+      }
+      try {
+        const row = await deps.store.getById(id);
+        if (row === undefined || row.deletedAt !== null) {
+          return c.json({ error: 'Not found' }, 404);
+        }
+        if (row.parentId !== null) {
+          return c.json({ error: 'A reply cannot include a place' }, 400);
+        }
+        if (!textHasHashtagToken(row.text, '21GiftsShop')) {
+          return c.json({ error: 'Only a shop note can set a place' }, 400);
+        }
+        const written = await deps.store.setPlace(id, parsed.value);
+        if (!written) {
+          return c.json({ error: 'Not found' }, 404);
+        }
+        const updated = await deps.store.getById(id);
+        if (updated === undefined) {
+          return c.json({ error: 'Not found' }, 404);
+        }
+        const author =
+          updated.accountId === null
+            ? undefined
+            : await deps.authStore.getAccount(updated.accountId);
+        const payable = updated.accountId === null ? false : payableOf(updated, author);
+        const role = updated.accountId === null ? undefined : (author?.role ?? 'basis');
+        logEvent('messages.place.updated', {
+          messageId: id,
+          accountId: account.id,
+          role: account.role,
+        });
+        return c.json(
+          serializeMessage(
+            updated,
+            payable,
+            role,
+            await deps.store.countAttributedReplies(updated.id),
+          ),
+          200,
+        );
+      } catch {
+        logEvent('messages.place.failed');
         return c.json({ error: 'Messages are unavailable' }, 503);
       }
     })

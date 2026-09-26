@@ -893,6 +893,9 @@ describe('debugMessagesRoutes', () => {
       markUndeleted: async () => {
         throw new Error('boom');
       },
+      setPlace: async () => {
+        throw new Error('boom');
+      },
     } as unknown as MessageStore;
     const app = mount(store, 'secret');
     const res = await app.request(`/debug/messages/${HIDDEN_ID}/restore`, {

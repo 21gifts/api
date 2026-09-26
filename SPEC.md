@@ -64,7 +64,7 @@ only and does not `addSats`; no `notifyForumReply`). Optional `messageId` on
 CORS allows the configured origins (`CORS_ALLOWED_ORIGINS`, or the default
 surfaces `https://21.gifts`, `https://dev.21.gifts`, `https://app.21.gifts`,
 `https://dev-app.21.gifts`, and `http://localhost:3000`) and methods `GET`,
-`POST`, `PUT`, `DELETE`, `OPTIONS`, with headers `Authorization` and `Content-Type`.
+`POST`, `PUT`, `PATCH`, `DELETE`, `OPTIONS`, with headers `Authorization` and `Content-Type`.
 Sessions are sent as `Authorization: Bearer` headers — no cookies,
 credentials not enabled.
 
@@ -143,6 +143,7 @@ Public base URLs used in examples:
 | GET    | `/messages/:id/photo`                                | none / Bearer (moderator+) | Live photo bytes; staff hidden bytes `Cache-Control: private, no-store`                                                                                           |
 | GET    | `/messages/:id/video.*`                              | none / Bearer (moderator+) | Live video bytes; staff hidden bytes `Cache-Control: private, no-store`                                                                                           |
 | DELETE | `/messages/:id`                                      | Bearer (moderator+)        | Soft-hide note + direct replies; retract in-app notifications; external target also blocks that pubkey                                                            |
+| PATCH  | `/messages/:id/place`                                | Bearer (moderator+)        | Set, replace, or clear the map pin on a live top-level shop note                                                                                                  |
 | POST   | `/messages/:id/invoice`                              | Bearer                     | NIP-57 zap / BOLT11                                                                                                                                               |
 | POST   | `/contact`                                           | Bearer                     | Send private in-app contact `{ text }`                                                                                                                            |
 | GET    | `/pos`                                               | Bearer                     | Open till charge or null, plus up to 20 history rows                                                                                                              |
@@ -3874,7 +3875,7 @@ two ids per store.
 
 Public single-note fetch. Live rows need **no Bearer.** `:id` is a UUID.
 Registered **after** photo, video, `GET /messages/:id/replies`,
-`DELETE /messages/:id`, `GET /messages/stats`, `GET /messages/hidden`, and
+`DELETE /messages/:id`, `PATCH /messages/:id/place`, `GET /messages/stats`, `GET /messages/hidden`, and
 `GET /messages/places` so
 those paths are not captured as `:id`. A live GET returns
 the public message JSON (`sats`, optional `goalSats` on a top-level note
@@ -4029,6 +4030,27 @@ On success the process logs `messages.deleted` with `messageId`,
 block additionally logs `messages.external.blocked` with only `messageId` and
 the hidden-row count, never the pubkey. On store throw it logs
 `messages.delete.failed`.
+
+### `PATCH /messages/:id/place`
+
+Staff map pin on a live top-level shop note (`#21GiftsShop`). Bearer
+session required. Live role must be at least `moderator`. No rules
+gate. `:id` must match `MESSAGE_ID_RE` or the response is **404**.
+Body is JSON via `c.req.json()`; a non-JSON body or an object with no
+`place` key is **400** `{ "error": "Invalid body" }`. `normalizePlace`
+accepts a pin or `null` (clears). A bad coordinate is **400**
+`{ "error": "Place must be a latitude and longitude" }`. A label over
+80 characters is **400** `{ "error": "Place label must be at most 80 characters" }`.
+Missing or hidden row → **404** and no write. A reply → **400**
+`{ "error": "A reply cannot include a place" }`. A non-shop top-level
+note → **400** `{ "error": "Only a shop note can set a place" }`.
+`setPlace` false → **404**. Store throw → **503**
+`{ "error": "Messages are unavailable" }` and `messages.place.failed`.
+
+Success → **200** live public message JSON (optional `place`, reply
+count, no hide stamps). Logs `messages.place.updated` with
+`messageId`, `accountId`, and `role` only. Text and publish state are
+unchanged.
 
 ### `GET /messages/hidden`
 
