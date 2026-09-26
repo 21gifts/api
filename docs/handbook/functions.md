@@ -2289,9 +2289,9 @@
 
 ## Function: decodeForumVideo
 
-- **Purpose:** Size + magic-byte check for MP4/WebM/MOV (32 MiB cap). MP4/MOV bytes are passed through `faststartIsoBmff` (`moov` before `mdat` only when remux succeeds; abort cases keep the original bytes).
+- **Purpose:** Size + magic-byte check for MP4/WebM/MOV (32 MiB cap). MP4/MOV bytes are passed through `faststartIsoBmff` (`moov` before `mdat` only when remux succeeds; abort cases keep the original bytes) and then `normalizeIsoBmffDisplayMatrix`.
 - **Inputs:** raw bytes.
-- **Returns / side effects:** `{ contentType, bytes, takenAt }` or null. `takenAt` is `YYYY-MM-DDTHH:MM:SS+00:00` or null. Bytes stay as `faststartIsoBmff` left them.
+- **Returns / side effects:** `{ contentType, bytes, takenAt }` or null. `takenAt` is `YYYY-MM-DDTHH:MM:SS+00:00` or null. Bytes stay as faststart and display-matrix repair left them.
 - **Used by:** `POST /messages` multipart.
 
 ## Function: detectVideoContentType
@@ -2343,6 +2343,13 @@
 - **Returns / side effects:** `Nip05Entry[]`.
 - **Used by:** `buildNostrJson`.
 
+## Function: normalizeIsoBmffDisplayMatrix
+
+- **Purpose:** Put a 90°, 180°, or 270° picture back inside the video frame. Some phone files rotate the track and leave the translation at zero, so players draw every pixel outside the element and the picture stays black. An already-correct matrix, a non-video track, or a translation that does not fit in a signed 32-bit field is left untouched.
+- **Inputs:** ISO-BMFF bytes. The buffer is not modified.
+- **Returns / side effects:** A new copy with the `tkhd` translation and display size corrected, or the same `bytes` reference when nothing changes. No I/O.
+- **Used by:** `decodeForumVideo`; `readForumVideoBytes`.
+
 ## Function: nip05Domain
 
 - **Purpose:** Hostname from `PUBLIC_BASE_URL`; null for loopback/IP.
@@ -2373,9 +2380,9 @@
 
 ## Function: readForumVideoBytes
 
-- **Purpose:** Read video bytes from disk, remux with `faststartIsoBmff`, and rewrite the file when boxes move (heal-on-read for clips stored before faststart). Heal writes a sibling temp file named with `crypto.randomUUID()` in the same directory as `path`, then `rename`s that temp onto `path`.
-- **Inputs:** absolute path; optional `io` disk ops (tests).
-- **Returns / side effects:** Bytes to serve. On write/rename failure the original file is left in place and the remuxed buffer is still returned.
+- **Purpose:** Read video bytes from disk, remux with `faststartIsoBmff`, correct a broken display matrix with `normalizeIsoBmffDisplayMatrix`, and rewrite the file when either change applies (heal-on-read, including clips stored before this repair). Heal writes a sibling temp file named with `crypto.randomUUID()` in the same directory as `path`, then `rename`s that temp onto `path`. After a change, purges the public API and site video URL when Cloudflare credentials and `PUBLIC_BASE_URL` are set. Missing credentials are a no-op. A purge failure is logged as `messages.video.purge_failed` and does not fail the read.
+- **Inputs:** absolute path; optional `io` disk ops (tests); optional env; optional `fetch`.
+- **Returns / side effects:** Bytes to serve. On write/rename failure the original file is left in place and the corrected buffer is still returned.
 - **Used by:** `GET /messages/:id/video.*`.
 
 ## Function: removeForumVideo

@@ -932,10 +932,10 @@ describe('normalizeIsoBmffDisplayMatrix', () => {
     await writeForumVideo(id, { contentType: 'video/mp4', bytes: input });
     const path = videoFilePath(resolveMediaDir(), id, 'video/mp4');
     try {
-      const loaded = await readForumVideoBytes(path);
+      const loaded = await readForumVideoBytes(path, fs, {});
       expect(tkhdView(loaded).tx).toBe(576 * MATRIX_ONE);
       expect(tkhdView(new Uint8Array(await readFile(path))).tx).toBe(576 * MATRIX_ONE);
-      const again = await readForumVideoBytes(path);
+      const again = await readForumVideoBytes(path, fs, {});
       expect(tkhdView(again).tx).toBe(576 * MATRIX_ONE);
       expect(tkhdView(again).width).toBe(576 * MATRIX_ONE);
     } finally {
@@ -956,5 +956,115 @@ describe('normalizeIsoBmffDisplayMatrix', () => {
       portraitTrak({ entry: null, tkhdWidth: 0, tkhdHeight: 0, tx: 0, ty: 0 }),
     );
     expect(normalizeIsoBmffDisplayMatrix(missing)).toBe(missing);
+  });
+
+  it('leaves a translation that does not fit in a signed 32-bit field', () => {
+    const input = matrixFile(portraitTrak({ entry: avc1Box(1024, 40000) }));
+    expect(normalizeIsoBmffDisplayMatrix(input)).toBe(input);
+  });
+
+  it('purges the site and api cache after rewriting a broken video', async () => {
+    const id = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd';
+    const input = matrixFile(portraitTrak({}));
+    await writeForumVideo(id, { contentType: 'video/mp4', bytes: input });
+    const path = videoFilePath(resolveMediaDir(), id, 'video/mp4');
+    const calls: string[] = [];
+    const fetchImpl = async (
+      _input: string | URL | Request,
+      init?: RequestInit,
+    ): Promise<Response> => {
+      calls.push(String(init?.body ?? ''));
+      return { status: 200, json: async () => ({ success: true }) } as Response;
+    };
+    const env = {
+      PUBLIC_BASE_URL: 'https://21.gifts',
+      CLOUDFLARE_ZONE_ID: 'zone',
+      CLOUDFLARE_API_TOKEN: 'token',
+    };
+    try {
+      const loaded = await readForumVideoBytes(path, fs, env, fetchImpl);
+      expect(tkhdView(loaded).width).toBe(576 * MATRIX_ONE);
+      expect(calls).toHaveLength(1);
+      expect(calls[0]).toContain(`https://api.21.gifts/messages/${id}/video.mp4`);
+      expect(calls[0]).toContain(`https://21.gifts/messages/${id}/video.mp4`);
+      await readForumVideoBytes(path, fs, env, fetchImpl);
+      expect(calls).toHaveLength(1);
+    } finally {
+      await removeForumVideo(id, 'video/mp4');
+    }
+  });
+
+  it('still returns corrected bytes when the cache purge fails', async () => {
+    const id = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee';
+    await writeForumVideo(id, { contentType: 'video/mp4', bytes: matrixFile(portraitTrak({})) });
+    const path = videoFilePath(resolveMediaDir(), id, 'video/mp4');
+    const warnings: string[] = [];
+    const previous = console.warn;
+    console.warn = (message?: unknown) => {
+      warnings.push(String(message));
+    };
+    const fetchImpl = async (): Promise<Response> =>
+      ({ status: 500, json: async () => ({ success: false }) }) as Response;
+    try {
+      const loaded = await readForumVideoBytes(
+        path,
+        fs,
+        {
+          PUBLIC_BASE_URL: 'https://api.example.test',
+          CLOUDFLARE_ZONE_ID: 'zone',
+          CLOUDFLARE_API_TOKEN: 'token',
+        },
+        fetchImpl,
+      );
+      expect(tkhdView(loaded).tx).toBe(576 * MATRIX_ONE);
+      expect(warnings.some((line) => line.includes('messages.video.purge_failed'))).toBe(true);
+    } finally {
+      console.warn = previous;
+      await removeForumVideo(id, 'video/mp4');
+    }
+  });
+
+  it('does not purge when credentials or a public video name are missing', async () => {
+    const id = 'ffffffff-ffff-4fff-8fff-ffffffffffff';
+    const input = matrixFile(portraitTrak({}));
+    await writeForumVideo(id, { contentType: 'video/mp4', bytes: input });
+    const path = videoFilePath(resolveMediaDir(), id, 'video/mp4');
+    let calls = 0;
+    const fetchImpl = async (): Promise<Response> => {
+      calls += 1;
+      return { status: 200, json: async () => ({ success: true }) } as Response;
+    };
+    const bare = path.slice(0, -4);
+    const odd = `${path.slice(0, -4)}.bin`;
+    await fs.writeFile(bare, input);
+    await fs.writeFile(odd, input);
+    try {
+      await readForumVideoBytes(path, fs, {}, fetchImpl);
+      await readForumVideoBytes(
+        bare,
+        fs,
+        {
+          PUBLIC_BASE_URL: 'https://21.gifts',
+          CLOUDFLARE_ZONE_ID: 'zone',
+          CLOUDFLARE_API_TOKEN: 'token',
+        },
+        fetchImpl,
+      );
+      await readForumVideoBytes(
+        odd,
+        fs,
+        {
+          PUBLIC_BASE_URL: 'https://21.gifts',
+          CLOUDFLARE_ZONE_ID: 'zone',
+          CLOUDFLARE_API_TOKEN: 'token',
+        },
+        fetchImpl,
+      );
+      expect(calls).toBe(0);
+    } finally {
+      await removeForumVideo(id, 'video/mp4');
+      await fs.unlink(bare).catch(() => undefined);
+      await fs.unlink(odd).catch(() => undefined);
+    }
   });
 });

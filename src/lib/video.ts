@@ -8,6 +8,10 @@ import * as fs from 'node:fs/promises';
 /** Disk ops {@link readForumVideoBytes} uses (overridable in tests). */
 export type ForumVideoFs = Pick<typeof fs, 'readFile' | 'writeFile' | 'rename' | 'unlink'>;
 import { basename, dirname, join } from 'node:path';
+import { purgeCloudflareFiles, resolveCloudflarePurgeConfig } from '@/lib/cloudflare-purge';
+import type { FetchFn } from '@/lib/lnurlp';
+import { logEvent } from '@/lib/log';
+import { resolvePublicApiBase } from '@/lib/nostr/relays';
 
 /** Maximum decoded video size (32 MiB). */
 export const MESSAGE_VIDEO_MAX_BYTES = 32 * 1024 * 1024;
@@ -56,6 +60,9 @@ const DISPLAY_MATRIX_UNITY = 65536;
 
 /** Required 2.30 `w` for a rotation this module will patch. */
 const DISPLAY_MATRIX_W = 0x40000000;
+
+/** Extensions whose public URL is purged after a heal. */
+const HEALED_VIDEO_EXTS = new Set(['mp4', 'webm', 'mov']);
 
 /** Decoded forum video ready for disk. */
 export interface ForumVideo {
@@ -648,6 +655,9 @@ function matrixPatchForTrak(bytes: Uint8Array, trak: IsoBmffBox): MatrixPatch | 
   const needTy = display.ty * DISPLAY_MATRIX_UNITY;
   const needW = display.width * DISPLAY_MATRIX_UNITY;
   const needH = display.height * DISPLAY_MATRIX_UNITY;
+  if (!fitsSigned32(needTx) || !fitsSigned32(needTy)) {
+    return null;
+  }
   if (
     tx === needTx &&
     ty === needTy &&
@@ -708,6 +718,11 @@ function displayFor(
 
 function pixelInRange(value: number): boolean {
   return value >= 1 && value <= 65535;
+}
+
+/** True when a non-negative 16.16 translation fits in a signed 32-bit field. */
+function fitsSigned32(value: number): boolean {
+  return value <= 0x7fffffff;
 }
 
 function scanTrak(
@@ -949,7 +964,10 @@ export async function writeForumVideo(
 }
 
 /**
- * Read video bytes, remux for faststart, and rewrite the file when boxes move.
+ * Read video bytes, remux for faststart, correct a broken display matrix, and
+ * rewrite the file when either change applies. A successful or failed rewrite
+ * still returns the corrected bytes. After a change, the public cache is
+ * purged when Cloudflare credentials and a public origin are set.
  *
  * Heal writes go to a UUID sibling temp (same directory as `path`) then
  * `rename` onto `path`, so a failed write leaves the original file intact.
@@ -957,11 +975,15 @@ export async function writeForumVideo(
  *
  * @param path - Absolute path on disk.
  * @param io - Disk ops; production omits this and uses `node:fs/promises`.
+ * @param env - Used only to purge a cached copy after a heal. Defaults to `process.env`.
+ * @param fetchImpl - Purge `fetch`. Defaults to the global `fetch`.
  * @returns Bytes to serve (moov before mdat, display matrix inside the frame).
  */
 export async function readForumVideoBytes(
   path: string,
   io: ForumVideoFs = fs,
+  env: Record<string, string | undefined> = process.env,
+  fetchImpl: FetchFn = fetch,
 ): Promise<Uint8Array> {
   const bytes = new Uint8Array(await io.readFile(path));
   const remuxed = faststartIsoBmff(bytes);
@@ -978,8 +1000,60 @@ export async function readForumVideoBytes(
         /* best-effort cleanup of a partial temp */
       }
     }
+    await purgeHealedVideoCache(path, env, fetchImpl);
   }
   return normalized;
+}
+
+/**
+ * Drop the cached public copy after a heal so viewers are not stuck on the old bytes.
+ *
+ * Missing Cloudflare config or a blank public origin is a no-op. A purge failure
+ * is logged and does not fail the read. Never logs the token.
+ *
+ * @param path - Healed file path (`<id>.mp4` / `.webm` / `.mov`).
+ * @param env - `PUBLIC_BASE_URL` plus optional Cloudflare credentials.
+ * @param fetchImpl - Injected `fetch`.
+ */
+async function purgeHealedVideoCache(
+  path: string,
+  env: Record<string, string | undefined>,
+  fetchImpl: FetchFn,
+): Promise<void> {
+  const config = resolveCloudflarePurgeConfig(env);
+  const urls = healedVideoPurgeUrls(path, env);
+  if (config === null || urls.length === 0) {
+    return;
+  }
+  try {
+    await purgeCloudflareFiles(fetchImpl, config, urls);
+  } catch {
+    logEvent('messages.video.purge_failed', { file: basename(path) });
+  }
+}
+
+function healedVideoPurgeUrls(path: string, env: Record<string, string | undefined>): string[] {
+  const name = basename(path);
+  const dot = name.lastIndexOf('.');
+  if (dot <= 0) {
+    return [];
+  }
+  const id = name.slice(0, dot);
+  const ext = name.slice(dot + 1);
+  if (!HEALED_VIDEO_EXTS.has(ext)) {
+    return [];
+  }
+  const suffix = `/messages/${id}/video.${ext}`;
+  const apiBase = resolvePublicApiBase(env);
+  const site = (env['PUBLIC_BASE_URL'] ?? '').trim().replace(/\/$/, '');
+  const urls: string[] = [];
+  if (apiBase !== '') {
+    urls.push(`${apiBase}${suffix}`);
+  }
+  if (site !== '' && site !== apiBase) {
+    urls.push(`${site}${suffix}`);
+  }
+  return urls;
 }
 
 /**
