@@ -1330,7 +1330,7 @@
 
 ## Function: repaymentStatus
 
-- **Purpose:** `GET /messages/:id/repayment` for the author.
+- **Purpose:** `GET /messages/:id/repayment` with no session. The public ledger of who gave and each repayment.
 - **Inputs:** Route deps and the request.
 - **Returns / side effects:** The due schedule JSON.
 

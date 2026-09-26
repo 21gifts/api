@@ -324,7 +324,7 @@ describe('credit repayment', () => {
     expect(plainRes.status).toBe(400);
   });
 
-  it('still returns the invoice when recording the attempt throws', async () => {
+  it('does not hand out an invoice when recording the attempt throws', async () => {
     const bolt11 = await import('@/lib/bolt11');
     const nip57 = vi.spyOn(bolt11, 'isNip57Invoice').mockReturnValue(true);
     try {
@@ -334,7 +334,7 @@ describe('credit repayment', () => {
         method: 'POST',
         headers: { authorization: 'Bearer acc-disk' },
       });
-      expect(res.status).toBe(200);
+      expect(res.status).toBe(503);
     } finally {
       nip57.mockRestore();
     }

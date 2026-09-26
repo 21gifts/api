@@ -277,6 +277,7 @@ export async function repaymentInvoice(deps: RepaymentDeps, c: Context): Promise
     await deps.store.recordInvoiceAttempt(attempt);
   } catch {
     logEvent('message.invoice.record_failed');
+    return c.json({ error: 'Messages are unavailable' }, 503);
   }
   return c.json({ pr: zap.pr, amountSats: next.share.sats }, 200);
 }

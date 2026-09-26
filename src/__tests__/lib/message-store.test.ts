@@ -6432,6 +6432,8 @@ describe('PostgresMessageStore', () => {
     expect(sql.queries[0]?.text).toMatch(/nostr_zap_receipt/);
     expect(sql.queries[0]?.text).toMatch(/ON CONFLICT/);
     expect(sql.queries[0]?.text).toMatch(/message\.sats \+ inserted\.sats/);
+    expect(sql.queries[0]?.text).toMatch(/goal_funded_at = CASE/);
+    expect(sql.queries[0]?.text).toMatch(/message\.goal_repayable IS TRUE/);
     expect(sql.executes).toEqual([]);
   });
 

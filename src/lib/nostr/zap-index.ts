@@ -1479,6 +1479,10 @@ async function ingestOneReceipt(
     return;
   }
 
+  if (await settleRepaymentReceipt(args, row, event, receipt, noteEventId, decoded, amountSats)) {
+    return;
+  }
+
   if (row.accountId === null) {
     logEvent('nostr.zap.rejected', { reason: 'author' });
     await persistZapIngest(
@@ -1539,59 +1543,6 @@ async function ingestOneReceipt(
     return;
   }
   if (event.pubkey.toLowerCase() !== providerPubkey.toLowerCase()) {
-    const repaymentInvoice = await args.store.findOkInvoiceByPaymentHash(decoded.paymentHash);
-    const repayment =
-      repaymentInvoice === undefined
-        ? null
-        : parseRepaymentDescription(repaymentInvoice.description);
-    if (
-      repaymentInvoice !== undefined &&
-      repayment !== null &&
-      repaymentInvoice.messageId === row.id &&
-      repaymentInvoice.amountSats === amountSats
-    ) {
-      if (
-        !(await args.store.claimZapPayment(decoded.paymentHash, event.id, new Date(args.now())))
-      ) {
-        logEvent('nostr.zap.rejected', { reason: 'settled' });
-        await persistZapIngest(
-          args.store,
-          zapIngestRow({
-            receiptId: event.id,
-            noteEventId,
-            messageId: row.id,
-            outcome: 'rejected',
-            reason: 'settled',
-            amountSats,
-            receiptPubkey: event.pubkey,
-            receipt,
-          }),
-        );
-        return;
-      }
-      await args.store.markRepaymentPaid({
-        messageId: row.id,
-        dayIndex: repayment.dayIndex,
-        recipientAccountId: repayment.recipientAccountId,
-        dueSats: amountSats,
-        paidAt: new Date(args.now()),
-      });
-      logEvent('nostr.zap.repaid', { messageId: row.id, sats: amountSats });
-      await persistZapIngest(
-        args.store,
-        zapIngestRow({
-          receiptId: event.id,
-          noteEventId,
-          messageId: row.id,
-          outcome: 'indexed',
-          reason: null,
-          amountSats,
-          receiptPubkey: event.pubkey,
-          receipt,
-        }),
-      );
-      return;
-    }
     logEvent('nostr.zap.rejected', { reason: 'pubkey' });
     await persistZapIngest(
       args.store,
@@ -1692,6 +1643,117 @@ async function ingestOneReceipt(
     }
   }
   await tryEnsureGiftReply(event, args);
+}
+
+/**
+ * A `repay:` invoice is the giver's payment, not a new gift.
+ *
+ * Runs before the author's provider check. The same wallet service can sign
+ * both addresses, and a missing author address must not drop the repayment.
+ * A receipt that is not signed by the giver's provider is rejected and does
+ * not claim the payment hash. Returns true when this receipt was a repayment
+ * attempt, including a rejection.
+ *
+ * @param args - Ingest collaborators.
+ * @param row - Note the receipt points at.
+ * @param event - Kind 9735.
+ * @param receipt - Parsed receipt kept on the ingest row.
+ * @param noteEventId - Note event id from the receipt, if any.
+ * @param decoded - Bolt11 payment hash and amount.
+ * @param amountSats - Whole sats from the bolt11.
+ * @returns Whether the receipt was handled as a repayment.
+ */
+async function settleRepaymentReceipt(
+  args: Parameters<typeof indexOpenZapReceipts>[0],
+  row: { id: string },
+  event: { id: string; pubkey: string },
+  receipt: Record<string, unknown>,
+  noteEventId: string | null,
+  decoded: { paymentHash: string },
+  amountSats: number,
+): Promise<boolean> {
+  let invoice: Awaited<ReturnType<typeof args.store.findOkInvoiceByPaymentHash>>;
+  try {
+    invoice = await args.store.findOkInvoiceByPaymentHash(decoded.paymentHash);
+  } catch {
+    /* v8 ignore next -- a thrown lookup is not a repayment; the gift path continues */
+    return false;
+  }
+  const repayment = invoice === undefined ? null : parseRepaymentDescription(invoice.description);
+  if (
+    invoice === undefined ||
+    repayment === null ||
+    invoice.messageId !== row.id ||
+    invoice.amountSats !== amountSats
+  ) {
+    return false;
+  }
+  const giver = await args.auth.getAccount(repayment.recipientAccountId);
+  const address = giver?.lightningAddress?.trim().toLowerCase() ?? '';
+  const giverProvider =
+    address === ''
+      ? null
+      : await resolveProviderPubkey({
+          address,
+          fetchImpl: args.fetchImpl,
+          nowMs: args.now(),
+        });
+  if (giverProvider === null || event.pubkey.toLowerCase() !== giverProvider) {
+    logEvent('nostr.zap.rejected', { reason: 'pubkey' });
+    await persistZapIngest(
+      args.store,
+      zapIngestRow({
+        receiptId: event.id,
+        noteEventId,
+        messageId: row.id,
+        outcome: 'rejected',
+        reason: 'pubkey',
+        amountSats,
+        receiptPubkey: event.pubkey,
+        receipt,
+      }),
+    );
+    return true;
+  }
+  if (!(await args.store.claimZapPayment(decoded.paymentHash, event.id, new Date(args.now())))) {
+    logEvent('nostr.zap.rejected', { reason: 'settled' });
+    await persistZapIngest(
+      args.store,
+      zapIngestRow({
+        receiptId: event.id,
+        noteEventId,
+        messageId: row.id,
+        outcome: 'rejected',
+        reason: 'settled',
+        amountSats,
+        receiptPubkey: event.pubkey,
+        receipt,
+      }),
+    );
+    return true;
+  }
+  await args.store.markRepaymentPaid({
+    messageId: row.id,
+    dayIndex: repayment.dayIndex,
+    recipientAccountId: repayment.recipientAccountId,
+    dueSats: amountSats,
+    paidAt: new Date(args.now()),
+  });
+  logEvent('nostr.zap.repaid', { messageId: row.id, sats: amountSats });
+  await persistZapIngest(
+    args.store,
+    zapIngestRow({
+      receiptId: event.id,
+      noteEventId,
+      messageId: row.id,
+      outcome: 'indexed',
+      reason: null,
+      amountSats,
+      receiptPubkey: event.pubkey,
+      receipt,
+    }),
+  );
+  return true;
 }
 
 /**

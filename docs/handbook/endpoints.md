@@ -551,10 +551,10 @@
 
 ## Endpoint: GET /messages/:id/repayment
 
-- **Purpose:** Public read of a live repayable ask. No session. 404 unless the note is a live top-level credit with a term. 200 lists `givers` (account, name, username, `givenSats`, and `givenAmount` in the goal currency or null for bitcoin) and `repayments`. Each repayment is one Lightning payment: `dayIndex`, `dueOn` (`YYYY-MM-DD` UTC, or null until the credit is fully given), who receives it, `amount` (fiat cents, or null for bitcoin), `sats` (the bitcoin share, or for fiat the sats of a paid share and null until it is paid), `status` `paid` | `due` | `scheduled`, and `via: lightning`. A 1-sat or 1-cent gift is a row of its own. `unassignedSats` is bitcoin with no 21.gifts payer and is not in the plan. `next` is the next unpaid share once the credit has filled, else null. 503 `{ error: 'Ask amount is unavailable' }` when a fiat amount or the gift-day rate is missing.
-- **Errors:** 401 Unauthorized. 404 Not found. 503 Ask amount is unavailable.
-- **Auth:** `Authorization: Bearer` session.
-- **Used by:** The author's credit card.
+- **Purpose:** Public read of a live repayable ask. No session. 404 unless the note is a live top-level credit with a term. 200 lists `givers` (account, name, username, `givenSats`, and `givenAmount` in the goal currency or null for bitcoin) and `repayments`. Each repayment is one Lightning payment: `dayIndex`, `dueOn` (`YYYY-MM-DD` UTC, or null until the credit is fully given), who receives it, `amount` (a two-decimal currency string such as `0.01`, or null for bitcoin), `sats` (the bitcoin share, or for fiat the sats of a paid share and null until it is paid), `status` `paid` | `due` | `scheduled`, and `via: lightning`. A 1-sat or 1-cent gift is a row of its own. `unassignedSats` is bitcoin with no 21.gifts payer and is not in the plan. `next` is the next unpaid share once the credit has filled, else null. 503 `{ error: 'Ask amount is unavailable' }` when a fiat amount or the gift-day rate is missing.
+- **Errors:** 404 Not found. 503 Ask amount is unavailable.
+- **Auth:** none.
+- **Used by:** Anyone opening the credit.
 
 ## Endpoint: POST /messages/:id/repayment
 

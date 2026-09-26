@@ -5237,6 +5237,14 @@ export class PostgresMessageStore implements MessageStore {
              WHEN $7::numeric IS NULL THEN message.fiat_php
              WHEN message.fiat_php IS NULL THEN $7::numeric
              ELSE message.fiat_php + $7::numeric
+           END,
+           goal_funded_at = CASE
+             WHEN message.goal_repayable IS TRUE
+              AND message.goal_funded_at IS NULL
+              AND message.goal_sats IS NOT NULL
+              AND message.sats + inserted.sats >= message.goal_sats
+             THEN now()
+             ELSE message.goal_funded_at
            END
        FROM inserted
        WHERE message.id = inserted.message_id
