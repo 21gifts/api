@@ -13,7 +13,7 @@ function TestDate(...args) {
     return args.length === 0 ? new NativeDate(TestDate.now()) : new NativeDate(...args);
   return new NativeDate(TestDate.now()).toString();
 }
-Object.setPrototypeOf(TestDate, NativeDate);
-TestDate.prototype = NativeDate.prototype;
+// Frameworks such as Next.js copy own Date descriptors when instrumenting time.
+Object.defineProperties(TestDate, Object.getOwnPropertyDescriptors(NativeDate));
 TestDate.now = () => anchor + realNow() - started;
 globalThis.Date = TestDate;
