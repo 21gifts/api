@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { describe, expect, it, vi } from 'vitest';
 import { InMemoryAuthStore, type Account } from '@/lib/auth/store';
 import { decodeBolt11, inspectBolt11 } from '@/lib/bolt11';
+import { repaymentDescription } from '@/lib/credit-repayment';
 import { LN_ADDRESS_CACHE_TTL_MS } from '@/lib/config';
 import type { FetchFn } from '@/lib/lnurlp';
 import { unsignedConversationDefaults } from '@/lib/conversation';
@@ -4816,6 +4817,10 @@ describe('indexOpenZapReceipts', () => {
       updatePublishState: (...args: Parameters<InMemoryMessageStore['updatePublishState']>) =>
         base.updatePublishState(...args),
       addSats: (...args: Parameters<InMemoryMessageStore['addSats']>) => base.addSats(...args),
+      listCreditPayers: (messageId: string) => base.listCreditPayers(messageId),
+      listRepayments: (messageId: string) => base.listRepayments(messageId),
+      markRepaymentPaid: (row: Parameters<InMemoryMessageStore['markRepaymentPaid']>[0]) =>
+        base.markRepaymentPaid(row),
       claimZapPayment: (...args: Parameters<InMemoryMessageStore['claimZapPayment']>) =>
         base.claimZapPayment(...args),
       recordZapReceipt: (...args: Parameters<InMemoryMessageStore['recordZapReceipt']>) =>
@@ -5050,6 +5055,10 @@ describe('indexOpenZapReceipts', () => {
         updatePublishState: (...args: Parameters<InMemoryMessageStore['updatePublishState']>) =>
           base.updatePublishState(...args),
         addSats: (...args: Parameters<InMemoryMessageStore['addSats']>) => base.addSats(...args),
+      listCreditPayers: (messageId: string) => base.listCreditPayers(messageId),
+      listRepayments: (messageId: string) => base.listRepayments(messageId),
+      markRepaymentPaid: (row: Parameters<InMemoryMessageStore['markRepaymentPaid']>[0]) =>
+        base.markRepaymentPaid(row),
         claimZapPayment: (...args: Parameters<InMemoryMessageStore['claimZapPayment']>) =>
           base.claimZapPayment(...args),
         recordZapReceipt: (...args: Parameters<InMemoryMessageStore['recordZapReceipt']>) =>
@@ -5350,6 +5359,85 @@ describe('indexOpenZapReceipts', () => {
     expect(await store.claimZapPayment(paymentHash, 'r-real', new Date(2))).toBe(true);
   });
 
+  it('records a repayment to the giver without increasing the ask', async () => {
+    const store = new InMemoryMessageStore();
+    const auth = new InMemoryAuthStore();
+    const messageId = await seedStore({ store, auth, accountId: 'acc-repay' });
+    const giver = '11111111-1111-4111-8111-111111111111';
+    const paymentHash = '13'.repeat(32);
+    await store.recordInvoiceAttempt({
+      id: 'inv-repay',
+      createdAt: new Date(1),
+      messageId,
+      payerAccountId: 'acc-repay',
+      authorAccountId: giver,
+      amountSats: 21,
+      lightningAddress: 'giver@walletofsatoshi.com',
+      zapRequest: null,
+      result: 'ok',
+      httpStatus: 200,
+      pr: 'lnbc-repay',
+      paymentHash,
+      description: repaymentDescription(0, giver),
+      descriptionHash: null,
+      isNip57Invoice: true,
+      lnurlResponse: null,
+    });
+    const querier = new RecordingQuerier();
+    querier.events = [
+      {
+        id: 'r-repay',
+        pubkey: 'bb'.repeat(32),
+        kind: 9735,
+        tags: [
+          ['e', NOTE_EVENT_ID],
+          ['bolt11', 'lnbc-repay'],
+        ],
+      },
+    ];
+    mockedDecode.mockReturnValue({ paymentHash, amountMsat: 21_000 });
+    await ingest({
+      store,
+      auth,
+      querier,
+      urls: URLS,
+      timeoutMs: 50,
+      now: () => 5,
+      fetchImpl: lnurlFetch(PROVIDER_PUBKEY),
+    });
+    expect((await store.getByEventId(NOTE_EVENT_ID))?.sats).toBe(0);
+    expect(await store.listRepayments(messageId)).toEqual([
+      {
+        dayIndex: 0,
+        recipientAccountId: giver,
+        dueSats: 21,
+        paidAt: new Date(5),
+      },
+    ]);
+    querier.events = [
+      {
+        id: 'r-repay-again',
+        pubkey: 'bb'.repeat(32),
+        kind: 9735,
+        tags: [
+          ['e', NOTE_EVENT_ID],
+          ['bolt11', 'lnbc-repay'],
+        ],
+      },
+    ];
+    await ingest({
+      store,
+      auth,
+      querier,
+      urls: URLS,
+      timeoutMs: 50,
+      now: () => 6,
+      fetchImpl: lnurlFetch(PROVIDER_PUBKEY),
+    });
+    const ingests = await store.listZapIngests(10);
+    expect(ingests.some((row) => row.reason === 'settled')).toBe(true);
+  });
+
   it('logs nostr.zap.ingest.record_failed when recordZapIngest throws', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     try {
@@ -5430,6 +5518,10 @@ describe('indexOpenZapReceipts', () => {
         updatePublishState: (...args: Parameters<InMemoryMessageStore['updatePublishState']>) =>
           base.updatePublishState(...args),
         addSats: (...args: Parameters<InMemoryMessageStore['addSats']>) => base.addSats(...args),
+      listCreditPayers: (messageId: string) => base.listCreditPayers(messageId),
+      listRepayments: (messageId: string) => base.listRepayments(messageId),
+      markRepaymentPaid: (row: Parameters<InMemoryMessageStore['markRepaymentPaid']>[0]) =>
+        base.markRepaymentPaid(row),
         claimZapPayment: (...args: Parameters<InMemoryMessageStore['claimZapPayment']>) =>
           base.claimZapPayment(...args),
         recordZapReceipt: (...args: Parameters<InMemoryMessageStore['recordZapReceipt']>) =>
