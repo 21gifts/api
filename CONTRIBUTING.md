@@ -57,7 +57,8 @@ api/
 │   │   ├── stats.ts          # GET /gifts/stats (public gift totals)
 │   │   ├── gifts.ts          # GET /gifts?day= (public per-day gift list)
 │   │   ├── invoices.ts       # GET /invoices/passkey, GET /invoices/eligible, GET /invoices/posted, POST /invoices, POST /invoices/proof (spend worker)
-│   │   ├── messages.ts       # GET/POST /messages, GET /messages/compose-target, public GET /messages/:id, GET /messages/hidden (session, not DEBUG_TOKEN), DELETE /messages/:id, GET /messages/:id/replies, GET /messages/:id/photo, GET /messages/:id/video.*, POST /messages/:id/invoice, POST /messages/:id/translate
+│   │   ├── messages.ts       # GET/POST /messages, GET /messages/compose-target, public GET /messages/:id, GET /messages/hidden (session, not DEBUG_TOKEN), DELETE /messages/:id, GET /messages/:id/replies, GET /messages/:id/photo, GET /messages/:id/video.*, POST /messages/:id/invoice, GET/POST /messages/:id/repayment, POST /messages/:id/translate
+│   │   ├── repayment.ts      # GET/POST /messages/:id/repayment (public ledger; author pays the next share)
 │   │   ├── translate.ts      # GET /translate (DeepL configured?)
 │   │   ├── well-known.ts     # GET /.well-known/nostr.json (NIP-05); GET /.well-known/lnurlp/:username (LUD-16)
 │   │   ├── pay.ts            # GET /pay/:username; POST /pay/:username/invoice
@@ -123,6 +124,7 @@ api/
 │   │   ├── debug-catalog.ts  # GET /debug/dump table loaders (every stored column; envelope hex, never decrypt)
 │   │   ├── boot-stores.ts    # DATABASE_URL → auth, optional QueryGiftStore + SqlGiftRecorder, message, contact, conversation, notification, push, trust_edge, funding_grant, BTC-USD and USD-fiat rates, KEK, db_change
 │   │   ├── money.ts          # Sats/BTC strings and historical USD cents
+│   │   ├── credit-repayment.ts # Repayment schedule, cent amounts, and the public ledger rows
 │   │   ├── btc-usd-candles.ts # Coinbase Exchange BTC-USD daily closes
 │   │   ├── btc-usd-store.ts  # btc_usd_daily migrate + rate book
 │   │   ├── usd-fiat-candles.ts # Frankfurter ECB USD→CHF/EUR/PHP daily rates
@@ -179,6 +181,7 @@ api/
 │       │   ├── debug-catalog.test.ts
 │       │   ├── boot-stores.test.ts
 │       │   ├── money.test.ts
+│       │   ├── credit-repayment.test.ts
 │       │   ├── btc-usd-candles.test.ts
 │       │   ├── btc-usd-store.test.ts
 │       │   ├── usd-fiat-candles.test.ts
@@ -258,6 +261,7 @@ api/
 │           ├── gifts.test.ts
 │           ├── invoices.test.ts
 │           ├── messages.test.ts
+│           ├── repayment.test.ts
 │           ├── public-active.test.ts
 │           ├── translate.test.ts
 │           ├── well-known.test.ts
@@ -288,7 +292,7 @@ api/
 │   ├── gift.sql              # gift table used by GET /gifts and GET /gifts/stats
 │   ├── btc_usd_daily.sql     # UTC daily BTC-USD closes for historical USD stats
 │   ├── usd_fiat_daily.sql    # UTC daily USD→CHF/EUR/PHP ECB crosses
-│   ├── message.sql           # message + nostr_zap_receipt + nostr_zapper + nostr_blocked_pubkey + nostr_zap_payment + message_invoice + message_translation + nostr_zap_ingest + message_extra_photo
+│   ├── message.sql           # message + nostr_zap_receipt + nostr_zapper + nostr_blocked_pubkey + nostr_zap_payment + message_invoice + message_translation + nostr_zap_ingest + message_extra_photo + message_repayment
 │   ├── contact.sql           # private contact mailbox table for POST /contact
 │   ├── conversation.sql      # PN threads + messages + conversation_read (per-viewer last-read; member/platform/Damus; closed moderator_group singleton, HTTP-only / skipped Nostr) + conversation_message.photo / photo_content_type + conversation_message_extra_photo + conversation_message_translation
 │   ├── api_log.sql           # HTTP audit log (who called which path)

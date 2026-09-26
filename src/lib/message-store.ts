@@ -11,6 +11,7 @@
  */
 
 import { isUniqueViolation, type SqlClient } from '@/lib/auth/sql';
+import { fiatAmountToCents } from '@/lib/credit-repayment';
 import { TRANSLATION_SCHEMA_SQL } from '@/lib/translation-store';
 import { fetchBtcUsdSpot } from '@/lib/btc-usd-spot';
 import type { FetchFn } from '@/lib/btc-usd-candles';
@@ -803,6 +804,54 @@ export interface MessageStore {
   addSats(id: string, extraSats: number, delta: FiatAmounts | null): Promise<void>;
 
   /**
+   * Sum of zap sats per 21.gifts payer of one note.
+   *
+   * @param messageId - Forum note.
+   * @returns Positive contributions. External payers without an account are omitted.
+   */
+  listCreditPayers(messageId: string): Promise<
+    {
+      accountId: string;
+      sats: number;
+      usd: string | null;
+      chf: string | null;
+      eur: string | null;
+      php: string | null;
+    }[]
+  >;
+
+  /**
+   * Sats on this note whose zap has no 21.gifts payer account.
+   *
+   * @param messageId - Forum note.
+   * @returns Those sats. They are not part of the repayment plan.
+   */
+  sumUnassignedCreditSats(messageId: string): Promise<number>;
+
+  /**
+   * Repayment shares already paid on one credit.
+   *
+   * @param messageId - Credit note.
+   * @returns One row per paid giver-day.
+   */
+  listRepayments(
+    messageId: string,
+  ): Promise<{ dayIndex: number; recipientAccountId: string; dueSats: number; paidAt: Date }[]>;
+
+  /**
+   * Record one paid repayment share. A repeat of the same day and giver is a no-op.
+   *
+   * @param row - Share that a zap just settled.
+   */
+  markRepaymentPaid(row: {
+    messageId: string;
+    dayIndex: number;
+    recipientAccountId: string;
+    dueSats: number;
+    paidAt: Date;
+  }): Promise<void>;
+
+  /**
    * Claim a lowercase payment hash for one receipt, preserving the claim
    * independently of forum-message deletion.
    *
@@ -1473,6 +1522,15 @@ END
 $message_goal_currency$`,
   `ALTER TABLE message ADD COLUMN IF NOT EXISTS goal_repayable boolean`,
   `ALTER TABLE message ADD COLUMN IF NOT EXISTS goal_term_days integer`,
+  `ALTER TABLE message ADD COLUMN IF NOT EXISTS goal_funded_at timestamptz`,
+  `CREATE TABLE IF NOT EXISTS message_repayment (
+  message_id uuid NOT NULL REFERENCES message (id) ON DELETE CASCADE,
+  day_index integer NOT NULL,
+  recipient_account_id uuid NOT NULL,
+  due_sats bigint NOT NULL,
+  paid_at timestamptz NOT NULL,
+  PRIMARY KEY (message_id, day_index, recipient_account_id)
+)`,
   `DO $message_goal_repayable$
 BEGIN
   ALTER TABLE message DROP CONSTRAINT IF EXISTS message_goal_repayable_chk;
@@ -1709,6 +1767,10 @@ function copyRow(row: MessageRow): MessageRow {
     goalSats: row.goalSats ?? null,
     goalRepayable: row.goalRepayable === true ? true : null,
     goalTermDays: row.goalTermDays ?? null,
+    goalFundedAt:
+      row.goalFundedAt === undefined || row.goalFundedAt === null
+        ? null
+        : new Date(row.goalFundedAt.getTime()),
     goalCurrency: row.goalCurrency ?? null,
     goalAmount: row.goalAmount ?? null,
     goalAmountUsd: row.goalAmountUsd ?? null,
@@ -1798,6 +1860,23 @@ function copyZapIngest(row: ZapIngestRow): ZapIngestRow {
   };
 }
 
+function addPayerCents(current: bigint | null, amount: string | null | undefined): bigint | null {
+  if (current === null || amount === null || amount === undefined) {
+    return null;
+  }
+  const cents = fiatAmountToCents(amount);
+  if (cents === null) {
+    return null;
+  }
+  return current + cents;
+}
+
+function centsToAmount(cents: bigint): string {
+  const whole = cents / 100n;
+  const frac = (cents % 100n).toString().padStart(2, '0');
+  return `${whole}.${frac}`;
+}
+
 /** In-memory zap receipt (parent credit + optional gift-reply link). */
 interface MemoryZapReceipt {
   messageId: string;
@@ -1820,6 +1899,13 @@ export class InMemoryMessageStore implements MessageStore {
     undefined;
   /** Kind:9735 event id → receipt; cleared when that parent message is deleted. */
   readonly #receipts = new Map<string, MemoryZapReceipt>();
+  readonly #repayments: {
+    messageId: string;
+    dayIndex: number;
+    recipientAccountId: string;
+    dueSats: number;
+    paidAt: Date;
+  }[] = [];
   /** Lowercase payment hash → durable-for-process receipt ownership tombstone. */
   readonly #zapPayments = new Map<string, { receiptEventId: string; createdAt: Date }>();
   readonly #photos = new Map<string, ForumPhoto>();
@@ -2776,6 +2862,120 @@ export class InMemoryMessageStore implements MessageStore {
       row.amountEur = foldFiatColumn(row.amountEur, delta?.eur ?? null, extraSats);
       row.amountPhp = foldFiatColumn(row.amountPhp, delta?.php ?? null, extraSats);
       row.sats += extraSats;
+      const goalSats = row.goalSats;
+      if (
+        row.goalRepayable === true &&
+        row.goalFundedAt === null &&
+        typeof goalSats === 'number' &&
+        goalSats > 0 &&
+        row.sats >= goalSats
+      ) {
+        row.goalFundedAt = new Date();
+      }
+    }
+    return Promise.resolve();
+  }
+
+  listCreditPayers(messageId: string): Promise<
+    {
+      accountId: string;
+      sats: number;
+      usd: string | null;
+      chf: string | null;
+      eur: string | null;
+      php: string | null;
+    }[]
+  > {
+    const totals = new Map<
+      string,
+      {
+        sats: number;
+        usd: bigint | null;
+        chf: bigint | null;
+        eur: bigint | null;
+        php: bigint | null;
+      }
+    >();
+    for (const [eventId, receipt] of this.#receipts) {
+      if (receipt.messageId !== messageId || receipt.payerAccountId === null) {
+        continue;
+      }
+      const ingest = this.#zapIngests.find(
+        (row) =>
+          row.receiptId === eventId && row.outcome === 'indexed' && row.messageId === messageId,
+      );
+      const current = totals.get(receipt.payerAccountId) ?? {
+        sats: 0,
+        usd: 0n,
+        chf: 0n,
+        eur: 0n,
+        php: 0n,
+      };
+      current.sats += receipt.sats;
+      current.usd = addPayerCents(current.usd, ingest?.amountUsd);
+      current.chf = addPayerCents(current.chf, ingest?.amountChf);
+      current.eur = addPayerCents(current.eur, ingest?.amountEur);
+      current.php = addPayerCents(current.php, ingest?.amountPhp);
+      totals.set(receipt.payerAccountId, current);
+    }
+    return Promise.resolve(
+      [...totals.entries()].map(([accountId, total]) => ({
+        accountId,
+        sats: total.sats,
+        usd: total.usd === null ? null : centsToAmount(total.usd),
+        chf: total.chf === null ? null : centsToAmount(total.chf),
+        eur: total.eur === null ? null : centsToAmount(total.eur),
+        php: total.php === null ? null : centsToAmount(total.php),
+      })),
+    );
+  }
+
+  sumUnassignedCreditSats(messageId: string): Promise<number> {
+    let sats = 0;
+    for (const receipt of this.#receipts.values()) {
+      if (receipt.messageId === messageId && receipt.payerAccountId === null) {
+        sats += receipt.sats;
+      }
+    }
+    return Promise.resolve(sats);
+  }
+
+  listRepayments(
+    messageId: string,
+  ): Promise<{ dayIndex: number; recipientAccountId: string; dueSats: number; paidAt: Date }[]> {
+    return Promise.resolve(
+      this.#repayments
+        .filter((row) => row.messageId === messageId)
+        .map((row) => ({
+          dayIndex: row.dayIndex,
+          recipientAccountId: row.recipientAccountId,
+          dueSats: row.dueSats,
+          paidAt: new Date(row.paidAt.getTime()),
+        })),
+    );
+  }
+
+  markRepaymentPaid(row: {
+    messageId: string;
+    dayIndex: number;
+    recipientAccountId: string;
+    dueSats: number;
+    paidAt: Date;
+  }): Promise<void> {
+    const existing = this.#repayments.find(
+      (item) =>
+        item.messageId === row.messageId &&
+        item.dayIndex === row.dayIndex &&
+        item.recipientAccountId === row.recipientAccountId,
+    );
+    if (existing === undefined) {
+      this.#repayments.push({
+        messageId: row.messageId,
+        dayIndex: row.dayIndex,
+        recipientAccountId: row.recipientAccountId,
+        dueSats: row.dueSats,
+        paidAt: new Date(row.paidAt.getTime()),
+      });
     }
     return Promise.resolve();
   }
@@ -3440,6 +3640,7 @@ interface MessageSqlRow {
   goal_sats?: string | number | null;
   goal_repayable?: boolean | string | number | null;
   goal_term_days?: string | number | null;
+  goal_funded_at?: Date | string | null;
   goal_currency?: string | null;
   goal_amount?: string | number | null;
   goal_fiat_usd?: string | number | null;
@@ -3631,6 +3832,12 @@ function mapMessageRow(row: MessageSqlRow): MessageRow {
       row.goal_term_days === null || row.goal_term_days === undefined
         ? null
         : Number(row.goal_term_days),
+    goalFundedAt:
+      row.goal_funded_at === null || row.goal_funded_at === undefined
+        ? null
+        : row.goal_funded_at instanceof Date
+          ? row.goal_funded_at
+          : new Date(row.goal_funded_at),
     goalCurrency: mapGoalCurrency(row.goal_currency),
     goalAmount: mapGoalAmountText(row.goal_amount),
     goalAmountUsd: mapGoalFiatText(row.goal_fiat_usd),
@@ -3679,6 +3886,7 @@ const MESSAGE_SELECT_COLUMNS = `id, account_id, name, text, created_at,
               video_content_type,
               parent_id, author_pubkey,
               event_id, nostr_publish_state, sats, goal_sats, goal_repayable, goal_term_days,
+              goal_funded_at,
               fiat_usd::text AS fiat_usd, fiat_chf::text AS fiat_chf,
               fiat_eur::text AS fiat_eur, fiat_php::text AS fiat_php,
               place_lat, place_lng, place_label,
@@ -4848,6 +5056,14 @@ export class PostgresMessageStore implements MessageStore {
              WHEN $6::numeric IS NULL THEN fiat_php
              WHEN fiat_php IS NULL THEN $6::numeric
              ELSE fiat_php + $6::numeric
+           END,
+           goal_funded_at = CASE
+             WHEN goal_repayable IS TRUE
+              AND goal_funded_at IS NULL
+              AND goal_sats IS NOT NULL
+              AND sats + $2::bigint >= goal_sats
+             THEN now()
+             ELSE goal_funded_at
            END
        WHERE id = $1`,
       [
@@ -4858,6 +5074,101 @@ export class PostgresMessageStore implements MessageStore {
         delta?.eur ?? null,
         delta?.php ?? null,
       ],
+    );
+  }
+
+  async listCreditPayers(messageId: string): Promise<
+    {
+      accountId: string;
+      sats: number;
+      usd: string | null;
+      chf: string | null;
+      eur: string | null;
+      php: string | null;
+    }[]
+  > {
+    const rows = await this.#sql.query<{
+      account_id: string;
+      sats: string | number;
+      usd: string | null;
+      chf: string | null;
+      eur: string | null;
+      php: string | null;
+    }>(
+      `SELECT r.payer_account_id AS account_id,
+              SUM(r.sats)::bigint AS sats,
+              CASE WHEN COUNT(i.fiat_usd) = COUNT(*) THEN SUM(i.fiat_usd)::text ELSE NULL END AS usd,
+              CASE WHEN COUNT(i.fiat_chf) = COUNT(*) THEN SUM(i.fiat_chf)::text ELSE NULL END AS chf,
+              CASE WHEN COUNT(i.fiat_eur) = COUNT(*) THEN SUM(i.fiat_eur)::text ELSE NULL END AS eur,
+              CASE WHEN COUNT(i.fiat_php) = COUNT(*) THEN SUM(i.fiat_php)::text ELSE NULL END AS php
+       FROM nostr_zap_receipt r
+       LEFT JOIN LATERAL (
+         SELECT fiat_usd, fiat_chf, fiat_eur, fiat_php
+         FROM nostr_zap_ingest
+         WHERE receipt_id = r.event_id
+           AND outcome = 'indexed'
+           AND message_id = r.message_id
+         ORDER BY created_at DESC, id DESC
+         LIMIT 1
+       ) i ON true
+       WHERE r.message_id = $1 AND r.payer_account_id IS NOT NULL
+       GROUP BY r.payer_account_id`,
+      [messageId],
+    );
+    return rows.map((row) => ({
+      accountId: row.account_id,
+      sats: Number(row.sats),
+      usd: row.usd,
+      chf: row.chf,
+      eur: row.eur,
+      php: row.php,
+    }));
+  }
+
+  async sumUnassignedCreditSats(messageId: string): Promise<number> {
+    const rows = await this.#sql.query<{ sats: string | number | null }>(
+      `SELECT COALESCE(SUM(sats), 0)::bigint AS sats
+       FROM nostr_zap_receipt
+       WHERE message_id = $1 AND payer_account_id IS NULL`,
+      [messageId],
+    );
+    return Number(rows[0]?.sats ?? 0);
+  }
+
+  async listRepayments(
+    messageId: string,
+  ): Promise<{ dayIndex: number; recipientAccountId: string; dueSats: number; paidAt: Date }[]> {
+    const rows = await this.#sql.query<{
+      day_index: number;
+      recipient_account_id: string;
+      due_sats: string | number;
+      paid_at: Date | string;
+    }>(
+      `SELECT day_index, recipient_account_id, due_sats, paid_at
+       FROM message_repayment
+       WHERE message_id = $1`,
+      [messageId],
+    );
+    return rows.map((row) => ({
+      dayIndex: Number(row.day_index),
+      recipientAccountId: row.recipient_account_id,
+      dueSats: Number(row.due_sats),
+      paidAt: row.paid_at instanceof Date ? row.paid_at : new Date(row.paid_at),
+    }));
+  }
+
+  async markRepaymentPaid(row: {
+    messageId: string;
+    dayIndex: number;
+    recipientAccountId: string;
+    dueSats: number;
+    paidAt: Date;
+  }): Promise<void> {
+    await this.#sql.execute(
+      `INSERT INTO message_repayment (message_id, day_index, recipient_account_id, due_sats, paid_at)
+       VALUES ($1, $2, $3, $4, $5)
+       ON CONFLICT (message_id, day_index, recipient_account_id) DO NOTHING`,
+      [row.messageId, row.dayIndex, row.recipientAccountId, row.dueSats, row.paidAt],
     );
   }
 
@@ -4926,6 +5237,14 @@ export class PostgresMessageStore implements MessageStore {
              WHEN $7::numeric IS NULL THEN message.fiat_php
              WHEN message.fiat_php IS NULL THEN $7::numeric
              ELSE message.fiat_php + $7::numeric
+           END,
+           goal_funded_at = CASE
+             WHEN message.goal_repayable IS TRUE
+              AND message.goal_funded_at IS NULL
+              AND message.goal_sats IS NOT NULL
+              AND message.sats + inserted.sats >= message.goal_sats
+             THEN now()
+             ELSE message.goal_funded_at
            END
        FROM inserted
        WHERE message.id = inserted.message_id

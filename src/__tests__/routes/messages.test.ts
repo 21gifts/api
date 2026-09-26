@@ -254,6 +254,10 @@ function throwingStore(overrides: Partial<MessageStore> = {}): MessageStore {
     listBlockedPubkeys: boom,
     listBlockedPubkeyRows: boom,
     listUnattributedIndexedReceipts: (_limit, _before) => boom(),
+    listCreditPayers: boom,
+    sumUnassignedCreditSats: boom,
+    listRepayments: boom,
+    markRepaymentPaid: boom,
     ...overrides,
   };
 }
@@ -3295,6 +3299,10 @@ describe('POST /messages', () => {
       recordZapIngest: (row) => base.recordZapIngest(row),
       listZapIngests: (limit) => base.listZapIngests(limit),
       findOkInvoiceByPaymentHash: (hash) => base.findOkInvoiceByPaymentHash(hash),
+      listCreditPayers: (messageId) => base.listCreditPayers(messageId),
+      sumUnassignedCreditSats: (messageId) => base.sumUnassignedCreditSats(messageId),
+      listRepayments: (messageId) => base.listRepayments(messageId),
+      markRepaymentPaid: (row) => base.markRepaymentPaid(row),
       findOkInvoiceByPr: (pr) => base.findOkInvoiceByPr(pr),
       updateZapReceiptGift: (...args: Parameters<InMemoryMessageStore['updateZapReceiptGift']>) =>
         base.updateZapReceiptGift(...args),
@@ -3410,6 +3418,10 @@ describe('POST /messages', () => {
       recordZapIngest: (row) => base.recordZapIngest(row),
       listZapIngests: (limit) => base.listZapIngests(limit),
       findOkInvoiceByPaymentHash: (hash) => base.findOkInvoiceByPaymentHash(hash),
+      listCreditPayers: (messageId) => base.listCreditPayers(messageId),
+      sumUnassignedCreditSats: (messageId) => base.sumUnassignedCreditSats(messageId),
+      listRepayments: (messageId) => base.listRepayments(messageId),
+      markRepaymentPaid: (row) => base.markRepaymentPaid(row),
       findOkInvoiceByPr: (pr) => base.findOkInvoiceByPr(pr),
       updateZapReceiptGift: (...args: Parameters<InMemoryMessageStore['updateZapReceiptGift']>) =>
         base.updateZapReceiptGift(...args),
@@ -5054,6 +5066,10 @@ describe('POST /messages/:id/invoice', () => {
       recordZapIngest: (row) => base.recordZapIngest(row),
       listZapIngests: (limit) => base.listZapIngests(limit),
       findOkInvoiceByPaymentHash: (hash) => base.findOkInvoiceByPaymentHash(hash),
+      listCreditPayers: (messageId) => base.listCreditPayers(messageId),
+      sumUnassignedCreditSats: (messageId) => base.sumUnassignedCreditSats(messageId),
+      listRepayments: (messageId) => base.listRepayments(messageId),
+      markRepaymentPaid: (row) => base.markRepaymentPaid(row),
       findOkInvoiceByPr: (pr) => base.findOkInvoiceByPr(pr),
       updateZapReceiptGift: (...args: Parameters<InMemoryMessageStore['updateZapReceiptGift']>) =>
         base.updateZapReceiptGift(...args),

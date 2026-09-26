@@ -34,6 +34,7 @@ export function isSundayInZone(nowMs: number, timeZone: string): boolean {
 const SUNDAY_REST_WRITES: ReadonlyArray<readonly [string, RegExp]> = [
   ['POST', /^\/messages$/],
   ['POST', /^\/messages\/[^/]+\/invoice$/],
+  ['POST', /^\/messages\/[^/]+\/repayment$/],
   ['DELETE', /^\/messages\/[^/]+$/],
   ['PATCH', /^\/messages\/[^/]+\/place$/],
   ['PATCH', /^\/messages\/[^/]+\/shop-account$/],
