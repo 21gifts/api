@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { verifyEvent, type NostrEvent } from 'nostr-tools/pure';
 import { ensureProfileMessage } from '@/lib/auth/profile-message';
@@ -32,13 +33,22 @@ import {
   type Kind1ReplyTo,
 } from '@/lib/nostr/event';
 import { nip05Domain, nip05Identifier } from '@/lib/nip05';
-import { forumVideoUrl, isoBmffDisplaySize, resolveMediaDir, videoFilePath } from '@/lib/video';
+import {
+  forumVideoUrl,
+  isoBmffDisplaySize,
+  isoBmffDurationSeconds,
+  resolveMediaDir,
+  videoFilePath,
+} from '@/lib/video';
 import { decryptNostrSecret, ensureAccountNostrKey, zeroizeSecret } from '@/lib/nostr/keys';
 import { publicAcked, spaceAcked, type NostrPublisher } from '@/lib/nostr/publish';
 import type { NostrEventFrame, NostrQuerier } from '@/lib/nostr/query';
 import {
+  INDEXER_RELAY_URL,
+  SEARCH_RELAY_URL,
+  readRelaysFromKind10002,
+  replyHintRelay,
   resolvePublicApiBase,
-  resolveRelaySpace,
   resolveWriteSet,
   resolveZapRelays,
   writeRelayUrls,
@@ -68,6 +78,15 @@ export const WORKER_LEASE_MS = 60_000;
 
 /** Per-relay timeout. */
 export const RELAY_TIMEOUT_MS = 5_000;
+
+/** Parent pubkeys queried for kind:10002 inbox relays. */
+const INBOX_AUTHOR_CAP = 8;
+
+/** Extra read relays added after the search relay. */
+const INBOX_URL_CAP = 16;
+
+/** Lowercase 64-hex pubkey (NIP-01). */
+const PUBKEY_HEX = /^[0-9a-f]{64}$/;
 
 /** Tick interval. */
 export const WORKER_INTERVAL_MS = 2_000;
@@ -347,7 +366,10 @@ async function indexHotZapReceipts(deps: NostrWorkerDeps, nowMs: number): Promis
  * signs/publishes NIP-17 wraps; `'all'` / `'ingest'` REQs inbound kind:1059 /
  * kind:4 to member and platform pubkeys. Fast-lane ticks are not serialised
  * (`setInterval` does not await the previous tick); the ingest lane waits for
- * each pass to settle before scheduling the next.
+ * each pass to settle before scheduling the next. When public publish is on
+ * and the space ACK succeeded, kind:1 is also sent best-effort to the search
+ * relay and reply inboxes, and a fully successful kind:0 or kind:10002 is
+ * copied to the indexer; those NACKs do not change publish state.
  *
  * @param deps - Stores, kek, publisher, querier, fetch, clock, env.
  * @param mode - Which lane work to run (default `'all'`).
@@ -745,7 +767,6 @@ async function signBatch(deps: NostrWorkerDeps, nowMs: number): Promise<void> {
     }
   }
   const rows = await deps.messages.claimUnsigned(WORKER_BATCH, nowMs, WORKER_LEASE_MS);
-  const spaceRelay = resolveRelaySpace(deps.env);
   for (const row of rows) {
     if (row.accountId === null) {
       continue;
@@ -774,24 +795,31 @@ async function signBatch(deps: NostrWorkerDeps, nowMs: number): Promise<void> {
                 videoFilePath(resolveMediaDir({ ...process.env, ...deps.env }), row.id, videoMime),
               ),
             );
+            photo.size = fileBytes.byteLength;
+            photo.hash = sha256Hex(fileBytes);
             const dim = isoBmffDisplaySize(fileBytes);
             if (dim !== null) {
               photo.dim = `${dim.width}x${dim.height}`;
-              photo.size = fileBytes.byteLength;
+            }
+            const durationSeconds = isoBmffDurationSeconds(fileBytes);
+            if (durationSeconds !== null) {
+              photo.durationSeconds = durationSeconds;
             }
           } catch {
-            /* missing or unreadable file — omit dim/size */
+            /* missing or unreadable file — omit dim, size, hash, and duration */
           }
         } else if (storedPhoto !== null) {
           photo = {
             url: forumPhotoUrl(apiBase, row.id, storedPhoto.contentType),
             mime: storedPhoto.contentType,
+            ...(storedPhoto.bytes.byteLength > 0 ? { hash: sha256Hex(storedPhoto.bytes) } : {}),
           };
           const storedExtras = await deps.messages.listExtraPhotos(row.id);
           if (storedExtras.length > 0) {
             extraPhotos = storedExtras.map((item, i) => ({
               url: forumExtraPhotoUrl(apiBase, row.id, i + 1, item.contentType),
               mime: item.contentType,
+              ...(item.bytes.byteLength > 0 ? { hash: sha256Hex(item.bytes) } : {}),
             }));
           }
         } else if (row.hasPhoto) {
@@ -815,7 +843,7 @@ async function signBatch(deps: NostrWorkerDeps, nowMs: number): Promise<void> {
         }
         replyTo = {
           noteEventId: parent.eventId,
-          spaceRelay,
+          spaceRelay: replyHintRelay(resolveWriteSet(deps.env)),
           noteAuthorPubkey,
         };
       }
@@ -878,6 +906,167 @@ async function backfillProfileMessages(deps: NostrWorkerDeps): Promise<void> {
       ...(deps.notificationStore === undefined ? {} : { notifications: deps.notificationStore }),
       ...(deps.conversations === undefined ? {} : { conversations: deps.conversations }),
     });
+  }
+}
+
+/** Lowercase hex sha256 of media bytes. */
+function sha256Hex(bytes: Uint8Array): string {
+  return createHash('sha256').update(bytes).digest('hex');
+}
+
+/** `p` tag pubkeys on a signed kind:1 (lowercase hex, capped). */
+function pTagAuthors(event: Record<string, unknown>): string[] {
+  const tags = event['tags'] as readonly unknown[];
+  const authors: string[] = [];
+  const seen = new Set<string>();
+  for (const tag of tags) {
+    if (!Array.isArray(tag) || tag[0] !== 'p') {
+      continue;
+    }
+    const pubkey = tag[1];
+    if (typeof pubkey !== 'string' || !PUBKEY_HEX.test(pubkey) || seen.has(pubkey)) {
+      continue;
+    }
+    seen.add(pubkey);
+    authors.push(pubkey);
+    if (authors.length >= INBOX_AUTHOR_CAP) {
+      break;
+    }
+  }
+  return authors;
+}
+
+/**
+ * Parent read relays from kind:10002, excluding the write set and the search relay.
+ *
+ * Query failure yields an empty list (the search relay is still published).
+ *
+ * @param deps - Worker deps (querier).
+ * @param event - Signed kind:1.
+ * @param writeSet - This tick's write set.
+ * @returns Up to {@link INBOX_URL_CAP} `wss://` URLs.
+ */
+async function inboxReadRelays(
+  deps: NostrWorkerDeps,
+  event: Record<string, unknown>,
+  writeSet: ResolvedWriteSet,
+): Promise<string[]> {
+  const authors = pTagAuthors(event);
+  if (authors.length === 0) {
+    return [];
+  }
+  const authorSet = new Set(authors);
+  let frames: NostrEventFrame[];
+  try {
+    frames = await deps.querier.query(
+      { kinds: [10002], authors },
+      [...writeRelayUrls(writeSet), INDEXER_RELAY_URL],
+      RELAY_TIMEOUT_MS,
+    );
+  } catch {
+    return [];
+  }
+  const newest = new Map<string, { createdAt: number; tags: readonly (readonly string[])[] }>();
+  for (const frame of frames) {
+    if (frame.kind !== 10002 || typeof frame.pubkey !== 'string') {
+      continue;
+    }
+    const pubkey = frame.pubkey.toLowerCase();
+    if (!authorSet.has(pubkey)) {
+      continue;
+    }
+    const createdAt = typeof frame.created_at === 'number' ? frame.created_at : 0;
+    const prev = newest.get(pubkey);
+    if (prev !== undefined && prev.createdAt > createdAt) {
+      continue;
+    }
+    newest.set(pubkey, {
+      createdAt,
+      tags: Array.isArray(frame.tags) ? frame.tags : [],
+    });
+  }
+  const blocked = new Set<string>(writeRelayUrls(writeSet));
+  blocked.add(SEARCH_RELAY_URL);
+  const urls: string[] = [];
+  const seen = new Set<string>();
+  for (const author of authors) {
+    const hit = newest.get(author);
+    if (hit === undefined) {
+      continue;
+    }
+    for (const url of readRelaysFromKind10002(hit.tags, 32)) {
+      if (blocked.has(url) || seen.has(url)) {
+        continue;
+      }
+      seen.add(url);
+      urls.push(url);
+      if (urls.length >= INBOX_URL_CAP) {
+        return urls;
+      }
+    }
+  }
+  return urls;
+}
+
+/**
+ * Best-effort kind:1 copy to the search relay and reply inboxes.
+ * ACKs are logged and do not affect publish state.
+ *
+ * @param deps - Worker deps.
+ * @param event - Signed kind:1 already accepted by space.
+ * @param writeSet - This tick's write set (public publish is on).
+ * @param messageId - Forum row id for nack logs.
+ */
+async function publishReachCopy(
+  deps: NostrWorkerDeps,
+  event: Record<string, unknown>,
+  writeSet: ResolvedWriteSet,
+  messageId: string,
+): Promise<void> {
+  const inbox = await inboxReadRelays(deps, event, writeSet);
+  const urls = [SEARCH_RELAY_URL, ...inbox];
+  let acks: { url: string; ok: boolean }[];
+  try {
+    acks = await deps.publisher.publish(event, urls, RELAY_TIMEOUT_MS);
+  } catch {
+    logEvent('nostr.publish.search_nack', { messageId });
+    if (inbox.length > 0) {
+      logEvent('nostr.publish.inbox_nack', { messageId });
+    }
+    return;
+  }
+  const search = acks.find((ack) => ack.url === SEARCH_RELAY_URL);
+  if (search === undefined || !search.ok) {
+    logEvent('nostr.publish.search_nack', { messageId });
+  }
+  if (acks.some((ack) => ack.url !== SEARCH_RELAY_URL && !ack.ok)) {
+    logEvent('nostr.publish.inbox_nack', { messageId });
+  }
+}
+
+/**
+ * Best-effort kind:0 / kind:10002 copy to the profile indexer.
+ * A nack or throw does not delete the caller's reservation.
+ *
+ * @param deps - Worker deps.
+ * @param event - Signed event already accepted by space and the public relays.
+ * @param nackEvent - Log name when the indexer does not ACK ok.
+ * @param accountId - Account id for the nack log.
+ */
+async function publishIndexerCopy(
+  deps: NostrWorkerDeps,
+  event: Record<string, unknown>,
+  nackEvent: 'nostr.profile.indexer_nack' | 'nostr.relays.indexer_nack',
+  accountId: string,
+): Promise<void> {
+  try {
+    const acks = await deps.publisher.publish(event, [INDEXER_RELAY_URL], RELAY_TIMEOUT_MS);
+    const ack = acks.find((row) => row.url === INDEXER_RELAY_URL);
+    if (ack === undefined || !ack.ok) {
+      logEvent(nackEvent, { accountId });
+    }
+  } catch {
+    logEvent(nackEvent, { accountId });
   }
 }
 
@@ -958,6 +1147,14 @@ async function publishProfiles(deps: NostrWorkerDeps, writeSet: ResolvedWriteSet
         continue;
       }
       logEvent('nostr.profile.ok', { accountId: live.id });
+      if (writeSet.publicEnabled) {
+        await publishIndexerCopy(
+          deps,
+          signed as unknown as Record<string, unknown>,
+          'nostr.profile.indexer_nack',
+          live.id,
+        );
+      }
     } catch {
       if (cache.get(live.id) === reservation) {
         cache.delete(live.id);
@@ -1051,6 +1248,14 @@ async function publishRelayLists(deps: NostrWorkerDeps, writeSet: ResolvedWriteS
         continue;
       }
       logEvent('nostr.relays.ok', { accountId: live.id });
+      if (writeSet.publicEnabled) {
+        await publishIndexerCopy(
+          deps,
+          signed as unknown as Record<string, unknown>,
+          'nostr.relays.indexer_nack',
+          live.id,
+        );
+      }
     } catch {
       if (cache.get(live.id) === reservation) {
         cache.delete(live.id);
@@ -1094,6 +1299,9 @@ async function publishBatch(
       } else {
         await deps.messages.updatePublishState(row.id, 'pending', 'space');
         logEvent('nostr.publish.ok', { messageId: row.id, parked: 1 });
+      }
+      if (writeSet.publicEnabled) {
+        await publishReachCopy(deps, row.nostrEvent, writeSet, row.id);
       }
     } catch {
       logEvent('nostr.publish.nack', { messageId: row.id });

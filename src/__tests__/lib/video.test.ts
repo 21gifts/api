@@ -9,6 +9,7 @@ import {
   forumVideoFilePresent,
   forumVideoUrl,
   isoBmffDisplaySize,
+  isoBmffDurationSeconds,
   parseBytesRange,
   readForumVideoBytes,
   readVideoTakenAt,
@@ -609,5 +610,51 @@ describe('readVideoTakenAt', () => {
     followed[8] = 1;
     new DataView(followed.buffer).setBigUint64(12, BigInt(seconds));
     expect(readVideoTakenAt(followed)).toBeNull();
+  });
+});
+
+describe('isoBmffDurationSeconds', () => {
+  function durationMvhd(version: 0 | 1, timescale: number, duration: bigint): Uint8Array {
+    const payload = new Uint8Array(version === 1 ? 32 : 20);
+    payload[0] = version;
+    const view = new DataView(payload.buffer);
+    if (version === 1) {
+      view.setUint32(20, timescale);
+      view.setBigUint64(24, duration);
+    } else {
+      view.setUint32(12, timescale);
+      view.setUint32(16, Number(duration));
+    }
+    return box('mvhd', payload);
+  }
+
+  it('reads rounded seconds from mvhd version 0 and version 1', () => {
+    expect(isoBmffDurationSeconds(box('moov', durationMvhd(0, 1000, 2000n)))).toBe(2);
+    expect(isoBmffDurationSeconds(durationMvhd(0, 1000, 2500n))).toBe(3);
+    expect(isoBmffDurationSeconds(durationMvhd(0, 1, 1n))).toBe(1);
+    expect(isoBmffDurationSeconds(durationMvhd(1, 1, 86400n))).toBe(86400);
+  });
+
+  it('returns null when mvhd is missing, truncated, or out of range', () => {
+    expect(isoBmffDurationSeconds(new Uint8Array())).toBeNull();
+    expect(isoBmffDurationSeconds(new Uint8Array([0x1a, 0x45, 0xdf, 0xa3]))).toBeNull();
+    const headerOnly = new Uint8Array(8);
+    new DataView(headerOnly.buffer).setUint32(0, 8);
+    headerOnly.set([0x6d, 0x76, 0x68, 0x64], 4);
+    expect(isoBmffDurationSeconds(headerOnly)).toBeNull();
+    expect(isoBmffDurationSeconds(box('mvhd', new Uint8Array(4)))).toBeNull();
+    const shortV1 = new Uint8Array(24);
+    shortV1[0] = 1;
+    expect(isoBmffDurationSeconds(box('mvhd', shortV1))).toBeNull();
+    const unknown = new Uint8Array(20);
+    unknown[0] = 2;
+    expect(isoBmffDurationSeconds(box('mvhd', unknown))).toBeNull();
+    expect(isoBmffDurationSeconds(durationMvhd(0, 0, 10n))).toBeNull();
+    expect(isoBmffDurationSeconds(durationMvhd(0, 1000, 0n))).toBeNull();
+    expect(isoBmffDurationSeconds(durationMvhd(0, 1000, 400n))).toBeNull();
+    expect(isoBmffDurationSeconds(durationMvhd(0, 1, 86401n))).toBeNull();
+    expect(
+      isoBmffDurationSeconds(durationMvhd(1, 1, BigInt(Number.MAX_SAFE_INTEGER) + 1n)),
+    ).toBeNull();
   });
 });
