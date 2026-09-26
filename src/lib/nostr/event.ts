@@ -233,18 +233,19 @@ export function kind1ContentWithHashtags(
 /** 64 lowercase hex sha256 for a NIP-92 `imeta` `x` field. */
 const IMETA_HASH_RE = /^[0-9a-f]{64}$/;
 
-/**
- * Append optional `x` and `duration` after the other `imeta` fields.
- *
- * @param imeta - Tag row that already has `url` and `m`.
- * @param photo - Media metadata. Invalid hash or duration is omitted.
- */
+/** Append a valid BlurHash after `m`. Invalid text is omitted. */
 function appendBlurhash(imeta: string[], photo: Kind1Photo): void {
   if (photo.blurhash !== undefined && BLURHASH_RE.test(photo.blurhash)) {
     imeta.push(`blurhash ${photo.blurhash}`);
   }
 }
 
+/**
+ * Append optional `x` and `duration` after the other `imeta` fields.
+ *
+ * @param imeta - Tag row that already has `url` and `m`.
+ * @param photo - Media metadata. Invalid hash or duration is omitted.
+ */
 function appendImetaHashAndDuration(imeta: string[], photo: Kind1Photo): void {
   if (photo.hash !== undefined && IMETA_HASH_RE.test(photo.hash)) {
     imeta.push(`x ${photo.hash}`);
