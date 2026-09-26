@@ -1296,6 +1296,25 @@
 - **Returns / side effects:** The non-zero payments in day order. No I/O.
 - **Used by:** `repaymentStatus`, `repaymentInvoice`.
 
+## Function: repaymentDueDate
+
+- **Purpose:** UTC calendar day of one repayment. Day 0 is the day after the credit filled.
+- **Inputs:** Funded time in epoch milliseconds, and the zero-based day.
+- **Returns / side effects:** `YYYY-MM-DD`. No I/O.
+
+## Function: formatCents
+
+- **Purpose:** Write whole cents as a two-decimal amount.
+- **Inputs:** A non-negative cent total.
+- **Returns / side effects:** `whole.frac`. No I/O.
+
+## Function: repaymentLedger
+
+- **Purpose:** List every repayment share in day order. Each row is one Lightning payment. A date is set only after the credit has filled. Status is paid, due, or scheduled.
+- **Inputs:** Term, giver units, shares already paid, funded time or null, and the clock.
+- **Returns / side effects:** The rows. No I/O.
+- **Used by:** `repaymentStatus`.
+
 ## Function: payerDebtUnits
 
 - **Purpose:** Units each giver is owed. Bitcoin asks use sats. Fiat asks use recorded cents of the goal currency, so one cent is owed as one cent. A missing snapshot splits the typed amount by sat weight.

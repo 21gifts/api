@@ -5,8 +5,10 @@ import { MISSING_REQUIREMENTS_ERROR, requireAction } from '@/lib/auth/requiremen
 import { inspectBolt11, isNip57Invoice } from '@/lib/bolt11';
 import {
   dueDayCount,
+  formatCents,
   payerDebtUnits,
   repaymentDescription,
+  repaymentLedger,
   repaymentSchedule,
 } from '@/lib/credit-repayment';
 import { fiatToSats, type GoalFiatCode, type GoalRateDay } from '@/lib/goal-rate';
@@ -38,38 +40,133 @@ export interface RepaymentDeps {
 const limiter = new InvoiceRateLimiter();
 
 /**
- * Status of one credit's daily repayment, for its author.
+ * Public ledger of one credit: who gave what, and each Lightning repayment.
  *
  * @param deps - Store, auth, and clock.
- * @param c - Request.
- * @returns The schedule, or an error.
+ * @param c - Request. No session is required.
+ * @returns The givers and the plan, or an error.
  */
 export async function repaymentStatus(deps: RepaymentDeps, c: Context): Promise<Response> {
-  const opened = await openCredit(deps, c);
-  if (opened instanceof Response) {
-    return opened;
+  const row = await readableCredit(deps, c);
+  if (row instanceof Response) {
+    return row;
   }
-  const next = await nextShare(deps, opened.row, opened.nowMs);
-  if (next.error !== null) {
-    return c.json({ error: next.error }, next.status);
+  const nowMs = deps.now();
+  const payers = await deps.store.listCreditPayers(row.id);
+  const unassignedSats = await deps.store.sumUnassignedCreditSats(row.id);
+  const owed = payerDebtUnits(row.goalCurrency, row.goalAmount, payers);
+  if (owed === 'unavailable') {
+    return c.json({ error: 'Ask amount is unavailable' }, 503);
+  }
+  const paid = await deps.store.listRepayments(row.id);
+  const fundedAt = row.goalFundedAt instanceof Date ? row.goalFundedAt : null;
+  const lines = repaymentLedger(
+    row.goalTermDays as number,
+    owed,
+    paid.map((item) => ({ dayIndex: item.dayIndex, accountId: item.recipientAccountId })),
+    fundedAt === null ? null : fundedAt.getTime(),
+    nowMs,
+  );
+  const names = new Map<string, { name: string; username: string | null }>();
+  for (const payer of payers) {
+    names.set(payer.accountId, await publicGiver(deps, payer.accountId));
+  }
+  const owedById = new Map(owed.map((payer) => [payer.accountId, payer.units]));
+  const fiat = isFiatCredit(row);
+  const paidSats = new Map(
+    paid.map((item) => [`${item.dayIndex}:${item.recipientAccountId}`, item.dueSats]),
+  );
+  let daysDue = 0;
+  let daysPaid = 0;
+  let next: { dayIndex: number; sats: number; recipientAccountId: string } | null = null;
+  if (fundedAt !== null) {
+    const share = await nextShare(deps, row, nowMs);
+    if (share.error !== null) {
+      return c.json({ error: share.error }, share.status);
+    }
+    daysDue = share.daysDue;
+    daysPaid = share.daysPaid;
+    next =
+      share.share === null
+        ? null
+        : {
+            dayIndex: share.share.dayIndex,
+            sats: share.share.sats,
+            recipientAccountId: share.share.accountId,
+          };
   }
   return c.json(
     {
-      fundedAt: (opened.row.goalFundedAt as Date).toISOString(),
-      termDays: opened.row.goalTermDays,
-      daysDue: next.daysDue,
-      daysPaid: next.daysPaid,
-      next:
-        next.share === null
-          ? null
-          : {
-              dayIndex: next.share.dayIndex,
-              sats: next.share.sats,
-              recipientAccountId: next.share.accountId,
-            },
+      currency: fiat ? row.goalCurrency : 'BTC',
+      fundedAt: fundedAt === null ? null : fundedAt.toISOString(),
+      termDays: row.goalTermDays,
+      daysDue,
+      daysPaid,
+      unassignedSats,
+      givers: payers.map((payer) => {
+        const identity = names.get(payer.accountId) as { name: string; username: string | null };
+        /* v8 ignore next -- every listed payer is in the debt map; a miss is zero */
+        const units = owedById.get(payer.accountId) ?? 0n;
+        return {
+          accountId: payer.accountId,
+          name: identity.name,
+          username: identity.username,
+          givenSats: payer.sats,
+          givenAmount: fiat ? formatCents(units) : null,
+        };
+      }),
+      repayments: lines.map((line) => {
+        const identity = names.get(line.accountId) as { name: string; username: string | null };
+        const settled = paidSats.get(`${line.dayIndex}:${line.accountId}`);
+        return {
+          dayIndex: line.dayIndex,
+          dueOn: line.dueOn,
+          accountId: line.accountId,
+          name: identity.name,
+          username: identity.username,
+          amount: fiat ? formatCents(line.units) : null,
+          sats: fiat ? (settled ?? null) : Number(line.units),
+          status: line.status,
+          via: 'lightning',
+        };
+      }),
+      next,
     },
     200,
   );
+}
+
+async function publicGiver(
+  deps: RepaymentDeps,
+  accountId: string,
+): Promise<{ name: string; username: string | null }> {
+  const account = await deps.authStore.getAccount(accountId);
+  if (account === undefined) {
+    return { name: '', username: null };
+  }
+  return {
+    name: account.name ?? '',
+    username: account.username ?? null,
+  };
+}
+
+async function readableCredit(deps: RepaymentDeps, c: Context): Promise<Response | MessageRow> {
+  const id = c.req.param('id') as string;
+  if (!MESSAGE_ID_RE.test(id)) {
+    return c.json({ error: 'Not found' }, 404);
+  }
+  const row = await deps.store.getById(id);
+  if (
+    row === undefined ||
+    row.deletedAt !== null ||
+    row.goalRepayable !== true ||
+    row.goalTermDays === null ||
+    /* v8 ignore next -- copyRow stores null, never undefined */
+    row.goalTermDays === undefined
+  ) {
+    return c.json({ error: 'Not found' }, 404);
+  }
+  return row;
 }
 
 /**

@@ -303,6 +303,80 @@ function allocateByWeight(
  * @param payers - Positive contributions with an account id.
  * @returns Shares that add up to `dueSats`.
  */
+/** Whether a planned share is still ahead, due, or already paid. */
+export type RepaymentLineStatus = 'scheduled' | 'due' | 'paid';
+
+/** One giver's repayment on one day of the term. */
+export interface RepaymentLedgerLine {
+  /** Zero-based day. */
+  dayIndex: number;
+  /** UTC calendar day `YYYY-MM-DD`, or null before the credit is fully given. */
+  dueOn: string | null;
+  /** Giver account id. */
+  accountId: string;
+  /** Whole sats or whole cents. */
+  units: bigint;
+  /** Paid, due today or earlier, or not yet due. */
+  status: RepaymentLineStatus;
+}
+
+/**
+ * UTC date of one repayment day. Day 0 is the UTC day after the credit filled.
+ *
+ * @param fundedAtMs - When collected sats first reached the goal.
+ * @param dayIndex - Zero-based day in the term.
+ * @returns `YYYY-MM-DD` in UTC.
+ */
+export function repaymentDueDate(fundedAtMs: number, dayIndex: number): string {
+  const ms = repaymentStartMs(fundedAtMs) + dayIndex * 86_400_000;
+  return new Date(ms).toISOString().slice(0, 10);
+}
+
+/**
+ * Cents as a two-decimal amount. The caller passes a non-negative total.
+ *
+ * @param cents - Whole cents.
+ * @returns `whole.frac`.
+ */
+export function formatCents(cents: bigint): string {
+  const whole = cents / 100n;
+  const frac = (cents % 100n).toString().padStart(2, '0');
+  return `${whole}.${frac}`;
+}
+
+/**
+ * Every repayment share, in day order, with a date once the credit has filled.
+ *
+ * @param days - Term length.
+ * @param payers - Positive contributions. Their units are the debt.
+ * @param paid - Shares already stored.
+ * @param fundedAtMs - When the credit filled, or null while it is still open.
+ * @param nowMs - Clock.
+ * @returns One row per non-zero share.
+ */
+export function repaymentLedger(
+  days: number,
+  payers: readonly { accountId: string; units: bigint }[],
+  paid: readonly { dayIndex: number; accountId: string }[],
+  fundedAtMs: number | null,
+  nowMs: number,
+): RepaymentLedgerLine[] {
+  const slices = repaymentSchedule(days, payers);
+  const settled = new Set(paid.map((row) => `${row.dayIndex}:${row.accountId}`));
+  const daysDue = fundedAtMs === null ? 0 : dueDayCount(fundedAtMs, nowMs, days);
+  return slices.map((slice) => ({
+    dayIndex: slice.dayIndex,
+    dueOn: fundedAtMs === null ? null : repaymentDueDate(fundedAtMs, slice.dayIndex),
+    accountId: slice.accountId,
+    units: slice.units,
+    status: settled.has(`${slice.dayIndex}:${slice.accountId}`)
+      ? 'paid'
+      : slice.dayIndex < daysDue
+        ? 'due'
+        : 'scheduled',
+  }));
+}
+
 export function shareSats(
   dueSats: number,
   payers: readonly { accountId: string; sats: number }[],
