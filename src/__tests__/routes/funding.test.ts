@@ -76,6 +76,7 @@ function mount(
   authStore: InMemoryAuthStore,
   fundingStore: FundingStore,
   messageStore: InMemoryMessageStore = new InMemoryMessageStore(),
+  spendPing?: { ping: (address: string, messageId: string, kind?: string) => Promise<void> },
 ): Hono {
   return new Hono().route(
     '/funding',
@@ -84,6 +85,7 @@ function mount(
       fundingStore,
       messageStore,
       now,
+      ...(spendPing === undefined ? {} : { spendPing }),
     }),
   );
 }
@@ -119,6 +121,44 @@ async function seedApplyProfile(
     profileMessageId: noteId,
     location,
   });
+}
+
+const LIVE_PHOTO = { contentType: 'image/jpeg' as const, bytes: APPLY_JPEG };
+const PHOTO_A = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+const PHOTO_B = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+const DAY_MS = 86_400_000;
+
+async function setLightning(
+  authStore: InMemoryAuthStore,
+  accountId: string,
+  lightningAddress: string | null,
+): Promise<void> {
+  const existing = await authStore.getAccount(accountId);
+  await authStore.updateAccount({ ...existing!, lightningAddress });
+}
+
+async function seedLivePhoto(
+  messageStore: InMemoryMessageStore,
+  accountId: string,
+  id: string,
+  createdAt: Date,
+  extra?: { parentId?: string; name?: string; text?: string },
+): Promise<void> {
+  await messageStore.create(
+    {
+      id,
+      accountId,
+      name: extra?.name ?? 'Ada',
+      text: extra?.text ?? 'photo',
+      createdAt,
+      hasPhoto: true,
+      hasVideo: false,
+      videoContentType: null,
+      ...unsignedNostrDefaults(),
+      ...(extra?.parentId === undefined ? {} : { parentId: extra.parentId }),
+    },
+    LIVE_PHOTO,
+  );
 }
 
 function post(
@@ -757,6 +797,27 @@ describe('POST /funding/trial', () => {
     expect(parsedEvents(warn).some((e) => e['event'] === 'funding.trial')).toBe(true);
   });
 
+  it("pings today's live top-level photo after trial from pending", async () => {
+    const { authStore, fundingStore } = await staffed();
+    await setLightning(authStore, VERIFIED, '  ada@walletofsatoshi.com  ');
+    await fundingStore.upsert(grant({ accountId: VERIFIED, status: 'pending' }));
+    const messageStore = new InMemoryMessageStore();
+    await seedLivePhoto(messageStore, VERIFIED, PHOTO_A, new Date(now()));
+    const ping = vi.fn(async () => {
+      expect((await fundingStore.getByAccountId(VERIFIED))?.status).toBe('trial');
+    });
+    const res = await post(
+      mount(authStore, fundingStore, messageStore, { ping }),
+      '/funding/trial',
+      'founder',
+      { accountId: VERIFIED },
+    );
+    expect(res.status).toBe(200);
+    expect(ping).toHaveBeenCalledTimes(1);
+    expect(ping).toHaveBeenCalledWith('ada@walletofsatoshi.com', PHOTO_A);
+    expect(ping.mock.calls[0]).toHaveLength(2);
+  });
+
   it('returns 503 when upsert throws', async () => {
     const { authStore } = await staffed();
     const store: FundingStore = {
@@ -906,6 +967,198 @@ describe('POST /funding/admit', () => {
     expect(((await fromTrial.json()) as { funding: { status: string } }).funding.status).toBe(
       'admitted',
     );
+  });
+
+  it('pings the newest of two today media posts after admit from pending', async () => {
+    const { authStore, fundingStore } = await staffed();
+    await setLightning(authStore, VERIFIED, '  ada@walletofsatoshi.com  ');
+    await fundingStore.upsert(grant({ accountId: VERIFIED, status: 'pending' }));
+    const messageStore = new InMemoryMessageStore();
+    await seedLivePhoto(messageStore, VERIFIED, PHOTO_A, new Date(now() - 1), { text: 'older' });
+    await seedLivePhoto(messageStore, VERIFIED, PHOTO_B, new Date(now()), { text: 'newer' });
+    const ping = vi.fn(async () => {
+      expect((await fundingStore.getByAccountId(VERIFIED))?.status).toBe('admitted');
+    });
+    const res = await post(
+      mount(authStore, fundingStore, messageStore, { ping }),
+      '/funding/admit',
+      'founder',
+      { accountId: VERIFIED },
+    );
+    expect(res.status).toBe(200);
+    expect(ping).toHaveBeenCalledTimes(1);
+    expect(ping).toHaveBeenCalledWith('ada@walletofsatoshi.com', PHOTO_B);
+    expect(ping.mock.calls[0]).toHaveLength(2);
+  });
+
+  it('does not ping when admitting from an active trial the same UTC day', async () => {
+    const { authStore, fundingStore } = await staffed();
+    await setLightning(authStore, VERIFIED, 'ada@walletofsatoshi.com');
+    await fundingStore.upsert(grant({ accountId: VERIFIED, status: 'trial', trialUtcDate: TODAY }));
+    const messageStore = new InMemoryMessageStore();
+    await seedLivePhoto(messageStore, VERIFIED, PHOTO_A, new Date(now()));
+    const ping = vi.fn(async () => undefined);
+    const res = await post(
+      mount(authStore, fundingStore, messageStore, { ping }),
+      '/funding/admit',
+      'founder',
+      { accountId: VERIFIED },
+    );
+    expect(res.status).toBe(200);
+    expect(ping).not.toHaveBeenCalled();
+  });
+
+  it('does not ping when the only live media post is the previous UTC day', async () => {
+    const { authStore, fundingStore } = await staffed();
+    await setLightning(authStore, VERIFIED, 'ada@walletofsatoshi.com');
+    await fundingStore.upsert(grant({ accountId: VERIFIED, status: 'pending' }));
+    const messageStore = new InMemoryMessageStore();
+    await seedLivePhoto(messageStore, VERIFIED, PHOTO_A, new Date(now() - DAY_MS));
+    const ping = vi.fn(async () => undefined);
+    const res = await post(
+      mount(authStore, fundingStore, messageStore, { ping }),
+      '/funding/admit',
+      'founder',
+      { accountId: VERIFIED },
+    );
+    expect(res.status).toBe(200);
+    expect(ping).not.toHaveBeenCalled();
+  });
+
+  it('does not ping admit-from-pending with no media, a null address, or a whitespace address', async () => {
+    const ping = vi.fn(async () => undefined);
+
+    const noMedia = await staffed();
+    await setLightning(noMedia.authStore, VERIFIED, 'ada@walletofsatoshi.com');
+    await noMedia.fundingStore.upsert(grant({ accountId: VERIFIED, status: 'pending' }));
+    expect(
+      (
+        await post(
+          mount(noMedia.authStore, noMedia.fundingStore, new InMemoryMessageStore(), { ping }),
+          '/funding/admit',
+          'founder',
+          { accountId: VERIFIED },
+        )
+      ).status,
+    ).toBe(200);
+
+    const nullAddress = await staffed();
+    await setLightning(nullAddress.authStore, VERIFIED, null);
+    await nullAddress.fundingStore.upsert(grant({ accountId: VERIFIED, status: 'pending' }));
+    const nullMessages = new InMemoryMessageStore();
+    await seedLivePhoto(nullMessages, VERIFIED, PHOTO_A, new Date(now()));
+    expect(
+      (
+        await post(
+          mount(nullAddress.authStore, nullAddress.fundingStore, nullMessages, { ping }),
+          '/funding/admit',
+          'founder',
+          { accountId: VERIFIED },
+        )
+      ).status,
+    ).toBe(200);
+
+    const whitespace = await staffed();
+    await setLightning(whitespace.authStore, VERIFIED, '   ');
+    await whitespace.fundingStore.upsert(grant({ accountId: VERIFIED, status: 'pending' }));
+    const whitespaceMessages = new InMemoryMessageStore();
+    await seedLivePhoto(whitespaceMessages, VERIFIED, PHOTO_A, new Date(now()));
+    expect(
+      (
+        await post(
+          mount(whitespace.authStore, whitespace.fundingStore, whitespaceMessages, { ping }),
+          '/funding/admit',
+          'founder',
+          { accountId: VERIFIED },
+        )
+      ).status,
+    ).toBe(200);
+
+    expect(ping).not.toHaveBeenCalled();
+  });
+
+  it('returns 200 and admits when ping throws', async () => {
+    const { authStore, fundingStore } = await staffed();
+    await setLightning(authStore, VERIFIED, 'ada@walletofsatoshi.com');
+    await fundingStore.upsert(grant({ accountId: VERIFIED, status: 'pending' }));
+    const messageStore = new InMemoryMessageStore();
+    await seedLivePhoto(messageStore, VERIFIED, PHOTO_A, new Date(now()));
+    const ping = vi.fn(async () => {
+      throw new Error('ping boom');
+    });
+    const res = await post(
+      mount(authStore, fundingStore, messageStore, { ping }),
+      '/funding/admit',
+      'founder',
+      { accountId: VERIFIED },
+    );
+    expect(res.status).toBe(200);
+    expect((await fundingStore.getByAccountId(VERIFIED))?.status).toBe('admitted');
+    expect(parsedEvents(warn).some((e) => e['event'] === 'funding.daily_ping.failed')).toBe(true);
+  });
+
+  it('does not ping a photo reply with no top-level media', async () => {
+    const { authStore, fundingStore } = await staffed();
+    await setLightning(authStore, VERIFIED, 'ada@walletofsatoshi.com');
+    await fundingStore.upsert(grant({ accountId: VERIFIED, status: 'pending' }));
+    const messageStore = new InMemoryMessageStore();
+    await messageStore.create({
+      id: PHOTO_A,
+      accountId: VERIFIED,
+      name: 'Ada',
+      text: 'parent',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+    });
+    await seedLivePhoto(messageStore, VERIFIED, PHOTO_B, new Date(now()), { parentId: PHOTO_A });
+    const ping = vi.fn(async () => undefined);
+    const res = await post(
+      mount(authStore, fundingStore, messageStore, { ping }),
+      '/funding/admit',
+      'founder',
+      { accountId: VERIFIED },
+    );
+    expect(res.status).toBe(200);
+    expect(ping).not.toHaveBeenCalled();
+  });
+
+  it('does not ping admit-from-pending when the media row is missing', async () => {
+    const { authStore, fundingStore } = await staffed();
+    await setLightning(authStore, VERIFIED, 'ada@walletofsatoshi.com');
+    await fundingStore.upsert(grant({ accountId: VERIFIED, status: 'pending' }));
+    const inner = new InMemoryMessageStore();
+    await seedLivePhoto(inner, VERIFIED, PHOTO_A, new Date(now()));
+    const messageStore = new Proxy(inner, {
+      get(target, prop, receiver) {
+        if (prop === 'getById') {
+          return async () => undefined;
+        }
+        const value = Reflect.get(target, prop, receiver) as unknown;
+        return typeof value === 'function'
+          ? (value as (...args: never[]) => unknown).bind(target)
+          : value;
+      },
+    }) as InMemoryMessageStore;
+    const ping = vi.fn(async () => undefined);
+    const res = await post(
+      mount(authStore, fundingStore, messageStore, { ping }),
+      '/funding/admit',
+      'founder',
+      { accountId: VERIFIED },
+    );
+    expect(res.status).toBe(200);
+    expect(ping).not.toHaveBeenCalled();
+  });
+
+  it('still returns 200 on admit-from-pending when spendPing is omitted', async () => {
+    const { authStore, fundingStore } = await staffed();
+    await fundingStore.upsert(grant({ accountId: VERIFIED, status: 'pending' }));
+    const res = await post(mount(authStore, fundingStore), '/funding/admit', 'founder', {
+      accountId: VERIFIED,
+    });
+    expect(res.status).toBe(200);
+    expect((await fundingStore.getByAccountId(VERIFIED))?.status).toBe('admitted');
   });
 
   it('returns 400 for missing JSON and 404 for a missing subject', async () => {

@@ -14,6 +14,7 @@ import { loadGrantEffective, type FundingStore } from '@/lib/funding-store';
 import { logEvent } from '@/lib/log';
 import { MESSAGE_LIST_LIMIT, serializeMessage, type MessageRow } from '@/lib/message';
 import type { MessageStore } from '@/lib/message-store';
+import type { SpendPing } from '@/lib/spend-ping';
 import { roleAtLeast } from '@/lib/auth/roles';
 import { isStaffRole } from '@/lib/trust';
 import { forumVideoFilePresent, resolveMediaDir } from '@/lib/video';
@@ -36,6 +37,8 @@ export interface FundingRouteDeps {
   messageStore: MessageStore;
   /** Clock returning epoch milliseconds (injected for testability). */
   now: () => number;
+  /** Optional spend ping. Omitted → skip the daily post ping after trial/admit. */
+  spendPing?: SpendPing;
 }
 
 /** Body schema for staff POSTs that target one account. */
@@ -150,13 +153,52 @@ function parseAccountId(
 }
 
 /**
+ * Daily spend ping for the newest live top-level photo or video posted
+ * today UTC. No-op when spend ping is omitted, the address is blank, or
+ * there is no such post. Lookup and ping failures are logged and swallowed.
+ *
+ * @param deps - Route collaborators.
+ * @param account - Subject after the grant write.
+ * @param nowMs - Grant decision clock.
+ */
+async function pingTodayMedia(
+  deps: FundingRouteDeps,
+  account: Account,
+  nowMs: number,
+): Promise<void> {
+  if (deps.spendPing === undefined) {
+    return;
+  }
+  const address = account.lightningAddress === null ? '' : account.lightningAddress.trim();
+  if (address === '') {
+    return;
+  }
+  try {
+    const id = await deps.messageStore.latestLiveTopLevelMediaId(account.id);
+    if (id === null) {
+      return;
+    }
+    const row = await deps.messageStore.getById(id);
+    if (row === undefined) {
+      return;
+    }
+    if (utcDayKey(row.createdAt.getTime()) !== utcDayKey(nowMs)) {
+      return;
+    }
+    await deps.spendPing.ping(address, id);
+  } catch {
+    logEvent('funding.daily_ping.failed', { accountId: account.id });
+  }
+}
+
+/**
  * Build the `/funding` route group.
  *
  * Mounted at `/funding` so the public paths are `POST /funding/apply`,
  * `GET /funding/applications`, `GET /funding/applications/:accountId`,
  * `POST /funding/trial`, `POST /funding/admit`, and `POST /funding/reject`.
  *
- * @param deps - Auth store, funding store, message store, and clock.
+ * @param deps - Auth store, funding store, message store, clock, and optional spend ping.
  * @returns A Hono app with member apply and staff review routes.
  */
 export function fundingRoutes(deps: FundingRouteDeps): Hono {
@@ -361,6 +403,7 @@ export function fundingRoutes(deps: FundingRouteDeps): Hono {
           return c.json({ error: 'Conflict' }, 409);
         }
         logEvent('funding.trial', { accountId: subject.id, actorId: staff.caller.id });
+        await pingTodayMedia(deps, subject, nowMs);
         return c.json(decisionBody(subject, grant, nowMs, staff.caller.name), 200);
       } catch {
         logEvent('funding.write.failed');
@@ -412,6 +455,9 @@ export function fundingRoutes(deps: FundingRouteDeps): Hono {
           return c.json({ error: 'Conflict' }, 409);
         }
         logEvent('funding.admitted', { accountId: subject.id, actorId: staff.caller.id });
+        if (status === 'pending') {
+          await pingTodayMedia(deps, subject, nowMs);
+        }
         return c.json(decisionBody(subject, grant, nowMs, staff.caller.name), 200);
       } catch {
         logEvent('funding.write.failed');

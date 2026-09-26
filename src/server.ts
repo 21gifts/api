@@ -519,6 +519,7 @@ export function createApp(deps: AppDeps = {}): Hono {
       fundingStore,
       messageStore,
       now,
+      ...(spendPing === undefined ? {} : { spendPing }),
     }),
   );
   app.route('/gifts', giftsRoutes({ store: giftStore, rates: btcUsdRates, fiatRates, now }));
