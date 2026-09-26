@@ -71,6 +71,9 @@ import type { PushStore } from '@/lib/push-store';
 import type { SpendPing } from '@/lib/spend-ping';
 import { syncWelcomePing } from '@/lib/welcome-media';
 import { normalizePlace, parseMultipartCoord, placesMatch, type ForumPlace } from '@/lib/place';
+import { recordFirstShopOcpPlace } from '@/lib/ocp-place';
+import { InMemoryOcpPlaceStore, type OcpPlaceStore } from '@/lib/ocp-place-store';
+import type { BtcMapPush } from '@/lib/btcmap-push';
 import { repaymentInvoice, repaymentStatus } from '@/routes/repayment';
 import { bearerToken } from '@/routes/me';
 import {
@@ -252,6 +255,17 @@ export interface MessagesRouteDeps {
    * Omitted → skip. Failures are logged and do not fail the 200.
    */
   spendPing?: SpendPing;
+  /**
+   * OpenCryptoPay places for a first `#21GiftsShop` pin (default: empty
+   * {@link InMemoryOcpPlaceStore}). Failures are logged and do not fail the
+   * forum response.
+   */
+  ocpPlaces?: OcpPlaceStore;
+  /**
+   * Optional BTC Map push after a newly created shop OCP place. Omitted →
+   * store only.
+   */
+  btcMapPush?: BtcMapPush;
   /**
    * Funding grants for spend-ping eligibility (default: empty
    * {@link InMemoryFundingStore}).
@@ -963,6 +977,19 @@ async function persistForumPost(
       } catch {
         logEvent('messages.mention.notify.failed');
       }
+    }
+    if (!isReplay) {
+      await recordFirstShopOcpPlace({
+        places: deps.ocpPlaces ?? new InMemoryOcpPlaceStore(),
+        ...(deps.btcMapPush === undefined ? {} : { btcMapPush: deps.btcMapPush }),
+        messageId: created.id,
+        text: created.text,
+        parentId: created.parentId ?? null,
+        place: created.place ?? null,
+        authorName: created.name,
+        hadPlaceBefore: false,
+        textHasHashtagToken,
+      });
     }
     return c.json(
       serializeMessage(created, payableOf(created, account), account.role, undefined, true),
@@ -1832,6 +1859,7 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
         if (!textHasHashtagToken(row.text, '21GiftsShop')) {
           return c.json({ error: 'Only a shop note can set a place' }, 400);
         }
+        const hadPlaceBefore = row.place !== null && row.place !== undefined;
         const written = await deps.store.setPlace(id, parsed.value);
         if (!written) {
           return c.json({ error: 'Not found' }, 404);
@@ -1851,6 +1879,19 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
           accountId: account.id,
           role: account.role,
         });
+        if (!hadPlaceBefore && parsed.value !== null) {
+          await recordFirstShopOcpPlace({
+            places: deps.ocpPlaces ?? new InMemoryOcpPlaceStore(),
+            ...(deps.btcMapPush === undefined ? {} : { btcMapPush: deps.btcMapPush }),
+            messageId: updated.id,
+            text: updated.text,
+            parentId: updated.parentId ?? null,
+            place: parsed.value,
+            authorName: updated.name,
+            hadPlaceBefore: false,
+            textHasHashtagToken,
+          });
+        }
         return c.json(
           serializeMessage(
             updated,

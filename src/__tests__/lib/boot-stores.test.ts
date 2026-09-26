@@ -9,6 +9,7 @@ import { QueryGiftStore } from '@/lib/gift-store';
 import { SqlGiftRecorder } from '@/lib/gift-recorder';
 import { PostgresContactStore } from '@/lib/contact-store';
 import { InMemoryPosStore, PostgresPosStore } from '@/lib/pos-store';
+import { InMemoryOcpPlaceStore, PostgresOcpPlaceStore } from '@/lib/ocp-place-store';
 import { PostgresConversationStore } from '@/lib/conversation-store';
 import { PostgresMessageStore } from '@/lib/message-store';
 import { PostgresTranslationStore } from '@/lib/translation-store';
@@ -64,6 +65,7 @@ describe('openBootStores', () => {
       btcUsdRates,
       fiatRates,
       messageStore,
+      ocpPlaces,
       translationStore,
       conversationTranslationStore,
       contactStore,
@@ -82,6 +84,7 @@ describe('openBootStores', () => {
     expect(giftStore).toBeUndefined();
     expect(giftRecorder).toBeUndefined();
     expect(messageStore).toBeUndefined();
+    expect(ocpPlaces).toBeInstanceOf(InMemoryOcpPlaceStore);
     expect(translationStore).toBeUndefined();
     expect(conversationTranslationStore).toBeUndefined();
     expect(contactStore).toBeUndefined();
@@ -111,6 +114,7 @@ describe('openBootStores', () => {
       btcUsdRates,
       fiatRates,
       messageStore,
+      ocpPlaces,
       translationStore,
       conversationTranslationStore,
       contactStore,
@@ -128,6 +132,7 @@ describe('openBootStores', () => {
     expect(giftStore).toBeUndefined();
     expect(giftRecorder).toBeUndefined();
     expect(messageStore).toBeUndefined();
+    expect(ocpPlaces).toBeInstanceOf(InMemoryOcpPlaceStore);
     expect(translationStore).toBeUndefined();
     expect(conversationTranslationStore).toBeUndefined();
     expect(contactStore).toBeUndefined();
@@ -197,6 +202,7 @@ describe('openBootStores', () => {
       btcUsdRates,
       fiatRates,
       messageStore,
+      ocpPlaces,
       translationStore,
       conversationTranslationStore,
       contactStore,
@@ -226,6 +232,7 @@ describe('openBootStores', () => {
     expect(giftStore).toBeInstanceOf(QueryGiftStore);
     expect(giftRecorder).toBeInstanceOf(SqlGiftRecorder);
     expect(messageStore).toBeInstanceOf(PostgresMessageStore);
+    expect(ocpPlaces).toBeInstanceOf(PostgresOcpPlaceStore);
     expect(translationStore).toBeInstanceOf(PostgresTranslationStore);
     expect(conversationTranslationStore).toBeInstanceOf(PostgresTranslationStore);
     expect(conversationTranslationStore).not.toBe(translationStore);
@@ -244,6 +251,13 @@ describe('openBootStores', () => {
     expect(fiatRates).toBeInstanceOf(PostgresFiatStore);
     expect(executes.length).toBeGreaterThan(0);
     expect(executes.some((q) => q.includes('message'))).toBe(true);
+    expect(executes.some((q) => q.includes('ocp_place'))).toBe(true);
+    const messageIdx = executes.findIndex((q) => /CREATE TABLE IF NOT EXISTS message\b/i.test(q));
+    const ocpPlaceIdx = executes.findIndex((q) =>
+      /CREATE TABLE IF NOT EXISTS ocp_place\b/i.test(q),
+    );
+    expect(messageIdx).toBeGreaterThanOrEqual(0);
+    expect(ocpPlaceIdx).toBeGreaterThan(messageIdx);
     expect(executes.some((q) => q.includes('contact'))).toBe(true);
     expect(executes.some((q) => q.includes('pos_charge'))).toBe(true);
     expect(executes.some((q) => q.includes('conversation'))).toBe(true);

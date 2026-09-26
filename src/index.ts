@@ -16,6 +16,7 @@ import { PostRateLimiter } from './lib/nostr/rate-limit';
 import { InMemoryBannerStore } from './lib/banner-store';
 import { RELAY_TIMEOUT_MS, startNostrWorker, WORKER_INTERVAL_MS } from './lib/nostr/worker';
 import { InMemoryMessageStore } from './lib/message-store';
+import { resolveBtcMapPush } from './lib/btcmap-push';
 import { resolveSpendPing } from './lib/spend-ping';
 import { syncWelcomePing } from './lib/welcome-media';
 import { resolveZapRelays } from './lib/nostr/relays';
@@ -63,6 +64,7 @@ if (import.meta.main) {
     btcUsdRates,
     fiatRates,
     messageStore,
+    ocpPlaces,
     nostrKek,
     contactStore,
     posStore,
@@ -91,6 +93,7 @@ if (import.meta.main) {
       ? new WebsocketNostrPublisher()
       : undefined;
   const spendPing = resolveSpendPing(process.env, globalThis.fetch);
+  const btcMapPush = resolveBtcMapPush(process.env, globalThis.fetch);
   const postLimiter = new PostRateLimiter();
   const forumMessages = messageStore ?? new InMemoryMessageStore();
   const banners = boot.bannerStore ?? new InMemoryBannerStore();
@@ -102,6 +105,8 @@ if (import.meta.main) {
     posStore,
     env: process.env,
     messageStore: forumMessages,
+    ocpPlaces,
+    ...(btcMapPush === undefined ? {} : { btcMapPush }),
     ...(giftStore === undefined ? {} : { giftStore }),
     ...(giftRecorder === undefined ? {} : { giftRecorder }),
     ...(boot.translationStore === undefined ? {} : { translationStore: boot.translationStore }),
