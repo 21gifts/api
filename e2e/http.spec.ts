@@ -190,6 +190,15 @@ test('DELETE /messages/:id without bearer is 401', async ({ request }) => {
   expect(res.status()).toBe(401);
 });
 
+test('Function: textHasHashtagToken — PATCH /messages/:id/place without bearer is 401', async ({
+  request,
+}) => {
+  const res = await request.patch('/messages/:id/place', {
+    data: { place: null },
+  });
+  expect(res.status()).toBe(401);
+});
+
 test('GET /messages/:id/replies without bearer is 404', async ({ request }) => {
   const res = await request.get('/messages/:id/replies');
   expect(res.status()).toBe(404);

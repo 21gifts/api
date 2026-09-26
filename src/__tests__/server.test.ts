@@ -598,6 +598,20 @@ describe('CORS', () => {
     expect(parsedEvents(warn).some((e) => e['event'] === 'http.request')).toBe(false);
   });
 
+  it('allows PATCH on the shop place preflight', async () => {
+    const res = await createApp().request('/messages/11111111-1111-4111-8111-111111111111/place', {
+      method: 'OPTIONS',
+      headers: {
+        origin: 'https://21.gifts',
+        'access-control-request-method': 'PATCH',
+      },
+    });
+    expect(res.status).toBe(204);
+    expect(res.headers.get('access-control-allow-methods')).toMatch(/PATCH/i);
+    expect(res.headers.get('access-control-allow-origin')).toBe('https://21.gifts');
+    expect(parsedEvents(warn).some((e) => e['event'] === 'http.request')).toBe(false);
+  });
+
   it('allows PUT on the About me preflight', async () => {
     const res = await createApp().request('/me/about', {
       method: 'OPTIONS',
