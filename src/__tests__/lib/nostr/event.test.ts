@@ -267,6 +267,87 @@ describe('kind1', () => {
       ['imeta', 'url http://127.0.0.1:3000/messages/m1/photo/1.jpg', 'm image/jpeg'],
     ]);
   });
+
+  it('appends imeta x and duration only when they are valid', () => {
+    const hash = 'ab'.repeat(32);
+    const extraHash = 'cd'.repeat(32);
+    const event = buildKind1Event('clip', 1, {
+      url: 'https://api.21.gifts/messages/m1/video.mp4',
+      mime: 'video/mp4',
+      dim: '720x1280',
+      size: 10,
+      posterUrl: 'https://api.21.gifts/messages/m1/photo.jpg',
+      hash,
+      durationSeconds: 12,
+    });
+    expect(event.tags.at(-1)).toEqual([
+      'imeta',
+      'url https://api.21.gifts/messages/m1/video.mp4',
+      'm video/mp4',
+      'dim 720x1280',
+      'size 10',
+      'image https://api.21.gifts/messages/m1/photo.jpg',
+      `x ${hash}`,
+      'duration 12',
+    ]);
+    const rejected = buildKind1Event('clip', 1, {
+      url: 'https://api.21.gifts/messages/m1/video.mp4',
+      mime: 'video/mp4',
+      hash: 'AB'.repeat(32),
+      durationSeconds: 0,
+    });
+    expect(rejected.tags.at(-1)).toEqual([
+      'imeta',
+      'url https://api.21.gifts/messages/m1/video.mp4',
+      'm video/mp4',
+    ]);
+    const fractional = buildKind1Event('clip', 1, {
+      url: 'https://api.21.gifts/messages/m1/video.mp4',
+      mime: 'video/mp4',
+      hash: 'abcd',
+      durationSeconds: 1.5,
+    });
+    expect(fractional.tags.at(-1)).toEqual([
+      'imeta',
+      'url https://api.21.gifts/messages/m1/video.mp4',
+      'm video/mp4',
+    ]);
+    const tooLong = buildKind1Event('clip', 1, {
+      url: 'https://api.21.gifts/messages/m1/video.mp4',
+      mime: 'video/mp4',
+      durationSeconds: 86401,
+    });
+    expect(tooLong.tags.at(-1)?.some((part) => part.startsWith('duration '))).toBe(false);
+    const withExtra = buildKind1Event(
+      'pics',
+      1,
+      {
+        url: 'https://api.21.gifts/messages/m1/photo.jpg',
+        mime: 'image/jpeg',
+        hash,
+      },
+      undefined,
+      undefined,
+      [
+        {
+          url: 'https://api.21.gifts/messages/m1/photo/1.jpg',
+          mime: 'image/jpeg',
+          hash: extraHash,
+          durationSeconds: 86400,
+        },
+      ],
+    );
+    expect(withExtra.tags.filter((tag) => tag[0] === 'imeta')).toEqual([
+      ['imeta', 'url https://api.21.gifts/messages/m1/photo.jpg', 'm image/jpeg', `x ${hash}`],
+      [
+        'imeta',
+        'url https://api.21.gifts/messages/m1/photo/1.jpg',
+        'm image/jpeg',
+        `x ${extraHash}`,
+        'duration 86400',
+      ],
+    ]);
+  });
 });
 
 describe('kind0', () => {

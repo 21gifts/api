@@ -41,13 +41,20 @@ export interface Kind1Photo {
   dim?: string;
   /** Optional byte length for `imeta` `size`. */
   size?: number;
+  /** Optional sha256 (64 lowercase hex) for `imeta` `x`. */
+  hash?: string;
+  /** Optional whole seconds for `imeta` `duration` (1–86400). */
+  durationSeconds?: number;
 }
 
 /** NIP-10 reply pointers for a forum reply kind:1 (not used on top-level notes). */
 export interface Kind1ReplyTo {
   /** Parent note event id (hex). Used for both `root` and `reply` markers. */
   noteEventId: string;
-  /** Space (durability) relay URL for the `e` tags. */
+  /**
+   * NIP-10 relay hint for the `e` tags (public discovery relay when public
+   * publish is on, otherwise the durability relay).
+   */
   spaceRelay: string;
   /** Parent note author pubkey (hex) for the `p` tag. */
   noteAuthorPubkey: string;
@@ -200,6 +207,25 @@ export function kind1ContentWithHashtags(
   return `${content.replace(/\n+$/, '')}\n\n${suffix}`;
 }
 
+/** 64 lowercase hex sha256 for a NIP-92 `imeta` `x` field. */
+const IMETA_HASH_RE = /^[0-9a-f]{64}$/;
+
+/**
+ * Append optional `x` and `duration` after the other `imeta` fields.
+ *
+ * @param imeta - Tag row that already has `url` and `m`.
+ * @param photo - Media metadata. Invalid hash or duration is omitted.
+ */
+function appendImetaHashAndDuration(imeta: string[], photo: Kind1Photo): void {
+  if (photo.hash !== undefined && IMETA_HASH_RE.test(photo.hash)) {
+    imeta.push(`x ${photo.hash}`);
+  }
+  const duration = photo.durationSeconds;
+  if (duration !== undefined && Number.isInteger(duration) && duration >= 1 && duration <= 86400) {
+    imeta.push(`duration ${duration}`);
+  }
+}
+
 /** Unsigned kind:1 fields before `finalizeEvent`. */
 export interface UnsignedKind1 {
   /** Kind 1. */
@@ -226,7 +252,7 @@ export interface UnsignedKind1 {
  *
  * @param content - Already-normalised forum text (may be empty when `photo` is set).
  * @param createdAtUnix - Unix seconds for the event.
- * @param photo - Optional public media (image or video URL + MIME; optional poster, dim, size).
+ * @param photo - Optional public media (image or video URL + MIME; optional poster, dim, size, hash, duration).
  * @param replyTo - Optional NIP-10 parent pointers (replies only).
  * @param location - Optional account location; null/omitted/unusable → same as four-arg HEAD.
  * @param extraPhotos - Optional extra stills (indices 1..n). Omit or empty for N=1 bit-identical events.
@@ -256,6 +282,7 @@ export function buildKind1Event(
     if (photo.posterUrl !== undefined && photo.posterUrl !== '') {
       imeta.push(`image ${photo.posterUrl}`);
     }
+    appendImetaHashAndDuration(imeta, photo);
     tags.push(imeta);
   }
   if (extraPhotos !== undefined && extraPhotos.length > 0) {
@@ -268,6 +295,7 @@ export function buildKind1Event(
       if (extra.size !== undefined) {
         imeta.push(`size ${extra.size}`);
       }
+      appendImetaHashAndDuration(imeta, extra);
       tags.push(imeta);
     }
   }

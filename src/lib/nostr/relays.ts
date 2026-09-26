@@ -19,6 +19,12 @@ export const DEFAULT_RELAY_PUBLIC: readonly string[] = [
   'wss://nos.lol',
 ];
 
+/** NIP-50 search index for extra kind:1 fan-out (not a write-set relay). */
+export const SEARCH_RELAY_URL = 'wss://relay.nostr.band';
+
+/** Profile/relay-list indexer for extra kind:0 / kind:10002 fan-out (not a write-set relay). */
+export const INDEXER_RELAY_URL = 'wss://purplepag.es';
+
 /** Resolved write-set for one worker tick. */
 export interface ResolvedWriteSet {
   /** Durability relay (nostr.space or DEV substitute). */
@@ -131,6 +137,60 @@ export function resolveZapRelays(env: Record<string, string | undefined>): strin
  */
 export function writeRelayUrls(writeSet: ResolvedWriteSet): string[] {
   return writeSet.publicEnabled ? [writeSet.spaceUrl, ...writeSet.publicUrls] : [writeSet.spaceUrl];
+}
+
+/**
+ * NIP-10 hint: first public write relay when public publish is on, else space.
+ *
+ * @param writeSet - Resolved flags and relays.
+ * @returns Hint URL for kind:1 `e` tags.
+ */
+export function replyHintRelay(writeSet: ResolvedWriteSet): string {
+  if (writeSet.publicEnabled && writeSet.publicUrls.length > 0) {
+    return writeSet.publicUrls[0] as string;
+  }
+  return writeSet.spaceUrl;
+}
+
+/**
+ * Read relays from one kind:10002 tag list.
+ * `r` whose marker is omitted or `read`. Skip `write`.
+ * URL must start with `wss://` after trim. Dedupe. Cap `max` (default 4).
+ *
+ * @param tags - Event tags.
+ * @param max - Maximum URLs to return. The worker passes a higher cap so
+ * relays it already writes to do not crowd out an inbox URL.
+ * @returns Up to `max` unique `wss://` read URLs.
+ */
+export function readRelaysFromKind10002(tags: readonly (readonly string[])[], max = 4): string[] {
+  const urls: string[] = [];
+  const seen = new Set<string>();
+  for (const tag of tags) {
+    if (tag[0] !== 'r') {
+      continue;
+    }
+    const raw = tag[1];
+    if (typeof raw !== 'string') {
+      continue;
+    }
+    const url = raw.trim();
+    if (!url.startsWith('wss://')) {
+      continue;
+    }
+    const marker = tag[2];
+    if (marker === 'write' || (marker !== undefined && marker !== 'read')) {
+      continue;
+    }
+    if (seen.has(url)) {
+      continue;
+    }
+    seen.add(url);
+    urls.push(url);
+    if (urls.length >= max) {
+      break;
+    }
+  }
+  return urls;
 }
 
 /**

@@ -8,6 +8,10 @@ import {
   resolveRelaySpace,
   resolveWriteSet,
   resolvePublicApiBase,
+  INDEXER_RELAY_URL,
+  SEARCH_RELAY_URL,
+  readRelaysFromKind10002,
+  replyHintRelay,
   resolveZapRelays,
   writeRelayUrls,
 } from '@/lib/nostr/relays';
@@ -117,5 +121,58 @@ describe('relays', () => {
         publicEnabled: true,
       }),
     ).toEqual(['wss://space', 'wss://a']);
+  });
+
+  it('hints the first public relay only when public publish is on', () => {
+    expect(
+      replyHintRelay({
+        spaceUrl: 'wss://space',
+        publicUrls: ['wss://a'],
+        publishEnabled: true,
+        publicEnabled: false,
+      }),
+    ).toBe('wss://space');
+    expect(
+      replyHintRelay({
+        spaceUrl: 'wss://space',
+        publicUrls: [],
+        publishEnabled: true,
+        publicEnabled: true,
+      }),
+    ).toBe('wss://space');
+    expect(
+      replyHintRelay({
+        spaceUrl: 'wss://space',
+        publicUrls: ['wss://a', 'wss://b'],
+        publishEnabled: true,
+        publicEnabled: true,
+      }),
+    ).toBe('wss://a');
+  });
+
+  it('reads kind:10002 read relays and drops write, non-wss, and dupes', () => {
+    expect(
+      readRelaysFromKind10002([
+        ['t', 'x'],
+        ['r'],
+        ['r', 1 as unknown as string],
+        ['r', '  wss://a  '],
+        ['r', 'wss://a', 'read'],
+        ['r', 'wss://b', 'write'],
+        ['r', 'wss://c', 'both'],
+        ['r', 'ws://d'],
+        ['r', 'https://e'],
+        ['r', 'wss://f'],
+        ['r', 'wss://g', 'read'],
+        ['r', 'wss://h'],
+        ['r', 'wss://i'],
+      ]),
+    ).toEqual(['wss://a', 'wss://f', 'wss://g', 'wss://h']);
+  });
+
+  it('keeps the search and indexer relays out of writeRelayUrls', () => {
+    const urls = writeRelayUrls(resolveWriteSet({ NOSTR_PUBLISH: '1', NOSTR_PUBLISH_PUBLIC: '1' }));
+    expect(urls).not.toContain(SEARCH_RELAY_URL);
+    expect(urls).not.toContain(INDEXER_RELAY_URL);
   });
 });
