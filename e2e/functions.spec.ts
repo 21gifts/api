@@ -2533,3 +2533,27 @@ test('Function: TranslateUpstreamError — POST /messages/:id/translate 404s unk
 test('Function: TRANSLATION_SCHEMA_SQL — GET /healthz is 200', async ({ request }) => {
   expect((await request.get('/healthz')).status()).toBe(200);
 });
+
+test('Function: sundayRest — health stays up with a Sunday zone', async ({ request }) => {
+  const res = await request.get('/healthz', { headers: { 'Time-Zone': 'Europe/Zurich' } });
+  expect(res.status()).toBe(200);
+});
+
+test('Function: isSundayInZone — an invalid zone does not refuse a write', async ({ request }) => {
+  const res = await request.post('/messages', {
+    headers: { 'Time-Zone': 'Not/AZone', 'content-type': 'application/json' },
+    data: { text: 'sunday' },
+  });
+  const body = (await res.json()) as { error?: string };
+  expect(body.error).not.toBe('SUNDAY_REST');
+});
+
+test('Function: isSundayRestHeader — a blank zone does not refuse the moderator room', async ({
+  request,
+}) => {
+  const res = await request.get('/conversations/moderator-group', {
+    headers: { 'Time-Zone': '   ' },
+  });
+  const body = (await res.json()) as { error?: string };
+  expect(body.error).not.toBe('SUNDAY_REST');
+});
