@@ -742,7 +742,7 @@
 - **Purpose:** Newest live top-level photo or video id for one account, including the About-me note. Not capped by the public list size. Replies, soft-hidden rows, and other accounts do not count. InMemory matches a stored photo, extra stills, or `hasVideo` (seed `hasPhoto: true` alone is not media) and sorts `createdAt` then `id` descending. Postgres selects `photo IS NOT NULL`, a non-empty `video_content_type`, or an extra still, `ORDER BY created_at DESC, id DESC LIMIT 1`.
 - **Inputs:** `accountId` (author account id).
 - **Returns / side effects:** `Promise<string | null>`. Empty or missing id is `null`. No writes.
-- **Used by:** `syncWelcomePing` and `invoiceRoutes` (`GET /posted` `welcomeHasMedia` / `welcomeMessageId`).
+- **Used by:** `syncWelcomePing`, `invoiceRoutes` (`GET /posted` `welcomeHasMedia` / `welcomeMessageId`), and `fundingRoutes` (`POST /funding/trial` and `POST /funding/admit` from effective pending).
 
 ## Function: InMemoryContactStore
 
