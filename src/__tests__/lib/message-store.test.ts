@@ -5103,6 +5103,40 @@ describe('PostgresMessageStore', () => {
     expect(listed[0]?.goalTermDays).toBe(30);
   });
 
+  it('listLatest maps goal_funded_at from a Date and from text', async () => {
+    const sql = new MockSql();
+    const store = new PostgresMessageStore(sql);
+    const funded = new Date('2026-09-26T12:00:00.000Z');
+    sql.nextRows = [
+      {
+        id: 'm-funded',
+        account_id: 'acc',
+        name: 'Ada',
+        text: 'ask',
+        created_at: new Date('2026-08-28T12:00:00.000Z'),
+        has_photo: false,
+        goal_sats: '21',
+        goal_repayable: true,
+        goal_funded_at: funded,
+      },
+    ];
+    expect((await store.listLatest(10))[0]?.goalFundedAt).toEqual(funded);
+    sql.nextRows = [
+      {
+        id: 'm-funded-text',
+        account_id: 'acc',
+        name: 'Ada',
+        text: 'ask',
+        created_at: '2026-08-28T12:00:00.000Z',
+        has_photo: false,
+        goal_sats: '21',
+        goal_repayable: true,
+        goal_funded_at: '2026-09-26T12:00:00.000Z',
+      },
+    ];
+    expect((await store.listLatest(10))[0]?.goalFundedAt).toEqual(funded);
+  });
+
   it('create with non-null parentId uses INSERT SELECT WHERE EXISTS on a live parent', async () => {
     const sql = new MockSql();
     sql.nextRows = [{ id: 'child-1' }];
@@ -7327,6 +7361,53 @@ describe('PostgresMessageStore', () => {
     });
     expect(sql.executes[0]?.text).toMatch(/INSERT INTO message_repayment/);
     expect(sql.executes[0]?.text).toMatch(/ON CONFLICT/);
+    const memory = new InMemoryMessageStore();
+    const paidAt = new Date('2026-09-27T00:00:00.000Z');
+    await memory.markRepaymentPaid({
+      messageId: 'm1',
+      dayIndex: 0,
+      recipientAccountId: 'giver',
+      dueSats: 10,
+      paidAt,
+    });
+    await memory.markRepaymentPaid({
+      messageId: 'm1',
+      dayIndex: 0,
+      recipientAccountId: 'other',
+      dueSats: 1,
+      paidAt,
+    });
+    await memory.markRepaymentPaid({
+      messageId: 'm1',
+      dayIndex: 0,
+      recipientAccountId: 'giver',
+      dueSats: 99,
+      paidAt: new Date('2026-09-28T00:00:00.000Z'),
+    });
+    const stored = await memory.listRepayments('m1');
+    expect(stored).toHaveLength(2);
+    expect(stored.find((row) => row.recipientAccountId === 'giver')?.dueSats).toBe(10);
+    await memory.recordZapReceipt('r-bad', 'm1', 21, null);
+    await memory.updateZapReceiptGift('r-bad', { payerAccountId: 'giver' });
+    await memory.recordZapIngest({
+      id: 'zi-bad',
+      createdAt: paidAt,
+      receiptId: 'r-bad',
+      noteEventId: null,
+      messageId: 'm1',
+      outcome: 'indexed',
+      reason: null,
+      amountSats: 21,
+      amountUsd: 'nope',
+      amountChf: '1.00',
+      amountEur: '1.00',
+      amountPhp: '1.00',
+      receiptPubkey: null,
+      receipt: { id: 'r-bad', kind: 9735 },
+    });
+    expect(await memory.listCreditPayers('m1')).toEqual([
+      { accountId: 'giver', sats: 21, usd: null, chf: '1.00', eur: '1.00', php: '1.00' },
+    ]);
   });
 
   it('listCreditPayers sums sats and recorded fiat', async () => {
