@@ -200,9 +200,10 @@ async function pingTodayMedia(
  *
  * Mounted at `/funding` so the public paths are `POST /funding/apply`,
  * `GET /funding/applications`, `GET /funding/applications/:accountId`,
- * `POST /funding/trial`, `POST /funding/admit`, and `POST /funding/reject`.
+ * `POST /funding/trial`, `POST /funding/admit`, `POST /funding/reject`,
+ * and `GET /funding/payout-days`.
  *
- * @param deps - Auth store, funding store, message store, clock, and optional spend ping.
+ * @param deps - Auth store, funding store, message store, gift store, clock, and optional spend ping.
  * @returns A Hono app with member apply and staff review routes.
  */
 export function fundingRoutes(deps: FundingRouteDeps): Hono {
