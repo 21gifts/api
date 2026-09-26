@@ -1623,6 +1623,12 @@ test('Function: writeRelayUrls — default boot has no DATABASE_URL', async ({ r
 test('Function: replyHintRelay — default boot has no DATABASE_URL', async ({ request }) => {
   expect((await request.get('/healthz')).status()).toBe(200);
 });
+test('Function: nostrNoteUri — default boot has no DATABASE_URL', async ({ request }) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
+test('Function: publicNoteRelays — default boot has no DATABASE_URL', async ({ request }) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
 test('Function: readRelaysFromKind10002 — default boot has no DATABASE_URL', async ({
   request,
 }) => {

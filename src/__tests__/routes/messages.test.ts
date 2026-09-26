@@ -14,6 +14,7 @@ import {
   unsignedNostrDefaults,
 } from '@/lib/message';
 import { InvoiceRateLimiter, PostRateLimiter } from '@/lib/nostr/rate-limit';
+import { nostrNoteUri, publicNoteRelays } from '@/lib/nostr/share';
 import { FUNDING_REQUIRED_FROM_UTC } from '@/lib/funding';
 import { InMemoryFundingStore } from '@/lib/funding-store';
 import { messagesRoutes, type MessagesRouteDeps } from '@/routes/messages';
@@ -5652,6 +5653,7 @@ describe('GET /messages/:id', () => {
       videoContentType: null,
       via: 'nostr',
       replyCount: 0,
+      nostrUri: nostrNoteUri('ee'.repeat(32), 'ab'.repeat(32), publicNoteRelays()),
     });
     expect(body).not.toHaveProperty('role');
     expect(body).not.toHaveProperty('accountId');

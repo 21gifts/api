@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import type { AccountRole } from '@/lib/auth/store';
 import type { GoalCurrency } from '@/lib/goal-rate';
+import { nostrNoteUri, publicNoteRelays } from '@/lib/nostr/share';
 import type { ForumPlace } from '@/lib/place';
 import type { ForumVideoContentType } from '@/lib/video';
 
@@ -281,6 +282,10 @@ export interface PublicMessage {
   role?: AccountRole;
   /** Marks a visible external Nostr-authored row; the pubkey remains private. */
   via?: 'nostr';
+  /**
+   * `nostr:` + nevent when the note is published; omitted otherwise; raw event id stays off JSON.
+   */
+  nostrUri?: string;
   /**
    * Number of direct replies (`parent_id` children). A top-level note
    * includes `replyCount` on `GET /messages` and on `GET /messages/:id`
@@ -577,6 +582,8 @@ export function truncatePubkeyDisplay(pubkeyHex: string): string {
  * `goalAmountEur` / `goalAmountPhp` when `goalCurrency` is null.
  * Omits `place` when unset or null.
  * Live serialize omits `deletedAt` / `deletedBy`.
+ * Optional `nostrUri` (`nostr:` + nevent) when the note is published; omitted
+ * otherwise (raw event id stays off JSON).
  * @throws RangeError (or Error) when createdAt is invalid.
  */
 export function serializeMessage(
@@ -660,6 +667,10 @@ export function serializeMessage(
   if (hidden !== undefined) {
     body.deletedAt = hidden.deletedAt.toISOString();
     body.deletedBy = hidden.deletedBy;
+  }
+  const nostrUri = nostrNoteUri(row.eventId, row.authorPubkey, publicNoteRelays());
+  if (nostrUri !== null) {
+    body.nostrUri = nostrUri;
   }
   return body;
 }

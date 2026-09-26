@@ -628,6 +628,43 @@ describe('serializeMessage', () => {
     expect(body).not.toHaveProperty('deletedBy');
     expect(body.payable).toBe(true);
   });
+
+  it('adds nostrUri on published notes and omits it when unsigned or not public', () => {
+    const eventId = 'ee'.repeat(32);
+    const authorPubkey = 'aa'.repeat(32);
+    const published: MessageRow = {
+      id: 'msg-nostr-uri',
+      accountId: 'acc-1',
+      name: 'Ada',
+      text: 'hi',
+      createdAt: new Date('2026-08-28T12:00:00.000Z'),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+      eventId,
+      authorPubkey,
+    };
+    const body = serializeMessage(published, false, 'basis');
+    expect(body.nostrUri).toMatch(/^nostr:nevent1/);
+    expect(body).not.toHaveProperty('eventId');
+
+    const unsigned: MessageRow = {
+      id: 'msg-nostr-uri-unsigned',
+      accountId: 'acc-1',
+      name: 'Ada',
+      text: 'hi',
+      createdAt: new Date('2026-08-28T12:00:00.000Z'),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+    };
+    expect(serializeMessage(unsigned, false, 'basis')).not.toHaveProperty('nostrUri');
+
+    expect(
+      serializeHiddenMessage(published, { id: 'staff', name: 'Mod', role: 'moderator' }),
+    ).not.toHaveProperty('nostrUri');
+    const debug = serializeDebugMessage(published);
+    expect(debug).not.toHaveProperty('nostrUri');
+    expect(debug['eventId']).toBe(eventId);
+  });
 });
 
 describe('serializeDebugMessage', () => {
