@@ -9931,13 +9931,20 @@ describe('PATCH /messages/:id/place', () => {
   });
 });
 
-function recordingMap(): { mapPush: MapPush; calls: string[] } {
+function recordingMap(): {
+  mapPush: MapPush;
+  calls: string[];
+  meta: Array<{ url: string; authorization: string }>;
+} {
   const calls: string[] = [];
-  const fetchImpl: MapFetch = async (_input, init) => {
+  const meta: Array<{ url: string; authorization: string }> = [];
+  const fetchImpl: MapFetch = async (input, init) => {
+    const headers = new Headers(init.headers);
     calls.push(String(init.body));
+    meta.push({ url: String(input), authorization: headers.get('authorization') ?? '' });
     return new Response('{}', { status: 201 });
   };
-  return { mapPush: { baseUrl: 'http://map.test', token: 'ingest', fetchImpl }, calls };
+  return { mapPush: { baseUrl: 'http://map.test', token: 'ingest', fetchImpl }, calls, meta };
 }
 
 describe('shop OCP place hook', () => {
@@ -9945,7 +9952,7 @@ describe('shop OCP place hook', () => {
   const PIN = { lat: 47.3, lng: 8.5, label: 'Stall' };
 
   it('posts a shop pin to the map when a shop note is created with a pin', async () => {
-    const { mapPush, calls } = recordingMap();
+    const { mapPush, calls, meta } = recordingMap();
     const app = mount(await namedStore('Ada'), new InMemoryMessageStore(), {
       mapPush,
     });
@@ -9960,6 +9967,8 @@ describe('shop OCP place hook', () => {
     expect(post.status).toBe(200);
     const body = (await post.json()) as { id: string };
     expect(calls).toHaveLength(1);
+    expect(meta[0]?.url).toBe('http://map.test/map/places');
+    expect(meta[0]?.authorization).toBe('Bearer ingest');
     expect(JSON.parse(calls[0] ?? '{}')).toMatchObject({
       origin: '21gifts',
       externalId: body.id,
