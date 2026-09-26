@@ -3171,7 +3171,7 @@ or video bytes. Signed-in list/replies/create may include `accountId`
 (`{ username, accountId }[]`, only when `accountId` is included and the
 stored list is non-empty). The public window omits both. Public GET
 `/messages/:id` omits `accountId` when unsigned; a session sets it for a
-21gifts author and omits it for an external author. Nostr event ids are never included in the JSON.
+21gifts author and omits it for an external author. Nostr event ids are never included in the JSON. A published row may include `nostrUri` (`nostr:` plus a NIP-19 nevent of that id, the author, and the public write relays). Unpublished rows omit it.
 
 A present Authorization header that is not a live session, a signed-out
 request that is not `mode=active` without a hashtag, or a public cursor
@@ -3486,7 +3486,7 @@ in `{ messages }`), including `sats`, `payable`, `hasPhoto`, `photoCount`
 (0–10; always present; `hasPhoto` still means photo 0 exists), `photoTakenAts`
 (always; length equals `photoCount`; null when unknown; `[]` when there are no
 stills) and `photoTakenAt` only when `photoCount` is 1, `hasVideo`, and
-`videoContentType`. May include `goalSats` (positive integer on a top-level
+`videoContentType`. May include `nostrUri` (`nostr:` plus a NIP-19 nevent) when the note is already published; unpublished rows omit it. The raw event id stays off the JSON. May include `goalSats` (positive integer on a top-level
 note; omitted when unset). May include `goalRepayable: true` when the stored
 column is true (omitted when null; never false). May include `goalTermDays`
 when the stored column is not null (omitted when null). May include `accountId` (21gifts author id) and `mentions`
@@ -3813,7 +3813,7 @@ photo 0 exists) with
 Lightning Address, and no `replyCount`. Unauthenticated items omit
 `accountId`; signed-in member replies include `accountId`. External replies
 set `via: "nostr"`, keep `payable: false`, and omit `accountId`, `role`, and the
-pubkey. Replies never include `goalSats`, `goalRepayable`, or `goalTermDays`.
+pubkey. A published reply may include `nostrUri` (`nostr:` plus a NIP-19 nevent); unpublished replies omit it. The raw event id stays off the JSON. Replies never include `goalSats`, `goalRepayable`, or `goalTermDays`.
 Photo and video bytes are never included. `:id` is a UUID
 (`MESSAGE_ID_RE`).
 
@@ -3917,7 +3917,7 @@ keys — optional `place` when a pin is stored and omitted when unset,
 `payable`, `hasPhoto`, `photoCount`
 (0–10; always present; `hasPhoto` still means photo 0 exists), `photoTakenAts`
 (always; length equals `photoCount`; null when unknown; `[]` when there are no
-stills) and `photoTakenAt` only when `photoCount` is 1, `hasVideo`,
+stills) and `photoTakenAt` only when `photoCount` is 1, optional `nostrUri` when the note is published (`nostr:` plus a NIP-19 nevent; the raw event id stays off the JSON), `hasVideo`,
 `videoContentType`; live `role` for 21gifts authors). Unsigned JSON omits
 `accountId`. A session sets `accountId` for a 21gifts author and omits it
 for an external author. Live JSON also omits
