@@ -5,6 +5,7 @@ import {
   decodeForumVideo,
   detectVideoContentType,
   faststartIsoBmff,
+  normalizeIsoBmffDisplayMatrix,
   forumVideoExt,
   forumVideoFilePresent,
   forumVideoUrl,
@@ -656,5 +657,304 @@ describe('isoBmffDurationSeconds', () => {
     expect(
       isoBmffDurationSeconds(durationMvhd(1, 1, BigInt(Number.MAX_SAFE_INTEGER) + 1n)),
     ).toBeNull();
+  });
+});
+
+const MATRIX_W = 0x40000000;
+const MATRIX_ONE = 65536;
+
+function hdlrBox(kind: string): Uint8Array {
+  const payload = new Uint8Array(Math.max(12, kind.length === 4 ? 12 : 4));
+  if (kind.length === 4) {
+    payload[8] = kind.charCodeAt(0);
+    payload[9] = kind.charCodeAt(1);
+    payload[10] = kind.charCodeAt(2);
+    payload[11] = kind.charCodeAt(3);
+  }
+  return box('hdlr', payload);
+}
+
+function avc1Box(width: number, height: number): Uint8Array {
+  const payload = new Uint8Array(28);
+  const view = new DataView(payload.buffer);
+  view.setUint16(24, width);
+  view.setUint16(26, height);
+  return box('avc1', payload);
+}
+
+function stsdBox(entry: Uint8Array): Uint8Array {
+  const payload = new Uint8Array(8 + entry.byteLength);
+  new DataView(payload.buffer).setUint32(4, 1);
+  payload.set(entry, 8);
+  return box('stsd', payload);
+}
+
+function matrixTkhd(version: number, width: number, height: number, matrix: number[]): Uint8Array {
+  const payload = new Uint8Array(version === 1 ? 96 : version === 0 ? 84 : 84);
+  payload[0] = version;
+  const view = new DataView(payload.buffer);
+  const matrixAt = version === 1 ? 52 : 40;
+  const widthAt = version === 1 ? 88 : 76;
+  for (let i = 0; i < 9; i += 1) {
+    view.setInt32(matrixAt + i * 4, matrix[i] ?? 0);
+  }
+  view.setUint32(widthAt, width * MATRIX_ONE);
+  view.setUint32(widthAt + 4, height * MATRIX_ONE);
+  return box('tkhd', payload);
+}
+
+function rotationMatrix(
+  kind: 90 | 180 | 270,
+  tx = 0,
+  ty = 0,
+  u = 0,
+  v = 0,
+  w = MATRIX_W,
+): number[] {
+  const a = kind === 180 ? -MATRIX_ONE : 0;
+  const b = kind === 90 ? MATRIX_ONE : kind === 270 ? -MATRIX_ONE : 0;
+  const c = kind === 90 ? -MATRIX_ONE : kind === 270 ? MATRIX_ONE : 0;
+  const d = kind === 180 ? -MATRIX_ONE : 0;
+  return [a, b, u, c, d, v, tx * MATRIX_ONE, ty * MATRIX_ONE, w];
+}
+
+function portraitTrak(options: {
+  version?: number;
+  kind?: 90 | 180 | 270;
+  tkhdWidth?: number;
+  tkhdHeight?: number;
+  tx?: number;
+  ty?: number;
+  u?: number;
+  v?: number;
+  w?: number;
+  handler?: string;
+  entry?: Uint8Array | null;
+  extraTkhd?: boolean;
+}): Uint8Array {
+  const version = options.version ?? 0;
+  const kind = options.kind ?? 90;
+  const tkhd = matrixTkhd(
+    version,
+    options.tkhdWidth ?? 1024,
+    options.tkhdHeight ?? 576,
+    rotationMatrix(
+      kind,
+      options.tx ?? 0,
+      options.ty ?? 0,
+      options.u ?? 0,
+      options.v ?? 0,
+      options.w,
+    ),
+  );
+  const handler = hdlrBox(options.handler ?? 'vide');
+  const entry = options.entry === undefined ? avc1Box(1024, 576) : options.entry;
+  const parts = [tkhd];
+  if (options.extraTkhd === true) {
+    parts.push(tkhd);
+  }
+  const mdia: Uint8Array[] = [handler];
+  if (entry !== null) {
+    mdia.push(box('minf', box('stbl', stsdBox(entry))));
+  }
+  parts.push(box('mdia', concat(...mdia)));
+  return box('trak', concat(...parts));
+}
+
+function matrixFile(trak: Uint8Array, media = new Uint8Array([9, 8, 7, 6])): Uint8Array {
+  return concat(ftypBox(), box('moov', trak), box('mdat', media));
+}
+
+function tkhdView(
+  bytes: Uint8Array,
+  version = 0,
+): { tx: number; ty: number; width: number; height: number } {
+  const text = Buffer.from(bytes).toString('binary');
+  const idx = text.indexOf('tkhd');
+  const body = idx + 4;
+  const matrixAt = body + (version === 1 ? 52 : 40);
+  const widthAt = body + (version === 1 ? 88 : 76);
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  return {
+    tx: view.getInt32(matrixAt + 24),
+    ty: view.getInt32(matrixAt + 28),
+    width: view.getUint32(widthAt),
+    height: view.getUint32(widthAt + 4),
+  };
+}
+
+describe('normalizeIsoBmffDisplayMatrix', () => {
+  it('moves a broken 90 degree picture back into the frame', () => {
+    const media = new Uint8Array([9, 8, 7, 6]);
+    const input = matrixFile(portraitTrak({ extraTkhd: true }), media);
+    const before = new Uint8Array(input);
+    const out = normalizeIsoBmffDisplayMatrix(input);
+    expect(out).not.toBe(input);
+    expect(input).toEqual(before);
+    const fields = tkhdView(out);
+    expect(fields.tx).toBe(576 * MATRIX_ONE);
+    expect(fields.ty).toBe(0);
+    expect(fields.width).toBe(576 * MATRIX_ONE);
+    expect(fields.height).toBe(1024 * MATRIX_ONE);
+    const payload = Buffer.from(out).toString('binary');
+    const mdat = payload.indexOf('mdat');
+    expect(out.subarray(mdat + 4, mdat + 8)).toEqual(media);
+  });
+
+  it('keeps an already corrected 90 degree matrix', () => {
+    const input = matrixFile(portraitTrak({ tkhdWidth: 576, tkhdHeight: 1024, tx: 576, ty: 0 }));
+    expect(normalizeIsoBmffDisplayMatrix(input)).toBe(input);
+  });
+
+  it('corrects 270 and 180 degree matrices', () => {
+    const turned = normalizeIsoBmffDisplayMatrix(matrixFile(portraitTrak({ kind: 270 })));
+    expect(tkhdView(turned)).toEqual({
+      tx: 0,
+      ty: 1024 * MATRIX_ONE,
+      width: 576 * MATRIX_ONE,
+      height: 1024 * MATRIX_ONE,
+    });
+    const flipped = normalizeIsoBmffDisplayMatrix(matrixFile(portraitTrak({ kind: 180 })));
+    expect(tkhdView(flipped)).toEqual({
+      tx: 1024 * MATRIX_ONE,
+      ty: 576 * MATRIX_ONE,
+      width: 1024 * MATRIX_ONE,
+      height: 576 * MATRIX_ONE,
+    });
+  });
+
+  it('corrects a version 1 tkhd', () => {
+    const out = normalizeIsoBmffDisplayMatrix(matrixFile(portraitTrak({ version: 1 })));
+    expect(tkhdView(out, 1).tx).toBe(576 * MATRIX_ONE);
+    expect(tkhdView(out, 1).width).toBe(576 * MATRIX_ONE);
+    expect(tkhdView(out, 1).height).toBe(1024 * MATRIX_ONE);
+  });
+
+  it('uses the tkhd size as the coded size when the sample entry is absent', () => {
+    const out = normalizeIsoBmffDisplayMatrix(matrixFile(portraitTrak({ entry: null })));
+    expect(tkhdView(out).tx).toBe(576 * MATRIX_ONE);
+    expect(tkhdView(out).width).toBe(576 * MATRIX_ONE);
+    expect(tkhdView(out).height).toBe(1024 * MATRIX_ONE);
+  });
+
+  it('leaves identity, zero, audio, shear, and a bad w component untouched', () => {
+    const identityMatrix = matrixTkhd(0, 1024, 576, [
+      MATRIX_ONE,
+      0,
+      0,
+      0,
+      MATRIX_ONE,
+      0,
+      0,
+      0,
+      MATRIX_W,
+    ]);
+    const identityFile = matrixFile(
+      box('trak', concat(identityMatrix, box('mdia', hdlrBox('vide')))),
+    );
+    expect(normalizeIsoBmffDisplayMatrix(identityFile)).toBe(identityFile);
+    const zero = matrixFile(box('trak', concat(tkhdBox(1024, 576), box('mdia', hdlrBox('vide')))));
+    expect(normalizeIsoBmffDisplayMatrix(zero)).toBe(zero);
+    const audio = matrixFile(portraitTrak({ handler: 'soun' }));
+    expect(normalizeIsoBmffDisplayMatrix(audio)).toBe(audio);
+    const sheared = matrixFile(portraitTrak({ u: 1 }));
+    expect(normalizeIsoBmffDisplayMatrix(sheared)).toBe(sheared);
+    const vShear = matrixFile(portraitTrak({ v: 1 }));
+    expect(normalizeIsoBmffDisplayMatrix(vShear)).toBe(vShear);
+    const badW = matrixFile(portraitTrak({ w: 0 }));
+    expect(normalizeIsoBmffDisplayMatrix(badW)).toBe(badW);
+  });
+
+  it('skips a zero coded width, a short sample entry, and an unknown tkhd version', () => {
+    const zeroWidth = matrixFile(portraitTrak({ entry: avc1Box(0, 576) }));
+    expect(normalizeIsoBmffDisplayMatrix(zeroWidth)).toBe(zeroWidth);
+    const zeroHeight = matrixFile(portraitTrak({ entry: avc1Box(1024, 0) }));
+    expect(normalizeIsoBmffDisplayMatrix(zeroHeight)).toBe(zeroHeight);
+    const shortEntry = matrixFile(portraitTrak({ entry: box('avc1', new Uint8Array(4)) }));
+    expect(normalizeIsoBmffDisplayMatrix(shortEntry)).not.toBe(shortEntry);
+    const version2 = matrixTkhd(2, 1024, 576, rotationMatrix(90));
+    const unknown = matrixFile(box('trak', concat(version2, box('mdia', hdlrBox('vide')))));
+    expect(normalizeIsoBmffDisplayMatrix(unknown)).toBe(unknown);
+    const shortTkhd = box('tkhd', new Uint8Array([0, 0, 0, 0]));
+    const shortTrack = matrixFile(box('trak', concat(shortTkhd, box('mdia', hdlrBox('vide')))));
+    expect(normalizeIsoBmffDisplayMatrix(shortTrack)).toBe(shortTrack);
+  });
+
+  it('returns the same reference for truncated bytes and a trak that will not parse', () => {
+    const junk = new Uint8Array([1, 2, 3]);
+    expect(normalizeIsoBmffDisplayMatrix(junk)).toBe(junk);
+    const broken = concat(ftypBox(), box('moov', new Uint8Array([0, 0, 0, 1])));
+    expect(normalizeIsoBmffDisplayMatrix(broken)).toBe(broken);
+    const shortHandler = matrixFile(
+      box(
+        'trak',
+        concat(
+          matrixTkhd(0, 1024, 576, rotationMatrix(90)),
+          box('mdia', box('hdlr', new Uint8Array(4))),
+        ),
+      ),
+    );
+    expect(normalizeIsoBmffDisplayMatrix(shortHandler)).toBe(shortHandler);
+    const movieHeader = concat(ftypBox(), box('moov', box('mvhd', new Uint8Array(20))));
+    expect(normalizeIsoBmffDisplayMatrix(movieHeader)).toBe(movieHeader);
+    const brokenTrak = concat(ftypBox(), box('moov', box('trak', new Uint8Array([0, 0, 0, 1]))));
+    expect(normalizeIsoBmffDisplayMatrix(brokenTrak)).toBe(brokenTrak);
+    expect(decodeForumVideo(new Uint8Array(16))).toBeNull();
+    const tinyStsd = matrixFile(
+      box(
+        'trak',
+        concat(
+          matrixTkhd(0, 1024, 576, rotationMatrix(90)),
+          box(
+            'mdia',
+            concat(hdlrBox('vide'), box('minf', box('stbl', box('stsd', new Uint8Array())))),
+          ),
+        ),
+      ),
+    );
+    expect(normalizeIsoBmffDisplayMatrix(tinyStsd)).toBe(tinyStsd);
+  });
+
+  it('stores a corrected matrix from decodeForumVideo', () => {
+    const input = matrixFile(portraitTrak({}));
+    const decoded = decodeForumVideo(input);
+    expect(decoded).not.toBeNull();
+    if (decoded === null) {
+      return;
+    }
+    expect(tkhdView(decoded.bytes).width).toBe(576 * MATRIX_ONE);
+    expect(tkhdView(decoded.bytes).tx).toBe(576 * MATRIX_ONE);
+  });
+
+  it('rewrites a broken matrix when the file is read', async () => {
+    const id = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
+    const input = matrixFile(portraitTrak({}));
+    await writeForumVideo(id, { contentType: 'video/mp4', bytes: input });
+    const path = videoFilePath(resolveMediaDir(), id, 'video/mp4');
+    try {
+      const loaded = await readForumVideoBytes(path);
+      expect(tkhdView(loaded).tx).toBe(576 * MATRIX_ONE);
+      expect(tkhdView(new Uint8Array(await readFile(path))).tx).toBe(576 * MATRIX_ONE);
+      const again = await readForumVideoBytes(path);
+      expect(tkhdView(again).tx).toBe(576 * MATRIX_ONE);
+      expect(tkhdView(again).width).toBe(576 * MATRIX_ONE);
+    } finally {
+      await removeForumVideo(id, 'video/mp4');
+    }
+  });
+
+  it('derives the coded size from a translated tkhd when no sample entry exists', () => {
+    const already = matrixFile(
+      portraitTrak({ entry: null, tkhdWidth: 576, tkhdHeight: 1024, tx: 576, ty: 0 }),
+    );
+    expect(normalizeIsoBmffDisplayMatrix(already)).toBe(already);
+    const flat = matrixFile(
+      portraitTrak({ entry: null, kind: 180, tkhdWidth: 0, tkhdHeight: 0, tx: 1, ty: 0 }),
+    );
+    expect(normalizeIsoBmffDisplayMatrix(flat)).toBe(flat);
+    const missing = matrixFile(
+      portraitTrak({ entry: null, tkhdWidth: 0, tkhdHeight: 0, tx: 0, ty: 0 }),
+    );
+    expect(normalizeIsoBmffDisplayMatrix(missing)).toBe(missing);
   });
 });

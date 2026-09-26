@@ -48,11 +48,20 @@ const ISO_BMFF_CONTAINERS = new Set([
   'dinf',
 ]);
 
+/** Visual sample-entry types with coded width/height at payload offset 24. */
+const VISUAL_SAMPLE_ENTRY_TYPES = new Set(['avc1', 'avc3', 'hvc1', 'hev1', 'mp4v', 'encv', 'vp09']);
+
+/** 16.16 unit for `1` in a QuickTime display matrix. */
+const DISPLAY_MATRIX_UNITY = 65536;
+
+/** Required 2.30 `w` for a rotation this module will patch. */
+const DISPLAY_MATRIX_W = 0x40000000;
+
 /** Decoded forum video ready for disk. */
 export interface ForumVideo {
   /** MIME from magic bytes. */
   contentType: ForumVideoContentType;
-  /** Raw container bytes. The file is stored as these bytes, unchanged apart from faststart. */
+  /** Raw container bytes. Stored as these bytes, apart from faststart and display-matrix repair. */
   bytes: Uint8Array;
   /** Civil capture time read from the container. Absent or null when the file has none. */
   takenAt?: string | null;
@@ -487,9 +496,280 @@ export function isoBmffDisplaySize(bytes: Uint8Array): { width: number; height: 
   return null;
 }
 
+type DisplayRotation = 90 | 180 | 270;
+
+interface MatrixPatch {
+  /** Absolute offset of `tx` in the output buffer. */
+  txAt: number;
+  /** Absolute offset of the `tkhd` width field. */
+  widthAt: number;
+  /** Translation and display size, already in 16.16 units. */
+  tx: number;
+  ty: number;
+  displayWidth: number;
+  displayHeight: number;
+}
+
+/**
+ * Put a 90°, 180°, or 270° picture back inside the frame.
+ *
+ * Some phone files rotate the track but leave `tx`/`ty` at 0, so players
+ * that apply the matrix draw every pixel outside the element. An unchanged
+ * file is returned as the same reference.
+ *
+ * @param bytes - ISO-BMFF bytes. Not modified.
+ * @returns Patched copy, or `bytes` when nothing changes.
+ */
+export function normalizeIsoBmffDisplayMatrix(bytes: Uint8Array): Uint8Array {
+  const top = parseIsoBmffBoxes(bytes, 0, bytes.byteLength);
+  if (top === null) {
+    return bytes;
+  }
+  const patches: MatrixPatch[] = [];
+  for (const box of top) {
+    if (box.type !== 'moov') {
+      continue;
+    }
+    collectMatrixPatches(bytes, box.start + box.headerSize, box.start + box.size, patches);
+  }
+  if (patches.length === 0) {
+    return bytes;
+  }
+  const out = new Uint8Array(bytes);
+  const view = new DataView(out.buffer, out.byteOffset, out.byteLength);
+  for (const patch of patches) {
+    view.setInt32(patch.txAt, patch.tx);
+    view.setInt32(patch.txAt + 4, patch.ty);
+    view.setUint32(patch.widthAt, patch.displayWidth);
+    view.setUint32(patch.widthAt + 4, patch.displayHeight);
+  }
+  return out;
+}
+
+function rotationOf(a: number, b: number, c: number, d: number): DisplayRotation | null {
+  if (a === 0 && b === DISPLAY_MATRIX_UNITY && c === -DISPLAY_MATRIX_UNITY && d === 0) {
+    return 90;
+  }
+  if (a === 0 && b === -DISPLAY_MATRIX_UNITY && c === DISPLAY_MATRIX_UNITY && d === 0) {
+    return 270;
+  }
+  if (a === -DISPLAY_MATRIX_UNITY && b === 0 && c === 0 && d === -DISPLAY_MATRIX_UNITY) {
+    return 180;
+  }
+  return null;
+}
+
+function collectMatrixPatches(
+  bytes: Uint8Array,
+  start: number,
+  end: number,
+  patches: MatrixPatch[],
+): void {
+  const traks = parseIsoBmffBoxes(bytes, start, end);
+  if (traks === null) {
+    return;
+  }
+  for (const trak of traks) {
+    if (trak.type !== 'trak') {
+      continue;
+    }
+    const patch = matrixPatchForTrak(bytes, trak);
+    if (patch !== null) {
+      patches.push(patch);
+    }
+  }
+}
+
+function matrixPatchForTrak(bytes: Uint8Array, trak: IsoBmffBox): MatrixPatch | null {
+  const found = {
+    handler: '',
+    tkhd: null as IsoBmffBox | null,
+    visual: null as { width: number; height: number } | null,
+  };
+  const payloadStart = trak.start + trak.headerSize;
+  const payloadEnd = trak.start + trak.size;
+  if (!scanTrak(bytes, payloadStart, payloadEnd, found)) {
+    return null;
+  }
+  if (found.handler !== 'vide' || found.tkhd === null) {
+    return null;
+  }
+  const tkhd = found.tkhd;
+  const body = tkhd.start + tkhd.headerSize;
+  const version = bytes[body] as number;
+  const layout =
+    version === 0
+      ? { matrix: 40, width: 76, min: 84 }
+      : version === 1
+        ? { matrix: 52, width: 88, min: 96 }
+        : null;
+  if (layout === null || body + layout.min > tkhd.start + tkhd.size) {
+    return null;
+  }
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const matrixAt = body + layout.matrix;
+  const widthAt = body + layout.width;
+  const u = view.getInt32(matrixAt + 8);
+  const v = view.getInt32(matrixAt + 20);
+  const w = view.getInt32(matrixAt + 32);
+  if (u !== 0) {
+    return null;
+  }
+  if (v !== 0) {
+    return null;
+  }
+  if (w !== DISPLAY_MATRIX_W) {
+    return null;
+  }
+  const rotation = rotationOf(
+    view.getInt32(matrixAt),
+    view.getInt32(matrixAt + 4),
+    view.getInt32(matrixAt + 12),
+    view.getInt32(matrixAt + 16),
+  );
+  if (rotation === null) {
+    return null;
+  }
+  const tx = view.getInt32(matrixAt + 24);
+  const ty = view.getInt32(matrixAt + 28);
+  const coded = codedSize(
+    found.visual,
+    view.getUint32(widthAt),
+    view.getUint32(widthAt + 4),
+    tx,
+    ty,
+    rotation,
+  );
+  if (coded === null) {
+    return null;
+  }
+  const display = displayFor(rotation, coded.width, coded.height);
+  const needTx = display.tx * DISPLAY_MATRIX_UNITY;
+  const needTy = display.ty * DISPLAY_MATRIX_UNITY;
+  const needW = display.width * DISPLAY_MATRIX_UNITY;
+  const needH = display.height * DISPLAY_MATRIX_UNITY;
+  if (
+    tx === needTx &&
+    ty === needTy &&
+    view.getUint32(widthAt) === needW &&
+    view.getUint32(widthAt + 4) === needH
+  ) {
+    return null;
+  }
+  return {
+    txAt: matrixAt + 24,
+    widthAt,
+    tx: needTx,
+    ty: needTy,
+    displayWidth: needW,
+    displayHeight: needH,
+  };
+}
+
+function codedSize(
+  visual: { width: number; height: number } | null,
+  rawWidth: number,
+  rawHeight: number,
+  tx: number,
+  ty: number,
+  rotation: DisplayRotation,
+): { width: number; height: number } | null {
+  if (visual !== null) {
+    if (!pixelInRange(visual.width) || !pixelInRange(visual.height)) {
+      return null;
+    }
+    return visual;
+  }
+  const width = rawWidth >>> 16;
+  const height = rawHeight >>> 16;
+  let coded = { width, height };
+  if (!(tx === 0 && ty === 0) && rotation !== 180) {
+    coded = { width: height, height: width };
+  }
+  if (!pixelInRange(coded.width) || !pixelInRange(coded.height)) {
+    return null;
+  }
+  return coded;
+}
+
+function displayFor(
+  rotation: DisplayRotation,
+  width: number,
+  height: number,
+): { tx: number; ty: number; width: number; height: number } {
+  if (rotation === 90) {
+    return { tx: height, ty: 0, width: height, height: width };
+  }
+  if (rotation === 270) {
+    return { tx: 0, ty: width, width: height, height: width };
+  }
+  return { tx: width, ty: height, width, height };
+}
+
+function pixelInRange(value: number): boolean {
+  return value >= 1 && value <= 65535;
+}
+
+function scanTrak(
+  bytes: Uint8Array,
+  start: number,
+  end: number,
+  found: {
+    handler: string;
+    tkhd: IsoBmffBox | null;
+    visual: { width: number; height: number } | null;
+  },
+): boolean {
+  const children = parseIsoBmffBoxes(bytes, start, end);
+  if (children === null) {
+    return false;
+  }
+  for (const child of children) {
+    if (child.type === 'tkhd' && found.tkhd === null) {
+      found.tkhd = child;
+    }
+    if (child.type === 'hdlr' && found.handler === '') {
+      const payload = child.start + child.headerSize;
+      if (payload + 12 <= child.start + child.size) {
+        found.handler = String.fromCharCode(
+          bytes[payload + 8] as number,
+          bytes[payload + 9] as number,
+          bytes[payload + 10] as number,
+          bytes[payload + 11] as number,
+        );
+      }
+    }
+    if (VISUAL_SAMPLE_ENTRY_TYPES.has(child.type) && found.visual === null) {
+      const payload = child.start + child.headerSize;
+      if (payload + 28 <= child.start + child.size) {
+        const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+        found.visual = {
+          width: view.getUint16(payload + 24),
+          height: view.getUint16(payload + 26),
+        };
+      }
+    }
+    const descend = ISO_BMFF_CONTAINERS.has(child.type) || child.type === 'stsd';
+    if (!descend) {
+      continue;
+    }
+    const payload = child.start + child.headerSize;
+    const childEnd = child.start + child.size;
+    const innerStart = child.type === 'stsd' ? payload + 8 : payload;
+    if (innerStart > childEnd) {
+      return false;
+    }
+    if (!scanTrak(bytes, innerStart, childEnd, found)) {
+      return false;
+    }
+  }
+  return true;
+}
+
 /**
  * Validate raw video bytes (size + magic). MP4/MOV go through {@link faststartIsoBmff}
- * (`moov` before `mdat` only when remux succeeds; abort cases stay unchanged).
+ * (`moov` before `mdat` only when remux succeeds; abort cases stay unchanged)
+ * and {@link normalizeIsoBmffDisplayMatrix}.
  *
  * @param bytes - Uploaded bytes.
  * @returns A {@link ForumVideo}, or `null` when empty, oversize, or unrecognized.
@@ -505,7 +785,7 @@ export function decodeForumVideo(bytes: Uint8Array): ForumVideo | null {
   const copy = bytes.slice();
   const remuxed =
     contentType === 'video/mp4' || contentType === 'video/quicktime'
-      ? faststartIsoBmff(copy)
+      ? normalizeIsoBmffDisplayMatrix(faststartIsoBmff(copy))
       : copy;
   return { contentType, bytes: remuxed, takenAt: readVideoTakenAt(remuxed) };
 }
@@ -677,7 +957,7 @@ export async function writeForumVideo(
  *
  * @param path - Absolute path on disk.
  * @param io - Disk ops; production omits this and uses `node:fs/promises`.
- * @returns Bytes to serve (moov before mdat when remux succeeds).
+ * @returns Bytes to serve (moov before mdat, display matrix inside the frame).
  */
 export async function readForumVideoBytes(
   path: string,
@@ -685,10 +965,11 @@ export async function readForumVideoBytes(
 ): Promise<Uint8Array> {
   const bytes = new Uint8Array(await io.readFile(path));
   const remuxed = faststartIsoBmff(bytes);
-  if (remuxed !== bytes) {
+  const normalized = normalizeIsoBmffDisplayMatrix(remuxed);
+  if (normalized !== bytes) {
     const tempPath = join(dirname(path), `.${basename(path)}.${crypto.randomUUID()}.tmp`);
     try {
-      await io.writeFile(tempPath, remuxed);
+      await io.writeFile(tempPath, normalized);
       await io.rename(tempPath, path);
     } catch {
       try {
@@ -698,7 +979,7 @@ export async function readForumVideoBytes(
       }
     }
   }
-  return remuxed;
+  return normalized;
 }
 
 /**
