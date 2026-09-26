@@ -343,8 +343,9 @@ async function indexHotZapReceipts(deps: NostrWorkerDeps, nowMs: number): Promis
  * get `notePageUrl(PUBLIC_BASE_URL)` as their page link. Already published
  * kind:1 rows are not rewritten for that link. Also fans out a NIP-65
  * kind:10002 relay list. Kind:1 photo and video posts include the public media
- * URL and an `imeta` tag (video may add poster `image`). Kind:0 `created_at` is `max(wall clock, last issued + 1)` so an
- * in-flight older profile cannot win a same-second replaceable-event tie.
+ * URL and an `imeta` tag (video may add poster `image`). Kind:0
+ * `created_at` is `max(wall clock, last issued + 1)` so an in-flight older
+ * profile cannot win a same-second replaceable-event tie.
  * Zap ingest runs at the **start** of `'all'` / `'fast'` ticks (full or hot),
  * before resign/sign/publish, so receipt indexing is not delayed by relay
  * publish timeouts. `nowMs` for sign/publish leases is sampled only after zap
