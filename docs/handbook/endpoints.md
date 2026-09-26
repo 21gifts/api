@@ -553,15 +553,15 @@
 
 - **Purpose:** Public read of a live repayable ask. No session. 404 unless the note is a live top-level credit with a term. 200 lists `givers` (account, name, username, `givenSats`, and `givenAmount` in the goal currency or null for bitcoin) and `repayments`. Each repayment is one bitcoin payment: `dayIndex`, `dueOn` (`YYYY-MM-DD` UTC, or null until the credit is fully given), who receives it, `amount` (a two-decimal currency string such as `0.01`, or null for bitcoin), `sats` (the bitcoin share, or for fiat the sats of a paid share and null until it is paid), `status` `paid` | `due` | `scheduled`, and `via: lightning`. A 1-sat or 1-cent gift is a row of its own. `unassignedSats` is bitcoin with no 21.gifts payer and is not in the plan. `next` is the next unpaid share once the credit has filled, else null. 503 `{ error: 'Ask amount is unavailable' }` when a fiat amount or the gift-day rate is missing.
 - **Errors:** 404 Not found. 503 Ask amount is unavailable.
-- **Auth:** none.
+- **Auth:** none. A local Sunday does not refuse this read.
 - **Used by:** Anyone opening the credit.
 
 ## Endpoint: POST /messages/:id/repayment
 
 - **Purpose:** Same author session. Issues `{ pr, amountSats }` for the next giver share. The author pays that invoice from their own wallet. The zap tags the credit note. When indexed, the share is stored on `message_repayment` and the ask total does not rise. 409 `missing_requirements` without forum pay. 403 `{ error: 'SUNDAY_REST' }` when the device `Time-Zone` is in Sunday. 429 when rate limited. 400 `Nothing is due`, `This message cannot be paid yet`, `A giver has no Lightning address`, or when the wallet cannot take a zap. 503 `{ error: 'Ask amount is unavailable' }` when the fiat share cannot be priced, and 503 `{ error: 'Messages are unavailable' }` when signing keys are missing or storing the invoice attempt fails.
-- **Errors:** 401, 404, 400, 409, 429, 503 as in the purpose.
+- **Errors:** 401 Unauthorized; 404 Not found; 400 as in the purpose; 403 `{ error: 'SUNDAY_REST' }` when `Time-Zone` names a Sunday (a missing, blank, or invalid zone does not refuse; GET stays open); 409 `{ error: 'missing_requirements', missing }`; 429 Too many payments; 503 `{ error: 'Ask amount is unavailable' }` or `{ error: 'Messages are unavailable' }`.
 - **Auth:** `Authorization: Bearer` session.
-- **Used by:** The author's credit card.
+- **Used by:** The author of the credit, from their own wallet.
 
 ## Endpoint: POST /messages/:id/invoice
 
