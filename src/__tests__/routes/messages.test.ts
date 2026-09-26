@@ -1396,7 +1396,7 @@ describe('POST /messages', () => {
 
   it('returns 400 when JSON goalRepayable is not true', async () => {
     const app = mount(await namedStore('Ada'));
-    for (const goalRepayable of [false, 1, 'true']) {
+    for (const goalRepayable of [false, 1, 'true', '']) {
       const res = await app.request('/messages', {
         method: 'POST',
         headers: { ...AUTH, 'content-type': 'application/json' },

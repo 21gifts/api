@@ -552,7 +552,7 @@ type GoalRepayableParse = { ok: true; value: true | null } | { ok: false };
  * or multipart empty is none. Any other value is 400.
  */
 function parseGoalRepayable(value: unknown, source: 'json' | 'multipart'): GoalRepayableParse {
-  if (value === undefined || value === null || value === '') {
+  if (value === undefined || value === null || (source === 'multipart' && value === '')) {
     return { ok: true, value: null };
   }
   if (source === 'json' ? value === true : value === 'true') {
