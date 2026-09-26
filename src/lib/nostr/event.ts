@@ -26,10 +26,10 @@ export const KIND1_CONTENT_HASHTAGS: readonly ['#bitcoin', '#21gifts'] = [
   '#21gifts',
 ] as const;
 
-/** Public PNG used as every kind:0 `picture` so Damus shows 21.gifts branding. */
+/** Fallback kind:0 `picture` when no profile photo is stored. */
 export const KIND0_PICTURE_URL = 'https://21.gifts/apple-touch-icon.png';
 
-/** Wide public image used as every kind:0 `banner` (1200×630). */
+/** Fallback kind:0 `banner` when no profile photo is stored (1200×630). */
 export const KIND0_BANNER_URL = 'https://21.gifts/og.png';
 
 const NOTE_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
