@@ -7,8 +7,41 @@
 
 import { logEvent } from '@/lib/log';
 import type { ForumPlace } from '@/lib/place';
-import type { BtcMapPush } from '@/lib/btcmap-push';
-import type { OcpPlaceStore } from '@/lib/ocp-place-store';
+/** HTTP fetch for the one-shot map ingest. */
+export type MapFetch = (input: string, init: RequestInit) => Promise<Response>;
+
+/** Where a first shop pin is posted. Both fields are required together. */
+export type MapPush = {
+  baseUrl: string;
+  token: string;
+  fetchImpl: MapFetch;
+};
+
+/**
+ * Build a map push from the environment. A blank URL or token means no push.
+ *
+ * @param env - `OCP_MAP_BASE_URL` and `OCP_PLACE_INGEST_TOKEN`.
+ * @param fetchImpl - HTTP fetch.
+ * @returns The push target, or `undefined`.
+ */
+export function resolveMapPush(
+  env: Record<string, string | undefined>,
+  fetchImpl: MapFetch,
+): MapPush | undefined {
+  const rawUrl = env['OCP_MAP_BASE_URL'];
+  const rawToken = env['OCP_PLACE_INGEST_TOKEN'];
+  if (rawUrl === undefined || rawUrl.trim() === '') {
+    return undefined;
+  }
+  if (rawToken === undefined || rawToken.trim() === '') {
+    return undefined;
+  }
+  return {
+    baseUrl: rawUrl.trim().replace(/\/+$/u, ''),
+    token: rawToken.trim(),
+    fetchImpl,
+  };
+}
 
 /** 400 when latitude or longitude is missing or out of range. */
 const PLACE_COORD_ERROR = 'Place must be a latitude and longitude' as const;
@@ -46,7 +79,7 @@ const SHOP_CATEGORY = 'shopping';
 /** Fixed payment methods for forum shop pins. */
 const SHOP_PAYMENT_METHODS = 'lightning';
 
-/** Validated ingest body for {@link OcpPlaceStore.insertIfNew}. */
+/** Validated body posted to `POST /map/places`. */
 export type OcpPlaceInput = {
   origin: string;
   externalId: string;
@@ -233,42 +266,48 @@ export function shopOcpPlaceInput(
 }
 
 /**
- * Persist a shop OCP place on the first pin and optionally push to BTC Map.
+ * Post a shop pin to the OpenCryptoPay map the first time it is set.
  *
- * Only when `parentId` is null, the text contains `#21GiftsShop`, and a pin
- * is present. Inserts via {@link OcpPlaceStore.insertIfNew}; pushes only when
- * `created` and `btcMapPush` is set. Store and push failures are logged as
- * `ocp.place.failed` and swallowed.
+ * Only when `parentId` is null, the text contains `#21GiftsShop`, a pin is
+ * present, and `mapPush` is configured. BTC Map is not called here. Failures
+ * are logged as `ocp.place.failed` and swallowed.
  *
- * @param opts - Store, optional push, message fields, and pin.
+ * @param opts - Optional map push, message fields, and pin.
  */
 export async function recordFirstShopOcpPlace(opts: {
-  places: OcpPlaceStore;
-  btcMapPush?: BtcMapPush;
+  mapPush?: MapPush;
   messageId: string;
   text: string;
   parentId: string | null;
   place: ForumPlace | null;
   authorName: string | null | undefined;
-  /** When false, the note already had a pin before this write. */
+  /** When true, the note already had a pin before this write. */
   hadPlaceBefore: boolean;
-  /** Hashtag token check (injected so tests need not import the store helper). */
+  /** Hashtag token check (injected so tests need not import the message helper). */
   textHasHashtagToken: (text: string, name: string) => boolean;
 }): Promise<void> {
   if (
     opts.hadPlaceBefore ||
     opts.parentId !== null ||
     opts.place === null ||
-    !opts.textHasHashtagToken(opts.text, SHOP_HASHTAG)
+    !opts.textHasHashtagToken(opts.text, SHOP_HASHTAG) ||
+    opts.mapPush === undefined
   ) {
     return;
   }
+  const mapPush = opts.mapPush;
   try {
-    const { created, place } = await opts.places.insertIfNew(
-      shopOcpPlaceInput(opts.messageId, opts.place, opts.authorName),
-    );
-    if (created && opts.btcMapPush !== undefined) {
-      await opts.btcMapPush.submit(place);
+    const response = await mapPush.fetchImpl(`${mapPush.baseUrl}/map/places`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${mapPush.token}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(shopOcpPlaceInput(opts.messageId, opts.place, opts.authorName)),
+      signal: AbortSignal.timeout(5_000),
+    });
+    if (!response.ok) {
+      logEvent('ocp.place.failed');
     }
   } catch {
     logEvent('ocp.place.failed');

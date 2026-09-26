@@ -21,7 +21,7 @@ import { parseNostrKek } from '@/lib/nostr/kek';
 import { ensureAccountNostrKey } from '@/lib/nostr/keys';
 import { RecordingPublisher } from '@/lib/nostr/publish';
 import { InMemoryPushStore } from '@/lib/push-store';
-import { InMemoryOcpPlaceStore } from '@/lib/ocp-place-store';
+import type { MapFetch, MapPush } from '@/lib/ocp-place';
 import { removeForumVideo, resolveMediaDir, videoFilePath } from '@/lib/video';
 
 function parsedEvents(warn: ReturnType<typeof vi.spyOn>): Array<Record<string, unknown>> {
@@ -9931,16 +9931,23 @@ describe('PATCH /messages/:id/place', () => {
   });
 });
 
+function recordingMap(): { mapPush: MapPush; calls: string[] } {
+  const calls: string[] = [];
+  const fetchImpl: MapFetch = async (_input, init) => {
+    calls.push(String(init.body));
+    return new Response('{}', { status: 201 });
+  };
+  return { mapPush: { baseUrl: 'http://map.test', token: 'ingest', fetchImpl }, calls };
+}
+
 describe('shop OCP place hook', () => {
   const SHOP_ID = '66666666-6666-4666-8666-666666666666';
   const PIN = { lat: 47.3, lng: 8.5, label: 'Stall' };
 
-  it('records an OCP place and pushes once when a shop note is created with a pin', async () => {
-    const places = new InMemoryOcpPlaceStore();
-    const submit = vi.fn().mockResolvedValue('sent');
+  it('posts a shop pin to the map when a shop note is created with a pin', async () => {
+    const { mapPush, calls } = recordingMap();
     const app = mount(await namedStore('Ada'), new InMemoryMessageStore(), {
-      ocpPlaces: places,
-      btcMapPush: { submit },
+      mapPush,
     });
     const post = await app.request('/messages', {
       method: 'POST',
@@ -9952,9 +9959,8 @@ describe('shop OCP place hook', () => {
     });
     expect(post.status).toBe(200);
     const body = (await post.json()) as { id: string };
-    const listed = await places.list(10);
-    expect(listed).toHaveLength(1);
-    expect(listed[0]).toMatchObject({
+    expect(calls).toHaveLength(1);
+    expect(JSON.parse(calls[0] ?? '{}')).toMatchObject({
       origin: '21gifts',
       externalId: body.id,
       name: 'Stall',
@@ -9963,28 +9969,23 @@ describe('shop OCP place hook', () => {
       category: 'shopping',
       paymentMethods: 'lightning',
     });
-    expect(submit).toHaveBeenCalledTimes(1);
   });
 
-  it('does not record an OCP place for a non-shop pin on create', async () => {
-    const places = new InMemoryOcpPlaceStore();
-    const submit = vi.fn().mockResolvedValue('sent');
+  it('does not post a non-shop pin', async () => {
+    const { mapPush, calls } = recordingMap();
     const post = await mount(await namedStore('Ada'), new InMemoryMessageStore(), {
-      ocpPlaces: places,
-      btcMapPush: { submit },
+      mapPush,
     }).request('/messages', {
       method: 'POST',
       headers: { ...AUTH, 'content-type': 'application/json' },
       body: JSON.stringify({ text: 'plain pin', place: PIN }),
     });
     expect(post.status).toBe(200);
-    expect(await places.list(10)).toEqual([]);
-    expect(submit).not.toHaveBeenCalled();
+    expect(calls).toEqual([]);
   });
 
-  it('records an OCP place on the first PATCH pin and skips replace/clear', async () => {
-    const places = new InMemoryOcpPlaceStore();
-    const submit = vi.fn().mockResolvedValue('sent');
+  it('posts the first PATCH pin and skips replace and clear', async () => {
+    const { mapPush, calls } = recordingMap();
     const messages = new InMemoryMessageStore();
     await messages.create({
       id: SHOP_ID,
@@ -9995,18 +9996,14 @@ describe('shop OCP place hook', () => {
       hasPhoto: false,
       ...unsignedNostrDefaults(),
     });
-    const app = mount(await staffStore('Ada'), messages, {
-      ocpPlaces: places,
-      btcMapPush: { submit },
-    });
+    const app = mount(await staffStore('Ada'), messages, { mapPush });
     const first = await app.request('/messages/' + SHOP_ID + '/place', {
       method: 'PATCH',
       headers: { ...AUTH, 'content-type': 'application/json' },
       body: JSON.stringify({ place: PIN }),
     });
     expect(first.status).toBe(200);
-    expect(await places.list(10)).toHaveLength(1);
-    expect(submit).toHaveBeenCalledTimes(1);
+    expect(calls).toHaveLength(1);
 
     const replace = await app.request('/messages/' + SHOP_ID + '/place', {
       method: 'PATCH',
@@ -10014,8 +10011,7 @@ describe('shop OCP place hook', () => {
       body: JSON.stringify({ place: { lat: 1, lng: 2, label: 'New' } }),
     });
     expect(replace.status).toBe(200);
-    expect(submit).toHaveBeenCalledTimes(1);
-    expect((await places.list(10))[0]?.name).toBe('Stall');
+    expect(calls).toHaveLength(1);
 
     const clear = await app.request('/messages/' + SHOP_ID + '/place', {
       method: 'PATCH',
@@ -10023,15 +10019,16 @@ describe('shop OCP place hook', () => {
       body: JSON.stringify({ place: null }),
     });
     expect(clear.status).toBe(200);
-    expect(submit).toHaveBeenCalledTimes(1);
+    expect(calls).toHaveLength(1);
   });
 
-  it('keeps the forum 200 when OCP insert fails', async () => {
-    const places = {
-      insertIfNew: async () => {
-        throw new Error('boom');
+  it('keeps the forum 200 when the map call throws', async () => {
+    const mapPush: MapPush = {
+      baseUrl: 'http://map.test',
+      token: 'ingest',
+      fetchImpl: async () => {
+        throw new Error('down');
       },
-      list: async () => [],
     };
     const messages = new InMemoryMessageStore();
     await messages.create({
@@ -10043,13 +10040,14 @@ describe('shop OCP place hook', () => {
       hasPhoto: false,
       ...unsignedNostrDefaults(),
     });
-    const res = await mount(await staffStore('Ada'), messages, {
-      ocpPlaces: places,
-    }).request('/messages/' + SHOP_ID + '/place', {
-      method: 'PATCH',
-      headers: { ...AUTH, 'content-type': 'application/json' },
-      body: JSON.stringify({ place: PIN }),
-    });
+    const res = await mount(await staffStore('Ada'), messages, { mapPush }).request(
+      '/messages/' + SHOP_ID + '/place',
+      {
+        method: 'PATCH',
+        headers: { ...AUTH, 'content-type': 'application/json' },
+        body: JSON.stringify({ place: PIN }),
+      },
+    );
     expect(res.status).toBe(200);
     expect(parsedEvents(warn).some((e) => e['event'] === 'ocp.place.failed')).toBe(true);
   });

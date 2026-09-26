@@ -17,7 +17,7 @@ import { bindGoalRateDay, giftsStatsRoutes } from '@/routes/stats';
 import { giftsRoutes } from '@/routes/gifts';
 import { invoiceRoutes } from '@/routes/invoices';
 import { messagesRoutes } from '@/routes/messages';
-import { ocpPlacesRoutes } from '@/routes/ocp-places';
+import { resolveMapPush, type MapPush } from '@/lib/ocp-place';
 import { translateRoutes } from '@/routes/translate';
 import { InMemoryTranslationStore, type TranslationStore } from '@/lib/translation-store';
 import { wellKnownRoutes } from '@/routes/well-known';
@@ -57,8 +57,7 @@ import { InMemoryMessageStore } from '@/lib/message-store';
 import type { MessageStore } from '@/lib/message-store';
 import { InMemoryNotificationStore } from '@/lib/notification-store';
 import type { NotificationStore } from '@/lib/notification-store';
-import { InMemoryOcpPlaceStore, type OcpPlaceStore } from '@/lib/ocp-place-store';
-import type { BtcMapPush } from '@/lib/btcmap-push';
+
 import { resolveVapidConfig } from '@/lib/push-config';
 import { InMemoryPushStore, type PushStore } from '@/lib/push-store';
 import { InMemoryTrustStore, type TrustStore } from '@/lib/trust-store';
@@ -191,20 +190,10 @@ export interface AppDeps {
    */
   messageStore?: MessageStore;
   /**
-   * OpenCryptoPay places (default: empty {@link InMemoryOcpPlaceStore}).
-   * Boot injects {@link PostgresOcpPlaceStore} when `DATABASE_URL` is set.
+   * Optional push of a first shop pin to `POST /map/places`. Default:
+   * {@link resolveMapPush} on `env`. Unset URL or token → nothing is sent.
    */
-  ocpPlaces?: OcpPlaceStore;
-  /**
-   * Optional BTC Map place submission. Omitted or undefined → new places are
-   * stored with `btcmap: "skipped"`; the forum path still succeeds.
-   */
-  btcMapPush?: BtcMapPush;
-  /**
-   * Shared secret for `POST /ocp/places` (default:
-   * `process.env.OCP_PLACE_INGEST_TOKEN`). Unset or blank → ingest returns 503.
-   */
-  ocpPlaceIngestToken?: string;
+  mapPush?: MapPush;
   /** Optional AES-256 KEK for custodial nsec (memory boots may omit). */
   nostrKek?: Uint8Array;
   /**
@@ -295,9 +284,7 @@ function debugList(store: object, limit: number): Promise<unknown[]> {
  * @param deps - Optional overrides for the auth store, clock, invoice payer,
  *   LNURL-pay fetch, LN-Address cache, brand reader, debugToken, gift store,
  *   gift recorder, BTC-USD rates, USD-fiat rates, message store,
- *   ocpPlaces (optional; default InMemoryOcpPlaceStore), btcMapPush
- *   (optional), ocpPlaceIngestToken (optional; default
- *   `OCP_PLACE_INGEST_TOKEN`),
+ *   mapPush (optional; default resolveMapPush on env),
  *   translationStore (optional; default InMemoryTranslationStore; SQL boot
  *   injects PostgresTranslationStore), contact store,
  *   conversation store, notification store, push store, trust store,
@@ -322,11 +309,9 @@ export function createApp(deps: AppDeps = {}): Hono {
   const btcUsdRates = deps.btcUsdRates ?? new InMemoryBtcUsdStore();
   const fiatRates = deps.fiatRates ?? new InMemoryFiatStore();
   const messageStore = deps.messageStore ?? new InMemoryMessageStore();
-  const ocpPlaces = deps.ocpPlaces ?? new InMemoryOcpPlaceStore();
-  const btcMapPush = deps.btcMapPush;
-  const ocpPlaceIngestToken = deps.ocpPlaceIngestToken ?? process.env['OCP_PLACE_INGEST_TOKEN'];
-  const translationStore = deps.translationStore ?? new InMemoryTranslationStore();
   const env = deps.env ?? process.env;
+  const mapPush = deps.mapPush ?? resolveMapPush(env, fetchImpl);
+  const translationStore = deps.translationStore ?? new InMemoryTranslationStore();
   if (messageStore instanceof InMemoryMessageStore) {
     messageStore.useProfileNoteIds(async () => {
       const ids = new Set<string>();
@@ -454,14 +439,6 @@ export function createApp(deps: AppDeps = {}): Hono {
   );
   app.route('/links', linksRoutes({ messages: messageStore, accounts: store }));
   app.route(
-    '/ocp',
-    ocpPlacesRoutes({
-      places: ocpPlaces,
-      ...(ocpPlaceIngestToken === undefined ? {} : { ingestToken: ocpPlaceIngestToken }),
-      ...(btcMapPush === undefined ? {} : { btcMapPush }),
-    }),
-  );
-  app.route(
     '/view',
     viewRoutes({ store, messageStore, giftStore, rates: btcUsdRates, fiatRates, now }),
   );
@@ -572,7 +549,7 @@ export function createApp(deps: AppDeps = {}): Hono {
       env,
       translationStore,
       fundingStore,
-      ocpPlaces,
+      ...(mapPush === undefined ? {} : { mapPush }),
       goalRateDay: bindGoalRateDay({
         store: giftStore,
         rates: btcUsdRates,
@@ -582,7 +559,6 @@ export function createApp(deps: AppDeps = {}): Hono {
       ...(nostrKek === undefined ? {} : { nostrKek }),
       ...(deps.nostrPublisher === undefined ? {} : { nostrPublisher: deps.nostrPublisher }),
       ...(spendPing === undefined ? {} : { spendPing }),
-      ...(btcMapPush === undefined ? {} : { btcMapPush }),
       postLimiter,
     }),
   );

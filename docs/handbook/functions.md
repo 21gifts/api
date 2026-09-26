@@ -2755,7 +2755,7 @@ Builds the operator-only external-pubkey inspection route.
 - **Purpose:** Validate a JSON body for one OpenCryptoPay place. Coordinates are finite and in range, then rounded to six decimals. `paymentMethods` that is not an onchain/lightning/nfc list becomes null instead of an error.
 - **Inputs:** Unknown JSON. Required fields are `origin`, `externalId`, `name`, `lat`, `lon`, and `category`.
 - **Returns / side effects:** `{ ok: true, value }` or `{ ok: false, error }` with a fixed English message. No I/O.
-- **Used by:** `ocpPlacesRoutes` on `POST /ocp/places`.
+- **Used by:** Nothing on the request path. `shopOcpPlaceInput` follows the same field rules. The OpenCryptoPay map API validates the POST.
 
 ## Function: shopOcpPlaceName
 
@@ -2773,59 +2773,17 @@ Builds the operator-only external-pubkey inspection route.
 
 ## Function: recordFirstShopOcpPlace
 
-- **Purpose:** Store a shop place the first time a top-level `#21GiftsShop` note receives a pin, then push it to BTC Map once. Replies, notes that already had a pin, and notes without the shop tag do nothing.
-- **Inputs:** Place store, optional BTC Map push, message id, text, parent id, place, author name, and whether a pin already existed.
-- **Returns / side effects:** Resolves after insert and an optional push. Store and push failures log `ocp.place.failed` and do not throw. A duplicate insert does not push.
+- **Purpose:** POST a first shop pin to the OpenCryptoPay map at `/map/places`. Replies, notes that already had a pin, notes without the shop tag, and a missing map push do nothing. BTC Map is not called here.
+- **Inputs:** Optional map push, message id, text, parent id, place, author name, whether a pin already existed, and the hashtag check.
+- **Returns / side effects:** Resolves after the POST. A non-2xx answer or a thrown fetch logs `ocp.place.failed` and does not throw. Timeout is 5000 ms.
 - **Used by:** `messagesRoutes` after a new shop post with a pin and after the first moderator place patch.
 
-## Function: migrateOcpPlaceSchema
+## Function: resolveMapPush
 
-- **Purpose:** Create `ocp_place` if it is missing. The unique key is `(origin, external_id)`.
-- **Inputs:** A parameter-bound SQL client.
-- **Returns / side effects:** Resolves when the one statement has run. Idempotent.
-- **Used by:** `openBootStores` immediately after `migrateMessageSchema`.
-
-## Function: InMemoryOcpPlaceStore
-
-- **Purpose:** Process-local OpenCryptoPay place store for tests and a boot without `DATABASE_URL`.
-- **Inputs:** `insertIfNew` takes a validated place. `list` takes a positive limit.
-- **Returns / side effects:** `insertIfNew` returns the existing row unchanged when the origin and external id already exist. `list` is newest first.
-- **Used by:** `createApp` when no store is injected, and `openBootStores` without SQL.
-
-## Function: PostgresOcpPlaceStore
-
-- **Purpose:** Durable OpenCryptoPay place store. Insert uses `ON CONFLICT DO NOTHING` so a repeat does not overwrite the first row.
-- **Inputs:** Constructor takes a shared boot `SqlClient`. `insertIfNew` and `list` match the store interface.
-- **Returns / side effects:** Parameter-bound SQL. A conflict reads the existing row and reports `created: false`.
-- **Used by:** `openBootStores` when `DATABASE_URL` is set.
-
-## Function: btcMapSubmissionBody
-
-- **Purpose:** Build the JSON body for `POST /v4/place-submissions`. `extra_fields.source` is the place origin. `payment_methods` is included only when the place has them.
-- **Inputs:** A stored OpenCryptoPay place.
-- **Returns / side effects:** `{ lat, lon, category, name, extra_fields }`. No I/O.
-- **Used by:** `HttpBtcMapPush.submit`.
-
-## Function: HttpBtcMapPush
-
-- **Purpose:** POST one new place to the BTC Map user API. Never throws and never logs the bearer token.
-- **Inputs:** Constructor takes the submit URL, bearer token, and fetch. `submit` takes a stored place.
-- **Returns / side effects:** `'sent'` on 2xx, otherwise `'failed'`. Logs `btcmap.push.ok` or `btcmap.push.failed` with the origin only. Timeout is 5000 ms.
-- **Used by:** `resolveBtcMapPush` and `ocpPlacesRoutes` after a new insert.
-
-## Function: resolveBtcMapPush
-
-- **Purpose:** Build an `HttpBtcMapPush` from the environment. A missing or blank `BTCMAP_ACCESS_TOKEN` means no push and the process still boots.
-- **Inputs:** Environment slice and fetch. Optional `BTCMAP_SUBMIT_URL`; otherwise `https://api.btcmap.org/v4/place-submissions`.
-- **Returns / side effects:** The push collaborator, or `undefined`. Trims the token and strips trailing slashes from a custom URL.
-- **Used by:** `src/index.ts` when constructing `createApp`.
-
-## Function: ocpPlacesRoutes
-
-- **Purpose:** `GET /ocp/places` is public. `POST /ocp/places` requires the ingest bearer and creates a place at most once.
-- **Inputs:** Place store, optional BTC Map push, and optional ingest token.
-- **Returns / side effects:** GET returns `{ places }` newest first. POST returns 201 `{ created: true, id, btcmap }` or 200 `{ created: false, id, btcmap: "skipped" }`. Unconfigured ingest is 503. A bad bearer is 401.
-- **Used by:** `createApp`, mounted at `/ocp`.
+- **Purpose:** Build the map push from `OCP_MAP_BASE_URL` and `OCP_PLACE_INGEST_TOKEN`. A blank URL or token means no push and the process still boots.
+- **Inputs:** Environment slice and fetch.
+- **Returns / side effects:** `{ baseUrl, token, fetchImpl }` or `undefined`. Trims both values and strips trailing slashes from the URL.
+- **Used by:** `createApp` when `mapPush` is not injected.
 
 ## Function: loadLatestGoalRateDay
 
