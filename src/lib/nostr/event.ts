@@ -29,6 +29,12 @@ export const KIND1_CONTENT_HASHTAGS: readonly ['#bitcoin', '#21gifts'] = [
 /** Public PNG used as every kind:0 `picture` so Damus shows 21.gifts branding. */
 export const KIND0_PICTURE_URL = 'https://21.gifts/apple-touch-icon.png';
 
+/** Wide public image used as every kind:0 `banner` (1200×630). */
+export const KIND0_BANNER_URL = 'https://21.gifts/og.png';
+
+const NOTE_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const BLURHASH_RE = /^[0-9A-Za-z#$%*+,\-.:;=?@[\]^_{|}~]{6,}$/;
+
 /** Optional NIP-92 media (image or video) attached to a kind:1. */
 export interface Kind1Photo {
   /** Absolute HTTPS URL clients fetch. */
@@ -45,6 +51,8 @@ export interface Kind1Photo {
   hash?: string;
   /** Optional whole seconds for `imeta` `duration` (1–86400). */
   durationSeconds?: number;
+  /** Optional BlurHash placeholder for `imeta`. */
+  blurhash?: string;
 }
 
 /** NIP-10 reply pointers for a forum reply kind:1 (not used on top-level notes). */
@@ -93,6 +101,21 @@ export function forumPhotoUrl(
   mime: Kind1Photo['mime'] = 'image/jpeg',
 ): string {
   return `${apiBase.replace(/\/$/, '')}/messages/${messageId}/photo.${forumPhotoExt(mime)}`;
+}
+
+/**
+ * Public page for one forum message, matching the app's `/l/<8 hex>` link.
+ *
+ * @param siteOrigin - `PUBLIC_BASE_URL` without caring about a trailing slash.
+ * @param messageId - Message id. Only a UUID is shortened.
+ * @returns `https://21.gifts/l/…`, or `null` when the origin or id is unusable.
+ */
+export function notePageUrl(siteOrigin: string, messageId: string): string | null {
+  const origin = siteOrigin.trim().replace(/\/$/, '');
+  if (origin === '' || !NOTE_ID_RE.test(messageId)) {
+    return null;
+  }
+  return `${origin}/l/${messageId.slice(0, 8).toLowerCase()}`;
 }
 
 /**
@@ -216,6 +239,12 @@ const IMETA_HASH_RE = /^[0-9a-f]{64}$/;
  * @param imeta - Tag row that already has `url` and `m`.
  * @param photo - Media metadata. Invalid hash or duration is omitted.
  */
+function appendBlurhash(imeta: string[], photo: Kind1Photo): void {
+  if (photo.blurhash !== undefined && BLURHASH_RE.test(photo.blurhash)) {
+    imeta.push(`blurhash ${photo.blurhash}`);
+  }
+}
+
 function appendImetaHashAndDuration(imeta: string[], photo: Kind1Photo): void {
   if (photo.hash !== undefined && IMETA_HASH_RE.test(photo.hash)) {
     imeta.push(`x ${photo.hash}`);
@@ -256,6 +285,7 @@ export interface UnsignedKind1 {
  * @param replyTo - Optional NIP-10 parent pointers (replies only).
  * @param location - Optional account location; null/omitted/unusable → same as four-arg HEAD.
  * @param extraPhotos - Optional extra stills (indices 1..n). Omit or empty for N=1 bit-identical events.
+ * @param pageUrl - Optional `https://…/l/<8 hex>` for this message. Omitted or null keeps the homepage `r` tag and does not add a link line.
  * @returns Unsigned event fields for `finalizeEvent`.
  */
 export function buildKind1Event(
@@ -265,6 +295,7 @@ export function buildKind1Event(
   replyTo?: Kind1ReplyTo,
   location?: string | null,
   extraPhotos?: readonly Kind1Photo[],
+  pageUrl?: string | null,
 ): UnsignedKind1 {
   const name = locationHashtagName(location ?? null);
   const extras = name === null ? [] : [name];
@@ -273,6 +304,7 @@ export function buildKind1Event(
   if (photo !== undefined) {
     body = content === '' ? photo.url : `${content}\n${photo.url}`;
     const imeta = ['imeta', `url ${photo.url}`, `m ${photo.mime}`];
+    appendBlurhash(imeta, photo);
     if (photo.dim !== undefined) {
       imeta.push(`dim ${photo.dim}`);
     }
@@ -289,6 +321,7 @@ export function buildKind1Event(
     for (const extra of extraPhotos) {
       body = body === '' ? extra.url : `${body}\n${extra.url}`;
       const imeta = ['imeta', `url ${extra.url}`, `m ${extra.mime}`];
+      appendBlurhash(imeta, extra);
       if (extra.dim !== undefined) {
         imeta.push(`dim ${extra.dim}`);
       }
@@ -303,6 +336,16 @@ export function buildKind1Event(
     tags.push(['e', replyTo.noteEventId, replyTo.spaceRelay, 'root']);
     tags.push(['e', replyTo.noteEventId, replyTo.spaceRelay, 'reply']);
     tags.push(['p', replyTo.noteAuthorPubkey]);
+  }
+  if (pageUrl !== undefined && pageUrl !== null && pageUrl !== '') {
+    for (const tag of tags) {
+      if (tag[0] === 'r' && tag[1] === 'https://21.gifts') {
+        tag[1] = pageUrl;
+      }
+    }
+    if (!body.includes(pageUrl)) {
+      body = body === '' ? pageUrl : `${body}\n${pageUrl}`;
+    }
   }
   body = kind1ContentWithHashtags(body, extras);
   return {
@@ -353,6 +396,8 @@ export interface Kind0ProfileContent {
   display_name: string;
   /** Fixed site URL. */
   website: string;
+  /** Wide banner so Damus does not show an empty header. */
+  banner: string;
   /** 21.gifts icon so Damus shows a branded avatar. */
   picture: string;
   /** LUD-16 when the account has a linked address. */
@@ -367,7 +412,7 @@ export interface Kind0ProfileContent {
  * Build kind:0 `content` JSON (no extra whitespace).
  *
  * Omit `lud16` when the account has no Lightning Address. Always set `picture`
- * to {@link KIND0_PICTURE_URL}. `about` defaults to `21.gifts` and is the
+ * to {@link KIND0_PICTURE_URL} and `banner` to {@link KIND0_BANNER_URL}. `about` defaults to `21.gifts` and is the
  * profile-note text when the worker passes it. Set `nip05` when a public host
  * is available. Never set `bot`.
  *
@@ -387,6 +432,7 @@ export function buildKind0Content(
     name,
     display_name: name,
     website: 'https://21.gifts',
+    banner: KIND0_BANNER_URL,
     picture: KIND0_PICTURE_URL,
     about,
   };

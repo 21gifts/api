@@ -1993,6 +1993,34 @@
 - **Returns / side effects:** content with missing hashtags appended.
 - **Used by:** `buildKind1Event`; `listSignedMissingHashtags` (in-memory helper).
 
+## Function: notePageUrl
+
+- **Purpose:** Public `/l/<8 hex>` URL for one forum message, same shape as the app copy link. Empty origin or a non-UUID id returns null so the worker leaves the homepage reference.
+- **Inputs:** site origin (`PUBLIC_BASE_URL`), message id.
+- **Returns / side effects:** Absolute URL, or null. No I/O.
+- **Used by:** Worker sign path.
+
+## Function: imageDisplaySize
+
+- **Purpose:** Read `WIDTHxHEIGHT` from a PNG, JPEG, or WebP header. Video MIME and truncated or oversized images return null.
+- **Inputs:** image bytes, MIME.
+- **Returns / side effects:** `dim` string or null. No I/O.
+- **Used by:** `stillLook`.
+
+## Function: imageBlurhash
+
+- **Purpose:** BlurHash for a JPEG or PNG, sampled to at most 32 px on the long side. WebP, video, and bytes that do not decode return null.
+- **Inputs:** image bytes, MIME.
+- **Returns / side effects:** BlurHash string or null. No I/O.
+- **Used by:** `stillLook`.
+
+## Function: stillLook
+
+- **Purpose:** Optional `dim` and `blurhash` for one still. Empty object when the bytes do not decode. Does not throw.
+- **Inputs:** image bytes, MIME.
+- **Returns / side effects:** Object with the fields that decoded.
+- **Used by:** Worker sign path.
+
 ## Function: forumPhotoUrl
 
 - **Purpose:** Absolute `GET /messages/:id/photo.jpg` (or `.png` / `.webp`) URL for kind:1 content and `imeta`. The extension matches the stored MIME so Damus treats the URL as an image, not a website.
@@ -2009,16 +2037,16 @@
 
 ## Function: buildKind1Event
 
-- **Purpose:** Unsigned kind:1 for a forum line (top-level or NIP-10 reply). Optional media (`Kind1Photo`: image or video MIME) appends the public URL to content and a NIP-92 `imeta` tag (`url`, `m`, optional `dim`, optional `size`, optional `image` from `posterUrl`). Always ensures Damus-visible `#bitcoin` / `#21gifts` via `kind1ContentWithHashtags`, appending only missing tokens (forum row `text` is not modified). Optional fifth `location?: string | null`: when `locationHashtagName` is non-null, extra content token and `t` tag. Optional sixth `extraPhotos?: readonly Kind1Photo[]`: empty/omitted extras are bit-identical to the five-arg form; non-empty extras append extra URL lines after the first photo URL plus one `imeta` per extra (`url`, `m`, optional dim/size; no poster). Profile notes are skipped by the worker, not this function. When `replyTo` is set, adds NIP-10 `e` (root + reply) and `p` tags after the frozen tags (and optional `imeta`); top-level notes never get `e`/`p`/`q`. Each `imeta` may also include `x` (64 lowercase hex hash) and `duration` (integer seconds from 1 to 86400).
-- **Inputs:** content, unix created_at, optional `{ url, mime, posterUrl?, dim?, size?, hash?, durationSeconds? }` (`Kind1Photo`), optional `replyTo?: Kind1ReplyTo` (`noteEventId`, `spaceRelay`, `noteAuthorPubkey`), optional fifth `location?: string | null`, optional sixth `extraPhotos?: readonly Kind1Photo[]`.
+- **Purpose:** Unsigned kind:1 for a forum line (top-level or NIP-10 reply). Optional media (`Kind1Photo`: image or video MIME) appends the public URL to content and a NIP-92 `imeta` tag (`url`, `m`, optional `blurhash`, optional `dim`, optional `size`, optional `image` from `posterUrl`). Always ensures Damus-visible `#bitcoin` / `#21gifts` via `kind1ContentWithHashtags`, appending only missing tokens (forum row `text` is not modified). Optional fifth `location?: string | null`: when `locationHashtagName` is non-null, extra content token and `t` tag. Optional sixth `extraPhotos?: readonly Kind1Photo[]`: empty/omitted extras are bit-identical to the five-arg form; non-empty extras append extra URL lines after the first photo URL plus one `imeta` per extra (`url`, `m`, optional blurhash/dim/size; no poster). Optional seventh `pageUrl`: when a non-empty string, the homepage `r` tag becomes that URL and the URL is appended to the content unless it is already there. Null, omitted, or empty keeps the homepage `r` tag. Profile notes are skipped by the worker, not this function. When `replyTo` is set, adds NIP-10 `e` (root + reply) and `p` tags after the frozen tags (and optional `imeta`); top-level notes never get `e`/`p`/`q`. Each `imeta` may also include `x` (64 lowercase hex hash) and `duration` (integer seconds from 1 to 86400). A `blurhash` value that is not BlurHash text is omitted.
+- **Inputs:** content, unix created_at, optional `{ url, mime, posterUrl?, dim?, size?, hash?, durationSeconds?, blurhash? }` (`Kind1Photo`), optional `replyTo?: Kind1ReplyTo` (`noteEventId`, `spaceRelay`, `noteAuthorPubkey`), optional fifth `location?: string | null`, optional sixth `extraPhotos?: readonly Kind1Photo[]`, optional seventh `pageUrl?: string | null`.
 - **Returns / side effects:** Unsigned fields (`kind`, `content`, `tags`, `created_at`).
 - **Used by:** Worker sign path.
 
 ## Function: buildKind0Content
 
-- **Purpose:** Kind:0 JSON without extra whitespace (`name`, `display_name`, `website`, `picture`, `about`, optional `lud16`, optional `nip05`).
+- **Purpose:** Kind:0 JSON without extra whitespace (`name`, `display_name`, `website`, `banner`, `picture`, `about`, optional `lud16`, optional `nip05`).
 - **Inputs:** name, lightningAddress or null, optional nip05 or null, optional `about` (default `'21.gifts'`; worker passes profile-note text when present).
-- **Returns / side effects:** JSON string; `picture` is always the 21.gifts icon; `about` is the fourth argument; `lud16` only when address set; `nip05` only when a public identifier is passed.
+- **Returns / side effects:** JSON string; `picture` is always the 21.gifts icon; `banner` is always `https://21.gifts/og.png`; `about` is the fourth argument; `lud16` only when address set; `nip05` only when a public identifier is passed.
 - **Used by:** `buildKind0Event`, worker `publishProfiles`.
 
 ## Function: buildKind0Event
