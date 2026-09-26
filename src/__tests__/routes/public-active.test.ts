@@ -305,6 +305,48 @@ describe('public active window', () => {
     expect((await res.json()) as { mentions?: unknown }).not.toHaveProperty('mentions');
   });
 
+  it('continues past a missing video on a short public page', async () => {
+    const auth = await poster();
+    const store = new InMemoryMessageStore([
+      {
+        id: id(40),
+        accountId: null,
+        name: 'Visitor',
+        text: 'clip',
+        createdAt: new Date(5_000),
+        hasPhoto: false,
+        ...unsignedNostrDefaults(),
+        hasVideo: true,
+        videoContentType: 'video/mp4',
+        authorPubkey: 'cd'.repeat(32),
+        sats: 1,
+      },
+    ]);
+    await store.create({
+      id: id(41),
+      accountId: 'ada',
+      name: 'Ada',
+      text: 'after',
+      createdAt: new Date(4_000),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+      sats: 1,
+    });
+    const app = mount(auth, store);
+    const first = await app.request('/messages?mode=active&limit=1');
+    expect(first.status).toBe(200);
+    const opened = (await first.json()) as { messages: unknown[]; nextCursor?: string };
+    expect(opened.messages).toEqual([]);
+    expect(opened.nextCursor).toEqual(expect.any(String));
+    const second = await app.request(
+      `/messages?mode=active&limit=1&cursor=${opened.nextCursor ?? ''}`,
+    );
+    expect(second.status).toBe(200);
+    expect((await second.json()) as { messages: Array<{ id: string }> }).toMatchObject({
+      messages: [{ id: id(41) }],
+    });
+  });
+
   it('pages a short public list, an external pin, and the odd cursors', async () => {
     const auth = await poster();
     const store = new InMemoryMessageStore([

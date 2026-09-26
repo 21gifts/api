@@ -1116,8 +1116,10 @@ const translateBody = z.object({
 /**
  * Unsigned `GET /messages` window: `mode=active` only, first 200 raw rows.
  *
- * A cursor that is not inside that window, or that points at the 200th row,
- * is 401. Anything other than `mode=active` without a hashtag is 401.
+ * A cursor that points at the 200th row is 401. A cursor whose id is gone
+ * continues at the first row strictly older than its timestamp, or is 401
+ * when nothing in the window is older. Anything other than `mode=active`
+ * without a hashtag is 401.
  * Malformed limit or cursor stays 400.
  *
  * @param deps - Route collaborators.
@@ -1143,12 +1145,18 @@ async function servePublicActiveList(deps: MessagesRouteDeps, c: Context): Promi
   }
   const cursorQuery = c.req.query('cursor');
   let cursorId: string | null = null;
+  let cursorAtMs: number | null = null;
   if (cursorQuery !== undefined) {
     const decoded = decodeMessageFeedCursor(cursorQuery);
     if (decoded === null || decoded.k !== 't' || !MESSAGE_ID_RE.test(decoded.i)) {
       return c.json({ error: 'Invalid cursor' }, 400);
     }
+    const parsed = Date.parse(decoded.c);
+    if (!Number.isFinite(parsed)) {
+      return c.json({ error: 'Invalid cursor' }, 400);
+    }
     cursorId = decoded.i;
+    cursorAtMs = parsed;
   }
   try {
     const staffAccountIds = new Set(await deps.authStore.listStaffAccountIds());
@@ -1163,10 +1171,20 @@ async function servePublicActiveList(deps: MessagesRouteDeps, c: Context): Promi
     let start = 0;
     if (cursorId !== null) {
       const index = window.findIndex((row) => row.id === cursorId);
-      if (index < 0 || index === MESSAGE_LIST_LIMIT - 1) {
+      if (index === MESSAGE_LIST_LIMIT - 1) {
         return c.json({ error: 'Unauthorized' }, 401);
       }
-      start = index + 1;
+      if (index >= 0) {
+        start = index + 1;
+      } else {
+        const older = window.findIndex(
+          (row) => row.createdAt.getTime() < (cursorAtMs ?? Number.POSITIVE_INFINITY),
+        );
+        if (older < 0) {
+          return c.json({ error: 'Unauthorized' }, 401);
+        }
+        start = older;
+      }
     }
     const page = window.slice(start, start + limit);
     const maybeKept = await Promise.all(
@@ -1190,17 +1208,18 @@ async function servePublicActiveList(deps: MessagesRouteDeps, c: Context): Promi
       return serializeMessage(row, payable, role, row.replyCount);
     });
     const last = page[page.length - 1];
+    const anchor = kept.length > 0 ? kept[kept.length - 1] : last;
     let nextCursor: string | undefined;
-    if (last !== undefined) {
-      const lastIndex = window.findIndex((row) => row.id === last.id);
+    if (anchor !== undefined) {
+      const lastIndex = window.findIndex((row) => row.id === anchor.id);
       const pageFull = page.length === limit;
       const reachesEnd = lastIndex === window.length - 1;
       const includesBoundary = lastIndex === MESSAGE_LIST_LIMIT - 1;
       if ((pageFull && !reachesEnd) || (includesBoundary && more)) {
         nextCursor = encodeMessageFeedCursor({
           k: 't',
-          c: last.createdAt.toISOString(),
-          i: last.id,
+          c: anchor.createdAt.toISOString(),
+          i: anchor.id,
         });
       }
     }
