@@ -1,0 +1,369 @@
+import { describe, expect, it, vi } from 'vitest';
+import { Hono } from 'hono';
+import { InMemoryAuthStore } from '@/lib/auth/store';
+import { unsignedNostrDefaults } from '@/lib/message';
+import { InMemoryMessageStore } from '@/lib/message-store';
+import { ensureAccountNostrKey } from '@/lib/nostr/keys';
+import { parseNostrKek } from '@/lib/nostr/kek';
+import { InvoiceRateLimiter, PostRateLimiter } from '@/lib/nostr/rate-limit';
+import { messagesRoutes } from '@/routes/messages';
+
+const now = (): number => Date.UTC(2026, 8, 28, 12);
+const AUTH = { authorization: 'Bearer tok' };
+const CREDIT = '55555555-5555-4555-8555-555555555555';
+const GIVER = '11111111-1111-4111-8111-111111111111';
+
+async function readyCredit(options?: {
+  rules?: boolean;
+  eventId?: string | null;
+  giverAddress?: string | null;
+  giverKey?: boolean;
+  kek?: boolean;
+  fundedAt?: Date;
+  goalCurrency?: 'USD';
+  goalAmount?: string | null;
+  rate?: boolean;
+  authorId?: string;
+}): Promise<{
+  app: Hono;
+  messages: InMemoryMessageStore;
+  auth: InMemoryAuthStore;
+}> {
+  const kek = parseNostrKek('11'.repeat(32));
+  const authorId = options?.authorId ?? 'acc';
+  const auth = new InMemoryAuthStore();
+  await auth.createAccount({
+    id: authorId,
+    linkingKey: `02${'ab'.repeat(32)}`,
+    role: 'verified',
+    name: 'Ada',
+    lightningAddress: 'ada@walletofsatoshi.com',
+    lightningAddressVerified: true,
+    forumLawsDismissed: false,
+    location: null,
+    viewKey: 'a'.repeat(64),
+    createdAt: 1,
+    rulesAgreedAt: options?.rules === false ? null : now(),
+    username: 'ada',
+  });
+  await auth.createAccount({
+    id: GIVER,
+    linkingKey: `02${'cd'.repeat(32)}`,
+    role: 'verified',
+    name: 'Bea',
+    lightningAddress:
+      options?.giverAddress === undefined ? 'bea@walletofsatoshi.com' : options.giverAddress,
+    lightningAddressVerified: true,
+    forumLawsDismissed: false,
+    location: null,
+    viewKey: 'b'.repeat(64),
+    createdAt: 1,
+    rulesAgreedAt: now(),
+    username: 'bea',
+  });
+  await auth.createSession({ token: authorId, accountId: authorId, createdAt: now() });
+  await ensureAccountNostrKey(auth, authorId, kek);
+  if (options?.giverKey !== false) {
+    await ensureAccountNostrKey(auth, GIVER, kek);
+  }
+  const messages = new InMemoryMessageStore();
+  await messages.create({
+    id: CREDIT,
+    accountId: authorId,
+    name: 'Ada',
+    text: 'need a ticket',
+    createdAt: new Date(now()),
+    hasPhoto: false,
+    ...unsignedNostrDefaults(),
+    eventId: options?.eventId === undefined ? 'ee'.repeat(32) : options.eventId,
+    sats: 21,
+    goalSats: 21,
+    goalRepayable: true,
+    goalTermDays: 1,
+    goalFundedAt: options?.fundedAt ?? new Date(Date.UTC(2026, 8, 26, 12)),
+    ...(options?.goalCurrency === undefined
+      ? {}
+      : {
+          goalCurrency: options.goalCurrency,
+          goalAmount: options.goalAmount === undefined ? '0.21' : options.goalAmount,
+        }),
+  });
+  await messages.recordZapReceipt('r1', CREDIT, 21, null);
+  await messages.updateZapReceiptGift('r1', { payerAccountId: GIVER });
+  const fetchImpl = async (input: string | URL | Request): Promise<Response> => {
+    const url = String(input);
+    if (url.includes('/.well-known/lnurlp/')) {
+      return new Response(
+        JSON.stringify({
+          callback: 'https://walletofsatoshi.com/lnurlp/callback',
+          minSendable: 1000,
+          maxSendable: 10_000_000_000,
+          allowsNostr: true,
+          nostrPubkey: 'aa'.repeat(32),
+        }),
+        { headers: { 'content-type': 'application/json' } },
+      );
+    }
+    return new Response(JSON.stringify({ pr: 'lnbc21n1repay' }), {
+      headers: { 'content-type': 'application/json' },
+    });
+  };
+  const app = new Hono().route(
+    '/messages',
+    messagesRoutes({
+      store: messages,
+      authStore: auth,
+      now,
+      ...(options?.kek === false ? {} : { nostrKek: kek }),
+      ...(options?.rate
+        ? {
+            goalRateDay: async () => ({
+              sats: 100_000_000,
+              usd: '100000.00',
+              chf: null,
+              eur: null,
+              php: null,
+            }),
+          }
+        : {}),
+      fetchImpl,
+      postLimiter: new PostRateLimiter(),
+      invoiceLimiter: new InvoiceRateLimiter(),
+    }),
+  );
+  return { app, messages, auth };
+}
+
+describe('credit repayment', () => {
+  it('rejects a missing session', async () => {
+    const { app } = await readyCredit();
+    const res = await app.request(`/messages/${CREDIT}/repayment`);
+    expect(res.status).toBe(401);
+    const post = await app.request(`/messages/${CREDIT}/repayment`, { method: 'POST' });
+    expect(post.status).toBe(401);
+  });
+
+  it('shows the due share and invoices the giver Wallet of Satoshi address', async () => {
+    const bolt11 = await import('@/lib/bolt11');
+    const nip57 = vi.spyOn(bolt11, 'isNip57Invoice').mockReturnValue(true);
+    try {
+      const { app, messages } = await readyCredit();
+      const status = await app.request(`/messages/${CREDIT}/repayment`, {
+        headers: { authorization: 'Bearer acc' },
+      });
+      expect(status.status).toBe(200);
+      const body = (await status.json()) as { daysDue: number; next: { sats: number } };
+      expect(body.daysDue).toBeGreaterThan(0);
+      expect(body.next.sats).toBe(21);
+      const pay = await app.request(`/messages/${CREDIT}/repayment`, {
+        method: 'POST',
+        headers: { authorization: 'Bearer acc' },
+      });
+      expect(pay.status).toBe(200);
+      expect(await pay.json()).toEqual({ pr: 'lnbc21n1repay', amountSats: 21 });
+      const attempt = (await messages.listInvoiceAttempts(5))[0];
+      expect(attempt?.lightningAddress).toBe('bea@walletofsatoshi.com');
+      expect(attempt?.description).toBe(`repay:0:${GIVER}`);
+      const again = await app.request(`/messages/${CREDIT}/repayment`, {
+        method: 'POST',
+        headers: { authorization: 'Bearer acc' },
+      });
+      expect(again.status).toBe(429);
+    } finally {
+      nip57.mockRestore();
+    }
+  });
+
+  it('refuses an author who has not agreed to the rules', async () => {
+    const { app } = await readyCredit({ rules: false, authorId: 'acc-rules' });
+    const res = await app.request(`/messages/${CREDIT}/repayment`, {
+      method: 'POST',
+      headers: { authorization: 'Bearer acc-rules' },
+    });
+    expect(res.status).toBe(409);
+  });
+
+  it('says nothing is due on the funding day', async () => {
+    const { app } = await readyCredit({
+      authorId: 'acc-today',
+      fundedAt: new Date(now()),
+    });
+    const res = await app.request(`/messages/${CREDIT}/repayment`, {
+      method: 'POST',
+      headers: { authorization: 'Bearer acc-today' },
+    });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: 'Nothing is due' });
+    const status = await app.request(`/messages/${CREDIT}/repayment`, {
+      headers: { authorization: 'Bearer acc-today' },
+    });
+    expect(status.status).toBe(200);
+    expect((await status.json()) as { next: null }).toMatchObject({ next: null });
+  });
+
+  it('refuses a note that is not signed yet', async () => {
+    const { app } = await readyCredit({ authorId: 'acc-unsigned', eventId: null });
+    const res = await app.request(`/messages/${CREDIT}/repayment`, {
+      method: 'POST',
+      headers: { authorization: 'Bearer acc-unsigned' },
+    });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: 'This message cannot be paid yet' });
+  });
+
+  it('refuses a giver without a Lightning address or key', async () => {
+    const missingAddress = await readyCredit({
+      authorId: 'acc-noaddr',
+      giverAddress: null,
+    });
+    const noAddress = await missingAddress.app.request(`/messages/${CREDIT}/repayment`, {
+      method: 'POST',
+      headers: { authorization: 'Bearer acc-noaddr' },
+    });
+    expect(noAddress.status).toBe(400);
+    const missingKey = await readyCredit({ authorId: 'acc-nokey', giverKey: false });
+    const noKey = await missingKey.app.request(`/messages/${CREDIT}/repayment`, {
+      method: 'POST',
+      headers: { authorization: 'Bearer acc-nokey' },
+    });
+    expect(noKey.status).toBe(400);
+  });
+
+  it('is unavailable without a signing key', async () => {
+    const { app } = await readyCredit({ authorId: 'acc-kek', kek: false });
+    const res = await app.request(`/messages/${CREDIT}/repayment`, {
+      method: 'POST',
+      headers: { authorization: 'Bearer acc-kek' },
+    });
+    expect(res.status).toBe(503);
+    const sign = await import('@/lib/nostr/sign');
+    const broken = vi.spyOn(sign, 'signEventForAccount').mockRejectedValue(new Error('sign'));
+    const signed = await readyCredit({ authorId: 'acc-sign' });
+    const signRes = await signed.app.request(`/messages/${CREDIT}/repayment`, {
+      method: 'POST',
+      headers: { authorization: 'Bearer acc-sign' },
+    });
+    broken.mockRestore();
+    expect(signRes.status).toBe(503);
+  });
+
+  it('reports a wallet that cannot take a zap', async () => {
+    const { app } = await readyCredit({ authorId: 'acc-nozap' });
+    const original = globalThis.fetch;
+    const routes = await import('@/lib/lnurl-pay');
+    const spy = vi.spyOn(routes, 'requestZapInvoice').mockResolvedValue({
+      ok: false,
+      reason: 'noZap',
+      lnurlResponse: null,
+    });
+    void original;
+    const res = await app.request(`/messages/${CREDIT}/repayment`, {
+      method: 'POST',
+      headers: { authorization: 'Bearer acc-nozap' },
+    });
+    spy.mockRestore();
+    expect(res.status).toBe(400);
+  });
+
+  it('reports an unreachable wallet and a non-zap invoice', async () => {
+    const unreachable = await readyCredit({ authorId: 'acc-down' });
+    const down = vi.spyOn(await import('@/lib/lnurl-pay'), 'requestZapInvoice').mockResolvedValue({
+      ok: false,
+      reason: 'unreachable',
+      lnurlResponse: null,
+    });
+    const downRes = await unreachable.app.request(`/messages/${CREDIT}/repayment`, {
+      method: 'POST',
+      headers: { authorization: 'Bearer acc-down' },
+    });
+    down.mockRestore();
+    expect(downRes.status).toBe(400);
+    const plain = await readyCredit({ authorId: 'acc-plain' });
+    const plainRes = await plain.app.request(`/messages/${CREDIT}/repayment`, {
+      method: 'POST',
+      headers: { authorization: 'Bearer acc-plain' },
+    });
+    expect(plainRes.status).toBe(400);
+  });
+
+  it('still returns the invoice when recording the attempt throws', async () => {
+    const bolt11 = await import('@/lib/bolt11');
+    const nip57 = vi.spyOn(bolt11, 'isNip57Invoice').mockReturnValue(true);
+    try {
+      const { app, messages } = await readyCredit({ authorId: 'acc-disk' });
+      messages.recordInvoiceAttempt = () => Promise.reject(new Error('disk'));
+      const res = await app.request(`/messages/${CREDIT}/repayment`, {
+        method: 'POST',
+        headers: { authorization: 'Bearer acc-disk' },
+      });
+      expect(res.status).toBe(200);
+    } finally {
+      nip57.mockRestore();
+    }
+  });
+
+  it('counts a paid day and ignores an unknown note', async () => {
+    const { app, messages } = await readyCredit({ authorId: 'acc-paid' });
+    await messages.markRepaymentPaid({
+      messageId: CREDIT,
+      dayIndex: 0,
+      recipientAccountId: GIVER,
+      dueSats: 21,
+      paidAt: new Date(now()),
+    });
+    const status = await app.request(`/messages/${CREDIT}/repayment`, {
+      headers: { authorization: 'Bearer acc-paid' },
+    });
+    expect(status.status).toBe(200);
+    expect((await status.json()) as { next: null }).toMatchObject({ next: null, daysPaid: 1 });
+    const missing = await app.request('/messages/22222222-2222-4222-8222-222222222222/repayment', {
+      headers: { authorization: 'Bearer acc-paid' },
+    });
+    expect(missing.status).toBe(404);
+    const badToken = await app.request(`/messages/${CREDIT}/repayment`, {
+      headers: { authorization: 'Bearer nope' },
+    });
+    expect(badToken.status).toBe(401);
+  });
+
+  it('prices a fiat day and rejects a bad id', async () => {
+    const { app } = await readyCredit({
+      authorId: 'acc-fiat',
+      goalCurrency: 'USD',
+      goalAmount: '0.21',
+      rate: true,
+    });
+    const status = await app.request(`/messages/${CREDIT}/repayment`, {
+      headers: { authorization: 'Bearer acc-fiat' },
+    });
+    expect(status.status).toBe(200);
+    const missing = await app.request('/messages/not-a-uuid/repayment', {
+      headers: { authorization: 'Bearer acc-fiat' },
+    });
+    expect(missing.status).toBe(404);
+    const unavailable = await readyCredit({
+      authorId: 'acc-norate',
+      goalCurrency: 'USD',
+      goalAmount: '0.21',
+    });
+    const blocked = await unavailable.app.request(`/messages/${CREDIT}/repayment`, {
+      method: 'POST',
+      headers: { authorization: 'Bearer acc-norate' },
+    });
+    expect(blocked.status).toBe(503);
+    const looked = await unavailable.app.request(`/messages/${CREDIT}/repayment`, {
+      headers: { authorization: 'Bearer acc-norate' },
+    });
+    expect(looked.status).toBe(503);
+    const blank = await readyCredit({
+      authorId: 'acc-blank',
+      goalCurrency: 'USD',
+      goalAmount: null,
+      rate: true,
+    });
+    const blankRes = await blank.app.request(`/messages/${CREDIT}/repayment`, {
+      headers: { authorization: 'Bearer acc-blank' },
+    });
+    expect(blankRes.status).toBe(503);
+  });
+});

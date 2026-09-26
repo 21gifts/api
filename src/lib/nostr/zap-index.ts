@@ -38,6 +38,7 @@ import type { NotificationStore } from '@/lib/notification-store';
 import { normalizeHex32, preimageMatchesHash } from '@/lib/proof';
 import type { PushStore } from '@/lib/push-store';
 import { verifyEvent } from 'nostr-tools/pure';
+import { parseRepaymentDescription } from '@/lib/credit-repayment';
 
 /** Minimal zap receipt fields we validate. */
 export interface ZapReceipt {
@@ -1538,6 +1539,59 @@ async function ingestOneReceipt(
     return;
   }
   if (event.pubkey.toLowerCase() !== providerPubkey.toLowerCase()) {
+    const repaymentInvoice = await args.store.findOkInvoiceByPaymentHash(decoded.paymentHash);
+    const repayment =
+      repaymentInvoice === undefined
+        ? null
+        : parseRepaymentDescription(repaymentInvoice.description);
+    if (
+      repaymentInvoice !== undefined &&
+      repayment !== null &&
+      repaymentInvoice.messageId === row.id &&
+      repaymentInvoice.amountSats === amountSats
+    ) {
+      if (
+        !(await args.store.claimZapPayment(decoded.paymentHash, event.id, new Date(args.now())))
+      ) {
+        logEvent('nostr.zap.rejected', { reason: 'settled' });
+        await persistZapIngest(
+          args.store,
+          zapIngestRow({
+            receiptId: event.id,
+            noteEventId,
+            messageId: row.id,
+            outcome: 'rejected',
+            reason: 'settled',
+            amountSats,
+            receiptPubkey: event.pubkey,
+            receipt,
+          }),
+        );
+        return;
+      }
+      await args.store.markRepaymentPaid({
+        messageId: row.id,
+        dayIndex: repayment.dayIndex,
+        recipientAccountId: repayment.recipientAccountId,
+        dueSats: amountSats,
+        paidAt: new Date(args.now()),
+      });
+      logEvent('nostr.zap.repaid', { messageId: row.id, sats: amountSats });
+      await persistZapIngest(
+        args.store,
+        zapIngestRow({
+          receiptId: event.id,
+          noteEventId,
+          messageId: row.id,
+          outcome: 'indexed',
+          reason: null,
+          amountSats,
+          receiptPubkey: event.pubkey,
+          receipt,
+        }),
+      );
+      return;
+    }
     logEvent('nostr.zap.rejected', { reason: 'pubkey' });
     await persistZapIngest(
       args.store,

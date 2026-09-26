@@ -1253,6 +1253,60 @@
 - **Returns / side effects:** The original string when it is `YYYY-MM-DDTHH:MM:SS` with an optional `±HH:MM` offset, a real calendar date, and a year from 1990 through the current UTC year + 1. Otherwise null. No I/O.
 - **Used by:** `POST /messages`.
 
+## Function: repaymentDescription
+
+- **Purpose:** Build `repay:<dayIndex>:<recipientAccountId>` for an invoice attempt.
+- **Inputs:** Day index and giver account id.
+- **Returns / side effects:** That string. No I/O.
+
+## Function: parseRepaymentDescription
+
+- **Purpose:** Read a repayment marker.
+- **Inputs:** Invoice description, or null.
+- **Returns / side effects:** `{ dayIndex, recipientAccountId }`, or null. No I/O.
+
+## Function: repaymentStartMs
+
+- **Purpose:** UTC midnight after the credit filled.
+- **Inputs:** Epoch milliseconds.
+- **Returns / side effects:** That midnight. No I/O.
+
+## Function: dueDayCount
+
+- **Purpose:** How many term days are due at a clock.
+- **Inputs:** Funded time, now, term days.
+- **Returns / side effects:** A count from 0 through the term. No I/O.
+
+## Function: dayUnits
+
+- **Purpose:** Equal daily units. The last day keeps the remainder.
+- **Inputs:** Total, day count, zero-based index.
+- **Returns / side effects:** That day's units, or null. No I/O.
+
+## Function: fiatAmountToCents
+
+- **Purpose:** Cents of a typed fiat amount.
+- **Inputs:** Canonical amount text.
+- **Returns / side effects:** Cents, or null. No I/O.
+
+## Function: shareSats
+
+- **Purpose:** Split a day's sats across givers in proportion to what they paid.
+- **Inputs:** Due sats and payer totals.
+- **Returns / side effects:** Shares that add up to the due sats. No I/O.
+
+## Function: repaymentStatus
+
+- **Purpose:** `GET /messages/:id/repayment` for the author.
+- **Inputs:** Route deps and the request.
+- **Returns / side effects:** The due schedule JSON.
+
+## Function: repaymentInvoice
+
+- **Purpose:** `POST /messages/:id/repayment`. BOLT11 for the next giver share.
+- **Inputs:** Route deps and the request.
+- **Returns / side effects:** `{ pr, amountSats }` or an error. Records the invoice attempt.
+
 ## Function: serializeMessage
 
 - **Purpose:** Project a stored forum row to its public JSON shape including zap totals, payability, `hasPhoto`, `photoCount` (0–10; from `row.photoCount` or `hasPhoto ? 1 : 0`), `hasVideo`, `videoContentType`, live author role, optional `via`, optional `replyCount`, optional `accountId`, optional `mentions` (`{ username, accountId }[]` only when `accountId` is included and the stored list is non-empty), optional `parentId`, optional `goalSats` (included when the stored value is a positive integer on a top-level note; omitted on replies and when unset, null, or 0), optional `goalRepayable: true` only when the stored column is true (omitted when null; never false; omitted on replies), optional `goalTermDays` when the stored column is not null (omitted when null; omitted on replies), optional `goalCurrency` / `goalAmount` / `goalAmountUsd` / `goalAmountChf` / `goalAmountEur` / `goalAmountPhp` (only when `goalCurrency` is set and `goalAmount` is a string; snapshot keys stay present when null; omitted entirely for legacy rows), optional `place` (included only when both coordinates are stored; omitted when unset), optional `shopAccount` (`{ id, username, name }`, included when stored and omitted when unset, including when `accountId` is omitted), and optional hide stamps. When stored `name` is empty after trim, JSON `name` is `truncatePubkeyDisplay(row.authorPubkey ?? '')` (`'npub'` when the pubkey is missing); non-empty names are unchanged. Invalid `createdAt` is not guarded here: `toISOString()` still throws. `GET /messages/:id/replies` and `GET /members/:accountId/replies` omit that child (200, siblings remain); `GET /messages` (list), `GET /members/:accountId/posts`, and public `GET /messages/:id` return 503. Member feeds reuse this: `GET /members/:accountId/posts` is newest-first like signed-in `GET /messages`; `GET /members/:accountId/replies` is newest-first with `payable` when a non-empty `eventId` and a non-blank Lightning Address are set. Callers that serve list/GET/replies delete a `hasVideo` row when the file is missing or empty on disk (`forumVideoFilePresent`) so no empty note remains. Last optional `hidden?: { deletedAt: Date; deletedBy: { id, name, role } }`: when set, JSON `deletedAt` is ISO, `deletedBy` is copied, and `payable` is false (ignore the payable arg). When omitted, do not set those keys (live JSON has no `deletedAt` / `deletedBy`). Store-internal `contentFp` is never included.
