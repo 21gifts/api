@@ -2750,6 +2750,41 @@ Builds the operator-only external-pubkey inspection route.
 - **Returns / side effects:** `{ ok: true, stats }` or `{ ok: false, reason: 'fx-incomplete' }`. Logs `gifts.stats.fiat_failed` when fiat `ensureDays` throws.
 - **Used by:** `giftsStatsRoutes`, `loadLatestGoalRateDay`.
 
+## Function: normalizeOcpPlace
+
+- **Purpose:** Validate a JSON body for one OpenCryptoPay place. Coordinates are finite and in range, then rounded to six decimals. `paymentMethods` that is not an onchain/lightning/nfc list becomes null instead of an error.
+- **Inputs:** Unknown JSON. Required fields are `origin`, `externalId`, `name`, `lat`, `lon`, and `category`.
+- **Returns / side effects:** `{ ok: true, value }` or `{ ok: false, error }` with a fixed English message. No I/O.
+- **Used by:** Nothing on the request path. `shopOcpPlaceInput` follows the same field rules. The OpenCryptoPay map API validates the POST.
+
+## Function: shopOcpPlaceName
+
+- **Purpose:** Choose the public name of a shop pin: the pin label, otherwise the author name, otherwise `Shop`, cut at 80 characters.
+- **Inputs:** A forum place and an optional author name.
+- **Returns / side effects:** A trimmed string of length 1–80. No I/O.
+- **Used by:** `shopOcpPlaceInput`.
+
+## Function: shopOcpPlaceInput
+
+- **Purpose:** Map a first shop pin onto an OpenCryptoPay place with origin `21gifts`, category `shopping`, and payment methods `lightning`.
+- **Inputs:** Message id, forum place, and optional author name.
+- **Returns / side effects:** An `OcpPlaceInput`. No I/O.
+- **Used by:** `recordFirstShopOcpPlace`.
+
+## Function: recordFirstShopOcpPlace
+
+- **Purpose:** POST a first shop pin to the OpenCryptoPay map at `/map/places`. Replies, notes that already had a pin, notes without the shop tag, and a missing map push do nothing. BTC Map is not called here.
+- **Inputs:** Optional map push, message id, text, parent id, place, author name, whether a pin already existed, and the hashtag check.
+- **Returns / side effects:** Resolves after the POST. A non-2xx answer or a thrown fetch logs `ocp.place.failed` and does not throw. Timeout is 5000 ms.
+- **Used by:** `messagesRoutes` after a new shop post with a pin and after the first moderator place patch.
+
+## Function: resolveMapPush
+
+- **Purpose:** Build the map push from `OCP_MAP_BASE_URL` and `OCP_PLACE_INGEST_TOKEN`. A blank URL or token means no push and the process still boots.
+- **Inputs:** Environment slice and fetch.
+- **Returns / side effects:** `{ baseUrl, token, fetchImpl }` or `undefined`. Trims both values and strips trailing slashes from the URL.
+- **Used by:** `createApp` when `mapPush` is not injected.
+
 ## Function: loadLatestGoalRateDay
 
 - **Purpose:** Latest gift-day proportion for a currency ask: last `spendOverTime` day with `sats > 0` from `loadGiftStatsSnapshot` (no recipient filter). Empty history is null. Does not invent a rate.

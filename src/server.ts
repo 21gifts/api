@@ -17,6 +17,7 @@ import { bindGoalRateDay, giftsStatsRoutes } from '@/routes/stats';
 import { giftsRoutes } from '@/routes/gifts';
 import { invoiceRoutes } from '@/routes/invoices';
 import { messagesRoutes } from '@/routes/messages';
+import { resolveMapPush, type MapPush } from '@/lib/ocp-place';
 import { translateRoutes } from '@/routes/translate';
 import { InMemoryTranslationStore, type TranslationStore } from '@/lib/translation-store';
 import { wellKnownRoutes } from '@/routes/well-known';
@@ -56,6 +57,7 @@ import { InMemoryMessageStore } from '@/lib/message-store';
 import type { MessageStore } from '@/lib/message-store';
 import { InMemoryNotificationStore } from '@/lib/notification-store';
 import type { NotificationStore } from '@/lib/notification-store';
+
 import { resolveVapidConfig } from '@/lib/push-config';
 import { InMemoryPushStore, type PushStore } from '@/lib/push-store';
 import { InMemoryTrustStore, type TrustStore } from '@/lib/trust-store';
@@ -187,6 +189,11 @@ export interface AppDeps {
    * Boot injects {@link PostgresMessageStore} when `DATABASE_URL` is set.
    */
   messageStore?: MessageStore;
+  /**
+   * Optional push of a first shop pin to `POST /map/places`. Default:
+   * {@link resolveMapPush} on `env`. Unset URL or token → nothing is sent.
+   */
+  mapPush?: MapPush;
   /** Optional AES-256 KEK for custodial nsec (memory boots may omit). */
   nostrKek?: Uint8Array;
   /**
@@ -277,6 +284,7 @@ function debugList(store: object, limit: number): Promise<unknown[]> {
  * @param deps - Optional overrides for the auth store, clock, invoice payer,
  *   LNURL-pay fetch, LN-Address cache, brand reader, debugToken, gift store,
  *   gift recorder, BTC-USD rates, USD-fiat rates, message store,
+ *   mapPush (optional; default resolveMapPush on env),
  *   translationStore (optional; default InMemoryTranslationStore; SQL boot
  *   injects PostgresTranslationStore), contact store,
  *   conversation store, notification store, push store, trust store,
@@ -301,8 +309,9 @@ export function createApp(deps: AppDeps = {}): Hono {
   const btcUsdRates = deps.btcUsdRates ?? new InMemoryBtcUsdStore();
   const fiatRates = deps.fiatRates ?? new InMemoryFiatStore();
   const messageStore = deps.messageStore ?? new InMemoryMessageStore();
-  const translationStore = deps.translationStore ?? new InMemoryTranslationStore();
   const env = deps.env ?? process.env;
+  const mapPush = deps.mapPush ?? resolveMapPush(env, fetchImpl);
+  const translationStore = deps.translationStore ?? new InMemoryTranslationStore();
   if (messageStore instanceof InMemoryMessageStore) {
     messageStore.useProfileNoteIds(async () => {
       const ids = new Set<string>();
@@ -540,6 +549,7 @@ export function createApp(deps: AppDeps = {}): Hono {
       env,
       translationStore,
       fundingStore,
+      ...(mapPush === undefined ? {} : { mapPush }),
       goalRateDay: bindGoalRateDay({
         store: giftStore,
         rates: btcUsdRates,

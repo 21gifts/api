@@ -21,6 +21,7 @@ import { parseNostrKek } from '@/lib/nostr/kek';
 import { ensureAccountNostrKey } from '@/lib/nostr/keys';
 import { RecordingPublisher } from '@/lib/nostr/publish';
 import { InMemoryPushStore } from '@/lib/push-store';
+import type { MapFetch, MapPush } from '@/lib/ocp-place';
 import { removeForumVideo, resolveMediaDir, videoFilePath } from '@/lib/video';
 
 function parsedEvents(warn: ReturnType<typeof vi.spyOn>): Array<Record<string, unknown>> {
@@ -9927,5 +9928,136 @@ describe('PATCH /messages/:id/place', () => {
     });
     expect(res.status).toBe(200);
     expect(((await res.json()) as { role: string }).role).toBe('basis');
+  });
+});
+
+function recordingMap(): {
+  mapPush: MapPush;
+  calls: string[];
+  meta: Array<{ url: string; authorization: string }>;
+} {
+  const calls: string[] = [];
+  const meta: Array<{ url: string; authorization: string }> = [];
+  const fetchImpl: MapFetch = async (input, init) => {
+    const headers = new Headers(init.headers);
+    calls.push(String(init.body));
+    meta.push({ url: String(input), authorization: headers.get('authorization') ?? '' });
+    return new Response('{}', { status: 201 });
+  };
+  return { mapPush: { baseUrl: 'http://map.test', token: 'ingest', fetchImpl }, calls, meta };
+}
+
+describe('shop OCP place hook', () => {
+  const SHOP_ID = '66666666-6666-4666-8666-666666666666';
+  const PIN = { lat: 47.3, lng: 8.5, label: 'Stall' };
+
+  it('posts a shop pin to the map when a shop note is created with a pin', async () => {
+    const { mapPush, calls, meta } = recordingMap();
+    const app = mount(await namedStore('Ada'), new InMemoryMessageStore(), {
+      mapPush,
+    });
+    const post = await app.request('/messages', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({
+        text: 'Open #21GiftsShop',
+        place: PIN,
+      }),
+    });
+    expect(post.status).toBe(200);
+    const body = (await post.json()) as { id: string };
+    expect(calls).toHaveLength(1);
+    expect(meta[0]?.url).toBe('http://map.test/map/places');
+    expect(meta[0]?.authorization).toBe('Bearer ingest');
+    expect(JSON.parse(calls[0] ?? '{}')).toMatchObject({
+      origin: '21gifts',
+      externalId: body.id,
+      name: 'Stall',
+      lat: 47.3,
+      lon: 8.5,
+      category: 'shopping',
+      paymentMethods: 'lightning',
+    });
+  });
+
+  it('does not post a non-shop pin', async () => {
+    const { mapPush, calls } = recordingMap();
+    const post = await mount(await namedStore('Ada'), new InMemoryMessageStore(), {
+      mapPush,
+    }).request('/messages', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ text: 'plain pin', place: PIN }),
+    });
+    expect(post.status).toBe(200);
+    expect(calls).toEqual([]);
+  });
+
+  it('posts the first PATCH pin and skips replace and clear', async () => {
+    const { mapPush, calls } = recordingMap();
+    const messages = new InMemoryMessageStore();
+    await messages.create({
+      id: SHOP_ID,
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'Shop #21GiftsShop',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+    });
+    const app = mount(await staffStore('Ada'), messages, { mapPush });
+    const first = await app.request('/messages/' + SHOP_ID + '/place', {
+      method: 'PATCH',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ place: PIN }),
+    });
+    expect(first.status).toBe(200);
+    expect(calls).toHaveLength(1);
+
+    const replace = await app.request('/messages/' + SHOP_ID + '/place', {
+      method: 'PATCH',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ place: { lat: 1, lng: 2, label: 'New' } }),
+    });
+    expect(replace.status).toBe(200);
+    expect(calls).toHaveLength(1);
+
+    const clear = await app.request('/messages/' + SHOP_ID + '/place', {
+      method: 'PATCH',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ place: null }),
+    });
+    expect(clear.status).toBe(200);
+    expect(calls).toHaveLength(1);
+  });
+
+  it('keeps the forum 200 when the map call throws', async () => {
+    const mapPush: MapPush = {
+      baseUrl: 'http://map.test',
+      token: 'ingest',
+      fetchImpl: async () => {
+        throw new Error('down');
+      },
+    };
+    const messages = new InMemoryMessageStore();
+    await messages.create({
+      id: SHOP_ID,
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'Shop #21GiftsShop',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+    });
+    const res = await mount(await staffStore('Ada'), messages, { mapPush }).request(
+      '/messages/' + SHOP_ID + '/place',
+      {
+        method: 'PATCH',
+        headers: { ...AUTH, 'content-type': 'application/json' },
+        body: JSON.stringify({ place: PIN }),
+      },
+    );
+    expect(res.status).toBe(200);
+    expect(parsedEvents(warn).some((e) => e['event'] === 'ocp.place.failed')).toBe(true);
   });
 });

@@ -9,6 +9,7 @@ import { QueryGiftStore } from '@/lib/gift-store';
 import { SqlGiftRecorder } from '@/lib/gift-recorder';
 import { PostgresContactStore } from '@/lib/contact-store';
 import { InMemoryPosStore, PostgresPosStore } from '@/lib/pos-store';
+
 import { PostgresConversationStore } from '@/lib/conversation-store';
 import { PostgresMessageStore } from '@/lib/message-store';
 import { PostgresTranslationStore } from '@/lib/translation-store';

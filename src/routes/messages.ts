@@ -70,6 +70,8 @@ import type { PushStore } from '@/lib/push-store';
 import type { SpendPing } from '@/lib/spend-ping';
 import { syncWelcomePing } from '@/lib/welcome-media';
 import { normalizePlace, parseMultipartCoord, placesMatch, type ForumPlace } from '@/lib/place';
+import { recordFirstShopOcpPlace, type MapPush } from '@/lib/ocp-place';
+
 import { bearerToken } from '@/routes/me';
 import {
   MESSAGE_VIDEO_MAX_BYTES,
@@ -250,6 +252,11 @@ export interface MessagesRouteDeps {
    * Omitted → skip. Failures are logged and do not fail the 200.
    */
   spendPing?: SpendPing;
+  /**
+   * Optional push of a first `#21GiftsShop` pin to the OpenCryptoPay map.
+   * Omitted → the forum write still succeeds and nothing is sent.
+   */
+  mapPush?: MapPush;
   /**
    * Funding grants for spend-ping eligibility (default: empty
    * {@link InMemoryFundingStore}).
@@ -879,6 +886,18 @@ async function persistForumPost(
       } catch {
         logEvent('messages.mention.notify.failed');
       }
+    }
+    if (!isReplay) {
+      await recordFirstShopOcpPlace({
+        ...(deps.mapPush === undefined ? {} : { mapPush: deps.mapPush }),
+        messageId: created.id,
+        text: created.text,
+        parentId: created.parentId ?? null,
+        place: created.place ?? null,
+        authorName: created.name,
+        hadPlaceBefore: false,
+        textHasHashtagToken,
+      });
     }
     return c.json(
       serializeMessage(created, payableOf(created, account), account.role, undefined, true),
@@ -1710,6 +1729,7 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
         if (!textHasHashtagToken(row.text, '21GiftsShop')) {
           return c.json({ error: 'Only a shop note can set a place' }, 400);
         }
+        const hadPlaceBefore = row.place !== null && row.place !== undefined;
         const written = await deps.store.setPlace(id, parsed.value);
         if (!written) {
           return c.json({ error: 'Not found' }, 404);
@@ -1729,6 +1749,18 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
           accountId: account.id,
           role: account.role,
         });
+        if (!hadPlaceBefore && parsed.value !== null) {
+          await recordFirstShopOcpPlace({
+            ...(deps.mapPush === undefined ? {} : { mapPush: deps.mapPush }),
+            messageId: updated.id,
+            text: updated.text,
+            parentId: updated.parentId ?? null,
+            place: parsed.value,
+            authorName: updated.name,
+            hadPlaceBefore: false,
+            textHasHashtagToken,
+          });
+        }
         return c.json(
           serializeMessage(
             updated,

@@ -174,7 +174,8 @@ export interface BootFxOptions {
  * an empty {@link InMemoryBtcUsdStore}, and an empty {@link InMemoryFiatStore}.
  * A set URL asks `createClient` for one `SqlClient`, migrates auth (via
  * `openAuthStore`) then the FX tables (`btc_usd_daily` then `usd_fiat_daily`),
- * `message`, `contact`, `pos_charge` (via `migratePosSchema`), `conversation`, `push`, `notification`, `trust_edge`,
+ * `message`, `contact`, `pos_charge` (via `migratePosSchema`),
+ * `conversation`, `push`, `notification`, `trust_edge`,
  * `funding_grant`, `api_log`, and `db_change` schemas (notification after push, trust
  * after notification, funding after trust, `api_log` immediately before
  * `db_change` so `trg_db_change` attaches), builds a {@link QueryGiftStore},
