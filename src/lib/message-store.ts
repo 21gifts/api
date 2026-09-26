@@ -2862,12 +2862,13 @@ export class InMemoryMessageStore implements MessageStore {
       row.amountEur = foldFiatColumn(row.amountEur, delta?.eur ?? null, extraSats);
       row.amountPhp = foldFiatColumn(row.amountPhp, delta?.php ?? null, extraSats);
       row.sats += extraSats;
+      const goalSats = row.goalSats;
       if (
         row.goalRepayable === true &&
         row.goalFundedAt === null &&
-        row.goalSats !== null &&
-        row.goalSats > 0 &&
-        row.sats >= row.goalSats
+        typeof goalSats === 'number' &&
+        goalSats > 0 &&
+        row.sats >= goalSats
       ) {
         row.goalFundedAt = new Date();
       }
