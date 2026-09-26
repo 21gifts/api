@@ -6,8 +6,9 @@ import type { Kind1Photo } from '@/lib/nostr/event';
 const BLUR_MAX = 32;
 
 /**
- * `WIDTHxHEIGHT` from a still, or `null` when the bytes do not decode.
- * WebP uses the VP8X header only. Video types return `null`.
+ * `WIDTHxHEIGHT` from a still, or `null` when the header is missing.
+ * JPEG uses the SOF marker. WebP accepts VP8, VP8L, and VP8X. Video types
+ * return `null`.
  *
  * @param bytes - Stored image bytes.
  * @param mime - Stored still MIME.
@@ -21,14 +22,7 @@ export function imageDisplaySize(bytes: Uint8Array, mime: Kind1Photo['mime']): s
     });
   }
   if (mime === 'image/jpeg') {
-    return decodedDim(() => {
-      const image = decodeJpeg(bytes, {
-        useTArray: true,
-        formatAsRGBA: true,
-        maxResolutionInMP: 8,
-      });
-      return { width: image.width, height: image.height };
-    });
+    return jpegSize(bytes);
   }
   if (mime === 'image/webp') {
     return webpSize(bytes);
@@ -51,7 +45,7 @@ export function imageBlurhash(bytes: Uint8Array, mime: Kind1Photo['mime']): stri
       const image = decodeJpeg(bytes, {
         useTArray: true,
         formatAsRGBA: true,
-        maxResolutionInMP: 8,
+        maxResolutionInMP: 64,
       });
       return blurhashFromRgba(image.data, image.width, image.height);
     }
@@ -98,25 +92,115 @@ function decodedDim(read: () => { width: number; height: number }): string | nul
   }
 }
 
+function jpegSize(bytes: Uint8Array): string | null {
+  if (bytes.length < 4 || bytes[0] !== 0xff || bytes[1] !== 0xd8) {
+    return null;
+  }
+  let i = 2;
+  while (i + 8 < bytes.length) {
+    if (bytes[i] !== 0xff) {
+      return null;
+    }
+    const marker = bytes[i + 1]!;
+    if (
+      marker === 0x01 ||
+      marker === 0xd8 ||
+      marker === 0xd9 ||
+      (marker >= 0xd0 && marker <= 0xd7)
+    ) {
+      i += 2;
+      continue;
+    }
+    if (marker === 0xc0 || marker === 0xc1 || marker === 0xc2) {
+      const height = (bytes[i + 5]! << 8) | bytes[i + 6]!;
+      const width = (bytes[i + 7]! << 8) | bytes[i + 8]!;
+      return dimText(width, height);
+    }
+    const length = (bytes[i + 2]! << 8) | bytes[i + 3]!;
+    if (length < 2) {
+      return null;
+    }
+    i += 2 + length;
+  }
+  return null;
+}
+
 function webpSize(bytes: Uint8Array): string | null {
-  if (bytes.length < 30) {
+  if (
+    bytes.length < 12 ||
+    bytes[0] !== 0x52 ||
+    bytes[1] !== 0x49 ||
+    bytes[2] !== 0x46 ||
+    bytes[3] !== 0x46 ||
+    bytes[8] !== 0x57 ||
+    bytes[9] !== 0x45 ||
+    bytes[10] !== 0x42 ||
+    bytes[11] !== 0x50
+  ) {
     return null;
   }
-  const riff =
-    bytes[0] === 0x52 &&
-    bytes[1] === 0x49 &&
-    bytes[2] === 0x46 &&
-    bytes[3] === 0x46 &&
-    bytes[8] === 0x57 &&
-    bytes[9] === 0x45 &&
-    bytes[10] === 0x42 &&
-    bytes[11] === 0x50;
-  const vp8x = bytes[12] === 0x56 && bytes[13] === 0x50 && bytes[14] === 0x38 && bytes[15] === 0x58;
-  if (!riff || !vp8x) {
+  let offset = 12;
+  while (offset + 8 <= bytes.length) {
+    const tag = String.fromCharCode(
+      bytes[offset]!,
+      bytes[offset + 1]!,
+      bytes[offset + 2]!,
+      bytes[offset + 3]!,
+    );
+    const size = u32le(bytes, offset + 4);
+    const payload = offset + 8;
+    if (tag === 'VP8X' && size >= 10 && payload + 10 <= bytes.length) {
+      return dimText(
+        1 + (bytes[payload + 4]! | (bytes[payload + 5]! << 8) | (bytes[payload + 6]! << 16)),
+        1 + (bytes[payload + 7]! | (bytes[payload + 8]! << 8) | (bytes[payload + 9]! << 16)),
+      );
+    }
+    if (tag === 'VP8 ' && size >= 10 && payload + 10 <= bytes.length) {
+      return vp8LossySize(bytes, payload);
+    }
+    if (tag === 'VP8L' && size >= 5 && payload + 5 <= bytes.length) {
+      return vp8lSize(bytes, payload);
+    }
+    const step = 8 + size + (size & 1);
+    if (step < 8 || offset + step > bytes.length) {
+      return null;
+    }
+    offset += step;
+  }
+  return null;
+}
+
+function vp8LossySize(bytes: Uint8Array, payload: number): string | null {
+  if ((bytes[payload]! & 1) !== 0) {
     return null;
   }
-  const width = 1 + (bytes[24]! | (bytes[25]! << 8) | (bytes[26]! << 16));
-  const height = 1 + (bytes[27]! | (bytes[28]! << 8) | (bytes[29]! << 16));
+  if (bytes[payload + 3] !== 0x9d || bytes[payload + 4] !== 0x01 || bytes[payload + 5] !== 0x2a) {
+    return null;
+  }
+  const width = (bytes[payload + 6]! | (bytes[payload + 7]! << 8)) & 0x3fff;
+  const height = (bytes[payload + 8]! | (bytes[payload + 9]! << 8)) & 0x3fff;
+  return dimText(width, height);
+}
+
+function vp8lSize(bytes: Uint8Array, payload: number): string | null {
+  if (bytes[payload] !== 0x2f) {
+    return null;
+  }
+  const bits = u32le(bytes, payload + 1);
+  return dimText((bits & 0x3fff) + 1, ((bits >> 14) & 0x3fff) + 1);
+}
+
+function u32le(bytes: Uint8Array, offset: number): number {
+  return (
+    (bytes[offset]! |
+      (bytes[offset + 1]! << 8) |
+      (bytes[offset + 2]! << 16) |
+      (bytes[offset + 3]! << 24)) >>>
+    0
+  );
+}
+
+function dimText(width: number, height: number): string | null {
   if (width < 1 || height < 1 || width > 20000 || height > 20000) {
     return null;
   }
