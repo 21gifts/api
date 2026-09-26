@@ -802,6 +802,7 @@ describe('serializeHiddenMessage', () => {
       parentId: 'parent-1',
       deletedAt: '2026-09-01T12:00:00.000Z',
       deletedBy: { id: 'staff', name: 'Mod', role: 'moderator' },
+      accountId: 'acc-1',
     });
   });
 
@@ -826,7 +827,7 @@ describe('serializeHiddenMessage', () => {
     expect(body['deletedBy']).toEqual({ id: null, name: null, role: null });
   });
 
-  it('omits accountId, eventId, payable, author role, and store internals', () => {
+  it('includes accountId for a 21.gifts author and omits store internals', () => {
     const row: MessageRow = {
       id: 'msg-hidden',
       accountId: 'acc-1',
@@ -844,7 +845,7 @@ describe('serializeHiddenMessage', () => {
       deletedBy: 'staff',
     };
     const body = serializeHiddenMessage(row, { id: 'staff', name: null, role: 'founder' });
-    expect(body).not.toHaveProperty('accountId');
+    expect(body['accountId']).toBe('acc-1');
     expect(body).not.toHaveProperty('eventId');
     expect(body).not.toHaveProperty('nostrPublishState');
     expect(body).not.toHaveProperty('payable');

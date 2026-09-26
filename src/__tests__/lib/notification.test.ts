@@ -1788,6 +1788,56 @@ describe('notificationsMatchingLevel', () => {
     expect(matched.map((row) => row.id)).toEqual(['n-reply']);
   });
 
+  it('keeps a forum_mention for the recipient at mentions and only when active at active', () => {
+    const row = notification({
+      id: 'n-mark',
+      recipientAccountId: 'me',
+      type: 'forum_mention',
+      parentId: 'post-1',
+      replyId: 'post-1',
+    });
+    const parentById = new Map<string, MessageRow>([
+      [
+        'post-1',
+        message({ id: 'post-1', accountId: 'actor', parentId: null, sats: 0, text: 'hi' }),
+      ],
+    ]);
+    const accounts = [{ id: 'actor', role: 'basis' }];
+    expect(
+      notificationsMatchingLevel({
+        rows: [row],
+        level: 'mentions',
+        recipientAccountId: 'me',
+        accounts,
+        parentById,
+      }).map((item) => item.id),
+    ).toEqual(['n-mark']);
+    expect(
+      notificationsMatchingLevel({
+        rows: [row],
+        level: 'active',
+        recipientAccountId: 'me',
+        accounts,
+        parentById,
+      }),
+    ).toEqual([]);
+    const paid = new Map<string, MessageRow>([
+      [
+        'post-1',
+        message({ id: 'post-1', accountId: 'actor', parentId: null, sats: 5, text: 'hi' }),
+      ],
+    ]);
+    expect(
+      notificationsMatchingLevel({
+        rows: [row],
+        level: 'active',
+        recipientAccountId: 'me',
+        accounts,
+        parentById: paid,
+      }).map((item) => item.id),
+    ).toEqual(['n-mark']);
+  });
+
   it('keeps moderator_appointed at mentions', () => {
     const rows: NotificationRow[] = [
       notification({

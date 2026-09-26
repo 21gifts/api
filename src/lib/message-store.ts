@@ -388,6 +388,7 @@ export interface MessageStore {
       lat: number;
       lng: number;
       label: string | null;
+      accountId: string | null;
     }>
   >;
 
@@ -1432,6 +1433,7 @@ WHERE message.id = ranked.id AND ranked.rn > 1`,
   `ALTER TABLE message ADD COLUMN IF NOT EXISTS place_lat double precision`,
   `ALTER TABLE message ADD COLUMN IF NOT EXISTS place_lng double precision`,
   `ALTER TABLE message ADD COLUMN IF NOT EXISTS place_label text`,
+  `ALTER TABLE message ADD COLUMN IF NOT EXISTS mentions jsonb NOT NULL DEFAULT '[]'::jsonb`,
   `ALTER TABLE message ADD COLUMN IF NOT EXISTS goal_currency text`,
   `ALTER TABLE message ADD COLUMN IF NOT EXISTS goal_amount numeric(20, 8)`,
   `ALTER TABLE message ADD COLUMN IF NOT EXISTS goal_fiat_usd numeric(20, 2)`,
@@ -1680,6 +1682,12 @@ function copyRow(row: MessageRow): MessageRow {
         ? null
         : { lat: place.lat, lng: place.lng, label: place.label },
   };
+  if (row.mentions !== undefined && row.mentions.length > 0) {
+    copy.mentions = row.mentions.map((mark) => ({
+      accountId: mark.accountId,
+      username: mark.username,
+    }));
+  }
   // Absent on old rows. Assigning `undefined` breaks exactOptionalPropertyTypes.
   if (row.photoTakenAts !== undefined) {
     copy.photoTakenAts = [...row.photoTakenAts];
@@ -2054,6 +2062,7 @@ export class InMemoryMessageStore implements MessageStore {
       lat: number;
       lng: number;
       label: string | null;
+      accountId: string | null;
     }>
   > {
     const pinned = this.#rows.filter((row) => {
@@ -2083,6 +2092,7 @@ export class InMemoryMessageStore implements MessageStore {
           lat: place.lat,
           lng: place.lng,
           label: place.label,
+          accountId: row.accountId,
         };
       }),
     );
@@ -3373,6 +3383,7 @@ interface MessageSqlRow {
   place_lat?: string | number | null;
   place_lng?: string | number | null;
   place_label?: string | null;
+  mentions?: unknown;
   nostr_event?: Record<string, unknown> | string | null;
   claimed_until?: Date | string | null;
   nostr_first_attempt_at?: Date | string | null;
@@ -3471,12 +3482,40 @@ function mapPhotoTakenAts(
   return times;
 }
 
+/** Stored `@username` marks. Invalid JSON becomes an empty list. */
+function parseStoredMentions(value: unknown): { accountId: string; username: string }[] {
+  const raw = typeof value === 'string' ? safeJson(value) : value;
+  if (!Array.isArray(raw)) {
+    return [];
+  }
+  const marks: { accountId: string; username: string }[] = [];
+  for (const item of raw) {
+    if (item === null || typeof item !== 'object') {
+      continue;
+    }
+    const accountId = 'accountId' in item ? item.accountId : undefined;
+    const username = 'username' in item ? item.username : undefined;
+    if (typeof accountId === 'string' && typeof username === 'string') {
+      marks.push({ accountId, username });
+    }
+  }
+  return marks;
+}
+
+function safeJson(value: string): unknown {
+  try {
+    return JSON.parse(value);
+  } catch {
+    return [];
+  }
+}
+
 /** Map a SQL list row onto {@link MessageRow}. Unexported. */
 function mapMessageRow(row: MessageSqlRow): MessageRow {
   const defaults = unsignedNostrDefaults();
   const state = row.nostr_publish_state;
   const photoCount = Number(row.photo_count ?? (row.has_photo ? 1 : 0));
-  return {
+  const mapped: MessageRow = {
     id: row.id,
     accountId: row.account_id,
     name: row.name,
@@ -3527,6 +3566,11 @@ function mapMessageRow(row: MessageSqlRow): MessageRow {
       ? { videoTakenAt: row.video_taken_at }
       : {}),
   };
+  const marks = parseStoredMentions(row.mentions);
+  if (marks.length > 0) {
+    mapped.mentions = marks;
+  }
+  return mapped;
 }
 
 /** Coerce Postgres bytea drivers into a fresh {@link Uint8Array}. */
@@ -3546,7 +3590,7 @@ const MESSAGE_SELECT_COLUMNS = `id, account_id, name, text, created_at,
               event_id, nostr_publish_state, sats, goal_sats,
               fiat_usd::text AS fiat_usd, fiat_chf::text AS fiat_chf,
               fiat_eur::text AS fiat_eur, fiat_php::text AS fiat_php,
-              place_lat, place_lng, place_label,
+              place_lat, place_lng, place_label, mentions,
               nostr_event, claimed_until, nostr_first_attempt_at, nostr_publish_epoch, nostr_attempts,
               content_fp, deleted_at, deleted_by,
               photo_taken_at, video_taken_at,
@@ -3828,6 +3872,7 @@ export class PostgresMessageStore implements MessageStore {
       lat: number;
       lng: number;
       label: string | null;
+      accountId: string | null;
     }>
   > {
     const rows = await this.#sql.query<{
@@ -3837,8 +3882,9 @@ export class PostgresMessageStore implements MessageStore {
       place_lat: string | number | null;
       place_lng: string | number | null;
       place_label: string | null;
+      account_id: string | null;
     }>(
-      `SELECT id, name, created_at, place_lat, place_lng, place_label
+      `SELECT id, name, created_at, place_lat, place_lng, place_label, account_id
        FROM message
        WHERE parent_id IS NULL AND deleted_at IS NULL
          AND place_lat IS NOT NULL AND place_lng IS NOT NULL
@@ -3853,6 +3899,7 @@ export class PostgresMessageStore implements MessageStore {
       lat: Number(row.place_lat),
       lng: Number(row.place_lng),
       label: row.place_label === null || row.place_label === undefined ? null : row.place_label,
+      accountId: row.account_id,
     }));
   }
 
@@ -4253,6 +4300,13 @@ export class PostgresMessageStore implements MessageStore {
         await this.deleteById(stored.id);
         throw err;
       }
+    }
+    const marks = stored.mentions ?? [];
+    if (marks.length > 0) {
+      await this.#sql.execute(`UPDATE message SET mentions = $2::jsonb WHERE id = $1`, [
+        stored.id,
+        JSON.stringify(marks),
+      ]);
     }
     return stored;
   }

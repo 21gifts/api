@@ -22,6 +22,7 @@ import type { MessageRow } from '@/lib/message';
 import type { MessageStore } from '@/lib/message-store';
 import type { NotificationStore } from '@/lib/notification-store';
 import {
+  buildForumMentionPushPayload,
   buildForumPushPayload,
   buildModeratorAppointedPushPayload,
   buildReplyPushPayload,
@@ -37,7 +38,12 @@ export const NOTIFICATION_FILTER_SCAN_LIMIT = 1000;
 
 /** Persisted notification kind. */
 export type NotificationType =
-  'forum_post' | 'forum_reply' | 'zap' | 'moderator_appointed' | 'moderator_proposal';
+  | 'forum_post'
+  | 'forum_reply'
+  | 'forum_mention'
+  | 'zap'
+  | 'moderator_appointed'
+  | 'moderator_proposal';
 
 /** Persisted notification row (store-internal; includes account ids). */
 export interface NotificationRow {
@@ -178,7 +184,7 @@ export function wantsNotification(args: {
  * would still accept. `moderator_appointed` and `moderator_proposal` always
  * stay (not living-room fan-out). `all` returns `rows` unchanged. Parent lookup uses
  * `parentById` (`forum_post` / `forum_reply` / `zap` `parentId`); a missing
- * parent is unpaid and not personal. Zap `text` is the amount string.
+ * parent is unpaid and not personal. `forum_mention` uses the recipient as `mentionedAccountId` and is active only when the parent exists and `parent.sats > 0`. Zap `text` is the amount string.
  * Zap actor staff is the stored actor via {@link isStaffAccount} only when
  * that actor is not the parent note author (missing payer is not staff).
  *
@@ -205,8 +211,18 @@ export function notificationsMatchingLevel(args: {
     const parent = args.parentById.get(row.parentId);
     const amountSats = Number(row.text);
     const zapAmount = row.type === 'zap' && Number.isFinite(amountSats) ? amountSats : 0;
-    const isActive = parent === undefined ? zapAmount > 0 : parent.sats > 0 || zapAmount > 0;
-    const mentionedAccountId = row.type === 'forum_post' ? null : (parent?.accountId ?? null);
+    const isActive =
+      row.type === 'forum_mention'
+        ? parent !== undefined && parent.sats > 0
+        : parent === undefined
+          ? zapAmount > 0
+          : parent.sats > 0 || zapAmount > 0;
+    const mentionedAccountId =
+      row.type === 'forum_mention'
+        ? args.recipientAccountId
+        : row.type === 'forum_post'
+          ? null
+          : (parent?.accountId ?? null);
     const storedActorIsStaff = staffById.get(row.actorAccountId) === true;
     const actorIsStaff =
       row.type !== 'zap'
@@ -580,6 +596,75 @@ export async function notifyForumReply(args: {
     ),
     nowMs: args.created.createdAt.getTime(),
   });
+}
+
+/**
+ * Notify each `@username` account once, except the author.
+ *
+ * Level `all` always. Level `active` only when `isActive` (the same flag the
+ * sibling post or reply notifier uses). Level `mentions` because
+ * `mentionedAccountId` is that recipient. One fan-out per person so the push
+ * body can use that account's locale.
+ *
+ * @param args - Mentioned ids, author, note, active flag, optional stores.
+ * @returns Resolves after each targeted fan-out.
+ * @throws If a fan-out rejects.
+ */
+export async function notifyForumMentions(args: {
+  notifications?: NotificationStore;
+  pushStore?: PushStore;
+  auth?: Pick<AuthStore, 'listAccounts' | 'getAccount'>;
+  account: { id: string };
+  created: MessageRow;
+  /** Top-level note id the notification opens. */
+  parentId: string;
+  /** True when the related top-level note would already notify at level `active`. */
+  isActive: boolean;
+  inboxUnreadCount?: (accountId: string) => Promise<number>;
+}): Promise<void> {
+  const ids = new Set<string>();
+  for (const mark of args.created.mentions ?? []) {
+    if (mark.accountId !== args.account.id) {
+      ids.add(mark.accountId);
+    }
+  }
+  const actorIsStaff = await actorIsStaffFromAuth(args.auth, args.account.id);
+  for (const recipientId of ids) {
+    const recipient = args.auth === undefined ? undefined : await args.auth.getAccount(recipientId);
+    await fanoutToBellSubscribers({
+      ...(args.notifications === undefined ? {} : { notifications: args.notifications }),
+      ...(args.pushStore === undefined ? {} : { pushStore: args.pushStore }),
+      ...(args.auth === undefined ? {} : { auth: args.auth }),
+      ...(args.inboxUnreadCount === undefined ? {} : { inboxUnreadCount: args.inboxUnreadCount }),
+      skipAccountId: args.account.id,
+      onlyAccountIds: [recipientId],
+      match: {
+        actorIsStaff,
+        isActive: args.isActive,
+        mentionedAccountId: recipientId,
+      },
+      template: {
+        actorAccountId: args.account.id,
+        type: 'forum_mention',
+        parentId: args.parentId,
+        replyId: args.created.id,
+        name: args.created.name,
+        text: args.created.text,
+        createdAt: args.created.createdAt,
+        readAt: null,
+      },
+      outboxType: 'forum',
+      outboxMessageId: args.created.id,
+      payload: JSON.stringify(
+        buildForumMentionPushPayload({
+          messageId: args.created.id,
+          name: args.created.name,
+          locale: recipient?.locale ?? null,
+        }),
+      ),
+      nowMs: args.created.createdAt.getTime(),
+    });
+  }
 }
 
 /**
