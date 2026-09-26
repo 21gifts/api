@@ -125,7 +125,10 @@ describe('image display size and blurhash', () => {
       ),
     ).toBe('1x1');
     expect(
-      imageDisplaySize(new Uint8Array([0xff, 0xd8, 0xff, 0xc0, 0x00, 0x02, 0x08, 0x00, 0x05, 0x00, 0x07]), 'image/jpeg'),
+      imageDisplaySize(
+        new Uint8Array([0xff, 0xd8, 0xff, 0xc0, 0x00, 0x02, 0x08, 0x00, 0x05, 0x00, 0x07]),
+        'image/jpeg',
+      ),
     ).toBeNull();
     expect(imageDisplaySize(new Uint8Array([0xff, 0xd8, 0xff, 0xff]), 'image/jpeg')).toBeNull();
     expect(imageDisplaySize(new Uint8Array([0xff, 0xd8, 0xff, 0xe0]), 'image/jpeg')).toBeNull();
