@@ -358,6 +358,9 @@ describe('note page link', () => {
     expect(notePageUrl('https://21.gifts/', 'ABCDEF01-2222-4333-8444-555555555555')).toBe(
       'https://21.gifts/l/abcdef01',
     );
+    expect(notePageUrl('https://dev.21.gifts/', 'ABCDEF01-2222-4333-8444-555555555555')).toBe(
+      'https://dev.21.gifts/l/abcdef01',
+    );
     expect(notePageUrl('', 'abcdef01-2222-4333-8444-555555555555')).toBeNull();
     expect(notePageUrl('https://21.gifts', 'm-pic')).toBeNull();
   });
@@ -368,6 +371,36 @@ describe('note page link', () => {
     expect(event.tags.find((tag) => tag[0] === 'r')?.[1]).toBe(page);
     const again = buildKind1Event(`see ${page}`, 1, undefined, undefined, null, undefined, page);
     expect(again.content).toBe(`see ${page}\n\n#bitcoin #21gifts`);
+    const prefixed = buildKind1Event(
+      `see ${page}extra`,
+      1,
+      undefined,
+      undefined,
+      null,
+      undefined,
+      page,
+    );
+    expect(prefixed.content).toBe(`see ${page}extra\n${page}\n\n#bitcoin #21gifts`);
+    const punctuated = buildKind1Event(
+      `see ${page}.`,
+      1,
+      undefined,
+      undefined,
+      null,
+      undefined,
+      page,
+    );
+    expect(punctuated.content).toBe(`see ${page}.\n\n#bitcoin #21gifts`);
+    const later = buildKind1Event(
+      `${page}x ${page}`,
+      1,
+      undefined,
+      undefined,
+      null,
+      undefined,
+      page,
+    );
+    expect(later.content).toBe(`${page}x ${page}\n\n#bitcoin #21gifts`);
     const empty = buildKind1Event('', 1, undefined, undefined, null, undefined, page);
     expect(empty.content).toBe(`${page}\n\n#bitcoin #21gifts`);
     expect(

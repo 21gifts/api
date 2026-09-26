@@ -108,7 +108,7 @@ export function forumPhotoUrl(
  *
  * @param siteOrigin - `PUBLIC_BASE_URL` without caring about a trailing slash.
  * @param messageId - Message id. Only a UUID is shortened.
- * @returns `https://21.gifts/l/…`, or `null` when the origin or id is unusable.
+ * @returns `<siteOrigin>/l/<8 hex>`, or `null` when the origin or id is unusable.
  */
 export function notePageUrl(siteOrigin: string, messageId: string): string | null {
   const origin = siteOrigin.trim().replace(/\/$/, '');
@@ -286,7 +286,9 @@ export interface UnsignedKind1 {
  * @param replyTo - Optional NIP-10 parent pointers (replies only).
  * @param location - Optional account location; null/omitted/unusable → same as four-arg HEAD.
  * @param extraPhotos - Optional extra stills (indices 1..n). Omit or empty for N=1 bit-identical events.
- * @param pageUrl - Optional `https://…/l/<8 hex>` for this message. Omitted or null keeps the homepage `r` tag and does not add a link line.
+ * @param pageUrl - Optional `<siteOrigin>/l/<8 hex>` for this message. Omitted,
+ *   null, or empty keeps the homepage `r` tag and does not add a link line.
+ *   The URL is appended unless that exact URL is already its own token.
  * @returns Unsigned event fields for `finalizeEvent`.
  */
 export function buildKind1Event(
@@ -344,7 +346,7 @@ export function buildKind1Event(
         tag[1] = pageUrl;
       }
     }
-    if (!body.includes(pageUrl)) {
+    if (!contentHasUrlToken(body, pageUrl)) {
       body = body === '' ? pageUrl : `${body}\n${pageUrl}`;
     }
   }
@@ -486,6 +488,23 @@ export function buildKind0Event(
     tags: [],
     created_at: createdAtUnix,
   };
+}
+
+/** True when `url` occurs with no letter, digit, or `_` immediately after it. */
+function contentHasUrlToken(content: string, url: string): boolean {
+  let from = 0;
+  while (from < content.length) {
+    const index = content.indexOf(url, from);
+    if (index === -1) {
+      return false;
+    }
+    const after = content[index + url.length];
+    if (after === undefined || !/[A-Za-z0-9_]/.test(after)) {
+      return true;
+    }
+    from = index + 1;
+  }
+  return false;
 }
 
 function profileImageUrl(value: string | null | undefined, fallback: string): string {
