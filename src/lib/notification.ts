@@ -184,7 +184,7 @@ export function wantsNotification(args: {
  * would still accept. `moderator_appointed` and `moderator_proposal` always
  * stay (not living-room fan-out). `all` returns `rows` unchanged. Parent lookup uses
  * `parentById` (`forum_post` / `forum_reply` / `zap` `parentId`); a missing
- * parent is unpaid and not personal. Zap `text` is the amount string.
+ * parent is unpaid and not personal. `forum_mention` uses the recipient as `mentionedAccountId` and is active only when the parent exists and `parent.sats > 0`. Zap `text` is the amount string.
  * Zap actor staff is the stored actor via {@link isStaffAccount} only when
  * that actor is not the parent note author (missing payer is not staff).
  *

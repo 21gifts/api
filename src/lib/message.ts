@@ -525,7 +525,7 @@ export function truncatePubkeyDisplay(pubkeyHex: string): string {
  * `videoContentType`; live `role` for 21gifts authors; optional
  * `via: 'nostr'` when `row.accountId === null && row.authorPubkey !== null`;
  * optional `accountId` when requested; optional `parentId` when
- * `row.parentId !== null`; optional `goalSats` when the stored value is a
+ * `row.parentId !== null`; optional `mentions` (`{ username, accountId }[]`) when `includeAccountId` is true and the stored list is non-empty; optional `goalSats` when the stored value is a
  * positive integer on a top-level note; optional currency-ask keys when
  * `goalCurrency` is stored; optional `place` when stored;
  * optional hide stamps when `hidden`

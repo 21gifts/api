@@ -117,6 +117,14 @@ describe('public active window', () => {
       (await app.request('/messages?mode=active', { headers: { authorization: 'Bearer no' } }))
         .status,
     ).toBe(401);
+    expect(
+      (await app.request('/messages?mode=active', { headers: { authorization: 'Bearer    ' } }))
+        .status,
+    ).toBe(401);
+    expect(
+      (await app.request('/messages?mode=active', { headers: { authorization: 'Basic abc' } }))
+        .status,
+    ).toBe(401);
   }, 20_000);
 
   it('serves an external author, a short page, and the error paths', async () => {
@@ -189,6 +197,18 @@ describe('public active window', () => {
     expect(rows).toHaveLength(1);
     const self = await notes.listByRecipient('ada', 10);
     expect(self.filter((row) => row.type === 'forum_mention')).toHaveLength(0);
+    const own = await app.request('/messages', {
+      method: 'POST',
+      headers: { authorization: 'Bearer tok', 'content-type': 'application/json' },
+      body: JSON.stringify({ text: 'hi @ada' }),
+    });
+    expect(own.status).toBe(200);
+    expect(
+      ((await own.json()) as { mentions?: { username: string; accountId: string }[] }).mentions,
+    ).toEqual([{ username: 'ada', accountId: 'ada' }]);
+    expect(
+      (await notes.listByRecipient('ada', 10)).filter((row) => row.type === 'forum_mention'),
+    ).toHaveLength(0);
   });
 
   it('marks a reply, skips a vanished parent, and still answers when notify throws', async () => {

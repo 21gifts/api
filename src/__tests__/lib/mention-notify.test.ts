@@ -18,18 +18,22 @@ const created = (mentions?: MessageRow['mentions']): MessageRow => ({
 
 describe('notifyForumMentions', () => {
   it('skips an empty list and a self mark', async () => {
+    const notes = new InMemoryNotificationStore();
     await notifyForumMentions({
       account: { id: 'ada' },
       created: created(),
       parentId: '11111111-1111-4111-8111-111111111111',
       isActive: false,
+      notifications: notes,
     });
     await notifyForumMentions({
       account: { id: 'ada' },
       created: created([{ accountId: 'ada', username: 'ada' }]),
       parentId: '11111111-1111-4111-8111-111111111111',
-      isActive: false,
+      isActive: true,
+      notifications: notes,
     });
+    expect(await notes.listByRecipient('ada', 10)).toEqual([]);
   });
 
   it('notifies one person with and without the optional stores', async () => {

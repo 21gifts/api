@@ -1220,14 +1220,14 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
   return new Hono()
     .get('/', async (c) => {
       const header = c.req.header('authorization');
+      if (header === undefined) {
+        return servePublicActiveList(deps, c);
+      }
       const token = bearerToken(header);
       const account =
         token === null ? null : await resolveSession(deps.authStore, deps.now(), token);
-      if (token !== null && account === null) {
-        return c.json({ error: 'Unauthorized' }, 401);
-      }
       if (account === null) {
-        return servePublicActiveList(deps, c);
+        return c.json({ error: 'Unauthorized' }, 401);
       }
       const gate = requireAction(account, 'forum.read');
       if (!gate.ok) {
