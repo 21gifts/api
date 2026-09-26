@@ -9,6 +9,8 @@ import {
   type MapPush,
 } from '@/lib/ocp-place';
 import { createApp } from '@/server';
+import { InMemoryAuthStore } from '@/lib/auth/store';
+import type { FetchFn } from '@/lib/lnurlp';
 
 const COORD_ERROR = 'Place must be a latitude and longitude';
 const ORIGIN_ERROR = 'Place origin is invalid';
@@ -199,16 +201,44 @@ describe('shopOcpPlaceName / shopOcpPlaceInput', () => {
   });
 });
 
-function recordingPush(status = 201): { mapPush: MapPush; calls: string[] } {
-  const calls: string[] = [];
+type RecordedCall = { url: string; authorization: string; body: string };
+
+function recordingPush(status = 201): { mapPush: MapPush; calls: RecordedCall[] } {
+  const calls: RecordedCall[] = [];
   const fetchImpl: MapFetch = async (input, init) => {
-    calls.push(String(init.body));
+    const headers = new Headers(init.headers);
+    calls.push({
+      url: String(input),
+      authorization: headers.get('authorization') ?? '',
+      body: String(init.body),
+    });
     return new Response('{}', { status });
   };
   return {
-    mapPush: { baseUrl: 'http://map.test/', token: ' ingest ', fetchImpl },
+    mapPush: { baseUrl: 'http://map.test', token: 'secret', fetchImpl },
     calls,
   };
+}
+
+async function shopAccount(): Promise<InMemoryAuthStore> {
+  const store = new InMemoryAuthStore();
+  const now = Date.now();
+  await store.createAccount({
+    id: 'acc',
+    linkingKey: 'a'.repeat(64),
+    role: 'verified',
+    name: 'Ada',
+    lightningAddress: 'ada@walletofsatoshi.com',
+    lightningAddressVerified: true,
+    forumLawsDismissed: false,
+    location: null,
+    viewKey: 'b'.repeat(64),
+    createdAt: now,
+    rulesAgreedAt: now,
+    username: 'ada',
+  });
+  await store.createSession({ token: 'tok', accountId: 'acc', createdAt: now });
+  return store;
 }
 
 describe('resolveMapPush', () => {
@@ -236,11 +266,53 @@ describe('resolveMapPush', () => {
 });
 
 describe('createApp map push', () => {
-  it('forwards a configured map push into the app', async () => {
+  const pin = { text: 'Open #21GiftsShop', place: { lat: 47.3, lng: 8.5, label: 'Stall' } };
+
+  async function postShop(app: ReturnType<typeof createApp>): Promise<number> {
+    const res = await app.request('/messages', {
+      method: 'POST',
+      headers: { authorization: 'Bearer tok', 'content-type': 'application/json' },
+      body: JSON.stringify(pin),
+    });
+    return res.status;
+  }
+
+  it('keeps the pin and posts nothing when the url or token is blank', async () => {
+    const calls: string[] = [];
+    const fetchImpl: FetchFn = async (input) => {
+      calls.push(String(input));
+      return new Response('{}', { status: 201 });
+    };
     const app = createApp({
-      env: { OCP_MAP_BASE_URL: 'http://map.test', OCP_PLACE_INGEST_TOKEN: 'secret' },
+      env: { OCP_MAP_BASE_URL: '  ', OCP_PLACE_INGEST_TOKEN: '  ' },
+      fetchImpl,
+      authStore: await shopAccount(),
     });
     expect((await app.request('/healthz')).status).toBe(200);
+    expect(await postShop(app)).toBe(200);
+    expect(calls).toEqual([]);
+  });
+
+  it('posts one shop pin to the stripped map url', async () => {
+    const calls: RecordedCall[] = [];
+    const fetchImpl: FetchFn = async (input, init) => {
+      const headers = new Headers(init?.headers);
+      calls.push({
+        url: String(input),
+        authorization: headers.get('authorization') ?? '',
+        body: String(init?.body),
+      });
+      return new Response('{}', { status: 201 });
+    };
+    const app = createApp({
+      env: { OCP_MAP_BASE_URL: 'http://map.test/', OCP_PLACE_INGEST_TOKEN: ' secret ' },
+      fetchImpl,
+      authStore: await shopAccount(),
+    });
+    expect(await postShop(app)).toBe(200);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.url).toBe('http://map.test/map/places');
+    expect(calls[0]?.authorization).toBe('Bearer secret');
   });
 });
 
@@ -256,6 +328,7 @@ describe('recordFirstShopOcpPlace', () => {
   });
 
   it('posts a first top-level shop pin to /map/places', async () => {
+    const timeoutSpy = vi.spyOn(AbortSignal, 'timeout');
     const { mapPush, calls } = recordingPush();
     await recordFirstShopOcpPlace({
       mapPush,
@@ -268,12 +341,16 @@ describe('recordFirstShopOcpPlace', () => {
       textHasHashtagToken: (text, name) => text.includes(`#${name}`),
     });
     expect(calls).toHaveLength(1);
-    expect(JSON.parse(calls[0] ?? '{}')).toMatchObject({
+    expect(calls[0]?.url).toBe('http://map.test/map/places');
+    expect(calls[0]?.authorization).toBe('Bearer secret');
+    expect(timeoutSpy).toHaveBeenCalledWith(5_000);
+    expect(JSON.parse(calls[0]?.body ?? '{}')).toMatchObject({
       origin: '21gifts',
       name: 'Stall',
       category: 'shopping',
       paymentMethods: 'lightning',
     });
+    timeoutSpy.mockRestore();
   });
 
   it('skips replies, non-shops, missing pins, prior pins, and a missing push', async () => {
