@@ -478,6 +478,25 @@ describe('credit repayment', () => {
     expect(hidden.status).toBe(404);
   });
 
+  it('looks past a paid first day when the term has a later day', async () => {
+    const { app, messages } = await readyCredit({ authorId: 'acc-twoday', termDays: 2 });
+    await messages.markRepaymentPaid({
+      messageId: CREDIT,
+      dayIndex: 0,
+      recipientAccountId: GIVER,
+      dueSats: 10,
+      paidAt: new Date(now()),
+    });
+    const status = await app.request(`/messages/${CREDIT}/repayment`, {
+      headers: { authorization: 'Bearer acc-twoday' },
+    });
+    expect(status.status).toBe(200);
+    expect(await status.json()).toMatchObject({
+      daysPaid: 1,
+      next: { dayIndex: 1, recipientAccountId: GIVER, sats: 11 },
+    });
+  });
+
   it('prices a fiat day and rejects a bad id', async () => {
     const { app } = await readyCredit({
       authorId: 'acc-fiat',
