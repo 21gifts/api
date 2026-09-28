@@ -8,6 +8,7 @@ import { InMemoryMessageStore, type MessageStore } from '@/lib/message-store';
 import { InMemoryNotificationStore } from '@/lib/notification-store';
 import {
   MESSAGE_MAX_LENGTH,
+  type MessageRow,
   decodeMessageFeedCursor,
   encodeMessageFeedCursor,
   truncatePubkeyDisplay,
@@ -213,6 +214,8 @@ function throwingStore(overrides: Partial<MessageStore> = {}): MessageStore {
     markUndeleted: boom,
     setPlace: boom,
     setShopAccount: boom,
+    appendEdit: boom,
+    listEdits: boom,
     getById: boom,
     getByEventId: boom,
     claimUnsigned: boom,
@@ -3285,6 +3288,8 @@ describe('POST /messages', () => {
       markUndeleted: (id) => base.markUndeleted(id),
       setPlace: (id, place) => base.setPlace(id, place),
       setShopAccount: (id, account) => base.setShopAccount(id, account),
+      appendEdit: (row) => base.appendEdit(row),
+      listEdits: (messageId) => base.listEdits(messageId),
       getById: (id) => base.getById(id),
       getByEventId: (eventId) => base.getByEventId(eventId),
       listPublishedEventIds: (limit) => base.listPublishedEventIds(limit),
@@ -3406,6 +3411,8 @@ describe('POST /messages', () => {
       markUndeleted: (id) => base.markUndeleted(id),
       setPlace: (id, place) => base.setPlace(id, place),
       setShopAccount: (id, account) => base.setShopAccount(id, account),
+      appendEdit: (row) => base.appendEdit(row),
+      listEdits: (messageId) => base.listEdits(messageId),
       getById: (id) => base.getById(id),
       getByEventId: (eventId) => base.getByEventId(eventId),
       listPublishedEventIds: (limit) => base.listPublishedEventIds(limit),
@@ -5062,6 +5069,8 @@ describe('POST /messages/:id/invoice', () => {
       markUndeleted: (id) => base.markUndeleted(id),
       setPlace: (id, place) => base.setPlace(id, place),
       setShopAccount: (id, account) => base.setShopAccount(id, account),
+      appendEdit: (row) => base.appendEdit(row),
+      listEdits: (messageId) => base.listEdits(messageId),
       getByEventId: (id) => base.getByEventId(id),
       claimUnsigned: (...args) => base.claimUnsigned(...args),
       claimUnpublished: (...args) => base.claimUnpublished(...args),
@@ -10894,6 +10903,7 @@ describe('PATCH /messages/:id/shop-account', () => {
   });
 });
 
+
 function recordingMap(): {
   mapPush: MapPush;
   calls: string[];
@@ -11022,5 +11032,494 @@ describe('shop OCP place hook', () => {
     );
     expect(res.status).toBe(200);
     expect(parsedEvents(warn).some((e) => e['event'] === 'ocp.place.failed')).toBe(true);
+  });
+});
+
+describe('PATCH /messages/:id/text and GET /messages/:id/edits', () => {
+  const SHOP_ID = '11111111-1111-4111-8111-111111111111';
+  const REPLY_ID = '33333333-3333-4333-8333-333333333333';
+  const PLAIN_ID = '66666666-6666-4666-8666-666666666666';
+  const EVENT_ID = 'ee'.repeat(32);
+
+  async function roleStore(role: 'initiator' | 'founder'): Promise<InMemoryAuthStore> {
+    const auth = await staffStore('Ada');
+    const existing = await auth.getAccount('acc');
+    if (existing === undefined) {
+      throw new Error('expected account');
+    }
+    await auth.updateAccount({ ...existing, role });
+    return auth;
+  }
+
+  async function shopNote(
+    messages: InMemoryMessageStore,
+    overrides: Partial<MessageRow> = {},
+  ): Promise<void> {
+    await messages.create({
+      id: SHOP_ID,
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'Cafe\n\n#21GiftsShop',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+      eventId: EVENT_ID,
+      ...overrides,
+    });
+  }
+
+  function patchText(
+    auth: InMemoryAuthStore,
+    id: string,
+    body: unknown,
+    messages: InMemoryMessageStore = new InMemoryMessageStore(),
+  ) {
+    return mount(auth, messages).request('/messages/' + id + '/text', {
+      method: 'PATCH',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+  }
+
+  it('returns 401 without a session', async () => {
+    const res = await mount(await seededStore()).request('/messages/' + SHOP_ID + '/text', {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ text: 'Cafe' }),
+    });
+    expect(res.status).toBe(401);
+    expect(await res.json()).toEqual({ error: 'Unauthorized' });
+    const edits = await mount(await seededStore()).request('/messages/' + SHOP_ID + '/edits');
+    expect(edits.status).toBe(401);
+  });
+
+  it('returns 403 below moderator', async () => {
+    const messages = new InMemoryMessageStore();
+    await shopNote(messages);
+    const basis = await patchText(await seededStore(), SHOP_ID, { text: 'Cafe' }, messages);
+    expect(basis.status).toBe(403);
+    const verified = await patchText(await namedStore('Ada'), SHOP_ID, { text: 'Cafe' }, messages);
+    expect(verified.status).toBe(403);
+    const listed = await mount(await namedStore('Ada'), messages).request(
+      '/messages/' + SHOP_ID + '/edits',
+      { headers: AUTH },
+    );
+    expect(listed.status).toBe(403);
+  });
+
+  it('returns 400 for a bad id, a bad body, and text that cannot be stored', async () => {
+    const auth = await staffStore('Ada');
+    const badId = await patchText(auth, 'nope', { text: 'Cafe' });
+    expect(badId.status).toBe(404);
+    const missingText = await patchText(auth, SHOP_ID, {});
+    expect(missingText.status).toBe(400);
+    expect(await missingText.json()).toEqual({ error: 'Invalid body' });
+    const numberText = await patchText(auth, SHOP_ID, { text: 1 });
+    expect(numberText.status).toBe(400);
+    const arrayBody = await mount(auth).request('/messages/' + SHOP_ID + '/text', {
+      method: 'PATCH',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify(['Cafe']),
+    });
+    expect(arrayBody.status).toBe(400);
+    const control = await patchText(auth, SHOP_ID, { text: 'bad\u0000text' });
+    expect(control.status).toBe(400);
+    expect(await control.json()).toEqual({ error: 'Text must be 1–8000 characters' });
+    const tooLong = await patchText(auth, SHOP_ID, { text: 'a'.repeat(8001) });
+    expect(tooLong.status).toBe(400);
+  });
+
+  it('returns 404 for a hidden note, 400 for a reply, and 400 for a non-shop note', async () => {
+    const auth = await staffStore('Ada');
+    const messages = new InMemoryMessageStore();
+    await shopNote(messages);
+    await messages.create({
+      id: REPLY_ID,
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'Reply #21GiftsShop',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+      parentId: SHOP_ID,
+    });
+    const reply = await patchText(auth, REPLY_ID, { text: 'Next' }, messages);
+    expect(reply.status).toBe(400);
+    expect(await reply.json()).toEqual({ error: 'A reply cannot be edited' });
+    await messages.markDeleted(SHOP_ID, new Date(now()), 'acc');
+    const hidden = await patchText(auth, SHOP_ID, { text: 'Next' }, messages);
+    expect(hidden.status).toBe(404);
+    await messages.create({
+      id: PLAIN_ID,
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'Hello',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+    });
+    const plain = await patchText(auth, PLAIN_ID, { text: 'Next' }, messages);
+    expect(plain.status).toBe(400);
+    expect(await plain.json()).toEqual({ error: 'Only a shop note can be edited' });
+  });
+
+  it('rejects empty text without media and a body that would exceed the cap after the tag', async () => {
+    const auth = await staffStore('Ada');
+    const messages = new InMemoryMessageStore();
+    await shopNote(messages);
+    const empty = await patchText(auth, SHOP_ID, { text: '   ' }, messages);
+    expect(empty.status).toBe(400);
+    expect(await empty.json()).toEqual({
+      error: 'Text must be 1–8000 characters or include a photo',
+    });
+    const capped = await patchText(auth, SHOP_ID, { text: 'a'.repeat(8000) }, messages);
+    expect(capped.status).toBe(400);
+    expect(await capped.json()).toEqual({ error: 'Text must be 1–8000 characters' });
+    expect((await messages.getById(SHOP_ID))?.text).toBe('Cafe\n\n#21GiftsShop');
+    expect(await messages.listEdits(SHOP_ID)).toEqual([]);
+  });
+
+  it('lets a moderator, an initiator, and a founder replace text and keep the shop tag', async () => {
+    for (const role of ['moderator', 'initiator', 'founder'] as const) {
+      const auth = role === 'moderator' ? await staffStore('Ada') : await roleStore(role);
+      const messages = new InMemoryMessageStore();
+      await shopNote(messages);
+      const res = await patchText(auth, SHOP_ID, { text: 'Cafe Sol' }, messages);
+      expect(res.status).toBe(200);
+      const json = (await res.json()) as { text: string };
+      expect(json.text).toBe('Cafe Sol\n\n#21GiftsShop');
+      expect(json).not.toHaveProperty('edits');
+      expect((await messages.getById(SHOP_ID))?.eventId).toBe(EVENT_ID);
+      const edits = await messages.listEdits(SHOP_ID);
+      expect(edits).toHaveLength(1);
+      expect(edits[0]).toMatchObject({
+        field: 'text',
+        before: 'Cafe\n\n#21GiftsShop',
+        after: 'Cafe Sol\n\n#21GiftsShop',
+        actorId: 'acc',
+      });
+    }
+  });
+
+  it('does not append history when the text is unchanged, including an existing tag', async () => {
+    const auth = await staffStore('Ada');
+    const messages = new InMemoryMessageStore();
+    await shopNote(messages);
+    const res = await patchText(auth, SHOP_ID, { text: 'Cafe\n\n#21GiftsShop' }, messages);
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as { text: string }).text).toBe('Cafe\n\n#21GiftsShop');
+    expect(await messages.listEdits(SHOP_ID)).toEqual([]);
+  });
+
+  it('edits an external shop note and a note whose author account is gone', async () => {
+    const auth = await staffStore('Ada');
+    const external = new InMemoryMessageStore();
+    await shopNote(external, { accountId: null, authorPubkey: 'ab'.repeat(32) });
+    const same = await patchText(auth, SHOP_ID, { text: 'Cafe\n\n#21GiftsShop' }, external);
+    expect(same.status).toBe(200);
+    expect((await same.json()) as { role?: string }).not.toHaveProperty('role');
+    const changed = await patchText(auth, SHOP_ID, { text: 'Cafe Sol' }, external);
+    expect(changed.status).toBe(200);
+    expect((await changed.json()) as { role?: string }).not.toHaveProperty('role');
+
+    const gone = new InMemoryMessageStore();
+    await shopNote(gone, { accountId: 'gone' });
+    const untouched = await patchText(auth, SHOP_ID, { text: 'Cafe\n\n#21GiftsShop' }, gone);
+    expect(untouched.status).toBe(200);
+    expect(((await untouched.json()) as { role: string }).role).toBe('basis');
+    const renamed = await patchText(auth, SHOP_ID, { text: 'Cafe Sol' }, gone);
+    expect(renamed.status).toBe(200);
+    expect(((await renamed.json()) as { role: string }).role).toBe('basis');
+  });
+
+  it('stores only the shop tag for a photo-only or video-only note', async () => {
+    const auth = await staffStore('Ada');
+    const seeded = {
+      id: SHOP_ID,
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'Cafe\n\n#21GiftsShop',
+      createdAt: new Date(now()),
+      ...unsignedNostrDefaults(),
+      eventId: EVENT_ID,
+    };
+    const photos = new InMemoryMessageStore([{ ...seeded, hasPhoto: true, hasVideo: false }]);
+    const photo = await patchText(auth, SHOP_ID, { text: '' }, photos);
+    expect(photo.status).toBe(200);
+    expect((await photos.getById(SHOP_ID))?.text).toBe('#21GiftsShop');
+    const videos = new InMemoryMessageStore([{ ...seeded, hasPhoto: false, hasVideo: true }]);
+    const video = await patchText(auth, SHOP_ID, { text: '' }, videos);
+    expect(video.status).toBe(200);
+    expect((await videos.getById(SHOP_ID))?.text).toBe('#21GiftsShop');
+  });
+
+  it('returns 404 when updateText misses and 503 when the store throws', async () => {
+    const auth = await staffStore('Ada');
+    const messages = new InMemoryMessageStore();
+    await shopNote(messages);
+    const row = await messages.getById(SHOP_ID);
+    if (row === undefined) {
+      throw new Error('expected shop');
+    }
+    const missing = await mount(
+      auth,
+      throwingStore({
+        getById: async () => row,
+        updateText: async () => undefined,
+      }),
+    ).request('/messages/' + SHOP_ID + '/text', {
+      method: 'PATCH',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ text: 'Next' }),
+    });
+    expect(missing.status).toBe(404);
+    warn.mockClear();
+    const failed = await mount(
+      auth,
+      throwingStore({
+        getById: async () => row,
+        updateText: async () => {
+          throw new Error('boom');
+        },
+      }),
+    ).request('/messages/' + SHOP_ID + '/text', {
+      method: 'PATCH',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ text: 'Next' }),
+    });
+    expect(failed.status).toBe(503);
+    expect(parsedEvents(warn).some((event) => event['event'] === 'messages.text.failed')).toBe(
+      true,
+    );
+    const historyFailed = await mount(
+      auth,
+      throwingStore({
+        getById: async () => ({ ...row, text: 'Cafe\n\n#21GiftsShop' }),
+        updateText: async () => ({ ...row, text: 'Next\n\n#21GiftsShop' }),
+        appendEdit: async () => {
+          throw new Error('boom');
+        },
+      }),
+    ).request('/messages/' + SHOP_ID + '/text', {
+      method: 'PATCH',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ text: 'Next' }),
+    });
+    expect(historyFailed.status).toBe(503);
+    let reads = 0;
+    const gone = await mount(
+      auth,
+      throwingStore({
+        getById: async () => {
+          reads += 1;
+          return reads === 1 ? row : undefined;
+        },
+        updateText: async () => row,
+        appendEdit: async () => undefined,
+      }),
+    ).request('/messages/' + SHOP_ID + '/text', {
+      method: 'PATCH',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ text: 'Next' }),
+    });
+    expect(gone.status).toBe(404);
+  });
+
+  it('lists history newest first for staff, including a hidden shop note', async () => {
+    const auth = await staffStore('Ada');
+    const messages = new InMemoryMessageStore();
+    await shopNote(messages);
+    const empty = await mount(auth, messages).request('/messages/' + SHOP_ID + '/edits', {
+      headers: AUTH,
+    });
+    expect(empty.status).toBe(200);
+    expect(await empty.json()).toEqual({ edits: [] });
+    await messages.appendEdit({
+      id: '11111111-1111-4111-8111-111111111112',
+      messageId: SHOP_ID,
+      actorId: 'acc',
+      createdAt: new Date('2026-08-01T00:00:00.000Z'),
+      field: 'place',
+      before: null,
+      after: { lat: 1, lng: 2, label: 'Stall' },
+    });
+    await messages.appendEdit({
+      id: '11111111-1111-4111-8111-111111111113',
+      messageId: SHOP_ID,
+      actorId: 'missing-actor',
+      createdAt: new Date('2026-08-02T00:00:00.000Z'),
+      field: 'shop_account',
+      before: null,
+      after: { id: 's', username: 'luna', name: 'Luna' },
+    });
+    const listed = await mount(auth, messages).request('/messages/' + SHOP_ID + '/edits', {
+      headers: AUTH,
+    });
+    expect(listed.status).toBe(200);
+    expect(await listed.json()).toEqual({
+      edits: [
+        {
+          id: '11111111-1111-4111-8111-111111111113',
+          createdAt: '2026-08-02T00:00:00.000Z',
+          field: 'shopAccount',
+          before: null,
+          after: { id: 's', username: 'luna', name: 'Luna' },
+          actor: { id: 'missing-actor', name: null, role: null },
+        },
+        {
+          id: '11111111-1111-4111-8111-111111111112',
+          createdAt: '2026-08-01T00:00:00.000Z',
+          field: 'place',
+          before: null,
+          after: { lat: 1, lng: 2, label: 'Stall' },
+          actor: { id: 'acc', name: 'Ada', role: 'moderator' },
+        },
+      ],
+    });
+    await messages.markDeleted(SHOP_ID, new Date(now()), 'acc');
+    const hidden = await mount(auth, messages).request('/messages/' + SHOP_ID + '/edits', {
+      headers: AUTH,
+    });
+    expect(hidden.status).toBe(200);
+    expect(((await hidden.json()) as { edits: unknown[] }).edits).toHaveLength(2);
+    const plain = await mount(auth, messages).request('/messages/' + PLAIN_ID + '/edits', {
+      headers: AUTH,
+    });
+    expect(plain.status).toBe(404);
+    const bad = await mount(auth, messages).request('/messages/nope/edits', { headers: AUTH });
+    expect(bad.status).toBe(404);
+  });
+
+  it('returns 404 for a reply history read and 503 when listing throws', async () => {
+    const auth = await staffStore('Ada');
+    const messages = new InMemoryMessageStore();
+    await shopNote(messages);
+    await messages.create({
+      id: REPLY_ID,
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'Reply #21GiftsShop',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+      parentId: SHOP_ID,
+    });
+    const reply = await mount(auth, messages).request('/messages/' + REPLY_ID + '/edits', {
+      headers: AUTH,
+    });
+    expect(reply.status).toBe(404);
+    const row = await messages.getById(SHOP_ID);
+    if (row === undefined) {
+      throw new Error('expected shop');
+    }
+    warn.mockClear();
+    const failed = await mount(
+      auth,
+      throwingStore({
+        getById: async () => row,
+        listEdits: async () => {
+          throw new Error('boom');
+        },
+      }),
+    ).request('/messages/' + SHOP_ID + '/edits', { headers: AUTH });
+    expect(failed.status).toBe(503);
+    expect(parsedEvents(warn).some((event) => event['event'] === 'messages.edits.failed')).toBe(
+      true,
+    );
+  });
+
+  it('records a place or shop-account change once and skips an identical save', async () => {
+    const auth = await staffStore('Ada');
+    const messages = new InMemoryMessageStore();
+    await shopNote(messages);
+    const pin = { lat: 47.1, lng: 8.5, label: 'Stall' };
+    const setPlace = await mount(auth, messages).request('/messages/' + SHOP_ID + '/place', {
+      method: 'PATCH',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ place: pin }),
+    });
+    expect(setPlace.status).toBe(200);
+    const samePlace = await mount(auth, messages).request('/messages/' + SHOP_ID + '/place', {
+      method: 'PATCH',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ place: pin }),
+    });
+    expect(samePlace.status).toBe(200);
+    expect(await messages.listEdits(SHOP_ID)).toHaveLength(1);
+    const clearPlace = await mount(auth, messages).request('/messages/' + SHOP_ID + '/place', {
+      method: 'PATCH',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ place: null }),
+    });
+    expect(clearPlace.status).toBe(200);
+    const clearAgain = await mount(auth, messages).request('/messages/' + SHOP_ID + '/place', {
+      method: 'PATCH',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ place: null }),
+    });
+    expect(clearAgain.status).toBe(200);
+    expect(
+      (await messages.listEdits(SHOP_ID))
+        .map((row) => row.field)
+        .slice()
+        .sort(),
+    ).toEqual(['place', 'place']);
+
+    await auth.createAccount({
+      id: 'shop-acc',
+      linkingKey: null,
+      role: 'basis',
+      name: 'Luna',
+      username: 'luna',
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: 'c'.repeat(64),
+      createdAt: 2_000_000,
+      rulesAgreedAt: null,
+    });
+    const setAccount = await mount(auth, messages).request(
+      '/messages/' + SHOP_ID + '/shop-account',
+      {
+        method: 'PATCH',
+        headers: { ...AUTH, 'content-type': 'application/json' },
+        body: JSON.stringify({ username: 'luna' }),
+      },
+    );
+    expect(setAccount.status).toBe(200);
+    const sameAccount = await mount(auth, messages).request(
+      '/messages/' + SHOP_ID + '/shop-account',
+      {
+        method: 'PATCH',
+        headers: { ...AUTH, 'content-type': 'application/json' },
+        body: JSON.stringify({ username: 'luna' }),
+      },
+    );
+    expect(sameAccount.status).toBe(200);
+    const clearAccount = await mount(auth, messages).request(
+      '/messages/' + SHOP_ID + '/shop-account',
+      {
+        method: 'PATCH',
+        headers: { ...AUTH, 'content-type': 'application/json' },
+        body: JSON.stringify({ username: null }),
+      },
+    );
+    expect(clearAccount.status).toBe(200);
+    const clearAccountAgain = await mount(auth, messages).request(
+      '/messages/' + SHOP_ID + '/shop-account',
+      {
+        method: 'PATCH',
+        headers: { ...AUTH, 'content-type': 'application/json' },
+        body: JSON.stringify({ username: null }),
+      },
+    );
+    expect(clearAccountAgain.status).toBe(200);
+    expect(
+      (await messages.listEdits(SHOP_ID))
+        .map((row) => row.field)
+        .slice()
+        .sort(),
+    ).toEqual(['place', 'place', 'shop_account', 'shop_account']);
   });
 });

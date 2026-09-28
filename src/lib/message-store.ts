@@ -280,6 +280,24 @@ export interface AccountMessageCounts {
   replyCount: number;
 }
 
+/** One stored change of shop-note text, place, or shop account. */
+export interface MessageEditRow {
+  /** Opaque unique history id. */
+  id: string;
+  /** Message this row belongs to. */
+  messageId: string;
+  /** Staff account that made the change. */
+  actorId: string;
+  /** When the change was stored. */
+  createdAt: Date;
+  /** Which field changed. SQL `shop_account` stays `shop_account`. */
+  field: 'text' | 'place' | 'shop_account';
+  /** Value before the write (`null` when clearing). */
+  before: unknown;
+  /** Value after the write (`null` when clearing). */
+  after: unknown;
+}
+
 /**
  * Persistence port for forum messages.
  */
@@ -644,6 +662,23 @@ export interface MessageStore {
     id: string,
     account: { id: string; username: string; name: string } | null,
   ): Promise<boolean>;
+
+  /**
+   * Append one edit-history row. Does not change the message. The stored
+   * `before` / `after` values are copies.
+   *
+   * @param row - History row to store.
+   */
+  appendEdit(row: MessageEditRow): Promise<void>;
+
+  /**
+   * Edit history for one message. Newest `createdAt` then `id` first.
+   * Missing message → `[]`. Caller-owned copies.
+   *
+   * @param messageId - Message id.
+   * @returns History row copies, newest first.
+   */
+  listEdits(messageId: string): Promise<MessageEditRow[]>;
 
   /**
    * Direct children of `parentId` (`parentId` match), including hidden,
@@ -1609,6 +1644,18 @@ $message_goal_term_days$`,
      END LOOP;
    END;
    $unwrap$;`,
+  `CREATE TABLE IF NOT EXISTS message_edit (
+  id uuid PRIMARY KEY,
+  message_id uuid NOT NULL REFERENCES message (id) ON DELETE CASCADE,
+  actor_id uuid NOT NULL,
+  created_at timestamptz NOT NULL,
+  field text NOT NULL,
+  before jsonb NOT NULL,
+  after jsonb NOT NULL,
+  CONSTRAINT message_edit_field_chk CHECK (field IN ('text', 'place', 'shop_account'))
+)`,
+  `CREATE INDEX IF NOT EXISTS message_edit_message_created_idx
+  ON message_edit (message_id, created_at DESC, id DESC)`,
 ];
 
 /**
@@ -1827,6 +1874,44 @@ function copyRow(row: MessageRow): MessageRow {
   return copy;
 }
 
+/** Caller-owned clone of a jsonb `before` / `after` value. */
+function cloneEditValue(value: unknown): unknown {
+  if (value === null || typeof value !== 'object') {
+    return value;
+  }
+  return JSON.parse(JSON.stringify(value));
+}
+
+/** Copy one history row (cloned `createdAt` and jsonb values). */
+function copyEdit(row: MessageEditRow): MessageEditRow {
+  return {
+    id: row.id,
+    messageId: row.messageId,
+    actorId: row.actorId,
+    createdAt: new Date(row.createdAt.getTime()),
+    field: row.field,
+    before: cloneEditValue(row.before),
+    after: cloneEditValue(row.after),
+  };
+}
+
+/** Driver jsonb: parse a JSON string, otherwise keep the value (including `null`). */
+function readStoredEditJson(value: unknown): unknown {
+  if (typeof value !== 'string') {
+    return cloneEditValue(value);
+  }
+  try {
+    return cloneEditValue(JSON.parse(value));
+  } catch {
+    return value;
+  }
+}
+
+/** Map a SQL `field` text onto {@link MessageEditRow.field}. */
+function mapEditField(value: unknown): MessageEditRow['field'] {
+  return value === 'place' || value === 'shop_account' ? value : 'text';
+}
+
 /**
  * A receipt counts toward the frozen credit when it was stored at or before
  * the note filled. A missing timestamp is a row from before that column.
@@ -1961,6 +2046,7 @@ export class InMemoryMessageStore implements MessageStore {
   readonly #zapIngests: ZapIngestRow[] = [];
   readonly #zappers = new Map<string, NostrZapperRow>();
   readonly #blockedPubkeys = new Map<string, NostrBlockedPubkeyRow>();
+  readonly #edits: MessageEditRow[] = [];
   readonly #paymentFiat: Required<PaymentFiatStoreOptions>;
 
   /**
@@ -3656,6 +3742,25 @@ export class InMemoryMessageStore implements MessageStore {
     return Promise.resolve(true);
   }
 
+  appendEdit(row: MessageEditRow): Promise<void> {
+    this.#edits.push(copyEdit(row));
+    return Promise.resolve();
+  }
+
+  listEdits(messageId: string): Promise<MessageEditRow[]> {
+    const rows = this.#edits
+      .filter((item) => item.messageId === messageId)
+      .sort((a, b) => {
+        const byTime = b.createdAt.getTime() - a.createdAt.getTime();
+        if (byTime !== 0) {
+          return byTime;
+        }
+        return b.id.localeCompare(a.id);
+      })
+      .map((item) => copyEdit(item));
+    return Promise.resolve(rows);
+  }
+
   /**
    * Direct children of `parentId`, including hidden, Damus-only, and
    * gift-only rows. Oldest `createdAt` then `id` first. Missing parent → `[]`.
@@ -4833,6 +4938,49 @@ export class PostgresMessageStore implements MessageStore {
       [id, account === null ? null : account.id],
     );
     return rows[0] !== undefined;
+  }
+
+  async appendEdit(row: MessageEditRow): Promise<void> {
+    await this.#sql.execute(
+      `INSERT INTO message_edit (id, message_id, actor_id, created_at, field, before, after)
+       VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7::jsonb)`,
+      [
+        row.id,
+        row.messageId,
+        row.actorId,
+        row.createdAt,
+        row.field,
+        JSON.stringify(row.before),
+        JSON.stringify(row.after),
+      ],
+    );
+  }
+
+  async listEdits(messageId: string): Promise<MessageEditRow[]> {
+    const rows = await this.#sql.query<{
+      id: string;
+      message_id: string;
+      actor_id: string;
+      created_at: Date | string;
+      field: string;
+      before: unknown;
+      after: unknown;
+    }>(
+      `SELECT id, message_id, actor_id, created_at, field, before, after
+       FROM message_edit
+       WHERE message_id = $1
+       ORDER BY created_at DESC, id DESC`,
+      [messageId],
+    );
+    return rows.map((row) => ({
+      id: row.id,
+      messageId: row.message_id,
+      actorId: row.actor_id,
+      createdAt: new Date(row.created_at),
+      field: mapEditField(row.field),
+      before: readStoredEditJson(row.before),
+      after: readStoredEditJson(row.after),
+    }));
   }
 
   /**

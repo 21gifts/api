@@ -4841,6 +4841,10 @@ describe('indexOpenZapReceipts', () => {
       setPlace: (...args: Parameters<InMemoryMessageStore['setPlace']>) => base.setPlace(...args),
       setShopAccount: (...args: Parameters<InMemoryMessageStore['setShopAccount']>) =>
         base.setShopAccount(...args),
+      appendEdit: (...args: Parameters<InMemoryMessageStore['appendEdit']>) =>
+        base.appendEdit(...args),
+      listEdits: (...args: Parameters<InMemoryMessageStore['listEdits']>) =>
+        base.listEdits(...args),
       getById: (id: string) => base.getById(id),
       getByEventId: async (id: string) => {
         getByEventIdCalls += 1;
@@ -5085,6 +5089,10 @@ describe('indexOpenZapReceipts', () => {
         setPlace: (...args: Parameters<InMemoryMessageStore['setPlace']>) => base.setPlace(...args),
         setShopAccount: (...args: Parameters<InMemoryMessageStore['setShopAccount']>) =>
           base.setShopAccount(...args),
+        appendEdit: (...args: Parameters<InMemoryMessageStore['appendEdit']>) =>
+          base.appendEdit(...args),
+        listEdits: (...args: Parameters<InMemoryMessageStore['listEdits']>) =>
+          base.listEdits(...args),
         getById: (id: string) => base.getById(id),
         getByEventId: (id: string) => base.getByEventId(id),
         claimUnsigned: (...args: Parameters<InMemoryMessageStore['claimUnsigned']>) =>
@@ -5873,6 +5881,10 @@ describe('indexOpenZapReceipts', () => {
         setPlace: (...args: Parameters<InMemoryMessageStore['setPlace']>) => base.setPlace(...args),
         setShopAccount: (...args: Parameters<InMemoryMessageStore['setShopAccount']>) =>
           base.setShopAccount(...args),
+        appendEdit: (...args: Parameters<InMemoryMessageStore['appendEdit']>) =>
+          base.appendEdit(...args),
+        listEdits: (...args: Parameters<InMemoryMessageStore['listEdits']>) =>
+          base.listEdits(...args),
         getById: (id: string) => base.getById(id),
         getByEventId: (id: string) => base.getByEventId(id),
         claimUnsigned: (...args: Parameters<InMemoryMessageStore['claimUnsigned']>) =>

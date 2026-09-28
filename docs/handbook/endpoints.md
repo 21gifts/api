@@ -37,16 +37,30 @@
 
 ## Endpoint: PATCH /messages/:id/place
 
-- **Purpose:** Bearer required. A moderator sets, replaces, or clears the map pin on a live top-level shop note (`#21GiftsShop`) via `MessageStore.setPlace`. The first pin, when `mapPush` is configured, is posted once to `POST /map/places`; a failure logs `ocp.place.failed` and this response stays 200. Boot leaves `mapPush` unset while `SHOP_PLACE_PUSH_ENABLED` is false, so a set URL or token does not post. A replace or a clear does not post again. Does not republish Nostr, change note text, or notify. `place: null` clears; a missing `place` key does not. Success is the live public message JSON (optional `place`, reply count, no hide stamps).
+- **Purpose:** Bearer required. A moderator sets, replaces, or clears the map pin on a live top-level shop note (`#21GiftsShop`) via `MessageStore.setPlace`. The first pin, when `mapPush` is configured, is posted once to `POST /map/places`; a failure logs `ocp.place.failed` and this response stays 200. Boot leaves `mapPush` unset while `SHOP_PLACE_PUSH_ENABLED` is false, so a set URL or token does not post. A replace or a clear does not post again. Does not republish Nostr, change note text, or notify. `place: null` clears; a missing `place` key does not. A real change appends `message_edit`. Success is the live public message JSON (optional `place`, reply count, no hide stamps).
 - **Errors:** 401 `{ error: 'Unauthorized' }` without a session; 403 `{ error: 'Forbidden' }` when the live role is not at least moderator; 404 `{ error: 'Not found' }` for a non-UUID `:id`, missing or hidden row, or `setPlace` false; 400 `{ error: 'Invalid body' }` for non-JSON or a missing `place` key; 400 `{ error: 'Place must be a latitude and longitude' }`; 400 `{ error: 'Place label must be at most 80 characters' }`; 400 `{ error: 'A reply cannot include a place' }`; 400 `{ error: 'Only a shop note can set a place' }`; 503 `{ error: 'Messages are unavailable' }`. 403 `{ error: 'SUNDAY_REST' }` when `Time-Zone` names an IANA zone that is Sunday on the server clock (a missing, blank, or invalid zone does not refuse).
 - **Used by:** Staff shop map pin in the app forum.
 - **Auth:** `Authorization: Bearer` session (moderator).
 
 ## Endpoint: PATCH /messages/:id/shop-account
 
-- **Purpose:** Bearer required. A moderator sets, replaces, or clears the 21.gifts account on a live top-level shop note (`#21GiftsShop`) via `MessageStore.setShopAccount`. The assignment is not the note author. Does not republish Nostr or change note text. `username: null` clears; a missing `username` key does not. Success is the live public message JSON (optional `shopAccount`, reply count, no hide stamps).
+- **Purpose:** Bearer required. A moderator sets, replaces, or clears the 21.gifts account on a live top-level shop note (`#21GiftsShop`) via `MessageStore.setShopAccount`. The assignment is not the note author. Does not republish Nostr or change note text. `username: null` clears; a missing `username` key does not. A real change appends `message_edit`. Success is the live public message JSON (optional `shopAccount`, reply count, no hide stamps).
 - **Errors:** 401 `{ error: 'Unauthorized' }` without a session; 403 `{ error: 'Forbidden' }` when the live role is not at least moderator; 404 `{ error: 'Not found' }` for a non-UUID `:id`, a missing row, a hidden row, or `setShopAccount` false; 400 `{ error: 'Invalid body' }` when the body is not a JSON object or has no `username` key; 400 `{ error: 'Username is not valid' }`; 404 `{ error: 'No account with that username' }`; 400 `{ error: 'A reply cannot include a shop account' }`; 400 `{ error: 'Only a shop note can set a shop account' }`; 503 `{ error: 'Messages are unavailable' }`. 403 `{ error: 'SUNDAY_REST' }` when `Time-Zone` names an IANA zone that is Sunday on the server clock (a missing, blank, or invalid zone does not refuse).
 - **Used by:** The app shops feed.
+- **Auth:** `Authorization: Bearer` session (moderator).
+
+## Endpoint: PATCH /messages/:id/text
+
+- **Purpose:** Bearer required. A moderator changes the text of a live top-level shop note (`#21GiftsShop`) via `MessageStore.updateText`. The shop tag is kept or restored. Does not republish Nostr, notify, or change sats, media, author, mentions, event ids, or publish state. An unchanged body is 200 without a history row. A real change appends `message_edit`. Success is the live public message JSON (reply count, no hide stamps, no `edits` field).
+- **Errors:** 401 `{ error: 'Unauthorized' }` without a session; 403 `{ error: 'Forbidden' }` when the live role is not at least moderator; 404 `{ error: 'Not found' }` for a non-UUID `:id`, a missing row, a hidden row, or `updateText` undefined; 400 `{ error: 'Invalid body' }` when the body is not a JSON object or `text` is missing or not a string; 400 `{ error: 'Text must be 1–8000 characters' }`; 400 `{ error: 'Text must be 1–8000 characters or include a photo' }`; 400 `{ error: 'A reply cannot be edited' }`; 400 `{ error: 'Only a shop note can be edited' }`; 503 `{ error: 'Messages are unavailable' }`. 403 `{ error: 'SUNDAY_REST' }` when `Time-Zone` names an IANA zone that is Sunday on the server clock (a missing, blank, or invalid zone does not refuse).
+- **Used by:** Staff shop-note text edit in the app forum.
+- **Auth:** `Authorization: Bearer` session (moderator).
+
+## Endpoint: GET /messages/:id/edits
+
+- **Purpose:** Bearer required. A moderator lists `message_edit` history for a top-level shop note, newest first, including a hidden shop note. Does not change the note and does not republish Nostr. GET is not a Sunday write. Actors resolve like hide stamps (missing account keeps the id with null name/role). Public message JSON does not include `edits`. Empty history is `{ edits: [] }`.
+- **Errors:** 401 `{ error: 'Unauthorized' }` without a session; 403 `{ error: 'Forbidden' }` when the live role is not at least moderator; 404 `{ error: 'Not found' }` for a non-UUID `:id`, a missing row, a reply, or a note that is not a shop note; 503 `{ error: 'Messages are unavailable' }`. GET history is not refused with `SUNDAY_REST`.
+- **Used by:** Staff shop-note history in the app forum.
 - **Auth:** `Authorization: Bearer` session (moderator).
 
 ## Endpoint: GET /messages/hidden

@@ -86,6 +86,24 @@ describe('sunday rest routes', () => {
     expect(await res.json()).toEqual({ error: 'SUNDAY_REST' });
   });
 
+  it('refuses PATCH /messages/:id/text when the device zone is Sunday', async () => {
+    const res = await app().request('/messages/note-1/text', {
+      method: 'PATCH',
+      headers: { 'Time-Zone': 'Europe/Zurich', 'content-type': 'application/json' },
+      body: JSON.stringify({ text: 'hello' }),
+    });
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: 'SUNDAY_REST' });
+  });
+
+  it('does not refuse GET /messages/:id/edits with Time-Zone Europe/Zurich on Sunday', async () => {
+    const res = await app().request('/messages/note-1/edits', {
+      headers: { 'Time-Zone': 'Europe/Zurich' },
+    });
+    expect(res.status).not.toBe(403);
+    expect(((await res.json()) as { error?: string }).error).not.toBe('SUNDAY_REST');
+  });
+
   it('refuses GET /conversations/moderator-group when the device zone is Sunday', async () => {
     const res = await app().request('/conversations/moderator-group', {
       headers: { 'Time-Zone': 'Europe/Zurich' },

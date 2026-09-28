@@ -42,6 +42,7 @@ import {
 } from '@/lib/message';
 import {
   textHasHashtagToken,
+  type MessageEditRow,
   type MessageFeedQuery,
   type MessageInvoiceAttempt,
   type MessageInvoiceResult,
@@ -343,6 +344,37 @@ async function resolveDeletedBy(
   return deleter === undefined
     ? { id: row.deletedBy, name: null, role: null }
     : { id: deleter.id, name: deleter.name, role: deleter.role };
+}
+
+/**
+ * Keep `#21GiftsShop` on an already-normalised shop-note body.
+ * Empty text becomes the tag alone (photo/video-only notes).
+ */
+function ensureShopNoteTag(text: string): string {
+  if (textHasHashtagToken(text, '21GiftsShop')) {
+    return text;
+  }
+  return text === '' ? '#21GiftsShop' : `${text}\n\n#21GiftsShop`;
+}
+
+/**
+ * Whether two shop-account snapshots are the same assignment.
+ * Both absent matches. One absent does not.
+ */
+function shopAccountsMatch(
+  a: { id: string; username: string; name: string } | null | undefined,
+  b: { id: string; username: string; name: string } | null,
+): boolean {
+  const left = a ?? null;
+  if (left === null || b === null) {
+    return left === b;
+  }
+  return left.id === b.id && left.username === b.username && left.name === b.name;
+}
+
+/** Public JSON `field` for one history row. */
+function publicEditField(field: MessageEditRow['field']): 'text' | 'place' | 'shopAccount' {
+  return field === 'shop_account' ? 'shopAccount' : field;
 }
 
 /** Hex UUID as stored on `message.id` (rejects values Postgres would error on). */
@@ -1230,8 +1262,9 @@ const translateBody = z.object({
  * @returns A Hono app with `GET /`, `POST /`, `GET /compose-target`,
  * `GET /places`, `GET /:id/photo` plus `.jpg` / `.jpeg` / `.png` / `.webp`,
  * `GET /:id/video.mp4|.webm|.mov`, public `GET /:id/replies` (`accountId` when
- * the stored author id is non-null), `DELETE /:id`, staff `PATCH /:id/place` and
- * staff `PATCH /:id/shop-account` (moderator session; no `forum.read`),
+ * the stored author id is non-null), `DELETE /:id`, staff `PATCH /:id/place`,
+ * staff `PATCH /:id/shop-account`, staff `PATCH /:id/text`, and staff
+ * `GET /:id/edits` (moderator session; no `forum.read`),
  * staff `GET /hidden` (moderator session; no `forum.read`), public
  * `GET /:id` (optional `?sinceSats=`), and
  * `POST /:id/invoice`, `POST /:id/translate`, and public `GET /stats`.
@@ -1859,6 +1892,17 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
         if (updated === undefined) {
           return c.json({ error: 'Not found' }, 404);
         }
+        if (!placesMatch(row.place ?? null, parsed.value)) {
+          await deps.store.appendEdit({
+            id: crypto.randomUUID(),
+            messageId: id,
+            actorId: account.id,
+            createdAt: new Date(deps.now()),
+            field: 'place',
+            before: row.place ?? null,
+            after: parsed.value,
+          });
+        }
         const author =
           updated.accountId === null
             ? undefined
@@ -1965,6 +2009,17 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
         if (updated === undefined) {
           return c.json({ error: 'Not found' }, 404);
         }
+        if (!shopAccountsMatch(row.shopAccount, snapshot)) {
+          await deps.store.appendEdit({
+            id: crypto.randomUUID(),
+            messageId: id,
+            actorId: account.id,
+            createdAt: new Date(deps.now()),
+            field: 'shop_account',
+            before: row.shopAccount ?? null,
+            after: snapshot,
+          });
+        }
         const author =
           updated.accountId === null
             ? undefined
@@ -1987,6 +2042,149 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
         );
       } catch {
         logEvent('messages.shop_account.failed');
+        return c.json({ error: 'Messages are unavailable' }, 503);
+      }
+    })
+    .patch('/:id/text', async (c) => {
+      const account = await authedAccount(deps, c.req.header('authorization'));
+      if (account === null) {
+        return c.json({ error: 'Unauthorized' }, 401);
+      }
+      if (!roleAtLeast(account.role, 'moderator')) {
+        return c.json({ error: 'Forbidden' }, 403);
+      }
+      const id = c.req.param('id');
+      if (!MESSAGE_ID_RE.test(id)) {
+        return c.json({ error: 'Not found' }, 404);
+      }
+      const raw: unknown = await c.req.json().catch(() => null);
+      if (
+        raw === null ||
+        typeof raw !== 'object' ||
+        Array.isArray(raw) ||
+        !Object.prototype.hasOwnProperty.call(raw, 'text') ||
+        typeof (raw as { text: unknown }).text !== 'string'
+      ) {
+        return c.json({ error: 'Invalid body' }, 400);
+      }
+      const normalized = normalizeForumText((raw as { text: string }).text);
+      if (normalized === null) {
+        return c.json({ error: `Text must be 1–${MESSAGE_MAX_LENGTH} characters` }, 400);
+      }
+      try {
+        const row = await deps.store.getById(id);
+        if (row === undefined || row.deletedAt !== null) {
+          return c.json({ error: 'Not found' }, 404);
+        }
+        if (row.parentId !== null) {
+          return c.json({ error: 'A reply cannot be edited' }, 400);
+        }
+        if (!textHasHashtagToken(row.text, '21GiftsShop')) {
+          return c.json({ error: 'Only a shop note can be edited' }, 400);
+        }
+        if (normalized === '' && !row.hasPhoto && row.hasVideo !== true) {
+          return c.json(
+            { error: `Text must be 1–${MESSAGE_MAX_LENGTH} characters or include a photo` },
+            400,
+          );
+        }
+        const ensured = ensureShopNoteTag(normalized);
+        if (ensured.length > MESSAGE_MAX_LENGTH) {
+          return c.json({ error: `Text must be 1–${MESSAGE_MAX_LENGTH} characters` }, 400);
+        }
+        if (ensured === row.text) {
+          const author =
+            row.accountId === null ? undefined : await deps.authStore.getAccount(row.accountId);
+          const payable = row.accountId === null ? false : payableOf(row, author);
+          const role = row.accountId === null ? undefined : (author?.role ?? 'basis');
+          return c.json(
+            serializeMessage(row, payable, role, await deps.store.countAttributedReplies(row.id)),
+            200,
+          );
+        }
+        const written = await deps.store.updateText(id, ensured);
+        if (written === undefined) {
+          return c.json({ error: 'Not found' }, 404);
+        }
+        await deps.store.appendEdit({
+          id: crypto.randomUUID(),
+          messageId: id,
+          actorId: account.id,
+          createdAt: new Date(deps.now()),
+          field: 'text',
+          before: row.text,
+          after: ensured,
+        });
+        const updated = await deps.store.getById(id);
+        if (updated === undefined) {
+          return c.json({ error: 'Not found' }, 404);
+        }
+        const author =
+          updated.accountId === null
+            ? undefined
+            : await deps.authStore.getAccount(updated.accountId);
+        const payable = updated.accountId === null ? false : payableOf(updated, author);
+        const role = updated.accountId === null ? undefined : (author?.role ?? 'basis');
+        logEvent('messages.text.updated', {
+          messageId: id,
+          accountId: account.id,
+          role: account.role,
+        });
+        return c.json(
+          serializeMessage(
+            updated,
+            payable,
+            role,
+            await deps.store.countAttributedReplies(updated.id),
+          ),
+          200,
+        );
+      } catch {
+        logEvent('messages.text.failed');
+        return c.json({ error: 'Messages are unavailable' }, 503);
+      }
+    })
+    .get('/:id/edits', async (c) => {
+      const account = await authedAccount(deps, c.req.header('authorization'));
+      if (account === null) {
+        return c.json({ error: 'Unauthorized' }, 401);
+      }
+      if (!roleAtLeast(account.role, 'moderator')) {
+        return c.json({ error: 'Forbidden' }, 403);
+      }
+      const id = c.req.param('id');
+      if (!MESSAGE_ID_RE.test(id)) {
+        return c.json({ error: 'Not found' }, 404);
+      }
+      try {
+        const row = await deps.store.getById(id);
+        if (
+          row === undefined ||
+          row.parentId !== null ||
+          !textHasHashtagToken(row.text, '21GiftsShop')
+        ) {
+          return c.json({ error: 'Not found' }, 404);
+        }
+        const rows = await deps.store.listEdits(id);
+        const edits = [];
+        for (const item of rows) {
+          const actor = await deps.authStore.getAccount(item.actorId);
+          edits.push({
+            id: item.id,
+            createdAt: item.createdAt.toISOString(),
+            field: publicEditField(item.field),
+            before: item.before,
+            after: item.after,
+            actor:
+              actor === undefined
+                ? { id: item.actorId, name: null, role: null }
+                : { id: actor.id, name: actor.name, role: actor.role },
+          });
+        }
+        logEvent('messages.edits.listed', { messageId: id, count: edits.length });
+        return c.json({ edits }, 200);
+      } catch {
+        logEvent('messages.edits.failed');
         return c.json({ error: 'Messages are unavailable' }, 503);
       }
     })

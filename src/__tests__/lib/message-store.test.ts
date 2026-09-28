@@ -96,7 +96,7 @@ const JPEG2: ForumPhoto = {
 
 describe('MESSAGE_SCHEMA_SQL', () => {
   it('creates message with photo columns, Nostr columns, index, and additive ALTERs', () => {
-    expect(MESSAGE_SCHEMA_SQL).toHaveLength(96);
+    expect(MESSAGE_SCHEMA_SQL).toHaveLength(98);
     expect(MESSAGE_SCHEMA_SQL.join('\n')).toMatch(
       /ALTER TABLE message ADD COLUMN IF NOT EXISTS place_lat double precision/i,
     );
@@ -251,28 +251,40 @@ describe('MESSAGE_SCHEMA_SQL', () => {
     expect(fundedColumn).toBeGreaterThan(recordedColumn);
     expect(fundedBackfill).toBe(fundedColumn + 1);
     expect(recordedBackfill).toBe(fundedColumn + 2);
-    expect(MESSAGE_SCHEMA_SQL.at(-1)).toContain('FROM pg_trigger');
-    expect(MESSAGE_SCHEMA_SQL.at(-1)).toContain("tgname = 'trg_db_change'");
-    expect(MESSAGE_SCHEMA_SQL.at(-1)).toContain("jsonb_typeof(nostr_event) = 'string'");
-    expect(MESSAGE_SCHEMA_SQL.at(-1)).not.toContain('EXCEPTION WHEN others');
-    expect(MESSAGE_SCHEMA_SQL.at(-1)).not.toContain('EXCEPTION WHEN invalid_text_representation');
-    expect(MESSAGE_SCHEMA_SQL.at(-1)).toContain(
+    expect(MESSAGE_SCHEMA_SQL[95]).toContain('FROM pg_trigger');
+    expect(MESSAGE_SCHEMA_SQL[95]).toContain("tgname = 'trg_db_change'");
+    expect(MESSAGE_SCHEMA_SQL[95]).toContain("jsonb_typeof(nostr_event) = 'string'");
+    expect(MESSAGE_SCHEMA_SQL[95]).not.toContain('EXCEPTION WHEN others');
+    expect(MESSAGE_SCHEMA_SQL[95]).not.toContain('EXCEPTION WHEN invalid_text_representation');
+    expect(MESSAGE_SCHEMA_SQL[95]).toContain(
       'EXCEPTION WHEN data_exception OR statement_too_complex THEN',
     );
-    expect(MESSAGE_SCHEMA_SQL.at(-1)).toContain(
+    expect(MESSAGE_SCHEMA_SQL[95]).toContain(
       "unwrapped := (repair_row.nostr_event #>> '{}')::jsonb;",
     );
-    expect(MESSAGE_SCHEMA_SQL.at(-1)).toContain('SET nostr_event = unwrapped');
-    expect(MESSAGE_SCHEMA_SQL.at(-1)).toContain('nostr_attempts = 0');
-    expect(MESSAGE_SCHEMA_SQL.at(-1)).toContain('CONTINUE;');
-    expect(MESSAGE_SCHEMA_SQL.at(-1)).toContain('AND nostr_event = repair_row.nostr_event');
-    expect(MESSAGE_SCHEMA_SQL.at(-1)).toMatch(
+    expect(MESSAGE_SCHEMA_SQL[95]).toContain('SET nostr_event = unwrapped');
+    expect(MESSAGE_SCHEMA_SQL[95]).toContain('nostr_attempts = 0');
+    expect(MESSAGE_SCHEMA_SQL[95]).toContain('CONTINUE;');
+    expect(MESSAGE_SCHEMA_SQL[95]).toContain('AND nostr_event = repair_row.nostr_event');
+    expect(MESSAGE_SCHEMA_SQL[95]).toMatch(
       /WHERE id = repair_row\.id[\s\S]*?jsonb_typeof\(nostr_event\) = 'string'[\s\S]*?AND nostr_event = repair_row\.nostr_event;/,
     );
-    expect(MESSAGE_SCHEMA_SQL.at(-1)).toMatch(
+    expect(MESSAGE_SCHEMA_SQL[95]).toMatch(
       /unwrapped := \(repair_row\.nostr_event #>> '\{\}'\)::jsonb;[\s\S]*?EXCEPTION WHEN data_exception OR statement_too_complex THEN[\s\S]*?CONTINUE;[\s\S]*?END;[\s\S]*?UPDATE message/,
     );
-    expect(MESSAGE_SCHEMA_SQL.at(-1)).not.toContain('repair_row.unwrapped_event');
+    expect(MESSAGE_SCHEMA_SQL[95]).not.toContain('repair_row.unwrapped_event');
+    expect(MESSAGE_SCHEMA_SQL[96]).toMatch(/CREATE TABLE IF NOT EXISTS message_edit/);
+    expect(MESSAGE_SCHEMA_SQL[96]).toMatch(
+      /CONSTRAINT message_edit_field_chk CHECK \(field IN \('text', 'place', 'shop_account'\)\)/,
+    );
+    expect(MESSAGE_SCHEMA_SQL[96]).toMatch(/before jsonb NOT NULL/);
+    expect(MESSAGE_SCHEMA_SQL[96]).toMatch(/after jsonb NOT NULL/);
+    expect(MESSAGE_SCHEMA_SQL[97]).toMatch(
+      /CREATE INDEX IF NOT EXISTS message_edit_message_created_idx/,
+    );
+    expect(MESSAGE_SCHEMA_SQL[97]).toMatch(
+      /ON message_edit \(message_id, created_at DESC, id DESC\)/,
+    );
   });
 });
 
@@ -995,6 +1007,65 @@ describe('InMemoryMessageStore', () => {
     expect(cleared?.sats).toBe(21);
     expect(cleared?.eventId).toBe(eventId);
     expect(cleared?.place).toEqual({ lat: 1, lng: 2, label: 'Pin' });
+  });
+
+  it('appendEdit stores copies and listEdits returns newest first', async () => {
+    const store = new InMemoryMessageStore();
+    expect(await store.listEdits('missing')).toEqual([]);
+    const place = { lat: 1, lng: 2, label: 'Stall' };
+    const older = new Date('2026-08-01T00:00:00.000Z');
+    const newer = new Date('2026-08-02T00:00:00.000Z');
+    await store.appendEdit({
+      id: 'b',
+      messageId: 'm1',
+      actorId: 'acc',
+      createdAt: newer,
+      field: 'place',
+      before: null,
+      after: place,
+    });
+    await store.appendEdit({
+      id: 'a',
+      messageId: 'm1',
+      actorId: 'acc',
+      createdAt: newer,
+      field: 'text',
+      before: 'old',
+      after: 'new',
+    });
+    await store.appendEdit({
+      id: 'c',
+      messageId: 'm1',
+      actorId: 'acc',
+      createdAt: older,
+      field: 'shop_account',
+      before: { id: 's', username: 'ada', name: 'Ada' },
+      after: null,
+    });
+    await store.appendEdit({
+      id: 'other',
+      messageId: 'm2',
+      actorId: 'acc',
+      createdAt: newer,
+      field: 'text',
+      before: 'x',
+      after: 'y',
+    });
+    place.label = 'mutated';
+    newer.setTime(0);
+    const listed = await store.listEdits('m1');
+    expect(listed.map((row) => row.id)).toEqual(['b', 'a', 'c']);
+    expect(listed[0]?.after).toEqual({ lat: 1, lng: 2, label: 'Stall' });
+    expect(listed[0]?.createdAt.toISOString()).toBe('2026-08-02T00:00:00.000Z');
+    expect(listed[2]?.before).toEqual({ id: 's', username: 'ada', name: 'Ada' });
+    const first = listed[0];
+    if (first === undefined || typeof first.after !== 'object' || first.after === null) {
+      throw new Error('expected place');
+    }
+    (first.after as { label: string }).label = 'listed';
+    const again = await store.listEdits('m1');
+    expect(again[0]?.after).toEqual({ lat: 1, lng: 2, label: 'Stall' });
+    expect(await store.listEdits('m2')).toHaveLength(1);
   });
 
   it('create leaves shopAccount null and copyRow copies a snapshot', async () => {
@@ -6337,6 +6408,88 @@ describe('PostgresMessageStore', () => {
     const missing = new MockSql();
     missing.nextRows = [];
     expect(await new PostgresMessageStore(missing).setShopAccount('gone', account)).toBe(false);
+  });
+
+  it('appendEdit inserts jsonb copies and listEdits maps rows newest-query order', async () => {
+    const sql = new MockSql();
+    const at = new Date('2026-08-02T00:00:00.000Z');
+    await new PostgresMessageStore(sql).appendEdit({
+      id: 'e1',
+      messageId: 'm1',
+      actorId: 'acc',
+      createdAt: at,
+      field: 'text',
+      before: null,
+      after: { lat: 1, lng: 2, label: null },
+    });
+    expect(sql.queries).toEqual([]);
+    expect(sql.executes).toHaveLength(1);
+    expect(sql.executes[0]?.text).toMatch(/INSERT INTO message_edit/);
+    expect(sql.executes[0]?.text).toMatch(/\$6::jsonb, \$7::jsonb/);
+    expect(sql.executes[0]?.params).toEqual([
+      'e1',
+      'm1',
+      'acc',
+      at,
+      'text',
+      'null',
+      JSON.stringify({ lat: 1, lng: 2, label: null }),
+    ]);
+
+    sql.nextRows = [
+      {
+        id: 'e2',
+        message_id: 'm1',
+        actor_id: 'acc',
+        created_at: '2026-08-03T00:00:00.000Z',
+        field: 'shop_account',
+        before: '{"id":"s","username":"ada","name":"Ada"}',
+        after: null,
+      },
+      {
+        id: 'e3',
+        message_id: 'm1',
+        actor_id: 'acc',
+        created_at: at,
+        field: 'place',
+        before: { lat: 1, lng: 2, label: 'Stall' },
+        after: 'not-json',
+      },
+      {
+        id: 'e4',
+        message_id: 'm1',
+        actor_id: 'acc',
+        created_at: at,
+        field: 'nope',
+        before: 'plain',
+        after: 4,
+      },
+    ];
+    const listed = await new PostgresMessageStore(sql).listEdits('m1');
+    expect(sql.queries[0]?.text).toMatch(/FROM message_edit/);
+    expect(sql.queries[0]?.text).toMatch(/ORDER BY created_at DESC, id DESC/);
+    expect(sql.queries[0]?.params).toEqual(['m1']);
+    expect(listed[0]).toMatchObject({
+      id: 'e2',
+      messageId: 'm1',
+      field: 'shop_account',
+      before: { id: 's', username: 'ada', name: 'Ada' },
+      after: null,
+    });
+    expect(listed[0]?.createdAt.toISOString()).toBe('2026-08-03T00:00:00.000Z');
+    expect(listed[1]).toMatchObject({
+      field: 'place',
+      before: { lat: 1, lng: 2, label: 'Stall' },
+      after: 'not-json',
+    });
+    expect(listed[2]).toMatchObject({ field: 'text', before: 'plain', after: 4 });
+    const place = listed[1]?.before as { label: string };
+    place.label = 'mutated';
+    expect(sql.nextRows[1]).toMatchObject({ before: { lat: 1, lng: 2, label: 'Stall' } });
+
+    const empty = new MockSql();
+    empty.nextRows = [];
+    expect(await new PostgresMessageStore(empty).listEdits('none')).toEqual([]);
   });
 
   it('list and claim SQL require deleted_at IS NULL', async () => {
