@@ -531,12 +531,13 @@ ID).
     "walletRequired": true,
     "walletBackupSeenAt": null,
     "passkeyCredentialId": "<base64url>",
-    "passkeyRenewFailed": false
+    "passkeyRenewFailed": false,
+    "passkeyRenewClosed": false
   }
 }
 ```
 
-The `account` object is the same owner JSON as `GET /me` (includes `viewKey`, `setup`, `missing`, `hasPosted`, `aboutMe`, `aboutMeHasPhoto`, `aboutMessageId`, `notificationLevel`, `amountUnit`, `locale`, `fiat`, `walletRequired`, `walletBackupSeenAt`, `passkeyCredentialId`, and `passkeyRenewFailed`). `locale` and `fiat` are null until the member's app stores them. The example above is a new register (`walletRequired: true`, `setup: "name"` when the name is unset). The recovery phrase is not a setup step and does not change `setup` or `missing`. Existing members start with `walletRequired: false`. Seed finish sets `walletRequired: true` and does not change `walletBackupSeenAt`. Replace refuses and changes nothing. `walletBackupSeenAt` does not decide whether a seed exists.
+The `account` object is the same owner JSON as `GET /me` (includes `viewKey`, `setup`, `missing`, `hasPosted`, `aboutMe`, `aboutMeHasPhoto`, `aboutMessageId`, `notificationLevel`, `amountUnit`, `locale`, `fiat`, `walletRequired`, `walletBackupSeenAt`, `passkeyCredentialId`, `passkeyRenewFailed`, and `passkeyRenewClosed`). `locale` and `fiat` are null until the member's app stores them. The example above is a new register (`walletRequired: true`, `setup: "name"` when the name is unset). The recovery phrase is not a setup step and does not change `setup` or `missing`. Existing members start with `walletRequired: false`. Seed finish sets `walletRequired: true` and does not change `walletBackupSeenAt`. Replace refuses and changes nothing. `walletBackupSeenAt` does not decide whether a seed exists.
 
 A new register row is stored with `walletRequired: true` and `walletBackupSeenAt: null`. First-passkey claim of a provisioned row sets `walletRequired: true` in the same write as the credential (`createFirstPasskeyCredential`: Postgres CTE locks the account row with `FOR UPDATE`, then inserts and sets `wallet_required`; memory store writes both in one method) and does not clear a seen timestamp. Passkey replace refuses and does not change these columns. Seed finish sets `walletRequired: true` without changing `walletBackupSeenAt`. Operator `POST /debug/accounts` provision leaves `walletRequired` false. The api never stores a mnemonic or PRF output.
 
@@ -672,7 +673,8 @@ An account with `sessionRefused` and a still-valid minted token → **Response**
   "walletRequired": false,
   "walletBackupSeenAt": null,
   "passkeyCredentialId": null,
-  "passkeyRenewFailed": false
+  "passkeyRenewFailed": false,
+  "passkeyRenewClosed": false
 }
 ```
 

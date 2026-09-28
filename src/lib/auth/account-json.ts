@@ -62,7 +62,8 @@ export interface AccountResponse {
  * view-key capability secret, the next `setup` step, factual `missing`,
  * `hasPosted`, `aboutMe`, `aboutMeHasPhoto`, `notificationLevel`,
  * `amountUnit`, `locale`, `fiat`, `funding`, `walletRequired`,
- * `walletBackupSeenAt`, `passkeyCredentialId`, and `passkeyRenewFailed`.
+ * `walletBackupSeenAt`, `passkeyCredentialId`, `passkeyRenewFailed`, and
+ * `passkeyRenewClosed`.
  */
 export interface OwnerAccountResponse extends AccountResponse {
   /** 64 lowercase hex; capability URL secret for `GET /view/:viewKey`. */
@@ -543,7 +544,8 @@ export function serializeDebugAccountDetail(
  * the fourth is whether the live profile note has a photo; the fifth is
  * `funding` (`null` for `basis`, default `null`); the sixth is
  * `passkeyCredentialId` (base64url or `null`, default `null`); the seventh is
- * `passkeyRenewFailed` (default `false`).
+ * `passkeyRenewFailed` (default `false`); the eighth is `passkeyRenewClosed`
+ * (default `false`).
  * This function performs no I/O. Never used by the operator debug listing.
  * Does not expose `profileMessageId`.
  *
@@ -564,8 +566,8 @@ export function serializeDebugAccountDetail(
  * @returns Owner fields including `viewKey`, `setup`, `missing`,
  * `hasPosted`, `location`, `aboutMe`, `aboutMeHasPhoto`,
  * `notificationLevel`, `amountUnit`, `locale`, `fiat`, `funding`,
- * `walletRequired`, `walletBackupSeenAt`, `passkeyCredentialId`, and
- * `passkeyRenewFailed`.
+ * `walletRequired`, `walletBackupSeenAt`, `passkeyCredentialId`,
+ * `passkeyRenewFailed`, and `passkeyRenewClosed`.
  */
 export function serializeOwnerAccount(
   account: Account,
