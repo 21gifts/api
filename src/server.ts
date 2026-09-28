@@ -521,6 +521,7 @@ export function createApp(deps: AppDeps = {}): Hono {
       fundingStore,
       messageStore,
       now,
+      gifts: giftStore,
       ...(spendPing === undefined ? {} : { spendPing }),
     }),
   );

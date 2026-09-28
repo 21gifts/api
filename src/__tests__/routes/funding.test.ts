@@ -3,6 +3,8 @@ import { Hono } from 'hono';
 import { InMemoryAuthStore, type Account } from '@/lib/auth/store';
 import type { FundingGrant } from '@/lib/funding';
 import { InMemoryFundingStore, type FundingStore } from '@/lib/funding-store';
+import type { GiftRow } from '@/lib/gift';
+import { InMemoryGiftStore, type GiftStore } from '@/lib/gift-store';
 import { unsignedNostrDefaults } from '@/lib/message';
 import { InMemoryMessageStore } from '@/lib/message-store';
 import { removeForumVideo, writeForumVideo } from '@/lib/video';
@@ -77,6 +79,8 @@ function mount(
   fundingStore: FundingStore,
   messageStore: InMemoryMessageStore = new InMemoryMessageStore(),
   spendPing?: { ping: (address: string, messageId: string, kind?: string) => Promise<void> },
+  gifts: GiftStore = new InMemoryGiftStore(),
+  clock: () => number = now,
 ): Hono {
   return new Hono().route(
     '/funding',
@@ -84,7 +88,8 @@ function mount(
       authStore,
       fundingStore,
       messageStore,
-      now,
+      now: clock,
+      gifts,
       ...(spendPing === undefined ? {} : { spendPing }),
     }),
   );
@@ -1308,5 +1313,96 @@ describe('POST /funding/reject', () => {
       (await post(mount(authStore, store), '/funding/reject', 'founder', { accountId: VERIFIED }))
         .status,
     ).toBe(409);
+  });
+});
+
+describe('GET /funding/payout-days', () => {
+  let warn: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+  });
+
+  afterEach(() => {
+    warn.mockRestore();
+  });
+
+  function payoutApp(
+    authStore: InMemoryAuthStore,
+    fundingStore: FundingStore,
+    gifts: GiftRow[] = [],
+  ): Hono {
+    return mount(
+      authStore,
+      fundingStore,
+      new InMemoryMessageStore(),
+      undefined,
+      new InMemoryGiftStore(gifts),
+    );
+  }
+
+  it('returns 401 without a session', async () => {
+    const { authStore, fundingStore } = await staffed();
+    const res = await get(payoutApp(authStore, fundingStore), '/funding/payout-days', undefined);
+    expect(res.status).toBe(401);
+    expect(await res.json()).toEqual({ error: 'Unauthorized' });
+  });
+
+  it('returns 403 when the caller is not staff', async () => {
+    const { authStore, fundingStore } = await staffed();
+    const res = await get(payoutApp(authStore, fundingStore), '/funding/payout-days', 'verified');
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: 'Forbidden' });
+  });
+
+  it('returns missed days for an admitted member and paid only for a daily gift', async () => {
+    const { authStore, fundingStore } = await staffed();
+    await setLightning(authStore, VERIFIED, 'ada@walletofsatoshi.com');
+    await fundingStore.upsert(
+      grant({
+        accountId: VERIFIED,
+        status: 'admitted',
+        admittedAt: Date.parse('2023-11-08T00:00:00.000Z'),
+      }),
+    );
+    const gifts: GiftRow[] = [
+      {
+        paidAt: new Date('2023-11-12T12:00:00.000Z'),
+        amountSats: 1,
+        recipientWosUser: 'ada',
+        kind: 'daily',
+      },
+      {
+        paidAt: new Date('2023-11-13T12:00:00.000Z'),
+        amountSats: 1,
+        recipientWosUser: 'ada',
+        kind: 'welcome',
+      },
+    ];
+    const res = await get(payoutApp(authStore, fundingStore, gifts), '/funding/payout-days', 'mod');
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      days: string[];
+      rows: Array<{ accountId: string; name: string; days: string[] }>;
+    };
+    expect(body.days[0]).toBe('2023-11-08');
+    expect(body.days[6]).toBe('2023-11-14');
+    const ada = body.rows.find((row) => row.accountId === VERIFIED);
+    expect(ada?.name).toBe('Ada');
+    expect(ada?.days[4]).toBe('paid');
+    expect(ada?.days[5]).toBe('missed');
+    expect(parsedEvents(warn).some((event) => event['event'] === 'funding.payouts.listed')).toBe(
+      true,
+    );
+  });
+
+  it('returns 503 when listing grants throws', async () => {
+    const { authStore } = await staffed();
+    const res = await get(payoutApp(authStore, boomStore), '/funding/payout-days', 'mod');
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({ error: 'Funding is unavailable' });
+    expect(parsedEvents(warn).some((event) => event['event'] === 'funding.payouts.failed')).toBe(
+      true,
+    );
   });
 });
