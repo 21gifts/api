@@ -527,7 +527,7 @@ describe('notifyForumReply', () => {
       type: 'forum',
       title: 'Ada',
       body: 'child',
-      url: '/notifications',
+      url: '/messages/reply-1',
       tag: 'forum_reply:reply-1',
       unreadCount: 1,
     });
@@ -744,7 +744,7 @@ describe('notifyForumReply', () => {
     const claimed = await pushStore.claimPending(10, NOW.getTime(), 60_000);
     expect(claimed).toHaveLength(1);
     expect(payloadObject(claimed[0]?.payload ?? '{}')).toMatchObject({
-      url: '/notifications',
+      url: '/messages/reply-1',
       tag: 'forum_reply:reply-1',
     });
     expect(payloadObject(claimed[0]?.payload ?? '{}')).not.toHaveProperty('unreadCount');
@@ -1029,7 +1029,7 @@ describe('notifyForumPost', () => {
       type: 'forum',
       title: 'Ada',
       body: 'hello',
-      url: '/notifications',
+      url: '/messages/post-1',
       tag: 'forum_post:post-1',
       unreadCount: 1,
     });
@@ -1173,7 +1173,7 @@ describe('notifyZap', () => {
       type: 'zap',
       title: 'Someone',
       body: 'Sent 21 sats.',
-      url: '/notifications',
+      url: '/messages/note-1',
       tag: `zap:${ZAP_REPLY_ID}`,
       unreadCount: 1,
     });

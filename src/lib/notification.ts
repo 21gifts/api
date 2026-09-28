@@ -454,7 +454,7 @@ export async function fanoutToBellSubscribers(args: {
  * via `auth.listAccounts()`). Missing auth, missing id, missing account, or
  * `isPlatform` not true still fans out. Persist a `forum_post` row for every
  * matching account (when `auth` is set) or every bell subscriber (otherwise)
- * when `notifications` is set, and enqueue a `/notifications` Web Push when
+ * when `notifications` is set, and enqueue a `/messages/<id>` Web Push when
  * `pushStore` is set. Matching uses {@link wantsNotification}: `isActive` is
  * `created.sats > 0`, `mentionedAccountId` is null (top-level posts are never
  * personal), `actorIsStaff` from the actor in `auth.listAccounts()` (false if
@@ -521,7 +521,7 @@ export async function notifyForumPost(args: {
 
 /**
  * Notify living-room members of a forum reply except the actor. Persist a
- * `forum_reply` row when `notifications` is set and enqueue a `/notifications`
+ * `forum_reply` row when `notifications` is set and enqueue a `/messages/<replyId>`
  * Web Push when `pushStore` is set. No-op when the parent is missing. No-op
  * when the actor is the official platform account (`isPlatform === true` via
  * `auth.listAccounts()`). Missing auth, missing id, missing account, or
@@ -616,7 +616,7 @@ export async function notifyForumMentions(args: {
   auth?: Pick<AuthStore, 'listAccounts' | 'getAccount'>;
   account: { id: string };
   created: MessageRow;
-  /** Top-level note id the notification opens. */
+  /** Top-level note id. The push opens `created.id`, which may be this note or a reply. */
   parentId: string;
   /** True when the related top-level note would already notify at level `active`. */
   isActive: boolean;
@@ -738,7 +738,7 @@ export async function notifyExternalForumReply(args: {
 
 /**
  * Notify living-room members of a newly indexed zap/payment. Persist a `zap`
- * row when `notifications` is set and enqueue a `/notifications` Web Push when
+ * row when `notifications` is set and enqueue a `/messages/<noteId>` Web Push when
  * `pushStore` is set. No-op when the note has no `accountId`. No-op when
  * `payerAccountId` is the official platform account (`isPlatform === true` via
  * `auth.listAccounts()`). Do not skip when `payerAccountId` is omitted.
@@ -814,6 +814,7 @@ export async function notifyZap(args: {
     payload: JSON.stringify(
       buildZapPushPayload({
         messageId: replyId,
+        noteId: args.note.id,
         name: args.payerName ?? 'Someone',
         amountSats: args.amountSats,
       }),

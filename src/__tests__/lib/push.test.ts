@@ -83,7 +83,7 @@ describe('buildForumPushPayload', () => {
       type: 'forum',
       title: 'Ada',
       body: 'hello',
-      url: '/notifications',
+      url: '/messages/post-1',
       tag: 'forum_post:post-1',
     });
   });
@@ -176,15 +176,21 @@ describe('buildForumPushPayload', () => {
     expect(body).toBe(`${'a'.repeat(179)}…`);
     expect(body).not.toMatch(/[\uD800-\uDFFF]/);
   });
+
+  it('percent-encodes a slash in the post id so it stays one path segment', () => {
+    expect(buildForumPushPayload({ postId: 'a/b', name: 'Ada', text: 'hello' }).url).toBe(
+      '/messages/a%2Fb',
+    );
+  });
 });
 
 describe('buildReplyPushPayload', () => {
-  it('points at /notifications with the reply id tag', () => {
+  it('points at /messages/<replyId> with the reply id tag', () => {
     expect(buildReplyPushPayload({ replyId: 'reply-1', name: 'Ada', text: 'child' })).toEqual({
       type: 'forum',
       title: 'Ada',
       body: 'child',
-      url: '/notifications',
+      url: '/messages/reply-1',
       tag: 'forum_reply:reply-1',
     });
   });
@@ -235,7 +241,7 @@ describe('buildZapPushPayload', () => {
       type: 'zap',
       title: 'Ada',
       body: 'Sent 21 sats.',
-      url: '/notifications',
+      url: '/messages/msg-1',
       tag: 'zap:msg-1',
     });
   });
@@ -245,7 +251,28 @@ describe('buildZapPushPayload', () => {
       type: 'zap',
       title: 'Someone',
       body: 'Sent 0 sats.',
-      url: '/notifications',
+      url: '/messages/msg-1',
+      tag: 'zap:msg-1',
+    });
+  });
+
+  it('opens noteId when set and falls back to messageId when noteId is empty', () => {
+    expect(
+      buildZapPushPayload({ messageId: 'msg-1', name: 'Ada', amountSats: 21, noteId: 'note-9' }),
+    ).toEqual({
+      type: 'zap',
+      title: 'Ada',
+      body: 'Sent 21 sats.',
+      url: '/messages/note-9',
+      tag: 'zap:msg-1',
+    });
+    expect(
+      buildZapPushPayload({ messageId: 'msg-1', name: 'Ada', amountSats: 21, noteId: '' }),
+    ).toEqual({
+      type: 'zap',
+      title: 'Ada',
+      body: 'Sent 21 sats.',
+      url: '/messages/msg-1',
       tag: 'zap:msg-1',
     });
   });
