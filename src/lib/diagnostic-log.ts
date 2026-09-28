@@ -1,22 +1,46 @@
 import type { SqlClient } from '@/lib/auth/sql';
 
+/** Where a diagnostic row was recorded. */
 export type DiagnosticSource = 'server' | 'client';
 
+/** Persisted diagnostic row. `fields` holds allowlisted scalars only. */
 export interface DiagnosticEvent {
+  /** Opaque unique row id. */
   id: string;
+  /** Instant the row was recorded. */
   createdAt: Date;
+  /** `server` for `logEvent`, `client` for `POST /diagnostics`. */
   source: DiagnosticSource;
+  /** Dotted event name. */
   event: string;
+  /** Allowlisted scalar fields. No nested objects. */
   fields: Record<string, string | number | boolean>;
 }
 
+/**
+ * Persistence port for diagnostic rows.
+ */
 export interface DiagnosticStore {
+  /**
+   * Append one diagnostic row.
+   *
+   * @param row - Fully formed row.
+   */
   append(row: DiagnosticEvent): Promise<void>;
+
+  /**
+   * Newest rows first (`createdAt` desc, then `id` desc), capped at `limit`.
+   *
+   * @param limit - Maximum rows.
+   * @returns Row copies.
+   */
   listLatest(limit: number): Promise<DiagnosticEvent[]>;
 }
 
+/** Cap for `GET /debug/diagnostics`. */
 export const DIAGNOSTIC_LIST_LIMIT = 200;
 
+/** Idempotent DDL (matches `docs/schema/diagnostic_event.sql`). */
 export const DIAGNOSTIC_SCHEMA_SQL: readonly string[] = [
   `CREATE TABLE IF NOT EXISTS diagnostic_event (
   id uuid PRIMARY KEY,
@@ -90,8 +114,10 @@ function mapDiagnosticRow(row: {
 }
 
 /**
- * Applies the diagnostic_event DDL in order. Safe to rerun: every statement
- * uses IF NOT EXISTS.
+ * Apply {@link DIAGNOSTIC_SCHEMA_SQL} in order. Idempotent.
+ *
+ * @param sql - Parameter-bound SQL client.
+ * @returns Resolves when every statement has executed.
  */
 export async function migrateDiagnosticSchema(sql: SqlClient): Promise<void> {
   for (const statement of DIAGNOSTIC_SCHEMA_SQL) {
@@ -103,10 +129,21 @@ export async function migrateDiagnosticSchema(sql: SqlClient): Promise<void> {
 export class InMemoryDiagnosticStore implements DiagnosticStore {
   private readonly rows: DiagnosticEvent[] = [];
 
+  /**
+   * Append a copy of `row`.
+   *
+   * @param row - Diagnostic row.
+   */
   async append(row: DiagnosticEvent): Promise<void> {
     this.rows.push(copyRow(row));
   }
 
+  /**
+   * Newest-first copy of stored rows, capped at `limit`.
+   *
+   * @param limit - Maximum rows.
+   * @returns A new array of row copies.
+   */
   async listLatest(limit: number): Promise<DiagnosticEvent[]> {
     return this.rows
       .slice()
@@ -124,8 +161,16 @@ export class InMemoryDiagnosticStore implements DiagnosticStore {
 
 /** Postgres-backed diagnostic_event store. Query and execute failures propagate. */
 export class PostgresDiagnosticStore implements DiagnosticStore {
+  /**
+   * @param sql - Parameter-bound SQL client (already migrated).
+   */
   constructor(private readonly sql: SqlClient) {}
 
+  /**
+   * Insert `row` into `diagnostic_event`.
+   *
+   * @param row - Fully formed diagnostic row.
+   */
   async append(row: DiagnosticEvent): Promise<void> {
     await this.sql.execute(
       'INSERT INTO diagnostic_event (id, created_at, source, event, fields) VALUES ($1,$2,$3,$4,$5::jsonb)',
@@ -133,6 +178,12 @@ export class PostgresDiagnosticStore implements DiagnosticStore {
     );
   }
 
+  /**
+   * Newest-first list from `diagnostic_event`, capped at `limit`.
+   *
+   * @param limit - Maximum rows (`$1`).
+   * @returns Mapped rows.
+   */
   async listLatest(limit: number): Promise<DiagnosticEvent[]> {
     const rows = await this.sql.query<{
       id: unknown;
@@ -156,7 +207,10 @@ export class PostgresDiagnosticStore implements DiagnosticStore {
 }
 
 /**
- * Serializes a stored row for GET /debug/diagnostics. `createdAt` is ISO-8601.
+ * Project a store row to operator JSON.
+ *
+ * @param row - Persisted diagnostic row.
+ * @returns Debug fields; `createdAt` as ISO-8601.
  */
 export function serializeDebugDiagnostic(row: DiagnosticEvent): {
   id: string;
