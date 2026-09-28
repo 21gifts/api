@@ -9,6 +9,7 @@ import { SimpleWebAuthnPasskeyCeremony } from '@/lib/auth/webauthn';
 import type { PasskeyCeremony } from '@/lib/auth/webauthn';
 import { meRoutes } from '@/routes/me';
 import { bannerRoutes } from '@/routes/banner';
+import { pictureRoutes } from '@/routes/pictures';
 import { InMemoryBannerStore, type BannerStore } from '@/lib/banner-store';
 import { membersRoutes } from '@/routes/members';
 import { linksRoutes } from '@/routes/links';
@@ -408,6 +409,7 @@ export function createApp(deps: AppDeps = {}): Hono {
     }),
   );
   app.route('/banners', bannerRoutes({ auth: store, banners: bannerStore, now }));
+  app.route('/pictures', pictureRoutes({ auth: store, banners: bannerStore, now }));
   app.route(
     '/me',
     meRoutes({

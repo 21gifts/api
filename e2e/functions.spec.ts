@@ -1591,6 +1591,18 @@ test('Function: InMemoryBannerStore — default boot has no DATABASE_URL', async
 test('Function: PostgresBannerStore — default boot has no DATABASE_URL', async ({ request }) => {
   expect((await request.get('/healthz')).status()).toBe(200);
 });
+test('Function: picturePublicUrl — default boot has no DATABASE_URL', async ({ request }) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
+test('Function: isProfilePhoto — default boot has no DATABASE_URL', async ({ request }) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
+test('Function: pictureRoutes — PUT /pictures/me without bearer is 401', async ({ request }) => {
+  const res = await request.put('/pictures/me', { data: { photo: null } });
+  expect(res.status()).toBe(401);
+  expect((await request.get('/pictures/me')).status()).toBe(401);
+  expect((await request.get('/pictures/:file')).status()).toBe(404);
+});
 test('Function: bannerRoutes — PUT /banners/me without bearer is 401', async ({ request }) => {
   const res = await request.put('/banners/me', { data: { photo: null } });
   expect(res.status()).toBe(401);

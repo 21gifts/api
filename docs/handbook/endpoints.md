@@ -758,6 +758,27 @@
 - **Used by:** App profile About me editor.
 - **Auth:** `Authorization: Bearer` session.
 
+## Endpoint: GET /pictures/me
+
+- **Purpose:** Bearer required. Raw profile-photo bytes. This is not the wide image and not the About me note photo.
+- **Errors:** 401 `{ error: 'Unauthorized' }` without a session; 404 `{ error: 'Profile photo not found' }` when none is stored.
+- **Used by:** App profile editor.
+- **Auth:** `Authorization: Bearer` session.
+
+## Endpoint: PUT /pictures/me
+
+- **Purpose:** Bearer required. Body `{ photo }`. `null` clears the profile photo. `{ contentType, data }` must be a JPEG, PNG, or WebP under 1 MiB with a readable size. Does not change the wide image or the About me note.
+- **Errors:** 401 without a session; 400 `{ error: 'Expected a JSON body with a "photo" field' }` when `photo` is missing or not an object; 400 `{ error: 'Profile photo must be a JPEG, PNG, or WebP' }` when the bytes are not a decodable still. 403 `{ error: 'SUNDAY_REST' }` when `Time-Zone` names an IANA zone that is Sunday on the server clock (a missing, blank, or invalid zone does not refuse).
+- **Used by:** App profile editor.
+- **Auth:** `Authorization: Bearer` session.
+
+## Endpoint: GET /pictures/:file
+
+- **Purpose:** Public. `:file` is `{accountId}.jpg`, `.png`, or `.webp`. Returns the stored profile photo when the extension matches. No auth. Used as the Nostr kind:0 `picture` URL.
+- **Errors:** 404 `{ error: 'Not found' }` when the name does not match, nothing is stored, or the extension does not match.
+- **Used by:** Nostr clients.
+- **Auth:** none.
+
 ## Endpoint: GET /banners/me
 
 - **Purpose:** Bearer required. Raw wide-image bytes via `forumPhotoResponse`. This is not the About me photo.

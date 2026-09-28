@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { verifyEvent, type NostrEvent } from 'nostr-tools/pure';
-import { bannerPublicUrl, type BannerStore } from '@/lib/banner-store';
+import { bannerPublicUrl, picturePublicUrl, type BannerStore } from '@/lib/banner-store';
 import { ensureProfileMessage } from '@/lib/auth/profile-message';
 import type { Account, AuthStore } from '@/lib/auth/store';
 import { unsignedConversationDefaults, type ConversationThread } from '@/lib/conversation';
@@ -341,10 +341,10 @@ async function indexHotZapReceipts(deps: NostrWorkerDeps, nowMs: number): Promis
  * event id so receipts still resolve. An empty API base skips photo- and
  * video-URL resign so it cannot un-publish and loop. When publishing, also
  * fans out a replaceable kind:0 profile (`name` / `display_name` / `picture` /
- * `banner`, optional `nip05`). `picture` is the profile-note photo when one
- * is stored and the API origin is non-empty, otherwise the shared icon.
- * `banner` is that account's wide image when one is stored, otherwise
- * `https://21.gifts/og.png`. The profile photo is never the banner.
+ * `banner`, optional `nip05`). `picture` is only the account's own profile
+ * photo. `banner` is only that account's wide image. The About me note photo
+ * is neither. A missing slot stays the shared icon or
+ * `https://21.gifts/og.png`.
  * Unsigned non-profile kind:1 notes
  * get `notePageUrl(PUBLIC_BASE_URL)` as their page link. Already published
  * kind:1 rows are not rewritten for that link. Also fans out a NIP-65
@@ -1132,16 +1132,14 @@ async function publishProfiles(deps: NostrWorkerDeps, writeSet: ResolvedWriteSet
       const note = await deps.messages.getById(profileId);
       if (note !== undefined) {
         about = note.text;
-        if (apiBase !== '') {
-          const photo = await deps.messages.getPhoto(profileId);
-          if (photo !== null) {
-            picture = forumPhotoUrl(apiBase, profileId, photo.contentType);
-          }
-        }
       }
     }
     if (deps.banners !== undefined && apiBase !== '') {
-      const wide = await deps.banners.get(live.id);
+      const ownPhoto = await deps.banners.get(live.id, 'picture');
+      if (ownPhoto !== null) {
+        picture = picturePublicUrl(apiBase, live.id, ownPhoto.contentType);
+      }
+      const wide = await deps.banners.get(live.id, 'banner');
       if (wide !== null) {
         banner = bannerPublicUrl(apiBase, live.id, wide.contentType);
       }

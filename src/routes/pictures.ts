@@ -1,38 +1,37 @@
 /**
- * Wide profile image. `PUT/GET /banners/me` is the signed-in account.
- * `GET /banners/:accountId.jpg` is public so a Nostr client can fetch it.
- * The About me photo is never accepted here.
+ * Round profile photo. Separate from the wide image and from the About me note.
+ * `PUT/GET /pictures/me` is the signed-in account.
+ * `GET /pictures/:accountId.jpg` is public so a Nostr client can fetch it.
  */
 
 import { Hono } from 'hono';
-import type { AuthStore } from '@/lib/auth/store';
 import { resolveSession } from '@/lib/auth/service';
-import { InMemoryBannerStore, wideBannerSize, type BannerStore } from '@/lib/banner-store';
+import { InMemoryBannerStore, isProfilePhoto, type BannerStore } from '@/lib/banner-store';
+import type { AuthStore } from '@/lib/auth/store';
 import { decodeForumPhoto, forumPhotoResponse, type ForumPhotoContentType } from '@/lib/message';
 import { bearerToken } from '@/routes/me';
 
 const ACCOUNT_FILE_RE = /^([0-9A-Za-z_-]{1,80})\.(jpg|png|webp)$/;
 
-const WIDE_IMAGE_ERROR =
-  'Wide image must be at least 640 px wide and at least 1.5 times as wide as it is tall';
+const PHOTO_ERROR = 'Profile photo must be a JPEG, PNG, or WebP';
 
-/** Collaborators for {@link bannerRoutes}. */
-export interface BannerRouteDeps {
+/** Collaborators for {@link pictureRoutes}. */
+export interface PictureRouteDeps {
   /** Account sessions. */
   auth: AuthStore;
-  /** Wide-image store (default: empty memory). */
+  /** Image store (default: empty memory). The picture slot only. */
   banners?: BannerStore;
   /** Clock for session expiry. */
   now?: () => number;
 }
 
 /**
- * Routes for the wide profile image.
+ * Routes for the round profile photo.
  *
- * @param deps - Auth store and banner store.
- * @returns Hono app. Mount at `/banners`.
+ * @param deps - Auth store and image store.
+ * @returns Hono app. Mount at `/pictures`.
  */
-export function bannerRoutes(deps: BannerRouteDeps): Hono {
+export function pictureRoutes(deps: PictureRouteDeps): Hono {
   const banners = deps.banners ?? new InMemoryBannerStore();
   const now = deps.now ?? Date.now;
 
@@ -46,9 +45,9 @@ export function bannerRoutes(deps: BannerRouteDeps): Hono {
       if (account === null) {
         return c.json({ error: 'Unauthorized' }, 401);
       }
-      const photo = await banners.get(account.id, 'banner');
+      const photo = await banners.get(account.id, 'picture');
       if (photo === null) {
-        return c.json({ error: 'Wide image not found' }, 404);
+        return c.json({ error: 'Profile photo not found' }, 404);
       }
       return forumPhotoResponse(photo);
     })
@@ -67,7 +66,7 @@ export function bannerRoutes(deps: BannerRouteDeps): Hono {
       }
       const incoming = (raw as { photo?: unknown }).photo;
       if (incoming === null) {
-        await banners.set(account.id, 'banner', null);
+        await banners.set(account.id, 'picture', null);
         return c.body(null, 204);
       }
       if (
@@ -81,13 +80,10 @@ export function bannerRoutes(deps: BannerRouteDeps): Hono {
       }
       const body = incoming as { contentType: string; data: string };
       const decoded = decodeForumPhoto(body.contentType, body.data);
-      if (decoded === null) {
-        return c.json({ error: WIDE_IMAGE_ERROR }, 400);
+      if (decoded === null || !isProfilePhoto(decoded.bytes, decoded.contentType)) {
+        return c.json({ error: PHOTO_ERROR }, 400);
       }
-      if (wideBannerSize(decoded.bytes, decoded.contentType) === null) {
-        return c.json({ error: WIDE_IMAGE_ERROR }, 400);
-      }
-      await banners.set(account.id, 'banner', decoded);
+      await banners.set(account.id, 'picture', decoded);
       return c.body(null, 204);
     })
     .get('/:file', async (c) => {
@@ -97,12 +93,11 @@ export function bannerRoutes(deps: BannerRouteDeps): Hono {
       }
       const accountId = match[1] as string;
       const ext = match[2] as string;
-      const photo = await banners.get(accountId, 'banner');
+      const photo = await banners.get(accountId, 'picture');
       if (photo === null) {
         return c.json({ error: 'Not found' }, 404);
       }
-      const expected = extFor(photo.contentType);
-      if (ext !== expected) {
+      if (ext !== extFor(photo.contentType)) {
         return c.json({ error: 'Not found' }, 404);
       }
       return forumPhotoResponse(photo);

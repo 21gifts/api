@@ -721,7 +721,7 @@ describe('runNostrWorkerTick', () => {
     expect(publisher.calls.length).toBe(afterFirst);
   });
 
-  it('publishes the profile-note photo as the avatar only', async () => {
+  it('does not use the About me photo as the avatar or the banner', async () => {
     const { auth, messages } = await seed();
     const acc = await auth.getAccount('acc');
     expect(acc).toBeDefined();
@@ -758,8 +758,7 @@ describe('runNostrWorkerTick', () => {
       banner: string;
       about: string;
     };
-    const photo = `https://api.21.gifts/messages/${profileId}/photo.jpg`;
-    expect(body.picture).toBe(photo);
+    expect(body.picture).toBe('https://21.gifts/apple-touch-icon.png');
     expect(body.banner).toBe('https://21.gifts/og.png');
     expect(body.about).toBe('about Ada');
   });
@@ -783,7 +782,11 @@ describe('runNostrWorkerTick', () => {
     );
     await auth.updateAccount({ ...acc!, profileMessageId: profileId });
     const banners = new InMemoryBannerStore();
-    await banners.set('acc', {
+    await banners.set('acc', 'picture', {
+      contentType: 'image/jpeg',
+      bytes: new Uint8Array([9, 9, 9]),
+    });
+    await banners.set('acc', 'banner', {
       contentType: 'image/png',
       bytes: new Uint8Array([1, 2, 3]),
     });
@@ -809,7 +812,7 @@ describe('runNostrWorkerTick', () => {
       picture: string;
       banner: string;
     };
-    expect(body.picture).toBe(`https://api.21.gifts/messages/${profileId}/photo.jpg`);
+    expect(body.picture).toBe('https://api.21.gifts/pictures/acc.jpg');
     expect(body.banner).toBe('https://api.21.gifts/banners/acc.png');
     const plain = new RecordingPublisher();
     await runNostrWorkerTick(

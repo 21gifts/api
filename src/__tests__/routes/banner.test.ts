@@ -51,9 +51,15 @@ describe('banner routes', () => {
     const pub = await app.request('/banners/acc.jpg');
     expect(pub.status).toBe(200);
     expect((await app.request('/banners/acc.png')).status).toBe(404);
-    await banners.set('acc', { contentType: 'image/png', bytes: new Uint8Array([1, 2, 3, 4]) });
+    await banners.set('acc', 'banner', {
+      contentType: 'image/png',
+      bytes: new Uint8Array([1, 2, 3, 4]),
+    });
     expect((await app.request('/banners/acc.png')).status).toBe(200);
-    await banners.set('acc', { contentType: 'image/webp', bytes: new Uint8Array([1, 2, 3, 4]) });
+    await banners.set('acc', 'banner', {
+      contentType: 'image/webp',
+      bytes: new Uint8Array([1, 2, 3, 4]),
+    });
     expect((await app.request('/banners/acc.webp')).status).toBe(200);
     const cleared = await app.request('/banners/me', {
       method: 'PUT',

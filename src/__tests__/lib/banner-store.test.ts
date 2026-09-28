@@ -6,7 +6,9 @@ import {
   InMemoryBannerStore,
   PostgresBannerStore,
   bannerPublicUrl,
+  isProfilePhoto,
   migrateBannerSchema,
+  picturePublicUrl,
   wideBannerSize,
 } from '@/lib/banner-store';
 
@@ -32,6 +34,21 @@ describe('wideBannerSize', () => {
   });
 });
 
+describe('isProfilePhoto', () => {
+  it('accepts a portrait and rejects junk', () => {
+    expect(isProfilePhoto(jpeg(40, 80), 'image/jpeg')).toBe(true);
+    expect(isProfilePhoto(new Uint8Array([1, 2, 3]), 'image/jpeg')).toBe(false);
+  });
+});
+
+describe('picturePublicUrl', () => {
+  it('uses /pictures and the stored extension', () => {
+    expect(picturePublicUrl('https://api.21.gifts/', 'acc', 'image/jpeg')).toBe(
+      'https://api.21.gifts/pictures/acc.jpg',
+    );
+  });
+});
+
 describe('bannerPublicUrl', () => {
   it('uses the stored extension and strips a trailing slash', () => {
     expect(bannerPublicUrl('https://api.21.gifts/', 'acc', 'image/png')).toBe(
@@ -50,14 +67,18 @@ describe('InMemoryBannerStore', () => {
   it('stores a copy and clears it', async () => {
     const store = new InMemoryBannerStore();
     const bytes = new Uint8Array([1, 2, 3]);
-    await store.set('acc', { contentType: 'image/jpeg', bytes });
+    await store.set('acc', 'picture', { contentType: 'image/jpeg', bytes });
     bytes[0] = 9;
-    const stored = await store.get('acc');
+    const stored = await store.get('acc', 'picture');
     expect(stored?.bytes[0]).toBe(1);
-    expect(stored?.contentType).toBe('image/jpeg');
-    await store.set('acc', null);
-    expect(await store.get('acc')).toBeNull();
-    expect(await store.get('missing')).toBeNull();
+    expect(await store.get('acc', 'banner')).toBeNull();
+    await store.set('acc', 'banner', { contentType: 'image/png', bytes: new Uint8Array([9]) });
+    expect((await store.get('acc', 'picture'))?.contentType).toBe('image/jpeg');
+    expect((await store.get('acc', 'banner'))?.contentType).toBe('image/png');
+    await store.set('acc', 'picture', null);
+    expect(await store.get('acc', 'picture')).toBeNull();
+    expect(await store.get('acc', 'banner')).not.toBeNull();
+    expect(await store.get('missing', 'picture')).toBeNull();
   });
 });
 
@@ -75,22 +96,22 @@ describe('PostgresBannerStore', () => {
       },
     };
     await migrateBannerSchema(sql);
-    expect(calls.some((text) => text.includes('CREATE TABLE IF NOT EXISTS account_banner'))).toBe(
+    expect(calls.some((text) => text.includes('CREATE TABLE IF NOT EXISTS account_image'))).toBe(
       true,
     );
     const store = new PostgresBannerStore(sql);
-    expect(await store.get('acc')).toBeNull();
+    expect(await store.get('acc', 'picture')).toBeNull();
     rows = [{ content_type: 'image/jpeg', data: new Uint8Array([4, 5]) }];
-    const jpegRow = await store.get('acc');
+    const jpegRow = await store.get('acc', 'picture');
     expect(jpegRow?.bytes).toEqual(new Uint8Array([4, 5]));
     rows = [{ content_type: 'image/png', data: new ArrayBuffer(2) }];
-    expect((await store.get('acc'))?.contentType).toBe('image/png');
+    expect((await store.get('acc', 'banner'))?.contentType).toBe('image/png');
     rows = [{ content_type: 'text/plain', data: new Uint8Array([1]) }];
-    expect(await store.get('acc')).toBeNull();
+    expect(await store.get('acc', 'picture')).toBeNull();
     rows = [{ content_type: 'image/webp', data: 'nope' }];
-    expect(await store.get('acc')).toBeNull();
-    await store.set('acc', { contentType: 'image/webp', bytes: new Uint8Array([7]) });
-    await store.set('acc', null);
+    expect(await store.get('acc', 'banner')).toBeNull();
+    await store.set('acc', 'banner', { contentType: 'image/webp', bytes: new Uint8Array([7]) });
+    await store.set('acc', 'picture', null);
     expect(calls.some((text) => text.startsWith('DELETE'))).toBe(true);
     expect(calls.some((text) => text.includes('ON CONFLICT'))).toBe(true);
   });
