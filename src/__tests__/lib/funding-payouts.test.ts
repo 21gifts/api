@@ -53,11 +53,16 @@ function missedWeek(): PayoutDayCell[] {
   return ['missed', 'missed', 'missed', 'missed', 'missed', 'missed', 'missed'];
 }
 
+function noneWelcome(): PayoutMatrixRow['welcome'] {
+  return [false, false, false, false, false, false, false];
+}
+
 function matrixRow(partial: Partial<PayoutMatrixRow>): PayoutMatrixRow {
   return {
     accountId: 'a',
     name: 'Ada',
     days: ['blocked', 'blocked', 'blocked', 'blocked', 'blocked', 'blocked', 'blocked'],
+    welcome: noneWelcome(),
     ...partial,
   };
 }
@@ -130,6 +135,7 @@ describe('buildFundingPayoutMatrix', () => {
         accountId: 'a',
         name: 'Ada',
         days: ['blocked', 'blocked', 'missed', 'missed', 'missed', 'missed', 'missed'],
+        welcome: noneWelcome(),
       },
     ]);
   });
@@ -183,7 +189,7 @@ describe('buildFundingPayoutMatrix', () => {
     expect(matrix.rows).toEqual([]);
   });
 
-  it('paints a daily gift paid and ignores welcome, moderator, blank, and out-of-window gifts', () => {
+  it('paints a daily gift paid, flags a welcome gift, and ignores moderator, blank, and out-of-window gifts', () => {
     const matrix = buildFundingPayoutMatrix({
       nowMs: NOW,
       accounts: [account({ id: 'a', lightningAddress: 'Ada@walletofsatoshi.com' })],
@@ -235,6 +241,7 @@ describe('buildFundingPayoutMatrix', () => {
       'missed',
       'missed',
     ]);
+    expect(matrix.rows[0]?.welcome).toEqual([false, false, false, false, false, true, false]);
   });
 
   it('includes a basis account only on days a daily gift was paid', () => {
@@ -262,6 +269,7 @@ describe('buildFundingPayoutMatrix', () => {
         accountId: 'b',
         name: null,
         days: ['blocked', 'blocked', 'blocked', 'blocked', 'blocked', 'blocked', 'paid'],
+        welcome: noneWelcome(),
       },
     ]);
   });
@@ -302,6 +310,7 @@ describe('buildFundingPayoutMatrix', () => {
       accountId: null,
       name: 'ghost',
       days: ['blocked', 'blocked', 'blocked', 'blocked', 'blocked', 'paid', 'blocked'],
+      welcome: noneWelcome(),
     });
     expect(matrix.rows.map((row) => row.name)).toEqual(['Aye', 'Bee', 'ghost', 'Same', 'Same']);
   });
@@ -358,6 +367,76 @@ describe('buildFundingPayoutMatrix', () => {
         accountId: null,
         name: 'ada',
         days: ['blocked', 'blocked', 'blocked', 'blocked', 'blocked', 'blocked', 'paid'],
+        welcome: noneWelcome(),
+      },
+    ]);
+  });
+
+  it('includes a welcome-only person who is not entitled and has no daily gift', () => {
+    const matrix = buildFundingPayoutMatrix({
+      nowMs: NOW,
+      accounts: [account({ id: 'a' })],
+      grants: [],
+      gifts: [
+        gift({
+          kind: 'welcome',
+          recipientWosUser: 'ada',
+          paidAt: new Date('2026-09-25T12:00:00.000Z'),
+        }),
+      ],
+    });
+    expect(matrix.rows).toEqual([
+      {
+        accountId: 'a',
+        name: 'Ada',
+        days: ['blocked', 'blocked', 'blocked', 'blocked', 'blocked', 'blocked', 'blocked'],
+        welcome: [false, false, false, false, false, true, false],
+      },
+    ]);
+  });
+
+  it('allows paid and welcome on the same UTC day', () => {
+    const matrix = buildFundingPayoutMatrix({
+      nowMs: NOW,
+      accounts: [account({ id: 'a' })],
+      grants: [grant({ accountId: 'a', status: 'admitted', admittedAt: null })],
+      gifts: [
+        gift({
+          kind: 'daily',
+          recipientWosUser: 'ada',
+          paidAt: new Date('2026-09-25T08:00:00.000Z'),
+        }),
+        gift({
+          kind: 'welcome',
+          recipientWosUser: 'ada',
+          paidAt: new Date('2026-09-25T16:00:00.000Z'),
+        }),
+      ],
+    });
+    expect(matrix.rows[0]?.days[5]).toBe('paid');
+    expect(matrix.rows[0]?.welcome[5]).toBe(true);
+    expect(matrix.rows[0]?.welcome).toEqual([false, false, false, false, false, true, false]);
+  });
+
+  it('includes an unmatched welcome gift as a handle without an account', () => {
+    const matrix = buildFundingPayoutMatrix({
+      nowMs: NOW,
+      accounts: [account({ id: 'a' })],
+      grants: [],
+      gifts: [
+        gift({
+          kind: 'welcome',
+          recipientWosUser: 'Ghost',
+          paidAt: new Date('2026-09-25T12:00:00.000Z'),
+        }),
+      ],
+    });
+    expect(matrix.rows).toEqual([
+      {
+        accountId: null,
+        name: 'ghost',
+        days: ['blocked', 'blocked', 'blocked', 'blocked', 'blocked', 'blocked', 'blocked'],
+        welcome: [false, false, false, false, false, true, false],
       },
     ]);
   });
