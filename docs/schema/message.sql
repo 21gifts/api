@@ -60,10 +60,6 @@ ALTER TABLE nostr_zap_receipt ADD COLUMN IF NOT EXISTS zap_request_id text;
 ALTER TABLE nostr_zap_receipt ADD COLUMN IF NOT EXISTS gift_reply_id uuid REFERENCES message (id);
 ALTER TABLE nostr_zap_receipt ADD COLUMN IF NOT EXISTS comment text NOT NULL DEFAULT '';
 ALTER TABLE nostr_zap_receipt ADD COLUMN IF NOT EXISTS recorded_at timestamptz;
-UPDATE nostr_zap_receipt AS r
-SET recorded_at = COALESCE(m.goal_funded_at, now())
-FROM message AS m
-WHERE r.message_id = m.id AND r.recorded_at IS NULL;
 CREATE UNIQUE INDEX IF NOT EXISTS nostr_zap_receipt_request_uidx
   ON nostr_zap_receipt (zap_request_id) WHERE zap_request_id IS NOT NULL;
 CREATE UNIQUE INDEX IF NOT EXISTS nostr_zap_receipt_gift_reply_id_uidx ON nostr_zap_receipt (gift_reply_id) WHERE gift_reply_id IS NOT NULL;
@@ -280,6 +276,11 @@ ALTER TABLE message ADD COLUMN IF NOT EXISTS goal_repayable boolean;
 ALTER TABLE message ADD COLUMN IF NOT EXISTS goal_term_days integer;
 -- Set once, when collected sats first reach the ask. Null until then.
 ALTER TABLE message ADD COLUMN IF NOT EXISTS goal_funded_at timestamptz;
+-- recorded_at is added above. This backfill runs only after goal_funded_at exists.
+UPDATE nostr_zap_receipt AS r
+SET recorded_at = COALESCE(m.goal_funded_at, now())
+FROM message AS m
+WHERE r.message_id = m.id AND r.recorded_at IS NULL;
 -- One stored giver share. Paying it does not increase message.sats.
 CREATE TABLE IF NOT EXISTS message_repayment (
   message_id uuid NOT NULL REFERENCES message (id) ON DELETE CASCADE,

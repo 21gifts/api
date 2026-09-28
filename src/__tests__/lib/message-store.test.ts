@@ -235,6 +235,18 @@ describe('MESSAGE_SCHEMA_SQL', () => {
     expect(MESSAGE_SCHEMA_SQL.join('\n')).toMatch(
       /DROP CONSTRAINT IF EXISTS message_goal_term_days_chk[\s\S]*ADD CONSTRAINT message_goal_term_days_chk\s+CHECK \(goal_term_days IS NULL OR \(goal_repayable IS TRUE AND goal_term_days BETWEEN 1 AND 3650\)\)/,
     );
+    const recordedColumn = MESSAGE_SCHEMA_SQL.findIndex((statement) =>
+      statement.includes('ADD COLUMN IF NOT EXISTS recorded_at'),
+    );
+    const fundedColumn = MESSAGE_SCHEMA_SQL.findIndex((statement) =>
+      statement.includes('ADD COLUMN IF NOT EXISTS goal_funded_at'),
+    );
+    const recordedBackfill = MESSAGE_SCHEMA_SQL.findIndex((statement) =>
+      statement.includes('SET recorded_at = COALESCE(m.goal_funded_at, now())'),
+    );
+    expect(recordedColumn).toBeGreaterThan(-1);
+    expect(fundedColumn).toBeGreaterThan(recordedColumn);
+    expect(recordedBackfill).toBe(fundedColumn + 1);
     expect(MESSAGE_SCHEMA_SQL.at(-1)).toContain('FROM pg_trigger');
     expect(MESSAGE_SCHEMA_SQL.at(-1)).toContain("tgname = 'trg_db_change'");
     expect(MESSAGE_SCHEMA_SQL.at(-1)).toContain("jsonb_typeof(nostr_event) = 'string'");
