@@ -3619,7 +3619,8 @@ POST with the same account, parent, normalised text, media bytes, and pin return
 The same media with a different pin is **409**
 `{ "error": "A live note with this media already exists" }`.
 Text-only posts are unchanged (still **429** on burst). After a **new**
-top-level persist, the api POSTs `{ address, messageId }` to `{SPEND_URL}/ping` with
+top-level persist, the welcome POST is sent and awaited before the daily
+POST. The api POSTs `{ address, messageId }` to `{SPEND_URL}/ping` with
 Bearer `SPEND_API_TOKEN` (fire-and-await; `messageId` is the UUID of the new
 top-level row) only when `eligibleToday` for the author's funding grant
 **and** the new row has media (`hasPhoto` / `hasVideo` / `photoCount > 0`).
@@ -3628,6 +3629,8 @@ Otherwise no ping, log `spend.ping.skipped` / `not_eligible` (ineligible) or
 top-level photo or video exists, including the About-me note, the api also
 POSTs `{ address, messageId, kind: "welcome" }` for that note, independent
 of `eligibleToday` and independent of whether the new row itself has media.
+Spend pays the welcome gift and does not also pay the daily gift on that
+same UTC day. A later UTC day still pays the daily gift.
 The same ping runs when the account becomes verified and when About me is
 saved while verified. On boot, and every 15 minutes, every verified account
 that already has a live top-level photo or video (About me or a living-room
