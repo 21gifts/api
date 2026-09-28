@@ -103,11 +103,15 @@ describe('GET /mentions', () => {
 
   it('expires the session on the injected clock', async () => {
     const store = await seededCaller();
-    const res = await mount(store, () => FROZEN + SESSION_TTL_MS + 1).request('/mentions', {
+    const fresh = await mount(store, () => FROZEN + SESSION_TTL_MS).request('/mentions', {
       headers: AUTH,
     });
-    expect(res.status).toBe(401);
-    expect(await res.json()).toEqual({ error: 'Unauthorized' });
+    expect(fresh.status).toBe(200);
+    const expired = await mount(store, () => FROZEN + SESSION_TTL_MS + 1).request('/mentions', {
+      headers: AUTH,
+    });
+    expect(expired.status).toBe(401);
+    expect(await expired.json()).toEqual({ error: 'Unauthorized' });
   });
 
   it('caps an empty query at 20 rows in username order, not insertion or id order', async () => {
