@@ -84,7 +84,7 @@ async function poster(): Promise<InMemoryAuthStore> {
 }
 
 describe('public active window', () => {
-  it('pages the first 200 active notes without accountId and 401s past the window', async () => {
+  it('pages the first 200 active notes with accountId and 401s past the window', async () => {
     const store = new InMemoryMessageStore();
     for (let n = 1; n <= 201; n += 1) {
       await store.create({
@@ -106,7 +106,7 @@ describe('public active window', () => {
       nextCursor?: string;
     };
     expect(page.messages).toHaveLength(200);
-    expect(page.messages[0]).not.toHaveProperty('accountId');
+    expect(page.messages[0]?.accountId).toBe('ada');
     expect(page.nextCursor).toBeTypeOf('string');
     const past = await app.request(`/messages?mode=active&cursor=${page.nextCursor ?? ''}`);
     expect(past.status).toBe(401);
