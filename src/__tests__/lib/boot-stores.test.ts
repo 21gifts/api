@@ -488,6 +488,29 @@ describe('openBootStores', () => {
     );
   });
 
+  it('logs diagnostic.write.failed when a boot diagnostic insert throws', async () => {
+    const client: SqlClient = {
+      query: async <T>(text: string): Promise<T[]> => {
+        if (text.includes('min(paid_at)')) {
+          throw new Error('range query failed');
+        }
+        return [] as T[];
+      },
+      execute: async (text: string) => {
+        if (text.includes('INSERT INTO diagnostic_event')) {
+          throw new Error('disk');
+        }
+      },
+    };
+    await openBootStores('postgres://gifts21@localhost/gifts21', () => client, {
+      fetchImpl: async () => new Response('[]', { status: 200 }),
+      candlesUrl: 'https://example.test/candles',
+    });
+    await Promise.resolve();
+    expect(parsedEvents(warn).some((e) => e['event'] === 'gifts.fx.boot_fill.failed')).toBe(true);
+    expect(parsedEvents(warn).some((e) => e['event'] === 'diagnostic.write.failed')).toBe(true);
+  });
+
   it('logs a failed external-zapper backfill and still returns every durable store', async () => {
     const client: SqlClient = {
       query: async <T>(text: string): Promise<T[]> => {
