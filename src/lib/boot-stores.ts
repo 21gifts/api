@@ -138,8 +138,9 @@ export interface BootStores {
    */
   debugDbStore: DebugDbStore | undefined;
   /**
-   * Wide profile images, or `undefined` on a memory boot so the entry point
-   * keeps one in-memory store shared by HTTP and the Nostr worker.
+   * Profile photo and wide image, or `undefined` on a memory boot so the
+   * entry point keeps one in-memory store shared by HTTP and the Nostr worker.
+   * The About me photo is neither slot.
    */
   bannerStore: BannerStore | undefined;
 }

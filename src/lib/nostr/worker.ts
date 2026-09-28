@@ -146,7 +146,7 @@ export interface NostrWorkerDeps {
   postLimiter?: PostRateLimiter;
   /** Optional funding grants; compose spend pings use the same `eligibleToday` gate as `POST /messages`. */
   fundingStore?: FundingStore;
-  /** Optional wide-image store. Omitted → the shared banner, never the profile photo. */
+  /** Optional profile-photo and wide-image store. Omitted → the shared icon and the shared banner. The About me photo is neither. */
   banners?: BannerStore;
   /** Optional crosses for the one spot taken per newly indexed zap. */
   fiatRates?: FiatRateBook;

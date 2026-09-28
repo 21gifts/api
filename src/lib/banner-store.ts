@@ -1,8 +1,8 @@
 /**
- * One wide profile image per account, separate from the About me photo.
+ * Round profile photo and wide image, one of each per account.
  *
- * The About me photo is the round Nostr avatar. This image is only the wide
- * header. A portrait is not stored here.
+ * The two slots never share bytes. The About me note photo is neither slot.
+ * A portrait is stored only as the profile photo, never as the wide image.
  */
 
 import type { SqlClient } from '@/lib/auth/sql';

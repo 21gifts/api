@@ -261,9 +261,10 @@ export interface AppDeps {
    */
   fundingStore?: FundingStore;
   /**
-   * Wide profile images (default: empty {@link InMemoryBannerStore}).
-   * Boot injects {@link PostgresBannerStore} when `DATABASE_URL` is set.
-   * The same instance is passed to the Nostr worker.
+   * Profile photo and wide image (default: empty {@link InMemoryBannerStore}).
+   * The About me photo is neither slot. Boot injects
+   * {@link PostgresBannerStore} when `DATABASE_URL` is set. The same instance
+   * is passed to the Nostr worker.
    */
   bannerStore?: BannerStore;
 }

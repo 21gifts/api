@@ -1082,7 +1082,7 @@
 
 ## Function: sundayRest
 
-- **Purpose:** Hono middleware. A trimmed `Time-Zone` header naming the device IANA zone makes the listed public writes return 403 `{ error: 'SUNDAY_REST' }` while that zone is in Sunday on the injected clock: `POST /messages`, `DELETE /messages/:id` (one segment), `PATCH /messages/:id/place`, `PATCH /messages/:id/shop-account`, `POST /funding/apply|trial|admit|reject`, `POST /me/name|username|location`, `PUT /me/about`, Lightning Address link/unlink/verify, the trust verify/moderator writes, and `POST /messages/:id/invoice` (a zap on a forum note). `GET /conversations/moderator-group` is refused the same way, and opening, reading, or sending in a moderator-group thread is refused once that thread is known. Ordinary private messages, contact, pay links, the till, and conversation invoices are not refused. Missing or invalid zone does not refuse. Never 503; does not pause `/healthz`, boot, or workers.
+- **Purpose:** Hono middleware. A trimmed `Time-Zone` header naming the device IANA zone makes the listed public writes return 403 `{ error: 'SUNDAY_REST' }` while that zone is in Sunday on the injected clock: `POST /messages`, `DELETE /messages/:id` (one segment), `PATCH /messages/:id/place`, `PATCH /messages/:id/shop-account`, `POST /funding/apply|trial|admit|reject`, `POST /me/name|username|location`, `PUT /me/about`, `PUT /pictures/me`, `PUT /banners/me`, Lightning Address link/unlink/verify, the trust verify/moderator writes, and `POST /messages/:id/invoice` (a zap on a forum note). `GET /conversations/moderator-group` is refused the same way, and opening, reading, or sending in a moderator-group thread is refused once that thread is known. Ordinary private messages, contact, pay links, the till, and conversation invoices are not refused. Missing or invalid zone does not refuse. Never 503; does not pause `/healthz`, boot, or workers.
 - **Inputs:** `now` epoch-ms callback (the same clock `createApp` already uses).
 - **Returns / side effects:** Middleware. JSON 403 or `next()`.
 - **Used by:** `createApp`.
@@ -2023,7 +2023,7 @@
 
 ## Function: pictureRoutes
 
-- **Purpose:** `PUT /pictures/me` stores or clears the signed-in account's profile photo. It does not change the wide image or the About me note. `GET /pictures/me` returns the stored bytes. `GET /pictures/:accountId.jpg|.png|.webp` is public and 404s when the extension does not match.
+- **Purpose:** `PUT /pictures/me` stores or clears the signed-in account's profile photo. It does not change the wide image or the About me note. `GET /pictures/me` returns the stored bytes. `GET /pictures/:accountId.jpg|.png|.webp` is public and 404s when the extension does not match. On the device's local Sunday, that PUT is 403 `{ error: 'SUNDAY_REST' }` when `Time-Zone` names the zone. GET stays open. A missing, blank, or invalid zone does not refuse.
 - **Inputs:** Auth store, optional image store, optional clock.
 - **Returns / side effects:** Hono app mounted at `/pictures`.
 - **Used by:** `createApp`.
@@ -2037,21 +2037,21 @@
 
 ## Function: InMemoryBannerStore
 
-- **Purpose:** Process-local wide-image store. Default empty so the process boots without a database.
-- **Inputs:** `get(accountId)` and `set(accountId, photo | null)`.
-- **Returns / side effects:** A byte copy, or null. No I/O.
-- **Used by:** `createApp` when no banner store is injected.
+- **Purpose:** Process-local store for the round profile photo and the wide image. The two slots never share bytes. The About me photo is neither. Default empty so the process boots without a database.
+- **Inputs:** `get(accountId, slot)` and `set(accountId, slot, photo | null)`. `slot` is `picture` or `banner`.
+- **Returns / side effects:** A byte copy of that slot, or null. No I/O.
+- **Used by:** `createApp` when no image store is injected; `/pictures` and `/banners`.
 
 ## Function: PostgresBannerStore
 
-- **Purpose:** `account_image` rows, one per slot. `get` returns null for a missing, non-image, or non-byte row. `set(null)` deletes that slot only. `set(photo)` upserts that slot only.
-- **Inputs:** SQL client. Account id and optional image.
-- **Returns / side effects:** Stored image or null. Writes one row.
-- **Used by:** SQL boot, shared by `/banners` and the Nostr worker.
+- **Purpose:** `account_image` rows, one per slot. `get` returns null for a missing, non-image, or non-byte row. `set(null)` deletes that slot only. `set(photo)` upserts that slot only. The About me photo is neither slot.
+- **Inputs:** SQL client. `get(accountId, slot)` and `set(accountId, slot, photo | null)`.
+- **Returns / side effects:** Stored image or null. Writes one row of that slot.
+- **Used by:** SQL boot, shared by `/pictures`, `/banners`, and the Nostr worker.
 
 ## Function: bannerRoutes
 
-- **Purpose:** `PUT /banners/me` stores or clears the signed-in account's wide image. A portrait, a square, a thin strip, and bytes that are not a JPEG, PNG, or WebP are rejected. `GET /banners/me` returns the stored bytes. `GET /banners/:accountId.jpg|.png|.webp` is public and 404s when the extension does not match the stored MIME. The About me photo is not this image.
+- **Purpose:** `PUT /banners/me` stores or clears the signed-in account's wide image. A portrait, a square, a thin strip, and bytes that are not a JPEG, PNG, or WebP are rejected. `GET /banners/me` returns the stored bytes. `GET /banners/:accountId.jpg|.png|.webp` is public and 404s when the extension does not match the stored MIME. The About me photo is not this image. On the device's local Sunday, that PUT is 403 `{ error: 'SUNDAY_REST' }` when `Time-Zone` names the zone. GET stays open. A missing, blank, or invalid zone does not refuse.
 - **Inputs:** Auth store, optional banner store, optional clock.
 - **Returns / side effects:** Hono app mounted at `/banners`.
 - **Used by:** `createApp`.

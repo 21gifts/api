@@ -20,7 +20,7 @@ const WIDE_IMAGE_ERROR =
 export interface BannerRouteDeps {
   /** Account sessions. */
   auth: AuthStore;
-  /** Wide-image store (default: empty memory). */
+  /** Image store (default: empty memory). The banner slot only. */
   banners?: BannerStore;
   /** Clock for session expiry. */
   now?: () => number;

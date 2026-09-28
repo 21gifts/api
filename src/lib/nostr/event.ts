@@ -29,7 +29,7 @@ export const KIND1_CONTENT_HASHTAGS: readonly ['#bitcoin', '#21gifts'] = [
 /** Fallback kind:0 `picture` when no profile photo is stored. */
 export const KIND0_PICTURE_URL = 'https://21.gifts/apple-touch-icon.png';
 
-/** Fallback kind:0 `banner` when no profile photo is stored (1200×630). */
+/** Fallback kind:0 `banner` when no wide image is stored (1200×630). */
 export const KIND0_BANNER_URL = 'https://21.gifts/og.png';
 
 const NOTE_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -399,9 +399,9 @@ export interface Kind0ProfileContent {
   display_name: string;
   /** Fixed site URL. */
   website: string;
-  /** Wide header: the profile photo, or the shared 1200×630 image. */
+  /** Wide header: the account's own wide image, or the shared 1200×630 image. */
   banner: string;
-  /** Avatar: the profile photo, or the shared 21.gifts icon. */
+  /** Avatar: the account's own profile photo, or the shared 21.gifts icon. */
   picture: string;
   /** LUD-16 when the account has a linked address. */
   lud16?: string;
@@ -414,17 +414,18 @@ export interface Kind0ProfileContent {
 /**
  * Build kind:0 `content` JSON (no extra whitespace).
  *
- * Omit `lud16` when the account has no Lightning Address. `picture` and
- * `banner` use the personal profile-note photo when the worker passes those
- * URLs, otherwise {@link KIND0_PICTURE_URL} and {@link KIND0_BANNER_URL}.
- * `about` defaults to `21.gifts` and is the profile-note text when the worker
- * passes it. Set `nip05` when a public host is available. Never set `bot`.
+ * Omit `lud16` when the account has no Lightning Address. `picture` is only
+ * the profile-photo slot and `banner` is only the wide-image slot. Blank
+ * values fall back to {@link KIND0_PICTURE_URL} and {@link KIND0_BANNER_URL}.
+ * The About me note photo is neither. `about` defaults to `21.gifts` and is
+ * the profile-note text when the worker passes it. Set `nip05` when a public
+ * host is available. Never set `bot`.
  *
  * @param name - Non-null display name.
  * @param lightningAddress - Linked LUD-16, or `null`.
  * @param nip05 - NIP-05 identifier, or `null`.
  * @param about - Kind:0 about text (profile note, or default `21.gifts`).
- * @param images - Optional personal `picture` and `banner` URLs. Blank values fall back to the shared images.
+ * @param images - Optional profile-photo `picture` and wide-image `banner` URLs. Blank values fall back to the shared images. The About me photo is neither.
  * @returns JSON string for the kind:0 `content` field.
  */
 export function buildKind0Content(
@@ -471,7 +472,7 @@ export interface UnsignedKind0 {
  * @param createdAtUnix - Unix seconds at enqueue/publish.
  * @param nip05 - NIP-05 identifier, or `null`.
  * @param about - Kind:0 about text (profile note, or default `21.gifts`).
- * @param images - Optional personal `picture` and `banner` URLs.
+ * @param images - Optional profile-photo `picture` and wide-image `banner` URLs. The About me photo is neither.
  * @returns Unsigned event fields for `finalizeEvent`.
  */
 export function buildKind0Event(
