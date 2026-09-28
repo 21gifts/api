@@ -2152,7 +2152,7 @@ describe('POST /messages', () => {
     expect(JSON.parse(claimed[0]?.payload ?? '{}')).toMatchObject({
       title: 'Ada',
       body: 'child',
-      url: '/notifications',
+      url: `/messages/${listed[0]?.replyId}`,
       tag: `forum_reply:${listed[0]?.replyId}`,
     });
   });
@@ -2363,7 +2363,7 @@ describe('POST /messages', () => {
     expect(JSON.parse(claimed[0]?.payload ?? '{}')).toMatchObject({
       title: 'Ada',
       body: 'child',
-      url: '/notifications',
+      url: `/messages/${claimed[0]?.messageId}`,
       tag: `forum_reply:${claimed[0]?.messageId}`,
     });
   });

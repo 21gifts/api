@@ -3602,8 +3602,8 @@ self mark does not notify the author. Other marks fan out one
 `replyCount`, and no photo or video bytes in the JSON. `sats` is 0 and
 `payable` is false until the worker signs the note (and stays false without
 author LN). `role` is the posting session account's live `account.role`. Web Push and in-app rows for a **top-level** note (`notifyForumPost`, kind
-`forum_post`, `url` `/notifications`, `tag` `forum_post:<id>`) and for a
-**reply** (`notifyForumReply`, kind `forum_reply`, `url` `/notifications`,
+`forum_post`, `url` `/messages/<id>`, `tag` `forum_post:<id>`) and for a
+**reply** (`notifyForumReply`, kind `forum_reply`, `url` `/messages/<replyId>`,
 `tag` `forum_reply:<replyId>`) fan out in-app to every account except the
 actor (no-op when the actor is the official platform account), then filter recipients by each account's `notificationLevel`
 (`all` / `active` / `mentions`). Web Push still goes only to bell subscribers

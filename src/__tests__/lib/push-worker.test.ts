@@ -92,7 +92,7 @@ describe('enqueueForumPushes', () => {
       tag: 'forum_post:msg-1',
       title: 'Someone',
       body: 'Posted in the living room.',
-      url: '/notifications',
+      url: '/messages/msg-1',
     });
   });
 
@@ -119,7 +119,7 @@ describe('enqueueReplyPush', () => {
     expect(JSON.parse(claimed[0]?.payload ?? '{}')).toMatchObject({
       title: 'Someone',
       body: 'Replied in the living room.',
-      url: '/notifications',
+      url: '/messages/reply-1',
       tag: 'forum_reply:reply-1',
     });
   });
@@ -147,7 +147,7 @@ describe('enqueueZapPush', () => {
     expect(JSON.parse(claimed[0]?.payload ?? '{}')).toMatchObject({
       title: 'Someone',
       body: 'Sent 0 sats.',
-      url: '/notifications',
+      url: '/messages/msg-9',
       tag: 'zap:msg-9',
     });
   });
