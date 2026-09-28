@@ -2228,7 +2228,8 @@ but invalid:
 - `status` — integer from 100 through 599.
 - `path` — string. `requestLogPath` rewrites a `/view/<segment>` prefix to
   `/view/:viewKey`. The result is rejected when it contains `?` or 32 or
-  more hex digits in a row.
+  more lowercase hex digits (`0-9`, `a-f`) in a row. Uppercase letters are
+  not treated as hex.
 
 A valid body is stored as a `client` row and the response is **204** with an
 empty body. Rows are kept with no TTL and no DELETE. The stored fields never
