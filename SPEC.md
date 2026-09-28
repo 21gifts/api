@@ -173,7 +173,7 @@ Public base URLs used in examples:
 | POST   | `/notifications/read-all`                            | Bearer                     | Mark all notifications read                                                                                                                                                                                        |
 | POST   | `/notifications/:id/read`                            | Bearer                     | Mark one notification read                                                                                                                                                                                         |
 | GET    | `/lightning-address`                                 | none                       | Resolve LUD-16 metadata (cached)                                                                                                                                                                                   |
-| POST   | `/diagnostics`                                       | none                       | Allowlisted client diagnostic (`204`); 60 per IP and 600 global per minute; no secrets                                                                                                                             |
+| POST   | `/diagnostics`                                       | none                       | `{ event }` plus optional `name`, `message`, `prfPresent`, `challengeId`, `accountId`, `stage`, `status`, `path` → `204`; 60/IP and 600 global per minute                                                          |
 | GET    | `/debug/accounts`                                    | `Authorization: Bearer`    | Operator account listing (`DEBUG_TOKEN`)                                                                                                                                                                           |
 | GET    | `/debug/accounts/:id`                                | `Authorization: Bearer`    | Operator one-account detail (`DEBUG_TOKEN`)                                                                                                                                                                        |
 | POST   | `/debug/accounts`                                    | `Authorization: Bearer`    | Operator provision name + Lightning Address (`DEBUG_TOKEN`)                                                                                                                                                        |
@@ -2212,13 +2212,31 @@ Environment:
 
 ### `POST /diagnostics`
 
-Public ingest of an allowlisted client diagnostic. No session and no debug
-bearer. A valid body is stored as a `client` row and the response is **204**
-with an empty body. Rows are kept with no TTL and no DELETE. The stored
-fields never include PRF output, the recovery phrase, a session token, a
-view key, nsec, Authorization, Cookie, a WebAuthn challenge, attestation, or
-signatures. An optional `User-Agent` has controls stripped and is truncated
-to 200 characters.
+Public ingest of one client diagnostic. No session and no debug bearer.
+The body is a JSON object. Any key other than the ones below is rejected.
+Required `event` matches `client.` plus 1–60 characters from `a-z`, digits,
+and `.`. Optional fields are omitted when absent and rejected when present
+but invalid:
+
+- `name` — 1–40 letters (`A-Z` / `a-z`).
+- `message` — 1–120 characters from letters, digits, `.`, `_`, `:`, space,
+  and `-`. A slash is rejected.
+- `prfPresent` — boolean. This is presence only, never the PRF bytes.
+- `challengeId` — 64 lowercase hex digits.
+- `accountId` — UUID.
+- `stage` — `register`, `authenticate`, `seed`, `login`, or `unhandled`.
+- `status` — integer from 100 through 599.
+- `path` — string. `requestLogPath` rewrites a `/view/<segment>` prefix to
+  `/view/:viewKey`. The result is rejected when it contains `?` or 32 or
+  more hex digits in a row.
+
+A valid body is stored as a `client` row and the response is **204** with an
+empty body. Rows are kept with no TTL and no DELETE. The stored fields never
+include PRF output, the recovery phrase, a session token, a view key, nsec,
+Authorization, Cookie, a WebAuthn challenge, attestation, or signatures.
+`User-Agent` is not a body field. The server may store it as `userAgent`
+after stripping controls and truncating to 200 characters. An empty result
+is omitted.
 
 Invalid JSON or a field outside the allowlist → **Response** `400`:
 
