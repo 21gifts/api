@@ -1702,8 +1702,9 @@ async function ingestOneReceipt(
  * Runs before the author's provider check. The same wallet service can sign
  * both addresses, and a missing author address must not drop the repayment.
  * A receipt that is not signed by the giver's provider is rejected and does
- * not claim the payment hash. Returns true when this receipt was a repayment
- * attempt, including a rejection.
+ * not claim the payment hash. A repay invoice for another note, or for a
+ * different sat amount, is rejected the same way and does not credit the ask.
+ * Returns true when this receipt was a repayment attempt, including a rejection.
  *
  * @param args - Ingest collaborators.
  * @param row - Note the receipt points at.
@@ -1731,13 +1732,26 @@ async function settleRepaymentReceipt(
     return false;
   }
   const repayment = invoice === undefined ? null : parseRepaymentDescription(invoice.description);
-  if (
-    invoice === undefined ||
-    repayment === null ||
-    invoice.messageId !== row.id ||
-    invoice.amountSats !== amountSats
-  ) {
+  if (invoice === undefined || repayment === null) {
     return false;
+  }
+  if (invoice.messageId !== row.id || invoice.amountSats !== amountSats) {
+    const reason = invoice.messageId !== row.id ? 'event' : 'amount';
+    logEvent('nostr.zap.rejected', { reason });
+    await persistZapIngest(
+      args.store,
+      zapIngestRow({
+        receiptId: event.id,
+        noteEventId,
+        messageId: row.id,
+        outcome: 'rejected',
+        reason,
+        amountSats,
+        receiptPubkey: event.pubkey,
+        receipt,
+      }),
+    );
+    return true;
   }
   const giver = await args.auth.getAccount(repayment.recipientAccountId);
   const address = giver?.lightningAddress?.trim().toLowerCase() ?? '';

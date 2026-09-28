@@ -241,12 +241,16 @@ describe('MESSAGE_SCHEMA_SQL', () => {
     const fundedColumn = MESSAGE_SCHEMA_SQL.findIndex((statement) =>
       statement.includes('ADD COLUMN IF NOT EXISTS goal_funded_at'),
     );
+    const fundedBackfill = MESSAGE_SCHEMA_SQL.findIndex((statement) =>
+      statement.includes('SET goal_funded_at = now()'),
+    );
     const recordedBackfill = MESSAGE_SCHEMA_SQL.findIndex((statement) =>
       statement.includes('SET recorded_at = COALESCE(m.goal_funded_at, now())'),
     );
     expect(recordedColumn).toBeGreaterThan(-1);
     expect(fundedColumn).toBeGreaterThan(recordedColumn);
-    expect(recordedBackfill).toBe(fundedColumn + 1);
+    expect(fundedBackfill).toBe(fundedColumn + 1);
+    expect(recordedBackfill).toBe(fundedColumn + 2);
     expect(MESSAGE_SCHEMA_SQL.at(-1)).toContain('FROM pg_trigger');
     expect(MESSAGE_SCHEMA_SQL.at(-1)).toContain("tgname = 'trg_db_change'");
     expect(MESSAGE_SCHEMA_SQL.at(-1)).toContain("jsonb_typeof(nostr_event) = 'string'");

@@ -1536,6 +1536,12 @@ $message_goal_currency$`,
   `ALTER TABLE message ADD COLUMN IF NOT EXISTS goal_repayable boolean`,
   `ALTER TABLE message ADD COLUMN IF NOT EXISTS goal_term_days integer`,
   `ALTER TABLE message ADD COLUMN IF NOT EXISTS goal_funded_at timestamptz`,
+  `UPDATE message
+   SET goal_funded_at = now()
+   WHERE goal_repayable IS TRUE
+     AND goal_sats IS NOT NULL
+     AND sats >= goal_sats
+     AND goal_funded_at IS NULL`,
   `UPDATE nostr_zap_receipt AS r
    SET recorded_at = COALESCE(m.goal_funded_at, now())
    FROM message AS m

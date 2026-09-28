@@ -276,6 +276,13 @@ ALTER TABLE message ADD COLUMN IF NOT EXISTS goal_repayable boolean;
 ALTER TABLE message ADD COLUMN IF NOT EXISTS goal_term_days integer;
 -- Set once, when collected sats first reach the ask. Null until then.
 ALTER TABLE message ADD COLUMN IF NOT EXISTS goal_funded_at timestamptz;
+-- Asks already full before this column existed start their term now, before receipt times are filled.
+UPDATE message
+SET goal_funded_at = now()
+WHERE goal_repayable IS TRUE
+  AND goal_sats IS NOT NULL
+  AND sats >= goal_sats
+  AND goal_funded_at IS NULL;
 -- recorded_at is added above. This backfill runs only after goal_funded_at exists.
 UPDATE nostr_zap_receipt AS r
 SET recorded_at = COALESCE(m.goal_funded_at, now())
