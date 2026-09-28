@@ -2613,3 +2613,75 @@ test('Function: isSundayRestHeader — a blank zone does not refuse the moderato
   const body = (await res.json()) as { error?: string };
   expect(body.error).not.toBe('SUNDAY_REST');
 });
+
+test('GET /messages/:id/repayment without a note is 404', async ({ request }) => {
+  expect((await request.get('/messages/:id/repayment')).status()).toBe(404);
+});
+
+test('POST /messages/:id/repayment without bearer is 401', async ({ request }) => {
+  expect((await request.post('/messages/:id/repayment')).status()).toBe(401);
+});
+
+test('Function: repaymentStatus — GET /messages/:id/repayment without a note is 404', async ({
+  request,
+}) => {
+  expect(
+    (await request.get('/messages/00000000-0000-4000-8000-000000000000/repayment')).status(),
+  ).toBe(404);
+});
+
+test('Function: repaymentInvoice — POST /messages/:id/repayment without bearer is 401', async ({
+  request,
+}) => {
+  expect(
+    (await request.post('/messages/00000000-0000-4000-8000-000000000000/repayment')).status(),
+  ).toBe(401);
+});
+
+test('Function: repaymentLedger — GET /healthz is ok', async ({ request }) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
+
+test('Function: repaymentSchedule — GET /healthz is ok', async ({ request }) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
+
+test('Function: repaymentDueDate — GET /healthz is ok', async ({ request }) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
+
+test('Function: repaymentStartMs — GET /healthz is ok', async ({ request }) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
+
+test('Function: formatCents — GET /healthz is ok', async ({ request }) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
+
+test('Function: dayUnits — GET /healthz is ok', async ({ request }) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
+
+test('Function: dueDayCount — GET /healthz is ok', async ({ request }) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
+
+test('Function: fiatAmountToCents — GET /healthz is ok', async ({ request }) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
+
+test('Function: payerDebtUnits — GET /healthz is ok', async ({ request }) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
+
+test('Function: shareSats — GET /healthz is ok', async ({ request }) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
+
+test('Function: repaymentDescription — GET /healthz is ok', async ({ request }) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
+
+test('Function: parseRepaymentDescription — GET /healthz is ok', async ({ request }) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});

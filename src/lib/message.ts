@@ -131,6 +131,11 @@ export interface MessageRow {
    * Stored as SQL NULL or 1..3650. Omit or `null` means no term.
    */
   goalTermDays?: number | null;
+  /**
+   * When collected sats first reached the goal on a repayable ask.
+   * Null until then, including on donations.
+   */
+  goalFundedAt?: Date | null;
   /** Canonical typed ask amount (dot decimal). Null when there is no currency ask. */
   goalAmount?: string | null;
   /** Gift-day USD snapshot of the frozen ask, or null. */
@@ -891,8 +896,7 @@ export function serializeHiddenMessage(
 /**
  * Default Nostr columns for a freshly posted row (unsigned, pending).
  *
- * @returns The unsigned/pending defaults (`goalSats: null`, `goalRepayable:
- *   null`, `goalTermDays: null`, currency-ask columns null).
+ * @returns The unsigned/pending defaults. goalSats, goalRepayable, goalTermDays, and the currency-ask columns are null.
  */
 export function unsignedNostrDefaults(): Pick<
   MessageRow,

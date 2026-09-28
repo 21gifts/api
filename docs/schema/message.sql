@@ -59,6 +59,7 @@ ALTER TABLE nostr_zap_receipt ADD COLUMN IF NOT EXISTS payer_pubkey text;
 ALTER TABLE nostr_zap_receipt ADD COLUMN IF NOT EXISTS zap_request_id text;
 ALTER TABLE nostr_zap_receipt ADD COLUMN IF NOT EXISTS gift_reply_id uuid REFERENCES message (id);
 ALTER TABLE nostr_zap_receipt ADD COLUMN IF NOT EXISTS comment text NOT NULL DEFAULT '';
+ALTER TABLE nostr_zap_receipt ADD COLUMN IF NOT EXISTS recorded_at timestamptz;
 CREATE UNIQUE INDEX IF NOT EXISTS nostr_zap_receipt_request_uidx
   ON nostr_zap_receipt (zap_request_id) WHERE zap_request_id IS NOT NULL;
 CREATE UNIQUE INDEX IF NOT EXISTS nostr_zap_receipt_gift_reply_id_uidx ON nostr_zap_receipt (gift_reply_id) WHERE gift_reply_id IS NOT NULL;
@@ -273,6 +274,29 @@ $message_goal_currency$;
 ALTER TABLE message ADD COLUMN IF NOT EXISTS goal_repayable boolean;
 -- Optional agreed repayment term in whole days on a repayable ask; SQL NULL or 1..3650.
 ALTER TABLE message ADD COLUMN IF NOT EXISTS goal_term_days integer;
+-- Set once, when collected sats first reach the ask. Null until then.
+ALTER TABLE message ADD COLUMN IF NOT EXISTS goal_funded_at timestamptz;
+-- Asks already full before this column existed start their term now, before receipt times are filled.
+UPDATE message
+SET goal_funded_at = now()
+WHERE goal_repayable IS TRUE
+  AND goal_sats IS NOT NULL
+  AND sats >= goal_sats
+  AND goal_funded_at IS NULL;
+-- recorded_at is added above. This backfill runs only after goal_funded_at exists.
+UPDATE nostr_zap_receipt AS r
+SET recorded_at = COALESCE(m.goal_funded_at, now())
+FROM message AS m
+WHERE r.message_id = m.id AND r.recorded_at IS NULL;
+-- One stored giver share. Paying it does not increase message.sats.
+CREATE TABLE IF NOT EXISTS message_repayment (
+  message_id uuid NOT NULL REFERENCES message (id) ON DELETE CASCADE,
+  day_index integer NOT NULL,
+  recipient_account_id uuid NOT NULL,
+  due_sats bigint NOT NULL,
+  paid_at timestamptz NOT NULL,
+  PRIMARY KEY (message_id, day_index, recipient_account_id)
+);
 DO $message_goal_repayable$
 BEGIN
   ALTER TABLE message DROP CONSTRAINT IF EXISTS message_goal_repayable_chk;

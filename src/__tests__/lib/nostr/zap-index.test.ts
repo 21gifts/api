@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { describe, expect, it, vi } from 'vitest';
 import { InMemoryAuthStore, type Account } from '@/lib/auth/store';
 import { decodeBolt11, inspectBolt11 } from '@/lib/bolt11';
+import { repaymentDescription } from '@/lib/credit-repayment';
 import { LN_ADDRESS_CACHE_TTL_MS } from '@/lib/config';
 import type { FetchFn } from '@/lib/lnurlp';
 import { unsignedConversationDefaults } from '@/lib/conversation';
@@ -1329,6 +1330,56 @@ describe('manual invoice settlement', () => {
     expect(note?.amountChf).toBeNull();
     expect(note?.amountEur).toBeNull();
     expect(note?.amountPhp).toBeNull();
+  });
+
+  it('records a repayment invoice as a paid share and does not raise the ask', async () => {
+    const store = new InMemoryMessageStore();
+    const auth = new InMemoryAuthStore();
+    const messageId = await seedStore({
+      store,
+      auth,
+      accountId: 'manual-author',
+      messageId: 'manual-message',
+    });
+    const giver = '11111111-1111-4111-8111-111111111111';
+    const paymentHash = 'b2'.repeat(32);
+    await seedManualInvoice(store, paymentHash, {
+      amountSats: 21,
+      description: repaymentDescription(0, giver),
+    });
+    const result = await settleInvoiceManually({
+      store,
+      auth,
+      now: () => 1_800,
+      paymentHash,
+      note: 'repayment settled by hand',
+    });
+    expect(result).toEqual({
+      ok: true,
+      receiptId: manualReceiptIdForPaymentHash(paymentHash),
+      messageId,
+      amountSats: 21,
+      resumed: false,
+    });
+    expect((await store.getById(messageId))?.sats).toBe(0);
+    expect(await store.listRepayments(messageId)).toEqual([
+      {
+        dayIndex: 0,
+        recipientAccountId: giver,
+        dueSats: 21,
+        paidAt: new Date(1_800),
+      },
+    ]);
+    await expect(
+      settleInvoiceManually({
+        store,
+        auth,
+        now: () => 1_900,
+        paymentHash,
+        note: 'repayment settled by hand',
+      }),
+    ).resolves.toEqual({ ok: false, reason: 'duplicate' });
+    expect(await store.listRepayments(messageId)).toHaveLength(1);
   });
 
   it('settles with verified preimage, receipt evidence, notification, and gift reply', async () => {
@@ -4816,6 +4867,11 @@ describe('indexOpenZapReceipts', () => {
       updatePublishState: (...args: Parameters<InMemoryMessageStore['updatePublishState']>) =>
         base.updatePublishState(...args),
       addSats: (...args: Parameters<InMemoryMessageStore['addSats']>) => base.addSats(...args),
+      listCreditPayers: (messageId: string) => base.listCreditPayers(messageId),
+      sumUnassignedCreditSats: (messageId: string) => base.sumUnassignedCreditSats(messageId),
+      listRepayments: (messageId: string) => base.listRepayments(messageId),
+      markRepaymentPaid: (row: Parameters<InMemoryMessageStore['markRepaymentPaid']>[0]) =>
+        base.markRepaymentPaid(row),
       claimZapPayment: (...args: Parameters<InMemoryMessageStore['claimZapPayment']>) =>
         base.claimZapPayment(...args),
       recordZapReceipt: (...args: Parameters<InMemoryMessageStore['recordZapReceipt']>) =>
@@ -4829,6 +4885,8 @@ describe('indexOpenZapReceipts', () => {
         base.recordZapIngest(...args),
       listZapIngests: (limit: number) => base.listZapIngests(limit),
       findOkInvoiceByPaymentHash: (hash: string) => base.findOkInvoiceByPaymentHash(hash),
+      findOkInvoiceByDescription: (messageId: string, description: string) =>
+        base.findOkInvoiceByDescription(messageId, description),
       findOkInvoiceByPr: (pr: string) => base.findOkInvoiceByPr(pr),
       updateZapReceiptGift: (...args: Parameters<InMemoryMessageStore['updateZapReceiptGift']>) =>
         base.updateZapReceiptGift(...args),
@@ -5050,6 +5108,11 @@ describe('indexOpenZapReceipts', () => {
         updatePublishState: (...args: Parameters<InMemoryMessageStore['updatePublishState']>) =>
           base.updatePublishState(...args),
         addSats: (...args: Parameters<InMemoryMessageStore['addSats']>) => base.addSats(...args),
+        listCreditPayers: (messageId: string) => base.listCreditPayers(messageId),
+        sumUnassignedCreditSats: (messageId: string) => base.sumUnassignedCreditSats(messageId),
+        listRepayments: (messageId: string) => base.listRepayments(messageId),
+        markRepaymentPaid: (row: Parameters<InMemoryMessageStore['markRepaymentPaid']>[0]) =>
+          base.markRepaymentPaid(row),
         claimZapPayment: (...args: Parameters<InMemoryMessageStore['claimZapPayment']>) =>
           base.claimZapPayment(...args),
         recordZapReceipt: (...args: Parameters<InMemoryMessageStore['recordZapReceipt']>) =>
@@ -5068,6 +5131,8 @@ describe('indexOpenZapReceipts', () => {
         },
         listZapIngests: (limit: number) => base.listZapIngests(limit),
         findOkInvoiceByPaymentHash: (hash: string) => base.findOkInvoiceByPaymentHash(hash),
+        findOkInvoiceByDescription: (messageId: string, description: string) =>
+          base.findOkInvoiceByDescription(messageId, description),
         findOkInvoiceByPr: (pr: string) => base.findOkInvoiceByPr(pr),
         updateZapReceiptGift: (...args: Parameters<InMemoryMessageStore['updateZapReceiptGift']>) =>
           base.updateZapReceiptGift(...args),
@@ -5350,6 +5415,407 @@ describe('indexOpenZapReceipts', () => {
     expect(await store.claimZapPayment(paymentHash, 'r-real', new Date(2))).toBe(true);
   });
 
+  it('records a repayment to the giver without increasing the ask', async () => {
+    const store = new InMemoryMessageStore();
+    const auth = new InMemoryAuthStore();
+    const messageId = await seedStore({ store, auth, accountId: 'acc-repay' });
+    const giver = '11111111-1111-4111-8111-111111111111';
+    await auth.createAccount({
+      id: giver,
+      linkingKey: null,
+      role: 'basis',
+      name: 'Bea',
+      lightningAddress: 'giver@walletofsatoshi.com',
+      lightningAddressVerified: true,
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: viewKeyFor(giver),
+      createdAt: 1,
+      rulesAgreedAt: null,
+    });
+    const paymentHash = '13'.repeat(32);
+    await store.recordInvoiceAttempt({
+      id: 'inv-repay',
+      createdAt: new Date(1),
+      messageId,
+      payerAccountId: 'acc-repay',
+      authorAccountId: giver,
+      amountSats: 21,
+      lightningAddress: 'giver@walletofsatoshi.com',
+      zapRequest: null,
+      result: 'ok',
+      httpStatus: 200,
+      pr: 'lnbc-repay',
+      paymentHash,
+      description: repaymentDescription(0, giver),
+      descriptionHash: null,
+      isNip57Invoice: true,
+      lnurlResponse: null,
+    });
+    const querier = new RecordingQuerier();
+    querier.events = [
+      {
+        id: 'r-repay',
+        pubkey: 'bb'.repeat(32),
+        kind: 9735,
+        tags: [
+          ['e', NOTE_EVENT_ID],
+          ['bolt11', 'lnbc-repay'],
+        ],
+      },
+    ];
+    mockedDecode.mockReturnValue({ paymentHash, amountMsat: 21_000 });
+    await ingest({
+      store,
+      auth,
+      querier,
+      urls: URLS,
+      timeoutMs: 50,
+      now: () => 5,
+      fetchImpl: async (input, init) =>
+        lnurlFetch(
+          String(input).includes('walletofsatoshi.com') ? 'bb'.repeat(32) : PROVIDER_PUBKEY,
+        )(input, init),
+    });
+    expect((await store.getByEventId(NOTE_EVENT_ID))?.sats).toBe(0);
+    expect(await store.listRepayments(messageId)).toEqual([
+      {
+        dayIndex: 0,
+        recipientAccountId: giver,
+        dueSats: 21,
+        paidAt: new Date(5),
+      },
+    ]);
+    querier.events = [
+      {
+        id: 'r-repay-again',
+        pubkey: 'bb'.repeat(32),
+        kind: 9735,
+        tags: [
+          ['e', NOTE_EVENT_ID],
+          ['bolt11', 'lnbc-repay'],
+        ],
+      },
+    ];
+    await ingest({
+      store,
+      auth,
+      querier,
+      urls: URLS,
+      timeoutMs: 50,
+      now: () => 6,
+      fetchImpl: async (input, init) =>
+        lnurlFetch(
+          String(input).includes('walletofsatoshi.com') ? 'bb'.repeat(32) : PROVIDER_PUBKEY,
+        )(input, init),
+    });
+    const ingests = await store.listZapIngests(10);
+    expect(ingests.some((row) => row.reason === 'settled')).toBe(true);
+  });
+
+  it('records a repayment when the giver uses the same provider as the author', async () => {
+    const store = new InMemoryMessageStore();
+    const auth = new InMemoryAuthStore();
+    const messageId = await seedStore({ store, auth, accountId: 'acc-same' });
+    const giver = '22222222-2222-4222-8222-222222222222';
+    await auth.createAccount({
+      id: giver,
+      linkingKey: null,
+      role: 'basis',
+      name: 'Bea',
+      lightningAddress: 'same@example.com',
+      lightningAddressVerified: true,
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: viewKeyFor(giver),
+      createdAt: 1,
+      rulesAgreedAt: null,
+    });
+    const paymentHash = '14'.repeat(32);
+    await store.recordInvoiceAttempt({
+      id: 'inv-same',
+      createdAt: new Date(1),
+      messageId,
+      payerAccountId: 'acc-same',
+      authorAccountId: giver,
+      amountSats: 21,
+      lightningAddress: 'same@example.com',
+      zapRequest: null,
+      result: 'ok',
+      httpStatus: 200,
+      pr: 'lnbc-same',
+      paymentHash,
+      description: repaymentDescription(0, giver),
+      descriptionHash: null,
+      isNip57Invoice: true,
+      lnurlResponse: null,
+    });
+    const querier = new RecordingQuerier();
+    querier.events = [
+      {
+        id: 'r-same',
+        pubkey: PROVIDER_PUBKEY,
+        kind: 9735,
+        tags: [
+          ['e', NOTE_EVENT_ID],
+          ['bolt11', 'lnbc-same'],
+        ],
+      },
+    ];
+    mockedDecode.mockReturnValue({ paymentHash, amountMsat: 21_000 });
+    await ingest({
+      store,
+      auth,
+      querier,
+      urls: URLS,
+      timeoutMs: 50,
+      now: () => 7,
+      fetchImpl: lnurlFetch(PROVIDER_PUBKEY),
+    });
+    expect((await store.getByEventId(NOTE_EVENT_ID))?.sats).toBe(0);
+    expect((await store.listRepayments(messageId))[0]?.recipientAccountId).toBe(giver);
+  });
+
+  it('does not claim a repayment receipt signed by someone other than the giver', async () => {
+    const store = new InMemoryMessageStore();
+    const auth = new InMemoryAuthStore();
+    const messageId = await seedStore({ store, auth, accountId: 'acc-foreign-repay' });
+    const giver = '33333333-3333-4333-8333-333333333333';
+    await auth.createAccount({
+      id: giver,
+      linkingKey: null,
+      role: 'basis',
+      name: 'Bea',
+      lightningAddress: 'foreign@walletofsatoshi.com',
+      lightningAddressVerified: true,
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: viewKeyFor(giver),
+      createdAt: 1,
+      rulesAgreedAt: null,
+    });
+    const paymentHash = '15'.repeat(32);
+    await store.recordInvoiceAttempt({
+      id: 'inv-foreign',
+      createdAt: new Date(1),
+      messageId,
+      payerAccountId: 'acc-foreign-repay',
+      authorAccountId: giver,
+      amountSats: 21,
+      lightningAddress: 'foreign@walletofsatoshi.com',
+      zapRequest: null,
+      result: 'ok',
+      httpStatus: 200,
+      pr: 'lnbc-foreign-repay',
+      paymentHash,
+      description: repaymentDescription(0, giver),
+      descriptionHash: null,
+      isNip57Invoice: true,
+      lnurlResponse: null,
+    });
+    const querier = new RecordingQuerier();
+    querier.events = [
+      {
+        id: 'r-foreign-repay',
+        pubkey: 'cc'.repeat(32),
+        kind: 9735,
+        tags: [
+          ['e', NOTE_EVENT_ID],
+          ['bolt11', 'lnbc-foreign-repay'],
+        ],
+      },
+    ];
+    mockedDecode.mockReturnValue({ paymentHash, amountMsat: 21_000 });
+    await ingest({
+      store,
+      auth,
+      querier,
+      urls: URLS,
+      timeoutMs: 50,
+      now: () => 8,
+      fetchImpl: async (input, init) =>
+        lnurlFetch(
+          String(input).includes('walletofsatoshi.com') ? 'bb'.repeat(32) : PROVIDER_PUBKEY,
+        )(input, init),
+    });
+    expect(await store.listRepayments(messageId)).toEqual([]);
+    expect(await store.claimZapPayment(paymentHash, 'r-later', new Date(9))).toBe(true);
+  });
+
+  it('rejects a repayment receipt for another note and does not credit the ask', async () => {
+    const store = new InMemoryMessageStore();
+    const auth = new InMemoryAuthStore();
+    const messageId = await seedStore({
+      store,
+      auth,
+      accountId: 'acc-repay-event',
+      lightningAddress: 'repay-event@example.com',
+    });
+    const otherId = await seedStore({
+      store,
+      auth,
+      accountId: 'acc-repay-other-note',
+      eventId: 'dd'.repeat(32),
+      lightningAddress: 'repay-other@example.com',
+    });
+    const giver = '55555555-5555-4555-8555-555555555555';
+    const paymentHash = '17'.repeat(32);
+    await store.recordInvoiceAttempt({
+      id: 'inv-repay-event',
+      createdAt: new Date(1),
+      messageId: otherId,
+      payerAccountId: 'acc-repay-event',
+      authorAccountId: giver,
+      amountSats: 21,
+      lightningAddress: 'repay-event@example.com',
+      zapRequest: null,
+      result: 'ok',
+      httpStatus: 200,
+      pr: 'lnbc-repay-event',
+      paymentHash,
+      description: repaymentDescription(0, giver),
+      descriptionHash: null,
+      isNip57Invoice: true,
+      lnurlResponse: null,
+    });
+    const querier = new RecordingQuerier();
+    querier.events = [
+      {
+        id: 'r-repay-event',
+        pubkey: PROVIDER_PUBKEY,
+        kind: 9735,
+        tags: [
+          ['e', NOTE_EVENT_ID],
+          ['bolt11', 'lnbc-repay-event'],
+        ],
+      },
+    ];
+    mockedDecode.mockReturnValue({ paymentHash, amountMsat: 21_000 });
+    await ingest({
+      store,
+      auth,
+      querier,
+      urls: URLS,
+      timeoutMs: 50,
+      now: () => 12,
+      fetchImpl: lnurlFetch(PROVIDER_PUBKEY),
+    });
+    expect((await store.getByEventId(NOTE_EVENT_ID))?.sats).toBe(0);
+    expect(await store.listRepayments(messageId)).toEqual([]);
+    expect((await store.listZapIngests(10))[0]?.outcome).toBe('rejected');
+    expect((await store.listZapIngests(10))[0]?.reason).toBe('event');
+    expect(await store.claimZapPayment(paymentHash, 'r-after-event', new Date(13))).toBe(true);
+  });
+
+  it('rejects a repayment receipt whose sat amount differs and does not credit the ask', async () => {
+    const store = new InMemoryMessageStore();
+    const auth = new InMemoryAuthStore();
+    const messageId = await seedStore({
+      store,
+      auth,
+      accountId: 'acc-repay-amount',
+      lightningAddress: 'repay-amount@example.com',
+    });
+    const giver = '66666666-6666-4666-8666-666666666666';
+    const paymentHash = '18'.repeat(32);
+    await store.recordInvoiceAttempt({
+      id: 'inv-repay-amount',
+      createdAt: new Date(1),
+      messageId,
+      payerAccountId: 'acc-repay-amount',
+      authorAccountId: giver,
+      amountSats: 21,
+      lightningAddress: 'repay-amount@example.com',
+      zapRequest: null,
+      result: 'ok',
+      httpStatus: 200,
+      pr: 'lnbc-repay-amount',
+      paymentHash,
+      description: repaymentDescription(0, giver),
+      descriptionHash: null,
+      isNip57Invoice: true,
+      lnurlResponse: null,
+    });
+    const querier = new RecordingQuerier();
+    querier.events = [
+      {
+        id: 'r-repay-amount',
+        pubkey: PROVIDER_PUBKEY,
+        kind: 9735,
+        tags: [
+          ['e', NOTE_EVENT_ID],
+          ['bolt11', 'lnbc-repay-amount'],
+        ],
+      },
+    ];
+    mockedDecode.mockReturnValue({ paymentHash, amountMsat: 42_000 });
+    await ingest({
+      store,
+      auth,
+      querier,
+      urls: URLS,
+      timeoutMs: 50,
+      now: () => 14,
+      fetchImpl: lnurlFetch(PROVIDER_PUBKEY),
+    });
+    expect((await store.getByEventId(NOTE_EVENT_ID))?.sats).toBe(0);
+    expect(await store.listRepayments(messageId)).toEqual([]);
+    expect((await store.listZapIngests(10))[0]?.outcome).toBe('rejected');
+    expect((await store.listZapIngests(10))[0]?.reason).toBe('amount');
+    expect(await store.claimZapPayment(paymentHash, 'r-after-amount', new Date(15))).toBe(true);
+  });
+
+  it('rejects a repayment whose giver has no account and does not claim the hash', async () => {
+    const store = new InMemoryMessageStore();
+    const auth = new InMemoryAuthStore();
+    const messageId = await seedStore({ store, auth, accountId: 'acc-nogiver' });
+    const giver = '44444444-4444-4444-8444-444444444444';
+    const paymentHash = '16'.repeat(32);
+    await store.recordInvoiceAttempt({
+      id: 'inv-nogiver',
+      createdAt: new Date(1),
+      messageId,
+      payerAccountId: 'acc-nogiver',
+      authorAccountId: 'acc-nogiver',
+      amountSats: 21,
+      lightningAddress: 'gone@example.com',
+      zapRequest: null,
+      result: 'ok',
+      httpStatus: 200,
+      pr: 'lnbc-nogiver',
+      paymentHash,
+      description: repaymentDescription(0, giver),
+      descriptionHash: null,
+      isNip57Invoice: true,
+      lnurlResponse: null,
+    });
+    const querier = new RecordingQuerier();
+    querier.events = [
+      {
+        id: 'r-nogiver',
+        pubkey: PROVIDER_PUBKEY,
+        kind: 9735,
+        tags: [
+          ['e', NOTE_EVENT_ID],
+          ['bolt11', 'lnbc-nogiver'],
+        ],
+      },
+    ];
+    mockedDecode.mockReturnValue({ paymentHash, amountMsat: 21_000 });
+    await ingest({
+      store,
+      auth,
+      querier,
+      urls: URLS,
+      timeoutMs: 50,
+      now: () => 10,
+      fetchImpl: lnurlFetch(PROVIDER_PUBKEY),
+    });
+    expect(await store.listRepayments(messageId)).toEqual([]);
+    expect((await store.getByEventId(NOTE_EVENT_ID))?.sats).toBe(0);
+    expect(await store.claimZapPayment(paymentHash, 'r-after-missing', new Date(11))).toBe(true);
+  });
+
   it('logs nostr.zap.ingest.record_failed when recordZapIngest throws', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     try {
@@ -5430,6 +5896,11 @@ describe('indexOpenZapReceipts', () => {
         updatePublishState: (...args: Parameters<InMemoryMessageStore['updatePublishState']>) =>
           base.updatePublishState(...args),
         addSats: (...args: Parameters<InMemoryMessageStore['addSats']>) => base.addSats(...args),
+        listCreditPayers: (messageId: string) => base.listCreditPayers(messageId),
+        sumUnassignedCreditSats: (messageId: string) => base.sumUnassignedCreditSats(messageId),
+        listRepayments: (messageId: string) => base.listRepayments(messageId),
+        markRepaymentPaid: (row: Parameters<InMemoryMessageStore['markRepaymentPaid']>[0]) =>
+          base.markRepaymentPaid(row),
         claimZapPayment: (...args: Parameters<InMemoryMessageStore['claimZapPayment']>) =>
           base.claimZapPayment(...args),
         recordZapReceipt: (...args: Parameters<InMemoryMessageStore['recordZapReceipt']>) =>
@@ -5444,6 +5915,8 @@ describe('indexOpenZapReceipts', () => {
         },
         listZapIngests: (limit: number) => base.listZapIngests(limit),
         findOkInvoiceByPaymentHash: (hash: string) => base.findOkInvoiceByPaymentHash(hash),
+        findOkInvoiceByDescription: (messageId: string, description: string) =>
+          base.findOkInvoiceByDescription(messageId, description),
         findOkInvoiceByPr: (pr: string) => base.findOkInvoiceByPr(pr),
         updateZapReceiptGift: (...args: Parameters<InMemoryMessageStore['updateZapReceiptGift']>) =>
           base.updateZapReceiptGift(...args),
