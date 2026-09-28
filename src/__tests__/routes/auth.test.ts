@@ -906,7 +906,7 @@ describe('auth routes', () => {
 
     it('returns 409 on seed finish without parsing a body when walletRequired is true', async () => {
       const store = new InMemoryAuthStore();
-      const { app, token } = await register(store);
+      const { app, token, accountId } = await register(store);
       const res = await app.request('/auth/passkey/seed/finish', {
         method: 'POST',
         headers: { origin: ORIGIN, authorization: `Bearer ${token}` },
@@ -915,6 +915,14 @@ describe('auth routes', () => {
       expect(await res.json()).toEqual({
         error: 'This account already has a recovery phrase',
       });
+      expect(
+        parsedEvents(warn).some(
+          (e) =>
+            e['event'] === 'auth.passkey.seed.fail' &&
+            e['error'] === 'This account already has a recovery phrase' &&
+            e['accountId'] === accountId,
+        ),
+      ).toBe(true);
     });
 
     it('returns 400 when seed finish rejects the attestation', async () => {

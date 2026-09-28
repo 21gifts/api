@@ -34,6 +34,11 @@ import {
 import { SqlGiftRecorder, type GiftRecorder } from '@/lib/gift-recorder';
 import { logEvent } from '@/lib/log';
 import { migrateApiLogSchema, PostgresApiLogStore, type ApiLogStore } from '@/lib/api-log';
+import {
+  migrateDiagnosticSchema,
+  PostgresDiagnosticStore,
+  type DiagnosticStore,
+} from '@/lib/diagnostic-log';
 import { migrateContactSchema, PostgresContactStore, type ContactStore } from '@/lib/contact-store';
 import {
   InMemoryPosStore,
@@ -107,6 +112,11 @@ export interface BootStores {
    */
   apiLogStore: ApiLogStore | undefined;
   /**
+   * Postgres-backed diagnostic events, or `undefined` when no SQL client was
+   * opened so `createApp` keeps the empty in-memory default.
+   */
+  diagnosticStore: DiagnosticStore | undefined;
+  /**
    * Postgres-backed private messaging store, or `undefined` when no SQL
    * client was opened so `createApp` keeps the empty in-memory default.
    */
@@ -174,6 +184,7 @@ export interface BootFxOptions {
  * `conversationTranslationStore: undefined`,
  * `contactStore: undefined`, a fresh {@link InMemoryPosStore} as `posStore`,
  * `apiLogStore: undefined`,
+ * `diagnosticStore: undefined`,
  * `conversationStore: undefined`,
  * `notificationStore: undefined`, `pushStore: undefined`,
  * `trustStore: undefined`, `fundingStore: undefined`, `bannerStore: undefined`,
@@ -183,9 +194,9 @@ export interface BootFxOptions {
  * A set URL asks `createClient` for one `SqlClient`, migrates auth (via
  * `openAuthStore`) then the FX tables (`btc_usd_daily` then `usd_fiat_daily`),
  * `message`, `contact`, `pos_charge` (via `migratePosSchema`), `conversation`, `push`, `notification`, `trust_edge`,
- * `funding_grant`, `api_log`, `account_image`, and `db_change` schemas (notification after push, trust
+ * `funding_grant`, `api_log`, `account_image`, `diagnostic_event`, and `db_change` schemas (notification after push, trust
  * after notification, funding after trust, `api_log` then `account_image` via
- * `migrateBannerSchema` immediately before `db_change` so `trg_db_change` attaches), builds a {@link QueryGiftStore},
+ * `migrateBannerSchema`, then `diagnostic_event` between `account_image` and `db_change` so `trg_db_change` attaches), builds a {@link QueryGiftStore},
  * {@link SqlGiftRecorder}, {@link PostgresMessageStore},
  * {@link PostgresTranslationStore},
  * {@link PostgresContactStore}, {@link PostgresPosStore}, {@link PostgresConversationStore},
@@ -205,13 +216,15 @@ export interface BootFxOptions {
  * undefined, and do not run the `db_change` migrate. SQL boots return
  * {@link PostgresNotificationStore}, {@link PostgresTrustStore},
  * {@link PostgresFundingStore}, {@link PostgresBannerStore},
- * {@link PostgresApiLogStore}, and {@link PostgresDebugDbStore}.
+ * {@link PostgresApiLogStore}, {@link PostgresDiagnosticStore}, and {@link PostgresDebugDbStore}.
  * `migrateTrustSchema` then `migrateFundingSchema` run after auth/`account`
  * exists and before `migrateApiLogSchema` / `migrateDbChangeSchema` so
  * `trg_db_change` attaches to `trust_edge` and `funding_grant`.
  * `migrateApiLogSchema` runs after `openAuthStore` (account exists).
- * `migrateBannerSchema` runs next, then `migrateDbChangeSchema`, so
- * `trg_db_change` attaches to `api_log` and `account_image`.
+ * `migrateBannerSchema` runs next, then `migrateDiagnosticSchema`, then
+ * `migrateDbChangeSchema`, so `diagnostic_event` is migrated between
+ * `account_image` and `db_change` and `trg_db_change` attaches to `api_log`,
+ * `account_image`, and `diagnostic_event`.
  *
  * @param databaseUrl - `postgres://` URL, or `undefined` / blank for memory.
  * @param createClient - SQL factory; required when `databaseUrl` is set.
@@ -250,6 +263,7 @@ export async function openBootStores(
       contactStore: undefined,
       posStore: new InMemoryPosStore(),
       apiLogStore: undefined,
+      diagnosticStore: undefined,
       conversationStore: undefined,
       notificationStore: undefined,
       pushStore: undefined,
@@ -277,6 +291,7 @@ export async function openBootStores(
   await migrateFundingSchema(sqlClient);
   await migrateApiLogSchema(sqlClient);
   await migrateBannerSchema(sqlClient);
+  await migrateDiagnosticSchema(sqlClient);
   await migrateDbChangeSchema(sqlClient);
   await repairGiftKind(sqlClient);
 
@@ -425,6 +440,7 @@ export async function openBootStores(
     contactStore,
     posStore,
     apiLogStore,
+    diagnosticStore: new PostgresDiagnosticStore(sqlClient),
     conversationStore,
     notificationStore,
     pushStore,

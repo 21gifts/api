@@ -117,6 +117,10 @@ export function authRoutes(deps: AuthRouteDeps): Hono {
         nostrOpts(deps),
       );
       if (!result.ok) {
+        logEvent('auth.passkey.register.fail', {
+          challengeId: parsed.data.challengeId,
+          error: result.error,
+        });
         const status = result.error === WRONG_ACCOUNT_ERROR ? 403 : 400;
         return c.json({ error: result.error }, status);
       }
@@ -166,6 +170,10 @@ export function authRoutes(deps: AuthRouteDeps): Hono {
         nostrOpts(deps),
       );
       if (!result.ok) {
+        logEvent('auth.passkey.login.fail', {
+          challengeId: parsed.data.challengeId,
+          error: result.error,
+        });
         const status = result.error === WRONG_ACCOUNT_ERROR ? 403 : 400;
         return c.json({ error: result.error }, status);
       }
@@ -253,6 +261,10 @@ export function authRoutes(deps: AuthRouteDeps): Hono {
         return c.json({ error: 'Unauthorized' }, 401);
       }
       if (account.walletRequired === true) {
+        logEvent('auth.passkey.seed.fail', {
+          accountId: account.id,
+          error: 'This account already has a recovery phrase',
+        });
         return c.json({ error: 'This account already has a recovery phrase' }, 409);
       }
       const parsed = passkeyFinishBody.safeParse(await c.req.json().catch(() => null));
@@ -270,6 +282,10 @@ export function authRoutes(deps: AuthRouteDeps): Hono {
         account,
       );
       if (!result.ok) {
+        logEvent('auth.passkey.seed.fail', {
+          challengeId: parsed.data.challengeId,
+          error: result.error,
+        });
         const status = result.error === 'This account already has a recovery phrase' ? 409 : 400;
         return c.json({ error: result.error }, status);
       }

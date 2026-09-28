@@ -29,6 +29,8 @@ import { posRoutes } from '@/routes/pos';
 import { conversationRoutes } from '@/routes/conversations';
 import { notificationRoutes } from '@/routes/notifications';
 import { debugApiLogRoutes } from '@/routes/debug-api-log';
+import { debugDiagnosticsRoutes } from '@/routes/debug-diagnostics';
+import { diagnosticsRoutes } from '@/routes/diagnostics';
 import { debugDbRoutes } from '@/routes/debug-db';
 import type { DebugDbStore } from '@/lib/debug-db';
 import { debugContactsRoutes } from '@/routes/debug-contacts';
@@ -49,6 +51,7 @@ import { InMemoryFiatStore, type FiatRateBook } from '@/lib/usd-fiat-store';
 import { InMemoryGiftStore } from '@/lib/gift-store';
 import type { GiftStore } from '@/lib/gift-store';
 import { InMemoryApiLogStore, type ApiLogStore } from '@/lib/api-log';
+import { InMemoryDiagnosticStore, type DiagnosticStore } from '@/lib/diagnostic-log';
 import { InMemoryContactStore } from '@/lib/contact-store';
 import type { ContactStore } from '@/lib/contact-store';
 import { InMemoryPosStore, type PosStore } from '@/lib/pos-store';
@@ -72,7 +75,7 @@ import type { InvoiceStore } from '@/lib/invoice-store';
 import type { GiftRecorder } from '@/lib/gift-recorder';
 import { InMemoryLnAddressCache } from '@/lib/ln-address-cache';
 import type { LnAddressCache } from '@/lib/ln-address-cache';
-import { requestLog } from '@/lib/log';
+import { requestLog, setDiagnosticSink } from '@/lib/log';
 import { sundayRest } from '@/lib/sunday-rest';
 import type { FetchFn } from '@/lib/lnurlp';
 import type { NostrPublisher } from '@/lib/nostr/publish';
@@ -111,7 +114,7 @@ export interface AppDeps {
    * Operator debug token (default: `process.env.DEBUG_TOKEN`). Unset or
    * blank → `GET /debug/accounts`, `POST /debug/accounts`,
    * `PATCH /debug/accounts/:id`, `POST /debug/accounts/:id/session`,
-   * `GET /debug/contacts`, `GET /debug/api-log`, `GET /debug/invoices`, `POST /debug/invoices/settle`,
+   * `GET /debug/contacts`, `GET /debug/api-log`, `GET /debug/diagnostics`, `GET /debug/invoices`, `POST /debug/invoices/settle`,
    * `GET /debug/zap-ingests`, `GET /debug/messages`,
    * `GET /debug/messages/:id`, `GET /debug/messages/:id/photo`,
    * `PUT /debug/messages/:id/video`, `POST /debug/messages/:id/restore`,
@@ -131,6 +134,11 @@ export interface AppDeps {
    * injects {@link PostgresApiLogStore} when `DATABASE_URL` is set.
    */
   apiLogStore?: ApiLogStore;
+  /**
+   * Diagnostic events (default: empty {@link InMemoryDiagnosticStore}). Boot
+   * injects {@link PostgresDiagnosticStore} when `DATABASE_URL` is set.
+   */
+  diagnosticStore?: DiagnosticStore;
   /**
    * Outbound gifts for public statistics (default: empty
    * {@link InMemoryGiftStore}).
@@ -296,7 +304,9 @@ function debugList(store: object, limit: number): Promise<unknown[]> {
  *   `/messages`, `/conversations`, `/invoices`, and `debugPaymentsRoutes`), vapidPublicKey, nostrKek,
  *   nostrPublisher, env, WebAuthn RP, spend token, spend ping, postLimiter
  *   (optional; default `new PostRateLimiter()`, shared with `messagesRoutes`
- *   and the Nostr worker), gift invoice store, and listDbChange.
+ *   and the Nostr worker), gift invoice store, listDbChange, and
+ *   diagnosticStore (optional; default {@link InMemoryDiagnosticStore};
+ *   mounts `POST /diagnostics` and `GET /debug/diagnostics`).
  * @returns A Hono app with all routes and middleware attached.
  */
 export function createApp(deps: AppDeps = {}): Hono {
@@ -341,6 +351,22 @@ export function createApp(deps: AppDeps = {}): Hono {
   const contactStore = deps.contactStore ?? new InMemoryContactStore();
   const posStore = deps.posStore ?? new InMemoryPosStore();
   const apiLogStore = deps.apiLogStore ?? new InMemoryApiLogStore();
+  const diagnosticStore = deps.diagnosticStore ?? new InMemoryDiagnosticStore();
+  setDiagnosticSink((event, fields) => {
+    void diagnosticStore
+      .append({
+        id: crypto.randomUUID(),
+        createdAt: new Date(),
+        source: 'server',
+        event,
+        fields: { ...(fields ?? {}) },
+      })
+      .catch(() => {
+        console.warn(
+          JSON.stringify({ ts: new Date().toISOString(), event: 'diagnostic.write.failed' }),
+        );
+      });
+  });
   const conversationStore = deps.conversationStore ?? new InMemoryConversationStore();
   const notificationStore = deps.notificationStore ?? new InMemoryNotificationStore();
   const pushStore = deps.pushStore ?? new InMemoryPushStore();
@@ -467,6 +493,8 @@ export function createApp(deps: AppDeps = {}): Hono {
   );
   app.route('/debug/contacts', debugContactsRoutes({ store: contactStore, debugToken }));
   app.route('/debug/api-log', debugApiLogRoutes({ store: apiLogStore, debugToken }));
+  app.route('/debug/diagnostics', debugDiagnosticsRoutes({ store: diagnosticStore, debugToken }));
+  app.route('/diagnostics', diagnosticsRoutes({ store: diagnosticStore, now }));
   app.route('/debug/db', debugDbRoutes({ store: deps.debugDbStore, debugToken }));
   app.route('/debug/messages', debugMessagesRoutes({ store: messageStore, debugToken }));
   app.route('/debug/external-pubkeys', debugExternalRoutes({ store: messageStore, debugToken }));

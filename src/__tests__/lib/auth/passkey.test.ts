@@ -1326,12 +1326,29 @@ describe('passkey seed', () => {
     if (account === undefined) {
       throw new Error('missing account');
     }
-    const started = await startPasskeySeed(store, new FakePasskeyCeremony(), CONFIG, T0, account);
-    expect(started).toEqual({
-      ok: false,
-      error: 'This account already has a recovery phrase',
-    });
-    expect((await store.listPasskeyChallenges()).some((row) => row.type === 'seed')).toBe(false);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      const started = await startPasskeySeed(store, new FakePasskeyCeremony(), CONFIG, T0, account);
+      expect(started).toEqual({
+        ok: false,
+        error: 'This account already has a recovery phrase',
+      });
+      expect((await store.listPasskeyChallenges()).some((row) => row.type === 'seed')).toBe(false);
+      const events = warn.mock.calls
+        .map((call) => call[0])
+        .filter((arg): arg is string => typeof arg === 'string' && arg.startsWith('{'))
+        .map((arg) => JSON.parse(arg) as Record<string, unknown>);
+      expect(
+        events.some(
+          (e) =>
+            e['event'] === 'auth.passkey.seed.fail' &&
+            e['accountId'] === 'seeded' &&
+            e['error'] === 'This account already has a recovery phrase',
+        ),
+      ).toBe(true);
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   it('issues seed options without excludeCredentials', async () => {
