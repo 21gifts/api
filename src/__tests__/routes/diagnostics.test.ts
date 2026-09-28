@@ -385,6 +385,17 @@ describe('diagnosticsRoutes', () => {
     }
   });
 
+  it('drops an expired address bucket when a later request starts a new minute', async () => {
+    const store = new InMemoryDiagnosticStore();
+    const app = mount(store, now);
+    expect((await post(app, { 'cf-connecting-ip': '1.1.1.1' })).status).toBe(204);
+    clock += 30_000;
+    expect((await post(app, { 'cf-connecting-ip': '2.2.2.2' })).status).toBe(204);
+    clock += 30_001;
+    expect((await post(app, { 'cf-connecting-ip': '3.3.3.3' })).status).toBe(204);
+    expect((await post(app, { 'cf-connecting-ip': '1.1.1.1' })).status).toBe(204);
+  });
+
   it('does not remember lastRateLimitedAt when the rate-limited append throws', async () => {
     const store = new RecordingStore();
     const app = mount(store, now);

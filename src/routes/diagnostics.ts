@@ -161,6 +161,7 @@ export function diagnosticsRoutes(deps: { store: DiagnosticStore; now?: () => nu
   const globalAccepted: number[] = [];
   const ipAccepted = new Map<string, number[]>();
   let lastRateLimitedAt: number | null = null;
+  let lastIpSweepAt: number | null = null;
   return new Hono().post('/', async (c) => {
     let body: unknown;
     try {
@@ -174,6 +175,16 @@ export function diagnosticsRoutes(deps: { store: DiagnosticStore; now?: () => nu
     }
 
     const now = clock();
+    // Drop expired address buckets at most once a minute. A one-off address would otherwise stay for the process lifetime.
+    if (lastIpSweepAt === null || now - lastIpSweepAt >= WINDOW_MS) {
+      lastIpSweepAt = now;
+      for (const [key, bucket] of ipAccepted) {
+        pruneWindow(bucket, now);
+        if (bucket.length === 0) {
+          ipAccepted.delete(key);
+        }
+      }
+    }
     const ipHeader = c.req.header('cf-connecting-ip');
     const ip = ipHeader !== undefined && CF_IP_RE.test(ipHeader) ? ipHeader : undefined;
     pruneWindow(globalAccepted, now);
