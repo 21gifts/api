@@ -1634,6 +1634,9 @@ test('Function: resolvePublicApiBase — default boot has no DATABASE_URL', asyn
 test('Function: resolveZapRelays — default boot has no DATABASE_URL', async ({ request }) => {
   expect((await request.get('/healthz')).status()).toBe(200);
 });
+test('Function: resolveZapReadRelays — default boot has no DATABASE_URL', async ({ request }) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
 test('Function: utcDayKey — default boot has no DATABASE_URL', async ({ request }) => {
   expect((await request.get('/healthz')).status()).toBe(200);
 });

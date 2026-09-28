@@ -4071,6 +4071,8 @@ describe('POST /messages/:id/invoice', () => {
         const relaysTag = zapRequest.tags.find((tag) => tag[0] === 'relays');
         expect(relaysTag).toBeDefined();
         expect(relaysTag?.slice(1)).toContain('wss://relay.damus.io');
+        expect(relaysTag?.slice(1)).not.toContain('wss://nostr.wine');
+        expect(relaysTag?.slice(1)).not.toContain('wss://nostr.bitcoiner.social');
       });
     } finally {
       if (prevPublishPublic === undefined) {
@@ -4170,6 +4172,8 @@ describe('POST /messages/:id/invoice', () => {
         const relaysTag = zapRequest.tags.find((tag) => tag[0] === 'relays');
         expect(relaysTag).toBeDefined();
         expect(relaysTag?.slice(1)).toContain('wss://relay.damus.io');
+        expect(relaysTag?.slice(1)).not.toContain('wss://nostr.wine');
+        expect(relaysTag?.slice(1)).not.toContain('wss://nostr.bitcoiner.social');
       });
     } finally {
       if (prevPublishPublic === undefined) {

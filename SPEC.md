@@ -3271,8 +3271,16 @@ Postgres `message`. List queries select top-level rows only
 and must not select the `photo` bytea
 column.
 
-The nostr worker's ingest lane, each pass, queries zap relays (space plus the public
-list, including when `NOSTR_PUBLISH_PUBLIC` is unset) for kind:9735
+The hot lane uses the same receipt-read URL set as full ingest (space plus the
+public list, including when `NOSTR_PUBLISH_PUBLIC` is unset, then
+`wss://nostr.wine` and `wss://nostr.bitcoiner.social` unless that exact URL is
+already present), but only for recent in-app invoice e-tags, and it makes no
+relay query when no target remains. Those two URLs are not written into the
+kind:9734 `relays` tag and are not used for inbound kind:1 replies or direct
+messages.
+
+The nostr worker's ingest lane, each pass, queries that receipt-read set for
+kind:9735
 receipts whose `e` tag matches a non-empty `event_id` from `listLatest`
 or a non-null `listReplies` child of those rows (unioned with the official
 platform profile note's `event_id` even after that note ages out of
