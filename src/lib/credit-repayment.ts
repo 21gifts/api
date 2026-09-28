@@ -106,7 +106,7 @@ export function fiatAmountToCents(amount: string): bigint | null {
   const frac = parts[1] ?? '';
   const head = frac.slice(0, 2).padEnd(2, '0');
   let cents = BigInt(whole) * 100n + BigInt(head);
-  if (frac.length > 2 && frac[2] !== undefined && frac[2] >= '5') {
+  if (frac.length > 2 && frac.charAt(2) >= '5') {
     cents += 1n;
   }
   return cents;

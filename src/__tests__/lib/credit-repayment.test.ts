@@ -23,6 +23,7 @@ describe('credit repayment', () => {
     expect(dueDayCount(funded, Date.UTC(2026, 8, 27, 1), 30)).toBe(1);
     expect(dueDayCount(funded, Date.UTC(2026, 8, 28, 1), 2)).toBe(2);
     expect(dueDayCount(funded, Date.UTC(2026, 8, 27), 0)).toBe(0);
+    expect(dueDayCount(funded, funded, 1.5)).toBe(0);
   });
 
   it('puts the remainder on the last day', () => {
@@ -30,10 +31,14 @@ describe('credit repayment', () => {
     expect(dayUnits(1000n, 30, 29)).toBe(43n);
     expect(dayUnits(1000n, 30, 30)).toBeNull();
     expect(dayUnits(-1n, 30, 0)).toBeNull();
+    expect(dayUnits(1n, 1.5, 0)).toBeNull();
+    expect(dayUnits(1n, 0, 0)).toBeNull();
+    expect(dayUnits(1n, 30, -1)).toBeNull();
   });
 
   it('reads cents and ignores other descriptions', () => {
     expect(fiatAmountToCents('10.125')).toBe(1013n);
+    expect(fiatAmountToCents('10.124')).toBe(1012n);
     expect(fiatAmountToCents('1,')).toBe(100n);
     expect(fiatAmountToCents('10')).toBe(1000n);
     expect(fiatAmountToCents('nope')).toBeNull();

@@ -326,6 +326,13 @@ describe('credit repayment', () => {
     });
     expect(res.status).toBe(400);
     expect(await res.json()).toEqual({ error: 'This message cannot be paid yet' });
+    const blank = await readyCredit({ authorId: 'acc-blank-event', eventId: '' });
+    const empty = await blank.app.request(`/messages/${CREDIT}/repayment`, {
+      method: 'POST',
+      headers: { authorization: 'Bearer acc-blank-event' },
+    });
+    expect(empty.status).toBe(400);
+    expect(await empty.json()).toEqual({ error: 'This message cannot be paid yet' });
   });
 
   it('refuses a giver without a Lightning address or key', async () => {
@@ -421,6 +428,20 @@ describe('credit repayment', () => {
 
   it('counts a paid day and ignores an unknown note', async () => {
     const { app, messages } = await readyCredit({ authorId: 'acc-paid' });
+    await messages.markRepaymentPaid({
+      messageId: CREDIT,
+      dayIndex: 1,
+      recipientAccountId: GIVER,
+      dueSats: 21,
+      paidAt: new Date(now()),
+    });
+    await messages.markRepaymentPaid({
+      messageId: CREDIT,
+      dayIndex: 0,
+      recipientAccountId: '77777777-7777-4777-8777-777777777777',
+      dueSats: 21,
+      paidAt: new Date(now()),
+    });
     await messages.markRepaymentPaid({
       messageId: CREDIT,
       dayIndex: 0,
@@ -571,6 +592,45 @@ describe('credit repayment', () => {
       headers: { authorization: 'Bearer acc-open' },
     });
     expect(pay.status).toBe(404);
+    const closed = await readyCredit({ authorId: 'acc-closed' });
+    const unknown = await closed.app.request(
+      '/messages/22222222-2222-4222-8222-222222222222/repayment',
+      { method: 'POST', headers: { authorization: 'Bearer acc-closed' } },
+    );
+    expect(unknown.status).toBe(404);
+    expect(await unknown.json()).toEqual({ error: 'Not found' });
+    await closed.messages.create({
+      id: '33333333-3333-4333-8333-333333333334',
+      accountId: 'acc-closed',
+      name: 'Ada',
+      text: 'plain',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+    });
+    const plain = await closed.app.request(
+      '/messages/33333333-3333-4333-8333-333333333334/repayment',
+      { method: 'POST', headers: { authorization: 'Bearer acc-closed' } },
+    );
+    expect(plain.status).toBe(404);
+    await closed.auth.createSession({ token: 'giver-closed', accountId: GIVER, createdAt: now() });
+    const stranger = await closed.app.request(`/messages/${CREDIT}/repayment`, {
+      method: 'POST',
+      headers: { authorization: 'Bearer giver-closed' },
+    });
+    expect(stranger.status).toBe(404);
+    await closed.messages.markDeleted(CREDIT, new Date(now()), 'acc-closed');
+    const hidden = await closed.app.request(`/messages/${CREDIT}/repayment`, {
+      method: 'POST',
+      headers: { authorization: 'Bearer acc-closed' },
+    });
+    expect(hidden.status).toBe(404);
+    const noTermPost = await readyCredit({ authorId: 'acc-noterm-post', termDays: null });
+    const missingTermPost = await noTermPost.app.request(`/messages/${CREDIT}/repayment`, {
+      method: 'POST',
+      headers: { authorization: 'Bearer acc-noterm-post' },
+    });
+    expect(missingTermPost.status).toBe(404);
     const noTerm = await readyCredit({ authorId: 'acc-noterm', termDays: null });
     const missingTerm = await noTerm.app.request(`/messages/${CREDIT}/repayment`, {
       headers: { authorization: 'Bearer acc-noterm' },
