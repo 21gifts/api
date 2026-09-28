@@ -63,7 +63,14 @@ const limiter = new InvoiceRateLimiter();
  * @param row - Credit note.
  * @returns Payers, unassigned sats, and the units each account owes.
  */
-async function creditOwed(deps: RepaymentDeps, row: MessageRow) {
+async function creditOwed(
+  deps: RepaymentDeps,
+  row: MessageRow,
+): Promise<{
+  payers: Awaited<ReturnType<MessageStore['listCreditPayers']>>;
+  unassignedSats: number;
+  owed: ReturnType<typeof payerDebtUnits>;
+}> {
   const payers = await deps.store.listCreditPayers(row.id);
   const unassignedSats = await deps.store.sumUnassignedCreditSats(row.id);
   return {
