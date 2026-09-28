@@ -5,8 +5,10 @@ import { InMemoryAuthStore } from '@/lib/auth/store';
 import { mentionsRoutes } from '@/routes/mentions';
 
 const AUTH = { authorization: 'Bearer tok' };
+const FROZEN = 1_000_000;
+const frozenNow = (): number => FROZEN;
 
-function mount(auth: InMemoryAuthStore, now: () => number = Date.now): Hono {
+function mount(auth: InMemoryAuthStore, now: () => number = frozenNow): Hono {
   return new Hono().route('/mentions', mentionsRoutes({ auth, now }));
 }
 
@@ -19,7 +21,6 @@ async function seededCaller(
   overrides: { rulesAgreedAt?: number | null } = {},
 ): Promise<InMemoryAuthStore> {
   const store = new InMemoryAuthStore();
-  const now = Date.now();
   await store.createAccount({
     id: 'caller',
     linkingKey: null,
@@ -30,10 +31,10 @@ async function seededCaller(
     forumLawsDismissed: false,
     location: null,
     viewKey: 'a'.repeat(64),
-    createdAt: now,
-    rulesAgreedAt: overrides.rulesAgreedAt === undefined ? now : overrides.rulesAgreedAt,
+    createdAt: FROZEN,
+    rulesAgreedAt: overrides.rulesAgreedAt === undefined ? FROZEN : overrides.rulesAgreedAt,
   });
-  await store.createSession({ token: 'tok', accountId: 'caller', createdAt: Date.now() });
+  await store.createSession({ token: 'tok', accountId: 'caller', createdAt: FROZEN });
   return store;
 }
 
@@ -57,8 +58,8 @@ async function addAccount(
     forumLawsDismissed: false,
     location: null,
     viewKey: opts.viewKey,
-    createdAt: opts.createdAt ?? Date.now(),
-    rulesAgreedAt: Date.now(),
+    createdAt: opts.createdAt ?? FROZEN,
+    rulesAgreedAt: FROZEN,
     ...(opts.username !== undefined ? { username: opts.username } : {}),
   });
 }
@@ -102,8 +103,7 @@ describe('GET /mentions', () => {
 
   it('expires the session on the injected clock', async () => {
     const store = await seededCaller();
-    const createdAt = Date.now();
-    const res = await mount(store, () => createdAt + SESSION_TTL_MS + 1).request('/mentions', {
+    const res = await mount(store, () => FROZEN + SESSION_TTL_MS + 1).request('/mentions', {
       headers: AUTH,
     });
     expect(res.status).toBe(401);
