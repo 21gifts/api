@@ -760,6 +760,65 @@ describe('serializeOwnerAccountWithPosts', () => {
     });
   });
 
+  it('does not close a renew when the stored account already has a seed', async () => {
+    const authStore = new InMemoryAuthStore();
+    await authStore.createAccount(account);
+    await authStore.insertPasskeyRenewAttempt({
+      id: 'r1',
+      accountId: 'acc',
+      createdAt: 1,
+      stage: 'ceremony',
+      outcome: 'failed',
+      errorName: null,
+      errorCode: null,
+      httpStatus: null,
+      message: 'seed failed',
+      userAgent: null,
+    });
+    await authStore.acknowledgePasskeyRenewFailures('acc', 2);
+    expect(
+      await authStore.addSeedPasskeyCredential({
+        credentialId: 'seed-now',
+        publicKey: new Uint8Array([1]),
+        signCount: 0,
+        accountId: 'acc',
+        createdAt: 3,
+      }),
+    ).toBe(true);
+    const json = await serializeOwnerAccountWithPosts(
+      account,
+      {
+        accountHasLivePost: async () => false,
+        getById: async () => undefined,
+      },
+      { store: new InMemoryFundingStore(), nowMs: 4, authStore },
+    );
+    expect(json.walletRequired).toBe(true);
+    expect(json.passkeyRenewClosed).toBe(false);
+  });
+
+  it('keeps the passed account when the store no longer has it', async () => {
+    const json = await serializeOwnerAccountWithPosts(
+      account,
+      {
+        accountHasLivePost: async () => false,
+        getById: async () => undefined,
+      },
+      {
+        store: new InMemoryFundingStore(),
+        nowMs: 1,
+        authStore: {
+          getAccount: async () => undefined,
+          getPasskeyCredentialForAccount: async () => undefined,
+          hasUnacknowledgedPasskeyRenewFailure: async () => false,
+          hasAcknowledgedPasskeyRenewFailure: async () => true,
+        },
+      },
+    );
+    expect(json.walletRequired).toBe(false);
+    expect(json.passkeyRenewClosed).toBe(true);
+  });
+
   it('sets passkeyRenewFailed from an unacknowledged failure only when funding is passed', async () => {
     const authStore = new InMemoryAuthStore();
     await authStore.createAccount(account);

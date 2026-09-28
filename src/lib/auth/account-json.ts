@@ -644,7 +644,8 @@ export interface OwnerFundingLookup {
  *   `funding` is passed, loads `hasUnacknowledgedPasskeyRenewFailure` even
  *   if `walletRequired` is false, and sets `passkeyRenewClosed` only when
  *   `walletRequired` is not true and `hasAcknowledgedPasskeyRenewFailure`
- *   is true.
+ *   is true. `walletRequired` is read after that predicate, so a seed that
+ *   already acknowledged the failure is not closed.
  * @returns Owner JSON including `hasPosted`, `aboutMe`, `aboutMeHasPhoto`,
  *   `notificationLevel`, `amountUnit`, `locale`, `fiat`, `funding`,
  *   `walletRequired`, `walletBackupSeenAt`, `passkeyCredentialId`,
@@ -675,6 +676,7 @@ export async function serializeOwnerAccountWithPosts(
   let passkeyCredentialId: string | null = null;
   let passkeyRenewFailed = false;
   let passkeyRenewClosed = false;
+  let serializedAccount = account;
   if (funding === undefined) {
     fundingJson = serializeOwnerFunding(account.role, undefined, 0, null);
   } else {
@@ -685,17 +687,20 @@ export async function serializeOwnerAccountWithPosts(
       reviewerName = reviewer?.name ?? null;
     }
     fundingJson = serializeOwnerFunding(account.role, grant, funding.nowMs, reviewerName);
-    if (account.walletRequired === true) {
-      const passkey = await funding.authStore.getPasskeyCredentialForAccount(account.id);
+    passkeyRenewFailed = await funding.authStore.hasUnacknowledgedPasskeyRenewFailure(account.id);
+    const acknowledgedRenew = await funding.authStore.hasAcknowledgedPasskeyRenewFailure(
+      account.id,
+    );
+    const latest = await funding.authStore.getAccount(account.id);
+    serializedAccount = latest ?? account;
+    if (serializedAccount.walletRequired === true) {
+      const passkey = await funding.authStore.getPasskeyCredentialForAccount(serializedAccount.id);
       passkeyCredentialId = passkey?.credentialId ?? null;
     }
-    passkeyRenewFailed = await funding.authStore.hasUnacknowledgedPasskeyRenewFailure(account.id);
-    passkeyRenewClosed =
-      account.walletRequired !== true &&
-      (await funding.authStore.hasAcknowledgedPasskeyRenewFailure(account.id));
+    passkeyRenewClosed = serializedAccount.walletRequired !== true && acknowledgedRenew;
   }
   return serializeOwnerAccount(
-    account,
+    serializedAccount,
     hasPosted,
     aboutMe,
     aboutMeHasPhoto,
