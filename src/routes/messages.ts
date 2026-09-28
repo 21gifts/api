@@ -887,6 +887,11 @@ async function persistForumPost(
       account.lightningAddress !== null &&
       deps.spendPing !== undefined
     ) {
+      await syncWelcomePing({
+        spendPing: deps.spendPing,
+        messages: deps.store,
+        account,
+      });
       try {
         const grant = await (deps.fundingStore ?? new InMemoryFundingStore()).getByAccountId(
           account.id,
@@ -905,11 +910,6 @@ async function persistForumPost(
       } catch {
         logEvent('spend.ping.failed');
       }
-      await syncWelcomePing({
-        spendPing: deps.spendPing,
-        messages: deps.store,
-        account,
-      });
     }
     if (!isReplay && parentId !== null) {
       try {

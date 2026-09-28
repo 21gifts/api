@@ -3046,8 +3046,13 @@ describe('POST /messages', () => {
     expect(res.status).toBe(200);
     const created = (await res.json()) as { id: string };
     expect(spendPing.ping).toHaveBeenCalledTimes(2);
-    expect(spendPing.ping).toHaveBeenCalledWith('ada@walletofsatoshi.com', created.id);
-    expect(spendPing.ping).toHaveBeenCalledWith('ada@walletofsatoshi.com', created.id, 'welcome');
+    expect(spendPing.ping).toHaveBeenNthCalledWith(
+      1,
+      'ada@walletofsatoshi.com',
+      created.id,
+      'welcome',
+    );
+    expect(spendPing.ping).toHaveBeenNthCalledWith(2, 'ada@walletofsatoshi.com', created.id);
   });
 
   it('does not welcome-ping spend on a verified text-only post', async () => {
@@ -3227,8 +3232,13 @@ describe('POST /messages', () => {
     expect(res.status).toBe(200);
     const created = (await res.json()) as { id: string };
     expect(spendPing.ping).toHaveBeenCalledTimes(2);
-    expect(spendPing.ping).toHaveBeenCalledWith('ada@walletofsatoshi.com', created.id);
-    expect(spendPing.ping).toHaveBeenCalledWith('ada@walletofsatoshi.com', created.id, 'welcome');
+    expect(spendPing.ping).toHaveBeenNthCalledWith(
+      1,
+      'ada@walletofsatoshi.com',
+      created.id,
+      'welcome',
+    );
+    expect(spendPing.ping).toHaveBeenNthCalledWith(2, 'ada@walletofsatoshi.com', created.id);
     expect(parsedEvents(warn).some((e) => e['event'] === 'spend.ping.failed')).toBe(true);
   });
 
