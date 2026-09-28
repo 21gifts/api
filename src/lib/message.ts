@@ -190,13 +190,17 @@ export interface MessageRow {
 
 /**
  * Public JSON shape of a forum message (no event id, no photo bytes).
- * Public GET omits `accountId`; signed-in list/replies/create may include it.
+ * Live list, single-note GET, and replies include `accountId` whenever the
+ * stored author id is non-null, with or without a session, and omit it for
+ * an external row. Mentions stay tied to that same flag.
  */
 export interface PublicMessage {
   /** Opaque unique message id. */
   id: string;
   /**
-   * 21gifts author id; omitted for Damus-only rows and on public GET.
+   * 21gifts author id; omitted when the stored author id is null (external /
+   * Nostr). Live list, single-note GET, and replies include it when the
+   * stored author id is non-null, with or without a session.
    */
   accountId?: string;
   /**
@@ -576,7 +580,8 @@ export function truncatePubkeyDisplay(pubkeyHex: string): string {
  * and for a top-level `GET /messages/:id`, including 0. A reply passes
  * `undefined` so the key is omitted.
  * @param includeAccountId - When true, set `accountId` for 21gifts authors
- * (`row.accountId !== null`). Public GET leaves this unset.
+ * (`row.accountId !== null`). Live list, single-note GET, and replies pass
+ * true with or without a session.
  * @param hidden - When set, stamp `deletedAt` / `deletedBy` and force
  * `payable` false (the `payable` argument is ignored). Omit on live JSON so
  * those keys are absent.

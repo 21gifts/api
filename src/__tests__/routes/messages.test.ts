@@ -5784,11 +5784,16 @@ describe('GET /messages/:id', () => {
       '/messages/16161616-1616-4161-8161-161616161616',
     );
     expect(res.status).toBe(200);
-    const body = (await res.json()) as { role: string; payable: boolean; hasVideo: boolean };
+    const body = (await res.json()) as {
+      role: string;
+      payable: boolean;
+      hasVideo: boolean;
+      accountId?: string;
+    };
     expect(body.role).toBe('basis');
     expect(body.payable).toBe(false);
     expect(body.hasVideo).toBe(false);
-    expect(body).not.toHaveProperty('accountId');
+    expect(body.accountId).toBe('acc');
     expect(body).not.toHaveProperty('via');
   });
 
@@ -6351,7 +6356,7 @@ describe('GET /messages/:id/replies', () => {
     expect(await store.getById('16161616-1616-4161-8161-161616161616')).toBeUndefined();
   });
 
-  it('returns 200 without a session and omits accountId', async () => {
+  it('returns 200 without a session and includes accountId', async () => {
     const parentId = '28282828-2828-4282-8282-282828282828';
     const replyId = '29292929-2929-4292-8292-292929292929';
     const store = new InMemoryMessageStore([
@@ -6389,7 +6394,7 @@ describe('GET /messages/:id/replies', () => {
     expect(body.messages).toHaveLength(1);
     expect(body.messages[0]?.text).toBe('member reply');
     expect(body.messages[0]?.payable).toBe(false);
-    expect(body.messages[0]).not.toHaveProperty('accountId');
+    expect(body.messages[0]?.accountId).toBe('acc');
   });
 
   it('marks a signed reply with a Lightning Address as payable in the thread', async () => {
@@ -10386,7 +10391,7 @@ describe('PATCH /messages/:id/shop-account', () => {
     expect(publicRes.status).toBe(200);
     const publicJson = (await publicRes.json()) as Record<string, unknown>;
     expect(publicJson['shopAccount']).toEqual(SHOP_ACCOUNT);
-    expect(publicJson).not.toHaveProperty('accountId');
+    expect(publicJson['accountId']).toBe('acc');
   });
 
   it('returns 200 when replacing the shop account', async () => {

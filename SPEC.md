@@ -3136,8 +3136,10 @@ Success → **Response** `200`:
 ### `GET /messages`
 
 Public member forum thread. With no `Authorization` header, `mode=active`,
-and no hashtag, this is the public window: the first 200 active rows, no
-`accountId` and no `mentions`, 200 not 401. A present header that is not a
+and no hashtag, this is the public window: the first 200 active rows;
+includes `accountId` whenever the stored author id is non-null, omits it
+for an external row, and includes `mentions` when that flag is on and the
+stored list is non-empty; 200 not 401. A present header that is not a
 live session is 401 and does not use that window. A session still needs
 `requireAction(account, 'forum.read')` (rules). Returns **only
 top-level notes** (`parent_id IS NULL`) via `listFeed`. A profile note
@@ -3183,12 +3185,11 @@ an `EXISTS` subquery)). Visible external rows
 include `"via": "nostr"`; their pubkey, `role`, and `accountId` remain omitted,
 and `payable` is false. Rows with neither an account nor an author pubkey stay
 invisible. List JSON never includes photo
-or video bytes. Signed-in list/replies/create may include `accountId`
-(21gifts author id; omitted for external rows) and `mentions`
-(`{ username, accountId }[]`, only when `accountId` is included and the
-stored list is non-empty). The public window omits both. Public GET
-`/messages/:id` omits `accountId` when unsigned; a session sets it for a
-21gifts author and omits it for an external author. Nostr event ids are never included in the JSON.
+or video bytes. Live list, single-note GET, and replies include
+`accountId` whenever the stored author id is non-null, with or without a
+session, and omit it for an external row. `mentions`
+(`{ username, accountId }[]`) stay tied to that same inclusion (only when
+`accountId` is included and the stored list is non-empty). Nostr event ids are never included in the JSON.
 
 A present Authorization header that is not a live session, a signed-out
 request that is not `mode=active` without a hashtag, or a public cursor
@@ -3827,8 +3828,8 @@ public message JSON (`photoCount` 0–10 always present;
 stills; `photoTakenAt` only when `photoCount` is 1; `hasPhoto` still means
 photo 0 exists) with
 `payable` when a member row has a non-empty `eventId` and a non-blank
-Lightning Address, and no `replyCount`. Unauthenticated items omit
-`accountId`; signed-in member replies include `accountId`. External replies
+Lightning Address, and no `replyCount`. Items include `accountId` whenever
+the stored author id is non-null, with or without a session. External replies
 set `via: "nostr"`, keep `payable: false`, and omit `accountId`, `role`, and the
 pubkey. Replies never include `goalSats`, `goalRepayable`, or `goalTermDays`.
 Photo and video bytes are never included. `:id` is a UUID
@@ -3937,9 +3938,9 @@ stored and omitted when unset, even when `accountId` is omitted,
 (0–10; always present; `hasPhoto` still means photo 0 exists), `photoTakenAts`
 (always; length equals `photoCount`; null when unknown; `[]` when there are no
 stills) and `photoTakenAt` only when `photoCount` is 1, `hasVideo`,
-`videoContentType`; live `role` for 21gifts authors). Unsigned JSON omits
-`accountId`. A session sets `accountId` for a 21gifts author and omits it
-for an external author. Live JSON also omits
+`videoContentType`; live `role` for 21gifts authors). Live JSON includes
+`accountId` whenever the stored author id is non-null, with or without a
+session, and omits it for an external author. Live JSON also omits
 `deletedAt` and `deletedBy`. Unsigned and non-staff GET of a
 soft-hidden row is still **404** `{ "error": "Not found" }` with no hide
 stamps in the body. A founder/moderator Bearer (`roleAtLeast(...,
