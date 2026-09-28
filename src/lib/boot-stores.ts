@@ -32,7 +32,7 @@ import {
   type GiftStore,
 } from '@/lib/gift-store';
 import { SqlGiftRecorder, type GiftRecorder } from '@/lib/gift-recorder';
-import { logEvent } from '@/lib/log';
+import { logEvent, setDiagnosticSink } from '@/lib/log';
 import { migrateApiLogSchema, PostgresApiLogStore, type ApiLogStore } from '@/lib/api-log';
 import {
   migrateDiagnosticSchema,
@@ -292,6 +292,22 @@ export async function openBootStores(
   await migrateApiLogSchema(sqlClient);
   await migrateBannerSchema(sqlClient);
   await migrateDiagnosticSchema(sqlClient);
+  const diagnosticStore = new PostgresDiagnosticStore(sqlClient);
+  setDiagnosticSink((event, fields) => {
+    void diagnosticStore
+      .append({
+        id: crypto.randomUUID(),
+        createdAt: new Date(),
+        source: 'server',
+        event,
+        fields: { ...(fields ?? {}) },
+      })
+      .catch(() => {
+        console.warn(
+          JSON.stringify({ ts: new Date().toISOString(), event: 'diagnostic.write.failed' }),
+        );
+      });
+  });
   await migrateDbChangeSchema(sqlClient);
   await repairGiftKind(sqlClient);
 
@@ -440,7 +456,7 @@ export async function openBootStores(
     contactStore,
     posStore,
     apiLogStore,
-    diagnosticStore: new PostgresDiagnosticStore(sqlClient),
+    diagnosticStore,
     conversationStore,
     notificationStore,
     pushStore,

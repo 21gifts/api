@@ -219,6 +219,9 @@ describe('diagnosticsRoutes', () => {
     const limited = await post(app);
     expect(limited.status).toBe(429);
     expect(await limited.json()).toEqual({ error: 'Too many diagnostics' });
+    expect((await post(app, { 'cf-connecting-ip': '9.9.9.9' })).status).toBe(429);
+    clock += 60_000;
+    expect((await post(app, { 'cf-connecting-ip': '9.9.9.9' })).status).toBe(204);
   });
 
   it('releases a no-IP slot when the insert throws', async () => {

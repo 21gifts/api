@@ -190,13 +190,14 @@ export function diagnosticsRoutes(deps: { store: DiagnosticStore; now?: () => nu
     let ipBucket: number[] | undefined;
     if (ip !== undefined) {
       const existing = ipAccepted.get(ip);
-      if (existing === undefined) {
-        ipBucket = [];
-        ipAccepted.set(ip, ipBucket);
-      } else {
-        ipBucket = existing;
+      if (existing !== undefined) {
+        pruneWindow(existing, now);
+        if (existing.length === 0) {
+          ipAccepted.delete(ip);
+        } else {
+          ipBucket = existing;
+        }
       }
-      pruneWindow(ipBucket, now);
     }
     if (
       globalAccepted.length >= GLOBAL_LIMIT ||
@@ -222,7 +223,11 @@ export function diagnosticsRoutes(deps: { store: DiagnosticStore; now?: () => nu
 
     // Reserve before the insert await so a second in-flight request cannot take the same slot.
     globalAccepted.push(now);
-    if (ipBucket !== undefined) {
+    if (ip !== undefined) {
+      if (ipBucket === undefined) {
+        ipBucket = [];
+        ipAccepted.set(ip, ipBucket);
+      }
       ipBucket.push(now);
     }
     const fields: ClientFields = { ...parsed.fields };
@@ -240,8 +245,11 @@ export function diagnosticsRoutes(deps: { store: DiagnosticStore; now?: () => nu
       });
     } catch {
       releaseReserved(globalAccepted, now);
-      if (ipBucket !== undefined) {
+      if (ip !== undefined && ipBucket !== undefined) {
         releaseReserved(ipBucket, now);
+        if (ipBucket.length === 0) {
+          ipAccepted.delete(ip);
+        }
       }
       return c.json({ error: 'Log is unavailable' }, 500);
     }
