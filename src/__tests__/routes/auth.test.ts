@@ -1183,7 +1183,11 @@ describe('auth routes', () => {
       });
       expect(finish.status).toBe(200);
       const finishBody = (await finish.json()) as {
-        account: { passkeyRenewFailed: boolean; passkeyRenewClosed: boolean; walletRequired: boolean };
+        account: {
+          passkeyRenewFailed: boolean;
+          passkeyRenewClosed: boolean;
+          walletRequired: boolean;
+        };
       };
       expect(finishBody.account.passkeyRenewFailed).toBe(false);
       expect(finishBody.account.passkeyRenewClosed).toBe(false);
