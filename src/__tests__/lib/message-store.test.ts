@@ -2467,6 +2467,36 @@ describe('InMemoryMessageStore', () => {
     expect(await store.updatePhoto('missing', JPEG)).toBeUndefined();
   });
 
+  it('replacePhotos sets, adds an extra, and clears without changing sats or eventId', async () => {
+    const store = new InMemoryMessageStore();
+    await store.create({ ...EARLY, eventId: 'ee'.repeat(32), sats: 21, hasVideo: true });
+    expect(await store.replacePhotos('missing', [JPEG])).toBeUndefined();
+    const one = await store.replacePhotos('a', [JPEG]);
+    expect(one?.hasPhoto).toBe(true);
+    expect(one?.photoCount).toBe(1);
+    expect(one?.sats).toBe(21);
+    expect(one?.eventId).toBe('ee'.repeat(32));
+    const two = await store.replacePhotos('a', [
+      { ...JPEG, takenAt: '2020-01-01T00:00:00+00:00' },
+      JPEG2,
+      { ...JPEG2, takenAt: '2021-02-02T00:00:00+00:00' },
+    ]);
+    expect(two?.photoCount).toBe(3);
+    expect(two?.photoTakenAts).toEqual([
+      '2020-01-01T00:00:00+00:00',
+      null,
+      '2021-02-02T00:00:00+00:00',
+    ]);
+    expect(await store.listExtraPhotos('a')).toEqual([
+      JPEG2,
+      { ...JPEG2, takenAt: '2021-02-02T00:00:00+00:00' },
+    ]);
+    const cleared = await store.replacePhotos('a', []);
+    expect(cleared?.hasPhoto).toBe(false);
+    expect(cleared?.photoCount).toBe(0);
+    expect(await store.listExtraPhotos('a')).toEqual([]);
+  });
+
   it('pads a listed photo that has no stored capture time', async () => {
     const store = new InMemoryMessageStore([{ ...EARLY, hasPhoto: true }]);
     expect((await store.getById('a'))?.photoTakenAts).toEqual([null]);
@@ -6756,6 +6786,43 @@ describe('PostgresMessageStore', () => {
     expect(sql.queries[1]?.params).toEqual(['m1', null, null, null]);
     sql.nextRows = [];
     expect(await store.updatePhoto('missing', JPEG)).toBeUndefined();
+  });
+
+  it('replacePhotos deletes extras, writes the new stills, and returns undefined when missing', async () => {
+    const sql = new MockSql();
+    const row = {
+      id: 'm1',
+      account_id: 'acc',
+      name: 'Ada',
+      text: 'Shop #21GiftsShop',
+      created_at: new Date(0),
+      has_photo: true,
+      photo_count: 2,
+      event_id: 'ee'.repeat(32),
+      nostr_publish_state: 'published',
+      sats: 21,
+    };
+    sql.queryQueue = [[row], [row], [row]];
+    const store = new PostgresMessageStore(sql);
+    const updated = await store.replacePhotos('m1', [
+      { ...JPEG, takenAt: '2020-01-01T00:00:00+00:00' },
+      JPEG2,
+      { ...JPEG2, takenAt: '2020-01-02T00:00:00+00:00' },
+    ]);
+    expect(updated?.id).toBe('m1');
+    expect(sql.executes[0]?.text).toMatch(/DELETE FROM message_extra_photo/);
+    expect(sql.queries[1]?.text).toMatch(/UPDATE message SET photo/);
+    expect(sql.queries[1]?.params?.[3]).toBe('2020-01-01T00:00:00+00:00');
+    expect(sql.executes[1]?.params?.[4]).toBeNull();
+    expect(sql.executes[2]?.params?.[4]).toBe('2020-01-02T00:00:00+00:00');
+    sql.queryQueue = [[row], [row], []];
+    const fallenBack = await store.replacePhotos('m1', [JPEG]);
+    expect(fallenBack?.id).toBe('m1');
+    expect(sql.queries.at(-2)?.params?.[3]).toBeNull();
+    sql.queryQueue = [[row], []];
+    expect(await store.replacePhotos('m1', [])).toBeUndefined();
+    sql.queryQueue = [[]];
+    expect(await store.replacePhotos('missing', [JPEG])).toBeUndefined();
   });
 
   it('getById maps nostr_event JSON string', async () => {

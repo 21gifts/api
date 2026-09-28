@@ -56,6 +56,13 @@
 - **Used by:** Staff shop-note text edit in the app forum.
 - **Auth:** `Authorization: Bearer` session (moderator).
 
+## Endpoint: PATCH /messages/:id/photos
+
+- **Purpose:** Bearer required. A moderator replaces the stills on a live top-level shop note (`#21GiftsShop`) via `MessageStore.replacePhotos`. Body `{ photos: { contentType, data, takenAt? }[] }` (at most 10; empty clears stills). Does not republish Nostr, write `message_edit`, or change text, video, sats, author, or event ids. A video note keeps its video. Success is the live public message JSON.
+- **Errors:** 401 `{ error: 'Unauthorized' }`; 403 `{ error: 'Forbidden' }` below moderator; 404 `{ error: 'Not found' }` for a non-UUID `:id`, a missing row, a hidden row, or `replacePhotos` undefined; 400 `{ error: 'Invalid body' }`; 400 `{ error: 'At most 10 photos' }`; 400 `{ error: 'Photo must be a JPEG, PNG, or WebP under 1 MiB' }`; 400 `{ error: 'A reply cannot be edited' }`; 400 `{ error: 'Only a shop note can be edited' }`; 503 `{ error: 'Messages are unavailable' }`. 403 `{ error: 'SUNDAY_REST' }` when `Time-Zone` names an IANA zone that is Sunday on the server clock (a missing, blank, or invalid zone does not refuse).
+- **Used by:** The shop-note pencil wizard in the app.
+- **Auth:** `Authorization: Bearer` session (moderator).
+
 ## Endpoint: GET /messages/:id/edits
 
 - **Purpose:** Bearer required. A moderator lists `message_edit` history for a top-level shop note, newest first, including a hidden shop note. Does not change the note and does not republish Nostr. GET is not a Sunday write. Actors resolve like hide stamps (missing account keeps the id with null name/role). Public message JSON does not include `edits`. Empty history is `{ edits: [] }`.

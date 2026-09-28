@@ -39,6 +39,7 @@ const SUNDAY_REST_WRITES: ReadonlyArray<readonly [string, RegExp]> = [
   ['PATCH', /^\/messages\/[^/]+\/place$/],
   ['PATCH', /^\/messages\/[^/]+\/text$/],
   ['PATCH', /^\/messages\/[^/]+\/shop-account$/],
+  ['PATCH', /^\/messages\/[^/]+\/photos$/],
   ['POST', /^\/funding\/apply$/],
   ['POST', /^\/funding\/trial$/],
   ['POST', /^\/funding\/admit$/],

@@ -4927,6 +4927,8 @@ describe('indexOpenZapReceipts', () => {
       listIndexedZapIngests: () => base.listIndexedZapIngests(),
       listAuthoredMessages: (accountId: string) => base.listAuthoredMessages(accountId),
       listOpenConversationZapEventIds: () => base.listOpenConversationZapEventIds(),
+      replacePhotos: (...args: Parameters<InMemoryMessageStore['replacePhotos']>) =>
+        base.replacePhotos(...args),
     };
     const querier = new RecordingQuerier();
     querier.events = [
@@ -5178,6 +5180,8 @@ describe('indexOpenZapReceipts', () => {
         listIndexedZapIngests: () => base.listIndexedZapIngests(),
         listAuthoredMessages: (accountId: string) => base.listAuthoredMessages(accountId),
         listOpenConversationZapEventIds: () => base.listOpenConversationZapEventIds(),
+        replacePhotos: (...args: Parameters<InMemoryMessageStore['replacePhotos']>) =>
+          base.replacePhotos(...args),
       };
       const querier = new RecordingQuerier();
       querier.events = [
@@ -5966,6 +5970,8 @@ describe('indexOpenZapReceipts', () => {
         listIndexedZapIngests: () => base.listIndexedZapIngests(),
         listAuthoredMessages: (accountId: string) => base.listAuthoredMessages(accountId),
         listOpenConversationZapEventIds: () => base.listOpenConversationZapEventIds(),
+        replacePhotos: (...args: Parameters<InMemoryMessageStore['replacePhotos']>) =>
+          base.replacePhotos(...args),
       };
       const querier = new RecordingQuerier();
       querier.events = [

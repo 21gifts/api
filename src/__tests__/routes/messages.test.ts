@@ -228,6 +228,7 @@ function throwingStore(overrides: Partial<MessageStore> = {}): MessageStore {
     resetSignedEvent: boom,
     updateText: boom,
     updatePhoto: boom,
+    replacePhotos: boom,
     updateSignedEvent: boom,
     updatePublishState: boom,
     addSats: boom,
@@ -3608,6 +3609,7 @@ describe('POST /messages', () => {
       listIndexedZapIngests: () => base.listIndexedZapIngests(),
       listAuthoredMessages: (accountId) => base.listAuthoredMessages(accountId),
       listOpenConversationZapEventIds: () => base.listOpenConversationZapEventIds(),
+      replacePhotos: (id, photos) => base.replacePhotos(id, photos),
       attributeZapReceipt: (receiptEventId, attribution) =>
         base.attributeZapReceipt(receiptEventId, attribution),
       recordZapper: (pubkey, receiptEventId, at) => base.recordZapper(pubkey, receiptEventId, at),
@@ -3731,6 +3733,7 @@ describe('POST /messages', () => {
       listIndexedZapIngests: () => base.listIndexedZapIngests(),
       listAuthoredMessages: (accountId) => base.listAuthoredMessages(accountId),
       listOpenConversationZapEventIds: () => base.listOpenConversationZapEventIds(),
+      replacePhotos: (id, photos) => base.replacePhotos(id, photos),
       attributeZapReceipt: (receiptEventId, attribution) =>
         base.attributeZapReceipt(receiptEventId, attribution),
       recordZapper: (pubkey, receiptEventId, at) => base.recordZapper(pubkey, receiptEventId, at),
@@ -5387,6 +5390,7 @@ describe('POST /messages/:id/invoice', () => {
       listIndexedZapIngests: () => base.listIndexedZapIngests(),
       listAuthoredMessages: (accountId) => base.listAuthoredMessages(accountId),
       listOpenConversationZapEventIds: () => base.listOpenConversationZapEventIds(),
+      replacePhotos: (id, photos) => base.replacePhotos(id, photos),
       attributeZapReceipt: (receiptEventId, attribution) =>
         base.attributeZapReceipt(receiptEventId, attribution),
       recordZapper: (pubkey, receiptEventId, at) => base.recordZapper(pubkey, receiptEventId, at),
@@ -11599,6 +11603,166 @@ describe('PATCH /messages/:id/text and GET /messages/:id/edits', () => {
       body: JSON.stringify({ text: 'Next' }),
     });
     expect(gone.status).toBe(404);
+  });
+
+  function patchPhotos(
+    auth: InMemoryAuthStore,
+    id: string,
+    body: unknown,
+    messages: InMemoryMessageStore = new InMemoryMessageStore(),
+    headers: Record<string, string> = AUTH,
+  ) {
+    return mount(auth, messages).request('/messages/' + id + '/photos', {
+      method: 'PATCH',
+      headers: { ...headers, 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+  }
+
+  it('replaces shop stills and writes no edit history', async () => {
+    const auth = await staffStore('Ada');
+    const messages = new InMemoryMessageStore();
+    await messages.create(
+      {
+        id: SHOP_ID,
+        accountId: 'acc',
+        name: 'Ada',
+        text: 'Cafe\n\n#21GiftsShop',
+        createdAt: new Date(now()),
+        hasPhoto: false,
+        ...unsignedNostrDefaults(),
+        eventId: EVENT_ID,
+        sats: 21,
+      },
+      undefined,
+      { contentType: 'video/mp4', bytes: new Uint8Array([1, 2, 3]) },
+    );
+    const res = await patchPhotos(
+      auth,
+      SHOP_ID,
+      {
+        photos: [
+          { contentType: 'image/jpeg', data: JPEG_B64, takenAt: '2020-01-01T00:00:00+00:00' },
+          { contentType: 'image/jpeg', data: JPEG_B64 },
+        ],
+      },
+      messages,
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { hasPhoto: boolean; photoCount: number; hasVideo: boolean };
+    expect(body.hasPhoto).toBe(true);
+    expect(body.photoCount).toBe(2);
+    expect(body.hasVideo).toBe(true);
+    expect(await messages.listEdits(SHOP_ID)).toEqual([]);
+    const cleared = await patchPhotos(auth, SHOP_ID, { photos: [] }, messages);
+    expect(cleared.status).toBe(200);
+    const clearedBody = (await cleared.json()) as { hasPhoto: boolean; hasVideo: boolean };
+    expect(clearedBody.hasPhoto).toBe(false);
+    expect(clearedBody.hasVideo).toBe(true);
+
+    const external = new InMemoryMessageStore();
+    await shopNote(external, { accountId: null, authorPubkey: 'ab'.repeat(32) });
+    const externalRes = await patchPhotos(auth, SHOP_ID, { photos: [] }, external);
+    expect(externalRes.status).toBe(200);
+    expect((await externalRes.json()) as { role?: string }).not.toHaveProperty('role');
+
+    const gone = new InMemoryMessageStore();
+    await shopNote(gone, { accountId: 'gone' });
+    const goneRes = await patchPhotos(auth, SHOP_ID, { photos: [] }, gone);
+    expect(goneRes.status).toBe(200);
+    expect(((await goneRes.json()) as { role: string }).role).toBe('basis');
+  });
+
+  it('rejects a bad photo body, a reply, a hidden note, and a non-shop note', async () => {
+    const auth = await staffStore('Ada');
+    const messages = new InMemoryMessageStore();
+    await shopNote(messages);
+    expect((await patchPhotos(auth, 'nope', { photos: [] }, messages)).status).toBe(404);
+    expect((await patchPhotos(auth, SHOP_ID, {}, messages)).status).toBe(400);
+    expect((await patchPhotos(auth, SHOP_ID, { photos: 'x' }, messages)).status).toBe(400);
+    expect(
+      (await patchPhotos(auth, SHOP_ID, { photos: [{ contentType: 1, data: 2 }] }, messages))
+        .status,
+    ).toBe(400);
+    expect(
+      (
+        await patchPhotos(
+          auth,
+          SHOP_ID,
+          { photos: [{ contentType: 'image/jpeg', data: 'not-a-photo' }] },
+          messages,
+        )
+      ).status,
+    ).toBe(400);
+    expect(
+      (
+        await patchPhotos(auth, SHOP_ID, {
+          photos: Array.from({ length: 11 }, () => ({
+            contentType: 'image/jpeg',
+            data: JPEG_B64,
+          })),
+        })
+      ).status,
+    ).toBe(400);
+    await messages.create({
+      id: REPLY_ID,
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'Reply #21GiftsShop',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+      parentId: SHOP_ID,
+    });
+    const reply = await patchPhotos(auth, REPLY_ID, { photos: [] }, messages);
+    expect(reply.status).toBe(400);
+    expect(await reply.json()).toEqual({ error: 'A reply cannot be edited' });
+    await messages.markDeleted(SHOP_ID, new Date(now()), 'acc');
+    expect((await patchPhotos(auth, SHOP_ID, { photos: [] }, messages)).status).toBe(404);
+    await messages.create({
+      id: PLAIN_ID,
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'Hello',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+    });
+    const plain = await patchPhotos(auth, PLAIN_ID, { photos: [] }, messages);
+    expect(plain.status).toBe(400);
+    expect(await plain.json()).toEqual({ error: 'Only a shop note can be edited' });
+    expect(
+      (
+        await mount(await namedStore('Ada'), messages).request('/messages/' + SHOP_ID + '/photos', {
+          method: 'PATCH',
+          headers: { ...AUTH, 'content-type': 'application/json' },
+          body: JSON.stringify({ photos: [] }),
+        })
+      ).status,
+    ).toBe(403);
+    expect(
+      (
+        await mount(auth, messages).request('/messages/' + SHOP_ID + '/photos', {
+          method: 'PATCH',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ photos: [] }),
+        })
+      ).status,
+    ).toBe(401);
+  });
+
+  it('returns 404 when replacePhotos misses and 503 when it throws', async () => {
+    const auth = await staffStore('Ada');
+    const messages = new InMemoryMessageStore();
+    await shopNote(messages);
+    vi.spyOn(messages, 'replacePhotos').mockResolvedValueOnce(undefined);
+    expect((await patchPhotos(auth, SHOP_ID, { photos: [] }, messages)).status).toBe(404);
+    vi.spyOn(messages, 'replacePhotos').mockRejectedValueOnce(new Error('boom'));
+    warn.mockClear();
+    expect((await patchPhotos(auth, SHOP_ID, { photos: [] }, messages)).status).toBe(503);
+    expect(parsedEvents(warn).some((event) => event['event'] === 'messages.photos.failed')).toBe(
+      true,
+    );
   });
 
   it('lists history newest first for staff, including a hidden shop note', async () => {

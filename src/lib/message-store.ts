@@ -825,6 +825,17 @@ export interface MessageStore {
    */
   updatePhoto(id: string, photo: ForumPhoto | null): Promise<MessageRow | undefined>;
 
+  /**
+   * Replace every still on a note. Index 0 is the primary photo; the rest are
+   * extras. An empty list clears stills. Does not change text, video, sats, or
+   * event ids, and does not recompute `content_fp`.
+   *
+   * @param id - Message id.
+   * @param photos - Decoded stills, at most 10.
+   * @returns The updated row copy, or `undefined` when no row has that id.
+   */
+  replacePhotos(id: string, photos: readonly ForumPhoto[]): Promise<MessageRow | undefined>;
+
   /** Persist a signed event id + JSON. Returns false on event-id collision. */
   updateSignedEvent(
     id: string,
@@ -2956,6 +2967,33 @@ export class InMemoryMessageStore implements MessageStore {
     row.photoTakenAts = [
       ...(hasPhoto0 ? [typeof photo?.takenAt === 'string' ? photo.takenAt : null] : []),
       ...extras.map((item) => (typeof item.takenAt === 'string' ? item.takenAt : null)),
+    ];
+    return Promise.resolve(copyRow(row));
+  }
+
+  replacePhotos(id: string, photos: readonly ForumPhoto[]): Promise<MessageRow | undefined> {
+    const row = this.#rows.find((item) => item.id === id);
+    if (row === undefined) {
+      return Promise.resolve(undefined);
+    }
+    this.#photos.delete(id);
+    this.#extraPhotos.delete(id);
+    const first = photos[0];
+    if (first !== undefined) {
+      this.#photos.set(id, copyPhoto(first));
+      row.hasPhoto = true;
+    } else {
+      row.hasPhoto = false;
+    }
+    const extras = photos.slice(1).map((item) => copyPhoto(item));
+    if (extras.length > 0) {
+      this.#extraPhotos.set(id, extras);
+    }
+    const storedExtras = this.#extraPhotos.get(id) ?? [];
+    row.photoCount = (first !== undefined ? 1 : 0) + storedExtras.length;
+    row.photoTakenAts = [
+      ...(first !== undefined ? [typeof first.takenAt === 'string' ? first.takenAt : null] : []),
+      ...storedExtras.map((item) => (typeof item.takenAt === 'string' ? item.takenAt : null)),
     ];
     return Promise.resolve(copyRow(row));
   }
@@ -5230,6 +5268,36 @@ export class PostgresMessageStore implements MessageStore {
     );
     const row = rows[0];
     return row === undefined ? undefined : mapMessageRow(row);
+  }
+
+  async replacePhotos(id: string, photos: readonly ForumPhoto[]): Promise<MessageRow | undefined> {
+    const existing = await this.getById(id);
+    if (existing === undefined) {
+      return undefined;
+    }
+    await this.#sql.execute(`DELETE FROM message_extra_photo WHERE message_id = $1`, [id]);
+    const first = photos[0];
+    const rows = await this.#sql.query<MessageSqlRow>(
+      `UPDATE message SET photo = $2, photo_content_type = $3, photo_taken_at = $4 WHERE id = $1 RETURNING ${MESSAGE_SELECT_COLUMNS}`,
+      [
+        id,
+        first === undefined ? null : first.bytes,
+        first === undefined ? null : first.contentType,
+        first === undefined || typeof first.takenAt !== 'string' ? null : first.takenAt,
+      ],
+    );
+    const written = rows[0];
+    if (written === undefined) {
+      return undefined;
+    }
+    for (const [index, extra] of photos.slice(1).entries()) {
+      await this.#sql.execute(
+        `INSERT INTO message_extra_photo (message_id, idx, photo, photo_content_type, photo_taken_at) VALUES ($1,$2,$3,$4,$5)`,
+        [id, index + 1, extra.bytes, extra.contentType, extra.takenAt ?? null],
+      );
+    }
+    const refreshed = await this.getById(id);
+    return refreshed ?? mapMessageRow(written);
   }
 
   async updateSignedEvent(

@@ -2230,6 +2230,91 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
         return c.json({ error: 'Messages are unavailable' }, 503);
       }
     })
+    .patch('/:id/photos', async (c) => {
+      const account = await authedAccount(deps, c.req.header('authorization'));
+      if (account === null) {
+        return c.json({ error: 'Unauthorized' }, 401);
+      }
+      if (!roleAtLeast(account.role, 'moderator')) {
+        return c.json({ error: 'Forbidden' }, 403);
+      }
+      const id = c.req.param('id');
+      if (!MESSAGE_ID_RE.test(id)) {
+        return c.json({ error: 'Not found' }, 404);
+      }
+      const raw: unknown = await c.req.json().catch(() => null);
+      if (
+        raw === null ||
+        typeof raw !== 'object' ||
+        Array.isArray(raw) ||
+        !Object.prototype.hasOwnProperty.call(raw, 'photos') ||
+        !Array.isArray((raw as { photos: unknown }).photos)
+      ) {
+        return c.json({ error: 'Invalid body' }, 400);
+      }
+      const listed = (raw as { photos: unknown[] }).photos;
+      if (listed.length > 10) {
+        return c.json({ error: 'At most 10 photos' }, 400);
+      }
+      const decoded: ForumPhoto[] = [];
+      for (const item of listed) {
+        if (
+          item === null ||
+          typeof item !== 'object' ||
+          Array.isArray(item) ||
+          typeof (item as { contentType?: unknown }).contentType !== 'string' ||
+          typeof (item as { data?: unknown }).data !== 'string'
+        ) {
+          return c.json({ error: 'Photo must be a JPEG, PNG, or WebP under 1 MiB' }, 400);
+        }
+        const photo = item as { contentType: string; data: string; takenAt?: unknown };
+        const next = decodeForumPhoto(photo.contentType, photo.data);
+        if (next === null) {
+          return c.json({ error: 'Photo must be a JPEG, PNG, or WebP under 1 MiB' }, 400);
+        }
+        next.takenAt = normalizePhotoTakenAt(photo.takenAt);
+        decoded.push(next);
+      }
+      try {
+        const row = await deps.store.getById(id);
+        if (row === undefined || row.deletedAt !== null) {
+          return c.json({ error: 'Not found' }, 404);
+        }
+        if (row.parentId !== null) {
+          return c.json({ error: 'A reply cannot be edited' }, 400);
+        }
+        if (!textHasHashtagToken(row.text, '21GiftsShop')) {
+          return c.json({ error: 'Only a shop note can be edited' }, 400);
+        }
+        const written = await deps.store.replacePhotos(id, decoded);
+        if (written === undefined) {
+          return c.json({ error: 'Not found' }, 404);
+        }
+        const author =
+          written.accountId === null
+            ? undefined
+            : await deps.authStore.getAccount(written.accountId);
+        const payable = written.accountId === null ? false : payableOf(written, author);
+        const role = written.accountId === null ? undefined : (author?.role ?? 'basis');
+        logEvent('messages.photos.updated', {
+          messageId: id,
+          accountId: account.id,
+          role: account.role,
+        });
+        return c.json(
+          serializeMessage(
+            written,
+            payable,
+            role,
+            await deps.store.countAttributedReplies(written.id),
+          ),
+          200,
+        );
+      } catch {
+        logEvent('messages.photos.failed');
+        return c.json({ error: 'Messages are unavailable' }, 503);
+      }
+    })
     .get('/:id/edits', async (c) => {
       const account = await authedAccount(deps, c.req.header('authorization'));
       if (account === null) {
