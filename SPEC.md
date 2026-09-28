@@ -3809,6 +3809,73 @@ Other LNURL/zap failure (`unreachable`) →
 **400** `{ "error": "Could not start the Bitcoin payment" }`. Keygen/sign failure →
 **503** `{ "error": "Messages are unavailable" }`.
 
+### `GET /messages/:id/repayment`
+
+Public credit ledger. No session. `:id` must be a UUID (`MESSAGE_ID_RE`); anything else is **404** `{ "error": "Not found" }`. **404** unless the note is live, top-level, `goalRepayable` true, and has a term. A local Sunday does not refuse this read.
+
+Success → **Response** `200`:
+
+```json
+{
+  "currency": "BTC",
+  "fundedAt": null,
+  "termDays": 30,
+  "daysDue": 0,
+  "daysPaid": 0,
+  "unassignedSats": 0,
+  "givers": [
+    {
+      "accountId": "<uuid>",
+      "name": "Ada",
+      "username": "ada",
+      "givenSats": 21,
+      "givenAmount": null
+    }
+  ],
+  "repayments": [
+    {
+      "dayIndex": 0,
+      "dueOn": null,
+      "accountId": "<uuid>",
+      "name": "Ada",
+      "username": "ada",
+      "amount": null,
+      "sats": 21,
+      "status": "scheduled",
+      "via": "lightning"
+    }
+  ],
+  "next": null
+}
+```
+
+`currency` is `BTC`, `USD`, `CHF`, `EUR`, or `PHP`. `fundedAt` is ISO-8601 or null until collected sats first reach the ask. `dueOn` is `YYYY-MM-DD` UTC, or null until then. `givenAmount` and `amount` are two-decimal strings in the ask currency, or null for bitcoin. For a fiat ask, `sats` on a repayment is the paid share or null until it is paid. `status` is `paid`, `due`, or `scheduled`. `unassignedSats` is bitcoin with no 21.gifts payer and is not in the plan. `next` is the next unpaid share once the credit has filled, else null. A 1-sat or 1-cent gift is its own row.
+
+Fiat amount or gift-day rate missing → **503** `{ "error": "Ask amount is unavailable" }`.
+
+### `POST /messages/:id/repayment`
+
+Author pays the next giver share from their own wallet. Bearer session required. No body. `:id` is a UUID; a non-UUID is **404** `{ "error": "Not found" }` before auth. The author pays the returned BOLT11. The description is `repay:<day>:<accountId>`. When that zap is indexed, the share is stored on `message_repayment` and `message.sats` does not rise. A repeat for the same unpaid share returns the outstanding invoice instead of minting another.
+
+Success → **Response** `200`:
+
+```json
+{ "pr": "lnbc…", "amountSats": 21 }
+```
+
+Missing Bearer → **401** `{ "error": "Unauthorized" }`.
+Unknown id, a note that is not a live repayable ask, or a caller who is not the author → **404** `{ "error": "Not found" }`.
+Nothing left to pay → **400** `{ "error": "Nothing is due" }`.
+Note not payable yet → **400** `{ "error": "This message cannot be paid yet" }`.
+Giver without a Lightning address → **400** `{ "error": "A giver has no Lightning address" }`.
+Recipient wallet cannot take the payment → **400** `{ "error": "The recipient's wallet cannot receive this Bitcoin payment" }`.
+Other payment start failure → **400** `{ "error": "Could not start the Bitcoin payment" }`.
+Author missing forum pay → **409** `{ "error": "missing_requirements", "missing": ["rules"] }`.
+Device `Time-Zone` in Sunday → **403** `{ "error": "SUNDAY_REST" }`. A missing, blank, or invalid zone does not refuse.
+Over-limit → **429** `{ "error": "Too many payments" }`.
+Fiat share cannot be priced → **503** `{ "error": "Ask amount is unavailable" }`.
+Signing keys missing or the invoice attempt cannot be stored → **503** `{ "error": "Messages are unavailable" }`.
+
 ### `GET /messages/:id/photo`
 
 Fetch the optional photo bytes for one forum message. Live rows need **no
