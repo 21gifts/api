@@ -3063,7 +3063,8 @@ export class InMemoryMessageStore implements MessageStore {
     }
     const at = new Date();
     const before = this.#rows.find((row) => row.id === messageId);
-    const wasOpen = before?.goalFundedAt == null;
+    const fundedBefore = before?.goalFundedAt;
+    const wasOpen = fundedBefore === null || fundedBefore === undefined;
     this.#receipts.set(receiptEventId, {
       messageId,
       sats,
@@ -3076,7 +3077,13 @@ export class InMemoryMessageStore implements MessageStore {
     });
     await this.addSats(messageId, sats, delta);
     const after = this.#rows.find((row) => row.id === messageId);
-    if (wasOpen && after?.goalFundedAt != null && !this.#creditFreezeAt.has(messageId)) {
+    const fundedAfter = after?.goalFundedAt;
+    if (
+      wasOpen &&
+      fundedAfter !== null &&
+      fundedAfter !== undefined &&
+      !this.#creditFreezeAt.has(messageId)
+    ) {
       this.#creditFreezeAt.set(messageId, at.getTime());
     }
     return true;
