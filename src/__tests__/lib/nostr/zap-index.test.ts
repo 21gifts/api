@@ -1332,6 +1332,56 @@ describe('manual invoice settlement', () => {
     expect(note?.amountPhp).toBeNull();
   });
 
+  it('records a repayment invoice as a paid share and does not raise the ask', async () => {
+    const store = new InMemoryMessageStore();
+    const auth = new InMemoryAuthStore();
+    const messageId = await seedStore({
+      store,
+      auth,
+      accountId: 'manual-author',
+      messageId: 'manual-message',
+    });
+    const giver = '11111111-1111-4111-8111-111111111111';
+    const paymentHash = 'b2'.repeat(32);
+    await seedManualInvoice(store, paymentHash, {
+      amountSats: 21,
+      description: repaymentDescription(0, giver),
+    });
+    const result = await settleInvoiceManually({
+      store,
+      auth,
+      now: () => 1_800,
+      paymentHash,
+      note: 'repayment settled by hand',
+    });
+    expect(result).toEqual({
+      ok: true,
+      receiptId: manualReceiptIdForPaymentHash(paymentHash),
+      messageId,
+      amountSats: 21,
+      resumed: false,
+    });
+    expect((await store.getById(messageId))?.sats).toBe(0);
+    expect(await store.listRepayments(messageId)).toEqual([
+      {
+        dayIndex: 0,
+        recipientAccountId: giver,
+        dueSats: 21,
+        paidAt: new Date(1_800),
+      },
+    ]);
+    await expect(
+      settleInvoiceManually({
+        store,
+        auth,
+        now: () => 1_900,
+        paymentHash,
+        note: 'repayment settled by hand',
+      }),
+    ).resolves.toEqual({ ok: false, reason: 'duplicate' });
+    expect(await store.listRepayments(messageId)).toHaveLength(1);
+  });
+
   it('settles with verified preimage, receipt evidence, notification, and gift reply', async () => {
     const store = new InMemoryMessageStore();
     const auth = new InMemoryAuthStore();
@@ -4835,6 +4885,8 @@ describe('indexOpenZapReceipts', () => {
         base.recordZapIngest(...args),
       listZapIngests: (limit: number) => base.listZapIngests(limit),
       findOkInvoiceByPaymentHash: (hash: string) => base.findOkInvoiceByPaymentHash(hash),
+      findOkInvoiceByDescription: (messageId: string, description: string) =>
+        base.findOkInvoiceByDescription(messageId, description),
       findOkInvoiceByPr: (pr: string) => base.findOkInvoiceByPr(pr),
       updateZapReceiptGift: (...args: Parameters<InMemoryMessageStore['updateZapReceiptGift']>) =>
         base.updateZapReceiptGift(...args),
@@ -5079,6 +5131,8 @@ describe('indexOpenZapReceipts', () => {
         },
         listZapIngests: (limit: number) => base.listZapIngests(limit),
         findOkInvoiceByPaymentHash: (hash: string) => base.findOkInvoiceByPaymentHash(hash),
+        findOkInvoiceByDescription: (messageId: string, description: string) =>
+          base.findOkInvoiceByDescription(messageId, description),
         findOkInvoiceByPr: (pr: string) => base.findOkInvoiceByPr(pr),
         updateZapReceiptGift: (...args: Parameters<InMemoryMessageStore['updateZapReceiptGift']>) =>
           base.updateZapReceiptGift(...args),
@@ -5738,6 +5792,8 @@ describe('indexOpenZapReceipts', () => {
         },
         listZapIngests: (limit: number) => base.listZapIngests(limit),
         findOkInvoiceByPaymentHash: (hash: string) => base.findOkInvoiceByPaymentHash(hash),
+        findOkInvoiceByDescription: (messageId: string, description: string) =>
+          base.findOkInvoiceByDescription(messageId, description),
         findOkInvoiceByPr: (pr: string) => base.findOkInvoiceByPr(pr),
         updateZapReceiptGift: (...args: Parameters<InMemoryMessageStore['updateZapReceiptGift']>) =>
           base.updateZapReceiptGift(...args),

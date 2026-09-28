@@ -1317,7 +1317,7 @@
 
 ## Function: payerDebtUnits
 
-- **Purpose:** Units each giver is owed. Bitcoin asks use sats. Fiat asks use recorded cents of the goal currency, so one cent is owed as one cent. A missing snapshot splits the typed amount by sat weight.
+- **Purpose:** Units each giver is owed. Bitcoin asks use sats. Fiat asks use recorded cents of the goal currency, so one cent is owed as one cent. A missing snapshot splits the typed amount by sat weight. Sats with no account are weight that is then dropped, so they are not repaid to someone else.
 - **Inputs:** Goal currency, typed amount, and each giver's sats plus recorded fiat.
 - **Returns / side effects:** Units per giver, or `unavailable`. No I/O.
 - **Used by:** `repaymentStatus`, `repaymentInvoice`.
@@ -1336,9 +1336,9 @@
 
 ## Function: repaymentInvoice
 
-- **Purpose:** `POST /messages/:id/repayment`. BOLT11 for the next giver share.
+- **Purpose:** `POST /messages/:id/repayment`. BOLT11 for the next giver share. A second request for the same unpaid share returns the outstanding invoice instead of minting another.
 - **Inputs:** Route deps and the request.
-- **Returns / side effects:** `{ pr, amountSats }` or an error. Records the invoice attempt.
+- **Returns / side effects:** `{ pr, amountSats }` or an error. Records the invoice attempt only when a new invoice is minted.
 
 ## Function: serializeMessage
 
@@ -2424,7 +2424,7 @@
 
 - **Purpose:** Settle a successful forum invoice by payment hash after its LNURL provider failed to publish a kind:9735 receipt. The required trimmed `note` (1–8000 characters, no C0/DEL controls) is durable operator evidence. `DEBUG_TOKEN` is the route authority; an optional preimage adds cryptographic evidence only when it is 32-byte hex and hashes to the payment hash. It is intentionally optional because some wallet-internal payments expose a wallet “preimage” that does not match the invoice hash.
 - **Checks:** Normalises the payment hash, validates the note and optional preimage, requires an `ok` invoice with positive whole sats and non-empty BOLT11, rejects conversation invoices and missing/hidden messages, loads the note author (`auth.getAccount(message.accountId)`) **before** claiming, checks historical indexed ingests, and claims the lowercase payment hash through `claimZapPayment`. A thrown author lookup propagates (no claim, no receipt, no ingest). A claim owned by another receipt is `duplicate`.
-- **Returns / side effects:** On a fresh success returns `{ ok: true, receiptId, messageId, amountSats, resumed: false }`, credits via `recordZapReceipt`, and writes an indexed synthetic 9735 ingest directly through `store.recordZapIngest`. If the synthetic receipt was already credited but its indexed ingest is missing, the current request's note/preimage rebuilds that ingest without another credit, notification and gift-reply processing run, and the result has `resumed: true`. An already complete settle returns `duplicate`.
+- **Returns / side effects:** On a fresh success returns `{ ok: true, receiptId, messageId, amountSats, resumed: false }`. A `repay:` invoice is stored as a paid share and does not credit the ask. Any other invoice credits via `recordZapReceipt`. Both write an indexed synthetic 9735 ingest directly through `store.recordZapIngest`. If the synthetic receipt was already credited but its indexed ingest is missing, the current request's note/preimage rebuilds that ingest without another credit, notification and gift-reply processing run, and the result has `resumed: true`. An already complete settle returns `duplicate`.
 - **Durability / errors:** The payment-hash claim is a durable tombstone that protects against a second credit even if a prior ingest write failed or the forum message was later deleted. Claim, lookup, credit, and direct ingest-write failures propagate (the route maps them to 503); the decision memory is updated only after the ingest write succeeds. The claim and credit are not one transaction, but the payment-hash primary key serialises competing receipt ids.
 - **Post-credit effects:** On a member note, fans out `notifyZap` and attempts the payer gift-reply from the original zap request. On the platform profile note, skips `notifyZap` and treats the zap comment as a compose post/reply (`sats` 0) gated by `forum.post` and optional `postLimiter`; a created top-level post fans out `notifyForumPost` and `spendPing` only when `eligibleToday` (same gate as `POST /messages`; ineligible logs `spend.ping.skipped` / `not_eligible`), a reply fans out `notifyForumReply`. Missing `forum.post` fields or a limiter denial dequeue the receipt without creating a row. A throwing **payer** `auth.getAccount` after credit is logged as `nostr.zap.gift_reply.failed`, omits payer fields from the notification, skips the gift-reply, and still returns success. A throwing **note-author** `auth.getAccount` happens before claim and fails the settle. Notification, spend-ping, and gift-reply failures are likewise logged and suppressed. Logs and responses never contain the note or preimage.
 - **Resume on a hidden note:** A fresh settle refuses a missing or hidden note. A retry that finds its synthetic receipt already credited is a resume: it completes the missing `indexed` ingest row even when staff hid the note in the meantime, and in that case skips `notifyZap` and the gift-reply.

@@ -26,6 +26,22 @@ import { buildZapRequest } from '@/lib/nostr/zap-request';
 import { bearerToken } from '@/routes/me';
 
 const MESSAGE_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const DEFAULT_INVOICE_EXPIRY_MS = 3_600_000;
+
+/**
+ * Whether a stored BOLT11 can still be paid. An invoice that does not decode
+ * uses the one-hour default.
+ *
+ * @param pr - Stored invoice.
+ * @param createdAtMs - When the attempt was recorded.
+ * @param nowMs - Clock.
+ * @returns False once the invoice has expired.
+ */
+function invoiceStillOpen(pr: string, createdAtMs: number, nowMs: number): boolean {
+  const seconds = inspectBolt11(pr)?.expirySeconds;
+  const expiryMs = typeof seconds === 'number' ? seconds * 1000 : DEFAULT_INVOICE_EXPIRY_MS;
+  return nowMs < createdAtMs + expiryMs;
+}
 
 /** What repayment needs from the forum routes. */
 export interface RepaymentDeps {
@@ -185,10 +201,6 @@ export async function repaymentInvoice(deps: RepaymentDeps, c: Context): Promise
   if (!payGate.ok) {
     return c.json({ error: MISSING_REQUIREMENTS_ERROR, missing: payGate.missing }, 409);
   }
-  if (!limiter.allow(opened.account.id, opened.nowMs)) {
-    c.header('Retry-After', '10');
-    return c.json({ error: 'Too many payments' }, 429);
-  }
   const next = await nextShare(deps, opened.row, opened.nowMs);
   if (next.error !== null) {
     return c.json({ error: next.error }, next.status);
@@ -215,6 +227,19 @@ export async function repaymentInvoice(deps: RepaymentDeps, c: Context): Promise
   }
   const amountMsat = next.share.sats * 1000;
   const description = repaymentDescription(next.share.dayIndex, next.share.accountId);
+  const outstanding = await deps.store.findOkInvoiceByDescription(opened.row.id, description);
+  if (
+    outstanding !== undefined &&
+    outstanding.pr !== null &&
+    outstanding.amountSats === next.share.sats &&
+    invoiceStillOpen(outstanding.pr, outstanding.createdAt.getTime(), opened.nowMs)
+  ) {
+    return c.json({ pr: outstanding.pr, amountSats: outstanding.amountSats }, 200);
+  }
+  if (!limiter.allow(opened.account.id, opened.nowMs)) {
+    c.header('Retry-After', '10');
+    return c.json({ error: 'Too many payments' }, 429);
+  }
   const unsigned = buildZapRequest({
     recipientPubkey,
     eventId: opened.row.eventId,

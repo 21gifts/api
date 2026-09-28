@@ -626,6 +626,57 @@ export async function settleInvoiceManually(args: {
   if (!(await args.store.claimZapPayment(paymentHash, receiptId, new Date(args.now())))) {
     return { ok: false, reason: 'duplicate' };
   }
+  const repayment = parseRepaymentDescription(invoice.description);
+  if (repayment !== null && invoice.messageId === message.id) {
+    if (indexed.some((row) => row.receiptId === receiptId)) {
+      return { ok: false, reason: 'duplicate' };
+    }
+    const paidAt = new Date(args.now());
+    await args.store.markRepaymentPaid({
+      messageId: message.id,
+      dayIndex: repayment.dayIndex,
+      recipientAccountId: repayment.recipientAccountId,
+      dueSats: invoice.amountSats,
+      paidAt,
+    });
+    const tags: string[][] = [];
+    if (typeof message.eventId === 'string' && message.eventId !== '') {
+      tags.push(['e', message.eventId]);
+    }
+    if (invoice.pr !== null) {
+      tags.push(['bolt11', invoice.pr]);
+    }
+    tags.push(['manual', 'debug-settle'], ['note', note]);
+    const receipt = {
+      id: receiptId,
+      pubkey: '',
+      kind: 9735,
+      created_at: Math.floor(args.now() / 1000),
+      content: '',
+      sig: '',
+      tags,
+    } satisfies Record<string, unknown>;
+    await args.store.recordZapIngest(
+      zapIngestRow({
+        receiptId,
+        noteEventId: message.eventId,
+        messageId: message.id,
+        outcome: 'indexed',
+        reason: null,
+        amountSats: invoice.amountSats,
+        receiptPubkey: null,
+        receipt,
+      }),
+    );
+    logEvent('nostr.zap.repaid', { messageId: message.id, sats: invoice.amountSats });
+    return {
+      ok: true,
+      receiptId,
+      messageId: message.id,
+      amountSats: invoice.amountSats,
+      resumed: false,
+    };
+  }
   const paidAt = new Date(args.now());
   const pinned = pinnedInvoiceFiat(invoice);
   const delta =

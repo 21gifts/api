@@ -992,6 +992,18 @@ export interface MessageStore {
   findOkInvoiceByPaymentHash(paymentHash: string): Promise<MessageInvoiceAttempt | undefined>;
 
   /**
+   * Newest successful invoice for one note and description.
+   *
+   * @param messageId - Forum note.
+   * @param description - Stored invoice description.
+   * @returns That attempt, or `undefined`.
+   */
+  findOkInvoiceByDescription(
+    messageId: string,
+    description: string,
+  ): Promise<MessageInvoiceAttempt | undefined>;
+
+  /**
    * Newest `result === 'ok'` invoice with this BOLT11 `pr`, or `undefined`.
    *
    * @param pr - BOLT11 payment request.
@@ -1362,6 +1374,11 @@ export const MESSAGE_SCHEMA_SQL: readonly string[] = [
   `ALTER TABLE nostr_zap_receipt ADD COLUMN IF NOT EXISTS zap_request_id text`,
   `ALTER TABLE nostr_zap_receipt ADD COLUMN IF NOT EXISTS gift_reply_id uuid REFERENCES message (id)`,
   `ALTER TABLE nostr_zap_receipt ADD COLUMN IF NOT EXISTS comment text NOT NULL DEFAULT ''`,
+  `ALTER TABLE nostr_zap_receipt ADD COLUMN IF NOT EXISTS recorded_at timestamptz`,
+  `UPDATE nostr_zap_receipt AS r
+   SET recorded_at = COALESCE(m.goal_funded_at, now())
+   FROM message AS m
+   WHERE r.message_id = m.id AND r.recorded_at IS NULL`,
   `CREATE UNIQUE INDEX IF NOT EXISTS nostr_zap_receipt_request_uidx ON nostr_zap_receipt (zap_request_id) WHERE zap_request_id IS NOT NULL`,
   `CREATE UNIQUE INDEX IF NOT EXISTS nostr_zap_receipt_gift_reply_id_uidx ON nostr_zap_receipt (gift_reply_id) WHERE gift_reply_id IS NOT NULL`,
   `CREATE TABLE IF NOT EXISTS nostr_zapper (
@@ -1804,6 +1821,21 @@ function copyRow(row: MessageRow): MessageRow {
   return copy;
 }
 
+/**
+ * A receipt counts toward the frozen credit when it was stored at or before
+ * the note filled. A missing timestamp is a row from before that column.
+ *
+ * @param recordedAt - When the receipt was stored.
+ * @param fundedAt - When the credit filled, or null while it is still open.
+ * @returns Whether the receipt is part of the repayment plan.
+ */
+function receiptCountsTowardCredit(recordedAt: Date, freezeAtMs: number | null): boolean {
+  if (freezeAtMs === null) {
+    return true;
+  }
+  return recordedAt.getTime() <= freezeAtMs;
+}
+
 /** Newest `result === 'ok'` invoice matching `predicate`, or `undefined`. */
 function newestOkInvoice(
   rows: readonly MessageInvoiceAttempt[],
@@ -1886,6 +1918,8 @@ interface MemoryZapReceipt {
   zapRequestId: string | null;
   giftReplyId: string | null;
   comment: string;
+  /** When the receipt was stored. */
+  recordedAt: Date;
 }
 
 /**
@@ -1899,6 +1933,12 @@ export class InMemoryMessageStore implements MessageStore {
     undefined;
   /** Kind:9735 event id → receipt; cleared when that parent message is deleted. */
   readonly #receipts = new Map<string, MemoryZapReceipt>();
+  /**
+   * Receipt time of the zap that filled each credit. Later receipts are not
+   * part of the plan. A credit whose funded time was stored up front has no
+   * watermark, so every receipt still counts.
+   */
+  readonly #creditFreezeAt = new Map<string, number>();
   readonly #repayments: {
     messageId: string;
     dayIndex: number;
@@ -2896,8 +2936,13 @@ export class InMemoryMessageStore implements MessageStore {
         php: bigint | null;
       }
     >();
+    const freezeAt = this.#creditFreezeAt.get(messageId) ?? null;
     for (const [eventId, receipt] of this.#receipts) {
-      if (receipt.messageId !== messageId || receipt.payerAccountId === null) {
+      if (
+        receipt.messageId !== messageId ||
+        receipt.payerAccountId === null ||
+        !receiptCountsTowardCredit(receipt.recordedAt, freezeAt)
+      ) {
         continue;
       }
       const ingest = this.#zapIngests.find(
@@ -2931,9 +2976,14 @@ export class InMemoryMessageStore implements MessageStore {
   }
 
   sumUnassignedCreditSats(messageId: string): Promise<number> {
+    const freezeAt = this.#creditFreezeAt.get(messageId) ?? null;
     let sats = 0;
     for (const receipt of this.#receipts.values()) {
-      if (receipt.messageId === messageId && receipt.payerAccountId === null) {
+      if (
+        receipt.messageId === messageId &&
+        receipt.payerAccountId === null &&
+        receiptCountsTowardCredit(receipt.recordedAt, freezeAt)
+      ) {
         sats += receipt.sats;
       }
     }
@@ -3011,6 +3061,9 @@ export class InMemoryMessageStore implements MessageStore {
     if (this.#receipts.has(receiptEventId)) {
       return false;
     }
+    const at = new Date();
+    const before = this.#rows.find((row) => row.id === messageId);
+    const wasOpen = before?.goalFundedAt == null;
     this.#receipts.set(receiptEventId, {
       messageId,
       sats,
@@ -3019,8 +3072,13 @@ export class InMemoryMessageStore implements MessageStore {
       zapRequestId: null,
       giftReplyId: null,
       comment: '',
+      recordedAt: at,
     });
     await this.addSats(messageId, sats, delta);
+    const after = this.#rows.find((row) => row.id === messageId);
+    if (wasOpen && after?.goalFundedAt != null && !this.#creditFreezeAt.has(messageId)) {
+      this.#creditFreezeAt.set(messageId, at.getTime());
+    }
     return true;
   }
 
@@ -3260,6 +3318,18 @@ export class InMemoryMessageStore implements MessageStore {
   findOkInvoiceByPaymentHash(paymentHash: string): Promise<MessageInvoiceAttempt | undefined> {
     return Promise.resolve(
       newestOkInvoice(this.#invoiceAttempts, (row) => row.paymentHash === paymentHash),
+    );
+  }
+
+  findOkInvoiceByDescription(
+    messageId: string,
+    description: string,
+  ): Promise<MessageInvoiceAttempt | undefined> {
+    return Promise.resolve(
+      newestOkInvoice(
+        this.#invoiceAttempts,
+        (row) => row.messageId === messageId && row.description === description && row.pr !== null,
+      ),
     );
   }
 
@@ -5111,7 +5181,13 @@ export class PostgresMessageStore implements MessageStore {
          ORDER BY created_at DESC, id DESC
          LIMIT 1
        ) i ON true
+       JOIN message m ON m.id = r.message_id
        WHERE r.message_id = $1 AND r.payer_account_id IS NOT NULL
+         AND (
+           m.goal_funded_at IS NULL
+           OR r.recorded_at IS NULL
+           OR r.recorded_at <= m.goal_funded_at
+         )
        GROUP BY r.payer_account_id`,
       [messageId],
     );
@@ -5127,9 +5203,15 @@ export class PostgresMessageStore implements MessageStore {
 
   async sumUnassignedCreditSats(messageId: string): Promise<number> {
     const rows = await this.#sql.query<{ sats: string | number | null }>(
-      `SELECT COALESCE(SUM(sats), 0)::bigint AS sats
-       FROM nostr_zap_receipt
-       WHERE message_id = $1 AND payer_account_id IS NULL`,
+      `SELECT COALESCE(SUM(r.sats), 0)::bigint AS sats
+       FROM nostr_zap_receipt r
+       JOIN message m ON m.id = r.message_id
+       WHERE r.message_id = $1 AND r.payer_account_id IS NULL
+         AND (
+           m.goal_funded_at IS NULL
+           OR r.recorded_at IS NULL
+           OR r.recorded_at <= m.goal_funded_at
+         )`,
       [messageId],
     );
     return Number(rows[0]?.sats ?? 0);
@@ -5207,8 +5289,8 @@ export class PostgresMessageStore implements MessageStore {
   ): Promise<boolean> {
     const inserted = await this.#sql.query<{ event_id: string }>(
       `WITH inserted AS (
-         INSERT INTO nostr_zap_receipt (event_id, message_id, sats)
-         VALUES ($1, $2, $3)
+         INSERT INTO nostr_zap_receipt (event_id, message_id, sats, recorded_at)
+         VALUES ($1, $2, $3, now())
          ON CONFLICT (event_id) DO NOTHING
          RETURNING event_id, message_id, sats
        )
@@ -5562,6 +5644,27 @@ export class PostgresMessageStore implements MessageStore {
        ORDER BY created_at DESC, id DESC
        LIMIT 1`,
       [paymentHash],
+    );
+    const row = rows[0];
+    return row === undefined ? undefined : mapInvoiceAttemptRow(row);
+  }
+
+  async findOkInvoiceByDescription(
+    messageId: string,
+    description: string,
+  ): Promise<MessageInvoiceAttempt | undefined> {
+    const rows = await this.#sql.query<MessageInvoiceSqlRow>(
+      `SELECT id, created_at, message_id, payer_account_id, author_account_id,
+              amount_sats, lightning_address, zap_request, result, http_status,
+              pr, payment_hash, description, description_hash, is_nip57_invoice,
+              lnurl_response, conversation_id, conversation_message_id,
+              fiat_pinned, fiat_usd::text AS fiat_usd, fiat_chf::text AS fiat_chf,
+              fiat_eur::text AS fiat_eur, fiat_php::text AS fiat_php
+       FROM message_invoice
+       WHERE message_id = $1 AND description = $2 AND result = 'ok' AND pr IS NOT NULL
+       ORDER BY created_at DESC, id DESC
+       LIMIT 1`,
+      [messageId, description],
     );
     const row = rows[0];
     return row === undefined ? undefined : mapInvoiceAttemptRow(row);

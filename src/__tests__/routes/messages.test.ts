@@ -235,6 +235,7 @@ function throwingStore(overrides: Partial<MessageStore> = {}): MessageStore {
     recordZapIngest: boom,
     listZapIngests: boom,
     findOkInvoiceByPaymentHash: boom,
+    findOkInvoiceByDescription: boom,
     findOkInvoiceByPr: boom,
     updateZapReceiptGift: boom,
     getZapReceiptGift: boom,
@@ -3299,6 +3300,8 @@ describe('POST /messages', () => {
       recordZapIngest: (row) => base.recordZapIngest(row),
       listZapIngests: (limit) => base.listZapIngests(limit),
       findOkInvoiceByPaymentHash: (hash) => base.findOkInvoiceByPaymentHash(hash),
+      findOkInvoiceByDescription: (messageId, description) =>
+        base.findOkInvoiceByDescription(messageId, description),
       listCreditPayers: (messageId) => base.listCreditPayers(messageId),
       sumUnassignedCreditSats: (messageId) => base.sumUnassignedCreditSats(messageId),
       listRepayments: (messageId) => base.listRepayments(messageId),
@@ -3418,6 +3421,8 @@ describe('POST /messages', () => {
       recordZapIngest: (row) => base.recordZapIngest(row),
       listZapIngests: (limit) => base.listZapIngests(limit),
       findOkInvoiceByPaymentHash: (hash) => base.findOkInvoiceByPaymentHash(hash),
+      findOkInvoiceByDescription: (messageId, description) =>
+        base.findOkInvoiceByDescription(messageId, description),
       listCreditPayers: (messageId) => base.listCreditPayers(messageId),
       sumUnassignedCreditSats: (messageId) => base.sumUnassignedCreditSats(messageId),
       listRepayments: (messageId) => base.listRepayments(messageId),
@@ -5070,6 +5075,8 @@ describe('POST /messages/:id/invoice', () => {
       recordZapIngest: (row) => base.recordZapIngest(row),
       listZapIngests: (limit) => base.listZapIngests(limit),
       findOkInvoiceByPaymentHash: (hash) => base.findOkInvoiceByPaymentHash(hash),
+      findOkInvoiceByDescription: (messageId, description) =>
+        base.findOkInvoiceByDescription(messageId, description),
       listCreditPayers: (messageId) => base.listCreditPayers(messageId),
       sumUnassignedCreditSats: (messageId) => base.sumUnassignedCreditSats(messageId),
       listRepayments: (messageId) => base.listRepayments(messageId),

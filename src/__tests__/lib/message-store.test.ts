@@ -96,7 +96,7 @@ const JPEG2: ForumPhoto = {
 
 describe('MESSAGE_SCHEMA_SQL', () => {
   it('creates message with photo columns, Nostr columns, index, and additive ALTERs', () => {
-    expect(MESSAGE_SCHEMA_SQL).toHaveLength(93);
+    expect(MESSAGE_SCHEMA_SQL).toHaveLength(95);
     expect(MESSAGE_SCHEMA_SQL.join('\n')).toMatch(
       /ALTER TABLE message ADD COLUMN IF NOT EXISTS place_lat double precision/i,
     );
@@ -7427,6 +7427,28 @@ describe('PostgresMessageStore', () => {
       { accountId: 'giver', sats: 21, usd: '0.01', chf: null, eur: null, php: null },
     ]);
     expect(sql.queries[0]?.text).toMatch(/nostr_zap_ingest/);
+    expect(sql.queries[0]?.text).toMatch(/recorded_at <= m.goal_funded_at/);
+  });
+
+  it('ignores a gift that arrives after the credit has filled', async () => {
+    const store = new InMemoryMessageStore();
+    await store.create({
+      ...EARLY,
+      id: 'filled',
+      goalSats: 10,
+      goalRepayable: true,
+      goalTermDays: 2,
+    });
+    expect(await store.recordZapReceipt('fund', 'filled', 10, null)).toBe(true);
+    await store.updateZapReceiptGift('fund', { payerAccountId: 'giver' });
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    expect(await store.recordZapReceipt('later', 'filled', 7, null)).toBe(true);
+    await store.updateZapReceiptGift('later', { payerAccountId: 'giver' });
+    expect(await store.recordZapReceipt('stray', 'filled', 3, null)).toBe(true);
+    expect(await store.listCreditPayers('filled')).toEqual([
+      { accountId: 'giver', sats: 10, usd: null, chf: null, eur: null, php: null },
+    ]);
+    expect(await store.sumUnassignedCreditSats('filled')).toBe(0);
   });
 
   it('listOpenConversationZapEventIds maps zap_request e-tags', async () => {
@@ -7477,6 +7499,31 @@ describe('PostgresMessageStore', () => {
     const store = new PostgresMessageStore(sql);
     const found = await store.findOkInvoiceByPr('lnbc');
     expect(sql.queries[0]?.text).toMatch(/pr = \$1 AND result = 'ok'/);
+    const description = 'repay:0:11111111-1111-4111-8111-111111111111';
+    sql.nextRows = [
+      {
+        id: 'inv-repay',
+        created_at: new Date('2026-08-28T12:00:00.000Z'),
+        message_id: 'm1',
+        payer_account_id: 'payer',
+        author_account_id: 'auth',
+        amount_sats: 21,
+        lightning_address: null,
+        zap_request: null,
+        result: 'ok',
+        http_status: 200,
+        pr: 'lnbc-repay',
+        payment_hash: '22'.repeat(32),
+        description,
+        description_hash: null,
+        is_nip57_invoice: true,
+        lnurl_response: null,
+      },
+    ];
+    expect((await store.findOkInvoiceByDescription('m1', description))?.pr).toBe('lnbc-repay');
+    expect(sql.queries[1]?.text).toMatch(/description = \$2 AND result = 'ok'/);
+    sql.nextRows = [];
+    expect(await store.findOkInvoiceByDescription('m1', description)).toBeUndefined();
     expect(found?.id).toBe('inv-pr');
     expect(await new PostgresMessageStore(new MockSql()).findOkInvoiceByPr('lnbc')).toBeUndefined();
   });

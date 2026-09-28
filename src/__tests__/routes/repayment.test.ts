@@ -206,9 +206,39 @@ describe('credit repayment', () => {
         method: 'POST',
         headers: { authorization: 'Bearer acc' },
       });
-      expect(again.status).toBe(429);
+      expect(again.status).toBe(200);
+      expect(await again.json()).toEqual({ pr: 'lnbc21n1repay', amountSats: 21 });
+      expect(await messages.listInvoiceAttempts(5)).toHaveLength(1);
     } finally {
       nip57.mockRestore();
+    }
+  });
+
+  it('mints again when the outstanding repayment invoice has expired', async () => {
+    const bolt11 = await import('@/lib/bolt11');
+    const nip57 = vi.spyOn(bolt11, 'isNip57Invoice').mockReturnValue(true);
+    const inspected = vi.spyOn(bolt11, 'inspectBolt11').mockReturnValue({
+      paymentHash: 'ab'.repeat(32),
+      amountMsat: 21_000,
+      description: null,
+      descriptionHash: null,
+      expirySeconds: 0,
+    });
+    try {
+      const { app } = await readyCredit({ authorId: 'acc-expire' });
+      const first = await app.request(`/messages/${CREDIT}/repayment`, {
+        method: 'POST',
+        headers: { authorization: 'Bearer acc-expire' },
+      });
+      expect(first.status).toBe(200);
+      const second = await app.request(`/messages/${CREDIT}/repayment`, {
+        method: 'POST',
+        headers: { authorization: 'Bearer acc-expire' },
+      });
+      expect(second.status).toBe(429);
+    } finally {
+      nip57.mockRestore();
+      inspected.mockRestore();
     }
   });
 

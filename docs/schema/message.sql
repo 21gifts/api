@@ -59,6 +59,11 @@ ALTER TABLE nostr_zap_receipt ADD COLUMN IF NOT EXISTS payer_pubkey text;
 ALTER TABLE nostr_zap_receipt ADD COLUMN IF NOT EXISTS zap_request_id text;
 ALTER TABLE nostr_zap_receipt ADD COLUMN IF NOT EXISTS gift_reply_id uuid REFERENCES message (id);
 ALTER TABLE nostr_zap_receipt ADD COLUMN IF NOT EXISTS comment text NOT NULL DEFAULT '';
+ALTER TABLE nostr_zap_receipt ADD COLUMN IF NOT EXISTS recorded_at timestamptz;
+UPDATE nostr_zap_receipt AS r
+SET recorded_at = COALESCE(m.goal_funded_at, now())
+FROM message AS m
+WHERE r.message_id = m.id AND r.recorded_at IS NULL;
 CREATE UNIQUE INDEX IF NOT EXISTS nostr_zap_receipt_request_uidx
   ON nostr_zap_receipt (zap_request_id) WHERE zap_request_id IS NOT NULL;
 CREATE UNIQUE INDEX IF NOT EXISTS nostr_zap_receipt_gift_reply_id_uidx ON nostr_zap_receipt (gift_reply_id) WHERE gift_reply_id IS NOT NULL;

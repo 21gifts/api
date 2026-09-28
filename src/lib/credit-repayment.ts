@@ -217,7 +217,8 @@ type FiatCode = keyof typeof FIAT_CENTS;
  *
  * Bitcoin asks use the sats they paid. Fiat asks use the cents recorded in
  * the goal currency, including a 1-cent gift. When a snapshot is missing,
- * the typed amount is split by sat weight so the shares still add up.
+ * the typed amount is split by sat weight. Sats with no account are weight
+ * that is then dropped, so they are not repaid to someone else.
  *
  * @param goalCurrency - Ask currency, or null.
  * @param goalAmount - Typed fiat amount, used only when a snapshot is missing.
@@ -266,7 +267,7 @@ function allocateByWeight(
   total: bigint,
   weights: readonly { accountId: string; units: bigint }[],
 ): { accountId: string; units: bigint }[] {
-  const usable = weights.filter((weight) => weight.units > 0n && weight.accountId !== '');
+  const usable = weights.filter((weight) => weight.units > 0n);
   const sum = usable.reduce((acc, weight) => acc + weight.units, 0n);
   if (sum <= 0n || total <= 0n) {
     return [];
@@ -291,7 +292,7 @@ function allocateByWeight(
     leftover -= 1n;
   }
   return shares
-    .filter((share) => share.units > 0n)
+    .filter((share) => share.units > 0n && share.accountId !== '')
     .map((share) => ({ accountId: share.accountId, units: share.units }));
 }
 
