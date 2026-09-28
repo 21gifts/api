@@ -780,6 +780,59 @@ async function frozenAskResponse(
 }
 
 /**
+ * Resolve an optional shop username before a note is created.
+ *
+ * Omitted, null, blank, or only `@` means no assignment. A non-blank value
+ * is only valid on a top-level shop note. Unknown and unusable handles fail
+ * before `persistForumPost`.
+ *
+ * @param deps - Auth store used for the username lookup.
+ * @param text - Normalised note body.
+ * @param parentId - Reply parent, or null for a top-level note.
+ * @param raw - JSON or multipart `shopUsername`, or undefined when omitted.
+ * @returns The account snapshot, null when unset, or a 400/404 error.
+ */
+async function postedShopAccount(
+  deps: MessagesRouteDeps,
+  text: string,
+  parentId: string | null,
+  raw: unknown,
+): Promise<
+  | { ok: true; snapshot: { id: string; username: string; name: string } | null }
+  | { ok: false; status: 400 | 404; error: string }
+> {
+  if (raw === undefined || raw === null) {
+    return { ok: true, snapshot: null };
+  }
+  if (typeof raw !== 'string') {
+    return { ok: false, status: 400, error: 'Username is not valid' };
+  }
+  const trimmed = raw.trim().replace(/^@/, '');
+  if (trimmed === '') {
+    return { ok: true, snapshot: null };
+  }
+  if (parentId !== null || !textHasHashtagToken(text, '21GiftsShop')) {
+    return { ok: false, status: 400, error: 'Only a shop note can set a shop account' };
+  }
+  const normalized = normalizeUsername(trimmed);
+  if (normalized === null) {
+    return { ok: false, status: 400, error: 'Username is not valid' };
+  }
+  const found = await deps.authStore.getAccountByUsername(normalized);
+  if (found === undefined) {
+    return { ok: false, status: 404, error: 'No account with that username' };
+  }
+  const storedUsername = found.username;
+  if (typeof storedUsername !== 'string' || storedUsername.trim() === '') {
+    return { ok: false, status: 404, error: 'No account with that username' };
+  }
+  return {
+    ok: true,
+    snapshot: { id: found.id, username: storedUsername, name: found.name ?? '' },
+  };
+}
+
+/**
  * Media collapse → burst limiter → create → optional {@link notifyForumPost}
  * (every account except the actor; no-op when the actor is the official
  * platform account) for a top-level note, or {@link notifyForumReply} (same
@@ -801,6 +854,9 @@ async function frozenAskResponse(
  *   replies store null.
  * @param place - Optional map pin for a top-level note. Default `null`.
  *   Stored as `null` when `parentId` is set.
+ * @param shopAccount - Optional shop assignment for a new top-level shop
+ *   note. Default `null`. Not applied on a media replay, and not written
+ *   as edit history.
  * @returns 200 / 403 (unpaid text-only below verified) / 409 (same live
  *   media, different pin) / 429 / 503.
  */
@@ -817,6 +873,7 @@ async function persistForumPost(
   extraPhotos?: readonly ForumPhoto[],
   goal: FrozenAsk = NO_ASK,
   place: ForumPlace | null = null,
+  shopAccount: { id: string; username: string; name: string } | null = null,
 ): Promise<Response> {
   const extras = video !== undefined ? [] : [...(extraPhotos ?? [])];
   if (photo !== undefined || video !== undefined) {
@@ -1002,20 +1059,32 @@ async function persistForumPost(
         logEvent('messages.mention.notify.failed');
       }
     }
+    let published = created;
+    if (!isReplay && shopAccount !== null) {
+      const written = await deps.store.setShopAccount(created.id, shopAccount);
+      if (!written) {
+        throw new Error('shop account was not stored');
+      }
+      const updated = await deps.store.getById(created.id);
+      if (updated === undefined) {
+        throw new Error('shop account was not stored');
+      }
+      published = updated;
+    }
     if (!isReplay) {
       await recordFirstShopOcpPlace({
         ...(deps.mapPush === undefined ? {} : { mapPush: deps.mapPush }),
-        messageId: created.id,
-        text: created.text,
-        parentId: created.parentId ?? null,
-        place: created.place ?? null,
-        authorName: created.name,
+        messageId: published.id,
+        text: published.text,
+        parentId: published.parentId ?? null,
+        place: published.place ?? null,
+        authorName: published.name,
         hadPlaceBefore: false,
         textHasHashtagToken,
       });
     }
     return c.json(
-      serializeMessage(created, payableOf(created, account), account.role, undefined, true),
+      serializeMessage(published, payableOf(published, account), account.role, undefined, true),
       200,
     );
   } catch (err) {
@@ -1147,6 +1216,16 @@ async function postMultipartMessage(
   if (!termed.ok) {
     return c.json({ error: termed.error }, 400);
   }
+  const rawShop = form.get('shopUsername');
+  const shopParsed = await postedShopAccount(
+    deps,
+    text,
+    null,
+    rawShop === null ? undefined : rawShop,
+  );
+  if (!shopParsed.ok) {
+    return c.json({ error: shopParsed.error }, shopParsed.status);
+  }
   return persistForumPost(
     deps,
     postLimiter,
@@ -1160,6 +1239,7 @@ async function postMultipartMessage(
     undefined,
     termed.goal,
     place,
+    shopParsed.snapshot,
   );
 }
 
@@ -1174,6 +1254,7 @@ const postBody = z
     goalRepayable: z.unknown().nullish(),
     goalTermDays: z.unknown().nullish(),
     place: z.unknown().nullish(),
+    shopUsername: z.unknown().nullish(),
     photo: z
       .object({
         contentType: z.string(),
@@ -1650,6 +1731,10 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
       if (!termed.ok) {
         return c.json({ error: termed.error }, 400);
       }
+      const shopParsed = await postedShopAccount(deps, text, parentId, parsed.data.shopUsername);
+      if (!shopParsed.ok) {
+        return c.json({ error: shopParsed.error }, shopParsed.status);
+      }
       return persistForumPost(
         deps,
         postLimiter,
@@ -1663,6 +1748,7 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
         extraPhotos.length > 0 ? extraPhotos : undefined,
         termed.goal,
         place,
+        shopParsed.snapshot,
       );
     })
     .get('/compose-target', async (c) => {

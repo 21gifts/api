@@ -1242,6 +1242,282 @@ describe('POST /messages', () => {
     expect(body.hasPhoto).toBe(true);
   });
 
+  async function withLuna(auth: InMemoryAuthStore, name: string | null = 'Luna'): Promise<void> {
+    await auth.createAccount({
+      id: 'shop-acc',
+      linkingKey: null,
+      role: 'basis',
+      name,
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: 'd'.repeat(64),
+      createdAt: now(),
+      rulesAgreedAt: now(),
+    });
+    const luna = await auth.getAccount('shop-acc');
+    expect(luna).toBeDefined();
+    if (luna === undefined) {
+      throw new Error('expected luna');
+    }
+    await auth.updateAccount({ ...luna, username: 'luna', name });
+  }
+
+  it('assigns shopUsername on a new shop note and writes no edit history', async () => {
+    const auth = await namedStore('Ada');
+    await withLuna(auth);
+    const messages = new InMemoryMessageStore();
+    const res = await mount(auth, messages).request('/messages', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ text: 'Cafe Luna #21GiftsShop', shopUsername: '@Luna' }),
+    });
+    expect(res.status).toBe(200);
+    const created = (await res.json()) as {
+      id: string;
+      shopAccount?: { id: string; username: string; name: string };
+    };
+    expect(created.shopAccount).toEqual({ id: 'shop-acc', username: 'luna', name: 'Luna' });
+    expect(await messages.listEdits(created.id)).toEqual([]);
+  });
+
+  it('stores an empty shop name when the assigned account has none', async () => {
+    const auth = await namedStore('Ada');
+    await withLuna(auth, null);
+    const res = await mount(auth).request('/messages', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ text: 'Cafe #21GiftsShop', shopUsername: 'luna' }),
+    });
+    expect(res.status).toBe(200);
+    const created = (await res.json()) as { shopAccount?: { name: string } };
+    expect(created.shopAccount?.name).toBe('');
+  });
+
+  it('lets a basis account assign a shop username on a photo shop note', async () => {
+    const auth = await namedStore('Ada');
+    const ada = await auth.getAccount('acc');
+    expect(ada).toBeDefined();
+    await auth.updateAccount({ ...ada!, role: 'basis' });
+    await withLuna(auth);
+    const res = await mount(auth).request('/messages', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({
+        text: 'Cafe #21GiftsShop',
+        shopUsername: 'luna',
+        photo: { contentType: 'image/jpeg', data: JPEG_B64 },
+      }),
+    });
+    expect(res.status).toBe(200);
+    const created = (await res.json()) as { shopAccount?: { username: string } };
+    expect(created.shopAccount?.username).toBe('luna');
+  });
+
+  it('ignores a blank shop username', async () => {
+    const auth = await namedStore('Ada');
+    for (const shopUsername of ['', '   ', '@', null]) {
+      const res = await mount(auth).request('/messages', {
+        method: 'POST',
+        headers: { ...AUTH, 'content-type': 'application/json' },
+        body: JSON.stringify({ text: `Cafe ${String(shopUsername)} #21GiftsShop`, shopUsername }),
+      });
+      expect(res.status).toBe(200);
+      expect(await res.json()).not.toHaveProperty('shopAccount');
+    }
+  });
+
+  it('rejects a shop username that is not a shop note, a reply, or a usable handle', async () => {
+    const auth = await namedStore('Ada');
+    const messages = new InMemoryMessageStore();
+    const parentId = '11111111-1111-4111-8111-111111111111';
+    await messages.create({
+      id: parentId,
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'Parent',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+    });
+    const app = mount(auth, messages);
+    const post = (body: unknown) =>
+      app.request('/messages', {
+        method: 'POST',
+        headers: { ...AUTH, 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+    const notShop = await post({ text: 'Hello', shopUsername: 'luna' });
+    expect(notShop.status).toBe(400);
+    expect(await notShop.json()).toEqual({ error: 'Only a shop note can set a shop account' });
+    const reply = await post({
+      text: 'Cafe #21GiftsShop',
+      inReplyTo: parentId,
+      shopUsername: 'luna',
+    });
+    expect(reply.status).toBe(400);
+    expect(await reply.json()).toEqual({ error: 'Only a shop note can set a shop account' });
+    const invalid = await post({ text: 'Cafe #21GiftsShop', shopUsername: 'not a user' });
+    expect(invalid.status).toBe(400);
+    expect(await invalid.json()).toEqual({ error: 'Username is not valid' });
+    const number = await post({ text: 'Cafe #21GiftsShop', shopUsername: 1 });
+    expect(number.status).toBe(400);
+    expect(await number.json()).toEqual({ error: 'Username is not valid' });
+    expect(await messages.listLatest(10)).toHaveLength(1);
+  });
+
+  it('returns 404 before create when the shop username is unknown', async () => {
+    const auth = await namedStore('Ada');
+    const messages = new InMemoryMessageStore();
+    const res = await mount(auth, messages).request('/messages', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ text: 'Cafe #21GiftsShop', shopUsername: 'missing' }),
+    });
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ error: 'No account with that username' });
+    expect(await messages.listLatest(10)).toHaveLength(0);
+  });
+
+  it('returns 404 when the stored shop username is blank or null', async () => {
+    const auth = await namedStore('Ada');
+    const ada = await auth.getAccount('acc');
+    expect(ada).toBeDefined();
+    if (ada === undefined) {
+      throw new Error('expected account');
+    }
+    const messages = new InMemoryMessageStore();
+    const app = mount(auth, messages);
+    for (const username of ['   ', null]) {
+      vi.spyOn(auth, 'getAccountByUsername').mockResolvedValueOnce({ ...ada, username });
+      const res = await app.request('/messages', {
+        method: 'POST',
+        headers: { ...AUTH, 'content-type': 'application/json' },
+        body: JSON.stringify({
+          text: `Cafe ${String(username)} #21GiftsShop`,
+          shopUsername: 'luna',
+        }),
+      });
+      expect(res.status).toBe(404);
+      expect(await res.json()).toEqual({ error: 'No account with that username' });
+    }
+    expect(await messages.listLatest(10)).toHaveLength(0);
+  });
+
+  it('does not change the shop account when the same media is posted again', async () => {
+    const auth = await namedStore('Ada');
+    await withLuna(auth);
+    const messages = new InMemoryMessageStore();
+    const setShop = vi.spyOn(messages, 'setShopAccount');
+    const app = mount(auth, messages);
+    const photo = { contentType: 'image/jpeg', data: JPEG_B64 };
+    const first = await app.request('/messages', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ text: 'Cafe #21GiftsShop', photo }),
+    });
+    expect(first.status).toBe(200);
+    const firstId = ((await first.json()) as { id: string }).id;
+    const second = await app.request('/messages', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ text: 'Cafe #21GiftsShop', photo, shopUsername: 'luna' }),
+    });
+    expect(second.status).toBe(200);
+    const replay = (await second.json()) as { id: string };
+    expect(replay.id).toBe(firstId);
+    expect(replay).not.toHaveProperty('shopAccount');
+    expect(setShop).not.toHaveBeenCalled();
+    expect(await messages.listEdits(firstId)).toEqual([]);
+  });
+
+  it('returns 503 when storing the shop account fails after create', async () => {
+    const auth = await namedStore('Ada');
+    await withLuna(auth);
+    const messages = new InMemoryMessageStore();
+    vi.spyOn(messages, 'setShopAccount').mockResolvedValue(false);
+    warn.mockClear();
+    const res = await mount(auth, messages).request('/messages', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ text: 'Cafe #21GiftsShop', shopUsername: 'luna' }),
+    });
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({ error: 'Messages are unavailable' });
+    expect(parsedEvents(warn).some((event) => event['event'] === 'messages.create.failed')).toBe(
+      true,
+    );
+    expect((await messages.listLatest(10))[0]?.shopAccount).toBeNull();
+  });
+
+  it('returns 503 when the shop row disappears after the account write', async () => {
+    const auth = await namedStore('Ada');
+    await withLuna(auth);
+    const messages = new InMemoryMessageStore();
+    vi.spyOn(messages, 'getById').mockResolvedValue(undefined);
+    const res = await mount(auth, messages).request('/messages', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ text: 'Cafe #21GiftsShop', shopUsername: 'luna' }),
+    });
+    expect(res.status).toBe(503);
+  });
+
+  it('returns 503 when setShopAccount throws', async () => {
+    const auth = await namedStore('Ada');
+    await withLuna(auth);
+    const messages = new InMemoryMessageStore();
+    vi.spyOn(messages, 'setShopAccount').mockRejectedValue(new Error('boom'));
+    const res = await mount(auth, messages).request('/messages', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ text: 'Cafe #21GiftsShop', shopUsername: 'luna' }),
+    });
+    expect(res.status).toBe(503);
+  });
+
+  it('assigns shopUsername from a multipart shop note', async () => {
+    const auth = await namedStore('Ada');
+    await withLuna(auth);
+    const form = new FormData();
+    form.set('text', 'Cafe #21GiftsShop');
+    form.set('shopUsername', '@Luna');
+    const res = await mount(auth).request('/messages', {
+      method: 'POST',
+      headers: AUTH,
+      body: form,
+    });
+    expect(res.status).toBe(200);
+    const created = (await res.json()) as { shopAccount?: { username: string } };
+    expect(created.shopAccount?.username).toBe('luna');
+  });
+
+  it('rejects a multipart shop username that is a file or not a shop note', async () => {
+    const auth = await namedStore('Ada');
+    const app = mount(auth);
+    const fileForm = new FormData();
+    fileForm.set('text', 'Cafe #21GiftsShop');
+    fileForm.set('shopUsername', new File(['x'], 'name.txt', { type: 'text/plain' }));
+    const fileRes = await app.request('/messages', {
+      method: 'POST',
+      headers: AUTH,
+      body: fileForm,
+    });
+    expect(fileRes.status).toBe(400);
+    expect(await fileRes.json()).toEqual({ error: 'Username is not valid' });
+    const plain = new FormData();
+    plain.set('text', 'Hello');
+    plain.set('shopUsername', 'luna');
+    const plainRes = await app.request('/messages', {
+      method: 'POST',
+      headers: AUTH,
+      body: plain,
+    });
+    expect(plainRes.status).toBe(400);
+    expect(await plainRes.json()).toEqual({ error: 'Only a shop note can set a shop account' });
+  });
+
   it('returns 429 on a burst of posts', async () => {
     const limiter = new PostRateLimiter();
     const app = new Hono().route(
