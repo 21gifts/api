@@ -257,7 +257,6 @@ export async function repaymentInvoice(deps: RepaymentDeps, c: Context): Promise
   if (
     outstanding !== undefined &&
     outstanding.pr !== null &&
-    outstanding.amountSats === next.share.sats &&
     invoiceStillOpen(outstanding.pr, outstanding.createdAt.getTime(), opened.nowMs)
   ) {
     return c.json({ pr: outstanding.pr, amountSats: outstanding.amountSats }, 200);

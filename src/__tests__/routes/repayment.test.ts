@@ -23,6 +23,8 @@ async function readyCredit(options?: {
   goalCurrency?: 'USD';
   goalAmount?: string | null;
   rate?: boolean;
+  /** When set with `rate`, each quote reads `current` so a test can move the price. */
+  rateUsd?: { current: string };
   authorId?: string;
   giverAccount?: boolean;
   giverName?: string | null;
@@ -127,7 +129,7 @@ async function readyCredit(options?: {
         ? {
             goalRateDay: async () => ({
               sats: 100_000_000,
-              usd: '100000.00',
+              usd: options.rateUsd?.current ?? '100000.00',
               chf: null,
               eur: null,
               php: null,
@@ -208,6 +210,53 @@ describe('credit repayment', () => {
       });
       expect(again.status).toBe(200);
       expect(await again.json()).toEqual({ pr: 'lnbc21n1repay', amountSats: 21 });
+      expect(await messages.listInvoiceAttempts(5)).toHaveLength(1);
+    } finally {
+      nip57.mockRestore();
+    }
+  });
+
+  it('returns the open repayment invoice when the fiat price moves', async () => {
+    const bolt11 = await import('@/lib/bolt11');
+    const nip57 = vi.spyOn(bolt11, 'isNip57Invoice').mockReturnValue(true);
+    const rate = { current: '100000.00' };
+    try {
+      const { app, messages } = await readyCredit({
+        authorId: 'acc-reprice',
+        goalCurrency: 'USD',
+        goalAmount: '0.01',
+        rate: true,
+        rateUsd: rate,
+      });
+      await messages.recordZapIngest({
+        id: '11111111-1111-4111-8111-111111111113',
+        createdAt: new Date(now()),
+        receiptId: 'r1',
+        noteEventId: null,
+        messageId: CREDIT,
+        outcome: 'indexed',
+        reason: null,
+        amountSats: 21,
+        amountUsd: '0.01',
+        amountChf: '0.01',
+        amountEur: '0.01',
+        amountPhp: '0.01',
+        receiptPubkey: null,
+        receipt: {},
+      });
+      const first = await app.request(`/messages/${CREDIT}/repayment`, {
+        method: 'POST',
+        headers: { authorization: 'Bearer acc-reprice' },
+      });
+      expect(first.status).toBe(200);
+      expect(await first.json()).toEqual({ pr: 'lnbc21n1repay', amountSats: 10 });
+      rate.current = '50000.00';
+      const second = await app.request(`/messages/${CREDIT}/repayment`, {
+        method: 'POST',
+        headers: { authorization: 'Bearer acc-reprice' },
+      });
+      expect(second.status).toBe(200);
+      expect(await second.json()).toEqual({ pr: 'lnbc21n1repay', amountSats: 10 });
       expect(await messages.listInvoiceAttempts(5)).toHaveLength(1);
     } finally {
       nip57.mockRestore();

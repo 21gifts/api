@@ -3855,7 +3855,7 @@ Fiat amount or gift-day rate missing → **503** `{ "error": "Ask amount is unav
 
 ### `POST /messages/:id/repayment`
 
-Author pays the next giver share from their own wallet. Bearer session required. No body. A missing or invalid Bearer is **401** `{ "error": "Unauthorized" }`, including when `:id` is not a UUID. After a valid session, a non-UUID `:id` is **404** `{ "error": "Not found" }`. The author pays the returned BOLT11. The description is `repay:<day>:<accountId>`. When that zap is indexed, the share is stored on `message_repayment` and `message.sats` does not rise. A repeat for the same unpaid share returns the outstanding invoice instead of minting another.
+Author pays the next giver share from their own wallet. Bearer session required. No body. A missing or invalid Bearer is **401** `{ "error": "Unauthorized" }`, including when `:id` is not a UUID. After a valid session, a non-UUID `:id` is **404** `{ "error": "Not found" }`. The author pays the returned BOLT11. The description is `repay:<day>:<accountId>`. When that zap is indexed, the share is stored on `message_repayment` and `message.sats` does not rise. A repeat for the same unpaid share returns the outstanding invoice instead of minting another, including when the sat price of that fiat share has moved.
 
 Success → **Response** `200`:
 
