@@ -1344,8 +1344,8 @@ const translateBody = z.object({
  * `GET /places`, `GET /:id/photo` plus `.jpg` / `.jpeg` / `.png` / `.webp`,
  * `GET /:id/video.mp4|.webm|.mov`, public `GET /:id/replies` (`accountId` when
  * the stored author id is non-null), `DELETE /:id`, staff `PATCH /:id/place`,
- * staff `PATCH /:id/shop-account`, staff `PATCH /:id/text`, and staff
- * `GET /:id/edits` (moderator session; no `forum.read`),
+ * staff `PATCH /:id/shop-account`, staff `PATCH /:id/text`, staff
+ * `PATCH /:id/photos`, and staff `GET /:id/edits` (moderator session; no `forum.read`),
  * staff `GET /hidden` (moderator session; no `forum.read`), public
  * `GET /:id` (optional `?sinceSats=`), and
  * `POST /:id/invoice`, `POST /:id/translate`, and public `GET /stats`.

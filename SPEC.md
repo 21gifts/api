@@ -155,6 +155,9 @@ Public base URLs used in examples:
 | DELETE | `/messages/:id`                                      | Bearer (moderator+)        | Soft-hide note + direct replies; retract in-app notifications; external target also blocks that pubkey                                                                                                                                                                                                                                                 |
 | PATCH  | `/messages/:id/place`                                | Bearer (moderator+)        | Set, replace, or clear the map pin on a live top-level shop note                                                                                                                                                                                                                                                                                       |
 | PATCH  | `/messages/:id/shop-account`                         | Bearer (moderator+)        | Set, replace, or clear the 21.gifts account on a live top-level shop note                                                                                                                                                                                                                                                                              |
+| PATCH  | `/messages/:id/text`                                 | Bearer (moderator+)        | Replace the text of a live top-level shop note; the shop tag stays                                                                                                                                                                                                                                                                                     |
+| PATCH  | `/messages/:id/photos`                               | Bearer (moderator+)        | Replace the stills of a live top-level shop note; a video stays; no edit history                                                                                                                                                                                                                                                                       |
+| GET    | `/messages/:id/edits`                                | Bearer (moderator+)        | Staff edit history of a shop note, newest first                                                                                                                                                                                                                                                                                                        |
 | POST   | `/messages/:id/invoice`                              | Bearer                     | NIP-57 zap / BOLT11                                                                                                                                                                                                                                                                                                                                    |
 | GET    | `/messages/:id/repayment`                            | none                       | Public credit ledger: who gave, and each repayment share                                                                                                                                                                                                                                                                                               |
 | POST   | `/messages/:id/repayment`                            | Bearer                     | Author pays the next giver share from their own wallet. A repeat for that unpaid share returns the outstanding invoice.                                                                                                                                                                                                                                |
@@ -3675,8 +3678,8 @@ Bearer session required. After auth, the same `forum.read` gate as
 `GET /messages` (401 without a session; 409 `missing_requirements` when
 rules are missing). Query `limit` is an integer 1..1000 (default **1000**);
 otherwise **400** `{ "error": "Invalid limit" }`. Body
-`{ "places": [{ "id", "name", "createdAt", "lat", "lng", "label", "accountId?" }] }`.
-`accountId` is set for a 21gifts author and omitted for an external pin.
+`{ "places": [{ "id", "name", "createdAt", "lat", "lng", "label", "shop", "accountId?" }] }`.
+`shop` is true when the note text contains the shop tag. `accountId` is set for a 21gifts author and omitted for an external pin.
 `createdAt` is ISO-8601. Newest first (`created_at` desc, `id` desc). Only
 live top-level rows with both coordinates. Replies and hidden notes are
 excluded.
@@ -4296,7 +4299,7 @@ two ids per store.
 
 Public single-note fetch. Live rows need **no Bearer.** `:id` is a UUID.
 Registered **after** photo, video, `GET /messages/:id/replies`,
-`DELETE /messages/:id`, `PATCH /messages/:id/place`, `PATCH /messages/:id/shop-account`, `GET /messages/stats`, `GET /messages/hidden`, and
+`DELETE /messages/:id`, `PATCH /messages/:id/place`, `PATCH /messages/:id/shop-account`, `PATCH /messages/:id/text`, `PATCH /messages/:id/photos`, `GET /messages/:id/edits`, `GET /messages/stats`, `GET /messages/hidden`, and
 `GET /messages/places` so
 those paths are not captured as `:id`. A live GET returns
 the public message JSON (`sats`, optional `goalSats` on a top-level note
@@ -4504,7 +4507,19 @@ Success → **200** live public message JSON (optional `shopAccount`
 `{ id, username, name }`, omitted when cleared, reply count, no hide
 stamps). Logs `messages.shop_account.updated` with `messageId`,
 `accountId`, and `role` only. Text, place, and publish state are
-unchanged. The write stores only `shop_account_id`.
+unchanged. The write stores only `shop_account_id`. A real change appends `message_edit`. An unchanged account does not.
+
+### `PATCH /messages/:id/text`
+
+Staff replacement of the body of a live top-level shop note (`#21GiftsShop`). Bearer session required. Live role must be at least `moderator`. `:id` must match `MESSAGE_ID_RE` or the response is **404**. Body is JSON; a non-object or a missing string `text` is **400** `{ "error": "Invalid body" }`. The shop tag is kept or restored. An unchanged body is **200** without `message_edit`. A real change appends `message_edit` and is **200** public message JSON. A reply is **400** `{ "error": "A reply cannot be edited" }`. A non-shop note is **400** `{ "error": "Only a shop note can be edited" }`. Missing or hidden row → **404**. Store throw → **503** `{ "error": "Messages are unavailable" }`.
+
+### `PATCH /messages/:id/photos`
+
+Staff replacement of the stills on a live top-level shop note. Bearer session required. Live role must be at least `moderator`. Body `{ "photos": [{ "contentType", "data", "takenAt?" }] }` with at most 10 items. An empty list clears stills. A video on the note stays. This write does not append `message_edit`. Success is **200** public message JSON. A reply is **400** `{ "error": "A reply cannot be edited" }`. A non-shop note is **400** `{ "error": "Only a shop note can be edited" }`. A bad photo is **400** `{ "error": "Photo must be a JPEG, PNG, or WebP under 1 MiB" }`. Store throw → **503**.
+
+### `GET /messages/:id/edits`
+
+Staff history for a top-level shop note, newest first, including a hidden shop note. Bearer session required. Live role must be at least `moderator`. GET is not a Sunday write. Success is **200** `{ "edits": [...] }`. A reply or a non-shop note is **404**. Public message JSON does not include `edits`.
 
 ### `GET /messages/hidden`
 

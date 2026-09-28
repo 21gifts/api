@@ -1908,13 +1908,20 @@ function copyEdit(row: MessageEditRow): MessageEditRow {
   };
 }
 
-/** Driver jsonb: parse a JSON string, otherwise keep the value (including `null`). */
-function readStoredEditJson(value: unknown): unknown {
+/**
+ * Driver jsonb: parse a JSON string, otherwise keep the value (including `null`).
+ * A text value that parses to something other than a string stays the stored text.
+ */
+function readStoredEditJson(value: unknown, field: MessageEditRow['field']): unknown {
   if (typeof value !== 'string') {
     return cloneEditValue(value);
   }
   try {
-    return cloneEditValue(JSON.parse(value));
+    const parsed: unknown = JSON.parse(value);
+    if (field === 'text' && typeof parsed !== 'string') {
+      return value;
+    }
+    return cloneEditValue(parsed);
   } catch {
     return value;
   }
@@ -5024,8 +5031,8 @@ export class PostgresMessageStore implements MessageStore {
       actorId: row.actor_id,
       createdAt: new Date(row.created_at),
       field: mapEditField(row.field),
-      before: readStoredEditJson(row.before),
-      after: readStoredEditJson(row.after),
+      before: readStoredEditJson(row.before, mapEditField(row.field)),
+      after: readStoredEditJson(row.after, mapEditField(row.field)),
     }));
   }
 

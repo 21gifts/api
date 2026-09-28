@@ -6506,6 +6506,15 @@ describe('PostgresMessageStore', () => {
         before: 'plain',
         after: 4,
       },
+      {
+        id: 'e5',
+        message_id: 'm1',
+        actor_id: 'acc',
+        created_at: at,
+        field: 'text',
+        before: '["#21GiftsShop"]',
+        after: '"kept"',
+      },
     ];
     const listed = await new PostgresMessageStore(sql).listEdits('m1');
     expect(sql.queries[0]?.text).toMatch(/FROM message_edit/);
@@ -6525,6 +6534,11 @@ describe('PostgresMessageStore', () => {
       after: 'not-json',
     });
     expect(listed[2]).toMatchObject({ field: 'text', before: 'plain', after: 4 });
+    expect(listed[3]).toMatchObject({
+      field: 'text',
+      before: '["#21GiftsShop"]',
+      after: 'kept',
+    });
     const place = listed[1]?.before as { label: string };
     place.label = 'mutated';
     expect(sql.nextRows[1]).toMatchObject({ before: { lat: 1, lng: 2, label: 'Stall' } });
