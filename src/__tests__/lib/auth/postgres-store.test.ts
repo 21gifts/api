@@ -1553,6 +1553,17 @@ describe('PostgresAuthStore', () => {
     expect(sql.queries[1]?.text).toMatch(/LIMIT 1/);
   });
 
+  it('hasAcknowledgedPasskeyRenewFailure requires acknowledged_at', async () => {
+    const sql = new MockSql();
+    const store = new PostgresAuthStore(sql);
+    sql.nextRows = [{ exists: 1 }];
+    expect(await store.hasAcknowledgedPasskeyRenewFailure('acc')).toBe(true);
+    expect(sql.queries[0]?.text).toMatch(/acknowledged_at IS NOT NULL/);
+    expect(sql.queries[0]?.params).toEqual(['acc']);
+    sql.nextRows = [];
+    expect(await store.hasAcknowledgedPasskeyRenewFailure('acc')).toBe(false);
+  });
+
   it('setAccountLocale writes only when locale is still null', async () => {
     const sql = new MockSql();
     sql.nextRows = [{ ...ACCOUNT_ROW, locale: 'de' }];

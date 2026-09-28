@@ -327,6 +327,14 @@ export interface AuthStore {
    */
   hasUnacknowledgedPasskeyRenewFailure(accountId: string): Promise<boolean>;
   /**
+   * Whether this account has a failed renew row that was acknowledged.
+   * That closes the guided renew. The account row is unchanged.
+   *
+   * @param accountId - Account to inspect.
+   * @returns `true` only when such a row exists.
+   */
+  hasAcknowledgedPasskeyRenewFailure(accountId: string): Promise<boolean>;
+  /**
    * Set `locale` on the account. When `onlyIfUnset` is true, write only while
    * the stored value is still null. Other columns stay unchanged.
    *
@@ -667,6 +675,13 @@ export class InMemoryAuthStore implements AuthStore {
     return this.#passkeyRenewAttempts.some(
       (row) =>
         row.accountId === accountId && row.outcome === 'failed' && row.acknowledgedAt === null,
+    );
+  }
+
+  async hasAcknowledgedPasskeyRenewFailure(accountId: string): Promise<boolean> {
+    return this.#passkeyRenewAttempts.some(
+      (row) =>
+        row.accountId === accountId && row.outcome === 'failed' && row.acknowledgedAt !== null,
     );
   }
 

@@ -230,6 +230,17 @@ export class PostgresAuthStore implements AuthStore {
     return rows[0] !== undefined;
   }
 
+  async hasAcknowledgedPasskeyRenewFailure(accountId: string): Promise<boolean> {
+    const rows = await this.#sql.query<{ exists: number }>(
+      `SELECT 1 AS exists
+       FROM passkey_renew_attempt
+       WHERE account_id = $1 AND outcome = 'failed' AND acknowledged_at IS NOT NULL
+       LIMIT 1`,
+      [accountId],
+    );
+    return rows[0] !== undefined;
+  }
+
   async setAccountLocale(
     accountId: string,
     locale: AccountLocale,

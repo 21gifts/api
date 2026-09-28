@@ -677,9 +677,11 @@ describe('POST /me/passkey-renew/ack', () => {
     expect(res.status).toBe(200);
     const body = (await res.json()) as {
       passkeyRenewFailed: boolean;
+      passkeyRenewClosed: boolean;
       walletRequired: boolean;
     };
     expect(body.passkeyRenewFailed).toBe(false);
+    expect(body.passkeyRenewClosed).toBe(true);
     expect(body.walletRequired).toBe(false);
     expect(store.inserts).toHaveLength(1);
   });

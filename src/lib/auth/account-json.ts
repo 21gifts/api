@@ -153,6 +153,11 @@ export interface OwnerAccountResponse extends AccountResponse {
    * `acknowledged_at` is still null. Owner-only.
    */
   passkeyRenewFailed: boolean;
+  /**
+   * True when a failed renew was acknowledged. The guided renew stays
+   * closed. The account still has no seed. Owner-only.
+   */
+  passkeyRenewClosed: boolean;
 }
 
 /**
@@ -554,6 +559,8 @@ export function serializeDebugAccountDetail(
  * @param passkeyCredentialId - Current passkey id (base64url), or `null`.
  * @param passkeyRenewFailed - True when an unacknowledged failed renew exists.
  *   Defaults to `false` so existing direct callers keep compiling.
+ * @param passkeyRenewClosed - True when a failed renew was acknowledged.
+ *   Defaults to `false`.
  * @returns Owner fields including `viewKey`, `setup`, `missing`,
  * `hasPosted`, `location`, `aboutMe`, `aboutMeHasPhoto`,
  * `notificationLevel`, `amountUnit`, `locale`, `fiat`, `funding`,
@@ -568,6 +575,7 @@ export function serializeOwnerAccount(
   funding: OwnerFundingJson | null = null,
   passkeyCredentialId: string | null = null,
   passkeyRenewFailed = false,
+  passkeyRenewClosed = false,
 ): OwnerAccountResponse {
   return {
     ...serializeAccount(account),
@@ -587,6 +595,7 @@ export function serializeOwnerAccount(
     walletBackupSeenAt: account.walletBackupSeenAt ?? null,
     passkeyCredentialId,
     passkeyRenewFailed,
+    passkeyRenewClosed,
   };
 }
 
@@ -599,7 +608,10 @@ export interface OwnerFundingLookup {
   /** Account lookup for admitted `reviewedByName` and owner `passkeyCredentialId`. */
   authStore: Pick<
     AuthStore,
-    'getAccount' | 'getPasskeyCredentialForAccount' | 'hasUnacknowledgedPasskeyRenewFailure'
+    | 'getAccount'
+    | 'getPasskeyCredentialForAccount'
+    | 'hasUnacknowledgedPasskeyRenewFailure'
+    | 'hasAcknowledgedPasskeyRenewFailure'
   >;
 }
 
@@ -655,6 +667,7 @@ export async function serializeOwnerAccountWithPosts(
   let fundingJson: OwnerFundingJson | null;
   let passkeyCredentialId: string | null = null;
   let passkeyRenewFailed = false;
+  let passkeyRenewClosed = false;
   if (funding === undefined) {
     fundingJson = serializeOwnerFunding(account.role, undefined, 0, null);
   } else {
@@ -670,6 +683,7 @@ export async function serializeOwnerAccountWithPosts(
       passkeyCredentialId = passkey?.credentialId ?? null;
     }
     passkeyRenewFailed = await funding.authStore.hasUnacknowledgedPasskeyRenewFailure(account.id);
+    passkeyRenewClosed = await funding.authStore.hasAcknowledgedPasskeyRenewFailure(account.id);
   }
   return serializeOwnerAccount(
     account,
@@ -679,6 +693,7 @@ export async function serializeOwnerAccountWithPosts(
     fundingJson,
     passkeyCredentialId,
     passkeyRenewFailed,
+    passkeyRenewClosed,
   );
 }
 

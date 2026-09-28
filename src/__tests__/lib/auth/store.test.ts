@@ -1678,6 +1678,8 @@ describe('InMemoryAuthStore', () => {
     await store.acknowledgePasskeyRenewFailures('acc', 9);
     await store.acknowledgePasskeyRenewFailures('acc', 10);
     expect(await store.hasUnacknowledgedPasskeyRenewFailure('acc')).toBe(false);
+    expect(await store.hasAcknowledgedPasskeyRenewFailure('acc')).toBe(true);
+    expect(await store.hasAcknowledgedPasskeyRenewFailure('other')).toBe(false);
     expect(await store.hasUnacknowledgedPasskeyRenewFailure('other')).toBe(true);
     expect((await store.getAccount('acc'))?.walletRequired === true).toBe(false);
   });

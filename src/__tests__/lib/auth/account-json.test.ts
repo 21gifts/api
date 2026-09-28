@@ -256,6 +256,7 @@ describe('serializeOwnerAccount', () => {
       walletBackupSeenAt: null,
       passkeyCredentialId: null,
       passkeyRenewFailed: false,
+      passkeyRenewClosed: false,
     });
     expect(json.viewKey).toBe(account.viewKey);
     expect(json.setup).toBe('rules');
@@ -788,7 +789,20 @@ describe('serializeOwnerAccountWithPosts', () => {
       { store: new InMemoryFundingStore(), nowMs: 1, authStore },
     );
     expect(json.passkeyRenewFailed).toBe(true);
+    expect(json.passkeyRenewClosed).toBe(false);
     expect(json.walletRequired).toBe(false);
+    await authStore.acknowledgePasskeyRenewFailures('acc', 2);
+    const closed = await serializeOwnerAccountWithPosts(
+      account,
+      {
+        accountHasLivePost: async () => false,
+        getById: async () => undefined,
+      },
+      { store: new InMemoryFundingStore(), nowMs: 1, authStore },
+    );
+    expect(closed.passkeyRenewFailed).toBe(false);
+    expect(closed.passkeyRenewClosed).toBe(true);
+    expect(closed.walletRequired).toBe(false);
   });
 });
 
