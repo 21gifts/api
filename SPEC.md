@@ -108,6 +108,12 @@ Public base URLs used in examples:
 | POST   | `/me/location`                                       | Bearer                     | Set, change, or clear free-text profile location                                                                                                                                                                   |
 | PUT    | `/me/about`                                          | Bearer                     | Set/clear About me text and optional photo on the profile note                                                                                                                                                     |
 | GET    | `/me/about/photo`                                    | Bearer                     | Owner profile-note photo bytes                                                                                                                                                                                     |
+| GET    | `/pictures/me`                                       | Bearer                     | Owner profile-photo bytes. Not the wide image and not the About me photo                                                                                                                                           |
+| PUT    | `/pictures/me`                                       | Bearer                     | Set or clear the round profile photo. Not the wide image and not the About me photo                                                                                                                                |
+| GET    | `/pictures/:file`                                    | none                       | Public profile photo when the extension matches. Kind:0 `picture`                                                                                                                                                  |
+| GET    | `/banners/me`                                        | Bearer                     | Owner wide-image bytes. Not the About me photo                                                                                                                                                                     |
+| PUT    | `/banners/me`                                        | Bearer                     | Set or clear the wide image. A portrait is rejected. Not the About me photo                                                                                                                                        |
+| GET    | `/banners/:file`                                     | none                       | Public wide image when the extension matches. Kind:0 `banner`                                                                                                                                                      |
 | POST   | `/me/forum-laws-dismissed`                           | Bearer                     | Dismiss welcome-forum living-room laws                                                                                                                                                                             |
 | POST   | `/me/notification-level`                             | Bearer                     | Set owner fan-out filter (`all` / `active` / `mentions`)                                                                                                                                                           |
 | POST   | `/me/rules-agreement`                                | Bearer                     | Record living-room rules agreement                                                                                                                                                                                 |
@@ -1360,6 +1366,73 @@ No live profile note or no photo → **Response** `404`
 
 Store throw → **Response** `503` `{ "error": "Messages are unavailable" }`
 (`account.about.photo.failed`).
+
+### `GET /pictures/me` and `PUT /pictures/me`
+
+The round profile photo. Not the wide image and not the About me note
+photo. A missing photo leaves kind:0 `picture` at
+`https://21.gifts/apple-touch-icon.png`. These routes never read or write
+the other slot.
+
+`GET /pictures/me` is Bearer. Raw bytes (`forumPhotoResponse`).
+Missing or invalid bearer → **401** `{ "error": "Unauthorized" }`.
+Nothing stored → **404** `{ "error": "Profile photo not found" }`.
+
+`PUT /pictures/me` body is `{ "photo": null }` to clear, or
+`{ "photo": { "contentType", "data" } }` for a JPEG, PNG, or WebP under
+1 MiB with a readable size. A portrait is allowed. Success → **204**
+with an empty body. It does not change the wide image or the About me
+note.
+
+Missing or invalid bearer → **401** `{ "error": "Unauthorized" }`.
+Body is not JSON with a `photo` field, or `photo` is not `null` and not
+`{ contentType, data }` → **400**
+`{ "error": "Expected a JSON body with a \"photo\" field" }`.
+Bytes that are not a decodable still → **400**
+`{ "error": "Profile photo must be a JPEG, PNG, or WebP" }`.
+When `Time-Zone` names an IANA zone that is Sunday on the server clock,
+the PUT is **403** `{ "error": "SUNDAY_REST" }` before auth. A missing,
+blank, or invalid zone does not refuse. GET is not refused.
+
+### `GET /pictures/:file`
+
+Public. `:file` is `{accountId}.jpg`, `.png`, or `.webp`. Returns the
+stored profile photo when the extension matches the stored MIME. No auth.
+Used as the Nostr kind:0 `picture` URL. Anything else → **404**
+`{ "error": "Not found" }`.
+
+### `GET /banners/me` and `PUT /banners/me`
+
+The wide image. Not the profile photo and not the About me note photo.
+A missing wide image leaves kind:0 `banner` at `https://21.gifts/og.png`
+(1200×630). These routes never read or write the other slot.
+
+`GET /banners/me` is Bearer. Raw bytes (`forumPhotoResponse`).
+Missing or invalid bearer → **401** `{ "error": "Unauthorized" }`.
+Nothing stored → **404** `{ "error": "Wide image not found" }`.
+
+`PUT /banners/me` body is `{ "photo": null }` to clear, or
+`{ "photo": { "contentType", "data" } }` for a JPEG, PNG, or WebP under
+1 MiB that is at least 640 px wide and at least 1.5 times as wide as it
+is tall. A portrait is rejected. Success → **204** with an empty body.
+It does not change the profile photo or the About me note.
+
+Missing or invalid bearer → **401** `{ "error": "Unauthorized" }`.
+Body is not JSON with a `photo` field, or `photo` is not `null` and not
+`{ contentType, data }` → **400**
+`{ "error": "Expected a JSON body with a \"photo\" field" }`.
+Bytes that are not a decodable wide image → **400**
+`{ "error": "Wide image must be at least 640 px wide and at least 1.5 times as wide as it is tall" }`.
+When `Time-Zone` names an IANA zone that is Sunday on the server clock,
+the PUT is **403** `{ "error": "SUNDAY_REST" }` before auth. A missing,
+blank, or invalid zone does not refuse. GET is not refused.
+
+### `GET /banners/:file`
+
+Public. `:file` is `{accountId}.jpg`, `.png`, or `.webp`. Returns the
+stored wide image when the extension matches the stored MIME. No auth.
+Used as the Nostr kind:0 `banner` URL. Anything else → **404**
+`{ "error": "Not found" }`.
 
 ### `GET /view/:viewKey/about/photo`
 
@@ -3136,8 +3209,10 @@ Success → **Response** `200`:
 ### `GET /messages`
 
 Public member forum thread. With no `Authorization` header, `mode=active`,
-and no hashtag, this is the public window: the first 200 active rows, no
-`accountId` and no `mentions`, 200 not 401. A present header that is not a
+and no hashtag, this is the public window: the first 200 active rows;
+includes `accountId` whenever the stored author id is non-null, omits it
+for an external row, and includes `mentions` when that flag is on and the
+stored list is non-empty; 200 not 401. A present header that is not a
 live session is 401 and does not use that window. A session still needs
 `requireAction(account, 'forum.read')` (rules). Returns **only
 top-level notes** (`parent_id IS NULL`) via `listFeed`. A profile note
@@ -3183,12 +3258,11 @@ an `EXISTS` subquery)). Visible external rows
 include `"via": "nostr"`; their pubkey, `role`, and `accountId` remain omitted,
 and `payable` is false. Rows with neither an account nor an author pubkey stay
 invisible. List JSON never includes photo
-or video bytes. Signed-in list/replies/create may include `accountId`
-(21gifts author id; omitted for external rows) and `mentions`
-(`{ username, accountId }[]`, only when `accountId` is included and the
-stored list is non-empty). The public window omits both. Public GET
-`/messages/:id` omits `accountId` when unsigned; a session sets it for a
-21gifts author and omits it for an external author. Nostr event ids are never included in the JSON.
+or video bytes. Live list, single-note GET, and replies include
+`accountId` whenever the stored author id is non-null, with or without a
+session, and omit it for an external row. `mentions`
+(`{ username, accountId }[]`) stay tied to that same inclusion (only when
+`accountId` is included and the stored list is non-empty). Nostr event ids are never included in the JSON.
 
 A present Authorization header that is not a live session, a signed-out
 request that is not `mode=active` without a hashtag, or a public cursor
@@ -3270,8 +3344,16 @@ Postgres `message`. List queries select top-level rows only
 and must not select the `photo` bytea
 column.
 
-The nostr worker's ingest lane, each pass, queries zap relays (space plus the public
-list, including when `NOSTR_PUBLISH_PUBLIC` is unset) for kind:9735
+The hot lane uses the same receipt-read URL set as full ingest (space plus the
+public list, including when `NOSTR_PUBLISH_PUBLIC` is unset, then
+`wss://nostr.wine` and `wss://nostr.bitcoiner.social` unless that exact URL is
+already present), but only for recent in-app invoice e-tags, and it makes no
+relay query when no target remains. Those two URLs are not written into the
+kind:9734 `relays` tag and are not used for inbound kind:1 replies or direct
+messages.
+
+The nostr worker's ingest lane, each pass, queries that receipt-read set for
+kind:9735
 receipts whose `e` tag matches a non-empty `event_id` from `listLatest`
 or a non-null `listReplies` child of those rows (unioned with the official
 platform profile note's `event_id` even after that note ages out of
@@ -3827,8 +3909,8 @@ public message JSON (`photoCount` 0–10 always present;
 stills; `photoTakenAt` only when `photoCount` is 1; `hasPhoto` still means
 photo 0 exists) with
 `payable` when a member row has a non-empty `eventId` and a non-blank
-Lightning Address, and no `replyCount`. Unauthenticated items omit
-`accountId`; signed-in member replies include `accountId`. External replies
+Lightning Address, and no `replyCount`. Items include `accountId` whenever
+the stored author id is non-null, with or without a session. External replies
 set `via: "nostr"`, keep `payable: false`, and omit `accountId`, `role`, and the
 pubkey. Replies never include `goalSats`, `goalRepayable`, or `goalTermDays`.
 Photo and video bytes are never included. `:id` is a UUID
@@ -3937,9 +4019,9 @@ stored and omitted when unset, even when `accountId` is omitted,
 (0–10; always present; `hasPhoto` still means photo 0 exists), `photoTakenAts`
 (always; length equals `photoCount`; null when unknown; `[]` when there are no
 stills) and `photoTakenAt` only when `photoCount` is 1, `hasVideo`,
-`videoContentType`; live `role` for 21gifts authors). Unsigned JSON omits
-`accountId`. A session sets `accountId` for a 21gifts author and omits it
-for an external author. Live JSON also omits
+`videoContentType`; live `role` for 21gifts authors). Live JSON includes
+`accountId` whenever the stored author id is non-null, with or without a
+session, and omits it for an external author. Live JSON also omits
 `deletedAt` and `deletedBy`. Unsigned and non-staff GET of a
 soft-hidden row is still **404** `{ "error": "Not found" }` with no hide
 stamps in the body. A founder/moderator Bearer (`roleAtLeast(...,

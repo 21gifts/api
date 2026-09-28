@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { finalizeEvent, generateSecretKey, getPublicKey } from 'nostr-tools/pure';
 import { InMemoryAuthStore } from '@/lib/auth/store';
+import { InMemoryBannerStore } from '@/lib/banner-store';
 import { InMemoryConversationStore } from '@/lib/conversation-store';
 import { InMemoryFundingStore } from '@/lib/funding-store';
 import { InMemoryFiatStore } from '@/lib/usd-fiat-store';
@@ -18,7 +19,7 @@ import { parseNostrKek } from '@/lib/nostr/kek';
 import { decryptNostrSecret, ensureAccountNostrKey, zeroizeSecret } from '@/lib/nostr/keys';
 import { RecordingPublisher } from '@/lib/nostr/publish';
 import { RecordingQuerier, type NostrEventFrame } from '@/lib/nostr/query';
-import { DEFAULT_RELAY_PUBLIC } from '@/lib/nostr/relays';
+import { resolveZapReadRelays, resolveZapRelays } from '@/lib/nostr/relays';
 import { PostRateLimiter } from '@/lib/nostr/rate-limit';
 import {
   HOT_ZAP_SINCE_SLACK_S,
@@ -720,6 +721,121 @@ describe('runNostrWorkerTick', () => {
     expect(publisher.calls.length).toBe(afterFirst);
   });
 
+  it('does not use the About me photo as the avatar or the banner', async () => {
+    const { auth, messages } = await seed();
+    const acc = await auth.getAccount('acc');
+    expect(acc).toBeDefined();
+    const profileId = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd';
+    await messages.create(
+      {
+        id: profileId,
+        accountId: 'acc',
+        name: 'Ada',
+        text: 'about Ada',
+        createdAt: new Date('2026-08-27T00:00:00.000Z'),
+        hasPhoto: true,
+        ...unsignedNostrDefaults(),
+      },
+      { contentType: 'image/jpeg', bytes: new Uint8Array([0xff, 0xd8, 0xff, 0xd9]) },
+    );
+    await auth.updateAccount({ ...acc!, profileMessageId: profileId });
+    const publisher = new RecordingPublisher();
+    const env = {
+      NOSTR_PUBLISH: '1',
+      NOSTR_RELAY_SPACE: 'wss://relay.nostr.space',
+      PUBLIC_BASE_URL: 'https://21.gifts',
+    };
+    const banners = new InMemoryBannerStore();
+    await runNostrWorkerTick(
+      deps({ messages, auth, kek: KEK, publisher, now: () => 1_700_000_000_000, env, banners }),
+    );
+    await runNostrWorkerTick(
+      deps({ messages, auth, kek: KEK, publisher, now: () => 1_700_000_060_000, env, banners }),
+    );
+    const profile = publisher.calls.find((call) => call.event['kind'] === 0);
+    const body = JSON.parse(String(profile?.event['content'])) as {
+      picture: string;
+      banner: string;
+      about: string;
+    };
+    expect(body.picture).toBe('https://21.gifts/apple-touch-icon.png');
+    expect(body.banner).toBe('https://21.gifts/og.png');
+    expect(body.about).toBe('about Ada');
+  });
+
+  it('publishes a stored wide image as the banner and keeps the profile photo as the avatar', async () => {
+    const { auth, messages } = await seed();
+    const acc = await auth.getAccount('acc');
+    expect(acc).toBeDefined();
+    const profileId = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd';
+    await messages.create(
+      {
+        id: profileId,
+        accountId: 'acc',
+        name: 'Ada',
+        text: 'about Ada',
+        createdAt: new Date('2026-08-27T00:00:00.000Z'),
+        hasPhoto: true,
+        ...unsignedNostrDefaults(),
+      },
+      { contentType: 'image/jpeg', bytes: new Uint8Array([0xff, 0xd8, 0xff, 0xd9]) },
+    );
+    await auth.updateAccount({ ...acc!, profileMessageId: profileId });
+    const banners = new InMemoryBannerStore();
+    await banners.set('acc', 'picture', {
+      contentType: 'image/jpeg',
+      bytes: new Uint8Array([9, 9, 9]),
+    });
+    await banners.set('acc', 'banner', {
+      contentType: 'image/png',
+      bytes: new Uint8Array([1, 2, 3]),
+    });
+    const publisher = new RecordingPublisher();
+    const env = {
+      NOSTR_PUBLISH: '1',
+      NOSTR_RELAY_SPACE: 'wss://relay.nostr.space',
+      PUBLIC_BASE_URL: 'https://21.gifts',
+    };
+    await runNostrWorkerTick(
+      deps({
+        messages,
+        auth,
+        kek: KEK,
+        publisher,
+        now: () => 1_700_000_000_000,
+        env,
+        banners,
+      }),
+    );
+    const profile = publisher.calls.find((call) => call.event['kind'] === 0);
+    const body = JSON.parse(String(profile?.event['content'])) as {
+      picture: string;
+      banner: string;
+    };
+    expect(body.picture).toBe('https://api.21.gifts/pictures/acc.jpg');
+    expect(body.banner).toBe('https://api.21.gifts/banners/acc.png');
+    const plain = new RecordingPublisher();
+    await runNostrWorkerTick(
+      deps({
+        messages,
+        auth,
+        kek: KEK,
+        publisher: plain,
+        now: () => 1_700_000_120_000,
+        env: { NOSTR_PUBLISH: '1', NOSTR_RELAY_SPACE: 'wss://relay.nostr.space' },
+        banners,
+      }),
+    );
+    const withoutOrigin = JSON.parse(
+      String(plain.calls.find((call) => call.event['kind'] === 0)?.event['content']),
+    ) as {
+      picture: string;
+      banner: string;
+    };
+    expect(withoutOrigin.picture).toBe('https://21.gifts/apple-touch-icon.png');
+    expect(withoutOrigin.banner).toBe('https://21.gifts/og.png');
+  });
+
   it('publishes kind:0 with the database name before kind:1', async () => {
     const { auth, messages } = await seed();
     const publisher = new RecordingPublisher();
@@ -750,6 +866,7 @@ describe('runNostrWorkerTick', () => {
       name: 'Ada',
       display_name: 'Ada',
       website: 'https://21.gifts',
+      banner: 'https://21.gifts/og.png',
       picture: 'https://21.gifts/apple-touch-icon.png',
       about: 'Ada',
     });
@@ -935,6 +1052,66 @@ describe('runNostrWorkerTick', () => {
     expect(Number(lists[1]?.event['created_at'])).toBeGreaterThan(
       Number(lists[0]?.event['created_at']),
     );
+  });
+
+  it('puts the public note link on a new kind:1 and a poster blurhash on video', async () => {
+    const { encode: encodeJpeg } = await import('jpeg-js');
+    const { auth, messages } = await seed();
+    const poster = new Uint8Array(
+      encodeJpeg({ data: new Uint8Array([255, 0, 0, 255]), width: 1, height: 1 }, 50).data,
+    );
+    const mp4 = new Uint8Array(32);
+    mp4.set([0x00, 0x00, 0x00, 0x18, 0x66, 0x74, 0x79, 0x70, 0x69, 0x73, 0x6f, 0x6d]);
+    await messages.create({
+      id: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'gift',
+      createdAt: new Date('2026-08-28T00:01:00.000Z'),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+    });
+    await messages.create(
+      {
+        id: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
+        accountId: 'acc',
+        name: 'Ada',
+        text: 'clip',
+        createdAt: new Date('2026-08-28T00:01:30.000Z'),
+        hasPhoto: true,
+        hasVideo: true,
+        videoContentType: 'video/mp4',
+        ...unsignedNostrDefaults(),
+      },
+      { contentType: 'image/jpeg', bytes: poster },
+      { contentType: 'video/mp4', bytes: mp4 },
+    );
+    const publisher = new RecordingPublisher();
+    const env = {
+      NOSTR_PUBLISH: '1',
+      NOSTR_RELAY_SPACE: 'wss://relay.nostr.space',
+      PUBLIC_BASE_URL: 'https://21.gifts',
+    };
+    await runNostrWorkerTick(
+      deps({ messages, auth, kek: KEK, publisher, now: () => 1_700_000_000_000, env }),
+    );
+    await runNostrWorkerTick(
+      deps({ messages, auth, kek: KEK, publisher, now: () => 1_700_000_060_000, env }),
+    );
+    const note = publisher.calls.find(
+      (call) => call.event['kind'] === 1 && String(call.event['content']).startsWith('gift'),
+    );
+    expect(String(note?.event['content'])).toBe(
+      'gift\nhttps://21.gifts/l/bbbbbbbb\n\n#bitcoin #21gifts',
+    );
+    expect(note?.event['tags']).toContainEqual(['r', 'https://21.gifts/l/bbbbbbbb']);
+    const video = publisher.calls.find(
+      (call) => call.event['kind'] === 1 && String(call.event['content']).includes('/video.mp4'),
+    );
+    const imeta = (video?.event['tags'] as string[][] | undefined)?.find(
+      (tag) => tag[0] === 'imeta',
+    );
+    expect(imeta?.some((part) => part.startsWith('blurhash '))).toBe(true);
   });
 
   it('embeds a public photo URL and imeta on kind:1', async () => {
@@ -3118,6 +3295,7 @@ describe('runNostrWorkerTick', () => {
       ],
     });
     const querier = new RecordingQuerier();
+    const env = { NOSTR_RELAY_SPACE: 'wss://space' };
     await runNostrWorkerTick(
       deps({
         messages,
@@ -3126,10 +3304,18 @@ describe('runNostrWorkerTick', () => {
         publisher: new RecordingPublisher(),
         querier,
         now: () => 1_700_000_000_000,
-        env: { NOSTR_RELAY_SPACE: 'wss://space' },
+        env,
       }),
     );
-    expect(querier.calls[0]?.urls).toEqual(['wss://space', ...DEFAULT_RELAY_PUBLIC]);
+    expect(querier.calls[0]?.urls).toEqual(resolveZapReadRelays(env));
+    expect(querier.calls[0]?.filter['kinds']).toContain(9735);
+    const kind1Call = querier.calls.find((call) => {
+      const kinds = call.filter['kinds'];
+      return Array.isArray(kinds) && kinds.includes(1);
+    });
+    expect(kind1Call?.urls).toEqual(resolveZapRelays(env));
+    expect(kind1Call?.urls).not.toContain('wss://nostr.wine');
+    expect(kind1Call?.urls).not.toContain('wss://nostr.bitcoiner.social');
   });
 
   it('skips private-message ingest when no conversation store is injected', async () => {
@@ -6398,6 +6584,7 @@ describe('runNostrWorkerTick modes', () => {
       limit: 200,
       since: Math.floor(older.getTime() / 1000) - HOT_ZAP_SINCE_SLACK_S,
     });
+    expect(zapCalls[0]?.urls).toEqual(resolveZapReadRelays({ NOSTR_RELAY_SPACE: 'wss://space' }));
     expect(
       querier.calls.some((call) => {
         const kinds = call.filter['kinds'];
@@ -6580,6 +6767,7 @@ describe('runNostrWorkerTick modes', () => {
     const conversations = new InMemoryConversationStore();
     const querier = new RecordingQuerier();
     const publisher = new RecordingPublisher();
+    const env = { NOSTR_RELAY_SPACE: 'wss://space' };
     await runNostrWorkerTick(
       deps({
         messages,
@@ -6588,7 +6776,7 @@ describe('runNostrWorkerTick modes', () => {
         publisher,
         querier,
         now: () => 1_700_000_000_000,
-        env: { NOSTR_RELAY_SPACE: 'wss://space' },
+        env,
         conversations,
         verifyKind1: () => true,
       }),
@@ -6616,6 +6804,22 @@ describe('runNostrWorkerTick modes', () => {
         return Array.isArray(kinds) && (kinds.includes(4) || kinds.includes(1059));
       }),
     ).toBe(true);
+    const zapReadUrls = resolveZapReadRelays(env);
+    const replyUrls = resolveZapRelays(env);
+    for (const call of querier.calls) {
+      const kinds = call.filter['kinds'];
+      if (!Array.isArray(kinds)) {
+        continue;
+      }
+      if (kinds.includes(9735)) {
+        expect(call.urls).toEqual(zapReadUrls);
+      }
+      if (kinds.includes(1) || kinds.includes(4) || kinds.includes(1059)) {
+        expect(call.urls).toEqual(replyUrls);
+        expect(call.urls).not.toContain('wss://nostr.wine');
+        expect(call.urls).not.toContain('wss://nostr.bitcoiner.social');
+      }
+    }
     expect((await messages.getById('m1'))?.eventId).toBeNull();
     expect(publisher.calls).toHaveLength(0);
   });

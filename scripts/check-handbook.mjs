@@ -130,6 +130,7 @@ function extractEndpoints() {
     'info.ts': '/info',
     'auth.ts': '/auth',
     'me.ts': '/me',
+    'banner.ts': '/banners',
     'lightning-address.ts': '/lightning-address',
     'stats.ts': '/gifts/stats',
     'brand.ts': '',

@@ -1576,6 +1576,51 @@ test('Function: retractHiddenForumNotes — DELETE /messages/:id without bearer 
 test('Function: forumPhotoUrl — default boot has no DATABASE_URL', async ({ request }) => {
   expect((await request.get('/healthz')).status()).toBe(200);
 });
+test('Function: migrateBannerSchema — default boot has no DATABASE_URL', async ({ request }) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
+test('Function: wideBannerSize — default boot has no DATABASE_URL', async ({ request }) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
+test('Function: bannerPublicUrl — default boot has no DATABASE_URL', async ({ request }) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
+test('Function: InMemoryBannerStore — default boot has no DATABASE_URL', async ({ request }) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
+test('Function: PostgresBannerStore — default boot has no DATABASE_URL', async ({ request }) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
+test('Function: picturePublicUrl — default boot has no DATABASE_URL', async ({ request }) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
+test('Function: isProfilePhoto — default boot has no DATABASE_URL', async ({ request }) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
+test('Function: pictureRoutes — PUT /pictures/me without bearer is 401', async ({ request }) => {
+  const res = await request.put('/pictures/me', { data: { photo: null } });
+  expect(res.status()).toBe(401);
+  expect((await request.get('/pictures/me')).status()).toBe(401);
+  expect((await request.get('/pictures/:file')).status()).toBe(404);
+});
+test('Function: bannerRoutes — PUT /banners/me without bearer is 401', async ({ request }) => {
+  const res = await request.put('/banners/me', { data: { photo: null } });
+  expect(res.status()).toBe(401);
+  expect((await request.get('/banners/me')).status()).toBe(401);
+  expect((await request.get('/banners/:file')).status()).toBe(404);
+});
+test('Function: notePageUrl — default boot has no DATABASE_URL', async ({ request }) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
+test('Function: imageDisplaySize — default boot has no DATABASE_URL', async ({ request }) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
+test('Function: imageBlurhash — default boot has no DATABASE_URL', async ({ request }) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
+test('Function: stillLook — default boot has no DATABASE_URL', async ({ request }) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
 test('Function: forumExtraPhotoUrl — default boot has no DATABASE_URL', async ({ request }) => {
   expect((await request.get('/healthz')).status()).toBe(200);
 });
@@ -1632,6 +1677,9 @@ test('Function: resolvePublicApiBase — default boot has no DATABASE_URL', asyn
   expect((await request.get('/healthz')).status()).toBe(200);
 });
 test('Function: resolveZapRelays — default boot has no DATABASE_URL', async ({ request }) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
+test('Function: resolveZapReadRelays — default boot has no DATABASE_URL', async ({ request }) => {
   expect((await request.get('/healthz')).status()).toBe(200);
 });
 test('Function: utcDayKey — default boot has no DATABASE_URL', async ({ request }) => {

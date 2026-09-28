@@ -1173,7 +1173,7 @@ const translateBody = z.object({
  * `GET /messages/compose-target` (platform profile note for a 1-sat write),
  * `GET /messages/:id/photo` (and `.jpg` / `.jpeg` / `.png` / `.webp`),
  * `GET /messages/:id/video.mp4|.webm|.mov`, public `GET /messages/:id/replies`
- * (optional Bearer for `accountId`), staff `DELETE /messages/:id` (soft-hide
+ * (`accountId` when the stored author id is non-null), staff `DELETE /messages/:id` (soft-hide)
  * plus best-effort NIP-09 and Cloudflare media purge when publisher+kek are
  * set),
  * staff `GET /messages/hidden` (moderator session log), public
@@ -1194,7 +1194,8 @@ const translateBody = z.object({
  * 404 for the same live rows. Top-level Damus-only notes stay 200. Public
  * `GET /:id/replies` lists live children with either an account or an
  * author pubkey that is a recorded zapper; Bearer is optional (`accountId`
- * present only when signed in). Staff hide retracts in-app notifications
+ * whenever the stored author id is non-null, with or without a session).
+ * Staff hide retracts in-app notifications
  * for the note and its direct children. Deleting an external row
  * (`accountId` null with `authorPubkey` set) also blocks that pubkey,
  * soft-hides its other live external rows, and logs
@@ -1209,8 +1210,8 @@ const translateBody = z.object({
  * `WAIT_SATS_POLL_MS`).
  * @returns A Hono app with `GET /`, `POST /`, `GET /compose-target`,
  * `GET /places`, `GET /:id/photo` plus `.jpg` / `.jpeg` / `.png` / `.webp`,
- * `GET /:id/video.mp4|.webm|.mov`, public `GET /:id/replies` (optional Bearer
- * for `accountId`), `DELETE /:id`, staff `PATCH /:id/place` and
+ * `GET /:id/video.mp4|.webm|.mov`, public `GET /:id/replies` (`accountId` when
+ * the stored author id is non-null), `DELETE /:id`, staff `PATCH /:id/place` and
  * staff `PATCH /:id/shop-account` (moderator session; no `forum.read`),
  * staff `GET /hidden` (moderator session; no `forum.read`), public
  * `GET /:id` (optional `?sinceSats=`), and
@@ -1302,7 +1303,7 @@ async function servePublicActiveList(deps: MessagesRouteDeps, c: Context): Promi
       const author = authors[i];
       const payable = payableOf(row, author);
       const role = row.accountId === null ? undefined : (author?.role ?? 'basis');
-      return serializeMessage(row, payable, role, row.replyCount);
+      return serializeMessage(row, payable, role, row.replyCount, true);
     });
     const last = page[page.length - 1];
     const anchor = kept.length > 0 ? kept[kept.length - 1] : last;
@@ -1675,7 +1676,6 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
         return c.json({ error: 'Not found' }, 404);
       }
       const account = await authedAccount(deps, c.req.header('authorization'));
-      const includeAccountId = account !== null;
       try {
         const parent = await deps.store.getById(id);
         if (parent === undefined) {
@@ -1715,7 +1715,7 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
               row.accountId === null ? undefined : await deps.authStore.getAccount(row.accountId);
             const role = row.accountId === null ? undefined : (author?.role ?? 'basis');
             const payable = row.accountId === null ? false : payableOf(kept, author);
-            messages.push(serializeMessage(kept, payable, role, undefined, includeAccountId));
+            messages.push(serializeMessage(kept, payable, role, undefined, true));
           } catch {
             // One child must not 503 the thread (invalid createdAt, author lookup).
             continue;
@@ -2096,7 +2096,6 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
         }
         sinceSats = Number(sinceSatsRaw);
       }
-      const viewer = await authedAccount(deps, c.req.header('authorization'));
       const started = deps.now();
       const timeoutMs = deps.waitSatsTimeoutMs ?? WAIT_SATS_TIMEOUT_MS;
       const pollMs = deps.waitSatsPollMs ?? WAIT_SATS_POLL_MS;
@@ -2156,7 +2155,7 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
               payable,
               role,
               kept.parentId === null ? await deps.store.countAttributedReplies(kept.id) : undefined,
-              viewer !== null,
+              true,
             ),
             200,
           );
