@@ -39,6 +39,7 @@ api/
 │   │   ├── pictures.ts       # GET/PUT /pictures/me; public GET /pictures/:accountId.jpg|.png|.webp (round profile photo; not the About me photo)
 │   │   ├── banner.ts         # GET/PUT /banners/me; public GET /banners/:accountId.jpg|.png|.webp (wide image; not the About me photo)
 │   │   ├── members.ts        # GET /members/:accountId (Bearer; live identity + profile note + counts + trust + fundingReviewedAt); GET /members/:accountId/activity; GET /members/:accountId/posts; GET /members/:accountId/replies
+│   │   ├── mentions.ts       # GET /mentions (Bearer, forum.read; username prefix suggestions, at most 20)
 │   │   ├── links.ts          # GET /links/:code (public; 8-hex prefix of a message or account id)
 │   │   ├── view.ts           # GET /view/:viewKey (public profile card); GET /view/:viewKey/about/photo; GET /view/:viewKey/activity
 │   │   ├── lightning-address.ts  # GET /lightning-address (public LUD-16 resolve)
@@ -78,6 +79,7 @@ api/
 │   │   ├── location.ts       # Profile location trim/validate (C0/DEL; empty clears)
 │   │   ├── message.ts        # Forum text/photo/video validate + public JSON (hasPhoto/hasVideo; no bytes)
 │   │   ├── mention.ts        # @username marks stored on a note at send time
+│   │   ├── mention-query.ts  # normalised @ prefix for GET /mentions (does not store marks)
 │   │   ├── video.ts          # Forum video magic-bytes, faststart, MEDIA_DIR, Range parse
 │   │   ├── ocp-place.ts      # First shop pin posted once to the OpenCryptoPay map
 │   │   ├── nip05.ts          # NIP-05 slugs, nostr.json names, kind:0 identifier
@@ -198,6 +200,7 @@ api/
 │       │   ├── gift-store.test.ts
 │       │   ├── message.test.ts
 │       │   ├── mention.test.ts
+│       │   ├── mention-query.test.ts
 │       │   ├── mention-notify.test.ts
 │       │   ├── funding-reviewed-by-name.test.ts
 │       │   ├── push-mention.test.ts
@@ -264,6 +267,7 @@ api/
 │           ├── me-about.test.ts
 │           ├── activity.test.ts
 │           ├── members.test.ts
+│           ├── mentions.test.ts
 │           ├── links.test.ts
 │           ├── lightning-address.test.ts
 │           ├── debug.test.ts

@@ -70,6 +70,13 @@
 - **Used by:** Lightning wallets paying `username@21.gifts`; app proxies this from the site apex.
 - **Auth:** none.
 
+## Endpoint: GET /mentions
+
+- **Purpose:** Signed-in username prefix suggestions for `@` in a forum post or reply. Query `q` is optional. Omitted, empty, or whitespace is the first 20 handles in alphabetical order. Otherwise one leading `@` is stripped, the rest is trimmed and lowercased, and the result must be a username prefix (`^[a-z0-9][a-z0-9._-]{0,31}$`). Each row is `{ id, username, name }` where `name` is the trimmed display name, or the stored username when that name is blank. At most 20 rows. Does not parse or store `@username` marks on a note.
+- **Errors:** 401 `{ error: 'Unauthorized' }` without a usable bearer session; 409 `{ error: 'missing_requirements', missing }` when `forum.read` is not allowed yet; 400 `{ error: 'Invalid query' }` when `q` is not a username prefix.
+- **Used by:** The forum composer suggestion list (`GET /forum/mentions` on the app, which proxies here).
+- **Auth:** Bearer session with `forum.read`.
+
 ## Endpoint: GET /pay/:username
 
 - **Purpose:** Public, unauthenticated pay-link card for a member. Normalises `:username`, loads the account, and returns `name`, `username`, `minSats`, `maxSats`, and `charge` from the linked Lightning Address LNURL-pay metadata. `name` is the trimmed display name, or the normalised username when the display name is blank. No charge → `charge: null` and the wallet sat range. Unexpired pending → both bounds equal that amount and `charge` is `{ amountSats, expiresAt }` only. A bad wallet window is still 502 before any pin. Does not return the callback, the Lightning Address, or provider metadata. No spend token.

@@ -2059,6 +2059,13 @@
 - **Returns / side effects:** Hono app mounted at `/members`. Activity is 200 JSON or 503 `{ error: 'Gift stats are unavailable' }` on store throw or missing BTC-USD. Missing fiat never 503. Logs `members.get.failed`, `members.posts.failed`, `members.replies.failed`, or `account.activity.failed` on 503. Activity 503 logs `account.activity.failed` / `account.activity.fx_incomplete`. GET JSON includes `aboutMe` and `aboutMeHasPhoto`.
 - **Used by:** `createApp`.
 
+## Function: mentionsRoutes
+
+- **Purpose:** Hono sub-app for `GET /mentions`. Bearer session plus `requireAction(forum.read)`. Optional `q` is a username prefix for `@` suggestions as soon as someone types `@` in a forum post. Empty `q` returns the first usernames. At most 20 rows, ordered by `lower(trim(username))` then `id`. Blank usernames are skipped. Each account is `{ id, username, name }`; `name` falls back to the stored username when the display name is null or blank. Does not change stored `@username` marks.
+- **Inputs:** `{ auth: AuthStore }`. No injected clock (`Date.now`). Query `q` is optional.
+- **Returns / side effects:** Hono app mounted at `/mentions`. 200 `{ accounts }` or 401 `{ error: 'Unauthorized' }` / 409 `missing_requirements` / 400 `{ error: 'Invalid query' }`. No logging.
+- **Used by:** `createApp`.
+
 ## Function: serializeViewProfile
 
 - **Purpose:** Public profile card for the capability URL. Ten fields (`name`, `username`, `location`, `lightningAddress`, `lightningAddressVerified`, `createdAt`, `hasPasskey`, `aboutMe`, `aboutMeHasPhoto`, `aboutMessageId`). `aboutMessageId` is the live profile-note id only when `aboutMe !== null`, else `null` (never `profileMessageId` under another name). Omits `id`, `linkingKey`, `role`, and `viewKey`. `username` is `string | null` (LUD-16 / NIP-05 local-part). `location` is `string | null` (never omitted, never `""`).
@@ -2957,6 +2964,13 @@ Builds the operator-only external-pubkey inspection route.
 - **Inputs:** Forum body text.
 - **Returns / side effects:** `string[]`. No I/O.
 - **Used by:** `persistForumPost`.
+
+## Function: mentionQueryPrefix
+
+- **Purpose:** Normalise the optional `q` on `GET /mentions` into a username prefix for `@` suggestions. Empty, whitespace, or a lone `@` become `""`. Otherwise trim, strip one leading `@`, and lowercase. Longer than 32 characters or outside `a-z0-9._-` with a leading letter or digit is `null` (the route maps that to 400 `{ error: 'Invalid query' }`). Does not store `@username` marks.
+- **Inputs:** `string | undefined` query value.
+- **Returns / side effects:** Prefix string, `""`, or `null`. No I/O.
+- **Used by:** `mentionsRoutes`.
 
 ## Function: notifyForumMentions
 
