@@ -2118,7 +2118,13 @@ describe('InMemoryMessageStore', () => {
         place: { lat: 5, lng: 6, label: 'hid' },
       },
       { ...LATE, id: 'za', createdAt: same, place: { lat: 7, lng: 8, label: 'A' } },
-      { ...LATE, id: 'zb', createdAt: same, place: { lat: 9, lng: 10, label: 'B' } },
+      {
+        ...LATE,
+        id: 'zb',
+        text: 'Cafe\n\n#21GiftsShop',
+        createdAt: same,
+        place: { lat: 9, lng: 10, label: 'B' },
+      },
     ]);
     const listed = await store.listPlaces(10);
     expect(listed.map((row) => row.id)).toEqual(['zb', 'za', 'a']);
@@ -2130,7 +2136,9 @@ describe('InMemoryMessageStore', () => {
       lng: 10,
       label: 'B',
       accountId: 'acc',
+      shop: true,
     });
+    expect(listed[1]?.shop).toBe(false);
     expect((await store.listPlaces(1)).map((row) => row.id)).toEqual(['zb']);
   });
 
@@ -4941,18 +4949,19 @@ describe('PostgresMessageStore', () => {
         place_lat: '47.3',
         place_lng: '8.5',
         place_label: 'Zürich',
+        shop: true,
       },
     ];
     const listed = await new PostgresMessageStore(sql).listPlaces(10);
     expect(sql.queries[0]?.text).toMatch(
-      /SELECT id, name, created_at, place_lat, place_lng, place_label/,
+      /SELECT id, name, created_at, place_lat, place_lng, place_label, account_id,\s+\(text ~\* \$2\) AS shop/,
     );
     expect(sql.queries[0]?.text).toMatch(
       /WHERE parent_id IS NULL AND deleted_at IS NULL\s+AND place_lat IS NOT NULL AND place_lng IS NOT NULL/,
     );
     expect(sql.queries[0]?.text).toMatch(/ORDER BY created_at DESC, id DESC\s+LIMIT \$1/);
     expect(sql.queries[0]?.text).not.toMatch(/photo/);
-    expect(sql.queries[0]?.params).toEqual([10]);
+    expect(sql.queries[0]?.params).toEqual([10, '#21giftsshop([^a-z0-9_]|$)']);
     expect(listed).toEqual([
       {
         id: 'pin-1',
@@ -4961,6 +4970,8 @@ describe('PostgresMessageStore', () => {
         lat: 47.3,
         lng: 8.5,
         label: 'Zürich',
+        accountId: undefined,
+        shop: true,
       },
     ]);
   });
@@ -4982,6 +4993,7 @@ describe('PostgresMessageStore', () => {
     expect(listed[0]?.lat).toBe(1);
     expect(listed[0]?.lng).toBe(2);
     expect(listed[0]?.label).toBeNull();
+    expect(listed[0]?.shop).toBe(false);
   });
 
   it('listPlaces maps an undefined place_label to null', async () => {

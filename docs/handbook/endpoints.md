@@ -499,7 +499,7 @@
 
 ## Endpoint: GET /messages/places
 
-- **Purpose:** Bearer required. After auth, `requireAction(account, 'forum.read')`. Lists live top-level notes that have both coordinates (`parent_id` null, `deleted_at` null, `place_lat` and `place_lng` not null) via `listPlaces`. Query `limit` (integer 1–1000, default 1000). Body `{ places: [{ id, name, createdAt, lat, lng, label, accountId? }] }`. `accountId` is set for a 21.gifts author and omitted for an external pin. `createdAt` is ISO-8601. Newest `createdAt` then `id` descending. `label` is a string or null. Replies and soft-hidden notes are excluded. No photo bytes.
+- **Purpose:** Bearer required. After auth, `requireAction(account, 'forum.read')`. Lists live top-level notes that have both coordinates (`parent_id` null, `deleted_at` null, `place_lat` and `place_lng` not null) via `listPlaces`. Query `limit` (integer 1–1000, default 1000). Body `{ places: [{ id, name, createdAt, lat, lng, label, shop, accountId? }] }`. `shop` is true when the note text contains the shop tag. `accountId` is set for a 21.gifts author and omitted for an external pin. `createdAt` is ISO-8601. Newest `createdAt` then `id` descending. `label` is a string or null. Replies and soft-hidden notes are excluded. No photo bytes.
 - **Errors:** 401 `{ error: 'Unauthorized' }`; 400 `{ error: 'Invalid limit' }`; 409 `{ error: 'missing_requirements', missing: [...] }` when `forum.read` fails; 503 `{ error: 'Messages are unavailable' }` when `listPlaces` throws (`messages.places.failed`).
 - **Used by:** App map of live forum pins.
 - **Auth:** `Authorization: Bearer` session.

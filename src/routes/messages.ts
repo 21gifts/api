@@ -2422,6 +2422,7 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
               lat: row.lat,
               lng: row.lng,
               label: row.label,
+              shop: row.shop,
               ...(row.accountId === null ? {} : { accountId: row.accountId }),
             })),
           },

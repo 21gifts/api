@@ -5665,7 +5665,7 @@ describe('GET /messages/places', () => {
         id: 'zb',
         accountId: 'acc',
         name: 'Ada',
-        text: 'zb',
+        text: 'Cafe\n\n#21GiftsShop',
         createdAt: same,
         hasPhoto: false,
         hasVideo: false,
@@ -5701,7 +5701,9 @@ describe('GET /messages/places', () => {
       lng: 10,
       label: 'B',
       accountId: 'acc',
+      shop: true,
     });
+    expect(body.places[1]).toMatchObject({ shop: false });
     expect(body.places[1]?.label).toBe('A');
     expect(body.places[2]?.label).toBeNull();
     expect(body.places[2]?.createdAt).toBe(new Date('2026-08-01T00:00:00.000Z').toISOString());

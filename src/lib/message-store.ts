@@ -412,6 +412,8 @@ export interface MessageStore {
       lng: number;
       label: string | null;
       accountId: string | null;
+      /** True when the note text contains the shop tag. */
+      shop: boolean;
     }>
   >;
 
@@ -2339,6 +2341,7 @@ export class InMemoryMessageStore implements MessageStore {
       lng: number;
       label: string | null;
       accountId: string | null;
+      shop: boolean;
     }>
   > {
     const pinned = this.#rows.filter((row) => {
@@ -2369,6 +2372,7 @@ export class InMemoryMessageStore implements MessageStore {
           lng: place.lng,
           label: place.label,
           accountId: row.accountId,
+          shop: textHasHashtagToken(row.text, '21GiftsShop'),
         };
       }),
     );
@@ -4402,6 +4406,7 @@ export class PostgresMessageStore implements MessageStore {
       lng: number;
       label: string | null;
       accountId: string | null;
+      shop: boolean;
     }>
   > {
     const rows = await this.#sql.query<{
@@ -4412,14 +4417,16 @@ export class PostgresMessageStore implements MessageStore {
       place_lng: string | number | null;
       place_label: string | null;
       account_id: string | null;
+      shop: boolean | null;
     }>(
-      `SELECT id, name, created_at, place_lat, place_lng, place_label, account_id
+      `SELECT id, name, created_at, place_lat, place_lng, place_label, account_id,
+              (text ~* $2) AS shop
        FROM message
        WHERE parent_id IS NULL AND deleted_at IS NULL
          AND place_lat IS NOT NULL AND place_lng IS NOT NULL
        ORDER BY created_at DESC, id DESC
        LIMIT $1`,
-      [limit],
+      [limit, posixHashtagTokenPattern('21GiftsShop')],
     );
     return rows.map((row) => ({
       id: row.id,
@@ -4429,6 +4436,7 @@ export class PostgresMessageStore implements MessageStore {
       lng: Number(row.place_lng),
       label: row.place_label === null || row.place_label === undefined ? null : row.place_label,
       accountId: row.account_id,
+      shop: row.shop === true,
     }));
   }
 
