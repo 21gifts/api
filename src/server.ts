@@ -480,7 +480,7 @@ export function createApp(deps: AppDeps = {}): Hono {
       fiatRates,
     }),
   );
-  app.route('/mentions', mentionsRoutes({ auth: store }));
+  app.route('/mentions', mentionsRoutes({ auth: store, now }));
   app.route('/links', linksRoutes({ messages: messageStore, accounts: store }));
   app.route(
     '/view',

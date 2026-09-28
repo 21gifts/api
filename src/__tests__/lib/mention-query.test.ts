@@ -27,6 +27,7 @@ describe('mentionQueryPrefix', () => {
     expect(mentionQueryPrefix('.')).toBeNull();
     expect(mentionQueryPrefix('-ada')).toBeNull();
     expect(mentionQueryPrefix('ada bob')).toBeNull();
+    expect(mentionQueryPrefix('@ Ada')).toBeNull();
     expect(mentionQueryPrefix('@@ada')).toBeNull();
   });
 

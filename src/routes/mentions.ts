@@ -16,6 +16,8 @@ export const MENTION_SUGGEST_LIMIT = 20;
 interface MentionsRouteDeps {
   /** Shared auth persistence port. */
   auth: AuthStore;
+  /** Clock returning epoch milliseconds. */
+  now: () => number;
 }
 
 /** Auth outcome. */
@@ -30,8 +32,7 @@ async function authedAccount(
   if (token === null) {
     return null;
   }
-  // Clock is Date.now because this route has no injected clock.
-  return resolveSession(deps.auth, Date.now(), token);
+  return resolveSession(deps.auth, deps.now(), token);
 }
 
 /**
@@ -63,7 +64,7 @@ async function requireForumRead(deps: MentionsRouteDeps, c: Context): Promise<Me
  * prefix suggestions for `@` in a forum post. Does not change how a sent
  * post stores `@username` marks.
  *
- * @param deps - Auth store (no injected clock).
+ * @param deps - Auth store and clock.
  * @returns A Hono app with mention prefix GET.
  */
 export function mentionsRoutes(deps: MentionsRouteDeps): Hono {

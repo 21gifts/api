@@ -1,12 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import { Hono } from 'hono';
+import { SESSION_TTL_MS } from '@/lib/config';
 import { InMemoryAuthStore } from '@/lib/auth/store';
 import { mentionsRoutes } from '@/routes/mentions';
 
 const AUTH = { authorization: 'Bearer tok' };
 
-function mount(auth: InMemoryAuthStore): Hono {
-  return new Hono().route('/mentions', mentionsRoutes({ auth }));
+function mount(auth: InMemoryAuthStore, now: () => number = Date.now): Hono {
+  return new Hono().route('/mentions', mentionsRoutes({ auth, now }));
 }
 
 function hexKey(tag: string): string {
@@ -90,13 +91,23 @@ describe('GET /mentions', () => {
 
   it('returns 400 for an invalid query', async () => {
     const store = await seededCaller();
-    for (const q of ['_ada', 'ada bob', 'a'.repeat(33)]) {
+    for (const q of ['_ada', 'ada bob', '@ Ada', 'a'.repeat(33)]) {
       const res = await mount(store).request(`/mentions?q=${encodeURIComponent(q)}`, {
         headers: AUTH,
       });
       expect(res.status).toBe(400);
       expect(await res.json()).toEqual({ error: 'Invalid query' });
     }
+  });
+
+  it('expires the session on the injected clock', async () => {
+    const store = await seededCaller();
+    const createdAt = Date.now();
+    const res = await mount(store, () => createdAt + SESSION_TTL_MS + 1).request('/mentions', {
+      headers: AUTH,
+    });
+    expect(res.status).toBe(401);
+    expect(await res.json()).toEqual({ error: 'Unauthorized' });
   });
 
   it('caps an empty query at 20 rows in username order, not insertion or id order', async () => {
