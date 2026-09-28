@@ -115,4 +115,25 @@ describe('PostgresBannerStore', () => {
     expect(calls.some((text) => text.startsWith('DELETE'))).toBe(true);
     expect(calls.some((text) => text.includes('ON CONFLICT'))).toBe(true);
   });
+
+  it('treats an invalid account id as a missing slot and rethrows other read errors', async () => {
+    const invalid: SqlClient = {
+      query: async () => {
+        throw Object.assign(new Error('invalid input syntax for type uuid'), { code: '22P02' });
+      },
+      execute: async () => {},
+    };
+    expect(await new PostgresBannerStore(invalid).get('nope', 'picture')).toBeNull();
+    expect(await new PostgresBannerStore(invalid).get('nope', 'banner')).toBeNull();
+
+    const down: SqlClient = {
+      query: async () => {
+        throw Object.assign(new Error('database is shutting down'), { errno: '57P01' });
+      },
+      execute: async () => {},
+    };
+    await expect(new PostgresBannerStore(down).get('acc', 'banner')).rejects.toThrow(
+      'database is shutting down',
+    );
+  });
 });

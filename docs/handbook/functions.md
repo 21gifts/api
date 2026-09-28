@@ -2023,7 +2023,7 @@
 
 ## Function: pictureRoutes
 
-- **Purpose:** `PUT /pictures/me` stores or clears the signed-in account's profile photo. It does not change the wide image or the About me note. `GET /pictures/me` returns the stored bytes. `GET /pictures/:accountId.jpg|.png|.webp` is public and 404s when the extension does not match. On the device's local Sunday, that PUT is 403 `{ error: 'SUNDAY_REST' }` when `Time-Zone` names the zone. GET stays open. A missing, blank, or invalid zone does not refuse.
+- **Purpose:** `PUT /pictures/me` stores or clears the signed-in account's profile photo. It does not change the wide image or the About me note. `GET /pictures/me` returns the stored bytes. `GET /pictures/:accountId.jpg|.png|.webp` is public and 404s when the extension does not match or the account id is not a UUID. On the device's local Sunday, that PUT is 403 `{ error: 'SUNDAY_REST' }` when `Time-Zone` names the zone. GET stays open. A missing, blank, or invalid zone does not refuse.
 - **Inputs:** Auth store, optional image store, optional clock.
 - **Returns / side effects:** Hono app mounted at `/pictures`.
 - **Used by:** `createApp`.
@@ -2044,14 +2044,14 @@
 
 ## Function: PostgresBannerStore
 
-- **Purpose:** `account_image` rows, one per slot. `get` returns null for a missing, non-image, or non-byte row. `set(null)` deletes that slot only. `set(photo)` upserts that slot only. The About me photo is neither slot.
+- **Purpose:** `account_image` rows, one per slot. `get` returns null for a missing, non-image, or non-byte row, and when Postgres rejects the account id as a UUID (`22P02`). `set(null)` deletes that slot only. `set(photo)` upserts that slot only. The About me photo is neither slot. A write still uses the session account id, which is already a UUID.
 - **Inputs:** SQL client. `get(accountId, slot)` and `set(accountId, slot, photo | null)`.
 - **Returns / side effects:** Stored image or null. Writes one row of that slot.
 - **Used by:** SQL boot, shared by `/pictures`, `/banners`, and the Nostr worker.
 
 ## Function: bannerRoutes
 
-- **Purpose:** `PUT /banners/me` stores or clears the signed-in account's wide image. A portrait, a square, a thin strip, and bytes that are not a JPEG, PNG, or WebP are rejected. `GET /banners/me` returns the stored bytes. `GET /banners/:accountId.jpg|.png|.webp` is public and 404s when the extension does not match the stored MIME. The profile photo and the About me photo are not this image. On the device's local Sunday, that PUT is 403 `{ error: 'SUNDAY_REST' }` when `Time-Zone` names the zone. GET stays open. A missing, blank, or invalid zone does not refuse.
+- **Purpose:** `PUT /banners/me` stores or clears the signed-in account's wide image. A portrait, a square, a thin strip, and bytes that are not a JPEG, PNG, or WebP are rejected. `GET /banners/me` returns the stored bytes. `GET /banners/:accountId.jpg|.png|.webp` is public and 404s when the extension does not match the stored MIME or the account id is not a UUID. The profile photo and the About me photo are not this image. On the device's local Sunday, that PUT is 403 `{ error: 'SUNDAY_REST' }` when `Time-Zone` names the zone. GET stays open. A missing, blank, or invalid zone does not refuse.
 - **Inputs:** Auth store, optional banner store, optional clock.
 - **Returns / side effects:** Hono app mounted at `/banners`.
 - **Used by:** `createApp`.

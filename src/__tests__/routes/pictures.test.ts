@@ -1,8 +1,9 @@
 import { Hono } from 'hono';
 import { encode as encodeJpeg } from 'jpeg-js';
 import { describe, expect, it } from 'vitest';
+import type { SqlClient } from '@/lib/auth/sql';
 import { InMemoryAuthStore } from '@/lib/auth/store';
-import { InMemoryBannerStore } from '@/lib/banner-store';
+import { InMemoryBannerStore, PostgresBannerStore } from '@/lib/banner-store';
 import { pictureRoutes } from '@/routes/pictures';
 import { createApp } from '@/server';
 
@@ -134,5 +135,25 @@ describe('picture routes', () => {
     expect(
       (await app.request('/pictures/me', { headers: { authorization: 'Bearer tok' } })).status,
     ).toBe(404);
+  });
+
+  it('answers 404 when Postgres rejects the account id', async () => {
+    const sql: SqlClient = {
+      query: async () => {
+        throw Object.assign(new Error('invalid input syntax for type uuid'), { errno: '22P02' });
+      },
+      execute: async () => {},
+    };
+    const app = createApp({
+      authStore: new InMemoryAuthStore(),
+      now: () => 1,
+      bannerStore: new PostgresBannerStore(sql),
+    });
+    const picture = await app.request('/pictures/nope.jpg');
+    const banner = await app.request('/banners/nope.jpg');
+    expect(picture.status).toBe(404);
+    expect(banner.status).toBe(404);
+    expect(await picture.json()).toEqual({ error: 'Not found' });
+    expect(await banner.json()).toEqual({ error: 'Not found' });
   });
 });

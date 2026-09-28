@@ -775,7 +775,7 @@
 ## Endpoint: GET /pictures/:file
 
 - **Purpose:** Public. `:file` is `{accountId}.jpg`, `.png`, or `.webp`. Returns the stored profile photo when the extension matches. No auth. Used as the Nostr kind:0 `picture` URL.
-- **Errors:** 404 `{ error: 'Not found' }` when the name does not match, nothing is stored, or the extension does not match.
+- **Errors:** 404 `{ error: 'Not found' }` when the name does not match, nothing is stored, the account id is not a UUID, or the extension does not match.
 - **Used by:** Nostr clients.
 - **Auth:** none.
 
@@ -796,7 +796,7 @@
 ## Endpoint: GET /banners/:file
 
 - **Purpose:** Public. `:file` is `{accountId}.jpg`, `.png`, or `.webp`. Returns the stored wide image when the extension matches the stored MIME. No auth. Used as the Nostr kind:0 `banner` URL.
-- **Errors:** 404 `{ error: 'Not found' }` when the name does not match, nothing is stored, or the extension does not match.
+- **Errors:** 404 `{ error: 'Not found' }` when the name does not match, nothing is stored, the account id is not a UUID, or the extension does not match.
 - **Used by:** Nostr clients.
 - **Auth:** none.
 

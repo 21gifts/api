@@ -5,7 +5,7 @@
  * A portrait is stored only as the profile photo, never as the wide image.
  */
 
-import type { SqlClient } from '@/lib/auth/sql';
+import { sqlState, type SqlClient } from '@/lib/auth/sql';
 import type { ForumPhoto, ForumPhotoContentType } from '@/lib/message';
 import { imageDisplaySize } from '@/lib/nostr/image';
 
@@ -149,11 +149,18 @@ function slotKey(accountId: string, slot: ProfileImageSlot): string {
   return `${accountId}\u0000${slot}`;
 }
 
+/** Postgres `22P02` in Bun SQL `errno` or node-postgres `code`. */
+function isInvalidUuid(error: unknown): boolean {
+  return sqlState(error) === '22P02';
+}
+
 /** Process-local {@link BannerStore}. */
 export class InMemoryBannerStore implements BannerStore {
   readonly #rows = new Map<string, ForumPhoto>();
 
   /**
+   * Read one slot from memory. Does not touch the other slot.
+   *
    * @param accountId - Account id.
    * @param slot - `picture` or `banner`.
    * @returns A copy of that slot, or `null`.
@@ -167,6 +174,8 @@ export class InMemoryBannerStore implements BannerStore {
   }
 
   /**
+   * Replace or clear one slot in memory. Does not touch the other slot.
+   *
    * @param accountId - Account id.
    * @param slot - `picture` or `banner`.
    * @param photo - Image to store, or `null` to clear that slot only.
@@ -208,6 +217,8 @@ export class PostgresBannerStore implements BannerStore {
   readonly #sql: SqlClient;
 
   /**
+   * Open a store for the existing `account_image` table.
+   *
    * @param sql - Parameter-bound SQL client. The table must already exist.
    */
   constructor(sql: SqlClient) {
@@ -215,15 +226,25 @@ export class PostgresBannerStore implements BannerStore {
   }
 
   /**
+   * Read one slot from `account_image`. An id Postgres rejects as a UUID is missing.
+   *
    * @param accountId - Account id.
    * @param slot - `picture` or `banner`.
-   * @returns The stored image, or `null` when the row is missing or unreadable.
+   * @returns The stored image, or `null` when the row is missing, unreadable, or not a UUID.
    */
   async get(accountId: string, slot: ProfileImageSlot): Promise<ForumPhoto | null> {
-    const rows = await this.#sql.query<BannerRow>(
-      `SELECT content_type, data FROM account_image WHERE account_id = $1 AND slot = $2`,
-      [accountId, slot],
-    );
+    let rows: BannerRow[];
+    try {
+      rows = await this.#sql.query<BannerRow>(
+        `SELECT content_type, data FROM account_image WHERE account_id = $1 AND slot = $2`,
+        [accountId, slot],
+      );
+    } catch (error) {
+      if (isInvalidUuid(error)) {
+        return null;
+      }
+      throw error;
+    }
     const row = rows[0];
     if (row === undefined) {
       return null;
@@ -237,6 +258,8 @@ export class PostgresBannerStore implements BannerStore {
   }
 
   /**
+   * Replace or clear one slot in `account_image`. Does not touch the other slot.
+   *
    * @param accountId - Account id.
    * @param slot - `picture` or `banner`.
    * @param photo - Image to store, or `null` to delete the row.
