@@ -255,15 +255,15 @@ export interface PasskeyRenewAttemptInput {
   stage: PasskeyRenewStage;
   /** Attempt result. */
   outcome: PasskeyRenewOutcome;
-  /** Client exception name, or `null`. Capped at 80. */
+  /** Client exception name, or `null`. Redacted, then capped at 80. */
   errorName: string | null;
-  /** Client exception code, or `null`. Capped at 80. */
+  /** Client exception code, or `null`. Redacted, then capped at 80. */
   errorCode: string | null;
   /** HTTP status when the server recorded the row, or `null`. */
   httpStatus: number | null;
-  /** Safe error string, or `null`. Capped at 500 and redacted. */
+  /** Safe error string, or `null`. Redacted, then capped at 500. */
   message: string | null;
-  /** User-Agent header, or `null`. Capped at 300. */
+  /** User-Agent header, or `null`. Redacted, then capped at 300. */
   userAgent: string | null;
 }
 
@@ -328,7 +328,9 @@ export interface AuthStore {
   hasUnacknowledgedPasskeyRenewFailure(accountId: string): Promise<boolean>;
   /**
    * Whether this account has a failed renew row that was acknowledged.
-   * That closes the guided renew. The account row is unchanged.
+   * This is only the row predicate. Owner JSON `passkeyRenewClosed` is
+   * true only when this is true and `walletRequired` is not true.
+   * The account row is unchanged.
    *
    * @param accountId - Account to inspect.
    * @returns `true` only when such a row exists.

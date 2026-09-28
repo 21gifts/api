@@ -155,8 +155,9 @@ export interface OwnerAccountResponse extends AccountResponse {
    */
   passkeyRenewFailed: boolean;
   /**
-   * True when a failed renew was acknowledged. The guided renew stays
-   * closed. The account still has no seed. Owner-only.
+   * True only when `walletRequired` is not true and a failed renew row
+   * has non-null `acknowledged_at`. A later seed is not closed. While
+   * this is true the account still has no seed. Owner-only.
    */
   passkeyRenewClosed: boolean;
 }
@@ -561,8 +562,8 @@ export function serializeDebugAccountDetail(
  * @param passkeyCredentialId - Current passkey id (base64url), or `null`.
  * @param passkeyRenewFailed - True when an unacknowledged failed renew exists.
  *   Defaults to `false` so existing direct callers keep compiling.
- * @param passkeyRenewClosed - True when a failed renew was acknowledged.
- *   Defaults to `false`.
+ * @param passkeyRenewClosed - True only when `walletRequired` is not true
+ *   and an acknowledged failed renew exists. Defaults to `false`.
  * @returns Owner fields including `viewKey`, `setup`, `missing`,
  * `hasPosted`, `location`, `aboutMe`, `aboutMeHasPhoto`,
  * `notificationLevel`, `amountUnit`, `locale`, `fiat`, `funding`,

@@ -235,6 +235,7 @@ describe('GET /me', () => {
       walletRequired: boolean;
       walletBackupSeenAt: number | null;
       passkeyRenewFailed: boolean;
+      passkeyRenewClosed: boolean;
     };
     expect(body.id).toBe('acc');
     expect(body.role).toBe('basis');
@@ -256,6 +257,7 @@ describe('GET /me', () => {
     expect(body.walletRequired).toBe(false);
     expect(body.walletBackupSeenAt).toBeNull();
     expect(body.passkeyRenewFailed).toBe(false);
+    expect(body.passkeyRenewClosed).toBe(false);
   });
 
   it('returns funding none for a verified account without a grant', async () => {
@@ -561,9 +563,11 @@ describe('POST /me/passkey-renew/report', () => {
     expect(res.status).toBe(200);
     const body = (await res.json()) as {
       passkeyRenewFailed: boolean;
+      passkeyRenewClosed: boolean;
       walletRequired: boolean;
     };
     expect(body.passkeyRenewFailed).toBe(true);
+    expect(body.passkeyRenewClosed).toBe(false);
     expect(body.walletRequired).toBe(false);
     expect((await store.getAccount('acc'))?.walletRequired === true).toBe(false);
     expect(store.inserts).toHaveLength(1);

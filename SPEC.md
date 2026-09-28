@@ -91,8 +91,8 @@ Public base URLs used in examples:
 | POST   | `/auth/passkey/authenticate/finish`                  | none                       | Verify assertion, issue session                                                                                                                                                                                                                             |
 | POST   | `/auth/passkey/replace/begin`                        | Bearer                     | 409 refusal after a valid Bearer (a recovery phrase cannot be replaced; no challenge)                                                                                                                                                                       |
 | POST   | `/auth/passkey/replace/finish`                       | Bearer                     | 409 refusal that deletes nothing and keeps the session                                                                                                                                                                                                      |
-| POST   | `/auth/passkey/seed/begin`                           | Bearer                     | Creation options for one extra seed passkey; 409 when walletRequired is already true; no excludeCredentials.                                                                                                                                                |
-| POST   | `/auth/passkey/seed/finish`                          | Bearer                     | Verify attestation, insert an additional passkey, set walletRequired true, keep the login passkey and the session.                                                                                                                                          |
+| POST   | `/auth/passkey/seed/begin`                           | Bearer                     | Creation options for one extra seed passkey; 409 when walletRequired is already true stores a failed renew row and does not change the account; a 200 stores no row; no excludeCredentials.                                                                 |
+| POST   | `/auth/passkey/seed/finish`                          | Bearer                     | Verify attestation, insert an additional passkey, set walletRequired true, keep the login passkey and the session. Failure stores a failed renew row. Success stores succeeded, acknowledges open failures, and returns passkeyRenewClosed false.           |
 | GET    | `/me`                                                | `Authorization: Bearer`    | Account (`setup` + factual `missing` + `hasPosted` + `aboutMe` + `aboutMeHasPhoto` + `aboutMessageId` + `notificationLevel` + `amountUnit` + `locale` + `fiat`)                                                                                             |
 | POST   | `/me/amount-unit`                                    | Bearer                     | Set owner amount-entry unit (`btc` or `fiat`, default `btc`)                                                                                                                                                                                                |
 | POST   | `/me/locale`                                         | Bearer                     | Set owner UI language (`en`, `de`, `es`, or `fil`). Null until set. `onlyIfUnset` does not overwrite a stored value.                                                                                                                                        |
@@ -593,6 +593,8 @@ are the account id.
 
 When `walletRequired` is true → **Response** `409`:
 `{ "error": "This account already has a recovery phrase" }` (no challenge).
+That 409 stores a failed renew row and does not change the account.
+A 200 stores no renew row. 401 and 500 store no row.
 
 Missing or invalid Bearer stays **401** `{ "error": "Unauthorized" }`.
 Unconfigured WebAuthn stays **500** `{ "error": "Server auth is not configured" }`,
@@ -618,10 +620,14 @@ replace finish: Invalid origin, Unknown or expired challenge, Challenge
 expired, Challenge already used, Wrong challenge type, Invalid passkey,
 and `{ "error": "Expected a JSON body with challengeId and credential" }`.
 
+A 400 or 409 after the session is known stores a failed renew row and does
+not change the account. Success stores `outcome: "succeeded"` with null
+error fields, then acknowledges open failed rows. 401 and 500 store no row.
+
 **Response** `200`: `{ "account": { ... } }` — owner JSON via
 `serializeOwnerAccountWithPosts`, no `token`. `passkeyCredentialId` is the
-new credential id, `walletRequired` is true, `walletBackupSeenAt` is
-unchanged. Logs `auth.passkey.seed.ok` only on success.
+new credential id, `walletRequired` is true, `passkeyRenewClosed` is false,
+`walletBackupSeenAt` is unchanged. Logs `auth.passkey.seed.ok` only on success.
 
 Missing or invalid Bearer stays **401** `{ "error": "Unauthorized" }`.
 Unconfigured WebAuthn stays **500** `{ "error": "Server auth is not configured" }`,
@@ -771,7 +777,10 @@ The first successful POST sets `walletBackupSeenAt` to the server clock
 Bearer required. Client report of a passkey renew attempt. Accepts only
 `failed` or `cancelled` (`succeeded` is 400). Stores a renew row (server
 generates `id` and `createdAt`; User-Agent from the header). Does not
-change the account row. Returns owner JSON including `passkeyRenewFailed` and `passkeyRenewClosed`. `passkeyRenewClosed` is true only while `walletRequired` is false.
+change the account row. Before the length cap, a phrase of 12 or more
+whitespace-separated tokens, or a run of 64 or more token characters, is
+stored as `[redacted]` on error name (80), error code (80), message (500),
+and user agent (300). Returns owner JSON including `passkeyRenewFailed` and `passkeyRenewClosed`. `passkeyRenewClosed` is true only while `walletRequired` is false.
 
 Missing/invalid bearer → **Response** `401` `{ "error": "Unauthorized" }`.
 
