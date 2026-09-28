@@ -638,13 +638,17 @@ export interface OwnerFundingLookup {
  *   `passkeyCredentialId` null. When present, loads the grant and
  *   `authStore.getPasskeyCredentialForAccount` for `passkeyCredentialId`
  *   only when `walletRequired` is true (otherwise that field is null).
- *   When `funding` is omitted, `passkeyRenewFailed` is false and the auth
- *   store is not called for that flag. When `funding` is passed, loads
- *   `hasUnacknowledgedPasskeyRenewFailure` even if `walletRequired` is false.
+ *   When `funding` is omitted, `passkeyRenewFailed` and `passkeyRenewClosed`
+ *   are false and the auth store is not called for those flags. When
+ *   `funding` is passed, loads `hasUnacknowledgedPasskeyRenewFailure` even
+ *   if `walletRequired` is false, and sets `passkeyRenewClosed` only when
+ *   `walletRequired` is not true and `hasAcknowledgedPasskeyRenewFailure`
+ *   is true.
  * @returns Owner JSON including `hasPosted`, `aboutMe`, `aboutMeHasPhoto`,
  *   `notificationLevel`, `amountUnit`, `locale`, `fiat`, `funding`,
- *   `walletRequired`, `walletBackupSeenAt`, `passkeyCredentialId`, and
- *   `passkeyRenewFailed` (via {@link serializeOwnerAccount}).
+ *   `walletRequired`, `walletBackupSeenAt`, `passkeyCredentialId`,
+ *   `passkeyRenewFailed`, and `passkeyRenewClosed` (via
+ *   {@link serializeOwnerAccount}).
  *   `aboutMe` is `null` when the profile note is missing or `deletedAt` is
  *   set, else `aboutMeFromNote(account.name, row.text, row.name)`.
  *   `aboutMeHasPhoto` is true iff the live row has `hasPhoto === true`.

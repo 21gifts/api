@@ -982,14 +982,14 @@
 
 ## Endpoint: POST /me/passkey-renew/report
 
-- **Purpose:** Bearer required. Strict JSON `{ stage, outcome, errorName, errorCode, httpStatus, message }`. Accepts only `failed` or `cancelled` (`succeeded` is 400). Stores a passkey renew row (server id and `createdAt`; User-Agent from the header). Does not change the account row. Returns owner JSON including `passkeyRenewFailed`.
+- **Purpose:** Bearer required. Strict JSON `{ stage, outcome, errorName, errorCode, httpStatus, message }`. Accepts only `failed` or `cancelled` (`succeeded` is 400). Stores a passkey renew row (server id and `createdAt`; User-Agent from the header). Does not change the account row. Returns owner JSON including `passkeyRenewFailed` and `passkeyRenewClosed`. `passkeyRenewClosed` is true only while `walletRequired` is false.
 - **Errors:** 401 without session; 400 for a bad report body (invalid JSON, unknown keys, or `outcome: "succeeded"`).
 - **Used by:** App passkey renew ceremony (browser cancel / PRF failure) via `POST /me/passkey-renew/report`.
 - **Auth:** `Authorization: Bearer` session.
 
 ## Endpoint: POST /me/passkey-renew/ack
 
-- **Purpose:** Bearer required. Empty body is fine. Acknowledges failed unacknowledged renew rows only (`outcome = 'failed'` and `acknowledged_at` IS NULL). Does not change the account row. Returns owner JSON including `passkeyRenewFailed`.
+- **Purpose:** Bearer required. Empty body is fine. Acknowledges failed unacknowledged renew rows only (`outcome = 'failed'` and `acknowledged_at` IS NULL). Does not change the account row. Returns owner JSON including `passkeyRenewFailed` and `passkeyRenewClosed`. `passkeyRenewClosed` is true only while `walletRequired` is false.
 - **Errors:** 401 without session.
 - **Used by:** App after the owner dismisses a failed renew.
 - **Auth:** `Authorization: Bearer` session.
