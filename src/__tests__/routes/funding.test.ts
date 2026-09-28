@@ -1383,7 +1383,7 @@ describe('GET /funding/payout-days', () => {
     expect(res.status).toBe(200);
     const body = (await res.json()) as {
       days: string[];
-      rows: Array<{ accountId: string; name: string; days: string[] }>;
+      rows: Array<{ accountId: string; name: string; days: string[]; welcome: boolean[] }>;
     };
     expect(body.days[0]).toBe('2023-11-08');
     expect(body.days[6]).toBe('2023-11-14');
@@ -1391,6 +1391,8 @@ describe('GET /funding/payout-days', () => {
     expect(ada?.name).toBe('Ada');
     expect(ada?.days[4]).toBe('paid');
     expect(ada?.days[5]).toBe('missed');
+    expect(ada?.welcome).toEqual([false, false, false, false, false, true, false]);
+    expect(ada?.welcome[4]).toBe(false);
     expect(parsedEvents(warn).some((event) => event['event'] === 'funding.payouts.listed')).toBe(
       true,
     );
