@@ -1700,7 +1700,7 @@
 
 ## Function: diagnosticsRoutes
 
-- **Purpose:** Public `POST /` ingest mounted at `/diagnostics`. No auth. Only allowlisted scalar keys are stored on a `client` row, then the response is 204 with an empty body. The per-IP cap (60) and the global cap (600) per 60_000 ms are recorded only after the insert resolves. A thrown insert does not consume a slot. Rows are kept forever (no TTL, no DELETE). Secrets and raw bodies are not stored.
+- **Purpose:** Public `POST /` ingest mounted at `/diagnostics`. No auth. Only allowlisted scalar keys are stored on a `client` row, then the response is 204 with an empty body. The per-IP cap (60) and the global cap (600) per 60_000 ms are reserved before the insert await, so two overlapping requests cannot share one slot, and released if that insert throws. Rows are kept forever (no TTL, no DELETE). Secrets and raw bodies are not stored.
 - **Inputs:** `{ store: DiagnosticStore, now?: () => number }`. Optional `cf-connecting-ip` is the per-IP key only when it matches a short IP token; any other value is ignored. Optional `User-Agent` has controls stripped, is truncated to 200, and is omitted when nothing remains.
 - **Returns / side effects:** 204 empty on accept; 400 `{ error: 'Invalid diagnostics' }` when JSON or a field fails the allowlist; 429 `{ error: 'Too many diagnostics' }` over the cap, without recording an accept timestamp (at most one `diagnostics.rate_limited` server row per window, and only after that append resolves); 500 `{ error: 'Log is unavailable' }` when the client-row insert throws. No PRF bytes, mnemonic, session token, view key, nsec, Authorization, Cookie, WebAuthn challenge, attestation, signatures, or raw body are stored.
 

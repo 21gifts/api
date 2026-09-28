@@ -221,6 +221,14 @@ describe('diagnosticsRoutes', () => {
     expect(await limited.json()).toEqual({ error: 'Too many diagnostics' });
   });
 
+  it('releases a no-IP slot when the insert throws', async () => {
+    const store = new RecordingStore();
+    store.failFirstClient = true;
+    const app = mount(store, now);
+    expect((await post(app)).status).toBe(500);
+    expect((await post(app)).status).toBe(204);
+  });
+
   it('does not consume a rate-limit slot when the client append throws', async () => {
     const store = new RecordingStore();
     store.failFirstClient = true;
@@ -233,6 +241,51 @@ describe('diagnosticsRoutes', () => {
       expect((await post(app, ip)).status).toBe(204);
     }
     expect((await post(app, ip)).status).toBe(429);
+  });
+
+  it('keeps the reserved slot while an insert is still in flight', async () => {
+    let holdClients = false;
+    let releaseHold: () => void = () => undefined;
+    let hold = Promise.resolve();
+    let entered = 0;
+    const store: DiagnosticStore = {
+      async append(row) {
+        if (row.source !== 'client') {
+          return;
+        }
+        entered += 1;
+        if (holdClients) {
+          await hold;
+        }
+      },
+      listLatest: async () => [],
+    };
+    const app = mount(store, now);
+    const ip = { 'cf-connecting-ip': '9.9.9.9' };
+    for (let i = 0; i < 59; i++) {
+      expect((await post(app, ip)).status).toBe(204);
+    }
+    holdClients = true;
+    hold = new Promise<void>((resolve) => {
+      releaseHold = resolve;
+    });
+    try {
+      const first = post(app, ip);
+      for (let i = 0; i < 50 && entered < 60; i++) {
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      }
+      expect(entered).toBe(60);
+      const second = post(app, ip);
+      for (let i = 0; i < 50 && entered < 61; i++) {
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      }
+      expect(entered).toBe(60);
+      releaseHold();
+      expect((await second).status).toBe(429);
+      expect((await first).status).toBe(204);
+    } finally {
+      releaseHold();
+    }
   });
 
   it('does not remember lastRateLimitedAt when the rate-limited append throws', async () => {

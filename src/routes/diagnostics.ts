@@ -53,8 +53,22 @@ export function resetDiagnosticRateLimit(): void {
   lastRateLimitedAt = null;
 }
 
-function inWindow(timestamps: number[], now: number): number[] {
-  return timestamps.filter((timestamp) => now - timestamp < WINDOW_MS);
+function pruneWindow(timestamps: number[], now: number): void {
+  let write = 0;
+  for (const timestamp of timestamps) {
+    if (now - timestamp < WINDOW_MS) {
+      timestamps[write] = timestamp;
+      write += 1;
+    }
+  }
+  timestamps.length = write;
+}
+
+function releaseReserved(timestamps: number[], reserved: number): void {
+  const index = timestamps.lastIndexOf(reserved);
+  if (index !== -1) {
+    timestamps.splice(index, 1);
+  }
 }
 
 function sanitizeUserAgent(raw: string | undefined): string | undefined {
@@ -172,10 +186,25 @@ export function diagnosticsRoutes(deps: { store: DiagnosticStore; now?: () => nu
     const now = clock();
     const ipHeader = c.req.header('cf-connecting-ip');
     const ip = ipHeader !== undefined && CF_IP_RE.test(ipHeader) ? ipHeader : undefined;
-    const globalInWindow = inWindow(globalAccepted, now);
-    const ipInWindow = ip === undefined ? [] : inWindow(ipAccepted.get(ip) ?? [], now);
-    if (globalInWindow.length >= GLOBAL_LIMIT || ipInWindow.length >= PER_IP_LIMIT) {
+    pruneWindow(globalAccepted, now);
+    let ipBucket: number[] | undefined;
+    if (ip !== undefined) {
+      const existing = ipAccepted.get(ip);
+      if (existing === undefined) {
+        ipBucket = [];
+        ipAccepted.set(ip, ipBucket);
+      } else {
+        ipBucket = existing;
+      }
+      pruneWindow(ipBucket, now);
+    }
+    if (
+      globalAccepted.length >= GLOBAL_LIMIT ||
+      (ipBucket !== undefined && ipBucket.length >= PER_IP_LIMIT)
+    ) {
       if (lastRateLimitedAt === null || now - lastRateLimitedAt >= WINDOW_MS) {
+        const previousRateLimitedAt = lastRateLimitedAt;
+        lastRateLimitedAt = now;
         try {
           await deps.store.append({
             id: crypto.randomUUID(),
@@ -184,14 +213,18 @@ export function diagnosticsRoutes(deps: { store: DiagnosticStore; now?: () => nu
             event: 'diagnostics.rate_limited',
             fields: {},
           });
-          lastRateLimitedAt = now;
         } catch {
-          // Append failed: still 429, and do not remember the time.
+          lastRateLimitedAt = previousRateLimitedAt;
         }
       }
       return c.json({ error: 'Too many diagnostics' }, 429);
     }
 
+    // Reserve before the insert await so a second in-flight request cannot take the same slot.
+    globalAccepted.push(now);
+    if (ipBucket !== undefined) {
+      ipBucket.push(now);
+    }
     const fields: ClientFields = { ...parsed.fields };
     const userAgent = sanitizeUserAgent(c.req.header('user-agent'));
     if (userAgent !== undefined) {
@@ -206,12 +239,11 @@ export function diagnosticsRoutes(deps: { store: DiagnosticStore; now?: () => nu
         fields,
       });
     } catch {
+      releaseReserved(globalAccepted, now);
+      if (ipBucket !== undefined) {
+        releaseReserved(ipBucket, now);
+      }
       return c.json({ error: 'Log is unavailable' }, 500);
-    }
-    globalAccepted = globalInWindow;
-    globalAccepted.push(now);
-    if (ip !== undefined) {
-      ipAccepted.set(ip, ipInWindow.concat(now));
     }
     return c.body(null, 204);
   });
