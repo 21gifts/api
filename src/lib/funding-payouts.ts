@@ -8,8 +8,8 @@ import type { GiftRow } from '@/lib/gift';
  * `blocked` is not entitled that UTC day. `missed` is entitled and no daily
  * payout was recorded. `paid` is a `daily` gift that UTC day. This is the
  * post-gate grant rule. Cleared trial or admission history and the spend
- * roster are not reconstructed. Welcome gifts and moderator stipends are
- * ignored.
+ * roster are not reconstructed. A welcome gift does not change the cell.
+ * Moderator stipends are ignored.
  */
 export type PayoutDayCell = 'blocked' | 'missed' | 'paid';
 
@@ -27,7 +27,7 @@ export interface PayoutMatrixAccount {
 
 /** One person across the seven UTC days, oldest first. */
 export interface PayoutMatrixRow {
-  /** Account id, or null when a daily gift matches no account. */
+  /** Account id, or null when a daily or welcome gift matches no account. */
   accountId: string | null;
   /** Trimmed display name, or the lowercased handle when there is no account. */
   name: string | null;
@@ -41,9 +41,11 @@ export interface PayoutMatrixRow {
     PayoutDayCell,
     PayoutDayCell,
   ];
+  /** Welcome gift that UTC day, same index order as {@link PayoutMatrix.days}. */
+  welcome: readonly [boolean, boolean, boolean, boolean, boolean, boolean, boolean];
 }
 
-/** Seven UTC days and the people who were entitled or paid in that window. */
+/** Seven UTC days and the people who were entitled, paid, or given a welcome gift. */
 export interface PayoutMatrix {
   /** Oldest first. The last entry is the UTC day of `nowMs`. */
   days: readonly [string, string, string, string, string, string, string];
@@ -153,13 +155,49 @@ function weekCells(
 }
 
 /**
- * True when the row should appear (entitled or paid on at least one day).
+ * Seven welcome flags for one person.
+ *
+ * @param days - Window, oldest first.
+ * @param welcomeDays - UTC days with a welcome gift.
+ * @returns The week of flags.
+ */
+function weekWelcome(
+  days: PayoutMatrix['days'],
+  welcomeDays: ReadonlySet<string>,
+): PayoutMatrixRow['welcome'] {
+  return [
+    welcomeDays.has(days[0]),
+    welcomeDays.has(days[1]),
+    welcomeDays.has(days[2]),
+    welcomeDays.has(days[3]),
+    welcomeDays.has(days[4]),
+    welcomeDays.has(days[5]),
+    welcomeDays.has(days[6]),
+  ];
+}
+
+/**
+ * Record a UTC day against an account id or unmatched local part.
+ *
+ * @param map - Days keyed by account id or handle.
+ * @param key - Account id or local part.
+ * @param day - UTC day `YYYY-MM-DD`.
+ */
+function addUtcDay(map: Map<string, Set<string>>, key: string, day: string): void {
+  const set = map.get(key) ?? new Set<string>();
+  set.add(day);
+  map.set(key, set);
+}
+
+/**
+ * True when the row should appear (missed, paid, or a welcome gift).
  *
  * @param days - Seven cells.
- * @returns `true` when any cell is `missed` or `paid`.
+ * @param welcome - Seven welcome flags.
+ * @returns `true` when any cell is `missed` or `paid`, or any welcome flag is true.
  */
-function visible(days: readonly PayoutDayCell[]): boolean {
-  return days.some((day) => day === 'missed' || day === 'paid');
+function visible(days: readonly PayoutDayCell[], welcome: readonly boolean[]): boolean {
+  return days.some((day) => day === 'missed' || day === 'paid') || welcome.some((flag) => flag);
 }
 
 /**
@@ -197,7 +235,9 @@ export function comparePayoutRows(a: PayoutMatrixRow, b: PayoutMatrixRow): numbe
  *
  * @param input - Clock, accounts, stored grants, and outbound gifts. The last
  *   column is the UTC day of `nowMs`. Grants are not passed through lazy trial
- *   expiry. Only `kind === 'daily'` inside the window marks a day paid.
+ *   expiry. `kind === 'daily'` inside the window marks a day paid.
+ *   `kind === 'welcome'` sets that day's welcome flag. Moderator stipends
+ *   are ignored.
  * @returns Seven days and the included rows, named first.
  */
 export function buildFundingPayoutMatrix(input: {
@@ -230,9 +270,11 @@ export function buildFundingPayoutMatrix(input: {
   }
 
   const paidByAccount = new Map<string, Set<string>>();
-  const unmatched = new Map<string, Set<string>>();
+  const welcomeByAccount = new Map<string, Set<string>>();
+  const unmatchedPaid = new Map<string, Set<string>>();
+  const unmatchedWelcome = new Map<string, Set<string>>();
   for (const gift of input.gifts) {
-    if (gift.kind !== 'daily') {
+    if (gift.kind !== 'daily' && gift.kind !== 'welcome') {
       continue;
     }
     const day = utcDay(gift.paidAt.getTime());
@@ -244,23 +286,22 @@ export function buildFundingPayoutMatrix(input: {
       continue;
     }
     const owners = byPart.get(part);
+    const daily = gift.kind === 'daily';
     if (owners === undefined) {
-      const set = unmatched.get(part) ?? new Set<string>();
-      set.add(day);
-      unmatched.set(part, set);
+      addUtcDay(daily ? unmatchedPaid : unmatchedWelcome, part, day);
     } else {
       const winner = owners[0] as PayoutMatrixAccount;
-      const set = paidByAccount.get(winner.id) ?? new Set<string>();
-      set.add(day);
-      paidByAccount.set(winner.id, set);
+      addUtcDay(daily ? paidByAccount : welcomeByAccount, winner.id, day);
     }
   }
 
   const rows: PayoutMatrixRow[] = [];
   for (const account of input.accounts) {
     const paid = paidByAccount.get(account.id) ?? new Set<string>();
+    const welcomeDays = welcomeByAccount.get(account.id) ?? new Set<string>();
     const cells = weekCells(days, paid, account.role, grantsById.get(account.id));
-    if (!visible(cells)) {
+    const welcome = weekWelcome(days, welcomeDays);
+    if (!visible(cells, welcome)) {
       continue;
     }
     const trimmed = (account.name ?? '').trim();
@@ -268,13 +309,18 @@ export function buildFundingPayoutMatrix(input: {
       accountId: account.id,
       name: trimmed === '' ? null : trimmed,
       days: cells,
+      welcome,
     });
   }
-  for (const [part, paid] of unmatched) {
+  const unmatchedParts = new Set<string>([...unmatchedPaid.keys(), ...unmatchedWelcome.keys()]);
+  for (const part of unmatchedParts) {
+    const paid = unmatchedPaid.get(part) ?? new Set<string>();
+    const welcomeDays = unmatchedWelcome.get(part) ?? new Set<string>();
     rows.push({
       accountId: null,
       name: part,
       days: weekCells(days, paid, 'verified', undefined),
+      welcome: weekWelcome(days, welcomeDays),
     });
   }
 

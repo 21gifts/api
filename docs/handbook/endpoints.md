@@ -872,7 +872,7 @@
 
 ## Endpoint: GET /funding/payout-days
 
-- **Purpose:** Staff Bearer. Seven UTC days ending today (oldest first) and one row per person who was entitled to the grant or received a daily payout in that window. JSON `{ days, rows }` where each row is `{ accountId, name, days }` and each cell is `blocked` (not entitled), `missed` (entitled, no daily gift), or `paid` (kind `daily` that UTC day). Welcome gifts and moderator stipends do not mark a day paid. Does not call lazy trial expiry. Logs `funding.payouts.listed` `{ count }`.
+- **Purpose:** Staff Bearer. Seven UTC days ending today (oldest first) and one row per person who missed a grant day, received a daily payout, or received a welcome gift in that window, including a person who was not entitled. JSON `{ days, rows }` where each row is `{ accountId, name, days, welcome }`. Each cell in `days` is `blocked` (not entitled), `missed` (entitled, no daily gift), or `paid` (kind `daily` that UTC day). `welcome` is seven booleans in the same order as `days`. A daily gift sets `paid` and does not set `welcome`. A welcome gift sets `welcome` and does not change `blocked`, `missed`, or `paid`. Both may be true on the same UTC day. Moderator stipends, blank handles, gifts outside the window, and other kinds do not count. Does not call lazy trial expiry. Logs `funding.payouts.listed` `{ count }`.
 - **Errors:** 401 `{ error: 'Unauthorized' }` without a bearer session; 403 `{ error: 'Forbidden' }` when the live role is not at least moderator; 503 `{ error: 'Funding is unavailable' }` (`funding.payouts.failed`).
 - **Used by:** Staff payout-per-person table.
 - **Auth:** `Authorization: Bearer` session (moderator).
