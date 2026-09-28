@@ -18,5 +18,6 @@ describe('buildForumMentionPushPayload', () => {
     expect(buildForumMentionPushPayload({ messageId: 'm', name: 'Ada' }).tag).toBe(
       'forum_mention:m',
     );
+    expect(buildForumMentionPushPayload({ messageId: 'm', name: 'Ada' }).url).toBe('/messages/m');
   });
 });

@@ -141,7 +141,8 @@ function mediaFallback(
  *
  * Title is the collapsed display name, or `Someone` when blank (at most 80
  * code points). Body is the note on one line (at most 180 code points), or a
- * photo/video sentence when the text is empty.
+ * photo/video sentence when the text is empty. `url` is
+ * `/messages/${encodeURIComponent(postId)}`.
  *
  * @param args - Post id, author name, note text, and optional media flags.
  * @returns Payload object; callers `JSON.stringify`. Omits `unreadCount`.
@@ -165,7 +166,7 @@ export function buildForumPushPayload(args: {
         none: 'Posted in the living room.',
       }),
     ),
-    url: '/notifications',
+    url: `/messages/${encodeURIComponent(args.postId)}`,
     tag: `forum_post:${args.postId}`,
   };
 }
@@ -174,7 +175,8 @@ export function buildForumPushPayload(args: {
  * Forum `@username` mark payload for one mentioned recipient.
  *
  * Title matches a forum post. Body is locale copy of "marked you".
- * `url` `/notifications` and `type: 'forum'` match the other forum pushes.
+ * `url` `/messages/${encodeURIComponent(messageId)}` and `type: 'forum'`
+ * match the other forum pushes.
  *
  * @param args - Created message id, author name, and recipient locale.
  * @returns Payload object; callers `JSON.stringify`. Omits `unreadCount`.
@@ -199,7 +201,7 @@ export function buildForumMentionPushPayload(args: {
     type: 'forum',
     title: pushTitle(args.name),
     body,
-    url: '/notifications',
+    url: `/messages/${encodeURIComponent(args.messageId)}`,
     tag: `forum_mention:${args.messageId}`,
   };
 }
@@ -208,21 +210,25 @@ export function buildForumMentionPushPayload(args: {
  * Zap payload for every bell subscriber except the payer skip id.
  *
  * Title is the collapsed payer name, or `Someone` when blank. Body is
- * `Sent <amountSats> sats.`
+ * `Sent <amountSats> sats.` `url` is `/messages/${encodeURIComponent(noteId)}`
+ * when `noteId` is a non-empty string, otherwise
+ * `/messages/${encodeURIComponent(messageId)}`. Tag stays `zap:<messageId>`.
  *
- * @param args - Tag id, payer name, and whole-sat amount.
+ * @param args - Tag id, payer name, whole-sat amount, and optional note id.
  * @returns Payload object; callers `JSON.stringify`. Omits `unreadCount`.
  */
 export function buildZapPushPayload(args: {
   messageId: string;
   name: string;
   amountSats: number;
+  noteId?: string;
 }): PushPayload {
+  const openId = args.noteId !== undefined && args.noteId !== '' ? args.noteId : args.messageId;
   return {
     type: 'zap',
     title: pushTitle(args.name),
     body: `Sent ${String(args.amountSats)} sats.`,
-    url: '/notifications',
+    url: `/messages/${encodeURIComponent(openId)}`,
     tag: `zap:${args.messageId}`,
   };
 }
@@ -232,7 +238,8 @@ export function buildZapPushPayload(args: {
  *
  * Title matches a forum post. Body is the reply on one line (at most 180
  * code points), or a photo/video sentence when the text is empty. Non-empty
- * text wins over media flags.
+ * text wins over media flags. `url` is
+ * `/messages/${encodeURIComponent(replyId)}`.
  *
  * @param args - Reply id, author name, reply text, and optional media flags.
  * @returns Payload object; callers `JSON.stringify`. Omits `unreadCount`.
@@ -256,7 +263,7 @@ export function buildReplyPushPayload(args: {
         none: 'Replied in the living room.',
       }),
     ),
-    url: '/notifications',
+    url: `/messages/${encodeURIComponent(args.replyId)}`,
     tag: `forum_reply:${args.replyId}`,
   };
 }
