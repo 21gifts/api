@@ -685,7 +685,9 @@ export async function serializeOwnerAccountWithPosts(
       passkeyCredentialId = passkey?.credentialId ?? null;
     }
     passkeyRenewFailed = await funding.authStore.hasUnacknowledgedPasskeyRenewFailure(account.id);
-    passkeyRenewClosed = await funding.authStore.hasAcknowledgedPasskeyRenewFailure(account.id);
+    passkeyRenewClosed =
+      account.walletRequired !== true &&
+      (await funding.authStore.hasAcknowledgedPasskeyRenewFailure(account.id));
   }
   return serializeOwnerAccount(
     account,

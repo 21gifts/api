@@ -1,4 +1,4 @@
-import { capPasskeyRenewText, redactPasskeyRenewMessage } from '@/lib/auth/passkey-renew-report';
+import { redactPasskeyRenewField } from '@/lib/auth/passkey-renew-report';
 import { ROLE_ORDER } from '@/lib/auth/roles';
 import { AUTH_SCHEMA_SQL } from '@/lib/auth/schema';
 import { CHALLENGE_TTL_MS, SESSION_TTL_MS } from '@/lib/config';
@@ -201,11 +201,11 @@ export class PostgresAuthStore implements AuthStore {
         input.createdAt,
         input.stage,
         input.outcome,
-        capPasskeyRenewText(input.errorName, 80),
-        capPasskeyRenewText(input.errorCode, 80),
+        redactPasskeyRenewField(input.errorName, 80),
+        redactPasskeyRenewField(input.errorCode, 80),
         input.httpStatus,
-        redactPasskeyRenewMessage(input.message),
-        capPasskeyRenewText(input.userAgent, 300),
+        redactPasskeyRenewField(input.message, 500),
+        redactPasskeyRenewField(input.userAgent, 300),
       ],
     );
   }

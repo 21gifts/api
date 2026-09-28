@@ -1,4 +1,4 @@
-import { capPasskeyRenewText, redactPasskeyRenewMessage } from '@/lib/auth/passkey-renew-report';
+import { redactPasskeyRenewField } from '@/lib/auth/passkey-renew-report';
 import { roleAtLeast } from '@/lib/auth/roles';
 import { CHALLENGE_TTL_MS, SESSION_TTL_MS } from '@/lib/config';
 
@@ -654,11 +654,11 @@ export class InMemoryAuthStore implements AuthStore {
       createdAt: input.createdAt,
       stage: input.stage,
       outcome: input.outcome,
-      errorName: capPasskeyRenewText(input.errorName, 80),
-      errorCode: capPasskeyRenewText(input.errorCode, 80),
+      errorName: redactPasskeyRenewField(input.errorName, 80),
+      errorCode: redactPasskeyRenewField(input.errorCode, 80),
       httpStatus: input.httpStatus,
-      message: redactPasskeyRenewMessage(input.message),
-      userAgent: capPasskeyRenewText(input.userAgent, 300),
+      message: redactPasskeyRenewField(input.message, 500),
+      userAgent: redactPasskeyRenewField(input.userAgent, 300),
       acknowledgedAt: null,
     });
   }

@@ -424,14 +424,21 @@
 - **Purpose:** Trim a passkey-renew text field, treat a blank string as null, and cap the stored length so client and header values cannot grow without bound.
 - **Inputs:** `value` (`string | null`) and `max` (maximum stored length after trim).
 - **Returns / side effects:** The trimmed string, sliced to `max` when longer, or `null` when the value is null or blank. No I/O.
-- **Used by:** `insertPasskeyRenewAttempt` for `error_name`, `error_code`, and `user_agent`.
+- **Used by:** `redactPasskeyRenewField` after a value is not a secret dump.
 
 ## Function: redactPasskeyRenewMessage
 
-- **Purpose:** Inspect the trimmed passkey-renew message before any length cap. Twelve or more whitespace-separated tokens, or a base64url/hex run of 81 or more characters, become `"[redacted]"`; otherwise the trimmed string is capped at 500 characters.
+- **Purpose:** Inspect the trimmed passkey-renew message before any length cap. Twelve or more whitespace-separated tokens, or a base64url/hex run of 64 or more characters, become `"[redacted]"`; otherwise the trimmed string is capped at 500 characters.
 - **Inputs:** `value` (`string | null`).
 - **Returns / side effects:** `"[redacted]"`, the trimmed message, the first 500 characters, or `null` when blank. Does not call `capPasskeyRenewText`. No I/O.
-- **Used by:** `insertPasskeyRenewAttempt` for `message`.
+- **Used by:** `redactPasskeyRenewField` for every stored renew text field.
+
+## Function: redactPasskeyRenewField
+
+- **Purpose:** Redact a renew text field, then cap it. A 12-word phrase or a 64-character secret run becomes `"[redacted]"` before the field cap.
+- **Inputs:** `value` (`string | null`) and `max` (stored length after redaction).
+- **Returns / side effects:** `"[redacted]"`, the capped trimmed string, or `null` when blank. No I/O.
+- **Used by:** `insertPasskeyRenewAttempt` for `error_name`, `error_code`, `message`, and `user_agent`.
 
 ## Function: openAuthStore
 

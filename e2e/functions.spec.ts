@@ -185,6 +185,13 @@ test('Function: capPasskeyRenewText — POST /me/passkey-renew/report without be
   expect(res.status()).toBe(401);
 });
 
+test('Function: redactPasskeyRenewField — POST /me/passkey-renew/report field redaction without bearer is 401', async ({
+  request,
+}) => {
+  const res = await request.post('/me/passkey-renew/report');
+  expect(res.status()).toBe(401);
+});
+
 test('Function: redactPasskeyRenewMessage — POST /me/passkey-renew/ack without bearer is 401', async ({
   request,
 }) => {

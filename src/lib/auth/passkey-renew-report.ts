@@ -4,7 +4,7 @@
  */
 
 const MESSAGE_MAX = 500;
-const LONG_SECRET_RUN = /[A-Za-z0-9_-]{81,}/;
+const LONG_SECRET_RUN = /[A-Za-z0-9_-]{64,}/;
 
 /**
  * Trim a passkey-renew text field, treat blank as null, and cap length.
@@ -28,7 +28,7 @@ export function capPasskeyRenewText(value: string | null, max: number): string |
  * Redact a passkey-renew message, inspecting the trimmed full string first.
  *
  * A run of 12 or more whitespace-separated tokens, or a base64url/hex run
- * of 81 or more characters, becomes `"[redacted]"` before any length cap.
+ * of 64 or more characters, becomes `"[redacted]"` before any length cap.
  * Otherwise the trimmed string is capped at 500 characters. Empty becomes
  * `null`. Does not call {@link capPasskeyRenewText}.
  *
@@ -47,4 +47,19 @@ export function redactPasskeyRenewMessage(value: string | null): string | null {
     return '[redacted]';
   }
   return trimmed.length > MESSAGE_MAX ? trimmed.slice(0, MESSAGE_MAX) : trimmed;
+}
+
+/**
+ * Redact a renew field, then cap it. Used for name, code, message, and agent.
+ *
+ * @param value - Client or header string, or `null`.
+ * @param max - Maximum stored length after redaction.
+ * @returns The stored string, `[redacted]`, or `null`.
+ */
+export function redactPasskeyRenewField(value: string | null, max: number): string | null {
+  const redacted = redactPasskeyRenewMessage(value);
+  if (redacted === null || redacted === '[redacted]') {
+    return redacted;
+  }
+  return capPasskeyRenewText(redacted, max);
 }

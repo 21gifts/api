@@ -30,6 +30,10 @@ describe('redactPasskeyRenewMessage', () => {
     expect(redactPasskeyRenewMessage(value)).toBe(value.slice(0, 500));
   });
 
+  it('redacts a 64-character hex token', () => {
+    expect(redactPasskeyRenewMessage('a'.repeat(64))).toBe('[redacted]');
+  });
+
   it('returns a short normal message trimmed and unchanged', () => {
     expect(redactPasskeyRenewMessage('seed failed')).toBe('seed failed');
     expect(redactPasskeyRenewMessage('  seed failed  ')).toBe('seed failed');

@@ -1183,9 +1183,10 @@ describe('auth routes', () => {
       });
       expect(finish.status).toBe(200);
       const finishBody = (await finish.json()) as {
-        account: { passkeyRenewFailed: boolean; walletRequired: boolean };
+        account: { passkeyRenewFailed: boolean; passkeyRenewClosed: boolean; walletRequired: boolean };
       };
       expect(finishBody.account.passkeyRenewFailed).toBe(false);
+      expect(finishBody.account.passkeyRenewClosed).toBe(false);
       expect(finishBody.account.walletRequired).toBe(true);
       expect(await store.hasUnacknowledgedPasskeyRenewFailure(accountId)).toBe(false);
       const succeeded = store.inserts.filter((row) => row.outcome === 'succeeded');
