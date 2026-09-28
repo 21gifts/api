@@ -3855,7 +3855,7 @@ Fiat amount or gift-day rate missing → **503** `{ "error": "Ask amount is unav
 
 ### `POST /messages/:id/repayment`
 
-Author pays the next giver share from their own wallet. Bearer session required. No body. `:id` is a UUID; a non-UUID is **404** `{ "error": "Not found" }` before auth. The author pays the returned BOLT11. The description is `repay:<day>:<accountId>`. When that zap is indexed, the share is stored on `message_repayment` and `message.sats` does not rise. A repeat for the same unpaid share returns the outstanding invoice instead of minting another.
+Author pays the next giver share from their own wallet. Bearer session required. No body. A missing or invalid Bearer is **401** `{ "error": "Unauthorized" }`, including when `:id` is not a UUID. After a valid session, a non-UUID `:id` is **404** `{ "error": "Not found" }`. The author pays the returned BOLT11. The description is `repay:<day>:<accountId>`. When that zap is indexed, the share is stored on `message_repayment` and `message.sats` does not rise. A repeat for the same unpaid share returns the outstanding invoice instead of minting another.
 
 Success → **Response** `200`:
 
@@ -3863,8 +3863,8 @@ Success → **Response** `200`:
 { "pr": "lnbc…", "amountSats": 21 }
 ```
 
-Missing Bearer → **401** `{ "error": "Unauthorized" }`.
-Unknown id, a note that is not a live repayable ask, or a caller who is not the author → **404** `{ "error": "Not found" }`.
+Missing or invalid Bearer → **401** `{ "error": "Unauthorized" }`, including when `:id` is not a UUID.
+Unknown id, a non-UUID after a valid session, a note that is not a live repayable ask, a credit that is not funded yet, or a caller who is not the author → **404** `{ "error": "Not found" }`. GET of that same unfunded credit stays **200**.
 Nothing left to pay → **400** `{ "error": "Nothing is due" }`.
 Note not payable yet → **400** `{ "error": "This message cannot be paid yet" }`.
 Giver without a Lightning address → **400** `{ "error": "A giver has no Lightning address" }`.
