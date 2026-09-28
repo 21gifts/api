@@ -454,7 +454,7 @@ gap. Reviewers enforce this; `migrateDbChangeSchema` in `src/lib/db-change.ts` /
 - Logging is done by Postgres AFTER INSERT OR UPDATE OR DELETE **row** triggers
   named `trg_db_change` on every `public` table except `db_change` itself — **not**
   by application store methods. New public tables are covered on the next SQL boot
-  (`migrateDbChangeSchema` after `migrateApiLogSchema` / `migrateFundingSchema` / `migrateTrustSchema` / `migrateNotificationSchema` / `migratePushSchema`) once the table exists. A
+  (`migrateDbChangeSchema` after `migrateBannerSchema` / `migrateApiLogSchema` / `migrateFundingSchema` / `migrateTrustSchema` / `migrateNotificationSchema` / `migratePushSchema`) once the table exists. A
   missing table **fails** the write; it does not skip the log.
 - `db_change` is append-only at runtime. UPDATE, DELETE, and TRUNCATE on it
   **must** fail (exception `db_change is append-only`). `migrateDbChangeSchema`
