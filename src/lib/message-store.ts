@@ -889,10 +889,10 @@ export interface MessageStore {
   listInvoiceAttempts(limit: number): Promise<MessageInvoiceAttempt[]>;
 
   /**
-   * Newest `result = 'ok'` invoice attempts created at or after `since`, capped at `limit`.
-   * Same sort as {@link MessageStore.listInvoiceAttempts} (`createdAt` DESC, `id` DESC).
+   * Newest successful invoice attempts created at or after since, capped at limit.
+   * Same sort as listInvoiceAttempts: createdAt descending, then id descending.
    *
-   * @param since - Inclusive lower bound on `createdAt`.
+   * @param since - Inclusive lower bound on createdAt.
    * @param limit - Maximum rows.
    * @returns Matching attempts (caller-owned copies).
    */

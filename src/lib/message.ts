@@ -896,8 +896,7 @@ export function serializeHiddenMessage(
 /**
  * Default Nostr columns for a freshly posted row (unsigned, pending).
  *
- * @returns The unsigned/pending defaults (`goalSats: null`, `goalRepayable:
- *   null`, `goalTermDays: null`, currency-ask columns null).
+ * @returns The unsigned/pending defaults. goalSats, goalRepayable, goalTermDays, and the currency-ask columns are null.
  */
 export function unsignedNostrDefaults(): Pick<
   MessageRow,
