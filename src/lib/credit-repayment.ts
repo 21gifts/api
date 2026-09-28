@@ -218,11 +218,12 @@ type FiatCode = keyof typeof FIAT_CENTS;
  * Bitcoin asks use the sats they paid. Fiat asks use the cents recorded in
  * the goal currency, including a 1-cent gift. When a snapshot is missing,
  * the typed amount is split by sat weight. Sats with no account are weight
- * that is then dropped, so they are not repaid to someone else.
+ * on that split and are then dropped, so they are not repaid to someone
+ * else. An empty account does not erase a recorded snapshot.
  *
  * @param goalCurrency - Ask currency, or null.
  * @param goalAmount - Typed fiat amount, used only when a snapshot is missing.
- * @param payers - Contributions with an account id.
+ * @param payers - Contributions. An empty account id is not payable.
  * @returns Units per giver, or `unavailable` when a fiat ask has no amount.
  */
 export function payerDebtUnits(
@@ -232,11 +233,12 @@ export function payerDebtUnits(
 ): { accountId: string; units: bigint }[] | 'unavailable' {
   if (goalCurrency !== null && goalCurrency !== undefined && goalCurrency in FIAT_CENTS) {
     const field = FIAT_CENTS[goalCurrency as FiatCode];
-    const priced = payers.map((payer) => ({
+    const named = payers.filter((payer) => payer.accountId !== '');
+    const priced = named.map((payer) => ({
       accountId: payer.accountId,
       cents: payer[field],
     }));
-    if (priced.every((payer) => typeof payer.cents === 'string')) {
+    if (named.length > 0 && priced.every((payer) => typeof payer.cents === 'string')) {
       const parsed = priced.map((payer) => ({
         accountId: payer.accountId,
         units: fiatAmountToCents(payer.cents as string),

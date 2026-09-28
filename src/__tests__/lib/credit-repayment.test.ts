@@ -191,6 +191,12 @@ describe('credit repayment', () => {
       ]),
     ).toEqual([{ accountId: 'a', units: 50n }]);
     expect(
+      payerDebtUnits('USD', '1.00', [
+        { accountId: 'a', sats: 50, usd: '0.40' },
+        { accountId: '', sats: 50 },
+      ]),
+    ).toEqual([{ accountId: 'a', units: 40n }]);
+    expect(
       payerDebtUnits('USD', '0.01', [
         { accountId: 'small', sats: 1 },
         { accountId: 'large', sats: 100 },

@@ -56,6 +56,27 @@ export interface RepaymentDeps {
 const limiter = new InvoiceRateLimiter();
 
 /**
+ * Debt of one credit. Sats with no account are weight only when a fiat
+ * snapshot is missing, and that weight is not repaid.
+ *
+ * @param deps - Store.
+ * @param row - Credit note.
+ * @returns Payers, unassigned sats, and the units each account owes.
+ */
+async function creditOwed(deps: RepaymentDeps, row: MessageRow) {
+  const payers = await deps.store.listCreditPayers(row.id);
+  const unassignedSats = await deps.store.sumUnassignedCreditSats(row.id);
+  return {
+    payers,
+    unassignedSats,
+    owed: payerDebtUnits(row.goalCurrency, row.goalAmount, [
+      ...payers,
+      { accountId: '', sats: unassignedSats },
+    ]),
+  };
+}
+
+/**
  * Public ledger of one credit: who gave what, and each Lightning repayment.
  *
  * @param deps - Store, auth, and clock.
@@ -68,9 +89,7 @@ export async function repaymentStatus(deps: RepaymentDeps, c: Context): Promise<
     return row;
   }
   const nowMs = deps.now();
-  const payers = await deps.store.listCreditPayers(row.id);
-  const unassignedSats = await deps.store.sumUnassignedCreditSats(row.id);
-  const owed = payerDebtUnits(row.goalCurrency, row.goalAmount, payers);
+  const { payers, unassignedSats, owed } = await creditOwed(deps, row);
   if (owed === 'unavailable') {
     return c.json({ error: 'Ask amount is unavailable' }, 503);
   }
@@ -355,9 +374,8 @@ async function nextShare(
   const termDays = row.goalTermDays as number;
   const fundedAt = row.goalFundedAt as Date;
   const daysDue = dueDayCount(fundedAt.getTime(), nowMs, termDays);
-  const payers = await deps.store.listCreditPayers(row.id);
   const paid = await deps.store.listRepayments(row.id);
-  const owed = payerDebtUnits(row.goalCurrency, row.goalAmount, payers);
+  const { owed } = await creditOwed(deps, row);
   if (owed === 'unavailable') {
     return {
       daysDue,

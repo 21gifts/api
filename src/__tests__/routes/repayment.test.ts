@@ -578,4 +578,36 @@ describe('credit repayment', () => {
       next: null,
     });
   });
+
+  it('drops account-less sat weight from a fiat split when the snapshot is missing', async () => {
+    const bolt11 = await import('@/lib/bolt11');
+    const nip57 = vi.spyOn(bolt11, 'isNip57Invoice').mockReturnValue(true);
+    try {
+      const { app, messages } = await readyCredit({
+        authorId: 'acc-open-weight',
+        goalCurrency: 'USD',
+        goalAmount: '1.00',
+        rate: true,
+      });
+      await messages.recordZapReceipt('r-anon-weight', CREDIT, 21, null);
+      const status = await app.request(`/messages/${CREDIT}/repayment`, {
+        headers: { authorization: 'Bearer acc-open-weight' },
+      });
+      expect(status.status).toBe(200);
+      expect(await status.json()).toMatchObject({
+        unassignedSats: 21,
+        givers: [{ accountId: GIVER, givenAmount: '0.50' }],
+        repayments: [{ amount: '0.50', accountId: GIVER }],
+        next: { sats: 500, recipientAccountId: GIVER },
+      });
+      const pay = await app.request(`/messages/${CREDIT}/repayment`, {
+        method: 'POST',
+        headers: { authorization: 'Bearer acc-open-weight' },
+      });
+      expect(pay.status).toBe(200);
+      expect(await pay.json()).toEqual({ pr: 'lnbc21n1repay', amountSats: 500 });
+    } finally {
+      nip57.mockRestore();
+    }
+  });
 });
