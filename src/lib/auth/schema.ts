@@ -6,7 +6,8 @@
  * `amount_unit`, `locale`, `fiat`, `session_refused`, `wallet_required`, and
  * `wallet_backup_seen_at` on
  * databases created before those columns existed.
- * Also creates `passkey_renew_attempt` (safe renew-ceremony error rows).
+ * Also creates `passkey_renew_attempt` (failed, cancelled, and
+ * server-written succeeded seed rows).
  * `locale` and `fiat` are backfilled as nullable (no value backfill of
  * existing rows).
  * Drops leftover `auth_challenge` from LNURL-auth.

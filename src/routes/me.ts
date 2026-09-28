@@ -205,10 +205,10 @@ const passkeyRenewReportBody = z
   .object({
     stage: z.enum(['begin', 'ceremony', 'finish']),
     outcome: z.enum(['failed', 'cancelled']),
-    errorName: z.string().max(80),
-    errorCode: z.string().max(80).nullable(),
+    errorName: z.string(),
+    errorCode: z.string().nullable(),
     httpStatus: z.number().int().min(0).max(599).nullable(),
-    message: z.string().max(500),
+    message: z.string(),
   })
   .strict();
 

@@ -1,5 +1,6 @@
--- Passkey renew ceremony attempts for members who do not yet have a
--- seed-bearing passkey. Applied by migrateAuthSchema / AUTH_SCHEMA_SQL.
+-- Passkey renew and seed ceremony attempts: failed, cancelled, or a
+-- server-written succeeded seed finish. A failed row can exist when a
+-- seed is already present. Applied by migrateAuthSchema / AUTH_SCHEMA_SQL.
 -- Stores only safe error fields. Does not store stack, request body,
 -- response body, challenge, credential, attestation, PRF output,
 -- mnemonic, session token, or view key.
