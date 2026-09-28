@@ -40,19 +40,6 @@ interface ClientDiagnosticBody {
   path?: unknown;
 }
 
-let globalAccepted: number[] = [];
-const ipAccepted = new Map<string, number[]>();
-let lastRateLimitedAt: number | null = null;
-
-/**
- * Clears the in-process diagnostics rate-limit window. Used by tests.
- */
-export function resetDiagnosticRateLimit(): void {
-  globalAccepted = [];
-  ipAccepted.clear();
-  lastRateLimitedAt = null;
-}
-
 function pruneWindow(timestamps: number[], now: number): void {
   let write = 0;
   for (const timestamp of timestamps) {
@@ -171,6 +158,9 @@ function parseClientBody(
  */
 export function diagnosticsRoutes(deps: { store: DiagnosticStore; now?: () => number }): Hono {
   const clock = deps.now ?? Date.now;
+  const globalAccepted: number[] = [];
+  const ipAccepted = new Map<string, number[]>();
+  let lastRateLimitedAt: number | null = null;
   return new Hono().post('/', async (c) => {
     let body: unknown;
     try {

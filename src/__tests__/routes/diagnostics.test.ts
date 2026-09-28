@@ -5,7 +5,7 @@ import {
   type DiagnosticEvent,
   type DiagnosticStore,
 } from '@/lib/diagnostic-log';
-import { diagnosticsRoutes, resetDiagnosticRateLimit } from '@/routes/diagnostics';
+import { diagnosticsRoutes } from '@/routes/diagnostics';
 
 const EVENT = 'client.passkey.register.begin';
 const CHALLENGE_ID = 'ab'.repeat(32);
@@ -63,7 +63,6 @@ describe('diagnosticsRoutes', () => {
 
   beforeEach(() => {
     clock = 1_700_000_000_000;
-    resetDiagnosticRateLimit();
   });
 
   it('defaults now to Date.now', async () => {
@@ -157,7 +156,6 @@ describe('diagnosticsRoutes', () => {
 
   it('strips controls, truncates, and omits empty user agents', async () => {
     async function accept(ua: string): Promise<DiagnosticEvent | undefined> {
-      resetDiagnosticRateLimit();
       const store = new InMemoryDiagnosticStore();
       const app = mount(store, now);
       expect((await post(app, { 'user-agent': ua })).status).toBe(204);

@@ -1692,12 +1692,6 @@
 - **Returns / side effects:** 503 if token blank; 401 if bearer mismatches; 200 `{ logs }` cap 200; 503 `Log is unavailable` on store throw.
 - **Used by:** `createApp` at `/debug/api-log`.
 
-## Function: resetDiagnosticRateLimit
-
-- **Purpose:** Clear the in-process diagnostics accept window (global timestamps, per-IP buckets, and `lastRateLimitedAt`) so a test starts from an empty 60-second window. It does not delete stored rows. Rows are kept forever (no TTL). A failed insert is not counted; this helper only wipes accounting.
-- **Inputs:** None.
-- **Returns / side effects:** void. No HTTP call and no store write. Does not log or store secrets.
-
 ## Function: diagnosticsRoutes
 
 - **Purpose:** Public `POST /` ingest mounted at `/diagnostics`. No auth. Only allowlisted scalar keys are stored on a `client` row, then the response is 204 with an empty body. The per-IP cap (60) and the global cap (600) per 60_000 ms are reserved before the insert await, so two overlapping requests cannot share one slot, and released if that insert throws. Rows are kept forever (no TTL, no DELETE). Secrets and raw bodies are not stored.

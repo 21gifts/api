@@ -816,15 +816,6 @@ test('Function: diagnosticsRoutes — POST /diagnostics accepts an allowlisted c
   expect(res.status()).toBe(204);
 });
 
-test('Function: resetDiagnosticRateLimit — POST /diagnostics accepts an allowlisted client event', async ({
-  request,
-}) => {
-  const res = await request.post('/diagnostics', {
-    data: { event: 'client.passkey.register.begin' },
-  });
-  expect(res.status()).toBe(204);
-});
-
 test('Function: debugDiagnosticsRoutes — GET /debug/diagnostics without bearer is 401', async ({
   request,
 }) => {
