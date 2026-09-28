@@ -71,6 +71,7 @@ import type { PushStore } from '@/lib/push-store';
 import type { SpendPing } from '@/lib/spend-ping';
 import { syncWelcomePing } from '@/lib/welcome-media';
 import { normalizePlace, parseMultipartCoord, placesMatch, type ForumPlace } from '@/lib/place';
+import { repaymentInvoice, repaymentStatus } from '@/routes/repayment';
 import { bearerToken } from '@/routes/me';
 import {
   MESSAGE_VIDEO_MAX_BYTES,
@@ -887,6 +888,11 @@ async function persistForumPost(
       account.lightningAddress !== null &&
       deps.spendPing !== undefined
     ) {
+      await syncWelcomePing({
+        spendPing: deps.spendPing,
+        messages: deps.store,
+        account,
+      });
       try {
         const grant = await (deps.fundingStore ?? new InMemoryFundingStore()).getByAccountId(
           account.id,
@@ -905,11 +911,6 @@ async function persistForumPost(
       } catch {
         logEvent('spend.ping.failed');
       }
-      await syncWelcomePing({
-        spendPing: deps.spendPing,
-        messages: deps.store,
-        account,
-      });
     }
     if (!isReplay && parentId !== null) {
       try {
@@ -2165,6 +2166,8 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
         return c.json({ error: 'Messages are unavailable' }, 503);
       }
     })
+    .get('/:id/repayment', (c) => repaymentStatus(deps, c))
+    .post('/:id/repayment', (c) => repaymentInvoice(deps, c))
     .post('/:id/invoice', async (c) => {
       const account = await authedAccount(deps, c.req.header('authorization'));
       if (account === null) {

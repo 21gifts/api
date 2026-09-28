@@ -96,7 +96,7 @@ const JPEG2: ForumPhoto = {
 
 describe('MESSAGE_SCHEMA_SQL', () => {
   it('creates message with photo columns, Nostr columns, index, and additive ALTERs', () => {
-    expect(MESSAGE_SCHEMA_SQL).toHaveLength(91);
+    expect(MESSAGE_SCHEMA_SQL).toHaveLength(96);
     expect(MESSAGE_SCHEMA_SQL.join('\n')).toMatch(
       /ALTER TABLE message ADD COLUMN IF NOT EXISTS place_lat double precision/i,
     );
@@ -235,6 +235,22 @@ describe('MESSAGE_SCHEMA_SQL', () => {
     expect(MESSAGE_SCHEMA_SQL.join('\n')).toMatch(
       /DROP CONSTRAINT IF EXISTS message_goal_term_days_chk[\s\S]*ADD CONSTRAINT message_goal_term_days_chk\s+CHECK \(goal_term_days IS NULL OR \(goal_repayable IS TRUE AND goal_term_days BETWEEN 1 AND 3650\)\)/,
     );
+    const recordedColumn = MESSAGE_SCHEMA_SQL.findIndex((statement) =>
+      statement.includes('ADD COLUMN IF NOT EXISTS recorded_at'),
+    );
+    const fundedColumn = MESSAGE_SCHEMA_SQL.findIndex((statement) =>
+      statement.includes('ADD COLUMN IF NOT EXISTS goal_funded_at'),
+    );
+    const fundedBackfill = MESSAGE_SCHEMA_SQL.findIndex((statement) =>
+      statement.includes('SET goal_funded_at = now()'),
+    );
+    const recordedBackfill = MESSAGE_SCHEMA_SQL.findIndex((statement) =>
+      statement.includes('SET recorded_at = COALESCE(m.goal_funded_at, now())'),
+    );
+    expect(recordedColumn).toBeGreaterThan(-1);
+    expect(fundedColumn).toBeGreaterThan(recordedColumn);
+    expect(fundedBackfill).toBe(fundedColumn + 1);
+    expect(recordedBackfill).toBe(fundedColumn + 2);
     expect(MESSAGE_SCHEMA_SQL.at(-1)).toContain('FROM pg_trigger');
     expect(MESSAGE_SCHEMA_SQL.at(-1)).toContain("tgname = 'trg_db_change'");
     expect(MESSAGE_SCHEMA_SQL.at(-1)).toContain("jsonb_typeof(nostr_event) = 'string'");
@@ -2178,6 +2194,29 @@ describe('InMemoryMessageStore', () => {
     });
     expect(withTerm.goalTermDays).toBe(30);
     expect((await store.getById('term'))?.goalTermDays).toBe(30);
+    await store.addSats('term', 10, null);
+    expect((await store.getById('term'))?.goalFundedAt).toBeNull();
+    await store.addSats('term', 20_990, null);
+    const fundedAt = (await store.getById('term'))?.goalFundedAt;
+    expect(fundedAt).toBeInstanceOf(Date);
+    await store.addSats('term', 1, null);
+    expect((await store.getById('term'))?.goalFundedAt?.getTime()).toBe(fundedAt?.getTime());
+    const unpaid = await store.create({
+      ...LATE,
+      id: 'unpriced',
+      goalRepayable: true,
+      goalSats: null,
+    });
+    await store.addSats(unpaid.id, 21, null);
+    expect((await store.getById(unpaid.id))?.goalFundedAt).toBeNull();
+    const zero = await store.create({
+      ...LATE,
+      id: 'zerogoal',
+      goalRepayable: true,
+      goalSats: 0,
+    });
+    await store.addSats(zero.id, 21, null);
+    expect((await store.getById(zero.id))?.goalFundedAt).toBeNull();
     const without = await store.create({ ...LATE, id: 'nogoal', goalSats: 21000 });
     expect(without.goalTermDays).toBeNull();
     expect((await store.getById('nogoal'))?.goalTermDays).toBeNull();
@@ -5080,6 +5119,40 @@ describe('PostgresMessageStore', () => {
     expect(listed[0]?.goalTermDays).toBe(30);
   });
 
+  it('listLatest maps goal_funded_at from a Date and from text', async () => {
+    const sql = new MockSql();
+    const store = new PostgresMessageStore(sql);
+    const funded = new Date('2026-09-26T12:00:00.000Z');
+    sql.nextRows = [
+      {
+        id: 'm-funded',
+        account_id: 'acc',
+        name: 'Ada',
+        text: 'ask',
+        created_at: new Date('2026-08-28T12:00:00.000Z'),
+        has_photo: false,
+        goal_sats: '21',
+        goal_repayable: true,
+        goal_funded_at: funded,
+      },
+    ];
+    expect((await store.listLatest(10))[0]?.goalFundedAt).toEqual(funded);
+    sql.nextRows = [
+      {
+        id: 'm-funded-text',
+        account_id: 'acc',
+        name: 'Ada',
+        text: 'ask',
+        created_at: '2026-08-28T12:00:00.000Z',
+        has_photo: false,
+        goal_sats: '21',
+        goal_repayable: true,
+        goal_funded_at: '2026-09-26T12:00:00.000Z',
+      },
+    ];
+    expect((await store.listLatest(10))[0]?.goalFundedAt).toEqual(funded);
+  });
+
   it('create with non-null parentId uses INSERT SELECT WHERE EXISTS on a live parent', async () => {
     const sql = new MockSql();
     sql.nextRows = [{ id: 'child-1' }];
@@ -6409,6 +6482,8 @@ describe('PostgresMessageStore', () => {
     expect(sql.queries[0]?.text).toMatch(/nostr_zap_receipt/);
     expect(sql.queries[0]?.text).toMatch(/ON CONFLICT/);
     expect(sql.queries[0]?.text).toMatch(/message\.sats \+ inserted\.sats/);
+    expect(sql.queries[0]?.text).toMatch(/goal_funded_at = CASE/);
+    expect(sql.queries[0]?.text).toMatch(/message\.goal_repayable IS TRUE/);
     expect(sql.executes).toEqual([]);
   });
 
@@ -7251,6 +7326,147 @@ describe('PostgresMessageStore', () => {
     ).toBeUndefined();
   });
 
+  it('sums sats that have no payer account', async () => {
+    const store = new InMemoryMessageStore();
+    await store.recordZapReceipt('anon', 'm1', 5, null);
+    await store.recordZapReceipt('named', 'm1', 21, null);
+    await store.updateZapReceiptGift('named', { payerAccountId: 'giver' });
+    expect(await store.sumUnassignedCreditSats('m1')).toBe(5);
+    expect(await store.sumUnassignedCreditSats('other')).toBe(0);
+    const sql = new MockSql();
+    sql.queryQueue = [[], [{ sats: null }], [{ sats: '4' }]];
+    const postgres = new PostgresMessageStore(sql);
+    expect(await postgres.sumUnassignedCreditSats('m1')).toBe(0);
+    expect(await postgres.sumUnassignedCreditSats('m1')).toBe(0);
+    expect(await postgres.sumUnassignedCreditSats('m1')).toBe(4);
+    expect(sql.queries[0]?.text).toMatch(/payer_account_id IS NULL/);
+  });
+
+  it('lists stored repayments and records a share once', async () => {
+    const sql = new MockSql();
+    sql.nextRows = [
+      {
+        day_index: 0,
+        recipient_account_id: 'giver',
+        due_sats: '10',
+        paid_at: '2026-09-27T00:00:00.000Z',
+      },
+      {
+        day_index: 1,
+        recipient_account_id: 'giver',
+        due_sats: 1,
+        paid_at: new Date('2026-09-28T00:00:00.000Z'),
+      },
+    ];
+    const postgres = new PostgresMessageStore(sql);
+    const rows = await postgres.listRepayments('m1');
+    expect(rows[0]).toEqual({
+      dayIndex: 0,
+      recipientAccountId: 'giver',
+      dueSats: 10,
+      paidAt: new Date('2026-09-27T00:00:00.000Z'),
+    });
+    expect(rows[1]?.paidAt).toEqual(new Date('2026-09-28T00:00:00.000Z'));
+    expect(sql.queries[0]?.text).toMatch(/FROM message_repayment/);
+    await postgres.markRepaymentPaid({
+      messageId: 'm1',
+      dayIndex: 0,
+      recipientAccountId: 'giver',
+      dueSats: 10,
+      paidAt: new Date('2026-09-27T00:00:00.000Z'),
+    });
+    expect(sql.executes[0]?.text).toMatch(/INSERT INTO message_repayment/);
+    expect(sql.executes[0]?.text).toMatch(/ON CONFLICT/);
+    const memory = new InMemoryMessageStore();
+    const paidAt = new Date('2026-09-27T00:00:00.000Z');
+    await memory.markRepaymentPaid({
+      messageId: 'm1',
+      dayIndex: 0,
+      recipientAccountId: 'giver',
+      dueSats: 10,
+      paidAt,
+    });
+    await memory.markRepaymentPaid({
+      messageId: 'm1',
+      dayIndex: 0,
+      recipientAccountId: 'other',
+      dueSats: 1,
+      paidAt,
+    });
+    await memory.markRepaymentPaid({
+      messageId: 'm1',
+      dayIndex: 0,
+      recipientAccountId: 'giver',
+      dueSats: 99,
+      paidAt: new Date('2026-09-28T00:00:00.000Z'),
+    });
+    const stored = await memory.listRepayments('m1');
+    expect(stored).toHaveLength(2);
+    expect(stored.find((row) => row.recipientAccountId === 'giver')?.dueSats).toBe(10);
+    await memory.recordZapReceipt('r-bad', 'm1', 21, null);
+    await memory.updateZapReceiptGift('r-bad', { payerAccountId: 'giver' });
+    await memory.recordZapIngest({
+      id: 'zi-bad',
+      createdAt: paidAt,
+      receiptId: 'r-bad',
+      noteEventId: null,
+      messageId: 'm1',
+      outcome: 'indexed',
+      reason: null,
+      amountSats: 21,
+      amountUsd: 'nope',
+      amountChf: '1.00',
+      amountEur: '1.00',
+      amountPhp: '1.00',
+      receiptPubkey: null,
+      receipt: { id: 'r-bad', kind: 9735 },
+    });
+    expect(await memory.listCreditPayers('m1')).toEqual([
+      { accountId: 'giver', sats: 21, usd: null, chf: '1.00', eur: '1.00', php: '1.00' },
+    ]);
+  });
+
+  it('listCreditPayers sums sats and recorded fiat', async () => {
+    const sql = new MockSql();
+    sql.nextRows = [
+      {
+        account_id: 'giver',
+        sats: '21',
+        usd: '0.01',
+        chf: null,
+        eur: null,
+        php: null,
+      },
+    ];
+    const store = new PostgresMessageStore(sql);
+    expect(await store.listCreditPayers('m1')).toEqual([
+      { accountId: 'giver', sats: 21, usd: '0.01', chf: null, eur: null, php: null },
+    ]);
+    expect(sql.queries[0]?.text).toMatch(/nostr_zap_ingest/);
+    expect(sql.queries[0]?.text).toMatch(/recorded_at <= m.goal_funded_at/);
+  });
+
+  it('ignores a gift that arrives after the credit has filled', async () => {
+    const store = new InMemoryMessageStore();
+    await store.create({
+      ...EARLY,
+      id: 'filled',
+      goalSats: 10,
+      goalRepayable: true,
+      goalTermDays: 2,
+    });
+    expect(await store.recordZapReceipt('fund', 'filled', 10, null)).toBe(true);
+    await store.updateZapReceiptGift('fund', { payerAccountId: 'giver' });
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    expect(await store.recordZapReceipt('later', 'filled', 7, null)).toBe(true);
+    await store.updateZapReceiptGift('later', { payerAccountId: 'giver' });
+    expect(await store.recordZapReceipt('stray', 'filled', 3, null)).toBe(true);
+    expect(await store.listCreditPayers('filled')).toEqual([
+      { accountId: 'giver', sats: 10, usd: null, chf: null, eur: null, php: null },
+    ]);
+    expect(await store.sumUnassignedCreditSats('filled')).toBe(0);
+  });
+
   it('listOpenConversationZapEventIds maps zap_request e-tags', async () => {
     const sql = new MockSql();
     sql.nextRows = [
@@ -7299,6 +7515,31 @@ describe('PostgresMessageStore', () => {
     const store = new PostgresMessageStore(sql);
     const found = await store.findOkInvoiceByPr('lnbc');
     expect(sql.queries[0]?.text).toMatch(/pr = \$1 AND result = 'ok'/);
+    const description = 'repay:0:11111111-1111-4111-8111-111111111111';
+    sql.nextRows = [
+      {
+        id: 'inv-repay',
+        created_at: new Date('2026-08-28T12:00:00.000Z'),
+        message_id: 'm1',
+        payer_account_id: 'payer',
+        author_account_id: 'auth',
+        amount_sats: 21,
+        lightning_address: null,
+        zap_request: null,
+        result: 'ok',
+        http_status: 200,
+        pr: 'lnbc-repay',
+        payment_hash: '22'.repeat(32),
+        description,
+        description_hash: null,
+        is_nip57_invoice: true,
+        lnurl_response: null,
+      },
+    ];
+    expect((await store.findOkInvoiceByDescription('m1', description))?.pr).toBe('lnbc-repay');
+    expect(sql.queries[1]?.text).toMatch(/description = \$2 AND result = 'ok'/);
+    sql.nextRows = [];
+    expect(await store.findOkInvoiceByDescription('m1', description)).toBeUndefined();
     expect(found?.id).toBe('inv-pr');
     expect(await new PostgresMessageStore(new MockSql()).findOkInvoiceByPr('lnbc')).toBeUndefined();
   });

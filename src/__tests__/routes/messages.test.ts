@@ -235,6 +235,7 @@ function throwingStore(overrides: Partial<MessageStore> = {}): MessageStore {
     recordZapIngest: boom,
     listZapIngests: boom,
     findOkInvoiceByPaymentHash: boom,
+    findOkInvoiceByDescription: boom,
     findOkInvoiceByPr: boom,
     updateZapReceiptGift: boom,
     getZapReceiptGift: boom,
@@ -254,6 +255,10 @@ function throwingStore(overrides: Partial<MessageStore> = {}): MessageStore {
     listBlockedPubkeys: boom,
     listBlockedPubkeyRows: boom,
     listUnattributedIndexedReceipts: (_limit, _before) => boom(),
+    listCreditPayers: boom,
+    sumUnassignedCreditSats: boom,
+    listRepayments: boom,
+    markRepaymentPaid: boom,
     ...overrides,
   };
 }
@@ -3046,8 +3051,13 @@ describe('POST /messages', () => {
     expect(res.status).toBe(200);
     const created = (await res.json()) as { id: string };
     expect(spendPing.ping).toHaveBeenCalledTimes(2);
-    expect(spendPing.ping).toHaveBeenCalledWith('ada@walletofsatoshi.com', created.id);
-    expect(spendPing.ping).toHaveBeenCalledWith('ada@walletofsatoshi.com', created.id, 'welcome');
+    expect(spendPing.ping).toHaveBeenNthCalledWith(
+      1,
+      'ada@walletofsatoshi.com',
+      created.id,
+      'welcome',
+    );
+    expect(spendPing.ping).toHaveBeenNthCalledWith(2, 'ada@walletofsatoshi.com', created.id);
   });
 
   it('does not welcome-ping spend on a verified text-only post', async () => {
@@ -3227,8 +3237,13 @@ describe('POST /messages', () => {
     expect(res.status).toBe(200);
     const created = (await res.json()) as { id: string };
     expect(spendPing.ping).toHaveBeenCalledTimes(2);
-    expect(spendPing.ping).toHaveBeenCalledWith('ada@walletofsatoshi.com', created.id);
-    expect(spendPing.ping).toHaveBeenCalledWith('ada@walletofsatoshi.com', created.id, 'welcome');
+    expect(spendPing.ping).toHaveBeenNthCalledWith(
+      1,
+      'ada@walletofsatoshi.com',
+      created.id,
+      'welcome',
+    );
+    expect(spendPing.ping).toHaveBeenNthCalledWith(2, 'ada@walletofsatoshi.com', created.id);
     expect(parsedEvents(warn).some((e) => e['event'] === 'spend.ping.failed')).toBe(true);
   });
 
@@ -3295,6 +3310,12 @@ describe('POST /messages', () => {
       recordZapIngest: (row) => base.recordZapIngest(row),
       listZapIngests: (limit) => base.listZapIngests(limit),
       findOkInvoiceByPaymentHash: (hash) => base.findOkInvoiceByPaymentHash(hash),
+      findOkInvoiceByDescription: (messageId, description) =>
+        base.findOkInvoiceByDescription(messageId, description),
+      listCreditPayers: (messageId) => base.listCreditPayers(messageId),
+      sumUnassignedCreditSats: (messageId) => base.sumUnassignedCreditSats(messageId),
+      listRepayments: (messageId) => base.listRepayments(messageId),
+      markRepaymentPaid: (row) => base.markRepaymentPaid(row),
       findOkInvoiceByPr: (pr) => base.findOkInvoiceByPr(pr),
       updateZapReceiptGift: (...args: Parameters<InMemoryMessageStore['updateZapReceiptGift']>) =>
         base.updateZapReceiptGift(...args),
@@ -3410,6 +3431,12 @@ describe('POST /messages', () => {
       recordZapIngest: (row) => base.recordZapIngest(row),
       listZapIngests: (limit) => base.listZapIngests(limit),
       findOkInvoiceByPaymentHash: (hash) => base.findOkInvoiceByPaymentHash(hash),
+      findOkInvoiceByDescription: (messageId, description) =>
+        base.findOkInvoiceByDescription(messageId, description),
+      listCreditPayers: (messageId) => base.listCreditPayers(messageId),
+      sumUnassignedCreditSats: (messageId) => base.sumUnassignedCreditSats(messageId),
+      listRepayments: (messageId) => base.listRepayments(messageId),
+      markRepaymentPaid: (row) => base.markRepaymentPaid(row),
       findOkInvoiceByPr: (pr) => base.findOkInvoiceByPr(pr),
       updateZapReceiptGift: (...args: Parameters<InMemoryMessageStore['updateZapReceiptGift']>) =>
         base.updateZapReceiptGift(...args),
@@ -5058,6 +5085,12 @@ describe('POST /messages/:id/invoice', () => {
       recordZapIngest: (row) => base.recordZapIngest(row),
       listZapIngests: (limit) => base.listZapIngests(limit),
       findOkInvoiceByPaymentHash: (hash) => base.findOkInvoiceByPaymentHash(hash),
+      findOkInvoiceByDescription: (messageId, description) =>
+        base.findOkInvoiceByDescription(messageId, description),
+      listCreditPayers: (messageId) => base.listCreditPayers(messageId),
+      sumUnassignedCreditSats: (messageId) => base.sumUnassignedCreditSats(messageId),
+      listRepayments: (messageId) => base.listRepayments(messageId),
+      markRepaymentPaid: (row) => base.markRepaymentPaid(row),
       findOkInvoiceByPr: (pr) => base.findOkInvoiceByPr(pr),
       updateZapReceiptGift: (...args: Parameters<InMemoryMessageStore['updateZapReceiptGift']>) =>
         base.updateZapReceiptGift(...args),

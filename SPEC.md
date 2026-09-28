@@ -153,6 +153,8 @@ Public base URLs used in examples:
 | PATCH  | `/messages/:id/place`                                | Bearer (moderator+)        | Set, replace, or clear the map pin on a live top-level shop note                                                                                                                                                   |
 | PATCH  | `/messages/:id/shop-account`                         | Bearer (moderator+)        | Set, replace, or clear the 21.gifts account on a live top-level shop note                                                                                                                                          |
 | POST   | `/messages/:id/invoice`                              | Bearer                     | NIP-57 zap / BOLT11                                                                                                                                                                                                |
+| GET    | `/messages/:id/repayment`                            | none                       | Public credit ledger: who gave, and each repayment share                                                                                                                                                           |
+| POST   | `/messages/:id/repayment`                            | Bearer                     | Author pays the next giver share from their own wallet. A repeat for that unpaid share returns the outstanding invoice.                                                                                            |
 | POST   | `/contact`                                           | Bearer                     | Send private in-app contact `{ text }`                                                                                                                                                                             |
 | GET    | `/pos`                                               | Bearer                     | Open till charge or null, plus up to 20 history rows                                                                                                                                                               |
 | POST   | `/pos`                                               | Bearer                     | Pin one whole-sat amount for five minutes                                                                                                                                                                          |
@@ -3573,7 +3575,7 @@ latitude and longitude` or `Place label must be at most 80 characters`.
 coordinates empty means no pin. Exactly one of them set is 400
 `Place must be a latitude and longitude`.
 An invalid multipart `goalSats` → **400** `{ "error": "Goal must be a positive whole-sat amount" }`.
-A post sends either legacy `goalSats` alone, or both `goalCurrency` (`BTC`, `USD`, `CHF`, `EUR`, or `PHP`) and `goalAmount` (trimmed decimal string, comma or dot, at most eight fractional digits). Both styles together, only one of the new pair, a non-string `goalAmount`, or a string that fails that grammar → **400** `{ "error": "Send either goalSats or both goalCurrency and goalAmount" }`. A reply that sends `goalSats`, `goalCurrency`, `goalAmount`, `goalRepayable`, or `goalTermDays` → **400** `{ "error": "A reply cannot ask for a goal" }`. Optional `goalRepayable` (JSON boolean or multipart string) marks a top-level ask as repayable. Absent, JSON `null`, or a missing/empty multipart field stores SQL NULL and the 200 JSON omits the key. JSON `true` or multipart `"true"` stores `true` only when this create also stores an ask (`goalSats`, or both `goalCurrency` and `goalAmount`) and a term; the 200 JSON then includes `goalRepayable: true`. JSON `false`, any other type, or any other string → **400** `{ "error": "Ask obligation must be true" }`. `true` without an ask → **400** `{ "error": "A repayment obligation needs an ask" }`. Stored values are SQL NULL or TRUE, never `false`. Optional `goalTermDays` (JSON number or multipart digits) is the agreed repayment term in whole days. Absent, JSON `null`, or a missing/empty multipart field stores SQL NULL and the 200 JSON omits the key. A whole number from 1 to 3650 stores that integer only when this create also stores `goalRepayable: true` and an ask; the 200 JSON then includes `goalTermDays` as that integer. Anything else, including 0, 3651, a fraction, or a string that is not an integer → **400** `{ "error": "Ask term must be a whole number of days from 1 to 3650" }`. A term without `goalRepayable: true` → **400** `{ "error": "A repayment term needs a repayable ask" }`. `goalRepayable: true` without a term → **400** `{ "error": "A repayable ask needs a term in days" }`. Interest is not stored. There is no due date, repayment ledger, interest, or partial-repayment status. Money capture and collection stay unchanged. The flag and term are not written into Nostr event content or the note text. The canonical stored `goalAmount` uses a dot, no exponent, no leading zeros, and no trailing fractional zeros (`10.` and `10.0` are `10`). `goal_sats` is that integer for `BTC` (1..10_000_000; a missing gift-day does not reject it) or `Math.round(amount * day.sats / dayFiat)` for fiat, with a rounded 0 raised to 1. Fiat needs a usable latest gift-day (`GET /gifts/stats` `spendOverTime`, last day with `sats > 0`) and a result in 1..10_000_000; otherwise **400** `{ "error": "Ask amount is unavailable" }`. If that loader throws for a fiat ask → **503** `{ "error": "Messages are unavailable" }`. A BTC ask still stores the typed sats when the loader throws. Frozen columns `goal_currency`, `goal_amount`, and `goal_fiat_usd` / `goal_fiat_chf` / `goal_fiat_eur` / `goal_fiat_php` are null when there is no currency ask. Legacy rows keep `goal_sats` and leave the new columns null (no backfill). Public, debug, and hidden JSON include `goalRepayable: true` only when the column is true and omit the key when null (never emit `false`). Public and debug JSON omit the currency-ask keys when `goal_currency` is null. When it is set they include `goalCurrency`, `goalAmount` (the typed canonical string, not the two-decimal snapshot), `goalSats`, and `goalAmountUsd` / `goalAmountChf` / `goalAmountEur` / `goalAmountPhp` (two-decimal string or null). Payment progress fiat stays the sum of per-payment gift-day snapshots. A null component on a later payment does not wipe a stored total; a null stored column is assigned the next non-null snapshot and is not rebuilt. One-time and Daily are still not stored. Settlement is not moved onto Coinbase spot.
+A post sends either legacy `goalSats` alone, or both `goalCurrency` (`BTC`, `USD`, `CHF`, `EUR`, or `PHP`) and `goalAmount` (trimmed decimal string, comma or dot, at most eight fractional digits). Both styles together, only one of the new pair, a non-string `goalAmount`, or a string that fails that grammar → **400** `{ "error": "Send either goalSats or both goalCurrency and goalAmount" }`. A reply that sends `goalSats`, `goalCurrency`, `goalAmount`, `goalRepayable`, or `goalTermDays` → **400** `{ "error": "A reply cannot ask for a goal" }`. Optional `goalRepayable` (JSON boolean or multipart string) marks a top-level ask as repayable. Absent, JSON `null`, or a missing/empty multipart field stores SQL NULL and the 200 JSON omits the key. JSON `true` or multipart `"true"` stores `true` only when this create also stores an ask (`goalSats`, or both `goalCurrency` and `goalAmount`) and a term; the 200 JSON then includes `goalRepayable: true`. JSON `false`, any other type, or any other string → **400** `{ "error": "Ask obligation must be true" }`. `true` without an ask → **400** `{ "error": "A repayment obligation needs an ask" }`. Stored values are SQL NULL or TRUE, never `false`. Optional `goalTermDays` (JSON number or multipart digits) is the agreed repayment term in whole days. Absent, JSON `null`, or a missing/empty multipart field stores SQL NULL and the 200 JSON omits the key. A whole number from 1 to 3650 stores that integer only when this create also stores `goalRepayable: true` and an ask; the 200 JSON then includes `goalTermDays` as that integer. Anything else, including 0, 3651, a fraction, or a string that is not an integer → **400** `{ "error": "Ask term must be a whole number of days from 1 to 3650" }`. A term without `goalRepayable: true` → **400** `{ "error": "A repayment term needs a repayable ask" }`. `goalRepayable: true` without a term → **400** `{ "error": "A repayable ask needs a term in days" }`. Interest is not stored. When collected sats first reach `goal_sats`, `goal_funded_at` is set. Repayment is due each UTC day starting the day after that, for `goal_term_days` days. Each giver is repaid exactly what they paid: their sats on a bitcoin ask, or the cents of the goal currency recorded on their payments on a fiat ask. A fraction below one sat or one cent carries to a later day until it is one whole unit, so a gift of 1 sat or 1 cent comes back in full. The shares of one day add up to that day's split of the total, with the remainder on the last day. The author pays the next unpaid share at that giver's Lightning address. A fiat share is priced in bitcoin at the rate of the day it is paid. A paid zap whose invoice description is `repay:<day>:<accountId>` is stored in `message_repayment` and does not increase the ask. `GET /messages/:id/repayment` is public on a live repayable ask and lists every giver and every Lightning repayment (who, how much, which UTC day, and whether it is paid, due, or still scheduled). Dates are omitted until the credit is fully given. Sats with no 21.gifts payer are reported separately and are not repaid. The flag and term are not written into Nostr event content or the note text. The canonical stored `goalAmount` uses a dot, no exponent, no leading zeros, and no trailing fractional zeros (`10.` and `10.0` are `10`). `goal_sats` is that integer for `BTC` (1..10_000_000; a missing gift-day does not reject it) or `Math.round(amount * day.sats / dayFiat)` for fiat, with a rounded 0 raised to 1. Fiat needs a usable latest gift-day (`GET /gifts/stats` `spendOverTime`, last day with `sats > 0`) and a result in 1..10_000_000; otherwise **400** `{ "error": "Ask amount is unavailable" }`. If that loader throws for a fiat ask → **503** `{ "error": "Messages are unavailable" }`. A BTC ask still stores the typed sats when the loader throws. Frozen columns `goal_currency`, `goal_amount`, and `goal_fiat_usd` / `goal_fiat_chf` / `goal_fiat_eur` / `goal_fiat_php` are null when there is no currency ask. Legacy rows keep `goal_sats` and leave the new columns null (no backfill). Public, debug, and hidden JSON include `goalRepayable: true` only when the column is true and omit the key when null (never emit `false`). Public and debug JSON omit the currency-ask keys when `goal_currency` is null. When it is set they include `goalCurrency`, `goalAmount` (the typed canonical string, not the two-decimal snapshot), `goalSats`, and `goalAmountUsd` / `goalAmountChf` / `goalAmountEur` / `goalAmountPhp` (two-decimal string or null). Payment progress fiat stays the sum of per-payment gift-day snapshots. A null component on a later payment does not wipe a stored total; a null stored column is assigned the next non-null snapshot and is not rebuilt. One-time and Daily are still not stored. Settlement is not moved onto Coinbase spot.
 JSON type/range errors keep **400** `{ "error": "Expected a JSON body with text and/or photo" }`.
 Above 10_000_000 is rejected, not clamped. Multipart video posts do not
 accept `inReplyTo` (they are always top-level).
@@ -3619,7 +3621,8 @@ POST with the same account, parent, normalised text, media bytes, and pin return
 The same media with a different pin is **409**
 `{ "error": "A live note with this media already exists" }`.
 Text-only posts are unchanged (still **429** on burst). After a **new**
-top-level persist, the api POSTs `{ address, messageId }` to `{SPEND_URL}/ping` with
+top-level persist, the welcome POST is sent and awaited before the daily
+POST. The api POSTs `{ address, messageId }` to `{SPEND_URL}/ping` with
 Bearer `SPEND_API_TOKEN` (fire-and-await; `messageId` is the UUID of the new
 top-level row) only when `eligibleToday` for the author's funding grant
 **and** the new row has media (`hasPhoto` / `hasVideo` / `photoCount > 0`).
@@ -3628,6 +3631,8 @@ Otherwise no ping, log `spend.ping.skipped` / `not_eligible` (ineligible) or
 top-level photo or video exists, including the About-me note, the api also
 POSTs `{ address, messageId, kind: "welcome" }` for that note, independent
 of `eligibleToday` and independent of whether the new row itself has media.
+Spend pays the welcome gift and does not also pay the daily gift on that
+same UTC day. A later UTC day still pays the daily gift.
 The same ping runs when the account becomes verified and when About me is
 saved while verified. On boot, and every 15 minutes, every verified account
 that already has a live top-level photo or video (About me or a living-room
@@ -3811,6 +3816,73 @@ limiter still counts. Author-wallet zap failure (`noZap` or `not_zap`) →
 Other LNURL/zap failure (`unreachable`) →
 **400** `{ "error": "Could not start the Bitcoin payment" }`. Keygen/sign failure →
 **503** `{ "error": "Messages are unavailable" }`.
+
+### `GET /messages/:id/repayment`
+
+Public credit ledger. No session. `:id` must be a UUID (`MESSAGE_ID_RE`); anything else is **404** `{ "error": "Not found" }`. **404** unless the note is live, top-level, `goalRepayable` true, and has a term. A local Sunday does not refuse this read.
+
+Success → **Response** `200`:
+
+```json
+{
+  "currency": "BTC",
+  "fundedAt": null,
+  "termDays": 30,
+  "daysDue": 0,
+  "daysPaid": 0,
+  "unassignedSats": 0,
+  "givers": [
+    {
+      "accountId": "<uuid>",
+      "name": "Ada",
+      "username": "ada",
+      "givenSats": 21,
+      "givenAmount": null
+    }
+  ],
+  "repayments": [
+    {
+      "dayIndex": 0,
+      "dueOn": null,
+      "accountId": "<uuid>",
+      "name": "Ada",
+      "username": "ada",
+      "amount": null,
+      "sats": 21,
+      "status": "scheduled",
+      "via": "lightning"
+    }
+  ],
+  "next": null
+}
+```
+
+`currency` is `BTC`, `USD`, `CHF`, `EUR`, or `PHP`. `fundedAt` is ISO-8601 or null until collected sats first reach the ask. `dueOn` is `YYYY-MM-DD` UTC, or null until then. `givenAmount` and `amount` are two-decimal strings in the ask currency, or null for bitcoin. For a fiat ask, `sats` on a repayment is the paid share or null until it is paid. `status` is `paid`, `due`, or `scheduled`. `unassignedSats` is bitcoin with no 21.gifts payer and is not in the plan. `next` is the next unpaid share once the credit has filled, else null. A 1-sat or 1-cent gift is its own row.
+
+Fiat amount or gift-day rate missing → **503** `{ "error": "Ask amount is unavailable" }`.
+
+### `POST /messages/:id/repayment`
+
+Author pays the next giver share from their own wallet. Bearer session required. No body. A missing or invalid Bearer is **401** `{ "error": "Unauthorized" }`, including when `:id` is not a UUID. After a valid session, a non-UUID `:id` is **404** `{ "error": "Not found" }`. The author pays the returned BOLT11. The description is `repay:<day>:<accountId>`. When that zap is indexed, the share is stored on `message_repayment` and `message.sats` does not rise. A repeat for the same unpaid share returns the outstanding invoice instead of minting another, including when the sat price of that fiat share has moved.
+
+Success → **Response** `200`:
+
+```json
+{ "pr": "lnbc…", "amountSats": 21 }
+```
+
+Missing or invalid Bearer → **401** `{ "error": "Unauthorized" }`, including when `:id` is not a UUID.
+Unknown id, a non-UUID after a valid session, a note that is not a live repayable ask, a credit that is not funded yet, or a caller who is not the author → **404** `{ "error": "Not found" }`. GET of that same unfunded credit stays **200**.
+Nothing left to pay → **400** `{ "error": "Nothing is due" }`.
+Note not payable yet → **400** `{ "error": "This message cannot be paid yet" }`.
+Giver without a Lightning address → **400** `{ "error": "A giver has no Lightning address" }`.
+Recipient wallet cannot take the payment → **400** `{ "error": "The recipient's wallet cannot receive this Bitcoin payment" }`.
+Other payment start failure → **400** `{ "error": "Could not start the Bitcoin payment" }`.
+Author missing forum pay → **409** `{ "error": "missing_requirements", "missing": ["rules"] }`.
+Device `Time-Zone` in Sunday → **403** `{ "error": "SUNDAY_REST" }`. A missing, blank, or invalid zone does not refuse.
+Over-limit → **429** `{ "error": "Too many payments" }`.
+Fiat share cannot be priced → **503** `{ "error": "Ask amount is unavailable" }`.
+Signing keys missing or the invoice attempt cannot be stored → **503** `{ "error": "Messages are unavailable" }`.
 
 ### `GET /messages/:id/photo`
 
