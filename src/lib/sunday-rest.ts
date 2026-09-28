@@ -45,6 +45,8 @@ const SUNDAY_REST_WRITES: ReadonlyArray<readonly [string, RegExp]> = [
   ['POST', /^\/me\/username$/],
   ['POST', /^\/me\/location$/],
   ['PUT', /^\/me\/about$/],
+  ['PUT', /^\/pictures\/me$/],
+  ['PUT', /^\/banners\/me$/],
   ['POST', /^\/me\/lightning-address$/],
   ['DELETE', /^\/me\/lightning-address$/],
   ['POST', /^\/me\/lightning-address\/verification$/],

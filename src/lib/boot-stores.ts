@@ -22,6 +22,7 @@ import {
   type FiatRateBook,
 } from '@/lib/usd-fiat-store';
 import { listDbChanges, migrateDbChangeSchema } from '@/lib/db-change';
+import { migrateBannerSchema, PostgresBannerStore, type BannerStore } from '@/lib/banner-store';
 import { mapGiftQueryRow } from '@/lib/gift';
 import {
   migrateGiftSchema,
@@ -136,6 +137,12 @@ export interface BootStores {
    * was opened so the route answers 503.
    */
   debugDbStore: DebugDbStore | undefined;
+  /**
+   * Profile photo and wide image, or `undefined` on a memory boot so the
+   * entry point keeps one in-memory store shared by HTTP and the Nostr worker.
+   * The About me photo is neither slot.
+   */
+  bannerStore: BannerStore | undefined;
 }
 
 /** Optional boot wiring so tests never hit the network. */
@@ -169,20 +176,22 @@ export interface BootFxOptions {
  * `apiLogStore: undefined`,
  * `conversationStore: undefined`,
  * `notificationStore: undefined`, `pushStore: undefined`,
- * `trustStore: undefined`, `fundingStore: undefined`, `listDbChange: undefined`,
+ * `trustStore: undefined`, `fundingStore: undefined`, `bannerStore: undefined`,
+ * `listDbChange: undefined`,
  * `debugDbStore: undefined`, `nostrKek: undefined`,
  * an empty {@link InMemoryBtcUsdStore}, and an empty {@link InMemoryFiatStore}.
  * A set URL asks `createClient` for one `SqlClient`, migrates auth (via
  * `openAuthStore`) then the FX tables (`btc_usd_daily` then `usd_fiat_daily`),
  * `message`, `contact`, `pos_charge` (via `migratePosSchema`), `conversation`, `push`, `notification`, `trust_edge`,
- * `funding_grant`, `api_log`, and `db_change` schemas (notification after push, trust
- * after notification, funding after trust, `api_log` immediately before
- * `db_change` so `trg_db_change` attaches), builds a {@link QueryGiftStore},
+ * `funding_grant`, `api_log`, `account_image`, and `db_change` schemas (notification after push, trust
+ * after notification, funding after trust, `api_log` then `account_image` via
+ * `migrateBannerSchema` immediately before `db_change` so `trg_db_change` attaches), builds a {@link QueryGiftStore},
  * {@link SqlGiftRecorder}, {@link PostgresMessageStore},
  * {@link PostgresTranslationStore},
  * {@link PostgresContactStore}, {@link PostgresPosStore}, {@link PostgresConversationStore},
  * {@link PostgresNotificationStore}, {@link PostgresPushStore},
- * {@link PostgresTrustStore}, and {@link PostgresFundingStore}, parses
+ * {@link PostgresTrustStore}, {@link PostgresFundingStore}, and
+ * {@link PostgresBannerStore}, parses
  * `NOSTR_NSEC_KEK` into `nostrKek`, constructs {@link PostgresBtcUsdStore} and
  * {@link PostgresFiatStore}, and best-effort fills rates for the outbound gift
  * day range (BTC-USD failures log `gifts.fx.boot_fill.failed`; fiat failures
@@ -195,14 +204,14 @@ export interface BootFxOptions {
  * `notificationStore`, `trustStore`, and `fundingStore`, leave `nostrKek`
  * undefined, and do not run the `db_change` migrate. SQL boots return
  * {@link PostgresNotificationStore}, {@link PostgresTrustStore},
- * {@link PostgresFundingStore}, {@link PostgresApiLogStore}, and
- * {@link PostgresDebugDbStore}.
+ * {@link PostgresFundingStore}, {@link PostgresBannerStore},
+ * {@link PostgresApiLogStore}, and {@link PostgresDebugDbStore}.
  * `migrateTrustSchema` then `migrateFundingSchema` run after auth/`account`
  * exists and before `migrateApiLogSchema` / `migrateDbChangeSchema` so
  * `trg_db_change` attaches to `trust_edge` and `funding_grant`.
- * `migrateApiLogSchema` runs after `openAuthStore` (account exists) and
- * immediately before `migrateDbChangeSchema` so `trg_db_change` attaches
- * to `api_log`.
+ * `migrateApiLogSchema` runs after `openAuthStore` (account exists).
+ * `migrateBannerSchema` runs next, then `migrateDbChangeSchema`, so
+ * `trg_db_change` attaches to `api_log` and `account_image`.
  *
  * @param databaseUrl - `postgres://` URL, or `undefined` / blank for memory.
  * @param createClient - SQL factory; required when `databaseUrl` is set.
@@ -248,6 +257,7 @@ export async function openBootStores(
       fundingStore: undefined,
       listDbChange: undefined,
       debugDbStore: undefined,
+      bannerStore: undefined,
     };
   }
   const sql: SqlClient = sqlClient;
@@ -266,6 +276,7 @@ export async function openBootStores(
   await migrateTrustSchema(sqlClient);
   await migrateFundingSchema(sqlClient);
   await migrateApiLogSchema(sqlClient);
+  await migrateBannerSchema(sqlClient);
   await migrateDbChangeSchema(sqlClient);
   await repairGiftKind(sqlClient);
 
@@ -421,5 +432,6 @@ export async function openBootStores(
     fundingStore,
     listDbChange: (limit) => listDbChanges(sql, limit),
     debugDbStore: new PostgresDebugDbStore(sqlClient),
+    bannerStore: new PostgresBannerStore(sqlClient),
   };
 }

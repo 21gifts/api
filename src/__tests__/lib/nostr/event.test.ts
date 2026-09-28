@@ -8,6 +8,7 @@ import {
   buildKind10002Event,
   forumExtraPhotoUrl,
   forumPhotoUrl,
+  notePageUrl,
   kind1ContentWithHashtags,
   kind1HasHashtag,
   kind1Tags,
@@ -350,12 +351,92 @@ describe('kind1', () => {
   });
 });
 
+describe('note page link', () => {
+  const page = 'https://21.gifts/l/abcdef01';
+
+  it('builds /l/ from a UUID and rejects anything else', () => {
+    expect(notePageUrl('https://21.gifts/', 'ABCDEF01-2222-4333-8444-555555555555')).toBe(
+      'https://21.gifts/l/abcdef01',
+    );
+    expect(notePageUrl('https://dev.21.gifts/', 'ABCDEF01-2222-4333-8444-555555555555')).toBe(
+      'https://dev.21.gifts/l/abcdef01',
+    );
+    expect(notePageUrl('', 'abcdef01-2222-4333-8444-555555555555')).toBeNull();
+    expect(notePageUrl('https://21.gifts', 'm-pic')).toBeNull();
+  });
+
+  it('points the reference and the text at the note page', () => {
+    const event = buildKind1Event('hello', 1, undefined, undefined, null, undefined, page);
+    expect(event.content).toBe(`hello\n${page}\n\n#bitcoin #21gifts`);
+    expect(event.tags.find((tag) => tag[0] === 'r')?.[1]).toBe(page);
+    const again = buildKind1Event(`see ${page}`, 1, undefined, undefined, null, undefined, page);
+    expect(again.content).toBe(`see ${page}\n\n#bitcoin #21gifts`);
+    const prefixed = buildKind1Event(
+      `see ${page}extra`,
+      1,
+      undefined,
+      undefined,
+      null,
+      undefined,
+      page,
+    );
+    expect(prefixed.content).toBe(`see ${page}extra\n${page}\n\n#bitcoin #21gifts`);
+    const punctuated = buildKind1Event(
+      `see ${page}.`,
+      1,
+      undefined,
+      undefined,
+      null,
+      undefined,
+      page,
+    );
+    expect(punctuated.content).toBe(`see ${page}.\n\n#bitcoin #21gifts`);
+    const later = buildKind1Event(
+      `${page}x ${page}`,
+      1,
+      undefined,
+      undefined,
+      null,
+      undefined,
+      page,
+    );
+    expect(later.content).toBe(`${page}x ${page}\n\n#bitcoin #21gifts`);
+    const empty = buildKind1Event('', 1, undefined, undefined, null, undefined, page);
+    expect(empty.content).toBe(`${page}\n\n#bitcoin #21gifts`);
+    expect(
+      buildKind1Event('hello', 1, undefined, undefined, null, undefined, null).tags[2]?.[1],
+    ).toBe('https://21.gifts');
+    expect(
+      buildKind1Event('hello', 1, undefined, undefined, null, undefined, '').tags[2]?.[1],
+    ).toBe('https://21.gifts');
+  });
+
+  it('omits a blurhash that is not BlurHash text', () => {
+    const event = buildKind1Event('x', 1, {
+      url: 'https://api.21.gifts/messages/m1/photo.jpg',
+      mime: 'image/jpeg',
+      blurhash: '!!!',
+    });
+    const imeta = event.tags.find((tag) => tag[0] === 'imeta');
+    expect(imeta?.some((part) => part.startsWith('blurhash '))).toBe(false);
+    const kept = buildKind1Event('x', 1, {
+      url: 'https://api.21.gifts/messages/m1/photo.jpg',
+      mime: 'image/jpeg',
+      blurhash: 'LEHV6nWB2yk8pyo0adR*.7kCMdnj',
+    });
+    expect(kept.tags.find((tag) => tag[0] === 'imeta')).toContain(
+      'blurhash LEHV6nWB2yk8pyo0adR*.7kCMdnj',
+    );
+  });
+});
+
 describe('kind0', () => {
   it('omits lud16 when the address is null', () => {
     expect(JSON.parse(buildKind0Content('Ada', null))).toEqual({
       name: 'Ada',
       display_name: 'Ada',
       website: 'https://21.gifts',
+      banner: 'https://21.gifts/og.png',
       picture: KIND0_PICTURE_URL,
       about: '21.gifts',
     });
@@ -383,6 +464,23 @@ describe('kind0', () => {
   it('includes lud16 when set', () => {
     expect(JSON.parse(buildKind0Content('Ada', 'ada@walletofsatoshi.com')).lud16).toBe(
       'ada@walletofsatoshi.com',
+    );
+  });
+
+  it('uses a personal photo for the avatar and the banner', () => {
+    const photo = 'https://api.21.gifts/messages/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/photo.jpg';
+    const parsed = JSON.parse(
+      buildKind0Content('Ada', null, null, 'Ada', { picture: photo, banner: photo }),
+    ) as { picture: string; banner: string };
+    expect(parsed.picture).toBe(photo);
+    expect(parsed.banner).toBe(photo);
+    const fallback = JSON.parse(
+      buildKind0Content('Ada', null, null, 'Ada', { picture: null, banner: '  ' }),
+    ) as { picture: string; banner: string };
+    expect(fallback.picture).toBe(KIND0_PICTURE_URL);
+    expect(fallback.banner).toBe('https://21.gifts/og.png');
+    expect(JSON.parse(buildKind0Event('Ada', null, 1, null, 'Ada', null).content).picture).toBe(
+      KIND0_PICTURE_URL,
     );
   });
 

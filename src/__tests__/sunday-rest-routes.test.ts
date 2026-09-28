@@ -95,6 +95,46 @@ describe('sunday rest routes', () => {
     expect(((await res.json()) as { error?: string }).error).not.toBe('SUNDAY_REST');
   });
 
+  it('refuses PUT /pictures/me and PUT /banners/me when the device zone is Sunday', async () => {
+    const picture = await app().request('/pictures/me', {
+      method: 'PUT',
+      headers: { 'Time-Zone': 'Europe/Zurich', 'content-type': 'application/json' },
+      body: JSON.stringify({ photo: null }),
+    });
+    const banner = await app().request('/banners/me', {
+      method: 'PUT',
+      headers: { 'Time-Zone': 'Europe/Zurich', 'content-type': 'application/json' },
+      body: JSON.stringify({ photo: null }),
+    });
+    expect(picture.status).toBe(403);
+    expect(await picture.json()).toEqual({ error: 'SUNDAY_REST' });
+    expect(banner.status).toBe(403);
+    expect(await banner.json()).toEqual({ error: 'SUNDAY_REST' });
+  });
+
+  it('does not refuse reading the profile photo or the wide image on Sunday', async () => {
+    const picture = await app().request('/pictures/me', {
+      headers: { 'Time-Zone': 'Europe/Zurich' },
+    });
+    const banner = await app().request('/banners/me', {
+      headers: { 'Time-Zone': 'Europe/Zurich' },
+    });
+    expect(picture.status).not.toBe(403);
+    expect(((await picture.json()) as { error?: string }).error).not.toBe('SUNDAY_REST');
+    expect(banner.status).not.toBe(403);
+    expect(((await banner.json()) as { error?: string }).error).not.toBe('SUNDAY_REST');
+  });
+
+  it('does not refuse a profile-photo write without a Time-Zone header', async () => {
+    const res = await app().request('/pictures/me', {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ photo: null }),
+    });
+    expect(res.status).not.toBe(403);
+    expect(((await res.json()) as { error?: string }).error).not.toBe('SUNDAY_REST');
+  });
+
   it('does not refuse POST /messages when Time-Zone is invalid', async () => {
     const res = await app().request('/messages', {
       method: 'POST',
