@@ -8,7 +8,7 @@
 > paths, JSON fields, or status codes**. When a journey has no route in
 > `SPEC.md`, say so and stop.
 
-**Status**: living document. Last revised 2026-09-23.
+**Status**: living document. Last revised 2026-09-28.
 
 ---
 
@@ -378,10 +378,10 @@ enqueues (does not send inline) one Web Push to every remaining bell subscriber
 (an account with at least one `push_subscription`) except the actor. External
 replies use the targeted exception below:
 
-- a **forum post** payload when someone else posts (title is the author display name, or Someone when blank; the body is the note text on one line, cut at 180 code points, or the photo/video sentence when the text is empty; `url: /notifications`, `tag: forum_post:<postId>`)
-- a **reply** payload when someone replies (title and body follow the post rules; `url: /notifications`, `tag: forum_reply:<replyId>`). Damus-only parents still fan out; a self-reply skips only the actor. That includes an unpaid `POST /messages` reply and an inbound member reply the worker persisted.
-- an **external reply** payload only for the parent note's member author, never a broadcast, and only when numeric `created_at` is at most one hour old and no more than ten minutes in the future. Missing/non-numeric, farther-future, and older event times do not notify. Its notification actor and push title stay the generic "Someone", not the reply's own name. The body is the reply text on one line, cut at 180 code points, or the photo/video sentence when the text is empty. The persisted row remains visible in every suppressed-notification case.
-- a **zap** payload when a zap receipt is newly indexed (title is the payer name, or Someone when blank; body is `Sent <amount> sats.`; `url: /notifications`, `tag: zap:<id>`). The note author is notified unless they are the payer. A platform-account payer does not notify anyone.
+- a **forum post** payload when someone else posts (title is the author display name, or Someone when blank; the body is the note text on one line, cut at 180 code points, or the photo/video sentence when the text is empty; `url: /messages/<postId>` with the id URI-encoded, `tag: forum_post:<postId>`)
+- a **reply** payload when someone replies (title and body follow the post rules; `url: /messages/<replyId>` with the id URI-encoded, `tag: forum_reply:<replyId>`). Damus-only parents still fan out; a self-reply skips only the actor. That includes an unpaid `POST /messages` reply and an inbound member reply the worker persisted.
+- an **external reply** payload only for the parent note's member author, never a broadcast, and only when numeric `created_at` is at most one hour old and no more than ten minutes in the future. Missing/non-numeric, farther-future, and older event times do not notify. Its notification actor and push title stay the generic "Someone", not the reply's own name. The body is the reply text on one line, cut at 180 code points, or the photo/video sentence when the text is empty. `url: /messages/<replyId>` with the id URI-encoded. The persisted row remains visible in every suppressed-notification case.
+- a **zap** payload when a zap receipt is newly indexed (title is the payer name, or Someone when blank; body is `Sent <amount> sats.`; `url: /messages/<noteId>` with the forum note id URI-encoded, not the receipt id; `tag: zap:<id>`). The note author is notified unless they are the payer. A platform-account payer does not notify anyone.
 
 Missing `pushStore` still writes in-app rows. If persist or enqueue
 fails, the living-room write still succeeds (HTTP 200 on `POST /messages`;
@@ -391,7 +391,7 @@ The in-app Notifications list (`GET /notifications`, mark-read POSTs) is
 separate from `/conversations` chat. The list omits rows whose parent or
 reply forum message is missing or hidden (`forum_reply` also checks the
 child note; `zap` only the parent note). `moderator_appointed` stays. Post, reply, and zap pushes open
-`/notifications`. A new inbound private message enqueues Web Push
+`/messages/<id>` (the reply for a reply, the forum note for a post or a zap). A new inbound private message enqueues Web Push
 `/messages?c=` (bell subscribers only); badge `unreadCount` is
 notification unread plus listed inbox unread.
 

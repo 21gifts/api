@@ -616,7 +616,7 @@ export async function notifyForumMentions(args: {
   auth?: Pick<AuthStore, 'listAccounts' | 'getAccount'>;
   account: { id: string };
   created: MessageRow;
-  /** Top-level note id the notification opens. */
+  /** Top-level note id. The push opens `created.id`, which may be this note or a reply. */
   parentId: string;
   /** True when the related top-level note would already notify at level `active`. */
   isActive: boolean;
