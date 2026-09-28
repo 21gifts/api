@@ -982,14 +982,14 @@
 
 ## Endpoint: POST /me/passkey-renew/report
 
-- **Purpose:** Bearer required. Strict JSON `{ stage, outcome, errorName, errorCode, httpStatus, message }`. Accepts only `failed` or `cancelled` (`succeeded` is 400). Stores a passkey renew row (server id and `createdAt`; User-Agent from the header). Does not change the account row. Before the length cap, a phrase of 12 or more whitespace-separated tokens, or a run of 64 or more token characters, is stored as `[redacted]` on error name (80), error code (80), message (500), and user agent (300). Returns owner JSON including `passkeyRenewFailed` and `passkeyRenewClosed`. `passkeyRenewClosed` is true only while `walletRequired` is false.
+- **Purpose:** Bearer required. Strict JSON `{ stage, outcome, errorName, errorCode, httpStatus, message }`. Accepts only `failed` or `cancelled` (`succeeded` is 400). Stores a passkey renew row (server id and `createdAt`; User-Agent from the header). Does not change the account row. Before the length cap, a phrase of 12 or more whitespace-separated tokens, or a run of 64 or more token characters, is stored as `[redacted]` on error name (80), error code (80), message (500), and user agent (300). Returns owner JSON loaded after the insert, including `passkeyRenewFailed` and `passkeyRenewClosed`. A seed that landed during the request is not closed. `passkeyRenewClosed` is true only while `walletRequired` is false.
 - **Errors:** 401 without session; 400 for a bad report body (invalid JSON, unknown keys, or `outcome: "succeeded"`).
 - **Used by:** App passkey renew ceremony (browser cancel / PRF failure) via `POST /me/passkey-renew/report`.
 - **Auth:** `Authorization: Bearer` session.
 
 ## Endpoint: POST /me/passkey-renew/ack
 
-- **Purpose:** Bearer required. Empty body is fine. Acknowledges failed unacknowledged renew rows only (`outcome = 'failed'` and `acknowledged_at` IS NULL). Does not change the account row. Returns owner JSON including `passkeyRenewFailed` and `passkeyRenewClosed`. `passkeyRenewClosed` is true only while `walletRequired` is false.
+- **Purpose:** Bearer required. Empty body is fine. Acknowledges failed unacknowledged renew rows only (`outcome = 'failed'` and `acknowledged_at` IS NULL). Does not change the account row. Returns owner JSON loaded after the acknowledgement, including `passkeyRenewFailed` and `passkeyRenewClosed`. A seed that landed during the request is not closed. `passkeyRenewClosed` is true only while `walletRequired` is false.
 - **Errors:** 401 without session.
 - **Used by:** App after the owner dismisses a failed renew.
 - **Auth:** `Authorization: Bearer` session.

@@ -320,7 +320,12 @@ export function meRoutes(deps: MeRouteDeps): Hono {
         message: parsed.data.message,
         userAgent: c.req.header('user-agent') ?? null,
       });
-      return c.json(await ownerJson(deps, account), 200);
+      const reported = await storedAccount(deps, account.id);
+      /* v8 ignore next 3 -- the account row cannot vanish mid-request after auth */
+      if (reported === null) {
+        return c.json({ error: 'Unauthorized' }, 401);
+      }
+      return c.json(await ownerJson(deps, reported), 200);
     })
     .post('/passkey-renew/ack', async (c) => {
       const account = await authedAccount(deps, c.req.header('authorization'));
@@ -328,7 +333,12 @@ export function meRoutes(deps: MeRouteDeps): Hono {
         return c.json({ error: 'Unauthorized' }, 401);
       }
       await deps.store.acknowledgePasskeyRenewFailures(account.id, deps.now());
-      return c.json(await ownerJson(deps, account), 200);
+      const acknowledged = await storedAccount(deps, account.id);
+      /* v8 ignore next 3 -- the account row cannot vanish mid-request after auth */
+      if (acknowledged === null) {
+        return c.json({ error: 'Unauthorized' }, 401);
+      }
+      return c.json(await ownerJson(deps, acknowledged), 200);
     })
     .post('/setup/skip', async (c) => {
       const account = await authedAccount(deps, c.req.header('authorization'));

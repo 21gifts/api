@@ -621,6 +621,60 @@ describe('POST /me/passkey-renew/report', () => {
     expect((await store.getAccount('acc'))?.walletRequired === true).toBe(false);
   });
 
+  it('does not look closed when a seed lands during the report', async () => {
+    const store = new RecordingAuthStore();
+    await store.createAccount({
+      id: 'acc',
+      linkingKey: LINKING_KEY,
+      role: 'basis',
+      name: null,
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: VIEW_KEY,
+      createdAt: 1_000_000,
+      rulesAgreedAt: null,
+    });
+    await store.createSession({ token: 'tok', accountId: 'acc', createdAt: 1_000_000 });
+    await InMemoryAuthStore.prototype.insertPasskeyRenewAttempt.call(store, {
+      id: 'prior-fail',
+      accountId: 'acc',
+      createdAt: 1,
+      stage: 'ceremony',
+      outcome: 'failed',
+      errorName: null,
+      errorCode: null,
+      httpStatus: null,
+      message: 'seed failed',
+      userAgent: null,
+    });
+    await store.acknowledgePasskeyRenewFailures('acc', 2);
+    const seeded = store.insertPasskeyRenewAttempt.bind(store);
+    store.insertPasskeyRenewAttempt = async (input) => {
+      await store.addSeedPasskeyCredential({
+        credentialId: 'seed-during-report',
+        publicKey: new Uint8Array([1]),
+        signCount: 0,
+        accountId: input.accountId,
+        createdAt: 3,
+      });
+      await seeded(input);
+    };
+    const res = await mount(store).request('/me/passkey-renew/report', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify(PASSKEY_RENEW_REPORT),
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      passkeyRenewClosed: boolean;
+      walletRequired: boolean;
+    };
+    expect(body.walletRequired).toBe(true);
+    expect(body.passkeyRenewClosed).toBe(false);
+  });
+
   it('returns 400 for outcome succeeded and stores nothing', async () => {
     const store = new RecordingAuthStore();
     await store.createAccount({

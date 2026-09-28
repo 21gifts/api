@@ -780,7 +780,9 @@ generates `id` and `createdAt`; User-Agent from the header). Does not
 change the account row. Before the length cap, a phrase of 12 or more
 whitespace-separated tokens, or a run of 64 or more token characters, is
 stored as `[redacted]` on error name (80), error code (80), message (500),
-and user agent (300). Returns owner JSON including `passkeyRenewFailed` and `passkeyRenewClosed`. `passkeyRenewClosed` is true only while `walletRequired` is false.
+and user agent (300). Returns owner JSON loaded after the insert, including
+`passkeyRenewFailed` and `passkeyRenewClosed`. A seed that landed during the
+request is not closed. `passkeyRenewClosed` is true only while `walletRequired` is false.
 
 Missing/invalid bearer → **Response** `401` `{ "error": "Unauthorized" }`.
 
@@ -793,8 +795,9 @@ Success → **Response** `200` with the owner JSON (same shape as `GET /me`).
 
 Bearer required. Empty body is fine. Acknowledges failed unacknowledged
 renew rows only. Does not change the account row. Returns owner JSON
-including `passkeyRenewFailed` and `passkeyRenewClosed`. `passkeyRenewClosed`
-is true only while `walletRequired` is false.
+loaded after the acknowledgement, including `passkeyRenewFailed` and
+`passkeyRenewClosed`. A seed that landed during the request is not closed.
+`passkeyRenewClosed` is true only while `walletRequired` is false.
 
 Missing/invalid bearer → **Response** `401` `{ "error": "Unauthorized" }`.
 
