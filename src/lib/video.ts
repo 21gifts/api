@@ -68,7 +68,7 @@ const HEALED_VIDEO_EXTS = new Set(['mp4', 'webm', 'mov']);
 export interface ForumVideo {
   /** MIME from magic bytes. */
   contentType: ForumVideoContentType;
-  /** Raw container bytes. Stored as these bytes, apart from faststart and display-matrix repair. */
+  /** Raw container bytes. Stored as these bytes, apart from faststart, display-matrix, and zero-duration audio repair. */
   bytes: Uint8Array;
   /** Civil capture time read from the container. Absent or null when the file has none. */
   takenAt?: string | null;
@@ -781,10 +781,723 @@ function scanTrak(
   return true;
 }
 
+/** Sample tables this repair is allowed to rewrite. Anything else in `stbl` blocks the edit. */
+const AUDIO_STBL_BOXES = new Set(['stsd', 'stts', 'stsc', 'stsz', 'stco', 'co64']);
+
+/** Cap so a corrupt `stts` cannot expand without bound. */
+const MAX_AUDIO_SAMPLES = 2_000_000;
+
+interface BoxReplacement {
+  /** Absolute start of the box being replaced. */
+  start: number;
+  /** Old box size, header included. */
+  oldSize: number;
+  /** New box, header included. */
+  bytes: Uint8Array;
+}
+
+interface AudioChunkEdit {
+  /** Bytes of leading duration-0 samples skipped inside this chunk. */
+  prefix: bigint;
+  /** Samples that stay, in order. */
+  kept: { delta: number; size: number }[];
+  /** Absolute file offset of the chunk before this repair. */
+  offset: bigint;
+  /** `stsc` sample-description index. */
+  desc: number;
+}
+
+/**
+ * Drop audio samples whose duration is 0.
+ *
+ * Some phone files store the AAC decoder config as a first sample of two
+ * bytes and duration 0. Chrome refuses that packet and the note stays black.
+ * The sample is removed from the timing tables. Its bytes stay in `mdat`,
+ * unreferenced. An edit that would leave a hole in a chunk, or that cannot
+ * be checked, returns the same `bytes` reference.
+ *
+ * @param bytes - ISO-BMFF bytes. Not modified.
+ * @returns A new copy, or `bytes` when nothing changes.
+ */
+export function dropZeroDurationAudioSamples(bytes: Uint8Array): Uint8Array {
+  const boxes = collectIsoBmffBoxes(bytes);
+  if (boxes === null) {
+    return bytes;
+  }
+  const planned = planZeroDurationEdits(bytes, boxes);
+  if (planned === null || planned.replacements.length === 0) {
+    return bytes;
+  }
+  const out = new Uint8Array(bytes);
+  if (!growAncestors(out, boxes, planned.replacements)) {
+    return bytes;
+  }
+  const spliced = spliceBoxes(out, planned.replacements);
+  if (planned.moovDelta === 0) {
+    return spliced;
+  }
+  const shifted = parseIsoBmffBoxes(spliced, 0, spliced.byteLength);
+  /* v8 ignore next 3 -- a planned edit only rewrites boxes inside a tree that already parsed */
+  if (shifted === null) {
+    return bytes;
+  }
+  const state = { offsetBoxes: 0 };
+  for (const box of shifted) {
+    /* v8 ignore next 3 -- chunk offsets were range-checked before the splice */
+    if (!patchChunkOffsets(spliced, box, planned.moovDelta, state)) {
+      return bytes;
+    }
+  }
+  return spliced;
+}
+
+function collectIsoBmffBoxes(bytes: Uint8Array): IsoBmffBox[] | null {
+  const into: IsoBmffBox[] = [];
+  const walk = (start: number, end: number): boolean => {
+    const children = parseIsoBmffBoxes(bytes, start, end);
+    if (children === null) {
+      return false;
+    }
+    for (const child of children) {
+      into.push(child);
+      if (!ISO_BMFF_CONTAINERS.has(child.type)) {
+        continue;
+      }
+      const payload = child.start + child.headerSize;
+      if (!walk(payload, child.start + child.size)) {
+        return false;
+      }
+    }
+    return true;
+  };
+  return walk(0, bytes.byteLength) ? into : null;
+}
+
+function planZeroDurationEdits(
+  bytes: Uint8Array,
+  boxes: IsoBmffBox[],
+): { replacements: BoxReplacement[]; moovDelta: number } | null {
+  const edits: AudioChunkEdit[][] = [];
+  const offsetBoxes: IsoBmffBox[] = [];
+  const tableReps: BoxReplacement[] = [];
+  for (const box of boxes) {
+    if (box.type !== 'trak') {
+      continue;
+    }
+    const plan = planAudioTrak(bytes, box);
+    if (plan === null) {
+      return null;
+    }
+    if (plan.kind === 'skip') {
+      continue;
+    }
+    edits.push(plan.chunks);
+    offsetBoxes.push(plan.offsetBox);
+    tableReps.push(plan.stts, plan.stsz, plan.stsc);
+  }
+  if (edits.length === 0) {
+    return { replacements: [], moovDelta: 0 };
+  }
+  const baseDelta = tableReps.reduce((sum, rep) => sum + rep.bytes.byteLength - rep.oldSize, 0);
+  let wide = offsetBoxes.map((box) => box.type === 'co64');
+  for (let guard = 0; guard <= wide.length; guard += 1) {
+    const delta = baseDelta + offsetDelta(offsetBoxes, edits, wide);
+    const nextWide = edits.map(
+      (chunks, index) => wide[index] === true || chunksNeedWide(chunks, delta),
+    );
+    if (nextWide.every((flag, index) => flag === wide[index])) {
+      wide = nextWide;
+      break;
+    }
+    wide = nextWide;
+    /* v8 ignore next 3 -- each track flips to a wide offset table at most once */
+    if (guard === wide.length) {
+      return null;
+    }
+  }
+  const moovDelta = baseDelta + offsetDelta(offsetBoxes, edits, wide);
+  if (!offsetsStayInRange(bytes, boxes, offsetBoxes, edits, wide, moovDelta)) {
+    return null;
+  }
+  const offsetReps = offsetBoxes.map((box, index) =>
+    packOffsetReplacement(box, edits[index] as AudioChunkEdit[], wide[index] === true),
+  );
+  return {
+    replacements: [...tableReps, ...offsetReps],
+    moovDelta,
+  };
+}
+
+function offsetDelta(boxes: IsoBmffBox[], edits: AudioChunkEdit[][], wide: boolean[]): number {
+  return boxes.reduce((sum, box, index) => {
+    const packed = packChunkOffsets(edits[index] as AudioChunkEdit[], wide[index] === true);
+    return sum + packed.byteLength - box.size;
+  }, 0);
+}
+
+function chunksNeedWide(chunks: AudioChunkEdit[], delta: number): boolean {
+  return chunks.some((chunk) => {
+    const stored = chunk.offset + chunk.prefix;
+    const next = stored + BigInt(delta);
+    return stored > 0xffffffffn || next > 0xffffffffn;
+  });
+}
+
+function offsetsStayInRange(
+  bytes: Uint8Array,
+  boxes: IsoBmffBox[],
+  replaced: IsoBmffBox[],
+  edits: AudioChunkEdit[][],
+  wide: boolean[],
+  delta: number,
+): boolean {
+  const replacedAt = new Set(replaced.map((box) => box.start));
+  for (const box of boxes) {
+    if ((box.type !== 'stco' && box.type !== 'co64') || replacedAt.has(box.start)) {
+      continue;
+    }
+    const values = readChunkOffsets(bytes, box);
+    if (
+      values === null ||
+      values.some((value) => !offsetFits(value + BigInt(delta), box.type === 'co64'))
+    ) {
+      return false;
+    }
+  }
+  return edits.every((chunks, index) =>
+    chunks.every((chunk) =>
+      offsetFits(chunk.offset + BigInt(chunk.prefix) + BigInt(delta), wide[index] === true),
+    ),
+  );
+}
+
+function offsetFits(value: bigint, wide: boolean): boolean {
+  if (value < 0n) {
+    return false;
+  }
+  return wide || value <= 0xffffffffn;
+}
+
+interface AudioTrakPlan {
+  kind: 'edit';
+  chunks: AudioChunkEdit[];
+  offsetBox: IsoBmffBox;
+  stts: BoxReplacement;
+  stsz: BoxReplacement;
+  stsc: BoxReplacement;
+}
+
+function planAudioTrak(
+  bytes: Uint8Array,
+  trak: IsoBmffBox,
+): AudioTrakPlan | { kind: 'skip' } | null {
+  const found = inspectTrak(bytes, trak);
+  if (found.handler !== 'soun') {
+    return { kind: 'skip' };
+  }
+  if (
+    found.blocked ||
+    found.stts === null ||
+    found.stsz === null ||
+    found.stsc === null ||
+    (found.stco === null && found.co64 === null) ||
+    (found.stco !== null && found.co64 !== null)
+  ) {
+    return found.stts === null && !found.blocked ? { kind: 'skip' } : null;
+  }
+  const offsetBox = found.stco ?? found.co64;
+  /* v8 ignore next 3 -- the guard above requires exactly one offset table */
+  if (offsetBox === null) {
+    return null;
+  }
+  const samples = readSampleTiming(bytes, found.stts, found.stsz);
+  if (samples === null) {
+    return null;
+  }
+  if (!samples.deltas.some((delta) => delta === 0)) {
+    return { kind: 'skip' };
+  }
+  const chunks = assignChunks(bytes, found.stsc, offsetBox, samples);
+  if (chunks === null) {
+    return null;
+  }
+  const edited = editChunks(chunks);
+  if (edited === null || edited.length === 0) {
+    return null;
+  }
+  const stts = packStts(edited.flatMap((chunk) => chunk.kept.map((sample) => sample.delta)));
+  const stsz = packStsz(edited.flatMap((chunk) => chunk.kept.map((sample) => sample.size)));
+  const stsc = packStsc(edited);
+  return {
+    kind: 'edit',
+    chunks: edited,
+    offsetBox,
+    stts: { start: found.stts.start, oldSize: found.stts.size, bytes: stts },
+    stsz: { start: found.stsz.start, oldSize: found.stsz.size, bytes: stsz },
+    stsc: { start: found.stsc.start, oldSize: found.stsc.size, bytes: stsc },
+  };
+}
+
+interface InspectedTrak {
+  handler: string;
+  blocked: boolean;
+  stts: IsoBmffBox | null;
+  stsz: IsoBmffBox | null;
+  stsc: IsoBmffBox | null;
+  stco: IsoBmffBox | null;
+  co64: IsoBmffBox | null;
+}
+
+function inspectTrak(bytes: Uint8Array, trak: IsoBmffBox): InspectedTrak {
+  const found: InspectedTrak = {
+    handler: '',
+    blocked: false,
+    stts: null,
+    stsz: null,
+    stsc: null,
+    stco: null,
+    co64: null,
+  };
+  const walk = (start: number, end: number, parent: string): void => {
+    const children = parseIsoBmffBoxes(bytes, start, end) as IsoBmffBox[];
+    for (const child of children) {
+      if (parent === 'stbl' && !AUDIO_STBL_BOXES.has(child.type)) {
+        found.blocked = true;
+      }
+      if (child.type === 'hdlr' && found.handler === '') {
+        found.handler = readHandler(bytes, child);
+      }
+      if (parent === 'stbl') {
+        noteSampleBox(found, child);
+      }
+      if (!ISO_BMFF_CONTAINERS.has(child.type)) {
+        continue;
+      }
+      const payload = child.start + child.headerSize;
+      walk(payload, child.start + child.size, child.type);
+    }
+  };
+  const payload = trak.start + trak.headerSize;
+  walk(payload, trak.start + trak.size, 'trak');
+  return found;
+}
+
+function noteSampleBox(found: InspectedTrak, child: IsoBmffBox): void {
+  if (child.type === 'stts') {
+    found.blocked = found.stts !== null || found.blocked;
+    found.stts = found.stts ?? child;
+  } else if (child.type === 'stsz') {
+    found.blocked = found.stsz !== null || found.blocked;
+    found.stsz = found.stsz ?? child;
+  } else if (child.type === 'stsc') {
+    found.blocked = found.stsc !== null || found.blocked;
+    found.stsc = found.stsc ?? child;
+  } else if (child.type === 'stco') {
+    found.blocked = found.stco !== null || found.blocked;
+    found.stco = found.stco ?? child;
+  } else if (child.type === 'co64') {
+    found.blocked = found.co64 !== null || found.blocked;
+    found.co64 = found.co64 ?? child;
+  }
+}
+
+function readHandler(bytes: Uint8Array, box: IsoBmffBox): string {
+  const payload = box.start + box.headerSize;
+  if (payload + 12 > box.start + box.size) {
+    return '';
+  }
+  return String.fromCharCode(
+    bytes[payload + 8] as number,
+    bytes[payload + 9] as number,
+    bytes[payload + 10] as number,
+    bytes[payload + 11] as number,
+  );
+}
+
+function readSampleTiming(
+  bytes: Uint8Array,
+  stts: IsoBmffBox,
+  stsz: IsoBmffBox,
+): { deltas: number[]; sizes: number[] } | null {
+  const deltas = readDeltas(bytes, stts);
+  const sizes = readSizes(bytes, stsz);
+  if (deltas === null || sizes === null || deltas.length !== sizes.length) {
+    return null;
+  }
+  return { deltas, sizes };
+}
+
+function readDeltas(bytes: Uint8Array, box: IsoBmffBox): number[] | null {
+  const payload = box.start + box.headerSize;
+  const end = box.start + box.size;
+  if (payload + 8 > end || bytes[payload] !== 0) {
+    return null;
+  }
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const entries = view.getUint32(payload + 4);
+  if (payload + 8 + entries * 8 > end) {
+    return null;
+  }
+  const deltas: number[] = [];
+  for (let index = 0; index < entries; index += 1) {
+    const count = view.getUint32(payload + 8 + index * 8);
+    const delta = view.getUint32(payload + 12 + index * 8);
+    if (count === 0 || deltas.length + count > MAX_AUDIO_SAMPLES) {
+      return null;
+    }
+    for (let sample = 0; sample < count; sample += 1) {
+      deltas.push(delta);
+    }
+  }
+  return deltas;
+}
+
+function readSizes(bytes: Uint8Array, box: IsoBmffBox): number[] | null {
+  const payload = box.start + box.headerSize;
+  const end = box.start + box.size;
+  if (payload + 12 > end || bytes[payload] !== 0) {
+    return null;
+  }
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const sampleSize = view.getUint32(payload + 4);
+  const count = view.getUint32(payload + 8);
+  if (count > MAX_AUDIO_SAMPLES) {
+    return null;
+  }
+  if (sampleSize !== 0) {
+    return Array.from({ length: count }, () => sampleSize);
+  }
+  if (payload + 12 + count * 4 > end) {
+    return null;
+  }
+  const sizes: number[] = [];
+  for (let index = 0; index < count; index += 1) {
+    sizes.push(view.getUint32(payload + 12 + index * 4));
+  }
+  return sizes;
+}
+
+function assignChunks(
+  bytes: Uint8Array,
+  stsc: IsoBmffBox,
+  offsets: IsoBmffBox,
+  samples: { deltas: number[]; sizes: number[] },
+): { samples: { delta: number; size: number }[]; offset: bigint; desc: number }[] | null {
+  const entries = readStsc(bytes, stsc);
+  const chunkOffsets = readChunkOffsets(bytes, offsets);
+  if (entries === null || chunkOffsets === null) {
+    return null;
+  }
+  const layout = expandChunkLayout(entries, samples.deltas.length);
+  if (layout === null || layout.length !== chunkOffsets.length) {
+    return null;
+  }
+  let index = 0;
+  return layout.map((chunk, chunkIndex) => {
+    const slice = samples.deltas.slice(index, index + chunk.spc).map((delta, sampleIndex) => {
+      const size = samples.sizes[index + sampleIndex];
+      return { delta, size: size as number };
+    });
+    index += chunk.spc;
+    return { samples: slice, offset: chunkOffsets[chunkIndex] as bigint, desc: chunk.desc };
+  });
+}
+
+function readStsc(
+  bytes: Uint8Array,
+  box: IsoBmffBox,
+): { first: number; spc: number; desc: number }[] | null {
+  const payload = box.start + box.headerSize;
+  const end = box.start + box.size;
+  if (payload + 8 > end || bytes[payload] !== 0) {
+    return null;
+  }
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const count = view.getUint32(payload + 4);
+  if (payload + 8 + count * 12 > end || count > MAX_AUDIO_SAMPLES) {
+    return null;
+  }
+  const entries: { first: number; spc: number; desc: number }[] = [];
+  for (let index = 0; index < count; index += 1) {
+    const at = payload + 8 + index * 12;
+    const first = view.getUint32(at);
+    const spc = view.getUint32(at + 4);
+    const desc = view.getUint32(at + 8);
+    if (first < 1 || spc < 1 || desc < 1) {
+      return null;
+    }
+    const previous = entries[index - 1];
+    if (index > 0 && previous !== undefined && first <= previous.first) {
+      return null;
+    }
+    entries.push({ first, spc, desc });
+  }
+  return entries;
+}
+
+function expandChunkLayout(
+  entries: { first: number; spc: number; desc: number }[],
+  sampleCount: number,
+): { spc: number; desc: number }[] | null {
+  if (entries.length === 0) {
+    return null;
+  }
+  const head = entries[0];
+  /* v8 ignore next 3 -- a non-empty entry list has a first row */
+  if (head === undefined || head.first !== 1) {
+    return null;
+  }
+  const chunks: { spc: number; desc: number }[] = [];
+  let remaining = sampleCount;
+  let entry = 0;
+  let chunkNo = 1;
+  while (remaining > 0) {
+    if (chunkNo >= (entries[entry + 1]?.first ?? Infinity)) {
+      entry += 1;
+    }
+    const current = entries[entry];
+    /* v8 ignore next 3 -- chunk numbers stay inside the stsc runs */
+    if (current === undefined || chunkNo < current.first) {
+      return null;
+    }
+    if (remaining < current.spc) {
+      return null;
+    }
+    chunks.push({ spc: current.spc, desc: current.desc });
+    remaining -= current.spc;
+    chunkNo += 1;
+  }
+  if (entries.some((item) => item.first > chunks.length)) {
+    return null;
+  }
+  return chunks;
+}
+
+function readChunkOffsets(bytes: Uint8Array, box: IsoBmffBox): bigint[] | null {
+  const payload = box.start + box.headerSize;
+  const end = box.start + box.size;
+  if (payload + 8 > end || bytes[payload] !== 0) {
+    return null;
+  }
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const count = view.getUint32(payload + 4);
+  if (box.type === 'stco') {
+    if (payload + 8 + count * 4 > end) {
+      return null;
+    }
+    const values: bigint[] = [];
+    for (let index = 0; index < count; index += 1) {
+      values.push(BigInt(view.getUint32(payload + 8 + index * 4)));
+    }
+    return values;
+  }
+  if (payload + 8 + count * 8 > end) {
+    return null;
+  }
+  const values: bigint[] = [];
+  for (let index = 0; index < count; index += 1) {
+    values.push(view.getBigUint64(payload + 8 + index * 8));
+  }
+  return values;
+}
+
+function editChunks(
+  chunks: { samples: { delta: number; size: number }[]; offset: bigint; desc: number }[],
+): AudioChunkEdit[] | null {
+  const edited: AudioChunkEdit[] = [];
+  for (const chunk of chunks) {
+    const next = editOneChunk(chunk);
+    if (next === null) {
+      return null;
+    }
+    if (next === 'empty') {
+      continue;
+    }
+    edited.push(next);
+  }
+  return edited;
+}
+
+function editOneChunk(chunk: {
+  samples: { delta: number; size: number }[];
+  offset: bigint;
+  desc: number;
+}): AudioChunkEdit | 'empty' | null {
+  const dropped = chunk.samples.map((sample) => sample.delta === 0);
+  if (dropped.every(Boolean)) {
+    return 'empty';
+  }
+  let seenKeep = false;
+  let dropAfterKeep = false;
+  for (const isDrop of dropped) {
+    if (!isDrop && dropAfterKeep) {
+      return null;
+    }
+    if (!isDrop) {
+      seenKeep = true;
+    } else if (seenKeep) {
+      dropAfterKeep = true;
+    }
+  }
+  let prefix = 0n;
+  let index = 0;
+  while (index < chunk.samples.length) {
+    const sample = chunk.samples[index] as { delta: number; size: number };
+    if (sample.delta !== 0) {
+      break;
+    }
+    prefix += BigInt(sample.size);
+    index += 1;
+  }
+  const kept = chunk.samples.slice(index).filter((sample) => sample.delta !== 0);
+  return { prefix, kept, offset: chunk.offset, desc: chunk.desc };
+}
+
+function packStts(deltas: number[]): Uint8Array {
+  const runs: { count: number; delta: number }[] = [];
+  for (const delta of deltas) {
+    const last = runs[runs.length - 1];
+    if (last !== undefined && last.delta === delta) {
+      last.count += 1;
+    } else {
+      runs.push({ count: 1, delta });
+    }
+  }
+  const payload = new Uint8Array(8 + runs.length * 8);
+  const view = new DataView(payload.buffer);
+  view.setUint32(4, runs.length);
+  runs.forEach((run, index) => {
+    view.setUint32(8 + index * 8, run.count);
+    view.setUint32(12 + index * 8, run.delta);
+  });
+  return isoBox('stts', payload);
+}
+
+function packStsz(sizes: number[]): Uint8Array {
+  const first = sizes[0];
+  const constant = first !== undefined && sizes.every((size) => size === first);
+  const payload = new Uint8Array(constant ? 12 : 12 + sizes.length * 4);
+  const view = new DataView(payload.buffer);
+  view.setUint32(4, constant ? first : 0);
+  view.setUint32(8, sizes.length);
+  if (!constant) {
+    sizes.forEach((size, index) => {
+      view.setUint32(12 + index * 4, size);
+    });
+  }
+  return isoBox('stsz', payload);
+}
+
+function packStsc(chunks: AudioChunkEdit[]): Uint8Array {
+  const runs: { first: number; spc: number; desc: number }[] = [];
+  chunks.forEach((chunk, index) => {
+    const last = runs[runs.length - 1];
+    if (last !== undefined && last.spc === chunk.kept.length && last.desc === chunk.desc) {
+      return;
+    }
+    runs.push({ first: index + 1, spc: chunk.kept.length, desc: chunk.desc });
+  });
+  const payload = new Uint8Array(8 + runs.length * 12);
+  const view = new DataView(payload.buffer);
+  view.setUint32(4, runs.length);
+  runs.forEach((run, index) => {
+    const at = 8 + index * 12;
+    view.setUint32(at, run.first);
+    view.setUint32(at + 4, run.spc);
+    view.setUint32(at + 8, run.desc);
+  });
+  return isoBox('stsc', payload);
+}
+
+function packOffsetReplacement(
+  box: IsoBmffBox,
+  chunks: AudioChunkEdit[],
+  wide: boolean,
+): BoxReplacement {
+  return { start: box.start, oldSize: box.size, bytes: packChunkOffsets(chunks, wide) };
+}
+
+function packChunkOffsets(chunks: AudioChunkEdit[], wide: boolean): Uint8Array {
+  const forceWide = wide || chunks.some((chunk) => chunk.offset + chunk.prefix > 0xffffffffn);
+  const payload = new Uint8Array(8 + chunks.length * (forceWide ? 8 : 4));
+  const view = new DataView(payload.buffer);
+  view.setUint32(4, chunks.length);
+  for (let index = 0; index < chunks.length; index += 1) {
+    const chunk = chunks[index] as AudioChunkEdit;
+    const value = chunk.offset + chunk.prefix;
+    if (forceWide) {
+      view.setBigUint64(8 + index * 8, value);
+    } else {
+      view.setUint32(8 + index * 4, Number(value));
+    }
+  }
+  return isoBox(forceWide ? 'co64' : 'stco', payload);
+}
+
+function isoBox(type: string, payload: Uint8Array): Uint8Array {
+  const out = new Uint8Array(8 + payload.byteLength);
+  const view = new DataView(out.buffer);
+  view.setUint32(0, out.byteLength);
+  out[4] = type.charCodeAt(0);
+  out[5] = type.charCodeAt(1);
+  out[6] = type.charCodeAt(2);
+  out[7] = type.charCodeAt(3);
+  out.set(payload, 8);
+  return out;
+}
+
+function growAncestors(bytes: Uint8Array, boxes: IsoBmffBox[], reps: BoxReplacement[]): boolean {
+  const deltaAt = new Map<number, number>();
+  for (const rep of reps) {
+    const delta = rep.bytes.byteLength - rep.oldSize;
+    for (const box of boxes) {
+      if (box.start < rep.start && box.start + box.size >= rep.start + rep.oldSize) {
+        deltaAt.set(box.start, (deltaAt.get(box.start) ?? 0) + delta);
+      }
+    }
+  }
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  for (const [start, delta] of deltaAt) {
+    const raw = view.getUint32(start);
+    if (raw === 0) {
+      return false;
+    }
+    if (raw === 1) {
+      const next = view.getBigUint64(start + 8) + BigInt(delta);
+      /* v8 ignore next 3 -- a parsed largesize box is at least 16 bytes */
+      if (next < 16n) {
+        return false;
+      }
+      view.setBigUint64(start + 8, next);
+      continue;
+    }
+    const next = raw + delta;
+    /* v8 ignore next 3 -- rewritten parents still hold their children */
+    if (next < 8 || next > 0xffffffff) {
+      return false;
+    }
+    view.setUint32(start, next);
+  }
+  return true;
+}
+
+function spliceBoxes(bytes: Uint8Array, reps: BoxReplacement[]): Uint8Array {
+  const ordered = [...reps].sort((left, right) => right.start - left.start);
+  let out = bytes;
+  for (const rep of ordered) {
+    const next = new Uint8Array(out.byteLength - rep.oldSize + rep.bytes.byteLength);
+    next.set(out.subarray(0, rep.start), 0);
+    next.set(rep.bytes, rep.start);
+    next.set(out.subarray(rep.start + rep.oldSize), rep.start + rep.bytes.byteLength);
+    out = next;
+  }
+  return out;
+}
+
 /**
  * Validate raw video bytes (size + magic). MP4/MOV go through {@link faststartIsoBmff}
- * (`moov` before `mdat` only when remux succeeds; abort cases stay unchanged)
- * and {@link normalizeIsoBmffDisplayMatrix}.
+ * (`moov` before `mdat` only when remux succeeds; abort cases stay unchanged),
+ * {@link normalizeIsoBmffDisplayMatrix}, and {@link dropZeroDurationAudioSamples}.
  *
  * @param bytes - Uploaded bytes.
  * @returns A {@link ForumVideo}, or `null` when empty, oversize, or unrecognized.
@@ -800,7 +1513,7 @@ export function decodeForumVideo(bytes: Uint8Array): ForumVideo | null {
   const copy = bytes.slice();
   const remuxed =
     contentType === 'video/mp4' || contentType === 'video/quicktime'
-      ? normalizeIsoBmffDisplayMatrix(faststartIsoBmff(copy))
+      ? dropZeroDurationAudioSamples(normalizeIsoBmffDisplayMatrix(faststartIsoBmff(copy)))
       : copy;
   return { contentType, bytes: remuxed, takenAt: readVideoTakenAt(remuxed) };
 }
@@ -964,10 +1677,11 @@ export async function writeForumVideo(
 }
 
 /**
- * Read video bytes, remux for faststart, correct a broken display matrix, and
- * rewrite the file when either change applies. A successful or failed rewrite
- * still returns the corrected bytes. After a change, the public cache is
- * purged when Cloudflare credentials and a public origin are set.
+ * Read video bytes, remux for faststart, correct a broken display matrix, drop
+ * audio samples whose duration is 0, and rewrite the file when any change
+ * applies. A successful or failed rewrite still returns the corrected bytes.
+ * After a change, the public cache is purged when Cloudflare credentials and
+ * a public origin are set.
  *
  * Heal writes go to a UUID sibling temp (same directory as `path`) then
  * `rename` onto `path`, so a failed write leaves the original file intact.
@@ -977,7 +1691,7 @@ export async function writeForumVideo(
  * @param io - Disk ops; production omits this and uses `node:fs/promises`.
  * @param env - Used only to purge a cached copy after a heal. Defaults to `process.env`.
  * @param fetchImpl - Purge `fetch`. Defaults to the global `fetch`.
- * @returns Bytes to serve (moov before mdat, display matrix inside the frame).
+ * @returns Bytes to serve (moov before mdat, display matrix inside the frame, no zero-duration audio sample).
  */
 export async function readForumVideoBytes(
   path: string,
@@ -987,7 +1701,7 @@ export async function readForumVideoBytes(
 ): Promise<Uint8Array> {
   const bytes = new Uint8Array(await io.readFile(path));
   const remuxed = faststartIsoBmff(bytes);
-  const normalized = normalizeIsoBmffDisplayMatrix(remuxed);
+  const normalized = dropZeroDurationAudioSamples(normalizeIsoBmffDisplayMatrix(remuxed));
   if (normalized !== bytes) {
     const tempPath = join(dirname(path), `.${basename(path)}.${crypto.randomUUID()}.tmp`);
     try {

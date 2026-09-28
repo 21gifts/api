@@ -2539,9 +2539,9 @@
 
 ## Function: decodeForumVideo
 
-- **Purpose:** Size + magic-byte check for MP4/WebM/MOV (32 MiB cap). MP4/MOV bytes are passed through `faststartIsoBmff` (`moov` before `mdat` only when remux succeeds; abort cases keep the original bytes) and then `normalizeIsoBmffDisplayMatrix`.
+- **Purpose:** Size + magic-byte check for MP4/WebM/MOV (32 MiB cap). MP4/MOV bytes are passed through `faststartIsoBmff` (`moov` before `mdat` only when remux succeeds; abort cases keep the original bytes), then `normalizeIsoBmffDisplayMatrix`, then `dropZeroDurationAudioSamples`.
 - **Inputs:** raw bytes.
-- **Returns / side effects:** `{ contentType, bytes, takenAt }` or null. `takenAt` is `YYYY-MM-DDTHH:MM:SS+00:00` or null. Bytes stay as faststart and display-matrix repair left them.
+- **Returns / side effects:** `{ contentType, bytes, takenAt }` or null. `takenAt` is `YYYY-MM-DDTHH:MM:SS+00:00` or null. Bytes stay as faststart, display-matrix, and zero-duration audio repair left them.
 - **Used by:** `POST /messages` multipart.
 
 ## Function: detectVideoContentType
@@ -2550,6 +2550,13 @@
 - **Inputs:** bytes.
 - **Returns / side effects:** MIME or null.
 - **Used by:** `decodeForumVideo`.
+
+## Function: dropZeroDurationAudioSamples
+
+- **Purpose:** Remove audio samples whose duration is 0. Some phone files store a two-byte AAC decoder config as that first sample; Chrome then refuses to decode and the note stays black. The sample tables skip it. A chunk that would be left with a hole, or a table that cannot be checked, is left untouched.
+- **Inputs:** ISO-BMFF bytes. The buffer is not modified.
+- **Returns / side effects:** A new copy with those samples removed from `stts`, `stsz`, `stsc`, and `stco`/`co64`, and chunk offsets shifted when `moov` changes size. The same `bytes` reference when nothing changes. No I/O.
+- **Used by:** `decodeForumVideo`; `readForumVideoBytes`.
 
 ## Function: faststartIsoBmff
 
@@ -2630,7 +2637,7 @@
 
 ## Function: readForumVideoBytes
 
-- **Purpose:** Read video bytes from disk, remux with `faststartIsoBmff`, correct a broken display matrix with `normalizeIsoBmffDisplayMatrix`, and rewrite the file when either change applies (heal-on-read, including clips stored before this repair). Heal writes a sibling temp file named with `crypto.randomUUID()` in the same directory as `path`, then `rename`s that temp onto `path`. After a change, purges the public API and site video URL when Cloudflare credentials and `PUBLIC_BASE_URL` are set. Missing credentials are a no-op. A purge failure is logged as `messages.video.purge_failed` and does not fail the read.
+- **Purpose:** Read video bytes from disk, remux with `faststartIsoBmff`, correct a broken display matrix with `normalizeIsoBmffDisplayMatrix`, drop zero-duration audio samples with `dropZeroDurationAudioSamples`, and rewrite the file when any change applies (heal-on-read, including clips stored before this repair). Heal writes a sibling temp file named with `crypto.randomUUID()` in the same directory as `path`, then `rename`s that temp onto `path`. After a change, purges the public API and site video URL when Cloudflare credentials and `PUBLIC_BASE_URL` are set. Missing credentials are a no-op. A purge failure is logged as `messages.video.purge_failed` and does not fail the read.
 - **Inputs:** absolute path; optional `io` disk ops (tests); optional env; optional `fetch`.
 - **Returns / side effects:** Bytes to serve. On write/rename failure the original file is left in place and the corrected buffer is still returned.
 - **Used by:** `GET /messages/:id/video.*`.

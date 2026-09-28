@@ -4,6 +4,7 @@ import { describe, expect, it } from 'vitest';
 import {
   decodeForumVideo,
   detectVideoContentType,
+  dropZeroDurationAudioSamples,
   faststartIsoBmff,
   normalizeIsoBmffDisplayMatrix,
   forumVideoExt,
@@ -1066,5 +1067,775 @@ describe('normalizeIsoBmffDisplayMatrix', () => {
       await fs.unlink(bare).catch(() => undefined);
       await fs.unlink(odd).catch(() => undefined);
     }
+  });
+});
+
+function sttsRuns(runs: [number, number][]): Uint8Array {
+  const payload = new Uint8Array(8 + runs.length * 8);
+  const view = new DataView(payload.buffer);
+  view.setUint32(4, runs.length);
+  runs.forEach(([count, delta], index) => {
+    view.setUint32(8 + index * 8, count);
+    view.setUint32(12 + index * 8, delta);
+  });
+  return box('stts', payload);
+}
+
+function stszValues(sizes: number[], constant = false): Uint8Array {
+  const payload = new Uint8Array(constant ? 12 : 12 + sizes.length * 4);
+  const view = new DataView(payload.buffer);
+  view.setUint32(4, constant ? (sizes[0] ?? 0) : 0);
+  view.setUint32(8, sizes.length);
+  if (!constant) {
+    sizes.forEach((size, index) => {
+      view.setUint32(12 + index * 4, size);
+    });
+  }
+  return box('stsz', payload);
+}
+
+function stscRuns(entries: [number, number, number][]): Uint8Array {
+  const payload = new Uint8Array(8 + entries.length * 12);
+  const view = new DataView(payload.buffer);
+  view.setUint32(4, entries.length);
+  entries.forEach(([first, samples, desc], index) => {
+    const at = 8 + index * 12;
+    view.setUint32(at, first);
+    view.setUint32(at + 4, samples);
+    view.setUint32(at + 8, desc);
+  });
+  return box('stsc', payload);
+}
+
+function stcoValues(offsets: number[]): Uint8Array {
+  const payload = new Uint8Array(8 + offsets.length * 4);
+  const view = new DataView(payload.buffer);
+  view.setUint32(4, offsets.length);
+  offsets.forEach((offset, index) => {
+    view.setUint32(8 + index * 4, offset);
+  });
+  return box('stco', payload);
+}
+
+function co64Values(offsets: bigint[]): Uint8Array {
+  const payload = new Uint8Array(8 + offsets.length * 8);
+  const view = new DataView(payload.buffer);
+  view.setUint32(4, offsets.length);
+  offsets.forEach((offset, index) => {
+    view.setBigUint64(8 + index * 8, offset);
+  });
+  return box('co64', payload);
+}
+
+function soundTrak(tables: Uint8Array): Uint8Array {
+  return box('trak', box('mdia', concat(hdlrBox('soun'), box('minf', box('stbl', tables)))));
+}
+
+function videoTrak(offset: number): Uint8Array {
+  return box(
+    'trak',
+    box('mdia', concat(hdlrBox('vide'), box('minf', box('stbl', stcoBox(offset))))),
+  );
+}
+
+/** ftyp + moov + mdat, with every stco aimed at the media payload. */
+function movieWith(inner: Uint8Array, media: Uint8Array): Uint8Array {
+  const moov = box('moov', inner);
+  const file = concat(ftypBox(), moov, box('mdat', media));
+  const payloadAt = ftypBox().byteLength + moov.byteLength + 8;
+  const view = new DataView(file.buffer);
+  const walk = (start: number, end: number): void => {
+    let offset = start;
+    while (offset + 8 <= end) {
+      const size = view.getUint32(offset);
+      if (size < 8 || offset + size > end) {
+        return;
+      }
+      const type = String.fromCharCode(
+        file[offset + 4] ?? 0,
+        file[offset + 5] ?? 0,
+        file[offset + 6] ?? 0,
+        file[offset + 7] ?? 0,
+      );
+      if (type === 'stco') {
+        const count = view.getUint32(offset + 12);
+        for (let index = 0; index < count; index += 1) {
+          view.setUint32(offset + 16 + index * 4, payloadAt);
+        }
+      }
+      if (
+        type === 'moov' ||
+        type === 'trak' ||
+        type === 'mdia' ||
+        type === 'minf' ||
+        type === 'stbl'
+      ) {
+        walk(offset + 8, offset + size);
+      }
+      offset += size;
+    }
+  };
+  walk(0, file.byteLength);
+  return file;
+}
+
+function stcoBoxesIn(bytes: Uint8Array): number[] {
+  const starts: number[] = [];
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const walk = (start: number, end: number): void => {
+    let offset = start;
+    while (offset + 8 <= end) {
+      const size = view.getUint32(offset);
+      if (size < 8 || offset + size > end) {
+        return;
+      }
+      const type = String.fromCharCode(
+        bytes[offset + 4] ?? 0,
+        bytes[offset + 5] ?? 0,
+        bytes[offset + 6] ?? 0,
+        bytes[offset + 7] ?? 0,
+      );
+      if (type === 'stco' || type === 'co64') {
+        starts.push(offset);
+      }
+      if (
+        type === 'moov' ||
+        type === 'trak' ||
+        type === 'mdia' ||
+        type === 'minf' ||
+        type === 'stbl'
+      ) {
+        walk(offset + 8, offset + size);
+      }
+      offset += size;
+    }
+  };
+  walk(0, bytes.byteLength);
+  return starts;
+}
+
+function firstBytes(bytes: Uint8Array, type: string): { payload: number; end: number } | null {
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const walk = (start: number, end: number): { payload: number; end: number } | null => {
+    let offset = start;
+    while (offset + 8 <= end) {
+      const size = view.getUint32(offset);
+      if (size < 8 || offset + size > end) {
+        return null;
+      }
+      const found = String.fromCharCode(
+        bytes[offset + 4] ?? 0,
+        bytes[offset + 5] ?? 0,
+        bytes[offset + 6] ?? 0,
+        bytes[offset + 7] ?? 0,
+      );
+      if (found === type) {
+        return { payload: offset + 8, end: offset + size };
+      }
+      if (
+        found === 'moov' ||
+        found === 'trak' ||
+        found === 'mdia' ||
+        found === 'minf' ||
+        found === 'stbl'
+      ) {
+        const nested = walk(offset + 8, offset + size);
+        if (nested !== null) {
+          return nested;
+        }
+      }
+      offset += size;
+    }
+    return null;
+  };
+  return walk(0, bytes.byteLength);
+}
+
+describe('dropZeroDurationAudioSamples', () => {
+  it('drops a leading zero-duration audio sample and keeps the picture byte', () => {
+    const media = Uint8Array.of(0x11, 0x90, 0xaa, 0xbb, 0xcc, 0xdd);
+    const input = movieWith(
+      concat(
+        videoTrak(0),
+        soundTrak(
+          concat(
+            sttsRuns([
+              [1, 0],
+              [1, 1024],
+            ]),
+            stscRuns([[1, 2, 1]]),
+            stszValues([2, 4]),
+            stcoValues([0]),
+          ),
+        ),
+      ),
+      media,
+    );
+    const healed = dropZeroDurationAudioSamples(input);
+    expect(healed).not.toBe(input);
+    const audio = firstBytes(healed, 'stsz');
+    expect(audio).not.toBeNull();
+    const view = new DataView(healed.buffer, healed.byteOffset, healed.byteLength);
+    if (audio === null) {
+      return;
+    }
+    expect(view.getUint32(audio.payload + 4)).toBe(4);
+    expect(view.getUint32(audio.payload + 8)).toBe(1);
+    const boxes = stcoBoxesIn(healed);
+    expect(boxes).toHaveLength(2);
+    const videoOffset = view.getUint32((boxes[0] ?? 0) + 16);
+    const audioOffset = view.getUint32((boxes[1] ?? 0) + 16);
+    expect(healed[videoOffset]).toBe(0x11);
+    expect(healed[audioOffset]).toBe(0xaa);
+    expect(healed[audioOffset + 3]).toBe(0xdd);
+  });
+
+  it('returns the same reference when the audio timing is already usable', () => {
+    const input = movieWith(
+      soundTrak(
+        concat(sttsRuns([[1, 1024]]), stscRuns([[1, 1, 1]]), stszValues([4]), stcoValues([0])),
+      ),
+      Uint8Array.of(1, 2, 3, 4),
+    );
+    expect(dropZeroDurationAudioSamples(input)).toBe(input);
+    const truncated = new Uint8Array([0, 0, 0, 3]);
+    expect(dropZeroDurationAudioSamples(truncated)).toBe(truncated);
+  });
+
+  it('does not rewrite a zero-duration sample on a video track', () => {
+    const input = movieWith(
+      box(
+        'trak',
+        box(
+          'mdia',
+          concat(
+            hdlrBox('vide'),
+            box(
+              'minf',
+              box(
+                'stbl',
+                concat(sttsRuns([[1, 0]]), stscRuns([[1, 1, 1]]), stszValues([4]), stcoValues([0])),
+              ),
+            ),
+          ),
+        ),
+      ),
+      Uint8Array.of(1, 2, 3, 4),
+    );
+    expect(dropZeroDurationAudioSamples(input)).toBe(input);
+  });
+
+  it('leaves a chunk hole, a blocked table, and a negative offset untouched', () => {
+    const hole = movieWith(
+      soundTrak(
+        concat(
+          sttsRuns([
+            [1, 1024],
+            [1, 0],
+            [1, 1024],
+          ]),
+          stscRuns([[1, 3, 1]]),
+          stszValues([4, 2, 4]),
+          stcoValues([0]),
+        ),
+      ),
+      Uint8Array.of(1, 2, 3, 4, 5, 6, 7, 8, 9, 10),
+    );
+    const blocked = movieWith(
+      soundTrak(
+        concat(
+          sttsRuns([
+            [1, 0],
+            [1, 1024],
+          ]),
+          box('ctts', new Uint8Array(8)),
+          stscRuns([[1, 2, 1]]),
+          stszValues([2, 4]),
+          stcoValues([0]),
+        ),
+      ),
+      Uint8Array.of(1, 2, 3, 4, 5, 6),
+    );
+    const negative = movieWith(
+      soundTrak(
+        concat(
+          sttsRuns([
+            [1, 1024],
+            [1, 0],
+          ]),
+          stscRuns([[1, 2, 1]]),
+          stszValues([4, 2]),
+          stcoValues([0]),
+        ),
+      ),
+      Uint8Array.of(1, 2, 3, 4, 5, 6),
+    );
+    const view = new DataView(negative.buffer);
+    const stcoAt = Buffer.from(negative).indexOf('stco') - 4;
+    view.setUint32(stcoAt + 16, 0);
+    expect(dropZeroDurationAudioSamples(hole)).toBe(hole);
+    expect(dropZeroDurationAudioSamples(blocked)).toBe(blocked);
+    expect(dropZeroDurationAudioSamples(negative)).toBe(negative);
+  });
+
+  it('drops a chunk that contains only the bad sample', () => {
+    const media = Uint8Array.of(0x11, 0x90, 0xaa, 0xbb, 0xcc, 0xdd);
+    const input = movieWith(
+      soundTrak(
+        concat(
+          sttsRuns([
+            [1, 0],
+            [1, 1024],
+          ]),
+          stscRuns([
+            [1, 1, 1],
+            [2, 1, 1],
+          ]),
+          stszValues([2, 4]),
+          stcoValues([0, 0]),
+        ),
+      ),
+      media,
+    );
+    const source = new DataView(input.buffer);
+    const sourceStco = stcoBoxesIn(input)[0] ?? 0;
+    const origin = source.getUint32(sourceStco + 16);
+    source.setUint32(sourceStco + 20, origin + 2);
+    const healed = dropZeroDurationAudioSamples(input);
+    const view = new DataView(healed.buffer, healed.byteOffset, healed.byteLength);
+    const stco = stcoBoxesIn(healed)[0] ?? 0;
+    expect(view.getUint32(stco + 12)).toBe(1);
+    expect(healed[view.getUint32(stco + 16)]).toBe(0xaa);
+  });
+
+  it('stores a huge chunk offset in co64 and still points at the kept sample', () => {
+    const media = Uint8Array.of(9, 9, 9, 9, 1, 2, 3, 4);
+    const input = movieWith(
+      concat(
+        videoTrak(0),
+        soundTrak(
+          concat(
+            sttsRuns([
+              [1, 0],
+              [2, 1024],
+              [3, 1024],
+            ]),
+            stscRuns([
+              [1, 3, 1],
+              [2, 3, 1],
+            ]),
+            stszValues([4, 4, 4, 4, 4, 4], true),
+            stcoValues([0, 0]),
+          ),
+        ),
+      ),
+      media,
+    );
+    const view = new DataView(input.buffer);
+    const marker = Buffer.from(input).indexOf('soun');
+    const stcoAt = Buffer.from(input).indexOf('stco', marker) - 4;
+    view.setUint32(stcoAt + 16, 0xfffffffc);
+    view.setUint32(stcoAt + 20, 0xfffffffc);
+    const healed = dropZeroDurationAudioSamples(input);
+    expect(Buffer.from(healed).includes(Buffer.from('co64'))).toBe(true);
+    expect(healed).not.toBe(input);
+  });
+
+  it('heals on upload and on read', async () => {
+    const media = Uint8Array.of(0x11, 0x90, 0xaa, 0xbb, 0xcc, 0xdd);
+    const broken = concat(
+      ftypBox(),
+      box('mdat', media),
+      box(
+        'moov',
+        soundTrak(
+          concat(
+            sttsRuns([
+              [1, 0],
+              [1, 1024],
+            ]),
+            stscRuns([[1, 2, 1]]),
+            stszValues([2, 4]),
+            stcoValues([ftypBox().byteLength + 8]),
+          ),
+        ),
+      ),
+    );
+    const decoded = decodeForumVideo(broken);
+    expect(decoded).not.toBeNull();
+    if (decoded === null) {
+      return;
+    }
+    const decodedView = new DataView(
+      decoded.bytes.buffer,
+      decoded.bytes.byteOffset,
+      decoded.bytes.byteLength,
+    );
+    const decodedStco = firstBytes(decoded.bytes, 'stco');
+    expect(decodedStco).not.toBeNull();
+    if (decodedStco === null) {
+      return;
+    }
+    expect(decoded.bytes[decodedView.getUint32(decodedStco.payload + 8)]).toBe(0xaa);
+
+    const id = 'vid-audio-zero';
+    const path = videoFilePath(resolveMediaDir(), id, 'video/mp4');
+    await fs.writeFile(path, broken);
+    try {
+      const healed = await readForumVideoBytes(path, fs, {});
+      expect(new Uint8Array(await fs.readFile(path))).toEqual(healed);
+      const again = await readForumVideoBytes(path, fs, {});
+      expect(again).toEqual(healed);
+    } finally {
+      await removeForumVideo(id, 'video/mp4');
+    }
+  });
+
+  it('rejects audio tables that cannot be rewritten safely', () => {
+    const media = Uint8Array.of(1, 2, 3, 4, 5, 6);
+    const base = (): Uint8Array =>
+      movieWith(
+        soundTrak(
+          concat(
+            sttsRuns([
+              [1, 0],
+              [1, 1024],
+            ]),
+            stscRuns([[1, 2, 1]]),
+            stszValues([2, 4]),
+            stcoValues([0]),
+          ),
+        ),
+        media,
+      );
+    const version = (type: string): Uint8Array => {
+      const file = base();
+      const at = Buffer.from(file).indexOf(type);
+      file[at + 4] = 1;
+      return file;
+    };
+    const shortHandler = movieWith(
+      box(
+        'trak',
+        box(
+          'mdia',
+          concat(box('hdlr', new Uint8Array(4)), box('minf', box('stbl', stcoValues([0])))),
+        ),
+      ),
+      media,
+    );
+    const noTiming = movieWith(soundTrak(concat(stszValues([4]), stcoValues([0]))), media);
+    const bothOffsets = movieWith(
+      soundTrak(
+        concat(
+          sttsRuns([
+            [1, 0],
+            [1, 1024],
+          ]),
+          stscRuns([[1, 2, 1]]),
+          stszValues([2, 4]),
+          stcoValues([0]),
+          co64Values([0n]),
+        ),
+      ),
+      media,
+    );
+    const duplicate = movieWith(
+      soundTrak(
+        concat(
+          sttsRuns([[1, 0]]),
+          sttsRuns([[1, 1024]]),
+          stscRuns([[1, 2, 1]]),
+          stszValues([2, 4]),
+          stcoValues([0]),
+        ),
+      ),
+      media,
+    );
+    const overCount = base();
+    const sttsAt = Buffer.from(overCount).indexOf('stts');
+    new DataView(overCount.buffer).setUint32(sttsAt + 8, 2_000_001);
+    const uneven = movieWith(
+      soundTrak(
+        concat(sttsRuns([[2, 0]]), stscRuns([[1, 3, 1]]), stszValues([2, 2]), stcoValues([0])),
+      ),
+      media,
+    );
+    const lateChunk = movieWith(
+      soundTrak(
+        concat(
+          sttsRuns([
+            [1, 0],
+            [1, 1024],
+          ]),
+          stscRuns([
+            [1, 2, 1],
+            [5, 1, 1],
+          ]),
+          stszValues([2, 4]),
+          stcoValues([0]),
+        ),
+      ),
+      media,
+    );
+    const badDesc = movieWith(
+      soundTrak(
+        concat(
+          sttsRuns([
+            [1, 0],
+            [1, 1024],
+          ]),
+          stscRuns([[1, 2, 0]]),
+          stszValues([2, 4]),
+          stcoValues([0]),
+        ),
+      ),
+      media,
+    );
+    const emptyStsc = movieWith(
+      soundTrak(
+        concat(
+          sttsRuns([
+            [1, 0],
+            [1, 1024],
+          ]),
+          stscRuns([]),
+          stszValues([2, 4]),
+          stcoValues([0]),
+        ),
+      ),
+      media,
+    );
+    const notFirst = movieWith(
+      soundTrak(
+        concat(
+          sttsRuns([
+            [1, 0],
+            [1, 1024],
+          ]),
+          stscRuns([[2, 2, 1]]),
+          stszValues([2, 4]),
+          stcoValues([0]),
+        ),
+      ),
+      media,
+    );
+    const allZero = movieWith(
+      soundTrak(
+        concat(sttsRuns([[1, 0]]), stscRuns([[1, 1, 1]]), stszValues([2]), stcoValues([0])),
+      ),
+      media,
+    );
+    const zeroCount = base();
+    const zeroStts = Buffer.from(zeroCount).indexOf('stts');
+    new DataView(zeroCount.buffer).setUint32(zeroStts + 12, 0);
+    const hugeSizes = base();
+    const stszAt = Buffer.from(hugeSizes).indexOf('stsz');
+    new DataView(hugeSizes.buffer).setUint32(stszAt + 8, 4);
+    new DataView(hugeSizes.buffer).setUint32(stszAt + 12, 2_000_001);
+    const shortSizes = base();
+    const shortStsz = Buffer.from(shortSizes).indexOf('stsz');
+    new DataView(shortSizes.buffer).setUint32(shortStsz + 12, 9);
+    const hugeStsc = base();
+    const stscAt = Buffer.from(hugeStsc).indexOf('stsc');
+    new DataView(hugeStsc.buffer).setUint32(stscAt + 8, 40);
+    const decreasing = movieWith(
+      soundTrak(
+        concat(
+          sttsRuns([
+            [1, 0],
+            [1, 1024],
+          ]),
+          stscRuns([
+            [1, 1, 1],
+            [1, 1, 1],
+          ]),
+          stszValues([2, 4]),
+          stcoValues([0, 0]),
+        ),
+      ),
+      media,
+    );
+    const shortStco = base();
+    const stcoAt = Buffer.from(shortStco).indexOf('stco');
+    new DataView(shortStco.buffer).setUint32(stcoAt + 8, 9);
+    const shortCo64 = movieWith(
+      soundTrak(
+        concat(
+          sttsRuns([
+            [1, 0],
+            [1, 1024],
+          ]),
+          stscRuns([[1, 2, 1]]),
+          stszValues([2, 4]),
+          co64Values([0n]),
+        ),
+      ),
+      media,
+    );
+    const co64At = Buffer.from(shortCo64).indexOf('co64');
+    new DataView(shortCo64.buffer).setUint32(co64At + 8, 9);
+    const otherBroken = movieWith(
+      concat(
+        videoTrak(0),
+        soundTrak(
+          concat(
+            sttsRuns([
+              [1, 0],
+              [1, 1024],
+            ]),
+            stscRuns([[1, 2, 1]]),
+            stszValues([2, 4]),
+            stcoValues([0]),
+          ),
+        ),
+      ),
+      media,
+    );
+    const videoStco = stcoBoxesIn(otherBroken)[0] ?? 0;
+    new DataView(otherBroken.buffer).setUint32(videoStco + 12, 9);
+    const brokenTree = concat(ftypBox(), box('moov', new Uint8Array([0, 0, 0, 1])));
+    for (const file of [
+      version('stts'),
+      version('stsz'),
+      version('stsc'),
+      version('stco'),
+      shortHandler,
+      noTiming,
+      bothOffsets,
+      duplicate,
+      overCount,
+      uneven,
+      lateChunk,
+      badDesc,
+      emptyStsc,
+      notFirst,
+      allZero,
+      zeroCount,
+      hugeSizes,
+      shortSizes,
+      hugeStsc,
+      decreasing,
+      shortStco,
+      shortCo64,
+      otherBroken,
+      brokenTree,
+    ]) {
+      expect(dropZeroDurationAudioSamples(file)).toBe(file);
+    }
+  });
+
+  it('rewrites a largesize moov and a file whose moov size does not change', () => {
+    const media = Uint8Array.of(9, 9, 9, 9, 1, 2, 3, 4);
+    const inner = soundTrak(
+      concat(
+        sttsRuns([
+          [1, 0],
+          [1, 1024],
+        ]),
+        stscRuns([[1, 2, 1]]),
+        stszValues([4, 4]),
+        stcoValues([0]),
+      ),
+    );
+    const moov = box64('moov', inner);
+    const wide = concat(ftypBox(), moov, box('mdat', media));
+    const payloadAt = ftypBox().byteLength + moov.byteLength + 8;
+    const stcoAt = Buffer.from(wide).indexOf('stco');
+    new DataView(wide.buffer).setUint32(stcoAt + 12, payloadAt);
+    expect(dropZeroDurationAudioSamples(wide)).not.toBe(wide);
+
+    const balanced = movieWith(
+      concat(
+        videoTrak(0),
+        soundTrak(
+          concat(
+            sttsRuns([
+              [1, 0],
+              [2, 1024],
+              [3, 512],
+            ]),
+            stscRuns([
+              [1, 3, 1],
+              [2, 3, 1],
+            ]),
+            stszValues([4, 4, 4, 4, 4, 4], true),
+            stcoValues([0, 0]),
+          ),
+        ),
+      ),
+      media,
+    );
+    const marker = Buffer.from(balanced).indexOf('soun');
+    const audioStco = Buffer.from(balanced).indexOf('stco', marker);
+    const view = new DataView(balanced.buffer);
+    view.setUint32(audioStco + 12, 0xfffffffc);
+    view.setUint32(audioStco + 16, 0xfffffffc);
+    const healed = dropZeroDurationAudioSamples(balanced);
+    expect(Buffer.from(healed).includes(Buffer.from('co64'))).toBe(true);
+
+    const extended = movieWith(
+      soundTrak(
+        concat(
+          sttsRuns([
+            [1, 0],
+            [1, 1024],
+          ]),
+          stscRuns([[1, 2, 1]]),
+          stszValues([2, 4]),
+          stcoValues([0]),
+        ),
+      ),
+      Uint8Array.of(1, 2, 3, 4, 5, 6),
+    );
+    const moovAt = Buffer.from(extended).indexOf('moov') - 4;
+    new DataView(extended.buffer).setUint32(moovAt, 0);
+    expect(dropZeroDurationAudioSamples(extended)).toBe(extended);
+
+    const mixed = movieWith(
+      soundTrak(
+        concat(
+          sttsRuns([
+            [1, 0],
+            [1, 1024],
+            [1, 512],
+          ]),
+          stscRuns([
+            [1, 2, 1],
+            [2, 1, 1],
+          ]),
+          stszValues([2, 4, 6]),
+          stcoValues([0, 0]),
+        ),
+      ),
+      Uint8Array.of(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12),
+    );
+    expect(dropZeroDurationAudioSamples(mixed)).not.toBe(mixed);
+  });
+
+  it('keeps an existing 64-bit chunk offset pointed at the kept sample', () => {
+    const media = Uint8Array.of(0x11, 0x90, 0xaa, 0xbb, 0xcc, 0xdd);
+    const moov = box(
+      'moov',
+      soundTrak(
+        concat(
+          sttsRuns([
+            [1, 0],
+            [1, 1024],
+          ]),
+          stscRuns([[1, 2, 1]]),
+          stszValues([2, 4]),
+          co64Values([0n]),
+        ),
+      ),
+    );
+    const file = concat(ftypBox(), moov, box('mdat', media));
+    const payloadAt = BigInt(ftypBox().byteLength + moov.byteLength + 8);
+    const co64At = Buffer.from(file).indexOf('co64');
+    new DataView(file.buffer).setBigUint64(co64At + 12, payloadAt);
+    const healed = dropZeroDurationAudioSamples(file);
+    const healedCo64 = Buffer.from(healed).indexOf('co64');
+    const offset = new DataView(healed.buffer).getBigUint64(healedCo64 + 12);
+    expect(healed[Number(offset)]).toBe(0xaa);
   });
 });
