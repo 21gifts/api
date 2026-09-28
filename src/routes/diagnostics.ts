@@ -193,11 +193,7 @@ export function diagnosticsRoutes(deps: { store: DiagnosticStore; now?: () => nu
       const existing = ipAccepted.get(ip);
       if (existing !== undefined) {
         pruneWindow(existing, now);
-        if (existing.length === 0) {
-          ipAccepted.delete(ip);
-        } else {
-          ipBucket = existing;
-        }
+        ipBucket = existing;
       }
     }
     if (
