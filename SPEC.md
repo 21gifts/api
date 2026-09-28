@@ -3737,7 +3737,7 @@ Post to the public member forum. Bearer session required. JSON body (not
 multipart) with text and/or one photo, optional `photos` (array, max 10,
 each `{ contentType, data, takenAt? }` same shape as singular `photo`), an
 optional parent UUID, and optional `goalSats` (positive integer 1..10_000_000
-on a top-level note only). Optional `takenAt` is `YYYY-MM-DDTHH:MM:SS` with an optional `±HH:MM`
+on a top-level note only). Optional `shopUsername` on a shop note stores that account at create and does not write `message_edit`. A bad username is 400 `Username is not valid`. An unknown username is 404 `No account with that username`. A non-shop note with a username is 400 `Only a shop note can set a shop account`. Blank, null, or `@` alone stores nothing. Optional `takenAt` is `YYYY-MM-DDTHH:MM:SS` with an optional `±HH:MM`
 offset, a real calendar date, and a year from 1990 through the current UTC
 year + 1. `Z`, a fractional second, a leap second, a non-string, or a missing
 value is stored null and does not return 400:
