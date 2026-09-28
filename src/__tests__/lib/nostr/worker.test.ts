@@ -18,7 +18,7 @@ import { parseNostrKek } from '@/lib/nostr/kek';
 import { decryptNostrSecret, ensureAccountNostrKey, zeroizeSecret } from '@/lib/nostr/keys';
 import { RecordingPublisher } from '@/lib/nostr/publish';
 import { RecordingQuerier, type NostrEventFrame } from '@/lib/nostr/query';
-import { DEFAULT_RELAY_PUBLIC } from '@/lib/nostr/relays';
+import { resolveZapReadRelays, resolveZapRelays } from '@/lib/nostr/relays';
 import { PostRateLimiter } from '@/lib/nostr/rate-limit';
 import {
   HOT_ZAP_SINCE_SLACK_S,
@@ -3118,6 +3118,7 @@ describe('runNostrWorkerTick', () => {
       ],
     });
     const querier = new RecordingQuerier();
+    const env = { NOSTR_RELAY_SPACE: 'wss://space' };
     await runNostrWorkerTick(
       deps({
         messages,
@@ -3126,10 +3127,18 @@ describe('runNostrWorkerTick', () => {
         publisher: new RecordingPublisher(),
         querier,
         now: () => 1_700_000_000_000,
-        env: { NOSTR_RELAY_SPACE: 'wss://space' },
+        env,
       }),
     );
-    expect(querier.calls[0]?.urls).toEqual(['wss://space', ...DEFAULT_RELAY_PUBLIC]);
+    expect(querier.calls[0]?.urls).toEqual(resolveZapReadRelays(env));
+    expect(querier.calls[0]?.filter['kinds']).toContain(9735);
+    const kind1Call = querier.calls.find((call) => {
+      const kinds = call.filter['kinds'];
+      return Array.isArray(kinds) && kinds.includes(1);
+    });
+    expect(kind1Call?.urls).toEqual(resolveZapRelays(env));
+    expect(kind1Call?.urls).not.toContain('wss://nostr.wine');
+    expect(kind1Call?.urls).not.toContain('wss://nostr.bitcoiner.social');
   });
 
   it('skips private-message ingest when no conversation store is injected', async () => {
@@ -6398,6 +6407,7 @@ describe('runNostrWorkerTick modes', () => {
       limit: 200,
       since: Math.floor(older.getTime() / 1000) - HOT_ZAP_SINCE_SLACK_S,
     });
+    expect(zapCalls[0]?.urls).toEqual(resolveZapReadRelays({ NOSTR_RELAY_SPACE: 'wss://space' }));
     expect(
       querier.calls.some((call) => {
         const kinds = call.filter['kinds'];
@@ -6580,6 +6590,7 @@ describe('runNostrWorkerTick modes', () => {
     const conversations = new InMemoryConversationStore();
     const querier = new RecordingQuerier();
     const publisher = new RecordingPublisher();
+    const env = { NOSTR_RELAY_SPACE: 'wss://space' };
     await runNostrWorkerTick(
       deps({
         messages,
@@ -6588,7 +6599,7 @@ describe('runNostrWorkerTick modes', () => {
         publisher,
         querier,
         now: () => 1_700_000_000_000,
-        env: { NOSTR_RELAY_SPACE: 'wss://space' },
+        env,
         conversations,
         verifyKind1: () => true,
       }),
@@ -6616,6 +6627,22 @@ describe('runNostrWorkerTick modes', () => {
         return Array.isArray(kinds) && (kinds.includes(4) || kinds.includes(1059));
       }),
     ).toBe(true);
+    const zapReadUrls = resolveZapReadRelays(env);
+    const replyUrls = resolveZapRelays(env);
+    for (const call of querier.calls) {
+      const kinds = call.filter['kinds'];
+      if (!Array.isArray(kinds)) {
+        continue;
+      }
+      if (kinds.includes(9735)) {
+        expect(call.urls).toEqual(zapReadUrls);
+      }
+      if (kinds.includes(1) || kinds.includes(4) || kinds.includes(1059)) {
+        expect(call.urls).toEqual(replyUrls);
+        expect(call.urls).not.toContain('wss://nostr.wine');
+        expect(call.urls).not.toContain('wss://nostr.bitcoiner.social');
+      }
+    }
     expect((await messages.getById('m1'))?.eventId).toBeNull();
     expect(publisher.calls).toHaveLength(0);
   });

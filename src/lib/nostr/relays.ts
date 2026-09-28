@@ -108,10 +108,11 @@ export function resolveWriteSet(env: Record<string, string | undefined>): Resolv
 }
 
 /**
- * Resolve relays for zap ingest and kind:9734 invoice `relays` tags.
+ * Relays for the kind 9734 `relays` tag and inbound kind 1 replies and
+ * direct messages.
  *
  * Always space plus the public list, independent of `NOSTR_PUBLISH` /
- * `NOSTR_PUBLISH_PUBLIC`.
+ * `NOSTR_PUBLISH_PUBLIC`. Kind 9735 reads use `resolveZapReadRelays`.
  *
  * @param env - Environment slice.
  * @returns Space first, then unique public URLs.
@@ -121,6 +122,38 @@ export function resolveZapRelays(env: Record<string, string | undefined>): strin
   const seen = new Set<string>([spaceUrl]);
   const urls = [spaceUrl];
   for (const url of resolveRelayPublic(env)) {
+    if (!seen.has(url)) {
+      seen.add(url);
+      urls.push(url);
+    }
+  }
+  return urls;
+}
+
+/**
+ * Relays Wallet of Satoshi actually stores kind 9735 receipts on.
+ * It does not reliably publish those receipts to the relays named in the
+ * zap request. Never include these URLs in a kind 9734 `relays` tag.
+ */
+export const ZAP_RECEIPT_READ_RELAYS: readonly string[] = [
+  'wss://nostr.wine',
+  'wss://nostr.bitcoiner.social',
+];
+
+/**
+ * Relays queried for kind 9735 receipts.
+ *
+ * `resolveZapRelays` first (space, then the public list), then each
+ * {@link ZAP_RECEIPT_READ_RELAYS} entry that is not already present.
+ * Exact string match. Independent of `NOSTR_PUBLISH` / `NOSTR_PUBLISH_PUBLIC`.
+ *
+ * @param env - Environment slice.
+ * @returns Request list, then any missing receipt-read URLs.
+ */
+export function resolveZapReadRelays(env: Record<string, string | undefined>): string[] {
+  const urls = resolveZapRelays(env);
+  const seen = new Set<string>(urls);
+  for (const url of ZAP_RECEIPT_READ_RELAYS) {
     if (!seen.has(url)) {
       seen.add(url);
       urls.push(url);

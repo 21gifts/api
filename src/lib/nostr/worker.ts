@@ -50,6 +50,7 @@ import {
   replyHintRelay,
   resolvePublicApiBase,
   resolveWriteSet,
+  resolveZapReadRelays,
   resolveZapRelays,
   writeRelayUrls,
   type ResolvedWriteSet,
@@ -214,7 +215,7 @@ function reservedContent(
  * Build the shared `indexOpenZapReceipts` argument object for full and hot calls.
  *
  * @param deps - Worker collaborators.
- * @param urls - Zap relay URLs (space + public list).
+ * @param urls - Kind 9735 receipt-read URLs.
  * @returns Args object with identical optional collaborators for every call site.
  */
 function indexOpenZapReceiptsArgs(
@@ -298,7 +299,7 @@ async function indexHotZapReceipts(deps: NostrWorkerDeps, nowMs: number): Promis
   if (oldestKeptCreatedAtMs === undefined) {
     return;
   }
-  const urls = resolveZapRelays(deps.env);
+  const urls = resolveZapReadRelays(deps.env);
   const since = Math.floor(oldestKeptCreatedAtMs / 1000) - HOT_ZAP_SINCE_SLACK_S;
   await indexOpenZapReceipts({
     ...indexOpenZapReceiptsArgs(deps, urls),
@@ -344,10 +345,11 @@ async function indexHotZapReceipts(deps: NostrWorkerDeps, nowMs: number): Promis
  * publish timeouts. `nowMs` for sign/publish leases is sampled only after zap
  * ingest returns, so an overlapping fast tick cannot reclaim with a later
  * clock while this tick still signs/publishes under a stale lease time. Full
- * ingest queries zap relays (space plus the public list, even when
- * `NOSTR_PUBLISH_PUBLIC` is off) for kind:9735 receipts and indexes validated
- * ones onto `sats`, even when publish is off. After sign/publish, `'all'` (and
- * the ingest lane) also REQs kind:1 replies (`#e` = our note event ids) and
+ * ingest and the hot lane query kind 9735 on `resolveZapReadRelays` (space plus
+ * the public list, then `wss://nostr.wine` and `wss://nostr.bitcoiner.social`
+ * when those exact URLs are absent), and those two URLs are not used for the
+ * kind 9734 tag or for inbound replies and direct messages. After sign/publish,
+ * `'all'` (and the ingest lane) also REQs kind:1 replies (`#e` = our note event ids) and
  * persists inbound replies whose pubkey maps to a 21.gifts account or to an
  * entitled, unblocked external zapper (even when publish is off). Other npubs
  * are skipped. After a member reply is stored, `notifyForumReply` always runs
@@ -381,17 +383,18 @@ export async function runNostrWorkerTick(
   mode: NostrWorkerTickMode = 'all',
 ): Promise<void> {
   const writeSet = resolveWriteSet(deps.env);
-  const urls = resolveZapRelays(deps.env);
+  const zapReadUrls = resolveZapReadRelays(deps.env);
+  const replyUrls = resolveZapRelays(deps.env);
   if (mode === 'ingest') {
-    await indexOpenZapReceipts(indexOpenZapReceiptsArgs(deps, urls));
-    await indexInboundForumReplies(deps, urls);
-    await indexInboundDirectMessages(deps, urls);
+    await indexOpenZapReceipts(indexOpenZapReceiptsArgs(deps, zapReadUrls));
+    await indexInboundForumReplies(deps, replyUrls);
+    await indexInboundDirectMessages(deps, replyUrls);
     return;
   }
   if (mode === 'fast') {
     await indexHotZapReceipts(deps, deps.now());
   } else {
-    await indexOpenZapReceipts(indexOpenZapReceiptsArgs(deps, urls));
+    await indexOpenZapReceipts(indexOpenZapReceiptsArgs(deps, zapReadUrls));
   }
   const nowMs = deps.now();
   await resignLegacyKind1Tags(deps);
@@ -407,8 +410,8 @@ export async function runNostrWorkerTick(
     await publishConversationBatch(deps, writeSet, nowMs);
   }
   if (mode === 'all') {
-    await indexInboundForumReplies(deps, urls);
-    await indexInboundDirectMessages(deps, urls);
+    await indexInboundForumReplies(deps, replyUrls);
+    await indexInboundDirectMessages(deps, replyUrls);
   }
   await backfillProfileMessages(deps);
 }
