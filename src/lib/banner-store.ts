@@ -216,6 +216,7 @@ export class PostgresBannerStore implements BannerStore {
 
   /**
    * @param accountId - Account id.
+   * @param slot - `picture` or `banner`.
    * @returns The stored image, or `null` when the row is missing or unreadable.
    */
   async get(accountId: string, slot: ProfileImageSlot): Promise<ForumPhoto | null> {
@@ -237,6 +238,7 @@ export class PostgresBannerStore implements BannerStore {
 
   /**
    * @param accountId - Account id.
+   * @param slot - `picture` or `banner`.
    * @param photo - Image to store, or `null` to delete the row.
    */
   async set(accountId: string, slot: ProfileImageSlot, photo: ForumPhoto | null): Promise<void> {

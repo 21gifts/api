@@ -781,14 +781,14 @@
 
 ## Endpoint: GET /banners/me
 
-- **Purpose:** Bearer required. Raw wide-image bytes via `forumPhotoResponse`. This is not the About me photo.
+- **Purpose:** Bearer required. Raw wide-image bytes via `forumPhotoResponse`. This is not the profile photo and not the About me photo.
 - **Errors:** 401 `{ error: 'Unauthorized' }` without a session; 404 `{ error: 'Wide image not found' }` when none is stored.
 - **Used by:** App profile editor.
 - **Auth:** `Authorization: Bearer` session.
 
 ## Endpoint: PUT /banners/me
 
-- **Purpose:** Bearer required. Body `{ photo }`. `null` clears the wide image. `{ contentType, data }` must be a JPEG, PNG, or WebP under 1 MiB that is at least 640 px wide and at least 1.5 times as wide as it is tall. A portrait is rejected. Does not change the About me photo.
+- **Purpose:** Bearer required. Body `{ photo }`. `null` clears the wide image. `{ contentType, data }` must be a JPEG, PNG, or WebP under 1 MiB that is at least 640 px wide and at least 1.5 times as wide as it is tall. A portrait is rejected. Does not change the profile photo or the About me photo.
 - **Errors:** 401 without a session; 400 `{ error: 'Expected a JSON body with a "photo" field' }` when `photo` is missing or not an object; 400 `{ error: 'Wide image must be at least 640 px wide and at least 1.5 times as wide as it is tall' }` when the bytes are not a decodable wide image. 403 `{ error: 'SUNDAY_REST' }` when `Time-Zone` names an IANA zone that is Sunday on the server clock (a missing, blank, or invalid zone does not refuse).
 - **Used by:** App profile editor.
 - **Auth:** `Authorization: Bearer` session.
