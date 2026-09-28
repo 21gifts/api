@@ -3,9 +3,11 @@ import {
   dayUnits,
   dueDayCount,
   fiatAmountToCents,
+  formatCents,
   parseRepaymentDescription,
   payerDebtUnits,
   repaymentDescription,
+  repaymentDueDate,
   repaymentLedger,
   repaymentSchedule,
   repaymentStartMs,
@@ -16,6 +18,7 @@ describe('credit repayment', () => {
   it('starts at the next UTC midnight', () => {
     const funded = Date.UTC(2026, 8, 26, 15, 30);
     expect(repaymentStartMs(funded)).toBe(Date.UTC(2026, 8, 27));
+    expect(repaymentDueDate(funded, 0)).toBe('2026-09-27');
     expect(dueDayCount(funded, funded + 1000, 30)).toBe(0);
     expect(dueDayCount(funded, Date.UTC(2026, 8, 27, 1), 30)).toBe(1);
     expect(dueDayCount(funded, Date.UTC(2026, 8, 28, 1), 2)).toBe(2);
@@ -34,6 +37,7 @@ describe('credit repayment', () => {
     expect(fiatAmountToCents('1,')).toBe(100n);
     expect(fiatAmountToCents('10')).toBe(1000n);
     expect(fiatAmountToCents('nope')).toBeNull();
+    expect(formatCents(1n)).toBe('0.01');
     const id = '11111111-1111-4111-8111-111111111111';
     expect(parseRepaymentDescription(repaymentDescription(3, id))).toEqual({
       dayIndex: 3,
