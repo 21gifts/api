@@ -1,6 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { Hono } from 'hono';
-import { redactPasskeyRenewField } from '@/lib/auth/passkey-renew-report';
 import { InMemoryAuthStore, type Account, type PasskeyRenewAttemptInput } from '@/lib/auth/store';
 import type { InvoicePayer, PayInvoiceResult } from '@/lib/invoice-payer';
 import { UnconfiguredInvoicePayer } from '@/lib/invoice-payer';
@@ -513,14 +512,8 @@ describe('POST /me/wallet-backup-seen', () => {
 class RecordingAuthStore extends InMemoryAuthStore {
   inserts: PasskeyRenewAttemptInput[] = [];
   override async insertPasskeyRenewAttempt(input: PasskeyRenewAttemptInput): Promise<void> {
+    this.inserts.push(input);
     await super.insertPasskeyRenewAttempt(input);
-    this.inserts.push({
-      ...input,
-      errorName: redactPasskeyRenewField(input.errorName, 80),
-      errorCode: redactPasskeyRenewField(input.errorCode, 80),
-      message: redactPasskeyRenewField(input.message, 500),
-      userAgent: redactPasskeyRenewField(input.userAgent, 300),
-    });
   }
 }
 
@@ -591,7 +584,7 @@ describe('POST /me/passkey-renew/report', () => {
     });
   });
 
-  it('redacts an over-long phrase and a long secret instead of rejecting them', async () => {
+  it('accepts an over-long phrase and a long secret instead of rejecting them', async () => {
     const store = new RecordingAuthStore();
     await store.createAccount({
       id: 'acc',
@@ -608,22 +601,23 @@ describe('POST /me/passkey-renew/report', () => {
     });
     await store.createSession({ token: 'tok', accountId: 'acc', createdAt: 1_000_000 });
     const phrase = Array.from({ length: 12 }, () => 'x'.repeat(50)).join(' ');
+    const longName = `${'a'.repeat(64)}name`;
     const longCode = `${'c'.repeat(40)}.${'d'.repeat(40)}`;
     const res = await mount(store).request('/me/passkey-renew/report', {
       method: 'POST',
       headers: { ...AUTH, 'content-type': 'application/json' },
       body: JSON.stringify({
         ...PASSKEY_RENEW_REPORT,
-        errorName: `${'a'.repeat(64)}name`,
+        errorName: longName,
         errorCode: longCode,
         message: phrase,
       }),
     });
     expect(res.status).toBe(200);
     expect(store.inserts).toHaveLength(1);
-    expect(store.inserts[0]?.errorName).toBe('[redacted]');
-    expect(store.inserts[0]?.errorCode).toBe(longCode.slice(0, 80));
-    expect(store.inserts[0]?.message).toBe('[redacted]');
+    expect(store.inserts[0]?.errorName).toBe(longName);
+    expect(store.inserts[0]?.errorCode).toBe(longCode);
+    expect(store.inserts[0]?.message).toBe(phrase);
     expect((await store.getAccount('acc'))?.walletRequired === true).toBe(false);
   });
 

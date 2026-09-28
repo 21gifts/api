@@ -1531,6 +1531,37 @@ describe('PostgresAuthStore', () => {
     ]);
   });
 
+  it('insertPasskeyRenewAttempt redacts a long secret and caps a long code', async () => {
+    const sql = new MockSql();
+    const longName = `${'a'.repeat(64)}name`;
+    const longCode = `${'c'.repeat(40)}.${'d'.repeat(40)}`;
+    const phrase = Array.from({ length: 12 }, () => 'x'.repeat(50)).join(' ');
+    await new PostgresAuthStore(sql).insertPasskeyRenewAttempt({
+      id: 'row-long',
+      accountId: 'acc',
+      createdAt: 9,
+      stage: 'ceremony',
+      outcome: 'failed',
+      errorName: longName,
+      errorCode: longCode,
+      httpStatus: null,
+      message: phrase,
+      userAgent: 'Mozilla',
+    });
+    expect(sql.executes[0]?.params).toEqual([
+      'row-long',
+      'acc',
+      9,
+      'ceremony',
+      'failed',
+      '[redacted]',
+      longCode.slice(0, 80),
+      null,
+      '[redacted]',
+      'Mozilla',
+    ]);
+  });
+
   it('acknowledgePasskeyRenewFailures updates only failed unacknowledged rows', async () => {
     const sql = new MockSql();
     await new PostgresAuthStore(sql).acknowledgePasskeyRenewFailures('acc', 11);
