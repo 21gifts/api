@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { verifyEvent, type NostrEvent } from 'nostr-tools/pure';
+import { bannerPublicUrl, type BannerStore } from '@/lib/banner-store';
 import { ensureProfileMessage } from '@/lib/auth/profile-message';
 import type { Account, AuthStore } from '@/lib/auth/store';
 import { unsignedConversationDefaults, type ConversationThread } from '@/lib/conversation';
@@ -145,6 +146,8 @@ export interface NostrWorkerDeps {
   postLimiter?: PostRateLimiter;
   /** Optional funding grants; compose spend pings use the same `eligibleToday` gate as `POST /messages`. */
   fundingStore?: FundingStore;
+  /** Optional wide-image store. Omitted → the shared banner, never the profile photo. */
+  banners?: BannerStore;
   /** Optional crosses for the one spot taken per newly indexed zap. */
   fiatRates?: FiatRateBook;
 }
@@ -338,9 +341,11 @@ async function indexHotZapReceipts(deps: NostrWorkerDeps, nowMs: number): Promis
  * event id so receipts still resolve. An empty API base skips photo- and
  * video-URL resign so it cannot un-publish and loop. When publishing, also
  * fans out a replaceable kind:0 profile (`name` / `display_name` / `picture` /
- * `banner`, optional `nip05`). `picture` and `banner` are the profile-note
- * photo when one is stored and the API origin is non-empty, otherwise the
- * shared icon and `https://21.gifts/og.png`. Unsigned non-profile kind:1 notes
+ * `banner`, optional `nip05`). `picture` is the profile-note photo when one
+ * is stored and the API origin is non-empty, otherwise the shared icon.
+ * `banner` is that account's wide image when one is stored, otherwise
+ * `https://21.gifts/og.png`. The profile photo is never the banner.
+ * Unsigned non-profile kind:1 notes
  * get `notePageUrl(PUBLIC_BASE_URL)` as their page link. Already published
  * kind:1 rows are not rewritten for that link. Also fans out a NIP-65
  * kind:10002 relay list. Kind:1 photo and video posts include the public media
@@ -1121,20 +1126,24 @@ async function publishProfiles(deps: NostrWorkerDeps, writeSet: ResolvedWriteSet
     let about = '21.gifts';
     let picture: string | null = null;
     let banner: string | null = null;
+    const apiBase = resolvePublicApiBase(deps.env);
     const profileId = live.profileMessageId;
     if (typeof profileId === 'string' && profileId.trim() !== '') {
       const note = await deps.messages.getById(profileId);
       if (note !== undefined) {
         about = note.text;
-        const apiBase = resolvePublicApiBase(deps.env);
         if (apiBase !== '') {
           const photo = await deps.messages.getPhoto(profileId);
           if (photo !== null) {
-            const url = forumPhotoUrl(apiBase, profileId, photo.contentType);
-            picture = url;
-            banner = url;
+            picture = forumPhotoUrl(apiBase, profileId, photo.contentType);
           }
         }
+      }
+    }
+    if (deps.banners !== undefined && apiBase !== '') {
+      const wide = await deps.banners.get(live.id);
+      if (wide !== null) {
+        banner = bannerPublicUrl(apiBase, live.id, wide.contentType);
       }
     }
     const images = { picture, banner };

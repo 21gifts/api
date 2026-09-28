@@ -8,6 +8,8 @@ import { authRoutes } from '@/routes/auth';
 import { SimpleWebAuthnPasskeyCeremony } from '@/lib/auth/webauthn';
 import type { PasskeyCeremony } from '@/lib/auth/webauthn';
 import { meRoutes } from '@/routes/me';
+import { bannerRoutes } from '@/routes/banner';
+import { InMemoryBannerStore, type BannerStore } from '@/lib/banner-store';
 import { membersRoutes } from '@/routes/members';
 import { linksRoutes } from '@/routes/links';
 import { viewRoutes } from '@/routes/view';
@@ -257,6 +259,12 @@ export interface AppDeps {
    * Boot injects {@link PostgresFundingStore} when `DATABASE_URL` is set.
    */
   fundingStore?: FundingStore;
+  /**
+   * Wide profile images (default: empty {@link InMemoryBannerStore}).
+   * Boot injects {@link PostgresBannerStore} when `DATABASE_URL` is set.
+   * The same instance is passed to the Nostr worker.
+   */
+  bannerStore?: BannerStore;
 }
 
 /** Optional `listDebug` on a rate book, or `[]` when the adapter has none. */
@@ -336,6 +344,7 @@ export function createApp(deps: AppDeps = {}): Hono {
   const pushStore = deps.pushStore ?? new InMemoryPushStore();
   const trustStore = deps.trustStore ?? new InMemoryTrustStore();
   const fundingStore = deps.fundingStore ?? new InMemoryFundingStore();
+  const bannerStore = deps.bannerStore ?? new InMemoryBannerStore();
   const vapidPublicKey = deps.vapidPublicKey ?? resolveVapidConfig(process.env)?.publicKey;
   const webAuthnRpId = deps.webAuthnRpId ?? process.env['WEBAUTHN_RP_ID'];
   const webAuthnRpName = deps.webAuthnRpName ?? process.env['WEBAUTHN_RP_NAME'];
@@ -398,6 +407,7 @@ export function createApp(deps: AppDeps = {}): Hono {
       ...(nostrKek === undefined ? {} : { nostrKek }),
     }),
   );
+  app.route('/banners', bannerRoutes({ auth: store, banners: bannerStore, now }));
   app.route(
     '/me',
     meRoutes({

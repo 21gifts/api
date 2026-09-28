@@ -22,6 +22,7 @@ import {
   type FiatRateBook,
 } from '@/lib/usd-fiat-store';
 import { listDbChanges, migrateDbChangeSchema } from '@/lib/db-change';
+import { migrateBannerSchema, PostgresBannerStore, type BannerStore } from '@/lib/banner-store';
 import { mapGiftQueryRow } from '@/lib/gift';
 import {
   migrateGiftSchema,
@@ -136,6 +137,11 @@ export interface BootStores {
    * was opened so the route answers 503.
    */
   debugDbStore: DebugDbStore | undefined;
+  /**
+   * Wide profile images, or `undefined` on a memory boot so the entry point
+   * keeps one in-memory store shared by HTTP and the Nostr worker.
+   */
+  bannerStore: BannerStore | undefined;
 }
 
 /** Optional boot wiring so tests never hit the network. */
@@ -248,6 +254,7 @@ export async function openBootStores(
       fundingStore: undefined,
       listDbChange: undefined,
       debugDbStore: undefined,
+      bannerStore: undefined,
     };
   }
   const sql: SqlClient = sqlClient;
@@ -266,6 +273,7 @@ export async function openBootStores(
   await migrateTrustSchema(sqlClient);
   await migrateFundingSchema(sqlClient);
   await migrateApiLogSchema(sqlClient);
+  await migrateBannerSchema(sqlClient);
   await migrateDbChangeSchema(sqlClient);
   await repairGiftKind(sqlClient);
 
@@ -421,5 +429,6 @@ export async function openBootStores(
     fundingStore,
     listDbChange: (limit) => listDbChanges(sql, limit),
     debugDbStore: new PostgresDebugDbStore(sqlClient),
+    bannerStore: new PostgresBannerStore(sqlClient),
   };
 }
