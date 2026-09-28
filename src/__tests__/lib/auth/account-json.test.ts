@@ -255,6 +255,7 @@ describe('serializeOwnerAccount', () => {
       walletRequired: false,
       walletBackupSeenAt: null,
       passkeyCredentialId: null,
+      passkeyRenewFailed: false,
     });
     expect(json.viewKey).toBe(account.viewKey);
     expect(json.setup).toBe('rules');
@@ -269,6 +270,7 @@ describe('serializeOwnerAccount', () => {
     expect(json.walletRequired).toBe(false);
     expect(json.walletBackupSeenAt).toBeNull();
     expect(json.passkeyCredentialId).toBeNull();
+    expect(json.passkeyRenewFailed).toBe(false);
     expect(json).not.toHaveProperty('isPlatform');
     expect(json).not.toHaveProperty('sessionRefused');
     expect(json).not.toHaveProperty('profileMessageId');
@@ -386,6 +388,13 @@ describe('serializeOwnerAccount', () => {
     expect(json).not.toHaveProperty('profileMessageId');
   });
 
+  it('defaults omitted passkeyRenewFailed to false and includes true when passed', () => {
+    expect(serializeOwnerAccount(account, false, null, false).passkeyRenewFailed).toBe(false);
+    expect(
+      serializeOwnerAccount(account, false, null, false, null, null, true).passkeyRenewFailed,
+    ).toBe(true);
+  });
+
   it('includes an explicit funding object when provided', () => {
     const json = serializeOwnerAccount(account, false, null, false, {
       status: 'none',
@@ -422,6 +431,7 @@ describe('serializeOwnerAccountWithPosts', () => {
     expect(json.aboutMe).toBeNull();
     expect(json.aboutMeHasPhoto).toBe(false);
     expect(json.aboutMessageId).toBeNull();
+    expect(json.passkeyRenewFailed).toBe(false);
     expect(json).not.toHaveProperty('profileMessageId');
     expect(json).not.toHaveProperty('isPlatform');
     expect(json).not.toHaveProperty('sessionRefused');
@@ -747,6 +757,38 @@ describe('serializeOwnerAccountWithPosts', () => {
       admittedAt: 3,
       reviewedByName: null,
     });
+  });
+
+  it('sets passkeyRenewFailed from an unacknowledged failure only when funding is passed', async () => {
+    const authStore = new InMemoryAuthStore();
+    await authStore.createAccount(account);
+    await authStore.insertPasskeyRenewAttempt({
+      id: 'r1',
+      accountId: 'acc',
+      createdAt: 1,
+      stage: 'ceremony',
+      outcome: 'failed',
+      errorName: null,
+      errorCode: null,
+      httpStatus: 400,
+      message: 'seed failed',
+      userAgent: null,
+    });
+    const omitted = await serializeOwnerAccountWithPosts(account, {
+      accountHasLivePost: async () => false,
+      getById: async () => undefined,
+    });
+    expect(omitted.passkeyRenewFailed).toBe(false);
+    const json = await serializeOwnerAccountWithPosts(
+      account,
+      {
+        accountHasLivePost: async () => false,
+        getById: async () => undefined,
+      },
+      { store: new InMemoryFundingStore(), nowMs: 1, authStore },
+    );
+    expect(json.passkeyRenewFailed).toBe(true);
+    expect(json.walletRequired).toBe(false);
   });
 });
 

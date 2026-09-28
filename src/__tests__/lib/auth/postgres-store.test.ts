@@ -1501,6 +1501,58 @@ describe('PostgresAuthStore', () => {
     expect(await new PostgresAuthStore(sql).markWalletBackupSeen('acc', 10)).toBeUndefined();
   });
 
+  it('insertPasskeyRenewAttempt binds redacted fields', async () => {
+    const sql = new MockSql();
+    const twelve = 'one two three four five six seven eight nine ten eleven twelve';
+    await new PostgresAuthStore(sql).insertPasskeyRenewAttempt({
+      id: 'row-1',
+      accountId: 'acc',
+      createdAt: 9,
+      stage: 'ceremony',
+      outcome: 'failed',
+      errorName: 'Error',
+      errorCode: null,
+      httpStatus: 400,
+      message: twelve,
+      userAgent: 'Mozilla',
+    });
+    expect(sql.executes[0]?.text).toMatch(/INSERT INTO passkey_renew_attempt/);
+    expect(sql.executes[0]?.params).toEqual([
+      'row-1',
+      'acc',
+      9,
+      'ceremony',
+      'failed',
+      'Error',
+      null,
+      400,
+      '[redacted]',
+      'Mozilla',
+    ]);
+  });
+
+  it('acknowledgePasskeyRenewFailures updates only failed unacknowledged rows', async () => {
+    const sql = new MockSql();
+    await new PostgresAuthStore(sql).acknowledgePasskeyRenewFailures('acc', 11);
+    expect(sql.executes[0]?.text).toMatch(
+      /UPDATE passkey_renew_attempt[\s\S]*outcome = 'failed' AND acknowledged_at IS NULL/,
+    );
+    expect(sql.executes[0]?.params).toEqual(['acc', 11]);
+  });
+
+  it('hasUnacknowledgedPasskeyRenewFailure is true when a row exists and false when none', async () => {
+    const sql = new MockSql();
+    const store = new PostgresAuthStore(sql);
+    sql.nextRows = [{ exists: 1 }];
+    expect(await store.hasUnacknowledgedPasskeyRenewFailure('acc')).toBe(true);
+    expect(sql.queries[0]?.text).toMatch(/SELECT 1 AS exists/);
+    expect(sql.queries[0]?.text).toMatch(/LIMIT 1/);
+    expect(sql.queries[0]?.params).toEqual(['acc']);
+    sql.nextRows = [];
+    expect(await store.hasUnacknowledgedPasskeyRenewFailure('acc')).toBe(false);
+    expect(sql.queries[1]?.text).toMatch(/LIMIT 1/);
+  });
+
   it('setAccountLocale writes only when locale is still null', async () => {
     const sql = new MockSql();
     sql.nextRows = [{ ...ACCOUNT_ROW, locale: 'de' }];

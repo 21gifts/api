@@ -130,6 +130,20 @@ test('POST /me/wallet-backup-seen without bearer is 401', async ({ request }) =>
   expect(res.status()).toBe(401);
 });
 
+test('Function: capPasskeyRenewText — POST /me/passkey-renew/report without bearer is 401', async ({
+  request,
+}) => {
+  const res = await request.post('/me/passkey-renew/report');
+  expect(res.status()).toBe(401);
+});
+
+test('Function: redactPasskeyRenewMessage — POST /me/passkey-renew/ack without bearer is 401', async ({
+  request,
+}) => {
+  const res = await request.post('/me/passkey-renew/ack');
+  expect(res.status()).toBe(401);
+});
+
 test('GET /members/:accountId without bearer is 401', async ({ request }) => {
   const res = await request.get('/members/:accountId');
   expect(res.status()).toBe(401);

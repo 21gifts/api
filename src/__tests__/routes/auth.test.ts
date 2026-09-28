@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { Hono } from 'hono';
-import { InMemoryAuthStore } from '@/lib/auth/store';
+import { InMemoryAuthStore, type PasskeyRenewAttemptInput } from '@/lib/auth/store';
 import { UnconfiguredInvoicePayer } from '@/lib/invoice-payer';
 import { InMemoryMessageStore } from '@/lib/message-store';
 import { WRONG_ACCOUNT_ERROR } from '@/lib/auth/wrong-account';
@@ -1053,6 +1053,176 @@ describe('auth routes', () => {
       expect(await res.json()).toEqual({
         error: 'Expected a JSON body with challengeId and credential',
       });
+    });
+
+    class RecordingAuthStore extends InMemoryAuthStore {
+      inserts: PasskeyRenewAttemptInput[] = [];
+      override async insertPasskeyRenewAttempt(input: PasskeyRenewAttemptInput): Promise<void> {
+        this.inserts.push(input);
+        await super.insertPasskeyRenewAttempt(input);
+      }
+    }
+
+    it('inserts a failed begin row on seed begin 409 without changing walletRequired', async () => {
+      const store = new RecordingAuthStore();
+      const { app, token, accountId } = await register(store);
+      expect((await store.getAccount(accountId))?.walletRequired).toBe(true);
+      const res = await app.request('/auth/passkey/seed/begin', {
+        method: 'POST',
+        headers: { authorization: `Bearer ${token}`, 'user-agent': 'SeedAgent' },
+      });
+      expect(res.status).toBe(409);
+      expect(await res.json()).toEqual({
+        error: 'This account already has a recovery phrase',
+      });
+      expect((await store.getAccount(accountId))?.walletRequired).toBe(true);
+      expect(store.inserts).toHaveLength(1);
+      expect(store.inserts[0]).toMatchObject({
+        accountId,
+        createdAt: now(),
+        stage: 'begin',
+        outcome: 'failed',
+        errorName: null,
+        errorCode: null,
+        httpStatus: 409,
+        message: 'This account already has a recovery phrase',
+        userAgent: 'SeedAgent',
+      });
+    });
+
+    it('inserts a failed finish row on seed finish 400', async () => {
+      const store = new RecordingAuthStore();
+      const { app, token, accountId } = await legacySignedIn(store);
+      const begin = (await (
+        await app.request('/auth/passkey/seed/begin', {
+          method: 'POST',
+          headers: { authorization: `Bearer ${token}` },
+        })
+      ).json()) as { challengeId: string };
+      const res = await app.request('/auth/passkey/seed/finish', {
+        method: 'POST',
+        headers: {
+          origin: ORIGIN,
+          'content-type': 'application/json',
+          authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          challengeId: begin.challengeId,
+          credential: { test: 'nope' },
+        }),
+      });
+      expect(res.status).toBe(400);
+      expect(await res.json()).toEqual({ error: 'Invalid passkey' });
+      expect((await store.getAccount(accountId))?.walletRequired).toBe(false);
+      expect(store.inserts).toHaveLength(1);
+      expect(store.inserts[0]).toMatchObject({
+        accountId,
+        stage: 'finish',
+        outcome: 'failed',
+        errorName: null,
+        errorCode: null,
+        httpStatus: 400,
+        message: 'Invalid passkey',
+      });
+    });
+
+    it('inserts a failed finish row when the account already has a phrase', async () => {
+      const store = new RecordingAuthStore();
+      const { app, token, accountId } = await register(store);
+      const res = await app.request('/auth/passkey/seed/finish', {
+        method: 'POST',
+        headers: { origin: ORIGIN, authorization: `Bearer ${token}` },
+      });
+      expect(res.status).toBe(409);
+      expect(await res.json()).toEqual({
+        error: 'This account already has a recovery phrase',
+      });
+      expect(store.inserts).toHaveLength(1);
+      expect(store.inserts[0]).toMatchObject({
+        accountId,
+        stage: 'finish',
+        outcome: 'failed',
+        httpStatus: 409,
+        message: 'This account already has a recovery phrase',
+      });
+    });
+
+    it('inserts succeeded with null error fields and acknowledges an earlier failure', async () => {
+      const store = new RecordingAuthStore();
+      const { app, token, accountId } = await legacySignedIn(store);
+      await store.insertPasskeyRenewAttempt({
+        id: 'prior-fail',
+        accountId,
+        createdAt: 1,
+        stage: 'begin',
+        outcome: 'failed',
+        errorName: null,
+        errorCode: null,
+        httpStatus: 409,
+        message: 'seed failed',
+        userAgent: null,
+      });
+      expect(await store.hasUnacknowledgedPasskeyRenewFailure(accountId)).toBe(true);
+      const begin = (await (
+        await app.request('/auth/passkey/seed/begin', {
+          method: 'POST',
+          headers: { authorization: `Bearer ${token}` },
+        })
+      ).json()) as { challengeId: string };
+      const finish = await app.request('/auth/passkey/seed/finish', {
+        method: 'POST',
+        headers: {
+          origin: ORIGIN,
+          'content-type': 'application/json',
+          authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          challengeId: begin.challengeId,
+          credential: { test: 'replace' },
+        }),
+      });
+      expect(finish.status).toBe(200);
+      const finishBody = (await finish.json()) as {
+        account: { passkeyRenewFailed: boolean; walletRequired: boolean };
+      };
+      expect(finishBody.account.passkeyRenewFailed).toBe(false);
+      expect(finishBody.account.walletRequired).toBe(true);
+      expect(await store.hasUnacknowledgedPasskeyRenewFailure(accountId)).toBe(false);
+      const succeeded = store.inserts.filter((row) => row.outcome === 'succeeded');
+      expect(succeeded).toHaveLength(1);
+      expect(succeeded[0]).toMatchObject({
+        accountId,
+        stage: 'finish',
+        outcome: 'succeeded',
+        errorName: null,
+        errorCode: null,
+        httpStatus: null,
+        message: null,
+      });
+    });
+
+    it('inserts nothing on begin or finish 401', async () => {
+      const store = new RecordingAuthStore();
+      const app = mount(store);
+      const begin = await app.request('/auth/passkey/seed/begin', { method: 'POST' });
+      expect(begin.status).toBe(401);
+      const finish = await app.request('/auth/passkey/seed/finish', {
+        method: 'POST',
+        headers: { origin: ORIGIN, 'content-type': 'application/json' },
+        body: JSON.stringify({ challengeId: 'x', credential: { test: 'replace' } }),
+      });
+      expect(finish.status).toBe(401);
+      expect(store.inserts).toEqual([]);
+    });
+
+    it('inserts nothing when WebAuthn is not configured', async () => {
+      const store = new RecordingAuthStore();
+      const app = mount(store, '');
+      const begin = await app.request('/auth/passkey/seed/begin', { method: 'POST' });
+      expect(begin.status).toBe(500);
+      const finish = await app.request('/auth/passkey/seed/finish', { method: 'POST' });
+      expect(finish.status).toBe(500);
+      expect(store.inserts).toEqual([]);
     });
   });
 });

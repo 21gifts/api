@@ -1609,6 +1609,79 @@ describe('InMemoryAuthStore', () => {
     expect((await store.getAccount('acc'))?.name).toBe('Grace');
   });
 
+  it('tracks unacknowledged failed passkey renew rows per account', async () => {
+    const store = new InMemoryAuthStore();
+    await store.createAccount({
+      id: 'acc',
+      linkingKey: KEY,
+      role: 'basis',
+      name: 'Ada',
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: 'a'.repeat(64),
+      createdAt: 1,
+      rulesAgreedAt: null,
+    });
+    await store.createAccount({
+      id: 'other',
+      linkingKey: `03${'b'.repeat(64)}`,
+      role: 'basis',
+      name: 'Bob',
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: 'b'.repeat(64),
+      createdAt: 1,
+      rulesAgreedAt: null,
+    });
+    const base = {
+      createdAt: 1,
+      stage: 'ceremony' as const,
+      errorName: null,
+      errorCode: null,
+      httpStatus: 400,
+      message: 'seed failed',
+      userAgent: null,
+    };
+    expect(await store.hasUnacknowledgedPasskeyRenewFailure('acc')).toBe(false);
+    await store.insertPasskeyRenewAttempt({
+      ...base,
+      id: 's1',
+      accountId: 'acc',
+      outcome: 'succeeded',
+    });
+    await store.insertPasskeyRenewAttempt({
+      ...base,
+      id: 'c1',
+      accountId: 'acc',
+      outcome: 'cancelled',
+    });
+    expect(await store.hasUnacknowledgedPasskeyRenewFailure('acc')).toBe(false);
+    await store.insertPasskeyRenewAttempt({
+      ...base,
+      id: 'f1',
+      accountId: 'acc',
+      outcome: 'failed',
+    });
+    await store.insertPasskeyRenewAttempt({
+      ...base,
+      id: 'f2',
+      accountId: 'other',
+      outcome: 'failed',
+    });
+    expect(await store.hasUnacknowledgedPasskeyRenewFailure('acc')).toBe(true);
+    expect(await store.hasUnacknowledgedPasskeyRenewFailure('other')).toBe(true);
+    expect((await store.getAccount('acc'))?.walletRequired === true).toBe(false);
+    await store.acknowledgePasskeyRenewFailures('acc', 9);
+    await store.acknowledgePasskeyRenewFailures('acc', 10);
+    expect(await store.hasUnacknowledgedPasskeyRenewFailure('acc')).toBe(false);
+    expect(await store.hasUnacknowledgedPasskeyRenewFailure('other')).toBe(true);
+    expect((await store.getAccount('acc'))?.walletRequired === true).toBe(false);
+  });
+
   it('createAccount stores locale and fiat null even when the argument includes them', async () => {
     const store = new InMemoryAuthStore();
     await store.createAccount({

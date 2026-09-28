@@ -6,6 +6,7 @@
  * `amount_unit`, `locale`, `fiat`, `session_refused`, `wallet_required`, and
  * `wallet_backup_seen_at` on
  * databases created before those columns existed.
+ * Also creates `passkey_renew_attempt` (safe renew-ceremony error rows).
  * `locale` and `fiat` are backfilled as nullable (no value backfill of
  * existing rows).
  * Drops leftover `auth_challenge` from LNURL-auth.
@@ -102,4 +103,21 @@ export const AUTH_SCHEMA_SQL: readonly string[] = [
   // One account may hold a login passkey plus one later seed passkey.
   `DROP INDEX IF EXISTS passkey_credential_account_uidx`,
   `UPDATE account SET role = 'initiator' WHERE lower(trim(username)) = 'pater-severin' AND role = 'moderator'`,
+  `CREATE TABLE IF NOT EXISTS passkey_renew_attempt (
+    id uuid PRIMARY KEY,
+    account_id uuid NOT NULL REFERENCES account (id),
+    created_at timestamptz NOT NULL,
+    stage text NOT NULL,
+    outcome text NOT NULL,
+    error_name text,
+    error_code text,
+    http_status integer,
+    message text,
+    user_agent text,
+    acknowledged_at timestamptz,
+    CONSTRAINT passkey_renew_attempt_stage_chk CHECK (stage IN ('begin', 'ceremony', 'finish')),
+    CONSTRAINT passkey_renew_attempt_outcome_chk CHECK (outcome IN ('failed', 'succeeded', 'cancelled'))
+  )`,
+  `CREATE INDEX IF NOT EXISTS passkey_renew_attempt_account_idx
+    ON passkey_renew_attempt (account_id, created_at DESC)`,
 ];

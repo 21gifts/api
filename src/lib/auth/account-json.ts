@@ -62,7 +62,7 @@ export interface AccountResponse {
  * view-key capability secret, the next `setup` step, factual `missing`,
  * `hasPosted`, `aboutMe`, `aboutMeHasPhoto`, `notificationLevel`,
  * `amountUnit`, `locale`, `fiat`, `funding`, `walletRequired`,
- * `walletBackupSeenAt`, and `passkeyCredentialId`.
+ * `walletBackupSeenAt`, `passkeyCredentialId`, and `passkeyRenewFailed`.
  */
 export interface OwnerAccountResponse extends AccountResponse {
   /** 64 lowercase hex; capability URL secret for `GET /view/:viewKey`. */
@@ -148,6 +148,11 @@ export interface OwnerAccountResponse extends AccountResponse {
    * credential.
    */
   passkeyCredentialId: string | null;
+  /**
+   * True only when this account has a failed passkey-renew row whose
+   * `acknowledged_at` is still null. Owner-only.
+   */
+  passkeyRenewFailed: boolean;
 }
 
 /**
@@ -532,7 +537,8 @@ export function serializeDebugAccountDetail(
  * argument is `hasPosted`; the third is About me;
  * the fourth is whether the live profile note has a photo; the fifth is
  * `funding` (`null` for `basis`, default `null`); the sixth is
- * `passkeyCredentialId` (base64url or `null`, default `null`).
+ * `passkeyCredentialId` (base64url or `null`, default `null`); the seventh is
+ * `passkeyRenewFailed` (default `false`).
  * This function performs no I/O. Never used by the operator debug listing.
  * Does not expose `profileMessageId`.
  *
@@ -546,10 +552,13 @@ export function serializeDebugAccountDetail(
  * @param funding - Owner funding JSON, or `null` for `basis`. Defaults to
  *   `null` so direct test callers keep a present field.
  * @param passkeyCredentialId - Current passkey id (base64url), or `null`.
+ * @param passkeyRenewFailed - True when an unacknowledged failed renew exists.
+ *   Defaults to `false` so existing direct callers keep compiling.
  * @returns Owner fields including `viewKey`, `setup`, `missing`,
  * `hasPosted`, `location`, `aboutMe`, `aboutMeHasPhoto`,
  * `notificationLevel`, `amountUnit`, `locale`, `fiat`, `funding`,
- * `walletRequired`, `walletBackupSeenAt`, and `passkeyCredentialId`.
+ * `walletRequired`, `walletBackupSeenAt`, `passkeyCredentialId`, and
+ * `passkeyRenewFailed`.
  */
 export function serializeOwnerAccount(
   account: Account,
@@ -558,6 +567,7 @@ export function serializeOwnerAccount(
   aboutMeHasPhoto: boolean,
   funding: OwnerFundingJson | null = null,
   passkeyCredentialId: string | null = null,
+  passkeyRenewFailed = false,
 ): OwnerAccountResponse {
   return {
     ...serializeAccount(account),
@@ -576,6 +586,7 @@ export function serializeOwnerAccount(
     walletRequired: account.walletRequired === true,
     walletBackupSeenAt: account.walletBackupSeenAt ?? null,
     passkeyCredentialId,
+    passkeyRenewFailed,
   };
 }
 
@@ -586,7 +597,10 @@ export interface OwnerFundingLookup {
   /** Epoch milliseconds for lazy trial expiry. */
   nowMs: number;
   /** Account lookup for admitted `reviewedByName` and owner `passkeyCredentialId`. */
-  authStore: Pick<AuthStore, 'getAccount' | 'getPasskeyCredentialForAccount'>;
+  authStore: Pick<
+    AuthStore,
+    'getAccount' | 'getPasskeyCredentialForAccount' | 'hasUnacknowledgedPasskeyRenewFailure'
+  >;
 }
 
 /**
@@ -610,10 +624,13 @@ export interface OwnerFundingLookup {
  *   `passkeyCredentialId` null. When present, loads the grant and
  *   `authStore.getPasskeyCredentialForAccount` for `passkeyCredentialId`
  *   only when `walletRequired` is true (otherwise that field is null).
+ *   When `funding` is omitted, `passkeyRenewFailed` is false and the auth
+ *   store is not called for that flag. When `funding` is passed, loads
+ *   `hasUnacknowledgedPasskeyRenewFailure` even if `walletRequired` is false.
  * @returns Owner JSON including `hasPosted`, `aboutMe`, `aboutMeHasPhoto`,
  *   `notificationLevel`, `amountUnit`, `locale`, `fiat`, `funding`,
- *   `walletRequired`, `walletBackupSeenAt`, and `passkeyCredentialId`
- *   (via {@link serializeOwnerAccount}).
+ *   `walletRequired`, `walletBackupSeenAt`, `passkeyCredentialId`, and
+ *   `passkeyRenewFailed` (via {@link serializeOwnerAccount}).
  *   `aboutMe` is `null` when the profile note is missing or `deletedAt` is
  *   set, else `aboutMeFromNote(account.name, row.text, row.name)`.
  *   `aboutMeHasPhoto` is true iff the live row has `hasPhoto === true`.
@@ -637,6 +654,7 @@ export async function serializeOwnerAccountWithPosts(
   const hasPosted = livePost || aboutMe !== null;
   let fundingJson: OwnerFundingJson | null;
   let passkeyCredentialId: string | null = null;
+  let passkeyRenewFailed = false;
   if (funding === undefined) {
     fundingJson = serializeOwnerFunding(account.role, undefined, 0, null);
   } else {
@@ -651,6 +669,7 @@ export async function serializeOwnerAccountWithPosts(
       const passkey = await funding.authStore.getPasskeyCredentialForAccount(account.id);
       passkeyCredentialId = passkey?.credentialId ?? null;
     }
+    passkeyRenewFailed = await funding.authStore.hasUnacknowledgedPasskeyRenewFailure(account.id);
   }
   return serializeOwnerAccount(
     account,
@@ -659,6 +678,7 @@ export async function serializeOwnerAccountWithPosts(
     aboutMeHasPhoto,
     fundingJson,
     passkeyCredentialId,
+    passkeyRenewFailed,
   );
 }
 

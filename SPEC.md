@@ -99,6 +99,8 @@ Public base URLs used in examples:
 | POST   | `/me/fiat`                                           | Bearer                     | Set owner fiat (`CHF`, `EUR`, `USD`, or `PHP`). Null until set. `onlyIfUnset` does not overwrite a stored value.                                                                                                   |
 | GET    | `/me/activity`                                       | Bearer                     | Given + received series (forum zaps + house gifts; platform given = all outbound)                                                                                                                                  |
 | POST   | `/me/wallet-backup-seen`                             | Bearer                     | Records that this account can show a recovery phrase. Not a confirmation and not a setup step. Empty body. Does not change `walletRequired`.                                                                       |
+| POST   | `/me/passkey-renew/report`                           | Bearer                     | Client `failed` or `cancelled` renew attempt. Stores a row; does not change the account. `succeeded` is 400. Returns owner JSON including `passkeyRenewFailed`.                                                    |
+| POST   | `/me/passkey-renew/ack`                              | Bearer                     | Acknowledges failed unacknowledged renew rows only. Empty body. Returns owner JSON including `passkeyRenewFailed`.                                                                                                 |
 | GET    | `/view/:viewKey`                                     | none                       | Public profile card by view key                                                                                                                                                                                    |
 | GET    | `/view/:viewKey/about/photo`                         | none                       | Profile-note photo bytes for the view-key card                                                                                                                                                                     |
 | GET    | `/view/:viewKey/activity`                            | none                       | Public given/received payload for the account behind the view key                                                                                                                                                  |
@@ -528,12 +530,13 @@ ID).
     "funding": null,
     "walletRequired": true,
     "walletBackupSeenAt": null,
-    "passkeyCredentialId": "<base64url>"
+    "passkeyCredentialId": "<base64url>",
+    "passkeyRenewFailed": false
   }
 }
 ```
 
-The `account` object is the same owner JSON as `GET /me` (includes `viewKey`, `setup`, `missing`, `hasPosted`, `aboutMe`, `aboutMeHasPhoto`, `aboutMessageId`, `notificationLevel`, `amountUnit`, `locale`, `fiat`, `walletRequired`, `walletBackupSeenAt`, and `passkeyCredentialId`). `locale` and `fiat` are null until the member's app stores them. The example above is a new register (`walletRequired: true`, `setup: "name"` when the name is unset). The recovery phrase is not a setup step and does not change `setup` or `missing`. Existing members start with `walletRequired: false`. Seed finish sets `walletRequired: true` and does not change `walletBackupSeenAt`. Replace refuses and changes nothing. `walletBackupSeenAt` does not decide whether a seed exists.
+The `account` object is the same owner JSON as `GET /me` (includes `viewKey`, `setup`, `missing`, `hasPosted`, `aboutMe`, `aboutMeHasPhoto`, `aboutMessageId`, `notificationLevel`, `amountUnit`, `locale`, `fiat`, `walletRequired`, `walletBackupSeenAt`, `passkeyCredentialId`, and `passkeyRenewFailed`). `locale` and `fiat` are null until the member's app stores them. The example above is a new register (`walletRequired: true`, `setup: "name"` when the name is unset). The recovery phrase is not a setup step and does not change `setup` or `missing`. Existing members start with `walletRequired: false`. Seed finish sets `walletRequired: true` and does not change `walletBackupSeenAt`. Replace refuses and changes nothing. `walletBackupSeenAt` does not decide whether a seed exists.
 
 A new register row is stored with `walletRequired: true` and `walletBackupSeenAt: null`. First-passkey claim of a provisioned row sets `walletRequired: true` in the same write as the credential (`createFirstPasskeyCredential`: Postgres CTE locks the account row with `FOR UPDATE`, then inserts and sets `wallet_required`; memory store writes both in one method) and does not clear a seen timestamp. Passkey replace refuses and does not change these columns. Seed finish sets `walletRequired: true` without changing `walletBackupSeenAt`. Operator `POST /debug/accounts` provision leaves `walletRequired` false. The api never stores a mnemonic or PRF output.
 
@@ -668,7 +671,8 @@ An account with `sessionRefused` and a still-valid minted token → **Response**
   "funding": null,
   "walletRequired": false,
   "walletBackupSeenAt": null,
-  "passkeyCredentialId": null
+  "passkeyCredentialId": null,
+  "passkeyRenewFailed": false
 }
 ```
 
@@ -710,6 +714,7 @@ stays `null`)).
 | `walletRequired`           | boolean        | True when a seed-bearing passkey exists (new register/claim, or seed finish). Default false does not mean a seed is present. It does not make `setup` `'wallet'`.                                                                                                                                                                               |
 | `walletBackupSeenAt`       | number \| null | Epoch ms recorded after an existing member activates a passkey that can show a recovery phrase, so the app can offer Show recovery phrase next time instead of Activate. Not a confirmation. Not a seed check; it does not decide whether a seed exists. Null when that has not been recorded.                                                  |
 | `passkeyCredentialId`      | string \| null | Null when `walletRequired` is not true, even if a login passkey exists. When `walletRequired` is true it is the newest credential id (`created_at` desc, `credential_id` desc with `COLLATE "C"`). Owner-only.                                                                                                                                  |
+| `passkeyRenewFailed`       | boolean        | True only when that account has a failed renew row whose `acknowledged_at` is null. Owner-only.                                                                                                                                                                                                                                                 |
 
 ### `GET /me/activity`
 
@@ -757,6 +762,30 @@ The first successful POST sets `walletBackupSeenAt` to the server clock
 (epoch ms). Later POSTs return the original timestamp unchanged
 (idempotent; no second write). Logs `account.wallet.backup_seen` with
 `{ accountId }` only. Never stores or logs a mnemonic or PRF output.
+
+### `POST /me/passkey-renew/report`
+
+Bearer required. Client report of a passkey renew attempt. Accepts only
+`failed` or `cancelled` (`succeeded` is 400). Stores a renew row (server
+generates `id` and `createdAt`; User-Agent from the header). Does not
+change the account row. Returns owner JSON including `passkeyRenewFailed`.
+
+Missing/invalid bearer → **Response** `401` `{ "error": "Unauthorized" }`.
+
+Invalid JSON, unknown keys, or a body that fails the strict schema
+(including `outcome: "succeeded"`) → **Response** `400`.
+
+Success → **Response** `200` with the owner JSON (same shape as `GET /me`).
+
+### `POST /me/passkey-renew/ack`
+
+Bearer required. Empty body is fine. Acknowledges failed unacknowledged
+renew rows only. Does not change the account row. Returns owner JSON
+including `passkeyRenewFailed`.
+
+Missing/invalid bearer → **Response** `401` `{ "error": "Unauthorized" }`.
+
+Success → **Response** `200` with the owner JSON (same shape as `GET /me`).
 
 ### `POST /me/setup/skip`
 
