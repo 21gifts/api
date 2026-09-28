@@ -203,6 +203,21 @@ describe('auth routes', () => {
       });
     });
 
+    it('does not log a registration challenge id that is not 64 lowercase hex', async () => {
+      const res = await mount(new InMemoryAuthStore()).request('/auth/passkey/register/finish', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', origin: ORIGIN },
+        body: JSON.stringify({ challengeId: 'not-a-challenge', credential: { test: 'ok' } }),
+      });
+      expect(await res.json()).toEqual({ error: 'Unknown or expired challenge' });
+      const logged = parsedEvents(warn).find((e) => e['event'] === 'auth.passkey.register.fail');
+      expect(logged).toMatchObject({
+        event: 'auth.passkey.register.fail',
+        error: 'Unknown or expired challenge',
+      });
+      expect(logged).not.toHaveProperty('challengeId');
+    });
+
     it('rejects a missing origin on finish', async () => {
       const store = new InMemoryAuthStore();
       const app = mount(store);
@@ -526,6 +541,33 @@ describe('auth routes', () => {
         },
       );
       expect(await res.json()).toEqual({ error: 'Unknown or expired challenge' });
+      const logged = parsedEvents(warn).find((e) => e['event'] === 'auth.passkey.login.fail');
+      expect(logged).toEqual({
+        ts: logged?.['ts'],
+        event: 'auth.passkey.login.fail',
+        error: 'Unknown or expired challenge',
+      });
+      expect(logged).not.toHaveProperty('challengeId');
+    });
+
+    it('logs a real challenge id when authentication fails', async () => {
+      const challengeId = 'ab'.repeat(32);
+      const res = await mount(new InMemoryAuthStore()).request(
+        '/auth/passkey/authenticate/finish',
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json', origin: ORIGIN },
+          body: JSON.stringify({ challengeId, credential: { test: 'ok', id: 'cred-1' } }),
+        },
+      );
+      expect(await res.json()).toEqual({ error: 'Unknown or expired challenge' });
+      expect(parsedEvents(warn)).toContainEqual(
+        expect.objectContaining({
+          event: 'auth.passkey.login.fail',
+          challengeId,
+          error: 'Unknown or expired challenge',
+        }),
+      );
     });
 
     it('rejects a mismatched origin', async () => {
@@ -949,6 +991,27 @@ describe('auth routes', () => {
       expect(res.status).toBe(400);
       expect(await res.json()).toEqual({ error: 'Invalid passkey' });
       expect(await store.getPasskeyCredential('cred-2')).toBeUndefined();
+    });
+
+    it('does not log a seed challenge id that is not 64 lowercase hex', async () => {
+      const store = new InMemoryAuthStore();
+      const { app, token } = await legacySignedIn(store);
+      const res = await app.request('/auth/passkey/seed/finish', {
+        method: 'POST',
+        headers: {
+          origin: ORIGIN,
+          'content-type': 'application/json',
+          authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ challengeId: 'not-a-challenge', credential: { test: 'ok' } }),
+      });
+      expect(await res.json()).toEqual({ error: 'Unknown or expired challenge' });
+      const logged = parsedEvents(warn).find((e) => e['event'] === 'auth.passkey.seed.fail');
+      expect(logged).toMatchObject({
+        event: 'auth.passkey.seed.fail',
+        error: 'Unknown or expired challenge',
+      });
+      expect(logged).not.toHaveProperty('challengeId');
     });
 
     it('returns 409 when finish finds the credential id already stored', async () => {

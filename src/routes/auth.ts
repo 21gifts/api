@@ -57,6 +57,19 @@ const passkeyFinishBody = z.object({
   credential: z.unknown(),
 });
 
+/** Real ceremony ids are 64 lowercase hex characters. Anything else is not logged. */
+const LOGGED_CHALLENGE_ID = /^[0-9a-f]{64}$/;
+
+function passkeyFailFields(
+  challengeId: string,
+  error: string,
+): { error: string; challengeId?: string } {
+  if (LOGGED_CHALLENGE_ID.test(challengeId)) {
+    return { challengeId, error };
+  }
+  return { error };
+}
+
 /**
  * Build the `/auth` route group.
  *
@@ -117,10 +130,10 @@ export function authRoutes(deps: AuthRouteDeps): Hono {
         nostrOpts(deps),
       );
       if (!result.ok) {
-        logEvent('auth.passkey.register.fail', {
-          challengeId: parsed.data.challengeId,
-          error: result.error,
-        });
+        logEvent(
+          'auth.passkey.register.fail',
+          passkeyFailFields(parsed.data.challengeId, result.error),
+        );
         const status = result.error === WRONG_ACCOUNT_ERROR ? 403 : 400;
         return c.json({ error: result.error }, status);
       }
@@ -170,10 +183,10 @@ export function authRoutes(deps: AuthRouteDeps): Hono {
         nostrOpts(deps),
       );
       if (!result.ok) {
-        logEvent('auth.passkey.login.fail', {
-          challengeId: parsed.data.challengeId,
-          error: result.error,
-        });
+        logEvent(
+          'auth.passkey.login.fail',
+          passkeyFailFields(parsed.data.challengeId, result.error),
+        );
         const status = result.error === WRONG_ACCOUNT_ERROR ? 403 : 400;
         return c.json({ error: result.error }, status);
       }
@@ -282,10 +295,10 @@ export function authRoutes(deps: AuthRouteDeps): Hono {
         account,
       );
       if (!result.ok) {
-        logEvent('auth.passkey.seed.fail', {
-          challengeId: parsed.data.challengeId,
-          error: result.error,
-        });
+        logEvent(
+          'auth.passkey.seed.fail',
+          passkeyFailFields(parsed.data.challengeId, result.error),
+        );
         const status = result.error === 'This account already has a recovery phrase' ? 409 : 400;
         return c.json({ error: result.error }, status);
       }
