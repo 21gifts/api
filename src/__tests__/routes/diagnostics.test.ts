@@ -289,6 +289,102 @@ describe('diagnosticsRoutes', () => {
     }
   });
 
+  it('keeps a newer address bucket when an older insert fails after the window', async () => {
+    let releaseHold: () => void = () => undefined;
+    let gate = Promise.resolve();
+    let entered = 0;
+    const store: DiagnosticStore = {
+      async append(row) {
+        if (row.source !== 'client') {
+          return;
+        }
+        entered += 1;
+        if (entered === 60) {
+          await gate;
+          throw new Error('disk');
+        }
+      },
+      listLatest: async () => [],
+    };
+    const app = mount(store, now);
+    const ip = { 'cf-connecting-ip': '1.2.3.4' };
+    for (let i = 0; i < 59; i++) {
+      expect((await post(app, ip)).status).toBe(204);
+    }
+    gate = new Promise<void>((resolve) => {
+      releaseHold = resolve;
+    });
+    try {
+      const first = post(app, ip);
+      for (let i = 0; i < 50 && entered < 60; i++) {
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      }
+      expect(entered).toBe(60);
+      clock += 60_000;
+      expect((await post(app, ip)).status).toBe(204);
+      releaseHold();
+      expect((await first).status).toBe(500);
+      let accepted = 0;
+      for (let i = 0; i < 61; i++) {
+        if ((await post(app, ip)).status !== 204) {
+          break;
+        }
+        accepted += 1;
+      }
+      expect(accepted).toBe(59);
+    } finally {
+      releaseHold();
+    }
+  });
+
+  it('does not clear a newer refusal stamp when an older refusal fails to record', async () => {
+    let releaseHold: () => void = () => undefined;
+    const gate = new Promise<void>((resolve) => {
+      releaseHold = resolve;
+    });
+    let rateLimited = 0;
+    const store = new InMemoryDiagnosticStore();
+    const gated: DiagnosticStore = {
+      async append(row) {
+        if (row.event === 'diagnostics.rate_limited') {
+          rateLimited += 1;
+          if (rateLimited === 1) {
+            await gate;
+            throw new Error('disk');
+          }
+        }
+        await store.append(row);
+      },
+      listLatest: (limit) => store.listLatest(limit),
+    };
+    const app = mount(gated, now);
+    const firstIp = { 'cf-connecting-ip': '1.1.1.1' };
+    const secondIp = { 'cf-connecting-ip': '2.2.2.2' };
+    for (let i = 0; i < 60; i++) {
+      expect((await post(app, firstIp)).status).toBe(204);
+    }
+    try {
+      const first = post(app, firstIp);
+      for (let i = 0; i < 50 && rateLimited < 1; i++) {
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      }
+      expect(rateLimited).toBe(1);
+      clock += 60_001;
+      for (let i = 0; i < 60; i++) {
+        expect((await post(app, secondIp)).status).toBe(204);
+      }
+      expect((await post(app, secondIp)).status).toBe(429);
+      expect(rateLimited).toBe(2);
+      releaseHold();
+      expect((await first).status).toBe(429);
+      expect((await post(app, secondIp)).status).toBe(429);
+      const rows = await store.listLatest(200);
+      expect(rows.filter((row) => row.event === 'diagnostics.rate_limited')).toHaveLength(1);
+    } finally {
+      releaseHold();
+    }
+  });
+
   it('does not remember lastRateLimitedAt when the rate-limited append throws', async () => {
     const store = new RecordingStore();
     const app = mount(store, now);

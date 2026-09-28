@@ -205,7 +205,9 @@ export function diagnosticsRoutes(deps: { store: DiagnosticStore; now?: () => nu
             fields: {},
           });
         } catch {
-          lastRateLimitedAt = previousRateLimitedAt;
+          if (lastRateLimitedAt === now) {
+            lastRateLimitedAt = previousRateLimitedAt;
+          }
         }
       }
       return c.json({ error: 'Too many diagnostics' }, 429);
@@ -237,7 +239,7 @@ export function diagnosticsRoutes(deps: { store: DiagnosticStore; now?: () => nu
       releaseReserved(globalAccepted, now);
       if (ip !== undefined && ipBucket !== undefined) {
         releaseReserved(ipBucket, now);
-        if (ipBucket.length === 0) {
+        if (ipBucket.length === 0 && ipAccepted.get(ip) === ipBucket) {
           ipAccepted.delete(ip);
         }
       }
