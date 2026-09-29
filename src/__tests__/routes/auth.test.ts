@@ -197,12 +197,11 @@ describe('auth routes', () => {
         error: 'Expected a JSON body with an optional "viewKey" string',
       });
       const logged = parsedEvents(warn).find((e) => e['event'] === 'auth.passkey.register.fail');
-      expect(logged).toMatchObject({
+      expect(logged).toEqual({
+        ts: expect.any(String),
         event: 'auth.passkey.register.fail',
         error: 'Expected a JSON body with an optional "viewKey" string',
       });
-      expect(logged).not.toHaveProperty('viewKey');
-      expect(JSON.stringify(logged)).not.toContain('12');
     });
 
     it('rejects a missing finish body', async () => {
