@@ -440,6 +440,13 @@
 - **Returns / side effects:** `"[redacted]"`, the capped trimmed string, or `null` when blank. No I/O.
 - **Used by:** `insertPasskeyRenewAttempt` for `error_name`, `error_code`, `message`, and `user_agent`.
 
+## Function: sanitizePasskeyRenewDebug
+
+- **Purpose:** Keep only public authenticator facts on a passkey-renew row. A wrong type or a value outside the allowlist becomes null, so the failure row is still stored.
+- **Inputs:** Attachment, transports, AAGUID, PRF booleans, extension names, flags byte, COSE algorithm, resident-key and hmac-secret booleans, credProtect, and browser capability names.
+- **Returns / side effects:** The twelve safe fields. No credential id, attestation, challenge, or PRF output. No I/O.
+- **Used by:** `insertPasskeyRenewAttempt` in the in-memory and Postgres auth stores.
+
 ## Function: openAuthStore
 
 - **Purpose:** Chooses in-memory vs Postgres AuthStore from `DATABASE_URL`.

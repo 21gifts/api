@@ -1684,6 +1684,39 @@ describe('InMemoryAuthStore', () => {
     expect((await store.getAccount('acc'))?.walletRequired === true).toBe(false);
   });
 
+  it('uses the later id when two unacknowledged failures share a time', async () => {
+    const store = new InMemoryAuthStore();
+    await store.createAccount({
+      id: 'acc',
+      linkingKey: KEY,
+      role: 'basis',
+      name: 'Ada',
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: 'a'.repeat(64),
+      createdAt: 1,
+      rulesAgreedAt: null,
+    });
+    const base = {
+      accountId: 'acc',
+      createdAt: 5,
+      stage: 'ceremony' as const,
+      outcome: 'failed' as const,
+      errorCode: null,
+      httpStatus: null,
+      message: 'seed failed',
+      userAgent: null,
+    };
+    await store.insertPasskeyRenewAttempt({ ...base, id: 'b', errorName: 'kept' });
+    await store.insertPasskeyRenewAttempt({ ...base, id: 'a', errorName: 'older-id' });
+    expect(await store.latestUnacknowledgedPasskeyRenewErrorName('acc')).toBe('kept');
+    await store.insertPasskeyRenewAttempt({ ...base, id: 'c', errorName: 'wins' });
+    expect(await store.latestUnacknowledgedPasskeyRenewErrorName('acc')).toBe('wins');
+    expect(await store.latestUnacknowledgedPasskeyRenewErrorName('missing')).toBeNull();
+  });
+
   it('createAccount stores locale and fiat null even when the argument includes them', async () => {
     const store = new InMemoryAuthStore();
     await store.createAccount({

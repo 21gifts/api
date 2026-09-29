@@ -209,6 +209,18 @@ const passkeyRenewReportBody = z
     errorCode: z.string().nullable(),
     httpStatus: z.number().int().min(0).max(599).nullable(),
     message: z.string(),
+    authenticatorAttachment: z.unknown().optional(),
+    transports: z.unknown().optional(),
+    aaguid: z.unknown().optional(),
+    prfEnabled: z.unknown().optional(),
+    prfPresent: z.unknown().optional(),
+    extensions: z.unknown().optional(),
+    authenticatorFlags: z.unknown().optional(),
+    publicKeyAlgorithm: z.unknown().optional(),
+    residentKey: z.unknown().optional(),
+    hmacSecret: z.unknown().optional(),
+    credProtect: z.unknown().optional(),
+    clientCapabilities: z.unknown().optional(),
   })
   .strict();
 
@@ -319,6 +331,18 @@ export function meRoutes(deps: MeRouteDeps): Hono {
         httpStatus: parsed.data.httpStatus,
         message: parsed.data.message,
         userAgent: c.req.header('user-agent') ?? null,
+        authenticatorAttachment: parsed.data.authenticatorAttachment ?? null,
+        transports: parsed.data.transports ?? null,
+        aaguid: parsed.data.aaguid ?? null,
+        prfEnabled: parsed.data.prfEnabled ?? null,
+        prfPresent: parsed.data.prfPresent ?? null,
+        extensions: parsed.data.extensions ?? null,
+        authenticatorFlags: parsed.data.authenticatorFlags ?? null,
+        publicKeyAlgorithm: parsed.data.publicKeyAlgorithm ?? null,
+        residentKey: parsed.data.residentKey ?? null,
+        hmacSecret: parsed.data.hmacSecret ?? null,
+        credProtect: parsed.data.credProtect ?? null,
+        clientCapabilities: parsed.data.clientCapabilities ?? null,
       });
       const reported = await storedAccount(deps, account.id);
       /* v8 ignore next 3 -- the account row cannot vanish mid-request after auth */

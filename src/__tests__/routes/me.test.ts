@@ -564,10 +564,12 @@ describe('POST /me/passkey-renew/report', () => {
     const body = (await res.json()) as {
       passkeyRenewFailed: boolean;
       passkeyRenewClosed: boolean;
+      passkeyRenewPrfUnsupported: boolean;
       walletRequired: boolean;
     };
     expect(body.passkeyRenewFailed).toBe(true);
     expect(body.passkeyRenewClosed).toBe(false);
+    expect(body.passkeyRenewPrfUnsupported).toBe(false);
     expect(body.walletRequired).toBe(false);
     expect((await store.getAccount('acc'))?.walletRequired === true).toBe(false);
     expect(store.inserts).toHaveLength(1);
@@ -582,6 +584,119 @@ describe('POST /me/passkey-renew/report', () => {
       message: 'seed failed',
       userAgent: 'TestAgent',
     });
+  });
+
+  it('stores allowlisted authenticator facts and marks a missing PRF', async () => {
+    const store = new RecordingAuthStore();
+    await store.createAccount({
+      id: 'acc',
+      linkingKey: LINKING_KEY,
+      role: 'basis',
+      name: null,
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: VIEW_KEY,
+      createdAt: 1_000_000,
+      rulesAgreedAt: null,
+    });
+    await store.createSession({ token: 'tok', accountId: 'acc', createdAt: 1_000_000 });
+    const res = await mount(store).request('/me/passkey-renew/report', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({
+        ...PASSKEY_RENEW_REPORT,
+        errorName: 'prfUnsupported',
+        message: 'wallet.prfUnsupported',
+        authenticatorAttachment: 'cross-platform',
+        transports: 'usb,nope',
+        aaguid: 'ab'.repeat(16),
+        prfEnabled: false,
+        prfPresent: false,
+        extensions: 'prf,nope',
+        authenticatorFlags: 0,
+        publicKeyAlgorithm: -7,
+        residentKey: true,
+        hmacSecret: false,
+        credProtect: 2,
+        clientCapabilities: 'prf,hybridTransport',
+      }),
+    });
+    expect(res.status).toBe(200);
+    expect(
+      ((await res.json()) as { passkeyRenewPrfUnsupported: boolean }).passkeyRenewPrfUnsupported,
+    ).toBe(true);
+    expect(store.inserts[0]).toMatchObject({
+      errorName: 'prfUnsupported',
+      authenticatorAttachment: 'cross-platform',
+      transports: 'usb,nope',
+      aaguid: 'ab'.repeat(16),
+      prfEnabled: false,
+      prfPresent: false,
+      extensions: 'prf,nope',
+      authenticatorFlags: 0,
+      publicKeyAlgorithm: -7,
+      residentKey: true,
+      hmacSecret: false,
+      credProtect: 2,
+      clientCapabilities: 'prf,hybridTransport',
+    });
+  });
+
+  it('stores the row when a debug value is the wrong type', async () => {
+    const store = new RecordingAuthStore();
+    await store.createAccount({
+      id: 'acc',
+      linkingKey: LINKING_KEY,
+      role: 'basis',
+      name: null,
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: VIEW_KEY,
+      createdAt: 1_000_000,
+      rulesAgreedAt: null,
+    });
+    await store.createSession({ token: 'tok', accountId: 'acc', createdAt: 1_000_000 });
+    const res = await mount(store).request('/me/passkey-renew/report', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({
+        ...PASSKEY_RENEW_REPORT,
+        authenticatorFlags: 'nope',
+        credProtect: { policy: 'userVerificationRequired' },
+      }),
+    });
+    expect(res.status).toBe(200);
+    expect(store.inserts).toHaveLength(1);
+    expect(store.inserts[0]).toMatchObject({ authenticatorFlags: 'nope' });
+  });
+
+  it('returns 400 for an unknown report key and stores nothing', async () => {
+    const store = new RecordingAuthStore();
+    await store.createAccount({
+      id: 'acc',
+      linkingKey: LINKING_KEY,
+      role: 'basis',
+      name: null,
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: VIEW_KEY,
+      createdAt: 1_000_000,
+      rulesAgreedAt: null,
+    });
+    await store.createSession({ token: 'tok', accountId: 'acc', createdAt: 1_000_000 });
+    const res = await mount(store).request('/me/passkey-renew/report', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ ...PASSKEY_RENEW_REPORT, credentialId: 'secret' }),
+    });
+    expect(res.status).toBe(400);
+    expect(store.inserts).toHaveLength(0);
   });
 
   it('accepts an over-long phrase and a long secret instead of rejecting them', async () => {
