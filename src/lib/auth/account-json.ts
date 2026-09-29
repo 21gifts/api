@@ -62,8 +62,9 @@ export interface AccountResponse {
  * view-key capability secret, the next `setup` step, factual `missing`,
  * `hasPosted`, `aboutMe`, `aboutMeHasPhoto`, `notificationLevel`,
  * `amountUnit`, `locale`, `fiat`, `funding`, `walletRequired`,
- * `walletBackupSeenAt`, `passkeyCredentialId`, `passkeyRenewFailed`, and
- * `passkeyRenewClosed`.
+ * `walletBackupSeenAt`, `passkeyCredentialId`, `passkeyRenewFailed`,
+ * `passkeyRenewClosed`, and `passkeyRenewPrfUnsupported` (true only when
+ * the newest unacknowledged failed renew is `prfUnsupported`).
  */
 export interface OwnerAccountResponse extends AccountResponse {
   /** 64 lowercase hex; capability URL secret for `GET /view/:viewKey`. */
@@ -663,7 +664,9 @@ export interface OwnerFundingLookup {
  * @returns Owner JSON including `hasPosted`, `aboutMe`, `aboutMeHasPhoto`,
  *   `notificationLevel`, `amountUnit`, `locale`, `fiat`, `funding`,
  *   `walletRequired`, `walletBackupSeenAt`, `passkeyCredentialId`,
- *   `passkeyRenewFailed`, and `passkeyRenewClosed` (via
+ *   `passkeyRenewFailed`, `passkeyRenewClosed`, and
+ *   `passkeyRenewPrfUnsupported` (true only when the newest unacknowledged
+ *   failed renew is `prfUnsupported`, via
  *   {@link serializeOwnerAccount}).
  *   `aboutMe` is `null` when the profile note is missing or `deletedAt` is
  *   set, else `aboutMeFromNote(account.name, row.text, row.name)`.
