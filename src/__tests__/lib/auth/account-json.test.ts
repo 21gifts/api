@@ -255,6 +255,9 @@ describe('serializeOwnerAccount', () => {
       walletRequired: false,
       walletBackupSeenAt: null,
       passkeyCredentialId: null,
+      passkeyRenewFailed: false,
+      passkeyRenewClosed: false,
+      passkeyRenewPrfUnsupported: false,
     });
     expect(json.viewKey).toBe(account.viewKey);
     expect(json.setup).toBe('rules');
@@ -269,6 +272,7 @@ describe('serializeOwnerAccount', () => {
     expect(json.walletRequired).toBe(false);
     expect(json.walletBackupSeenAt).toBeNull();
     expect(json.passkeyCredentialId).toBeNull();
+    expect(json.passkeyRenewFailed).toBe(false);
     expect(json).not.toHaveProperty('isPlatform');
     expect(json).not.toHaveProperty('sessionRefused');
     expect(json).not.toHaveProperty('profileMessageId');
@@ -386,6 +390,13 @@ describe('serializeOwnerAccount', () => {
     expect(json).not.toHaveProperty('profileMessageId');
   });
 
+  it('defaults omitted passkeyRenewFailed to false and includes true when passed', () => {
+    expect(serializeOwnerAccount(account, false, null, false).passkeyRenewFailed).toBe(false);
+    expect(
+      serializeOwnerAccount(account, false, null, false, null, null, true).passkeyRenewFailed,
+    ).toBe(true);
+  });
+
   it('includes an explicit funding object when provided', () => {
     const json = serializeOwnerAccount(account, false, null, false, {
       status: 'none',
@@ -422,6 +433,7 @@ describe('serializeOwnerAccountWithPosts', () => {
     expect(json.aboutMe).toBeNull();
     expect(json.aboutMeHasPhoto).toBe(false);
     expect(json.aboutMessageId).toBeNull();
+    expect(json.passkeyRenewFailed).toBe(false);
     expect(json).not.toHaveProperty('profileMessageId');
     expect(json).not.toHaveProperty('isPlatform');
     expect(json).not.toHaveProperty('sessionRefused');
@@ -747,6 +759,160 @@ describe('serializeOwnerAccountWithPosts', () => {
       admittedAt: 3,
       reviewedByName: null,
     });
+  });
+
+  it('does not close a renew when the stored account already has a seed', async () => {
+    const authStore = new InMemoryAuthStore();
+    await authStore.createAccount(account);
+    await authStore.insertPasskeyRenewAttempt({
+      id: 'r1',
+      accountId: 'acc',
+      createdAt: 1,
+      stage: 'ceremony',
+      outcome: 'failed',
+      errorName: null,
+      errorCode: null,
+      httpStatus: null,
+      message: 'seed failed',
+      userAgent: null,
+    });
+    await authStore.acknowledgePasskeyRenewFailures('acc', 2);
+    expect(
+      await authStore.addSeedPasskeyCredential({
+        credentialId: 'seed-now',
+        publicKey: new Uint8Array([1]),
+        signCount: 0,
+        accountId: 'acc',
+        createdAt: 3,
+      }),
+    ).toBe(true);
+    const json = await serializeOwnerAccountWithPosts(
+      account,
+      {
+        accountHasLivePost: async () => false,
+        getById: async () => undefined,
+      },
+      { store: new InMemoryFundingStore(), nowMs: 4, authStore },
+    );
+    expect(json.walletRequired).toBe(true);
+    expect(json.passkeyRenewClosed).toBe(false);
+  });
+
+  it('keeps the passed account when the store no longer has it', async () => {
+    const json = await serializeOwnerAccountWithPosts(
+      account,
+      {
+        accountHasLivePost: async () => false,
+        getById: async () => undefined,
+      },
+      {
+        store: new InMemoryFundingStore(),
+        nowMs: 1,
+        authStore: {
+          getAccount: async () => undefined,
+          getPasskeyCredentialForAccount: async () => undefined,
+          hasUnacknowledgedPasskeyRenewFailure: async () => false,
+          hasAcknowledgedPasskeyRenewFailure: async () => true,
+          latestUnacknowledgedPasskeyRenewErrorName: async () => null,
+        },
+      },
+    );
+    expect(json.walletRequired).toBe(false);
+    expect(json.passkeyRenewClosed).toBe(true);
+  });
+
+  it('sets passkeyRenewFailed from an unacknowledged failure only when funding is passed', async () => {
+    const authStore = new InMemoryAuthStore();
+    await authStore.createAccount(account);
+    await authStore.insertPasskeyRenewAttempt({
+      id: 'r1',
+      accountId: 'acc',
+      createdAt: 1,
+      stage: 'ceremony',
+      outcome: 'failed',
+      errorName: null,
+      errorCode: null,
+      httpStatus: 400,
+      message: 'seed failed',
+      userAgent: null,
+    });
+    const omitted = await serializeOwnerAccountWithPosts(account, {
+      accountHasLivePost: async () => false,
+      getById: async () => undefined,
+    });
+    expect(omitted.passkeyRenewFailed).toBe(false);
+    const json = await serializeOwnerAccountWithPosts(
+      account,
+      {
+        accountHasLivePost: async () => false,
+        getById: async () => undefined,
+      },
+      { store: new InMemoryFundingStore(), nowMs: 1, authStore },
+    );
+    expect(json.passkeyRenewFailed).toBe(true);
+    expect(json.passkeyRenewClosed).toBe(false);
+    expect(json.walletRequired).toBe(false);
+    await authStore.acknowledgePasskeyRenewFailures('acc', 2);
+    const closed = await serializeOwnerAccountWithPosts(
+      account,
+      {
+        accountHasLivePost: async () => false,
+        getById: async () => undefined,
+      },
+      { store: new InMemoryFundingStore(), nowMs: 1, authStore },
+    );
+    expect(closed.passkeyRenewFailed).toBe(false);
+    expect(closed.passkeyRenewClosed).toBe(true);
+    expect(closed.walletRequired).toBe(false);
+    expect(closed.passkeyRenewPrfUnsupported).toBe(false);
+  });
+
+  it('sets passkeyRenewPrfUnsupported only for the newest unacknowledged prf failure', async () => {
+    const authStore = new InMemoryAuthStore();
+    await authStore.createAccount(account);
+    await authStore.insertPasskeyRenewAttempt({
+      id: 'r1',
+      accountId: 'acc',
+      createdAt: 1,
+      stage: 'ceremony',
+      outcome: 'failed',
+      errorName: 'prfUnsupported',
+      errorCode: null,
+      httpStatus: null,
+      message: 'wallet.prfUnsupported',
+      userAgent: null,
+    });
+    const open = await serializeOwnerAccountWithPosts(
+      account,
+      {
+        accountHasLivePost: async () => false,
+        getById: async () => undefined,
+      },
+      { store: new InMemoryFundingStore(), nowMs: 2, authStore },
+    );
+    expect(open.passkeyRenewFailed).toBe(true);
+    expect(open.passkeyRenewPrfUnsupported).toBe(true);
+    await authStore.insertPasskeyRenewAttempt({
+      id: 'r2',
+      accountId: 'acc',
+      createdAt: 3,
+      stage: 'ceremony',
+      outcome: 'failed',
+      errorName: 'NotAllowedError',
+      errorCode: null,
+      httpStatus: null,
+      message: 'cancel',
+      userAgent: null,
+    });
+    const newer = await serializeOwnerAccountWithPosts(
+      account,
+      {
+        accountHasLivePost: async () => false,
+        getById: async () => undefined,
+      },
+      { store: new InMemoryFundingStore(), nowMs: 4, authStore },
+    );
+    expect(newer.passkeyRenewPrfUnsupported).toBe(false);
   });
 });
 

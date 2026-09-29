@@ -148,6 +148,7 @@ api/
 │   │       ├── hex.ts        # CSPRNG hex tokens
 │   │       ├── prf.ts        # Frozen WebAuthn PRF eval.first salt
 │   │       ├── passkey.ts    # WebAuthn register/authenticate/replace domain logic
+│   │       ├── passkey-renew-report.ts  # Cap and redact renew-attempt text before insert
 │   │       ├── service.ts    # Session issuance and bearer resolution
 │   │       ├── wrong-account.ts  # sessionRefused: refuse a bearer when the account flag is set
 │   │       ├── store.ts      # AuthStore port + in-memory adapter (+ passkey records)
@@ -250,6 +251,7 @@ api/
 │       │       ├── sql.test.ts
 │       │       ├── postgres-store.test.ts
 │       │       ├── open-store.test.ts
+│       │       ├── passkey-renew-report.test.ts
 │       │       └── webauthn.test.ts
 │       └── routes/
 │           ├── health.test.ts
@@ -305,6 +307,7 @@ api/
 │   ├── conversation.sql      # PN threads + messages + conversation_read (per-viewer last-read; member/platform/Damus; closed moderator_group singleton, HTTP-only / skipped Nostr) + conversation_message.photo / photo_content_type + conversation_message_extra_photo + conversation_message_translation
 │   ├── api_log.sql           # HTTP audit log (who called which path)
 │   ├── diagnostic_event.sql  # Append-only diagnostic rows (no TTL)
+│   ├── passkey_renew_attempt.sql  # Safe renew-attempt rows (no phrase or credential)
 │   ├── push.sql              # push_subscription + push_outbox
 │   ├── notification.sql      # in-app Notifications rows (`forum_post`, `forum_reply`, `zap`)
 │   ├── trust_edge.sql        # who granted which staff status (GET /trust-chain)

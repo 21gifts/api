@@ -1,3 +1,7 @@
+import {
+  redactPasskeyRenewField,
+  sanitizePasskeyRenewDebug,
+} from '@/lib/auth/passkey-renew-report';
 import { roleAtLeast } from '@/lib/auth/roles';
 import { CHALLENGE_TTL_MS, SESSION_TTL_MS } from '@/lib/config';
 
@@ -236,6 +240,60 @@ export interface PasskeyChallenge {
   createdAt: number;
 }
 
+/** Stage of a passkey renew ceremony. */
+export type PasskeyRenewStage = 'begin' | 'ceremony' | 'finish';
+
+/** Outcome of a passkey renew attempt. `succeeded` is server-only. */
+export type PasskeyRenewOutcome = 'failed' | 'succeeded' | 'cancelled';
+
+/** Row written by {@link AuthStore.insertPasskeyRenewAttempt}. */
+export interface PasskeyRenewAttemptInput {
+  /** Opaque row id (uuid). */
+  id: string;
+  /** Account that started the renew. */
+  accountId: string;
+  /** Creation time (epoch ms). */
+  createdAt: number;
+  /** Ceremony stage. */
+  stage: PasskeyRenewStage;
+  /** Attempt result. */
+  outcome: PasskeyRenewOutcome;
+  /** Client exception name, or `null`. Redacted, then capped at 80. */
+  errorName: string | null;
+  /** Client exception code, or `null`. Redacted, then capped at 80. */
+  errorCode: string | null;
+  /** HTTP status when the server recorded the row, or `null`. */
+  httpStatus: number | null;
+  /** Safe error string, or `null`. Redacted, then capped at 500. */
+  message: string | null;
+  /** User-Agent header, or `null`. Redacted, then capped at 300. */
+  userAgent: string | null;
+  /** `platform` or `cross-platform`, or omitted when unknown. */
+  authenticatorAttachment?: unknown;
+  /** Comma-separated transports, or omitted. Allowlisted before storage. */
+  transports?: unknown;
+  /** Authenticator AAGUID, or omitted. Stored only as 32 hex chars. */
+  aaguid?: unknown;
+  /** Browser `prf.enabled`, or omitted. */
+  prfEnabled?: unknown;
+  /** Whether PRF output was present, or omitted when unknown. */
+  prfPresent?: unknown;
+  /** Comma-separated extension names, or omitted. Allowlisted before storage. */
+  extensions?: unknown;
+  /** Flags byte, or omitted. Stored only as an integer 0–255. */
+  authenticatorFlags?: unknown;
+  /** COSE algorithm, or omitted. Stored only inside -65536..65535. */
+  publicKeyAlgorithm?: unknown;
+  /** `credProps.rk`, or omitted. */
+  residentKey?: unknown;
+  /** hmac-secret supported, or omitted. */
+  hmacSecret?: unknown;
+  /** credProtect policy name or numeric code, or omitted. */
+  credProtect?: unknown;
+  /** Comma-separated browser capability names, or omitted. */
+  clientCapabilities?: unknown;
+}
+
 /** A server-issued session bound to an account. */
 export interface Session {
   /** Opaque bearer token (hex). */
@@ -273,6 +331,45 @@ export interface AuthStore {
     accountId: string,
     now: number,
   ): Promise<{ account: Account; wrote: boolean } | undefined>;
+  /**
+   * Persist one passkey renew attempt. Caps and redacts client fields.
+   * Does not change the account row.
+   *
+   * @param input - Row to store (`acknowledged_at` starts null).
+   */
+  insertPasskeyRenewAttempt(input: PasskeyRenewAttemptInput): Promise<void>;
+  /**
+   * Set `acknowledged_at` on this account's failed rows that are still
+   * unacknowledged. Succeeded and cancelled rows are left unchanged.
+   *
+   * @param accountId - Account whose failures to acknowledge.
+   * @param now - Epoch ms stored as `acknowledged_at`.
+   */
+  acknowledgePasskeyRenewFailures(accountId: string, now: number): Promise<void>;
+  /**
+   * Whether this account has a failed renew row that is not acknowledged.
+   *
+   * @param accountId - Account to inspect.
+   * @returns `true` only when such a row exists.
+   */
+  hasUnacknowledgedPasskeyRenewFailure(accountId: string): Promise<boolean>;
+  /**
+   * Error name of the newest unacknowledged failed renew, or `null`.
+   *
+   * @param accountId - Account to inspect.
+   * @returns The stored name, or `null` when no such row exists.
+   */
+  latestUnacknowledgedPasskeyRenewErrorName(accountId: string): Promise<string | null>;
+  /**
+   * Whether this account has a failed renew row that was acknowledged.
+   * This is only the row predicate. Owner JSON `passkeyRenewClosed` is
+   * true only when this is true and `walletRequired` is not true.
+   * The account row is unchanged.
+   *
+   * @param accountId - Account to inspect.
+   * @returns `true` only when such a row exists.
+   */
+  hasAcknowledgedPasskeyRenewFailure(accountId: string): Promise<boolean>;
   /**
    * Set `locale` on the account. When `onlyIfUnset` is true, write only while
    * the stored value is still null. Other columns stay unchanged.
@@ -540,6 +637,7 @@ export class InMemoryAuthStore implements AuthStore {
   readonly #passkeyChallenges = new Map<string, PasskeyChallenge>();
   readonly #passkeyCredentials = new Map<string, PasskeyCredential>();
   readonly #nostrKeys = new Map<string, NostrKeyRecord>();
+  readonly #passkeyRenewAttempts: StoredPasskeyRenewAttempt[] = [];
 
   async createAccount(account: Account): Promise<void> {
     if (this.#accountsByViewKey.has(account.viewKey)) {
@@ -583,6 +681,87 @@ export class InMemoryAuthStore implements AuthStore {
     const updated: Account = { ...current, walletBackupSeenAt: now };
     this.#accounts.set(accountId, updated);
     return { account: updated, wrote: true };
+  }
+
+  async insertPasskeyRenewAttempt(input: PasskeyRenewAttemptInput): Promise<void> {
+    const debug = sanitizePasskeyRenewDebug({
+      authenticatorAttachment: input.authenticatorAttachment ?? null,
+      transports: input.transports ?? null,
+      aaguid: input.aaguid ?? null,
+      prfEnabled: input.prfEnabled ?? null,
+      prfPresent: input.prfPresent ?? null,
+      extensions: input.extensions ?? null,
+      authenticatorFlags: input.authenticatorFlags ?? null,
+      publicKeyAlgorithm: input.publicKeyAlgorithm ?? null,
+      residentKey: input.residentKey ?? null,
+      hmacSecret: input.hmacSecret ?? null,
+      credProtect: input.credProtect ?? null,
+      clientCapabilities: input.clientCapabilities ?? null,
+    });
+    this.#passkeyRenewAttempts.push({
+      id: input.id,
+      accountId: input.accountId,
+      createdAt: input.createdAt,
+      stage: input.stage,
+      outcome: input.outcome,
+      errorName: redactPasskeyRenewField(input.errorName, 80),
+      errorCode: redactPasskeyRenewField(input.errorCode, 80),
+      httpStatus: input.httpStatus,
+      message: redactPasskeyRenewField(input.message, 500),
+      userAgent: redactPasskeyRenewField(input.userAgent, 300),
+      authenticatorAttachment: debug.authenticatorAttachment,
+      transports: debug.transports,
+      aaguid: debug.aaguid,
+      prfEnabled: debug.prfEnabled,
+      prfPresent: debug.prfPresent,
+      extensions: debug.extensions,
+      authenticatorFlags: debug.authenticatorFlags,
+      publicKeyAlgorithm: debug.publicKeyAlgorithm,
+      residentKey: debug.residentKey,
+      hmacSecret: debug.hmacSecret,
+      credProtect: debug.credProtect,
+      clientCapabilities: debug.clientCapabilities,
+      acknowledgedAt: null,
+    });
+  }
+
+  async acknowledgePasskeyRenewFailures(accountId: string, now: number): Promise<void> {
+    for (const row of this.#passkeyRenewAttempts) {
+      if (row.accountId === accountId && row.outcome === 'failed' && row.acknowledgedAt === null) {
+        row.acknowledgedAt = now;
+      }
+    }
+  }
+
+  async hasUnacknowledgedPasskeyRenewFailure(accountId: string): Promise<boolean> {
+    return this.#passkeyRenewAttempts.some(
+      (row) =>
+        row.accountId === accountId && row.outcome === 'failed' && row.acknowledgedAt === null,
+    );
+  }
+
+  async hasAcknowledgedPasskeyRenewFailure(accountId: string): Promise<boolean> {
+    return this.#passkeyRenewAttempts.some(
+      (row) =>
+        row.accountId === accountId && row.outcome === 'failed' && row.acknowledgedAt !== null,
+    );
+  }
+
+  async latestUnacknowledgedPasskeyRenewErrorName(accountId: string): Promise<string | null> {
+    let best: StoredPasskeyRenewAttempt | undefined;
+    for (const row of this.#passkeyRenewAttempts) {
+      if (row.accountId !== accountId || row.outcome !== 'failed' || row.acknowledgedAt !== null) {
+        continue;
+      }
+      if (
+        best === undefined ||
+        row.createdAt > best.createdAt ||
+        (row.createdAt === best.createdAt && row.id > best.id)
+      ) {
+        best = row;
+      }
+    }
+    return best?.errorName ?? null;
   }
 
   async setAccountLocale(
@@ -1134,6 +1313,33 @@ export class InMemoryAuthStore implements AuthStore {
       }
     }
   }
+}
+
+/** In-memory passkey renew row, including acknowledgement. */
+interface StoredPasskeyRenewAttempt {
+  id: string;
+  accountId: string;
+  createdAt: number;
+  stage: PasskeyRenewStage;
+  outcome: PasskeyRenewOutcome;
+  errorName: string | null;
+  errorCode: string | null;
+  httpStatus: number | null;
+  message: string | null;
+  userAgent: string | null;
+  authenticatorAttachment: 'platform' | 'cross-platform' | null;
+  transports: string | null;
+  aaguid: string | null;
+  prfEnabled: boolean | null;
+  prfPresent: boolean | null;
+  extensions: string | null;
+  authenticatorFlags: number | null;
+  publicKeyAlgorithm: number | null;
+  residentKey: boolean | null;
+  hmacSecret: boolean | null;
+  credProtect: string | null;
+  clientCapabilities: string | null;
+  acknowledgedAt: number | null;
 }
 
 /**

@@ -62,7 +62,9 @@ export interface AccountResponse {
  * view-key capability secret, the next `setup` step, factual `missing`,
  * `hasPosted`, `aboutMe`, `aboutMeHasPhoto`, `notificationLevel`,
  * `amountUnit`, `locale`, `fiat`, `funding`, `walletRequired`,
- * `walletBackupSeenAt`, and `passkeyCredentialId`.
+ * `walletBackupSeenAt`, `passkeyCredentialId`, `passkeyRenewFailed`,
+ * `passkeyRenewClosed`, and `passkeyRenewPrfUnsupported` (true only when
+ * the newest unacknowledged failed renew is `prfUnsupported`).
  */
 export interface OwnerAccountResponse extends AccountResponse {
   /** 64 lowercase hex; capability URL secret for `GET /view/:viewKey`. */
@@ -148,6 +150,23 @@ export interface OwnerAccountResponse extends AccountResponse {
    * credential.
    */
   passkeyCredentialId: string | null;
+  /**
+   * True only when this account has a failed passkey-renew row whose
+   * `acknowledged_at` is still null. Owner-only.
+   */
+  passkeyRenewFailed: boolean;
+  /**
+   * True only when `walletRequired` is not true and a failed renew row
+   * has non-null `acknowledged_at`. A later seed is not closed. While
+   * this is true the account still has no seed. Owner-only.
+   */
+  passkeyRenewClosed: boolean;
+  /**
+   * True only when the newest unacknowledged failed renew is
+   * `prfUnsupported`: the passkey did not yield the recovery-phrase key.
+   * Owner-only. False for every other failure.
+   */
+  passkeyRenewPrfUnsupported: boolean;
 }
 
 /**
@@ -532,7 +551,10 @@ export function serializeDebugAccountDetail(
  * argument is `hasPosted`; the third is About me;
  * the fourth is whether the live profile note has a photo; the fifth is
  * `funding` (`null` for `basis`, default `null`); the sixth is
- * `passkeyCredentialId` (base64url or `null`, default `null`).
+ * `passkeyCredentialId` (base64url or `null`, default `null`); the seventh is
+ * `passkeyRenewFailed` (default `false`); the eighth is `passkeyRenewClosed`
+ * (default `false`); the ninth is `passkeyRenewPrfUnsupported`
+ * (default `false`).
  * This function performs no I/O. Never used by the operator debug listing.
  * Does not expose `profileMessageId`.
  *
@@ -546,10 +568,18 @@ export function serializeDebugAccountDetail(
  * @param funding - Owner funding JSON, or `null` for `basis`. Defaults to
  *   `null` so direct test callers keep a present field.
  * @param passkeyCredentialId - Current passkey id (base64url), or `null`.
+ * @param passkeyRenewFailed - True when an unacknowledged failed renew exists.
+ *   Defaults to `false` so existing direct callers keep compiling.
+ * @param passkeyRenewClosed - True only when `walletRequired` is not true
+ *   and an acknowledged failed renew exists. Defaults to `false`.
+ * @param passkeyRenewPrfUnsupported - True when the newest unacknowledged
+ *   failed renew is `prfUnsupported`. Defaults to `false`.
  * @returns Owner fields including `viewKey`, `setup`, `missing`,
  * `hasPosted`, `location`, `aboutMe`, `aboutMeHasPhoto`,
  * `notificationLevel`, `amountUnit`, `locale`, `fiat`, `funding`,
- * `walletRequired`, `walletBackupSeenAt`, and `passkeyCredentialId`.
+ * `walletRequired`, `walletBackupSeenAt`, `passkeyCredentialId`,
+ * `passkeyRenewFailed`, `passkeyRenewClosed`, and
+ * `passkeyRenewPrfUnsupported`.
  */
 export function serializeOwnerAccount(
   account: Account,
@@ -558,6 +588,9 @@ export function serializeOwnerAccount(
   aboutMeHasPhoto: boolean,
   funding: OwnerFundingJson | null = null,
   passkeyCredentialId: string | null = null,
+  passkeyRenewFailed = false,
+  passkeyRenewClosed = false,
+  passkeyRenewPrfUnsupported = false,
 ): OwnerAccountResponse {
   return {
     ...serializeAccount(account),
@@ -576,6 +609,9 @@ export function serializeOwnerAccount(
     walletRequired: account.walletRequired === true,
     walletBackupSeenAt: account.walletBackupSeenAt ?? null,
     passkeyCredentialId,
+    passkeyRenewFailed,
+    passkeyRenewClosed,
+    passkeyRenewPrfUnsupported,
   };
 }
 
@@ -586,7 +622,14 @@ export interface OwnerFundingLookup {
   /** Epoch milliseconds for lazy trial expiry. */
   nowMs: number;
   /** Account lookup for admitted `reviewedByName` and owner `passkeyCredentialId`. */
-  authStore: Pick<AuthStore, 'getAccount' | 'getPasskeyCredentialForAccount'>;
+  authStore: Pick<
+    AuthStore,
+    | 'getAccount'
+    | 'getPasskeyCredentialForAccount'
+    | 'hasUnacknowledgedPasskeyRenewFailure'
+    | 'hasAcknowledgedPasskeyRenewFailure'
+    | 'latestUnacknowledgedPasskeyRenewErrorName'
+  >;
 }
 
 /**
@@ -610,10 +653,21 @@ export interface OwnerFundingLookup {
  *   `passkeyCredentialId` null. When present, loads the grant and
  *   `authStore.getPasskeyCredentialForAccount` for `passkeyCredentialId`
  *   only when `walletRequired` is true (otherwise that field is null).
+ *   When `funding` is omitted, `passkeyRenewFailed`, `passkeyRenewClosed`,
+ *   and `passkeyRenewPrfUnsupported` are false and the auth store is not
+ *   called for those flags. When
+ *   `funding` is passed, loads `hasUnacknowledgedPasskeyRenewFailure` even
+ *   if `walletRequired` is false, and sets `passkeyRenewClosed` only when
+ *   `walletRequired` is not true and `hasAcknowledgedPasskeyRenewFailure`
+ *   is true. `walletRequired` is read after that predicate, so a seed that
+ *   already acknowledged the failure is not closed.
  * @returns Owner JSON including `hasPosted`, `aboutMe`, `aboutMeHasPhoto`,
  *   `notificationLevel`, `amountUnit`, `locale`, `fiat`, `funding`,
- *   `walletRequired`, `walletBackupSeenAt`, and `passkeyCredentialId`
- *   (via {@link serializeOwnerAccount}).
+ *   `walletRequired`, `walletBackupSeenAt`, `passkeyCredentialId`,
+ *   `passkeyRenewFailed`, `passkeyRenewClosed`, and
+ *   `passkeyRenewPrfUnsupported` (true only when the newest unacknowledged
+ *   failed renew is `prfUnsupported`, via
+ *   {@link serializeOwnerAccount}).
  *   `aboutMe` is `null` when the profile note is missing or `deletedAt` is
  *   set, else `aboutMeFromNote(account.name, row.text, row.name)`.
  *   `aboutMeHasPhoto` is true iff the live row has `hasPhoto === true`.
@@ -637,6 +691,10 @@ export async function serializeOwnerAccountWithPosts(
   const hasPosted = livePost || aboutMe !== null;
   let fundingJson: OwnerFundingJson | null;
   let passkeyCredentialId: string | null = null;
+  let passkeyRenewFailed = false;
+  let passkeyRenewClosed = false;
+  let passkeyRenewPrfUnsupported = false;
+  let serializedAccount = account;
   if (funding === undefined) {
     fundingJson = serializeOwnerFunding(account.role, undefined, 0, null);
   } else {
@@ -647,18 +705,32 @@ export async function serializeOwnerAccountWithPosts(
       reviewerName = reviewer?.name ?? null;
     }
     fundingJson = serializeOwnerFunding(account.role, grant, funding.nowMs, reviewerName);
-    if (account.walletRequired === true) {
-      const passkey = await funding.authStore.getPasskeyCredentialForAccount(account.id);
+    passkeyRenewFailed = await funding.authStore.hasUnacknowledgedPasskeyRenewFailure(account.id);
+    const acknowledgedRenew = await funding.authStore.hasAcknowledgedPasskeyRenewFailure(
+      account.id,
+    );
+    const renewErrorName = await funding.authStore.latestUnacknowledgedPasskeyRenewErrorName(
+      account.id,
+    );
+    passkeyRenewPrfUnsupported = renewErrorName === 'prfUnsupported';
+    const latest = await funding.authStore.getAccount(account.id);
+    serializedAccount = latest ?? account;
+    if (serializedAccount.walletRequired === true) {
+      const passkey = await funding.authStore.getPasskeyCredentialForAccount(serializedAccount.id);
       passkeyCredentialId = passkey?.credentialId ?? null;
     }
+    passkeyRenewClosed = serializedAccount.walletRequired !== true && acknowledgedRenew;
   }
   return serializeOwnerAccount(
-    account,
+    serializedAccount,
     hasPosted,
     aboutMe,
     aboutMeHasPhoto,
     fundingJson,
     passkeyCredentialId,
+    passkeyRenewFailed,
+    passkeyRenewClosed,
+    passkeyRenewPrfUnsupported,
   );
 }
 

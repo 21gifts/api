@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { Hono } from 'hono';
 import { z } from 'zod';
 import { buildAccountActivity } from '@/lib/account-activity';
@@ -199,6 +200,34 @@ const fiatBody = z.object({
   onlyIfUnset: z.boolean().optional(),
 });
 
+/** Body schema for a client passkey-renew report. Unknown keys are 400. */
+const passkeyRenewReportBody = z
+  .object({
+    stage: z.enum(['begin', 'ceremony', 'finish']),
+    outcome: z.enum(['failed', 'cancelled']),
+    errorName: z.string(),
+    errorCode: z.string().nullable(),
+    httpStatus: z.number().int().min(0).max(599).nullable(),
+    message: z.string(),
+    authenticatorAttachment: z.unknown().optional(),
+    transports: z.unknown().optional(),
+    aaguid: z.unknown().optional(),
+    prfEnabled: z.unknown().optional(),
+    prfPresent: z.unknown().optional(),
+    extensions: z.unknown().optional(),
+    authenticatorFlags: z.unknown().optional(),
+    publicKeyAlgorithm: z.unknown().optional(),
+    residentKey: z.unknown().optional(),
+    hmacSecret: z.unknown().optional(),
+    credProtect: z.unknown().optional(),
+    clientCapabilities: z.unknown().optional(),
+  })
+  .strict();
+
+/** Single 400 copy for a missing or invalid passkey-renew report body. */
+const PASSKEY_RENEW_REPORT_ERROR =
+  'Expected a JSON body with stage, outcome, errorName, errorCode, httpStatus, and message';
+
 /** Owner JSON including the live funding grant. */
 function ownerJson(deps: MeRouteDeps, account: Account): Promise<OwnerAccountResponse> {
   return serializeOwnerAccountWithPosts(account, deps.messages, {
@@ -212,7 +241,7 @@ function ownerJson(deps: MeRouteDeps, account: Account): Promise<OwnerAccountRes
  * Build the `/me` route group.
  *
  * @param deps - Shared store, message store, clock, payer, fetch, optional push, optional notification and conversation stores, optional gift/rate/fiat stores for activity, optional funding store, and optional `nostrKek` for the NIP-57 mint probe.
- * @returns A Hono app exposing account, activity, display-name, username, location, About me, wallet-backup-seen, setup skip, forum-laws dismiss,
+ * @returns A Hono app exposing account, activity, display-name, username, location, About me, wallet-backup-seen, passkey-renew/report, passkey-renew/ack, setup skip, forum-laws dismiss,
  * living-room rules agreement, notification level, amount-entry unit, locale, fiat, link/unlink, and verification routes.
  */
 export function meRoutes(deps: MeRouteDeps): Hono {
@@ -281,6 +310,59 @@ export function meRoutes(deps: MeRouteDeps): Hono {
         logEvent('account.wallet.backup_seen', { accountId: current.id });
       }
       return c.json(await ownerJson(deps, marked.account), 200);
+    })
+    .post('/passkey-renew/report', async (c) => {
+      const account = await authedAccount(deps, c.req.header('authorization'));
+      if (account === null) {
+        return c.json({ error: 'Unauthorized' }, 401);
+      }
+      const parsed = passkeyRenewReportBody.safeParse(await c.req.json().catch(() => null));
+      if (!parsed.success) {
+        return c.json({ error: PASSKEY_RENEW_REPORT_ERROR }, 400);
+      }
+      await deps.store.insertPasskeyRenewAttempt({
+        id: randomUUID(),
+        accountId: account.id,
+        createdAt: deps.now(),
+        stage: parsed.data.stage,
+        outcome: parsed.data.outcome,
+        errorName: parsed.data.errorName,
+        errorCode: parsed.data.errorCode,
+        httpStatus: parsed.data.httpStatus,
+        message: parsed.data.message,
+        userAgent: c.req.header('user-agent') ?? null,
+        authenticatorAttachment: parsed.data.authenticatorAttachment ?? null,
+        transports: parsed.data.transports ?? null,
+        aaguid: parsed.data.aaguid ?? null,
+        prfEnabled: parsed.data.prfEnabled ?? null,
+        prfPresent: parsed.data.prfPresent ?? null,
+        extensions: parsed.data.extensions ?? null,
+        authenticatorFlags: parsed.data.authenticatorFlags ?? null,
+        publicKeyAlgorithm: parsed.data.publicKeyAlgorithm ?? null,
+        residentKey: parsed.data.residentKey ?? null,
+        hmacSecret: parsed.data.hmacSecret ?? null,
+        credProtect: parsed.data.credProtect ?? null,
+        clientCapabilities: parsed.data.clientCapabilities ?? null,
+      });
+      const reported = await storedAccount(deps, account.id);
+      /* v8 ignore next 3 -- the account row cannot vanish mid-request after auth */
+      if (reported === null) {
+        return c.json({ error: 'Unauthorized' }, 401);
+      }
+      return c.json(await ownerJson(deps, reported), 200);
+    })
+    .post('/passkey-renew/ack', async (c) => {
+      const account = await authedAccount(deps, c.req.header('authorization'));
+      if (account === null) {
+        return c.json({ error: 'Unauthorized' }, 401);
+      }
+      await deps.store.acknowledgePasskeyRenewFailures(account.id, deps.now());
+      const acknowledged = await storedAccount(deps, account.id);
+      /* v8 ignore next 3 -- the account row cannot vanish mid-request after auth */
+      if (acknowledged === null) {
+        return c.json({ error: 'Unauthorized' }, 401);
+      }
+      return c.json(await ownerJson(deps, acknowledged), 200);
     })
     .post('/setup/skip', async (c) => {
       const account = await authedAccount(deps, c.req.header('authorization'));

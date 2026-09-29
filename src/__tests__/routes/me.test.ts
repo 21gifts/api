@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { Hono } from 'hono';
-import { InMemoryAuthStore, type Account } from '@/lib/auth/store';
+import { InMemoryAuthStore, type Account, type PasskeyRenewAttemptInput } from '@/lib/auth/store';
 import type { InvoicePayer, PayInvoiceResult } from '@/lib/invoice-payer';
 import { UnconfiguredInvoicePayer } from '@/lib/invoice-payer';
 import { SESSION_TTL_MS, VERIFICATION_TTL_MS } from '@/lib/config';
@@ -234,6 +234,8 @@ describe('GET /me', () => {
       funding: null;
       walletRequired: boolean;
       walletBackupSeenAt: number | null;
+      passkeyRenewFailed: boolean;
+      passkeyRenewClosed: boolean;
     };
     expect(body.id).toBe('acc');
     expect(body.role).toBe('basis');
@@ -254,6 +256,8 @@ describe('GET /me', () => {
     expect(body.funding).toBeNull();
     expect(body.walletRequired).toBe(false);
     expect(body.walletBackupSeenAt).toBeNull();
+    expect(body.passkeyRenewFailed).toBe(false);
+    expect(body.passkeyRenewClosed).toBe(false);
   });
 
   it('returns funding none for a verified account without a grant', async () => {
@@ -502,6 +506,394 @@ describe('POST /me/wallet-backup-seen', () => {
     );
     expect((await store.getAccount('acc'))?.walletBackupSeenAt).toBe(1_000_000);
     expect(parsedEvents(warn).some((e) => e['event'] === 'account.wallet.backup_seen')).toBe(false);
+  });
+});
+
+class RecordingAuthStore extends InMemoryAuthStore {
+  inserts: PasskeyRenewAttemptInput[] = [];
+  override async insertPasskeyRenewAttempt(input: PasskeyRenewAttemptInput): Promise<void> {
+    this.inserts.push(input);
+    await super.insertPasskeyRenewAttempt(input);
+  }
+}
+
+const PASSKEY_RENEW_REPORT = {
+  stage: 'ceremony' as const,
+  outcome: 'failed' as const,
+  errorName: 'Error',
+  errorCode: null,
+  httpStatus: null,
+  message: 'seed failed',
+};
+
+describe('POST /me/passkey-renew/report', () => {
+  it('returns 401 without a session', async () => {
+    const res = await mount(new InMemoryAuthStore()).request('/me/passkey-renew/report', {
+      method: 'POST',
+    });
+    expect(res.status).toBe(401);
+    expect(await res.json()).toEqual({ error: 'Unauthorized' });
+  });
+
+  it('stores a failed row and returns owner JSON with passkeyRenewFailed true', async () => {
+    const store = new RecordingAuthStore();
+    await store.createAccount({
+      id: 'acc',
+      linkingKey: LINKING_KEY,
+      role: 'basis',
+      name: null,
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: VIEW_KEY,
+      createdAt: 1_000_000,
+      rulesAgreedAt: null,
+    });
+    await store.createSession({ token: 'tok', accountId: 'acc', createdAt: 1_000_000 });
+    const res = await mount(store).request('/me/passkey-renew/report', {
+      method: 'POST',
+      headers: {
+        ...AUTH,
+        'content-type': 'application/json',
+        'user-agent': 'TestAgent',
+      },
+      body: JSON.stringify(PASSKEY_RENEW_REPORT),
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      passkeyRenewFailed: boolean;
+      passkeyRenewClosed: boolean;
+      passkeyRenewPrfUnsupported: boolean;
+      walletRequired: boolean;
+    };
+    expect(body.passkeyRenewFailed).toBe(true);
+    expect(body.passkeyRenewClosed).toBe(false);
+    expect(body.passkeyRenewPrfUnsupported).toBe(false);
+    expect(body.walletRequired).toBe(false);
+    expect((await store.getAccount('acc'))?.walletRequired === true).toBe(false);
+    expect(store.inserts).toHaveLength(1);
+    expect(store.inserts[0]).toMatchObject({
+      accountId: 'acc',
+      createdAt: now(),
+      stage: 'ceremony',
+      outcome: 'failed',
+      errorName: 'Error',
+      errorCode: null,
+      httpStatus: null,
+      message: 'seed failed',
+      userAgent: 'TestAgent',
+    });
+  });
+
+  it('stores allowlisted authenticator facts and marks a missing PRF', async () => {
+    const store = new RecordingAuthStore();
+    await store.createAccount({
+      id: 'acc',
+      linkingKey: LINKING_KEY,
+      role: 'basis',
+      name: null,
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: VIEW_KEY,
+      createdAt: 1_000_000,
+      rulesAgreedAt: null,
+    });
+    await store.createSession({ token: 'tok', accountId: 'acc', createdAt: 1_000_000 });
+    const res = await mount(store).request('/me/passkey-renew/report', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({
+        ...PASSKEY_RENEW_REPORT,
+        errorName: 'prfUnsupported',
+        message: 'wallet.prfUnsupported',
+        authenticatorAttachment: 'cross-platform',
+        transports: 'usb,nope',
+        aaguid: 'ab'.repeat(16),
+        prfEnabled: false,
+        prfPresent: false,
+        extensions: 'prf,nope',
+        authenticatorFlags: 0,
+        publicKeyAlgorithm: -7,
+        residentKey: true,
+        hmacSecret: false,
+        credProtect: 2,
+        clientCapabilities: 'prf,hybridTransport',
+      }),
+    });
+    expect(res.status).toBe(200);
+    expect(
+      ((await res.json()) as { passkeyRenewPrfUnsupported: boolean }).passkeyRenewPrfUnsupported,
+    ).toBe(true);
+    expect(store.inserts[0]).toMatchObject({
+      errorName: 'prfUnsupported',
+      authenticatorAttachment: 'cross-platform',
+      transports: 'usb,nope',
+      aaguid: 'ab'.repeat(16),
+      prfEnabled: false,
+      prfPresent: false,
+      extensions: 'prf,nope',
+      authenticatorFlags: 0,
+      publicKeyAlgorithm: -7,
+      residentKey: true,
+      hmacSecret: false,
+      credProtect: 2,
+      clientCapabilities: 'prf,hybridTransport',
+    });
+  });
+
+  it('stores the row when a debug value is the wrong type', async () => {
+    const store = new RecordingAuthStore();
+    await store.createAccount({
+      id: 'acc',
+      linkingKey: LINKING_KEY,
+      role: 'basis',
+      name: null,
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: VIEW_KEY,
+      createdAt: 1_000_000,
+      rulesAgreedAt: null,
+    });
+    await store.createSession({ token: 'tok', accountId: 'acc', createdAt: 1_000_000 });
+    const res = await mount(store).request('/me/passkey-renew/report', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({
+        ...PASSKEY_RENEW_REPORT,
+        authenticatorFlags: 'nope',
+        credProtect: { policy: 'userVerificationRequired' },
+      }),
+    });
+    expect(res.status).toBe(200);
+    expect(store.inserts).toHaveLength(1);
+    expect(store.inserts[0]).toMatchObject({ authenticatorFlags: 'nope' });
+  });
+
+  it('returns 400 for an unknown report key and stores nothing', async () => {
+    const store = new RecordingAuthStore();
+    await store.createAccount({
+      id: 'acc',
+      linkingKey: LINKING_KEY,
+      role: 'basis',
+      name: null,
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: VIEW_KEY,
+      createdAt: 1_000_000,
+      rulesAgreedAt: null,
+    });
+    await store.createSession({ token: 'tok', accountId: 'acc', createdAt: 1_000_000 });
+    const res = await mount(store).request('/me/passkey-renew/report', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ ...PASSKEY_RENEW_REPORT, credentialId: 'secret' }),
+    });
+    expect(res.status).toBe(400);
+    expect(store.inserts).toHaveLength(0);
+  });
+
+  it('accepts an over-long phrase and a long secret instead of rejecting them', async () => {
+    const store = new RecordingAuthStore();
+    await store.createAccount({
+      id: 'acc',
+      linkingKey: LINKING_KEY,
+      role: 'basis',
+      name: null,
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: VIEW_KEY,
+      createdAt: 1_000_000,
+      rulesAgreedAt: null,
+    });
+    await store.createSession({ token: 'tok', accountId: 'acc', createdAt: 1_000_000 });
+    const phrase = Array.from({ length: 12 }, () => 'x'.repeat(50)).join(' ');
+    const longName = `${'a'.repeat(64)}name`;
+    const longCode = `${'c'.repeat(40)}.${'d'.repeat(40)}`;
+    const res = await mount(store).request('/me/passkey-renew/report', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({
+        ...PASSKEY_RENEW_REPORT,
+        errorName: longName,
+        errorCode: longCode,
+        message: phrase,
+      }),
+    });
+    expect(res.status).toBe(200);
+    expect(store.inserts).toHaveLength(1);
+    expect(store.inserts[0]?.errorName).toBe(longName);
+    expect(store.inserts[0]?.errorCode).toBe(longCode);
+    expect(store.inserts[0]?.message).toBe(phrase);
+    expect((await store.getAccount('acc'))?.walletRequired === true).toBe(false);
+  });
+
+  it('does not look closed when a seed lands during the report', async () => {
+    const store = new RecordingAuthStore();
+    await store.createAccount({
+      id: 'acc',
+      linkingKey: LINKING_KEY,
+      role: 'basis',
+      name: null,
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: VIEW_KEY,
+      createdAt: 1_000_000,
+      rulesAgreedAt: null,
+    });
+    await store.createSession({ token: 'tok', accountId: 'acc', createdAt: 1_000_000 });
+    await InMemoryAuthStore.prototype.insertPasskeyRenewAttempt.call(store, {
+      id: 'prior-fail',
+      accountId: 'acc',
+      createdAt: 1,
+      stage: 'ceremony',
+      outcome: 'failed',
+      errorName: null,
+      errorCode: null,
+      httpStatus: null,
+      message: 'seed failed',
+      userAgent: null,
+    });
+    await store.acknowledgePasskeyRenewFailures('acc', 2);
+    const seeded = store.insertPasskeyRenewAttempt.bind(store);
+    store.insertPasskeyRenewAttempt = async (input) => {
+      await store.addSeedPasskeyCredential({
+        credentialId: 'seed-during-report',
+        publicKey: new Uint8Array([1]),
+        signCount: 0,
+        accountId: input.accountId,
+        createdAt: 3,
+      });
+      await seeded(input);
+    };
+    const res = await mount(store).request('/me/passkey-renew/report', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify(PASSKEY_RENEW_REPORT),
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      passkeyRenewClosed: boolean;
+      walletRequired: boolean;
+    };
+    expect(body.walletRequired).toBe(true);
+    expect(body.passkeyRenewClosed).toBe(false);
+  });
+
+  it('returns 400 for outcome succeeded and stores nothing', async () => {
+    const store = new RecordingAuthStore();
+    await store.createAccount({
+      id: 'acc',
+      linkingKey: LINKING_KEY,
+      role: 'basis',
+      name: null,
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: VIEW_KEY,
+      createdAt: 1_000_000,
+      rulesAgreedAt: null,
+    });
+    await store.createSession({ token: 'tok', accountId: 'acc', createdAt: 1_000_000 });
+    const res = await mount(store).request('/me/passkey-renew/report', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ ...PASSKEY_RENEW_REPORT, outcome: 'succeeded' }),
+    });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({
+      error:
+        'Expected a JSON body with stage, outcome, errorName, errorCode, httpStatus, and message',
+    });
+    expect(store.inserts).toEqual([]);
+    expect(await store.hasUnacknowledgedPasskeyRenewFailure('acc')).toBe(false);
+  });
+
+  it('returns 400 for invalid JSON and stores nothing', async () => {
+    const store = new RecordingAuthStore();
+    await store.createAccount({
+      id: 'acc',
+      linkingKey: LINKING_KEY,
+      role: 'basis',
+      name: null,
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: VIEW_KEY,
+      createdAt: 1_000_000,
+      rulesAgreedAt: null,
+    });
+    await store.createSession({ token: 'tok', accountId: 'acc', createdAt: 1_000_000 });
+    const res = await mount(store).request('/me/passkey-renew/report', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: 'not-json',
+    });
+    expect(res.status).toBe(400);
+    expect(store.inserts).toEqual([]);
+  });
+});
+
+describe('POST /me/passkey-renew/ack', () => {
+  it('returns 401 without a session', async () => {
+    const res = await mount(new InMemoryAuthStore()).request('/me/passkey-renew/ack', {
+      method: 'POST',
+    });
+    expect(res.status).toBe(401);
+    expect(await res.json()).toEqual({ error: 'Unauthorized' });
+  });
+
+  it('acknowledges a failed report and returns passkeyRenewFailed false', async () => {
+    const store = new RecordingAuthStore();
+    await store.createAccount({
+      id: 'acc',
+      linkingKey: LINKING_KEY,
+      role: 'basis',
+      name: null,
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: VIEW_KEY,
+      createdAt: 1_000_000,
+      rulesAgreedAt: null,
+    });
+    await store.createSession({ token: 'tok', accountId: 'acc', createdAt: 1_000_000 });
+    const reported = await mount(store).request('/me/passkey-renew/report', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify(PASSKEY_RENEW_REPORT),
+    });
+    expect(reported.status).toBe(200);
+    expect(((await reported.json()) as { passkeyRenewFailed: boolean }).passkeyRenewFailed).toBe(
+      true,
+    );
+    const res = await mount(store).request('/me/passkey-renew/ack', {
+      method: 'POST',
+      headers: AUTH,
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      passkeyRenewFailed: boolean;
+      passkeyRenewClosed: boolean;
+      walletRequired: boolean;
+    };
+    expect(body.passkeyRenewFailed).toBe(false);
+    expect(body.passkeyRenewClosed).toBe(true);
+    expect(body.walletRequired).toBe(false);
+    expect(store.inserts).toHaveLength(1);
   });
 });
 

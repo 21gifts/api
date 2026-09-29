@@ -1,3 +1,7 @@
+import {
+  redactPasskeyRenewField,
+  sanitizePasskeyRenewDebug,
+} from '@/lib/auth/passkey-renew-report';
 import { ROLE_ORDER } from '@/lib/auth/roles';
 import { AUTH_SCHEMA_SQL } from '@/lib/auth/schema';
 import { CHALLENGE_TTL_MS, SESSION_TTL_MS } from '@/lib/config';
@@ -17,6 +21,7 @@ import {
   type PasskeyChallenge,
   type PasskeyChallengeType,
   type PasskeyCredential,
+  type PasskeyRenewAttemptInput,
   type Session,
 } from '@/lib/auth/store';
 import { parseNotificationLevel } from '@/lib/notification';
@@ -182,6 +187,104 @@ export class PostgresAuthStore implements AuthStore {
     }
     const account = mapAccount(row);
     return account === undefined ? undefined : { account, wrote: false };
+  }
+
+  async insertPasskeyRenewAttempt(input: PasskeyRenewAttemptInput): Promise<void> {
+    const debug = sanitizePasskeyRenewDebug({
+      authenticatorAttachment: input.authenticatorAttachment ?? null,
+      transports: input.transports ?? null,
+      aaguid: input.aaguid ?? null,
+      prfEnabled: input.prfEnabled ?? null,
+      prfPresent: input.prfPresent ?? null,
+      extensions: input.extensions ?? null,
+      authenticatorFlags: input.authenticatorFlags ?? null,
+      publicKeyAlgorithm: input.publicKeyAlgorithm ?? null,
+      residentKey: input.residentKey ?? null,
+      hmacSecret: input.hmacSecret ?? null,
+      credProtect: input.credProtect ?? null,
+      clientCapabilities: input.clientCapabilities ?? null,
+    });
+    await this.#sql.execute(
+      `INSERT INTO passkey_renew_attempt (
+         id, account_id, created_at, stage, outcome,
+         error_name, error_code, http_status, message, user_agent,
+         authenticator_attachment, transports, aaguid, prf_enabled, prf_present, extensions,
+         authenticator_flags, public_key_algorithm, resident_key, hmac_secret,
+         cred_protect, client_capabilities
+       ) VALUES (
+         $1, $2, to_timestamp($3::double precision / 1000.0), $4, $5,
+         $6, $7, $8, $9, $10,
+         $11, $12, $13, $14, $15, $16,
+         $17, $18, $19, $20, $21, $22
+       )`,
+      [
+        input.id,
+        input.accountId,
+        input.createdAt,
+        input.stage,
+        input.outcome,
+        redactPasskeyRenewField(input.errorName, 80),
+        redactPasskeyRenewField(input.errorCode, 80),
+        input.httpStatus,
+        redactPasskeyRenewField(input.message, 500),
+        redactPasskeyRenewField(input.userAgent, 300),
+        debug.authenticatorAttachment,
+        debug.transports,
+        debug.aaguid,
+        debug.prfEnabled,
+        debug.prfPresent,
+        debug.extensions,
+        debug.authenticatorFlags,
+        debug.publicKeyAlgorithm,
+        debug.residentKey,
+        debug.hmacSecret,
+        debug.credProtect,
+        debug.clientCapabilities,
+      ],
+    );
+  }
+
+  async acknowledgePasskeyRenewFailures(accountId: string, now: number): Promise<void> {
+    await this.#sql.execute(
+      `UPDATE passkey_renew_attempt
+       SET acknowledged_at = to_timestamp($2::double precision / 1000.0)
+       WHERE account_id = $1 AND outcome = 'failed' AND acknowledged_at IS NULL`,
+      [accountId, now],
+    );
+  }
+
+  async hasUnacknowledgedPasskeyRenewFailure(accountId: string): Promise<boolean> {
+    const rows = await this.#sql.query<{ exists: number }>(
+      `SELECT 1 AS exists
+       FROM passkey_renew_attempt
+       WHERE account_id = $1 AND outcome = 'failed' AND acknowledged_at IS NULL
+       LIMIT 1`,
+      [accountId],
+    );
+    return rows[0] !== undefined;
+  }
+
+  async hasAcknowledgedPasskeyRenewFailure(accountId: string): Promise<boolean> {
+    const rows = await this.#sql.query<{ exists: number }>(
+      `SELECT 1 AS exists
+       FROM passkey_renew_attempt
+       WHERE account_id = $1 AND outcome = 'failed' AND acknowledged_at IS NOT NULL
+       LIMIT 1`,
+      [accountId],
+    );
+    return rows[0] !== undefined;
+  }
+
+  async latestUnacknowledgedPasskeyRenewErrorName(accountId: string): Promise<string | null> {
+    const rows = await this.#sql.query<{ error_name: string | null }>(
+      `SELECT error_name
+       FROM passkey_renew_attempt
+       WHERE account_id = $1 AND outcome = 'failed' AND acknowledged_at IS NULL
+       ORDER BY created_at DESC, id DESC
+       LIMIT 1`,
+      [accountId],
+    );
+    return rows[0]?.error_name ?? null;
   }
 
   async setAccountLocale(
