@@ -277,6 +277,7 @@ describe('MESSAGE_SCHEMA_SQL', () => {
     expect(MESSAGE_SCHEMA_SQL[96]).toMatch(
       /CONSTRAINT message_edit_field_chk CHECK \(field IN \('text', 'place', 'shop_account'\)\)/,
     );
+    expect(MESSAGE_SCHEMA_SQL[96]).toMatch(/REFERENCES message \(id\) ON DELETE CASCADE/);
     expect(MESSAGE_SCHEMA_SQL[96]).toMatch(/before jsonb NOT NULL/);
     expect(MESSAGE_SCHEMA_SQL[96]).toMatch(/after jsonb NOT NULL/);
     expect(MESSAGE_SCHEMA_SQL[97]).toMatch(
