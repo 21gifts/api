@@ -11185,7 +11185,6 @@ describe('PATCH /messages/:id/shop-account', () => {
   });
 });
 
-
 function recordingMap(): {
   mapPush: MapPush;
   calls: string[];
