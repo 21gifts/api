@@ -5290,7 +5290,6 @@ export class PostgresMessageStore implements MessageStore {
     if (existing === undefined) {
       return undefined;
     }
-    await this.#sql.execute(`DELETE FROM message_extra_photo WHERE message_id = $1`, [id]);
     const first = photos[0];
     const rows = await this.#sql.query<MessageSqlRow>(
       `UPDATE message SET photo = $2, photo_content_type = $3, photo_taken_at = $4 WHERE id = $1 RETURNING ${MESSAGE_SELECT_COLUMNS}`,
@@ -5307,10 +5306,19 @@ export class PostgresMessageStore implements MessageStore {
     }
     for (const [index, extra] of photos.slice(1).entries()) {
       await this.#sql.execute(
-        `INSERT INTO message_extra_photo (message_id, idx, photo, photo_content_type, photo_taken_at) VALUES ($1,$2,$3,$4,$5)`,
+        `INSERT INTO message_extra_photo (message_id, idx, photo, photo_content_type, photo_taken_at)
+         VALUES ($1,$2,$3,$4,$5)
+         ON CONFLICT (message_id, idx) DO UPDATE
+         SET photo = EXCLUDED.photo,
+             photo_content_type = EXCLUDED.photo_content_type,
+             photo_taken_at = EXCLUDED.photo_taken_at`,
         [id, index + 1, extra.bytes, extra.contentType, extra.takenAt ?? null],
       );
     }
+    await this.#sql.execute(`DELETE FROM message_extra_photo WHERE message_id = $1 AND idx > $2`, [
+      id,
+      photos.length - 1,
+    ]);
     const refreshed = await this.getById(id);
     return refreshed ?? mapMessageRow(written);
   }

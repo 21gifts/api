@@ -6814,7 +6814,7 @@ describe('PostgresMessageStore', () => {
     expect(await store.updatePhoto('missing', JPEG)).toBeUndefined();
   });
 
-  it('replacePhotos deletes extras, writes the new stills, and returns undefined when missing', async () => {
+  it('replacePhotos writes the new stills before it drops leftover extras', async () => {
     const sql = new MockSql();
     const row = {
       id: 'm1',
@@ -6836,19 +6836,33 @@ describe('PostgresMessageStore', () => {
       { ...JPEG2, takenAt: '2020-01-02T00:00:00+00:00' },
     ]);
     expect(updated?.id).toBe('m1');
-    expect(sql.executes[0]?.text).toMatch(/DELETE FROM message_extra_photo/);
     expect(sql.queries[1]?.text).toMatch(/UPDATE message SET photo/);
     expect(sql.queries[1]?.params?.[3]).toBe('2020-01-01T00:00:00+00:00');
-    expect(sql.executes[1]?.params?.[4]).toBeNull();
-    expect(sql.executes[2]?.params?.[4]).toBe('2020-01-02T00:00:00+00:00');
+    expect(sql.executes[0]?.text).toMatch(/ON CONFLICT \(message_id, idx\) DO UPDATE/);
+    expect(sql.executes[0]?.params?.[4]).toBeNull();
+    expect(sql.executes[1]?.params?.[4]).toBe('2020-01-02T00:00:00+00:00');
+    expect(sql.executes[2]?.text).toMatch(/idx > \$2/);
+    expect(sql.executes[2]?.params).toEqual(['m1', 2]);
     sql.queryQueue = [[row], [row], []];
     const fallenBack = await store.replacePhotos('m1', [JPEG]);
     expect(fallenBack?.id).toBe('m1');
     expect(sql.queries.at(-2)?.params?.[3]).toBeNull();
-    sql.queryQueue = [[row], []];
-    expect(await store.replacePhotos('m1', [])).toBeUndefined();
+    expect(sql.executes.at(-1)?.params).toEqual(['m1', 0]);
+    const missed = new MockSql();
+    missed.queryQueue = [[row], []];
+    expect(await new PostgresMessageStore(missed).replacePhotos('m1', [])).toBeUndefined();
+    expect(missed.executes).toEqual([]);
     sql.queryQueue = [[]];
     expect(await store.replacePhotos('missing', [JPEG])).toBeUndefined();
+    const failing = new MockSql();
+    failing.queryQueue = [[row], [row]];
+    failing.executeError = new Error('extra');
+    await expect(
+      new PostgresMessageStore(failing).replacePhotos('m1', [JPEG, JPEG2]),
+    ).rejects.toThrow('extra');
+    expect(failing.executes).toHaveLength(1);
+    expect(failing.executes[0]?.text).toMatch(/ON CONFLICT/);
+    expect(failing.executes.some((item) => item.text.includes('DELETE'))).toBe(false);
   });
 
   it('getById maps nostr_event JSON string', async () => {
