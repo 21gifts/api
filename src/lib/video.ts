@@ -814,7 +814,9 @@ interface AudioChunkEdit {
  * bytes and duration 0. Chrome refuses that packet and the note stays black.
  * The sample is removed from the timing tables. Its bytes stay in `mdat`,
  * unreferenced. An edit that would leave a hole in a chunk, or that cannot
- * be checked, returns the same `bytes` reference.
+ * be checked, returns the same `bytes` reference. The same reference is
+ * returned when a resized `moov` would shift a chunk that does not sit
+ * strictly after that `moov`, or when a chunk offset does not fit in 64 bits.
  *
  * @param bytes - ISO-BMFF bytes. Not modified.
  * @returns A new copy, or `bytes` when nothing changes.
@@ -951,28 +953,72 @@ function offsetsStayInRange(
   wide: boolean[],
   delta: number,
 ): boolean {
+  const moovEnd = moovEndForShift(boxes, delta);
+  if (moovEnd === 'abort') {
+    return false;
+  }
   const replacedAt = new Set(replaced.map((box) => box.start));
   for (const box of boxes) {
     if ((box.type !== 'stco' && box.type !== 'co64') || replacedAt.has(box.start)) {
       continue;
     }
     const values = readChunkOffsets(bytes, box);
-    if (
-      values === null ||
-      values.some((value) => !offsetFits(value + BigInt(delta), box.type === 'co64'))
-    ) {
+    if (values === null) {
+      return false;
+    }
+    const shiftedFits = values.every((value) =>
+      offsetFits(value + BigInt(delta), box.type === 'co64'),
+    );
+    const follows = moovEnd === null || values.every((value) => value >= moovEnd);
+    if (!shiftedFits || !follows) {
       return false;
     }
   }
   return edits.every((chunks, index) =>
-    chunks.every((chunk) =>
-      offsetFits(chunk.offset + BigInt(chunk.prefix) + BigInt(delta), wide[index] === true),
-    ),
+    chunks.every((chunk) => {
+      const isWide = wide[index] === true;
+      const packed = chunk.offset + BigInt(chunk.prefix);
+      const shifted = packed + BigInt(delta);
+      const packedFits = offsetFits(packed, isWide);
+      const shiftedFits = offsetFits(shifted, isWide);
+      const follows = moovEnd === null || packed >= moovEnd;
+      return packedFits && shiftedFits && follows;
+    }),
   );
 }
 
+/**
+ * Where a non-zero `moov` size change may shift chunk offsets.
+ *
+ * `patchChunkOffsets` adds the same delta to every chunk offset. That is
+ * correct only when every chunk sits strictly after the single top-level
+ * `moov`. A zero delta shifts nothing.
+ *
+ * @param boxes - Every box in the file.
+ * @param delta - Net size change of `moov`.
+ * @returns The exclusive end of that `moov`, `null` when nothing shifts, or
+ *   `abort` when the shift would address media that did not move.
+ */
+function moovEndForShift(boxes: IsoBmffBox[], delta: number): bigint | null | 'abort' {
+  if (delta === 0) {
+    return null;
+  }
+  const moovs = boxes.filter(
+    (box) =>
+      box.type === 'moov' &&
+      !boxes.some(
+        (other) => other.start < box.start && other.start + other.size >= box.start + box.size,
+      ),
+  );
+  if (moovs.length !== 1) {
+    return 'abort';
+  }
+  const moov = moovs[0] as IsoBmffBox;
+  return BigInt(moov.start + moov.size);
+}
+
 function offsetFits(value: bigint, wide: boolean): boolean {
-  if (value < 0n) {
+  if (value < 0n || value > 0xffffffffffffffffn) {
     return false;
   }
   return wide || value <= 0xffffffffn;

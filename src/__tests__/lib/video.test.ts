@@ -1446,6 +1446,145 @@ describe('dropZeroDurationAudioSamples', () => {
     expect(healed[view.getUint32(stco + 16)]).toBe(0xaa);
   });
 
+  it('leaves media ahead of moov and an offset that does not fit in 64 bits', () => {
+    const media = Uint8Array.of(0x11, 0x90, 0xaa, 0xbb, 0xcc, 0xdd);
+    const ftyp = ftypBox();
+    const ahead = concat(
+      ftyp,
+      box('mdat', media),
+      box(
+        'moov',
+        soundTrak(
+          concat(
+            sttsRuns([
+              [1, 0],
+              [1, 1024],
+            ]),
+            stscRuns([[1, 2, 1]]),
+            stszValues([2, 4]),
+            stcoValues([ftyp.byteLength + 8]),
+          ),
+        ),
+      ),
+    );
+    expect(dropZeroDurationAudioSamples(ahead)).toBe(ahead);
+
+    const inside = movieWith(
+      concat(
+        videoTrak(0),
+        soundTrak(
+          concat(
+            sttsRuns([
+              [1, 0],
+              [1, 1024],
+            ]),
+            stscRuns([[1, 2, 1]]),
+            stszValues([2, 4]),
+            stcoValues([0]),
+          ),
+        ),
+      ),
+      media,
+    );
+    const videoStco = stcoBoxesIn(inside)[0] ?? 0;
+    new DataView(inside.buffer).setUint32(videoStco + 16, 40);
+    expect(dropZeroDurationAudioSamples(inside)).toBe(inside);
+
+    const underflow = movieWith(
+      concat(
+        videoTrak(0),
+        soundTrak(
+          concat(
+            sttsRuns([
+              [1, 0],
+              [1, 1024],
+            ]),
+            stscRuns([[1, 2, 1]]),
+            stszValues([2, 4]),
+            stcoValues([0]),
+          ),
+        ),
+      ),
+      media,
+    );
+    new DataView(underflow.buffer).setUint32((stcoBoxesIn(underflow)[0] ?? 0) + 16, 0);
+    expect(dropZeroDurationAudioSamples(underflow)).toBe(underflow);
+
+    const doubled = concat(
+      ftyp,
+      box(
+        'moov',
+        soundTrak(
+          concat(
+            sttsRuns([
+              [1, 0],
+              [1, 1024],
+            ]),
+            stscRuns([[1, 2, 1]]),
+            stszValues([2, 4]),
+            stcoValues([400]),
+          ),
+        ),
+      ),
+      box('moov', new Uint8Array(0)),
+      box('mdat', media),
+    );
+    expect(dropZeroDurationAudioSamples(doubled)).toBe(doubled);
+
+    const overflow = concat(
+      ftyp,
+      box(
+        'moov',
+        soundTrak(
+          concat(
+            sttsRuns([
+              [1, 0],
+              [1, 1024],
+            ]),
+            stscRuns([[1, 2, 1]]),
+            stszValues([1, 4]),
+            co64Values([0xffffffffffffffffn]),
+          ),
+        ),
+      ),
+      box('mdat', media),
+    );
+    expect(dropZeroDurationAudioSamples(overflow)).toBe(overflow);
+  });
+
+  it('drops the bad sample when the movie header stays the same size', () => {
+    const media = Uint8Array.of(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17);
+    const input = movieWith(
+      soundTrak(
+        concat(
+          sttsRuns([
+            [1, 0],
+            [3, 1024],
+          ]),
+          stscRuns([[1, 2, 1]]),
+          stszValues([2, 4, 5, 6]),
+          stcoValues([0, 0]),
+        ),
+      ),
+      media,
+    );
+    const stco = stcoBoxesIn(input)[0] ?? 0;
+    const view = new DataView(input.buffer);
+    const origin = view.getUint32(stco + 16);
+    view.setUint32(stco + 20, origin + 6);
+    const healed = dropZeroDurationAudioSamples(input);
+    expect(healed).not.toBe(input);
+    expect(healed.byteLength).toBe(input.byteLength);
+    const healedStco = stcoBoxesIn(healed)[0] ?? 0;
+    const healedView = new DataView(healed.buffer, healed.byteOffset, healed.byteLength);
+    expect(healed[healedView.getUint32(healedStco + 16)]).toBe(3);
+
+    const frozen = new Uint8Array(input);
+    const moovAt = Buffer.from(frozen).indexOf('moov') - 4;
+    new DataView(frozen.buffer).setUint32(moovAt, 0);
+    expect(dropZeroDurationAudioSamples(frozen)).toBe(frozen);
+  });
+
   it('stores a huge chunk offset in co64 and still points at the kept sample', () => {
     const media = Uint8Array.of(9, 9, 9, 9, 1, 2, 3, 4);
     const input = movieWith(
