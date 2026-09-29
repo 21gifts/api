@@ -20,6 +20,7 @@ import type { PasskeyCeremony } from '@/lib/auth/webauthn';
 import { logEvent } from '@/lib/log';
 import type { MessageStore } from '@/lib/message-store';
 import type { NostrKeygen } from '@/lib/nostr/keys';
+import { normalizeUsername } from '@/lib/username';
 import { bearerToken } from '@/routes/me';
 
 /**
@@ -130,6 +131,32 @@ export function authRoutes(deps: AuthRouteDeps): Hono {
         }
         return c.json(claimed.value, 200);
       }
+      if (body !== null && typeof body === 'object' && !Array.isArray(body) && 'name' in body) {
+        const name = (body as { name: unknown }).name;
+        if (typeof name !== 'string') {
+          return c.json({ error: 'Expected a JSON body with an optional "name" string' }, 400);
+        }
+        const requestedName = normalizeUsername(name);
+        if (requestedName === null) {
+          return c.json(
+            {
+              error: 'Username must be 1–32 characters of a-z, 0-9, hyphen, underscore, or dot',
+            },
+            400,
+          );
+        }
+        if ((await deps.store.getAccountByUsername(requestedName)) !== undefined) {
+          return c.json({ error: 'Username is already in use' }, 409);
+        }
+        const started = await startPasskeyRegistration(
+          deps.store,
+          deps.passkeyCeremony,
+          config,
+          deps.now(),
+          requestedName,
+        );
+        return c.json(started, 200);
+      }
       const started = await startPasskeyRegistration(
         deps.store,
         deps.passkeyCeremony,
@@ -162,7 +189,12 @@ export function authRoutes(deps: AuthRouteDeps): Hono {
           'auth.passkey.register.fail',
           passkeyFailFields(parsed.data.challengeId, result.error),
         );
-        const status = result.error === WRONG_ACCOUNT_ERROR ? 403 : 400;
+        const status =
+          result.error === WRONG_ACCOUNT_ERROR
+            ? 403
+            : result.error === 'Username is already in use'
+              ? 409
+              : 400;
         return c.json({ error: result.error }, status);
       }
       logEvent('auth.passkey.register.ok', { accountId: result.value.account.id });
