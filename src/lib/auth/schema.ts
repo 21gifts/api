@@ -116,9 +116,51 @@ export const AUTH_SCHEMA_SQL: readonly string[] = [
     message text,
     user_agent text,
     acknowledged_at timestamptz,
+    authenticator_attachment text,
+    transports text,
+    aaguid text,
+    prf_enabled boolean,
+    prf_present boolean,
+    extensions text,
+    authenticator_flags integer,
+    public_key_algorithm integer,
+    resident_key boolean,
+    hmac_secret boolean,
+    cred_protect text,
+    client_capabilities text,
     CONSTRAINT passkey_renew_attempt_stage_chk CHECK (stage IN ('begin', 'ceremony', 'finish')),
     CONSTRAINT passkey_renew_attempt_outcome_chk CHECK (outcome IN ('failed', 'succeeded', 'cancelled'))
   )`,
+  `ALTER TABLE passkey_renew_attempt ADD COLUMN IF NOT EXISTS authenticator_attachment text`,
+  `ALTER TABLE passkey_renew_attempt ADD COLUMN IF NOT EXISTS transports text`,
+  `ALTER TABLE passkey_renew_attempt ADD COLUMN IF NOT EXISTS aaguid text`,
+  `ALTER TABLE passkey_renew_attempt ADD COLUMN IF NOT EXISTS prf_enabled boolean`,
+  `ALTER TABLE passkey_renew_attempt ADD COLUMN IF NOT EXISTS prf_present boolean`,
+  `ALTER TABLE passkey_renew_attempt ADD COLUMN IF NOT EXISTS extensions text`,
+  `ALTER TABLE passkey_renew_attempt ADD COLUMN IF NOT EXISTS authenticator_flags integer`,
+  `ALTER TABLE passkey_renew_attempt ADD COLUMN IF NOT EXISTS public_key_algorithm integer`,
+  `ALTER TABLE passkey_renew_attempt ADD COLUMN IF NOT EXISTS resident_key boolean`,
+  `ALTER TABLE passkey_renew_attempt ADD COLUMN IF NOT EXISTS hmac_secret boolean`,
+  `ALTER TABLE passkey_renew_attempt ADD COLUMN IF NOT EXISTS cred_protect text`,
+  `ALTER TABLE passkey_renew_attempt ADD COLUMN IF NOT EXISTS client_capabilities text`,
+  `ALTER TABLE passkey_renew_attempt DROP CONSTRAINT IF EXISTS passkey_renew_attempt_attachment_chk`,
+  `ALTER TABLE passkey_renew_attempt ADD CONSTRAINT passkey_renew_attempt_attachment_chk
+    CHECK (authenticator_attachment IS NULL OR authenticator_attachment IN ('platform', 'cross-platform'))`,
+  `ALTER TABLE passkey_renew_attempt DROP CONSTRAINT IF EXISTS passkey_renew_attempt_aaguid_chk`,
+  `ALTER TABLE passkey_renew_attempt ADD CONSTRAINT passkey_renew_attempt_aaguid_chk
+    CHECK (aaguid IS NULL OR aaguid ~ '^[0-9a-f]{32}$')`,
+  `ALTER TABLE passkey_renew_attempt DROP CONSTRAINT IF EXISTS passkey_renew_attempt_flags_chk`,
+  `ALTER TABLE passkey_renew_attempt ADD CONSTRAINT passkey_renew_attempt_flags_chk
+    CHECK (authenticator_flags IS NULL OR (authenticator_flags >= 0 AND authenticator_flags <= 255))`,
+  `ALTER TABLE passkey_renew_attempt DROP CONSTRAINT IF EXISTS passkey_renew_attempt_alg_chk`,
+  `ALTER TABLE passkey_renew_attempt ADD CONSTRAINT passkey_renew_attempt_alg_chk
+    CHECK (public_key_algorithm IS NULL OR (public_key_algorithm >= -65536 AND public_key_algorithm <= 65535))`,
+  `ALTER TABLE passkey_renew_attempt DROP CONSTRAINT IF EXISTS passkey_renew_attempt_cred_protect_chk`,
+  `ALTER TABLE passkey_renew_attempt ADD CONSTRAINT passkey_renew_attempt_cred_protect_chk
+    CHECK (cred_protect IS NULL OR cred_protect IN ('userVerificationOptional', 'userVerificationOptionalWithCredentialIDList', 'userVerificationRequired'))`,
+  `ALTER TABLE passkey_renew_attempt DROP CONSTRAINT IF EXISTS passkey_renew_attempt_capabilities_chk`,
+  `ALTER TABLE passkey_renew_attempt ADD CONSTRAINT passkey_renew_attempt_capabilities_chk
+    CHECK (client_capabilities IS NULL OR (char_length(client_capabilities) <= 1200 AND client_capabilities ~ '^[A-Za-z][A-Za-z0-9]{0,40}(,[A-Za-z][A-Za-z0-9]{0,40})*$'))`,
   `CREATE INDEX IF NOT EXISTS passkey_renew_attempt_account_idx
     ON passkey_renew_attempt (account_id, created_at DESC)`,
 ];

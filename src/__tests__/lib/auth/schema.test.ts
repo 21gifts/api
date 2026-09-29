@@ -103,6 +103,14 @@ describe('AUTH_SCHEMA_SQL', () => {
     expect(AUTH_SCHEMA_SQL.join('\n')).toMatch(/stage IN \('begin', 'ceremony', 'finish'\)/);
     expect(AUTH_SCHEMA_SQL.join('\n')).toMatch(/passkey_renew_attempt_outcome_chk/);
     expect(AUTH_SCHEMA_SQL.join('\n')).toMatch(/outcome IN \('failed', 'succeeded', 'cancelled'\)/);
+    expect(AUTH_SCHEMA_SQL.join('\n')).toMatch(/authenticator_attachment text/);
+    expect(AUTH_SCHEMA_SQL.join('\n')).toMatch(/passkey_renew_attempt_attachment_chk/);
+    expect(AUTH_SCHEMA_SQL.join('\n')).toMatch(/passkey_renew_attempt_aaguid_chk/);
+    expect(AUTH_SCHEMA_SQL.join('\n')).toMatch(/authenticator_flags integer/);
+    expect(AUTH_SCHEMA_SQL.join('\n')).toMatch(/passkey_renew_attempt_flags_chk/);
+    expect(AUTH_SCHEMA_SQL.join('\n')).toMatch(/passkey_renew_attempt_alg_chk/);
+    expect(AUTH_SCHEMA_SQL.join('\n')).toMatch(/passkey_renew_attempt_cred_protect_chk/);
+    expect(AUTH_SCHEMA_SQL.join('\n')).toMatch(/passkey_renew_attempt_capabilities_chk/);
     expect(AUTH_SCHEMA_SQL.join('\n')).toMatch(
       /CREATE INDEX IF NOT EXISTS passkey_renew_attempt_account_idx\s+ON passkey_renew_attempt \(account_id, created_at DESC\)/i,
     );

@@ -1,4 +1,7 @@
-import { redactPasskeyRenewField } from '@/lib/auth/passkey-renew-report';
+import {
+  redactPasskeyRenewField,
+  sanitizePasskeyRenewDebug,
+} from '@/lib/auth/passkey-renew-report';
 import { ROLE_ORDER } from '@/lib/auth/roles';
 import { AUTH_SCHEMA_SQL } from '@/lib/auth/schema';
 import { CHALLENGE_TTL_MS, SESSION_TTL_MS } from '@/lib/config';
@@ -187,13 +190,32 @@ export class PostgresAuthStore implements AuthStore {
   }
 
   async insertPasskeyRenewAttempt(input: PasskeyRenewAttemptInput): Promise<void> {
+    const debug = sanitizePasskeyRenewDebug({
+      authenticatorAttachment: input.authenticatorAttachment ?? null,
+      transports: input.transports ?? null,
+      aaguid: input.aaguid ?? null,
+      prfEnabled: input.prfEnabled ?? null,
+      prfPresent: input.prfPresent ?? null,
+      extensions: input.extensions ?? null,
+      authenticatorFlags: input.authenticatorFlags ?? null,
+      publicKeyAlgorithm: input.publicKeyAlgorithm ?? null,
+      residentKey: input.residentKey ?? null,
+      hmacSecret: input.hmacSecret ?? null,
+      credProtect: input.credProtect ?? null,
+      clientCapabilities: input.clientCapabilities ?? null,
+    });
     await this.#sql.execute(
       `INSERT INTO passkey_renew_attempt (
          id, account_id, created_at, stage, outcome,
-         error_name, error_code, http_status, message, user_agent
+         error_name, error_code, http_status, message, user_agent,
+         authenticator_attachment, transports, aaguid, prf_enabled, prf_present, extensions,
+         authenticator_flags, public_key_algorithm, resident_key, hmac_secret,
+         cred_protect, client_capabilities
        ) VALUES (
          $1, $2, to_timestamp($3::double precision / 1000.0), $4, $5,
-         $6, $7, $8, $9, $10
+         $6, $7, $8, $9, $10,
+         $11, $12, $13, $14, $15, $16,
+         $17, $18, $19, $20, $21, $22
        )`,
       [
         input.id,
@@ -206,6 +228,18 @@ export class PostgresAuthStore implements AuthStore {
         input.httpStatus,
         redactPasskeyRenewField(input.message, 500),
         redactPasskeyRenewField(input.userAgent, 300),
+        debug.authenticatorAttachment,
+        debug.transports,
+        debug.aaguid,
+        debug.prfEnabled,
+        debug.prfPresent,
+        debug.extensions,
+        debug.authenticatorFlags,
+        debug.publicKeyAlgorithm,
+        debug.residentKey,
+        debug.hmacSecret,
+        debug.credProtect,
+        debug.clientCapabilities,
       ],
     );
   }
@@ -239,6 +273,18 @@ export class PostgresAuthStore implements AuthStore {
       [accountId],
     );
     return rows[0] !== undefined;
+  }
+
+  async latestUnacknowledgedPasskeyRenewErrorName(accountId: string): Promise<string | null> {
+    const rows = await this.#sql.query<{ error_name: string | null }>(
+      `SELECT error_name
+       FROM passkey_renew_attempt
+       WHERE account_id = $1 AND outcome = 'failed' AND acknowledged_at IS NULL
+       ORDER BY created_at DESC, id DESC
+       LIMIT 1`,
+      [accountId],
+    );
+    return rows[0]?.error_name ?? null;
   }
 
   async setAccountLocale(

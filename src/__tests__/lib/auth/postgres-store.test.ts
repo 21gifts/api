@@ -1528,6 +1528,18 @@ describe('PostgresAuthStore', () => {
       400,
       '[redacted]',
       'Mozilla',
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
     ]);
   });
 
@@ -1559,7 +1571,211 @@ describe('PostgresAuthStore', () => {
       null,
       '[redacted]',
       'Mozilla',
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
     ]);
+  });
+
+  it('insertPasskeyRenewAttempt keeps allowlisted authenticator facts only', async () => {
+    const sql = new MockSql();
+    await new PostgresAuthStore(sql).insertPasskeyRenewAttempt({
+      id: 'row-debug',
+      accountId: 'acc',
+      createdAt: 9,
+      stage: 'ceremony',
+      outcome: 'failed',
+      errorName: 'prfUnsupported',
+      errorCode: null,
+      httpStatus: null,
+      message: 'wallet.prfUnsupported',
+      userAgent: 'Mozilla',
+      authenticatorAttachment: 'cross-platform',
+      transports: 'internal,usb,not-a-transport',
+      aaguid: 'AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE',
+      prfEnabled: false,
+      prfPresent: false,
+      extensions: 'prf,secret,credProps',
+      authenticatorFlags: 0x1d,
+      publicKeyAlgorithm: -7,
+      residentKey: true,
+      hmacSecret: false,
+      credProtect: 'userVerificationOptional',
+      clientCapabilities: 'prf,hybridTransport',
+    });
+    expect(sql.executes[0]?.params?.slice(10)).toEqual([
+      'cross-platform',
+      'internal,usb',
+      'aaaaaaaabbbbccccddddeeeeeeeeeeee',
+      false,
+      false,
+      'credProps,prf',
+      0x1d,
+      -7,
+      true,
+      false,
+      'userVerificationOptional',
+      'hybridTransport,prf',
+    ]);
+  });
+
+  it('insertPasskeyRenewAttempt nulls debug values that are not safe to store', async () => {
+    const sql = new MockSql();
+    const store = new PostgresAuthStore(sql);
+    const base = {
+      id: 'row-bad',
+      accountId: 'acc',
+      createdAt: 9,
+      stage: 'ceremony' as const,
+      outcome: 'failed' as const,
+      errorName: 'Error',
+      errorCode: null,
+      httpStatus: null,
+      message: 'seed failed',
+      userAgent: 'Mozilla',
+    };
+    const none = [null, null, null, null, null, null, null, null, null, null, null, null];
+    await store.insertPasskeyRenewAttempt({
+      ...base,
+      authenticatorAttachment: 1,
+      transports: 1,
+      aaguid: 2,
+      prfEnabled: 'false',
+      prfPresent: 0,
+      extensions: 3,
+      authenticatorFlags: '8',
+      publicKeyAlgorithm: 1.5,
+      residentKey: 'true',
+      hmacSecret: 1,
+      credProtect: 1.5,
+      clientCapabilities: 4,
+    });
+    await store.insertPasskeyRenewAttempt({
+      ...base,
+      id: 'row-range',
+      authenticatorAttachment: 'nope',
+      transports: '',
+      aaguid: 'zz',
+      extensions: 'nope',
+      authenticatorFlags: -1,
+      publicKeyAlgorithm: 65536,
+      credProtect: 0,
+      clientCapabilities: '!!!',
+    });
+    await store.insertPasskeyRenewAttempt({
+      ...base,
+      id: 'row-high',
+      authenticatorFlags: 256,
+      publicKeyAlgorithm: -65537,
+      credProtect: 4,
+      clientCapabilities: '',
+    });
+    await store.insertPasskeyRenewAttempt({
+      ...base,
+      id: 'row-edge',
+      authenticatorAttachment: 'platform',
+      transports: 'usb,usb,ble',
+      aaguid: 'ab'.repeat(16),
+      prfEnabled: false,
+      prfPresent: true,
+      extensions: 'uvm,prf,uvm',
+      authenticatorFlags: 0,
+      publicKeyAlgorithm: -65536,
+      residentKey: false,
+      hmacSecret: true,
+      credProtect: 2,
+      clientCapabilities: Array.from(
+        { length: 25 },
+        (_, i) => `c${String(i).padStart(2, '0')}`,
+      ).join(','),
+    });
+    await store.insertPasskeyRenewAttempt({
+      ...base,
+      id: 'row-policy',
+      authenticatorFlags: 255,
+      publicKeyAlgorithm: 65535,
+      credProtect: 'userVerificationRequired',
+      clientCapabilities: 'prf, hybridTransport ,prf',
+    });
+    await store.insertPasskeyRenewAttempt({
+      ...base,
+      id: 'row-code',
+      credProtect: 3,
+    });
+    await store.insertPasskeyRenewAttempt({
+      ...base,
+      id: 'row-policy-bad',
+      credProtect: 'nope',
+    });
+    expect(sql.executes[0]?.params?.slice(10)).toEqual(none);
+    expect(sql.executes[1]?.params?.slice(10)).toEqual(none);
+    expect(sql.executes[2]?.params?.slice(10)).toEqual(none);
+    expect(sql.executes[3]?.params?.slice(10)).toEqual([
+      'platform',
+      'ble,usb',
+      'ab'.repeat(16),
+      false,
+      true,
+      'prf,uvm',
+      0,
+      -65536,
+      false,
+      true,
+      'userVerificationOptionalWithCredentialIDList',
+      Array.from({ length: 24 }, (_, i) => `c${String(i).padStart(2, '0')}`).join(','),
+    ]);
+    expect(sql.executes[4]?.params?.slice(10)).toEqual([
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      255,
+      65535,
+      null,
+      null,
+      'userVerificationRequired',
+      'hybridTransport,prf',
+    ]);
+    expect(sql.executes[5]?.params?.slice(10)).toEqual([
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      'userVerificationRequired',
+      null,
+    ]);
+    expect(sql.executes[6]?.params?.slice(10)).toEqual(none);
+  });
+
+  it('latestUnacknowledgedPasskeyRenewErrorName reads the newest failed name', async () => {
+    const sql = new MockSql();
+    const store = new PostgresAuthStore(sql);
+    sql.nextRows = [{ error_name: 'prfUnsupported' }];
+    expect(await store.latestUnacknowledgedPasskeyRenewErrorName('acc')).toBe('prfUnsupported');
+    expect(sql.queries[0]?.text).toMatch(/ORDER BY created_at DESC, id DESC/);
+    expect(sql.queries[0]?.text).toMatch(/acknowledged_at IS NULL/);
+    expect(sql.queries[0]?.params).toEqual(['acc']);
+    sql.nextRows = [{ error_name: null }];
+    expect(await store.latestUnacknowledgedPasskeyRenewErrorName('acc')).toBeNull();
+    sql.nextRows = [];
+    expect(await store.latestUnacknowledgedPasskeyRenewErrorName('acc')).toBeNull();
   });
 
   it('acknowledgePasskeyRenewFailures updates only failed unacknowledged rows', async () => {

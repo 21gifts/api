@@ -1,4 +1,7 @@
-import { redactPasskeyRenewField } from '@/lib/auth/passkey-renew-report';
+import {
+  redactPasskeyRenewField,
+  sanitizePasskeyRenewDebug,
+} from '@/lib/auth/passkey-renew-report';
 import { roleAtLeast } from '@/lib/auth/roles';
 import { CHALLENGE_TTL_MS, SESSION_TTL_MS } from '@/lib/config';
 
@@ -265,6 +268,30 @@ export interface PasskeyRenewAttemptInput {
   message: string | null;
   /** User-Agent header, or `null`. Redacted, then capped at 300. */
   userAgent: string | null;
+  /** `platform` or `cross-platform`, or omitted when unknown. */
+  authenticatorAttachment?: unknown;
+  /** Comma-separated transports, or omitted. Allowlisted before storage. */
+  transports?: unknown;
+  /** Authenticator AAGUID, or omitted. Stored only as 32 hex chars. */
+  aaguid?: unknown;
+  /** Browser `prf.enabled`, or omitted. */
+  prfEnabled?: unknown;
+  /** Whether PRF output was present, or omitted when unknown. */
+  prfPresent?: unknown;
+  /** Comma-separated extension names, or omitted. Allowlisted before storage. */
+  extensions?: unknown;
+  /** Flags byte, or omitted. Stored only as an integer 0–255. */
+  authenticatorFlags?: unknown;
+  /** COSE algorithm, or omitted. Stored only inside -65536..65535. */
+  publicKeyAlgorithm?: unknown;
+  /** `credProps.rk`, or omitted. */
+  residentKey?: unknown;
+  /** hmac-secret supported, or omitted. */
+  hmacSecret?: unknown;
+  /** credProtect policy name or numeric code, or omitted. */
+  credProtect?: unknown;
+  /** Comma-separated browser capability names, or omitted. */
+  clientCapabilities?: unknown;
 }
 
 /** A server-issued session bound to an account. */
@@ -326,6 +353,13 @@ export interface AuthStore {
    * @returns `true` only when such a row exists.
    */
   hasUnacknowledgedPasskeyRenewFailure(accountId: string): Promise<boolean>;
+  /**
+   * Error name of the newest unacknowledged failed renew, or `null`.
+   *
+   * @param accountId - Account to inspect.
+   * @returns The stored name, or `null` when no such row exists.
+   */
+  latestUnacknowledgedPasskeyRenewErrorName(accountId: string): Promise<string | null>;
   /**
    * Whether this account has a failed renew row that was acknowledged.
    * This is only the row predicate. Owner JSON `passkeyRenewClosed` is
@@ -650,6 +684,20 @@ export class InMemoryAuthStore implements AuthStore {
   }
 
   async insertPasskeyRenewAttempt(input: PasskeyRenewAttemptInput): Promise<void> {
+    const debug = sanitizePasskeyRenewDebug({
+      authenticatorAttachment: input.authenticatorAttachment ?? null,
+      transports: input.transports ?? null,
+      aaguid: input.aaguid ?? null,
+      prfEnabled: input.prfEnabled ?? null,
+      prfPresent: input.prfPresent ?? null,
+      extensions: input.extensions ?? null,
+      authenticatorFlags: input.authenticatorFlags ?? null,
+      publicKeyAlgorithm: input.publicKeyAlgorithm ?? null,
+      residentKey: input.residentKey ?? null,
+      hmacSecret: input.hmacSecret ?? null,
+      credProtect: input.credProtect ?? null,
+      clientCapabilities: input.clientCapabilities ?? null,
+    });
     this.#passkeyRenewAttempts.push({
       id: input.id,
       accountId: input.accountId,
@@ -661,6 +709,18 @@ export class InMemoryAuthStore implements AuthStore {
       httpStatus: input.httpStatus,
       message: redactPasskeyRenewField(input.message, 500),
       userAgent: redactPasskeyRenewField(input.userAgent, 300),
+      authenticatorAttachment: debug.authenticatorAttachment,
+      transports: debug.transports,
+      aaguid: debug.aaguid,
+      prfEnabled: debug.prfEnabled,
+      prfPresent: debug.prfPresent,
+      extensions: debug.extensions,
+      authenticatorFlags: debug.authenticatorFlags,
+      publicKeyAlgorithm: debug.publicKeyAlgorithm,
+      residentKey: debug.residentKey,
+      hmacSecret: debug.hmacSecret,
+      credProtect: debug.credProtect,
+      clientCapabilities: debug.clientCapabilities,
       acknowledgedAt: null,
     });
   }
@@ -685,6 +745,23 @@ export class InMemoryAuthStore implements AuthStore {
       (row) =>
         row.accountId === accountId && row.outcome === 'failed' && row.acknowledgedAt !== null,
     );
+  }
+
+  async latestUnacknowledgedPasskeyRenewErrorName(accountId: string): Promise<string | null> {
+    let best: StoredPasskeyRenewAttempt | undefined;
+    for (const row of this.#passkeyRenewAttempts) {
+      if (row.accountId !== accountId || row.outcome !== 'failed' || row.acknowledgedAt !== null) {
+        continue;
+      }
+      if (
+        best === undefined ||
+        row.createdAt > best.createdAt ||
+        (row.createdAt === best.createdAt && row.id > best.id)
+      ) {
+        best = row;
+      }
+    }
+    return best?.errorName ?? null;
   }
 
   async setAccountLocale(
@@ -1250,6 +1327,18 @@ interface StoredPasskeyRenewAttempt {
   httpStatus: number | null;
   message: string | null;
   userAgent: string | null;
+  authenticatorAttachment: 'platform' | 'cross-platform' | null;
+  transports: string | null;
+  aaguid: string | null;
+  prfEnabled: boolean | null;
+  prfPresent: boolean | null;
+  extensions: string | null;
+  authenticatorFlags: number | null;
+  publicKeyAlgorithm: number | null;
+  residentKey: boolean | null;
+  hmacSecret: boolean | null;
+  credProtect: string | null;
+  clientCapabilities: string | null;
   acknowledgedAt: number | null;
 }
 

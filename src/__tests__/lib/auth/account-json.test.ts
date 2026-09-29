@@ -257,6 +257,7 @@ describe('serializeOwnerAccount', () => {
       passkeyCredentialId: null,
       passkeyRenewFailed: false,
       passkeyRenewClosed: false,
+      passkeyRenewPrfUnsupported: false,
     });
     expect(json.viewKey).toBe(account.viewKey);
     expect(json.setup).toBe('rules');
@@ -812,6 +813,7 @@ describe('serializeOwnerAccountWithPosts', () => {
           getPasskeyCredentialForAccount: async () => undefined,
           hasUnacknowledgedPasskeyRenewFailure: async () => false,
           hasAcknowledgedPasskeyRenewFailure: async () => true,
+          latestUnacknowledgedPasskeyRenewErrorName: async () => null,
         },
       },
     );
@@ -862,6 +864,55 @@ describe('serializeOwnerAccountWithPosts', () => {
     expect(closed.passkeyRenewFailed).toBe(false);
     expect(closed.passkeyRenewClosed).toBe(true);
     expect(closed.walletRequired).toBe(false);
+    expect(closed.passkeyRenewPrfUnsupported).toBe(false);
+  });
+
+  it('sets passkeyRenewPrfUnsupported only for the newest unacknowledged prf failure', async () => {
+    const authStore = new InMemoryAuthStore();
+    await authStore.createAccount(account);
+    await authStore.insertPasskeyRenewAttempt({
+      id: 'r1',
+      accountId: 'acc',
+      createdAt: 1,
+      stage: 'ceremony',
+      outcome: 'failed',
+      errorName: 'prfUnsupported',
+      errorCode: null,
+      httpStatus: null,
+      message: 'wallet.prfUnsupported',
+      userAgent: null,
+    });
+    const open = await serializeOwnerAccountWithPosts(
+      account,
+      {
+        accountHasLivePost: async () => false,
+        getById: async () => undefined,
+      },
+      { store: new InMemoryFundingStore(), nowMs: 2, authStore },
+    );
+    expect(open.passkeyRenewFailed).toBe(true);
+    expect(open.passkeyRenewPrfUnsupported).toBe(true);
+    await authStore.insertPasskeyRenewAttempt({
+      id: 'r2',
+      accountId: 'acc',
+      createdAt: 3,
+      stage: 'ceremony',
+      outcome: 'failed',
+      errorName: 'NotAllowedError',
+      errorCode: null,
+      httpStatus: null,
+      message: 'cancel',
+      userAgent: null,
+    });
+    const newer = await serializeOwnerAccountWithPosts(
+      account,
+      {
+        accountHasLivePost: async () => false,
+        getById: async () => undefined,
+      },
+      { store: new InMemoryFundingStore(), nowMs: 4, authStore },
+    );
+    expect(newer.passkeyRenewPrfUnsupported).toBe(false);
   });
 });
 
