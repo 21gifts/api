@@ -3717,6 +3717,9 @@ export class InMemoryMessageStore implements MessageStore {
     const kept = this.#invoiceAttempts.filter((item) => !ids.has(item.messageId));
     this.#invoiceAttempts.length = 0;
     this.#invoiceAttempts.push(...kept);
+    const keptEdits = this.#edits.filter((item) => !ids.has(item.messageId));
+    this.#edits.length = 0;
+    this.#edits.push(...keptEdits);
     for (const [receiptEventId, receipt] of this.#receipts) {
       if (ids.has(receipt.messageId)) {
         this.#receipts.delete(receiptEventId);

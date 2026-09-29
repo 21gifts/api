@@ -1193,6 +1193,34 @@ describe('InMemoryMessageStore', () => {
     expect(await store.claimZapPayment('AB'.repeat(32), 'receipt-del', new Date(0))).toBe(true);
     await store.create({ ...LATE });
     expect(await store.recordZapReceipt('receipt-keep', LATE.id, 1, null)).toBe(true);
+    const editedAt = new Date('2026-08-01T00:00:00.000Z');
+    await store.appendEdit({
+      id: 'edit-parent',
+      messageId: 'p-del',
+      actorId: 'author',
+      createdAt: editedAt,
+      field: 'text',
+      before: 'parent',
+      after: 'changed',
+    });
+    await store.appendEdit({
+      id: 'edit-child',
+      messageId: 'c-del',
+      actorId: 'author',
+      createdAt: editedAt,
+      field: 'text',
+      before: 'child',
+      after: 'changed',
+    });
+    await store.appendEdit({
+      id: 'edit-keep',
+      messageId: LATE.id,
+      actorId: 'author',
+      createdAt: editedAt,
+      field: 'text',
+      before: 'second',
+      after: 'kept',
+    });
     const videoPath = videoFilePath(resolveMediaDir(), 'p-del', 'video/mp4');
     await readFile(videoPath);
     expect(await store.deleteById('p-del')).toBe(true);
@@ -1204,6 +1232,9 @@ describe('InMemoryMessageStore', () => {
     expect(await store.recordZapReceipt('receipt-del', 'p-del', 7, null)).toBe(true);
     expect(await store.recordZapReceipt('receipt-keep', 'b', 1, null)).toBe(false);
     expect(await store.claimZapPayment('ab'.repeat(32), 'receipt-other', new Date(1))).toBe(false);
+    expect(await store.listEdits('p-del')).toEqual([]);
+    expect(await store.listEdits('c-del')).toEqual([]);
+    expect((await store.listEdits(LATE.id)).map((row) => row.id)).toEqual(['edit-keep']);
     expect(await store.getPhoto('p-del')).toBeNull();
     await expect(readFile(videoPath)).rejects.toMatchObject({ code: 'ENOENT' });
   });
