@@ -447,7 +447,9 @@ Starts a discoverable-credential registration. Empty body mints a new account
 id (no row until finish). Optional JSON `{ "viewKey": "<64 lowercase hex>" }`
 claims an existing provisioned account: `404` when the profile is missing,
 `409` when it already has a passkey, `400` when `viewKey` is present but not a
-string.
+string. Non-empty invalid JSON is `400`
+`{ "error": "Begin body is not valid JSON" }` and does not open a challenge.
+Empty or whitespace-only body still starts a new registration.
 
 When `WEBAUTHN_RP_ID` is unset, blank, not on the allowlist (`21.gifts` /
 `dev.21.gifts` / `localhost`), or no CORS origin matches that RP ID:
@@ -491,7 +493,8 @@ ID).
 | Status | Body                                                                                              | When                                                                |
 | ------ | ------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------- |
 | 500    | `{ "error": "Server auth is not configured" }`                                                    | RP ID missing, not on the allowlist, or no matching origin          |
-| 400    | `{ "error": "Expected a JSON body with challengeId and credential" }`                             | Body parse fail                                                     |
+| 400    | `{ "error": "Finish body is not valid JSON" }`                                                    | Body is not JSON                                                    |
+| 400    | `{ "error": "Expected a JSON body with challengeId and credential" }`                             | Missing body, or JSON that is not `{ challengeId, credential }`     |
 | 400    | `{ "error": "Unknown or expired challenge" }`                                                     | Unknown `challengeId`                                               |
 | 400    | `{ "error": "Challenge expired" }`                                                                | Past challenge TTL                                                  |
 | 400    | `{ "error": "Challenge already used" }`                                                           | Finish already attempted; challenge is consumed before verification |
@@ -620,7 +623,8 @@ session resolution, before finish runs.
 Other ceremony failures stay **400** with the same strings as the old
 replace finish: Invalid origin, Unknown or expired challenge, Challenge
 expired, Challenge already used, Wrong challenge type, Invalid passkey,
-and `{ "error": "Expected a JSON body with challengeId and credential" }`.
+`{ "error": "Finish body is not valid JSON" }`, and
+`{ "error": "Expected a JSON body with challengeId and credential" }`.
 
 A 400 or 409 after the session is known stores a failed renew row and does
 not change the account. Success stores `outcome: "succeeded"` with null

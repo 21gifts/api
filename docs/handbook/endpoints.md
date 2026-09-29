@@ -261,56 +261,56 @@
 ## Endpoint: POST /auth/passkey/authenticate/begin
 
 - **Purpose:** Issues WebAuthn request options for a discoverable credential. JSON: challengeId, options (`extensions.prf.eval.first` = base64url SHA-256 of `21gifts-nostr-v1`).
-- **Errors:** HTTP 500 `{ error: 'Server auth is not configured' }` if `WEBAUTHN_RP_ID` is unset, blank, not on the allowlist, or no CORS origin matches it.
+- **Errors:** HTTP 500 `{ error: 'Server auth is not configured' }` if `WEBAUTHN_RP_ID` is unset, blank, not on the allowlist, or no CORS origin matches it. That 500 is logged as `auth.passkey.login.fail` with the same error and no account id.
 - **Used by:** App passkey sign-in.
 - **Auth:** Public.
 
 ## Endpoint: POST /auth/passkey/authenticate/finish
 
 - **Purpose:** Verifies the assertion and issues `{ token, account }` immediately. Requires `Origin`. `{ token, account }` uses owner JSON including `hasPosted`, `aboutMe`, `aboutMeHasPhoto`, `notificationLevel`, `amountUnit`, `funding`, `walletRequired`, `walletBackupSeenAt`, and `passkeyCredentialId`. An account with `sessionRefused` is refused with no bearer.
-- **Errors:** 400 invalid body/origin/challenge/credential; 403 `{ error: 'You signed in with the wrong account. Please try again with the correct account.' }` when `sessionRefused` is true; 500 if WebAuthn is unconfigured.
+- **Errors:** 400 invalid body/origin/challenge/credential; 403 `{ error: 'You signed in with the wrong account. Please try again with the correct account.' }` when `sessionRefused` is true; 500 if WebAuthn is unconfigured. A missing body is 400 `Expected a JSON body with challengeId and credential`, logged as `auth.passkey.login.fail` with `json` `absent` and `bodyBytes`. Invalid JSON is 400 `Finish body is not valid JSON`, logged with `json` `invalid` and `bodyBytes`, and the text is not logged. A parsed body without `challengeId` and `credential` is the expected-body 400, logged with `json` `parsed`, `bodyKind`, and for an object `hasCredential` and `challengeIdKind`. The challenge id is logged only when it is 64 lowercase hex. The credential and the raw body are not logged. The 500 is logged as the same event with `Server auth is not configured`.
 - **Used by:** App passkey sign-in.
 - **Auth:** Public (proof is the assertion).
 
 ## Endpoint: POST /auth/passkey/register/begin
 
 - **Purpose:** Issues WebAuthn creation options. JSON: challengeId, options (`extensions.prf: {}`). Empty body / no `viewKey` mints a pending new account id (row created only on finish). Optional body `{ "viewKey": "<64-hex>" }` claims an operator-provisioned account (same id/name/lightningAddress/viewKey).
-- **Errors:** HTTP 500 `{ error: 'Server auth is not configured' }` if `WEBAUTHN_RP_ID` is unset, blank, not on the allowlist, or no CORS origin matches it; 400 `{ error: 'Expected a JSON body with an optional "viewKey" string' }` when `viewKey` is present but not a string; 404 `{ error: 'This profile could not be found.' }` for a malformed/unknown view key; 409 `{ error: 'This profile already has a passkey' }` when the provisioned account already has a credential.
+- **Errors:** HTTP 500 `{ error: 'Server auth is not configured' }` if `WEBAUTHN_RP_ID` is unset, blank, not on the allowlist, or no CORS origin matches it; 400 `{ error: 'Expected a JSON body with an optional "viewKey" string' }` when `viewKey` is present but not a string; 404 `{ error: 'This profile could not be found.' }` for a malformed/unknown view key; 409 `{ error: 'This profile already has a passkey' }` when the provisioned account already has a credential. Invalid JSON is 400 `{ error: 'Begin body is not valid JSON' }`, logs `auth.passkey.register.fail` with `json` `invalid` and `bodyBytes`, and does not open a challenge. Those failures log `auth.passkey.register.fail` with the error text and not the view key.
 - **Used by:** App passkey account creation and claim-by-viewKey.
 - **Auth:** Public.
 
 ## Endpoint: POST /auth/passkey/register/finish
 
 - **Purpose:** Verifies the attestation, creates a `linkingKey: null` account (or binds a passkey to a provisioned account without recreating it), issues `{ token, account }`. Requires `Origin`. `{ token, account }` uses owner JSON including `hasPosted`, `aboutMe`, `aboutMeHasPhoto`, `notificationLevel`, `amountUnit`, `funding`, `walletRequired`, `walletBackupSeenAt`, and `passkeyCredentialId`. An account with `sessionRefused` is refused with no bearer.
-- **Errors:** 400 invalid body/origin/challenge/passkey; 403 `{ error: 'You signed in with the wrong account. Please try again with the correct account.' }` when `sessionRefused` is true; 500 if WebAuthn is unconfigured.
+- **Errors:** 400 invalid body/origin/challenge/passkey; 403 `{ error: 'You signed in with the wrong account. Please try again with the correct account.' }` when `sessionRefused` is true; 500 if WebAuthn is unconfigured. A missing body is 400 `Expected a JSON body with challengeId and credential`, logged as `auth.passkey.register.fail` with `json` `absent` and `bodyBytes`. Invalid JSON is 400 `Finish body is not valid JSON`, logged with `json` `invalid` and `bodyBytes`, and the text is not logged. A parsed body without `challengeId` and `credential` is the expected-body 400, logged with `json` `parsed`, `bodyKind`, and for an object `hasCredential` and `challengeIdKind`. The challenge id is logged only when it is 64 lowercase hex. The credential and the raw body are not logged. The 500 is logged as the same event with `Server auth is not configured`.
 - **Used by:** App passkey account creation and claim-by-viewKey.
 - **Auth:** Public (proof is the attestation).
 
 ## Endpoint: POST /auth/passkey/replace/begin
 
 - **Purpose:** Bearer session. Refuses to replace a passkey. A recovery phrase is never replaced. Does not create a challenge and does not delete or insert a credential. `walletBackupSeenAt` is not consulted.
-- **Errors:** 401 `{ error: 'Unauthorized' }` missing or invalid Bearer; 409 `{ error: 'A recovery phrase cannot be replaced' }` after a valid session; 500 `{ error: 'Server auth is not configured' }` when WebAuthn is unconfigured (checked before the bearer).
+- **Errors:** 401 `{ error: 'Unauthorized' }` missing or invalid Bearer; 409 `{ error: 'A recovery phrase cannot be replaced' }` after a valid session; 500 `{ error: 'Server auth is not configured' }` when WebAuthn is unconfigured (checked before the bearer). That 500 is logged as `auth.passkey.replace.refused` with the same error and no account id.
 - **Used by:** App passkey replace, which the api now refuses.
 - **Auth:** `Authorization: Bearer` session.
 
 ## Endpoint: POST /auth/passkey/replace/finish
 
 - **Purpose:** Bearer session. Same refusal as begin. Does not parse a ceremony once the session is valid. Does not delete or insert a passkey. Does not mint a session. `walletBackupSeenAt` does not decide whether a seed exists.
-- **Errors:** 401 without a session; 409 `{ error: 'A recovery phrase cannot be replaced' }` after a valid session; 500 if WebAuthn is unconfigured.
+- **Errors:** 401 without a session; 409 `{ error: 'A recovery phrase cannot be replaced' }` after a valid session; 500 if WebAuthn is unconfigured. That 500 is logged as `auth.passkey.replace.refused` with `Server auth is not configured` and no account id.
 - **Used by:** App passkey replace, which the api now refuses.
 - **Auth:** `Authorization: Bearer` session.
 
 ## Endpoint: POST /auth/passkey/seed/begin
 
-- **Purpose:** Bearer session. When `walletRequired` is not true, issues WebAuthn creation options for one extra seed passkey (`{ challengeId, options }`, no `excludeCredentials`, user id and name are the account id). Does not delete the login passkey. `walletRequired: true` means a seed passkey already exists. A 409 because a seed already exists stores a failed renew row (`stage` `begin`, HTTP 409) and does not change the account. A 200 stores no renew row. 401 and 500 store no row.
+- **Purpose:** Bearer session. When `walletRequired` is not true, issues WebAuthn creation options for one extra seed passkey (`{ challengeId, options }`, no `excludeCredentials`, user id and name are the account id). Does not delete the login passkey. `walletRequired: true` means a seed passkey already exists. A 409 because a seed already exists stores a failed renew row (`stage` `begin`, HTTP 409), logs `auth.passkey.seed.fail` with the account id and error, and does not change the account. A 200 stores no renew row. 401 stores no row and no diagnostic row. 500 stores no renew row and logs `auth.passkey.seed.fail` with `Server auth is not configured`.
 - **Errors:** 401 missing or invalid Bearer; 409 `{ error: 'This account already has a recovery phrase' }` when `walletRequired` is true (no challenge); 500 if WebAuthn is unconfigured.
 - **Used by:** App add-recovery-phrase for an account that has no seed yet.
 - **Auth:** `Authorization: Bearer` session.
 
 ## Endpoint: POST /auth/passkey/seed/finish
 
-- **Purpose:** Bearer session. Verifies a `seed` attestation and inserts an additional passkey, setting `walletRequired` true. Does not delete the login passkey, does not change `walletBackupSeenAt`, and does not mint a session. Success JSON is the owner account itself, same shape as `GET /me`, with no `token` and no `account` wrapper. `passkeyCredentialId` is the new credential id. `walletBackupSeenAt` does not decide whether a seed exists. A 400 or 409 after the session is known stores a failed renew row and does not change the account. Success stores `outcome` `succeeded` with null error fields, then acknowledges failed rows that are still unacknowledged, so the owner JSON has `walletRequired` true and `passkeyRenewClosed` false. 401 and 500 store no row.
-- **Errors:** 401 without a session, including a `sessionRefused` bearer (resolved before finish, not 409); 409 `{ error: 'This account already has a recovery phrase' }` when `walletRequired` is already true, the credential id is taken, the account is missing, or the insert does not land; 400 invalid body, origin, challenge, or attestation; 500 if WebAuthn is unconfigured.
+- **Purpose:** Bearer session. Verifies a `seed` attestation and inserts an additional passkey, setting `walletRequired` true. Does not delete the login passkey, does not change `walletBackupSeenAt`, and does not mint a session. Success JSON is the owner account itself, same shape as `GET /me`, with no `token` and no `account` wrapper. `passkeyCredentialId` is the new credential id. `walletBackupSeenAt` does not decide whether a seed exists. A 400 or 409 after the session is known stores a failed renew row and does not change the account. Success stores `outcome` `succeeded` with null error fields, then acknowledges failed rows that are still unacknowledged, so the owner JSON has `walletRequired` true and `passkeyRenewClosed` false. 401 stores no renew row and no diagnostic row. 500 stores no renew row and logs `auth.passkey.seed.fail` with `Server auth is not configured`. A missing finish body is 400 `Expected a JSON body with challengeId and credential`, logged as `auth.passkey.seed.fail` with the account id, `json` `absent`, and `bodyBytes`. Invalid JSON is 400 `Finish body is not valid JSON`, logged with the account id, `json` `invalid`, and `bodyBytes`; the text is not logged. A parsed body without `challengeId` and `credential` is the expected-body 400, logged with the account id, `json` `parsed`, `bodyKind`, and for an object `hasCredential` and `challengeIdKind`. The challenge id is logged only when it is 64 lowercase hex. Each of those 400s still stores the failed renew row. The credential is not logged. A later ceremony 400 or 409 also logs `auth.passkey.seed.fail` with the account id.
+- **Errors:** 401 without a session, including a `sessionRefused` bearer (resolved before finish, not 409); 409 `{ error: 'This account already has a recovery phrase' }` when `walletRequired` is already true, the credential id is taken, the account is missing, or the insert does not land; 400 invalid body, origin, challenge, or attestation; 500 if WebAuthn is unconfigured. Invalid JSON (`Finish body is not valid JSON`) and a body without `challengeId` and `credential` log `auth.passkey.seed.fail` with the account id as well as the renew row. The text, credential, and bearer are not logged. The 500 logs that fail event and stores no renew row.
 - **Used by:** App add-recovery-phrase finish.
 - **Auth:** `Authorization: Bearer` session.
 
