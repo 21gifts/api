@@ -3737,7 +3737,7 @@ Post to the public member forum. Bearer session required. JSON body (not
 multipart) with text and/or one photo, optional `photos` (array, max 10,
 each `{ contentType, data, takenAt? }` same shape as singular `photo`), an
 optional parent UUID, and optional `goalSats` (positive integer 1..10_000_000
-on a top-level note only). Optional `shopUsername` on a shop note stores that account at create and does not write `message_edit`. A bad username is 400 `Username is not valid`. An unknown username is 404 `No account with that username`. A non-shop note with a username is 400 `Only a shop note can set a shop account`. Blank, null, or `@` alone stores nothing. Optional `takenAt` is `YYYY-MM-DDTHH:MM:SS` with an optional `±HH:MM`
+on a top-level note only). Optional `shopUsername` on a shop note stores that account at create and does not write `message_edit`. A bad username is 400 `Username is not valid`. An unknown username, or a stored username that is null or blank, is 404 `No account with that username`. A reply, or a note that is not a shop, with a non-blank username is 400 `Only a shop note can set a shop account`. Blank, null, or `@` alone stores nothing. A media replay of an existing live note does not change its shop account. Optional `takenAt` is `YYYY-MM-DDTHH:MM:SS` with an optional `±HH:MM`
 offset, a real calendar date, and a year from 1990 through the current UTC
 year + 1. `Z`, a fractional second, a leap second, a non-string, or a missing
 value is stored null and does not return 400:
@@ -4494,12 +4494,13 @@ must match `MESSAGE_ID_RE` or the response is **404**. Body is JSON via
 **400** `{ "error": "Invalid body" }`. `username: null` clears. A string
 is trimmed, one leading `@` is stripped, then `normalizeUsername`. An
 invalid username is **400** `{ "error": "Username is not valid" }`.
-Unknown username, or a stored username that is null or blank, is **404**
-`{ "error": "No account with that username" }`. Missing or hidden row →
-**404** and no write. A reply → **400**
+Missing or hidden row → **404** `{ "error": "Not found" }` and no write,
+before the handle is looked up. A reply → **400**
 `{ "error": "A reply cannot include a shop account" }`. A non-shop
 top-level note → **400**
-`{ "error": "Only a shop note can set a shop account" }`.
+`{ "error": "Only a shop note can set a shop account" }`. On a live shop
+note, an unknown username, or a stored username that is null or blank,
+is **404** `{ "error": "No account with that username" }`.
 `setShopAccount` false, or a row that disappears before reload, → **404**.
 Store throw → **503** `{ "error": "Messages are unavailable" }` and
 `messages.shop_account.failed`.
@@ -4516,11 +4517,11 @@ Staff replacement of the body of a live top-level shop note (`#21GiftsShop`). Be
 
 ### `PATCH /messages/:id/photos`
 
-Staff replacement of the stills on a live top-level shop note. Bearer session required. Live role must be at least `moderator`. Body `{ "photos": [{ "contentType", "data", "takenAt?" }] }` with at most 10 items. An empty list clears stills. A video on the note stays. This write does not append `message_edit`. Success is **200** public message JSON. A reply is **400** `{ "error": "A reply cannot be edited" }`. A non-shop note is **400** `{ "error": "Only a shop note can be edited" }`. A bad photo is **400** `{ "error": "Photo must be a JPEG, PNG, or WebP under 1 MiB" }`. Store throw → **503**.
+Staff replacement of the stills on a live top-level shop note. Bearer session required. Live role must be at least `moderator`. `:id` must match `MESSAGE_ID_RE`, and a missing or hidden row is **404** `{ "error": "Not found" }`. Body `{ "photos": [{ "contentType", "data", "takenAt?" }] }` with at most 10 items. An empty list clears stills. A video on the note stays. This write does not append `message_edit`. Success is **200** public message JSON. A reply is **400** `{ "error": "A reply cannot be edited" }`. A non-shop note is **400** `{ "error": "Only a shop note can be edited" }`. A bad photo is **400** `{ "error": "Photo must be a JPEG, PNG, or WebP under 1 MiB" }`. Store throw → **503**.
 
 ### `GET /messages/:id/edits`
 
-Staff history for a top-level shop note, newest first, including a hidden shop note. Bearer session required. Live role must be at least `moderator`. GET is not a Sunday write. Success is **200** `{ "edits": [{ "id", "createdAt", "field", "before", "after", "actor" }] }`. `createdAt` is ISO. `field` is `"text"`, `"place"`, or `"shopAccount"` (SQL `shop_account` is published as `shopAccount`). `before` and `after` are the previous and next value: a text string, a place pin or null, or a shop account `{ "id", "username", "name" }` or null. `actor` is `{ "id", "name", "role" }`. A missing account keeps `{ "id", "name": null, "role": null }`. Empty history is `{ "edits": [] }`. A reply or a non-shop note is **404**. Public message JSON does not include `edits`.
+Staff history for a top-level shop note, newest first, including a hidden shop note. Bearer session required. Live role must be at least `moderator`. GET is not a Sunday write. Success is **200** `{ "edits": [{ "id", "createdAt", "field", "before", "after", "actor" }] }`. `createdAt` is ISO. `field` is `"text"`, `"place"`, or `"shopAccount"` (SQL `shop_account` is published as `shopAccount`). `before` and `after` are the previous and next value: a text string, a place pin or null, or a shop account `{ "id", "username", "name" }` or null. `actor` is `{ "id", "name", "role" }`. A missing account keeps `{ "id", "name": null, "role": null }`. Empty history `{ "edits": [] }` is only for an existing top-level shop note, including a hidden one. A non-UUID `:id`, a missing row, a reply, or a non-shop note is **404** `{ "error": "Not found" }`. Public message JSON does not include `edits`.
 
 ### `GET /messages/hidden`
 
