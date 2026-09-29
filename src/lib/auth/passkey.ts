@@ -99,6 +99,7 @@ export async function startPasskeyRegistration(
     consumed: false,
     createdAt: now,
   });
+  logEvent('auth.passkey.register.begin', { accountId, challengeId });
   return { challengeId, options: generated.options };
 }
 
@@ -121,13 +122,16 @@ export async function startPasskeyClaim(
   viewKey: string,
 ): Promise<{ ok: true; value: PasskeyBeginResult } | { ok: false; error: string }> {
   if (!/^[0-9a-f]{64}$/.test(viewKey)) {
+    logEvent('auth.passkey.claim.fail', { error: CLAIM_NOT_FOUND });
     return { ok: false, error: CLAIM_NOT_FOUND };
   }
   const account = await store.getAccountByViewKey(viewKey);
   if (account === undefined) {
+    logEvent('auth.passkey.claim.fail', { error: CLAIM_NOT_FOUND });
     return { ok: false, error: CLAIM_NOT_FOUND };
   }
   if (await store.accountHasPasskey(account.id)) {
+    logEvent('auth.passkey.claim.fail', { error: CLAIM_ALREADY_HAS_PASSKEY });
     return { ok: false, error: CLAIM_ALREADY_HAS_PASSKEY };
   }
   const generated = await ceremony.generateRegistrationOptions({
@@ -146,6 +150,7 @@ export async function startPasskeyClaim(
     consumed: false,
     createdAt: now,
   });
+  logEvent('auth.passkey.claim.begin', { accountId: account.id, challengeId });
   return { ok: true, value: { challengeId, options: generated.options } };
 }
 
@@ -318,6 +323,7 @@ export async function startPasskeyAuthentication(
     consumed: false,
     createdAt: now,
   });
+  logEvent('auth.passkey.authenticate.begin', { challengeId });
   return { challengeId, options: generated.options };
 }
 
@@ -559,6 +565,7 @@ export async function startPasskeySeed(
   account: Account,
 ): Promise<PasskeyBeginResult | { ok: false; error: string }> {
   if (account.walletRequired === true) {
+    logEvent('auth.passkey.seed.fail', { accountId: account.id, error: SEED_ALREADY_HAS_PHRASE });
     return { ok: false, error: SEED_ALREADY_HAS_PHRASE };
   }
   const generated = await ceremony.generateRegistrationOptions({
@@ -577,6 +584,7 @@ export async function startPasskeySeed(
     consumed: false,
     createdAt: now,
   });
+  logEvent('auth.passkey.seed.begin', { accountId: account.id, challengeId });
   return { challengeId, options: generated.options };
 }
 

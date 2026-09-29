@@ -17,6 +17,8 @@ import { RecordingQuerier } from '@/lib/nostr/query';
 import { PostgresPushStore } from '@/lib/push-store';
 import { PostgresTrustStore } from '@/lib/trust-store';
 import { PostgresApiLogStore } from '@/lib/api-log';
+import { PostgresDiagnosticStore } from '@/lib/diagnostic-log';
+import { setDiagnosticSink } from '@/lib/log';
 import { PostgresFundingStore } from '@/lib/funding-store';
 import { PostgresDebugDbStore } from '@/lib/debug-db';
 import { PostgresBannerStore } from '@/lib/banner-store';
@@ -49,6 +51,7 @@ describe('openBootStores', () => {
 
   afterEach(() => {
     warn.mockRestore();
+    setDiagnosticSink(null);
     delete process.env['NOSTR_NSEC_KEK'];
   });
 
@@ -203,6 +206,7 @@ describe('openBootStores', () => {
       pushStore,
       trustStore,
       apiLogStore,
+      diagnosticStore,
       fundingStore,
       bannerStore,
       debugDbStore,
@@ -232,6 +236,7 @@ describe('openBootStores', () => {
     expect(pushStore).toBeInstanceOf(PostgresPushStore);
     expect(trustStore).toBeInstanceOf(PostgresTrustStore);
     expect(apiLogStore).toBeInstanceOf(PostgresApiLogStore);
+    expect(diagnosticStore).toBeInstanceOf(PostgresDiagnosticStore);
     expect(fundingStore).toBeInstanceOf(PostgresFundingStore);
     expect(bannerStore).toBeInstanceOf(PostgresBannerStore);
     expect(debugDbStore).toBeInstanceOf(PostgresDebugDbStore);
@@ -256,12 +261,17 @@ describe('openBootStores', () => {
     const accountImageIdx = executes.findIndex((q) =>
       /CREATE TABLE IF NOT EXISTS account_image/i.test(q),
     );
+    const diagnosticIdx = executes.findIndex((q) =>
+      /CREATE TABLE IF NOT EXISTS diagnostic_event/i.test(q),
+    );
     const dbChangeIdx = executes.findIndex((q) => /CREATE TABLE IF NOT EXISTS db_change/i.test(q));
     expect(trustIdx).toBeGreaterThanOrEqual(0);
     expect(fundingIdx).toBeGreaterThan(trustIdx);
     expect(apiLogIdx).toBeGreaterThan(fundingIdx);
     expect(accountImageIdx).toBeGreaterThan(apiLogIdx);
-    expect(dbChangeIdx).toBeGreaterThan(accountImageIdx);
+    expect(diagnosticIdx).toBeGreaterThan(accountImageIdx);
+    expect(dbChangeIdx).toBeGreaterThan(diagnosticIdx);
+    expect(executes.some((q) => q.startsWith('INSERT INTO diagnostic_event'))).toBe(true);
     expect(executes.some((q) => /CREATE TABLE/i.test(q))).toBe(true);
     expect(queries.some((q) => q.includes('min(paid_at)'))).toBe(true);
     const btcUsdIdx = executes.findIndex((q) => q.includes('btc_usd_daily'));
@@ -343,6 +353,7 @@ describe('openBootStores', () => {
   });
 
   it('logs gifts.fx.boot_fill.failed and still returns stores when fill throws', async () => {
+    const diagnosticInserts: unknown[] = [];
     const client: SqlClient = {
       query: async <T>(text: string): Promise<T[]> => {
         if (text.includes('min(paid_at)')) {
@@ -396,7 +407,11 @@ describe('openBootStores', () => {
         }
         return [] as T[];
       },
-      execute: async () => undefined,
+      execute: async (text: string, params?: readonly unknown[]) => {
+        if (text.includes('INSERT INTO diagnostic_event')) {
+          diagnosticInserts.push(params?.[3]);
+        }
+      },
     };
     const {
       authStore,
@@ -414,6 +429,7 @@ describe('openBootStores', () => {
       pushStore,
       trustStore,
       apiLogStore,
+      diagnosticStore,
       fundingStore,
       listDbChange,
       debugDbStore,
@@ -435,6 +451,7 @@ describe('openBootStores', () => {
     expect(pushStore).toBeInstanceOf(PostgresPushStore);
     expect(trustStore).toBeInstanceOf(PostgresTrustStore);
     expect(apiLogStore).toBeInstanceOf(PostgresApiLogStore);
+    expect(diagnosticStore).toBeInstanceOf(PostgresDiagnosticStore);
     expect(fundingStore).toBeInstanceOf(PostgresFundingStore);
     expect(debugDbStore).toBeInstanceOf(PostgresDebugDbStore);
     expect(btcUsdRates).toBeInstanceOf(PostgresBtcUsdStore);
@@ -466,6 +483,32 @@ describe('openBootStores', () => {
     expect(parsedEvents(warn).some((e) => e['event'] === 'gifts.fx.fiat_boot_fill.failed')).toBe(
       true,
     );
+    expect(diagnosticInserts).toEqual(
+      expect.arrayContaining(['gifts.fx.boot_fill.failed', 'gifts.fx.fiat_boot_fill.failed']),
+    );
+  });
+
+  it('logs diagnostic.write.failed when a boot diagnostic insert throws', async () => {
+    const client: SqlClient = {
+      query: async <T>(text: string): Promise<T[]> => {
+        if (text.includes('min(paid_at)')) {
+          throw new Error('range query failed');
+        }
+        return [] as T[];
+      },
+      execute: async (text: string) => {
+        if (text.includes('INSERT INTO diagnostic_event')) {
+          throw new Error('disk');
+        }
+      },
+    };
+    await openBootStores('postgres://gifts21@localhost/gifts21', () => client, {
+      fetchImpl: async () => new Response('[]', { status: 200 }),
+      candlesUrl: 'https://example.test/candles',
+    });
+    await Promise.resolve();
+    expect(parsedEvents(warn).some((e) => e['event'] === 'gifts.fx.boot_fill.failed')).toBe(true);
+    expect(parsedEvents(warn).some((e) => e['event'] === 'diagnostic.write.failed')).toBe(true);
   });
 
   it('logs a failed external-zapper backfill and still returns every durable store', async () => {

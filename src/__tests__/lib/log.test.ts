@@ -3,7 +3,7 @@ import { Hono } from 'hono';
 import { InMemoryApiLogStore } from '@/lib/api-log';
 import { issueSession } from '@/lib/auth/service';
 import { InMemoryAuthStore } from '@/lib/auth/store';
-import { errorLogFields, logEvent, requestLog, requestLogPath } from '@/lib/log';
+import { errorLogFields, logEvent, requestLog, requestLogPath, setDiagnosticSink } from '@/lib/log';
 
 function parsedEvents(warn: ReturnType<typeof vi.spyOn>): Array<Record<string, unknown>> {
   return warn.mock.calls
@@ -16,11 +16,13 @@ describe('logEvent', () => {
   let warn: ReturnType<typeof vi.spyOn>;
 
   beforeEach(() => {
+    setDiagnosticSink(null);
     warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
   });
 
   afterEach(() => {
     warn.mockRestore();
+    setDiagnosticSink(null);
   });
 
   it('writes ts and event with no extra fields', () => {
@@ -43,6 +45,50 @@ describe('logEvent', () => {
     expect(events[0]?.['event']).toBe('auth.login.ok');
     expect(events[0]?.['accountId']).toBe('acc');
     expect(events[0]?.['firstLogin']).toBe(true);
+  });
+
+  it('calls the sink after the console line with the same event and fields', () => {
+    const order: string[] = [];
+    warn.mockImplementation(() => {
+      order.push('console');
+    });
+    const sink = vi.fn(() => {
+      order.push('sink');
+    });
+    setDiagnosticSink(sink);
+    logEvent('e', { accountId: 'a' });
+    expect(order).toEqual(['console', 'sink']);
+    expect(sink).toHaveBeenCalledWith('e', { accountId: 'a' });
+  });
+
+  it('does not let a throwing sink escape logEvent', () => {
+    setDiagnosticSink(() => {
+      throw new Error('sink');
+    });
+    expect(() => {
+      logEvent('e', { accountId: 'a' });
+    }).not.toThrow();
+    expect(parsedEvents(warn).some((e) => e['event'] === 'e')).toBe(true);
+  });
+
+  it('prints a nested logEvent from a sink without re-entering the sink', () => {
+    const sink = vi.fn(() => {
+      logEvent('inner');
+    });
+    setDiagnosticSink(sink);
+    logEvent('outer');
+    expect(sink).toHaveBeenCalledTimes(1);
+    expect(parsedEvents(warn).map((e) => e['event'])).toEqual(['outer', 'inner']);
+  });
+
+  it('does not call a previous sink after setDiagnosticSink(null)', () => {
+    const sink = vi.fn();
+    setDiagnosticSink(sink);
+    logEvent('first');
+    setDiagnosticSink(null);
+    sink.mockClear();
+    logEvent('second');
+    expect(sink).not.toHaveBeenCalled();
   });
 });
 

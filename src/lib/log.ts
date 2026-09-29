@@ -6,11 +6,30 @@ import { resolveRequestAuth } from '@/lib/request-auth';
 /** JSON-serialisable event fields. No nested objects. */
 export type LogFields = { readonly [key: string]: string | number | boolean };
 
+/** Optional persistence hook for {@link logEvent}. Must not be the store itself. */
+export type DiagnosticSink = (event: string, fields: LogFields | undefined) => void;
+
+let diagnosticSink: DiagnosticSink | null = null;
+let diagnosticSinkDepth = 0;
+
+/**
+ * Install or clear the diagnostic persistence hook used by {@link logEvent}.
+ *
+ * @param next - Sink to call after the console line, or `null` to disable.
+ * @returns void
+ */
+export function setDiagnosticSink(next: DiagnosticSink | null): void {
+  diagnosticSink = next;
+}
+
 /**
  * Write one operator-facing JSON line.
  *
  * Uses `console.warn` (CONTRIBUTING forbids `console.log`).
- * Always includes `ts` (ISO-8601) and `event`.
+ * Always includes `ts` (ISO-8601) and `event`. When a sink is set and this
+ * call is not already inside a sink, the sink runs after the console line.
+ * A throwing sink does not escape. A sink that calls {@link logEvent} still
+ * prints, but does not re-enter the sink.
  *
  * @param event - Dotted event name, e.g. `auth.login.ok`.
  * @param fields - Extra fields; omit rather than passing empty strings unless the spec says otherwise.
@@ -18,6 +37,17 @@ export type LogFields = { readonly [key: string]: string | number | boolean };
  */
 export function logEvent(event: string, fields?: LogFields): void {
   console.warn(JSON.stringify({ ts: new Date().toISOString(), event, ...fields }));
+  if (diagnosticSink === null || diagnosticSinkDepth !== 0) {
+    return;
+  }
+  diagnosticSinkDepth += 1;
+  try {
+    diagnosticSink(event, fields);
+  } catch {
+    // Sink failures must not escape logEvent.
+  } finally {
+    diagnosticSinkDepth -= 1;
+  }
 }
 
 const SAFE_ERROR_NAME_PATTERN = /^[A-Za-z]{1,40}$/;
