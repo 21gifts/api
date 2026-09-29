@@ -203,7 +203,8 @@ export interface AppDeps {
   messageStore?: MessageStore;
   /**
    * Optional push of a first shop pin to `POST /map/places`. Default:
-   * {@link resolveMapPush} on `env`. Unset URL or token → nothing is sent.
+   * {@link resolveMapPush} on `env`. Off while `SHOP_PLACE_PUSH_ENABLED` is
+   * false, even when the URL and token are set.
    */
   mapPush?: MapPush;
   /** Optional AES-256 KEK for custodial nsec (memory boots may omit). */

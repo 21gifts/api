@@ -254,14 +254,14 @@ describe('resolveMapPush', () => {
     ).toBeUndefined();
   });
 
-  it('trims the url and the token', () => {
+  it('returns undefined even when the url and token are set', () => {
     const fetchImpl: MapFetch = async () => new Response('{}');
     expect(
       resolveMapPush(
         { OCP_MAP_BASE_URL: ' http://map.test/// ', OCP_PLACE_INGEST_TOKEN: ' secret ' },
         fetchImpl,
       ),
-    ).toMatchObject({ baseUrl: 'http://map.test', token: 'secret' });
+    ).toBeUndefined();
   });
 });
 
@@ -293,7 +293,7 @@ describe('createApp map push', () => {
     expect(calls).toEqual([]);
   });
 
-  it('posts one shop pin to the stripped map url', async () => {
+  it('posts nothing even when the url and token are set', async () => {
     const calls: RecordedCall[] = [];
     const fetchImpl: FetchFn = async (input, init) => {
       const headers = new Headers(init?.headers);
@@ -310,9 +310,7 @@ describe('createApp map push', () => {
       authStore: await shopAccount(),
     });
     expect(await postShop(app)).toBe(200);
-    expect(calls).toHaveLength(1);
-    expect(calls[0]?.url).toBe('http://map.test/map/places');
-    expect(calls[0]?.authorization).toBe('Bearer secret');
+    expect(calls).toEqual([]);
   });
 });
 

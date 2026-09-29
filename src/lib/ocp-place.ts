@@ -7,6 +7,7 @@
 
 import { logEvent } from '@/lib/log';
 import type { ForumPlace } from '@/lib/place';
+import { SHOP_PLACE_PUSH_ENABLED } from '@/lib/shop-place-push-enabled';
 /** HTTP fetch for the one-shot map ingest. */
 export type MapFetch = (input: string, init: RequestInit) => Promise<Response>;
 
@@ -18,7 +19,9 @@ export type MapPush = {
 };
 
 /**
- * Build a map push from the environment. A blank URL or token means no push.
+ * Build a map push from the environment. Off while
+ * {@link SHOP_PLACE_PUSH_ENABLED} is false, even when both variables are set.
+ * A blank URL or token also means no push.
  *
  * @param env - `OCP_MAP_BASE_URL` and `OCP_PLACE_INGEST_TOKEN`.
  * @param fetchImpl - HTTP fetch.
@@ -28,6 +31,9 @@ export function resolveMapPush(
   env: Record<string, string | undefined>,
   fetchImpl: MapFetch,
 ): MapPush | undefined {
+  if (!SHOP_PLACE_PUSH_ENABLED) {
+    return undefined;
+  }
   const rawUrl = env['OCP_MAP_BASE_URL'];
   const rawToken = env['OCP_PLACE_INGEST_TOKEN'];
   if (rawUrl === undefined || rawUrl.trim() === '') {
