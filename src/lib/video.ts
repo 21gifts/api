@@ -819,8 +819,9 @@ interface AudioChunkEdit {
  * field is 0, an offset that does not fit in its chunk-offset table (a
  * negative value, a value above 64 bits, or a 32-bit `stco` this edit does
  * not rewrite whose shifted value is above 32 bits), or a non-zero `moov`
- * size change that is not exactly one top-level `moov` or would shift a
- * chunk that does not sit strictly after that `moov`.
+ * size change that is not exactly one top-level `moov`, would shift a
+ * chunk that does not sit strictly after that `moov`, or would move a
+ * `moof` or `mfra` whose fragment offsets this edit does not rewrite.
  *
  * @param bytes - ISO-BMFF bytes. Not modified.
  * @returns A new copy, or the original `bytes` when nothing changes or the edit is aborted.
@@ -1001,11 +1002,15 @@ function offsetsStayInRange(
  * @param boxes - Every box in the file.
  * @param delta - Net size change of `moov`.
  * @returns The exclusive end of that `moov`, `null` when nothing shifts, or
- *   `abort` when the shift would address media that did not move.
+ *   `abort` when the shift would address media that did not move, including a
+ *   `moof` or `mfra` whose fragment offsets are not rewritten.
  */
 function moovEndForShift(boxes: IsoBmffBox[], delta: number): bigint | null | 'abort' {
   if (delta === 0) {
     return null;
+  }
+  if (boxes.some((box) => box.type === 'moof' || box.type === 'mfra')) {
+    return 'abort';
   }
   const moovs = boxes.filter(
     (box) =>
@@ -1425,7 +1430,7 @@ function packStts(deltas: number[]): Uint8Array {
 
 function packStsz(sizes: number[]): Uint8Array {
   const first = sizes[0];
-  const constant = first !== undefined && sizes.every((size) => size === first);
+  const constant = first !== undefined && first !== 0 && sizes.every((size) => size === first);
   const payload = new Uint8Array(constant ? 12 : 12 + sizes.length * 4);
   const view = new DataView(payload.buffer);
   view.setUint32(4, constant ? first : 0);

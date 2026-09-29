@@ -1618,6 +1618,85 @@ describe('dropZeroDurationAudioSamples', () => {
     expect(healed).not.toBe(input);
   });
 
+  it('leaves the file unchanged when another track cannot hold a shifted 32-bit offset', () => {
+    const media = Uint8Array.of(9, 9, 9, 9, 1, 2, 3, 4);
+    const input = movieWith(
+      concat(
+        videoTrak(0),
+        soundTrak(
+          concat(
+            sttsRuns([
+              [1, 0],
+              [7, 1024],
+            ]),
+            stscRuns([[1, 2, 1]]),
+            stszValues([4, 5, 6, 7, 8, 9, 10, 11]),
+            stcoValues([0, 0, 0, 0]),
+          ),
+        ),
+      ),
+      media,
+    );
+    const view = new DataView(input.buffer);
+    const marker = Buffer.from(input).indexOf('soun');
+    const audioStco = Buffer.from(input).indexOf('stco', marker) - 4;
+    for (let entry = 0; entry < 4; entry += 1) {
+      view.setUint32(audioStco + 16 + entry * 4, 0xfffffffc);
+    }
+    const videoStco = stcoBoxesIn(input)[0] ?? 0;
+    view.setUint32(videoStco + 16, 0xffffffff);
+    expect(dropZeroDurationAudioSamples(input)).toBe(input);
+  });
+
+  it('leaves a fragmented file unchanged when the movie header would move', () => {
+    const media = Uint8Array.of(0x11, 0x90, 0xaa, 0xbb, 0xcc, 0xdd);
+    const base = movieWith(
+      soundTrak(
+        concat(
+          sttsRuns([
+            [1, 0],
+            [1, 1024],
+          ]),
+          stscRuns([[1, 2, 1]]),
+          stszValues([2, 4]),
+          stcoValues([0]),
+        ),
+      ),
+      media,
+    );
+    for (const kind of ['moof', 'mfra']) {
+      const fragmented = concat(base, box(kind, new Uint8Array(8)));
+      expect(dropZeroDurationAudioSamples(fragmented)).toBe(fragmented);
+    }
+  });
+
+  it('keeps a per-sample size table when every kept sample has size 0', () => {
+    const media = Uint8Array.of(0x11, 0x90, 0xaa, 0xbb, 0xcc, 0xdd);
+    const input = movieWith(
+      soundTrak(
+        concat(
+          sttsRuns([
+            [1, 0],
+            [2, 1024],
+          ]),
+          stscRuns([[1, 3, 1]]),
+          stszValues([0, 0, 0]),
+          stcoValues([0]),
+        ),
+      ),
+      media,
+    );
+    const healed = dropZeroDurationAudioSamples(input);
+    expect(healed).not.toBe(input);
+    const at = Buffer.from(healed).indexOf('stsz');
+    const view = new DataView(healed.buffer, healed.byteOffset, healed.byteLength);
+    expect(view.getUint32(at - 4)).toBe(28);
+    expect(view.getUint32(at + 8)).toBe(0);
+    expect(view.getUint32(at + 12)).toBe(2);
+    expect(view.getUint32(at + 16)).toBe(0);
+    expect(view.getUint32(at + 20)).toBe(0);
+  });
+
   it('heals on upload and on read', async () => {
     const media = Uint8Array.of(0x11, 0x90, 0xaa, 0xbb, 0xcc, 0xdd);
     const broken = concat(
