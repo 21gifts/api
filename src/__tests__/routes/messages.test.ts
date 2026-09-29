@@ -11824,6 +11824,15 @@ describe('PATCH /messages/:id/text and GET /messages/:id/edits', () => {
     });
     expect(hidden.status).toBe(200);
     expect(((await hidden.json()) as { edits: unknown[] }).edits).toHaveLength(2);
+    await messages.create({
+      id: PLAIN_ID,
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'Hello',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+    });
     const plain = await mount(auth, messages).request('/messages/' + PLAIN_ID + '/edits', {
       headers: AUTH,
     });
