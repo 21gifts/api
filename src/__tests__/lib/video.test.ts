@@ -565,6 +565,44 @@ describe('video', () => {
       await removeForumVideo(messageId, 'video/mp4');
     }
   });
+
+  it('faststarts a quicktime file on read', async () => {
+    const mov = mdatFirstFixture();
+    mov.set([0x71, 0x74, 0x20, 0x20], 8);
+    const id = 'vid-mov-read';
+    await writeForumVideo(id, { contentType: 'video/quicktime', bytes: mov });
+    const path = videoFilePath(resolveMediaDir(), id, 'video/quicktime');
+    try {
+      const healed = await readForumVideoBytes(path, fs, {});
+      expect(topLevelTypes(healed)).toEqual(['ftyp', 'moov', 'mdat']);
+    } finally {
+      await removeForumVideo(id, 'video/quicktime');
+    }
+  });
+
+  it('does not rewrite a WebM file on read', async () => {
+    const webm = new Uint8Array([0x1a, 0x45, 0xdf, 0xa3, 0x77, 0x65, 0x62, 0x6d, 0x01]);
+    const id = 'vid-webm-read';
+    await writeForumVideo(id, { contentType: 'video/webm', bytes: webm });
+    const path = videoFilePath(resolveMediaDir(), id, 'video/webm');
+    let writes = 0;
+    const io = {
+      readFile: fs.readFile,
+      writeFile: async () => {
+        writes += 1;
+      },
+      rename: fs.rename,
+      unlink: fs.unlink,
+    };
+    try {
+      const loaded = await readForumVideoBytes(path, io, {});
+      expect(loaded).toEqual(webm);
+      expect(writes).toBe(0);
+      expect(new Uint8Array(await fs.readFile(path))).toEqual(webm);
+    } finally {
+      await removeForumVideo(id, 'video/webm');
+    }
+  });
 });
 
 describe('readVideoTakenAt', () => {

@@ -1677,9 +1677,10 @@ export async function writeForumVideo(
 }
 
 /**
- * Read video bytes, remux for faststart, correct a broken display matrix, drop
- * audio samples whose duration is 0, and rewrite the file when any change
- * applies. A successful or failed rewrite still returns the corrected bytes.
+ * Read video bytes, remux for faststart, correct a broken display matrix, and
+ * rewrite the file when any change applies. MP4 and MOV also drop audio
+ * samples whose duration is 0, matching upload. WebM skips that step.
+ * A successful or failed rewrite still returns the corrected bytes.
  * After a change, the public cache is purged when Cloudflare credentials and
  * a public origin are set.
  *
@@ -1691,7 +1692,9 @@ export async function writeForumVideo(
  * @param io - Disk ops; production omits this and uses `node:fs/promises`.
  * @param env - Used only to purge a cached copy after a heal. Defaults to `process.env`.
  * @param fetchImpl - Purge `fetch`. Defaults to the global `fetch`.
- * @returns Bytes to serve (moov before mdat, display matrix inside the frame, no zero-duration audio sample).
+ * @returns Bytes to serve. MP4 and MOV have moov before mdat, the display
+ * matrix inside the frame, and no zero-duration audio sample. WebM skips
+ * that audio step.
  */
 export async function readForumVideoBytes(
   path: string,
@@ -1701,7 +1704,12 @@ export async function readForumVideoBytes(
 ): Promise<Uint8Array> {
   const bytes = new Uint8Array(await io.readFile(path));
   const remuxed = faststartIsoBmff(bytes);
-  const normalized = dropZeroDurationAudioSamples(normalizeIsoBmffDisplayMatrix(remuxed));
+  const matrix = normalizeIsoBmffDisplayMatrix(remuxed);
+  const contentType = detectVideoContentType(bytes);
+  const normalized =
+    contentType === 'video/mp4' || contentType === 'video/quicktime'
+      ? dropZeroDurationAudioSamples(matrix)
+      : matrix;
   if (normalized !== bytes) {
     const tempPath = join(dirname(path), `.${basename(path)}.${crypto.randomUUID()}.tmp`);
     try {

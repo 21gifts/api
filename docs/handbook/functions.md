@@ -2549,7 +2549,7 @@
 - **Purpose:** `ftyp` / WebM magic → MIME.
 - **Inputs:** bytes.
 - **Returns / side effects:** MIME or null.
-- **Used by:** `decodeForumVideo`.
+- **Used by:** `decodeForumVideo`; `readForumVideoBytes`.
 
 ## Function: dropZeroDurationAudioSamples
 
@@ -2637,7 +2637,7 @@
 
 ## Function: readForumVideoBytes
 
-- **Purpose:** Read video bytes from disk, remux with `faststartIsoBmff`, correct a broken display matrix with `normalizeIsoBmffDisplayMatrix`, drop zero-duration audio samples with `dropZeroDurationAudioSamples`, and rewrite the file when any change applies (heal-on-read, including clips stored before this repair). Heal writes a sibling temp file named with `crypto.randomUUID()` in the same directory as `path`, then `rename`s that temp onto `path`. After a change, purges the public API and site video URL when Cloudflare credentials and `PUBLIC_BASE_URL` are set. Missing credentials are a no-op. A purge failure is logged as `messages.video.purge_failed` and does not fail the read.
+- **Purpose:** Read video bytes from disk, remux with `faststartIsoBmff`, correct a broken display matrix with `normalizeIsoBmffDisplayMatrix`, and rewrite the file when any change applies (heal-on-read, including clips stored before this repair). `dropZeroDurationAudioSamples` runs only when `detectVideoContentType` is `video/mp4` or `video/quicktime`, matching `decodeForumVideo`. WebM and any other container skip that step. Heal writes a sibling temp file named with `crypto.randomUUID()` in the same directory as `path`, then `rename`s that temp onto `path`. After a change, purges the public API and site video URL when Cloudflare credentials and `PUBLIC_BASE_URL` are set. Missing credentials are a no-op. A purge failure is logged as `messages.video.purge_failed` and does not fail the read.
 - **Inputs:** absolute path; optional `io` disk ops (tests); optional env; optional `fetch`.
 - **Returns / side effects:** Bytes to serve. On write/rename failure the original file is left in place and the corrected buffer is still returned.
 - **Used by:** `GET /messages/:id/video.*`.
