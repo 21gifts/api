@@ -11492,6 +11492,16 @@ describe('PATCH /messages/:id/text and GET /messages/:id/edits', () => {
     expect(await messages.listEdits(SHOP_ID)).toEqual([]);
   });
 
+  it('does not append history when the client omits the shop tag', async () => {
+    const auth = await staffStore('Ada');
+    const messages = new InMemoryMessageStore();
+    await shopNote(messages);
+    const res = await patchText(auth, SHOP_ID, { text: 'Cafe' }, messages);
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as { text: string }).text).toBe('Cafe\n\n#21GiftsShop');
+    expect(await messages.listEdits(SHOP_ID)).toEqual([]);
+  });
+
   it('edits an external shop note and a note whose author account is gone', async () => {
     const auth = await staffStore('Ada');
     const external = new InMemoryMessageStore();
