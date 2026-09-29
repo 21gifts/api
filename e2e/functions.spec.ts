@@ -253,6 +253,16 @@ test('Function: membersRoutes — GET /members/:accountId without bearer is 401'
   expect(res.status()).toBe(401);
 });
 
+test('Function: mentionQueryPrefix — GET /mentions without bearer is 401', async ({ request }) => {
+  const res = await request.get('/mentions');
+  expect(res.status()).toBe(401);
+});
+
+test('Function: mentionsRoutes — GET /mentions without bearer is 401', async ({ request }) => {
+  const res = await request.get('/mentions');
+  expect(res.status()).toBe(401);
+});
+
 test('Function: requireAction — GET /messages without bearer is 401', async ({ request }) => {
   const res = await request.get('/messages');
   expect(res.status()).toBe(401);
