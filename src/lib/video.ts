@@ -816,7 +816,9 @@ interface AudioChunkEdit {
  * unreferenced. The same `bytes` reference is returned when nothing changes
  * or the edit is aborted: a hole in a chunk, a table that cannot be checked,
  * an audio track whose samples all have duration 0, an ancestor whose size
- * field is 0, an offset that does not fit in 64 bits, or a non-zero `moov`
+ * field is 0, an offset that does not fit in its chunk-offset table (a
+ * negative value, a value above 64 bits, or a 32-bit `stco` this edit does
+ * not rewrite whose shifted value is above 32 bits), or a non-zero `moov`
  * size change that is not exactly one top-level `moov` or would shift a
  * chunk that does not sit strictly after that `moov`.
  *
