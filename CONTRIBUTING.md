@@ -105,6 +105,7 @@ api/
 │   │   ├── diagnostic-log.ts # Diagnostic event store (`diagnostic_event`)
 │   │   ├── debug-db.ts       # Operator read of every public table (`GET /debug/db`)
 │   │   ├── request-auth.ts   # Classify bearer for api_log (session/debug/spend/none)
+│   │   ├── request-meta.ts   # Validated client IP, country, ray, user agent, language, origin
 │   │   ├── conversation-store.ts  # ConversationStore port, memory + Postgres
 │   │   ├── conversation-push.ts  # notifyConversationMessage (DM Web Push; no in-app rows)
 │   │   ├── notification.ts   # Notification public JSON + bell fan-out (`notifyForumPost` / `notifyForumReply` / `notifyZap`) filtered by `notificationLevel` (`parseNotificationLevel` / `isStaffAccount` / `wantsNotification`); staff `notifyModeratorProposed`; targeted `notifyModeratorAppointed` and `notifyExternalForumReply` (not fan-out; the latter reaches only the parent note's author)
@@ -227,6 +228,7 @@ api/
 │       │   ├── diagnostic-log.test.ts
 │       │   ├── debug-db.test.ts
 │       │   ├── request-auth.test.ts
+│       │   ├── request-meta.test.ts
 │       │   ├── funding.test.ts
 │       │   ├── funding-store.test.ts
 │       │   ├── postgres-text-array.test.ts

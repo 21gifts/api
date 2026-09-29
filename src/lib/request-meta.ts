@@ -67,6 +67,10 @@ function readTextHeader(
 
 /**
  * Reads and validates client metadata from request headers.
+ *
+ * @param headers - Header lookup. Only `cf-connecting-ip`, `cf-ipcountry`,
+ * `cf-ray`, `user-agent`, `accept-language`, and `origin` are read.
+ * @returns Validated fields. Each is the original text or `null`.
  */
 export function readClientRequestMeta(headers: {
   get(name: string): string | null | undefined;
@@ -116,6 +120,9 @@ export function readClientRequestMeta(headers: {
 
 /**
  * Returns the non-null client metadata fields.
+ *
+ * @param meta - Validated client metadata.
+ * @returns Present string fields, in interface order. Nulls are omitted.
  */
 export function presentClientFields(meta: ClientRequestMeta): {
   [key: string]: string;

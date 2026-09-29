@@ -161,7 +161,7 @@ describe('diagnosticsRoutes', () => {
     const res = await post(app, {
       'cf-connecting-ip': '192.0.2.1',
       'cf-ipcountry': 't1',
-      'cf-ray': '0123456789abcdef-ZRH',
+      'cf-ray': 'not-a-ray',
       'user-agent': 'Test Agent',
       'accept-language': 'de-CH',
       origin: 'https://21.gifts',
@@ -170,7 +170,6 @@ describe('diagnosticsRoutes', () => {
     expect((await store.listLatest(1))[0]?.fields).toEqual({
       clientIp: '192.0.2.1',
       clientCountry: 'T1',
-      cfRay: '0123456789abcdef-ZRH',
       userAgent: 'Test Agent',
       acceptLanguage: 'de-CH',
       origin: 'https://21.gifts',
