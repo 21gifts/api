@@ -444,7 +444,8 @@ Graph tags.
 ### `POST /auth/passkey/register/begin`
 
 Starts a discoverable-credential registration. Empty body, `{}`, or a body
-without `name` mints a new account id (no row until finish). `user.name` is
+containing neither `name` nor `viewKey` mints a new account id (no row until
+finish). `user.name` is
 that UUID and `user.displayName` is `21.gifts`. Optional JSON
 `{ "viewKey": "<64 lowercase hex>" }` claims an existing provisioned account:
 `404` when the profile is missing, `409` when it already has a passkey, `400`
