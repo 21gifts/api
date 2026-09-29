@@ -444,15 +444,15 @@ Graph tags.
 ### `POST /auth/passkey/register/begin`
 
 Starts a discoverable-credential registration. Empty body, `{}`, or a body
-without `name` mints a new account id (no row until finish). `user.name` is
-that UUID and `user.displayName` is `21.gifts`. Non-empty invalid JSON is
-`400` `{ "error": "Begin body is not valid JSON" }` and does not open a
-challenge. Empty or whitespace-only body still starts a new registration.
-Optional JSON `{ "viewKey": "<64 lowercase hex>" }` claims an existing
-provisioned account: `404` when the profile is missing, `409` when it already
-has a passkey, `400` when `viewKey` is present but not a string. A string
-`viewKey` ignores `name` and does not overwrite the provisioned account's
-name or username, and it does not mint an id.
+containing neither `name` nor `viewKey` mints a new account id (no row until
+finish). `user.name` is that UUID and `user.displayName` is `21.gifts`.
+Non-empty invalid JSON is `400` `{ "error": "Begin body is not valid JSON" }`
+and does not open a challenge. Empty or whitespace-only body still starts a
+new registration. Optional JSON `{ "viewKey": "<64 lowercase hex>" }` claims
+an existing provisioned account: `404` when the profile is missing, `409`
+when it already has a passkey, `400` when `viewKey` is present but not a
+string. A string `viewKey` ignores `name` and does not overwrite the
+provisioned account's name or username, and it does not mint an id.
 
 Optional `{ "name": "<handle>" }` (not combined with a claim) validates the
 handle with `normalizeUsername` (1–32 characters of a-z, 0-9, hyphen,
