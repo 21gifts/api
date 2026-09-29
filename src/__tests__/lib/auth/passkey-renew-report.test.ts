@@ -14,10 +14,11 @@ describe('redactPasskeyRenewMessage', () => {
     expect(redactPasskeyRenewMessage(phrase)).toBe('[redacted]');
   });
 
-  it('redacts an 81-character run that starts after character 500', () => {
-    const head = `${'x'.repeat(80)}.`.repeat(6) + 'y'.repeat(14);
+  it('redacts a 64-character run that starts after character 500', () => {
+    const head = `${'a'.repeat(63)}.`.repeat(7) + 'b'.repeat(52);
     expect(head.length).toBe(500);
-    const value = `${head}.${'z'.repeat(81)}`;
+    expect(redactPasskeyRenewMessage(head)).toBe(head);
+    const value = `${head}${'z'.repeat(64)}`;
     expect(value.slice(0, 500)).toBe(head);
     expect(redactPasskeyRenewMessage(value)).toBe('[redacted]');
   });
