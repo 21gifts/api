@@ -140,6 +140,18 @@
 - **Used by:** Operators attributing who called the API (`gifts-debug api-log`).
 - **Auth:** `Authorization: Bearer` with `DEBUG_TOKEN`. Not an end-user session.
 
+## Endpoint: POST /diagnostics
+
+- **Purpose:** Public client diagnostic ingest with no auth. The JSON object requires `event` (`client.` plus 1–60 of `a-z`, digits, and `.`). Optional `name` (1–40 letters), `message` (1–120 of letters, digits, `.`, `_`, `:`, space, `-`; no slash), `prfPresent` (boolean, never the bytes), `challengeId` (64 lowercase hex), `accountId` (UUID), `stage` (`register` / `authenticate` / `seed` / `login` / `unhandled`), `status` (integer 100–599), and `path` (string; `/view/<segment>` becomes `/view/:viewKey`; rejected if it contains `?` or 32 lowercase hex digits (`0-9`, `a-f`) in a row). Any other key is rejected. A valid body is stored as a `client` row and answered with 204 and an empty body. `User-Agent` is not a body field; the server may store it as `userAgent` after stripping controls and truncating to 200. Rows are kept forever (no TTL, no DELETE). Secrets are not stored: no PRF bytes, mnemonic, session token, view key, nsec, Authorization, Cookie, WebAuthn challenge, attestation, signatures, or raw request bodies.
+- **Errors:** 400 `{ error: 'Invalid diagnostics' }` when JSON or any field fails the allowlist; 429 `{ error: 'Too many diagnostics' }` when the IP window (60) or the global window (600) in 60 seconds is full (the accept timestamp is not recorded on 429); 500 `{ error: 'Log is unavailable' }` when the insert throws (that failure does not consume a rate-limit slot).
+- **Auth:** None. No session and no debug bearer.
+
+## Endpoint: GET /debug/diagnostics
+
+- **Purpose:** Operator read of diagnostic rows, newest-first, cap 200, with `createdAt` as ISO-8601 and allowlisted scalar fields. Rows are kept forever (no TTL, no DELETE). No PRF bytes, mnemonic, session token, view key, nsec, Authorization, Cookie, WebAuthn challenge, attestation, signatures, or request bodies.
+- **Errors:** 503 `{ error: 'Debug is not configured' }` when `DEBUG_TOKEN` is unset or blank; 401 `{ error: 'Unauthorized' }` when the Bearer token does not match; 503 `{ error: 'Log is unavailable' }` if the store throws.
+- **Auth:** `Authorization: Bearer` with `DEBUG_TOKEN`. Not an end-user session.
+
 ## Endpoint: GET /debug/contacts
 
 - **Purpose:** Operator listing of private in-app contacts newest-first (cap 200), including `accountId`, name snapshot, text, and ISO `createdAt`.

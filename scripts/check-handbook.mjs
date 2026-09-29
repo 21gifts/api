@@ -138,6 +138,7 @@ function extractEndpoints() {
     'debug.ts': '/debug/accounts',
     'debug-contacts.ts': '/debug/contacts',
     'debug-api-log.ts': '/debug/api-log',
+    'debug-diagnostics.ts': '/debug/diagnostics',
     'debug-db.ts': '/debug/db',
     'debug-external.ts': '/debug/external-pubkeys',
     'debug-messages.ts': '/debug/messages',

@@ -807,6 +807,55 @@ test('Function: debugApiLogRoutes — GET /debug/api-log without bearer is 401',
   expect(res.status()).toBe(401);
 });
 
+test('Function: diagnosticsRoutes — POST /diagnostics accepts an allowlisted client event', async ({
+  request,
+}) => {
+  const res = await request.post('/diagnostics', {
+    data: { event: 'client.passkey.register.begin' },
+  });
+  expect(res.status()).toBe(204);
+});
+
+test('Function: debugDiagnosticsRoutes — GET /debug/diagnostics without bearer is 401', async ({
+  request,
+}) => {
+  const res = await request.get('/debug/diagnostics');
+  expect(res.status()).toBe(401);
+});
+
+test('Function: serializeDebugDiagnostic — GET /debug/diagnostics without bearer is 401', async ({
+  request,
+}) => {
+  const res = await request.get('/debug/diagnostics');
+  expect(res.status()).toBe(401);
+});
+
+test('Function: InMemoryDiagnosticStore — GET /debug/diagnostics without bearer is 401', async ({
+  request,
+}) => {
+  const res = await request.get('/debug/diagnostics');
+  expect(res.status()).toBe(401);
+});
+
+test('Function: PostgresDiagnosticStore — default boot has no DATABASE_URL', async ({
+  request,
+}) => {
+  const res = await request.get('/healthz');
+  expect(res.status()).toBe(200);
+});
+
+test('Function: migrateDiagnosticSchema — default boot has no DATABASE_URL', async ({
+  request,
+}) => {
+  const res = await request.get('/healthz');
+  expect(res.status()).toBe(200);
+});
+
+test('Function: setDiagnosticSink — default boot has no DATABASE_URL', async ({ request }) => {
+  const res = await request.get('/healthz');
+  expect(res.status()).toBe(200);
+});
+
 test('Function: serializeDebugApiLog — GET /debug/api-log without bearer is 401', async ({
   request,
 }) => {

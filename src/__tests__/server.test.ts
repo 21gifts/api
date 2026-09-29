@@ -1,5 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { InMemoryAuthStore } from '@/lib/auth/store';
+import type { DiagnosticStore } from '@/lib/diagnostic-log';
+import { setDiagnosticSink } from '@/lib/log';
 import { unsignedNostrDefaults } from '@/lib/message';
 import { InMemoryMessageStore, PostgresMessageStore } from '@/lib/message-store';
 import { RecordingPublisher } from '@/lib/nostr/publish';
@@ -35,6 +37,7 @@ describe('createApp', () => {
 
   afterEach(() => {
     warn.mockRestore();
+    setDiagnosticSink(null);
   });
 
   it('accepts an injected Nostr KEK', async () => {
@@ -91,6 +94,20 @@ describe('createApp', () => {
   it('does not emit http.request for GET /healthz', async () => {
     await createApp().request('/healthz');
     expect(parsedEvents(warn).some((e) => e['event'] === 'http.request')).toBe(false);
+  });
+
+  it('warns diagnostic.write.failed when the sink append rejects', async () => {
+    const diagnosticStore: DiagnosticStore = {
+      append: () => Promise.reject(new Error('disk')),
+      listLatest: () => Promise.resolve([]),
+    };
+    const app = createApp({ diagnosticStore });
+    await app.request('/auth/passkey/register/begin', { method: 'POST' });
+    await app.request('/pay/_');
+    await new Promise<void>((resolve) => {
+      setTimeout(resolve, 0);
+    });
+    expect(parsedEvents(warn).some((e) => e['event'] === 'diagnostic.write.failed')).toBe(true);
   });
 
   it('mounts /info', async () => {
