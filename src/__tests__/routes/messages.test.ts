@@ -11388,10 +11388,11 @@ describe('PATCH /messages/:id/text and GET /messages/:id/edits', () => {
     expect(listed.status).toBe(403);
   });
 
-  it('returns 400 for a bad id, a bad body, and text that cannot be stored', async () => {
+  it('returns 404 for a non-UUID id and 400 for a bad body or text that cannot be stored', async () => {
     const auth = await staffStore('Ada');
     const badId = await patchText(auth, 'nope', { text: 'Cafe' });
     expect(badId.status).toBe(404);
+    expect(await badId.json()).toEqual({ error: 'Not found' });
     const missingText = await patchText(auth, SHOP_ID, {});
     expect(missingText.status).toBe(400);
     expect(await missingText.json()).toEqual({ error: 'Invalid body' });
