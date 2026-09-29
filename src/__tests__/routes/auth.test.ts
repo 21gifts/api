@@ -854,18 +854,18 @@ describe('auth routes', () => {
       expect(finish.status).toBe(200);
       const finishBody = (await finish.json()) as {
         token?: unknown;
-        account: {
-          id: string;
-          walletRequired: boolean;
-          walletBackupSeenAt: number | null;
-          passkeyCredentialId: string | null;
-        };
+        account?: unknown;
+        id: string;
+        walletRequired: boolean;
+        walletBackupSeenAt: number | null;
+        passkeyCredentialId: string | null;
       };
       expect(finishBody).not.toHaveProperty('token');
-      expect(finishBody.account.id).toBe(accountId);
-      expect(finishBody.account.walletRequired).toBe(true);
-      expect(finishBody.account.walletBackupSeenAt).toBe(9);
-      expect(finishBody.account.passkeyCredentialId).toBe('cred-2');
+      expect(finishBody).not.toHaveProperty('account');
+      expect(finishBody.id).toBe(accountId);
+      expect(finishBody.walletRequired).toBe(true);
+      expect(finishBody.walletBackupSeenAt).toBe(9);
+      expect(finishBody.passkeyCredentialId).toBe('cred-2');
       expect((await store.getPasskeyCredential('cred-1'))?.accountId).toBe(accountId);
       expect((await store.getPasskeyCredential('cred-2'))?.accountId).toBe(accountId);
       expect((await store.getPasskeyCredentialForAccount(accountId))?.credentialId).toBe('cred-2');
@@ -1183,15 +1183,15 @@ describe('auth routes', () => {
       });
       expect(finish.status).toBe(200);
       const finishBody = (await finish.json()) as {
-        account: {
-          passkeyRenewFailed: boolean;
-          passkeyRenewClosed: boolean;
-          walletRequired: boolean;
-        };
+        account?: unknown;
+        passkeyRenewFailed: boolean;
+        passkeyRenewClosed: boolean;
+        walletRequired: boolean;
       };
-      expect(finishBody.account.passkeyRenewFailed).toBe(false);
-      expect(finishBody.account.passkeyRenewClosed).toBe(false);
-      expect(finishBody.account.walletRequired).toBe(true);
+      expect(finishBody).not.toHaveProperty('account');
+      expect(finishBody.passkeyRenewFailed).toBe(false);
+      expect(finishBody.passkeyRenewClosed).toBe(false);
+      expect(finishBody.walletRequired).toBe(true);
       expect(await store.hasUnacknowledgedPasskeyRenewFailure(accountId)).toBe(false);
       const succeeded = store.inserts.filter((row) => row.outcome === 'succeeded');
       expect(succeeded).toHaveLength(1);

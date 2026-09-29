@@ -626,9 +626,10 @@ A 400 or 409 after the session is known stores a failed renew row and does
 not change the account. Success stores `outcome: "succeeded"` with null
 error fields, then acknowledges open failed rows. 401 and 500 store no row.
 
-**Response** `200`: `{ "account": { ... } }` — owner JSON via
-`serializeOwnerAccountWithPosts`, no `token`. `passkeyCredentialId` is the
-new credential id, `walletRequired` is true, `passkeyRenewClosed` is false,
+**Response** `200`: the owner account itself, via
+`serializeOwnerAccountWithPosts`, same shape as `GET /me`. No `token` and
+no `account` wrapper. `passkeyCredentialId` is the new credential id,
+`walletRequired` is true, `passkeyRenewClosed` is false,
 `walletBackupSeenAt` is unchanged. Logs `auth.passkey.seed.ok` only on success.
 
 Missing or invalid Bearer stays **401** `{ "error": "Unauthorized" }`.
