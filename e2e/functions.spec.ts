@@ -178,6 +178,27 @@ test('Function: markWalletBackupSeen — POST /me/wallet-backup-seen without bea
   expect(res.status()).toBe(401);
 });
 
+test('Function: capPasskeyRenewText — POST /me/passkey-renew/report without bearer is 401', async ({
+  request,
+}) => {
+  const res = await request.post('/me/passkey-renew/report');
+  expect(res.status()).toBe(401);
+});
+
+test('Function: redactPasskeyRenewField — POST /me/passkey-renew/report field redaction without bearer is 401', async ({
+  request,
+}) => {
+  const res = await request.post('/me/passkey-renew/report');
+  expect(res.status()).toBe(401);
+});
+
+test('Function: redactPasskeyRenewMessage — POST /me/passkey-renew/ack without bearer is 401', async ({
+  request,
+}) => {
+  const res = await request.post('/me/passkey-renew/ack');
+  expect(res.status()).toBe(401);
+});
+
 test('Function: aboutMeFromNote — PUT /me/about without bearer is 401', async ({ request }) => {
   const res = await request.put('/me/about', { data: { text: 'Hi' } });
   expect(res.status()).toBe(401);

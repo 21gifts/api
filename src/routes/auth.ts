@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { Hono } from 'hono';
 import { z } from 'zod';
 import { resolveWebAuthnConfig } from '@/lib/config';
@@ -68,6 +69,33 @@ function passkeyFailFields(
     return { challengeId, error };
   }
   return { error };
+}
+
+/**
+ * Record a seed-path passkey renew row. Unexported so it does not need a
+ * handbook heading. Does not change the account row.
+ */
+async function recordPasskeySeedAttempt(
+  deps: AuthRouteDeps,
+  accountId: string,
+  userAgent: string | undefined,
+  stage: 'begin' | 'finish',
+  outcome: 'failed' | 'succeeded',
+  httpStatus: number | null,
+  message: string | null,
+): Promise<void> {
+  await deps.store.insertPasskeyRenewAttempt({
+    id: randomUUID(),
+    accountId,
+    createdAt: deps.now(),
+    stage,
+    outcome,
+    errorName: null,
+    errorCode: null,
+    httpStatus,
+    message,
+    userAgent: userAgent ?? null,
+  });
 }
 
 /**
@@ -256,6 +284,15 @@ export function authRoutes(deps: AuthRouteDeps): Hono {
         account,
       );
       if (!('challengeId' in started)) {
+        await recordPasskeySeedAttempt(
+          deps,
+          account.id,
+          c.req.header('user-agent'),
+          'begin',
+          'failed',
+          409,
+          started.error,
+        );
         return c.json({ error: started.error }, 409);
       }
       return c.json(started, 200);
@@ -273,16 +310,37 @@ export function authRoutes(deps: AuthRouteDeps): Hono {
       if (account === null) {
         return c.json({ error: 'Unauthorized' }, 401);
       }
+      const userAgent = c.req.header('user-agent');
       if (account.walletRequired === true) {
+        const alreadyHasPhrase = 'This account already has a recovery phrase';
         logEvent('auth.passkey.seed.fail', {
           accountId: account.id,
-          error: 'This account already has a recovery phrase',
+          error: alreadyHasPhrase,
         });
-        return c.json({ error: 'This account already has a recovery phrase' }, 409);
+        await recordPasskeySeedAttempt(
+          deps,
+          account.id,
+          userAgent,
+          'finish',
+          'failed',
+          409,
+          alreadyHasPhrase,
+        );
+        return c.json({ error: alreadyHasPhrase }, 409);
       }
       const parsed = passkeyFinishBody.safeParse(await c.req.json().catch(() => null));
       if (!parsed.success) {
-        return c.json({ error: 'Expected a JSON body with challengeId and credential' }, 400);
+        const badBody = 'Expected a JSON body with challengeId and credential';
+        await recordPasskeySeedAttempt(
+          deps,
+          account.id,
+          userAgent,
+          'finish',
+          'failed',
+          400,
+          badBody,
+        );
+        return c.json({ error: badBody }, 400);
       }
       const result = await finishPasskeySeed(
         deps.store,
@@ -300,8 +358,27 @@ export function authRoutes(deps: AuthRouteDeps): Hono {
           passkeyFailFields(parsed.data.challengeId, result.error),
         );
         const status = result.error === 'This account already has a recovery phrase' ? 409 : 400;
+        await recordPasskeySeedAttempt(
+          deps,
+          account.id,
+          userAgent,
+          'finish',
+          'failed',
+          status,
+          result.error,
+        );
         return c.json({ error: result.error }, status);
       }
+      await recordPasskeySeedAttempt(
+        deps,
+        result.account.id,
+        userAgent,
+        'finish',
+        'succeeded',
+        null,
+        null,
+      );
+      await deps.store.acknowledgePasskeyRenewFailures(result.account.id, deps.now());
       logEvent('auth.passkey.seed.ok', { accountId: result.account.id });
       return c.json(
         {
