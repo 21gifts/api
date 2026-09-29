@@ -432,7 +432,6 @@ export function authRoutes(deps: AuthRouteDeps): Hono {
         account,
       );
       if (!('challengeId' in started)) {
-        logEvent('auth.passkey.seed.fail', { accountId: account.id, error: started.error });
         await recordPasskeySeedAttempt(
           deps,
           account.id,

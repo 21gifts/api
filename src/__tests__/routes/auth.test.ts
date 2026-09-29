@@ -1194,13 +1194,13 @@ describe('auth routes', () => {
       });
       expect(await store.listPasskeyChallenges()).toEqual(before);
       expect(
-        parsedEvents(warn).some(
+        parsedEvents(warn).filter(
           (e) =>
             e['event'] === 'auth.passkey.seed.fail' &&
             e['error'] === 'This account already has a recovery phrase' &&
             e['accountId'] === accountId,
         ),
-      ).toBe(true);
+      ).toHaveLength(1);
     });
 
     it('returns 409 on seed finish without parsing a body when walletRequired is true', async () => {
