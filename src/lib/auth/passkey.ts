@@ -7,6 +7,7 @@ import { CHALLENGE_TTL_MS } from '@/lib/config';
 import type { WebAuthnRuntimeConfig } from '@/lib/config';
 import { logEvent } from '@/lib/log';
 import { ensureAccountNostrKey, generateNostrKeyRecord, type NostrKeygen } from '@/lib/nostr/keys';
+import { normalizeUsername } from '@/lib/username';
 
 /** Browser-facing payload from a passkey begin step. */
 export interface PasskeyBeginResult {
@@ -64,6 +65,12 @@ const CLAIM_ALREADY_HAS_PASSKEY = 'This profile already has a passkey';
 /** Stable 409 copy when the account already has a seed-bearing passkey. */
 const SEED_ALREADY_HAS_PHRASE = 'This account already has a recovery phrase';
 
+/** Stable 409 copy when the register-challenge name is taken. */
+const USERNAME_IN_USE = 'Username is already in use';
+
+/** Stable 400 copy when a stored register name no longer normalises. */
+const USERNAME_INVALID = 'Username must be 1–32 characters of a-z, 0-9, hyphen, underscore, or dot';
+
 /**
  * Start passkey registration: mint a pending account id and creation options.
  *
@@ -74,6 +81,8 @@ const SEED_ALREADY_HAS_PHRASE = 'This account already has a recovery phrase';
  * @param ceremony - WebAuthn collaborator.
  * @param config - RP ID, name, and allowed origins.
  * @param now - Current time in epoch milliseconds.
+ * @param requestedName - Already-normalised handle, or `null`/`undefined`
+ *   for a nameless registration. Uniqueness is the caller's job.
  * @returns `challengeId` plus creation options.
  */
 export async function startPasskeyRegistration(
@@ -81,14 +90,23 @@ export async function startPasskeyRegistration(
   ceremony: PasskeyCeremony,
   config: WebAuthnRuntimeConfig,
   now: number,
+  requestedName?: string | null,
 ): Promise<PasskeyBeginResult> {
   const accountId = crypto.randomUUID();
+  let userName: string = accountId;
+  let userDisplayName = '21.gifts';
+  let storedName: string | null = null;
+  if (typeof requestedName === 'string') {
+    userName = requestedName;
+    userDisplayName = requestedName;
+    storedName = requestedName;
+  }
   const generated = await ceremony.generateRegistrationOptions({
     rpName: config.rpName,
     rpID: config.rpId,
     userID: new TextEncoder().encode(accountId),
-    userName: accountId,
-    userDisplayName: '21.gifts',
+    userName,
+    userDisplayName,
   });
   const challengeId = randomHex(32);
   await store.createPasskeyChallenge({
@@ -98,6 +116,7 @@ export async function startPasskeyRegistration(
     accountId,
     consumed: false,
     createdAt: now,
+    requestedName: storedName,
   });
   logEvent('auth.passkey.register.begin', { accountId, challengeId });
   return { challengeId, options: generated.options };
@@ -162,6 +181,12 @@ export async function startPasskeyClaim(
  * stores walletRequired true and walletBackupSeenAt null; optional
  * `nostr` mints a custodial nsec (rolls the account back if keygen fails) and
  * a duplicate credential id rolls the new account back via `deleteAccount`.
+ * A string `requestedName` on the challenge is stored as `name` and
+ * `username` after a second normalisation and uniqueness check. A handle
+ * that no longer normalises is the username charset error. A taken handle,
+ * or a named `createAccount` that inserts nothing, is
+ * `{ ok: false, error: "Username is already in use" }` with no credential
+ * and no session.
  *
  * @param store - Auth persistence port.
  * @param ceremony - WebAuthn collaborator.
@@ -248,11 +273,23 @@ export async function finishPasskeyRegistration(
     const claimed: Account = { ...existing, walletRequired: true };
     return mintSession(store, now, claimed);
   }
+  let name: string | null = null;
+  if (typeof challenge.requestedName === 'string') {
+    const handle = normalizeUsername(challenge.requestedName);
+    if (handle === null) {
+      return { ok: false, error: USERNAME_INVALID };
+    }
+    if ((await store.getAccountByUsername(handle)) !== undefined) {
+      return { ok: false, error: USERNAME_IN_USE };
+    }
+    name = handle;
+  }
   const account: Account = {
     id: accountId,
     linkingKey: null,
     role: 'basis',
-    name: null,
+    name,
+    ...(name === null ? {} : { username: name }),
     location: null,
     lightningAddress: null,
     lightningAddressVerified: false,
@@ -269,6 +306,12 @@ export async function finishPasskeyRegistration(
     walletBackupSeenAt: null,
   };
   await store.createAccount(account);
+  if (
+    typeof challenge.requestedName === 'string' &&
+    (await store.getAccount(accountId)) === undefined
+  ) {
+    return { ok: false, error: USERNAME_IN_USE };
+  }
   if (nostr !== undefined) {
     try {
       const record = await generateNostrKeyRecord(accountId, nostr.kek, nostr.keygen);

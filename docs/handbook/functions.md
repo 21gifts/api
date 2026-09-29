@@ -1873,8 +1873,8 @@
 
 ## Function: startPasskeyRegistration
 
-- **Purpose:** Mints WebAuthn creation options and a pending account UUID (row created only on finish). Display name is always `21.gifts`.
-- **Inputs:** store, ceremony, config, now.
+- **Purpose:** Mints WebAuthn creation options and a pending account UUID (row created only on finish). A normalized `requestedName` is both `user.name` and `user.displayName` and is stored on the challenge. Without it, `user.name` is the new UUID and the display name is `21.gifts`.
+- **Inputs:** store, ceremony, config, now, optional `requestedName`.
 - **Returns / side effects:** `{ challengeId, options }`; persists a passkey challenge.
 - **Used by:** `POST /auth/passkey/register/begin` when the body has no string `viewKey`.
 

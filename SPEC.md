@@ -443,13 +443,26 @@ Graph tags.
 
 ### `POST /auth/passkey/register/begin`
 
-Starts a discoverable-credential registration. Empty body mints a new account
-id (no row until finish). Optional JSON `{ "viewKey": "<64 lowercase hex>" }`
-claims an existing provisioned account: `404` when the profile is missing,
-`409` when it already has a passkey, `400` when `viewKey` is present but not a
-string. Non-empty invalid JSON is `400`
-`{ "error": "Begin body is not valid JSON" }` and does not open a challenge.
-Empty or whitespace-only body still starts a new registration.
+Starts a discoverable-credential registration. Empty body, `{}`, or a body
+without `name` mints a new account id (no row until finish). `user.name` is
+that UUID and `user.displayName` is `21.gifts`. Non-empty invalid JSON is
+`400` `{ "error": "Begin body is not valid JSON" }` and does not open a
+challenge. Empty or whitespace-only body still starts a new registration.
+Optional JSON `{ "viewKey": "<64 lowercase hex>" }` claims an existing
+provisioned account: `404` when the profile is missing, `409` when it already
+has a passkey, `400` when `viewKey` is present but not a string. A string
+`viewKey` ignores `name` and does not overwrite the provisioned account's
+name or username, and it does not mint an id.
+
+Optional `{ "name": "<handle>" }` (not combined with a claim) validates the
+handle with `normalizeUsername` (1–32 characters of a-z, 0-9, hyphen,
+underscore, or dot). Non-string `name` (including `null`) is `400`
+`{ "error": "Expected a JSON body with an optional \"name\" string" }`. An
+invalid handle is `400` with that username charset error. A taken handle is
+`409` `{ "error": "Username is already in use" }`. Failed begin writes no
+challenge row. On success the challenge stores `requestedName` as the
+normalised handle; `user.name` and `user.displayName` are that handle.
+`user.id` remains the pending account UUID encoded as UTF-8.
 
 When `WEBAUTHN_RP_ID` is unset, blank, not on the allowlist (`21.gifts` /
 `dev.21.gifts` / `localhost`), or no CORS origin matches that RP ID:
@@ -490,18 +503,20 @@ Body:
 must be in the RP ID's expected origins (CORS allowlist filtered to that RP
 ID).
 
-| Status | Body                                                                                              | When                                                                |
-| ------ | ------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------- |
-| 500    | `{ "error": "Server auth is not configured" }`                                                    | RP ID missing, not on the allowlist, or no matching origin          |
-| 400    | `{ "error": "Finish body is not valid JSON" }`                                                    | Body is not JSON                                                    |
-| 400    | `{ "error": "Expected a JSON body with challengeId and credential" }`                             | Missing body, or JSON that is not `{ challengeId, credential }`     |
-| 400    | `{ "error": "Unknown or expired challenge" }`                                                     | Unknown `challengeId`                                               |
-| 400    | `{ "error": "Challenge expired" }`                                                                | Past challenge TTL                                                  |
-| 400    | `{ "error": "Challenge already used" }`                                                           | Finish already attempted; challenge is consumed before verification |
-| 400    | `{ "error": "Wrong challenge type" }`                                                             | Challenge is not `register`                                         |
-| 400    | `{ "error": "Invalid origin" }`                                                                   | Missing or disallowed `Origin`                                      |
-| 400    | `{ "error": "Invalid passkey" }`                                                                  | Attestation verify failed or duplicate credential                   |
-| 403    | `{ "error": "You signed in with the wrong account. Please try again with the correct account." }` | Account with `sessionRefused`; no bearer is persisted               |
+| Status | Body                                                                                              | When                                                                                                    |
+| ------ | ------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------- |
+| 500    | `{ "error": "Server auth is not configured" }`                                                    | RP ID missing, not on the allowlist, or no matching origin                                              |
+| 400    | `{ "error": "Finish body is not valid JSON" }`                                                    | Body is not JSON                                                                                        |
+| 400    | `{ "error": "Expected a JSON body with challengeId and credential" }`                             | Missing body, or JSON that is not `{ challengeId, credential }`                                         |
+| 400    | `{ "error": "Unknown or expired challenge" }`                                                     | Unknown `challengeId`                                                                                   |
+| 400    | `{ "error": "Challenge expired" }`                                                                | Past challenge TTL                                                                                      |
+| 400    | `{ "error": "Challenge already used" }`                                                           | Finish already attempted; challenge is consumed before verification                                     |
+| 400    | `{ "error": "Wrong challenge type" }`                                                             | Challenge is not `register`                                                                             |
+| 400    | `{ "error": "Invalid origin" }`                                                                   | Missing or disallowed `Origin`                                                                          |
+| 400    | `{ "error": "Invalid passkey" }`                                                                  | Attestation verify failed or duplicate credential                                                       |
+| 400    | `{ "error": "Username must be 1–32 characters of a-z, 0-9, hyphen, underscore, or dot" }`         | Stored register name no longer normalizes; no credential and no session                                 |
+| 403    | `{ "error": "You signed in with the wrong account. Please try again with the correct account." }` | Account with `sessionRefused`; no bearer is persisted                                                   |
+| 409    | `{ "error": "Username is already in use" }`                                                       | Register-challenge name taken at finish, or the account row was not inserted; no credential, no session |
 
 **Response** `200`:
 
@@ -542,7 +557,7 @@ ID).
 }
 ```
 
-The `account` object is the same owner JSON as `GET /me` (includes `viewKey`, `setup`, `missing`, `hasPosted`, `aboutMe`, `aboutMeHasPhoto`, `aboutMessageId`, `notificationLevel`, `amountUnit`, `locale`, `fiat`, `walletRequired`, `walletBackupSeenAt`, `passkeyCredentialId`, `passkeyRenewFailed`, `passkeyRenewClosed`, and `passkeyRenewPrfUnsupported`). `passkeyRenewPrfUnsupported` is true only when the newest unacknowledged failed row has error name `prfUnsupported`. `locale` and `fiat` are null until the member's app stores them. The example above is a new register (`walletRequired: true`, `setup: "name"` when the name is unset). The recovery phrase is not a setup step and does not change `setup` or `missing`. Existing members start with `walletRequired: false`. Seed finish sets `walletRequired: true` and does not change `walletBackupSeenAt`. Replace refuses and changes nothing. `walletBackupSeenAt` does not decide whether a seed exists.
+The `account` object is the same owner JSON as `GET /me` (includes `viewKey`, `setup`, `missing`, `hasPosted`, `aboutMe`, `aboutMeHasPhoto`, `aboutMessageId`, `notificationLevel`, `amountUnit`, `locale`, `fiat`, `walletRequired`, `walletBackupSeenAt`, `passkeyCredentialId`, `passkeyRenewFailed`, `passkeyRenewClosed`, and `passkeyRenewPrfUnsupported`). `passkeyRenewPrfUnsupported` is true only when the newest unacknowledged failed row has error name `prfUnsupported`. `locale` and `fiat` are null until the member's app stores them. The example above is a nameless new register (`name: null`, `username: null`, `setup: "name"`). When begin stored a name, `name` and `username` are that normalised handle (example `ada`), `nameSkippedAt` stays null, there is no profile note, and `setup` is `lightning-address`. Finish does not take `name` from the body. The recovery phrase is not a setup step and does not change `setup` or `missing`. Existing members start with `walletRequired: false`. Seed finish sets `walletRequired: true` and does not change `walletBackupSeenAt`. Replace refuses and changes nothing. `walletBackupSeenAt` does not decide whether a seed exists. The nameless example remains `walletRequired: true` with `setup: "name"` when the name is unset.
 
 A new register row is stored with `walletRequired: true` and `walletBackupSeenAt: null`. First-passkey claim of a provisioned row sets `walletRequired: true` in the same write as the credential (`createFirstPasskeyCredential`: Postgres CTE locks the account row with `FOR UPDATE`, then inserts and sets `wallet_required`; memory store writes both in one method) and does not clear a seen timestamp. Passkey replace refuses and does not change these columns. Seed finish sets `walletRequired: true` without changing `walletBackupSeenAt`. Operator `POST /debug/accounts` provision leaves `walletRequired` false. The api never stores a mnemonic or PRF output.
 

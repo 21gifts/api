@@ -3,8 +3,8 @@
  * `DATABASE_URL` is set. `CREATE TABLE IF NOT EXISTS` is safe to re-run;
  * `ALTER TABLE` backfills `account.name`, nullable `linking_key`,
  * `forum_laws_dismissed`, `rules_agreed_at`, `notification_level`,
- * `amount_unit`, `locale`, `fiat`, `session_refused`, `wallet_required`, and
- * `wallet_backup_seen_at` on
+ * `amount_unit`, `locale`, `fiat`, `session_refused`, `wallet_required`,
+ * `wallet_backup_seen_at`, and `passkey_challenge.requested_name` on
  * databases created before those columns existed.
  * Also creates `passkey_renew_attempt` (failed, cancelled, and
  * server-written succeeded seed rows).
@@ -163,4 +163,5 @@ export const AUTH_SCHEMA_SQL: readonly string[] = [
     CHECK (client_capabilities IS NULL OR (char_length(client_capabilities) <= 1200 AND client_capabilities ~ '^[A-Za-z][A-Za-z0-9]{0,40}(,[A-Za-z][A-Za-z0-9]{0,40})*$'))`,
   `CREATE INDEX IF NOT EXISTS passkey_renew_attempt_account_idx
     ON passkey_renew_attempt (account_id, created_at DESC)`,
+  `ALTER TABLE passkey_challenge ADD COLUMN IF NOT EXISTS requested_name text`,
 ];

@@ -190,6 +190,107 @@ describe('passkey registration', () => {
     expect(pending?.accountId).toEqual(expect.any(String));
     expect(await store.getAccount(pending?.accountId ?? '')).toBeUndefined();
   });
+
+  it('puts the requested name on registration options and the challenge', async () => {
+    const store = new InMemoryAuthStore();
+    const ceremony = new FakePasskeyCeremony();
+    const begin = await startPasskeyRegistration(store, ceremony, CONFIG, T0, 'ada');
+    const challenge = await store.getPasskeyChallenge(begin.challengeId);
+    expect(challenge?.requestedName).toBe('ada');
+    const options = begin.options as {
+      user: { id: string; name: string; displayName: string };
+    };
+    expect(options.user.name).toBe('ada');
+    expect(options.user.displayName).toBe('ada');
+    expect(options.user.id).toBe(challenge?.accountId);
+    expect(options.user.id).not.toBe('ada');
+  });
+
+  it('keeps nameless registration when the fifth argument is omitted', async () => {
+    const store = new InMemoryAuthStore();
+    const ceremony = new FakePasskeyCeremony();
+    const begin = await startPasskeyRegistration(store, ceremony, CONFIG, T0);
+    const challenge = await store.getPasskeyChallenge(begin.challengeId);
+    expect(challenge?.requestedName).toBeNull();
+    const options = begin.options as {
+      user: { id: string; name: string; displayName: string };
+    };
+    expect(options.user.displayName).toBe('21.gifts');
+    expect(options.user.name).toBe(challenge?.accountId);
+    expect(options.user.id).toBe(challenge?.accountId);
+  });
+
+  it('creates a nameless account with name null and no username', async () => {
+    const store = new InMemoryAuthStore();
+    const ceremony = new FakePasskeyCeremony();
+    const begin = await startPasskeyRegistration(store, ceremony, CONFIG, T0);
+    const finish = await finishPasskeyRegistration(
+      store,
+      ceremony,
+      CONFIG,
+      T0,
+      ORIGIN,
+      begin.challengeId,
+      { test: 'ok' },
+    );
+    expect(finish.ok).toBe(true);
+    if (!finish.ok) {
+      return;
+    }
+    expect(finish.value.account.name).toBeNull();
+    expect(finish.value.account.username).toBeUndefined();
+    const stored = await store.getAccount(finish.value.account.id);
+    expect(stored?.name).toBeNull();
+    expect(stored?.username).toBeUndefined();
+  });
+
+  it('refuses finish when the stored requested name is no longer valid', async () => {
+    const store = new InMemoryAuthStore();
+    const ceremony = new FakePasskeyCeremony();
+    await store.createPasskeyChallenge({
+      id: 'ch',
+      type: 'register',
+      challenge: 'test-challenge',
+      accountId: 'pending',
+      consumed: false,
+      createdAt: T0,
+      requestedName: '!!!',
+    });
+    const finish = await finishPasskeyRegistration(store, ceremony, CONFIG, T0, ORIGIN, 'ch', {
+      test: 'ok',
+    });
+    expect(finish).toEqual({
+      ok: false,
+      error: 'Username must be 1–32 characters of a-z, 0-9, hyphen, underscore, or dot',
+    });
+    expect(await store.getPasskeyCredential('cred-1')).toBeUndefined();
+    expect(await store.getAccount('pending')).toBeUndefined();
+  });
+
+  it('refuses finish when createAccount does not persist a named account', async () => {
+    class SwallowStore extends InMemoryAuthStore {
+      override async createAccount(): Promise<void> {
+        return;
+      }
+    }
+    const store = new SwallowStore();
+    const ceremony = new FakePasskeyCeremony();
+    const begin = await startPasskeyRegistration(store, ceremony, CONFIG, T0, 'ada');
+    const finish = await finishPasskeyRegistration(
+      store,
+      ceremony,
+      CONFIG,
+      T0,
+      ORIGIN,
+      begin.challengeId,
+      { test: 'ok' },
+    );
+    expect(finish).toEqual({ ok: false, error: 'Username is already in use' });
+    expect(await store.getPasskeyCredential('cred-1')).toBeUndefined();
+    expect(await store.listSessions()).toEqual([]);
+    const pending = await store.getPasskeyChallenge(begin.challengeId);
+    expect(await store.getAccount(pending?.accountId ?? '')).toBeUndefined();
+  });
 });
 
 describe('passkey claim', () => {
