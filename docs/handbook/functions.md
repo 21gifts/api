@@ -2553,9 +2553,9 @@
 
 ## Function: dropZeroDurationAudioSamples
 
-- **Purpose:** Remove audio samples whose duration is 0. Some phone files store a two-byte AAC decoder config as that first sample; Chrome then refuses to decode and the note stays black. The sample tables skip it. A chunk that would be left with a hole, or a table that cannot be checked, is left untouched. The original bytes are also kept when a resized `moov` would shift a chunk that does not sit strictly after that single top-level `moov`, or when a chunk offset does not fit in 64 bits.
+- **Purpose:** Remove audio samples whose duration is 0. Some phone files store a two-byte AAC decoder config as that first sample; Chrome then refuses to decode and the note stays black. The sample tables skip it. The original bytes are kept when a chunk would be left with a hole, a table cannot be checked, every audio sample has duration 0, an ancestor size field is 0, a chunk offset does not fit in 64 bits, or a non-zero `moov` size change is not exactly one top-level `moov` or would shift a chunk that does not sit strictly after that `moov`.
 - **Inputs:** ISO-BMFF bytes. The buffer is not modified.
-- **Returns / side effects:** A new copy with those samples removed from `stts`, `stsz`, `stsc`, and `stco`/`co64`, and chunk offsets shifted when `moov` changes size. The same `bytes` reference when nothing changes or the edit would address media that did not move. No I/O.
+- **Returns / side effects:** A new copy with those samples removed from `stts`, `stsz`, `stsc`, and `stco`/`co64`, and chunk offsets shifted when `moov` changes size. The same `bytes` reference when nothing changes or the edit aborts for any case in Purpose. No I/O.
 - **Used by:** `decodeForumVideo`; `readForumVideoBytes`.
 
 ## Function: faststartIsoBmff

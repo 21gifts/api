@@ -813,13 +813,15 @@ interface AudioChunkEdit {
  * Some phone files store the AAC decoder config as a first sample of two
  * bytes and duration 0. Chrome refuses that packet and the note stays black.
  * The sample is removed from the timing tables. Its bytes stay in `mdat`,
- * unreferenced. An edit that would leave a hole in a chunk, or that cannot
- * be checked, returns the same `bytes` reference. The same reference is
- * returned when a resized `moov` would shift a chunk that does not sit
- * strictly after that `moov`, or when a chunk offset does not fit in 64 bits.
+ * unreferenced. The same `bytes` reference is returned when nothing changes
+ * or the edit is aborted: a hole in a chunk, a table that cannot be checked,
+ * an audio track whose samples all have duration 0, an ancestor whose size
+ * field is 0, an offset that does not fit in 64 bits, or a non-zero `moov`
+ * size change that is not exactly one top-level `moov` or would shift a
+ * chunk that does not sit strictly after that `moov`.
  *
  * @param bytes - ISO-BMFF bytes. Not modified.
- * @returns A new copy, or `bytes` when nothing changes.
+ * @returns A new copy, or the original `bytes` when nothing changes or the edit is aborted.
  */
 export function dropZeroDurationAudioSamples(bytes: Uint8Array): Uint8Array {
   const boxes = collectIsoBmffBoxes(bytes);
@@ -1738,9 +1740,10 @@ export async function writeForumVideo(
  * @param io - Disk ops; production omits this and uses `node:fs/promises`.
  * @param env - Used only to purge a cached copy after a heal. Defaults to `process.env`.
  * @param fetchImpl - Purge `fetch`. Defaults to the global `fetch`.
- * @returns Bytes to serve. MP4 and MOV have moov before mdat, the display
- * matrix inside the frame, and no zero-duration audio sample. WebM skips
- * that audio step.
+ * @returns Bytes to serve. MP4 and MOV are passed through faststart, the
+ * display-matrix repair, and `dropZeroDurationAudioSamples`. An aborted
+ * audio edit leaves those bytes as the earlier repairs left them. WebM
+ * skips the audio step.
  */
 export async function readForumVideoBytes(
   path: string,
