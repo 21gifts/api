@@ -41,6 +41,12 @@ const EARLY: ApiLogRow = {
   ms: 1,
   accountId: null,
   authKind: 'none',
+  clientIp: null,
+  clientCountry: null,
+  cfRay: null,
+  userAgent: null,
+  acceptLanguage: null,
+  origin: null,
 };
 
 const LATE: ApiLogRow = {
@@ -52,6 +58,12 @@ const LATE: ApiLogRow = {
   ms: 4,
   accountId: 'acc',
   authKind: 'session',
+  clientIp: null,
+  clientCountry: null,
+  cfRay: null,
+  userAgent: null,
+  acceptLanguage: null,
+  origin: null,
 };
 
 const TIE_LOW: ApiLogRow = {
@@ -63,6 +75,12 @@ const TIE_LOW: ApiLogRow = {
   ms: 1,
   accountId: null,
   authKind: 'none',
+  clientIp: null,
+  clientCountry: null,
+  cfRay: null,
+  userAgent: null,
+  acceptLanguage: null,
+  origin: null,
 };
 
 const TIE_HIGH: ApiLogRow = {
@@ -74,6 +92,12 @@ const TIE_HIGH: ApiLogRow = {
   ms: 2,
   accountId: 'acc',
   authKind: 'session',
+  clientIp: null,
+  clientCountry: null,
+  cfRay: null,
+  userAgent: null,
+  acceptLanguage: null,
+  origin: null,
 };
 
 describe('serializeDebugApiLog', () => {
@@ -87,6 +111,12 @@ describe('serializeDebugApiLog', () => {
       ms: 4,
       accountId: 'acc',
       authKind: 'session',
+      clientIp: null,
+      clientCountry: null,
+      cfRay: null,
+      userAgent: null,
+      acceptLanguage: null,
+      origin: null,
     });
   });
 });
@@ -119,6 +149,14 @@ describe('migrateApiLogSchema', () => {
     const sql = new MockSql();
     await migrateApiLogSchema(sql);
     expect(sql.executes.map((row) => row.text)).toEqual([...API_LOG_SCHEMA_SQL]);
+    expect(API_LOG_SCHEMA_SQL.slice(2)).toEqual([
+      'ALTER TABLE api_log ADD COLUMN IF NOT EXISTS client_ip text',
+      'ALTER TABLE api_log ADD COLUMN IF NOT EXISTS client_country text',
+      'ALTER TABLE api_log ADD COLUMN IF NOT EXISTS cf_ray text',
+      'ALTER TABLE api_log ADD COLUMN IF NOT EXISTS user_agent text',
+      'ALTER TABLE api_log ADD COLUMN IF NOT EXISTS accept_language text',
+      'ALTER TABLE api_log ADD COLUMN IF NOT EXISTS origin text',
+    ]);
   });
 });
 
@@ -127,7 +165,10 @@ describe('PostgresApiLogStore', () => {
     const sql = new MockSql();
     await new PostgresApiLogStore(sql).append(LATE);
     expect(sql.executes[0]?.text).toMatch(
-      /INSERT INTO api_log \(id, created_at, method, path, status, ms, account_id, auth_kind\)/,
+      /INSERT INTO api_log \(id, created_at, method, path, status, ms, account_id, auth_kind, client_ip, client_country, cf_ray, user_agent, accept_language, origin\)/,
+    );
+    expect(sql.executes[0]?.text).toMatch(
+      /VALUES \(\$1,\$2,\$3,\$4,\$5,\$6,\$7,\$8,\$9,\$10,\$11,\$12,\$13,\$14\)/,
     );
     expect(sql.executes[0]?.text).not.toMatch(/ON CONFLICT/i);
     expect(sql.executes[0]?.params).toEqual([
@@ -139,6 +180,12 @@ describe('PostgresApiLogStore', () => {
       4,
       'acc',
       'session',
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
     ]);
   });
 
@@ -154,6 +201,12 @@ describe('PostgresApiLogStore', () => {
         ms: '2',
         account_id: 'acc',
         auth_kind: 'session',
+        client_ip: '192.0.2.1',
+        client_country: 'CH',
+        cf_ray: '0123456789abcdef-ZRH',
+        user_agent: 'Agent',
+        accept_language: 'de-CH',
+        origin: 'https://21.gifts',
       },
       {
         id: 'a',
@@ -164,9 +217,18 @@ describe('PostgresApiLogStore', () => {
         ms: 1,
         account_id: null,
         auth_kind: 'mystery',
+        client_ip: null,
+        client_country: null,
+        cf_ray: null,
+        user_agent: null,
+        accept_language: null,
+        origin: null,
       },
     ];
     const listed = await new PostgresApiLogStore(sql).listLatest(50);
+    expect(sql.queries[0]?.text).toMatch(
+      /account_id, auth_kind, client_ip, client_country, cf_ray, user_agent, accept_language, origin/,
+    );
     expect(sql.queries[0]?.text).toMatch(/ORDER BY created_at DESC, id DESC\s+LIMIT \$1/);
     expect(sql.queries[0]?.params).toEqual([50]);
     expect(listed).toEqual([
@@ -179,6 +241,12 @@ describe('PostgresApiLogStore', () => {
         ms: 2,
         accountId: 'acc',
         authKind: 'session',
+        clientIp: '192.0.2.1',
+        clientCountry: 'CH',
+        cfRay: '0123456789abcdef-ZRH',
+        userAgent: 'Agent',
+        acceptLanguage: 'de-CH',
+        origin: 'https://21.gifts',
       },
       {
         id: 'a',
@@ -189,6 +257,12 @@ describe('PostgresApiLogStore', () => {
         ms: 1,
         accountId: null,
         authKind: 'none',
+        clientIp: null,
+        clientCountry: null,
+        cfRay: null,
+        userAgent: null,
+        acceptLanguage: null,
+        origin: null,
       },
     ]);
   });

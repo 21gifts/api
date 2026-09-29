@@ -983,7 +983,7 @@
 
 ## Function: logEvent
 
-- **Purpose:** One JSON line on `console.warn` (`ts` + `event` + fields). Never log secrets.
+- **Purpose:** One JSON line on `console.warn` (`ts` + `event` + fields). During a request, validated client fields from `readClientRequestMeta` are merged underneath the explicit fields, and explicit fields win. Absent client fields are omitted. Outside a request, only the explicit fields are written. Never log secrets.
 - **Inputs:** `event` string, optional `LogFields`.
 - **Returns / side effects:** void.
 - **Used by:** Auth, me, lightning-address, requestLog.
@@ -1618,6 +1618,20 @@
 - **Returns / side effects:** Lowercase hex.
 - **Used by:** `issueSession`, passkey begin, verification nonce.
 
+## Function: presentClientFields
+
+- **Purpose:** Copies the non-null fields of a validated client-request record, in `clientIp`, `clientCountry`, `cfRay`, `userAgent`, `acceptLanguage`, `origin` order. Absent headers stay omitted so a log line does not print nulls.
+- **Inputs:** `ClientRequestMeta`.
+- **Returns / side effects:** A string map. No I/O.
+- **Used by:** `requestLog` (the request-scoped log fields) and `diagnosticsRoutes`.
+
+## Function: readClientRequestMeta
+
+- **Purpose:** Reads `cf-connecting-ip`, `cf-ipcountry`, `cf-ray`, `user-agent`, `accept-language`, and `origin`. Keeps an IPv4 address with no leading zeros, or an IPv6 address including compressed and IPv4-mapped forms, unchanged. Keeps a country code of two letters or digits after trim and uppercase, so `T1` stays. Keeps a Cloudflare ray id of 16 hex digits, a hyphen, and three letters. Strips controls from the user agent and accept-language and cuts each at 200 characters. Keeps an `https` origin, or `http://localhost` or `http://127.0.0.1`, with an optional port. Drops a port or zone id on the IP, a hostname, `x-forwarded-for`, userinfo, a path, a query, or any other `http` host. Does not read the socket.
+- **Inputs:** A headers object with `get(name)`.
+- **Returns / side effects:** `ClientRequestMeta`. Each field is the original text or `null`. No I/O.
+- **Used by:** `requestLog` and `diagnosticsRoutes`.
+
 ## Function: readPublicBrandFile
 
 - **Purpose:** Reads `public/<name>` relative to a root directory.
@@ -1627,7 +1641,7 @@
 
 ## Function: requestLog
 
-- **Purpose:** Hono middleware: `http.request` JSON after the handler, then one `api_log` row. Skips `/healthz` and OPTIONS. Never logs the query string, body, or Authorization. Path is passed through `requestLogPath` so `/view/<segment>` is redacted. `ms` is handler duration (captured once after `next`). Auth-classification failure still stores `authKind: 'none'` with `accountId` null. Store write failure logs `api_log.write.failed` and does not replace the response.
+- **Purpose:** Hono middleware: `http.request` JSON after the handler, then one `api_log` row. Skips `/healthz` and OPTIONS. Never logs the query string, body, or Authorization. Path is passed through `requestLogPath` so `/view/<segment>` is redacted. `ms` is handler duration (captured once after `next`). Auth-classification failure still stores `authKind: 'none'` with `accountId` null. The row always includes `clientIp`, `clientCountry`, `cfRay`, `userAgent`, `acceptLanguage`, and `origin`, each null when that header is missing or invalid. `logEvent` during the request merges the present values underneath the explicit fields, and explicit fields win. Store write failure logs `api_log.write.failed` and does not replace the response.
 - **Inputs:** `{ apiLogStore, authStore, debugToken, spendApiToken, now? }`.
 - **Returns / side effects:** `MiddlewareHandler`.
 - **Used by:** `createApp`.
@@ -1722,7 +1736,7 @@
 ## Function: diagnosticsRoutes
 
 - **Purpose:** Public `POST /` ingest mounted at `/diagnostics`. No auth. Only allowlisted scalar keys are stored on a `client` row, then the response is 204 with an empty body. The per-IP cap (60) and the global cap (600) per 60_000 ms are reserved before the insert await, so two overlapping requests cannot share one slot, and released if that insert throws. Expired per-IP buckets are dropped on the first request of a new minute, so a one-off address does not stay for the process lifetime. Rows are kept forever (no TTL, no DELETE). Secrets and raw bodies are not stored.
-- **Inputs:** `{ store: DiagnosticStore, now?: () => number }`. Optional `cf-connecting-ip` is the per-IP key only when it matches a short IP token; any other value is ignored. Optional `User-Agent` has controls stripped, is truncated to 200, and is omitted when nothing remains.
+- **Inputs:** `{ store: DiagnosticStore, now?: () => number }`. Optional `cf-connecting-ip` is the per-IP key only when it matches a short IP token; any other value is ignored for the cap. Validated `clientIp`, `clientCountry`, `cfRay`, `userAgent`, `acceptLanguage`, and `origin` from `readClientRequestMeta` are stored when present. `User-Agent` and `Accept-Language` have controls stripped, are truncated to 200, and are omitted when nothing remains. A body key named `clientIp` is rejected.
 - **Returns / side effects:** 204 empty on accept; 400 `{ error: 'Invalid diagnostics' }` when JSON or a field fails the allowlist; 429 `{ error: 'Too many diagnostics' }` over the cap, without recording an accept timestamp (at most one `diagnostics.rate_limited` server row per window, and only after that append resolves); 500 `{ error: 'Log is unavailable' }` when the client-row insert throws. No PRF bytes, mnemonic, session token, view key, nsec, Authorization, Cookie, WebAuthn challenge, attestation, signatures, or raw body are stored.
 
 ## Function: debugDiagnosticsRoutes

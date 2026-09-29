@@ -190,6 +190,12 @@ describe('debugCatalogRoutes', () => {
               ms: 1,
               accountId: null,
               authKind: 'none',
+              clientIp: null,
+              clientCountry: null,
+              cfRay: null,
+              userAgent: null,
+              acceptLanguage: null,
+              origin: null,
             },
           ]),
           debugToken: 'secret',
@@ -201,7 +207,18 @@ describe('debugCatalogRoutes', () => {
     expect(res.status).toBe(200);
     const body = (await res.json()) as { table: string; rows: Array<{ path: string }> };
     expect(body.table).toBe('api_log');
-    expect(body.rows).toEqual([expect.objectContaining({ path: '/healthz', authKind: 'none' })]);
+    expect(body.rows).toEqual([
+      expect.objectContaining({
+        path: '/healthz',
+        authKind: 'none',
+        clientIp: null,
+        clientCountry: null,
+        cfRay: null,
+        userAgent: null,
+        acceptLanguage: null,
+        origin: null,
+      }),
+    ]);
   });
 
   it('returns 503 when a store throw escapes the dump', async () => {

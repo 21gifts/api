@@ -90,6 +90,11 @@ describe('logEvent', () => {
     logEvent('second');
     expect(sink).not.toHaveBeenCalled();
   });
+
+  it('does not add clientIp outside a request', () => {
+    logEvent('probe');
+    expect(parsedEvents(warn)[0]).not.toHaveProperty('clientIp');
+  });
 });
 
 describe('errorLogFields', () => {
@@ -186,6 +191,14 @@ describe('requestLog', () => {
     );
     app.get('/healthz', (c) => c.text('ok'));
     app.get('/info', (c) => c.text('info'));
+    app.get('/probe', (c) => {
+      logEvent('probe');
+      return c.text('probe');
+    });
+    app.get('/probe-explicit', (c) => {
+      logEvent('probe', { clientIp: 'kept' });
+      return c.text('probe');
+    });
     app.options('/info', (c) => c.body(null, 204));
     app.get('/view/:viewKey', (c) => c.json({ error: 'Not found' }, 404));
     return app;
@@ -221,6 +234,63 @@ describe('requestLog', () => {
     expect(rows[0]?.path).toBe('/info');
     expect(rows[0]?.authKind).toBe('none');
     expect(rows[0]?.accountId).toBeNull();
+  });
+
+  it('logs and stores all validated client metadata', async () => {
+    const store = new InMemoryApiLogStore();
+    await appWithRequestLog(store).request('/info', {
+      headers: {
+        'cf-connecting-ip': '192.0.2.1',
+        'cf-ipcountry': 't1',
+        'cf-ray': '0123456789aBCDef-ZrH',
+        'user-agent': 'Test Agent',
+        'accept-language': 'de-CH',
+        origin: 'https://21.gifts',
+      },
+    });
+    const line = parsedEvents(warn).find((event) => event['event'] === 'http.request');
+    expect(line).toMatchObject({
+      clientIp: '192.0.2.1',
+      clientCountry: 'T1',
+      cfRay: '0123456789aBCDef-ZrH',
+      userAgent: 'Test Agent',
+      acceptLanguage: 'de-CH',
+      origin: 'https://21.gifts',
+    });
+    expect((await store.listLatest(10))[0]).toMatchObject({
+      clientIp: '192.0.2.1',
+      clientCountry: 'T1',
+      cfRay: '0123456789aBCDef-ZrH',
+      userAgent: 'Test Agent',
+      acceptLanguage: 'de-CH',
+      origin: 'https://21.gifts',
+    });
+  });
+
+  it('stores invalid clientIp as null and omits it from the log line', async () => {
+    const store = new InMemoryApiLogStore();
+    await appWithRequestLog(store).request('/info', {
+      headers: { 'cf-connecting-ip': 'not-an-ip' },
+    });
+    const line = parsedEvents(warn).find((event) => event['event'] === 'http.request');
+    expect(line).not.toHaveProperty('clientIp');
+    expect((await store.listLatest(10))[0]?.clientIp).toBeNull();
+  });
+
+  it('adds request clientIp to logEvent inside the request', async () => {
+    await appWithRequestLog().request('/probe', {
+      headers: { 'cf-connecting-ip': '192.0.2.1' },
+    });
+    const probe = parsedEvents(warn).find((event) => event['event'] === 'probe');
+    expect(probe?.['clientIp']).toBe('192.0.2.1');
+  });
+
+  it('lets explicit logEvent fields override request client metadata', async () => {
+    await appWithRequestLog().request('/probe-explicit', {
+      headers: { 'cf-connecting-ip': '192.0.2.1' },
+    });
+    const probe = parsedEvents(warn).find((event) => event['event'] === 'probe');
+    expect(probe?.['clientIp']).toBe('kept');
   });
 
   it('emits http.request for GET /view/<64-hex> with redacted path', async () => {

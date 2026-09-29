@@ -31,6 +31,18 @@ export interface ApiLogRow {
   accountId: string | null;
   /** Bearer class. */
   authKind: ApiLogAuthKind;
+  /** Validated client IP address, or null. */
+  clientIp: string | null;
+  /** Validated client country code, or null. */
+  clientCountry: string | null;
+  /** Validated Cloudflare ray id, or null. */
+  cfRay: string | null;
+  /** Sanitized user agent, or null. */
+  userAgent: string | null;
+  /** Sanitized accepted languages, or null. */
+  acceptLanguage: string | null;
+  /** Validated request origin, or null. */
+  origin: string | null;
 }
 
 /** Operator JSON for one audit row. */
@@ -51,6 +63,18 @@ export interface DebugApiLog {
   accountId: string | null;
   /** Bearer class. */
   authKind: ApiLogAuthKind;
+  /** Validated client IP address, or null. */
+  clientIp: string | null;
+  /** Validated client country code, or null. */
+  clientCountry: string | null;
+  /** Validated Cloudflare ray id, or null. */
+  cfRay: string | null;
+  /** Sanitized user agent, or null. */
+  userAgent: string | null;
+  /** Sanitized accepted languages, or null. */
+  acceptLanguage: string | null;
+  /** Validated request origin, or null. */
+  origin: string | null;
 }
 
 /**
@@ -69,6 +93,12 @@ export function serializeDebugApiLog(row: ApiLogRow): DebugApiLog {
     ms: row.ms,
     accountId: row.accountId,
     authKind: row.authKind,
+    clientIp: row.clientIp,
+    clientCountry: row.clientCountry,
+    cfRay: row.cfRay,
+    userAgent: row.userAgent,
+    acceptLanguage: row.acceptLanguage,
+    origin: row.origin,
   };
 }
 
@@ -105,6 +135,12 @@ export const API_LOG_SCHEMA_SQL: readonly string[] = [
   auth_kind text NOT NULL CHECK (auth_kind IN ('session', 'debug', 'spend', 'none'))
 )`,
   `CREATE INDEX IF NOT EXISTS api_log_created_at_idx ON api_log (created_at DESC, id DESC)`,
+  `ALTER TABLE api_log ADD COLUMN IF NOT EXISTS client_ip text`,
+  `ALTER TABLE api_log ADD COLUMN IF NOT EXISTS client_country text`,
+  `ALTER TABLE api_log ADD COLUMN IF NOT EXISTS cf_ray text`,
+  `ALTER TABLE api_log ADD COLUMN IF NOT EXISTS user_agent text`,
+  `ALTER TABLE api_log ADD COLUMN IF NOT EXISTS accept_language text`,
+  `ALTER TABLE api_log ADD COLUMN IF NOT EXISTS origin text`,
 ];
 
 /**
@@ -171,6 +207,12 @@ interface ApiLogSqlRow {
   ms: number | string;
   account_id: string | null;
   auth_kind: string;
+  client_ip: string | null;
+  client_country: string | null;
+  cf_ray: string | null;
+  user_agent: string | null;
+  accept_language: string | null;
+  origin: string | null;
 }
 
 /**
@@ -193,8 +235,8 @@ export class PostgresApiLogStore implements ApiLogStore {
    */
   async append(row: ApiLogRow): Promise<void> {
     await this.#sql.execute(
-      `INSERT INTO api_log (id, created_at, method, path, status, ms, account_id, auth_kind)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+      `INSERT INTO api_log (id, created_at, method, path, status, ms, account_id, auth_kind, client_ip, client_country, cf_ray, user_agent, accept_language, origin)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
       [
         row.id,
         row.createdAt,
@@ -204,6 +246,12 @@ export class PostgresApiLogStore implements ApiLogStore {
         row.ms,
         row.accountId,
         row.authKind,
+        row.clientIp,
+        row.clientCountry,
+        row.cfRay,
+        row.userAgent,
+        row.acceptLanguage,
+        row.origin,
       ],
     );
   }
@@ -216,7 +264,7 @@ export class PostgresApiLogStore implements ApiLogStore {
    */
   async listLatest(limit: number): Promise<ApiLogRow[]> {
     const rows = await this.#sql.query<ApiLogSqlRow>(
-      `SELECT id, created_at, method, path, status, ms, account_id, auth_kind
+      `SELECT id, created_at, method, path, status, ms, account_id, auth_kind, client_ip, client_country, cf_ray, user_agent, accept_language, origin
        FROM api_log
        ORDER BY created_at DESC, id DESC
        LIMIT $1`,
@@ -250,5 +298,11 @@ function mapApiLogRow(row: ApiLogSqlRow): ApiLogRow {
     ms: Number(row.ms),
     accountId: row.account_id,
     authKind: parseAuthKind(row.auth_kind),
+    clientIp: row.client_ip,
+    clientCountry: row.client_country,
+    cfRay: row.cf_ray,
+    userAgent: row.user_agent,
+    acceptLanguage: row.accept_language,
+    origin: row.origin,
   };
 }

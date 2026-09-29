@@ -100,6 +100,7 @@ describe('diagnosticsRoutes', () => {
     { name: 'path not a string', body: { event: EVENT, path: 1 } },
     { name: 'path with hex run', body: { event: EVENT, path: `/x/${'a'.repeat(32)}` } },
     { name: 'path with query', body: { event: EVENT, path: '/login?x=1' } },
+    { name: 'clientIp in the body', body: { event: EVENT, clientIp: '192.0.2.1' } },
   ];
   it.each(invalidBodies)('returns 400 for $name', async (tc) => {
     const store = new InMemoryDiagnosticStore();
@@ -151,6 +152,28 @@ describe('diagnosticsRoutes', () => {
       stage: 'register',
       status: 400,
       path: '/login',
+    });
+  });
+
+  it('stores validated client headers and omits invalid ones', async () => {
+    const store = new InMemoryDiagnosticStore();
+    const app = mount(store, now);
+    const res = await post(app, {
+      'cf-connecting-ip': '192.0.2.1',
+      'cf-ipcountry': 't1',
+      'cf-ray': '0123456789abcdef-ZRH',
+      'user-agent': 'Test Agent',
+      'accept-language': 'de-CH',
+      origin: 'https://21.gifts',
+    });
+    expect(res.status).toBe(204);
+    expect((await store.listLatest(1))[0]?.fields).toEqual({
+      clientIp: '192.0.2.1',
+      clientCountry: 'T1',
+      cfRay: '0123456789abcdef-ZRH',
+      userAgent: 'Test Agent',
+      acceptLanguage: 'de-CH',
+      origin: 'https://21.gifts',
     });
   });
 
