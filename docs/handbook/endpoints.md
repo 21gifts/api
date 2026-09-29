@@ -989,7 +989,7 @@
 
 ## Endpoint: POST /me/passkey-renew/ack
 
-- **Purpose:** Bearer required. Empty body is fine. Acknowledges failed unacknowledged renew rows only (`outcome = 'failed'` and `acknowledged_at` IS NULL). Does not change the account row. Returns owner JSON loaded after the acknowledgement, including `passkeyRenewFailed` and `passkeyRenewClosed`. A seed that landed during the request is not closed. `passkeyRenewClosed` is true only while `walletRequired` is false.
+- **Purpose:** Bearer required. Empty body is fine. Acknowledges failed unacknowledged renew rows only (`outcome = 'failed'` and `acknowledged_at` IS NULL). Does not change the account row. Returns owner JSON loaded after the acknowledgement, including `passkeyRenewFailed`, `passkeyRenewClosed`, and `passkeyRenewPrfUnsupported` (true only when the newest unacknowledged failed renew row has error name `prfUnsupported`; acknowledgement clears that row, so the flag is false). A seed that landed during the request is not closed. `passkeyRenewClosed` is true only while `walletRequired` is false.
 - **Errors:** 401 without session.
 - **Used by:** App after the owner dismisses a failed renew.
 - **Auth:** `Authorization: Bearer` session.
