@@ -496,6 +496,58 @@ describe('PostgresAuthStore', () => {
     ).toBeUndefined();
   });
 
+  it('lists accounts by username prefix with escaped LIKE and mapped name', async () => {
+    const sql = new MockSql();
+    sql.nextRows = [{ id: 'acc', username: 'A_b', name: '  Ada  ' }];
+    const store = new PostgresAuthStore(sql);
+    const found = await store.listAccountsByUsernamePrefix('a_b', 20);
+    const text = sql.queries[0]?.text ?? '';
+    expect(found).toEqual([{ id: 'acc', username: 'A_b', name: 'Ada' }]);
+    expect(sql.queries[0]?.params).toEqual(['a\\_b%', 20]);
+    expect(text).toContain('LIKE');
+    expect(text).toContain(`ESCAPE '\\'`);
+    expect(text).toContain('username IS NOT NULL');
+    expect(text).toContain("trim(username) <> ''");
+    expect(text).toContain('ORDER BY lower(trim(username)) ASC, id::text ASC');
+    expect(text).toContain('LIMIT $2');
+    expect(text).toContain('SELECT id::text AS id, username, name');
+    expect(text).not.toMatch(/lightning/i);
+    expect(text).not.toMatch(/email/i);
+    expect(text).not.toMatch(/\brole\b/i);
+    expect(text).not.toMatch(/npub/i);
+  });
+
+  it('lists accounts by username prefix with an empty prefix as %', async () => {
+    const sql = new MockSql();
+    sql.nextRows = [];
+    const store = new PostgresAuthStore(sql);
+    expect(await store.listAccountsByUsernamePrefix('', 20)).toEqual([]);
+    expect(sql.queries[0]?.params).toEqual(['%', 20]);
+  });
+
+  it('escapes % and backslash in the mention LIKE pattern', async () => {
+    const sql = new MockSql();
+    const store = new PostgresAuthStore(sql);
+    sql.nextRows = [];
+    await store.listAccountsByUsernamePrefix('100%', 20);
+    expect(sql.queries[0]?.params[0]).toBe('100\\%%');
+    await store.listAccountsByUsernamePrefix('a\\b', 20);
+    expect(sql.queries[1]?.params[0]).toBe('a\\\\b%');
+  });
+
+  it('falls back to the stored username when name is null or blank', async () => {
+    const sql = new MockSql();
+    const store = new PostgresAuthStore(sql);
+    sql.nextRows = [{ id: 'acc', username: 'cara', name: null }];
+    expect(await store.listAccountsByUsernamePrefix('cara', 20)).toEqual([
+      { id: 'acc', username: 'cara', name: 'cara' },
+    ]);
+    sql.nextRows = [{ id: 'acc2', username: 'cara2', name: '   ' }];
+    expect(await store.listAccountsByUsernamePrefix('cara', 20)).toEqual([
+      { id: 'acc2', username: 'cara2', name: 'cara2' },
+    ]);
+  });
+
   it('updateAccountNameByLightningAddress sets only name by lower(trim) address', async () => {
     const sql = new MockSql();
     sql.nextRows = [

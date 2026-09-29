@@ -58,6 +58,11 @@ interface AccountRow {
 
 const ACCOUNT_SELECT_COLUMNS = `id, linking_key, role, name, lightning_address, lightning_address_verified, forum_laws_dismissed, view_key, created_at, rules_agreed_at, is_platform, name_skipped_at, lightning_address_skipped_at, profile_message_id, location, notification_level, username, session_refused, nostr_kek_id, nostr_key_custody, nostr_key_created_at, wallet_required, wallet_backup_seen_at, amount_unit, locale, fiat`;
 
+/** LIKE prefix where `\`, `%`, and `_` are literals. */
+function mentionLikePattern(prefix: string): string {
+  return `${prefix.replace(/[\\%_]/g, (char) => `\\${char}`)}%`;
+}
+
 /** Row shape of `auth_session`. */
 interface SessionRow {
   token: string;
@@ -487,6 +492,29 @@ export class PostgresAuthStore implements AuthStore {
     );
     const row = rows[0];
     return row === undefined ? undefined : mapAccount(row);
+  }
+
+  async listAccountsByUsernamePrefix(
+    prefix: string,
+    limit: number,
+  ): Promise<{ id: string; username: string; name: string }[]> {
+    const rows = await this.#sql.query<{
+      id: string;
+      username: string;
+      name: string | null;
+    }>(
+      `SELECT id::text AS id, username, name
+FROM account
+WHERE username IS NOT NULL AND trim(username) <> ''
+  AND lower(trim(username)) LIKE $1 ESCAPE '\\'
+ORDER BY lower(trim(username)) ASC, id::text ASC
+LIMIT $2`,
+      [mentionLikePattern(prefix), limit],
+    );
+    return rows.map((row) => {
+      const name = row.name === null || row.name.trim() === '' ? row.username : row.name.trim();
+      return { id: row.id, username: row.username, name };
+    });
   }
 
   async getAccountByPubkey(pubkey: string): Promise<Account | undefined> {

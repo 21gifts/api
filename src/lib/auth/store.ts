@@ -458,6 +458,25 @@ export interface AuthStore {
    */
   getAccountByUsername(username: string): Promise<Account | undefined>;
   /**
+   * Accounts whose username starts with `prefix`, for `@` suggestions.
+   *
+   * `prefix` is already `""` or a normalised prefix; do not re-validate, trim,
+   * or lowercase it. Empty prefix matches every account that has a non-blank
+   * username. At most `limit` rows. Order is `lower(trim(username))`
+   * ascending, then `id` ascending. Skip null, undefined, and blank
+   * (trim-empty) usernames. `username` in the result is the stored handle
+   * (not lowercased, not trimmed). `name` is the trimmed display name, or
+   * the stored username when the display name is null or blank (trim-empty).
+   *
+   * @param prefix - Already `""` or a normalised prefix.
+   * @param limit - Maximum rows to return.
+   * @returns Matching `{ id, username, name }` rows.
+   */
+  listAccountsByUsernamePrefix(
+    prefix: string,
+    limit: number,
+  ): Promise<{ id: string; username: string; name: string }[]>;
+  /**
    * Look up an account by custodial Nostr pubkey (case-insensitive hex).
    * Unique index in Postgres; in-memory scans `#nostrKeys`.
    */
@@ -985,6 +1004,34 @@ export class InMemoryAuthStore implements AuthStore {
       }
     }
     return undefined;
+  }
+
+  async listAccountsByUsernamePrefix(
+    prefix: string,
+    limit: number,
+  ): Promise<{ id: string; username: string; name: string }[]> {
+    const rows: { key: string; id: string; username: string; name: string }[] = [];
+    for (const account of this.#accounts.values()) {
+      if (account.username === null || account.username === undefined) {
+        continue;
+      }
+      if (account.username.trim() === '') {
+        continue;
+      }
+      const lowered = account.username.trim().toLowerCase();
+      if (prefix === '' || lowered.startsWith(prefix)) {
+        const trimmedName = (account.name ?? '').trim();
+        rows.push({
+          // NUL sorts before username characters so the id is the tie-break
+          key: `${lowered}\u0000${account.id}`,
+          id: account.id,
+          username: account.username,
+          name: trimmedName === '' ? account.username : trimmedName,
+        });
+      }
+    }
+    rows.sort((a, b) => (a.key < b.key ? -1 : 1));
+    return rows.slice(0, limit).map(({ id, username, name }) => ({ id, username, name }));
   }
 
   async getAccountByPubkey(pubkey: string): Promise<Account | undefined> {

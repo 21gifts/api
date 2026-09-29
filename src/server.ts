@@ -12,6 +12,7 @@ import { bannerRoutes } from '@/routes/banner';
 import { pictureRoutes } from '@/routes/pictures';
 import { InMemoryBannerStore, type BannerStore } from '@/lib/banner-store';
 import { membersRoutes } from '@/routes/members';
+import { mentionsRoutes } from '@/routes/mentions';
 import { linksRoutes } from '@/routes/links';
 import { viewRoutes } from '@/routes/view';
 import { lightningAddressRoutes } from '@/routes/lightning-address';
@@ -479,6 +480,7 @@ export function createApp(deps: AppDeps = {}): Hono {
       fiatRates,
     }),
   );
+  app.route('/mentions', mentionsRoutes({ auth: store, now }));
   app.route('/links', linksRoutes({ messages: messageStore, accounts: store }));
   app.route(
     '/view',

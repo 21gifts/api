@@ -976,6 +976,197 @@ describe('InMemoryAuthStore', () => {
     expect(await store.getAccountByUsername('cara')).toBeUndefined();
   });
 
+  it('listAccountsByUsernamePrefix skips null, undefined, and blank usernames', async () => {
+    const store = new InMemoryAuthStore();
+    const base = {
+      linkingKey: null as string | null,
+      role: 'basis' as const,
+      name: 'Ada' as string | null,
+      location: null as string | null,
+      lightningAddress: null as string | null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      createdAt: 1,
+      rulesAgreedAt: null as number | null,
+    };
+    await store.createAccount({
+      ...base,
+      id: 'undef',
+      viewKey: '1'.repeat(64),
+    });
+    await store.createAccount({
+      ...base,
+      id: 'nully',
+      username: null,
+      viewKey: '2'.repeat(64),
+    });
+    await store.createAccount({
+      ...base,
+      id: 'blank',
+      username: '   ',
+      viewKey: '3'.repeat(64),
+    });
+    await store.createAccount({
+      ...base,
+      id: 'zed',
+      username: 'zed',
+      viewKey: '4'.repeat(64),
+    });
+    expect(await store.listAccountsByUsernamePrefix('', 20)).toEqual([
+      { id: 'zed', username: 'zed', name: 'Ada' },
+    ]);
+  });
+
+  it('listAccountsByUsernamePrefix matches a prefix and misses others', async () => {
+    const store = new InMemoryAuthStore();
+    const base = {
+      linkingKey: null as string | null,
+      role: 'basis' as const,
+      name: 'Ada' as string | null,
+      location: null as string | null,
+      lightningAddress: null as string | null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      createdAt: 1,
+      rulesAgreedAt: null as number | null,
+    };
+    await store.createAccount({
+      ...base,
+      id: 'ada',
+      username: 'Ada',
+      viewKey: '1'.repeat(64),
+    });
+    await store.createAccount({
+      ...base,
+      id: 'bob',
+      username: 'bob',
+      viewKey: '2'.repeat(64),
+    });
+    expect(await store.listAccountsByUsernamePrefix('ad', 20)).toEqual([
+      { id: 'ada', username: 'Ada', name: 'Ada' },
+    ]);
+    expect(await store.listAccountsByUsernamePrefix('zz', 20)).toEqual([]);
+    expect(await store.listAccountsByUsernamePrefix('', 20)).toEqual([
+      { id: 'ada', username: 'Ada', name: 'Ada' },
+      { id: 'bob', username: 'bob', name: 'Ada' },
+    ]);
+  });
+
+  it('listAccountsByUsernamePrefix maps blank names and keeps a padded display name', async () => {
+    const store = new InMemoryAuthStore();
+    const base = {
+      linkingKey: null as string | null,
+      role: 'basis' as const,
+      location: null as string | null,
+      lightningAddress: null as string | null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      createdAt: 1,
+      rulesAgreedAt: null as number | null,
+    };
+    await store.createAccount({
+      ...base,
+      id: 'n',
+      name: null,
+      username: 'cara',
+      viewKey: '1'.repeat(64),
+    });
+    await store.createAccount({
+      ...base,
+      id: 'b',
+      name: '   ',
+      username: 'cara2',
+      viewKey: '2'.repeat(64),
+    });
+    await store.createAccount({
+      ...base,
+      id: 'p',
+      name: '  Ada Lovelace  ',
+      username: 'Ada',
+      viewKey: '3'.repeat(64),
+    });
+    expect(await store.listAccountsByUsernamePrefix('', 20)).toEqual([
+      { id: 'p', username: 'Ada', name: 'Ada Lovelace' },
+      { id: 'n', username: 'cara', name: 'cara' },
+      { id: 'b', username: 'cara2', name: 'cara2' },
+    ]);
+  });
+
+  it('listAccountsByUsernamePrefix orders by username then id and slices after sort', async () => {
+    const store = new InMemoryAuthStore();
+    const base = {
+      linkingKey: null as string | null,
+      role: 'basis' as const,
+      name: 'Ada' as string | null,
+      location: null as string | null,
+      lightningAddress: null as string | null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      createdAt: 1,
+      rulesAgreedAt: null as number | null,
+    };
+    await store.createAccount({
+      ...base,
+      id: 'a',
+      username: 'zed',
+      createdAt: 1,
+      viewKey: '1'.repeat(64),
+    });
+    await store.createAccount({
+      ...base,
+      id: 'z',
+      username: 'ada',
+      createdAt: 2,
+      viewKey: '2'.repeat(64),
+    });
+    await store.createAccount({
+      ...base,
+      id: 'm',
+      username: 'mia',
+      createdAt: 3,
+      viewKey: '3'.repeat(64),
+    });
+    expect(await store.listAccountsByUsernamePrefix('', 20)).toEqual([
+      { id: 'z', username: 'ada', name: 'Ada' },
+      { id: 'm', username: 'mia', name: 'Ada' },
+      { id: 'a', username: 'zed', name: 'Ada' },
+    ]);
+    expect(await store.listAccountsByUsernamePrefix('', 2)).toEqual([
+      { id: 'z', username: 'ada', name: 'Ada' },
+      { id: 'm', username: 'mia', name: 'Ada' },
+    ]);
+  });
+
+  it('listAccountsByUsernamePrefix treats underscore as a literal', async () => {
+    const store = new InMemoryAuthStore();
+    const base = {
+      linkingKey: null as string | null,
+      role: 'basis' as const,
+      name: 'Ada' as string | null,
+      location: null as string | null,
+      lightningAddress: null as string | null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      createdAt: 1,
+      rulesAgreedAt: null as number | null,
+    };
+    await store.createAccount({
+      ...base,
+      id: 'axb',
+      username: 'axb',
+      viewKey: '1'.repeat(64),
+    });
+    await store.createAccount({
+      ...base,
+      id: 'a_b',
+      username: 'a_b',
+      viewKey: '2'.repeat(64),
+    });
+    expect(await store.listAccountsByUsernamePrefix('a_', 20)).toEqual([
+      { id: 'a_b', username: 'a_b', name: 'Ada' },
+    ]);
+  });
+
   it('refuses createAccount and updateAccount when the lightningAddress is taken', async () => {
     const store = new InMemoryAuthStore();
     const base = {
