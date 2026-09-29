@@ -4481,7 +4481,8 @@ note → **400** `{ "error": "Only a shop note can set a place" }`.
 Success → **200** live public message JSON (optional `place`, reply
 count, no hide stamps). Logs `messages.place.updated` with
 `messageId`, `accountId`, and `role` only. Text and publish state are
-unchanged.
+unchanged. A real pin change appends `message_edit`. An identical pin
+does not.
 
 ### `PATCH /messages/:id/shop-account`
 
@@ -4519,7 +4520,7 @@ Staff replacement of the stills on a live top-level shop note. Bearer session re
 
 ### `GET /messages/:id/edits`
 
-Staff history for a top-level shop note, newest first, including a hidden shop note. Bearer session required. Live role must be at least `moderator`. GET is not a Sunday write. Success is **200** `{ "edits": [...] }`. A reply or a non-shop note is **404**. Public message JSON does not include `edits`.
+Staff history for a top-level shop note, newest first, including a hidden shop note. Bearer session required. Live role must be at least `moderator`. GET is not a Sunday write. Success is **200** `{ "edits": [{ "id", "createdAt", "field", "before", "after", "actor" }] }`. `createdAt` is ISO. `field` is `"text"`, `"place"`, or `"shopAccount"` (SQL `shop_account` is published as `shopAccount`). `before` and `after` are the previous and next value: a text string, a place pin or null, or a shop account `{ "id", "username", "name" }` or null. `actor` is `{ "id", "name", "role" }`. A missing account keeps `{ "id", "name": null, "role": null }`. Empty history is `{ "edits": [] }`. A reply or a non-shop note is **404**. Public message JSON does not include `edits`.
 
 ### `GET /messages/hidden`
 
