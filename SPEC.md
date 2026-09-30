@@ -2276,15 +2276,29 @@ Success → **Response** `200`:
       "status": 200,
       "ms": 8,
       "accountId": "<uuid>",
-      "authKind": "session"
+      "authKind": "session",
+      "clientIp": null,
+      "clientCountry": null,
+      "cfRay": null,
+      "userAgent": null,
+      "acceptLanguage": null,
+      "origin": null
     }
   ]
 }
 ```
 
 `authKind` is `session`, `debug`, `spend`, or `none`. `accountId` is the
-session account when `authKind` is `session`; otherwise JSON `null`. An
-empty log returns `"logs": []`. When `DATABASE_URL` is unset the default
+session account when `authKind` is `session`; otherwise JSON `null`.
+`clientIp`, `clientCountry`, `cfRay`, `userAgent`, `acceptLanguage`, and
+`origin` are always present and are JSON `null` when that header is missing
+or fails validation. `clientIp` is `CF-Connecting-IP` only when it is an
+IPv4 or IPv6 address. `clientCountry` is `CF-IPCountry`, uppercased, when it
+is two letters or digits. `cfRay` is `CF-Ray` when it is 16 hex digits, a
+hyphen, and three letters. `userAgent` and `acceptLanguage` are those
+headers with controls removed and at most 200 characters. `origin` is an
+`https` origin, or `http://localhost` or `http://127.0.0.1`, with an
+optional port. An empty log returns `"logs": []`. When `DATABASE_URL` is unset the default
 in-memory store starts empty; when set, rows come from Postgres `api_log`.
 
 Environment:
@@ -2321,7 +2335,10 @@ include PRF output, the recovery phrase, a session token, a view key, nsec,
 Authorization, Cookie, a WebAuthn challenge, attestation, or signatures.
 `User-Agent` is not a body field. The server may store it as `userAgent`
 after stripping controls and truncating to 200 characters. An empty result
-is omitted.
+is omitted. The server also stores `clientIp`, `clientCountry`, `cfRay`,
+`acceptLanguage`, and `origin` when those request headers validate, using
+the same rules as `api_log`. Those names are not body keys. Absent values
+are omitted.
 
 Invalid JSON or a field outside the allowlist → **Response** `400`:
 

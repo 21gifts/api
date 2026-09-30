@@ -1,7 +1,9 @@
+import { AsyncLocalStorage } from 'node:async_hooks';
 import type { MiddlewareHandler } from 'hono';
 import type { ApiLogStore } from '@/lib/api-log';
 import type { AuthStore } from '@/lib/auth/store';
 import { resolveRequestAuth } from '@/lib/request-auth';
+import { presentClientFields, readClientRequestMeta } from '@/lib/request-meta';
 
 /** JSON-serialisable event fields. No nested objects. */
 export type LogFields = { readonly [key: string]: string | number | boolean };
@@ -11,6 +13,7 @@ export type DiagnosticSink = (event: string, fields: LogFields | undefined) => v
 
 let diagnosticSink: DiagnosticSink | null = null;
 let diagnosticSinkDepth = 0;
+const requestClientFields = new AsyncLocalStorage<ReturnType<typeof presentClientFields>>();
 
 /**
  * Install or clear the diagnostic persistence hook used by {@link logEvent}.
@@ -36,13 +39,15 @@ export function setDiagnosticSink(next: DiagnosticSink | null): void {
  * @returns void
  */
 export function logEvent(event: string, fields?: LogFields): void {
-  console.warn(JSON.stringify({ ts: new Date().toISOString(), event, ...fields }));
+  const storedFields = requestClientFields.getStore();
+  const merged = storedFields === undefined ? fields : { ...storedFields, ...fields };
+  console.warn(JSON.stringify({ ts: new Date().toISOString(), event, ...merged }));
   if (diagnosticSink === null || diagnosticSinkDepth !== 0) {
     return;
   }
   diagnosticSinkDepth += 1;
   try {
-    diagnosticSink(event, fields);
+    diagnosticSink(event, merged);
   } catch {
     // Sink failures must not escape logEvent.
   } finally {
@@ -122,48 +127,57 @@ export interface RequestLogDeps {
  */
 export function requestLog(deps: RequestLogDeps): MiddlewareHandler {
   return async (c, next) => {
-    const started = Date.now();
-    await next();
-    if (c.req.method === 'OPTIONS' || c.req.path === '/healthz') {
-      return;
-    }
-    const ms = Date.now() - started;
-    logEvent('http.request', {
-      method: c.req.method,
-      path: requestLogPath(c.req.path),
-      status: c.res.status,
-      ms,
-    });
-    const clock = deps.now ?? Date.now;
-    let accountId: string | null = null;
-    let authKind: 'session' | 'debug' | 'spend' | 'none' = 'none';
-    try {
-      const auth = await resolveRequestAuth({
-        authorizationHeader: c.req.header('authorization'),
-        debugToken: deps.debugToken,
-        spendApiToken: deps.spendApiToken,
-        authStore: deps.authStore,
-        now: clock(),
-      });
-      accountId = auth.accountId;
-      authKind = auth.authKind;
-    } catch {
-      accountId = null;
-      authKind = 'none';
-    }
-    try {
-      await deps.apiLogStore.append({
-        id: crypto.randomUUID(),
-        createdAt: new Date(clock()),
+    const meta = readClientRequestMeta(c.req.raw.headers);
+    return requestClientFields.run(presentClientFields(meta), async () => {
+      const started = Date.now();
+      await next();
+      if (c.req.method === 'OPTIONS' || c.req.path === '/healthz') {
+        return;
+      }
+      const ms = Date.now() - started;
+      logEvent('http.request', {
         method: c.req.method,
         path: requestLogPath(c.req.path),
         status: c.res.status,
         ms,
-        accountId,
-        authKind,
       });
-    } catch {
-      logEvent('api_log.write.failed');
-    }
+      const clock = deps.now ?? Date.now;
+      let accountId: string | null = null;
+      let authKind: 'session' | 'debug' | 'spend' | 'none' = 'none';
+      try {
+        const auth = await resolveRequestAuth({
+          authorizationHeader: c.req.header('authorization'),
+          debugToken: deps.debugToken,
+          spendApiToken: deps.spendApiToken,
+          authStore: deps.authStore,
+          now: clock(),
+        });
+        accountId = auth.accountId;
+        authKind = auth.authKind;
+      } catch {
+        accountId = null;
+        authKind = 'none';
+      }
+      try {
+        await deps.apiLogStore.append({
+          id: crypto.randomUUID(),
+          createdAt: new Date(clock()),
+          method: c.req.method,
+          path: requestLogPath(c.req.path),
+          status: c.res.status,
+          ms,
+          accountId,
+          authKind,
+          clientIp: meta.clientIp,
+          clientCountry: meta.clientCountry,
+          cfRay: meta.cfRay,
+          userAgent: meta.userAgent,
+          acceptLanguage: meta.acceptLanguage,
+          origin: meta.origin,
+        });
+      } catch {
+        logEvent('api_log.write.failed');
+      }
+    });
   };
 }
