@@ -1,42 +1,63 @@
-# Account recovery after verification
+# Securing the account
 
 Status: **concept only**. Decided 2026-09-30. Not implemented. No HTTP path in
 this document is reserved. A later change that builds this adds its routes to
 `SPEC.md` in that same change. Nothing here changes runtime behaviour.
 
-This supersedes the 2026-09-29 text where the same shares were treated as a
-future Nostr key. Recovery does two things, and nothing else:
+Recovery does two things, and nothing else:
 
 1. The same 21.gifts account opens on a new device.
 2. The same 12 seed words come back.
 
 ## Decision
 
-When a moderator has verified a person in real life, that person gets three
-recovery shares. Two are assigned. The person chooses only the third.
+The account holder starts this. It is not a side effect of being verified.
+The app offers **Mein Konto absichern**. That screen explains the two
+results above, and that both chosen people are required. One person cannot
+reset the account. The holder then chooses exactly two people.
 
-- The **verifier** is the moderator who verified them. That share is stored on
-  the verifier's phone.
-- **21.gifts** holds one share on the server. The service can read that one
-  share. It cannot read the other two.
-- The person chooses **one friend**. That share is stored on the friend's
-  phone.
+If a moderator has verified the holder, that moderator is suggested as
+person 1. The suggestion is not fixed. The holder can replace it with
+someone else. Person 2 has no suggestion. If nobody has verified the
+holder, both slots start empty.
 
-Two shares reconstruct the 16 bytes of the existing 12-word phrase. One share
-does not. After the set is active, the verifier and 21.gifts together are
-enough, without the friend. The friend and the verifier are enough if the
-server is gone. The friend and 21.gifts are enough if the verifier is gone.
+Each chosen person's share stays on that person's phone. 21.gifts does not
+hold a share and cannot reset the account. The server may store a copy of
+a sealed share. It has no key to open one.
+
+Both shares are required. There is no third share. A threshold of 1 cannot
+be stored.
 
 Daily login stays a passkey. The passkey private key is not one of these
-shares and never leaves the authenticator. On the new device those 16 bytes
-do only the two things above: they authorize one new passkey for this
+shares and never leaves the authenticator. On the new device the recovered
+bytes do only the two things above: they authorize one new passkey for this
 account, and they are shown as the same 12 words.
+
+## Mein Konto absichern
+
+The action is available to a signed-in holder. Opening it does not create
+shares. The screen explains, in order:
+
+- Both people together can put this account on a new phone and bring back
+  the same 12 words.
+- One of them cannot.
+- The passkey used day to day stays on the holder's phone.
+- Nothing else is recovered or moved.
+
+The holder then picks the two people. Person 1 is prefilled with the
+moderator who verified them, when that trust edge exists. Changing person
+1 is a normal choice, not an extra step. The two people must be two
+different 21.gifts accounts, and neither may be the holder. An account
+that cannot log in cannot be chosen.
+
+The set stays **inactive** until both phones have stored their share.
+Inactive means a reset cannot start. Choosing the names is not enough.
 
 ## The 12 words
 
-The words are the phrase the phone already derives and never sends. At the
-verification meeting the owner's phone derives them again. It does not
-generate a new secret.
+The words are the phrase the phone already derives and never sends. When
+the holder continues past the explanation, their phone derives them again.
+It does not generate a new secret.
 
 1. WebAuthn PRF `eval.first`, salt = SHA-256 of the UTF-8 string
    `21gifts-nostr-v1`.
@@ -48,9 +69,9 @@ That derivation already exists. This document does not change it. The bytes
 are the backup phrase. They are not uploaded, and they are not used for
 anything besides the two results above.
 
-Before any share is given out, the phone reconstructs the shares locally and
-checks that BIP-39 of those bytes is the phrase it just derived. If not, it
-stops.
+Before any share is given out, the phone reconstructs the shares locally
+and checks that BIP-39 of those bytes is the phrase it just derived. If
+not, it stops.
 
 ## What this does not do
 
@@ -59,94 +80,60 @@ words. The passkey private key is not split. A new passkey is a new door
 onto the same account. Deleting the old credential on the server stops the
 old passkey from logging in. It does not erase the secret inside a lost
 phone. The phrase is not replaced with different words. No balance is
-moved. Nothing is published.
+moved. Nothing is published. Verification is not changed, and it does not
+by itself create a share.
 
-## When the shares are created
+## The two shares
 
-`verified` stays a moderator confirming this person in real life. This
-document does not change `POST /trust/verify` and does not reserve a new
-route. The share ceremony happens at that same meeting, on the phones, and
-is not a server-side side effect of the role change.
-
-The owner's phone must be present and unlocked with the passkey. The
-verifier's phone must be present. The phone derives the existing phrase
-there.
-If the ceremony does not finish, the person can still be `verified` and
-simply has no recovery set. A later meeting can run the ceremony. A second
-verification does not mint a second set while one exists.
-
-The verifier and 21.gifts are not chosen. The only choice is the one friend.
-The friend does not have to be in the room. Until that friend's phone has
-stored its share, the set is **inactive** and the service has not been given
-its share. The verifier may already hold one share from the meeting. One
-share is not enough, and recovery cannot start.
-
-## The three shares
-
-One SLIP-39 group. Group count 1. Group threshold 1. Member count 3. Member
+One SLIP-39 group. Group count 1. Group threshold 1. Member count 2. Member
 threshold 2. Empty passphrase. Iteration exponent 0. The master secret is
 those 16 bytes. Reconstruction stops there, then BIP-39-encodes them. That
 encoding is the original 12 words. Do not run SLIP-39's conversion of the
 master secret into a BIP-32 seed. That would not be these words.
 
-| Share | Who                             | Where the readable share lives                |
-| ----- | ------------------------------- | --------------------------------------------- |
-| 1     | The verifying moderator         | That moderator's phone                        |
-| 2     | 21.gifts                        | The server, in a form the service can decrypt |
-| 3     | The one friend the person chose | That friend's phone                           |
+| Share | Who                           | Where the readable share lives |
+| ----- | ----------------------------- | ------------------------------ |
+| 1     | The person chosen as person 1 | That person's phone            |
+| 2     | The person chosen as person 2 | That person's phone            |
 
-Any two of the three active shares reconstruct the secret. There is no
-configuration of `t` or `n`. A threshold of 1 cannot be stored.
+Both shares are required. There is no configuration of `t` or `n`.
 
-Each human share is sealed to an X25519 key that phone shows, as a QR or as
-hex, to the owner's phone. The owner's phone does not take that key from
-the api. The seal is a libsodium sealed box (`crypto_box_seal`: X25519,
-XSalsa20-Poly1305). The plaintext is one version byte `0x01` followed by
-the UTF-8 SLIP-39 mnemonic of that share (twenty words, single ASCII
-spaces, no trailing newline). The api may store a copy of that ciphertext.
-It has no key to open it.
-
-The service share is sealed to the 21.gifts recovery public key shipped in
-the client, not to a key taken from a response. The private key stays on
-the server. Once the ciphertext has been uploaded, the server stores it
-and can open that share alone. It must not write the opened share into a log, and it must not
-store it beside another opened share.
-
-The owner's phone checks, before anything is given out, that the three
-local shares reconstruct the same 16 bytes. If they do not, it stops. No
-phone receives a share, and nothing is uploaded.
+Each share is sealed to an X25519 key that person's phone shows, as a QR
+or as hex, to the holder's phone. The holder's phone does not take that
+key from the api. The seal is a libsodium sealed box (`crypto_box_seal`:
+X25519, XSalsa20-Poly1305). The plaintext is one version byte `0x01`
+followed by the UTF-8 SLIP-39 mnemonic of that share (twenty words, single
+ASCII spaces, no trailing newline). The api may store a copy of that
+ciphertext. It has no key to open it.
 
 ## Enrollment order
 
-1. The owner unlocks the phone. It derives the existing 16 bytes, builds
-   the three SLIP-39 shares, and checks that BIP-39 of the reconstruction
-   is the phrase it just derived.
-2. The verifier's phone shows a fresh X25519 public key and an Ed25519
-   public key, and signs the owner's 32-byte nonce with that Ed25519 key.
-   The owner scans or pastes that payload and verifies the signature. A
-   mismatch aborts the ceremony.
-3. The owner seals share 1 to that X25519 key. The verifier's phone stores
-   the ciphertext, opens it once, checks the SLIP-39 identifier, discards
-   the plaintext, and signs a readable-proof with the same Ed25519 key.
-4. The owner seals share 2 to the pinned service key and keeps that
-   ciphertext on the owner's phone. It is not uploaded yet, and the
-   owner's phone cannot open it. Share 3 is sealed to a key that stays
-   on the owner's phone. The owner derives the Ed25519 bind public key
-   from the 16 bytes and keeps that public key. The 16 bytes, the bind
-   private key, and the other plaintexts are discarded. One remaining
-   share on the owner's phone is not enough to reconstruct the secret.
-5. The owner chooses one friend, at the meeting or later. The owner's
-   phone opens share 3 and that friend's phone does step 2 and step 3
-   for it. The owner's copy of share 3 is then discarded.
-6. Only after the friend's readable-proof is stored does the owner's
-   phone upload the service ciphertext, the Ed25519 bind public key, the
-   SLIP-39 identifier, and the two human ciphertexts. The service then
-   opens its share once, checks the identifier, stores the ciphertext,
-   and discards the plaintext. Until this upload, the service does not
-   have a share. The verifier alone is not enough, so recovery cannot
-   be performed yet. The 16 bytes are not in the upload.
+1. The holder opens **Mein Konto absichern**, reads the explanation, and
+   confirms the two people. Person 1 may still be the suggested moderator,
+   or someone else.
+2. The holder's phone derives the existing 16 bytes, builds the two
+   SLIP-39 shares, and checks that BIP-39 of the reconstruction is the
+   phrase it just derived. It derives the Ed25519 bind public key and
+   keeps that public key.
+3. For each chosen person, that phone shows a fresh X25519 public key and
+   an Ed25519 public key, and signs the holder's 32-byte nonce with that
+   Ed25519 key. The holder scans or pastes that payload and verifies the
+   signature. A mismatch aborts the ceremony. The holder seals that
+   person's share to the scanned X25519 key. That phone stores the
+   ciphertext, opens it once, checks the SLIP-39 identifier, discards the
+   plaintext, and signs a readable-proof.
+4. The 16 bytes, the bind private key, and the share plaintexts are
+   discarded once both seals exist. If the second person is not available
+   yet, their share stays sealed to a key on the holder's phone, and the
+   plaintext is still discarded. One share is not enough to reconstruct
+   the phrase. The holder's phone opens that remaining share only to hand
+   it to the second person, then discards it.
+5. Only after both readable-proofs are stored does the holder's phone
+   upload the bind public key, the SLIP-39 identifier, and the two
+   ciphertexts. The 16 bytes are not in the upload. Until both proofs
+   exist, the set is inactive and a reset cannot start.
 
-The nonce is generated on the owner's phone. The api does not choose it.
+The nonce is generated on the holder's phone. The api does not choose it.
 The signed enrollment message is UTF-8, four lines, a newline between the
 lines, no trailing newline:
 
@@ -167,74 +154,64 @@ uses the same rules over:
 <holder ed25519 public key, lowercase hex>
 ```
 
-A holder who cannot open the seal cannot produce the proof. The proof is
-not a substitute for the scan. The service share has no holder signature.
-Its proof is that the service accepted the seal under the pinned key.
+A person who cannot open the seal cannot produce the proof. The proof is
+not a substitute for the scan.
 
-Replacing a set is the same ceremony and replaces all three shares in one
-step. Shamir shares are not edited in place. Changing the friend, or
-moving the verifier's share to a different phone, is a full replacement.
-A later trust edge does not move the share. The verifier of the set is the
-moderator whose phone was scanned, which is the moderator who verified
-the person at that meeting.
+Replacing the set is the same ceremony and replaces both shares in one
+step. Shamir shares are not edited in place. Changing either person is a
+full replacement. A later verification does not move a share and does not
+replace person 1.
 
 A written export of a SLIP-39 share cannot be deleted. Resignation deletes
 the server ciphertext and asks that phone to delete its local copy. The
-owner is told this before the friend is added. After the set is active,
-losing the friend's share does not remove the service share. The verifier
-and 21.gifts remain a working pair. Replacing the friend is a new
-ceremony, because the shares are not edited in place. The set becomes
-inactive only when fewer than two shares remain.
+holder is told this before confirming the two people. If either share is
+gone, fewer than two shares remain, the set is inactive, and a reset
+cannot start until the holder, who can still open the phrase with their
+passkey, runs the ceremony again.
 
 ## What the server may store
 
 No row contains the 16 bytes, a share plaintext, PRF output, the 12-word
-backup, or a passkey private key. Logs follow the same ban. The service
-may decrypt its own share in memory while handling a recovery, and must
-discard that plaintext when the handling ends.
+backup, or a passkey private key. Logs follow the same ban. The server
+cannot decrypt a share.
 
 Conceptual records, not a schema migration:
 
 **Recovery set.** Owner account id. SLIP-39 identifier. Status `inactive`
-or `active`. Ed25519 bind public key. Created time.
+or `active`. Ed25519 bind public key. Created time. The account id that
+was suggested as person 1, if any, is not stored as a holder unless that
+person was the one confirmed.
 
-**Human share.** Set id. Holder account id (`verifier` or `friend`).
-Ed25519 public key and X25519 public key the owner verified. Sealed
-ciphertext. Time the readable-proof succeeded.
+**Share.** Set id. Holder account id. Ed25519 public key and X25519 public
+key the holder of the account verified by scan. Sealed ciphertext. Time
+the readable-proof succeeded. Exactly two rows once the set is active.
 
-**Service share.** Set id. Sealed ciphertext. Time the service checked the
-identifier.
-
-The friend is a 21.gifts account so the app on that phone can store the
-share and be asked to release it. The friend receives nothing else.
-`session_refused` cannot enroll, hold a share, or recover.
+Both people are 21.gifts accounts so the app on those phones can store
+the share and be asked to release it. A holder receives nothing except
+that share. `session_refused` cannot enroll, hold a share, or recover.
 
 ## Recovery
 
 A new phone generates an X25519 keypair and keeps the secret in memory.
-It shows the public key as a QR and as lowercase hex, and it announces
-the same public key on the recovery session. Two of the three shares
-must be released. A human holder opens their share only for a key that
-phone scanned from the new phone, and refuses a key that arrived only
-inside a server payload. The service is not a holder and does not scan.
-It opens its own share only for the announced public key, and only after
-one human release names that same key. The server may store the announced
-public key so a person can see a mismatch. It must not offer a human
-"use the key on the session".
+It shows the public key as a QR and as lowercase hex. Both people must
+release their share. Each opens their share only for a key that phone
+scanned from the new phone, and refuses a key that arrived only inside a
+server payload. The server may store the announced public key so a person
+can see a mismatch. It must not offer "use the key on the session". The
+server has no share of its own to release.
 
 The short code is 8 characters from `ABCDEFGHJKLMNPQRSTUVWXYZ23456789`.
 It names the recovery to a person. It is not a key and not sufficient to
 release a share.
 
-The new phone reconstructs the 16 bytes from the two released shares. It
-derives the bind key locally and checks the signature against the stored
-bind public key before uploading anything. A mismatch discards the
-material and uploads nothing.
+The new phone reconstructs the 16 bytes from both shares. It derives the
+bind key locally and checks the signature against the stored bind public
+key before uploading anything. A mismatch discards the material and
+uploads nothing.
 
 The bind private key is Ed25519. Its 32-byte seed is HKDF-SHA256 with
 input keying material the 16 bytes, salt the UTF-8 string
-`21gifts-account-recovery`, info the UTF-8 string `bind-v1`, and length 32. This key only authorizes
-the new passkey.
+`21gifts-account-recovery`, info the UTF-8 string `bind-v1`, and length 32. This key only authorizes the new passkey.
 
 The bind message is UTF-8, four lines, a newline between the lines, no
 trailing newline:
@@ -258,14 +235,14 @@ phrase. It does not write a different one.
 
 The new phone then shows the 12 words from those bytes. So those words
 remain available after the ceremony, the phone wraps the bytes under the
-new passkey and uploads only the wrap. HKDF-SHA256, salt UTF-8 `21gifts-seed-derivation`,
-info UTF-8 `seed-wrap-v1`, 32 bytes. That info must not equal `mnemonic-v1`.
-AES-256-GCM, 12-byte nonce, additional data the UTF-8 account id, plaintext
-the 16 bytes. The blob is version `0x01`, the nonce, the ciphertext, and
-the tag: 45 bytes. The server stores the blob and cannot read it. Showing
-the words later unwraps it and BIP-39-encodes the bytes. If that passkey
-returns no PRF, the words stay locked. The phone must not show
-`mnemonic-v1` of the new passkey instead.
+new passkey and uploads only the wrap. HKDF-SHA256, salt UTF-8
+`21gifts-seed-derivation`, info UTF-8 `seed-wrap-v1`, 32 bytes. That info
+must not equal `mnemonic-v1`. AES-256-GCM, 12-byte nonce, additional data
+the UTF-8 account id, plaintext the 16 bytes. The blob is version `0x01`,
+the nonce, the ciphertext, and the tag: 45 bytes. The server stores the
+blob and cannot read it. Showing the words later unwraps it and
+BIP-39-encodes the bytes. If that passkey returns no PRF, the words stay
+locked. The phone must not show `mnemonic-v1` of the new passkey instead.
 
 The wait is 48 hours from the start of the recovery, even if both shares
 arrive in the first minute, and even if some passkey is still logged in.
@@ -282,31 +259,28 @@ signature under the bind public key stored at enrollment.
 
 ## If the service is gone
 
-The verifier's phone and the friend's phone still hold their sealed
-shares. Two of those people can reconstruct the 16 bytes without the
-server. Binding a new passkey needs the service to be up, because the
-account lives there. The reconstruction itself does not. The service
-share is not required for that pair.
+The two phones still hold their sealed shares. Those two people can
+reconstruct the 12 words without the server. Binding a new passkey needs
+the service to be up, because the account lives there. The reconstruction
+itself does not.
 
-Losing the server's recovery private key loses the service share only.
-The other pair still works. Losing the phones as well, with no export,
-loses this recovery. A paper copy of the 12 words is the same phrase, not
-a different secret. The shares reconstruct those words.
+Losing both phones, with no export, loses this recovery. A paper copy of
+the 12 words is the same phrase, not a different secret.
 
 ## State machine
 
 ```text
 no set
-  │ ceremony, friend has not stored a share
+  │ Mein Konto absichern, one or both shares not yet stored
   ▼
-inactive ──────── friend readable-proof stored ────────► active
+inactive ──────── both readable-proofs stored ────────► active
 
 active recovery:
 draft (15 min, no account yet)
         │ bind by username, or by a holder who selects the owner
         ▼
      pending ────── owner passkey cancel, or device abandon, or sibling completed ──► cancelled
-        │ 48h elapsed and two distinct shares released
+        │ 48h elapsed and both shares released
         ▼
       ready ────── owner passkey cancel, or device abandon, or sibling completed ──► cancelled
         │ bind signature and new passkey verify
@@ -321,25 +295,25 @@ works is the cancel path during the 48 hours.
 
 ## Acceptance criteria for a later implementation
 
-- Two of the three shares reconstruct the original 16 bytes, and BIP-39
-  of those bytes is the original 12 words. One share does not.
+- Both shares reconstruct the original 16 bytes, and BIP-39 of those
+  bytes is the original 12 words. One share does not.
 - Those bytes authorize a new passkey on the same account, and nothing
   else.
-- The owner's phone will not seal a human share to a key that came from
-  the api.
-- The service share is sealed only to the key shipped in the client.
-- Before the friend's readable-proof, the verifier and the service cannot
-  start a recovery.
-- After the set is active, the verifier and the service can, without the
-  friend.
+- **Mein Konto absichern** explains that, then asks for two people.
+  Person 1 starts as the verifying moderator when one exists, and the
+  holder can replace that suggestion.
+- A fixed moderator, or a share held by the service, cannot be stored.
+- The holder's phone will not seal a share to a key that came from the
+  api.
+- Before both readable-proofs, a reset cannot start.
 - A body that contains PRF results is rejected.
 - Replacing the phrase with different words stays refused.
 - After recovery, showing the words unwraps the stored wrap. It does not
   derive a new phrase from the new passkey.
 - No row and no log contains the 16 bytes or a share plaintext.
 - Completing one recovery cancels the other open ones for that account.
-- The verifier and the friend can reconstruct the 16 bytes from the
-  copies on their phones with the server offline.
+- The two people can reconstruct the 12 words from the copies on their
+  phones with the server offline.
 
 ## Out of scope here
 
@@ -347,7 +321,8 @@ works is the cancel path during the 48 hours.
   words.
 - Any route, table, screen, or migration.
 - Splitting the passkey private key.
-- A second friend, a chosen verifier, or a threshold other than 2 of 3.
+- A share held by 21.gifts, a fixed moderator, or a threshold other than
+  both chosen people.
 - A SLIP-39 passphrase or a second Shamir group.
 - Remote wipe of a lost authenticator.
 - Wallet of Satoshi recovery.

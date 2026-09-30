@@ -5104,7 +5104,7 @@ exist on the account model; `GET /debug/accounts` and
 ## Out of scope for v1
 
 - Passkey + PRF + NIP-06 user-owned keys (non-custodial phase)
-- Account recovery after verification ([docs/social-recovery.md](docs/social-recovery.md)). Not a v1 route. It only opens the account on a new device and restores the same 12 words. No path in that document is reserved.
+- Securing the account ([docs/social-recovery.md](docs/social-recovery.md)). Not a v1 route. The holder chooses two people under Mein Konto absichern. It only opens the account on a new device and restores the same 12 words. No path in that document is reserved.
 - Email/password login (or any second login method)
 - Internationalization of api response text and push payloads (they stay English). A signed-in account may store `locale` and `fiat`; that is not translated copy.
 - Platform custody of **receiver** funds (receiving stays LUD-16 only)
