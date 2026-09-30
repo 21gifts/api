@@ -117,7 +117,7 @@ export interface AppDeps {
    * Operator debug token (default: `process.env.DEBUG_TOKEN`). Unset or
    * blank → `GET /debug/accounts`, `POST /debug/accounts`,
    * `PATCH /debug/accounts/:id`, `POST /debug/accounts/:id/session`,
-   * `GET /debug/contacts`, `GET /debug/api-log`, `GET /debug/diagnostics`, `GET /debug/invoices`, `POST /debug/invoices/settle`,
+   * `GET /debug/contacts`, `GET /debug/api-log`, `GET /debug/diagnostics`, `GET /debug/invoices`, `POST /debug/invoices/settle`, `POST /debug/spend-ping`,
    * `GET /debug/zap-ingests`, `GET /debug/messages`,
    * `GET /debug/messages/:id`, `GET /debug/messages/:id/photo`,
    * `PUT /debug/messages/:id/video`, `POST /debug/messages/:id/restore`,
