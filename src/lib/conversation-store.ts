@@ -285,8 +285,8 @@ export interface ConversationStore {
 
   /**
    * True when the thread has at least one inbound message for the viewer
-   * (`conversationIsInbound`). Used by GET /conversations to omit empty
-   * and outbound-only threads.
+   * (`conversationIsInbound`). GET /conversations also keeps a thread
+   * whose latest message is from the viewer. Empty threads stay omitted.
    *
    * @param conversationId - Thread to inspect.
    * @param viewerId - Session account.
