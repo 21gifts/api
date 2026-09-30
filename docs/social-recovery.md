@@ -114,10 +114,11 @@ Both shares are required. There is no configuration of `t` or `n`.
 Each share is sealed to an X25519 key that person's phone shows, as a QR
 or as hex, to the owner's phone. The owner's phone does not take that
 key from the api. The seal is a libsodium sealed box (`crypto_box_seal`:
-X25519, XSalsa20-Poly1305). The plaintext is one version byte `0x01`
-followed by the UTF-8 SLIP-39 mnemonic of that share (twenty words, single
-ASCII spaces, no trailing newline). The api may store a copy of that
-ciphertext. It has no key to open it.
+X25519, XSalsa20-Poly1305). The plaintext is one version byte `0x01`, then 32 confirmation bytes from
+the owner's phone, then the UTF-8 SLIP-39 mnemonic of that share (twenty
+words, single ASCII spaces, no trailing newline). Each share has its own
+confirmation. The api may store a copy of that ciphertext. It has no key
+to open it, and it never stores the confirmation.
 
 ## Enrollment order
 
@@ -127,21 +128,26 @@ ciphertext. It has no key to open it.
    else. Confirming the names still stores nothing.
 2. The owner's phone derives the existing 16 bytes, builds the two
    SLIP-39 shares, and checks that BIP-39 of the reconstruction is the
-   phrase it just derived. It derives the Ed25519 bind public key and
-   keeps that public key.
+   phrase it just derived. It draws a fresh 32-byte confirmation for each
+   share. It derives the Ed25519 bind public key and keeps that public key.
 3. For each chosen person, that phone shows a fresh X25519 public key and
    an Ed25519 public key, and signs the owner's 32-byte nonce with that
    Ed25519 key. The owner scans or pastes that payload and verifies the
    signature. A mismatch aborts the ceremony. The owner seals that
-   person's share to the scanned X25519 key. That phone stores the
-   ciphertext, opens it once, checks the SLIP-39 identifier, discards the
-   plaintext, and signs a readable-proof.
-4. The 16 bytes, the bind private key, and the share plaintexts are
-   discarded once both seals exist. If the second person is not available
-   yet, their share stays sealed to a key on the owner's phone, and the
-   plaintext is still discarded. One share is not enough to reconstruct
-   the phrase. The owner's phone opens that remaining share only to hand
-   it to the second person, then discards it.
+   person's share, including that share's confirmation, to the scanned
+   X25519 key. That phone stores the ciphertext, opens it once, reads the
+   confirmation, checks the SLIP-39 identifier, discards the share words,
+   and signs a readable-proof that includes the confirmation. The owner's
+   phone accepts the proof only when the signature verifies and the
+   confirmation matches the one it sealed into that share. It then
+   discards that confirmation.
+4. Both people do this on their own phones during this ceremony. If either
+   person is not available, the owner's phone discards the 16 bytes, the
+   bind private key, both share plaintexts, and both confirmations.
+   Nothing is stored, and no share is sealed to a key on the owner's phone.
+   The ceremony can be started again later. When both proofs have been
+   accepted, the 16 bytes, the bind private key, and the share plaintexts
+   are discarded.
 5. Only after both readable-proofs are stored does the owner's phone
    upload the bind public key, the SLIP-39 identifier, and the two
    ciphertexts. That upload creates the set as `active`. The 16 bytes are
@@ -160,17 +166,21 @@ lines, no trailing newline:
 ```
 
 The signature is Ed25519 over the SHA-256 of that string. The readable-proof
-uses the same rules over:
+is UTF-8, five lines, a newline between the lines, no trailing newline.
+The signature is Ed25519 over the SHA-256 of that string:
 
 ```text
 21gifts-recovery-readable-v1
 <owner account id>
 <SLIP-39 identifier, lowercase hex>
 <person ed25519 public key, lowercase hex>
+<confirmation, lowercase hex>
 ```
 
-A person who cannot open the seal cannot produce the proof. The proof is
-not a substitute for the scan.
+The confirmation is inside the seal and nowhere else. A person who cannot
+open the seal does not learn it, so they cannot produce a proof the owner's
+phone accepts. The proof is not a substitute for the scan. The server does
+not store the confirmation.
 
 Replacing the set is the same ceremony and replaces both shares in one
 step. Shamir shares are not edited in place. Changing either person is a
@@ -188,8 +198,8 @@ new upload waits until both new proofs exist, then replaces the set as
 
 ## What the server may store
 
-No row contains the 16 bytes, a share plaintext, PRF output, the 12-word
-backup, or a passkey private key. Logs follow the same ban. The server
+No row contains the 16 bytes, a share plaintext, a confirmation, PRF
+output, the 12-word backup, or a passkey private key. Logs follow the same ban. The server
 cannot decrypt a share.
 
 Conceptual records, not a schema migration:
@@ -340,11 +350,15 @@ that still works is the cancel path during the 48 hours.
 - The owner's phone will not seal a share to a key that came from the
   api.
 - Before both readable-proofs, nothing is stored and a reset cannot start.
+- The owner's phone rejects a readable-proof whose confirmation was not
+  inside that share's seal. A share is never sealed to a key on the
+  owner's phone.
 - A body that contains PRF results is rejected.
 - Replacing the phrase with different words stays refused.
 - After recovery, showing the words unwraps the stored wrap. It does not
   derive a new phrase from the new passkey.
-- No row and no log contains the 16 bytes or a share plaintext.
+- No row and no log contains the 16 bytes, a share plaintext, or a
+  confirmation.
 - Completing one recovery cancels the other open ones for that account.
 - The two people can reconstruct the 12 words from the copies on their
   phones with the server offline.
