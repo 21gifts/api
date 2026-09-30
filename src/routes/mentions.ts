@@ -6,7 +6,9 @@ import { mentionQueryPrefix } from '@/lib/mention-query';
 import { bearerToken } from '@/routes/me';
 
 /**
- * `/mentions` — signed-in username prefix suggestions for `@` in a forum post.
+ * `/mentions` — signed-in `@` suggestions. `q` matches the start of the
+ * username, a `.` `_` `-` segment, or the start of the display name or one
+ * of its words — not only the whole username.
  */
 
 /** Maximum accounts returned by `GET /mentions`. */
@@ -60,12 +62,13 @@ async function requireForumRead(deps: MentionsRouteDeps, c: Context): Promise<Me
 /**
  * Build the `/mentions` route group.
  *
- * Mounted at `/mentions` so the public path is `GET /mentions`. Username
- * prefix suggestions for `@` in a forum post. Does not change how a sent
- * post stores `@username` marks.
+ * Mounted at `/mentions` so the public path is `GET /mentions`. Optional `q`
+ * matches the start of the username, a `.` `_` `-` segment, or the start of
+ * the display name or one of its words. Does not change how a sent post
+ * stores `@username` marks.
  *
  * @param deps - Auth store and clock.
- * @returns A Hono app with mention prefix GET.
+ * @returns A Hono app with mention GET.
  */
 export function mentionsRoutes(deps: MentionsRouteDeps): Hono {
   return new Hono().get('/', async (c): Promise<Response> => {

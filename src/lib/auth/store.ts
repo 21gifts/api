@@ -4,6 +4,7 @@ import {
 } from '@/lib/auth/passkey-renew-report';
 import { roleAtLeast } from '@/lib/auth/roles';
 import { CHALLENGE_TTL_MS, SESSION_TTL_MS } from '@/lib/config';
+import { mentionAccountMatches } from '@/lib/mention-query';
 
 /**
  * Persistence for accounts, sessions, passkeys, and address verification.
@@ -458,15 +459,19 @@ export interface AuthStore {
    */
   getAccountByUsername(username: string): Promise<Account | undefined>;
   /**
-   * Accounts whose username starts with `prefix`, for `@` suggestions.
+   * Accounts `mentionAccountMatches` accepts for `prefix`, for `@` suggestions.
    *
    * `prefix` is already `""` or a normalised prefix; do not re-validate, trim,
    * or lowercase it. Empty prefix matches every account that has a non-blank
-   * username. At most `limit` rows. Order is `lower(trim(username))`
-   * ascending, then `id` ascending. Skip null, undefined, and blank
-   * (trim-empty) usernames. `username` in the result is the stored handle
-   * (not lowercased, not trimmed). `name` is the trimmed display name, or
-   * the stored username when the display name is null or blank (trim-empty).
+   * username. Otherwise the token must start the trimmed username, a username
+   * segment split on `.` `_` `-`, the trimmed display name, or a display-name
+   * word split on space `.` `_` `-`. At most `limit` rows. Order is
+   * `lower(trim(username))` ascending, then `id` ascending. Skip null,
+   * undefined, and blank (trim-empty) usernames. `username` in the result is
+   * the stored handle (not lowercased, not trimmed). `name` is the trimmed
+   * display name, or the stored username when the display name is null or
+   * blank (trim-empty). The match sees the stored display name, not that
+   * fallback.
    *
    * @param prefix - Already `""` or a normalised prefix.
    * @param limit - Maximum rows to return.
@@ -1018,17 +1023,18 @@ export class InMemoryAuthStore implements AuthStore {
       if (account.username.trim() === '') {
         continue;
       }
-      const lowered = account.username.trim().toLowerCase();
-      if (prefix === '' || lowered.startsWith(prefix)) {
-        const trimmedName = (account.name ?? '').trim();
-        rows.push({
-          // NUL sorts before username characters so the id is the tie-break
-          key: `${lowered}\u0000${account.id}`,
-          id: account.id,
-          username: account.username,
-          name: trimmedName === '' ? account.username : trimmedName,
-        });
+      if (!mentionAccountMatches(account.username, account.name, prefix)) {
+        continue;
       }
+      const lowered = account.username.trim().toLowerCase();
+      const trimmedName = (account.name ?? '').trim();
+      rows.push({
+        // NUL sorts before username characters so the id is the tie-break
+        key: `${lowered}\u0000${account.id}`,
+        id: account.id,
+        username: account.username,
+        name: trimmedName === '' ? account.username : trimmedName,
+      });
     }
     rows.sort((a, b) => (a.key < b.key ? -1 : 1));
     return rows.slice(0, limit).map(({ id, username, name }) => ({ id, username, name }));

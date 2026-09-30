@@ -4,7 +4,7 @@
 > Product decisions live in [`CONCEPT.md`](./CONCEPT.md); this file owns
 > request/response contracts for routes that exist in code today.
 
-**Status**: living document. Last revised 2026-09-28 (`GET /mentions` username prefix suggestions. GET /mentions returns at most 20 username-prefix suggestions for a signed-in forum reader. 2026-09-24: `POST /conversations/:id/messages/:messageId/translate`; owner and view JSON include `aboutMessageId`; conversation rows include `lastMessageId`. 2026-09-23: `eligibleToday` does not require a grant until UTC 2026-09-30; funding-program grants independent of `account.role`; spend ping and `POST /invoices` require `eligibleToday`; verified top-level media also welcome-pings independent of `eligibleToday`; `GET /invoices/eligible`; `GET /conversations` list/open rows include per-row `unreadMessageCount`; envelope `unreadCount` remains unread thread count; `GET /trust-chain` requires a member Bearer session; public graph uses at most one incoming edge per subject: the oldest eligible sibling (`createdAt` then `id`), skipping a non-chain oldest sibling so a later displayable contact can show; eligible `verify`, `moderator_appoint`, and `moderator_propose` only when the subject is a moderator; `moderator_confirm` and `moderator_reject` never; later appoint/confirm/propose do not replace the first eligible contact; staff may reject an open proposal (`POST /trust/reject-moderator`, append-only `moderator_reject`, role stays `verified`) and re-propose after reject (new `moderator_propose`; 409 while currently pending, any confirm/appoint, or a concurrent older open propose wins after insert); confirm/reject re-list after insert and undo when the other grant already closed; pending = latest propose/reject is propose, verified, no confirm/appoint; live-unique kinds are verify/confirm/appoint only; open proposal fans out in-app `moderator_proposal` plus Web Push to other staff until confirm, until reject when pending is then empty, or until appoint; GET `/notifications` keeps `moderator_appointed` and `moderator_proposal` (mark-read / read-all do not stamp the proposal); owner `notificationLevel` on GET `/me` and `POST /me/notification-level`; fan-out filters in-app and Web Push by `all` / `active` / `mentions`; GET `/notifications` applies the same filter to stored rows (`moderator_appointed` always stays; `unreadCount` is unread among kept rows after the hidden filter (before the 200 cap), not `store.unreadCount()` and not the unfiltered matching unread of the newest 1000); a zap that inserts a gift-reply fans out only `notifyZap`, not a second `forum_reply`; gift-reply row still lands in the thread; confirm/appoint notify the subject only with `moderator_appointed` and Web Push url `/welcome`; official platform account (`isPlatform`) never fans out living-room `forum_post` / `forum_reply` / `zap`; house daily gift-replies still persist; GET /messages omits name-copy profile notes and About me text stays).
+**Status**: living document. Last revised 2026-09-30 (`GET /mentions` matches the start of the username, a `.` `_` `-` segment, or the start of the display name or one of its words; a token containing `.` `_` `-` matches only a whole-string start. 2026-09-28: `GET /mentions` username prefix suggestions. GET /mentions returns at most 20 username-prefix suggestions for a signed-in forum reader. 2026-09-24: `POST /conversations/:id/messages/:messageId/translate`; owner and view JSON include `aboutMessageId`; conversation rows include `lastMessageId`. 2026-09-23: `eligibleToday` does not require a grant until UTC 2026-09-30; funding-program grants independent of `account.role`; spend ping and `POST /invoices` require `eligibleToday`; verified top-level media also welcome-pings independent of `eligibleToday`; `GET /invoices/eligible`; `GET /conversations` list/open rows include per-row `unreadMessageCount`; envelope `unreadCount` remains unread thread count; `GET /trust-chain` requires a member Bearer session; public graph uses at most one incoming edge per subject: the oldest eligible sibling (`createdAt` then `id`), skipping a non-chain oldest sibling so a later displayable contact can show; eligible `verify`, `moderator_appoint`, and `moderator_propose` only when the subject is a moderator; `moderator_confirm` and `moderator_reject` never; later appoint/confirm/propose do not replace the first eligible contact; staff may reject an open proposal (`POST /trust/reject-moderator`, append-only `moderator_reject`, role stays `verified`) and re-propose after reject (new `moderator_propose`; 409 while currently pending, any confirm/appoint, or a concurrent older open propose wins after insert); confirm/reject re-list after insert and undo when the other grant already closed; pending = latest propose/reject is propose, verified, no confirm/appoint; live-unique kinds are verify/confirm/appoint only; open proposal fans out in-app `moderator_proposal` plus Web Push to other staff until confirm, until reject when pending is then empty, or until appoint; GET `/notifications` keeps `moderator_appointed` and `moderator_proposal` (mark-read / read-all do not stamp the proposal); owner `notificationLevel` on GET `/me` and `POST /me/notification-level`; fan-out filters in-app and Web Push by `all` / `active` / `mentions`; GET `/notifications` applies the same filter to stored rows (`moderator_appointed` always stays; `unreadCount` is unread among kept rows after the hidden filter (before the 200 cap), not `store.unreadCount()` and not the unfiltered matching unread of the newest 1000); a zap that inserts a gift-reply fans out only `notifyZap`, not a second `forum_reply`; gift-reply row still lands in the thread; confirm/appoint notify the subject only with `moderator_appointed` and Web Push url `/welcome`; official platform account (`isPlatform`) never fans out living-room `forum_post` / `forum_reply` / `zap`; house daily gift-replies still persist; GET /messages omits name-copy profile notes and About me text stays).
 
 ---
 
@@ -127,7 +127,7 @@ Public base URLs used in examples:
 | GET    | `/members/:accountId/activity`                       | Bearer                     | Same given/received payload as `/me/activity` for that member                                                                                                                                                                                                                                                                                          |
 | GET    | `/members/:accountId/posts`                          | Bearer                     | Live member top-level notes (latest 200)                                                                                                                                                                                                                                                                                                               |
 | GET    | `/members/:accountId/replies`                        | Bearer                     | Live member replies (latest 200)                                                                                                                                                                                                                                                                                                                       |
-| GET    | `/mentions`                                          | Bearer                     | Username prefix suggestions (`q` empty = first 20 alphabetical; otherwise starts-with). Does not store `@` marks                                                                                                                                                                                                                                       |
+| GET    | `/mentions`                                          | Bearer                     | Suggestions for `@` (`q` empty = first 20 alphabetical). A token matches the start of the username, a `.` `_` `-` segment, or the start of the display name or one of its words; a token containing `.` `_` `-` is whole-string only. Does not store `@` marks                                                                                         |
 | GET    | `/trust-chain`                                       | Bearer                     | Founder seeds (empty edges); `?around=<id>` one hop of stored public edges                                                                                                                                                                                                                                                                             |
 | POST   | `/trust/verify`                                      | Bearer (moderator+)        | Staff: confirm a person in real life (`verified`)                                                                                                                                                                                                                                                                                                      |
 | POST   | `/trust/propose-moderator`                           | Bearer (moderator+)        | Staff: propose a verified member as moderator                                                                                                                                                                                                                                                                                                          |
@@ -447,7 +447,9 @@ Starts a discoverable-credential registration. Empty body mints a new account
 id (no row until finish). Optional JSON `{ "viewKey": "<64 lowercase hex>" }`
 claims an existing provisioned account: `404` when the profile is missing,
 `409` when it already has a passkey, `400` when `viewKey` is present but not a
-string.
+string. Non-empty invalid JSON is `400`
+`{ "error": "Begin body is not valid JSON" }` and does not open a challenge.
+Empty or whitespace-only body still starts a new registration.
 
 When `WEBAUTHN_RP_ID` is unset, blank, not on the allowlist (`21.gifts` /
 `dev.21.gifts` / `localhost`), or no CORS origin matches that RP ID:
@@ -491,7 +493,8 @@ ID).
 | Status | Body                                                                                              | When                                                                |
 | ------ | ------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------- |
 | 500    | `{ "error": "Server auth is not configured" }`                                                    | RP ID missing, not on the allowlist, or no matching origin          |
-| 400    | `{ "error": "Expected a JSON body with challengeId and credential" }`                             | Body parse fail                                                     |
+| 400    | `{ "error": "Finish body is not valid JSON" }`                                                    | Body is not JSON                                                    |
+| 400    | `{ "error": "Expected a JSON body with challengeId and credential" }`                             | Missing body, or JSON that is not `{ challengeId, credential }`     |
 | 400    | `{ "error": "Unknown or expired challenge" }`                                                     | Unknown `challengeId`                                               |
 | 400    | `{ "error": "Challenge expired" }`                                                                | Past challenge TTL                                                  |
 | 400    | `{ "error": "Challenge already used" }`                                                           | Finish already attempted; challenge is consumed before verification |
@@ -620,15 +623,17 @@ session resolution, before finish runs.
 Other ceremony failures stay **400** with the same strings as the old
 replace finish: Invalid origin, Unknown or expired challenge, Challenge
 expired, Challenge already used, Wrong challenge type, Invalid passkey,
-and `{ "error": "Expected a JSON body with challengeId and credential" }`.
+`{ "error": "Finish body is not valid JSON" }`, and
+`{ "error": "Expected a JSON body with challengeId and credential" }`.
 
 A 400 or 409 after the session is known stores a failed renew row and does
 not change the account. Success stores `outcome: "succeeded"` with null
 error fields, then acknowledges open failed rows. 401 and 500 store no row.
 
-**Response** `200`: `{ "account": { ... } }` — owner JSON via
-`serializeOwnerAccountWithPosts`, no `token`. `passkeyCredentialId` is the
-new credential id, `walletRequired` is true, `passkeyRenewClosed` is false,
+**Response** `200`: the owner account itself, via
+`serializeOwnerAccountWithPosts`, same shape as `GET /me`. No `token` and
+no `account` wrapper. `passkeyCredentialId` is the new credential id,
+`walletRequired` is true, `passkeyRenewClosed` is false,
 `walletBackupSeenAt` is unchanged. Logs `auth.passkey.seed.ok` only on success.
 
 Missing or invalid Bearer stays **401** `{ "error": "Unauthorized" }`.
@@ -896,7 +901,7 @@ BTC-USD.
 
 ### `GET /mentions`
 
-Signed-in username prefix suggestions. Bearer session with `forum.read`.
+Signed-in suggestions for `@` in a forum post or reply. Bearer session with `forum.read`.
 Missing or invalid Bearer → **Response** `401` `{ "error": "Unauthorized" }`.
 `forum.read` not yet allowed → **Response** `409` `{ "error": "missing_requirements", "missing": [...] }`.
 
@@ -904,6 +909,12 @@ Query `q` is optional. Omitted, empty, or whitespace, including a lone `@`
 after trim, is the first page. Otherwise trim, strip one leading `@`, and
 lowercase. The result must match `^[a-z0-9][a-z0-9._-]{0,31}$`. Anything else
 → **Response** `400` `{ "error": "Invalid query" }`.
+
+A valid token matches the start of the stored username, the start of a
+username segment split on `.` `_` `-`, the start of the trimmed display
+name, or a display-name word split on space, `.`, `_`, or `-`. A token
+that itself contains `.`, `_`, or `-` matches only a whole-string start.
+Comparison is lowercase. `_` is a literal separator, not a wildcard.
 
 **Response** `200`:
 
@@ -5099,6 +5110,7 @@ exist on the account model; `GET /debug/accounts` and
 ## Out of scope for v1
 
 - Passkey + PRF + NIP-06 user-owned keys (non-custodial phase)
+- Social recovery of the user-held seed ([docs/social-recovery.md](docs/social-recovery.md)). Not a v1 route. Does not apply to the custodial nsec. No path in that document is reserved.
 - Email/password login (or any second login method)
 - Internationalization of api response text and push payloads (they stay English). A signed-in account may store `locale` and `fiat`; that is not translated copy.
 - Platform custody of **receiver** funds (receiving stays LUD-16 only)

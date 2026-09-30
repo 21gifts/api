@@ -17,7 +17,7 @@ import { WRONG_ACCOUNT_ERROR } from '@/lib/auth/wrong-account';
 import { InMemoryFundingStore, type FundingStore } from '@/lib/funding-store';
 import type { AuthStore } from '@/lib/auth/store';
 import type { PasskeyCeremony } from '@/lib/auth/webauthn';
-import { logEvent } from '@/lib/log';
+import { logEvent, type LogFields } from '@/lib/log';
 import type { MessageStore } from '@/lib/message-store';
 import type { NostrKeygen } from '@/lib/nostr/keys';
 import { bearerToken } from '@/routes/me';
@@ -71,6 +71,133 @@ function passkeyFailFields(
   return { error };
 }
 
+const PASSKEY_FINISH_BODY_ERROR = 'Expected a JSON body with challengeId and credential';
+const PASSKEY_FINISH_JSON_ERROR = 'Finish body is not valid JSON';
+const PASSKEY_BEGIN_JSON_ERROR = 'Begin body is not valid JSON';
+const SERVER_AUTH_UNCONFIGURED = 'Server auth is not configured';
+
+/**
+ * Challenge id from an untrusted finish body. Missing, non-object, and
+ * non-string values are empty. The credential is never read.
+ */
+function challengeIdFromUnknown(body: unknown): string {
+  if (body === null || typeof body !== 'object' || Array.isArray(body)) {
+    return '';
+  }
+  const challengeId = (body as { challengeId?: unknown }).challengeId;
+  return typeof challengeId === 'string' ? challengeId : '';
+}
+
+/** `null`, `array`, or the JavaScript `typeof` name. No value is copied. */
+function valueKind(value: unknown): string {
+  if (value === null) {
+    return 'null';
+  }
+  if (Array.isArray(value)) {
+    return 'array';
+  }
+  return typeof value;
+}
+
+/**
+ * Shape of a parsed finish body. Kinds and booleans only. Never the
+ * credential, the raw text, or a challenge id that is not 64 lowercase hex.
+ */
+function parsedBodyFields(body: unknown, bodyBytes: number): LogFields {
+  const fields: { [key: string]: string | number | boolean } = {
+    bodyBytes,
+    json: 'parsed',
+    bodyKind: valueKind(body),
+  };
+  if (body !== null && typeof body === 'object' && !Array.isArray(body)) {
+    const record = body as { credential?: unknown; challengeId?: unknown };
+    fields['hasCredential'] = 'credential' in record;
+    fields['challengeIdKind'] = 'challengeId' in record ? valueKind(record.challengeId) : 'absent';
+  }
+  return fields;
+}
+
+/** Empty text is absent. Invalid JSON is not parsed. The text is not returned. */
+async function readJsonBody(req: {
+  text: () => Promise<string>;
+}): Promise<
+  | { json: 'absent'; bodyBytes: number }
+  | { json: 'invalid'; bodyBytes: number }
+  | { json: 'parsed'; bodyBytes: number; value: unknown }
+> {
+  const text = await req.text();
+  if (text.trim() === '') {
+    return { json: 'absent', bodyBytes: text.length };
+  }
+  try {
+    return { json: 'parsed', bodyBytes: text.length, value: JSON.parse(text) as unknown };
+  } catch {
+    return { json: 'invalid', bodyBytes: text.length };
+  }
+}
+
+/**
+ * Finish body, or a 400 reason. Invalid JSON stays distinct from a parsed
+ * body that is not `{ challengeId, credential }`.
+ */
+async function readPasskeyFinish(req: {
+  text: () => Promise<string>;
+}): Promise<
+  | { ok: true; challengeId: string; credential: unknown }
+  | { ok: false; error: string; body?: unknown; extra: LogFields }
+> {
+  const read = await readJsonBody(req);
+  if (read.json === 'absent') {
+    return {
+      ok: false,
+      error: PASSKEY_FINISH_BODY_ERROR,
+      body: null,
+      extra: { bodyBytes: read.bodyBytes, json: 'absent' },
+    };
+  }
+  if (read.json === 'invalid') {
+    return {
+      ok: false,
+      error: PASSKEY_FINISH_JSON_ERROR,
+      extra: { bodyBytes: read.bodyBytes, json: 'invalid' },
+    };
+  }
+  const parsed = passkeyFinishBody.safeParse(read.value);
+  // z.unknown() accepts a missing key, so a body with only challengeId still parses.
+  const shape = parsedBodyFields(read.value, read.bodyBytes);
+  if (!parsed.success || shape['hasCredential'] !== true) {
+    return {
+      ok: false,
+      error: PASSKEY_FINISH_BODY_ERROR,
+      body: read.value,
+      extra: shape,
+    };
+  }
+  return { ok: true, challengeId: parsed.data.challengeId, credential: parsed.data.credential };
+}
+
+/**
+ * One diagnostic row for a passkey stop. A challenge id is kept only when
+ * it is 64 lowercase hex. No credential, token, or raw body.
+ */
+function logPasskeyStop(
+  event:
+    | 'auth.passkey.login.fail'
+    | 'auth.passkey.register.fail'
+    | 'auth.passkey.seed.fail'
+    | 'auth.passkey.replace.refused',
+  error: string,
+  body?: unknown,
+  accountId?: string,
+  extra?: LogFields,
+): void {
+  logEvent(event, {
+    ...passkeyFailFields(body === undefined ? '' : challengeIdFromUnknown(body), error),
+    ...extra,
+    ...(accountId !== undefined ? { accountId } : {}),
+  });
+}
+
 /**
  * Record a seed-path passkey renew row. Unexported so it does not need a
  * handbook heading. Does not change the account row.
@@ -109,13 +236,27 @@ export function authRoutes(deps: AuthRouteDeps): Hono {
     .post('/passkey/register/begin', async (c) => {
       const config = webAuthnConfig(deps);
       if (config === null) {
-        return c.json({ error: 'Server auth is not configured' }, 500);
+        logPasskeyStop('auth.passkey.register.fail', SERVER_AUTH_UNCONFIGURED);
+        return c.json({ error: SERVER_AUTH_UNCONFIGURED }, 500);
       }
-      const body = await c.req.json().catch(() => null);
+      const read = await readJsonBody(c.req);
+      if (read.json === 'invalid') {
+        logPasskeyStop(
+          'auth.passkey.register.fail',
+          PASSKEY_BEGIN_JSON_ERROR,
+          undefined,
+          undefined,
+          { bodyBytes: read.bodyBytes, json: 'invalid' },
+        );
+        return c.json({ error: PASSKEY_BEGIN_JSON_ERROR }, 400);
+      }
+      const body = read.json === 'parsed' ? read.value : null;
       if (body !== null && typeof body === 'object' && !Array.isArray(body) && 'viewKey' in body) {
         const viewKey = (body as { viewKey: unknown }).viewKey;
         if (typeof viewKey !== 'string') {
-          return c.json({ error: 'Expected a JSON body with an optional "viewKey" string' }, 400);
+          const badViewKey = 'Expected a JSON body with an optional "viewKey" string';
+          logPasskeyStop('auth.passkey.register.fail', badViewKey);
+          return c.json({ error: badViewKey }, 400);
         }
         const claimed = await startPasskeyClaim(
           deps.store,
@@ -125,6 +266,7 @@ export function authRoutes(deps: AuthRouteDeps): Hono {
           viewKey,
         );
         if (!claimed.ok) {
+          logPasskeyStop('auth.passkey.register.fail', claimed.error);
           const status = claimed.error === 'This profile already has a passkey' ? 409 : 404;
           return c.json({ error: claimed.error }, status);
         }
@@ -141,11 +283,13 @@ export function authRoutes(deps: AuthRouteDeps): Hono {
     .post('/passkey/register/finish', async (c) => {
       const config = webAuthnConfig(deps);
       if (config === null) {
-        return c.json({ error: 'Server auth is not configured' }, 500);
+        logPasskeyStop('auth.passkey.register.fail', SERVER_AUTH_UNCONFIGURED);
+        return c.json({ error: SERVER_AUTH_UNCONFIGURED }, 500);
       }
-      const parsed = passkeyFinishBody.safeParse(await c.req.json().catch(() => null));
-      if (!parsed.success) {
-        return c.json({ error: 'Expected a JSON body with challengeId and credential' }, 400);
+      const read = await readPasskeyFinish(c.req);
+      if (!read.ok) {
+        logPasskeyStop('auth.passkey.register.fail', read.error, read.body, undefined, read.extra);
+        return c.json({ error: read.error }, 400);
       }
       const result = await finishPasskeyRegistration(
         deps.store,
@@ -153,15 +297,14 @@ export function authRoutes(deps: AuthRouteDeps): Hono {
         config,
         deps.now(),
         c.req.header('origin'),
-        parsed.data.challengeId,
-        parsed.data.credential,
+        read.challengeId,
+        read.credential,
         nostrOpts(deps),
       );
       if (!result.ok) {
-        logEvent(
-          'auth.passkey.register.fail',
-          passkeyFailFields(parsed.data.challengeId, result.error),
-        );
+        logPasskeyStop('auth.passkey.register.fail', result.error, {
+          challengeId: read.challengeId,
+        });
         const status = result.error === WRONG_ACCOUNT_ERROR ? 403 : 400;
         return c.json({ error: result.error }, status);
       }
@@ -181,7 +324,8 @@ export function authRoutes(deps: AuthRouteDeps): Hono {
     .post('/passkey/authenticate/begin', async (c) => {
       const config = webAuthnConfig(deps);
       if (config === null) {
-        return c.json({ error: 'Server auth is not configured' }, 500);
+        logPasskeyStop('auth.passkey.login.fail', SERVER_AUTH_UNCONFIGURED);
+        return c.json({ error: SERVER_AUTH_UNCONFIGURED }, 500);
       }
       const started = await startPasskeyAuthentication(
         deps.store,
@@ -194,11 +338,13 @@ export function authRoutes(deps: AuthRouteDeps): Hono {
     .post('/passkey/authenticate/finish', async (c) => {
       const config = webAuthnConfig(deps);
       if (config === null) {
-        return c.json({ error: 'Server auth is not configured' }, 500);
+        logPasskeyStop('auth.passkey.login.fail', SERVER_AUTH_UNCONFIGURED);
+        return c.json({ error: SERVER_AUTH_UNCONFIGURED }, 500);
       }
-      const parsed = passkeyFinishBody.safeParse(await c.req.json().catch(() => null));
-      if (!parsed.success) {
-        return c.json({ error: 'Expected a JSON body with challengeId and credential' }, 400);
+      const read = await readPasskeyFinish(c.req);
+      if (!read.ok) {
+        logPasskeyStop('auth.passkey.login.fail', read.error, read.body, undefined, read.extra);
+        return c.json({ error: read.error }, 400);
       }
       const result = await finishPasskeyAuthentication(
         deps.store,
@@ -206,15 +352,14 @@ export function authRoutes(deps: AuthRouteDeps): Hono {
         config,
         deps.now(),
         c.req.header('origin'),
-        parsed.data.challengeId,
-        parsed.data.credential,
+        read.challengeId,
+        read.credential,
         nostrOpts(deps),
       );
       if (!result.ok) {
-        logEvent(
-          'auth.passkey.login.fail',
-          passkeyFailFields(parsed.data.challengeId, result.error),
-        );
+        logPasskeyStop('auth.passkey.login.fail', result.error, {
+          challengeId: read.challengeId,
+        });
         const status = result.error === WRONG_ACCOUNT_ERROR ? 403 : 400;
         return c.json({ error: result.error }, status);
       }
@@ -234,7 +379,8 @@ export function authRoutes(deps: AuthRouteDeps): Hono {
     .post('/passkey/replace/begin', async (c) => {
       const config = webAuthnConfig(deps);
       if (config === null) {
-        return c.json({ error: 'Server auth is not configured' }, 500);
+        logPasskeyStop('auth.passkey.replace.refused', SERVER_AUTH_UNCONFIGURED);
+        return c.json({ error: SERVER_AUTH_UNCONFIGURED }, 500);
       }
       const token = bearerToken(c.req.header('authorization'));
       if (token === null) {
@@ -250,7 +396,8 @@ export function authRoutes(deps: AuthRouteDeps): Hono {
     .post('/passkey/replace/finish', async (c) => {
       const config = webAuthnConfig(deps);
       if (config === null) {
-        return c.json({ error: 'Server auth is not configured' }, 500);
+        logPasskeyStop('auth.passkey.replace.refused', SERVER_AUTH_UNCONFIGURED);
+        return c.json({ error: SERVER_AUTH_UNCONFIGURED }, 500);
       }
       const token = bearerToken(c.req.header('authorization'));
       if (token === null) {
@@ -266,7 +413,8 @@ export function authRoutes(deps: AuthRouteDeps): Hono {
     .post('/passkey/seed/begin', async (c) => {
       const config = webAuthnConfig(deps);
       if (config === null) {
-        return c.json({ error: 'Server auth is not configured' }, 500);
+        logPasskeyStop('auth.passkey.seed.fail', SERVER_AUTH_UNCONFIGURED);
+        return c.json({ error: SERVER_AUTH_UNCONFIGURED }, 500);
       }
       const token = bearerToken(c.req.header('authorization'));
       if (token === null) {
@@ -300,7 +448,8 @@ export function authRoutes(deps: AuthRouteDeps): Hono {
     .post('/passkey/seed/finish', async (c) => {
       const config = webAuthnConfig(deps);
       if (config === null) {
-        return c.json({ error: 'Server auth is not configured' }, 500);
+        logPasskeyStop('auth.passkey.seed.fail', SERVER_AUTH_UNCONFIGURED);
+        return c.json({ error: SERVER_AUTH_UNCONFIGURED }, 500);
       }
       const token = bearerToken(c.req.header('authorization'));
       if (token === null) {
@@ -328,9 +477,9 @@ export function authRoutes(deps: AuthRouteDeps): Hono {
         );
         return c.json({ error: alreadyHasPhrase }, 409);
       }
-      const parsed = passkeyFinishBody.safeParse(await c.req.json().catch(() => null));
-      if (!parsed.success) {
-        const badBody = 'Expected a JSON body with challengeId and credential';
+      const read = await readPasskeyFinish(c.req);
+      if (!read.ok) {
+        logPasskeyStop('auth.passkey.seed.fail', read.error, read.body, account.id, read.extra);
         await recordPasskeySeedAttempt(
           deps,
           account.id,
@@ -338,9 +487,9 @@ export function authRoutes(deps: AuthRouteDeps): Hono {
           'finish',
           'failed',
           400,
-          badBody,
+          read.error,
         );
-        return c.json({ error: badBody }, 400);
+        return c.json({ error: read.error }, 400);
       }
       const result = await finishPasskeySeed(
         deps.store,
@@ -348,14 +497,16 @@ export function authRoutes(deps: AuthRouteDeps): Hono {
         config,
         deps.now(),
         c.req.header('origin'),
-        parsed.data.challengeId,
-        parsed.data.credential,
+        read.challengeId,
+        read.credential,
         account,
       );
       if (!result.ok) {
-        logEvent(
+        logPasskeyStop(
           'auth.passkey.seed.fail',
-          passkeyFailFields(parsed.data.challengeId, result.error),
+          result.error,
+          { challengeId: read.challengeId },
+          account.id,
         );
         const status = result.error === 'This account already has a recovery phrase' ? 409 : 400;
         await recordPasskeySeedAttempt(
@@ -381,13 +532,11 @@ export function authRoutes(deps: AuthRouteDeps): Hono {
       await deps.store.acknowledgePasskeyRenewFailures(result.account.id, deps.now());
       logEvent('auth.passkey.seed.ok', { accountId: result.account.id });
       return c.json(
-        {
-          account: await serializeOwnerAccountWithPosts(result.account, deps.messages, {
-            store: deps.fundingStore ?? new InMemoryFundingStore(),
-            nowMs: deps.now(),
-            authStore: deps.store,
-          }),
-        },
+        await serializeOwnerAccountWithPosts(result.account, deps.messages, {
+          store: deps.fundingStore ?? new InMemoryFundingStore(),
+          nowMs: deps.now(),
+          authStore: deps.store,
+        }),
         200,
       );
     });

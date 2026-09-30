@@ -178,6 +178,12 @@ describe('auth routes', () => {
       });
       expect(res.status).toBe(409);
       expect(await res.json()).toEqual({ error: 'This profile already has a passkey' });
+      const logged = parsedEvents(warn).find((e) => e['event'] === 'auth.passkey.register.fail');
+      expect(logged).toMatchObject({
+        event: 'auth.passkey.register.fail',
+        error: 'This profile already has a passkey',
+      });
+      expect(JSON.stringify(logged)).not.toContain(viewKey);
     });
 
     it('returns 400 when begin viewKey is not a string', async () => {
@@ -188,6 +194,12 @@ describe('auth routes', () => {
       });
       expect(res.status).toBe(400);
       expect(await res.json()).toEqual({
+        error: 'Expected a JSON body with an optional "viewKey" string',
+      });
+      const logged = parsedEvents(warn).find((e) => e['event'] === 'auth.passkey.register.fail');
+      expect(logged).toEqual({
+        ts: expect.any(String),
+        event: 'auth.passkey.register.fail',
         error: 'Expected a JSON body with an optional "viewKey" string',
       });
     });
@@ -201,6 +213,37 @@ describe('auth routes', () => {
       expect(await res.json()).toEqual({
         error: 'Expected a JSON body with challengeId and credential',
       });
+      const logged = parsedEvents(warn).find((e) => e['event'] === 'auth.passkey.register.fail');
+      expect(logged).toMatchObject({
+        event: 'auth.passkey.register.fail',
+        error: 'Expected a JSON body with challengeId and credential',
+        json: 'absent',
+        bodyBytes: 0,
+      });
+      expect(logged).not.toHaveProperty('challengeId');
+      expect(logged).not.toHaveProperty('accountId');
+    });
+
+    it('rejects invalid JSON on register begin and does not open a challenge', async () => {
+      const store = new InMemoryAuthStore();
+      const raw = '{"viewKey":"secret-view"';
+      const res = await mount(store).request('/auth/passkey/register/begin', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: raw,
+      });
+      expect(res.status).toBe(400);
+      expect(await res.json()).toEqual({ error: 'Begin body is not valid JSON' });
+      expect(await store.listPasskeyChallenges()).toEqual([]);
+      const logged = parsedEvents(warn).find((e) => e['event'] === 'auth.passkey.register.fail');
+      expect(logged).toMatchObject({
+        event: 'auth.passkey.register.fail',
+        error: 'Begin body is not valid JSON',
+        json: 'invalid',
+        bodyBytes: raw.length,
+      });
+      expect(logged).not.toHaveProperty('viewKey');
+      expect(JSON.stringify(logged)).not.toContain('secret-view');
     });
 
     it('does not log a registration challenge id that is not 64 lowercase hex', async () => {
@@ -372,6 +415,12 @@ describe('auth routes', () => {
         { method: 'POST' },
       );
       expect(res.status).toBe(500);
+      const logged = parsedEvents(warn).find((e) => e['event'] === 'auth.passkey.login.fail');
+      expect(logged).toMatchObject({
+        event: 'auth.passkey.login.fail',
+        error: 'Server auth is not configured',
+      });
+      expect(logged).not.toHaveProperty('accountId');
     });
 
     it('returns 500 on finish when unconfigured', async () => {
@@ -380,6 +429,11 @@ describe('auth routes', () => {
         { method: 'POST' },
       );
       expect(res.status).toBe(500);
+      const logged = parsedEvents(warn).find((e) => e['event'] === 'auth.passkey.login.fail');
+      expect(logged).toMatchObject({
+        event: 'auth.passkey.login.fail',
+        error: 'Server auth is not configured',
+      });
     });
 
     it('rejects a missing finish body', async () => {
@@ -391,6 +445,200 @@ describe('auth routes', () => {
       expect(await res.json()).toEqual({
         error: 'Expected a JSON body with challengeId and credential',
       });
+      const logged = parsedEvents(warn).find((e) => e['event'] === 'auth.passkey.login.fail');
+      expect(logged).toMatchObject({
+        event: 'auth.passkey.login.fail',
+        error: 'Expected a JSON body with challengeId and credential',
+        json: 'absent',
+        bodyBytes: 0,
+      });
+      expect(logged).not.toHaveProperty('challengeId');
+      expect(logged).not.toHaveProperty('accountId');
+    });
+
+    it('logs invalid JSON on login finish and keeps no credential', async () => {
+      const raw = '{"credential":"cred-secret"';
+      const res = await mount(new InMemoryAuthStore()).request(
+        '/auth/passkey/authenticate/finish',
+        {
+          method: 'POST',
+          headers: { origin: ORIGIN, 'content-type': 'application/json' },
+          body: raw,
+        },
+      );
+      expect(res.status).toBe(400);
+      expect(await res.json()).toEqual({ error: 'Finish body is not valid JSON' });
+      const logged = parsedEvents(warn).find((e) => e['event'] === 'auth.passkey.login.fail');
+      expect(logged).toMatchObject({
+        event: 'auth.passkey.login.fail',
+        error: 'Finish body is not valid JSON',
+        json: 'invalid',
+        bodyBytes: raw.length,
+      });
+      expect(logged).not.toHaveProperty('challengeId');
+      expect(logged).not.toHaveProperty('hasCredential');
+      expect(JSON.stringify(logged)).not.toContain('cred-secret');
+    });
+
+    it('logs a challenge id when the login finish body has no credential', async () => {
+      const challengeId = 'ab'.repeat(32);
+      const payload = JSON.stringify({ challengeId, leftover: 'cred-secret' });
+      const res = await mount(new InMemoryAuthStore()).request(
+        '/auth/passkey/authenticate/finish',
+        {
+          method: 'POST',
+          headers: { origin: ORIGIN, 'content-type': 'application/json' },
+          body: payload,
+        },
+      );
+      expect(res.status).toBe(400);
+      const logged = parsedEvents(warn).find((e) => e['event'] === 'auth.passkey.login.fail');
+      expect(logged).toMatchObject({
+        event: 'auth.passkey.login.fail',
+        error: 'Expected a JSON body with challengeId and credential',
+        challengeId,
+        json: 'parsed',
+        bodyKind: 'object',
+        hasCredential: false,
+        challengeIdKind: 'string',
+        bodyBytes: payload.length,
+      });
+      expect(JSON.stringify(logged)).not.toContain('cred-secret');
+      expect(logged).not.toHaveProperty('accountId');
+    });
+
+    it('drops a non-hex challenge id and never logs the credential', async () => {
+      const nonHex = await mount(new InMemoryAuthStore()).request(
+        '/auth/passkey/authenticate/finish',
+        {
+          method: 'POST',
+          headers: { origin: ORIGIN, 'content-type': 'application/json' },
+          body: JSON.stringify({ challengeId: 'nope' }),
+        },
+      );
+      expect(nonHex.status).toBe(400);
+      const nonHexLog = parsedEvents(warn).find((e) => e['event'] === 'auth.passkey.login.fail');
+      expect(nonHexLog).toMatchObject({
+        event: 'auth.passkey.login.fail',
+        error: 'Expected a JSON body with challengeId and credential',
+        json: 'parsed',
+        bodyKind: 'object',
+        hasCredential: false,
+        challengeIdKind: 'string',
+      });
+      expect(nonHexLog).not.toHaveProperty('challengeId');
+      expect(JSON.stringify(nonHexLog)).not.toContain('nope');
+      warn.mockClear();
+      const credentialOnly = await mount(new InMemoryAuthStore()).request(
+        '/auth/passkey/authenticate/finish',
+        {
+          method: 'POST',
+          headers: { origin: ORIGIN, 'content-type': 'application/json' },
+          body: JSON.stringify({ credential: { id: 'cred-secret', signature: 'sig-secret' } }),
+        },
+      );
+      expect(credentialOnly.status).toBe(400);
+      const logged = parsedEvents(warn).find((e) => e['event'] === 'auth.passkey.login.fail');
+      expect(logged).toMatchObject({
+        event: 'auth.passkey.login.fail',
+        error: 'Expected a JSON body with challengeId and credential',
+        json: 'parsed',
+        bodyKind: 'object',
+        hasCredential: true,
+        challengeIdKind: 'absent',
+      });
+      expect(logged).not.toHaveProperty('challengeId');
+      expect(JSON.stringify(logged)).not.toContain('cred-secret');
+      expect(JSON.stringify(logged)).not.toContain('sig-secret');
+    });
+
+    it('drops a numeric challenge id and an array body', async () => {
+      const numeric = await mount(new InMemoryAuthStore()).request(
+        '/auth/passkey/authenticate/finish',
+        {
+          method: 'POST',
+          headers: { origin: ORIGIN, 'content-type': 'application/json' },
+          body: JSON.stringify({ challengeId: 4 }),
+        },
+      );
+      expect(numeric.status).toBe(400);
+      const numericLog = parsedEvents(warn).find((e) => e['event'] === 'auth.passkey.login.fail');
+      expect(numericLog).toMatchObject({
+        json: 'parsed',
+        bodyKind: 'object',
+        hasCredential: false,
+        challengeIdKind: 'number',
+      });
+      expect(numericLog).not.toHaveProperty('challengeId');
+      expect(Object.values(numericLog ?? {})).not.toContain(4);
+      warn.mockClear();
+      const arrayBody = await mount(new InMemoryAuthStore()).request(
+        '/auth/passkey/authenticate/finish',
+        {
+          method: 'POST',
+          headers: { origin: ORIGIN, 'content-type': 'application/json' },
+          body: '[]',
+        },
+      );
+      expect(arrayBody.status).toBe(400);
+      const arrayLog = parsedEvents(warn).find((e) => e['event'] === 'auth.passkey.login.fail');
+      expect(arrayLog).toMatchObject({
+        event: 'auth.passkey.login.fail',
+        error: 'Expected a JSON body with challengeId and credential',
+        json: 'parsed',
+        bodyKind: 'array',
+        bodyBytes: 2,
+      });
+      expect(arrayLog).not.toHaveProperty('challengeId');
+      expect(arrayLog).not.toHaveProperty('hasCredential');
+    });
+
+    it('logs a parsed login finish body by kind and never its values', async () => {
+      const cases: Array<{ body: string; fields: Record<string, unknown>; secret?: string }> = [
+        { body: 'null', fields: { bodyKind: 'null', bodyBytes: 4 } },
+        {
+          body: '"cred-secret"',
+          fields: { bodyKind: 'string', bodyBytes: '"cred-secret"'.length },
+          secret: 'cred-secret',
+        },
+        {
+          body: JSON.stringify({ challengeId: { id: 'cred-secret' } }),
+          fields: { bodyKind: 'object', hasCredential: false, challengeIdKind: 'object' },
+          secret: 'cred-secret',
+        },
+        {
+          body: JSON.stringify({ challengeId: ['cred-secret'] }),
+          fields: { bodyKind: 'object', hasCredential: false, challengeIdKind: 'array' },
+          secret: 'cred-secret',
+        },
+        {
+          body: JSON.stringify({ challengeId: null }),
+          fields: { bodyKind: 'object', hasCredential: false, challengeIdKind: 'null' },
+        },
+      ];
+      for (const item of cases) {
+        warn.mockClear();
+        const res = await mount(new InMemoryAuthStore()).request(
+          '/auth/passkey/authenticate/finish',
+          {
+            method: 'POST',
+            headers: { origin: ORIGIN, 'content-type': 'application/json' },
+            body: item.body,
+          },
+        );
+        expect(res.status).toBe(400);
+        const logged = parsedEvents(warn).find((e) => e['event'] === 'auth.passkey.login.fail');
+        expect(logged).toMatchObject({
+          event: 'auth.passkey.login.fail',
+          error: 'Expected a JSON body with challengeId and credential',
+          json: 'parsed',
+          ...item.fields,
+        });
+        expect(logged).not.toHaveProperty('challengeId');
+        if (item.secret !== undefined) {
+          expect(JSON.stringify(logged)).not.toContain(item.secret);
+        }
+      }
     });
 
     it('authenticates a registered credential', async () => {
@@ -854,18 +1102,18 @@ describe('auth routes', () => {
       expect(finish.status).toBe(200);
       const finishBody = (await finish.json()) as {
         token?: unknown;
-        account: {
-          id: string;
-          walletRequired: boolean;
-          walletBackupSeenAt: number | null;
-          passkeyCredentialId: string | null;
-        };
+        account?: unknown;
+        id: string;
+        walletRequired: boolean;
+        walletBackupSeenAt: number | null;
+        passkeyCredentialId: string | null;
       };
       expect(finishBody).not.toHaveProperty('token');
-      expect(finishBody.account.id).toBe(accountId);
-      expect(finishBody.account.walletRequired).toBe(true);
-      expect(finishBody.account.walletBackupSeenAt).toBe(9);
-      expect(finishBody.account.passkeyCredentialId).toBe('cred-2');
+      expect(finishBody).not.toHaveProperty('account');
+      expect(finishBody.id).toBe(accountId);
+      expect(finishBody.walletRequired).toBe(true);
+      expect(finishBody.walletBackupSeenAt).toBe(9);
+      expect(finishBody.passkeyCredentialId).toBe('cred-2');
       expect((await store.getPasskeyCredential('cred-1'))?.accountId).toBe(accountId);
       expect((await store.getPasskeyCredential('cred-2'))?.accountId).toBe(accountId);
       expect((await store.getPasskeyCredentialForAccount(accountId))?.credentialId).toBe('cred-2');
@@ -933,7 +1181,7 @@ describe('auth routes', () => {
 
     it('returns 409 on seed begin for an account that already has a seed', async () => {
       const store = new InMemoryAuthStore();
-      const { app, token } = await register(store);
+      const { app, token, accountId } = await register(store);
       const before = await store.listPasskeyChallenges();
       const res = await app.request('/auth/passkey/seed/begin', {
         method: 'POST',
@@ -944,6 +1192,14 @@ describe('auth routes', () => {
         error: 'This account already has a recovery phrase',
       });
       expect(await store.listPasskeyChallenges()).toEqual(before);
+      expect(
+        parsedEvents(warn).filter(
+          (e) =>
+            e['event'] === 'auth.passkey.seed.fail' &&
+            e['error'] === 'This account already has a recovery phrase' &&
+            e['accountId'] === accountId,
+        ),
+      ).toHaveLength(1);
     });
 
     it('returns 409 on seed finish without parsing a body when walletRequired is true', async () => {
@@ -969,7 +1225,7 @@ describe('auth routes', () => {
 
     it('returns 400 when seed finish rejects the attestation', async () => {
       const store = new InMemoryAuthStore();
-      const { app, token } = await legacySignedIn(store);
+      const { app, token, accountId } = await legacySignedIn(store);
       const begin = (await (
         await app.request('/auth/passkey/seed/begin', {
           method: 'POST',
@@ -991,11 +1247,20 @@ describe('auth routes', () => {
       expect(res.status).toBe(400);
       expect(await res.json()).toEqual({ error: 'Invalid passkey' });
       expect(await store.getPasskeyCredential('cred-2')).toBeUndefined();
+      expect(
+        parsedEvents(warn).some(
+          (e) =>
+            e['event'] === 'auth.passkey.seed.fail' &&
+            e['error'] === 'Invalid passkey' &&
+            e['accountId'] === accountId &&
+            e['challengeId'] === begin.challengeId,
+        ),
+      ).toBe(true);
     });
 
     it('does not log a seed challenge id that is not 64 lowercase hex', async () => {
       const store = new InMemoryAuthStore();
-      const { app, token } = await legacySignedIn(store);
+      const { app, token, accountId } = await legacySignedIn(store);
       const res = await app.request('/auth/passkey/seed/finish', {
         method: 'POST',
         headers: {
@@ -1010,8 +1275,10 @@ describe('auth routes', () => {
       expect(logged).toMatchObject({
         event: 'auth.passkey.seed.fail',
         error: 'Unknown or expired challenge',
+        accountId,
       });
       expect(logged).not.toHaveProperty('challengeId');
+      expect(JSON.stringify(logged)).not.toContain(token);
     });
 
     it('returns 409 when finish finds the credential id already stored', async () => {
@@ -1044,7 +1311,7 @@ describe('auth routes', () => {
 
     it('rejects a missing finish body on a legacy account', async () => {
       const store = new InMemoryAuthStore();
-      const { app, token } = await legacySignedIn(store);
+      const { app, token, accountId } = await legacySignedIn(store);
       const res = await app.request('/auth/passkey/seed/finish', {
         method: 'POST',
         headers: { origin: ORIGIN, authorization: `Bearer ${token}` },
@@ -1053,6 +1320,16 @@ describe('auth routes', () => {
       expect(await res.json()).toEqual({
         error: 'Expected a JSON body with challengeId and credential',
       });
+      const logged = parsedEvents(warn).find((e) => e['event'] === 'auth.passkey.seed.fail');
+      expect(logged).toMatchObject({
+        event: 'auth.passkey.seed.fail',
+        error: 'Expected a JSON body with challengeId and credential',
+        json: 'absent',
+        bodyBytes: 0,
+        accountId,
+      });
+      expect(logged).not.toHaveProperty('challengeId');
+      expect(JSON.stringify(logged)).not.toContain(token);
     });
 
     class RecordingAuthStore extends InMemoryAuthStore {
@@ -1062,6 +1339,45 @@ describe('auth routes', () => {
         await super.insertPasskeyRenewAttempt(input);
       }
     }
+
+    it('logs invalid JSON on seed finish and stores the failed renew row', async () => {
+      const store = new RecordingAuthStore();
+      const { app, token, accountId } = await legacySignedIn(store);
+      warn.mockClear();
+      const raw = '{"credential":"cred-secret"';
+      const res = await app.request('/auth/passkey/seed/finish', {
+        method: 'POST',
+        headers: {
+          origin: ORIGIN,
+          'content-type': 'application/json',
+          authorization: `Bearer ${token}`,
+          'user-agent': 'SeedAgent',
+        },
+        body: raw,
+      });
+      expect(res.status).toBe(400);
+      expect(await res.json()).toEqual({ error: 'Finish body is not valid JSON' });
+      const logged = parsedEvents(warn).find((e) => e['event'] === 'auth.passkey.seed.fail');
+      expect(logged).toMatchObject({
+        event: 'auth.passkey.seed.fail',
+        error: 'Finish body is not valid JSON',
+        json: 'invalid',
+        bodyBytes: raw.length,
+        accountId,
+      });
+      expect(logged).not.toHaveProperty('challengeId');
+      expect(JSON.stringify(logged)).not.toContain('cred-secret');
+      expect(JSON.stringify(logged)).not.toContain(token);
+      expect(store.inserts).toHaveLength(1);
+      expect(store.inserts[0]).toMatchObject({
+        accountId,
+        stage: 'finish',
+        outcome: 'failed',
+        httpStatus: 400,
+        message: 'Finish body is not valid JSON',
+        userAgent: 'SeedAgent',
+      });
+    });
 
     it('inserts a failed begin row on seed begin 409 without changing walletRequired', async () => {
       const store = new RecordingAuthStore();
@@ -1183,15 +1499,15 @@ describe('auth routes', () => {
       });
       expect(finish.status).toBe(200);
       const finishBody = (await finish.json()) as {
-        account: {
-          passkeyRenewFailed: boolean;
-          passkeyRenewClosed: boolean;
-          walletRequired: boolean;
-        };
+        account?: unknown;
+        passkeyRenewFailed: boolean;
+        passkeyRenewClosed: boolean;
+        walletRequired: boolean;
       };
-      expect(finishBody.account.passkeyRenewFailed).toBe(false);
-      expect(finishBody.account.passkeyRenewClosed).toBe(false);
-      expect(finishBody.account.walletRequired).toBe(true);
+      expect(finishBody).not.toHaveProperty('account');
+      expect(finishBody.passkeyRenewFailed).toBe(false);
+      expect(finishBody.passkeyRenewClosed).toBe(false);
+      expect(finishBody.walletRequired).toBe(true);
       expect(await store.hasUnacknowledgedPasskeyRenewFailure(accountId)).toBe(false);
       const succeeded = store.inserts.filter((row) => row.outcome === 'succeeded');
       expect(succeeded).toHaveLength(1);
