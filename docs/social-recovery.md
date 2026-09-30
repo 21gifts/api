@@ -146,8 +146,9 @@ to open it, and it never stores the confirmation.
    every provisional ciphertext and the matching X25519 secret. The
    owner's phone also discards the 16
    bytes, the bind private key, both share plaintexts, and both
-   confirmations. Nothing is stored, and no share is sealed to a key on
-   the owner's phone. The ceremony can be started again later. When both
+   confirmations. Nothing is stored. During this enrollment, no share is
+   sealed to a key on the owner's current phone. The ceremony can be
+   started again later. When both
    proofs have been accepted, the 16 bytes, the bind private key, and the
    share plaintexts are discarded.
 5. Only after both readable-proofs are accepted do both phones store their
@@ -369,9 +370,11 @@ that still works is the cancel path during the 48 hours.
   missing PRF, or a failed write, leaves the session `ready` and leaves
   existing credentials in place.
 - The owner's phone rejects a readable-proof whose confirmation was not
-  inside that share's seal. A share is never sealed to a key on the
-  owner's phone. Each chosen phone stores the X25519 secret with the
-  ciphertext. The server never receives that secret.
+  inside that share's seal. During enrollment, a share is not sealed to
+  a key on the owner's current phone. During recovery, each chosen phone
+  opens its share and seals it to the key scanned from the new phone.
+  Each chosen phone stores the X25519 secret with the ciphertext. The
+  server never receives that secret.
 - A body that contains PRF results is rejected.
 - Replacing the phrase with different words stays refused.
 - After recovery, showing the words unwraps the stored wrap. It does not
