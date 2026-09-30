@@ -1,6 +1,7 @@
 import { Hono } from 'hono';
 import type { DiagnosticStore } from '@/lib/diagnostic-log';
 import { requestLogPath } from '@/lib/log';
+import { presentClientFields, readClientRequestMeta } from '@/lib/request-meta';
 
 const EVENT_RE = /^client\.[a-z0-9.]{1,60}$/;
 const NAME_RE = /^[A-Za-z]{1,40}$/;
@@ -56,21 +57,6 @@ function releaseReserved(timestamps: number[], reserved: number): void {
   if (index !== -1) {
     timestamps.splice(index, 1);
   }
-}
-
-function sanitizeUserAgent(raw: string | undefined): string | undefined {
-  if (raw === undefined) {
-    return undefined;
-  }
-  let cleaned = '';
-  for (const char of raw) {
-    const code = char.charCodeAt(0);
-    if (code >= 0x20 && code !== 0x7f) {
-      cleaned += char;
-    }
-  }
-  cleaned = cleaned.slice(0, 200);
-  return cleaned === '' ? undefined : cleaned;
 }
 
 function parseClientBody(
@@ -229,11 +215,10 @@ export function diagnosticsRoutes(deps: { store: DiagnosticStore; now?: () => nu
       }
       ipBucket.push(now);
     }
-    const fields: ClientFields = { ...parsed.fields };
-    const userAgent = sanitizeUserAgent(c.req.header('user-agent'));
-    if (userAgent !== undefined) {
-      fields['userAgent'] = userAgent;
-    }
+    const fields: ClientFields = {
+      ...parsed.fields,
+      ...presentClientFields(readClientRequestMeta(c.req.raw.headers)),
+    };
     try {
       await deps.store.append({
         id: crypto.randomUUID(),

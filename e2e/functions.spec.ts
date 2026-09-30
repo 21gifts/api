@@ -854,6 +854,79 @@ test('Function: diagnosticsRoutes — POST /diagnostics accepts an allowlisted c
   expect(res.status()).toBe(204);
 });
 
+test('Function: readClientRequestMeta — GET /info stores validated client headers on the audit row', async ({
+  request,
+}) => {
+  const userAgent = 'e2e-request-meta-read';
+  const res = await request.get('/info', {
+    headers: {
+      'cf-connecting-ip': '192.0.2.1',
+      'cf-ipcountry': 't1',
+      'cf-ray': '0123456789abcdef-ZRH',
+      'user-agent': userAgent,
+      'accept-language': 'de-CH,de;q=0.9',
+      origin: 'https://21.gifts',
+    },
+  });
+  expect(res.status()).toBe(200);
+  const listed = await request.get('/debug/api-log', {
+    headers: { authorization: 'Bearer e2e-debug-token' },
+  });
+  expect(listed.status()).toBe(200);
+  const body = (await listed.json()) as {
+    logs: Array<{
+      path: string;
+      userAgent: string | null;
+      clientIp: string | null;
+      clientCountry: string | null;
+      cfRay: string | null;
+      acceptLanguage: string | null;
+      origin: string | null;
+    }>;
+  };
+  const row = body.logs.find((log) => log.userAgent === userAgent && log.path === '/info');
+  expect(row).toMatchObject({
+    clientIp: '192.0.2.1',
+    clientCountry: 'T1',
+    cfRay: '0123456789abcdef-ZRH',
+    acceptLanguage: 'de-CH,de;q=0.9',
+    origin: 'https://21.gifts',
+  });
+});
+
+test('Function: presentClientFields — POST /diagnostics stores present client headers', async ({
+  request,
+}) => {
+  const res = await request.post('/diagnostics', {
+    headers: {
+      'cf-connecting-ip': '198.51.100.10',
+      'cf-ipcountry': 'ch',
+      'cf-ray': 'fedcba9876543210-zrh',
+      'user-agent': 'e2e-present-fields',
+      'accept-language': 'en',
+      origin: 'http://127.0.0.1:3000',
+    },
+    data: { event: 'client.e2e.present.fields' },
+  });
+  expect(res.status()).toBe(204);
+  const listed = await request.get('/debug/diagnostics', {
+    headers: { authorization: 'Bearer e2e-debug-token' },
+  });
+  expect(listed.status()).toBe(200);
+  const body = (await listed.json()) as {
+    logs: Array<{ event: string; fields: Record<string, unknown> }>;
+  };
+  const row = body.logs.find((log) => log.event === 'client.e2e.present.fields');
+  expect(row?.fields).toMatchObject({
+    clientIp: '198.51.100.10',
+    clientCountry: 'CH',
+    cfRay: 'fedcba9876543210-zrh',
+    userAgent: 'e2e-present-fields',
+    acceptLanguage: 'en',
+    origin: 'http://127.0.0.1:3000',
+  });
+});
+
 test('Function: debugDiagnosticsRoutes — GET /debug/diagnostics without bearer is 401', async ({
   request,
 }) => {

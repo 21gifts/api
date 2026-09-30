@@ -19,6 +19,12 @@ const ROW: ApiLogRow = {
   ms: 8,
   accountId: 'staff',
   authKind: 'session',
+  clientIp: null,
+  clientCountry: null,
+  cfRay: null,
+  userAgent: null,
+  acceptLanguage: null,
+  origin: null,
 };
 
 describe('debugApiLogRoutes', () => {
@@ -73,6 +79,12 @@ describe('debugApiLogRoutes', () => {
           ms: 8,
           accountId: 'staff',
           authKind: 'session',
+          clientIp: null,
+          clientCountry: null,
+          cfRay: null,
+          userAgent: null,
+          acceptLanguage: null,
+          origin: null,
         },
       ],
     });
