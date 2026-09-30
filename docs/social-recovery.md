@@ -58,11 +58,12 @@ moderator who verified them, when that trust edge exists. Changing person
 different 21.gifts accounts, and neither may be the owner. An account
 that cannot log in cannot be chosen.
 
-Choosing the names is not enough, and it stores nothing. There is no set
-until both phones have stored a readable proof. Until then a reset cannot
-start. After that upload the set is **active**. It becomes **inactive**
-only later, if one of those stored shares is gone. Inactive means a reset
-cannot start.
+Choosing the names is not enough, and it stores nothing. There is no set,
+and neither phone stores the ciphertext or the X25519 secret, until both
+readable-proofs are accepted. Those local copies and the owner's upload
+happen together. That upload creates the set as **active**. It becomes
+**inactive** only later, if one of those stored shares is gone. Inactive
+means a reset cannot start.
 
 ## The 12 words
 
