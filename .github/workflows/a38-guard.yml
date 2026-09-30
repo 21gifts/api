@@ -24,7 +24,7 @@ on:
         default: false
 
 concurrency:
-  group: a38-pr-guard-${{ github.repository }}-${{ (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.all_open)) && 'sweep' || 'event' }}
+  group: a38-pr-guard-${{ github.repository }}-${{ (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.all_open == 'true')) && 'sweep' || 'event' }}
   cancel-in-progress: false
 
 permissions:
@@ -38,7 +38,7 @@ permissions:
 jobs:
   guard:
     runs-on: ubuntu-latest
-    timeout-minutes: ${{ (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.all_open)) && 45 || 10 }}
+    timeout-minutes: ${{ (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.all_open == 'true')) && 45 || 10 }}
     steps:
       - name: dfx pr guard
         uses: DFXswiss/agent/.github/actions/a38-guard@473be2bbac871694a9c6df5e30c0570d0ca38ea9
@@ -46,4 +46,4 @@ jobs:
           token: ${{ secrets.GITHUB_TOKEN }}
           repository: ${{ github.repository }}
           pr: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.pr || '' }}
-          all_open: ${{ github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.all_open) }}
+          all_open: ${{ github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.all_open == 'true') }}
