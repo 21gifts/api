@@ -135,24 +135,26 @@ to open it, and it never stores the confirmation.
    Ed25519 key. The owner scans or pastes that payload and verifies the
    signature. A mismatch aborts the ceremony. The owner seals that
    person's share, including that share's confirmation, to the scanned
-   X25519 key. That phone stores the ciphertext, opens it once, reads the
-   confirmation, checks the SLIP-39 identifier, discards the share words,
-   and signs a readable-proof that includes the confirmation. The owner's
-   phone accepts the proof only when the signature verifies and the
-   confirmation matches the one it sealed into that share. It then
-   discards that confirmation.
+   X25519 key. That phone holds the ciphertext only in memory, opens it
+   once, reads the confirmation, checks the SLIP-39 identifier, discards
+   the share words, and signs a readable-proof that includes the
+   confirmation. The owner's phone accepts the proof only when the
+   signature verifies and the confirmation matches the one it sealed into
+   that share. It then discards that confirmation.
 4. Both people do this on their own phones during this ceremony. If either
-   person is not available, the owner's phone discards the 16 bytes, the
-   bind private key, both share plaintexts, and both confirmations.
-   Nothing is stored, and no share is sealed to a key on the owner's phone.
-   The ceremony can be started again later. When both proofs have been
-   accepted, the 16 bytes, the bind private key, and the share plaintexts
-   are discarded.
-5. Only after both readable-proofs are stored does the owner's phone
-   upload the bind public key, the SLIP-39 identifier, and the two
-   ciphertexts. That upload creates the set as `active`. The 16 bytes are
-   not in the upload. Until both proofs exist, nothing is stored and a
-   reset cannot start.
+   person is not available, or either phone aborts, both phones discard
+   every provisional ciphertext. The owner's phone also discards the 16
+   bytes, the bind private key, both share plaintexts, and both
+   confirmations. Nothing is stored, and no share is sealed to a key on
+   the owner's phone. The ceremony can be started again later. When both
+   proofs have been accepted, the 16 bytes, the bind private key, and the
+   share plaintexts are discarded.
+5. Only after both readable-proofs are accepted do both phones store their
+   ciphertext, and the owner's phone uploads the bind public key, the
+   SLIP-39 identifier, and the two ciphertexts. Those local copies and
+   that upload happen together. That upload creates the set as `active`.
+   The 16 bytes are not in the upload. Until both proofs are accepted,
+   nothing is stored and a reset cannot start.
 
 The nonce is generated on the owner's phone. The api does not choose it.
 The signed enrollment message is UTF-8, four lines, a newline between the
@@ -255,24 +257,33 @@ trailing newline:
 
 The signature is Ed25519 over the SHA-256 of that string. The server
 accepts it only together with a new passkey attestation for this
-relying party, user verification required, and the user id equal to the
-account id. The body must not contain PRF results. The server stores the
-new credential, deletes every other credential for the account, marks the
-session completed, and cancels sibling sessions. On failure it stores
-nothing and leaves the session open until it expires. The refused
-"replace the phrase" behaviour is unchanged. This path restores the same
-phrase. It does not write a different one.
+relying party, user verification required, the user id equal to the
+account id, and the wrap described below. The body must not contain PRF
+results.
 
-The new phone then shows the 12 words from those bytes. So those words
-remain available after the ceremony, the phone wraps the bytes under the
-new passkey and uploads only the wrap. HKDF-SHA256, salt UTF-8
+Before that request, the new phone wraps the 16 bytes under the new
+passkey and decrypts the wrap locally. HKDF-SHA256, salt UTF-8
 `21gifts-seed-derivation`, info UTF-8 `seed-wrap-v1`, 32 bytes. That info
 must not equal `mnemonic-v1`. AES-256-GCM, 12-byte nonce, additional data
 the UTF-8 account id, plaintext the 16 bytes. The blob is version `0x01`,
-the nonce, the ciphertext, and the tag: 45 bytes. The server stores the
-blob and cannot read it. Showing the words later unwraps it and
-BIP-39-encodes the bytes. If that passkey returns no PRF, the words stay
-locked. The phone must not show `mnemonic-v1` of the new passkey instead.
+the nonce, the ciphertext, and the tag: 45 bytes. The local decrypt must
+yield the same 16 bytes. If the new passkey returns no PRF, or the local
+decrypt does not match, the phone does not send the bind. The session
+stays `ready`. Existing credentials stay. The phone must not show
+`mnemonic-v1` of the new passkey instead.
+
+When the local decrypt matches, the phone shows the 12 words from those
+bytes and sends the bind, the attestation, and the wrap together. The
+server, in one transaction, stores the new credential, stores the wrap,
+deletes every other credential for the account, marks the session
+completed, and cancels sibling sessions. On failure it stores nothing,
+leaves the session `ready` until it expires, and leaves existing
+credentials in place. The refused "replace the phrase" behaviour is
+unchanged. This path restores the same phrase. It does not write a
+different one.
+
+The server cannot read the wrap. Showing the words later unwraps it and
+BIP-39-encodes the bytes.
 
 The wait is 48 hours from the start of the recovery, even if both shares
 arrive in the first minute, and even if some passkey is still logged in.
@@ -306,13 +317,13 @@ no set
   └── stays here
 
 no set
-  │ both readable-proofs stored
+  │ both readable-proofs accepted
   │ upload bind public key, identifier, and both ciphertexts
   ▼
 active ──────── one share gone, or resignation ────────► inactive
 
 inactive
-  │ ceremony again, both new readable-proofs stored
+  │ ceremony again, both new readable-proofs accepted
   │ upload bind public key, identifier, and both ciphertexts
   ▼
 active
@@ -325,7 +336,7 @@ draft (15 min, no account yet)
         │ 48h elapsed and both shares released
         ▼
       ready ────── owner passkey cancel, or device abandon, or sibling completed ──► cancelled
-        │ bind signature and new passkey verify
+        │ bind, wrap, and new passkey verify together
         ▼
     completed
 
@@ -349,7 +360,11 @@ that still works is the cancel path during the 48 hours.
 - A fixed moderator, or a share held by the service, cannot be stored.
 - The owner's phone will not seal a share to a key that came from the
   api.
-- Before both readable-proofs, nothing is stored and a reset cannot start.
+- Before both readable-proofs are accepted, nothing is stored, including
+  on the chosen people's phones, and a reset cannot start.
+- The new passkey, the wrap, and completion are written together. A
+  missing PRF, or a failed write, leaves the session `ready` and leaves
+  existing credentials in place.
 - The owner's phone rejects a readable-proof whose confirmation was not
   inside that share's seal. A share is never sealed to a key on the
   owner's phone.
