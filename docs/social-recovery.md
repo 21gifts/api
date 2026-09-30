@@ -61,7 +61,10 @@ that cannot log in cannot be chosen.
 Choosing the names is not enough, and it stores nothing. There is no set,
 and neither phone stores the ciphertext or the X25519 secret, until both
 readable-proofs are accepted. Those local copies and the owner's upload
-happen together. That upload creates the set as **active**. It becomes
+happen together. The set becomes **active** only when both copies are
+stored and that upload has created it. If either phone cannot store its
+copy, or the upload fails, both phones discard the ciphertext and the
+X25519 secret, and the server stores no set. The active set becomes
 **inactive** only later, if one of those stored shares is gone. Inactive
 means a reset cannot start.
 
@@ -156,9 +159,13 @@ to open it, and it never stores the confirmation.
    ciphertext and the matching X25519 secret together, and the owner's
    phone uploads the bind public key, the SLIP-39 identifier, and the two
    ciphertexts. The server never receives an X25519 secret. Those local
-   copies and that upload happen together. That upload creates the set as `active`.
-   The 16 bytes are not in the upload. Until both proofs are accepted,
-   nothing is stored and a reset cannot start.
+   copies and that upload happen together. The set becomes `active` only
+   when both copies are stored and that upload has created it. If either
+   phone cannot store its copy, or the upload fails, both phones discard
+   the ciphertext and the X25519 secret, and the server stores no set.
+   There is no active set, and a reset cannot start. The ceremony can be
+   started again. The 16 bytes are not in the upload. Until both proofs
+   are accepted, nothing is stored and a reset cannot start.
 
 The nonce is generated on the owner's phone. The api does not choose it.
 The signed enrollment message is UTF-8, four lines, a newline between the
@@ -200,7 +207,10 @@ gone after the set is `active`, fewer than two shares remain, the set
 becomes `inactive`, and a reset cannot start until the owner, who can
 still open the phrase with their passkey, runs the ceremony again. The
 new upload waits until both new proofs exist, then replaces the set as
-`active`. Until that upload, the set stays `inactive`.
+`active` only when both new copies are stored and that upload has created
+it. If either phone cannot store its new copy, or the upload fails, both
+phones discard those new copies, and the set stays `inactive`. Until a
+successful upload, the set stays `inactive`.
 
 ## What the server may store
 
@@ -211,7 +221,8 @@ cannot decrypt a share.
 Conceptual records, not a schema migration:
 
 **Recovery set.** Created only by the upload in enrollment step 5, as
-`active`. Owner account id. SLIP-39 identifier. Ed25519 bind public key.
+`active`, and only when both phones have stored their copies. A failed
+upload stores no set. Owner account id. SLIP-39 identifier. Ed25519 bind public key.
 Created time. Status `active`, or `inactive` after one stored share is
 later gone. The account suggested as person 1 is not stored unless that
 person was confirmed.
@@ -323,15 +334,25 @@ no set
 
 no set
   │ both readable-proofs accepted
-  │ upload bind public key, identifier, and both ciphertexts
+  │ both phones store their copies, and the owner uploads
   ▼
 active ──────── one share gone, or resignation ────────► inactive
 
+no set
+  │ either phone cannot store its copy, or the upload fails
+  │ both phones discard the copies; the server stores no set
+  └── stays here
+
 inactive
   │ ceremony again, both new readable-proofs accepted
-  │ upload bind public key, identifier, and both ciphertexts
+  │ both phones store their copies, and the owner uploads
   ▼
 active
+
+inactive
+  │ either new copy cannot be stored, or that upload fails
+  │ both phones discard the new copies
+  └── stays here
 
 active recovery, only from active:
 draft (15 min, no account yet)
@@ -367,6 +388,13 @@ that still works is the cancel path during the 48 hours.
   api.
 - Before both readable-proofs are accepted, nothing is stored, including
   on the chosen people's phones, and a reset cannot start.
+- The local copies and the owner's upload happen together. The set
+  becomes active only when both copies are stored and the upload has
+  created it. If either phone cannot store its copy, or the upload fails,
+  both phones discard the ciphertext and the X25519 secret, the server
+  stores no set, and a reset cannot start. A replacement that fails the
+  same way leaves the set inactive. Partial copies are discarded in that
+  same step. They are not kept for a later retry.
 - The new passkey, the wrap, and completion are written together. A
   missing PRF, or a failed write, leaves the session `ready` and leaves
   existing credentials in place.
