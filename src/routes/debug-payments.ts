@@ -6,8 +6,10 @@ import type { MessageInvoiceAttempt, MessageStore, ZapIngestRow } from '@/lib/me
 import type { NotificationStore } from '@/lib/notification-store';
 import { settleInvoiceManually } from '@/lib/nostr/zap-index';
 import type { PushStore } from '@/lib/push-store';
+import { eligibleToday, utcDayKey } from '@/lib/funding';
 import type { FundingStore } from '@/lib/funding-store';
 import type { SpendPing } from '@/lib/spend-ping';
+import { MESSAGE_ID_RE } from '@/routes/messages';
 
 /**
  * Operator debug surface for `message_invoice` attempts (forum and
@@ -102,10 +104,13 @@ function serializeIngest(row: ZapIngestRow): Record<string, unknown> {
  *
  * @param deps - Stores, clock, optional debug token, and optional `spendPing` /
  *   `fundingStore` forwarded into `settleInvoiceManually` for platform-note
- *   compose (same `eligibleToday` gate as `POST /messages`). Does not take
- *   `postLimiter`; DEBUG_TOKEN settle is not the shared post burst limiter.
+ *   compose (same `eligibleToday` gate as `POST /messages`) and used by
+ *   `POST /spend-ping`. Does not take `postLimiter`; DEBUG_TOKEN settle is not
+ *   the shared post burst limiter.
  * @returns A Hono app exposing invoice list/manual settle (including whether a
- *   successful settle resumed) and zap-ingest list.
+ *   successful settle resumed), zap-ingest list, and `POST /spend-ping` (replay
+ *   today's daily ping for one qualifying top-level post; 202 `{ messageId }`;
+ *   never returns the Lightning address).
  */
 export function debugPaymentsRoutes(deps: DebugPaymentsRouteDeps): Hono {
   return new Hono()
@@ -192,6 +197,89 @@ export function debugPaymentsRoutes(deps: DebugPaymentsRouteDeps): Hono {
         logEvent('debug.invoices.settle_failed');
         return c.json({ error: 'Messages are unavailable' }, 503);
       }
+    })
+    .post('/spend-ping', async (c) => {
+      const gate = gateDebugToken(deps.debugToken, c.req.header('authorization'));
+      if (!gate.ok) {
+        return c.json(gate.body, gate.status);
+      }
+      if (deps.spendPing === undefined) {
+        return c.json({ error: 'Spend ping is not configured' }, 503);
+      }
+      const body: unknown = await c.req.json().catch(() => null);
+      if (body === null || typeof body !== 'object' || Array.isArray(body)) {
+        return c.json({ error: 'Invalid body' }, 400);
+      }
+      const messageId = (body as { messageId?: unknown }).messageId;
+      if (typeof messageId !== 'string' || !MESSAGE_ID_RE.test(messageId)) {
+        return c.json({ error: 'Invalid body' }, 400);
+      }
+      let message;
+      try {
+        message = await deps.store.getById(messageId);
+      } catch {
+        logEvent('debug.spend_ping.failed', { messageId });
+        return c.json({ error: 'Messages are unavailable' }, 503);
+      }
+      if (message === undefined) {
+        return c.json({ error: 'Not found' }, 404);
+      }
+      if (message.deletedAt !== null) {
+        return c.json({ error: 'Message is hidden' }, 409);
+      }
+      if (message.parentId !== null) {
+        return c.json({ error: 'Replies are not paid' }, 409);
+      }
+      if (message.accountId === null) {
+        return c.json({ error: 'Account not found' }, 404);
+      }
+      let account;
+      try {
+        account = await deps.auth.getAccount(message.accountId);
+      } catch {
+        logEvent('debug.spend_ping.failed', { messageId });
+        return c.json({ error: 'Messages are unavailable' }, 503);
+      }
+      if (account === undefined) {
+        return c.json({ error: 'Account not found' }, 404);
+      }
+      if (account.profileMessageId === message.id) {
+        return c.json({ error: 'Profile notes are not paid' }, 409);
+      }
+      if (utcDayKey(message.createdAt.getTime()) !== utcDayKey(deps.now())) {
+        return c.json({ error: 'Message is not from today' }, 409);
+      }
+      const address = account.lightningAddress?.trim() ?? '';
+      if (address === '') {
+        return c.json({ error: 'No Lightning address' }, 409);
+      }
+      let grant;
+      try {
+        grant = await deps.fundingStore?.getByAccountId(account.id);
+      } catch {
+        logEvent('debug.spend_ping.failed', { messageId });
+        return c.json({ error: 'Messages are unavailable' }, 503);
+      }
+      if (!eligibleToday(account.role, grant, deps.now())) {
+        logEvent('debug.spend_ping.skipped', { messageId, reason: 'not_eligible' });
+        return c.json({ error: 'Not eligible' }, 403);
+      }
+      if (!(
+        message.hasPhoto === true ||
+        message.hasVideo === true ||
+        Number(message.photoCount) > 0
+      )) {
+        logEvent('debug.spend_ping.skipped', { messageId, reason: 'no_media' });
+        return c.json({ error: 'Message has no media' }, 409);
+      }
+      try {
+        await deps.spendPing.ping(address, message.id);
+      } catch {
+        logEvent('debug.spend_ping.failed', { messageId });
+        return c.json({ error: 'Messages are unavailable' }, 503);
+      }
+      logEvent('debug.spend_ping.sent', { messageId });
+      return c.json({ messageId }, 202);
     })
     .get('/zap-ingests', async (c) => {
       const gate = gateDebugToken(deps.debugToken, c.req.header('authorization'));
