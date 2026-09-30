@@ -135,24 +135,26 @@ to open it, and it never stores the confirmation.
    Ed25519 key. The owner scans or pastes that payload and verifies the
    signature. A mismatch aborts the ceremony. The owner seals that
    person's share, including that share's confirmation, to the scanned
-   X25519 key. That phone holds the ciphertext only in memory, opens it
-   once, reads the confirmation, checks the SLIP-39 identifier, discards
-   the share words, and signs a readable-proof that includes the
-   confirmation. The owner's phone accepts the proof only when the
+   X25519 key. That phone holds the ciphertext and the matching X25519
+   secret only in memory, opens the ciphertext once, reads the
+   confirmation, checks the SLIP-39 identifier, discards the share words,
+   and signs a readable-proof that includes the confirmation. The owner's phone accepts the proof only when the
    signature verifies and the confirmation matches the one it sealed into
    that share. It then discards that confirmation.
 4. Both people do this on their own phones during this ceremony. If either
    person is not available, or either phone aborts, both phones discard
-   every provisional ciphertext. The owner's phone also discards the 16
+   every provisional ciphertext and the matching X25519 secret. The
+   owner's phone also discards the 16
    bytes, the bind private key, both share plaintexts, and both
    confirmations. Nothing is stored, and no share is sealed to a key on
    the owner's phone. The ceremony can be started again later. When both
    proofs have been accepted, the 16 bytes, the bind private key, and the
    share plaintexts are discarded.
 5. Only after both readable-proofs are accepted do both phones store their
-   ciphertext, and the owner's phone uploads the bind public key, the
-   SLIP-39 identifier, and the two ciphertexts. Those local copies and
-   that upload happen together. That upload creates the set as `active`.
+   ciphertext and the matching X25519 secret together, and the owner's
+   phone uploads the bind public key, the SLIP-39 identifier, and the two
+   ciphertexts. The server never receives an X25519 secret. Those local
+   copies and that upload happen together. That upload creates the set as `active`.
    The 16 bytes are not in the upload. Until both proofs are accepted,
    nothing is stored and a reset cannot start.
 
@@ -226,8 +228,9 @@ recover.
 
 A new phone generates an X25519 keypair and keeps the secret in memory.
 It shows the public key as a QR and as lowercase hex. Both people must
-release their share. Each opens their share only for a key that phone
-scanned from the new phone, and refuses a key that arrived only inside a
+release their share. Each phone opens its stored ciphertext with the
+X25519 secret it kept, then seals that share only to a key that phone
+scanned from the new phone. It refuses a key that arrived only inside a
 server payload. The server may store the announced public key so a person
 can see a mismatch. It must not offer "use the key on the session". The
 server has no share of its own to release.
@@ -367,7 +370,8 @@ that still works is the cancel path during the 48 hours.
   existing credentials in place.
 - The owner's phone rejects a readable-proof whose confirmation was not
   inside that share's seal. A share is never sealed to a key on the
-  owner's phone.
+  owner's phone. Each chosen phone stores the X25519 secret with the
+  ciphertext. The server never receives that secret.
 - A body that contains PRF results is rejected.
 - Replacing the phrase with different words stays refused.
 - After recovery, showing the words unwraps the stored wrap. It does not
