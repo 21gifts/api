@@ -114,5 +114,8 @@ describe('AUTH_SCHEMA_SQL', () => {
     expect(AUTH_SCHEMA_SQL.join('\n')).toMatch(
       /CREATE INDEX IF NOT EXISTS passkey_renew_attempt_account_idx\s+ON passkey_renew_attempt \(account_id, created_at DESC\)/i,
     );
+    expect(AUTH_SCHEMA_SQL[AUTH_SCHEMA_SQL.length - 1]).toBe(
+      'ALTER TABLE passkey_challenge ADD COLUMN IF NOT EXISTS requested_name text',
+    );
   });
 });

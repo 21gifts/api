@@ -155,6 +155,9 @@ Public base URLs used in examples:
 | DELETE | `/messages/:id`                                      | Bearer (moderator+)        | Soft-hide note + direct replies; retract in-app notifications; external target also blocks that pubkey                                                                                                                                                                                                                                                 |
 | PATCH  | `/messages/:id/place`                                | Bearer (moderator+)        | Set, replace, or clear the map pin on a live top-level shop note                                                                                                                                                                                                                                                                                       |
 | PATCH  | `/messages/:id/shop-account`                         | Bearer (moderator+)        | Set, replace, or clear the 21.gifts account on a live top-level shop note                                                                                                                                                                                                                                                                              |
+| PATCH  | `/messages/:id/text`                                 | Bearer (moderator+)        | Replace the text of a live top-level shop note; the shop tag stays                                                                                                                                                                                                                                                                                     |
+| PATCH  | `/messages/:id/photos`                               | Bearer (moderator+)        | Replace the stills of a live top-level shop note; a video stays; no edit history                                                                                                                                                                                                                                                                       |
+| GET    | `/messages/:id/edits`                                | Bearer (moderator+)        | Staff edit history of a shop note, newest first                                                                                                                                                                                                                                                                                                        |
 | POST   | `/messages/:id/invoice`                              | Bearer                     | NIP-57 zap / BOLT11                                                                                                                                                                                                                                                                                                                                    |
 | GET    | `/messages/:id/repayment`                            | none                       | Public credit ledger: who gave, and each repayment share                                                                                                                                                                                                                                                                                               |
 | POST   | `/messages/:id/repayment`                            | Bearer                     | Author pays the next giver share from their own wallet. A repeat for that unpaid share returns the outstanding invoice.                                                                                                                                                                                                                                |
@@ -443,13 +446,26 @@ Graph tags.
 
 ### `POST /auth/passkey/register/begin`
 
-Starts a discoverable-credential registration. Empty body mints a new account
-id (no row until finish). Optional JSON `{ "viewKey": "<64 lowercase hex>" }`
-claims an existing provisioned account: `404` when the profile is missing,
-`409` when it already has a passkey, `400` when `viewKey` is present but not a
-string. Non-empty invalid JSON is `400`
-`{ "error": "Begin body is not valid JSON" }` and does not open a challenge.
-Empty or whitespace-only body still starts a new registration.
+Starts a discoverable-credential registration. Empty body, `{}`, or a body
+containing neither `name` nor `viewKey` mints a new account id (no row until
+finish). `user.name` is that UUID and `user.displayName` is `21.gifts`.
+Non-empty invalid JSON is `400` `{ "error": "Begin body is not valid JSON" }`
+and does not open a challenge. Empty or whitespace-only body still starts a
+new registration. Optional JSON `{ "viewKey": "<64 lowercase hex>" }` claims
+an existing provisioned account: `404` when the profile is missing, `409`
+when it already has a passkey, `400` when `viewKey` is present but not a
+string. A string `viewKey` ignores `name` and does not overwrite the
+provisioned account's name or username, and it does not mint an id.
+
+Optional `{ "name": "<handle>" }` (not combined with a claim) validates the
+handle with `normalizeUsername` (1–32 characters of a-z, 0-9, hyphen,
+underscore, or dot). Non-string `name` (including `null`) is `400`
+`{ "error": "Expected a JSON body with an optional \"name\" string" }`. An
+invalid handle is `400` with that username charset error. A taken handle is
+`409` `{ "error": "Username is already in use" }`. Failed begin writes no
+challenge row. On success the challenge stores `requestedName` as the
+normalised handle; `user.name` and `user.displayName` are that handle.
+`user.id` remains the pending account UUID encoded as UTF-8.
 
 When `WEBAUTHN_RP_ID` is unset, blank, not on the allowlist (`21.gifts` /
 `dev.21.gifts` / `localhost`), or no CORS origin matches that RP ID:
@@ -490,18 +506,20 @@ Body:
 must be in the RP ID's expected origins (CORS allowlist filtered to that RP
 ID).
 
-| Status | Body                                                                                              | When                                                                |
-| ------ | ------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------- |
-| 500    | `{ "error": "Server auth is not configured" }`                                                    | RP ID missing, not on the allowlist, or no matching origin          |
-| 400    | `{ "error": "Finish body is not valid JSON" }`                                                    | Body is not JSON                                                    |
-| 400    | `{ "error": "Expected a JSON body with challengeId and credential" }`                             | Missing body, or JSON that is not `{ challengeId, credential }`     |
-| 400    | `{ "error": "Unknown or expired challenge" }`                                                     | Unknown `challengeId`                                               |
-| 400    | `{ "error": "Challenge expired" }`                                                                | Past challenge TTL                                                  |
-| 400    | `{ "error": "Challenge already used" }`                                                           | Finish already attempted; challenge is consumed before verification |
-| 400    | `{ "error": "Wrong challenge type" }`                                                             | Challenge is not `register`                                         |
-| 400    | `{ "error": "Invalid origin" }`                                                                   | Missing or disallowed `Origin`                                      |
-| 400    | `{ "error": "Invalid passkey" }`                                                                  | Attestation verify failed or duplicate credential                   |
-| 403    | `{ "error": "You signed in with the wrong account. Please try again with the correct account." }` | Account with `sessionRefused`; no bearer is persisted               |
+| Status | Body                                                                                              | When                                                                                                    |
+| ------ | ------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------- |
+| 500    | `{ "error": "Server auth is not configured" }`                                                    | RP ID missing, not on the allowlist, or no matching origin                                              |
+| 400    | `{ "error": "Finish body is not valid JSON" }`                                                    | Body is not JSON                                                                                        |
+| 400    | `{ "error": "Expected a JSON body with challengeId and credential" }`                             | Missing body, or JSON that is not `{ challengeId, credential }`                                         |
+| 400    | `{ "error": "Unknown or expired challenge" }`                                                     | Unknown `challengeId`                                                                                   |
+| 400    | `{ "error": "Challenge expired" }`                                                                | Past challenge TTL                                                                                      |
+| 400    | `{ "error": "Challenge already used" }`                                                           | Finish already attempted; challenge is consumed before verification                                     |
+| 400    | `{ "error": "Wrong challenge type" }`                                                             | Challenge is not `register`                                                                             |
+| 400    | `{ "error": "Invalid origin" }`                                                                   | Missing or disallowed `Origin`                                                                          |
+| 400    | `{ "error": "Invalid passkey" }`                                                                  | Attestation verify failed or duplicate credential                                                       |
+| 400    | `{ "error": "Username must be 1–32 characters of a-z, 0-9, hyphen, underscore, or dot" }`         | Stored register name no longer normalizes; no credential and no session                                 |
+| 403    | `{ "error": "You signed in with the wrong account. Please try again with the correct account." }` | Account with `sessionRefused`; no bearer is persisted                                                   |
+| 409    | `{ "error": "Username is already in use" }`                                                       | Register-challenge name taken at finish, or the account row was not inserted; no credential, no session |
 
 **Response** `200`:
 
@@ -542,7 +560,7 @@ ID).
 }
 ```
 
-The `account` object is the same owner JSON as `GET /me` (includes `viewKey`, `setup`, `missing`, `hasPosted`, `aboutMe`, `aboutMeHasPhoto`, `aboutMessageId`, `notificationLevel`, `amountUnit`, `locale`, `fiat`, `walletRequired`, `walletBackupSeenAt`, `passkeyCredentialId`, `passkeyRenewFailed`, `passkeyRenewClosed`, and `passkeyRenewPrfUnsupported`). `passkeyRenewPrfUnsupported` is true only when the newest unacknowledged failed row has error name `prfUnsupported`. `locale` and `fiat` are null until the member's app stores them. The example above is a new register (`walletRequired: true`, `setup: "name"` when the name is unset). The recovery phrase is not a setup step and does not change `setup` or `missing`. Existing members start with `walletRequired: false`. Seed finish sets `walletRequired: true` and does not change `walletBackupSeenAt`. Replace refuses and changes nothing. `walletBackupSeenAt` does not decide whether a seed exists.
+The `account` object is the same owner JSON as `GET /me` (includes `viewKey`, `setup`, `missing`, `hasPosted`, `aboutMe`, `aboutMeHasPhoto`, `aboutMessageId`, `notificationLevel`, `amountUnit`, `locale`, `fiat`, `walletRequired`, `walletBackupSeenAt`, `passkeyCredentialId`, `passkeyRenewFailed`, `passkeyRenewClosed`, and `passkeyRenewPrfUnsupported`). `passkeyRenewPrfUnsupported` is true only when the newest unacknowledged failed row has error name `prfUnsupported`. `locale` and `fiat` are null until the member's app stores them. The example above is a nameless new register (`name: null`, `username: null`, `setup: "name"`). When begin stored a name, `name` and `username` are that normalised handle (example `ada`), `nameSkippedAt` stays null, there is no profile note, and `setup` is `lightning-address`. Finish does not take `name` from the body. The recovery phrase is not a setup step and does not change `setup` or `missing`. Existing members start with `walletRequired: false`. Seed finish sets `walletRequired: true` and does not change `walletBackupSeenAt`. Replace refuses and changes nothing. `walletBackupSeenAt` does not decide whether a seed exists. The nameless example remains `walletRequired: true` with `setup: "name"` when the name is unset.
 
 A new register row is stored with `walletRequired: true` and `walletBackupSeenAt: null`. First-passkey claim of a provisioned row sets `walletRequired: true` in the same write as the credential (`createFirstPasskeyCredential`: Postgres CTE locks the account row with `FOR UPDATE`, then inserts and sets `wallet_required`; memory store writes both in one method) and does not clear a seen timestamp. Passkey replace refuses and does not change these columns. Seed finish sets `walletRequired: true` without changing `walletBackupSeenAt`. Operator `POST /debug/accounts` provision leaves `walletRequired` false. The api never stores a mnemonic or PRF output.
 
@@ -3681,8 +3699,8 @@ Bearer session required. After auth, the same `forum.read` gate as
 `GET /messages` (401 without a session; 409 `missing_requirements` when
 rules are missing). Query `limit` is an integer 1..1000 (default **1000**);
 otherwise **400** `{ "error": "Invalid limit" }`. Body
-`{ "places": [{ "id", "name", "createdAt", "lat", "lng", "label", "accountId?" }] }`.
-`accountId` is set for a 21gifts author and omitted for an external pin.
+`{ "places": [{ "id", "name", "createdAt", "lat", "lng", "label", "shop", "accountId?" }] }`.
+`shop` is true when the note text contains the shop tag. `accountId` is set for a 21gifts author and omitted for an external pin.
 `createdAt` is ISO-8601. Newest first (`created_at` desc, `id` desc). Only
 live top-level rows with both coordinates. Replies and hidden notes are
 excluded.
@@ -3740,7 +3758,7 @@ Post to the public member forum. Bearer session required. JSON body (not
 multipart) with text and/or one photo, optional `photos` (array, max 10,
 each `{ contentType, data, takenAt? }` same shape as singular `photo`), an
 optional parent UUID, and optional `goalSats` (positive integer 1..10_000_000
-on a top-level note only). Optional `takenAt` is `YYYY-MM-DDTHH:MM:SS` with an optional `±HH:MM`
+on a top-level note only). Optional `shopUsername` (JSON string or multipart field) on a shop note stores that account on the same insert as the note and does not write `message_edit`. Omitted, null, blank, or `@` alone stores nothing. A non-string is 400 `Username is not valid`. A reply, or a note that is not a shop, with a non-blank username is 400 `Only a shop note can set a shop account` before the handle is normalised or looked up. After that, a handle `normalizeUsername` rejects is 400 `Username is not valid`. An unknown username, or a stored username that is null or blank, is 404 `No account with that username`. A media replay of an existing live note does not change its shop account. Optional `takenAt` is `YYYY-MM-DDTHH:MM:SS` with an optional `±HH:MM`
 offset, a real calendar date, and a year from 1990 through the current UTC
 year + 1. `Z`, a fractional second, a leap second, a non-string, or a missing
 value is stored null and does not return 400:
@@ -4302,7 +4320,7 @@ two ids per store.
 
 Public single-note fetch. Live rows need **no Bearer.** `:id` is a UUID.
 Registered **after** photo, video, `GET /messages/:id/replies`,
-`DELETE /messages/:id`, `PATCH /messages/:id/place`, `PATCH /messages/:id/shop-account`, `GET /messages/stats`, `GET /messages/hidden`, and
+`DELETE /messages/:id`, `PATCH /messages/:id/place`, `PATCH /messages/:id/shop-account`, `PATCH /messages/:id/text`, `PATCH /messages/:id/photos`, `GET /messages/:id/edits`, `GET /messages/stats`, `GET /messages/hidden`, and
 `GET /messages/places` so
 those paths are not captured as `:id`. A live GET returns
 the public message JSON (`sats`, optional `goalSats` on a top-level note
@@ -4484,7 +4502,8 @@ note → **400** `{ "error": "Only a shop note can set a place" }`.
 Success → **200** live public message JSON (optional `place`, reply
 count, no hide stamps). Logs `messages.place.updated` with
 `messageId`, `accountId`, and `role` only. Text and publish state are
-unchanged.
+unchanged. A real pin change appends `message_edit`. An identical pin
+does not.
 
 ### `PATCH /messages/:id/shop-account`
 
@@ -4496,12 +4515,13 @@ must match `MESSAGE_ID_RE` or the response is **404**. Body is JSON via
 **400** `{ "error": "Invalid body" }`. `username: null` clears. A string
 is trimmed, one leading `@` is stripped, then `normalizeUsername`. An
 invalid username is **400** `{ "error": "Username is not valid" }`.
-Unknown username, or a stored username that is null or blank, is **404**
-`{ "error": "No account with that username" }`. Missing or hidden row →
-**404** and no write. A reply → **400**
+Missing or hidden row → **404** `{ "error": "Not found" }` and no write,
+before the handle is looked up. A reply → **400**
 `{ "error": "A reply cannot include a shop account" }`. A non-shop
 top-level note → **400**
-`{ "error": "Only a shop note can set a shop account" }`.
+`{ "error": "Only a shop note can set a shop account" }`. On a live shop
+note, an unknown username, or a stored username that is null or blank,
+is **404** `{ "error": "No account with that username" }`.
 `setShopAccount` false, or a row that disappears before reload, → **404**.
 Store throw → **503** `{ "error": "Messages are unavailable" }` and
 `messages.shop_account.failed`.
@@ -4510,7 +4530,19 @@ Success → **200** live public message JSON (optional `shopAccount`
 `{ id, username, name }`, omitted when cleared, reply count, no hide
 stamps). Logs `messages.shop_account.updated` with `messageId`,
 `accountId`, and `role` only. Text, place, and publish state are
-unchanged. The write stores only `shop_account_id`.
+unchanged. The write stores only `shop_account_id`. A real change appends `message_edit`. An unchanged account does not. The same account id with a new name or username is unchanged.
+
+### `PATCH /messages/:id/text`
+
+Staff replacement of the body of a live top-level shop note (`#21GiftsShop`). Bearer session required. Live role must be at least `moderator`. Checks run in this order: `:id` must match `MESSAGE_ID_RE` or the response is **404**; a non-object body or a missing string `text` is **400** `{ "error": "Invalid body" }`; text outside 1–8000 characters is **400** before the row is read; a missing or hidden row is **404** `{ "error": "Not found" }`; a reply is **400** `{ "error": "A reply cannot be edited" }`; a non-shop note is **400** `{ "error": "Only a shop note can be edited" }`; empty text on a note with no photo and no video is **400** `{ "error": "Text must be 1–8000 characters or include a photo" }`. The shop tag is kept or restored, and if that makes the text longer than 8000 characters the response is **400** `{ "error": "Text must be 1–8000 characters" }`. An unchanged body is **200** without `message_edit`. A real change writes the body and `message_edit` together and is **200** public message JSON. Store throw → **503** `{ "error": "Messages are unavailable" }` and leaves the previous body with no new history row.
+
+### `PATCH /messages/:id/photos`
+
+Staff replacement of the stills on a live top-level shop note. Bearer session required. Live role must be at least `moderator`. Checks run in this order: `:id` must match `MESSAGE_ID_RE` or the response is **404**; the body must be `{ "photos": [{ "contentType", "data", "takenAt?" }] }` with at most 10 items, and a bad photo is **400** `{ "error": "Photo must be a JPEG, PNG, or WebP under 1 MiB" }`, before the row is read (a missing or hidden row with a bad photo is still that **400**); a missing or hidden row is then **404** `{ "error": "Not found" }`; a reply is **400** `{ "error": "A reply cannot be edited" }`; a non-shop note is **400** `{ "error": "Only a shop note can be edited" }`. An empty list clears stills. A video on the note stays. The stills are replaced in one write. This write does not append `message_edit`. Success is **200** public message JSON. Store throw → **503**.
+
+### `GET /messages/:id/edits`
+
+Staff history for a top-level shop note, newest first, including a hidden shop note. Bearer session required. Live role must be at least `moderator`. GET is not a Sunday write. Success is **200** `{ "edits": [{ "id", "createdAt", "field", "before", "after", "actor" }] }`. `createdAt` is ISO. `field` is `"text"`, `"place"`, or `"shopAccount"` (SQL `shop_account` is published as `shopAccount`). `before` and `after` are the previous and next value: a text string, a place pin or null, or a shop account `{ "id", "username", "name" }` or null. `actor` is `{ "id", "name", "role" }`. A missing account keeps `{ "id", "name": null, "role": null }`. Empty history `{ "edits": [] }` is only for an existing top-level shop note, including a hidden one. A non-UUID `:id`, a missing row, a reply, or a non-shop note is **404** `{ "error": "Not found" }`. Public message JSON does not include `edits`.
 
 ### `GET /messages/hidden`
 
@@ -4681,10 +4713,11 @@ Success → **Response** `200`:
 
 Bearer session required. Nothing public. Lists threads the session may see:
 own member↔member / member↔Damus / member↔platform threads, plus (when
-the role is at least `moderator`) every platform thread. Empty threads
-and outbound-only member/Damus threads (every stored message is
-`conversationFromMe` for the viewer — the actor, else the sender) are
-omitted. The member's own `member_platform` contact thread is listed when
+the role is at least `moderator`) every platform thread. A thread is
+listed when it has an inbound message for the viewer, or when its latest
+message is from the viewer (the actor, else the sender). Empty threads
+stay omitted. One-sided rows are `unread: false`. The member's own
+`member_platform` contact thread is listed when
 it has a message, even if outbound-only. Damus inbound (null sender) is
 inbound and listed. This list never includes `moderator_group` regardless of
 role. The closed group is `GET /conversations/moderator-group`
@@ -4733,11 +4766,14 @@ Success → **Response** `200`:
 `lastMessageId` is the id of the same newest row as `lastText` (`created_at`
 then `id`, both descending), or `null` when the thread has no message.
 `unreadCount` is the number of listed rows with `unread: true` (same
-cap/filter, not a second uncapped query; menu/PWA badge). Per-row
+cap, not a second uncapped query). The menu/PWA badge matches that
+number because a row kept only because its latest message is from the
+viewer is `unread: false`. Per-row
 `unreadMessageCount` is the number of inbound messages strictly after
 last-read (`0` when none; gift-only inbound counts; outbound does not).
-Per-row `unread` is `unreadMessageCount > 0` (outbound-only listed contact
-tickets are `false`). List GET does not stamp last-read. `accountId` is the
+Per-row `unread` is `unreadMessageCount > 0` (outbound-only listed rows,
+including contact tickets, are `false`). List GET does not stamp
+last-read. `accountId` is the
 counterpart 21.gifts account. It is omitted for Damus-only counterparts
 (never JSON `null`).
 
@@ -5110,7 +5146,7 @@ exist on the account model; `GET /debug/accounts` and
 ## Out of scope for v1
 
 - Passkey + PRF + NIP-06 user-owned keys (non-custodial phase)
-- Social recovery of the user-held seed ([docs/social-recovery.md](docs/social-recovery.md)). Not a v1 route. Does not apply to the custodial nsec. No path in that document is reserved.
+- Optional securing of the account ([docs/social-recovery.md](docs/social-recovery.md)). Not a v1 route. Mein Konto absichern is not required. An owner who continues chooses two people. It only opens the account on a new device and restores the same 12 words. No path in that document is reserved.
 - Email/password login (or any second login method)
 - Internationalization of api response text and push payloads (they stay English). A signed-in account may store `locale` and `fiat`; that is not translated copy.
 - Platform custody of **receiver** funds (receiving stays LUD-16 only)

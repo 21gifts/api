@@ -285,8 +285,8 @@ export interface ConversationStore {
 
   /**
    * True when the thread has at least one inbound message for the viewer
-   * (`conversationIsInbound`). Used by GET /conversations to omit empty
-   * and outbound-only threads.
+   * (`conversationIsInbound`). GET /conversations also keeps a thread
+   * whose latest message is from the viewer. Empty threads stay omitted.
    *
    * @param conversationId - Thread to inspect.
    * @param viewerId - Session account.
@@ -342,15 +342,17 @@ export interface ConversationStore {
 
   /**
    * Count of listed inbox threads with unread inbound for this viewer.
-   * Same visibility as GET `/conversations` `unreadCount`: listed threads
-   * with `hasUnread`. Outbound-only own platform tickets are listed but
-   * unread false. Empty/outbound-only member threads omitted. Scan capped
-   * at `CONVERSATION_LIST_LIMIT`.
+   * Does not keep a thread only because its latest message is from the
+   * viewer. The number still matches GET `/conversations` `unreadCount`
+   * because those extra rows are unread false. Outbound-only own platform
+   * tickets stay unread false. Empty threads stay omitted. When `moderator`
+   * is true, `moderator_group` is included. Scan capped at
+   * `CONVERSATION_LIST_LIMIT`.
    *
    * @param accountId - Session account.
    * @param staff - Moderator (sees all platform threads).
    * @param platformId - Official platform account id, or `null` when none.
-   * @param moderator - When true, include `moderator_group` (same as GET list).
+   * @param moderator - When true, include `moderator_group`.
    * @returns Number of listed unread threads.
    */
   unreadCount(
@@ -498,7 +500,9 @@ export interface ConversationStore {
 }
 
 /**
- * Listed GET `/conversations` unread count (same filter/cap as the list).
+ * Badge unread count. Same cap as GET `/conversations`, but does not keep
+ * a thread only because its latest message is from the viewer. Those rows
+ * are unread false, so the number matches the list envelope.
  */
 async function listedUnreadCount(
   store: Pick<
@@ -589,6 +593,7 @@ export const CONVERSATION_SCHEMA_SQL: readonly string[] = [
   `ALTER TABLE conversation_message ADD COLUMN IF NOT EXISTS actor_account_id uuid REFERENCES account (id)`,
   `ALTER TABLE conversation_message ADD COLUMN IF NOT EXISTS actor_name text NOT NULL DEFAULT ''`,
   `ALTER TABLE conversation_message ADD COLUMN IF NOT EXISTS gift_for_message_id uuid`,
+  `ALTER TABLE conversation_message ADD COLUMN IF NOT EXISTS mentions jsonb NOT NULL DEFAULT '[]'::jsonb`,
   `CREATE INDEX IF NOT EXISTS conversation_message_conversation_id_idx
   ON conversation_message (conversation_id, created_at ASC, id ASC)`,
   `CREATE UNIQUE INDEX IF NOT EXISTS conversation_message_event_id_uidx
@@ -756,7 +761,8 @@ const MESSAGE_SELECT = `id, conversation_id, text, created_at, sender_account_id
   fiat_eur::text AS fiat_eur, fiat_php::text AS fiat_php,
   event_id, nostr_publish_state, nostr_event, claimed_until, actor_account_id, actor_name, gift_for_message_id,
   (photo IS NOT NULL) AS has_photo,
-  ((photo IS NOT NULL)::int + COALESCE((SELECT COUNT(*)::int FROM conversation_message_extra_photo e WHERE e.message_id = conversation_message.id), 0)) AS photo_count`;
+  ((photo IS NOT NULL)::int + COALESCE((SELECT COUNT(*)::int FROM conversation_message_extra_photo e WHERE e.message_id = conversation_message.id), 0)) AS photo_count,
+  mentions`;
 
 /**
  * Apply {@link CONVERSATION_SCHEMA_SQL} in order. Idempotent.
@@ -953,12 +959,15 @@ export class InMemoryConversationStore implements ConversationStore {
   }
 
   /**
-   * Count listed unread threads for this viewer (GET list rules).
+   * Count listed unread threads for this viewer.
+   * Does not keep a thread only because its latest message is from the
+   * viewer. The number still matches GET `/conversations` `unreadCount`
+   * because those extra rows are unread false.
    *
    * @param accountId - Session account.
    * @param staff - Moderator.
    * @param platformId - Official platform account id, or `null`.
-   * @param moderator - When true, include `moderator_group` (same as GET list).
+   * @param moderator - When true, include `moderator_group`.
    * @returns Listed unread count.
    */
   unreadCount(
@@ -1387,6 +1396,7 @@ interface ConversationMessageSqlRow {
   actor_account_id: string | null;
   actor_name: string | null;
   gift_for_message_id: string | null;
+  mentions?: unknown;
   has_photo?: boolean | number | string | null;
   photo_count?: number | string | null;
 }
@@ -1572,12 +1582,15 @@ export class PostgresConversationStore implements ConversationStore {
   }
 
   /**
-   * Count listed unread threads for this viewer (GET list rules).
+   * Count listed unread threads for this viewer.
+   * Does not keep a thread only because its latest message is from the
+   * viewer. The number still matches GET `/conversations` `unreadCount`
+   * because those extra rows are unread false.
    *
    * @param accountId - Session account.
    * @param staff - Moderator.
    * @param platformId - Official platform account id, or `null`.
-   * @param moderator - When true, include `moderator_group` (same as GET list).
+   * @param moderator - When true, include `moderator_group`.
    * @returns Listed unread count.
    */
   unreadCount(
@@ -1858,9 +1871,9 @@ export class PostgresConversationStore implements ConversationStore {
            id, conversation_id, text, created_at, sender_account_id, sender_pubkey, name, sats,
            event_id, nostr_publish_state, nostr_event, claimed_until, actor_account_id, actor_name,
            gift_for_message_id, photo, photo_content_type, photo_taken_at,
-           fiat_usd, fiat_chf, fiat_eur, fiat_php
+           fiat_usd, fiat_chf, fiat_eur, fiat_php, mentions
          ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb,$12,$13,$14,$15,$16,$17,$18,
-                   $19::numeric,$20::numeric,$21::numeric,$22::numeric)`,
+                   $19::numeric,$20::numeric,$21::numeric,$22::numeric,$23::jsonb)`,
         [
           stored.id,
           stored.conversationId,
@@ -1884,6 +1897,7 @@ export class PostgresConversationStore implements ConversationStore {
           stored.amountChf ?? null,
           stored.amountEur ?? null,
           stored.amountPhp ?? null,
+          JSON.stringify(stored.mentions ?? []),
         ],
       );
     } catch (error: unknown) {
@@ -2144,7 +2158,53 @@ function copyMessage(row: ConversationMessageRow): ConversationMessageRow {
     actorName: row.actorName ?? '',
     hasPhoto: row.hasPhoto === true,
     photoCount: typeof row.photoCount === 'number' ? row.photoCount : row.hasPhoto === true ? 1 : 0,
+    ...(row.mentions === undefined
+      ? {}
+      : {
+          mentions: row.mentions.map((mark) => ({
+            accountId: mark.accountId,
+            username: mark.username,
+          })),
+        }),
   };
+}
+
+/**
+ * Read stored profile marks. A bad value is no marks.
+ *
+ * @param value - `mentions` jsonb, or a string some drivers return.
+ * @returns Marks with a string account id and username. Empty when absent.
+ */
+function parseConversationMentions(value: unknown): { accountId: string; username: string }[] {
+  const raw = typeof value === 'string' ? safeConversationJson(value) : value;
+  if (!Array.isArray(raw)) {
+    return [];
+  }
+  const marks: { accountId: string; username: string }[] = [];
+  for (const item of raw) {
+    if (item === null || typeof item !== 'object') {
+      continue;
+    }
+    const accountId = 'accountId' in item ? item.accountId : undefined;
+    const username = 'username' in item ? item.username : undefined;
+    if (
+      typeof accountId === 'string' &&
+      accountId !== '' &&
+      typeof username === 'string' &&
+      username !== ''
+    ) {
+      marks.push({ accountId, username });
+    }
+  }
+  return marks;
+}
+
+function safeConversationJson(value: string): unknown {
+  try {
+    return JSON.parse(value);
+  } catch {
+    return [];
+  }
 }
 
 /** Coerce Postgres bytea drivers into a fresh {@link Uint8Array}. */
@@ -2219,6 +2279,7 @@ async function alignMemberPlatformAccountB(
 function mapMessage(row: ConversationMessageSqlRow): ConversationMessageRow {
   const state = row.nostr_publish_state;
   const hasPhoto = Boolean(row.has_photo);
+  const mentions = parseConversationMentions(row.mentions);
   return {
     id: row.id,
     conversationId: row.conversation_id,
@@ -2230,6 +2291,7 @@ function mapMessage(row: ConversationMessageSqlRow): ConversationMessageRow {
     actorAccountId: row.actor_account_id,
     actorName: row.actor_name ?? '',
     giftForMessageId: row.gift_for_message_id,
+    ...(mentions.length > 0 ? { mentions } : {}),
     sats: Number(row.sats ?? 0),
     amountUsd: textOrNull(row.fiat_usd),
     amountChf: textOrNull(row.fiat_chf),

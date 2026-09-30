@@ -6,6 +6,7 @@ import {
   serializeDebugAccount,
   serializeDebugAccountDetail,
   serializeDebugPasskey,
+  serializeDebugPasskeyChallenge,
   serializeOwnerAccount,
   serializeOwnerAccountWithPosts,
   serializeViewProfile,
@@ -222,6 +223,33 @@ describe('serializeDebugAccountDetail', () => {
       passkeyChallenges: [],
     });
     expect(json.addressVerification).toBeNull();
+  });
+});
+
+describe('serializeDebugPasskeyChallenge', () => {
+  it('serializes requestedName ada', () => {
+    const json = serializeDebugPasskeyChallenge({
+      id: 'ch',
+      type: 'register',
+      challenge: 'abc',
+      accountId: 'acc',
+      consumed: false,
+      createdAt: 1,
+      requestedName: 'ada',
+    });
+    expect(json.requestedName).toBe('ada');
+  });
+
+  it('serializes omitted requestedName as null', () => {
+    const json = serializeDebugPasskeyChallenge({
+      id: 'ch',
+      type: 'register',
+      challenge: 'abc',
+      accountId: 'acc',
+      consumed: false,
+      createdAt: 1,
+    });
+    expect(json.requestedName).toBeNull();
   });
 });
 

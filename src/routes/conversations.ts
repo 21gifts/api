@@ -18,6 +18,7 @@ import {
 import { notifyConversationMessage } from '@/lib/conversation-push';
 import type { ConversationStore, ConversationThreadPageQuery } from '@/lib/conversation-store';
 import { logEvent } from '@/lib/log';
+import { resolveMentionMarks } from '@/lib/mention';
 import { isSundayRestHeader } from '@/lib/sunday-rest';
 import { shownFiatFromBody, type FiatAmounts } from '@/lib/money';
 import type { FetchFn } from '@/lib/lnurlp';
@@ -524,7 +525,12 @@ export function conversationRoutes(deps: ConversationRouteDeps): Hono {
             thread.kind === 'member_platform' &&
             thread.accountA === account.id &&
             (thread.lastText !== '' || thread.lastSats > 0);
-          if (!inbound && !ownContactTicket) {
+          const sentByViewer = conversationFromMe({
+            senderAccountId: thread.lastSenderAccountId,
+            actorAccountId: thread.lastActorAccountId,
+            viewerId: account.id,
+          });
+          if (!inbound && !ownContactTicket && !sentByViewer) {
             continue;
           }
           const unreadMessageCount = await deps.store.countUnread(
@@ -946,11 +952,15 @@ export function conversationRoutes(deps: ConversationRouteDeps): Hono {
           return c.json({ error: 'Set a name before posting' }, 400);
         }
         const actorName = account.name?.trim() ?? '';
+        const mentions = await resolveMentionMarks(text, (username) =>
+          deps.authStore.getAccountByUsername(username),
+        );
         const created = await deps.store.appendMessage(
           {
             id: crypto.randomUUID(),
             conversationId: thread.id,
             text,
+            ...(mentions.length > 0 ? { mentions } : {}),
             createdAt: new Date(deps.now()),
             senderAccountId: sender.id,
             senderPubkey: (await deps.authStore.getNostrPublicKey(sender.id)) ?? null,

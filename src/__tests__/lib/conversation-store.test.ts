@@ -108,7 +108,10 @@ function sqlMessage(id: string, createdAt: Date): Record<string, unknown> {
 describe('CONVERSATION_SCHEMA_SQL', () => {
   it('creates conversation tables and unique indexes', () => {
     const joined = CONVERSATION_SCHEMA_SQL.join('\n');
-    expect(CONVERSATION_SCHEMA_SQL).toHaveLength(31);
+    expect(CONVERSATION_SCHEMA_SQL).toHaveLength(32);
+    expect(joined).toMatch(
+      /ALTER TABLE conversation_message ADD COLUMN IF NOT EXISTS mentions jsonb NOT NULL DEFAULT '\[\]'::jsonb/,
+    );
     expect(joined).toMatch(/CREATE TABLE IF NOT EXISTS conversation/i);
     expect(joined).toMatch(/CREATE TABLE IF NOT EXISTS conversation_message/i);
     expect(joined).toMatch(/CREATE TABLE IF NOT EXISTS conversation_message_translation/i);
@@ -1634,6 +1637,11 @@ describe('PostgresConversationStore', () => {
         actor_account_id: 'acc',
         actor_name: 'Ada',
         gift_for_message_id: 'm-trigger',
+        mentions: JSON.stringify([
+          { accountId: 'acc-marites', username: 'marites' },
+          { accountId: '', username: 'skip' },
+          { nope: true },
+        ]),
         event_id: null,
         nostr_publish_state: 'pending',
         nostr_event: null,
@@ -1646,10 +1654,67 @@ describe('PostgresConversationStore', () => {
     expect(listed[0]?.actorAccountId).toBe('acc');
     expect(listed[0]?.actorName).toBe('Ada');
     expect(listed[0]?.giftForMessageId).toBe('m-trigger');
+    expect(listed[0]?.mentions).toEqual([{ accountId: 'acc-marites', username: 'marites' }]);
     expect(sql.queries[0]?.text).toMatch(/gift_for_message_id/);
     expect(sql.queries[0]?.params).toEqual(['c1', 20]);
     expect(await store.getMessageById('m1')).toBeDefined();
     expect(await store.getMessageByEventId('ab'.repeat(32))).toBeDefined();
+  });
+
+  it('drops mention marks that are not a profile and ignores broken json', async () => {
+    const sql = new MockSql();
+    const base = {
+      conversation_id: 'c1',
+      text: 'hi',
+      created_at: NOW,
+      sender_account_id: 'acc',
+      sender_pubkey: null,
+      name: 'Ada',
+      actor_account_id: null,
+      actor_name: '',
+      gift_for_message_id: null,
+      event_id: null,
+      nostr_publish_state: 'pending',
+      nostr_event: null,
+      claimed_until: null,
+    };
+    sql.nextRows = [
+      {
+        ...base,
+        id: 'm-mixed',
+        mentions: JSON.stringify([
+          null,
+          'nope',
+          1,
+          { accountId: 'acc-ada', username: '' },
+          { accountId: 'acc-ada', username: 1 },
+          { accountId: 1, username: 'ada' },
+          { accountId: 'acc-ada', username: 'ada' },
+        ]),
+      },
+    ];
+    const store = new PostgresConversationStore(sql);
+    const mixed = await store.listMessages('c1', 5);
+    expect(mixed[0]?.mentions).toEqual([{ accountId: 'acc-ada', username: 'ada' }]);
+
+    sql.nextRows = [
+      {
+        ...base,
+        id: 'm-array',
+        mentions: [null, 'nope', { accountId: 'acc-ada', username: 'ada' }],
+      },
+    ];
+    const asArray = await store.listMessages('c1', 5);
+    expect(asArray[0]?.mentions).toEqual([{ accountId: 'acc-ada', username: 'ada' }]);
+
+    sql.nextRows = [{ ...base, id: 'm-broken', mentions: '{' }];
+    const broken = await store.listMessages('c1', 5);
+    expect(broken[0]).toBeDefined();
+    expect(broken[0]?.mentions).toBeUndefined();
+
+    sql.nextRows = [{ ...base, id: 'm-object', mentions: JSON.stringify({ accountId: 'x' }) }];
+    const objectValue = await store.listMessages('c1', 5);
+    expect(objectValue[0]?.mentions).toBeUndefined();
   });
 
   it('lists a Postgres thread page newest-first in SQL and reverses a copy', async () => {
@@ -1710,6 +1775,7 @@ describe('PostgresConversationStore', () => {
     expect(sql.executes[0]?.params[13]).toBe(row.actorName);
     expect(sql.executes[0]?.text).toMatch(/gift_for_message_id/);
     expect(sql.executes[0]?.params[14]).toBeNull();
+    expect(sql.executes[0]?.params[22]).toBe('[]');
     expect(sql.executes[1]?.text).toMatch(/UPDATE conversation SET last_message_at/);
     expect(created.text).toBe('hello');
   });
@@ -1730,6 +1796,18 @@ describe('PostgresConversationStore', () => {
     expect(sql.executes[0]?.params[12]).toBeNull();
     expect(sql.executes[0]?.params[13]).toBe('');
     expect(sql.executes[0]?.params[14]).toBeNull();
+  });
+
+  it('appendMessage binds mentions json after the fiat amounts', async () => {
+    const sql = new MockSql();
+    const store = new PostgresConversationStore(sql);
+    await store.appendMessage(
+      message({ mentions: [{ accountId: 'acc-marites', username: 'marites' }] }),
+    );
+    expect(sql.executes[0]?.params[14]).toBeNull();
+    expect(sql.executes[0]?.params[22]).toBe(
+      JSON.stringify([{ accountId: 'acc-marites', username: 'marites' }]),
+    );
   });
 
   it('appendMessage binds giftForMessageId at the gift_for_message_id placeholder', async () => {

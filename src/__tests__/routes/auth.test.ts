@@ -136,6 +136,7 @@ describe('auth routes', () => {
       expect(body.options.user.name).toBe('provisioned');
       expect(body).not.toHaveProperty('ok');
       expect(body).not.toHaveProperty('value');
+      expect((await store.listAccounts()).map((row) => row.id)).toEqual(['provisioned']);
     });
 
     it('returns 404 when begin viewKey is unknown', async () => {
@@ -290,12 +291,23 @@ describe('auth routes', () => {
       expect(res.status).toBe(200);
       const body = (await res.json()) as {
         token: string;
-        account: { id: string; linkingKey: string | null; viewKey: string; hasPosted: boolean };
+        account: {
+          id: string;
+          linkingKey: string | null;
+          viewKey: string;
+          hasPosted: boolean;
+          setup: string;
+        };
       };
       expect(body.token).toMatch(/^[0-9a-f]{64}$/);
       expect(body.account.linkingKey).toBeNull();
       expect(body.account.viewKey).toMatch(/^[0-9a-f]{64}$/);
       expect(body.account.hasPosted).toBe(false);
+      expect(body.account.setup).toBe('name');
+      const stored = await store.getAccount(body.account.id);
+      expect(stored?.name).toBeNull();
+      expect(stored?.username).toBeUndefined();
+      expect(stored?.nameSkippedAt).toBeNull();
       expect(
         parsedEvents(warn).some(
           (e) => e['event'] === 'auth.passkey.register.ok' && e['accountId'] === body.account.id,
@@ -392,6 +404,330 @@ describe('auth routes', () => {
         body: JSON.stringify({ challengeId: begin.challengeId, credential: { test: 'ok' } }),
       });
       expect(await res.json()).toEqual({ error: 'Wrong challenge type' });
+    });
+
+    it('returns 400 when begin name is a number', async () => {
+      const store = new InMemoryAuthStore();
+      const res = await mount(store).request('/auth/passkey/register/begin', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ name: 1 }),
+      });
+      expect(res.status).toBe(400);
+      expect(await res.json()).toEqual({
+        error: 'Expected a JSON body with an optional "name" string',
+      });
+      expect(await store.listPasskeyChallenges()).toEqual([]);
+    });
+
+    it('returns 400 when begin name is null', async () => {
+      const store = new InMemoryAuthStore();
+      const res = await mount(store).request('/auth/passkey/register/begin', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ name: null }),
+      });
+      expect(res.status).toBe(400);
+      expect(await res.json()).toEqual({
+        error: 'Expected a JSON body with an optional "name" string',
+      });
+      expect(await store.listPasskeyChallenges()).toEqual([]);
+    });
+
+    it('returns 400 when begin name is empty', async () => {
+      const store = new InMemoryAuthStore();
+      const res = await mount(store).request('/auth/passkey/register/begin', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ name: '' }),
+      });
+      expect(res.status).toBe(400);
+      expect(await res.json()).toEqual({
+        error: 'Username must be 1–32 characters of a-z, 0-9, hyphen, underscore, or dot',
+      });
+      expect(await store.listPasskeyChallenges()).toEqual([]);
+    });
+
+    it('returns 400 when begin name is not a valid username', async () => {
+      const store = new InMemoryAuthStore();
+      const res = await mount(store).request('/auth/passkey/register/begin', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ name: 'Ada Lovelace' }),
+      });
+      expect(res.status).toBe(400);
+      expect(await res.json()).toEqual({
+        error: 'Username must be 1–32 characters of a-z, 0-9, hyphen, underscore, or dot',
+      });
+      expect(await store.listPasskeyChallenges()).toEqual([]);
+    });
+
+    it('returns 400 when begin name starts with a dot', async () => {
+      const store = new InMemoryAuthStore();
+      const res = await mount(store).request('/auth/passkey/register/begin', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ name: '.ada' }),
+      });
+      expect(res.status).toBe(400);
+      expect(await res.json()).toEqual({
+        error: 'Username must be 1–32 characters of a-z, 0-9, hyphen, underscore, or dot',
+      });
+      expect(await store.listPasskeyChallenges()).toEqual([]);
+    });
+
+    it('returns 400 when begin name is a lone underscore', async () => {
+      const store = new InMemoryAuthStore();
+      const res = await mount(store).request('/auth/passkey/register/begin', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ name: '_' }),
+      });
+      expect(res.status).toBe(400);
+      expect(await res.json()).toEqual({
+        error: 'Username must be 1–32 characters of a-z, 0-9, hyphen, underscore, or dot',
+      });
+      expect(await store.listPasskeyChallenges()).toEqual([]);
+    });
+
+    it('returns 400 when begin name is 33 characters', async () => {
+      const store = new InMemoryAuthStore();
+      const res = await mount(store).request('/auth/passkey/register/begin', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ name: 'a'.repeat(33) }),
+      });
+      expect(res.status).toBe(400);
+      expect(await res.json()).toEqual({
+        error: 'Username must be 1–32 characters of a-z, 0-9, hyphen, underscore, or dot',
+      });
+      expect(await store.listPasskeyChallenges()).toEqual([]);
+    });
+
+    it('issues options for a 32-character begin name', async () => {
+      const store = new InMemoryAuthStore();
+      const name = 'a' + 'b'.repeat(31);
+      const res = await mount(store).request('/auth/passkey/register/begin', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ name }),
+      });
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as {
+        options: { user: { id: string; name: string; displayName: string } };
+      };
+      expect(body.options.user.name).toBe(name);
+      expect(body.options.user.displayName).toBe(name);
+      expect(body.options.user.id).not.toBe(name);
+    });
+
+    it('returns 409 when begin name is already in use', async () => {
+      const store = new InMemoryAuthStore();
+      await store.createAccount({
+        id: 'taken',
+        linkingKey: null,
+        role: 'basis',
+        name: 'Ada',
+        username: 'ada',
+        lightningAddress: null,
+        lightningAddressVerified: false,
+        forumLawsDismissed: false,
+        location: null,
+        viewKey: 'e'.repeat(64),
+        createdAt: 1,
+        rulesAgreedAt: null,
+      });
+      const res = await mount(store).request('/auth/passkey/register/begin', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ name: 'Ada' }),
+      });
+      expect(res.status).toBe(409);
+      expect(await res.json()).toEqual({ error: 'Username is already in use' });
+      expect(await store.listPasskeyChallenges()).toEqual([]);
+    });
+
+    it('issues nameless options when begin has no body', async () => {
+      const store = new InMemoryAuthStore();
+      const res = await mount(store).request('/auth/passkey/register/begin', {
+        method: 'POST',
+      });
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as {
+        options: { user: { name: string; displayName: string } };
+      };
+      const challenge = (await store.listPasskeyChallenges())[0];
+      expect(challenge?.requestedName).toBeNull();
+      expect(body.options.user.displayName).toBe('21.gifts');
+      expect(body.options.user.name).toBe(challenge?.accountId);
+    });
+
+    it('issues nameless options when begin body is empty', async () => {
+      const store = new InMemoryAuthStore();
+      const res = await mount(store).request('/auth/passkey/register/begin', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({}),
+      });
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as {
+        options: { user: { name: string; displayName: string } };
+      };
+      const challenge = (await store.listPasskeyChallenges())[0];
+      expect(challenge?.requestedName).toBeNull();
+      expect(body.options.user.displayName).toBe('21.gifts');
+      expect(body.options.user.name).toBe(challenge?.accountId);
+    });
+
+    it('issues nameless options when begin has no name field', async () => {
+      const store = new InMemoryAuthStore();
+      const res = await mount(store).request('/auth/passkey/register/begin', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ extra: true }),
+      });
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as {
+        options: { user: { name: string; displayName: string } };
+      };
+      const challenge = (await store.listPasskeyChallenges())[0];
+      expect(challenge?.requestedName).toBeNull();
+      expect(body.options.user.displayName).toBe('21.gifts');
+      expect(body.options.user.name).toBe(challenge?.accountId);
+    });
+
+    it('registers a named account from begin name Ada', async () => {
+      const store = new InMemoryAuthStore();
+      const app = mount(store);
+      const begin = await app.request('/auth/passkey/register/begin', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ name: 'Ada' }),
+      });
+      expect(begin.status).toBe(200);
+      const started = (await begin.json()) as {
+        challengeId: string;
+        options: { user: { id: string; name: string; displayName: string } };
+      };
+      const challenge = (await store.listPasskeyChallenges())[0];
+      expect(challenge?.requestedName).toBe('ada');
+      expect(started.options.user.name).toBe('ada');
+      expect(started.options.user.displayName).toBe('ada');
+      expect(started.options.user.id).toBe(challenge?.accountId);
+      expect(started.options.user.id).not.toBe('ada');
+      const res = await app.request('/auth/passkey/register/finish', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', origin: ORIGIN },
+        body: JSON.stringify({ challengeId: started.challengeId, credential: { test: 'ok' } }),
+      });
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as {
+        account: {
+          name: string | null;
+          username: string | null;
+          setup: string;
+        };
+      };
+      expect(body.account.name).toBe('ada');
+      expect(body.account.username).toBe('ada');
+      expect(body.account.setup).toBe('lightning-address');
+      const stored = await store.getAccount(challenge?.accountId ?? '');
+      expect(stored?.name).toBe('ada');
+      expect(stored?.username).toBe('ada');
+      expect(stored?.nameSkippedAt).toBeNull();
+      expect(await store.getPasskeyCredential('cred-1')).toBeDefined();
+    });
+
+    it('returns 409 when the name is taken between begin and finish', async () => {
+      const store = new InMemoryAuthStore();
+      const app = mount(store);
+      const begin = await app.request('/auth/passkey/register/begin', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ name: 'Ada' }),
+      });
+      expect(begin.status).toBe(200);
+      const { challengeId } = (await begin.json()) as { challengeId: string };
+      const pendingId = (await store.listPasskeyChallenges())[0]?.accountId;
+      await store.createAccount({
+        id: 'other',
+        linkingKey: null,
+        role: 'basis',
+        name: 'Ada',
+        username: 'ada',
+        lightningAddress: null,
+        lightningAddressVerified: false,
+        forumLawsDismissed: false,
+        location: null,
+        viewKey: 'd'.repeat(64),
+        createdAt: 1,
+        rulesAgreedAt: null,
+      });
+      const res = await app.request('/auth/passkey/register/finish', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', origin: ORIGIN },
+        body: JSON.stringify({ challengeId, credential: { test: 'ok' } }),
+      });
+      expect(res.status).toBe(409);
+      expect(await res.json()).toEqual({ error: 'Username is already in use' });
+      expect(await store.getPasskeyCredential('cred-1')).toBeUndefined();
+      expect(await store.getAccount(pendingId ?? '')).toBeUndefined();
+    });
+
+    it('ignores name on finish and keeps the challenge handle', async () => {
+      const store = new InMemoryAuthStore();
+      const app = mount(store);
+      const begin = await app.request('/auth/passkey/register/begin', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ name: 'Ada' }),
+      });
+      const { challengeId } = (await begin.json()) as { challengeId: string };
+      const res = await app.request('/auth/passkey/register/finish', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', origin: ORIGIN },
+        body: JSON.stringify({
+          challengeId,
+          credential: { test: 'ok' },
+          name: 'bob',
+        }),
+      });
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as {
+        account: { name: string | null; username: string | null };
+      };
+      expect(body.account.name).toBe('ada');
+      expect(body.account.username).toBe('ada');
+    });
+
+    it('ignores name when begin claims with viewKey', async () => {
+      const store = new InMemoryAuthStore();
+      const viewKey = 'a'.repeat(64);
+      await store.createAccount({
+        id: 'provisioned',
+        linkingKey: null,
+        role: 'basis',
+        name: 'Ada',
+        lightningAddress: 'guest@walletofsatoshi.com',
+        lightningAddressVerified: false,
+        forumLawsDismissed: false,
+        location: null,
+        viewKey,
+        createdAt: 1,
+        rulesAgreedAt: null,
+      });
+      const res = await mount(store).request('/auth/passkey/register/begin', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ viewKey, name: 12 }),
+      });
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as {
+        options: { user: { displayName: string; name: string } };
+      };
+      expect(body.options.user.displayName).toBe('Ada');
+      expect(body.options.user.name).toBe('provisioned');
+      expect((await store.listAccounts()).map((row) => row.id)).toEqual(['provisioned']);
     });
   });
 

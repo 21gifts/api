@@ -954,6 +954,37 @@ describe('PostgresAuthStore', () => {
     expect(sql.executes[1]?.text).toMatch(/INSERT INTO passkey_challenge/);
   });
 
+  it('inserts requested_name when the challenge has requestedName', async () => {
+    const sql = new MockSql();
+    const store = new PostgresAuthStore(sql);
+    await store.createPasskeyChallenge({
+      id: 'ch',
+      type: 'register',
+      challenge: 'c',
+      accountId: 'acc',
+      consumed: false,
+      createdAt: 5_000,
+      requestedName: 'ada',
+    });
+    expect(sql.executes[1]?.text).toMatch(/requested_name/);
+    expect(sql.executes[1]?.params[6]).toBe('ada');
+  });
+
+  it('inserts NULL requested_name when the field is omitted', async () => {
+    const sql = new MockSql();
+    const store = new PostgresAuthStore(sql);
+    await store.createPasskeyChallenge({
+      id: 'ch',
+      type: 'register',
+      challenge: 'c',
+      accountId: 'acc',
+      consumed: false,
+      createdAt: 5_000,
+    });
+    expect(sql.executes[1]?.text).toMatch(/requested_name/);
+    expect(sql.executes[1]?.params[6]).toBeNull();
+  });
+
   it('maps a passkey challenge row', async () => {
     const sql = new MockSql();
     sql.nextRows = [
@@ -973,6 +1004,7 @@ describe('PostgresAuthStore', () => {
       accountId: null,
       consumed: false,
       createdAt: 1_000,
+      requestedName: null,
     });
   });
 
@@ -995,7 +1027,64 @@ describe('PostgresAuthStore', () => {
       accountId: 'acc',
       consumed: false,
       createdAt: 1_000,
+      requestedName: null,
     });
+  });
+
+  it('maps requested_name ada onto requestedName', async () => {
+    const sql = new MockSql();
+    sql.nextRows = [
+      {
+        id: 'ch',
+        type: 'register',
+        challenge: 'c',
+        account_id: 'acc',
+        consumed: false,
+        created_at: new Date(1_000),
+        requested_name: 'ada',
+      },
+    ];
+    expect(await new PostgresAuthStore(sql).getPasskeyChallenge('ch')).toMatchObject({
+      requestedName: 'ada',
+    });
+    expect(sql.queries[0]?.text).toMatch(/requested_name/);
+  });
+
+  it('maps a null requested_name onto requestedName null', async () => {
+    const sql = new MockSql();
+    sql.nextRows = [
+      {
+        id: 'ch',
+        type: 'register',
+        challenge: 'c',
+        account_id: 'acc',
+        consumed: false,
+        created_at: new Date(1_000),
+        requested_name: null,
+      },
+    ];
+    expect(await new PostgresAuthStore(sql).getPasskeyChallenge('ch')).toMatchObject({
+      requestedName: null,
+    });
+  });
+
+  it('lists passkey challenges including requested_name', async () => {
+    const sql = new MockSql();
+    sql.nextRows = [
+      {
+        id: 'ch',
+        type: 'register',
+        challenge: 'c',
+        account_id: 'acc',
+        consumed: false,
+        created_at: new Date(1_000),
+        requested_name: 'ada',
+      },
+    ];
+    expect((await new PostgresAuthStore(sql).listPasskeyChallenges())[0]?.requestedName).toBe(
+      'ada',
+    );
+    expect(sql.queries[0]?.text).toMatch(/requested_name/);
   });
 
   it('returns undefined for a missing passkey challenge', async () => {
@@ -1015,6 +1104,23 @@ describe('PostgresAuthStore', () => {
     });
     expect(ok).toBe(true);
     expect(sql.queries[0]?.text).toMatch(/consumed = false/);
+  });
+
+  it('keeps requestedName on a consume update', async () => {
+    const sql = new MockSql();
+    sql.nextRows = [{ id: 'ch' }];
+    const ok = await new PostgresAuthStore(sql).updatePasskeyChallenge({
+      id: 'ch',
+      type: 'register',
+      challenge: 'c',
+      accountId: 'acc',
+      consumed: true,
+      createdAt: 1,
+      requestedName: 'ada',
+    });
+    expect(ok).toBe(true);
+    expect(sql.queries[0]?.text).toMatch(/requested_name = \$7/);
+    expect(sql.queries[0]?.params[6]).toBe('ada');
   });
 
   it('returns false when the passkey challenge CAS matches no row', async () => {
@@ -1413,6 +1519,7 @@ describe('PostgresAuthStore', () => {
       accountId: 'acc',
       consumed: false,
       createdAt: 1_000,
+      requestedName: null,
     });
   });
 

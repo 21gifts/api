@@ -310,7 +310,7 @@ api/
 │   ├── gift.sql              # gift table used by GET /gifts and GET /gifts/stats
 │   ├── btc_usd_daily.sql     # UTC daily BTC-USD closes for historical USD stats
 │   ├── usd_fiat_daily.sql    # UTC daily USD→CHF/EUR/PHP ECB crosses
-│   ├── message.sql           # message + nostr_zap_receipt + nostr_zapper + nostr_blocked_pubkey + nostr_zap_payment + message_invoice + message_translation + nostr_zap_ingest + message_extra_photo + message_repayment
+│   ├── message.sql           # message + nostr_zap_receipt + nostr_zapper + nostr_blocked_pubkey + nostr_zap_payment + message_invoice + message_translation + nostr_zap_ingest + message_extra_photo + message_repayment + message_edit
 │   ├── contact.sql           # private contact mailbox table for POST /contact
 │   ├── conversation.sql      # PN threads + messages + conversation_read (per-viewer last-read; member/platform/Damus; closed moderator_group singleton, HTTP-only / skipped Nostr) + conversation_message.photo / photo_content_type + conversation_message_extra_photo + conversation_message_translation
 │   ├── api_log.sql           # HTTP audit log (who called which path)

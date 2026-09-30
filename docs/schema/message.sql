@@ -311,3 +311,16 @@ BEGIN
     CHECK (goal_term_days IS NULL OR (goal_repayable IS TRUE AND goal_term_days BETWEEN 1 AND 3650));
 END
 $message_goal_term_days$;
+-- Staff history of a shop note. Text, place, and shop account only.
+CREATE TABLE IF NOT EXISTS message_edit (
+  id uuid PRIMARY KEY,
+  message_id uuid NOT NULL REFERENCES message (id) ON DELETE CASCADE,
+  actor_id uuid NOT NULL,
+  created_at timestamptz NOT NULL,
+  field text NOT NULL,
+  before jsonb NOT NULL,
+  after jsonb NOT NULL,
+  CONSTRAINT message_edit_field_chk CHECK (field IN ('text', 'place', 'shop_account'))
+);
+CREATE INDEX IF NOT EXISTS message_edit_message_created_idx
+  ON message_edit (message_id, created_at DESC, id DESC);

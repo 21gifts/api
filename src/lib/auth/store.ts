@@ -239,6 +239,11 @@ export interface PasskeyChallenge {
   consumed: boolean;
   /** Issue time (epoch ms). */
   createdAt: number;
+  /**
+   * Normalised handle from register begin, or omitted/`null` when nameless.
+   * Claim, authenticate, seed, and replace omit this field.
+   */
+  requestedName?: string | null;
 }
 
 /** Stage of a passkey renew ceremony. */

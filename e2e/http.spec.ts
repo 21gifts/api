@@ -234,6 +234,25 @@ test('PATCH /messages/:id/shop-account without bearer is 401', async ({ request 
   expect(res.status()).toBe(401);
 });
 
+test('PATCH /messages/:id/text without bearer is 401', async ({ request }) => {
+  const res = await request.patch('/messages/:id/text', {
+    data: { text: 'hi' },
+  });
+  expect(res.status()).toBe(401);
+});
+
+test('PATCH /messages/:id/photos without bearer is 401', async ({ request }) => {
+  const res = await request.patch('/messages/:id/photos', {
+    data: { photos: [] },
+  });
+  expect(res.status()).toBe(401);
+});
+
+test('GET /messages/:id/edits without bearer is 401', async ({ request }) => {
+  const res = await request.get('/messages/:id/edits');
+  expect(res.status()).toBe(401);
+});
+
 test('GET /messages/:id/replies without bearer is 404', async ({ request }) => {
   const res = await request.get('/messages/:id/replies');
   expect(res.status()).toBe(404);

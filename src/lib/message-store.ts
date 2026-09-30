@@ -280,6 +280,24 @@ export interface AccountMessageCounts {
   replyCount: number;
 }
 
+/** One stored change of shop-note text, place, or shop account. */
+export interface MessageEditRow {
+  /** Opaque unique history id. */
+  id: string;
+  /** Message this row belongs to. */
+  messageId: string;
+  /** Staff account that made the change. */
+  actorId: string;
+  /** When the change was stored. */
+  createdAt: Date;
+  /** Which field changed. SQL `shop_account` stays `shop_account`. */
+  field: 'text' | 'place' | 'shop_account';
+  /** Value before the write (`null` when clearing). */
+  before: unknown;
+  /** Value after the write (`null` when clearing). */
+  after: unknown;
+}
+
 /**
  * Persistence port for forum messages.
  */
@@ -394,6 +412,8 @@ export interface MessageStore {
       lng: number;
       label: string | null;
       accountId: string | null;
+      /** True when the note text contains the shop tag. */
+      shop: boolean;
     }>
   >;
 
@@ -626,10 +646,12 @@ export interface MessageStore {
    *
    * @param id - Message id.
    * @param place - Pin to store, or `null` to store SQL NULL / `place: null`.
+   * @param edit - When set, and the pin actually changes, the history row is
+   *   written in the same step as the pin. An unchanged pin writes no history.
    * @returns `false` when no row has that id; `true` when the three columns
    *   were written.
    */
-  setPlace(id: string, place: ForumPlace | null): Promise<boolean>;
+  setPlace(id: string, place: ForumPlace | null, edit?: MessageEditRow): Promise<boolean>;
 
   /**
    * Set, replace, or clear the linked 21.gifts shop account. Writes only
@@ -638,12 +660,32 @@ export interface MessageStore {
    *
    * @param id - Message id.
    * @param account - Account snapshot to store, or `null` to clear.
+   * @param edit - When set, and the account actually changes, the history row
+   *   is written in the same step. An unchanged account writes no history.
    * @returns `false` when no row has that id; `true` when the column was written.
    */
   setShopAccount(
     id: string,
     account: { id: string; username: string; name: string } | null,
+    edit?: MessageEditRow,
   ): Promise<boolean>;
+
+  /**
+   * Append one edit-history row. Does not change the message. The stored
+   * `before` / `after` values are copies.
+   *
+   * @param row - History row to store.
+   */
+  appendEdit(row: MessageEditRow): Promise<void>;
+
+  /**
+   * Edit history for one message. Newest `createdAt` then `id` first.
+   * Missing message → `[]`. Caller-owned copies.
+   *
+   * @param messageId - Message id.
+   * @returns History row copies, newest first.
+   */
+  listEdits(messageId: string): Promise<MessageEditRow[]>;
 
   /**
    * Direct children of `parentId` (`parentId` match), including hidden,
@@ -775,9 +817,11 @@ export interface MessageStore {
    *
    * @param id - Message id.
    * @param text - New body (already normalised; may be empty).
+   * @param edit - When set, and the body actually changes, the history row is
+   *   written in the same step. An unchanged body writes no history.
    * @returns The updated row copy, or `undefined` when no row has that id.
    */
-  updateText(id: string, text: string): Promise<MessageRow | undefined>;
+  updateText(id: string, text: string, edit?: MessageEditRow): Promise<MessageRow | undefined>;
 
   /**
    * Replace or clear the stored photo. Does not change text, sats, or event ids.
@@ -789,6 +833,17 @@ export interface MessageStore {
    *   `undefined` when no row has that id.
    */
   updatePhoto(id: string, photo: ForumPhoto | null): Promise<MessageRow | undefined>;
+
+  /**
+   * Replace every still on a note. Index 0 is the primary photo; the rest are
+   * extras. An empty list clears stills. Does not change text, video, sats, or
+   * event ids, and does not recompute `content_fp`.
+   *
+   * @param id - Message id.
+   * @param photos - Decoded stills, at most 10.
+   * @returns The updated row copy, or `undefined` when no row has that id.
+   */
+  replacePhotos(id: string, photos: readonly ForumPhoto[]): Promise<MessageRow | undefined>;
 
   /** Persist a signed event id + JSON. Returns false on event-id collision. */
   updateSignedEvent(
@@ -1609,6 +1664,18 @@ $message_goal_term_days$`,
      END LOOP;
    END;
    $unwrap$;`,
+  `CREATE TABLE IF NOT EXISTS message_edit (
+  id uuid PRIMARY KEY,
+  message_id uuid NOT NULL REFERENCES message (id) ON DELETE CASCADE,
+  actor_id uuid NOT NULL,
+  created_at timestamptz NOT NULL,
+  field text NOT NULL,
+  before jsonb NOT NULL,
+  after jsonb NOT NULL,
+  CONSTRAINT message_edit_field_chk CHECK (field IN ('text', 'place', 'shop_account'))
+)`,
+  `CREATE INDEX IF NOT EXISTS message_edit_message_created_idx
+  ON message_edit (message_id, created_at DESC, id DESC)`,
 ];
 
 /**
@@ -1827,6 +1894,66 @@ function copyRow(row: MessageRow): MessageRow {
   return copy;
 }
 
+/** Caller-owned clone of a jsonb `before` / `after` value. */
+function cloneEditValue(value: unknown): unknown {
+  if (value === null || typeof value !== 'object') {
+    return value;
+  }
+  return JSON.parse(JSON.stringify(value));
+}
+
+/**
+ * Whether two shop-account snapshots are the same assignment.
+ * Only the account id counts. A renamed username or display name is not a new assignment.
+ */
+function shopSnapshotsMatch(
+  a: { id: string; username: string; name: string } | null | undefined,
+  b: { id: string; username: string; name: string } | null,
+): boolean {
+  const left = a ?? null;
+  if (left === null || b === null) {
+    return left === b;
+  }
+  return left.id === b.id;
+}
+
+/** Copy one history row (cloned `createdAt` and jsonb values). */
+function copyEdit(row: MessageEditRow): MessageEditRow {
+  return {
+    id: row.id,
+    messageId: row.messageId,
+    actorId: row.actorId,
+    createdAt: new Date(row.createdAt.getTime()),
+    field: row.field,
+    before: cloneEditValue(row.before),
+    after: cloneEditValue(row.after),
+  };
+}
+
+/**
+ * Driver jsonb: parse a JSON string, otherwise keep the value (including `null`).
+ * A text value that parses to something other than a string stays the stored text.
+ */
+function readStoredEditJson(value: unknown, field: MessageEditRow['field']): unknown {
+  if (typeof value !== 'string') {
+    return cloneEditValue(value);
+  }
+  try {
+    const parsed: unknown = JSON.parse(value);
+    if (field === 'text' && typeof parsed !== 'string') {
+      return value;
+    }
+    return cloneEditValue(parsed);
+  } catch {
+    return value;
+  }
+}
+
+/** Map a SQL `field` text onto {@link MessageEditRow.field}. */
+function mapEditField(value: unknown): MessageEditRow['field'] {
+  return value === 'place' || value === 'shop_account' ? value : 'text';
+}
+
 /**
  * A receipt counts toward the frozen credit when it was stored at or before
  * the note filled. A missing timestamp is a row from before that column.
@@ -1961,6 +2088,7 @@ export class InMemoryMessageStore implements MessageStore {
   readonly #zapIngests: ZapIngestRow[] = [];
   readonly #zappers = new Map<string, NostrZapperRow>();
   readonly #blockedPubkeys = new Map<string, NostrBlockedPubkeyRow>();
+  readonly #edits: MessageEditRow[] = [];
   readonly #paymentFiat: Required<PaymentFiatStoreOptions>;
 
   /**
@@ -2242,6 +2370,7 @@ export class InMemoryMessageStore implements MessageStore {
       lng: number;
       label: string | null;
       accountId: string | null;
+      shop: boolean;
     }>
   > {
     const pinned = this.#rows.filter((row) => {
@@ -2272,6 +2401,7 @@ export class InMemoryMessageStore implements MessageStore {
           lng: place.lng,
           label: place.label,
           accountId: row.accountId,
+          shop: textHasHashtagToken(row.text, '21GiftsShop'),
         };
       }),
     );
@@ -2389,9 +2519,9 @@ export class InMemoryMessageStore implements MessageStore {
     });
     applyStoredGoal(stored);
     stored.place = stored.parentId !== null ? null : (stored.place ?? null);
-    // Create does not assign a shop account.
-    stored.shopAccount = null;
+    // A reply never stores a shop account. A top-level note keeps the one on the row.
     if (stored.parentId !== null) {
+      stored.shopAccount = null;
       const parent = this.#rows.find((item) => item.id === stored.parentId);
       if (parent === undefined || parent.deletedAt !== null) {
         throw new Error('parent missing or deleted');
@@ -2843,12 +2973,16 @@ export class InMemoryMessageStore implements MessageStore {
     return Promise.resolve();
   }
 
-  updateText(id: string, text: string): Promise<MessageRow | undefined> {
+  updateText(id: string, text: string, edit?: MessageEditRow): Promise<MessageRow | undefined> {
     const row = this.#rows.find((item) => item.id === id);
     if (row === undefined) {
       return Promise.resolve(undefined);
     }
+    const changed = row.text !== text;
     row.text = text;
+    if (edit !== undefined && changed) {
+      this.#edits.push(copyEdit(edit));
+    }
     return Promise.resolve(copyRow(row));
   }
 
@@ -2870,6 +3004,36 @@ export class InMemoryMessageStore implements MessageStore {
     row.photoTakenAts = [
       ...(hasPhoto0 ? [typeof photo?.takenAt === 'string' ? photo.takenAt : null] : []),
       ...extras.map((item) => (typeof item.takenAt === 'string' ? item.takenAt : null)),
+    ];
+    return Promise.resolve(copyRow(row));
+  }
+
+  replacePhotos(id: string, photos: readonly ForumPhoto[]): Promise<MessageRow | undefined> {
+    const row = this.#rows.find((item) => item.id === id);
+    if (row === undefined) {
+      return Promise.resolve(undefined);
+    }
+    const kept = photos.slice(0, 10);
+    const first = kept[0];
+    const nextPrimary = first === undefined ? undefined : copyPhoto(first);
+    const nextExtras = kept.slice(1).map((item) => copyPhoto(item));
+    if (nextPrimary === undefined) {
+      this.#photos.delete(id);
+      row.hasPhoto = false;
+    } else {
+      this.#photos.set(id, nextPrimary);
+      row.hasPhoto = true;
+    }
+    if (nextExtras.length > 0) {
+      this.#extraPhotos.set(id, nextExtras);
+    } else {
+      this.#extraPhotos.delete(id);
+    }
+    const storedExtras = this.#extraPhotos.get(id) ?? [];
+    row.photoCount = (first !== undefined ? 1 : 0) + storedExtras.length;
+    row.photoTakenAts = [
+      ...(first !== undefined ? [typeof first.takenAt === 'string' ? first.takenAt : null] : []),
+      ...storedExtras.map((item) => (typeof item.takenAt === 'string' ? item.takenAt : null)),
     ];
     return Promise.resolve(copyRow(row));
   }
@@ -3582,6 +3746,9 @@ export class InMemoryMessageStore implements MessageStore {
     const kept = this.#invoiceAttempts.filter((item) => !ids.has(item.messageId));
     this.#invoiceAttempts.length = 0;
     this.#invoiceAttempts.push(...kept);
+    const keptEdits = this.#edits.filter((item) => !ids.has(item.messageId));
+    this.#edits.length = 0;
+    this.#edits.push(...keptEdits);
     for (const [receiptEventId, receipt] of this.#receipts) {
       if (ids.has(receipt.messageId)) {
         this.#receipts.delete(receiptEventId);
@@ -3634,26 +3801,56 @@ export class InMemoryMessageStore implements MessageStore {
     return Promise.resolve(true);
   }
 
-  setPlace(id: string, place: ForumPlace | null): Promise<boolean> {
+  setPlace(id: string, place: ForumPlace | null, edit?: MessageEditRow): Promise<boolean> {
     const row = this.#rows.find((item) => item.id === id);
     if (row === undefined) {
       return Promise.resolve(false);
     }
-    row.place = place === null ? null : { lat: place.lat, lng: place.lng, label: place.label };
+    const next = place === null ? null : { lat: place.lat, lng: place.lng, label: place.label };
+    const changed = !placesMatch(row.place ?? null, next);
+    row.place = next;
+    if (edit !== undefined && changed) {
+      this.#edits.push(copyEdit(edit));
+    }
     return Promise.resolve(true);
   }
 
   setShopAccount(
     id: string,
     account: { id: string; username: string; name: string } | null,
+    edit?: MessageEditRow,
   ): Promise<boolean> {
     const row = this.#rows.find((item) => item.id === id);
     if (row === undefined) {
       return Promise.resolve(false);
     }
-    row.shopAccount =
+    const next =
       account === null ? null : { id: account.id, username: account.username, name: account.name };
+    const changed = !shopSnapshotsMatch(row.shopAccount, next);
+    row.shopAccount = next;
+    if (edit !== undefined && changed) {
+      this.#edits.push(copyEdit(edit));
+    }
     return Promise.resolve(true);
+  }
+
+  appendEdit(row: MessageEditRow): Promise<void> {
+    this.#edits.push(copyEdit(row));
+    return Promise.resolve();
+  }
+
+  listEdits(messageId: string): Promise<MessageEditRow[]> {
+    const rows = this.#edits
+      .filter((item) => item.messageId === messageId)
+      .sort((a, b) => {
+        const byTime = b.createdAt.getTime() - a.createdAt.getTime();
+        if (byTime !== 0) {
+          return byTime;
+        }
+        return b.id.localeCompare(a.id);
+      })
+      .map((item) => copyEdit(item));
+    return Promise.resolve(rows);
   }
 
   /**
@@ -4259,6 +4456,7 @@ export class PostgresMessageStore implements MessageStore {
       lng: number;
       label: string | null;
       accountId: string | null;
+      shop: boolean;
     }>
   > {
     const rows = await this.#sql.query<{
@@ -4269,14 +4467,16 @@ export class PostgresMessageStore implements MessageStore {
       place_lng: string | number | null;
       place_label: string | null;
       account_id: string | null;
+      shop: boolean | null;
     }>(
-      `SELECT id, name, created_at, place_lat, place_lng, place_label, account_id
+      `SELECT id, name, created_at, place_lat, place_lng, place_label, account_id,
+              (text ~* $2) AS shop
        FROM message
        WHERE parent_id IS NULL AND deleted_at IS NULL
          AND place_lat IS NOT NULL AND place_lng IS NOT NULL
        ORDER BY created_at DESC, id DESC
        LIMIT $1`,
-      [limit],
+      [limit, posixHashtagTokenPattern('21GiftsShop')],
     );
     return rows.map((row) => ({
       id: row.id,
@@ -4286,6 +4486,7 @@ export class PostgresMessageStore implements MessageStore {
       lng: Number(row.place_lng),
       label: row.place_label === null || row.place_label === undefined ? null : row.place_label,
       accountId: row.account_id,
+      shop: row.shop === true,
     }));
   }
 
@@ -4515,7 +4716,9 @@ export class PostgresMessageStore implements MessageStore {
    * SQL null even when the row carried a positive `goalSats`, bind
    * `goal_repayable` SQL null even when the row carried `true`, bind
    * `goal_term_days` SQL null even when the row carried a term, and bind place
-   * columns SQL null even when the row carried a pin. A 0-row insert calls
+   * columns and `shop_account_id` SQL null even when the row carried a pin or
+   * a shop account. A top-level note stores `row.shopAccount`'s id on the same
+   * insert. A 0-row insert calls
    * `getById(stored.id)` and returns that row when present (gift-reply retry
    * after the parent was later deleted); otherwise throws, no insert. On unique
    * violation (`23505`), if `getById(stored.id)` matches that id, return that
@@ -4577,8 +4780,10 @@ export class PostgresMessageStore implements MessageStore {
     });
     applyStoredGoal(stored);
     stored.place = stored.parentId !== null ? null : (stored.place ?? null);
-    // Create does not assign a shop account.
-    stored.shopAccount = null;
+    // A reply never stores a shop account. A top-level note keeps the one on the row.
+    if (stored.parentId !== null) {
+      stored.shopAccount = null;
+    }
     if (video !== undefined) {
       await writeForumVideo(stored.id, video);
     }
@@ -4616,6 +4821,7 @@ export class PostgresMessageStore implements MessageStore {
       stored.goalAmountPhp ?? null,
       stored.goalRepayable === true ? true : null,
       stored.goalTermDays ?? null,
+      stored.shopAccount?.id ?? null,
     ];
     try {
       if (stored.parentId !== null) {
@@ -4625,11 +4831,12 @@ export class PostgresMessageStore implements MessageStore {
            nostr_publish_state, sats, parent_id, author_pubkey, event_id, nostr_event, content_fp, goal_sats,
            fiat_usd, fiat_chf, fiat_eur, fiat_php, photo_taken_at, video_taken_at,
            place_lat, place_lng, place_label,
-           goal_currency, goal_amount, goal_fiat_usd, goal_fiat_chf, goal_fiat_eur, goal_fiat_php, goal_repayable, goal_term_days
+           goal_currency, goal_amount, goal_fiat_usd, goal_fiat_chf, goal_fiat_eur, goal_fiat_php, goal_repayable, goal_term_days,
+           shop_account_id
          )
          SELECT $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14::jsonb,$15,$16,
                 $17::numeric,$18::numeric,$19::numeric,$20::numeric,$21,$22,$23,$24,$25,
-                $26,$27::numeric,$28::numeric,$29::numeric,$30::numeric,$31::numeric,$32,$33
+                $26,$27::numeric,$28::numeric,$29::numeric,$30::numeric,$31::numeric,$32,$33,$34
          WHERE EXISTS (SELECT 1 FROM message p WHERE p.id = $11 AND p.deleted_at IS NULL)
          RETURNING id`,
           params,
@@ -4648,11 +4855,12 @@ export class PostgresMessageStore implements MessageStore {
            nostr_publish_state, sats, parent_id, author_pubkey, event_id, nostr_event, content_fp, goal_sats,
            fiat_usd, fiat_chf, fiat_eur, fiat_php, photo_taken_at, video_taken_at,
            place_lat, place_lng, place_label,
-           goal_currency, goal_amount, goal_fiat_usd, goal_fiat_chf, goal_fiat_eur, goal_fiat_php, goal_repayable, goal_term_days
+           goal_currency, goal_amount, goal_fiat_usd, goal_fiat_chf, goal_fiat_eur, goal_fiat_php, goal_repayable, goal_term_days,
+           shop_account_id
          ) VALUES (
            $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14::jsonb,$15,$16,
            $17::numeric,$18::numeric,$19::numeric,$20::numeric,$21,$22,$23,$24,$25,
-           $26,$27::numeric,$28::numeric,$29::numeric,$30::numeric,$31::numeric,$32,$33
+           $26,$27::numeric,$28::numeric,$29::numeric,$30::numeric,$31::numeric,$32,$33,$34
          )`,
           params,
         );
@@ -4811,14 +5019,49 @@ export class PostgresMessageStore implements MessageStore {
     return rows[0] !== undefined;
   }
 
-  async setPlace(id: string, place: ForumPlace | null): Promise<boolean> {
+  async setPlace(id: string, place: ForumPlace | null, edit?: MessageEditRow): Promise<boolean> {
+    const lat = place === null ? null : place.lat;
+    const lng = place === null ? null : place.lng;
+    const label = place === null ? null : place.label;
+    if (edit === undefined) {
+      const rows = await this.#sql.query<{ id: string }>(
+        `UPDATE message SET place_lat = $2, place_lng = $3, place_label = $4 WHERE id = $1 RETURNING id`,
+        [id, lat, lng, label],
+      );
+      return rows[0] !== undefined;
+    }
     const rows = await this.#sql.query<{ id: string }>(
-      `UPDATE message SET place_lat = $2, place_lng = $3, place_label = $4 WHERE id = $1 RETURNING id`,
+      `WITH locked AS (
+         SELECT id, place_lat, place_lng, place_label FROM message WHERE id = $1 FOR UPDATE
+       ), updated AS (
+         UPDATE message SET place_lat = $2, place_lng = $3, place_label = $4
+         FROM locked
+         WHERE message.id = locked.id
+           AND (
+             locked.place_lat IS DISTINCT FROM $2
+             OR locked.place_lng IS DISTINCT FROM $3
+             OR locked.place_label IS DISTINCT FROM $4
+           )
+         RETURNING message.id
+       ), inserted AS (
+         INSERT INTO message_edit (id, message_id, actor_id, created_at, field, before, after)
+         SELECT $5, locked.id, $6, $7, $8, $9::jsonb, $10::jsonb
+         FROM locked
+         WHERE EXISTS (SELECT 1 FROM updated)
+         RETURNING id
+       )
+       SELECT id FROM message WHERE id = (SELECT id FROM locked)`,
       [
         id,
-        place === null ? null : place.lat,
-        place === null ? null : place.lng,
-        place === null ? null : place.label,
+        lat,
+        lng,
+        label,
+        edit.id,
+        edit.actorId,
+        edit.createdAt,
+        edit.field,
+        JSON.stringify(edit.before),
+        JSON.stringify(edit.after),
       ],
     );
     return rows[0] !== undefined;
@@ -4827,12 +5070,87 @@ export class PostgresMessageStore implements MessageStore {
   async setShopAccount(
     id: string,
     account: { id: string; username: string; name: string } | null,
+    edit?: MessageEditRow,
   ): Promise<boolean> {
+    const accountId = account === null ? null : account.id;
+    if (edit === undefined) {
+      const rows = await this.#sql.query<{ id: string }>(
+        `UPDATE message SET shop_account_id = $2 WHERE id = $1 RETURNING id`,
+        [id, accountId],
+      );
+      return rows[0] !== undefined;
+    }
     const rows = await this.#sql.query<{ id: string }>(
-      `UPDATE message SET shop_account_id = $2 WHERE id = $1 RETURNING id`,
-      [id, account === null ? null : account.id],
+      `WITH locked AS (
+         SELECT id, shop_account_id FROM message WHERE id = $1 FOR UPDATE
+       ), updated AS (
+         UPDATE message SET shop_account_id = $2
+         FROM locked
+         WHERE message.id = locked.id AND locked.shop_account_id IS DISTINCT FROM $2
+         RETURNING message.id
+       ), inserted AS (
+         INSERT INTO message_edit (id, message_id, actor_id, created_at, field, before, after)
+         SELECT $3, locked.id, $4, $5, $6, $7::jsonb, $8::jsonb
+         FROM locked
+         WHERE EXISTS (SELECT 1 FROM updated)
+         RETURNING id
+       )
+       SELECT id FROM message WHERE id = (SELECT id FROM locked)`,
+      [
+        id,
+        accountId,
+        edit.id,
+        edit.actorId,
+        edit.createdAt,
+        edit.field,
+        JSON.stringify(edit.before),
+        JSON.stringify(edit.after),
+      ],
     );
     return rows[0] !== undefined;
+  }
+
+  async appendEdit(row: MessageEditRow): Promise<void> {
+    await this.#sql.execute(
+      `INSERT INTO message_edit (id, message_id, actor_id, created_at, field, before, after)
+       VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7::jsonb)`,
+      [
+        row.id,
+        row.messageId,
+        row.actorId,
+        row.createdAt,
+        row.field,
+        JSON.stringify(row.before),
+        JSON.stringify(row.after),
+      ],
+    );
+  }
+
+  async listEdits(messageId: string): Promise<MessageEditRow[]> {
+    const rows = await this.#sql.query<{
+      id: string;
+      message_id: string;
+      actor_id: string;
+      created_at: Date | string;
+      field: string;
+      before: unknown;
+      after: unknown;
+    }>(
+      `SELECT id, message_id, actor_id, created_at, field, before, after
+       FROM message_edit
+       WHERE message_id = $1
+       ORDER BY created_at DESC, id DESC`,
+      [messageId],
+    );
+    return rows.map((row) => ({
+      id: row.id,
+      messageId: row.message_id,
+      actorId: row.actor_id,
+      createdAt: new Date(row.created_at),
+      field: mapEditField(row.field),
+      before: readStoredEditJson(row.before, mapEditField(row.field)),
+      after: readStoredEditJson(row.after, mapEditField(row.field)),
+    }));
   }
 
   /**
@@ -5061,13 +5379,52 @@ export class PostgresMessageStore implements MessageStore {
     );
   }
 
-  async updateText(id: string, text: string): Promise<MessageRow | undefined> {
-    const rows = await this.#sql.query<MessageSqlRow>(
-      `UPDATE message SET text = $2 WHERE id = $1 RETURNING ${MESSAGE_SELECT_COLUMNS}`,
-      [id, text],
+  async updateText(
+    id: string,
+    text: string,
+    edit?: MessageEditRow,
+  ): Promise<MessageRow | undefined> {
+    if (edit === undefined) {
+      const rows = await this.#sql.query<MessageSqlRow>(
+        `UPDATE message SET text = $2 WHERE id = $1 RETURNING ${MESSAGE_SELECT_COLUMNS}`,
+        [id, text],
+      );
+      const row = rows[0];
+      return row === undefined ? undefined : mapMessageRow(row);
+    }
+    const rows = await this.#sql.query<{ id: string }>(
+      `WITH locked AS (
+         SELECT id, text FROM message WHERE id = $1 FOR UPDATE
+       ), updated AS (
+         UPDATE message SET text = $2
+         FROM locked
+         WHERE message.id = locked.id AND locked.text IS DISTINCT FROM $2
+         RETURNING message.id
+       ), inserted AS (
+         INSERT INTO message_edit (id, message_id, actor_id, created_at, field, before, after)
+         SELECT $3, locked.id, $4, $5, $6, $7::jsonb, $8::jsonb
+         FROM locked
+         WHERE EXISTS (SELECT 1 FROM updated)
+         RETURNING id
+       )
+       SELECT id FROM locked`,
+      [
+        id,
+        text,
+        edit.id,
+        edit.actorId,
+        edit.createdAt,
+        edit.field,
+        JSON.stringify(edit.before),
+        JSON.stringify(edit.after),
+      ],
     );
-    const row = rows[0];
-    return row === undefined ? undefined : mapMessageRow(row);
+    // The write and this read are separate statements. One statement cannot
+    // see its own UPDATE, so the returned text would still be the old body.
+    if (rows[0] === undefined) {
+      return undefined;
+    }
+    return this.getById(id);
   }
 
   async updatePhoto(id: string, photo: ForumPhoto | null): Promise<MessageRow | undefined> {
@@ -5082,6 +5439,61 @@ export class PostgresMessageStore implements MessageStore {
     );
     const row = rows[0];
     return row === undefined ? undefined : mapMessageRow(row);
+  }
+
+  async replacePhotos(id: string, photos: readonly ForumPhoto[]): Promise<MessageRow | undefined> {
+    const kept = photos.slice(0, 10);
+    const first = kept[0];
+    const extras = kept.slice(1);
+    const params: unknown[] = [
+      id,
+      first === undefined ? null : first.bytes,
+      first === undefined ? null : first.contentType,
+      first === undefined || typeof first.takenAt !== 'string' ? null : first.takenAt,
+    ];
+    const slots: string[] = [];
+    for (let index = 0; index < 9; index += 1) {
+      const extra = extras[index];
+      const base = 5 + index * 3;
+      slots.push(`(${index + 1}, $${base}::bytea, $${base + 1}::text, $${base + 2})`);
+      params.push(
+        extra === undefined ? null : extra.bytes,
+        extra === undefined ? null : extra.contentType,
+        extra === undefined || typeof extra.takenAt !== 'string' ? null : extra.takenAt,
+      );
+    }
+    params.push(kept.length - 1);
+    const rows = await this.#sql.query<{ id: string }>(
+      `WITH updated AS (
+         UPDATE message
+         SET photo = $2, photo_content_type = $3, photo_taken_at = $4
+         WHERE id = $1
+         RETURNING id
+       ), upserted AS (
+         INSERT INTO message_extra_photo (message_id, idx, photo, photo_content_type, photo_taken_at)
+         SELECT updated.id, v.idx, v.photo, v.content_type, v.taken_at
+         FROM updated
+         JOIN (VALUES ${slots.join(', ')}) AS v(idx, photo, content_type, taken_at)
+           ON v.photo IS NOT NULL
+         ON CONFLICT (message_id, idx) DO UPDATE
+         SET photo = EXCLUDED.photo,
+             photo_content_type = EXCLUDED.photo_content_type,
+             photo_taken_at = EXCLUDED.photo_taken_at
+         RETURNING message_id
+       ), removed AS (
+         DELETE FROM message_extra_photo AS extra
+         USING updated
+         WHERE extra.message_id = updated.id AND extra.idx > $32
+         RETURNING extra.message_id
+       )
+       SELECT id FROM updated`,
+      params,
+    );
+    // Same statement cannot see the new stills. Read them afterwards.
+    if (rows[0] === undefined) {
+      return undefined;
+    }
+    return this.getById(id);
   }
 
   async updateSignedEvent(
