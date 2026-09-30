@@ -42,6 +42,7 @@ import {
 } from '@/lib/message';
 import {
   textHasHashtagToken,
+  type MessageEditRow,
   type MessageFeedQuery,
   type MessageInvoiceAttempt,
   type MessageInvoiceResult,
@@ -343,6 +344,37 @@ async function resolveDeletedBy(
   return deleter === undefined
     ? { id: row.deletedBy, name: null, role: null }
     : { id: deleter.id, name: deleter.name, role: deleter.role };
+}
+
+/**
+ * Keep `#21GiftsShop` on an already-normalised shop-note body.
+ * Empty text becomes the tag alone (photo/video-only notes).
+ */
+function ensureShopNoteTag(text: string): string {
+  if (textHasHashtagToken(text, '21GiftsShop')) {
+    return text;
+  }
+  return text === '' ? '#21GiftsShop' : `${text}\n\n#21GiftsShop`;
+}
+
+/**
+ * Whether two shop-account snapshots are the same assignment.
+ * Both absent matches. One absent does not. Only the account id counts.
+ */
+function shopAccountsMatch(
+  a: { id: string; username: string; name: string } | null | undefined,
+  b: { id: string; username: string; name: string } | null,
+): boolean {
+  const left = a ?? null;
+  if (left === null || b === null) {
+    return left === b;
+  }
+  return left.id === b.id;
+}
+
+/** Public JSON `field` for one history row. */
+function publicEditField(field: MessageEditRow['field']): 'text' | 'place' | 'shopAccount' {
+  return field === 'shop_account' ? 'shopAccount' : field;
 }
 
 /** Hex UUID as stored on `message.id` (rejects values Postgres would error on). */
@@ -748,6 +780,59 @@ async function frozenAskResponse(
 }
 
 /**
+ * Resolve an optional shop username before a note is created.
+ *
+ * Omitted, null, blank, or only `@` means no assignment. A non-blank value
+ * is only valid on a top-level shop note. Unknown and unusable handles fail
+ * before `persistForumPost`.
+ *
+ * @param deps - Auth store used for the username lookup.
+ * @param text - Normalised note body.
+ * @param parentId - Reply parent, or null for a top-level note.
+ * @param raw - JSON or multipart `shopUsername`, or undefined when omitted.
+ * @returns The account snapshot, null when unset, or a 400/404 error.
+ */
+async function postedShopAccount(
+  deps: MessagesRouteDeps,
+  text: string,
+  parentId: string | null,
+  raw: unknown,
+): Promise<
+  | { ok: true; snapshot: { id: string; username: string; name: string } | null }
+  | { ok: false; status: 400 | 404; error: string }
+> {
+  if (raw === undefined || raw === null) {
+    return { ok: true, snapshot: null };
+  }
+  if (typeof raw !== 'string') {
+    return { ok: false, status: 400, error: 'Username is not valid' };
+  }
+  const trimmed = raw.trim().replace(/^@/, '');
+  if (trimmed === '') {
+    return { ok: true, snapshot: null };
+  }
+  if (parentId !== null || !textHasHashtagToken(text, '21GiftsShop')) {
+    return { ok: false, status: 400, error: 'Only a shop note can set a shop account' };
+  }
+  const normalized = normalizeUsername(trimmed);
+  if (normalized === null) {
+    return { ok: false, status: 400, error: 'Username is not valid' };
+  }
+  const found = await deps.authStore.getAccountByUsername(normalized);
+  if (found === undefined) {
+    return { ok: false, status: 404, error: 'No account with that username' };
+  }
+  const storedUsername = found.username;
+  if (typeof storedUsername !== 'string' || storedUsername.trim() === '') {
+    return { ok: false, status: 404, error: 'No account with that username' };
+  }
+  return {
+    ok: true,
+    snapshot: { id: found.id, username: storedUsername, name: found.name ?? '' },
+  };
+}
+
+/**
  * Media collapse → burst limiter → create → optional {@link notifyForumPost}
  * (every account except the actor; no-op when the actor is the official
  * platform account) for a top-level note, or {@link notifyForumReply} (same
@@ -769,6 +854,9 @@ async function frozenAskResponse(
  *   replies store null.
  * @param place - Optional map pin for a top-level note. Default `null`.
  *   Stored as `null` when `parentId` is set.
+ * @param shopAccount - Optional shop assignment for a new top-level shop
+ *   note. Default `null`. Stored on the same insert as the note. Not applied
+ *   on a media replay, and not written as edit history.
  * @returns 200 / 403 (unpaid text-only below verified) / 409 (same live
  *   media, different pin) / 429 / 503.
  */
@@ -785,6 +873,7 @@ async function persistForumPost(
   extraPhotos?: readonly ForumPhoto[],
   goal: FrozenAsk = NO_ASK,
   place: ForumPlace | null = null,
+  shopAccount: { id: string; username: string; name: string } | null = null,
 ): Promise<Response> {
   const extras = video !== undefined ? [] : [...(extraPhotos ?? [])];
   if (photo !== undefined || video !== undefined) {
@@ -858,6 +947,7 @@ async function persistForumPost(
     goalAmountEur: parentId === null ? goal.goalAmountEur : null,
     goalAmountPhp: parentId === null ? goal.goalAmountPhp : null,
     place: parentId === null ? place : null,
+    ...(parentId === null && shopAccount !== null ? { shopAccount } : {}),
   };
   try {
     const created =
@@ -970,20 +1060,21 @@ async function persistForumPost(
         logEvent('messages.mention.notify.failed');
       }
     }
+    const published = created;
     if (!isReplay) {
       await recordFirstShopOcpPlace({
         ...(deps.mapPush === undefined ? {} : { mapPush: deps.mapPush }),
-        messageId: created.id,
-        text: created.text,
-        parentId: created.parentId ?? null,
-        place: created.place ?? null,
-        authorName: created.name,
+        messageId: published.id,
+        text: published.text,
+        parentId: published.parentId ?? null,
+        place: published.place ?? null,
+        authorName: published.name,
         hadPlaceBefore: false,
         textHasHashtagToken,
       });
     }
     return c.json(
-      serializeMessage(created, payableOf(created, account), account.role, undefined, true),
+      serializeMessage(published, payableOf(published, account), account.role, undefined, true),
       200,
     );
   } catch (err) {
@@ -1115,6 +1206,16 @@ async function postMultipartMessage(
   if (!termed.ok) {
     return c.json({ error: termed.error }, 400);
   }
+  const rawShop = form.get('shopUsername');
+  const shopParsed = await postedShopAccount(
+    deps,
+    text,
+    null,
+    rawShop === null ? undefined : rawShop,
+  );
+  if (!shopParsed.ok) {
+    return c.json({ error: shopParsed.error }, shopParsed.status);
+  }
   return persistForumPost(
     deps,
     postLimiter,
@@ -1128,6 +1229,7 @@ async function postMultipartMessage(
     undefined,
     termed.goal,
     place,
+    shopParsed.snapshot,
   );
 }
 
@@ -1142,6 +1244,7 @@ const postBody = z
     goalRepayable: z.unknown().nullish(),
     goalTermDays: z.unknown().nullish(),
     place: z.unknown().nullish(),
+    shopUsername: z.unknown().nullish(),
     photo: z
       .object({
         contentType: z.string(),
@@ -1230,8 +1333,9 @@ const translateBody = z.object({
  * @returns A Hono app with `GET /`, `POST /`, `GET /compose-target`,
  * `GET /places`, `GET /:id/photo` plus `.jpg` / `.jpeg` / `.png` / `.webp`,
  * `GET /:id/video.mp4|.webm|.mov`, public `GET /:id/replies` (`accountId` when
- * the stored author id is non-null), `DELETE /:id`, staff `PATCH /:id/place` and
- * staff `PATCH /:id/shop-account` (moderator session; no `forum.read`),
+ * the stored author id is non-null), `DELETE /:id`, staff `PATCH /:id/place`,
+ * staff `PATCH /:id/shop-account`, staff `PATCH /:id/text`, staff
+ * `PATCH /:id/photos`, and staff `GET /:id/edits` (moderator session; no `forum.read`),
  * staff `GET /hidden` (moderator session; no `forum.read`), public
  * `GET /:id` (optional `?sinceSats=`), and
  * `POST /:id/invoice`, `POST /:id/translate`, and public `GET /stats`.
@@ -1617,6 +1721,10 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
       if (!termed.ok) {
         return c.json({ error: termed.error }, 400);
       }
+      const shopParsed = await postedShopAccount(deps, text, parentId, parsed.data.shopUsername);
+      if (!shopParsed.ok) {
+        return c.json({ error: shopParsed.error }, shopParsed.status);
+      }
       return persistForumPost(
         deps,
         postLimiter,
@@ -1630,6 +1738,7 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
         extraPhotos.length > 0 ? extraPhotos : undefined,
         termed.goal,
         place,
+        shopParsed.snapshot,
       );
     })
     .get('/compose-target', async (c) => {
@@ -1851,7 +1960,18 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
           return c.json({ error: 'Only a shop note can set a place' }, 400);
         }
         const hadPlaceBefore = row.place !== null && row.place !== undefined;
-        const written = await deps.store.setPlace(id, parsed.value);
+        const placeChanged = !placesMatch(row.place ?? null, parsed.value);
+        const written = placeChanged
+          ? await deps.store.setPlace(id, parsed.value, {
+              id: crypto.randomUUID(),
+              messageId: id,
+              actorId: account.id,
+              createdAt: new Date(deps.now()),
+              field: 'place',
+              before: row.place ?? null,
+              after: parsed.value,
+            })
+          : await deps.store.setPlace(id, parsed.value);
         if (!written) {
           return c.json({ error: 'Not found' }, 404);
         }
@@ -1957,7 +2077,18 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
             name: found.name ?? '',
           };
         }
-        const written = await deps.store.setShopAccount(id, snapshot);
+        const accountChanged = !shopAccountsMatch(row.shopAccount, snapshot);
+        const written = accountChanged
+          ? await deps.store.setShopAccount(id, snapshot, {
+              id: crypto.randomUUID(),
+              messageId: id,
+              actorId: account.id,
+              createdAt: new Date(deps.now()),
+              field: 'shop_account',
+              before: row.shopAccount ?? null,
+              after: snapshot,
+            })
+          : await deps.store.setShopAccount(id, snapshot);
         if (!written) {
           return c.json({ error: 'Not found' }, 404);
         }
@@ -1987,6 +2118,233 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
         );
       } catch {
         logEvent('messages.shop_account.failed');
+        return c.json({ error: 'Messages are unavailable' }, 503);
+      }
+    })
+    .patch('/:id/text', async (c) => {
+      const account = await authedAccount(deps, c.req.header('authorization'));
+      if (account === null) {
+        return c.json({ error: 'Unauthorized' }, 401);
+      }
+      if (!roleAtLeast(account.role, 'moderator')) {
+        return c.json({ error: 'Forbidden' }, 403);
+      }
+      const id = c.req.param('id');
+      if (!MESSAGE_ID_RE.test(id)) {
+        return c.json({ error: 'Not found' }, 404);
+      }
+      const raw: unknown = await c.req.json().catch(() => null);
+      if (
+        raw === null ||
+        typeof raw !== 'object' ||
+        Array.isArray(raw) ||
+        !Object.prototype.hasOwnProperty.call(raw, 'text') ||
+        typeof (raw as { text: unknown }).text !== 'string'
+      ) {
+        return c.json({ error: 'Invalid body' }, 400);
+      }
+      const normalized = normalizeForumText((raw as { text: string }).text);
+      if (normalized === null) {
+        return c.json({ error: `Text must be 1–${MESSAGE_MAX_LENGTH} characters` }, 400);
+      }
+      try {
+        const row = await deps.store.getById(id);
+        if (row === undefined || row.deletedAt !== null) {
+          return c.json({ error: 'Not found' }, 404);
+        }
+        if (row.parentId !== null) {
+          return c.json({ error: 'A reply cannot be edited' }, 400);
+        }
+        if (!textHasHashtagToken(row.text, '21GiftsShop')) {
+          return c.json({ error: 'Only a shop note can be edited' }, 400);
+        }
+        if (normalized === '' && !row.hasPhoto && row.hasVideo !== true) {
+          return c.json(
+            { error: `Text must be 1–${MESSAGE_MAX_LENGTH} characters or include a photo` },
+            400,
+          );
+        }
+        const ensured = ensureShopNoteTag(normalized);
+        if (ensured.length > MESSAGE_MAX_LENGTH) {
+          return c.json({ error: `Text must be 1–${MESSAGE_MAX_LENGTH} characters` }, 400);
+        }
+        if (ensured === row.text) {
+          const author =
+            row.accountId === null ? undefined : await deps.authStore.getAccount(row.accountId);
+          const payable = row.accountId === null ? false : payableOf(row, author);
+          const role = row.accountId === null ? undefined : (author?.role ?? 'basis');
+          return c.json(
+            serializeMessage(row, payable, role, await deps.store.countAttributedReplies(row.id)),
+            200,
+          );
+        }
+        const written = await deps.store.updateText(id, ensured, {
+          id: crypto.randomUUID(),
+          messageId: id,
+          actorId: account.id,
+          createdAt: new Date(deps.now()),
+          field: 'text',
+          before: row.text,
+          after: ensured,
+        });
+        if (written === undefined) {
+          return c.json({ error: 'Not found' }, 404);
+        }
+        const updated = await deps.store.getById(id);
+        if (updated === undefined) {
+          return c.json({ error: 'Not found' }, 404);
+        }
+        const author =
+          updated.accountId === null
+            ? undefined
+            : await deps.authStore.getAccount(updated.accountId);
+        const payable = updated.accountId === null ? false : payableOf(updated, author);
+        const role = updated.accountId === null ? undefined : (author?.role ?? 'basis');
+        logEvent('messages.text.updated', {
+          messageId: id,
+          accountId: account.id,
+          role: account.role,
+        });
+        return c.json(
+          serializeMessage(
+            updated,
+            payable,
+            role,
+            await deps.store.countAttributedReplies(updated.id),
+          ),
+          200,
+        );
+      } catch {
+        logEvent('messages.text.failed');
+        return c.json({ error: 'Messages are unavailable' }, 503);
+      }
+    })
+    .patch('/:id/photos', async (c) => {
+      const account = await authedAccount(deps, c.req.header('authorization'));
+      if (account === null) {
+        return c.json({ error: 'Unauthorized' }, 401);
+      }
+      if (!roleAtLeast(account.role, 'moderator')) {
+        return c.json({ error: 'Forbidden' }, 403);
+      }
+      const id = c.req.param('id');
+      if (!MESSAGE_ID_RE.test(id)) {
+        return c.json({ error: 'Not found' }, 404);
+      }
+      const raw: unknown = await c.req.json().catch(() => null);
+      if (
+        raw === null ||
+        typeof raw !== 'object' ||
+        Array.isArray(raw) ||
+        !Object.prototype.hasOwnProperty.call(raw, 'photos') ||
+        !Array.isArray((raw as { photos: unknown }).photos)
+      ) {
+        return c.json({ error: 'Invalid body' }, 400);
+      }
+      const listed = (raw as { photos: unknown[] }).photos;
+      if (listed.length > 10) {
+        return c.json({ error: 'At most 10 photos' }, 400);
+      }
+      const decoded: ForumPhoto[] = [];
+      for (const item of listed) {
+        if (
+          item === null ||
+          typeof item !== 'object' ||
+          Array.isArray(item) ||
+          typeof (item as { contentType?: unknown }).contentType !== 'string' ||
+          typeof (item as { data?: unknown }).data !== 'string'
+        ) {
+          return c.json({ error: 'Photo must be a JPEG, PNG, or WebP under 1 MiB' }, 400);
+        }
+        const photo = item as { contentType: string; data: string; takenAt?: unknown };
+        const next = decodeForumPhoto(photo.contentType, photo.data);
+        if (next === null) {
+          return c.json({ error: 'Photo must be a JPEG, PNG, or WebP under 1 MiB' }, 400);
+        }
+        next.takenAt = normalizePhotoTakenAt(photo.takenAt);
+        decoded.push(next);
+      }
+      try {
+        const row = await deps.store.getById(id);
+        if (row === undefined || row.deletedAt !== null) {
+          return c.json({ error: 'Not found' }, 404);
+        }
+        if (row.parentId !== null) {
+          return c.json({ error: 'A reply cannot be edited' }, 400);
+        }
+        if (!textHasHashtagToken(row.text, '21GiftsShop')) {
+          return c.json({ error: 'Only a shop note can be edited' }, 400);
+        }
+        const written = await deps.store.replacePhotos(id, decoded);
+        if (written === undefined) {
+          return c.json({ error: 'Not found' }, 404);
+        }
+        const author =
+          written.accountId === null
+            ? undefined
+            : await deps.authStore.getAccount(written.accountId);
+        const payable = written.accountId === null ? false : payableOf(written, author);
+        const role = written.accountId === null ? undefined : (author?.role ?? 'basis');
+        logEvent('messages.photos.updated', {
+          messageId: id,
+          accountId: account.id,
+          role: account.role,
+        });
+        return c.json(
+          serializeMessage(
+            written,
+            payable,
+            role,
+            await deps.store.countAttributedReplies(written.id),
+          ),
+          200,
+        );
+      } catch {
+        logEvent('messages.photos.failed');
+        return c.json({ error: 'Messages are unavailable' }, 503);
+      }
+    })
+    .get('/:id/edits', async (c) => {
+      const account = await authedAccount(deps, c.req.header('authorization'));
+      if (account === null) {
+        return c.json({ error: 'Unauthorized' }, 401);
+      }
+      if (!roleAtLeast(account.role, 'moderator')) {
+        return c.json({ error: 'Forbidden' }, 403);
+      }
+      const id = c.req.param('id');
+      if (!MESSAGE_ID_RE.test(id)) {
+        return c.json({ error: 'Not found' }, 404);
+      }
+      try {
+        const row = await deps.store.getById(id);
+        if (
+          row === undefined ||
+          row.parentId !== null ||
+          !textHasHashtagToken(row.text, '21GiftsShop')
+        ) {
+          return c.json({ error: 'Not found' }, 404);
+        }
+        const rows = await deps.store.listEdits(id);
+        const edits = [];
+        for (const item of rows) {
+          const actor = await deps.authStore.getAccount(item.actorId);
+          edits.push({
+            id: item.id,
+            createdAt: item.createdAt.toISOString(),
+            field: publicEditField(item.field),
+            before: item.before,
+            after: item.after,
+            actor:
+              actor === undefined
+                ? { id: item.actorId, name: null, role: null }
+                : { id: actor.id, name: actor.name, role: actor.role },
+          });
+        }
+        logEvent('messages.edits.listed', { messageId: id, count: edits.length });
+        return c.json({ edits }, 200);
+      } catch {
+        logEvent('messages.edits.failed');
         return c.json({ error: 'Messages are unavailable' }, 503);
       }
     })
@@ -2053,6 +2411,7 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
               lat: row.lat,
               lng: row.lng,
               label: row.label,
+              shop: row.shop,
               ...(row.accountId === null ? {} : { accountId: row.accountId }),
             })),
           },
