@@ -352,7 +352,7 @@ export interface ConversationStore {
    * @param accountId - Session account.
    * @param staff - Moderator (sees all platform threads).
    * @param platformId - Official platform account id, or `null` when none.
-   * @param moderator - When true, include `moderator_group` (same as GET list).
+   * @param moderator - When true, include `moderator_group`.
    * @returns Number of listed unread threads.
    */
   unreadCount(
@@ -959,12 +959,15 @@ export class InMemoryConversationStore implements ConversationStore {
   }
 
   /**
-   * Count listed unread threads for this viewer (GET list rules).
+   * Count listed unread threads for this viewer.
+   * Does not keep a thread only because its latest message is from the
+   * viewer. The number still matches GET `/conversations` `unreadCount`
+   * because those extra rows are unread false.
    *
    * @param accountId - Session account.
    * @param staff - Moderator.
    * @param platformId - Official platform account id, or `null`.
-   * @param moderator - When true, include `moderator_group` (same as GET list).
+   * @param moderator - When true, include `moderator_group`.
    * @returns Listed unread count.
    */
   unreadCount(
@@ -1579,12 +1582,15 @@ export class PostgresConversationStore implements ConversationStore {
   }
 
   /**
-   * Count listed unread threads for this viewer (GET list rules).
+   * Count listed unread threads for this viewer.
+   * Does not keep a thread only because its latest message is from the
+   * viewer. The number still matches GET `/conversations` `unreadCount`
+   * because those extra rows are unread false.
    *
    * @param accountId - Session account.
    * @param staff - Moderator.
    * @param platformId - Official platform account id, or `null`.
-   * @param moderator - When true, include `moderator_group` (same as GET list).
+   * @param moderator - When true, include `moderator_group`.
    * @returns Listed unread count.
    */
   unreadCount(
