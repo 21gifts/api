@@ -85,6 +85,9 @@ const SHOP_CATEGORY = 'shopping';
 /** Fixed payment methods for forum shop pins. */
 const SHOP_PAYMENT_METHODS = 'lightning';
 
+/** Cap for one process-start walk of existing shop pins. */
+const EXISTING_SHOP_PLACE_LIMIT = 1000;
+
 /** Validated body posted to `POST /map/places`. */
 export type OcpPlaceInput = {
   origin: string;
@@ -272,6 +275,31 @@ export function shopOcpPlaceInput(
 }
 
 /**
+ * POST one shop place. Failures are logged as `ocp.place.failed` and swallowed.
+ *
+ * @param mapPush - Configured map target.
+ * @param input - Validated ingest body.
+ */
+async function postShopPlace(mapPush: MapPush, input: OcpPlaceInput): Promise<void> {
+  try {
+    const response = await mapPush.fetchImpl(`${mapPush.baseUrl}/map/places`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${mapPush.token}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(input),
+      signal: AbortSignal.timeout(5_000),
+    });
+    if (!response.ok) {
+      logEvent('ocp.place.failed');
+    }
+  } catch {
+    logEvent('ocp.place.failed');
+  }
+}
+
+/**
  * Post a shop pin to the OpenCryptoPay map the first time it is set.
  *
  * Only when `parentId` is null, the text contains `#21GiftsShop`, a pin is
@@ -302,20 +330,63 @@ export async function recordFirstShopOcpPlace(opts: {
     return;
   }
   const mapPush = opts.mapPush;
+  await postShopPlace(mapPush, shopOcpPlaceInput(opts.messageId, opts.place, opts.authorName));
+}
+
+type ExistingShopNote = {
+  id: string;
+  text: string;
+  name: string;
+  parentId: string | null;
+  place?: ForumPlace | null;
+  deletedAt?: Date | null;
+};
+
+/**
+ * POST each existing live top-level shop pin to the OpenCryptoPay map.
+ *
+ * A missing map push does nothing. Replies, hidden notes, notes without a
+ * pin, and notes without the shop tag are skipped. Create-once means a later
+ * 200 is success. BTC Map is not called here. Failures are logged as
+ * `ocp.place.failed` and swallowed.
+ *
+ * @param opts - Optional map push, listed pin ids, row loader, and hashtag check.
+ */
+export async function publishExistingShopPlaces(opts: {
+  mapPush?: MapPush;
+  listPlaces: (limit: number) => Promise<ReadonlyArray<{ id: string }>>;
+  getById: (id: string) => Promise<ExistingShopNote | undefined>;
+  textHasHashtagToken: (text: string, name: string) => boolean;
+}): Promise<void> {
+  if (opts.mapPush === undefined) {
+    return;
+  }
+  const mapPush = opts.mapPush;
+  let listed: ReadonlyArray<{ id: string }>;
   try {
-    const response = await mapPush.fetchImpl(`${mapPush.baseUrl}/map/places`, {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${mapPush.token}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify(shopOcpPlaceInput(opts.messageId, opts.place, opts.authorName)),
-      signal: AbortSignal.timeout(5_000),
-    });
-    if (!response.ok) {
-      logEvent('ocp.place.failed');
-    }
+    listed = await opts.listPlaces(EXISTING_SHOP_PLACE_LIMIT);
   } catch {
     logEvent('ocp.place.failed');
+    return;
+  }
+  for (const item of listed) {
+    let row: ExistingShopNote | undefined;
+    try {
+      row = await opts.getById(item.id);
+    } catch {
+      logEvent('ocp.place.failed');
+      continue;
+    }
+    if (
+      row === undefined ||
+      row.parentId !== null ||
+      (row.deletedAt !== null && row.deletedAt !== undefined) ||
+      row.place === null ||
+      row.place === undefined ||
+      !opts.textHasHashtagToken(row.text, SHOP_HASHTAG)
+    ) {
+      continue;
+    }
+    await postShopPlace(mapPush, shopOcpPlaceInput(row.id, row.place, row.name));
   }
 }
