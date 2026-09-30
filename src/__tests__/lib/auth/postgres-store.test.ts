@@ -503,9 +503,16 @@ describe('PostgresAuthStore', () => {
     const found = await store.listAccountsByUsernamePrefix('a_b', 20);
     const text = sql.queries[0]?.text ?? '';
     expect(found).toEqual([{ id: 'acc', username: 'A_b', name: 'Ada' }]);
-    expect(sql.queries[0]?.params).toEqual(['a\\_b%', 20]);
+    expect(sql.queries[0]?.params).toEqual(['a\\_b', 20, '1']);
     expect(text).toContain('LIKE');
     expect(text).toContain(`ESCAPE '\\'`);
+    expect(text).toContain("$1 = ''");
+    expect(text).toContain("$3 = '0'");
+    expect(text).toContain("coalesce(name, '')");
+    expect(text).toContain("'%-'");
+    expect(text).toContain("'%.'");
+    expect(text).toContain("'% '");
+    expect(text).toContain("'%\\_'");
     expect(text).toContain('username IS NOT NULL');
     expect(text).toContain("trim(username) <> ''");
     expect(text).toContain('ORDER BY lower(trim(username)) ASC, id::text ASC');
@@ -517,12 +524,16 @@ describe('PostgresAuthStore', () => {
     expect(text).not.toMatch(/npub/i);
   });
 
-  it('lists accounts by username prefix with an empty prefix as %', async () => {
+  it('lists accounts by username prefix with an empty prefix as an empty string', async () => {
     const sql = new MockSql();
     sql.nextRows = [];
     const store = new PostgresAuthStore(sql);
     expect(await store.listAccountsByUsernamePrefix('', 20)).toEqual([]);
-    expect(sql.queries[0]?.params).toEqual(['%', 20]);
+    expect(sql.queries[0]?.params).toEqual(['', 20, '0']);
+    await store.listAccountsByUsernamePrefix('sev', 20);
+    expect(sql.queries[1]?.params).toEqual(['sev', 20, '0']);
+    await store.listAccountsByUsernamePrefix('a-b', 20);
+    expect(sql.queries[2]?.params).toEqual(['a-b', 20, '1']);
   });
 
   it('escapes % and backslash in the mention LIKE pattern', async () => {
@@ -530,9 +541,11 @@ describe('PostgresAuthStore', () => {
     const store = new PostgresAuthStore(sql);
     sql.nextRows = [];
     await store.listAccountsByUsernamePrefix('100%', 20);
-    expect(sql.queries[0]?.params[0]).toBe('100\\%%');
+    expect(sql.queries[0]?.params[0]).toBe('100\\%');
+    expect(sql.queries[0]?.params[2]).toBe('0');
     await store.listAccountsByUsernamePrefix('a\\b', 20);
-    expect(sql.queries[1]?.params[0]).toBe('a\\\\b%');
+    expect(sql.queries[1]?.params[0]).toBe('a\\\\b');
+    expect(sql.queries[1]?.params[2]).toBe('0');
   });
 
   it('falls back to the stored username when name is null or blank', async () => {

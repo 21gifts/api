@@ -1039,6 +1039,7 @@ describe('InMemoryAuthStore', () => {
     await store.createAccount({
       ...base,
       id: 'bob',
+      name: 'Bob',
       username: 'bob',
       viewKey: '2'.repeat(64),
     });
@@ -1048,7 +1049,7 @@ describe('InMemoryAuthStore', () => {
     expect(await store.listAccountsByUsernamePrefix('zz', 20)).toEqual([]);
     expect(await store.listAccountsByUsernamePrefix('', 20)).toEqual([
       { id: 'ada', username: 'Ada', name: 'Ada' },
-      { id: 'bob', username: 'bob', name: 'Ada' },
+      { id: 'bob', username: 'bob', name: 'Bob' },
     ]);
   });
 
@@ -1164,6 +1165,45 @@ describe('InMemoryAuthStore', () => {
     });
     expect(await store.listAccountsByUsernamePrefix('a_', 20)).toEqual([
       { id: 'a_b', username: 'a_b', name: 'Ada' },
+    ]);
+  });
+
+  it('listAccountsByUsernamePrefix matches a username segment or display-name word', async () => {
+    const store = new InMemoryAuthStore();
+    const base = {
+      linkingKey: null as string | null,
+      role: 'basis' as const,
+      location: null as string | null,
+      lightningAddress: null as string | null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      createdAt: 1,
+      rulesAgreedAt: null as number | null,
+    };
+    await store.createAccount({
+      ...base,
+      id: 'abbot',
+      username: 'abbot',
+      name: 'Pater Severin',
+      viewKey: 'a'.repeat(64),
+    });
+    await store.createAccount({
+      ...base,
+      id: 'padre',
+      username: 'padre',
+      name: 'Reserve',
+      viewKey: 'b'.repeat(64),
+    });
+    await store.createAccount({
+      ...base,
+      id: 'pater',
+      username: 'pater-severin',
+      name: 'Pater Severin',
+      viewKey: 'c'.repeat(64),
+    });
+    expect(await store.listAccountsByUsernamePrefix('sev', 20)).toEqual([
+      { id: 'abbot', username: 'abbot', name: 'Pater Severin' },
+      { id: 'pater', username: 'pater-severin', name: 'Pater Severin' },
     ]);
   });
 

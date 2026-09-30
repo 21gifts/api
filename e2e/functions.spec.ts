@@ -258,6 +258,13 @@ test('Function: mentionQueryPrefix — GET /mentions without bearer is 401', asy
   expect(res.status()).toBe(401);
 });
 
+test('Function: mentionAccountMatches — GET /mentions without bearer is 401', async ({
+  request,
+}) => {
+  const res = await request.get('/mentions');
+  expect(res.status()).toBe(401);
+});
+
 test('Function: mentionsRoutes — GET /mentions without bearer is 401', async ({ request }) => {
   const res = await request.get('/mentions');
   expect(res.status()).toBe(401);
