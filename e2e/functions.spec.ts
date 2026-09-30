@@ -1048,6 +1048,10 @@ test('Function: debugPaymentsRoutes — GET /debug/invoices without bearer is 40
   expect(invoices.status()).toBe(401);
   const ingests = await request.get('/debug/zap-ingests');
   expect(ingests.status()).toBe(401);
+  const spendPing = await request.post('/debug/spend-ping', {
+    data: { messageId: '00000000-0000-4000-8000-000000000000' },
+  });
+  expect(spendPing.status()).toBe(401);
 });
 
 test('Function: settleInvoiceManually — POST /debug/invoices/settle without bearer is 401', async ({

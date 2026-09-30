@@ -51,7 +51,7 @@ api/
 │   │   ├── debug-db.ts       # GET /debug/db (operator DEBUG_TOKEN; every public table)
 │   │   ├── debug-external.ts # GET /debug/external-pubkeys (operator DEBUG_TOKEN)
 │   │   ├── debug-messages.ts # GET /debug/messages, GET /:id, GET /:id/photo; PUT /:id/video; POST /:id/restore (operator DEBUG_TOKEN)
-│   │   ├── debug-payments.ts # GET /debug/invoices; POST /debug/invoices/settle; GET /debug/zap-ingests (DEBUG_TOKEN)
+│   │   ├── debug-payments.ts # GET /debug/invoices; POST /debug/invoices/settle; POST /debug/spend-ping; GET /debug/zap-ingests (DEBUG_TOKEN)
 │   │   ├── debug-push.ts     # POST /debug/push-ping (operator DEBUG_TOKEN)
 │   │   ├── debug-trust.ts    # GET/POST/DELETE /debug/trust-edges (operator DEBUG_TOKEN; no role change)
 │   │   ├── debug-catalog.ts  # GET /debug/dump, GET /debug/dump/:table (operator DEBUG_TOKEN)
