@@ -220,16 +220,17 @@ Enrollment happens on a device that can already unlock the seed. Order:
    whole enrollment.
 3. The owner builds one SLIP-39 set locally and encrypts each share to the
    verified pubkey. Plaintext shares exist only in that device's memory.
-4. Each guardian's device stores the ciphertext **locally**, decrypts it once,
-   checks that the SLIP-39 identifier matches the set the owner just committed
-   to, discards the plaintext, and signs a readable-proof with the same
-   guardian key. Enrollment is incomplete until every guardian has done this.
-   The local copy is what still exists if this service disappears.
-5. The owner uploads the `n` ciphertexts, `t`, `n`, and the SLIP-39 identifier.
+4. The owner reconstructs the entropy from those local shares and derives the
+   `npub`. If it does not match the account, enrollment stops. No guardian
+   receives a share, and nothing is uploaded.
+5. Each guardian's device stores the ciphertext **locally**, decrypts it once,
+   checks that the SLIP-39 identifier matches the set the owner just built,
+   discards the plaintext, and signs a readable-proof with the same guardian
+   key. Enrollment is incomplete until every guardian has done this. The local
+   copy is what still exists if this service disappears.
+6. The owner uploads the `n` ciphertexts, `t`, `n`, and the SLIP-39 identifier.
    The api stores them against the owner and the guardian accounts. It cannot
    read them.
-6. The owner reconstructs from the local shares before uploading, derives the
-   `npub`, and aborts with no upload if it does not match the account.
 
 The readable-proof message is UTF-8
 
@@ -495,7 +496,7 @@ the rule that a disappeared service must not take the key with it.
 draft (15 min, no account)
         │ bind by username or by a guardian's short code
         ▼
-     pending
+     pending ────── owner passkey cancel, or device abandon, or sibling completed ──► cancelled
         │ 48h elapsed, and t approvals if mode is friends
         ▼
       ready ────── owner passkey cancel, or device abandon, or sibling completed ──► cancelled
