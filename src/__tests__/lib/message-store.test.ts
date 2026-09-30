@@ -2610,6 +2610,15 @@ describe('InMemoryMessageStore', () => {
       'place',
       'text',
     ]);
+    const renamed = { id: 'shop-acc', username: 'luna-new', name: 'Cafe Luna' };
+    await store.setShopAccount('a', renamed, {
+      ...accountEdit,
+      id: 'e-rename',
+      before: account,
+      after: renamed,
+    });
+    expect((await store.listEdits('a')).map((item) => item.id)).not.toContain('e-rename');
+    expect((await store.getById('a'))?.shopAccount).toEqual(renamed);
   });
 
   it('pads a listed photo that has no stored capture time', async () => {
@@ -6895,12 +6904,14 @@ describe('PostgresMessageStore', () => {
       after: 'next',
     });
     expect(edited?.text).toBe('next');
-    const history = sql.queries.at(-1);
+    const history = sql.queries[2];
     expect(history?.text).toMatch(/FOR UPDATE/);
     expect(history?.text).toMatch(/locked\.text IS DISTINCT FROM \$2/);
     expect(history?.text).toMatch(/INSERT INTO message_edit/);
+    expect(history?.text).not.toMatch(/AS has_photo/);
     expect(history?.params?.[2]).toBe('e1');
-    expect(sql.queries).toHaveLength(3);
+    expect(sql.queries[3]?.text).toMatch(/FROM message WHERE id = \$1/);
+    expect(sql.queries).toHaveLength(4);
     expect(sql.executes).toEqual([]);
     sql.nextRows = [];
     expect(
@@ -7050,7 +7061,7 @@ describe('PostgresMessageStore', () => {
       nostr_publish_state: 'published',
       sats: 21,
     };
-    sql.queryQueue = [[row]];
+    sql.queryQueue = [[{ id: 'm1' }], [row]];
     const store = new PostgresMessageStore(sql);
     const updated = await store.replacePhotos('m1', [
       { ...JPEG, takenAt: '2020-01-01T00:00:00+00:00' },
@@ -7058,13 +7069,14 @@ describe('PostgresMessageStore', () => {
       { ...JPEG2, takenAt: '2020-01-02T00:00:00+00:00' },
     ]);
     expect(updated?.id).toBe('m1');
+    expect(updated?.photoCount).toBe(2);
     expect(sql.executes).toEqual([]);
-    expect(sql.queries).toHaveLength(1);
+    expect(sql.queries).toHaveLength(2);
     const statement = sql.queries[0]?.text ?? '';
     expect(statement).toMatch(/UPDATE message\s+SET photo = \$2/);
-    expect(statement.slice(0, statement.indexOf('SELECT id, account_id'))).not.toMatch(
-      /video_content_type/,
-    );
+    expect(statement).not.toMatch(/AS has_photo/);
+    expect(statement).toMatch(/SELECT id FROM updated/);
+    expect(sql.queries[1]?.text).toMatch(/FROM message WHERE id = \$1/);
     expect(statement).toMatch(/ON CONFLICT \(message_id, idx\) DO UPDATE/);
     expect(statement).toMatch(/extra\.idx > \$32/);
     expect(statement.indexOf('UPDATE message')).toBeLessThan(
@@ -7077,11 +7089,12 @@ describe('PostgresMessageStore', () => {
     expect(sql.queries[0]?.params?.[6]).toBeNull();
     expect(sql.queries[0]?.params?.[9]).toBe('2020-01-02T00:00:00+00:00');
     expect(sql.queries[0]?.params?.at(-1)).toBe(2);
-    sql.queryQueue = [[row]];
+    sql.queryQueue = [[{ id: 'm1' }], [row]];
     const one = await store.replacePhotos('m1', [JPEG]);
     expect(one?.id).toBe('m1');
-    expect(sql.queries.at(-1)?.params?.[3]).toBeNull();
-    expect(sql.queries.at(-1)?.params?.at(-1)).toBe(0);
+    const oneWrite = sql.queries[2];
+    expect(oneWrite?.params?.[3]).toBeNull();
+    expect(oneWrite?.params?.at(-1)).toBe(0);
     const missed = new MockSql();
     missed.queryQueue = [[]];
     expect(await new PostgresMessageStore(missed).replacePhotos('m1', [])).toBeUndefined();

@@ -359,7 +359,7 @@ function ensureShopNoteTag(text: string): string {
 
 /**
  * Whether two shop-account snapshots are the same assignment.
- * Both absent matches. One absent does not.
+ * Both absent matches. One absent does not. Only the account id counts.
  */
 function shopAccountsMatch(
   a: { id: string; username: string; name: string } | null | undefined,
@@ -369,7 +369,7 @@ function shopAccountsMatch(
   if (left === null || b === null) {
     return left === b;
   }
-  return left.id === b.id && left.username === b.username && left.name === b.name;
+  return left.id === b.id;
 }
 
 /** Public JSON `field` for one history row. */

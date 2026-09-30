@@ -1902,7 +1902,10 @@ function cloneEditValue(value: unknown): unknown {
   return JSON.parse(JSON.stringify(value));
 }
 
-/** Whether two shop-account snapshots are the same assignment. */
+/**
+ * Whether two shop-account snapshots are the same assignment.
+ * Only the account id counts. A renamed username or display name is not a new assignment.
+ */
 function shopSnapshotsMatch(
   a: { id: string; username: string; name: string } | null | undefined,
   b: { id: string; username: string; name: string } | null,
@@ -1911,7 +1914,7 @@ function shopSnapshotsMatch(
   if (left === null || b === null) {
     return left === b;
   }
-  return left.id === b.id && left.username === b.username && left.name === b.name;
+  return left.id === b.id;
 }
 
 /** Copy one history row (cloned `createdAt` and jsonb values). */
@@ -5389,7 +5392,7 @@ export class PostgresMessageStore implements MessageStore {
       const row = rows[0];
       return row === undefined ? undefined : mapMessageRow(row);
     }
-    const rows = await this.#sql.query<MessageSqlRow>(
+    const rows = await this.#sql.query<{ id: string }>(
       `WITH locked AS (
          SELECT id, text FROM message WHERE id = $1 FOR UPDATE
        ), updated AS (
@@ -5404,7 +5407,7 @@ export class PostgresMessageStore implements MessageStore {
          WHERE EXISTS (SELECT 1 FROM updated)
          RETURNING id
        )
-       SELECT ${MESSAGE_SELECT_COLUMNS} FROM message WHERE id = (SELECT id FROM locked)`,
+       SELECT id FROM locked`,
       [
         id,
         text,
@@ -5416,8 +5419,12 @@ export class PostgresMessageStore implements MessageStore {
         JSON.stringify(edit.after),
       ],
     );
-    const row = rows[0];
-    return row === undefined ? undefined : mapMessageRow(row);
+    // The write and this read are separate statements. One statement cannot
+    // see its own UPDATE, so the returned text would still be the old body.
+    if (rows[0] === undefined) {
+      return undefined;
+    }
+    return this.getById(id);
   }
 
   async updatePhoto(id: string, photo: ForumPhoto | null): Promise<MessageRow | undefined> {
@@ -5456,7 +5463,7 @@ export class PostgresMessageStore implements MessageStore {
       );
     }
     params.push(kept.length - 1);
-    const rows = await this.#sql.query<MessageSqlRow>(
+    const rows = await this.#sql.query<{ id: string }>(
       `WITH updated AS (
          UPDATE message
          SET photo = $2, photo_content_type = $3, photo_taken_at = $4
@@ -5479,13 +5486,14 @@ export class PostgresMessageStore implements MessageStore {
          WHERE extra.message_id = updated.id AND extra.idx > $32
          RETURNING extra.message_id
        )
-       SELECT ${MESSAGE_SELECT_COLUMNS}
-       FROM message
-       WHERE id = (SELECT id FROM updated)`,
+       SELECT id FROM updated`,
       params,
     );
-    const row = rows[0];
-    return row === undefined ? undefined : mapMessageRow(row);
+    // Same statement cannot see the new stills. Read them afterwards.
+    if (rows[0] === undefined) {
+      return undefined;
+    }
+    return this.getById(id);
   }
 
   async updateSignedEvent(

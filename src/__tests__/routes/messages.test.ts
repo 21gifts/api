@@ -11960,6 +11960,21 @@ describe('PATCH /messages/:id/text and GET /messages/:id/edits', () => {
       },
     );
     expect(sameAccount.status).toBe(200);
+    const luna = await auth.getAccount('shop-acc');
+    expect(luna).toBeDefined();
+    await auth.updateAccount({ ...luna!, name: 'Cafe Luna' });
+    const renamed = await mount(auth, messages).request('/messages/' + SHOP_ID + '/shop-account', {
+      method: 'PATCH',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ username: 'luna' }),
+    });
+    expect(renamed.status).toBe(200);
+    expect(((await renamed.json()) as { shopAccount?: { name?: string } }).shopAccount?.name).toBe(
+      'Cafe Luna',
+    );
+    expect(
+      (await messages.listEdits(SHOP_ID)).filter((row) => row.field === 'shop_account'),
+    ).toHaveLength(1);
     const clearAccount = await mount(auth, messages).request(
       '/messages/' + SHOP_ID + '/shop-account',
       {
