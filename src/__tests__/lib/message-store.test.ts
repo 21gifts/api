@@ -1069,7 +1069,7 @@ describe('InMemoryMessageStore', () => {
     expect(await store.listEdits('m2')).toHaveLength(1);
   });
 
-  it('create leaves shopAccount null and copyRow copies a snapshot', async () => {
+  it('create keeps a top-level shop account and copyRow copies a snapshot', async () => {
     const seeded = new InMemoryMessageStore([
       EARLY,
       {
@@ -1094,7 +1094,12 @@ describe('InMemoryMessageStore', () => {
       id: 'created-shop',
       shopAccount: { id: 'a', username: 'ada', name: 'Ada' },
     });
-    expect((await store.getById('created-shop'))?.shopAccount).toBeNull();
+    const createdShop = await store.getById('created-shop');
+    expect(createdShop?.shopAccount).toEqual({ id: 'a', username: 'ada', name: 'Ada' });
+    if (createdShop?.shopAccount) {
+      createdShop.shopAccount.name = 'mutated';
+    }
+    expect((await store.getById('created-shop'))?.shopAccount?.name).toBe('Ada');
   });
 
   it('replyCount and worker scans omit soft-deleted rows', async () => {
@@ -2535,6 +2540,76 @@ describe('InMemoryMessageStore', () => {
     expect(cleared?.hasPhoto).toBe(false);
     expect(cleared?.photoCount).toBe(0);
     expect(await store.listExtraPhotos('a')).toEqual([]);
+  });
+
+  it('create keeps a top-level shop account and clears one on a reply', async () => {
+    const store = new InMemoryMessageStore();
+    const account = { id: 'shop-acc', username: 'luna', name: 'Luna' };
+    const shop = await store.create({
+      ...EARLY,
+      id: 'shop',
+      text: 'Cafe #21GiftsShop',
+      shopAccount: account,
+    });
+    expect(shop.shopAccount).toEqual(account);
+    const reply = await store.create({
+      ...EARLY,
+      id: 'reply',
+      parentId: 'shop',
+      shopAccount: account,
+    });
+    expect(reply.shopAccount).toBeNull();
+  });
+
+  it('writes text, place, and shop-account history only when the value changes', async () => {
+    const store = new InMemoryMessageStore();
+    await store.create({ ...EARLY, text: 'Cafe #21GiftsShop' });
+    const textEdit = {
+      id: 'e-text',
+      messageId: 'a',
+      actorId: 'staff',
+      createdAt: new Date('2026-08-02T00:00:00.000Z'),
+      field: 'text' as const,
+      before: 'Cafe #21GiftsShop',
+      after: 'Cafe Sol #21GiftsShop',
+    };
+    expect(await store.updateText('missing', 'x', textEdit)).toBeUndefined();
+    expect(await store.listEdits('a')).toEqual([]);
+    await store.updateText('a', 'Cafe #21GiftsShop', textEdit);
+    expect(await store.listEdits('a')).toEqual([]);
+    await store.updateText('a', 'Cafe Sol #21GiftsShop', textEdit);
+    expect((await store.listEdits('a')).map((item) => item.id)).toEqual(['e-text']);
+    const placeEdit = {
+      id: 'e-place',
+      messageId: 'a',
+      actorId: 'staff',
+      createdAt: new Date('2026-08-03T00:00:00.000Z'),
+      field: 'place' as const,
+      before: null,
+      after: { lat: 1, lng: 2, label: 'Luna' },
+    };
+    expect(await store.setPlace('missing', null, placeEdit)).toBe(false);
+    await store.setPlace('a', null, placeEdit);
+    expect(await store.listEdits('a')).toHaveLength(1);
+    await store.setPlace('a', { lat: 1, lng: 2, label: 'Luna' }, placeEdit);
+    const account = { id: 'shop-acc', username: 'luna', name: 'Luna' };
+    const accountEdit = {
+      id: 'e-shop',
+      messageId: 'a',
+      actorId: 'staff',
+      createdAt: new Date('2026-08-04T00:00:00.000Z'),
+      field: 'shop_account' as const,
+      before: null,
+      after: account,
+    };
+    expect(await store.setShopAccount('missing', account, accountEdit)).toBe(false);
+    await store.setShopAccount('a', null, accountEdit);
+    await store.setShopAccount('a', account, accountEdit);
+    expect((await store.listEdits('a')).map((item) => item.field)).toEqual([
+      'shop_account',
+      'place',
+      'text',
+    ]);
   });
 
   it('pads a listed photo that has no stored capture time', async () => {
@@ -5057,10 +5132,10 @@ describe('PostgresMessageStore', () => {
     };
     const created = await store.create(row);
     expect(sql.executes[0]?.text).toMatch(
-      /INSERT INTO message \(\s*id, account_id, name, text, photo, photo_content_type, video_content_type, created_at,\s*nostr_publish_state, sats, parent_id, author_pubkey, event_id, nostr_event, content_fp, goal_sats,\s*fiat_usd, fiat_chf, fiat_eur, fiat_php, photo_taken_at, video_taken_at,\s*place_lat, place_lng, place_label,\s*goal_currency, goal_amount, goal_fiat_usd, goal_fiat_chf, goal_fiat_eur, goal_fiat_php, goal_repayable, goal_term_days\s*\)/,
+      /INSERT INTO message \(\s*id, account_id, name, text, photo, photo_content_type, video_content_type, created_at,\s*nostr_publish_state, sats, parent_id, author_pubkey, event_id, nostr_event, content_fp, goal_sats,\s*fiat_usd, fiat_chf, fiat_eur, fiat_php, photo_taken_at, video_taken_at,\s*place_lat, place_lng, place_label,\s*goal_currency, goal_amount, goal_fiat_usd, goal_fiat_chf, goal_fiat_eur, goal_fiat_php, goal_repayable, goal_term_days,\s*shop_account_id\s*\)/,
     );
     expect(sql.executes[0]?.text).toMatch(
-      /\$14::jsonb,\$15,\$16,\s*\$17::numeric,\$18::numeric,\$19::numeric,\$20::numeric,\$21,\$22,\$23,\$24,\$25,\s*\$26,\$27::numeric,\$28::numeric,\$29::numeric,\$30::numeric,\$31::numeric,\$32,\$33/,
+      /\$14::jsonb,\$15,\$16,\s*\$17::numeric,\$18::numeric,\$19::numeric,\$20::numeric,\$21,\$22,\$23,\$24,\$25,\s*\$26,\$27::numeric,\$28::numeric,\$29::numeric,\$30::numeric,\$31::numeric,\$32,\$33,\$34/,
     );
     expect(sql.executes[0]?.text).not.toMatch(/ON CONFLICT/i);
     expect(sql.executes[0]?.params).toEqual([
@@ -5097,8 +5172,9 @@ describe('PostgresMessageStore', () => {
       null,
       null,
       null,
+      null,
     ]);
-    expect(sql.executes[0]?.params).toHaveLength(33);
+    expect(sql.executes[0]?.params).toHaveLength(34);
     expect(created.id).toBe(row.id);
     expect(created.hasVideo).toBe(false);
     expect(created.goalSats).toBeNull();
@@ -5134,6 +5210,7 @@ describe('PostgresMessageStore', () => {
       null,
       null,
       null,
+      null,
     ]);
   });
 
@@ -5153,6 +5230,7 @@ describe('PostgresMessageStore', () => {
     const created = await store.create(row);
     expect(sql.executes[0]?.params[15]).toBe(21000);
     expect(sql.executes[0]?.params.slice(16)).toEqual([
+      null,
       null,
       null,
       null,
@@ -5315,10 +5393,10 @@ describe('PostgresMessageStore', () => {
     const created = await store.create(row);
     expect(sql.executes).toEqual([]);
     expect(sql.queries[0]?.text).toMatch(
-      /INSERT INTO message \(\s*id, account_id, name, text, photo, photo_content_type, video_content_type, created_at,\s*nostr_publish_state, sats, parent_id, author_pubkey, event_id, nostr_event, content_fp, goal_sats,\s*fiat_usd, fiat_chf, fiat_eur, fiat_php, photo_taken_at, video_taken_at,\s*place_lat, place_lng, place_label,\s*goal_currency, goal_amount, goal_fiat_usd, goal_fiat_chf, goal_fiat_eur, goal_fiat_php, goal_repayable, goal_term_days\s*\)/,
+      /INSERT INTO message \(\s*id, account_id, name, text, photo, photo_content_type, video_content_type, created_at,\s*nostr_publish_state, sats, parent_id, author_pubkey, event_id, nostr_event, content_fp, goal_sats,\s*fiat_usd, fiat_chf, fiat_eur, fiat_php, photo_taken_at, video_taken_at,\s*place_lat, place_lng, place_label,\s*goal_currency, goal_amount, goal_fiat_usd, goal_fiat_chf, goal_fiat_eur, goal_fiat_php, goal_repayable, goal_term_days,\s*shop_account_id\s*\)/,
     );
     expect(sql.queries[0]?.text).toMatch(
-      /SELECT \$1,\$2,\$3,\$4,\$5,\$6,\$7,\$8,\$9,\$10,\$11,\$12,\$13,\$14::jsonb,\$15,\$16,\s*\$17::numeric,\$18::numeric,\$19::numeric,\$20::numeric,\$21,\$22,\$23,\$24,\$25,\s*\$26,\$27::numeric,\$28::numeric,\$29::numeric,\$30::numeric,\$31::numeric,\$32,\$33/,
+      /SELECT \$1,\$2,\$3,\$4,\$5,\$6,\$7,\$8,\$9,\$10,\$11,\$12,\$13,\$14::jsonb,\$15,\$16,\s*\$17::numeric,\$18::numeric,\$19::numeric,\$20::numeric,\$21,\$22,\$23,\$24,\$25,\s*\$26,\$27::numeric,\$28::numeric,\$29::numeric,\$30::numeric,\$31::numeric,\$32,\$33,\$34/,
     );
     expect(sql.queries[0]?.text).toMatch(
       /WHERE EXISTS \(SELECT 1 FROM message p WHERE p\.id = \$11 AND p\.deleted_at IS NULL\)/,
@@ -5359,8 +5437,9 @@ describe('PostgresMessageStore', () => {
       null,
       null,
       null,
+      null,
     ]);
-    expect(sql.queries[0]?.params).toHaveLength(33);
+    expect(sql.queries[0]?.params).toHaveLength(34);
     expect(created.id).toBe('child-1');
     expect(created.parentId).toBe('parent-1');
   });
@@ -5383,6 +5462,7 @@ describe('PostgresMessageStore', () => {
     const created = await store.create(row);
     expect(sql.queries[0]?.params[15]).toBeNull();
     expect(sql.queries[0]?.params.slice(16)).toEqual([
+      null,
       null,
       null,
       null,
@@ -5437,6 +5517,7 @@ describe('PostgresMessageStore', () => {
       null,
       null,
       null,
+      null,
     ]);
     expect(created.place).toEqual({ lat: 47.3, lng: 8.5, label: 'Zürich' });
   });
@@ -5458,6 +5539,7 @@ describe('PostgresMessageStore', () => {
     };
     const created = await store.create(row);
     expect(sql.queries[0]?.params.slice(16)).toEqual([
+      null,
       null,
       null,
       null,
@@ -6792,6 +6874,114 @@ describe('PostgresMessageStore', () => {
     expect(sql.queries[0]?.params).toEqual(['m1', 'bio']);
     sql.nextRows = [];
     expect(await store.updateText('missing', 'x')).toBeUndefined();
+    sql.nextRows = [
+      {
+        id: 'm1',
+        account_id: 'acc',
+        name: 'Ada',
+        text: 'next',
+        created_at: new Date(0),
+        has_photo: false,
+        sats: 21,
+      },
+    ];
+    const edited = await store.updateText('m1', 'next', {
+      id: 'e1',
+      messageId: 'm1',
+      actorId: 'staff',
+      createdAt: new Date(0),
+      field: 'text',
+      before: 'bio',
+      after: 'next',
+    });
+    expect(edited?.text).toBe('next');
+    const history = sql.queries.at(-1);
+    expect(history?.text).toMatch(/FOR UPDATE/);
+    expect(history?.text).toMatch(/locked\.text IS DISTINCT FROM \$2/);
+    expect(history?.text).toMatch(/INSERT INTO message_edit/);
+    expect(history?.params?.[2]).toBe('e1');
+    expect(sql.queries).toHaveLength(3);
+    expect(sql.executes).toEqual([]);
+    sql.nextRows = [];
+    expect(
+      await store.updateText('missing', 'gone', {
+        id: 'e-miss',
+        messageId: 'missing',
+        actorId: 'staff',
+        createdAt: new Date(0),
+        field: 'text',
+        before: 'bio',
+        after: 'gone',
+      }),
+    ).toBeUndefined();
+  });
+
+  it('setPlace and setShopAccount write history in the same statement', async () => {
+    const sql = new MockSql();
+    sql.nextRows = [{ id: 'm1' }];
+    const store = new PostgresMessageStore(sql);
+    const changed = await store.setPlace(
+      'm1',
+      { lat: 1, lng: 2, label: null },
+      {
+        id: 'e-place',
+        messageId: 'm1',
+        actorId: 'staff',
+        createdAt: new Date(0),
+        field: 'place',
+        before: null,
+        after: { lat: 1, lng: 2, label: null },
+      },
+    );
+    expect(changed).toBe(true);
+    expect(sql.queries[0]?.text).toMatch(/place_lat IS DISTINCT FROM \$2/);
+    expect(sql.queries[0]?.text).toMatch(/INSERT INTO message_edit/);
+    expect(sql.executes).toEqual([]);
+    sql.nextRows = [];
+    expect(
+      await store.setShopAccount('missing', null, {
+        id: 'e-shop',
+        messageId: 'missing',
+        actorId: 'staff',
+        createdAt: new Date(0),
+        field: 'shop_account',
+        before: { id: 'shop-acc', username: 'luna', name: 'Luna' },
+        after: null,
+      }),
+    ).toBe(false);
+    expect(sql.queries.at(-1)?.text).toMatch(/shop_account_id IS DISTINCT FROM \$2/);
+    expect(sql.queries.at(-1)?.text).toMatch(/INSERT INTO message_edit/);
+  });
+
+  it('create binds shop_account_id on a top-level note and null on a reply', async () => {
+    const sql = new MockSql();
+    const store = new PostgresMessageStore(sql);
+    const account = { id: 'shop-acc', username: 'luna', name: 'Luna' };
+    await store.create({
+      id: 'm1',
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'Cafe #21GiftsShop',
+      createdAt: new Date('2026-08-28T12:00:00.000Z'),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+      shopAccount: account,
+    });
+    expect(sql.executes[0]?.text).toMatch(/shop_account_id/);
+    expect(sql.executes[0]?.params?.[33]).toBe('shop-acc');
+    sql.nextRows = [{ id: 'child-shop' }];
+    await store.create({
+      id: 'child-shop',
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'reply',
+      createdAt: new Date('2026-08-28T12:00:00.000Z'),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+      parentId: 'parent-1',
+      shopAccount: account,
+    });
+    expect(sql.queries.at(-1)?.params?.[33]).toBeNull();
   });
 
   it('updatePhoto issues UPDATE … RETURNING and maps the row', async () => {
@@ -6846,7 +7036,7 @@ describe('PostgresMessageStore', () => {
     expect(await store.updatePhoto('missing', JPEG)).toBeUndefined();
   });
 
-  it('replacePhotos writes the new stills before it drops leftover extras', async () => {
+  it('replacePhotos writes the new stills and drops leftover extras in one statement', async () => {
     const sql = new MockSql();
     const row = {
       id: 'm1',
@@ -6860,7 +7050,7 @@ describe('PostgresMessageStore', () => {
       nostr_publish_state: 'published',
       sats: 21,
     };
-    sql.queryQueue = [[row], [row], [row]];
+    sql.queryQueue = [[row]];
     const store = new PostgresMessageStore(sql);
     const updated = await store.replacePhotos('m1', [
       { ...JPEG, takenAt: '2020-01-01T00:00:00+00:00' },
@@ -6868,33 +7058,47 @@ describe('PostgresMessageStore', () => {
       { ...JPEG2, takenAt: '2020-01-02T00:00:00+00:00' },
     ]);
     expect(updated?.id).toBe('m1');
-    expect(sql.queries[1]?.text).toMatch(/UPDATE message SET photo/);
-    expect(sql.queries[1]?.params?.[3]).toBe('2020-01-01T00:00:00+00:00');
-    expect(sql.executes[0]?.text).toMatch(/ON CONFLICT \(message_id, idx\) DO UPDATE/);
-    expect(sql.executes[0]?.params?.[4]).toBeNull();
-    expect(sql.executes[1]?.params?.[4]).toBe('2020-01-02T00:00:00+00:00');
-    expect(sql.executes[2]?.text).toMatch(/idx > \$2/);
-    expect(sql.executes[2]?.params).toEqual(['m1', 2]);
-    sql.queryQueue = [[row], [row], []];
-    const fallenBack = await store.replacePhotos('m1', [JPEG]);
-    expect(fallenBack?.id).toBe('m1');
-    expect(sql.queries.at(-2)?.params?.[3]).toBeNull();
-    expect(sql.executes.at(-1)?.params).toEqual(['m1', 0]);
+    expect(sql.executes).toEqual([]);
+    expect(sql.queries).toHaveLength(1);
+    const statement = sql.queries[0]?.text ?? '';
+    expect(statement).toMatch(/UPDATE message\s+SET photo = \$2/);
+    expect(statement.slice(0, statement.indexOf('SELECT id, account_id'))).not.toMatch(
+      /video_content_type/,
+    );
+    expect(statement).toMatch(/ON CONFLICT \(message_id, idx\) DO UPDATE/);
+    expect(statement).toMatch(/extra\.idx > \$32/);
+    expect(statement.indexOf('UPDATE message')).toBeLessThan(
+      statement.indexOf('INSERT INTO message_extra_photo'),
+    );
+    expect(statement.indexOf('INSERT INTO message_extra_photo')).toBeLessThan(
+      statement.indexOf('DELETE FROM message_extra_photo'),
+    );
+    expect(sql.queries[0]?.params?.[3]).toBe('2020-01-01T00:00:00+00:00');
+    expect(sql.queries[0]?.params?.[6]).toBeNull();
+    expect(sql.queries[0]?.params?.[9]).toBe('2020-01-02T00:00:00+00:00');
+    expect(sql.queries[0]?.params?.at(-1)).toBe(2);
+    sql.queryQueue = [[row]];
+    const one = await store.replacePhotos('m1', [JPEG]);
+    expect(one?.id).toBe('m1');
+    expect(sql.queries.at(-1)?.params?.[3]).toBeNull();
+    expect(sql.queries.at(-1)?.params?.at(-1)).toBe(0);
     const missed = new MockSql();
-    missed.queryQueue = [[row], []];
+    missed.queryQueue = [[]];
     expect(await new PostgresMessageStore(missed).replacePhotos('m1', [])).toBeUndefined();
     expect(missed.executes).toEqual([]);
+    expect(missed.queries[0]?.params?.at(-1)).toBe(-1);
+    expect(missed.queries[0]?.text).toMatch(/DELETE FROM message_extra_photo/);
     sql.queryQueue = [[]];
     expect(await store.replacePhotos('missing', [JPEG])).toBeUndefined();
     const failing = new MockSql();
-    failing.queryQueue = [[row], [row]];
-    failing.executeError = new Error('extra');
+    failing.queryError = new Error('extra');
     await expect(
       new PostgresMessageStore(failing).replacePhotos('m1', [JPEG, JPEG2]),
     ).rejects.toThrow('extra');
-    expect(failing.executes).toHaveLength(1);
-    expect(failing.executes[0]?.text).toMatch(/ON CONFLICT/);
-    expect(failing.executes.some((item) => item.text.includes('DELETE'))).toBe(false);
+    expect(failing.executes).toEqual([]);
+    expect(failing.queries).toHaveLength(1);
+    expect(failing.queries[0]?.text).toMatch(/ON CONFLICT/);
+    expect(failing.queries[0]?.text).toMatch(/DELETE FROM message_extra_photo/);
   });
 
   it('getById maps nostr_event JSON string', async () => {
@@ -8601,6 +8805,7 @@ describe('message fiat accumulator SQL', () => {
       null,
       null,
       null,
+      null,
     ]);
     sql.nextRows = [{ id: 'child-cur' }];
     await store.create({
@@ -8612,6 +8817,7 @@ describe('message fiat accumulator SQL', () => {
     });
     expect(sql.queries[0]?.params[15]).toBeNull();
     expect(sql.queries[0]?.params.slice(25)).toEqual([
+      null,
       null,
       null,
       null,

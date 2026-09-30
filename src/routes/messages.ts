@@ -855,8 +855,8 @@ async function postedShopAccount(
  * @param place - Optional map pin for a top-level note. Default `null`.
  *   Stored as `null` when `parentId` is set.
  * @param shopAccount - Optional shop assignment for a new top-level shop
- *   note. Default `null`. Not applied on a media replay, and not written
- *   as edit history.
+ *   note. Default `null`. Stored on the same insert as the note. Not applied
+ *   on a media replay, and not written as edit history.
  * @returns 200 / 403 (unpaid text-only below verified) / 409 (same live
  *   media, different pin) / 429 / 503.
  */
@@ -947,6 +947,7 @@ async function persistForumPost(
     goalAmountEur: parentId === null ? goal.goalAmountEur : null,
     goalAmountPhp: parentId === null ? goal.goalAmountPhp : null,
     place: parentId === null ? place : null,
+    ...(parentId === null && shopAccount !== null ? { shopAccount } : {}),
   };
   try {
     const created =
@@ -1059,18 +1060,7 @@ async function persistForumPost(
         logEvent('messages.mention.notify.failed');
       }
     }
-    let published = created;
-    if (!isReplay && shopAccount !== null) {
-      const written = await deps.store.setShopAccount(created.id, shopAccount);
-      if (!written) {
-        throw new Error('shop account was not stored');
-      }
-      const updated = await deps.store.getById(created.id);
-      if (updated === undefined) {
-        throw new Error('shop account was not stored');
-      }
-      published = updated;
-    }
+    const published = created;
     if (!isReplay) {
       await recordFirstShopOcpPlace({
         ...(deps.mapPush === undefined ? {} : { mapPush: deps.mapPush }),
@@ -1970,24 +1960,24 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
           return c.json({ error: 'Only a shop note can set a place' }, 400);
         }
         const hadPlaceBefore = row.place !== null && row.place !== undefined;
-        const written = await deps.store.setPlace(id, parsed.value);
+        const placeChanged = !placesMatch(row.place ?? null, parsed.value);
+        const written = placeChanged
+          ? await deps.store.setPlace(id, parsed.value, {
+              id: crypto.randomUUID(),
+              messageId: id,
+              actorId: account.id,
+              createdAt: new Date(deps.now()),
+              field: 'place',
+              before: row.place ?? null,
+              after: parsed.value,
+            })
+          : await deps.store.setPlace(id, parsed.value);
         if (!written) {
           return c.json({ error: 'Not found' }, 404);
         }
         const updated = await deps.store.getById(id);
         if (updated === undefined) {
           return c.json({ error: 'Not found' }, 404);
-        }
-        if (!placesMatch(row.place ?? null, parsed.value)) {
-          await deps.store.appendEdit({
-            id: crypto.randomUUID(),
-            messageId: id,
-            actorId: account.id,
-            createdAt: new Date(deps.now()),
-            field: 'place',
-            before: row.place ?? null,
-            after: parsed.value,
-          });
         }
         const author =
           updated.accountId === null
@@ -2087,24 +2077,24 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
             name: found.name ?? '',
           };
         }
-        const written = await deps.store.setShopAccount(id, snapshot);
+        const accountChanged = !shopAccountsMatch(row.shopAccount, snapshot);
+        const written = accountChanged
+          ? await deps.store.setShopAccount(id, snapshot, {
+              id: crypto.randomUUID(),
+              messageId: id,
+              actorId: account.id,
+              createdAt: new Date(deps.now()),
+              field: 'shop_account',
+              before: row.shopAccount ?? null,
+              after: snapshot,
+            })
+          : await deps.store.setShopAccount(id, snapshot);
         if (!written) {
           return c.json({ error: 'Not found' }, 404);
         }
         const updated = await deps.store.getById(id);
         if (updated === undefined) {
           return c.json({ error: 'Not found' }, 404);
-        }
-        if (!shopAccountsMatch(row.shopAccount, snapshot)) {
-          await deps.store.appendEdit({
-            id: crypto.randomUUID(),
-            messageId: id,
-            actorId: account.id,
-            createdAt: new Date(deps.now()),
-            field: 'shop_account',
-            before: row.shopAccount ?? null,
-            after: snapshot,
-          });
         }
         const author =
           updated.accountId === null
@@ -2188,11 +2178,7 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
             200,
           );
         }
-        const written = await deps.store.updateText(id, ensured);
-        if (written === undefined) {
-          return c.json({ error: 'Not found' }, 404);
-        }
-        await deps.store.appendEdit({
+        const written = await deps.store.updateText(id, ensured, {
           id: crypto.randomUUID(),
           messageId: id,
           actorId: account.id,
@@ -2201,6 +2187,9 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
           before: row.text,
           after: ensured,
         });
+        if (written === undefined) {
+          return c.json({ error: 'Not found' }, 404);
+        }
         const updated = await deps.store.getById(id);
         if (updated === undefined) {
           return c.json({ error: 'Not found' }, 404);

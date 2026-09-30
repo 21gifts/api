@@ -1269,6 +1269,7 @@ describe('POST /messages', () => {
     const auth = await namedStore('Ada');
     await withLuna(auth);
     const messages = new InMemoryMessageStore();
+    const setShop = vi.spyOn(messages, 'setShopAccount');
     const res = await mount(auth, messages).request('/messages', {
       method: 'POST',
       headers: { ...AUTH, 'content-type': 'application/json' },
@@ -1280,6 +1281,8 @@ describe('POST /messages', () => {
       shopAccount?: { id: string; username: string; name: string };
     };
     expect(created.shopAccount).toEqual({ id: 'shop-acc', username: 'luna', name: 'Luna' });
+    expect((await messages.getById(created.id))?.shopAccount).toEqual(created.shopAccount);
+    expect(setShop).not.toHaveBeenCalled();
     expect(await messages.listEdits(created.id)).toEqual([]);
   });
 
@@ -1433,11 +1436,11 @@ describe('POST /messages', () => {
     expect(await messages.listEdits(firstId)).toEqual([]);
   });
 
-  it('returns 503 when storing the shop account fails after create', async () => {
+  it('returns 503 and leaves no note when create throws', async () => {
     const auth = await namedStore('Ada');
     await withLuna(auth);
     const messages = new InMemoryMessageStore();
-    vi.spyOn(messages, 'setShopAccount').mockResolvedValue(false);
+    vi.spyOn(messages, 'create').mockRejectedValue(new Error('boom'));
     warn.mockClear();
     const res = await mount(auth, messages).request('/messages', {
       method: 'POST',
@@ -1449,33 +1452,7 @@ describe('POST /messages', () => {
     expect(parsedEvents(warn).some((event) => event['event'] === 'messages.create.failed')).toBe(
       true,
     );
-    expect((await messages.listLatest(10))[0]?.shopAccount).toBeNull();
-  });
-
-  it('returns 503 when the shop row disappears after the account write', async () => {
-    const auth = await namedStore('Ada');
-    await withLuna(auth);
-    const messages = new InMemoryMessageStore();
-    vi.spyOn(messages, 'getById').mockResolvedValue(undefined);
-    const res = await mount(auth, messages).request('/messages', {
-      method: 'POST',
-      headers: { ...AUTH, 'content-type': 'application/json' },
-      body: JSON.stringify({ text: 'Cafe #21GiftsShop', shopUsername: 'luna' }),
-    });
-    expect(res.status).toBe(503);
-  });
-
-  it('returns 503 when setShopAccount throws', async () => {
-    const auth = await namedStore('Ada');
-    await withLuna(auth);
-    const messages = new InMemoryMessageStore();
-    vi.spyOn(messages, 'setShopAccount').mockRejectedValue(new Error('boom'));
-    const res = await mount(auth, messages).request('/messages', {
-      method: 'POST',
-      headers: { ...AUTH, 'content-type': 'application/json' },
-      body: JSON.stringify({ text: 'Cafe #21GiftsShop', shopUsername: 'luna' }),
-    });
-    expect(res.status).toBe(503);
+    expect(await messages.listLatest(10)).toHaveLength(0);
   });
 
   it('assigns shopUsername from a multipart shop note', async () => {
@@ -3563,8 +3540,8 @@ describe('POST /messages', () => {
       deleteById: (id) => base.deleteById(id),
       markDeleted: (id, at, by) => base.markDeleted(id, at, by),
       markUndeleted: (id) => base.markUndeleted(id),
-      setPlace: (id, place) => base.setPlace(id, place),
-      setShopAccount: (id, account) => base.setShopAccount(id, account),
+      setPlace: (...args) => base.setPlace(...args),
+      setShopAccount: (...args) => base.setShopAccount(...args),
       appendEdit: (row) => base.appendEdit(row),
       listEdits: (messageId) => base.listEdits(messageId),
       getById: (id) => base.getById(id),
@@ -3578,7 +3555,7 @@ describe('POST /messages', () => {
       listSignedMissingVideo: (limit) => base.listSignedMissingVideo(limit),
       listSignedMissingHashtags: (limit) => base.listSignedMissingHashtags(limit),
       resetSignedEvent: (id, expected) => base.resetSignedEvent(id, expected),
-      updateText: (id, text) => base.updateText(id, text),
+      updateText: (...args) => base.updateText(...args),
       updatePhoto: (id, photo) => base.updatePhoto(id, photo),
       updateSignedEvent: (id, eventId, nostrEvent) =>
         base.updateSignedEvent(id, eventId, nostrEvent),
@@ -3687,8 +3664,8 @@ describe('POST /messages', () => {
       deleteById: (id) => base.deleteById(id),
       markDeleted: (id, at, by) => base.markDeleted(id, at, by),
       markUndeleted: (id) => base.markUndeleted(id),
-      setPlace: (id, place) => base.setPlace(id, place),
-      setShopAccount: (id, account) => base.setShopAccount(id, account),
+      setPlace: (...args) => base.setPlace(...args),
+      setShopAccount: (...args) => base.setShopAccount(...args),
       appendEdit: (row) => base.appendEdit(row),
       listEdits: (messageId) => base.listEdits(messageId),
       getById: (id) => base.getById(id),
@@ -3702,7 +3679,7 @@ describe('POST /messages', () => {
       listSignedMissingVideo: (limit) => base.listSignedMissingVideo(limit),
       listSignedMissingHashtags: (limit) => base.listSignedMissingHashtags(limit),
       resetSignedEvent: (id, expected) => base.resetSignedEvent(id, expected),
-      updateText: (id, text) => base.updateText(id, text),
+      updateText: (...args) => base.updateText(...args),
       updatePhoto: (id, photo) => base.updatePhoto(id, photo),
       updateSignedEvent: (id, eventId, nostrEvent) =>
         base.updateSignedEvent(id, eventId, nostrEvent),
@@ -5346,8 +5323,8 @@ describe('POST /messages/:id/invoice', () => {
       deleteById: (id) => base.deleteById(id),
       markDeleted: (id, at, by) => base.markDeleted(id, at, by),
       markUndeleted: (id) => base.markUndeleted(id),
-      setPlace: (id, place) => base.setPlace(id, place),
-      setShopAccount: (id, account) => base.setShopAccount(id, account),
+      setPlace: (...args) => base.setPlace(...args),
+      setShopAccount: (...args) => base.setShopAccount(...args),
       appendEdit: (row) => base.appendEdit(row),
       listEdits: (messageId) => base.listEdits(messageId),
       getByEventId: (id) => base.getByEventId(id),
@@ -11583,13 +11560,17 @@ describe('PATCH /messages/:id/text and GET /messages/:id/edits', () => {
     expect(parsedEvents(warn).some((event) => event['event'] === 'messages.text.failed')).toBe(
       true,
     );
+    const seen: unknown[][] = [];
     const historyFailed = await mount(
       auth,
       throwingStore({
         getById: async () => ({ ...row, text: 'Cafe\n\n#21GiftsShop' }),
-        updateText: async () => ({ ...row, text: 'Next\n\n#21GiftsShop' }),
-        appendEdit: async () => {
+        updateText: async (...args: unknown[]) => {
+          seen.push(args);
           throw new Error('boom');
+        },
+        appendEdit: async () => {
+          throw new Error('append should not run');
         },
       }),
     ).request('/messages/' + SHOP_ID + '/text', {
@@ -11598,6 +11579,7 @@ describe('PATCH /messages/:id/text and GET /messages/:id/edits', () => {
       body: JSON.stringify({ text: 'Next' }),
     });
     expect(historyFailed.status).toBe(503);
+    expect(seen[0]?.[2]).toMatchObject({ field: 'text', before: row.text });
     let reads = 0;
     const gone = await mount(
       auth,
@@ -11716,6 +11698,16 @@ describe('PATCH /messages/:id/text and GET /messages/:id/edits', () => {
         })
       ).status,
     ).toBe(400);
+    const missingPhoto = await patchPhotos(
+      auth,
+      '11111111-1111-4111-8111-111111111111',
+      { photos: [{ contentType: 'image/jpeg', data: 'not-a-photo' }] },
+      messages,
+    );
+    expect(missingPhoto.status).toBe(400);
+    expect(await missingPhoto.json()).toEqual({
+      error: 'Photo must be a JPEG, PNG, or WebP under 1 MiB',
+    });
     await messages.create({
       id: REPLY_ID,
       accountId: 'acc',
@@ -11730,6 +11722,16 @@ describe('PATCH /messages/:id/text and GET /messages/:id/edits', () => {
     expect(reply.status).toBe(400);
     expect(await reply.json()).toEqual({ error: 'A reply cannot be edited' });
     await messages.markDeleted(SHOP_ID, new Date(now()), 'acc');
+    const hiddenPhoto = await patchPhotos(
+      auth,
+      SHOP_ID,
+      { photos: [{ contentType: 'image/jpeg', data: 'not-a-photo' }] },
+      messages,
+    );
+    expect(hiddenPhoto.status).toBe(400);
+    expect(await hiddenPhoto.json()).toEqual({
+      error: 'Photo must be a JPEG, PNG, or WebP under 1 MiB',
+    });
     expect((await patchPhotos(auth, SHOP_ID, { photos: [] }, messages)).status).toBe(404);
     await messages.create({
       id: PLAIN_ID,
