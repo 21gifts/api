@@ -1,546 +1,446 @@
-# Social recovery of the seed
+# Securing the account
 
-Status: **concept only**. Decided 2026-09-29. Not implemented. No HTTP path in
+Status: **concept only**. Decided 2026-09-30. Not implemented. No HTTP path in
 this document is reserved. A later change that builds this adds its routes to
 `SPEC.md` in that same change. Nothing here changes runtime behaviour.
 
-This is the third recovery path named in `CONCEPT.md`. It applies only to the
-non-custodial phase, after an account holds one user-owned Nostr key derived
-from its seed. It does not migrate the v1 custodial `nsec`, and it does not
-decide Open Question #9.
+Recovery does two things, and nothing else:
+
+1. The same 21.gifts account opens on a new device.
+2. The same 12 seed words come back.
 
 ## Decision
 
-Friends replace the paper copy of the seed. They do not replace the phone, and
-they do not hold the passkey.
+The owner starts this. The owner is the account being secured. Person 1 and
+person 2 are the two chosen people. Those words are not interchangeable. It
+is not a side effect of being verified, and it is not required. The app
+offers **Mein Konto absichern**. The owner may ignore it. Sign-up, login,
+and every other use of the account work with no recovery set. Leaving the
+screen before two people are confirmed stores nothing.
 
-Daily login stays a passkey. Friends are involved only when the seed itself
-must be reconstructed. They act together, on purpose, and only toward the new
-device. One friend is not enough.
+When the owner continues, that screen explains the two results above, and
+that both chosen people are required. One person cannot reset the account.
+The owner then chooses exactly two people.
 
-The server stores ciphertext and account bookkeeping. It is not a guardian, not
-a co-decryptor, and not the source of the public keys that shares are encrypted
-to. If the encrypting device trusts a public key because the api returned it,
-the server is the recipient and can read every share. Ciphertext-only storage
-would then be false. That failure is forbidden below.
+If a moderator has verified the owner, that moderator is suggested as
+person 1. The suggestion is not fixed. The owner can replace it with
+someone else. Person 2 has no suggestion. If nobody has verified the
+owner, both slots start empty.
 
-## What is recovered
+Each chosen person's share stays on that person's phone. 21.gifts does not
+hold a share and cannot reset the account. The server may store a copy of
+a sealed share. It has no key to open one.
 
-The secret is the **128-bit BIP-39 entropy** that the client already derives
-and never sends:
+Both shares are required. There is no third share. A member threshold of 1
+cannot be stored. The SLIP-39 group threshold is 1 because there is one
+group, not because one share is enough.
 
-1. WebAuthn PRF `eval.first`, with salt = SHA-256 of the UTF-8 string
+Daily login stays a passkey. The passkey private key is not one of these
+shares and never leaves the authenticator. On the new device the recovered
+bytes do only the two things above: they authorize one new passkey for this
+account, and they are shown as the same 12 words.
+
+## Mein Konto absichern
+
+The action is offered to a signed-in owner. It is optional. Opening it
+does not create shares, and closing it does not either. The screen
+explains, in order:
+
+- Both people together can put this account on a new phone and bring back
+  the same 12 words.
+- One of them cannot.
+- The passkey used day to day stays on the owner's phone.
+- Nothing else is recovered or moved.
+
+The owner then picks the two people. Person 1 is prefilled with the
+moderator who verified them, when that trust edge exists. Changing person
+1 is a normal choice, not an extra step. The two people must be two
+different 21.gifts accounts, and neither may be the owner. An account
+that cannot log in cannot be chosen.
+
+Choosing the names is not enough, and it stores nothing. There is no set,
+and neither phone stores the ciphertext or the X25519 secret, until both
+readable-proofs are accepted. Those local copies and the owner's upload
+happen together. The set becomes **active** only when both copies are
+stored and that upload has created it. If either phone cannot store its
+copy, or the upload fails, both phones discard the ciphertext and the
+X25519 secret, and the server stores no set. That failure rule is for
+the first set. A failed replacement of a set that is already active
+leaves that set active. The active set becomes **inactive** only later,
+if one of those stored shares is gone. Inactive means a reset cannot
+start.
+
+## The 12 words
+
+The words are the phrase the phone already derives and never sends. When
+the owner continues past the explanation, their phone derives them again.
+It does not generate a new secret.
+
+1. WebAuthn PRF `eval.first`, salt = SHA-256 of the UTF-8 string
    `21gifts-nostr-v1`.
-2. HKDF-SHA-256, salt = UTF-8 `21gifts-seed-derivation`, info = UTF-8
-   `mnemonic-v1`, output length 128 bits.
+2. HKDF-SHA256, salt = UTF-8 `21gifts-seed-derivation`, info = UTF-8
+   `mnemonic-v1`, 128 bits.
+3. BIP-39 English, 12 words.
 
-Those 16 bytes are the master secret. BIP-39 English encoding of those bytes
-is the twelve-word phrase. The target identity, still client-side, is NIP-06:
-BIP-39 seed, then BIP-32 at `m/44'/1237'/0'/0/0`, then the secp256k1 Nostr key.
-The same 16 bytes are the root for any later wallet derived from that phrase.
+That derivation already exists. This document does not change it. The bytes
+are the backup phrase. They are not uploaded, and they are not used for
+anything besides the two results above.
 
-Social recovery reconstructs **those 16 bytes**. It does not create a new
-identity. After a correct reconstruction, the twelve words and the `npub` match
-what the original passkey's PRF produced.
+Before any share is given out, the phone reconstructs the shares locally
+and checks that BIP-39 of those bytes is the phrase it just derived. If
+not, it stops.
 
-`mnemonic-v1` is frozen. This concept does not change the salt, the info
-string, the length, or the PRF label.
+## What this does not do
 
-## What is not recovered
+Anything other than opening the account on a new device and restoring those
+words. The passkey private key is not split. A new passkey is a new door
+onto the same account. Deleting the old credential on the server stops the
+old passkey from logging in. It does not erase the secret inside a lost
+phone. The phrase is not replaced with different words. No balance is
+moved. Nothing is published. Verification is not changed, and it does not
+by itself create a share. Skipping **Mein Konto absichern** does not lock
+the account. An account with no set has no social reset. The passkey
+remains the only way in.
 
-- **The passkey.** The passkey private key never leaves the authenticator.
-  There is no share of it. A new passkey after recovery is a new door onto the
-  same seed. Its own `mnemonic-v1` output is a different seed and must not be
-  shown or used as the identity.
-- **The v1 custodial `nsec`.** The api generates that key and stores it
-  encrypted at rest. The client does not hold it, so friends cannot be given a
-  share of it. Forum history signed by the custodial key stays on that key
-  until the separate migration in Open Question #9. Recovery proves the
-  user-held `npub` only.
-- **Wallet of Satoshi.** The Lightning address is a string on the account, not
-  a key derived from the seed. Logging in again shows the same string. The
-  balance lives in that wallet's own custody. Friends do not recover it.
-- **A server session.** Sessions stay passkey-backed bearer tokens. Recovery
-  does not mint a session until a new passkey has been bound.
-- **Bitcoin held by 21.gifts.** The service does not hold it.
+## The two shares
 
-## Prerequisites
+One SLIP-39 group. Group count 1. Group threshold 1. Member count 2. Member
+threshold 2. Empty passphrase. Iteration exponent 0. The master secret is
+those 16 bytes. Reconstruction stops there, then BIP-39-encodes them. That
+encoding is the original 12 words. Do not run SLIP-39's conversion of the
+master secret into a BIP-32 seed. That would not be these words.
 
-All of the following are required before enrollment. If any is missing, the
-client stops. The server-side flags are consistency checks, not the trust root.
+| Share | Who                           | Where the readable share lives |
+| ----- | ----------------------------- | ------------------------------ |
+| 1     | The person chosen as person 1 | That person's phone            |
+| 2     | The person chosen as person 2 | That person's phone            |
 
-- The owner's seed unlocks on this device (PRF `mnemonic-v1`, or an existing
-  wrap as defined below). The twelve words are known to the client and are not
-  uploaded.
-- The owner's user-held secret is the NIP-06 key of that entropy. The device
-  derives the `npub` locally.
-- `nostr_key_custody` for the owner is `user`, and the stored `nostr_pubkey`
-  equals that locally derived `npub`. A mismatch aborts. A custodial row cannot
-  enroll.
-- Each guardian is another 21.gifts account whose device can sign with **its
-  own** user-held NIP-06 key. A custodial account cannot be a guardian, because
-  its device cannot sign without the server.
-- The owner's device encrypts each share only to a guardian public key it
-  received from that guardian's device (scanned or pasted), and only after it
-  has verified a signature from that key. Seeing `nostr_pubkey` in an api
-  response is not enough. If the scanned key and the stored pubkey differ,
-  abort. The account record and the person in front of the device must be the
-  same key.
-- The authenticator used to persist a wrap supports PRF. Missing PRF aborts,
-  as registration already aborts. The api still never receives PRF output.
+Both shares are required. There is no configuration of `t` or `n`.
 
-Platform passkey sync (iCloud Keychain, Google Password Manager, and a hardware
-authenticator that syncs) remains recovery path 1. The written twelve words
-remain recovery path 2. Social recovery is path 3, optional, and of the same
-entropy. None of the three replaces the others. Losing all three loses the
-seed. A new passkey does not bring it back.
+Each share is sealed to an X25519 key that person's phone shows, as a QR
+or as hex, to the owner's phone. The owner's phone does not take that
+key from the api. The seal is a libsodium sealed box (`crypto_box_seal`:
+X25519, XSalsa20-Poly1305). The plaintext is one version byte `0x01`, then 32 confirmation bytes from
+the owner's phone, then the UTF-8 SLIP-39 mnemonic of that share (twenty
+words, single ASCII spaces, no trailing newline). Each share has its own
+confirmation. The api may store a copy of that ciphertext. It has no key
+to open it, and it never stores the confirmation.
 
-## Guardians and threshold
+## Enrollment order
 
-One Shamir group only. No second group, no "family and friends" composition,
-no passphrase in this version. A memorised passphrase would stop colluding
-guardians, and it would also lock out the person who forgot it. This path is
-for someone who has already lost the device. The passphrase is deferred.
+1. The owner opens **Mein Konto absichern** and reads the explanation.
+   Stopping here stores nothing. If the owner continues, they confirm the
+   two people. Person 1 may still be the suggested moderator, or someone
+   else. Confirming the names still stores nothing.
+2. The owner's phone derives the existing 16 bytes, builds the two
+   SLIP-39 shares, and checks that BIP-39 of the reconstruction is the
+   phrase it just derived. It draws a fresh 32-byte confirmation for each
+   share. It derives the Ed25519 bind public key and keeps that public key.
+3. For each chosen person, that phone shows a fresh X25519 public key and
+   an Ed25519 public key, and signs the owner's 32-byte nonce with that
+   Ed25519 key. The owner scans or pastes that payload and verifies the
+   signature. A mismatch aborts the ceremony. The owner seals that
+   person's share, including that share's confirmation, to the scanned
+   X25519 key. That phone holds the ciphertext and the matching X25519
+   secret only in memory, opens the ciphertext once, reads the
+   confirmation, checks the SLIP-39 identifier, discards the share words,
+   and signs a readable-proof that includes the confirmation. The owner's phone accepts the proof only when the
+   signature verifies and the confirmation matches the one it sealed into
+   that share. It then discards that confirmation.
+4. Both people do this on their own phones during this ceremony. If either
+   person is not available, or either phone aborts, both phones discard
+   every provisional ciphertext and the matching X25519 secret. The
+   owner's phone also discards the 16
+   bytes, the bind private key, both share plaintexts, and both
+   confirmations. Nothing is stored. During this enrollment, no share is
+   sealed to a key on the owner's current phone. The ceremony can be
+   started again later. When both
+   proofs have been accepted, the 16 bytes, the bind private key, and the
+   share plaintexts are discarded.
+5. Only after both readable-proofs are accepted do both phones store their
+   ciphertext and the matching X25519 secret together, and the owner's
+   phone uploads the bind public key, the SLIP-39 identifier, and the two
+   ciphertexts. The server never receives an X25519 secret. Those local
+   copies and that upload happen together. The set becomes `active` only
+   when both copies are stored and that upload has created it. If either
+   phone cannot store its copy, or the upload fails, both phones discard
+   the ciphertext and the X25519 secret, and the server stores no set.
+   There is no active set, and a reset cannot start. The ceremony can be
+   started again. This step creates the first set. A failed replacement
+   does not delete a set that already exists. The 16 bytes are not in
+   the upload. Until both proofs are accepted, nothing is stored and a
+   reset cannot start.
 
-| Parameter                               | Rule              |
-| --------------------------------------- | ----------------- |
-| `n`                                     | 2 to 5 guardians  |
-| `t`                                     | 2 to `n`, never 1 |
-| Default offered                         | 2 of 3            |
-| Shares one account may hold as guardian | at most 20        |
-| Active share sets per owner             | one               |
-
-`t = 1` is forbidden. One guardian must not be able to reconstruct the seed.
-`t = n` is allowed and is a bad default: one unavailable guardian blocks
-recovery. The product offers 2 of 3 and lets the owner raise or lower only
-inside the table.
-
-A guardian is a person with an account, not an email address and not a phone
-number. The owner sees every guardian's name. Each guardian sees the owner's
-name and, during a recovery, the count of approvals (`2 of 3`). A guardian does
-not see the other guardians' names.
-
-An account with `session_refused` cannot enroll, guard, or recover.
-
-## Share construction
-
-Normative sharing format: **SLIP-39** (SatoshiLabs SLIP-0039), used only as the
-container for the 16-byte entropy.
-
-- Master secret: exactly those 16 bytes. Not the twelve-word string. Not the
-  64-byte BIP-39 seed. Not the Nostr private key. Not the PRF output.
-- One group. Group threshold 1. Group count 1.
-- Member threshold `t`. Member count `n`.
-- Empty passphrase.
-- Iteration exponent 0, as SLIP-39 defines it.
-- A 128-bit master secret under those parameters is a 20-word SLIP-39 mnemonic
-  per guardian. That word list is not the BIP-39 list. Guardians do not see it
-  unless they explicitly export.
-
-After reconstruction the client **stops**. It must not run SLIP-39's conversion
-of the master secret into a BIP-32 seed. That conversion would produce a
-different `npub` from NIP-06. The client BIP-39-encodes the 16 bytes with the
-English wordlist and, when it needs the Nostr key, follows NIP-06.
-
-A future implementation must pass SLIP-39's published test vectors for a
-128-bit master secret, one group, empty passphrase, and iteration exponent 0,
-and must then assert that BIP-39(master secret) equals the phrase
-`mnemonic-v1` produced from the original PRF.
-
-Each stored share is NIP-44 version 2, encrypted to the guardian's 32-byte
-x-only public key. Plaintext before encryption:
-
-- one version byte `0x01`
-- the UTF-8 SLIP-39 mnemonic: twenty words, single ASCII spaces, no trailing
-  newline
-
-NIP-44 padding and the conversation key are the NIP-44 v2 rules. No second
-encryption scheme. The client uses the secp256k1 library the non-custodial
-phase already calls for. WebCrypto does not perform this ECDH.
-
-The SLIP-39 identifier is the set id. Shares from two enrollments must not
-combine. Reconstruction rejects a set whose identifier, threshold, or member
-count disagrees.
-
-## Key transport
-
-Two public keys move between devices. Neither is taken from the api.
-
-**Guardian key, at enrollment.** The guardian's device derives its user-held
-secret locally (PRF or its own wrap), signs, and displays the x-only pubkey
-together with the signature. The owner's device scans or pastes that payload.
-It verifies the signature itself. It encrypts that guardian's share only to
-that pubkey. The api is then asked whether the account's stored pubkey is
-equal. Unequal means abort and upload nothing. The api value is a consistency
-check against the wrong profile. It is never the key that is encrypted to.
-
-The signed message is the UTF-8 string
+The nonce is generated on the owner's phone. The api does not choose it.
+The signed enrollment message is UTF-8, four lines, a newline between the
+lines, no trailing newline:
 
 ```text
-21gifts-guardian-v1
+21gifts-recovery-person-v1
 <owner account id>
-<guardian x-only pubkey, lowercase hex>
+<person x25519 public key, lowercase hex>
 <nonce, lowercase hex>
 ```
 
-with a newline between the four lines and no trailing newline. The signature
-is BIP-340 Schnorr over the SHA-256 of that string, from the guardian's NIP-06
-key. The nonce is 32 random bytes from the owner's device, shown on the same
-QR the guardian signs, so the api cannot choose the nonce either. The guardian
-signs only a nonce its device scanned from the owner.
-
-**Ephemeral key, at recovery.** The new device generates a secp256k1 keypair
-and keeps the secret in memory. It shows the x-only pubkey as a QR and as
-lowercase hex. Each approving guardian scans or pastes that pubkey from the
-recovering device, or from a copy the owner sent through some channel that is
-not this api. The guardian encrypts the decrypted share to that scanned key
-and uploads only the new ciphertext.
-
-The session record may store the pubkey the new device announced. That copy is
-for humans to notice a mismatch. A guardian client must refuse to encrypt to a
-pubkey that arrived only inside the session payload. A later test of the client
-feeds the session pubkey alone and expects no upload.
-
-A short code of 8 characters from `ABCDEFGHJKLMNPQRSTUVWXYZ23456789` identifies
-the session to a person. It is not a key, not a secret, and not sufficient to
-approve. Approval without the scanned ephemeral pubkey does nothing.
-
-In person is the normal handoff. A remote guardian works only if the owner
-conveys the ephemeral pubkey outside this service. The service must not offer
-"use the key on the session" as a shortcut.
-
-## Enrollment
-
-Enrollment happens on a device that can already unlock the seed. Order:
-
-1. The owner chooses `n` and `t` inside the rules above, and chooses that many
-   guardian accounts.
-2. For each guardian, the two devices exchange the nonce and the signed pubkey
-   as specified above. The owner verifies. A stored-pubkey mismatch aborts the
-   whole enrollment.
-3. The owner builds one SLIP-39 set locally and encrypts each share to the
-   verified pubkey. Plaintext shares exist only in that device's memory.
-4. The owner reconstructs the entropy from those local shares and derives the
-   `npub`. If it does not match the account, enrollment stops. No guardian
-   receives a share, and nothing is uploaded.
-5. Each guardian's device stores the ciphertext **locally**, decrypts it once,
-   checks that the SLIP-39 identifier matches the set the owner just built,
-   discards the plaintext, and signs a readable-proof with the same guardian
-   key. Enrollment is incomplete until every guardian has done this. The local
-   copy is what still exists if this service disappears.
-6. The owner uploads the `n` ciphertexts, `t`, `n`, and the SLIP-39 identifier.
-   The api stores them against the owner and the guardian accounts. It cannot
-   read them.
-
-The readable-proof message is UTF-8
+The signature is Ed25519 over the SHA-256 of that string. The readable-proof
+is UTF-8, five lines, a newline between the lines, no trailing newline.
+The signature is Ed25519 over the SHA-256 of that string:
 
 ```text
-21gifts-guardian-readable-v1
+21gifts-recovery-readable-v1
 <owner account id>
 <SLIP-39 identifier, lowercase hex>
-<guardian x-only pubkey, lowercase hex>
+<person ed25519 public key, lowercase hex>
+<confirmation, lowercase hex>
 ```
 
-same newline rules, BIP-340 over SHA-256, guardian NIP-06 key. The api checks
-the signature against the pubkey the owner bound to that share. A guardian who
-cannot decrypt cannot produce this proof. The proof is not a substitute for the
-in-person key exchange: the server could sign for a key it owns if the owner
-had encrypted to a server-supplied key. The scan is what prevents that.
+The confirmation is inside the seal and nowhere else. A person who cannot
+open the seal does not learn it, so they cannot produce a proof the owner's
+phone accepts. The proof is not a substitute for the scan. The server does
+not store the confirmation.
 
-Replacing a share set is the same ceremony. The new set is written and the old
-ciphertexts are deleted in one step. Open recovery sessions for that owner are
-cancelled. A guardian who exported words earlier still holds that export.
+Replacing the set uses the same proofs and replaces both shares in one
+step. Shamir shares are not edited in place. Changing either person is a
+full replacement. While that set is still active, it stays active until
+the new upload replaces it. If that upload fails, or either phone cannot
+store its new copy, both phones discard the new copies and the old set
+stays active. A later verification does not move a share and does not
+replace person 1.
+
+A written export of a SLIP-39 share cannot be deleted. Resignation deletes
+the server ciphertext and asks that phone to delete its local copy. The
+owner is told this before confirming the two people. If either share is
+gone after the set is `active`, fewer than two shares remain, the set
+becomes `inactive`, and a reset cannot start until the owner, who can
+still open the phrase with their passkey, runs the ceremony again. The
+new upload waits until both new proofs exist, then replaces the set as
+`active` only when both new copies are stored and that upload has created
+it. This repair starts from a set that is already `inactive`. If either
+phone cannot store its new copy, or the upload fails, both phones
+discard those new copies, and the set stays `inactive`. Until a
+successful upload, the set stays `inactive`.
 
 ## What the server may store
 
-No row contains entropy, a mnemonic, PRF output, a share plaintext, a wrap key,
-or an `nsec`. Logs and diagnostics follow the same ban.
+No row contains the 16 bytes, a share plaintext, a confirmation, PRF
+output, the 12-word backup, or a passkey private key. Logs follow the same ban. The server
+cannot decrypt a share.
 
 Conceptual records, not a schema migration:
 
-**Share set.** Owner account id. SLIP-39 identifier. `t`. `n`. Status
-`active` or `degraded`. Created time.
+**Recovery set.** Created only by the upload in enrollment step 5, as
+`active`, and only when both phones have stored their copies. A failed
+first upload stores no set. A failed replacement does not write a new
+set: an active set stays active, and an inactive set stays inactive.
+Owner account id. SLIP-39 identifier. Ed25519 bind public key.
+Created time. Status `active`, or `inactive` after one stored share is
+later gone. The account suggested as person 1 is not stored unless that
+person was confirmed.
 
-**Share.** Share-set id. Guardian account id. Guardian x-only pubkey (the one
-the owner verified, stored so later signatures have a comparison point, never
-used by a client as the encryption target). NIP-44 ciphertext. Time the
-readable-proof succeeded.
+**Share.** Set id. Chosen person's account id. Ed25519 public key and
+X25519 public key the owner verified by scan. Sealed ciphertext. Time the
+readable-proof succeeded. Exactly two rows while the set is `active`. An
+`inactive` set has fewer than two.
 
-**Wrap.** Owner account id. Opaque blob, at most 128 bytes. For version 1 the
-blob is exactly 45 bytes: version `0x01`, 12-byte AES-GCM nonce, 16-byte
-ciphertext, 16-byte tag. Absent while `seed_root` is `prf`.
+Both people are 21.gifts accounts so the app on those phones can store
+the share and be asked to release it. A chosen person receives nothing
+except that share. `session_refused` cannot enroll, hold a share, or
+recover.
 
-**`seed_root`.** `prf` or `wrapped`. Default `prf`, including every account
-that already exists when this ships. Visible to the signed-in owner. Not shown
-on a public profile. `prf` means the identity is `mnemonic-v1` of the current
-seed-bearing passkey. `wrapped` means the identity is the unwrap of the wrap
-blob, and `mnemonic-v1` of the current passkey must not be displayed.
+## Recovery
 
-**Recovery draft.** Ephemeral x-only pubkey announced by a new device. Short
-code. Created time. Expires 15 minutes after creation. No account yet. Not an
-encryption instruction for guardians.
+A new phone generates an X25519 keypair and keeps the secret in memory.
+It shows the public key as a QR and as lowercase hex. Both people must
+release their share. Each phone opens its stored ciphertext with the
+X25519 secret it kept, then seals that share only to a key that phone
+scanned from the new phone. It refuses a key that arrived only inside a
+server payload. The server may store the announced public key so a person
+can see a mismatch. It must not offer "use the key on the session". The
+server has no share of its own to release.
 
-**Recovery session.** Owner account id. Mode `friends` or `paper`. Announced
-ephemeral pubkey. Short code. Status `pending`, `ready`, `completed`,
-`cancelled`, or `expired`. Created time. Ready time. The announced pubkey is
-not the guardian's encryption input.
+The short code is 8 characters from `ABCDEFGHJKLMNPQRSTUVWXYZ23456789`.
+It names the recovery to a person. It is not a key and not sufficient to
+release a share.
 
-**Approval.** Session id. Guardian account id. NIP-44 ciphertext encrypted to
-the ephemeral key the guardian scanned. Created time.
+The new phone reconstructs the 16 bytes from both shares. It derives the
+bind key locally and checks the signature against the stored bind public
+key before uploading anything. A mismatch discards the material and
+uploads nothing.
 
-`wallet_required` stays the existing flag meaning "a seed-bearing ceremony has
-happened". It is not `seed_root`. Recovery does not clear
-`wallet_backup_seen_at`.
+The bind private key is Ed25519. Its 32-byte seed is HKDF-SHA256 with
+input keying material the 16 bytes, salt the UTF-8 string
+`21gifts-account-recovery`, info the UTF-8 string `bind-v1`, and length 32. This key only authorizes the new passkey.
 
-## Recovery session
-
-A new device generates the ephemeral keypair first and registers a draft (the
-pubkey and a short code). Drafts are unauthenticated and expire after 15
-minutes. Creation is rate-limited per caller so drafts cannot be used to flood
-the service.
-
-Binding a draft to an account creates a session:
-
-- **By username.** The new device sends the public username. Unknown username
-  is a not-found response. Usernames are already public. This only names the
-  account. It does not release a share.
-- **With a guardian present.** A signed-in guardian selects the owner from the
-  accounts whose share they hold, and submits the draft's short code. The
-  session is bound to that owner. The guardian still scans the ephemeral pubkey
-  separately before any share is re-encrypted.
-
-At most 3 sessions may be created for one account in any rolling 24 hours.
-Pending sessions do not block each other. One hostile start must not occupy
-the only slot until expiry. The first session that completes cancels the
-others.
-
-Friends mode becomes `ready` at the later of: 48 hours after creation, and the
-moment the `t`-th distinct guardian approval is stored. Paper mode becomes
-`ready` 48 hours after creation and needs no approvals. A session that is not
-`completed` or `cancelled` becomes `expired` 7 days after creation. Expired and
-cancelled sessions cannot be completed. Approvals that arrive late are kept
-and ignored.
-
-The 48 hours run even if every guardian approves in the first minute. An owner
-who still has a passkey uses that time to cancel. Being logged in does not
-skip the wait. The only instant path to the seed is the original PRF
-derivation, or an unwrap with the passkey that already wraps it. Any path that
-reconstructs the seed from friends or from paper waits.
-
-Guardians and the owner's existing push subscriptions are notified that a
-recovery started, with the owner's display name and the short code. The
-payload has no share, no mnemonic, and no ephemeral pubkey. Cancellation
-notifies the same people. The new device polls. It is not assumed to have a
-push subscription.
-
-## Paper words
-
-The twelve words are a full copy of the same 16 bytes, not a second factor on
-top of the friends. Whoever holds the words holds the identity. They can import
-them into any NIP-06 client without this service.
-
-Rebinding a passkey from paper uses the same delay and the same bind
-submission as friends mode, with mode `paper` and no approvals. The words are
-typed into the new device and are not sent. The device derives the `npub`
-locally, opens the session for that account, waits 48 hours, and signs the
-bind challenge. Guardians are notified so they can warn the owner. A passkey
-the owner still has can cancel the session.
-
-Friends are not required to use the words. The words are not required to use
-friends. Either one reconstructs the same secret.
-
-## Binding a new passkey
-
-The current replace routes stay a refusal (`A recovery phrase cannot be
-replaced`). Replace swaps the credential and would orphan a PRF-derived seed.
-Recovery is not replace.
-
-When a session is `ready`, the new device submits one bind. The client has
-already reconstructed or typed the entropy, checked the `npub`, created a
-passkey, read PRF, and built the wrap. If PRF is missing, the client does not
-submit.
-
-The submission carries:
-
-- the session id
-- a WebAuthn attestation for a new passkey whose user id is the account id,
-  user verification required, resident key required
-- a BIP-340 signature by the recovered NIP-06 key over the bind challenge
-- the wrap blob
-
-The bind challenge is UTF-8
+The bind message is UTF-8, four lines, a newline between the lines, no
+trailing newline:
 
 ```text
-21gifts-recovery-bind-v1
-<session id>
-<announced ephemeral x-only pubkey, lowercase hex>
+21gifts-account-recovery-bind-v1
+<owner account id>
+<recovery session id>
+<new passkey credential id, lowercase hex>
 ```
 
-same newline rules. The server's challenge nonce is the session id plus the
-announced pubkey, so the signature is bound to this session. The signature is
-over SHA-256 of that string.
+The signature is Ed25519 over the SHA-256 of that string. The server
+accepts it only together with a new passkey attestation for this
+relying party, user verification required, the user id equal to the
+account id, and the wrap described below. The body must not contain PRF
+results.
 
-The api accepts the bind only when all of these hold:
+Before that request, the new phone wraps the 16 bytes under the new
+passkey and decrypts the wrap locally. HKDF-SHA256, salt UTF-8
+`21gifts-seed-derivation`, info UTF-8 `seed-wrap-v1`, 32 bytes. That info
+must not equal `mnemonic-v1`. AES-256-GCM, 12-byte nonce, additional data
+the UTF-8 account id, plaintext the 16 bytes. The blob is version `0x01`,
+the nonce, the ciphertext, and the tag: 45 bytes. The local decrypt must
+yield the same 16 bytes. If the new passkey returns no PRF, or the local
+decrypt does not match, the phone does not send the bind. The session
+stays `ready`. Existing credentials stay. The phone must not show
+`mnemonic-v1` of the new passkey instead.
 
-- the session is `ready` and belongs to this account
-- `nostr_key_custody` is `user`
-- the signature verifies under the stored `nostr_pubkey`
-- the attestation verifies for this relying party, user verification was
-  required, and the credential id is not stored for a different account
-- the body does not contain PRF results (same rejection as authentication)
-- the wrap blob is at most 128 bytes
+When the local decrypt matches, the phone shows the 12 words from those
+bytes and sends the bind, the attestation, and the wrap together. The
+server, in one transaction, stores the new credential, stores the wrap,
+deletes every other credential for the account, marks the session
+completed, and cancels sibling sessions. On failure it stores nothing,
+leaves the session `ready` until it expires, and leaves existing
+credentials in place. The refused "replace the phrase" behaviour is
+unchanged. This path restores the same phrase. It does not write a
+different one.
 
-The api cannot see whether the authenticator returned PRF. The client hard-fail
-is the same rule as registration today.
+The server cannot read the wrap. Showing the words later unwraps it and
+BIP-39-encodes the bytes.
 
-On success, in one transaction: store the new credential, delete every other
-passkey credential for the account, store the wrap, set `seed_root` to
-`wrapped`, leave `wallet_required` true, mark the session `completed`, cancel
-sibling sessions. On failure, store nothing from the submission and leave the
-session `ready` until it expires, so the device can try again.
+The wait is 48 hours from the start of the recovery, even if both shares
+arrive in the first minute, and even if some passkey is still logged in.
+The only instant path is a passkey that already logs in. An existing
+passkey cancels the recovery immediately. The new phone can abandon its
+own session and discard the ephemeral secret.
 
-Deleting the old credential stops that passkey from logging in. It does not
-erase the PRF secret inside the lost authenticator. Someone who can still pass
-that device's user verification can still derive the seed locally. Recovery
-does not pretend to remote-wipe it.
+A session that is not completed or cancelled expires 7 days after
+creation. At most 3 recoveries may be started for one account in any
+rolling 24 hours. The first one to complete cancels the others.
 
-## The wrap
+The server does not need the 16 bytes to check the bind. It verifies the
+signature under the bind public key stored at enrollment.
 
-The wrap exists so a passkey created after recovery can unlock the **old**
-entropy. The new passkey's PRF is an encryption key, not a new root.
+## If the service is gone
 
-- IKM: the new passkey's PRF `eval.first` (32 bytes).
-- HKDF-SHA-256, salt = UTF-8 `21gifts-seed-derivation` (the same salt
-  `CONCEPT.md` already uses for domain separation), info = UTF-8
-  `seed-wrap-v1`, output 256 bits.
-- AES-256-GCM. Nonce: 12 random bytes, stored in the blob. Additional data:
-  the UTF-8 account id, so a blob cannot be moved to another account.
-- Plaintext: the 16-byte entropy, nothing else.
+The two phones still hold their sealed shares. Those two people can
+reconstruct the 12 words without the server. Binding a new passkey needs
+the service to be up, because the account lives there. The reconstruction
+itself does not.
 
-`seed-wrap-v1` must not equal `mnemonic-v1`. The wrap key is not the phrase.
-The client that just built a wrap decrypts it before uploading and checks the
-16 bytes. A mismatch aborts with no bind.
-
-While `seed_root` is `prf`, there is no wrap. Showing the phrase evaluates PRF
-and runs `mnemonic-v1`, as today. While `seed_root` is `wrapped`, showing the
-phrase evaluates PRF, derives the wrap key, decrypts the blob, and BIP-39-encodes
-the 16 bytes. If the authenticator returns no PRF, the phrase stays locked.
-The client must not fall back to `mnemonic-v1` of that PRF-less login, and must
-not invent words.
-
-Login itself stays the discoverable passkey assertion. It does not require the
-wrap. A passkey can sign the user in and still fail to unlock the seed. The
-interface says so. It does not create a second account to "fix" it.
-
-## Rotation, resignation, and a degraded set
-
-While the owner can unlock the seed, they may run enrollment again. That
-replaces the set. They may also remove one guardian and add another, which is
-the same full reshare: Shamir shares are not edited in place.
-
-A guardian may resign. Resignation deletes that share's server ciphertext and
-asks that guardian's device to delete its local copy. An export the guardian
-already wrote down cannot be deleted. The owner is told this at enrollment,
-before any guardian is added: resignation is social, export is not.
-
-If the number of remaining shares drops below `t`, the set is `degraded`. A
-degraded set cannot open a friends-mode session. The owner repairs it by
-resharing while they still have the seed. If they no longer have the seed and
-the set is degraded, friends-mode recovery is over. Paper and the original
-passkey's PRF are the remaining copies.
-
-A guardian who loses their own seed can recover it through their own guardians
-or their own paper. The share stays encrypted to the same `npub`, so it becomes
-readable again when that guardian can sign with that same key. A guardian who
-starts a **new** identity (a new `npub`) does not regain the share. The owner
-must reshare. This concept does not transfer shares across a guardian's
-identity change.
-
-## Cancellation
-
-A passkey login for the owner cancels any named session, or all pending and
-ready sessions, immediately. No delay. Cancellation is the owner's defence
-during the 48 hours.
-
-The new device can abandon its own session before completion. Abandoning
-discards the ephemeral secret. Ciphertexts encrypted to it become useless.
-The guardian's original share is untouched.
-
-## Threat model
-
-| Threat                                                  | What holds                                                                                                                                                                                                                                          |
-| ------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| The server reads stored shares                          | It cannot. It never receives plaintext, and it does not choose the recipient key. A client that encrypts to an api-supplied key is a broken client.                                                                                                 |
-| One guardian reconstructs the seed                      | `t ≥ 2`. One share is not the entropy. SLIP-39's checksum rejects a forged companion share.                                                                                                                                                         |
-| `t` guardians collude                                   | They can. They each hold a decryptable share. The delay does not stop them from reconstructing outside the service. The trust assumption is that fewer than `t` guardians will betray the owner.                                                    |
-| A stranger starts a session                             | Username start only notifies people and waits. Shares move only after a guardian scans the new device's key. Paper completion needs the words. Rate limits bound the noise.                                                                         |
-| Stolen paper                                            | The thief can open paper mode and, after 48 hours, bind a passkey, unless the owner still has a passkey and cancels. That is the same power as holding the identity.                                                                                |
-| Stolen phone, biometrics not passed                     | PRF and the passkey stay inside the authenticator. Social recovery is not required.                                                                                                                                                                 |
-| Stolen phone, biometrics passed                         | The thief already has the seed via PRF. Friends do not make that worse. Revocation after the real owner's recovery stops further login. It does not wipe the authenticator.                                                                         |
-| Passkey syncs, PRF does not                             | Login works and the seed does not. Friends or paper reconstruct it. The bind then wraps it to a PRF-capable passkey. The synced passkey that has no PRF must not be the passkey that holds the wrap.                                                |
-| This service disappears                                 | A guardian's local ciphertext, or an export of the SLIP-39 words, still reconstructs the entropy on a device that never talks to the api. The server copy is convenience, not the only copy. The wrap blob is not required for that reconstruction. |
-| Malicious client offers "approve with the server's key" | Forbidden. Approval requires a scanned or pasted ephemeral pubkey.                                                                                                                                                                                  |
-| Replay of an old bind signature                         | The signature covers the session id and the announced pubkey. Completed, cancelled, and expired sessions are rejected.                                                                                                                              |
-
-Social recovery is not threshold signing. Guardians do not co-sign posts,
-gifts, or Nostr events. FROST and account multisig are a different product:
-friends would be online for ordinary use. That is out of scope.
-
-The server is not a mandatory decryptor. Adding a server share so that friends
-alone are not sufficient would let the service refuse a recovery. That breaks
-the rule that a disappeared service must not take the key with it.
+Losing both phones, with no export, loses this recovery. A paper copy of
+the 12 words is the same phrase, not a different secret.
 
 ## State machine
 
 ```text
-draft (15 min, no account)
-        │ bind by username or by a guardian's short code
+no set
+  │ never opened, left before two people are confirmed, or a readable
+  │ proof is still missing (stores nothing)
+  └── stays here
+
+no set
+  │ both readable-proofs accepted
+  │ both phones store their copies, and the owner uploads
+  ▼
+active ──────── one share gone, or resignation ────────► inactive
+
+active
+  │ replacement of both shares fails
+  │ both phones discard the new copies
+  └── stays here
+
+no set
+  │ either phone cannot store its copy, or the upload fails
+  │ both phones discard the copies; the server stores no set
+  └── stays here
+
+inactive
+  │ ceremony again, both new readable-proofs accepted
+  │ both phones store their copies, and the owner uploads
+  ▼
+active
+
+inactive
+  │ either new copy cannot be stored, or that upload fails
+  │ both phones discard the new copies
+  └── stays here
+
+active recovery, only from active:
+draft (15 min, no account yet)
+        │ bind by username, or by a chosen person who selects the owner
         ▼
      pending ────── owner passkey cancel, or device abandon, or sibling completed ──► cancelled
-        │ 48h elapsed, and t approvals if mode is friends
+        │ 48h elapsed and both shares released
         ▼
       ready ────── owner passkey cancel, or device abandon, or sibling completed ──► cancelled
-        │
-        │ bind verifies
+        │ bind, wrap, and new passkey verify together
         ▼
     completed
 
 pending or ready, 7 days after creation, not completed ──► expired
 ```
 
-A degraded share set has no transition into `pending` for friends mode. Paper
-mode does not consult the share set.
+No set, and an inactive set, have no transition into `pending`. A passkey
+that still works is the cancel path during the 48 hours.
 
 ## Acceptance criteria for a later implementation
 
-These are the checks a future change has to meet. This document does not add
-them.
-
-- Reconstructing a fresh SLIP-39 set of the `mnemonic-v1` entropy yields those
-  same 16 bytes, and BIP-39 of them is the original twelve words.
-- The NIP-06 `npub` of the reconstruction equals the `npub` of the original
-  PRF. SLIP-39's BIP-32 derivation was not used.
-- A client given only the api's copy of a pubkey uploads no share and no
-  approval.
-- A body that still contains PRF results is rejected on bind, as on login.
-- `t = 1` cannot be stored.
-- A custodial account cannot enroll and cannot be a guardian.
-- Replace stays the existing refusal.
-- `seed_root = wrapped` never displays `mnemonic-v1` of the current passkey.
-- Server logs and the database contain no entropy, mnemonic, PRF output, share
-  plaintext, wrap key, or `nsec`.
-- Completing one session cancels the others. A cancelled session cannot bind.
-- With the service unreachable, `t` exported SLIP-39 shares still produce the
-  twelve words offline.
+- Both shares reconstruct the original 16 bytes, and BIP-39 of those
+  bytes is the original 12 words. One share does not.
+- Those bytes authorize a new passkey on the same account, and nothing
+  else.
+- **Mein Konto absichern** is optional. The account works with no
+  recovery set. Closing the screen before two people are confirmed stores
+  nothing. Continuing explains the two results, then asks for two people.
+  Person 1 starts as the verifying moderator when one exists, and the
+  owner can replace that suggestion.
+- A fixed moderator, or a share held by the service, cannot be stored.
+- The owner's phone will not seal a share to a key that came from the
+  api.
+- Before both readable-proofs are accepted, nothing is stored, including
+  on the chosen people's phones, and a reset cannot start.
+- The local copies and the owner's upload happen together. The set
+  becomes active only when both copies are stored and the upload has
+  created it. If either phone cannot store its copy, or the upload fails,
+  both phones discard the ciphertext and the X25519 secret, the server
+  stores no set, and a reset cannot start. That is the first set. A
+  failed replacement of a set that is still active discards the new
+  copies and leaves the old set active. A failed repair of a set that is
+  already inactive leaves it inactive. Partial copies are discarded in
+  that same step. They are not kept for a later retry.
+- The new passkey, the wrap, and completion are written together. A
+  missing PRF, or a failed write, leaves the session `ready` and leaves
+  existing credentials in place.
+- The owner's phone rejects a readable-proof whose confirmation was not
+  inside that share's seal. During enrollment, a share is not sealed to
+  a key on the owner's current phone. During recovery, each chosen phone
+  opens its share and seals it to the key scanned from the new phone.
+  Each chosen phone stores the X25519 secret with the ciphertext. The
+  server never receives that secret.
+- A body that contains PRF results is rejected.
+- Replacing the phrase with different words stays refused.
+- After recovery, showing the words unwraps the stored wrap. It does not
+  derive a new phrase from the new passkey.
+- No row and no log contains the 16 bytes, a share plaintext, or a
+  confirmation.
+- Completing one recovery cancels the other open ones for that account.
+- The two people can reconstruct the 12 words from the copies on their
+  phones with the server offline.
 
 ## Out of scope here
 
-- Any route, table, client screen, or migration.
-- Choosing how a custodial `nsec` becomes the user-held key, or how old forum
-  events move. That remains Open Question #9. Social recovery starts only after
-  one user-held `npub` is the account's key.
-- A passphrase on the SLIP-39 set.
-- More than one Shamir group.
-- Threshold signatures, multisig wallets, and recovery of Wallet of Satoshi.
-- Changing passkey login, the PRF label, or `mnemonic-v1`.
+- Anything other than account access on a new device and the same 12
+  words.
+- Any route, table, screen, or migration.
+- Splitting the passkey private key.
+- Requiring **Mein Konto absichern** before sign-up, login, or any other
+  use of the account.
+- A share held by 21.gifts, a fixed moderator, or a threshold other than
+  both chosen people.
+- A SLIP-39 passphrase or a second Shamir group.
 - Remote wipe of a lost authenticator.
+- Wallet of Satoshi recovery.
