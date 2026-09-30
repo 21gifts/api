@@ -2177,7 +2177,12 @@ function parseConversationMentions(value: unknown): { accountId: string; usernam
     }
     const accountId = 'accountId' in item ? item.accountId : undefined;
     const username = 'username' in item ? item.username : undefined;
-    if (typeof accountId === 'string' && accountId !== '' && typeof username === 'string' && username !== '') {
+    if (
+      typeof accountId === 'string' &&
+      accountId !== '' &&
+      typeof username === 'string' &&
+      username !== ''
+    ) {
       marks.push({ accountId, username });
     }
   }
