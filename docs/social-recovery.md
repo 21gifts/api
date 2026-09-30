@@ -122,9 +122,10 @@ phone receives a share, and nothing is uploaded.
 4. The owner seals share 2 to the pinned service key and keeps that
    ciphertext on the owner's phone. It is not uploaded yet, and the
    owner's phone cannot open it. Share 3 is sealed to a key that stays
-   on the owner's phone. The 16 bytes and the other plaintexts are
-   discarded. One remaining share on the owner's phone is not enough to
-   reconstruct the secret.
+   on the owner's phone. The owner derives the Ed25519 bind public key
+   from the 16 bytes and keeps that public key. The 16 bytes, the bind
+   private key, and the other plaintexts are discarded. One remaining
+   share on the owner's phone is not enough to reconstruct the secret.
 5. The owner chooses one friend, at the meeting or later. The owner's
    phone opens share 3 and that friend's phone does step 2 and step 3
    for it. The owner's copy of share 3 is then discarded.
@@ -170,10 +171,11 @@ the person at that meeting.
 
 A written export of a SLIP-39 share cannot be deleted. Resignation deletes
 the server ciphertext and asks that phone to delete its local copy. The
-owner is told this before the friend is added. If the friend's share is
-gone, the set is inactive until a replacement set is created. The verifier
-and the service do not become a working pair again merely because the
-friend left.
+owner is told this before the friend is added. After the set is active,
+losing the friend's share does not remove the service share. The verifier
+and 21.gifts remain a working pair. Replacing the friend is a new
+ceremony, because the shares are not edited in place. The set becomes
+inactive only when fewer than two shares remain.
 
 ## What the server may store
 
@@ -201,11 +203,15 @@ share and be asked to release it. The account is not a Nostr identity.
 ## Recovery
 
 A new phone generates an X25519 keypair and keeps the secret in memory.
-It shows the public key as a QR and as lowercase hex. Two holders each
-open their own share and seal it to that scanned key. A holder must refuse
-a public key that arrived only inside a server payload. The server may
-store the announced public key so a person can see a mismatch. It must
-not offer "use the key on the session".
+It shows the public key as a QR and as lowercase hex, and it announces
+the same public key on the recovery session. Two of the three shares
+must be released. A human holder opens their share only for a key that
+phone scanned from the new phone, and refuses a key that arrived only
+inside a server payload. The service is not a holder and does not scan.
+It opens its own share only for the announced public key, and only after
+one human release names that same key. The server may store the announced
+public key so a person can see a mismatch. It must not offer a human
+"use the key on the session".
 
 The short code is 8 characters from `ABCDEFGHJKLMNPQRSTUVWXYZ23456789`.
 It names the recovery to a person. It is not a key and not sufficient to
