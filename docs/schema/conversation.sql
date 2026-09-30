@@ -64,6 +64,7 @@ ALTER TABLE conversation_message ADD COLUMN IF NOT EXISTS fiat_php numeric(20, 2
 ALTER TABLE conversation_message ADD COLUMN IF NOT EXISTS actor_account_id uuid REFERENCES account (id);
 ALTER TABLE conversation_message ADD COLUMN IF NOT EXISTS actor_name text NOT NULL DEFAULT '';
 ALTER TABLE conversation_message ADD COLUMN IF NOT EXISTS gift_for_message_id uuid;
+ALTER TABLE conversation_message ADD COLUMN IF NOT EXISTS mentions jsonb NOT NULL DEFAULT '[]'::jsonb;
 CREATE INDEX IF NOT EXISTS conversation_message_conversation_id_idx
   ON conversation_message (conversation_id, created_at ASC, id ASC);
 CREATE UNIQUE INDEX IF NOT EXISTS conversation_message_event_id_uidx

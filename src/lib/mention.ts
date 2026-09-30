@@ -1,8 +1,10 @@
 /**
- * `@username` marks in living-room post text.
+ * `@username` marks in living-room posts and in private threads.
  *
- * Only {@link persistForumPost} parses marks. A later rename does not move
- * a stored mark; the account id is resolved at send time.
+ * A forum post notifies the marked person. An inbox message, a paid inbox
+ * gift, and a moderator-room message store the same mark and do not notify.
+ * A later rename does not move a stored mark; the account id is resolved
+ * at send time.
  */
 
 import { normalizeUsername } from '@/lib/username';
@@ -46,4 +48,28 @@ export function mentionUsernames(text: string): string[] {
     i = end - 1;
   }
   return usernames;
+}
+
+/**
+ * Resolve conversation `@username` tokens to profile marks.
+ *
+ * Same token rules as {@link mentionUsernames}. An unknown username is
+ * skipped. This does not notify the marked account.
+ *
+ * @param text - Message body.
+ * @param lookup - Account that owns the username now, or undefined.
+ * @returns Marks in first-seen order. Empty when the text marks nobody.
+ */
+export async function resolveMentionMarks(
+  text: string,
+  lookup: (username: string) => Promise<{ id: string } | undefined>,
+): Promise<{ accountId: string; username: string }[]> {
+  const marks: { accountId: string; username: string }[] = [];
+  for (const username of mentionUsernames(text)) {
+    const marked = await lookup(username);
+    if (marked !== undefined) {
+      marks.push({ accountId: marked.id, username });
+    }
+  }
+  return marks;
 }

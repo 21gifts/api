@@ -18,6 +18,7 @@ import {
 import { notifyConversationMessage } from '@/lib/conversation-push';
 import type { ConversationStore, ConversationThreadPageQuery } from '@/lib/conversation-store';
 import { logEvent } from '@/lib/log';
+import { resolveMentionMarks } from '@/lib/mention';
 import { isSundayRestHeader } from '@/lib/sunday-rest';
 import { shownFiatFromBody, type FiatAmounts } from '@/lib/money';
 import type { FetchFn } from '@/lib/lnurlp';
@@ -946,11 +947,15 @@ export function conversationRoutes(deps: ConversationRouteDeps): Hono {
           return c.json({ error: 'Set a name before posting' }, 400);
         }
         const actorName = account.name?.trim() ?? '';
+        const mentions = await resolveMentionMarks(text, (username) =>
+          deps.authStore.getAccountByUsername(username),
+        );
         const created = await deps.store.appendMessage(
           {
             id: crypto.randomUUID(),
             conversationId: thread.id,
             text,
+            ...(mentions.length > 0 ? { mentions } : {}),
             createdAt: new Date(deps.now()),
             senderAccountId: sender.id,
             senderPubkey: (await deps.authStore.getNostrPublicKey(sender.id)) ?? null,

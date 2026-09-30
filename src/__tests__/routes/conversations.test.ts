@@ -2371,6 +2371,75 @@ describe('POST /conversations/:id', () => {
     expect(listed[0]?.nostrPublishState).toBe('pending');
   });
 
+  it('stores a profile mark and does not push the marked person', async () => {
+    const auth = await seeded();
+    await withOther(auth);
+    await auth.createAccount({
+      id: 'marites',
+      linkingKey: null,
+      role: 'basis',
+      name: 'Marites Villanueva',
+      username: 'marites',
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: 'm'.repeat(64),
+      createdAt: 3,
+      rulesAgreedAt: null,
+    });
+    const conversations = new InMemoryConversationStore();
+    const thread = await conversations.openMemberMember('acc', 'other', new Date(now()));
+    const pushStore = new InMemoryPushStore();
+    await pushStore.upsertSubscription({
+      endpoint: 'https://push.example/other',
+      accountId: 'other',
+      p256dh: 'p',
+      auth: 'a',
+      createdAt: new Date(now()),
+    });
+    await pushStore.upsertSubscription({
+      endpoint: 'https://push.example/marites',
+      accountId: 'marites',
+      p256dh: 'p',
+      auth: 'a',
+      createdAt: new Date(now()),
+    });
+    const res = await mount(auth, conversations, new InMemoryMessageStore(), { pushStore }).request(
+      `/conversations/${thread.id}`,
+      {
+        method: 'POST',
+        headers: { ...AUTH, 'content-type': 'application/json' },
+        body: JSON.stringify({ text: 'see @Marites, pay ada@walletofsatoshi.com' }),
+      },
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      mentions?: { accountId: string; username: string }[];
+    };
+    expect(body.mentions).toEqual([{ accountId: 'marites', username: 'marites' }]);
+    const listed = await conversations.listMessages(thread.id, 10);
+    expect(listed[0]?.mentions).toEqual([{ accountId: 'marites', username: 'marites' }]);
+    await flushMicrotasks();
+    const claimed = await pushStore.claimPending(10, now(), 60_000);
+    expect(claimed.map((row) => row.accountId)).toEqual(['other']);
+    expect(claimed[0]?.type).toBe('conversation');
+  });
+
+  it('omits mentions when the text is only an address', async () => {
+    const auth = await seeded();
+    await withOther(auth);
+    const conversations = new InMemoryConversationStore();
+    const thread = await conversations.openMemberMember('acc', 'other', new Date(now()));
+    const res = await mount(auth, conversations).request(`/conversations/${thread.id}`, {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ text: 'ada@walletofsatoshi.com' }),
+    });
+    expect(res.status).toBe(200);
+    expect(await res.json()).not.toHaveProperty('mentions');
+  });
+
   it('lets staff reply on a platform thread as the platform account', async () => {
     const auth = await seeded('founder');
     await withPlatform(auth);
@@ -3055,6 +3124,40 @@ describe('moderator_group', () => {
     expect(rows[0]?.senderAccountId).toBe('acc');
     expect(rows[0]?.nostrPublishState).toBe('skipped');
     expect(rows[0]?.eventId).toBeNull();
+  });
+
+  it('stores a profile mark in the moderator room without a mention push', async () => {
+    const auth = await seeded('moderator');
+    await withPlatform(auth);
+    await auth.createAccount({
+      id: 'marites',
+      linkingKey: null,
+      role: 'basis',
+      name: 'Marites Villanueva',
+      username: 'marites',
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: 'm'.repeat(64),
+      createdAt: 3,
+      rulesAgreedAt: null,
+    });
+    const conversations = new InMemoryConversationStore();
+    const thread = await conversations.ensureModeratorGroup('plat', new Date(now()));
+    const res = await mount(auth, conversations).request(`/conversations/${thread.id}`, {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ text: 'ask @marites' }),
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      mentions?: { accountId: string; username: string }[];
+    };
+    expect(body.mentions).toEqual([{ accountId: 'marites', username: 'marites' }]);
+    const rows = await conversations.listMessages(thread.id, 10);
+    expect(rows[0]?.mentions).toEqual([{ accountId: 'marites', username: 'marites' }]);
+    expect(rows[0]?.nostrPublishState).toBe('skipped');
   });
 
   it('pings spend once with kind moderator when a Lightning Address is set', async () => {

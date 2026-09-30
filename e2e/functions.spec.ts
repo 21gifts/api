@@ -2418,6 +2418,9 @@ test('Function: fundingReviewedByName — default boot has no DATABASE_URL', asy
 test('Function: mentionUsernames — default boot has no DATABASE_URL', async ({ request }) => {
   expect((await request.get('/healthz')).status()).toBe(200);
 });
+test('Function: resolveMentionMarks — default boot has no DATABASE_URL', async ({ request }) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
 test('Function: notifyForumMentions — default boot has no DATABASE_URL', async ({ request }) => {
   expect((await request.get('/healthz')).status()).toBe(200);
 });
