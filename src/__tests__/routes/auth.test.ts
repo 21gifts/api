@@ -136,6 +136,7 @@ describe('auth routes', () => {
       expect(body.options.user.name).toBe('provisioned');
       expect(body).not.toHaveProperty('ok');
       expect(body).not.toHaveProperty('value');
+      expect((await store.listAccounts()).map((row) => row.id)).toEqual(['provisioned']);
     });
 
     it('returns 404 when begin viewKey is unknown', async () => {
@@ -450,6 +451,65 @@ describe('auth routes', () => {
       expect(await store.listPasskeyChallenges()).toEqual([]);
     });
 
+    it('returns 400 when begin name starts with a dot', async () => {
+      const store = new InMemoryAuthStore();
+      const res = await mount(store).request('/auth/passkey/register/begin', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ name: '.ada' }),
+      });
+      expect(res.status).toBe(400);
+      expect(await res.json()).toEqual({
+        error: 'Username must be 1–32 characters of a-z, 0-9, hyphen, underscore, or dot',
+      });
+      expect(await store.listPasskeyChallenges()).toEqual([]);
+    });
+
+    it('returns 400 when begin name is a lone underscore', async () => {
+      const store = new InMemoryAuthStore();
+      const res = await mount(store).request('/auth/passkey/register/begin', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ name: '_' }),
+      });
+      expect(res.status).toBe(400);
+      expect(await res.json()).toEqual({
+        error: 'Username must be 1–32 characters of a-z, 0-9, hyphen, underscore, or dot',
+      });
+      expect(await store.listPasskeyChallenges()).toEqual([]);
+    });
+
+    it('returns 400 when begin name is 33 characters', async () => {
+      const store = new InMemoryAuthStore();
+      const res = await mount(store).request('/auth/passkey/register/begin', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ name: 'a'.repeat(33) }),
+      });
+      expect(res.status).toBe(400);
+      expect(await res.json()).toEqual({
+        error: 'Username must be 1–32 characters of a-z, 0-9, hyphen, underscore, or dot',
+      });
+      expect(await store.listPasskeyChallenges()).toEqual([]);
+    });
+
+    it('issues options for a 32-character begin name', async () => {
+      const store = new InMemoryAuthStore();
+      const name = 'a' + 'b'.repeat(31);
+      const res = await mount(store).request('/auth/passkey/register/begin', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ name }),
+      });
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as {
+        options: { user: { id: string; name: string; displayName: string } };
+      };
+      expect(body.options.user.name).toBe(name);
+      expect(body.options.user.displayName).toBe(name);
+      expect(body.options.user.id).not.toBe(name);
+    });
+
     it('returns 409 when begin name is already in use', async () => {
       const store = new InMemoryAuthStore();
       await store.createAccount({
@@ -656,6 +716,7 @@ describe('auth routes', () => {
       };
       expect(body.options.user.displayName).toBe('Ada');
       expect(body.options.user.name).toBe('provisioned');
+      expect((await store.listAccounts()).map((row) => row.id)).toEqual(['provisioned']);
     });
   });
 
