@@ -342,10 +342,12 @@ export interface ConversationStore {
 
   /**
    * Count of listed inbox threads with unread inbound for this viewer.
-   * Same visibility as GET `/conversations` `unreadCount`: listed threads
-   * with `hasUnread`. Outbound-only own platform tickets are listed but
-   * unread false. Empty/outbound-only member threads omitted. Scan capped
-   * at `CONVERSATION_LIST_LIMIT`.
+   * Does not keep a thread only because its latest message is from the
+   * viewer. The number still matches GET `/conversations` `unreadCount`
+   * because those extra rows are unread false. Outbound-only own platform
+   * tickets stay unread false. Empty threads stay omitted. When `moderator`
+   * is true, `moderator_group` is included. Scan capped at
+   * `CONVERSATION_LIST_LIMIT`.
    *
    * @param accountId - Session account.
    * @param staff - Moderator (sees all platform threads).
@@ -498,7 +500,9 @@ export interface ConversationStore {
 }
 
 /**
- * Listed GET `/conversations` unread count (same filter/cap as the list).
+ * Badge unread count. Same cap as GET `/conversations`, but does not keep
+ * a thread only because its latest message is from the viewer. Those rows
+ * are unread false, so the number matches the list envelope.
  */
 async function listedUnreadCount(
   store: Pick<
