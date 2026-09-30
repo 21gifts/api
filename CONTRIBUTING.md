@@ -558,8 +558,9 @@ fresh A38 enforce pass on the current head, `dfx pr guard` approves those
 waiting initial runs, then sets Ready when the required GitHub jobs are green
 and the PR is mergeable. The merger does not click Approve and run workflows.
 Do not ask a maintainer to approve workflow runs. Post the light A38 report
-on the current head. Every new head needs a new report. Authors with write
-access to `21gifts/api` do not need a report.
+on the current head only when the pinned standard requires one. A head that
+still requires a report needs a new report. That standard defines the waivers,
+including write access and a markdown-only or guard-docs change set.
 
 ## Docker
 
