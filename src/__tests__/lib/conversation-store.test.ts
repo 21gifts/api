@@ -1661,6 +1661,62 @@ describe('PostgresConversationStore', () => {
     expect(await store.getMessageByEventId('ab'.repeat(32))).toBeDefined();
   });
 
+  it('drops mention marks that are not a profile and ignores broken json', async () => {
+    const sql = new MockSql();
+    const base = {
+      conversation_id: 'c1',
+      text: 'hi',
+      created_at: NOW,
+      sender_account_id: 'acc',
+      sender_pubkey: null,
+      name: 'Ada',
+      actor_account_id: null,
+      actor_name: '',
+      gift_for_message_id: null,
+      event_id: null,
+      nostr_publish_state: 'pending',
+      nostr_event: null,
+      claimed_until: null,
+    };
+    sql.nextRows = [
+      {
+        ...base,
+        id: 'm-mixed',
+        mentions: JSON.stringify([
+          null,
+          'nope',
+          1,
+          { accountId: 'acc-ada', username: '' },
+          { accountId: 'acc-ada', username: 1 },
+          { accountId: 1, username: 'ada' },
+          { accountId: 'acc-ada', username: 'ada' },
+        ]),
+      },
+    ];
+    const store = new PostgresConversationStore(sql);
+    const mixed = await store.listMessages('c1', 5);
+    expect(mixed[0]?.mentions).toEqual([{ accountId: 'acc-ada', username: 'ada' }]);
+
+    sql.nextRows = [
+      {
+        ...base,
+        id: 'm-array',
+        mentions: [null, 'nope', { accountId: 'acc-ada', username: 'ada' }],
+      },
+    ];
+    const asArray = await store.listMessages('c1', 5);
+    expect(asArray[0]?.mentions).toEqual([{ accountId: 'acc-ada', username: 'ada' }]);
+
+    sql.nextRows = [{ ...base, id: 'm-broken', mentions: '{' }];
+    const broken = await store.listMessages('c1', 5);
+    expect(broken[0]).toBeDefined();
+    expect(broken[0]?.mentions).toBeUndefined();
+
+    sql.nextRows = [{ ...base, id: 'm-object', mentions: JSON.stringify({ accountId: 'x' }) }];
+    const objectValue = await store.listMessages('c1', 5);
+    expect(objectValue[0]?.mentions).toBeUndefined();
+  });
+
   it('lists a Postgres thread page newest-first in SQL and reverses a copy', async () => {
     const sql = new MockSql();
     const newest = new Date(NOW.getTime() + 1000);
