@@ -3187,7 +3187,7 @@ Builds the operator-only external-pubkey inspection route.
 
 - **Purpose:** After listen, POST each existing live top-level shop pin to the OpenCryptoPay map at `/map/places`. A missing map push does nothing. Replies, hidden notes, notes without a pin, and notes without the shop tag are skipped. Create-once means a later 200 is success. BTC Map is not called here.
 - **Inputs:** Optional map push, `listPlaces` (capped at 1000), `getById`, and the hashtag check.
-- **Returns / side effects:** Resolves when the walk finishes. Does not reject. A failed list, a failed load, a non-2xx answer, or a thrown fetch logs `ocp.place.failed` and the walk continues. Timeout is 5000 ms. Nothing is logged except that event name.
+- **Returns / side effects:** Resolves when the walk finishes or when listing pins fails. Does not reject. A failed list logs `ocp.place.failed` and returns. A failed load, a non-2xx answer, or a thrown fetch logs `ocp.place.failed` and the walk continues. Timeout is 5000 ms. Nothing is logged except that event name.
 - **Used by:** The process entry point, once, after listen. Not on the welcome interval.
 
 ## Function: resolveMapPush
