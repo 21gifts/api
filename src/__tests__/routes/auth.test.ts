@@ -291,12 +291,23 @@ describe('auth routes', () => {
       expect(res.status).toBe(200);
       const body = (await res.json()) as {
         token: string;
-        account: { id: string; linkingKey: string | null; viewKey: string; hasPosted: boolean };
+        account: {
+          id: string;
+          linkingKey: string | null;
+          viewKey: string;
+          hasPosted: boolean;
+          setup: string;
+        };
       };
       expect(body.token).toMatch(/^[0-9a-f]{64}$/);
       expect(body.account.linkingKey).toBeNull();
       expect(body.account.viewKey).toMatch(/^[0-9a-f]{64}$/);
       expect(body.account.hasPosted).toBe(false);
+      expect(body.account.setup).toBe('name');
+      const stored = await store.getAccount(body.account.id);
+      expect(stored?.name).toBeNull();
+      expect(stored?.username).toBeUndefined();
+      expect(stored?.nameSkippedAt).toBeNull();
       expect(
         parsedEvents(warn).some(
           (e) => e['event'] === 'auth.passkey.register.ok' && e['accountId'] === body.account.id,

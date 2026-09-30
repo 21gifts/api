@@ -16,6 +16,7 @@ import {
 } from '@/lib/auth/passkey';
 import * as authService from '@/lib/auth/service';
 import { WRONG_ACCOUNT_ERROR } from '@/lib/auth/wrong-account';
+import { accountSetup } from '@/lib/auth/account-setup';
 import { FakePasskeyCeremony } from '@/__tests__/helpers/fake-passkey';
 
 const T0 = 1_000_000;
@@ -242,6 +243,12 @@ describe('passkey registration', () => {
     const stored = await store.getAccount(finish.value.account.id);
     expect(stored?.name).toBeNull();
     expect(stored?.username).toBeUndefined();
+    expect(stored).toBeDefined();
+    if (!stored) {
+      return;
+    }
+    expect(stored.nameSkippedAt).toBeNull();
+    expect(accountSetup(stored)).toBe('name');
   });
 
   it('refuses finish when the stored requested name is no longer valid', async () => {
