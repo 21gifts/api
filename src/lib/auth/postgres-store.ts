@@ -86,6 +86,7 @@ interface PasskeyChallengeRow {
   account_id: string | null;
   consumed: boolean;
   created_at: Date | string;
+  requested_name?: string | null;
 }
 
 /** Row shape of `passkey_credential`. */
@@ -591,7 +592,7 @@ LIMIT $2`,
 
   async listPasskeyChallenges(): Promise<PasskeyChallenge[]> {
     const rows = await this.#sql.query<PasskeyChallengeRow>(
-      `SELECT id, type, challenge, account_id, consumed, created_at
+      `SELECT id, type, challenge, account_id, consumed, created_at, requested_name
        FROM passkey_challenge
        ORDER BY created_at DESC, id DESC`,
     );
@@ -708,8 +709,8 @@ LIMIT $2`,
   async createPasskeyChallenge(challenge: PasskeyChallenge): Promise<void> {
     await this.#evictExpiredPasskeyChallenges(challenge.createdAt);
     await this.#sql.execute(
-      `INSERT INTO passkey_challenge (id, type, challenge, account_id, consumed, created_at)
-       VALUES ($1, $2, $3, $4, $5, to_timestamp($6::double precision / 1000.0))`,
+      `INSERT INTO passkey_challenge (id, type, challenge, account_id, consumed, created_at, requested_name)
+       VALUES ($1, $2, $3, $4, $5, to_timestamp($6::double precision / 1000.0), $7)`,
       [
         challenge.id,
         challenge.type,
@@ -717,13 +718,14 @@ LIMIT $2`,
         challenge.accountId,
         challenge.consumed,
         challenge.createdAt,
+        challenge.requestedName ?? null,
       ],
     );
   }
 
   async getPasskeyChallenge(id: string): Promise<PasskeyChallenge | undefined> {
     const rows = await this.#sql.query<PasskeyChallengeRow>(
-      `SELECT id, type, challenge, account_id, consumed, created_at
+      `SELECT id, type, challenge, account_id, consumed, created_at, requested_name
        FROM passkey_challenge WHERE id = $1`,
       [id],
     );
@@ -735,7 +737,8 @@ LIMIT $2`,
     const rows = await this.#sql.query<{ id: string }>(
       `UPDATE passkey_challenge
        SET type = $2, challenge = $3, account_id = $4, consumed = $5,
-           created_at = to_timestamp($6::double precision / 1000.0)
+           created_at = to_timestamp($6::double precision / 1000.0),
+           requested_name = $7
        WHERE id = $1 AND consumed = false
        RETURNING id`,
       [
@@ -745,6 +748,7 @@ LIMIT $2`,
         challenge.accountId,
         challenge.consumed,
         challenge.createdAt,
+        challenge.requestedName ?? null,
       ],
     );
     return rows[0] !== undefined;
@@ -1090,6 +1094,7 @@ function mapPasskeyChallenge(row: PasskeyChallengeRow): PasskeyChallenge {
     accountId: row.account_id,
     consumed: row.consumed,
     createdAt: epochMs(row.created_at),
+    requestedName: row.requested_name ?? null,
   };
 }
 

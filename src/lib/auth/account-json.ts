@@ -354,6 +354,8 @@ export interface PasskeyChallengeDebug {
   consumed: boolean;
   /** Issue time (epoch ms). */
   createdAt: number;
+  /** Normalised signup handle, or null when this challenge did not ask for one. */
+  requestedName: string | null;
 }
 
 /** Operator GET `/debug/accounts/:id` body. */
@@ -456,6 +458,7 @@ export function serializeDebugPasskeyChallenge(challenge: PasskeyChallenge): Pas
     accountId: challenge.accountId,
     consumed: challenge.consumed,
     createdAt: challenge.createdAt,
+    requestedName: challenge.requestedName ?? null,
   };
 }
 

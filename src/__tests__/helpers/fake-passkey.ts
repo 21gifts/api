@@ -12,7 +12,8 @@ export class FakePasskeyCeremony implements PasskeyCeremony {
   /**
    * Return a fixed creation challenge for tests.
    *
-   * @param input - RP and user entity (user fields unused by the fake);
+   * @param input - RP and user entity (`id` is UTF-8 of `userID`, `name` is
+   *   `userName`, `displayName` is `userDisplayName`);
    *   optional `excludeCredentials` is copied onto the stub options.
    * @returns A fixed challenge and a stub creation-options object.
    */
@@ -29,7 +30,11 @@ export class FakePasskeyCeremony implements PasskeyCeremony {
       options: {
         challenge: 'test-challenge',
         rp: { id: input.rpID, name: input.rpName },
-        user: { id: input.userName, name: input.userName, displayName: input.userDisplayName },
+        user: {
+          id: new TextDecoder().decode(input.userID),
+          name: input.userName,
+          displayName: input.userDisplayName,
+        },
         pubKeyCredParams: [],
         ...(input.excludeCredentials === undefined
           ? {}

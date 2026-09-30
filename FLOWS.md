@@ -38,14 +38,21 @@ clears the token; a transient failure does not.
 
 1. App calls `POST /auth/passkey/register/begin` (new account, or
    `{ "viewKey" }` to claim a provisioned profile) or
-   `POST /auth/passkey/authenticate/begin` (returning).
+   `POST /auth/passkey/authenticate/begin` (returning). For a new account,
+   begin may send `{ "name": "<handle>" }` (not together with a claim). The
+   normalised handle is the WebAuthn name and display name. An empty body
+   stays nameless (user name is the new UUID, display name `21.gifts`).
 2. Browser runs `navigator.credentials.create` / `get` with the returned
    `options` (no WebAuthn library in the app).
 3. App posts the credential to the matching `…/finish` with the page
-   `Origin`. The api verifies and returns `{ token, account }` immediately.
-   An account with `sessionRefused` (operator flag on the row) is refused at
-   finish and on `GET /me` with 403 and no new bearer, so the client can sign
-   the visitor out.
+   `Origin`. Finish does not send the name again. The api verifies and
+   returns `{ token, account }` immediately. When begin stored a name,
+   `account.name` and `account.username` are that handle and `setup` is
+   `lightning-address`. Nameless stays `setup` `name`. A name taken between
+   begin and finish is 409 and creates no account. An account with
+   `sessionRefused` (operator flag on the row) is refused at finish and on
+   `GET /me` with 403 and no new bearer, so the client can sign the visitor
+   out.
 
 Login is passkey-only. LNURL-auth has been removed.
 
