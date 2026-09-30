@@ -525,7 +525,12 @@ export function conversationRoutes(deps: ConversationRouteDeps): Hono {
             thread.kind === 'member_platform' &&
             thread.accountA === account.id &&
             (thread.lastText !== '' || thread.lastSats > 0);
-          if (!inbound && !ownContactTicket) {
+          const sentByViewer = conversationFromMe({
+            senderAccountId: thread.lastSenderAccountId,
+            actorAccountId: thread.lastActorAccountId,
+            viewerId: account.id,
+          });
+          if (!inbound && !ownContactTicket && !sentByViewer) {
             continue;
           }
           const unreadMessageCount = await deps.store.countUnread(

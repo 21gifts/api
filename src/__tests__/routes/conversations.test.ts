@@ -249,7 +249,7 @@ describe('GET /conversations', () => {
     expect(res.status).toBe(401);
   });
 
-  it('omits a member thread when only the viewer sent', async () => {
+  it('lists a member thread when only the viewer sent', async () => {
     const auth = await seeded();
     await withOther(auth);
     const conversations = new InMemoryConversationStore();
@@ -271,9 +271,55 @@ describe('GET /conversations', () => {
     const res = await mount(auth, conversations).request('/conversations', { headers: AUTH });
     expect(res.status).toBe(200);
     const body = (await res.json()) as {
-      conversations: Array<{ kind: string; name: string; lastText: string; lastFromMe: boolean }>;
+      conversations: Array<{
+        kind: string;
+        lastFromMe: boolean;
+        lastText: string;
+        lastMessageId: string | null;
+        accountId?: string;
+        unread: boolean;
+      }>;
     };
-    expect(body.conversations).toHaveLength(0);
+    expect(body.conversations).toHaveLength(1);
+    expect(body.conversations[0]?.kind).toBe('member_member');
+    expect(body.conversations[0]?.lastFromMe).toBe(true);
+    expect(body.conversations[0]?.lastText).toBe('hi');
+    expect(body.conversations[0]?.lastMessageId).toBe('m1');
+    expect(body.conversations[0]?.accountId).toBe('other');
+    expect(body.conversations[0]?.unread).toBe(false);
+  });
+
+  it('lists a member thread when the last row is gift-only', async () => {
+    const auth = await seeded();
+    await withOther(auth);
+    const conversations = new InMemoryConversationStore();
+    const thread = await conversations.openMemberMember('acc', 'other', new Date(now()));
+    await conversations.appendMessage({
+      id: 'm-gift',
+      conversationId: thread.id,
+      text: '',
+      createdAt: new Date(now()),
+      senderAccountId: 'acc',
+      senderPubkey: null,
+      name: 'Ada',
+      sats: 21,
+      eventId: null,
+      nostrPublishState: 'skipped',
+      nostrEvent: null,
+      claimedUntil: null,
+    });
+    const res = await mount(auth, conversations).request('/conversations', { headers: AUTH });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      conversations: Array<{
+        kind: string;
+        lastText: string;
+        lastSats: number;
+      }>;
+    };
+    expect(body.conversations).toHaveLength(1);
+    expect(body.conversations[0]?.lastSats).toBe(21);
+    expect(body.conversations[0]?.lastText).toBe('');
   });
 
   it('lists the member own platform thread when only the member sent', async () => {
@@ -1048,7 +1094,7 @@ describe('GET /conversations', () => {
     expect(parsedEvents(warn).some((e) => e['event'] === 'conversations.list.failed')).toBe(true);
   });
 
-  it('omits an outbound-only member thread and reports unreadCount 0', async () => {
+  it('lists an outbound-only member thread and reports unreadCount 0', async () => {
     const auth = await seeded();
     await withOther(auth);
     const conversations = new InMemoryConversationStore();
@@ -1070,11 +1116,40 @@ describe('GET /conversations', () => {
     const res = await mount(auth, conversations).request('/conversations', { headers: AUTH });
     expect(res.status).toBe(200);
     const body = (await res.json()) as {
-      conversations: unknown[];
+      conversations: Array<{ unread: boolean }>;
       unreadCount: number;
     };
-    expect(body.conversations).toHaveLength(0);
+    expect(body.conversations).toHaveLength(1);
+    expect(body.conversations[0]?.unread).toBe(false);
     expect(body.unreadCount).toBe(0);
+  });
+
+  it('lists an outbound-only member_damus thread', async () => {
+    const auth = await seeded();
+    const conversations = new InMemoryConversationStore();
+    const thread = await conversations.openMemberDamus('acc', 'aa'.repeat(32), new Date(now()));
+    await conversations.appendMessage({
+      id: 'm-out',
+      conversationId: thread.id,
+      text: 'hi',
+      createdAt: new Date(now()),
+      senderAccountId: 'acc',
+      senderPubkey: null,
+      name: 'Ada',
+      sats: 0,
+      eventId: null,
+      nostrPublishState: 'pending',
+      nostrEvent: null,
+      claimedUntil: null,
+    });
+    const res = await mount(auth, conversations).request('/conversations', { headers: AUTH });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      conversations: Array<{ kind: string; accountId?: string }>;
+    };
+    expect(body.conversations).toHaveLength(1);
+    expect(body.conversations[0]?.kind).toBe('member_damus');
+    expect(body.conversations[0]).not.toHaveProperty('accountId');
   });
 
   it('lists own outbound-only platform contact with unread false', async () => {

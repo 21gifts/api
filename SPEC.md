@@ -4713,10 +4713,11 @@ Success → **Response** `200`:
 
 Bearer session required. Nothing public. Lists threads the session may see:
 own member↔member / member↔Damus / member↔platform threads, plus (when
-the role is at least `moderator`) every platform thread. Empty threads
-and outbound-only member/Damus threads (every stored message is
-`conversationFromMe` for the viewer — the actor, else the sender) are
-omitted. The member's own `member_platform` contact thread is listed when
+the role is at least `moderator`) every platform thread. A thread is
+listed when it has an inbound message for the viewer, or when its latest
+message is from the viewer (the actor, else the sender). Empty threads
+stay omitted. One-sided rows are `unread: false`. The member's own
+`member_platform` contact thread is listed when
 it has a message, even if outbound-only. Damus inbound (null sender) is
 inbound and listed. This list never includes `moderator_group` regardless of
 role. The closed group is `GET /conversations/moderator-group`
@@ -4765,11 +4766,14 @@ Success → **Response** `200`:
 `lastMessageId` is the id of the same newest row as `lastText` (`created_at`
 then `id`, both descending), or `null` when the thread has no message.
 `unreadCount` is the number of listed rows with `unread: true` (same
-cap/filter, not a second uncapped query; menu/PWA badge). Per-row
+cap, not a second uncapped query). The menu/PWA badge matches that
+number because a row kept only because its latest message is from the
+viewer is `unread: false`. Per-row
 `unreadMessageCount` is the number of inbound messages strictly after
 last-read (`0` when none; gift-only inbound counts; outbound does not).
-Per-row `unread` is `unreadMessageCount > 0` (outbound-only listed contact
-tickets are `false`). List GET does not stamp last-read. `accountId` is the
+Per-row `unread` is `unreadMessageCount > 0` (outbound-only listed rows,
+including contact tickets, are `false`). List GET does not stamp
+last-read. `accountId` is the
 counterpart 21.gifts account. It is omitted for Damus-only counterparts
 (never JSON `null`).
 

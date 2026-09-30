@@ -285,8 +285,8 @@ export interface ConversationStore {
 
   /**
    * True when the thread has at least one inbound message for the viewer
-   * (`conversationIsInbound`). Used by GET /conversations to omit empty
-   * and outbound-only threads.
+   * (`conversationIsInbound`). GET /conversations also keeps a thread
+   * whose latest message is from the viewer. Empty threads stay omitted.
    *
    * @param conversationId - Thread to inspect.
    * @param viewerId - Session account.
@@ -342,15 +342,17 @@ export interface ConversationStore {
 
   /**
    * Count of listed inbox threads with unread inbound for this viewer.
-   * Same visibility as GET `/conversations` `unreadCount`: listed threads
-   * with `hasUnread`. Outbound-only own platform tickets are listed but
-   * unread false. Empty/outbound-only member threads omitted. Scan capped
-   * at `CONVERSATION_LIST_LIMIT`.
+   * Does not keep a thread only because its latest message is from the
+   * viewer. The number still matches GET `/conversations` `unreadCount`
+   * because those extra rows are unread false. Outbound-only own platform
+   * tickets stay unread false. Empty threads stay omitted. When `moderator`
+   * is true, `moderator_group` is included. Scan capped at
+   * `CONVERSATION_LIST_LIMIT`.
    *
    * @param accountId - Session account.
    * @param staff - Moderator (sees all platform threads).
    * @param platformId - Official platform account id, or `null` when none.
-   * @param moderator - When true, include `moderator_group` (same as GET list).
+   * @param moderator - When true, include `moderator_group`.
    * @returns Number of listed unread threads.
    */
   unreadCount(
@@ -498,7 +500,9 @@ export interface ConversationStore {
 }
 
 /**
- * Listed GET `/conversations` unread count (same filter/cap as the list).
+ * Badge unread count. Same cap as GET `/conversations`, but does not keep
+ * a thread only because its latest message is from the viewer. Those rows
+ * are unread false, so the number matches the list envelope.
  */
 async function listedUnreadCount(
   store: Pick<
@@ -955,12 +959,15 @@ export class InMemoryConversationStore implements ConversationStore {
   }
 
   /**
-   * Count listed unread threads for this viewer (GET list rules).
+   * Count listed unread threads for this viewer.
+   * Does not keep a thread only because its latest message is from the
+   * viewer. The number still matches GET `/conversations` `unreadCount`
+   * because those extra rows are unread false.
    *
    * @param accountId - Session account.
    * @param staff - Moderator.
    * @param platformId - Official platform account id, or `null`.
-   * @param moderator - When true, include `moderator_group` (same as GET list).
+   * @param moderator - When true, include `moderator_group`.
    * @returns Listed unread count.
    */
   unreadCount(
@@ -1575,12 +1582,15 @@ export class PostgresConversationStore implements ConversationStore {
   }
 
   /**
-   * Count listed unread threads for this viewer (GET list rules).
+   * Count listed unread threads for this viewer.
+   * Does not keep a thread only because its latest message is from the
+   * viewer. The number still matches GET `/conversations` `unreadCount`
+   * because those extra rows are unread false.
    *
    * @param accountId - Session account.
    * @param staff - Moderator.
    * @param platformId - Official platform account id, or `null`.
-   * @param moderator - When true, include `moderator_group` (same as GET list).
+   * @param moderator - When true, include `moderator_group`.
    * @returns Listed unread count.
    */
   unreadCount(
