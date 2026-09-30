@@ -6,6 +6,7 @@ import { decodeBolt11, inspectBolt11 } from '@/lib/bolt11';
 import { fetchBtcUsdSpot } from '@/lib/btc-usd-spot';
 import { LN_ADDRESS_CACHE_TTL_MS } from '@/lib/config';
 import { unsignedConversationDefaults } from '@/lib/conversation';
+import { resolveMentionMarks } from '@/lib/mention';
 import type { ConversationStore } from '@/lib/conversation-store';
 import { errorLogFields, logEvent, type LogFields } from '@/lib/log';
 import {
@@ -2511,11 +2512,15 @@ async function appendConversationGift(args: {
   const nameTrim = payer?.name?.trim() ?? '';
   const name = nameTrim !== '' ? nameTrim : truncatePubkeyDisplay(pubkey === '' ? 'npub' : pubkey);
   const text = commentFromZapRequest(args.invoice.zapRequest);
+  const mentions = await resolveMentionMarks(text, (username) =>
+    args.auth.getAccountByUsername(username),
+  );
   await args.conversations.appendMessage(
     {
       id: conversationMessageId,
       conversationId,
       text,
+      ...(mentions.length > 0 ? { mentions } : {}),
       createdAt: new Date(args.now()),
       senderAccountId: args.invoice.payerAccountId,
       senderPubkey: pubkey === '' ? null : pubkey,

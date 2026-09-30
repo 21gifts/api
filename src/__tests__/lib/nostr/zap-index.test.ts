@@ -9764,6 +9764,103 @@ describe('conversation zap ingest', () => {
     expect(rows[0]?.amountEur).toBe('4.50');
     expect(rows[0]?.amountPhp).toBe('280.00');
     expect(rows[0]?.nostrPublishState).toBe('pending');
+    expect(rows[0]?.mentions).toBeUndefined();
+  });
+
+  it('stores a profile mark on a paid inbox gift and does not mark an address', async () => {
+    const store = new InMemoryMessageStore();
+    const auth = new InMemoryAuthStore();
+    const profileId = await seedStore({
+      store,
+      auth,
+      accountId: 'acc-pn-recv-mark',
+      lightningAddress: 'recv-mark@example.com',
+      messageId: 'm-pn-profile-mark',
+    });
+    await auth.createAccount({
+      id: 'acc-pn-pay-mark',
+      linkingKey: null,
+      role: 'basis',
+      name: 'Pat',
+      lightningAddress: 'pat-mark@example.com',
+      lightningAddressVerified: true,
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: viewKeyFor('acc-pn-pay-mark'),
+      createdAt: 2,
+      rulesAgreedAt: null,
+    });
+    await auth.createAccount({
+      id: 'marites',
+      linkingKey: null,
+      role: 'basis',
+      name: 'Marites Villanueva',
+      username: 'marites',
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: viewKeyFor('marites'),
+      createdAt: 3,
+      rulesAgreedAt: null,
+    });
+    const conversations = new InMemoryConversationStore();
+    const thread = await conversations.openMemberMember(
+      'acc-pn-pay-mark',
+      'acc-pn-recv-mark',
+      new Date('2026-08-28T00:00:00.000Z'),
+    );
+    const giftId = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee';
+    await store.recordInvoiceAttempt({
+      id: 'inv-pn-mark',
+      createdAt: new Date('2026-08-28T00:00:00.000Z'),
+      messageId: profileId,
+      payerAccountId: 'acc-pn-pay-mark',
+      authorAccountId: 'acc-pn-recv-mark',
+      amountSats: 21,
+      lightningAddress: 'recv-mark@example.com',
+      zapRequest: {
+        tags: [['e', NOTE_EVENT_ID]],
+        content: 'see @Marites ada@walletofsatoshi.com',
+      },
+      result: 'ok',
+      httpStatus: 200,
+      pr: 'lnbc-pn-mark',
+      paymentHash: 'ae'.repeat(32),
+      description: null,
+      descriptionHash: null,
+      isNip57Invoice: true,
+      lnurlResponse: null,
+      conversationId: thread.id,
+      conversationMessageId: giftId,
+    });
+    const querier = new RecordingQuerier();
+    querier.events = [
+      {
+        id: 'r-pn-mark',
+        pubkey: PROVIDER_PUBKEY,
+        kind: 9735,
+        tags: [
+          ['e', NOTE_EVENT_ID],
+          ['bolt11', 'lnbc-pn-mark'],
+        ],
+      },
+    ];
+    mockedDecode.mockReturnValue({ paymentHash: 'ae'.repeat(32), amountMsat: 21_000 });
+    await ingest({
+      store,
+      auth,
+      querier,
+      urls: URLS,
+      timeoutMs: 50,
+      now: () => Date.parse('2026-08-28T00:00:00.000Z'),
+      fetchImpl: lnurlFetch(PROVIDER_PUBKEY),
+      conversations,
+      fiatRates: new InMemoryFiatStore(),
+    });
+    const rows = await conversations.listMessages(thread.id, 10);
+    expect(rows[0]?.text).toBe('see @Marites ada@walletofsatoshi.com');
+    expect(rows[0]?.mentions).toEqual([{ accountId: 'marites', username: 'marites' }]);
   });
 
   it('indexes an already-inserted PN gift on a second tick without rejecting', async () => {

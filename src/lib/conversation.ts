@@ -119,6 +119,11 @@ export interface ConversationMessageRow {
   nostrEvent: Record<string, unknown> | null;
   /** Lease expiry (epoch ms), or null. */
   claimedUntil: number | null;
+  /**
+   * `@username` marks resolved at send time. Absent or empty when the text
+   * marks nobody. A mark is a profile link only. It does not notify.
+   */
+  mentions?: readonly { accountId: string; username: string }[];
 }
 
 /** Member-facing conversation list row. */
@@ -195,6 +200,11 @@ export interface PublicConversationMessage {
    * when `giftForMessageId` is null or empty.
    */
   giftFor?: string;
+  /**
+   * Profile links in `text`. Omitted when the message marks nobody.
+   * Reading a mark does not notify that account.
+   */
+  mentions?: { accountId: string; username: string }[];
 }
 
 /**
@@ -327,6 +337,12 @@ export function serializeConversationMessage(
   }
   if (typeof row.giftForMessageId === 'string' && row.giftForMessageId !== '') {
     json.giftFor = row.giftForMessageId;
+  }
+  if (row.mentions !== undefined && row.mentions.length > 0) {
+    json.mentions = row.mentions.map((mark) => ({
+      accountId: mark.accountId,
+      username: mark.username,
+    }));
   }
   return json;
 }

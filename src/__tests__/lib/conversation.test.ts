@@ -325,6 +325,21 @@ describe('serializeConversationMessage', () => {
     expect(json.giftFor).toBe('m-trigger');
   });
 
+  it('emits mentions when the row marks someone and omits an empty list', () => {
+    const json = serializeConversationMessage(
+      {
+        ...ROW,
+        mentions: [{ accountId: 'acc-marites', username: 'marites' }],
+      },
+      false,
+    );
+    expect(json.mentions).toEqual([{ accountId: 'acc-marites', username: 'marites' }]);
+    expect(serializeConversationMessage(ROW, false)).not.toHaveProperty('mentions');
+    expect(serializeConversationMessage({ ...ROW, mentions: [] }, false)).not.toHaveProperty(
+      'mentions',
+    );
+  });
+
   it('omits giftFor when giftForMessageId is unset or null', () => {
     expect(serializeConversationMessage(ROW, false)).not.toHaveProperty('giftFor');
     expect(
