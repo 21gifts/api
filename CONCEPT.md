@@ -322,9 +322,9 @@ WebAuthn Passkey (PRF extension)
 
 Putting the same account on a new phone does two things only: a new passkey
 on that account, and the same 12-word backup. Mein Konto absichern is
-optional. The account works without it. A holder who continues is told what
+optional. The account works without it. An owner who continues is told what
 it does, then chooses two people. Both are required.
-If a moderator verified the holder, that person is suggested as person 1 and
+If a moderator verified the owner, that person is suggested as person 1 and
 can be replaced. 21.gifts does not hold a share. Specified in
 [`docs/social-recovery.md`](./docs/social-recovery.md). Not implemented.
 
@@ -988,7 +988,7 @@ repository — they're intentionally not part of this project's scope.
 | 2026-09-22 | A top-level forum note may store an optional place pin (latitude, longitude, label at most 80 characters). Replies cannot. Public JSON includes `place` only when set. `GET /messages/places` lists live top-level pins for a map. The label is not a kind:1 hashtag and is not the profile location.                                                                                                                                                                                                                                                                                                                                                                 |
 | 2026-09-24 | Initiator shares the moderator rank; permissions still name the minimum rank only. **Supersedes** the 2026-09-20 strict total order founder > moderator > verified > basis.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
 | 2026-09-29 | Social recovery of the user-held seed is specified in docs/social-recovery.md and is not implemented. Guardians hold SLIP-39 shares of the frozen mnemonic-v1 entropy. They do not hold the passkey. The api must not be the source of the public keys those shares are encrypted to. Custodial nsecs are out of scope.                                                                                                                                                                                                                                                                                                                                               |
-| 2026-09-30 | Mein Konto absichern is optional. The account works without it. A holder who continues is told what social recovery does, then chooses two people. Both are required to open the same account on a new device and restore the same 12 seed words. If a moderator verified the holder, that person is suggested as person 1 and can be replaced. 21.gifts does not hold a share. Specified in docs/social-recovery.md. Not implemented. **Supersedes** the 2026-09-29 social-recovery row.                                                                                                                                                                             |
+| 2026-09-30 | Mein Konto absichern is optional. The account works without it. An owner who continues is told what social recovery does, then chooses two people. Both are required to open the same account on a new device and restore the same 12 seed words. If a moderator verified the owner, that person is suggested as person 1 and can be replaced. 21.gifts does not hold a share. Specified in docs/social-recovery.md. Not implemented. **Supersedes** the 2026-09-29 social-recovery row.                                                                                                                                                                              |
 
 ## Next Steps
 

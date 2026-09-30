@@ -11,27 +11,29 @@ Recovery does two things, and nothing else:
 
 ## Decision
 
-The account holder starts this. It is not a side effect of being verified,
-and it is not required. The app offers **Mein Konto absichern**. The holder
-may ignore it. Sign-up, login, and every other use of the account work with
-no recovery set. Leaving the screen before two people are confirmed stores
-nothing.
+The owner starts this. The owner is the account being secured. Person 1 and
+person 2 are the two chosen people. Those words are not interchangeable. It
+is not a side effect of being verified, and it is not required. The app
+offers **Mein Konto absichern**. The owner may ignore it. Sign-up, login,
+and every other use of the account work with no recovery set. Leaving the
+screen before two people are confirmed stores nothing.
 
-When the holder continues, that screen explains the two results above, and
+When the owner continues, that screen explains the two results above, and
 that both chosen people are required. One person cannot reset the account.
-The holder then chooses exactly two people.
+The owner then chooses exactly two people.
 
-If a moderator has verified the holder, that moderator is suggested as
-person 1. The suggestion is not fixed. The holder can replace it with
+If a moderator has verified the owner, that moderator is suggested as
+person 1. The suggestion is not fixed. The owner can replace it with
 someone else. Person 2 has no suggestion. If nobody has verified the
-holder, both slots start empty.
+owner, both slots start empty.
 
 Each chosen person's share stays on that person's phone. 21.gifts does not
 hold a share and cannot reset the account. The server may store a copy of
 a sealed share. It has no key to open one.
 
-Both shares are required. There is no third share. A threshold of 1 cannot
-be stored.
+Both shares are required. There is no third share. A member threshold of 1
+cannot be stored. The SLIP-39 group threshold is 1 because there is one
+group, not because one share is enough.
 
 Daily login stays a passkey. The passkey private key is not one of these
 shares and never leaves the authenticator. On the new device the recovered
@@ -40,29 +42,32 @@ account, and they are shown as the same 12 words.
 
 ## Mein Konto absichern
 
-The action is offered to a signed-in holder. It is optional. Opening it
+The action is offered to a signed-in owner. It is optional. Opening it
 does not create shares, and closing it does not either. The screen
 explains, in order:
 
 - Both people together can put this account on a new phone and bring back
   the same 12 words.
 - One of them cannot.
-- The passkey used day to day stays on the holder's phone.
+- The passkey used day to day stays on the owner's phone.
 - Nothing else is recovered or moved.
 
-The holder then picks the two people. Person 1 is prefilled with the
+The owner then picks the two people. Person 1 is prefilled with the
 moderator who verified them, when that trust edge exists. Changing person
 1 is a normal choice, not an extra step. The two people must be two
-different 21.gifts accounts, and neither may be the holder. An account
+different 21.gifts accounts, and neither may be the owner. An account
 that cannot log in cannot be chosen.
 
-The set stays **inactive** until both phones have stored their share.
-Inactive means a reset cannot start. Choosing the names is not enough.
+Choosing the names is not enough, and it stores nothing. There is no set
+until both phones have stored a readable proof. Until then a reset cannot
+start. After that upload the set is **active**. It becomes **inactive**
+only later, if one of those stored shares is gone. Inactive means a reset
+cannot start.
 
 ## The 12 words
 
 The words are the phrase the phone already derives and never sends. When
-the holder continues past the explanation, their phone derives them again.
+the owner continues past the explanation, their phone derives them again.
 It does not generate a new secret.
 
 1. WebAuthn PRF `eval.first`, salt = SHA-256 of the UTF-8 string
@@ -107,7 +112,7 @@ master secret into a BIP-32 seed. That would not be these words.
 Both shares are required. There is no configuration of `t` or `n`.
 
 Each share is sealed to an X25519 key that person's phone shows, as a QR
-or as hex, to the holder's phone. The holder's phone does not take that
+or as hex, to the owner's phone. The owner's phone does not take that
 key from the api. The seal is a libsodium sealed box (`crypto_box_seal`:
 X25519, XSalsa20-Poly1305). The plaintext is one version byte `0x01`
 followed by the UTF-8 SLIP-39 mnemonic of that share (twenty words, single
@@ -116,40 +121,41 @@ ciphertext. It has no key to open it.
 
 ## Enrollment order
 
-1. The holder opens **Mein Konto absichern** and reads the explanation.
-   Stopping here stores nothing. If the holder continues, they confirm the
+1. The owner opens **Mein Konto absichern** and reads the explanation.
+   Stopping here stores nothing. If the owner continues, they confirm the
    two people. Person 1 may still be the suggested moderator, or someone
-   else.
-2. The holder's phone derives the existing 16 bytes, builds the two
+   else. Confirming the names still stores nothing.
+2. The owner's phone derives the existing 16 bytes, builds the two
    SLIP-39 shares, and checks that BIP-39 of the reconstruction is the
    phrase it just derived. It derives the Ed25519 bind public key and
    keeps that public key.
 3. For each chosen person, that phone shows a fresh X25519 public key and
-   an Ed25519 public key, and signs the holder's 32-byte nonce with that
-   Ed25519 key. The holder scans or pastes that payload and verifies the
-   signature. A mismatch aborts the ceremony. The holder seals that
+   an Ed25519 public key, and signs the owner's 32-byte nonce with that
+   Ed25519 key. The owner scans or pastes that payload and verifies the
+   signature. A mismatch aborts the ceremony. The owner seals that
    person's share to the scanned X25519 key. That phone stores the
    ciphertext, opens it once, checks the SLIP-39 identifier, discards the
    plaintext, and signs a readable-proof.
 4. The 16 bytes, the bind private key, and the share plaintexts are
    discarded once both seals exist. If the second person is not available
-   yet, their share stays sealed to a key on the holder's phone, and the
+   yet, their share stays sealed to a key on the owner's phone, and the
    plaintext is still discarded. One share is not enough to reconstruct
-   the phrase. The holder's phone opens that remaining share only to hand
+   the phrase. The owner's phone opens that remaining share only to hand
    it to the second person, then discards it.
-5. Only after both readable-proofs are stored does the holder's phone
+5. Only after both readable-proofs are stored does the owner's phone
    upload the bind public key, the SLIP-39 identifier, and the two
-   ciphertexts. The 16 bytes are not in the upload. Until both proofs
-   exist, the set is inactive and a reset cannot start.
+   ciphertexts. That upload creates the set as `active`. The 16 bytes are
+   not in the upload. Until both proofs exist, nothing is stored and a
+   reset cannot start.
 
-The nonce is generated on the holder's phone. The api does not choose it.
+The nonce is generated on the owner's phone. The api does not choose it.
 The signed enrollment message is UTF-8, four lines, a newline between the
 lines, no trailing newline:
 
 ```text
-21gifts-recovery-holder-v1
+21gifts-recovery-person-v1
 <owner account id>
-<holder x25519 public key, lowercase hex>
+<person x25519 public key, lowercase hex>
 <nonce, lowercase hex>
 ```
 
@@ -160,7 +166,7 @@ uses the same rules over:
 21gifts-recovery-readable-v1
 <owner account id>
 <SLIP-39 identifier, lowercase hex>
-<holder ed25519 public key, lowercase hex>
+<person ed25519 public key, lowercase hex>
 ```
 
 A person who cannot open the seal cannot produce the proof. The proof is
@@ -173,10 +179,12 @@ replace person 1.
 
 A written export of a SLIP-39 share cannot be deleted. Resignation deletes
 the server ciphertext and asks that phone to delete its local copy. The
-holder is told this before confirming the two people. If either share is
-gone, fewer than two shares remain, the set is inactive, and a reset
-cannot start until the holder, who can still open the phrase with their
-passkey, runs the ceremony again.
+owner is told this before confirming the two people. If either share is
+gone after the set is `active`, fewer than two shares remain, the set
+becomes `inactive`, and a reset cannot start until the owner, who can
+still open the phrase with their passkey, runs the ceremony again. The
+new upload waits until both new proofs exist, then replaces the set as
+`active`. Until that upload, the set stays `inactive`.
 
 ## What the server may store
 
@@ -186,18 +194,21 @@ cannot decrypt a share.
 
 Conceptual records, not a schema migration:
 
-**Recovery set.** Owner account id. SLIP-39 identifier. Status `inactive`
-or `active`. Ed25519 bind public key. Created time. The account id that
-was suggested as person 1, if any, is not stored as a holder unless that
-person was the one confirmed.
+**Recovery set.** Created only by the upload in enrollment step 5, as
+`active`. Owner account id. SLIP-39 identifier. Ed25519 bind public key.
+Created time. Status `active`, or `inactive` after one stored share is
+later gone. The account suggested as person 1 is not stored unless that
+person was confirmed.
 
-**Share.** Set id. Holder account id. Ed25519 public key and X25519 public
-key the holder of the account verified by scan. Sealed ciphertext. Time
-the readable-proof succeeded. Exactly two rows once the set is active.
+**Share.** Set id. Chosen person's account id. Ed25519 public key and
+X25519 public key the owner verified by scan. Sealed ciphertext. Time the
+readable-proof succeeded. Exactly two rows while the set is `active`. An
+`inactive` set has fewer than two.
 
 Both people are 21.gifts accounts so the app on those phones can store
-the share and be asked to release it. A holder receives nothing except
-that share. `session_refused` cannot enroll, hold a share, or recover.
+the share and be asked to release it. A chosen person receives nothing
+except that share. `session_refused` cannot enroll, hold a share, or
+recover.
 
 ## Recovery
 
@@ -280,17 +291,24 @@ the 12 words is the same phrase, not a different secret.
 
 ```text
 no set
-  │ never opened, or left before two people are confirmed (stores nothing)
+  │ never opened, left before two people are confirmed, or a readable
+  │ proof is still missing (stores nothing)
   └── stays here
 
 no set
-  │ two people confirmed, one or both shares not yet stored
+  │ both readable-proofs stored
+  │ upload bind public key, identifier, and both ciphertexts
   ▼
-inactive ──────── both readable-proofs stored ────────► active
+active ──────── one share gone, or resignation ────────► inactive
 
-active recovery:
+inactive
+  │ ceremony again, both new readable-proofs stored
+  ▼
+active
+
+active recovery, only from active:
 draft (15 min, no account yet)
-        │ bind by username, or by a holder who selects the owner
+        │ bind by username, or by a chosen person who selects the owner
         ▼
      pending ────── owner passkey cancel, or device abandon, or sibling completed ──► cancelled
         │ 48h elapsed and both shares released
@@ -316,11 +334,11 @@ that still works is the cancel path during the 48 hours.
   recovery set. Closing the screen before two people are confirmed stores
   nothing. Continuing explains the two results, then asks for two people.
   Person 1 starts as the verifying moderator when one exists, and the
-  holder can replace that suggestion.
+  owner can replace that suggestion.
 - A fixed moderator, or a share held by the service, cannot be stored.
-- The holder's phone will not seal a share to a key that came from the
+- The owner's phone will not seal a share to a key that came from the
   api.
-- Before both readable-proofs, a reset cannot start.
+- Before both readable-proofs, nothing is stored and a reset cannot start.
 - A body that contains PRF results is rejected.
 - Replacing the phrase with different words stays refused.
 - After recovery, showing the words unwraps the stored wrap. It does not
