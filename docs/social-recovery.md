@@ -4,9 +4,11 @@ Status: **concept only**. Decided 2026-09-30. Not implemented. No HTTP path in
 this document is reserved. A later change that builds this adds its routes to
 `SPEC.md` in that same change. Nothing here changes runtime behaviour.
 
-This supersedes the 2026-09-29 social recovery of the user-held seed. That
-text split the 12-word backup and treated the result as a future Nostr key.
-This mechanism does neither. It has nothing to do with Nostr.
+This supersedes the 2026-09-29 text where the same shares were treated as a
+future Nostr key. Recovery does two things, and nothing else:
+
+1. The same 21.gifts account opens on a new device.
+2. The same 12 seed words come back.
 
 ## Decision
 
@@ -20,39 +22,44 @@ recovery shares. Two are assigned. The person chooses only the third.
 - The person chooses **one friend**. That share is stored on the friend's
   phone.
 
-Two shares reconstruct the recovery secret. One share does not. After the set
-is active, the verifier and 21.gifts together are enough, without the friend.
-The friend and the verifier are enough if the server is gone. The friend and
-21.gifts are enough if the verifier is gone.
+Two shares reconstruct the 16 bytes of the existing 12-word phrase. One share
+does not. After the set is active, the verifier and 21.gifts together are
+enough, without the friend. The friend and the verifier are enough if the
+server is gone. The friend and 21.gifts are enough if the verifier is gone.
 
 Daily login stays a passkey. The passkey private key is not one of these
-shares and never leaves the authenticator. Recovery puts the same account on
-a new phone by binding a new passkey. It does not import, move, or create a
-Nostr key.
+shares and never leaves the authenticator. On the new device those 16 bytes
+do only the two things above: they authorize one new passkey for this
+account, and they are shown as the same 12 words.
 
-## What is recovered
+## The 12 words
 
-The same account, on a new phone, with a new passkey bound to it.
+The words are the phrase the phone already derives and never sends. At the
+verification meeting the owner's phone derives them again. It does not
+generate a new secret.
 
-The secret is 16 bytes from a CSPRNG on the owner's phone at the verification
-meeting. It is not passkey PRF output, not `mnemonic-v1`, not the 12-word
-backup, and not a key used for Nostr. The phone shows it to nobody. It is not
-uploaded.
+1. WebAuthn PRF `eval.first`, salt = SHA-256 of the UTF-8 string
+   `21gifts-nostr-v1`.
+2. HKDF-SHA256, salt = UTF-8 `21gifts-seed-derivation`, info = UTF-8
+   `mnemonic-v1`, 128 bits.
+3. BIP-39 English, 12 words.
 
-## What is not recovered
+That derivation already exists. This document does not change it. The bytes
+are the backup phrase. They are not uploaded, and they are not used for
+anything besides the two results above.
 
-- **The passkey.** No share of the authenticator key exists. A new passkey
-  after recovery is a new door onto the same account. Deleting the old
-  credential on the server stops that old passkey from logging in. It does
-  not erase the secret inside a lost phone.
-- **Nostr.** No `nsec`, no `npub`, no event history, no custodial key, and no
-  user-held key. Open Question #9 is untouched. Forum posts stay where they
-  are.
-- **The 12-word backup.** That phrase remains what `CONCEPT.md` already says
-  it is. This document does not split it, replace it, or derive it.
-- **Wallet of Satoshi.** The Lightning address is a string on the account.
-  The balance stays in that wallet. Logging in again shows the same string.
-- **Bitcoin held by 21.gifts.** The service does not hold it.
+Before any share is given out, the phone reconstructs the shares locally and
+checks that BIP-39 of those bytes is the phrase it just derived. If not, it
+stops.
+
+## What this does not do
+
+Anything other than opening the account on a new device and restoring those
+words. The passkey private key is not split. A new passkey is a new door
+onto the same account. Deleting the old credential on the server stops the
+old passkey from logging in. It does not erase the secret inside a lost
+phone. The phrase is not replaced with different words. No balance is
+moved. Nothing is published.
 
 ## When the shares are created
 
@@ -62,7 +69,8 @@ route. The share ceremony happens at that same meeting, on the phones, and
 is not a server-side side effect of the role change.
 
 The owner's phone must be present and unlocked with the passkey. The
-verifier's phone must be present. The recovery secret is generated there.
+verifier's phone must be present. The phone derives the existing phrase
+there.
 If the ceremony does not finish, the person can still be `verified` and
 simply has no recovery set. A later meeting can run the ceremony. A second
 verification does not mint a second set while one exists.
@@ -77,9 +85,9 @@ share is not enough, and recovery cannot start.
 
 One SLIP-39 group. Group count 1. Group threshold 1. Member count 3. Member
 threshold 2. Empty passphrase. Iteration exponent 0. The master secret is
-the 16 random bytes. Reconstruction stops at those 16 bytes. Do not run
-SLIP-39's conversion of the master secret into a BIP-32 seed, and do not
-BIP-39-encode them as the account's 12-word backup.
+those 16 bytes. Reconstruction stops there, then BIP-39-encodes them. That
+encoding is the original 12 words. Do not run SLIP-39's conversion of the
+master secret into a BIP-32 seed. That would not be these words.
 
 | Share | Who                             | Where the readable share lives                |
 | ----- | ------------------------------- | --------------------------------------------- |
@@ -110,8 +118,9 @@ phone receives a share, and nothing is uploaded.
 
 ## Enrollment order
 
-1. The owner unlocks the phone. It generates the 16 bytes and the three
-   SLIP-39 shares, then checks that they reconstruct.
+1. The owner unlocks the phone. It derives the existing 16 bytes, builds
+   the three SLIP-39 shares, and checks that BIP-39 of the reconstruction
+   is the phrase it just derived.
 2. The verifier's phone shows a fresh X25519 public key and an Ed25519
    public key, and signs the owner's 32-byte nonce with that Ed25519 key.
    The owner scans or pastes that payload and verifies the signature. A
@@ -197,7 +206,7 @@ ciphertext. Time the readable-proof succeeded.
 identifier.
 
 The friend is a 21.gifts account so the app on that phone can store the
-share and be asked to release it. The account is not a Nostr identity.
+share and be asked to release it. The friend receives nothing else.
 `session_refused` cannot enroll, hold a share, or recover.
 
 ## Recovery
@@ -224,7 +233,8 @@ material and uploads nothing.
 
 The bind private key is Ed25519. Its 32-byte seed is HKDF-SHA256 with
 input keying material the 16 bytes, salt the UTF-8 string
-`21gifts-account-recovery`, info the UTF-8 string `bind-v1`, and length 32. This key signs and does nothing else. It is not a Nostr key.
+`21gifts-account-recovery`, info the UTF-8 string `bind-v1`, and length 32. This key only authorizes
+the new passkey.
 
 The bind message is UTF-8, four lines, a newline between the lines, no
 trailing newline:
@@ -243,8 +253,19 @@ account id. The body must not contain PRF results. The server stores the
 new credential, deletes every other credential for the account, marks the
 session completed, and cancels sibling sessions. On failure it stores
 nothing and leaves the session open until it expires. The refused
-"replace the phrase" behaviour is unchanged, because this path does not
-touch the phrase.
+"replace the phrase" behaviour is unchanged. This path restores the same
+phrase. It does not write a different one.
+
+The new phone then shows the 12 words from those bytes. So those words
+remain available after the ceremony, the phone wraps the bytes under the
+new passkey and uploads only the wrap. HKDF-SHA256, salt UTF-8 `21gifts-seed-derivation`,
+info UTF-8 `seed-wrap-v1`, 32 bytes. That info must not equal `mnemonic-v1`.
+AES-256-GCM, 12-byte nonce, additional data the UTF-8 account id, plaintext
+the 16 bytes. The blob is version `0x01`, the nonce, the ciphertext, and
+the tag: 45 bytes. The server stores the blob and cannot read it. Showing
+the words later unwraps it and BIP-39-encodes the bytes. If that passkey
+returns no PRF, the words stay locked. The phone must not show
+`mnemonic-v1` of the new passkey instead.
 
 The wait is 48 hours from the start of the recovery, even if both shares
 arrive in the first minute, and even if some passkey is still logged in.
@@ -269,8 +290,8 @@ share is not required for that pair.
 
 Losing the server's recovery private key loses the service share only.
 The other pair still works. Losing the phones as well, with no export,
-loses this recovery. The 12-word backup is a different copy and does not
-reconstruct these 16 bytes.
+loses this recovery. A paper copy of the 12 words is the same phrase, not
+a different secret. The shares reconstruct those words.
 
 ## State machine
 
@@ -300,10 +321,10 @@ works is the cancel path during the 48 hours.
 
 ## Acceptance criteria for a later implementation
 
-- Two of the three shares reconstruct the original 16 bytes. One share
-  does not.
-- The reconstructed bytes are not a Nostr key and are not the 12-word
-  backup.
+- Two of the three shares reconstruct the original 16 bytes, and BIP-39
+  of those bytes is the original 12 words. One share does not.
+- Those bytes authorize a new passkey on the same account, and nothing
+  else.
 - The owner's phone will not seal a human share to a key that came from
   the api.
 - The service share is sealed only to the key shipped in the client.
@@ -312,7 +333,9 @@ works is the cancel path during the 48 hours.
 - After the set is active, the verifier and the service can, without the
   friend.
 - A body that contains PRF results is rejected.
-- Replacing the 12-word phrase stays refused.
+- Replacing the phrase with different words stays refused.
+- After recovery, showing the words unwraps the stored wrap. It does not
+  derive a new phrase from the new passkey.
 - No row and no log contains the 16 bytes or a share plaintext.
 - Completing one recovery cancels the other open ones for that account.
 - The verifier and the friend can reconstruct the 16 bytes from the
@@ -320,10 +343,10 @@ works is the cancel path during the 48 hours.
 
 ## Out of scope here
 
+- Anything other than account access on a new device and the same 12
+  words.
 - Any route, table, screen, or migration.
-- Nostr, including the custodial key and Open Question #9.
-- Splitting or backing up the passkey private key.
-- Splitting the 12-word backup.
+- Splitting the passkey private key.
 - A second friend, a chosen verifier, or a threshold other than 2 of 3.
 - A SLIP-39 passphrase or a second Shamir group.
 - Remote wipe of a lost authenticator.

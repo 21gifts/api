@@ -321,9 +321,9 @@ WebAuthn Passkey (PRF extension)
 2. Optional explicit 12-word backup, shown once on sign-up, never sent to the server
 
 Putting the same account on a new phone after a moderator has verified the
-person is a separate mechanism. The verifier and 21.gifts each hold one
-share, and the person chooses one friend. It does not split this mnemonic
-and it is not a Nostr key. Specified in
+person does two things only: a new passkey on that account, and the same
+12-word backup. The verifier and 21.gifts each hold one share, and the
+person chooses one friend. Specified in
 [`docs/social-recovery.md`](./docs/social-recovery.md). Not implemented.
 
 **The server never holds the nsec.** All NOSTR signing happens in the browser.
@@ -986,7 +986,7 @@ repository — they're intentionally not part of this project's scope.
 | 2026-09-22 | A top-level forum note may store an optional place pin (latitude, longitude, label at most 80 characters). Replies cannot. Public JSON includes `place` only when set. `GET /messages/places` lists live top-level pins for a map. The label is not a kind:1 hashtag and is not the profile location.                                                                                                                                                                                                                                                                                                                                                                 |
 | 2026-09-24 | Initiator shares the moderator rank; permissions still name the minimum rank only. **Supersedes** the 2026-09-20 strict total order founder > moderator > verified > basis.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
 | 2026-09-29 | Social recovery of the user-held seed is specified in docs/social-recovery.md and is not implemented. Guardians hold SLIP-39 shares of the frozen mnemonic-v1 entropy. They do not hold the passkey. The api must not be the source of the public keys those shares are encrypted to. Custodial nsecs are out of scope.                                                                                                                                                                                                                                                                                                                                               |
-| 2026-09-30 | After a real-life verification, account recovery is three shares: the verifying moderator on that phone, 21.gifts on the server, and one friend chosen by the person on that friend's phone. Two shares suffice once the friend has stored theirs. This is not a Nostr key and does not split the 12-word backup. Specified in docs/social-recovery.md. Not implemented. **Supersedes** the 2026-09-29 social-recovery row.                                                                                                                                                                                                                                           |
+| 2026-09-30 | After a real-life verification, recovery does two things only: open the same account on a new device, and restore the same 12 seed words. Three shares: the verifying moderator on that phone, 21.gifts on the server, and one friend chosen by the person. Two shares suffice once the friend has stored theirs. Specified in docs/social-recovery.md. Not implemented. **Supersedes** the 2026-09-29 social-recovery row.                                                                                                                                                                                                                                           |
 
 ## Next Steps
 
