@@ -303,6 +303,7 @@ active ──────── one share gone, or resignation ─────�
 
 inactive
   │ ceremony again, both new readable-proofs stored
+  │ upload bind public key, identifier, and both ciphertexts
   ▼
 active
 
