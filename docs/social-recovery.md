@@ -11,10 +11,15 @@ Recovery does two things, and nothing else:
 
 ## Decision
 
-The account holder starts this. It is not a side effect of being verified.
-The app offers **Mein Konto absichern**. That screen explains the two
-results above, and that both chosen people are required. One person cannot
-reset the account. The holder then chooses exactly two people.
+The account holder starts this. It is not a side effect of being verified,
+and it is not required. The app offers **Mein Konto absichern**. The holder
+may ignore it. Sign-up, login, and every other use of the account work with
+no recovery set. Leaving the screen before two people are confirmed stores
+nothing.
+
+When the holder continues, that screen explains the two results above, and
+that both chosen people are required. One person cannot reset the account.
+The holder then chooses exactly two people.
 
 If a moderator has verified the holder, that moderator is suggested as
 person 1. The suggestion is not fixed. The holder can replace it with
@@ -35,8 +40,9 @@ account, and they are shown as the same 12 words.
 
 ## Mein Konto absichern
 
-The action is available to a signed-in holder. Opening it does not create
-shares. The screen explains, in order:
+The action is offered to a signed-in holder. It is optional. Opening it
+does not create shares, and closing it does not either. The screen
+explains, in order:
 
 - Both people together can put this account on a new phone and bring back
   the same 12 words.
@@ -81,7 +87,9 @@ onto the same account. Deleting the old credential on the server stops the
 old passkey from logging in. It does not erase the secret inside a lost
 phone. The phrase is not replaced with different words. No balance is
 moved. Nothing is published. Verification is not changed, and it does not
-by itself create a share.
+by itself create a share. Skipping **Mein Konto absichern** does not lock
+the account. An account with no set has no social reset. The passkey
+remains the only way in.
 
 ## The two shares
 
@@ -108,9 +116,10 @@ ciphertext. It has no key to open it.
 
 ## Enrollment order
 
-1. The holder opens **Mein Konto absichern**, reads the explanation, and
-   confirms the two people. Person 1 may still be the suggested moderator,
-   or someone else.
+1. The holder opens **Mein Konto absichern** and reads the explanation.
+   Stopping here stores nothing. If the holder continues, they confirm the
+   two people. Person 1 may still be the suggested moderator, or someone
+   else.
 2. The holder's phone derives the existing 16 bytes, builds the two
    SLIP-39 shares, and checks that BIP-39 of the reconstruction is the
    phrase it just derived. It derives the Ed25519 bind public key and
@@ -271,7 +280,11 @@ the 12 words is the same phrase, not a different secret.
 
 ```text
 no set
-  │ Mein Konto absichern, one or both shares not yet stored
+  │ never opened, or left before two people are confirmed (stores nothing)
+  └── stays here
+
+no set
+  │ two people confirmed, one or both shares not yet stored
   ▼
 inactive ──────── both readable-proofs stored ────────► active
 
@@ -290,8 +303,8 @@ draft (15 min, no account yet)
 pending or ready, 7 days after creation, not completed ──► expired
 ```
 
-An inactive set has no transition into `pending`. A passkey that still
-works is the cancel path during the 48 hours.
+No set, and an inactive set, have no transition into `pending`. A passkey
+that still works is the cancel path during the 48 hours.
 
 ## Acceptance criteria for a later implementation
 
@@ -299,7 +312,9 @@ works is the cancel path during the 48 hours.
   bytes is the original 12 words. One share does not.
 - Those bytes authorize a new passkey on the same account, and nothing
   else.
-- **Mein Konto absichern** explains that, then asks for two people.
+- **Mein Konto absichern** is optional. The account works with no
+  recovery set. Closing the screen before two people are confirmed stores
+  nothing. Continuing explains the two results, then asks for two people.
   Person 1 starts as the verifying moderator when one exists, and the
   holder can replace that suggestion.
 - A fixed moderator, or a share held by the service, cannot be stored.
@@ -321,6 +336,8 @@ works is the cancel path during the 48 hours.
   words.
 - Any route, table, screen, or migration.
 - Splitting the passkey private key.
+- Requiring **Mein Konto absichern** before sign-up, login, or any other
+  use of the account.
 - A share held by 21.gifts, a fixed moderator, or a threshold other than
   both chosen people.
 - A SLIP-39 passphrase or a second Shamir group.
