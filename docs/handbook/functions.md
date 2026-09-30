@@ -2074,7 +2074,7 @@
 
 ## Function: mentionsRoutes
 
-- **Purpose:** Hono sub-app for `GET /mentions`. Bearer session plus `requireAction(forum.read)`. Optional `q` matches the start of the username, the start of a username segment (`.` `_` `-`), or the start of the display name or one of its words (space, `.` `_` `-`), as soon as someone types `@` in a forum post. Empty `q` returns the first usernames. At most 20 rows, ordered by `lower(trim(username))` then `id`. Blank usernames are skipped. Each account is `{ id, username, name }`; `name` falls back to the stored username when the display name is null or blank. Does not change stored `@username` marks.
+- **Purpose:** Hono sub-app for `GET /mentions`. Bearer session plus `requireAction(forum.read)`. Optional `q` matches the start of the username, the start of a username segment (`.` `_` `-`), or the start of the display name or one of its words (space, `.` `_` `-`), as soon as someone types `@` in a forum post. Empty `q` returns the first usernames. At most 20 rows, ordered by `lower(trim(username))` then `id`. Blank usernames are skipped. Each account is `{ id, username, name }`; `name` falls back to the stored username when the display name is null or blank. A token that itself contains `.`, `_`, or `-` matches only a whole-string start. Does not change stored `@username` marks.
 - **Inputs:** `{ auth: AuthStore, now: () => number }`. `createApp` passes its clock. Query `q` is optional.
 - **Returns / side effects:** Hono app mounted at `/mentions`. 200 `{ accounts }` or 401 `{ error: 'Unauthorized' }` / 409 `missing_requirements` / 400 `{ error: 'Invalid query' }`. No logging.
 - **Used by:** `createApp`.
