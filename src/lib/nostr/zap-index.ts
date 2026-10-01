@@ -1180,8 +1180,11 @@ async function queryAndIngestZapReceipts(
  *
  * @param event - Candidate receipt.
  * @param args - The {@link indexOpenZapReceipts} collaborators (`eventIds` and `since` are ignored).
- * @returns `true` when the ingest finished without a thrown step (accepted or
- *   rejected), `false` when a step threw and the `error` row was persisted.
+ * @returns `true` when this receipt is credited: its latest ingest decision on
+ *   this store is `indexed`, or `rejected`/`duplicate` (already recorded under
+ *   the same receipt id). `false` for any other rejection, or when a step threw;
+ *   the `rejected`/`error` ingest row is then persisted when the event has a
+ *   non-empty id.
  * @throws Propagates a failure to persist the `error` ingest row.
  */
 export async function ingestZapReceipt(
@@ -1191,7 +1194,10 @@ export async function ingestZapReceipt(
   const verifyReceipt = args.verifyReceipt ?? defaultVerifyReceipt;
   try {
     await ingestOneReceipt(event, { ...args, verifyReceipt });
-    return true;
+    const decision = decisionsFor(args.store).get(event.id);
+    return (
+      decision === decisionKey('indexed', null) || decision === decisionKey('rejected', 'duplicate')
+    );
   } catch (error: unknown) {
     logEvent('nostr.zap.rejected', zapIngestCatchFields(error));
     if (typeof event.id === 'string' && event.id !== '') {

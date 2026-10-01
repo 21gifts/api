@@ -133,7 +133,7 @@ function deps(
       if (!claimed.has(hash)) {
         claimed.set(hash, event.id);
       }
-      return true;
+      return claimed.get(hash) === event.id;
     },
     claims: { zapPaymentReceiptId: async (hash) => claimed.get(hash) },
     now: () => NOW,
@@ -347,7 +347,7 @@ describe('runSparkInvoiceTick', () => {
     expect(await store.listOpen(new Date(0))).toHaveLength(1);
   });
 
-  it('keeps the row open and does not publish when the ingest did not claim the payment hash', async () => {
+  it('keeps the row open and does not publish when the ingest did not credit the receipt', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     const store = new InMemorySparkInvoiceStore();
     await store.issue(row(1));
@@ -355,7 +355,7 @@ describe('runSparkInvoiceTick', () => {
     const d = deps(store, operator(new Map([['spark1inv1', { status: 2 }]])), {
       ingest: async (event) => {
         ingested.push(event);
-        return true;
+        return false;
       },
     });
     await runSparkInvoiceTick(d);

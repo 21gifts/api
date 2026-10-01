@@ -278,7 +278,7 @@ function indexOpenZapReceiptsArgs(
  *
  * @param deps - The worker collaborators the ingest uses.
  * @returns A function that ingests one kind 9735 event and resolves `true`
- *   unless an ingest step threw.
+ *   when that receipt is credited.
  */
 export function zapReceiptIngest(
   deps: ZapIngestDeps,
