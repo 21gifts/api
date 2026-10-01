@@ -639,15 +639,17 @@ deploy visible on the develop→main PR.
 
 ## Breez SDK Spark
 
-This repository stores two GitHub Actions secrets for the Breez SDK (Spark).
+This repository stores three GitHub Actions secrets for the Breez SDK (Spark).
 Deploy workflows do not read them. A workflow in this repository uses them as
-`secrets.BREEZ_API_KEY_PRD` and `secrets.BREEZ_API_KEY_DEV`. GitHub does not
-show the values again, and the values are not in git.
+`secrets.BREEZ_API_KEY_PRD`, `secrets.BREEZ_API_KEY_DEV`, and
+`secrets.BREEZ_API_KEY_STAGING`. GitHub does not show the values again, and
+the values are not in git.
 
-| Secret              | Use                                                            |
-| ------------------- | -------------------------------------------------------------- |
-| `BREEZ_API_KEY_PRD` | Breez SDK API key for production (`https://api.21.gifts`)      |
-| `BREEZ_API_KEY_DEV` | Breez SDK API key for development (`https://dev-api.21.gifts`) |
+| Secret                  | Use                                                            |
+| ----------------------- | -------------------------------------------------------------- |
+| `BREEZ_API_KEY_PRD`     | Breez SDK API key for production (`https://api.21.gifts`)      |
+| `BREEZ_API_KEY_DEV`     | Breez SDK API key for development (`https://dev-api.21.gifts`) |
+| `BREEZ_API_KEY_STAGING` | Breez SDK API key for the future staging environment           |
 
 ```yaml
 env:
@@ -655,8 +657,8 @@ env:
 ```
 
 Pass `BREEZ_API_KEY` to the SDK as `apiKey`. Use `BREEZ_API_KEY_PRD` only for
-production. The same two secret names are set on
-[`21gifts/app`](https://github.com/21gifts/app).
+production and `BREEZ_API_KEY_STAGING` only for staging. The same three secret
+names are set on [`21gifts/app`](https://github.com/21gifts/app).
 
 ## Related repos
 
