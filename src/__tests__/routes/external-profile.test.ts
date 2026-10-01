@@ -61,13 +61,30 @@ function asResponse(partial: {
   status: number;
   headers?: Headers;
   text: () => Promise<string>;
+  body?: ReadableStream<Uint8Array> | null;
 }): Response {
   return {
     status: partial.status,
     ok: partial.status >= 200 && partial.status < 300,
     headers: partial.headers ?? new Headers(),
+    body: partial.body,
     text: partial.text,
   } as Response;
+}
+
+function byteStream(chunks: readonly Uint8Array[], fail = false): ReadableStream<Uint8Array> {
+  return new ReadableStream({
+    start(controller) {
+      if (fail) {
+        controller.error(new Error('stream'));
+        return;
+      }
+      for (const chunk of chunks) {
+        controller.enqueue(chunk);
+      }
+      controller.close();
+    },
+  });
 }
 
 function profileEvent(
@@ -557,6 +574,10 @@ describe('GET /messages/:id/external-profile', () => {
     ['172.31.255.1', false],
     ['192.168.1.1', false],
     ['192.0.2.1', false],
+    ['198.17.0.1', true],
+    ['198.18.0.1', false],
+    ['198.19.255.255', false],
+    ['198.20.0.1', true],
     ['198.51.100.1', false],
     ['203.0.113.1', false],
     ['::', false],
@@ -846,6 +867,76 @@ describe('GET /messages/:id/external-profile', () => {
       }).request(`/messages/${NOTE}/external-profile`);
       expect(res.status).toBe(200);
       expect(await res.json()).toMatchObject({ nip05: 'lone@example.com' });
+    }
+  });
+
+  it('counts a streamed well-known body and stops when it is too large or unreadable', async () => {
+    const secret = generateSecretKey();
+    const pubkey = getPublicKey(secret);
+    const store = new InMemoryMessageStore();
+    await store.create(row({ id: NOTE, authorPubkey: pubkey, name: 'Old' }));
+    const querier = new RecordingQuerier();
+    querier.events = [profileEvent({ display_name: 'Robin', nip05: 'lone@example.com' }, secret)];
+    const document = JSON.stringify({ names: { lone: pubkey } });
+    const encoded = new TextEncoder().encode(document);
+    const readable = () => Promise.resolve(document);
+    const cases: Array<{ response: Response; matched: boolean }> = [
+      {
+        matched: true,
+        response: asResponse({
+          status: 200,
+          body: null,
+          text: readable,
+        }),
+      },
+      {
+        matched: true,
+        response: asResponse({
+          status: 200,
+          body: byteStream([encoded.subarray(0, 1), encoded.subarray(1)]),
+          text: readable,
+        }),
+      },
+      {
+        matched: false,
+        response: asResponse({
+          status: 200,
+          body: byteStream([]),
+          text: readable,
+        }),
+      },
+      {
+        matched: false,
+        response: asResponse({
+          status: 200,
+          headers: new Headers({ 'content-length': '10' }),
+          body: byteStream([new Uint8Array(65_537)]),
+          text: readable,
+        }),
+      },
+      {
+        matched: false,
+        response: asResponse({
+          status: 200,
+          body: byteStream([], true),
+          text: readable,
+        }),
+      },
+    ];
+    for (const { response, matched } of cases) {
+      const res = await mount(store, new InMemoryAuthStore(), {
+        nostrQuerier: querier,
+        nostrRelayUrls: ['wss://relay.example'],
+        fetchImpl: async () => response,
+        lookupHost: async () => ['1.1.1.1'],
+      }).request(`/messages/${NOTE}/external-profile`);
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as Record<string, unknown>;
+      if (matched) {
+        expect(body['nip05']).toBe('lone@example.com');
+      } else {
+        expect(body).not.toHaveProperty('nip05');
+      }
     }
   });
 

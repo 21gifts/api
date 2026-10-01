@@ -4374,7 +4374,8 @@ Public profile for an external author. No Bearer. Registered **before**
 `GET /messages/:id`. **200** `{ "name", "npub" }` and, when present,
 `nip05` and `lud16`. `name` is the stored snapshot (truncated pubkey when
 blank). A live kind 0 name replaces it only when `externalDisplayName`
-accepts it. `npub` is the stored pubkey. `nip05` requires `fetchImpl` and
+accepts it. `npub` is the NIP-19 bech32 encoding of the stored 64-hex
+author pubkey. `nip05` requires `fetchImpl` and
 a guarded HTTPS `/.well-known/nostr.json` whose `names` entry matches the
 pubkey. `lud16` must be `user@host` and is not fetched. No hex pubkey,
 picture, callback, or invoice. **404** `{ "error": "Not found" }` for a

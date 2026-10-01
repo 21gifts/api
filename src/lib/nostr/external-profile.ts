@@ -359,12 +359,7 @@ async function readNostrJson(
       if (declared !== null && /^\d+$/.test(declared) && Number(declared) > NIP05_BODY_CAP) {
         return null;
       }
-      try {
-        const text = await response.text();
-        return text.length > NIP05_BODY_CAP ? null : text;
-      } catch {
-        return null;
-      }
+      return readCappedText(response);
     }
   }
   return null;
@@ -508,10 +503,60 @@ function isNonPublicIpv4(octets: readonly [number, number, number, number]): boo
   if (a === 192 && b === 0 && c === 2) {
     return true;
   }
+  if (a === 198 && (b === 18 || b === 19)) {
+    return true;
+  }
   if (a === 198 && b === 51 && c === 100) {
     return true;
   }
   return a === 203 && b === 0 && c === 113;
+}
+
+/**
+ * Read a well-known body up to {@link NIP05_BODY_CAP} bytes.
+ *
+ * A real response is counted as it arrives and cancelled past the cap.
+ * A test double with no `body` falls back to `text()`.
+ *
+ * @param response - Well-known HTTP response.
+ * @returns The decoded body, or `null` when it is too large or unreadable.
+ */
+async function readCappedText(response: Response): Promise<string | null> {
+  const body = response.body;
+  if (body === null || body === undefined) {
+    try {
+      const text = await response.text();
+      return text.length > NIP05_BODY_CAP ? null : text;
+    } catch {
+      return null;
+    }
+  }
+  const reader = body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  try {
+    for (;;) {
+      const step = await reader.read();
+      if (step.done) {
+        break;
+      }
+      total += step.value.byteLength;
+      if (total > NIP05_BODY_CAP) {
+        await reader.cancel();
+        return null;
+      }
+      chunks.push(step.value);
+    }
+  } catch {
+    return null;
+  }
+  const bytes = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return new TextDecoder().decode(bytes);
 }
 
 /**
