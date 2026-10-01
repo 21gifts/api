@@ -676,7 +676,13 @@ export class PostgresPushStore implements PushStore {
        RETURNING ${OUTBOX_SELECT}`,
       [until, new Date(nowMs), limit],
     );
-    return rows.map((row) => mapOutbox(row));
+    return rows.map((row) => mapOutbox(row)).sort((a, b) => {
+      const byTime = a.createdAt.getTime() - b.createdAt.getTime();
+      if (byTime !== 0) {
+        return byTime;
+      }
+      return a.id.localeCompare(b.id);
+    });
   }
 
   /**

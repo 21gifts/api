@@ -561,7 +561,7 @@
 
 ## Function: PostgresPushStore
 
-- **Purpose:** Durable `PushStore` over Postgres (`push_subscription`, `push_outbox`). Same port semantics as the in-memory adapter, including claim leases, attempt counting, and `recordDelivered` for successful endpoint URLs.
+- **Purpose:** Durable `PushStore` over Postgres (`push_subscription`, `push_outbox`). Same port semantics as the in-memory adapter, including claim leases, attempt counting, and `recordDelivered` for successful endpoint URLs. `claimPending` returns the leased rows oldest `createdAt` then `id`, because `RETURNING` does not keep the subquery order.
 - **Inputs:** Constructor takes a shared boot `SqlClient` (already migrated via `migratePushSchema`). Operator dump: `listAllSubscriptions` (`ORDER BY created_at DESC, endpoint DESC`); `listAllOutbox(limit)` newest `created_at` then `id`.
 - **Returns / side effects:** Parameter-bound SQL; maps snake_case rows to domain objects including `delivered_endpoints` JSON. Errors propagate to callers.
 - **Used by:** `openBootStores` when `DATABASE_URL` is set.

@@ -415,6 +415,40 @@ describe('PostgresPushStore', () => {
     expect(claimed[0]?.skipEndpoints).toEqual(['https://push.example/a', 'https://push.example/b']);
   });
 
+  it('claimPending returns leased rows oldest createdAt then id', async () => {
+    const sql = new MockSql();
+    const store = new PostgresPushStore(sql);
+    sql.nextRows = [
+      {
+        id: 'newer',
+        account_id: 'acc-a',
+        type: 'dismiss',
+        message_id: null,
+        payload: '{}',
+        status: 'pending',
+        attempts: 0,
+        claimed_until: null,
+        created_at: new Date('2026-08-02T00:00:00.000Z'),
+        delivered_endpoints: '[]',
+        skip_endpoints: '[]',
+      },
+      {
+        id: 'older',
+        account_id: 'acc-a',
+        type: 'forum',
+        message_id: 'm',
+        payload: '{}',
+        status: 'pending',
+        attempts: 0,
+        claimed_until: null,
+        created_at: new Date('2026-08-01T00:00:00.000Z'),
+        delivered_endpoints: '[]',
+      },
+    ];
+    const claimed = await store.claimPending(10, 1, 1000);
+    expect(claimed.map((row) => row.id)).toEqual(['older', 'newer']);
+  });
+
   it.each([undefined, null, 'not-json'])(
     'maps missing or invalid skip_endpoints %s to an empty array',
     async (skipEndpoints) => {
