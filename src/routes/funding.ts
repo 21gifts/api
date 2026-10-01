@@ -1,4 +1,4 @@
-import { Hono } from 'hono';
+import { Hono, type Context } from 'hono';
 import { z } from 'zod';
 import { serializeOwnerAccountWithPosts } from '@/lib/auth/account-json';
 import { resolveSession } from '@/lib/auth/service';
@@ -17,16 +17,28 @@ import { logEvent } from '@/lib/log';
 import { MESSAGE_LIST_LIMIT, serializeMessage, type MessageRow } from '@/lib/message';
 import type { MessageStore } from '@/lib/message-store';
 import type { SpendPing } from '@/lib/spend-ping';
-import { roleAtLeast } from '@/lib/auth/roles';
+import { canEditDailyPayoutRoster, roleAtLeast } from '@/lib/auth/roles';
+import {
+  DAILY_ROSTER_INVALID_ADDRESS,
+  DAILY_ROSTER_INVALID_COMMENT,
+  DAILY_ROSTER_INVALID_PAYMENTS,
+  DAILY_ROSTER_NOT_CONFIGURED,
+  DAILY_ROSTER_UNAVAILABLE,
+  DAILY_ROSTER_UNKNOWN_ADDRESS,
+  DailyRosterRequestError,
+  type DailyRoster,
+  type DailyRosterClient,
+} from '@/lib/daily-roster';
 import { isStaffRole } from '@/lib/trust';
 import { forumVideoFilePresent, resolveMediaDir } from '@/lib/video';
 import { bearerToken } from '@/routes/me';
 import { MESSAGE_ID_RE } from '@/routes/messages';
 
 /**
- * Member apply and staff review for funding-program grants.
- * Bearer session required. Independent of `account.role` except `basis`
- * cannot apply or be granted.
+ * Member apply, staff review, and the initiator/founder daily payout roster.
+ * Bearer session required. Grant routes are independent of `account.role`
+ * except `basis` cannot apply or be granted. Roster routes use
+ * {@link canEditDailyPayoutRoster} (initiator or founder only).
  */
 
 /** Collaborators the funding routes need. */
@@ -41,12 +53,58 @@ export interface FundingRouteDeps {
   now: () => number;
   /** Optional spend ping. Omitted → skip the daily post ping after trial/admit. */
   spendPing?: SpendPing;
+  /**
+   * Daily payout roster client. Omitted when spend env is missing or blank.
+   * Roster routes then answer 503 after the role gate and do not call fetch.
+   */
+  dailyRoster?: DailyRosterClient;
   /** Outbound gifts. Daily rows mark a payout day collected. */
   gifts: GiftStore;
 }
 
 /** Body schema for staff POSTs that target one account. */
 const accountIdBody = z.object({ accountId: z.string() });
+
+/** Body schema for `POST /funding/daily-roster/comment`. */
+const rosterCommentBody = z.object({ comment: z.string() });
+
+/** Body schema for `POST /funding/daily-roster/payments`. */
+const rosterPaymentsBody = z.object({ enabled: z.boolean() });
+
+/** Body schema for recipient add and update. */
+const rosterRecipientBody = z.object({
+  address: z.string(),
+  amountUsd: z.number().finite(),
+});
+
+/** Body schema for `POST /funding/daily-roster/recipients/delete`. */
+const rosterDeleteBody = z.object({ address: z.string() });
+
+/**
+ * True when a JSON value has a string `address`. Update uses this so a bad
+ * amount is `Invalid address or amount` and a missing address is
+ * `Unknown address`, matching spend.
+ *
+ * @param raw - Parsed JSON, or `null` when the body was not JSON.
+ * @returns Whether `address` is a string.
+ */
+function rawAddressIsString(raw: unknown): boolean {
+  return (
+    typeof raw === 'object' &&
+    raw !== null &&
+    !Array.isArray(raw) &&
+    typeof (raw as Record<string, unknown>)['address'] === 'string'
+  );
+}
+
+/** Logged roster action. Never a comment or a Lightning address. */
+type DailyRosterAction =
+  'read' | 'comment' | 'payments' | 'recipient-add' | 'recipient-update' | 'recipient-delete';
+
+type RosterStop = { error: string; status: 401 | 403 | 503 };
+
+type RosterReply =
+  { status: 200; body: DailyRoster } | { status: 400 | 502; body: { error: string } };
 
 /** Resolve the account behind a request's bearer session, or `null`. */
 async function authedAccount(
@@ -196,15 +254,93 @@ async function pingTodayMedia(
 }
 
 /**
+ * Bearer session, then {@link canEditDailyPayoutRoster}, then a configured client.
+ * A moderator is 403 and never 503.
+ *
+ * @param deps - Route collaborators.
+ * @param header - Raw `Authorization` header.
+ * @returns The caller and client, or a 401/403/503 JSON error.
+ */
+async function openDailyRoster(
+  deps: FundingRouteDeps,
+  header: string | undefined,
+): Promise<{ caller: Account; client: DailyRosterClient } | RosterStop> {
+  const caller = await authedAccount(deps, header);
+  if (caller === null) {
+    return { error: 'Unauthorized', status: 401 };
+  }
+  if (!canEditDailyPayoutRoster(caller.role)) {
+    return { error: 'Forbidden', status: 403 };
+  }
+  if (deps.dailyRoster === undefined) {
+    return { error: DAILY_ROSTER_NOT_CONFIGURED, status: 503 };
+  }
+  return { caller, client: deps.dailyRoster };
+}
+
+/**
+ * Call spend and map failures. Success and 502 log the actor id and action only.
+ *
+ * @param caller - Initiator or founder.
+ * @param action - Stable action name.
+ * @param call - Client method.
+ * @returns 200 roster, 400 forwarded change, or 502 unavailable.
+ */
+async function callRoster(
+  caller: Account,
+  action: DailyRosterAction,
+  call: () => Promise<DailyRoster>,
+): Promise<RosterReply> {
+  try {
+    const roster = await call();
+    logEvent('funding.daily_roster', { accountId: caller.id, action });
+    return { status: 200, body: roster };
+  } catch (err) {
+    if (err instanceof DailyRosterRequestError && err.status === 400) {
+      return { status: 400, body: { error: err.error } };
+    }
+    logEvent('funding.daily_roster.failed', { accountId: caller.id, action });
+    const error = err instanceof DailyRosterRequestError ? err.error : DAILY_ROSTER_UNAVAILABLE;
+    return { status: 502, body: { error } };
+  }
+}
+
+/**
+ * @param c - Hono context.
+ * @param result - Roster call outcome.
+ * @returns The JSON response.
+ */
+function answerRoster(c: Context, result: RosterReply): Response {
+  if (result.status === 200) {
+    return c.json(result.body, 200);
+  }
+  return c.json(result.body, result.status);
+}
+
+/**
+ * @param c - Hono context.
+ * @param stop - Auth or configuration failure.
+ * @returns The JSON response.
+ */
+function stopRoster(c: Context, stop: RosterStop): Response {
+  return c.json({ error: stop.error }, stop.status);
+}
+
+/**
  * Build the `/funding` route group.
  *
  * Mounted at `/funding` so the public paths are `POST /funding/apply`,
  * `GET /funding/applications`, `GET /funding/applications/:accountId`,
  * `POST /funding/trial`, `POST /funding/admit`, `POST /funding/reject`,
- * and `GET /funding/payout-days`.
+ * `GET /funding/payout-days`, `GET /funding/daily-roster`,
+ * `POST /funding/daily-roster/comment`, `POST /funding/daily-roster/payments`,
+ * `POST /funding/daily-roster/recipients`,
+ * `POST /funding/daily-roster/recipients/update`, and
+ * `POST /funding/daily-roster/recipients/delete`.
  *
- * @param deps - Auth store, funding store, message store, gift store, clock, and optional spend ping.
- * @returns A Hono app with member apply and staff review routes.
+ * @param deps - Auth store, funding store, message store, gift store, clock,
+ *   optional spend ping, and optional daily roster client.
+ * @returns A Hono app with member apply, staff review, and daily roster routes.
  */
 export function fundingRoutes(deps: FundingRouteDeps): Hono {
   return new Hono()
@@ -549,5 +685,98 @@ export function fundingRoutes(deps: FundingRouteDeps): Hono {
         logEvent('funding.payouts.failed');
         return c.json({ error: 'Funding is unavailable' }, 503);
       }
+    })
+    .get('/daily-roster', async (c) => {
+      const opened = await openDailyRoster(deps, c.req.header('authorization'));
+      if ('status' in opened) {
+        return stopRoster(c, opened);
+      }
+      const result = await callRoster(opened.caller, 'read', () => opened.client.get());
+      return answerRoster(c, result);
+    })
+    .post('/daily-roster/comment', async (c) => {
+      const opened = await openDailyRoster(deps, c.req.header('authorization'));
+      if ('status' in opened) {
+        return stopRoster(c, opened);
+      }
+      const parsed = rosterCommentBody.safeParse(await c.req.json().catch(() => null));
+      if (!parsed.success) {
+        return c.json({ error: DAILY_ROSTER_INVALID_COMMENT }, 400);
+      }
+      const comment = parsed.data.comment;
+      const result = await callRoster(opened.caller, 'comment', () =>
+        opened.client.setComment(comment),
+      );
+      return answerRoster(c, result);
+    })
+    .post('/daily-roster/payments', async (c) => {
+      const opened = await openDailyRoster(deps, c.req.header('authorization'));
+      if ('status' in opened) {
+        return stopRoster(c, opened);
+      }
+      const parsed = rosterPaymentsBody.safeParse(await c.req.json().catch(() => null));
+      if (!parsed.success) {
+        return c.json({ error: DAILY_ROSTER_INVALID_PAYMENTS }, 400);
+      }
+      const enabled = parsed.data.enabled;
+      const result = await callRoster(opened.caller, 'payments', () =>
+        opened.client.setPaymentsEnabled(enabled),
+      );
+      return answerRoster(c, result);
+    })
+    .post('/daily-roster/recipients', async (c) => {
+      const opened = await openDailyRoster(deps, c.req.header('authorization'));
+      if ('status' in opened) {
+        return stopRoster(c, opened);
+      }
+      const parsed = rosterRecipientBody.safeParse(await c.req.json().catch(() => null));
+      if (!parsed.success) {
+        return c.json({ error: DAILY_ROSTER_INVALID_ADDRESS }, 400);
+      }
+      const address = parsed.data.address;
+      const amountUsd = parsed.data.amountUsd;
+      const result = await callRoster(opened.caller, 'recipient-add', () =>
+        opened.client.addRecipient(address, amountUsd),
+      );
+      return answerRoster(c, result);
+    })
+    .post('/daily-roster/recipients/update', async (c) => {
+      const opened = await openDailyRoster(deps, c.req.header('authorization'));
+      if ('status' in opened) {
+        return stopRoster(c, opened);
+      }
+      const raw = await c.req.json().catch(() => null);
+      const parsed = rosterRecipientBody.safeParse(raw);
+      if (!parsed.success) {
+        return c.json(
+          {
+            error: rawAddressIsString(raw)
+              ? DAILY_ROSTER_INVALID_ADDRESS
+              : DAILY_ROSTER_UNKNOWN_ADDRESS,
+          },
+          400,
+        );
+      }
+      const address = parsed.data.address;
+      const amountUsd = parsed.data.amountUsd;
+      const result = await callRoster(opened.caller, 'recipient-update', () =>
+        opened.client.updateRecipient(address, amountUsd),
+      );
+      return answerRoster(c, result);
+    })
+    .post('/daily-roster/recipients/delete', async (c) => {
+      const opened = await openDailyRoster(deps, c.req.header('authorization'));
+      if ('status' in opened) {
+        return stopRoster(c, opened);
+      }
+      const parsed = rosterDeleteBody.safeParse(await c.req.json().catch(() => null));
+      if (!parsed.success) {
+        return c.json({ error: DAILY_ROSTER_UNKNOWN_ADDRESS }, 400);
+      }
+      const address = parsed.data.address;
+      const result = await callRoster(opened.caller, 'recipient-delete', () =>
+        opened.client.deleteRecipient(address),
+      );
+      return answerRoster(c, result);
     });
 }

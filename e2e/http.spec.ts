@@ -942,6 +942,42 @@ test('POST /funding/reject without bearer is 401', async ({ request }) => {
   expect(res.status()).toBe(401);
 });
 
+test('GET /funding/daily-roster without bearer is 401', async ({ request }) => {
+  const res = await request.get('/funding/daily-roster');
+  expect(res.status()).toBe(401);
+});
+
+test('POST /funding/daily-roster/comment without bearer is 401', async ({ request }) => {
+  const res = await request.post('/funding/daily-roster/comment', { data: { comment: 'x' } });
+  expect(res.status()).toBe(401);
+});
+
+test('POST /funding/daily-roster/payments without bearer is 401', async ({ request }) => {
+  const res = await request.post('/funding/daily-roster/payments', { data: { enabled: true } });
+  expect(res.status()).toBe(401);
+});
+
+test('POST /funding/daily-roster/recipients without bearer is 401', async ({ request }) => {
+  const res = await request.post('/funding/daily-roster/recipients', {
+    data: { address: 'ada@example.com', amountUsd: 1 },
+  });
+  expect(res.status()).toBe(401);
+});
+
+test('POST /funding/daily-roster/recipients/update without bearer is 401', async ({ request }) => {
+  const res = await request.post('/funding/daily-roster/recipients/update', {
+    data: { address: 'ada@example.com', amountUsd: 1 },
+  });
+  expect(res.status()).toBe(401);
+});
+
+test('POST /funding/daily-roster/recipients/delete without bearer is 401', async ({ request }) => {
+  const res = await request.post('/funding/daily-roster/recipients/delete', {
+    data: { address: 'ada@example.com' },
+  });
+  expect(res.status()).toBe(401);
+});
+
 test('POST /debug/trust-edges without bearer is 401', async ({ request }) => {
   const res = await request.post('/debug/trust-edges');
   expect(res.status()).toBe(401);

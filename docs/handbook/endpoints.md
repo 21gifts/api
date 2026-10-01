@@ -1029,6 +1029,48 @@
 - **Used by:** Staff funding reject (subject may re-apply).
 - **Auth:** `Authorization: Bearer` session. Staff only.
 
+## Endpoint: GET /funding/daily-roster
+
+- **Purpose:** Bearer session, initiator or founder only, moderator is 403. Reads the spend daily payout roster. Success 200 is that JSON and nothing else. There is no request body proxied to spend. Missing or blank `SPEND_URL` or `SPEND_API_TOKEN` is 503 only after the role gate, so a moderator is never 503.
+- **Errors:** 401 `{ error: 'Unauthorized' }` with no session; 403 `{ error: 'Forbidden' }` when the live role is not initiator or founder; 503 `{ error: 'Daily roster is not configured' }` when spend is not configured; 502 `{ error: 'Daily roster is unavailable' }` when spend answers 401, 403, or 500, the network fails, the call times out, or the 200 body is not the roster shape.
+- **Used by:** App daily payout roster.
+- **Auth:** `Authorization: Bearer` session. Initiator or founder only.
+
+## Endpoint: POST /funding/daily-roster/comment
+
+- **Purpose:** Bearer session, initiator or founder only, moderator is 403, body proxied to spend `POST /daily-roster/comment` as `{ comment }`. Success 200 is the roster JSON and nothing else. 503 only after the role gate.
+- **Errors:** 401 `{ error: 'Unauthorized' }`; 403 `{ error: 'Forbidden' }` when the live role is not initiator or founder; 503 `{ error: 'Daily roster is not configured' }`; 400 `{ error: 'Invalid comment' }` when the body is not `{ comment: string }` or spend returns that error; 400 `{ error: 'Invalid daily roster change' }` for any other spend 400; 502 `{ error: 'Daily roster is unavailable' }` for spend 401/403/500, network, timeout, or a 200 body that is not the roster.
+- **Used by:** App daily payout roster comment.
+- **Auth:** `Authorization: Bearer` session. Initiator or founder only.
+
+## Endpoint: POST /funding/daily-roster/payments
+
+- **Purpose:** Bearer session, initiator or founder only, moderator is 403, body proxied to spend `POST /daily-roster/payments` as `{ enabled }`. Success 200 is the roster JSON and nothing else. 503 only after the role gate.
+- **Errors:** 401 `{ error: 'Unauthorized' }`; 403 `{ error: 'Forbidden' }` when the live role is not initiator or founder; 503 `{ error: 'Daily roster is not configured' }`; 400 `{ error: 'Invalid payments switch' }` when the body is not `{ enabled: boolean }` or spend returns that error; 400 `{ error: 'Invalid daily roster change' }` for any other spend 400; 502 `{ error: 'Daily roster is unavailable' }` for spend 401/403/500, network, timeout, or a 200 body that is not the roster.
+- **Used by:** App daily payout roster payments switch.
+- **Auth:** `Authorization: Bearer` session. Initiator or founder only.
+
+## Endpoint: POST /funding/daily-roster/recipients
+
+- **Purpose:** Bearer session, initiator or founder only, moderator is 403, body proxied to spend `POST /daily-roster/recipients` as `{ address, amountUsd }`. Success 200 is the roster JSON and nothing else. 503 only after the role gate.
+- **Errors:** 401 `{ error: 'Unauthorized' }`; 403 `{ error: 'Forbidden' }` when the live role is not initiator or founder; 503 `{ error: 'Daily roster is not configured' }`; 400 `{ error: 'Invalid address or amount' }`, `{ error: 'Address already listed' }`, or `{ error: 'Unknown address' }` when spend returns that string; 400 `{ error: 'Invalid address or amount' }` when the body is not `{ address: string, amountUsd: number }`; 400 `{ error: 'Invalid daily roster change' }` for any other spend 400; 502 `{ error: 'Daily roster is unavailable' }` for spend 401/403/500, network, timeout, or a 200 body that is not the roster.
+- **Used by:** App daily payout roster recipient add.
+- **Auth:** `Authorization: Bearer` session. Initiator or founder only.
+
+## Endpoint: POST /funding/daily-roster/recipients/update
+
+- **Purpose:** Bearer session, initiator or founder only, moderator is 403, body proxied to spend `POST /daily-roster/recipients/update` as `{ address, amountUsd }`. Success 200 is the roster JSON and nothing else. 503 only after the role gate.
+- **Errors:** Same 401/403/503/400/502 JSON shapes as `POST /funding/daily-roster/recipients`.
+- **Used by:** App daily payout roster recipient update.
+- **Auth:** `Authorization: Bearer` session. Initiator or founder only.
+
+## Endpoint: POST /funding/daily-roster/recipients/delete
+
+- **Purpose:** Bearer session, initiator or founder only, moderator is 403, body proxied to spend `POST /daily-roster/recipients/delete` as `{ address }`. Success 200 is the roster JSON and nothing else. 503 only after the role gate.
+- **Errors:** 401 `{ error: 'Unauthorized' }`; 403 `{ error: 'Forbidden' }` when the live role is not initiator or founder; 503 `{ error: 'Daily roster is not configured' }`; 400 `{ error: 'Invalid address or amount' }` when the body is not `{ address: string }` or spend returns that error; 400 `{ error: 'Unknown address' }` or `{ error: 'Address already listed' }` when spend returns that string; 400 `{ error: 'Invalid daily roster change' }` for any other spend 400; 502 `{ error: 'Daily roster is unavailable' }` for spend 401/403/500, network, timeout, or a 200 body that is not the roster.
+- **Used by:** App daily payout roster recipient delete.
+- **Auth:** `Authorization: Bearer` session. Initiator or founder only.
+
 ## Endpoint: GET /debug/trust-edges
 
 - **Purpose:** Operator listing of every stored trust edge (`serializeTrustEdge`), newest `createdAt` then `id` descending. Success JSON is `{ edges }` (`serializeTrustEdge` rows).
