@@ -1935,7 +1935,7 @@ process has no SQL client → **Response** `503`
 `nextCursor` when another page exists. Follow `nextCursor` until it is
 absent. `bytea` cells, including `nostr_nsec_ciphertext`, are octet lengths.
 Text in `token`, `challenge`, `nonce`, `view_key`, `endpoint`, `p256dh`,
-`auth`, and `delivered_endpoints` is the string `"redacted"`. A primary key
+`auth`, `delivered_endpoints`, and `skip_endpoints` is the string `"redacted"`. A primary key
 that is one of those columns is paged by `ctid`, so the cursor is not the
 secret. A cursor that does not match the key is **Response** `400`
 `{ "error": "Invalid cursor" }`. An unknown table is **Response** `404`
