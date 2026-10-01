@@ -241,7 +241,7 @@ the **minimum** role: "Bearer (moderator+)" means that rank or higher,
 "Bearer (verified+)" means that rank or higher. Permission text names the
 minimum rank only. Do not write "moderator or initiator" or „Moderator oder
 Initiator“. Permission checks use `roleAtLeast` (`src/lib/auth/roles.ts`); an
-equality test on the caller's role is a defect. Checks on the _subject_ of an
+equality test on the caller's role is a defect. The single named exception is `canEditDailyPayoutRoster`: initiator and moderator share rank 2, so `roleAtLeast` cannot exclude moderators; true only for initiator and founder. Checks on the _subject_ of an
 action (for example "only a verified member can be proposed as moderator") are
 state rules, not permissions, and stay exact. A subject already at the
 moderator rank is `sameRoleRank(role, 'moderator')`, which does not include
@@ -1263,6 +1263,30 @@ Logs `funding.payouts.listed` `{ count }`.
 No session → **401** `{ "error": "Unauthorized" }`. Below moderator →
 **403** `{ "error": "Forbidden" }`. Store throw → **503**
 `{ "error": "Funding is unavailable" }` (`funding.payouts.failed`).
+
+### `GET /funding/daily-roster`
+
+Bearer session, then initiator or founder (`canEditDailyPayoutRoster`). No session → 401 `{ "error": "Unauthorized" }`. Any other role, including moderator → 403 `{ "error": "Forbidden" }` and never 503. Missing or blank `SPEND_URL` or `SPEND_API_TOKEN` → 503 `{ "error": "Daily roster is not configured" }` and no fetch. Success 200 is only `{ comment, paymentsEnabled, recipients: [{ address, amountUsd }] }`. Spend 401, 403, 500, network, timeout, or a 200 body that is not that shape → 502 `{ "error": "Daily roster is unavailable" }`. Timeout 5000 ms.
+
+### `POST /funding/daily-roster/comment`
+
+Same gate and success/502/503 as GET. Body `{ comment: string }`. A body that is not that object, including a non-string comment → 400 `{ "error": "Invalid comment" }` before fetch. Spend may still return 400 `{ "error": "Invalid comment" }` (newlines become spaces, then trim, max 500). Empty after trim is valid. Any other spend 400 → 400 `{ "error": "Invalid daily roster change" }`.
+
+### `POST /funding/daily-roster/payments`
+
+Same gate and success/502/503 as GET. Body `{ enabled: boolean }` only. Strings, numbers, and missing fields → 400 `{ "error": "Invalid payments switch" }` before fetch. Sets `paymentsEnabled` only. Any other spend 400 → 400 `{ "error": "Invalid daily roster change" }`.
+
+### `POST /funding/daily-roster/recipients`
+
+Same gate and success/502/503 as GET. Body `{ address: string, amountUsd: number }`. `amountUsd` must be a finite number; numeric strings are rejected here. Local failure → 400 `{ "error": "Invalid address or amount" }`. Spend forwards exactly one of `Invalid address or amount`, `Address already listed`, `Invalid comment`, `Invalid payments switch`, `Unknown address`. Any other spend 400 → 400 `{ "error": "Invalid daily roster change" }`. Appends a row with no per-row comment. Duplicate addresses are case-insensitive on spend.
+
+### `POST /funding/daily-roster/recipients/update`
+
+Same gate and success/502/503 as GET. Body `{ address: string, amountUsd: finite number }`. If the body is an object (not an array) whose `address` is a string but the amount fails → 400 `{ "error": "Invalid address or amount" }`. Any other local failure, including a missing address → 400 `{ "error": "Unknown address" }`. Spend exact-address match is after trim and is not case-insensitive. Other row fields stay. Forwarded spend 400 strings are the same five; anything else → `{ "error": "Invalid daily roster change" }`.
+
+### `POST /funding/daily-roster/recipients/delete`
+
+Same gate and success/502/503 as GET. Body `{ address: string }`. Local failure → 400 `{ "error": "Unknown address" }` always. Spend unknown address is the same 400. A spend `Invalid address or amount` is forwarded only when spend returns it. Any other spend 400 → `{ "error": "Invalid daily roster change" }`.
 
 ### `GET /funding/goal`
 

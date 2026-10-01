@@ -65,6 +65,7 @@ export interface DailyRosterClient {
    * Read the current roster.
    *
    * @returns The roster JSON.
+   * @throws {@link DailyRosterRequestError}
    */
   get(): Promise<DailyRoster>;
 
@@ -73,6 +74,7 @@ export interface DailyRosterClient {
    *
    * @param comment - Comment text proxied to spend.
    * @returns The roster after the change.
+   * @throws {@link DailyRosterRequestError}
    */
   setComment(comment: string): Promise<DailyRoster>;
 
@@ -81,6 +83,7 @@ export interface DailyRosterClient {
    *
    * @param enabled - Payments switch.
    * @returns The roster after the change.
+   * @throws {@link DailyRosterRequestError}
    */
   setPaymentsEnabled(enabled: boolean): Promise<DailyRoster>;
 
@@ -90,6 +93,7 @@ export interface DailyRosterClient {
    * @param address - Lightning address.
    * @param amountUsd - USD amount.
    * @returns The roster after the change.
+   * @throws {@link DailyRosterRequestError}
    */
   addRecipient(address: string, amountUsd: number): Promise<DailyRoster>;
 
@@ -99,6 +103,7 @@ export interface DailyRosterClient {
    * @param address - Lightning address.
    * @param amountUsd - USD amount.
    * @returns The roster after the change.
+   * @throws {@link DailyRosterRequestError}
    */
   updateRecipient(address: string, amountUsd: number): Promise<DailyRoster>;
 
@@ -107,6 +112,7 @@ export interface DailyRosterClient {
    *
    * @param address - Lightning address.
    * @returns The roster after the change.
+   * @throws {@link DailyRosterRequestError}
    */
   deleteRecipient(address: string): Promise<DailyRoster>;
 }
@@ -251,6 +257,7 @@ export class HttpDailyRoster implements DailyRosterClient {
    * GET `{spendUrl}/daily-roster`.
    *
    * @returns The roster.
+   * @throws {@link DailyRosterRequestError}
    */
   get(): Promise<DailyRoster> {
     return this.#request('/daily-roster');
@@ -261,6 +268,7 @@ export class HttpDailyRoster implements DailyRosterClient {
    *
    * @param comment - Comment text.
    * @returns The roster after the change.
+   * @throws {@link DailyRosterRequestError}
    */
   setComment(comment: string): Promise<DailyRoster> {
     return this.#request('/daily-roster/comment', { comment });
@@ -271,6 +279,7 @@ export class HttpDailyRoster implements DailyRosterClient {
    *
    * @param enabled - Payments switch.
    * @returns The roster after the change.
+   * @throws {@link DailyRosterRequestError}
    */
   setPaymentsEnabled(enabled: boolean): Promise<DailyRoster> {
     return this.#request('/daily-roster/payments', { enabled });
@@ -282,6 +291,7 @@ export class HttpDailyRoster implements DailyRosterClient {
    * @param address - Lightning address.
    * @param amountUsd - USD amount.
    * @returns The roster after the change.
+   * @throws {@link DailyRosterRequestError}
    */
   addRecipient(address: string, amountUsd: number): Promise<DailyRoster> {
     return this.#request('/daily-roster/recipients', { address, amountUsd });
@@ -293,6 +303,7 @@ export class HttpDailyRoster implements DailyRosterClient {
    * @param address - Lightning address.
    * @param amountUsd - USD amount.
    * @returns The roster after the change.
+   * @throws {@link DailyRosterRequestError}
    */
   updateRecipient(address: string, amountUsd: number): Promise<DailyRoster> {
     return this.#request('/daily-roster/recipients/update', { address, amountUsd });
@@ -303,6 +314,7 @@ export class HttpDailyRoster implements DailyRosterClient {
    *
    * @param address - Lightning address.
    * @returns The roster after the change.
+   * @throws {@link DailyRosterRequestError}
    */
   deleteRecipient(address: string): Promise<DailyRoster> {
     return this.#request('/daily-roster/recipients/delete', { address });
