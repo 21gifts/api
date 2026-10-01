@@ -325,6 +325,48 @@ test('Function: normalizeUsername — POST /me/username without bearer is 401', 
   expect(res.status()).toBe(401);
 });
 
+test('Function: normalizeSparkPubkey — PUT /me/wallet is 404 when LNURL server is off', async ({
+  request,
+}) => {
+  const res = await request.put('/me/wallet');
+  expect(res.status()).toBe(404);
+});
+
+test('Function: IpRateLimiter — POST /lnurlpay/:pubkey is 404 when LNURL server is off', async ({
+  request,
+}) => {
+  const res = await request.post('/lnurlpay/:pubkey');
+  expect(res.status()).toBe(404);
+});
+
+test('Function: resolveLnurlServerConfig — PUT /me/wallet is 404 when LNURL server is off', async ({
+  request,
+}) => {
+  const res = await request.put('/me/wallet');
+  expect(res.status()).toBe(404);
+});
+
+test('Function: callLnurlServer — GET /lnurlp/:username/invoice is 404 when LNURL server is off', async ({
+  request,
+}) => {
+  const res = await request.get('/lnurlp/:username/invoice');
+  expect(res.status()).toBe(404);
+});
+
+test('Function: walletPayRequest — GET /lnurlp/:username/invoice is 404 when LNURL server is off', async ({
+  request,
+}) => {
+  const res = await request.get('/lnurlp/:username/invoice');
+  expect(res.status()).toBe(404);
+});
+
+test('Function: lnurlServerRoutes — GET /verify/:paymentHash is 404 when LNURL server is off', async ({
+  request,
+}) => {
+  const res = await request.get('/verify/:paymentHash');
+  expect(res.status()).toBe(404);
+});
+
 test('Function: usernameFromDisplayName — POST /me/name without bearer is 401', async ({
   request,
 }) => {

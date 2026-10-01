@@ -283,6 +283,8 @@ describe('PostgresAuthStore', () => {
     expect(sql.executes[1]?.text).toMatch(/UPDATE account/);
     expect(sql.executes[1]?.text).not.toMatch(/wallet_required/);
     expect(sql.executes[1]?.text).not.toMatch(/wallet_backup_seen_at/);
+    expect(sql.executes[1]?.text).not.toMatch(/spark_pubkey =/);
+    expect(sql.executes[1]?.text).not.toMatch(/spark_pubkey_verified_at =/);
     expect(sql.executes[1]?.text).toMatch(/forum_laws_dismissed/);
     expect(sql.executes[1]?.text).toMatch(/view_key = \$9/);
     expect(sql.executes[1]?.text).toMatch(/rules_agreed_at/);
@@ -295,6 +297,9 @@ describe('PostgresAuthStore', () => {
     expect(sql.executes[1]?.text).toMatch(/amount_unit = \$18/);
     expect(sql.executes[1]?.text).not.toMatch(/session_refused = \$18/);
     expect(sql.executes[1]?.text).toMatch(/NOT EXISTS/);
+    expect(sql.executes[1]?.text).toMatch(
+      /spark_pubkey_verified_at IS NULL OR username IS NOT DISTINCT FROM \$17/,
+    );
     expect(sql.executes[1]?.params).toEqual([
       'acc',
       ACCOUNT_ROW.linking_key,
@@ -315,6 +320,7 @@ describe('PostgresAuthStore', () => {
       null,
       'btc',
     ]);
+    expect(sql.executes[0]?.text).not.toMatch(/spark_pubkey/);
   });
 
   it('writes a stored notificationLevel as $16', async () => {
@@ -2094,5 +2100,164 @@ describe('PostgresAuthStore', () => {
     const sql = new MockSql();
     sql.nextQueryRows = [[], [{ ...ACCOUNT_ROW, view_key: null, fiat: 'CHF' }]];
     expect(await new PostgresAuthStore(sql).setAccountFiat('acc', 'EUR', true)).toBeUndefined();
+  });
+});
+
+describe('PostgresAuthStore spark pubkey', () => {
+  const PUBKEY = `02${'a'.repeat(64)}`;
+
+  it('claimSparkPubkey updates with the conditional SQL and returns wrote true', async () => {
+    const sql = new MockSql();
+    sql.nextRows = [
+      { ...ACCOUNT_ROW, spark_pubkey: PUBKEY, wallet_required: true, username: 'ada' },
+    ];
+    const stored = await new PostgresAuthStore(sql).claimSparkPubkey('acc', PUBKEY);
+    expect(sql.queries[0]?.text).toMatch(/UPDATE account SET spark_pubkey = \$2/);
+    expect(sql.queries[0]?.text).toMatch(/spark_pubkey_verified_at IS NULL/);
+    expect(sql.queries[0]?.text).toMatch(/wallet_required IS TRUE/);
+    expect(sql.queries[0]?.text).toMatch(/username IS NOT NULL AND trim\(username\) <> ''/);
+    expect(sql.queries[0]?.text).toMatch(/RETURNING/);
+    expect(sql.queries[0]?.params).toEqual(['acc', PUBKEY]);
+    expect(stored?.wrote).toBe(true);
+    expect(stored?.account.sparkPubkey).toBe(PUBKEY);
+  });
+
+  it('claimSparkPubkey re-selects and returns wrote false when no row is updated', async () => {
+    const sql = new MockSql();
+    sql.nextQueryRows = [[], [{ ...ACCOUNT_ROW, wallet_required: false }]];
+    const stored = await new PostgresAuthStore(sql).claimSparkPubkey('acc', PUBKEY);
+    expect(sql.queries).toHaveLength(2);
+    expect(sql.queries[1]?.text).toMatch(/SELECT/);
+    expect(sql.queries[1]?.params).toEqual(['acc']);
+    expect(stored?.wrote).toBe(false);
+  });
+
+  it('claimSparkPubkey returns undefined for an unknown id', async () => {
+    const sql = new MockSql();
+    sql.nextQueryRows = [[], []];
+    expect(await new PostgresAuthStore(sql).claimSparkPubkey('missing', PUBKEY)).toBeUndefined();
+  });
+
+  it('claimSparkPubkey returns undefined when the written row has no view key', async () => {
+    const sql = new MockSql();
+    sql.nextRows = [{ ...ACCOUNT_ROW, view_key: null, spark_pubkey: PUBKEY }];
+    expect(await new PostgresAuthStore(sql).claimSparkPubkey('acc', PUBKEY)).toBeUndefined();
+  });
+
+  it('claimSparkPubkey returns undefined when the existing row has no view key', async () => {
+    const sql = new MockSql();
+    sql.nextQueryRows = [[], [{ ...ACCOUNT_ROW, view_key: null }]];
+    expect(await new PostgresAuthStore(sql).claimSparkPubkey('acc', PUBKEY)).toBeUndefined();
+  });
+
+  it('markSparkPubkeyVerified uses the conditional SQL and returns true when a row is updated', async () => {
+    const sql = new MockSql();
+    sql.nextRows = [{ id: 'acc' }];
+    expect(await new PostgresAuthStore(sql).markSparkPubkeyVerified('acc', PUBKEY, 'ada', 10)).toBe(
+      true,
+    );
+    expect(sql.queries[0]?.text).toMatch(
+      /UPDATE account SET spark_pubkey_verified_at = to_timestamp\(\$4::double precision \/ 1000\.0\)/,
+    );
+    expect(sql.queries[0]?.text).toMatch(/spark_pubkey = \$2/);
+    expect(sql.queries[0]?.text).toMatch(/spark_pubkey_verified_at IS NULL/);
+    expect(sql.queries[0]?.text).toMatch(/lower\(trim\(username\)\) = \$3/);
+    expect(sql.queries[0]?.params).toEqual(['acc', PUBKEY, 'ada', 10]);
+  });
+
+  it('markSparkPubkeyVerified returns false when no row is updated', async () => {
+    const sql = new MockSql();
+    sql.nextRows = [];
+    expect(await new PostgresAuthStore(sql).markSparkPubkeyVerified('acc', PUBKEY, 'ada', 10)).toBe(
+      false,
+    );
+  });
+
+  it('markSparkPubkeyVerified returns false on unique violation', async () => {
+    const sql = new MockSql();
+    sql.queryError = Object.assign(new Error('duplicate key'), { code: '23505' });
+    expect(await new PostgresAuthStore(sql).markSparkPubkeyVerified('acc', PUBKEY, 'ada', 10)).toBe(
+      false,
+    );
+  });
+
+  it('markSparkPubkeyVerified rethrows other errors', async () => {
+    const sql = new MockSql();
+    sql.queryError = new Error('boom');
+    await expect(
+      new PostgresAuthStore(sql).markSparkPubkeyVerified('acc', PUBKEY, 'ada', 10),
+    ).rejects.toThrow('boom');
+  });
+
+  it('getAccountByVerifiedSparkPubkey selects a verified row', async () => {
+    const sql = new MockSql();
+    sql.nextRows = [
+      {
+        ...ACCOUNT_ROW,
+        spark_pubkey: PUBKEY,
+        spark_pubkey_verified_at: new Date(10),
+      },
+    ];
+    const account = await new PostgresAuthStore(sql).getAccountByVerifiedSparkPubkey(PUBKEY);
+    expect(sql.queries[0]?.text).toMatch(
+      /WHERE spark_pubkey = \$1 AND spark_pubkey_verified_at IS NOT NULL/,
+    );
+    expect(sql.queries[0]?.params).toEqual([PUBKEY]);
+    expect(account?.sparkPubkey).toBe(PUBKEY);
+    expect(account?.sparkPubkeyVerifiedAt).toBe(10);
+  });
+
+  it('getAccountByVerifiedSparkPubkey returns undefined when no row matches', async () => {
+    const sql = new MockSql();
+    sql.nextRows = [];
+    expect(
+      await new PostgresAuthStore(sql).getAccountByVerifiedSparkPubkey(PUBKEY),
+    ).toBeUndefined();
+  });
+
+  it('isSparkPubkeyClaimed returns true when a row holds the key', async () => {
+    const sql = new MockSql();
+    sql.nextRows = [{ one: 1 }];
+    expect(await new PostgresAuthStore(sql).isSparkPubkeyClaimed(PUBKEY)).toBe(true);
+    expect(sql.queries[0]?.text).toBe(
+      'SELECT 1 AS one FROM account WHERE spark_pubkey = $1 LIMIT 1',
+    );
+    expect(sql.queries[0]?.params).toEqual([PUBKEY]);
+  });
+
+  it('isSparkPubkeyClaimed returns false when no row holds the key', async () => {
+    const sql = new MockSql();
+    sql.nextRows = [];
+    expect(await new PostgresAuthStore(sql).isSparkPubkeyClaimed(PUBKEY)).toBe(false);
+  });
+
+  it('maps spark_pubkey and spark_pubkey_verified_at', async () => {
+    const sql = new MockSql();
+    sql.nextRows = [
+      {
+        ...ACCOUNT_ROW,
+        spark_pubkey: PUBKEY,
+        spark_pubkey_verified_at: new Date(4_000),
+      },
+    ];
+    const mapped = await new PostgresAuthStore(sql).getAccount('acc');
+    expect(mapped?.sparkPubkey).toBe(PUBKEY);
+    expect(mapped?.sparkPubkeyVerifiedAt).toBe(4_000);
+  });
+
+  it('maps omitted spark columns to null', async () => {
+    const sql = new MockSql();
+    sql.nextRows = [ACCOUNT_ROW];
+    const mapped = await new PostgresAuthStore(sql).getAccount('acc');
+    expect(mapped?.sparkPubkey).toBeNull();
+    expect(mapped?.sparkPubkeyVerifiedAt).toBeNull();
+  });
+
+  it('SELECT columns include spark_pubkey and spark_pubkey_verified_at', async () => {
+    const sql = new MockSql();
+    sql.nextRows = [ACCOUNT_ROW];
+    await new PostgresAuthStore(sql).getAccount('acc');
+    expect(sql.queries[0]?.text).toMatch(/spark_pubkey/);
+    expect(sql.queries[0]?.text).toMatch(/spark_pubkey_verified_at/);
   });
 });
