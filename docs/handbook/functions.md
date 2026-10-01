@@ -2431,7 +2431,7 @@
 
 ## Function: resolvePublicApiBase
 
-- **Purpose:** HTTP origin for kind:1 photo URLs. Maps `https://21.gifts` → `https://api.21.gifts` and `https://dev.21.gifts` → `https://dev-api.21.gifts`; otherwise the trimmed `PUBLIC_BASE_URL`.
+- **Purpose:** HTTP origin for kind:1 photo URLs. Maps `https://21.gifts` → `https://api.21.gifts`, `https://dev.21.gifts` → `https://dev-api.21.gifts`, and `https://staging.21.gifts` → `https://staging-api.21.gifts`; otherwise the trimmed `PUBLIC_BASE_URL`.
 - **Inputs:** env slice.
 - **Returns / side effects:** Origin without trailing slash, or empty.
 - **Used by:** Worker sign path.

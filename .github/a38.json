@@ -34,6 +34,11 @@
       "reason": "This job builds and pushes a production Docker image and dispatches a deploy to the DEV environment, a production-credential path that is not an author-measured test."
     },
     {
+      "workflow": ".github/workflows/deploy-staging.yaml",
+      "job": "build-and-deploy",
+      "reason": "This job builds and pushes a production Docker image and dispatches a deploy to the staging environment, a production-credential path that is not an author-measured test."
+    },
+    {
       "workflow": ".github/workflows/deploy-prd.yaml",
       "job": "build-and-deploy",
       "reason": "This job builds and pushes a production Docker image and dispatches a deploy to the PRD environment, a production-credential path that is not an author-measured test."
@@ -41,7 +46,7 @@
     {
       "workflow": ".github/workflows/auto-release-pr.yaml",
       "job": "create-release-pr",
-      "reason": "This job is a housekeeping bot that opens the develop to main release pull request and performs no author-measurable testing."
+      "reason": "This job is a housekeeping bot that opens the develop to staging release pull request, then the staging to main release pull request, and performs no author-measurable testing."
     },
     {
       "workflow": ".github/workflows/one-shot-publish-spend.yml",

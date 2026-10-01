@@ -229,8 +229,10 @@ export function readRelaysFromKind10002(tags: readonly (readonly string[])[], ma
 /**
  * Public HTTP origin for photo URLs in kind:1.
  *
- * Maps the site `PUBLIC_BASE_URL` to the API host. Tests that point
- * `PUBLIC_BASE_URL` at the API itself keep that origin.
+ * Maps `https://21.gifts` → `https://api.21.gifts`,
+ * `https://dev.21.gifts` → `https://dev-api.21.gifts`, and
+ * `https://staging.21.gifts` → `https://staging-api.21.gifts`.
+ * Tests that point `PUBLIC_BASE_URL` at the API itself keep that origin.
  *
  * @param env - Environment slice.
  * @returns Origin without a trailing slash, or empty when unset.
@@ -242,6 +244,9 @@ export function resolvePublicApiBase(env: Record<string, string | undefined>): s
   }
   if (raw === 'https://dev.21.gifts') {
     return 'https://dev-api.21.gifts';
+  }
+  if (raw === 'https://staging.21.gifts') {
+    return 'https://staging-api.21.gifts';
   }
   return raw;
 }

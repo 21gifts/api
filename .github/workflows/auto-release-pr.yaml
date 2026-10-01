@@ -2,7 +2,7 @@ name: Auto Release PR
 
 on:
   push:
-    branches: [develop]
+    branches: [develop, staging]
   workflow_dispatch:
 
 permissions:
@@ -23,47 +23,74 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Fetch main branch
-        run: git fetch origin main || true
-
-      - name: Check for existing PR
-        id: check-pr
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Fetch release branches
         run: |
-          PR_COUNT=$(gh pr list --base main --head develop --state open --json number --jq 'length')
-          echo "pr_exists=$([[ $PR_COUNT -gt 0 ]] && echo 'true' || echo 'false')" >> $GITHUB_OUTPUT
-
-      - name: Check for differences
-        id: check-diff
-        if: steps.check-pr.outputs.pr_exists == 'false'
-        run: |
-          if git rev-parse --verify origin/main >/dev/null 2>&1; then
-            DIFF_COUNT=$(git rev-list --count origin/main..origin/develop)
-          else
-            DIFF_COUNT=0
-          fi
-          echo "has_changes=$([[ $DIFF_COUNT -gt 0 ]] && echo 'true' || echo 'false')" >> $GITHUB_OUTPUT
-          echo "commit_count=$DIFF_COUNT" >> $GITHUB_OUTPUT
+          git fetch origin main || true
+          git fetch origin develop || true
+          git fetch origin staging || true
 
       - name: Create Release PR
-        if: steps.check-pr.outputs.pr_exists == 'false' && steps.check-diff.outputs.has_changes == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          COMMIT_COUNT: ${{ steps.check-diff.outputs.commit_count }}
         run: |
+          set -euo pipefail
+
+          case "${GITHUB_REF}" in
+            refs/heads/develop)
+              base=staging
+              head=develop
+              title='Release: develop -> staging'
+              ready='Merge when ready for staging'
+              ;;
+            refs/heads/staging)
+              base=main
+              head=staging
+              title='Release: staging -> main'
+              ready='Merge when ready for production'
+              ;;
+            *)
+              echo "::notice::Ref ${GITHUB_REF} is not a release branch; skipping"
+              exit 0
+              ;;
+          esac
+
+          if ! git rev-parse --verify --quiet "origin/staging" >/dev/null; then
+            echo "::notice::origin/staging is missing; not opening a release PR"
+            exit 0
+          fi
+
+          if ! git rev-parse --verify --quiet "origin/${base}" >/dev/null; then
+            echo "::notice::origin/${base} is missing; not opening a release PR"
+            exit 0
+          fi
+
+          if ! git rev-parse --verify --quiet "origin/${head}" >/dev/null; then
+            echo "::notice::origin/${head} is missing; not opening a release PR"
+            exit 0
+          fi
+
+          pr_count="$(gh pr list --base "${base}" --head "${head}" --state open --json number --jq 'length')"
+          if [ "${pr_count}" -gt 0 ]; then
+            exit 0
+          fi
+
+          diff_count="$(git rev-list --count "origin/${base}..origin/${head}")"
+          if [ "${diff_count}" -le 0 ]; then
+            exit 0
+          fi
+
           printf '%s\n' \
             "## Automatic Release PR" \
             "" \
-            "**Commits:** ${COMMIT_COUNT} new commit(s)" \
+            "**Commits:** ${diff_count} new commit(s)" \
             "" \
             "- [ ] Review all changes" \
             "- [ ] Verify CI passes" \
-            "- [ ] Merge when ready for production" \
+            "- [ ] ${ready}" \
             > /tmp/pr-body.md
 
           gh pr create \
-            --base main \
-            --head develop \
-            --title "Release: develop -> main" \
+            --base "${base}" \
+            --head "${head}" \
+            --title "${title}" \
             --body-file /tmp/pr-body.md

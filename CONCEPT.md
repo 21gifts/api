@@ -717,7 +717,7 @@ GitHub organization: **`21gifts`** (created 2026-05-25).
 - `develop` is the default branch
 - `main` is the production branch
 - Feature branch → PR → merge to `develop`
-- `main` is protected; updates flow via an auto-generated Release PR (`develop → main`)
+- `main` is protected; updates flow via auto-generated Release PRs (`develop → staging`, then `staging → main`)
 - Every repo has `README.md`, `CONTRIBUTING.md`, `SECURITY.md`, `LICENSE`
 - Strict linting (Prettier + ESLint)
 - No `console.log` in committed code
@@ -756,7 +756,8 @@ GitHub organization: **`21gifts`** (created 2026-05-25).
 - Image names match the repo: `21gifts/app`, `21gifts/api`
 - Tag convention per image:
   - `:beta` — built from `develop`, deployed to DEV
-  - `:latest` — built from `main`, deployed to PRD
+  - `:staging` — built from `staging`, deployed to staging
+  - `:latest` — built from `main`, deployed to PRD. `:latest` is an independent rebuild from `main`, not a retag of `:staging`
 - **One image, multiple environments** — for the app, build-time placeholders
   for `NEXT_PUBLIC_*` variables are replaced at container start by an
   `entrypoint.sh` with runtime values; the api reads its config purely from
@@ -766,14 +767,15 @@ GitHub organization: **`21gifts`** (created 2026-05-25).
 
 ## CI / CD (per product repo)
 
-Four GitHub Actions workflows, identical structure for `app` and `api`:
+Five GitHub Actions workflows, identical structure for `app` and `api`:
 
-| Workflow               | Trigger             | Action                                            |
-| ---------------------- | ------------------- | ------------------------------------------------- |
-| `ci.yaml`              | PR, push to develop | Lint + build + test (required for merge)          |
-| `deploy-dev.yaml`      | push to develop     | Docker build → push `:beta` → notify infra repo   |
-| `deploy-prd.yaml`      | push to main        | Docker build → push `:latest` → notify infra repo |
-| `auto-release-pr.yaml` | push to develop     | Auto-create release PR `develop → main`           |
+| Workflow               | Trigger                     | Action                                                         |
+| ---------------------- | --------------------------- | -------------------------------------------------------------- |
+| `ci.yaml`              | PR, push to develop         | Lint + build + test (required for merge)                       |
+| `deploy-dev.yaml`      | push to develop             | Docker build → push `:beta` → notify infra repo                |
+| `deploy-staging.yaml`  | push to staging             | Docker build → push `:staging` → notify infra repo             |
+| `deploy-prd.yaml`      | push to main                | Docker build → push `:latest` → notify infra repo              |
+| `auto-release-pr.yaml` | push to develop or staging  | Auto-create release PR `develop → staging`, then `staging → main` |
 
 **Pre-push local checks**:
 
@@ -798,7 +800,7 @@ DNS, and reverse-proxy routing.
 
 ## Hosting & Operations
 
-Two environments per service, mapped 1:1 to the branch model:
+Three environments per service, mapped 1:1 to the branch model:
 
 | Service | Env | Source branch | Image tag | Public URL         |
 | ------- | --- | ------------- | --------- | ------------------ |
@@ -806,13 +808,16 @@ Two environments per service, mapped 1:1 to the branch model:
 | app     | PRD | `main`        | `:latest` | `21.gifts`         |
 | api     | DEV | `develop`     | `:beta`   | `dev-api.21.gifts` |
 | api     | PRD | `main`        | `:latest` | `api.21.gifts`     |
+| app     | staging | `staging`     | `:staging` | `staging.21.gifts`     |
+| api     | staging | `staging`     | `:staging` | `staging-api.21.gifts` |
 
 `app.21.gifts` / `dev-app.21.gifts` remain transitional aliases for the app
-container. Passkey RP ID is the apex (`21.gifts` / `dev.21.gifts`), not the
+container. `staging-app.21.gifts` redirects to the apex `staging.21.gifts`.
+Passkey RP ID is the apex (`21.gifts` / `dev.21.gifts` / `staging.21.gifts`), not the
 api hostname.
 
 Subdomain convention: **dash, not dot** (e.g., `dev-api.21.gifts` rather than
-`dev.api.21.gifts`). This keeps every subdomain at exactly one level deep,
+`dev.api.21.gifts`). `staging.api.21.gifts` is not a name. This keeps every subdomain at exactly one level deep,
 which sidesteps the multi-level wildcard certificate problem on Cloudflare.
 
 Public routing: behind a reverse proxy / tunnel that terminates TLS and
@@ -826,6 +831,7 @@ repository — they're intentionally not part of this project's scope.
 
 | Date       | Decision                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
 | ---------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 2026-10-01 | Three environments per service. Branch `staging` publishes image tag `:staging`. The app public URL is `staging.21.gifts`. The api public URL is `staging-api.21.gifts`. `staging-app.21.gifts` redirects to the apex. `staging.api.21.gifts` is not a name. Release pull requests go develop → staging, then staging → main. The passkey RP ID includes `staging.21.gifts`. |
 | 2026-09-25 | A moderator can set, replace, or clear the map pin on an existing live top-level shop note (`#21GiftsShop`) via `PATCH /messages/:id/place`. Columns stay `place_lat` / `place_lng` / `place_label`. No Nostr republish, no text change, no notification.                                                                                                                                                                                                                                                                                                                                                                                                             |
 | 2026-09-24 | Signed-in language and fiat are stored on the account (locale, fiat, both nullable). Null means not defined yet: the app writes the resolved value once (onlyIfUnset). A stored value always wins over Accept-Language and the cookies. An explicit control updates the stored value. Signed-out visitors stay on the cookie and Accept-Language and write nothing.                                                                                                                                                                                                                                                                                                   |
 | 2026-05-25 | Domain `21.gifts` registered (premium .gifts TLD on Identity Digital)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
