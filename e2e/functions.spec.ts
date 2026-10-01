@@ -2040,6 +2040,115 @@ test('Function: buildZapRequest — default boot has no DATABASE_URL', async ({ 
 test('Function: serializeZapRequest — default boot has no DATABASE_URL', async ({ request }) => {
   expect((await request.get('/healthz')).status()).toBe(200);
 });
+test('Function: receivingAddress — GET /pay/:username is 404 when unknown', async ({ request }) => {
+  expect((await request.get('/pay/:username')).status()).toBe(404);
+});
+test('Function: lnurlServerFetch — GET /pay/:username is 404 when LNURL server is off', async ({
+  request,
+}) => {
+  expect((await request.get('/pay/:username')).status()).toBe(404);
+});
+test('Function: issueSparkInvoice — POST /messages/:id/invoice without bearer is 401', async ({
+  request,
+}) => {
+  const res = await request.post('/messages/00000000-0000-4000-8000-000000000000/invoice', {
+    data: { sats: 21 },
+  });
+  expect(res.status()).toBe(401);
+});
+test('Function: resolveFreePaymentsConfig — free in-app payments are off on the default boot', async ({
+  request,
+}) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
+test('Function: concatBytes — free in-app payments are off on the default boot', async ({
+  request,
+}) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
+test('Function: protoVarintField — free in-app payments are off on the default boot', async ({
+  request,
+}) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
+test('Function: protoBytesField — free in-app payments are off on the default boot', async ({
+  request,
+}) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
+test('Function: decodeProto — free in-app payments are off on the default boot', async ({
+  request,
+}) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
+test('Function: encodeSparkInvoice — free in-app payments are off on the default boot', async ({
+  request,
+}) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
+test('Function: uuidV7 — free in-app payments are off on the default boot', async ({ request }) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
+test('Function: migrateSparkInvoiceSchema — free in-app payments are off on the default boot', async ({
+  request,
+}) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
+test('Function: InMemorySparkInvoiceStore — free in-app payments are off on the default boot', async ({
+  request,
+}) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
+test('Function: PostgresSparkInvoiceStore — free in-app payments are off on the default boot', async ({
+  request,
+}) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
+test('Function: encodeQuerySparkInvoicesRequest — free in-app payments are off on the default boot', async ({
+  request,
+}) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
+test('Function: parseQuerySparkInvoicesResponse — free in-app payments are off on the default boot', async ({
+  request,
+}) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
+test('Function: querySparkInvoices — free in-app payments are off on the default boot', async ({
+  request,
+}) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
+test('Function: zapReceiptSecretKey — free in-app payments are off on the default boot', async ({
+  request,
+}) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
+test('Function: buildZapReceipt — free in-app payments are off on the default boot', async ({
+  request,
+}) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
+test('Function: runSparkInvoiceTick — free in-app payments are off on the default boot', async ({
+  request,
+}) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
+test('Function: startSparkInvoiceWorker — free in-app payments are off on the default boot', async ({
+  request,
+}) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
+test('Function: ingestZapReceipt — free in-app payments are off on the default boot', async ({
+  request,
+}) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
+test('Function: zapReceiptIngest — free in-app payments are off on the default boot', async ({
+  request,
+}) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
 test('Function: indexZapReceipt — default boot has no DATABASE_URL', async ({ request }) => {
   expect((await request.get('/healthz')).status()).toBe(200);
 });

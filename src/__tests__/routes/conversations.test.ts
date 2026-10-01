@@ -19,6 +19,14 @@ import { InMemoryFundingStore } from '@/lib/funding-store';
 import type { SpendPing } from '@/lib/spend-ping';
 import { InMemoryTranslationStore, translationSourceHash } from '@/lib/translation-store';
 import { conversationRoutes } from '@/routes/conversations';
+import { InMemorySparkInvoiceStore } from '@/lib/spark-invoice-store';
+import {
+  BOLT11,
+  LNURL_SERVER,
+  allInternal,
+  createWalletAccount,
+  walletLnurlFetch,
+} from '@/__tests__/helpers/wallet-lnurl';
 
 function parsedEvents(warn: ReturnType<typeof vi.spyOn>): Array<Record<string, unknown>> {
   return warn.mock.calls
@@ -5007,5 +5015,113 @@ describe('GET /conversations/:id?sinceMessageId=', () => {
       '00000000-0000-4000-8000-000000000000',
     ]);
     expect(olderBody).not.toHaveProperty('nextCursor');
+  });
+});
+
+describe('wallet-backed receiving on POST /conversations/:id/invoice', () => {
+  const PROFILE = '44444444-4444-4444-8444-444444444444';
+
+  async function walletThread(options: { profile: boolean }): Promise<{
+    auth: InMemoryAuthStore;
+    conversations: InMemoryConversationStore;
+    messages: InMemoryMessageStore;
+    threadId: string;
+    kek: Uint8Array;
+  }> {
+    const { parseNostrKek } = await import('@/lib/nostr/kek');
+    const { ensureAccountNostrKey } = await import('@/lib/nostr/keys');
+    const kek = parseNostrKek('11'.repeat(32));
+    const auth = await seeded();
+    await createWalletAccount(auth, 'other', 'bob');
+    const messages = new InMemoryMessageStore();
+    if (options.profile) {
+      await messages.create({
+        id: PROFILE,
+        accountId: 'other',
+        name: 'bob',
+        text: 'hi',
+        createdAt: new Date(now()),
+        hasPhoto: false,
+        ...unsignedNostrDefaults(),
+        eventId: 'ee'.repeat(32),
+      });
+      const other = await auth.getAccount('other');
+      if (other === undefined) {
+        throw new Error('expected counterpart');
+      }
+      await auth.updateAccount({ ...other, profileMessageId: PROFILE });
+    }
+    await ensureAccountNostrKey(auth, 'other', kek);
+    const conversations = new InMemoryConversationStore();
+    const thread = await conversations.openMemberMember('acc', 'other', new Date(now()));
+    return { auth, conversations, messages, threadId: thread.id, kek };
+  }
+
+  function walletApp(setup: Awaited<ReturnType<typeof walletThread>>, fetchImpl: FetchFn): Hono {
+    return new Hono().route(
+      '/conversations',
+      conversationRoutes({
+        store: setup.conversations,
+        authStore: setup.auth,
+        messageStore: setup.messages,
+        now,
+        nostrKek: setup.kek,
+        fetchImpl,
+        invoiceLimiter: new InvoiceRateLimiter(),
+        lnurlServer: LNURL_SERVER,
+        sparkInvoices: new InMemorySparkInvoiceStore(),
+      }),
+    );
+  }
+
+  async function payRequest(app: Hono, threadId: string): Promise<Response> {
+    return app.request(`/conversations/${threadId}/invoice`, {
+      method: 'POST',
+      headers: { authorization: 'Bearer tok', 'content-type': 'application/json' },
+      body: JSON.stringify({ sats: 21 }),
+    });
+  }
+
+  it('resolves a wallet counterpart internally and returns a Spark invoice', async () => {
+    const setup = await walletThread({ profile: true });
+    const { fetchImpl, seen } = walletLnurlFetch('bob');
+    const res = await withNip57True(async () =>
+      payRequest(walletApp(setup, fetchImpl), setup.threadId),
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { pr: string; sparkInvoice: string; messageId: string };
+    expect(body.pr).toBe(BOLT11);
+    expect(body.sparkInvoice.startsWith('spark1')).toBe(true);
+    expect(typeof body.messageId).toBe('string');
+    expect(allInternal(seen)).toBe(true);
+    expect(seen.map((request) => new URL(request.url).pathname)).toEqual([
+      '/.well-known/lnurlp/bob',
+      '/lnurlp/bob/invoice',
+    ]);
+    const attempt = (await setup.messages.listInvoiceAttempts(5))[0];
+    expect(attempt?.lightningAddress).toBe('bob@example.test');
+  });
+
+  it('returns sparkInvoice null for an external counterpart', async () => {
+    const { auth, conversations, messages, threadId, kek } = await payableThread();
+    const res = await withNip57True(async () =>
+      payRequest(
+        walletApp({ auth, conversations, messages, threadId, kek }, lnurlFetchImpl()),
+        threadId,
+      ),
+    );
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as { sparkInvoice: unknown }).sparkInvoice).toBeNull();
+  });
+
+  it('records the wallet address when the counterpart has no profile note', async () => {
+    const setup = await walletThread({ profile: false });
+    const { fetchImpl, seen } = walletLnurlFetch('bob');
+    const res = await payRequest(walletApp(setup, fetchImpl), setup.threadId);
+    expect(res.status).toBe(400);
+    expect(seen).toEqual([]);
+    const attempt = (await setup.messages.listInvoiceAttempts(5))[0];
+    expect(attempt?.result).toBe('no_author');
+    expect(attempt?.lightningAddress).toBe('bob@example.test');
   });
 });

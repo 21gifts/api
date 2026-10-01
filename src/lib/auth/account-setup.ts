@@ -57,6 +57,8 @@ export function accountSetup(account: Account): AccountSetup {
 
 /**
  * Factually missing account fields (skip timestamps do not clear them).
+ * A verified wallet clears `lightning-address`: it receives on its
+ * wallet-backed address, so it satisfies the posting requirement.
  *
  * @param account - Stored account.
  * @returns Missing fields in order: name, username, lightning-address,
@@ -74,7 +76,8 @@ export function accountMissing(account: Account): AccountMissingField[] {
   ) {
     missing.push('username');
   }
-  if (account.lightningAddress === null || account.lightningAddress.trim() === '') {
+  const linked = account.lightningAddress !== null && account.lightningAddress.trim() !== '';
+  if (!linked && typeof account.sparkPubkeyVerifiedAt !== 'number') {
     missing.push('lightning-address');
   }
   if (account.rulesAgreedAt === null) {

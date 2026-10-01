@@ -4,7 +4,7 @@ import { isModeratorGroupMember, roleAtLeast } from '@/lib/auth/roles';
 import { resolveSession } from '@/lib/auth/service';
 import type { Account, AuthStore } from '@/lib/auth/store';
 import { inspectBolt11, isNip57Invoice } from '@/lib/bolt11';
-import { GIFT_INVOICE_MAX_MSAT } from '@/lib/config';
+import { GIFT_INVOICE_MAX_MSAT, type LnurlServerConfig } from '@/lib/config';
 import {
   CONVERSATION_LIST_LIMIT,
   conversationFromMe,
@@ -23,6 +23,9 @@ import { isSundayRestHeader } from '@/lib/sunday-rest';
 import { shownFiatFromBody, type FiatAmounts } from '@/lib/money';
 import type { FetchFn } from '@/lib/lnurlp';
 import { requestZapInvoice } from '@/lib/lnurl-pay';
+import { lnurlServerFetch, receivingAddress } from '@/lib/receiving-address';
+import { issueSparkInvoice } from '@/lib/spark-invoice';
+import type { SparkInvoiceStore } from '@/lib/spark-invoice-store';
 import {
   decodeForumPhoto,
   decodeMessageFeedCursor,
@@ -85,6 +88,10 @@ export interface ConversationRouteDeps {
   fundingStore?: FundingStore;
   /** LNURL fetch (invoice path). */
   fetchImpl?: FetchFn;
+  /** LNURL server; omitted when off. A counterpart with a verified wallet receives on it. */
+  lnurlServer?: LnurlServerConfig;
+  /** Issued Spark invoices; omitted when free in-app payments are off. */
+  sparkInvoices?: SparkInvoiceStore;
   /** Optional AES KEK; without it invoice signing is 503. */
   nostrKek?: Uint8Array;
   /** Invoice limiter (tests inject). */
@@ -1201,15 +1208,15 @@ export function conversationRoutes(deps: ConversationRouteDeps): Hono {
         if (senderName === '') {
           return c.json({ error: 'Set a name before posting' }, 400);
         }
-        const address = counterpart.lightningAddress;
+        const receiving = receivingAddress(counterpart, deps.lnurlServer);
         const profileId = counterpart.profileMessageId ?? null;
-        if (address === null || address.trim() === '' || profileId === null) {
+        if (receiving === null || profileId === null) {
           await persist({
             messageId: profileId ?? UNKNOWN_ACCOUNT_ID,
             authorAccountId: counterpart.id,
             amountSats: parsed.data.sats,
             shown,
-            lightningAddress: address,
+            lightningAddress: receiving?.address ?? counterpart.lightningAddress,
             zapRequest: null,
             result: 'no_author',
             httpStatus: 400,
@@ -1222,6 +1229,7 @@ export function conversationRoutes(deps: ConversationRouteDeps): Hono {
           });
           return c.json({ error: AUTHOR_WALLET_CANNOT_RECEIVE }, 400);
         }
+        const address = receiving.address;
         const profile = await deps.messageStore.getById(profileId);
         if (profile === undefined || profile.eventId === null || profile.eventId === '') {
           await persist({
@@ -1341,7 +1349,7 @@ export function conversationRoutes(deps: ConversationRouteDeps): Hono {
           address,
           amountMsat,
           zapRequestJson,
-          fetchImpl,
+          fetchImpl: lnurlServerFetch(deps.lnurlServer, fetchImpl),
         });
         if (!zap.ok) {
           await persist({
@@ -1412,8 +1420,19 @@ export function conversationRoutes(deps: ConversationRouteDeps): Hono {
             lnurlResponse: zap.lnurlResponse,
           }),
         );
+        const sparkInvoice = await issueSparkInvoice(deps, receiving, {
+          pr: zap.pr,
+          paymentHash: inspected?.paymentHash ?? null,
+          amountSats: zap.amountSats,
+          zapRequestJson,
+        });
         return c.json(
-          { pr: zap.pr, amountSats: zap.amountSats, messageId: conversationMessageId },
+          {
+            pr: zap.pr,
+            amountSats: zap.amountSats,
+            messageId: conversationMessageId,
+            sparkInvoice,
+          },
           200,
         );
       } catch {

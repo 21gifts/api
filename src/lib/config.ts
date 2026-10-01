@@ -9,6 +9,8 @@
  * cache TTL (`LN_ADDRESS_CACHE_TTL_MS` — a code constant, not an
  * environment variable). `LNURL_SERVER_URL` (with `PUBLIC_BASE_URL`) enables
  * the self-hosted LNURL server; unset or blank leaves that feature off.
+ * `LNURL_ZAP_NSEC_HEX` (with `SPARK_OPERATOR_URL`) additionally enables free
+ * in-app payments between members with a verified wallet.
  */
 
 /** Lifetime of an unclaimed passkey ceremony challenge, in milliseconds. */
@@ -234,4 +236,45 @@ export function resolveLnurlServerConfig(
     publicBaseUrl,
     host: publicUrl.host,
   };
+}
+
+/** Spark coordinator used when `SPARK_OPERATOR_URL` is unset or blank. */
+export const DEFAULT_SPARK_OPERATOR_URL = 'https://0.spark.lightspark.com';
+
+/** Resolved configuration of free in-app payments between members. */
+export interface FreePaymentsConfig {
+  /** 32-byte server secret from `LNURL_ZAP_NSEC_HEX`; root of the per-member receipt keys. */
+  zapNsec: Uint8Array;
+  /** Spark coordinator base URL, without a trailing slash. */
+  operatorUrl: string;
+}
+
+/**
+ * Resolve the free in-app payments configuration from the environment.
+ *
+ * Returns `null` (feature off) when `LNURL_ZAP_NSEC_HEX` is unset, blank, or
+ * not 64 hex characters, or when `SPARK_OPERATOR_URL` is set to something
+ * other than an `http:` / `https:` URL. Unset or blank `SPARK_OPERATOR_URL`
+ * uses {@link DEFAULT_SPARK_OPERATOR_URL}. The feature also needs
+ * {@link resolveLnurlServerConfig}; callers check both.
+ *
+ * @param env - Environment slice (injected so tests need not mutate process env).
+ * @returns The resolved config, or `null`.
+ */
+export function resolveFreePaymentsConfig(
+  env: Record<string, string | undefined>,
+): FreePaymentsConfig | null {
+  const nsecHex = (env['LNURL_ZAP_NSEC_HEX'] ?? '').trim().toLowerCase();
+  if (!/^[0-9a-f]{64}$/.test(nsecHex)) {
+    return null;
+  }
+  const rawOperator = env['SPARK_OPERATOR_URL'];
+  const operatorUrl =
+    rawOperator === undefined || rawOperator.trim() === ''
+      ? DEFAULT_SPARK_OPERATOR_URL
+      : trimBaseUrl(rawOperator);
+  if (parseHttpUrl(operatorUrl) === null) {
+    return null;
+  }
+  return { zapNsec: Uint8Array.from(Buffer.from(nsecHex, 'hex')), operatorUrl };
 }

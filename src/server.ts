@@ -78,7 +78,12 @@ import { InMemoryPushStore, type PushStore } from '@/lib/push-store';
 import { InMemoryTrustStore, type TrustStore } from '@/lib/trust-store';
 import { InMemoryFundingStore, type FundingStore } from '@/lib/funding-store';
 import { PostRateLimiter } from '@/lib/nostr/rate-limit';
-import { resolveAllowedOrigins, resolveLnurlServerConfig } from '@/lib/config';
+import {
+  resolveAllowedOrigins,
+  resolveFreePaymentsConfig,
+  resolveLnurlServerConfig,
+} from '@/lib/config';
+import { InMemorySparkInvoiceStore, type SparkInvoiceStore } from '@/lib/spark-invoice-store';
 import { UnconfiguredInvoicePayer } from '@/lib/invoice-payer';
 import type { InvoicePayer } from '@/lib/invoice-payer';
 import { InMemoryInvoiceStore } from '@/lib/invoice-store';
@@ -334,6 +339,14 @@ export interface AppDeps {
    * is passed to the Nostr worker.
    */
   bannerStore?: BannerStore;
+  /**
+   * Issued Spark invoices (default: empty {@link InMemorySparkInvoiceStore}).
+   * Used only when free in-app payments are on: `LNURL_SERVER_URL` and
+   * `PUBLIC_BASE_URL` resolve through {@link resolveLnurlServerConfig} and
+   * `LNURL_ZAP_NSEC_HEX` through {@link resolveFreePaymentsConfig}. The
+   * same instance is passed to the Spark invoice worker.
+   */
+  sparkInvoiceStore?: SparkInvoiceStore;
 }
 
 /** Optional `listDebug` on a rate book, or `[]` when the adapter has none. */
@@ -397,6 +410,12 @@ export function createApp(deps: AppDeps = {}): Hono {
   const messageStore = deps.messageStore ?? new InMemoryMessageStore();
   const env = deps.env ?? process.env;
   const lnurlServer = resolveLnurlServerConfig(env);
+  const receivingDeps = lnurlServer === null ? {} : { lnurlServer };
+  const sparkInvoices =
+    lnurlServer !== null && resolveFreePaymentsConfig(env) !== null
+      ? (deps.sparkInvoiceStore ?? new InMemorySparkInvoiceStore())
+      : undefined;
+  const sparkDeps = sparkInvoices === undefined ? {} : { sparkInvoices };
   const mapPush = deps.mapPush ?? resolveMapPush(env, fetchImpl);
   const translationStore = deps.translationStore ?? new InMemoryTranslationStore();
   if (messageStore instanceof InMemoryMessageStore) {
@@ -540,7 +559,7 @@ export function createApp(deps: AppDeps = {}): Hono {
   if (lnurlServer !== null) {
     app.route('/', lnurlServerRoutes({ auth: store, config: lnurlServer, fetchImpl, now }));
   }
-  app.route('/pay', payRoutes({ auth: store, fetchImpl, posStore, now }));
+  app.route('/pay', payRoutes({ auth: store, fetchImpl, posStore, now, ...receivingDeps }));
   app.route(
     '/auth',
     authRoutes({
@@ -581,6 +600,7 @@ export function createApp(deps: AppDeps = {}): Hono {
     '/members',
     membersRoutes({
       authStore: store,
+      ...receivingDeps,
       messageStore,
       trustStore,
       fundingStore,
@@ -723,6 +743,8 @@ export function createApp(deps: AppDeps = {}): Hono {
       authStore: store,
       now,
       fetchImpl,
+      ...receivingDeps,
+      ...sparkDeps,
       pushStore,
       notificationStore,
       conversationStore,
@@ -759,7 +781,10 @@ export function createApp(deps: AppDeps = {}): Hono {
     '/habits',
     memberHabitRoutes({ store: memberHabitStore, authStore: store, now, fetchImpl }),
   );
-  app.route('/pos', posRoutes({ store: posStore, authStore: store, now, fetchImpl }));
+  app.route(
+    '/pos',
+    posRoutes({ store: posStore, authStore: store, now, fetchImpl, ...receivingDeps }),
+  );
   app.route(
     '/shops/activity',
     shopActivityRoutes({ authStore: store, now, messages: messageStore, pos: posStore }),
@@ -776,6 +801,8 @@ export function createApp(deps: AppDeps = {}): Hono {
       messageStore,
       now,
       fetchImpl,
+      ...receivingDeps,
+      ...sparkDeps,
       fundingStore,
       env,
       ...(nostrKek === undefined ? {} : { nostrKek }),
