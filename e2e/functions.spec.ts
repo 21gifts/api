@@ -2438,6 +2438,36 @@ test('Function: fundingRoutes — POST /funding/apply without bearer is 401', as
   const res = await request.post('/funding/apply');
   expect(res.status()).toBe(401);
 });
+
+test('Function: canEditDailyPayoutRoster — GET /funding/daily-roster without bearer is 401', async ({
+  request,
+}) => {
+  expect((await request.get('/funding/daily-roster')).status()).toBe(401);
+});
+
+test('Function: resolveDailyRoster — GET /funding/daily-roster without bearer is 401', async ({
+  request,
+}) => {
+  expect((await request.get('/funding/daily-roster')).status()).toBe(401);
+});
+
+test('Function: HttpDailyRoster — GET /funding/daily-roster without bearer is 401', async ({
+  request,
+}) => {
+  expect((await request.get('/funding/daily-roster')).status()).toBe(401);
+});
+
+test('Function: mapDailyRosterResponse — GET /funding/daily-roster without bearer is 401', async ({
+  request,
+}) => {
+  expect((await request.get('/funding/daily-roster')).status()).toBe(401);
+});
+
+test('Function: DailyRosterRequestError — GET /funding/daily-roster without bearer is 401', async ({
+  request,
+}) => {
+  expect((await request.get('/funding/daily-roster')).status()).toBe(401);
+});
 test('Function: effectiveStatus — default boot has no DATABASE_URL', async ({ request }) => {
   expect((await request.get('/healthz')).status()).toBe(200);
 });
