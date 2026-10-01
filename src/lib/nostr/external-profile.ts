@@ -675,8 +675,42 @@ function ipv4EmbeddedInIpv6(address: string): [number, number, number, number] |
 }
 
 /**
+ * @param groups - Eight expanded IPv6 groups.
+ * @returns `true` for ranges that are not globally reachable unicast.
+ */
+function isNonGlobalIpv6(groups: readonly number[]): boolean {
+  const g0 = groups[0]!;
+  const g1 = groups[1]!;
+  const g2 = groups[2]!;
+  if (g0 === 0x0100 && g1 === 0 && g2 === 0 && groups[3]! === 0) {
+    return true;
+  }
+  if (g0 === 0x5f00) {
+    return true;
+  }
+  if (g0 === 0x3fff && (g1 & 0xf000) === 0) {
+    return true;
+  }
+  if (g0 === 0x0064 && g1 === 0xff9b && g2 === 0x0001) {
+    return true;
+  }
+  if (g0 !== 0x2001) {
+    return false;
+  }
+  if (g1 === 0x0000 || g1 === 0x0001 || g1 === 0x0db8) {
+    return true;
+  }
+  if (g1 === 0x0002 && g2 === 0x0000) {
+    return true;
+  }
+  const orchid = g1 & 0xfff0;
+  return orchid === 0x0010 || orchid === 0x0020;
+}
+
+/**
  * @param address - IPv6 text that is not an embedded IPv4 form.
- * @returns `false` for unique-local, link-local, and multicast.
+ * @returns `false` for unique-local, link-local, site-local, multicast,
+ * and ranges that are not globally reachable unicast.
  * Unspecified and loopback are embedded IPv4 (`::` is 0.0.0.0, `::1` is 0.0.0.1).
  */
 function isPublicIpv6(address: string): boolean {
@@ -684,11 +718,17 @@ function isPublicIpv6(address: string): boolean {
   if (groups === null) {
     return false;
   }
+  if (isNonGlobalIpv6(groups)) {
+    return false;
+  }
   const first = groups[0]!;
   if ((first & 0xfe00) === 0xfc00) {
     return false;
   }
   if ((first & 0xffc0) === 0xfe80) {
+    return false;
+  }
+  if ((first & 0xffc0) === 0xfec0) {
     return false;
   }
   return (first & 0xff00) !== 0xff00;
