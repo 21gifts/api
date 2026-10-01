@@ -38,8 +38,8 @@ export interface SparkWorkerDeps {
   fetchImpl: FetchFn;
   /** Relay publisher (fake in tests). */
   publisher: NostrPublisher;
-  /** Existing receipt ingest for one event. */
-  ingest: (event: NostrEventFrame) => Promise<void>;
+  /** Existing receipt ingest for one event; `false` when an ingest step threw. */
+  ingest: (event: NostrEventFrame) => Promise<boolean>;
   /** Payment hash claims written by the receipt ingest. */
   claims: Pick<MessageStore, 'zapPaymentReceiptId'>;
   /** Clock in epoch milliseconds. */
@@ -49,9 +49,11 @@ export interface SparkWorkerDeps {
 /**
  * Turn one finalized Spark invoice into an ingested and published receipt.
  *
- * The row is settled only once the zap invoice's payment hash is claimed. When
- * the ingest did not claim it (for example the LNURL server was briefly
- * unreachable), the row stays open and the next tick signs and ingests again.
+ * The row is settled only when the ingest finished without a thrown step and
+ * the zap invoice's payment hash is claimed. Otherwise (for example the LNURL
+ * server was briefly unreachable, or crediting failed after the claim) the row
+ * stays open and the next tick ingests the same receipt again; its id is
+ * stable, so a claim it already holds lets that retry complete the credit.
  * The receipt is published only when it is the one that claimed the hash, so a
  * zap invoice already paid over Lightning does not get a second receipt.
  *
@@ -68,15 +70,14 @@ async function settleRow(
     secretKey: zapReceiptSecretKey(deps.config.zapNsec, row.receiverPubkey),
     bolt11: row.bolt11,
     zapRequestJson: row.zapRequest,
-    createdAt: Math.floor(deps.now() / 1000),
   });
   if (built === null) {
     logEvent('spark.receipt.invalid', { paymentHash: row.paymentHash });
     return;
   }
-  await deps.ingest(built.event);
+  const ingested = await deps.ingest(built.event);
   const owner = await deps.claims.zapPaymentReceiptId(row.paymentHash);
-  if (owner === undefined) {
+  if (!ingested || owner === undefined) {
     logEvent('spark.receipt.not_credited', { paymentHash: row.paymentHash });
     return;
   }

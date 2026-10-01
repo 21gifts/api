@@ -91,13 +91,12 @@ describe('buildZapReceipt', () => {
       secretKey,
       bolt11: 'lnbc21n1',
       zapRequestJson,
-      createdAt: 1700,
     });
     expect(built).not.toBeNull();
     const event = built?.event;
     expect(event?.kind).toBe(9735);
     expect(event?.content).toBe('');
-    expect(event?.created_at).toBe(1700);
+    expect(event?.created_at).toBe(1);
     expect(event?.pubkey).toBe(PUBKEY);
     expect(event?.tags).toEqual([
       ['p', recipient],
@@ -110,25 +109,32 @@ describe('buildZapReceipt', () => {
     expect(built?.relays).toEqual(['wss://a', 'wss://b', 'wss://c']);
   });
 
+  it('gives the same receipt id for the same zap invoice', () => {
+    const args = { secretKey, bolt11: 'lnbc21n1', zapRequestJson: request() };
+    expect(buildZapReceipt(args)?.event.id).toBe(buildZapReceipt(args)?.event.id);
+  });
+
   it('omits the e tag when the zap request has none', () => {
     const built = buildZapReceipt({
       secretKey,
       bolt11: 'lnbc1',
       zapRequestJson: request({ tags: [['p', recipient]] }),
-      createdAt: 1,
     });
     expect(built?.event.tags.map((t) => t[0])).toEqual(['p', 'P', 'bolt11', 'description']);
     expect(built?.relays).toEqual([]);
   });
 
   it('returns null for an unusable zap request', () => {
-    const args = { secretKey, bolt11: 'lnbc1', createdAt: 1 };
+    const args = { secretKey, bolt11: 'lnbc1' };
     expect(buildZapReceipt({ ...args, zapRequestJson: '{' })).toBeNull();
     expect(buildZapReceipt({ ...args, zapRequestJson: 'null' })).toBeNull();
     expect(buildZapReceipt({ ...args, zapRequestJson: '"x"' })).toBeNull();
     expect(buildZapReceipt({ ...args, zapRequestJson: '[]' })).toBeNull();
     expect(buildZapReceipt({ ...args, zapRequestJson: request({ kind: 1 }) })).toBeNull();
     expect(buildZapReceipt({ ...args, zapRequestJson: request({ pubkey: 5 }) })).toBeNull();
+    expect(buildZapReceipt({ ...args, zapRequestJson: request({ created_at: '1' }) })).toBeNull();
+    expect(buildZapReceipt({ ...args, zapRequestJson: request({ created_at: 1.5 }) })).toBeNull();
+    expect(buildZapReceipt({ ...args, zapRequestJson: request({ created_at: -1 }) })).toBeNull();
     expect(buildZapReceipt({ ...args, zapRequestJson: request({ tags: [] }) })).toBeNull();
     expect(buildZapReceipt({ ...args, zapRequestJson: request({ tags: 'x' }) })).toBeNull();
   });
