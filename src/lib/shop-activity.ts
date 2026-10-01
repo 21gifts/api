@@ -3,18 +3,13 @@
  * when the currently assigned account created a POS charge that day.
  */
 
-import { textHasHashtagToken } from '@/lib/message-store';
-
-/** Live top-level shop note with its current till account. */
-export type ShopNoteRef = { id: string; accountId: string; text: string };
-
-/** POS charge used to mark an account as active on a UTC day. */
-export type PosChargeRef = { accountId: string; createdAtMs: number };
+import { textHasHashtagToken, type ShopNoteRef } from '@/lib/message-store';
+import type { PosChargeRef } from '@/lib/pos-store';
 
 /** One UTC day in the 30-day staff series. */
 export type ShopActivityDay = { day: string; shopCount: number };
 
-const WINDOW_DAYS = 30;
+export const WINDOW_DAYS = 30;
 const MS_PER_DAY = 86_400_000;
 const SHOP_HASHTAG = '21GiftsShop';
 

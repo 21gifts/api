@@ -23,7 +23,6 @@ import {
   type FiatAmounts,
 } from '@/lib/money';
 import type { PostDayCount } from '@/lib/post-stats';
-import type { ShopNoteRef } from '@/lib/shop-activity';
 import { postgresTextArrayLiteral } from '@/lib/postgres-text-array';
 import { canonicalGoalAmount, type GoalCurrency } from '@/lib/goal-rate';
 import {
@@ -47,6 +46,9 @@ import {
   type ForumVideo,
   type ForumVideoContentType,
 } from '@/lib/video';
+
+/** Live top-level shop note with its current till account. */
+export type ShopNoteRef = { id: string; accountId: string; text: string };
 
 const MAX_PUBLISH_ATTEMPTS = 5;
 

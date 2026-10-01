@@ -1,7 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
 import { InMemoryAuthStore, type Account, type AccountRole } from '@/lib/auth/store';
-import type { PosChargeRef, ShopNoteRef } from '@/lib/shop-activity';
+import type { ShopNoteRef } from '@/lib/message-store';
+import type { PosChargeRef } from '@/lib/pos-store';
 import { shopActivityRoutes } from '@/routes/shop-activity';
 
 const NOW_MS = Date.parse('2026-03-15T12:00:00.000Z');
@@ -90,11 +91,14 @@ describe('GET /shops/activity', () => {
     expect(await res.json()).toEqual({ error: 'Unauthorized' });
   });
 
-  it.each(['verified', 'basis'] as const)('returns 403 for a %s account', async (role: AccountRole) => {
-    const res = await get(mount(await staffed()), role);
-    expect(res.status).toBe(403);
-    expect(await res.json()).toEqual({ error: 'Forbidden' });
-  });
+  it.each(['verified', 'basis'] as const)(
+    'returns 403 for a %s account',
+    async (role: AccountRole) => {
+      const res = await get(mount(await staffed()), role);
+      expect(res.status).toBe(403);
+      expect(await res.json()).toEqual({ error: 'Forbidden' });
+    },
+  );
 
   it('returns 200 for a moderator', async () => {
     const res = await get(mount(await staffed()), 'mod');

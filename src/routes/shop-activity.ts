@@ -3,14 +3,11 @@ import { roleAtLeast } from '@/lib/auth/roles';
 import { resolveSession } from '@/lib/auth/service';
 import type { Account, AuthStore } from '@/lib/auth/store';
 import { logEvent } from '@/lib/log';
-import {
-  activeShopDays,
-  type PosChargeRef,
-  type ShopNoteRef,
-} from '@/lib/shop-activity';
+import type { ShopNoteRef } from '@/lib/message-store';
+import type { PosChargeRef } from '@/lib/pos-store';
+import { activeShopDays, WINDOW_DAYS } from '@/lib/shop-activity';
 import { bearerToken } from '@/routes/me';
 
-const WINDOW_DAYS = 30;
 const MS_PER_DAY = 86_400_000;
 
 /** Collaborators the `/shops/activity` route needs. All required. */

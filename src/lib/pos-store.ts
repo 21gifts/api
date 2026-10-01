@@ -8,7 +8,9 @@
 import type { SqlClient } from '@/lib/auth/sql';
 import { logEvent } from '@/lib/log';
 import type { PosCharge, PosChargeStatus } from '@/lib/pos-charge';
-import type { PosChargeRef } from '@/lib/shop-activity';
+
+/** POS charge used to mark an account as active on a UTC day. */
+export type PosChargeRef = { accountId: string; createdAtMs: number };
 
 /**
  * Persistence port for point-of-sale charges.
@@ -59,11 +61,11 @@ export interface PosStore {
   listLatest(limit: number): Promise<PosCharge[]>;
 
   /**
-   * Charges created in `[startMs, endMs)` for every status. `startMs` is
-   * UTC midnight of the first day; `endMs` is UTC midnight after today.
+   * Charges whose `created_at` is in `[startMs, endMs)`, every status.
    *
    * @param startMs - Inclusive window start (epoch ms).
    * @param endMs - Exclusive window end (epoch ms).
+   * @returns Account id and created-at epoch ms.
    */
   listCreatedBetween(startMs: number, endMs: number): Promise<PosChargeRef[]>;
 }

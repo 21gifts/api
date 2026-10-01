@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { activeShopDays, type PosChargeRef, type ShopNoteRef } from '@/lib/shop-activity';
+import type { ShopNoteRef } from '@/lib/message-store';
+import type { PosChargeRef } from '@/lib/pos-store';
+import { activeShopDays } from '@/lib/shop-activity';
 
 const TODAY = '2026-03-15';
 const FIRST = '2026-02-14';
@@ -66,22 +68,14 @@ describe('activeShopDays', () => {
     expect(onStart[0]).toEqual({ day: FIRST, shopCount: 1 });
     expect(onStart[29]?.shopCount).toBe(0);
 
-    const beforeStart = activeShopDays(
-      notes,
-      [charge({ createdAtMs: START_MS - 1 })],
-      TODAY,
-    );
+    const beforeStart = activeShopDays(notes, [charge({ createdAtMs: START_MS - 1 })], TODAY);
     expect(beforeStart.every((row) => row.shopCount === 0)).toBe(true);
 
     const lastMs = NEXT_MIDNIGHT_MS - 1;
     const onToday = activeShopDays(notes, [charge({ createdAtMs: lastMs })], TODAY);
     expect(onToday[29]).toEqual({ day: TODAY, shopCount: 1 });
 
-    const nextDay = activeShopDays(
-      notes,
-      [charge({ createdAtMs: NEXT_MIDNIGHT_MS })],
-      TODAY,
-    );
+    const nextDay = activeShopDays(notes, [charge({ createdAtMs: NEXT_MIDNIGHT_MS })], TODAY);
     expect(nextDay.every((row) => row.shopCount === 0)).toBe(true);
   });
 });
