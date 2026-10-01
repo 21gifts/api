@@ -286,6 +286,13 @@
 - **Used by:** Operators verifying Web Push delivery.
 - **Auth:** `Authorization: Bearer` with `DEBUG_TOKEN`. Not an end-user session.
 
+## Endpoint: POST /debug/passkey-renew/reopen
+
+- **Purpose:** Operator delete of one account's failed passkey-renew rows so the blocking dialog opens again at the explanation. Body `{ accountId }` UUID. Returns `{ deleted }`. Succeeded and cancelled rows stay. Does not change the account. Refuses when `walletRequired` is true.
+- **Errors:** 503 Debug is not configured; 401 Unauthorized; 400 Invalid account; 404 Not found; 409 Account already has a seed.
+- **Used by:** Operators who must ask one member to repeat passkey renew.
+- **Auth:** `Authorization: Bearer` with `DEBUG_TOKEN`. Not an end-user session.
+
 ## Endpoint: POST /auth/passkey/authenticate/begin
 
 - **Purpose:** Issues WebAuthn request options for a discoverable credential. JSON: challengeId, options (`extensions.prf.eval.first` = base64url SHA-256 of `21gifts-nostr-v1`).

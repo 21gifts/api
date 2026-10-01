@@ -281,6 +281,16 @@ export class PostgresAuthStore implements AuthStore {
     return rows[0] !== undefined;
   }
 
+  async deleteFailedPasskeyRenewAttempts(accountId: string): Promise<number> {
+    const rows = await this.#sql.query<{ id: string }>(
+      `DELETE FROM passkey_renew_attempt
+       WHERE account_id = $1 AND outcome = 'failed'
+       RETURNING id`,
+      [accountId],
+    );
+    return rows.length;
+  }
+
   async latestUnacknowledgedPasskeyRenewErrorName(accountId: string): Promise<string | null> {
     const rows = await this.#sql.query<{ error_name: string | null }>(
       `SELECT error_name
