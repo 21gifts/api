@@ -8,6 +8,7 @@
 import type { SqlClient } from '@/lib/auth/sql';
 import { logEvent } from '@/lib/log';
 import type { PosCharge, PosChargeStatus } from '@/lib/pos-charge';
+import type { PosChargeRef } from '@/lib/shop-activity';
 
 /**
  * Persistence port for point-of-sale charges.
@@ -56,6 +57,15 @@ export interface PosStore {
    * @param limit - Maximum rows.
    */
   listLatest(limit: number): Promise<PosCharge[]>;
+
+  /**
+   * Charges created in `[startMs, endMs)` for every status. `startMs` is
+   * UTC midnight of the first day; `endMs` is UTC midnight after today.
+   *
+   * @param startMs - Inclusive window start (epoch ms).
+   * @param endMs - Exclusive window end (epoch ms).
+   */
+  listCreatedBetween(startMs: number, endMs: number): Promise<PosChargeRef[]>;
 }
 
 /** Idempotent DDL for the pos_charge table (matches `docs/schema/pos_charge.sql`). */
@@ -238,6 +248,24 @@ export class InMemoryPosStore implements PosStore {
     const sorted = newestFirst(this.#rows);
     return Promise.resolve(sorted.slice(0, limit).map((row) => copyCharge(row)));
   }
+
+  /**
+   * Charges whose `createdAt` is in `[startMs, endMs)`, every status.
+   *
+   * @param startMs - Inclusive window start (epoch ms).
+   * @param endMs - Exclusive window end (epoch ms).
+   * @returns Account id and created-at epoch ms.
+   */
+  listCreatedBetween(startMs: number, endMs: number): Promise<PosChargeRef[]> {
+    const listed: PosChargeRef[] = [];
+    for (const row of this.#rows) {
+      const createdAtMs = row.createdAt.getTime();
+      if (createdAtMs >= startMs && createdAtMs < endMs) {
+        listed.push({ accountId: row.accountId, createdAtMs });
+      }
+    }
+    return Promise.resolve(listed);
+  }
 }
 
 /** Row shape selected from `pos_charge`. */
@@ -412,5 +440,28 @@ LIMIT $1`,
       [limit],
     );
     return rows.map((row) => mapPosRow(row));
+  }
+
+  /**
+   * Charges whose `created_at` is in `[startMs, endMs)`, every status.
+   *
+   * @param startMs - Inclusive window start (epoch ms); bound as ISO `$1`.
+   * @param endMs - Exclusive window end (epoch ms); bound as ISO `$2`.
+   * @returns Account id and created-at epoch ms.
+   */
+  async listCreatedBetween(startMs: number, endMs: number): Promise<PosChargeRef[]> {
+    const rows = await this.#sql.query<{
+      account_id: string;
+      created_at: Date | string;
+    }>(
+      `SELECT account_id, created_at
+FROM pos_charge
+WHERE created_at >= $1 AND created_at < $2`,
+      [new Date(startMs).toISOString(), new Date(endMs).toISOString()],
+    );
+    return rows.map((row) => ({
+      accountId: row.account_id,
+      createdAtMs: asDate(row.created_at).getTime(),
+    }));
   }
 }

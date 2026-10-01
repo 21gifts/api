@@ -23,6 +23,7 @@ import {
   type FiatAmounts,
 } from '@/lib/money';
 import type { PostDayCount } from '@/lib/post-stats';
+import type { ShopNoteRef } from '@/lib/shop-activity';
 import { postgresTextArrayLiteral } from '@/lib/postgres-text-array';
 import { canonicalGoalAmount, type GoalCurrency } from '@/lib/goal-rate';
 import {
@@ -416,6 +417,15 @@ export interface MessageStore {
       shop: boolean;
     }>
   >;
+
+  /**
+   * Live top-level notes with a current `shop_account_id` (`parent_id` null,
+   * `deleted_at` null, `shop_account_id` not null). Does not filter the
+   * shop hashtag — callers apply {@link textHasHashtagToken}.
+   *
+   * @returns Note id, assigned account id, and text (caller-owned).
+   */
+  listLiveAssignedShops(): Promise<ShopNoteRef[]>;
 
   /**
    * Persist a new message row and optional photo, video, and extra stills.
@@ -2405,6 +2415,27 @@ export class InMemoryMessageStore implements MessageStore {
         };
       }),
     );
+  }
+
+  /**
+   * Live top-level notes with a current shop account. Does not filter the
+   * shop hashtag.
+   *
+   * @returns Note id, assigned account id, and text copies.
+   */
+  listLiveAssignedShops(): Promise<ShopNoteRef[]> {
+    const listed: ShopNoteRef[] = [];
+    for (const row of this.#rows) {
+      if (row.parentId !== null || row.deletedAt !== null) {
+        continue;
+      }
+      const shop = row.shopAccount;
+      if (shop === undefined || shop === null || shop.id === '') {
+        continue;
+      }
+      listed.push({ id: row.id, accountId: shop.id, text: row.text });
+    }
+    return Promise.resolve(listed);
   }
 
   /**
@@ -4487,6 +4518,29 @@ export class PostgresMessageStore implements MessageStore {
       label: row.place_label === null || row.place_label === undefined ? null : row.place_label,
       accountId: row.account_id,
       shop: row.shop === true,
+    }));
+  }
+
+  /**
+   * Live top-level notes with a current `shop_account_id`. Does not filter
+   * the shop hashtag in SQL.
+   *
+   * @returns Note id, assigned account id, and text.
+   */
+  async listLiveAssignedShops(): Promise<ShopNoteRef[]> {
+    const rows = await this.#sql.query<{
+      id: string;
+      shop_account_id: string;
+      text: string;
+    }>(
+      `SELECT id, shop_account_id, text
+       FROM message
+       WHERE parent_id IS NULL AND deleted_at IS NULL AND shop_account_id IS NOT NULL`,
+    );
+    return rows.map((row) => ({
+      id: row.id,
+      accountId: row.shop_account_id,
+      text: row.text,
     }));
   }
 

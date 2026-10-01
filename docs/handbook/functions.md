@@ -7,6 +7,20 @@
 - **Returns / side effects:** A Hono app. Writes charges through `PosStore`. No paid status.
 - **Used by:** `createApp`.
 
+## Function: activeShopDays
+
+- **Purpose:** Count how many qualifying shop notes were used on each of the last 30 UTC days ending on `today`. A shop note is a live top-level forum note whose text has the `#21GiftsShop` token (via `textHasHashtagToken`) and whose current `shop_account_id` is set. It counts on a UTC day when that currently assigned account has at least one `pos_charge` `created_at` on that day (any status). Current assignment, not assignment history.
+- **Inputs:** `notes` (`ShopNoteRef[]`), `charges` (`PosChargeRef[]`), and `today` (`YYYY-MM-DD`). Duplicate note ids count once. Charges before the window or on the next UTC day are ignored.
+- **Returns / side effects:** Exactly 30 `{ day, shopCount }` rows, oldest first. Missing days are `shopCount: 0`. No I/O.
+- **Used by:** `shopActivityRoutes` (`GET /shops/activity`).
+
+## Function: shopActivityRoutes
+
+- **Purpose:** Staff Hono sub-app for `GET /shops/activity`. Bearer session required; live role must be at least moderator (`roleAtLeast`, founder passes). Loads live assigned shop notes and POS charges in the 30-UTC-day window, then returns `{ days }` from `activeShopDays`. Does not log account ids, note ids, or charge rows. No Sunday-rest gate on this GET.
+- **Inputs:** `{ authStore, now, messages: { listLiveAssignedShops }, pos: { listCreatedBetween } }`. Session resolution copies `/pos` (`resolveSession`, `bearerToken`).
+- **Returns / side effects:** Hono app mounted at `/shops/activity`. 200 `{ days }`. Store throw → 503 `{ error: 'Shop activity is unavailable' }` and `shops.activity.failed`.
+- **Used by:** `createApp`.
+
 ## Function: serializePosCharge
 
 - **Purpose:** Public JSON for a charge without `accountId`. Timestamps are ISO-8601.
