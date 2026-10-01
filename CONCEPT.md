@@ -702,6 +702,7 @@ GitHub organization: **`21gifts`** (created 2026-05-25).
 
 - `develop` is the default branch
 - `main` is the production branch
+- `staging` is the staging branch (api only)
 - Feature branch → PR → merge to `develop`
 - `main` is protected; updates flow via an auto-generated Release PR (`develop → main`)
 - Every repo has `README.md`, `CONTRIBUTING.md`, `SECURITY.md`, `LICENSE`
@@ -747,7 +748,7 @@ GitHub organization: **`21gifts`** (created 2026-05-25).
 - **One image, multiple environments** — for the app, build-time placeholders
   for `NEXT_PUBLIC_*` variables are replaced at container start by an
   `entrypoint.sh` with runtime values; the api reads its config purely from
-  environment variables at startup. Same image runs DEV and PRD without rebuild.
+  environment variables at startup. Same image runs in every environment without rebuild.
 
 ---
 
@@ -787,8 +788,7 @@ DNS, and reverse-proxy routing.
 
 ## Hosting & Operations
 
-Two environments per service, mapped 1:1 to the branch model. The api also has
-a STAGING environment, built from the `staging` branch:
+The app has two environments and the api three, each mapped 1:1 to a branch:
 
 | Service | Env     | Source branch | Image tag  | Public URL             |
 | ------- | ------- | ------------- | ---------- | ---------------------- |
