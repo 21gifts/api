@@ -13,9 +13,12 @@ Help people in difficult situations by enabling **direct gifts** from one human
 to another — without any organizational middleman taking a cut, gatekeeping, or
 politicizing the flow of help.
 
-Bitcoin Lightning is the only payment rail. NOSTR is the only message rail.
-Both are plumbing — the user just sees a website where they can ask for help
-or send help.
+Bitcoin Lightning is the only payment rail for a gift. A shop till is the
+decided exception: USDT or USDC on the same OpenCryptoPay QR still leaves
+the shop with bitcoin on Spark, specified in
+[`docs/shop-spark-payment.md`](./docs/shop-spark-payment.md), not implemented.
+NOSTR is the only message rail. Both are plumbing — the user just sees a
+website where they can ask for help or send help.
 
 ---
 

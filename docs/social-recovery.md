@@ -399,8 +399,10 @@ that still works is the cancel path during the 48 hours.
 
 - Both shares reconstruct the original 16 bytes, and BIP-39 of those
   bytes is the original 12 words. One share does not.
-- Those bytes authorize a new passkey on the same account, and nothing
-  else.
+- Those bytes authorize a new passkey on the same account and are the
+  same 12-word seed, including the Spark wallet seed in
+  [`docs/shop-spark-payment.md`](./shop-spark-payment.md). Recovery does
+  not send or receive bitcoin.
 - **Mein Konto absichern** is optional. The account works with no
   recovery set. Closing the screen before two people are confirmed stores
   nothing. Continuing explains the two results, then asks for two people.
