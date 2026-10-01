@@ -7,10 +7,12 @@ import type { PushStore } from '@/lib/push-store';
 
 /**
  * Ensure the account has exactly one top-level profile forum note when a
- * non-blank display name and a non-blank Lightning Address are present.
+ * non-blank display name and a receiving address are present: a non-blank
+ * Lightning Address, or a verified wallet (`sparkPubkeyVerifiedAt` set).
  *
- * No-ops (returns the input account, no `messages.create`) when the name or
- * Lightning Address is null/blank after trim. When both are set, the first
+ * No-ops (returns the input account, no `messages.create`) when the name is
+ * null/blank after trim, or when the Lightning Address is null/blank and the
+ * account has no verified wallet. When both are set, the first
  * insert creates one kind:1-pipeline message and claims `profileMessageId`.
  * A `profileMessageId` whose row is missing or soft-hidden (`deletedAt` set)
  * is treated as missing. Rename does not insert a second note and does not
@@ -42,7 +44,7 @@ export async function ensureProfileMessage(args: {
     return args.account;
   }
   const ln = args.account.lightningAddress === null ? '' : args.account.lightningAddress.trim();
-  if (ln === '') {
+  if (ln === '' && typeof args.account.sparkPubkeyVerifiedAt !== 'number') {
     return args.account;
   }
 
