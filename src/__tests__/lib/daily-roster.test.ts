@@ -284,6 +284,25 @@ describe('HttpDailyRoster', () => {
     expect(JSON.stringify(warn.mock.calls)).not.toContain('network down');
   });
 
+  it('maps a body read failure to unavailable and a readable non-JSON 400 to invalid change', async () => {
+    const aborted: FetchFn = async () =>
+      ({
+        status: 400,
+        text: () => Promise.reject(new Error('body aborted')),
+      }) as Response;
+    await expect(client(aborted).get()).rejects.toMatchObject({
+      status: 502,
+      error: DAILY_ROSTER_UNAVAILABLE,
+    });
+    const junk: FetchFn = async () => new Response('not-json', { status: 400 });
+    await expect(client(junk).get()).rejects.toMatchObject({
+      status: 400,
+      error: DAILY_ROSTER_INVALID_CHANGE,
+    });
+    expect(JSON.stringify(warn.mock.calls)).not.toContain('body aborted');
+    expect(JSON.stringify(warn.mock.calls)).not.toContain(TOKEN);
+  });
+
   it('maps a blank spend body to unavailable', async () => {
     const fetchImpl: FetchFn = async () => new Response('   ', { status: 200 });
     await expect(client(fetchImpl).get()).rejects.toMatchObject({
