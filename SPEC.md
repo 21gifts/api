@@ -5540,15 +5540,17 @@ no authentication). Only `FINALIZED` settles; not found, pending, returned,
 and mismatched invoices stay open until they leave the window. For a
 finalized invoice it builds a kind 9735 receipt for the zap invoice: tags
 `p`, `P` (zap request pubkey), `e`, `bolt11` (`pr`), `description` (the exact
-zap request string sent to the LNURL server), no `preimage`, empty content.
+zap request string sent to the LNURL server), no `preimage`, empty content,
+and `created_at` taken from the zap request so a retry yields the same receipt
+id.
 The receipt is signed with the receiver's receipt key, HMAC-SHA256 keyed with
 the `LNURL_ZAP_NSEC_HEX` bytes over `lnurl-zap-receipt-key:`, the lower-case
 hex of the wallet key, and a counter byte from 0 (the first valid secp256k1
 secret key); its public key is the `nostrPubkey` the LNURL server advertises
 for that member. The receipt is fed straight into the receipt ingest. The row is settled
-(transfer id and receipt id) only once the payment hash of `pr` is claimed;
-if the ingest did not claim it, the row stays open and the next tick tries
-again. The receipt is published to the relays named in the zap request only
+(transfer id and receipt id) only when the ingest finished without an error
+and the payment hash of `pr` is claimed; otherwise the row stays open and the
+next tick ingests the same receipt again. The receipt is published to the relays named in the zap request only
 when it is the receipt that claimed the hash. Crediting is the existing
 receipt path; the payment hash is claimed once, so a second receipt for the
 same payment hash (for example `pr` also paid over Lightning) credits

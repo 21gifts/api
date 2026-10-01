@@ -51,8 +51,6 @@ export interface BuildZapReceiptArgs {
   bolt11: string;
   /** Exact zap request string the BOLT11 commits to. */
   zapRequestJson: string;
-  /** Receipt `created_at` in Unix seconds. */
-  createdAt: number;
 }
 
 /**
@@ -61,10 +59,13 @@ export interface BuildZapReceiptArgs {
  * Tags: `p` (recipient from the zap request), `P` (zap request pubkey), `e`
  * (zapped event) when the zap request has one, `bolt11`, and `description`
  * (the exact zap request string). No `preimage` tag; content is empty.
+ * `created_at` is the zap request's `created_at`, so the same zap invoice and
+ * key always give the same receipt id.
  *
- * @param args - Key, invoice, zap request string, and timestamp.
+ * @param args - Key, invoice, and zap request string.
  * @returns The signed receipt and the relays named in the zap request, or
- *   `null` when the zap request is not a kind 9734 object with a pubkey and a `p` tag.
+ *   `null` when the zap request is not a kind 9734 object with a pubkey, a
+ *   non-negative integer `created_at`, and a `p` tag.
  */
 export function buildZapReceipt(
   args: BuildZapReceiptArgs,
@@ -89,8 +90,16 @@ export function buildZapReceipt(
     return undefined;
   };
   const pubkey = request['pubkey'];
+  const createdAt = request['created_at'];
   const recipient = tagValue('p');
-  if (request['kind'] !== 9734 || typeof pubkey !== 'string' || recipient === undefined) {
+  if (
+    request['kind'] !== 9734 ||
+    typeof pubkey !== 'string' ||
+    typeof createdAt !== 'number' ||
+    !Number.isSafeInteger(createdAt) ||
+    createdAt < 0 ||
+    recipient === undefined
+  ) {
     return null;
   }
   const relays: string[] = [];
@@ -107,7 +116,7 @@ export function buildZapReceipt(
   const event = finalizeEvent(
     {
       kind: 9735,
-      created_at: args.createdAt,
+      created_at: createdAt,
       content: '',
       tags: [
         ['p', recipient],
