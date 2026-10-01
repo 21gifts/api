@@ -5901,7 +5901,7 @@ open Spark invoices issued in the last 60 minutes and asks the Spark
 coordinator in batches of up to 100
 (`POST <SPARK_OPERATOR_URL>/spark.SparkService/query_spark_invoices`, gRPC-web,
 no authentication). Only `FINALIZED` settles; not found, pending, returned,
-and mismatched invoices stay open until they leave the window. For a
+mismatched, and unknown-status invoices stay open until they leave the window. For a
 finalized invoice it builds a kind 9735 receipt for the zap invoice: tags
 `p`, `P` (zap request pubkey), `e`, `bolt11` (`pr`), `description` (the exact
 zap request string sent to the LNURL server), no `preimage`, empty content,
