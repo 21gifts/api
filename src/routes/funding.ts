@@ -76,6 +76,27 @@ const accountIdBody = z.object({ accountId: z.string() });
 /** Body schema for `POST /funding/daily-roster/comment`. */
 const rosterCommentBody = z.object({ comment: z.string() });
 
+/** Maximum daily payment comment after newline folding and trim. */
+const DAILY_ROSTER_COMMENT_MAX = 500;
+
+/**
+ * Fold a daily payment comment before it is proxied.
+ *
+ * Newlines become spaces, then trim. Empty after trim is valid.
+ * Longer than {@link DAILY_ROSTER_COMMENT_MAX} is refused (`undefined`)
+ * and is not cut: the payout service rejects that length.
+ *
+ * @param raw - Comment string from the JSON body.
+ * @returns The comment to store, or `undefined` when it is too long.
+ */
+function normalizeDailyRosterComment(raw: string): string | undefined {
+  const comment = raw.replace(/\r\n|\n|\r/g, ' ').trim();
+  if (comment.length > DAILY_ROSTER_COMMENT_MAX) {
+    return undefined;
+  }
+  return comment;
+}
+
 /** Body schema for `POST /funding/daily-roster/payments`. */
 const rosterPaymentsBody = z.object({ enabled: z.boolean() });
 
@@ -728,7 +749,10 @@ export function fundingRoutes(deps: FundingRouteDeps): Hono {
       if (!parsed.success) {
         return c.json({ error: DAILY_ROSTER_INVALID_COMMENT }, 400);
       }
-      const comment = parsed.data.comment;
+      const comment = normalizeDailyRosterComment(parsed.data.comment);
+      if (comment === undefined) {
+        return c.json({ error: DAILY_ROSTER_INVALID_COMMENT }, 400);
+      }
       const result = await callRoster(opened.caller, 'comment', () =>
         opened.client.setComment(comment),
       );
