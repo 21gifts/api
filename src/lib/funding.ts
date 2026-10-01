@@ -45,6 +45,12 @@ export interface OwnerFundingJson {
   admittedAt: number | null;
   /** Live display name of `decidedBy` when admitted, else `null`. */
   reviewedByName: string | null;
+  /**
+   * True when this owner is one of the six legacy daily-spend accounts
+   * that never applied for a grant (effective status `'none'`).
+   * Always present; never omitted.
+   */
+  dailyPayoutStoppedNotice: boolean;
 }
 
 /**
@@ -93,7 +99,7 @@ export function effectiveStatus(
  * for spend pings and invoices. Until that morning, non-`basis` accounts
  * stay eligible without a grant so the community can apply.
  */
-export const FUNDING_REQUIRED_FROM_UTC = '2026-10-10';
+export const FUNDING_REQUIRED_FROM_UTC = '2026-10-01';
 
 /**
  * Whether the grant gate is in force on this UTC day.
@@ -139,6 +145,41 @@ export function eligibleToday(
 }
 
 /**
+ * Legacy daily-spend accounts that never applied for a funding grant.
+ * Usernames: vincent, joey-rosima, pat-armstrong, jewel-bacolbas,
+ * angel-abayle, ruben-mahinay.
+ */
+const DAILY_PAYOUT_STOPPED_NOTICE_IDS: ReadonlySet<string> = new Set([
+  '14101481-f421-42ef-9d37-6df3ccb6b25f',
+  '1b7ab8d9-c1f2-4a8e-be3f-bf16d3d7588d',
+  '227d1574-c784-4b40-a83f-0e5a8ed90cc3',
+  '35a841ac-0a3c-4f88-b876-01aa8d0bf3da',
+  '815c65d4-1360-426b-b1a5-9ffa994091ca',
+  'a29227aa-e7c8-41ea-bd59-f1b3ab4c560a',
+]);
+
+/**
+ * Whether the owner funding JSON should show the legacy daily-payout
+ * stopped notice. True only for the six listed accounts when effective
+ * status is `'none'` (no stored grant row).
+ *
+ * @param accountId - Subject account id (empty when the grant was not loaded).
+ * @param grant - Stored grant, or `undefined` when no row.
+ * @param nowMs - Epoch milliseconds (UTC day for trial expiry).
+ * @returns `true` when the notice should be shown.
+ */
+export function dailyPayoutStoppedNotice(
+  accountId: string,
+  grant: FundingGrant | undefined,
+  nowMs: number,
+): boolean {
+  if (!DAILY_PAYOUT_STOPPED_NOTICE_IDS.has(accountId)) {
+    return false;
+  }
+  return effectiveStatus(grant, nowMs) === 'none';
+}
+
+/**
  * Owner `funding` field: `null` for `basis` (do not leak grants), else
  * always an object (`none` when there is no row).
  *
@@ -146,6 +187,7 @@ export function eligibleToday(
  * @param grant - Observed grant (lazy-persisted), or `undefined`.
  * @param nowMs - Epoch milliseconds.
  * @param reviewerName - Live `decidedBy` name; used only when admitted.
+ * @param accountId - Subject account id for {@link dailyPayoutStoppedNotice}.
  * @returns Owner funding JSON, or `null` for `basis`.
  */
 export function serializeOwnerFunding(
@@ -153,6 +195,7 @@ export function serializeOwnerFunding(
   grant: FundingGrant | undefined,
   nowMs: number,
   reviewerName: string | null,
+  accountId: string,
 ): OwnerFundingJson | null {
   if (role === 'basis') {
     return null;
@@ -165,6 +208,7 @@ export function serializeOwnerFunding(
     trialUtcDate: trial ? (grant?.trialUtcDate ?? null) : null,
     admittedAt: admitted ? (grant?.admittedAt ?? null) : null,
     reviewedByName: admitted ? reviewerName : null,
+    dailyPayoutStoppedNotice: dailyPayoutStoppedNotice(accountId, grant, nowMs),
   };
 }
 

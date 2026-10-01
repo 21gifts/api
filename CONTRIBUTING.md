@@ -97,7 +97,7 @@ api/
 │   │   ├── pos-store.ts      # PosStore port, InMemoryPosStore, PostgresPosStore, POS_SCHEMA_SQL
 │   │   ├── trust.ts          # Trust-chain types, buildTrustChain, accountTrust, serializeTrustEdge
 │   │   ├── trust-store.ts    # TrustStore port, InMemoryTrustStore, PostgresTrustStore, TRUST_SCHEMA_SQL
-│   │   ├── funding.ts        # Funding-grant types, utcDayKey, FUNDING_REQUIRED_FROM_UTC, fundingGrantRequired, eligibleToday, serializeOwnerFunding, fundingReviewedAt, expiredTrialAsPending
+│   │   ├── funding.ts        # Funding-grant types, utcDayKey, FUNDING_REQUIRED_FROM_UTC, fundingGrantRequired, eligibleToday, dailyPayoutStoppedNotice, serializeOwnerFunding, fundingReviewedAt, expiredTrialAsPending
 │   │   ├── funding-store.ts  # FundingStore port, InMemoryFundingStore, PostgresFundingStore, FUNDING_SCHEMA_SQL, loadGrantEffective
 │   │   ├── postgres-text-array.ts  # postgresTextArrayLiteral (one Postgres text-array literal; Bun SQL cannot bind a JavaScript array)
 │   │   ├── conversation.ts   # PN public JSON (optional counterpart/sender accountId; hasPhoto/photoCount; no eventId / npub / bytes)
@@ -636,6 +636,29 @@ may already be on Hub). After `image-published`, the job waits for the
 infrastructure run whose title is `image-published 21gifts/api:<tag> <sha>`
 and fails if that run does not succeed. The wait is what makes a failed DEV
 deploy visible on the develop→main PR.
+
+## Breez SDK Spark
+
+This repository stores three GitHub Actions secrets for the Breez SDK (Spark).
+Deploy workflows do not read them. A later workflow can read them as
+`secrets.BREEZ_API_KEY_PRD`, `secrets.BREEZ_API_KEY_DEV`, and
+`secrets.BREEZ_API_KEY_STAGING`. GitHub does not show the values again, and
+the values are not in git.
+
+| Secret                  | Use                                                            |
+| ----------------------- | -------------------------------------------------------------- |
+| `BREEZ_API_KEY_PRD`     | Breez SDK API key for production (`https://api.21.gifts`)      |
+| `BREEZ_API_KEY_DEV`     | Breez SDK API key for development (`https://dev-api.21.gifts`) |
+| `BREEZ_API_KEY_STAGING` | Breez SDK API key for the future staging environment           |
+
+```yaml
+env:
+  BREEZ_API_KEY: ${{ secrets.BREEZ_API_KEY_DEV }}
+```
+
+Pass `BREEZ_API_KEY` to the SDK as `apiKey`. Use `BREEZ_API_KEY_PRD` only for
+production and `BREEZ_API_KEY_STAGING` only for staging. The same three secret
+names are set on [`21gifts/app`](https://github.com/21gifts/app).
 
 ## Related repos
 

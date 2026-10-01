@@ -378,6 +378,17 @@ export interface AuthStore {
    */
   hasAcknowledgedPasskeyRenewFailure(accountId: string): Promise<boolean>;
   /**
+   * Delete this account's failed renew rows, acknowledged or not.
+   * Succeeded and cancelled rows stay. Does not change the account row.
+   * After this, `passkeyRenewFailed` and `passkeyRenewClosed` are both false
+   * while `walletRequired` is not true, so the blocking renew dialog opens
+   * again at the explanation.
+   *
+   * @param accountId - Account whose failed rows to remove.
+   * @returns How many failed rows were removed.
+   */
+  deleteFailedPasskeyRenewAttempts(accountId: string): Promise<number>;
+  /**
    * Set `locale` on the account. When `onlyIfUnset` is true, write only while
    * the stored value is still null. Other columns stay unchanged.
    *
@@ -775,6 +786,21 @@ export class InMemoryAuthStore implements AuthStore {
       (row) =>
         row.accountId === accountId && row.outcome === 'failed' && row.acknowledgedAt !== null,
     );
+  }
+
+  async deleteFailedPasskeyRenewAttempts(accountId: string): Promise<number> {
+    let deleted = 0;
+    let index = this.#passkeyRenewAttempts.findIndex(
+      (row) => row.accountId === accountId && row.outcome === 'failed',
+    );
+    while (index >= 0) {
+      this.#passkeyRenewAttempts.splice(index, 1);
+      deleted += 1;
+      index = this.#passkeyRenewAttempts.findIndex(
+        (row) => row.accountId === accountId && row.outcome === 'failed',
+      );
+    }
+    return deleted;
   }
 
   async latestUnacknowledgedPasskeyRenewErrorName(accountId: string): Promise<string | null> {

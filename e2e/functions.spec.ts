@@ -1212,6 +1212,15 @@ test('Function: debugPushRoutes — POST /debug/push-ping without bearer is 401'
 }) => {
   expect((await request.post('/debug/push-ping')).status()).toBe(401);
 });
+test('Function: debugPasskeyRenewRoutes — POST /debug/passkey-renew/reopen with an unknown account is 404', async ({
+  request,
+}) => {
+  const res = await request.post('/debug/passkey-renew/reopen', {
+    headers: { authorization: 'Bearer e2e-debug-token' },
+    data: { accountId: '00000000-0000-4000-8000-000000000001' },
+  });
+  expect(res.status()).toBe(404);
+});
 
 test('Function: listDbChanges — default boot has no DATABASE_URL', async ({ request }) => {
   const res = await request.get('/healthz');
@@ -2415,6 +2424,11 @@ test('Function: buildFundingPayoutMatrix — default boot has no DATABASE_URL', 
   expect((await request.get('/healthz')).status()).toBe(200);
 });
 test('Function: eligibleToday — default boot has no DATABASE_URL', async ({ request }) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
+test('Function: dailyPayoutStoppedNotice — default boot has no DATABASE_URL', async ({
+  request,
+}) => {
   expect((await request.get('/healthz')).status()).toBe(200);
 });
 test('Function: serializeOwnerFunding — default boot has no DATABASE_URL', async ({ request }) => {

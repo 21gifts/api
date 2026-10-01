@@ -825,6 +825,23 @@ test('POST /debug/push-ping with the e2e token and no VAPID is 503', async ({ re
   expect(res.status()).toBe(503);
 });
 
+test('POST /debug/passkey-renew/reopen without bearer is 401', async ({ request }) => {
+  const res = await request.post('/debug/passkey-renew/reopen');
+  expect(res.status()).toBe(401);
+  expect(await res.json()).toEqual({ error: 'Unauthorized' });
+});
+
+test('POST /debug/passkey-renew/reopen with the e2e token and an unknown account is 404', async ({
+  request,
+}) => {
+  const res = await request.post('/debug/passkey-renew/reopen', {
+    headers: { authorization: 'Bearer e2e-debug-token' },
+    data: { accountId: '00000000-0000-4000-8000-000000000001' },
+  });
+  expect(res.status()).toBe(404);
+  expect(await res.json()).toEqual({ error: 'Not found' });
+});
+
 test('GET /trust-chain without bearer is 401', async ({ request }) => {
   const res = await request.get('/trust-chain');
   expect(res.status()).toBe(401);
