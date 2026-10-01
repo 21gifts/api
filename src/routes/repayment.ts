@@ -222,11 +222,12 @@ async function readableCredit(deps: RepaymentDeps, c: Context): Promise<Response
 }
 
 /**
- * BOLT11 that pays the next giver their share, at that giver's Lightning address.
+ * BOLT11 that pays the next giver their share, at that giver's receiving address
+ * (`receivingAddress`), plus a Spark invoice for it when the giver is wallet-backed.
  *
  * @param deps - Store, auth, clock, and LNURL fetch.
  * @param c - Request.
- * @returns `{ pr, amountSats }`, or an error.
+ * @returns `{ pr, amountSats, sparkInvoice }`, or an error.
  */
 export async function repaymentInvoice(deps: RepaymentDeps, c: Context): Promise<Response> {
   const opened = await openCredit(deps, c);
