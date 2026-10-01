@@ -384,8 +384,9 @@ upstream is not contacted. A request without a validated
 
 **Gate** (fail → 404 `{ "error": "Not found" }`, upstream not contacted):
 `normalizeSparkPubkey(:pubkey)` not null; body is a JSON object with
-string `username` and no other key whose lower-cased name is `username`
-(for example `Username`); `normalizeUsername(username)` not null; the
+string `username` and without another key that equals `username` after
+NFKC normalisation and lower-casing (for example `Username`);
+`normalizeUsername(username)` not null; the
 account for that name exists with `sparkPubkey === pubkey`; no other
 account is verified on that key.
 
@@ -428,7 +429,8 @@ upstream 2xx passed through with its status, body and only the
 
 Forward signed metadata for received payments. Mounted only when
 `LNURL_SERVER_URL` and `PUBLIC_BASE_URL` resolve. Rate limit
-120/min/client. Raw query string forwarded unchanged.
+120/min/client. Raw query string forwarded unchanged. A `HEAD` request is
+answered 404 and the LNURL server is not contacted.
 
 **Gate:** pubkey normalises; `getAccountByVerifiedSparkPubkey(pubkey)`
 exists. Fail → 404. Upstream `GET /lnurlpay/<pubkey>/metadata` + query
@@ -440,7 +442,8 @@ Forward LNURL-pay invoice for a wallet-backed username. Mounted only when
 `LNURL_SERVER_URL` and `PUBLIC_BASE_URL` resolve. Rate limit 20/min/client.
 CORS `*`
 (`Access-Control-Allow-Origin: *`, methods `GET` / `OPTIONS`). Raw query
-string forwarded unchanged.
+string forwarded unchanged. A `HEAD` request is answered 404 and the LNURL
+server is not contacted.
 
 **Gate:** `normalizeUsername(:username)` not null; account exists and
 `sparkPubkeyVerifiedAt` is a number. Fail → 404. Upstream
@@ -457,10 +460,11 @@ hash whose path segment is only
 `a%2Fb` decoded to `a/b` is refused). A refused segment → 404
 `{ "error": "Not found" }` without contacting upstream and without an
 `lnurl_server.unreachable` log. No query string. Rate limit
-120/min/client. CORS `*`. Upstream `GET /verify/<paymentHash>` (15 s)
-with the segment joined as-is (no percent-encoding). Status mapping as
-recover for reachable outcomes; network / timeout / redirect / body-read
-failure → 503 as above.
+120/min/client. CORS `*`. A `HEAD` request is answered 404 and the LNURL
+server is not contacted. Upstream `GET /verify/<paymentHash>` (15 s) with
+the segment joined as-is (no percent-encoding). Status mapping as recover
+for reachable outcomes; network / timeout / redirect / body-read failure →
+503 as above.
 
 ### `GET /pos`
 
@@ -713,6 +717,8 @@ ID).
     "funding": null,
     "walletRequired": true,
     "walletBackupSeenAt": null,
+    "sparkPubkey": null,
+    "sparkWalletVerified": false,
     "passkeyCredentialId": "<base64url>",
     "passkeyRenewFailed": false,
     "passkeyRenewClosed": false,
@@ -1542,8 +1548,8 @@ username of that shape is not matched until it is renamed; existing
 accounts are not migrated. `a.b_c-d` is valid. Cannot skip (no
 `POST /me/setup/skip` step for username; skip body is only
 `"name" | "lightning-address"`). Same handle on the same account is
-idempotent **200**. Once the wallet is verified (`sparkPubkeyVerifiedAt`
-is a number) the username is fixed.
+idempotent **200**. Once the wallet is verified every `POST /me/username`
+is 409, including the same handle.
 
 Missing/invalid bearer → **Response** `401` `{ "error": "Unauthorized" }`.
 

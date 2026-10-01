@@ -176,7 +176,7 @@ export function lnurlServerRoutes(deps: LnurlServerRouteDeps): Hono {
         }
         const parsedObject = parsed as Record<string, unknown>;
         for (const key of Object.keys(parsedObject)) {
-          if (key !== 'username' && key.toLowerCase() === 'username') {
+          if (key !== 'username' && key.normalize('NFKC').toLowerCase() === 'username') {
             return c.json(NOT_FOUND, 404);
           }
         }
@@ -263,6 +263,9 @@ export function lnurlServerRoutes(deps: LnurlServerRouteDeps): Hono {
       }
     })
     .get('/lnurlpay/:pubkey/metadata', async (c) => {
+      if (c.req.method !== 'GET') {
+        return c.notFound();
+      }
       const route: LnurlServerRouteName = 'metadata';
       try {
         const clientIp = readClientRequestMeta(c.req.raw.headers).clientIp;
@@ -291,6 +294,9 @@ export function lnurlServerRoutes(deps: LnurlServerRouteDeps): Hono {
       }
     })
     .get('/lnurlp/:username/invoice', async (c) => {
+      if (c.req.method !== 'GET') {
+        return c.notFound();
+      }
       const route: LnurlServerRouteName = 'invoice';
       try {
         const clientIp = readClientRequestMeta(c.req.raw.headers).clientIp;
@@ -319,6 +325,9 @@ export function lnurlServerRoutes(deps: LnurlServerRouteDeps): Hono {
       }
     })
     .get('/verify/:paymentHash', async (c) => {
+      if (c.req.method !== 'GET') {
+        return c.notFound();
+      }
       const route: LnurlServerRouteName = 'verify';
       try {
         const clientIp = readClientRequestMeta(c.req.raw.headers).clientIp;
