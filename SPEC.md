@@ -5206,12 +5206,12 @@ row is **200** with `readAt` still `null` (mark-read does not dismiss it).
 Unknown id, another account's notification, or a non-uuid `:id` → **404**
 `{ "error": "Not found" }`. Same **401** / **503** as list.
 
-When this call sets `readAt` (the stamp equals the route clock), the row's
-collapse tag is enqueued as a dismiss push for the account's other
-subscriptions. An already-read row does not enqueue. A proposal does not
-enqueue, including when a returned proposal `readAt` equals the clock,
-because that kind has no tag. The response stays the public notification,
-not `{ "ok", "tags" }`. Enqueue failure still returns **200**.
+Dismiss happens only when this call changes `readAt` from null. The row's
+collapse tag is then enqueued as a dismiss push for the account's other
+subscriptions. An already-read row does not enqueue, even when its `readAt`
+equals the route clock. A proposal does not enqueue. The response stays the
+public notification, not `{ "ok", "tags" }`. Enqueue failure still returns
+**200**.
 
 Success → **Response** `200` (one public notification with `readAt` set,
 or still `null` for `moderator_proposal`).

@@ -1072,7 +1072,7 @@ describe('POST /notifications/:id/read', () => {
   it('dismisses a freshly stamped row once and keeps the serialized body', async () => {
     const store = new InMemoryNotificationStore([note({ id: ID_A })]);
     const pushStore = new InMemoryPushStore();
-    let clock = now();
+    const clock = now();
     const app = mount(await seeded(), store, new InMemoryMessageStore(), {
       now: () => clock,
       pushStore,
@@ -1096,7 +1096,6 @@ describe('POST /notifications/:id/read', () => {
       unreadCount: 0,
     });
     expect(payload).not.toHaveProperty('endpoint');
-    clock += 1;
     const second = await app.request(`/notifications/${ID_A}/read`, {
       method: 'POST',
       headers: AUTH,
@@ -1133,12 +1132,14 @@ describe('POST /notifications/:id/read', () => {
   it('does not dismiss a proposal whose returned readAt equals the clock', async () => {
     const store = new InMemoryNotificationStore();
     const pushStore = new InMemoryPushStore();
-    store.markRead = async () =>
-      note({
+    store.markRead = async () => ({
+      row: note({
         id: ID_A,
         type: 'moderator_proposal',
         readAt: new Date(now()),
-      });
+      }),
+      stamped: false,
+    });
     const res = await mount(await seeded(), store, new InMemoryMessageStore(), {
       pushStore,
     }).request(`/notifications/${ID_A}/read`, {
@@ -1146,6 +1147,42 @@ describe('POST /notifications/:id/read', () => {
       headers: AUTH,
     });
     expect(res.status).toBe(200);
+    expect(await pushStore.listAllOutbox(10)).toEqual([]);
+  });
+
+  it('does not dismiss an already-read forum row when readAt equals the clock', async () => {
+    const store = new InMemoryNotificationStore();
+    const pushStore = new InMemoryPushStore();
+    const readAt = new Date(now());
+    const forum = note({ id: ID_A, type: 'forum_reply', readAt });
+    store.markRead = async () => ({ row: forum, stamped: false });
+    const res = await mount(await seeded(), store, new InMemoryMessageStore(), {
+      pushStore,
+    }).request(`/notifications/${ID_A}/read`, {
+      method: 'POST',
+      headers: AUTH,
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      id: string;
+      type: string;
+      parentId: string;
+      replyId: string;
+      name: string;
+      text: string;
+      createdAt: string;
+      readAt: string | null;
+    };
+    expect(body).toEqual({
+      id: forum.id,
+      type: forum.type,
+      parentId: forum.parentId,
+      replyId: forum.replyId,
+      name: forum.name,
+      text: forum.text,
+      createdAt: forum.createdAt.toISOString(),
+      readAt: readAt.toISOString(),
+    });
     expect(await pushStore.listAllOutbox(10)).toEqual([]);
   });
 });

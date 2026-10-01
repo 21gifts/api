@@ -13,6 +13,16 @@ import type { NotificationRow, NotificationType } from '@/lib/notification';
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /**
+ * Result of {@link NotificationStore.markRead}.
+ * `stamped` is true only when this call changed `readAt` from null.
+ */
+export interface MarkReadOutcome {
+  row: NotificationRow | undefined;
+  /** True only when this call changed `readAt` from null. */
+  stamped: boolean;
+}
+
+/**
  * Persistence port for in-app notifications.
  */
 export interface NotificationStore {
@@ -62,16 +72,17 @@ export interface NotificationStore {
   getByIdForRecipient(id: string, accountId: string): Promise<NotificationRow | undefined>;
 
   /**
-   * Mark one notification read. Missing / other recipient → `undefined`.
-   * Already read → return as-is (do not overwrite `readAt`).
+   * Mark one notification read. Missing or another recipient yields no row.
+   * Already read returns the row as-is (do not overwrite `readAt`).
    * `moderator_proposal` stays unread (do not stamp `readAt`).
+   * `stamped` is true only when this call changed `readAt` from null.
    *
    * @param id - Notification id.
    * @param accountId - Recipient account.
    * @param readAt - Read stamp for a previously unread row.
-   * @returns The row after stamping `readAt`, the already-read or proposal row unchanged, or `undefined` if missing/other recipient.
+   * @returns The row and whether this call changed `readAt` from null.
    */
-  markRead(id: string, accountId: string, readAt: Date): Promise<NotificationRow | undefined>;
+  markRead(id: string, accountId: string, readAt: Date): Promise<MarkReadOutcome>;
 
   /**
    * Mark every unread notification for the recipient read. Already-read rows
@@ -256,23 +267,23 @@ export class InMemoryNotificationStore implements NotificationStore {
 
   /**
    * Stamp `readAt` on an unread row owned by `accountId`.
-   * `moderator_proposal` is returned unchanged.
+   * `moderator_proposal` is returned unchanged with `stamped` false.
    *
    * @param id - Notification id.
    * @param accountId - Recipient account.
    * @param readAt - Read stamp.
-   * @returns A copy after stamping `readAt`, the already-read or proposal row unchanged, or `undefined` if missing/other recipient.
+   * @returns The row and whether this call changed `readAt` from null.
    */
-  markRead(id: string, accountId: string, readAt: Date): Promise<NotificationRow | undefined> {
+  markRead(id: string, accountId: string, readAt: Date): Promise<MarkReadOutcome> {
     const row = this.#rows.find((item) => item.id === id && item.recipientAccountId === accountId);
     if (row === undefined) {
-      return Promise.resolve(undefined);
+      return Promise.resolve({ row: undefined, stamped: false });
     }
     if (row.readAt !== null || row.type === 'moderator_proposal') {
-      return Promise.resolve(copyNotification(row));
+      return Promise.resolve({ row: copyNotification(row), stamped: false });
     }
     row.readAt = new Date(readAt.getTime());
-    return Promise.resolve(copyNotification(row));
+    return Promise.resolve({ row: copyNotification(row), stamped: true });
   }
 
   /**
@@ -510,28 +521,26 @@ export class PostgresNotificationStore implements NotificationStore {
    * Stamp `read_at` when the row is unread, owned by `accountId`, and not
    * `moderator_proposal` (mark-read does not stamp them; rows drop on
    * confirm, on reject when pending is then empty, or on appoint).
+   * `stamped` is true only when `UPDATE … RETURNING` yields a row, never
+   * on the fallback select, even when that row's `readAt` equals the passed date.
    *
    * @param id - Notification id.
    * @param accountId - Recipient.
    * @param readAt - Read stamp.
-   * @returns The mapped row after stamping `read_at`, the already-read or proposal row unchanged, or `undefined` if missing/other recipient.
+   * @returns The row and whether this call changed `readAt` from null.
    */
-  async markRead(
-    id: string,
-    accountId: string,
-    readAt: Date,
-  ): Promise<NotificationRow | undefined> {
+  async markRead(id: string, accountId: string, readAt: Date): Promise<MarkReadOutcome> {
     const updated = await this.#sql.query<NotificationSqlRow>(
       `UPDATE notification SET read_at = $3
        WHERE id = $1 AND recipient_account_id = $2 AND read_at IS NULL AND type <> 'moderator_proposal'
        RETURNING ${NOTIFICATION_SELECT}`,
       [id, accountId, readAt],
     );
-    const stamped = updated[0];
-    if (stamped !== undefined) {
-      return mapNotificationRow(stamped);
+    const updatedRow = updated[0];
+    if (updatedRow !== undefined) {
+      return { row: mapNotificationRow(updatedRow), stamped: true };
     }
-    return this.getByIdForRecipient(id, accountId);
+    return { row: await this.getByIdForRecipient(id, accountId), stamped: false };
   }
 
   /**

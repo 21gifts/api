@@ -272,14 +272,13 @@ export function notificationRoutes(deps: NotificationRouteDeps): Hono {
         return c.json({ error: 'Not found' }, 404);
       }
       const body = await c.req.json().catch(() => null);
-      const nowMs = deps.now();
       try {
-        const row = await deps.store.markRead(id, account.id, new Date(nowMs));
-        if (row === undefined) {
+        const outcome = await deps.store.markRead(id, account.id, new Date(deps.now()));
+        if (outcome.row === undefined) {
           return c.json({ error: 'Not found' }, 404);
         }
-        if (row.readAt !== null && row.readAt.getTime() === nowMs) {
-          const tag = pushTagForNotification(row);
+        if (outcome.stamped) {
+          const tag = pushTagForNotification(outcome.row);
           if (tag !== null) {
             await enqueueDismissForAccount({
               deps,
@@ -289,7 +288,7 @@ export function notificationRoutes(deps: NotificationRouteDeps): Hono {
             });
           }
         }
-        return c.json(serializeNotification(row), 200);
+        return c.json(serializeNotification(outcome.row), 200);
       } catch {
         logEvent('notifications.read.failed');
         return c.json({ error: 'Notifications are unavailable' }, 503);

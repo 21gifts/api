@@ -164,14 +164,18 @@ describe('InMemoryNotificationStore', () => {
   });
 
   it('markRead missing returns undefined', async () => {
-    expect(
-      await new InMemoryNotificationStore().markRead('missing', 'parent', READ_AT),
-    ).toBeUndefined();
+    expect(await new InMemoryNotificationStore().markRead('missing', 'parent', READ_AT)).toEqual({
+      row: undefined,
+      stamped: false,
+    });
   });
 
   it('markRead for another recipient returns undefined', async () => {
     const store = new InMemoryNotificationStore([row()]);
-    expect(await store.markRead('n-1', 'other', READ_AT)).toBeUndefined();
+    expect(await store.markRead('n-1', 'other', READ_AT)).toEqual({
+      row: undefined,
+      stamped: false,
+    });
     expect((await store.getByIdForRecipient('n-1', 'parent'))?.readAt).toBeNull();
   });
 
@@ -179,7 +183,8 @@ describe('InMemoryNotificationStore', () => {
     const original = new Date('2026-08-29T18:00:00.000Z');
     const store = new InMemoryNotificationStore([row({ readAt: original })]);
     const marked = await store.markRead('n-1', 'parent', READ_AT);
-    expect(marked?.readAt?.toISOString()).toBe(original.toISOString());
+    expect(marked.stamped).toBe(false);
+    expect(marked.row?.readAt?.toISOString()).toBe(original.toISOString());
   });
 
   it('markRead on a moderator_proposal leaves readAt null', async () => {
@@ -187,8 +192,20 @@ describe('InMemoryNotificationStore', () => {
       row({ type: 'moderator_proposal', replyId: 'subject' }),
     ]);
     const marked = await store.markRead('n-1', 'parent', READ_AT);
-    expect(marked?.readAt).toBeNull();
+    expect(marked.stamped).toBe(false);
+    expect(marked.row?.readAt).toBeNull();
     expect((await store.getByIdForRecipient('n-1', 'parent'))?.readAt).toBeNull();
+  });
+
+  it('markRead stamps a fresh row and a second call with the same date does not', async () => {
+    const store = new InMemoryNotificationStore([row()]);
+    const first = await store.markRead('n-1', 'parent', READ_AT);
+    expect(first.stamped).toBe(true);
+    expect(first.row?.readAt).toEqual(READ_AT);
+    const second = await store.markRead('n-1', 'parent', READ_AT);
+    expect(second.stamped).toBe(false);
+    expect(second.row?.readAt).toEqual(READ_AT);
+    expect((await store.getByIdForRecipient('n-1', 'parent'))?.readAt).toEqual(READ_AT);
   });
 
   it('markAllRead stamps unread rows only', async () => {
@@ -477,7 +494,9 @@ describe('PostgresNotificationStore', () => {
     expect(sql.queries[0]?.text).toMatch(/type <> 'moderator_proposal'/);
     expect(sql.queries[0]?.text).toMatch(/RETURNING/);
     expect(sql.queries[0]?.params).toEqual(['n-1', 'parent', READ_AT]);
-    expect(marked?.readAt).toEqual(READ_AT);
+    expect(sql.queries).toHaveLength(1);
+    expect(marked.stamped).toBe(true);
+    expect(marked.row?.readAt).toEqual(READ_AT);
   });
 
   it('markRead already-read returns the stored readAt', async () => {
@@ -488,22 +507,22 @@ describe('PostgresNotificationStore', () => {
       }
       return [sqlRow({ read_at: READ_AT })];
     };
-    const marked = await new PostgresNotificationStore(sql).markRead(
-      'n-1',
-      'parent',
-      new Date('2026-09-01T00:00:00.000Z'),
-    );
+    const marked = await new PostgresNotificationStore(sql).markRead('n-1', 'parent', READ_AT);
     expect(sql.executes).toHaveLength(0);
-    expect(marked?.readAt).toEqual(READ_AT);
+    expect(sql.queries).toHaveLength(2);
+    expect(marked.row?.readAt).toEqual(READ_AT);
+    expect(marked.stamped).toBe(false);
   });
 
   it('markRead missing returns undefined', async () => {
     const sql = new MockSql();
     sql.nextRows = [];
-    expect(
-      await new PostgresNotificationStore(sql).markRead('n-1', 'parent', READ_AT),
-    ).toBeUndefined();
+    expect(await new PostgresNotificationStore(sql).markRead('n-1', 'parent', READ_AT)).toEqual({
+      row: undefined,
+      stamped: false,
+    });
     expect(sql.executes).toHaveLength(0);
+    expect(sql.queries).toHaveLength(2);
   });
 
   it('markAllRead UPDATE params', async () => {

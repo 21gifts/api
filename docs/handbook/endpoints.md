@@ -702,7 +702,7 @@
 
 ## Endpoint: POST /notifications/:id/read
 
-- **Purpose:** Bearer required. UUID `:id`. 200 `PublicNotification` with `readAt` set. The body stays that notification, not `{ ok, tags }`. A fresh stamp (this call set `readAt`) enqueues that row's dismiss tag for the account's other devices. An already-read row does not enqueue. A `moderator_proposal` row is 200 with `readAt` still `null` and is not dismissed, including when a returned proposal `readAt` equals the clock, because that kind has no tag.
+- **Purpose:** Bearer required. UUID `:id`. 200 `PublicNotification` with `readAt` set. The body stays that notification, not `{ ok, tags }`. Dismiss happens only when this call changes `readAt` from null, which enqueues that row's dismiss tag for the account's other devices. An already-read row does not enqueue, even when its `readAt` equals the route clock. A `moderator_proposal` does not enqueue and is 200 with `readAt` still `null`.
 - **Errors:** 401 Unauthorized; 404 Not found (unknown/other/non-uuid); 503 Notifications are unavailable (`notifications.read.failed`). Dismiss enqueue failure is still 200.
 - **Used by:** App mark-one-read control.
 - **Auth:** Bearer session.
