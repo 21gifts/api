@@ -7831,7 +7831,7 @@ describe('zapReceiptIngest', () => {
         },
       }),
     );
-    await ingestOne({
+    const ok = await ingestOne({
       id: 'r-ingest',
       pubkey: receiptPubkey,
       kind: 9735,
@@ -7840,6 +7840,7 @@ describe('zapReceiptIngest', () => {
         ['bolt11', 'lnbc-ingest'],
       ],
     });
+    expect(ok).toBe(true);
     expect((await messages.getById('m-ingest'))?.sats).toBe(21);
     expect(calls).toContain('http://lnurl.internal/.well-known/lnurlp/ingest-wallet');
     expect(calls.some((url) => url.includes('gifts.test'))).toBe(false);
