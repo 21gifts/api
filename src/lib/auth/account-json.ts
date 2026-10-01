@@ -656,6 +656,8 @@ export interface OwnerFundingLookup {
  *   `passkeyCredentialId` null. When present, loads the grant and
  *   `authStore.getPasskeyCredentialForAccount` for `passkeyCredentialId`
  *   only when `walletRequired` is true (otherwise that field is null).
+ *   When `funding` is omitted, `serializeOwnerFunding` gets `accountId`
+ *   `''` so `dailyPayoutStoppedNotice` stays false (grant was not loaded).
  *   When `funding` is omitted, `passkeyRenewFailed`, `passkeyRenewClosed`,
  *   and `passkeyRenewPrfUnsupported` are false and the auth store is not
  *   called for those flags. When
@@ -699,7 +701,7 @@ export async function serializeOwnerAccountWithPosts(
   let passkeyRenewPrfUnsupported = false;
   let serializedAccount = account;
   if (funding === undefined) {
-    fundingJson = serializeOwnerFunding(account.role, undefined, 0, null);
+    fundingJson = serializeOwnerFunding(account.role, undefined, 0, null, '');
   } else {
     const grant = await funding.store.getByAccountId(account.id);
     let reviewerName: string | null = null;
@@ -707,7 +709,13 @@ export async function serializeOwnerAccountWithPosts(
       const reviewer = await funding.authStore.getAccount(grant.decidedBy);
       reviewerName = reviewer?.name ?? null;
     }
-    fundingJson = serializeOwnerFunding(account.role, grant, funding.nowMs, reviewerName);
+    fundingJson = serializeOwnerFunding(
+      account.role,
+      grant,
+      funding.nowMs,
+      reviewerName,
+      account.id,
+    );
     passkeyRenewFailed = await funding.authStore.hasUnacknowledgedPasskeyRenewFailure(account.id);
     const acknowledgedRenew = await funding.authStore.hasAcknowledgedPasskeyRenewFailure(
       account.id,

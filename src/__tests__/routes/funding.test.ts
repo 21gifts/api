@@ -252,6 +252,7 @@ describe('POST /funding/apply', () => {
         trialUtcDate: null,
         admittedAt: null,
         reviewedByName: null,
+        dailyPayoutStoppedNotice: false,
       },
     });
     expect(parsedEvents(warn).some((e) => e['event'] === 'funding.applied')).toBe(true);

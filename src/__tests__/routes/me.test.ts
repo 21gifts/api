@@ -277,6 +277,7 @@ describe('GET /me', () => {
       trialUtcDate: null,
       admittedAt: null,
       reviewedByName: null,
+      dailyPayoutStoppedNotice: false,
     });
     expect(funded.walletRequired).toBe(false);
     expect(funded.walletBackupSeenAt).toBeNull();

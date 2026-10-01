@@ -43,8 +43,8 @@ verification payment requires an injected invoice payer; the default
 does not fetch or pay invoices.
 
 Spend-worker invoice routes: `GET /invoices/passkey` and `GET /invoices/posted`
-report those gates; `GET /invoices/eligible` reports `{ eligible, status }` (`eligibleToday` plus `effectiveStatus`; grant required from UTC 2026-10-10);
-`POST /invoices` requires passkey and `eligibleToday` (grant required from UTC 2026-10-10), then fetches a BOLT11 via LNURL-pay.
+report those gates; `GET /invoices/eligible` reports `{ eligible, status }` (`eligibleToday` plus `effectiveStatus`; grant required from UTC 2026-10-01);
+`POST /invoices` requires passkey and `eligibleToday` (grant required from UTC 2026-10-01), then fetches a BOLT11 via LNURL-pay.
 When `messageId` is set, that note must be the address's live top-level note, including About me, and have a photo or video.
 When `messageId` is omitted, issue requires at least one live **top-level** forum message that is not the auto-created profile note.
 `POST /invoices/proof` accepts a preimage without re-checking the grant. Replies do not count. They require `SPEND_API_TOKEN`;
@@ -745,7 +745,7 @@ stays `null`)).
 | `amountUnit`                 | string         | Owner amount-entry unit: `btc` or `fiat`. Default `btc`. Owner-only; omitted from public `GET /view/:viewKey` and member cards. The last unit the member chose on any amount field.                                                                                                                                                             |
 | `locale`                     | string \| null | Owner UI language: `en`, `de`, `es`, or `fil`, or `null` when not stored yet. Owner-only; omitted from public `GET /view/:viewKey` and member cards. A stored value wins over the browser.                                                                                                                                                      |
 | `fiat`                       | string \| null | Owner fiat: `CHF`, `EUR`, `USD`, or `PHP`, or `null` when not stored yet. Owner-only; omitted from public `GET /view/:viewKey` and member cards. A stored value wins over the language default.                                                                                                                                                 |
-| `funding`                    | object \| null | Funding-program grant. `null` for `basis`. Otherwise always an object; no row is `{ status: "none", trialUtcDate: null, admittedAt: null, reviewedByName: null }`. Admitted includes live `reviewedByName`.                                                                                                                                     |
+| `funding`                    | object \| null | Funding-program grant. `null` for `basis`. Otherwise always an object; no row is `{ status: "none", trialUtcDate: null, admittedAt: null, reviewedByName: null, dailyPayoutStoppedNotice: false }`. `dailyPayoutStoppedNotice` is true only for the six legacy daily accounts while effective status is `none`. Admitted includes live `reviewedByName`. |
 | `walletRequired`             | boolean        | True when a seed-bearing passkey exists (new register/claim, or seed finish). Default false does not mean a seed is present. It does not make `setup` `'wallet'`.                                                                                                                                                                               |
 | `walletBackupSeenAt`         | number \| null | Epoch ms recorded after an existing member activates a passkey that can show a recovery phrase, so the app can offer Show recovery phrase next time instead of Activate. Not a confirmation. Not a seed check; it does not decide whether a seed exists. Null when that has not been recorded.                                                  |
 | `passkeyCredentialId`        | string \| null | Null when `walletRequired` is not true, even if a login passkey exists. When `walletRequired` is true it is the newest credential id (`created_at` desc, `credential_id` desc with `COLLATE "C"`). Owner-only.                                                                                                                                  |
@@ -1238,7 +1238,7 @@ Staff Bearer. Target effective pending or trial, not self. Sets
 Staff Bearer (moderator). Seven UTC days ending today, oldest first,
 and one row per person who missed a grant day, received a daily
 payout, or received a welcome gift in that window, including a person
-who was not entitled. Does not use the pre-2026-10-10 open gate and
+who was not entitled. Does not use the pre-2026-10-01 open gate and
 does not run lazy trial expiry. JSON
 `{ "days": [ "YYYY-MM-DD", … ], "rows": [ { accountId, name, days, welcome } ] }`
 where each cell is `blocked`, `missed`, or `paid`, and `welcome` is
@@ -3255,7 +3255,7 @@ Success is always **200** (never 404 for an unknown address):
 `status` is `effectiveStatus`: `none`, `pending`, `trial`, `admitted`, or
 `rejected`. Unknown address and `basis` are always
 `{ "eligible": false, "status": "none" }` with no grant lookup. Until UTC
-2026-10-10 a missing/pending/rejected grant on a non-`basis` account is
+2026-10-01 a missing/pending/rejected grant on a non-`basis` account is
 `eligible: true` with `status` still from `effectiveStatus`; from that day
 `eligible` is false unless admitted or trial-today.
 
@@ -3297,7 +3297,7 @@ note never become `messageId`. A text-only newest row can still pair with
 
 Spend-worker invoice fetch. After address and amount validation, the api
 requires a 21.gifts account for `address` that already has a passkey
-credential and `eligibleToday` (grant required from UTC 2026-10-10).
+credential and `eligibleToday` (grant required from UTC 2026-10-01).
 When `messageId` is omitted, it also requires at least one live **top-level**
 forum message that is not the auto-created profile note. When `messageId` is
 set, that note must be this address's live top-level note, including About me,

@@ -431,12 +431,14 @@ describe('serializeOwnerAccount', () => {
       trialUtcDate: null,
       admittedAt: null,
       reviewedByName: null,
+      dailyPayoutStoppedNotice: false,
     });
     expect(json.funding).toEqual({
       status: 'none',
       trialUtcDate: null,
       admittedAt: null,
       reviewedByName: null,
+      dailyPayoutStoppedNotice: false,
     });
   });
 });
@@ -650,6 +652,7 @@ describe('serializeOwnerAccountWithPosts', () => {
       trialUtcDate: null,
       admittedAt: null,
       reviewedByName: null,
+      dailyPayoutStoppedNotice: false,
     });
   });
 
@@ -687,6 +690,7 @@ describe('serializeOwnerAccountWithPosts', () => {
       trialUtcDate: null,
       admittedAt: 3,
       reviewedByName: 'Mod',
+      dailyPayoutStoppedNotice: false,
     });
     expect(json.passkeyCredentialId).toBeNull();
   });
@@ -786,6 +790,7 @@ describe('serializeOwnerAccountWithPosts', () => {
       trialUtcDate: null,
       admittedAt: 3,
       reviewedByName: null,
+      dailyPayoutStoppedNotice: false,
     });
   });
 
