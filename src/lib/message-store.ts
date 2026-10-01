@@ -988,6 +988,15 @@ export interface MessageStore {
   claimZapPayment(paymentHash: string, receiptEventId: string, at: Date): Promise<boolean>;
 
   /**
+   * Receipt event id that owns a payment hash claim, without claiming it.
+   *
+   * @param paymentHash - BOLT11 payment hash (any case).
+   * @returns The owning receipt event id, or `undefined` when the hash is unclaimed.
+   * @throws Propagates persistence failures.
+   */
+  zapPaymentReceiptId(paymentHash: string): Promise<string | undefined>;
+
+  /**
    * Persist a zap receipt once and credit the message. A reply folds into
    * `received_*`; a top-level note folds into `sats` / `fiat_*` /
    * `goal_funded_at`. Join is `message_id`, never `gift_reply_id`.
@@ -3518,6 +3527,10 @@ export class InMemoryMessageStore implements MessageStore {
       createdAt: new Date(at.getTime()),
     });
     return Promise.resolve(true);
+  }
+
+  zapPaymentReceiptId(paymentHash: string): Promise<string | undefined> {
+    return Promise.resolve(this.#zapPayments.get(paymentHash.toLowerCase())?.receiptEventId);
   }
 
   async recordZapReceipt(
@@ -6224,6 +6237,16 @@ export class PostgresMessageStore implements MessageStore {
       [normalizedHash],
     );
     return rows[0]?.receipt_event_id === receiptEventId;
+  }
+
+  async zapPaymentReceiptId(paymentHash: string): Promise<string | undefined> {
+    const rows = await this.#sql.query<{ receipt_event_id: string }>(
+      `SELECT receipt_event_id
+       FROM nostr_zap_payment
+       WHERE payment_hash = $1`,
+      [paymentHash.toLowerCase()],
+    );
+    return rows[0]?.receipt_event_id;
   }
 
   async recordZapReceipt(

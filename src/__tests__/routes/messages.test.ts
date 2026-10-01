@@ -249,6 +249,7 @@ function throwingStore(overrides: Partial<MessageStore> = {}): MessageStore {
     addSats: boom,
     addReceivedSats: boom,
     claimZapPayment: boom,
+    zapPaymentReceiptId: boom,
     recordZapReceipt: boom,
     recordInvoiceAttempt: boom,
     listInvoiceAttempts: boom,
@@ -3779,6 +3780,7 @@ describe('POST /messages', () => {
       addSats: (id, extra, delta) => base.addSats(id, extra, delta),
       addReceivedSats: (id, extra, delta) => base.addReceivedSats(id, extra, delta),
       claimZapPayment: (hash, receiptId, at) => base.claimZapPayment(hash, receiptId, at),
+      zapPaymentReceiptId: (hash) => base.zapPaymentReceiptId(hash),
       recordZapReceipt: (receiptId, messageId, sats, delta) =>
         base.recordZapReceipt(receiptId, messageId, sats, delta),
       recordInvoiceAttempt: (row) => base.recordInvoiceAttempt(row),
@@ -3909,6 +3911,7 @@ describe('POST /messages', () => {
       addSats: (id, extra, delta) => base.addSats(id, extra, delta),
       addReceivedSats: (id, extra, delta) => base.addReceivedSats(id, extra, delta),
       claimZapPayment: (hash, receiptId, at) => base.claimZapPayment(hash, receiptId, at),
+      zapPaymentReceiptId: (hash) => base.zapPaymentReceiptId(hash),
       recordZapReceipt: (receiptId, messageId, sats, delta) =>
         base.recordZapReceipt(receiptId, messageId, sats, delta),
       recordInvoiceAttempt: (row) => base.recordInvoiceAttempt(row),
@@ -5593,6 +5596,7 @@ describe('POST /messages/:id/invoice', () => {
       addSats: (...args) => base.addSats(...args),
       addReceivedSats: (...args) => base.addReceivedSats(...args),
       claimZapPayment: (...args) => base.claimZapPayment(...args),
+      zapPaymentReceiptId: (hash) => base.zapPaymentReceiptId(hash),
       recordZapReceipt: (...args) => base.recordZapReceipt(...args),
       recordInvoiceAttempt: async () => {
         throw new Error('persist boom');
