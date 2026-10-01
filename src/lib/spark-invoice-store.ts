@@ -51,11 +51,15 @@ export interface SparkInvoiceStore {
    * Open rows issued at or after `since`, oldest first.
    *
    * @param since - Window start.
+   * @returns Open rows, oldest first.
    */
   listOpen(since: Date): Promise<SparkInvoiceRow[]>;
   /**
    * Mark an open row settled with its transfer id and receipt id.
    *
+   * @param paymentHash - Payment hash of the zap invoice.
+   * @param transferId - Spark transfer id (hex), or `null` when the operators did not report one.
+   * @param receiptEventId - Id of the zap receipt built for the transfer.
    * @returns `true` only when this call changed the row from `open`.
    */
   markSettled(
