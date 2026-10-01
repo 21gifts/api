@@ -57,7 +57,7 @@ api/
 │   │   ├── debug-catalog.ts  # GET /debug/dump, GET /debug/dump/:table (operator DEBUG_TOKEN)
 │   │   ├── trust-chain.ts    # session GET /trust-chain (founder seeds; ?around=<id> one hop)
 │   │   ├── trust.ts          # GET /trust/proposals; POST /trust/verify, propose-moderator, confirm-moderator, reject-moderator, appoint-moderator
-│   │   ├── funding.ts        # POST /funding/apply; GET /funding/applications; GET /funding/applications/:accountId; POST /funding/trial, admit, reject
+│   │   ├── funding.ts        # POST /funding/apply; GET /funding/applications; GET /funding/applications/:accountId; POST /funding/trial, admit, reject; GET /funding/daily-roster; POST /funding/daily-roster/comment, /payments, /recipients, /recipients/update, /recipients/delete
 │   │   ├── push.ts           # GET /push/vapid-public; POST/DELETE /me/push-subscriptions
 │   │   ├── stats.ts          # GET /gifts/stats (public gift totals)
 │   │   ├── gifts.ts          # GET /gifts?day= (public per-day gift list)
@@ -126,6 +126,7 @@ api/
 │   │   ├── proof.ts          # sha256(preimage) === payment hash
 │   │   ├── spend-auth.ts     # Timing-safe SPEND_API_TOKEN Bearer check
 │   │   ├── spend-ping.ts     # SpendPing port, HttpSpendPing, resolveSpendPing (`{ address, messageId }` daily; optional `{ address, kind: "moderator", groupMessageId }`)
+│   │   ├── daily-roster.ts   # DailyRoster port, HttpDailyRoster, spend 400 mapping
 │   │   ├── invoice-store.ts  # In-memory gift invoices awaiting proof
 │   │   ├── gift-recorder.ts  # Persist proven spend gifts into `gift` (no-op or SQL)
 │   │   ├── verification.ts   # Address proof-of-control start/confirm domain logic
@@ -184,6 +185,7 @@ api/
 │       │   ├── proof.test.ts
 │       │   ├── spend-auth.test.ts
 │       │   ├── spend-ping.test.ts
+│       │   ├── daily-roster.test.ts
 │       │   ├── invoice-store.test.ts
 │       │   ├── gift-recorder.test.ts
 │       │   ├── verification.test.ts
@@ -300,6 +302,7 @@ api/
 │           ├── debug-catalog.test.ts
 │           ├── trust-chain.test.ts
 │           ├── trust.test.ts
+│           ├── daily-roster.test.ts
 │           ├── funding.test.ts
 │           └── view.test.ts
 ├── docs/handbook/            # Mandatory: every function + HTTP endpoint
