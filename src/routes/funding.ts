@@ -20,6 +20,7 @@ import type { MessageStore } from '@/lib/message-store';
 import type { SpendGrantStatus } from '@/lib/spend-instruction';
 import type { SpendPing } from '@/lib/spend-ping';
 import { canEditDailyPayoutRoster, roleAtLeast } from '@/lib/auth/roles';
+import type { LnurlServerConfig } from '@/lib/config';
 import {
   DAILY_ROSTER_INVALID_ADDRESS,
   DAILY_ROSTER_INVALID_COMMENT,
@@ -31,6 +32,7 @@ import {
   type DailyRoster,
   type DailyRosterClient,
 } from '@/lib/daily-roster';
+import { receivingAddress } from '@/lib/receiving-address';
 import { isStaffRole } from '@/lib/trust';
 import { forumVideoFilePresent, resolveMediaDir } from '@/lib/video';
 import { bearerToken } from '@/routes/me';
@@ -52,6 +54,8 @@ export interface FundingRouteDeps {
   fundingStore: FundingStore;
   /** Forum persistence for staff application detail. */
   messageStore: MessageStore;
+  /** LNURL server; omitted when off. A verified wallet makes an applicant's notes payable. */
+  lnurlServer?: LnurlServerConfig;
   /** Clock returning epoch milliseconds (injected for testability). */
   now: () => number;
   /** Optional spend ping. Omitted → skip the daily post ping after trial/admit. */
@@ -516,8 +520,7 @@ export function fundingRoutes(deps: FundingRouteDeps): Hono {
           const payable =
             kept.eventId !== null &&
             kept.eventId !== '' &&
-            account.lightningAddress !== null &&
-            account.lightningAddress.trim() !== '';
+            receivingAddress(account, deps.lnurlServer) !== null;
           messages.push(
             serializeMessage(
               kept,
