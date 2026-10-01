@@ -211,6 +211,10 @@ export interface Account {
    * that has not been recorded.
    */
   walletBackupSeenAt?: number | null;
+  /** Identity public key of the member's wallet (66 lower-case hex), or null/omitted. */
+  sparkPubkey?: string | null;
+  /** Epoch ms when the LNURL server accepted a registration signed by that key, or null/omitted. */
+  sparkPubkeyVerifiedAt?: number | null;
 }
 
 /**
@@ -345,7 +349,10 @@ export interface AuthStore {
    * Overwrite a stored account. A `viewKey`, non-null `linkingKey`,
    * `lightningAddress` (`lower(trim)`), or `username` (`lower(trim)`) owned
    * by another id is refused (in-memory no-op; Postgres via `UPDATE`
-   * matching no row or swallowed unique_violation).
+   * matching no row or swallowed unique_violation). The username of an
+   * account with a verified wallet (`sparkPubkeyVerifiedAt` set) cannot
+   * change; such an update matches no row / is a no-op. Wallet columns
+   * (`sparkPubkey`, `sparkPubkeyVerifiedAt`) are never written here.
    */
   updateAccount(account: Account): Promise<void>;
   /**
@@ -361,6 +368,33 @@ export interface AuthStore {
     accountId: string,
     now: number,
   ): Promise<{ account: Account; wrote: boolean } | undefined>;
+  /**
+   * Store `sparkPubkey` as the account's wallet key while the account has no verified wallet.
+   * Writes only when the account has `walletRequired` true, a non-blank username, and
+   * `sparkPubkeyVerifiedAt` null. Other columns stay unchanged. An unverified value is not
+   * exclusive: two accounts may hold the same unverified key.
+   * @returns `{ account, wrote }`, or `undefined` when the id is unknown.
+   */
+  claimSparkPubkey(
+    accountId: string,
+    sparkPubkey: string,
+  ): Promise<{ account: Account; wrote: boolean } | undefined>;
+  /**
+   * Mark the account's wallet key verified. One conditional write: only when the row has this id,
+   * this `sparkPubkey`, a null `sparkPubkeyVerifiedAt`, and `lower(trim(username)) = username`.
+   * A second account verified on the same key is refused (unique index / in-memory scan).
+   * @returns `true` only when this call stored the timestamp.
+   */
+  markSparkPubkeyVerified(
+    accountId: string,
+    sparkPubkey: string,
+    username: string,
+    now: number,
+  ): Promise<boolean>;
+  /** The account whose verified wallet key is `sparkPubkey`, or `undefined`. At most one row matches. */
+  getAccountByVerifiedSparkPubkey(sparkPubkey: string): Promise<Account | undefined>;
+  /** Whether any account holds `sparkPubkey` as its claimed or verified wallet key. */
+  isSparkPubkeyClaimed(sparkPubkey: string): Promise<boolean>;
   /**
    * Persist one passkey renew attempt. Caps and redacts client fields.
    * Does not change the account row.
@@ -724,6 +758,8 @@ export class InMemoryAuthStore implements AuthStore {
       sessionRefused: account.sessionRefused === true,
       locale: null,
       fiat: null,
+      sparkPubkey: null,
+      sparkPubkeyVerifiedAt: null,
     });
     this.#accountsByViewKey.set(account.viewKey, account.id);
     if (account.linkingKey !== null) {
@@ -745,6 +781,86 @@ export class InMemoryAuthStore implements AuthStore {
     const updated: Account = { ...current, walletBackupSeenAt: now };
     this.#accounts.set(accountId, updated);
     return { account: updated, wrote: true };
+  }
+
+  async claimSparkPubkey(
+    accountId: string,
+    sparkPubkey: string,
+  ): Promise<{ account: Account; wrote: boolean } | undefined> {
+    const current = this.#accounts.get(accountId);
+    if (current === undefined) {
+      return undefined;
+    }
+    const username = current.username;
+    const blankUsername = username === null || username === undefined || username.trim() === '';
+    const verified =
+      current.sparkPubkeyVerifiedAt !== null && current.sparkPubkeyVerifiedAt !== undefined;
+    if (current.walletRequired !== true || blankUsername || verified) {
+      return { account: current, wrote: false };
+    }
+    const updated: Account = { ...current, sparkPubkey };
+    this.#accounts.set(accountId, updated);
+    return { account: updated, wrote: true };
+  }
+
+  async markSparkPubkeyVerified(
+    accountId: string,
+    sparkPubkey: string,
+    username: string,
+    now: number,
+  ): Promise<boolean> {
+    for (const other of this.#accounts.values()) {
+      if (
+        other.id !== accountId &&
+        other.sparkPubkey === sparkPubkey &&
+        other.sparkPubkeyVerifiedAt !== null &&
+        other.sparkPubkeyVerifiedAt !== undefined
+      ) {
+        return false;
+      }
+    }
+    const current = this.#accounts.get(accountId);
+    if (current === undefined) {
+      return false;
+    }
+    if (current.sparkPubkey !== sparkPubkey) {
+      return false;
+    }
+    if (current.sparkPubkeyVerifiedAt !== null && current.sparkPubkeyVerifiedAt !== undefined) {
+      return false;
+    }
+    const storedUsername = current.username;
+    if (
+      storedUsername === null ||
+      storedUsername === undefined ||
+      storedUsername.trim().toLowerCase() !== username
+    ) {
+      return false;
+    }
+    this.#accounts.set(accountId, { ...current, sparkPubkeyVerifiedAt: now });
+    return true;
+  }
+
+  async getAccountByVerifiedSparkPubkey(sparkPubkey: string): Promise<Account | undefined> {
+    for (const account of this.#accounts.values()) {
+      if (
+        account.sparkPubkey === sparkPubkey &&
+        account.sparkPubkeyVerifiedAt !== null &&
+        account.sparkPubkeyVerifiedAt !== undefined
+      ) {
+        return account;
+      }
+    }
+    return undefined;
+  }
+
+  async isSparkPubkeyClaimed(sparkPubkey: string): Promise<boolean> {
+    for (const account of this.#accounts.values()) {
+      if (account.sparkPubkey === sparkPubkey) {
+        return true;
+      }
+    }
+    return false;
   }
 
   async insertPasskeyRenewAttempt(input: PasskeyRenewAttemptInput): Promise<void> {
@@ -894,10 +1010,18 @@ export class InMemoryAuthStore implements AuthStore {
     if (this.#usernameTaken(account.username, account.id)) {
       return;
     }
+    const previous = this.#accounts.get(account.id);
+    if (
+      previous !== undefined &&
+      previous.sparkPubkeyVerifiedAt !== null &&
+      previous.sparkPubkeyVerifiedAt !== undefined &&
+      account.username !== previous.username
+    ) {
+      return;
+    }
     if (account.isPlatform === true) {
       this.#clearPlatformExcept(account.id);
     }
-    const previous = this.#accounts.get(account.id);
     if (
       previous !== undefined &&
       previous.linkingKey !== null &&
@@ -915,6 +1039,8 @@ export class InMemoryAuthStore implements AuthStore {
       walletBackupSeenAt: previous?.walletBackupSeenAt ?? null,
       locale: previous?.locale ?? null,
       fiat: previous?.fiat ?? null,
+      sparkPubkey: previous?.sparkPubkey ?? null,
+      sparkPubkeyVerifiedAt: previous?.sparkPubkeyVerifiedAt ?? null,
     });
     this.#accountsByViewKey.set(account.viewKey, account.id);
     if (account.linkingKey !== null) {

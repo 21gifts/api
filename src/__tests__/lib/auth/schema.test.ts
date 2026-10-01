@@ -114,19 +114,42 @@ describe('AUTH_SCHEMA_SQL', () => {
     expect(AUTH_SCHEMA_SQL.join('\n')).toMatch(
       /CREATE INDEX IF NOT EXISTS passkey_renew_attempt_account_idx\s+ON passkey_renew_attempt \(account_id, created_at DESC\)/i,
     );
-    expect(AUTH_SCHEMA_SQL[AUTH_SCHEMA_SQL.length - 5]).toBe(
-      'ALTER TABLE passkey_challenge ADD COLUMN IF NOT EXISTS requested_name text',
+    expect(AUTH_SCHEMA_SQL.join('\n')).toMatch(
+      /ALTER TABLE passkey_challenge ADD COLUMN IF NOT EXISTS requested_name text/,
     );
-    expect(AUTH_SCHEMA_SQL[AUTH_SCHEMA_SQL.length - 4]).toBe(
-      'ALTER TABLE account ADD COLUMN IF NOT EXISTS staff_tag text',
+    expect(AUTH_SCHEMA_SQL.join('\n')).toMatch(
+      /ALTER TABLE account ADD COLUMN IF NOT EXISTS spark_pubkey text/,
     );
-    expect(AUTH_SCHEMA_SQL[AUTH_SCHEMA_SQL.length - 3]).toBe(
-      'ALTER TABLE account DROP CONSTRAINT IF EXISTS account_staff_tag_chk',
+    expect(AUTH_SCHEMA_SQL.join('\n')).toMatch(
+      /ALTER TABLE account ADD COLUMN IF NOT EXISTS spark_pubkey_verified_at timestamptz/,
     );
-    expect(AUTH_SCHEMA_SQL[AUTH_SCHEMA_SQL.length - 2]).toBe(
-      "ALTER TABLE account ADD CONSTRAINT account_staff_tag_chk CHECK (staff_tag IS NULL OR staff_tag IN ('software_developer'))",
+    expect(AUTH_SCHEMA_SQL.join('\n')).toMatch(
+      /ALTER TABLE account DROP CONSTRAINT IF EXISTS account_spark_pubkey_chk/,
+    );
+    expect(AUTH_SCHEMA_SQL.join('\n')).toMatch(/account_spark_pubkey_chk/);
+    expect(AUTH_SCHEMA_SQL.join('\n')).toMatch(/spark_pubkey ~ '\^0\[23\]\[0-9a-f\]\{64\}\$'/);
+    expect(AUTH_SCHEMA_SQL.join('\n')).toMatch(
+      /CREATE INDEX IF NOT EXISTS account_spark_pubkey_idx ON account \(spark_pubkey\) WHERE spark_pubkey IS NOT NULL/,
     );
     expect(AUTH_SCHEMA_SQL[AUTH_SCHEMA_SQL.length - 1]).toBe(
+      `CREATE UNIQUE INDEX IF NOT EXISTS account_spark_pubkey_verified_uidx
+  ON account (spark_pubkey) WHERE spark_pubkey_verified_at IS NOT NULL`,
+    );
+    const staffTagAt = AUTH_SCHEMA_SQL.indexOf(
+      'ALTER TABLE account ADD COLUMN IF NOT EXISTS staff_tag text',
+    );
+    expect(staffTagAt).toBeGreaterThan(
+      AUTH_SCHEMA_SQL.indexOf(
+        'ALTER TABLE passkey_challenge ADD COLUMN IF NOT EXISTS requested_name text',
+      ),
+    );
+    expect(AUTH_SCHEMA_SQL[staffTagAt + 1]).toBe(
+      'ALTER TABLE account DROP CONSTRAINT IF EXISTS account_staff_tag_chk',
+    );
+    expect(AUTH_SCHEMA_SQL[staffTagAt + 2]).toBe(
+      "ALTER TABLE account ADD CONSTRAINT account_staff_tag_chk CHECK (staff_tag IS NULL OR staff_tag IN ('software_developer'))",
+    );
+    expect(AUTH_SCHEMA_SQL[staffTagAt + 3]).toBe(
       "UPDATE account SET staff_tag = 'software_developer' WHERE lower(trim(username)) = 'dansw' AND staff_tag IS DISTINCT FROM 'software_developer'",
     );
   });

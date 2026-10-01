@@ -681,6 +681,146 @@ describe('CORS', () => {
     });
     expect(res.headers.get('access-control-allow-origin')).toBe('https://custom.test');
   });
+
+  it('allows any origin on /lnurlp/* and /verify/* only when the LNURL server is on', async () => {
+    const off = createApp({ env: {} });
+    const offInvoice = await off.request('/lnurlp/ada/invoice', {
+      headers: { origin: 'https://evil.test' },
+    });
+    expect(offInvoice.status).toBe(404);
+    expect(offInvoice.headers.get('access-control-allow-origin')).not.toBe('*');
+    const offVerify = await off.request('/verify/x', {
+      headers: { origin: 'https://evil.test' },
+    });
+    expect(offVerify.status).toBe(404);
+    expect(offVerify.headers.get('access-control-allow-origin')).not.toBe('*');
+
+    const on = createApp({
+      env: {
+        LNURL_SERVER_URL: 'http://lnurl.test',
+        PUBLIC_BASE_URL: 'https://example.test',
+      },
+      fetchImpl: async () => new Response('ok', { status: 200 }),
+    });
+    const invoice = await on.request('/lnurlp/ada/invoice', {
+      headers: { origin: 'https://evil.test' },
+    });
+    expect(invoice.headers.get('access-control-allow-origin')).toBe('*');
+    const verify = await on.request('/verify/abc', {
+      headers: { origin: 'https://evil.test' },
+    });
+    expect(verify.headers.get('access-control-allow-origin')).toBe('*');
+  });
+
+  it('keeps the allow-list CORS on /lnurlpay/* and adds breez headers there', async () => {
+    const on = createApp({
+      env: {
+        LNURL_SERVER_URL: 'http://lnurl.test',
+        PUBLIC_BASE_URL: 'https://example.test',
+      },
+      allowedOrigins: ['https://app.21.gifts'],
+    });
+    const denied = await on.request(`/lnurlpay/${'02'}${'a'.repeat(64)}`, {
+      method: 'POST',
+      headers: { origin: 'https://evil.test' },
+      body: '{}',
+    });
+    expect(denied.headers.get('access-control-allow-origin')).not.toBe('https://evil.test');
+
+    const preflight = await on.request(`/lnurlpay/${'02'}${'a'.repeat(64)}`, {
+      method: 'OPTIONS',
+      headers: {
+        origin: 'https://app.21.gifts',
+        'access-control-request-method': 'POST',
+        'access-control-request-headers': 'x-breez-signature,x-breez-timestamp',
+      },
+    });
+    expect(preflight.status).toBe(204);
+    expect(preflight.headers.get('access-control-allow-origin')).toBe('https://app.21.gifts');
+    const allowHeaders = preflight.headers.get('access-control-allow-headers') ?? '';
+    expect(allowHeaders.toLowerCase()).toMatch(/x-breez-signature/);
+    expect(allowHeaders.toLowerCase()).toMatch(/x-breez-timestamp/);
+
+    const elsewhere = await on.request('/me', {
+      method: 'OPTIONS',
+      headers: {
+        origin: 'https://app.21.gifts',
+        'access-control-request-method': 'GET',
+        'access-control-request-headers': 'x-breez-signature,x-breez-timestamp',
+      },
+    });
+    const meHeaders = elsewhere.headers.get('access-control-allow-headers') ?? '';
+    expect(meHeaders.toLowerCase()).not.toMatch(/x-breez-signature/);
+    expect(meHeaders.toLowerCase()).not.toMatch(/x-breez-timestamp/);
+  });
+});
+
+describe('LNURL server wiring', () => {
+  let warn: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+  });
+
+  afterEach(() => {
+    warn.mockRestore();
+  });
+
+  function routePairs(app: ReturnType<typeof createApp>): Array<{ method: string; path: string }> {
+    return app.routes.map((route) => ({ method: route.method, path: route.path }));
+  }
+
+  it('does not mount the new routes when LNURL_SERVER_URL is unset', async () => {
+    const app = createApp({ env: {} });
+    const pairs = routePairs(app);
+    expect(pairs.some((r) => r.method === 'PUT' && r.path === '/me/wallet')).toBe(false);
+    expect(pairs.some((r) => r.method === 'POST' && r.path === '/lnurlpay/:pubkey')).toBe(false);
+    expect(pairs.some((r) => r.method === 'POST' && r.path === '/lnurlpay/:pubkey/recover')).toBe(
+      false,
+    );
+    expect(pairs.some((r) => r.method === 'GET' && r.path === '/lnurlpay/:pubkey/metadata')).toBe(
+      false,
+    );
+    expect(pairs.some((r) => r.method === 'GET' && r.path === '/lnurlp/:username/invoice')).toBe(
+      false,
+    );
+    expect(pairs.some((r) => r.method === 'GET' && r.path === '/verify/:paymentHash')).toBe(false);
+
+    expect((await app.request('/me/wallet', { method: 'PUT' })).status).toBe(404);
+    expect((await app.request('/lnurlpay/x', { method: 'POST' })).status).toBe(404);
+    expect((await app.request('/lnurlp/x/invoice')).status).toBe(404);
+    expect((await app.request('/verify/x')).status).toBe(404);
+  });
+
+  it('mounts the new routes when LNURL_SERVER_URL and PUBLIC_BASE_URL are set', async () => {
+    const app = createApp({
+      env: {
+        LNURL_SERVER_URL: 'http://lnurl.test',
+        PUBLIC_BASE_URL: 'https://example.test',
+      },
+      fetchImpl: async () => new Response('{"status":"OK"}', { status: 200 }),
+    });
+    const pairs = routePairs(app);
+    expect(pairs.some((r) => r.method === 'PUT' && r.path === '/me/wallet')).toBe(true);
+    expect(pairs.some((r) => r.method === 'POST' && r.path === '/lnurlpay/:pubkey')).toBe(true);
+    expect(pairs.some((r) => r.method === 'POST' && r.path === '/lnurlpay/:pubkey/recover')).toBe(
+      true,
+    );
+    expect(pairs.some((r) => r.method === 'GET' && r.path === '/lnurlpay/:pubkey/metadata')).toBe(
+      true,
+    );
+    expect(pairs.some((r) => r.method === 'GET' && r.path === '/lnurlp/:username/invoice')).toBe(
+      true,
+    );
+    expect(pairs.some((r) => r.method === 'GET' && r.path === '/verify/:paymentHash')).toBe(true);
+
+    expect((await app.request('/me/wallet', { method: 'PUT' })).status).toBe(401);
+    expect((await app.request('/lnurlpay/not-a-key', { method: 'POST', body: '{}' })).status).toBe(
+      404,
+    );
+    expect((await app.request('/lnurlp/_/invoice')).status).toBe(404);
+    expect((await app.request('/verify/abc')).status).toBe(200);
+  });
 });
 
 describe('resolveBindAddr', () => {

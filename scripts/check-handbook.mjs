@@ -152,6 +152,7 @@ function extractEndpoints() {
     'debug-catalog.ts': '/debug/dump',
     'well-known.ts': '/.well-known',
     'spend-instruction-route.ts': '/spend',
+    'lnurl-server.ts': '',
   };
   const methodRe = /\.(get|post|delete|put|patch)\((['"])(\/[-A-Za-z0-9_./:]*)\2/g;
   for (const file of fs.readdirSync(routeDir).filter((n) => n.endsWith('.ts'))) {

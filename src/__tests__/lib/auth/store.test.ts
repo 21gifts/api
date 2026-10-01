@@ -2762,3 +2762,169 @@ describe('InMemoryAuthStore', () => {
     expect((await store.getAccount('acc'))?.name).toBe('Ada');
   });
 });
+
+describe('InMemoryAuthStore spark pubkey', () => {
+  const PUBKEY = `02${'a'.repeat(64)}`;
+  const OTHER_KEY = `03${'b'.repeat(64)}`;
+
+  async function walletAccount(
+    store: InMemoryAuthStore,
+    id: string,
+    opts: { username?: string | null; walletRequired?: boolean; viewKey?: string } = {},
+  ) {
+    await store.createAccount({
+      id,
+      linkingKey: null,
+      role: 'basis',
+      name: 'Ada',
+      username: opts.username === undefined ? 'ada' : opts.username,
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: opts.viewKey ?? `${id.replace(/-/g, '').padEnd(64, 'a').slice(0, 64)}`,
+      createdAt: 1,
+      rulesAgreedAt: null,
+      walletRequired: opts.walletRequired ?? true,
+    });
+  }
+
+  it('createAccount ignores wallet fields from the input', async () => {
+    const store = new InMemoryAuthStore();
+    await store.createAccount({
+      id: 'acc',
+      linkingKey: KEY,
+      role: 'basis',
+      name: 'Ada',
+      username: 'ada',
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: 'a'.repeat(64),
+      createdAt: 1,
+      rulesAgreedAt: null,
+      walletRequired: true,
+      sparkPubkey: PUBKEY,
+      sparkPubkeyVerifiedAt: 99,
+    });
+    const stored = await store.getAccount('acc');
+    expect(stored?.sparkPubkey).toBeNull();
+    expect(stored?.sparkPubkeyVerifiedAt).toBeNull();
+  });
+
+  it('claimSparkPubkey writes while unverified and overwrites', async () => {
+    const store = new InMemoryAuthStore();
+    await walletAccount(store, 'acc');
+    const first = await store.claimSparkPubkey('acc', PUBKEY);
+    expect(first?.wrote).toBe(true);
+    expect(first?.account.sparkPubkey).toBe(PUBKEY);
+    const second = await store.claimSparkPubkey('acc', OTHER_KEY);
+    expect(second?.wrote).toBe(true);
+    expect(second?.account.sparkPubkey).toBe(OTHER_KEY);
+  });
+
+  it('claimSparkPubkey returns wrote false without walletRequired, without username, and once verified', async () => {
+    const store = new InMemoryAuthStore();
+    await walletAccount(store, 'no-wallet', {
+      walletRequired: false,
+      username: 'nowallet',
+      viewKey: 'b'.repeat(64),
+    });
+    expect((await store.claimSparkPubkey('no-wallet', PUBKEY))?.wrote).toBe(false);
+    await walletAccount(store, 'no-name', { username: null, viewKey: 'c'.repeat(64) });
+    expect((await store.claimSparkPubkey('no-name', PUBKEY))?.wrote).toBe(false);
+    await walletAccount(store, 'blank', { username: '  ', viewKey: 'd'.repeat(64) });
+    expect((await store.claimSparkPubkey('blank', PUBKEY))?.wrote).toBe(false);
+    await walletAccount(store, 'acc', { username: 'carol', viewKey: 'e'.repeat(64) });
+    await store.claimSparkPubkey('acc', PUBKEY);
+    await store.markSparkPubkeyVerified('acc', PUBKEY, 'carol', 10);
+    expect((await store.claimSparkPubkey('acc', OTHER_KEY))?.wrote).toBe(false);
+    expect((await store.getAccount('acc'))?.sparkPubkey).toBe(PUBKEY);
+  });
+
+  it('claimSparkPubkey returns undefined for an unknown id', async () => {
+    const store = new InMemoryAuthStore();
+    expect(await store.claimSparkPubkey('missing', PUBKEY)).toBeUndefined();
+  });
+
+  it('allows two accounts to hold the same unverified key', async () => {
+    const store = new InMemoryAuthStore();
+    await walletAccount(store, 'acc-1', { username: 'ada', viewKey: 'a'.repeat(64) });
+    await walletAccount(store, 'acc-2', { username: 'grace', viewKey: 'b'.repeat(64) });
+    expect((await store.claimSparkPubkey('acc-1', PUBKEY))?.wrote).toBe(true);
+    expect((await store.claimSparkPubkey('acc-2', PUBKEY))?.wrote).toBe(true);
+    expect(await store.isSparkPubkeyClaimed(PUBKEY)).toBe(true);
+  });
+
+  it('markSparkPubkeyVerified succeeds exactly once', async () => {
+    const store = new InMemoryAuthStore();
+    await walletAccount(store, 'acc');
+    await store.claimSparkPubkey('acc', PUBKEY);
+    expect(await store.markSparkPubkeyVerified('acc', PUBKEY, 'ada', 10)).toBe(true);
+    expect((await store.getAccount('acc'))?.sparkPubkeyVerifiedAt).toBe(10);
+    expect(await store.markSparkPubkeyVerified('acc', PUBKEY, 'ada', 11)).toBe(false);
+    expect((await store.getAccount('acc'))?.sparkPubkeyVerifiedAt).toBe(10);
+  });
+
+  it('markSparkPubkeyVerified refuses wrong key, wrong username, unknown id, and a key verified by another account', async () => {
+    const store = new InMemoryAuthStore();
+    await walletAccount(store, 'acc-1', { username: 'ada', viewKey: 'a'.repeat(64) });
+    await walletAccount(store, 'acc-2', { username: 'grace', viewKey: 'b'.repeat(64) });
+    await store.claimSparkPubkey('acc-1', PUBKEY);
+    expect(await store.markSparkPubkeyVerified('acc-1', OTHER_KEY, 'ada', 10)).toBe(false);
+    expect(await store.markSparkPubkeyVerified('acc-1', PUBKEY, 'wrong', 10)).toBe(false);
+    expect(await store.markSparkPubkeyVerified('missing', PUBKEY, 'ada', 10)).toBe(false);
+    expect(await store.markSparkPubkeyVerified('acc-1', PUBKEY, 'ada', 10)).toBe(true);
+    await store.claimSparkPubkey('acc-2', PUBKEY);
+    expect(await store.markSparkPubkeyVerified('acc-2', PUBKEY, 'grace', 11)).toBe(false);
+  });
+
+  it('getAccountByVerifiedSparkPubkey and isSparkPubkeyClaimed cover claimed, verified, and unknown keys', async () => {
+    const store = new InMemoryAuthStore();
+    await walletAccount(store, 'acc');
+    expect(await store.isSparkPubkeyClaimed(PUBKEY)).toBe(false);
+    expect(await store.getAccountByVerifiedSparkPubkey(PUBKEY)).toBeUndefined();
+    await store.claimSparkPubkey('acc', PUBKEY);
+    expect(await store.isSparkPubkeyClaimed(PUBKEY)).toBe(true);
+    expect(await store.getAccountByVerifiedSparkPubkey(PUBKEY)).toBeUndefined();
+    await store.markSparkPubkeyVerified('acc', PUBKEY, 'ada', 10);
+    expect((await store.getAccountByVerifiedSparkPubkey(PUBKEY))?.id).toBe('acc');
+    expect(await store.getAccountByVerifiedSparkPubkey(OTHER_KEY)).toBeUndefined();
+    expect(await store.isSparkPubkeyClaimed(OTHER_KEY)).toBe(false);
+  });
+
+  it('updateAccount cannot change username once verified but still can before', async () => {
+    const store = new InMemoryAuthStore();
+    await walletAccount(store, 'acc');
+    const before = await store.getAccount('acc');
+    await store.updateAccount({ ...before!, username: 'grace' });
+    expect((await store.getAccount('acc'))?.username).toBe('grace');
+    await store.claimSparkPubkey('acc', PUBKEY);
+    await store.markSparkPubkeyVerified('acc', PUBKEY, 'grace', 10);
+    const verified = await store.getAccount('acc');
+    await store.updateAccount({ ...verified!, username: 'ada' });
+    expect((await store.getAccount('acc'))?.username).toBe('grace');
+    await store.updateAccount({ ...verified!, name: 'Grace', username: 'grace' });
+    expect((await store.getAccount('acc'))?.name).toBe('Grace');
+    expect((await store.getAccount('acc'))?.username).toBe('grace');
+  });
+
+  it('updateAccount never alters the two wallet fields', async () => {
+    const store = new InMemoryAuthStore();
+    await walletAccount(store, 'acc');
+    await store.claimSparkPubkey('acc', PUBKEY);
+    await store.markSparkPubkeyVerified('acc', PUBKEY, 'ada', 10);
+    const verified = await store.getAccount('acc');
+    await store.updateAccount({
+      ...verified!,
+      sparkPubkey: OTHER_KEY,
+      sparkPubkeyVerifiedAt: null,
+      name: 'Changed',
+    });
+    const stored = await store.getAccount('acc');
+    expect(stored?.sparkPubkey).toBe(PUBKEY);
+    expect(stored?.sparkPubkeyVerifiedAt).toBe(10);
+    expect(stored?.name).toBe('Changed');
+  });
+});

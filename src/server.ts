@@ -80,7 +80,7 @@ import { InMemoryPushStore, type PushStore } from '@/lib/push-store';
 import { InMemoryTrustStore, type TrustStore } from '@/lib/trust-store';
 import { InMemoryFundingStore, type FundingStore } from '@/lib/funding-store';
 import { PostRateLimiter } from '@/lib/nostr/rate-limit';
-import { resolveAllowedOrigins } from '@/lib/config';
+import { resolveAllowedOrigins, resolveLnurlServerConfig } from '@/lib/config';
 import { UnconfiguredInvoicePayer } from '@/lib/invoice-payer';
 import type { InvoicePayer } from '@/lib/invoice-payer';
 import { InMemoryInvoiceStore } from '@/lib/invoice-store';
@@ -95,6 +95,7 @@ import type { NostrPublisher } from '@/lib/nostr/publish';
 import type { NostrQuerier } from '@/lib/nostr/query';
 import { InMemoryDailyRosterStore, type DailyRosterStore } from '@/lib/daily-roster-store';
 import { resolveSpendPing, type SpendPing } from '@/lib/spend-ping';
+import { lnurlServerRoutes } from '@/routes/lnurl-server';
 
 /**
  * Optional collaborators for {@link createApp}. All default to production
@@ -260,7 +261,8 @@ export interface AppDeps {
   nostrRelayUrls?: readonly string[];
   /**
    * Optional env slice for hide retract (relays, `PUBLIC_BASE_URL`,
-   * Cloudflare). Default `process.env`.
+   * Cloudflare) and `LNURL_SERVER_URL` (self-hosted LNURL server; unset →
+   * those routes are not mounted). Default `process.env`.
    */
   env?: Record<string, string | undefined>;
   /**
@@ -364,9 +366,10 @@ function debugList(store: object, limit: number): Promise<unknown[]> {
  *   debugDbStore (`GET /debug/db`; omitted on a memory boot),
  *   funding store (injected into `/funding`, `/me`, `/auth`, `/members`,
  *   `/messages`, `/conversations`, `/invoices`, and `debugPaymentsRoutes`), vapidPublicKey, nostrKek,
- *   nostrPublisher, env, WebAuthn RP, spend token, spend ping, daily roster
- *   store (optional; default a fresh {@link InMemoryDailyRosterStore}, shared
- *   by funding routes, `POST /spend/daily-instruction`, and the default
+ *   nostrPublisher, env (including optional `LNURL_SERVER_URL` for the
+ *   self-hosted LNURL server routes), WebAuthn RP, spend token, spend ping,
+ *   daily roster store (optional; default a fresh {@link InMemoryDailyRosterStore},
+ *   shared by funding routes, `POST /spend/daily-instruction`, and the default
  *   spend ping), postLimiter
  *   (optional; default `new PostRateLimiter()`, shared with `messagesRoutes`
  *   and the Nostr worker), gift invoice store, listDbChange, and
@@ -392,6 +395,7 @@ export function createApp(deps: AppDeps = {}): Hono {
   const fiatRates = deps.fiatRates ?? new InMemoryFiatStore();
   const messageStore = deps.messageStore ?? new InMemoryMessageStore();
   const env = deps.env ?? process.env;
+  const lnurlServer = resolveLnurlServerConfig(env);
   const mapPush = deps.mapPush ?? resolveMapPush(env, fetchImpl);
   const translationStore = deps.translationStore ?? new InMemoryTranslationStore();
   if (messageStore instanceof InMemoryMessageStore) {
@@ -471,6 +475,26 @@ export function createApp(deps: AppDeps = {}): Hono {
       maxAge: 86400,
     }),
   );
+  // Payer-facing LNURL routes are public like `/.well-known/*` when the
+  // self-hosted LNURL server is configured.
+  if (lnurlServer !== null) {
+    app.use(
+      '/lnurlp/*',
+      cors({
+        origin: '*',
+        allowMethods: ['GET', 'OPTIONS'],
+        maxAge: 86400,
+      }),
+    );
+    app.use(
+      '/verify/*',
+      cors({
+        origin: '*',
+        allowMethods: ['GET', 'OPTIONS'],
+        maxAge: 86400,
+      }),
+    );
+  }
   // Browser origin is the apex (21.gifts); the api still listens on api.21.gifts.
   // CORS covers the apex, transitional app.* aliases, and localhost.
   // Bearer sessions are headers (no cookies), credentials off.
@@ -479,10 +503,21 @@ export function createApp(deps: AppDeps = {}): Hono {
       await next();
       return;
     }
+    if (
+      lnurlServer !== null &&
+      (c.req.path.startsWith('/lnurlp/') || c.req.path.startsWith('/verify/'))
+    ) {
+      await next();
+      return;
+    }
+    const allowHeaders = ['Authorization', 'Content-Type', 'Time-Zone'];
+    if (lnurlServer !== null && c.req.path.startsWith('/lnurlpay/')) {
+      allowHeaders.push('X-Breez-Signature', 'X-Breez-Timestamp');
+    }
     return cors({
       origin: allowedOrigins,
       allowMethods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-      allowHeaders: ['Authorization', 'Content-Type', 'Time-Zone'],
+      allowHeaders,
       maxAge: 86400,
     })(c, next);
   });
@@ -493,7 +528,19 @@ export function createApp(deps: AppDeps = {}): Hono {
   app.route('/healthz', healthRoute);
   app.route('/info', infoRoute);
   app.route('/translate', translateRoutes({ env }));
-  app.route('/.well-known', wellKnownRoutes({ auth: store, fetchImpl, posStore, now }));
+  app.route(
+    '/.well-known',
+    wellKnownRoutes({
+      auth: store,
+      fetchImpl,
+      posStore,
+      now,
+      ...(lnurlServer === null ? {} : { lnurlServer }),
+    }),
+  );
+  if (lnurlServer !== null) {
+    app.route('/', lnurlServerRoutes({ auth: store, config: lnurlServer, fetchImpl, now }));
+  }
   app.route('/pay', payRoutes({ auth: store, fetchImpl, posStore, now }));
   app.route(
     '/auth',
@@ -526,6 +573,7 @@ export function createApp(deps: AppDeps = {}): Hono {
       rates: btcUsdRates,
       fiatRates,
       fundingStore,
+      walletEnabled: lnurlServer !== null,
       ...(nostrKek === undefined ? {} : { nostrKek }),
       ...(spendPing === undefined ? {} : { spendPing }),
     }),

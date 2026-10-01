@@ -69,6 +69,9 @@ describe('serializeAccount', () => {
     expect(json).not.toHaveProperty('walletRequired');
     expect(json).not.toHaveProperty('walletBackupSeenAt');
     expect(json).not.toHaveProperty('staffTag');
+    expect(json).not.toHaveProperty('sparkPubkey');
+    expect(json).not.toHaveProperty('sparkWalletVerified');
+    expect(json).not.toHaveProperty('sparkPubkeyVerifiedAt');
     expect(Object.keys(json)).toHaveLength(11);
     expect(JSON.stringify(json)).not.toMatch(/nostr|npub|nsec/i);
   });
@@ -181,6 +184,8 @@ describe('serializeDebugAccount', () => {
     expect(json.profileMessageId).toBeNull();
     expect(json.walletRequired).toBe(false);
     expect(json.walletBackupSeenAt).toBeNull();
+    expect(json.sparkPubkey).toBeNull();
+    expect(json.sparkPubkeyVerifiedAt).toBeNull();
     expect(json.nostrPubkey).toBeNull();
     expect(json.nostrNsecCiphertext).toBeNull();
     expect(json).not.toHaveProperty('hasPosted');
@@ -196,6 +201,23 @@ describe('serializeDebugAccount', () => {
     expect(serializeDebugAccount({ ...account, staffTag: 'software_developer' }).staffTag).toBe(
       'software_developer',
     );
+  });
+
+  it('includes sparkPubkey and sparkPubkeyVerifiedAt on debug JSON', () => {
+    const pubkey = `02${'a'.repeat(64)}`;
+    const unset = serializeDebugAccount(account);
+    expect(unset.sparkPubkey).toBeNull();
+    expect(unset.sparkPubkeyVerifiedAt).toBeNull();
+    const claimed = serializeDebugAccount({ ...account, sparkPubkey: pubkey });
+    expect(claimed.sparkPubkey).toBe(pubkey);
+    expect(claimed.sparkPubkeyVerifiedAt).toBeNull();
+    const verified = serializeDebugAccount({
+      ...account,
+      sparkPubkey: pubkey,
+      sparkPubkeyVerifiedAt: 99,
+    });
+    expect(verified.sparkPubkey).toBe(pubkey);
+    expect(verified.sparkPubkeyVerifiedAt).toBe(99);
   });
 
   it('hex-encodes passkey public keys that are not Uint8Array', () => {
@@ -300,6 +322,8 @@ describe('serializeOwnerAccount', () => {
       funding: null,
       walletRequired: false,
       walletBackupSeenAt: null,
+      sparkPubkey: null,
+      sparkWalletVerified: false,
       passkeyCredentialId: null,
       passkeyRenewFailed: false,
       passkeyRenewClosed: false,
@@ -317,6 +341,8 @@ describe('serializeOwnerAccount', () => {
     expect(json.fiat).toBeNull();
     expect(json.walletRequired).toBe(false);
     expect(json.walletBackupSeenAt).toBeNull();
+    expect(json.sparkPubkey).toBeNull();
+    expect(json.sparkWalletVerified).toBe(false);
     expect(json.passkeyCredentialId).toBeNull();
     expect(json.passkeyRenewFailed).toBe(false);
     expect(json).not.toHaveProperty('isPlatform');
@@ -350,6 +376,23 @@ describe('serializeOwnerAccount', () => {
     const json = serializeOwnerAccount(account, false, null, false);
     expect(json.walletRequired).toBe(false);
     expect(json.walletBackupSeenAt).toBeNull();
+    expect(json.sparkPubkey).toBeNull();
+    expect(json.sparkWalletVerified).toBe(false);
+  });
+
+  it('includes sparkPubkey and sparkWalletVerified for claimed and verified wallets', () => {
+    const pubkey = `02${'a'.repeat(64)}`;
+    const claimed = serializeOwnerAccount({ ...account, sparkPubkey: pubkey }, false, null, false);
+    expect(claimed.sparkPubkey).toBe(pubkey);
+    expect(claimed.sparkWalletVerified).toBe(false);
+    const verified = serializeOwnerAccount(
+      { ...account, sparkPubkey: pubkey, sparkPubkeyVerifiedAt: 42 },
+      false,
+      null,
+      false,
+    );
+    expect(verified.sparkPubkey).toBe(pubkey);
+    expect(verified.sparkWalletVerified).toBe(true);
   });
 
   it('includes a stored notificationLevel on owner JSON', () => {

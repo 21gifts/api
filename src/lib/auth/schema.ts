@@ -4,8 +4,9 @@
  * `ALTER TABLE` backfills `account.name`, nullable `linking_key`,
  * `forum_laws_dismissed`, `rules_agreed_at`, `notification_level`,
  * `amount_unit`, `locale`, `fiat`, `session_refused`, `wallet_required`,
- * `wallet_backup_seen_at`, `staff_tag`, and `passkey_challenge.requested_name` on
- * databases created before those columns existed.
+ * `wallet_backup_seen_at`, `staff_tag`, `spark_pubkey`, `spark_pubkey_verified_at`,
+ * and `passkey_challenge.requested_name` on databases created before those
+ * columns existed.
  * Also creates `passkey_renew_attempt` (failed, cancelled, and
  * server-written succeeded seed rows).
  * `locale` and `fiat` are backfilled as nullable (no value backfill of
@@ -168,4 +169,13 @@ export const AUTH_SCHEMA_SQL: readonly string[] = [
   `ALTER TABLE account DROP CONSTRAINT IF EXISTS account_staff_tag_chk`,
   `ALTER TABLE account ADD CONSTRAINT account_staff_tag_chk CHECK (staff_tag IS NULL OR staff_tag IN ('software_developer'))`,
   `UPDATE account SET staff_tag = 'software_developer' WHERE lower(trim(username)) = 'dansw' AND staff_tag IS DISTINCT FROM 'software_developer'`,
+  `ALTER TABLE account ADD COLUMN IF NOT EXISTS spark_pubkey text`,
+  `ALTER TABLE account ADD COLUMN IF NOT EXISTS spark_pubkey_verified_at timestamptz`,
+  `ALTER TABLE account DROP CONSTRAINT IF EXISTS account_spark_pubkey_chk`,
+  `ALTER TABLE account ADD CONSTRAINT account_spark_pubkey_chk
+  CHECK ((spark_pubkey IS NULL OR spark_pubkey ~ '^0[23][0-9a-f]{64}$')
+     AND (spark_pubkey_verified_at IS NULL OR spark_pubkey IS NOT NULL))`,
+  `CREATE INDEX IF NOT EXISTS account_spark_pubkey_idx ON account (spark_pubkey) WHERE spark_pubkey IS NOT NULL`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS account_spark_pubkey_verified_uidx
+  ON account (spark_pubkey) WHERE spark_pubkey_verified_at IS NOT NULL`,
 ];
