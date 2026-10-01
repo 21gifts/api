@@ -41,6 +41,7 @@ import { debugExternalRoutes } from '@/routes/debug-external';
 import { debugPaymentsRoutes } from '@/routes/debug-payments';
 import { pushRoutes } from '@/routes/push';
 import { debugPushRoutes } from '@/routes/debug-push';
+import { debugPasskeyRenewRoutes } from '@/routes/debug-passkey-renew';
 import { debugTrustRoutes } from '@/routes/debug-trust';
 import { debugCatalogRoutes } from '@/routes/debug-catalog';
 import { trustChainRoutes } from '@/routes/trust-chain';
@@ -123,7 +124,8 @@ export interface AppDeps {
    * `PUT /debug/messages/:id/video`, `POST /debug/messages/:id/restore`,
    * `GET /debug/external-pubkeys`, `GET /debug/accounts/:id`,
    * `GET /debug/trust-edges`, `GET /debug/dump`, `GET /debug/dump/:table`,
-   * `POST /debug/trust-edges`, and `GET /debug/db`
+   * `POST /debug/trust-edges`, `GET /debug/db`, and
+   * `POST /debug/passkey-renew/reopen`
    * return 503.
    */
   debugToken?: string;
@@ -531,6 +533,13 @@ export function createApp(deps: AppDeps = {}): Hono {
       now,
       debugToken,
       vapidPublicKey,
+    }),
+  );
+  app.route(
+    '/debug/passkey-renew',
+    debugPasskeyRenewRoutes({
+      authStore: store,
+      debugToken,
     }),
   );
   app.route('/debug/trust-edges', debugTrustRoutes({ store, trustStore, debugToken, now }));

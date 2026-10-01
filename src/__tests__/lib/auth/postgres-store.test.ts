@@ -1972,6 +1972,19 @@ describe('PostgresAuthStore', () => {
     expect(sql.queries[1]?.text).toMatch(/LIMIT 1/);
   });
 
+  it('deleteFailedPasskeyRenewAttempts deletes only failed rows', async () => {
+    const sql = new MockSql();
+    sql.nextRows = [{ id: 'f1' }, { id: 'f2' }];
+    const deleted = await new PostgresAuthStore(sql).deleteFailedPasskeyRenewAttempts('acc');
+    expect(deleted).toBe(2);
+    expect(sql.queries[0]?.text).toMatch(
+      /DELETE FROM passkey_renew_attempt[\s\S]*outcome = 'failed'[\s\S]*RETURNING id/,
+    );
+    expect(sql.queries[0]?.params).toEqual(['acc']);
+    sql.nextRows = [];
+    expect(await new PostgresAuthStore(sql).deleteFailedPasskeyRenewAttempts('acc')).toBe(0);
+  });
+
   it('hasAcknowledgedPasskeyRenewFailure requires acknowledged_at', async () => {
     const sql = new MockSql();
     const store = new PostgresAuthStore(sql);

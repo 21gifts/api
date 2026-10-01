@@ -9,6 +9,7 @@
 #               PATCH /debug/accounts/:id,
 #               GET /debug/messages, GET /debug/messages/:id,
 #               GET /debug/api-log, GET /debug/db, GET /debug/external-pubkeys,
+#               POST /debug/passkey-renew/reopen,
 #               PUT /debug/messages/:id/video, POST /debug/messages/:id/restore,
 #               POST /debug/invoices/settle,
 #               GET {DEBUG_SPEND_URL}/debug/recipients,
@@ -35,6 +36,8 @@
 #   gifts-debug messages [--raw]     # forum notes table (default) or JSON
 #   gifts-debug api-log [account-uuid] [--raw]
 #                                    # every HTTP audit page, table (default) or JSON
+#   gifts-debug passkey-renew-reopen <account-uuid>
+#                                    # delete failed renew rows so the dialog opens again
 #   gifts-debug db [--raw]           # every public table: name and row count
 #   gifts-debug db <table>           # every row of one table (follows nextCursor)
 #   gifts-debug external-pubkeys [--raw]  # entitled/blocked pubkeys table or JSON
@@ -66,6 +69,7 @@
 #   gifts-debug api-log
 #   gifts-debug api-log <account-uuid>
 #   gifts-debug api-log --raw
+#   gifts-debug passkey-renew-reopen <account-uuid>
 #   gifts-debug db
 #   gifts-debug db message
 #   gifts-debug external-pubkeys
@@ -221,6 +225,30 @@ cmd_refuse_session() {
     -H "Content-Type: application/json" \
     -d "{\"sessionRefused\":${flag}}" \
     "${DEBUG_API_URL}/debug/accounts/${id}") || {
+    rm -f "$tmp"
+    die "request failed"
+  }
+  body=$(cat "$tmp")
+  rm -f "$tmp"
+  if [ "$status" != "200" ]; then
+    die "HTTP ${status}: ${body}"
+  fi
+  printf '%s\n' "$body"
+}
+
+cmd_passkey_renew_reopen() {
+  local id="${1:-}" tmp status body
+  [ -z "${2:-}" ] || die "usage: gifts-debug passkey-renew-reopen <account-uuid>"
+  [[ "$id" =~ ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$ ]] \
+    || die "invalid account uuid"
+  tmp=$(mktemp)
+  status=$(curl -sS -o "$tmp" -w '%{http_code}' \
+    -A taproot-diagnostics \
+    -X POST \
+    -H "Authorization: Bearer ${DEBUG_TOKEN}" \
+    -H "Content-Type: application/json" \
+    -d "{\"accountId\":\"${id}\"}" \
+    "${DEBUG_API_URL}/debug/passkey-renew/reopen") || {
     rm -f "$tmp"
     die "request failed"
   }
@@ -709,6 +737,7 @@ case "${1:-}" in
   unlink) shift; cmd_unlink "$@" ;;
   messages) cmd_messages ;;
   api-log) shift; cmd_api_log "$@" ;;
+  passkey-renew-reopen) shift; cmd_passkey_renew_reopen "$@" ;;
   db) shift; cmd_db "$@" ;;
   external-pubkeys) cmd_external_pubkeys ;;
   message) shift; cmd_message "$@" ;;

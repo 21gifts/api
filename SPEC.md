@@ -206,6 +206,7 @@ Public base URLs used in examples:
 | POST   | `/me/push-subscriptions`                             | Bearer                     | Upsert a browser PushSubscription                                                                                                                                                                                                                                                                                                                      |
 | DELETE | `/me/push-subscriptions`                             | Bearer                     | Remove a browser PushSubscription                                                                                                                                                                                                                                                                                                                      |
 | POST   | `/debug/push-ping`                                   | Bearer `DEBUG_TOKEN`       | Enqueue a test push for one account                                                                                                                                                                                                                                                                                                                    |
+| POST   | `/debug/passkey-renew/reopen`                        | Bearer `DEBUG_TOKEN`       | Delete one account's failed passkey-renew rows so the blocking dialog opens again. Refuses when a seed is already stored.                                                                                                                                                                                                                              |
 | GET    | `/debug/dump`                                        | `Authorization: Bearer`    | Operator catalog of allowlisted tables (`DEBUG_TOKEN`)                                                                                                                                                                                                                                                                                                 |
 | GET    | `/debug/dump/:table`                                 | `Authorization: Bearer`    | Operator catalog of one allowlisted table (`DEBUG_TOKEN`)                                                                                                                                                                                                                                                                                              |
 | GET    | `/gifts`                                             | none                       | Outbound gifts for one UTC day (`?day=`)                                                                                                                                                                                                                                                                                                               |
@@ -3029,6 +3030,32 @@ Success → **Response** `200`:
 ```
 
 `enqueued` is `0` when the account has no subscription.
+
+### `POST /debug/passkey-renew/reopen`
+
+Operator reopen of the blocking passkey-renew dialog. Authenticated with
+`Authorization: Bearer` matching `DEBUG_TOKEN` (not an end-user session).
+JSON body `{ "accountId": "<uuid>" }`. Deletes that account's failed
+`passkey_renew_attempt` rows, acknowledged or not. Succeeded and cancelled
+rows stay. The account row is unchanged. While `walletRequired` is not true,
+`passkeyRenewFailed` and `passkeyRenewClosed` are then both false, so the
+next signed-in app open starts again at the explanation.
+
+`DEBUG_TOKEN` unset or blank → **503** `{ "error": "Debug is not configured" }`.
+Missing or non-matching bearer → **401** `{ "error": "Unauthorized" }`.
+Missing, non-string, or non-UUID `accountId` → **400** `{ "error": "Invalid account" }`.
+Unknown account → **404** `{ "error": "Not found" }`.
+`walletRequired` true → **409** `{ "error": "Account already has a seed" }` and no delete.
+The delete is an ordinary `DELETE` on `passkey_renew_attempt`. The existing
+`trg_db_change` row trigger records it. This route does not write `db_change` itself.
+
+Success → **Response** `200`:
+
+```json
+{ "deleted": 1 }
+```
+
+`deleted` is `0` when the account had no failed row.
 
 ### `GET /gifts`
 

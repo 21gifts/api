@@ -1913,6 +1913,10 @@ describe('InMemoryAuthStore', () => {
     expect(await store.hasAcknowledgedPasskeyRenewFailure('other')).toBe(false);
     expect(await store.hasUnacknowledgedPasskeyRenewFailure('other')).toBe(true);
     expect((await store.getAccount('acc'))?.walletRequired === true).toBe(false);
+    expect(await store.deleteFailedPasskeyRenewAttempts('acc')).toBe(1);
+    expect(await store.hasAcknowledgedPasskeyRenewFailure('acc')).toBe(false);
+    expect(await store.hasUnacknowledgedPasskeyRenewFailure('other')).toBe(true);
+    expect(await store.deleteFailedPasskeyRenewAttempts('missing')).toBe(0);
   });
 
   it('uses the later id when two unacknowledged failures share a time', async () => {
