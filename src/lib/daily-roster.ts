@@ -349,9 +349,14 @@ export class HttpDailyRoster implements DailyRosterClient {
     } catch {
       throw new DailyRosterRequestError(502, DAILY_ROSTER_UNAVAILABLE);
     }
+    let text: string;
+    try {
+      text = await response.text();
+    } catch {
+      throw new DailyRosterRequestError(502, DAILY_ROSTER_UNAVAILABLE);
+    }
     let parsed: unknown;
     try {
-      const text = await response.text();
       parsed = text.trim() === '' ? undefined : (JSON.parse(text) as unknown);
     } catch {
       parsed = undefined;
