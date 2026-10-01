@@ -1179,16 +1179,18 @@ async function queryAndIngestZapReceipts(
  *
  * @param event - Candidate receipt.
  * @param args - The {@link indexOpenZapReceipts} collaborators (`eventIds` and `since` are ignored).
- * @returns Resolves when the receipt has been handled.
+ * @returns `true` when the ingest finished without a thrown step (accepted or
+ *   rejected), `false` when a step threw and the `error` row was persisted.
  * @throws Propagates a failure to persist the `error` ingest row.
  */
 export async function ingestZapReceipt(
   event: NostrEventFrame,
   args: Parameters<typeof indexOpenZapReceipts>[0],
-): Promise<void> {
+): Promise<boolean> {
   const verifyReceipt = args.verifyReceipt ?? defaultVerifyReceipt;
   try {
     await ingestOneReceipt(event, { ...args, verifyReceipt });
+    return true;
   } catch (error: unknown) {
     logEvent('nostr.zap.rejected', zapIngestCatchFields(error));
     if (typeof event.id === 'string' && event.id !== '') {
@@ -1207,6 +1209,7 @@ export async function ingestZapReceipt(
         }),
       );
     }
+    return false;
   }
 }
 

@@ -133,6 +133,7 @@ function deps(
       if (!claimed.has(hash)) {
         claimed.set(hash, event.id);
       }
+      return true;
     },
     claims: { zapPaymentReceiptId: async (hash) => claimed.get(hash) },
     now: () => NOW,
@@ -354,6 +355,7 @@ describe('runSparkInvoiceTick', () => {
     const d = deps(store, operator(new Map([['spark1inv1', { status: 2 }]])), {
       ingest: async (event) => {
         ingested.push(event);
+        return true;
       },
     });
     await runSparkInvoiceTick(d);
@@ -369,6 +371,38 @@ describe('runSparkInvoiceTick', () => {
 
     await runSparkInvoiceTick(d);
     expect(ingested).toHaveLength(2);
+  });
+
+  it('keeps the row open when crediting failed after the claim, and retries with the same receipt', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const store = new InMemorySparkInvoiceStore();
+    await store.issue(row(1));
+    const claimed = new Map<string, string>();
+    const ingested: NostrEventFrame[] = [];
+    let failCredit = true;
+    const d = deps(store, operator(new Map([['spark1inv1', { status: 2 }]])), {
+      ingest: async (event) => {
+        ingested.push(event);
+        if (!claimed.has(row(1).paymentHash)) {
+          claimed.set(row(1).paymentHash, event.id);
+        }
+        return !failCredit;
+      },
+      claims: { zapPaymentReceiptId: async (hash) => claimed.get(hash) },
+    });
+    await runSparkInvoiceTick(d);
+    expect(await store.listOpen(new Date(0))).toHaveLength(1);
+    expect(d.publisher.calls).toEqual([]);
+    expect(events(warn)).toContainEqual(
+      expect.objectContaining({ event: 'spark.receipt.not_credited' }),
+    );
+
+    failCredit = false;
+    await runSparkInvoiceTick(d);
+    expect(ingested).toHaveLength(2);
+    expect(ingested[1]?.id).toBe(ingested[0]?.id);
+    expect(d.publisher.calls).toHaveLength(1);
+    expect(await store.listOpen(new Date(0))).toEqual([]);
   });
 
   it('settles without publishing when another receipt already claimed the payment hash', async () => {

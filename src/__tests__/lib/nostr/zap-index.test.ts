@@ -11948,7 +11948,7 @@ describe('wallet-backed receipt ingest', () => {
     const zapRequest = finalizeEvent(
       {
         kind: 9734,
-        created_at: 1,
+        created_at: createdAt,
         content: '',
         tags: [
           ['p', 'cc'.repeat(32)],
@@ -11962,7 +11962,6 @@ describe('wallet-backed receipt ingest', () => {
       secretKey: zapReceiptSecretKey(NSEC, OWNER),
       bolt11,
       zapRequestJson: JSON.stringify(zapRequest),
-      createdAt,
     });
     if (built === null) {
       throw new Error('expected a receipt');
