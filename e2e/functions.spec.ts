@@ -2426,6 +2426,11 @@ test('Function: buildFundingPayoutMatrix — default boot has no DATABASE_URL', 
 test('Function: eligibleToday — default boot has no DATABASE_URL', async ({ request }) => {
   expect((await request.get('/healthz')).status()).toBe(200);
 });
+test('Function: dailyPayoutStoppedNotice — default boot has no DATABASE_URL', async ({
+  request,
+}) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
 test('Function: serializeOwnerFunding — default boot has no DATABASE_URL', async ({ request }) => {
   expect((await request.get('/healthz')).status()).toBe(200);
 });

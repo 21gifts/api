@@ -76,7 +76,7 @@ function decisionBody(
     id: account.id,
     name: account.name,
     role: account.role,
-    funding: serializeOwnerFunding(account.role, grant, nowMs, reviewerName),
+    funding: serializeOwnerFunding(account.role, grant, nowMs, reviewerName, account.id),
   };
 }
 
@@ -251,7 +251,10 @@ export function fundingRoutes(deps: FundingRouteDeps): Hono {
           return c.json({ error: 'Conflict' }, 409);
         }
         logEvent('funding.applied', { accountId: caller.id });
-        return c.json({ funding: serializeOwnerFunding(caller.role, grant, nowMs, null) }, 200);
+        return c.json(
+          { funding: serializeOwnerFunding(caller.role, grant, nowMs, null, caller.id) },
+          200,
+        );
       } catch {
         logEvent('funding.write.failed');
         return c.json({ error: 'Funding is unavailable' }, 503);

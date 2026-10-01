@@ -277,9 +277,36 @@ describe('GET /me', () => {
       trialUtcDate: null,
       admittedAt: null,
       reviewedByName: null,
+      dailyPayoutStoppedNotice: false,
     });
     expect(funded.walletRequired).toBe(false);
     expect(funded.walletBackupSeenAt).toBeNull();
+  });
+
+  it('returns dailyPayoutStoppedNotice true for a listed verified account without a grant', async () => {
+    const store = new InMemoryAuthStore();
+    const id = '14101481-f421-42ef-9d37-6df3ccb6b25f';
+    await store.createAccount({
+      id,
+      linkingKey: LINKING_KEY,
+      role: 'verified',
+      name: null,
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: VIEW_KEY,
+      createdAt: 1_000_000,
+      rulesAgreedAt: null,
+    });
+    await store.createSession({ token: 'tok', accountId: id, createdAt: 1_000_000 });
+    const res = await mount(store).request('/me', { headers: AUTH });
+    expect(res.status).toBe(200);
+    const funded = (await res.json()) as {
+      funding: { status: string; dailyPayoutStoppedNotice: boolean };
+    };
+    expect(funded.funding.status).toBe('none');
+    expect(funded.funding.dailyPayoutStoppedNotice).toBe(true);
   });
 
   it('returns hasPosted false when the only live row is the profile note', async () => {

@@ -3,6 +3,7 @@ import type { AccountRole } from '@/lib/auth/store';
 import type { FundingGrant, FundingStatus } from '@/lib/funding';
 import {
   FUNDING_REQUIRED_FROM_UTC,
+  dailyPayoutStoppedNotice,
   effectiveStatus,
   eligibleToday,
   fundingGrantRequired,
@@ -16,10 +17,20 @@ const YESTERDAY = '2026-09-19';
 const TOMORROW = '2026-09-21';
 const GATE_MS = Date.parse(`${FUNDING_REQUIRED_FROM_UTC}T00:00:00.000Z`);
 const GATE_TODAY = FUNDING_REQUIRED_FROM_UTC;
-const GATE_YESTERDAY = '2026-10-09';
-const GATE_TOMORROW = '2026-10-11';
-const BEFORE_GATE_MS = Date.parse('2026-10-09T23:59:59.999Z');
+const GATE_YESTERDAY = '2026-09-30';
+const GATE_TOMORROW = '2026-10-02';
+const BEFORE_GATE_MS = Date.parse('2026-09-30T23:59:59.999Z');
 const NON_BASIS: AccountRole = 'verified';
+
+/** The six legacy daily-spend accounts that never applied. */
+const NOTICE_IDS = [
+  '14101481-f421-42ef-9d37-6df3ccb6b25f',
+  '1b7ab8d9-c1f2-4a8e-be3f-bf16d3d7588d',
+  '227d1574-c784-4b40-a83f-0e5a8ed90cc3',
+  '35a841ac-0a3c-4f88-b876-01aa8d0bf3da',
+  '815c65d4-1360-426b-b1a5-9ffa994091ca',
+  'a29227aa-e7c8-41ea-bd59-f1b3ab4c560a',
+] as const;
 
 function grant(overrides: Partial<FundingGrant> = {}): FundingGrant {
   return {
@@ -71,7 +82,7 @@ describe('effectiveStatus', () => {
 });
 
 describe('fundingGrantRequired', () => {
-  it('is false before 2026-10-10 UTC and true from that midnight onward', () => {
+  it('is false before 2026-10-01 UTC and true from that midnight onward', () => {
     expect(fundingGrantRequired(BEFORE_GATE_MS)).toBe(false);
     expect(fundingGrantRequired(GATE_MS)).toBe(true);
     expect(fundingGrantRequired(Date.parse(`${GATE_TOMORROW}T00:00:00.000Z`))).toBe(true);
@@ -164,26 +175,92 @@ describe('effectiveStatus and eligibleToday matrix', () => {
   });
 });
 
+describe('dailyPayoutStoppedNotice', () => {
+  it('is true for each of the six listed accounts with no grant', () => {
+    for (const id of NOTICE_IDS) {
+      expect(dailyPayoutStoppedNotice(id, undefined, NOW_MS)).toBe(true);
+    }
+  });
+
+  it('is false for a listed account with pending, trial, admitted, or rejected', () => {
+    const id = NOTICE_IDS[0];
+    expect(dailyPayoutStoppedNotice(id, grant({ status: 'pending' }), NOW_MS)).toBe(false);
+    expect(dailyPayoutStoppedNotice(id, trial(TODAY), NOW_MS)).toBe(false);
+    expect(dailyPayoutStoppedNotice(id, grant({ status: 'admitted' }), NOW_MS)).toBe(false);
+    expect(dailyPayoutStoppedNotice(id, grant({ status: 'rejected' }), NOW_MS)).toBe(false);
+  });
+
+  it('is false for a listed account with an expired trial', () => {
+    expect(dailyPayoutStoppedNotice(NOTICE_IDS[0], trial(YESTERDAY), NOW_MS)).toBe(false);
+  });
+
+  it('is false for some other account id with no grant', () => {
+    expect(dailyPayoutStoppedNotice('other-account-id', undefined, NOW_MS)).toBe(false);
+  });
+
+  it('is false for an empty account id', () => {
+    expect(dailyPayoutStoppedNotice('', undefined, NOW_MS)).toBe(false);
+  });
+});
+
 describe('serializeOwnerFunding', () => {
   it('is null for basis', () => {
-    expect(serializeOwnerFunding('basis', grant({ status: 'admitted' }), NOW_MS, 'Mod')).toBeNull();
+    expect(
+      serializeOwnerFunding('basis', grant({ status: 'admitted' }), NOW_MS, 'Mod', NOTICE_IDS[0]),
+    ).toBeNull();
   });
 
   it('emits none when the grant is missing', () => {
-    expect(serializeOwnerFunding(NON_BASIS, undefined, NOW_MS, null)).toEqual({
+    expect(serializeOwnerFunding(NON_BASIS, undefined, NOW_MS, null, 'acc')).toEqual({
       status: 'none',
       trialUtcDate: null,
       admittedAt: null,
       reviewedByName: null,
+      dailyPayoutStoppedNotice: false,
     });
   });
 
+  it('sets dailyPayoutStoppedNotice true for a listed id with no grant', () => {
+    expect(serializeOwnerFunding(NON_BASIS, undefined, NOW_MS, null, NOTICE_IDS[0])).toEqual({
+      status: 'none',
+      trialUtcDate: null,
+      admittedAt: null,
+      reviewedByName: null,
+      dailyPayoutStoppedNotice: true,
+    });
+  });
+
+  it('sets dailyPayoutStoppedNotice false for a listed id with pending', () => {
+    expect(
+      serializeOwnerFunding(NON_BASIS, grant({ status: 'pending' }), NOW_MS, null, NOTICE_IDS[0]),
+    ).toEqual({
+      status: 'pending',
+      trialUtcDate: null,
+      admittedAt: null,
+      reviewedByName: null,
+      dailyPayoutStoppedNotice: false,
+    });
+  });
+
+  it('sets pending and dailyPayoutStoppedNotice false for a listed id with an expired trial', () => {
+    expect(serializeOwnerFunding(NON_BASIS, trial(YESTERDAY), NOW_MS, null, NOTICE_IDS[0])).toEqual(
+      {
+        status: 'pending',
+        trialUtcDate: null,
+        admittedAt: null,
+        reviewedByName: null,
+        dailyPayoutStoppedNotice: false,
+      },
+    );
+  });
+
   it('keeps trialUtcDate null when the stored trial day is null', () => {
-    expect(serializeOwnerFunding(NON_BASIS, trial(null), NOW_MS, null)).toEqual({
+    expect(serializeOwnerFunding(NON_BASIS, trial(null), NOW_MS, null, 'acc')).toEqual({
       status: 'trial',
       trialUtcDate: null,
       admittedAt: null,
       reviewedByName: null,
+      dailyPayoutStoppedNotice: false,
     });
   });
 
@@ -194,12 +271,14 @@ describe('serializeOwnerFunding', () => {
         grant({ status: 'admitted', admittedAt: null }),
         NOW_MS,
         'Mod',
+        'acc',
       ),
     ).toEqual({
       status: 'admitted',
       trialUtcDate: null,
       admittedAt: null,
       reviewedByName: 'Mod',
+      dailyPayoutStoppedNotice: false,
     });
   });
 });

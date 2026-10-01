@@ -2931,7 +2931,7 @@ Builds the operator-only external-pubkey inspection route.
 
 ## Function: fundingGrantRequired
 
-- **Purpose:** Whether the funding-grant gate is in force on this UTC day. True on and after `FUNDING_REQUIRED_FROM_UTC` (`2026-10-10`).
+- **Purpose:** Whether the funding-grant gate is in force on this UTC day. True on and after `FUNDING_REQUIRED_FROM_UTC` (`2026-10-01`).
 - **Inputs:** `nowMs` epoch milliseconds.
 - **Returns / side effects:** `boolean`. No I/O.
 - **Used by:** `eligibleToday`.
@@ -2952,15 +2952,22 @@ Builds the operator-only external-pubkey inspection route.
 
 ## Function: eligibleToday
 
-- **Purpose:** Whether the account may receive a spend ping / spend invoice today. `basis` is always false. Before UTC `2026-10-10` (`FUNDING_REQUIRED_FROM_UTC`), every other role is true (passkey and living-room post still gate issue). From that UTC day, true iff admitted, or a trial whose `trialUtcDate` equals today's UTC key. Expired, future, pending, rejected, and missing grants are then false.
+- **Purpose:** Whether the account may receive a spend ping / spend invoice today. `basis` is always false. Before UTC `2026-10-01` (`FUNDING_REQUIRED_FROM_UTC`), every other role is true (passkey and living-room post still gate issue). From that UTC day, true iff admitted, or a trial whose `trialUtcDate` equals today's UTC key. Expired, future, pending, rejected, and missing grants are then false.
 - **Inputs:** `role` (`AccountRole`), `grant` (`FundingGrant | undefined`), `nowMs`.
 - **Returns / side effects:** `boolean`. No I/O.
 - **Used by:** `messagesRoutes` spend ping, `conversationRoutes` moderator ping, `invoiceRoutes` `GET /eligible` and `POST /`. Domain tests cover the matrix.
 
+## Function: dailyPayoutStoppedNotice
+
+- **Purpose:** Whether the owner funding JSON should show the legacy daily-payout stopped notice. True only for the six listed accounts (vincent, joey-rosima, pat-armstrong, jewel-bacolbas, angel-abayle, ruben-mahinay) when effective status is `'none'` (no stored grant row). Any pending, trial, admitted, or rejected row makes it false.
+- **Inputs:** `accountId` (string; empty when the grant was not loaded), `grant` (`FundingGrant | undefined`), `nowMs`.
+- **Returns / side effects:** `boolean`. No I/O.
+- **Used by:** `serializeOwnerFunding`.
+
 ## Function: serializeOwnerFunding
 
-- **Purpose:** Owner `funding` JSON for `GET /me` / passkey finish. `basis` is `null` (do not leak grants). Otherwise always an object; missing row is `'none'`. Trial date and admission fields follow the effective status.
-- **Inputs:** `role`, observed `grant`, `nowMs`, live `reviewerName` (used only when admitted).
+- **Purpose:** Owner `funding` JSON for `GET /me` / passkey finish. `basis` is `null` (do not leak grants). Otherwise always an object; missing row is `'none'`. Trial date and admission fields follow the effective status. Always includes `dailyPayoutStoppedNotice`.
+- **Inputs:** `role`, observed `grant`, `nowMs`, live `reviewerName` (used only when admitted), `accountId` (for `dailyPayoutStoppedNotice`).
 - **Returns / side effects:** `OwnerFundingJson | null`. No I/O.
 - **Used by:** `serializeOwnerAccountWithPosts`, `fundingRoutes`.
 
