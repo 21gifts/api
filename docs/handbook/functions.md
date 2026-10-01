@@ -1084,7 +1084,7 @@
 - **Returns / side effects:** Hono app. Default `btcUsdRates` is an empty `InMemoryBtcUsdStore`. Default `fiatRates` is an empty `InMemoryFiatStore`. `createApp` passes the same `fiatRates` object into `/gifts`, `/gifts/stats`, `/me`, `/members`, and `/view`, and the same `now` into `/mentions`. Used by Bun.serve in `index.ts` and by tests via `app.request()`. Before routes mount, equal trimmed tokens throw `DEBUG_READ_TOKEN matches DEBUG_TOKEN` and neither value is printed; an empty or missing read token does not fail boot.
 - **Used by:** Boot path and every HTTP test.
 - **Daily roster:** Optional `dailyRoster` defaults to `resolveDailyRoster(process.env, fetchImpl)`, the same env the spend ping reads. Unset or blank `SPEND_URL` or `SPEND_API_TOKEN` omits it. Roster routes then return 503 after the initiator or founder gate and do not call fetch.
-- **Free in-app payments:** When `resolveLnurlServerConfig` resolves, `lnurlServer` is passed to `/messages`, `/conversations`, `/members`, `/pay`, and `/pos`. When `resolveFreePaymentsConfig` also resolves, `sparkInvoices` (`AppDeps.sparkInvoiceStore`, default `InMemorySparkInvoiceStore`) is passed to `/messages` and `/conversations`; otherwise every invoice response has `sparkInvoice: null`.
+- **Free in-app payments:** When `resolveLnurlServerConfig` resolves, `lnurlServer` is passed to `/messages`, `/conversations`, `/members`, `/funding`, `/pay`, and `/pos`. When `resolveFreePaymentsConfig` also resolves, `sparkInvoices` (`AppDeps.sparkInvoiceStore`, default `InMemorySparkInvoiceStore`) is passed to `/messages` and `/conversations`; otherwise every invoice response has `sparkInvoice: null`.
 
 ## Function: healthRoute
 
