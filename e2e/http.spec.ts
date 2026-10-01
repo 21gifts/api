@@ -979,3 +979,10 @@ test('Function: linksRoutes — GET /links/:code with a non-hex path is 400', as
   const body = (await res.json()) as { error: string };
   expect(body.error).toBe('invalid_code');
 });
+
+test('GET /messages/:id/external-profile without bearer is 404 on default boot', async ({
+  request,
+}) => {
+  const res = await request.get('/messages/:id/external-profile');
+  expect(res.status()).toBe(404);
+});

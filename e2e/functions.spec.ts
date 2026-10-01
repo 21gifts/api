@@ -2873,3 +2873,13 @@ test('Function: repaymentDescription — GET /healthz is ok', async ({ request }
 test('Function: parseRepaymentDescription — GET /healthz is ok', async ({ request }) => {
   expect((await request.get('/healthz')).status()).toBe(200);
 });
+
+test('Function: resolveExternalProfileFields — no direct default-boot HTTP trigger', async ({
+  request,
+}) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
+
+test('Function: publicExternalAuthorProfile — unknown id is not found', async ({ request }) => {
+  expect((await request.get('/messages/not-a-uuid/external-profile')).status()).toBe(404);
+});

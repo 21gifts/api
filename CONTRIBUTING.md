@@ -443,8 +443,8 @@ the default boot surface (today: `requestPayInvoice`, which needs a configured
 `resolveCandlesUrl`, `fetchFiatRates`, `parseFrankfurterRates`,
 `resolveFrankfurterUrl`, and `SqlGiftRecorder`, which need `DATABASE_URL`;
 `verifiedExternalZapRequest`, `externalDisplayName`, `resolveExternalProfileName`,
-`ExternalIngestLimiter`, and `notifyExternalForumReply`, which have no direct
-default-boot HTTP trigger;
+`resolveExternalProfileFields`, `ExternalIngestLimiter`, and
+`notifyExternalForumReply`, which have no direct default-boot HTTP trigger;
 `InMemoryInvoiceStore`, `requestGiftInvoice`, `decodeBolt11`, `newInvoiceId`,
 `normalizeHex32`, `preimageMatchesHash`, `NoopGiftRecorder`, and
 `recipientHandleFromAddress`, which need `SPEND_API_TOKEN` and a reachable
