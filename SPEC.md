@@ -5217,6 +5217,7 @@ exist on the account model; `GET /debug/accounts` and
 
 - Passkey + PRF + NIP-06 user-owned keys (non-custodial phase)
 - Optional securing of the account ([docs/social-recovery.md](docs/social-recovery.md)). Not a v1 route. Mein Konto absichern is not required. An owner who continues chooses two people. It only opens the account on a new device and restores the same 12 words. No path in that document is reserved.
+- Shop payment in USDT or USDC ([docs/shop-spark-payment.md](docs/shop-spark-payment.md)). Not a v1 route. The OpenCryptoPay QR stays. A later build settles that payment as bitcoin on the shop's own Spark wallet. No path in that document is reserved. Current receiving stays LUD-16.
 - Email/password login (or any second login method)
 - Internationalization of api response text and push payloads (they stay English). A signed-in account may store `locale` and `fiat`; that is not translated copy.
 - Platform custody of **receiver** funds (receiving stays LUD-16 only)
