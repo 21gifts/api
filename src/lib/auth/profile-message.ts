@@ -23,7 +23,8 @@ import type { PushStore } from '@/lib/push-store';
  * winner when one exists. A hidden winner is missing: the created live note
  * is kept and `profileMessageId` is claimed onto it. A failed insert returns
  * the input account (name may still be persisted by the caller; worker
- * backfill creates the missing note once LN is linked). A won insert does
+ * backfill creates the missing note once a Lightning Address is linked or a
+ * wallet is verified). A won insert does
  * not fan out `notifyForumPost`: the note text is the display name.
  *
  * @param args - Auth store, message store, account snapshot, clock, optional

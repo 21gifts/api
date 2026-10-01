@@ -158,7 +158,7 @@ api/
 │   │       ├── account-setup.ts # Next owner setup step + factual missing fields
 │   │       ├── requirements.ts # Action→fields gates (`requireAction`)
 │   │       ├── roles.ts       # ROLE_ORDER, roleRank, roleAtLeast, isModeratorGroupMember (caller-role hierarchy)
-│   │       ├── profile-message.ts # Profile forum note when name + LN set (`ensureProfileMessage`)
+│   │       ├── profile-message.ts # Profile forum note when name + (LN or verified wallet) set (`ensureProfileMessage`)
 │   │       ├── hex.ts        # CSPRNG hex tokens
 │   │       ├── prf.ts        # Frozen WebAuthn PRF eval.first salt
 │   │       ├── passkey.ts    # WebAuthn register/authenticate/replace domain logic
