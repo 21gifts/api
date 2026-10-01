@@ -479,7 +479,6 @@ describe('fanoutToBellSubscribers', () => {
       skipAccountId: null,
       onlyAccountIds: ['allowed'],
       match: {
-        actorIsStaff: false,
         isActive: false,
         mentionedAccountId: 'allowed',
       },
@@ -1118,7 +1117,7 @@ describe('notifyForumPost', () => {
       created,
     });
     expect(await notifications.listByRecipient('all-user', 10)).toHaveLength(1);
-    expect(await notifications.listByRecipient('mentions-user', 10)).toHaveLength(1);
+    expect(await notifications.listByRecipient('mentions-user', 10)).toEqual([]);
   });
 
   it('uses the video sentence when the post text is empty', async () => {
@@ -1677,56 +1676,48 @@ describe('wantsNotification', () => {
   const recipientAccountId = 'me';
   const cases: Array<{
     name: string;
-    actorIsStaff: boolean;
     isActive: boolean;
     mentionedAccountId: string | null;
     expected: { all: boolean; active: boolean; mentions: boolean };
   }> = [
     {
       name: 'unpaid post',
-      actorIsStaff: false,
       isActive: false,
       mentionedAccountId: null,
       expected: { all: true, active: false, mentions: false },
     },
     {
       name: 'paid post',
-      actorIsStaff: false,
       isActive: true,
       mentionedAccountId: null,
       expected: { all: true, active: true, mentions: false },
     },
     {
       name: 'staff unpaid post',
-      actorIsStaff: true,
       isActive: false,
       mentionedAccountId: null,
-      expected: { all: true, active: false, mentions: true },
+      expected: { all: true, active: false, mentions: false },
     },
     {
       name: 'reply-to-me',
-      actorIsStaff: false,
       isActive: false,
       mentionedAccountId: recipientAccountId,
       expected: { all: true, active: false, mentions: true },
     },
     {
       name: 'reply-to-other',
-      actorIsStaff: false,
       isActive: false,
       mentionedAccountId: 'other',
       expected: { all: true, active: false, mentions: false },
     },
     {
       name: 'zap-to-me',
-      actorIsStaff: false,
       isActive: true,
       mentionedAccountId: recipientAccountId,
       expected: { all: true, active: true, mentions: true },
     },
     {
       name: 'zap-to-other',
-      actorIsStaff: false,
       isActive: true,
       mentionedAccountId: 'other',
       expected: { all: true, active: true, mentions: false },
@@ -1739,7 +1730,6 @@ describe('wantsNotification', () => {
         expect(
           wantsNotification({
             level,
-            actorIsStaff: row.actorIsStaff,
             isActive: row.isActive,
             mentionedAccountId: row.mentionedAccountId,
             recipientAccountId,
@@ -2020,7 +2010,7 @@ describe('notificationsMatchingLevel', () => {
     expect(matched.map((row) => row.id)).toEqual(['n-zap']);
   });
 
-  it('keeps an unpaid founder forum_post at mentions', () => {
+  it('drops an unpaid founder forum_post at mentions', () => {
     const rows: NotificationRow[] = [
       notification({
         id: 'n-post',
@@ -2043,7 +2033,7 @@ describe('notificationsMatchingLevel', () => {
       accounts: [{ id: 'actor', role: 'founder' }],
       parentById,
     });
-    expect(matched.map((row) => row.id)).toEqual(['n-post']);
+    expect(matched.map((row) => row.id)).toEqual([]);
   });
 
   it('drops an unknown-payer zap on a founder note at mentions', () => {
@@ -2074,7 +2064,7 @@ describe('notificationsMatchingLevel', () => {
     expect(matched.map((row) => row.id)).toEqual([]);
   });
 
-  it('keeps a zap from a distinct founder payer at mentions', () => {
+  it('drops a zap from a distinct founder payer at mentions', () => {
     const rows: NotificationRow[] = [
       notification({
         id: 'n-zap',
@@ -2099,7 +2089,7 @@ describe('notificationsMatchingLevel', () => {
       accounts: [{ id: 'staff', role: 'founder' }],
       parentById,
     });
-    expect(matched.map((row) => row.id)).toEqual(['n-zap']);
+    expect(matched.map((row) => row.id)).toEqual([]);
   });
 
   it('drops a zap with missing parent at mentions even if the actor is founder', () => {
@@ -2226,7 +2216,7 @@ describe('notification level fan-out', () => {
     expect(await notifications.listByRecipient('actor', 10)).toEqual([]);
   });
 
-  it('notifies all and mentions on a staff unpaid forum post; active is dropped', async () => {
+  it('notifies all on a staff unpaid forum post; mentions and active are dropped', async () => {
     const created = message({ id: 'post-1', accountId: 'actor', name: 'Ada', text: 'hello' });
     const notifications = new InMemoryNotificationStore();
     const auth = {
@@ -2245,7 +2235,7 @@ describe('notification level fan-out', () => {
       created,
     });
     expect(await notifications.listByRecipient('all-user', 10)).toHaveLength(1);
-    expect(await notifications.listByRecipient('mentions-user', 10)).toHaveLength(1);
+    expect(await notifications.listByRecipient('mentions-user', 10)).toEqual([]);
     expect(await notifications.listByRecipient('active-user', 10)).toEqual([]);
     expect(await notifications.listByRecipient('actor', 10)).toEqual([]);
   });
@@ -2370,7 +2360,7 @@ describe('notification level fan-out', () => {
       notifications,
       pushStore,
       skipAccountId: 'actor',
-      match: { actorIsStaff: false, isActive: false, mentionedAccountId: null },
+      match: { isActive: false, mentionedAccountId: null },
       template,
       outboxType: 'forum',
       outboxMessageId: 'reply-1',
@@ -2382,6 +2372,60 @@ describe('notification level fan-out', () => {
     expect(await notifications.listByRecipient('actor', 10)).toEqual([]);
     const claimed = await pushStore.claimPending(10, NOW.getTime() + 1, 60_000);
     expect(claimed.map((row) => row.accountId).sort()).toEqual(['one', 'two']);
+  });
+
+  it('notifies the note author at mentions when a founder zaps a foreign note; bystander is dropped', async () => {
+    const note = message({ id: 'note-1', accountId: 'author', name: 'Pat', text: 'post' });
+    const notifications = new InMemoryNotificationStore();
+    const auth = {
+      listAccounts: async () =>
+        [
+          { id: 'author', role: 'basis', notificationLevel: 'mentions' },
+          { id: 'bystander', role: 'basis', notificationLevel: 'mentions' },
+          { id: 'founder', role: 'founder' },
+        ] as Awaited<ReturnType<AuthStore['listAccounts']>>,
+    };
+    await notifyZap({
+      notifications,
+      auth,
+      note,
+      receiptId: ZAP_RECEIPT_ID,
+      amountSats: 2100,
+      nowMs: NOW.getTime(),
+      payerAccountId: 'founder',
+      payerName: 'Founder',
+    });
+    expect(await notifications.listByRecipient('author', 10)).toHaveLength(1);
+    expect(await notifications.listByRecipient('bystander', 10)).toEqual([]);
+    expect(await notifications.listByRecipient('founder', 10)).toEqual([]);
+  });
+
+  it('notifies the parent author at mentions when a founder replies on a foreign note; bystander is dropped', async () => {
+    const messages = new InMemoryMessageStore();
+    await seedParent(messages, 'parent-author');
+    const created = await messages.create(
+      message({ id: 'reply-1', accountId: 'founder', parentId: 'parent-note' }),
+    );
+    const notifications = new InMemoryNotificationStore();
+    const auth = {
+      listAccounts: async () =>
+        [
+          { id: 'parent-author', role: 'basis', notificationLevel: 'mentions' },
+          { id: 'bystander', role: 'basis', notificationLevel: 'mentions' },
+          { id: 'founder', role: 'founder' },
+        ] as Awaited<ReturnType<AuthStore['listAccounts']>>,
+    };
+    await notifyForumReply({
+      messages,
+      notifications,
+      auth,
+      account: { id: 'founder' },
+      created,
+      parentId: 'parent-note',
+    });
+    expect(await notifications.listByRecipient('parent-author', 10)).toHaveLength(1);
+    expect(await notifications.listByRecipient('bystander', 10)).toEqual([]);
+    expect(await notifications.listByRecipient('founder', 10)).toEqual([]);
   });
 
   it('treats a push-only id missing from listAccounts as all', async () => {
