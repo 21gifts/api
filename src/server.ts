@@ -729,6 +729,7 @@ export function createApp(deps: AppDeps = {}): Hono {
       authStore: store,
       fundingStore,
       messageStore,
+      ...receivingDeps,
       now,
       gifts: giftStore,
       ...(spendApiToken === undefined ? {} : { spendApiToken }),
