@@ -53,6 +53,19 @@ describe('ensureProfileMessage', () => {
     expect(await messages.listLatest(10)).toHaveLength(0);
   });
 
+  it('inserts a profile note for a verified wallet without a Lightning Address', async () => {
+    const { auth, account } = await seededAccount({ lightningAddress: null });
+    const messages = new InMemoryMessageStore();
+    const result = await ensureProfileMessage({
+      auth,
+      messages,
+      account: { ...account, sparkPubkeyVerifiedAt: 1 },
+      now,
+    });
+    expect(typeof result.profileMessageId).toBe('string');
+    expect(await messages.listLatest(10)).toHaveLength(1);
+  });
+
   it('returns the account without inserting when Lightning Address is whitespace', async () => {
     const { auth, account } = await seededAccount({ lightningAddress: '   ' });
     const messages = new InMemoryMessageStore();
