@@ -38,7 +38,7 @@ type PayLookup =
   | { ok: false; status: 404 | 502; error: string };
 
 /**
- * Load the member and the linked Lightning Address LNURL-pay satoshi bounds.
+ * Load the member and the LNURL-pay satoshi bounds of their receiving address.
  * After a valid wallet window, an unexpired pending point-of-sale charge
  * pins both sat bounds to that amount and sets `charge`. Provider
  * `minSendable` / `maxSendable` are left unchanged. `currentPending` is

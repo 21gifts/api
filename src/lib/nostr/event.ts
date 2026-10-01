@@ -403,7 +403,7 @@ export interface Kind0ProfileContent {
   banner: string;
   /** Avatar: the account's own profile photo, or the shared 21.gifts icon. */
   picture: string;
-  /** LUD-16 when the account has a linked address. */
+  /** LUD-16 receiving address (verified wallet or linked address) when the account has one. */
   lud16?: string;
   /** NIP-05 identifier (`name@21.gifts`) when the public host is set. */
   nip05?: string;
@@ -414,7 +414,7 @@ export interface Kind0ProfileContent {
 /**
  * Build kind:0 `content` JSON (no extra whitespace).
  *
- * Omit `lud16` when the account has no Lightning Address. `picture` is only
+ * Omit `lud16` when the account has no receiving address. `picture` is only
  * the profile-photo slot and `banner` is only the wide-image slot. Blank
  * values fall back to {@link KIND0_PICTURE_URL} and {@link KIND0_BANNER_URL}.
  * The About me note photo is neither. `about` defaults to `21.gifts` and is
