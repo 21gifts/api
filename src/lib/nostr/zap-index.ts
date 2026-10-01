@@ -4,7 +4,7 @@ import { requireAction } from '@/lib/auth/requirements';
 import type { Account, AuthStore } from '@/lib/auth/store';
 import { decodeBolt11, inspectBolt11 } from '@/lib/bolt11';
 import { fetchBtcUsdSpot } from '@/lib/btc-usd-spot';
-import { LN_ADDRESS_CACHE_TTL_MS } from '@/lib/config';
+import { LN_ADDRESS_CACHE_TTL_MS, type LnurlServerConfig } from '@/lib/config';
 import { unsignedConversationDefaults } from '@/lib/conversation';
 import { resolveMentionMarks } from '@/lib/mention';
 import type { ConversationStore } from '@/lib/conversation-store';
@@ -40,6 +40,7 @@ import { normalizeHex32, preimageMatchesHash } from '@/lib/proof';
 import type { PushStore } from '@/lib/push-store';
 import { verifyEvent } from 'nostr-tools/pure';
 import { parseRepaymentDescription } from '@/lib/credit-repayment';
+import { lnurlServerFetch, receivingAddress } from '@/lib/receiving-address';
 
 /** Minimal zap receipt fields we validate. */
 export interface ZapReceipt {
@@ -1017,6 +1018,8 @@ export async function indexOpenZapReceipts(args: {
   fundingStore?: FundingStore;
   /** Optional crosses for the one spot taken per newly indexed zap. */
   fiatRates?: FiatRateBook;
+  /** LNURL server; wallet-backed recipients resolve their receipt signer through it. */
+  lnurlServer?: LnurlServerConfig;
   /** Hot mode: query exactly these note event ids instead of enumerating recent notes. */
   eventIds?: readonly string[];
   /** Unix seconds added as `since` to every kind:9735 receipt filter. */
@@ -1140,6 +1143,8 @@ async function queryAndIngestZapReceipts(
     postLimiter?: PostRateLimiter;
     fundingStore?: FundingStore;
     fiatRates?: FiatRateBook;
+    /** LNURL server; wallet-backed recipients resolve their receipt signer through it. */
+    lnurlServer?: LnurlServerConfig;
     since?: number;
   },
   eventIds: readonly string[],
@@ -1156,29 +1161,51 @@ async function queryAndIngestZapReceipts(
       args.urls,
       args.timeoutMs,
     );
-    const verifyReceipt = args.verifyReceipt ?? defaultVerifyReceipt;
     for (const event of events) {
-      try {
-        await ingestOneReceipt(event, { ...args, verifyReceipt });
-      } catch (error: unknown) {
-        logEvent('nostr.zap.rejected', zapIngestCatchFields(error));
-        if (typeof event.id === 'string' && event.id !== '') {
-          await persistZapIngest(
-            args.store,
-            zapIngestRow({
-              receiptId: event.id,
-              noteEventId: null,
-              messageId: null,
-              outcome: 'rejected',
-              reason: 'error',
-              amountSats: null,
-              /* v8 ignore next -- ingestOneReceipt returns unless pubkey is a string */
-              receiptPubkey: typeof event.pubkey === 'string' ? event.pubkey : null,
-              receipt: receiptFrame(event),
-            }),
-          );
-        }
-      }
+      await ingestZapReceipt(event, args);
+    }
+  }
+}
+
+/**
+ * Run the receipt ingest for one kind 9735 event, as the relay passes do.
+ *
+ * Same validation, crediting, and ingest rows as {@link indexOpenZapReceipts}
+ * for one queried receipt (signature, provider pubkey of the recipient's
+ * receiving address, payment hash claimed once). A thrown ingest step logs
+ * `nostr.zap.rejected` and persists a `rejected`/`error` ingest row instead of
+ * rejecting. Used by the Spark invoice worker so a receipt it signs is
+ * credited without waiting for a relay round trip.
+ *
+ * @param event - Candidate receipt.
+ * @param args - The {@link indexOpenZapReceipts} collaborators (`eventIds` and `since` are ignored).
+ * @returns Resolves when the receipt has been handled.
+ * @throws Propagates a failure to persist the `error` ingest row.
+ */
+export async function ingestZapReceipt(
+  event: NostrEventFrame,
+  args: Parameters<typeof indexOpenZapReceipts>[0],
+): Promise<void> {
+  const verifyReceipt = args.verifyReceipt ?? defaultVerifyReceipt;
+  try {
+    await ingestOneReceipt(event, { ...args, verifyReceipt });
+  } catch (error: unknown) {
+    logEvent('nostr.zap.rejected', zapIngestCatchFields(error));
+    if (typeof event.id === 'string' && event.id !== '') {
+      await persistZapIngest(
+        args.store,
+        zapIngestRow({
+          receiptId: event.id,
+          noteEventId: null,
+          messageId: null,
+          outcome: 'rejected',
+          reason: 'error',
+          amountSats: null,
+          /* v8 ignore next -- ingestOneReceipt returns unless pubkey is a string */
+          receiptPubkey: typeof event.pubkey === 'string' ? event.pubkey : null,
+          receipt: receiptFrame(event),
+        }),
+      );
     }
   }
 }
@@ -1219,6 +1246,8 @@ async function ingestOneReceipt(
     fundingStore?: FundingStore;
     /** Optional crosses. Absent means the spot snapshot uses empty crosses. */
     fiatRates?: FiatRateBook;
+    /** LNURL server; wallet-backed recipients resolve their receipt signer through it. */
+    lnurlServer?: LnurlServerConfig;
   },
 ): Promise<void> {
   if (event.kind !== 9735) {
@@ -1319,7 +1348,7 @@ async function ingestOneReceipt(
     }
     const providerPubkey = await resolveProviderPubkey({
       address: address.trim().toLowerCase(),
-      fetchImpl: args.fetchImpl,
+      fetchImpl: lnurlServerFetch(args.lnurlServer, args.fetchImpl),
       nowMs: args.now(),
     });
     if (providerPubkey === null) {
@@ -1567,8 +1596,9 @@ async function ingestOneReceipt(
     return;
   }
   const author = await args.auth.getAccount(row.accountId);
-  const address = author?.lightningAddress;
-  if (address === undefined || address === null || address.trim() === '') {
+  const address =
+    author === undefined ? undefined : receivingAddress(author, args.lnurlServer)?.address;
+  if (address === undefined) {
     logEvent('nostr.zap.rejected', { reason: 'address' });
     await persistZapIngest(
       args.store,
@@ -1588,7 +1618,7 @@ async function ingestOneReceipt(
 
   const providerPubkey = await resolveProviderPubkey({
     address: address.trim().toLowerCase(),
-    fetchImpl: args.fetchImpl,
+    fetchImpl: lnurlServerFetch(args.lnurlServer, args.fetchImpl),
     nowMs: args.now(),
   });
   if (providerPubkey === null) {
@@ -1769,13 +1799,16 @@ async function settleRepaymentReceipt(
     return true;
   }
   const giver = await args.auth.getAccount(repayment.recipientAccountId);
-  const address = giver?.lightningAddress?.trim().toLowerCase() ?? '';
+  const address =
+    giver === undefined
+      ? ''
+      : (receivingAddress(giver, args.lnurlServer)?.address.toLowerCase() ?? '');
   const giverProvider =
     address === ''
       ? null
       : await resolveProviderPubkey({
           address,
-          fetchImpl: args.fetchImpl,
+          fetchImpl: lnurlServerFetch(args.lnurlServer, args.fetchImpl),
           nowMs: args.now(),
         });
   if (giverProvider === null || event.pubkey.toLowerCase() !== giverProvider) {

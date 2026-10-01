@@ -24,6 +24,8 @@ export default defineConfig({
       BIND_ADDR: '127.0.0.1:3000',
       PUBLIC_BASE_URL: 'http://127.0.0.1:3000',
       LNURL_SERVER_URL: '',
+      LNURL_ZAP_NSEC_HEX: '',
+      SPARK_OPERATOR_URL: '',
       DATABASE_URL: '',
       NOSTR_NSEC_KEK: '',
       NOSTR_PUBLISH: '',

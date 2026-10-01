@@ -23,6 +23,7 @@ import { setDiagnosticSink } from '@/lib/log';
 import { PostgresFundingStore } from '@/lib/funding-store';
 import { PostgresDebugDbStore } from '@/lib/debug-db';
 import { PostgresBannerStore } from '@/lib/banner-store';
+import { PostgresSparkInvoiceStore } from '@/lib/spark-invoice-store';
 
 function unusedClient(): SqlClient {
   return {
@@ -78,6 +79,7 @@ describe('openBootStores', () => {
       bannerStore,
       listDbChange,
       debugDbStore,
+      sparkInvoiceStore,
     } = await openBootStores(undefined, factory);
     expect(authStore).toBeInstanceOf(InMemoryAuthStore);
     expect(giftStore).toBeUndefined();
@@ -96,6 +98,7 @@ describe('openBootStores', () => {
     expect(bannerStore).toBeUndefined();
     expect(listDbChange).toBeUndefined();
     expect(debugDbStore).toBeUndefined();
+    expect(sparkInvoiceStore).toBeUndefined();
     expect(btcUsdRates).toBeInstanceOf(InMemoryBtcUsdStore);
     expect(fiatRates).toBeInstanceOf(InMemoryFiatStore);
     expect(factory).not.toHaveBeenCalled();
@@ -211,6 +214,7 @@ describe('openBootStores', () => {
       fundingStore,
       bannerStore,
       debugDbStore,
+      sparkInvoiceStore,
     } = await openBootStores(url, factory, {
       fetchImpl: async () => new Response('[]', { status: 200 }),
       candlesUrl: 'https://example.test/candles',
@@ -241,6 +245,7 @@ describe('openBootStores', () => {
     expect(fundingStore).toBeInstanceOf(PostgresFundingStore);
     expect(bannerStore).toBeInstanceOf(PostgresBannerStore);
     expect(debugDbStore).toBeInstanceOf(PostgresDebugDbStore);
+    expect(sparkInvoiceStore).toBeInstanceOf(PostgresSparkInvoiceStore);
     expect(btcUsdRates).toBeInstanceOf(PostgresBtcUsdStore);
     expect(fiatRates).toBeInstanceOf(PostgresFiatStore);
     expect(executes.length).toBeGreaterThan(0);
@@ -265,7 +270,12 @@ describe('openBootStores', () => {
     const diagnosticIdx = executes.findIndex((q) =>
       /CREATE TABLE IF NOT EXISTS diagnostic_event/i.test(q),
     );
+    const sparkInvoiceIdx = executes.findIndex((q) =>
+      /CREATE TABLE IF NOT EXISTS spark_invoice/i.test(q),
+    );
     const dbChangeIdx = executes.findIndex((q) => /CREATE TABLE IF NOT EXISTS db_change/i.test(q));
+    expect(sparkInvoiceIdx).toBeGreaterThanOrEqual(0);
+    expect(dbChangeIdx).toBeGreaterThan(sparkInvoiceIdx);
     expect(trustIdx).toBeGreaterThanOrEqual(0);
     expect(fundingIdx).toBeGreaterThan(trustIdx);
     expect(apiLogIdx).toBeGreaterThan(fundingIdx);

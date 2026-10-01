@@ -206,4 +206,20 @@ describe('accountMissing', () => {
     expect(accountSetup(afterUnlink)).toBe('lightning-address');
     expect(accountMissing(afterUnlink)).toEqual(['lightning-address']);
   });
+
+  it('counts a verified wallet as a receiving address for missing, not for setup', () => {
+    const wallet: Account = {
+      ...base,
+      name: 'Ada',
+      username: 'ada',
+      rulesAgreedAt: 2,
+      sparkPubkey: `02${'a'.repeat(64)}`,
+      sparkPubkeyVerifiedAt: 3,
+    };
+    expect(accountMissing(wallet)).toEqual([]);
+    expect(accountSetup(wallet)).toBe('lightning-address');
+    expect(accountMissing({ ...wallet, sparkPubkeyVerifiedAt: null })).toEqual([
+      'lightning-address',
+    ]);
+  });
 });

@@ -8,6 +8,15 @@ import { InMemoryMessageStore, PostgresMessageStore } from '@/lib/message-store'
 import { RecordingPublisher } from '@/lib/nostr/publish';
 import { PostRateLimiter } from '@/lib/nostr/rate-limit';
 import { createApp, resolveBindAddr, parseBindAddr } from '@/server';
+import { parseNostrKek } from '@/lib/nostr/kek';
+import { ensureAccountNostrKey } from '@/lib/nostr/keys';
+import { InMemorySparkInvoiceStore } from '@/lib/spark-invoice-store';
+import {
+  BOLT11,
+  FREE_PAYMENTS_ENV,
+  createWalletAccount,
+  walletLnurlFetch,
+} from '@/__tests__/helpers/wallet-lnurl';
 
 function b64url(bytes: Uint8Array): string {
   return Buffer.from(bytes)
@@ -884,5 +893,100 @@ describe('parseBindAddr', () => {
 
   it('rejects port with trailing junk', () => {
     expect(() => parseBindAddr('0.0.0.0:3000x')).toThrowError(/must be 0\.\.65535/);
+  });
+});
+
+describe('free in-app payments wiring', () => {
+  const NOTE = '55555555-5555-4555-8555-555555555555';
+  let payerCount = 0;
+
+  async function payWalletNote(
+    env: Record<string, string>,
+    sparkInvoiceStore?: InMemorySparkInvoiceStore,
+  ): Promise<{ status: number; body: Record<string, unknown> }> {
+    const kek = parseNostrKek('11'.repeat(32));
+    payerCount += 1;
+    const payer = `payer-${payerCount}`;
+    const authStore = new InMemoryAuthStore();
+    await authStore.createAccount({
+      id: payer,
+      linkingKey: null,
+      role: 'basis',
+      name: 'Payer',
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: 'e'.repeat(64),
+      createdAt: 1,
+      rulesAgreedAt: 1,
+    });
+    await authStore.createSession({ token: payer, accountId: payer, createdAt: Date.now() });
+    await createWalletAccount(authStore, 'wal', 'wally');
+    await ensureAccountNostrKey(authStore, payer, kek);
+    await ensureAccountNostrKey(authStore, 'wal', kek);
+    const messageStore = new InMemoryMessageStore();
+    await messageStore.create({
+      id: NOTE,
+      accountId: 'wal',
+      name: 'wally',
+      text: 'hi',
+      createdAt: new Date(),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+      eventId: 'ee'.repeat(32),
+    });
+    const app = createApp({
+      env,
+      authStore,
+      messageStore,
+      nostrKek: kek,
+      fetchImpl: walletLnurlFetch('wally').fetchImpl,
+      ...(sparkInvoiceStore === undefined ? {} : { sparkInvoiceStore }),
+    });
+    const bolt11 = await import('@/lib/bolt11');
+    const nip57 = vi.spyOn(bolt11, 'isNip57Invoice').mockReturnValue(true);
+    try {
+      const res = await app.request(`/messages/${NOTE}/invoice`, {
+        method: 'POST',
+        headers: { authorization: `Bearer ${payer}`, 'content-type': 'application/json' },
+        body: JSON.stringify({ sats: 21 }),
+      });
+      return { status: res.status, body: (await res.json()) as Record<string, unknown> };
+    } finally {
+      nip57.mockRestore();
+    }
+  }
+
+  it('returns a Spark invoice from the default store when both configs resolve', async () => {
+    const { status, body } = await payWalletNote(FREE_PAYMENTS_ENV);
+    expect(status).toBe(200);
+    expect(String(body['sparkInvoice']).startsWith('spark1')).toBe(true);
+  });
+
+  it('uses the injected Spark invoice store', async () => {
+    const store = new InMemorySparkInvoiceStore();
+    const { body } = await payWalletNote(FREE_PAYMENTS_ENV, store);
+    const open = await store.listOpen(new Date(0));
+    expect(open.map((row) => row.invoice)).toEqual([body['sparkInvoice']]);
+    expect(open[0]?.bolt11).toBe(BOLT11);
+  });
+
+  it('returns sparkInvoice null without LNURL_ZAP_NSEC_HEX', async () => {
+    const env = { ...FREE_PAYMENTS_ENV };
+    delete env['LNURL_ZAP_NSEC_HEX'];
+    const { status, body } = await payWalletNote(env);
+    expect(status).toBe(200);
+    expect(body['sparkInvoice']).toBeNull();
+  });
+
+  it('does not use the wallet without the LNURL server', async () => {
+    const store = new InMemorySparkInvoiceStore();
+    const { status } = await payWalletNote(
+      { LNURL_ZAP_NSEC_HEX: FREE_PAYMENTS_ENV['LNURL_ZAP_NSEC_HEX'] ?? '' },
+      store,
+    );
+    expect(status).toBe(400);
+    expect(await store.listOpen(new Date(0))).toEqual([]);
   });
 });
