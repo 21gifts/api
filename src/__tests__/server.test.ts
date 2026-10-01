@@ -64,6 +64,15 @@ describe('createApp', () => {
     expect(res.status).toBe(200);
   });
 
+  it('accepts an injected Nostr querier and relay list', async () => {
+    const app = createApp({
+      nostrQuerier: { query: async () => [] },
+      nostrRelayUrls: ['wss://relay.example'],
+    });
+    const res = await app.request('/healthz');
+    expect(res.status).toBe(200);
+  });
+
   it('mounts /favicon.ico', async () => {
     const app = createApp();
     const res = await app.request('/favicon.ico');

@@ -8,6 +8,7 @@ import {
   EXTERNAL_ZAPPER_MIN_SATS,
   ExternalIngestLimiter,
   externalDisplayName,
+  resolveExternalProfileFields,
   resolveExternalProfileName,
   verifiedExternalZapRequest,
 } from '@/lib/nostr/external';
@@ -815,6 +816,186 @@ describe('resolveExternalProfileName', () => {
       'Profile 2',
     );
     expect(querier.calls).toBe(2);
+  });
+});
+
+describe('resolveExternalProfileFields', () => {
+  it('returns trimmed kind 0 fields and does not apply the display-name policy', async () => {
+    const querier = new RecordingQuerier();
+    const pubkey = 'e4'.repeat(32);
+    querier.events = [
+      profileEvent(
+        pubkey,
+        JSON.stringify({
+          display_name: 'Support',
+          nip05: '  lone@example.com  ',
+          lud16: 'pay@example.com',
+          picture: 'https://cdn.example/a.png',
+        }),
+      ),
+    ];
+    const args = {
+      querier,
+      urls: ['wss://relay.example'],
+      pubkey,
+      nowMs: 10,
+      timeoutMs: 50,
+      verifyProfile: () => true,
+    };
+
+    await expect(resolveExternalProfileFields(args)).resolves.toEqual({
+      displayName: 'Support',
+      nip05: 'lone@example.com',
+      lud16: 'pay@example.com',
+    });
+    querier.events = [];
+    await expect(resolveExternalProfileFields({ ...args, nowMs: 11 })).resolves.toEqual({
+      displayName: 'Support',
+      nip05: 'lone@example.com',
+      lud16: 'pay@example.com',
+    });
+    expect(querier.calls).toHaveLength(1);
+  });
+
+  it('returns null when the querier throws and caches that miss', async () => {
+    const querier: NostrQuerier = {
+      query: vi.fn(() => Promise.reject(new Error('relays down'))),
+    };
+    const args = {
+      querier,
+      urls: ['wss://relay.example'],
+      pubkey: 'e5'.repeat(32),
+      nowMs: 10,
+      timeoutMs: 50,
+    };
+
+    await expect(resolveExternalProfileFields(args)).resolves.toBeNull();
+    await expect(resolveExternalProfileFields({ ...args, nowMs: 11 })).resolves.toBeNull();
+    expect(querier.query).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    ['01', 'non-string content', 42, { displayName: null, nip05: null, lud16: null }],
+    ['02', 'JSON null', 'null', { displayName: null, nip05: null, lud16: null }],
+    ['03', 'a JSON array', '[]', { displayName: null, nip05: null, lud16: null }],
+    ['04', 'a JSON number', '42', { displayName: null, nip05: null, lud16: null }],
+    ['05', 'invalid JSON', '{', { displayName: null, nip05: null, lud16: null }],
+    [
+      '06',
+      'a name when display_name is blank',
+      '{"display_name":"  ","name":"  Fallback  ","nip05":"   ","lud16":"  "}',
+      { displayName: 'Fallback', nip05: null, lud16: null },
+    ],
+    [
+      '07',
+      'neither name is usable',
+      '{"display_name":"","name":"  "}',
+      { displayName: null, nip05: null, lud16: null },
+    ],
+    [
+      '08',
+      'a name when display_name is not text',
+      '{"display_name":1,"name":"From name","nip05":7}',
+      { displayName: 'From name', nip05: null, lud16: null },
+    ],
+    [
+      '09',
+      'no name when the fallback is not text',
+      '{"display_name":"","name":1,"lud16":false}',
+      { displayName: null, nip05: null, lud16: null },
+    ],
+  ])('%s reads profile fields from %s', async (id, _label, content, expected) => {
+    const querier = new RecordingQuerier();
+    const pubkey = `${id}f4`.padEnd(64, '0');
+    querier.events = [profileEvent(pubkey, content)];
+    await expect(
+      resolveExternalProfileFields({
+        querier,
+        urls: ['wss://relay.example'],
+        pubkey,
+        nowMs: 20,
+        timeoutMs: 50,
+        verifyProfile: () => true,
+      }),
+    ).resolves.toEqual(expected);
+  });
+
+  it('drops oversized profile content and an empty relay result', async () => {
+    const oversized = new RecordingQuerier();
+    const bigKey = 'f5'.repeat(32);
+    oversized.events = [profileEvent(bigKey, 'x'.repeat(64 * 1024 + 1))];
+    await expect(
+      resolveExternalProfileFields({
+        querier: oversized,
+        urls: ['wss://relay.example'],
+        pubkey: bigKey,
+        nowMs: 20,
+        timeoutMs: 50,
+        verifyProfile: () => true,
+      }),
+    ).resolves.toBeNull();
+
+    const empty = new RecordingQuerier();
+    const emptyKey = 'f6'.repeat(32);
+    await expect(
+      resolveExternalProfileFields({
+        querier: empty,
+        urls: ['wss://relay.example'],
+        pubkey: emptyKey,
+        nowMs: 20,
+        timeoutMs: 50,
+        verifyProfile: () => true,
+      }),
+    ).resolves.toBeNull();
+  });
+
+  it('deletes an expired profile entry and queries it again', async () => {
+    const querier = new AuthorProfileQuerier();
+    const args = {
+      querier,
+      urls: ['wss://relay.example'],
+      pubkey: 'f3'.repeat(32),
+      nowMs: 0,
+      timeoutMs: 50,
+      verifyProfile: () => true,
+    };
+
+    await expect(resolveExternalProfileFields(args)).resolves.toEqual({
+      displayName: 'Profile 1',
+      nip05: null,
+      lud16: null,
+    });
+    await expect(resolveExternalProfileFields({ ...args, nowMs: 60 * 60 * 1000 })).resolves.toEqual(
+      {
+        displayName: 'Profile 2',
+        nip05: null,
+        lud16: null,
+      },
+    );
+    expect(querier.calls).toBe(2);
+  });
+
+  it('evicts the oldest profile after 5000 distinct cached pubkeys', async () => {
+    const querier = new AuthorProfileQuerier();
+    const pubkeys = Array.from(
+      { length: 5001 },
+      (_, index) => `f11d${index.toString(16).padStart(60, '0')}`,
+    );
+    const args = {
+      querier,
+      urls: ['wss://relay.example'],
+      nowMs: 1000,
+      timeoutMs: 50,
+      verifyProfile: () => true,
+    };
+
+    for (const pubkey of pubkeys) {
+      await resolveExternalProfileFields({ ...args, pubkey });
+    }
+    expect(querier.calls).toBe(5001);
+
+    await resolveExternalProfileFields({ ...args, pubkey: pubkeys[0]! });
+    expect(querier.calls).toBe(5002);
   });
 });
 
