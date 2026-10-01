@@ -315,11 +315,11 @@ async function readNostrJson(
   parts: { local: string; host: string },
 ): Promise<string | null> {
   let current: URL;
-  /* v8 ignore start -- splitAddress only yields a host the URL parser accepts */
   try {
     current = new URL(
       `https://${parts.host}/.well-known/nostr.json?name=${encodeURIComponent(parts.local)}`,
     );
+    /* v8 ignore start -- splitAddress only yields a host the URL parser accepts */
   } catch {
     return null;
   }
