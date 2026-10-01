@@ -322,8 +322,7 @@ export function debugRoutes(deps: DebugRouteDeps): Hono {
         const probe = await probeNip57Mint({
           address: row.lightningAddress,
           recipientPubkey,
-          sign: async (unsigned) =>
-            finalizeEvent(unsigned, ephemeral) as unknown as Record<string, unknown>,
+          sign: async (unsigned) => finalizeEvent(unsigned, ephemeral),
           fetchImpl: deps.fetchImpl,
           env: process.env,
         });
