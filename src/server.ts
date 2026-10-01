@@ -83,6 +83,7 @@ import { requestLog, setDiagnosticSink } from '@/lib/log';
 import { sundayRest } from '@/lib/sunday-rest';
 import type { FetchFn } from '@/lib/lnurlp';
 import type { NostrPublisher } from '@/lib/nostr/publish';
+import type { NostrQuerier } from '@/lib/nostr/query';
 import { resolveSpendPing, type SpendPing } from '@/lib/spend-ping';
 
 /**
@@ -217,6 +218,12 @@ export interface AppDeps {
    * publishes NIP-09 kind:5. Memory/unit boots may omit.
    */
   nostrPublisher?: NostrPublisher;
+  /**
+   * Kind:0 querier for `GET /messages/:id/external-profile`. Omitted →
+   * that route returns the stored name and npub and does not open a relay.
+   */
+  nostrQuerier?: NostrQuerier;
+  nostrRelayUrls?: readonly string[];
   /**
    * Optional env slice for hide retract (relays, `PUBLIC_BASE_URL`,
    * Cloudflare). Default `process.env`.
@@ -614,6 +621,8 @@ export function createApp(deps: AppDeps = {}): Hono {
       }),
       ...(nostrKek === undefined ? {} : { nostrKek }),
       ...(deps.nostrPublisher === undefined ? {} : { nostrPublisher: deps.nostrPublisher }),
+      ...(deps.nostrQuerier === undefined ? {} : { nostrQuerier: deps.nostrQuerier }),
+      ...(deps.nostrRelayUrls === undefined ? {} : { nostrRelayUrls: deps.nostrRelayUrls }),
       ...(spendPing === undefined ? {} : { spendPing }),
       postLimiter,
     }),

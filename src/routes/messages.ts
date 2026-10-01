@@ -55,8 +55,10 @@ import {
   translateForumNote,
 } from '@/lib/translate-note';
 import { InMemoryTranslationStore, type TranslationStore } from '@/lib/translation-store';
+import { publicExternalAuthorProfile } from '@/lib/nostr/external-profile';
 import { ensureAccountNostrKey } from '@/lib/nostr/keys';
 import type { NostrPublisher } from '@/lib/nostr/publish';
+import type { NostrQuerier } from '@/lib/nostr/query';
 import { InvoiceRateLimiter, PostRateLimiter } from '@/lib/nostr/rate-limit';
 import { resolveZapRelays } from '@/lib/nostr/relays';
 import { retractHiddenForumNotes } from '@/lib/nostr/retract';
@@ -283,6 +285,21 @@ export interface MessagesRouteDeps {
    * purge. Omitted → `{}` on the DELETE retract path.
    */
   env?: Record<string, string | undefined>;
+  /**
+   * Kind:0 querier for `GET /:id/external-profile`. Omitted → that route
+   * still returns the stored name and npub, with no relay read.
+   */
+  nostrQuerier?: NostrQuerier;
+  /**
+   * Relay URLs for that lookup. Omitted → `resolveZapReadRelays(env)`.
+   * An empty list skips the lookup.
+   */
+  nostrRelayUrls?: readonly string[];
+  /**
+   * DNS lookup for a NIP-05 host. Tests inject this. Omitted → `node:dns`.
+   * Unused when `fetchImpl` is omitted: nip05 is then left off.
+   */
+  lookupHost?: (hostname: string) => Promise<readonly string[]>;
   /**
    * Cached DeepL output per message and locale (default: empty
    * {@link InMemoryTranslationStore}).
@@ -1854,6 +1871,16 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
         logEvent('messages.replies.failed');
         return c.json({ error: 'Messages are unavailable' }, 503);
       }
+    })
+    .get('/:id/external-profile', async (c) => {
+      const result = await publicExternalAuthorProfile(deps, c.req.param('id'));
+      if (result.status === 200) {
+        return c.json(result.body, 200);
+      }
+      if (result.status === 503) {
+        return c.json({ error: 'Messages are unavailable' }, 503);
+      }
+      return c.json({ error: 'Not found' }, 404);
     })
     .delete('/:id', async (c) => {
       const account = await authedAccount(deps, c.req.header('authorization'));

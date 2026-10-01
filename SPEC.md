@@ -4368,10 +4368,27 @@ account is **200** `{ "kind": "member", "id" }` with the id lowercased.
 Soft-hidden messages count. The prefix match is case-insensitive and stops at
 two ids per store.
 
+### `GET /messages/:id/external-profile`
+
+Public profile for an external author. No Bearer. Registered **before**
+`GET /messages/:id`. **200** `{ "name", "npub" }` and, when present,
+`nip05` and `lud16`. `name` is the stored snapshot (truncated pubkey when
+blank). A live kind 0 name replaces it only when `externalDisplayName`
+accepts it. `npub` is the stored pubkey. `nip05` requires `fetchImpl` and
+a guarded HTTPS `/.well-known/nostr.json` whose `names` entry matches the
+pubkey. `lud16` must be `user@host` and is not fetched. No hex pubkey,
+picture, callback, or invoice. **404** `{ "error": "Not found" }` for a
+bad id, a missing or deleted row (staff included), a withheld reply, a
+member author, or a pubkey that is not 64 hex. **503**
+`{ "error": "Messages are unavailable" }` when the store or account list
+throws (`messages.external_profile.failed`). Relay, DNS, and well-known
+failures omit the failed field and stay 200.
+
 ### `GET /messages/:id`
 
 Public single-note fetch. Live rows need **no Bearer.** `:id` is a UUID.
 Registered **after** photo, video, `GET /messages/:id/replies`,
+`GET /messages/:id/external-profile`,
 `DELETE /messages/:id`, `PATCH /messages/:id/place`, `PATCH /messages/:id/shop-account`, `PATCH /messages/:id/text`, `PATCH /messages/:id/photos`, `GET /messages/:id/edits`, `GET /messages/stats`, `GET /messages/hidden`, and
 `GET /messages/places` so
 those paths are not captured as `:id`. A live GET returns

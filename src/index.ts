@@ -18,7 +18,7 @@ import { RELAY_TIMEOUT_MS, startNostrWorker, WORKER_INTERVAL_MS } from './lib/no
 import { InMemoryMessageStore } from './lib/message-store';
 import { resolveSpendPing } from './lib/spend-ping';
 import { syncWelcomePing } from './lib/welcome-media';
-import { resolveZapRelays } from './lib/nostr/relays';
+import { resolveZapRelays, resolveZapReadRelays } from './lib/nostr/relays';
 import { ExternalIngestLimiter } from './lib/nostr/external';
 import { resolveVapidConfig } from './lib/push-config';
 import { UnconfiguredPushSender, WebPushSender, type PushSender } from './lib/push-sender';
@@ -110,6 +110,8 @@ if (import.meta.main) {
       : { conversationTranslationStore: boot.conversationTranslationStore }),
     ...(nostrKek === undefined ? {} : { nostrKek }),
     ...(publisher === undefined ? {} : { nostrPublisher: publisher }),
+    nostrQuerier: querier,
+    nostrRelayUrls: resolveZapReadRelays(process.env),
     ...(contactStore === undefined ? {} : { contactStore }),
     ...(apiLogStore === undefined ? {} : { apiLogStore }),
     ...(diagnosticStore === undefined ? {} : { diagnosticStore }),

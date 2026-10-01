@@ -390,12 +390,28 @@ export function externalDisplayName(args: {
   return capped;
 }
 
+/** Kind:0 profile fields used by the public external-author snapshot. */
+export interface ExternalProfileFields {
+  /** Trimmed display_name, else name, capped at NAME_MAX_LENGTH. Null when absent. */
+  displayName: string | null;
+  /** Raw trimmed nip05 string, or null. Not verified. */
+  nip05: string | null;
+  /** Raw trimmed lud16 string, or null. Not fetched. */
+  lud16: string | null;
+}
+
 interface ProfileCacheRow {
   name: string | null;
   expiresAt: number;
 }
 
+interface ProfileFieldsCacheRow {
+  fields: ExternalProfileFields | null;
+  expiresAt: number;
+}
+
 const profileCache = new Map<string, ProfileCacheRow>();
+const profileFieldsCache = new Map<string, ProfileFieldsCacheRow>();
 const PROFILE_HIT_TTL_MS = 60 * 60 * 1000;
 const PROFILE_MISS_TTL_MS = 5 * 60 * 1000;
 const PROFILE_CONTENT_MAX_LENGTH = 64 * 1024;
@@ -506,6 +522,103 @@ export async function resolveExternalProfileName(args: {
     expiresAt: args.nowMs + (name === null ? PROFILE_MISS_TTL_MS : PROFILE_HIT_TTL_MS),
   });
   return name;
+}
+
+function trimmedProfileString(value: unknown): string | null {
+  if (typeof value !== 'string') {
+    return null;
+  }
+  const trimmed = value.trim();
+  return trimmed === '' ? null : trimmed;
+}
+
+function profileFieldsFromEvent(event: NostrEventFrame): ExternalProfileFields {
+  const empty: ExternalProfileFields = { displayName: null, nip05: null, lud16: null };
+  if (typeof event.content !== 'string') {
+    return empty;
+  }
+  try {
+    const parsed: unknown = JSON.parse(event.content);
+    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      return empty;
+    }
+    const profile = parsed as Record<string, unknown>;
+    const displayNameRaw = profile['display_name'];
+    const nameRaw = profile['name'];
+    let displayName: string | null = null;
+    if (typeof displayNameRaw === 'string' && displayNameRaw.trim() !== '') {
+      displayName = displayNameRaw.trim().slice(0, NAME_MAX_LENGTH);
+    } else if (typeof nameRaw === 'string' && nameRaw.trim() !== '') {
+      displayName = nameRaw.trim().slice(0, NAME_MAX_LENGTH);
+    }
+    return {
+      displayName,
+      nip05: trimmedProfileString(profile['nip05']),
+      lud16: trimmedProfileString(profile['lud16']),
+    };
+  } catch {
+    return empty;
+  }
+}
+
+/**
+ * Resolve the newest verified kind:0 profile fields for an external pubkey.
+ *
+ * Successful lookups are cached for one hour even when every field is null;
+ * misses and failures for five minutes. Relay and parsing failures are
+ * collapsed to `null`. Does not apply {@link externalDisplayName} and does
+ * not fetch HTTP.
+ *
+ * @param args - Relay querier, URLs, pubkey, clock, timeout, and optional verifier.
+ * @returns Trimmed `display_name`/`name`, `nip05`, and `lud16`, or `null`.
+ */
+export async function resolveExternalProfileFields(args: {
+  querier: NostrQuerier;
+  urls: readonly string[];
+  pubkey: string;
+  nowMs: number;
+  timeoutMs: number;
+  /** Signature check; production uses nostr-tools verifyEvent. */
+  verifyProfile?: (event: NostrEventFrame) => boolean;
+}): Promise<ExternalProfileFields | null> {
+  const pubkey = args.pubkey.toLowerCase();
+  const cached = profileFieldsCache.get(pubkey);
+  if (cached !== undefined && cached.expiresAt > args.nowMs) {
+    return cached.fields;
+  }
+  if (cached !== undefined) {
+    profileFieldsCache.delete(pubkey);
+  }
+  let fields: ExternalProfileFields | null = null;
+  try {
+    const verifyProfile = args.verifyProfile ?? defaultVerifyProfile;
+    const events = await args.querier.query(
+      { kinds: [0], authors: [pubkey], limit: 20 },
+      args.urls,
+      args.timeoutMs,
+    );
+    const newest = events
+      .filter(
+        (event) =>
+          event.kind === 0 &&
+          event.pubkey.toLowerCase() === pubkey &&
+          (typeof event.content !== 'string' ||
+            event.content.length <= PROFILE_CONTENT_MAX_LENGTH) &&
+          verifyProfile(event),
+      )
+      .sort((a, b) => (b.created_at ?? 0) - (a.created_at ?? 0))[0];
+    fields = newest === undefined ? null : profileFieldsFromEvent(newest);
+  } catch {
+    fields = null;
+  }
+  if (profileFieldsCache.size >= PROFILE_CACHE_MAX_ENTRIES) {
+    profileFieldsCache.delete(profileFieldsCache.keys().next().value!);
+  }
+  profileFieldsCache.set(pubkey, {
+    fields,
+    expiresAt: args.nowMs + (fields === null ? PROFILE_MISS_TTL_MS : PROFILE_HIT_TTL_MS),
+  });
+  return fields;
 }
 
 interface IngestHits {

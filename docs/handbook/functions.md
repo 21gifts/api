@@ -2881,6 +2881,22 @@ Creates a safe display-name snapshot for a visible external Nostr author.
 - **Protection:** Rejects control characters, explicit Unicode bidirectional controls (RLO/LRO/RLE/LRE/PDF/RLM/LRM/RLI/LRI/FSI/PDI/ALM), names containing a default-ignorable Unicode code point (checked on the name and its NFKD form), except the ZWNJ/ZWJ joiners and the emoji variation selectors U+FE00-U+FE0F, which stay allowed, names without any letter or digit, names mixing more than one of the Latin, Cyrillic and Greek scripts, names equal to a member name (case-insensitive after compatibility normalisation), and names that impersonate a member or reserved project/staff identity after diacritic and common Cyrillic/Greek look-alike folding or after a by-sound transliteration of Cyrillic (so the Russian spelling of a reserved word or of a member name is caught too). Look-alike-fold and transliteration comparisons with member names apply only when every candidate letter is ASCII or substituted by the respective mapping, so unmapped non-Latin letters cannot create a spurious member collision. Reserved-word substring matching still uses both folds unconditionally. Names written entirely in one non-Latin script remain eligible when none of these comparisons collides.
 - **Fallback:** Uses a truncated pubkey display; accepted profile names are capped at the member-name limit.
 
+## Function: resolveExternalProfileFields
+
+Looks up kind 0 display name, nip05, and lud16 for one external pubkey.
+
+- **Query:** Requests kind 0 for that lowercase pubkey, keeps a verified event from that author whose content is at most 64 KiB, and reads the newest one.
+- **Fields:** `displayName` is trimmed `display_name`, otherwise trimmed `name`, capped at the member-name limit. `nip05` and `lud16` are trimmed strings or null. The display name is not passed through `externalDisplayName`.
+- **Resilience:** Never throws. A found event is cached for one hour, including when every field is null. A miss or a querier failure is cached for five minutes. The cache is separate from `resolveExternalProfileName` and uses the same 5,000-entry cap.
+
+## Function: publicExternalAuthorProfile
+
+Builds the public JSON for a forum author who has no 21.gifts account.
+
+- **Gate:** 404 unless the id is a UUID, the row exists, `deletedAt` is null (staff included), the row is not withheld the way `GET /messages/:id` withholds a reply, `accountId` is null, and `authorPubkey` is 64 hex. Store or account failures are 503 `messages.external_profile.failed` with no pubkey and no profile text.
+- **Name:** The stored name, or a truncated pubkey when that is blank. A live kind 0 name replaces it only when `externalDisplayName` accepts it against current member names.
+- **Fields:** `npub` is the bech32 form of the stored pubkey. `nip05` is included only after a guarded HTTPS well-known fetch whose `names` entry matches the pubkey; private, loopback, and link-local answers are dropped. `lud16` is included only when it is `user@host`, with no fetch. Picture, about, callback, and the hex pubkey are omitted.
+
 ## Function: resolveExternalProfileName
 
 Looks up the newest kind 0 profile name without making ingest depend on relay availability.

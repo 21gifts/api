@@ -8,6 +8,7 @@ import {
   EXTERNAL_ZAPPER_MIN_SATS,
   ExternalIngestLimiter,
   externalDisplayName,
+  resolveExternalProfileFields,
   resolveExternalProfileName,
   verifiedExternalZapRequest,
 } from '@/lib/nostr/external';
@@ -815,6 +816,62 @@ describe('resolveExternalProfileName', () => {
       'Profile 2',
     );
     expect(querier.calls).toBe(2);
+  });
+});
+
+describe('resolveExternalProfileFields', () => {
+  it('returns trimmed kind 0 fields and does not apply the display-name policy', async () => {
+    const querier = new RecordingQuerier();
+    const pubkey = 'e4'.repeat(32);
+    querier.events = [
+      profileEvent(
+        pubkey,
+        JSON.stringify({
+          display_name: 'Support',
+          nip05: '  lone@example.com  ',
+          lud16: 'pay@example.com',
+          picture: 'https://cdn.example/a.png',
+        }),
+      ),
+    ];
+    const args = {
+      querier,
+      urls: ['wss://relay.example'],
+      pubkey,
+      nowMs: 10,
+      timeoutMs: 50,
+      verifyProfile: () => true,
+    };
+
+    await expect(resolveExternalProfileFields(args)).resolves.toEqual({
+      displayName: 'Support',
+      nip05: 'lone@example.com',
+      lud16: 'pay@example.com',
+    });
+    querier.events = [];
+    await expect(resolveExternalProfileFields({ ...args, nowMs: 11 })).resolves.toEqual({
+      displayName: 'Support',
+      nip05: 'lone@example.com',
+      lud16: 'pay@example.com',
+    });
+    expect(querier.calls).toHaveLength(1);
+  });
+
+  it('returns null when the querier throws and caches that miss', async () => {
+    const querier: NostrQuerier = {
+      query: vi.fn(() => Promise.reject(new Error('relays down'))),
+    };
+    const args = {
+      querier,
+      urls: ['wss://relay.example'],
+      pubkey: 'e5'.repeat(32),
+      nowMs: 10,
+      timeoutMs: 50,
+    };
+
+    await expect(resolveExternalProfileFields(args)).resolves.toBeNull();
+    await expect(resolveExternalProfileFields({ ...args, nowMs: 11 })).resolves.toBeNull();
+    expect(querier.query).toHaveBeenCalledTimes(1);
   });
 });
 
