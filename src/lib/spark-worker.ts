@@ -4,9 +4,10 @@
  * Every tick it asks the Spark coordinator about the open Spark invoices
  * issued in the last {@link SPARK_INVOICE_WINDOW_MS}. For each one reported
  * `FINALIZED` it signs a kind 9735 receipt for the zap invoice with the
- * receiver's receipt key and feeds it into the receipt ingest. Once the zap
- * invoice's payment hash is claimed it publishes the receipt to the relays
- * named in the zap request and marks the row settled.
+ * receiver's receipt key and feeds it into the receipt ingest. Once that
+ * receipt is credited it publishes it to the relays named in the zap request
+ * and marks the row settled; a payment hash already owned by another receipt
+ * settles the row without publishing.
  */
 
 import type { FreePaymentsConfig } from '@/lib/config';
@@ -38,7 +39,7 @@ export interface SparkWorkerDeps {
   fetchImpl: FetchFn;
   /** Relay publisher (fake in tests). */
   publisher: NostrPublisher;
-  /** Existing receipt ingest for one event; `false` when an ingest step threw. */
+  /** Existing receipt ingest for one event; `true` when that receipt is credited. */
   ingest: (event: NostrEventFrame) => Promise<boolean>;
   /** Payment hash claims written by the receipt ingest. */
   claims: Pick<MessageStore, 'zapPaymentReceiptId'>;
@@ -49,13 +50,14 @@ export interface SparkWorkerDeps {
 /**
  * Turn one finalized Spark invoice into an ingested and published receipt.
  *
- * The row is settled only when the ingest finished without a thrown step and
- * the zap invoice's payment hash is claimed. Otherwise (for example the LNURL
- * server was briefly unreachable, or crediting failed after the claim) the row
- * stays open and the next tick ingests the same receipt again; its id is
- * stable, so a claim it already holds lets that retry complete the credit.
- * The receipt is published only when it is the one that claimed the hash, so a
- * zap invoice already paid over Lightning does not get a second receipt.
+ * The row is settled when the ingest credited this receipt, or when another
+ * receipt owns the zap invoice's payment hash (it was paid and credited some
+ * other way). Otherwise (for example the LNURL server was briefly unreachable,
+ * or crediting failed after the claim) the row stays open and the next tick
+ * ingests the same receipt again; its id is stable, so a claim it already
+ * holds lets that retry complete the credit.
+ * The receipt is published only when it was credited, so a zap invoice already
+ * paid over Lightning does not get a second receipt.
  *
  * @param deps - Worker collaborators.
  * @param row - The open row.
@@ -75,13 +77,13 @@ async function settleRow(
     logEvent('spark.receipt.invalid', { paymentHash: row.paymentHash });
     return;
   }
-  const ingested = await deps.ingest(built.event);
+  const credited = await deps.ingest(built.event);
   const owner = await deps.claims.zapPaymentReceiptId(row.paymentHash);
-  if (!ingested || owner === undefined) {
+  if (!credited && (owner === undefined || owner === built.event.id)) {
     logEvent('spark.receipt.not_credited', { paymentHash: row.paymentHash });
     return;
   }
-  if (owner === built.event.id && built.relays.length > 0) {
+  if (credited && built.relays.length > 0) {
     try {
       await deps.publisher.publish(
         built.event as unknown as Record<string, unknown>,

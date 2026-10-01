@@ -2014,7 +2014,7 @@
 
 ## Function: runSparkInvoiceTick
 
-- **Purpose:** One pass of the Spark invoice worker. Lists the open Spark invoices issued in the last 60 minutes, queries the coordinator in batches of up to 100, and for each invoice reported `finalized` signs the receipt for its zap invoice with the receiver's receipt key and feeds it into the receipt ingest. Only when the ingest finished without a thrown step and the payment hash is claimed (`claims.zapPaymentReceiptId`) is the row marked settled with the transfer id and receipt id; the receipt is published to the zap request's relays only when it is the claiming receipt. Otherwise (for example the LNURL server was briefly unreachable, or crediting failed after the claim) it logs `spark.receipt.not_credited` and leaves the row open; the next tick ingests the same receipt id again, so a claim it already holds lets the retry complete the credit. `not_found`, `pending`, `returned`, `mismatched`, and unknown statuses leave the row open.
+- **Purpose:** One pass of the Spark invoice worker. Lists the open Spark invoices issued in the last 60 minutes, queries the coordinator in batches of up to 100, and for each invoice reported `finalized` signs the receipt for its zap invoice with the receiver's receipt key and feeds it into the receipt ingest. When the ingest credited this receipt, it is published to the zap request's relays and the row is marked settled with the transfer id and receipt id; when another receipt owns the payment hash (`claims.zapPaymentReceiptId`), the row is settled without publishing. Otherwise (for example the LNURL server was briefly unreachable, or crediting failed after the claim) it logs `spark.receipt.not_credited` and leaves the row open; the next tick ingests the same receipt id again, so a claim it already holds lets the retry complete the credit. `not_found`, `pending`, `returned`, `mismatched`, and unknown statuses leave the row open.
 - **Inputs:** `SparkWorkerDeps` (`store`, `config`, `fetchImpl`, `publisher`, `ingest`, `claims`, `now`).
 - **Returns / side effects:** Resolves when every batch is handled. A failed batch logs `spark.query.failed` (`reason`, `grpcStatus`) and the next batch runs; a publish failure logs `spark.receipt.publish_failed`; an unusable stored zap request logs `spark.receipt.invalid`; a settled row logs `spark.invoice.settled`. A second receipt for the same payment hash is a no-op in the ingest (payment hash claimed once).
 - **Used by:** `startSparkInvoiceWorker`.
@@ -2030,14 +2030,14 @@
 
 - **Purpose:** Run the existing receipt ingest for one kind 9735 event, exactly as a relay pass does: signature check, recipient's receiving address and its LNURL `nostrPubkey`, conversation or forum or repayment crediting, and the "payment hash claimed once" rule, so a second receipt for the same payment hash credits nothing.
 - **Inputs:** The event and the `indexOpenZapReceipts` collaborators (`eventIds` and `since` are ignored).
-- **Returns / side effects:** `true` when the ingest finished without a thrown step (accepted or rejected), `false` when a step threw: that logs `nostr.zap.rejected` and persists a `rejected` / `error` ingest row instead of rejecting.
+- **Returns / side effects:** `true` when this receipt is credited: its latest ingest decision on the store is `indexed`, or `rejected` / `duplicate` (already recorded under the same receipt id). `false` for any other rejection, or when a step threw: that logs `nostr.zap.rejected` and, for an event with a non-empty id, persists a `rejected` / `error` ingest row instead of rejecting.
 - **Used by:** `queryAndIngestZapReceipts` (each queried receipt) and the Spark invoice worker through `zapReceiptIngest`.
 
 ## Function: zapReceiptIngest
 
 - **Purpose:** Bind `ingestZapReceipt` to the Nostr worker's collaborators (forum, auth, querier, fetch, clock, stores, LNURL server, zap read relays from `env`), so the Spark invoice worker credits a receipt it signs the same way as one read from a relay, without waiting for a relay round trip.
 - **Inputs:** `ZapIngestDeps` (the subset of `NostrWorkerDeps` the ingest reads; no key, no publisher).
-- **Returns / side effects:** A function that ingests one event and resolves `true` unless an ingest step threw. No I/O until called.
+- **Returns / side effects:** A function that ingests one event and resolves `true` when that receipt is credited. No I/O until called.
 - **Used by:** The entry point when the Spark invoice worker runs.
 
 ## Function: resolveSession
