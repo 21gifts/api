@@ -7,7 +7,8 @@
  * Verification TTL and micro-payment amounts for Lightning Address
  * proof-of-control also live here, as does the in-memory LUD-16 metadata
  * cache TTL (`LN_ADDRESS_CACHE_TTL_MS` — a code constant, not an
- * environment variable).
+ * environment variable). `LNURL_SERVER_URL` (with `PUBLIC_BASE_URL`) enables
+ * the self-hosted LNURL server; unset or blank leaves that feature off.
  */
 
 /** Lifetime of an unclaimed passkey ceremony challenge, in milliseconds. */
@@ -160,4 +161,77 @@ export function resolveWebAuthnConfig(
   const rpNameRaw = env['WEBAUTHN_RP_NAME'];
   const rpName = rpNameRaw === undefined || rpNameRaw.trim() === '' ? '21.gifts' : rpNameRaw.trim();
   return { rpId, rpName, expectedOrigins };
+}
+
+/** Resolved configuration of the self-hosted LNURL server. */
+export interface LnurlServerConfig {
+  /** Base URL of the LNURL server, without a trailing slash. */
+  baseUrl: string;
+  /** `PUBLIC_BASE_URL` without a trailing slash; prefix of the pay callback. */
+  publicBaseUrl: string;
+  /** Host (with port when present) of `PUBLIC_BASE_URL`; sent as `Host` on every call. */
+  host: string;
+}
+
+/**
+ * Trim and remove at most one trailing `/`.
+ *
+ * @param raw - Raw env value.
+ * @returns Normalised string (may be empty).
+ */
+function trimBaseUrl(raw: string): string {
+  const trimmed = raw.trim();
+  return trimmed.endsWith('/') ? trimmed.slice(0, -1) : trimmed;
+}
+
+/**
+ * Whether `value` parses as an absolute `http:` or `https:` URL.
+ *
+ * @param value - Candidate base URL (already trimmed, no trailing slash).
+ * @returns The parsed URL, or `null`.
+ */
+function parseHttpUrl(value: string): URL | null {
+  try {
+    const parsed = new URL(value);
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+      return null;
+    }
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Resolve the self-hosted LNURL server configuration from the environment.
+ *
+ * Returns `null` when `LNURL_SERVER_URL` is unset or blank, when either URL
+ * fails to parse, or when either protocol is not `http:` / `https:`.
+ *
+ * @param env - Environment slice (injected so tests need not mutate process env).
+ * @returns The resolved config, or `null` when the feature is off.
+ */
+export function resolveLnurlServerConfig(
+  env: Record<string, string | undefined>,
+): LnurlServerConfig | null {
+  const rawServer = env['LNURL_SERVER_URL'];
+  if (rawServer === undefined || rawServer.trim() === '') {
+    return null;
+  }
+  const baseUrl = trimBaseUrl(rawServer);
+  const rawPublic = env['PUBLIC_BASE_URL'];
+  if (rawPublic === undefined) {
+    return null;
+  }
+  const publicBaseUrl = trimBaseUrl(rawPublic);
+  const serverUrl = parseHttpUrl(baseUrl);
+  const publicUrl = parseHttpUrl(publicBaseUrl);
+  if (serverUrl === null || publicUrl === null) {
+    return null;
+  }
+  return {
+    baseUrl,
+    publicBaseUrl,
+    host: publicUrl.host,
+  };
 }

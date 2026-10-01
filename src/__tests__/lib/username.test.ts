@@ -79,6 +79,20 @@ describe('normalizeUsername', () => {
       'a'.repeat(USERNAME_MAX_LENGTH),
     );
   });
+
+  it('accepts a.b_c-d', () => {
+    expect(normalizeUsername('a.b_c-d')).toBe('a.b_c-d');
+  });
+
+  it('rejects a trailing dot', () => {
+    expect(normalizeUsername('ada.')).toBeNull();
+    expect(normalizeUsername('a.')).toBeNull();
+  });
+
+  it('rejects two dots in a row', () => {
+    expect(normalizeUsername('ada..lovelace')).toBeNull();
+    expect(normalizeUsername('a..b')).toBeNull();
+  });
 });
 
 describe('usernameFromDisplayName', () => {

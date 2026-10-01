@@ -32,6 +32,7 @@ import type { MessageStore } from '@/lib/message-store';
 import type { SpendPing } from '@/lib/spend-ping';
 import { syncWelcomePing } from '@/lib/welcome-media';
 import { normalizeDisplayName } from '@/lib/name';
+import { normalizeSparkPubkey } from '@/lib/spark-pubkey';
 import { normalizeUsername, usernameFromDisplayName } from '@/lib/username';
 import { inboxUnreadCountFor } from '@/lib/conversation-push';
 import type { ConversationStore } from '@/lib/conversation-store';
@@ -47,6 +48,7 @@ import { confirmVerification, startVerification } from '@/lib/verification';
  * `/me` — the authenticated account and its editable profile (display name,
  * unique username, optional location, About me, welcome-forum laws dismiss,
  * living-room rules agreement, notification level, amount-entry unit, wallet backup seen,
+ * optional wallet public-key bind (`PUT /wallet` when the LNURL server is configured),
  * and the receiver's Lightning Address), including proof-of-control
  * verification. Shares the {@link AuthStore} instance with `/auth`.
  */
@@ -96,6 +98,8 @@ export interface MeRouteDeps {
    * Omitted → skip. Failures do not fail the 200.
    */
   spendPing?: SpendPing;
+  /** True when the LNURL server is configured; mounts `PUT /wallet`. Default false. */
+  walletEnabled?: boolean;
 }
 
 /**
@@ -153,6 +157,9 @@ const locationBody = z.object({ location: z.string() });
 
 /** Body schema for linking a Lightning Address. */
 const addressBody = z.object({ address: z.string() });
+
+/** Body schema for binding the member's wallet public key. */
+const walletBody = z.object({ sparkPubkey: z.string() });
 
 /** Body schema for confirming address verification. */
 const confirmBody = z.object({ nonce: z.string() });
@@ -240,8 +247,8 @@ function ownerJson(deps: MeRouteDeps, account: Account): Promise<OwnerAccountRes
 /**
  * Build the `/me` route group.
  *
- * @param deps - Shared store, message store, clock, payer, fetch, optional push, optional notification and conversation stores, optional gift/rate/fiat stores for activity, optional funding store, and optional `nostrKek` for the NIP-57 mint probe.
- * @returns A Hono app exposing account, activity, display-name, username, location, About me, wallet-backup-seen, passkey-renew/report, passkey-renew/ack, setup skip, forum-laws dismiss,
+ * @param deps - Shared store, message store, clock, payer, fetch, optional push, optional notification and conversation stores, optional gift/rate/fiat stores for activity, optional funding store, optional `nostrKek` for the NIP-57 mint probe, and optional `walletEnabled` for `PUT /wallet`.
+ * @returns A Hono app exposing account, activity, display-name, username, location, About me, wallet-backup-seen, optional wallet bind, passkey-renew/report, passkey-renew/ack, setup skip, forum-laws dismiss,
  * living-room rules agreement, notification level, amount-entry unit, locale, fiat, link/unlink, and verification routes.
  */
 export function meRoutes(deps: MeRouteDeps): Hono {
@@ -249,7 +256,7 @@ export function meRoutes(deps: MeRouteDeps): Hono {
   const rates = deps.rates ?? new InMemoryBtcUsdStore();
   const fiatRates = deps.fiatRates ?? new InMemoryFiatStore();
 
-  return new Hono()
+  const app = new Hono()
     .get('/', async (c) => {
       const token = bearerToken(c.req.header('authorization'));
       if (token === null) {
@@ -482,6 +489,9 @@ export function meRoutes(deps: MeRouteDeps): Hono {
       /* v8 ignore next 3 -- the account row cannot vanish mid-request after auth */
       if (current === null) {
         return c.json({ error: 'Unauthorized' }, 401);
+      }
+      if (typeof current.sparkPubkeyVerifiedAt === 'number') {
+        return c.json({ error: 'Username is fixed once the wallet is connected' }, 409);
       }
       const owner = await deps.store.getAccountByUsername(username);
       if (owner !== undefined && owner.id !== current.id) {
@@ -1097,4 +1107,58 @@ export function meRoutes(deps: MeRouteDeps): Hono {
       logEvent('account.verification.confirmed', { accountId: account.id });
       return c.json(await ownerJson(deps, result.account), 200);
     });
+
+  if (deps.walletEnabled === true) {
+    app.put('/wallet', async (c) => {
+      const account = await authedAccount(deps, c.req.header('authorization'));
+      if (account === null) {
+        return c.json({ error: 'Unauthorized' }, 401);
+      }
+      const parsed = walletBody.safeParse(await c.req.json().catch(() => null));
+      if (!parsed.success) {
+        return c.json(
+          { error: 'Expected a JSON body with a "sparkPubkey" of 66 hex characters' },
+          400,
+        );
+      }
+      const pubkey = normalizeSparkPubkey(parsed.data.sparkPubkey);
+      if (pubkey === null) {
+        return c.json(
+          { error: 'Expected a JSON body with a "sparkPubkey" of 66 hex characters' },
+          400,
+        );
+      }
+      const current = await storedAccount(deps, account.id);
+      /* v8 ignore next 3 -- the account row cannot vanish mid-request after auth */
+      if (current === null) {
+        return c.json({ error: 'Unauthorized' }, 401);
+      }
+      const usernameBlank =
+        current.username === null ||
+        current.username === undefined ||
+        current.username.trim() === '';
+      if (usernameBlank) {
+        return c.json({ error: MISSING_REQUIREMENTS_ERROR, missing: ['username'] }, 409);
+      }
+      if (current.walletRequired !== true) {
+        return c.json({ error: 'Wallet is not set up' }, 409);
+      }
+      if (typeof current.sparkPubkeyVerifiedAt === 'number') {
+        return c.json({ error: 'Wallet is already connected' }, 409);
+      }
+      const result = await deps.store.claimSparkPubkey(current.id, pubkey);
+      /* v8 ignore next 3 -- the account row cannot vanish mid-request after auth */
+      if (result === undefined) {
+        return c.json({ error: 'Unauthorized' }, 401);
+      }
+      /* v8 ignore next 3 -- concurrent verification: claim refuses once sparkPubkeyVerifiedAt is set */
+      if (result.wrote === false) {
+        return c.json({ error: 'Wallet is already connected' }, 409);
+      }
+      logEvent('account.wallet.claimed', { accountId: current.id });
+      return c.json(await ownerJson(deps, result.account), 200);
+    });
+  }
+
+  return app;
 }

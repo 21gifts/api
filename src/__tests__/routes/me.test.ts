@@ -50,6 +50,7 @@ interface MountOpts {
   messages?: InMemoryMessageStore;
   pushStore?: InMemoryPushStore;
   notificationStore?: InMemoryNotificationStore;
+  walletEnabled?: boolean;
 }
 
 function mount(store: InMemoryAuthStore, opts: MountOpts = {}): Hono {
@@ -66,9 +67,13 @@ function mount(store: InMemoryAuthStore, opts: MountOpts = {}): Hono {
       ...(opts.notificationStore === undefined
         ? {}
         : { notificationStore: opts.notificationStore }),
+      ...(opts.walletEnabled === undefined ? {} : { walletEnabled: opts.walletEnabled }),
     }),
   );
 }
+
+const SPARK_PUBKEY = `02${'a'.repeat(64)}`;
+const SPARK_PUBKEY_OTHER = `03${'b'.repeat(64)}`;
 
 /** A store with a signed-in account `acc` reachable via session `tok`. */
 async function seededStore(
@@ -1838,6 +1843,171 @@ describe('POST /me/username', () => {
     });
     expect(res.status).toBe(200);
     expect(((await res.json()) as { username: string }).username).toBe('ada');
+  });
+
+  it('returns 409 once the wallet is connected', async () => {
+    const store = new InMemoryAuthStore();
+    await store.createAccount({
+      id: 'acc',
+      linkingKey: LINKING_KEY,
+      role: 'basis',
+      name: 'Ada',
+      username: 'ada',
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: VIEW_KEY,
+      createdAt: 1_000_000,
+      rulesAgreedAt: null,
+      walletRequired: true,
+    });
+    await store.createSession({ token: 'tok', accountId: 'acc', createdAt: 1_000_000 });
+    await store.claimSparkPubkey('acc', SPARK_PUBKEY);
+    await store.markSparkPubkeyVerified('acc', SPARK_PUBKEY, 'ada', 1_000_000);
+    const res = await mount(store).request('/me/username', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ username: 'ada2' }),
+    });
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({
+      error: 'Username is fixed once the wallet is connected',
+    });
+  });
+});
+
+describe('PUT /me/wallet', () => {
+  async function walletReadyStore(
+    overrides: { username?: string | null; walletRequired?: boolean } = {},
+  ): Promise<InMemoryAuthStore> {
+    const store = new InMemoryAuthStore();
+    await store.createAccount({
+      id: 'acc',
+      linkingKey: LINKING_KEY,
+      role: 'basis',
+      name: 'Ada',
+      username: overrides.username === undefined ? 'ada' : overrides.username,
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: VIEW_KEY,
+      createdAt: 1_000_000,
+      rulesAgreedAt: null,
+      walletRequired: overrides.walletRequired ?? true,
+    });
+    await store.createSession({ token: 'tok', accountId: 'acc', createdAt: 1_000_000 });
+    return store;
+  }
+
+  it('returns 404 when walletEnabled is not true', async () => {
+    const store = await walletReadyStore();
+    const res = await mount(store).request('/me/wallet', {
+      method: 'PUT',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ sparkPubkey: SPARK_PUBKEY }),
+    });
+    expect(res.status).toBe(404);
+  });
+
+  it('returns 401 without a valid session', async () => {
+    const res = await mount(await walletReadyStore(), { walletEnabled: true }).request(
+      '/me/wallet',
+      {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ sparkPubkey: SPARK_PUBKEY }),
+      },
+    );
+    expect(res.status).toBe(401);
+    expect(await res.json()).toEqual({ error: 'Unauthorized' });
+  });
+
+  it('returns 400 for bad JSON, a missing field, or a bad key', async () => {
+    const store = await walletReadyStore();
+    const app = mount(store, { walletEnabled: true });
+    for (const body of ['{', '{}', JSON.stringify({ sparkPubkey: 'nope' })]) {
+      const res = await app.request('/me/wallet', {
+        method: 'PUT',
+        headers: { ...AUTH, 'content-type': 'application/json' },
+        body,
+      });
+      expect(res.status).toBe(400);
+      expect(await res.json()).toEqual({
+        error: 'Expected a JSON body with a "sparkPubkey" of 66 hex characters',
+      });
+    }
+  });
+
+  it('returns 409 when the username is missing', async () => {
+    const store = await walletReadyStore({ username: null });
+    const res = await mount(store, { walletEnabled: true }).request('/me/wallet', {
+      method: 'PUT',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ sparkPubkey: SPARK_PUBKEY }),
+    });
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({
+      error: 'missing_requirements',
+      missing: ['username'],
+    });
+  });
+
+  it('returns 409 when walletRequired is not true', async () => {
+    const store = await walletReadyStore({ walletRequired: false });
+    const res = await mount(store, { walletEnabled: true }).request('/me/wallet', {
+      method: 'PUT',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ sparkPubkey: SPARK_PUBKEY }),
+    });
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({ error: 'Wallet is not set up' });
+  });
+
+  it('claims the key, overwrites while unverified, and returns owner JSON', async () => {
+    const store = await walletReadyStore();
+    const app = mount(store, { walletEnabled: true });
+    const first = await app.request('/me/wallet', {
+      method: 'PUT',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ sparkPubkey: SPARK_PUBKEY }),
+    });
+    expect(first.status).toBe(200);
+    const firstBody = (await first.json()) as {
+      sparkPubkey: string | null;
+      sparkWalletVerified: boolean;
+    };
+    expect(firstBody.sparkPubkey).toBe(SPARK_PUBKEY);
+    expect(firstBody.sparkWalletVerified).toBe(false);
+    expect((await store.getAccount('acc'))?.sparkPubkey).toBe(SPARK_PUBKEY);
+    expect(
+      parsedEvents(warn).some(
+        (e) => e['event'] === 'account.wallet.claimed' && e['accountId'] === 'acc',
+      ),
+    ).toBe(true);
+
+    const second = await app.request('/me/wallet', {
+      method: 'PUT',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ sparkPubkey: SPARK_PUBKEY_OTHER }),
+    });
+    expect(second.status).toBe(200);
+    expect(((await second.json()) as { sparkPubkey: string }).sparkPubkey).toBe(SPARK_PUBKEY_OTHER);
+    expect((await store.getAccount('acc'))?.sparkPubkey).toBe(SPARK_PUBKEY_OTHER);
+  });
+
+  it('returns 409 once the wallet is verified', async () => {
+    const store = await walletReadyStore();
+    await store.claimSparkPubkey('acc', SPARK_PUBKEY);
+    await store.markSparkPubkeyVerified('acc', SPARK_PUBKEY, 'ada', 1_000_000);
+    const res = await mount(store, { walletEnabled: true }).request('/me/wallet', {
+      method: 'PUT',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ sparkPubkey: SPARK_PUBKEY_OTHER }),
+    });
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({ error: 'Wallet is already connected' });
   });
 });
 

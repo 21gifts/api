@@ -114,8 +114,26 @@ describe('AUTH_SCHEMA_SQL', () => {
     expect(AUTH_SCHEMA_SQL.join('\n')).toMatch(
       /CREATE INDEX IF NOT EXISTS passkey_renew_attempt_account_idx\s+ON passkey_renew_attempt \(account_id, created_at DESC\)/i,
     );
+    expect(AUTH_SCHEMA_SQL.join('\n')).toMatch(
+      /ALTER TABLE passkey_challenge ADD COLUMN IF NOT EXISTS requested_name text/,
+    );
+    expect(AUTH_SCHEMA_SQL.join('\n')).toMatch(
+      /ALTER TABLE account ADD COLUMN IF NOT EXISTS spark_pubkey text/,
+    );
+    expect(AUTH_SCHEMA_SQL.join('\n')).toMatch(
+      /ALTER TABLE account ADD COLUMN IF NOT EXISTS spark_pubkey_verified_at timestamptz/,
+    );
+    expect(AUTH_SCHEMA_SQL.join('\n')).toMatch(
+      /ALTER TABLE account DROP CONSTRAINT IF EXISTS account_spark_pubkey_chk/,
+    );
+    expect(AUTH_SCHEMA_SQL.join('\n')).toMatch(/account_spark_pubkey_chk/);
+    expect(AUTH_SCHEMA_SQL.join('\n')).toMatch(/spark_pubkey ~ '\^0\[23\]\[0-9a-f\]\{64\}\$'/);
+    expect(AUTH_SCHEMA_SQL.join('\n')).toMatch(
+      /CREATE INDEX IF NOT EXISTS account_spark_pubkey_idx ON account \(spark_pubkey\) WHERE spark_pubkey IS NOT NULL/,
+    );
     expect(AUTH_SCHEMA_SQL[AUTH_SCHEMA_SQL.length - 1]).toBe(
-      'ALTER TABLE passkey_challenge ADD COLUMN IF NOT EXISTS requested_name text',
+      `CREATE UNIQUE INDEX IF NOT EXISTS account_spark_pubkey_verified_uidx
+  ON account (spark_pubkey) WHERE spark_pubkey_verified_at IS NOT NULL`,
     );
   });
 });

@@ -54,9 +54,11 @@ interface AccountRow {
   amount_unit?: string | null;
   locale?: string | null;
   fiat?: string | null;
+  spark_pubkey?: string | null;
+  spark_pubkey_verified_at?: Date | string | null;
 }
 
-const ACCOUNT_SELECT_COLUMNS = `id, linking_key, role, name, lightning_address, lightning_address_verified, forum_laws_dismissed, view_key, created_at, rules_agreed_at, is_platform, name_skipped_at, lightning_address_skipped_at, profile_message_id, location, notification_level, username, session_refused, nostr_kek_id, nostr_key_custody, nostr_key_created_at, wallet_required, wallet_backup_seen_at, amount_unit, locale, fiat`;
+const ACCOUNT_SELECT_COLUMNS = `id, linking_key, role, name, lightning_address, lightning_address_verified, forum_laws_dismissed, view_key, created_at, rules_agreed_at, is_platform, name_skipped_at, lightning_address_skipped_at, profile_message_id, location, notification_level, username, session_refused, nostr_kek_id, nostr_key_custody, nostr_key_created_at, wallet_required, wallet_backup_seen_at, amount_unit, locale, fiat, spark_pubkey, spark_pubkey_verified_at`;
 
 /** Escape `\`, `%`, and `_` so they are LIKE literals. Does not append `%`. */
 function mentionLikePattern(prefix: string): string {
@@ -193,6 +195,70 @@ export class PostgresAuthStore implements AuthStore {
     }
     const account = mapAccount(row);
     return account === undefined ? undefined : { account, wrote: false };
+  }
+
+  async claimSparkPubkey(
+    accountId: string,
+    sparkPubkey: string,
+  ): Promise<{ account: Account; wrote: boolean } | undefined> {
+    const written = await this.#sql.query<AccountRow>(
+      `UPDATE account SET spark_pubkey = $2 WHERE id = $1 AND spark_pubkey_verified_at IS NULL
+  AND wallet_required IS TRUE AND username IS NOT NULL AND trim(username) <> '' RETURNING ${ACCOUNT_SELECT_COLUMNS}`,
+      [accountId, sparkPubkey],
+    );
+    const wroteRow = written[0];
+    if (wroteRow !== undefined) {
+      const account = mapAccount(wroteRow);
+      return account === undefined ? undefined : { account, wrote: true };
+    }
+    const existing = await this.#sql.query<AccountRow>(
+      `SELECT ${ACCOUNT_SELECT_COLUMNS} FROM account WHERE id = $1`,
+      [accountId],
+    );
+    const row = existing[0];
+    if (row === undefined) {
+      return undefined;
+    }
+    const account = mapAccount(row);
+    return account === undefined ? undefined : { account, wrote: false };
+  }
+
+  async markSparkPubkeyVerified(
+    accountId: string,
+    sparkPubkey: string,
+    username: string,
+    now: number,
+  ): Promise<boolean> {
+    try {
+      const rows = await this.#sql.query<{ id: string }>(
+        `UPDATE account SET spark_pubkey_verified_at = to_timestamp($4::double precision / 1000.0)
+  WHERE id = $1 AND spark_pubkey = $2 AND spark_pubkey_verified_at IS NULL AND lower(trim(username)) = $3 RETURNING id`,
+        [accountId, sparkPubkey, username, now],
+      );
+      return rows.length > 0;
+    } catch (error: unknown) {
+      if (isUniqueViolation(error)) {
+        return false;
+      }
+      throw error;
+    }
+  }
+
+  async getAccountByVerifiedSparkPubkey(sparkPubkey: string): Promise<Account | undefined> {
+    const rows = await this.#sql.query<AccountRow>(
+      `SELECT ${ACCOUNT_SELECT_COLUMNS} FROM account WHERE spark_pubkey = $1 AND spark_pubkey_verified_at IS NOT NULL`,
+      [sparkPubkey],
+    );
+    const row = rows[0];
+    return row === undefined ? undefined : mapAccount(row);
+  }
+
+  async isSparkPubkeyClaimed(sparkPubkey: string): Promise<boolean> {
+    const rows = await this.#sql.query<{ one: number }>(
+      `SELECT 1 AS one FROM account WHERE spark_pubkey = $1 LIMIT 1`,
+      [sparkPubkey],
+    );
+    return rows[0] !== undefined;
   }
 
   async insertPasskeyRenewAttempt(input: PasskeyRenewAttemptInput): Promise<void> {
@@ -388,7 +454,8 @@ export class PostgresAuthStore implements AuthStore {
                SELECT 1 FROM account other
                WHERE other.linking_key = $2 AND other.id <> $1
              )
-           )`,
+           )
+           AND (spark_pubkey_verified_at IS NULL OR username IS NOT DISTINCT FROM $17)`,
         [
           account.id,
           account.linkingKey,
@@ -1069,6 +1136,11 @@ function mapAccount(row: AccountRow): Account | undefined {
       row.wallet_backup_seen_at === null || row.wallet_backup_seen_at === undefined
         ? null
         : epochMs(row.wallet_backup_seen_at),
+    sparkPubkey: row.spark_pubkey ?? null,
+    sparkPubkeyVerifiedAt:
+      row.spark_pubkey_verified_at === null || row.spark_pubkey_verified_at === undefined
+        ? null
+        : epochMs(row.spark_pubkey_verified_at),
   };
 }
 

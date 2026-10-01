@@ -1,9 +1,10 @@
 import { SQL } from 'bun';
 import { describe, expect, test } from 'bun:test';
-import { migrateAuthSchema } from '@/lib/auth/postgres-store';
+import { migrateAuthSchema, PostgresAuthStore } from '@/lib/auth/postgres-store';
 import type { SqlClient } from '@/lib/auth/sql';
 import type { FundingGrant } from '@/lib/funding';
 import { migrateFundingSchema, PostgresFundingStore } from '@/lib/funding-store';
+import { migrateDbChangeSchema } from '@/lib/db-change';
 import { postgresTextArrayLiteral } from '@/lib/postgres-text-array';
 
 const databaseUrl = process.env['DATABASE_URL'];
@@ -138,6 +139,143 @@ VALUES ($1, 'verified', false, false, $2)`,
         ['pending', 'trial'],
       );
       expect(admitted?.status).toBe('admitted');
+    } finally {
+      await closeIfPossible(sql);
+    }
+  });
+});
+
+describe('PostgresAuthStore spark pubkey', () => {
+  test('claim, verify, unique index, username freeze, and db_change', async () => {
+    const { client, sql } = createBunSqlClient(databaseUrl);
+    try {
+      await migrateAuthSchema(client);
+      await migrateDbChangeSchema(client);
+
+      const store = new PostgresAuthStore(client);
+      const hex64 = (): string =>
+        `${crypto.randomUUID().replaceAll('-', '')}${crypto.randomUUID().replaceAll('-', '')}`;
+      const stamp = `${Date.now()}-${Math.random().toString(16).slice(2, 10)}`;
+      const usernameA = `spark_a_${stamp}`;
+      const usernameB = `spark_b_${stamp}`;
+      const pubkey = `02${hex64()}`;
+      const idA = crypto.randomUUID();
+      const idB = crypto.randomUUID();
+      const viewA = hex64();
+      const viewB = hex64();
+
+      await store.createAccount({
+        id: idA,
+        linkingKey: null,
+        role: 'basis',
+        name: null,
+        username: usernameA,
+        location: null,
+        lightningAddress: null,
+        lightningAddressVerified: false,
+        forumLawsDismissed: false,
+        viewKey: viewA,
+        createdAt: Date.now(),
+        rulesAgreedAt: null,
+        walletRequired: true,
+      });
+      await store.createAccount({
+        id: idB,
+        linkingKey: null,
+        role: 'basis',
+        name: null,
+        username: usernameB,
+        location: null,
+        lightningAddress: null,
+        lightningAddressVerified: false,
+        forumLawsDismissed: false,
+        viewKey: viewB,
+        createdAt: Date.now() + 1,
+        rulesAgreedAt: null,
+        walletRequired: true,
+      });
+
+      const claimA = await store.claimSparkPubkey(idA, pubkey);
+      expect(claimA?.wrote).toBe(true);
+      expect(claimA?.account.sparkPubkey).toBe(pubkey);
+      expect(claimA?.account.sparkPubkeyVerifiedAt ?? null).toBeNull();
+
+      const claimB = await store.claimSparkPubkey(idB, pubkey);
+      expect(claimB?.wrote).toBe(true);
+      expect(claimB?.account.sparkPubkey).toBe(pubkey);
+
+      const now = Date.now();
+      expect(await store.markSparkPubkeyVerified(idA, pubkey, usernameA, now)).toBe(true);
+      expect(await store.markSparkPubkeyVerified(idA, pubkey, usernameA, now + 1)).toBe(false);
+      expect(await store.markSparkPubkeyVerified(idB, pubkey, usernameB, now + 2)).toBe(false);
+
+      const verified = await store.getAccount(idA);
+      expect(verified?.sparkPubkey).toBe(pubkey);
+      expect(typeof verified?.sparkPubkeyVerifiedAt).toBe('number');
+      const stillUnverified = await store.getAccount(idB);
+      expect(stillUnverified?.sparkPubkey).toBe(pubkey);
+      expect(stillUnverified?.sparkPubkeyVerifiedAt ?? null).toBeNull();
+
+      if (verified === undefined) {
+        throw new Error('expected verified account');
+      }
+      await store.updateAccount({
+        ...verified,
+        username: `renamed_${stamp}`,
+        name: 'ShouldNotStick',
+      });
+      const afterRename = await store.getAccount(idA);
+      expect(afterRename?.username).toBe(usernameA);
+      expect(afterRename?.name).toBeNull();
+      expect(afterRename?.sparkPubkey).toBe(pubkey);
+      expect(typeof afterRename?.sparkPubkeyVerifiedAt).toBe('number');
+
+      await store.updateAccount({
+        ...verified,
+        username: usernameA,
+        name: 'Renamed',
+        sparkPubkey: `03${'b'.repeat(64)}`,
+        sparkPubkeyVerifiedAt: null,
+      });
+      const afterUpdate = await store.getAccount(idA);
+      expect(afterUpdate?.username).toBe(usernameA);
+      expect(afterUpdate?.name).toBe('Renamed');
+      expect(afterUpdate?.sparkPubkey).toBe(pubkey);
+      expect(typeof afterUpdate?.sparkPubkeyVerifiedAt).toBe('number');
+
+      const changeRows = await client.query<{
+        op: string;
+        before: Record<string, unknown> | null;
+        after: Record<string, unknown> | null;
+      }>(
+        `SELECT op, before, after
+         FROM db_change
+         WHERE table_name = 'account'
+           AND op = 'UPDATE'
+           AND (
+             (before ->> 'id' = $1 OR after ->> 'id' = $1)
+             OR (before ->> 'id' = $2 OR after ->> 'id' = $2)
+           )
+         ORDER BY id ASC`,
+        [idA, idB],
+      );
+
+      const claimChange = changeRows.find(
+        (row) =>
+          (row.before?.['spark_pubkey'] === null || row.before?.['spark_pubkey'] === undefined) &&
+          row.after?.['spark_pubkey'] === pubkey,
+      );
+      expect(claimChange).toBeDefined();
+
+      const verifyChange = changeRows.find(
+        (row) =>
+          (row.before?.['spark_pubkey_verified_at'] === null ||
+            row.before?.['spark_pubkey_verified_at'] === undefined) &&
+          row.after?.['spark_pubkey_verified_at'] !== null &&
+          row.after?.['spark_pubkey_verified_at'] !== undefined &&
+          row.after?.['spark_pubkey'] === pubkey,
+      );
+      expect(verifyChange).toBeDefined();
     } finally {
       await closeIfPossible(sql);
     }

@@ -3,6 +3,7 @@ import {
   expectedOriginsForRpId,
   normalizeWebAuthnRpId,
   resolveAllowedOrigins,
+  resolveLnurlServerConfig,
   resolveWebAuthnConfig,
 } from '@/lib/config';
 
@@ -116,5 +117,96 @@ describe('resolveWebAuthnConfig', () => {
       'http://localhost:3000',
     ]);
     expect(config?.rpName).toBe('21.gifts');
+  });
+});
+
+describe('resolveLnurlServerConfig', () => {
+  it('returns null when LNURL_SERVER_URL is unset or blank', () => {
+    expect(resolveLnurlServerConfig({})).toBeNull();
+    expect(
+      resolveLnurlServerConfig({
+        LNURL_SERVER_URL: '   ',
+        PUBLIC_BASE_URL: 'https://example.test',
+      }),
+    ).toBeNull();
+  });
+
+  it('returns null when either URL is invalid', () => {
+    expect(
+      resolveLnurlServerConfig({
+        LNURL_SERVER_URL: 'not a url',
+        PUBLIC_BASE_URL: 'https://example.test',
+      }),
+    ).toBeNull();
+    expect(
+      resolveLnurlServerConfig({
+        LNURL_SERVER_URL: 'http://lnurl.test',
+        PUBLIC_BASE_URL: 'not a url',
+      }),
+    ).toBeNull();
+  });
+
+  it('returns null when PUBLIC_BASE_URL is missing or blank', () => {
+    expect(resolveLnurlServerConfig({ LNURL_SERVER_URL: 'http://lnurl.test' })).toBeNull();
+    expect(
+      resolveLnurlServerConfig({
+        LNURL_SERVER_URL: 'http://lnurl.test',
+        PUBLIC_BASE_URL: '   ',
+      }),
+    ).toBeNull();
+  });
+
+  it('returns null when either protocol is not http or https', () => {
+    expect(
+      resolveLnurlServerConfig({
+        LNURL_SERVER_URL: 'ftp://lnurl.test',
+        PUBLIC_BASE_URL: 'https://example.test',
+      }),
+    ).toBeNull();
+    expect(
+      resolveLnurlServerConfig({
+        LNURL_SERVER_URL: 'http://lnurl.test',
+        PUBLIC_BASE_URL: 'ftp://example.test',
+      }),
+    ).toBeNull();
+  });
+
+  it('trims and removes one trailing slash from both URLs', () => {
+    expect(
+      resolveLnurlServerConfig({
+        LNURL_SERVER_URL: '  http://lnurl.test/  ',
+        PUBLIC_BASE_URL: '  https://example.test/  ',
+      }),
+    ).toEqual({
+      baseUrl: 'http://lnurl.test',
+      publicBaseUrl: 'https://example.test',
+      host: 'example.test',
+    });
+  });
+
+  it('includes the port in host when PUBLIC_BASE_URL has one', () => {
+    expect(
+      resolveLnurlServerConfig({
+        LNURL_SERVER_URL: 'http://lnurl.test:9090',
+        PUBLIC_BASE_URL: 'https://example.test:8443',
+      }),
+    ).toEqual({
+      baseUrl: 'http://lnurl.test:9090',
+      publicBaseUrl: 'https://example.test:8443',
+      host: 'example.test:8443',
+    });
+  });
+
+  it('resolves host without a port', () => {
+    expect(
+      resolveLnurlServerConfig({
+        LNURL_SERVER_URL: 'https://lnurl.test',
+        PUBLIC_BASE_URL: 'https://example.test',
+      }),
+    ).toEqual({
+      baseUrl: 'https://lnurl.test',
+      publicBaseUrl: 'https://example.test',
+      host: 'example.test',
+    });
   });
 });
