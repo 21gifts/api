@@ -422,7 +422,7 @@ export interface Kind0ProfileContent {
  * host is available. Never set `bot`.
  *
  * @param name - Non-null display name.
- * @param lightningAddress - Linked LUD-16, or `null`.
+ * @param lightningAddress - Address published as `lud16` (the account's receiving address), or `null`.
  * @param nip05 - NIP-05 identifier, or `null`.
  * @param about - Kind:0 about text (profile note, or default `21.gifts`).
  * @param images - Optional profile-photo `picture` and wide-image `banner` URLs. Blank values fall back to the shared images. The About me photo is neither.
@@ -468,7 +468,7 @@ export interface UnsignedKind0 {
  * Build an unsigned replaceable kind:0 profile event.
  *
  * @param name - Non-null display name.
- * @param lightningAddress - Linked LUD-16, or `null`.
+ * @param lightningAddress - Address published as `lud16` (the account's receiving address), or `null`.
  * @param createdAtUnix - Unix seconds at enqueue/publish.
  * @param nip05 - NIP-05 identifier, or `null`.
  * @param about - Kind:0 about text (profile note, or default `21.gifts`).

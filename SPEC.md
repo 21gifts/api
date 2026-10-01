@@ -1563,11 +1563,11 @@ follow-up write stores `usernameFromDisplayName` if that handle is free.
 Collision or a uniqueness race leaves username null (setup stays
 `username`) and still returns 200; the display-name write is not rolled
 back. `POST /me/name` does not 409 for a taken handle (`POST /me/username`
-does). When a non-blank Lightning Address is already linked, the first
-persisted non-empty name also creates exactly one top-level profile
+does). When a non-blank Lightning Address is already linked or the
+wallet is verified, the first persisted non-empty name also creates exactly one top-level profile
 forum note and claims `profileMessageId` via `claimProfileMessageId`
 (set only while the pointer still matches the missing/hidden read; not
-on owner JSON). Without a Lightning Address the name is stored and no
+on owner JSON). Without a Lightning Address or a verified wallet the name is stored and no
 profile note is inserted (linking the address later creates it). Rename
 does not create a second note and does not change the note text.
 
@@ -4632,8 +4632,8 @@ public message JSON (`photoCount` 0–10 always present;
 `photoTakenAts` the same length, null when unknown, `[]` when there are no
 stills; `photoTakenAt` only when `photoCount` is 1; `hasPhoto` still means
 photo 0 exists) with
-`payable` when a member row has a non-empty `eventId` and a non-blank
-Lightning Address, and no `replyCount`. Items include `accountId` whenever
+`payable` when a member row has a non-empty `eventId` and the author has a
+receiving address (see [Receiving address](#receiving-address)), and no `replyCount`. Items include `accountId` whenever
 the stored author id is non-null, with or without a session. External replies
 set `via: "nostr"`, keep `payable: false`, and omit `accountId`, `role`, and the
 pubkey. Replies never include `goalSats`, `goalRepayable`, or `goalTermDays`.
