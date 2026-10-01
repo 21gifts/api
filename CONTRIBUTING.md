@@ -651,7 +651,7 @@ the values are not in git.
 | ----------------------- | -------------------------------------------------------------- |
 | `BREEZ_API_KEY_PRD`     | Breez SDK API key for production (`https://api.21.gifts`)      |
 | `BREEZ_API_KEY_DEV`     | Breez SDK API key for development (`https://dev-api.21.gifts`) |
-| `BREEZ_API_KEY_STAGING` | Breez SDK API key for the future staging environment           |
+| `BREEZ_API_KEY_STAGING` | Breez SDK API key for staging (`https://staging-api.21.gifts`) |
 
 ```yaml
 env:

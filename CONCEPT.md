@@ -742,6 +742,7 @@ GitHub organization: **`21gifts`** (created 2026-05-25).
 - Image names match the repo: `21gifts/app`, `21gifts/api`
 - Tag convention per image:
   - `:beta` — built from `develop`, deployed to DEV
+  - `:staging` — built from `staging`, deployed to STAGING (api only)
   - `:latest` — built from `main`, deployed to PRD
 - **One image, multiple environments** — for the app, build-time placeholders
   for `NEXT_PUBLIC_*` variables are replaced at container start by an
@@ -752,7 +753,8 @@ GitHub organization: **`21gifts`** (created 2026-05-25).
 
 ## CI / CD (per product repo)
 
-Four GitHub Actions workflows, identical structure for `app` and `api`:
+GitHub Actions workflows, identical structure for `app` and `api`
+(`deploy-staging.yaml` is api only):
 
 | Workflow               | Trigger                    | Action                                             |
 | ---------------------- | -------------------------- | -------------------------------------------------- |
