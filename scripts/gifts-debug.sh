@@ -33,7 +33,8 @@
 #                                    # set account.sessionRefused; print updated account JSON
 #   gifts-debug unlink <id>          # hard-delete Lightning Address; print updated account JSON
 #   gifts-debug messages [--raw]     # forum notes table (default) or JSON
-#   gifts-debug api-log [--raw]      # HTTP audit log table (default) or JSON
+#   gifts-debug api-log [account-uuid] [--raw]
+#                                    # every HTTP audit page, table (default) or JSON
 #   gifts-debug db [--raw]           # every public table: name and row count
 #   gifts-debug db <table>           # every row of one table (follows nextCursor)
 #   gifts-debug external-pubkeys [--raw]  # entitled/blocked pubkeys table or JSON
@@ -63,6 +64,8 @@
 #   gifts-debug unlink <account-id>
 #   gifts-debug messages
 #   gifts-debug api-log
+#   gifts-debug api-log <account-uuid>
+#   gifts-debug api-log --raw
 #   gifts-debug db
 #   gifts-debug db message
 #   gifts-debug external-pubkeys
@@ -292,8 +295,9 @@ fetch_messages() {
 fetch_api_log() {
   local tmp status body
   tmp=$(mktemp)
-  status=$(curl -sS -o "$tmp" -w '%{http_code}' \
+  status=$(curl -sS -G -o "$tmp" -w '%{http_code}' \
     -H "Authorization: Bearer ${DEBUG_TOKEN}" \
+    "$@" \
     "${DEBUG_API_URL}/debug/api-log") || {
     rm -f "$tmp"
     die "request failed"
@@ -307,22 +311,80 @@ fetch_api_log() {
 }
 
 cmd_api_log() {
-  local body
-  body=$(fetch_api_log)
-  if [ "$RAW" -eq 1 ]; then
-    printf '%s\n' "$body"
-    return
+  local account="${1:-}" body dir page cursor_created cursor_id next_created next_id has_more
+  [ -z "${2:-}" ] || die "usage: gifts-debug api-log [account-uuid] [--raw]"
+  if [ -n "$account" ]; then
+    [[ "$account" =~ ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$ ]] \
+      || die "invalid account uuid"
   fi
-  printf '%s' "$body" | python3 -c '
-import json, sys
-data = json.load(sys.stdin)
-rows = data.get("logs") or []
+  dir=$(mktemp -d)
+  page=0
+  cursor_created=""
+  cursor_id=""
+  while true; do
+    if [ -z "$cursor_created" ]; then
+      if [ -n "$account" ]; then
+        body=$(fetch_api_log --data-urlencode "accountId=${account}")
+      else
+        body=$(fetch_api_log)
+      fi
+    else
+      if [ -n "$account" ]; then
+        body=$(fetch_api_log --data-urlencode "accountId=${account}" \
+          --data-urlencode "before=${cursor_created}" \
+          --data-urlencode "beforeId=${cursor_id}")
+      else
+        body=$(fetch_api_log \
+          --data-urlencode "before=${cursor_created}" \
+          --data-urlencode "beforeId=${cursor_id}")
+      fi
+    fi
+    printf '%s' "$body" > "${dir}/${page}.json"
+    has_more=$(printf '%s' "$body" | python3 -c 'import json,sys; print("true" if json.load(sys.stdin).get("hasMore") is True else "false")')
+    next_created=$(printf '%s' "$body" | python3 -c 'import json,sys; logs=json.load(sys.stdin).get("logs") or []; print(logs[-1]["createdAt"] if logs else "")')
+    next_id=$(printf '%s' "$body" | python3 -c 'import json,sys; logs=json.load(sys.stdin).get("logs") or []; print(logs[-1]["id"] if logs else "")')
+    if [ "$has_more" != "true" ]; then
+      break
+    fi
+    if [ -z "$next_created" ] || [ -z "$next_id" ]; then
+      rm -rf "$dir"
+      die "empty api-log page"
+    fi
+    if [ "$next_created" = "$cursor_created" ] && [ "$next_id" = "$cursor_id" ]; then
+      rm -rf "$dir"
+      die "api-log cursor did not move"
+    fi
+    cursor_created="$next_created"
+    cursor_id="$next_id"
+    page=$((page + 1))
+  done
+  if [ "$RAW" -eq 1 ]; then
+    python3 -c '
+import json, pathlib, sys
+folder = pathlib.Path(sys.argv[1])
+pages = [json.loads(path.read_text()) for path in sorted(folder.glob("*.json"), key=lambda item: int(item.stem))]
+logs = []
+for item in pages:
+    logs.extend(item.get("logs") or [])
+json.dump({"logs": logs, "hasMore": False}, sys.stdout)
+sys.stdout.write("\n")
+' "$dir"
+  else
+    python3 -c '
+import json, pathlib, sys
+folder = pathlib.Path(sys.argv[1])
+pages = [json.loads(path.read_text()) for path in sorted(folder.glob("*.json"), key=lambda item: int(item.stem))]
+rows = []
+for item in pages:
+    rows.extend(item.get("logs") or [])
 keys = ["id", "createdAt", "method", "path", "status", "ms", "accountId", "authKind"]
 print("\t".join(keys))
 for row in rows:
     print("\t".join("" if row.get(k) is None else str(row.get(k, "")) for k in keys))
 print("%s rows" % len(rows), file=sys.stderr)
-'
+' "$dir"
+  fi
+  rm -rf "$dir"
 }
 
 cmd_messages() {
@@ -646,7 +708,7 @@ case "${1:-}" in
   refuse-session) shift; cmd_refuse_session "$@" ;;
   unlink) shift; cmd_unlink "$@" ;;
   messages) cmd_messages ;;
-  api-log) cmd_api_log ;;
+  api-log) shift; cmd_api_log "$@" ;;
   db) shift; cmd_db "$@" ;;
   external-pubkeys) cmd_external_pubkeys ;;
   message) shift; cmd_message "$@" ;;

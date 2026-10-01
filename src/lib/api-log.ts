@@ -102,6 +102,14 @@ export function serializeDebugApiLog(row: ApiLogRow): DebugApiLog {
   };
 }
 
+/** Keyset page for {@link ApiLogStore.listPage}. */
+export interface ApiLogPageQuery {
+  /** Both set, or both omitted. Exclusive upper bound in newest-first order. */
+  before?: { createdAt: Date; id: string };
+  /** When set, only rows whose accountId equals this string. Null account rows are excluded. */
+  accountId?: string;
+}
+
 /**
  * Persistence port for HTTP audit rows.
  */
@@ -120,6 +128,15 @@ export interface ApiLogStore {
    * @returns Row copies.
    */
   listLatest(limit: number): Promise<ApiLogRow[]>;
+
+  /**
+   * Newest-first keyset page (`createdAt` desc, then `id` desc), capped at `limit`.
+   *
+   * @param limit - Maximum rows.
+   * @param query - Optional exclusive `before` cursor and `accountId` filter.
+   * @returns Row copies.
+   */
+  listPage(limit: number, query?: ApiLogPageQuery): Promise<ApiLogRow[]>;
 }
 
 /** Idempotent DDL (matches `docs/schema/api_log.sql`). */
@@ -141,6 +158,7 @@ export const API_LOG_SCHEMA_SQL: readonly string[] = [
   `ALTER TABLE api_log ADD COLUMN IF NOT EXISTS user_agent text`,
   `ALTER TABLE api_log ADD COLUMN IF NOT EXISTS accept_language text`,
   `ALTER TABLE api_log ADD COLUMN IF NOT EXISTS origin text`,
+  `CREATE INDEX IF NOT EXISTS api_log_account_created_at_idx ON api_log (account_id, created_at DESC, id DESC)`,
 ];
 
 /**
@@ -194,6 +212,33 @@ export class InMemoryApiLogStore implements ApiLogStore {
       return b.id.localeCompare(a.id);
     });
     return Promise.resolve(sorted.slice(0, limit).map((row) => copyRow(row)));
+  }
+
+  /**
+   * Newest-first keyset page of stored rows, capped at `limit`.
+   *
+   * @param limit - Maximum rows.
+   * @param query - Optional exclusive `before` cursor and `accountId` filter.
+   * @returns A new array of row copies.
+   */
+  listPage(limit: number, query?: ApiLogPageQuery): Promise<ApiLogRow[]> {
+    let rows = this.#rows.map((row) => copyRow(row));
+    const accountId = query?.accountId;
+    if (accountId !== undefined) {
+      rows = rows.filter((row) => row.accountId === accountId);
+    }
+    rows.sort((a, b) => {
+      const byTime = b.createdAt.getTime() - a.createdAt.getTime();
+      if (byTime !== 0) {
+        return byTime;
+      }
+      return b.id.localeCompare(a.id);
+    });
+    const before = query?.before;
+    if (before !== undefined) {
+      rows = rows.filter((row) => isStrictlyOlder(row, before));
+    }
+    return Promise.resolve(rows.slice(0, limit).map((row) => copyRow(row)));
   }
 }
 
@@ -272,6 +317,36 @@ export class PostgresApiLogStore implements ApiLogStore {
     );
     return rows.map((row) => mapApiLogRow(row));
   }
+
+  /**
+   * Newest-first keyset page from `api_log`, capped at `limit`.
+   *
+   * @param limit - Maximum rows (`$4`).
+   * @param query - Optional exclusive `before` cursor (`$2`, `$3`) and `accountId` (`$1`).
+   * @returns Mapped rows.
+   */
+  async listPage(limit: number, query?: ApiLogPageQuery): Promise<ApiLogRow[]> {
+    const rows = await this.#sql.query<ApiLogSqlRow>(
+      `SELECT id, created_at, method, path, status, ms, account_id, auth_kind,
+       client_ip, client_country, cf_ray, user_agent, accept_language, origin
+FROM api_log
+WHERE ($1::uuid IS NULL OR account_id = $1::uuid)
+  AND (
+    $2::timestamptz IS NULL
+    OR created_at < $2
+    OR (created_at = $2 AND id < $3::uuid)
+  )
+ORDER BY created_at DESC, id DESC
+LIMIT $4`,
+      [
+        query?.accountId ?? null,
+        query?.before?.createdAt ?? null,
+        query?.before?.id ?? null,
+        limit,
+      ],
+    );
+    return rows.map((row) => mapApiLogRow(row));
+  }
 }
 
 function copyRow(row: ApiLogRow): ApiLogRow {
@@ -279,6 +354,13 @@ function copyRow(row: ApiLogRow): ApiLogRow {
     ...row,
     createdAt: new Date(row.createdAt.getTime()),
   };
+}
+
+function isStrictlyOlder(row: ApiLogRow, before: { createdAt: Date; id: string }): boolean {
+  if (row.createdAt.getTime() !== before.createdAt.getTime()) {
+    return row.createdAt.getTime() < before.createdAt.getTime();
+  }
+  return row.id.localeCompare(before.id) < 0;
 }
 
 function parseAuthKind(raw: string): ApiLogAuthKind {

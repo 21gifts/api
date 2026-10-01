@@ -1655,16 +1655,16 @@
 
 ## Function: InMemoryApiLogStore
 
-- **Purpose:** Process-local `ApiLogStore` (newest `createdAt` then `id` desc).
+- **Purpose:** Process-local `ApiLogStore` (newest `createdAt` then `id` desc; `listPage` keyset).
 - **Inputs:** Optional seed rows.
-- **Returns / side effects:** `append` / `listLatest` copies.
+- **Returns / side effects:** `append` / `listLatest` / `listPage` copies.
 - **Used by:** `createApp` default; tests.
 
 ## Function: PostgresApiLogStore
 
-- **Purpose:** Durable `ApiLogStore` over `api_log`.
+- **Purpose:** Durable `ApiLogStore` over `api_log` (`append`, `listLatest`, `listPage`).
 - **Inputs:** Parameter-bound `SqlClient` (already migrated).
-- **Returns / side effects:** Inserts and newest-first selects. No UPDATE/DELETE.
+- **Returns / side effects:** `append` inserts; `listLatest` / `listPage` newest-first selects. No UPDATE/DELETE.
 - **Used by:** `openBootStores` when `DATABASE_URL` is set.
 
 ## Function: migrateApiLogSchema
@@ -1728,9 +1728,9 @@
 
 ## Function: debugApiLogRoutes
 
-- **Purpose:** Hono app for `GET /debug/api-log`.
+- **Purpose:** Hono app for `GET /debug/api-log` (`listPage`, `hasMore`).
 - **Inputs:** `ApiLogStore` and optional `debugToken`.
-- **Returns / side effects:** 503 if token blank; 401 if bearer mismatches; 200 `{ logs }` cap 200; 503 `Log is unavailable` on store throw.
+- **Returns / side effects:** 503 if token blank; 401 if bearer mismatches; 400 `Invalid account` / `Invalid cursor`; 200 `{ logs, hasMore }` via `listPage` (page cap 200); 503 `Log is unavailable` on store throw.
 - **Used by:** `createApp` at `/debug/api-log`.
 
 ## Function: diagnosticsRoutes
