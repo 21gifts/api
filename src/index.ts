@@ -214,6 +214,7 @@ if (import.meta.main) {
       fetchImpl: globalThis.fetch,
       publisher: publisher ?? new WebsocketNostrPublisher(),
       ingest: zapReceiptIngest(ingestDeps),
+      claims: forumMessages,
       now: Date.now,
     });
   }
