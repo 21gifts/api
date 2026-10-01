@@ -37,14 +37,14 @@ hold the stablecoin and does not hold the bitcoin.
 
 The till shows paid only when those sats are on the shop's Spark wallet.
 The customer's wallet may report success earlier, when the stablecoin
-transfer has been accepted. That is not paid. A transfer accepted against
-a quote that was still valid for this charge stays tied to this charge.
-If those sats arrive after the five minutes have run out, the till still
-shows paid.
-
-Too little, too much, or a price move past the quote refunds the customer.
-The charge stays unpaid. A transfer sent after the charge has ended, with
-no quote that was still valid for it, is not a payment.
+transfer has been accepted. That is not paid. Before that acceptance, too
+little, too much, or a price move past the quote refunds the customer and
+the charge stays unpaid. A transfer accepted against a quote that was still
+valid for this charge stays tied to this charge: the agreed sats stay due,
+and a later price move does not refund them. If those sats arrive after
+the five minutes have run out, the till still shows paid. A transfer sent
+after the charge has ended, with no quote that was still valid for it, is
+not a payment.
 
 Without an open till charge, this document changes nothing. Gifts over the
 same Lightning address stay as they are.
@@ -79,8 +79,9 @@ address as the place bitcoin is delivered.
 - No second QR and no USDT or USDC balance for the shop.
 - No sticker address that accepts any amount at the rate of the moment.
   A new stablecoin price is shown only while the till charge is open, and
-  only for the sats on that charge. A quote already accepted for that
-  charge can still settle after the clock.
+  only for the sats on that charge. Once a quote for that charge has been
+  accepted, a later price move does not refund it. Those sats can still
+  settle after the clock.
 - No change to today's Lightning settlement. The pay link still resolves
   to Wallet of Satoshi until a later change says otherwise.
 - No new phrase and no phrase stored on the server.
