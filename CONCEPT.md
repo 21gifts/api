@@ -754,12 +754,13 @@ GitHub organization: **`21gifts`** (created 2026-05-25).
 
 Four GitHub Actions workflows, identical structure for `app` and `api`:
 
-| Workflow               | Trigger             | Action                                            |
-| ---------------------- | ------------------- | ------------------------------------------------- |
-| `ci.yaml`              | PR, push to develop | Lint + build + test (required for merge)          |
-| `deploy-dev.yaml`      | push to develop     | Docker build → push `:beta` → notify infra repo   |
-| `deploy-prd.yaml`      | push to main        | Docker build → push `:latest` → notify infra repo |
-| `auto-release-pr.yaml` | push to develop     | Auto-create release PR `develop → main`           |
+| Workflow               | Trigger                    | Action                                             |
+| ---------------------- | -------------------------- | -------------------------------------------------- |
+| `ci.yaml`              | PR, push to develop        | Lint + build + test (required for merge)           |
+| `deploy-dev.yaml`      | push to develop            | Docker build → push `:beta` → notify infra repo    |
+| `deploy-staging.yaml`  | push to staging (api only) | Docker build → push `:staging` → notify infra repo |
+| `deploy-prd.yaml`      | push to main               | Docker build → push `:latest` → notify infra repo  |
+| `auto-release-pr.yaml` | push to develop            | Auto-create release PR `develop → main`            |
 
 **Pre-push local checks**:
 
@@ -784,14 +785,16 @@ DNS, and reverse-proxy routing.
 
 ## Hosting & Operations
 
-Two environments per service, mapped 1:1 to the branch model:
+Two environments per service, mapped 1:1 to the branch model. The api also has
+a STAGING environment, built from the `staging` branch:
 
-| Service | Env | Source branch | Image tag | Public URL         |
-| ------- | --- | ------------- | --------- | ------------------ |
-| app     | DEV | `develop`     | `:beta`   | `dev.21.gifts`     |
-| app     | PRD | `main`        | `:latest` | `21.gifts`         |
-| api     | DEV | `develop`     | `:beta`   | `dev-api.21.gifts` |
-| api     | PRD | `main`        | `:latest` | `api.21.gifts`     |
+| Service | Env     | Source branch | Image tag  | Public URL             |
+| ------- | ------- | ------------- | ---------- | ---------------------- |
+| app     | DEV     | `develop`     | `:beta`    | `dev.21.gifts`         |
+| app     | PRD     | `main`        | `:latest`  | `21.gifts`             |
+| api     | DEV     | `develop`     | `:beta`    | `dev-api.21.gifts`     |
+| api     | STAGING | `staging`     | `:staging` | `staging-api.21.gifts` |
+| api     | PRD     | `main`        | `:latest`  | `api.21.gifts`         |
 
 `app.21.gifts` / `dev-app.21.gifts` remain transitional aliases for the app
 container. Passkey RP ID is the apex (`21.gifts` / `dev.21.gifts`), not the

@@ -361,6 +361,7 @@ api/
 | Branch    | Purpose                            | Deploy target |
 | --------- | ---------------------------------- | ------------- |
 | `develop` | Default branch, active development | DEV           |
+| `staging` | Staging releases                   | STAGING       |
 | `main`    | Production releases                | PRD           |
 
 - Push to `develop` via **feature branch + PR**
@@ -616,6 +617,7 @@ More will be added as concrete subsystems that need runtime configuration
 | ---------------------- | ----------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `ci.yaml`              | PR (including drafts); not `ready_for_review`                     | Lint (`bun run lint` on Bun) + typecheck + handbook + e2e-check + test (100% coverage) + test:postgres + build + e2e; **10 minutes** for Lint, **15** for the rest |
 | `deploy-dev.yaml`      | push to `develop`                                                 | Docker build → push `21gifts/api:beta` → notify → wait for deploy                                                                                                  |
+| `deploy-staging.yaml`  | push to `staging`                                                 | Docker build → push `21gifts/api:staging` → notify → wait for deploy                                                                                               |
 | `deploy-prd.yaml`      | push to `main`                                                    | Docker build → push `21gifts/api:latest` → notify → wait for deploy                                                                                                |
 | `auto-release-pr.yaml` | push to `develop`                                                 | Auto-create Release PR (`develop → main`)                                                                                                                          |
 | `a38-guard.yml`        | `pull_request_target`; PR comments; schedule; `workflow_dispatch` | `dfx pr guard` verifies the A38 report, releases held fork runs of `ci.yaml`, and sets ready; never checks out the PR code                                         |
