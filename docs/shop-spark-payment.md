@@ -50,15 +50,16 @@ and it is not a second seed.
 
 The 12 words already exist. The phone derives them and never sends them:
 
-1. WebAuthn PRF `eval.first`.
+1. WebAuthn PRF `eval.first`, salt = SHA-256 of the UTF-8 string
+   `21gifts-nostr-v1`.
 2. HKDF-SHA256, salt = UTF-8 `21gifts-seed-derivation`, info = UTF-8
    `mnemonic-v1`, 128 bits.
 3. BIP-39 English, 12 words.
 
 That derivation is `mnemonicFromPrfFirst` in the app. The api already records
-that this seed passkey exists: `POST /auth/passkey/seed/begin` and
-`POST /auth/passkey/seed/finish` set `walletRequired`. This document does
-not change either of those.
+that this seed passkey exists: `POST /auth/passkey/seed/begin` issues the
+WebAuthn options, and `POST /auth/passkey/seed/finish` sets `walletRequired`.
+This document does not change either of those.
 
 The Breez SDK is not called yet. Connecting it, and receiving on Spark, are
 part of building this, not part of what already runs.
