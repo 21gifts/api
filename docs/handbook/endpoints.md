@@ -1206,8 +1206,8 @@
 
 ## Endpoint: POST /lnurlpay/:pubkey
 
-- **Purpose:** Forward wallet registration to the self-hosted LNURL server. Mounted only when `LNURL_SERVER_URL` is set. Gate: normalised pubkey, JSON body with string `username`, normalised name, account owns that username with matching claimed key, and no other account is verified on the key. Upstream 2xx marks the key verified. Rate limit 30/min/client. Body cap 1 MB (1 048 576 bytes); a larger body gets 413 `{ error: 'Request body is too large' }` and the upstream is not contacted. A request without a validated `cf-connecting-ip` is not counted by the per-address limits.
-- **Errors:** 404 `{ error: 'Not found' }` when the gate fails or the route is not mounted; 429 `{ error: 'Too many requests' }`; 413 `{ error: 'Request body is too large' }`; 503 `{ error: 'Lightning address service is unavailable' }` when upstream is unreachable, the store throws, or upstream returns a status outside 2xx and 4xx (for example 5xx). Upstream 2xx passed through with its status, body and only the `content-type` / `cache-control` headers (a 204 stays a 204). Upstream 4xx is passed through with body and status (nothing verified).
+- **Purpose:** Forward wallet registration to the self-hosted LNURL server. Mounted only when `LNURL_SERVER_URL` is set. Gate: normalised pubkey, JSON body with string `username` and no other key whose lower-cased name is `username`, normalised name, account owns that username with matching claimed key, and no other account is verified on the key. The body is forwarded as the parsed JSON re-serialised. Upstream 2xx marks the key verified (`account.wallet.verified`); when the account is not verified on that key afterwards, 409 `{ error: 'Wallet registration could not be confirmed' }` and `account.wallet.unconfirmed`. Path segments are only `A-Z a-z 0-9 . _ ~ -`, never `.` or `..`. Rate limit 30/min/client. Body cap 1 MB (1 048 576 bytes); a larger body gets 413 `{ error: 'Request body is too large' }` and the upstream is not contacted. A request without a validated `cf-connecting-ip` is not counted by the per-address limits.
+- **Errors:** 404 `{ error: 'Not found' }` when the gate fails, a path segment is refused, or the route is not mounted; 409 `{ error: 'Wallet registration could not be confirmed' }` when upstream accepted registration but the account is not verified on that key afterwards; 429 `{ error: 'Too many requests' }`; 413 `{ error: 'Request body is too large' }`; 503 `{ error: 'Lightning address service is unavailable' }` when upstream is unreachable, the store throws, or upstream returns a status outside 2xx and 4xx (for example 5xx). Upstream 2xx passed through with its status, body and only the `content-type` / `cache-control` headers (a 204 stays a 204). Upstream 4xx is passed through with body and status (nothing verified).
 - **Used by:** In-app wallet registration of `username@<domain>`.
 - **Auth:** none (wallet signature in body or `x-breez-*` headers; no api session).
 
@@ -1234,8 +1234,8 @@
 
 ## Endpoint: GET /verify/:paymentHash
 
-- **Purpose:** LUD-21 payment verification forward to the self-hosted LNURL server. Mounted only when `LNURL_SERVER_URL` is set. Forwarded for any payment hash. No query string. Rate limit 120/min/client. CORS `*`.
-- **Errors:** 404 when the route is not mounted; 429; 503 when unreachable or upstream returns any status other than 2xx and 404 (other 4xx and 5xx). Upstream 2xx passed through with its status, body and only the `content-type` / `cache-control` headers (a 204 stays a 204); upstream 404 → 404.
+- **Purpose:** LUD-21 payment verification forward to the self-hosted LNURL server. Mounted only when `LNURL_SERVER_URL` is set. Forwarded when the payment hash segment is only `A-Z a-z 0-9 . _ ~ -` and is neither `.` nor `..` (joined as-is, no percent-encoding). No query string. Rate limit 120/min/client. CORS `*`.
+- **Errors:** 404 when the route is not mounted or the payment hash segment is refused (upstream not contacted); 429; 503 when unreachable (network / timeout / redirect / body-read failure) or upstream returns any status other than 2xx and 404 (other 4xx and 5xx). Upstream 2xx passed through with its status, body and only the `content-type` / `cache-control` headers (a 204 stays a 204); upstream 404 → 404.
 - **Used by:** Wallets verifying a paid invoice.
 - **Auth:** none.
 

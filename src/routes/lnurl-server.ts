@@ -42,6 +42,8 @@ const UNAVAILABLE = { error: 'Lightning address service is unavailable' } as con
 const TOO_MANY = { error: 'Too many requests' } as const;
 /** Stable 413 body when the request body exceeds {@link LNURL_BODY_LIMIT_BYTES}. */
 const TOO_LARGE = { error: 'Request body is too large' } as const;
+/** Stable 409 body when upstream accepted registration but the account is not verified on the key. */
+const UNCONFIRMED = { error: 'Wallet registration could not be confirmed' } as const;
 
 /** Route name for diagnostic logs (never a path or query). */
 type LnurlServerRouteName = 'register' | 'recover' | 'metadata' | 'invoice' | 'verify';
@@ -114,6 +116,9 @@ function mapUpstream(
   options: { registration?: boolean } = {},
 ): Response {
   if (!result.ok) {
+    if (result.reason === 'segment') {
+      return Response.json(NOT_FOUND, { status: 404 });
+    }
     logEvent('lnurl_server.unreachable', { route });
     return Response.json(UNAVAILABLE, { status: 503 });
   }
@@ -168,7 +173,13 @@ export function lnurlServerRoutes(deps: LnurlServerRouteDeps): Hono {
         if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
           return c.json(NOT_FOUND, 404);
         }
-        const usernameRaw = (parsed as { username?: unknown }).username;
+        const parsedObject = parsed as Record<string, unknown>;
+        for (const key of Object.keys(parsedObject)) {
+          if (key !== 'username' && key.toLowerCase() === 'username') {
+            return c.json(NOT_FOUND, 404);
+          }
+        }
+        const usernameRaw = parsedObject['username'];
         if (typeof usernameRaw !== 'string') {
           return c.json(NOT_FOUND, 404);
         }
@@ -188,7 +199,7 @@ export function lnurlServerRoutes(deps: LnurlServerRouteDeps): Hono {
           method: 'POST',
           segments: ['lnurlpay', pubkey],
           headers: c.req.raw.headers,
-          body: text,
+          body: JSON.stringify(parsedObject),
           timeoutMs: LNURL_SERVER_TIMEOUT_MS,
         });
         if (result.ok && result.status >= 200 && result.status < 300) {
@@ -200,6 +211,16 @@ export function lnurlServerRoutes(deps: LnurlServerRouteDeps): Hono {
           );
           if (marked) {
             logEvent('account.wallet.verified', { accountId: account.id });
+          } else {
+            const current = await deps.auth.getAccount(account.id);
+            if (
+              current === undefined ||
+              current.sparkPubkey !== pubkey ||
+              typeof current.sparkPubkeyVerifiedAt !== 'number'
+            ) {
+              logEvent('account.wallet.unconfirmed', { accountId: account.id });
+              return c.json(UNCONFIRMED, 409);
+            }
           }
         }
         return mapUpstream(result, route, { registration: true });

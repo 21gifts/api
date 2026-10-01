@@ -16,10 +16,17 @@ export const LNURL_SERVER_TIMEOUT_MS = 15_000;
 /** Largest request body the forwarded routes accept, in bytes. */
 export const LNURL_BODY_LIMIT_BYTES = 1024 * 1024;
 
+/** Path segment characters that may be forwarded without encoding. */
+const SEGMENT_RE = /^[A-Za-z0-9._~-]+$/;
+
 /** One call to the LNURL server. */
 export interface LnurlServerCall {
   method: 'GET' | 'POST';
-  /** Path segments after the base URL. Each is percent-encoded with `encodeURIComponent`. */
+  /**
+   * Path segments after the base URL. Each must match
+   * `/^[A-Za-z0-9._~-]+$/` and must not be `.` or `..`; otherwise the call
+   * is refused without a fetch. Joined with `/` and not percent-encoded.
+   */
   segments: readonly string[];
   /** Raw query string, `''` or starting with `?`. Appended unchanged. Default `''`. */
   search?: string;
@@ -31,9 +38,15 @@ export interface LnurlServerCall {
   timeoutMs: number;
 }
 
-/** Outcome of {@link callLnurlServer}. */
+/**
+ * Outcome of {@link callLnurlServer}.
+ *
+ * `reason: 'segment'` when a path segment is refused; `reason: 'unreachable'`
+ * when the fetch throws or `response.text()` fails.
+ */
 export type LnurlServerResult =
-  { ok: true; status: number; body: string; headers: Record<string, string> } | { ok: false };
+  | { ok: true; status: number; body: string; headers: Record<string, string> }
+  | { ok: false; reason: 'segment' | 'unreachable' };
 
 /** Inbound header names that may be forwarded to the LNURL server. */
 const FORWARD_REQUEST_HEADERS = ['content-type', 'x-breez-signature', 'x-breez-timestamp'] as const;
@@ -44,13 +57,18 @@ const FORWARD_RESPONSE_HEADERS = ['content-type', 'cache-control'] as const;
 /**
  * Call the self-hosted LNURL server once.
  *
- * Refuses path segments that are empty, `.`, or `..` without fetching.
- * Always sends `Host: config.host`. Never logs the URL, query, headers, or body.
+ * Forwards a segment only when it matches `/^[A-Za-z0-9._~-]+$/` and is
+ * neither `.` nor `..`; otherwise returns `{ ok: false, reason: 'segment' }`
+ * without fetching. Builds
+ * `${config.baseUrl}/${segments.join('/')}${search ?? ''}` with no
+ * percent-encoding. Always sends `Host: config.host`. Never logs the URL,
+ * query, headers, or body.
  *
  * @param config - Resolved LNURL server configuration.
  * @param fetchImpl - Injected `fetch` (tests stub this).
  * @param call - Method, path segments, optional search/headers/body, and timeout.
- * @returns Upstream status/body/headers, or `{ ok: false }` on network/timeout/redirect/`text()` failure.
+ * @returns Upstream status/body/headers, or `{ ok: false, reason }` on a
+ *   refused segment or on network/timeout/redirect/`text()` failure.
  */
 export async function callLnurlServer(
   config: LnurlServerConfig,
@@ -58,12 +76,12 @@ export async function callLnurlServer(
   call: LnurlServerCall,
 ): Promise<LnurlServerResult> {
   for (const segment of call.segments) {
-    if (segment === '' || segment === '.' || segment === '..') {
-      return { ok: false };
+    if (!SEGMENT_RE.test(segment) || segment === '.' || segment === '..') {
+      return { ok: false, reason: 'segment' };
     }
   }
 
-  const url = `${config.baseUrl}/${call.segments.map(encodeURIComponent).join('/')}${call.search ?? ''}`;
+  const url = `${config.baseUrl}/${call.segments.join('/')}${call.search ?? ''}`;
   const headers: Record<string, string> = { host: config.host };
   if (call.headers !== undefined) {
     for (const name of FORWARD_REQUEST_HEADERS) {
@@ -84,14 +102,14 @@ export async function callLnurlServer(
       ...(call.body === undefined ? {} : { body: call.body }),
     });
   } catch {
-    return { ok: false };
+    return { ok: false, reason: 'unreachable' };
   }
 
   let body: string;
   try {
     body = await response.text();
   } catch {
-    return { ok: false };
+    return { ok: false, reason: 'unreachable' };
   }
 
   const outHeaders: Record<string, string> = {};
