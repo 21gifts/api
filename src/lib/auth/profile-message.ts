@@ -7,8 +7,8 @@ import type { PushStore } from '@/lib/push-store';
 
 /**
  * Ensure the account has exactly one top-level profile forum note when a
- * non-blank display name and a receiving address are present: a non-blank
- * Lightning Address, or a verified wallet (`sparkPubkeyVerifiedAt` set).
+ * non-blank display name and either a non-blank Lightning Address or a
+ * verified wallet (`sparkPubkeyVerifiedAt` set) are present.
  *
  * No-ops (returns the input account, no `messages.create`) when the name is
  * null/blank after trim, or when the Lightning Address is null/blank and the

@@ -57,8 +57,8 @@ export function accountSetup(account: Account): AccountSetup {
 
 /**
  * Factually missing account fields (skip timestamps do not clear them).
- * A verified wallet clears `lightning-address`: it receives on its
- * wallet-backed address, so it satisfies the posting requirement.
+ * A verified wallet (`sparkPubkeyVerifiedAt` set) clears `lightning-address`,
+ * so it satisfies the posting requirement.
  *
  * @param account - Stored account.
  * @returns Missing fields in order: name, username, lightning-address,
