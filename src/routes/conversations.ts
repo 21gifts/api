@@ -1336,11 +1336,7 @@ export function conversationRoutes(deps: ConversationRouteDeps): Hono {
           return c.json({ error: 'Messages are unavailable' }, 503);
         }
         const zapRequestJson = serializeZapRequest(signed);
-        /* v8 ignore next 4 -- signEventForAccount returns an event object */
-        const zapRequest =
-          signed !== null && typeof signed === 'object'
-            ? (signed as unknown as Record<string, unknown>)
-            : null;
+        const zapRequest = signed as unknown as Record<string, unknown>;
         const zap = await requestZapInvoice({
           address,
           amountMsat,

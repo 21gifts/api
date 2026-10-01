@@ -2962,10 +2962,7 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
         return c.json({ error: 'Messages are unavailable' }, 503);
       }
       const zapRequestJson = serializeZapRequest(signed);
-      const zapRequest =
-        signed !== null && typeof signed === 'object'
-          ? (signed as unknown as Record<string, unknown>)
-          : null;
+      const zapRequest = signed as unknown as Record<string, unknown>;
       const zap = await requestZapInvoice({
         address: author.lightningAddress,
         amountMsat,
