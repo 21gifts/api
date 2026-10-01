@@ -23,6 +23,7 @@ export default defineConfig({
       ...process.env,
       BIND_ADDR: '127.0.0.1:3000',
       PUBLIC_BASE_URL: 'http://127.0.0.1:3000',
+      LNURL_SERVER_URL: '',
       DATABASE_URL: '',
       NOSTR_NSEC_KEK: '',
       NOSTR_PUBLISH: '',
