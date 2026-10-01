@@ -19,6 +19,8 @@ import { MESSAGE_LIST_LIMIT, serializeMessage, type MessageRow } from '@/lib/mes
 import type { MessageStore } from '@/lib/message-store';
 import type { SpendPing } from '@/lib/spend-ping';
 import { roleAtLeast } from '@/lib/auth/roles';
+import type { LnurlServerConfig } from '@/lib/config';
+import { receivingAddress } from '@/lib/receiving-address';
 import { isStaffRole } from '@/lib/trust';
 import { forumVideoFilePresent, resolveMediaDir } from '@/lib/video';
 import { bearerToken } from '@/routes/me';
@@ -39,6 +41,8 @@ export interface FundingRouteDeps {
   fundingStore: FundingStore;
   /** Forum persistence for staff application detail. */
   messageStore: MessageStore;
+  /** LNURL server; omitted when off. A verified wallet makes an applicant's notes payable. */
+  lnurlServer?: LnurlServerConfig;
   /** Clock returning epoch milliseconds (injected for testability). */
   now: () => number;
   /** Optional spend ping. Omitted → skip the daily post ping after trial/admit. */
@@ -355,8 +359,7 @@ export function fundingRoutes(deps: FundingRouteDeps): Hono {
           const payable =
             kept.eventId !== null &&
             kept.eventId !== '' &&
-            account.lightningAddress !== null &&
-            account.lightningAddress.trim() !== '';
+            receivingAddress(account, deps.lnurlServer) !== null;
           messages.push(
             serializeMessage(
               kept,

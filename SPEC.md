@@ -579,7 +579,9 @@ No spend token.
 The `pr` is returned only when it decodes to exactly `amountSats * 1000`
 millisatoshis.
 
-Invalid username, unknown account, or blank address → **Response** `404`
+Invalid username, unknown account, or no receiving address (no verified
+wallet with the LNURL server configured and no non-blank linked Lightning
+address) → **Response** `404`
 `{ "error": "Not found" }`. Missing or invalid JSON, a non-integer, or an
 amount outside the window → **Response** `400`
 `{ "error": "Enter a whole number of sats" }`. Resolve or store failure, an
