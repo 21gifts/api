@@ -327,6 +327,9 @@ it does, then chooses two people. Both are required.
 If a moderator verified the owner, that person is suggested as person 1 and
 can be replaced. 21.gifts does not hold a share. Specified in
 [`docs/social-recovery.md`](./docs/social-recovery.md). Not implemented.
+Restoring those words does not move bitcoin. The same words are the Spark
+wallet seed in [`docs/shop-spark-payment.md`](./docs/shop-spark-payment.md),
+which is also not implemented.
 
 **The server never holds the nsec.** All NOSTR signing happens in the browser.
 

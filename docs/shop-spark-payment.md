@@ -24,10 +24,12 @@ and USDC is not USDT. A transfer on the wrong chain is not a payment.
 The shop typed a number of sats on the till (`POST /pos`, one pending amount,
 five minutes). Those sats are what must arrive. The customer's stablecoin
 amount comes from a quote for that sat amount and includes the provider fee
-and spread. The shop's sat figure does not move after they enter it. The
-quote is shorter than the till charge. When it lapses, the customer is shown
-a new stablecoin amount for the same sats. A payment at a stale amount is
-not silently accepted as a different number of sats.
+and spread. The shop's sat figure does not move after they enter it. A quote ends no
+later than the till charge. When a quote lapses while that charge is still
+open, the customer is shown a new stablecoin amount for the same sats, and
+that new quote also ends when the charge ends. After the charge has ended,
+no new stablecoin amount is shown. A payment at a stale amount is not
+silently accepted as a different number of sats.
 
 The customer sends the stablecoin to the swap provider, Orchestra (Flashnet).
 Orchestra delivers bitcoin to the shop's Spark address. 21.gifts does not
@@ -35,10 +37,14 @@ hold the stablecoin and does not hold the bitcoin.
 
 The till shows paid only when those sats are on the shop's Spark wallet.
 The customer's wallet may report success earlier, when the stablecoin
-transfer has been accepted. That is not paid.
+transfer has been accepted. That is not paid. A transfer accepted against
+a quote that was still valid for this charge stays tied to this charge.
+If those sats arrive after the five minutes have run out, the till still
+shows paid.
 
 Too little, too much, or a price move past the quote refunds the customer.
-The charge stays unpaid.
+The charge stays unpaid. A transfer sent after the charge has ended, with
+no quote that was still valid for it, is not a payment.
 
 Without an open till charge, this document changes nothing. Gifts over the
 same Lightning address stay as they are.
@@ -72,8 +78,9 @@ address as the place bitcoin is delivered.
 
 - No second QR and no USDT or USDC balance for the shop.
 - No sticker address that accepts any amount at the rate of the moment.
-  Only an open till charge has a stablecoin price, and only for the sats
-  on that charge.
+  A new stablecoin price is shown only while the till charge is open, and
+  only for the sats on that charge. A quote already accepted for that
+  charge can still settle after the clock.
 - No change to today's Lightning settlement. The pay link still resolves
   to Wallet of Satoshi until a later change says otherwise.
 - No new phrase and no phrase stored on the server.
