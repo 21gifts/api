@@ -199,7 +199,7 @@ export function lnurlServerRoutes(deps: LnurlServerRouteDeps): Hono {
             deps.now(),
           );
           if (marked) {
-            logEvent('wallet.address.verified', { accountId: account.id });
+            logEvent('account.wallet.verified', { accountId: account.id });
           }
         }
         return mapUpstream(result, route, { registration: true });
