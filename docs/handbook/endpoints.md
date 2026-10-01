@@ -856,7 +856,7 @@
 
 ## Endpoint: POST /me/username
 
-- **Purpose:** Bearer required. Body `{ username }`. Stores a unique LUD-16 / NIP-05 local-part (lowercase `a-z0-9-_.`, 1–32 characters, leading letter or digit; no trailing `.`, no `..`). Cannot be skipped. Same handle on the same account is 200. Once the wallet is verified (`sparkPubkeyVerifiedAt` is a number) the username is fixed. Logs `account.username.set`.
+- **Purpose:** Bearer required. Body `{ username }`. Stores a unique LUD-16 / NIP-05 local-part (lowercase `a-z0-9-_.`, 1–32 characters, leading letter or digit; no trailing `.`, no `..`). Cannot be skipped. Same handle on the same account is 200. Once the wallet is verified every `POST /me/username` is 409, including the same handle. Logs `account.username.set`.
 - **Errors:** 401 `{ error: 'Unauthorized' }`; 400 `{ error: 'Expected a JSON body with a "username" string' }`; 400 `{ error: 'Username must be 1–32 characters of a-z, 0-9, hyphen, underscore, or dot' }` (including trailing or double-dot rejects); 409 `{ error: 'Username is already in use' }` when another account owns it, including a unique-index race; 409 `{ error: 'Username is fixed once the wallet is connected' }` when the wallet is already verified. 403 `{ error: 'SUNDAY_REST' }` when `Time-Zone` names an IANA zone that is Sunday on the server clock (a missing, blank, or invalid zone does not refuse).
 - **Used by:** App username onboarding and profile.
 - **Auth:** `Authorization: Bearer` session.
@@ -1206,7 +1206,7 @@
 
 ## Endpoint: POST /lnurlpay/:pubkey
 
-- **Purpose:** Forward wallet registration to the self-hosted LNURL server. Mounted only when `LNURL_SERVER_URL` and `PUBLIC_BASE_URL` resolve. Gate: normalised pubkey, JSON body with string `username` and no other key whose lower-cased name is `username`, normalised name, account owns that username with matching claimed key, and no other account is verified on the key. The body is forwarded as the parsed JSON re-serialised. Upstream 2xx marks the key verified (`account.wallet.verified`); when the account is not verified on that key afterwards, 409 `{ error: 'Wallet registration could not be confirmed' }` and `account.wallet.unconfirmed`. Path segments are only `A-Z a-z 0-9 . _ ~ -`, never `.` or `..`. Rate limit 30/min/client. Body cap 1 MB (1 048 576 bytes); a larger body gets 413 `{ error: 'Request body is too large' }` and the upstream is not contacted. A request without a validated `cf-connecting-ip` is not counted by the per-address limits.
+- **Purpose:** Forward wallet registration to the self-hosted LNURL server. Mounted only when `LNURL_SERVER_URL` and `PUBLIC_BASE_URL` resolve. Gate: normalised pubkey, JSON body with string `username` and without another key that equals `username` after NFKC normalisation and lower-casing (for example `Username`), normalised name, account owns that username with matching claimed key, and no other account is verified on the key. The body is forwarded as the parsed JSON re-serialised. Upstream 2xx marks the key verified (`account.wallet.verified`); when the account is not verified on that key afterwards, 409 `{ error: 'Wallet registration could not be confirmed' }` and `account.wallet.unconfirmed`. Path segments are only `A-Z a-z 0-9 . _ ~ -`, never `.` or `..`. Rate limit 30/min/client. Body cap 1 MB (1 048 576 bytes); a larger body gets 413 `{ error: 'Request body is too large' }` and the upstream is not contacted. A request without a validated `cf-connecting-ip` is not counted by the per-address limits.
 - **Errors:** 404 `{ error: 'Not found' }` when the gate fails, a path segment is refused, or the route is not mounted; 409 `{ error: 'Wallet registration could not be confirmed' }` when upstream accepted registration but the account is not verified on that key afterwards; 429 `{ error: 'Too many requests' }`; 413 `{ error: 'Request body is too large' }`; 503 `{ error: 'Lightning address service is unavailable' }` when upstream is unreachable, the store throws, or upstream returns a status outside 2xx and 4xx (for example 5xx). Upstream 2xx passed through with its status, body and only the `content-type` / `cache-control` headers (a 204 stays a 204). Upstream 4xx is passed through with body and status (nothing verified).
 - **Used by:** In-app wallet registration of `username@<domain>`.
 - **Auth:** none (wallet signature in body or `x-breez-*` headers; no api session).
@@ -1220,21 +1220,21 @@
 
 ## Endpoint: GET /lnurlpay/:pubkey/metadata
 
-- **Purpose:** Forward signed metadata for received payments. Mounted only when `LNURL_SERVER_URL` and `PUBLIC_BASE_URL` resolve. Gate: normalised pubkey and a verified account on that key. Raw query string forwarded unchanged. Rate limit 120/min/client.
+- **Purpose:** Forward signed metadata for received payments. Mounted only when `LNURL_SERVER_URL` and `PUBLIC_BASE_URL` resolve. Gate: normalised pubkey and a verified account on that key. Raw query string forwarded unchanged. Rate limit 120/min/client. A `HEAD` request is answered 404 and the LNURL server is not contacted.
 - **Errors:** 404 when the gate fails or the route is not mounted; 429; 503 when unreachable, the store throws, or upstream returns any status other than 2xx and 404 (other 4xx and 5xx). Upstream 2xx passed through with its status, body and only the `content-type` / `cache-control` headers (a 204 stays a 204); upstream 404 → 404.
 - **Used by:** In-app wallet payment history.
 - **Auth:** none (wallet signature headers; no api session).
 
 ## Endpoint: GET /lnurlp/:username/invoice
 
-- **Purpose:** Forward LNURL-pay invoice fetch for a wallet-backed username. Mounted only when `LNURL_SERVER_URL` and `PUBLIC_BASE_URL` resolve. Gate: normalised username and account with verified wallet. Raw query string forwarded unchanged. Rate limit 20/min/client. CORS `*`.
+- **Purpose:** Forward LNURL-pay invoice fetch for a wallet-backed username. Mounted only when `LNURL_SERVER_URL` and `PUBLIC_BASE_URL` resolve. Gate: normalised username and account with verified wallet. Raw query string forwarded unchanged. Rate limit 20/min/client. CORS `*`. A `HEAD` request is answered 404 and the LNURL server is not contacted.
 - **Errors:** 404 when the gate fails or the route is not mounted; 429; 503 when unreachable, the store throws, or upstream returns any status other than 2xx and 404 (other 4xx and 5xx). Upstream 2xx passed through with its status, body and only the `content-type` / `cache-control` headers (a 204 stays a 204), including LUD-06 `{ status: 'ERROR', reason }` as HTTP 200 from upstream.
 - **Used by:** Payers fetching an invoice for `username@<domain>` after the well-known payRequest.
 - **Auth:** none.
 
 ## Endpoint: GET /verify/:paymentHash
 
-- **Purpose:** LUD-21 payment verification forward to the self-hosted LNURL server. Mounted only when `LNURL_SERVER_URL` and `PUBLIC_BASE_URL` resolve. Forwarded when the payment hash segment is only `A-Z a-z 0-9 . _ ~ -` and is neither `.` nor `..` (joined as-is, no percent-encoding). No query string. Rate limit 120/min/client. CORS `*`.
+- **Purpose:** LUD-21 payment verification forward to the self-hosted LNURL server. Mounted only when `LNURL_SERVER_URL` and `PUBLIC_BASE_URL` resolve. Forwarded when the payment hash segment is only `A-Z a-z 0-9 . _ ~ -` and is neither `.` nor `..` (joined as-is, no percent-encoding). No query string. Rate limit 120/min/client. CORS `*`. A `HEAD` request is answered 404 and the LNURL server is not contacted.
 - **Errors:** 404 when the route is not mounted or the payment hash segment is refused (upstream not contacted); 429; 503 when unreachable (network / timeout / redirect / body-read failure) or upstream returns any status other than 2xx and 404 (other 4xx and 5xx). Upstream 2xx passed through with its status, body and only the `content-type` / `cache-control` headers (a 204 stays a 204); upstream 404 → 404.
 - **Used by:** Wallets verifying a paid invoice.
 - **Auth:** none.

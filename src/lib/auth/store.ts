@@ -349,10 +349,10 @@ export interface AuthStore {
    * Overwrite a stored account. A `viewKey`, non-null `linkingKey`,
    * `lightningAddress` (`lower(trim)`), or `username` (`lower(trim)`) owned
    * by another id is refused (in-memory no-op; Postgres via `UPDATE`
-   * matching no row or swallowed unique_violation). The username of an
-   * account with a verified wallet (`sparkPubkeyVerifiedAt` set) cannot
-   * change; such an update matches no row / is a no-op. Wallet columns
-   * (`sparkPubkey`, `sparkPubkeyVerifiedAt`) are never written here.
+   * matching no row or swallowed unique_violation). An account with a verified
+   * wallet (`sparkPubkeyVerifiedAt` set) keeps its stored username; the other
+   * fields are written. Wallet columns (`sparkPubkey`, `sparkPubkeyVerifiedAt`)
+   * are never written here.
    */
   updateAccount(account: Account): Promise<void>;
   /**
@@ -1007,16 +1007,15 @@ export class InMemoryAuthStore implements AuthStore {
     if (this.#lightningAddressTaken(account.lightningAddress, account.id)) {
       return;
     }
-    if (this.#usernameTaken(account.username, account.id)) {
-      return;
-    }
     const previous = this.#accounts.get(account.id);
-    if (
+    const { username: passedUsername, ...rest } = account;
+    const username =
       previous !== undefined &&
       previous.sparkPubkeyVerifiedAt !== null &&
-      previous.sparkPubkeyVerifiedAt !== undefined &&
-      account.username !== previous.username
-    ) {
+      previous.sparkPubkeyVerifiedAt !== undefined
+        ? previous.username
+        : passedUsername;
+    if (this.#usernameTaken(username, account.id)) {
       return;
     }
     if (account.isPlatform === true) {
@@ -1033,7 +1032,8 @@ export class InMemoryAuthStore implements AuthStore {
       this.#accountsByViewKey.delete(previous.viewKey);
     }
     this.#accounts.set(account.id, {
-      ...account,
+      ...rest,
+      ...(username === undefined ? {} : { username }),
       sessionRefused: previous?.sessionRefused === true,
       walletRequired: previous?.walletRequired === true,
       walletBackupSeenAt: previous?.walletBackupSeenAt ?? null,

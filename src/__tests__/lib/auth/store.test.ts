@@ -2894,7 +2894,7 @@ describe('InMemoryAuthStore spark pubkey', () => {
     expect(await store.isSparkPubkeyClaimed(OTHER_KEY)).toBe(false);
   });
 
-  it('updateAccount cannot change username once verified but still can before', async () => {
+  it('updateAccount keeps verified username but writes other fields', async () => {
     const store = new InMemoryAuthStore();
     await walletAccount(store, 'acc');
     const before = await store.getAccount('acc');
@@ -2902,12 +2902,19 @@ describe('InMemoryAuthStore spark pubkey', () => {
     expect((await store.getAccount('acc'))?.username).toBe('grace');
     await store.claimSparkPubkey('acc', PUBKEY);
     await store.markSparkPubkeyVerified('acc', PUBKEY, 'grace', 10);
+    await walletAccount(store, 'other', { username: 'ada', viewKey: 'b'.repeat(64) });
     const verified = await store.getAccount('acc');
-    await store.updateAccount({ ...verified!, username: 'ada' });
-    expect((await store.getAccount('acc'))?.username).toBe('grace');
-    await store.updateAccount({ ...verified!, name: 'Grace', username: 'grace' });
-    expect((await store.getAccount('acc'))?.name).toBe('Grace');
-    expect((await store.getAccount('acc'))?.username).toBe('grace');
+    await store.updateAccount({ ...verified!, username: 'ada', name: 'New' });
+    const afterVerified = await store.getAccount('acc');
+    expect(afterVerified?.username).toBe('grace');
+    expect(afterVerified?.name).toBe('New');
+    await walletAccount(store, 'unverified', {
+      username: 'bob',
+      viewKey: 'c'.repeat(64),
+    });
+    const unverified = await store.getAccount('unverified');
+    await store.updateAccount({ ...unverified!, username: 'carol' });
+    expect((await store.getAccount('unverified'))?.username).toBe('carol');
   });
 
   it('updateAccount never alters the two wallet fields', async () => {
