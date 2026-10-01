@@ -1276,15 +1276,15 @@ No session → **401** `{ "error": "Unauthorized" }`. Below moderator →
 
 ### `GET /funding/daily-roster`
 
-Bearer session, then initiator or founder (`canEditDailyPayoutRoster`). No session → 401 `{ "error": "Unauthorized" }`. Any other role, including moderator → 403 `{ "error": "Forbidden" }` and never 503. Missing or blank `SPEND_URL` or `SPEND_API_TOKEN` → 503 `{ "error": "Daily roster is not configured" }` and no fetch. Success 200 is only `{ comment, paymentsEnabled, recipients: [{ address, amountUsd }] }`. Spend 401, 403, 500, network, timeout, or a 200 body that is not that shape → 502 `{ "error": "Daily roster is unavailable" }`. Timeout 5000 ms.
+Bearer session, then initiator or founder (`canEditDailyPayoutRoster`). No session → 401 `{ "error": "Unauthorized" }`. Any other role, including moderator → 403 `{ "error": "Forbidden" }` and never 503. Missing or blank `SPEND_URL` or `SPEND_API_TOKEN` → 503 `{ "error": "Daily roster is not configured" }` and no fetch. Success 200 is only `{ comment, paymentsEnabled, recipients: [{ address, amountUsd }] }`. Spend 401, 403, 500, any other upstream status, a network failure, a timeout, or a 200 body that is not that shape → 502 `{ "error": "Daily roster is unavailable" }`. Timeout 5000 ms.
 
 ### `POST /funding/daily-roster/comment`
 
-Same gate and success/502/503 as GET. Body `{ comment: string }`. A body that is not that object, including a non-string comment → 400 `{ "error": "Invalid comment" }` before fetch. Spend may still return 400 `{ "error": "Invalid comment" }` (newlines become spaces, then trim, max 500). Empty after trim is valid. Any other spend 400 → 400 `{ "error": "Invalid daily roster change" }`.
+Same gate and success/502/503 as GET. Body `{ comment: string }`. A body that is not that object, including a non-string comment → 400 `{ "error": "Invalid comment" }` before fetch. Spend returns any of these five exact texts unchanged: `Invalid comment`, `Invalid payments switch`, `Invalid address or amount`, `Address already listed`, `Unknown address`. For a comment, newlines become spaces, then trim, max 500. Empty after trim is valid. Any other spend 400 → 400 `{ "error": "Invalid daily roster change" }`.
 
 ### `POST /funding/daily-roster/payments`
 
-Same gate and success/502/503 as GET. Body `{ enabled: boolean }` only. Strings, numbers, and missing fields → 400 `{ "error": "Invalid payments switch" }` before fetch. Sets `paymentsEnabled` only. Any other spend 400 → 400 `{ "error": "Invalid daily roster change" }`.
+Same gate and success/502/503 as GET. Body `{ enabled: boolean }` only. Strings, numbers, and missing fields → 400 `{ "error": "Invalid payments switch" }` before fetch. Sets `paymentsEnabled` only. Spend returns any of `Invalid comment`, `Invalid payments switch`, `Invalid address or amount`, `Address already listed`, or `Unknown address` unchanged. Any other spend 400 → 400 `{ "error": "Invalid daily roster change" }`.
 
 ### `POST /funding/daily-roster/recipients`
 
@@ -1296,7 +1296,7 @@ Same gate and success/502/503 as GET. Body `{ address: string, amountUsd: finite
 
 ### `POST /funding/daily-roster/recipients/delete`
 
-Same gate and success/502/503 as GET. Body `{ address: string }`. Local failure → 400 `{ "error": "Unknown address" }` always. Spend unknown address is the same 400. A spend `Invalid address or amount` is forwarded only when spend returns it. Any other spend 400 → `{ "error": "Invalid daily roster change" }`.
+Same gate and success/502/503 as GET. Body `{ address: string }`. Local failure → 400 `{ "error": "Unknown address" }` always. Spend returns any of `Invalid comment`, `Invalid payments switch`, `Invalid address or amount`, `Address already listed`, or `Unknown address` unchanged. Any other spend 400 → 400 `{ "error": "Invalid daily roster change" }`.
 
 ### `GET /funding/goal`
 
