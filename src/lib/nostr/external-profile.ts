@@ -319,11 +319,10 @@ async function readNostrJson(
     current = new URL(
       `https://${parts.host}/.well-known/nostr.json?name=${encodeURIComponent(parts.local)}`,
     );
-    /* v8 ignore start -- splitAddress only yields a host the URL parser accepts */
   } catch {
+    // `splitAddress` still accepts a numeric label the URL parser rejects, such as `256.1.1.1`.
     return null;
   }
-  /* v8 ignore stop */
   for (let followed = 0; followed <= NIP05_MAX_REDIRECTS; followed += 1) {
     if (current.protocol !== 'https:' || !(await hostIsPublic(current.hostname, lookupHost))) {
       return null;
@@ -449,6 +448,10 @@ function isPublicIp(address: string): boolean {
   const mapped = mappedIpv4(value);
   if (mapped !== null) {
     return !isNonPublicIpv4(mapped);
+  }
+  const embedded = ipv4EmbeddedInIpv6(value);
+  if (embedded !== null) {
+    return !isNonPublicIpv4(embedded);
   }
   if (!value.includes(':')) {
     return false;
@@ -594,18 +597,46 @@ function expandIpv6(address: string): number[] | null {
 }
 
 /**
- * @param address - IPv6 text.
- * @returns `false` for unspecified, loopback, unique-local, link-local, and multicast.
+ * IPv4 carried inside an IPv6 answer that is not the mapped form `::ffff:`.
+ *
+ * IPv4-compatible (`::x:x`), 6to4 (`2002::/16`), and NAT64 (`64:ff9b::/96`).
+ * Mapped addresses are handled by {@link mappedIpv4}.
+ *
+ * @param address - Lowercase address.
+ * @returns The embedded IPv4, or `null` when this is not one of those forms.
+ */
+function ipv4EmbeddedInIpv6(address: string): [number, number, number, number] | null {
+  const groups = expandIpv6(address);
+  if (groups === null) {
+    return null;
+  }
+  if (groups.slice(0, 6).every((group) => group === 0)) {
+    return ipv4FromHalves(groups[6]!, groups[7]!);
+  }
+  if (groups[0] === 0x2002) {
+    return ipv4FromHalves(groups[1]!, groups[2]!);
+  }
+  if (
+    groups[0] === 0x64 &&
+    groups[1] === 0xff9b &&
+    groups[2] === 0 &&
+    groups[3] === 0 &&
+    groups[4] === 0 &&
+    groups[5] === 0
+  ) {
+    return ipv4FromHalves(groups[6]!, groups[7]!);
+  }
+  return null;
+}
+
+/**
+ * @param address - IPv6 text that is not an embedded IPv4 form.
+ * @returns `false` for unique-local, link-local, and multicast.
+ * Unspecified and loopback are embedded IPv4 (`::` is 0.0.0.0, `::1` is 0.0.0.1).
  */
 function isPublicIpv6(address: string): boolean {
   const groups = expandIpv6(address);
   if (groups === null) {
-    return false;
-  }
-  if (groups.every((group) => group === 0)) {
-    return false;
-  }
-  if (groups.slice(0, 7).every((group) => group === 0) && groups[7] === 1) {
     return false;
   }
   const first = groups[0]!;
