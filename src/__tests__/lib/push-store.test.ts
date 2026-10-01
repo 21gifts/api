@@ -52,22 +52,27 @@ function pending(
     claimedUntil: null,
     createdAt: new Date('2026-08-01T00:00:00.000Z'),
     deliveredEndpoints: [],
+    skipEndpoints: [],
     ...overrides,
   };
 }
 
 describe('PUSH_SCHEMA_SQL', () => {
   it('creates push_subscription and push_outbox with indexes', () => {
-    expect(PUSH_SCHEMA_SQL).toHaveLength(6);
+    expect(PUSH_SCHEMA_SQL).toHaveLength(7);
     expect(PUSH_SCHEMA_SQL[0]).toMatch(/CREATE TABLE IF NOT EXISTS push_subscription/i);
     expect(PUSH_SCHEMA_SQL[1]).toMatch(/push_subscription_account_id_idx/i);
     expect(PUSH_SCHEMA_SQL[2]).toMatch(/CREATE TABLE IF NOT EXISTS push_outbox/i);
     expect(PUSH_SCHEMA_SQL[2]).toMatch(/delivered_endpoints/);
+    expect(PUSH_SCHEMA_SQL[2]).toMatch(/skip_endpoints/);
     expect(PUSH_SCHEMA_SQL[3]).toMatch(/push_outbox_pending_idx/i);
     expect(PUSH_SCHEMA_SQL[4]).toMatch(/ADD COLUMN IF NOT EXISTS delivered_endpoints/i);
+    expect(PUSH_SCHEMA_SQL[5]).toMatch(/ADD COLUMN IF NOT EXISTS skip_endpoints/i);
     expect(PUSH_SCHEMA_SQL[2]).toMatch(/'conversation'/);
-    expect(PUSH_SCHEMA_SQL[5]).toMatch(/push_outbox_type_check/);
-    expect(PUSH_SCHEMA_SQL[5]).toMatch(/'conversation'/);
+    expect(PUSH_SCHEMA_SQL[2]).toMatch(/'dismiss'/);
+    expect(PUSH_SCHEMA_SQL[6]).toMatch(/push_outbox_type_check/);
+    expect(PUSH_SCHEMA_SQL[6]).toMatch(/'conversation'/);
+    expect(PUSH_SCHEMA_SQL[6]).toMatch(/'dismiss'/);
   });
 });
 
@@ -313,6 +318,7 @@ describe('PostgresPushStore', () => {
     await store.enqueue(pending({ id: 'o1', accountId: 'acc-a' }));
     expect(sql.executes.at(-1)?.text).toMatch(/INSERT INTO push_outbox/i);
     expect(sql.executes.at(-1)?.text).toMatch(/delivered_endpoints/);
+    expect(sql.executes.at(-1)?.text).toMatch(/skip_endpoints/);
     expect(sql.executes.at(-1)?.params.at(-1)).toBe('[]');
 
     sql.nextRows = [
@@ -384,6 +390,54 @@ describe('PostgresPushStore', () => {
     const claimed = await store.claimPending(1, 1, 1000);
     expect(claimed[0]?.type).toBe('conversation');
   });
+
+  it('maps dismiss type and valid skip_endpoints from Postgres', async () => {
+    const sql = new MockSql();
+    const store = new PostgresPushStore(sql);
+    sql.nextRows = [
+      {
+        id: 'o-dismiss',
+        account_id: 'acc-a',
+        type: 'dismiss',
+        message_id: null,
+        payload: '{}',
+        status: 'pending',
+        attempts: 0,
+        claimed_until: null,
+        created_at: new Date('2026-08-01T00:00:00.000Z'),
+        delivered_endpoints: '[]',
+        skip_endpoints:
+          '["https://push.example/a","","https://push.example/a","https://push.example/b"]',
+      },
+    ];
+    const claimed = await store.claimPending(1, 1, 1000);
+    expect(claimed[0]?.type).toBe('dismiss');
+    expect(claimed[0]?.skipEndpoints).toEqual(['https://push.example/a', 'https://push.example/b']);
+  });
+
+  it.each([undefined, null, 'not-json'])(
+    'maps missing or invalid skip_endpoints %s to an empty array',
+    async (skipEndpoints) => {
+      const sql = new MockSql();
+      const store = new PostgresPushStore(sql);
+      sql.nextRows = [
+        {
+          id: 'o-dismiss-empty',
+          account_id: 'acc-a',
+          type: 'dismiss',
+          message_id: null,
+          payload: '{}',
+          status: 'pending',
+          attempts: 0,
+          claimed_until: null,
+          created_at: new Date('2026-08-01T00:00:00.000Z'),
+          delivered_endpoints: '[]',
+          skip_endpoints: skipEndpoints,
+        },
+      ];
+      expect((await store.claimPending(1, 1, 1000))[0]?.skipEndpoints).toEqual([]);
+    },
+  );
 
   it('maps unknown type/status and null claimed_until safely', async () => {
     const sql = new MockSql();

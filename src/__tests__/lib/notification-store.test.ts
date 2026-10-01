@@ -222,6 +222,51 @@ describe('InMemoryNotificationStore', () => {
     expect((await store.getByIdForRecipient('other', 'other'))?.readAt).toBeNull();
   });
 
+  it('markAllRead returns newly stamped copies sorted by id', async () => {
+    const original = new Date('2026-08-29T18:00:00.000Z');
+    const store = new InMemoryNotificationStore([
+      row({ id: 'z', replyId: 'r-z' }),
+      row({ id: 'a', replyId: 'r-a' }),
+      row({ id: 'read', replyId: 'r-read', readAt: original }),
+      row({ id: 'proposal', type: 'moderator_proposal', replyId: 'subject' }),
+    ]);
+    const stamped = await store.markAllRead('parent', READ_AT);
+    expect(stamped.map((item) => item.id)).toEqual(['a', 'z']);
+    expect(stamped.every((item) => item.readAt?.getTime() === READ_AT.getTime())).toBe(true);
+    if (stamped[0] !== undefined) {
+      stamped[0].readAt = null;
+    }
+    expect((await store.getByIdForRecipient('a', 'parent'))?.readAt).toEqual(READ_AT);
+  });
+
+  it('markReadByMessage stamps only unread matching forum and zap rows', async () => {
+    const original = new Date('2026-08-29T18:00:00.000Z');
+    const store = new InMemoryNotificationStore([
+      row({ id: 'z', type: 'zap', parentId: 'message', replyId: 'receipt' }),
+      row({ id: 'a', type: 'forum_post', parentId: 'message', replyId: 'post' }),
+      row({ id: 'b', type: 'forum_reply', parentId: 'other', replyId: 'message' }),
+      row({ id: 'c', type: 'forum_mention', parentId: 'message', replyId: 'mention' }),
+      row({ id: 'read', parentId: 'message', replyId: 'read', readAt: original }),
+      row({ id: 'appointed', type: 'moderator_appointed', parentId: 'message' }),
+      row({ id: 'proposal', type: 'moderator_proposal', parentId: 'message' }),
+      row({ id: 'miss', parentId: 'other', replyId: 'other-reply' }),
+      row({ id: 'other', recipientAccountId: 'other', parentId: 'message' }),
+    ]);
+    const stamped = await store.markReadByMessage('parent', 'message', READ_AT);
+    expect(stamped.map((item) => item.id)).toEqual(['a', 'b', 'c', 'z']);
+    expect(stamped.every((item) => item.readAt?.getTime() === READ_AT.getTime())).toBe(true);
+    expect((await store.getByIdForRecipient('read', 'parent'))?.readAt).toEqual(original);
+    expect((await store.getByIdForRecipient('appointed', 'parent'))?.readAt).toBeNull();
+    expect((await store.getByIdForRecipient('proposal', 'parent'))?.readAt).toBeNull();
+    expect((await store.getByIdForRecipient('miss', 'parent'))?.readAt).toBeNull();
+    expect((await store.getByIdForRecipient('other', 'other'))?.readAt).toBeNull();
+
+    expect(
+      await store.markReadByMessage('parent', 'message', new Date(READ_AT.getTime() + 1)),
+    ).toEqual([]);
+    expect((await store.getByIdForRecipient('a', 'parent'))?.readAt).toEqual(READ_AT);
+  });
+
   it('unique create returns the existing id', async () => {
     const store = new InMemoryNotificationStore();
     const first = await store.create(row({ id: 'first' }));
@@ -463,11 +508,44 @@ describe('PostgresNotificationStore', () => {
 
   it('markAllRead UPDATE params', async () => {
     const sql = new MockSql();
-    await new PostgresNotificationStore(sql).markAllRead('parent', READ_AT);
-    expect(sql.executes).toHaveLength(1);
-    expect(sql.executes[0]?.text).toMatch(/UPDATE notification SET read_at = \$2/);
-    expect(sql.executes[0]?.text).toMatch(/type <> 'moderator_proposal'/);
-    expect(sql.executes[0]?.params).toEqual(['parent', READ_AT]);
+    sql.nextRows = [sqlRow({ id: 'z', read_at: READ_AT }), sqlRow({ id: 'a', read_at: READ_AT })];
+    const stamped = await new PostgresNotificationStore(sql).markAllRead('parent', READ_AT);
+    expect(sql.queries).toHaveLength(1);
+    expect(sql.queries[0]?.text).toMatch(/UPDATE notification SET read_at/);
+    expect(sql.queries[0]?.text).toMatch(/type <> 'moderator_proposal'/);
+    expect(sql.queries[0]?.text).toMatch(/RETURNING/);
+    expect(sql.queries[0]?.params).toEqual(['parent', READ_AT]);
+    expect(sql.executes).toEqual([]);
+    expect(stamped.map((item) => item.id)).toEqual(['a', 'z']);
+  });
+
+  it('markReadByMessage UPDATEs matching kinds and maps RETURNING rows by id', async () => {
+    const sql = new MockSql();
+    sql.nextRows = [
+      sqlRow({ id: 'z', type: 'zap', parent_id: 'message', reply_id: 'receipt', read_at: READ_AT }),
+      sqlRow({
+        id: 'a',
+        type: 'forum_post',
+        parent_id: 'message',
+        reply_id: 'post',
+        read_at: READ_AT,
+      }),
+    ];
+    const stamped = await new PostgresNotificationStore(sql).markReadByMessage(
+      'parent',
+      'message',
+      READ_AT,
+    );
+    expect(sql.queries).toHaveLength(1);
+    expect(sql.queries[0]?.text).toMatch(
+      /type IN \('forum_post', 'forum_reply', 'forum_mention', 'zap'\)/,
+    );
+    expect(sql.queries[0]?.text).toMatch(/parent_id = \$2 OR reply_id = \$2/);
+    expect(sql.queries[0]?.text).toMatch(/RETURNING/);
+    expect(sql.queries[0]?.params).toEqual(['parent', 'message', READ_AT]);
+    expect(sql.executes).toEqual([]);
+    expect(stamped.map((item) => item.id)).toEqual(['a', 'z']);
+    expect(stamped[0]).toMatchObject({ type: 'forum_post', parentId: 'message', replyId: 'post' });
   });
 
   it('deleteByMessageIds skips SQL when no id is a well-formed UUID', async () => {

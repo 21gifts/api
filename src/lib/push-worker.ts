@@ -70,6 +70,7 @@ export async function enqueueForumPushes(
       claimedUntil: null,
       createdAt,
       deliveredEndpoints: [],
+      skipEndpoints: [],
     };
     await store.enqueue(row);
   }
@@ -116,6 +117,7 @@ export async function enqueueReplyPush(
       claimedUntil: null,
       createdAt,
       deliveredEndpoints: [],
+      skipEndpoints: [],
     };
     await store.enqueue(row);
   }
@@ -161,6 +163,7 @@ export async function enqueueZapPush(
       claimedUntil: null,
       createdAt,
       deliveredEndpoints: [],
+      skipEndpoints: [],
     };
     await store.enqueue(row);
   }
@@ -194,6 +197,7 @@ export async function enqueueDebugPush(
     claimedUntil: null,
     createdAt: new Date(nowMs),
     deliveredEndpoints: [],
+    skipEndpoints: [],
   };
   await store.enqueue(row);
   return 1;
@@ -224,14 +228,16 @@ export async function runPushWorkerTick(deps: PushWorkerDeps): Promise<void> {
   const rows = await deps.store.claimPending(PUSH_WORKER_BATCH, nowMs, PUSH_WORKER_LEASE_MS);
   for (const row of rows) {
     const subs = await deps.store.listByAccount(row.accountId);
-    if (subs.length === 0) {
+    const skip = new Set(row.skipEndpoints);
+    const targets = subs.filter((sub) => !skip.has(sub.endpoint));
+    if (targets.length === 0) {
       await deps.store.markSent(row.id);
       continue;
     }
     const delivered = new Set(row.deliveredEndpoints);
     const newlyDelivered: string[] = [];
     let anyFail = false;
-    for (const sub of subs) {
+    for (const sub of targets) {
       if (delivered.has(sub.endpoint)) {
         continue;
       }

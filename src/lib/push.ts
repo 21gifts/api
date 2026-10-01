@@ -2,6 +2,8 @@
  * Web Push subscription parsing and small English notification payloads.
  */
 
+import type { NotificationRow } from '@/lib/notification';
+
 /** Parsed PushSubscription fields stored for an account. */
 export interface ParsedPushSubscription {
   /** Push service endpoint URL. */
@@ -30,6 +32,19 @@ export interface PushPayload {
    * templates; fan-out adds it per recipient.
    */
   unreadCount?: number;
+}
+
+/** Compact JSON payload that closes matching OS notifications on other devices. */
+export interface DismissPushPayload {
+  /** Discriminator. */
+  type: 'dismiss';
+  /** Collapse tags to close. */
+  tags: string[];
+  /**
+   * Recipient's current home-screen badge: in-app notification unread plus
+   * listed inbox unread (a missing source contributes 0).
+   */
+  unreadCount: number;
 }
 
 /** Url-safe base64 charset with optional `=` padding. */
@@ -134,6 +149,34 @@ function mediaFallback(
     return copy.video;
   }
   return copy.none;
+}
+
+/**
+ * Collapse tag stored on a living-room notification row.
+ *
+ * Uses the ids already stored on the row. Zap tags use `replyId` (the
+ * receipt-derived id), not `parentId`.
+ *
+ * @param row - Notification type and stored parent/reply ids.
+ * @returns Tag string, or `null` for `moderator_proposal`.
+ */
+export function pushTagForNotification(
+  row: Pick<NotificationRow, 'type' | 'parentId' | 'replyId'>,
+): string | null {
+  switch (row.type) {
+    case 'forum_post':
+      return `forum_post:${row.parentId}`;
+    case 'forum_reply':
+      return `forum_reply:${row.replyId}`;
+    case 'forum_mention':
+      return `forum_mention:${row.replyId}`;
+    case 'zap':
+      return `zap:${row.replyId}`;
+    case 'moderator_appointed':
+      return `moderator_appointed:${row.parentId}`;
+    case 'moderator_proposal':
+      return null;
+  }
 }
 
 /**

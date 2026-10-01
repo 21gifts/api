@@ -205,11 +205,73 @@ describe('runPushWorkerTick', () => {
       claimedUntil: null,
       createdAt: new Date(1),
       deliveredEndpoints: [],
+      skipEndpoints: [],
     };
     await store.enqueue(row);
     const sender = new FakeSender(true);
     await runPushWorkerTick({ store, sender, now: () => 1 });
     expect(await store.claimPending(10, 1, 1000)).toEqual([]);
+    expect((await store.listAllOutbox(10))[0]?.status).toBe('sent');
+    expect(sender.calls).toEqual([]);
+  });
+
+  it('marks sent without sending when every subscription is skipped', async () => {
+    const store = new InMemoryPushStore();
+    await store.upsertSubscription(SUB_B);
+    await store.enqueue({
+      id: 'dismiss-all-skipped',
+      accountId: 'other',
+      type: 'dismiss',
+      messageId: null,
+      payload: JSON.stringify({ type: 'dismiss', tags: ['forum_post:m'], unreadCount: 0 }),
+      status: 'pending',
+      attempts: 0,
+      claimedUntil: null,
+      createdAt: new Date(1),
+      deliveredEndpoints: [],
+      skipEndpoints: [SUB_B.endpoint],
+    });
+    const sender = new FakeSender(true);
+    await runPushWorkerTick({ store, sender, now: () => 1 });
+    expect(sender.calls).toEqual([]);
+    expect((await store.listAllOutbox(10))[0]).toMatchObject({
+      status: 'sent',
+      deliveredEndpoints: [],
+    });
+  });
+
+  it('skips one device and sends the same dismiss payload to another device', async () => {
+    const store = new InMemoryPushStore();
+    const skipped = { ...SUB_B, endpoint: 'https://push.example/skipped' };
+    const target = { ...SUB_B, endpoint: 'https://push.example/target' };
+    await store.upsertSubscription(skipped);
+    await store.upsertSubscription(target);
+    const payload = JSON.stringify({
+      type: 'dismiss',
+      tags: ['forum_reply:message'],
+      unreadCount: 2,
+    });
+    await store.enqueue({
+      id: 'dismiss-one-skipped',
+      accountId: 'other',
+      type: 'dismiss',
+      messageId: null,
+      payload,
+      status: 'pending',
+      attempts: 0,
+      claimedUntil: null,
+      createdAt: new Date(1),
+      deliveredEndpoints: [],
+      skipEndpoints: [skipped.endpoint],
+    });
+    const sender = new FakeSender(true);
+    await runPushWorkerTick({ store, sender, now: () => 1 });
+    expect(sender.calls).toEqual([{ endpoint: target.endpoint, payload }]);
+    expect(sender.calls[0]?.payload).not.toContain(skipped.endpoint);
+    expect((await store.listAllOutbox(10))[0]).toMatchObject({
+      status: 'sent',
+      deliveredEndpoints: [target.endpoint],
+    });
   });
 
   it('deletes gone subscriptions and marks sent when all gone', async () => {

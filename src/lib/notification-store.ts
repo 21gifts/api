@@ -79,8 +79,22 @@ export interface NotificationStore {
    *
    * @param accountId - Recipient account.
    * @param readAt - Read stamp for previously unread rows.
+   * @returns Copies of rows whose `readAt` changed from null to `readAt`, sorted by `id` ascending.
    */
-  markAllRead(accountId: string, readAt: Date): Promise<void>;
+  markAllRead(accountId: string, readAt: Date): Promise<NotificationRow[]>;
+
+  /**
+   * Stamp `readAt` on unread forum post, reply, mention, and zap rows for
+   * this recipient whose `parentId` or `replyId` equals `messageId`.
+   * Does not stamp `moderator_appointed` or `moderator_proposal`. Does not
+   * overwrite an existing `readAt`. Does not touch other accounts.
+   *
+   * @param accountId - Recipient account.
+   * @param messageId - Forum note id to match against `parentId` / `replyId`.
+   * @param readAt - Read stamp for previously unread matching rows.
+   * @returns Copies of newly stamped rows, sorted by `id` ascending.
+   */
+  markReadByMessage(accountId: string, messageId: string, readAt: Date): Promise<NotificationRow[]>;
 
   /**
    * Delete notifications whose `parentId` or `replyId` is in `ids`.
@@ -123,6 +137,19 @@ export const NOTIFICATION_SCHEMA_SQL: readonly string[] = [
 
 const NOTIFICATION_SELECT =
   'id, recipient_account_id, actor_account_id, type, parent_id, reply_id, name, text, created_at, read_at';
+
+/** Kinds stamped by {@link NotificationStore.markReadByMessage}. */
+const MARK_READ_BY_MESSAGE_TYPES: ReadonlySet<NotificationType> = new Set([
+  'forum_post',
+  'forum_reply',
+  'forum_mention',
+  'zap',
+]);
+
+/** Sort notification copies by `id` ascending. */
+function sortByIdAsc(rows: NotificationRow[]): NotificationRow[] {
+  return rows.sort((a, b) => a.id.localeCompare(b.id));
+}
 
 /**
  * Apply {@link NOTIFICATION_SCHEMA_SQL} in order. Idempotent.
@@ -254,8 +281,10 @@ export class InMemoryNotificationStore implements NotificationStore {
    *
    * @param accountId - Recipient account.
    * @param readAt - Read stamp.
+   * @returns Copies of newly stamped rows, sorted by `id` ascending.
    */
-  markAllRead(accountId: string, readAt: Date): Promise<void> {
+  markAllRead(accountId: string, readAt: Date): Promise<NotificationRow[]> {
+    const stamped: NotificationRow[] = [];
     for (const row of this.#rows) {
       if (
         row.recipientAccountId === accountId &&
@@ -263,9 +292,41 @@ export class InMemoryNotificationStore implements NotificationStore {
         row.type !== 'moderator_proposal'
       ) {
         row.readAt = new Date(readAt.getTime());
+        stamped.push(copyNotification(row));
       }
     }
-    return Promise.resolve();
+    return Promise.resolve(sortByIdAsc(stamped));
+  }
+
+  /**
+   * Stamp `readAt` on unread forum post, reply, mention, and zap rows for
+   * `accountId` whose `parentId` or `replyId` equals `messageId`.
+   *
+   * @param accountId - Recipient account.
+   * @param messageId - Forum note id.
+   * @param readAt - Read stamp.
+   * @returns Copies of newly stamped rows, sorted by `id` ascending.
+   */
+  markReadByMessage(
+    accountId: string,
+    messageId: string,
+    readAt: Date,
+  ): Promise<NotificationRow[]> {
+    const stamped: NotificationRow[] = [];
+    for (const row of this.#rows) {
+      if (row.recipientAccountId !== accountId || row.readAt !== null) {
+        continue;
+      }
+      if (!MARK_READ_BY_MESSAGE_TYPES.has(row.type)) {
+        continue;
+      }
+      if (row.parentId !== messageId && row.replyId !== messageId) {
+        continue;
+      }
+      row.readAt = new Date(readAt.getTime());
+      stamped.push(copyNotification(row));
+    }
+    return Promise.resolve(sortByIdAsc(stamped));
   }
 
   /**
@@ -480,12 +541,39 @@ export class PostgresNotificationStore implements NotificationStore {
    *
    * @param accountId - Recipient (`$1`).
    * @param readAt - Read stamp (`$2`).
+   * @returns Mapped newly stamped rows, sorted by `id` ascending.
    */
-  async markAllRead(accountId: string, readAt: Date): Promise<void> {
-    await this.#sql.execute(
-      `UPDATE notification SET read_at = $2 WHERE recipient_account_id = $1 AND read_at IS NULL AND type <> 'moderator_proposal'`,
+  async markAllRead(accountId: string, readAt: Date): Promise<NotificationRow[]> {
+    const rows = await this.#sql.query<NotificationSqlRow>(
+      `UPDATE notification SET read_at = $2 WHERE recipient_account_id = $1 AND read_at IS NULL AND type <> 'moderator_proposal' RETURNING ${NOTIFICATION_SELECT}`,
       [accountId, readAt],
     );
+    return sortByIdAsc(rows.map((row) => mapNotificationRow(row)));
+  }
+
+  /**
+   * Stamp `read_at` on unread forum post, reply, mention, and zap rows for
+   * `accountId` whose `parent_id` or `reply_id` equals `messageId`.
+   *
+   * @param accountId - Recipient (`$1`).
+   * @param messageId - Forum note id (`$2`).
+   * @param readAt - Read stamp (`$3`).
+   * @returns Mapped newly stamped rows, sorted by `id` ascending.
+   */
+  async markReadByMessage(
+    accountId: string,
+    messageId: string,
+    readAt: Date,
+  ): Promise<NotificationRow[]> {
+    const rows = await this.#sql.query<NotificationSqlRow>(
+      `UPDATE notification SET read_at = $3
+       WHERE recipient_account_id = $1 AND read_at IS NULL
+         AND type IN ('forum_post', 'forum_reply', 'forum_mention', 'zap')
+         AND (parent_id = $2 OR reply_id = $2)
+       RETURNING ${NOTIFICATION_SELECT}`,
+      [accountId, messageId, readAt],
+    );
+    return sortByIdAsc(rows.map((row) => mapNotificationRow(row)));
   }
 
   /**

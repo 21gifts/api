@@ -384,6 +384,7 @@ describe('loadDebugTables', () => {
       claimedUntil: new Date('2026-09-01T00:30:00.000Z'),
       createdAt: new Date('2026-09-01T00:00:00.000Z'),
       deliveredEndpoints: [],
+      skipEndpoints: [],
     });
     await push.enqueue({
       id: 'outbox-2',
@@ -396,6 +397,7 @@ describe('loadDebugTables', () => {
       claimedUntil: null,
       createdAt: new Date('2026-09-01T00:00:00.000Z'),
       deliveredEndpoints: [],
+      skipEndpoints: [],
     });
     await push.enqueue({
       id: 'outbox-3',
@@ -408,6 +410,7 @@ describe('loadDebugTables', () => {
       claimedUntil: null,
       createdAt: new Date('2026-09-01T04:00:00.000Z'),
       deliveredEndpoints: [],
+      skipEndpoints: [],
     });
     const trust = new InMemoryTrustStore();
     await trust.insertEdge({
