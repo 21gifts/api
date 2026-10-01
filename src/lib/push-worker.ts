@@ -215,8 +215,9 @@ export interface PushWorkerDeps {
 
 /**
  * Claim a batch and deliver each row to every subscription for its account.
- * Skips endpoints already recorded on the outbox row so retries do not
- * re-send a payload that succeeded on a previous tick.
+ * Does not send endpoints listed in `skipEndpoints`. A skipped endpoint is
+ * not recorded as delivered. Skips endpoints already recorded on the outbox
+ * row so retries do not re-send a payload that succeeded on a previous tick.
  *
  * @param deps - Store, sender, clock.
  */
