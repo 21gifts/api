@@ -769,13 +769,13 @@ GitHub organization: **`21gifts`** (created 2026-05-25).
 
 Five GitHub Actions workflows, identical structure for `app` and `api`:
 
-| Workflow               | Trigger                     | Action                                                         |
-| ---------------------- | --------------------------- | -------------------------------------------------------------- |
-| `ci.yaml`              | PR, push to develop         | Lint + build + test (required for merge)                       |
-| `deploy-dev.yaml`      | push to develop             | Docker build → push `:beta` → notify infra repo                |
-| `deploy-staging.yaml`  | push to staging             | Docker build → push `:staging` → notify infra repo             |
-| `deploy-prd.yaml`      | push to main                | Docker build → push `:latest` → notify infra repo              |
-| `auto-release-pr.yaml` | push to develop or staging  | Auto-create release PR `develop → staging`, then `staging → main` |
+| Workflow               | Trigger                    | Action                                                            |
+| ---------------------- | -------------------------- | ----------------------------------------------------------------- |
+| `ci.yaml`              | PR, push to develop        | Lint + build + test (required for merge)                          |
+| `deploy-dev.yaml`      | push to develop            | Docker build → push `:beta` → notify infra repo                   |
+| `deploy-staging.yaml`  | push to staging            | Docker build → push `:staging` → notify infra repo                |
+| `deploy-prd.yaml`      | push to main               | Docker build → push `:latest` → notify infra repo                 |
+| `auto-release-pr.yaml` | push to develop or staging | Auto-create release PR `develop → staging`, then `staging → main` |
 
 **Pre-push local checks**:
 
@@ -802,12 +802,12 @@ DNS, and reverse-proxy routing.
 
 Three environments per service, mapped 1:1 to the branch model:
 
-| Service | Env | Source branch | Image tag | Public URL         |
-| ------- | --- | ------------- | --------- | ------------------ |
-| app     | DEV | `develop`     | `:beta`   | `dev.21.gifts`     |
-| app     | PRD | `main`        | `:latest` | `21.gifts`         |
-| api     | DEV | `develop`     | `:beta`   | `dev-api.21.gifts` |
-| api     | PRD | `main`        | `:latest` | `api.21.gifts`     |
+| Service | Env     | Source branch | Image tag  | Public URL             |
+| ------- | ------- | ------------- | ---------- | ---------------------- |
+| app     | DEV     | `develop`     | `:beta`    | `dev.21.gifts`         |
+| app     | PRD     | `main`        | `:latest`  | `21.gifts`             |
+| api     | DEV     | `develop`     | `:beta`    | `dev-api.21.gifts`     |
+| api     | PRD     | `main`        | `:latest`  | `api.21.gifts`         |
 | app     | staging | `staging`     | `:staging` | `staging.21.gifts`     |
 | api     | staging | `staging`     | `:staging` | `staging-api.21.gifts` |
 
@@ -831,7 +831,7 @@ repository — they're intentionally not part of this project's scope.
 
 | Date       | Decision                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
 | ---------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 2026-10-01 | Three environments per service. Branch `staging` publishes image tag `:staging`. The app public URL is `staging.21.gifts`. The api public URL is `staging-api.21.gifts`. `staging-app.21.gifts` redirects to the apex. `staging.api.21.gifts` is not a name. Release pull requests go develop → staging, then staging → main. The passkey RP ID includes `staging.21.gifts`. |
+| 2026-10-01 | Three environments per service. Branch `staging` publishes image tag `:staging`. The app public URL is `staging.21.gifts`. The api public URL is `staging-api.21.gifts`. `staging-app.21.gifts` redirects to the apex. `staging.api.21.gifts` is not a name. Release pull requests go develop → staging, then staging → main. The passkey RP ID includes `staging.21.gifts`.                                                                                                                                                                                                                                                                                          |
 | 2026-09-25 | A moderator can set, replace, or clear the map pin on an existing live top-level shop note (`#21GiftsShop`) via `PATCH /messages/:id/place`. Columns stay `place_lat` / `place_lng` / `place_label`. No Nostr republish, no text change, no notification.                                                                                                                                                                                                                                                                                                                                                                                                             |
 | 2026-09-24 | Signed-in language and fiat are stored on the account (locale, fiat, both nullable). Null means not defined yet: the app writes the resolved value once (onlyIfUnset). A stored value always wins over Accept-Language and the cookies. An explicit control updates the stored value. Signed-out visitors stay on the cookie and Accept-Language and write nothing.                                                                                                                                                                                                                                                                                                   |
 | 2026-05-25 | Domain `21.gifts` registered (premium .gifts TLD on Identity Digital)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |

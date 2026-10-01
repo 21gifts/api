@@ -25,11 +25,11 @@ argument is in [`CONCEPT.md`](./CONCEPT.md) (Convictions) and on
 Pre-built images are published to Docker Hub on every push to `develop` (`:beta`),
 `staging` (`:staging`), and `main` (`:latest`).
 
-| Tag                                                                           | Source    | Deploy target | Public URL                 |
-| ----------------------------------------------------------------------------- | --------- | ------------- | -------------------------- |
-| [`21gifts/api:beta`](https://hub.docker.com/r/21gifts/api/tags?name=beta)     | `develop` | DEV           | `https://dev-api.21.gifts` |
+| Tag                                                                             | Source    | Deploy target | Public URL                     |
+| ------------------------------------------------------------------------------- | --------- | ------------- | ------------------------------ |
+| [`21gifts/api:beta`](https://hub.docker.com/r/21gifts/api/tags?name=beta)       | `develop` | DEV           | `https://dev-api.21.gifts`     |
 | [`21gifts/api:staging`](https://hub.docker.com/r/21gifts/api/tags?name=staging) | `staging` | staging       | `https://staging-api.21.gifts` |
-| [`21gifts/api:latest`](https://hub.docker.com/r/21gifts/api/tags?name=latest) | `main`    | PRD           | `https://api.21.gifts`     |
+| [`21gifts/api:latest`](https://hub.docker.com/r/21gifts/api/tags?name=latest)   | `main`    | PRD           | `https://api.21.gifts`         |
 
 **Pull and run locally:**
 
