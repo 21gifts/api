@@ -177,7 +177,7 @@ describe('lnurlServerRoutes', () => {
       expect((await store.getAccount('acc'))?.sparkPubkeyVerifiedAt).toBe(verifiedAt);
       expect(
         parsedEvents(warn).filter(
-          (e) => e['event'] === 'wallet.address.verified' && e['accountId'] === 'acc',
+          (e) => e['event'] === 'account.wallet.verified' && e['accountId'] === 'acc',
         ),
       ).toHaveLength(1);
       expect(calls).toHaveLength(2);
