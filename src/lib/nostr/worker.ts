@@ -62,6 +62,7 @@ import {
 import { signEventForAccount } from '@/lib/nostr/sign';
 import type { PostRateLimiter } from '@/lib/nostr/rate-limit';
 import { indexOpenZapReceipts, ingestZapReceipt } from '@/lib/nostr/zap-index';
+import { receivingAddress } from '@/lib/receiving-address';
 import type { PushStore } from '@/lib/push-store';
 import type { SpendPing } from '@/lib/spend-ping';
 import {
@@ -955,8 +956,8 @@ async function signBatch(deps: NostrWorkerDeps, nowMs: number): Promise<void> {
 
 /**
  * Create a profile forum note for named accounts with a non-blank Lightning
- * Address that lack one (or whose stored id no longer points at a message
- * row). `ensureProfileMessage` no-ops without LN.
+ * Address or a verified wallet that lack one (or whose stored id no longer
+ * points at a message row). `ensureProfileMessage` no-ops without either.
  *
  * @param deps - Auth and message stores (and optional push / notifications).
  */
@@ -1186,7 +1187,8 @@ async function publishProfiles(deps: NostrWorkerDeps, writeSet: ResolvedWriteSet
       }
     }
     const images = { picture, banner };
-    const content = buildKind0Content(live.name, live.lightningAddress, nip05, about, images);
+    const lud16 = receivingAddress(live, deps.lnurlServer)?.address ?? null;
+    const content = buildKind0Content(live.name, lud16, nip05, about, images);
     if (reservedContent(cache, live.id) === content) {
       continue;
     }
@@ -1213,7 +1215,7 @@ async function publishProfiles(deps: NostrWorkerDeps, writeSet: ResolvedWriteSet
       watermarks.set(live.id, reservation.createdAt);
       const unsigned = buildKind0Event(
         live.name,
-        live.lightningAddress,
+        lud16,
         reservation.createdAt,
         nip05,
         about,

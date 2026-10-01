@@ -2024,6 +2024,35 @@ describe('runNostrWorkerTick', () => {
     expect(profileJson.picture).toBe('https://21.gifts/apple-touch-icon.png');
   });
 
+  it('publishes the wallet-backed address as lud16 when the account has a verified wallet', async () => {
+    const { auth, messages } = await seed();
+    const acc = await auth.getAccount('acc');
+    expect(acc).toBeDefined();
+    await auth.updateAccount({ ...acc!, lightningAddress: 'ada@walletofsatoshi.com' });
+    const stored = await auth.getAccount('acc');
+    vi.spyOn(auth, 'getAccount').mockResolvedValue({
+      ...stored!,
+      username: 'ada',
+      sparkPubkey: `02${'ab'.repeat(32)}`,
+      sparkPubkeyVerifiedAt: 1,
+    });
+    const publisher = new RecordingPublisher();
+    const env = { NOSTR_PUBLISH: '1', NOSTR_RELAY_SPACE: 'wss://relay.nostr.space' };
+    const lnurlServer = {
+      baseUrl: 'http://lnurl.internal',
+      publicBaseUrl: 'https://21.gifts',
+      host: '21.gifts',
+    };
+    for (const nowMs of [1_700_000_000_000, 1_700_000_060_000]) {
+      await runNostrWorkerTick(
+        deps({ messages, auth, kek: KEK, publisher, now: () => nowMs, env, lnurlServer }),
+      );
+    }
+    const profile = publisher.calls.find((call) => call.event['kind'] === 0);
+    const profileJson = JSON.parse(String(profile?.event['content'])) as { lud16: string };
+    expect(profileJson.lud16).toBe('ada@21.gifts');
+  });
+
   it('publishes a name that changed after listAccounts', async () => {
     const { auth } = await seed();
     const messages = new InMemoryMessageStore();
