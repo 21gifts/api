@@ -387,19 +387,29 @@ upstream is not contacted. A request without a validated
 
 **Gate** (fail → 404 `{ "error": "Not found" }`, upstream not contacted):
 `normalizeSparkPubkey(:pubkey)` not null; body is a JSON object with
-string `username`; `normalizeUsername(username)` not null; the account for
-that name exists with `sparkPubkey === pubkey`; no other account is
-verified on that key.
+string `username` and no other key whose lower-cased name is `username`
+(for example `Username`); `normalizeUsername(username)` not null; the
+account for that name exists with `sparkPubkey === pubkey`; no other
+account is verified on that key.
 
-Upstream `POST /lnurlpay/<pubkey>` with the body unchanged (15 s). On
-upstream 2xx, `markSparkPubkeyVerified` runs before the response
-(`account.wallet.verified` when it stores the timestamp). Upstream 2xx
-passed through with its status, body and only the `content-type` /
-`cache-control` headers (a 204 stays a 204). Upstream 4xx passes body and
-status through without verifying. Unreachable, store throw, or any other
-upstream status outside 2xx and 4xx (for example 5xx) → **Response**
-`503` `{ "error": "Lightning address service is unavailable" }`. Over
-limit → 429. Body too large → 413.
+Upstream `POST /lnurlpay/<pubkey>` with the parsed JSON re-serialised as
+the body (15 s), so the LNURL server receives exactly one `username`
+member — the one the gate checked. Path segments forwarded to the LNURL
+server are only `A-Z a-z 0-9 . _ ~ -` and never `.` or `..`; a refused
+segment is 404 without contacting upstream. On upstream 2xx,
+`markSparkPubkeyVerified` runs before the response
+(`account.wallet.verified` when it stores the timestamp). When that write
+does not store a timestamp, the account is re-read: if it still holds
+this key with `sparkPubkeyVerifiedAt` a number (a repeat of an already
+verified registration), the upstream response is passed through;
+otherwise **Response** `409`
+`{ "error": "Wallet registration could not be confirmed" }` and
+`account.wallet.unconfirmed` `{ accountId }`. Upstream 2xx passed through
+with its status, body and only the `content-type` / `cache-control`
+headers (a 204 stays a 204). Upstream 4xx passes body and status through
+without verifying. Unreachable, store throw, or any other upstream status
+outside 2xx and 4xx (for example 5xx) → **Response** `503`
+`{ "error": "Lightning address service is unavailable" }`. Over limit → 429. Body too large → 413.
 
 On `/lnurlpay/*`, the allow-list CORS (same origins) additionally allows
 the request headers `X-Breez-Signature` and `X-Breez-Timestamp`.
@@ -443,9 +453,15 @@ recover. Upstream may return HTTP 200 with
 ### `GET /verify/:paymentHash`
 
 LUD-21 payment verification forward. Mounted only when `LNURL_SERVER_URL`
-is set. Forwarded for any payment hash. No query string. Rate limit
-120/min/client. CORS `*`. Upstream `GET /verify/<paymentHash>` (15 s).
-Status mapping as recover.
+is set. Forwarded for a payment hash whose path segment is only
+`A-Z a-z 0-9 . _ ~ -` and is neither `.` nor `..` (for example
+`a%2Fb` decoded to `a/b` is refused). A refused segment → 404
+`{ "error": "Not found" }` without contacting upstream and without an
+`lnurl_server.unreachable` log. No query string. Rate limit
+120/min/client. CORS `*`. Upstream `GET /verify/<paymentHash>` (15 s)
+with the segment joined as-is (no percent-encoding). Status mapping as
+recover for reachable outcomes; network / timeout / redirect / body-read
+failure → 503 as above.
 
 ### `GET /pos`
 

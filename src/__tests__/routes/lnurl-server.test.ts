@@ -166,8 +166,15 @@ describe('lnurlServerRoutes', () => {
       expect(first.headers.get('content-type')).toBe('application/json');
       const verifiedAt = (await store.getAccount('acc'))?.sparkPubkeyVerifiedAt;
       expect(verifiedAt).toBe(NOW);
+      expect(JSON.parse(String(calls[0]?.init?.body))).toEqual({
+        username: 'Ada',
+        description: 'x',
+        signature: 'sig',
+        timestamp: 1,
+      });
 
       now = NOW + 5_000;
+      const getAccountSpy = vi.spyOn(store, 'getAccount');
       const second = await app.request(`/lnurlpay/${PUBKEY}`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
@@ -175,6 +182,7 @@ describe('lnurlServerRoutes', () => {
       });
       expect(second.status).toBe(200);
       expect((await store.getAccount('acc'))?.sparkPubkeyVerifiedAt).toBe(verifiedAt);
+      expect(getAccountSpy).toHaveBeenCalledWith('acc');
       expect(
         parsedEvents(warn).filter(
           (e) => e['event'] === 'account.wallet.verified' && e['accountId'] === 'acc',
@@ -188,6 +196,166 @@ describe('lnurlServerRoutes', () => {
         'x-breez-signature': 'sig',
         'x-breez-timestamp': '1',
       });
+    });
+
+    it('forwards a duplicate username key as the parsed value with username once', async () => {
+      const store = new InMemoryAuthStore();
+      await seedWallet(store, { id: 'acc', username: 'ada' });
+      const { fetchImpl, calls } = recordingFetch(
+        async () =>
+          new Response('{"ok":true}', {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          }),
+      );
+      const body =
+        '{"username":"other","username":"ada","description":"d","signature":"s","timestamp":1}';
+      const res = await mount(store, fetchImpl).request(`/lnurlpay/${PUBKEY}`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body,
+      });
+      expect(res.status).toBe(200);
+      expect(calls).toHaveLength(1);
+      const forwarded = String(calls[0]?.init?.body);
+      expect(JSON.parse(forwarded)).toEqual({
+        username: 'ada',
+        description: 'd',
+        signature: 's',
+        timestamp: 1,
+      });
+      expect(forwarded.match(/"username"/g)).toHaveLength(1);
+    });
+
+    it('returns 404 when a differently cased username key is present', async () => {
+      const store = new InMemoryAuthStore();
+      await seedWallet(store, { id: 'acc', username: 'ada' });
+      const { fetchImpl, calls } = recordingFetch(async () => new Response('no'));
+      const res = await mount(store, fetchImpl).request(`/lnurlpay/${PUBKEY}`, {
+        method: 'POST',
+        body: JSON.stringify({ username: 'ada', Username: 'other' }),
+      });
+      expect(res.status).toBe(404);
+      expect(calls).toHaveLength(0);
+    });
+
+    it('returns 409 when the username changes while registration is in flight', async () => {
+      const store = new InMemoryAuthStore();
+      await seedWallet(store, { id: 'acc', username: 'ada' });
+      const { fetchImpl, calls } = recordingFetch(async () => {
+        const current = await store.getAccount('acc');
+        expect(current).toBeDefined();
+        await store.updateAccount({ ...current!, username: 'changed' });
+        return new Response('{"ok":true}', {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      });
+      const res = await mount(store, fetchImpl).request(`/lnurlpay/${PUBKEY}`, {
+        method: 'POST',
+        body: JSON.stringify({ username: 'ada' }),
+      });
+      expect(res.status).toBe(409);
+      expect(await res.json()).toEqual({
+        error: 'Wallet registration could not be confirmed',
+      });
+      expect(calls).toHaveLength(1);
+      expect(typeof (await store.getAccount('acc'))?.sparkPubkeyVerifiedAt).not.toBe('number');
+      expect(
+        parsedEvents(warn).some(
+          (e) => e['event'] === 'account.wallet.unconfirmed' && e['accountId'] === 'acc',
+        ),
+      ).toBe(true);
+    });
+
+    it('returns 409 when another account becomes verified on the key during registration', async () => {
+      const store = new InMemoryAuthStore();
+      await seedWallet(store, {
+        id: 'first',
+        username: 'ada',
+        verified: false,
+        viewKey: `a${'d'.repeat(63)}`,
+      });
+      await seedWallet(store, {
+        id: 'second',
+        username: 'bob',
+        verified: false,
+        viewKey: `b${'e'.repeat(63)}`,
+      });
+      const { fetchImpl, calls } = recordingFetch(async () => {
+        await store.markSparkPubkeyVerified('first', PUBKEY, 'ada', NOW);
+        return new Response('{"ok":true}', {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      });
+      const res = await mount(store, fetchImpl).request(`/lnurlpay/${PUBKEY}`, {
+        method: 'POST',
+        body: JSON.stringify({ username: 'bob' }),
+      });
+      expect(res.status).toBe(409);
+      expect(await res.json()).toEqual({
+        error: 'Wallet registration could not be confirmed',
+      });
+      expect(calls).toHaveLength(1);
+      expect(typeof (await store.getAccount('second'))?.sparkPubkeyVerifiedAt).not.toBe('number');
+      expect(typeof (await store.getAccount('first'))?.sparkPubkeyVerifiedAt).toBe('number');
+      expect(
+        parsedEvents(warn).some(
+          (e) => e['event'] === 'account.wallet.unconfirmed' && e['accountId'] === 'second',
+        ),
+      ).toBe(true);
+    });
+
+    it('returns 409 when the account is removed while registration is in flight', async () => {
+      const store = new InMemoryAuthStore();
+      await seedWallet(store, { id: 'acc', username: 'ada' });
+      const { fetchImpl } = recordingFetch(async () => {
+        await store.deleteAccount('acc');
+        return new Response('{"ok":true}', {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      });
+      const res = await mount(store, fetchImpl).request(`/lnurlpay/${PUBKEY}`, {
+        method: 'POST',
+        body: JSON.stringify({ username: 'ada' }),
+      });
+      expect(res.status).toBe(409);
+      expect(await res.json()).toEqual({
+        error: 'Wallet registration could not be confirmed',
+      });
+      expect(
+        parsedEvents(warn).some(
+          (e) => e['event'] === 'account.wallet.unconfirmed' && e['accountId'] === 'acc',
+        ),
+      ).toBe(true);
+    });
+
+    it('returns 409 when the claimed key changes while registration is in flight', async () => {
+      const store = new InMemoryAuthStore();
+      await seedWallet(store, { id: 'acc', username: 'ada' });
+      const { fetchImpl } = recordingFetch(async () => {
+        await store.claimSparkPubkey('acc', PUBKEY_OTHER);
+        return new Response('{"ok":true}', {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      });
+      const res = await mount(store, fetchImpl).request(`/lnurlpay/${PUBKEY}`, {
+        method: 'POST',
+        body: JSON.stringify({ username: 'ada' }),
+      });
+      expect(res.status).toBe(409);
+      expect(await res.json()).toEqual({
+        error: 'Wallet registration could not be confirmed',
+      });
+      expect(typeof (await store.getAccount('acc'))?.sparkPubkeyVerifiedAt).not.toBe('number');
+      expect(
+        parsedEvents(warn).some(
+          (e) => e['event'] === 'account.wallet.unconfirmed' && e['accountId'] === 'acc',
+        ),
+      ).toBe(true);
     });
 
     it('returns 404 when the pubkey does not normalise', async () => {
@@ -343,11 +511,12 @@ describe('lnurlServerRoutes', () => {
       expect(cancelled).toBe(true);
     });
 
-    it('forwards a body at the limit byte-identically, including when streamed', async () => {
+    it('forwards a JSON body just under the limit with equal parsed content', async () => {
       const store = new InMemoryAuthStore();
       await seedWallet(store, { id: 'acc', username: 'ada' });
-      const body = paddedRegisterBody(LNURL_BODY_LIMIT_BYTES);
-      expect(new TextEncoder().encode(body).byteLength).toBe(LNURL_BODY_LIMIT_BYTES);
+      const body = paddedRegisterBody(LNURL_BODY_LIMIT_BYTES - 1);
+      expect(new TextEncoder().encode(body).byteLength).toBe(LNURL_BODY_LIMIT_BYTES - 1);
+      const expected = JSON.parse(body) as Record<string, unknown>;
 
       const { fetchImpl: fetchPlain, calls: callsPlain } = recordingFetch(
         async () =>
@@ -362,7 +531,8 @@ describe('lnurlServerRoutes', () => {
         body,
       });
       expect(plain.status).toBe(200);
-      expect(callsPlain[0]?.init?.body).toBe(body);
+      expect(JSON.parse(String(callsPlain[0]?.init?.body))).toEqual(expected);
+      expect(String(callsPlain[0]?.init?.body).match(/"username"/g)).toHaveLength(1);
 
       const { fetchImpl: fetchStream, calls: callsStream } = recordingFetch(
         async () =>
@@ -375,7 +545,7 @@ describe('lnurlServerRoutes', () => {
       expect(streamed.headers.has('content-length')).toBe(false);
       const streamRes = await mount(store, fetchStream).request(streamed);
       expect(streamRes.status).toBe(200);
-      expect(callsStream[0]?.init?.body).toBe(body);
+      expect(JSON.parse(String(callsStream[0]?.init?.body))).toEqual(expected);
     });
 
     it('passes through upstream 204 with an empty body and marks verified', async () => {
@@ -526,6 +696,33 @@ describe('lnurlServerRoutes', () => {
       expect(res.status).toBe(200);
       expect(calls).toHaveLength(1);
       expect(calls[0]?.init?.body).toBe('');
+    });
+
+    it('forwards a body at the limit byte-identically, including when streamed', async () => {
+      const store = new InMemoryAuthStore();
+      await seedWallet(store, { id: 'acc', username: 'ada' });
+      const body = paddedRegisterBody(LNURL_BODY_LIMIT_BYTES);
+      expect(new TextEncoder().encode(body).byteLength).toBe(LNURL_BODY_LIMIT_BYTES);
+
+      const { fetchImpl: fetchPlain, calls: callsPlain } = recordingFetch(
+        async () => new Response('ok', { status: 200 }),
+      );
+      const plain = await mount(store, fetchPlain).request(`/lnurlpay/${PUBKEY}/recover`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body,
+      });
+      expect(plain.status).toBe(200);
+      expect(callsPlain[0]?.init?.body).toBe(body);
+
+      const { fetchImpl: fetchStream, calls: callsStream } = recordingFetch(
+        async () => new Response('ok', { status: 200 }),
+      );
+      const streamed = streamedRequest(`http://localhost/lnurlpay/${PUBKEY}/recover`, body);
+      expect(streamed.headers.has('content-length')).toBe(false);
+      const streamRes = await mount(store, fetchStream).request(streamed);
+      expect(streamRes.status).toBe(200);
+      expect(callsStream[0]?.init?.body).toBe(body);
     });
 
     it('returns 503 when the store throws', async () => {
@@ -741,6 +938,20 @@ describe('lnurlServerRoutes', () => {
       }).request('/verify/abc');
       expect(down.status).toBe(503);
       expect(await down.json()).toEqual({ error: 'Lightning address service is unavailable' });
+      expect(
+        parsedEvents(warn).some(
+          (e) => e['event'] === 'lnurl_server.unreachable' && e['route'] === 'verify',
+        ),
+      ).toBe(true);
+    });
+
+    it('returns 404 for a refused paymentHash segment without contacting upstream', async () => {
+      const { fetchImpl, calls } = recordingFetch(async () => new Response('no'));
+      const res = await mount(new InMemoryAuthStore(), fetchImpl).request('/verify/a%2Fb');
+      expect(res.status).toBe(404);
+      expect(await res.json()).toEqual({ error: 'Not found' });
+      expect(calls).toHaveLength(0);
+      expect(parsedEvents(warn).some((e) => e['event'] === 'lnurl_server.unreachable')).toBe(false);
     });
 
     it('returns 503 when the handler throws before the upstream call', async () => {

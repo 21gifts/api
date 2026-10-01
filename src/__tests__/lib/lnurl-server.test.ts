@@ -15,6 +15,9 @@ const CONFIG: LnurlServerConfig = {
   host: 'example.test',
 };
 
+const PUBKEY = `02${'a'.repeat(64)}`;
+const PAYMENT_HASH = 'b'.repeat(64);
+
 describe('LNURL server constants', () => {
   it('exports the documented timeouts and body limit', () => {
     expect(LNURL_PAY_REQUEST_TIMEOUT_MS).toBe(5_000);
@@ -28,20 +31,29 @@ describe('callLnurlServer', () => {
     vi.restoreAllMocks();
   });
 
-  it('builds the URL with encoded segments and appends the raw search', async () => {
+  it('builds the URL with allow-listed segments verbatim and appends the raw search', async () => {
     let seenUrl = '';
     const fetchImpl: FetchFn = async (input) => {
       seenUrl = String(input);
       return new Response(new TextEncoder().encode('ok'), { status: 200 });
     };
-    const result = await callLnurlServer(CONFIG, fetchImpl, {
-      method: 'GET',
-      segments: ['lnurlp', 'a/b', 'invoice'],
-      search: '?amount=1000&comment=hi%20there',
-      timeoutMs: 1_000,
-    });
-    expect(result).toEqual({ ok: true, status: 200, body: 'ok', headers: {} });
-    expect(seenUrl).toBe('http://lnurl.test/lnurlp/a%2Fb/invoice?amount=1000&comment=hi%20there');
+    const cases: Array<{ segments: readonly string[]; expectedPath: string }> = [
+      { segments: ['.well-known', 'lnurlp', 'ada'], expectedPath: '/.well-known/lnurlp/ada' },
+      { segments: ['lnurlpay', PUBKEY], expectedPath: `/lnurlpay/${PUBKEY}` },
+      { segments: ['lnurlp', 'a.b_c-d', 'invoice'], expectedPath: '/lnurlp/a.b_c-d/invoice' },
+      { segments: ['verify', PAYMENT_HASH], expectedPath: `/verify/${PAYMENT_HASH}` },
+      { segments: ['x~y'], expectedPath: '/x~y' },
+    ];
+    for (const { segments, expectedPath } of cases) {
+      const result = await callLnurlServer(CONFIG, fetchImpl, {
+        method: 'GET',
+        segments,
+        search: '?amount=1000&comment=hi%20there',
+        timeoutMs: 1_000,
+      });
+      expect(result).toEqual({ ok: true, status: 200, body: 'ok', headers: {} });
+      expect(seenUrl).toBe(`http://lnurl.test${expectedPath}?amount=1000&comment=hi%20there`);
+    }
   });
 
   it('always sends Host from config and only the allow-listed request headers', async () => {
@@ -69,7 +81,7 @@ describe('callLnurlServer', () => {
     });
     const result = await callLnurlServer(CONFIG, fetchImpl, {
       method: 'POST',
-      segments: ['lnurlpay', `02${'a'.repeat(64)}`],
+      segments: ['lnurlpay', PUBKEY],
       headers: inbound,
       body: '{"username":"ada"}',
       timeoutMs: 2_000,
@@ -122,21 +134,33 @@ describe('callLnurlServer', () => {
     expect(timeoutSpy).toHaveBeenCalledWith(4_321);
   });
 
-  it('refuses empty, ".", and ".." segments without calling fetch', async () => {
+  it('refuses empty, ".", "..", and disallowed characters without calling fetch', async () => {
     const fetchImpl: FetchFn = async () => {
       throw new Error('fetch must not be called');
     };
-    for (const segments of [[''], ['.'], ['..'], ['lnurlp', '..'], ['', 'x']] as const) {
+    const refused: readonly (readonly string[])[] = [
+      [''],
+      ['.'],
+      ['..'],
+      ['lnurlp', '..'],
+      ['', 'x'],
+      ['a/b'],
+      ['a\\b'],
+      ['a%2Fb'],
+      ['a b'],
+      ['a\nb'],
+    ];
+    for (const segments of refused) {
       const result = await callLnurlServer(CONFIG, fetchImpl, {
         method: 'GET',
         segments,
         timeoutMs: 100,
       });
-      expect(result).toEqual({ ok: false });
+      expect(result).toEqual({ ok: false, reason: 'segment' });
     }
   });
 
-  it('returns ok:false when fetch throws', async () => {
+  it('returns unreachable when fetch throws', async () => {
     const result = await callLnurlServer(
       CONFIG,
       async () => {
@@ -144,10 +168,10 @@ describe('callLnurlServer', () => {
       },
       { method: 'GET', segments: ['verify', 'x'], timeoutMs: 100 },
     );
-    expect(result).toEqual({ ok: false });
+    expect(result).toEqual({ ok: false, reason: 'unreachable' });
   });
 
-  it('returns ok:false when response.text() throws', async () => {
+  it('returns unreachable when response.text() throws', async () => {
     const fetchImpl: FetchFn = async () =>
       ({
         status: 200,
@@ -161,7 +185,7 @@ describe('callLnurlServer', () => {
       segments: ['verify', 'x'],
       timeoutMs: 100,
     });
-    expect(result).toEqual({ ok: false });
+    expect(result).toEqual({ ok: false, reason: 'unreachable' });
   });
 
   it('defaults search to an empty string', async () => {
