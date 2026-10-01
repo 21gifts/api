@@ -129,6 +129,29 @@ describe('GET /shops/activity', () => {
     expect(body.days.slice(0, 29).every((row) => row.shopCount === 0)).toBe(true);
   });
 
+  it('counts a note only when the account on the note has the charge', async () => {
+    const notes: ShopNoteRef[] = [{ id: 'n1', accountId: 'current', text: 'A #21GiftsShop' }];
+    const formerOnly: PosChargeRef[] = [{ accountId: 'former', createdAtMs: NOW_MS }];
+    const res = await get(mount(await staffed(), notes, formerOnly), 'mod');
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { days: Array<{ day: string; shopCount: number }> };
+    expect(body.days).toHaveLength(30);
+    expect(body.days[29]).toEqual({ day: TODAY, shopCount: 0 });
+    expect(body.days.slice(0, 29).every((row) => row.shopCount === 0)).toBe(true);
+
+    const charges: PosChargeRef[] = [
+      { accountId: 'former', createdAtMs: NOW_MS },
+      { accountId: 'current', createdAtMs: NOW_MS },
+    ];
+    const counted = await get(mount(await staffed(), notes, charges), 'mod');
+    expect(counted.status).toBe(200);
+    const countedBody = (await counted.json()) as {
+      days: Array<{ day: string; shopCount: number }>;
+    };
+    expect(countedBody.days).toHaveLength(30);
+    expect(countedBody.days[29]).toEqual({ day: TODAY, shopCount: 1 });
+  });
+
   it('returns 503 when a store call throws', async () => {
     const app = new Hono().route(
       '/shops/activity',

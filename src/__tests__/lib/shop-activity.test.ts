@@ -78,4 +78,19 @@ describe('activeShopDays', () => {
     const nextDay = activeShopDays(notes, [charge({ createdAtMs: NEXT_MIDNIGHT_MS })], TODAY);
     expect(nextDay.every((row) => row.shopCount === 0)).toBe(true);
   });
+
+  it('counts a note only when the account currently on it has a charge that day', () => {
+    const notes: ShopNoteRef[] = [shop({ id: 'n1', accountId: 'current' })];
+    const formerOnly = activeShopDays(notes, [charge({ accountId: 'former' })], TODAY);
+    expect(formerOnly[29]).toEqual({ day: TODAY, shopCount: 0 });
+    expect(formerOnly.slice(0, 29).every((row) => row.shopCount === 0)).toBe(true);
+
+    const withCurrent = activeShopDays(
+      notes,
+      [charge({ accountId: 'former' }), charge({ accountId: 'current' })],
+      TODAY,
+    );
+    expect(withCurrent[29]).toEqual({ day: TODAY, shopCount: 1 });
+    expect(withCurrent.slice(0, 29).every((row) => row.shopCount === 0)).toBe(true);
+  });
 });
