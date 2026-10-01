@@ -227,7 +227,7 @@ async function pingTodayMedia(
  * 200 `{ funding }` (log `funding.applied`), or 503
  * `{ error: 'Funding is unavailable' }`. `basis` is 403 Forbidden.
  *
- * @param deps - Auth store, funding store, message store, gift store, clock, and optional spend ping.
+ * @param deps - Auth store, funding store, message store, gift store, clock, and optional spend ping and LNURL server.
  * @returns A Hono app with member apply and staff review routes.
  */
 export function fundingRoutes(deps: FundingRouteDeps): Hono {
