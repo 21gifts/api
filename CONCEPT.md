@@ -748,8 +748,8 @@ GitHub organization: **`21gifts`** (created 2026-05-25).
 - **One image, multiple environments** — for the app, build-time placeholders
   for `NEXT_PUBLIC_*` variables are replaced at container start by an
   `entrypoint.sh` with runtime values; the api reads its config purely from
-  environment variables at startup. No environment-specific build settings: each
-  environment's image differs only by its source branch.
+  environment variables at startup. No environment-specific build settings: every
+  branch is built with the same Dockerfile and build steps.
 
 ---
 
