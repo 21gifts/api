@@ -385,10 +385,11 @@ verified on that key.
 
 Upstream `POST /lnurlpay/<pubkey>` with the body unchanged (15 s). On
 upstream 2xx, `markSparkPubkeyVerified` runs before the response
-(`wallet.address.verified` when it stores the timestamp). Upstream 2xx
+(`account.wallet.verified` when it stores the timestamp). Upstream 2xx
 passed through with its status, body and only the `content-type` /
 `cache-control` headers (a 204 stays a 204). Upstream 4xx passes body and
-status through without verifying. Unreachable / store throw → **Response**
+status through without verifying. Unreachable, store throw, or any other
+upstream status outside 2xx and 4xx (for example 5xx) → **Response**
 `503` `{ "error": "Lightning address service is unavailable" }`. Over
 limit → 429. Body too large → 413.
 
@@ -405,7 +406,8 @@ contacted.
 **Gate:** pubkey normalises; `auth.isSparkPubkeyClaimed(pubkey)`. Fail → 404. Upstream `POST /lnurlpay/<pubkey>/recover` (15 s). Status mapping:
 upstream 2xx passed through with its status, body and only the
 `content-type` / `cache-control` headers (a 204 stays a 204); upstream
-404 → 404; unreachable → 503 as above.
+404 → 404; unreachable, store throw, or any other upstream status (other
+4xx and 5xx) → 503 as above.
 
 ### `GET /lnurlpay/:pubkey/metadata`
 
@@ -433,9 +435,9 @@ recover. Upstream may return HTTP 200 with
 ### `GET /verify/:paymentHash`
 
 LUD-21 payment verification forward. Mounted only when `LNURL_SERVER_URL`
-is set. No store gate. No query string. Rate limit 120/min/client. CORS
-`*`. Upstream `GET /verify/<paymentHash>` (15 s). Status mapping as
-recover.
+is set. Forwarded for any payment hash. No query string. Rate limit
+120/min/client. CORS `*`. Upstream `GET /verify/<paymentHash>` (15 s).
+Status mapping as recover.
 
 ### `GET /pos`
 
@@ -1540,11 +1542,16 @@ Set the unique LUD-16 / NIP-05 local-part. Body:
 ```
 
 Charset is lowercase `a-z0-9-_.`, 1–32 characters, leading letter or
-digit. A trailing `.` or two dots in a row (`..`) is rejected.
-`a.b_c-d` is valid. Cannot skip (no `POST /me/setup/skip` step for
-username; skip body is only `"name" | "lightning-address"`). Same handle
-on the same account is idempotent **200**. Once the wallet is verified
-(`sparkPubkeyVerifiedAt` is a number) the username is fixed.
+digit. A trailing `.` or two dots in a row (`..`) is rejected. Routes that
+look an account up by a normalised username
+(`GET /.well-known/lnurlp/:username`, `GET /pay/:username`, `@` mentions
+and the username lookups in `/messages`) apply the same rule, so a stored
+username of that shape is not matched until it is renamed; existing
+accounts are not migrated. `a.b_c-d` is valid. Cannot skip (no
+`POST /me/setup/skip` step for username; skip body is only
+`"name" | "lightning-address"`). Same handle on the same account is
+idempotent **200**. Once the wallet is verified (`sparkPubkeyVerifiedAt`
+is a number) the username is fixed.
 
 Missing/invalid bearer → **Response** `401` `{ "error": "Unauthorized" }`.
 
