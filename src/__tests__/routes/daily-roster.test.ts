@@ -315,6 +315,78 @@ describe('daily payout roster routes', () => {
     expect(called).toBe(false);
   });
 
+  it('folds newlines, trims, and proxies an empty comment', async () => {
+    let seen = 'unset';
+    const authStore = await seeded();
+    const client = fakeRoster({
+      setComment: async (comment) => {
+        seen = comment;
+        return { ...ROSTER, comment };
+      },
+    });
+    const folded = await post(
+      mount(authStore, client),
+      '/funding/daily-roster/comment',
+      'founder',
+      { comment: '  a\r\nb\nc\rd  ' },
+    );
+    expect(folded.status).toBe(200);
+    expect(seen).toBe('a b c d');
+    expect(JSON.stringify(parsedEvents(warn))).not.toContain('a b c d');
+    const empty = await post(mount(authStore, client), '/funding/daily-roster/comment', 'founder', {
+      comment: ' \n\r ',
+    });
+    expect(empty.status).toBe(200);
+    expect(seen).toBe('');
+  });
+
+  it('returns 400 Invalid comment and does not call spend when the comment is longer than 500', async () => {
+    let called = false;
+    const authStore = await seeded();
+    const tooLong = `  ${'a'.repeat(501)}\n`;
+    const res = await post(
+      mount(
+        authStore,
+        fakeRoster({
+          setComment: async () => {
+            called = true;
+            return ROSTER;
+          },
+        }),
+      ),
+      '/funding/daily-roster/comment',
+      'founder',
+      { comment: tooLong },
+    );
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: 'Invalid comment' });
+    expect(called).toBe(false);
+    expect(JSON.stringify(parsedEvents(warn))).not.toContain('a'.repeat(501));
+  });
+
+  it('proxies a comment of exactly 500 characters after trim', async () => {
+    let seen = '';
+    const authStore = await seeded();
+    const exact = 'b'.repeat(500);
+    const res = await post(
+      mount(
+        authStore,
+        fakeRoster({
+          setComment: async (comment) => {
+            seen = comment;
+            return { ...ROSTER, comment };
+          },
+        }),
+      ),
+      '/funding/daily-roster/comment',
+      'founder',
+      { comment: ` ${exact} ` },
+    );
+    expect(res.status).toBe(200);
+    expect(seen).toBe(exact);
+    expect(JSON.stringify(parsedEvents(warn))).not.toContain(exact);
+  });
+
   it('createApp passes an injected roster client through to the route', async () => {
     const authStore = await seeded();
     const fetchImpl: FetchFn = () => Promise.reject(new Error('network is forbidden'));
