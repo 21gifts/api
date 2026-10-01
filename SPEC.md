@@ -112,7 +112,7 @@ Public base URLs used in examples:
 | GET    | `/view/:viewKey/about/photo`                         | none                                         | Profile-note photo bytes for the view-key card                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
 | GET    | `/view/:viewKey/activity`                            | none                                         | Public given/received payload for the account behind the view key                                                                                                                                                                                                                                                                                                                                                                                                                                               |
 | POST   | `/me/setup/skip`                                     | Bearer                                       | Skip name or Lightning Address wizard step                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
-| POST   | `/me/name`                                           | Bearer                                       | Set/replace display name (profile note when name + LN are both set); auto-assign username when free                                                                                                                                                                                                                                                                                                                                                                                                             |
+| POST   | `/me/name`                                           | Bearer                                       | Set/replace display name (profile note when name + LN or a verified wallet are set); auto-assign username when free                                                                                                                                                                                                                                                                                                                                                                                             |
 | POST   | `/me/username`                                       | Bearer                                       | Set unique LUD-16 / NIP-05 local-part (cannot skip; fixed once wallet verified; no trailing/double dot)                                                                                                                                                                                                                                                                                                                                                                                                         |
 | POST   | `/me/location`                                       | Bearer                                       | Set, change, or clear free-text profile location                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
 | PUT    | `/me/about`                                          | Bearer                                       | Set/clear About me text and optional photo on the profile note                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
@@ -4234,7 +4234,8 @@ excluded.
 ### `GET /messages/compose-target`
 
 Bearer session required. After auth, `requireAction(account, 'forum.post')`
-(rules + name + username + Lightning Address). Returns the official platform
+(rules + name + username + Lightning Address, which a verified wallet
+satisfies). Returns the official platform
 profile note so a basis account can invoice 1 sat to 21.gifts before posting
 or replying:
 
@@ -4264,7 +4265,8 @@ Missing required fields → **Response** `409`:
 { "error": "missing_requirements", "missing": ["rules", "name", "username", "lightning-address"] }
 ```
 
-Platform note not yet payable (unsigned or missing Lightning Address) →
+Platform note not yet payable (unsigned, or the platform account has no
+receiving address) →
 **Response** `400`:
 
 ```json
@@ -4348,7 +4350,7 @@ accept `inReplyTo` (they are always top-level).
 
 After auth, `requireAction(account, 'forum.post')` requires rules agreement,
 a non-blank display name, a non-blank username, and a non-blank Lightning
-Address (skip timestamps do not satisfy; username cannot be skipped). The api stores a **name snapshot** (trimmed account name at
+Address or a verified wallet (skip timestamps do not satisfy; username cannot be skipped). The api stores a **name snapshot** (trimmed account name at
 post time), normalised text (possibly `""` for photo-only), optional
 JPEG/PNG/WebP bytes (≤ 1 MiB; MIME from magic bytes), `parentId` (null for
 top-level notes), and a timestamp. Text longer than **8000** after trim, or
@@ -4370,7 +4372,7 @@ them). `GET /notifications` drops and deletes a stored generic row when
 the scan also has `forum_mention` for the same `replyId`. No
 `replyCount`, and no photo or video bytes in the JSON. `sats` is 0 and
 `payable` is false until the worker signs the note (and stays false without
-author LN). `role` is the posting session account's live `account.role`. Web Push and in-app rows for a **top-level** note (`notifyForumPost`, kind
+an author receiving address). `role` is the posting session account's live `account.role`. Web Push and in-app rows for a **top-level** note (`notifyForumPost`, kind
 `forum_post`, `url` `/messages/<id>`, `tag` `forum_post:<id>`) and for a
 **reply** (`notifyForumReply`, kind `forum_reply`, `url` `/messages/<replyId>`,
 `tag` `forum_reply:<replyId>`) fan out in-app to every account except the
@@ -4431,7 +4433,7 @@ Missing required fields → **Response** `409`:
 
 (`missing` is never empty; order is `rules`, then `name`, then `username`,
 then `lightning-address`. A named, rules-agreed, username-set account with
-null LN yields `["lightning-address"]` only.)
+null LN and no verified wallet yields `["lightning-address"]` only.)
 
 Body is not JSON with `text` and/or `photo` → **Response** `400`:
 
