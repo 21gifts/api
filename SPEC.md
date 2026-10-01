@@ -4331,8 +4331,9 @@ Missing Bearer → **401** `{ "error": "Unauthorized" }`.
 Payer missing living-room rules → **409** `{ "error": "missing_requirements", "missing": ["rules"] }`.
 Malformed body or `sats` above 10 million → **400** `{ "error": "Expected a JSON body with a positive \"sats\" integer" }`.
 Unknown id → **404** `{ "error": "Not found" }`. Unsigned note (null or empty
-`eventId`), author without a receiving address (no verified wallet and no
-non-blank Lightning Address, including whitespace-only), or missing recipient pubkey →
+`eventId`), author without a receiving address (no verified wallet with the LNURL
+server configured, and no non-blank Lightning Address, including
+whitespace-only), or missing recipient pubkey →
 **400** `{ "error": "This message cannot be paid yet" }`. Missing KEK →
 **503** `{ "error": "Messages are unavailable" }` (before the limiter).
 Over-limit → **429** `{ "error": "Too many payments" }` (`Retry-After: 10`) —
@@ -4412,7 +4413,7 @@ Missing or invalid Bearer → **401** `{ "error": "Unauthorized" }`, including w
 Unknown id, a non-UUID after a valid session, a note that is not a live repayable ask, a credit that is not funded yet, or a caller who is not the author → **404** `{ "error": "Not found" }`. GET of that same unfunded credit stays **200**.
 Nothing left to pay → **400** `{ "error": "Nothing is due" }`.
 Note not payable yet → **400** `{ "error": "This message cannot be paid yet" }`.
-Giver without a Lightning address → **400** `{ "error": "A giver has no Lightning address" }`.
+Giver without a usable receiving address → **400** `{ "error": "A giver has no Lightning address" }`.
 Recipient wallet cannot take the payment → **400** `{ "error": "The recipient's wallet cannot receive this Bitcoin payment" }`.
 Other payment start failure → **400** `{ "error": "Could not start the Bitcoin payment" }`.
 Author missing forum pay → **409** `{ "error": "missing_requirements", "missing": ["rules"] }`.
