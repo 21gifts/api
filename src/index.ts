@@ -14,7 +14,12 @@ import { WebsocketNostrPublisher } from './lib/nostr/publish';
 import { WebsocketNostrQuerier } from './lib/nostr/query';
 import { PostRateLimiter } from './lib/nostr/rate-limit';
 import { InMemoryBannerStore } from './lib/banner-store';
-import { RELAY_TIMEOUT_MS, startNostrWorker, WORKER_INTERVAL_MS } from './lib/nostr/worker';
+import {
+  RELAY_TIMEOUT_MS,
+  startNostrWorker,
+  WORKER_INTERVAL_MS,
+  zapReceiptIngest,
+} from './lib/nostr/worker';
 import { InMemoryMessageStore, textHasHashtagToken } from './lib/message-store';
 import { publishExistingShopPlaces, resolveMapPush } from './lib/ocp-place';
 import { resolveSpendPing } from './lib/spend-ping';
@@ -26,6 +31,9 @@ import { UnconfiguredPushSender, WebPushSender, type PushSender } from './lib/pu
 import { InMemoryPushStore } from './lib/push-store';
 import { PUSH_WORKER_INTERVAL_MS, startPushWorker } from './lib/push-worker';
 import { resolveMediaDir } from './lib/video';
+import { resolveFreePaymentsConfig, resolveLnurlServerConfig } from './lib/config';
+import { InMemorySparkInvoiceStore } from './lib/spark-invoice-store';
+import { startSparkInvoiceWorker } from './lib/spark-worker';
 import { createApp, parseBindAddr, resolveBindAddr } from './server';
 
 /* v8 ignore start — Bun runtime boot path; exercised by smoke tests, not unit tests */
@@ -95,6 +103,12 @@ if (import.meta.main) {
   const postLimiter = new PostRateLimiter();
   const forumMessages = messageStore ?? new InMemoryMessageStore();
   const banners = boot.bannerStore ?? new InMemoryBannerStore();
+  const lnurlServer = resolveLnurlServerConfig(process.env) ?? undefined;
+  const freePayments = resolveFreePaymentsConfig(process.env);
+  const sparkInvoiceStore =
+    lnurlServer !== undefined && freePayments !== null
+      ? (boot.sparkInvoiceStore ?? new InMemorySparkInvoiceStore())
+      : undefined;
   const app = createApp({
     authStore,
     btcUsdRates,
@@ -125,6 +139,7 @@ if (import.meta.main) {
     vapidPublicKey: vapidPublicKey ?? '',
     postLimiter,
     bannerStore: banners,
+    ...(sparkInvoiceStore === undefined ? {} : { sparkInvoiceStore }),
   });
   Bun.serve({ fetch: app.fetch, hostname: host, port });
   console.warn(`21gifts-api listening on ${host}:${port}`);
@@ -149,29 +164,43 @@ if (import.meta.main) {
   if (sender.isConfigured()) {
     startPushWorker({ store: pushStore, sender, now: Date.now }, PUSH_WORKER_INTERVAL_MS);
   }
+  const ingestDeps = {
+    messages: forumMessages,
+    auth: authStore,
+    querier,
+    fetchImpl: globalThis.fetch,
+    now: Date.now,
+    env: process.env,
+    pushStore,
+    postLimiter,
+    ...(conversationStore === undefined ? {} : { conversations: conversationStore }),
+    ...(notificationStore === undefined ? {} : { notificationStore }),
+    ...(spendPing === undefined ? {} : { spendPing }),
+    ...(fundingStore === undefined ? {} : { fundingStore }),
+    fiatRates,
+    ...(lnurlServer === undefined ? {} : { lnurlServer }),
+  };
   if (publisher !== undefined && nostrKek !== undefined && messageStore !== undefined) {
     startNostrWorker(
       {
-        messages: messageStore,
-        auth: authStore,
+        ...ingestDeps,
         kek: nostrKek,
         publisher,
-        querier,
         externalLimiter: new ExternalIngestLimiter(),
-        fetchImpl: globalThis.fetch,
-        now: Date.now,
-        env: process.env,
-        pushStore,
-        postLimiter,
-        ...(conversationStore === undefined ? {} : { conversations: conversationStore }),
-        ...(notificationStore === undefined ? {} : { notificationStore }),
-        ...(spendPing === undefined ? {} : { spendPing }),
-        ...(fundingStore === undefined ? {} : { fundingStore }),
         banners,
-        fiatRates,
       },
       WORKER_INTERVAL_MS,
     );
+  }
+  if (sparkInvoiceStore !== undefined && freePayments !== null) {
+    startSparkInvoiceWorker({
+      store: sparkInvoiceStore,
+      config: freePayments,
+      fetchImpl: globalThis.fetch,
+      publisher: publisher ?? new WebsocketNostrPublisher(),
+      ingest: zapReceiptIngest(ingestDeps),
+      now: Date.now,
+    });
   }
 }
 /* v8 ignore stop */

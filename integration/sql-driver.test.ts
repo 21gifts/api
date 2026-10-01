@@ -6,6 +6,7 @@ import type { FundingGrant } from '@/lib/funding';
 import { migrateFundingSchema, PostgresFundingStore } from '@/lib/funding-store';
 import { migrateDbChangeSchema } from '@/lib/db-change';
 import { postgresTextArrayLiteral } from '@/lib/postgres-text-array';
+import { migrateSparkInvoiceSchema, PostgresSparkInvoiceStore } from '@/lib/spark-invoice-store';
 
 const databaseUrl = process.env['DATABASE_URL'];
 if (databaseUrl === undefined || databaseUrl === '') {
@@ -265,6 +266,87 @@ describe('PostgresAuthStore spark pubkey', () => {
           row.after?.['spark_pubkey'] === pubkey,
       );
       expect(verifyChange).toBeDefined();
+    } finally {
+      await closeIfPossible(sql);
+    }
+  });
+});
+
+describe('PostgresSparkInvoiceStore', () => {
+  test('issue, re-issue, list open, settle once, and db_change', async () => {
+    const { client, sql } = createBunSqlClient(databaseUrl);
+    try {
+      await migrateSparkInvoiceSchema(client);
+      await migrateDbChangeSchema(client);
+
+      const store = new PostgresSparkInvoiceStore(client);
+      const paymentHash = `${crypto.randomUUID().replaceAll('-', '')}${crypto.randomUUID().replaceAll('-', '')}`;
+      const invoice = `spark1test${paymentHash}`;
+      const issuedAt = new Date(Date.now() - 10 * 60_000);
+      const row = {
+        paymentHash,
+        invoice,
+        receiverPubkey: `02${'a'.repeat(64)}`,
+        amountSats: 21,
+        bolt11: 'lnbc210n1test',
+        zapRequest: '{"kind":9734}',
+        createdAt: issuedAt,
+      };
+      expect(await store.issue(row)).toBe(invoice);
+
+      const reissuedAt = new Date(issuedAt.getTime() + 60_000);
+      expect(
+        await store.issue({ ...row, invoice: `spark1other${paymentHash}`, createdAt: reissuedAt }),
+      ).toBe(invoice);
+
+      const open = await store.listOpen(new Date(issuedAt.getTime() - 60_000));
+      const mine = open.find((candidate) => candidate.paymentHash === paymentHash);
+      expect(mine?.invoice).toBe(invoice);
+      expect(mine?.createdAt.getTime()).toBe(reissuedAt.getTime());
+      expect(mine?.status).toBe('open');
+      expect(mine?.amountSats).toBe(21);
+      expect(
+        (await store.listOpen(new Date(reissuedAt.getTime() + 1))).some(
+          (candidate) => candidate.paymentHash === paymentHash,
+        ),
+      ).toBe(false);
+
+      expect(await store.markSettled(paymentHash, 'ab'.repeat(16), 'cd'.repeat(32))).toBe(true);
+      expect(await store.markSettled(paymentHash, 'ab'.repeat(16), 'cd'.repeat(32))).toBe(false);
+      expect(
+        (await store.listOpen(new Date(0))).some(
+          (candidate) => candidate.paymentHash === paymentHash,
+        ),
+      ).toBe(false);
+
+      const changes = await client.query<{
+        op: string;
+        before: Record<string, unknown> | null;
+        after: Record<string, unknown> | null;
+      }>(
+        `SELECT op, before, after
+         FROM db_change
+         WHERE table_name = 'spark_invoice'
+           AND (before ->> 'payment_hash' = $1 OR after ->> 'payment_hash' = $1)
+         ORDER BY id ASC`,
+        [paymentHash],
+      );
+      const insert = changes.find((change) => change.op === 'INSERT');
+      expect(insert?.before).toBeNull();
+      expect(insert?.after?.['invoice']).toBe(invoice);
+      const settle = changes.find(
+        (change) => change.op === 'UPDATE' && change.after?.['status'] === 'settled',
+      );
+      expect(settle?.before?.['status']).toBe('open');
+      expect(settle?.after?.['receipt_event_id']).toBe('cd'.repeat(32));
+      expect(
+        changes.some(
+          (change) =>
+            change.op === 'UPDATE' &&
+            change.before?.['status'] === 'open' &&
+            change.after?.['status'] === 'open',
+        ),
+      ).toBe(true);
     } finally {
       await closeIfPossible(sql);
     }

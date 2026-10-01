@@ -3,7 +3,7 @@
 ## Function: posRoutes
 
 - **Purpose:** Hono routes `GET /pos`, `POST /pos`, and `DELETE /pos` for one open point-of-sale amount in whole sats. Pins nothing itself; the well-known route reads the store.
-- **Inputs:** `PosRouteDeps` (`store`, `authStore`, `now`, `fetchImpl`).
+- **Inputs:** `PosRouteDeps` (`store`, `authStore`, `now`, `fetchImpl`, optional `lnurlServer`). `POST /pos` checks the amount against the member's receiving address (`receivingAddress`; a verified wallet through `lnurlServerFetch`).
 - **Returns / side effects:** A Hono app. Writes charges through `PosStore`. No paid status.
 - **Used by:** `createApp`.
 
@@ -470,7 +470,7 @@
 
 - **Purpose:** Shared `DATABASE_URL` wiring: one `SqlClient` for durable auth, FX tables, `QueryGiftStore`, `SqlGiftRecorder`, `PostgresBtcUsdStore`, `PostgresFiatStore`, `migrateMessageSchema`, `PostgresMessageStore`, `PostgresTranslationStore` (forum `message_translation`) plus a second `PostgresTranslationStore` aimed at `conversation_message_translation` (`conversationTranslationStore`; never the forum store instance), `migrateContactSchema`, `PostgresContactStore`, `migratePosSchema`, `PostgresPosStore`, `migrateConversationSchema`, `PostgresConversationStore`, `migratePushSchema`, `PostgresPushStore`, `migrateNotificationSchema`, `PostgresNotificationStore`, `migrateTrustSchema`, `migrateFundingSchema`, `PostgresTrustStore`, `PostgresFundingStore`, `migrateApiLogSchema`, `PostgresApiLogStore`, `PostgresDebugDbStore`, `migrateBannerSchema`, `PostgresBannerStore`, `migrateDiagnosticSchema`, `PostgresDiagnosticStore`, `migrateDbChangeSchema`, and parsed `NOSTR_NSEC_KEK`; or in-memory auth, `giftStore`/`giftRecorder`/`messageStore`/`translationStore`/`conversationTranslationStore`/`contactStore`/`conversationStore`/`notificationStore`/`pushStore`/`trustStore`/`fundingStore`/`bannerStore`/`apiLogStore`/`diagnosticStore`/`listDbChange`/`debugDbStore` undefined, `nostrKek` undefined, empty `InMemoryBtcUsdStore`, and empty `InMemoryFiatStore` when unset.
 - **Inputs:** `databaseUrl`; optional `createClient` (required when URL set); optional `fx: { fetchImpl, candlesUrl, frankfurterUrl, now, nostrQuerier, zapRelayUrls, nostrRelayTimeoutMs }` so tests avoid the network (`candlesUrl` defaults via `resolveCandlesUrl(process.env)`; `frankfurterUrl` defaults via `resolveFrankfurterUrl(process.env)`; the last three feed `backfillExternalZappers` and default to a `WebsocketNostrQuerier`, `resolveZapRelays(process.env)` and a 5000 ms per-relay timeout). SQL path reads `process.env.NOSTR_NSEC_KEK`.
-- **Returns / side effects:** `{ authStore, giftStore, giftRecorder, btcUsdRates, fiatRates, messageStore, translationStore, conversationTranslationStore, contactStore, posStore, conversationStore, notificationStore, pushStore, trustStore, fundingStore, bannerStore, apiLogStore, diagnosticStore, nostrKek, listDbChange, debugDbStore }`. Migrates `btc_usd_daily` then `usd_fiat_daily`, `message`, `contact`, `pos_charge` (via `migratePosSchema`), `conversation` (via `migrateConversationSchema`), `push_subscription`/`push_outbox` (via `migratePushSchema`), `notification` (via `migrateNotificationSchema` after push before `db_change`), then `trust_edge` (via `migrateTrustSchema`) after notification, then `funding_grant` (via `migrateFundingSchema`), then `api_log` (via `migrateApiLogSchema`), then `account_image` (via `migrateBannerSchema`), then `diagnostic_event` (via `migrateDiagnosticSchema`); the diagnostic sink is installed on that store before the FX fill and the zap backfills, immediately before `migrateDbChangeSchema` so `trg_db_change` attaches to `trust_edge`, `funding_grant`, `api_log`, `account_image`, and `diagnostic_event`, then `db_change` after auth migrate; best-effort `fillRatesForGiftRange` logs `gifts.fx.boot_fill.failed` and does not throw; best-effort `fillFiatRatesForGiftRange` logs `gifts.fx.fiat_boot_fill.failed` and does not throw. Throws if the URL is set without a factory, or if the SQL path has a missing/malformed KEK. SQL path returns `SqlGiftRecorder`, `PostgresMessageStore`, `PostgresTranslationStore` (forum) plus a second `PostgresTranslationStore` on `conversation_message_translation`, `PostgresContactStore`, `PostgresPosStore`, `PostgresConversationStore`, `PostgresNotificationStore`, `PostgresPushStore`, `PostgresFiatStore`, `PostgresTrustStore`, `PostgresFundingStore`, `PostgresBannerStore`, `PostgresApiLogStore`, `PostgresDiagnosticStore`, and `PostgresDebugDbStore`; memory path returns `giftRecorder`/`messageStore`/`translationStore`/`conversationTranslationStore`/`contactStore`/`conversationStore`/`notificationStore`/`pushStore`/`trustStore`/`fundingStore`/`bannerStore`/`apiLogStore`/`diagnosticStore`/`listDbChange`/`debugDbStore`/`nostrKek` undefined, returns a fresh `InMemoryPosStore` as `posStore`, and skips migrates including `migratePosSchema` / `migrateConversationSchema` / `migratePushSchema` / `migrateNotificationSchema` / `migrateTrustSchema` / `migrateFundingSchema` / `migrateApiLogSchema` / `migrateBannerSchema` / `migrateDiagnosticSchema` / `migrateDbChangeSchema`. SQL path calls `migratePosSchema` for `pos_charge` before `PostgresPosStore`.
+- **Returns / side effects:** `{ authStore, giftStore, giftRecorder, btcUsdRates, fiatRates, messageStore, translationStore, conversationTranslationStore, contactStore, posStore, conversationStore, notificationStore, pushStore, trustStore, fundingStore, bannerStore, apiLogStore, diagnosticStore, nostrKek, listDbChange, debugDbStore, sparkInvoiceStore }` (`sparkInvoiceStore` is a `PostgresSparkInvoiceStore` on SQL boots after `migrateSparkInvoiceSchema` ran before the `db_change` migrate, `undefined` on memory boots). Migrates `btc_usd_daily` then `usd_fiat_daily`, `message`, `contact`, `pos_charge` (via `migratePosSchema`), `conversation` (via `migrateConversationSchema`), `push_subscription`/`push_outbox` (via `migratePushSchema`), `notification` (via `migrateNotificationSchema` after push before `db_change`), then `trust_edge` (via `migrateTrustSchema`) after notification, then `funding_grant` (via `migrateFundingSchema`), then `api_log` (via `migrateApiLogSchema`), then `account_image` (via `migrateBannerSchema`), then `diagnostic_event` (via `migrateDiagnosticSchema`); the diagnostic sink is installed on that store before the FX fill and the zap backfills, immediately before `migrateDbChangeSchema` so `trg_db_change` attaches to `trust_edge`, `funding_grant`, `api_log`, `account_image`, and `diagnostic_event`, then `db_change` after auth migrate; best-effort `fillRatesForGiftRange` logs `gifts.fx.boot_fill.failed` and does not throw; best-effort `fillFiatRatesForGiftRange` logs `gifts.fx.fiat_boot_fill.failed` and does not throw. Throws if the URL is set without a factory, or if the SQL path has a missing/malformed KEK. SQL path returns `SqlGiftRecorder`, `PostgresMessageStore`, `PostgresTranslationStore` (forum) plus a second `PostgresTranslationStore` on `conversation_message_translation`, `PostgresContactStore`, `PostgresPosStore`, `PostgresConversationStore`, `PostgresNotificationStore`, `PostgresPushStore`, `PostgresFiatStore`, `PostgresTrustStore`, `PostgresFundingStore`, `PostgresBannerStore`, `PostgresApiLogStore`, `PostgresDiagnosticStore`, and `PostgresDebugDbStore`; memory path returns `giftRecorder`/`messageStore`/`translationStore`/`conversationTranslationStore`/`contactStore`/`conversationStore`/`notificationStore`/`pushStore`/`trustStore`/`fundingStore`/`bannerStore`/`apiLogStore`/`diagnosticStore`/`listDbChange`/`debugDbStore`/`nostrKek` undefined, returns a fresh `InMemoryPosStore` as `posStore`, and skips migrates including `migratePosSchema` / `migrateConversationSchema` / `migratePushSchema` / `migrateNotificationSchema` / `migrateTrustSchema` / `migrateFundingSchema` / `migrateApiLogSchema` / `migrateBannerSchema` / `migrateDiagnosticSchema` / `migrateDbChangeSchema`. SQL path calls `migratePosSchema` for `pos_charge` before `PostgresPosStore`.
 - **Payment and external-zapper backfills:** Only after `migrateDbChangeSchema` has attached `trg_db_change` to every public table (so the payment backfill's `nostr_zap_payment` inserts are logged), constructs `PostgresMessageStore`, runs `backfillZapPayments`, and immediately runs `backfillExternalZappers` before constructing the remaining Postgres stores and returning. The external-zapper backfill pages through unattributed receipts with a 10,000-row ceiling and logs `nostr.zapper.backfill.done` with its aggregate counts; a failure logs `nostr.zapper.backfill.failed` and boot continues. Payment-backfill failures still propagate. In-memory boots call neither backfill.
 - **Used by:** `src/index.ts` boot.
 
@@ -1013,6 +1013,7 @@
 - **Inputs:** Optional `AppDeps` (store, clock, payer, fetch, cache, readBrand, origins, `debugToken`, giftStore, `giftRecorder`, `btcUsdRates`, `fiatRates`, `messageStore`, optional `translationStore` (default `InMemoryTranslationStore`; SQL boot injects `PostgresTranslationStore`), optional `conversationTranslationStore` (passed to `conversationRoutes.translationStore`; omitted so that factory constructs one `InMemoryTranslationStore`; SQL boot injects a second `PostgresTranslationStore` on `conversation_message_translation`, never the forum store), `contactStore`, optional `conversationStore` (default `InMemoryConversationStore`), optional `notificationStore` (default `InMemoryNotificationStore`), optional `apiLogStore` (default `InMemoryApiLogStore`), optional `diagnosticStore` (default `InMemoryDiagnosticStore`), optional `debugDbStore` (omitted on a memory boot; `GET /debug/db` then 503 after the token matches), `pushStore`, `trustStore`, optional `fundingStore` (default `InMemoryFundingStore`; also forwarded to `debugPaymentsRoutes`), optional `bannerStore` (default `InMemoryBannerStore`; SQL boot injects `PostgresBannerStore`; the About me photo is neither slot; mounted at `/pictures` and `/banners` and passed to the Nostr worker), optional `listDbChange`, `vapidPublicKey`, `nostrKek`, optional `nostrPublisher` (without `nostrKek` staff hide skips NIP-09), optional `env` (default `process.env`; relays / `PUBLIC_BASE_URL` / Cloudflare on `DELETE /messages/:id`; forwarded to `conversationRoutes`), spendApiToken, optional `mapPush` (default `resolveMapPush` on `env`, which stays off while `SHOP_PLACE_PUSH_ENABLED` is false even if both variables are set; a blank URL or token also sends nothing; the process still boots; forwarded to `messagesRoutes`), `spendPing` (default `resolveSpendPing(process.env, fetchImpl)`; unset/blank `SPEND_URL` or `SPEND_API_TOKEN` omits it; `POST /messages` still 200; daily/omitted kind body `{ address, messageId }`; `conversationRoutes` gets the same `spendPing`; moderator-group POST body `{ address, kind: "moderator", groupMessageId }` without `messageId`; forum `POST /messages` still two-arg daily ping; a verified account with any live top-level photo or video, including About me, also three-arg `'welcome'` even when the new row has no media; `spendPing` is also passed to `meRoutes` and, with `messages`, to `trustRoutes`; `fundingRoutes` receives the same optional `spendPing`), optional `postLimiter` (default a new `PostRateLimiter`; passed to `messagesRoutes`; boot shares one instance with the Nostr worker), invoiceStore, `webAuthnRpId`, `webAuthnRpName`, `passkeyCeremony`). `debugPaymentsRoutes` receives the same optional `spendPing`. Omitted `giftRecorder` → `invoiceRoutes` uses `NoopGiftRecorder`; omitted `messageStore` → `InMemoryMessageStore`; omitted `translationStore` → `InMemoryTranslationStore`; omitted `conversationTranslationStore` → `conversationRoutes` constructs one `InMemoryTranslationStore`; omitted `contactStore` → `InMemoryContactStore`; omitted `posStore` → `InMemoryPosStore`; omitted `conversationStore` → `InMemoryConversationStore`; omitted `notificationStore` → `InMemoryNotificationStore`; omitted `pushStore` → `InMemoryPushStore`; omitted `trustStore` → `InMemoryTrustStore`; omitted `fundingStore` → `InMemoryFundingStore`; omitted `apiLogStore` → `InMemoryApiLogStore`; omitted `diagnosticStore` → `InMemoryDiagnosticStore`; omitted/blank `vapidPublicKey` → push HTTP 503 after session; omitted `nostrKek` → unsigned forum + invoice 503; SQL boot injects `SqlGiftRecorder`, `PostgresMessageStore`, `PostgresTranslationStore`, a second `PostgresTranslationStore` on `conversation_message_translation`, `PostgresContactStore`, `PostgresPosStore`, `PostgresConversationStore`, `PostgresNotificationStore`, `PostgresPushStore`, `PostgresTrustStore`, `PostgresFundingStore`, `PostgresBannerStore`, `PostgresApiLogStore`, `PostgresDiagnosticStore`, `PostgresDebugDbStore`, and parsed KEK. `messagesRoutes`, `meRoutes`, `invoiceRoutes`, and `trustRoutes` receive `conversationStore`. `fundingRoutes`, `invoiceRoutes`, `messagesRoutes`, `conversationRoutes`, `meRoutes`, `membersRoutes`, and auth finish receive `fundingStore`. `contactRoutes` and `conversationRoutes` receive `pushStore` plus `notificationStore`. Mounts `notificationRoutes` at `/notifications`. Does not take a push sender (worker owns delivery).
 - **Returns / side effects:** Hono app. Default `btcUsdRates` is an empty `InMemoryBtcUsdStore`. Default `fiatRates` is an empty `InMemoryFiatStore`. `createApp` passes the same `fiatRates` object into `/gifts`, `/gifts/stats`, `/me`, `/members`, and `/view`, and the same `now` into `/mentions`. Used by Bun.serve in `index.ts` and by tests via `app.request()`.
 - **Used by:** Boot path and every HTTP test.
+- **Free in-app payments:** When `resolveLnurlServerConfig` resolves, `lnurlServer` is passed to `/messages`, `/conversations`, `/members`, `/pay`, and `/pos`. When `resolveFreePaymentsConfig` also resolves, `sparkInvoices` (`AppDeps.sparkInvoiceStore`, default `InMemorySparkInvoiceStore`) is passed to `/messages` and `/conversations`; otherwise every invoice response has `sparkInvoice: null`.
 
 ## Function: healthRoute
 
@@ -1184,6 +1185,7 @@
 - **Returns / side effects:** Hono app mounted at `/messages`. 401 without a live session on create/compose-target/DELETE/GET `/hidden`/invoice/POST `/:id/repayment`, and on the list except the unsigned `mode=active` window with no hashtag (that window is 200); 403 on DELETE and GET `/hidden` when not at least moderator and on unpaid text-only posts and replies from anyone below `verified` (including the parent author); photo or video posts and replies from basis are allowed; 409 `{ error: 'A live note with this media already exists' }` when the same live media fingerprint has a different pin; 409 `{ error: 'missing_requirements', missing }` when action gates fail (GET `/hidden` and staff GET of a hidden permalink / replies / photo / video have no `forum.read` gate); 400 on bad body / invalid text / bad media / unpaid note / author's-wallet / LNURL failures / reply+goal field / non-integer multipart `goalSats` / currency-ask pair errors / `Ask amount is unavailable`; 404 for bad `inReplyTo` / missing rows / unsigned or non-staff GET of a hidden row; 204 empty body on successful DELETE (NIP-09 / purge / notification retract failure still 204); 200 staff hidden log `{ messages }` (no `forum.read`); 200 staff GET of a hidden permalink / replies / photo / video; 429 rate limits; 503 on store/KEK/sign failure. Live list, `GET /:id`, and replies include `accountId` whenever the stored author id is non-null, with or without a session, and omit it for an external row; create may include `accountId` for a 21.gifts author; live JSON omits `deletedAt` and `deletedBy`; staff hidden GET includes hide stamps and `accountId` for 21gifts authors. Post and reply notify call `notifyForumPost` / `notifyForumReply` best-effort (in-app rows for every account except the actor (no-op when the actor is the official platform account), then filtered by each account's `notificationLevel`; Web Push for bell subscribers, same filter; failure still 200.
 
 - **Used by:** `createApp`.
+- **Receiving address and Spark invoice:** The payable flag and `POST /:id/invoice` (forum gift and the compose-target posting fee) use `receivingAddress` with optional `lnurlServer`, so a member with a verified wallet receives on `<username>@<host>` resolved internally through `lnurlServerFetch`. With optional `sparkInvoices` (free in-app payments on) a wallet-backed recipient gets `sparkInvoice` from `issueSparkInvoice` next to `pr`; otherwise `sparkInvoice` is `null`. `POST /:id/repayment` uses the same two deps for the giver.
 
 ## Function: contactRoutes
 
@@ -1199,6 +1201,7 @@
 - **Returns / side effects:** Hono app mounted at `/conversations`. 401 without session; 400 on bad body / self-PM / missing name / invalid text / author wallet / invalid still / empty trimmed translate text; 404 when not allowed; 429 Too many payments; 403 `{ error: 'SUNDAY_REST' }` for the moderator group on Sunday (see Sunday rest); 503 `{ error: 'Messages are unavailable' }` for missing KEK / sign failure; 503 `{ error: 'Translate is not configured' }`; 502 `{ error: 'Translate upstream failed' }`; 503 `{ error: 'Conversations are unavailable' }` for store/catch including ok-path `recordInvoiceAttempt` throw (`conversations.list.failed` / `conversations.read.failed` / `conversations.photo.failed` / `conversations.translate.failed` without API key or text). After a successful `POST /:id` append, `notifyConversationMessage` is void-caught (`conversations.push.failed`) so 200 is unchanged. Public list/open JSON includes `unread`, `unreadMessageCount`, `lastSats`, and `lastMessageId` and may include optional counterpart `accountId`; thread messages may include optional `accountId` (actor for staff when set, otherwise sender), `hasPhoto`, and `photoCount` (0–10; never bytes). Omits event ids and npubs (Damus-only `name` may be a truncated npub; Damus-only counterparts and Damus inbound omit `accountId`). List rows include `lastSats`; messages include `sats`. Envelope `unreadCount` remains the number of listed rows with `unread` true. Translate 200 is `{ translatedText, cached }`.
 - **Sunday rest:** `GET /moderator-group` returns 403 `{ error: 'SUNDAY_REST' }` when `Time-Zone` names an IANA zone in Sunday on the injected clock. `GET /:id`, `POST /:id`, and `POST /:id/read` return that 403 only after the thread is loaded and its kind is `moderator_group`. Ordinary private threads, `POST /:id/invoice`, contact, pay links, and the till are not refused. A missing, blank, or invalid zone does not refuse. Never 503.
 - **Used by:** `createApp`.
+- **Receiving address and Spark invoice:** `POST /:id/invoice` resolves the counterpart with `receivingAddress` (optional `lnurlServer`; LNURL calls through `lnurlServerFetch`) and returns `sparkInvoice` from `issueSparkInvoice` when optional `sparkInvoices` is set and the counterpart is wallet-backed, else `null`.
 
 ## Function: notificationRoutes
 
@@ -1862,6 +1865,160 @@
 - **Returns / side effects:** The same object when valid, otherwise `null`. No I/O.
 - **Used by:** Wallet-backed branch of `wellKnownRoutes`.
 
+## Function: receivingAddress
+
+- **Purpose:** The one place that decides where an account receives in-app payments. With the LNURL server configured and a verified wallet (`sparkPubkeyVerifiedAt` a number, `sparkPubkey` and `username` set), the address is the wallet-backed `<username>@<host of PUBLIC_BASE_URL>`; otherwise the trimmed linked Lightning address; a blank linked address and no usable wallet is `null`.
+- **Inputs:** Account fields `lightningAddress`, `username`, `sparkPubkey`, `sparkPubkeyVerifiedAt`, and the `LnurlServerConfig` or `undefined` when that feature is off.
+- **Returns / side effects:** `{ kind: 'wallet', address, sparkPubkey }`, `{ kind: 'external', address }`, or `null`. No I/O.
+- **Used by:** `POST /messages/:id/invoice` (forum gift and the compose-target posting fee), `POST /conversations/:id/invoice`, `POST /messages/:id/repayment`, `GET /pay/:username`, `POST /pay/:username/invoice`, `POST /pos`, the payable flag on forum and member feeds, and the zap receipt ingest (provider pubkey of the recipient).
+
+## Function: lnurlServerFetch
+
+- **Purpose:** Keeps LNURL traffic for wallet-backed addresses inside the deployment. A request whose URL host equals the host of `PUBLIC_BASE_URL` (the LUD-16 document of `<username>@<host>` and its pay callback) is sent as a `GET` to the LNURL server through `callLnurlServer` (path segments and query kept, fixed `Host`, 15 s timeout) instead of over the public URL. Any other host goes to the wrapped fetch unchanged, so external Lightning addresses keep working exactly as before.
+- **Inputs:** `LnurlServerConfig` or `undefined`, and the fetch to wrap.
+- **Returns / side effects:** A `FetchFn`. With `undefined` config it is the wrapped fetch itself. A refused path segment or an unreachable LNURL server rejects like a failed `fetch`, which the LNURL helpers already map to `unreachable`.
+- **Used by:** The same routes as `receivingAddress` and the receipt ingest provider lookup.
+
+## Function: resolveFreePaymentsConfig
+
+- **Purpose:** Resolve the configuration of free in-app payments between members. `LNURL_ZAP_NSEC_HEX` must be 64 hex characters (any case); it is the server secret the per-member zap receipt keys are derived from. `SPARK_OPERATOR_URL` is the Spark coordinator base URL; unset or blank uses `https://0.spark.lightspark.com`, and a trailing slash is removed.
+- **Inputs:** Environment slice.
+- **Returns / side effects:** `{ zapNsec, operatorUrl }`, or `null` (feature off) when the secret is unset, blank, or malformed, or the operator URL is not `http:` / `https:`. No I/O. The feature additionally needs `resolveLnurlServerConfig`.
+- **Used by:** `createApp` (whether invoice routes issue Spark invoices) and the entry point (whether the Spark invoice worker runs).
+
+## Function: concatBytes
+
+- **Purpose:** Join byte arrays in order into one new array. Small helper for the hand-written protobuf and gRPC-web framing.
+- **Inputs:** Any number of `Uint8Array` parts.
+- **Returns / side effects:** A new `Uint8Array` with every part copied in order. No I/O.
+- **Used by:** `protoVarintField`, `protoBytesField`, `encodeSparkInvoice`, `encodeQuerySparkInvoicesRequest`.
+
+## Function: protoVarintField
+
+- **Purpose:** Encode one protobuf varint field (wire type 0): tag `field << 3`, then the value as a little-endian base-128 varint. Covers `uint32`, `uint64`, non-negative `int64`, and enums.
+- **Inputs:** Field number and a non-negative integer (`number` that is a safe integer, or `bigint` up to 2^64 - 1).
+- **Returns / side effects:** Tag and value bytes. Throws `RangeError` for a negative, fractional, unsafe, or too large value. No I/O.
+- **Used by:** `encodeSparkInvoice`, `encodeQuerySparkInvoicesRequest`.
+
+## Function: protoBytesField
+
+- **Purpose:** Encode one length-delimited protobuf field (wire type 2): tag, varint length, then the bytes. Strings are written as UTF-8; embedded messages are passed as their serialised bytes.
+- **Inputs:** Field number and a `Uint8Array` or string.
+- **Returns / side effects:** Tag, length, and value bytes. No I/O.
+- **Used by:** `encodeSparkInvoice`, `encodeQuerySparkInvoicesRequest`.
+
+## Function: decodeProto
+
+- **Purpose:** Decode the top-level fields of a protobuf message in wire order. Varint fields come back as `bigint`, length-delimited fields as raw bytes (the caller decodes strings and embedded messages). Fixed 64-bit and 32-bit fields are skipped.
+- **Inputs:** Serialised message bytes.
+- **Returns / side effects:** `ProtoField[]`. Throws on a truncated varint or field, a varint longer than 64 bits, field number 0, or wire types 3, 4, 6, 7. No I/O.
+- **Used by:** `parseQuerySparkInvoicesResponse`.
+
+## Function: encodeSparkInvoice
+
+- **Purpose:** Serialise a Spark invoice: protobuf `SparkAddress { 1: identity_public_key (33 bytes), 2: spark_invoice_fields }` with no signature field, where `SparkInvoiceFields` is written in the canonical order `1: version = 1`, `2: id (16 bytes)`, `5: memo`, `4: SatsPayment { 1: amount }` (not field-number order), then bech32m with prefix `spark` and no length limit.
+- **Inputs:** `{ identityPublicKey (66 hex), id (16 bytes), memo, amountSats }`.
+- **Returns / side effects:** The `spark1…` string. Throws when the key is not 33 bytes or the id not 16 bytes. No I/O.
+- **Used by:** `issueSparkInvoice`.
+
+## Function: uuidV7
+
+- **Purpose:** Build an RFC 9562 UUIDv7 as 16 bytes: 48-bit Unix milliseconds big-endian, version nibble 7, variant bits `10`, and the remaining bits from the given random bytes. Used as the Spark invoice id.
+- **Inputs:** Clock in epoch milliseconds and 10 random bytes.
+- **Returns / side effects:** 16 bytes. No I/O.
+- **Used by:** `issueSparkInvoice`.
+
+## Function: issueSparkInvoice
+
+- **Purpose:** Issue the Spark invoice that stands next to a member-to-member zap invoice: same amount, addressed to the recipient's verified wallet key, memo `zap:<payment hash of pr>`. Stores it with the zap invoice and the exact zap request string so the worker can later build the receipt. One payment hash has one Spark invoice; asking again returns the stored string and, while it is open, restarts its watch window.
+- **Inputs:** `{ sparkInvoices?, now, randomBytes? }`, the recipient's `ReceivingAddress`, and `{ pr, paymentHash, amountSats, zapRequestJson }`.
+- **Returns / side effects:** `spark1…` string, or `null` when the feature is off (`sparkInvoices` omitted), the recipient is not wallet-backed, or the payment hash is unknown. A store failure logs `spark.invoice.issue_failed` and resolves `null`, so the route still returns `pr`.
+- **Used by:** `POST /messages/:id/invoice`, `POST /conversations/:id/invoice`, `POST /messages/:id/repayment`.
+
+## Function: migrateSparkInvoiceSchema
+
+- **Purpose:** Apply the idempotent DDL for `spark_invoice` (`docs/schema/spark_invoice.sql`): one row per zap invoice payment hash with the Spark invoice, receiver key, amount, zap BOLT11, zap request string, `created_at`, `status` (`open` / `settled`), transfer id, and receipt event id, plus a partial index on open rows by `created_at`.
+- **Inputs:** A `SqlClient`.
+- **Returns / side effects:** Resolves when the statements have run. Runs before `migrateDbChangeSchema` so `trg_db_change` attaches.
+- **Used by:** `openBootStores` when `DATABASE_URL` is set.
+
+## Function: InMemorySparkInvoiceStore
+
+- **Purpose:** Process-local `SparkInvoiceStore` for tests and memory boots. `issue` keeps the first invoice per payment hash and moves an open row's `createdAt` forward when it is handed out again; `listOpen` returns open rows issued at or after a time, oldest first; `markSettled` flips an open row once.
+- **Inputs:** None.
+- **Returns / side effects:** The store port; mutates a private map and returns copies.
+- **Used by:** `createApp` default when free in-app payments are on, the entry point on memory boots, and unit tests.
+
+## Function: PostgresSparkInvoiceStore
+
+- **Purpose:** `SparkInvoiceStore` against `spark_invoice`. `issue` inserts with `ON CONFLICT (payment_hash)` that only moves an open row's `created_at` forward and then reads the stored invoice string back; `listOpen` selects open rows in the window ordered by `created_at`; `markSettled` is one conditional `UPDATE … WHERE status = 'open'`, so two ticks cannot settle the same row twice.
+- **Inputs:** A migrated `SqlClient`.
+- **Returns / side effects:** Same port as the in-memory store, persisted in Postgres. Every write is logged in `db_change` by the table trigger.
+- **Used by:** `openBootStores` when `DATABASE_URL` is set.
+
+## Function: encodeQuerySparkInvoicesRequest
+
+- **Purpose:** Build the gRPC-web request body for `spark.SparkService/query_spark_invoices`: `QuerySparkInvoicesRequest { 1: int64 limit = 100, 3: repeated string invoice }` wrapped in one data frame (flags byte 0, 4-byte big-endian length, message).
+- **Inputs:** Up to 100 Spark invoice strings.
+- **Returns / side effects:** Framed request bytes. No I/O.
+- **Used by:** `querySparkInvoices`.
+
+## Function: parseQuerySparkInvoicesResponse
+
+- **Purpose:** Parse a gRPC-web `QuerySparkInvoicesResponse { 2: repeated InvoiceResponse { 1: invoice, 2: status, 3: SatsTransfer { 1: transfer_id } } }`. Status `0` (omitted on the wire) is `not_found`, `1` `pending`, `2` `finalized`, `4` `returned`, `5`/`6`/`7` `mismatched`, anything else `unknown`. `grpc-status` comes from the response header (trailers-only) or the trailer frame (flag `0x80`).
+- **Inputs:** Response body bytes and the `grpc-status` header or `null`.
+- **Returns / side effects:** `{ ok: true, invoices }` with transfer ids as lower-case hex; `{ ok: false, reason: 'grpc', grpcStatus }` for a status other than `0` (`-1` when not numeric); `{ ok: false, reason: 'malformed' }` for a missing status, a compressed or truncated frame, or undecodable protobuf. No I/O.
+- **Used by:** `querySparkInvoices`.
+
+## Function: querySparkInvoices
+
+- **Purpose:** Ask the Spark coordinator for the status of up to 100 invoices: `POST <operatorUrl>/spark.SparkService/query_spark_invoices` with `content-type: application/grpc-web+proto` and `x-grpc-web: 1`, no authentication, no redirects, 10 s timeout. Never logs an invoice.
+- **Inputs:** Operator base URL, injected fetch, invoice strings.
+- **Returns / side effects:** The parsed result, `{ ok: false, reason: 'unreachable' }` when the fetch or body read fails, or `{ ok: false, reason: 'http' }` for an HTTP status other than 200.
+- **Used by:** `runSparkInvoiceTick`.
+
+## Function: zapReceiptSecretKey
+
+- **Purpose:** Derive the per-member key that signs zap receipts: HMAC-SHA256 keyed with the server secret (`LNURL_ZAP_NSEC_HEX`) over `lnurl-zap-receipt-key:` followed by the lower-case hex of the member's wallet key and one counter byte starting at 0, taking the first digest that is a valid secp256k1 secret key. Its public key is the `nostrPubkey` the LNURL server advertises for that member, so the receipt ingest accepts the receipt.
+- **Inputs:** 32-byte server secret and the member's wallet identity key (66 hex).
+- **Returns / side effects:** 32-byte secret key. No I/O.
+- **Used by:** `runSparkInvoiceTick`.
+
+## Function: buildZapReceipt
+
+- **Purpose:** Build and sign the NIP-57 kind 9735 receipt for a zap invoice paid by a Spark transfer. Tags: `p` (recipient from the zap request), `P` (zap request pubkey), `e` (zapped event, when present), `bolt11` (the zap `pr`), `description` (the exact zap request string the invoice commits to). No `preimage` tag; content is empty.
+- **Inputs:** `{ secretKey, bolt11, zapRequestJson, createdAt }`.
+- **Returns / side effects:** `{ event, relays }` with the deduplicated relays named in the zap request's `relays` tag, or `null` when the zap request is not a kind 9734 object with a pubkey and a `p` tag. No I/O.
+- **Used by:** `runSparkInvoiceTick`.
+
+## Function: runSparkInvoiceTick
+
+- **Purpose:** One pass of the Spark invoice worker. Lists the open Spark invoices issued in the last 60 minutes, queries the coordinator in batches of up to 100, and for each invoice reported `finalized` signs the receipt for its zap invoice with the receiver's receipt key, feeds it into the receipt ingest, publishes it to the zap request's relays, and marks the row settled with the transfer id and receipt id. `not_found`, `pending`, `returned`, `mismatched`, and unknown statuses leave the row open.
+- **Inputs:** `SparkWorkerDeps` (`store`, `config`, `fetchImpl`, `publisher`, `ingest`, `now`).
+- **Returns / side effects:** Resolves when every batch is handled. A failed batch logs `spark.query.failed` (`reason`, `grpcStatus`) and the next batch runs; a publish failure logs `spark.receipt.publish_failed`; an unusable stored zap request logs `spark.receipt.invalid`; a settled row logs `spark.invoice.settled`. A second receipt for the same payment hash is a no-op in the ingest (payment hash claimed once).
+- **Used by:** `startSparkInvoiceWorker`.
+
+## Function: startSparkInvoiceWorker
+
+- **Purpose:** Run `runSparkInvoiceTick` once immediately and then every 2 s. A tick does not start while the previous one is still running, so a slow coordinator cannot stack requests.
+- **Inputs:** `SparkWorkerDeps` and an optional interval in milliseconds.
+- **Returns / side effects:** `{ stop }`, which clears the interval. A rejecting tick logs `spark.worker.tick.failed` with the error fields.
+- **Used by:** The entry point when `LNURL_SERVER_URL`, `PUBLIC_BASE_URL`, and `LNURL_ZAP_NSEC_HEX` resolve.
+
+## Function: ingestZapReceipt
+
+- **Purpose:** Run the existing receipt ingest for one kind 9735 event, exactly as a relay pass does: signature check, recipient's receiving address and its LNURL `nostrPubkey`, conversation or forum or repayment crediting, and the "payment hash claimed once" rule, so a second receipt for the same payment hash credits nothing.
+- **Inputs:** The event and the `indexOpenZapReceipts` collaborators (`eventIds` and `since` are ignored).
+- **Returns / side effects:** Resolves when handled. A thrown ingest step logs `nostr.zap.rejected` and persists a `rejected` / `error` ingest row instead of rejecting.
+- **Used by:** `queryAndIngestZapReceipts` (each queried receipt) and the Spark invoice worker through `zapReceiptIngest`.
+
+## Function: zapReceiptIngest
+
+- **Purpose:** Bind `ingestZapReceipt` to the Nostr worker's collaborators (forum, auth, querier, fetch, clock, stores, LNURL server, zap read relays from `env`), so the Spark invoice worker credits a receipt it signs the same way as one read from a relay, without waiting for a relay round trip.
+- **Inputs:** `ZapIngestDeps` (the subset of `NostrWorkerDeps` the ingest reads; no key, no publisher).
+- **Returns / side effects:** A function that ingests one event. No I/O until called.
+- **Used by:** The entry point when the Spark invoice worker runs.
+
 ## Function: resolveSession
 
 - **Purpose:** Looks up a bearer session; rejects expired tokens and accounts with `sessionRefused` (`isWrongAccount`).
@@ -2016,7 +2173,7 @@
 
 ## Function: accountMissing
 
-- **Purpose:** Factually unset account fields for action gates. Skip timestamps do not clear a field from this list.
+- **Purpose:** Factually unset account fields for action gates. Skip timestamps do not clear a field from this list. A verified wallet (`sparkPubkeyVerifiedAt` set) clears `lightning-address`, because the member receives on the wallet-backed address; `accountSetup` is unchanged.
 - **Inputs:** `Account`.
 - **Returns / side effects:** `AccountMissingField[]` in order `name`, `username`, `lightning-address`, `rules` (only those that are null/blank or rules unset). Never includes `wallet`. Skip timestamps still do not clear name/username/lightning-address/rules. No I/O.
 - **Used by:** `serializeOwnerAccount`, `requireAction`.
@@ -2143,7 +2300,7 @@
 ## Function: membersRoutes
 
 - **Purpose:** Hono sub-app for `GET /members/:accountId`, `GET /members/:accountId/activity`, `GET /members/:accountId/posts`, and `GET /members/:accountId/replies`. Bearer + `requireAction(forum.read)` on all; UUID path. Profile card is live identity plus optional `profileMessage` via `serializeMessage`, derived `aboutMe`, `aboutMeHasPhoto` (true when the live profile note has a stored photo; false when `profileMessage` is null), uncapped live `postCount` / `replyCount` from `countByAccount`, and `trust` via `accountTrust`, and `fundingReviewedAt` (`grant.admittedAt` when effective admitted, else `null`) and `fundingReviewedByName` (the reviewer's display name, or `null` when that name is missing). Activity is given/received sats for that member (`buildAccountActivity`). Posts is live-only top-level notes newest-first (cap 200, same serialize as signed-in `GET /messages` including `accountId` / `replyCount` / `payable`, optional `goalSats` omitted when unset, `goalRepayable: true` only when stored true (omitted when null, never false) and `goalTermDays` only when stored (omitted when null), `goalCurrency` / `goalAmount` / the four `goalAmount*` snapshots only when `goalCurrency` is stored (omitted on a legacy row; a snapshot may be null), and optional `place` omitted when unset; omits `parentId`; missing-file `hasVideo` direct replies are deleted and subtracted from `replyCount`). Replies is live-only member replies newest-first (cap 200, `payable` when a non-empty `eventId` and a non-blank Lightning Address are set, optional `parentId`, no `replyCount`; replies never include `goalSats`, `goalRepayable`, or `goalTermDays`; a child that cannot serialize is omitted, siblings still 200).
-- **Inputs:** `MembersRouteDeps` (`authStore`, `messageStore`, required `trustStore`, optional `fundingStore` default empty `InMemoryFundingStore`, `now`, optional `giftStore`, `rates`, and `fiatRates` used by `GET /:accountId/activity`; missing fiat never 503).
+- **Inputs:** `MembersRouteDeps` (`authStore`, optional `lnurlServer` (the payable flag uses `receivingAddress`, so a wallet-only member's notes are payable), `messageStore`, required `trustStore`, optional `fundingStore` default empty `InMemoryFundingStore`, `now`, optional `giftStore`, `rates`, and `fiatRates` used by `GET /:accountId/activity`; missing fiat never 503).
 - **Returns / side effects:** Hono app mounted at `/members`. Activity is 200 JSON or 503 `{ error: 'Gift stats are unavailable' }` on store throw or missing BTC-USD. Missing fiat never 503. Logs `members.get.failed`, `members.posts.failed`, `members.replies.failed`, or `account.activity.failed` on 503. Activity 503 logs `account.activity.failed` / `account.activity.fx_incomplete`. GET JSON includes `aboutMe` and `aboutMeHasPhoto`.
 - **Used by:** `createApp`.
 
@@ -2623,6 +2780,7 @@
 - **Inputs:** store, auth, querier, urls, timeoutMs, now, fetchImpl; optional `eventIds` / `since` (hot mode); optional `verifyReceipt` (default: nostr-tools `verifyEvent`); optional `pushStore`; optional `notificationStore`; optional `conversations` (PN append; omitted → conversation invoices `rejected`/`conversation`); optional `spendPing` (top-level platform compose, only when `eligibleToday`); optional `postLimiter` (platform compose); optional `fundingStore` (same `eligibleToday` gate as `POST /messages`; omitted → empty `InMemoryFundingStore`).
 - **Returns / side effects:** void; logs `nostr.zap.rejected` / `indexed`; the per-receipt catch logs `nostr.zap.rejected` with `reason: 'error'` plus the `errorLogFields` allowlist (`name`: ASCII letters, `code` / `errno`: ASCII alphanumerics and underscore, each 1–40 characters) and never the message text; a failure outside that catch (store list, relay query) reaches `nostr.worker.tick.failed` or `nostr.worker.ingest.failed`, which log the same allowlist; records ingest rows; may append a conversation message, create a forum reply, and fan out `notifyZap` in-app on a **member-note** receipt to every account except skip (no-op when the payer is the official platform account), then filtered by each account's `notificationLevel` (Web Push to bell subscribers, same filter); a member/invoice platform-note compose fee skips `notifyZap` and fans out `notifyForumPost` / `notifyForumReply` plus a top-level `spendPing` only when `eligibleToday` (same gate as `POST /messages`; ineligible logs `spend.ping.skipped` / `not_eligible`); an external zap on that note stays `insertExternalGiftReply`; never logs full bolt11. Memory is per store instance and empty after a restart, so the first full ingest pass after boot may write one `rejected`/`duplicate` row per receipt that pass still queries (`listLatest` plus non-null `listReplies` children of those rows, unioned with the official platform profile note's `eventId` even after it ages out of `listLatest`).
 - **Used by:** `runNostrWorkerTick` (modes `'all'`, `'fast'` hot path, and `'ingest'`).
+- **Wallet-backed recipients:** With optional `lnurlServer`, the forum author's and the repayment giver's address come from `receivingAddress`, and every provider-pubkey lookup goes through `lnurlServerFetch`, so `<username>@<host>` (also when stored on a conversation invoice) is resolved against the LNURL server internally. One receipt can be fed directly through `ingestZapReceipt`.
 
 ## Function: backfillZapPayments
 
@@ -2810,8 +2968,8 @@
 ## Function: payRoutes
 
 - **Purpose:** Hono sub-app for the public pay link: `GET /:username` (name, username, minSats, maxSats, and charge) and `POST /:username/invoice` (one BOLT11 via `requestGiftInvoice`; rejects any other amount while a charge is open). `charge` is `null`, or `{ amountSats, expiresAt }` when an unexpired pending point-of-sale charge exists; then both sat bounds are that amount. Mounted at `/pay`. No auth and no extra CORS headers.
-- **Inputs:** `{ auth: AuthStore, fetchImpl: FetchFn, posStore: PosStore, now: () => number }`. All four are required; there is no default store and no default clock inside `payRoutes`. `createApp` passes the same `posStore` and `now` already used by `/.well-known` and `/pos`, and the shared LNURL-pay fetch as `fetchImpl`.
-- **Returns / side effects:** Hono app. Logs `pay.unknown`, `pay.unreachable`, `pay.failed`, `pay.invoice_failed`, and `pay.invoice`. Never calls `username@21.gifts`.
+- **Inputs:** `{ auth: AuthStore, fetchImpl: FetchFn, posStore: PosStore, now: () => number, lnurlServer? }`. The first four are required; there is no default store and no default clock inside `payRoutes`. `createApp` passes the same `posStore` and `now` already used by `/.well-known` and `/pos`, and the shared LNURL-pay fetch as `fetchImpl`.
+- **Returns / side effects:** Hono app. Logs `pay.unknown`, `pay.unreachable`, `pay.failed`, `pay.invoice_failed`, and `pay.invoice`. Resolves the member with `receivingAddress`: a verified wallet (with `lnurlServer`) is resolved and invoiced through the LNURL server internally via `lnurlServerFetch`, never over the public URL; otherwise the linked Lightning Address as before.
 - **Used by:** `createApp`.
 
 ## Function: writeForumVideo

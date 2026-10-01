@@ -3,8 +3,9 @@
  * and an open till when one is pending).
  * `POST /pay/:username/invoice` — one BOLT11 invoice via `requestGiftInvoice`.
  *
- * Settlement stays on the member's linked Lightning Address, never
- * `username@21.gifts`. No spend token. An unexpired pending point-of-sale
+ * Settlement goes to the member's receiving address (`receivingAddress`):
+ * a verified wallet, resolved internally against the LNURL server when it is
+ * configured, otherwise the linked Lightning Address. No spend token. An unexpired pending point-of-sale
  * charge pins both returned sat bounds to that amount; provider metadata
  * used for the millisatoshi check is not mutated.
  */
@@ -12,6 +13,7 @@
 import { Hono } from 'hono';
 import { z } from 'zod';
 import type { AuthStore } from '@/lib/auth/store';
+import type { LnurlServerConfig } from '@/lib/config';
 import { decodeBolt11 } from '@/lib/bolt11';
 import { requestGiftInvoice } from '@/lib/gift-invoice';
 import { normalizeLightningAddress } from '@/lib/lightning-address';
@@ -19,6 +21,7 @@ import type { FetchFn } from '@/lib/lnurlp';
 import { resolveLnurlp } from '@/lib/lnurlp';
 import { logEvent } from '@/lib/log';
 import type { PosStore } from '@/lib/pos-store';
+import { lnurlServerFetch, receivingAddress } from '@/lib/receiving-address';
 import { normalizeUsername } from '@/lib/username';
 
 type PayLookup =
@@ -52,6 +55,7 @@ async function lookupPayAccount(
     fetchImpl: FetchFn;
     posStore: PosStore;
     now: () => number;
+    lnurlServer?: LnurlServerConfig;
   },
 ): Promise<PayLookup> {
   const username = normalizeUsername(rawUsername);
@@ -61,17 +65,23 @@ async function lookupPayAccount(
   }
   try {
     const account = await deps.auth.getAccountByUsername(username);
-    const linked = account?.lightningAddress?.trim() ?? '';
-    if (account === undefined || linked === '') {
+    const receiving = account === undefined ? null : receivingAddress(account, deps.lnurlServer);
+    if (account === undefined || receiving === null) {
       logEvent('pay.unknown', { username });
       return { ok: false, status: 404, error: 'Not found' };
     }
-    const address = normalizeLightningAddress(linked);
+    const address =
+      receiving.kind === 'wallet'
+        ? receiving.address
+        : normalizeLightningAddress(receiving.address);
     if (address === null) {
       logEvent('pay.unreachable', { username });
       return { ok: false, status: 502, error: 'Lightning Address could not be resolved' };
     }
-    const resolved = await resolveLnurlp({ address, fetchImpl: deps.fetchImpl });
+    const resolved = await resolveLnurlp({
+      address,
+      fetchImpl: lnurlServerFetch(deps.lnurlServer, deps.fetchImpl),
+    });
     if (!resolved.ok) {
       logEvent('pay.unreachable', { username });
       return { ok: false, status: 502, error: 'Lightning Address could not be resolved' };
@@ -126,6 +136,8 @@ export function payRoutes(deps: {
   fetchImpl: FetchFn;
   posStore: PosStore;
   now: () => number;
+  /** LNURL server; omitted when off. */
+  lnurlServer?: LnurlServerConfig;
 }): Hono {
   return new Hono()
     .get('/:username', async (c) => {
@@ -168,7 +180,7 @@ export function payRoutes(deps: {
       const invoice = await requestGiftInvoice({
         address,
         amountMsat,
-        fetchImpl: deps.fetchImpl,
+        fetchImpl: lnurlServerFetch(deps.lnurlServer, deps.fetchImpl),
       });
       if (!invoice.ok) {
         logEvent('pay.invoice_failed', { username });

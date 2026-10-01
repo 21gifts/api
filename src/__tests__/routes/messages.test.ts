@@ -18,6 +18,16 @@ import { InvoiceRateLimiter, PostRateLimiter } from '@/lib/nostr/rate-limit';
 import { FUNDING_REQUIRED_FROM_UTC } from '@/lib/funding';
 import { InMemoryFundingStore } from '@/lib/funding-store';
 import { messagesRoutes, type MessagesRouteDeps } from '@/routes/messages';
+import { InMemorySparkInvoiceStore } from '@/lib/spark-invoice-store';
+import {
+  BOLT11,
+  BOLT11_PAYMENT_HASH,
+  LNURL_SERVER,
+  allInternal,
+  createWalletAccount,
+  walletLnurlFetch,
+  type SeenRequest,
+} from '@/__tests__/helpers/wallet-lnurl';
 import { parseNostrKek } from '@/lib/nostr/kek';
 import { ensureAccountNostrKey } from '@/lib/nostr/keys';
 import { RecordingPublisher } from '@/lib/nostr/publish';
@@ -4368,7 +4378,11 @@ describe('POST /messages/:id/invoice', () => {
           body: JSON.stringify({ sats: 21 }),
         });
         expect(res.status).toBe(200);
-        expect(await res.json()).toEqual({ pr: 'lnbc21n1test', amountSats: 21 });
+        expect(await res.json()).toEqual({
+          pr: 'lnbc21n1test',
+          amountSats: 21,
+          sparkInvoice: null,
+        });
         expect(callbackUrl).toBeDefined();
         const nostrParam = new URL(callbackUrl ?? '').searchParams.get('nostr');
         expect(nostrParam).toBeTruthy();
@@ -4481,7 +4495,11 @@ describe('POST /messages/:id/invoice', () => {
           body: JSON.stringify({ sats: 21 }),
         });
         expect(res.status).toBe(200);
-        expect(await res.json()).toEqual({ pr: 'lnbc21n1test', amountSats: 21 });
+        expect(await res.json()).toEqual({
+          pr: 'lnbc21n1test',
+          amountSats: 21,
+          sparkInvoice: null,
+        });
         expect(callbackUrl).toBeDefined();
         const nostrParam = new URL(callbackUrl ?? '').searchParams.get('nostr');
         expect(nostrParam).toBeTruthy();
@@ -4582,7 +4600,7 @@ describe('POST /messages/:id/invoice', () => {
         body: JSON.stringify({ sats: 21 }),
       });
       expect(res.status).toBe(200);
-      expect(await res.json()).toEqual({ pr: 'lnbc21n1test', amountSats: 21 });
+      expect(await res.json()).toEqual({ pr: 'lnbc21n1test', amountSats: 21, sparkInvoice: null });
       expect(await authStore.getNostrPublicKey('payer')).toMatch(/^[0-9a-f]{64}$/);
     });
   });
@@ -5450,7 +5468,7 @@ describe('POST /messages/:id/invoice', () => {
         body: JSON.stringify({ sats: 21 }),
       });
       expect(res.status).toBe(200);
-      expect(await res.json()).toEqual({ pr: 'lnbc21n1test', amountSats: 21 });
+      expect(await res.json()).toEqual({ pr: 'lnbc21n1test', amountSats: 21, sparkInvoice: null });
       expect(parsedEvents(warn).some((e) => e['event'] === 'message.invoice.record_failed')).toBe(
         true,
       );
@@ -12103,5 +12121,124 @@ describe('PATCH /messages/:id/text and GET /messages/:id/edits', () => {
         .slice()
         .sort(),
     ).toEqual(['place', 'place', 'shop_account', 'shop_account']);
+  });
+});
+
+describe('wallet-backed receiving on POST /messages/:id/invoice', () => {
+  const NOTE = '33333333-3333-4333-8333-333333333333';
+  const kek = parseNostrKek('11'.repeat(32));
+
+  async function walletSetup(options: {
+    lnurlServer: boolean;
+    spark: boolean;
+    authorId?: string;
+  }): Promise<{
+    app: Hono;
+    messageStore: InMemoryMessageStore;
+    seen: SeenRequest[];
+  }> {
+    const authStore = await namedStore('Ada');
+    await ensureAccountNostrKey(authStore, 'acc', kek);
+    await createWalletAccount(authStore, 'wal', 'wally');
+    await ensureAccountNostrKey(authStore, 'wal', kek);
+    const messageStore = new InMemoryMessageStore();
+    await messageStore.create({
+      id: NOTE,
+      accountId: options.authorId ?? 'wal',
+      name: 'wally',
+      text: 'hi',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+      eventId: 'ee'.repeat(32),
+    });
+    const { fetchImpl, seen } = walletLnurlFetch('wally');
+    const app = new Hono().route(
+      '/messages',
+      messagesRoutes({
+        store: messageStore,
+        authStore,
+        now,
+        nostrKek: kek,
+        fetchImpl,
+        postLimiter: new PostRateLimiter(),
+        invoiceLimiter: new InvoiceRateLimiter(),
+        ...(options.lnurlServer ? { lnurlServer: LNURL_SERVER } : {}),
+        ...(options.spark ? { sparkInvoices: new InMemorySparkInvoiceStore() } : {}),
+      }),
+    );
+    return { app, messageStore, seen };
+  }
+
+  async function pay(app: Hono): Promise<Response> {
+    return app.request(`/messages/${NOTE}/invoice`, {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ sats: 21 }),
+    });
+  }
+
+  it('resolves a wallet author internally and returns a Spark invoice', async () => {
+    const bolt11 = await import('@/lib/bolt11');
+    const nip57 = vi.spyOn(bolt11, 'isNip57Invoice').mockReturnValue(true);
+    try {
+      const { app, messageStore, seen } = await walletSetup({ lnurlServer: true, spark: true });
+      const res = await pay(app);
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as { pr: string; amountSats: number; sparkInvoice: string };
+      expect(body.pr).toBe(BOLT11);
+      expect(body.amountSats).toBe(21);
+      expect(body.sparkInvoice.startsWith('spark1')).toBe(true);
+      expect(allInternal(seen)).toBe(true);
+      expect(seen[0]?.url).toBe(`${LNURL_SERVER.baseUrl}/.well-known/lnurlp/wally`);
+      const callback = new URL(seen[1]?.url ?? '');
+      expect(`${callback.origin}${callback.pathname}`).toBe(
+        `${LNURL_SERVER.baseUrl}/lnurlp/wally/invoice`,
+      );
+      expect(callback.searchParams.get('amount')).toBe('21000');
+      expect(callback.searchParams.get('nostr')).toBeTruthy();
+      const attempt = (await messageStore.listInvoiceAttempts(5))[0];
+      expect(attempt?.lightningAddress).toBe('wally@example.test');
+      expect(attempt?.paymentHash).toBe(BOLT11_PAYMENT_HASH);
+    } finally {
+      nip57.mockRestore();
+    }
+  });
+
+  it('returns sparkInvoice null when free payments are off', async () => {
+    const bolt11 = await import('@/lib/bolt11');
+    const nip57 = vi.spyOn(bolt11, 'isNip57Invoice').mockReturnValue(true);
+    try {
+      const { app, seen } = await walletSetup({ lnurlServer: true, spark: false });
+      const res = await pay(app);
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ pr: BOLT11, amountSats: 21, sparkInvoice: null });
+      expect(allInternal(seen)).toBe(true);
+    } finally {
+      nip57.mockRestore();
+    }
+  });
+
+  it('cannot pay a wallet-only author when the LNURL server is off', async () => {
+    const { app, seen } = await walletSetup({ lnurlServer: false, spark: false });
+    const res = await pay(app);
+    expect(res.status).toBe(400);
+    expect(seen).toEqual([]);
+  });
+
+  it('rejects a note whose author account is gone', async () => {
+    const { app } = await walletSetup({ lnurlServer: true, spark: true, authorId: 'ghost' });
+    const res = await pay(app);
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: 'This message cannot be paid yet' });
+  });
+
+  it('marks a wallet-only author payable only when the LNURL server is on', async () => {
+    for (const lnurlServer of [true, false]) {
+      const { app } = await walletSetup({ lnurlServer, spark: false });
+      const res = await app.request(`/messages/${NOTE}`, { headers: AUTH });
+      expect(res.status).toBe(200);
+      expect(((await res.json()) as { payable: boolean }).payable).toBe(lnurlServer);
+    }
   });
 });

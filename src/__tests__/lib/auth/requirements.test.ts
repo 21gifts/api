@@ -108,3 +108,21 @@ describe('requireAction', () => {
     expect(requireAction(account, 'forum.read')).toEqual({ ok: true });
   });
 });
+
+describe('forum.post with a verified wallet', () => {
+  it('passes without an external Lightning address', () => {
+    const account: Account = {
+      ...base,
+      name: 'Ada',
+      username: 'ada',
+      rulesAgreedAt: 2,
+      sparkPubkey: `02${'a'.repeat(64)}`,
+      sparkPubkeyVerifiedAt: 3,
+    };
+    expect(requireAction(account, 'forum.post')).toEqual({ ok: true });
+    expect(requireAction({ ...account, sparkPubkeyVerifiedAt: null }, 'forum.post')).toEqual({
+      ok: false,
+      missing: ['lightning-address'],
+    });
+  });
+});
