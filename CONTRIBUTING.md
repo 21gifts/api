@@ -35,7 +35,7 @@ api/
 │   │   ├── info.ts           # GET /info
 │   │   ├── brand.ts          # GET /favicon.ico, /favicon.svg, /apple-touch-icon.png
 │   │   ├── auth.ts           # Passkey: /auth/passkey/register|authenticate|replace begin/finish
-│   │   ├── me.ts             # GET /me; GET /me/activity; PUT /me/about; GET /me/about/photo; POST /me/wallet-backup-seen; PUT /me/wallet (when LNURL_SERVER_URL); POST /me/setup/skip; POST /me/name; POST /me/username; POST /me/location; POST /me/forum-laws-dismissed; POST /me/notification-level; POST /me/amount-unit; POST /me/locale; POST /me/fiat; POST /me/rules-agreement; link/unlink + address verification
+│   │   ├── me.ts             # GET /me; GET /me/activity; PUT /me/about; GET /me/about/photo; POST /me/wallet-backup-seen; PUT /me/wallet (when LNURL_SERVER_URL and PUBLIC_BASE_URL resolve); POST /me/setup/skip; POST /me/name; POST /me/username; POST /me/location; POST /me/forum-laws-dismissed; POST /me/notification-level; POST /me/amount-unit; POST /me/locale; POST /me/fiat; POST /me/rules-agreement; link/unlink + address verification
 │   │   ├── pictures.ts       # GET/PUT /pictures/me; public GET /pictures/:accountId.jpg|.png|.webp (round profile photo; not the About me photo)
 │   │   ├── banner.ts         # GET/PUT /banners/me; public GET /banners/:accountId.jpg|.png|.webp (wide image; not the About me photo)
 │   │   ├── members.ts        # GET /members/:accountId (Bearer; live identity + profile note + counts + trust + fundingReviewedAt); GET /members/:accountId/activity; GET /members/:accountId/posts; GET /members/:accountId/replies
@@ -65,8 +65,8 @@ api/
 │   │   ├── messages.ts       # GET/POST /messages, GET /messages/compose-target, public GET /messages/:id, GET /messages/hidden (session, not DEBUG_TOKEN), DELETE /messages/:id, GET /messages/:id/replies, GET /messages/:id/photo, GET /messages/:id/video.*, POST /messages/:id/invoice, GET/POST /messages/:id/repayment, POST /messages/:id/translate
 │   │   ├── repayment.ts      # GET/POST /messages/:id/repayment (public ledger; author pays the next share)
 │   │   ├── translate.ts      # GET /translate (DeepL configured?)
-│   │   ├── well-known.ts     # GET /.well-known/nostr.json (NIP-05); GET /.well-known/lnurlp/:username (LUD-16; wallet-backed when LNURL_SERVER_URL)
-│   │   ├── lnurl-server.ts   # Forwarded LNURL routes when LNURL_SERVER_URL is set (register/recover/metadata/invoice/verify)
+│   │   ├── well-known.ts     # GET /.well-known/nostr.json (NIP-05); GET /.well-known/lnurlp/:username (LUD-16; wallet-backed when LNURL_SERVER_URL and PUBLIC_BASE_URL resolve)
+│   │   ├── lnurl-server.ts   # Forwarded LNURL routes when LNURL_SERVER_URL and PUBLIC_BASE_URL resolve (register/recover/metadata/invoice/verify)
 │   │   ├── pay.ts            # GET /pay/:username; POST /pay/:username/invoice
 │   │   ├── contact.ts        # POST /contact (private mailbox + platform thread)
 │   │   ├── pos.ts            # GET/POST/DELETE /pos (one exact sat amount on the Lightning address)
@@ -74,7 +74,7 @@ api/
 │   │   └── notifications.ts  # GET /notifications, POST /notifications/read-by-message, POST /notifications/read-all, POST /notifications/:id/read
 │   ├── lib/
 │   │   ├── meta.ts           # Service constants (name, version, repo URL)
-│   │   ├── config.ts         # Auth, verification, and gift-invoice TTLs/amounts; resolveLnurlServerConfig (LNURL_SERVER_URL)
+│   │   ├── config.ts         # Auth, verification, and gift-invoice TTLs/amounts; resolveLnurlServerConfig (LNURL_SERVER_URL + PUBLIC_BASE_URL)
 │   │   ├── spark-pubkey.ts   # normalizeSparkPubkey (compressed secp256k1 identity key)
 │   │   ├── ip-rate-limit.ts  # IpRateLimiter (per-client sliding window for forwarded LNURL routes)
 │   │   ├── lnurl-server.ts   # callLnurlServer + walletPayRequest (self-hosted LNURL upstream client)
