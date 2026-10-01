@@ -656,6 +656,35 @@ describe('serializeOwnerAccountWithPosts', () => {
     });
   });
 
+  it('sets dailyPayoutStoppedNotice true for a listed verified id only when funding is looked up', async () => {
+    const listed = {
+      ...account,
+      id: '14101481-f421-42ef-9d37-6df3ccb6b25f',
+      role: 'verified' as const,
+    };
+    const lookedUp = await serializeOwnerAccountWithPosts(
+      listed,
+      {
+        accountHasLivePost: async () => false,
+        getById: async () => undefined,
+      },
+      { store: new InMemoryFundingStore(), nowMs: 1, authStore: new InMemoryAuthStore() },
+    );
+    expect(lookedUp.funding).toEqual({
+      status: 'none',
+      trialUtcDate: null,
+      admittedAt: null,
+      reviewedByName: null,
+      dailyPayoutStoppedNotice: true,
+    });
+
+    const omitted = await serializeOwnerAccountWithPosts(listed, {
+      accountHasLivePost: async () => false,
+      getById: async () => undefined,
+    });
+    expect(omitted.funding?.dailyPayoutStoppedNotice).toBe(false);
+  });
+
   it('loads admitted funding and the reviewer name', async () => {
     const fundingStore = new InMemoryFundingStore([
       {

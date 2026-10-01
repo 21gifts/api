@@ -190,6 +190,10 @@ describe('dailyPayoutStoppedNotice', () => {
     expect(dailyPayoutStoppedNotice(id, grant({ status: 'rejected' }), NOW_MS)).toBe(false);
   });
 
+  it('is false for a listed account with an expired trial', () => {
+    expect(dailyPayoutStoppedNotice(NOTICE_IDS[0], trial(YESTERDAY), NOW_MS)).toBe(false);
+  });
+
   it('is false for some other account id with no grant', () => {
     expect(dailyPayoutStoppedNotice('other-account-id', undefined, NOW_MS)).toBe(false);
   });
@@ -236,6 +240,18 @@ describe('serializeOwnerFunding', () => {
       reviewedByName: null,
       dailyPayoutStoppedNotice: false,
     });
+  });
+
+  it('sets pending and dailyPayoutStoppedNotice false for a listed id with an expired trial', () => {
+    expect(serializeOwnerFunding(NON_BASIS, trial(YESTERDAY), NOW_MS, null, NOTICE_IDS[0])).toEqual(
+      {
+        status: 'pending',
+        trialUtcDate: null,
+        admittedAt: null,
+        reviewedByName: null,
+        dailyPayoutStoppedNotice: false,
+      },
+    );
   });
 
   it('keeps trialUtcDate null when the stored trial day is null', () => {
