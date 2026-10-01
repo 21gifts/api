@@ -1,9 +1,10 @@
 /**
  * Forwarded LNURL routes for the self-hosted LNURL server.
  *
- * Mounted at `/` only when `LNURL_SERVER_URL` resolves. Every gate is a store
- * lookup (the wallet carries no session of this api). Rate-limited per client
- * IP; never logs a query string, body, signature header, comment, or zap request.
+ * Mounted at `/` only when `LNURL_SERVER_URL` and `PUBLIC_BASE_URL` resolve.
+ * Every gate is a store lookup (the wallet carries no session of this api).
+ * Rate-limited per client IP; never logs a query string, body, signature header,
+ * comment, or zap request.
  */
 
 import { Hono } from 'hono';

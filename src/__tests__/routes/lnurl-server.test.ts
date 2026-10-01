@@ -890,6 +890,17 @@ describe('lnurlServerRoutes', () => {
       ).toBe(true);
     });
 
+    it('does not count requests without a client address toward the per-address limit', async () => {
+      const store = new InMemoryAuthStore();
+      await seedWallet(store, { id: 'acc', username: 'ada', verified: true });
+      const { fetchImpl, calls } = recordingFetch(async () => new Response('ok', { status: 200 }));
+      const app = mount(store, fetchImpl);
+      for (let i = 0; i < 21; i += 1) {
+        expect((await app.request('/lnurlp/ada/invoice')).status).toBe(200);
+      }
+      expect(calls).toHaveLength(21);
+    });
+
     it('returns 429 after the per-client limit', async () => {
       const store = new InMemoryAuthStore();
       await seedWallet(store, { id: 'acc', username: 'ada', verified: true });
