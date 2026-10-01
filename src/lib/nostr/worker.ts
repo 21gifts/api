@@ -277,9 +277,12 @@ function indexOpenZapReceiptsArgs(
  * passes (zap read relays from `deps.env`). Used by the Spark invoice worker.
  *
  * @param deps - The worker collaborators the ingest uses.
- * @returns A function that ingests one kind 9735 event.
+ * @returns A function that ingests one kind 9735 event and resolves `true`
+ *   unless an ingest step threw.
  */
-export function zapReceiptIngest(deps: ZapIngestDeps): (event: NostrEventFrame) => Promise<void> {
+export function zapReceiptIngest(
+  deps: ZapIngestDeps,
+): (event: NostrEventFrame) => Promise<boolean> {
   const args = indexOpenZapReceiptsArgs(deps, resolveZapReadRelays(deps.env));
   return (event) => ingestZapReceipt(event, args);
 }
