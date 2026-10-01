@@ -9,6 +9,7 @@ import type { PosChargeRef } from '@/lib/pos-store';
 /** One UTC day in the 30-day staff series. */
 export type ShopActivityDay = { day: string; shopCount: number };
 
+/** Inclusive count of UTC days in the staff shop-activity series. */
 export const WINDOW_DAYS = 30;
 const MS_PER_DAY = 86_400_000;
 const SHOP_HASHTAG = '21GiftsShop';

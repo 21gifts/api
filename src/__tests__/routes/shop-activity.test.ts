@@ -144,8 +144,8 @@ describe('GET /shops/activity', () => {
     const res = await get(app, 'mod');
     expect(res.status).toBe(503);
     expect(await res.json()).toEqual({ error: 'Shop activity is unavailable' });
-    expect(parsedEvents(warn)).toContainEqual(
-      expect.objectContaining({ event: 'shops.activity.failed' }),
-    );
+    const failed = parsedEvents(warn).filter((entry) => entry['event'] === 'shops.activity.failed');
+    expect(failed).toHaveLength(1);
+    expect(Object.keys(failed[0]!).sort()).toEqual(['event', 'ts']);
   });
 });
