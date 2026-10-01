@@ -241,9 +241,11 @@ export interface AppDeps {
    */
   nostrRelayUrls?: readonly string[];
   /**
-   * Optional env slice for hide retract (relays, `PUBLIC_BASE_URL`,
-   * Cloudflare) and `LNURL_SERVER_URL` (self-hosted LNURL server; unset →
-   * those routes are not mounted). Default `process.env`.
+   * Optional env slice for hide retract (relays, `PUBLIC_BASE_URL`, Cloudflare)
+   * and the self-hosted LNURL server. Those routes are mounted only when
+   * `LNURL_SERVER_URL` and `PUBLIC_BASE_URL` resolve through
+   * {@link resolveLnurlServerConfig}; otherwise they are not mounted. Default
+   * `process.env`.
    */
   env?: Record<string, string | undefined>;
   /**
@@ -339,8 +341,10 @@ function debugList(store: object, limit: number): Promise<unknown[]> {
  *   debugDbStore (`GET /debug/db`; omitted on a memory boot),
  *   funding store (injected into `/funding`, `/me`, `/auth`, `/members`,
  *   `/messages`, `/conversations`, `/invoices`, and `debugPaymentsRoutes`), vapidPublicKey, nostrKek,
- *   nostrPublisher, env (including optional `LNURL_SERVER_URL` for the
- *   self-hosted LNURL server routes), WebAuthn RP, spend token, spend ping, postLimiter
+ *   nostrPublisher, env (the self-hosted LNURL server routes are mounted only when
+ *   `LNURL_SERVER_URL` and `PUBLIC_BASE_URL` resolve through
+ *   {@link resolveLnurlServerConfig}; otherwise they are not mounted), WebAuthn RP,
+ *   spend token, spend ping, postLimiter
  *   (optional; default `new PostRateLimiter()`, shared with `messagesRoutes`
  *   and the Nostr worker), gift invoice store, listDbChange, and
  *   diagnosticStore (optional; default {@link InMemoryDiagnosticStore};
