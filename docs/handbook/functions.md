@@ -2790,7 +2790,7 @@
 
 - **Purpose:** Hono `GET /nostr.json` (NIP-05, CORS `*`) and `GET /lnurlp/:username` (LUD-16 payRequest). Passes through the linked Wallet of Satoshi JSON so callback and metadata stay there. While an unexpired pending point-of-sale charge exists, both `minSendable` and `maxSendable` become that amount in millisats. `GET /lnurlp/:username` is `Cache-Control: no-store`; `GET /nostr.json` keeps `Cache-Control: public, max-age=60`. When `lnurlServer` is set and the account has a verified wallet key, a wallet-backed branch uses `callLnurlServer` and `walletPayRequest` to serve the pay request.
 - **Inputs:** auth store, env, optional fetchImpl (default `globalThis.fetch`), optional posStore (default empty in-memory store), optional now (default `Date.now`). Optional `lnurlServer` (`LnurlServerConfig`, omitted when the feature is off) enables the wallet-backed branch.
-- **Returns / side effects:** Hono app mounted at `/.well-known`. LNURL-pay 404 when the username is invalid, unknown, or unlinked; 502 when WoS is unreachable or the store throws. A wallet-backed upstream 404 returns 404, an over-limit request returns 429, and an unreachable LNURL server or invalid document returns 503.
+- **Returns / side effects:** Hono app mounted at `/.well-known`. LNURL-pay 404 when the username is invalid, unknown, or unlinked; 502 when WoS is unreachable or the store throws. A wallet-backed upstream 404 returns 404, an over-limit request returns 429, and an unreachable LNURL server or invalid document returns 503. An account with a verified wallet key is served from the LNURL server whether or not a Lightning Address is linked (only when the feature is on).
 - **Used by:** `createApp`.
 
 ## Function: lnurlServerRoutes

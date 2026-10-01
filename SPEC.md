@@ -80,13 +80,13 @@ Public base URLs used in examples:
 | ------ | ---------------------------------------------------- | -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | GET    | `/healthz`                                           | none                       | Liveness                                                                                                                                                                                                                                                                                                                                               |
 | GET    | `/info`                                              | none                       | Service identity                                                                                                                                                                                                                                                                                                                                       |
-| GET    | `/.well-known/lnurlp/:username`                      | none                       | LUD-16 payRequest; WoS callback stays; an open till charge pins both sendable bounds; a verified wallet key is served from the LNURL server when `LNURL_SERVER_URL` is set                                                                                                                                                                             |
-| PUT    | `/me/wallet`                                         | Bearer                     | Bind wallet identity pubkey while unverified (mounted only when `LNURL_SERVER_URL` is set)                                                                                                                                                                                                                                                             |
-| POST   | `/lnurlpay/:pubkey`                                  | none                       | Forward wallet name registration (mounted only when `LNURL_SERVER_URL` is set)                                                                                                                                                                                                                                                                         |
-| POST   | `/lnurlpay/:pubkey/recover`                          | none                       | Forward signed recover (mounted only when `LNURL_SERVER_URL` is set)                                                                                                                                                                                                                                                                                   |
-| GET    | `/lnurlpay/:pubkey/metadata`                         | none                       | Forward signed payment metadata (mounted only when `LNURL_SERVER_URL` is set)                                                                                                                                                                                                                                                                          |
-| GET    | `/lnurlp/:username/invoice`                          | none                       | Forward LNURL-pay invoice for a wallet-backed username (mounted only when `LNURL_SERVER_URL` is set)                                                                                                                                                                                                                                                   |
-| GET    | `/verify/:paymentHash`                               | none                       | LUD-21 verify forward (mounted only when `LNURL_SERVER_URL` is set)                                                                                                                                                                                                                                                                                    |
+| GET    | `/.well-known/lnurlp/:username`                      | none                       | LUD-16 payRequest; WoS callback stays; an open till charge pins both sendable bounds; a verified wallet key is served from the LNURL server when `LNURL_SERVER_URL` and `PUBLIC_BASE_URL` resolve                                                                                                                                                      |
+| PUT    | `/me/wallet`                                         | Bearer                     | Bind wallet identity pubkey while unverified (mounted only when `LNURL_SERVER_URL` and `PUBLIC_BASE_URL` resolve)                                                                                                                                                                                                                                      |
+| POST   | `/lnurlpay/:pubkey`                                  | none                       | Forward wallet name registration (mounted only when `LNURL_SERVER_URL` and `PUBLIC_BASE_URL` resolve)                                                                                                                                                                                                                                                  |
+| POST   | `/lnurlpay/:pubkey/recover`                          | none                       | Forward signed recover (mounted only when `LNURL_SERVER_URL` and `PUBLIC_BASE_URL` resolve)                                                                                                                                                                                                                                                            |
+| GET    | `/lnurlpay/:pubkey/metadata`                         | none                       | Forward signed payment metadata (mounted only when `LNURL_SERVER_URL` and `PUBLIC_BASE_URL` resolve)                                                                                                                                                                                                                                                   |
+| GET    | `/lnurlp/:username/invoice`                          | none                       | Forward LNURL-pay invoice for a wallet-backed username (mounted only when `LNURL_SERVER_URL` and `PUBLIC_BASE_URL` resolve)                                                                                                                                                                                                                            |
+| GET    | `/verify/:paymentHash`                               | none                       | LUD-21 verify forward (mounted only when `LNURL_SERVER_URL` and `PUBLIC_BASE_URL` resolve)                                                                                                                                                                                                                                                             |
 | GET    | `/pay/:username`                                     | none                       | Public pay-link card: display name and satoshi bounds                                                                                                                                                                                                                                                                                                  |
 | POST   | `/pay/:username/invoice`                             | none                       | One BOLT11 invoice for an exact satoshi amount on the linked address                                                                                                                                                                                                                                                                                   |
 | GET    | `/favicon.ico`                                       | none                       | Brand mark (favicon)                                                                                                                                                                                                                                                                                                                                   |
@@ -289,11 +289,12 @@ Satoshi. While an unexpired pending `pos_charge` exists, both
 does not mint invoices. Settlement stays on the linked Wallet of Satoshi
 address.
 
-When `LNURL_SERVER_URL` is set and the account has a verified wallet key
-(`sparkPubkeyVerifiedAt` is a number), the pay request comes from the
-self-hosted LNURL server instead (`GET /.well-known/lnurlp/<username>`,
-5 s timeout, fixed `Host`, 120 requests per minute per client address);
-it is returned only when `walletPayRequest` accepts it with callback
+When `LNURL_SERVER_URL` and `PUBLIC_BASE_URL` resolve and the account has
+a verified wallet key (`sparkPubkeyVerifiedAt` is a number), the pay
+request comes from the self-hosted LNURL server instead
+(`GET /.well-known/lnurlp/<username>`, 5 s timeout, fixed `Host`, 120
+requests per minute per client address); it is returned only when
+`walletPayRequest` accepts it with callback
 `<PUBLIC_BASE_URL>/lnurlp/<username>/invoice`; the pending point-of-sale
 rule above applies to it as well; an account without a verified wallet
 key is served as described above.
@@ -312,7 +313,9 @@ Username invalid (`normalizeUsername` returns null), unknown
 ```
 
 For a verified wallet key, an upstream 404 → **Response** `404` with the
-same body.
+same body. An account with a verified wallet key is served from the
+LNURL server whether or not a Lightning Address is linked (only when the
+feature is on).
 
 Wallet of Satoshi unreachable (`!resolved.ok`) or the store throws →
 **Response** `502`:
@@ -335,8 +338,11 @@ only `minSendable` and `maxSendable`, both to that amount in millisats.
 
 ### `PUT /me/wallet`
 
-Bearer session. Mounted only when `LNURL_SERVER_URL` resolves; otherwise
-Hono's default 404. Body:
+Bearer session. Mounted only when `LNURL_SERVER_URL` and
+`PUBLIC_BASE_URL` resolve; otherwise Hono's default 404.
+`LNURL_SERVER_URL` and `PUBLIC_BASE_URL` resolve when both are http or
+https URLs (`resolveLnurlServerConfig`); otherwise the feature is off.
+Body:
 
 ```json
 { "sparkPubkey": "02aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" }
@@ -367,10 +373,11 @@ and `sparkWalletVerified`). Logs `account.wallet.claimed` `{ accountId }`
 
 ### `POST /lnurlpay/:pubkey`
 
-Forward wallet name registration to the self-hosted LNURL server. Mounted
-only when `LNURL_SERVER_URL` is set. No api session; the wallet sends
-signature data in the body or `x-breez-signature` / `x-breez-timestamp`
-headers. Rate limit 30/min/client. Body cap 1 MB (1 048 576 bytes); a
+Forward wallet name registration to the self-hosted LNURL server.
+Mounted only when `LNURL_SERVER_URL` and `PUBLIC_BASE_URL` resolve. No api
+session; the wallet sends signature data in the body or
+`x-breez-signature` / `x-breez-timestamp` headers. Rate limit
+30/min/client. Body cap 1 MB (1 048 576 bytes); a
 larger body gets 413 `{ "error": "Request body is too large" }` and the
 upstream is not contacted. A request without a validated
 `cf-connecting-ip` is not counted by the per-address limits.
@@ -406,10 +413,10 @@ the request headers `X-Breez-Signature` and `X-Breez-Timestamp`.
 
 ### `POST /lnurlpay/:pubkey/recover`
 
-Forward signed recover. Mounted only when `LNURL_SERVER_URL` is set. Rate
-limit 30/min/client. Body cap 1 MB (1 048 576 bytes); a larger body gets
-413 `{ "error": "Request body is too large" }` and the upstream is not
-contacted.
+Forward signed recover. Mounted only when `LNURL_SERVER_URL` and
+`PUBLIC_BASE_URL` resolve. Rate limit 30/min/client. Body cap 1 MB
+(1 048 576 bytes); a larger body gets 413
+`{ "error": "Request body is too large" }` and the upstream is not contacted.
 
 **Gate:** pubkey normalises; `auth.isSparkPubkeyClaimed(pubkey)`. Fail → 404. Upstream `POST /lnurlpay/<pubkey>/recover` (15 s). Status mapping:
 upstream 2xx passed through with its status, body and only the
@@ -420,8 +427,8 @@ upstream 2xx passed through with its status, body and only the
 ### `GET /lnurlpay/:pubkey/metadata`
 
 Forward signed metadata for received payments. Mounted only when
-`LNURL_SERVER_URL` is set. Rate limit 120/min/client. Raw query string
-forwarded unchanged.
+`LNURL_SERVER_URL` and `PUBLIC_BASE_URL` resolve. Rate limit
+120/min/client. Raw query string forwarded unchanged.
 
 **Gate:** pubkey normalises; `getAccountByVerifiedSparkPubkey(pubkey)`
 exists. Fail → 404. Upstream `GET /lnurlpay/<pubkey>/metadata` + query
@@ -430,7 +437,8 @@ exists. Fail → 404. Upstream `GET /lnurlpay/<pubkey>/metadata` + query
 ### `GET /lnurlp/:username/invoice`
 
 Forward LNURL-pay invoice for a wallet-backed username. Mounted only when
-`LNURL_SERVER_URL` is set. Rate limit 20/min/client. CORS `*`
+`LNURL_SERVER_URL` and `PUBLIC_BASE_URL` resolve. Rate limit 20/min/client.
+CORS `*`
 (`Access-Control-Allow-Origin: *`, methods `GET` / `OPTIONS`). Raw query
 string forwarded unchanged.
 
@@ -442,8 +450,9 @@ recover. Upstream may return HTTP 200 with
 
 ### `GET /verify/:paymentHash`
 
-LUD-21 payment verification forward. Mounted only when `LNURL_SERVER_URL`
-is set. Forwarded for a payment hash whose path segment is only
+LUD-21 payment verification forward. Mounted only when
+`LNURL_SERVER_URL` and `PUBLIC_BASE_URL` resolve. Forwarded for a payment
+hash whose path segment is only
 `A-Z a-z 0-9 . _ ~ -` and is neither `.` nor `..` (for example
 `a%2Fb` decoded to `a/b` is refused). A refused segment → 404
 `{ "error": "Not found" }` without contacting upstream and without an
