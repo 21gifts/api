@@ -637,6 +637,27 @@ infrastructure run whose title is `image-published 21gifts/api:<tag> <sha>`
 and fails if that run does not succeed. The wait is what makes a failed DEV
 deploy visible on the develop→main PR.
 
+## Breez SDK Spark
+
+This repository stores two GitHub Actions secrets for the Breez SDK (Spark).
+Deploy workflows do not read them. A workflow in this repository uses them as
+`secrets.BREEZ_API_KEY_PRD` and `secrets.BREEZ_API_KEY_DEV`. GitHub does not
+show the values again, and the values are not in git.
+
+| Secret              | Use                                                            |
+| ------------------- | -------------------------------------------------------------- |
+| `BREEZ_API_KEY_PRD` | Breez SDK API key for production (`https://api.21.gifts`)      |
+| `BREEZ_API_KEY_DEV` | Breez SDK API key for development (`https://dev-api.21.gifts`) |
+
+```yaml
+env:
+  BREEZ_API_KEY: ${{ secrets.BREEZ_API_KEY_DEV }}
+```
+
+Pass `BREEZ_API_KEY` to the SDK as `apiKey`. Use `BREEZ_API_KEY_PRD` only for
+production. The same two secret names are set on
+[`21gifts/app`](https://github.com/21gifts/app).
+
 ## Related repos
 
 - [`21gifts/app`](https://github.com/21gifts/app) — Web frontend client
