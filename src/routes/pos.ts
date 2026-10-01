@@ -2,17 +2,21 @@ import { Hono } from 'hono';
 import { resolveSession } from '@/lib/auth/service';
 import { isUniqueViolation } from '@/lib/auth/sql';
 import type { Account, AuthStore } from '@/lib/auth/store';
+import type { LnurlServerConfig } from '@/lib/config';
 import type { FetchFn } from '@/lib/lnurlp';
 import { resolveLnurlp } from '@/lib/lnurlp';
 import { textHasHashtagToken, type ShopNoteRef } from '@/lib/message-store';
 import { logActivityFailure, pingShopActivity, type ActivityPing } from '@/lib/ocp-activity';
 import { POS_CHARGE_TTL_MS, serializePosCharge, type PosCharge } from '@/lib/pos-charge';
 import type { PosStore } from '@/lib/pos-store';
+import { lnurlServerFetch, receivingAddress } from '@/lib/receiving-address';
 import { bearerToken } from '@/routes/me';
 
 /**
  * `/pos` — signed-in member point-of-sale amount in whole sats.
- * Settlement stays at Wallet of Satoshi. There is no paid status.
+ * Settlement goes to the member's receiving address (a verified wallet when
+ * the LNURL server is configured, else the linked address). There is no paid
+ * status.
  * Shares the {@link AuthStore} with `/auth` and `/me`.
  */
 
@@ -33,6 +37,8 @@ export interface PosRouteDeps {
   messageStore?: { listLiveAssignedShops(): Promise<ShopNoteRef[]> };
   /** Map activity ping. Omitted → `POST /pos` does not ping the map. */
   activity?: ActivityPing;
+  /** LNURL server; omitted when off. A verified wallet is checked against it. */
+  lnurlServer?: LnurlServerConfig;
 }
 
 /** Resolve the account behind a request's bearer session, or `null`. */
@@ -92,15 +98,18 @@ export function posRoutes(deps: PosRouteDeps): Hono {
       if (username === '') {
         return c.json({ error: 'Set a username first' }, 400);
       }
-      const address = (account.lightningAddress ?? '').trim();
-      if (address === '') {
+      const receiving = receivingAddress(account, deps.lnurlServer);
+      if (receiving === null) {
         return c.json({ error: 'Set a Wallet of Satoshi address first' }, 400);
       }
       const open = await deps.store.currentPending(account.id, deps.now());
       if (open !== null) {
         return c.json({ error: 'A payment is already open' }, 409);
       }
-      const resolved = await resolveLnurlp({ address, fetchImpl: deps.fetchImpl });
+      const resolved = await resolveLnurlp({
+        address: receiving.address,
+        fetchImpl: lnurlServerFetch(deps.lnurlServer, deps.fetchImpl),
+      });
       if (!resolved.ok) {
         return c.json({ error: 'Lightning Address could not be resolved' }, 502);
       }

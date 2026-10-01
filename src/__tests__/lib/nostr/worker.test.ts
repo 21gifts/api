@@ -26,6 +26,7 @@ import {
   HOT_ZAP_WINDOW_MS,
   runNostrWorkerTick,
   startNostrWorker,
+  zapReceiptIngest,
   type NostrWorkerDeps,
 } from '@/lib/nostr/worker';
 import { ExternalIngestLimiter } from '@/lib/nostr/external';
@@ -7760,5 +7761,87 @@ describe('startNostrWorker', () => {
     expect(imeta?.some((part) => part.startsWith('size '))).toBe(true);
     expect(imeta?.some((part) => /^x [0-9a-f]{64}$/.test(part))).toBe(true);
     expect(imeta?.some((part) => part.startsWith('dim '))).toBe(false);
+  });
+});
+
+describe('zapReceiptIngest', () => {
+  it('ingests one receipt with the worker arguments and the LNURL server', async () => {
+    const auth = new InMemoryAuthStore();
+    const messages = new InMemoryMessageStore();
+    const owner = '0209cb7d2b5d3df3a0ac4ef86cfcfa229ffa52b687d797274c8669cbd5235eccd5';
+    const receiptPubkey = 'ab'.repeat(32);
+    await auth.createAccount({
+      id: 'acc-ingest',
+      linkingKey: null,
+      role: 'basis',
+      name: 'Ada',
+      username: 'ingest-wallet',
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: 'e'.repeat(64),
+      createdAt: 1,
+      rulesAgreedAt: null,
+      walletRequired: true,
+    });
+    await auth.claimSparkPubkey('acc-ingest', owner);
+    await auth.markSparkPubkeyVerified('acc-ingest', owner, 'ingest-wallet', 2);
+    const eventId = 'ef'.repeat(32);
+    await messages.create({
+      id: 'm-ingest',
+      accountId: 'acc-ingest',
+      name: 'Ada',
+      text: 'hi',
+      createdAt: new Date('2026-10-01T00:00:00.000Z'),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+      eventId,
+    });
+    mockedDecode.mockReturnValue({ paymentHash: 'd4'.repeat(32), amountMsat: 21_000 });
+    const calls: string[] = [];
+    const fetchImpl: FetchFn = async (input) => {
+      const url = String(input);
+      calls.push(url);
+      if (url !== 'http://lnurl.internal/.well-known/lnurlp/ingest-wallet') {
+        return new Response('{}', { status: 500 });
+      }
+      return Response.json({
+        callback: 'https://gifts.test/lnurlp/ingest-wallet/invoice',
+        minSendable: 1000,
+        maxSendable: 10_000_000,
+        allowsNostr: true,
+        nostrPubkey: receiptPubkey,
+      });
+    };
+    const ingestOne = zapReceiptIngest(
+      deps({
+        messages,
+        auth,
+        kek: KEK,
+        publisher: new RecordingPublisher(),
+        now: () => 1,
+        env: {},
+        fetchImpl,
+        verifyReceipt: () => true,
+        lnurlServer: {
+          baseUrl: 'http://lnurl.internal',
+          publicBaseUrl: 'https://gifts.test',
+          host: 'gifts.test',
+        },
+      }),
+    );
+    await ingestOne({
+      id: 'r-ingest',
+      pubkey: receiptPubkey,
+      kind: 9735,
+      tags: [
+        ['e', eventId],
+        ['bolt11', 'lnbc-ingest'],
+      ],
+    });
+    expect((await messages.getById('m-ingest'))?.sats).toBe(21);
+    expect(calls).toContain('http://lnurl.internal/.well-known/lnurlp/ingest-wallet');
+    expect(calls.some((url) => url.includes('gifts.test'))).toBe(false);
   });
 });

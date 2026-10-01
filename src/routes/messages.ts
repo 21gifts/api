@@ -22,6 +22,10 @@ import { shownFiatFromBody, type FiatAmounts } from '@/lib/money';
 import { buildPostStats } from '@/lib/post-stats';
 import type { FetchFn } from '@/lib/lnurlp';
 import { requestZapInvoice } from '@/lib/lnurl-pay';
+import type { LnurlServerConfig } from '@/lib/config';
+import { lnurlServerFetch, receivingAddress, type ReceivingAccount } from '@/lib/receiving-address';
+import { issueSparkInvoice } from '@/lib/spark-invoice';
+import type { SparkInvoiceStore } from '@/lib/spark-invoice-store';
 import {
   MESSAGE_LIST_LIMIT,
   MESSAGE_MAX_LENGTH,
@@ -142,21 +146,28 @@ const GOAL_SATS_MAX = GIFT_INVOICE_MAX_MSAT / 1000;
 const AUTHOR_WALLET_CANNOT_RECEIVE = "The author's wallet cannot receive this Bitcoin payment";
 
 /**
- * Whether a forum row can mint a zap: non-empty signed `eventId` plus a
- * non-blank author Lightning Address. Null or empty `eventId` and
- * whitespace-only addresses are not payable.
+ * Whether a forum row can mint a zap: non-empty signed `eventId` plus an
+ * author receiving address ({@link receivingAddress}: a verified wallet when
+ * the LNURL server is configured, else a non-blank Lightning Address). Null or
+ * empty `eventId` and whitespace-only addresses are not payable.
  *
  * @param row - Forum row (`eventId` is the mint gate).
  * @param author - Author account when known.
+ * @param lnurlServer - LNURL server config, or `undefined` when off.
  * @returns True when list/get should mark the note payable.
  */
 function payableOf(
   row: { eventId: string | null },
-  author: { lightningAddress: string | null } | undefined,
+  author: ReceivingAccount | undefined,
+  lnurlServer: LnurlServerConfig | undefined,
 ): boolean {
-  const address = author?.lightningAddress;
   const eventId = row.eventId;
-  return eventId !== null && eventId !== '' && typeof address === 'string' && address.trim() !== '';
+  return (
+    eventId !== null &&
+    eventId !== '' &&
+    author !== undefined &&
+    receivingAddress(author, lnurlServer) !== null
+  );
 }
 
 /**
@@ -245,6 +256,10 @@ export interface MessagesRouteDeps {
   nostrKek?: Uint8Array;
   /** LNURL fetch (invoice path). */
   fetchImpl?: FetchFn;
+  /** LNURL server; omitted when off. Members with a verified wallet receive on it. */
+  lnurlServer?: LnurlServerConfig;
+  /** Issued Spark invoices; omitted when free in-app payments are off. */
+  sparkInvoices?: SparkInvoiceStore;
   /** Post limiter (tests inject). */
   postLimiter?: PostRateLimiter;
   /** Invoice limiter (tests inject). */
@@ -921,7 +936,7 @@ async function persistForumPost(
         return c.json(
           serializeMessage(
             existing,
-            payableOf(existing, account),
+            payableOf(existing, account, deps.lnurlServer),
             account.role,
             undefined,
             true,
@@ -1122,7 +1137,7 @@ async function persistForumPost(
     return c.json(
       serializeMessage(
         published,
-        payableOf(published, account),
+        payableOf(published, account, deps.lnurlServer),
         account.role,
         undefined,
         true,
@@ -1480,7 +1495,7 @@ async function servePublicActiveList(deps: MessagesRouteDeps, c: Context): Promi
     );
     const messages = kept.map((row, i) => {
       const author = authors[i];
-      const payable = payableOf(row, author);
+      const payable = payableOf(row, author, deps.lnurlServer);
       const role = row.accountId === null ? undefined : (author?.role ?? 'basis');
       return serializeMessage(
         row,
@@ -1629,7 +1644,7 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
         );
         const messages = kept.map((row, i) => {
           const author = authors[i];
-          const payable = payableOf(row, author);
+          const payable = payableOf(row, author, deps.lnurlServer);
           const role = row.accountId === null ? undefined : (author?.role ?? 'basis');
           return serializeMessage(
             row,
@@ -1846,7 +1861,7 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
         if (row.deletedAt !== null) {
           return c.json({ error: 'Messages are unavailable' }, 503);
         }
-        if (!payableOf(row, live) || row.eventId === null || row.eventId === '') {
+        if (!payableOf(row, live, deps.lnurlServer) || row.eventId === null || row.eventId === '') {
           return c.json({ error: 'This message cannot be paid yet' }, 400);
         }
         return c.json({ messageId: row.id, sats: row.sats }, 200);
@@ -1922,7 +1937,8 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
             const author =
               row.accountId === null ? undefined : await deps.authStore.getAccount(row.accountId);
             const role = row.accountId === null ? undefined : (author?.role ?? 'basis');
-            const payable = row.accountId === null ? false : payableOf(kept, author);
+            const payable =
+              row.accountId === null ? false : payableOf(kept, author, deps.lnurlServer);
             messages.push(
               serializeMessage(
                 kept,
@@ -2147,7 +2163,8 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
           updated.accountId === null
             ? undefined
             : await deps.authStore.getAccount(updated.accountId);
-        const payable = updated.accountId === null ? false : payableOf(updated, author);
+        const payable =
+          updated.accountId === null ? false : payableOf(updated, author, deps.lnurlServer);
         const role = updated.accountId === null ? undefined : (author?.role ?? 'basis');
         logEvent('messages.place.updated', {
           messageId: id,
@@ -2271,7 +2288,8 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
           updated.accountId === null
             ? undefined
             : await deps.authStore.getAccount(updated.accountId);
-        const payable = updated.accountId === null ? false : payableOf(updated, author);
+        const payable =
+          updated.accountId === null ? false : payableOf(updated, author, deps.lnurlServer);
         const role = updated.accountId === null ? undefined : (author?.role ?? 'basis');
         logEvent('messages.shop_account.updated', {
           messageId: id,
@@ -2356,7 +2374,7 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
         if (ensured === row.text) {
           const author =
             row.accountId === null ? undefined : await deps.authStore.getAccount(row.accountId);
-          const payable = row.accountId === null ? false : payableOf(row, author);
+          const payable = row.accountId === null ? false : payableOf(row, author, deps.lnurlServer);
           const role = row.accountId === null ? undefined : (author?.role ?? 'basis');
           return c.json(
             serializeMessage(
@@ -2391,7 +2409,8 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
           updated.accountId === null
             ? undefined
             : await deps.authStore.getAccount(updated.accountId);
-        const payable = updated.accountId === null ? false : payableOf(updated, author);
+        const payable =
+          updated.accountId === null ? false : payableOf(updated, author, deps.lnurlServer);
         const role = updated.accountId === null ? undefined : (author?.role ?? 'basis');
         logEvent('messages.text.updated', {
           messageId: id,
@@ -2479,7 +2498,8 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
           written.accountId === null
             ? undefined
             : await deps.authStore.getAccount(written.accountId);
-        const payable = written.accountId === null ? false : payableOf(written, author);
+        const payable =
+          written.accountId === null ? false : payableOf(written, author, deps.lnurlServer);
         const role = written.accountId === null ? undefined : (author?.role ?? 'basis');
         logEvent('messages.photos.updated', {
           messageId: id,
@@ -2744,7 +2764,7 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
           }
           const author =
             row.accountId === null ? undefined : await deps.authStore.getAccount(row.accountId);
-          const payable = row.accountId === null ? false : payableOf(row, author);
+          const payable = row.accountId === null ? false : payableOf(row, author, deps.lnurlServer);
           const role = row.accountId === null ? undefined : (author?.role ?? 'basis');
           const kept = await dropMissingVideoRow(deps.store, row);
           if (kept === null) {
@@ -2919,11 +2939,8 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
         return c.json({ error: 'This message cannot be paid yet' }, 400);
       }
       const author = await deps.authStore.getAccount(row.accountId);
-      if (
-        author === undefined ||
-        author.lightningAddress === null ||
-        author.lightningAddress.trim() === ''
-      ) {
+      const receiving = author === undefined ? null : receivingAddress(author, deps.lnurlServer);
+      if (author === undefined || receiving === null) {
         await persistInvoiceAttempt(
           deps.store,
           invoiceAttemptBase({
@@ -2956,7 +2973,7 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
             authorAccountId: author.id,
             amountSats: parsed.data.sats,
             shown,
-            lightningAddress: author.lightningAddress,
+            lightningAddress: receiving.address,
             zapRequest: null,
             result: 'no_key',
             httpStatus: 400,
@@ -2980,7 +2997,7 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
             authorAccountId: author.id,
             amountSats: parsed.data.sats,
             shown,
-            lightningAddress: author.lightningAddress,
+            lightningAddress: receiving.address,
             zapRequest: null,
             result: 'no_key',
             httpStatus: 503,
@@ -3003,7 +3020,7 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
             authorAccountId: author.id,
             amountSats: parsed.data.sats,
             shown,
-            lightningAddress: author.lightningAddress,
+            lightningAddress: receiving.address,
             zapRequest: null,
             result: 'rate_limited',
             httpStatus: 429,
@@ -3039,7 +3056,7 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
             authorAccountId: author.id,
             amountSats: parsed.data.sats,
             shown,
-            lightningAddress: author.lightningAddress,
+            lightningAddress: receiving.address,
             zapRequest: null,
             result: 'sign_failed',
             httpStatus: 503,
@@ -3055,10 +3072,10 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
       const zapRequestJson = serializeZapRequest(signed);
       const zapRequest = signed as unknown as Record<string, unknown>;
       const zap = await requestZapInvoice({
-        address: author.lightningAddress,
+        address: receiving.address,
         amountMsat,
         zapRequestJson,
-        fetchImpl,
+        fetchImpl: lnurlServerFetch(deps.lnurlServer, fetchImpl),
       });
       if (!zap.ok) {
         await persistInvoiceAttempt(
@@ -3069,7 +3086,7 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
             authorAccountId: author.id,
             amountSats: parsed.data.sats,
             shown,
-            lightningAddress: author.lightningAddress,
+            lightningAddress: receiving.address,
             zapRequest,
             result: zap.reason,
             httpStatus: 400,
@@ -3099,7 +3116,7 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
             authorAccountId: author.id,
             amountSats: parsed.data.sats,
             shown,
-            lightningAddress: author.lightningAddress,
+            lightningAddress: receiving.address,
             zapRequest,
             result: 'not_zap',
             httpStatus: 400,
@@ -3121,7 +3138,7 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
           authorAccountId: author.id,
           amountSats: parsed.data.sats,
           shown,
-          lightningAddress: author.lightningAddress,
+          lightningAddress: receiving.address,
           zapRequest,
           result: 'ok',
           httpStatus: 200,
@@ -3133,6 +3150,12 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
           lnurlResponse: zap.lnurlResponse,
         }),
       );
-      return c.json({ pr: zap.pr, amountSats: zap.amountSats }, 200);
+      const sparkInvoice = await issueSparkInvoice(deps, receiving, {
+        pr: zap.pr,
+        paymentHash: inspected?.paymentHash ?? null,
+        amountSats: zap.amountSats,
+        zapRequestJson,
+      });
+      return c.json({ pr: zap.pr, amountSats: zap.amountSats, sparkInvoice }, 200);
     });
 }

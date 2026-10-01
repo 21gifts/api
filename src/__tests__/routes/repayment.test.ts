@@ -7,6 +7,16 @@ import { ensureAccountNostrKey } from '@/lib/nostr/keys';
 import { parseNostrKek } from '@/lib/nostr/kek';
 import { InvoiceRateLimiter, PostRateLimiter } from '@/lib/nostr/rate-limit';
 import { messagesRoutes } from '@/routes/messages';
+import { InMemorySparkInvoiceStore } from '@/lib/spark-invoice-store';
+import type { MessageInvoiceAttempt } from '@/lib/message-store';
+import {
+  BOLT11,
+  LNURL_SERVER,
+  allInternal,
+  createWalletAccount,
+  walletLnurlFetch,
+  type SeenRequest,
+} from '@/__tests__/helpers/wallet-lnurl';
 
 const now = (): number => Date.UTC(2026, 8, 28, 12);
 const CREDIT = '55555555-5555-4555-8555-555555555555';
@@ -31,10 +41,15 @@ async function readyCredit(options?: {
   giverUsername?: string | null;
   fetch?: boolean;
   pr?: string;
+  /** Giver receives on a verified wallet (username `bea`); routes get the LNURL server and Spark store. */
+  walletGiver?: boolean;
+  /** Mount the LNURL server and Spark store without changing the giver. */
+  freePayments?: boolean;
 }): Promise<{
   app: Hono;
   messages: InMemoryMessageStore;
   auth: InMemoryAuthStore;
+  seen: SeenRequest[];
 }> {
   const kek = parseNostrKek('11'.repeat(32));
   const authorId = options?.authorId ?? 'acc';
@@ -53,7 +68,9 @@ async function readyCredit(options?: {
     rulesAgreedAt: options?.rules === false ? null : now(),
     username: 'ada',
   });
-  if (options?.giverAccount !== false) {
+  if (options?.walletGiver === true) {
+    await createWalletAccount(auth, GIVER, 'bea');
+  } else if (options?.giverAccount !== false) {
     await auth.createAccount({
       id: GIVER,
       linkingKey: `02${'cd'.repeat(32)}`,
@@ -100,7 +117,7 @@ async function readyCredit(options?: {
   });
   await messages.recordZapReceipt('r1', CREDIT, 21, null);
   await messages.updateZapReceiptGift('r1', { payerAccountId: GIVER });
-  const fetchImpl = async (input: string | URL | Request): Promise<Response> => {
+  const externalFetch = async (input: string | URL | Request): Promise<Response> => {
     const url = String(input);
     if (url.includes('/.well-known/lnurlp/')) {
       return new Response(
@@ -118,6 +135,9 @@ async function readyCredit(options?: {
       headers: { 'content-type': 'application/json' },
     });
   };
+  const wallet = walletLnurlFetch('bea');
+  const fetchImpl = options?.walletGiver === true ? wallet.fetchImpl : externalFetch;
+  const freePayments = options?.walletGiver === true || options?.freePayments === true;
   const app = new Hono().route(
     '/messages',
     messagesRoutes({
@@ -137,11 +157,14 @@ async function readyCredit(options?: {
           }
         : {}),
       ...(options?.fetch === false ? {} : { fetchImpl }),
+      ...(freePayments
+        ? { lnurlServer: LNURL_SERVER, sparkInvoices: new InMemorySparkInvoiceStore() }
+        : {}),
       postLimiter: new PostRateLimiter(),
       invoiceLimiter: new InvoiceRateLimiter(),
     }),
   );
-  return { app, messages, auth };
+  return { app, messages, auth, seen: wallet.seen };
 }
 
 describe('credit repayment', () => {
@@ -202,7 +225,7 @@ describe('credit repayment', () => {
         headers: { authorization: 'Bearer acc' },
       });
       expect(pay.status).toBe(200);
-      expect(await pay.json()).toEqual({ pr: 'lnbc21n1repay', amountSats: 21 });
+      expect(await pay.json()).toEqual({ pr: 'lnbc21n1repay', amountSats: 21, sparkInvoice: null });
       const attempt = (await messages.listInvoiceAttempts(5))[0];
       expect(attempt?.lightningAddress).toBe('bea@walletofsatoshi.com');
       expect(attempt?.description).toBe(`repay:0:${GIVER}`);
@@ -223,7 +246,11 @@ describe('credit repayment', () => {
         headers: { authorization: 'Bearer acc' },
       });
       expect(again.status).toBe(200);
-      expect(await again.json()).toEqual({ pr: 'lnbc21n1repay', amountSats: 21 });
+      expect(await again.json()).toEqual({
+        pr: 'lnbc21n1repay',
+        amountSats: 21,
+        sparkInvoice: null,
+      });
       expect(await messages.listInvoiceAttempts(5)).toHaveLength(1);
     } finally {
       nip57.mockRestore();
@@ -264,14 +291,22 @@ describe('credit repayment', () => {
         headers: { authorization: 'Bearer acc-reprice' },
       });
       expect(first.status).toBe(200);
-      expect(await first.json()).toEqual({ pr: 'lnbc21n1repay', amountSats: 10 });
+      expect(await first.json()).toEqual({
+        pr: 'lnbc21n1repay',
+        amountSats: 10,
+        sparkInvoice: null,
+      });
       rate.current = '50000.00';
       const second = await app.request(`/messages/${CREDIT}/repayment`, {
         method: 'POST',
         headers: { authorization: 'Bearer acc-reprice' },
       });
       expect(second.status).toBe(200);
-      expect(await second.json()).toEqual({ pr: 'lnbc21n1repay', amountSats: 10 });
+      expect(await second.json()).toEqual({
+        pr: 'lnbc21n1repay',
+        amountSats: 10,
+        sparkInvoice: null,
+      });
       expect(await messages.listInvoiceAttempts(5)).toHaveLength(1);
     } finally {
       nip57.mockRestore();
@@ -602,7 +637,11 @@ describe('credit repayment', () => {
         headers: { authorization: 'Bearer acc-blankpr' },
       });
       expect(blankRes.status).toBe(200);
-      expect(await blankRes.json()).toEqual({ pr: 'lnbc21n1repay', amountSats: 21 });
+      expect(await blankRes.json()).toEqual({
+        pr: 'lnbc21n1repay',
+        amountSats: 21,
+        sparkInvoice: null,
+      });
     } finally {
       nip57.mockRestore();
       decoded.mockRestore();
@@ -748,7 +787,116 @@ describe('credit repayment', () => {
         headers: { authorization: 'Bearer acc-open-weight' },
       });
       expect(pay.status).toBe(200);
-      expect(await pay.json()).toEqual({ pr: 'lnbc21n1repay', amountSats: 500 });
+      expect(await pay.json()).toEqual({
+        pr: 'lnbc21n1repay',
+        amountSats: 500,
+        sparkInvoice: null,
+      });
+    } finally {
+      nip57.mockRestore();
+    }
+  });
+});
+
+describe('credit repayment to a wallet-backed giver', () => {
+  async function postRepay(app: Hono, payer: string): Promise<Response> {
+    return app.request(`/messages/${CREDIT}/repayment`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${payer}` },
+    });
+  }
+
+  function outstandingAttempt(overrides: Partial<MessageInvoiceAttempt>): MessageInvoiceAttempt {
+    return {
+      id: crypto.randomUUID(),
+      createdAt: new Date(now()),
+      messageId: CREDIT,
+      payerAccountId: 'acc',
+      authorAccountId: GIVER,
+      amountSats: 21,
+      lightningAddress: 'bea@example.test',
+      zapRequest: null,
+      result: 'ok',
+      httpStatus: 200,
+      pr: BOLT11,
+      paymentHash: null,
+      description: `repay:0:${GIVER}`,
+      descriptionHash: null,
+      isNip57Invoice: true,
+      lnurlResponse: null,
+      conversationId: null,
+      conversationMessageId: null,
+      fiatPinned: false,
+      amountUsd: null,
+      amountChf: null,
+      amountEur: null,
+      amountPhp: null,
+      ...overrides,
+    };
+  }
+
+  it('invoices the wallet internally and hands out the same Spark invoice again', async () => {
+    const bolt11 = await import('@/lib/bolt11');
+    const nip57 = vi.spyOn(bolt11, 'isNip57Invoice').mockReturnValue(true);
+    try {
+      const { app, messages, seen } = await readyCredit({ walletGiver: true, authorId: 'wal-1' });
+      const first = await postRepay(app, 'wal-1');
+      expect(first.status).toBe(200);
+      const body = (await first.json()) as { pr: string; amountSats: number; sparkInvoice: string };
+      expect(body.pr).toBe(BOLT11);
+      expect(body.amountSats).toBe(21);
+      expect(body.sparkInvoice.startsWith('spark1')).toBe(true);
+      expect(allInternal(seen)).toBe(true);
+      const attempt = (await messages.listInvoiceAttempts(5))[0];
+      expect(attempt?.lightningAddress).toBe('bea@example.test');
+      const again = await postRepay(app, 'wal-1');
+      expect(again.status).toBe(200);
+      expect(await again.json()).toEqual(body);
+      expect(await messages.listInvoiceAttempts(5)).toHaveLength(1);
+    } finally {
+      nip57.mockRestore();
+    }
+  });
+
+  it('returns sparkInvoice null for an external giver', async () => {
+    const bolt11 = await import('@/lib/bolt11');
+    const nip57 = vi.spyOn(bolt11, 'isNip57Invoice').mockReturnValue(true);
+    try {
+      const { app } = await readyCredit({ freePayments: true, authorId: 'wal-2' });
+      const res = await postRepay(app, 'wal-2');
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ pr: 'lnbc21n1repay', amountSats: 21, sparkInvoice: null });
+    } finally {
+      nip57.mockRestore();
+    }
+  });
+
+  it('reuses an open invoice without a Spark invoice when its zap request is unusable', async () => {
+    const { app, messages } = await readyCredit({ walletGiver: true, authorId: 'wal-3' });
+    await messages.recordInvoiceAttempt(outstandingAttempt({ zapRequest: null }));
+    const res = await postRepay(app, 'wal-3');
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ pr: BOLT11, amountSats: 21, sparkInvoice: null });
+  });
+
+  it('reuses an open invoice without a Spark invoice when it went to another address', async () => {
+    const bolt11 = await import('@/lib/bolt11');
+    const nip57 = vi.spyOn(bolt11, 'isNip57Invoice').mockReturnValue(true);
+    try {
+      const external = await readyCredit({ freePayments: true, pr: BOLT11, authorId: 'wal-4' });
+      expect((await postRepay(external.app, 'wal-4')).status).toBe(200);
+      const stored = (await external.messages.listInvoiceAttempts(5))[0];
+      expect(stored?.lightningAddress).toBe('bea@walletofsatoshi.com');
+      const { app, messages } = await readyCredit({ walletGiver: true, authorId: 'wal-5' });
+      await messages.recordInvoiceAttempt(
+        outstandingAttempt({
+          lightningAddress: 'bea@walletofsatoshi.com',
+          zapRequest: stored?.zapRequest ?? null,
+        }),
+      );
+      const res = await postRepay(app, 'wal-5');
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ pr: BOLT11, amountSats: 21, sparkInvoice: null });
     } finally {
       nip57.mockRestore();
     }

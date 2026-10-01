@@ -8,6 +8,7 @@ import { InMemoryFundingStore } from '@/lib/funding-store';
 import { InMemoryTrustStore } from '@/lib/trust-store';
 import { removeForumVideo, writeForumVideo } from '@/lib/video';
 import { membersRoutes } from '@/routes/members';
+import { LNURL_SERVER, createWalletAccount } from '@/__tests__/helpers/wallet-lnurl';
 
 const now = (): number => 1_700_000_000_000;
 const AUTH = { authorization: 'Bearer tok' };
@@ -1224,6 +1225,66 @@ describe('GET /members/:accountId/replies', () => {
       expect(loggedEvents(warn)).toContain('members.replies.failed');
     } finally {
       warn.mockRestore();
+    }
+  });
+});
+
+describe('payable notes of a wallet-backed member', () => {
+  const PROFILE = '66666666-6666-4666-8666-666666666666';
+
+  async function walletMember(lnurlServer: boolean): Promise<Hono> {
+    const authStore = await seededCaller();
+    await createWalletAccount(authStore, ACCOUNT_ID, 'wally');
+    const member = await authStore.getAccount(ACCOUNT_ID);
+    if (member === undefined) {
+      throw new Error('expected member');
+    }
+    await authStore.updateAccount({ ...member, profileMessageId: PROFILE });
+    const messageStore = new InMemoryMessageStore();
+    const note = (id: string, parentId: string | null) => ({
+      id,
+      accountId: ACCOUNT_ID,
+      name: 'wally',
+      text: 'hi',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+      eventId: id.replaceAll('-', '').padEnd(64, '0'),
+      ...(parentId === null ? {} : { parentId }),
+    });
+    await messageStore.create(note(PROFILE, null));
+    await messageStore.create(note(POST_NEW, null));
+    await messageStore.create(note(MEMBER_REPLY_NEW, POST_NEW));
+    return new Hono().route(
+      '/members',
+      membersRoutes({
+        authStore,
+        messageStore,
+        trustStore: new InMemoryTrustStore(),
+        fundingStore: new InMemoryFundingStore(),
+        now,
+        ...(lnurlServer ? { lnurlServer: LNURL_SERVER } : {}),
+      }),
+    );
+  }
+
+  it('marks posts, replies, and the profile note payable only when the LNURL server is on', async () => {
+    for (const lnurlServer of [true, false]) {
+      const app = await walletMember(lnurlServer);
+      const posts = (await (
+        await app.request(`/members/${ACCOUNT_ID}/posts`, { headers: AUTH })
+      ).json()) as { messages: { payable: boolean }[] };
+      expect(posts.messages.length).toBeGreaterThan(0);
+      expect(posts.messages.every((m) => m.payable === lnurlServer)).toBe(true);
+      const replies = (await (
+        await app.request(`/members/${ACCOUNT_ID}/replies`, { headers: AUTH })
+      ).json()) as { messages: { payable: boolean }[] };
+      expect(replies.messages.length).toBeGreaterThan(0);
+      expect(replies.messages.every((m) => m.payable === lnurlServer)).toBe(true);
+      const profile = (await (
+        await app.request(`/members/${ACCOUNT_ID}`, { headers: AUTH })
+      ).json()) as { profileMessage: { payable: boolean } | null };
+      expect(profile.profileMessage?.payable).toBe(lnurlServer);
     }
   });
 });

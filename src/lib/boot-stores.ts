@@ -73,6 +73,11 @@ import {
   type DailyRosterStore,
 } from '@/lib/daily-roster-store';
 import { PostgresDebugDbStore, type DebugDbStore } from '@/lib/debug-db';
+import {
+  migrateSparkInvoiceSchema,
+  PostgresSparkInvoiceStore,
+  type SparkInvoiceStore,
+} from '@/lib/spark-invoice-store';
 
 /** Auth, gift, forum, contact, conversation, notification, push, trust, funding, and FX persistence produced from `DATABASE_URL`. */
 export interface BootStores {
@@ -174,6 +179,12 @@ export interface BootStores {
    * The About me photo is neither slot.
    */
   bannerStore: BannerStore | undefined;
+  /**
+   * Postgres-backed issued Spark invoices, or `undefined` on a memory boot so
+   * the entry point keeps one in-memory store shared by HTTP and the Spark
+   * invoice worker.
+   */
+  sparkInvoiceStore: SparkInvoiceStore | undefined;
 }
 
 /** Optional boot wiring so tests never hit the network. */
@@ -211,6 +222,7 @@ export interface BootFxOptions {
  * `notificationStore: undefined`, `pushStore: undefined`,
  * `trustStore: undefined`, `fundingStore: undefined`, a fresh
  * {@link InMemoryDailyRosterStore} as `rosterStore`, `bannerStore: undefined`,
+ * `sparkInvoiceStore: undefined`,
  * `listDbChange: undefined`,
  * `debugDbStore: undefined`, `nostrKek: undefined`,
  * an empty {@link InMemoryBtcUsdStore}, and an empty {@link InMemoryFiatStore}.
@@ -218,17 +230,17 @@ export interface BootFxOptions {
  * `openAuthStore`) then the FX tables (`btc_usd_daily` then `usd_fiat_daily`),
  * `message`, `contact`, `member_habit` (via `migrateMemberHabitSchema`),
  * `pos_charge` (via `migratePosSchema`), `conversation`, `push`, `notification`, `trust_edge`,
- * `funding_grant`, `daily_roster`, `api_log`, `account_image`, `diagnostic_event`, and `db_change` schemas (notification after push, trust
+ * `funding_grant`, `daily_roster`, `api_log`, `account_image`, `diagnostic_event`, `spark_invoice`, and `db_change` schemas (notification after push, trust
  * after notification, funding after trust, `api_log` then `account_image` via
- * `migrateBannerSchema`, then `diagnostic_event` between `account_image` and `db_change` so `trg_db_change` attaches), builds a {@link QueryGiftStore},
+ * `migrateBannerSchema`, then `diagnostic_event` and `spark_invoice` between `account_image` and `db_change` so `trg_db_change` attaches), builds a {@link QueryGiftStore},
  * {@link SqlGiftRecorder}, {@link PostgresMessageStore},
  * {@link PostgresTranslationStore},
  * {@link PostgresContactStore}, {@link PostgresMemberHabitStore},
  * {@link PostgresPosStore}, {@link PostgresConversationStore},
  * {@link PostgresNotificationStore}, {@link PostgresPushStore},
  * {@link PostgresTrustStore}, {@link PostgresFundingStore},
- * {@link PostgresDailyRosterStore}, and
- * {@link PostgresBannerStore}, parses
+ * {@link PostgresDailyRosterStore}, {@link PostgresBannerStore}, and
+ * {@link PostgresSparkInvoiceStore}, parses
  * `NOSTR_NSEC_KEK` into `nostrKek`, constructs {@link PostgresBtcUsdStore} and
  * {@link PostgresFiatStore}, and best-effort fills rates for the outbound gift
  * day range (BTC-USD failures log `gifts.fx.boot_fill.failed`; fiat failures
@@ -302,6 +314,7 @@ export async function openBootStores(
       listDbChange: undefined,
       debugDbStore: undefined,
       bannerStore: undefined,
+      sparkInvoiceStore: undefined,
     };
   }
   const sql: SqlClient = sqlClient;
@@ -329,6 +342,7 @@ export async function openBootStores(
   await migrateApiLogSchema(sqlClient);
   await migrateBannerSchema(sqlClient);
   await migrateDiagnosticSchema(sqlClient);
+  await migrateSparkInvoiceSchema(sqlClient);
   const diagnosticStore = new PostgresDiagnosticStore(sqlClient);
   setDiagnosticSink((event, fields) => {
     void diagnosticStore
@@ -514,5 +528,6 @@ export async function openBootStores(
     listDbChange: (limit) => listDbChanges(sql, limit),
     debugDbStore: new PostgresDebugDbStore(sqlClient),
     bannerStore: new PostgresBannerStore(sqlClient),
+    sparkInvoiceStore: new PostgresSparkInvoiceStore(sqlClient),
   };
 }

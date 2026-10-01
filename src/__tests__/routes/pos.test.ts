@@ -8,6 +8,13 @@ import { InMemoryPosStore, type PosStore } from '@/lib/pos-store';
 import { POS_CHARGE_TTL_MS } from '@/lib/pos-charge';
 import { posRoutes } from '@/routes/pos';
 import { createApp } from '@/server';
+import {
+  LNURL_SERVER,
+  allInternal,
+  createWalletAccount,
+  walletLnurlFetch,
+  type SeenRequest,
+} from '@/__tests__/helpers/wallet-lnurl';
 
 const nowMs = 1_700_000_000_000;
 const now = (): number => nowMs;
@@ -573,5 +580,47 @@ describe('POS routes', () => {
     const removed = await app.request('/pos', { method: 'DELETE', headers: AUTH });
     expect(removed.status).toBe(200);
     expect(calls).toEqual([]);
+  });
+});
+
+describe('POS for a wallet-backed member', () => {
+  async function walletPos(lnurlServer: boolean): Promise<{ app: Hono; seen: SeenRequest[] }> {
+    const auth = new InMemoryAuthStore();
+    await createWalletAccount(auth, 'wal', 'wally');
+    await auth.createSession({ token: 'tok', accountId: 'wal', createdAt: nowMs });
+    const { fetchImpl, seen } = walletLnurlFetch('wally');
+    const app = new Hono().route(
+      '/pos',
+      posRoutes({
+        store: new InMemoryPosStore(),
+        authStore: auth,
+        now,
+        fetchImpl,
+        ...(lnurlServer ? { lnurlServer: LNURL_SERVER } : {}),
+      }),
+    );
+    return { app, seen };
+  }
+
+  it('checks the amount against the wallet resolved internally', async () => {
+    const { app, seen } = await walletPos(true);
+    const res = await app.request('/pos', {
+      method: 'POST',
+      headers: AUTH,
+      body: JSON.stringify({ amountSats: 21 }),
+    });
+    expect(res.status).toBe(201);
+    expect(allInternal(seen)).toBe(true);
+  });
+
+  it('asks for an address when the LNURL server is off', async () => {
+    const { app, seen } = await walletPos(false);
+    const res = await app.request('/pos', {
+      method: 'POST',
+      headers: AUTH,
+      body: JSON.stringify({ amountSats: 21 }),
+    });
+    expect(res.status).toBe(400);
+    expect(seen).toEqual([]);
   });
 });
