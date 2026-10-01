@@ -445,7 +445,7 @@ export class PostgresAuthStore implements AuthStore {
              profile_message_id = $14,
              location = $15,
              notification_level = $16,
-             username = $17,
+             username = CASE WHEN spark_pubkey_verified_at IS NULL THEN $17 ELSE username END,
              amount_unit = $18
          WHERE id = $1
            AND (
@@ -454,8 +454,7 @@ export class PostgresAuthStore implements AuthStore {
                SELECT 1 FROM account other
                WHERE other.linking_key = $2 AND other.id <> $1
              )
-           )
-           AND (spark_pubkey_verified_at IS NULL OR username IS NOT DISTINCT FROM $17)`,
+           )`,
         [
           account.id,
           account.linkingKey,
