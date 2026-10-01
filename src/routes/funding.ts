@@ -469,8 +469,8 @@ function stopRoster(c: Context, stop: RosterStop): Response {
  * `{ error: 'Funding is unavailable' }`. `basis` is 403 Forbidden.
  *
  * @param deps - Auth store, funding store, message store, gift store, clock,
- *   optional spend ping, optional roster store, optional spend token, and
- *   optional applicationsPaused flag.
+ *   optional spend ping, optional roster store, optional spend token,
+ *   optional LNURL server, and optional applicationsPaused flag.
  * @returns A Hono app with member apply, staff review, and daily roster routes.
  */
 export function fundingRoutes(deps: FundingRouteDeps): Hono {
