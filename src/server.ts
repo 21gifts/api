@@ -223,6 +223,10 @@ export interface AppDeps {
    * that route returns the stored name and npub and does not open a relay.
    */
   nostrQuerier?: NostrQuerier;
+  /**
+   * Relay URLs for that lookup. Omitted → `resolveZapReadRelays(env)`.
+   * An empty list skips the lookup.
+   */
   nostrRelayUrls?: readonly string[];
   /**
    * Optional env slice for hide retract (relays, `PUBLIC_BASE_URL`,
