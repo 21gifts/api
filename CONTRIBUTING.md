@@ -640,7 +640,7 @@ deploy visible on the develop→main PR.
 ## Breez SDK Spark
 
 This repository stores three GitHub Actions secrets for the Breez SDK (Spark).
-Deploy workflows do not read them. A workflow in this repository uses them as
+Deploy workflows do not read them. A later workflow can read them as
 `secrets.BREEZ_API_KEY_PRD`, `secrets.BREEZ_API_KEY_DEV`, and
 `secrets.BREEZ_API_KEY_STAGING`. GitHub does not show the values again, and
 the values are not in git.
