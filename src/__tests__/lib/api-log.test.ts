@@ -142,6 +142,33 @@ describe('InMemoryApiLogStore', () => {
     const store = new InMemoryApiLogStore([TIE_LOW, TIE_HIGH]);
     expect((await store.listLatest(10)).map((row) => row.id)).toEqual(['c', 'a']);
   });
+
+  it('pages every row once through listPage before cursors', async () => {
+    const store = new InMemoryApiLogStore([EARLY, LATE, TIE_HIGH]);
+    const first = await store.listPage(2);
+    expect(first.map((row) => row.id)).toEqual(['c', 'b']);
+    const last = first[first.length - 1]!;
+    const second = await store.listPage(2, { before: { createdAt: last.createdAt, id: last.id } });
+    expect(second.map((row) => row.id)).toEqual(['a']);
+    const seen = [...first, ...second].map((row) => row.id);
+    expect(seen.sort()).toEqual(['a', 'b', 'c']);
+    expect(new Set(seen).size).toBe(seen.length);
+  });
+
+  it('pages equal createdAt ties by id descending', async () => {
+    const store = new InMemoryApiLogStore([TIE_LOW, TIE_HIGH]);
+    const first = await store.listPage(1);
+    expect(first.map((row) => row.id)).toEqual(['c']);
+    const last = first[0]!;
+    const second = await store.listPage(1, { before: { createdAt: last.createdAt, id: last.id } });
+    expect(second.map((row) => row.id)).toEqual(['a']);
+  });
+
+  it('keeps only the requested accountId', async () => {
+    const other: ApiLogRow = { ...LATE, id: 'd', accountId: 'other' };
+    const store = new InMemoryApiLogStore([EARLY, LATE, other]);
+    expect((await store.listPage(10, { accountId: 'acc' })).map((row) => row.id)).toEqual(['b']);
+  });
 });
 
 describe('migrateApiLogSchema', () => {
@@ -156,6 +183,7 @@ describe('migrateApiLogSchema', () => {
       'ALTER TABLE api_log ADD COLUMN IF NOT EXISTS user_agent text',
       'ALTER TABLE api_log ADD COLUMN IF NOT EXISTS accept_language text',
       'ALTER TABLE api_log ADD COLUMN IF NOT EXISTS origin text',
+      'CREATE INDEX IF NOT EXISTS api_log_account_created_at_idx ON api_log (account_id, created_at DESC, id DESC)',
     ]);
   });
 });
@@ -267,10 +295,63 @@ describe('PostgresApiLogStore', () => {
     ]);
   });
 
+  it('listPage maps rows and binds the keyset params', async () => {
+    const sql = new MockSql();
+    const before = { createdAt: new Date('2026-09-19T13:00:00.000Z'), id: 'b' };
+    sql.nextRows = [
+      {
+        id: 'c',
+        created_at: new Date('2026-09-19T13:00:00.000Z'),
+        method: 'GET',
+        path: '/me',
+        status: '200',
+        ms: '2',
+        account_id: 'acc',
+        auth_kind: 'session',
+        client_ip: '192.0.2.1',
+        client_country: 'CH',
+        cf_ray: '0123456789abcdef-ZRH',
+        user_agent: 'Agent',
+        accept_language: 'de-CH',
+        origin: 'https://21.gifts',
+      },
+    ];
+    const listed = await new PostgresApiLogStore(sql).listPage(50, { accountId: 'acc', before });
+    expect(sql.queries[0]?.text).toMatch(/\$1::uuid IS NULL OR account_id = \$1::uuid/);
+    expect(sql.queries[0]?.text).toMatch(/\$2::timestamptz IS NULL/);
+    expect(sql.queries[0]?.text).toMatch(/created_at = \$2 AND id < \$3::uuid/);
+    expect(sql.queries[0]?.text).toMatch(/ORDER BY created_at DESC, id DESC\s+LIMIT \$4/);
+    expect(sql.queries[0]?.params).toEqual(['acc', before.createdAt, 'b', 50]);
+    expect(listed).toEqual([
+      {
+        id: 'c',
+        createdAt: new Date('2026-09-19T13:00:00.000Z'),
+        method: 'GET',
+        path: '/me',
+        status: 200,
+        ms: 2,
+        accountId: 'acc',
+        authKind: 'session',
+        clientIp: '192.0.2.1',
+        clientCountry: 'CH',
+        cfRay: '0123456789abcdef-ZRH',
+        userAgent: 'Agent',
+        acceptLanguage: 'de-CH',
+        origin: 'https://21.gifts',
+      },
+    ]);
+  });
+
   it('propagates list query errors', async () => {
     const sql = new MockSql();
     sql.queryError = new Error('list boom');
     await expect(new PostgresApiLogStore(sql).listLatest(10)).rejects.toThrow('list boom');
+  });
+
+  it('propagates listPage query errors', async () => {
+    const sql = new MockSql();
+    sql.queryError = new Error('list boom');
+    await expect(new PostgresApiLogStore(sql).listPage(10)).rejects.toThrow('list boom');
   });
 
   it('propagates append execute errors', async () => {

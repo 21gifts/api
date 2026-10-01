@@ -185,7 +185,7 @@ Public base URLs used in examples:
 | POST   | `/debug/accounts`                                    | `Authorization: Bearer`    | Operator provision name + Lightning Address (`DEBUG_TOKEN`)                                                                                                                                                                                                                                                                                            |
 | PATCH  | `/debug/accounts/:id`                                | `Authorization: Bearer`    | Operator set `role` / unlink Lightning Address / `platform` / `sessionRefused`                                                                                                                                                                                                                                                                         |
 | POST   | `/debug/accounts/:id/session`                        | `Authorization: Bearer`    | Operator mint of a member bearer (`DEBUG_TOKEN`)                                                                                                                                                                                                                                                                                                       |
-| GET    | `/debug/api-log`                                     | `Authorization: Bearer`    | Operator HTTP audit log (`DEBUG_TOKEN`); no query string, body, or Authorization                                                                                                                                                                                                                                                                       |
+| GET    | `/debug/api-log`                                     | `Authorization: Bearer`    | Operator HTTP audit log (`DEBUG_TOKEN`); follow `before`/`beforeId`; no query string, body, or Authorization stored                                                                                                                                                                                                                                    |
 | GET    | `/debug/diagnostics`                                 | `Authorization: Bearer`    | Operator diagnostic log (`DEBUG_TOKEN`); newest 200; no secrets                                                                                                                                                                                                                                                                                        |
 | GET    | `/debug/db`                                          | `Authorization: Bearer`    | Operator page through every public table (`DEBUG_TOKEN`); follow `nextCursor`                                                                                                                                                                                                                                                                          |
 | GET    | `/debug/contacts`                                    | `Authorization: Bearer`    | Operator contact listing (`DEBUG_TOKEN`)                                                                                                                                                                                                                                                                                                               |
@@ -2176,7 +2176,8 @@ per allowlisted name (cap 200): `account`, `passkey_credential`,
 bytes stay off JSON. `nostrNsecCiphertext` is envelope hex. `btc_usd_daily`,
 `usd_fiat_daily`, and `db_change` dump stored rows when those list ports are
 wired (in-memory boots dump `[]` for `db_change`). `api_log` dumps when an
-audit store is wired (same rows as `GET /debug/api-log`). Same `DEBUG_TOKEN`
+audit store is wired (the newest 200; the full history is `GET /debug/api-log`
+following `before` and `beforeId` while `hasMore` is true). Same `DEBUG_TOKEN`
 gate as the other debug routes. Unexpected store throw → **503**
 `{ "error": "Dump is unavailable" }`.
 
@@ -2268,12 +2269,21 @@ Success logs `debug.trust_edges.deleted` `{ subjectId, kind }`.
 
 Operator listing of HTTP audit rows (`api_log`). Authenticated with
 `Authorization: Bearer` matching `DEBUG_TOKEN`. This is not an end-user
-session. Rows are newest-first (`createdAt` descending, then `id`), capped
-at **200**. The log never stores OPTIONS, `/healthz`, the query string,
-request bodies, or the Authorization header. Paths pass through
-`requestLogPath` (`/view/<segment>` → `/view/:viewKey`). Write failure on
-the request path logs `api_log.write.failed` and does not replace the
-response.
+session. Rows are newest-first (`createdAt` descending, then `id`). Each
+response is one keyset page of at most **200** logs. `hasMore` is true only
+when another page exists. Follow `before` (the last log's `createdAt`) and
+`beforeId` (its `id`) while `hasMore` is true to read every matching row,
+including every row for one account. Omit `accountId` for every account;
+when present it is trimmed and must be a UUID (passed lowercased) or the
+response is **400** `{ "error": "Invalid account" }`. `before` and
+`beforeId` are both absent or both present; a lone one, a `before` that is
+not a finite `Date.parse` time, or a `beforeId` that is not a UUID is
+**400** `{ "error": "Invalid cursor" }`. `GET /debug/dump` of `api_log` is
+the newest 200; the full history is this endpoint. The log never stores
+OPTIONS, `/healthz`, the query string, request bodies, or the Authorization
+header. Paths pass through `requestLogPath` (`/view/<segment>` →
+`/view/:viewKey`). Write failure on the request path logs
+`api_log.write.failed` and does not replace the response.
 
 `DEBUG_TOKEN` unset or blank → **Response** `503`:
 
@@ -2285,6 +2295,19 @@ Missing or non-matching bearer → **Response** `401`:
 
 ```json
 { "error": "Unauthorized" }
+```
+
+Present `accountId` that is not a UUID → **Response** `400`:
+
+```json
+{ "error": "Invalid account" }
+```
+
+`before` without `beforeId`, `beforeId` without `before`, a non-date `before`,
+or a `beforeId` that is not a UUID → **Response** `400`:
+
+```json
+{ "error": "Invalid cursor" }
 ```
 
 Store failure → **Response** `503`:
@@ -2314,7 +2337,8 @@ Success → **Response** `200`:
       "acceptLanguage": null,
       "origin": null
     }
-  ]
+  ],
+  "hasMore": false
 }
 ```
 
@@ -2328,7 +2352,7 @@ is two letters or digits. `cfRay` is `CF-Ray` when it is 16 hex digits, a
 hyphen, and three letters. `userAgent` and `acceptLanguage` are those
 headers with controls removed and at most 200 characters. `origin` is an
 `https` origin, or `http://localhost` or `http://127.0.0.1`, with an
-optional port. An empty log returns `"logs": []`. When `DATABASE_URL` is unset the default
+optional port. An empty log returns `"logs": []` and `"hasMore": false`. When `DATABASE_URL` is unset the default
 in-memory store starts empty; when set, rows come from Postgres `api_log`.
 
 Environment:

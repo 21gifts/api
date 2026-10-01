@@ -154,15 +154,15 @@ export function isStaffAccount(account: { role: string; isPlatform?: boolean }):
 /**
  * Whether a recipient at `level` should receive this living-room event.
  *
- * `all` is always true. `active` is `isActive`. `mentions` is a staff actor
- * or `mentionedAccountId === recipientAccountId` (both non-null).
+ * `all` is always true. `active` is `isActive`. `mentions` is only
+ * `mentionedAccountId !== null && mentionedAccountId === recipientAccountId`.
+ * A staff or platform actor does not satisfy `mentions`.
  *
- * @param args - Recipient level, actor staff flag, active flag, mention target, recipient id.
+ * @param args - Recipient level, active flag, mention target, recipient id.
  * @returns True when this recipient should get an in-app row and/or Web Push.
  */
 export function wantsNotification(args: {
   level: NotificationLevel;
-  actorIsStaff: boolean;
   isActive: boolean;
   mentionedAccountId: string | null;
   recipientAccountId: string;
@@ -173,9 +173,6 @@ export function wantsNotification(args: {
   if (args.level === 'active') {
     return args.isActive;
   }
-  if (args.actorIsStaff) {
-    return true;
-  }
   return args.mentionedAccountId !== null && args.mentionedAccountId === args.recipientAccountId;
 }
 
@@ -185,8 +182,7 @@ export function wantsNotification(args: {
  * stay (not living-room fan-out). `all` returns `rows` unchanged. Parent lookup uses
  * `parentById` (`forum_post` / `forum_reply` / `zap` `parentId`); a missing
  * parent is unpaid and not personal. `forum_mention` uses the recipient as `mentionedAccountId` and is active only when the parent exists and `parent.sats > 0`. Zap `text` is the amount string.
- * Zap actor staff is the stored actor via {@link isStaffAccount} only when
- * that actor is not the parent note author (missing payer is not staff).
+ * A staff or platform actor does not satisfy `mentions`.
  *
  * @param args - Stored rows, owner level, recipient id, accounts, parent notes.
  * @returns Matching rows in the same order.
@@ -201,9 +197,6 @@ export function notificationsMatchingLevel(args: {
   if (args.level === 'all') {
     return [...args.rows];
   }
-  const staffById = new Map(
-    args.accounts.map((account) => [account.id, isStaffAccount(account)] as const),
-  );
   return args.rows.filter((row) => {
     if (row.type === 'moderator_appointed' || row.type === 'moderator_proposal') {
       return true;
@@ -223,17 +216,8 @@ export function notificationsMatchingLevel(args: {
         : row.type === 'forum_post'
           ? null
           : (parent?.accountId ?? null);
-    const storedActorIsStaff = staffById.get(row.actorAccountId) === true;
-    const actorIsStaff =
-      row.type !== 'zap'
-        ? storedActorIsStaff
-        : storedActorIsStaff &&
-          parent !== undefined &&
-          parent.accountId !== null &&
-          row.actorAccountId !== parent.accountId;
     return wantsNotification({
       level: args.level,
-      actorIsStaff,
       isActive,
       mentionedAccountId,
       recipientAccountId: args.recipientAccountId,
@@ -243,30 +227,10 @@ export function notificationsMatchingLevel(args: {
 
 /** Fan-out match context shared by in-app rows and Web Push. */
 interface NotificationMatch {
-  /** True when the actor/payer is at least moderator, or platform. */
-  actorIsStaff: boolean;
   /** True when the related top-level post is in the Active feed, or a zap has amount. */
   isActive: boolean;
   /** Parent/note author id for personal involvement, or `null`. */
   mentionedAccountId: string | null;
-}
-
-/**
- * Look up whether `actorId` is staff in `auth.listAccounts()`.
- *
- * @param auth - Optional auth list.
- * @param actorId - Actor/payer id, or `undefined` when there is no payer.
- * @returns False when `auth` or `actorId` is missing or the account is not listed.
- */
-async function actorIsStaffFromAuth(
-  auth: Pick<AuthStore, 'listAccounts'> | undefined,
-  actorId: string | undefined,
-): Promise<boolean> {
-  if (auth === undefined || actorId === undefined) {
-    return false;
-  }
-  const actor = (await auth.listAccounts()).find((account) => account.id === actorId);
-  return actor === undefined ? false : isStaffAccount(actor);
 }
 
 /**
@@ -309,7 +273,6 @@ function filterIdsByMatch(
       recipient === undefined ? 'all' : parseNotificationLevel(recipient.notificationLevel);
     return wantsNotification({
       level,
-      actorIsStaff: match.actorIsStaff,
       isActive: match.isActive,
       mentionedAccountId: match.mentionedAccountId,
       recipientAccountId,
@@ -457,10 +420,9 @@ export async function fanoutToBellSubscribers(args: {
  * when `notifications` is set, and enqueue a `/messages/<id>` Web Push when
  * `pushStore` is set. Matching uses {@link wantsNotification}: `isActive` is
  * `created.sats > 0`, `mentionedAccountId` is null (top-level posts are never
- * personal), `actorIsStaff` from the actor in `auth.listAccounts()` (false if
- * missing). When `auth` is unset, do not filter by level. Missing `pushStore`
- * still writes in-app rows when `auth` is set. This helper may throw; callers
- * wrap it.
+ * personal). A staff or platform actor does not satisfy `mentions`. When
+ * `auth` is unset, do not filter by level. Missing `pushStore` still writes
+ * in-app rows when `auth` is set. This helper may throw; callers wrap it.
  *
  * @param args - Optional stores, actor, persisted post.
  * @returns Resolves after the optional persist and push enqueue (including no-ops).
@@ -490,7 +452,6 @@ export async function notifyForumPost(args: {
     ...(args.inboxUnreadCount === undefined ? {} : { inboxUnreadCount: args.inboxUnreadCount }),
     skipAccountId: args.account.id,
     match: {
-      actorIsStaff: await actorIsStaffFromAuth(args.auth, args.account.id),
       isActive: args.created.sats > 0,
       mentionedAccountId: null,
     },
@@ -529,9 +490,10 @@ export async function notifyForumPost(args: {
  * still fan out (the actor is skipped). Photo-only empty text still notifies.
  * Matching uses {@link wantsNotification}: `isActive` is `parent.sats > 0`,
  * `mentionedAccountId` is `parent.accountId` (null when the parent has no
- * account), `actorIsStaff` from the reply actor. When `auth` is unset, do not
- * filter by level. Missing `pushStore` still writes in-app rows when `auth` is
- * set. Unique duplicate create is fine. This helper may throw; callers wrap it.
+ * account). A staff or platform actor does not satisfy `mentions`. When `auth`
+ * is unset, do not filter by level. Missing `pushStore` still writes in-app
+ * rows when `auth` is set. Unique duplicate create is fine. This helper may
+ * throw; callers wrap it.
  *
  * @param args - Message store, optional notification/push/auth stores, actor, reply, parent id.
  * @returns Resolves after the optional persist and push enqueue (including no-ops).
@@ -569,7 +531,6 @@ export async function notifyForumReply(args: {
     ...(args.inboxUnreadCount === undefined ? {} : { inboxUnreadCount: args.inboxUnreadCount }),
     skipAccountId: args.account.id,
     match: {
-      actorIsStaff: await actorIsStaffFromAuth(args.auth, args.account.id),
       isActive: parent.sats > 0,
       mentionedAccountId: parent.accountId ?? null,
     },
@@ -628,7 +589,6 @@ export async function notifyForumMentions(args: {
       ids.add(mark.accountId);
     }
   }
-  const actorIsStaff = await actorIsStaffFromAuth(args.auth, args.account.id);
   for (const recipientId of ids) {
     const recipient = args.auth === undefined ? undefined : await args.auth.getAccount(recipientId);
     await fanoutToBellSubscribers({
@@ -639,7 +599,6 @@ export async function notifyForumMentions(args: {
       skipAccountId: args.account.id,
       onlyAccountIds: [recipientId],
       match: {
-        actorIsStaff,
         isActive: args.isActive,
         mentionedAccountId: recipientId,
       },
@@ -707,7 +666,6 @@ export async function notifyExternalForumReply(args: {
     skipAccountId: null,
     onlyAccountIds: [parentAccountId],
     match: {
-      actorIsStaff: false,
       isActive: args.parent.sats > 0,
       mentionedAccountId: parentAccountId,
     },
@@ -746,8 +704,7 @@ export async function notifyExternalForumReply(args: {
  * Does not skip the note author unless they are also `payerAccountId`.
  * Matching uses {@link wantsNotification}: `isActive` is `note.sats > 0` or
  * `amountSats > 0` (first gift still counts), `mentionedAccountId` is
- * `note.accountId`, `actorIsStaff` from the payer account when
- * `payerAccountId` is found (otherwise false — a zap is not an admin post).
+ * `note.accountId`. A staff or platform actor does not satisfy `mentions`.
  * When `auth` is unset, do not filter by level. Missing `pushStore` still
  * writes in-app rows when `auth` is set. This helper may throw; callers wrap
  * it.
@@ -795,7 +752,6 @@ export async function notifyZap(args: {
     ...(args.inboxUnreadCount === undefined ? {} : { inboxUnreadCount: args.inboxUnreadCount }),
     skipAccountId,
     match: {
-      actorIsStaff: await actorIsStaffFromAuth(args.auth, args.payerAccountId),
       isActive: args.note.sats > 0 || args.amountSats > 0,
       mentionedAccountId: noteAccountId,
     },

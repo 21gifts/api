@@ -336,6 +336,7 @@ describe('requestLog', () => {
         throw new Error('disk');
       },
       listLatest: async () => [],
+      listPage: async () => [],
     };
     const app = new Hono();
     app.use(

@@ -1410,28 +1410,28 @@
 
 ## Function: fanoutToBellSubscribers
 
-- **Purpose:** Fan out in-app rows and optional Web Push outbox rows except `skipAccountId`. In-app recipients are the union of `auth.listAccounts()` (when `auth` is set) and `push_subscription` account ids. Web Push outbox rows go only to `push_subscription` accounts. Optional `onlyAccountIds` restricts both recipient sets before notification-level matching. Optional `match` `{ actorIsStaff, isActive, mentionedAccountId }` then filters when `auth` is also set: drop recipients whose `wantsNotification` is false (level from `listAccounts()`, omitted → `all`; push-only ids not in that list are `all`). When `auth` is unset, do not filter by level even if `match` is passed. Omitted `match` keeps every-id-except-skip behaviour. Missing both `auth` and `pushStore` is a no-op. Unique duplicate `create` is fine. Outbox JSON may include optional `unreadCount` for the home-screen badge: notification unread + listed inbox unread when `inboxUnreadCount` is passed. Either source alone still writes `unreadCount` (missing source is 0).
+- **Purpose:** Fan out in-app rows and optional Web Push outbox rows except `skipAccountId`. In-app recipients are the union of `auth.listAccounts()` (when `auth` is set) and `push_subscription` account ids. Web Push outbox rows go only to `push_subscription` accounts. Optional `onlyAccountIds` restricts both recipient sets before notification-level matching. Optional `match` `{ isActive, mentionedAccountId }` then filters when `auth` is also set: drop recipients whose `wantsNotification` is false (level from `listAccounts()`, omitted → `all`; push-only ids not in that list are `all`). When `auth` is unset, do not filter by level even if `match` is passed. Omitted `match` keeps every-id-except-skip behaviour. Missing both `auth` and `pushStore` is a no-op. Unique duplicate `create` is fine. Outbox JSON may include optional `unreadCount` for the home-screen badge: notification unread + listed inbox unread when `inboxUnreadCount` is passed. Either source alone still writes `unreadCount` (missing source is 0).
 - **Inputs:** `{ notifications?, pushStore?, auth?, skipAccountId, onlyAccountIds?, match?, template, outboxType, outboxMessageId, payload, nowMs, inboxUnreadCount? }`. `skipAccountId` `null` skips nobody. `onlyAccountIds` is an allowlist for in-app and push recipients. `match` is applied only when `auth` is also set. `template` is copied to each in-app recipient (`id` / `recipientAccountId` filled here). `payload` is the shared JSON template (no `unreadCount`).
 - **Returns / side effects:** Void. Logs `push.fanout` with `inApp` and `push` counts. Writes a notification row per in-app id when `notifications` is set, then enqueues one pending outbox row per push id when `pushStore` is set. When `notifications` or `inboxUnreadCount` is set, each outbox JSON is the parsed template plus `unreadCount` (invalid JSON or a non-object template becomes `{ unreadCount }`). When both are omitted, the payload is unchanged. Per-recipient `create`/`unreadCount`/inbox/`enqueue` failures log `push.fanout.failed`, continue, then throw after the loops. Does not copy DMs into notification rows.
 - **Used by:** `notifyForumPost`, `notifyForumReply`, `notifyExternalForumReply`, `notifyZap`.
 
 ## Function: notifyForumPost
 
-- **Purpose:** Notify living-room members of a new top-level forum post except the actor. No-op when the actor is the official platform account (`isPlatform === true` via `auth.listAccounts()`). Missing auth / missing id / missing account / `isPlatform` not true still fans out. Persist a `forum_post` row when `notifications` is set (`parentId` and `replyId` are the post id) for every matching account when `auth` is set (otherwise bell subscribers) and enqueue a `/messages/<postId>` Web Push (`tag` `forum_post:<postId>`) when `pushStore` is set. Matching uses `wantsNotification`: `isActive` is `created.sats > 0`, `mentionedAccountId` is null (top-level posts are never personal), `actorIsStaff` from the actor in `auth.listAccounts()` (false if missing). When `auth` is unset, do not filter by level. Missing `pushStore` still writes in-app rows when `auth` is set. May throw; callers wrap so persist still succeeds.
+- **Purpose:** Notify living-room members of a new top-level forum post except the actor. No-op when the actor is the official platform account (`isPlatform === true` via `auth.listAccounts()`). Missing auth / missing id / missing account / `isPlatform` not true still fans out. Persist a `forum_post` row when `notifications` is set (`parentId` and `replyId` are the post id) for every matching account when `auth` is set (otherwise bell subscribers) and enqueue a `/messages/<postId>` Web Push (`tag` `forum_post:<postId>`) when `pushStore` is set. Matching uses `wantsNotification`: `isActive` is `created.sats > 0`, `mentionedAccountId` is null (top-level posts are never personal). A staff or platform actor does not satisfy mentions. When `auth` is unset, do not filter by level. Missing `pushStore` still writes in-app rows when `auth` is set. May throw; callers wrap so persist still succeeds.
 - **Inputs:** `{ notifications?, pushStore?, auth?, account, created, inboxUnreadCount? }`.
 - **Returns / side effects:** Void. Calls `fanoutToBellSubscribers` with skip id `account.id`, match from the post, and payload from `buildForumPushPayload` (id, name, text, and media flags from `created`). Forwards `inboxUnreadCount`. Outbox JSON `unreadCount` is notification unread + listed inbox unread when either source is passed.
 - **Used by:** `messagesRoutes` after a successful top-level `POST /messages` create; `meRoutes` after a won `PUT /me/about` create (`notifyForumPost` after `updateText` with the bio); `settleInvoiceManually` / `indexOpenZapReceipts` after a platform-note compose creates a top-level post (`insertGiftReply`).
 
 ## Function: notifyForumReply
 
-- **Purpose:** Notify living-room members of a forum reply except the actor. Persist a `forum_reply` row when `notifications` is set and enqueue a `/messages/<replyId>` Web Push (`tag` `forum_reply:<replyId>`, not the parent id) when `pushStore` is set. No-op when the parent is missing. No-op when the actor is the official platform account (`isPlatform === true` via `auth.listAccounts()`). Missing auth / missing id / missing account / `isPlatform` not true still fans out. Damus-only parents and self-replies still fan out (the actor is skipped). Photo-only empty text still notifies. Matching uses `wantsNotification`: `isActive` is `parent.sats > 0`, `mentionedAccountId` is `parent.accountId` (null when the parent has no account), `actorIsStaff` from the reply actor. When `auth` is unset, do not filter by level. Missing `pushStore` still writes in-app rows when `auth` is set. Unique duplicate create is fine. May throw; callers wrap so persist still succeeds.
+- **Purpose:** Notify living-room members of a forum reply except the actor. Persist a `forum_reply` row when `notifications` is set and enqueue a `/messages/<replyId>` Web Push (`tag` `forum_reply:<replyId>`, not the parent id) when `pushStore` is set. No-op when the parent is missing. No-op when the actor is the official platform account (`isPlatform === true` via `auth.listAccounts()`). Missing auth / missing id / missing account / `isPlatform` not true still fans out. Damus-only parents and self-replies still fan out (the actor is skipped). Photo-only empty text still notifies. Matching uses `wantsNotification`: `isActive` is `parent.sats > 0`, `mentionedAccountId` is `parent.accountId` (null when the parent has no account). A staff or platform actor does not satisfy mentions. When `auth` is unset, do not filter by level. Missing `pushStore` still writes in-app rows when `auth` is set. Unique duplicate create is fine. May throw; callers wrap so persist still succeeds.
 - **Inputs:** `{ messages, notifications?, pushStore?, auth?, account, created, parentId, inboxUnreadCount? }`.
 - **Returns / side effects:** Void. After parent lookup, calls `fanoutToBellSubscribers` with skip id `account.id`, match from the parent/actor, and payload from `buildReplyPushPayload` (id, name, text, and media flags from `created`). Forwards `inboxUnreadCount`. Outbox JSON `unreadCount` is notification unread + listed inbox unread when either source is passed. Does not copy DMs into notification rows.
 - **Used by:** `messagesRoutes` after a 21.gifts-author reply `POST /messages`; `runNostrWorkerTick` after inbound member reply persist; `settleInvoiceManually` / `indexOpenZapReceipts` after a platform-note compose creates a reply (`insertGiftReply`).
 
 ## Function: notifyZap
 
-- **Purpose:** Notify living-room members of a newly indexed zap/payment except the payer. Persist a `zap` row when `notifications` is set (`text` is `String(amountSats)`, name default `'Someone'`, `replyId` is the first 32 hex of the 64-hex receipt id hyphenated 8-4-4-4-12) and enqueue a `/messages/<noteId>` Web Push (`tag` `zap:<replyId>`) when `pushStore` is set. No-op when the note has no `accountId`. No-op when `payerAccountId` is the official platform account (`isPlatform === true` via `auth.listAccounts()`). Do not skip when `payerAccountId` is omitted. Missing auth / missing account / `isPlatform` not true still fans out. Does not skip the note author unless they are also `payerAccountId`. Matching uses `wantsNotification`: `isActive` is `note.sats > 0` or `amountSats > 0` (first gift still counts), `mentionedAccountId` is `note.accountId`, `actorIsStaff` from the payer when `payerAccountId` is found (otherwise false). When `auth` is unset, do not filter by level. Missing `pushStore` still writes in-app rows when `auth` is set. May throw; callers wrap so persist still succeeds.
+- **Purpose:** Notify living-room members of a newly indexed zap/payment except the payer. Persist a `zap` row when `notifications` is set (`text` is `String(amountSats)`, name default `'Someone'`, `replyId` is the first 32 hex of the 64-hex receipt id hyphenated 8-4-4-4-12) and enqueue a `/messages/<noteId>` Web Push (`tag` `zap:<replyId>`) when `pushStore` is set. No-op when the note has no `accountId`. No-op when `payerAccountId` is the official platform account (`isPlatform === true` via `auth.listAccounts()`). Do not skip when `payerAccountId` is omitted. Missing auth / missing account / `isPlatform` not true still fans out. Does not skip the note author unless they are also `payerAccountId`. Matching uses `wantsNotification`: `isActive` is `note.sats > 0` or `amountSats > 0` (first gift still counts), `mentionedAccountId` is `note.accountId`. A staff or platform actor does not satisfy mentions. When `auth` is unset, do not filter by level. Missing `pushStore` still writes in-app rows when `auth` is set. May throw; callers wrap so persist still succeeds.
 - **Inputs:** `{ notifications?, pushStore?, auth?, note, receiptId, amountSats, nowMs, payerAccountId?, payerName?, inboxUnreadCount? }`.
 - **Returns / side effects:** Void. Calls `fanoutToBellSubscribers` with skip id `payerAccountId ?? null`, match from the note/payer, and payload from `buildZapPushPayload` (`replyId`, `noteId` `note.id`, payer name or `Someone`, and `amountSats`). Forwards `inboxUnreadCount`. Outbox JSON `unreadCount` is notification unread + listed inbox unread when either source is passed.
 - **Used by:** Zap ingest in `indexOpenZapReceipts` when `indexZapReceipt` newly indexed a member-note receipt (not the official platform profile note).
@@ -1480,21 +1480,21 @@
 
 ## Function: isStaffAccount
 
-- **Purpose:** True when this account is a staff/admin actor for `mentions` fan-out. Delegates to `roleAtLeast(role, 'moderator')` for known roles (`basis` / `verified` false). `isPlatform === true` is staff even when `role` is `basis`. Unknown role strings are not found in `ROLE_ORDER` and are therefore not staff. Does not parse display names or @mentions out of post text.
+- **Purpose:** Role and platform predicate, not a mentions shortcut. True when `isPlatform === true` or `roleAtLeast(role, 'moderator')` for a known role (`basis` and `verified` are false unless `isPlatform`). Unknown role strings are not staff. A staff or platform actor does not satisfy mentions. Does not parse display names or @mentions out of post text.
 - **Inputs:** `{ role: string; isPlatform?: boolean }`.
 - **Returns / side effects:** boolean. No I/O.
-- **Used by:** `notifyForumPost`, `notifyForumReply`, `notifyZap` via `actorIsStaffFromAuth`.
+- **Used by:** Exported. Not called by `wantsNotification`, `notifyForumPost`, `notifyForumReply`, or `notifyZap`. `actorIsStaffFromAuth` does not exist.
 
 ## Function: wantsNotification
 
-- **Purpose:** Whether a recipient at `level` should receive this living-room event for in-app rows and Web Push. `all` is always true. `active` is `isActive`. `mentions` is a staff actor or `mentionedAccountId === recipientAccountId` when the mention id is non-null.
-- **Inputs:** `{ level: NotificationLevel; actorIsStaff: boolean; isActive: boolean; mentionedAccountId: string | null; recipientAccountId: string }`.
+- **Purpose:** Whether a recipient at `level` should receive this living-room event for in-app rows and Web Push. `all` is always true. `active` is `isActive`. `mentions` is only `mentionedAccountId !== null && mentionedAccountId === recipientAccountId`. A staff or platform actor does not satisfy mentions.
+- **Inputs:** `{ level: NotificationLevel; isActive: boolean; mentionedAccountId: string | null; recipientAccountId: string }`.
 - **Returns / side effects:** boolean. No I/O.
 - **Used by:** `fanoutToBellSubscribers` after skip when `auth` and `match` are set.
 
 ## Function: notificationsMatchingLevel
 
-- **Purpose:** Keep stored in-app rows the owner's current `notificationLevel` would still accept, same rules as `wantsNotification`. `all` returns the rows unchanged. `moderator_appointed` and `moderator_proposal` always stay. `forum_post` is never personal (`mentionedAccountId` null). `forum_mention` is personal for the marked recipient and active only when the parent exists and `parent.sats > 0` (a missing parent is not active and still personal). `forum_reply` / `zap` use the parent note's `accountId` and `sats` from `parentById`; a missing parent is unpaid and not personal. Zap `text` is the amount string and still counts as active when `> 0`. Zap actor staff is the stored actor via `isStaffAccount` only when that actor is not the parent note author (missing payer is not staff).
+- **Purpose:** Keep stored in-app rows the owner's current `notificationLevel` would still accept, same rules as `wantsNotification`. `all` returns the rows unchanged. `moderator_appointed` and `moderator_proposal` always stay. `forum_post` is never personal (`mentionedAccountId` null). `forum_mention` is personal for the marked recipient and active only when the parent exists and `parent.sats > 0` (a missing parent is not active and still personal). `forum_reply` / `zap` use the parent note's `accountId` and `sats` from `parentById`; a missing parent is unpaid and not personal. Zap `text` is the amount string and still counts as active when `> 0`. A staff or platform actor does not satisfy mentions. The `accounts` argument stays on the signature and is not read.
 - **Inputs:** `{ rows, level, recipientAccountId, accounts, parentById }`.
 - **Returns / side effects:** Matching rows in the same order. No I/O.
 - **Used by:** `notificationRoutes` `GET /notifications` after scanning the newest `NOTIFICATION_FILTER_SCAN_LIMIT` rows.
@@ -1655,16 +1655,16 @@
 
 ## Function: InMemoryApiLogStore
 
-- **Purpose:** Process-local `ApiLogStore` (newest `createdAt` then `id` desc).
+- **Purpose:** Process-local `ApiLogStore` (newest `createdAt` then `id` desc; `listPage` keyset).
 - **Inputs:** Optional seed rows.
-- **Returns / side effects:** `append` / `listLatest` copies.
+- **Returns / side effects:** `append` / `listLatest` / `listPage` copies.
 - **Used by:** `createApp` default; tests.
 
 ## Function: PostgresApiLogStore
 
-- **Purpose:** Durable `ApiLogStore` over `api_log`.
+- **Purpose:** Durable `ApiLogStore` over `api_log` (`append`, `listLatest`, `listPage`).
 - **Inputs:** Parameter-bound `SqlClient` (already migrated).
-- **Returns / side effects:** Inserts and newest-first selects. No UPDATE/DELETE.
+- **Returns / side effects:** `append` inserts; `listLatest` / `listPage` newest-first selects. No UPDATE/DELETE.
 - **Used by:** `openBootStores` when `DATABASE_URL` is set.
 
 ## Function: migrateApiLogSchema
@@ -1728,9 +1728,9 @@
 
 ## Function: debugApiLogRoutes
 
-- **Purpose:** Hono app for `GET /debug/api-log`.
+- **Purpose:** Hono app for `GET /debug/api-log` (`listPage`, `hasMore`).
 - **Inputs:** `ApiLogStore` and optional `debugToken`.
-- **Returns / side effects:** 503 if token blank; 401 if bearer mismatches; 200 `{ logs }` cap 200; 503 `Log is unavailable` on store throw.
+- **Returns / side effects:** 503 if token blank; 401 if bearer mismatches; 400 `Invalid account` / `Invalid cursor`; 200 `{ logs, hasMore }` via `listPage` (page cap 200); 503 `Log is unavailable` on store throw.
 - **Used by:** `createApp` at `/debug/api-log`.
 
 ## Function: diagnosticsRoutes
