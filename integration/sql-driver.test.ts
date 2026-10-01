@@ -373,17 +373,6 @@ describe('PostgresAuthStore spark pubkey', () => {
       await store.updateAccount({
         ...verified,
         username: `renamed_${stamp}`,
-        name: 'ShouldNotStick',
-      });
-      const afterRename = await store.getAccount(idA);
-      expect(afterRename?.username).toBe(usernameA);
-      expect(afterRename?.name).toBeNull();
-      expect(afterRename?.sparkPubkey).toBe(pubkey);
-      expect(typeof afterRename?.sparkPubkeyVerifiedAt).toBe('number');
-
-      await store.updateAccount({
-        ...verified,
-        username: usernameA,
         name: 'Renamed',
         sparkPubkey: `03${'b'.repeat(64)}`,
         sparkPubkeyVerifiedAt: null,

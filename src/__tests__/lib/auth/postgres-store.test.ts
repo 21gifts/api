@@ -293,13 +293,20 @@ describe('PostgresAuthStore', () => {
     expect(sql.executes[1]?.text).toMatch(/profile_message_id = \$14/);
     expect(sql.executes[1]?.text).toMatch(/location = \$15/);
     expect(sql.executes[1]?.text).toMatch(/notification_level = \$16/);
-    expect(sql.executes[1]?.text).toMatch(/username = \$17/);
+    expect(sql.executes[1]?.text).toMatch(
+      /username = CASE WHEN spark_pubkey_verified_at IS NULL THEN \$17 ELSE username END/,
+    );
     expect(sql.executes[1]?.text).toMatch(/amount_unit = \$18/);
     expect(sql.executes[1]?.text).not.toMatch(/session_refused = \$18/);
     expect(sql.executes[1]?.text).toMatch(/NOT EXISTS/);
-    expect(sql.executes[1]?.text).toMatch(
-      /spark_pubkey_verified_at IS NULL OR username IS NOT DISTINCT FROM \$17/,
-    );
+    expect(sql.executes[1]?.text).not.toMatch(/IS NOT DISTINCT FROM/);
+    const setClause = sql.executes[1]!.text.split(/\bWHERE\b/)[0]!;
+    expect(
+      setClause.replace(
+        /username = CASE WHEN spark_pubkey_verified_at IS NULL THEN \$17 ELSE username END/,
+        '',
+      ),
+    ).not.toMatch(/spark_pubkey/);
     expect(sql.executes[1]?.params).toEqual([
       'acc',
       ACCOUNT_ROW.linking_key,
@@ -345,7 +352,9 @@ describe('PostgresAuthStore', () => {
     expect(sql.executes[0]?.params[15]).toBe('mentions');
     await store.updateAccount({ ...account, notificationLevel: 'active' });
     expect(sql.executes[1]?.text).toMatch(/notification_level = \$16/);
-    expect(sql.executes[1]?.text).toMatch(/username = \$17/);
+    expect(sql.executes[1]?.text).toMatch(
+      /username = CASE WHEN spark_pubkey_verified_at IS NULL THEN \$17 ELSE username END/,
+    );
     expect(sql.executes[1]?.params[15]).toBe('active');
     expect(sql.executes[1]?.params[16]).toBeNull();
   });
@@ -386,7 +395,9 @@ describe('PostgresAuthStore', () => {
     expect(sql.executes[0]?.params[20]).toBe('fiat');
     await store.updateAccount({ ...account, amountUnit: 'btc' });
     expect(sql.executes[1]?.text).toMatch(/amount_unit = \$18/);
-    expect(sql.executes[1]?.text).toMatch(/username = \$17/);
+    expect(sql.executes[1]?.text).toMatch(
+      /username = CASE WHEN spark_pubkey_verified_at IS NULL THEN \$17 ELSE username END/,
+    );
     expect(sql.executes[1]?.params[17]).toBe('btc');
   });
 

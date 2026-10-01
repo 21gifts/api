@@ -239,6 +239,18 @@ describe('lnurlServerRoutes', () => {
       expect(calls).toHaveLength(0);
     });
 
+    it('returns 404 when a compatibility-folded username key is present', async () => {
+      const store = new InMemoryAuthStore();
+      await seedWallet(store, { id: 'acc', username: 'ada' });
+      const { fetchImpl, calls } = recordingFetch(async () => new Response('no'));
+      const res = await mount(store, fetchImpl).request(`/lnurlpay/${PUBKEY}`, {
+        method: 'POST',
+        body: JSON.stringify({ username: 'ada', ['u\u017Fername']: 'other' }),
+      });
+      expect(res.status).toBe(404);
+      expect(calls).toHaveLength(0);
+    });
+
     it('returns 409 when the username changes while registration is in flight', async () => {
       const store = new InMemoryAuthStore();
       await seedWallet(store, { id: 'acc', username: 'ada' });
@@ -799,6 +811,17 @@ describe('lnurlServerRoutes', () => {
       expect(calls).toHaveLength(0);
     });
 
+    it('returns 404 for HEAD without contacting upstream', async () => {
+      const store = new InMemoryAuthStore();
+      await seedWallet(store, { id: 'acc', username: 'ada', verified: true });
+      const { fetchImpl, calls } = recordingFetch(async () => new Response('no'));
+      const res = await mount(store, fetchImpl).request(`/lnurlpay/${PUBKEY}/metadata`, {
+        method: 'HEAD',
+      });
+      expect(res.status).toBe(404);
+      expect(calls).toHaveLength(0);
+    });
+
     it('maps store errors to 503', async () => {
       const store = new InMemoryAuthStore();
       await seedWallet(store, { id: 'acc', username: 'ada', verified: true });
@@ -873,6 +896,17 @@ describe('lnurlServerRoutes', () => {
       expect(calls).toHaveLength(0);
     });
 
+    it('returns 404 for HEAD without contacting upstream', async () => {
+      const store = new InMemoryAuthStore();
+      await seedWallet(store, { id: 'acc', username: 'ada', verified: true });
+      const { fetchImpl, calls } = recordingFetch(async () => new Response('no'));
+      const res = await mount(store, fetchImpl).request('/lnurlp/ada/invoice', {
+        method: 'HEAD',
+      });
+      expect(res.status).toBe(404);
+      expect(calls).toHaveLength(0);
+    });
+
     it('maps store errors to 503', async () => {
       const store = new InMemoryAuthStore();
       await seedWallet(store, { id: 'acc', username: 'ada', verified: true });
@@ -941,6 +975,15 @@ describe('lnurlServerRoutes', () => {
       expect(res.status).toBe(200);
       expect(await res.text()).toBe('{"status":"OK"}');
       expect(calls[0]?.url).toBe('http://lnurl.test/verify/abc123');
+    });
+
+    it('returns 404 for HEAD without contacting upstream', async () => {
+      const { fetchImpl, calls } = recordingFetch(async () => new Response('no'));
+      const res = await mount(new InMemoryAuthStore(), fetchImpl).request('/verify/abc123', {
+        method: 'HEAD',
+      });
+      expect(res.status).toBe(404);
+      expect(calls).toHaveLength(0);
     });
 
     it('maps unreachable upstream to 503', async () => {
