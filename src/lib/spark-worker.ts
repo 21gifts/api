@@ -4,13 +4,15 @@
  * Every tick it asks the Spark coordinator about the open Spark invoices
  * issued in the last {@link SPARK_INVOICE_WINDOW_MS}. For each one reported
  * `FINALIZED` it signs a kind 9735 receipt for the zap invoice with the
- * receiver's receipt key, feeds it into the receipt ingest, publishes it to the
- * relays named in the zap request, and marks the row settled.
+ * receiver's receipt key and feeds it into the receipt ingest. Once the zap
+ * invoice's payment hash is claimed it publishes the receipt to the relays
+ * named in the zap request and marks the row settled.
  */
 
 import type { FreePaymentsConfig } from '@/lib/config';
 import { errorLogFields, logEvent } from '@/lib/log';
 import type { FetchFn } from '@/lib/lnurlp';
+import type { MessageStore } from '@/lib/message-store';
 import type { NostrPublisher } from '@/lib/nostr/publish';
 import type { NostrEventFrame } from '@/lib/nostr/query';
 import { buildZapReceipt, zapReceiptSecretKey } from '@/lib/nostr/zap-receipt';
@@ -38,12 +40,20 @@ export interface SparkWorkerDeps {
   publisher: NostrPublisher;
   /** Existing receipt ingest for one event. */
   ingest: (event: NostrEventFrame) => Promise<void>;
+  /** Payment hash claims written by the receipt ingest. */
+  claims: Pick<MessageStore, 'zapPaymentReceiptId'>;
   /** Clock in epoch milliseconds. */
   now: () => number;
 }
 
 /**
  * Turn one finalized Spark invoice into an ingested and published receipt.
+ *
+ * The row is settled only once the zap invoice's payment hash is claimed. When
+ * the ingest did not claim it (for example the LNURL server was briefly
+ * unreachable), the row stays open and the next tick signs and ingests again.
+ * The receipt is published only when it is the one that claimed the hash, so a
+ * zap invoice already paid over Lightning does not get a second receipt.
  *
  * @param deps - Worker collaborators.
  * @param row - The open row.
@@ -65,7 +75,12 @@ async function settleRow(
     return;
   }
   await deps.ingest(built.event);
-  if (built.relays.length > 0) {
+  const owner = await deps.claims.zapPaymentReceiptId(row.paymentHash);
+  if (owner === undefined) {
+    logEvent('spark.receipt.not_credited', { paymentHash: row.paymentHash });
+    return;
+  }
+  if (owner === built.event.id && built.relays.length > 0) {
     try {
       await deps.publisher.publish(
         built.event as unknown as Record<string, unknown>,

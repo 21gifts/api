@@ -1081,7 +1081,7 @@ Bearer required. Same 401 / 409 / 404 / 503 as `GET /members/:accountId`
 (`members.posts.failed` on 503). Live-only top-level notes by the member,
 newest-first, capped at 200. Body `{ "messages": [...] }` via
 `serializeMessage` like signed-in `GET /messages` (`accountId`,
-`replyCount`, `payable` when a non-empty `eventId` and a non-blank Lightning Address are set;
+`replyCount`, `payable` when a non-empty `eventId` and a receiving address are set;
 optional `goalSats` omitted when unset, optional `goalRepayable: true` when
 the stored column is true (omitted when null; never false), optional
 `goalTermDays` when the stored column is not null (omitted when null), and when
@@ -1095,7 +1095,7 @@ Omits `parentId`. Replies by that member are not listed.
 Bearer required. Same 401 / 409 / 404 / 503 as `GET /members/:accountId`
 (`members.replies.failed` on 503). Live-only replies by the member,
 newest-first, capped at 200. Body `{ "messages": [...] }` via
-`serializeMessage` with `payable` when a non-empty `eventId` and a non-blank Lightning Address are set, `accountId`, and optional
+`serializeMessage` with `payable` when a non-empty `eventId` and a receiving address are set, `accountId`, and optional
 `parentId` when set; omits `replyCount`. Replies never include `goalSats`,
 `goalRepayable`, or `goalTermDays`.
 Top-level notes by that member are not listed.
@@ -3901,7 +3901,7 @@ those keys),
 optional `place` (`{ lat, lng, label }` when a pin is stored;
 the key is omitted when unset),
 `payable` (true when the note has a non-empty signed `eventId` and the author
-has a non-blank Lightning Address; null or empty `eventId` is not payable),
+has a receiving address (see [Receiving address](#receiving-address)); null or empty `eventId` is not payable),
 `hasPhoto` (photo 0 exists), `photoCount` (integer 0–10 = photo 0
 plus extras 1–9; always present), `photoTakenAts` (always present, length
 equals `photoCount`, null when unknown, `[]` when there are no stills) and
@@ -5767,9 +5767,11 @@ The receipt is signed with the receiver's receipt key, HMAC-SHA256 keyed with
 the `LNURL_ZAP_NSEC_HEX` bytes over `lnurl-zap-receipt-key:`, the lower-case
 hex of the wallet key, and a counter byte from 0 (the first valid secp256k1
 secret key); its public key is the `nostrPubkey` the LNURL server advertises
-for that member. The receipt is fed straight into the receipt ingest, then
-published to the relays named in the zap request, and the row is marked
-settled with the transfer id and receipt id. Crediting is the existing
+for that member. The receipt is fed straight into the receipt ingest. The row is settled
+(transfer id and receipt id) only once the payment hash of `pr` is claimed;
+if the ingest did not claim it, the row stays open and the next tick tries
+again. The receipt is published to the relays named in the zap request only
+when it is the receipt that claimed the hash. Crediting is the existing
 receipt path; the payment hash is claimed once, so a second receipt for the
 same payment hash (for example `pr` also paid over Lightning) credits
 nothing.

@@ -110,9 +110,15 @@ function deps(
   store: SparkInvoiceStore,
   fetchImpl: SparkWorkerDeps['fetchImpl'],
   overrides: Partial<SparkWorkerDeps> = {},
-): SparkWorkerDeps & { ingested: NostrEventFrame[]; publisher: RecordingPublisher } {
+): SparkWorkerDeps & {
+  ingested: NostrEventFrame[];
+  publisher: RecordingPublisher;
+  claimed: Map<string, string>;
+} {
   const ingested: NostrEventFrame[] = [];
   const publisher = new RecordingPublisher();
+  // Like the receipt ingest: the first receipt for a payment hash claims it.
+  const claimed = new Map<string, string>();
   return {
     store,
     config,
@@ -120,11 +126,24 @@ function deps(
     publisher,
     ingest: async (event) => {
       ingested.push(event);
+      const bolt11 = event.tags.find((tag) => tag[0] === 'bolt11')?.[1] ?? '';
+      const hash = Number.parseInt(bolt11.replace('lnbc21n1pr', ''), 10)
+        .toString(16)
+        .padStart(64, '0');
+      if (!claimed.has(hash)) {
+        claimed.set(hash, event.id);
+      }
     },
+    claims: { zapPaymentReceiptId: async (hash) => claimed.get(hash) },
     now: () => NOW,
     ingested,
+    claimed,
     ...overrides,
-  } as SparkWorkerDeps & { ingested: NostrEventFrame[]; publisher: RecordingPublisher };
+  } as SparkWorkerDeps & {
+    ingested: NostrEventFrame[];
+    publisher: RecordingPublisher;
+    claimed: Map<string, string>;
+  };
 }
 
 function events(warn: ReturnType<typeof vi.spyOn>): Array<Record<string, unknown>> {
@@ -325,6 +344,42 @@ describe('runSparkInvoiceTick', () => {
     );
     expect(d.ingested).toEqual([]);
     expect(await store.listOpen(new Date(0))).toHaveLength(1);
+  });
+
+  it('keeps the row open and does not publish when the ingest did not claim the payment hash', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const store = new InMemorySparkInvoiceStore();
+    await store.issue(row(1));
+    const ingested: NostrEventFrame[] = [];
+    const d = deps(store, operator(new Map([['spark1inv1', { status: 2 }]])), {
+      ingest: async (event) => {
+        ingested.push(event);
+      },
+    });
+    await runSparkInvoiceTick(d);
+    expect(ingested).toHaveLength(1);
+    expect(d.publisher.calls).toEqual([]);
+    expect(await store.listOpen(new Date(0))).toHaveLength(1);
+    expect(events(warn)).toContainEqual(
+      expect.objectContaining({
+        event: 'spark.receipt.not_credited',
+        paymentHash: row(1).paymentHash,
+      }),
+    );
+
+    await runSparkInvoiceTick(d);
+    expect(ingested).toHaveLength(2);
+  });
+
+  it('settles without publishing when another receipt already claimed the payment hash', async () => {
+    const store = new InMemorySparkInvoiceStore();
+    await store.issue(row(1));
+    const d = deps(store, operator(new Map([['spark1inv1', { status: 2 }]])));
+    d.claimed.set(row(1).paymentHash, 'f0'.repeat(32));
+    await runSparkInvoiceTick(d);
+    expect(d.ingested).toHaveLength(1);
+    expect(d.publisher.calls).toEqual([]);
+    expect(await store.listOpen(new Date(0))).toEqual([]);
   });
 
   it('does not log settled when another tick settled the row first', async () => {

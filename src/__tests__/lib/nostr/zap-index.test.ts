@@ -4897,6 +4897,7 @@ describe('indexOpenZapReceipts', () => {
         base.markRepaymentPaid(row),
       claimZapPayment: (...args: Parameters<InMemoryMessageStore['claimZapPayment']>) =>
         base.claimZapPayment(...args),
+      zapPaymentReceiptId: (hash: string) => base.zapPaymentReceiptId(hash),
       recordZapReceipt: (...args: Parameters<InMemoryMessageStore['recordZapReceipt']>) =>
         base.recordZapReceipt(...args),
       recordInvoiceAttempt: (...args: Parameters<InMemoryMessageStore['recordInvoiceAttempt']>) =>
@@ -5154,6 +5155,7 @@ describe('indexOpenZapReceipts', () => {
           base.markRepaymentPaid(row),
         claimZapPayment: (...args: Parameters<InMemoryMessageStore['claimZapPayment']>) =>
           base.claimZapPayment(...args),
+        zapPaymentReceiptId: (hash: string) => base.zapPaymentReceiptId(hash),
         recordZapReceipt: (...args: Parameters<InMemoryMessageStore['recordZapReceipt']>) =>
           base.recordZapReceipt(...args),
         recordInvoiceAttempt: (...args: Parameters<InMemoryMessageStore['recordInvoiceAttempt']>) =>
@@ -5958,6 +5960,7 @@ describe('indexOpenZapReceipts', () => {
           base.markRepaymentPaid(row),
         claimZapPayment: (...args: Parameters<InMemoryMessageStore['claimZapPayment']>) =>
           base.claimZapPayment(...args),
+        zapPaymentReceiptId: (hash: string) => base.zapPaymentReceiptId(hash),
         recordZapReceipt: (...args: Parameters<InMemoryMessageStore['recordZapReceipt']>) =>
           base.recordZapReceipt(...args),
         recordInvoiceAttempt: (...args: Parameters<InMemoryMessageStore['recordInvoiceAttempt']>) =>
