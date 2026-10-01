@@ -430,6 +430,34 @@ describe('GET /.well-known/lnurlp/:username', () => {
       );
     });
 
+    it('prefers the verified wallet over a linked external address', async () => {
+      const auth = new InMemoryAuthStore();
+      await seedVerifiedWallet(auth);
+      const account = await auth.getAccount('00000000-0000-4000-8000-000000000001');
+      await auth.updateAccount({
+        ...account!,
+        lightningAddress: 'alice@walletofsatoshi.com',
+        lightningAddressVerified: true,
+      });
+      const document = walletPayDoc();
+      const fetchImpl = vi.fn<FetchFn>(
+        async () =>
+          new Response(JSON.stringify(document), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          }),
+      );
+      const app = new Hono().route(
+        '/.well-known',
+        wellKnownRoutes({ auth, fetchImpl, lnurlServer: LNURL_CONFIG }),
+      );
+      const res = await app.request('/.well-known/lnurlp/ada');
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual(document);
+      expect(fetchImpl).toHaveBeenCalledTimes(1);
+      expect(String(fetchImpl.mock.calls[0]?.[0])).toBe('http://lnurl.test/.well-known/lnurlp/ada');
+    });
+
     it('uses the external address when lnurlServer is omitted', async () => {
       const auth = new InMemoryAuthStore();
       await seedVerifiedWallet(auth);
