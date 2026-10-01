@@ -541,9 +541,23 @@
 
 ## Endpoint: GET /messages/:id/external-profile
 
-- **Purpose:** Public profile for a forum author with no 21.gifts account. No Bearer. 200 `{ name, npub }` plus optional `nip05` and `lud16`. `name` is the stored snapshot, or a truncated pubkey when that is blank; a live kind 0 name replaces it only when `externalDisplayName` accepts it. `npub` comes from the stored pubkey. `nip05` is included only when `fetchImpl` is set and `https://<host>/.well-known/nostr.json?name=<local>` names that pubkey after a public-address DNS check (at most two HTTPS redirects, 5s, 64 KiB). `lud16` is the published `user@host` and is not fetched. No hex pubkey, picture, about, callback, or invoice. Registered before `GET /messages/:id`. A missing querier, empty relay list, or relay failure still returns 200 with the stored name and npub.
+- **Purpose:** Public profile for a forum author with no 21.gifts account. No Bearer. 200 `{ name, npub, postCount, replyCount }` plus optional `nip05` and `lud16`. `name` is the stored snapshot, or a truncated pubkey when that is blank; a live kind 0 name replaces it only when `externalDisplayName` accepts it. `npub` comes from the stored pubkey. `postCount` and `replyCount` are always present, including 0: `postCount` is the uncapped live top-level notes for that pubkey; `replyCount` is the uncapped live public replies, and is 0 when the pubkey is not a recorded zapper. `nip05` is included only when `fetchImpl` is set and `https://<host>/.well-known/nostr.json?name=<local>` names that pubkey after a public-address DNS check (at most two HTTPS redirects, 5s, 64 KiB). `lud16` is the published `user@host` and is not fetched. No hex pubkey, picture, about, callback, or invoice. Registered before `GET /messages/:id`. A missing querier, empty relay list, or relay failure still returns 200 with the stored name and npub.
 - **Errors:** 404 `{ error: 'Not found' }` for a non-UUID id, a missing row, a deleted row (including a founder/moderator Bearer), a withheld reply, a member-authored row, or a pubkey that is not 64 hex. 503 `{ error: 'Messages are unavailable' }` when the store or account list throws (`messages.external_profile.failed`, no pubkey and no profile text). A well-known or DNS failure omits `nip05` and stays 200.
 - **Used by:** App `GET /public-messages/[id]/external-profile`.
+- **Auth:** Public. No staff exception for a deleted row.
+
+## Endpoint: GET /messages/:id/external-posts
+
+- **Purpose:** Public list of live top-level notes for the external author of `:id`. No Bearer. Same 404 gate as `GET /messages/:id/external-profile`. 200 `{ messages }` capped at 200, newest first (`createdAt` desc, `id` desc). Each item is public message JSON with `replyCount` of live attributed children, `payable` false, `via: 'nostr'`, and no `role`. Registered before `GET /messages/:id`.
+- **Errors:** 404 `{ error: 'Not found' }` for a non-UUID id, a missing row, a deleted row (including a founder/moderator Bearer), a withheld reply, a member-authored row, or a pubkey that is not 64 hex. 503 `{ error: 'Messages are unavailable' }` when the store throws (`messages.external_posts.failed`, no pubkey and no profile text). A serialize failure skips that row and still returns 200.
+- **Used by:** App `GET /public-messages/[id]/external-posts`.
+- **Auth:** Public. No staff exception for a deleted row.
+
+## Endpoint: GET /messages/:id/external-replies
+
+- **Purpose:** Public list of live public replies for the external author of `:id`. No Bearer. Same 404 gate as `GET /messages/:id/external-profile`. 200 `{ messages }` capped at 200, newest first (`createdAt` desc, `id` desc). Each item includes `parentId`, omits `replyCount`, `payable` false, `via: 'nostr'`, and no `role`. A non-zapper author's reply list is empty. Registered before `GET /messages/:id`.
+- **Errors:** 404 `{ error: 'Not found' }` for a non-UUID id, a missing row, a deleted row (including a founder/moderator Bearer), a withheld reply, a member-authored row, or a pubkey that is not 64 hex. 503 `{ error: 'Messages are unavailable' }` when the store throws (`messages.external_replies.failed`, no pubkey and no profile text). A serialize failure skips that row and still returns 200.
+- **Used by:** App `GET /public-messages/[id]/external-replies`.
 - **Auth:** Public. No staff exception for a deleted row.
 
 ## Endpoint: GET /messages/:id

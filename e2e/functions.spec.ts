@@ -2883,3 +2883,11 @@ test('Function: resolveExternalProfileFields — no direct default-boot HTTP tri
 test('Function: publicExternalAuthorProfile — unknown id is not found', async ({ request }) => {
   expect((await request.get('/messages/not-a-uuid/external-profile')).status()).toBe(404);
 });
+
+test('Function: publicExternalAuthorPosts — unknown id is not found', async ({ request }) => {
+  expect((await request.get('/messages/not-a-uuid/external-posts')).status()).toBe(404);
+});
+
+test('Function: publicExternalAuthorReplies — unknown id is not found', async ({ request }) => {
+  expect((await request.get('/messages/not-a-uuid/external-replies')).status()).toBe(404);
+});

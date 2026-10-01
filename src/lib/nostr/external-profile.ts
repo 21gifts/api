@@ -10,7 +10,12 @@ import { npubEncode } from 'nostr-tools/nip19';
 import type { AuthStore } from '@/lib/auth/store';
 import { logEvent } from '@/lib/log';
 import type { FetchFn } from '@/lib/lnurlp';
-import { truncatePubkeyDisplay, type MessageRow } from '@/lib/message';
+import {
+  MESSAGE_LIST_LIMIT,
+  truncatePubkeyDisplay,
+  type MessageListRow,
+  type MessageRow,
+} from '@/lib/message';
 import type { MessageStore } from '@/lib/message-store';
 import {
   externalDisplayName,
@@ -34,6 +39,7 @@ const NIP05_BODY_CAP = 65_536;
 const NIP05_TIMEOUT_MS = 5_000;
 const NIP05_MAX_REDIRECTS = 2;
 const PUBKEY_RE = /^[0-9a-f]{64}$/i;
+const MESSAGE_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /** Collaborators for {@link publicExternalAuthorProfile}. */
 export interface ExternalAuthorProfileDeps {
@@ -64,6 +70,10 @@ export interface ExternalAuthorProfileBody {
   name: string;
   /** bech32 npub of the stored author pubkey. */
   npub: string;
+  /** Uncapped live top-level notes for this pubkey. Always present, including 0. */
+  postCount: number;
+  /** Uncapped live public replies for this pubkey. 0 when not a zapper. Always present. */
+  replyCount: number;
   /** NIP-05 identifier whose well-known document names this pubkey. */
   nip05?: string;
   /** Published lightning address. Not fetched and not a payment promise. */
@@ -74,6 +84,14 @@ export interface ExternalAuthorProfileBody {
 export type ExternalAuthorProfileResult =
   { status: 200; body: ExternalAuthorProfileBody } | { status: 404 } | { status: 503 };
 
+/** 200 post list, or a terminal status the route maps to the public error JSON. */
+export type ExternalAuthorPostsResult =
+  { status: 200; messages: MessageListRow[] } | { status: 404 } | { status: 503 };
+
+/** 200 reply list, or a terminal status the route maps to the public error JSON. */
+export type ExternalAuthorRepliesResult =
+  { status: 200; messages: MessageRow[] } | { status: 404 } | { status: 503 };
+
 /**
  * Build the public profile for one forum message.
  *
@@ -81,6 +99,7 @@ export type ExternalAuthorProfileResult =
  * staff caller), withheld from the public read, not an external author, or
  * the pubkey is not 64 hex. Store and account throws are 503. A relay or
  * well-known failure keeps the 200 and drops only the field that failed.
+ * `postCount` and `replyCount` are uncapped live totals for that pubkey.
  *
  * @param deps - Store, clock, and optional querier / fetch / DNS.
  * @param id - Path message id.
@@ -90,21 +109,13 @@ export async function publicExternalAuthorProfile(
   deps: ExternalAuthorProfileDeps,
   id: string,
 ): Promise<ExternalAuthorProfileResult> {
-  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)) {
-    return { status: 404 };
-  }
   try {
-    const row = await deps.store.getById(id);
-    if (row === undefined || row.deletedAt !== null) {
+    const loaded = await loadExternalAuthor(deps, id);
+    if (loaded.status === 404) {
       return { status: 404 };
     }
-    if (await withheldExternal(deps, row)) {
-      return { status: 404 };
-    }
-    if (row.accountId !== null || row.authorPubkey === null || !PUBKEY_RE.test(row.authorPubkey)) {
-      return { status: 404 };
-    }
-    const pubkey = row.authorPubkey.toLowerCase();
+    const { pubkey, row } = loaded;
+    const counts = await deps.store.countByPubkey(pubkey);
     const live = await liveFields(deps, pubkey);
     const accountNames =
       live?.displayName === null || live?.displayName === undefined
@@ -113,6 +124,8 @@ export async function publicExternalAuthorProfile(
     const body: ExternalAuthorProfileBody = {
       name: displayedName(row.name, pubkey, live?.displayName ?? null, accountNames),
       npub: npubEncode(pubkey),
+      postCount: counts.postCount,
+      replyCount: counts.replyCount,
     };
     const nip05 = await confirmedNip05(deps, live?.nip05 ?? null, pubkey);
     if (nip05 !== null) {
@@ -127,6 +140,93 @@ export async function publicExternalAuthorProfile(
     logEvent('messages.external_profile.failed');
     return { status: 503 };
   }
+}
+
+/**
+ * List live top-level notes for the external author of one forum message.
+ *
+ * Same 404 gate as {@link publicExternalAuthorProfile}. 200 is
+ * {@link MESSAGE_LIST_LIMIT} newest-first posts. Store throws are 503.
+ *
+ * @param deps - Store used for the row, zapper check, and list.
+ * @param id - Path message id.
+ * @returns Status and, on 200, the post rows.
+ */
+export async function publicExternalAuthorPosts(
+  deps: ExternalAuthorProfileDeps,
+  id: string,
+): Promise<ExternalAuthorPostsResult> {
+  try {
+    const loaded = await loadExternalAuthor(deps, id);
+    if (loaded.status === 404) {
+      return { status: 404 };
+    }
+    const messages = await deps.store.listPostsByPubkey(loaded.pubkey, MESSAGE_LIST_LIMIT);
+    return { status: 200, messages };
+  } catch {
+    logEvent('messages.external_posts.failed');
+    return { status: 503 };
+  }
+}
+
+/**
+ * List live public replies for the external author of one forum message.
+ *
+ * Same 404 gate as {@link publicExternalAuthorProfile}. 200 is
+ * {@link MESSAGE_LIST_LIMIT} newest-first replies, or `[]` when the author
+ * is not a recorded zapper. Store throws are 503.
+ *
+ * @param deps - Store used for the row, zapper check, and list.
+ * @param id - Path message id.
+ * @returns Status and, on 200, the reply rows.
+ */
+export async function publicExternalAuthorReplies(
+  deps: ExternalAuthorProfileDeps,
+  id: string,
+): Promise<ExternalAuthorRepliesResult> {
+  try {
+    const loaded = await loadExternalAuthor(deps, id);
+    if (loaded.status === 404) {
+      return { status: 404 };
+    }
+    const messages = await deps.store.listRepliesByPubkey(loaded.pubkey, MESSAGE_LIST_LIMIT);
+    return { status: 200, messages };
+  } catch {
+    logEvent('messages.external_replies.failed');
+    return { status: 503 };
+  }
+}
+
+/**
+ * Shared 404 gate for the public external-author endpoints.
+ *
+ * 404 when the id is not a UUID, the row is missing, `deletedAt` is set
+ * (including for staff), withheld from the public read, `accountId` is not
+ * null, or `authorPubkey` is not 64 hex. Then lowercases the pubkey.
+ * Store throws propagate to the caller.
+ *
+ * @param deps - Store used for the row and zapper check.
+ * @param id - Path message id.
+ * @returns The live external author, or 404.
+ */
+async function loadExternalAuthor(
+  deps: ExternalAuthorProfileDeps,
+  id: string,
+): Promise<{ status: 404 } | { status: 200; pubkey: string; row: MessageRow }> {
+  if (!MESSAGE_ID_RE.test(id)) {
+    return { status: 404 };
+  }
+  const row = await deps.store.getById(id);
+  if (row === undefined || row.deletedAt !== null) {
+    return { status: 404 };
+  }
+  if (await withheldExternal(deps, row)) {
+    return { status: 404 };
+  }
+  if (row.accountId !== null || row.authorPubkey === null || !PUBKEY_RE.test(row.authorPubkey)) {
+    return { status: 404 };
+  }
+  return { status: 200, pubkey: row.authorPubkey.toLowerCase(), row };
 }
 
 /**
