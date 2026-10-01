@@ -5547,11 +5547,11 @@ The receipt is signed with the receiver's receipt key, HMAC-SHA256 keyed with
 the `LNURL_ZAP_NSEC_HEX` bytes over `lnurl-zap-receipt-key:`, the lower-case
 hex of the wallet key, and a counter byte from 0 (the first valid secp256k1
 secret key); its public key is the `nostrPubkey` the LNURL server advertises
-for that member. The receipt is fed straight into the receipt ingest. The row is settled
-(transfer id and receipt id) only when the ingest finished without an error
-and the payment hash of `pr` is claimed; otherwise the row stays open and the
-next tick ingests the same receipt again. The receipt is published to the relays named in the zap request only
-when it is the receipt that claimed the hash. Crediting is the existing
+for that member. The receipt is fed straight into the receipt ingest. When the ingest credited this receipt, it is published to the
+relays named in the zap request and the row is settled (transfer id and
+receipt id). When another receipt already owns the payment hash of `pr`, the
+row is settled without publishing. Otherwise the row stays open and the next
+tick ingests the same receipt again. Crediting is the existing
 receipt path; the payment hash is claimed once, so a second receipt for the
 same payment hash (for example `pr` also paid over Lightning) credits
 nothing.

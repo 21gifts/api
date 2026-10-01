@@ -11661,12 +11661,12 @@ describe('wallet-backed receipt ingest', () => {
     };
     const first = signedReceipt('lnbc-wallet-forum', 100);
     expect(first.pubkey).toBe(RECEIPT_PUBKEY);
-    await ingestZapReceipt(first, args);
+    expect(await ingestZapReceipt(first, args)).toBe(true);
     expect((await store.getById(messageId))?.sats).toBe(21);
     expect(calls).toContain(`${LNURL.baseUrl}/.well-known/lnurlp/wallet-forum`);
     expect(calls.some((url) => url.includes('gifts.test'))).toBe(false);
 
-    await ingestZapReceipt(signedReceipt('lnbc-wallet-forum', 101), args);
+    expect(await ingestZapReceipt(signedReceipt('lnbc-wallet-forum', 101), args)).toBe(false);
     expect((await store.getById(messageId))?.sats).toBe(21);
     const ingests = await store.listZapIngests(10);
     expect(ingests.filter((row) => row.outcome === 'indexed')).toHaveLength(1);
@@ -11686,16 +11686,18 @@ describe('wallet-backed receipt ingest', () => {
       kind: 9735,
       tags: [['e', NOTE_EVENT_ID]],
     };
-    await ingestZapReceipt(event, {
-      store,
-      auth,
-      querier: new RecordingQuerier(),
-      urls: URLS,
-      timeoutMs: 50,
-      now: () => 1,
-      fetchImpl: failFetch(),
-      verifyReceipt: () => true,
-    });
+    expect(
+      await ingestZapReceipt(event, {
+        store,
+        auth,
+        querier: new RecordingQuerier(),
+        urls: URLS,
+        timeoutMs: 50,
+        now: () => 1,
+        fetchImpl: failFetch(),
+        verifyReceipt: () => true,
+      }),
+    ).toBe(false);
     const ingests = await store.listZapIngests(10);
     expect(ingests).toHaveLength(1);
     expect(ingests[0]).toMatchObject({
