@@ -1,10 +1,10 @@
-import type { EventTemplate } from 'nostr-tools/pure';
+import type { EventTemplate, VerifiedEvent } from 'nostr-tools/pure';
 import { inspectBolt11, isNip57Invoice } from '@/lib/bolt11';
 import type { FetchFn } from '@/lib/lnurlp';
 import { resolveLnurlp } from '@/lib/lnurlp';
 import { requestZapInvoice } from '@/lib/lnurl-pay';
 import { resolveZapRelays } from '@/lib/nostr/relays';
-import { buildZapProbeRequest } from '@/lib/nostr/zap-request';
+import { buildZapProbeRequest, serializeZapRequest } from '@/lib/nostr/zap-request';
 
 /** Outcome of a NIP-57 mint probe (never pays; never writes message_invoice). */
 export type Nip57ProbeResult = 'ok' | 'not_zap' | 'unreachable';
@@ -18,7 +18,7 @@ export const LIGHTNING_ADDRESS_NOT_ZAP =
  *
  * Resolves LNURL-pay, builds a throwaway kind:9734 (`p` = signer pubkey),
  * requests an invoice without paying, and checks `description_hash` against
- * the signed zap request JSON.
+ * the NIP-01-ordered serialisation of the signed zap request.
  *
  * @param args - Address, signer pubkey, sign helper, fetch, env for relays.
  * @returns `ok`, `not_zap`, or `unreachable` (resolve/callback failure).
@@ -26,7 +26,7 @@ export const LIGHTNING_ADDRESS_NOT_ZAP =
 export async function probeNip57Mint(args: {
   address: string;
   recipientPubkey: string;
-  sign: (unsigned: EventTemplate) => Promise<Record<string, unknown>>;
+  sign: (unsigned: EventTemplate) => Promise<VerifiedEvent>;
   fetchImpl: FetchFn;
   env?: Record<string, string | undefined>;
 }): Promise<Nip57ProbeResult> {
@@ -54,13 +54,13 @@ export async function probeNip57Mint(args: {
     amountMsat,
     relays,
   });
-  let signed: Record<string, unknown>;
+  let signed: VerifiedEvent;
   try {
     signed = await args.sign(unsigned);
   } catch {
     return 'unreachable';
   }
-  const zapRequestJson = JSON.stringify(signed);
+  const zapRequestJson = serializeZapRequest(signed);
   const zap = await requestZapInvoice({
     address: args.address,
     amountMsat,

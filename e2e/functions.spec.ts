@@ -1985,6 +1985,9 @@ test('Function: startNostrWorker — default boot has no DATABASE_URL', async ({
 test('Function: buildZapRequest — default boot has no DATABASE_URL', async ({ request }) => {
   expect((await request.get('/healthz')).status()).toBe(200);
 });
+test('Function: serializeZapRequest — default boot has no DATABASE_URL', async ({ request }) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
 test('Function: indexZapReceipt — default boot has no DATABASE_URL', async ({ request }) => {
   expect((await request.get('/healthz')).status()).toBe(200);
 });

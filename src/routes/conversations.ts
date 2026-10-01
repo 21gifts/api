@@ -44,7 +44,7 @@ import { ensureAccountNostrKey } from '@/lib/nostr/keys';
 import { InvoiceRateLimiter } from '@/lib/nostr/rate-limit';
 import { resolveZapRelays } from '@/lib/nostr/relays';
 import { signEventForAccount } from '@/lib/nostr/sign';
-import { buildZapRequest } from '@/lib/nostr/zap-request';
+import { buildZapRequest, serializeZapRequest } from '@/lib/nostr/zap-request';
 import type { NotificationStore } from '@/lib/notification-store';
 import type { PushStore } from '@/lib/push-store';
 import { eligibleToday } from '@/lib/funding';
@@ -1335,7 +1335,7 @@ export function conversationRoutes(deps: ConversationRouteDeps): Hono {
           });
           return c.json({ error: 'Messages are unavailable' }, 503);
         }
-        const zapRequestJson = JSON.stringify(signed);
+        const zapRequestJson = serializeZapRequest(signed);
         /* v8 ignore next 4 -- signEventForAccount returns an event object */
         const zapRequest =
           signed !== null && typeof signed === 'object'

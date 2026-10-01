@@ -4728,21 +4728,38 @@ describe('POST /conversations/:id/invoice', () => {
       descriptionHash: 'bb'.repeat(32),
       expirySeconds: 600,
     });
-    const res = await withNip57True(async () =>
-      app.request(`/conversations/${threadId}/invoice`, {
+    const nip57Spy = vi.spyOn(bolt11, 'isNip57Invoice').mockReturnValue(true);
+    const requestSpy = vi.spyOn(await import('@/lib/lnurl-pay'), 'requestZapInvoice');
+    try {
+      const res = await app.request(`/conversations/${threadId}/invoice`, {
         method: 'POST',
         headers: { ...AUTH, 'content-type': 'application/json' },
         body: JSON.stringify({ sats: 21, text: 'cheers' }),
-      }),
-    );
-    inspectSpy.mockRestore();
-    expect(res.status).toBe(200);
-    const body = (await res.json()) as { pr: string; amountSats: number; messageId: string };
-    expect(body.pr).toBe('lnbc21n1test');
-    expect(body.amountSats).toBe(21);
-    expect(body.messageId).toMatch(
-      /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i,
-    );
+      });
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as { pr: string; amountSats: number; messageId: string };
+      expect(body.pr).toBe('lnbc21n1test');
+      expect(body.amountSats).toBe(21);
+      expect(body.messageId).toMatch(
+        /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i,
+      );
+      const zapRequestJson = requestSpy.mock.calls[0]?.[0]?.zapRequestJson;
+      expect(typeof zapRequestJson).toBe('string');
+      expect(nip57Spy.mock.calls[0]?.[1]).toBe(zapRequestJson);
+      expect(Object.keys(JSON.parse(zapRequestJson ?? ''))).toEqual([
+        'id',
+        'pubkey',
+        'created_at',
+        'kind',
+        'tags',
+        'content',
+        'sig',
+      ]);
+    } finally {
+      inspectSpy.mockRestore();
+      nip57Spy.mockRestore();
+      requestSpy.mockRestore();
+    }
   });
 
   it('returns 503 when recording an ok invoice attempt throws', async () => {
