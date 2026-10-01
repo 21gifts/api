@@ -949,10 +949,7 @@ export function meRoutes(deps: MeRouteDeps): Hono {
       const probe = await probeNip57Mint({
         address,
         recipientPubkey: accountPubkey,
-        sign: async (unsigned) => {
-          const signed = await signEventForAccount(deps.store, account.id, kek, unsigned);
-          return { ...signed };
-        },
+        sign: async (unsigned) => signEventForAccount(deps.store, account.id, kek, unsigned),
         fetchImpl: deps.fetchImpl,
         env: process.env,
       });

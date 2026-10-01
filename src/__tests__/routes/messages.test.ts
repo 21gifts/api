@@ -4507,7 +4507,9 @@ describe('POST /messages/:id/invoice', () => {
           invoiceLimiter: new InvoiceRateLimiter(),
         }),
       );
-      await withNip57True(async () => {
+      const bolt11 = await import('@/lib/bolt11');
+      const nip57Spy = vi.spyOn(bolt11, 'isNip57Invoice').mockReturnValue(true);
+      try {
         const res = await app.request('/messages/11111111-1111-4111-8111-111111111111/invoice', {
           method: 'POST',
           headers: { ...AUTH, 'content-type': 'application/json' },
@@ -4518,13 +4520,25 @@ describe('POST /messages/:id/invoice', () => {
         expect(callbackUrl).toBeDefined();
         const nostrParam = new URL(callbackUrl ?? '').searchParams.get('nostr');
         expect(nostrParam).toBeTruthy();
+        expect(nip57Spy.mock.calls[0]?.[1]).toBe(nostrParam);
+        expect(Object.keys(JSON.parse(nostrParam ?? ''))).toEqual([
+          'id',
+          'pubkey',
+          'created_at',
+          'kind',
+          'tags',
+          'content',
+          'sig',
+        ]);
         const zapRequest = JSON.parse(nostrParam ?? '') as { tags: string[][] };
         const relaysTag = zapRequest.tags.find((tag) => tag[0] === 'relays');
         expect(relaysTag).toBeDefined();
         expect(relaysTag?.slice(1)).toContain('wss://relay.damus.io');
         expect(relaysTag?.slice(1)).not.toContain('wss://nostr.wine');
         expect(relaysTag?.slice(1)).not.toContain('wss://nostr.bitcoiner.social');
-      });
+      } finally {
+        nip57Spy.mockRestore();
+      }
     } finally {
       if (prevPublishPublic === undefined) {
         delete process.env['NOSTR_PUBLISH_PUBLIC'];
@@ -5676,7 +5690,7 @@ describe('POST /messages/:id/invoice', () => {
     const spy = vi
       .spyOn(signMod, 'signEventForAccount')
       .mockResolvedValue(
-        null as unknown as Awaited<ReturnType<typeof signMod.signEventForAccount>>,
+        'not-an-event' as unknown as Awaited<ReturnType<typeof signMod.signEventForAccount>>,
       );
     const fetchImpl = async (input: string | URL | Request): Promise<Response> => {
       const url = String(input);

@@ -185,7 +185,9 @@ describe('credit repayment', () => {
 
   it('shows the due share and invoices the giver Wallet of Satoshi address', async () => {
     const bolt11 = await import('@/lib/bolt11');
+    const lnurlPay = await import('@/lib/lnurl-pay');
     const nip57 = vi.spyOn(bolt11, 'isNip57Invoice').mockReturnValue(true);
+    const requestSpy = vi.spyOn(lnurlPay, 'requestZapInvoice');
     try {
       const { app, messages } = await readyCredit();
       const status = await app.request(`/messages/${CREDIT}/repayment`, {
@@ -204,6 +206,18 @@ describe('credit repayment', () => {
       const attempt = (await messages.listInvoiceAttempts(5))[0];
       expect(attempt?.lightningAddress).toBe('bea@walletofsatoshi.com');
       expect(attempt?.description).toBe(`repay:0:${GIVER}`);
+      const zapRequestJson = requestSpy.mock.calls[0]?.[0]?.zapRequestJson;
+      expect(typeof zapRequestJson).toBe('string');
+      expect(nip57.mock.calls[0]?.[1]).toBe(zapRequestJson);
+      expect(Object.keys(JSON.parse(zapRequestJson ?? ''))).toEqual([
+        'id',
+        'pubkey',
+        'created_at',
+        'kind',
+        'tags',
+        'content',
+        'sig',
+      ]);
       const again = await app.request(`/messages/${CREDIT}/repayment`, {
         method: 'POST',
         headers: { authorization: 'Bearer acc' },
@@ -213,6 +227,7 @@ describe('credit repayment', () => {
       expect(await messages.listInvoiceAttempts(5)).toHaveLength(1);
     } finally {
       nip57.mockRestore();
+      requestSpy.mockRestore();
     }
   });
 

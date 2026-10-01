@@ -1748,9 +1748,11 @@ Link or replace the receiver Lightning Address. After the LUD-16 shape check,
 the api live-resolves the well-known LNURL-pay metadata and requires zap
 support (`allowsNostr === true` and a non-empty `nostrPubkey`). It then runs a
 NIP-57 mint probe (`probeNip57Mint` with the account's custodial key): a
-throwaway kind:9734 is signed, an invoice is requested (never paid), and the
-BOLT11 must be a NIP-57 `description_hash` invoice. Placeholder, unreachable,
-or non-zap addresses are rejected and not stored. Body:
+throwaway kind:9734 is signed and serialised with the NIP-01 field order
+`id, pubkey, created_at, kind, tags, content, sig`; that exact string is the
+LNURL `nostr=` value and the SHA-256 input. An invoice is requested (never
+paid), and the BOLT11 must be a NIP-57 `description_hash` invoice. Placeholder,
+unreachable, or non-zap addresses are rejected and not stored. Body:
 
 ```json
 { "address": "name@domain.tld" }
@@ -2725,10 +2727,11 @@ was stored. Rows are newest-first, capped at **200**. Never includes nsec.
 `no_author`, `no_key`,
 `sign_failed`, `rate_limited`, `bad_body`, `not_found`. `isNip57Invoice` is
 true only when `descriptionHash` equals SHA-256 of the zap-request JSON string
-sent as LNURL `nostr=`. Failure rows have `pr` null and `isNip57Invoice`
-false, except `not_zap` which stores the rejected BOLT11 (`pr` set,
-`isNip57Invoice` false). When `DATABASE_URL` is unset the in-memory store
-starts empty.
+(serialised with NIP-01 field order `id, pubkey, created_at, kind, tags,
+content, sig`) sent as LNURL `nostr=`. Failure rows have `pr` null and
+`isNip57Invoice` false, except `not_zap` which stores the rejected BOLT11
+(`pr` set, `isNip57Invoice` false). When `DATABASE_URL` is unset the in-memory
+store starts empty.
 
 Environment:
 
@@ -4180,7 +4183,10 @@ Invalid `text` → **400** `{ "error": "Text must be 1–8000 characters" }`.
 The api signs a NIP-57 zap request with the
 **payer** key and returns a BOLT11 invoice for the **author** Lightning Address
 **only** when the minted invoice's `description_hash` equals SHA-256 of the
-zap-request JSON (`isNip57Invoice`). A validated kind:9735 receipt credits the
+zap-request JSON (`isNip57Invoice`). That JSON is serialised with the NIP-01
+field order `id, pubkey, created_at, kind, tags, content, sig`, and the exact
+string is both the LNURL `nostr=` value and the SHA-256 input. A validated
+kind:9735 receipt credits the
 paid row (`:id`, which may be a reply). After that increment (never in the same
 SQL CTE), the worker inserts a reply from the payer (`text` from the zap-request
 comment or `""`, `sats` = this zap) only when the paid row is top-level
