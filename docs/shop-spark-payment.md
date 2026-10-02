@@ -67,8 +67,9 @@ that this seed passkey exists: `POST /auth/passkey/seed/begin` issues the
 WebAuthn options, and `POST /auth/passkey/seed/finish` sets `walletRequired`.
 This document does not change either of those.
 
-The Breez SDK is not called yet. Connecting it, and receiving on Spark, are
-part of building this, not part of what already runs.
+The Breez SDK is not called yet. Connecting it is part of building this, not
+part of what already runs. Receiving member-to-member payments on Spark already
+runs: see Free in-app payments in SPEC.
 
 The Spark address is produced on the device from those 12 words. The server
 may learn the address. It must not learn the words. The quote names that
