@@ -411,6 +411,7 @@ describe('credit repayment', () => {
       headers: { authorization: 'Bearer acc-nokey' },
     });
     expect(noKey.status).toBe(400);
+    expect(await noKey.json()).toEqual({ error: 'A giver has no Lightning address' });
   });
 
   it('is unavailable without a signing key', async () => {
@@ -447,6 +448,10 @@ describe('credit repayment', () => {
     });
     spy.mockRestore();
     expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({
+      error: "The recipient's wallet cannot receive this Bitcoin payment",
+      code: 'cannot_receive',
+    });
   });
 
   it('reports an unreachable wallet and a non-zap invoice', async () => {
@@ -462,12 +467,17 @@ describe('credit repayment', () => {
     });
     down.mockRestore();
     expect(downRes.status).toBe(400);
+    expect(await downRes.json()).toEqual({ error: 'Could not start the Bitcoin payment' });
     const plain = await readyCredit({ authorId: 'acc-plain' });
     const plainRes = await plain.app.request(`/messages/${CREDIT}/repayment`, {
       method: 'POST',
       headers: { authorization: 'Bearer acc-plain' },
     });
     expect(plainRes.status).toBe(400);
+    expect(await plainRes.json()).toEqual({
+      error: "The recipient's wallet cannot receive this Bitcoin payment",
+      code: 'cannot_receive',
+    });
   });
 
   it('does not hand out an invoice when recording the attempt throws', async () => {

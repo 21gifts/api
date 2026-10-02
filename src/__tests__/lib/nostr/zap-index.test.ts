@@ -4911,6 +4911,8 @@ describe('indexOpenZapReceipts', () => {
       latestLiveTopLevelMediaId: (
         ...args: Parameters<InMemoryMessageStore['latestLiveTopLevelMediaId']>
       ) => base.latestLiveTopLevelMediaId(...args),
+      accountHasWelcomeGift: (...args: Parameters<InMemoryMessageStore['accountHasWelcomeGift']>) =>
+        base.accountHasWelcomeGift(...args),
       countByAccount: (...args: Parameters<InMemoryMessageStore['countByAccount']>) =>
         base.countByAccount(...args),
       countByPubkey: (...args: Parameters<InMemoryMessageStore['countByPubkey']>) =>
@@ -5169,6 +5171,9 @@ describe('indexOpenZapReceipts', () => {
         latestLiveTopLevelMediaId: (
           ...args: Parameters<InMemoryMessageStore['latestLiveTopLevelMediaId']>
         ) => base.latestLiveTopLevelMediaId(...args),
+        accountHasWelcomeGift: (
+          ...args: Parameters<InMemoryMessageStore['accountHasWelcomeGift']>
+        ) => base.accountHasWelcomeGift(...args),
         countByAccount: (...args: Parameters<InMemoryMessageStore['countByAccount']>) =>
           base.countByAccount(...args),
         countByPubkey: (...args: Parameters<InMemoryMessageStore['countByPubkey']>) =>
@@ -5974,6 +5979,9 @@ describe('indexOpenZapReceipts', () => {
         latestLiveTopLevelMediaId: (
           ...args: Parameters<InMemoryMessageStore['latestLiveTopLevelMediaId']>
         ) => base.latestLiveTopLevelMediaId(...args),
+        accountHasWelcomeGift: (
+          ...args: Parameters<InMemoryMessageStore['accountHasWelcomeGift']>
+        ) => base.accountHasWelcomeGift(...args),
         countByAccount: (...args: Parameters<InMemoryMessageStore['countByAccount']>) =>
           base.countByAccount(...args),
         countByPubkey: (...args: Parameters<InMemoryMessageStore['countByPubkey']>) =>

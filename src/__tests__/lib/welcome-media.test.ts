@@ -9,6 +9,8 @@ const JPEG = {
   contentType: 'image/jpeg' as const,
   bytes: new Uint8Array([0xff, 0xd8, 0xff, 0xd9]),
 };
+/** Auth store without a platform account: no welcome gift can be recorded. */
+const NO_PLATFORM = new InMemoryAuthStore();
 const PHOTO_ID = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 const TEXT_ID = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
 
@@ -66,20 +68,11 @@ async function photoStore(id: string = PHOTO_ID): Promise<InMemoryMessageStore> 
 }
 
 describe('syncWelcomePing', () => {
-  it('does nothing when neither an account nor the auth store is passed', async () => {
-    const ping = vi.fn(async () => undefined);
-    await syncWelcomePing({
-      lnurlServer: LNURL_SERVER,
-      spendPing: { ping },
-      messages: new InMemoryMessageStore(),
-    });
-    expect(ping).not.toHaveBeenCalled();
-  });
-
   it('does nothing when the spend ping is omitted', async () => {
     const messages = await photoStore();
     await syncWelcomePing({
       messages,
+      auth: NO_PLATFORM,
       account: account({ id: 'acc', role: 'verified', profileMessageId: PHOTO_ID }),
     });
     await syncWelcomePing({
@@ -98,19 +91,22 @@ describe('syncWelcomePing', () => {
       lnurlServer: LNURL_SERVER,
       spendPing,
       messages,
+      auth: NO_PLATFORM,
       account: { ...verified, sparkPubkeyVerifiedAt: null },
     });
-    await syncWelcomePing({ spendPing, messages, account: verified });
+    await syncWelcomePing({ spendPing, messages, auth: NO_PLATFORM, account: verified });
     await syncWelcomePing({
       lnurlServer: LNURL_SERVER,
       spendPing,
       messages,
+      auth: NO_PLATFORM,
       account: account({ id: 'acc', role: 'basis', profileMessageId: PHOTO_ID }),
     });
     await syncWelcomePing({
       lnurlServer: LNURL_SERVER,
       spendPing,
       messages,
+      auth: NO_PLATFORM,
       account: account({ id: 'acc', role: 'founder', profileMessageId: PHOTO_ID }),
     });
     expect(ping).not.toHaveBeenCalled();
@@ -152,6 +148,7 @@ describe('syncWelcomePing', () => {
       lnurlServer: LNURL_SERVER,
       spendPing: { ping },
       messages,
+      auth: NO_PLATFORM,
       account: account({ id: 'acc', role: 'verified' }),
     });
     expect(ping).toHaveBeenCalledWith('acc@example.test', TEXT_ID, 'welcome');
@@ -192,6 +189,7 @@ describe('syncWelcomePing', () => {
       lnurlServer: LNURL_SERVER,
       spendPing: { ping },
       messages,
+      auth: NO_PLATFORM,
       account: account({ id: 'acc', role: 'verified' }),
     });
     expect(ping).toHaveBeenCalledTimes(1);
@@ -253,36 +251,42 @@ describe('syncWelcomePing', () => {
       lnurlServer: LNURL_SERVER,
       spendPing,
       messages: hidden,
+      auth: NO_PLATFORM,
       account: verified,
     });
     await syncWelcomePing({
       lnurlServer: LNURL_SERVER,
       spendPing,
       messages: reply,
+      auth: NO_PLATFORM,
       account: verified,
     });
     await syncWelcomePing({
       lnurlServer: LNURL_SERVER,
       spendPing,
       messages: foreign,
+      auth: NO_PLATFORM,
       account: verified,
     });
     await syncWelcomePing({
       lnurlServer: LNURL_SERVER,
       spendPing,
       messages: textOnly,
+      auth: NO_PLATFORM,
       account: verified,
     });
     await syncWelcomePing({
       lnurlServer: LNURL_SERVER,
       spendPing,
       messages: new InMemoryMessageStore(),
+      auth: NO_PLATFORM,
       account: account({ id: 'acc', role: 'verified', profileMessageId: '   ' }),
     });
     await syncWelcomePing({
       lnurlServer: LNURL_SERVER,
       spendPing,
       messages: new InMemoryMessageStore(),
+      auth: NO_PLATFORM,
       account: account({ id: 'acc', role: 'verified', profileMessageId: null }),
     });
     expect(ping).not.toHaveBeenCalled();
@@ -299,6 +303,7 @@ describe('syncWelcomePing', () => {
       lnurlServer: LNURL_SERVER,
       spendPing: { ping },
       messages: stills,
+      auth: NO_PLATFORM,
       account: account({ id: 'acc', role: 'verified' }),
     });
     expect(ping).toHaveBeenCalledWith('acc@example.test', PHOTO_ID, 'welcome');
@@ -313,6 +318,7 @@ describe('syncWelcomePing', () => {
       lnurlServer: LNURL_SERVER,
       spendPing: { ping },
       messages: missingCount,
+      auth: NO_PLATFORM,
       account: account({ id: 'acc', role: 'verified', profileMessageId: PHOTO_ID }),
     });
     expect(ping).not.toHaveBeenCalled();
@@ -328,6 +334,7 @@ describe('syncWelcomePing', () => {
       lnurlServer: LNURL_SERVER,
       spendPing: { ping: vi.fn(async () => undefined) },
       messages,
+      auth: NO_PLATFORM,
       account: account({ id: 'acc', role: 'verified' }),
     });
     const ping = vi.fn(async () => {
@@ -337,6 +344,7 @@ describe('syncWelcomePing', () => {
       lnurlServer: LNURL_SERVER,
       spendPing: { ping },
       messages: await photoStore(),
+      auth: NO_PLATFORM,
       account: account({ id: 'acc', role: 'verified', profileMessageId: PHOTO_ID }),
     });
     expect(
@@ -458,5 +466,82 @@ describe('syncWelcomePing', () => {
     expect(
       parsedEvents(warn).filter((event) => event['event'] === 'spend.ping.failed'),
     ).toHaveLength(2);
+  });
+  it('does not ping an account that already received the welcome gift', async () => {
+    const ping = vi.fn(async () => undefined);
+    const auth = new InMemoryAuthStore();
+    await auth.createAccount(account({ id: 'acc', role: 'verified', profileMessageId: PHOTO_ID }));
+    await auth.createAccount(
+      account({
+        id: 'plat',
+        role: 'basis',
+        isPlatform: true,
+        sparkPubkeyVerifiedAt: null,
+        viewKey: 'f'.repeat(64),
+      }),
+    );
+    const walletKey = `02${'7'.repeat(64)}`;
+    await auth.claimSparkPubkey('acc', walletKey);
+    await auth.markSparkPubkeyVerified('acc', walletKey, 'acc', 2);
+    const messages = await photoStore();
+    const reply = {
+      accountId: 'plat',
+      name: '21.gifts',
+      createdAt: new Date(3),
+      hasPhoto: false,
+      hasVideo: false,
+      videoContentType: null,
+      ...unsignedNostrDefaults(),
+      parentId: PHOTO_ID,
+    };
+    await messages.create({ ...reply, id: 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee', text: 'daily' });
+    const verified = account({ id: 'acc', role: 'verified', profileMessageId: PHOTO_ID });
+    await syncWelcomePing({
+      lnurlServer: LNURL_SERVER,
+      spendPing: { ping },
+      messages,
+      auth,
+      account: verified,
+    });
+    expect(ping).toHaveBeenCalledTimes(1);
+
+    await messages.create({
+      ...reply,
+      id: 'ffffffff-ffff-4fff-8fff-ffffffffffff',
+      text: ' Welcome ',
+    });
+    await messages.markDeleted('ffffffff-ffff-4fff-8fff-ffffffffffff', new Date(4), 'plat');
+    ping.mockClear();
+    await syncWelcomePing({
+      lnurlServer: LNURL_SERVER,
+      spendPing: { ping },
+      messages,
+      auth,
+      account: verified,
+    });
+    await syncWelcomePing({ lnurlServer: LNURL_SERVER, spendPing: { ping }, messages, auth });
+    expect(ping).not.toHaveBeenCalled();
+    expect(
+      parsedEvents(warn).filter(
+        (event) => event['event'] === 'spend.ping.skipped' && event['reason'] === 'welcomed',
+      ),
+    ).toHaveLength(2);
+  });
+
+  it('logs and does not ping when the platform lookup throws for one account', async () => {
+    const ping = vi.fn(async () => undefined);
+    const auth = new InMemoryAuthStore();
+    vi.spyOn(auth, 'listAccounts').mockRejectedValue(new Error('list boom'));
+    await syncWelcomePing({
+      lnurlServer: LNURL_SERVER,
+      spendPing: { ping },
+      messages: await photoStore(),
+      auth,
+      account: account({ id: 'acc', role: 'verified', profileMessageId: PHOTO_ID }),
+    });
+    expect(ping).not.toHaveBeenCalled();
+    expect(
+      parsedEvents(warn).filter((event) => event['event'] === 'spend.ping.failed'),
+    ).toHaveLength(1);
   });
 });

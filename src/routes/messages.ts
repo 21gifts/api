@@ -1042,6 +1042,7 @@ async function persistForumPost(
       await syncWelcomePing({
         spendPing: deps.spendPing,
         messages: deps.store,
+        auth: deps.authStore,
         account,
         lnurlServer,
       });

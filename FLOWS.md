@@ -215,7 +215,8 @@ is funding-eligible today and the new row has media (`hasPhoto` /
 `not_eligible` or `no_media` and still 200; when `role === 'verified'` and any live top-level photo or video exists, including About me, the api also pings `{ address, messageId, kind: "welcome" }`
 for the newest live top-level photo or video, including an About-me note,
 independent of `eligibleToday` (the new row itself need not have media;
-Spend pays once per address; this API may ping again; becoming
+the welcome gift is once per account: an account that already has a
+platform `Welcome` reply under one of its notes is not pinged again; becoming
 verified and saving About me while verified also welcome-ping; boot and a
 15-minute timer welcome-ping every verified account that already has a photo or video post;
 replies and any role other than `verified` do not welcome-ping); replies and media replay do

@@ -236,6 +236,7 @@ function throwingStore(overrides: Partial<MessageStore> = {}): MessageStore {
     accountHasLiveTopLevelPost: boom,
     accountHasLiveTopLevelMediaPost: boom,
     latestLiveTopLevelMediaId: boom,
+    accountHasWelcomeGift: boom,
     countByAccount: boom,
     countByPubkey: boom,
     countAttributedReplies: boom,
@@ -3604,6 +3605,8 @@ describe('POST /messages', () => {
       accountHasLiveTopLevelMediaPost: (accountId, excludeId) =>
         base.accountHasLiveTopLevelMediaPost(accountId, excludeId),
       latestLiveTopLevelMediaId: (accountId) => base.latestLiveTopLevelMediaId(accountId),
+      accountHasWelcomeGift: (accountId, platformAccountId) =>
+        base.accountHasWelcomeGift(accountId, platformAccountId),
       countByAccount: (accountId) => base.countByAccount(accountId),
       countByPubkey: (pubkey) => base.countByPubkey(pubkey),
       countAttributedReplies: (parentId) => base.countAttributedReplies(parentId),
@@ -3732,6 +3735,8 @@ describe('POST /messages', () => {
       accountHasLiveTopLevelMediaPost: (accountId, excludeId) =>
         base.accountHasLiveTopLevelMediaPost(accountId, excludeId),
       latestLiveTopLevelMediaId: (accountId) => base.latestLiveTopLevelMediaId(accountId),
+      accountHasWelcomeGift: (accountId, platformAccountId) =>
+        base.accountHasWelcomeGift(accountId, platformAccountId),
       countByAccount: (accountId) => base.countByAccount(accountId),
       countByPubkey: (pubkey) => base.countByPubkey(pubkey),
       countAttributedReplies: (parentId) => base.countAttributedReplies(parentId),
@@ -5396,6 +5401,8 @@ describe('POST /messages/:id/invoice', () => {
       accountHasLiveTopLevelMediaPost: (accountId, excludeId) =>
         base.accountHasLiveTopLevelMediaPost(accountId, excludeId),
       latestLiveTopLevelMediaId: (accountId) => base.latestLiveTopLevelMediaId(accountId),
+      accountHasWelcomeGift: (accountId, platformAccountId) =>
+        base.accountHasWelcomeGift(accountId, platformAccountId),
       countByAccount: (accountId) => base.countByAccount(accountId),
       countByPubkey: (pubkey) => base.countByPubkey(pubkey),
       countAttributedReplies: (parentId) => base.countAttributedReplies(parentId),

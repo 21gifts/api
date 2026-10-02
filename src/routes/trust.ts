@@ -65,6 +65,7 @@ async function welcomeVerified(deps: TrustRouteDeps, account: Account): Promise<
   await syncWelcomePing({
     ...(deps.spendPing === undefined ? {} : { spendPing: deps.spendPing }),
     messages: deps.messages,
+    auth: deps.authStore,
     account,
     ...(deps.lnurlServer === undefined ? {} : { lnurlServer: deps.lnurlServer }),
   });
