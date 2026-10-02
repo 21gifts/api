@@ -11175,8 +11175,6 @@ describe('shop OCP place hook', () => {
       role: 'basis',
       name: SHOP_ACCOUNT.name,
       username: SHOP_ACCOUNT.username,
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'c'.repeat(64),
