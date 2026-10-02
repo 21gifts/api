@@ -3988,7 +3988,10 @@ column is true (omitted when null; never false). May include `goalTermDays`
 when the stored column is not null (omitted when null). May include `accountId` (21gifts author id) and `mentions`
 (`{ accountId, username }[]`, only when that list is non-empty). A stored
 self mark does not notify the author. Other marks fan out one
-`forum_mention` per person. No
+`forum_mention` per person. That is the only in-app row and the only Web
+Push for that note for that person (`forum_post` / `forum_reply` exclude
+them). `GET /notifications` drops and deletes a stored generic row when
+the scan also has `forum_mention` for the same `replyId`. No
 `replyCount`, and no photo or video bytes in the JSON. `sats` is 0 and
 `payable` is false until the worker signs the note (and stays false without
 author LN). `role` is the posting session account's live `account.role`. Web Push and in-app rows for a **top-level** note (`notifyForumPost`, kind
@@ -5220,16 +5223,25 @@ Bearer session required. Lists the recipient's notifications newest-first
 plus `unreadCount`. Fan-out already applied the owner's
 `notificationLevel` when the row was written; this list applies the same
 `notificationLevel` filter to stored rows (`notificationsMatchingLevel`
-on the newest 1000). After the level filter, drop `forum_post` /
+on the newest 1000). From those scanned rows (this recipient only), if a
+`forum_mention` has `replyId` R, drop every `forum_post` and
+`forum_reply` in that scan with the same `replyId` before the level
+filter and the hidden-message filter. Do not drop `zap`, `forum_mention`,
+`moderator_appointed`, or `moderator_proposal`. Best-effort
+`deleteForRecipient` of those dropped ids (`notifications.duplicate.purged`;
+a throw logs `notifications.duplicate.purge_failed` and still returns 200
+with the filtered list). After the level filter, drop `forum_post` /
 `forum_reply` / `forum_mention` whose parent message is missing or hidden; also drop
 `forum_reply` when the child (`replyId`) is missing or hidden. Never drop
 `moderator_appointed` or `moderator_proposal` (do not look up a forum
 message; do not add the parent id to the purge set). Zap only checks the
 parent (`replyId` is a receipt-derived UUID, not a message id).
 Best-effort purge of those message ids. Then cap the kept list at **200**.
-`unreadCount` is unread among kept rows after the hidden filter (not the
-unfiltered matching unread of the 1000, and not necessarily the page
-length). Member JSON never includes recipient or actor account ids. Each
+`unreadCount` is unread among kept rows after this drop and the existing
+hidden filter, before the 200 cap (not the unfiltered matching unread of
+the 1000, and not necessarily the page length). A generic row whose
+matching mention is outside the 1000-row scan stays. Member JSON never
+includes recipient or actor account ids. Each
 item `type` is `"forum_post"`, `"forum_reply"`, `"forum_mention"`, `"zap"`,
 `"moderator_appointed"`, or `"moderator_proposal"`.
 

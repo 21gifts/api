@@ -2447,6 +2447,151 @@ describe('POST /messages', () => {
     expect(await notificationStore.listByRecipient('acc', 10)).toEqual([]);
   });
 
+  it('gives a marked account only forum_mention and a subscriber only forum_post', async () => {
+    const authStore = await namedStore('Ada');
+    await authStore.createAccount({
+      id: 'marked',
+      linkingKey: null,
+      role: 'basis',
+      name: 'Marked',
+      username: 'marked',
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      location: null,
+      forumLawsDismissed: false,
+      viewKey: 'c'.repeat(64),
+      createdAt: 1_000_002,
+      rulesAgreedAt: now(),
+    });
+    await authStore.createAccount({
+      id: 'sub',
+      linkingKey: null,
+      role: 'basis',
+      name: 'Sub',
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      location: null,
+      forumLawsDismissed: false,
+      viewKey: 'd'.repeat(64),
+      createdAt: 1_000_003,
+      rulesAgreedAt: now(),
+    });
+    const messageStore = new InMemoryMessageStore();
+    const notificationStore = new InMemoryNotificationStore();
+    const pushStore = new InMemoryPushStore();
+    await pushStore.upsertSubscription({
+      endpoint: 'https://push.example/marked',
+      accountId: 'marked',
+      p256dh: 'p256dh',
+      auth: 'authkey',
+      createdAt: new Date(now()),
+    });
+    await pushStore.upsertSubscription({
+      endpoint: 'https://push.example/sub',
+      accountId: 'sub',
+      p256dh: 'p256dh',
+      auth: 'authkey',
+      createdAt: new Date(now()),
+    });
+    const res = await mount(authStore, messageStore, {
+      notificationStore,
+      pushStore,
+    }).request('/messages', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ text: 'hello @marked' }),
+    });
+    expect(res.status).toBe(200);
+    const created = (await res.json()) as { id: string };
+    const markedRows = await notificationStore.listByRecipient('marked', 10);
+    expect(markedRows.map((row) => row.type)).toEqual(['forum_mention']);
+    const subRows = await notificationStore.listByRecipient('sub', 10);
+    expect(subRows.map((row) => row.type)).toEqual(['forum_post']);
+    expect(await notificationStore.listByRecipient('acc', 10)).toEqual([]);
+    const claimed = await pushStore.claimPending(10, now() + 1, 60_000);
+    expect(claimed).toHaveLength(2);
+    const byAccount = Object.fromEntries(
+      claimed.map((row) => [row.accountId, JSON.parse(row.payload) as { tag: string }]),
+    );
+    expect(byAccount['marked']?.tag).toBe(`forum_mention:${created.id}`);
+    expect(byAccount['sub']?.tag).toBe(`forum_post:${created.id}`);
+  });
+
+  it('gives a marked parent only forum_mention and a subscriber only forum_reply', async () => {
+    const authStore = await staffStore('Ada');
+    await authStore.createAccount({
+      id: 'parent',
+      linkingKey: null,
+      role: 'basis',
+      name: 'Pat',
+      username: 'pat',
+      lightningAddress: 'pat@walletofsatoshi.com',
+      lightningAddressVerified: false,
+      location: null,
+      forumLawsDismissed: false,
+      viewKey: 'b'.repeat(64),
+      createdAt: 1_000_001,
+      rulesAgreedAt: now(),
+    });
+    await authStore.createAccount({
+      id: 'sub',
+      linkingKey: null,
+      role: 'basis',
+      name: 'Sub',
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      location: null,
+      forumLawsDismissed: false,
+      viewKey: 'd'.repeat(64),
+      createdAt: 1_000_003,
+      rulesAgreedAt: now(),
+    });
+    const messageStore = new InMemoryMessageStore();
+    const parentId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+    await messageStore.create({
+      id: parentId,
+      accountId: 'parent',
+      name: 'Pat',
+      text: 'parent',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      hasVideo: false,
+      videoContentType: null,
+      ...unsignedNostrDefaults(),
+    });
+    const notificationStore = new InMemoryNotificationStore();
+    const pushStore = new InMemoryPushStore();
+    await pushStore.upsertSubscription({
+      endpoint: 'https://push.example/parent',
+      accountId: 'parent',
+      p256dh: 'p256dh',
+      auth: 'authkey',
+      createdAt: new Date(now()),
+    });
+    await pushStore.upsertSubscription({
+      endpoint: 'https://push.example/sub',
+      accountId: 'sub',
+      p256dh: 'p256dh',
+      auth: 'authkey',
+      createdAt: new Date(now()),
+    });
+    const res = await mount(authStore, messageStore, {
+      notificationStore,
+      pushStore,
+    }).request('/messages', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ text: '@pat', inReplyTo: parentId }),
+    });
+    expect(res.status).toBe(200);
+    expect((await notificationStore.listByRecipient('parent', 10)).map((row) => row.type)).toEqual([
+      'forum_mention',
+    ]);
+    expect((await notificationStore.listByRecipient('sub', 10)).map((row) => row.type)).toEqual([
+      'forum_reply',
+    ]);
+  });
+
   it('skips a self-replier when they are the only subscriber', async () => {
     const messageStore = new InMemoryMessageStore();
     const parentId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';

@@ -274,8 +274,9 @@ export interface MessagesRouteDeps {
   /**
    * Optional in-app notification store. When present, living-room events
    * fan out via {@link notifyForumPost} / {@link notifyForumReply} to every
-   * account except the actor (no-op when the actor is the official platform
-   * account); Web Push still uses `pushStore` subscriptions.
+   * account except the actor and except mention account ids on the created
+   * row (no-op when the actor is the official platform account); Web Push
+   * still uses `pushStore` subscriptions.
    */
   notificationStore?: NotificationStore;
   /** Optional inbox store; forum/zap payloads include listed unread when set. */
@@ -856,9 +857,10 @@ async function postedShopAccount(
 
 /**
  * Media collapse → burst limiter → create → optional {@link notifyForumPost}
- * (every account except the actor; no-op when the actor is the official
- * platform account) for a top-level note, or {@link notifyForumReply} (same
- * skip) when `parentId` is set. Web Push still uses `pushStore` subscriptions.
+ * (every account except the actor and except mention account ids on the
+ * created row; no-op when the actor is the official platform account) for a
+ * top-level note, or {@link notifyForumReply} (same skip) when `parentId`
+ * is set. Web Push still uses `pushStore` subscriptions.
  * Shared by JSON and multipart after body parse / normalize / decode.
  *
  * @param deps - Store, clock, optional push / spend ping / notification stores.
@@ -979,6 +981,13 @@ async function persistForumPost(
           ? await deps.store.create(row)
           : await deps.store.create(row, photo, video);
     const isReplay = created.id !== id;
+    const excludeAccountIds = [
+      ...new Set(
+        (created.mentions ?? [])
+          .filter((mark) => mark.accountId !== account.id)
+          .map((mark) => mark.accountId),
+      ),
+    ];
     if (!isReplay && parentId === null) {
       try {
         await notifyForumPost({
@@ -995,6 +1004,7 @@ async function persistForumPost(
             : {
                 inboxUnreadCount: inboxUnreadCountFor(deps.conversationStore, deps.authStore),
               }),
+          ...(excludeAccountIds.length === 0 ? {} : { excludeAccountIds }),
         });
       } catch {
         logEvent('push.enqueue.failed');
@@ -1048,6 +1058,7 @@ async function persistForumPost(
             : {
                 inboxUnreadCount: inboxUnreadCountFor(deps.conversationStore, deps.authStore),
               }),
+          ...(excludeAccountIds.length === 0 ? {} : { excludeAccountIds }),
         });
       } catch {
         logEvent('messages.reply.notify.failed');
