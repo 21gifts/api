@@ -481,7 +481,7 @@ LNURL-pay;
 `satsToUsdCents`, `usdCentsToFiatCents`, `parseUsdPerBtc`, and `utcDayFromPaidAt`, which need a non-empty gift list;
 `normalizeSparkPubkey`, `IpRateLimiter`, `callLnurlServer`, `walletPayRequest`,
 `lnurlServerRoutes`, and `accountByReceivingAddress`, which need `LNURL_SERVER_URL` and `PUBLIC_BASE_URL` to resolve;
-`normalizePlace`, `placesMatch`, `parseMultipartCoord`, `loadLatestGoalRateDay`,
+`parseMultipartCoord`, `loadLatestGoalRateDay`,
 `bindGoalRateDay`, `canonicalGoalAmount`, `fiatToSats`, and `satsToFiatAmount`, which
 run only when a member may post; posting needs a verified wallet, which only the LNURL
 server (`LNURL_SERVER_URL`) can confirm, so no member on the default boot can post (their
