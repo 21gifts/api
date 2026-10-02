@@ -286,7 +286,8 @@ Service identity for clients. Does not expose runtime configuration.
 
 ### `GET /.well-known/lnurlp/:username`
 
-Public LUD-16 payRequest for `username@21.gifts`. No auth. Looks up the
+Public LUD-16 payRequest for `<username>@<host of PUBLIC_BASE_URL>` (in
+production `username@21.gifts`). No auth. Looks up the
 stored username via `getAccountByUsername` after `normalizeUsername` on
 the path param. A member receives only on their in-app wallet: when
 `LNURL_SERVER_URL` and `PUBLIC_BASE_URL` resolve and the account has a
