@@ -3109,7 +3109,7 @@
 ## Function: resolveRelayPayRequest
 
 - **Purpose:** Normalises a Lightning Address or bech32 LNURL, checks the URL as input (`https`, a DNS name with two or more labels, no address literal, no `localhost` / `.local` / `.internal` / `.localhost`, no port, no credentials, not the own host, a name that is not only dots), requires every resolved address of the host (and of the callback host) to pass `isPublicIp`, fetches it without redirects within 5 s and 64 KB, and validates the LNURL pay request.
-- **Inputs:** `{ target, fetchImpl, ownHost, timeoutMs?, lookupImpl? }`. `timeoutMs` defaults to 5000; `lookupImpl` defaults to the system resolver (`dns.lookup` with `all`).
+- **Inputs:** `{ target, fetchImpl, ownHost, timeoutMs?, lookupImpl? }`. `timeoutMs` defaults to 5000 and limits each host lookup and each fetch (an answer that comes too late gives 502); `lookupImpl` defaults to the system resolver (`dns.lookup` with `all`).
 - **Returns / side effects:** `{ ok: true, payRequest }` with `target`, `minSendableMsat`, `maxSendableMsat`, `commentAllowed`, `description`, `domain`, or `{ ok: false, status: 400 | 404 | 502, error, reason }`. One outbound GET at most.
 - **Used by:** `POST /lnurl/pay-request`.
 
