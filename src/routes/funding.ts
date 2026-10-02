@@ -1,5 +1,6 @@
 import { Hono } from 'hono';
 import { z } from 'zod';
+import { serializeOwnerAccountWithPosts } from '@/lib/auth/account-json';
 import { resolveSession } from '@/lib/auth/service';
 import type { Account, AuthStore } from '@/lib/auth/store';
 import {
@@ -42,6 +43,11 @@ export interface FundingRouteDeps {
   spendPing?: SpendPing;
   /** Outbound gifts. Daily rows mark a payout day collected. */
   gifts: GiftStore;
+  /**
+   * When omitted or true, new applications are paused and the apply checks
+   * below are not run. Pass false only to exercise the stored apply walk.
+   */
+  applicationsPaused?: boolean;
 }
 
 /** Body schema for staff POSTs that target one account. */
@@ -202,9 +208,11 @@ async function pingTodayMedia(
  * `POST /funding/trial`, `POST /funding/admit`, `POST /funding/reject`,
  * and `GET /funding/payout-days`.
  *
- * `POST /apply` is paused: authenticated `verified` and above receive 403
- * `{ error: 'Applications are paused' }` with no grant write. `basis` is 403
- * Forbidden.
+ * `POST /apply` is paused unless `deps.applicationsPaused` is false.
+ * While paused, authenticated `verified` and above receive 403
+ * `{ error: 'Applications are paused' }` with no grant write. The previous
+ * About-me, photo, location, and grant write stay in the handler and run
+ * only when applications are not paused. `basis` is 403 Forbidden.
  *
  * @param deps - Auth store, funding store, message store, gift store, clock, and optional spend ping.
  * @returns A Hono app with member apply and staff review routes.
@@ -219,8 +227,53 @@ export function fundingRoutes(deps: FundingRouteDeps): Hono {
       if (!roleAtLeast(caller.role, 'verified')) {
         return c.json({ error: 'Forbidden' }, 403);
       }
-      logEvent('funding.apply.paused', { accountId: caller.id });
-      return c.json({ error: 'Applications are paused' }, 403);
+      if (deps.applicationsPaused !== false) {
+        logEvent('funding.apply.paused', { accountId: caller.id });
+        return c.json({ error: 'Applications are paused' }, 403);
+      }
+      const nowMs = deps.now();
+      try {
+        const owner = await serializeOwnerAccountWithPosts(caller, deps.messageStore);
+        if (owner.aboutMe === null) {
+          return c.json({ error: 'About me is required' }, 400);
+        }
+        if (!owner.aboutMeHasPhoto) {
+          return c.json({ error: 'About me photo is required' }, 400);
+        }
+        const location = caller.location;
+        if (location === null || location.trim() === '') {
+          return c.json({ error: 'Location is required' }, 400);
+        }
+        const observed = await loadGrantEffective(deps.fundingStore, caller.id, nowMs);
+        const status = effectiveStatus(observed, nowMs);
+        if (status === 'pending' || status === 'trial' || status === 'admitted') {
+          return c.json({ error: 'Conflict' }, 409);
+        }
+        const grant = await deps.fundingStore.transition(
+          {
+            accountId: caller.id,
+            status: 'pending',
+            appliedAt: nowMs,
+            decidedAt: null,
+            decidedBy: null,
+            trialUtcDate: null,
+            admittedAt: null,
+            note: null,
+          },
+          ['none', 'rejected'],
+        );
+        if (grant === undefined) {
+          return c.json({ error: 'Conflict' }, 409);
+        }
+        logEvent('funding.applied', { accountId: caller.id });
+        return c.json(
+          { funding: serializeOwnerFunding(caller.role, grant, nowMs, null, caller.id) },
+          200,
+        );
+      } catch {
+        logEvent('funding.write.failed');
+        return c.json({ error: 'Funding is unavailable' }, 503);
+      }
     })
     .get('/applications', async (c) => {
       const staff = await requireStaff(deps, c.req.header('authorization'));

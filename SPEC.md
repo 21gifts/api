@@ -1195,9 +1195,11 @@ not fail the POST.
 
 Bearer session. Role `basis` → **403** `{ "error": "Forbidden" }`.
 Every other authenticated role → **403**
-`{ "error": "Applications are paused" }` with no grant write and no
-About me, photo, or location check. Logs `funding.apply.paused`
-`{ accountId }`. Missing session → **401**
+`{ "error": "Applications are paused" }` with no grant write. While paused,
+the About me, photo, and location checks are not run. Those checks and the
+grant write stay in the handler and run only when the route is built with
+`applicationsPaused` set to false. Production omits that flag. Logs
+`funding.apply.paused` `{ accountId }` while paused. Missing session → **401**
 `{ "error": "Unauthorized" }`.
 
 ### `GET /funding/applications`
