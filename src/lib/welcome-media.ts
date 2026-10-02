@@ -75,7 +75,7 @@ async function welcomeRecords(
  * to.
  *
  * @param args - Spend ping, forum store, account, platform account id, the
- *   recorded welcome handles, and LNURL server config.
+ *   recorded welcome gifts (handle and payment time), and LNURL server config.
  */
 async function pingOne(args: {
   spendPing: SpendPing;

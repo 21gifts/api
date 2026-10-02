@@ -294,9 +294,9 @@ export interface MessagesRouteDeps {
    */
   fundingStore?: FundingStore;
   /**
-   * Outbound house gifts. A recorded `welcome` gift under the author's
-   * username stops a second welcome ping. Omitted → only the platform
-   * `Welcome` reply counts.
+   * Outbound house gifts. A `welcome` gift recorded under the author's
+   * username at or after the wallet verification stops a second welcome ping.
+   * Omitted → only the platform `Welcome` reply counts.
    */
   giftStore?: Pick<GiftStore, 'listOutbound'>;
   /**
