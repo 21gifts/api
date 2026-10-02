@@ -475,8 +475,7 @@ LNURL-pay;
 `satsToUsdCents`, `usdCentsToFiatCents`, `parseUsdPerBtc`, and `utcDayFromPaidAt`, which need a non-empty gift list;
 `normalizeSparkPubkey`, `IpRateLimiter`, `callLnurlServer`, `walletPayRequest`, and
 `lnurlServerRoutes`, which need `LNURL_SERVER_URL` and `PUBLIC_BASE_URL` to resolve;
-`receivingAddress` and `lnurlServerFetch` past the account lookup, which need an existing account
-(and, on the invoice routes, a session); `issueSparkInvoice`, which needs an account and a session;
+`issueSparkInvoice`, which runs only after a reachable LNURL server mints a NIP-57 invoice;
 `migrateSparkInvoiceSchema` and `PostgresSparkInvoiceStore`, which need `DATABASE_URL`;
 `concatBytes`, `protoVarintField`, `protoBytesField`, `decodeProto`, `encodeSparkInvoice`, `uuidV7`,
 `InMemorySparkInvoiceStore`, `encodeQuerySparkInvoicesRequest`, `parseQuerySparkInvoicesResponse`,

@@ -1346,6 +1346,7 @@ async function ingestOneReceipt(
       address: address.trim().toLowerCase(),
       fetchImpl: lnurlServerFetch(args.lnurlServer, args.fetchImpl, args.auth),
       nowMs: args.now(),
+      lnurlServerHost: args.lnurlServer?.host,
     });
     if (providerPubkey === null) {
       logEvent('nostr.zap.rejected', { reason: 'provider' });
@@ -1616,6 +1617,7 @@ async function ingestOneReceipt(
     address: address.trim().toLowerCase(),
     fetchImpl: lnurlServerFetch(args.lnurlServer, args.fetchImpl, args.auth),
     nowMs: args.now(),
+    lnurlServerHost: args.lnurlServer?.host,
   });
   if (providerPubkey === null) {
     logEvent('nostr.zap.rejected', { reason: 'provider' });
@@ -1806,6 +1808,7 @@ async function settleRepaymentReceipt(
           address,
           fetchImpl: lnurlServerFetch(args.lnurlServer, args.fetchImpl, args.auth),
           nowMs: args.now(),
+          lnurlServerHost: args.lnurlServer?.host,
         });
   if (giverProvider === null || event.pubkey.toLowerCase() !== giverProvider) {
     logEvent('nostr.zap.rejected', { reason: 'pubkey' });
@@ -1868,15 +1871,22 @@ async function settleRepaymentReceipt(
 /**
  * Resolve LNURL `nostrPubkey` with a module-local TTL cache (success and miss).
  *
- * @param args - Normalised address, fetch, clock.
+ * An address on the LNURL server host is not cached: whether it resolves
+ * through the LNURL server or over the public URL follows the username's
+ * current wallet verification, so a cached key could be stale.
+ *
+ * @param args - Normalised address, fetch, clock, and the LNURL server host when configured.
  * @returns Provider pubkey, or `null` when unresolved / not zap-capable.
  */
 async function resolveProviderPubkey(args: {
   address: string;
   fetchImpl: FetchFn;
   nowMs: number;
+  lnurlServerHost: string | undefined;
 }): Promise<string | null> {
-  const cached = providerPubkeyCache.get(args.address);
+  const cacheable =
+    args.lnurlServerHost === undefined || !args.address.endsWith(`@${args.lnurlServerHost}`);
+  const cached = cacheable ? providerPubkeyCache.get(args.address) : undefined;
   if (cached !== undefined && cached.expiresAt > args.nowMs) {
     return cached.nostrPubkey;
   }
@@ -1894,10 +1904,12 @@ async function resolveProviderPubkey(args: {
   ) {
     nostrPubkey = resolved.metadata.nostrPubkey.toLowerCase();
   }
-  providerPubkeyCache.set(args.address, {
-    nostrPubkey,
-    expiresAt: args.nowMs + LN_ADDRESS_CACHE_TTL_MS,
-  });
+  if (cacheable) {
+    providerPubkeyCache.set(args.address, {
+      nostrPubkey,
+      expiresAt: args.nowMs + LN_ADDRESS_CACHE_TTL_MS,
+    });
+  }
   return nostrPubkey;
 }
 

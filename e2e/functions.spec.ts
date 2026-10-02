@@ -30,6 +30,24 @@ async function memberSession(
   return { authorization: `Bearer ${token}`, id: row?.id ?? '' };
 }
 
+/** Provision a member whose linked address is on an unreachable domain; returns its username. */
+async function unreachableMember(request: APIRequestContext): Promise<string> {
+  const stamp = `${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
+  const name = `E2eFnPay${stamp.slice(-8)}`;
+  const provision = await request.post('/debug/accounts', {
+    headers: DEBUG,
+    data: { accounts: [{ name, lightningAddress: `e2e-fn-pay-${stamp}@unreachable.invalid` }] },
+  });
+  expect(provision.status()).toBe(200);
+  const listed = await request.get('/debug/accounts', { headers: DEBUG });
+  const accounts = (
+    (await listed.json()) as { accounts: Array<{ name: string; username: string | null }> }
+  ).accounts;
+  const username = accounts.find((item) => item.name === name)?.username ?? null;
+  expect(username).not.toBeNull();
+  return username ?? '';
+}
+
 async function passkeyBegin(request: APIRequestContext): Promise<{ challengeId: string }> {
   const res = await request.post('/auth/passkey/register/begin');
   expect(res.status()).toBe(200);
@@ -1949,13 +1967,20 @@ test('Function: buildZapRequest — default boot has no DATABASE_URL', async ({ 
 test('Function: serializeZapRequest — default boot has no DATABASE_URL', async ({ request }) => {
   expect((await request.get('/healthz')).status()).toBe(200);
 });
-test('Function: receivingAddress — GET /pay/:username is 404 when unknown', async ({ request }) => {
-  expect((await request.get('/pay/:username')).status()).toBe(404);
-});
-test('Function: lnurlServerFetch — GET /pay/:username is 404 when LNURL server is off', async ({
+test('Function: receivingAddress — GET /pay/:username resolves the linked address of a member', async ({
   request,
 }) => {
-  expect((await request.get('/pay/:username')).status()).toBe(404);
+  const username = await unreachableMember(request);
+  expect((await request.get(`/pay/${username}`)).status()).toBe(502);
+  expect((await request.get('/pay/nobody-e2e-unknown')).status()).toBe(404);
+});
+test('Function: lnurlServerFetch — GET /pay/:username fetches an external address over the plain fetch', async ({
+  request,
+}) => {
+  const username = await unreachableMember(request);
+  const res = await request.get(`/pay/${username}`);
+  expect(res.status()).toBe(502);
+  expect(await res.json()).toEqual({ error: 'Lightning Address could not be resolved' });
 });
 test('Function: issueSparkInvoice — POST /messages/:id/invoice without bearer is 401', async ({
   request,
