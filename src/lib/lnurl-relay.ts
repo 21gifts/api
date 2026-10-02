@@ -281,10 +281,15 @@ function parseRelayTarget(
   if (raw.length > LNURL_RELAY_TARGET_MAX_LENGTH) {
     return null;
   }
-  let text = raw.trim().toLowerCase();
-  if (text.startsWith('lightning:')) {
+  let text = raw.trim();
+  if (text.toLowerCase().startsWith('lightning:')) {
     text = text.slice('lightning:'.length);
   }
+  // bech32 is all lower case or all upper case, never mixed.
+  if (!text.includes('@') && text !== text.toLowerCase() && text !== text.toUpperCase()) {
+    return null;
+  }
+  text = text.toLowerCase();
   if (text.includes('@')) {
     const address = normalizeLightningAddress(text);
     if (address === null) {
