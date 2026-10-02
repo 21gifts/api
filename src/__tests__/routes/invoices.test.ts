@@ -13,6 +13,7 @@ import { invoiceRoutes } from '@/routes/invoices';
 import { createApp as createAppRaw } from '@/server';
 import { FUNDING_REQUIRED_FROM_UTC, type FundingGrant } from '@/lib/funding';
 import { InMemoryFundingStore } from '@/lib/funding-store';
+import { InMemoryGiftStore } from '@/lib/gift-store';
 import type { GiftRecord } from '@/lib/gift-recorder';
 import { InMemoryFiatStore } from '@/lib/usd-fiat-store';
 import { decodeBolt11 } from '@/lib/bolt11';
@@ -809,6 +810,41 @@ describe('GET /invoices/posted', () => {
       spendApiToken: TOKEN,
       authStore,
       messageStore,
+    }).request(`/invoices/posted?address=${encodeURIComponent(ADDRESS)}`, auth());
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({
+      hasPosted: true,
+      messageId: 'post-alice',
+      postedAt: '2026-08-01T00:00:00.000Z',
+      hasMedia: true,
+      welcomeHasMedia: false,
+      welcomeMessageId: null,
+    });
+  });
+  it('reports no welcome media when a welcome gift is recorded under the username', async () => {
+    const authStore = new InMemoryAuthStore();
+    await authStore.createAccount({
+      id: 'acc-alice',
+      username: 'alice',
+      walletRequired: true,
+      linkingKey: null,
+      role: 'basis',
+      name: 'Ada',
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: 'a'.repeat(64),
+      createdAt: 1,
+      rulesAgreedAt: null,
+    });
+    await verifyWallet(authStore);
+    const messageStore = await liveMediaPostStore();
+    const res = await createApp({
+      spendApiToken: TOKEN,
+      authStore,
+      messageStore,
+      giftStore: new InMemoryGiftStore([
+        { paidAt: new Date(1), amountSats: 1, recipientWosUser: 'alice', kind: 'welcome' },
+      ]),
     }).request(`/invoices/posted?address=${encodeURIComponent(ADDRESS)}`, auth());
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({
@@ -1837,6 +1873,35 @@ describe('POST /invoices', () => {
     expect(await res.json()).toEqual({ error: 'Platform account is not configured' });
     expect(fetchImpl).not.toHaveBeenCalled();
     expect(putSpy).not.toHaveBeenCalled();
+  });
+
+  it('returns 409 for a welcome invoice when a welcome gift is recorded under the username', async () => {
+    const authStore = new InMemoryAuthStore();
+    await seedPasskeyAccount(authStore);
+    const fetchImpl = vi.fn<FetchFn>(happyFetch());
+    const app = (gifts: InMemoryGiftStore): ReturnType<typeof createAppRaw> =>
+      createApp({
+        spendApiToken: TOKEN,
+        authStore,
+        messageStore: livePostStore(),
+        giftStore: gifts,
+        fetchImpl,
+      });
+    const welcome = JSON.stringify({ address: ADDRESS, amountMsat: 1000, comment: 'Welcome' });
+    const refused = await app(
+      new InMemoryGiftStore([
+        { paidAt: new Date(1), amountSats: 1, recipientWosUser: 'Alice', kind: 'welcome' },
+      ]),
+    ).request('/invoices', auth({ method: 'POST', body: welcome }));
+    expect(refused.status).toBe(409);
+    expect(await refused.json()).toEqual({ error: 'Welcome gift already paid' });
+    expect(fetchImpl).not.toHaveBeenCalled();
+    const first = await app(
+      new InMemoryGiftStore([
+        { paidAt: new Date(1), amountSats: 1, recipientWosUser: 'alice', kind: 'daily' },
+      ]),
+    ).request('/invoices', auth({ method: 'POST', body: welcome }));
+    expect(first.status).toBe(200);
   });
 
   it('returns 200 when messageId is omitted even without a platform account', async () => {
