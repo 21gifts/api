@@ -225,7 +225,8 @@ async function readableCredit(deps: RepaymentDeps, c: Context): Promise<Response
  * BOLT11 that pays the next giver their share, at that giver's receiving address
  * (`receivingAddress`), plus a Spark invoice for it when the giver is wallet-backed.
  *
- * @param deps - Store, auth, clock, and LNURL fetch.
+ * @param deps - Store, auth, clock, LNURL fetch, and the optional LNURL server and
+ *   Spark invoice store.
  * @param c - Request.
  * @returns `{ pr, amountSats, sparkInvoice }`, or an error.
  */

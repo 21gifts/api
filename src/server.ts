@@ -383,7 +383,9 @@ function debugList(store: object, limit: number): Promise<unknown[]> {
  *   `/messages`, `/conversations`, `/invoices`, and `debugPaymentsRoutes`), vapidPublicKey, nostrKek,
  *   nostrPublisher, env (the self-hosted LNURL server routes are mounted only when
  *   `LNURL_SERVER_URL` and `PUBLIC_BASE_URL` resolve through
- *   {@link resolveLnurlServerConfig}; otherwise they are not mounted), WebAuthn RP,
+ *   {@link resolveLnurlServerConfig}; otherwise they are not mounted),
+ *   sparkInvoiceStore (used only when free in-app payments are on; default
+ *   {@link InMemorySparkInvoiceStore}), WebAuthn RP,
  *   spend token, spend ping, daily roster store (optional; default a fresh
  *   {@link InMemoryDailyRosterStore}, shared by funding routes,
  *   `POST /spend/daily-instruction`, and the default spend ping), postLimiter

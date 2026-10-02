@@ -59,7 +59,7 @@ async function authedAccount(
  * Mounted at `/pos` so the public paths are `GET /pos`, `POST /pos`,
  * and `DELETE /pos`.
  *
- * @param deps - Charge store, auth store, clock, and LNURL fetch.
+ * @param deps - Charge store, auth store, clock, LNURL fetch, and optional LNURL server.
  *   Optional `messageStore` and `activity` enable a best-effort map ping
  *   after a successful charge create. GET and DELETE do not ping.
  * @returns A Hono app with `GET /`, `POST /`, and `DELETE /`.
