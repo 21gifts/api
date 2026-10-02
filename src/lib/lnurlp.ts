@@ -3,8 +3,9 @@ import { z } from 'zod';
 /**
  * LUD-16 / LNURL-pay (LUD-06) well-known metadata resolve.
  *
- * Shared by public `GET /lightning-address` and verification's invoice
- * request so the HTTPS well-known fetch is not duplicated.
+ * Shared by public `GET /lightning-address` and the gift, zap, pay, and
+ * point-of-sale invoice requests so the HTTPS well-known fetch is not
+ * duplicated.
  */
 
 /** Abort the LUD-16 metadata fetch after this many milliseconds. */
