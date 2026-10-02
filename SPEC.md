@@ -5755,8 +5755,9 @@ URL; any other `SPARK_OPERATOR_URL` turns the feature off
 (`resolveFreePaymentsConfig`). Off →
 every `sparkInvoice` is `null` and no worker runs.
 
-**Spark invoice.** For a wallet-backed recipient, the three invoice routes
-store and return a Spark invoice next to `pr`: protobuf
+**Spark invoice.** For a wallet-backed recipient, when `pr` is for exactly the
+invoiced amount, the three invoice routes store and return a Spark invoice next
+to `pr` (otherwise `sparkInvoice` is `null`): protobuf
 `SparkAddress { 1: identity_public_key, 2: spark_invoice_fields }` without a
 signature, where `SparkInvoiceFields` is written in the order
 `1: version = 1`, `2: id` (UUIDv7), `5: memo` (`zap:<payment hash of pr>`),
