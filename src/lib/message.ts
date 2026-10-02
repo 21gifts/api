@@ -29,11 +29,13 @@ export const MESSAGE_INBOUND_REPLY_MAX_LENGTH = 8192;
 export const MESSAGE_LIST_LIMIT = 200;
 
 /** Server-side forum feed filter for GET `/messages`. */
-export type ForumFeedMode = 'all' | 'active' | 'unpaid' | 'popular';
+export type ForumFeedMode = 'all' | 'active' | 'unpaid' | 'donations' | 'popular';
 
 /** Opaque keyset cursor JSON before base64url encoding. */
 export type MessageFeedCursorJson =
-  { k: 't'; c: string; i: string } | { k: 's'; s: number; c: string; i: string };
+  | { k: 't'; c: string; i: string }
+  | { k: 's'; s: number; c: string; i: string }
+  | { k: 'g'; d: boolean; g: number; c: string; i: string };
 
 /** Worker publish state for a forum row. */
 export type NostrPublishState = 'pending' | 'published' | 'failed' | 'skipped';
@@ -1092,6 +1094,18 @@ export function decodeMessageFeedCursor(raw: string): MessageFeedCursorJson | nu
     if (rec['k'] === 't') {
       return { k: 't', c: createdAt, i: id };
     }
+    if (rec['k'] === 'g') {
+      const goal = rec['g'];
+      const done = rec['d'];
+      if (
+        typeof goal !== 'number' ||
+        !Number.isSafeInteger(goal) ||
+        goal <= 0 ||
+        typeof done !== 'boolean'
+      )
+        return null;
+      return { k: 'g', d: done, g: goal, c: createdAt, i: id };
+    }
     if (rec['k'] === 's') {
       const sats = rec['s'];
       if (typeof sats !== 'number' || !Number.isFinite(sats)) {
@@ -1103,4 +1117,39 @@ export function decodeMessageFeedCursor(raw: string): MessageFeedCursorJson | nu
   } catch {
     return null;
   }
+}
+
+/**
+ * Whether a forum goal has reached 100%, matching its progress bar.
+ * Fiat goals compare stored payments in their definition currency exactly.
+ * @param row - Goal and collected amounts from the message.
+ * @returns True when the defined funding goal is met; this is not loan repayment status.
+ */
+export function messageGoalComplete(row: MessageRow): boolean {
+  const fields = {
+    USD: 'amountUsd',
+    CHF: 'amountChf',
+    EUR: 'amountEur',
+    PHP: 'amountPhp',
+  } as const;
+  const currency = row.goalCurrency;
+  const goal = row.goalAmount;
+  if (
+    currency !== undefined &&
+    currency !== null &&
+    currency !== 'BTC' &&
+    typeof goal === 'string' &&
+    /^\d+(\.\d{1,8})?$/.test(goal)
+  ) {
+    const amount = row[fields[currency]];
+    if (typeof amount !== 'string' || !/^\d+\.\d{2}$/.test(amount)) return false;
+    const scaled = (value: string): bigint => {
+      const dot = value.indexOf('.');
+      return BigInt(
+        dot === -1 ? value + '00000000' : value.slice(0, dot) + value.slice(dot + 1).padEnd(8, '0'),
+      );
+    };
+    return scaled(goal) > 0n && scaled(amount) >= scaled(goal);
+  }
+  return typeof row.goalSats === 'number' && row.goalSats > 0 && row.sats >= row.goalSats;
 }

@@ -2883,3 +2883,36 @@ test('Function: resolveExternalProfileFields — no direct default-boot HTTP tri
 test('Function: publicExternalAuthorProfile — unknown id is not found', async ({ request }) => {
   expect((await request.get('/messages/not-a-uuid/external-profile')).status()).toBe(404);
 });
+
+test('Function: messageGoalComplete — donation feed filters and paginates funding goals', async ({
+  request,
+}) => {
+  const auth = await verifiedAskSession(request);
+  const tag = 'donation' + Date.now().toString();
+  const ids: string[] = [];
+  for (const amount of ['100', '1000']) {
+    const response = await request.post('/messages', {
+      headers: auth,
+      data: { text: '#' + tag, goalCurrency: 'BTC', goalAmount: amount },
+    });
+    expect(response.status()).toBe(200);
+    ids.push(((await response.json()) as { id: string }).id);
+  }
+  const first = await request.get('/messages?mode=donations&limit=1&hashtag=' + tag, {
+    headers: auth,
+  });
+  expect(first.status()).toBe(200);
+  const body = (await first.json()) as { messages: { id: string }[]; nextCursor: string };
+  expect(body.messages.map((row) => row.id)).toEqual([ids[1]]);
+  const second = await request.get(
+    '/messages?mode=donations&limit=1&hashtag=' +
+      tag +
+      '&cursor=' +
+      encodeURIComponent(body.nextCursor),
+    { headers: auth },
+  );
+  expect(second.status()).toBe(200);
+  expect(
+    ((await second.json()) as { messages: { id: string }[] }).messages.map((row) => row.id),
+  ).toEqual([ids[0]]);
+});

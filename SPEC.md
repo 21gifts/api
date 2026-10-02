@@ -5221,3 +5221,7 @@ exist on the account model; `GET /debug/accounts` and
 - Internationalization of api response text and push payloads (they stay English). A signed-in account may store `locale` and `fiat`; that is not translated copy.
 - Platform custody of **receiver** funds (receiving stays LUD-16 only)
 - Arbitrary LNDHub URLs (the external spend worker uses lightning.space only)
+
+### Donations and loans feed
+
+Signed-in `GET /messages?mode=donations` lists live top-level progress-bar posts (`goal_sats > 0`), including donation and repayable asks. Open funding goals come first, then funded goals; each group sorts by frozen goal sats descending, creation time descending, and id descending. Fiat completion uses payment snapshots in the goal definition currency, not conversion at today's rate. Funding completion is distinct from loan repayment. The goal cursor includes completion, goal sats, timestamp and id so pagination preserves the order. Existing modes and signed-out access remain unchanged.

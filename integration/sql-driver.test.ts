@@ -143,3 +143,91 @@ VALUES ($1, 'verified', false, false, $2)`,
     }
   });
 });
+
+test('donation feed PostgreSQL ordering and cursors match memory, including fiat completion', async () => {
+  const { migrateMessageSchema, PostgresMessageStore, InMemoryMessageStore } =
+    await import('@/lib/message-store');
+  const { unsignedNostrDefaults, messageGoalComplete } = await import('@/lib/message');
+  const { randomUUID } = await import('node:crypto');
+  const { client, sql } = createBunSqlClient(databaseUrl!);
+  const ids: string[] = [];
+  try {
+    await migrateAuthSchema(client);
+    await migrateMessageSchema(client);
+    const postgres = new PostgresMessageStore(client);
+    const memory = new InMemoryMessageStore();
+    const hashtag = 'donations' + Date.now().toString();
+    const fixtures = [
+      { goalSats: 9000, sats: 9000 },
+      { goalSats: 100, sats: 0, goalRepayable: true as const },
+      { goalSats: 1000, sats: 0 },
+      { goalSats: 1000, sats: 0 },
+      {
+        goalSats: 2000,
+        sats: 2000,
+        goalCurrency: 'USD' as const,
+        goalAmount: '10.00000001',
+        amountUsd: '10.00',
+      },
+      {
+        goalSats: 3000,
+        sats: 1,
+        goalCurrency: 'EUR' as const,
+        goalAmount: '10',
+        amountEur: '10.00',
+      },
+      { sats: 0 },
+    ];
+    for (const fixture of fixtures) {
+      const id = randomUUID();
+      ids.push(id);
+      const row = {
+        id,
+        accountId: null,
+        name: 'Donation test',
+        text: '#' + hashtag,
+        createdAt: new Date('2026-09-01T00:00:00.000Z'),
+        hasPhoto: false,
+        ...unsignedNostrDefaults(),
+        ...fixture,
+      };
+      await postgres.create(row);
+      await memory.create(row);
+    }
+    const query = {
+      mode: 'donations' as const,
+      limit: 20,
+      cursor: null,
+      staffAccountIds: new Set<string>(),
+      hashtag,
+    };
+    const expected = await memory.listFeed(query);
+    expect(expected).toHaveLength(6);
+    expect((await postgres.listFeed(query)).map((row) => row.id)).toEqual(
+      expected.map((row) => row.id),
+    );
+    for (let index = 0; index < expected.length; index++) {
+      const row = expected[index]!;
+      const page = await postgres.listFeed({
+        ...query,
+        limit: 2,
+        cursor: {
+          k: 'g',
+          d: messageGoalComplete(row),
+          g: row.goalSats!,
+          c: row.createdAt,
+          i: row.id,
+        },
+      });
+      expect(page.map((item) => item.id)).toEqual(
+        expected.slice(index + 1, index + 3).map((item) => item.id),
+      );
+    }
+  } finally {
+    if (ids.length > 0)
+      await client.execute('DELETE FROM message WHERE id::text = ANY($1::text[])', [
+        postgresTextArrayLiteral(ids),
+      ]);
+    await closeIfPossible(sql);
+  }
+});
