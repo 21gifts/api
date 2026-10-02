@@ -286,6 +286,7 @@ function filterIdsByMatch(
 
 /**
  * Fan out in-app rows and optional Web Push outbox rows except `skipAccountId`.
+ * Generic `forum_post` rows support push dismissal but stay out of member lists.
  * In-app recipients are the union of `auth.listAccounts()` (when `auth` is
  * set) and `push_subscription` account ids. Web Push outbox rows go only to
  * `push_subscription` accounts. When `auth` is set and `match` is set, drop
@@ -417,21 +418,16 @@ export async function fanoutToBellSubscribers(args: {
 }
 
 /**
- * Notify living-room members of a new top-level forum post except the actor.
- * No-op when the actor is the official platform account (`isPlatform === true`
- * via `auth.listAccounts()`). Missing auth, missing id, missing account, or
- * `isPlatform` not true still fans out. Persist a `forum_post` row for every
- * matching account (when `auth` is set) or every bell subscriber (otherwise)
- * when `notifications` is set, and enqueue a `/messages/<id>` Web Push when
- * `pushStore` is set. Matching uses {@link wantsNotification}: `isActive` is
- * `created.sats > 0`, `mentionedAccountId` is null (top-level posts are never
- * personal). A staff or platform actor does not satisfy `mentions`. When
- * `auth` is unset, do not filter by level. Missing `pushStore` still writes
- * in-app rows when `auth` is set. This helper may throw; callers wrap it.
+ * Enqueue Web Push for a new top-level forum post except the actor.
+ * Generic post rows are stored for push dismissal, but excluded from member
+ * lists and unread counts. Explicit mentions
+ * are handled separately by `notifyForumMentions`. Platform actors are skipped.
+ * Existing recipient levels and Web Push payloads are preserved. The optional
+ * notification store supplies the remaining unread count.
  *
  * @param args - Optional stores, actor, persisted post.
- * @returns Resolves after the optional persist and push enqueue (including no-ops).
- * @throws If fan-out `create`, `unreadCount`, or `enqueue` rejects.
+ * @returns Resolves after optional persistence and push enqueue (including no-ops).
+ * @throws If recipient lookup, persistence, unread counts, or enqueue rejects.
  */
 export async function notifyForumPost(args: {
   /** Optional notification persistence. */

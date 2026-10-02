@@ -37,7 +37,7 @@ export interface NotificationStore {
 
   /**
    * Newest notifications first (`createdAt` desc, then `id` desc), capped at
-   * `limit`.
+   * `limit`. Generic `forum_post` rows are excluded before the limit.
    *
    * @param accountId - Recipient account.
    * @param limit - Maximum rows.
@@ -55,7 +55,8 @@ export interface NotificationStore {
   listAll(limit: number): Promise<NotificationRow[]>;
 
   /**
-   * Count of unread rows for the recipient (not limited to a list page).
+   * Count of unread rows for the recipient, excluding generic `forum_post` rows
+   * (not limited to a list page).
    *
    * @param accountId - Recipient account.
    * @returns Unread count (`readAt === null`).
@@ -218,7 +219,7 @@ export class InMemoryNotificationStore implements NotificationStore {
    */
   listByRecipient(accountId: string, limit: number): Promise<NotificationRow[]> {
     const sorted = this.#rows
-      .filter((row) => row.recipientAccountId === accountId)
+      .filter((row) => row.recipientAccountId === accountId && row.type !== 'forum_post')
       .sort((a, b) => {
         const byTime = b.createdAt.getTime() - a.createdAt.getTime();
         if (byTime !== 0) {
@@ -248,8 +249,10 @@ export class InMemoryNotificationStore implements NotificationStore {
    */
   unreadCount(accountId: string): Promise<number> {
     return Promise.resolve(
-      this.#rows.filter((row) => row.recipientAccountId === accountId && row.readAt === null)
-        .length,
+      this.#rows.filter(
+        (row) =>
+          row.recipientAccountId === accountId && row.readAt === null && row.type !== 'forum_post',
+      ).length,
     );
   }
 
@@ -463,7 +466,7 @@ export class PostgresNotificationStore implements NotificationStore {
   async listByRecipient(accountId: string, limit: number): Promise<NotificationRow[]> {
     const rows = await this.#sql.query<NotificationSqlRow>(
       `SELECT ${NOTIFICATION_SELECT} FROM notification
-       WHERE recipient_account_id = $1
+       WHERE recipient_account_id = $1 AND type <> 'forum_post'
        ORDER BY created_at DESC, id DESC
        LIMIT $2`,
       [accountId, limit],
@@ -495,7 +498,7 @@ export class PostgresNotificationStore implements NotificationStore {
    */
   async unreadCount(accountId: string): Promise<number> {
     const rows = await this.#sql.query<{ count: number | string | bigint }>(
-      `SELECT COUNT(*)::bigint AS count FROM notification WHERE recipient_account_id = $1 AND read_at IS NULL`,
+      `SELECT COUNT(*)::bigint AS count FROM notification WHERE recipient_account_id = $1 AND read_at IS NULL AND type <> 'forum_post'`,
       [accountId],
     );
     return mapCount(rows[0]?.count);
