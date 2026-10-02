@@ -36,6 +36,7 @@ import { debugDiagnosticsRoutes } from '@/routes/debug-diagnostics';
 import { diagnosticsRoutes } from '@/routes/diagnostics';
 import { debugDbRoutes } from '@/routes/debug-db';
 import type { DebugDbStore } from '@/lib/debug-db';
+import type { MergeDb } from '@/lib/account-merge';
 import { debugContactsRoutes } from '@/routes/debug-contacts';
 import { debugMessagesRoutes } from '@/routes/debug-messages';
 import { debugExternalRoutes } from '@/routes/debug-external';
@@ -121,6 +122,7 @@ export interface AppDeps {
    * Operator debug token (default: `process.env.DEBUG_TOKEN`). Unset or
    * blank → `GET /debug/accounts`, `POST /debug/accounts`,
    * `PATCH /debug/accounts/:id`, `POST /debug/accounts/:id/session`,
+   * `POST /debug/accounts/merge`,
    * `GET /debug/contacts`, `GET /debug/api-log`, `GET /debug/diagnostics`, `GET /debug/invoices`, `POST /debug/invoices/settle`, `POST /debug/spend-ping`,
    * `GET /debug/zap-ingests`, `GET /debug/messages`,
    * `GET /debug/messages/:id`, `GET /debug/messages/:id/photo`,
@@ -132,6 +134,12 @@ export interface AppDeps {
    * return 503.
    */
   debugToken?: string;
+  /**
+   * Reserved-connection transaction port for `POST /debug/accounts/merge`.
+   * Omitted on a memory boot. A valid body then returns 503. An invalid body
+   * is still 400.
+   */
+  mergeDb?: MergeDb;
   /**
    * Whole-database reader for `GET /debug/db`. Omitted on a memory boot;
    * the route then returns 503 after the debug token matches.
@@ -318,7 +326,8 @@ function debugList(store: object, limit: number): Promise<unknown[]> {
  * `/notifications`, `/debug/dump`, and the rest of the surface.
  *
  * @param deps - Optional overrides for the auth store, clock, invoice payer,
- *   LNURL-pay fetch, LN-Address cache, brand reader, debugToken, gift store,
+ *   LNURL-pay fetch, LN-Address cache, brand reader, debugToken,
+ *   mergeDb, gift store,
  *   gift recorder, BTC-USD rates, USD-fiat rates, message store,
  *   mapPush (optional; default resolveMapPush on env),
  *   translationStore (optional; default InMemoryTranslationStore; SQL boot
@@ -516,6 +525,7 @@ export function createApp(deps: AppDeps = {}): Hono {
       pushStore,
       notificationStore,
       now,
+      ...(deps.mergeDb === undefined ? {} : { mergeDb: deps.mergeDb }),
     }),
   );
   app.route('/debug/contacts', debugContactsRoutes({ store: contactStore, debugToken }));
