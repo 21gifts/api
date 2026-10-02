@@ -3268,7 +3268,7 @@ Returns the Monday local date, ISO week-year label, and next Monday boundary in 
 - **Output:** Hono GET/POST routes.
 - **Failures:** 400 input, 401 session, 403 role, 404 ownership, 409 closed week.
 
-Serves public weekly history and authenticated mutations. Only founder and initiator accounts can manage their own resolutions. Any authenticated account can comment. Only the latest published review week can be edited. It represents the completed previous ISO week and opens Monday 08:00 in Manila. Founder and initiator can soft-delete any comment; signed-in donors can request exact-amount Lightning invoices.
+Serves public weekly history and authenticated mutations. Managing and rating their own resolutions require initiator rank (roleAtLeast initiator; the same rank qualifies), which includes founder because that rank is higher and excludes verified and basis. Any authenticated account can comment. Only the latest published review week can be edited. It represents the completed previous ISO week and opens Monday 08:00 in Manila. Soft-deleting any comment requires initiator rank (roleAtLeast initiator; the same rank qualifies), which includes founder because that rank is higher and excludes verified and basis; signed-in donors can request exact-amount Lightning invoices.
 
 ## Function: InMemoryHabitStore
 
