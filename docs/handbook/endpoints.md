@@ -968,9 +968,9 @@
 
 ## Endpoint: POST /funding/apply
 
-- **Purpose:** Bearer session. Role `basis` → 403. Apply also requires a filled About me (real bio, not empty/name-only), an About me photo, and a non-empty location, checked in that order before the grant 409. Effective `none` or `rejected` upserts `pending` (`appliedAt` now; trial/admitted/decided cleared). `pending` / `trial` / `admitted` → 409. 200 `{ funding: OwnerFundingJson }`. Logs `funding.applied`.
-- **Errors:** 401 `{ error: 'Unauthorized' }`; 403 `{ error: 'Forbidden' }` for `basis`; 400 `{ error: 'About me is required' }`; 400 `{ error: 'About me photo is required' }`; 400 `{ error: 'Location is required' }`; 409 `{ error: 'Conflict' }`; 503 `{ error: 'Funding is unavailable' }` (`funding.write.failed`). 403 `{ error: 'SUNDAY_REST' }` when `Time-Zone` names an IANA zone that is Sunday on the server clock (a missing, blank, or invalid zone does not refuse).
-- **Used by:** App funding apply.
+- **Purpose:** Bearer session. Role `basis` → 403 Forbidden. Every other authenticated role → 403 `{ error: 'Applications are paused' }` with no grant write and no About me, photo, or location check. Logs `funding.apply.paused` `{ accountId }`.
+- **Errors:** 401 `{ error: 'Unauthorized' }`; 403 `{ error: 'Forbidden' }` for `basis`; 403 `{ error: 'Applications are paused' }` for verified and above. 403 `{ error: 'SUNDAY_REST' }` when `Time-Zone` names an IANA zone that is Sunday on the server clock (a missing, blank, or invalid zone does not refuse).
+- **Used by:** The app no longer submits this route. Direct clients still receive the paused error.
 - **Auth:** `Authorization: Bearer` session. Not `basis`.
 
 ## Endpoint: GET /shops/activity

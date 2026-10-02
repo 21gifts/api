@@ -227,6 +227,7 @@ describe('POST /funding/apply', () => {
     const res = await post(mount(authStore, fundingStore), '/funding/apply', undefined);
     expect(res.status).toBe(401);
     expect(await res.json()).toEqual({ error: 'Unauthorized' });
+    expect(parsedEvents(warn).some((e) => e['event'] === 'funding.apply.paused')).toBe(false);
   });
 
   it('returns 403 when the caller is basis', async () => {
@@ -234,113 +235,83 @@ describe('POST /funding/apply', () => {
     const res = await post(mount(authStore, fundingStore), '/funding/apply', 'other');
     expect(res.status).toBe(403);
     expect(await res.json()).toEqual({ error: 'Forbidden' });
+    expect(parsedEvents(warn).some((e) => e['event'] === 'funding.apply.paused')).toBe(false);
   });
 
-  it('returns 200 and pending funding for a verified caller', async () => {
+  it('returns paused 403 when about me, photo, and location are missing', async () => {
     const { authStore, fundingStore } = await staffed();
-    const messageStore = new InMemoryMessageStore();
-    await seedApplyProfile(authStore, messageStore, VERIFIED);
-    const res = await post(
-      mount(authStore, fundingStore, messageStore),
-      '/funding/apply',
-      'verified',
-    );
-    expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({
-      funding: {
-        status: 'pending',
-        trialUtcDate: null,
-        admittedAt: null,
-        reviewedByName: null,
-        dailyPayoutStoppedNotice: false,
-      },
-    });
-    expect(parsedEvents(warn).some((e) => e['event'] === 'funding.applied')).toBe(true);
-  });
-
-  it('returns 400 when about me is missing', async () => {
-    const { authStore, fundingStore } = await staffed();
-    const messageStore = new InMemoryMessageStore();
-    const existing = await authStore.getAccount(VERIFIED);
-    await authStore.updateAccount({ ...existing!, location: 'Zurich' });
-    const app = mount(authStore, fundingStore, messageStore);
-    const missing = await post(app, '/funding/apply', 'verified');
-    expect(missing.status).toBe(400);
-    expect(await missing.json()).toEqual({ error: 'About me is required' });
-    expect(parsedEvents(warn).some((e) => e['event'] === 'funding.write.failed')).toBe(false);
-
-    await seedApplyProfile(authStore, messageStore, VERIFIED, { text: 'Ada' });
-    const nameOnly = await post(app, '/funding/apply', 'verified');
-    expect(nameOnly.status).toBe(400);
-    expect(await nameOnly.json()).toEqual({ error: 'About me is required' });
-    expect(parsedEvents(warn).some((e) => e['event'] === 'funding.write.failed')).toBe(false);
-  });
-
-  it('returns 400 when about me photo is missing', async () => {
-    const { authStore, fundingStore } = await staffed();
-    const messageStore = new InMemoryMessageStore();
-    await seedApplyProfile(authStore, messageStore, VERIFIED, { hasPhoto: false });
-    const res = await post(
-      mount(authStore, fundingStore, messageStore),
-      '/funding/apply',
-      'verified',
-    );
-    expect(res.status).toBe(400);
-    expect(await res.json()).toEqual({ error: 'About me photo is required' });
-    expect(parsedEvents(warn).some((e) => e['event'] === 'funding.write.failed')).toBe(false);
-  });
-
-  it('returns 400 when location is missing', async () => {
-    const { authStore, fundingStore } = await staffed();
-    const messageStore = new InMemoryMessageStore();
-    await seedApplyProfile(authStore, messageStore, VERIFIED, { location: null });
-    const app = mount(authStore, fundingStore, messageStore);
-    const missing = await post(app, '/funding/apply', 'verified');
-    expect(missing.status).toBe(400);
-    expect(await missing.json()).toEqual({ error: 'Location is required' });
-    expect(parsedEvents(warn).some((e) => e['event'] === 'funding.write.failed')).toBe(false);
-
-    const existing = await authStore.getAccount(VERIFIED);
-    await authStore.updateAccount({ ...existing!, location: '   ' });
-    const blank = await post(app, '/funding/apply', 'verified');
-    expect(blank.status).toBe(400);
-    expect(await blank.json()).toEqual({ error: 'Location is required' });
-    expect(parsedEvents(warn).some((e) => e['event'] === 'funding.write.failed')).toBe(false);
-  });
-
-  it('returns 409 when the CAS apply misses after the status check', async () => {
-    const { authStore } = await staffed();
-    const messageStore = new InMemoryMessageStore();
-    await seedApplyProfile(authStore, messageStore, VERIFIED);
-    const store: FundingStore = {
-      getByAccountId: () => Promise.resolve(undefined),
-      listGrants: () => Promise.resolve([]),
-      upsert: () => Promise.resolve(grant({ accountId: VERIFIED, status: 'pending' })),
-      transition: () => Promise.resolve(undefined),
-      expireTrialIfUnchanged: () => Promise.resolve(undefined),
-    };
+    const res = await post(mount(authStore, fundingStore), '/funding/apply', 'verified');
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: 'Applications are paused' });
     expect(
-      (await post(mount(authStore, store, messageStore), '/funding/apply', 'verified')).status,
-    ).toBe(409);
+      parsedEvents(warn).some(
+        (e) => e['event'] === 'funding.apply.paused' && e['accountId'] === VERIFIED,
+      ),
+    ).toBe(true);
+    expect(await fundingStore.getByAccountId(VERIFIED)).toBeUndefined();
   });
 
-  it('returns 409 when already pending, trial, or admitted', async () => {
+  it('returns paused 403 and writes no grant for a verified caller who would previously have been accepted', async () => {
     const { authStore, fundingStore } = await staffed();
     const messageStore = new InMemoryMessageStore();
     await seedApplyProfile(authStore, messageStore, VERIFIED);
-    await seedApplyProfile(authStore, messageStore, MOD);
-    await seedApplyProfile(authStore, messageStore, FOUNDER);
-    const app = mount(authStore, fundingStore, messageStore);
-    expect((await post(app, '/funding/apply', 'verified')).status).toBe(200);
-    expect((await post(app, '/funding/apply', 'verified')).status).toBe(409);
-    expect(await (await post(app, '/funding/apply', 'verified')).json()).toEqual({
-      error: 'Conflict',
-    });
+    const res = await post(
+      mount(authStore, fundingStore, messageStore),
+      '/funding/apply',
+      'verified',
+    );
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: 'Applications are paused' });
+    expect(await fundingStore.getByAccountId(VERIFIED)).toBeUndefined();
+    expect(
+      parsedEvents(warn).some(
+        (e) => e['event'] === 'funding.apply.paused' && e['accountId'] === VERIFIED,
+      ),
+    ).toBe(true);
+    expect(parsedEvents(warn).some((e) => e['event'] === 'funding.applied')).toBe(false);
+  });
+
+  it('returns paused 403 without calling a throwing store', async () => {
+    const { authStore } = await staffed();
+    const getByAccountId = vi.fn(boomStore.getByAccountId);
+    const listGrants = vi.fn(boomStore.listGrants);
+    const upsert = vi.fn(boomStore.upsert);
+    const transition = vi.fn(boomStore.transition);
+    const expireTrialIfUnchanged = vi.fn(boomStore.expireTrialIfUnchanged);
+    const store: FundingStore = {
+      getByAccountId,
+      listGrants,
+      upsert,
+      transition,
+      expireTrialIfUnchanged,
+    };
+    const res = await post(mount(authStore, store), '/funding/apply', 'verified');
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: 'Applications are paused' });
+    expect(getByAccountId).not.toHaveBeenCalled();
+    expect(listGrants).not.toHaveBeenCalled();
+    expect(upsert).not.toHaveBeenCalled();
+    expect(transition).not.toHaveBeenCalled();
+    expect(expireTrialIfUnchanged).not.toHaveBeenCalled();
+    expect(parsedEvents(warn).some((e) => e['event'] === 'funding.write.failed')).toBe(false);
+  });
+
+  it('returns paused 403 when already pending, trial, or admitted', async () => {
+    const { authStore, fundingStore } = await staffed();
+    const app = mount(authStore, fundingStore);
+    await fundingStore.upsert(grant({ accountId: VERIFIED, status: 'pending', appliedAt: now() }));
+    const pending = await post(app, '/funding/apply', 'verified');
+    expect(pending.status).toBe(403);
+    expect(await pending.json()).toEqual({ error: 'Applications are paused' });
+    expect((await fundingStore.getByAccountId(VERIFIED))?.status).toBe('pending');
 
     await fundingStore.upsert(
       grant({ accountId: MOD, status: 'trial', trialUtcDate: TODAY, appliedAt: now() }),
     );
-    expect((await post(app, '/funding/apply', 'mod')).status).toBe(409);
+    const trial = await post(app, '/funding/apply', 'mod');
+    expect(trial.status).toBe(403);
+    expect(await trial.json()).toEqual({ error: 'Applications are paused' });
+    expect((await fundingStore.getByAccountId(MOD))?.status).toBe('trial');
 
     await fundingStore.upsert(
       grant({
@@ -350,43 +321,10 @@ describe('POST /funding/apply', () => {
         appliedAt: now(),
       }),
     );
-    expect((await post(app, '/funding/apply', 'founder')).status).toBe(409);
-  });
-
-  it('returns 200 when re-applying after rejected', async () => {
-    const { authStore, fundingStore } = await staffed();
-    const messageStore = new InMemoryMessageStore();
-    await seedApplyProfile(authStore, messageStore, VERIFIED);
-    await fundingStore.upsert(
-      grant({
-        accountId: VERIFIED,
-        status: 'rejected',
-        decidedAt: 1,
-        decidedBy: FOUNDER,
-        appliedAt: 1,
-      }),
-    );
-    const res = await post(
-      mount(authStore, fundingStore, messageStore),
-      '/funding/apply',
-      'verified',
-    );
-    expect(res.status).toBe(200);
-    expect(((await res.json()) as { funding: { status: string } }).funding.status).toBe('pending');
-    const stored = await fundingStore.getByAccountId(VERIFIED);
-    expect(stored?.appliedAt).toBe(now());
-    expect(stored?.decidedAt).toBeNull();
-    expect(stored?.decidedBy).toBeNull();
-  });
-
-  it('returns 503 when the store throws', async () => {
-    const { authStore } = await staffed();
-    const messageStore = new InMemoryMessageStore();
-    await seedApplyProfile(authStore, messageStore, VERIFIED);
-    const res = await post(mount(authStore, boomStore, messageStore), '/funding/apply', 'verified');
-    expect(res.status).toBe(503);
-    expect(await res.json()).toEqual({ error: 'Funding is unavailable' });
-    expect(parsedEvents(warn).some((e) => e['event'] === 'funding.write.failed')).toBe(true);
+    const admitted = await post(app, '/funding/apply', 'founder');
+    expect(admitted.status).toBe(403);
+    expect(await admitted.json()).toEqual({ error: 'Applications are paused' });
+    expect((await fundingStore.getByAccountId(FOUNDER))?.status).toBe('admitted');
   });
 });
 
