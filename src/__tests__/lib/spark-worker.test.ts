@@ -320,6 +320,32 @@ describe('runSparkInvoiceTick', () => {
     expect(await store.listOpen(new Date(0))).toEqual([]);
   });
 
+  it('logs publish_failed and still settles when no relay accepts the receipt', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const store = new InMemorySparkInvoiceStore();
+    await store.issue(row(1));
+    const d = deps(store, operator(new Map([['spark1inv1', { status: 2 }]])));
+    d.publisher.ok = false;
+    await runSparkInvoiceTick(d);
+    expect(d.publisher.calls).toHaveLength(1);
+    expect(events(warn)).toContainEqual(
+      expect.objectContaining({
+        event: 'spark.receipt.publish_failed',
+        paymentHash: row(1).paymentHash,
+      }),
+    );
+    expect(await store.listOpen(new Date(0))).toEqual([]);
+  });
+
+  it('does not log publish_failed when a relay accepts the receipt', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const store = new InMemorySparkInvoiceStore();
+    await store.issue(row(1));
+    const d = deps(store, operator(new Map([['spark1inv1', { status: 2 }]])));
+    await runSparkInvoiceTick(d);
+    expect(events(warn).some((e) => e['event'] === 'spark.receipt.publish_failed')).toBe(false);
+  });
+
   it('still settles when publishing fails', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     const store = new InMemorySparkInvoiceStore();
