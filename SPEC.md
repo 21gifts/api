@@ -1995,10 +1995,13 @@ verification do not clear the timestamp.
 
 Public LUD-16 metadata resolve for a future guest Donate flow. This route
 returns cached well-known LNURL-pay metadata only; it never fetches a BOLT11
-invoice (`pr`) and never pays. The callback in that metadata is served by the
-api (`/lnurlp/:username/invoice`) and forwarded to the self-hosted LNURL
-server, so the api sees the requested amount and the invoice of a guest
-payment, but it never pays the invoice or holds the funds.
+invoice (`pr`) and never pays. For a member's wallet address
+(`<username>@<host of PUBLIC_BASE_URL>`) the callback in that metadata is
+served by the api (`/lnurlp/:username/invoice`) and forwarded to the
+self-hosted LNURL server, so the api sees the requested amount and the
+invoice of a guest payment, but it never pays the invoice or holds the funds.
+For any other domain the provider's callback is returned unchanged and the
+api is not involved in the payment.
 
 Query parameter:
 
