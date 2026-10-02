@@ -6,7 +6,7 @@ import { habitWeek, type Habit, type HabitResult, type HabitComment } from '@/li
 import { habitTrackerRoutes } from '@/routes/habit-tracker';
 
 async function payload(
-  response: Promise<Response>,
+  response: Response | Promise<Response>,
 ): Promise<{ habits: Habit[]; results: HabitResult[]; comments: HabitComment[] }> {
   return (await (await response).json()) as {
     habits: Habit[];
