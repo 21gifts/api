@@ -6,6 +6,8 @@ import type { FundingGrant } from '@/lib/funding';
 import { migrateFundingSchema, PostgresFundingStore } from '@/lib/funding-store';
 import { migrateMemberHabitSchema, PostgresMemberHabitStore } from '@/lib/member-habit-store';
 import { migrateDbChangeSchema } from '@/lib/db-change';
+import { unsignedNostrDefaults } from '@/lib/message';
+import { migrateMessageSchema, PostgresMessageStore } from '@/lib/message-store';
 import { postgresTextArrayLiteral } from '@/lib/postgres-text-array';
 import { migrateSparkInvoiceSchema, PostgresSparkInvoiceStore } from '@/lib/spark-invoice-store';
 
@@ -556,6 +558,71 @@ describe('PostgresAuthStore stored external address', () => {
         lightning_address: address,
         lightning_address_verified: true,
       });
+    } finally {
+      await closeIfPossible(sql);
+    }
+  });
+});
+
+describe('PostgresMessageStore welcome gift', () => {
+  test('a platform Welcome reply under the account notes counts, live or hidden', async () => {
+    const { client, sql } = createBunSqlClient(databaseUrl);
+    try {
+      await migrateAuthSchema(client);
+      await migrateMessageSchema(client);
+      const auth = new PostgresAuthStore(client);
+      const messages = new PostgresMessageStore(client);
+      const hex64 = (): string =>
+        `${crypto.randomUUID().replaceAll('-', '')}${crypto.randomUUID().replaceAll('-', '')}`;
+      const stamp = `${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
+      const member = crypto.randomUUID();
+      const platform = crypto.randomUUID();
+      for (const [id, name] of [
+        [member, `welcome_m_${stamp}`],
+        [platform, `welcome_p_${stamp}`],
+      ] as const) {
+        await auth.createAccount({
+          id,
+          linkingKey: null,
+          role: 'basis',
+          name,
+          username: name,
+          location: null,
+          forumLawsDismissed: false,
+          viewKey: hex64(),
+          createdAt: Date.now(),
+          rulesAgreedAt: null,
+        });
+      }
+      const note = crypto.randomUUID();
+      const base = {
+        name: 'n',
+        createdAt: new Date(),
+        hasPhoto: false,
+        hasVideo: false,
+        videoContentType: null,
+        ...unsignedNostrDefaults(),
+      };
+      await messages.create({ ...base, id: note, accountId: member, text: 'note' });
+      expect(await messages.accountHasWelcomeGift(member, platform)).toBe(false);
+      await messages.create({
+        ...base,
+        id: crypto.randomUUID(),
+        accountId: platform,
+        parentId: note,
+        text: '21gifts daily',
+      });
+      expect(await messages.accountHasWelcomeGift(member, platform)).toBe(false);
+      const welcome = crypto.randomUUID();
+      await messages.create({
+        ...base,
+        id: welcome,
+        accountId: platform,
+        parentId: note,
+        text: 'Welcome',
+      });
+      await messages.markDeleted(welcome, new Date(), platform);
+      expect(await messages.accountHasWelcomeGift(member, platform)).toBe(true);
     } finally {
       await closeIfPossible(sql);
     }
