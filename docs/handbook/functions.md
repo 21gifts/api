@@ -1925,7 +1925,7 @@
 
 - **Purpose:** Build an RFC 9562 UUIDv7 as 16 bytes: 48-bit Unix milliseconds big-endian, version nibble 7, variant bits `10`, and the remaining bits from the given random bytes. Used as the Spark invoice id.
 - **Inputs:** Clock in epoch milliseconds and 10 random bytes.
-- **Returns / side effects:** 16 bytes. No I/O.
+- **Returns / side effects:** 16 bytes. Throws `RangeError` when `nowMs` is not an integer. No I/O.
 - **Used by:** `issueSparkInvoice`.
 
 ## Function: issueSparkInvoice
@@ -1988,7 +1988,7 @@
 
 - **Purpose:** Build and sign the NIP-57 kind 9735 receipt for a zap invoice paid by a Spark transfer. Tags: `p` (recipient from the zap request), `P` (zap request pubkey), `e` (zapped event, when present), `bolt11` (the zap `pr`), `description` (the exact zap request string the invoice commits to). No `preimage` tag; content is empty. `created_at` is the zap request's `created_at`, so the same zap invoice and signing key always give the same receipt id.
 - **Inputs:** `{ secretKey, bolt11, zapRequestJson }`.
-- **Returns / side effects:** `{ event, relays }` with the deduplicated relays named in the zap request's `relays` tag, or `null` when the zap request is not a kind 9734 object with a pubkey, a non-negative integer `created_at`, and a `p` tag. No I/O.
+- **Returns / side effects:** `{ event, relays }` with the deduplicated relays named in the zap request's `relays` tag, or `null` when the zap request is not a kind 9734 object with a pubkey, a non-negative integer `created_at`, and a `p` tag. Throws when the secret key is not a valid secp256k1 key. No I/O.
 - **Used by:** `runSparkInvoiceTick`.
 
 ## Function: runSparkInvoiceTick

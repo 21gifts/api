@@ -65,6 +65,7 @@ export function encodeSparkInvoice(fields: SparkInvoiceFields): string {
  * @param nowMs - Clock in epoch milliseconds.
  * @param random - 10 random bytes (injected so tests are deterministic).
  * @returns 16 bytes.
+ * @throws RangeError when `nowMs` is not an integer.
  */
 export function uuidV7(nowMs: number, random: Uint8Array): Uint8Array {
   const out = new Uint8Array(16);

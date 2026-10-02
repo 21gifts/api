@@ -66,6 +66,7 @@ export interface BuildZapReceiptArgs {
  * @returns The signed receipt and the relays named in the zap request, or
  *   `null` when the zap request is not a kind 9734 object with a pubkey, a
  *   non-negative integer `created_at`, and a `p` tag.
+ * @throws Error when `secretKey` is not a valid secp256k1 secret key.
  */
 export function buildZapReceipt(
   args: BuildZapReceiptArgs,
