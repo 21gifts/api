@@ -25,7 +25,8 @@ import { bearerToken } from '@/routes/me';
 import { MESSAGE_ID_RE } from '@/routes/messages';
 
 /**
- * Member apply (paused: 403, no write) and staff review for funding-program grants.
+ * Member apply (paused: 403, no write, except joey-rosima, vincent, and
+ * jewel-bacolbas) and staff review for funding-program grants.
  * Bearer session required. Independent of `account.role` except `basis`
  * cannot apply or be granted.
  */
@@ -213,10 +214,14 @@ async function pingTodayMedia(
  * `POST /apply` is paused unless `deps.applicationsPaused` is false.
  * While paused, authenticated `verified` and above receive 403
  * `{ error: 'Applications are paused' }` with no grant write, except
- * `joey-rosima`, `vincent`, and `jewel-bacolbas`, who still run the
- * About-me, photo, location, and grant write. Those checks stay in the
- * handler and also run when applications are not paused. `basis` is 403
- * Forbidden.
+ * `joey-rosima`, `vincent`, and `jewel-bacolbas`. Those three, and every
+ * caller when `applicationsPaused` is false, still run the About-me,
+ * photo, location, and grant write. That walk returns 400
+ * `{ error: 'About me is required' }`, 400
+ * `{ error: 'About me photo is required' }`, 400
+ * `{ error: 'Location is required' }`, 409 `{ error: 'Conflict' }`,
+ * 200 `{ funding }` (log `funding.applied`), or 503
+ * `{ error: 'Funding is unavailable' }`. `basis` is 403 Forbidden.
  *
  * @param deps - Auth store, funding store, message store, gift store, clock, and optional spend ping.
  * @returns A Hono app with member apply and staff review routes.
