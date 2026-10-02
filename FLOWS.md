@@ -147,15 +147,16 @@ It cannot write and cannot mint a session. Do not invent extra paths.
 
 Guest / one-off giving: the donor clicks **Donate** on a receiver and pays
 through browser LNURL-pay (resolve the Lightning Address → invoice → wallet
-pays). The api forwards the wallet's LNURL-pay metadata and invoice callback
-to the self-hosted LNURL server, so it sees the amount and the invoice, but it
-never pays the invoice or holds the funds. This works without an account
+pays). For a member's wallet address the api forwards the LNURL-pay metadata
+and invoice callback to the self-hosted LNURL server, so it sees the amount and
+the invoice, but it never pays the invoice or holds the funds; an address on
+any other domain keeps its provider's callback. This works without an account
 (CONCEPT Donations).
 
 Public `GET /lightning-address` now resolves and caches LUD-16 metadata
 (callback, min/max sendable, optional commentAllowed). There is still no
-Donate button; for this guest path the api only forwards the callback and does
-not pay the gift invoice (spend-worker invoice fetch is §4 / `POST /invoices`).
+Donate button; for this guest path the api at most forwards a member wallet's
+callback and does not pay the gift invoice (spend-worker invoice fetch is §4 / `POST /invoices`).
 
 There is no campaign feed and no Donate button in the app today. Do not invent
 `/feed` or `/campaigns` paths.

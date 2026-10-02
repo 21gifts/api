@@ -357,10 +357,11 @@ non-custodial phase (this table, like the rest of this section, is post-v1).
 - The api resolves and caches LUD-16 metadata server-side, with health checks
 - Donor flow in the browser: click _Donate_ → app reads cached LN-Address from
   api → browser fetches LNURL-pay callback → invoice → pay
-- The wallet's LNURL-pay metadata and invoice callback are served at the api's
-  `PUBLIC_BASE_URL` and forwarded to the self-hosted LNURL server, so the api
-  sees the requested amount and the returned invoice; it never pays the
-  invoice and never holds the funds
+- For a member's wallet address, the LNURL-pay metadata and invoice callback
+  are served at the api's `PUBLIC_BASE_URL` and forwarded to the self-hosted
+  LNURL server, so the api sees the requested amount and the returned invoice;
+  it never pays the invoice and never holds the funds (an address on any other
+  domain keeps its provider's callback, and the api is not involved)
 - **v1 addition** (see "v1 Transitional Model"): recurring gifts are paid by
   an external spend worker via lightning.space LNDHub. This api only fetches
   the invoice and verifies the preimage — it is not in the LNDHub pay path.
