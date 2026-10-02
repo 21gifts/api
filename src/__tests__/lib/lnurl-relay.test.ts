@@ -172,7 +172,11 @@ describe('resolveRelayPayRequest', () => {
     const { fetchImpl, calls } = fakeFetch({
       'https://lnurl.example.org/p/abc?x=1': () => json(PAY_REQUEST),
     });
-    const result = await resolveRelayPayRequest({ target: code.toUpperCase(), fetchImpl, ...DEPS });
+    const result = await resolveRelayPayRequest({
+      target: `LIGHTNING:${code.toUpperCase()}`,
+      fetchImpl,
+      ...DEPS,
+    });
     expect(result.ok && result.payRequest.target).toBe(code);
     expect(result.ok && result.payRequest.domain).toBe('lnurl.example.org');
     expect(calls).toHaveLength(1);
@@ -190,6 +194,10 @@ describe('resolveRelayPayRequest', () => {
     ['single-dot name', '.@example.com'],
     ['bad bech32 checksum', `${lnurl('https://a.example.com/x').slice(0, -1)}q`],
     ['bech32 with a bad character', 'lnurl1bbbbbbbbbbbb'],
+    [
+      'mixed-case bech32',
+      ((code: string): string => `L${code.slice(1)}`)(lnurl('https://a.example.com/x')),
+    ],
     ['bech32 too short', 'lnurl1qqqqq'],
     ['bech32 without separator', 'lnurlqqqqqqqqq'],
     ['other bech32 prefix', lnurl('https://a.example.com/x', 'lnbc')],

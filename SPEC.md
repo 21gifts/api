@@ -594,7 +594,8 @@ is missing, not a safe integer amount, or not the requested amount →
 Bearer session. Fetches the LNURL pay request of a Lightning Address or a
 bech32 LNURL on another host, so the app can pay addresses whose server sends
 no CORS headers. Body `{ "target": "<user@domain>" | "<bech32 LNURL>" }`. An
-optional `lightning:` prefix is dropped and the target is lowercased.
+optional `lightning:` prefix (any case) is dropped and the target is lowercased.
+A bech32 LNURL written in mixed case is refused.
 
 The pay-request URL (`https://<domain>/.well-known/lnurlp/<user>`, or the
 decoded LNURL) must use `https`, have no port other than the default 443 and no user name or
