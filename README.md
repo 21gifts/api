@@ -104,15 +104,16 @@ bun run e2e             # Playwright against bun src/index.ts
 
 ## Documentation
 
-| Doc                                                    | Purpose                                                                                 |
-| ------------------------------------------------------ | --------------------------------------------------------------------------------------- |
-| [`CONCEPT.md`](./CONCEPT.md)                           | Project vision, architecture, principles, decisions                                     |
-| [`SPEC.md`](./SPEC.md)                                 | Implemented HTTP surface (request/response contracts)                                   |
-| [`FLOWS.md`](./FLOWS.md)                               | Core UI journeys (sign-in → profile → donate → recurring → message)                     |
-| [`docs/social-recovery.md`](./docs/social-recovery.md) | Optional securing of the account by choosing two people (concept only, not implemented) |
-| [`docs/handbook/`](./docs/handbook/)                   | Mandatory: every function and HTTP endpoint                                             |
-| [`CONTRIBUTING.md`](./CONTRIBUTING.md)                 | Dev setup, conventions, workflow                                                        |
-| [`SECURITY.md`](./SECURITY.md)                         | Reporting vulnerabilities                                                               |
+| Doc                                                          | Purpose                                                                                                                  |
+| ------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------ |
+| [`CONCEPT.md`](./CONCEPT.md)                                 | Project vision, architecture, principles, decisions                                                                      |
+| [`SPEC.md`](./SPEC.md)                                       | Implemented HTTP surface (request/response contracts)                                                                    |
+| [`FLOWS.md`](./FLOWS.md)                                     | Core UI journeys (sign-in → profile → donate → recurring → message)                                                      |
+| [`docs/social-recovery.md`](./docs/social-recovery.md)       | Optional securing of the account by choosing two people (concept only, not implemented)                                  |
+| [`docs/shop-spark-payment.md`](./docs/shop-spark-payment.md) | Shop QR stays OpenCryptoPay; USDT or USDC pays out as bitcoin on the shop's Spark wallet (concept only, not implemented) |
+| [`docs/handbook/`](./docs/handbook/)                         | Mandatory: every function and HTTP endpoint                                                                              |
+| [`CONTRIBUTING.md`](./CONTRIBUTING.md)                       | Dev setup, conventions, workflow                                                                                         |
+| [`SECURITY.md`](./SECURITY.md)                               | Reporting vulnerabilities                                                                                                |
 
 ## License
 
