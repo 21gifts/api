@@ -62,18 +62,19 @@ only and does not `addSats`; no `notifyForumReply`). Optional `messageId` on
 `POST /invoices`. `GET /invoices/posted` returns `{ hasPosted, messageId, postedAt, hasMedia, welcomeHasMedia, welcomeMessageId }`.
 
 CORS allows the configured origins (`CORS_ALLOWED_ORIGINS`, or the default
-surfaces `https://21.gifts`, `https://dev.21.gifts`, `https://app.21.gifts`,
-`https://dev-app.21.gifts`, and `http://localhost:3000`) and methods `GET`,
+surfaces `https://21.gifts`, `https://dev.21.gifts`, `https://staging.21.gifts`, `https://app.21.gifts`,
+`https://dev-app.21.gifts`, `https://staging-app.21.gifts`, and `http://localhost:3000`) and methods `GET`,
 `POST`, `PUT`, `PATCH`, `DELETE`, `OPTIONS`, with headers `Authorization` and `Content-Type`.
 Sessions are sent as `Authorization: Bearer` headers — no cookies,
 credentials not enabled.
 
 Public base URLs used in examples:
 
-| Environment | API                        | App                    |
-| ----------- | -------------------------- | ---------------------- |
-| PRD         | `https://api.21.gifts`     | `https://21.gifts`     |
-| DEV         | `https://dev-api.21.gifts` | `https://dev.21.gifts` |
+| Environment | API                            | App                        |
+| ----------- | ------------------------------ | -------------------------- |
+| PRD         | `https://api.21.gifts`         | `https://21.gifts`         |
+| DEV         | `https://dev-api.21.gifts`     | `https://dev.21.gifts`     |
+| STAGING     | `https://staging-api.21.gifts` | `https://staging.21.gifts` |
 
 | Method | Path                                                 | Auth                       | Purpose                                                                                                                                                                                                                                                                                                                                                |
 | ------ | ---------------------------------------------------- | -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
@@ -472,7 +473,7 @@ normalised handle; `user.name` and `user.displayName` are that handle.
 `user.id` remains the pending account UUID encoded as UTF-8.
 
 When `WEBAUTHN_RP_ID` is unset, blank, not on the allowlist (`21.gifts` /
-`dev.21.gifts` / `localhost`), or no CORS origin matches that RP ID:
+`dev.21.gifts` / `staging.21.gifts` / `localhost`), or no CORS origin matches that RP ID:
 
 **Response** `500`:
 
