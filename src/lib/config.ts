@@ -245,7 +245,7 @@ export const DEFAULT_SPARK_OPERATOR_URL = 'https://0.spark.lightspark.com';
 export interface FreePaymentsConfig {
   /** 32-byte server secret from `LNURL_ZAP_NSEC_HEX`; root of the per-member receipt keys. */
   zapNsec: Uint8Array;
-  /** Spark coordinator base URL, without a trailing slash. */
+  /** Spark coordinator base URL, with at most one trailing slash removed. */
   operatorUrl: string;
 }
 
