@@ -38,6 +38,7 @@ export const BOLT11_PAYMENT_HASH =
  * @param username - Lower-case username.
  * @param extra - Optional `lightningAddress` and `rulesAgreedAt`.
  * @returns Resolves when the account is created, claimed, and verified.
+ * @throws Error when the wallet key cannot be marked verified.
  */
 export async function createWalletAccount(
   store: AuthStore,
