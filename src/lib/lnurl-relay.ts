@@ -304,7 +304,12 @@ function isRelayAddress(ip: string): boolean {
     return false;
   }
   const lower = ip.trim().toLowerCase();
-  return !lower.includes(':') || /^[23][0-9a-f]{3}:/.test(lower) || lower.startsWith('64:ff9b:');
+  return (
+    !lower.includes(':') ||
+    /^[23][0-9a-f]{3}:/.test(lower) ||
+    /^64:ff9b::(?:[0-9a-f]{1,4}:)?[0-9a-f]{1,4}$/.test(lower) ||
+    /^64:ff9b(?::0{1,4}){4}(?::[0-9a-f]{1,4}){2}$/.test(lower)
+  );
 }
 
 /**
