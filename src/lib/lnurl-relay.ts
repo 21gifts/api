@@ -1,10 +1,3 @@
-import { createHash } from 'node:crypto';
-import { lookup } from 'node:dns/promises';
-import { inspectBolt11 } from '@/lib/bolt11';
-import { normalizeLightningAddress } from '@/lib/lightning-address';
-import type { FetchFn } from '@/lib/lnurlp';
-import { isPublicIp } from '@/lib/public-ip';
-
 /**
  * LNURL-pay relay for addresses on other hosts.
  *
@@ -12,11 +5,19 @@ import { isPublicIp } from '@/lib/public-ip';
  * request or invoice from the browser. The api fetches both on the member's
  * behalf and validates them before returning them. Every outbound URL is
  * checked as input: `https`, a DNS name with at least two labels, no
- * address literal, no `localhost` / `.local` / `.internal`, no port, no
- * credentials, and a name that resolves to public addresses only. Fetches do not follow redirects, stop after
+ * address literal, no `localhost` / `.localhost` / `.local` / `.internal`,
+ * no port, no credentials, and a name that resolves to public addresses
+ * only. Fetches do not follow redirects, stop after
  * {@link LNURL_RELAY_TIMEOUT_MS}, and read at most
  * {@link LNURL_RELAY_BODY_CAP_BYTES}.
  */
+
+import { createHash } from 'node:crypto';
+import { lookup } from 'node:dns/promises';
+import { inspectBolt11 } from '@/lib/bolt11';
+import { normalizeLightningAddress } from '@/lib/lightning-address';
+import type { FetchFn } from '@/lib/lnurlp';
+import { isPublicIp } from '@/lib/public-ip';
 
 /** Abort one outbound LNURL fetch (headers and body) after this many milliseconds. */
 export const LNURL_RELAY_TIMEOUT_MS = 5_000;
@@ -525,13 +526,16 @@ export async function resolveRelayPayRequest(
 export async function requestRelayInvoice(
   args: RelayDeps & { target: string; amountMsat: number; comment?: string },
 ): Promise<{ ok: true; pr: string } | RelayFailure> {
+  // A non-whole amount is refused before any outbound request.
+  if (!Number.isSafeInteger(args.amountMsat)) {
+    return fail(400, AMOUNT_ERROR, 'amount');
+  }
   const loaded = await loadPayRequest(args.target, args);
   if (!loaded.ok) {
     return loaded;
   }
   const { payRequest, callback, metadata } = loaded;
   if (
-    !Number.isSafeInteger(args.amountMsat) ||
     args.amountMsat < payRequest.minSendableMsat ||
     args.amountMsat > payRequest.maxSendableMsat
   ) {
