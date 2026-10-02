@@ -281,6 +281,10 @@ describe('resolveRelayPayRequest', () => {
     ['ff02::1'],
     ['64:ff9b::a00:1'],
     ['::ffff:8.8.8.8'],
+    ['64:ff9b:0:1::1'],
+    ['64:ff9b:2::1'],
+    ['64:ff9b::1:2:3'],
+    ['64:ff9b:0::808:808'],
     ['1::'],
     ['200::1'],
     ['4000::1'],
@@ -313,6 +317,7 @@ describe('resolveRelayPayRequest', () => {
     ['2a00:1450:4001::1'],
     ['3fff:1000::1'],
     ['64:ff9b::808:808'],
+    ['64:ff9b:0:0:0:0:808:808'],
   ])('accepts a target that resolves to %s', async (address) => {
     const { fetchImpl } = payRequestFetch();
     const result = await resolveRelayPayRequest({
