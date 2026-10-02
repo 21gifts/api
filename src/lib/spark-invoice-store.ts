@@ -108,6 +108,13 @@ function copyRow(row: SparkInvoiceRow): SparkInvoiceRow {
 export class InMemorySparkInvoiceStore implements SparkInvoiceStore {
   readonly #rows = new Map<string, SparkInvoiceRow>();
 
+  /**
+   * Store a new invoice, or return the existing one for that payment hash and
+   * move an open row's `createdAt` forward when `row.createdAt` is newer.
+   *
+   * @param row - New invoice.
+   * @returns The stored invoice string for that payment hash.
+   */
   async issue(row: SparkInvoiceIssue): Promise<string> {
     const existing = this.#rows.get(row.paymentHash);
     if (existing !== undefined) {
@@ -123,6 +130,12 @@ export class InMemorySparkInvoiceStore implements SparkInvoiceStore {
     return row.invoice;
   }
 
+  /**
+   * Open rows issued at or after `since`, oldest first.
+   *
+   * @param since - Window start.
+   * @returns Copies of the matching rows.
+   */
   async listOpen(since: Date): Promise<SparkInvoiceRow[]> {
     return [...this.#rows.values()]
       .filter((row) => row.status === 'open' && row.createdAt.getTime() >= since.getTime())
@@ -130,6 +143,14 @@ export class InMemorySparkInvoiceStore implements SparkInvoiceStore {
       .map(copyRow);
   }
 
+  /**
+   * Mark an open row settled with its transfer id and receipt id.
+   *
+   * @param paymentHash - Payment hash of the zap invoice.
+   * @param transferId - Spark transfer id (hex), or `null`.
+   * @param receiptEventId - Id of the zap receipt built for the transfer.
+   * @returns `true` only when this call changed the row from `open`.
+   */
   async markSettled(
     paymentHash: string,
     transferId: string | null,
@@ -185,6 +206,14 @@ export class PostgresSparkInvoiceStore implements SparkInvoiceStore {
     this.#sql = sql;
   }
 
+  /**
+   * Insert a new invoice; on a conflicting payment hash only move an open row's
+   * `created_at` forward. Then read the stored invoice string back.
+   *
+   * @param row - New invoice.
+   * @returns The stored invoice string for that payment hash.
+   * @throws Propagates SQL failures.
+   */
   async issue(row: SparkInvoiceIssue): Promise<string> {
     await this.#sql.execute(
       `INSERT INTO spark_invoice
@@ -211,6 +240,13 @@ WHERE spark_invoice.status = 'open'`,
     return stored[0]?.invoice ?? row.invoice;
   }
 
+  /**
+   * Open rows issued at or after `since`, ordered by `created_at`.
+   *
+   * @param since - Window start.
+   * @returns The matching rows.
+   * @throws Propagates SQL failures.
+   */
   async listOpen(since: Date): Promise<SparkInvoiceRow[]> {
     const rows = await this.#sql.query<SparkInvoiceSqlRow>(
       `SELECT payment_hash, invoice, receiver_pubkey, amount_sats, bolt11, zap_request,
@@ -223,6 +259,16 @@ ORDER BY created_at ASC, payment_hash ASC`,
     return rows.map(mapRow);
   }
 
+  /**
+   * One conditional `UPDATE … WHERE status = 'open'` setting the transfer id
+   * and receipt id.
+   *
+   * @param paymentHash - Payment hash of the zap invoice.
+   * @param transferId - Spark transfer id (hex), or `null`.
+   * @param receiptEventId - Id of the zap receipt built for the transfer.
+   * @returns `true` only when this call changed the row from `open`.
+   * @throws Propagates SQL failures.
+   */
   async markSettled(
     paymentHash: string,
     transferId: string | null,
