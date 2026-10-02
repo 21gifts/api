@@ -148,6 +148,7 @@ describe('mapDailyRosterResponse', () => {
       mapDailyRosterResponse(200, {
         comment: 'x',
         paymentsEnabled: false,
+        defaultAmountUsd: 3,
         recipients: [{ address: 'ada@example.com', amountUsd: Number.NaN }],
       }),
     ).toEqual({ ok: false, status: 502, error: DAILY_ROSTER_UNAVAILABLE });
@@ -157,10 +158,20 @@ describe('mapDailyRosterResponse', () => {
       [],
       { comment: 1, paymentsEnabled: true, recipients: [] },
       { comment: 'x', paymentsEnabled: 'yes', recipients: [] },
-      { comment: 'x', paymentsEnabled: true, recipients: [null] },
-      { comment: 'x', paymentsEnabled: true, recipients: ['ada'] },
-      { comment: 'x', paymentsEnabled: true, recipients: [{ address: 1, amountUsd: 1 }] },
-      { comment: 'x', paymentsEnabled: true, recipients: [{ address: 'a', amountUsd: '1' }] },
+      { comment: 'x', paymentsEnabled: true, defaultAmountUsd: 3, recipients: [null] },
+      { comment: 'x', paymentsEnabled: true, defaultAmountUsd: 3, recipients: ['ada'] },
+      {
+        comment: 'x',
+        paymentsEnabled: true,
+        defaultAmountUsd: 3,
+        recipients: [{ address: 1, amountUsd: 1 }],
+      },
+      {
+        comment: 'x',
+        paymentsEnabled: true,
+        defaultAmountUsd: 3,
+        recipients: [{ address: 'a', amountUsd: '1' }],
+      },
     ]) {
       expect(mapDailyRosterResponse(200, body)).toEqual({
         ok: false,
