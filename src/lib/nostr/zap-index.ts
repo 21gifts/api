@@ -1184,8 +1184,8 @@ async function queryAndIngestZapReceipts(
  *   this store is `indexed`, or `rejected`/`duplicate` (already recorded under
  *   the same receipt id). `false` for any other rejection, or when a step threw;
  *   the `rejected`/`error` ingest row is then persisted when the event has a
- *   non-empty id.
- * @throws Propagates a failure to persist the `error` ingest row.
+ *   non-empty id. A failure to write an ingest row is logged as
+ *   `nostr.zap.ingest.record_failed` and not propagated.
  */
 export async function ingestZapReceipt(
   event: NostrEventFrame,
