@@ -18,6 +18,10 @@ const MOD = '22222222-2222-4222-8222-222222222222';
 const SUBJECT = '33333333-3333-4333-8333-333333333333';
 const OTHER = '44444444-4444-4444-8444-444444444444';
 const VERIFIED = '55555555-5555-4555-8555-555555555555';
+const JOEY = '77777777-7777-4777-8777-777777777777';
+const VINCENT = '88888888-8888-4888-8888-888888888888';
+const JEWEL = '99999999-9999-4999-8999-999999999999';
+const VINCENT_OTHER = '12121212-1212-4121-8121-121212121212';
 const APPLY_JPEG = new Uint8Array([0xff, 0xd8, 0xff, 0xd9]);
 
 function parsedEvents(warn: ReturnType<typeof vi.spyOn>): Array<Record<string, unknown>> {
@@ -249,6 +253,20 @@ describe('POST /funding/apply', () => {
     expect(parsedEvents(warn).some((e) => e['event'] === 'funding.apply.paused')).toBe(false);
   });
 
+  it('returns 403 Forbidden for basis even when the username is joey-rosima', async () => {
+    const { authStore, fundingStore } = await staffed([
+      account({ id: JOEY, role: 'basis', name: 'Joey', username: 'joey-rosima' }),
+    ]);
+    await authStore.createSession({ token: 'joey', accountId: JOEY, createdAt: now() });
+    const messageStore = new InMemoryMessageStore();
+    await seedApplyProfile(authStore, messageStore, JOEY);
+    const res = await post(mount(authStore, fundingStore, messageStore), '/funding/apply', 'joey');
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: 'Forbidden' });
+    expect(parsedEvents(warn).some((e) => e['event'] === 'funding.apply.paused')).toBe(false);
+    expect(await fundingStore.getByAccountId(JOEY)).toBeUndefined();
+  });
+
   it('returns paused 403 when about me, photo, and location are missing', async () => {
     const { authStore, fundingStore } = await staffed();
     const res = await post(mount(authStore, fundingStore), '/funding/apply', 'verified');
@@ -336,6 +354,81 @@ describe('POST /funding/apply', () => {
     expect(admitted.status).toBe(403);
     expect(await admitted.json()).toEqual({ error: 'Applications are paused' });
     expect((await fundingStore.getByAccountId(FOUNDER))?.status).toBe('admitted');
+  });
+
+  it.each([
+    ['joey-rosima', JOEY, 'joey'],
+    ['vincent', VINCENT, 'vincent'],
+    ['jewel-bacolbas', JEWEL, 'jewel'],
+  ] as const)(
+    'returns 200 and pending funding for paused exempt username %s',
+    async (username, id, token) => {
+      const { authStore, fundingStore } = await staffed([
+        account({ id, role: 'verified', name: username, username }),
+      ]);
+      await authStore.createSession({ token, accountId: id, createdAt: now() });
+      const messageStore = new InMemoryMessageStore();
+      await seedApplyProfile(authStore, messageStore, id);
+      const res = await post(mount(authStore, fundingStore, messageStore), '/funding/apply', token);
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({
+        funding: {
+          status: 'pending',
+          trialUtcDate: null,
+          admittedAt: null,
+          reviewedByName: null,
+          dailyPayoutStoppedNotice: false,
+        },
+      });
+      expect(
+        parsedEvents(warn).some((e) => e['event'] === 'funding.applied' && e['accountId'] === id),
+      ).toBe(true);
+      expect(
+        parsedEvents(warn).some(
+          (e) => e['event'] === 'funding.apply.paused' && e['accountId'] === id,
+        ),
+      ).toBe(false);
+    },
+  );
+
+  it('returns 400 when paused exempt joey-rosima has no about me', async () => {
+    const { authStore, fundingStore } = await staffed([
+      account({ id: JOEY, role: 'verified', name: 'Joey', username: 'joey-rosima' }),
+    ]);
+    await authStore.createSession({ token: 'joey', accountId: JOEY, createdAt: now() });
+    const messageStore = new InMemoryMessageStore();
+    const existing = await authStore.getAccount(JOEY);
+    await authStore.updateAccount({ ...existing!, location: 'Zurich' });
+    const res = await post(mount(authStore, fundingStore, messageStore), '/funding/apply', 'joey');
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: 'About me is required' });
+    expect(parsedEvents(warn).some((e) => e['event'] === 'funding.apply.paused')).toBe(false);
+  });
+
+  it('returns paused 403 for username vincent-other with a complete profile', async () => {
+    const { authStore, fundingStore } = await staffed([
+      account({
+        id: VINCENT_OTHER,
+        role: 'verified',
+        name: 'Vincent Other',
+        username: 'vincent-other',
+      }),
+    ]);
+    await authStore.createSession({
+      token: 'vincent-other',
+      accountId: VINCENT_OTHER,
+      createdAt: now(),
+    });
+    const messageStore = new InMemoryMessageStore();
+    await seedApplyProfile(authStore, messageStore, VINCENT_OTHER);
+    const res = await post(
+      mount(authStore, fundingStore, messageStore),
+      '/funding/apply',
+      'vincent-other',
+    );
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: 'Applications are paused' });
+    expect(await fundingStore.getByAccountId(VINCENT_OTHER)).toBeUndefined();
   });
 });
 

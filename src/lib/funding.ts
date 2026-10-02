@@ -101,6 +101,24 @@ export function effectiveStatus(
  */
 export const FUNDING_REQUIRED_FROM_UTC = '2026-10-01';
 
+/** Usernames that may POST /funding/apply while applications are paused. */
+export const APPLICATION_PAUSE_EXEMPT_USERNAMES: readonly string[] = [
+  'joey-rosima',
+  'vincent',
+  'jewel-bacolbas',
+];
+
+/**
+ * Whether this username may apply while applications are paused.
+ * Exact match. Null, omitted, and every other username are not exempt.
+ */
+export function applicationPauseExempt(username: string | null | undefined): boolean {
+  return (
+    typeof username === 'string' &&
+    (APPLICATION_PAUSE_EXEMPT_USERNAMES as readonly string[]).includes(username)
+  );
+}
+
 /**
  * Whether the grant gate is in force on this UTC day.
  *

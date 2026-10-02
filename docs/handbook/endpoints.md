@@ -968,9 +968,9 @@
 
 ## Endpoint: POST /funding/apply
 
-- **Purpose:** Bearer session. Role `basis` → 403 Forbidden. Every other authenticated role → 403 `{ error: 'Applications are paused' }` with no grant write. While paused, the About me, photo, and location checks are not run. Those checks and the grant write stay in the handler and run only when `applicationsPaused` is false. Production omits that flag. Logs `funding.apply.paused` `{ accountId }` while paused.
-- **Errors:** 401 `{ error: 'Unauthorized' }`; 403 `{ error: 'Forbidden' }` for `basis`; 403 `{ error: 'Applications are paused' }` for verified and above while paused; 400 when the switch is off and About me, photo, or location is missing; 409 when the switch is off and the grant is already pending, trial, or admitted. 403 `{ error: 'SUNDAY_REST' }` when `Time-Zone` names an IANA zone that is Sunday on the server clock (a missing, blank, or invalid zone does not refuse).
-- **Used by:** The app does not submit this route while applications are paused. The apply walk submits it only when that switch is off. Direct clients still receive the paused error.
+- **Purpose:** Bearer session. Role `basis` → 403 Forbidden. While applications are paused, usernames `joey-rosima`, `vincent`, and `jewel-bacolbas` still run the About me, photo, location, and grant write and receive the existing 400/409/200 outcomes. Every other verified caller still gets 403 `{ error: 'Applications are paused' }` with no grant write. Those checks and the grant write also run when `applicationsPaused` is false. Production omits that flag. Logs `funding.apply.paused` `{ accountId }` while paused (not for an exempt caller).
+- **Errors:** 401 `{ error: 'Unauthorized' }`; 403 `{ error: 'Forbidden' }` for `basis`; 403 `{ error: 'Applications are paused' }` for verified and above while paused except `joey-rosima`, `vincent`, and `jewel-bacolbas`; 400 when About me, photo, or location is missing (exempt callers while paused, or when the switch is off); 409 when the grant is already pending, trial, or admitted (same). 403 `{ error: 'SUNDAY_REST' }` when `Time-Zone` names an IANA zone that is Sunday on the server clock (a missing, blank, or invalid zone does not refuse).
+- **Used by:** The app does not submit this route while applications are paused except for usernames `joey-rosima`, `vincent`, and `jewel-bacolbas`. Direct clients still receive the paused error unless the username is one of those three.
 - **Auth:** `Authorization: Bearer` session. Not `basis`.
 
 ## Endpoint: GET /shops/activity

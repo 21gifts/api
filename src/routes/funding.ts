@@ -4,6 +4,7 @@ import { serializeOwnerAccountWithPosts } from '@/lib/auth/account-json';
 import { resolveSession } from '@/lib/auth/service';
 import type { Account, AuthStore } from '@/lib/auth/store';
 import {
+  applicationPauseExempt,
   effectiveStatus,
   serializeOwnerFunding,
   utcDayKey,
@@ -210,9 +211,11 @@ async function pingTodayMedia(
  *
  * `POST /apply` is paused unless `deps.applicationsPaused` is false.
  * While paused, authenticated `verified` and above receive 403
- * `{ error: 'Applications are paused' }` with no grant write. The previous
- * About-me, photo, location, and grant write stay in the handler and run
- * only when applications are not paused. `basis` is 403 Forbidden.
+ * `{ error: 'Applications are paused' }` with no grant write, except
+ * `joey-rosima`, `vincent`, and `jewel-bacolbas`, who still run the
+ * About-me, photo, location, and grant write. Those checks stay in the
+ * handler and also run when applications are not paused. `basis` is 403
+ * Forbidden.
  *
  * @param deps - Auth store, funding store, message store, gift store, clock, and optional spend ping.
  * @returns A Hono app with member apply and staff review routes.
@@ -227,7 +230,7 @@ export function fundingRoutes(deps: FundingRouteDeps): Hono {
       if (!roleAtLeast(caller.role, 'verified')) {
         return c.json({ error: 'Forbidden' }, 403);
       }
-      if (deps.applicationsPaused !== false) {
+      if (deps.applicationsPaused !== false && !applicationPauseExempt(caller.username)) {
         logEvent('funding.apply.paused', { accountId: caller.id });
         return c.json({ error: 'Applications are paused' }, 403);
       }
