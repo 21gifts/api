@@ -7,9 +7,9 @@
 /**
  * Whether a resolved address is a public unicast IP.
  *
- * IPv4 (dotted, IPv4-mapped, IPv4-compatible, 6to4, and NAT64 forms) is
- * checked against the non-public IPv4 ranges. Other IPv6 must be globally
- * reachable unicast.
+ * IPv4 (dotted, IPv4-mapped, IPv4-compatible, IPv4-translated, 6to4, and
+ * NAT64 forms) is checked against the non-public IPv4 ranges. Other IPv6 must
+ * not fall in a listed non-global range.
  *
  * @param address - DNS answer.
  * @returns `true` when the address is a public unicast IP.
