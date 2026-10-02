@@ -1046,7 +1046,7 @@ posts.
 check. Missing id after the rank gate is **404**.
 
 `invoice` checks a positive integer `amountSats` for any signed-in role, returns
-`{ "pr": "<bolt11>", "amountSats": 1 }`, and does not pay. Self-donation
+`{ "pr": "<bolt11>", "amountSats": "<requested amountSats>" }`, and does not pay. Self-donation
 or a missing author wallet → **409**. Rate-limit → **429**
 `{ "error": "Too many requests" }`. LNURL or BOLT11 failure → **502**
 `{ "error": "Invoice unavailable" }`. Missing comment → **404**.
