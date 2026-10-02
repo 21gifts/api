@@ -97,20 +97,55 @@ test('Function: issueSession — POST /debug/accounts/:id/session with the e2e t
   expect(me.status()).toBe(200);
 });
 
-test('Function: markDeleted — DELETE /messages/:id of an unknown note is 404 for a moderator', async ({
+/**
+ * Save an About-me note for a member (no wallet needed) and return its id.
+ *
+ * @param request - Playwright request context.
+ * @param member - Member id and bearer.
+ * @returns The About-me note id.
+ */
+async function aboutMeNote(
+  request: APIRequestContext,
+  member: { id: string; auth: { authorization: string } },
+): Promise<string> {
+  const saved = await request.put('/me/about', {
+    headers: member.auth,
+    data: { text: 'About me, to be hidden' },
+  });
+  expect(saved.status()).toBe(200);
+  const listed = await request.get('/debug/accounts', { headers: DEBUG });
+  expect(listed.status()).toBe(200);
+  const row = (
+    (await listed.json()) as { accounts: Array<{ id: string; profileMessageId: string | null }> }
+  ).accounts.find((item) => item.id === member.id);
+  expect(typeof row?.profileMessageId).toBe('string');
+  return row!.profileMessageId!;
+}
+
+test('Function: markDeleted — DELETE /messages/:id hides the note for a moderator', async ({
   request,
 }) => {
   const member = await memberSession(request, 'E2eHide');
   const agreed = await request.post('/me/rules-agreement', { headers: member.auth });
   expect(agreed.status()).toBe(200);
-  const missing = '00000000-0000-4000-8000-000000000000';
+  const noteId = await aboutMeNote(request, member);
 
-  const basisDenied = await request.delete(`/messages/${missing}`, { headers: member.auth });
+  const basisDenied = await request.delete(`/messages/${noteId}`, { headers: member.auth });
   expect(basisDenied.status()).toBe(403);
 
   await promote(request, member.id, 'moderator');
-  const unknown = await request.delete(`/messages/${missing}`, { headers: member.auth });
+  const unknown = await request.delete('/messages/00000000-0000-4000-8000-000000000000', {
+    headers: member.auth,
+  });
   expect(unknown.status()).toBe(404);
+  const hidden = await request.delete(`/messages/${noteId}`, { headers: member.auth });
+  expect(hidden.status()).toBe(204);
+  const staffList = await request.get('/messages/hidden', { headers: member.auth });
+  expect(staffList.status()).toBe(200);
+  const ids = ((await staffList.json()) as { messages: Array<{ id: string }> }).messages.map(
+    (message) => message.id,
+  );
+  expect(ids).toContain(noteId);
 });
 
 test('Function: listHidden — GET /messages/hidden is 200 for a moderator', async ({ request }) => {
@@ -125,14 +160,22 @@ test('Function: listHidden — GET /messages/hidden is 200 for a moderator', asy
   expect(Array.isArray(hiddenBody.messages)).toBe(true);
 });
 
-test('Function: markUndeleted — POST /debug/messages/:id/restore of an unknown note is 404', async ({
+test('Function: markUndeleted — POST /debug/messages/:id/restore restores a hidden note', async ({
   request,
 }) => {
-  const restored = await request.post(
+  const member = await memberSession(request, 'E2eRestore');
+  const agreed = await request.post('/me/rules-agreement', { headers: member.auth });
+  expect(agreed.status()).toBe(200);
+  const noteId = await aboutMeNote(request, member);
+  await promote(request, member.id, 'moderator');
+  const hidden = await request.delete(`/messages/${noteId}`, { headers: member.auth });
+  expect(hidden.status()).toBe(204);
+
+  const restored = await request.post(`/debug/messages/${noteId}/restore`, { headers: DEBUG });
+  expect(restored.status()).toBe(204);
+  const unknown = await request.post(
     '/debug/messages/00000000-0000-4000-8000-000000000000/restore',
-    {
-      headers: DEBUG,
-    },
+    { headers: DEBUG },
   );
-  expect(restored.status()).toBe(404);
+  expect(unknown.status()).toBe(404);
 });
