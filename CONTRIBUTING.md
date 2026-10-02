@@ -69,7 +69,7 @@ api/
 │   │   ├── lnurl-server.ts   # Forwarded LNURL routes when LNURL_SERVER_URL and PUBLIC_BASE_URL resolve (register/recover/metadata/invoice/verify)
 │   │   ├── pay.ts            # GET /pay/:username; POST /pay/:username/invoice
 │   │   ├── contact.ts        # POST /contact (private mailbox + platform thread)
-│   │   ├── pos.ts            # GET/POST/DELETE /pos (one exact sat amount on the Lightning address)
+│   │   ├── pos.ts            # GET/POST/DELETE /pos (one exact sat amount on the receiving address)
 │   │   ├── conversations.ts  # GET/POST /conversations, GET /conversations/moderator-group, GET/POST /conversations/:id, POST /conversations/:id/read, POST /conversations/:id/invoice, GET /conversations/:id/messages/:messageId/photo, GET /conversations/:id/messages/:messageId/photo/:file, POST /conversations/:id/messages/:messageId/translate
 │   │   └── notifications.ts  # GET /notifications, POST /notifications/read-by-message, POST /notifications/read-all, POST /notifications/:id/read
 │   ├── lib/
