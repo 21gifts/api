@@ -2975,7 +2975,7 @@
 ## Function: resolveRelayPayRequest
 
 - **Purpose:** Normalises a Lightning Address or bech32 LNURL, checks the URL as input (`https`, a DNS name with two or more labels, no address literal, no `localhost` / `.local` / `.internal` / `.localhost`, no port, no credentials, not the own host, a name that is not only dots), requires every resolved address of the host (and of the callback host) to pass `isPublicIp`, fetches it without redirects within 5 s and 64 KB, and validates the LNURL pay request.
-- **Inputs:** `{ target, fetchImpl, ownHost, timeoutMs?, lookupImpl? }`. `timeoutMs` defaults to 5000 and limits each host lookup and each fetch (an answer that comes too late gives 502); `lookupImpl` defaults to the system resolver (`dns.lookup` with `all`).
+- **Inputs:** `{ target, fetchImpl, ownHost, timeoutMs?, lookupImpl? }`. `timeoutMs` defaults to 5000 and is the longest wait for each host lookup and each fetch (an answer that comes too late gives 502; the system resolver may still finish in the background); `lookupImpl` defaults to the system resolver (`dns.lookup` with `all`).
 - **Returns / side effects:** `{ ok: true, payRequest }` with `target`, `minSendableMsat`, `maxSendableMsat`, `commentAllowed`, `description`, `domain`, or `{ ok: false, status: 400 | 404 | 502, error, reason }`. One outbound GET at most.
 - **Used by:** `POST /lnurl/pay-request`.
 
@@ -3159,7 +3159,7 @@ Looks up kind 0 display name, nip05, and lud16 for one external pubkey.
 
 ## Function: isPublicIp
 
-- **Purpose:** Decides whether one resolved address may be contacted. IPv4 (dotted, IPv4-mapped `::ffff:`, IPv4-compatible `::x:x`, 6to4 `2002::/16`, and NAT64 `64:ff9b::/96`) must lie outside `0/8`, `10/8`, `100.64/10`, `127/8`, `169.254/16`, `172.16/12`, `192.0.0/24`, `192.0.2/24`, `192.168/16`, `198.18/15`, `198.51.100/24`, `203.0.113/24`, and `224/3`. Other IPv6 must be globally reachable unicast: unique-local (`fc00::/7`), link-local (`fe80::/10`), site-local (`fec0::/10`), multicast (`ff00::/8`), discard (`100::/64`), `5f00::/16`, documentation (`2001:db8::/32`, `3fff::/20`), Teredo (`2001::/32`), `2001:1::/32`, `2001:2::/48` benchmarking, ORCHID (`2001:10::/28`, `2001:20::/28`), and local NAT64 (`64:ff9b:1::/48`) are refused.
+- **Purpose:** Decides whether one resolved address may be contacted. IPv4 (dotted, IPv4-mapped `::ffff:`, IPv4-compatible `::x:x`, IPv4-translated `::ffff:0:x:x`, 6to4 `2002::/16`, and NAT64 `64:ff9b::/96`) must lie outside `0/8`, `10/8`, `100.64/10`, `127/8`, `169.254/16`, `172.16/12`, `192.0.0/24`, `192.0.2/24`, `192.168/16`, `198.18/15`, `198.51.100/24`, `203.0.113/24`, and `224/3`. Other IPv6 must be globally reachable unicast: unique-local (`fc00::/7`), link-local (`fe80::/10`), site-local (`fec0::/10`), multicast (`ff00::/8`), discard (`100::/64`), `5f00::/16`, documentation (`2001:db8::/32`, `3fff::/20`), Teredo (`2001::/32`), `2001:1::/32`, `2001:2::/48` benchmarking, ORCHID (`2001:10::/28`, `2001:20::/28`), and local NAT64 (`64:ff9b:1::/48`) are refused.
 - **Inputs:** `address` text as returned by the resolver (trimmed and lowercased first).
 - **Returns / side effects:** `true` for a public unicast address; `false` otherwise, including text that is not an address. Pure.
 - **Used by:** the external author profile NIP-05 lookup and `resolveRelayPayRequest` / `requestRelayInvoice`.

@@ -177,7 +177,8 @@ function expandIpv6(address: string): number[] | null {
 /**
  * IPv4 carried inside an IPv6 answer that is not the mapped form `::ffff:`.
  *
- * IPv4-compatible (`::x:x`), 6to4 (`2002::/16`), and NAT64 (`64:ff9b::/96`).
+ * IPv4-compatible (`::x:x`), IPv4-translated (`::ffff:0:x:x`), 6to4
+ * (`2002::/16`), and NAT64 (`64:ff9b::/96`).
  * Mapped addresses are handled by {@link mappedIpv4}.
  *
  * @param address - Lowercase address.
@@ -189,6 +190,9 @@ function ipv4EmbeddedInIpv6(address: string): [number, number, number, number] |
     return null;
   }
   if (groups.slice(0, 6).every((group) => group === 0)) {
+    return ipv4FromHalves(groups[6]!, groups[7]!);
+  }
+  if (groups.slice(0, 4).every((group) => group === 0) && groups[4] === 0xffff && groups[5] === 0) {
     return ipv4FromHalves(groups[6]!, groups[7]!);
   }
   if (groups[0] === 0x2002) {
