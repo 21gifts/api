@@ -454,6 +454,18 @@ describe('runSparkInvoiceTick', () => {
     expect(await store.listOpen(new Date(0))).toEqual([]);
   });
 
+  it('keeps the row open when the ingest reports the receipt credited but no receipt holds the claim', async () => {
+    const store = new InMemorySparkInvoiceStore();
+    await store.issue(row(1));
+    const d = deps(store, operator(new Map([['spark1inv1', { status: 2 }]])), {
+      ingest: async () => true,
+      claims: { zapPaymentReceiptId: async () => undefined },
+    });
+    await runSparkInvoiceTick(d);
+    expect(d.publisher.calls).toEqual([]);
+    expect(await store.listOpen(new Date(0))).toHaveLength(1);
+  });
+
   it('does not log settled when another tick settled the row first', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     const store = new InMemorySparkInvoiceStore();
