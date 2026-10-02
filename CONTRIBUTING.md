@@ -176,7 +176,8 @@ api/
 │   └── __tests__/            # Mirror tree; one *.test.ts per source file
 │       ├── server.test.ts
 │       ├── helpers/
-│       │   └── fake-passkey.ts   # PasskeyCeremony test double
+│       │   ├── fake-passkey.ts   # PasskeyCeremony test double
+│       │   └── wallet-lnurl.ts   # Verified-wallet account, LNURL server config, and BOLT11 test vectors
 │       ├── integration/
 │       │   └── auth-flow.test.ts
 │       ├── lib/
@@ -479,14 +480,15 @@ LNURL-pay;
 `satsToUsdCents`, `usdCentsToFiatCents`, `parseUsdPerBtc`, and `utcDayFromPaidAt`, which need a non-empty gift list;
 `normalizeSparkPubkey`, `IpRateLimiter`, `callLnurlServer`, `walletPayRequest`, and
 `lnurlServerRoutes`, which need `LNURL_SERVER_URL`;
-`receivingAddress` and `lnurlServerFetch` past the account lookup, and `issueSparkInvoice`, which need
-an account and a session;
+`receivingAddress` and `lnurlServerFetch` past the account lookup, which need an existing account
+(and, on the invoice routes, a session); `issueSparkInvoice`, which needs an account and a session;
 `resolveFreePaymentsConfig`, `concatBytes`, `protoVarintField`, `protoBytesField`, `decodeProto`,
 `encodeSparkInvoice`, `uuidV7`, `migrateSparkInvoiceSchema`, `InMemorySparkInvoiceStore`,
 `PostgresSparkInvoiceStore`, `encodeQuerySparkInvoicesRequest`, `parseQuerySparkInvoicesResponse`,
 `querySparkInvoices`, `zapReceiptSecretKey`, `buildZapReceipt`, `runSparkInvoiceTick`,
-`startSparkInvoiceWorker`, `ingestZapReceipt`, and `zapReceiptIngest`, which need `LNURL_SERVER_URL`
-and `LNURL_ZAP_NSEC_HEX`),
+`startSparkInvoiceWorker`, and `zapReceiptIngest`, which need `LNURL_SERVER_URL` and
+`LNURL_ZAP_NSEC_HEX`; `ingestZapReceipt`, which needs `DATABASE_URL` and `NOSTR_NSEC_KEK` (relay
+ingest) or free in-app payments (Spark worker)),
 that test still exists and asserts the default-boot outcome that proves it is
 not invoked (verification `503`, spend invoices unconfigured `503`, an
 unmounted route answering `404` with `LNURL_SERVER_URL` blank, or a

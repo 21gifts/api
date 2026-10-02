@@ -5640,13 +5640,17 @@ fee), `POST /conversations/:id/invoice`, `POST /messages/:id/repayment`,
 `payable` flag on forum and member feeds, and the zap receipt ingest (the
 LNURL `nostrPubkey` that must sign a receipt). A verified wallet also clears
 `lightning-address` from `missing`, so it satisfies the posting requirement
-of `POST /messages`.
+of `POST /messages`. That rule and the profile note do not check the LNURL server, so the
+LNURL server must stay configured once members have verified wallets: with it
+off, a wallet-only member can still post but has no receiving address.
 
 ## Free in-app payments
 
-On when `LNURL_SERVER_URL` and `PUBLIC_BASE_URL` resolve and
-`LNURL_ZAP_NSEC_HEX` is 64 hex characters (`resolveFreePaymentsConfig`;
-`SPARK_OPERATOR_URL` defaults to `https://0.spark.lightspark.com`). Off →
+On when `LNURL_SERVER_URL` and `PUBLIC_BASE_URL` resolve,
+`LNURL_ZAP_NSEC_HEX` is 64 hex characters, and `SPARK_OPERATOR_URL` is unset,
+blank (both use `https://0.spark.lightspark.com`), or an `http:` / `https:`
+URL; any other `SPARK_OPERATOR_URL` turns the feature off
+(`resolveFreePaymentsConfig`). Off →
 every `sparkInvoice` is `null` and no worker runs.
 
 **Spark invoice.** For a wallet-backed recipient, the three invoice routes

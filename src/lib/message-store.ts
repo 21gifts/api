@@ -3445,6 +3445,12 @@ export class InMemoryMessageStore implements MessageStore {
     return Promise.resolve(true);
   }
 
+  /**
+   * Receipt event id that owns a payment hash claim, without claiming it.
+   *
+   * @param paymentHash - BOLT11 payment hash (any case).
+   * @returns The owning receipt event id, or `undefined` when unclaimed.
+   */
   zapPaymentReceiptId(paymentHash: string): Promise<string | undefined> {
     return Promise.resolve(this.#zapPayments.get(paymentHash.toLowerCase())?.receiptEventId);
   }
@@ -6077,6 +6083,13 @@ export class PostgresMessageStore implements MessageStore {
     return rows[0]?.receipt_event_id === receiptEventId;
   }
 
+  /**
+   * Receipt event id that owns a payment hash claim, without claiming it.
+   *
+   * @param paymentHash - BOLT11 payment hash (any case).
+   * @returns The owning receipt event id, or `undefined` when unclaimed.
+   * @throws Propagates SQL failures.
+   */
   async zapPaymentReceiptId(paymentHash: string): Promise<string | undefined> {
     const rows = await this.#sql.query<{ receipt_event_id: string }>(
       `SELECT receipt_event_id
