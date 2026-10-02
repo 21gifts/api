@@ -835,7 +835,7 @@
 
 ## Endpoint: POST /me/username
 
-- **Purpose:** Bearer required. Body `{ username }`. Stores a unique LUD-16 / NIP-05 local-part (lowercase `a-z0-9-_.`, 1–32 characters, leading letter or digit; no trailing `.`, no `..`). Cannot be skipped. Same handle on the same account is 200. Once the wallet is verified every `POST /me/username` is 409, including the same handle. Logs `account.username.set`.
+- **Purpose:** Bearer required. Body `{ username }`. Stores a unique LUD-16 / NIP-05 local-part (lowercase `a-z0-9-_.`, 1–32 characters, leading letter or digit; no trailing `.`, no `..`). Cannot be skipped. Same handle on the same account is 200. Once the wallet is verified, a request with a valid session, body and handle is 409, including the same handle; a missing session is still 401 and an invalid body or handle still 400. Logs `account.username.set`.
 - **Errors:** 401 `{ error: 'Unauthorized' }`; 400 `{ error: 'Expected a JSON body with a "username" string' }`; 400 `{ error: 'Username must be 1–32 characters of a-z, 0-9, hyphen, underscore, or dot' }` (including trailing or double-dot rejects); 409 `{ error: 'Username is already in use' }` when another account owns it, including a unique-index race; 409 `{ error: 'Username is fixed once the wallet is connected' }` when the wallet is already verified. 403 `{ error: 'SUNDAY_REST' }` when `Time-Zone` names an IANA zone that is Sunday on the server clock (a missing, blank, or invalid zone does not refuse).
 - **Used by:** App username onboarding and profile.
 - **Auth:** `Authorization: Bearer` session.
