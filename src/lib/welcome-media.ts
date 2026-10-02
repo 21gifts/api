@@ -1,6 +1,8 @@
 import type { Account, AuthStore } from '@/lib/auth/store';
+import type { LnurlServerConfig } from '@/lib/config';
 import { logEvent } from '@/lib/log';
 import type { MessageStore } from '@/lib/message-store';
+import { receivingAddress } from '@/lib/receiving-address';
 import type { SpendPing } from '@/lib/spend-ping';
 
 /**
@@ -10,7 +12,7 @@ import type { SpendPing } from '@/lib/spend-ping';
  * @param messages - Forum store.
  * @param account - Account whose media would earn the welcome gift.
  * @returns Message id, or `null` when the role is not `verified` or no live
- *   top-level media exists. The caller checks the Lightning Address.
+ *   top-level media exists. The caller checks the receiving address.
  */
 async function welcomeMediaMessageId(
   messages: MessageStore,
@@ -26,19 +28,19 @@ async function welcomeMediaMessageId(
  * Ping spend once for `account` when a welcome photo or video exists.
  * Failures are logged. Does not throw.
  *
- * @param args - Spend ping, forum store, and account.
+ * @param args - Spend ping, forum store, account, and LNURL server config.
  */
 async function pingOne(args: {
   spendPing: SpendPing | undefined;
   messages: MessageStore;
   account: Account;
+  lnurlServer: LnurlServerConfig | undefined;
 }): Promise<void> {
   if (args.spendPing === undefined) {
     return;
   }
-  const address =
-    args.account.lightningAddress === null ? '' : args.account.lightningAddress.trim();
-  if (address === '') {
+  const address = receivingAddress(args.account, args.lnurlServer)?.address ?? null;
+  if (address === null) {
     return;
   }
   try {
@@ -57,12 +59,13 @@ async function pingOne(args: {
  * photo or video, including About me and a living-room post. Spend pays
  * once per address. Failures are logged per account.
  *
- * @param args - Spend ping, auth store, and forum store.
+ * @param args - Spend ping, auth store, forum store, and LNURL server config.
  */
 async function catchUpVerifiedMedia(args: {
   spendPing: SpendPing | undefined;
   auth: AuthStore;
   messages: MessageStore;
+  lnurlServer: LnurlServerConfig | undefined;
 }): Promise<void> {
   if (args.spendPing === undefined) {
     return;
@@ -83,7 +86,12 @@ async function catchUpVerifiedMedia(args: {
       if (mediaId === null) {
         continue;
       }
-      await pingOne({ spendPing: args.spendPing, messages: args.messages, account });
+      await pingOne({
+        spendPing: args.spendPing,
+        messages: args.messages,
+        account,
+        lnurlServer: args.lnurlServer,
+      });
     } catch {
       logEvent('spend.ping.failed');
     }
@@ -96,22 +104,26 @@ async function catchUpVerifiedMedia(args: {
  * Pass `account` after a new top-level post, an About-me save, or a
  * verification. Pass `auth` (and no `account`) to catch up people who are
  * already verified and already have a photo or video post. Omitted spend
- * ping, a role other than `verified`, a blank Lightning Address, or no
- * photo/video is a no-op. Spend pays once per address.
+ * ping, a role other than `verified`, no receiving address (no verified
+ * wallet, or the LNURL server off), or no photo/video is a no-op. Spend pays
+ * once per address.
  *
- * @param args - Spend ping plus either one account or the auth store.
+ * @param args - Spend ping, optional LNURL server config, plus either one
+ *   account or the auth store.
  */
 export async function syncWelcomePing(args: {
   spendPing?: SpendPing;
   messages: MessageStore;
   account?: Account;
   auth?: AuthStore;
+  lnurlServer?: LnurlServerConfig;
 }): Promise<void> {
   if (args.account !== undefined) {
     await pingOne({
       spendPing: args.spendPing,
       messages: args.messages,
       account: args.account,
+      lnurlServer: args.lnurlServer,
     });
     return;
   }
@@ -120,6 +132,7 @@ export async function syncWelcomePing(args: {
       spendPing: args.spendPing,
       auth: args.auth,
       messages: args.messages,
+      lnurlServer: args.lnurlServer,
     });
   }
 }

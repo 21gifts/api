@@ -1,12 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
-import {
-  resolveLnurlp,
-  resolveLnurlpDocument,
-  LNURLP_METADATA_TIMEOUT_MS,
-  type FetchFn,
-} from '@/lib/lnurlp';
+import { resolveLnurlp, LNURLP_METADATA_TIMEOUT_MS, type FetchFn } from '@/lib/lnurlp';
 
-const ADDRESS = 'alice@walletofsatoshi.com';
+const ADDRESS = 'alice@wallet.example';
 const MAX_SENDABLE = 100_000_000_000;
 
 function jsonResponse(body: unknown, status = 200): Response {
@@ -19,10 +14,10 @@ function jsonResponse(body: unknown, status = 200): Response {
 describe('resolveLnurlp', () => {
   it('returns metadata on the happy path (https callback, min/max, commentAllowed)', async () => {
     const fetchImpl: FetchFn = async (input, init) => {
-      expect(String(input)).toBe('https://walletofsatoshi.com/.well-known/lnurlp/alice');
+      expect(String(input)).toBe('https://wallet.example/.well-known/lnurlp/alice');
       expect(init).toEqual({ redirect: 'error', signal: expect.any(AbortSignal) });
       return jsonResponse({
-        callback: 'https://walletofsatoshi.com/lnurlp/callback',
+        callback: 'https://wallet.example/lnurlp/callback',
         minSendable: 1000,
         maxSendable: MAX_SENDABLE,
         commentAllowed: 255,
@@ -33,7 +28,7 @@ describe('resolveLnurlp', () => {
     expect(result).toEqual({
       ok: true,
       metadata: {
-        callback: 'https://walletofsatoshi.com/lnurlp/callback',
+        callback: 'https://wallet.example/lnurlp/callback',
         minSendable: 1000,
         maxSendable: MAX_SENDABLE,
         commentAllowed: 255,
@@ -44,7 +39,7 @@ describe('resolveLnurlp', () => {
   it('omits commentAllowed when the provider omitted it', async () => {
     const fetchImpl: FetchFn = async () =>
       jsonResponse({
-        callback: 'https://walletofsatoshi.com/lnurlp/callback',
+        callback: 'https://wallet.example/lnurlp/callback',
         minSendable: 1000,
         maxSendable: MAX_SENDABLE,
       });
@@ -53,7 +48,7 @@ describe('resolveLnurlp', () => {
     expect(result).toEqual({
       ok: true,
       metadata: {
-        callback: 'https://walletofsatoshi.com/lnurlp/callback',
+        callback: 'https://wallet.example/lnurlp/callback',
         minSendable: 1000,
         maxSendable: MAX_SENDABLE,
       },
@@ -73,7 +68,7 @@ describe('resolveLnurlp', () => {
 
   it('rejects an address without a local part', async () => {
     const result = await resolveLnurlp({
-      address: '@walletofsatoshi.com',
+      address: '@wallet.example',
       fetchImpl: async () => {
         throw new Error('fetch must not be called');
       },
@@ -140,7 +135,7 @@ describe('resolveLnurlp', () => {
   it('rejects an http callback', async () => {
     const fetchImpl: FetchFn = async () =>
       jsonResponse({
-        callback: 'http://walletofsatoshi.com/lnurlp/callback',
+        callback: 'http://wallet.example/lnurlp/callback',
         minSendable: 1000,
         maxSendable: MAX_SENDABLE,
       });
@@ -151,7 +146,7 @@ describe('resolveLnurlp', () => {
   it('rejects when maxSendable is below minSendable', async () => {
     const fetchImpl: FetchFn = async () =>
       jsonResponse({
-        callback: 'https://walletofsatoshi.com/lnurlp/callback',
+        callback: 'https://wallet.example/lnurlp/callback',
         minSendable: 5000,
         maxSendable: 1000,
       });
@@ -164,7 +159,7 @@ describe('resolveLnurlp', () => {
     const fetchImpl: FetchFn = async (_input, init) => {
       seenInit = init;
       return jsonResponse({
-        callback: 'https://walletofsatoshi.com/lnurlp/callback',
+        callback: 'https://wallet.example/lnurlp/callback',
         minSendable: 1000,
         maxSendable: MAX_SENDABLE,
       });
@@ -191,7 +186,7 @@ describe('resolveLnurlp', () => {
     const timeoutSpy = vi.spyOn(AbortSignal, 'timeout');
     const fetchImpl: FetchFn = async () =>
       jsonResponse({
-        callback: 'https://walletofsatoshi.com/lnurlp/callback',
+        callback: 'https://wallet.example/lnurlp/callback',
         minSendable: 1000,
         maxSendable: MAX_SENDABLE,
       });
@@ -225,31 +220,35 @@ describe('resolveLnurlp', () => {
   });
 });
 
-describe('resolveLnurlpDocument', () => {
-  it('returns the provider JSON including extra fields', async () => {
-    const fetchImpl: FetchFn = async () =>
-      jsonResponse({
-        tag: 'payRequest',
-        callback: 'https://walletofsatoshi.com/lnurlp/callback',
-        minSendable: 1000,
-        maxSendable: MAX_SENDABLE,
-        extra: 'keep',
-      });
-    const result = await resolveLnurlpDocument({ address: ADDRESS, fetchImpl });
+describe('resolveLnurlp body shape', () => {
+  it('keeps the NIP-57 fields', async () => {
+    const result = await resolveLnurlp({
+      address: ADDRESS,
+      fetchImpl: async () =>
+        jsonResponse({
+          tag: 'payRequest',
+          callback: 'https://wallet.example/lnurlp/callback',
+          minSendable: 1000,
+          maxSendable: MAX_SENDABLE,
+          allowsNostr: true,
+          nostrPubkey: 'ab'.repeat(32),
+          extra: 'ignored',
+        }),
+    });
     expect(result).toEqual({
       ok: true,
-      body: {
-        tag: 'payRequest',
-        callback: 'https://walletofsatoshi.com/lnurlp/callback',
+      metadata: {
+        callback: 'https://wallet.example/lnurlp/callback',
         minSendable: 1000,
         maxSendable: MAX_SENDABLE,
-        extra: 'keep',
+        allowsNostr: true,
+        nostrPubkey: 'ab'.repeat(32),
       },
     });
   });
 
   it('rejects a non-object body', async () => {
-    const result = await resolveLnurlpDocument({
+    const result = await resolveLnurlp({
       address: ADDRESS,
       fetchImpl: async () => jsonResponse(['nope']),
     });

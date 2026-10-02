@@ -4,9 +4,9 @@ import { InMemoryLnAddressCache } from '@/lib/ln-address-cache';
 import type { FetchFn } from '@/lib/lnurlp';
 import { createApp } from '@/server';
 
-const ADDRESS = 'alice@walletofsatoshi.com';
+const ADDRESS = 'alice@example.com';
 const MAX_SENDABLE = 100_000_000_000;
-const CALLBACK = 'https://walletofsatoshi.com/lnurlp/callback';
+const CALLBACK = 'https://example.com/lnurlp/callback';
 
 function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {

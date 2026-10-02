@@ -8,6 +8,7 @@ import { InMemoryNotificationStore } from '@/lib/notification-store';
 import { InMemoryPushStore } from '@/lib/push-store';
 import { InvoiceRateLimiter, PostRateLimiter } from '@/lib/nostr/rate-limit';
 import { messagesRoutes } from '@/routes/messages';
+import { WALLET_PUBKEY } from '@/__tests__/helpers/wallet-lnurl';
 
 const now = (): number => 1_700_000_000_000;
 
@@ -56,22 +57,21 @@ async function poster(): Promise<InMemoryAuthStore> {
     linkingKey: `02${'a'.repeat(64)}`,
     role: 'verified',
     name: 'Ada',
-    lightningAddress: 'ada@walletofsatoshi.com',
-    lightningAddressVerified: true,
     forumLawsDismissed: false,
     location: null,
     viewKey: 'a'.repeat(64),
     createdAt: 1,
     rulesAgreedAt: now(),
     username: 'ada',
+    walletRequired: true,
   });
+  await auth.claimSparkPubkey('ada', WALLET_PUBKEY);
+  await auth.markSparkPubkeyVerified('ada', WALLET_PUBKEY, 'ada', 1);
   await auth.createAccount({
     id: 'bob',
     linkingKey: `02${'b'.repeat(64)}`,
     role: 'basis',
     name: 'Bob',
-    lightningAddress: null,
-    lightningAddressVerified: false,
     forumLawsDismissed: false,
     location: null,
     viewKey: 'b'.repeat(64),

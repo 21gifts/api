@@ -1,10 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { finalizeEvent, generateSecretKey, type VerifiedEvent } from 'nostr-tools/pure';
-import {
-  buildZapProbeRequest,
-  buildZapRequest,
-  serializeZapRequest,
-} from '@/lib/nostr/zap-request';
+import { buildZapRequest, serializeZapRequest } from '@/lib/nostr/zap-request';
 
 const NIP01_KEYS = ['id', 'pubkey', 'created_at', 'kind', 'tags', 'content', 'sig'] as const;
 
@@ -31,25 +27,6 @@ describe('buildZapRequest', () => {
       content: 'thank you',
     });
     expect(event.content).toBe('thank you');
-  });
-});
-
-describe('buildZapProbeRequest', () => {
-  it('builds kind 9734 with p/amount/relays and without e/k', () => {
-    const event = buildZapProbeRequest({
-      recipientPubkey: 'aa'.repeat(32),
-      amountMsat: 1000,
-      relays: ['wss://relay.nostr.space', 'wss://relay.damus.io'],
-    });
-    expect(event.kind).toBe(9734);
-    expect(event.content).toBe('');
-    expect(event.tags).toEqual([
-      ['p', 'aa'.repeat(32)],
-      ['amount', '1000'],
-      ['relays', 'wss://relay.nostr.space', 'wss://relay.damus.io'],
-    ]);
-    expect(event.tags.some((tag) => tag[0] === 'e')).toBe(false);
-    expect(event.tags.some((tag) => tag[0] === 'k')).toBe(false);
   });
 });
 

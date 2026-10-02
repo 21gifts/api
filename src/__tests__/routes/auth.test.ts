@@ -1,7 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { Hono } from 'hono';
 import { InMemoryAuthStore, type PasskeyRenewAttemptInput } from '@/lib/auth/store';
-import { UnconfiguredInvoicePayer } from '@/lib/invoice-payer';
 import { InMemoryMessageStore } from '@/lib/message-store';
 import { WRONG_ACCOUNT_ERROR } from '@/lib/auth/wrong-account';
 import { authRoutes } from '@/routes/auth';
@@ -111,8 +110,6 @@ describe('auth routes', () => {
         linkingKey: null,
         role: 'basis',
         name: 'Ada',
-        lightningAddress: 'guest@walletofsatoshi.com',
-        lightningAddressVerified: false,
         forumLawsDismissed: false,
         location: null,
         viewKey,
@@ -157,8 +154,6 @@ describe('auth routes', () => {
         linkingKey: null,
         role: 'basis',
         name: 'Ada',
-        lightningAddress: 'guest@walletofsatoshi.com',
-        lightningAddressVerified: false,
         forumLawsDismissed: false,
         location: null,
         viewKey,
@@ -320,8 +315,6 @@ describe('auth routes', () => {
           store,
           messages: new InMemoryMessageStore(),
           now,
-          payer: new UnconfiguredInvoicePayer(),
-          fetchImpl: globalThis.fetch,
         }),
       );
       const me = await meApp.request('/me', { headers: { authorization: `Bearer ${body.token}` } });
@@ -366,8 +359,6 @@ describe('auth routes', () => {
         linkingKey: null,
         role: 'basis',
         name: null,
-        lightningAddress: null,
-        lightningAddressVerified: false,
         forumLawsDismissed: false,
         location: null,
         viewKey,
@@ -529,8 +520,6 @@ describe('auth routes', () => {
         role: 'basis',
         name: 'Ada',
         username: 'ada',
-        lightningAddress: null,
-        lightningAddressVerified: false,
         forumLawsDismissed: false,
         location: null,
         viewKey: 'e'.repeat(64),
@@ -655,8 +644,6 @@ describe('auth routes', () => {
         role: 'basis',
         name: 'Ada',
         username: 'ada',
-        lightningAddress: null,
-        lightningAddressVerified: false,
         forumLawsDismissed: false,
         location: null,
         viewKey: 'd'.repeat(64),
@@ -708,8 +695,6 @@ describe('auth routes', () => {
         linkingKey: null,
         role: 'basis',
         name: 'Ada',
-        lightningAddress: 'guest@walletofsatoshi.com',
-        lightningAddressVerified: false,
         forumLawsDismissed: false,
         location: null,
         viewKey,
@@ -1013,8 +998,6 @@ describe('auth routes', () => {
         linkingKey: null,
         role: 'basis',
         name: null,
-        lightningAddress: null,
-        lightningAddressVerified: false,
         forumLawsDismissed: false,
         location: null,
         viewKey: 'a'.repeat(64),
@@ -1320,8 +1303,6 @@ describe('auth routes', () => {
         linkingKey: null,
         role: 'basis',
         name: null,
-        lightningAddress: null,
-        lightningAddressVerified: false,
         forumLawsDismissed: false,
         location: null,
         viewKey: 'a'.repeat(64),

@@ -67,7 +67,9 @@ path. Advantages:
 - Both keep their dignity: one asks, one gives, and they meet as
   people in the living room.
 - 21.gifts never holds the receiver’s Bitcoin. If 21.gifts disappeared
-  tomorrow, the Wallet of Satoshi addresses would keep working.
+  tomorrow, the funds stay self-custodial and recoverable with the 12
+  words in any compatible wallet; the `@21.gifts` address does not
+  survive the service.
 - Help moves at the speed of the payment, not of a committee.
 - The giver can see the person who asked — not an abstract cause.
 
@@ -85,7 +87,7 @@ put in a person’s hand.
   frozen bank accounts, war, a closed branch — none of them can stop
   the network.
 - **Permissionless.** No account application, no ID gate, no banking
-  hours. A phone and a Wallet of Satoshi address are enough, also for
+  hours. A phone and the in-app wallet are enough, also for
   people no bank will open a file for.
 - **Borderless and always on.** One network, every country; nights,
   weekends, bank holidays, and crises included. An international gift
@@ -95,12 +97,11 @@ put in a person’s hand.
   practical; an email-like address is enough to receive.
 - **Hard cap.** 21 million, so inflation cannot quietly tax people
   who already have little.
-- **Bearer money.** In a self-custodial wallet — Wallet of Satoshi
-  offers one — nobody holds it for the receiver. 21.gifts never holds
-  it in any case.
+- **Bearer money.** In the self-custodial in-app wallet nobody holds it
+  for the receiver. 21.gifts never holds it in any case.
 
-On the website we say “Bitcoin” and “Wallet of Satoshi”; Lightning,
-LNURL, and keys are plumbing and stay out of sight.
+On the website we say “Bitcoin” and “wallet”; Lightning, LNURL, and
+keys are plumbing and stay out of sight.
 
 The public version of these convictions is `/about` in the app, in
 every catalog locale. This section is the full argument.
@@ -116,7 +117,7 @@ every catalog locale. This section is the full argument.
    visible in Damus/Amethyst/etc., but the user is never asked about keys or relays
 5. **Self-sovereign keys** — Passkey + PRF derives the NOSTR key client-side; the
    server never sees raw key material
-6. **Lightning Address mandatory** — receivers must have a LUD-16 address; the platform never custodies receiver funds
+6. **In-app wallet mandatory** — a member receives only on their verified in-app wallet, at the LUD-16 address `<username>@<host of PUBLIC_BASE_URL>`; the platform never custodies receiver funds
 7. **English canon, localized visitor UI** — CONCEPT, identifiers, commits,
    handbook, and api payloads stay English. Visitor-facing app copy is
    localized (`en`, `de`, `es`, `fil`). Adding a fifth locale is out of scope
@@ -137,7 +138,7 @@ Principle 5 for **all** v1 accounts (no client-side keys; each account's
 NOSTR identity is custodial, held and used for signing server-side — see
 "NOSTR in v1" below). Both deviations are transitional
 and will be replaced by a non-custodial setup. Receiving stays non-custodial
-(LUD-16 only, as before).
+(the self-custodial in-app wallet).
 
 ### Roles
 
@@ -196,9 +197,10 @@ Initiator, and Founder.
 - WebAuthn RP ID is `WEBAUTHN_RP_ID` (`21.gifts` / `dev.21.gifts` / `staging.21.gifts`). Missing
   RP ID → passkey routes 500; the process still boots.
 - **Operator provision / viewKey claim (2026-08-30):** `POST /debug/accounts`
-  can create accounts with name + Lightning Address and no passkey. The
-  public `viewKey` URL is the invite. `POST /auth/passkey/register/begin`
-  with `{ "viewKey" }` binds a passkey to that row (name and address stay);
+  can create accounts with a name (and an optional username) and no
+  passkey. The public `viewKey` URL is the invite.
+  `POST /auth/passkey/register/begin` with `{ "viewKey" }` binds a passkey
+  to that row (name and username stay);
   living-room rules agreement remains a later `/me` step.
 
 ### Donor upgrade (custodial, v1 only)
@@ -215,18 +217,14 @@ Any account can additionally become a donor and spend money:
   because it contradicts the non-custodial target; that replacement retires
   it.
 
-### Receiver address verification
+### Receiving address
 
-A receiver's Lightning Address is entered free-form on sign-up (a wrong
-address is self-punishing — gifts simply go elsewhere). Proof of control
-sets `lightningAddressVerified` (not the forum role **Verified**) via
-micro-payment: the api pays 1 sat (or the provider's `minSendable` if
-higher, capped at 10 sat) with a one-time nonce in the LNURL-pay comment
-(LUD-12; Wallet of Satoshi allows 255 characters); the user reads the nonce
-from the wallet's transaction history and enters it in the app
-(`POST /me/lightning-address/verification` + `…/confirm`). No LNDHub payer
-is wired yet — start returns 503 until one is injected; the process still
-boots. No LUD-21 dependency — WoS does not implement LNURL-verify.
+A member receives only on their in-app wallet, at
+`<username>@<host of PUBLIC_BASE_URL>`. The wallet counts once the
+self-hosted LNURL server has accepted its registration
+(`sparkPubkeyVerifiedAt`). A member without a verified wallet cannot
+receive and cannot post. Linking an external Lightning address, and its
+micro-payment proof of control, were removed on 2026-10-02.
 
 ### Recurring gifts (v1 feature)
 
@@ -354,7 +352,8 @@ non-custodial phase (this table, like the rest of this section, is post-v1).
 
 ### Donations
 
-- Receiver profile **must** include a Lightning Address (LUD-16)
+- Receiver **must** have a verified in-app wallet; its LUD-16 address is
+  `<username>@<host of PUBLIC_BASE_URL>`
 - The api resolves and caches LUD-16 metadata server-side, with health checks
 - Donor flow in the browser: click _Donate_ → app reads cached LN-Address from
   api → browser fetches LNURL-pay callback → invoice → pay (browser ↔ wallet
@@ -526,9 +525,9 @@ Encryption: AES-GCM 256, with two key-derivation paths:
 
 - Sign-in via passkey (WebAuthn discoverable credential; session bound to
   `account.id`)
-- Receiver profile UI: name, photo, story, Lightning Address (+
-  `lightningAddressVerified` via micro-payment nonce; not the forum role
-  Verified)
+- Receiver profile UI: name, photo, story, and the in-app wallet as the
+  receiving address (`lightningAddressVerified` = wallet verified; not the
+  forum role Verified)
 - Public campaign feed (rendered from api response)
 - _Donate_ button → LNURL-pay (browser flow, works without an account)
 - Recurring gifts: configure USD amounts per recipient (paid by the
@@ -566,8 +565,6 @@ Encryption: AES-GCM 256, with two key-derivation paths:
   closed HTTP group for moderators with no Nostr)
 - Forum replies (`replyCount`, `GET /messages/:id/replies`) and public
   `GET /messages/:id`
-- NIP-57 mint probe before linking a Lightning Address (`POST /me/lightning-address`
-  and operator `POST /debug/accounts` unless `NIP57_PROBE=0`)
 
 **Out, deferred:**
 
@@ -927,7 +924,8 @@ repository — they're intentionally not part of this project's scope.
 | 2026-09-21 | Propose/confirm/reject re-list after insert so a concurrent older propose, a concurrent reject, or a concurrent confirm/appoint cannot leave two live outcomes. Confirm and reject compare the pending propose by edge id (same-actor same-ms re-propose is a different row). After propose notify, re-list and drop or refresh `moderator_proposal` rows when that insert is no longer pending. The public graph projects at most one incoming edge per subject (winning id), skipping non-chain oldest siblings. **Supersedes** the 2026-09-17 “one incoming kind” / first-contact-wins row.                                                                        |
 | 2026-09-24 | Initiator shares the moderator rank; permissions still name the minimum rank only. **Supersedes** the 2026-09-20 strict total order founder > moderator > verified > basis.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
 | 2026-10-01 | A member may bind the public key of the self-custodial in-app wallet to the account (`PUT /me/wallet`). A self-hosted LNURL server behind this api serves `username@<domain>` for that wallet. A registration the LNURL server accepts is the proof of the key. The wallet key can be replaced until it is verified; from then on the wallet and the username of the account are fixed. External Lightning addresses keep working. Off unless `LNURL_SERVER_URL` and `PUBLIC_BASE_URL` resolve.                                                                                                                                                                       |
-| 2026-10-02 | An account has one receiving address: with a verified wallet and the LNURL server configured, the wallet-backed `username@<domain>`, resolved inside the deployment; otherwise the linked Lightning address. Nostr `lud16` follows it. Payments between members are free: next to the zap invoice the api issues a Spark invoice to the recipient's wallet, and once the Spark operators report it finalized it signs the zap receipt with the member's receipt key and feeds it into the receipt ingest. Gifts are still credited only from zap receipts, once per payment hash. Off unless the settings in SPEC (Free in-app payments) resolve.                     |
+| 2026-10-02 | An account has one receiving address: with a verified wallet and the LNURL server configured, the wallet-backed `username@<domain>`, resolved inside the deployment; otherwise the linked Lightning address. Nostr `lud16` follows it. Payments between members are free: next to the zap invoice the api issues a Spark invoice to the recipient's wallet, and once the Spark operators report it finalized it signs the zap receipt with the member's receipt key and feeds it into the receipt ingest. Gifts are still credited only from zap receipts, once per payment hash. Off unless `LNURL_SERVER_URL`, `PUBLIC_BASE_URL`, and `LNURL_ZAP_NSEC_HEX` resolve. |
+| 2026-10-02 | Every member receives only on the in-app wallet at `<username>@<host of PUBLIC_BASE_URL>`. Linking an external Lightning address is removed, with no fallback and no transition mode. A member without a verified wallet cannot receive and cannot post. Funds stay self-custodial and recoverable with the 12 words in any compatible wallet; the `@21.gifts` address does not survive the service. The stored `lightning_address` column and its data stay for rollback and a later data step.                                                                                                                                                                      |
 | Date       | Decision                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
 | ---------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | 2026-05-25 | Domain `21.gifts` registered (premium .gifts TLD on Identity Digital)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |

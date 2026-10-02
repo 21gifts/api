@@ -9,15 +9,12 @@ import { MISSING_REQUIREMENTS_ERROR } from '@/lib/auth/requirements';
 import { resolveSession } from '@/lib/auth/service';
 import type { Account, AuthStore } from '@/lib/auth/store';
 import { isWrongAccount, WRONG_ACCOUNT_ERROR } from '@/lib/auth/wrong-account';
-import { SESSION_TTL_MS } from '@/lib/config';
+import { SESSION_TTL_MS, type LnurlServerConfig } from '@/lib/config';
 import { InMemoryBtcUsdStore, type BtcUsdRateBook } from '@/lib/btc-usd-store';
 import { InMemoryGiftStore, type GiftStore } from '@/lib/gift-store';
-import type { InvoicePayer } from '@/lib/invoice-payer';
 import { InMemoryFiatStore, type FiatRateBook } from '@/lib/usd-fiat-store';
-import { normalizeLightningAddress } from '@/lib/lightning-address';
 import { normalizeLocation } from '@/lib/location';
 import { logEvent } from '@/lib/log';
-import { resolveLnurlp, type FetchFn } from '@/lib/lnurlp';
 import {
   MESSAGE_MAX_LENGTH,
   decodeForumPhoto,
@@ -37,20 +34,16 @@ import { normalizeUsername, usernameFromDisplayName } from '@/lib/username';
 import { inboxUnreadCountFor } from '@/lib/conversation-push';
 import type { ConversationStore } from '@/lib/conversation-store';
 import { notifyForumPost } from '@/lib/notification';
-import { LIGHTNING_ADDRESS_NOT_ZAP, probeNip57Mint } from '@/lib/nip57-probe';
-import { ensureAccountNostrKey } from '@/lib/nostr/keys';
-import { signEventForAccount } from '@/lib/nostr/sign';
 import type { NotificationStore } from '@/lib/notification-store';
 import type { PushStore } from '@/lib/push-store';
-import { confirmVerification, startVerification } from '@/lib/verification';
 
 /**
  * `/me` — the authenticated account and its editable profile (display name,
  * unique username, optional location, About me, welcome-forum laws dismiss,
  * living-room rules agreement, notification level, amount-entry unit, wallet backup seen,
- * optional wallet public-key bind (`PUT /wallet` when the LNURL server is configured),
- * and the receiver's Lightning Address), including proof-of-control
- * verification. Shares the {@link AuthStore} instance with `/auth`.
+ * and the optional wallet public-key bind (`PUT /wallet` when the LNURL server
+ * is configured). The verified wallet is the member's only receiving address.
+ * Shares the {@link AuthStore} instance with `/auth`.
  */
 
 /** Collaborators the `/me` routes need. */
@@ -61,12 +54,6 @@ export interface MeRouteDeps {
   messages: MessageStore;
   /** Clock returning epoch milliseconds (injected for testability). */
   now: () => number;
-  /** Pays the verification micro-payment invoice. */
-  payer: InvoicePayer;
-  /** Injected `fetch` for LNURL-pay resolution. */
-  fetchImpl: FetchFn;
-  /** AES KEK for signing the NIP-57 mint probe; omit when unset. */
-  nostrKek?: Uint8Array;
   /** Optional push outbox; also the bell-subscriber list. */
   pushStore?: PushStore;
   /** Optional in-app notification store for profile-note create. */
@@ -98,8 +85,11 @@ export interface MeRouteDeps {
    * Omitted → skip. Failures do not fail the 200.
    */
   spendPing?: SpendPing;
-  /** True when the LNURL server is configured; mounts `PUT /wallet`. Default false. */
-  walletEnabled?: boolean;
+  /**
+   * LNURL server config. When set, mounts `PUT /wallet` and resolves the
+   * receiving address in owner JSON and the welcome ping. Omitted → off.
+   */
+  lnurlServer?: LnurlServerConfig;
 }
 
 /**
@@ -155,16 +145,10 @@ const usernameBody = z.object({ username: z.string() });
 /** Body schema for setting a free-text profile location. */
 const locationBody = z.object({ location: z.string() });
 
-/** Body schema for linking a Lightning Address. */
-const addressBody = z.object({ address: z.string() });
-
 /** Body schema for binding the member's wallet public key. */
 const walletBody = z.object({ sparkPubkey: z.string() });
 
-/** Body schema for confirming address verification. */
-const confirmBody = z.object({ nonce: z.string() });
-
-/** Body schema for skipping a wizard step. */
+/** Body schema for skipping a wizard step (`lightning-address` is the receiving-wallet step). */
 const skipBody = z.object({ step: z.enum(['name', 'lightning-address']) });
 
 /** Body schema for writing About me (required text; optional photo tri-state). */
@@ -237,19 +221,24 @@ const PASSKEY_RENEW_REPORT_ERROR =
 
 /** Owner JSON including the live funding grant. */
 function ownerJson(deps: MeRouteDeps, account: Account): Promise<OwnerAccountResponse> {
-  return serializeOwnerAccountWithPosts(account, deps.messages, {
-    store: deps.fundingStore ?? new InMemoryFundingStore(),
-    nowMs: deps.now(),
-    authStore: deps.store,
-  });
+  return serializeOwnerAccountWithPosts(
+    account,
+    deps.messages,
+    {
+      store: deps.fundingStore ?? new InMemoryFundingStore(),
+      nowMs: deps.now(),
+      authStore: deps.store,
+    },
+    deps.lnurlServer,
+  );
 }
 
 /**
  * Build the `/me` route group.
  *
- * @param deps - Shared store, message store, clock, payer, fetch, optional push, optional notification and conversation stores, optional gift/rate/fiat stores for activity, optional funding store, optional `nostrKek` for the NIP-57 mint probe, and optional `walletEnabled` for `PUT /wallet`.
+ * @param deps - Shared store, message store, clock, optional push, optional notification and conversation stores, optional gift/rate/fiat stores for activity, optional funding store, and optional `lnurlServer` for `PUT /wallet` and the receiving address.
  * @returns A Hono app exposing account, activity, display-name, username, location, About me, wallet-backup-seen, optional wallet bind, passkey-renew/report, passkey-renew/ack, setup skip, forum-laws dismiss,
- * living-room rules agreement, notification level, amount-entry unit, locale, fiat, link/unlink, and verification routes.
+ * living-room rules agreement, notification level, amount-entry unit, locale, and fiat routes.
  */
 export function meRoutes(deps: MeRouteDeps): Hono {
   const giftStore = deps.giftStore ?? new InMemoryGiftStore();
@@ -772,6 +761,7 @@ export function meRoutes(deps: MeRouteDeps): Hono {
           ...(deps.spendPing === undefined ? {} : { spendPing: deps.spendPing }),
           messages: deps.messages,
           account: latest,
+          ...(deps.lnurlServer === undefined ? {} : { lnurlServer: deps.lnurlServer }),
         });
         return c.json(await ownerJson(deps, latest), 200);
       } catch {
@@ -917,195 +907,9 @@ export function meRoutes(deps: MeRouteDeps): Hono {
       await deps.store.updateAccount(updated);
       logEvent('account.rules_agreement.set', { accountId: current.id });
       return c.json(await ownerJson(deps, updated), 200);
-    })
-    .post('/lightning-address', async (c) => {
-      const account = await authedAccount(deps, c.req.header('authorization'));
-      if (account === null) {
-        return c.json({ error: 'Unauthorized' }, 401);
-      }
-      const parsed = addressBody.safeParse(await c.req.json().catch(() => null));
-      if (!parsed.success) {
-        return c.json({ error: 'Expected a JSON body with an "address" string' }, 400);
-      }
-      const address = normalizeLightningAddress(parsed.data.address);
-      if (address === null) {
-        return c.json({ error: 'Not a valid Lightning Address (expected name@domain)' }, 400);
-      }
-      const resolved = await resolveLnurlp({ address, fetchImpl: deps.fetchImpl });
-      const zapPubkey =
-        resolved.ok && resolved.metadata.allowsNostr === true
-          ? resolved.metadata.nostrPubkey
-          : undefined;
-      if (zapPubkey === undefined || zapPubkey.trim() === '') {
-        logEvent('account.lightning_address.resolve_failed', {
-          accountId: account.id,
-          address,
-        });
-        return c.json({ error: 'Lightning Address could not be resolved' }, 400);
-      }
-      const kek = deps.nostrKek;
-      if (kek === undefined) {
-        return c.json({ error: 'Lightning Address could not be resolved' }, 503);
-      }
-      try {
-        await ensureAccountNostrKey(deps.store, account.id, kek);
-      } catch {
-        return c.json({ error: 'Lightning Address could not be resolved' }, 503);
-      }
-      const accountPubkey = await deps.store.getNostrPublicKey(account.id);
-      if (accountPubkey === undefined || accountPubkey === '') {
-        return c.json({ error: 'Lightning Address could not be resolved' }, 503);
-      }
-      const probe = await probeNip57Mint({
-        address,
-        recipientPubkey: accountPubkey,
-        sign: async (unsigned) => signEventForAccount(deps.store, account.id, kek, unsigned),
-        fetchImpl: deps.fetchImpl,
-        env: process.env,
-      });
-      if (probe === 'not_zap') {
-        logEvent('account.lightning_address.not_zap', { accountId: account.id });
-        return c.json({ error: LIGHTNING_ADDRESS_NOT_ZAP }, 400);
-      }
-      if (probe === 'unreachable') {
-        logEvent('account.lightning_address.resolve_failed', {
-          accountId: account.id,
-          address,
-        });
-        return c.json({ error: 'Lightning Address could not be resolved' }, 400);
-      }
-      const current = await storedAccount(deps, account.id);
-      /* v8 ignore next 3 -- the account row cannot vanish mid-request after auth */
-      if (current === null) {
-        return c.json({ error: 'Unauthorized' }, 401);
-      }
-      // Linking a (new) address resets any prior verified state; proof of control
-      // is a separate step. Any in-flight verification is dropped with the link.
-      const owner = await deps.store.getAccountByLightningAddress(address);
-      if (owner !== undefined && owner.id !== current.id) {
-        return c.json({ error: 'Lightning Address is already in use' }, 409);
-      }
-      const updated: Account = {
-        ...current,
-        lightningAddress: address,
-        lightningAddressVerified: false,
-      };
-      await deps.store.updateAccount(updated);
-      const stored = await storedAccount(deps, current.id);
-      /* v8 ignore next 3 -- the account row cannot vanish mid-request after auth */
-      if (stored === null) {
-        return c.json({ error: 'Unauthorized' }, 401);
-      }
-      if ((stored.lightningAddress ?? '').trim().toLowerCase() !== address.trim().toLowerCase()) {
-        return c.json({ error: 'Lightning Address is already in use' }, 409);
-      }
-      await deps.store.deleteVerification(current.id);
-      await ensureProfileMessage({
-        auth: deps.store,
-        messages: deps.messages,
-        account: stored,
-        now: deps.now,
-        ...(deps.pushStore === undefined ? {} : { pushStore: deps.pushStore }),
-        ...(deps.notificationStore === undefined ? {} : { notifications: deps.notificationStore }),
-        /* v8 ignore next -- createApp always injects conversationStore */
-        ...(deps.conversationStore === undefined ? {} : { conversations: deps.conversationStore }),
-      });
-      const live = await deps.store.getAccount(current.id);
-      /* v8 ignore next 3 -- the account row cannot vanish mid-request after auth */
-      if (live === null || live === undefined) {
-        return c.json({ error: 'Unauthorized' }, 401);
-      }
-      logEvent('account.lightning_address.linked', {
-        accountId: account.id,
-        address,
-      });
-      return c.json(await ownerJson(deps, live), 200);
-    })
-    .delete('/lightning-address', async (c) => {
-      const account = await authedAccount(deps, c.req.header('authorization'));
-      if (account === null) {
-        return c.json({ error: 'Unauthorized' }, 401);
-      }
-      const current = await storedAccount(deps, account.id);
-      /* v8 ignore next 3 -- the account row cannot vanish mid-request after auth */
-      if (current === null) {
-        return c.json({ error: 'Unauthorized' }, 401);
-      }
-      const updated: Account = {
-        ...current,
-        lightningAddress: null,
-        lightningAddressVerified: false,
-        lightningAddressSkippedAt: null,
-      };
-      await deps.store.updateAccount(updated);
-      await deps.store.deleteVerification(account.id);
-      logEvent('account.lightning_address.unlinked', { accountId: account.id });
-      return c.json(await ownerJson(deps, updated), 200);
-    })
-    .post('/lightning-address/verification', async (c) => {
-      const account = await authedAccount(deps, c.req.header('authorization'));
-      if (account === null) {
-        return c.json({ error: 'Unauthorized' }, 401);
-      }
-      const result = await startVerification({
-        store: deps.store,
-        payer: deps.payer,
-        fetchImpl: deps.fetchImpl,
-        now: deps.now(),
-        account,
-      });
-      if (!result.ok) {
-        switch (result.code) {
-          case 'no_address':
-            return c.json({ error: 'No Lightning Address linked' }, 409);
-          case 'already_verified':
-            return c.json({ error: 'Lightning Address already verified' }, 409);
-          case 'not_configured':
-            return c.json({ error: 'Verification payments are not configured' }, 503);
-          case 'unreachable':
-            return c.json(
-              { error: 'Lightning Address did not accept the verification payment' },
-              502,
-            );
-        }
-      }
-      // Do not return the nonce — the user must read it from the wallet history.
-      logEvent('account.verification.started', { accountId: account.id });
-      return c.json(
-        {
-          status: 'sent',
-          expiresInSeconds: result.expiresInSeconds,
-          sats: result.sats,
-        },
-        200,
-      );
-    })
-    .post('/lightning-address/verification/confirm', async (c) => {
-      const account = await authedAccount(deps, c.req.header('authorization'));
-      if (account === null) {
-        return c.json({ error: 'Unauthorized' }, 401);
-      }
-      const parsed = confirmBody.safeParse(await c.req.json().catch(() => null));
-      if (!parsed.success) {
-        return c.json({ error: 'Expected a JSON body with a "nonce" string' }, 400);
-      }
-      const result = await confirmVerification(deps.store, deps.now(), account, parsed.data.nonce);
-      if (!result.ok) {
-        switch (result.code) {
-          case 'bad_nonce':
-          case 'mismatch':
-            return c.json({ error: 'Incorrect verification code' }, 400);
-          case 'no_pending':
-            return c.json({ error: 'No verification in progress' }, 409);
-          case 'expired':
-            return c.json({ error: 'Verification expired' }, 409);
-        }
-      }
-      logEvent('account.verification.confirmed', { accountId: account.id });
-      return c.json(await ownerJson(deps, result.account), 200);
     });
 
-  if (deps.walletEnabled === true) {
+  if (deps.lnurlServer !== undefined) {
     app.put('/wallet', async (c) => {
       const account = await authedAccount(deps, c.req.header('authorization'));
       if (account === null) {

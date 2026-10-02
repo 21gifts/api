@@ -223,7 +223,7 @@ describe('PostgresAuthStore', () => {
     expect(await new PostgresAuthStore(new MockSql()).getAccount('x')).toBeUndefined();
   });
 
-  it('inserts and updates accounts', async () => {
+  it('inserts and updates accounts without the stored external address', async () => {
     const sql = new MockSql();
     const store = new PostgresAuthStore(sql);
     const account = {
@@ -231,8 +231,6 @@ describe('PostgresAuthStore', () => {
       linkingKey: ACCOUNT_ROW.linking_key,
       role: 'moderator' as const,
       name: 'Ada',
-      lightningAddress: 'a@b.com',
-      lightningAddressVerified: true,
       forumLawsDismissed: false,
       location: null,
       viewKey: VIEW_KEY,
@@ -245,75 +243,86 @@ describe('PostgresAuthStore', () => {
       linkingKey: ACCOUNT_ROW.linking_key,
       role: 'basis',
       name: null,
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: VIEW_KEY,
       createdAt: 1,
       rulesAgreedAt: 9_000,
     });
-    expect(sql.executes[0]?.text).toMatch(/ON CONFLICT \(linking_key\) DO NOTHING/);
-    expect(sql.executes[0]?.text).toMatch(/forum_laws_dismissed/);
-    expect(sql.executes[0]?.text).toMatch(/view_key/);
-    expect(sql.executes[0]?.text).toMatch(/rules_agreed_at/);
-    expect(sql.executes[0]?.text).toMatch(/is_platform/);
-    expect(sql.executes[0]?.params[8]).toBe(account.viewKey);
-    expect(sql.executes[0]?.params[9]).toBeNull();
-    expect(sql.executes[0]?.params[10]).toBe(false);
-    expect(sql.executes[0]?.params[11]).toBeNull();
-    expect(sql.executes[0]?.params[12]).toBeNull();
-    expect(sql.executes[0]?.params[13]).toBeNull();
-    expect(sql.executes[0]?.params[14]).toBeNull();
-    expect(sql.executes[0]?.text).toMatch(/name_skipped_at/);
-    expect(sql.executes[0]?.text).toMatch(/profile_message_id/);
-    expect(sql.executes[0]?.text).toMatch(/location/);
-    expect(sql.executes[0]?.text).toMatch(/notification_level/);
-    expect(sql.executes[0]?.params[15]).toBe('all');
-    expect(sql.executes[0]?.params[16]).toBeNull();
-    expect(sql.executes[0]?.params[17]).toBe(false);
-    expect(sql.executes[0]?.params[18]).toBe(false);
-    expect(sql.executes[0]?.params[19]).toBeNull();
-    expect(sql.executes[0]?.params[20]).toBe('btc');
-    expect(sql.executes[0]?.text).toMatch(/username/);
-    expect(sql.executes[0]?.text).toMatch(/amount_unit/);
-    expect(sql.executes[0]?.text).toMatch(/session_refused/);
-    expect(sql.executes[0]?.text).toMatch(/wallet_required/);
-    expect(sql.executes[0]?.text).toMatch(/wallet_backup_seen_at/);
-    expect(sql.executes[1]?.text).toMatch(/UPDATE account/);
-    expect(sql.executes[1]?.text).not.toMatch(/wallet_required/);
-    expect(sql.executes[1]?.text).not.toMatch(/wallet_backup_seen_at/);
-    expect(sql.executes[1]?.text).not.toMatch(/spark_pubkey =/);
-    expect(sql.executes[1]?.text).not.toMatch(/spark_pubkey_verified_at =/);
-    expect(sql.executes[1]?.text).toMatch(/forum_laws_dismissed/);
-    expect(sql.executes[1]?.text).toMatch(/view_key = \$9/);
-    expect(sql.executes[1]?.text).toMatch(/rules_agreed_at/);
-    expect(sql.executes[1]?.text).toMatch(/is_platform = \$11/);
-    expect(sql.executes[1]?.text).toMatch(/name_skipped_at/);
-    expect(sql.executes[1]?.text).toMatch(/profile_message_id = \$14/);
-    expect(sql.executes[1]?.text).toMatch(/location = \$15/);
-    expect(sql.executes[1]?.text).toMatch(/notification_level = \$16/);
-    expect(sql.executes[1]?.text).toMatch(
-      /username = CASE WHEN spark_pubkey_verified_at IS NULL THEN \$17 ELSE username END/,
+    const insert = sql.executes[0]!;
+    expect(insert.text).toMatch(/ON CONFLICT \(linking_key\) DO NOTHING/);
+    expect(insert.text).not.toMatch(/lightning_address,|lightning_address_verified/);
+    expect(insert.text).toMatch(/lightning_address_skipped_at/);
+    for (const column of [
+      'forum_laws_dismissed',
+      'view_key',
+      'rules_agreed_at',
+      'is_platform',
+      'name_skipped_at',
+      'profile_message_id',
+      'location',
+      'notification_level',
+      'username',
+      'amount_unit',
+      'session_refused',
+      'wallet_required',
+      'wallet_backup_seen_at',
+    ]) {
+      expect(insert.text).toMatch(new RegExp(column));
+    }
+    expect(insert.params).toEqual([
+      'acc',
+      ACCOUNT_ROW.linking_key,
+      'moderator',
+      'Ada',
+      false,
+      1,
+      VIEW_KEY,
+      null,
+      false,
+      null,
+      null,
+      null,
+      null,
+      'all',
+      null,
+      false,
+      false,
+      null,
+      'btc',
+    ]);
+    const update = sql.executes[1]!;
+    expect(update.text).toMatch(/UPDATE account/);
+    expect(update.text).not.toMatch(/lightning_address =|lightning_address_verified/);
+    expect(update.text).not.toMatch(/wallet_required/);
+    expect(update.text).not.toMatch(/wallet_backup_seen_at/);
+    expect(update.text).not.toMatch(/spark_pubkey =/);
+    expect(update.text).not.toMatch(/spark_pubkey_verified_at =/);
+    expect(update.text).toMatch(/forum_laws_dismissed = \$5/);
+    expect(update.text).toMatch(/view_key = \$7/);
+    expect(update.text).toMatch(/is_platform = \$9/);
+    expect(update.text).toMatch(/lightning_address_skipped_at = to_timestamp\(\$11/);
+    expect(update.text).toMatch(/profile_message_id = \$12/);
+    expect(update.text).toMatch(/location = \$13/);
+    expect(update.text).toMatch(/notification_level = \$14/);
+    expect(update.text).toMatch(
+      /username = CASE WHEN spark_pubkey_verified_at IS NULL THEN \$15 ELSE username END/,
     );
-    expect(sql.executes[1]?.text).toMatch(/amount_unit = \$18/);
-    expect(sql.executes[1]?.text).not.toMatch(/session_refused = \$18/);
-    expect(sql.executes[1]?.text).toMatch(/NOT EXISTS/);
-    expect(sql.executes[1]?.text).not.toMatch(/IS NOT DISTINCT FROM/);
-    const setClause = sql.executes[1]!.text.split(/\bWHERE\b/)[0]!;
+    expect(update.text).toMatch(/amount_unit = \$16/);
+    expect(update.text).toMatch(/NOT EXISTS/);
+    expect(update.text).not.toMatch(/IS NOT DISTINCT FROM/);
+    const setClause = update.text.split(/\bWHERE\b/)[0]!;
     expect(
       setClause.replace(
-        /username = CASE WHEN spark_pubkey_verified_at IS NULL THEN \$17 ELSE username END/,
+        /username = CASE WHEN spark_pubkey_verified_at IS NULL THEN \$15 ELSE username END/,
         '',
       ),
     ).not.toMatch(/spark_pubkey/);
-    expect(sql.executes[1]?.params).toEqual([
+    expect(update.params).toEqual([
       'acc',
       ACCOUNT_ROW.linking_key,
       'basis',
       null,
-      null,
-      false,
       false,
       1,
       VIEW_KEY,
@@ -327,10 +336,19 @@ describe('PostgresAuthStore', () => {
       null,
       'btc',
     ]);
-    expect(sql.executes[0]?.text).not.toMatch(/spark_pubkey/);
+    expect(insert.text).not.toMatch(/spark_pubkey/);
   });
 
-  it('writes a stored notificationLevel as $16', async () => {
+  it('selects account rows without the stored external address', async () => {
+    const sql = new MockSql();
+    sql.nextRows = [{ ...ACCOUNT_ROW, lightning_address: 'old@example.com' }];
+    const mapped = await new PostgresAuthStore(sql).getAccount('acc');
+    expect(sql.queries[0]?.text).not.toMatch(/lightning_address,|lightning_address_verified/);
+    expect(mapped).not.toHaveProperty('lightningAddress');
+    expect(mapped).not.toHaveProperty('lightningAddressVerified');
+  });
+
+  it('writes a stored notificationLevel as $14', async () => {
     const sql = new MockSql();
     const store = new PostgresAuthStore(sql);
     const account = {
@@ -338,8 +356,6 @@ describe('PostgresAuthStore', () => {
       linkingKey: ACCOUNT_ROW.linking_key,
       role: 'basis' as const,
       name: null,
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: VIEW_KEY,
@@ -349,14 +365,14 @@ describe('PostgresAuthStore', () => {
     };
     await store.createAccount(account);
     expect(sql.executes[0]?.text).toMatch(/notification_level/);
-    expect(sql.executes[0]?.params[15]).toBe('mentions');
+    expect(sql.executes[0]?.params[13]).toBe('mentions');
     await store.updateAccount({ ...account, notificationLevel: 'active' });
-    expect(sql.executes[1]?.text).toMatch(/notification_level = \$16/);
+    expect(sql.executes[1]?.text).toMatch(/notification_level = \$14/);
     expect(sql.executes[1]?.text).toMatch(
-      /username = CASE WHEN spark_pubkey_verified_at IS NULL THEN \$17 ELSE username END/,
+      /username = CASE WHEN spark_pubkey_verified_at IS NULL THEN \$15 ELSE username END/,
     );
-    expect(sql.executes[1]?.params[15]).toBe('active');
-    expect(sql.executes[1]?.params[16]).toBeNull();
+    expect(sql.executes[1]?.params[13]).toBe('active');
+    expect(sql.executes[1]?.params[14]).toBeNull();
   });
 
   it('maps amount_unit stored texts via parseAmountUnit', async () => {
@@ -373,7 +389,7 @@ describe('PostgresAuthStore', () => {
     expect(sql.queries[0]?.text).toMatch(/amount_unit/);
   });
 
-  it('writes a stored amountUnit as $21 on insert and $18 on update', async () => {
+  it('writes a stored amountUnit as $19 on insert and $16 on update', async () => {
     const sql = new MockSql();
     const store = new PostgresAuthStore(sql);
     const account = {
@@ -381,8 +397,6 @@ describe('PostgresAuthStore', () => {
       linkingKey: ACCOUNT_ROW.linking_key,
       role: 'basis' as const,
       name: null,
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: VIEW_KEY,
@@ -392,13 +406,13 @@ describe('PostgresAuthStore', () => {
     };
     await store.createAccount(account);
     expect(sql.executes[0]?.text).toMatch(/amount_unit/);
-    expect(sql.executes[0]?.params[20]).toBe('fiat');
+    expect(sql.executes[0]?.params[18]).toBe('fiat');
     await store.updateAccount({ ...account, amountUnit: 'btc' });
-    expect(sql.executes[1]?.text).toMatch(/amount_unit = \$18/);
+    expect(sql.executes[1]?.text).toMatch(/amount_unit = \$16/);
     expect(sql.executes[1]?.text).toMatch(
-      /username = CASE WHEN spark_pubkey_verified_at IS NULL THEN \$17 ELSE username END/,
+      /username = CASE WHEN spark_pubkey_verified_at IS NULL THEN \$15 ELSE username END/,
     );
-    expect(sql.executes[1]?.params[17]).toBe('btc');
+    expect(sql.executes[1]?.params[15]).toBe('btc');
   });
 
   it('clears other platform flags before inserting or updating is_platform true', async () => {
@@ -409,8 +423,6 @@ describe('PostgresAuthStore', () => {
       linkingKey: null,
       role: 'founder',
       name: '21.gifts',
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: VIEW_KEY,
@@ -419,15 +431,13 @@ describe('PostgresAuthStore', () => {
       isPlatform: true,
     });
     expect(sql.executes[0]?.text).toMatch(/is_platform = false WHERE is_platform/);
-    expect(sql.executes[1]?.params[10]).toBe(true);
-    expect(sql.executes[1]?.params[13]).toBeNull();
+    expect(sql.executes[1]?.params[8]).toBe(true);
+    expect(sql.executes[1]?.params[11]).toBeNull();
     await store.updateAccount({
       id: 'plat',
       linkingKey: null,
       role: 'founder',
       name: '21.gifts',
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: VIEW_KEY,
@@ -436,7 +446,7 @@ describe('PostgresAuthStore', () => {
       isPlatform: true,
     });
     expect(sql.executes[2]?.text).toMatch(/is_platform = false WHERE is_platform/);
-    expect(sql.executes[3]?.params[10]).toBe(true);
+    expect(sql.executes[3]?.params[8]).toBe(true);
   });
 
   it('looks up an account by view_key', async () => {
@@ -456,21 +466,6 @@ describe('PostgresAuthStore', () => {
     ).toBeUndefined();
   });
 
-  it('looks up an account by lightning_address with lower(trim) SQL', async () => {
-    const sql = new MockSql();
-    sql.nextRows = [
-      { ...ACCOUNT_ROW, lightning_address: 'guest@walletofsatoshi.com', name: 'Ada' },
-    ];
-    const store = new PostgresAuthStore(sql);
-    const found = await store.getAccountByLightningAddress('  Guest@WalletOfSatoshi.com  ');
-    expect(sql.queries[0]?.text).toMatch(
-      /WHERE lower\(trim\(lightning_address\)\) = lower\(trim\(\$1\)\)/,
-    );
-    expect(sql.queries[0]?.params).toEqual(['  Guest@WalletOfSatoshi.com  ']);
-    expect(found?.id).toBe('acc');
-    expect(found?.lightningAddress).toBe('guest@walletofsatoshi.com');
-  });
-
   it('looks up an account by nostr_pubkey with lower(trim) SQL', async () => {
     const sql = new MockSql();
     sql.nextRows = [{ ...ACCOUNT_ROW, name: 'Ada' }];
@@ -483,14 +478,6 @@ describe('PostgresAuthStore', () => {
   it('returns undefined when nostr_pubkey lookup has no rows', async () => {
     expect(
       await new PostgresAuthStore(new MockSql()).getAccountByPubkey('aa'.repeat(32)),
-    ).toBeUndefined();
-  });
-
-  it('returns undefined when lightning_address lookup has no rows', async () => {
-    expect(
-      await new PostgresAuthStore(new MockSql()).getAccountByLightningAddress(
-        'missing@example.com',
-      ),
     ).toBeUndefined();
   });
 
@@ -578,47 +565,6 @@ describe('PostgresAuthStore', () => {
     ]);
   });
 
-  it('updateAccountNameByLightningAddress sets only name by lower(trim) address', async () => {
-    const sql = new MockSql();
-    sql.nextRows = [
-      {
-        ...ACCOUNT_ROW,
-        role: 'moderator',
-        name: 'Ada Lovelace',
-        lightning_address: 'guest@walletofsatoshi.com',
-        rules_agreed_at: new Date(9_000),
-      },
-    ];
-    const store = new PostgresAuthStore(sql);
-    const named = await store.updateAccountNameByLightningAddress(
-      '  Guest@WalletOfSatoshi.com  ',
-      'Ada Lovelace',
-    );
-    expect(sql.queries[0]?.text).toMatch(/SET name = \$2\s+WHERE/);
-    expect(sql.queries[0]?.text).toMatch(
-      /lower\(trim\(lightning_address\)\) = lower\(trim\(\$1\)\)/,
-    );
-    expect(sql.queries[0]?.text).toMatch(/RETURNING id, linking_key, role, name/);
-    expect(sql.queries[0]?.params).toEqual(['  Guest@WalletOfSatoshi.com  ', 'Ada Lovelace']);
-    expect(named).toMatchObject({
-      id: 'acc',
-      name: 'Ada Lovelace',
-      role: 'moderator',
-      lightningAddress: 'guest@walletofsatoshi.com',
-      rulesAgreedAt: 9_000,
-      viewKey: VIEW_KEY,
-    });
-  });
-
-  it('updateAccountNameByLightningAddress returns undefined when no row matches', async () => {
-    expect(
-      await new PostgresAuthStore(new MockSql()).updateAccountNameByLightningAddress(
-        'missing@example.com',
-        'Ada',
-      ),
-    ).toBeUndefined();
-  });
-
   it('claimProfileMessageId uses query with IS NOT DISTINCT FROM', async () => {
     const sql = new MockSql();
     const store = new PostgresAuthStore(sql);
@@ -645,17 +591,6 @@ describe('PostgresAuthStore', () => {
     expect(await store.accountHasPasskey('acc')).toBe(true);
   });
 
-  it('skips rows with a null view_key', async () => {
-    const sql = new MockSql();
-    sql.nextRows = [{ ...ACCOUNT_ROW, view_key: null }];
-    const store = new PostgresAuthStore(sql);
-    expect(await store.getAccount('acc')).toBeUndefined();
-    expect(await store.getAccountByViewKey(VIEW_KEY)).toBeUndefined();
-    expect(await store.listAccounts()).toEqual([]);
-    sql.nextRows = [{ ...ACCOUNT_ROW, view_key: null, lightning_address: 'a@b.com' }];
-    expect(await store.updateAccountNameByLightningAddress('a@b.com', 'Ada')).toBeUndefined();
-  });
-
   it('createAccount treats a unique_violation as a no-op', async () => {
     const sql = new MockSql();
     sql.executeError = Object.assign(new Error('duplicate key'), { code: '23505' });
@@ -665,8 +600,6 @@ describe('PostgresAuthStore', () => {
         linkingKey: ACCOUNT_ROW.linking_key,
         role: 'basis',
         name: null,
-        lightningAddress: null,
-        lightningAddressVerified: false,
         forumLawsDismissed: false,
         location: null,
         viewKey: VIEW_KEY,
@@ -685,8 +618,6 @@ describe('PostgresAuthStore', () => {
         linkingKey: ACCOUNT_ROW.linking_key,
         role: 'basis',
         name: null,
-        lightningAddress: null,
-        lightningAddressVerified: false,
         forumLawsDismissed: false,
         location: null,
         viewKey: VIEW_KEY,
@@ -705,8 +636,6 @@ describe('PostgresAuthStore', () => {
         linkingKey: ACCOUNT_ROW.linking_key,
         role: 'basis',
         name: null,
-        lightningAddress: null,
-        lightningAddressVerified: false,
         forumLawsDismissed: false,
         location: null,
         viewKey: VIEW_KEY,
@@ -723,8 +652,6 @@ describe('PostgresAuthStore', () => {
       linkingKey: ACCOUNT_ROW.linking_key,
       role: 'basis',
       name: null,
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: VIEW_KEY,
@@ -743,8 +670,6 @@ describe('PostgresAuthStore', () => {
         linkingKey: ACCOUNT_ROW.linking_key,
         role: 'basis',
         name: null,
-        lightningAddress: null,
-        lightningAddressVerified: false,
         forumLawsDismissed: false,
         location: null,
         viewKey: VIEW_KEY,
@@ -763,8 +688,6 @@ describe('PostgresAuthStore', () => {
         linkingKey: ACCOUNT_ROW.linking_key,
         role: 'basis',
         name: null,
-        lightningAddress: null,
-        lightningAddressVerified: false,
         forumLawsDismissed: false,
         location: null,
         viewKey: VIEW_KEY,
@@ -783,8 +706,6 @@ describe('PostgresAuthStore', () => {
         linkingKey: ACCOUNT_ROW.linking_key,
         role: 'basis',
         name: null,
-        lightningAddress: null,
-        lightningAddressVerified: false,
         forumLawsDismissed: false,
         location: null,
         viewKey: VIEW_KEY,
@@ -803,8 +724,6 @@ describe('PostgresAuthStore', () => {
         linkingKey: ACCOUNT_ROW.linking_key,
         role: 'basis',
         name: null,
-        lightningAddress: null,
-        lightningAddressVerified: false,
         forumLawsDismissed: false,
         location: null,
         viewKey: VIEW_KEY,
@@ -823,8 +742,6 @@ describe('PostgresAuthStore', () => {
         linkingKey: ACCOUNT_ROW.linking_key,
         role: 'basis',
         name: null,
-        lightningAddress: null,
-        lightningAddressVerified: false,
         forumLawsDismissed: false,
         location: null,
         viewKey: VIEW_KEY,
@@ -907,33 +824,6 @@ describe('PostgresAuthStore', () => {
 
   it('returns undefined for a missing session', async () => {
     expect(await new PostgresAuthStore(new MockSql()).getSession('x')).toBeUndefined();
-  });
-
-  it('upserts, reads, and deletes verifications', async () => {
-    const sql = new MockSql();
-    const store = new PostgresAuthStore(sql);
-    await store.putVerification({
-      accountId: 'acc',
-      address: 'a@b.com',
-      nonce: 'n'.repeat(32),
-      createdAt: 1,
-    });
-    expect(sql.executes[0]?.text).toMatch(/ON CONFLICT/);
-    sql.nextRows = [
-      {
-        account_id: 'acc',
-        address: 'a@b.com',
-        nonce: 'n'.repeat(32),
-        created_at: new Date(1),
-      },
-    ];
-    expect((await store.getVerification('acc'))?.address).toBe('a@b.com');
-    await store.deleteVerification('acc');
-    expect(sql.executes[1]?.text).toMatch(/DELETE FROM address_verification/);
-  });
-
-  it('returns undefined for a missing verification', async () => {
-    expect(await new PostgresAuthStore(new MockSql()).getVerification('x')).toBeUndefined();
   });
 
   it('maps verified and founder account roles', async () => {
@@ -1556,7 +1446,7 @@ describe('PostgresAuthStore', () => {
     expect(row?.createdAt).toBe(1_000);
   });
 
-  it('lists passkeys, sessions, challenges, verifications, and nostr keys', async () => {
+  it('lists passkeys, sessions, challenges, and nostr keys', async () => {
     const sql = new MockSql();
     const store = new PostgresAuthStore(sql);
     sql.nextRows = [
@@ -1586,15 +1476,6 @@ describe('PostgresAuthStore', () => {
       },
     ];
     expect((await store.listPasskeyChallenges())[0]?.id).toBe('ch');
-    sql.nextRows = [
-      {
-        account_id: 'acc',
-        address: 'a@b.com',
-        nonce: 'n',
-        created_at: new Date(4_000),
-      },
-    ];
-    expect((await store.listAddressVerifications())[0]?.nonce).toBe('n');
     sql.nextRows = [
       {
         id: 'acc',

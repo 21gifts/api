@@ -7,7 +7,7 @@ import { CHALLENGE_TTL_MS, SESSION_TTL_MS } from '@/lib/config';
 import { mentionAccountMatches } from '@/lib/mention-query';
 
 /**
- * Persistence for accounts, sessions, passkeys, and address verification.
+ * Persistence for accounts, sessions, and passkeys.
  *
  * {@link InMemoryAuthStore} is the default when `DATABASE_URL` is unset
  * (tests and local boots). {@link PostgresAuthStore} is the durable adapter
@@ -21,7 +21,7 @@ import { mentionAccountMatches } from '@/lib/mention-query';
  * the propose edge only. `PATCH /debug/accounts/:id` may still set `role`
  * and does not write edges. New passkey accounts stay `basis`.
  * `verified` is a moderator confirming this person in real
- * life (forum badge), not `lightningAddressVerified`.
+ * life (forum badge), not a verified wallet.
  */
 export type AccountRole = 'basis' | 'verified' | 'moderator' | 'initiator' | 'founder';
 
@@ -120,13 +120,6 @@ export interface Account {
    * Not unique. Not a setup step. Public on member and view cards.
    */
   location: string | null;
-  /** The receiver's linked Lightning Address (LUD-16), or `null` if none. */
-  lightningAddress: string | null;
-  /**
-   * Whether control of the linked address has been proven via micro-payment
-   * verification. Set only by successful confirm; linking/unlinking resets it.
-   */
-  lightningAddressVerified: boolean;
   /** True after the user dismissed the welcome-forum living-room laws hint. */
   forumLawsDismissed: boolean;
   /**
@@ -151,7 +144,7 @@ export interface Account {
   sessionRefused?: boolean;
   /** Epoch ms when the owner skipped the name wizard step, or null/omitted. */
   nameSkippedAt?: number | null;
-  /** Epoch ms when the owner skipped the Lightning Address wizard step, or null/omitted. */
+  /** Epoch ms when the owner skipped the receiving-wallet wizard step, or null/omitted. */
   lightningAddressSkippedAt?: number | null;
   /** Id of the single top-level profile forum message, or null/omitted. */
   profileMessageId?: string | null;
@@ -192,21 +185,6 @@ export interface Account {
   sparkPubkey?: string | null;
   /** Epoch ms when the LNURL server accepted a registration signed by that key, or null/omitted. */
   sparkPubkeyVerifiedAt?: number | null;
-}
-
-/**
- * Pending receiver address verification (one-time nonce in an LNURL-pay comment).
- * At most one record per account; replaced on re-start, cleared on confirm/link/unlink.
- */
-export interface AddressVerification {
-  /** Account that started verification. */
-  accountId: string;
-  /** Lightning Address the payment was sent to (must still match on confirm). */
-  address: string;
-  /** One-time nonce (32 lowercase hex chars) placed in the LUD-12 comment. */
-  nonce: string;
-  /** Issue time (epoch ms). */
-  createdAt: number;
 }
 
 /** A discoverable WebAuthn credential bound to an account. */
@@ -324,7 +302,7 @@ export interface AuthStore {
   createAccount(account: Account): Promise<void>;
   /**
    * Overwrite a stored account. A `viewKey`, non-null `linkingKey`,
-   * `lightningAddress` (`lower(trim)`), or `username` (`lower(trim)`) owned
+   * or `username` (`lower(trim)`) owned
    * by another id is refused (in-memory no-op; Postgres via `UPDATE`
    * matching no row or swallowed unique_violation). An account with a verified
    * wallet (`sparkPubkeyVerifiedAt` set) keeps its stored username; the other
@@ -453,16 +431,6 @@ export interface AuthStore {
     onlyIfUnset: boolean,
   ): Promise<{ account: Account; wrote: boolean } | undefined>;
   /**
-   * Set only `name` on the account that owns this Lightning Address
-   * (`lower(trim)` match). Other columns stay unchanged.
-   *
-   * @returns The updated account, or `undefined` when no row matches.
-   */
-  updateAccountNameByLightningAddress(
-    lightningAddress: string,
-    name: string,
-  ): Promise<Account | undefined>;
-  /**
    * Set `profileMessageId` to `nextId` only when the stored pointer still
    * matches `expectedId`. Does not change other columns. Does not touch
    * viewKey or linkingKey indexes.
@@ -497,12 +465,6 @@ export interface AuthStore {
    * Used by the public capability URL; never mints a session.
    */
   getAccountByViewKey(viewKey: string): Promise<Account | undefined>;
-  /**
-   * Look up an account by Lightning Address (`lower(trim)` match). Rows with a
-   * null `lightningAddress` are skipped. At most one row matches (unique index
-   * in Postgres; in-memory create/update refuse a taken address).
-   */
-  getAccountByLightningAddress(address: string): Promise<Account | undefined>;
   /**
    * Look up an account by username (`lower(trim)` match). Rows with a
    * null/undefined/blank `username` are skipped. At most one row matches
@@ -559,8 +521,6 @@ export interface AuthStore {
   listSessions(): Promise<Session[]>;
   /** Every stored passkey challenge (operator dump / account detail). */
   listPasskeyChallenges(): Promise<PasskeyChallenge[]>;
-  /** Every pending address verification (operator dump / account detail). */
-  listAddressVerifications(): Promise<AddressVerification[]>;
   /**
    * Every account row's Nostr columns (pubkey may be null; kek/custody are the stored defaults).
    * In-memory `createdAt` is `null` when the adapter does not store it.
@@ -584,12 +544,6 @@ export interface AuthStore {
   setSessionRefused(accountId: string, refused: boolean): Promise<Account | undefined>;
   /** Look up a session by token, or `undefined` if unknown. */
   getSession(token: string): Promise<Session | undefined>;
-  /** Upsert a pending address verification for the account. */
-  putVerification(verification: AddressVerification): Promise<void>;
-  /** Look up a pending verification by account id, or `undefined` if none. */
-  getVerification(accountId: string): Promise<AddressVerification | undefined>;
-  /** Drop any pending verification for the account. */
-  deleteVerification(accountId: string): Promise<void>;
   /** Persist a freshly issued passkey ceremony challenge. */
   createPasskeyChallenge(challenge: PasskeyChallenge): Promise<void>;
   /** Look up a passkey challenge by id, or `undefined` if unknown. */
@@ -708,7 +662,6 @@ export class InMemoryAuthStore implements AuthStore {
   readonly #accountsByLinkingKey = new Map<string, string>();
   readonly #accountsByViewKey = new Map<string, string>();
   readonly #sessions = new Map<string, Session>();
-  readonly #verifications = new Map<string, AddressVerification>();
   readonly #passkeyChallenges = new Map<string, PasskeyChallenge>();
   readonly #passkeyCredentials = new Map<string, PasskeyCredential>();
   readonly #nostrKeys = new Map<string, NostrKeyRecord>();
@@ -719,9 +672,6 @@ export class InMemoryAuthStore implements AuthStore {
       return;
     }
     if (account.linkingKey !== null && this.#accountsByLinkingKey.has(account.linkingKey)) {
-      return;
-    }
-    if (this.#lightningAddressTaken(account.lightningAddress, account.id)) {
       return;
     }
     if (this.#usernameTaken(account.username, account.id)) {
@@ -981,9 +931,6 @@ export class InMemoryAuthStore implements AuthStore {
     if (viewKeyOwnerId !== undefined && viewKeyOwnerId !== account.id) {
       return;
     }
-    if (this.#lightningAddressTaken(account.lightningAddress, account.id)) {
-      return;
-    }
     const previous = this.#accounts.get(account.id);
     const { username: passedUsername, ...rest } = account;
     const username =
@@ -1023,23 +970,6 @@ export class InMemoryAuthStore implements AuthStore {
     if (account.linkingKey !== null) {
       this.#accountsByLinkingKey.set(account.linkingKey, account.id);
     }
-  }
-
-  async updateAccountNameByLightningAddress(
-    lightningAddress: string,
-    name: string,
-  ): Promise<Account | undefined> {
-    const needle = lightningAddress.trim().toLowerCase();
-    for (const account of this.#accounts.values()) {
-      if (account.lightningAddress === null) {
-        continue;
-      }
-      if (account.lightningAddress.trim().toLowerCase() === needle) {
-        account.name = name;
-        return account;
-      }
-    }
-    return undefined;
   }
 
   async claimProfileMessageId(
@@ -1101,22 +1031,6 @@ export class InMemoryAuthStore implements AuthStore {
     return id === undefined ? undefined : this.#accounts.get(id);
   }
 
-  #lightningAddressTaken(address: string | null, accountId: string): boolean {
-    if (address === null) {
-      return false;
-    }
-    const needle = address.trim().toLowerCase();
-    for (const other of this.#accounts.values()) {
-      if (other.id === accountId || other.lightningAddress === null) {
-        continue;
-      }
-      if (other.lightningAddress.trim().toLowerCase() === needle) {
-        return true;
-      }
-    }
-    return false;
-  }
-
   #usernameTaken(username: string | null | undefined, accountId: string): boolean {
     if (username === null || username === undefined) {
       return false;
@@ -1134,19 +1048,6 @@ export class InMemoryAuthStore implements AuthStore {
       }
     }
     return false;
-  }
-
-  async getAccountByLightningAddress(address: string): Promise<Account | undefined> {
-    const needle = address.trim().toLowerCase();
-    for (const account of this.#accounts.values()) {
-      if (account.lightningAddress === null) {
-        continue;
-      }
-      if (account.lightningAddress.trim().toLowerCase() === needle) {
-        return account;
-      }
-    }
-    return undefined;
   }
 
   async getAccountByUsername(username: string): Promise<Account | undefined> {
@@ -1239,10 +1140,6 @@ export class InMemoryAuthStore implements AuthStore {
     return [...this.#passkeyChallenges.values()].map((challenge) => ({ ...challenge }));
   }
 
-  async listAddressVerifications(): Promise<AddressVerification[]> {
-    return [...this.#verifications.values()].map((row) => ({ ...row }));
-  }
-
   async listNostrKeys(): Promise<NostrKeyListRow[]> {
     const rows: NostrKeyListRow[] = [];
     for (const account of this.#accounts.values()) {
@@ -1298,18 +1195,6 @@ export class InMemoryAuthStore implements AuthStore {
 
   async getSession(token: string): Promise<Session | undefined> {
     return this.#sessions.get(token);
-  }
-
-  async putVerification(verification: AddressVerification): Promise<void> {
-    this.#verifications.set(verification.accountId, verification);
-  }
-
-  async getVerification(accountId: string): Promise<AddressVerification | undefined> {
-    return this.#verifications.get(accountId);
-  }
-
-  async deleteVerification(accountId: string): Promise<void> {
-    this.#verifications.delete(accountId);
   }
 
   async createPasskeyChallenge(challenge: PasskeyChallenge): Promise<void> {

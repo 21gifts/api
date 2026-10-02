@@ -12,8 +12,6 @@ const base: Account = {
   linkingKey: null,
   role: 'basis',
   name: null,
-  lightningAddress: null,
-  lightningAddressVerified: false,
   forumLawsDismissed: false,
   location: null,
   viewKey: 'a'.repeat(64),
@@ -41,7 +39,7 @@ describe('requireAction', () => {
       ...base,
       name: 'Ada',
       username: 'ada',
-      lightningAddress: 'ada@walletofsatoshi.com',
+      sparkPubkeyVerifiedAt: 3,
       rulesAgreedAt: 2,
     };
     expect(requireAction(account, 'forum.post')).toEqual({ ok: true });
@@ -88,7 +86,6 @@ describe('requireAction', () => {
     const account: Account = {
       ...base,
       name: null,
-      lightningAddress: null,
       rulesAgreedAt: 2,
     };
     expect(requireAction(account, 'forum.pay')).toEqual({ ok: true });
@@ -100,7 +97,7 @@ describe('requireAction', () => {
       walletRequired: true,
       name: 'Ada',
       username: 'ada',
-      lightningAddress: 'ada@walletofsatoshi.com',
+      sparkPubkeyVerifiedAt: 3,
       rulesAgreedAt: 2,
     };
     expect(accountMissing(account)).toEqual([]);
@@ -109,8 +106,8 @@ describe('requireAction', () => {
   });
 });
 
-describe('forum.post with a verified wallet', () => {
-  it('passes without an external Lightning address', () => {
+describe('forum.post and the receiving wallet', () => {
+  it('passes only with a verified wallet', () => {
     const account: Account = {
       ...base,
       name: 'Ada',

@@ -2,7 +2,14 @@ import { describe, expect, it, vi } from 'vitest';
 import type { Account } from '@/lib/auth/store';
 import type { LnurlServerConfig } from '@/lib/config';
 import type { FetchFn } from '@/lib/lnurlp';
-import { lnurlServerFetch, receivingAddress, type ReceivingAccount } from '@/lib/receiving-address';
+import { InMemoryAuthStore } from '@/lib/auth/store';
+import {
+  accountByReceivingAddress,
+  lnurlServerFetch,
+  receivingAddress,
+  type ReceivingAccount,
+} from '@/lib/receiving-address';
+import { createWalletAccount, LNURL_SERVER, WALLET_PUBKEY } from '@/__tests__/helpers/wallet-lnurl';
 
 const config: LnurlServerConfig = {
   baseUrl: 'http://lnurl.internal:8080',
@@ -19,7 +26,6 @@ function without(key: keyof ReceivingAccount): ReceivingAccount {
 
 function account(partial: Partial<ReceivingAccount> = {}): ReceivingAccount {
   return {
-    lightningAddress: ' alice@walletofsatoshi.com ',
     username: ' Alice ',
     sparkPubkey: KEY,
     sparkPubkeyVerifiedAt: 1,
@@ -30,29 +36,64 @@ function account(partial: Partial<ReceivingAccount> = {}): ReceivingAccount {
 describe('receivingAddress', () => {
   it('uses the wallet-backed address for a verified wallet', () => {
     expect(receivingAddress(account(), config)).toEqual({
-      kind: 'wallet',
       address: 'alice@21.gifts',
       sparkPubkey: KEY,
     });
   });
 
-  it('falls back to the linked address when the wallet cannot be used', () => {
-    const external = { kind: 'external', address: 'alice@walletofsatoshi.com' };
-    expect(receivingAddress(account(), undefined)).toEqual(external);
-    expect(receivingAddress(account({ sparkPubkeyVerifiedAt: null }), config)).toEqual(external);
-    expect(receivingAddress(without('sparkPubkeyVerifiedAt'), config)).toEqual(external);
-    expect(receivingAddress(account({ sparkPubkey: null }), config)).toEqual(external);
-    expect(receivingAddress(without('sparkPubkey'), config)).toEqual(external);
-    expect(receivingAddress(account({ username: '  ' }), config)).toEqual(external);
-    expect(receivingAddress(account({ username: null }), config)).toEqual(external);
-    expect(receivingAddress(without('username'), config)).toEqual(external);
+  it('returns null without a verified wallet, a username, or the LNURL server', () => {
+    expect(receivingAddress(account(), undefined)).toBeNull();
+    expect(receivingAddress(account({ sparkPubkeyVerifiedAt: null }), config)).toBeNull();
+    expect(receivingAddress(without('sparkPubkeyVerifiedAt'), config)).toBeNull();
+    expect(receivingAddress(account({ sparkPubkey: null }), config)).toBeNull();
+    expect(receivingAddress(without('sparkPubkey'), config)).toBeNull();
+    expect(receivingAddress(account({ username: '  ' }), config)).toBeNull();
+    expect(receivingAddress(account({ username: null }), config)).toBeNull();
+    expect(receivingAddress(without('username'), config)).toBeNull();
+  });
+});
+
+describe('accountByReceivingAddress', () => {
+  const walletConfig = { ...LNURL_SERVER, host: 'Example.Test' };
+
+  async function seeded(): Promise<InMemoryAuthStore> {
+    const store = new InMemoryAuthStore();
+    await createWalletAccount(store, '00000000-0000-4000-8000-000000000001', 'alice');
+    await store.createAccount({
+      id: '00000000-0000-4000-8000-000000000002',
+      linkingKey: null,
+      role: 'verified',
+      name: 'bob',
+      username: 'bob',
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: 'b'.repeat(64),
+      createdAt: 1,
+      rulesAgreedAt: 1,
+    });
+    return store;
+  }
+
+  it('finds the member by the wallet address, case-insensitively', async () => {
+    const store = await seeded();
+    const found = await accountByReceivingAddress(store, ' ALICE@Example.Test ', walletConfig);
+    expect(found?.account.id).toBe('00000000-0000-4000-8000-000000000001');
+    expect(found?.receiving).toEqual({ address: 'alice@Example.Test', sparkPubkey: WALLET_PUBKEY });
   });
 
-  it('returns null without a wallet and without a linked address', () => {
-    expect(receivingAddress(account({ lightningAddress: null }), undefined)).toBeNull();
-    expect(
-      receivingAddress(account({ lightningAddress: '  ', sparkPubkeyVerifiedAt: null }), config),
-    ).toBeNull();
+  it('finds nobody for other addresses or with the LNURL server off', async () => {
+    const store = await seeded();
+    for (const address of [
+      'alice@example.com',
+      'carol@example.test',
+      'bob@example.test',
+      '@example.test',
+      'example.test',
+      'alice @example.test',
+    ]) {
+      expect(await accountByReceivingAddress(store, address, walletConfig)).toBeUndefined();
+    }
+    expect(await accountByReceivingAddress(store, 'alice@example.test', undefined)).toBeUndefined();
   });
 });
 
@@ -92,11 +133,8 @@ describe('lnurlServerFetch', () => {
     const fetchImpl = vi.fn(async () => response);
     const routed = lnurlServerFetch(config, fetchImpl, accounts);
     const init = { redirect: 'error' as const };
-    expect(await routed('https://walletofsatoshi.com/.well-known/lnurlp/a', init)).toBe(response);
-    expect(fetchImpl).toHaveBeenCalledWith(
-      'https://walletofsatoshi.com/.well-known/lnurlp/a',
-      init,
-    );
+    expect(await routed('https://example.com/.well-known/lnurlp/a', init)).toBe(response);
+    expect(fetchImpl).toHaveBeenCalledWith('https://example.com/.well-known/lnurlp/a', init);
   });
 
   it('sends the wallet-backed host to the LNURL server', async () => {

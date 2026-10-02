@@ -31,8 +31,6 @@ async function seedVerifiedWallet(store: InMemoryAuthStore): Promise<void> {
     role: 'basis',
     name: 'Ada',
     username: 'ada',
-    lightningAddress: null,
-    lightningAddressVerified: false,
     forumLawsDismissed: false,
     location: null,
     viewKey: 'cd'.repeat(32),
@@ -64,8 +62,6 @@ describe('GET /.well-known/nostr.json', () => {
       linkingKey: null,
       role: 'basis',
       name: 'Ada',
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'cd'.repeat(32),
@@ -120,7 +116,7 @@ describe('GET /.well-known/nostr.json', () => {
 });
 
 describe('GET /.well-known/lnurlp/:username', () => {
-  it('passes through the linked Wallet of Satoshi payRequest', async () => {
+  it('returns 404 for a member without a verified wallet and never fetches', async () => {
     const auth = new InMemoryAuthStore();
     await auth.createAccount({
       id: '00000000-0000-4000-8000-000000000001',
@@ -128,71 +124,36 @@ describe('GET /.well-known/lnurlp/:username', () => {
       role: 'basis',
       name: 'Ada',
       username: 'ada',
-      lightningAddress: 'alice@walletofsatoshi.com',
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'cd'.repeat(32),
       createdAt: 1,
       rulesAgreedAt: null,
     });
-    const fetchImpl = async (input: string | URL | Request) => {
-      expect(String(input)).toBe('https://walletofsatoshi.com/.well-known/lnurlp/alice');
-      return new Response(
-        JSON.stringify({
-          tag: 'payRequest',
-          callback: 'https://walletofsatoshi.com/lnurlp/callback',
-          minSendable: 1000,
-          maxSendable: 100_000_000_000,
-        }),
-        { status: 200, headers: { 'content-type': 'application/json' } },
-      );
-    };
-    const app = createApp({ authStore: auth, fetchImpl });
+    const fetchImpl = vi.fn<FetchFn>();
+    const app = createApp({
+      authStore: auth,
+      fetchImpl,
+      env: {
+        ...process.env,
+        LNURL_SERVER_URL: LNURL_CONFIG.baseUrl,
+        PUBLIC_BASE_URL: LNURL_CONFIG.publicBaseUrl,
+      },
+    });
     const res = await app.request('/.well-known/lnurlp/Ada');
-    const bare = new Hono().route('/.well-known', wellKnownRoutes({ auth, fetchImpl }));
-    const unpinned = await bare.request('/.well-known/lnurlp/ada');
-    expect(unpinned.status).toBe(200);
-    expect(res.status).toBe(200);
+    expect(res.status).toBe(404);
     expect(res.headers.get('Access-Control-Allow-Origin')).toBe('*');
     expect(res.headers.get('Cache-Control')).toBe('no-store');
-    const body = (await res.json()) as { tag: string; callback: string };
-    expect(body.tag).toBe('payRequest');
-    expect(body.callback).toBe('https://walletofsatoshi.com/lnurlp/callback');
+    expect(await res.json()).toEqual({ error: 'Not found' });
+    expect(fetchImpl).not.toHaveBeenCalled();
   });
 
-  it('returns 404 when the username is unknown or has no linked address', async () => {
+  it('returns 404 when the username is unknown or invalid', async () => {
     const app = createApp({ authStore: new InMemoryAuthStore() });
     const missing = await app.request('/.well-known/lnurlp/ada');
     expect(missing.status).toBe(404);
     const invalid = await app.request('/.well-known/lnurlp/_');
     expect(invalid.status).toBe(404);
-  });
-
-  it('returns 502 when Wallet of Satoshi is unreachable', async () => {
-    const auth = new InMemoryAuthStore();
-    await auth.createAccount({
-      id: '00000000-0000-4000-8000-000000000001',
-      linkingKey: null,
-      role: 'basis',
-      name: 'Ada',
-      username: 'ada',
-      lightningAddress: 'alice@walletofsatoshi.com',
-      lightningAddressVerified: false,
-      forumLawsDismissed: false,
-      location: null,
-      viewKey: 'cd'.repeat(32),
-      createdAt: 1,
-      rulesAgreedAt: null,
-    });
-    const app = createApp({
-      authStore: auth,
-      fetchImpl: async () => {
-        throw new Error('offline');
-      },
-    });
-    const res = await app.request('/.well-known/lnurlp/ada');
-    expect(res.status).toBe(502);
   });
 
   it('returns 502 when the username lookup throws', async () => {
@@ -389,7 +350,7 @@ describe('GET /.well-known/lnurlp/:username', () => {
       expect(res.status).toBe(404);
     });
 
-    it('falls through to the external address when the wallet is not verified', async () => {
+    it('returns 404 when the wallet is claimed but not verified', async () => {
       const auth = new InMemoryAuthStore();
       await auth.createAccount({
         id: '00000000-0000-4000-8000-000000000001',
@@ -397,8 +358,6 @@ describe('GET /.well-known/lnurlp/:username', () => {
         role: 'basis',
         name: 'Ada',
         username: 'ada',
-        lightningAddress: 'alice@walletofsatoshi.com',
-        lightningAddressVerified: false,
         forumLawsDismissed: false,
         location: null,
         viewKey: 'cd'.repeat(32),
@@ -407,83 +366,28 @@ describe('GET /.well-known/lnurlp/:username', () => {
         walletRequired: true,
       });
       await auth.claimSparkPubkey('00000000-0000-4000-8000-000000000001', PUBKEY);
-      const fetchImpl: FetchFn = async (input) => {
-        expect(String(input)).toBe('https://walletofsatoshi.com/.well-known/lnurlp/alice');
-        return new Response(
-          JSON.stringify({
-            tag: 'payRequest',
-            callback: 'https://walletofsatoshi.com/lnurlp/callback',
-            minSendable: 1000,
-            maxSendable: 100_000_000_000,
-          }),
-          { status: 200 },
-        );
-      };
+      const fetchImpl = vi.fn<FetchFn>();
       const app = new Hono().route(
         '/.well-known',
         wellKnownRoutes({ auth, fetchImpl, lnurlServer: LNURL_CONFIG }),
       );
       const res = await app.request('/.well-known/lnurlp/ada');
-      expect(res.status).toBe(200);
-      expect(((await res.json()) as { callback: string }).callback).toBe(
-        'https://walletofsatoshi.com/lnurlp/callback',
-      );
+      expect(res.status).toBe(404);
+      expect(await res.json()).toEqual({ error: 'Not found' });
+      expect(fetchImpl).not.toHaveBeenCalled();
+      expect(
+        parsedEvents(warn).some((e) => e['event'] === 'lnurlp.unknown' && e['username'] === 'ada'),
+      ).toBe(true);
     });
 
-    it('prefers the verified wallet over a linked external address', async () => {
+    it('returns 404 for a verified wallet when lnurlServer is omitted', async () => {
       const auth = new InMemoryAuthStore();
       await seedVerifiedWallet(auth);
-      const account = await auth.getAccount('00000000-0000-4000-8000-000000000001');
-      await auth.updateAccount({
-        ...account!,
-        lightningAddress: 'alice@walletofsatoshi.com',
-        lightningAddressVerified: true,
-      });
-      const document = walletPayDoc();
-      const fetchImpl = vi.fn<FetchFn>(
-        async () =>
-          new Response(JSON.stringify(document), {
-            status: 200,
-            headers: { 'content-type': 'application/json' },
-          }),
-      );
-      const app = new Hono().route(
-        '/.well-known',
-        wellKnownRoutes({ auth, fetchImpl, lnurlServer: LNURL_CONFIG }),
-      );
-      const res = await app.request('/.well-known/lnurlp/ada');
-      expect(res.status).toBe(200);
-      expect(await res.json()).toEqual(document);
-      expect(fetchImpl).toHaveBeenCalledTimes(1);
-      expect(String(fetchImpl.mock.calls[0]?.[0])).toBe('http://lnurl.test/.well-known/lnurlp/ada');
-    });
-
-    it('uses the external address when lnurlServer is omitted', async () => {
-      const auth = new InMemoryAuthStore();
-      await seedVerifiedWallet(auth);
-      const account = await auth.getAccount('00000000-0000-4000-8000-000000000001');
-      await auth.updateAccount({
-        ...account!,
-        lightningAddress: 'alice@walletofsatoshi.com',
-      });
-      const fetchImpl: FetchFn = async (input) => {
-        expect(String(input)).toBe('https://walletofsatoshi.com/.well-known/lnurlp/alice');
-        return new Response(
-          JSON.stringify({
-            tag: 'payRequest',
-            callback: 'https://walletofsatoshi.com/lnurlp/callback',
-            minSendable: 1000,
-            maxSendable: 100_000_000_000,
-          }),
-          { status: 200 },
-        );
-      };
+      const fetchImpl = vi.fn<FetchFn>();
       const app = new Hono().route('/.well-known', wellKnownRoutes({ auth, fetchImpl }));
       const res = await app.request('/.well-known/lnurlp/ada');
-      expect(res.status).toBe(200);
-      expect(((await res.json()) as { callback: string }).callback).toBe(
-        'https://walletofsatoshi.com/lnurlp/callback',
-      );
+      expect(res.status).toBe(404);
+      expect(fetchImpl).not.toHaveBeenCalled();
     });
   });
 });
