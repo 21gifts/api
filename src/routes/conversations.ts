@@ -492,7 +492,7 @@ async function serveConversationPhoto(
  * for anyone at least moderator. Photo GET routes and
  * `POST /:id/messages/:messageId/translate` register before `GET /:id`.
  *
- * @param deps - Stores, clock, optional spend ping, invoice collaborators, wait injects, optional push and notification stores, optional `translationStore` (default empty `InMemoryTranslationStore`), and optional `env`.
+ * @param deps - Stores, clock, optional spend ping, invoice collaborators, wait injects, optional push and notification stores, optional `translationStore` (default empty `InMemoryTranslationStore`), optional `env`, and the optional `lnurlServer` and `sparkInvoices` for wallet-backed counterparts.
  * @returns A Hono app with list/open/read/reply/invoice/photo/translate routes and GET `/moderator-group`.
  */
 export function conversationRoutes(deps: ConversationRouteDeps): Hono {

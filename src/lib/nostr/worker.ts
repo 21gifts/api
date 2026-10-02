@@ -427,7 +427,8 @@ async function indexHotZapReceipts(deps: NostrWorkerDeps, nowMs: number): Promis
  * relay and reply inboxes, and a fully successful kind:0 or kind:10002 is
  * copied to the indexer; those NACKs do not change publish state.
  *
- * @param deps - Stores, kek, publisher, querier, fetch, clock, env.
+ * @param deps - Stores, kek, publisher, querier, fetch, clock, env, and the
+ *   optional LNURL server (receipt signer lookup and kind:0 `lud16`).
  * @param mode - Which lane work to run (default `'all'`).
  * @returns Resolves when the selected work has finished (notify failures are
  *   swallowed).

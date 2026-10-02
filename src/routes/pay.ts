@@ -45,7 +45,7 @@ type PayLookup =
  * not called when account or LNURL resolution already failed.
  *
  * @param rawUsername - Path parameter before normalisation.
- * @param deps - Auth store, LNURL-pay fetch, POS store, and clock.
+ * @param deps - Auth store, LNURL-pay fetch, POS store, clock, and optional LNURL server.
  * @returns Display fields, bounds, and `charge`, or an HTTP error payload.
  */
 async function lookupPayAccount(
@@ -128,7 +128,8 @@ async function lookupPayAccount(
 /**
  * Build the `/pay` route group.
  *
- * @param deps - Auth store, fetch, POS store, and clock. All required.
+ * @param deps - Auth store, fetch, POS store, and clock (required), and the
+ *   optional LNURL server (omitted when it is off).
  * @returns Hono app with `GET /:username` and `POST /:username/invoice`.
  */
 export function payRoutes(deps: {
