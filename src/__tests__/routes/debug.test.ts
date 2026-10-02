@@ -722,13 +722,20 @@ describe('debugRoutes', () => {
     const store = new InMemoryAuthStore();
     await createWalletAccount(store, 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', 'ada');
     const app = new Hono().route('/debug/accounts', debugRoutes({ store, debugToken: 'secret' }));
-    for (const body of [{ lightningAddress: null }, { role: 'verified', lightningAddress: null }]) {
+    for (const body of [
+      { lightningAddress: null },
+      { role: 'moderator', lightningAddress: null },
+    ]) {
       const res = await app.request('/debug/accounts/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', {
         method: 'PATCH',
         headers: { authorization: 'Bearer secret', 'content-type': 'application/json' },
         body: JSON.stringify(body),
       });
       expect(res.status).toBe(400);
+      expect(await res.json()).toEqual({
+        error:
+          'Expected a JSON body with a "role" string, platform boolean, and/or sessionRefused boolean',
+      });
     }
     expect((await store.getAccount('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'))?.role).toBe('verified');
   });

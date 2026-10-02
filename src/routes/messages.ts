@@ -17,6 +17,7 @@ import {
 } from '@/lib/goal-rate';
 import { eligibleToday } from '@/lib/funding';
 import { InMemoryFundingStore, type FundingStore } from '@/lib/funding-store';
+import type { GiftStore } from '@/lib/gift-store';
 import { logEvent } from '@/lib/log';
 import { shownFiatFromBody, type FiatAmounts } from '@/lib/money';
 import { buildPostStats } from '@/lib/post-stats';
@@ -291,6 +292,12 @@ export interface MessagesRouteDeps {
    * {@link InMemoryFundingStore}).
    */
   fundingStore?: FundingStore;
+  /**
+   * Outbound house gifts. A recorded `welcome` gift under the author's
+   * username stops a second welcome ping. Omitted → only the platform
+   * `Welcome` reply counts.
+   */
+  giftStore?: Pick<GiftStore, 'listOutbound'>;
   /**
    * Optional in-app notification store. When present, living-room events
    * fan out via {@link notifyForumPost} / {@link notifyForumReply} to every
@@ -1043,6 +1050,7 @@ async function persistForumPost(
         spendPing: deps.spendPing,
         messages: deps.store,
         auth: deps.authStore,
+        gifts: deps.giftStore,
         account,
         lnurlServer,
       });
