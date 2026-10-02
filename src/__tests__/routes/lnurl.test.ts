@@ -75,7 +75,11 @@ async function mount(
   env: Record<string, string | undefined> = { PUBLIC_BASE_URL: 'https://21.gifts' },
 ): Promise<Hono> {
   const auth = await seeded();
-  return new Hono().route('/lnurl', lnurlRoutes({ auth, fetchImpl, now: () => FROZEN, env }));
+  const lookupImpl = async (): Promise<string[]> => ['93.184.216.34'];
+  return new Hono().route(
+    '/lnurl',
+    lnurlRoutes({ auth, fetchImpl, now: () => FROZEN, env, lookupImpl }),
+  );
 }
 
 function post(app: Hono, path: string, body: unknown, headers: Record<string, string> = AUTH) {
