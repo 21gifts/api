@@ -50,7 +50,7 @@ async function authedAccount(
  * Mounted at `/pos` so the public paths are `GET /pos`, `POST /pos`,
  * and `DELETE /pos`.
  *
- * @param deps - Charge store, auth store, clock, and LNURL fetch.
+ * @param deps - Charge store, auth store, clock, LNURL fetch, and optional LNURL server.
  * @returns A Hono app with `GET /`, `POST /`, and `DELETE /`.
  */
 export function posRoutes(deps: PosRouteDeps): Hono {

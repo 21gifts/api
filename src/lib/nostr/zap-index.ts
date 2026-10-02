@@ -991,7 +991,8 @@ export async function indexZapReceipt(args: {
  *   `notificationStore`, and `conversations` (PN invoices append here;
  *   omitted → `rejected`/`conversation`); optional `spendPing`, `postLimiter`,
  *   and `fundingStore` for platform-note compose (`spendPing` only when
- *   `eligibleToday`, same gate as `POST /messages`).
+ *   `eligibleToday`, same gate as `POST /messages`); optional `lnurlServer`
+ *   for wallet-backed recipients.
  * @returns Resolves when the ingest pass finishes.
  * @throws Propagates relay-query and unguarded store failures.
  */
