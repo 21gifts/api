@@ -50,16 +50,15 @@ export interface SparkWorkerDeps {
 /**
  * Turn one finalized Spark invoice into an ingested and published receipt.
  *
- * The row is settled when the ingest credited this receipt, or when another
- * receipt owns the zap invoice's payment hash (it was paid and credited some
- * other way). Otherwise (for example the LNURL server was briefly unreachable,
+ * The row is settled when the ingest credited this receipt and it holds the
+ * payment hash claim, or when another receipt owns the zap invoice's payment
+ * hash (it was paid and credited some other way). Otherwise (for example the LNURL server was briefly unreachable,
  * or crediting failed after the claim) the row stays open and the next tick
  * ingests the same receipt again; its id is stable, so a claim it already
  * holds lets that retry complete the credit.
- * The receipt is published only when it was credited and holds the payment
- * hash claim, so a zap invoice already paid over Lightning does not get a
- * second receipt (a conversation gift that already exists is reported indexed
- * without a claim). Publishing is best effort:
+ * The receipt is published only in the first case, so a zap invoice already
+ * paid over Lightning does not get a second receipt (a conversation gift that
+ * already exists is reported indexed without a claim). Publishing is best effort:
  * when no relay accepts the receipt (or the publisher throws) it logs
  * `spark.receipt.publish_failed`, and the row is still settled because the
  * credit is already done.
@@ -84,11 +83,12 @@ async function settleRow(
   }
   const credited = await deps.ingest(built.event);
   const owner = await deps.claims.zapPaymentReceiptId(row.paymentHash);
-  if (!credited && (owner === undefined || owner === built.event.id)) {
+  const ownsClaim = owner === built.event.id;
+  if (owner === undefined || (ownsClaim && !credited)) {
     logEvent('spark.receipt.not_credited', { paymentHash: row.paymentHash });
     return;
   }
-  if (credited && owner === built.event.id && built.relays.length > 0) {
+  if (ownsClaim && built.relays.length > 0) {
     let accepted = false;
     try {
       const acks = await deps.publisher.publish(

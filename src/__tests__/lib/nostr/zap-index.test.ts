@@ -12026,6 +12026,30 @@ describe('wallet-backed receipt ingest', () => {
     );
   });
 
+  it('resolves the signer of an address on the LNURL server host on every receipt, without the cache', async () => {
+    const store = new InMemoryMessageStore();
+    const auth = new InMemoryAuthStore();
+    await walletAccount(auth, 'acc-wallet-nocache', 'wallet-nocache');
+    await seedStore({ store, auth, accountId: 'acc-wallet-nocache', createAccount: false });
+    const calls: string[] = [];
+    const args = {
+      store,
+      auth,
+      querier: new RecordingQuerier(),
+      urls: URLS,
+      timeoutMs: 50,
+      now: () => 10,
+      fetchImpl: walletFetch(calls),
+      lnurlServer: LNURL,
+    };
+    mockedDecode.mockReturnValue({ paymentHash: 'c3'.repeat(32), amountMsat: 21_000 });
+    expect(await ingestZapReceipt(signedReceipt('lnbc-wallet-nocache-1', 100), args)).toBe(true);
+    mockedDecode.mockReturnValue({ paymentHash: 'c4'.repeat(32), amountMsat: 21_000 });
+    expect(await ingestZapReceipt(signedReceipt('lnbc-wallet-nocache-2', 101), args)).toBe(true);
+    const doc = `${LNURL.baseUrl}/.well-known/lnurlp/wallet-nocache`;
+    expect(calls.filter((url) => url === doc)).toHaveLength(2);
+  });
+
   it('persists a rejected error row when an ingest step throws', async () => {
     const store = new InMemoryMessageStore();
     const auth = new InMemoryAuthStore();
