@@ -591,6 +591,15 @@ describe('PostgresAuthStore', () => {
     expect(await store.accountHasPasskey('acc')).toBe(true);
   });
 
+  it('skips rows with a null view_key', async () => {
+    const sql = new MockSql();
+    sql.nextRows = [{ ...ACCOUNT_ROW, view_key: null }];
+    const store = new PostgresAuthStore(sql);
+    expect(await store.getAccount('acc')).toBeUndefined();
+    expect(await store.getAccountByViewKey(VIEW_KEY)).toBeUndefined();
+    expect(await store.listAccounts()).toEqual([]);
+  });
+
   it('createAccount treats a unique_violation as a no-op', async () => {
     const sql = new MockSql();
     sql.executeError = Object.assign(new Error('duplicate key'), { code: '23505' });
