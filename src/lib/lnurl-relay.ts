@@ -6,7 +6,8 @@
  * behalf and validates them before returning them. Every outbound URL is
  * checked as input: `https`, a DNS name with at least two labels, no
  * address literal, no `localhost` / `.localhost` / `.local` / `.internal`,
- * no port, no credentials, and a name that resolves to public addresses
+ * no port other than the default 443, no user name or password, and a name
+ * that resolves to public addresses
  * only. The relay waits at most {@link LNURL_RELAY_TIMEOUT_MS} for each host
  * lookup and each fetch, and at most {@link LNURL_RELAY_TOTAL_MS} for the whole
  * call; fetches do not follow redirects and read at most

@@ -599,12 +599,13 @@ no CORS headers. Body `{ "target": "<user@domain>" | "<bech32 LNURL>" }`. An
 optional `lightning:` prefix is dropped and the target is lowercased.
 
 The pay-request URL (`https://<domain>/.well-known/lnurlp/<user>`, or the
-decoded LNURL) must use `https`, have no port and no credentials, and its host
+decoded LNURL) must use `https`, have no port other than the default 443 and no user name or
+password, and its host
 must be a DNS name with at least two labels: no address literal, no
 `localhost`, no `.local`, `.internal`, or `.localhost` name, no trailing dot.
 Every address the host resolves to must pass the public address check: no
-loopback, private, shared, link-local, benchmark, documentation, multicast,
-or reserved IPv4 (also when carried as IPv4-mapped, IPv4-compatible,
+loopback, private, shared, link-local, benchmark, documentation, 6to4 relay
+(`192.88.99/24`), multicast, or reserved IPv4 (also when carried as IPv4-mapped, IPv4-compatible,
 IPv4-translated, 6to4, or NAT64 IPv6). IPv6 unique-local, link-local, site-local, multicast,
 documentation, Teredo, `2001:1::/32`, benchmarking, ORCHID, `5f00::/16`,
 discard, and local NAT64 ranges

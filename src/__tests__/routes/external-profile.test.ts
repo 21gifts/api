@@ -608,6 +608,7 @@ describe('GET /messages/:id/external-profile', () => {
     ['172.15.0.1', true],
     ['172.32.0.1', true],
     ['192.0.1.1', true],
+    ['192.88.99.1', false],
     ['192.1.0.1', true],
     ['198.50.0.1', true],
     ['198.51.99.1', true],
