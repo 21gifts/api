@@ -980,6 +980,13 @@
 - **Used by:** The statistics shop chart for every visitor.
 - **Auth:** none.
 
+## Endpoint: GET /funding/goal
+
+- **Purpose:** Bearer session, any role including `basis`. How many shops had at least one till charge on each of the last 7 UTC days ending today (oldest first, zeros included), and how many of those shops had a charge on at least 5 of those days. A shop is a live top-level forum note whose text contains `#21GiftsShop` (case-insensitive token; the next character must not be a letter, digit, or underscore) and whose `shop_account_id` is set. It counts on a UTC day when that currently assigned account has at least one `pos_charge` with `created_at` on that UTC day. Any status (`pending`, `cancelled`, `expired`) counts; creating the charge is the till use. There is no paid status. One account assigned to two qualifying notes counts as two shops. The 5 days need not be consecutive. This is not `GET /shops/activity`. JSON `{ days: [{ day, shopCount }], qualifyingShops }`.
+- **Errors:** 401 `{ error: 'Unauthorized' }` without a bearer session or with an unknown bearer. 503 `{ error: 'Funding goal is unavailable' }` (`funding.goal.failed`, keys `event` and `ts` only).
+- **Used by:** The signed-in grant goals page.
+- **Auth:** `Authorization: Bearer` session. Any signed-in role. Not `DEBUG_TOKEN`.
+
 ## Endpoint: GET /funding/payout-days
 
 - **Purpose:** Staff Bearer. Seven UTC days ending today (oldest first) and one row per person who missed a grant day, received a daily payout, or received a welcome gift in that window, including a person who was not entitled. JSON `{ days, rows }` where each row is `{ accountId, name, days, welcome }`. Each cell in `days` is `blocked` (not entitled), `missed` (entitled, no daily gift), or `paid` (kind `daily` that UTC day). `welcome` is seven booleans in the same order as `days`. A daily gift sets `paid` and does not set `welcome`. A welcome gift sets `welcome` and does not change `blocked`, `missed`, or `paid`. Both may be true on the same UTC day. Moderator stipends, blank handles, gifts outside the window, and other kinds do not count. Does not call lazy trial expiry. Logs `funding.payouts.listed` `{ count }`.
