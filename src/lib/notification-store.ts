@@ -127,9 +127,8 @@ export interface NotificationStore {
 
   /**
    * Delete notifications whose `id` is in `ids` and whose
-   * `recipientAccountId` is `accountId`. Empty `ids`, or no well-formed
-   * UUID, returns 0 and does not run SQL. Never removes another
-   * recipient's row.
+   * `recipientAccountId` is `accountId`. Empty `ids` returns 0.
+   * Never removes another recipient's row.
    *
    * @param accountId - Recipient account.
    * @param ids - Notification ids to remove for that recipient.
