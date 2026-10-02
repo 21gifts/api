@@ -5425,3 +5425,15 @@ exist on the account model; `GET /debug/accounts` and
 - Internationalization of api response text and push payloads (they stay English). A signed-in account may store `locale` and `fiat`; that is not translated copy.
 - Platform custody of **receiver** funds (receiving stays LUD-16 only)
 - Arbitrary LNDHub URLs (the external spend worker uses lightning.space only)
+
+## Habit-Tracker
+
+`GET /habit-tracker` is publicly readable. Only founders and initiators can add,
+retire, and rate their own resolutions. Each Monday at 00:00 Asia/Manila a new
+ISO week begins with active resolutions and no selected outcomes. Outcomes are
+`achieved`, `partial`, or `missed`; absence means not yet rated. The current and
+previous week remain rateable, including Monday reporting after Sunday rest.
+Retirement preserves the current and preceding weeks and stops future carry-over.
+Week blocks are derived from persisted first/last weeks, so downtime cannot omit
+weeks or duplicate snapshots. Comments require a session of any role and are
+persisted separately from forum messages and Nostr publication.
