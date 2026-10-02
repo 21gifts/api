@@ -57,7 +57,10 @@ export interface SparkWorkerDeps {
  * ingests the same receipt again; its id is stable, so a claim it already
  * holds lets that retry complete the credit.
  * The receipt is published only when it was credited, so a zap invoice already
- * paid over Lightning does not get a second receipt.
+ * paid over Lightning does not get a second receipt. Publishing is best effort:
+ * when no relay accepts the receipt (or the publisher throws) it logs
+ * `spark.receipt.publish_failed`, and the row is still settled because the
+ * credit is already done.
  *
  * @param deps - Worker collaborators.
  * @param row - The open row.
@@ -84,13 +87,18 @@ async function settleRow(
     return;
   }
   if (credited && built.relays.length > 0) {
+    let accepted = false;
     try {
-      await deps.publisher.publish(
+      const acks = await deps.publisher.publish(
         built.event as unknown as Record<string, unknown>,
         built.relays,
         RECEIPT_PUBLISH_TIMEOUT_MS,
       );
+      accepted = acks.some((ack) => ack.ok);
     } catch {
+      accepted = false;
+    }
+    if (!accepted) {
       logEvent('spark.receipt.publish_failed', { paymentHash: row.paymentHash });
     }
   }

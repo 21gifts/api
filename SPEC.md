@@ -5675,7 +5675,7 @@ hex of the wallet key, and a counter byte from 0 (the first valid secp256k1
 secret key); its public key is the `nostrPubkey` the LNURL server advertises
 for that member. The receipt is fed straight into the receipt ingest. When the ingest credited this receipt, it is published to the
 relays named in the zap request and the row is settled (transfer id and
-receipt id). When another receipt already owns the payment hash of `pr`, the
+receipt id). Publishing is best effort: when no relay accepts the receipt, the api logs `spark.receipt.publish_failed` and the row is still settled. When another receipt already owns the payment hash of `pr`, the
 row is settled without publishing. Otherwise the row stays open and the next
 tick ingests the same receipt again. Crediting is the existing
 receipt path; the payment hash is claimed once, so a second receipt for the
