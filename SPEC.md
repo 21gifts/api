@@ -50,7 +50,7 @@ does not fetch or pay invoices.
 Spend-worker invoice routes: `GET /invoices/passkey` and `GET /invoices/posted`
 report those gates; `GET /invoices/eligible` reports `{ eligible, status }` (`eligibleToday` plus `effectiveStatus`; grant required from UTC 2026-10-01);
 `POST /invoices` requires passkey and `eligibleToday` (grant required from UTC 2026-10-01), then fetches a BOLT11 via LNURL-pay through the internal LNURL-server resolver.
-Every `address` is matched only as the wallet-backed `<username>@<host of PUBLIC_BASE_URL>` (case-insensitive) of a member with a verified wallet; any other domain, or a member without one, gets the existing not-found answer.
+Every `address` is matched only as the wallet-backed `<username>@<host of PUBLIC_BASE_URL>` (case-insensitive) of a member with a verified wallet; any other domain, or a member without one, gets the existing not-found answer. An address must look like `local@domain.tld`, except that an address on the configured wallet host also passes when that host has a port or is an IP address; anything else is **400** `Not a valid Lightning Address (expected name@domain)`.
 When `messageId` is set, that note must be the address's live top-level note, including About me, and have a photo or video.
 When `messageId` is omitted, issue requires at least one live **top-level** forum message that is not the auto-created profile note.
 `POST /invoices/proof` accepts a preimage without re-checking the grant. Replies do not count. They require `SPEND_API_TOKEN`;
