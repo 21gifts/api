@@ -449,6 +449,41 @@ describe('PostgresPushStore', () => {
     expect(claimed.map((row) => row.id)).toEqual(['older', 'newer']);
   });
 
+  it('claimPending orders equal createdAt by id', async () => {
+    const sql = new MockSql();
+    const store = new PostgresPushStore(sql);
+    sql.nextRows = [
+      {
+        id: 'b',
+        account_id: 'acc-a',
+        type: 'dismiss',
+        message_id: null,
+        payload: '{}',
+        status: 'pending',
+        attempts: 0,
+        claimed_until: null,
+        created_at: new Date('2026-08-01T00:00:00.000Z'),
+        delivered_endpoints: '[]',
+        skip_endpoints: '[]',
+      },
+      {
+        id: 'a',
+        account_id: 'acc-a',
+        type: 'forum',
+        message_id: 'm',
+        payload: '{}',
+        status: 'pending',
+        attempts: 0,
+        claimed_until: null,
+        created_at: new Date('2026-08-01T00:00:00.000Z'),
+        delivered_endpoints: '[]',
+        skip_endpoints: '[]',
+      },
+    ];
+    const claimed = await store.claimPending(10, 1, 1000);
+    expect(claimed.map((row) => row.id)).toEqual(['a', 'b']);
+  });
+
   it.each([undefined, null, 'not-json'])(
     'maps missing or invalid skip_endpoints %s to an empty array',
     async (skipEndpoints) => {
