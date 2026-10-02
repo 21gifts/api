@@ -2891,8 +2891,9 @@ test('Function: messageGoalComplete — donation feed filters and paginates fund
   const tag = 'donation' + Date.now().toString();
   const ids: string[] = [];
   for (const amount of ['100', '1000']) {
+    const author = await verifiedAskSession(request);
     const response = await request.post('/messages', {
-      headers: auth,
+      headers: author,
       data: { text: '#' + tag, goalCurrency: 'BTC', goalAmount: amount },
     });
     expect(response.status()).toBe(200);
