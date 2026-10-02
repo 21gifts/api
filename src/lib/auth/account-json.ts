@@ -276,7 +276,10 @@ export const EMPTY_DEBUG_NOSTR: DebugNostrFields = {
   nostrKeyCreatedAt: null,
 };
 
-/** Operator JSON shape: every `account` column plus Nostr debug fields. */
+/**
+ * Operator JSON shape: the `account` columns except the legacy
+ * `lightning_address` and `lightning_address_verified`, plus Nostr debug fields.
+ */
 export interface DebugAccountResponse extends AccountResponse {
   /** True when this is the official platform account. */
   isPlatform: boolean;
@@ -476,8 +479,9 @@ function aboutMessageIdFor(account: Account, aboutMe: string | null): string | n
 /**
  * Project an account for `GET /debug/accounts` and `PATCH /debug/accounts/:id`.
  *
- * Includes every `account` column plus Nostr debug fields. Never used by
- * member `GET /me`. Does not decrypt nsec.
+ * Includes the `account` columns except the legacy `lightning_address` and
+ * `lightning_address_verified`, plus Nostr debug fields. Never used by member
+ * `GET /me`. Does not decrypt nsec.
  *
  * @param account - Stored account.
  * @param nostr - Optional Nostr columns (defaults to JSON `null`s).
