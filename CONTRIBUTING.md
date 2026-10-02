@@ -477,12 +477,12 @@ LNURL-pay;
 `lnurlServerRoutes`, which need `LNURL_SERVER_URL`;
 `receivingAddress` and `lnurlServerFetch` past the account lookup, which need an existing account
 (and, on the invoice routes, a session); `issueSparkInvoice`, which needs an account and a session;
-`resolveFreePaymentsConfig`, `concatBytes`, `protoVarintField`, `protoBytesField`, `decodeProto`,
-`encodeSparkInvoice`, `uuidV7`, `migrateSparkInvoiceSchema`, `InMemorySparkInvoiceStore`,
-`PostgresSparkInvoiceStore`, `encodeQuerySparkInvoicesRequest`, `parseQuerySparkInvoicesResponse`,
+`migrateSparkInvoiceSchema` and `PostgresSparkInvoiceStore`, which need `DATABASE_URL`;
+`concatBytes`, `protoVarintField`, `protoBytesField`, `decodeProto`, `encodeSparkInvoice`, `uuidV7`,
+`InMemorySparkInvoiceStore`, `encodeQuerySparkInvoicesRequest`, `parseQuerySparkInvoicesResponse`,
 `querySparkInvoices`, `zapReceiptSecretKey`, `buildZapReceipt`, `runSparkInvoiceTick`,
-`startSparkInvoiceWorker`, and `zapReceiptIngest`, which need `LNURL_SERVER_URL` and
-`LNURL_ZAP_NSEC_HEX`; `ingestZapReceipt`, which needs `DATABASE_URL` and `NOSTR_NSEC_KEK` (relay
+`startSparkInvoiceWorker`, and `zapReceiptIngest`, which are reached only when free in-app payments
+are on (`LNURL_SERVER_URL`, `PUBLIC_BASE_URL`, and `LNURL_ZAP_NSEC_HEX` resolve); `ingestZapReceipt`, which needs `DATABASE_URL` and `NOSTR_NSEC_KEK` (relay
 ingest) or free in-app payments (Spark worker)),
 that test still exists and asserts the default-boot outcome that proves it is
 not invoked (verification `503`, spend invoices unconfigured `503`, an
