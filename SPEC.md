@@ -3546,7 +3546,7 @@ Success is always **200** (never 404 for an unknown address):
 or `{ "hasPosted": false, "messageId": null, "postedAt": null, "hasMedia": false, "welcomeHasMedia": false, "welcomeMessageId": null }` when there is no account for the
 address, or the account has no live top-level note other than a text-only profile note.
 `hasPosted` is still any live top-level note that is not the profile note, including text-only.
-A profile note that has a photo or video keeps `hasPosted: false` and sets `welcomeHasMedia: true` with that note as `welcomeMessageId`. An account that already received the welcome gift (a platform `Welcome` reply under one of its notes (live or hidden), or a recorded `welcome` gift under its username) reports `welcomeHasMedia: false` and `welcomeMessageId: null`. Replies do not count. Photo-only / empty-text
+A profile note that has a photo or video keeps `hasPosted: false` and sets `welcomeHasMedia: true` with that note as `welcomeMessageId`. An account that already received the welcome gift (a platform `Welcome` reply under one of its notes (live or hidden), or a recorded `welcome` gift under its username at or after its wallet verification) reports `welcomeHasMedia: false` and `welcomeMessageId: null`. Replies do not count. Photo-only / empty-text
 top-level notes still count for `hasPosted`. `hasMedia` is true only when such a
 post has photo 0, extra stills, or video. `welcomeHasMedia` is true when any live top-level photo or video exists, including the About-me note, even when `hasPosted` is false. `welcomeMessageId` is that newest note's id, or null. When `hasPosted` is true, `messageId` is usually
 the newest live top-level non-profile post id; it can still be `null` if
@@ -3614,7 +3614,7 @@ media requirement). Missing
 (no LNURL). With `comment` exactly `Welcome` (with or without `messageId`),
 an account that already received the welcome gift (a platform `Welcome`
 reply under one of its notes, live or hidden, or a recorded `welcome` gift
-under its username) → **409** `{ "error": "Welcome gift already paid" }`
+under its username at or after its wallet verification) → **409** `{ "error": "Welcome gift already paid" }`
 after the passkey and grant checks and before LNURL; the welcome gift is once
 per account, whichever address it went to. Stores `messageId` and `comment` (or `''`) on the invoice.
 When `groupMessageId` is set (no `messageId`), the living-room post gate
@@ -4184,7 +4184,7 @@ post) is welcome-pinged, so the gift still goes out when the photo post and
 verification happened in either order. The welcome gift is once per
 account, not once per address: an account that already has a platform reply
 with the text `Welcome` under one of its notes (live or hidden), or a recorded
-`welcome` gift under its username, is not pinged again (`spend.ping.skipped` / `welcomed`), whichever address the gift went
+`welcome` gift under its username at or after its wallet verification, is not pinged again (`spend.ping.skipped` / `welcomed`), whichever address the gift went
 to, so a member whose receiving address changed is not paid twice. Replies, and any role other than `verified`, do not
 welcome-ping. A verified text-only post with no photo or video anywhere does
 not welcome-ping.
@@ -4444,9 +4444,11 @@ when free in-app payments are off (see
 wallet never reaches this 200; it is the **400** `cannot_receive` below. `pr` is unchanged, so a
 payer without an in-app wallet still pays over Lightning.
 The giver's address is the receiving address. An outstanding invoice is
-returned for a repeat only while it was minted for that address; an open
-invoice minted for another address is not reused, and a new one is minted for
-the wallet. A returned outstanding invoice carries the same Spark invoice
+returned for a repeat only while it was minted for that address. While an
+open invoice minted for another address is still payable, the route answers
+**409** `{ "error": "A payment for this share is still open" }` and mints
+nothing, so the share cannot be paid twice; once it has expired, a new invoice
+is minted for the wallet. A returned outstanding invoice carries the same Spark invoice
 (issued on demand if it was minted before the feature was on).
 
 Missing or invalid Bearer → **401** `{ "error": "Unauthorized" }`, including when `:id` is not a UUID.
@@ -4455,6 +4457,7 @@ Nothing left to pay → **400** `{ "error": "Nothing is due" }`.
 Note not payable yet → **400** `{ "error": "This message cannot be paid yet" }`.
 Giver without a receiving address → **400** `{ "error": "A giver has no Lightning address", "code": "cannot_receive" }`.
 Giver without a Nostr key → **400** `{ "error": "A giver has no Lightning address" }` (no `code`).
+An open invoice for this share minted for another address → **409** `{ "error": "A payment for this share is still open" }`.
 Recipient wallet cannot take the payment → **400** `{ "error": "The recipient's wallet cannot receive this Bitcoin payment", "code": "cannot_receive" }`.
 Other payment start failure → **400** `{ "error": "Could not start the Bitcoin payment" }`.
 Author missing forum pay → **409** `{ "error": "missing_requirements", "missing": ["rules"] }`.

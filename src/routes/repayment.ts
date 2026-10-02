@@ -268,7 +268,16 @@ export async function repaymentInvoice(deps: RepaymentDeps, c: Context): Promise
   if (
     outstanding !== undefined &&
     outstanding.pr !== null &&
-    outstanding.lightningAddress === address &&
+    invoiceStillOpen(outstanding.pr, outstanding.createdAt.getTime(), opened.nowMs) &&
+    outstanding.lightningAddress !== address
+  ) {
+    // Minted for an earlier receiving address and still payable: a second
+    // invoice could pay the same share twice, so wait until it expires.
+    return c.json({ error: 'A payment for this share is still open' }, 409);
+  }
+  if (
+    outstanding !== undefined &&
+    outstanding.pr !== null &&
     invoiceStillOpen(outstanding.pr, outstanding.createdAt.getTime(), opened.nowMs)
   ) {
     const storedRequest = normalizeSignedEvent(outstanding.zapRequest);

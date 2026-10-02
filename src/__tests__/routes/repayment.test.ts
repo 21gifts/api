@@ -886,7 +886,7 @@ describe('credit repayment to a wallet-backed giver', () => {
     expect(await res.json()).toEqual({ pr: BOLT11, amountSats: 21, sparkInvoice: null });
   });
 
-  it('mints a new invoice instead of reusing one minted for another address', async () => {
+  it('waits for an open invoice minted for another address, then mints for the wallet', async () => {
     const bolt11 = await import('@/lib/bolt11');
     const nip57 = vi.spyOn(bolt11, 'isNip57Invoice').mockReturnValue(true);
     try {
@@ -894,17 +894,28 @@ describe('credit repayment to a wallet-backed giver', () => {
       expect((await postRepay(earlier.app, 'wal-4')).status).toBe(200);
       const stored = (await earlier.messages.listInvoiceAttempts(5))[0];
       expect(stored?.lightningAddress).toBe('bea@example.test');
-      const { app, messages } = await readyCredit({ walletGiver: true, authorId: 'wal-5' });
-      await messages.recordInvoiceAttempt(
+      const open = await readyCredit({ walletGiver: true, authorId: 'wal-5' });
+      await open.messages.recordInvoiceAttempt(
         outstandingAttempt({
           lightningAddress: 'bea@example.com',
           zapRequest: stored?.zapRequest ?? null,
         }),
       );
-      const res = await postRepay(app, 'wal-5');
-      expect(res.status).toBe(200);
-      const attempts = await messages.listInvoiceAttempts(5);
-      expect(attempts).toHaveLength(2);
+      const refused = await postRepay(open.app, 'wal-5');
+      expect(refused.status).toBe(409);
+      expect(await refused.json()).toEqual({ error: 'A payment for this share is still open' });
+      expect(await open.messages.listInvoiceAttempts(5)).toHaveLength(1);
+
+      const expired = await readyCredit({ walletGiver: true, authorId: 'wal-6' });
+      await expired.messages.recordInvoiceAttempt(
+        outstandingAttempt({
+          lightningAddress: 'bea@example.com',
+          zapRequest: stored?.zapRequest ?? null,
+          createdAt: new Date(now() - 30 * 24 * 60 * 60 * 1000),
+        }),
+      );
+      expect((await postRepay(expired.app, 'wal-6')).status).toBe(200);
+      const attempts = await expired.messages.listInvoiceAttempts(5);
       expect(attempts.map((row) => row.lightningAddress).sort()).toEqual([
         'bea@example.com',
         'bea@example.test',
