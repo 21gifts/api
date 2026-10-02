@@ -132,7 +132,7 @@ api/
 │   │   ├── lnurl-pay.ts      # LUD-16 → zap invoice
 │   │   ├── lnurl-relay.ts    # Outside Lightning Address / LNURL pay request + invoice for the app
 │   │   ├── public-ip.ts      # Public unicast check for resolved addresses (relay + external profile)
-│   │   ├── gift-invoice.ts   # LUD-16 → LNURL-pay invoice for gift amounts (no 10-sat cap)
+│   │   ├── gift-invoice.ts   # LUD-16 → LNURL-pay invoice for gift amounts
 │   │   ├── bolt11.ts         # Decode/inspect BOLT11 (hash, amount, description / description_hash)
 │   │   ├── proof.ts          # sha256(preimage) === payment hash
 │   │   ├── spend-auth.ts     # Timing-safe SPEND_API_TOKEN Bearer check
