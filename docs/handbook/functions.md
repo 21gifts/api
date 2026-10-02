@@ -1168,7 +1168,7 @@
 - **Sunday rest:** A `Time-Zone` header naming the device IANA zone makes `POST /`, staff `DELETE /:id`, `PATCH /:id/place`, `PATCH /:id/shop-account`, `PATCH /:id/text`, `PATCH /:id/photos`, `POST /:id/invoice`, and `POST /:id/repayment` return 403 `{ error: 'SUNDAY_REST' }` while that zone is in Sunday. `GET /:id/repayment` stays open. Pay links, the till, and private messages are not refused. Missing or invalid zone does not refuse.
 - **External DELETE cascade:** When the target has `accountId === null` and a recorded `authorPubkey`, a successful `markDeleted` is followed by the single atomic `blockPubkeyAndHideRows` operation, which records the block and hides that pubkey's other live external rows. It logs `messages.external.blocked` with `{ messageId, hidden: cascaded + 1 }`; deleting a member row does not trigger this author-wide cascade.
 
-- **Inputs:** `MessagesRouteDeps`: message `store`, shared `authStore`, `now`, optional `nostrKek`, optional `nostrPublisher`, optional `env` (relays / `PUBLIC_BASE_URL` / Cloudflare / DeepL; default `{}` on the retract path), optional `translationStore` (default empty `InMemoryTranslationStore`), `fetchImpl`, `postLimiter`, `invoiceLimiter`, optional `pushStore`, optional `spendPing`, optional `mapPush` (omitted → no map POST; set → the first shop pin is posted once to `POST /map/places`, a failure logs `ocp.place.failed`, and the forum response stays 200), optional `fundingStore` (default empty `InMemoryFundingStore`), optional `notificationStore`, optional `conversationStore`, optional `waitSatsSleep` (test inject; default `defaultWaitSatsSleep`), optional `waitSatsTimeoutMs` (test inject; default `WAIT_SATS_TIMEOUT_MS`), optional `waitSatsPollMs` (test inject; default `WAIT_SATS_POLL_MS`), optional `goalRateDay` (`createApp` passes `bindGoalRateDay`; when omitted a fiat ask is 400 `Ask amount is unavailable`, a throw is 503 for a fiat ask, and a BTC ask still stores the typed sats when the loader throws or returns null).
+- **Inputs:** `MessagesRouteDeps`: message `store`, shared `authStore`, `now`, optional `nostrKek`, optional `nostrPublisher`, optional `env` (relays / `PUBLIC_BASE_URL` / Cloudflare / DeepL; default `{}` on the retract path), optional `translationStore` (default empty `InMemoryTranslationStore`), `fetchImpl`, `postLimiter`, `invoiceLimiter`, optional `pushStore`, optional `spendPing`, optional `mapPush` (omitted → no map call; set → PUT on create, on every place write, and on a shop-account change when a place exists; a clear or a delete sends DELETE; failures log `ocp.place.failed` and the forum response stays unchanged), optional `fundingStore` (default empty `InMemoryFundingStore`), optional `notificationStore`, optional `conversationStore`, optional `waitSatsSleep` (test inject; default `defaultWaitSatsSleep`), optional `waitSatsTimeoutMs` (test inject; default `WAIT_SATS_TIMEOUT_MS`), optional `waitSatsPollMs` (test inject; default `WAIT_SATS_POLL_MS`), optional `goalRateDay` (`createApp` passes `bindGoalRateDay`; when omitted a fiat ask is 400 `Ask amount is unavailable`, a throw is 503 for a fiat ask, and a BTC ask still stores the typed sats when the loader throws or returns null).
 - **Returns / side effects:** Hono app mounted at `/messages`. 401 without a live session on create/compose-target/DELETE/GET `/hidden`/invoice/POST `/:id/repayment`, and on the list except the unsigned `mode=active` window with no hashtag (that window is 200); 403 on DELETE and GET `/hidden` when not at least moderator and on unpaid text-only posts and replies from anyone below `verified` (including the parent author); photo or video posts and replies from basis are allowed; 409 `{ error: 'A live note with this media already exists' }` when the same live media fingerprint has a different pin; 409 `{ error: 'missing_requirements', missing }` when action gates fail (GET `/hidden` and staff GET of a hidden permalink / replies / photo / video have no `forum.read` gate); 400 on bad body / invalid text / bad media / unpaid note / author's-wallet / LNURL failures / reply+goal field / non-integer multipart `goalSats` / currency-ask pair errors / `Ask amount is unavailable`; 404 for bad `inReplyTo` / missing rows / unsigned or non-staff GET of a hidden row; 204 empty body on successful DELETE (NIP-09 / purge / notification retract failure still 204); 200 staff hidden log `{ messages }` (no `forum.read`); 200 staff GET of a hidden permalink / replies / photo / video; 429 rate limits; 503 on store/KEK/sign failure. Live list, `GET /:id`, and replies include `accountId` whenever the stored author id is non-null, with or without a session, and omit it for an external row; create may include `accountId` for a 21.gifts author; live JSON omits `deletedAt` and `deletedBy`; staff hidden GET includes hide stamps and `accountId` for 21gifts authors. Post and reply notify call `notifyForumPost` / `notifyForumReply` best-effort (in-app rows for every account except the actor (no-op when the actor is the official platform account), then filtered by each account's `notificationLevel`; Web Push for bell subscribers, same filter; failure still 200.
 
 - **Used by:** `createApp`.
@@ -3160,7 +3160,7 @@ Builds the operator-only external-pubkey inspection route.
 - **Purpose:** Validate a JSON body for one OpenCryptoPay place. Coordinates are finite and in range, then rounded to six decimals. `paymentMethods` that is not an onchain/lightning/nfc list becomes null instead of an error.
 - **Inputs:** Unknown JSON. Required fields are `origin`, `externalId`, `name`, `lat`, `lon`, and `category`.
 - **Returns / side effects:** `{ ok: true, value }` or `{ ok: false, error }` with a fixed English message. No I/O.
-- **Used by:** Nothing on the request path. `shopOcpPlaceInput` follows the same field rules. The OpenCryptoPay map API validates the POST.
+- **Used by:** Nothing on the request path. `shopOcpPlaceInput` follows the same field rules. The OpenCryptoPay map API validates the same body on PUT.
 
 ## Function: shopOcpPlaceName
 
@@ -3171,17 +3171,31 @@ Builds the operator-only external-pubkey inspection route.
 
 ## Function: shopOcpPlaceInput
 
-- **Purpose:** Map a first shop pin onto an OpenCryptoPay place with origin `21gifts`, category `shopping`, and payment methods `lightning`.
+- **Purpose:** Map a shop pin onto an OpenCryptoPay place with origin `21gifts`, techProvider `21.gifts`, category `shopping`, and payment methods `lightning`.
 - **Inputs:** Message id, forum place, and optional author name.
 - **Returns / side effects:** An `OcpPlaceInput`. No I/O.
-- **Used by:** `recordFirstShopOcpPlace`.
+- **Used by:** `syncShopOcpPlace` and `publishExistingShopPlaces`.
 
-## Function: recordFirstShopOcpPlace
+## Function: syncShopOcpPlace
 
-- **Purpose:** POST a first shop pin to the OpenCryptoPay map at `/map/places`. Replies, notes that already had a pin, notes without the shop tag, and a missing map push do nothing. BTC Map is not called here.
-- **Inputs:** Optional map push, message id, text, parent id, place, author name, whether a pin already existed, and the hashtag check.
-- **Returns / side effects:** Resolves after the POST. A non-2xx answer or a thrown fetch logs `ocp.place.failed` and does not throw. Timeout is 5000 ms.
-- **Used by:** `messagesRoutes` after a new shop post with a pin and after the first moderator place patch.
+- **Purpose:** PUT the current shop pin to `/map/places` when mapPush is set, the note is top-level, the text has the shop hashtag, and a pin is present. A pin that already existed is still sent. Replies, a missing pin, a missing shop tag, and a missing map push do nothing. BTC Map is not called.
+- **Inputs:** Optional map push, message id, text, parent id, place, author name, and the hashtag check. There is no hadPlaceBefore flag.
+- **Returns / side effects:** Resolves after the PUT. A non-2xx answer or a thrown fetch logs `ocp.place.failed` and does not throw. Timeout is 5000 ms. The body includes techProvider `21.gifts`.
+- **Used by:** `messagesRoutes` on create (not a replay), on every place write that sets a pin, on a shop-account change when a place exists, and debug restore of a live top-level shop pin.
+
+## Function: removeShopOcpPlace
+
+- **Purpose:** DELETE `/map/places` with `{ origin: "21gifts", externalId }`. No-op when mapPush is missing.
+- **Inputs:** Optional map push and the forum message id used as `externalId`.
+- **Returns / side effects:** Resolves after the DELETE. A non-2xx answer or a thrown fetch logs `ocp.place.failed` and does not throw. Timeout is 5000 ms.
+- **Used by:** `messagesRoutes` when a place is cleared and when a top-level shop note that had a place is deleted.
+
+## Function: publishExistingShopPlaces
+
+- **Purpose:** After listen, PUT each existing live top-level shop pin to the OpenCryptoPay map at `/map/places`. A missing map push does nothing. Replies, hidden notes, notes without a pin, and notes without the shop tag are skipped. A 200 is success. The body includes techProvider `21.gifts`. BTC Map is not called here.
+- **Inputs:** Optional map push, `listPlaces` (capped at 1000), `getById`, and the hashtag check.
+- **Returns / side effects:** Resolves when the walk finishes or when listing pins fails. Does not reject. A failed list logs `ocp.place.failed` and returns. A failed load, a non-2xx answer, or a thrown fetch logs `ocp.place.failed` and the walk continues. Timeout is 5000 ms. Nothing is logged except that event name.
+- **Used by:** The process entry point, once, after listen. Not on the welcome interval.
 
 ## Function: resolveMapPush
 

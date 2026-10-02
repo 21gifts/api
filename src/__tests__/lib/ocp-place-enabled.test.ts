@@ -54,10 +54,10 @@ describe('resolveMapPush when the code switch is on', () => {
 });
 
 describe('createApp map push when the code switch is on', () => {
-  it('posts one shop pin to the stripped map url', async () => {
-    const calls: string[] = [];
-    const fetchImpl: FetchFn = async (input) => {
-      calls.push(String(input));
+  it('puts one shop pin to the stripped map url', async () => {
+    const calls: Array<{ url: string; method: string }> = [];
+    const fetchImpl: FetchFn = async (input, init) => {
+      calls.push({ url: String(input), method: init?.method ?? 'GET' });
       return new Response('{}', { status: 201 });
     };
     const app = createApp({
@@ -74,6 +74,6 @@ describe('createApp map push when the code switch is on', () => {
       }),
     });
     expect(res.status).toBe(200);
-    expect(calls).toEqual(['http://map.test/map/places']);
+    expect(calls).toEqual([{ url: 'http://map.test/map/places', method: 'PUT' }]);
   });
 });

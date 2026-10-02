@@ -74,7 +74,7 @@ import type { PushStore } from '@/lib/push-store';
 import type { SpendPing } from '@/lib/spend-ping';
 import { syncWelcomePing } from '@/lib/welcome-media';
 import { normalizePlace, parseMultipartCoord, placesMatch, type ForumPlace } from '@/lib/place';
-import { recordFirstShopOcpPlace, type MapPush } from '@/lib/ocp-place';
+import { removeShopOcpPlace, syncShopOcpPlace, type MapPush } from '@/lib/ocp-place';
 import { repaymentInvoice, repaymentStatus } from '@/routes/repayment';
 import { bearerToken } from '@/routes/me';
 import {
@@ -257,8 +257,9 @@ export interface MessagesRouteDeps {
    */
   spendPing?: SpendPing;
   /**
-   * Optional push of a first `#21GiftsShop` pin to the OpenCryptoPay map.
-   * Omitted → the forum write still succeeds and nothing is sent.
+   * Optional push of a `#21GiftsShop` pin to the OpenCryptoPay map (PUT on
+   * write, DELETE on clear or hide). Omitted → the forum write still
+   * succeeds and nothing is sent.
    */
   mapPush?: MapPush;
   /**
@@ -1079,14 +1080,13 @@ async function persistForumPost(
     }
     const published = created;
     if (!isReplay) {
-      await recordFirstShopOcpPlace({
+      await syncShopOcpPlace({
         ...(deps.mapPush === undefined ? {} : { mapPush: deps.mapPush }),
         messageId: published.id,
         text: published.text,
         parentId: published.parentId ?? null,
         place: published.place ?? null,
         authorName: published.name,
-        hadPlaceBefore: false,
         textHasHashtagToken,
       });
     }
@@ -1904,6 +1904,17 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
         if (!tagged) {
           return c.json({ error: 'Not found' }, 404);
         }
+        if (
+          target.parentId === null &&
+          target.place !== null &&
+          target.place !== undefined &&
+          textHasHashtagToken(target.text, '21GiftsShop')
+        ) {
+          await removeShopOcpPlace({
+            ...(deps.mapPush === undefined ? {} : { mapPush: deps.mapPush }),
+            messageId: target.id,
+          });
+        }
         if (target.accountId === null && target.authorPubkey !== null) {
           const cascaded = await deps.store.blockPubkeyAndHideRows(
             target.authorPubkey,
@@ -1986,7 +1997,6 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
         if (!textHasHashtagToken(row.text, '21GiftsShop')) {
           return c.json({ error: 'Only a shop note can set a place' }, 400);
         }
-        const hadPlaceBefore = row.place !== null && row.place !== undefined;
         const placeChanged = !placesMatch(row.place ?? null, parsed.value);
         const written = placeChanged
           ? await deps.store.setPlace(id, parsed.value, {
@@ -2017,16 +2027,20 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
           accountId: account.id,
           role: account.role,
         });
-        if (!hadPlaceBefore && parsed.value !== null) {
-          await recordFirstShopOcpPlace({
+        if (parsed.value !== null) {
+          await syncShopOcpPlace({
             ...(deps.mapPush === undefined ? {} : { mapPush: deps.mapPush }),
             messageId: updated.id,
             text: updated.text,
             parentId: updated.parentId ?? null,
             place: parsed.value,
             authorName: updated.name,
-            hadPlaceBefore: false,
             textHasHashtagToken,
+          });
+        } else {
+          await removeShopOcpPlace({
+            ...(deps.mapPush === undefined ? {} : { mapPush: deps.mapPush }),
+            messageId: updated.id,
           });
         }
         return c.json(
@@ -2134,6 +2148,17 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
           accountId: account.id,
           role: account.role,
         });
+        if (updated.place !== null && updated.place !== undefined) {
+          await syncShopOcpPlace({
+            ...(deps.mapPush === undefined ? {} : { mapPush: deps.mapPush }),
+            messageId: updated.id,
+            text: updated.text,
+            parentId: updated.parentId ?? null,
+            place: updated.place,
+            authorName: updated.name,
+            textHasHashtagToken,
+          });
+        }
         return c.json(
           serializeMessage(
             updated,
