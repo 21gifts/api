@@ -1,6 +1,7 @@
 -- Member point-of-sale charges (GET/POST/DELETE /pos).
 -- One unexpired pending amount in whole sats. Expired rows are not a live
--- invoice. Settlement stays at Wallet of Satoshi; this API cannot see payment.
+-- invoice. Settlement goes to the member's receiving address; this API cannot
+-- see payment.
 
 CREATE TABLE IF NOT EXISTS pos_charge (
   id uuid PRIMARY KEY,

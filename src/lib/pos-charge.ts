@@ -2,8 +2,8 @@
  * Point-of-sale charge domain: public and debug JSON projection.
  *
  * One open amount in whole sats. There is no paid or completed status —
- * this API cannot see the wallet payment. Settlement stays at Wallet of
- * Satoshi. Expired charges are not a live invoice.
+ * this API cannot see the wallet payment. Settlement goes to the member's
+ * receiving address. Expired charges are not a live invoice.
  */
 
 /** Live, cancelled, or TTL-expired. Never paid/completed. */
