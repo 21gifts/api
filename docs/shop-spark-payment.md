@@ -51,8 +51,7 @@ member's receiving address stay as they are.
 
 ## The wallet
 
-The Spark wallet is 21.gifts' own Breez wallet. It is not Wallet of Satoshi,
-and it is not a second seed.
+The Spark wallet is 21.gifts' own Breez wallet. It is not a second seed.
 
 The 12 words already exist. The phone derives them and never sends them:
 
@@ -84,9 +83,8 @@ address as the place bitcoin is delivered.
   accepted, a later price move does not refund it. Those sats can still
   settle after the clock.
 - No change to today's Lightning settlement. The pay link resolves to the
-  member's receiving address: the verified in-app wallet through the LNURL
-  server when it is configured, otherwise the linked Lightning address
-  (Wallet of Satoshi).
+  member's receiving address, the verified in-app wallet through the LNURL
+  server; there is no external Lightning address.
 - No new phrase and no phrase stored on the server.
 - No payment marked paid because the stablecoin transaction was seen.
 - No route, table, or response field. Those belong to the change that
