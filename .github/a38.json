@@ -46,7 +46,7 @@
     {
       "workflow": ".github/workflows/auto-release-pr.yaml",
       "job": "create-release-pr",
-      "reason": "This job is a housekeeping bot that opens the develop to staging release pull request, then the staging to main release pull request, and performs no author-measurable testing."
+      "reason": "This job is a housekeeping bot that opens the develop to main release pull request and performs no author-measurable testing."
     },
     {
       "workflow": ".github/workflows/one-shot-publish-spend.yml",
