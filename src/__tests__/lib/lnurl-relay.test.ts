@@ -518,10 +518,26 @@ describe('requestRelayInvoice', () => {
   });
 
   it.each([
-    ['below the minimum', 999],
-    ['above the maximum', 100_000_001],
     ['not a whole number of millisatoshis', 1000.5],
     ['not finite', Number.NaN],
+  ])('refuses an amount %s with 400 before any request', async (_label, amountMsat) => {
+    const { fetchImpl, calls } = payRequestFetch();
+    const result = await requestRelayInvoice({
+      target: 'bob@example.com',
+      amountMsat,
+      fetchImpl,
+      ...DEPS,
+      lookupImpl: async () => {
+        throw new Error('lookup must not run');
+      },
+    });
+    expect(result).toMatchObject({ ok: false, status: 400, error: AMOUNT_ERROR });
+    expect(calls).toHaveLength(0);
+  });
+
+  it.each([
+    ['below the minimum', 999],
+    ['above the maximum', 100_000_001],
   ])('refuses an amount %s with 400', async (_label, amountMsat) => {
     const { fetchImpl, calls } = payRequestFetch();
     const result = await requestRelayInvoice({
