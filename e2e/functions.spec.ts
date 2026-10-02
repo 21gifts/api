@@ -521,7 +521,9 @@ test('Function: LnurlRelayRateLimiter — the 31st relay request in a minute is 
   const accounts = ((await listed.json()) as { accounts: Array<{ id: string; name: string }> })
     .accounts;
   const row = accounts.find((item) => item.name === name);
+  expect(row).toBeDefined();
   const session = await request.post(`/debug/accounts/${row?.id}/session`, { headers: DEBUG });
+  expect(session.status()).toBe(200);
   const authorization = `Bearer ${((await session.json()) as { token: string }).token}`;
   const statuses: number[] = [];
   for (let i = 0; i < 31; i += 1) {
