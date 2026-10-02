@@ -178,7 +178,7 @@ worker holds lightning.space LNDHub credentials and calls:
 
 1. `POST /invoices` — this api fetches the BOLT11 from the recipient via LNURL-pay
 2. LNDHub `payinvoice` (spend, not this api)
-3. `POST /invoices/proof` — preimage (`sha256` = payment hash); the api records the gift for `GET /gifts/stats` and `GET /gifts?day=`. After recording the gift, when the invoice has `messageId` the api inserts a platform-account gift-reply under a top-level post first, then `addSats`. This path does not notify (no in-app rows, no Web Push). When `messageId` is already a reply, it hides a deterministic spend marker and `addSats`s that reply (no nested gift-reply). When the invoice has `groupMessageId`, the api also inserts a platform-account conversation message in the closed Moderators group (text + paid sats, name `21.gifts`) after the triggering group message, at payment time; a missing or mismatched group reference is ignored and does not block the 200. Recorded description is `21gifts moderator` when `groupMessageId` is stored, else `21gifts daily`.
+3. `POST /invoices/proof` — preimage (`sha256` = payment hash); the api records the gift for `GET /gifts/stats` and `GET /gifts?day=`. After recording the gift, when the invoice has `messageId` the api inserts a platform-account gift-reply under a top-level post first, then `addSats`. This path does not notify (no in-app rows, no Web Push). When `messageId` is already a reply, it hides a deterministic spend marker and `addSats`s that reply (no nested gift-reply). When the invoice has `groupMessageId`, the api also inserts a platform-account conversation message in the closed Moderators group (text + paid sats, name `21.gifts`) after the triggering group message, at payment time; a missing or mismatched group reference is ignored and does not block the 200. Recorded description is `21gifts moderator` when `groupMessageId` is stored, else `21gifts welcome` when the comment is exactly `Welcome`, else `21gifts daily`.
 
 Recurring **USD** gifts are paid by the external spend worker **when the
 recipient posts a top-level note with a photo or video**, not on a daily timer, and only when
@@ -216,7 +216,7 @@ is funding-eligible today and the new row has media (`hasPhoto` /
 for the newest live top-level photo or video, including an About-me note,
 independent of `eligibleToday` (the new row itself need not have media;
 the welcome gift is once per account: an account that already has a
-platform `Welcome` reply under one of its notes, or a recorded `welcome` gift
+platform `Welcome` reply under one of its notes, or a recorded `welcome` gift with description `21gifts welcome`
 under its username at or after its wallet verification, is not pinged again; becoming
 verified and saving About me while verified also welcome-ping; boot and a
 15-minute timer welcome-ping every verified account that already has a photo or video post;

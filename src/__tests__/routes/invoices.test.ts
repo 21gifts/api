@@ -844,7 +844,13 @@ describe('GET /invoices/posted', () => {
       authStore,
       messageStore,
       giftStore: new InMemoryGiftStore([
-        { paidAt: new Date(5), amountSats: 1, recipientWosUser: 'alice', kind: 'welcome' },
+        {
+          paidAt: new Date(5),
+          amountSats: 1,
+          recipientWosUser: 'alice',
+          kind: 'welcome',
+          description: '21gifts welcome',
+        },
       ]),
     }).request(`/invoices/posted?address=${encodeURIComponent(ADDRESS)}`, auth());
     expect(res.status).toBe(200);
@@ -1969,7 +1975,13 @@ describe('POST /invoices', () => {
     const welcome = JSON.stringify({ address: ADDRESS, amountMsat: 1000, comment: 'Welcome' });
     const refused = await app(
       new InMemoryGiftStore([
-        { paidAt: new Date(5), amountSats: 1, recipientWosUser: 'Alice', kind: 'welcome' },
+        {
+          paidAt: new Date(5),
+          amountSats: 1,
+          recipientWosUser: 'Alice',
+          kind: 'welcome',
+          description: '21gifts welcome',
+        },
       ]),
     ).request('/invoices', auth({ method: 'POST', body: welcome }));
     expect(refused.status).toBe(409);
@@ -1978,7 +1990,21 @@ describe('POST /invoices', () => {
     const first = await app(
       new InMemoryGiftStore([
         { paidAt: new Date(5), amountSats: 1, recipientWosUser: 'alice', kind: 'daily' },
-        { paidAt: new Date(1), amountSats: 1, recipientWosUser: 'alice', kind: 'welcome' },
+        {
+          paidAt: new Date(1),
+          amountSats: 1,
+          recipientWosUser: 'alice',
+          kind: 'welcome',
+          description: '21gifts welcome',
+        },
+        // A legacy welcome to another member's external address with the same local part.
+        {
+          paidAt: new Date(5),
+          amountSats: 1,
+          recipientWosUser: 'alice',
+          kind: 'welcome',
+          description: '21gifts daily',
+        },
       ]),
     ).request('/invoices', auth({ method: 'POST', body: welcome }));
     expect(first.status).toBe(200);
@@ -1992,7 +2018,13 @@ describe('POST /invoices', () => {
       authStore,
       messageStore: livePostStore(),
       giftStore: new InMemoryGiftStore([
-        { paidAt: new Date(5), amountSats: 1, recipientWosUser: 'alice', kind: 'welcome' },
+        {
+          paidAt: new Date(5),
+          amountSats: 1,
+          recipientWosUser: 'alice',
+          kind: 'welcome',
+          description: '21gifts welcome',
+        },
       ]),
       fetchImpl: happyFetch(),
       fundingStore: new InMemoryFundingStore(),
@@ -2872,7 +2904,7 @@ describe('POST /invoices/proof', () => {
         feeSats: 0,
         recipientWosUser: 'alice',
         lightningInvoice: PR,
-        description: '21gifts daily',
+        description: '21gifts welcome',
         kind: 'welcome',
         sourceWallet: 'lightning.space',
         fiat: null,

@@ -556,7 +556,21 @@ describe('syncWelcomePing', () => {
     const verified = account({ id: 'acc', role: 'verified', profileMessageId: PHOTO_ID });
     const daily = new InMemoryGiftStore([
       { paidAt: new Date(1), amountSats: 1, recipientWosUser: 'acc', kind: 'daily' },
-      { paidAt: new Date(1), amountSats: 1, recipientWosUser: 'other', kind: 'welcome' },
+      {
+        paidAt: new Date(1),
+        amountSats: 1,
+        recipientWosUser: 'other',
+        kind: 'welcome',
+        description: '21gifts welcome',
+      },
+      // A legacy welcome to another member's external address with the same local part.
+      {
+        paidAt: new Date(5),
+        amountSats: 1,
+        recipientWosUser: 'acc',
+        kind: 'welcome',
+        description: '21gifts daily',
+      },
     ]);
     await syncWelcomePing({
       lnurlServer: LNURL_SERVER,
@@ -569,7 +583,13 @@ describe('syncWelcomePing', () => {
     expect(ping).toHaveBeenCalledTimes(1);
     ping.mockClear();
     const before = new InMemoryGiftStore([
-      { paidAt: new Date(1), amountSats: 1, recipientWosUser: 'acc', kind: 'welcome' },
+      {
+        paidAt: new Date(1),
+        amountSats: 1,
+        recipientWosUser: 'acc',
+        kind: 'welcome',
+        description: '21gifts welcome',
+      },
     ]);
     await syncWelcomePing({
       lnurlServer: LNURL_SERVER,
@@ -582,7 +602,13 @@ describe('syncWelcomePing', () => {
     expect(ping).toHaveBeenCalledTimes(1);
     ping.mockClear();
     const welcomed = new InMemoryGiftStore([
-      { paidAt: new Date(5), amountSats: 1, recipientWosUser: ' ACC ', kind: 'welcome' },
+      {
+        paidAt: new Date(5),
+        amountSats: 1,
+        recipientWosUser: ' ACC ',
+        kind: 'welcome',
+        description: '21gifts welcome',
+      },
     ]);
     await syncWelcomePing({
       lnurlServer: LNURL_SERVER,
