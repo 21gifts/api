@@ -108,7 +108,7 @@ export function posRoutes(deps: PosRouteDeps): Hono {
       }
       const resolved = await resolveLnurlp({
         address: receiving.address,
-        fetchImpl: lnurlServerFetch(deps.lnurlServer, deps.fetchImpl),
+        fetchImpl: lnurlServerFetch(deps.lnurlServer, deps.fetchImpl, deps.authStore),
       });
       if (!resolved.ok) {
         return c.json({ error: 'Lightning Address could not be resolved' }, 502);

@@ -1349,7 +1349,7 @@ export function conversationRoutes(deps: ConversationRouteDeps): Hono {
           address,
           amountMsat,
           zapRequestJson,
-          fetchImpl: lnurlServerFetch(deps.lnurlServer, fetchImpl),
+          fetchImpl: lnurlServerFetch(deps.lnurlServer, fetchImpl, deps.authStore),
         });
         if (!zap.ok) {
           await persist({
