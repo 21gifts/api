@@ -227,6 +227,8 @@ api/
 │       │   ├── pos-store.test.ts
 │       │   ├── trust.test.ts
 │       │   ├── trust-store.test.ts
+│       │   ├── habit-store.test.ts
+│       │   ├── habit-tracker.test.ts
 │       │   ├── api-log.test.ts
 │       │   ├── diagnostic-log.test.ts
 │       │   ├── debug-db.test.ts
@@ -304,6 +306,7 @@ api/
 │           ├── trust-chain.test.ts
 │           ├── trust.test.ts
 │           ├── funding.test.ts
+│           ├── habit-tracker.test.ts
 │           └── view.test.ts
 ├── docs/handbook/            # Mandatory: every function + HTTP endpoint
 │   ├── README.md
