@@ -51,8 +51,9 @@ export interface TrustRouteDeps {
   /** LNURL server config for the welcome ping's receiving address; omitted → no ping. */
   lnurlServer?: LnurlServerConfig;
   /**
-   * Outbound house gifts. A recorded `welcome` gift under the username stops a
-   * second welcome ping. Omitted → only the platform `Welcome` reply counts.
+   * Outbound house gifts. A `welcome` gift recorded under the username at or
+   * after the wallet verification stops a second welcome ping. Omitted → only
+   * the platform `Welcome` reply counts.
    */
   giftStore?: Pick<GiftStore, 'listOutbound'>;
 }

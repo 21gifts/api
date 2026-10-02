@@ -101,9 +101,9 @@ export interface InvoiceRouteDeps {
    */
   lnurlServer?: LnurlServerConfig;
   /**
-   * Outbound house gifts. A recorded `welcome` gift under the member's
-   * username counts as a paid welcome gift. Omitted → only the platform
-   * `Welcome` reply counts.
+   * Outbound house gifts. A `welcome` gift recorded under the member's
+   * username at or after the wallet verification counts as a paid welcome
+   * gift. Omitted → only the platform `Welcome` reply counts.
    */
   giftStore?: Pick<GiftStore, 'listOutbound'>;
   /**
