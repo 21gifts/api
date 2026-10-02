@@ -71,15 +71,22 @@ async function photoStore(id: string = PHOTO_ID): Promise<InMemoryMessageStore> 
 describe('syncWelcomePing', () => {
   it('does nothing when the spend ping is omitted', async () => {
     const messages = await photoStore();
+    const verified = account({ id: 'acc', role: 'verified', profileMessageId: PHOTO_ID });
+    const auth = new InMemoryAuthStore();
+    await auth.createAccount(verified);
+    const listAccounts = vi.spyOn(auth, 'listAccounts');
+    const gifts = new InMemoryGiftStore();
+    const listOutbound = vi.spyOn(gifts, 'listOutbound');
     await syncWelcomePing({
+      lnurlServer: LNURL_SERVER,
       messages,
-      auth: NO_PLATFORM,
-      account: account({ id: 'acc', role: 'verified', profileMessageId: PHOTO_ID }),
+      auth,
+      gifts,
+      account: verified,
     });
-    await syncWelcomePing({
-      messages,
-      auth: new InMemoryAuthStore(),
-    });
+    await syncWelcomePing({ lnurlServer: LNURL_SERVER, messages, auth, gifts });
+    expect(listAccounts).not.toHaveBeenCalled();
+    expect(listOutbound).not.toHaveBeenCalled();
     expect(parsedEvents(warn)).toEqual([]);
   });
 
