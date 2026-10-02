@@ -199,6 +199,32 @@ function authGate(
 }
 
 /**
+ * Validate a spend lookup address. Any `local@domain.tld` passes, and so does
+ * an address on the configured wallet host, whose `PUBLIC_BASE_URL` host may
+ * carry a port or be an IP address that the general check refuses.
+ *
+ * @param raw - The address as sent by the spend worker.
+ * @param lnurlServer - LNURL server config, or `undefined` when off.
+ * @returns The trimmed address, or `null` when it is not valid.
+ */
+function spendLookupAddress(
+  raw: string,
+  lnurlServer: LnurlServerConfig | undefined,
+): string | null {
+  const valid = normalizeLightningAddress(raw);
+  if (valid !== null || lnurlServer === undefined) {
+    return valid;
+  }
+  const trimmed = raw.trim();
+  const at = trimmed.lastIndexOf('@');
+  return trimmed.length <= 255 &&
+    at > 0 &&
+    trimmed.slice(at + 1).toLowerCase() === lnurlServer.host.toLowerCase()
+    ? trimmed
+    : null;
+}
+
+/**
  * The member who receives on `address` (their verified wallet), if any.
  *
  * @param deps - Auth store and LNURL server config.
@@ -581,7 +607,7 @@ export function invoiceRoutes(deps: InvoiceRouteDeps): Hono {
         return denied;
       }
 
-      const address = normalizeLightningAddress(c.req.query('address') ?? '');
+      const address = spendLookupAddress(c.req.query('address') ?? '', deps.lnurlServer);
       if (address === null) {
         return c.json({ error: 'Not a valid Lightning Address (expected name@domain)' }, 400);
       }
@@ -598,7 +624,7 @@ export function invoiceRoutes(deps: InvoiceRouteDeps): Hono {
         return denied;
       }
 
-      const address = normalizeLightningAddress(c.req.query('address') ?? '');
+      const address = spendLookupAddress(c.req.query('address') ?? '', deps.lnurlServer);
       if (address === null) {
         return c.json({ error: 'Not a valid Lightning Address (expected name@domain)' }, 400);
       }
@@ -626,7 +652,7 @@ export function invoiceRoutes(deps: InvoiceRouteDeps): Hono {
         return denied;
       }
 
-      const address = normalizeLightningAddress(c.req.query('address') ?? '');
+      const address = spendLookupAddress(c.req.query('address') ?? '', deps.lnurlServer);
       if (address === null) {
         return c.json({ error: 'Not a valid Lightning Address (expected name@domain)' }, 400);
       }
@@ -715,7 +741,7 @@ export function invoiceRoutes(deps: InvoiceRouteDeps): Hono {
         return c.json({ error: 'Expected a JSON body with address and amountMsat' }, 400);
       }
 
-      const address = normalizeLightningAddress(parsed.data.address);
+      const address = spendLookupAddress(parsed.data.address, deps.lnurlServer);
       if (address === null) {
         return c.json({ error: 'Not a valid Lightning Address (expected name@domain)' }, 400);
       }
