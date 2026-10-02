@@ -493,7 +493,8 @@ are on (`LNURL_SERVER_URL` and `PUBLIC_BASE_URL` resolve, `LNURL_ZAP_NSEC_HEX` i
 ingest) or free in-app payments (Spark worker)),
 that test still exists and asserts the default-boot outcome (verification
 `503`, spend invoices unconfigured `503`, an unmounted route answering `404`
-with `LNURL_SERVER_URL` blank, or a healthy process with `DATABASE_URL` blank
+with `LNURL_SERVER_URL` blank, relay `502` for a target host that does not
+resolve, or a healthy process with `DATABASE_URL` blank
 or for a resolver that runs only at boot). Playwright `webServer.env` pins
 `DATABASE_URL`, `SPEND_API_TOKEN`, `NOSTR_NSEC_KEK`, `NOSTR_PUBLISH`,
 `NOSTR_PUBLISH_PUBLIC`, `NOSTR_RELAY_URL`, `NOSTR_RELAY_SPACE`,
