@@ -49,7 +49,10 @@ export const UNREACHABLE_ERROR = 'Address could not be reached';
 /** 400 body for an amount outside the bounds or not a whole number of millisatoshis. */
 export const AMOUNT_ERROR = 'Amount out of range';
 
-/** 400 body for a comment longer than `commentAllowed`. */
+/**
+ * 400 body for a comment that is not a string, not well-formed Unicode, longer
+ * than {@link LNURL_RELAY_COMMENT_MAX_LENGTH}, or longer than `commentAllowed`.
+ */
 export const COMMENT_ERROR = 'Comment too long';
 
 /** Validated pay request returned to the app. */
