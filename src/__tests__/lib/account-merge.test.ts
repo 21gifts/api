@@ -102,6 +102,32 @@ describe('mergeAccounts', () => {
     );
   });
 
+  it('copies earlier join time and consent onto the survivor before deleting the source', async () => {
+    const { db, queries } = fakeDatabase();
+
+    await expect(mergeAccounts(db, { from: FROM, into: INTO, verify: 'into' })).resolves.toEqual({
+      ok: true,
+      messages: 1,
+    });
+
+    const history = queries.findIndex(
+      (query) =>
+        query.text.includes('LEAST(survivor.created_at, source.created_at)') &&
+        query.text.includes('wallet_required = survivor.wallet_required OR source.wallet_required') &&
+        query.text.includes('survivor.id = $2'),
+    );
+    const deleted = queries.findIndex((query) =>
+      query.text.includes('DELETE FROM account WHERE id = $1'),
+    );
+    expect(history).toBeGreaterThanOrEqual(0);
+    expect(deleted).toBeGreaterThan(history);
+    expect(queries[history]?.params).toEqual([FROM, INTO]);
+    expect(queries[history]?.text).not.toContain('SET name');
+    expect(queries[history]?.text).not.toContain('username =');
+    expect(queries[history]?.text).not.toContain('location =');
+    expect(queries[history]?.text).not.toContain('lightning_address =');
+  });
+
   it('keeps the source verify edge when requested', async () => {
     const { db, queries } = fakeDatabase();
 

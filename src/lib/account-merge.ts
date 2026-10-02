@@ -401,6 +401,28 @@ export async function mergeAccounts(db: MergeDb, input: MergeInput): Promise<Mer
         input.into,
       ]);
     }
+    await tx.query(
+      `UPDATE account AS survivor
+SET
+  created_at = LEAST(survivor.created_at, source.created_at),
+  rules_agreed_at = CASE
+    WHEN survivor.rules_agreed_at IS NULL THEN source.rules_agreed_at
+    WHEN source.rules_agreed_at IS NULL THEN survivor.rules_agreed_at
+    ELSE LEAST(survivor.rules_agreed_at, source.rules_agreed_at)
+  END,
+  wallet_required = survivor.wallet_required OR source.wallet_required,
+  wallet_backup_seen_at = CASE
+    WHEN survivor.wallet_backup_seen_at IS NULL THEN source.wallet_backup_seen_at
+    WHEN source.wallet_backup_seen_at IS NULL THEN survivor.wallet_backup_seen_at
+    ELSE LEAST(survivor.wallet_backup_seen_at, source.wallet_backup_seen_at)
+  END,
+  forum_laws_dismissed = survivor.forum_laws_dismissed OR source.forum_laws_dismissed,
+  locale = COALESCE(survivor.locale, source.locale),
+  fiat = COALESCE(survivor.fiat, source.fiat)
+FROM account AS source
+WHERE survivor.id = $2 AND source.id = $1`,
+      accountParams,
+    );
     await tx.query('DELETE FROM account WHERE id = $1', [input.from]);
     return { ok: true, messages };
   });
