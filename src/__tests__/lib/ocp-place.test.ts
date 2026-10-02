@@ -2,10 +2,11 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import {
   normalizeOcpPlace,
   publishExistingShopPlaces,
-  recordFirstShopOcpPlace,
+  removeShopOcpPlace,
   resolveMapPush,
   shopOcpPlaceInput,
   shopOcpPlaceName,
+  syncShopOcpPlace,
   type MapFetch,
   type MapPush,
 } from '@/lib/ocp-place';
@@ -18,6 +19,7 @@ const ORIGIN_ERROR = 'Place origin is invalid';
 const EXTERNAL_ID_ERROR = 'Place external id is required';
 const NAME_ERROR = 'Place name is required';
 const CATEGORY_ERROR = 'Place category is required';
+const TECH_PROVIDER_ERROR = 'Place tech provider is invalid';
 
 const VALID = {
   origin: 'partner',
@@ -179,6 +181,42 @@ describe('normalizeOcpPlace', () => {
       value: { paymentMethods: null },
     });
   });
+
+  it('normalizes optional techProvider', () => {
+    expect(normalizeOcpPlace(VALID)).toEqual({ ok: true, value: VALID });
+    expect(normalizeOcpPlace({ ...VALID, techProvider: null })).toEqual({
+      ok: true,
+      value: VALID,
+    });
+    expect(normalizeOcpPlace({ ...VALID, techProvider: '   ' })).toEqual({
+      ok: true,
+      value: VALID,
+    });
+    expect(normalizeOcpPlace({ ...VALID, techProvider: ' 21.gifts ' })).toEqual({
+      ok: true,
+      value: { ...VALID, techProvider: '21.gifts' },
+    });
+    expect(normalizeOcpPlace({ ...VALID, techProvider: 'A'.repeat(40) })).toEqual({
+      ok: true,
+      value: { ...VALID, techProvider: 'A'.repeat(40) },
+    });
+    expect(normalizeOcpPlace({ ...VALID, techProvider: 1 })).toEqual({
+      ok: false,
+      error: TECH_PROVIDER_ERROR,
+    });
+    expect(normalizeOcpPlace({ ...VALID, techProvider: 'bad_name' })).toEqual({
+      ok: false,
+      error: TECH_PROVIDER_ERROR,
+    });
+    expect(normalizeOcpPlace({ ...VALID, techProvider: '.start' })).toEqual({
+      ok: false,
+      error: TECH_PROVIDER_ERROR,
+    });
+    expect(normalizeOcpPlace({ ...VALID, techProvider: 'A'.repeat(41) })).toEqual({
+      ok: false,
+      error: TECH_PROVIDER_ERROR,
+    });
+  });
 });
 
 describe('shopOcpPlaceName / shopOcpPlaceInput', () => {
@@ -198,11 +236,12 @@ describe('shopOcpPlaceName / shopOcpPlaceInput', () => {
       lon: 8.5,
       category: 'shopping',
       paymentMethods: 'lightning',
+      techProvider: '21.gifts',
     });
   });
 });
 
-type RecordedCall = { url: string; authorization: string; body: string };
+type RecordedCall = { url: string; method: string; authorization: string; body: string };
 
 function recordingPush(status = 201): { mapPush: MapPush; calls: RecordedCall[] } {
   const calls: RecordedCall[] = [];
@@ -210,6 +249,7 @@ function recordingPush(status = 201): { mapPush: MapPush; calls: RecordedCall[] 
     const headers = new Headers(init.headers);
     calls.push({
       url: String(input),
+      method: init.method ?? 'GET',
       authorization: headers.get('authorization') ?? '',
       body: String(init.body),
     });
@@ -300,6 +340,7 @@ describe('createApp map push', () => {
       const headers = new Headers(init?.headers);
       calls.push({
         url: String(input),
+        method: init?.method ?? 'GET',
         authorization: headers.get('authorization') ?? '',
         body: String(init?.body),
       });
@@ -313,12 +354,14 @@ describe('createApp map push', () => {
     expect(await postShop(app)).toBe(200);
     expect(calls).toHaveLength(1);
     expect(calls[0]?.url).toBe('http://map.test/map/places');
+    expect(calls[0]?.method).toBe('PUT');
     expect(calls[0]?.authorization).toBe('Bearer secret');
     const body = JSON.parse(calls[0]?.body ?? '{}') as Record<string, unknown>;
     expect(body).toMatchObject({
       origin: '21gifts',
       category: 'shopping',
       paymentMethods: 'lightning',
+      techProvider: '21.gifts',
       name: 'Stall',
       lat: 47.3,
       lon: 8.5,
@@ -328,7 +371,7 @@ describe('createApp map push', () => {
   });
 });
 
-describe('recordFirstShopOcpPlace', () => {
+describe('syncShopOcpPlace', () => {
   let warn: ReturnType<typeof vi.spyOn>;
 
   beforeEach(() => {
@@ -339,21 +382,21 @@ describe('recordFirstShopOcpPlace', () => {
     warn.mockRestore();
   });
 
-  it('posts a first top-level shop pin to /map/places', async () => {
+  it('puts a top-level shop pin to /map/places', async () => {
     const timeoutSpy = vi.spyOn(AbortSignal, 'timeout');
     const { mapPush, calls } = recordingPush();
-    await recordFirstShopOcpPlace({
+    await syncShopOcpPlace({
       mapPush,
       messageId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
       text: 'Open #21GiftsShop',
       parentId: null,
       place: { lat: 1, lng: 2, label: 'Stall' },
       authorName: 'Ada',
-      hadPlaceBefore: false,
       textHasHashtagToken: (text, name) => text.includes(`#${name}`),
     });
     expect(calls).toHaveLength(1);
     expect(calls[0]?.url).toBe('http://map.test/map/places');
+    expect(calls[0]?.method).toBe('PUT');
     expect(calls[0]?.authorization).toBe('Bearer secret');
     expect(timeoutSpy).toHaveBeenCalledWith(5_000);
     expect(JSON.parse(calls[0]?.body ?? '{}')).toMatchObject({
@@ -361,11 +404,36 @@ describe('recordFirstShopOcpPlace', () => {
       name: 'Stall',
       category: 'shopping',
       paymentMethods: 'lightning',
+      techProvider: '21.gifts',
     });
     timeoutSpy.mockRestore();
   });
 
-  it('skips replies, non-shops, missing pins, prior pins, and a missing push', async () => {
+  it('puts again when a pin already existed', async () => {
+    const { mapPush, calls } = recordingPush();
+    const opts = {
+      mapPush,
+      messageId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+      text: 'Open #21GiftsShop',
+      parentId: null,
+      place: { lat: 1, lng: 2, label: 'Stall' },
+      authorName: 'Ada',
+      textHasHashtagToken: (text: string, name: string) => text.includes(`#${name}`),
+    };
+    await syncShopOcpPlace(opts);
+    await syncShopOcpPlace({ ...opts, place: { lat: 3, lng: 4, label: 'Moved' } });
+    expect(calls).toHaveLength(2);
+    expect(calls[0]?.method).toBe('PUT');
+    expect(calls[1]?.method).toBe('PUT');
+    expect(JSON.parse(calls[1]?.body ?? '{}')).toMatchObject({
+      lat: 3,
+      lon: 4,
+      name: 'Moved',
+      techProvider: '21.gifts',
+    });
+  });
+
+  it('skips replies, non-shops, missing pins, and a missing push', async () => {
     const { mapPush, calls } = recordingPush();
     const base = {
       mapPush,
@@ -375,42 +443,37 @@ describe('recordFirstShopOcpPlace', () => {
       authorName: 'Ada',
       textHasHashtagToken: (text: string, name: string) => text.includes(`#${name}`),
     };
-    await recordFirstShopOcpPlace({ ...base, parentId: 'parent', hadPlaceBefore: false });
-    await recordFirstShopOcpPlace({
+    await syncShopOcpPlace({ ...base, parentId: 'parent' });
+    await syncShopOcpPlace({
       ...base,
       parentId: null,
       text: 'plain',
-      hadPlaceBefore: false,
     });
-    await recordFirstShopOcpPlace({
+    await syncShopOcpPlace({
       ...base,
       parentId: null,
       place: null,
-      hadPlaceBefore: false,
     });
-    await recordFirstShopOcpPlace({ ...base, parentId: null, hadPlaceBefore: true });
-    await recordFirstShopOcpPlace({
+    await syncShopOcpPlace({
       messageId: base.messageId,
       text: base.text,
       place: base.place,
       authorName: base.authorName,
       textHasHashtagToken: base.textHasHashtagToken,
       parentId: null,
-      hadPlaceBefore: false,
     });
     expect(calls).toEqual([]);
   });
 
   it('logs ocp.place.failed when the map answers an error or the call throws', async () => {
     const { mapPush } = recordingPush(500);
-    await recordFirstShopOcpPlace({
+    await syncShopOcpPlace({
       mapPush,
       messageId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
       text: '#21GiftsShop',
       parentId: null,
       place: { lat: 1, lng: 2, label: null },
       authorName: null,
-      hadPlaceBefore: false,
       textHasHashtagToken: () => true,
     });
     const throwing: MapPush = {
@@ -421,15 +484,73 @@ describe('recordFirstShopOcpPlace', () => {
       },
     };
     await expect(
-      recordFirstShopOcpPlace({
+      syncShopOcpPlace({
         mapPush: throwing,
         messageId: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd',
         text: '#21GiftsShop',
         parentId: null,
         place: { lat: 1, lng: 2, label: null },
         authorName: null,
-        hadPlaceBefore: false,
         textHasHashtagToken: () => true,
+      }),
+    ).resolves.toBeUndefined();
+    expect(parsedEvents(warn).filter((e) => e['event'] === 'ocp.place.failed')).toHaveLength(2);
+  });
+});
+
+describe('removeShopOcpPlace', () => {
+  let warn: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+  });
+
+  afterEach(() => {
+    warn.mockRestore();
+  });
+
+  it('deletes origin 21gifts and the message id', async () => {
+    const timeoutSpy = vi.spyOn(AbortSignal, 'timeout');
+    const { mapPush, calls } = recordingPush();
+    await removeShopOcpPlace({
+      mapPush,
+      messageId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+    });
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.url).toBe('http://map.test/map/places');
+    expect(calls[0]?.method).toBe('DELETE');
+    expect(calls[0]?.authorization).toBe('Bearer secret');
+    expect(timeoutSpy).toHaveBeenCalledWith(5_000);
+    expect(JSON.parse(calls[0]?.body ?? '{}')).toEqual({
+      origin: '21gifts',
+      externalId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+    });
+    timeoutSpy.mockRestore();
+  });
+
+  it('does nothing when mapPush is omitted', async () => {
+    const { calls } = recordingPush();
+    await removeShopOcpPlace({ messageId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa' });
+    expect(calls).toEqual([]);
+  });
+
+  it('logs ocp.place.failed when the map answers an error or the call throws', async () => {
+    const { mapPush } = recordingPush(500);
+    await removeShopOcpPlace({
+      mapPush,
+      messageId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
+    });
+    const throwing: MapPush = {
+      baseUrl: 'http://map.test',
+      token: 'secret',
+      fetchImpl: async () => {
+        throw new Error('down');
+      },
+    };
+    await expect(
+      removeShopOcpPlace({
+        mapPush: throwing,
+        messageId: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd',
       }),
     ).resolves.toBeUndefined();
     expect(parsedEvents(warn).filter((e) => e['event'] === 'ocp.place.failed')).toHaveLength(2);
@@ -460,7 +581,7 @@ describe('publishExistingShopPlaces', () => {
     expect(listPlaces).not.toHaveBeenCalled();
   });
 
-  it('posts a live shop pin and skips replies, hidden notes, missing rows, and non-shops', async () => {
+  it('puts a live shop pin and skips replies, hidden notes, missing rows, and non-shops', async () => {
     const timeoutSpy = vi.spyOn(AbortSignal, 'timeout');
     const { mapPush, calls } = recordingPush();
     const listPlaces = vi.fn(async () => [
@@ -537,6 +658,7 @@ describe('publishExistingShopPlaces', () => {
     expect(listPlaces).toHaveBeenCalledWith(1000);
     expect(calls).toHaveLength(1);
     expect(calls[0]?.url).toBe('http://map.test/map/places');
+    expect(calls[0]?.method).toBe('PUT');
     expect(calls[0]?.authorization).toBe('Bearer secret');
     expect(timeoutSpy).toHaveBeenCalledWith(5_000);
     expect(JSON.parse(calls[0]?.body ?? '{}')).toEqual(shopOcpPlaceInput('keep', stall, 'Ada'));
@@ -562,12 +684,13 @@ describe('publishExistingShopPlaces', () => {
     expect(parsedEvents(warn).filter((e) => e['event'] === 'ocp.place.failed')).toHaveLength(0);
   });
 
-  it('logs ocp.place.failed on HTTP 500 and still posts the next shop row', async () => {
+  it('logs ocp.place.failed on HTTP 500 and still puts the next shop row', async () => {
     const calls: RecordedCall[] = [];
     const fetchImpl: MapFetch = async (input, init) => {
       const headers = new Headers(init.headers);
       calls.push({
         url: String(input),
+        method: init.method ?? 'GET',
         authorization: headers.get('authorization') ?? '',
         body: String(init.body),
       });

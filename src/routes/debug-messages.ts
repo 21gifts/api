@@ -17,7 +17,8 @@ import {
   serializeDebugMessage,
   type DebugMessagePhotoMeta,
 } from '@/lib/message';
-import type { MessageStore } from '@/lib/message-store';
+import { textHasHashtagToken, type MessageStore } from '@/lib/message-store';
+import { syncShopOcpPlace, type MapPush } from '@/lib/ocp-place';
 import {
   MESSAGE_VIDEO_MAX_BYTES,
   decodeForumVideo,
@@ -32,6 +33,11 @@ export interface DebugMessagesRouteDeps {
   store: MessageStore;
   /** Configured operator token, or `undefined` when debug is disabled. */
   debugToken: string | undefined;
+  /**
+   * Optional map push. Omitted → restore does not PUT. Set → a restored
+   * live top-level shop pin is sent with PUT.
+   */
+  mapPush?: MapPush;
 }
 
 /** Shared 503/401 gate matching other `/debug/*` routes. */
@@ -70,7 +76,7 @@ async function debugPhotoMeta(store: MessageStore, id: string): Promise<DebugMes
  * `GET /debug/messages/:id`, `GET /debug/messages/:id/photo`,
  * `PUT /debug/messages/:id/video`, and `POST /debug/messages/:id/restore`.
  *
- * @param deps - Message store and optional debug token.
+ * @param deps - Message store, optional debug token, and optional map push.
  * @returns A Hono app exposing the debug message GETs, `PUT /:id/video`,
  *   and `POST /:id/restore`.
  */
@@ -257,6 +263,18 @@ export function debugMessagesRoutes(deps: DebugMessagesRouteDeps): Hono {
         }
         await deps.store.unblockPubkeyByMessage(id);
         logEvent('debug.messages.restored', { messageId: id });
+        const row = await deps.store.getById(id);
+        if (row !== undefined) {
+          await syncShopOcpPlace({
+            ...(deps.mapPush === undefined ? {} : { mapPush: deps.mapPush }),
+            messageId: row.id,
+            text: row.text,
+            parentId: row.parentId ?? null,
+            place: row.place ?? null,
+            authorName: row.name,
+            textHasHashtagToken,
+          });
+        }
         return c.body(null, 204);
       } catch {
         logEvent('debug.messages.restore_failed');
