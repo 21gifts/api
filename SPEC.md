@@ -991,9 +991,7 @@ week. Invalid or later weeks → **Response** `400`:
       "lastWeek": null
     }
   ],
-  "results": [
-    { "habitId": "<uuid>", "week": "2026-09-21", "status": "achieved" }
-  ],
+  "results": [{ "habitId": "<uuid>", "week": "2026-09-21", "status": "achieved" }],
   "comments": [
     {
       "id": "<uuid>",
