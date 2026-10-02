@@ -25,20 +25,33 @@ async function welcomeMediaMessageId(
 }
 
 /**
- * Ping spend once for `account` when a welcome photo or video exists.
- * Failures are logged. Does not throw.
+ * Id of the official platform account, or `null` when none is configured.
  *
- * @param args - Spend ping, forum store, account, and LNURL server config.
+ * @param accounts - Every stored account.
+ * @returns The platform account id, or `null`.
+ */
+function platformAccountId(accounts: readonly Account[]): string | null {
+  return accounts.find((account) => account.isPlatform === true)?.id ?? null;
+}
+
+/**
+ * Ping spend once for `account` when a welcome photo or video exists and the
+ * account has not received the welcome gift yet. Failures are logged. Does
+ * not throw.
+ *
+ * The welcome gift is once per account: a platform `Welcome` reply under one
+ * of the account's notes means it was paid, whichever address it went to.
+ *
+ * @param args - Spend ping, forum store, account, platform account id, and
+ *   LNURL server config.
  */
 async function pingOne(args: {
-  spendPing: SpendPing | undefined;
+  spendPing: SpendPing;
   messages: MessageStore;
   account: Account;
+  platformId: string | null;
   lnurlServer: LnurlServerConfig | undefined;
 }): Promise<void> {
-  if (args.spendPing === undefined) {
-    return;
-  }
   const address = receivingAddress(args.account, args.lnurlServer)?.address ?? null;
   if (address === null) {
     return;
@@ -46,6 +59,13 @@ async function pingOne(args: {
   try {
     const messageId = await welcomeMediaMessageId(args.messages, args.account);
     if (messageId === null) {
+      return;
+    }
+    if (
+      args.platformId !== null &&
+      (await args.messages.accountHasWelcomeGift(args.account.id, args.platformId))
+    ) {
+      logEvent('spend.ping.skipped', { reason: 'welcomed' });
       return;
     }
     await args.spendPing.ping(address, messageId, 'welcome');
@@ -56,14 +76,14 @@ async function pingOne(args: {
 
 /**
  * Welcome-ping every verified account that already has a live top-level
- * photo or video, including About me and a living-room post. Spend pays
- * once per address. Failures are logged per account.
+ * photo or video, including About me and a living-room post, and has not
+ * received the welcome gift yet. Failures are logged per account.
  *
  * @param args - Spend ping, auth store, forum store, and LNURL server config.
  */
 async function catchUpVerifiedMedia(args: {
   spendPing: SpendPing | undefined;
-  auth: AuthStore;
+  auth: Pick<AuthStore, 'listAccounts'>;
   messages: MessageStore;
   lnurlServer: LnurlServerConfig | undefined;
 }): Promise<void> {
@@ -77,6 +97,7 @@ async function catchUpVerifiedMedia(args: {
     logEvent('spend.ping.failed');
     return;
   }
+  const platformId = platformAccountId(accounts);
   for (const account of accounts) {
     if (account.role !== 'verified') {
       continue;
@@ -90,6 +111,7 @@ async function catchUpVerifiedMedia(args: {
         spendPing: args.spendPing,
         messages: args.messages,
         account,
+        platformId,
         lnurlServer: args.lnurlServer,
       });
     } catch {
@@ -102,37 +124,49 @@ async function catchUpVerifiedMedia(args: {
  * Tell spend a verified account is owed the one-time welcome gift.
  *
  * Pass `account` after a new top-level post, an About-me save, or a
- * verification. Pass `auth` (and no `account`) to catch up people who are
- * already verified and already have a photo or video post. Omitted spend
- * ping, a role other than `verified`, no receiving address (no verified
- * wallet, or the LNURL server off), or no photo/video is a no-op. Spend pays
- * once per address.
+ * verification. Omit `account` to catch up people who are already verified
+ * and already have a photo or video post. `auth` is always required: it finds
+ * the platform account whose `Welcome` reply marks a paid welcome gift.
+ * Omitted spend ping, a role other than `verified`, no receiving address (no
+ * verified wallet, or the LNURL server off), no photo/video, or a welcome gift
+ * already paid to the account is a no-op. The gift is once per account, not
+ * once per address, so a member whose receiving address changed is not paid
+ * twice.
  *
- * @param args - Spend ping, optional LNURL server config, plus either one
- *   account or the auth store.
+ * @param args - Spend ping, forum store, auth store, optional LNURL server
+ *   config, and optionally one account.
  */
 export async function syncWelcomePing(args: {
   spendPing?: SpendPing;
   messages: MessageStore;
+  auth: Pick<AuthStore, 'listAccounts'>;
   account?: Account;
-  auth?: AuthStore;
   lnurlServer?: LnurlServerConfig;
 }): Promise<void> {
   if (args.account !== undefined) {
+    if (args.spendPing === undefined) {
+      return;
+    }
+    let platformId: string | null;
+    try {
+      platformId = platformAccountId(await args.auth.listAccounts());
+    } catch {
+      logEvent('spend.ping.failed');
+      return;
+    }
     await pingOne({
       spendPing: args.spendPing,
       messages: args.messages,
       account: args.account,
+      platformId,
       lnurlServer: args.lnurlServer,
     });
     return;
   }
-  if (args.auth !== undefined) {
-    await catchUpVerifiedMedia({
-      spendPing: args.spendPing,
-      auth: args.auth,
-      messages: args.messages,
-      lnurlServer: args.lnurlServer,
-    });
-  }
+  await catchUpVerifiedMedia({
+    spendPing: args.spendPing,
+    auth: args.auth,
+    messages: args.messages,
+    lnurlServer: args.lnurlServer,
+  });
 }

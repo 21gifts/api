@@ -4445,6 +4445,9 @@ describe('POST /conversations/:id/invoice', () => {
       },
     );
     expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({
+      error: "The author's wallet cannot receive this Bitcoin payment",
+    });
   });
 
   it('returns 400 when the counterpart has no nostr key', async () => {
@@ -4482,6 +4485,9 @@ describe('POST /conversations/:id/invoice', () => {
       },
     );
     expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({
+      error: "The author's wallet cannot receive this Bitcoin payment",
+    });
     const attempt = (await messages.listInvoiceAttempts(5))[0];
     expect(attempt?.result).toBe('no_key');
     expect(attempt?.lightningAddress).toBe('bob@example.test');

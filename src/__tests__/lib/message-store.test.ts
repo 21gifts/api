@@ -426,6 +426,46 @@ describe('InMemoryMessageStore', () => {
     );
   });
 
+  it('accountHasWelcomeGift finds a platform Welcome reply under the account notes', async () => {
+    const store = new InMemoryMessageStore();
+    expect(await store.accountHasWelcomeGift('acc', 'plat')).toBe(false);
+    await store.create({ ...EARLY, id: 'note', accountId: 'acc' });
+    await store.create({ ...EARLY, id: 'other-note', accountId: 'other' });
+    await store.create({
+      ...EARLY,
+      id: 'daily',
+      accountId: 'plat',
+      parentId: 'note',
+      text: 'daily',
+    });
+    await store.create({
+      ...EARLY,
+      id: 'stranger',
+      accountId: 'x',
+      parentId: 'note',
+      text: 'Welcome',
+    });
+    await store.create({
+      ...EARLY,
+      id: 'elsewhere',
+      accountId: 'plat',
+      parentId: 'other-note',
+      text: 'Welcome',
+    });
+    await store.create({ ...EARLY, id: 'top', accountId: 'plat', text: 'Welcome' });
+    expect(await store.accountHasWelcomeGift('acc', 'plat')).toBe(false);
+    await store.create({
+      ...EARLY,
+      id: 'welcome',
+      accountId: 'plat',
+      parentId: 'note',
+      text: ' Welcome ',
+    });
+    await store.markDeleted('welcome', new Date(9), 'plat');
+    expect(await store.accountHasWelcomeGift('acc', 'plat')).toBe(true);
+    expect(await store.accountHasWelcomeGift('other', 'plat')).toBe(true);
+  });
+
   it('latestLiveTopLevelMediaId returns the newest live top-level media id', async () => {
     const store = new InMemoryMessageStore();
     expect(await store.latestLiveTopLevelMediaId('acc')).toBeNull();
@@ -5002,6 +5042,21 @@ describe('PostgresMessageStore', () => {
     expect(await store.accountHasLiveTopLevelPost('acc', null)).toBe(true);
     expect(await store.accountHasLiveTopLevelPost('acc', 'prof')).toBe(true);
     expect(sql.queries[2]?.params).toEqual(['acc', 'prof']);
+  });
+
+  it('accountHasWelcomeGift joins platform Welcome replies to the account notes', async () => {
+    const sql = new MockSql();
+    const store = new PostgresMessageStore(sql);
+    sql.nextRows = [];
+    expect(await store.accountHasWelcomeGift('acc', 'plat')).toBe(false);
+    expect(sql.queries[0]?.text).toMatch(/JOIN message parent ON parent\.id = reply\.parent_id/);
+    expect(sql.queries[0]?.text).toMatch(/reply\.account_id = \$2/);
+    expect(sql.queries[0]?.text).toMatch(/parent\.account_id = \$1/);
+    expect(sql.queries[0]?.text).toMatch(/trim\(reply\.text\) = 'Welcome'/);
+    expect(sql.queries[0]?.text).not.toMatch(/deleted_at/);
+    expect(sql.queries[0]?.params).toEqual(['acc', 'plat']);
+    sql.nextRows = [{ found: 1 }];
+    expect(await store.accountHasWelcomeGift('acc', 'plat')).toBe(true);
   });
 
   it('latestLiveTopLevelMediaId returns the newest live top-level media id', async () => {
