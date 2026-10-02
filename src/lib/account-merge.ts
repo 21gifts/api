@@ -1,10 +1,23 @@
 /** One reserved database transaction connection used by an account merge. */
 export interface MergeTx {
+  /**
+   * Run a parameterised query and return rows.
+   *
+   * @param text - SQL with `$1`, `$2`, … placeholders.
+   * @param params - Bound values, in order.
+   * @returns Result rows.
+   */
   query<T>(text: string, params?: readonly unknown[]): Promise<T[]>;
 }
 
 /** Database port that keeps the complete account merge on one transaction. */
 export interface MergeDb {
+  /**
+   * Run a callback on one reserved transaction connection.
+   *
+   * @param run - Callback that receives the transaction.
+   * @returns The callback result.
+   */
   begin<T>(run: (tx: MergeTx) => Promise<T>): Promise<T>;
 }
 
@@ -43,6 +56,10 @@ function quoteIdentifier(identifier: string): string {
  * @param db - Transaction-capable database port.
  * @param input - Source, destination, and verify-edge choice.
  * @returns A merge count or an operator-safe refusal.
+ * @throws Error('invalid account foreign key identifier') when a catalog
+ *   identifier fails the allowlist in `quoteIdentifier`.
+ * @throws Error('composite account foreign key') when a catalog foreign key
+ *   is composite.
  */
 export async function mergeAccounts(db: MergeDb, input: MergeInput): Promise<MergeResult> {
   if (input.from === input.into) {
