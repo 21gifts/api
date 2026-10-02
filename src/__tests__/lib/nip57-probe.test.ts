@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import type { EventTemplate } from 'nostr-tools/pure';
+import { finalizeEvent, generateSecretKey, type EventTemplate } from 'nostr-tools/pure';
 import type { FetchFn } from '@/lib/lnurlp';
 import { LIGHTNING_ADDRESS_NOT_ZAP, probeNip57Mint } from '@/lib/nip57-probe';
 
@@ -7,6 +7,11 @@ const ADDRESS = 'alice@walletofsatoshi.com';
 const PUBKEY = 'aa'.repeat(32);
 const PR = 'lnbc10n1ptest';
 const MAX_SENDABLE = 100_000_000_000;
+const SECRET = generateSecretKey();
+
+async function sign(unsigned: EventTemplate) {
+  return finalizeEvent(unsigned, SECRET);
+}
 
 function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
@@ -60,7 +65,7 @@ describe('probeNip57Mint', () => {
     const result = await probeNip57Mint({
       address: 'not-an-address',
       recipientPubkey: PUBKEY,
-      sign: async () => ({}),
+      sign,
       fetchImpl: async () => {
         throw new Error('no');
       },
@@ -78,7 +83,7 @@ describe('probeNip57Mint', () => {
     const result = await probeNip57Mint({
       address: ADDRESS,
       recipientPubkey: PUBKEY,
-      sign: async () => ({}),
+      sign,
       fetchImpl,
     });
     expect(result).toBe('unreachable');
@@ -95,7 +100,7 @@ describe('probeNip57Mint', () => {
     const result = await probeNip57Mint({
       address: ADDRESS,
       recipientPubkey: PUBKEY,
-      sign: async () => ({}),
+      sign,
       fetchImpl,
     });
     expect(result).toBe('unreachable');
@@ -107,7 +112,7 @@ describe('probeNip57Mint', () => {
     const result = await probeNip57Mint({
       address: ADDRESS,
       recipientPubkey: PUBKEY,
-      sign: async () => ({}),
+      sign,
       fetchImpl,
     });
     expect(result).toBe('unreachable');
@@ -119,7 +124,7 @@ describe('probeNip57Mint', () => {
     const result = await probeNip57Mint({
       address: ADDRESS,
       recipientPubkey: PUBKEY,
-      sign: async () => ({}),
+      sign,
       fetchImpl,
     });
     expect(result).toBe('unreachable');
@@ -130,7 +135,7 @@ describe('probeNip57Mint', () => {
     const result = await probeNip57Mint({
       address: ADDRESS,
       recipientPubkey: PUBKEY,
-      sign: async () => ({}),
+      sign,
       fetchImpl,
     });
     expect(result).toBe('unreachable');
@@ -155,12 +160,7 @@ describe('probeNip57Mint', () => {
     const result = await probeNip57Mint({
       address: ADDRESS,
       recipientPubkey: PUBKEY,
-      sign: async (unsigned: EventTemplate) => ({
-        ...unsigned,
-        id: '1',
-        sig: '2',
-        pubkey: PUBKEY,
-      }),
+      sign,
       fetchImpl,
     });
     expect(result).toBe('not_zap');
@@ -172,7 +172,7 @@ describe('probeNip57Mint', () => {
     const result = await probeNip57Mint({
       address: ADDRESS,
       recipientPubkey: PUBKEY,
-      sign: async () => ({}),
+      sign,
       fetchImpl,
     });
     expect(result).toBe('unreachable');
@@ -200,7 +200,7 @@ describe('probeNip57Mint', () => {
     const result = await probeNip57Mint({
       address: ADDRESS,
       recipientPubkey: PUBKEY,
-      sign: async (unsigned: EventTemplate) => ({ ...unsigned, id: '1', sig: '2', pubkey: PUBKEY }),
+      sign,
       fetchImpl,
     });
     expect(result).toBe('unreachable');
@@ -211,12 +211,7 @@ describe('probeNip57Mint', () => {
       const result = await probeNip57Mint({
         address: ADDRESS,
         recipientPubkey: PUBKEY,
-        sign: async (unsigned: EventTemplate) => ({
-          ...unsigned,
-          id: '1',
-          sig: '2',
-          pubkey: PUBKEY,
-        }),
+        sign,
         fetchImpl: zapCapableFetch(),
       });
       expect(result).toBe('not_zap');
@@ -236,12 +231,7 @@ describe('probeNip57Mint', () => {
       const result = await probeNip57Mint({
         address: ADDRESS,
         recipientPubkey: PUBKEY,
-        sign: async (unsigned: EventTemplate) => ({
-          ...unsigned,
-          id: '1',
-          sig: '2',
-          pubkey: PUBKEY,
-        }),
+        sign,
         fetchImpl: zapCapableFetch(),
       });
       expect(result).toBe('not_zap');
@@ -251,20 +241,34 @@ describe('probeNip57Mint', () => {
   });
 
   it('returns ok when the minted invoice is NIP-57', async () => {
-    await withNip57(true, async () => {
+    const bolt11 = await import('@/lib/bolt11');
+    const lnurlPay = await import('@/lib/lnurl-pay');
+    const nip57Spy = vi.spyOn(bolt11, 'isNip57Invoice').mockReturnValue(true);
+    const requestSpy = vi.spyOn(lnurlPay, 'requestZapInvoice');
+    try {
       const result = await probeNip57Mint({
         address: ADDRESS,
         recipientPubkey: PUBKEY,
-        sign: async (unsigned: EventTemplate) => ({
-          ...unsigned,
-          id: '1',
-          sig: '2',
-          pubkey: PUBKEY,
-        }),
+        sign,
         fetchImpl: zapCapableFetch(),
         env: { NOSTR_RELAY_SPACE: 'wss://relay.nostr.space' },
       });
       expect(result).toBe('ok');
-    });
+      const zapRequestJson = requestSpy.mock.calls[0]?.[0]?.zapRequestJson;
+      expect(typeof zapRequestJson).toBe('string');
+      expect(nip57Spy.mock.calls[0]?.[1]).toBe(zapRequestJson);
+      expect(Object.keys(JSON.parse(zapRequestJson ?? ''))).toEqual([
+        'id',
+        'pubkey',
+        'created_at',
+        'kind',
+        'tags',
+        'content',
+        'sig',
+      ]);
+    } finally {
+      nip57Spy.mockRestore();
+      requestSpy.mockRestore();
+    }
   });
 });

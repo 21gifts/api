@@ -22,7 +22,7 @@ import { ensureAccountNostrKey } from '@/lib/nostr/keys';
 import { InvoiceRateLimiter } from '@/lib/nostr/rate-limit';
 import { resolveZapRelays } from '@/lib/nostr/relays';
 import { signEventForAccount } from '@/lib/nostr/sign';
-import { buildZapRequest } from '@/lib/nostr/zap-request';
+import { buildZapRequest, serializeZapRequest } from '@/lib/nostr/zap-request';
 import { bearerToken } from '@/routes/me';
 
 const MESSAGE_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -280,7 +280,7 @@ export async function repaymentInvoice(deps: RepaymentDeps, c: Context): Promise
     logEvent('nostr.sign.failed', { messageId: opened.row.id });
     return c.json({ error: 'Messages are unavailable' }, 503);
   }
-  const zapRequestJson = JSON.stringify(signed);
+  const zapRequestJson = serializeZapRequest(signed);
   const fetchImpl: FetchFn = deps.fetchImpl ?? fetch;
   const zap = await requestZapInvoice({
     address,

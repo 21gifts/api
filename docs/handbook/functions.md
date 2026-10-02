@@ -2352,7 +2352,7 @@
 
 ## Function: probeNip57Mint
 
-- **Purpose:** Request a throwaway zap invoice and accept the address only when `description_hash` matches the signed 9734 JSON.
+- **Purpose:** Request a throwaway zap invoice and accept the address only when `description_hash` matches the NIP-01-ordered serialisation of the signed 9734.
 - **Inputs:** LUD-16 address, signer pubkey, sign helper, fetch, optional env.
 - **Returns / side effects:** `'ok' | 'not_zap' | 'unreachable'`. Never pays. Never writes `message_invoice`.
 - **Used by:** `POST /me/lightning-address`, `POST /debug/accounts`.
@@ -2542,6 +2542,13 @@
 - **Inputs:** recipient pubkey, event id, amountMsat, relays, optional `content` (NIP-57 comment, default empty).
 - **Returns / side effects:** EventTemplate.
 - **Used by:** `POST /messages/:id/invoice`.
+
+## Function: serializeZapRequest
+
+- **Purpose:** Serialise a signed kind:9734 with the NIP-01 field order `id, pubkey, created_at, kind, tags, content, sig`, so the LNURL `nostr=` value and the `description_hash` check use the same string.
+- **Inputs:** Signed zap-request event.
+- **Returns / side effects:** Compact JSON string with exactly those seven keys in that order; any other property on the event is dropped.
+- **Used by:** `probeNip57Mint`, `POST /messages/:id/invoice`, `POST /conversations/:id/invoice`, `POST /messages/:id/repayment`.
 
 ## Function: manualReceiptIdForPaymentHash
 

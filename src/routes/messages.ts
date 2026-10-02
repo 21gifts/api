@@ -67,7 +67,7 @@ import { InvoiceRateLimiter, PostRateLimiter } from '@/lib/nostr/rate-limit';
 import { resolveZapRelays } from '@/lib/nostr/relays';
 import { retractHiddenForumNotes } from '@/lib/nostr/retract';
 import { signEventForAccount } from '@/lib/nostr/sign';
-import { buildZapRequest } from '@/lib/nostr/zap-request';
+import { buildZapRequest, serializeZapRequest } from '@/lib/nostr/zap-request';
 import { inboxUnreadCountFor } from '@/lib/conversation-push';
 import type { ConversationStore } from '@/lib/conversation-store';
 import { mentionUsernames } from '@/lib/mention';
@@ -2950,11 +2950,8 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
         );
         return c.json({ error: 'Messages are unavailable' }, 503);
       }
-      const zapRequestJson = JSON.stringify(signed);
-      const zapRequest =
-        signed !== null && typeof signed === 'object'
-          ? (signed as unknown as Record<string, unknown>)
-          : null;
+      const zapRequestJson = serializeZapRequest(signed);
+      const zapRequest = signed as unknown as Record<string, unknown>;
       const zap = await requestZapInvoice({
         address: author.lightningAddress,
         amountMsat,
