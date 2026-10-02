@@ -148,8 +148,9 @@ export interface AppDeps {
    */
   diagnosticStore?: DiagnosticStore;
   /**
-   * Outbound gifts for public statistics (default: empty
-   * {@link InMemoryGiftStore}).
+   * Outbound gifts for public statistics; the same store tells the welcome
+   * check (invoices, trust, me, messages) that a welcome gift was already paid
+   * (default: empty {@link InMemoryGiftStore}).
    */
   giftStore?: GiftStore;
   /**
