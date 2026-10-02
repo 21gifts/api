@@ -22,7 +22,7 @@ export interface SparkInvoiceFields {
   id: Uint8Array;
   /** Memo; `zap:<payment hash>` for a zap. */
   memo: string;
-  /** Amount in whole sats. */
+  /** Amount in whole sats (a safe integer, 0 or more). */
   amountSats: number;
 }
 
@@ -39,6 +39,7 @@ const SPARK_INVOICE_VERSION = 1;
  * @param fields - Receiver key, id, memo, and amount.
  * @returns `spark1…` string (bech32m, no length limit).
  * @throws Error when the key is not 33 bytes or the id is not 16 bytes.
+ * @throws RangeError when `amountSats` is negative or not a safe integer.
  */
 export function encodeSparkInvoice(fields: SparkInvoiceFields): string {
   const identity = hex.decode(fields.identityPublicKey);

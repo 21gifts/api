@@ -1874,8 +1874,8 @@
 
 ## Function: lnurlServerFetch
 
-- **Purpose:** Keeps LNURL traffic for wallet-backed addresses inside the deployment. A request whose URL host equals the host of `PUBLIC_BASE_URL` (the LUD-16 document of `<username>@<host>` and its pay callback) is sent as a `GET` to the LNURL server through `callLnurlServer` (path segments and query kept, fixed `Host`, 15 s timeout) instead of over the public URL. Any other host goes to the wrapped fetch unchanged, so external Lightning addresses keep working exactly as before.
-- **Inputs:** `LnurlServerConfig` or `undefined`, and the fetch to wrap.
+- **Purpose:** Keeps LNURL traffic for wallet-backed addresses inside the deployment. A request whose URL host equals the host of `PUBLIC_BASE_URL` (the LUD-16 document of `<username>@<host>` and its pay callback) is sent as a `GET` to the LNURL server through `callLnurlServer` (path segments and query kept, fixed `Host`, 15 s timeout) instead of over the public URL. Any other host goes to the wrapped fetch unchanged, so external Lightning addresses keep working exactly as before. Like the public `GET /.well-known/lnurlp/:username`, a LUD-16 document request for a username without a verified wallet also goes to the wrapped fetch, so an external address on that host keeps resolving over the public URL.
+- **Inputs:** `LnurlServerConfig` or `undefined`, the fetch to wrap, and a username lookup (`getAccountByUsername`).
 - **Returns / side effects:** A `FetchFn`. With `undefined` config it is the wrapped fetch itself. A refused path segment or an unreachable LNURL server rejects like a failed `fetch`, which the LNURL helpers already map to `unreachable`.
 - **Used by:** The same routes as `receivingAddress` and the receipt ingest provider lookup.
 
@@ -1918,7 +1918,7 @@
 
 - **Purpose:** Serialise a Spark invoice: protobuf `SparkAddress { 1: identity_public_key (33 bytes), 2: spark_invoice_fields }` with no signature field, where `SparkInvoiceFields` is written in the canonical order `1: version = 1`, `2: id (16 bytes)`, `5: memo`, `4: SatsPayment { 1: amount }` (not field-number order), then bech32m with prefix `spark` and no length limit.
 - **Inputs:** `{ identityPublicKey (66 hex), id (16 bytes), memo, amountSats }`.
-- **Returns / side effects:** The `spark1…` string. Throws when the key is not 33 bytes or the id not 16 bytes. No I/O.
+- **Returns / side effects:** The `spark1…` string. Throws when the key is not 33 bytes or the id not 16 bytes, and `RangeError` when `amountSats` is negative or not a safe integer. No I/O.
 - **Used by:** `issueSparkInvoice`.
 
 ## Function: uuidV7
@@ -1993,7 +1993,7 @@
 
 ## Function: runSparkInvoiceTick
 
-- **Purpose:** One pass of the Spark invoice worker. Lists the open Spark invoices issued in the last 60 minutes, queries the coordinator in batches of up to 100, and for each invoice reported `finalized` signs the receipt for its zap invoice with the receiver's receipt key and feeds it into the receipt ingest. When the ingest credited this receipt, it is published to the zap request's relays and the row is marked settled with the transfer id and receipt id; when another receipt owns the payment hash (`claims.zapPaymentReceiptId`), the row is settled without publishing. Otherwise (for example the LNURL server was briefly unreachable, or crediting failed after the claim) it logs `spark.receipt.not_credited` and leaves the row open; the next tick ingests the same receipt id again, so a claim it already holds lets the retry complete the credit. `not_found`, `pending`, `returned`, `mismatched`, and unknown statuses leave the row open.
+- **Purpose:** One pass of the Spark invoice worker. Lists the open Spark invoices issued in the last 60 minutes, queries the coordinator in batches of up to 100, and for each invoice reported `finalized` signs the receipt for its zap invoice with the receiver's receipt key and feeds it into the receipt ingest. When the ingest credited this receipt and it holds the payment hash claim, it is published to the zap request's relays (if any) and the row is marked settled with the transfer id and receipt id; when another receipt owns the payment hash (`claims.zapPaymentReceiptId`), the row is settled without publishing. Otherwise (for example the LNURL server was briefly unreachable, or crediting failed after the claim) it logs `spark.receipt.not_credited` and leaves the row open; the next tick ingests the same receipt id again, so a claim it already holds lets the retry complete the credit. `not_found`, `pending`, `returned`, `mismatched`, and unknown statuses leave the row open.
 - **Inputs:** `SparkWorkerDeps` (`store`, `config`, `fetchImpl`, `publisher`, `ingest`, `claims`, `now`).
 - **Returns / side effects:** Resolves when every batch is handled. A failed batch logs `spark.query.failed` (`reason`, `grpcStatus`) and the next batch runs; a publish that no relay accepts (or that throws) logs `spark.receipt.publish_failed` and the row is still settled, since the credit is done; an unusable stored zap request logs `spark.receipt.invalid`; a settled row logs `spark.invoice.settled`. A second receipt for the same payment hash is a no-op in the ingest (payment hash claimed once).
 - **Used by:** `startSparkInvoiceWorker`.

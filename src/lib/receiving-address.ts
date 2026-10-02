@@ -5,14 +5,15 @@
  * the wallet-backed `<username>@<host of PUBLIC_BASE_URL>`; otherwise the
  * linked external Lightning address. Every money route and the receipt ingest
  * resolve the address through {@link receivingAddress} and fetch LNURL
- * documents through {@link lnurlServerFetch}, which answers the wallet-backed
- * host from the LNURL server directly instead of over the public URL.
+ * documents through {@link lnurlServerFetch}, which answers wallet-backed
+ * addresses from the LNURL server directly instead of over the public URL.
  */
 
-import type { Account } from '@/lib/auth/store';
+import type { Account, AuthStore } from '@/lib/auth/store';
 import type { LnurlServerConfig } from '@/lib/config';
 import { LNURL_SERVER_TIMEOUT_MS, callLnurlServer } from '@/lib/lnurl-server';
 import type { FetchFn } from '@/lib/lnurlp';
+import { normalizeUsername } from '@/lib/username';
 
 /** Where an account receives: its wallet, or an external Lightning address. */
 export type ReceivingAddress =
@@ -71,16 +72,21 @@ export function receivingAddress(
  * a wallet-backed address and its pay callback) is sent as a `GET` to the
  * LNURL server with {@link callLnurlServer} (path segments and query kept,
  * fixed `Host`, 15 s timeout); every other request goes to `fetchImpl`
- * unchanged. A refused path segment or an unreachable LNURL server rejects
- * like a failed `fetch`.
+ * unchanged. Like the public `GET /.well-known/lnurlp/:username`, a LUD-16
+ * document request for a username without a verified wallet goes to
+ * `fetchImpl` too, so an external address on that host keeps resolving over
+ * the public URL. A refused path segment or an unreachable LNURL server
+ * rejects like a failed `fetch`.
  *
  * @param lnurlServer - LNURL server config, or `undefined` (returns `fetchImpl`).
  * @param fetchImpl - Fetch for every other host and for the LNURL server itself.
+ * @param accounts - Username lookup that tells a wallet-backed username apart.
  * @returns A fetch with the same signature.
  */
 export function lnurlServerFetch(
   lnurlServer: LnurlServerConfig | undefined,
   fetchImpl: FetchFn,
+  accounts: Pick<AuthStore, 'getAccountByUsername'>,
 ): FetchFn {
   if (lnurlServer === undefined) {
     return fetchImpl;
@@ -90,9 +96,17 @@ export function lnurlServerFetch(
     if (url.host !== lnurlServer.host) {
       return fetchImpl(input, init);
     }
+    const segments = url.pathname.split('/').filter((segment) => segment !== '');
+    if (segments[0] === '.well-known' && segments[1] === 'lnurlp') {
+      const username = normalizeUsername(segments[2] ?? '');
+      const account = username === null ? undefined : await accounts.getAccountByUsername(username);
+      if (account === undefined || typeof account.sparkPubkeyVerifiedAt !== 'number') {
+        return fetchImpl(input, init);
+      }
+    }
     const result = await callLnurlServer(lnurlServer, fetchImpl, {
       method: 'GET',
-      segments: url.pathname.split('/').filter((segment) => segment !== ''),
+      segments,
       search: url.search,
       timeoutMs: LNURL_SERVER_TIMEOUT_MS,
     });

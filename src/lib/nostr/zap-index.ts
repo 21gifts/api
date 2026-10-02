@@ -1344,7 +1344,7 @@ async function ingestOneReceipt(
     }
     const providerPubkey = await resolveProviderPubkey({
       address: address.trim().toLowerCase(),
-      fetchImpl: lnurlServerFetch(args.lnurlServer, args.fetchImpl),
+      fetchImpl: lnurlServerFetch(args.lnurlServer, args.fetchImpl, args.auth),
       nowMs: args.now(),
     });
     if (providerPubkey === null) {
@@ -1614,7 +1614,7 @@ async function ingestOneReceipt(
 
   const providerPubkey = await resolveProviderPubkey({
     address: address.trim().toLowerCase(),
-    fetchImpl: lnurlServerFetch(args.lnurlServer, args.fetchImpl),
+    fetchImpl: lnurlServerFetch(args.lnurlServer, args.fetchImpl, args.auth),
     nowMs: args.now(),
   });
   if (providerPubkey === null) {
@@ -1804,7 +1804,7 @@ async function settleRepaymentReceipt(
       ? null
       : await resolveProviderPubkey({
           address,
-          fetchImpl: lnurlServerFetch(args.lnurlServer, args.fetchImpl),
+          fetchImpl: lnurlServerFetch(args.lnurlServer, args.fetchImpl, args.auth),
           nowMs: args.now(),
         });
   if (giverProvider === null || event.pubkey.toLowerCase() !== giverProvider) {
