@@ -70,6 +70,7 @@ api/
 │   │   ├── well-known.ts     # GET /.well-known/nostr.json (NIP-05); GET /.well-known/lnurlp/:username (LUD-16; wallet-backed when LNURL_SERVER_URL and PUBLIC_BASE_URL resolve)
 │   │   ├── lnurl-server.ts   # Forwarded LNURL routes when LNURL_SERVER_URL and PUBLIC_BASE_URL resolve (register/recover/metadata/invoice/verify)
 │   │   ├── pay.ts            # GET /pay/:username; POST /pay/:username/invoice
+│   │   ├── lnurl.ts          # POST /lnurl/pay-request; POST /lnurl/invoice (Bearer; outside LNURL relay)
 │   │   ├── contact.ts        # POST /contact (private mailbox + platform thread)
 │   │   ├── pos.ts            # GET/POST/DELETE /pos (one exact sat amount on the receiving address)
 │   │   ├── conversations.ts  # GET/POST /conversations, GET /conversations/moderator-group, GET/POST /conversations/:id, POST /conversations/:id/read, POST /conversations/:id/invoice, GET /conversations/:id/messages/:messageId/photo, GET /conversations/:id/messages/:messageId/photo/:file, POST /conversations/:id/messages/:messageId/translate
@@ -133,6 +134,7 @@ api/
 │   │   ├── ln-address-cache.ts  # In-memory TTL cache for successful resolves
 │   │   ├── log.ts            # JSON event lines (console.warn); requestLog middleware
 │   │   ├── lnurl-pay.ts      # LUD-16 → LNURL-pay invoice (amount + LUD-12 comment)
+│   │   ├── lnurl-relay.ts    # Outside Lightning Address / LNURL pay request + invoice for the app
 │   │   ├── gift-invoice.ts   # LUD-16 → LNURL-pay invoice for gift amounts (no 10-sat cap)
 │   │   ├── bolt11.ts         # Decode/inspect BOLT11 (hash, amount, description / description_hash)
 │   │   ├── proof.ts          # sha256(preimage) === payment hash
@@ -201,6 +203,7 @@ api/
 │       │   ├── ln-address-cache.test.ts
 │       │   ├── log.test.ts
 │       │   ├── lnurl-pay.test.ts
+│       │   ├── lnurl-relay.test.ts
 │       │   ├── gift-invoice.test.ts
 │       │   ├── bolt11.test.ts
 │       │   ├── proof.test.ts
@@ -305,6 +308,7 @@ api/
 │           ├── well-known.test.ts
 │           ├── lnurl-server.test.ts
 │           ├── pay.test.ts
+│           ├── lnurl.test.ts
 │           ├── contact.test.ts
 │           ├── pos.test.ts
 │           ├── conversations.test.ts

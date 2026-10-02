@@ -25,6 +25,7 @@ import { resolveMapPush, type MapPush } from '@/lib/ocp-place';
 import { translateRoutes } from '@/routes/translate';
 import { InMemoryTranslationStore, type TranslationStore } from '@/lib/translation-store';
 import { wellKnownRoutes } from '@/routes/well-known';
+import { lnurlRoutes } from '@/routes/lnurl';
 import { payRoutes } from '@/routes/pay';
 import { contactRoutes } from '@/routes/contact';
 import { posRoutes } from '@/routes/pos';
@@ -340,7 +341,7 @@ function debugList(store: object, limit: number): Promise<unknown[]> {
  * via Hono's `app.request()` helper without binding to a TCP port. Every
  * wire-up change — middleware, routes, error handlers — flows through this
  * single factory so the test surface matches production exactly. Mounts
- * public `GET /view/:viewKey` alongside `/me`, `/pay`, Web Push subscription routes,
+ * public `GET /view/:viewKey` alongside `/me`, `/pay`, `/lnurl`, Web Push subscription routes,
  * `/notifications`, `/debug/dump`, and the rest of the surface.
  *
  * @param deps - Optional overrides for the auth store, clock, invoice payer,
@@ -529,6 +530,7 @@ export function createApp(deps: AppDeps = {}): Hono {
     app.route('/', lnurlServerRoutes({ auth: store, config: lnurlServer, fetchImpl, now }));
   }
   app.route('/pay', payRoutes({ auth: store, fetchImpl, posStore, now, ...receivingDeps }));
+  app.route('/lnurl', lnurlRoutes({ auth: store, fetchImpl, now, env }));
   app.route(
     '/auth',
     authRoutes({
