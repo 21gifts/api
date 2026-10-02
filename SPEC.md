@@ -176,7 +176,7 @@ Public base URLs used in examples:
 | POST   | `/conversations/:id/invoice`                         | Bearer                     | NIP-57 zap / BOLT11 for a private gift (`{ sats, text? }` → `{ pr, amountSats, messageId }`)                                                                                                                                                                                                                                                           |
 | POST   | `/conversations/:id/read`                            | Bearer                     | Stamp last-read for the viewer                                                                                                                                                                                                                                                                                                                         |
 | POST   | `/conversations/:id/messages/:messageId/translate`   | Bearer                     | Translate stored conversation text (`{ target }` → `{ translatedText, cached }`)                                                                                                                                                                                                                                                                       |
-| GET    | `/notifications`                                     | Bearer                     | List + unreadCount; drop leftover hidden forum_post/forum_reply (zap checks parent only)                                                                                                                                                                                                                                                               |
+| GET    | `/notifications`                                     | Bearer                     | List + unreadCount; exclude generic forum_post; drop hidden replies (zap checks parent only)                                                                                                                                                                                                                                                           |
 | POST   | `/notifications/read-all`                            | Bearer                     | Mark all notifications read                                                                                                                                                                                                                                                                                                                            |
 | POST   | `/notifications/:id/read`                            | Bearer                     | Mark one notification read                                                                                                                                                                                                                                                                                                                             |
 | GET    | `/lightning-address`                                 | none                       | Resolve LUD-16 metadata (cached)                                                                                                                                                                                                                                                                                                                       |
@@ -3915,10 +3915,11 @@ self mark does not notify the author. Other marks fan out one
 `forum_mention` per person. No
 `replyCount`, and no photo or video bytes in the JSON. `sats` is 0 and
 `payable` is false until the worker signs the note (and stays false without
-author LN). `role` is the posting session account's live `account.role`. Web Push and in-app rows for a **top-level** note (`notifyForumPost`, kind
+author LN). `role` is the posting session account's live `account.role`. Web Push for a **top-level** note (`notifyForumPost`, kind
 `forum_post`, `url` `/messages/<id>`, `tag` `forum_post:<id>`) and for a
 **reply** (`notifyForumReply`, kind `forum_reply`, `url` `/messages/<replyId>`,
-`tag` `forum_reply:<replyId>`) fan out in-app to every account except the
+`tag` `forum_reply:<replyId>`) use the existing recipient levels. Only replies
+create generic in-app rows for every matching account except the
 actor (no-op when the actor is the official platform account), then filter recipients by each account's `notificationLevel`
 (`all` / `active` / `mentions`). Web Push still goes only to bell subscribers
 and uses the same level filter. Damus-only parents still
@@ -3926,7 +3927,8 @@ fan out. A self-reply skips only the actor. `GET /notifications` applies the
 same `notificationLevel` filter to stored rows.
 The booted process always has notification and push stores (in-memory without
 `DATABASE_URL`, Postgres when it is set). Photo-only empty text still
-notifies. Missing `pushStore` still writes in-app rows. Notification or
+notifies. Missing `pushStore` still writes in-app reply and mention rows. Generic new-post
+events never write in-app rows; explicit `@username` mentions remain separate. Notification or
 push failure does not fail the **200**. Over-limit posters
 get **429** `{ "error": "Too many messages" }`
 with `Retry-After: 10` (1/10s, 6/h, 20/UTC-day). A second **live** photo/video
@@ -5118,7 +5120,9 @@ Bearer session required. Lists the recipient's notifications newest-first
 plus `unreadCount`. Fan-out already applied the owner's
 `notificationLevel` when the row was written; this list applies the same
 `notificationLevel` filter to stored rows (`notificationsMatchingLevel`
-on the newest 1000). After the level filter, drop `forum_post` /
+on the newest 1000 eligible rows). Legacy `forum_post` rows are excluded
+by both stores before the limit and from unread badge counts, without deleting
+them. After the level filter, drop
 `forum_reply` / `forum_mention` whose parent message is missing or hidden; also drop
 `forum_reply` when the child (`replyId`) is missing or hidden. Never drop
 `moderator_appointed` or `moderator_proposal` (do not look up a forum
@@ -5128,7 +5132,7 @@ Best-effort purge of those message ids. Then cap the kept list at **200**.
 `unreadCount` is unread among kept rows after the hidden filter (not the
 unfiltered matching unread of the 1000, and not necessarily the page
 length). Member JSON never includes recipient or actor account ids. Each
-item `type` is `"forum_post"`, `"forum_reply"`, `"forum_mention"`, `"zap"`,
+item `type` is `"forum_reply"`, `"forum_mention"`, `"zap"`,
 `"moderator_appointed"`, or `"moderator_proposal"`.
 
 Missing/invalid/expired bearer → **Response** `401`:
