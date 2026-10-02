@@ -2,8 +2,8 @@
  * Gift statistics domain: outbound gift rows and pure aggregation.
  *
  * The HTTP surface never includes invoices or other payment secrets — only
- * amounts (sats, BTC, historical USD/CHF/EUR/PHP), UTC days, and Wallet of
- * Satoshi recipient handles.
+ * amounts (sats, BTC, historical USD/CHF/EUR/PHP), UTC days, and recipient
+ * handles (the local part of the receiving address).
  */
 
 import { FX_SOURCE_COINBASE_DAILY_CLOSE } from '@/lib/btc-usd-store';
