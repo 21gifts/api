@@ -986,3 +986,17 @@ test('GET /messages/:id/external-profile without bearer is 404 on default boot',
   const res = await request.get('/messages/:id/external-profile');
   expect(res.status()).toBe(404);
 });
+
+test('GET /messages/:id/external-posts without bearer is 404 on default boot', async ({
+  request,
+}) => {
+  const res = await request.get('/messages/:id/external-posts');
+  expect(res.status()).toBe(404);
+});
+
+test('GET /messages/:id/external-replies without bearer is 404 on default boot', async ({
+  request,
+}) => {
+  const res = await request.get('/messages/:id/external-replies');
+  expect(res.status()).toBe(404);
+});

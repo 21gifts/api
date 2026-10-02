@@ -165,6 +165,10 @@ ALTER TABLE message ADD COLUMN IF NOT EXISTS deleted_at timestamptz;
 ALTER TABLE message ADD COLUMN IF NOT EXISTS deleted_by uuid;
 CREATE INDEX IF NOT EXISTS message_feed_created_idx ON message (created_at DESC, id DESC) WHERE parent_id IS NULL AND deleted_at IS NULL;
 CREATE INDEX IF NOT EXISTS message_feed_popular_idx ON message (sats DESC, created_at DESC, id DESC) WHERE parent_id IS NULL AND deleted_at IS NULL AND sats > 0;
+-- External author lists match on the lowercased pubkey. After deleted_at exists.
+CREATE INDEX IF NOT EXISTS message_external_author_idx
+  ON message (lower(author_pubkey), created_at DESC, id DESC)
+  WHERE account_id IS NULL AND deleted_at IS NULL AND author_pubkey IS NOT NULL;
 CREATE INDEX IF NOT EXISTS message_nostr_event_unrepaired_idx
   ON message (id)
   WHERE nostr_event IS NOT NULL AND jsonb_typeof(nostr_event) = 'string';

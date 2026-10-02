@@ -4394,11 +4394,14 @@ two ids per store.
 ### `GET /messages/:id/external-profile`
 
 Public profile for an external author. No Bearer. Registered **before**
-`GET /messages/:id`. **200** `{ "name", "npub" }` and, when present,
-`nip05` and `lud16`. `name` is the stored snapshot (truncated pubkey when
-blank). A live kind 0 name replaces it only when `externalDisplayName`
-accepts it. `npub` is the NIP-19 bech32 encoding of the stored 64-hex
-author pubkey. `nip05` requires `fetchImpl` and
+`GET /messages/:id`. **200** `{ "name", "npub", "postCount", "replyCount" }`
+and, when present, `nip05` and `lud16`. `name` is the stored snapshot
+(truncated pubkey when blank). A live kind 0 name replaces it only when
+`externalDisplayName` accepts it. `npub` is the NIP-19 bech32 encoding of
+the stored 64-hex author pubkey. `postCount` and `replyCount` are always
+present, including 0: uncapped live top-level notes, and uncapped live
+public replies (`replyCount` is 0 when the pubkey is not a recorded
+zapper). `nip05` requires `fetchImpl` and
 a guarded HTTPS `/.well-known/nostr.json` whose `names` entry matches the
 pubkey. `lud16` must be `user@host` and is not fetched. No hex pubkey,
 picture, callback, or invoice. **404** `{ "error": "Not found" }` for a
@@ -4408,11 +4411,34 @@ member author, or a pubkey that is not 64 hex. **503**
 throws (`messages.external_profile.failed`). Relay, DNS, and well-known
 failures omit the failed field and stay 200.
 
+### `GET /messages/:id/external-posts`
+
+Public list of live top-level notes for an external author. No Bearer.
+Registered **before** `GET /messages/:id`. Same 404 gate as
+`GET /messages/:id/external-profile`. **200** `{ "messages" }` capped at
+200, newest first (`createdAt` desc, `id` desc). Each item includes
+`replyCount` of live attributed children, `payable` false, `via: "nostr"`,
+and omits `role`. **503** `{ "error": "Messages are unavailable" }`
+(`messages.external_posts.failed`). A serialize failure skips that row
+and still returns 200.
+
+### `GET /messages/:id/external-replies`
+
+Public list of live public replies for an external author. No Bearer.
+Registered **before** `GET /messages/:id`. Same 404 gate as
+`GET /messages/:id/external-profile`. **200** `{ "messages" }` capped at
+200, newest first (`createdAt` desc, `id` desc). Each item includes
+`parentId`, omits `replyCount`, `payable` false, `via: "nostr"`, and omits
+`role`. A non-zapper author's list is empty. **503**
+`{ "error": "Messages are unavailable" }` (`messages.external_replies.failed`).
+A serialize failure skips that row and still returns 200.
+
 ### `GET /messages/:id`
 
 Public single-note fetch. Live rows need **no Bearer.** `:id` is a UUID.
 Registered **after** photo, video, `GET /messages/:id/replies`,
 `GET /messages/:id/external-profile`,
+`GET /messages/:id/external-posts`, `GET /messages/:id/external-replies`,
 `DELETE /messages/:id`, `PATCH /messages/:id/place`, `PATCH /messages/:id/shop-account`, `PATCH /messages/:id/text`, `PATCH /messages/:id/photos`, `GET /messages/:id/edits`, `GET /messages/stats`, `GET /messages/hidden`, and
 `GET /messages/places` so
 those paths are not captured as `:id`. A live GET returns

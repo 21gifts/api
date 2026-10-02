@@ -96,7 +96,7 @@ const JPEG2: ForumPhoto = {
 
 describe('MESSAGE_SCHEMA_SQL', () => {
   it('creates message with photo columns, Nostr columns, index, and additive ALTERs', () => {
-    expect(MESSAGE_SCHEMA_SQL).toHaveLength(98);
+    expect(MESSAGE_SCHEMA_SQL).toHaveLength(99);
     expect(MESSAGE_SCHEMA_SQL.join('\n')).toMatch(
       /ALTER TABLE message ADD COLUMN IF NOT EXISTS place_lat double precision/i,
     );
@@ -119,6 +119,9 @@ describe('MESSAGE_SCHEMA_SQL', () => {
     expect(MESSAGE_SCHEMA_SQL[1]).toMatch(/CREATE INDEX IF NOT EXISTS message_created_at_idx/i);
     expect(MESSAGE_SCHEMA_SQL.join('\n')).toMatch(/message_feed_created_idx/);
     expect(MESSAGE_SCHEMA_SQL.join('\n')).toMatch(/message_feed_popular_idx/);
+    expect(MESSAGE_SCHEMA_SQL.join('\n')).toMatch(
+      /CREATE INDEX IF NOT EXISTS message_external_author_idx[\s\S]*lower\(author_pubkey\)[\s\S]*account_id IS NULL AND deleted_at IS NULL AND author_pubkey IS NOT NULL/,
+    );
     expect(MESSAGE_SCHEMA_SQL.join('\n')).toMatch(
       /ALTER TABLE message ADD COLUMN IF NOT EXISTS photo bytea/i,
     );
@@ -251,39 +254,39 @@ describe('MESSAGE_SCHEMA_SQL', () => {
     expect(fundedColumn).toBeGreaterThan(recordedColumn);
     expect(fundedBackfill).toBe(fundedColumn + 1);
     expect(recordedBackfill).toBe(fundedColumn + 2);
-    expect(MESSAGE_SCHEMA_SQL[95]).toContain('FROM pg_trigger');
-    expect(MESSAGE_SCHEMA_SQL[95]).toContain("tgname = 'trg_db_change'");
-    expect(MESSAGE_SCHEMA_SQL[95]).toContain("jsonb_typeof(nostr_event) = 'string'");
-    expect(MESSAGE_SCHEMA_SQL[95]).not.toContain('EXCEPTION WHEN others');
-    expect(MESSAGE_SCHEMA_SQL[95]).not.toContain('EXCEPTION WHEN invalid_text_representation');
-    expect(MESSAGE_SCHEMA_SQL[95]).toContain(
+    expect(MESSAGE_SCHEMA_SQL[96]).toContain('FROM pg_trigger');
+    expect(MESSAGE_SCHEMA_SQL[96]).toContain("tgname = 'trg_db_change'");
+    expect(MESSAGE_SCHEMA_SQL[96]).toContain("jsonb_typeof(nostr_event) = 'string'");
+    expect(MESSAGE_SCHEMA_SQL[96]).not.toContain('EXCEPTION WHEN others');
+    expect(MESSAGE_SCHEMA_SQL[96]).not.toContain('EXCEPTION WHEN invalid_text_representation');
+    expect(MESSAGE_SCHEMA_SQL[96]).toContain(
       'EXCEPTION WHEN data_exception OR statement_too_complex THEN',
     );
-    expect(MESSAGE_SCHEMA_SQL[95]).toContain(
+    expect(MESSAGE_SCHEMA_SQL[96]).toContain(
       "unwrapped := (repair_row.nostr_event #>> '{}')::jsonb;",
     );
-    expect(MESSAGE_SCHEMA_SQL[95]).toContain('SET nostr_event = unwrapped');
-    expect(MESSAGE_SCHEMA_SQL[95]).toContain('nostr_attempts = 0');
-    expect(MESSAGE_SCHEMA_SQL[95]).toContain('CONTINUE;');
-    expect(MESSAGE_SCHEMA_SQL[95]).toContain('AND nostr_event = repair_row.nostr_event');
-    expect(MESSAGE_SCHEMA_SQL[95]).toMatch(
+    expect(MESSAGE_SCHEMA_SQL[96]).toContain('SET nostr_event = unwrapped');
+    expect(MESSAGE_SCHEMA_SQL[96]).toContain('nostr_attempts = 0');
+    expect(MESSAGE_SCHEMA_SQL[96]).toContain('CONTINUE;');
+    expect(MESSAGE_SCHEMA_SQL[96]).toContain('AND nostr_event = repair_row.nostr_event');
+    expect(MESSAGE_SCHEMA_SQL[96]).toMatch(
       /WHERE id = repair_row\.id[\s\S]*?jsonb_typeof\(nostr_event\) = 'string'[\s\S]*?AND nostr_event = repair_row\.nostr_event;/,
     );
-    expect(MESSAGE_SCHEMA_SQL[95]).toMatch(
+    expect(MESSAGE_SCHEMA_SQL[96]).toMatch(
       /unwrapped := \(repair_row\.nostr_event #>> '\{\}'\)::jsonb;[\s\S]*?EXCEPTION WHEN data_exception OR statement_too_complex THEN[\s\S]*?CONTINUE;[\s\S]*?END;[\s\S]*?UPDATE message/,
     );
-    expect(MESSAGE_SCHEMA_SQL[95]).not.toContain('repair_row.unwrapped_event');
-    expect(MESSAGE_SCHEMA_SQL[96]).toMatch(/CREATE TABLE IF NOT EXISTS message_edit/);
-    expect(MESSAGE_SCHEMA_SQL[96]).toMatch(
+    expect(MESSAGE_SCHEMA_SQL[96]).not.toContain('repair_row.unwrapped_event');
+    expect(MESSAGE_SCHEMA_SQL[97]).toMatch(/CREATE TABLE IF NOT EXISTS message_edit/);
+    expect(MESSAGE_SCHEMA_SQL[97]).toMatch(
       /CONSTRAINT message_edit_field_chk CHECK \(field IN \('text', 'place', 'shop_account'\)\)/,
     );
-    expect(MESSAGE_SCHEMA_SQL[96]).toMatch(/REFERENCES message \(id\) ON DELETE CASCADE/);
-    expect(MESSAGE_SCHEMA_SQL[96]).toMatch(/before jsonb NOT NULL/);
-    expect(MESSAGE_SCHEMA_SQL[96]).toMatch(/after jsonb NOT NULL/);
-    expect(MESSAGE_SCHEMA_SQL[97]).toMatch(
+    expect(MESSAGE_SCHEMA_SQL[97]).toMatch(/REFERENCES message \(id\) ON DELETE CASCADE/);
+    expect(MESSAGE_SCHEMA_SQL[97]).toMatch(/before jsonb NOT NULL/);
+    expect(MESSAGE_SCHEMA_SQL[97]).toMatch(/after jsonb NOT NULL/);
+    expect(MESSAGE_SCHEMA_SQL[98]).toMatch(
       /CREATE INDEX IF NOT EXISTS message_edit_message_created_idx/,
     );
-    expect(MESSAGE_SCHEMA_SQL[97]).toMatch(
+    expect(MESSAGE_SCHEMA_SQL[98]).toMatch(
       /ON message_edit \(message_id, created_at DESC, id DESC\)/,
     );
   });
@@ -744,6 +747,255 @@ describe('InMemoryMessageStore', () => {
     const listed = await store.listPostsByAccount('acc', 10);
     expect(listed).toHaveLength(1);
     expect(listed[0]?.replyCount).toBe(2);
+  });
+
+  it('listPostsByPubkey is case-insensitive and excludes account and deleted rows', async () => {
+    const pubkey = 'aa'.repeat(32);
+    const store = new InMemoryMessageStore();
+    await store.create({
+      ...EARLY,
+      id: 'ext-a',
+      accountId: null,
+      authorPubkey: pubkey.toUpperCase(),
+      text: 'external',
+    });
+    await store.create({
+      ...LATE,
+      id: 'ext-acc',
+      accountId: 'acc',
+      authorPubkey: pubkey,
+      text: 'member with same key',
+    });
+    await store.create({
+      ...LATE,
+      id: 'ext-dead',
+      accountId: null,
+      authorPubkey: pubkey,
+      text: 'hidden',
+      deletedAt: new Date('2026-09-01T00:00:00.000Z'),
+      deletedBy: 'staff',
+    });
+    await store.create({
+      ...LATE,
+      id: 'ext-other',
+      accountId: null,
+      authorPubkey: 'bb'.repeat(32),
+      text: 'other',
+    });
+    await store.create({
+      ...LATE,
+      id: 'ext-reply',
+      parentId: 'ext-a',
+      accountId: null,
+      authorPubkey: pubkey,
+      text: 'reply',
+    });
+    expect((await store.listPostsByPubkey(pubkey, 10)).map((row) => row.id)).toEqual(['ext-a']);
+    expect((await store.listPostsByPubkey(pubkey.toUpperCase(), 10)).map((row) => row.id)).toEqual([
+      'ext-a',
+    ]);
+    expect((await store.listPostsByPubkey('Aa'.repeat(32), 10)).map((row) => row.id)).toEqual([
+      'ext-a',
+    ]);
+  });
+
+  it('listPostsByPubkey is newest-first and honors limit', async () => {
+    const pubkey = 'cc'.repeat(32);
+    const store = new InMemoryMessageStore();
+    await store.create({
+      ...EARLY,
+      id: 'p-early',
+      accountId: null,
+      authorPubkey: pubkey,
+    });
+    await store.create({
+      ...LATE,
+      id: 'p-late',
+      accountId: null,
+      authorPubkey: pubkey,
+    });
+    await store.create({
+      ...TIE_HIGH,
+      id: 'p-z',
+      accountId: null,
+      authorPubkey: pubkey,
+    });
+    await store.create({
+      ...TIE_LOW,
+      id: 'p-m',
+      accountId: null,
+      authorPubkey: pubkey,
+    });
+    expect((await store.listPostsByPubkey(pubkey, 10)).map((row) => row.id)).toEqual([
+      'p-z',
+      'p-m',
+      'p-late',
+      'p-early',
+    ]);
+    expect((await store.listPostsByPubkey(pubkey, 1)).map((row) => row.id)).toEqual(['p-z']);
+  });
+
+  it('listPostsByPubkey includes replyCount of live attributed children only', async () => {
+    const pubkey = 'aa'.repeat(32);
+    const store = new InMemoryMessageStore();
+    await store.create({
+      ...EARLY,
+      id: 'ext-a',
+      accountId: null,
+      authorPubkey: pubkey,
+      text: 'external',
+    });
+    await store.create({ ...LATE, id: 'r-member', parentId: 'ext-a', text: 'member child' });
+    await store.create({
+      ...LATE,
+      id: 'r-damus',
+      parentId: 'ext-a',
+      accountId: null,
+      name: 'aabbccdd…8899',
+      text: 'damus child',
+    });
+    await store.create({
+      ...LATE,
+      id: 'r-external',
+      parentId: 'ext-a',
+      accountId: null,
+      authorPubkey: 'bb'.repeat(32),
+      name: 'External',
+      text: 'external child',
+    });
+    await store.create({
+      ...LATE,
+      id: 'r-hidden',
+      parentId: 'ext-a',
+      text: 'hidden member',
+      deletedAt: new Date('2026-09-01T00:00:00.000Z'),
+      deletedBy: 'staff',
+    });
+    await store.recordZapper('bb'.repeat(32), 'receipt-bb', new Date('2026-09-18T10:00:00Z'));
+    const listed = await store.listPostsByPubkey(pubkey, 10);
+    expect(listed).toHaveLength(1);
+    expect(listed[0]?.replyCount).toBe(2);
+  });
+
+  it('listRepliesByPubkey is empty until the pubkey is a recorded zapper', async () => {
+    const pubkey = 'dd'.repeat(32);
+    const store = new InMemoryMessageStore([EARLY]);
+    await store.create({
+      ...LATE,
+      id: 'r-early',
+      parentId: 'a',
+      accountId: null,
+      authorPubkey: pubkey.toUpperCase(),
+      text: 'early',
+      createdAt: new Date('2026-08-01T12:00:00.000Z'),
+    });
+    await store.create({
+      ...LATE,
+      id: 'r-late',
+      parentId: 'a',
+      accountId: null,
+      authorPubkey: pubkey,
+      text: 'late',
+      createdAt: new Date('2026-08-01T13:00:00.000Z'),
+    });
+    const same = new Date('2026-08-01T14:00:00.000Z');
+    await store.create({
+      ...LATE,
+      id: 'rb',
+      parentId: 'a',
+      accountId: null,
+      authorPubkey: pubkey,
+      text: 'tie-b',
+      createdAt: same,
+    });
+    await store.create({
+      ...LATE,
+      id: 'ra',
+      parentId: 'a',
+      accountId: null,
+      authorPubkey: pubkey,
+      text: 'tie-a',
+      createdAt: same,
+    });
+    await store.create({
+      ...LATE,
+      id: 'r-dead',
+      parentId: 'a',
+      accountId: null,
+      authorPubkey: pubkey,
+      text: 'hidden',
+      deletedAt: new Date('2026-09-01T00:00:00.000Z'),
+      deletedBy: 'staff',
+    });
+    expect(await store.listRepliesByPubkey(pubkey, 10)).toEqual([]);
+    await store.recordZapper(pubkey, 'receipt-dd', new Date('2026-09-18T10:00:00Z'));
+    const listed = await store.listRepliesByPubkey(pubkey, 10);
+    expect(listed.map((row) => row.id)).toEqual(['rb', 'ra', 'r-late', 'r-early']);
+    expect(listed[0]).not.toHaveProperty('replyCount');
+    expect((await store.listRepliesByPubkey(pubkey, 1)).map((row) => row.id)).toEqual(['rb']);
+    expect(
+      (await store.listRepliesByPubkey(pubkey.toUpperCase(), 10)).map((row) => row.id),
+    ).toEqual(['rb', 'ra', 'r-late', 'r-early']);
+  });
+
+  it('countByPubkey matches live external posts and zapper replies', async () => {
+    const pubkey = 'ee'.repeat(32);
+    const store = new InMemoryMessageStore();
+    await store.create({
+      ...EARLY,
+      id: 'ext-post',
+      accountId: null,
+      authorPubkey: pubkey.toUpperCase(),
+    });
+    await store.create({
+      ...LATE,
+      id: 'ext-acc',
+      accountId: 'acc',
+      authorPubkey: pubkey,
+    });
+    await store.create({
+      ...LATE,
+      id: 'ext-dead',
+      accountId: null,
+      authorPubkey: pubkey,
+      deletedAt: new Date('2026-09-01T00:00:00.000Z'),
+      deletedBy: 'staff',
+    });
+    await store.create({
+      ...LATE,
+      id: 'ext-r1',
+      parentId: 'ext-post',
+      accountId: null,
+      authorPubkey: pubkey,
+    });
+    await store.create({
+      ...LATE,
+      id: 'ext-r2',
+      parentId: 'ext-post',
+      accountId: null,
+      authorPubkey: pubkey,
+    });
+    await store.create({
+      ...LATE,
+      id: 'ext-r3',
+      parentId: 'ext-post',
+      accountId: null,
+      authorPubkey: pubkey,
+    });
+    await store.create({
+      ...LATE,
+      id: 'ext-r-dead',
+      parentId: 'ext-post',
+      accountId: null,
+      authorPubkey: pubkey,
+      deletedAt: new Date('2026-09-01T00:00:00.000Z'),
+      deletedBy: 'staff',
+    });
+    expect(await store.countByPubkey(pubkey)).toEqual({ postCount: 1, replyCount: 0 });
+    await store.recordZapper(pubkey, 'receipt-ee', new Date('2026-09-18T10:00:00Z'));
+    expect(await store.countByPubkey('Ee'.repeat(32))).toEqual({ postCount: 1, replyCount: 3 });
+    expect((await store.listRepliesByPubkey(pubkey, 1)).map((row) => row.id)).toHaveLength(1);
+    expect(await store.countByPubkey(pubkey)).toEqual({ postCount: 1, replyCount: 3 });
   });
 
   it('listPostsByAccount and listRepliesByAccount copy photo and video flags', async () => {
@@ -4711,6 +4963,105 @@ describe('PostgresMessageStore', () => {
     expect(sql.queries[0]?.text).toMatch(/parent_id IS NOT NULL/);
     expect(sql.queries[0]?.text).toMatch(/ORDER BY created_at DESC, id DESC/);
     expect(sql.queries[0]?.params).toEqual(['acc', 50]);
+    expect(listed[0]?.id).toBe('r1');
+    expect(listed[0]?.parentId).toBe('m1');
+    expect(listed[0]).not.toHaveProperty('replyCount');
+  });
+
+  it('countByPubkey aggregates live posts and zapper replies for the pubkey', async () => {
+    const sql = new MockSql();
+    const store = new PostgresMessageStore(sql);
+    const pubkey = 'aa'.repeat(32);
+    sql.nextRows = [];
+    expect(await store.countByPubkey(pubkey.toUpperCase())).toEqual({
+      postCount: 0,
+      replyCount: 0,
+    });
+    expect(sql.queries[0]?.text).toMatch(/lower\(author_pubkey\) = \$1/);
+    expect(sql.queries[0]?.text).toMatch(/account_id IS NULL/);
+    expect(sql.queries[0]?.text).toMatch(/deleted_at IS NULL/);
+    expect(sql.queries[0]?.text).toMatch(/author_pubkey IS NOT NULL/);
+    expect(sql.queries[0]?.text).toMatch(/COUNT\(\*\) FILTER \(WHERE parent_id IS NULL\)/);
+    expect(sql.queries[0]?.text).toMatch(
+      /EXISTS \(SELECT 1 FROM nostr_zapper z WHERE z\.pubkey = \$1\)/,
+    );
+    expect(sql.queries[0]?.params).toEqual([pubkey]);
+    sql.nextRows = [{ post_count: '3', reply_count: '12' }];
+    expect(await store.countByPubkey(pubkey)).toEqual({ postCount: 3, replyCount: 12 });
+    sql.nextRows = [{ post_count: null, reply_count: null }];
+    expect(await store.countByPubkey(pubkey)).toEqual({ postCount: 0, replyCount: 0 });
+    sql.nextRows = [{}];
+    expect(await store.countByPubkey(pubkey)).toEqual({ postCount: 0, replyCount: 0 });
+  });
+
+  it('listPostsByPubkey selects live top-level notes for the pubkey with replyCount', async () => {
+    const sql = new MockSql();
+    const pubkey = 'aa'.repeat(32);
+    sql.nextRows = [
+      {
+        id: 'm1',
+        account_id: null,
+        name: 'Ada',
+        text: 'hi',
+        created_at: new Date('2026-08-28T12:00:00.000Z'),
+        has_photo: false,
+        reply_count: '2',
+      },
+    ];
+    const store = new PostgresMessageStore(sql);
+    const listed = await store.listPostsByPubkey(pubkey.toUpperCase(), 50);
+    expect(sql.queries[0]?.text).toMatch(/parent_id IS NULL/);
+    expect(sql.queries[0]?.text).toMatch(/account_id IS NULL/);
+    expect(sql.queries[0]?.text).toMatch(/lower\(author_pubkey\) = \$1/);
+    expect(sql.queries[0]?.text).toMatch(/deleted_at IS NULL/);
+    expect(sql.queries[0]?.text).toMatch(/reply_count/);
+    expect(sql.queries[0]?.text).toMatch(
+      /child\.account_id IS NOT NULL\s+OR \(child\.author_pubkey IS NOT NULL\s+AND EXISTS \(\s+SELECT 1 FROM nostr_zapper z\s+WHERE z\.pubkey = lower\(child\.author_pubkey\)/,
+    );
+    expect(sql.queries[0]?.text).toMatch(/ORDER BY created_at DESC, id DESC/);
+    expect(sql.queries[0]?.text).toMatch(/LIMIT \$2/);
+    expect(sql.queries[0]?.params).toEqual([pubkey, 50]);
+    expect(listed[0]?.id).toBe('m1');
+    expect(listed[0]?.replyCount).toBe(2);
+    sql.nextRows = [
+      {
+        id: 'm2',
+        account_id: null,
+        name: 'Ada',
+        text: 'no count',
+        created_at: new Date('2026-08-28T12:00:00.000Z'),
+        has_photo: false,
+      },
+    ];
+    const listedNull = await store.listPostsByPubkey(pubkey, 10);
+    expect(listedNull[0]?.replyCount).toBe(0);
+  });
+
+  it('listRepliesByPubkey selects live zapper replies for the pubkey newest-first', async () => {
+    const sql = new MockSql();
+    const pubkey = 'aa'.repeat(32);
+    sql.nextRows = [
+      {
+        id: 'r1',
+        account_id: null,
+        name: 'Ada',
+        text: 'hi',
+        created_at: new Date(0),
+        has_photo: false,
+        parent_id: 'm1',
+      },
+    ];
+    const store = new PostgresMessageStore(sql);
+    const listed = await store.listRepliesByPubkey(pubkey.toUpperCase(), 50);
+    expect(sql.queries[0]?.text).toMatch(/parent_id IS NOT NULL/);
+    expect(sql.queries[0]?.text).toMatch(/account_id IS NULL/);
+    expect(sql.queries[0]?.text).toMatch(/lower\(author_pubkey\) = \$1/);
+    expect(sql.queries[0]?.text).toMatch(
+      /EXISTS \(SELECT 1 FROM nostr_zapper z WHERE z\.pubkey = \$1\)/,
+    );
+    expect(sql.queries[0]?.text).toMatch(/ORDER BY created_at DESC, id DESC/);
+    expect(sql.queries[0]?.text).not.toMatch(/reply_count/);
+    expect(sql.queries[0]?.params).toEqual([pubkey, 50]);
     expect(listed[0]?.id).toBe('r1');
     expect(listed[0]?.parentId).toBe('m1');
     expect(listed[0]).not.toHaveProperty('replyCount');
