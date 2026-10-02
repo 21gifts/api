@@ -485,8 +485,10 @@ recurring paying stays in the external spend worker):
 
 - Passkey ceremonies, PRF evaluation, key derivation
 - Event signing (the api never sees the nsec)
-- Guest Donate LNURL-pay flow (browser → wallet provider directly). Recurring
-  spend-worker invoices are the exception (`POST /invoices`).
+- Paying in the guest Donate LNURL-pay flow (the browser pays the invoice
+  itself; the api only forwards the wallet's LNURL metadata and invoice
+  callback, so it sees the amount and the invoice but never pays or holds
+  funds). Recurring spend-worker invoices are the exception (`POST /invoices`).
 - Client-side decryption of NIP-17 sealed DMs (v1 custodial unwrap is on
   the api for `/conversations`)
 
