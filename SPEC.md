@@ -1693,8 +1693,7 @@ username of that shape is not matched until it is renamed; existing
 accounts are not migrated. `a.b_c-d` is valid. Cannot skip (no
 `POST /me/setup/skip` step for username; skip body is only
 `"name" | "lightning-address"`). Same handle on the same account is
-idempotent **200**. Once the wallet is verified every `POST /me/username`
-is 409, including the same handle.
+idempotent **200**. Once the wallet is verified, a request with a valid session, body and handle is 409, including the same handle; a missing session is still 401 and an invalid body or handle still 400.
 
 Missing/invalid bearer → **Response** `401` `{ "error": "Unauthorized" }`.
 
