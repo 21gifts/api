@@ -619,7 +619,7 @@
 
 - **Purpose:** Claim a batch of pending outbox rows and deliver each payload to every subscription for the recipient account except endpoints listed in `skipEndpoints`. A skipped endpoint is not sent and is not recorded as delivered. When every subscription is skipped, or none remain, the row is `markSent`.
 - **Inputs:** `PushWorkerDeps` (`store`, `sender`, `now`). Batch size and lease from module constants.
-- **Returns / side effects:** No-op when `sender.isConfigured()` is false. Records successful endpoints via `recordDelivered` and does not resend them on retry; deletes gone subscriptions without recording them; logs `push.send.failed` with optional numeric `status` (HTTP status from the sender) and no endpoint/keys/payload, then `markFailed` on fail after recording successes; `markSent` when remaining sends succeed / all gone / no subs left to try.
+- **Returns / side effects:** No-op when `sender.isConfigured()` is false. Records successful endpoints via `recordDelivered` and does not resend them on retry; deletes gone subscriptions without recording them; logs `push.send.failed` with optional numeric `status` (HTTP status from the sender) and no endpoint/keys/payload, then `markFailed` on fail after recording successes, except a failed send is `markSent` (not `markFailed`) when the same claim includes a dismiss whose tags include that row's payload tag; `markSent` when remaining sends succeed / all gone / no subs left to try.
 - **Used by:** `startPushWorker` interval; unit tests.
 
 ## Function: startPushWorker

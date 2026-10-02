@@ -213,11 +213,71 @@ export interface PushWorkerDeps {
   now: () => number;
 }
 
+function payloadTag(payload: string): string | undefined {
+  try {
+    const parsed: unknown = JSON.parse(payload);
+    if (parsed === null || typeof parsed !== 'object') {
+      return undefined;
+    }
+    const tag = (parsed as { tag?: unknown }).tag;
+    if (typeof tag !== 'string' || tag === '') {
+      return undefined;
+    }
+    return tag;
+  } catch {
+    return undefined;
+  }
+}
+
+function dismissPayloadTags(payload: string): string[] | undefined {
+  try {
+    const parsed: unknown = JSON.parse(payload);
+    if (parsed === null || typeof parsed !== 'object') {
+      return undefined;
+    }
+    const record = parsed as { type?: unknown; tags?: unknown };
+    if (record.type !== 'dismiss' || !Array.isArray(record.tags)) {
+      return undefined;
+    }
+    const tags: string[] = [];
+    for (const item of record.tags) {
+      if (typeof item !== 'string') {
+        return undefined;
+      }
+      tags.push(item);
+    }
+    return tags;
+  } catch {
+    return undefined;
+  }
+}
+
+function sameClaimDismissesTag(rows: readonly PushOutboxRow[], row: PushOutboxRow): boolean {
+  const tag = payloadTag(row.payload);
+  if (tag === undefined) {
+    return false;
+  }
+  // Dismiss rows are newer and later in the claim; inspect the full batch.
+  for (const other of rows) {
+    if (other.id === row.id) {
+      continue;
+    }
+    const tags = dismissPayloadTags(other.payload);
+    if (tags !== undefined && tags.includes(tag)) {
+      return true;
+    }
+  }
+  return false;
+}
+
 /**
  * Claim a batch and deliver each row to every subscription for its account.
  * Does not send endpoints listed in `skipEndpoints`. A skipped endpoint is
  * not recorded as delivered. Skips endpoints already recorded on the outbox
  * row so retries do not re-send a payload that succeeded on a previous tick.
+ * A failed send is marked sent when the same claim includes a dismiss for
+ * that payload tag, so a later tick cannot deliver the content after the
+ * dismiss.
  *
  * @param deps - Store, sender, clock.
  */
@@ -263,7 +323,11 @@ export async function runPushWorkerTick(deps: PushWorkerDeps): Promise<void> {
       await deps.store.recordDelivered(row.id, newlyDelivered);
     }
     if (anyFail) {
-      await deps.store.markFailed(row.id);
+      if (sameClaimDismissesTag(rows, row)) {
+        await deps.store.markSent(row.id);
+      } else {
+        await deps.store.markFailed(row.id);
+      }
     } else {
       await deps.store.markSent(row.id);
     }
