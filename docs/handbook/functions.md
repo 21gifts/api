@@ -3046,14 +3046,14 @@
 ## Function: resolveRelayPayRequest
 
 - **Purpose:** Normalises a Lightning Address or bech32 LNURL, checks the URL as input (`https`, a DNS name with two or more labels, no address literal, no `localhost` / `.local` / `.internal` / `.localhost`, no port, no credentials, not the own host, a name that is not only dots), requires every resolved address of the host (and of the callback host) to pass `isPublicIp` and, for IPv6, to lie in `2000::/3` or `64:ff9b::/96`, fetches it without redirects within 5 s and 64 KB, and validates the LNURL pay request.
-- **Inputs:** `{ target, fetchImpl, ownHost, timeoutMs?, lookupImpl? }`. `timeoutMs` defaults to 5000 and is the longest wait for each host lookup and each fetch (an answer that comes too late gives 502; the system resolver may still finish in the background); `lookupImpl` defaults to the system resolver (`dns.lookup` with `all`).
+- **Inputs:** `{ target, fetchImpl, ownHost, timeoutMs?, totalMs?, lookupImpl? }`. `timeoutMs` defaults to 5000 and is the longest wait for each host lookup and each fetch, cut to the time left before `totalMs` (default 8000) for the whole call (an answer that comes too late gives 502; the system resolver may still finish in the background); `lookupImpl` defaults to the system resolver (`dns.lookup` with `all`).
 - **Returns / side effects:** `{ ok: true, payRequest }` with `target`, `minSendableMsat`, `maxSendableMsat`, `commentAllowed`, `description`, `domain`, or `{ ok: false, status: 400 | 404 | 502, error, reason }`. One outbound GET at most.
 - **Used by:** `POST /lnurl/pay-request`.
 
 ## Function: requestRelayInvoice
 
 - **Purpose:** Resolves the target like `resolveRelayPayRequest`, refuses a non-whole amount and a comment that is over 2000 UTF-16 code units or not well-formed Unicode before any outbound request, then checks the amount against the bounds and the comment against `commentAllowed` characters, calls the callback with `amount` and an optional `comment`, and checks that the BOLT11 amount equals the request and its description hash equals SHA-256 of the metadata.
-- **Inputs:** `{ target, amountMsat, comment?, fetchImpl, ownHost, timeoutMs?, lookupImpl? }`.
+- **Inputs:** `{ target, amountMsat, comment?, fetchImpl, ownHost, timeoutMs?, totalMs?, lookupImpl? }`.
 - **Returns / side effects:** `{ ok: true, pr }` or `{ ok: false, status, error, reason }` (`Amount out of range`, `Comment too long`, or the pay-request errors). Two outbound GETs at most.
 - **Used by:** `POST /lnurl/invoice`.
 
