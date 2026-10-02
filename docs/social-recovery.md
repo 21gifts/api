@@ -37,8 +37,11 @@ group, not because one share is enough.
 
 Daily login stays a passkey. The passkey private key is not one of these
 shares and never leaves the authenticator. On the new device the recovered
-bytes do only the two things above: they authorize one new passkey for this
-account, and they are shown as the same 12 words.
+bytes authorize one new passkey for this account, and they are shown as the
+same 12 words. Those words are the phrase the phone already derives,
+including the Spark wallet seed specified in
+[`docs/shop-spark-payment.md`](./shop-spark-payment.md). Recovery does not
+move that bitcoin.
 
 ## Mein Konto absichern
 
@@ -83,8 +86,11 @@ It does not generate a new secret.
 3. BIP-39 English, 12 words.
 
 That derivation already exists. This document does not change it. The bytes
-are the backup phrase. They are not uploaded, and they are not used for
-anything besides the two results above.
+are the backup phrase. They are not uploaded. Recovery uses them to open
+this account on a new device and to show the same 12 words. It does not
+move a balance. The same words are the Spark wallet seed specified in
+[`docs/shop-spark-payment.md`](./shop-spark-payment.md). That wallet is not
+implemented, and recovery does not perform the payment.
 
 Before any share is given out, the phone reconstructs the shares locally
 and checks that BIP-39 of those bytes is the phrase it just derived. If
@@ -92,9 +98,11 @@ not, it stops.
 
 ## What this does not do
 
-Anything other than opening the account on a new device and restoring those
-words. The passkey private key is not split. A new passkey is a new door
-onto the same account. Deleting the old credential on the server stops the
+Opening the account on a new device and restoring those words is what it
+does. The restored words are also the Spark wallet seed in
+[`docs/shop-spark-payment.md`](./shop-spark-payment.md). This recovery does
+not send or receive that bitcoin. The passkey private key is not split.
+A new passkey is a new door onto the same account. Deleting the old credential on the server stops the
 old passkey from logging in. It does not erase the secret inside a lost
 phone. The phrase is not replaced with different words. No balance is
 moved. Nothing is published. Verification is not changed, and it does not
@@ -391,8 +399,10 @@ that still works is the cancel path during the 48 hours.
 
 - Both shares reconstruct the original 16 bytes, and BIP-39 of those
   bytes is the original 12 words. One share does not.
-- Those bytes authorize a new passkey on the same account, and nothing
-  else.
+- Those bytes authorize a new passkey on the same account and are the
+  same 12-word seed, including the Spark wallet seed in
+  [`docs/shop-spark-payment.md`](./shop-spark-payment.md). Recovery does
+  not send or receive bitcoin.
 - **Mein Konto absichern** is optional. The account works with no
   recovery set. Closing the screen before two people are confirmed stores
   nothing. Continuing explains the two results, then asks for two people.
