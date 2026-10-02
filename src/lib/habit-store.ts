@@ -1,18 +1,99 @@
 import type { SqlClient } from '@/lib/auth/sql';
 import type { Habit, HabitComment, HabitResult } from '@/lib/habit-tracker';
 
-/** Durable habit history and a separate comment stream. */
+/**
+ * Persistence port for habit history and a separate comment stream.
+ */
 export interface HabitStore {
+  /**
+   * Live comment with this `id`, or `null` when missing or soft-deleted.
+   *
+   * @param id - Comment id.
+   * @returns A copy of the comment, or `null`.
+   */
   findComment(id: string): Promise<HabitComment | null>;
+
+  /**
+   * Soft-delete the comment with this `id`.
+   *
+   * @param id - Comment id.
+   * @returns Resolves when the delete has been recorded.
+   */
   deleteComment(id: string): Promise<void>;
+
+  /**
+   * Earliest ISO Monday in stored resolution or comment history.
+   *
+   * @returns That week, or `null` when the store is empty.
+   */
   firstWeek(): Promise<string | null>;
+
+  /**
+   * Resolutions with text as of `week` (latest revision on or before it).
+   *
+   * @param week - ISO Monday; omitted reads the latest text.
+   * @returns Habit copies, oldest `firstWeek` first, then `id`.
+   */
   habits(week?: string): Promise<Habit[]>;
+
+  /**
+   * Version resolution text starting in `week`.
+   *
+   * @param id - Habit id.
+   * @param week - ISO Monday the new text starts.
+   * @param text - Replacement text.
+   * @returns Resolves when the revision is stored.
+   */
   updateText(id: string, week: string, text: string): Promise<void>;
+
+  /**
+   * Outcomes recorded for `week`.
+   *
+   * @param week - ISO Monday.
+   * @returns Result copies for that week.
+   */
   results(week: string): Promise<HabitResult[]>;
+
+  /**
+   * Live comments for `week`, oldest `createdAt` first, then `id`.
+   *
+   * @param week - ISO Monday.
+   * @returns Comment copies (caller-owned).
+   */
   comments(week: string): Promise<HabitComment[]>;
+
+  /**
+   * Insert a resolution. History is archived, never deleted.
+   *
+   * @param habit - Fully formed resolution.
+   * @returns Resolves when the row is stored.
+   */
   add(habit: Habit): Promise<void>;
+
+  /**
+   * End future carry-over by setting `lastWeek` once.
+   *
+   * @param id - Habit id.
+   * @param accountId - Owner account id.
+   * @param week - Inclusive last ISO Monday.
+   * @returns Resolves when retirement is stored.
+   */
   retire(id: string, accountId: string, week: string): Promise<void>;
+
+  /**
+   * Upsert one outcome for a resolution and week.
+   *
+   * @param result - Habit id, ISO Monday, and status.
+   * @returns Resolves when the outcome is stored.
+   */
   setResult(result: HabitResult): Promise<void>;
+
+  /**
+   * Insert a tracker comment (not a forum or Nostr post).
+   *
+   * @param comment - Fully formed comment.
+   * @returns Resolves when the comment is stored.
+   */
   comment(comment: HabitComment): Promise<void>;
 }
 
@@ -20,11 +101,6 @@ export interface HabitStore {
 export class InMemoryHabitStore implements HabitStore {
   private readonly rows: Habit[] = [];
   private readonly revisions = new Map<string, Map<string, string>>();
-  async updateText(id: string, week: string, text: string): Promise<void> {
-    const revisions = this.revisions.get(id) ?? new Map<string, string>();
-    revisions.set(week, text);
-    this.revisions.set(id, revisions);
-  }
   private readonly outcomes = new Map<string, HabitResult>();
   private readonly posts: HabitComment[] = [];
   private readonly deletedComments = new Set<string>();
@@ -50,6 +126,11 @@ export class InMemoryHabitStore implements HabitStore {
         return { ...row, text: revision?.[1] ?? row.text };
       })
       .sort((a, b) => a.firstWeek.localeCompare(b.firstWeek) || a.id.localeCompare(b.id));
+  }
+  async updateText(id: string, week: string, text: string): Promise<void> {
+    const revisions = this.revisions.get(id) ?? new Map<string, string>();
+    revisions.set(week, text);
+    this.revisions.set(id, revisions);
   }
   async results(week: string): Promise<HabitResult[]> {
     return [...this.outcomes.values()]
@@ -77,7 +158,7 @@ export class InMemoryHabitStore implements HabitStore {
   }
 }
 
-/** Idempotent schema; resolutions are archived, never deleted. */
+/** Idempotent DDL for the habit tables (matches `docs/schema/habit.sql`). */
 export const HABIT_SCHEMA_SQL = [
   `CREATE TABLE IF NOT EXISTS habit (
     id uuid PRIMARY KEY, account_id uuid NOT NULL REFERENCES account(id),
@@ -106,7 +187,12 @@ export const HABIT_SCHEMA_SQL = [
   `CREATE INDEX IF NOT EXISTS habit_comment_week_idx ON habit_comment (week, created_at, id)`,
 ] as const;
 
-/** Apply schema after the account table exists. */
+/**
+ * Apply {@link HABIT_SCHEMA_SQL} in order. Idempotent.
+ *
+ * @param sql - Parameter-bound SQL client.
+ * @returns Resolves when every statement has executed.
+ */
 export async function migrateHabitSchema(sql: SqlClient): Promise<void> {
   for (const statement of HABIT_SCHEMA_SQL) await sql.execute(statement);
 }
