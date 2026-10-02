@@ -1165,12 +1165,25 @@ describe('GET /messages/compose-target', () => {
     expect(await res.json()).toEqual({ error: 'Messages are unavailable' });
   });
 
+  it('returns 400 without a code while a receiving platform note is still unsigned', async () => {
+    const authStore = await namedStore('Ada');
+    await withPlatform(authStore);
+    const res = await mount(authStore, new InMemoryMessageStore(), {
+      lnurlServer: LNURL_SERVER,
+    }).request('/messages/compose-target', { headers: AUTH });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: 'This message cannot be paid yet' });
+  });
+
   it('returns 400 when the platform profile note is not payable', async () => {
     const authStore = await namedStore('Ada');
     await withPlatform(authStore);
     const res = await mount(authStore).request('/messages/compose-target', { headers: AUTH });
     expect(res.status).toBe(400);
-    expect(await res.json()).toEqual({ error: 'This message cannot be paid yet' });
+    expect(await res.json()).toEqual({
+      error: 'This message cannot be paid yet',
+      code: 'cannot_receive',
+    });
   });
 
   it('returns the platform profile note when it is payable', async () => {
@@ -1225,7 +1238,10 @@ describe('GET /messages/compose-target', () => {
       { headers: AUTH },
     );
     expect(res.status).toBe(400);
-    expect(await res.json()).toEqual({ error: 'This message cannot be paid yet' });
+    expect(await res.json()).toEqual({
+      error: 'This message cannot be paid yet',
+      code: 'cannot_receive',
+    });
   });
 
   it('returns 503 when listing accounts throws', async () => {
@@ -4696,7 +4712,10 @@ describe('POST /messages/:id/invoice', () => {
       body: JSON.stringify({ sats: 21 }),
     });
     expect(res.status).toBe(400);
-    expect(await res.json()).toEqual({ error: 'This message cannot be paid yet' });
+    expect(await res.json()).toEqual({
+      error: 'This message cannot be paid yet',
+      code: 'cannot_receive',
+    });
     const attempts = await messageStore.listInvoiceAttempts(10);
     expect(attempts).toHaveLength(1);
     expect(attempts[0]?.result).toBe('no_author');
@@ -4752,7 +4771,10 @@ describe('POST /messages/:id/invoice', () => {
       body: JSON.stringify({ sats: 21 }),
     });
     expect(res.status).toBe(400);
-    expect(await res.json()).toEqual({ error: 'This message cannot be paid yet' });
+    expect(await res.json()).toEqual({
+      error: 'This message cannot be paid yet',
+      code: 'cannot_receive',
+    });
     expect(fetchImpl).not.toHaveBeenCalled();
     const attempts = await messageStore.listInvoiceAttempts(10);
     expect(attempts).toHaveLength(1);
@@ -4830,6 +4852,7 @@ describe('POST /messages/:id/invoice', () => {
     expect(res.status).toBe(400);
     expect(await res.json()).toEqual({
       error: "The author's wallet cannot receive this Bitcoin payment",
+      code: 'cannot_receive',
     });
     const attempts = await messageStore.listInvoiceAttempts(10);
     expect(attempts).toHaveLength(1);
@@ -4873,6 +4896,7 @@ describe('POST /messages/:id/invoice', () => {
     expect(res.status).toBe(400);
     expect(await res.json()).toEqual({
       error: "The author's wallet cannot receive this Bitcoin payment",
+      code: 'cannot_receive',
     });
     const attempts = await messageStore.listInvoiceAttempts(10);
     expect(attempts).toHaveLength(1);
@@ -5037,6 +5061,7 @@ describe('POST /messages/:id/invoice', () => {
       const body = (await res.json()) as Record<string, unknown>;
       expect(body).toEqual({
         error: "The author's wallet cannot receive this Bitcoin payment",
+        code: 'cannot_receive',
       });
       expect(body).not.toHaveProperty('pr');
       const attempts = await messageStore.listInvoiceAttempts(10);
@@ -5116,6 +5141,7 @@ describe('POST /messages/:id/invoice', () => {
     const body = (await res.json()) as Record<string, unknown>;
     expect(body).toEqual({
       error: "The author's wallet cannot receive this Bitcoin payment",
+      code: 'cannot_receive',
     });
     expect(body).not.toHaveProperty('pr');
     const attempts = await messageStore.listInvoiceAttempts(10);
@@ -5188,6 +5214,7 @@ describe('POST /messages/:id/invoice', () => {
     expect(noZapRes.status).toBe(400);
     expect(await noZapRes.json()).toEqual({
       error: "The author's wallet cannot receive this Bitcoin payment",
+      code: 'cannot_receive',
     });
     expect((await messageStore.listInvoiceAttempts(1))[0]?.result).toBe('noZap');
     expect((await messageStore.listInvoiceAttempts(1))[0]?.pr).toBeNull();
@@ -12260,7 +12287,10 @@ describe('wallet-backed receiving on POST /messages/:id/invoice', () => {
     const { app } = await walletSetup({ lnurlServer: true, spark: true, authorId: 'ghost' });
     const res = await pay(app);
     expect(res.status).toBe(400);
-    expect(await res.json()).toEqual({ error: 'This message cannot be paid yet' });
+    expect(await res.json()).toEqual({
+      error: 'This message cannot be paid yet',
+      code: 'cannot_receive',
+    });
   });
 
   it('marks a wallet-only author payable only when the LNURL server is on', async () => {
@@ -12297,7 +12327,10 @@ describe('wallet-backed receiving on POST /messages/:id/invoice', () => {
     const { app, seen } = await walletSetup({ lnurlServer: true, spark: true, authorId: 'plain' });
     const res = await pay(app);
     expect(res.status).toBe(400);
-    expect(await res.json()).toEqual({ error: 'This message cannot be paid yet' });
+    expect(await res.json()).toEqual({
+      error: 'This message cannot be paid yet',
+      code: 'cannot_receive',
+    });
     expect(seen).toEqual([]);
   });
 
@@ -12337,7 +12370,10 @@ describe('wallet-backed receiving on POST /messages/:id/invoice', () => {
       body: JSON.stringify({ sats: 1, text: 'my post' }),
     });
     expect(res.status).toBe(400);
-    expect(await res.json()).toEqual({ error: 'This message cannot be paid yet' });
+    expect(await res.json()).toEqual({
+      error: 'This message cannot be paid yet',
+      code: 'cannot_receive',
+    });
     expect(seen).toEqual([]);
   });
 });
