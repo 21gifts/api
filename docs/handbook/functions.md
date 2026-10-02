@@ -2981,7 +2981,7 @@
 
 ## Function: requestRelayInvoice
 
-- **Purpose:** Resolves the target like `resolveRelayPayRequest`, checks the amount (safe integer within the bounds) and the comment (at most `commentAllowed` characters), calls the callback with `amount` and an optional `comment`, and checks that the BOLT11 amount equals the request and its description hash equals SHA-256 of the metadata.
+- **Purpose:** Resolves the target like `resolveRelayPayRequest`, refuses a non-whole amount and a comment that is over 2000 UTF-16 code units or not well-formed Unicode before any outbound request, then checks the amount against the bounds and the comment against `commentAllowed` characters, calls the callback with `amount` and an optional `comment`, and checks that the BOLT11 amount equals the request and its description hash equals SHA-256 of the metadata.
 - **Inputs:** `{ target, amountMsat, comment?, fetchImpl, ownHost, timeoutMs?, lookupImpl? }`.
 - **Returns / side effects:** `{ ok: true, pr }` or `{ ok: false, status, error, reason }` (`Amount out of range`, `Comment too long`, or the pay-request errors). Two outbound GETs at most.
 - **Used by:** `POST /lnurl/invoice`.
