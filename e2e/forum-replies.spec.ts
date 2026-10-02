@@ -170,9 +170,18 @@ test('Function: markUndeleted — POST /debug/messages/:id/restore restores a hi
   await promote(request, member.id, 'moderator');
   const hidden = await request.delete(`/messages/${noteId}`, { headers: member.auth });
   expect(hidden.status()).toBe(204);
+  const hiddenIds = async (): Promise<string[]> => {
+    const list = await request.get('/messages/hidden', { headers: member.auth });
+    expect(list.status()).toBe(200);
+    return ((await list.json()) as { messages: Array<{ id: string }> }).messages.map(
+      (message) => message.id,
+    );
+  };
+  expect(await hiddenIds()).toContain(noteId);
 
   const restored = await request.post(`/debug/messages/${noteId}/restore`, { headers: DEBUG });
   expect(restored.status()).toBe(204);
+  expect(await hiddenIds()).not.toContain(noteId);
   const unknown = await request.post(
     '/debug/messages/00000000-0000-4000-8000-000000000000/restore',
     { headers: DEBUG },
