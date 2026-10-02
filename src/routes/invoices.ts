@@ -228,10 +228,11 @@ async function addressHasPasskey(
 
 /**
  * Whether the account already received the one-time welcome gift: a platform
- * `Welcome` reply under one of its notes, or a recorded `welcome` gift under
- * its username (a welcome paid to the wallet address is recorded there). The
- * gift is once per account, so a member whose receiving address changed is not
- * paid again.
+ * `Welcome` reply under one of its notes, or a `welcome` gift recorded under
+ * its username at or after its wallet was verified (a welcome paid to the
+ * wallet address is recorded there; an older record with the same handle went
+ * to another address). The gift is once per account, so a member whose
+ * receiving address changed is not paid again.
  *
  * @param deps - Auth store (platform lookup), forum store, optional gift store.
  * @param receiver - Receiving account and its wallet address.
@@ -239,14 +240,21 @@ async function addressHasPasskey(
  */
 async function alreadyWelcomed(
   deps: Pick<InvoiceRouteDeps, 'authStore' | 'messageStore' | 'giftStore'>,
-  receiver: { account: Pick<Account, 'id'>; receiving: ReceivingAddress },
+  receiver: {
+    account: Pick<Account, 'id' | 'sparkPubkeyVerifiedAt'>;
+    receiving: ReceivingAddress;
+  },
 ): Promise<boolean> {
   const { account, receiving } = receiver;
   const handle = receiving.address.slice(0, receiving.address.lastIndexOf('@'));
+  const verifiedAtMs = Number(account.sparkPubkeyVerifiedAt);
   if (
     deps.giftStore !== undefined &&
     (await deps.giftStore.listOutbound()).some(
-      (row) => row.kind === 'welcome' && row.recipientWosUser.trim().toLowerCase() === handle,
+      (row) =>
+        row.kind === 'welcome' &&
+        row.recipientWosUser.trim().toLowerCase() === handle &&
+        row.paidAt.getTime() >= verifiedAtMs,
     )
   ) {
     return true;
@@ -269,7 +277,10 @@ async function alreadyWelcomed(
  */
 async function welcomePostedFields(
   deps: Pick<InvoiceRouteDeps, 'authStore' | 'messageStore' | 'giftStore'>,
-  receiver: { account: Pick<Account, 'id'>; receiving: ReceivingAddress },
+  receiver: {
+    account: Pick<Account, 'id' | 'sparkPubkeyVerifiedAt'>;
+    receiving: ReceivingAddress;
+  },
 ): Promise<{ welcomeHasMedia: boolean; welcomeMessageId: string | null }> {
   const { account } = receiver;
   if (await alreadyWelcomed(deps, receiver)) {

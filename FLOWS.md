@@ -217,7 +217,7 @@ for the newest live top-level photo or video, including an About-me note,
 independent of `eligibleToday` (the new row itself need not have media;
 the welcome gift is once per account: an account that already has a
 platform `Welcome` reply under one of its notes, or a recorded `welcome` gift
-under its username, is not pinged again; becoming
+under its username at or after its wallet verification, is not pinged again; becoming
 verified and saving About me while verified also welcome-ping; boot and a
 15-minute timer welcome-ping every verified account that already has a photo or video post;
 replies and any role other than `verified` do not welcome-ping); replies and media replay do
