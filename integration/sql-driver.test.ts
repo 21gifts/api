@@ -470,6 +470,7 @@ describe('PostgresMessageStore welcome gift', () => {
         parentId: note,
         text: 'Welcome',
       });
+      expect(await messages.accountHasWelcomeGift(member, platform)).toBe(true);
       await messages.markDeleted(welcome, new Date(), platform);
       expect(await messages.accountHasWelcomeGift(member, platform)).toBe(true);
     } finally {
