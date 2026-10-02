@@ -3,6 +3,7 @@ import { InMemoryAuthStore, type Account } from '@/lib/auth/store';
 import { unsignedNostrDefaults } from '@/lib/message';
 import { InMemoryMessageStore, type MessageStore } from '@/lib/message-store';
 import { syncWelcomePing } from '@/lib/welcome-media';
+import { LNURL_SERVER } from '@/__tests__/helpers/wallet-lnurl';
 
 const JPEG = {
   contentType: 'image/jpeg' as const,
@@ -32,13 +33,15 @@ function account(partial: Partial<Account> & Pick<Account, 'id' | 'role'>): Acco
   return {
     linkingKey: null,
     name: 'Ada',
-    lightningAddress: 'ada@walletofsatoshi.com',
-    lightningAddressVerified: true,
     forumLawsDismissed: false,
     location: null,
     viewKey: `${partial.id.replace(/-/g, '')}${'ab'.repeat(40)}`.slice(0, 64),
     createdAt: 1,
     rulesAgreedAt: 1,
+    username: partial.id,
+    walletRequired: true,
+    sparkPubkey: `02${'a'.repeat(64)}`,
+    sparkPubkeyVerifiedAt: 1,
     ...partial,
   };
 }
@@ -66,6 +69,7 @@ describe('syncWelcomePing', () => {
   it('does nothing when neither an account nor the auth store is passed', async () => {
     const ping = vi.fn(async () => undefined);
     await syncWelcomePing({
+      lnurlServer: LNURL_SERVER,
       spendPing: { ping },
       messages: new InMemoryMessageStore(),
     });
@@ -85,26 +89,26 @@ describe('syncWelcomePing', () => {
     expect(parsedEvents(warn)).toEqual([]);
   });
 
-  it('does nothing without a Lightning Address or when the role is not verified', async () => {
+  it('does nothing without a receiving wallet or when the role is not verified', async () => {
     const ping = vi.fn(async () => undefined);
     const messages = await photoStore();
     const spendPing = { ping };
+    const verified = account({ id: 'acc', role: 'verified', profileMessageId: PHOTO_ID });
     await syncWelcomePing({
+      lnurlServer: LNURL_SERVER,
       spendPing,
       messages,
-      account: account({ id: 'acc', role: 'verified', lightningAddress: null }),
+      account: { ...verified, sparkPubkeyVerifiedAt: null },
     });
+    await syncWelcomePing({ spendPing, messages, account: verified });
     await syncWelcomePing({
-      spendPing,
-      messages,
-      account: account({ id: 'acc', role: 'verified', lightningAddress: '   ' }),
-    });
-    await syncWelcomePing({
+      lnurlServer: LNURL_SERVER,
       spendPing,
       messages,
       account: account({ id: 'acc', role: 'basis', profileMessageId: PHOTO_ID }),
     });
     await syncWelcomePing({
+      lnurlServer: LNURL_SERVER,
       spendPing,
       messages,
       account: account({ id: 'acc', role: 'founder', profileMessageId: PHOTO_ID }),
@@ -145,11 +149,12 @@ describe('syncWelcomePing', () => {
       { contentType: 'video/mp4', bytes: new Uint8Array([0, 0, 0, 1]) },
     );
     await syncWelcomePing({
+      lnurlServer: LNURL_SERVER,
       spendPing: { ping },
       messages,
       account: account({ id: 'acc', role: 'verified' }),
     });
-    expect(ping).toHaveBeenCalledWith('ada@walletofsatoshi.com', TEXT_ID, 'welcome');
+    expect(ping).toHaveBeenCalledWith('acc@example.test', TEXT_ID, 'welcome');
   });
 
   it('pings an About-me photo that is older than the listed page', async () => {
@@ -184,12 +189,13 @@ describe('syncWelcomePing', () => {
       });
     }
     await syncWelcomePing({
+      lnurlServer: LNURL_SERVER,
       spendPing: { ping },
       messages,
       account: account({ id: 'acc', role: 'verified' }),
     });
     expect(ping).toHaveBeenCalledTimes(1);
-    expect(ping).toHaveBeenCalledWith('ada@walletofsatoshi.com', PHOTO_ID, 'welcome');
+    expect(ping).toHaveBeenCalledWith('acc@example.test', PHOTO_ID, 'welcome');
   });
 
   it('does not ping a hidden, nested, foreign, or blank profile note', async () => {
@@ -243,16 +249,38 @@ describe('syncWelcomePing', () => {
     }
     const spendPing = { ping };
     const verified = account({ id: 'acc', role: 'verified', profileMessageId: PHOTO_ID });
-    await syncWelcomePing({ spendPing, messages: hidden, account: verified });
-    await syncWelcomePing({ spendPing, messages: reply, account: verified });
-    await syncWelcomePing({ spendPing, messages: foreign, account: verified });
-    await syncWelcomePing({ spendPing, messages: textOnly, account: verified });
     await syncWelcomePing({
+      lnurlServer: LNURL_SERVER,
+      spendPing,
+      messages: hidden,
+      account: verified,
+    });
+    await syncWelcomePing({
+      lnurlServer: LNURL_SERVER,
+      spendPing,
+      messages: reply,
+      account: verified,
+    });
+    await syncWelcomePing({
+      lnurlServer: LNURL_SERVER,
+      spendPing,
+      messages: foreign,
+      account: verified,
+    });
+    await syncWelcomePing({
+      lnurlServer: LNURL_SERVER,
+      spendPing,
+      messages: textOnly,
+      account: verified,
+    });
+    await syncWelcomePing({
+      lnurlServer: LNURL_SERVER,
       spendPing,
       messages: new InMemoryMessageStore(),
       account: account({ id: 'acc', role: 'verified', profileMessageId: '   ' }),
     });
     await syncWelcomePing({
+      lnurlServer: LNURL_SERVER,
       spendPing,
       messages: new InMemoryMessageStore(),
       account: account({ id: 'acc', role: 'verified', profileMessageId: null }),
@@ -268,11 +296,12 @@ describe('syncWelcomePing', () => {
       },
     } as unknown as MessageStore;
     await syncWelcomePing({
+      lnurlServer: LNURL_SERVER,
       spendPing: { ping },
       messages: stills,
       account: account({ id: 'acc', role: 'verified' }),
     });
-    expect(ping).toHaveBeenCalledWith('ada@walletofsatoshi.com', PHOTO_ID, 'welcome');
+    expect(ping).toHaveBeenCalledWith('acc@example.test', PHOTO_ID, 'welcome');
 
     const missingCount = {
       async latestLiveTopLevelMediaId() {
@@ -281,6 +310,7 @@ describe('syncWelcomePing', () => {
     } as unknown as MessageStore;
     ping.mockClear();
     await syncWelcomePing({
+      lnurlServer: LNURL_SERVER,
       spendPing: { ping },
       messages: missingCount,
       account: account({ id: 'acc', role: 'verified', profileMessageId: PHOTO_ID }),
@@ -295,6 +325,7 @@ describe('syncWelcomePing', () => {
       },
     } as unknown as MessageStore;
     await syncWelcomePing({
+      lnurlServer: LNURL_SERVER,
       spendPing: { ping: vi.fn(async () => undefined) },
       messages,
       account: account({ id: 'acc', role: 'verified' }),
@@ -303,6 +334,7 @@ describe('syncWelcomePing', () => {
       throw new Error('ping boom');
     });
     await syncWelcomePing({
+      lnurlServer: LNURL_SERVER,
       spendPing: { ping },
       messages: await photoStore(),
       account: account({ id: 'acc', role: 'verified', profileMessageId: PHOTO_ID }),
@@ -315,15 +347,12 @@ describe('syncWelcomePing', () => {
   it('catches up a verified photo post, including About me and a living-room photo', async () => {
     const ping = vi.fn(async () => undefined);
     const auth = new InMemoryAuthStore();
-    await auth.createAccount(
-      account({ id: 'basis', role: 'basis', lightningAddress: 'basis@walletofsatoshi.com' }),
-    );
+    await auth.createAccount(account({ id: 'basis', role: 'basis' }));
     await auth.createAccount(
       account({
         id: 'blank',
         role: 'verified',
         profileMessageId: '   ',
-        lightningAddress: 'b@walletofsatoshi.com',
       }),
     );
     await auth.createAccount(
@@ -331,7 +360,6 @@ describe('syncWelcomePing', () => {
         id: 'none',
         role: 'verified',
         profileMessageId: null,
-        lightningAddress: 'n@walletofsatoshi.com',
       }),
     );
     await auth.createAccount(
@@ -346,7 +374,6 @@ describe('syncWelcomePing', () => {
         id: 'both',
         role: 'verified',
         profileMessageId: TEXT_ID,
-        lightningAddress: 'both@walletofsatoshi.com',
       }),
     );
     const messages = new InMemoryMessageStore();
@@ -389,11 +416,18 @@ describe('syncWelcomePing', () => {
       },
       JPEG,
     );
+    for (const [index, id] of ['blank', 'none', 'acc', 'both'].entries()) {
+      const key = `02${String(index).repeat(64)}`;
+      await auth.claimSparkPubkey(id, key);
+      await auth.markSparkPubkeyVerified(id, key, id, 2);
+    }
     await syncWelcomePing({ spendPing: { ping }, messages, auth });
+    expect(ping).not.toHaveBeenCalled();
+    await syncWelcomePing({ lnurlServer: LNURL_SERVER, spendPing: { ping }, messages, auth });
     expect(ping).toHaveBeenCalledTimes(2);
-    expect(ping).toHaveBeenCalledWith('ada@walletofsatoshi.com', PHOTO_ID, 'welcome');
+    expect(ping).toHaveBeenCalledWith('acc@example.test', PHOTO_ID, 'welcome');
     expect(ping).toHaveBeenCalledWith(
-      'both@walletofsatoshi.com',
+      'both@example.test',
       'dddddddd-dddd-4ddd-8ddd-dddddddddddd',
       'welcome',
     );
@@ -403,6 +437,7 @@ describe('syncWelcomePing', () => {
     const auth = new InMemoryAuthStore();
     vi.spyOn(auth, 'listAccounts').mockRejectedValue(new Error('list boom'));
     await syncWelcomePing({
+      lnurlServer: LNURL_SERVER,
       spendPing: { ping: vi.fn(async () => undefined) },
       messages: new InMemoryMessageStore(),
       auth,
@@ -415,6 +450,7 @@ describe('syncWelcomePing', () => {
       },
     } as unknown as MessageStore;
     await syncWelcomePing({
+      lnurlServer: LNURL_SERVER,
       spendPing: { ping: vi.fn(async () => undefined) },
       messages,
       auth: live,

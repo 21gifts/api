@@ -13,7 +13,6 @@ import {
 } from '@/lib/credit-repayment';
 import type { LnurlServerConfig } from '@/lib/config';
 import { fiatToSats, type GoalFiatCode, type GoalRateDay } from '@/lib/goal-rate';
-import { normalizeLightningAddress } from '@/lib/lightning-address';
 import { logEvent } from '@/lib/log';
 import type { FetchFn } from '@/lib/lnurlp';
 import { requestZapInvoice } from '@/lib/lnurl-pay';
@@ -251,15 +250,10 @@ export async function repaymentInvoice(deps: RepaymentDeps, c: Context): Promise
   }
   const recipient = await deps.authStore.getAccount(next.share.accountId);
   const receiving = recipient === undefined ? null : receivingAddress(recipient, deps.lnurlServer);
-  const address =
-    receiving === null
-      ? null
-      : receiving.kind === 'wallet'
-        ? receiving.address
-        : normalizeLightningAddress(receiving.address);
-  if (recipient === undefined || receiving === null || address === null) {
+  if (recipient === undefined || receiving === null) {
     return c.json({ error: 'A giver has no Lightning address' }, 400);
   }
+  const address = receiving.address;
   const recipientPubkey = await deps.authStore.getNostrPublicKey(recipient.id);
   if (recipientPubkey === undefined) {
     return c.json({ error: 'A giver has no Lightning address' }, 400);

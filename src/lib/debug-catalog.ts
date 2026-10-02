@@ -2,7 +2,6 @@ import {
   EMPTY_DEBUG_NOSTR,
   debugNostrFieldsFromListRow,
   serializeDebugAccount,
-  serializeDebugAddressVerification,
   serializeDebugPasskey,
   serializeDebugPasskeyChallenge,
   serializeDebugSession,
@@ -17,6 +16,7 @@ import type { ConversationStore } from '@/lib/conversation-store';
 import type { GiftStore } from '@/lib/gift-store';
 import { MESSAGE_LIST_LIMIT, serializeDebugMessage } from '@/lib/message';
 import type { MessageInvoiceAttempt, MessageStore, ZapIngestRow } from '@/lib/message-store';
+import type { LnurlServerConfig } from '@/lib/config';
 import type { NotificationStore } from '@/lib/notification-store';
 import type { PushStore } from '@/lib/push-store';
 import { serializeTrustEdge } from '@/lib/trust';
@@ -28,7 +28,6 @@ export const DEBUG_CATALOG_TABLES = [
   'passkey_credential',
   'passkey_challenge',
   'auth_session',
-  'address_verification',
   'api_log',
   'contact',
   'pos_charge',
@@ -70,7 +69,7 @@ export function isDebugCatalogTable(name: string): name is DebugCatalogTable {
 
 /** Stores the dump reads. Missing optional stores dump as `[]`. */
 export interface DebugCatalogDeps {
-  /** Auth rows, passkeys, sessions, challenges, verifications, Nostr envelopes. */
+  /** Auth rows, passkeys, sessions, challenges, Nostr envelopes. */
   auth: AuthStore;
   /** Forum notes, invoices, zaps, extra-photo meta. */
   messages: MessageStore;
@@ -96,6 +95,8 @@ export interface DebugCatalogDeps {
   listUsdFiatDaily?: (limit: number) => Promise<unknown[]>;
   /** Optional db_change dump. */
   listDbChange?: (limit: number) => Promise<unknown[]>;
+  /** LNURL server config for each account's receiving address; omitted → none. */
+  lnurlServer?: LnurlServerConfig;
 }
 
 function cap<T>(rows: T[]): T[] {
@@ -167,7 +168,11 @@ async function loadTable(deps: DebugCatalogDeps, table: DebugCatalogTable): Prom
         ]),
       );
       return newestByCreatedAt(accounts, (row) => row.id).map((account) =>
-        serializeDebugAccount(account, nostrById.get(account.id) ?? EMPTY_DEBUG_NOSTR),
+        serializeDebugAccount(
+          account,
+          nostrById.get(account.id) ?? EMPTY_DEBUG_NOSTR,
+          deps.lnurlServer,
+        ),
       );
     }
     case 'passkey_credential':
@@ -183,11 +188,6 @@ async function loadTable(deps: DebugCatalogDeps, table: DebugCatalogTable): Prom
       return newestByCreatedAt(await deps.auth.listSessions(), (row) => row.token).map(
         serializeDebugSession,
       );
-    case 'address_verification':
-      return newestByCreatedAt(
-        await deps.auth.listAddressVerifications(),
-        (row) => `${row.accountId}\0${row.address}`,
-      ).map(serializeDebugAddressVerification);
     case 'api_log':
       return ((await deps.apiLog?.listLatest(MESSAGE_LIST_LIMIT)) ?? []).map(serializeDebugApiLog);
     case 'contact':

@@ -13,6 +13,7 @@ import {
 } from '@/lib/message';
 import { InMemoryMessageStore, type MessageStore } from '@/lib/message-store';
 import { InvoiceRateLimiter } from '@/lib/nostr/rate-limit';
+import { resolveZapRelays } from '@/lib/nostr/relays';
 import { InMemoryPushStore } from '@/lib/push-store';
 import { FUNDING_REQUIRED_FROM_UTC } from '@/lib/funding';
 import { InMemoryFundingStore } from '@/lib/funding-store';
@@ -123,6 +124,7 @@ function mount(
       ...(extra.translationStore === undefined ? {} : { translationStore: extra.translationStore }),
       ...(extra.env === undefined ? {} : { env: extra.env }),
       ...(extra.fetchImpl === undefined ? {} : { fetchImpl: extra.fetchImpl }),
+      lnurlServer: LNURL_SERVER,
     }),
   );
 }
@@ -136,8 +138,7 @@ async function seeded(
     linkingKey: null,
     role,
     name: 'Ada',
-    lightningAddress: null,
-    lightningAddressVerified: false,
+    walletRequired: true,
     forumLawsDismissed: false,
     location: null,
     viewKey: 'a'.repeat(64),
@@ -148,14 +149,34 @@ async function seeded(
   return store;
 }
 
+/** Wallet key of `acc` (distinct from the helper's `WALLET_PUBKEY`). */
+const ACC_PUBKEY = `03${'c'.repeat(64)}`;
+/** Wallet key of `other`. */
+const OTHER_PUBKEY = `03${'d'.repeat(64)}`;
+
+/**
+ * Give `id` the username `username` and a verified wallet, so it receives on
+ * `<username>@example.test`.
+ */
+async function verifyWallet(
+  store: InMemoryAuthStore,
+  id: string,
+  username: string,
+  pubkey: string,
+): Promise<void> {
+  const account = await store.getAccount(id);
+  await store.updateAccount({ ...account!, username });
+  await store.claimSparkPubkey(id, pubkey);
+  await store.markSparkPubkeyVerified(id, pubkey, username, 2);
+}
+
 async function withOther(store: InMemoryAuthStore, id = 'other'): Promise<void> {
   await store.createAccount({
     id,
     linkingKey: null,
     role: 'basis',
     name: 'Bob',
-    lightningAddress: null,
-    lightningAddressVerified: false,
+    walletRequired: true,
     forumLawsDismissed: false,
     location: null,
     viewKey: id.padEnd(64, 'b'),
@@ -180,7 +201,7 @@ function lnurlFetchImpl(pr = 'lnbc21n1test'): FetchFn {
     if (url.includes('/.well-known/lnurlp/')) {
       return new Response(
         JSON.stringify({
-          callback: 'https://walletofsatoshi.com/lnurlp/callback',
+          callback: `${LNURL_SERVER.publicBaseUrl}/lnurlp/bob/invoice`,
           minSendable: 1000,
           maxSendable: 10_000_000_000,
           allowsNostr: true,
@@ -225,9 +246,9 @@ async function payableThread(): Promise<{
   });
   await auth.updateAccount({
     ...other,
-    lightningAddress: 'bob@walletofsatoshi.com',
     profileMessageId: profileId,
   });
+  await verifyWallet(auth, 'other', 'bob', OTHER_PUBKEY);
   await ensureAccountNostrKey(auth, 'other', kek);
   const conversations = new InMemoryConversationStore();
   const thread = await conversations.openMemberMember('acc', 'other', new Date(now()));
@@ -240,8 +261,6 @@ async function withPlatform(store: InMemoryAuthStore): Promise<void> {
     linkingKey: null,
     role: 'founder',
     name: '21.gifts',
-    lightningAddress: null,
-    lightningAddressVerified: false,
     forumLawsDismissed: false,
     location: null,
     viewKey: 'p'.repeat(64),
@@ -822,8 +841,6 @@ describe('GET /conversations', () => {
       linkingKey: null,
       role: 'basis',
       name: null,
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'other'.padEnd(64, 'b'),
@@ -1850,8 +1867,6 @@ describe('POST /conversations/:id/messages/:messageId/translate', () => {
       linkingKey: null,
       role: 'basis',
       name: 'Eve',
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'e'.repeat(64),
@@ -2463,8 +2478,6 @@ describe('POST /conversations/:id', () => {
       role: 'basis',
       name: 'Marites Villanueva',
       username: 'marites',
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'm'.repeat(64),
@@ -2493,7 +2506,7 @@ describe('POST /conversations/:id', () => {
       {
         method: 'POST',
         headers: { ...AUTH, 'content-type': 'application/json' },
-        body: JSON.stringify({ text: 'see @Marites, pay ada@walletofsatoshi.com' }),
+        body: JSON.stringify({ text: 'see @Marites, pay ada@example.com' }),
       },
     );
     expect(res.status).toBe(200);
@@ -2517,7 +2530,7 @@ describe('POST /conversations/:id', () => {
     const res = await mount(auth, conversations).request(`/conversations/${thread.id}`, {
       method: 'POST',
       headers: { ...AUTH, 'content-type': 'application/json' },
-      body: JSON.stringify({ text: 'ada@walletofsatoshi.com' }),
+      body: JSON.stringify({ text: 'ada@example.com' }),
     });
     expect(res.status).toBe(200);
     expect(await res.json()).not.toHaveProperty('mentions');
@@ -2558,8 +2571,6 @@ describe('POST /conversations/:id', () => {
       linkingKey: null,
       role: 'founder',
       name: null,
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'p'.repeat(64),
@@ -2640,8 +2651,6 @@ describe('POST /conversations/:id', () => {
       linkingKey: null,
       role: 'basis',
       name: null,
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'a'.repeat(64),
@@ -2693,8 +2702,6 @@ describe('POST /conversations/:id', () => {
       linkingKey: null,
       role: 'founder',
       name: null,
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'c'.repeat(64),
@@ -2854,8 +2861,6 @@ describe('moderator_group', () => {
       linkingKey: null,
       role: 'moderator',
       name: 'Mod',
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'm'.repeat(64),
@@ -2910,8 +2915,6 @@ describe('moderator_group', () => {
         linkingKey: null,
         role,
         name: 'Ada',
-        lightningAddress: null,
-        lightningAddressVerified: false,
         forumLawsDismissed: false,
         location: null,
         viewKey: 'a'.repeat(64),
@@ -2992,8 +2995,6 @@ describe('moderator_group', () => {
       linkingKey: null,
       role: 'founder',
       name: 'Ada',
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'a'.repeat(64),
@@ -3137,8 +3138,6 @@ describe('moderator_group', () => {
         linkingKey: null,
         role,
         name: 'Ada',
-        lightningAddress: null,
-        lightningAddressVerified: false,
         forumLawsDismissed: false,
         location: null,
         viewKey: 'a'.repeat(64),
@@ -3218,8 +3217,6 @@ describe('moderator_group', () => {
       role: 'basis',
       name: 'Marites Villanueva',
       username: 'marites',
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'm'.repeat(64),
@@ -3243,7 +3240,7 @@ describe('moderator_group', () => {
     expect(rows[0]?.nostrPublishState).toBe('skipped');
   });
 
-  it('pings spend once with kind moderator when a Lightning Address is set', async () => {
+  it('pings spend once with kind moderator on the wallet address', async () => {
     const auth = await seeded('moderator');
     await withPlatform(auth);
     const existing = await auth.getAccount('acc');
@@ -3251,10 +3248,7 @@ describe('moderator_group', () => {
     if (existing === undefined) {
       throw new Error('expected account');
     }
-    await auth.updateAccount({
-      ...existing,
-      lightningAddress: 'ada@walletofsatoshi.com',
-    });
+    await verifyWallet(auth, 'acc', 'ada', ACC_PUBKEY);
     const conversations = new InMemoryConversationStore();
     const thread = await conversations.ensureModeratorGroup('plat', new Date(now()));
     const spendPing = { ping: vi.fn(async () => undefined) };
@@ -3269,7 +3263,7 @@ describe('moderator_group', () => {
     expect(res.status).toBe(200);
     const created = (await res.json()) as { id: string };
     expect(spendPing.ping).toHaveBeenCalledTimes(1);
-    expect(spendPing.ping).toHaveBeenCalledWith('ada@walletofsatoshi.com', created.id, 'moderator');
+    expect(spendPing.ping).toHaveBeenCalledWith('ada@example.test', created.id, 'moderator');
   });
 
   it('does not ping when the moderator is not funding-eligible', async () => {
@@ -3280,10 +3274,7 @@ describe('moderator_group', () => {
     if (existing === undefined) {
       throw new Error('expected account');
     }
-    await auth.updateAccount({
-      ...existing,
-      lightningAddress: 'ada@walletofsatoshi.com',
-    });
+    await verifyWallet(auth, 'acc', 'ada', ACC_PUBKEY);
     const conversations = new InMemoryConversationStore();
     const thread = await conversations.ensureModeratorGroup('plat', new Date(now()));
     const spendPing = { ping: vi.fn(async () => undefined) };
@@ -3314,10 +3305,7 @@ describe('moderator_group', () => {
     if (existing === undefined) {
       throw new Error('expected account');
     }
-    await auth.updateAccount({
-      ...existing,
-      lightningAddress: 'ada@walletofsatoshi.com',
-    });
+    await verifyWallet(auth, 'acc', 'ada', ACC_PUBKEY);
     const conversations = new InMemoryConversationStore();
     const thread = await conversations.ensureModeratorGroup('plat', new Date(now()));
     const spendPing = { ping: vi.fn(async () => undefined) };
@@ -3348,9 +3336,9 @@ describe('moderator_group', () => {
     }
     await auth.updateAccount({
       ...existing,
-      lightningAddress: 'ada@walletofsatoshi.com',
       profileMessageId: LIVING_ROOM_POST_ID,
     });
+    await verifyWallet(auth, 'acc', 'ada', ACC_PUBKEY);
     const conversations = new InMemoryConversationStore();
     const thread = await conversations.ensureModeratorGroup('plat', new Date(now()));
     const spendPing = { ping: vi.fn(async () => undefined) };
@@ -3379,10 +3367,7 @@ describe('moderator_group', () => {
     if (existing === undefined) {
       throw new Error('expected account');
     }
-    await auth.updateAccount({
-      ...existing,
-      lightningAddress: 'ada@walletofsatoshi.com',
-    });
+    await verifyWallet(auth, 'acc', 'ada', ACC_PUBKEY);
     const conversations = new InMemoryConversationStore();
     const thread = await conversations.ensureModeratorGroup('plat', new Date(now()));
     const spendPing = { ping: vi.fn(async () => undefined) };
@@ -3407,10 +3392,7 @@ describe('moderator_group', () => {
     if (existing === undefined) {
       throw new Error('expected account');
     }
-    await auth.updateAccount({
-      ...existing,
-      lightningAddress: 'ada@walletofsatoshi.com',
-    });
+    await verifyWallet(auth, 'acc', 'ada', ACC_PUBKEY);
     const conversations = new InMemoryConversationStore();
     const thread = await conversations.ensureModeratorGroup('plat', new Date(now()));
     const spendPing = {
@@ -3438,10 +3420,7 @@ describe('moderator_group', () => {
     if (existing === undefined) {
       throw new Error('expected account');
     }
-    await auth.updateAccount({
-      ...existing,
-      lightningAddress: 'ada@walletofsatoshi.com',
-    });
+    await verifyWallet(auth, 'acc', 'ada', ACC_PUBKEY);
     const conversations = new InMemoryConversationStore();
     const thread = await conversations.ensureModeratorGroup('plat', new Date(now()));
     const spendPing = { ping: vi.fn(async () => undefined) };
@@ -3465,7 +3444,7 @@ describe('moderator_group', () => {
     expect(await conversations.listMessages(thread.id, 10)).toHaveLength(1);
   });
 
-  it('does not ping when lightningAddress is missing', async () => {
+  it('does not ping without a verified wallet', async () => {
     const auth = await seeded('moderator');
     await withPlatform(auth);
     const conversations = new InMemoryConversationStore();
@@ -3491,10 +3470,7 @@ describe('moderator_group', () => {
     if (existing === undefined) {
       throw new Error('expected account');
     }
-    await auth.updateAccount({
-      ...existing,
-      lightningAddress: 'ada@walletofsatoshi.com',
-    });
+    await verifyWallet(auth, 'acc', 'ada', ACC_PUBKEY);
     const conversations = new InMemoryConversationStore();
     const thread = await conversations.ensureModeratorGroup('plat', new Date(now()));
     const spendPing = { ping: vi.fn(async () => undefined) };
@@ -3986,10 +3962,7 @@ describe('moderator-group photos', () => {
     if (existing === undefined) {
       throw new Error('expected account');
     }
-    await auth.updateAccount({
-      ...existing,
-      lightningAddress: 'ada@walletofsatoshi.com',
-    });
+    await verifyWallet(auth, 'acc', 'ada', ACC_PUBKEY);
     const conversations = new InMemoryConversationStore();
     const thread = await conversations.ensureModeratorGroup('plat', new Date(now()));
     const spendPing = { ping: vi.fn(async () => undefined) };
@@ -4006,7 +3979,7 @@ describe('moderator-group photos', () => {
     expect(res.status).toBe(200);
     const created = (await res.json()) as { id: string };
     expect(spendPing.ping).toHaveBeenCalledTimes(1);
-    expect(spendPing.ping).toHaveBeenCalledWith('ada@walletofsatoshi.com', created.id, 'moderator');
+    expect(spendPing.ping).toHaveBeenCalledWith('ada@example.test', created.id, 'moderator');
   });
 });
 
@@ -4176,6 +4149,7 @@ describe('POST /conversations/:id/invoice', () => {
         nostrKek: kek,
         fetchImpl: lnurlFetchImpl(),
         invoiceLimiter: new InvoiceRateLimiter(),
+        lnurlServer: LNURL_SERVER,
       }),
     );
     const acc = await auth.getAccount('acc');
@@ -4195,9 +4169,9 @@ describe('POST /conversations/:id/invoice', () => {
     });
     await auth.updateAccount({
       ...acc,
-      lightningAddress: 'ada@walletofsatoshi.com',
       profileMessageId: profileId,
     });
+    await verifyWallet(auth, 'acc', 'ada', ACC_PUBKEY);
     const { ensureAccountNostrKey } = await import('@/lib/nostr/keys');
     await ensureAccountNostrKey(auth, 'acc', kek);
     const res = await withNip57True(async () =>
@@ -4238,9 +4212,9 @@ describe('POST /conversations/:id/invoice', () => {
     });
     await auth.updateAccount({
       ...zzz,
-      lightningAddress: 'bob@walletofsatoshi.com',
       profileMessageId: profileId,
     });
+    await verifyWallet(auth, 'zzz', 'zzz', OTHER_PUBKEY);
     await ensureAccountNostrKey(auth, 'zzz', kek);
     const conversations = new InMemoryConversationStore();
     const thread = await conversations.openMemberMember('plat', 'zzz', new Date(now()));
@@ -4254,6 +4228,7 @@ describe('POST /conversations/:id/invoice', () => {
         nostrKek: kek,
         fetchImpl: lnurlFetchImpl(),
         invoiceLimiter: new InvoiceRateLimiter(),
+        lnurlServer: LNURL_SERVER,
       }),
     );
     const res = await withNip57True(async () =>
@@ -4291,9 +4266,9 @@ describe('POST /conversations/:id/invoice', () => {
     });
     await auth.updateAccount({
       ...aaa,
-      lightningAddress: 'bob@walletofsatoshi.com',
       profileMessageId: profileId,
     });
+    await verifyWallet(auth, 'aaa', 'aaa', OTHER_PUBKEY);
     await ensureAccountNostrKey(auth, 'aaa', kek);
     const conversations = new InMemoryConversationStore();
     const thread = await conversations.openMemberMember('aaa', 'plat', new Date(now()));
@@ -4307,6 +4282,7 @@ describe('POST /conversations/:id/invoice', () => {
         nostrKek: kek,
         fetchImpl: lnurlFetchImpl(),
         invoiceLimiter: new InvoiceRateLimiter(),
+        lnurlServer: LNURL_SERVER,
       }),
     );
     const res = await withNip57True(async () =>
@@ -4319,17 +4295,14 @@ describe('POST /conversations/:id/invoice', () => {
     expect(res.status).toBe(200);
   });
 
-  it('returns 400 when the counterpart has a Lightning Address but no profile note', async () => {
+  it('returns 400 when the counterpart has a wallet but no profile note', async () => {
     const auth = await seeded();
     await withOther(auth);
     const other = await auth.getAccount('other');
     if (other === undefined) {
       throw new Error('expected counterpart');
     }
-    await auth.updateAccount({
-      ...other,
-      lightningAddress: 'bob@walletofsatoshi.com',
-    });
+    await verifyWallet(auth, 'other', 'bob', OTHER_PUBKEY);
     const conversations = new InMemoryConversationStore();
     const thread = await conversations.openMemberMember('acc', 'other', new Date(now()));
     const res = await mount(auth, conversations).request(`/conversations/${thread.id}/invoice`, {
@@ -4364,9 +4337,9 @@ describe('POST /conversations/:id/invoice', () => {
     });
     await auth.updateAccount({
       ...someone,
-      lightningAddress: 'bob@walletofsatoshi.com',
       profileMessageId: profileId,
     });
+    await verifyWallet(auth, 'someone', 'someone', OTHER_PUBKEY);
     await ensureAccountNostrKey(auth, 'someone', kek);
     const conversations = new InMemoryConversationStore();
     const thread = await conversations.openMemberPlatform('someone', 'plat', new Date(now()));
@@ -4380,6 +4353,7 @@ describe('POST /conversations/:id/invoice', () => {
         nostrKek: kek,
         fetchImpl: lnurlFetchImpl(),
         invoiceLimiter: new InvoiceRateLimiter(),
+        lnurlServer: LNURL_SERVER,
       }),
     );
     const res = await withNip57True(async () =>
@@ -4491,9 +4465,9 @@ describe('POST /conversations/:id/invoice', () => {
     });
     await auth.updateAccount({
       ...other,
-      lightningAddress: 'bob@walletofsatoshi.com',
       profileMessageId: profileId,
     });
+    await verifyWallet(auth, 'other', 'bob', OTHER_PUBKEY);
     const conversations = new InMemoryConversationStore();
     const thread = await conversations.openMemberMember('acc', 'other', new Date(now()));
     const res = await mount(auth, conversations, messages).request(
@@ -4505,6 +4479,47 @@ describe('POST /conversations/:id/invoice', () => {
       },
     );
     expect(res.status).toBe(400);
+    const attempt = (await messages.listInvoiceAttempts(5))[0];
+    expect(attempt?.result).toBe('no_key');
+    expect(attempt?.lightningAddress).toBe('bob@example.test');
+  });
+
+  it('answers as for no address when the counterpart has no verified wallet', async () => {
+    const auth = await seeded();
+    await withOther(auth);
+    const other = await auth.getAccount('other');
+    const messages = new InMemoryMessageStore();
+    const profileId = '11111111-1111-4111-8111-111111111111';
+    await messages.create({
+      id: profileId,
+      accountId: 'other',
+      name: 'Bob',
+      text: 'hi',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+      eventId: 'ee'.repeat(32),
+    });
+    await auth.updateAccount({ ...other!, profileMessageId: profileId });
+    const fetchImpl = vi.fn<FetchFn>(lnurlFetchImpl());
+    const conversations = new InMemoryConversationStore();
+    const thread = await conversations.openMemberMember('acc', 'other', new Date(now()));
+    const res = await mount(auth, conversations, messages, { fetchImpl }).request(
+      `/conversations/${thread.id}/invoice`,
+      {
+        method: 'POST',
+        headers: { ...AUTH, 'content-type': 'application/json' },
+        body: JSON.stringify({ sats: 21 }),
+      },
+    );
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({
+      error: "The author's wallet cannot receive this Bitcoin payment",
+    });
+    const attempt = (await messages.listInvoiceAttempts(5))[0];
+    expect(attempt?.result).toBe('no_author');
+    expect(attempt?.lightningAddress).toBeNull();
+    expect(fetchImpl).not.toHaveBeenCalled();
   });
 
   it('returns 503 when nostrKek is missing', async () => {
@@ -4534,6 +4549,7 @@ describe('POST /conversations/:id/invoice', () => {
         nostrKek: kek,
         fetchImpl: lnurlFetchImpl(),
         invoiceLimiter: limiter,
+        lnurlServer: LNURL_SERVER,
       }),
     );
     const hit = async (): Promise<number> =>
@@ -4564,6 +4580,7 @@ describe('POST /conversations/:id/invoice', () => {
         nostrKek: kek,
         fetchImpl: lnurlFetchImpl(),
         invoiceLimiter: new InvoiceRateLimiter(),
+        lnurlServer: LNURL_SERVER,
       }),
     );
     const res = await app.request(`/conversations/${threadId}/invoice`, {
@@ -4582,7 +4599,7 @@ describe('POST /conversations/:id/invoice', () => {
       if (url.includes('/.well-known/lnurlp/')) {
         return new Response(
           JSON.stringify({
-            callback: 'https://walletofsatoshi.com/lnurlp/callback',
+            callback: `${LNURL_SERVER.publicBaseUrl}/lnurlp/bob/invoice`,
             minSendable: 1000,
             maxSendable: 10_000_000_000,
           }),
@@ -4603,6 +4620,7 @@ describe('POST /conversations/:id/invoice', () => {
         nostrKek: kek,
         fetchImpl,
         invoiceLimiter: new InvoiceRateLimiter(),
+        lnurlServer: LNURL_SERVER,
       }),
     );
     const res = await app.request(`/conversations/${threadId}/invoice`, {
@@ -4623,7 +4641,7 @@ describe('POST /conversations/:id/invoice', () => {
       if (url.includes('/.well-known/lnurlp/')) {
         return new Response(
           JSON.stringify({
-            callback: 'https://walletofsatoshi.com/lnurlp/callback',
+            callback: `${LNURL_SERVER.publicBaseUrl}/lnurlp/bob/invoice`,
             minSendable: 1000,
             maxSendable: 10_000_000_000,
             allowsNostr: true,
@@ -4644,6 +4662,7 @@ describe('POST /conversations/:id/invoice', () => {
         nostrKek: kek,
         fetchImpl,
         invoiceLimiter: new InvoiceRateLimiter(),
+        lnurlServer: LNURL_SERVER,
       }),
     );
     const res = await app.request(`/conversations/${threadId}/invoice`, {
@@ -4667,6 +4686,7 @@ describe('POST /conversations/:id/invoice', () => {
         nostrKek: kek,
         fetchImpl: lnurlFetchImpl(),
         invoiceLimiter: new InvoiceRateLimiter(),
+        lnurlServer: LNURL_SERVER,
       }),
     );
     const res = await app.request(`/conversations/${threadId}/invoice`, {
@@ -4700,6 +4720,7 @@ describe('POST /conversations/:id/invoice', () => {
         nostrKek: kek,
         fetchImpl: lnurlFetchImpl(),
         invoiceLimiter: new InvoiceRateLimiter(),
+        lnurlServer: LNURL_SERVER,
       }),
     );
     const res = await app.request(`/conversations/${threadId}/invoice`, {
@@ -4726,6 +4747,7 @@ describe('POST /conversations/:id/invoice', () => {
         nostrKek: kek,
         fetchImpl: lnurlFetchImpl(),
         invoiceLimiter: new InvoiceRateLimiter(),
+        lnurlServer: LNURL_SERVER,
       }),
     );
     const bolt11 = await import('@/lib/bolt11');
@@ -4754,6 +4776,13 @@ describe('POST /conversations/:id/invoice', () => {
       const zapRequestJson = requestSpy.mock.calls[0]?.[0]?.zapRequestJson;
       expect(typeof zapRequestJson).toBe('string');
       expect(nip57Spy.mock.calls[0]?.[1]).toBe(zapRequestJson);
+      expect(requestSpy.mock.calls[0]?.[0]?.address).toBe('bob@example.test');
+      const relays = (JSON.parse(zapRequestJson ?? '') as { tags: string[][] }).tags
+        .find((tag) => tag[0] === 'relays')
+        ?.slice(1);
+      expect(relays?.length).toBeGreaterThan(0);
+      const read = resolveZapRelays(process.env);
+      expect(relays?.every((url) => read.includes(url))).toBe(true);
       expect(Object.keys(JSON.parse(zapRequestJson ?? ''))).toEqual([
         'id',
         'pubkey',
@@ -4801,6 +4830,7 @@ describe('POST /conversations/:id/invoice', () => {
         nostrKek: kek,
         fetchImpl: lnurlFetchImpl(),
         invoiceLimiter: new InvoiceRateLimiter(),
+        lnurlServer: LNURL_SERVER,
       }),
     );
     const res = await withNip57True(async () =>
@@ -5102,7 +5132,7 @@ describe('wallet-backed receiving on POST /conversations/:id/invoice', () => {
     expect(attempt?.lightningAddress).toBe('bob@example.test');
   });
 
-  it('returns sparkInvoice null for an external counterpart', async () => {
+  it('returns sparkInvoice null when the invoice has no payment hash', async () => {
     const { auth, conversations, messages, threadId, kek } = await payableThread();
     const res = await withNip57True(async () =>
       payRequest(

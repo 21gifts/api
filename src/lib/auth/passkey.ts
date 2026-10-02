@@ -291,8 +291,6 @@ export async function finishPasskeyRegistration(
     name,
     ...(name === null ? {} : { username: name }),
     location: null,
-    lightningAddress: null,
-    lightningAddressVerified: false,
     forumLawsDismissed: false,
     viewKey: randomHex(32),
     createdAt: now,

@@ -26,7 +26,7 @@ import { seedDevShopPlaces } from './lib/dev-shop-places';
 import { publishExistingShopPlaces, resolveMapPush } from './lib/ocp-place';
 import { resolveSpendPing } from './lib/spend-ping';
 import { syncWelcomePing } from './lib/welcome-media';
-import { resolveZapRelays, resolveZapReadRelays } from './lib/nostr/relays';
+import { resolveZapRelays } from './lib/nostr/relays';
 import { ExternalIngestLimiter } from './lib/nostr/external';
 import { resolveVapidConfig } from './lib/push-config';
 import { UnconfiguredPushSender, WebPushSender, type PushSender } from './lib/push-sender';
@@ -142,7 +142,7 @@ if (import.meta.main) {
     ...(nostrKek === undefined ? {} : { nostrKek }),
     ...(publisher === undefined ? {} : { nostrPublisher: publisher }),
     nostrQuerier: querier,
-    nostrRelayUrls: resolveZapReadRelays(process.env),
+    nostrRelayUrls: resolveZapRelays(process.env),
     ...(contactStore === undefined ? {} : { contactStore }),
     ...(memberHabitStore === undefined ? {} : { memberHabitStore }),
     ...(apiLogStore === undefined ? {} : { apiLogStore }),
@@ -166,6 +166,7 @@ if (import.meta.main) {
       ...(spendPing === undefined ? {} : { spendPing }),
       messages: forumMessages,
       auth: authStore,
+      ...(lnurlServer === undefined ? {} : { lnurlServer }),
     });
   };
   welcomeCatchUp();

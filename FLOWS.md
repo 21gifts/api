@@ -65,26 +65,26 @@ The session stays. `walletBackupSeenAt` does not decide whether a seed exists.
 `walletRequired` true means a seed passkey exists.
 
 The signed-in view currently lives on `/login` — there is no separate
-`/profile` route yet. It shows a name form, a username form, a Lightning
-Address form, and **Sign out**. Name and Lightning Address are each
-skippable via `POST /me/setup/skip`. Username cannot skip; the app sets
+`/profile` route yet. It shows a name form, a username form, the in-app
+wallet set-up, and **Sign out**. Name and the receiving-wallet step
+(`lightning-address`) are each skippable via `POST /me/setup/skip`. Username cannot skip; the app sets
 the handle with `POST /me/username`. Living-room rules stay required.
 An existing member records that the account can show a recovery phrase via
 `POST /me/wallet-backup-seen` after activating a phrase-capable passkey. That
 is not a confirmation and not a setup step.
 
 `GET /me` `setup` order is name, then username (unskippable), then
-lightning-address, then rules. The recovery phrase is not a setup step
+lightning-address (the receiving wallet), then rules. The recovery phrase is not a setup step
 and does not change `setup` or `missing`. When username is still blank,
 `POST /me/name` auto-assigns `usernameFromDisplayName` if that handle is
 free; a collision or uniqueness race leaves username null and `setup` at
 username.
 
-After name/skip, username, and address/skip,
+After name/skip, username, and wallet/skip,
 the app records living-room rules agreement via `POST /me/rules-agreement`.
 `GET /me` carries `setup` (wizard; skip counts as done for name and
-Lightning Address, not username), `missing` (facts; skip does
-not), `walletRequired`, `walletBackupSeenAt`, and `rulesAgreedAt` (epoch
+the receiving wallet, not username), `missing` (facts; skip does
+not; `lightning-address` stays until the wallet is verified), `walletRequired`, `walletBackupSeenAt`, and `rulesAgreedAt` (epoch
 ms of the first agreement, or `null`).
 
 No email, no password. Losing the passkey (and platform sync) loses the
@@ -99,36 +99,19 @@ HTTP cited: `/auth/passkey/register/begin`, `/auth/passkey/register/finish`,
 
 ---
 
-## 2. Profile — **Shipped** (address, name) + **Sketch** (photo / story)
+## 2. Profile — **Shipped** (wallet address, name) + **Sketch** (photo / story)
 
 ### Address — **Shipped**
 
-Every account can receive. From the signed-in view the user can link, replace,
-or unlink a LUD-16 Lightning Address:
-
-- `POST /me/lightning-address` — link or replace after a live well-known
-  resolve that requires zap metadata (`allowsNostr` + `nostrPubkey`). Always
-  leaves the address **unverified**. Unreachable or non-zap addresses are
-  rejected and not stored.
-- `DELETE /me/lightning-address` — unlink (also clears the LN skip timestamp;
-  does not clear `username`). After unlink, `setup` is `username` if the
-  handle is blank; `setup` is `lightning-address` when name is done or
-  skipped **and** username is set. The recovery phrase is not a setup
-  step and does not change `setup` or `missing`.
-
-Proof-of-control of the linked Lightning Address is the flag
-`lightningAddressVerified` (not the forum role **Verified**):
-
-1. `POST /me/lightning-address/verification` (no body). The api pays 1 sat, or
-   the provider's `minSendable` when higher, capped at 10 sat, with a LUD-12
-   comment `21gifts <32-hex-nonce>`. The nonce is never returned to the client.
-2. The user types the code from wallet history into
-   `POST /me/lightning-address/verification/confirm`.
-
-Until an invoice payer is injected, start returns **503**
-`{ "error": "Verification payments are not configured" }`. The process still
-boots. Live verification payments do **not** work today. Edit or unlink clears
-any pending verification (`SPEC.md`).
+A member's only receiving address is their in-app wallet, at the
+wallet-backed `<username>@<host of PUBLIC_BASE_URL>`. The app binds the
+wallet key with `PUT /me/wallet`; the LNURL server registration verifies it.
+There is no route to link, change, verify, or remove an external Lightning
+address. A member without a verified wallet cannot receive and cannot post
+(`missing` contains `lightning-address`) until they set one up; reading the
+forum still works. Owner JSON `lightningAddress` is the wallet address or
+`null`, and `lightningAddressVerified` is true exactly when it is set (names
+kept for app compatibility).
 
 ### Identity copy — **Shipped** (name / location / About me / About me photo)
 
@@ -137,15 +120,17 @@ location is stored on the account (`POST /me/location`); empty or whitespace
 after trim stores `null`. Location is public on member and view cards. It is
 not a setup step, not a posting requirement, not a profile forum note, and
 not Nostr `kind:0`. About me is `PUT /me/about` (Bearer `{ text, photo? }`): a
-non-blank name is required (409 otherwise); Lightning Address is not; empty
+non-blank name is required (409 otherwise); a verified wallet is not; empty
 text clears the bio (`aboutMe` null; a live note row is kept). Optional
 `photo` uses the same JPEG/PNG/WebP decode as a forum post (`omitted` keeps,
 `null` clears, object sets). When no live note exists, empty text without a
 new photo does not create or notify; a photo-only or non-empty write against
-a missing or hidden note creates a live note without LN and notifies after
+a missing or hidden note creates a live note, with or without a verified
+wallet, and notifies after
 the write. Auto name-copy is not a bio (`aboutMe` is `null`); a photo still
-sets `aboutMeHasPhoto`. `POST /me/name` still no-ops the note without LN;
-`POST /me/lightning-address` still creates the name-copy note. Rename does
+sets `aboutMeHasPhoto`. `POST /me/name` still no-ops the note without a
+verified wallet; once the wallet is verified the worker backfill creates the
+name-copy note. Rename does
 not create a second note. Other members read live identity plus `aboutMe`
 and `aboutMeHasPhoto` via `GET /members/:accountId` (Bearer; rules required).
 Kind:0 `picture` stays the brand icon. **Do not invent** `POST /me/profile`.
@@ -207,6 +192,10 @@ media (else 403 `Forum post required`); omitted
 is the spend lookup and returns 200 `{ eligible, status }` (`status` is
 `effectiveStatus`; unknown/`basis` are `{ eligible: false, status: "none" }`).
 `POST /invoices/proof` does not check the grant.
+Every spend lookup and `POST /invoices` match `address` only as a member's
+wallet-backed `<username>@<host of PUBLIC_BASE_URL>` (case-insensitive,
+verified wallet); any other domain is the not-found answer, and the invoice
+is fetched from the LNURL server internally.
 Recurring donor UI is still a sketch. **Do not invent** `/me/donor`,
 `/me/recurring`, or scheduler paths. HTTP that exists today is the
 spend-worker invoice surface in `SPEC.md`.
@@ -217,16 +206,16 @@ spend-worker invoice surface in `SPEC.md`.
 
 Public comment / encouragement is a v1 surface. The composer POSTs
 `{ text }` and/or `{ photo: { contentType, data } }` to `POST /messages`
-(requires rules + name + username + Lightning Address — missing requirements are
+(requires rules + name + username + a verified in-app wallet — missing requirements are
 **409** `missing_requirements`);
 a **new top-level** persist pings spend (`POST {SPEND_URL}/ping` with
-`{ address, messageId }` and Bearer `SPEND_API_TOKEN`) only when the author
+`{ address, messageId }`, `address` being the author's wallet address, and Bearer `SPEND_API_TOKEN`) only when the author
 is funding-eligible today and the new row has media (`hasPhoto` /
 `hasVideo` / `photoCount > 0`); otherwise log `spend.ping.skipped` /
 `not_eligible` or `no_media` and still 200; when `role === 'verified'` and any live top-level photo or video exists, including About me, the api also pings `{ address, messageId, kind: "welcome" }`
 for the newest live top-level photo or video, including an About-me note,
 independent of `eligibleToday` (the new row itself need not have media;
-Spend pays once per Lightning Address; this API may ping again; becoming
+Spend pays once per address; this API may ping again; becoming
 verified and saving About me while verified also welcome-ping; boot and a
 15-minute timer welcome-ping every verified account that already has a photo or video post;
 replies and any role other than `verified` do not welcome-ping); replies and media replay do

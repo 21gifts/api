@@ -310,8 +310,6 @@ describe('passkey claim', () => {
       linkingKey: null,
       role: 'basis',
       name: 'Ada',
-      lightningAddress: 'guest@walletofsatoshi.com',
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: VIEW_KEY,
@@ -363,8 +361,6 @@ describe('passkey claim', () => {
       linkingKey: null,
       role: 'basis',
       name: null,
-      lightningAddress: 'guest@walletofsatoshi.com',
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: VIEW_KEY,
@@ -398,7 +394,7 @@ describe('passkey claim', () => {
     );
   });
 
-  it('finish after claim keeps name, lightningAddress, viewKey, and id', async () => {
+  it('finish after claim keeps name, viewKey, and id', async () => {
     const store = await provisionedStore();
     const begin = await startPasskeyClaim(store, new FakePasskeyCeremony(), CONFIG, T0, VIEW_KEY);
     expect(begin.ok).toBe(true);
@@ -421,7 +417,6 @@ describe('passkey claim', () => {
     expect(finish.value.account).toMatchObject({
       id: 'provisioned',
       name: 'Ada',
-      lightningAddress: 'guest@walletofsatoshi.com',
       viewKey: VIEW_KEY,
       walletRequired: true,
     });
@@ -472,8 +467,6 @@ describe('passkey claim', () => {
       linkingKey: null,
       role: 'basis',
       name: 'Ada',
-      lightningAddress: 'guest@walletofsatoshi.com',
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: VIEW_KEY,
@@ -585,8 +578,6 @@ describe('passkey claim', () => {
       linkingKey: null,
       role: 'basis',
       name: null,
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: VIEW_KEY,
@@ -625,8 +616,6 @@ describe('passkey claim', () => {
       linkingKey: null,
       role: 'basis',
       name: null,
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: VIEW_KEY,
@@ -812,8 +801,6 @@ describe('passkey authentication', () => {
       linkingKey: null,
       role: 'basis',
       name: null,
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'a'.repeat(64),
@@ -862,8 +849,6 @@ describe('passkey authentication', () => {
       linkingKey: null,
       role: 'basis',
       name: null,
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'a'.repeat(64),
@@ -953,8 +938,6 @@ describe('passkey replace', () => {
       linkingKey: null,
       role: 'basis',
       name: 'Ada',
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'a'.repeat(64),
@@ -1020,8 +1003,6 @@ describe('passkey replace', () => {
       linkingKey: null,
       role: 'basis',
       name: 'Ada',
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'b'.repeat(64),
@@ -1307,8 +1288,6 @@ describe('passkey replace', () => {
       linkingKey: null,
       role: 'basis' as const,
       name: null,
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'a'.repeat(64),
@@ -1373,8 +1352,6 @@ describe('passkey seed', () => {
       linkingKey: null;
       role: 'basis';
       name: null;
-      lightningAddress: null;
-      lightningAddressVerified: boolean;
       forumLawsDismissed: boolean;
       location: null;
       viewKey: string;
@@ -1391,8 +1368,6 @@ describe('passkey seed', () => {
       linkingKey: null,
       role: 'basis' as const,
       name: null,
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'a'.repeat(64),
@@ -1421,8 +1396,6 @@ describe('passkey seed', () => {
       linkingKey: null,
       role: 'basis',
       name: null,
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'a'.repeat(64),

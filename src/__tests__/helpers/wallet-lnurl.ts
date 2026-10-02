@@ -31,12 +31,12 @@ export const BOLT11_PAYMENT_HASH =
   '0001020304050607080900010203040506070809000102030405060708090102';
 
 /**
- * Create an account with a verified wallet and no external address.
+ * Create an account with a verified wallet.
  *
  * @param store - Auth store.
  * @param id - Account id.
  * @param username - Lower-case username.
- * @param extra - Optional `lightningAddress` and `rulesAgreedAt`.
+ * @param extra - Optional `rulesAgreedAt`.
  * @returns Resolves when the account is created, claimed, and verified.
  * @throws Error when the wallet key cannot be marked verified.
  */
@@ -44,7 +44,7 @@ export async function createWalletAccount(
   store: AuthStore,
   id: string,
   username: string,
-  extra: { lightningAddress?: string | null; rulesAgreedAt?: number | null } = {},
+  extra: { rulesAgreedAt?: number | null } = {},
 ): Promise<void> {
   await store.createAccount({
     id,
@@ -52,8 +52,6 @@ export async function createWalletAccount(
     role: 'verified',
     name: username,
     username,
-    lightningAddress: extra.lightningAddress ?? null,
-    lightningAddressVerified: false,
     forumLawsDismissed: false,
     location: null,
     viewKey: `${id.replaceAll('-', '')}${'0'.repeat(64)}`.slice(0, 64),

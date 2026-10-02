@@ -43,7 +43,6 @@ export default defineConfig({
       OCP_PLACE_INGEST_TOKEN: '',
       DEBUG_TOKEN: 'e2e-debug-token',
       DEBUG_READ_TOKEN: '',
-      NIP57_PROBE: '0',
       WEBAUTHN_RP_ID: 'localhost',
       CORS_ALLOWED_ORIGINS: 'http://localhost:3000,http://127.0.0.1:3000',
       MEDIA_DIR: join(tmpdir(), '21gifts-e2e-media'),

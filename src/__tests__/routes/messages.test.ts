@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { createHash } from 'node:crypto';
 import { chmod, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -32,6 +33,7 @@ import {
 import { parseNostrKek } from '@/lib/nostr/kek';
 import { ensureAccountNostrKey } from '@/lib/nostr/keys';
 import { RecordingPublisher } from '@/lib/nostr/publish';
+import { resolveZapRelays } from '@/lib/nostr/relays';
 import { InMemoryPushStore } from '@/lib/push-store';
 import type { MapFetch, MapPush } from '@/lib/ocp-place';
 import { removeForumVideo, resolveMediaDir, videoFilePath } from '@/lib/video';
@@ -116,13 +118,12 @@ async function seededStore(): Promise<InMemoryAuthStore> {
     linkingKey: LINKING_KEY,
     role: 'basis',
     name: null,
-    lightningAddress: null,
-    lightningAddressVerified: false,
     forumLawsDismissed: false,
     location: null,
     viewKey: 'a'.repeat(64),
     createdAt: 1_000_000,
     rulesAgreedAt: null,
+    walletRequired: true,
   });
   await store.createSession({ token: 'tok', accountId: 'acc', createdAt: now() });
   return store;
@@ -147,9 +148,30 @@ async function namedStore(name: string): Promise<InMemoryAuthStore> {
       return slug === '' ? null : slug;
     })(),
     rulesAgreedAt: now(),
-    lightningAddress: 'ada@walletofsatoshi.com',
   });
+  if (((await store.getAccount('acc'))?.username ?? null) !== null) {
+    await verifyWallet(store, 'acc');
+  }
   return store;
+}
+
+/** Distinct wallet identity key per account id (66 hex). */
+function walletKeyFor(id: string): string {
+  return `02${createHash('sha256').update(id).digest('hex')}`;
+}
+
+/**
+ * Give an existing account (created with `walletRequired: true` and a
+ * username) a verified in-app wallet, its only receiving address
+ * (`<username>@example.test` with {@link LNURL_SERVER}).
+ */
+async function verifyWallet(store: InMemoryAuthStore, id: string): Promise<void> {
+  const existing = await store.getAccount(id);
+  const username = existing?.username?.trim().toLowerCase() ?? '';
+  await store.claimSparkPubkey(id, walletKeyFor(id));
+  if (!(await store.markSparkPubkeyVerified(id, walletKeyFor(id), username, 2))) {
+    throw new Error(`wallet not verified for ${id}`);
+  }
 }
 
 /** Named session whose role may post unpaid replies (moderator). */
@@ -511,17 +533,8 @@ describe('GET /messages', () => {
     expect(body.messages.map((m) => m.text)).toEqual(['newer', 'older']);
   });
 
-  it('marks a signed note with a Lightning Address as payable', async () => {
+  it('marks a signed note payable only when its author has a verified wallet', async () => {
     const authStore = await namedStore('Ada');
-    const account = await authStore.getAccount('acc');
-    expect(account).toBeDefined();
-    if (account === undefined) {
-      throw new Error('expected account');
-    }
-    await authStore.updateAccount({
-      ...account,
-      lightningAddress: 'ada@walletofsatoshi.com',
-    });
     const messageStore = new InMemoryMessageStore();
     await messageStore.create({
       id: 'pay-1',
@@ -533,11 +546,24 @@ describe('GET /messages', () => {
       ...unsignedNostrDefaults(),
       eventId: 'ee'.repeat(32),
     });
-    const res = await mount(authStore, messageStore).request('/messages', { headers: AUTH });
+    const res = await mount(authStore, messageStore, { lnurlServer: LNURL_SERVER }).request(
+      '/messages',
+      { headers: AUTH },
+    );
     expect(res.status).toBe(200);
     const body = (await res.json()) as { messages: Array<{ payable: boolean; role: string }> };
     expect(body.messages[0]?.payable).toBe(true);
     expect(body.messages[0]?.role).toBe('verified');
+    const off = await mount(authStore, messageStore).request('/messages', { headers: AUTH });
+    const offBody = (await off.json()) as { messages: Array<{ payable: boolean }> };
+    expect(offBody.messages[0]?.payable).toBe(false);
+    const unverified = await rulesStore({ name: 'Ada' });
+    const plain = await mount(unverified, messageStore, { lnurlServer: LNURL_SERVER }).request(
+      '/messages',
+      { headers: AUTH },
+    );
+    const plainBody = (await plain.json()) as { messages: Array<{ payable: boolean }> };
+    expect(plainBody.messages[0]?.payable).toBe(false);
   });
 
   it('includes the live author role for moderator, founder, and verified', async () => {
@@ -585,7 +611,7 @@ describe('GET /messages', () => {
     expect(body.messages[0]?.payable).toBe(false);
   });
 
-  it('marks a signed note without a Lightning Address as not payable', async () => {
+  it('marks a signed note without a verified wallet as not payable', async () => {
     const authStore = await rulesStore({ name: 'Ada' });
     const messageStore = new InMemoryMessageStore();
     await messageStore.create({
@@ -779,8 +805,6 @@ describe('GET /messages', () => {
       linkingKey: null,
       role: 'founder',
       name: 'Founder',
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'b'.repeat(64),
@@ -792,8 +816,6 @@ describe('GET /messages', () => {
       linkingKey: null,
       role: 'moderator',
       name: 'Mod',
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'c'.repeat(64),
@@ -1092,25 +1114,25 @@ describe('GET /messages', () => {
 describe('GET /messages/compose-target', () => {
   async function withPlatform(
     authStore: InMemoryAuthStore,
-    overrides: { name?: string | null; lightningAddress?: string | null } = {},
+    overrides: { name?: string | null; wallet?: boolean } = {},
   ): Promise<void> {
     await authStore.createAccount({
       id: 'plat',
       linkingKey: null,
       role: 'basis',
       name: overrides.name === undefined ? '21.gifts' : overrides.name,
-      lightningAddress:
-        overrides.lightningAddress === undefined
-          ? 'gifts@walletofsatoshi.com'
-          : overrides.lightningAddress,
-      lightningAddressVerified: false,
+      username: 'gifts',
       forumLawsDismissed: false,
       location: null,
       viewKey: 'b'.repeat(64),
       createdAt: 2,
       rulesAgreedAt: now(),
       isPlatform: true,
+      walletRequired: true,
     });
+    if (overrides.wallet !== false) {
+      await verifyWallet(authStore, 'plat');
+    }
   }
 
   it('returns 401 without a session', async () => {
@@ -1139,7 +1161,7 @@ describe('GET /messages/compose-target', () => {
 
   it('returns 503 when the platform profile note is missing', async () => {
     const authStore = await namedStore('Ada');
-    await withPlatform(authStore, { name: null, lightningAddress: null });
+    await withPlatform(authStore, { name: null, wallet: false });
     const res = await mount(authStore).request('/messages/compose-target', { headers: AUTH });
     expect(res.status).toBe(503);
     expect(await res.json()).toEqual({ error: 'Messages are unavailable' });
@@ -1173,11 +1195,39 @@ describe('GET /messages/compose-target', () => {
       ...unsignedNostrDefaults(),
       eventId: 'ee'.repeat(32),
     });
-    const res = await mount(authStore, messageStore).request('/messages/compose-target', {
-      headers: AUTH,
-    });
+    const res = await mount(authStore, messageStore, { lnurlServer: LNURL_SERVER }).request(
+      '/messages/compose-target',
+      { headers: AUTH },
+    );
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ messageId: noteId, sats: 0 });
+  });
+
+  it('returns 400 when the platform account has no verified wallet', async () => {
+    const authStore = await namedStore('Ada');
+    await withPlatform(authStore, { wallet: false });
+    const platform = await authStore.getAccount('plat');
+    const noteId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaab';
+    await authStore.updateAccount({ ...platform!, profileMessageId: noteId });
+    const messageStore = new InMemoryMessageStore();
+    await messageStore.create({
+      id: noteId,
+      accountId: 'plat',
+      name: '21.gifts',
+      text: '21.gifts',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      hasVideo: false,
+      videoContentType: null,
+      ...unsignedNostrDefaults(),
+      eventId: 'ee'.repeat(32),
+    });
+    const res = await mount(authStore, messageStore, { lnurlServer: LNURL_SERVER }).request(
+      '/messages/compose-target',
+      { headers: AUTH },
+    );
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: 'This message cannot be paid yet' });
   });
 
   it('returns 503 when listing accounts throws', async () => {
@@ -1267,8 +1317,6 @@ describe('POST /messages', () => {
       linkingKey: null,
       role: 'basis',
       name,
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'd'.repeat(64),
@@ -1921,15 +1969,6 @@ describe('POST /messages', () => {
 
   it('returns 409 when posting without a name after rules and name skip', async () => {
     const store = await rulesStore({ name: null, nameSkippedAt: now() });
-    const existing = await store.getAccount('acc');
-    expect(existing).toBeDefined();
-    if (existing === undefined) {
-      throw new Error('expected account');
-    }
-    await store.updateAccount({
-      ...existing,
-      lightningAddress: 'ada@walletofsatoshi.com',
-    });
     const res = await mount(store).request('/messages', {
       method: 'POST',
       headers: { ...AUTH, 'content-type': 'application/json' },
@@ -1938,7 +1977,7 @@ describe('POST /messages', () => {
     expect(res.status).toBe(409);
     expect(await res.json()).toEqual({
       error: 'missing_requirements',
-      missing: ['name', 'username'],
+      missing: ['name', 'username', 'lightning-address'],
     });
   });
 
@@ -1951,11 +1990,11 @@ describe('POST /messages', () => {
     expect(res.status).toBe(409);
     expect(await res.json()).toEqual({
       error: 'missing_requirements',
-      missing: ['name', 'username'],
+      missing: ['name', 'username', 'lightning-address'],
     });
   });
 
-  it('returns 409 when posting with name and rules but no Lightning Address', async () => {
+  it('returns 409 when posting with name and rules but no verified wallet', async () => {
     const store = await rulesStore({ name: 'Ada' });
     const res = await mount(store).request('/messages', {
       method: 'POST',
@@ -2199,8 +2238,6 @@ describe('POST /messages', () => {
       linkingKey: null,
       role: 'basis',
       name: 'Pat',
-      lightningAddress: 'pat@walletofsatoshi.com',
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'b'.repeat(64),
@@ -2267,8 +2304,6 @@ describe('POST /messages', () => {
       linkingKey: null,
       role: 'basis',
       name: 'Pat',
-      lightningAddress: 'pat@walletofsatoshi.com',
-      lightningAddressVerified: false,
       location: null,
       forumLawsDismissed: false,
       viewKey: 'b'.repeat(64),
@@ -2311,8 +2346,6 @@ describe('POST /messages', () => {
       linkingKey: null,
       role: 'basis',
       name: 'Pat',
-      lightningAddress: 'pat@walletofsatoshi.com',
-      lightningAddressVerified: false,
       location: null,
       forumLawsDismissed: false,
       viewKey: 'b'.repeat(64),
@@ -2352,8 +2385,6 @@ describe('POST /messages', () => {
       linkingKey: null,
       role: 'basis',
       name: 'Pat',
-      lightningAddress: 'pat@walletofsatoshi.com',
-      lightningAddressVerified: false,
       location: null,
       forumLawsDismissed: false,
       viewKey: 'b'.repeat(64),
@@ -2387,8 +2418,6 @@ describe('POST /messages', () => {
       linkingKey: null,
       role: 'basis',
       name: 'Pat',
-      lightningAddress: 'pat@walletofsatoshi.com',
-      lightningAddressVerified: false,
       location: null,
       forumLawsDismissed: false,
       viewKey: 'b'.repeat(64),
@@ -2477,8 +2506,6 @@ describe('POST /messages', () => {
       role: 'basis',
       name: 'Marked',
       username: 'marked',
-      lightningAddress: null,
-      lightningAddressVerified: false,
       location: null,
       forumLawsDismissed: false,
       viewKey: 'c'.repeat(64),
@@ -2490,8 +2517,6 @@ describe('POST /messages', () => {
       linkingKey: null,
       role: 'basis',
       name: 'Sub',
-      lightningAddress: null,
-      lightningAddressVerified: false,
       location: null,
       forumLawsDismissed: false,
       viewKey: 'd'.repeat(64),
@@ -2547,8 +2572,6 @@ describe('POST /messages', () => {
       role: 'basis',
       name: 'Pat',
       username: 'pat',
-      lightningAddress: 'pat@walletofsatoshi.com',
-      lightningAddressVerified: false,
       location: null,
       forumLawsDismissed: false,
       viewKey: 'b'.repeat(64),
@@ -2560,8 +2583,6 @@ describe('POST /messages', () => {
       linkingKey: null,
       role: 'basis',
       name: 'Sub',
-      lightningAddress: null,
-      lightningAddressVerified: false,
       location: null,
       forumLawsDismissed: false,
       viewKey: 'd'.repeat(64),
@@ -2657,8 +2678,6 @@ describe('POST /messages', () => {
       linkingKey: null,
       role: 'basis',
       name: 'Pat',
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'b'.repeat(64),
@@ -2752,8 +2771,6 @@ describe('POST /messages', () => {
       linkingKey: null,
       role: 'basis',
       name: 'Pat',
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'b'.repeat(64),
@@ -2804,8 +2821,6 @@ describe('POST /messages', () => {
       linkingKey: null,
       role: 'basis',
       name: 'Pat',
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'b'.repeat(64),
@@ -3113,7 +3128,7 @@ describe('POST /messages', () => {
     expect(await store.listLatest(10)).toHaveLength(1);
   });
 
-  it('collapses onto a signed note as payable when the account has a Lightning Address', async () => {
+  it('collapses onto a signed note as payable when the account has a verified wallet', async () => {
     const store = new InMemoryMessageStore();
     const seeded = await store.create(
       {
@@ -3129,7 +3144,7 @@ describe('POST /messages', () => {
     );
     const eventId = 'ee'.repeat(32);
     expect(await store.updateSignedEvent(seeded.id, eventId, { id: eventId, kind: 1 })).toBe(true);
-    const app = mount(await namedStore('Ada'), store);
+    const app = mount(await namedStore('Ada'), store, { lnurlServer: LNURL_SERVER });
     const res = await app.request('/messages', {
       method: 'POST',
       headers: { ...AUTH, 'content-type': 'application/json' },
@@ -3274,6 +3289,7 @@ describe('POST /messages', () => {
     const spendPing = { ping: vi.fn(async (_address: string, _messageId: string) => undefined) };
     const res = await mount(await staffStore('Ada'), new InMemoryMessageStore(), {
       spendPing,
+      lnurlServer: LNURL_SERVER,
       fundingStore: admittedFunding(),
     }).request('/messages', {
       method: 'POST',
@@ -3287,11 +3303,28 @@ describe('POST /messages', () => {
     const created = (await res.json()) as { id: string };
     expect(spendPing.ping).toHaveBeenCalledTimes(1);
     expect(spendPing.ping).toHaveBeenCalledWith(
-      'ada@walletofsatoshi.com',
+      'ada@example.test',
       created.id,
       'daily',
       'admitted',
     );
+  });
+
+  it('does not ping spend when the poster has no receiving address', async () => {
+    const spendPing = { ping: vi.fn(async (_address: string, _messageId: string) => undefined) };
+    const res = await mount(await staffStore('Ada'), new InMemoryMessageStore(), {
+      spendPing,
+      fundingStore: admittedFunding(),
+    }).request('/messages', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({
+        text: 'hello',
+        photo: { contentType: 'image/jpeg', data: JPEG_B64 },
+      }),
+    });
+    expect(res.status).toBe(200);
+    expect(spendPing.ping).not.toHaveBeenCalled();
   });
 
   it('does not ping spend on a reply', async () => {
@@ -3309,14 +3342,14 @@ describe('POST /messages', () => {
       videoContentType: null,
       ...unsignedNostrDefaults(),
     });
-    const res = await mount(await staffStore('Ada'), messageStore, { spendPing }).request(
-      '/messages',
-      {
-        method: 'POST',
-        headers: { ...AUTH, 'content-type': 'application/json' },
-        body: JSON.stringify({ text: 'child', inReplyTo: parentId }),
-      },
-    );
+    const res = await mount(await staffStore('Ada'), messageStore, {
+      spendPing,
+      lnurlServer: LNURL_SERVER,
+    }).request('/messages', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ text: 'child', inReplyTo: parentId }),
+    });
     expect(res.status).toBe(200);
     expect(spendPing.ping).not.toHaveBeenCalled();
   });
@@ -3325,6 +3358,7 @@ describe('POST /messages', () => {
     const spendPing = { ping: vi.fn(async (_address: string, _messageId: string) => undefined) };
     const app = mount(await staffStore('Ada'), new InMemoryMessageStore(), {
       spendPing,
+      lnurlServer: LNURL_SERVER,
       fundingStore: admittedFunding(),
     });
     const body = JSON.stringify({
@@ -3340,7 +3374,7 @@ describe('POST /messages', () => {
     const created = (await first.json()) as { id: string };
     expect(spendPing.ping).toHaveBeenCalledTimes(1);
     expect(spendPing.ping).toHaveBeenCalledWith(
-      'ada@walletofsatoshi.com',
+      'ada@example.test',
       created.id,
       'daily',
       'admitted',
@@ -3362,6 +3396,7 @@ describe('POST /messages', () => {
     await auth.createSession({ token: 'tok', accountId: 'acc', createdAt: gateNow });
     const res = await mount(auth, new InMemoryMessageStore(), {
       spendPing,
+      lnurlServer: LNURL_SERVER,
       now: () => gateNow,
     }).request('/messages', {
       method: 'POST',
@@ -3394,6 +3429,7 @@ describe('POST /messages', () => {
     };
     const res = await mount(await staffStore('Ada'), new InMemoryMessageStore(), {
       spendPing,
+      lnurlServer: LNURL_SERVER,
       fundingStore: admittedFunding(),
     }).request('/messages', {
       method: 'POST',
@@ -3407,7 +3443,7 @@ describe('POST /messages', () => {
     const created = (await res.json()) as { id: string };
     expect(spendPing.ping).toHaveBeenCalledTimes(1);
     expect(spendPing.ping).toHaveBeenCalledWith(
-      'ada@walletofsatoshi.com',
+      'ada@example.test',
       created.id,
       'daily',
       'admitted',
@@ -3419,6 +3455,7 @@ describe('POST /messages', () => {
     const spendPing = { ping: vi.fn(async (_address: string, _messageId: string) => undefined) };
     const res = await mount(await staffStore('Ada'), new InMemoryMessageStore(), {
       spendPing,
+      lnurlServer: LNURL_SERVER,
       fundingStore: admittedFunding(),
     }).request('/messages', {
       method: 'POST',
@@ -3438,6 +3475,7 @@ describe('POST /messages', () => {
     const spendPing = { ping: vi.fn(async (_address: string, _messageId: string) => undefined) };
     const res = await mount(await staffStore('Ada'), new InMemoryMessageStore(), {
       spendPing,
+      lnurlServer: LNURL_SERVER,
       fundingStore: admittedFunding(),
     }).request('/messages', {
       method: 'POST',
@@ -3451,7 +3489,7 @@ describe('POST /messages', () => {
     const created = (await res.json()) as { id: string };
     expect(spendPing.ping).toHaveBeenCalledTimes(1);
     expect(spendPing.ping).toHaveBeenCalledWith(
-      'ada@walletofsatoshi.com',
+      'ada@example.test',
       created.id,
       'daily',
       'admitted',
@@ -3471,6 +3509,7 @@ describe('POST /messages', () => {
     form.set('poster', new File([JPEG_BYTES], 'poster.jpg', { type: 'image/jpeg' }));
     const res = await mount(await staffStore('Ada'), new InMemoryMessageStore(), {
       spendPing,
+      lnurlServer: LNURL_SERVER,
       fundingStore: admittedFunding(),
     }).request('/messages', {
       method: 'POST',
@@ -3481,7 +3520,7 @@ describe('POST /messages', () => {
     const created = (await res.json()) as { id: string };
     expect(spendPing.ping).toHaveBeenCalledTimes(1);
     expect(spendPing.ping).toHaveBeenCalledWith(
-      'ada@walletofsatoshi.com',
+      'ada@example.test',
       created.id,
       'daily',
       'admitted',
@@ -3494,6 +3533,7 @@ describe('POST /messages', () => {
     };
     const res = await mount(await namedStore('Ada'), new InMemoryMessageStore(), {
       spendPing,
+      lnurlServer: LNURL_SERVER,
     }).request('/messages', {
       method: 'POST',
       headers: { ...AUTH, 'content-type': 'application/json' },
@@ -3505,15 +3545,10 @@ describe('POST /messages', () => {
     expect(res.status).toBe(200);
     const created = (await res.json()) as { id: string };
     expect(spendPing.ping).toHaveBeenCalledTimes(2);
-    expect(spendPing.ping).toHaveBeenNthCalledWith(
-      1,
-      'ada@walletofsatoshi.com',
-      created.id,
-      'welcome',
-    );
+    expect(spendPing.ping).toHaveBeenNthCalledWith(1, 'ada@example.test', created.id, 'welcome');
     expect(spendPing.ping).toHaveBeenNthCalledWith(
       2,
-      'ada@walletofsatoshi.com',
+      'ada@example.test',
       created.id,
       'daily',
       'none',
@@ -3526,6 +3561,7 @@ describe('POST /messages', () => {
     };
     const res = await mount(await namedStore('Ada'), new InMemoryMessageStore(), {
       spendPing,
+      lnurlServer: LNURL_SERVER,
     }).request('/messages', {
       method: 'POST',
       headers: { ...AUTH, 'content-type': 'application/json' },
@@ -3534,7 +3570,7 @@ describe('POST /messages', () => {
     expect(res.status).toBe(200);
     expect(spendPing.ping).not.toHaveBeenCalled();
     expect(spendPing.ping).not.toHaveBeenCalledWith(
-      'ada@walletofsatoshi.com',
+      'ada@example.test',
       expect.anything(),
       'welcome',
     );
@@ -3567,14 +3603,17 @@ describe('POST /messages', () => {
       { contentType: 'image/jpeg', bytes: JPEG_BYTES },
     );
     await auth.updateAccount({ ...existing, profileMessageId: photoId });
-    const res = await mount(auth, messageStore, { spendPing }).request('/messages', {
-      method: 'POST',
-      headers: { ...AUTH, 'content-type': 'application/json' },
-      body: JSON.stringify({ text: 'hello again' }),
-    });
+    const res = await mount(auth, messageStore, { spendPing, lnurlServer: LNURL_SERVER }).request(
+      '/messages',
+      {
+        method: 'POST',
+        headers: { ...AUTH, 'content-type': 'application/json' },
+        body: JSON.stringify({ text: 'hello again' }),
+      },
+    );
     expect(res.status).toBe(200);
     expect(spendPing.ping).toHaveBeenCalledTimes(1);
-    expect(spendPing.ping).toHaveBeenCalledWith('ada@walletofsatoshi.com', photoId, 'welcome');
+    expect(spendPing.ping).toHaveBeenCalledWith('ada@example.test', photoId, 'welcome');
   });
 
   it('does not welcome-ping spend on a verified reply', async () => {
@@ -3594,22 +3633,22 @@ describe('POST /messages', () => {
       videoContentType: null,
       ...unsignedNostrDefaults(),
     });
-    const res = await mount(await namedStore('Ada'), messageStore, { spendPing }).request(
-      '/messages',
-      {
-        method: 'POST',
-        headers: { ...AUTH, 'content-type': 'application/json' },
-        body: JSON.stringify({
-          text: 'child',
-          inReplyTo: parentId,
-          photo: { contentType: 'image/jpeg', data: JPEG_B64 },
-        }),
-      },
-    );
+    const res = await mount(await namedStore('Ada'), messageStore, {
+      spendPing,
+      lnurlServer: LNURL_SERVER,
+    }).request('/messages', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({
+        text: 'child',
+        inReplyTo: parentId,
+        photo: { contentType: 'image/jpeg', data: JPEG_B64 },
+      }),
+    });
     expect(res.status).toBe(200);
     expect(spendPing.ping).not.toHaveBeenCalled();
     expect(spendPing.ping).not.toHaveBeenCalledWith(
-      'ada@walletofsatoshi.com',
+      'ada@example.test',
       expect.anything(),
       'welcome',
     );
@@ -3628,6 +3667,7 @@ describe('POST /messages', () => {
     await auth.updateAccount({ ...existing, role: 'founder' });
     const res = await mount(auth, new InMemoryMessageStore(), {
       spendPing,
+      lnurlServer: LNURL_SERVER,
       fundingStore: admittedFunding(),
     }).request('/messages', {
       method: 'POST',
@@ -3641,16 +3681,12 @@ describe('POST /messages', () => {
     const created = (await res.json()) as { id: string };
     expect(spendPing.ping).toHaveBeenCalledTimes(1);
     expect(spendPing.ping).toHaveBeenCalledWith(
-      'ada@walletofsatoshi.com',
+      'ada@example.test',
       created.id,
       'daily',
       'admitted',
     );
-    expect(spendPing.ping).not.toHaveBeenCalledWith(
-      'ada@walletofsatoshi.com',
-      created.id,
-      'welcome',
-    );
+    expect(spendPing.ping).not.toHaveBeenCalledWith('ada@example.test', created.id, 'welcome');
   });
 
   it('welcome-pings spend when a verified poster is not funding-eligible', async () => {
@@ -3662,6 +3698,7 @@ describe('POST /messages', () => {
     await auth.createSession({ token: 'tok', accountId: 'acc', createdAt: gateNow });
     const res = await mount(auth, new InMemoryMessageStore(), {
       spendPing,
+      lnurlServer: LNURL_SERVER,
       now: () => gateNow,
     }).request('/messages', {
       method: 'POST',
@@ -3674,8 +3711,8 @@ describe('POST /messages', () => {
     expect(res.status).toBe(200);
     const created = (await res.json()) as { id: string };
     expect(spendPing.ping).toHaveBeenCalledTimes(1);
-    expect(spendPing.ping).toHaveBeenCalledWith('ada@walletofsatoshi.com', created.id, 'welcome');
-    expect(spendPing.ping).not.toHaveBeenCalledWith('ada@walletofsatoshi.com', created.id);
+    expect(spendPing.ping).toHaveBeenCalledWith('ada@example.test', created.id, 'welcome');
+    expect(spendPing.ping).not.toHaveBeenCalledWith('ada@example.test', created.id);
     expect(
       parsedEvents(warn).some(
         (e) => e['event'] === 'spend.ping.skipped' && e['reason'] === 'not_eligible',
@@ -3691,6 +3728,7 @@ describe('POST /messages', () => {
     };
     const res = await mount(await namedStore('Ada'), new InMemoryMessageStore(), {
       spendPing,
+      lnurlServer: LNURL_SERVER,
     }).request('/messages', {
       method: 'POST',
       headers: { ...AUTH, 'content-type': 'application/json' },
@@ -3702,15 +3740,10 @@ describe('POST /messages', () => {
     expect(res.status).toBe(200);
     const created = (await res.json()) as { id: string };
     expect(spendPing.ping).toHaveBeenCalledTimes(2);
-    expect(spendPing.ping).toHaveBeenNthCalledWith(
-      1,
-      'ada@walletofsatoshi.com',
-      created.id,
-      'welcome',
-    );
+    expect(spendPing.ping).toHaveBeenNthCalledWith(1, 'ada@example.test', created.id, 'welcome');
     expect(spendPing.ping).toHaveBeenNthCalledWith(
       2,
-      'ada@walletofsatoshi.com',
+      'ada@example.test',
       created.id,
       'daily',
       'none',
@@ -4198,10 +4231,6 @@ describe('POST /messages/:id/invoice', () => {
     if (account === undefined) {
       throw new Error('expected account');
     }
-    await authStore.updateAccount({
-      ...account,
-      lightningAddress: 'ada@walletofsatoshi.com',
-    });
     await ensureAccountNostrKey(authStore, 'acc', kek);
     const messageStore = new InMemoryMessageStore();
     await messageStore.create({
@@ -4219,7 +4248,7 @@ describe('POST /messages/:id/invoice', () => {
       if (url.includes('/.well-known/lnurlp/')) {
         return new Response(
           JSON.stringify({
-            callback: 'https://walletofsatoshi.com/lnurlp/callback',
+            callback: 'https://example.test/lnurlp/callback',
             minSendable: 1000,
             maxSendable: 10_000_000_000,
             allowsNostr: true,
@@ -4240,6 +4269,7 @@ describe('POST /messages/:id/invoice', () => {
         authStore,
         now,
         nostrKek: kek,
+        lnurlServer: LNURL_SERVER,
         fetchImpl,
         postLimiter: new PostRateLimiter(),
         invoiceLimiter: limiter,
@@ -4268,6 +4298,7 @@ describe('POST /messages/:id/invoice', () => {
         authStore: await namedStore('Ada'),
         now,
         nostrKek: new Uint8Array(32).fill(1),
+        lnurlServer: LNURL_SERVER,
         postLimiter: new PostRateLimiter(),
         invoiceLimiter: limiter,
       }),
@@ -4294,10 +4325,6 @@ describe('POST /messages/:id/invoice', () => {
     if (account === undefined) {
       throw new Error('expected account');
     }
-    await authStore.updateAccount({
-      ...account,
-      lightningAddress: 'ada@walletofsatoshi.com',
-    });
     await ensureAccountNostrKey(authStore, 'acc', kek);
     const messageStore = new InMemoryMessageStore();
     await messageStore.create({
@@ -4324,7 +4351,7 @@ describe('POST /messages/:id/invoice', () => {
       if (url.includes('/.well-known/lnurlp/')) {
         return new Response(
           JSON.stringify({
-            callback: 'https://walletofsatoshi.com/lnurlp/callback',
+            callback: 'https://example.test/lnurlp/callback',
             minSendable: 1000,
             maxSendable: 10_000_000_000,
             allowsNostr: true,
@@ -4345,6 +4372,7 @@ describe('POST /messages/:id/invoice', () => {
         authStore,
         now,
         nostrKek: kek,
+        lnurlServer: LNURL_SERVER,
         fetchImpl,
         postLimiter: new PostRateLimiter(),
         invoiceLimiter: limiter,
@@ -4373,6 +4401,7 @@ describe('POST /messages/:id/invoice', () => {
         authStore: await namedStore('Ada'),
         now,
         nostrKek: new Uint8Array(32).fill(1),
+        lnurlServer: LNURL_SERVER,
         postLimiter: new PostRateLimiter(),
         invoiceLimiter: new InvoiceRateLimiter(),
       }),
@@ -4394,6 +4423,7 @@ describe('POST /messages/:id/invoice', () => {
         authStore: await namedStore('Ada'),
         now,
         nostrKek: new Uint8Array(32).fill(1),
+        lnurlServer: LNURL_SERVER,
         postLimiter: new PostRateLimiter(),
         invoiceLimiter: new InvoiceRateLimiter(),
       }),
@@ -4481,10 +4511,6 @@ describe('POST /messages/:id/invoice', () => {
     if (account === undefined) {
       throw new Error('expected account');
     }
-    await authStore.updateAccount({
-      ...account,
-      lightningAddress: 'ada@walletofsatoshi.com',
-    });
     await authStore.setNostrKeyIfAbsent('acc', {
       pubkey: 'aa'.repeat(32),
       ciphertext: new Uint8Array(16),
@@ -4502,7 +4528,7 @@ describe('POST /messages/:id/invoice', () => {
       ...unsignedNostrDefaults(),
       eventId: 'ee'.repeat(32),
     });
-    const res = await mount(authStore, messageStore).request(
+    const res = await mount(authStore, messageStore, { lnurlServer: LNURL_SERVER }).request(
       '/messages/88888888-8888-4888-8888-888888888888/invoice',
       {
         method: 'POST',
@@ -4523,10 +4549,6 @@ describe('POST /messages/:id/invoice', () => {
     if (account === undefined) {
       throw new Error('expected account');
     }
-    await authStore.updateAccount({
-      ...account,
-      lightningAddress: 'ada@walletofsatoshi.com',
-    });
     await ensureAccountNostrKey(authStore, 'acc', kek);
     const messageStore = new InMemoryMessageStore();
     await messageStore.create({
@@ -4548,7 +4570,7 @@ describe('POST /messages/:id/invoice', () => {
         if (url.includes('/.well-known/lnurlp/')) {
           return new Response(
             JSON.stringify({
-              callback: 'https://walletofsatoshi.com/lnurlp/callback',
+              callback: 'https://example.test/lnurlp/callback',
               minSendable: 1000,
               maxSendable: 10_000_000_000,
               allowsNostr: true,
@@ -4569,6 +4591,7 @@ describe('POST /messages/:id/invoice', () => {
           authStore,
           now,
           nostrKek: kek,
+          lnurlServer: LNURL_SERVER,
           fetchImpl,
           postLimiter: new PostRateLimiter(),
           invoiceLimiter: new InvoiceRateLimiter(),
@@ -4629,10 +4652,6 @@ describe('POST /messages/:id/invoice', () => {
     if (account === undefined) {
       throw new Error('expected account');
     }
-    await authStore.updateAccount({
-      ...account,
-      lightningAddress: 'ada@walletofsatoshi.com',
-    });
     await ensureAccountNostrKey(authStore, 'acc', kek);
     const messageStore = new InMemoryMessageStore();
     const parentId = '11111111-1111-4111-8111-111111111111';
@@ -4667,7 +4686,7 @@ describe('POST /messages/:id/invoice', () => {
         if (url.includes('/.well-known/lnurlp/')) {
           return new Response(
             JSON.stringify({
-              callback: 'https://walletofsatoshi.com/lnurlp/callback',
+              callback: 'https://example.test/lnurlp/callback',
               minSendable: 1000,
               maxSendable: 10_000_000_000,
               allowsNostr: true,
@@ -4688,6 +4707,7 @@ describe('POST /messages/:id/invoice', () => {
           authStore,
           now,
           nostrKek: kek,
+          lnurlServer: LNURL_SERVER,
           fetchImpl,
           postLimiter: new PostRateLimiter(),
           invoiceLimiter: new InvoiceRateLimiter(),
@@ -4734,18 +4754,12 @@ describe('POST /messages/:id/invoice', () => {
     if (account === undefined) {
       throw new Error('expected account');
     }
-    await authStore.updateAccount({
-      ...account,
-      lightningAddress: 'ada@walletofsatoshi.com',
-    });
     await ensureAccountNostrKey(authStore, 'acc', kek);
     await authStore.createAccount({
       id: 'payer',
       linkingKey: `02${'b'.repeat(64)}`,
       role: 'basis',
       name: 'Bob',
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'b'.repeat(64),
@@ -4770,7 +4784,7 @@ describe('POST /messages/:id/invoice', () => {
       if (url.includes('/.well-known/lnurlp/')) {
         return new Response(
           JSON.stringify({
-            callback: 'https://walletofsatoshi.com/lnurlp/callback',
+            callback: 'https://example.test/lnurlp/callback',
             minSendable: 1000,
             maxSendable: 10_000_000_000,
             allowsNostr: true,
@@ -4790,6 +4804,7 @@ describe('POST /messages/:id/invoice', () => {
         authStore,
         now,
         nostrKek: kek,
+        lnurlServer: LNURL_SERVER,
         fetchImpl,
         postLimiter: new PostRateLimiter(),
         invoiceLimiter: new InvoiceRateLimiter(),
@@ -4830,6 +4845,7 @@ describe('POST /messages/:id/invoice', () => {
         authStore,
         now,
         nostrKek: kek,
+        lnurlServer: LNURL_SERVER,
         postLimiter: new PostRateLimiter(),
         invoiceLimiter: new InvoiceRateLimiter(),
       }),
@@ -4842,7 +4858,7 @@ describe('POST /messages/:id/invoice', () => {
     expect(res.status).toBe(400);
   });
 
-  it('returns 400 no_author when the live author has no Lightning Address', async () => {
+  it('returns 400 no_author when the live author has no verified wallet', async () => {
     const authStore = await rulesStore({ name: 'Ada' });
     const messageStore = new InMemoryMessageStore();
     await messageStore.create({
@@ -4862,6 +4878,7 @@ describe('POST /messages/:id/invoice', () => {
         authStore,
         now,
         nostrKek: new Uint8Array(32).fill(1),
+        lnurlServer: LNURL_SERVER,
         postLimiter: new PostRateLimiter(),
         invoiceLimiter: new InvoiceRateLimiter(),
       }),
@@ -4880,17 +4897,8 @@ describe('POST /messages/:id/invoice', () => {
     expect(attempts[0]?.pr).toBeNull();
   });
 
-  it('returns 400 no_author when a signed reply author Lightning Address is whitespace', async () => {
-    const authStore = await namedStore('Ada');
-    const account = await authStore.getAccount('acc');
-    expect(account).toBeDefined();
-    if (account === undefined) {
-      throw new Error('expected account');
-    }
-    await authStore.updateAccount({
-      ...account,
-      lightningAddress: '   ',
-    });
+  it('returns 400 no_author when a signed reply author has no verified wallet', async () => {
+    const authStore = await rulesStore({ name: 'Ada' });
     const messageStore = new InMemoryMessageStore();
     const parentId = '11111111-1111-4111-8111-111111111111';
     const replyId = '12121212-1212-4121-8121-121212121212';
@@ -4925,6 +4933,7 @@ describe('POST /messages/:id/invoice', () => {
         authStore,
         now,
         nostrKek: new Uint8Array(32).fill(1),
+        lnurlServer: LNURL_SERVER,
         fetchImpl,
         postLimiter: new PostRateLimiter(),
         invoiceLimiter: new InvoiceRateLimiter(),
@@ -4954,6 +4963,7 @@ describe('POST /messages/:id/invoice', () => {
         authStore,
         now,
         nostrKek: new Uint8Array(32).fill(1),
+        lnurlServer: LNURL_SERVER,
         postLimiter: new PostRateLimiter(),
         invoiceLimiter: new InvoiceRateLimiter(),
       }),
@@ -5000,6 +5010,7 @@ describe('POST /messages/:id/invoice', () => {
         authStore: await namedStore('Ada'),
         now,
         nostrKek: new Uint8Array(32).fill(1),
+        lnurlServer: LNURL_SERVER,
         postLimiter: new PostRateLimiter(),
         invoiceLimiter: new InvoiceRateLimiter(),
       }),
@@ -5042,6 +5053,7 @@ describe('POST /messages/:id/invoice', () => {
         authStore: await namedStore('Ada'),
         now,
         nostrKek: new Uint8Array(32).fill(1),
+        lnurlServer: LNURL_SERVER,
         postLimiter: new PostRateLimiter(),
         invoiceLimiter: new InvoiceRateLimiter(),
       }),
@@ -5073,10 +5085,6 @@ describe('POST /messages/:id/invoice', () => {
     if (account === undefined) {
       throw new Error('expected account');
     }
-    await authStore.updateAccount({
-      ...account,
-      lightningAddress: 'ada@walletofsatoshi.com',
-    });
     await ensureAccountNostrKey(authStore, 'acc', kek);
     const messageStore = new InMemoryMessageStore();
     await messageStore.create({
@@ -5094,7 +5102,7 @@ describe('POST /messages/:id/invoice', () => {
       if (url.includes('/.well-known/lnurlp/')) {
         return new Response(
           JSON.stringify({
-            callback: 'https://walletofsatoshi.com/lnurlp/callback',
+            callback: 'https://example.test/lnurlp/callback',
             minSendable: 1000,
             maxSendable: 10_000_000_000,
             allowsNostr: true,
@@ -5124,6 +5132,7 @@ describe('POST /messages/:id/invoice', () => {
           authStore,
           now,
           nostrKek: kek,
+          lnurlServer: LNURL_SERVER,
           fetchImpl,
           postLimiter: new PostRateLimiter(),
           invoiceLimiter: new InvoiceRateLimiter(),
@@ -5160,10 +5169,6 @@ describe('POST /messages/:id/invoice', () => {
     if (account === undefined) {
       throw new Error('expected account');
     }
-    await authStore.updateAccount({
-      ...account,
-      lightningAddress: 'ada@walletofsatoshi.com',
-    });
     await ensureAccountNostrKey(authStore, 'acc', kek);
     const messageStore = new InMemoryMessageStore();
     await messageStore.create({
@@ -5181,7 +5186,7 @@ describe('POST /messages/:id/invoice', () => {
       if (url.includes('/.well-known/lnurlp/')) {
         return new Response(
           JSON.stringify({
-            callback: 'https://walletofsatoshi.com/lnurlp/callback',
+            callback: 'https://example.test/lnurlp/callback',
             minSendable: 1000,
             maxSendable: 10_000_000_000,
             allowsNostr: true,
@@ -5198,7 +5203,7 @@ describe('POST /messages/:id/invoice', () => {
     const inspectSpy = vi.spyOn(bolt11, 'inspectBolt11').mockReturnValue({
       paymentHash: 'aa'.repeat(32),
       amountMsat: 21_000,
-      description: 'Wallet of Satoshi',
+      description: 'Example wallet',
       descriptionHash: null,
       expirySeconds: 86400,
     });
@@ -5210,6 +5215,7 @@ describe('POST /messages/:id/invoice', () => {
           authStore,
           now,
           nostrKek: kek,
+          lnurlServer: LNURL_SERVER,
           fetchImpl,
           postLimiter: new PostRateLimiter(),
           invoiceLimiter: new InvoiceRateLimiter(),
@@ -5232,7 +5238,7 @@ describe('POST /messages/:id/invoice', () => {
       expect(attempts[0]?.httpStatus).toBe(400);
       expect(attempts[0]?.pr).toBe('lnbc21n1test');
       expect(attempts[0]?.isNip57Invoice).toBe(false);
-      expect(attempts[0]?.description).toBe('Wallet of Satoshi');
+      expect(attempts[0]?.description).toBe('Example wallet');
       expect(attempts[0]?.descriptionHash).toBeNull();
       expect(attempts[0]?.paymentHash).toBe('aa'.repeat(32));
       expect(attempts[0]?.zapRequest).not.toBeNull();
@@ -5251,10 +5257,6 @@ describe('POST /messages/:id/invoice', () => {
     if (account === undefined) {
       throw new Error('expected account');
     }
-    await authStore.updateAccount({
-      ...account,
-      lightningAddress: 'ada@walletofsatoshi.com',
-    });
     await ensureAccountNostrKey(authStore, 'acc', kek);
     const messageStore = new InMemoryMessageStore();
     await messageStore.create({
@@ -5272,7 +5274,7 @@ describe('POST /messages/:id/invoice', () => {
       if (url.includes('/.well-known/lnurlp/')) {
         return new Response(
           JSON.stringify({
-            callback: 'https://walletofsatoshi.com/lnurlp/callback',
+            callback: 'https://example.test/lnurlp/callback',
             minSendable: 1000,
             maxSendable: 10_000_000_000,
             allowsNostr: true,
@@ -5292,6 +5294,7 @@ describe('POST /messages/:id/invoice', () => {
         authStore,
         now,
         nostrKek: kek,
+        lnurlServer: LNURL_SERVER,
         fetchImpl,
         postLimiter: new PostRateLimiter(),
         invoiceLimiter: new InvoiceRateLimiter(),
@@ -5328,10 +5331,6 @@ describe('POST /messages/:id/invoice', () => {
     if (account === undefined) {
       throw new Error('expected account');
     }
-    await authStore.updateAccount({
-      ...account,
-      lightningAddress: 'ada@walletofsatoshi.com',
-    });
     await ensureAccountNostrKey(authStore, 'acc', kek);
     const messageStore = new InMemoryMessageStore();
     await messageStore.create({
@@ -5349,7 +5348,7 @@ describe('POST /messages/:id/invoice', () => {
       if (url.includes('/.well-known/lnurlp/')) {
         return new Response(
           JSON.stringify({
-            callback: 'https://walletofsatoshi.com/lnurlp/callback',
+            callback: 'https://example.test/lnurlp/callback',
             minSendable: 1000,
             maxSendable: 10_000_000_000,
           }),
@@ -5365,6 +5364,7 @@ describe('POST /messages/:id/invoice', () => {
         authStore,
         now,
         nostrKek: kek,
+        lnurlServer: LNURL_SERVER,
         fetchImpl: noZapFetch,
         postLimiter: new PostRateLimiter(),
         invoiceLimiter: new InvoiceRateLimiter(),
@@ -5394,6 +5394,7 @@ describe('POST /messages/:id/invoice', () => {
         authStore,
         now,
         nostrKek: kek,
+        lnurlServer: LNURL_SERVER,
         fetchImpl: unreachableFetch,
         postLimiter: new PostRateLimiter(),
         invoiceLimiter: new InvoiceRateLimiter(),
@@ -5427,6 +5428,7 @@ describe('POST /messages/:id/invoice', () => {
         authStore,
         now,
         nostrKek: kek,
+        lnurlServer: LNURL_SERVER,
         postLimiter: new PostRateLimiter(),
         invoiceLimiter: new InvoiceRateLimiter(),
       }),
@@ -5461,6 +5463,7 @@ describe('POST /messages/:id/invoice', () => {
         authStore,
         now,
         nostrKek: kek,
+        lnurlServer: LNURL_SERVER,
         postLimiter: new PostRateLimiter(),
         invoiceLimiter: new InvoiceRateLimiter(),
       }),
@@ -5498,6 +5501,7 @@ describe('POST /messages/:id/invoice', () => {
         authStore,
         now,
         nostrKek: kek,
+        lnurlServer: LNURL_SERVER,
         postLimiter: new PostRateLimiter(),
         invoiceLimiter: new InvoiceRateLimiter(),
       }),
@@ -5524,10 +5528,6 @@ describe('POST /messages/:id/invoice', () => {
     if (account === undefined) {
       throw new Error('expected account');
     }
-    await authStore.updateAccount({
-      ...account,
-      lightningAddress: 'ada@walletofsatoshi.com',
-    });
     await ensureAccountNostrKey(authStore, 'acc', kek);
     const base = new InMemoryMessageStore();
     await base.create({
@@ -5644,7 +5644,7 @@ describe('POST /messages/:id/invoice', () => {
       if (url.includes('/.well-known/lnurlp/')) {
         return new Response(
           JSON.stringify({
-            callback: 'https://walletofsatoshi.com/lnurlp/callback',
+            callback: 'https://example.test/lnurlp/callback',
             minSendable: 1000,
             maxSendable: 10_000_000_000,
             allowsNostr: true,
@@ -5664,6 +5664,7 @@ describe('POST /messages/:id/invoice', () => {
         authStore,
         now,
         nostrKek: kek,
+        lnurlServer: LNURL_SERVER,
         fetchImpl,
         postLimiter: new PostRateLimiter(),
         invoiceLimiter: new InvoiceRateLimiter(),
@@ -5694,10 +5695,6 @@ describe('POST /messages/:id/invoice', () => {
     if (account === undefined) {
       throw new Error('expected account');
     }
-    await authStore.updateAccount({
-      ...account,
-      lightningAddress: 'ada@walletofsatoshi.com',
-    });
     await ensureAccountNostrKey(authStore, 'acc', kek);
     const messageStore = new InMemoryMessageStore();
     await messageStore.create({
@@ -5719,6 +5716,7 @@ describe('POST /messages/:id/invoice', () => {
           authStore,
           now,
           nostrKek: kek,
+          lnurlServer: LNURL_SERVER,
           postLimiter: new PostRateLimiter(),
           invoiceLimiter: new InvoiceRateLimiter(),
         }),
@@ -6284,17 +6282,13 @@ describe('GET /messages/:id', () => {
     expect(body).not.toHaveProperty('via');
   });
 
-  it('marks a signed note with a Lightning Address as payable', async () => {
+  it('marks a signed note with a verified wallet as payable', async () => {
     const authStore = await namedStore('Ada');
     const account = await authStore.getAccount('acc');
     expect(account).toBeDefined();
     if (account === undefined) {
       throw new Error('expected account');
     }
-    await authStore.updateAccount({
-      ...account,
-      lightningAddress: 'ada@walletofsatoshi.com',
-    });
     const messageStore = new InMemoryMessageStore();
     await messageStore.create({
       id: '19191919-1919-4191-8191-191919191919',
@@ -6308,7 +6302,7 @@ describe('GET /messages/:id', () => {
       ...unsignedNostrDefaults(),
       eventId: 'ee'.repeat(32),
     });
-    const res = await mount(authStore, messageStore).request(
+    const res = await mount(authStore, messageStore, { lnurlServer: LNURL_SERVER }).request(
       '/messages/19191919-1919-4191-8191-191919191919',
     );
     expect(res.status).toBe(200);
@@ -6317,17 +6311,13 @@ describe('GET /messages/:id', () => {
     expect(body.role).toBe('verified');
   });
 
-  it('marks a signed reply with a Lightning Address as payable', async () => {
+  it('marks a signed reply with a verified wallet as payable', async () => {
     const authStore = await namedStore('Ada');
     const account = await authStore.getAccount('acc');
     expect(account).toBeDefined();
     if (account === undefined) {
       throw new Error('expected account');
     }
-    await authStore.updateAccount({
-      ...account,
-      lightningAddress: 'ada@walletofsatoshi.com',
-    });
     const messageStore = new InMemoryMessageStore();
     const parentId = '1b1b1b1b-1b1b-41b1-81b1-1b1b1b1b1b1b';
     const replyId = '1c1c1c1c-1c1c-41c1-81c1-1c1c1c1c1c1c';
@@ -6356,7 +6346,9 @@ describe('GET /messages/:id', () => {
       parentId,
       eventId: 'ee'.repeat(32),
     });
-    const res = await mount(authStore, messageStore).request(`/messages/${replyId}`);
+    const res = await mount(authStore, messageStore, { lnurlServer: LNURL_SERVER }).request(
+      `/messages/${replyId}`,
+    );
     expect(res.status).toBe(200);
     const body = (await res.json()) as { payable: boolean; role: string; parentId?: string };
     expect(body.payable).toBe(true);
@@ -7030,7 +7022,7 @@ describe('GET /messages/:id/replies', () => {
     expect(body.messages[0]?.accountId).toBe('acc');
   });
 
-  it('marks a signed reply with a Lightning Address as payable in the thread', async () => {
+  it('marks a signed reply with a verified wallet as payable in the thread', async () => {
     const parentId = '2a2a2a2a-2a2a-42a2-82a2-2a2a2a2a2a2a';
     const replyId = '2b2b2b2b-2b2b-42b2-82b2-2b2b2b2b2b2b';
     const store = new InMemoryMessageStore();
@@ -7058,7 +7050,7 @@ describe('GET /messages/:id/replies', () => {
       hasVideo: false,
       videoContentType: null,
     });
-    const res = await mount(await namedStore('Ada'), store).request(
+    const res = await mount(await namedStore('Ada'), store, { lnurlServer: LNURL_SERVER }).request(
       `/messages/${parentId}/replies`,
     );
     expect(res.status).toBe(200);
@@ -7070,7 +7062,7 @@ describe('GET /messages/:id/replies', () => {
     expect(body.messages[0]?.payable).toBe(true);
   });
 
-  it('marks a signed reply with a whitespace Lightning Address as not payable in the thread', async () => {
+  it('marks a signed reply without a verified wallet as not payable in the thread', async () => {
     const parentId = '2e2e2e2e-2e2e-42e2-82e2-2e2e2e2e2e2e';
     const replyId = '2f2f2f2f-2f2f-42f2-82f2-2f2f2f2f2f2f';
     const store = new InMemoryMessageStore();
@@ -7098,17 +7090,10 @@ describe('GET /messages/:id/replies', () => {
       hasVideo: false,
       videoContentType: null,
     });
-    const authStore = await namedStore('Ada');
-    const account = await authStore.getAccount('acc');
-    expect(account).toBeDefined();
-    if (account === undefined) {
-      throw new Error('expected account');
-    }
-    await authStore.updateAccount({
-      ...account,
-      lightningAddress: '   ',
-    });
-    const res = await mount(authStore, store).request(`/messages/${parentId}/replies`);
+    const authStore = await rulesStore({ name: 'Ada' });
+    const res = await mount(authStore, store, { lnurlServer: LNURL_SERVER }).request(
+      `/messages/${parentId}/replies`,
+    );
     expect(res.status).toBe(200);
     const body = (await res.json()) as {
       messages: Array<{ text: string; payable: boolean }>;
@@ -7372,8 +7357,6 @@ describe('GET /messages/:id/replies', () => {
       linkingKey: `02${'c'.repeat(64)}`,
       role: 'basis',
       name: 'Thrower',
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'c'.repeat(64),
@@ -8903,15 +8886,6 @@ describe('forum video', () => {
     const form = new FormData();
     form.set('text', 'clip');
     const store = await rulesStore({ name: null, nameSkippedAt: now() });
-    const existing = await store.getAccount('acc');
-    expect(existing).toBeDefined();
-    if (existing === undefined) {
-      throw new Error('expected account');
-    }
-    await store.updateAccount({
-      ...existing,
-      lightningAddress: 'ada@walletofsatoshi.com',
-    });
     const res = await mount(store).request('/messages', {
       method: 'POST',
       headers: AUTH,
@@ -8920,7 +8894,7 @@ describe('forum video', () => {
     expect(res.status).toBe(409);
     expect(await res.json()).toEqual({
       error: 'missing_requirements',
-      missing: ['name', 'username'],
+      missing: ['name', 'username', 'lightning-address'],
     });
   });
 
@@ -9473,8 +9447,6 @@ describe('DELETE /messages/:id', () => {
       linkingKey: null,
       role: 'verified',
       name: 'Bea',
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'b'.repeat(64),
@@ -10937,8 +10909,6 @@ describe('PATCH /messages/:id/shop-account', () => {
       role: 'basis',
       name: account.name,
       username: account.username,
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey,
@@ -12415,8 +12385,6 @@ describe('PATCH /messages/:id/text and GET /messages/:id/edits', () => {
       role: 'basis',
       name: 'Luna',
       username: 'luna',
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'c'.repeat(64),
@@ -12501,6 +12469,41 @@ describe('wallet-backed receiving on POST /messages/:id/invoice', () => {
     await ensureAccountNostrKey(authStore, 'acc', kek);
     await createWalletAccount(authStore, 'wal', 'wally');
     await ensureAccountNostrKey(authStore, 'wal', kek);
+    if (options.authorId === 'plain' || options.authorId === 'plat-plain') {
+      await authStore.createAccount({
+        id: options.authorId,
+        linkingKey: null,
+        role: 'verified',
+        name: 'Plain',
+        username: options.authorId === 'plain' ? 'plain' : 'gifts',
+        forumLawsDismissed: false,
+        location: null,
+        viewKey: 'c'.repeat(64),
+        createdAt: 1,
+        rulesAgreedAt: 1,
+        isPlatform: options.authorId === 'plat-plain',
+      });
+      await ensureAccountNostrKey(authStore, options.authorId, kek);
+    }
+    if (options.authorId === 'plat') {
+      await authStore.createAccount({
+        id: 'plat',
+        linkingKey: null,
+        role: 'basis',
+        name: '21.gifts',
+        username: 'gifts',
+        forumLawsDismissed: false,
+        location: null,
+        viewKey: 'd'.repeat(64),
+        createdAt: 1,
+        rulesAgreedAt: 1,
+        isPlatform: true,
+        profileMessageId: NOTE,
+        walletRequired: true,
+      });
+      await verifyWallet(authStore, 'plat');
+      await ensureAccountNostrKey(authStore, 'plat', kek);
+    }
     const messageStore = new InMemoryMessageStore();
     await messageStore.create({
       id: NOTE,
@@ -12512,7 +12515,7 @@ describe('wallet-backed receiving on POST /messages/:id/invoice', () => {
       ...unsignedNostrDefaults(),
       eventId: 'ee'.repeat(32),
     });
-    const { fetchImpl, seen } = walletLnurlFetch('wally', options.pr);
+    const { fetchImpl, seen } = walletLnurlFetch(options.authorId === 'plat' ? 'gifts' : 'wally');
     const app = new Hono().route(
       '/messages',
       messagesRoutes({
@@ -12613,5 +12616,74 @@ describe('wallet-backed receiving on POST /messages/:id/invoice', () => {
       expect(res.status).toBe(200);
       expect(((await res.json()) as { payable: boolean }).payable).toBe(lnurlServer);
     }
+  });
+
+  it('names at least one relay the api reads in every zap request', async () => {
+    const bolt11 = await import('@/lib/bolt11');
+    const nip57 = vi.spyOn(bolt11, 'isNip57Invoice').mockReturnValue(true);
+    try {
+      const { app, seen } = await walletSetup({ lnurlServer: true, spark: false });
+      expect((await pay(app)).status).toBe(200);
+      const callback = new URL(seen[1]?.url ?? '');
+      const zapRequest = JSON.parse(callback.searchParams.get('nostr') ?? '{}') as {
+        tags: string[][];
+      };
+      const relays = zapRequest.tags.find((tag) => tag[0] === 'relays')?.slice(1) ?? [];
+      const read = resolveZapRelays(process.env);
+      expect(relays.length).toBeGreaterThan(0);
+      for (const relay of relays) {
+        expect(read).toContain(relay);
+      }
+    } finally {
+      nip57.mockRestore();
+    }
+  });
+
+  it('cannot pay an author without a verified wallet', async () => {
+    const { app, seen } = await walletSetup({ lnurlServer: true, spark: true, authorId: 'plain' });
+    const res = await pay(app);
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: 'This message cannot be paid yet' });
+    expect(seen).toEqual([]);
+  });
+
+  it('fetches the posting fee from the platform wallet internally', async () => {
+    const bolt11 = await import('@/lib/bolt11');
+    const nip57 = vi.spyOn(bolt11, 'isNip57Invoice').mockReturnValue(true);
+    try {
+      const { app, messageStore, seen } = await walletSetup({
+        lnurlServer: true,
+        spark: false,
+        authorId: 'plat',
+      });
+      const res = await app.request(`/messages/${NOTE}/invoice`, {
+        method: 'POST',
+        headers: { ...AUTH, 'content-type': 'application/json' },
+        body: JSON.stringify({ sats: 1, text: 'my post' }),
+      });
+      expect(res.status).toBe(200);
+      expect(allInternal(seen)).toBe(true);
+      expect(seen[0]?.url).toBe(`${LNURL_SERVER.baseUrl}/.well-known/lnurlp/gifts`);
+      const attempt = (await messageStore.listInvoiceAttempts(5))[0];
+      expect(attempt?.lightningAddress).toBe('gifts@example.test');
+    } finally {
+      nip57.mockRestore();
+    }
+  });
+
+  it('cannot take a posting fee when the platform has no verified wallet', async () => {
+    const { app, seen } = await walletSetup({
+      lnurlServer: true,
+      spark: false,
+      authorId: 'plat-plain',
+    });
+    const res = await app.request(`/messages/${NOTE}/invoice`, {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ sats: 1, text: 'my post' }),
+    });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: 'This message cannot be paid yet' });
+    expect(seen).toEqual([]);
   });
 });

@@ -147,9 +147,9 @@ const AUTHOR_WALLET_CANNOT_RECEIVE = "The author's wallet cannot receive this Bi
 
 /**
  * Whether a forum row can mint a zap: non-empty signed `eventId` plus an
- * author receiving address ({@link receivingAddress}: a verified wallet when
- * the LNURL server is configured, else a non-blank Lightning Address). Null or
- * empty `eventId` and whitespace-only addresses are not payable.
+ * author receiving address ({@link receivingAddress}: a verified wallet with
+ * the LNURL server configured). Null or empty `eventId` and an author without
+ * a verified wallet are not payable.
  *
  * @param row - Forum row (`eventId` is the mint gate).
  * @param author - Author account when known.
@@ -313,7 +313,7 @@ export interface MessagesRouteDeps {
    */
   nostrQuerier?: NostrQuerier;
   /**
-   * Relay URLs for that lookup. Omitted → `resolveZapReadRelays(env)`.
+   * Relay URLs for that lookup. Omitted → `resolveZapRelays(env)`.
    * An empty list skips the lookup.
    */
   nostrRelayUrls?: readonly string[];
@@ -1032,16 +1032,24 @@ async function persistForumPost(
         logEvent('push.enqueue.failed');
       }
     }
+    const lnurlServer = deps.lnurlServer;
+    const spendAddress =
+      lnurlServer === undefined
+        ? null
+        : /* v8 ignore next -- forum.post already required a verified wallet and a username */
+          (receivingAddress(account, lnurlServer)?.address ?? null);
     if (
       !isReplay &&
       parentId === null &&
-      account.lightningAddress !== null &&
+      lnurlServer !== undefined &&
+      spendAddress !== null &&
       deps.spendPing !== undefined
     ) {
       await syncWelcomePing({
         spendPing: deps.spendPing,
         messages: deps.store,
         account,
+        lnurlServer,
       });
       try {
         const grant = await (deps.fundingStore ?? new InMemoryFundingStore()).getByAccountId(
@@ -1055,7 +1063,7 @@ async function persistForumPost(
           Number(created.photoCount) > 0
         ) {
           await deps.spendPing.ping(
-            account.lightningAddress,
+            spendAddress,
             created.id,
             'daily',
             effectiveStatus(grant, deps.now()),
@@ -2889,7 +2897,7 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
             authorAccountId: row.accountId,
             amountSats: parsed.data.sats,
             shown,
-            lightningAddress: author?.lightningAddress ?? null,
+            lightningAddress: null,
             zapRequest: null,
             result: 'no_author',
             httpStatus: 400,

@@ -41,12 +41,13 @@ function account(overrides: Partial<Account> = {}): Account {
     role: 'basis',
     name: 'Ada',
     location: null,
-    lightningAddress: 'ada@walletofsatoshi.com',
-    lightningAddressVerified: true,
     forumLawsDismissed: false,
     viewKey: 'a'.repeat(64),
     createdAt: 1,
     rulesAgreedAt: 1,
+    username: 'Ada',
+    sparkPubkey: `02${'a'.repeat(64)}`,
+    sparkPubkeyVerifiedAt: 1,
     ...overrides,
   };
 }
@@ -59,7 +60,7 @@ function invoice(overrides: Partial<MessageInvoiceAttempt> = {}): MessageInvoice
     payerAccountId: 'acc',
     authorAccountId: 'author',
     amountSats: 21,
-    lightningAddress: 'ada@walletofsatoshi.com',
+    lightningAddress: 'ada@example.test',
     zapRequest: { kind: 9734 },
     result: 'ok',
     httpStatus: 200,
@@ -219,6 +220,13 @@ describe('matchConfirmedGivenZaps', () => {
     ]);
   });
 
+  it('uses the zap handle when the invoice address is missing or blank', () => {
+    for (const lightningAddress of [null, '   ']) {
+      const given = matchConfirmedGivenZaps([invoice({ lightningAddress })], [ingest()]);
+      expect(given.map((row) => row.recipientWosUser)).toEqual(['zap']);
+    }
+  });
+
   it('decodes pr when paymentHash is not 64 hex', () => {
     const given = matchConfirmedGivenZaps(
       [invoice({ paymentHash: 'nope', pr: 'lnbc-good' })],
@@ -314,6 +322,18 @@ describe('buildAccountActivity', () => {
     expect(stats.fx).toEqual(FX);
   });
 
+  it('matches house gifts to the username only once the wallet is verified', async () => {
+    const gifts = new InMemoryGiftStore([
+      { paidAt: PAID_AT, amountSats: 1000, recipientWosUser: 'ada', kind: 'daily' },
+    ]);
+    const unverified = await activity({ acc: account({ sparkPubkeyVerifiedAt: null }), gifts });
+    expect(unverified.receivedSats).toBe(0);
+    const blank = await activity({ acc: account({ username: '  ' }), gifts });
+    expect(blank.receivedSats).toBe(0);
+    const missing = await activity({ acc: account({ username: null }), gifts });
+    expect(missing.receivedSats).toBe(0);
+  });
+
   it('counts confirmed given zaps and does not credit another author as received', async () => {
     const messages = new InMemoryMessageStore([note({ accountId: 'other' })]);
     await messages.recordInvoiceAttempt(invoice());
@@ -373,9 +393,9 @@ describe('buildAccountActivity', () => {
     expect(stats.receivedSats).toBe(0);
   });
 
-  it('treats a blank Lightning Address as the zap handle', async () => {
+  it('uses the zap handle without a verified wallet', async () => {
     const messages = new InMemoryMessageStore([note({ sats: 21 })]);
-    const stats = await activity({ acc: account({ lightningAddress: '   ' }), messages });
+    const stats = await activity({ acc: account({ sparkPubkeyVerifiedAt: null }), messages });
     expect(stats.receivedSats).toBe(21);
   });
 

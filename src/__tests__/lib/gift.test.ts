@@ -169,7 +169,7 @@ describe('giftsForRecipient', () => {
   });
 
   it('uses the local-part when indexOf("@") > 0', () => {
-    expect(giftsForRecipient(rows, 'alice@walletofsatoshi.com')).toEqual([alice, aliceCaps]);
+    expect(giftsForRecipient(rows, 'alice@example.com')).toEqual([alice, aliceCaps]);
   });
 
   it('uses the whole string when "@" is at index 0', () => {

@@ -6,6 +6,7 @@ import { Hono } from 'hono';
 import { payRoutes } from '@/routes/pay';
 import {
   LNURL_SERVER,
+  WALLET_PUBKEY,
   allInternal,
   createWalletAccount,
   walletLnurlFetch,
@@ -14,8 +15,17 @@ import {
 
 const ADA_ID = '00000000-0000-4000-8000-000000000001';
 const WIDE_MAX_SENDABLE = 100_000_000_000;
-const CALLBACK = 'https://walletofsatoshi.com/lnurlp/callback';
-const WELL_KNOWN_URL = 'https://walletofsatoshi.com/.well-known/lnurlp/alice';
+/** Public callback; the api fetches it from the LNURL server. */
+const CALLBACK = `${LNURL_SERVER.publicBaseUrl}/lnurlp/ada/invoice`;
+/** Internal LNURL server URL of `ada@example.test`'s payRequest. */
+const WELL_KNOWN_URL = `${LNURL_SERVER.baseUrl}/.well-known/lnurlp/ada`;
+/** Internal LNURL server URL the public callback is fetched from. */
+const INTERNAL_CALLBACK = `${LNURL_SERVER.baseUrl}/lnurlp/ada/invoice`;
+/** Env that resolves the LNURL server. */
+const LNURL_ENV = {
+  LNURL_SERVER_URL: LNURL_SERVER.baseUrl,
+  PUBLIC_BASE_URL: LNURL_SERVER.publicBaseUrl,
+};
 /** BOLT11 for 2500 uBTC = 250_000 sats = 250_000_000 msat. */
 const PR =
   'lnbc2500u1pvjluezpp5qqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqypqdq5xysxxatsyp3k7enxv4jsxqzpuaztrnwngzn3kdzw5hydlzf03qdgm2hdq27cqv3agm2awhz5se903vruatfhq77w3ls4evs3ch9zw97j25emudupq63nyw24cg27h2rspfj9srp';
@@ -24,7 +34,6 @@ const PR_SATS = 250_000;
 function createAccount(
   overrides: {
     name?: string | null;
-    lightningAddress?: string | null;
   } = {},
 ) {
   return {
@@ -33,11 +42,7 @@ function createAccount(
     role: 'basis' as const,
     name: overrides.name === undefined ? 'Ada' : overrides.name,
     username: 'ada',
-    lightningAddress:
-      overrides.lightningAddress === undefined
-        ? 'alice@walletofsatoshi.com'
-        : overrides.lightningAddress,
-    lightningAddressVerified: false,
+    walletRequired: true,
     forumLawsDismissed: false,
     location: null,
     viewKey: 'cd'.repeat(32),
@@ -67,7 +72,8 @@ function invoiceResponse(): Response {
 async function seededApp(
   overrides: {
     name?: string | null;
-    lightningAddress?: string | null;
+    /** `false` leaves the wallet unverified (the member cannot receive). */
+    wallet?: boolean;
     minSendable?: number;
     maxSendable?: number;
     fetchImpl?: (input: string | URL | Request) => Promise<Response>;
@@ -83,6 +89,10 @@ async function seededApp(
     };
   } else {
     await authStore.createAccount(createAccount(overrides));
+    if (overrides.wallet !== false) {
+      await authStore.claimSparkPubkey(ADA_ID, WALLET_PUBKEY);
+      await authStore.markSparkPubkeyVerified(ADA_ID, WALLET_PUBKEY, 'ada', 2);
+    }
   }
   const minSendable = overrides.minSendable ?? 1000;
   const maxSendable = overrides.maxSendable ?? WIDE_MAX_SENDABLE;
@@ -102,7 +112,8 @@ async function seededApp(
     fetchImpl: (input: string | URL | Request) => Promise<Response>;
     posStore?: PosStore;
     now?: () => number;
-  } = { authStore, fetchImpl };
+    env: Record<string, string | undefined>;
+  } = { authStore, fetchImpl, env: { ...process.env, ...LNURL_ENV } };
   if (overrides.posStore !== undefined) {
     appOpts.posStore = overrides.posStore;
   }
@@ -113,7 +124,7 @@ async function seededApp(
 }
 
 describe('GET /pay/:username', () => {
-  it('returns name and satoshi bounds from the linked Wallet of Satoshi address', async () => {
+  it('returns name and satoshi bounds from the verified wallet', async () => {
     const { app, urls } = await seededApp();
     const res = await app.request('/pay/Ada');
     expect(res.status).toBe(200);
@@ -127,7 +138,7 @@ describe('GET /pay/:username', () => {
     });
     expect(Object.keys(body).sort()).toEqual(['charge', 'maxSats', 'minSats', 'name', 'username']);
     expect(urls[0]).toBe(WELL_KNOWN_URL);
-    expect(urls.some((url) => url.includes('21.gifts'))).toBe(false);
+    expect(urls.every((url) => url.startsWith(`${LNURL_SERVER.baseUrl}/`))).toBe(true);
   });
 
   it('trims the display name', async () => {
@@ -183,32 +194,23 @@ describe('GET /pay/:username', () => {
     expect(await res.json()).toEqual({ error: 'Not found' });
   });
 
-  it('returns 404 when lightningAddress is null', async () => {
-    const { app } = await seededApp({ lightningAddress: null });
-    const res = await app.request('/pay/ada');
-    expect(res.status).toBe(404);
-    expect(await res.json()).toEqual({ error: 'Not found' });
-  });
-
-  it('returns 404 when lightningAddress is blank', async () => {
-    const { app } = await seededApp({ lightningAddress: '   ' });
-    const res = await app.request('/pay/ada');
-    expect(res.status).toBe(404);
-    expect(await res.json()).toEqual({ error: 'Not found' });
-  });
-
-  it('returns 502 when the stored address is not LUD-16', async () => {
+  it('returns 404 without a verified wallet and never fetches', async () => {
     let called = false;
     const { app } = await seededApp({
-      lightningAddress: 'not-an-address',
+      wallet: false,
       fetchImpl: async () => {
         called = true;
         return metadataResponse(1000, WIDE_MAX_SENDABLE);
       },
     });
-    const res = await app.request('/pay/ada');
-    expect(res.status).toBe(502);
-    expect(await res.json()).toEqual({ error: 'Lightning Address could not be resolved' });
+    expect((await app.request('/pay/ada')).status).toBe(404);
+    const res = await app.request('/pay/ada/invoice', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ amountSats: PR_SATS }),
+    });
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ error: 'Not found' });
     expect(called).toBe(false);
   });
 
@@ -328,7 +330,7 @@ describe('GET /pay/:username', () => {
 });
 
 describe('POST /pay/:username/invoice', () => {
-  it('mints a BOLT11 for an exact satoshi amount on the linked address', async () => {
+  it('mints a BOLT11 for an exact satoshi amount on the wallet address', async () => {
     const { app, urls } = await seededApp();
     const res = await app.request('/pay/ada/invoice', {
       method: 'POST',
@@ -343,10 +345,11 @@ describe('POST /pay/:username/invoice', () => {
     expect(urls[0]).toBe(WELL_KNOWN_URL);
     expect(urls[1]).toBe(WELL_KNOWN_URL);
     const callback = urls[2] ?? '';
+    expect(callback.startsWith(`${INTERNAL_CALLBACK}?`)).toBe(true);
     const callbackUrl = new URL(callback);
     expect(callbackUrl.searchParams.get('amount')).toBe(String(PR_SATS * 1000));
     expect(callbackUrl.searchParams.has('comment')).toBe(false);
-    expect(urls.some((url) => url.includes('21.gifts'))).toBe(false);
+    expect(urls.every((url) => url.startsWith(`${LNURL_SERVER.baseUrl}/`))).toBe(true);
   });
 
   it('returns 400 when the amount is below the window', async () => {
@@ -555,7 +558,7 @@ describe('POST /pay/:username/invoice', () => {
     });
     expect(res.status).toBe(400);
     expect(await res.json()).toEqual({ error: 'Enter a whole number of sats' });
-    expect(urls.some((url) => url.includes(CALLBACK))).toBe(false);
+    expect(urls.some((url) => url.startsWith(INTERNAL_CALLBACK))).toBe(false);
   });
 
   it('mints the open charge amount of 250000 sats', async () => {
@@ -609,7 +612,7 @@ describe('POST /pay/:username/invoice', () => {
     });
     expect(postRes.status).toBe(400);
     expect(await postRes.json()).toEqual({ error: 'Enter a whole number of sats' });
-    expect(urls.some((url) => url.includes(CALLBACK))).toBe(false);
+    expect(urls.some((url) => url.startsWith(INTERNAL_CALLBACK))).toBe(false);
   });
 });
 
