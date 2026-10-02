@@ -197,6 +197,22 @@ describe('Habit-Tracker Postgres persistence', () => {
         (await reopened.comments('2026-09-28')).find((row) => row.id === commentId)?.createdAt,
       ).toBe(1790899200000);
       expect(await reopened.firstWeek()).toBe('2026-09-28');
+      await reopened.updateText(habitId, '2026-10-05', 'Read thirty minutes');
+      const persisted = new PostgresHabitStore(client);
+      expect((await persisted.habits('2026-09-28')).find((row) => row.id === habitId)?.text).toBe(
+        'Read daily',
+      );
+      expect((await persisted.habits('2026-10-05')).find((row) => row.id === habitId)?.text).toBe(
+        'Read thirty minutes',
+      );
+      expect((await persisted.findComment(commentId))?.text).toBe('Progress');
+      await persisted.deleteComment(commentId);
+      await persisted.deleteComment(commentId);
+      expect(await new PostgresHabitStore(client).findComment(commentId)).toBeNull();
+      expect((await persisted.comments('2026-09-28')).some((row) => row.id === commentId)).toBe(
+        false,
+      );
+      expect(await persisted.firstWeek()).toBe('2026-09-28');
     } finally {
       await closeIfPossible(sql);
     }

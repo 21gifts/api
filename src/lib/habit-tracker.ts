@@ -18,6 +18,31 @@ export function habitWeek(now: number): { start: string; label: string; nextAt: 
   };
 }
 
+/** Latest completed ISO week, published Mondays at 08:00 Asia/Manila. */
+export function habitReviewWeek(now: number): { start: string; label: string; nextAt: number } {
+  const week = habitWeek(now - OFFSET - HABIT_WEEK_MS);
+  return { ...week, nextAt: week.nextAt + OFFSET + HABIT_WEEK_MS };
+}
+
+/** Comments for a completed week are admitted on the following Monday at 16:00 Manila. */
+export function habitCommentsAllowedAt(week: string): number {
+  return Date.parse(`${week}T16:00:00+08:00`) + HABIT_WEEK_MS;
+}
+
+/** End of the comment window: Saturday 20:00 Manila, exclusive. */
+export function habitCommentsCloseAt(week: string): number {
+  return habitCommentsAllowedAt(week) + (5 * 24 + 4) * 60 * 60 * 1000;
+}
+
+/** Only the latest published review week accepts comments, within its time window. */
+export function habitCommentsAllowed(week: string, now: number): boolean {
+  return (
+    week === habitReviewWeek(now).start &&
+    now >= habitCommentsAllowedAt(week) &&
+    now < habitCommentsCloseAt(week)
+  );
+}
+
 /** Persisted resolution. Retiring it retains its last week and all earlier history. */
 export interface Habit {
   id: string;

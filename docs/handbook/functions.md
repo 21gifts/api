@@ -3268,7 +3268,7 @@ Returns the Monday local date, ISO week-year label, and next Monday boundary in 
 - **Output:** Hono GET/POST routes.
 - **Failures:** 400 input, 401 session, 403 role, 404 ownership, 409 closed week.
 
-Serves public weekly history and authenticated mutations. Only founder and initiator accounts can manage their own resolutions. Any authenticated account can comment. Current and previous week outcomes can be edited; older outcomes are closed. The previous week stays editable after the Sunday rest.
+Serves public weekly history and authenticated mutations. Only founder and initiator accounts can manage their own resolutions. Any authenticated account can comment. Only the latest published review week can be edited. It represents the completed previous ISO week and opens Monday 08:00 in Manila. Founder and initiator can soft-delete any comment; signed-in donors can request exact-amount Lightning invoices.
 
 ## Function: InMemoryHabitStore
 
@@ -3284,7 +3284,7 @@ Development/test persistence with copied rows, one outcome per resolution/week, 
 - **Output:** Durable records with API field names.
 - **Concurrency:** Result uniqueness is enforced by the database; retirement is idempotent.
 
-Durable parameter-bound persistence in `habit`, `habit_result`, and `habit_comment`. Retirement sets the final inclusive week once; it never deletes history. Outcome writes use a composite primary key and upsert.
+Durable parameter-bound persistence in `habit`, `habit_revision`, `habit_result`, and `habit_comment`. Retirement sets the final inclusive week once; it never deletes history. Outcome writes use a composite primary key and upsert.
 
 ## Function: migrateHabitSchema
 
@@ -3293,3 +3293,35 @@ Durable parameter-bound persistence in `habit`, `habit_result`, and `habit_comme
 - **Failure:** Database errors abort boot, preventing silent memory fallback.
 
 Idempotently creates habit tables and week indexes after accounts exist and before database audit triggers are attached. Production boot injects the resulting Postgres store.
+
+## Function: habitReviewWeek
+
+- **Input:** Completed week and injected server time.
+- **Output:** Review schedule or comment-window availability.
+- **Validation:** Boundary and ISO year tests; no client clock authorization.
+
+Returns the latest completed ISO week published at Monday 08:00 Asia/Manila, including its ISO year label and next publication time. A week opens one calendar week after its Monday start. Tests cover the exact cutoff and ISO year transitions.
+
+## Function: habitCommentsAllowedAt
+
+- **Input:** Completed week and injected server time.
+- **Output:** Review schedule or comment-window availability.
+- **Validation:** Boundary and ISO year tests; no client clock authorization.
+
+Returns the Monday 16:00 Asia/Manila timestamp when comments for a completed ISO week are admitted. Shared by GET availability and POST enforcement.
+
+## Function: habitCommentsCloseAt
+
+- **Input:** Completed week and injected server time.
+- **Output:** Review schedule or comment-window availability.
+- **Validation:** Boundary and ISO year tests; no client clock authorization.
+
+Returns Saturday 20:00 Asia/Manila in the review period, the exclusive closing timestamp.
+
+## Function: habitCommentsAllowed
+
+- **Input:** Completed week and injected server time.
+- **Output:** Review schedule or comment-window availability.
+- **Validation:** Boundary and ISO year tests; no client clock authorization.
+
+Checks the latest published review week and the inclusive Monday 16:00 / exclusive Saturday 20:00 Manila window. Shared by GET and POST; no role bypass.

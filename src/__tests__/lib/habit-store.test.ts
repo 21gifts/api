@@ -101,3 +101,38 @@ describe('habit persistence', () => {
     ]);
   });
 });
+
+it('soft-deletes comments without losing the start of history', async () => {
+  const store = new InMemoryHabitStore();
+  await store.comment(comment);
+  expect(await store.findComment('c')).toEqual(comment);
+  await store.deleteComment('c');
+  expect(await store.findComment('c')).toBeNull();
+  expect(await store.comments(comment.week)).toEqual([]);
+  expect(await store.firstWeek()).toBe(comment.week);
+});
+it('binds comment lookup and soft deletion in Postgres', async () => {
+  const query = vi.fn().mockResolvedValueOnce([comment]).mockResolvedValueOnce([]);
+  const execute = vi.fn().mockResolvedValue(undefined);
+  const store = new PostgresHabitStore({ query, execute });
+  expect(await store.findComment('c')).toEqual(comment);
+  expect(await store.findComment('missing')).toBeNull();
+  await store.deleteComment('c');
+  expect(execute).toHaveBeenCalledWith(expect.stringContaining('deleted_at = CURRENT_TIMESTAMP'), [
+    'c',
+  ]);
+});
+
+it('stores parameter-bound weekly text revisions', async () => {
+  const query = vi.fn().mockResolvedValue([]);
+  const execute = vi.fn().mockResolvedValue(undefined);
+  const store = new PostgresHabitStore({ query, execute });
+  await store.updateText('id', '2026-09-28', "User's text");
+  expect(execute).toHaveBeenCalledWith(expect.stringContaining('ON CONFLICT'), [
+    'id',
+    '2026-09-28',
+    "User's text",
+  ]);
+  await store.habits('2026-09-21');
+  expect(query).toHaveBeenCalledWith(expect.stringContaining('r.week <= $1'), ['2026-09-21']);
+});

@@ -602,6 +602,7 @@ export function createApp(deps: AppDeps = {}): Hono {
       authStore: store,
       habitStore: deps.habitStore ?? new InMemoryHabitStore(),
       now,
+      fetchImpl,
     }),
   );
   app.route('/trust-chain', trustChainRoutes({ authStore: store, trustStore, now }));
