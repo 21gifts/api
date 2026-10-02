@@ -21,6 +21,20 @@
 - **Returns / side effects:** Hono app mounted at `/shops/activity`. 200 `{ days }`. Store throw → 503 `{ error: 'Shop activity is unavailable' }` and `shops.activity.failed`.
 - **Used by:** `createApp`.
 
+## Function: measureGrantContinuation
+
+- **Purpose:** Count qualifying shop notes on each of the last 7 UTC days ending on `today`, and how many of those notes have a charge on at least 5 of those days. A shop note is a live top-level forum note whose text has the `#21GiftsShop` token (via `textHasHashtagToken`) and whose current `shop_account_id` is set. It counts on a UTC day when that currently assigned account has at least one `pos_charge` `created_at` on that day (any status). The 5 days need not be consecutive. This does not call `activeShopDays` and is not the public 30-day series.
+- **Inputs:** `notes` (`ShopNoteRef[]`), `charges` (`PosChargeRef[]`), and `today` (`YYYY-MM-DD`). Duplicate note ids count once. An empty `accountId` and a note without the shop hashtag are skipped. Charges before the window or on the next UTC day are ignored.
+- **Returns / side effects:** `{ days, qualifyingShops }`. `days` is exactly 7 `{ day, shopCount }` rows, oldest first, missing days `shopCount: 0`. `qualifyingShops` counts notes, not accounts. No I/O.
+- **Used by:** `grantContinuationRoutes` (`GET /funding/goal`).
+
+## Function: grantContinuationRoutes
+
+- **Purpose:** Hono sub-app for `GET /funding/goal`. Bearer session required; any signed-in role, including `basis`, gets the body. No session or an unknown bearer is 401. Loads live assigned shop notes and POS charges in the 7-UTC-day window, then returns `measureGrantContinuation`. Does not call `activeShopDays` or read `GET /shops/activity`. Does not log account ids, note ids, or charge rows. No Sunday-rest gate on this GET.
+- **Inputs:** `{ authStore, now, messages: { listLiveAssignedShops }, pos: { listCreatedBetween } }`.
+- **Returns / side effects:** Hono app mounted at `/funding/goal`. 200 `{ days, qualifyingShops }`. 401 `{ error: 'Unauthorized' }`. Store throw → 503 `{ error: 'Funding goal is unavailable' }` and `funding.goal.failed` with only `event` and `ts`.
+- **Used by:** `createApp`.
+
 ## Function: serializePosCharge
 
 - **Purpose:** Public JSON for a charge without `accountId`. Timestamps are ISO-8601.

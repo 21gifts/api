@@ -144,6 +144,7 @@ Public base URLs used in examples:
 | POST   | `/funding/reject`                                    | Bearer (moderator+)        | Reject grant                                                                                                                                                                                                                                                                                                                                           |
 | GET    | `/funding/payout-days`                               | Bearer (moderator+)        | Staff seven-UTC-day grant payout matrix (`days`: `blocked` / `missed` / `paid`; `welcome`: seven booleans, same order)                                                                                                                                                                                                                                 |
 | GET    | `/shops/activity`                                    | none                       | 30-UTC-day shop till-charge counts (`days`: `{ day, shopCount }`, oldest first, zeros included)                                                                                                                                                                                                                                                        |
+| GET    | `/funding/goal`                                      | Bearer (any role)          | 7-UTC-day shop till-charge counts plus how many shops had a charge on 5 of those days (`days`, `qualifyingShops`)                                                                                                                                                                                                                                      |
 | GET    | `/messages`                                          | none for active / Bearer   | Public active window with no header; otherwise Bearer. List top-level notes (+ visible `replyCount`); 409 if rules missing; name-copy notes without photo, extra stills, or video are omitted; About me text stays                                                                                                                                     |
 | GET    | `/messages/compose-target`                           | Bearer                     | Platform profile note `{ messageId, sats }` for a 1-sat compose fee to 21.gifts                                                                                                                                                                                                                                                                        |
 | GET    | `/messages/places`                                   | Bearer                     | Live top-level forum pins; 409 if rules missing                                                                                                                                                                                                                                                                                                        |
@@ -1256,6 +1257,28 @@ Logs `funding.payouts.listed` `{ count }`.
 No session → **401** `{ "error": "Unauthorized" }`. Below moderator →
 **403** `{ "error": "Forbidden" }`. Store throw → **503**
 `{ "error": "Funding is unavailable" }` (`funding.payouts.failed`).
+
+### `GET /funding/goal`
+
+Bearer session. Any signed-in role, including `basis`. Missing or
+invalid bearer is **401** `{ "error": "Unauthorized" }`. Seven UTC days
+ending on the server clock's today, oldest first. A shop is a live
+top-level forum note (`parent_id` null, `deleted_at` null) whose text
+has the hashtag token `21GiftsShop` (case-insensitive, not followed by
+`[A-Za-z0-9_]`) and whose `shop_account_id` is set. That note counts on
+a UTC day when the account currently assigned to it has at least one
+`pos_charge` with `created_at` on that day, any status (`pending`,
+`cancelled`, or `expired`). Distinct notes, not accounts. A note
+qualifies when that account has a charge on at least 5 distinct UTC
+days inside the window. Those 5 days need not be consecutive.
+Duplicate note ids count once. Reassigning the account, clearing it,
+removing the hashtag, or soft-deleting the note rewrites every past
+day. This is not `GET /shops/activity` and not a historical usage log.
+JSON `{ "days": [ { "day": "YYYY-MM-DD", "shopCount": 0 } ], "qualifyingShops": 0 }`
+with exactly 7 day objects, missing days included as zero. No
+Sunday-rest gate. A store throw → **503**
+`{ "error": "Funding goal is unavailable" }` and log
+`funding.goal.failed` with no account, note, or charge ids.
 
 ### `GET /shops/activity`
 
