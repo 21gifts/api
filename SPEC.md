@@ -627,12 +627,15 @@ Every address the host resolves to must pass the public address check: no
 loopback, private, shared, link-local, benchmark, documentation, multicast,
 or reserved IPv4 (also when carried as IPv4-mapped, IPv4-compatible,
 IPv4-translated, 6to4, or NAT64 IPv6). IPv6 unique-local, link-local, site-local, multicast,
-documentation, Teredo, benchmarking, ORCHID, discard, and local NAT64 ranges
+documentation, Teredo, `2001:1::/32`, benchmarking, ORCHID, `5f00::/16`,
+discard, and local NAT64 ranges
 are refused, and any other IPv6 answer must lie in global unicast `2000::/3` or
 the well-known NAT64 prefix `64:ff9b::/96`. A Lightning Address whose name is only dots is refused. A
 target on the host of `PUBLIC_BASE_URL` (compared without a trailing dot) is
-refused (the app pays those itself). The fetch does not follow redirects, stops after 5 seconds, and reads
-at most 64 KB.
+refused (the app pays those itself). The fetch does not follow redirects and reads at most 64 KB. Each host lookup
+and each fetch waits at most 5 seconds, and one relay call waits at most 8
+seconds in total (below the server's 10-second idle timeout), so the client
+always gets an answer.
 
 The response must be a pay request: `tag` `payRequest`, an `https` `callback`
 that passes the same host checks, a string `metadata`, safe-integer
@@ -663,7 +666,8 @@ host, or a response that is not a valid pay request (including a callback host
 that resolves to a non-public address) → **Response** `400`
 `{ "error": "Not a payable address" }`. HTTP 404 or 410, or an LNURL
 `{ "status": "ERROR" }` body → **Response** `404`
-`{ "error": "Address not found" }`. A host that does not resolve within 5 seconds, network failure, timeout, redirect, any
+`{ "error": "Address not found" }`. A host that does not resolve in time, network failure, timeout (per step or
+for the whole call), redirect, any
 other non-2xx status, a body over 64 KB, or a body that is not a JSON object →
 **Response** `502` `{ "error": "Address could not be reached" }`.
 
