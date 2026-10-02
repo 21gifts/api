@@ -1037,7 +1037,7 @@
 
 ## Function: requestGiftInvoice
 
-- **Purpose:** LNURL-pay fetch for gift amounts: no 10-sat cap, comment optional, amount not raised to minSendable.
+- **Purpose:** LNURL-pay fetch for gift amounts: comment optional, amount not raised to minSendable.
 - **Inputs:** Normalised address, amountMsat, optional comment, fetchImpl.
 - **Returns / side effects:** `{ ok: true, pr }` or `{ ok: false, reason: 'unreachable' }`.
 - **Used by:** `POST /invoices`.

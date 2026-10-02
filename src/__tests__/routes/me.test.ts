@@ -18,17 +18,13 @@ function parsedEvents(warn: ReturnType<typeof vi.spyOn>): Array<Record<string, u
 }
 
 let warn: ReturnType<typeof vi.spyOn>;
-let nip57: { mockRestore: () => void };
 
-beforeEach(async () => {
+beforeEach(() => {
   warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
-  const bolt11 = await import('@/lib/bolt11');
-  nip57 = vi.spyOn(bolt11, 'isNip57Invoice').mockReturnValue(true);
 });
 
 afterEach(() => {
   warn.mockRestore();
-  nip57.mockRestore();
 });
 
 const now = (): number => 1_000_000;
