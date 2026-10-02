@@ -11,6 +11,7 @@ import {
   type LnurlServerConfig,
 } from '@/lib/config';
 import type { ConversationStore } from '@/lib/conversation-store';
+import { WELCOME_GIFT_DESCRIPTION } from '@/lib/gift';
 import { requestGiftInvoice } from '@/lib/gift-invoice';
 import type { GiftStore } from '@/lib/gift-store';
 import { newInvoiceId, type GiftInvoice, type InvoiceStore } from '@/lib/invoice-store';
@@ -98,7 +99,7 @@ export interface InvoiceRouteDeps {
    */
   lnurlServer?: LnurlServerConfig;
   /**
-   * Outbound house gifts. A `welcome` gift recorded under the member's
+   * Outbound house gifts. A `welcome` gift with description `21gifts welcome` recorded under the member's
    * username at or after the wallet verification counts as a paid welcome
    * gift. Omitted → only the platform `Welcome` reply counts.
    */
@@ -229,11 +230,12 @@ async function addressHasPasskey(
 
 /**
  * Whether the account already received the one-time welcome gift: a platform
- * `Welcome` reply under one of its notes, or a `welcome` gift recorded under
- * its username at or after its wallet was verified (a welcome paid to the
- * wallet address is recorded there; an older record with the same handle went
- * to another address). The gift is once per account, so a member whose
- * receiving address changed is not paid again.
+ * `Welcome` reply under one of its notes, or a welcome gift paid to a wallet
+ * address ({@link WELCOME_GIFT_DESCRIPTION}) recorded under its username at or
+ * after its wallet was verified. Older welcome records keep only the local part
+ * of an external address, which may be another member's, so only the reply
+ * counts for them. The gift is once per account, so a member whose receiving
+ * address changed is not paid again.
  *
  * @param deps - Auth store (platform lookup), forum store, optional gift store.
  * @param receiver - Receiving account and its wallet address.
@@ -254,6 +256,7 @@ async function alreadyWelcomed(
     (await deps.giftStore.listOutbound()).some(
       (row) =>
         row.kind === 'welcome' &&
+        row.description === WELCOME_GIFT_DESCRIPTION &&
         row.recipientWosUser.trim().toLowerCase() === handle &&
         row.paidAt.getTime() >= verifiedAtMs,
     )
@@ -378,7 +381,12 @@ export function invoiceRoutes(deps: InvoiceRouteDeps): Hono {
         feeSats: 0,
         recipientWosUser: recipientHandleFromAddress(invoice.address),
         lightningInvoice: invoice.pr,
-        description: invoice.groupMessageId !== undefined ? '21gifts moderator' : '21gifts daily',
+        description:
+          invoice.groupMessageId !== undefined
+            ? '21gifts moderator'
+            : invoice.comment === 'Welcome'
+              ? WELCOME_GIFT_DESCRIPTION
+              : '21gifts daily',
         kind:
           invoice.groupMessageId !== undefined
             ? 'moderator'

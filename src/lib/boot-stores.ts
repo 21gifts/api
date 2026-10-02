@@ -373,12 +373,13 @@ export async function openBootStores(
         amount_sats: number | string | bigint;
         recipient_wos_user: string;
         kind: string;
+        description: string;
         fiat_usd: string | number | null;
         fiat_chf: string | number | null;
         fiat_eur: string | number | null;
         fiat_php: string | number | null;
       }>(
-        `SELECT paid_at, amount_sats, recipient_wos_user, kind,
+        `SELECT paid_at, amount_sats, recipient_wos_user, kind, description,
                 fiat_usd::text AS fiat_usd, fiat_chf::text AS fiat_chf,
                 fiat_eur::text AS fiat_eur, fiat_php::text AS fiat_php
              FROM gift

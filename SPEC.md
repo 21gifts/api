@@ -1359,8 +1359,10 @@ edge exists and the subject is still `basis`, completes the role write and
 returns **200**. After a **200** that leaves the subject `verified` (new
 edge, completed role write, or this idempotent repeat), the subject is
 welcome-pinged when a live top-level photo or video exists, including About
-me. Omitted messages or spend ping skips that ping. A ping failure still
-returns **200**.
+me. An account without a receiving address (no verified wallet, or the
+LNURL server off), or one that already has the welcome gift (once per
+account, as for `POST /messages`), is not pinged. Omitted messages or spend
+ping skips that ping. A ping failure still returns **200**.
 
 Otherwise insert the edge then update role, log `trust.verified`
 `{ subjectId, actorId }`.
@@ -1841,8 +1843,11 @@ name-copy is not a bio, including after a display-name rename when the
 note text still equals the stored profile-note `name` (Ada→Grace with
 text `Ada` stays `null`)). `aboutMeHasPhoto` is true when the live note
 has a stored photo. After that successful save, a verified account with a
-live top-level photo or video (including this note) is welcome-pinged.
-Omitted spend ping skips. A ping failure still returns **200**.
+live top-level photo or video (including this note) is welcome-pinged. An
+account without a receiving address (no verified wallet, or the LNURL
+server off), or one that already has the welcome gift (once per account, as
+for `POST /messages`), is not pinged. Omitted spend ping skips. A ping
+failure still returns **200**.
 
 ### `GET /me/about/photo`
 
@@ -3578,7 +3583,7 @@ Success is always **200** (never 404 for an unknown address):
 or `{ "hasPosted": false, "messageId": null, "postedAt": null, "hasMedia": false, "welcomeHasMedia": false, "welcomeMessageId": null }` when there is no account for the
 address, or the account has no live top-level note other than a text-only profile note.
 `hasPosted` is still any live top-level note that is not the profile note, including text-only.
-A profile note that has a photo or video keeps `hasPosted: false` and sets `welcomeHasMedia: true` with that note as `welcomeMessageId`. An account that already received the welcome gift (a platform `Welcome` reply under one of its notes (live or hidden), or a recorded `welcome` gift under its username at or after its wallet verification) reports `welcomeHasMedia: false` and `welcomeMessageId: null`. Replies do not count. Photo-only / empty-text
+A profile note that has a photo or video keeps `hasPosted: false` and sets `welcomeHasMedia: true` with that note as `welcomeMessageId`. An account that already received the welcome gift (a platform `Welcome` reply under one of its notes (live or hidden), or a recorded `welcome` gift with description `21gifts welcome` under its username at or after its wallet verification) reports `welcomeHasMedia: false` and `welcomeMessageId: null`. Replies do not count. Photo-only / empty-text
 top-level notes still count for `hasPosted`. `hasMedia` is true only when such a
 post has photo 0, extra stills, or video. `welcomeHasMedia` is true when any live top-level photo or video exists, including the About-me note, even when `hasPosted` is false. `welcomeMessageId` is that newest note's id, or null. When `hasPosted` is true, `messageId` is usually
 the newest live top-level non-profile post id; it can still be `null` if
@@ -3645,7 +3650,7 @@ media requirement). Missing
 `isPlatform` account → **503** `{ "error": "Platform account is not configured" }`
 (no LNURL). With `comment` exactly `Welcome` (with or without `messageId`),
 an account that already received the welcome gift (a platform `Welcome`
-reply under one of its notes, live or hidden, or a recorded `welcome` gift
+reply under one of its notes, live or hidden, or a recorded `welcome` gift with description `21gifts welcome`
 under its username at or after its wallet verification) → **409** `{ "error": "Welcome gift already paid" }`
 after the passkey and grant checks and before LNURL; the welcome gift is once
 per account, whichever address it went to. Stores `messageId` and `comment` (or `''`) on the invoice.
@@ -3751,7 +3756,9 @@ A matching proof (including the same-preimage idempotent 200) inserts one
 outbound `gift` row when `DATABASE_URL` is set: BOLT11 `pr` as
 `lightning_invoice`, amount `floor(msat / 1000)` sats, fee 0, recipient
 handle from the invoice address, description `21gifts moderator` when the
-invoice has `groupMessageId` else `21gifts daily`,
+invoice has `groupMessageId`, else `21gifts welcome` when `comment` is
+exactly `Welcome` (the welcome checks count only these records), else
+`21gifts daily`,
 `source_wallet` `lightning.space`. Without SQL the recorder is a no-op.
 Insert errors log `gifts.record_failed` and do not change the HTTP
 response.
@@ -4216,7 +4223,7 @@ post) is welcome-pinged, so the gift still goes out when the photo post and
 verification happened in either order. The welcome gift is once per
 account, not once per address: an account that already has a platform reply
 with the text `Welcome` under one of its notes (live or hidden), or a recorded
-`welcome` gift under its username at or after its wallet verification, is not pinged again (`spend.ping.skipped` / `welcomed`), whichever address the gift went
+`welcome` gift with description `21gifts welcome` under its username at or after its wallet verification, is not pinged again (`spend.ping.skipped` / `welcomed`), whichever address the gift went
 to, so a member whose receiving address changed is not paid twice. Replies, and any role other than `verified`, do not
 welcome-ping. A verified text-only post with no photo or video anywhere does
 not welcome-ping.
