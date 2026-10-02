@@ -6,6 +6,8 @@ import {
   COMMENT_ERROR,
   LNURL_RELAY_BODY_CAP_BYTES,
   LNURL_RELAY_CAP,
+  LNURL_RELAY_COMMENT_MAX_LENGTH,
+  LNURL_RELAY_TARGET_MAX_LENGTH,
   LNURL_RELAY_TIMEOUT_MS,
   LNURL_RELAY_WINDOW_MS,
   LnurlRelayRateLimiter,
@@ -198,6 +200,17 @@ describe('resolveRelayPayRequest', () => {
   ])('refuses %s with 400 and does not fetch', async (_label, target) => {
     const { fetchImpl, calls } = payRequestFetch();
     const result = await resolveRelayPayRequest({ target, fetchImpl, ...DEPS });
+    expect(result).toMatchObject({ ok: false, status: 400, error: NOT_PAYABLE_ERROR });
+    expect(calls).toHaveLength(0);
+  });
+
+  it('refuses a target over the length limit with 400 before decoding', async () => {
+    const { fetchImpl, calls } = payRequestFetch();
+    const result = await resolveRelayPayRequest({
+      target: `lnurl1${'q'.repeat(LNURL_RELAY_TARGET_MAX_LENGTH)}`,
+      fetchImpl,
+      ...DEPS,
+    });
     expect(result).toMatchObject({ ok: false, status: 400, error: NOT_PAYABLE_ERROR });
     expect(calls).toHaveLength(0);
   });
@@ -615,6 +628,32 @@ describe('requestRelayInvoice', () => {
     });
     expect(tooLong).toMatchObject({ ok: false, status: 400, error: COMMENT_ERROR });
     expect(calls).toHaveLength(3);
+  });
+
+  it('refuses a comment over the length limit with 400 before any request', async () => {
+    const { fetchImpl, calls } = payRequestFetch();
+    const result = await requestRelayInvoice({
+      target: 'bob@example.com',
+      amountMsat: 21_000,
+      comment: 'x'.repeat(LNURL_RELAY_COMMENT_MAX_LENGTH + 1),
+      fetchImpl,
+      ...DEPS,
+    });
+    expect(result).toMatchObject({ ok: false, status: 400, error: COMMENT_ERROR });
+    expect(calls).toHaveLength(0);
+  });
+
+  it('refuses a comment with a lone surrogate with 400 before any request', async () => {
+    const { fetchImpl, calls } = payRequestFetch();
+    const result = await requestRelayInvoice({
+      target: 'bob@example.com',
+      amountMsat: 21_000,
+      comment: 'a\ud800',
+      fetchImpl,
+      ...DEPS,
+    });
+    expect(result).toMatchObject({ ok: false, status: 400, error: COMMENT_ERROR });
+    expect(calls).toHaveLength(0);
   });
 
   it('refuses any comment when the server accepts none', async () => {
