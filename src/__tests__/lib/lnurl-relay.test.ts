@@ -306,6 +306,19 @@ describe('resolveRelayPayRequest', () => {
     expect(calls).toHaveLength(0);
   });
 
+  it('maps a lookup that does not answer in time to 502 without a fetch', async () => {
+    const { fetchImpl, calls } = payRequestFetch();
+    const result = await resolveRelayPayRequest({
+      target: 'bob@example.com',
+      fetchImpl,
+      ...DEPS,
+      timeoutMs: 5,
+      lookupImpl: () => new Promise<string[]>(() => undefined),
+    });
+    expect(result).toMatchObject({ ok: false, status: 502, reason: 'dns' });
+    expect(calls).toHaveLength(0);
+  });
+
   it('refuses a callback host that resolves to a private address with 400', async () => {
     const { fetchImpl } = payRequestFetch();
     const result = await resolveRelayPayRequest({

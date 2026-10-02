@@ -27,7 +27,7 @@ import { logEvent } from '@/lib/log';
 import { bearerToken } from '@/routes/me';
 
 /** Collaborators the `/lnurl` routes need. */
-interface LnurlRouteDeps {
+export interface LnurlRouteDeps {
   /** Shared auth persistence port. */
   auth: AuthStore;
   /** Injected fetch for the outside LNURL server. */
