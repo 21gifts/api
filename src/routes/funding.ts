@@ -4,6 +4,7 @@ import { serializeOwnerAccountWithPosts } from '@/lib/auth/account-json';
 import { resolveSession } from '@/lib/auth/service';
 import type { Account, AuthStore } from '@/lib/auth/store';
 import {
+  applicationPauseExempt,
   effectiveStatus,
   serializeOwnerFunding,
   utcDayKey,
@@ -24,7 +25,8 @@ import { bearerToken } from '@/routes/me';
 import { MESSAGE_ID_RE } from '@/routes/messages';
 
 /**
- * Member apply and staff review for funding-program grants.
+ * Member apply (paused: 403, no write, except joey-rosima, vincent, and
+ * jewel-bacolbas) and staff review for funding-program grants.
  * Bearer session required. Independent of `account.role` except `basis`
  * cannot apply or be granted.
  */
@@ -43,6 +45,12 @@ export interface FundingRouteDeps {
   spendPing?: SpendPing;
   /** Outbound gifts. Daily rows mark a payout day collected. */
   gifts: GiftStore;
+  /**
+   * When omitted or true, new applications are paused except joey-rosima,
+   * vincent, and jewel-bacolbas. Pass false to run the stored apply walk
+   * for every caller.
+   */
+  applicationsPaused?: boolean;
 }
 
 /** Body schema for staff POSTs that target one account. */
@@ -203,6 +211,18 @@ async function pingTodayMedia(
  * `POST /funding/trial`, `POST /funding/admit`, `POST /funding/reject`,
  * and `GET /funding/payout-days`.
  *
+ * `POST /apply` is paused unless `deps.applicationsPaused` is false.
+ * While paused, authenticated `verified` and above receive 403
+ * `{ error: 'Applications are paused' }` with no grant write, except
+ * `joey-rosima`, `vincent`, and `jewel-bacolbas`. Those three, and every
+ * caller when `applicationsPaused` is false, still run the About-me,
+ * photo, location, and grant write. That walk returns 400
+ * `{ error: 'About me is required' }`, 400
+ * `{ error: 'About me photo is required' }`, 400
+ * `{ error: 'Location is required' }`, 409 `{ error: 'Conflict' }`,
+ * 200 `{ funding }` (log `funding.applied`), or 503
+ * `{ error: 'Funding is unavailable' }`. `basis` is 403 Forbidden.
+ *
  * @param deps - Auth store, funding store, message store, gift store, clock, and optional spend ping.
  * @returns A Hono app with member apply and staff review routes.
  */
@@ -215,6 +235,10 @@ export function fundingRoutes(deps: FundingRouteDeps): Hono {
       }
       if (!roleAtLeast(caller.role, 'verified')) {
         return c.json({ error: 'Forbidden' }, 403);
+      }
+      if (deps.applicationsPaused !== false && !applicationPauseExempt(caller.username)) {
+        logEvent('funding.apply.paused', { accountId: caller.id });
+        return c.json({ error: 'Applications are paused' }, 403);
       }
       const nowMs = deps.now();
       try {
