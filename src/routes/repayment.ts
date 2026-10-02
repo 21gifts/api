@@ -268,11 +268,12 @@ export async function repaymentInvoice(deps: RepaymentDeps, c: Context): Promise
   if (
     outstanding !== undefined &&
     outstanding.pr !== null &&
+    outstanding.lightningAddress === address &&
     invoiceStillOpen(outstanding.pr, outstanding.createdAt.getTime(), opened.nowMs)
   ) {
     const storedRequest = normalizeSignedEvent(outstanding.zapRequest);
     const sparkInvoice =
-      storedRequest === null || outstanding.lightningAddress !== address
+      storedRequest === null
         ? null
         : await issueSparkInvoice(deps, receiving, {
             pr: outstanding.pr,

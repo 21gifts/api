@@ -172,6 +172,7 @@ if (import.meta.main) {
       ...(spendPing === undefined ? {} : { spendPing }),
       messages: forumMessages,
       auth: authStore,
+      ...(giftStore === undefined ? {} : { gifts: giftStore }),
       ...(lnurlServer === undefined ? {} : { lnurlServer }),
     });
   };

@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { InMemoryAuthStore, type Account } from '@/lib/auth/store';
 import { unsignedNostrDefaults } from '@/lib/message';
+import { InMemoryGiftStore } from '@/lib/gift-store';
 import { InMemoryMessageStore, type MessageStore } from '@/lib/message-store';
 import { syncWelcomePing } from '@/lib/welcome-media';
 import { LNURL_SERVER } from '@/__tests__/helpers/wallet-lnurl';
@@ -543,5 +544,81 @@ describe('syncWelcomePing', () => {
     expect(
       parsedEvents(warn).filter((event) => event['event'] === 'spend.ping.failed'),
     ).toHaveLength(1);
+  });
+  it('does not ping an account whose welcome gift is recorded under its username', async () => {
+    const ping = vi.fn(async () => undefined);
+    const auth = new InMemoryAuthStore();
+    await auth.createAccount(account({ id: 'acc', role: 'verified', profileMessageId: PHOTO_ID }));
+    const walletKey = `02${'6'.repeat(64)}`;
+    await auth.claimSparkPubkey('acc', walletKey);
+    await auth.markSparkPubkeyVerified('acc', walletKey, 'acc', 2);
+    const messages = await photoStore();
+    const verified = account({ id: 'acc', role: 'verified', profileMessageId: PHOTO_ID });
+    const daily = new InMemoryGiftStore([
+      { paidAt: new Date(1), amountSats: 1, recipientWosUser: 'acc', kind: 'daily' },
+      { paidAt: new Date(1), amountSats: 1, recipientWosUser: 'other', kind: 'welcome' },
+    ]);
+    await syncWelcomePing({
+      lnurlServer: LNURL_SERVER,
+      spendPing: { ping },
+      messages,
+      auth,
+      gifts: daily,
+      account: verified,
+    });
+    expect(ping).toHaveBeenCalledTimes(1);
+    ping.mockClear();
+    const welcomed = new InMemoryGiftStore([
+      { paidAt: new Date(1), amountSats: 1, recipientWosUser: ' ACC ', kind: 'welcome' },
+    ]);
+    await syncWelcomePing({
+      lnurlServer: LNURL_SERVER,
+      spendPing: { ping },
+      messages,
+      auth,
+      gifts: welcomed,
+      account: verified,
+    });
+    await syncWelcomePing({
+      lnurlServer: LNURL_SERVER,
+      spendPing: { ping },
+      messages,
+      auth,
+      gifts: welcomed,
+    });
+    await syncWelcomePing({
+      lnurlServer: LNURL_SERVER,
+      spendPing: { ping },
+      messages,
+      auth,
+      gifts: welcomed,
+      account: { ...verified, username: null },
+    });
+    expect(ping).not.toHaveBeenCalled();
+  });
+
+  it('logs and does not ping when the gift lookup throws', async () => {
+    const ping = vi.fn(async () => undefined);
+    const gifts = new InMemoryGiftStore();
+    vi.spyOn(gifts, 'listOutbound').mockRejectedValue(new Error('gift boom'));
+    await syncWelcomePing({
+      lnurlServer: LNURL_SERVER,
+      spendPing: { ping },
+      messages: await photoStore(),
+      auth: NO_PLATFORM,
+      gifts,
+      account: account({ id: 'acc', role: 'verified', profileMessageId: PHOTO_ID }),
+    });
+    await syncWelcomePing({
+      lnurlServer: LNURL_SERVER,
+      spendPing: { ping },
+      messages: await photoStore(),
+      auth: NO_PLATFORM,
+      gifts,
+    });
+    expect(ping).not.toHaveBeenCalled();
+    expect(
+      parsedEvents(warn).filter((event) => event['event'] === 'spend.ping.failed'),
+    ).toHaveLength(2);
   });
 });

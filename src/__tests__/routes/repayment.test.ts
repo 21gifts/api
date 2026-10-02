@@ -886,7 +886,7 @@ describe('credit repayment to a wallet-backed giver', () => {
     expect(await res.json()).toEqual({ pr: BOLT11, amountSats: 21, sparkInvoice: null });
   });
 
-  it('reuses an open invoice without a Spark invoice when it went to another address', async () => {
+  it('mints a new invoice instead of reusing one minted for another address', async () => {
     const bolt11 = await import('@/lib/bolt11');
     const nip57 = vi.spyOn(bolt11, 'isNip57Invoice').mockReturnValue(true);
     try {
@@ -903,7 +903,12 @@ describe('credit repayment to a wallet-backed giver', () => {
       );
       const res = await postRepay(app, 'wal-5');
       expect(res.status).toBe(200);
-      expect(await res.json()).toEqual({ pr: BOLT11, amountSats: 21, sparkInvoice: null });
+      const attempts = await messages.listInvoiceAttempts(5);
+      expect(attempts).toHaveLength(2);
+      expect(attempts.map((row) => row.lightningAddress).sort()).toEqual([
+        'bea@example.com',
+        'bea@example.test',
+      ]);
     } finally {
       nip57.mockRestore();
     }
