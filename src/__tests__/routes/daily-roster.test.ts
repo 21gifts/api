@@ -24,6 +24,7 @@ const BASIS = '77777777-7777-4777-8777-777777777777';
 const ROSTER: DailyRoster = {
   comment: 'thanks',
   paymentsEnabled: true,
+  defaultAmountUsd: 3,
   recipients: [{ address: 'ada@example.com', amountUsd: 1 }],
 };
 

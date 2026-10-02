@@ -53,6 +53,11 @@ export interface DailyRoster {
   comment: string;
   /** Whether daily payments are switched on. */
   paymentsEnabled: boolean;
+  /**
+   * USD paid to an unlisted admitted or trial grant. Spend sends
+   * `NEW_MEMBER_DAILY_USD`. Not stored in the roster file.
+   */
+  defaultAmountUsd: number;
   /** Listed recipients and their USD amounts. */
   recipients: { address: string; amountUsd: number }[];
 }
@@ -168,10 +173,13 @@ function parseDailyRoster(body: unknown): DailyRoster | undefined {
   const record = body as Record<string, unknown>;
   const comment = record['comment'];
   const paymentsEnabled = record['paymentsEnabled'];
+  const defaultAmountUsd = record['defaultAmountUsd'];
   const recipients = record['recipients'];
   if (
     typeof comment !== 'string' ||
     typeof paymentsEnabled !== 'boolean' ||
+    typeof defaultAmountUsd !== 'number' ||
+    !Number.isFinite(defaultAmountUsd) ||
     !Array.isArray(recipients)
   ) {
     return undefined;
@@ -183,7 +191,7 @@ function parseDailyRoster(body: unknown): DailyRoster | undefined {
     }
     parsed.push({ address: item.address, amountUsd: item.amountUsd });
   }
-  return { comment, paymentsEnabled, recipients: parsed };
+  return { comment, paymentsEnabled, defaultAmountUsd, recipients: parsed };
 }
 
 /**
