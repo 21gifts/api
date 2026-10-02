@@ -11,8 +11,10 @@ describe('resolveAllowedOrigins', () => {
     const origins = resolveAllowedOrigins({});
     expect(origins).toContain('https://21.gifts');
     expect(origins).toContain('https://dev.21.gifts');
+    expect(origins).toContain('https://staging.21.gifts');
     expect(origins).toContain('https://app.21.gifts');
     expect(origins).toContain('https://dev-app.21.gifts');
+    expect(origins).toContain('https://staging-app.21.gifts');
     expect(origins).toContain('http://localhost:3000');
   });
 
@@ -41,6 +43,7 @@ describe('normalizeWebAuthnRpId', () => {
 
   it('trims a configured RP ID', () => {
     expect(normalizeWebAuthnRpId('  21.gifts  ')).toBe('21.gifts');
+    expect(normalizeWebAuthnRpId('staging.21.gifts')).toBe('staging.21.gifts');
   });
 
   it('rejects an RP ID outside the allowlist', () => {
