@@ -395,7 +395,9 @@ fails, the living-room write still succeeds (HTTP 200 on `POST /messages`;
 worker paths log and keep the row).
 
 The in-app Notifications list (`GET /notifications`, mark-read POSTs) is
-separate from `/conversations` chat. The list omits rows whose parent or
+separate from `/conversations` chat. Generic `forum_post` rows are excluded from
+the list and unread badge counts before pagination. They remain stored for
+cross-device push dismissal; explicit mentions still appear. The list omits rows whose parent or
 reply forum message is missing or hidden (`forum_reply` also checks the
 child note; `zap` only the parent note). `moderator_appointed` stays. Post, reply, and zap pushes open
 `/messages/<id>` (the reply for a reply, the forum note for a post or a zap). A new inbound private message enqueues Web Push

@@ -3919,8 +3919,8 @@ self mark does not notify the author. Other marks fan out one
 author LN). `role` is the posting session account's live `account.role`. Web Push for a **top-level** note (`notifyForumPost`, kind
 `forum_post`, `url` `/messages/<id>`, `tag` `forum_post:<id>`) and for a
 **reply** (`notifyForumReply`, kind `forum_reply`, `url` `/messages/<replyId>`,
-`tag` `forum_reply:<replyId>`) use the existing recipient levels. Only replies
-create generic in-app rows for every matching account except the
+`tag` `forum_reply:<replyId>`) use the existing recipient levels. Both posts and replies
+create internal notification rows for every matching account except the
 actor (no-op when the actor is the official platform account), then filter recipients by each account's `notificationLevel`
 (`all` / `active` / `mentions`). Web Push still goes only to bell subscribers
 and uses the same level filter. Damus-only parents still
@@ -3928,8 +3928,9 @@ fan out. A self-reply skips only the actor. `GET /notifications` applies the
 same `notificationLevel` filter to stored rows.
 The booted process always has notification and push stores (in-memory without
 `DATABASE_URL`, Postgres when it is set). Photo-only empty text still
-notifies. Missing `pushStore` still writes in-app reply and mention rows. Generic new-post
-events never write in-app rows; explicit `@username` mentions remain separate. Notification or
+notifies. Missing `pushStore` still writes notification rows. Generic new-post
+rows support cross-device push dismissal but are excluded from the member list
+and unread badge counts; explicit `@username` mentions remain visible. Notification or
 push failure does not fail the **200**. Over-limit posters
 get **429** `{ "error": "Too many messages" }`
 with `Retry-After: 10` (1/10s, 6/h, 20/UTC-day). A second **live** photo/video
@@ -5121,7 +5122,7 @@ Bearer session required. Lists the recipient's notifications newest-first
 plus `unreadCount`. Fan-out already applied the owner's
 `notificationLevel` when the row was written; this list applies the same
 `notificationLevel` filter to stored rows (`notificationsMatchingLevel`
-on the newest 1000 eligible rows). Legacy `forum_post` rows are excluded
+on the newest 1000 eligible rows). All `forum_post` rows are excluded
 by both stores before the limit and from unread badge counts, without deleting
 them. After the level filter, drop
 `forum_reply` / `forum_mention` whose parent message is missing or hidden; also drop
