@@ -460,6 +460,40 @@ test('POST /pay/:username/invoice is 404 when unknown', async ({ request }) => {
   expect(res.status()).toBe(404);
 });
 
+test('POST /lnurl/pay-request without bearer is 401', async ({ request }) => {
+  const res = await request.post('/lnurl/pay-request', { data: { target: 'bob@example.com' } });
+  expect(res.status()).toBe(401);
+});
+
+test('POST /lnurl/pay-request refuses a target on an address literal with 400', async ({
+  request,
+}) => {
+  const headers = await memberSession(request);
+  const res = await request.post('/lnurl/pay-request', {
+    headers,
+    data: { target: 'bob@127.0.0.1' },
+  });
+  expect(res.status()).toBe(400);
+  expect(await res.json()).toEqual({ error: 'Not a payable address' });
+});
+
+test('POST /lnurl/invoice without bearer is 401', async ({ request }) => {
+  const res = await request.post('/lnurl/invoice', {
+    data: { target: 'bob@example.com', amountMsat: 1000 },
+  });
+  expect(res.status()).toBe(401);
+});
+
+test('POST /lnurl/invoice refuses a non-numeric amount with 400', async ({ request }) => {
+  const headers = await memberSession(request);
+  const res = await request.post('/lnurl/invoice', {
+    headers,
+    data: { target: 'bob@example.com', amountMsat: '1000' },
+  });
+  expect(res.status()).toBe(400);
+  expect(await res.json()).toEqual({ error: 'Amount out of range' });
+});
+
 test('POST /me/name without bearer is 401', async ({ request }) => {
   const res = await request.post('/me/name', {
     data: { name: 'Ada' },

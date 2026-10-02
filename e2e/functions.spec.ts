@@ -522,6 +522,55 @@ test('Function: resolveLnurlpDocument — GET /.well-known/lnurlp/missing is 404
   expect(res.status()).toBe(404);
 });
 
+test('Function: lnurlRoutes — POST /lnurl/pay-request without bearer is 401', async ({
+  request,
+}) => {
+  const res = await request.post('/lnurl/pay-request', { data: { target: 'bob@example.com' } });
+  expect(res.status()).toBe(401);
+  expect(await res.json()).toEqual({ error: 'Unauthorized' });
+});
+
+test('Function: resolveRelayPayRequest — a localhost LNURL target is 400 without a fetch', async ({
+  request,
+}) => {
+  const { authorization } = await memberSession(request);
+  const res = await request.post('/lnurl/pay-request', {
+    headers: { authorization },
+    data: { target: 'bob@printer.localhost' },
+  });
+  expect(res.status()).toBe(400);
+  expect(await res.json()).toEqual({ error: 'Not a payable address' });
+});
+
+test('Function: requestRelayInvoice — a target on a .internal host is 400 without a fetch', async ({
+  request,
+}) => {
+  const { authorization } = await memberSession(request);
+  const res = await request.post('/lnurl/invoice', {
+    headers: { authorization },
+    data: { target: 'bob@wallet.internal', amountMsat: 1000 },
+  });
+  expect(res.status()).toBe(400);
+  expect(await res.json()).toEqual({ error: 'Not a payable address' });
+});
+
+test('Function: LnurlRelayRateLimiter — relay requests turn 429 within 31 in a minute', async ({
+  request,
+}) => {
+  // The member may share earlier relay hits from this file, so stop at the first 429.
+  const { authorization } = await memberSession(request);
+  const statuses: number[] = [];
+  for (let i = 0; i < 31 && statuses.at(-1) !== 429; i += 1) {
+    const res = await request.post('/lnurl/pay-request', {
+      headers: { authorization },
+      data: { target: 'not-an-address' },
+    });
+    statuses.push(res.status());
+  }
+  expect(statuses.at(-1)).toBe(429);
+  expect(statuses.slice(0, -1).every((status) => status === 400)).toBe(true);
+});
+
 test('Function: resolveLnurlp — GET an unresolvable address is 502', async ({ request }) => {
   const res = await request.get('/lightning-address?address=alice@not-a-lnurlp.invalid');
   expect(res.status()).toBe(502);
