@@ -19,6 +19,8 @@ import type { FetchFn } from '@/lib/lnurlp';
 
 const inspectMock = vi.hoisted(() => vi.fn<(pr: string) => InspectedBolt11 | null>());
 vi.mock('@/lib/bolt11', () => ({ inspectBolt11: inspectMock }));
+const dnsLookupMock = vi.hoisted(() => vi.fn());
+vi.mock('node:dns/promises', () => ({ lookup: dnsLookupMock }));
 
 const METADATA = JSON.stringify([
   ['text/identifier', 'bob@example.com'],
@@ -118,7 +120,8 @@ function lnurl(url: string, hrp = 'lnurl'): string {
   return bech32(hrp, new TextEncoder().encode(url));
 }
 
-const DEPS = { ownHost: '21.gifts' };
+const publicLookup = async (): Promise<string[]> => ['93.184.216.34'];
+const DEPS = { ownHost: '21.gifts', lookupImpl: publicLookup };
 
 beforeEach(() => {
   inspectMock.mockReset();
@@ -175,6 +178,8 @@ describe('resolveRelayPayRequest', () => {
     ['.local name', 'bob@printer.local'],
     ['.internal name', 'bob@db.internal'],
     ['own host', 'bob@21.gifts'],
+    ['dot-only name', '..@example.com'],
+    ['single-dot name', '.@example.com'],
     ['bad bech32 checksum', `${lnurl('https://a.example.com/x').slice(0, -1)}q`],
     ['bech32 with a bad character', 'lnurl1bbbbbbbbbbbb'],
     ['bech32 too short', 'lnurl1qqqqq'],
@@ -205,8 +210,119 @@ describe('resolveRelayPayRequest', () => {
       target: 'bob@21.gifts',
       fetchImpl,
       ownHost: null,
+      lookupImpl: publicLookup,
     });
     expect(result.ok).toBe(true);
+  });
+
+  it('resolves with the system resolver when no resolver is injected', async () => {
+    dnsLookupMock.mockResolvedValueOnce([{ address: '2606:2800:220:1::1', family: 6 }]);
+    dnsLookupMock.mockResolvedValueOnce([{ address: '93.184.216.34', family: 4 }]);
+    const { fetchImpl } = payRequestFetch();
+    const result = await resolveRelayPayRequest({
+      target: 'bob@example.com',
+      fetchImpl,
+      ownHost: '21.gifts',
+    });
+    expect(result.ok).toBe(true);
+    expect(dnsLookupMock).toHaveBeenCalledWith('example.com', { all: true, verbatim: true });
+    expect(dnsLookupMock).toHaveBeenCalledWith('pay.example.com', { all: true, verbatim: true });
+  });
+
+  it.each([
+    ['0.0.0.0'],
+    ['10.1.2.3'],
+    ['127.0.0.1'],
+    ['100.64.0.1'],
+    ['100.127.255.255'],
+    ['169.254.169.254'],
+    ['172.16.0.1'],
+    ['172.31.255.255'],
+    ['192.168.1.1'],
+    ['198.18.0.1'],
+    ['198.19.0.1'],
+    ['224.0.0.1'],
+    ['255.255.255.255'],
+    ['::'],
+    ['::1'],
+    ['::ffff:127.0.0.1'],
+    ['::FFFF:10.0.0.1'],
+    ['::ffff:7f00:1'],
+    ['fc00::1'],
+    ['fe80::1'],
+    ['ff02::1'],
+    ['64:ff9b::a00:1'],
+  ])('refuses a target that resolves to %s with 400 and does not fetch', async (address) => {
+    const { fetchImpl, calls } = payRequestFetch();
+    const result = await resolveRelayPayRequest({
+      target: 'bob@example.com',
+      fetchImpl,
+      ...DEPS,
+      lookupImpl: async () => ['93.184.216.34', address],
+    });
+    expect(result).toMatchObject({ ok: false, status: 400, reason: 'address' });
+    expect(calls).toHaveLength(0);
+  });
+
+  it.each([
+    ['100.63.255.255'],
+    ['100.128.0.1'],
+    ['169.253.1.1'],
+    ['172.15.0.1'],
+    ['172.32.0.1'],
+    ['192.169.0.1'],
+    ['198.17.0.1'],
+    ['198.20.0.1'],
+    ['223.255.255.254'],
+    ['::ffff:8.8.8.8'],
+    ['2001:4860:4860::8888'],
+    ['3fff::1'],
+  ])('accepts a target that resolves to %s', async (address) => {
+    const { fetchImpl } = payRequestFetch();
+    const result = await resolveRelayPayRequest({
+      target: 'bob@example.com',
+      fetchImpl,
+      ...DEPS,
+      lookupImpl: async () => [address],
+    });
+    expect(result.ok).toBe(true);
+  });
+
+  it.each([
+    ['a resolver error', async (): Promise<string[]> => Promise.reject(new Error('ENOTFOUND'))],
+    ['no addresses', async (): Promise<string[]> => []],
+  ])('maps %s to 502 without a fetch', async (_label, lookupImpl) => {
+    const { fetchImpl, calls } = payRequestFetch();
+    const result = await resolveRelayPayRequest({
+      target: 'bob@example.com',
+      fetchImpl,
+      ...DEPS,
+      lookupImpl,
+    });
+    expect(result).toMatchObject({ ok: false, status: 502, reason: 'dns' });
+    expect(calls).toHaveLength(0);
+  });
+
+  it('refuses a callback host that resolves to a private address with 400', async () => {
+    const { fetchImpl } = payRequestFetch();
+    const result = await resolveRelayPayRequest({
+      target: 'bob@example.com',
+      fetchImpl,
+      ...DEPS,
+      lookupImpl: async (host) => (host === 'pay.example.com' ? ['10.0.0.5'] : ['93.184.216.34']),
+    });
+    expect(result).toMatchObject({ ok: false, status: 400, reason: 'callback_address' });
+  });
+
+  it('maps an unresolvable callback host to 502', async () => {
+    const { fetchImpl } = payRequestFetch();
+    const result = await resolveRelayPayRequest({
+      target: 'bob@example.com',
+      fetchImpl,
+      ...DEPS,
+      lookupImpl: async (host) => (host === 'pay.example.com' ? [] : ['93.184.216.34']),
+    });
+    expect(result).toMatchObject({ ok: false, status: 502, reason: 'callback_dns' });
   });
 
   it.each([404, 410])('maps HTTP %i to 404', async (status) => {

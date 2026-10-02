@@ -19,6 +19,7 @@ import {
   requestRelayInvoice,
   resolveRelayPayRequest,
   type RelayFailure,
+  type RelayLookup,
 } from '@/lib/lnurl-relay';
 import { logEvent } from '@/lib/log';
 import { bearerToken } from '@/routes/me';
@@ -33,6 +34,8 @@ interface LnurlRouteDeps {
   now: () => number;
   /** Process env (`PUBLIC_BASE_URL`). */
   env: Record<string, string | undefined>;
+  /** Host name resolver (tests supply a fake); omitted → system resolver. */
+  lookupImpl?: RelayLookup;
 }
 
 /**
@@ -73,7 +76,7 @@ async function jsonObject(c: Context): Promise<Record<string, unknown> | null> {
  * Both routes need a member Bearer session (401 otherwise) and share one
  * per-member limit (429 with `Retry-After: 60`).
  *
- * @param deps - Auth store, fetch, clock, and env.
+ * @param deps - Auth store, fetch, clock, env, and optional resolver.
  * @returns Hono app with `POST /pay-request` and `POST /invoice`.
  */
 export function lnurlRoutes(deps: LnurlRouteDeps): Hono {
@@ -113,6 +116,7 @@ export function lnurlRoutes(deps: LnurlRouteDeps): Hono {
       const result = await resolveRelayPayRequest({
         target,
         fetchImpl: deps.fetchImpl,
+        lookupImpl: deps.lookupImpl,
         ownHost: host,
       });
       if (!result.ok) {
@@ -144,6 +148,7 @@ export function lnurlRoutes(deps: LnurlRouteDeps): Hono {
         amountMsat,
         ...(typeof comment === 'string' ? { comment } : {}),
         fetchImpl: deps.fetchImpl,
+        lookupImpl: deps.lookupImpl,
         ownHost: host,
       });
       if (!result.ok) {
