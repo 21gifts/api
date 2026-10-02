@@ -9,6 +9,7 @@ import { InMemoryNotificationStore } from '@/lib/notification-store';
 import { InMemoryPushStore } from '@/lib/push-store';
 import * as authService from '@/lib/auth/service';
 import { WRONG_ACCOUNT_ERROR } from '@/lib/auth/wrong-account';
+import type { MergeDb } from '@/lib/account-merge';
 import { debugRoutes } from '@/routes/debug';
 
 const unusedFetch: FetchFn = async () => new Response(null, { status: 500 });
@@ -34,6 +35,114 @@ function zapCapableFetch(): FetchFn {
     }
     return jsonResponse({ pr: 'lnbc10n1ptest' });
   };
+}
+
+const MERGE_FROM = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+const MERGE_INTO = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+const MERGE_MISSING = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
+
+/** Account row shape copied from the member-route fixtures. */
+async function createMergeAccount(
+  store: InMemoryAuthStore,
+  id: string,
+  viewKey: string,
+  extras: { isPlatform?: boolean } = {},
+): Promise<void> {
+  await store.createAccount({
+    id,
+    linkingKey: null,
+    role: 'verified',
+    name: 'Ada',
+    lightningAddress: null,
+    lightningAddressVerified: false,
+    forumLawsDismissed: false,
+    location: null,
+    viewKey,
+    createdAt: 1_700_000_000_000,
+    rulesAgreedAt: 1_700_000_000_000,
+    ...(extras.isPlatform === true ? { isPlatform: true } : {}),
+  });
+}
+
+/**
+ * Fake transaction port. Account rows come from the memory store; funding
+ * grants and the message count are scripted the same way as the merge unit tests.
+ */
+function mergeDbForStore(
+  store: InMemoryAuthStore,
+  options: { bothGrants?: boolean } = {},
+): MergeDb {
+  return {
+    async begin(run) {
+      return run({
+        async query<T>(text: string, params: readonly unknown[] = []): Promise<T[]> {
+          if (text.includes('FOR UPDATE')) {
+            const rows: Array<{
+              id: string;
+              is_platform: boolean;
+              role: string;
+              profile_message_id: string | null;
+            }> = [];
+            for (const id of params) {
+              if (typeof id !== 'string') {
+                continue;
+              }
+              const account = await store.getAccount(id);
+              if (account === undefined) {
+                continue;
+              }
+              rows.push({
+                id: account.id,
+                is_platform: account.isPlatform === true,
+                role: account.role,
+                profile_message_id: account.profileMessageId ?? null,
+              });
+            }
+            return rows as T[];
+          }
+          if (text.includes('SELECT account_id FROM funding_grant')) {
+            if (options.bothGrants !== true) {
+              return [];
+            }
+            return params
+              .filter((id): id is string => typeof id === 'string')
+              .map((account_id) => ({ account_id })) as T[];
+          }
+          if (text.includes('count(*)')) {
+            return [{ n: 1 }] as T[];
+          }
+          return [];
+        },
+      });
+    },
+  };
+}
+
+function mountDebug(
+  store: InMemoryAuthStore,
+  options: { debugToken?: string; mergeDb?: MergeDb } = {},
+): Hono {
+  return new Hono().route(
+    '/debug/accounts',
+    debugRoutes({
+      store,
+      debugToken: options.debugToken,
+      fetchImpl: unusedFetch,
+      ...(options.mergeDb === undefined ? {} : { mergeDb: options.mergeDb }),
+    }),
+  );
+}
+
+async function postMerge(
+  app: Hono,
+  body: unknown,
+  authorization = 'Bearer debug-token',
+): Promise<Response> {
+  return app.request('/debug/accounts/merge', {
+    method: 'POST',
+    headers: { authorization, 'content-type': 'application/json' },
+    body: JSON.stringify(body),
+  });
 }
 
 function parsedEvents(warn: ReturnType<typeof vi.spyOn>): Array<Record<string, unknown>> {
@@ -1762,5 +1871,106 @@ describe('debugRoutes', () => {
     expect(await res.json()).toEqual({ error: 'Lightning Address could not be resolved' });
     expect(await store.getAccountByLightningAddress('guest@walletofsatoshi.com')).toBeUndefined();
     expect(await store.getAccountByLightningAddress('other@walletofsatoshi.com')).toBeUndefined();
+  });
+
+  it('POST /debug/accounts/merge returns 503 when debug is not configured', async () => {
+    const app = mountDebug(new InMemoryAuthStore());
+    const res = await app.request('/debug/accounts/merge', { method: 'POST' });
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({ error: 'Debug is not configured' });
+  });
+
+  it('POST /debug/accounts/merge returns 401 with a wrong bearer', async () => {
+    const app = mountDebug(new InMemoryAuthStore(), { debugToken: 'debug-token' });
+    const res = await app.request('/debug/accounts/merge', {
+      method: 'POST',
+      headers: { authorization: 'Bearer wrong' },
+    });
+    expect(res.status).toBe(401);
+    expect(await res.json()).toEqual({ error: 'Unauthorized' });
+  });
+
+  it('POST /debug/accounts/merge returns 400 for body {}', async () => {
+    const store = new InMemoryAuthStore();
+    const app = mountDebug(store, {
+      debugToken: 'debug-token',
+      mergeDb: mergeDbForStore(store),
+    });
+    const res = await postMerge(app, {});
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: 'Expected a JSON body with "from" and "into"' });
+  });
+
+  it('POST /debug/accounts/merge returns 409 when from and into are the same account', async () => {
+    const store = new InMemoryAuthStore();
+    await createMergeAccount(store, MERGE_FROM, 'a'.repeat(64));
+    const app = mountDebug(store, {
+      debugToken: 'debug-token',
+      mergeDb: mergeDbForStore(store),
+    });
+    const res = await postMerge(app, { from: MERGE_FROM, into: MERGE_FROM });
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({ error: 'Cannot merge an account into itself' });
+  });
+
+  it('POST /debug/accounts/merge returns 404 when one id is not in the store', async () => {
+    const store = new InMemoryAuthStore();
+    await createMergeAccount(store, MERGE_FROM, 'a'.repeat(64));
+    const app = mountDebug(store, {
+      debugToken: 'debug-token',
+      mergeDb: mergeDbForStore(store),
+    });
+    const res = await postMerge(app, { from: MERGE_FROM, into: MERGE_MISSING });
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ error: 'Not found' });
+  });
+
+  it('POST /debug/accounts/merge returns 409 when an account is platform', async () => {
+    const store = new InMemoryAuthStore();
+    await createMergeAccount(store, MERGE_FROM, 'a'.repeat(64), { isPlatform: true });
+    await createMergeAccount(store, MERGE_INTO, 'b'.repeat(64));
+    const app = mountDebug(store, {
+      debugToken: 'debug-token',
+      mergeDb: mergeDbForStore(store),
+    });
+    const res = await postMerge(app, { from: MERGE_FROM, into: MERGE_INTO });
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({ error: 'Cannot merge the platform account' });
+  });
+
+  it('POST /debug/accounts/merge returns 503 when mergeDb is omitted', async () => {
+    const store = new InMemoryAuthStore();
+    await createMergeAccount(store, MERGE_FROM, 'a'.repeat(64));
+    await createMergeAccount(store, MERGE_INTO, 'b'.repeat(64));
+    const app = mountDebug(store, { debugToken: 'debug-token' });
+    const res = await postMerge(app, { from: MERGE_FROM, into: MERGE_INTO });
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({ error: 'Merge is unavailable' });
+  });
+
+  it('POST /debug/accounts/merge returns 409 when both accounts have a funding grant', async () => {
+    const store = new InMemoryAuthStore();
+    await createMergeAccount(store, MERGE_FROM, 'a'.repeat(64));
+    await createMergeAccount(store, MERGE_INTO, 'b'.repeat(64));
+    const app = mountDebug(store, {
+      debugToken: 'debug-token',
+      mergeDb: mergeDbForStore(store, { bothGrants: true }),
+    });
+    const res = await postMerge(app, { from: MERGE_FROM, into: MERGE_INTO });
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({ error: 'Both accounts have a funding grant' });
+  });
+
+  it('POST /debug/accounts/merge returns the moved message count', async () => {
+    const store = new InMemoryAuthStore();
+    await createMergeAccount(store, MERGE_FROM, 'a'.repeat(64));
+    await createMergeAccount(store, MERGE_INTO, 'b'.repeat(64));
+    const app = mountDebug(store, {
+      debugToken: 'debug-token',
+      mergeDb: mergeDbForStore(store),
+    });
+    const res = await postMerge(app, { from: MERGE_FROM, into: MERGE_INTO });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ into: MERGE_INTO, deleted: MERGE_FROM, messages: 1 });
   });
 });

@@ -147,6 +147,13 @@
 - **Used by:** Playwright e2e against the booted process; operators reproducing member HTTP.
 - **Auth:** `Authorization: Bearer` with `DEBUG_TOKEN`. Not an end-user session.
 
+## Endpoint: POST /debug/accounts/merge
+
+- **Purpose:** Operator merge of one account into another. Body `{ "from", "into", "verify"? }` with UUID ids. `verify` is `from` or `into` and defaults to `into`. Success is 200 `{ into, deleted, messages }`, where `deleted` is the source account id and `messages` is how many message rows belonged to `from`.
+- **Errors:** 503 `{ error: 'Debug is not configured' }` when `DEBUG_TOKEN` is unset or blank; 401 `{ error: 'Unauthorized' }` when the Bearer token does not match; 503 `{ error: 'Merge is unavailable' }` when `mergeDb` is omitted or the merge throws (including SQLSTATE 23505); 400 `{ error: 'Expected a JSON body with "from" and "into"' }` for a missing, non-JSON, or invalid body; 409 `{ error: 'Cannot merge an account into itself' }` when `from` and `into` are the same id; 404 `{ error: 'Not found' }` when either account is missing; 409 `{ error: 'Cannot merge the platform account' }` when either account is the platform account; 409 `{ error: 'Both accounts have a funding grant' }` when both accounts have a funding grant.
+- **Used by:** Operator debug token. Not a member session.
+- **Auth:** `Authorization: Bearer` with `DEBUG_TOKEN`. Not an end-user session.
+
 ## Endpoint: PATCH /debug/accounts/:id
 
 - **Purpose:** Operator assignment of `account.role` (`basis` \| `verified` \| `moderator` \| `initiator` \| `founder`), hard-unlink of the Lightning Address, the official platform flag, and/or `sessionRefused`. Body may include any of `{ "role": "<AccountRole>" }`, `{ "lightningAddress": null }`, `{ "platform": true|false }`, `{ "sessionRefused": true|false }`. Unlink sets `lightningAddress` to null, `lightningAddressVerified` to false, and drops in-flight address verification. Setting `platform: true` clears any other platform flag (at most one true) and, when a conversation store is wired, points every `member_platform` thread at this account (`retargetMemberPlatform`), except a thread whose member is already this account. `sessionRefused: true` makes passkey finish and debug session mint return 403 with the wrong-account copy. Returns the updated account JSON (same shape as `GET /debug/accounts` via `serializeDebugAccount`, including `isPlatform`, `sessionRefused`, `viewKey`, `walletRequired`, `walletBackupSeenAt`, and Nostr debug fields). Does not set a new address here (`POST /me/lightning-address` remains the live resolve path).
