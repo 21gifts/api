@@ -386,8 +386,9 @@ upstream is not contacted. A request without a validated
 
 **Gate** (fail → 404 `{ "error": "Not found" }`, upstream not contacted):
 `normalizeSparkPubkey(:pubkey)` not null; body is a JSON object with
-string `username` and without another key that equals `username` after
-NFKC normalisation and lower-casing (for example `Username`);
+string `username`; `body.username` must consist only of printable ASCII
+characters; the body has no other key that equals `username` after NFKC
+normalisation and lower-casing (for example `Username`);
 `normalizeUsername(username)` not null; the
 account for that name exists with `sparkPubkey === pubkey`; no other
 account is verified on that key.

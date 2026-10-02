@@ -147,7 +147,7 @@ describe('lnurlServerRoutes', () => {
       let now = NOW;
       const app = mount(store, fetchImpl, () => now);
       const body = JSON.stringify({
-        username: 'Ada',
+        username: ' Ada ',
         description: 'x',
         signature: 'sig',
         timestamp: 1,
@@ -167,7 +167,7 @@ describe('lnurlServerRoutes', () => {
       const verifiedAt = (await store.getAccount('acc'))?.sparkPubkeyVerifiedAt;
       expect(verifiedAt).toBe(NOW);
       expect(JSON.parse(String(calls[0]?.init?.body))).toEqual({
-        username: 'Ada',
+        username: ' Ada ',
         description: 'x',
         signature: 'sig',
         timestamp: 1,
@@ -250,6 +250,21 @@ describe('lnurlServerRoutes', () => {
       expect(res.status).toBe(404);
       expect(calls).toHaveLength(0);
     });
+
+    it.each(['\uFEFFada', 'ada\u00A0', 'ada\u200B'])(
+      'returns 404 when the username contains a non-printable-ASCII character',
+      async (username) => {
+        const store = new InMemoryAuthStore();
+        await seedWallet(store, { id: 'acc', username: 'ada' });
+        const { fetchImpl, calls } = recordingFetch(async () => new Response('no'));
+        const res = await mount(store, fetchImpl).request(`/lnurlpay/${PUBKEY}`, {
+          method: 'POST',
+          body: JSON.stringify({ username }),
+        });
+        expect(res.status).toBe(404);
+        expect(calls).toHaveLength(0);
+      },
+    );
 
     it('returns 409 when the username changes while registration is in flight', async () => {
       const store = new InMemoryAuthStore();
