@@ -24,6 +24,10 @@ test('e2e: forum note, public read, reply, and replyCount against the booted API
           name: `E2eAda${stamp.slice(0, 8)}`,
           lightningAddress: `e2e-ada-${stamp}@walletofsatoshi.com`,
         },
+        {
+          name: `E2eObserver${stamp}`,
+          lightningAddress: `e2e-observer-${stamp}@walletofsatoshi.com`,
+        },
       ],
     },
   });
@@ -36,6 +40,14 @@ test('e2e: forum note, public read, reply, and replyCount against the booted API
   const adaName = `E2eAda${stamp.slice(0, 8)}`;
   const ada = accounts.find((row) => row.name === adaName);
   expect(ada).toBeDefined();
+  const observer = accounts.find((row) => row.name === `E2eObserver${stamp}`);
+  expect(observer).toBeDefined();
+  const observerSession = await request.post(`/debug/accounts/${observer?.id}/session`, {
+    headers: DEBUG,
+  });
+  expect(observerSession.status()).toBe(200);
+  const observerToken = ((await observerSession.json()) as { token: string }).token;
+  const observerAuth = { authorization: `Bearer ${observerToken}` };
 
   const session = await request.post(`/debug/accounts/${ada?.id}/session`, { headers: DEBUG });
   expect(session.status()).toBe(200);
@@ -52,6 +64,13 @@ test('e2e: forum note, public read, reply, and replyCount against the booted API
   expect(posted.status()).toBe(200);
   const note = (await posted.json()) as { id: string; text: string; replyCount?: number };
   expect(note.text).toBe('e2e parent note');
+  const postNotifications = await request.get('/notifications', { headers: observerAuth });
+  expect(postNotifications.status()).toBe(200);
+  const afterPost = (await postNotifications.json()) as {
+    notifications: Array<{ type: string; parentId: string }>;
+  };
+  expect(afterPost.notifications.some((row) => row.type === 'forum_post')).toBe(false);
+  expect(afterPost.notifications.some((row) => row.parentId === note.id)).toBe(false);
 
   const publicRead = await request.get(`/messages/${note.id}`);
   expect(publicRead.status()).toBe(200);
@@ -73,6 +92,14 @@ test('e2e: forum note, public read, reply, and replyCount against the booted API
   });
   expect(reply.status()).toBe(200);
   expect(((await reply.json()) as { text: string }).text).toBe('e2e reply');
+  const replyNotifications = await request.get('/notifications', { headers: observerAuth });
+  expect(replyNotifications.status()).toBe(200);
+  const afterReply = (await replyNotifications.json()) as {
+    notifications: Array<{ type: string; parentId: string }>;
+  };
+  expect(
+    afterReply.notifications.some((row) => row.type === 'forum_reply' && row.parentId === note.id),
+  ).toBe(true);
 
   const replies = await request.get(`/messages/${note.id}/replies`, { headers: auth });
   expect(replies.status()).toBe(200);
