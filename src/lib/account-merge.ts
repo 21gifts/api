@@ -290,13 +290,19 @@ export async function mergeAccounts(db: MergeDb, input: MergeInput): Promise<Mer
       accountParams,
     );
     if (input.verify === 'from') {
-      await tx.query("DELETE FROM trust_edge WHERE subject_id = $2 AND kind = 'verify'", accountParams);
+      await tx.query(
+        "DELETE FROM trust_edge WHERE subject_id = $2 AND kind = 'verify'",
+        accountParams,
+      );
       await tx.query(
         "UPDATE trust_edge SET subject_id = $2 WHERE subject_id = $1 AND kind = 'verify'",
         accountParams,
       );
     } else {
-      await tx.query("DELETE FROM trust_edge WHERE subject_id = $1 AND kind = 'verify'", accountParams);
+      await tx.query(
+        "DELETE FROM trust_edge WHERE subject_id = $1 AND kind = 'verify'",
+        accountParams,
+      );
     }
     await tx.query(
       `DELETE FROM trust_edge AS src
@@ -317,10 +323,7 @@ export async function mergeAccounts(db: MergeDb, input: MergeInput): Promise<Mer
        WHERE subject_id = $1 AND kind IN ('moderator_propose', 'moderator_reject')`,
       accountParams,
     );
-    await tx.query(
-      'DELETE FROM trust_edge WHERE actor_id = $1 AND subject_id = $2',
-      accountParams,
-    );
+    await tx.query('DELETE FROM trust_edge WHERE actor_id = $1 AND subject_id = $2', accountParams);
     await tx.query('UPDATE trust_edge SET actor_id = $2 WHERE actor_id = $1', accountParams);
 
     await tx.query('UPDATE funding_grant SET decided_by = $2 WHERE decided_by = $1', accountParams);
@@ -378,10 +381,10 @@ export async function mergeAccounts(db: MergeDb, input: MergeInput): Promise<Mer
       const schema = quoteIdentifier(column.schema_name);
       const table = quoteIdentifier(column.table_name);
       const name = quoteIdentifier(column.column_name);
-      await tx.query(
-        `UPDATE ${schema}.${table} SET ${name} = $1 WHERE ${name} = $2`,
-        [input.into, input.from],
-      );
+      await tx.query(`UPDATE ${schema}.${table} SET ${name} = $1 WHERE ${name} = $2`, [
+        input.into,
+        input.from,
+      ]);
     }
 
     if (intoAccount.role === 'basis') {

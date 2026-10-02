@@ -1973,4 +1973,57 @@ describe('debugRoutes', () => {
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ into: MERGE_INTO, deleted: MERGE_FROM, messages: 1 });
   });
+
+  it('POST /debug/accounts/merge returns 503 when begin reports a sqlState', async () => {
+    const store = new InMemoryAuthStore();
+    await createMergeAccount(store, MERGE_FROM, 'a'.repeat(64));
+    await createMergeAccount(store, MERGE_INTO, 'b'.repeat(64));
+    const mergeDb: MergeDb = {
+      async begin() {
+        throw Object.assign(new Error('disk'), { code: '23505' });
+      },
+    };
+    const app = mountDebug(store, {
+      debugToken: 'debug-token',
+      mergeDb,
+    });
+    const res = await postMerge(app, { from: MERGE_FROM, into: MERGE_INTO });
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({ error: 'Merge is unavailable' });
+    expect(
+      parsedEvents(warn).some(
+        (e) =>
+          e['event'] === 'debug.accounts.merge_failed' &&
+          e['from'] === MERGE_FROM &&
+          e['into'] === MERGE_INTO &&
+          e['sqlState'] === '23505',
+      ),
+    ).toBe(true);
+  });
+
+  it('POST /debug/accounts/merge returns 503 when begin has no sqlState', async () => {
+    const store = new InMemoryAuthStore();
+    await createMergeAccount(store, MERGE_FROM, 'a'.repeat(64));
+    await createMergeAccount(store, MERGE_INTO, 'b'.repeat(64));
+    const mergeDb: MergeDb = {
+      async begin() {
+        throw new Error('disk');
+      },
+    };
+    const app = mountDebug(store, {
+      debugToken: 'debug-token',
+      mergeDb,
+    });
+    const res = await postMerge(app, { from: MERGE_FROM, into: MERGE_INTO });
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({ error: 'Merge is unavailable' });
+    const event = parsedEvents(warn).find(
+      (e) =>
+        e['event'] === 'debug.accounts.merge_failed' &&
+        e['from'] === MERGE_FROM &&
+        e['into'] === MERGE_INTO,
+    );
+    expect(event).toBeDefined();
+    expect(event !== undefined && !('sqlState' in event)).toBe(true);
+  });
 });
