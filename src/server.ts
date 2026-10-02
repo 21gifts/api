@@ -292,12 +292,16 @@ export interface AppDeps {
    */
   vapidPublicKey?: string;
   /**
+   * Stored habit history (default: empty {@link InMemoryHabitStore}).
+   * Boot injects {@link PostgresHabitStore} when `DATABASE_URL` is set.
+   */
+  habitStore?: HabitStore;
+  /**
    * Stored trust edges for the public chain and staff POSTs (default: empty
    * {@link InMemoryTrustStore}). Boot injects {@link PostgresTrustStore}
    * when `DATABASE_URL` is set. `PATCH /debug/accounts/:id` does not write
    * this store.
    */
-  habitStore?: HabitStore;
   trustStore?: TrustStore;
   /**
    * Stored funding grants (default: empty {@link InMemoryFundingStore}).

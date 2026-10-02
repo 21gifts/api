@@ -1134,7 +1134,7 @@ Bearer session required (401 otherwise). JSON operations:
 - `{ action: "rate", id, week, status }`: owner only, latest published review week while the resolution existed; `achieved`, `partial`, or `missed`. New weeks are unselected, never implicitly missed.
 - `{ action: "comment", week, text }`: any signed-in role; 1–2000 characters. Stored only in the tracker, not the forum, notifications, or Nostr.
 
-Unknown/non-owned IDs return 404; lower roles cannot mutate resolutions (403); closed/out-of-range outcome weeks return 409; invalid input returns 400. Reads and mutations send `Cache-Control: no-store`.
+Unknown/non-owned IDs return 404; lower roles cannot mutate resolutions (403); closed/out-of-range outcome weeks return 409; invalid input returns 400; invoice rate-limit returns 429; `Invoice unavailable` returns 502. Reads and mutations send `Cache-Control: no-store`.
 
 Habit-Tracker updates: comments include canReceiveDonation derived from the current author wallet. Authenticated invoice requests resolve the comment author server-side, validate amount and BOLT11, and use the existing invoice rate limiter. Soft-deleting any tracker comment requires initiator rank (roleAtLeast initiator; the same rank qualifies), which includes founder because that rank is higher and excludes verified and basis. Owners may edit their resolution text in the latest published review week; weekly revisions preserve older texts and carry forward. No tracker comment or donation publishes a forum post.
 

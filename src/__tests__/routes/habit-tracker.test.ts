@@ -142,7 +142,9 @@ describe('habit permissions and history', () => {
     const s = await setup();
     await s.post('f', { action: 'add', text: 'Read' });
     await s.post('f', { action: 'add', text: 'Walk' });
-    const [read, walk] = await s.habitStore.habits();
+    const listed = await s.habitStore.habits();
+    const read = listed.find((row) => row.text === 'Read');
+    const walk = listed.find((row) => row.text === 'Walk');
     await s.post('f', { action: 'rate', id: read!.id, week: '2026-12-28', status: 'achieved' });
     await s.post('f', { action: 'retire', id: read!.id });
     await s.post('f', { action: 'retire', id: read!.id });

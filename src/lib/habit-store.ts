@@ -42,12 +42,14 @@ export class InMemoryHabitStore implements HabitStore {
     );
   }
   async habits(week = '9999-12-31'): Promise<Habit[]> {
-    return this.rows.map((row) => {
-      const revision = [...(this.revisions.get(row.id) ?? [])]
-        .filter(([start]) => start <= week)
-        .sort(([a], [b]) => b.localeCompare(a))[0];
-      return { ...row, text: revision?.[1] ?? row.text };
-    });
+    return this.rows
+      .map((row) => {
+        const revision = [...(this.revisions.get(row.id) ?? [])]
+          .filter(([start]) => start <= week)
+          .sort(([a], [b]) => b.localeCompare(a))[0];
+        return { ...row, text: revision?.[1] ?? row.text };
+      })
+      .sort((a, b) => a.firstWeek.localeCompare(b.firstWeek) || a.id.localeCompare(b.id));
   }
   async results(week: string): Promise<HabitResult[]> {
     return [...this.outcomes.values()]
@@ -57,6 +59,7 @@ export class InMemoryHabitStore implements HabitStore {
   async comments(week: string): Promise<HabitComment[]> {
     return this.posts
       .filter((row) => row.week === week && !this.deletedComments.has(row.id))
+      .sort((a, b) => a.createdAt - b.createdAt || a.id.localeCompare(b.id))
       .map((row) => ({ ...row }));
   }
   async add(habit: Habit): Promise<void> {
