@@ -47,7 +47,7 @@ after the charge has ended, with no quote that was still valid for it, is
 not a payment.
 
 Without an open till charge, this document changes nothing. Gifts over the
-same Lightning address stay as they are.
+member's receiving address stay as they are.
 
 ## The wallet
 
@@ -82,8 +82,10 @@ address as the place bitcoin is delivered.
   only for the sats on that charge. Once a quote for that charge has been
   accepted, a later price move does not refund it. Those sats can still
   settle after the clock.
-- No change to today's Lightning settlement. The pay link still resolves
-  to Wallet of Satoshi until a later change says otherwise.
+- No change to today's Lightning settlement. The pay link resolves to the
+  member's receiving address: the verified in-app wallet through the LNURL
+  server when it is configured, otherwise the linked Lightning address
+  (Wallet of Satoshi).
 - No new phrase and no phrase stored on the server.
 - No payment marked paid because the stablecoin transaction was seen.
 - No route, table, or response field. Those belong to the change that
