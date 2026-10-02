@@ -366,9 +366,9 @@ api/
 
 - Push to `develop` via **feature branch + PR**
 - `main` is protected — updates flow via an auto-generated Release PR (`develop → main`)
-- **Hard requirement:** `staging` is the environment for experimental testing. It publishes `21gifts/api:staging`. A change that is good there is released to `develop` first (`Release: staging -> develop`). `main` receives changes only from `develop` (`Release: develop -> main`). `staging` is never released directly to `main`.
+- **Hard requirement:** `staging` is the environment for experimental testing. It publishes `21gifts/api:staging`. A change that is good there is released to `develop` first (`Release: staging -> develop`). `main` receives changes only from `develop` (`Release: develop -> main`). `staging` is never released directly to `main`. An open release pull request is left unchanged. The staging release is not opened when the three-dot diff against `develop` has no file changes.
 - Feature pull requests always target `develop`, not `staging` and not `main`. Developers rebase `staging` onto `develop` regularly, because those pull requests land on `develop` and do not update `staging`.
-- Never force-push, never amend published commits
+- Never force-push, never amend published commits, except publishing a rebase of `staging` onto `develop` with `git push --force-with-lease` to `staging` only.
 
 ### Commit messages
 
@@ -614,14 +614,14 @@ Currently:
 
 ## CI / CD
 
-| Workflow               | Trigger                                                           | Action                                                                                                                                                             |
-| ---------------------- | ----------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `ci.yaml`              | PR (including drafts); not `ready_for_review`                     | Lint (`bun run lint` on Bun) + typecheck + handbook + e2e-check + test (100% coverage) + test:postgres + build + e2e; **10 minutes** for Lint, **15** for the rest |
-| `deploy-dev.yaml`      | push to `develop`                                                 | Docker build → push `21gifts/api:beta` → notify → wait for deploy                                                                                                  |
-| `deploy-staging.yaml`  | push to `staging`                                                 | Docker build → push `21gifts/api:staging` → notify → wait for deploy                                                                                               |
-| `deploy-prd.yaml`      | push to `main`                                                    | Docker build → push `21gifts/api:latest` → notify → wait for deploy                                                                                                |
-| `auto-release-pr.yaml` | push to `develop` or `staging`                                    | Auto-create Release PRs (`staging → develop`, and `develop → main` only)                                                                                           |
-| `a38-guard.yml`        | `pull_request_target`; PR comments; schedule; `workflow_dispatch` | `dfx pr guard` verifies the A38 report, releases held fork runs of `ci.yaml`, and sets ready; never checks out the PR code                                         |
+| Workflow               | Trigger                                                           | Action                                                                                                                                                                 |
+| ---------------------- | ----------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `ci.yaml`              | PR (including drafts); not `ready_for_review`                     | Lint (`bun run lint` on Bun) + typecheck + handbook + e2e-check + test (100% coverage) + test:postgres + build + e2e; **10 minutes** for Lint, **15** for the rest     |
+| `deploy-dev.yaml`      | push to `develop`                                                 | Docker build → push `21gifts/api:beta` → notify → wait for deploy                                                                                                      |
+| `deploy-staging.yaml`  | push to `staging`                                                 | Docker build → push `21gifts/api:staging` → notify → wait for deploy                                                                                                   |
+| `deploy-prd.yaml`      | push to `main`                                                    | Docker build → push `21gifts/api:latest` → notify → wait for deploy                                                                                                    |
+| `auto-release-pr.yaml` | push to `develop` or `staging`                                    | Open a missing release only (`staging → develop`, and `develop → main`). Leave an open release unchanged. Skip `staging → develop` when that diff has no file changes. |
+| `a38-guard.yml`        | `pull_request_target`; PR comments; schedule; `workflow_dispatch` | `dfx pr guard` verifies the A38 report, releases held fork runs of `ci.yaml`, and sets ready; never checks out the PR code                                             |
 
 Images target `linux/arm64`.
 
