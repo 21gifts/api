@@ -32,7 +32,8 @@ export const BOLT11_PAYMENT_HASH =
  * @param store - Auth store.
  * @param id - Account id.
  * @param username - Lower-case username.
- * @param extra - Optional fields (e.g. `lightningAddress`, `profileMessageId`).
+ * @param extra - Optional `lightningAddress` and `rulesAgreedAt`.
+ * @returns Resolves when the account is created, claimed, and verified.
  */
 export async function createWalletAccount(
   store: AuthStore,
@@ -73,6 +74,7 @@ export interface SeenRequest {
  *
  * @param username - Wallet-backed username.
  * @param pr - Invoice the callback returns.
+ * @returns The fake fetch and the requests it saw.
  */
 export function walletLnurlFetch(
   username: string,
@@ -112,6 +114,7 @@ export function walletLnurlFetch(
  * Assert-friendly summary: every request went to the LNURL server with the public host.
  *
  * @param seen - Requests recorded by {@link walletLnurlFetch}.
+ * @returns `true` when there was at least one request and all of them were internal.
  */
 export function allInternal(seen: readonly SeenRequest[]): boolean {
   return (
