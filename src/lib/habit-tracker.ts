@@ -47,7 +47,7 @@ export function habitCommentsAllowed(week: string, now: number): boolean {
 export interface Habit {
   id: string;
   accountId: string;
-  role: 'founder' | 'initiator';
+  role: 'founder' | 'initiator' | 'moderator';
   name: string;
   text: string;
   firstWeek: string;

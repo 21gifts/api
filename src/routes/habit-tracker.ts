@@ -1,5 +1,6 @@
 import { Hono } from 'hono';
 import { z } from 'zod';
+import { roleAtLeast } from '@/lib/auth/roles';
 import { resolveSession } from '@/lib/auth/service';
 import type { AuthStore } from '@/lib/auth/store';
 import type { HabitStore } from '@/lib/habit-store';
@@ -9,6 +10,7 @@ import {
   habitCommentsAllowedAt,
   habitReviewWeek,
   habitWeek,
+  type Habit,
 } from '@/lib/habit-tracker';
 import { requestGiftInvoice } from '@/lib/gift-invoice';
 import { decodeBolt11 } from '@/lib/bolt11';
@@ -161,7 +163,7 @@ export function habitTrackerRoutes(deps: {
       });
       return c.json({ ok: true }, 201);
     }
-    if (caller.role !== 'founder' && caller.role !== 'initiator')
+    if (!roleAtLeast(caller.role, 'initiator'))
       return c.json({ error: 'Forbidden' }, 403);
     if (input.action === 'deleteComment') {
       if (!(await deps.habitStore.findComment(input.id)))
@@ -173,7 +175,7 @@ export function habitTrackerRoutes(deps: {
       await deps.habitStore.add({
         id: crypto.randomUUID(),
         accountId: caller.id,
-        role: caller.role,
+        role: caller.role as Habit['role'],
         name: caller.name ?? '',
         text: input.text,
         firstWeek: current,

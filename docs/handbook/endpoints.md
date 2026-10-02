@@ -1126,16 +1126,16 @@ Weekly blocks are a deterministic projection of versioned resolution text and in
 
 Bearer session required (401 otherwise). JSON operations:
 
-- `{ action: "add", text }`: founder/initiator only; trim to 1–200 characters; starts in the latest published review week.
+- `{ action: "add", text }`: initiator rank required (roleAtLeast initiator; the same rank qualifies), which includes founder because that rank is higher and excludes verified and basis; trim to 1–200 characters; starts in the latest published review week.
 - `{ action: "edit", id, text }`: owner only; versions text starting in the latest published review week and carries it forward, preserving earlier weeks.
-- `{ action: "deleteComment", id }`: founder/initiator only; soft-deletes any tracker comment.
+- `{ action: "deleteComment", id }`: initiator rank required (roleAtLeast initiator; the same rank qualifies), which includes founder because that rank is higher and excludes verified and basis; soft-deletes any tracker comment.
 - `{ action: "invoice", id, amountSats }`: signed-in donor; exact-amount BOLT11 for the comment author, excluding self-donations and deleted comments. Returns `{ pr, amountSats }`; rate limited.
 - `{ action: "retire", id }`: owner only; ends future carry-over and retains history.
 - `{ action: "rate", id, week, status }`: owner only, latest published review week while the resolution existed; `achieved`, `partial`, or `missed`. New weeks are unselected, never implicitly missed.
 - `{ action: "comment", week, text }`: any signed-in role; 1–2000 characters. Stored only in the tracker, not the forum, notifications, or Nostr.
 
-Unknown/non-owned IDs return 404; lower roles cannot mutate resolutions (403); closed/out-of-range outcome weeks return 409; invalid input returns 400. Comments may be added to historical tracker weeks. Reads and mutations send `Cache-Control: no-store`.
+Unknown/non-owned IDs return 404; lower roles cannot mutate resolutions (403); closed/out-of-range outcome weeks return 409; invalid input returns 400. Reads and mutations send `Cache-Control: no-store`.
 
-Habit-Tracker updates: comments include canReceiveDonation derived from the current author wallet. Authenticated invoice requests resolve the comment author server-side, validate amount and BOLT11, and use the existing invoice rate limiter. Founder/initiator may soft-delete any tracker comment; other roles may not. Owners may edit their resolution text in the latest published review week; weekly revisions preserve older texts and carry forward. No tracker comment or donation publishes a forum post.
+Habit-Tracker updates: comments include canReceiveDonation derived from the current author wallet. Authenticated invoice requests resolve the comment author server-side, validate amount and BOLT11, and use the existing invoice rate limiter. Soft-deleting any tracker comment requires initiator rank (roleAtLeast initiator; the same rank qualifies), which includes founder because that rank is higher and excludes verified and basis. Owners may edit their resolution text in the latest published review week; weekly revisions preserve older texts and carry forward. No tracker comment or donation publishes a forum post.
 
 Tracker comments for each review week are admitted from the following Monday at 16:00 Asia/Manila. GET exposes commentsAllowed and commentsAllowedAt; POST comment returns 403 before that timestamp for every role. Comments are accepted only for the latest review week, until Saturday 20:00 Asia/Manila (exclusive). Historical weeks are read-only for comments. GET includes commentsCloseAt.

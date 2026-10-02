@@ -2,7 +2,7 @@
 
 CREATE TABLE IF NOT EXISTS habit (
     id uuid PRIMARY KEY, account_id uuid NOT NULL REFERENCES account(id),
-    role text NOT NULL CHECK (role IN ('founder', 'initiator')),
+    role text NOT NULL CHECK (role IN ('founder', 'initiator', 'moderator')),
     name text NOT NULL, text text NOT NULL CHECK (length(text) BETWEEN 1 AND 200),
     first_week text NOT NULL, last_week text,
     CHECK (last_week IS NULL OR last_week >= first_week)

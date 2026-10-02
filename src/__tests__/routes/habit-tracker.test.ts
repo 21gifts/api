@@ -97,13 +97,16 @@ describe('habit permissions and history', () => {
     expect((await s.post('f', { action: 'add', text: ' ' })).status).toBe(400);
     expect((await s.post('f', { action: 'add', text: 'x'.repeat(201) })).status).toBe(400);
   });
-  it('only lets founder and initiator add and rate their own resolutions', async () => {
+  it('lets initiator rank add and rate their own resolutions', async () => {
     const s = await setup();
-    for (const token of ['m', 'v', 'b'])
+    for (const token of ['v', 'b'])
       expect((await s.post(token, { action: 'add', text: 'Read' })).status).toBe(403);
+    expect((await s.post('m', { action: 'add', text: 'Guide' })).status).toBe(201);
+    const moderatorHabit = (await s.habitStore.habits()).find((row) => row.accountId === 'm')!;
+    expect(moderatorHabit.role).toBe('moderator');
     expect((await s.post('f', { action: 'add', text: ' Read ' })).status).toBe(201);
     expect((await s.post('i', { action: 'add', text: 'Walk' })).status).toBe(201);
-    const habit = (await s.habitStore.habits())[0]!;
+    const habit = (await s.habitStore.habits()).find((row) => row.accountId === 'f')!;
     expect(habit.text).toBe('Read');
     for (const action of ['retire', 'rate']) {
       const body =
@@ -111,7 +114,7 @@ describe('habit permissions and history', () => {
           ? { action, id: habit.id, week: '2026-12-28', status: 'achieved' }
           : { action, id: habit.id };
       expect((await s.post('i', body)).status).toBe(404);
-      expect((await s.post('m', body)).status).toBe(403);
+      expect((await s.post('m', body)).status).toBe(404);
     }
     for (const status of ['achieved', 'partial', 'missed'])
       expect(
@@ -119,6 +122,20 @@ describe('habit permissions and history', () => {
       ).toBe(200);
     expect(await s.habitStore.results('2026-12-28')).toEqual([
       { habitId: habit.id, week: '2026-12-28', status: 'missed' },
+    ]);
+    expect(
+      (
+        await s.post('m', {
+          action: 'rate',
+          id: moderatorHabit.id,
+          week: '2026-12-28',
+          status: 'achieved',
+        })
+      ).status,
+    ).toBe(200);
+    expect(await s.habitStore.results('2026-12-28')).toEqual([
+      { habitId: habit.id, week: '2026-12-28', status: 'missed' },
+      { habitId: moderatorHabit.id, week: '2026-12-28', status: 'achieved' },
     ]);
   });
   it('carries active resolutions without ratings, preserves archived history, and catches up after downtime', async () => {
@@ -223,11 +240,11 @@ it('publishes the completed week at exactly Monday 08:00 Manila, including ISO y
   });
   expect(habitReviewWeek(Date.parse('2027-01-11T08:00:00+08:00')).label).toBe('2027-W01');
 });
-it('allows only founder and initiator to remove any comment and prevents donations to deleted comments', async () => {
+it('lets initiator rank remove any comment and prevents donations to deleted comments', async () => {
   const s = await setup();
   await s.post('b', { action: 'comment', week: '2026-12-28', text: 'Hello' });
   const id = (await s.habitStore.comments('2026-12-28'))[0]!.id;
-  for (const token of ['b', 'm', 'v'])
+  for (const token of ['b', 'v'])
     expect((await s.post(token, { action: 'deleteComment', id })).status).toBe(403);
   expect((await s.post('unknown', { action: 'deleteComment', id })).status).toBe(401);
   expect((await s.post('i', { action: 'deleteComment', id })).status).toBe(200);
@@ -237,6 +254,10 @@ it('allows only founder and initiator to remove any comment and prevents donatio
   await s.post('b', { action: 'comment', week: '2026-12-28', text: 'Second' });
   const second = (await s.habitStore.comments('2026-12-28'))[0]!.id;
   expect((await s.post('f', { action: 'deleteComment', id: second })).status).toBe(200);
+  await s.post('b', { action: 'comment', week: '2026-12-28', text: 'Third' });
+  const third = (await s.habitStore.comments('2026-12-28'))[0]!.id;
+  expect((await s.post('m', { action: 'deleteComment', id: third })).status).toBe(200);
+  expect((await s.habitStore.comments('2026-12-28')).some((row) => row.id === third)).toBe(false);
 });
 
 it('uses the commenter wallet for exact-amount invoices, rejects invalid amounts and applies rate limits', async () => {
@@ -304,7 +325,7 @@ it('versions edited resolution text without rewriting older weeks and carries it
   const id = (await s.habitStore.habits())[0]!.id;
   s.setClock('2027-01-11T08:00:00+08:00');
   expect((await s.post('i', { action: 'edit', id, text: 'Intruder' })).status).toBe(404);
-  expect((await s.post('m', { action: 'edit', id, text: 'Intruder' })).status).toBe(403);
+  expect((await s.post('m', { action: 'edit', id, text: 'Intruder' })).status).toBe(404);
   expect((await s.post('f', { action: 'edit', id, text: 'Updated' })).status).toBe(200);
   expect((await payload(s.get())).habits[0]!.text).toBe('Updated');
   expect((await payload(s.get('2026-12-28'))).habits[0]!.text).toBe('Original');
