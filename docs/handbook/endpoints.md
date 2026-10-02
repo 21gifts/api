@@ -470,7 +470,7 @@
 
 ## Endpoint: GET /lightning-address
 
-- **Purpose:** Query `address=local@domain`. Resolves LUD-16, cached 5 minutes on success.
+- **Purpose:** Query `address=local@domain`. Resolves LUD-16, cached 5 minutes on success. For a member's wallet address (`<username>@<host of PUBLIC_BASE_URL>`) the returned callback is the api's own `/lnurlp/:username/invoice`, forwarded to the self-hosted LNURL server (the api sees the amount and the invoice, never pays or holds funds); for any other domain the provider's callback is returned unchanged.
 - **Errors:** 400 invalid, 502 unresolved.
 - **Used by:** App donate `resolveLightningAddress`.
 - **Auth:** See Purpose — Bearer where stated, else public.
