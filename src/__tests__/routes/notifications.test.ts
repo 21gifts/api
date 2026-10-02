@@ -183,6 +183,23 @@ describe('GET /notifications', () => {
     }
   });
 
+  it('hides old posts at all while retaining explicit mentions on the same post', async () => {
+    const messages = new InMemoryMessageStore();
+    await messages.create(forumNote({ id: 'parent-note' }));
+    const store = new InMemoryNotificationStore([
+      note({ id: ID_A, type: 'forum_post', replyId: 'parent-note' }),
+      note({ id: ID_B, type: 'forum_mention', replyId: 'parent-note' }),
+    ]);
+    const res = await mount(await seeded(), store, messages).request('/notifications', {
+      headers: AUTH,
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { notifications: NotificationRow[]; unreadCount: number };
+    expect(body.notifications.map((item) => item.type)).toEqual(['forum_mention']);
+    expect(body.unreadCount).toBe(1);
+    expect(await store.unreadCount('acc')).toBe(1);
+  });
+
   it('hides a non-staff unpaid forum_post at mentions and keeps a reply to the owner', async () => {
     const postId = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee';
     const parentId = 'ffffffff-ffff-4fff-8fff-ffffffffffff';
@@ -316,7 +333,7 @@ describe('GET /notifications', () => {
     expect(body.notifications[1]?.['type']).toBe('forum_reply');
     expect(body.unreadCount).toBe(2);
     expect(await store.getByIdForRecipient(ID_B, 'acc')).toBeUndefined();
-    expect(await store.getByIdForRecipient(ID_READ, 'acc')).toBeUndefined();
+    expect(await store.getByIdForRecipient(ID_READ, 'acc')).toBeDefined(); // Legacy posts stay stored but hidden.
     expect(await store.getByIdForRecipient(appointedId, 'acc')).toBeDefined();
   });
 
