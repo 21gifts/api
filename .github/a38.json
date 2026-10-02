@@ -39,6 +39,11 @@
       "reason": "This job builds and pushes a production Docker image and dispatches a deploy to the staging environment, a production-credential path that is not an author-measured test."
     },
     {
+      "workflow": ".github/workflows/publish-spend-staging.yaml",
+      "job": "publish",
+      "reason": "This job builds and pushes the spend staging Docker image with production registry credentials, a production-credential path that is not an author-measured test."
+    },
+    {
       "workflow": ".github/workflows/deploy-prd.yaml",
       "job": "build-and-deploy",
       "reason": "This job builds and pushes a production Docker image and dispatches a deploy to the PRD environment, a production-credential path that is not an author-measured test."
