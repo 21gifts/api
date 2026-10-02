@@ -553,6 +553,17 @@ export interface MessageStore {
   latestLiveTopLevelMediaId(accountId: string): Promise<string | null>;
 
   /**
+   * Whether the account already received the one-time welcome gift: a
+   * platform reply whose trimmed text is `Welcome` under one of the account's
+   * notes (live or soft-hidden, so a hidden note or marker still counts).
+   *
+   * @param accountId - Member whose notes are checked.
+   * @param platformAccountId - Official platform account id.
+   * @returns `true` when such a reply exists.
+   */
+  accountHasWelcomeGift(accountId: string, platformAccountId: string): Promise<boolean>;
+
+  /**
    * Live post/reply totals for one 21.gifts author.
    *
    * Live = `deletedAt` null and `accountId` equals the argument (Damus-only
@@ -2845,6 +2856,28 @@ export class InMemoryMessageStore implements MessageStore {
   }
 
   /**
+   * Whether a platform `Welcome` reply exists under one of the account's notes.
+   *
+   * @param accountId - Member whose notes are checked.
+   * @param platformAccountId - Official platform account id.
+   * @returns `true` when such a reply exists (live or soft-hidden).
+   */
+  accountHasWelcomeGift(accountId: string, platformAccountId: string): Promise<boolean> {
+    const authored = new Set(
+      this.#rows.filter((row) => row.accountId === accountId).map((row) => row.id),
+    );
+    return Promise.resolve(
+      this.#rows.some(
+        (row) =>
+          row.accountId === platformAccountId &&
+          row.parentId !== null &&
+          authored.has(row.parentId) &&
+          row.text.trim() === 'Welcome',
+      ),
+    );
+  }
+
+  /**
    * Live post/reply totals for one 21.gifts author.
    *
    * @param accountId - Author account id.
@@ -4947,6 +4980,27 @@ export class PostgresMessageStore implements MessageStore {
          )
        LIMIT 1`,
       [accountId, excludeId],
+    );
+    return rows[0] !== undefined;
+  }
+
+  /**
+   * Whether a platform `Welcome` reply exists under one of the account's notes.
+   * Live and soft-hidden rows both count.
+   *
+   * @param accountId - Member whose notes are checked (`$1`).
+   * @param platformAccountId - Official platform account id (`$2`).
+   * @returns `true` when such a reply exists.
+   */
+  async accountHasWelcomeGift(accountId: string, platformAccountId: string): Promise<boolean> {
+    const rows = await this.#sql.query<{ found?: number }>(
+      `SELECT 1 AS found FROM message reply
+       JOIN message parent ON parent.id = reply.parent_id
+       WHERE reply.account_id = $2
+         AND parent.account_id = $1
+         AND trim(reply.text) = 'Welcome'
+       LIMIT 1`,
+      [accountId, platformAccountId],
     );
     return rows[0] !== undefined;
   }

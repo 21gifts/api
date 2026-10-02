@@ -3658,7 +3658,7 @@ Success is always **200** (never 404 for an unknown address):
 or `{ "hasPosted": false, "messageId": null, "postedAt": null, "hasMedia": false, "welcomeHasMedia": false, "welcomeMessageId": null }` when there is no account for the
 address, or the account has no live top-level note other than a text-only profile note.
 `hasPosted` is still any live top-level note that is not the profile note, including text-only.
-A profile note that has a photo or video keeps `hasPosted: false` and sets `welcomeHasMedia: true` with that note as `welcomeMessageId`. Replies do not count. Photo-only / empty-text
+A profile note that has a photo or video keeps `hasPosted: false` and sets `welcomeHasMedia: true` with that note as `welcomeMessageId`. An account that already received the welcome gift (a platform `Welcome` reply under one of its notes, live or hidden) reports `welcomeHasMedia: false` and `welcomeMessageId: null`. Replies do not count. Photo-only / empty-text
 top-level notes still count for `hasPosted`. `hasMedia` is true only when such a
 post has photo 0, extra stills, or video. `welcomeHasMedia` is true when any live top-level photo or video exists, including the About-me note, even when `hasPosted` is false. `welcomeMessageId` is that newest note's id, or null. When `hasPosted` is true, `messageId` is usually
 the newest live top-level non-profile post id; it can still be `null` if
@@ -3723,7 +3723,11 @@ including the About-me profile note, **and** have a photo or video (else
 **403**. Omitted `messageId` stays any live top-level non-profile post (no
 media requirement). Missing
 `isPlatform` account → **503** `{ "error": "Platform account is not configured" }`
-(no LNURL). Stores `messageId` and `comment` (or `''`) on the invoice.
+(no LNURL). With `messageId` and `comment` exactly `Welcome`, an account that
+already received the welcome gift (a platform `Welcome` reply under one of its
+notes, live or hidden) → **409** `{ "error": "Welcome gift already paid" }`
+(no LNURL); the welcome gift is once per account, whichever address it went
+to. Stores `messageId` and `comment` (or `''`) on the invoice.
 When `groupMessageId` is set (no `messageId`), the living-room post gate
 still applies. The id is display-only: it is stored only when it is that
 address's message in the closed `moderator_group` thread and an
@@ -4325,8 +4329,11 @@ The same ping runs when the account becomes verified and when About me is
 saved while verified. On boot, and every 15 minutes, every verified account
 that already has a live top-level photo or video (About me or a living-room
 post) is welcome-pinged, so the gift still goes out when the photo post and
-verification happened in either order. Spend pays once per address;
-this API may ping again. Replies, and any role other than `verified`, do not
+verification happened in either order. The welcome gift is once per
+account, not once per address: an account that already has a platform reply
+with the text `Welcome` under one of its notes (live or hidden) is not pinged
+again (`spend.ping.skipped` / `welcomed`), whichever address the gift went
+to, so a member whose receiving address changed is not paid twice. Replies, and any role other than `verified`, do not
 welcome-ping. A verified text-only post with no photo or video anywhere does
 not welcome-ping.
 Errors are logged; the POST still
@@ -4494,8 +4501,10 @@ Success → **Response** `200`:
 
 `sparkInvoice` is a Spark invoice (`spark1…`) for the same amount to the
 recipient's verified wallet with memo `zap:<payment hash of pr>`, or `null`
-when the recipient has no verified wallet, `pr` is not for exactly that amount,
-or free in-app payments are off (see [Free in-app payments](#free-in-app-payments)). `pr` is unchanged, so a
+when free in-app payments are off (see
+[Free in-app payments](#free-in-app-payments)). A recipient without a
+verified wallet never reaches this 200; it is the **400** `cannot_receive`
+below. `pr` is unchanged, so a
 payer without an in-app wallet still pays over Lightning.
 
 The author's address is the receiving address
@@ -4578,8 +4587,9 @@ Success → **Response** `200`:
 
 `sparkInvoice` is a Spark invoice (`spark1…`) for the same amount to the
 giver's verified wallet with memo `zap:<payment hash of pr>`, or `null`
-when the giver has no verified wallet, `pr` is not for exactly that amount,
-or free in-app payments are off (see [Free in-app payments](#free-in-app-payments)). `pr` is unchanged, so a
+when free in-app payments are off (see
+[Free in-app payments](#free-in-app-payments)). A giver without a verified
+wallet never reaches this 200; it is the **400** `cannot_receive` below. `pr` is unchanged, so a
 payer without an in-app wallet still pays over Lightning.
 The giver's address is the receiving address. The outstanding invoice
 returned for a repeat carries the same Spark invoice (issued on demand if it
@@ -5485,8 +5495,10 @@ Success → **Response** `200`:
 
 `sparkInvoice` is a Spark invoice (`spark1…`) for the same amount to the
 counterpart's verified wallet with memo `zap:<payment hash of pr>`, or `null`
-when the counterpart has no verified wallet, `pr` is not for exactly that amount,
-or free in-app payments are off (see [Free in-app payments](#free-in-app-payments)). `pr` is unchanged, so a
+when free in-app payments are off (see
+[Free in-app payments](#free-in-app-payments)). A counterpart without a
+verified wallet never reaches this 200; it is the **400** `cannot_receive`
+below. `pr` is unchanged, so a
 payer without an in-app wallet still pays over Lightning.
 The counterpart's address is the receiving address
 (see [Receiving address](#receiving-address)).

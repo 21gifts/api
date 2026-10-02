@@ -768,6 +768,60 @@ describe('GET /invoices/posted', () => {
       welcomeMessageId: 'post-alice',
     });
   });
+  it('reports no welcome media once the account received the welcome gift', async () => {
+    const authStore = new InMemoryAuthStore();
+    await authStore.createAccount({
+      id: 'acc-alice',
+      username: 'alice',
+      walletRequired: true,
+      linkingKey: null,
+      role: 'basis',
+      name: 'Ada',
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: 'a'.repeat(64),
+      createdAt: 1,
+      rulesAgreedAt: null,
+    });
+    await verifyWallet(authStore);
+    await authStore.createAccount({
+      id: 'plat',
+      linkingKey: null,
+      role: 'founder',
+      name: '21.gifts',
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: 'b'.repeat(64),
+      createdAt: 2,
+      rulesAgreedAt: null,
+      isPlatform: true,
+    });
+    const messageStore = await liveMediaPostStore();
+    await messageStore.create({
+      id: 'welcome-reply',
+      accountId: 'plat',
+      name: '21.gifts',
+      text: 'Welcome',
+      createdAt: new Date('2026-08-02T00:00:00.000Z'),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+      parentId: 'post-alice',
+    });
+    const res = await createApp({
+      spendApiToken: TOKEN,
+      authStore,
+      messageStore,
+    }).request(`/invoices/posted?address=${encodeURIComponent(ADDRESS)}`, auth());
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({
+      hasPosted: true,
+      messageId: 'post-alice',
+      postedAt: '2026-08-01T00:00:00.000Z',
+      hasMedia: true,
+      welcomeHasMedia: false,
+      welcomeMessageId: null,
+    });
+  });
 
   it('reports welcome media on an About-me photo and ignores a note that is not that photo', async () => {
     const authStore = new InMemoryAuthStore();
@@ -1595,6 +1649,85 @@ describe('POST /invoices', () => {
     );
     expect(res.status).toBe(200);
     expect(fetchImpl).toHaveBeenCalled();
+  });
+  it('returns 409 for a welcome invoice when the account already received the welcome gift', async () => {
+    const authStore = new InMemoryAuthStore();
+    await authStore.createAccount({
+      id: 'acc-alice',
+      username: 'alice',
+      walletRequired: true,
+      linkingKey: null,
+      role: 'verified',
+      name: 'Ada',
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: 'a'.repeat(64),
+      createdAt: 1,
+      rulesAgreedAt: null,
+      profileMessageId: PROFILE_NOTE_ID,
+    });
+    await verifyWallet(authStore);
+    await authStore.createPasskeyCredential({
+      credentialId: 'cred-alice',
+      publicKey: new Uint8Array([1]),
+      signCount: 0,
+      accountId: 'acc-alice',
+      createdAt: 1,
+    });
+    await authStore.createAccount({
+      id: 'plat',
+      linkingKey: null,
+      role: 'founder',
+      name: '21.gifts',
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: 'b'.repeat(64),
+      createdAt: 2,
+      rulesAgreedAt: null,
+      isPlatform: true,
+    });
+    const fetchImpl = vi.fn<FetchFn>(happyFetch());
+    const messageStore = new InMemoryMessageStore([
+      {
+        id: PROFILE_NOTE_ID,
+        accountId: 'acc-alice',
+        name: 'Ada',
+        text: 'about',
+        createdAt: new Date('2026-08-01T00:00:00.000Z'),
+        hasPhoto: true,
+        ...unsignedNostrDefaults(),
+      },
+      {
+        id: 'welcome-reply',
+        accountId: 'plat',
+        name: '21.gifts',
+        text: 'Welcome',
+        createdAt: new Date('2026-08-02T00:00:00.000Z'),
+        hasPhoto: false,
+        ...unsignedNostrDefaults(),
+        parentId: PROFILE_NOTE_ID,
+      },
+    ]);
+    const res = await createApp({
+      spendApiToken: TOKEN,
+      authStore,
+      messageStore,
+      fetchImpl,
+    }).request(
+      '/invoices',
+      auth({
+        method: 'POST',
+        body: JSON.stringify({
+          address: ADDRESS,
+          amountMsat: 1000,
+          messageId: PROFILE_NOTE_ID,
+          comment: 'Welcome',
+        }),
+      }),
+    );
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({ error: 'Welcome gift already paid' });
+    expect(fetchImpl).not.toHaveBeenCalled();
   });
 
   it("returns 403 when messageId is another account's post", async () => {

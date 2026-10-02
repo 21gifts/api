@@ -760,6 +760,7 @@ export function meRoutes(deps: MeRouteDeps): Hono {
         await syncWelcomePing({
           ...(deps.spendPing === undefined ? {} : { spendPing: deps.spendPing }),
           messages: deps.messages,
+          auth: deps.store,
           account: latest,
           ...(deps.lnurlServer === undefined ? {} : { lnurlServer: deps.lnurlServer }),
         });

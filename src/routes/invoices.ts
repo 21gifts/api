@@ -67,11 +67,7 @@ export interface InvoiceRouteDeps {
    */
   authStore: Pick<
     AuthStore,
-    | 'getAccountByUsername'
-    | 'accountHasPasskey'
-    | 'listAccounts'
-    | 'getNostrPublicKey'
-    | 'getAccount'
+    'getAccountByUsername' | 'accountHasPasskey' | 'listAccounts' | 'getNostrPublicKey'
   >;
   /**
    * Forum store for live top-level post lookup, GET `/posted` `hasMedia`,
@@ -83,6 +79,7 @@ export interface InvoiceRouteDeps {
     | 'accountHasLiveTopLevelPost'
     | 'accountHasLiveTopLevelMediaPost'
     | 'latestLiveTopLevelMediaId'
+    | 'accountHasWelcomeGift'
     | 'getById'
     | 'addSats'
     | 'addReceivedSats'
@@ -229,18 +226,43 @@ async function addressHasPasskey(
 }
 
 /**
- * Welcome media flag for `GET /invoices/posted`. Includes the About-me note.
- * Daily `hasMedia` still excludes that note.
+ * Whether the account already received the one-time welcome gift: a platform
+ * `Welcome` reply under one of its notes. The gift is once per account, so a
+ * member whose receiving address changed is not paid again. No platform
+ * account → `false` (no welcome gift can have been recorded).
  *
- * @param store - Forum store.
+ * @param deps - Auth store (platform lookup) and forum store.
+ * @param account - Receiving account.
+ * @returns `true` when the welcome gift was already paid.
+ */
+async function alreadyWelcomed(
+  deps: Pick<InvoiceRouteDeps, 'authStore' | 'messageStore'>,
+  account: { id: string },
+): Promise<boolean> {
+  const platform = (await deps.authStore.listAccounts()).find((item) => item.isPlatform === true);
+  return (
+    platform !== undefined &&
+    (await deps.messageStore.accountHasWelcomeGift(account.id, platform.id))
+  );
+}
+
+/**
+ * Welcome media flag for `GET /invoices/posted`. Includes the About-me note.
+ * Daily `hasMedia` still excludes that note. An account that already received
+ * the welcome gift reports no welcome media.
+ *
+ * @param deps - Auth store and forum store.
  * @param account - Address owner.
  * @returns `welcomeHasMedia` and the newest media note id (or null).
  */
 async function welcomePostedFields(
-  store: Pick<MessageStore, 'latestLiveTopLevelMediaId'>,
+  deps: Pick<InvoiceRouteDeps, 'authStore' | 'messageStore'>,
   account: { id: string },
 ): Promise<{ welcomeHasMedia: boolean; welcomeMessageId: string | null }> {
-  const welcomeMessageId = await store.latestLiveTopLevelMediaId(account.id);
+  if (await alreadyWelcomed(deps, account)) {
+    return { welcomeHasMedia: false, welcomeMessageId: null };
+  }
+  const welcomeMessageId = await deps.messageStore.latestLiveTopLevelMediaId(account.id);
   return {
     welcomeHasMedia: welcomeMessageId !== null,
     welcomeMessageId,
@@ -600,7 +622,7 @@ export function invoiceRoutes(deps: InvoiceRouteDeps): Hono {
           200,
         );
       }
-      const welcome = await welcomePostedFields(deps.messageStore, account);
+      const welcome = await welcomePostedFields(deps, account);
       const excludeId = account.profileMessageId ?? null;
       const hasPosted = await deps.messageStore.accountHasLiveTopLevelPost(account.id, excludeId);
       if (!hasPosted) {
@@ -719,6 +741,13 @@ export function invoiceRoutes(deps: InvoiceRouteDeps): Hono {
         const platform = accounts.find((item) => item.isPlatform === true);
         if (platform === undefined) {
           return c.json({ error: 'Platform account is not configured' }, 503);
+        }
+        if (
+          parsed.data.comment === 'Welcome' &&
+          (await deps.messageStore.accountHasWelcomeGift(account.id, platform.id))
+        ) {
+          logEvent('invoice.welcome_already_paid', { address });
+          return c.json({ error: 'Welcome gift already paid' }, 409);
         }
       } else {
         const hasPosted = await accountHasPosted(deps.messageStore, account);
