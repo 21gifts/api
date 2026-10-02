@@ -480,8 +480,10 @@ the default boot surface (today: `requestPayInvoice`, which needs a configured
 `resolveCandlesUrl`, `fetchFiatRates`, `parseFrankfurterRates`,
 `resolveFrankfurterUrl`, and `SqlGiftRecorder`, which need `DATABASE_URL`;
 `verifiedExternalZapRequest`, `externalDisplayName`, `resolveExternalProfileName`,
-`resolveExternalProfileFields`, `ExternalIngestLimiter`, `isPublicIp` (only reached after a
-host resolves), and `notifyExternalForumReply`, which have no direct default-boot HTTP trigger;
+`resolveExternalProfileFields`, `ExternalIngestLimiter`, and
+`notifyExternalForumReply`, which have no direct default-boot HTTP trigger;
+`isPublicIp`, which needs a relay target host that resolves (outbound DNS), so its test
+asserts the 502 for a host that does not resolve;
 `InMemoryInvoiceStore`, `requestGiftInvoice`, `decodeBolt11`, `newInvoiceId`,
 `normalizeHex32`, `preimageMatchesHash`, `NoopGiftRecorder`, and
 `recipientHandleFromAddress`, which need `SPEND_API_TOKEN` and a reachable

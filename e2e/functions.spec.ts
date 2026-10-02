@@ -530,7 +530,7 @@ test('Function: lnurlRoutes — POST /lnurl/pay-request without bearer is 401', 
   expect(await res.json()).toEqual({ error: 'Unauthorized' });
 });
 
-test('Function: resolveRelayPayRequest — a localhost LNURL target is 400 without a fetch', async ({
+test('Function: resolveRelayPayRequest — a Lightning Address on a .localhost host is 400 without a fetch', async ({
   request,
 }) => {
   const { authorization } = await memberSession(request);

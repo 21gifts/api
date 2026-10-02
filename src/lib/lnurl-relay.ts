@@ -276,18 +276,26 @@ async function systemLookup(host: string): Promise<string[]> {
 /**
  * Resolve the URL's host and require public addresses only.
  *
+ * The lookup shares the fetch time limit; an answer that does not arrive in
+ * time counts as `unresolved`.
+ *
  * @param url - Checked outbound URL.
- * @param deps - Resolver.
+ * @param deps - Resolver and timeout.
  * @returns `ok`, `private` (some address is not public), or `unresolved`.
  */
 async function hostAddresses(url: URL, deps: RelayDeps): Promise<'ok' | 'private' | 'unresolved'> {
-  let addresses: string[];
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const late = new Promise<null>((resolve) => {
+    timer = setTimeout(() => resolve(null), deps.timeoutMs ?? LNURL_RELAY_TIMEOUT_MS);
+  });
+  let addresses: string[] | null;
   try {
-    addresses = await (deps.lookupImpl ?? systemLookup)(url.hostname);
+    addresses = await Promise.race([(deps.lookupImpl ?? systemLookup)(url.hostname), late]);
   } catch {
-    return 'unresolved';
+    addresses = null;
   }
-  if (addresses.length === 0) {
+  clearTimeout(timer);
+  if (addresses === null || addresses.length === 0) {
     return 'unresolved';
   }
   return addresses.every(isPublicIp) ? 'ok' : 'private';
@@ -426,11 +434,11 @@ async function loadPayRequest(
     return fail(400, NOT_PAYABLE_ERROR, 'target');
   }
   const domain = parsed.url.hostname.toLowerCase();
-  const target = await hostAddresses(parsed.url, deps);
-  if (target === 'private') {
+  const targetHost = await hostAddresses(parsed.url, deps);
+  if (targetHost === 'private') {
     return fail(400, NOT_PAYABLE_ERROR, 'address');
   }
-  if (target === 'unresolved') {
+  if (targetHost === 'unresolved') {
     return fail(502, UNREACHABLE_ERROR, 'dns');
   }
   const fetched = await fetchRelayJson(parsed.url, deps);
