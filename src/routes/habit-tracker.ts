@@ -66,7 +66,13 @@ const operation = z.discriminatedUnion('action', [
 ]);
 
 /**
- * Public weekly history; all mutations require a session and owner checks.
+ * Public weekly history; mutations require a session, not a blanket owner check.
+ *
+ * Add, edit, retire, and rate require initiator rank. Edit, retire, and rate
+ * also require the caller to own the resolution. Deleting a comment requires
+ * initiator rank and does not check the author. Commenting and requesting a
+ * donation invoice are open to any signed-in role. The invoice does not check
+ * the comment window or initiator rank.
  *
  * @param deps - Auth store, habit store, clock, and optional fetch.
  * @returns The Hono app.
