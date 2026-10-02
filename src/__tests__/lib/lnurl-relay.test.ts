@@ -195,6 +195,12 @@ describe('resolveRelayPayRequest', () => {
     ['bad bech32 checksum', `${lnurl('https://a.example.com/x').slice(0, -1)}q`],
     ['bech32 with a bad character', 'lnurl1bbbbbbbbbbbb'],
     [
+      'LNURL to a host over 253 characters',
+      lnurl(
+        `https://${'a'.repeat(60)}.${'b'.repeat(60)}.${'c'.repeat(60)}.${'d'.repeat(60)}.example.com/x`,
+      ),
+    ],
+    [
       'mixed-case bech32',
       ((code: string): string => `L${code.slice(1)}`)(lnurl('https://a.example.com/x')),
     ],
@@ -290,6 +296,10 @@ describe('resolveRelayPayRequest', () => {
     ['ff02::1'],
     ['64:ff9b::a00:1'],
     ['::ffff:8.8.8.8'],
+    ['2001:2:1::1'],
+    ['2001:1ff::1'],
+    ['2001::1'],
+    ['100:0:0:1::1'],
     ['192.88.99.1'],
     ['64:ff9b:0:1::1'],
     ['64:ff9b:2::1'],
@@ -324,6 +334,7 @@ describe('resolveRelayPayRequest', () => {
     ['198.20.0.1'],
     ['223.255.255.254'],
     ['2001:4860:4860::8888'],
+    ['2001:200::1'],
     ['2a00:1450:4001::1'],
     ['3fff:1000::1'],
     ['64:ff9b::808:808'],

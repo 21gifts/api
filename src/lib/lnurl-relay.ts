@@ -162,6 +162,9 @@ function fail(status: 400 | 404 | 502, error: string, reason: string): RelayFail
  * @returns `true` when the host is an outside DNS name.
  */
 function isRelayDnsHost(host: string): boolean {
+  if (host.length > 253) {
+    return false;
+  }
   const labels = host.split('.');
   if (labels.length < 2) {
     return false;
@@ -337,7 +340,8 @@ async function systemLookup(host: string): Promise<string[]> {
  * Whether the relay may connect to one resolved address.
  *
  * The address must pass {@link isPublicIp}. An IPv6 answer must also lie in
- * global unicast `2000::/3` or the well-known NAT64 prefix `64:ff9b::/96`.
+ * global unicast `2000::/3` or the well-known NAT64 prefix `64:ff9b::/96`,
+ * and not in the IETF special-purpose block `2001::/23`.
  *
  * @param ip - Address text from the resolver.
  * @returns `true` when the relay may connect.
@@ -347,6 +351,11 @@ function isRelayAddress(ip: string): boolean {
     return false;
   }
   const lower = ip.trim().toLowerCase();
+  // `2001::…` (Teredo) is already refused by isPublicIp.
+  const ietf = /^2001:([0-9a-f]{1,4}):/.exec(lower);
+  if (ietf !== null && Number.parseInt(String(ietf[1]), 16) < 0x200) {
+    return false;
+  }
   return (
     !lower.includes(':') ||
     /^[23][0-9a-f]{3}:/.test(lower) ||

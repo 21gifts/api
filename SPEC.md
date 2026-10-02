@@ -602,7 +602,8 @@ A bech32 LNURL written in mixed case is refused.
 The pay-request URL (`https://<domain>/.well-known/lnurlp/<user>`, or the
 decoded LNURL) must use `https`, have no port other than the default 443 and no user name or
 password, and its host
-must be a DNS name with at least two labels: no address literal, no
+must be a DNS name of at most 253 characters with at least two labels: no
+address literal, no
 `localhost`, no `.local`, `.internal`, or `.localhost` name, no trailing dot.
 Every address the host resolves to must pass the public address check: no
 loopback, private, shared, link-local, benchmark, documentation, 6to4 relay
@@ -611,7 +612,8 @@ IPv4-translated, 6to4, or NAT64 IPv6). IPv6 unique-local, link-local, site-local
 documentation, Teredo, `2001:1::/32`, benchmarking, ORCHID, `5f00::/16`,
 discard, and local NAT64 ranges
 are refused, and any other IPv6 answer must lie in global unicast `2000::/3` or
-the well-known NAT64 prefix `64:ff9b::/96`. A Lightning Address whose name is only dots is refused. A
+the well-known NAT64 prefix `64:ff9b::/96` and not in the IETF special-purpose
+block `2001::/23`. A Lightning Address whose name is only dots is refused. A
 target on the host of `PUBLIC_BASE_URL` (compared without a trailing dot) is
 refused (the app pays those itself). The fetch does not follow redirects and reads at most 64 KB. Each host lookup
 and each fetch waits at most 5 seconds, and one relay call waits at most 8
