@@ -23,8 +23,6 @@ async function seededStore(): Promise<InMemoryAuthStore> {
     linkingKey: LINKING_KEY,
     role: 'basis',
     name: 'Ada',
-    lightningAddress: null,
-    lightningAddressVerified: false,
     forumLawsDismissed: false,
     location: null,
     viewKey: 'a'.repeat(64),

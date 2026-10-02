@@ -11,7 +11,7 @@ async function memberSession(request: APIRequestContext): Promise<{ authorizatio
       accounts: [
         {
           name,
-          lightningAddress: `e2e-trust-${stamp}@walletofsatoshi.com`,
+          username: `e2e-trust-${stamp}`.slice(0, 32),
         },
       ],
     },
@@ -545,30 +545,17 @@ test('POST /me/rules-agreement without bearer is 401', async ({ request }) => {
   expect(res.status()).toBe(401);
 });
 
-test('POST /me/lightning-address without bearer is 401', async ({ request }) => {
-  const res = await request.post('/me/lightning-address', {
-    data: { address: 'a@b.com' },
-  });
-  expect(res.status()).toBe(401);
-});
-
-test('DELETE /me/lightning-address without bearer is 401', async ({ request }) => {
-  const res = await request.delete('/me/lightning-address');
-  expect(res.status()).toBe(401);
-});
-
-test('POST /me/lightning-address/verification without bearer is 401', async ({ request }) => {
-  const res = await request.post('/me/lightning-address/verification');
-  expect(res.status()).toBe(401);
-});
-
-test('POST /me/lightning-address/verification/confirm without bearer is 401', async ({
-  request,
-}) => {
-  const res = await request.post('/me/lightning-address/verification/confirm', {
-    data: { nonce: '00' },
-  });
-  expect(res.status()).toBe(401);
+test('removed address-linking routes are 404', async ({ request }) => {
+  expect(
+    (await request.post('/me/lightning-address', { data: { address: 'a@b.com' } })).status(),
+  ).toBe(404);
+  expect((await request.delete('/me/lightning-address')).status()).toBe(404);
+  expect((await request.post('/me/lightning-address/verification')).status()).toBe(404);
+  expect(
+    (
+      await request.post('/me/lightning-address/verification/confirm', { data: { nonce: '00' } })
+    ).status(),
+  ).toBe(404);
 });
 
 test('GET /debug/accounts without bearer is 401', async ({ request }) => {
@@ -578,7 +565,7 @@ test('GET /debug/accounts without bearer is 401', async ({ request }) => {
 
 test('POST /debug/accounts without bearer is 401', async ({ request }) => {
   const res = await request.post('/debug/accounts', {
-    data: { accounts: [{ name: 'Ada', lightningAddress: 'guest@walletofsatoshi.com' }] },
+    data: { accounts: [{ name: 'Ada' }] },
   });
   expect(res.status()).toBe(401);
 });
@@ -586,15 +573,24 @@ test('POST /debug/accounts without bearer is 401', async ({ request }) => {
 test('POST /debug/accounts with the e2e token provisions a guest', async ({ request }) => {
   const res = await request.post('/debug/accounts', {
     headers: { authorization: 'Bearer e2e-debug-token' },
-    data: { accounts: [{ name: 'Ada', lightningAddress: 'guest@walletofsatoshi.com' }] },
+    data: { accounts: [{ name: 'Ada' }] },
   });
   expect(res.status()).toBe(200);
   const body = (await res.json()) as {
-    accounts: Array<{ name: string; lightningAddress: string; viewKey: string; created: boolean }>;
+    accounts: Array<{ name: string; username: string | null; viewKey: string; created: boolean }>;
   };
   expect(body.accounts).toHaveLength(1);
   expect(body.accounts[0]?.name).toBe('Ada');
+  expect(body.accounts[0]?.created).toBe(true);
   expect(body.accounts[0]?.viewKey).toMatch(/^[0-9a-f]{64}$/);
+});
+
+test('POST /debug/accounts refuses an external address field', async ({ request }) => {
+  const res = await request.post('/debug/accounts', {
+    headers: { authorization: 'Bearer e2e-debug-token' },
+    data: { accounts: [{ name: 'Ada', lightningAddress: 'guest@example.com' }] },
+  });
+  expect(res.status()).toBe(400);
 });
 
 test('GET /debug/accounts/:id without bearer is 401', async ({ request }) => {
@@ -855,7 +851,7 @@ test('GET /invoices/posted unconfigured is 503', async ({ request }) => {
 
 test('POST /invoices unconfigured is 503', async ({ request }) => {
   const res = await request.post('/invoices', {
-    data: { address: 'alice@walletofsatoshi.com', amountMsat: 1000 },
+    data: { address: 'alice@example.com', amountMsat: 1000 },
   });
   expect(res.status()).toBe(503);
 });
@@ -1181,4 +1177,9 @@ test('GET /messages/:id/external-replies without bearer is 404 on default boot',
 }) => {
   const res = await request.get('/messages/:id/external-replies');
   expect(res.status()).toBe(404);
+});
+
+test('GET /messages/places without bearer is 401', async ({ request }) => {
+  const res = await request.get('/messages/places');
+  expect(res.status()).toBe(401);
 });

@@ -42,6 +42,7 @@ import { InMemoryPushStore } from '@/lib/push-store';
 import { InMemoryFiatStore } from '@/lib/usd-fiat-store';
 import type { LnurlServerConfig } from '@/lib/config';
 import { buildZapReceipt, zapReceiptSecretKey } from '@/lib/nostr/zap-receipt';
+import { LNURL_SERVER } from '@/__tests__/helpers/wallet-lnurl';
 
 vi.mock('@/lib/bolt11', () => ({
   decodeBolt11: vi.fn(),
@@ -76,26 +77,34 @@ async function seedStore(args: {
   auth: InMemoryAuthStore;
   accountId: string;
   eventId?: string | null;
+  /**
+   * Author's receiving address: its local part becomes the username of a
+   * verified wallet (default `seed`). `null` or blank → no verified wallet.
+   */
   lightningAddress?: string | null;
   messageId?: string;
   createAccount?: boolean;
 }): Promise<string> {
   const messageId = args.messageId ?? `m-${args.accountId}`;
   if (args.createAccount !== false) {
+    const address =
+      args.lightningAddress === undefined ? 'seed@example.com' : args.lightningAddress;
+    const username = address === null ? '' : (address.trim().split('@')[0] ?? '').toLowerCase();
     await args.auth.createAccount({
       id: args.accountId,
       linkingKey: null,
       role: 'basis',
       name: 'Ada',
-      lightningAddress:
-        args.lightningAddress === undefined ? 'seed@example.com' : args.lightningAddress,
-      lightningAddressVerified: true,
+      ...(username === '' ? {} : { username, walletRequired: true }),
       forumLawsDismissed: false,
       location: null,
       viewKey: viewKeyFor(args.accountId),
       createdAt: 1,
       rulesAgreedAt: null,
     });
+    if (username !== '') {
+      await verifyWallet(args.auth, args.accountId, username);
+    }
   }
   await args.store.create({
     id: messageId,
@@ -108,6 +117,22 @@ async function seedStore(args: {
     eventId: args.eventId === undefined ? NOTE_EVENT_ID : args.eventId,
   });
   return messageId;
+}
+
+/** Claim and verify a wallet key derived from the account id (once). */
+async function verifyWallet(
+  auth: InMemoryAuthStore,
+  accountId: string,
+  username: string,
+): Promise<void> {
+  if (typeof (await auth.getAccount(accountId))?.sparkPubkeyVerifiedAt === 'number') {
+    return;
+  }
+  const key = `02${createHash('sha256').update(accountId).digest('hex')}`;
+  await auth.claimSparkPubkey(accountId, key);
+  if (!(await auth.markSparkPubkeyVerified(accountId, key, username, 1))) {
+    throw new Error(`wallet not verified for ${accountId}`);
+  }
 }
 
 /** LNURL-pay metadata fetch returning a zap-capable provider pubkey. */
@@ -136,6 +161,7 @@ async function ingest(
 ): ReturnType<typeof indexOpenZapReceipts> {
   return indexOpenZapReceipts({
     verifyReceipt: () => true,
+    lnurlServer: LNURL_SERVER,
     ...args,
   });
 }
@@ -353,8 +379,6 @@ async function memberGiftRetryFixture(
     linkingKey: null,
     role: 'basis',
     name: 'Retry Payer',
-    lightningAddress: `${slug}-payer@example.com`,
-    lightningAddressVerified: true,
     location: null,
     forumLawsDismissed: false,
     viewKey: viewKeyFor(payerId),
@@ -1399,8 +1423,6 @@ describe('manual invoice settlement', () => {
       linkingKey: null,
       role: 'basis',
       name: null,
-      lightningAddress: 'payer@example.com',
-      lightningAddressVerified: true,
       forumLawsDismissed: false,
       location: null,
       viewKey: viewKeyFor('manual-payer'),
@@ -1471,8 +1493,6 @@ describe('manual invoice settlement', () => {
       linkingKey: null,
       role: 'basis',
       name: null,
-      lightningAddress: 'payer@example.com',
-      lightningAddressVerified: true,
       forumLawsDismissed: false,
       location: null,
       viewKey: viewKeyFor('manual-payer'),
@@ -1533,14 +1553,14 @@ describe('manual invoice settlement', () => {
       role: 'basis',
       name: 'Ada',
       username: 'ada',
-      lightningAddress: 'payer@example.com',
-      lightningAddressVerified: true,
+      walletRequired: true,
       forumLawsDismissed: false,
       location: null,
       viewKey: viewKeyFor('manual-payer'),
       createdAt: 2,
       rulesAgreedAt: 1,
     });
+    await verifyWallet(auth, 'manual-payer', 'ada');
     const preimage = '12'.repeat(32);
     const paymentHash = createHash('sha256').update(Buffer.from(preimage, 'hex')).digest('hex');
     await seedManualInvoice(store, paymentHash, {
@@ -1573,7 +1593,7 @@ describe('manual invoice settlement', () => {
     expect(kinds).toEqual(['forum_post']);
   });
 
-  it('pings spend after a compose post when the payer is eligible today', async () => {
+  it('pings spend with the payer wallet address after a compose post when eligible today', async () => {
     const store = new InMemoryMessageStore();
     const auth = new InMemoryAuthStore();
     const messageId = await seedStore({
@@ -1595,14 +1615,92 @@ describe('manual invoice settlement', () => {
       role: 'verified',
       name: 'Ada',
       username: 'ada-eligible',
-      lightningAddress: 'eligible@example.com',
-      lightningAddressVerified: true,
+      walletRequired: true,
       forumLawsDismissed: false,
       location: null,
       viewKey: viewKeyFor('eligible-payer'),
       createdAt: 2,
       rulesAgreedAt: 1,
     });
+    await verifyWallet(auth, 'eligible-payer', 'ada-eligible');
+    const fundingStore = new InMemoryFundingStore([
+      {
+        accountId: 'eligible-payer',
+        status: 'admitted',
+        appliedAt: 1,
+        decidedAt: 2,
+        decidedBy: 'staff',
+        trialUtcDate: null,
+        admittedAt: 2,
+        note: null,
+      },
+    ]);
+    const preimage = '13'.repeat(32);
+    const paymentHash = createHash('sha256').update(Buffer.from(preimage, 'hex')).digest('hex');
+    await seedManualInvoice(store, paymentHash, {
+      conversationId: null,
+      messageId: 'eligible-message',
+      payerAccountId: 'eligible-payer',
+      authorAccountId: 'eligible-author',
+      zapRequest: { content: 'Eligible compose' },
+    });
+    const spendPing = { ping: vi.fn(async () => undefined) };
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const result = await settleInvoiceManually({
+      store,
+      auth,
+      now: () => 1_800,
+      paymentHash,
+      note: 'eligible compose',
+      preimage,
+      spendPing,
+      fundingStore,
+      postLimiter: new PostRateLimiter(),
+      lnurlServer: LNURL_SERVER,
+    });
+    warn.mockRestore();
+    expect(result.ok).toBe(true);
+    const created = (await store.listLatest(20)).find((row) => row.text === 'Eligible compose');
+    expect(created?.accountId).toBe('eligible-payer');
+    expect(spendPing.ping).toHaveBeenCalledTimes(1);
+    expect(spendPing.ping).toHaveBeenCalledWith(
+      'ada-eligible@example.test',
+      created?.id,
+      'daily',
+      'admitted',
+    );
+  });
+
+  it('skips the compose spend ping when the payer has no receiving address', async () => {
+    const store = new InMemoryMessageStore();
+    const auth = new InMemoryAuthStore();
+    const messageId = await seedStore({
+      store,
+      auth,
+      accountId: 'eligible-author',
+      messageId: 'eligible-message',
+    });
+    const platform = await auth.getAccount('eligible-author');
+    expect(platform).toBeDefined();
+    await auth.updateAccount({
+      ...platform!,
+      isPlatform: true,
+      profileMessageId: messageId,
+    });
+    await auth.createAccount({
+      id: 'eligible-payer',
+      linkingKey: null,
+      role: 'verified',
+      name: 'Ada',
+      username: 'ada-eligible',
+      walletRequired: true,
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: viewKeyFor('eligible-payer'),
+      createdAt: 2,
+      rulesAgreedAt: 1,
+    });
+    await verifyWallet(auth, 'eligible-payer', 'ada-eligible');
     const fundingStore = new InMemoryFundingStore([
       {
         accountId: 'eligible-payer',
@@ -1641,13 +1739,8 @@ describe('manual invoice settlement', () => {
     expect(result.ok).toBe(true);
     const created = (await store.listLatest(20)).find((row) => row.text === 'Eligible compose');
     expect(created?.accountId).toBe('eligible-payer');
-    expect(spendPing.ping).toHaveBeenCalledTimes(1);
-    expect(spendPing.ping).toHaveBeenCalledWith(
-      'eligible@example.com',
-      created?.id,
-      'daily',
-      'admitted',
-    );
+    // Without the LNURL server the payer has no receiving address to pay out to.
+    expect(spendPing.ping).toHaveBeenCalledTimes(0);
   });
 
   it('logs spend.ping.failed when compose funding lookup throws', async () => {
@@ -1672,14 +1765,14 @@ describe('manual invoice settlement', () => {
       role: 'verified',
       name: 'Ada',
       username: 'ada-throw',
-      lightningAddress: 'throw@example.com',
-      lightningAddressVerified: true,
+      walletRequired: true,
       forumLawsDismissed: false,
       location: null,
       viewKey: viewKeyFor('throw-payer'),
       createdAt: 2,
       rulesAgreedAt: 1,
     });
+    await verifyWallet(auth, 'throw-payer', 'ada-throw');
     const preimage = '14'.repeat(32);
     const paymentHash = createHash('sha256').update(Buffer.from(preimage, 'hex')).digest('hex');
     await seedManualInvoice(store, paymentHash, {
@@ -1703,6 +1796,7 @@ describe('manual invoice settlement', () => {
       spendPing,
       fundingStore,
       postLimiter: new PostRateLimiter(),
+      lnurlServer: LNURL_SERVER,
     });
     warn.mockRestore();
     expect(result.ok).toBe(true);
@@ -1730,8 +1824,6 @@ describe('manual invoice settlement', () => {
       linkingKey: null,
       role: 'basis',
       name: 'Ada',
-      lightningAddress: 'payer@example.com',
-      lightningAddressVerified: true,
       forumLawsDismissed: false,
       location: null,
       viewKey: viewKeyFor('manual-payer'),
@@ -1782,14 +1874,14 @@ describe('manual invoice settlement', () => {
       role: 'basis',
       name: 'Ada',
       username: 'ada',
-      lightningAddress: 'payer@example.com',
-      lightningAddressVerified: true,
+      walletRequired: true,
       forumLawsDismissed: false,
       location: null,
       viewKey: viewKeyFor('manual-payer'),
       createdAt: 2,
       rulesAgreedAt: 1,
     });
+    await verifyWallet(auth, 'manual-payer', 'ada');
     const preimage = '1a'.repeat(32);
     const paymentHash = createHash('sha256').update(Buffer.from(preimage, 'hex')).digest('hex');
     await seedManualInvoice(store, paymentHash, {
@@ -1837,14 +1929,14 @@ describe('manual invoice settlement', () => {
       role: 'basis',
       name: 'Ada',
       username: 'ada',
-      lightningAddress: 'payer@example.com',
-      lightningAddressVerified: true,
+      walletRequired: true,
       forumLawsDismissed: false,
       location: null,
       viewKey: viewKeyFor('manual-payer'),
       createdAt: 2,
       rulesAgreedAt: 1,
     });
+    await verifyWallet(auth, 'manual-payer', 'ada');
     const preimage = '1b'.repeat(32);
     const paymentHash = createHash('sha256').update(Buffer.from(preimage, 'hex')).digest('hex');
     await seedManualInvoice(store, paymentHash, {
@@ -1909,14 +2001,14 @@ describe('manual invoice settlement', () => {
       role: 'basis',
       name: 'Ada',
       username: 'ada',
-      lightningAddress: 'payer@example.com',
-      lightningAddressVerified: true,
+      walletRequired: true,
       forumLawsDismissed: false,
       location: null,
       viewKey: viewKeyFor('manual-payer'),
       createdAt: 2,
       rulesAgreedAt: 1,
     });
+    await verifyWallet(auth, 'manual-payer', 'ada');
     const preimage = '1c'.repeat(32);
     const paymentHash = createHash('sha256').update(Buffer.from(preimage, 'hex')).digest('hex');
     await seedManualInvoice(store, paymentHash, {
@@ -1973,14 +2065,14 @@ describe('manual invoice settlement', () => {
       role: 'basis',
       name: 'Ada',
       username: 'ada',
-      lightningAddress: 'payer@example.com',
-      lightningAddressVerified: true,
+      walletRequired: true,
       forumLawsDismissed: false,
       location: null,
       viewKey: viewKeyFor('manual-payer'),
       createdAt: 2,
       rulesAgreedAt: 1,
     });
+    await verifyWallet(auth, 'manual-payer', 'ada');
     const preimage = '13'.repeat(32);
     const paymentHash = createHash('sha256').update(Buffer.from(preimage, 'hex')).digest('hex');
     await seedManualInvoice(store, paymentHash, {
@@ -2026,14 +2118,14 @@ describe('manual invoice settlement', () => {
       role: 'basis',
       name: 'Ada',
       username: 'ada',
-      lightningAddress: 'payer@example.com',
-      lightningAddressVerified: true,
+      walletRequired: true,
       forumLawsDismissed: false,
       location: null,
       viewKey: viewKeyFor('manual-payer'),
       createdAt: 2,
       rulesAgreedAt: 1,
     });
+    await verifyWallet(auth, 'manual-payer', 'ada');
     const preimage = '14'.repeat(32);
     const paymentHash = createHash('sha256').update(Buffer.from(preimage, 'hex')).digest('hex');
     await seedManualInvoice(store, paymentHash, {
@@ -2088,14 +2180,14 @@ describe('manual invoice settlement', () => {
       role: 'basis',
       name: 'Ada',
       username: 'ada',
-      lightningAddress: 'payer@example.com',
-      lightningAddressVerified: true,
+      walletRequired: true,
       forumLawsDismissed: false,
       location: null,
       viewKey: viewKeyFor('manual-payer'),
       createdAt: 2,
       rulesAgreedAt: 1,
     });
+    await verifyWallet(auth, 'manual-payer', 'ada');
     const preimage = '18'.repeat(32);
     const paymentHash = createHash('sha256').update(Buffer.from(preimage, 'hex')).digest('hex');
     await seedManualInvoice(store, paymentHash, {
@@ -2141,14 +2233,14 @@ describe('manual invoice settlement', () => {
       role: 'basis',
       name: 'Ada',
       username: 'ada',
-      lightningAddress: 'payer@example.com',
-      lightningAddressVerified: true,
+      walletRequired: true,
       forumLawsDismissed: false,
       location: null,
       viewKey: viewKeyFor('manual-payer'),
       createdAt: 2,
       rulesAgreedAt: 1,
     });
+    await verifyWallet(auth, 'manual-payer', 'ada');
     const missingParent = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd';
     const preimage = '15'.repeat(32);
     const paymentHash = createHash('sha256').update(Buffer.from(preimage, 'hex')).digest('hex');
@@ -2216,14 +2308,14 @@ describe('manual invoice settlement', () => {
       role: 'basis',
       name: 'Ada',
       username: 'ada',
-      lightningAddress: 'payer@example.com',
-      lightningAddressVerified: true,
+      walletRequired: true,
       forumLawsDismissed: false,
       location: null,
       viewKey: viewKeyFor('manual-payer'),
       createdAt: 2,
       rulesAgreedAt: 1,
     });
+    await verifyWallet(auth, 'manual-payer', 'ada');
     const preimage = '16'.repeat(32);
     const paymentHash = createHash('sha256').update(Buffer.from(preimage, 'hex')).digest('hex');
     await seedManualInvoice(store, paymentHash, {
@@ -2279,14 +2371,14 @@ describe('manual invoice settlement', () => {
       role: 'basis',
       name: 'Ada',
       username: 'ada',
-      lightningAddress: 'payer@example.com',
-      lightningAddressVerified: true,
+      walletRequired: true,
       forumLawsDismissed: false,
       location: null,
       viewKey: viewKeyFor('manual-payer'),
       createdAt: 2,
       rulesAgreedAt: 1,
     });
+    await verifyWallet(auth, 'manual-payer', 'ada');
     const preimage = '17'.repeat(32);
     const paymentHash = createHash('sha256').update(Buffer.from(preimage, 'hex')).digest('hex');
     await seedManualInvoice(store, paymentHash, {
@@ -2356,8 +2448,6 @@ describe('manual invoice settlement', () => {
       linkingKey: null,
       role: 'basis',
       name: 'Pat',
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: viewKeyFor('manual-payer'),
@@ -2495,8 +2585,6 @@ describe('manual invoice settlement', () => {
       linkingKey: null,
       role: 'basis',
       name: null,
-      lightningAddress: 'payer@example.com',
-      lightningAddressVerified: true,
       forumLawsDismissed: false,
       location: null,
       viewKey: viewKeyFor('manual-payer'),
@@ -2669,8 +2757,6 @@ describe('manual invoice settlement', () => {
       linkingKey: null,
       role: 'basis',
       name: 'Pat',
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: viewKeyFor('manual-payer'),
@@ -3700,8 +3786,6 @@ describe('indexOpenZapReceipts', () => {
       linkingKey: null,
       role: 'basis',
       name: 'Ada',
-      lightningAddress: 'zap-chunk@example.com',
-      lightningAddressVerified: true,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'b'.repeat(64),
@@ -4994,12 +5078,20 @@ describe('indexOpenZapReceipts', () => {
     const store = new InMemoryMessageStore();
     const auth = new InMemoryAuthStore();
     const accountId = 'acc-decision-change';
-    await seedStore({
-      store,
-      auth,
-      accountId,
-      lightningAddress: null,
+    await auth.createAccount({
+      id: accountId,
+      linkingKey: null,
+      role: 'basis',
+      name: 'Ada',
+      username: 'decision',
+      walletRequired: true,
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: viewKeyFor(accountId),
+      createdAt: 1,
+      rulesAgreedAt: null,
     });
+    await seedStore({ store, auth, accountId, createAccount: false });
     const querier = new RecordingQuerier();
     querier.events = [
       {
@@ -5026,15 +5118,7 @@ describe('indexOpenZapReceipts', () => {
     expect(afterAddress).toHaveLength(1);
     expect(afterAddress[0]?.outcome).toBe('rejected');
     expect(afterAddress[0]?.reason).toBe('address');
-    const account = await auth.getAccount(accountId);
-    expect(account).toBeDefined();
-    if (account === undefined) {
-      throw new Error('expected account');
-    }
-    await auth.updateAccount({
-      ...account,
-      lightningAddress: 'zap-decision-change@example.com',
-    });
+    await verifyWallet(auth, accountId, 'decision');
     await ingest({
       store,
       auth,
@@ -5468,14 +5552,15 @@ describe('indexOpenZapReceipts', () => {
       linkingKey: null,
       role: 'basis',
       name: 'Bea',
-      lightningAddress: 'giver@walletofsatoshi.com',
-      lightningAddressVerified: true,
+      username: 'giver',
+      walletRequired: true,
       forumLawsDismissed: false,
       location: null,
       viewKey: viewKeyFor(giver),
       createdAt: 1,
       rulesAgreedAt: null,
     });
+    await verifyWallet(auth, giver, 'giver');
     const paymentHash = '13'.repeat(32);
     await store.recordInvoiceAttempt({
       id: 'inv-repay',
@@ -5484,7 +5569,7 @@ describe('indexOpenZapReceipts', () => {
       payerAccountId: 'acc-repay',
       authorAccountId: giver,
       amountSats: 21,
-      lightningAddress: 'giver@walletofsatoshi.com',
+      lightningAddress: 'giver@example.test',
       zapRequest: null,
       result: 'ok',
       httpStatus: 200,
@@ -5516,9 +5601,10 @@ describe('indexOpenZapReceipts', () => {
       timeoutMs: 50,
       now: () => 5,
       fetchImpl: async (input, init) =>
-        lnurlFetch(
-          String(input).includes('walletofsatoshi.com') ? 'bb'.repeat(32) : PROVIDER_PUBKEY,
-        )(input, init),
+        lnurlFetch(String(input).includes('/lnurlp/giver') ? 'bb'.repeat(32) : PROVIDER_PUBKEY)(
+          input,
+          init,
+        ),
     });
     expect((await store.getByEventId(NOTE_EVENT_ID))?.sats).toBe(0);
     expect(await store.listRepayments(messageId)).toEqual([
@@ -5548,9 +5634,10 @@ describe('indexOpenZapReceipts', () => {
       timeoutMs: 50,
       now: () => 6,
       fetchImpl: async (input, init) =>
-        lnurlFetch(
-          String(input).includes('walletofsatoshi.com') ? 'bb'.repeat(32) : PROVIDER_PUBKEY,
-        )(input, init),
+        lnurlFetch(String(input).includes('/lnurlp/giver') ? 'bb'.repeat(32) : PROVIDER_PUBKEY)(
+          input,
+          init,
+        ),
     });
     const ingests = await store.listZapIngests(10);
     expect(ingests.some((row) => row.reason === 'settled')).toBe(true);
@@ -5566,14 +5653,15 @@ describe('indexOpenZapReceipts', () => {
       linkingKey: null,
       role: 'basis',
       name: 'Bea',
-      lightningAddress: 'same@example.com',
-      lightningAddressVerified: true,
+      username: 'same',
+      walletRequired: true,
       forumLawsDismissed: false,
       location: null,
       viewKey: viewKeyFor(giver),
       createdAt: 1,
       rulesAgreedAt: null,
     });
+    await verifyWallet(auth, giver, 'same');
     const paymentHash = '14'.repeat(32);
     await store.recordInvoiceAttempt({
       id: 'inv-same',
@@ -5629,8 +5717,6 @@ describe('indexOpenZapReceipts', () => {
       linkingKey: null,
       role: 'basis',
       name: 'Bea',
-      lightningAddress: 'foreign@walletofsatoshi.com',
-      lightningAddressVerified: true,
       forumLawsDismissed: false,
       location: null,
       viewKey: viewKeyFor(giver),
@@ -5645,7 +5731,7 @@ describe('indexOpenZapReceipts', () => {
       payerAccountId: 'acc-foreign-repay',
       authorAccountId: giver,
       amountSats: 21,
-      lightningAddress: 'foreign@walletofsatoshi.com',
+      lightningAddress: 'foreign@example.net',
       zapRequest: null,
       result: 'ok',
       httpStatus: 200,
@@ -5677,9 +5763,10 @@ describe('indexOpenZapReceipts', () => {
       timeoutMs: 50,
       now: () => 8,
       fetchImpl: async (input, init) =>
-        lnurlFetch(
-          String(input).includes('walletofsatoshi.com') ? 'bb'.repeat(32) : PROVIDER_PUBKEY,
-        )(input, init),
+        lnurlFetch(String(input).includes('/lnurlp/giver') ? 'bb'.repeat(32) : PROVIDER_PUBKEY)(
+          input,
+          init,
+        ),
     });
     expect(await store.listRepayments(messageId)).toEqual([]);
     expect(await store.claimZapPayment(paymentHash, 'r-later', new Date(9))).toBe(true);
@@ -6139,6 +6226,7 @@ describe('indexOpenZapReceipts', () => {
     await indexOpenZapReceipts({
       store,
       auth,
+      lnurlServer: LNURL_SERVER,
       querier,
       urls: URLS,
       timeoutMs: 50,
@@ -6187,6 +6275,7 @@ describe('indexOpenZapReceipts', () => {
     await indexOpenZapReceipts({
       store,
       auth,
+      lnurlServer: LNURL_SERVER,
       querier,
       urls: URLS,
       timeoutMs: 50,
@@ -6275,6 +6364,7 @@ describe('indexOpenZapReceipts', () => {
     await indexOpenZapReceipts({
       store,
       auth,
+      lnurlServer: LNURL_SERVER,
       querier,
       urls: URLS,
       timeoutMs: 50,
@@ -6304,8 +6394,6 @@ describe('indexOpenZapReceipts', () => {
       linkingKey: null,
       role: 'basis',
       name: 'Pat',
-      lightningAddress: 'pat-zap-skip@example.com',
-      lightningAddressVerified: true,
       location: null,
       forumLawsDismissed: false,
       viewKey: viewKeyFor('payer-zap-skip'),
@@ -6391,8 +6479,6 @@ describe('indexOpenZapReceipts', () => {
       linkingKey: null,
       role: 'basis',
       name: 'Pat',
-      lightningAddress: 'pat-one-notify-empty@example.com',
-      lightningAddressVerified: true,
       location: null,
       forumLawsDismissed: false,
       viewKey: viewKeyFor('payer-one-notify-empty'),
@@ -6475,14 +6561,14 @@ describe('indexOpenZapReceipts', () => {
       role: 'basis',
       name: 'Ada',
       username: 'ada-ingest-platform',
-      lightningAddress: 'ada-ingest-platform@example.com',
-      lightningAddressVerified: true,
+      walletRequired: true,
       location: null,
       forumLawsDismissed: false,
       viewKey: viewKeyFor('payer-ingest-platform'),
       createdAt: 2,
       rulesAgreedAt: 1,
     });
+    await verifyWallet(auth, 'payer-ingest-platform', 'ada-ingest-platform');
     await store.recordInvoiceAttempt({
       id: 'inv-ingest-platform',
       createdAt: new Date('2026-08-28T00:00:00.000Z'),
@@ -6563,14 +6649,14 @@ describe('indexOpenZapReceipts', () => {
       role: 'basis',
       name: 'Ada',
       username: 'ada-aged-platform',
-      lightningAddress: 'ada-aged-platform@example.com',
-      lightningAddressVerified: true,
+      walletRequired: true,
       location: null,
       forumLawsDismissed: false,
       viewKey: viewKeyFor('payer-aged-platform'),
       createdAt: 2,
       rulesAgreedAt: 1,
     });
+    await verifyWallet(auth, 'payer-aged-platform', 'ada-aged-platform');
     const newer = new Date('2026-09-21T00:00:00.000Z');
     for (let i = 0; i < MESSAGE_LIST_LIMIT; i += 1) {
       const n = i.toString(16).padStart(2, '0');
@@ -6669,8 +6755,6 @@ describe('indexOpenZapReceipts', () => {
       linkingKey: null,
       role: 'basis',
       name: 'Pat',
-      lightningAddress: 'pat-one-notify-comment@example.com',
-      lightningAddressVerified: true,
       location: null,
       forumLawsDismissed: false,
       viewKey: viewKeyFor('payer-one-notify-comment'),
@@ -6781,6 +6865,7 @@ describe('indexOpenZapReceipts', () => {
     await indexOpenZapReceipts({
       store,
       auth,
+      lnurlServer: LNURL_SERVER,
       querier,
       urls: URLS,
       timeoutMs: 50,
@@ -6807,8 +6892,6 @@ describe('indexOpenZapReceipts', () => {
       linkingKey: null,
       role: 'basis',
       name: 'Iris',
-      lightningAddress: 'inspect-null-payer@example.com',
-      lightningAddressVerified: true,
       location: null,
       forumLawsDismissed: false,
       viewKey: viewKeyFor('inspect-null-payer'),
@@ -6879,8 +6962,6 @@ describe('indexOpenZapReceipts', () => {
       linkingKey: null,
       role: 'basis',
       name: 'Nia',
-      lightningAddress: 'remembered-no-e-payer@example.com',
-      lightningAddressVerified: true,
       location: null,
       forumLawsDismissed: false,
       viewKey: viewKeyFor('remembered-no-e-payer'),
@@ -6954,8 +7035,6 @@ describe('indexOpenZapReceipts', () => {
       linkingKey: null,
       role: 'basis',
       name: 'Bob',
-      lightningAddress: 'bob@example.com',
-      lightningAddressVerified: true,
       location: null,
       forumLawsDismissed: false,
       viewKey: viewKeyFor('payer-gift'),
@@ -7054,8 +7133,6 @@ describe('indexOpenZapReceipts', () => {
       linkingKey: null,
       role: 'basis',
       name: 'Bob',
-      lightningAddress: 'bob-gift-reply@example.com',
-      lightningAddressVerified: true,
       location: null,
       forumLawsDismissed: false,
       viewKey: viewKeyFor('payer-gift-reply'),
@@ -7177,8 +7254,6 @@ describe('indexOpenZapReceipts', () => {
       linkingKey: null,
       role: 'basis',
       name: 'Bob',
-      lightningAddress: 'bob-queue-drop@example.com',
-      lightningAddressVerified: true,
       location: null,
       forumLawsDismissed: false,
       viewKey: viewKeyFor('payer-queue-drop'),
@@ -7307,8 +7382,6 @@ describe('indexOpenZapReceipts', () => {
       linkingKey: null,
       role: 'basis',
       name: 'Bob',
-      lightningAddress: 'bob-gift-watch@example.com',
-      lightningAddressVerified: true,
       location: null,
       forumLawsDismissed: false,
       viewKey: viewKeyFor('payer-gift-watch'),
@@ -7415,8 +7488,6 @@ describe('indexOpenZapReceipts', () => {
       linkingKey: null,
       role: 'basis',
       name: 'Bob',
-      lightningAddress: 'bob-reply-window-old@example.com',
-      lightningAddressVerified: true,
       location: null,
       forumLawsDismissed: false,
       viewKey: viewKeyFor('payer-reply-window-old'),
@@ -7535,8 +7606,6 @@ describe('indexOpenZapReceipts', () => {
       linkingKey: null,
       role: 'basis',
       name: 'Cara',
-      lightningAddress: 'cara-reply-window-fresh@example.com',
-      lightningAddressVerified: true,
       location: null,
       forumLawsDismissed: false,
       viewKey: viewKeyFor('payer-reply-window-fresh'),
@@ -7636,8 +7705,6 @@ describe('indexOpenZapReceipts', () => {
       linkingKey: null,
       role: 'basis',
       name: 'Bob',
-      lightningAddress: 'bob-reply-window-blank@example.com',
-      lightningAddressVerified: true,
       location: null,
       forumLawsDismissed: false,
       viewKey: viewKeyFor('payer-reply-window-blank'),
@@ -7717,8 +7784,6 @@ describe('indexOpenZapReceipts', () => {
       linkingKey: null,
       role: 'basis',
       name: 'Cara',
-      lightningAddress: 'cara@example.com',
-      lightningAddressVerified: true,
       location: null,
       forumLawsDismissed: false,
       viewKey: viewKeyFor('payer-retry'),
@@ -7773,8 +7838,6 @@ describe('indexOpenZapReceipts', () => {
       linkingKey: null,
       role: 'basis',
       name: 'Cara',
-      lightningAddress: 'cara-retry-reply@example.com',
-      lightningAddressVerified: true,
       location: null,
       forumLawsDismissed: false,
       viewKey: viewKeyFor('payer-retry-reply'),
@@ -8134,8 +8197,6 @@ describe('indexOpenZapReceipts', () => {
       linkingKey: null,
       role: 'basis',
       name: null,
-      lightningAddress: 'damus@example.com',
-      lightningAddressVerified: true,
       location: null,
       forumLawsDismissed: false,
       viewKey: viewKeyFor('payer-damus'),
@@ -8211,8 +8272,6 @@ describe('indexOpenZapReceipts', () => {
       linkingKey: null,
       role: 'basis',
       name: 'Bo',
-      lightningAddress: 'bo@example.com',
-      lightningAddressVerified: true,
       location: null,
       forumLawsDismissed: false,
       viewKey: viewKeyFor('payer-boom'),
@@ -8297,8 +8356,6 @@ describe('indexOpenZapReceipts', () => {
       linkingKey: null,
       role: 'basis',
       name: null,
-      lightningAddress: 'noinv@example.com',
-      lightningAddressVerified: true,
       location: null,
       forumLawsDismissed: false,
       viewKey: viewKeyFor('payer-no-inv'),
@@ -8560,8 +8617,6 @@ describe('indexOpenZapReceipts', () => {
       linkingKey: null,
       role: 'basis',
       name: 'Pat',
-      lightningAddress: 'pat@example.com',
-      lightningAddressVerified: true,
       location: null,
       forumLawsDismissed: false,
       viewKey: viewKeyFor('payer-pr'),
@@ -8628,8 +8683,6 @@ describe('indexOpenZapReceipts', () => {
       linkingKey: null,
       role: 'basis',
       name: 'Ned',
-      lightningAddress: 'ned@example.com',
-      lightningAddressVerified: true,
       location: null,
       forumLawsDismissed: false,
       viewKey: viewKeyFor('payer-notify'),
@@ -8712,8 +8765,6 @@ describe('indexOpenZapReceipts', () => {
       linkingKey: null,
       role: 'basis',
       name: 'Other',
-      lightningAddress: 'other@example.com',
-      lightningAddressVerified: true,
       location: null,
       forumLawsDismissed: false,
       viewKey: viewKeyFor('payer-other'),
@@ -8806,8 +8857,6 @@ describe('indexOpenZapReceipts', () => {
       linkingKey: null,
       role: 'basis',
       name: 'Lou',
-      lightningAddress: 'lou@example.com',
-      lightningAddressVerified: true,
       location: null,
       forumLawsDismissed: false,
       viewKey: viewKeyFor('payer-lookup'),
@@ -9163,8 +9212,6 @@ describe('indexOpenZapReceipts', () => {
       linkingKey: null,
       role: 'basis',
       name: 'Lia',
-      lightningAddress: 'lia@example.com',
-      lightningAddressVerified: true,
       location: null,
       forumLawsDismissed: false,
       viewKey: viewKeyFor('payer-link'),
@@ -9593,8 +9640,6 @@ describe('indexOpenZapReceipts', () => {
       linkingKey: null,
       role: 'basis',
       name: 'Val',
-      lightningAddress: 'val@example.com',
-      lightningAddressVerified: true,
       location: null,
       forumLawsDismissed: false,
       viewKey: viewKeyFor('payer-vanish'),
@@ -9677,8 +9722,6 @@ describe('indexOpenZapReceipts', () => {
       linkingKey: null,
       role: 'basis',
       name: 'Lee',
-      lightningAddress: 'lee@example.com',
-      lightningAddressVerified: true,
       location: null,
       forumLawsDismissed: false,
       viewKey: viewKeyFor('payer-linked'),
@@ -9748,8 +9791,6 @@ describe('indexOpenZapReceipts', () => {
       linkingKey: null,
       role: 'basis',
       name: 'Mo',
-      lightningAddress: 'mo@example.com',
-      lightningAddressVerified: true,
       location: null,
       forumLawsDismissed: false,
       viewKey: viewKeyFor('payer-missing-parent'),
@@ -9836,8 +9877,6 @@ describe('indexOpenZapReceipts', () => {
       linkingKey: null,
       role: 'basis',
       name: 'Del',
-      lightningAddress: 'del@example.com',
-      lightningAddressVerified: true,
       location: null,
       forumLawsDismissed: false,
       viewKey: viewKeyFor('payer-deleted-parent'),
@@ -10066,8 +10105,6 @@ describe('conversation zap ingest', () => {
       linkingKey: null,
       role: 'basis',
       name: 'Pat',
-      lightningAddress: 'pat@example.com',
-      lightningAddressVerified: true,
       forumLawsDismissed: false,
       location: null,
       viewKey: viewKeyFor('acc-pn-pay'),
@@ -10160,8 +10197,6 @@ describe('conversation zap ingest', () => {
       linkingKey: null,
       role: 'basis',
       name: 'Pat',
-      lightningAddress: 'pat-mark@example.com',
-      lightningAddressVerified: true,
       forumLawsDismissed: false,
       location: null,
       viewKey: viewKeyFor('acc-pn-pay-mark'),
@@ -10174,14 +10209,14 @@ describe('conversation zap ingest', () => {
       role: 'basis',
       name: 'Marites Villanueva',
       username: 'marites',
-      lightningAddress: null,
-      lightningAddressVerified: false,
+      walletRequired: true,
       forumLawsDismissed: false,
       location: null,
       viewKey: viewKeyFor('marites'),
       createdAt: 3,
       rulesAgreedAt: null,
     });
+    await verifyWallet(auth, 'marites', 'marites');
     const conversations = new InMemoryConversationStore();
     const thread = await conversations.openMemberMember(
       'acc-pn-pay-mark',
@@ -10199,7 +10234,7 @@ describe('conversation zap ingest', () => {
       lightningAddress: 'recv-mark@example.com',
       zapRequest: {
         tags: [['e', NOTE_EVENT_ID]],
-        content: 'see @Marites ada@walletofsatoshi.com',
+        content: 'see @Marites ada@example.net',
       },
       result: 'ok',
       httpStatus: 200,
@@ -10237,7 +10272,7 @@ describe('conversation zap ingest', () => {
       fiatRates: new InMemoryFiatStore(),
     });
     const rows = await conversations.listMessages(thread.id, 10);
-    expect(rows[0]?.text).toBe('see @Marites ada@walletofsatoshi.com');
+    expect(rows[0]?.text).toBe('see @Marites ada@example.net');
     expect(rows[0]?.mentions).toEqual([{ accountId: 'marites', username: 'marites' }]);
   });
 
@@ -10256,8 +10291,6 @@ describe('conversation zap ingest', () => {
       linkingKey: null,
       role: 'basis',
       name: 'Pat',
-      lightningAddress: 'pat2@example.com',
-      lightningAddressVerified: true,
       forumLawsDismissed: false,
       location: null,
       viewKey: viewKeyFor('acc-pn-pay2'),
@@ -10360,8 +10393,6 @@ describe('conversation zap ingest', () => {
       linkingKey: null,
       role: 'basis',
       name: 'Pat',
-      lightningAddress: 'pat-cold@example.com',
-      lightningAddressVerified: true,
       forumLawsDismissed: false,
       location: null,
       viewKey: viewKeyFor('acc-pn-pay-cold'),
@@ -10465,8 +10496,6 @@ describe('conversation zap ingest', () => {
       linkingKey: null,
       role: 'basis',
       name: 'Pat',
-      lightningAddress: 'pat3@example.com',
-      lightningAddressVerified: true,
       forumLawsDismissed: false,
       location: null,
       viewKey: viewKeyFor('acc-pn-pay3'),
@@ -10569,8 +10598,6 @@ describe('conversation zap ingest', () => {
       linkingKey: null,
       role: 'basis',
       name: 'Pat',
-      lightningAddress: 'shared-pay@example.com',
-      lightningAddressVerified: true,
       forumLawsDismissed: false,
       location: null,
       viewKey: viewKeyFor('acc-pn-shared-pay'),
@@ -10684,8 +10711,6 @@ describe('conversation zap ingest', () => {
       linkingKey: null,
       role: 'basis',
       name: 'Pat',
-      lightningAddress: 'catch-pay@example.com',
-      lightningAddressVerified: true,
       forumLawsDismissed: false,
       location: null,
       viewKey: viewKeyFor('acc-pn-catch-pay'),
@@ -10783,8 +10808,6 @@ describe('conversation zap ingest', () => {
       linkingKey: null,
       role: 'basis',
       name: 'Pat',
-      lightningAddress: 'catch-pay2@example.com',
-      lightningAddressVerified: true,
       forumLawsDismissed: false,
       location: null,
       viewKey: viewKeyFor('acc-pn-catch-pay2'),
@@ -10886,8 +10909,6 @@ describe('conversation zap ingest', () => {
       linkingKey: null,
       role: 'basis',
       name: 'Pat',
-      lightningAddress: 'catch-pay3@example.com',
-      lightningAddressVerified: true,
       forumLawsDismissed: false,
       location: null,
       viewKey: viewKeyFor('acc-pn-catch-pay3'),
@@ -10979,8 +11000,6 @@ describe('conversation zap ingest', () => {
       linkingKey: null,
       role: 'basis',
       name: 'Pat',
-      lightningAddress: 'catch-pay4@example.com',
-      lightningAddressVerified: true,
       forumLawsDismissed: false,
       location: null,
       viewKey: viewKeyFor('acc-pn-catch-pay4'),
@@ -11073,8 +11092,6 @@ describe('conversation zap ingest', () => {
       linkingKey: null,
       role: 'basis',
       name: '',
-      lightningAddress: 'anon-pay@example.com',
-      lightningAddressVerified: true,
       forumLawsDismissed: false,
       location: null,
       viewKey: viewKeyFor('acc-pn-anon-pay'),
@@ -11322,8 +11339,6 @@ describe('conversation zap ingest', () => {
       linkingKey: null,
       role: 'basis',
       name: 'Pat',
-      lightningAddress: 'pat@example.com',
-      lightningAddressVerified: true,
       forumLawsDismissed: false,
       location: null,
       viewKey: viewKeyFor('acc-pn-mem-pay'),
@@ -11400,8 +11415,6 @@ describe('conversation zap ingest', () => {
       linkingKey: null,
       role: 'basis',
       name: 'Pat',
-      lightningAddress: 'pat-pk@example.com',
-      lightningAddressVerified: true,
       forumLawsDismissed: false,
       location: null,
       viewKey: viewKeyFor('acc-pn-pk-pay'),
@@ -11478,8 +11491,6 @@ describe('conversation zap ingest', () => {
       linkingKey: null,
       role: 'basis',
       name: 'Pat',
-      lightningAddress: 'pat-prov@example.com',
-      lightningAddressVerified: true,
       forumLawsDismissed: false,
       location: null,
       viewKey: viewKeyFor('acc-pn-prov-pay'),
@@ -11556,8 +11567,6 @@ describe('conversation zap ingest', () => {
       linkingKey: null,
       role: 'basis',
       name: 'Pat',
-      lightningAddress: 'pat-addr@example.com',
-      lightningAddressVerified: true,
       forumLawsDismissed: false,
       location: null,
       viewKey: viewKeyFor('acc-pn-addr-pay'),
@@ -11634,8 +11643,6 @@ describe('conversation zap ingest', () => {
       linkingKey: null,
       role: 'basis',
       name: 'Pat',
-      lightningAddress: 'pat-blank@example.com',
-      lightningAddressVerified: true,
       forumLawsDismissed: false,
       location: null,
       viewKey: viewKeyFor('acc-pn-blank-pay'),
@@ -11704,8 +11711,6 @@ describe('conversation zap ingest', () => {
       linkingKey: null,
       role: 'basis',
       name: 'Ada',
-      lightningAddress: 'hot@example.com',
-      lightningAddressVerified: true,
       forumLawsDismissed: false,
       location: null,
       viewKey: viewKeyFor('hot-author'),
@@ -11717,8 +11722,6 @@ describe('conversation zap ingest', () => {
       linkingKey: null,
       role: 'basis',
       name: 'Pat',
-      lightningAddress: 'pat-hot@example.com',
-      lightningAddressVerified: true,
       forumLawsDismissed: false,
       location: null,
       viewKey: viewKeyFor('hot-payer'),
@@ -11948,8 +11951,6 @@ describe('wallet-backed receipt ingest', () => {
       role: 'basis',
       name: 'Wally',
       username,
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: viewKeyFor(id),

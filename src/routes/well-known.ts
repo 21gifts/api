@@ -4,15 +4,13 @@
  *
  * Damus and Lightning wallets fetch these from the site apex (`21.gifts` /
  * `dev.21.gifts`); the app proxies same-origin. Direct hits on the API host
- * also work. LNURL-pay settlement stays on the account's linked Wallet of
- * Satoshi address. Callback and metadata stay on that document. While an
- * unexpired pending point-of-sale charge exists, both sendable bounds
- * become that amount in millisats.
+ * also work.
  *
- * When a self-hosted LNURL server is configured and the account has a
- * verified wallet key, this route serves that server's payRequest instead
- * (callback under this api's public base URL). External Lightning addresses
- * keep working for accounts without a verified wallet.
+ * A member receives only on their in-app wallet: with the self-hosted LNURL
+ * server configured and a verified wallet key, this route serves that
+ * server's payRequest (callback under this api's public base URL). Any other
+ * username is not found. While an unexpired pending point-of-sale charge
+ * exists, both sendable bounds become that amount in millisats.
  */
 
 import { Hono } from 'hono';
@@ -20,7 +18,6 @@ import type { AuthStore } from '@/lib/auth/store';
 import type { LnurlServerConfig } from '@/lib/config';
 import { IpRateLimiter } from '@/lib/ip-rate-limit';
 import type { FetchFn } from '@/lib/lnurlp';
-import { resolveLnurlpDocument } from '@/lib/lnurlp';
 import {
   LNURL_PAY_REQUEST_TIMEOUT_MS,
   callLnurlServer,
@@ -34,11 +31,11 @@ import { normalizeUsername } from '@/lib/username';
 
 /** Collaborators for the well-known routes. */
 export interface WellKnownRouteDeps {
-  /** Auth store (names + pubkeys + linked Lightning Address). */
+  /** Auth store (names, pubkeys, and wallet verification). */
   auth: AuthStore;
   /** Process env for write-set relays. */
   env?: Record<string, string | undefined>;
-  /** Injected `fetch` for Wallet of Satoshi LNURL-pay. Default `globalThis.fetch`. */
+  /** Injected `fetch` for the LNURL server. Default `globalThis.fetch`. */
   fetchImpl?: FetchFn;
   /** Open point-of-sale charges. Default empty in-memory store. */
   posStore?: PosStore;
@@ -154,40 +151,8 @@ export function wellKnownRoutes(deps: WellKnownRouteDeps): Hono {
           }
           return c.json(doc, 200, LNURLP_HEADERS);
         }
-        const linked = account?.lightningAddress?.trim() ?? '';
-        if (account === undefined || linked === '') {
-          logEvent('lnurlp.unknown', { username });
-          return c.json({ error: 'Not found' }, 404, LNURLP_HEADERS);
-        }
-        const resolved = await resolveLnurlpDocument({
-          address: linked,
-          fetchImpl,
-        });
-        if (!resolved.ok) {
-          logEvent('lnurlp.unreachable', { username });
-          return c.json({ error: 'Lightning Address could not be resolved' }, 502, LNURLP_HEADERS);
-        }
-        logEvent('lnurlp.resolved', { username });
-        const pending = await posStore.currentPending(account.id, now());
-        if (pending !== null) {
-          const minSendable = resolved.body['minSendable'];
-          const maxSendable = resolved.body['maxSendable'];
-          /* v8 ignore start -- resolveLnurlpDocument only yields numeric minSendable and maxSendable */
-          if (typeof minSendable !== 'number' || typeof maxSendable !== 'number') {
-            return c.json(resolved.body, 200, LNURLP_HEADERS);
-          }
-          /* v8 ignore stop */
-          return c.json(
-            {
-              ...resolved.body,
-              minSendable: pending.amountSats * 1000,
-              maxSendable: pending.amountSats * 1000,
-            },
-            200,
-            LNURLP_HEADERS,
-          );
-        }
-        return c.json(resolved.body, 200, LNURLP_HEADERS);
+        logEvent('lnurlp.unknown', { username });
+        return c.json({ error: 'Not found' }, 404, LNURLP_HEADERS);
       } catch {
         logEvent('lnurlp.failed', { username });
         return c.json({ error: 'Lightning Address could not be resolved' }, 502, LNURLP_HEADERS);

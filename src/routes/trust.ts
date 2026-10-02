@@ -4,6 +4,7 @@ import { roleAtLeast, sameRoleRank } from '@/lib/auth/roles';
 import { resolveSession } from '@/lib/auth/service';
 import type { Account, AuthStore } from '@/lib/auth/store';
 import { inboxUnreadCountFor } from '@/lib/conversation-push';
+import type { LnurlServerConfig } from '@/lib/config';
 import type { ConversationStore } from '@/lib/conversation-store';
 import { logEvent } from '@/lib/log';
 import { notifyModeratorAppointed, notifyModeratorProposed } from '@/lib/notification';
@@ -46,6 +47,8 @@ export interface TrustRouteDeps {
   messages?: MessageStore;
   /** Optional spend ping. Omitted → skip the welcome ping. Failures do not fail the 200. */
   spendPing?: SpendPing;
+  /** LNURL server config for the welcome ping's receiving address; omitted → no ping. */
+  lnurlServer?: LnurlServerConfig;
 }
 
 /**
@@ -63,6 +66,7 @@ async function welcomeVerified(deps: TrustRouteDeps, account: Account): Promise<
     ...(deps.spendPing === undefined ? {} : { spendPing: deps.spendPing }),
     messages: deps.messages,
     account,
+    ...(deps.lnurlServer === undefined ? {} : { lnurlServer: deps.lnurlServer }),
   });
 }
 

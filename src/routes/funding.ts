@@ -43,7 +43,7 @@ import {
   type DailyRosterStore,
 } from '@/lib/daily-roster-store';
 import { checkSpendAuth } from '@/lib/spend-auth';
-import { receivingAddress } from '@/lib/receiving-address';
+import { accountByReceivingAddress, receivingAddress } from '@/lib/receiving-address';
 import { isStaffRole } from '@/lib/trust';
 import { forumVideoFilePresent, resolveMediaDir } from '@/lib/video';
 import { bearerToken } from '@/routes/me';
@@ -267,8 +267,8 @@ async function pingTodayMedia(
   if (deps.spendPing === undefined) {
     return;
   }
-  const address = account.lightningAddress === null ? '' : account.lightningAddress.trim();
-  if (address === '') {
+  const address = receivingAddress(account, deps.lnurlServer)?.address ?? null;
+  if (address === null) {
     return;
   }
   try {
@@ -379,7 +379,7 @@ async function answerSpendDocument(
 /**
  * Call spend and map failures. Success and 502 log the actor id and action only.
  *
- * @param deps - Route collaborators (auth store for recipient identity).
+ * @param deps - Route collaborators (auth store and LNURL server for recipient identity).
  * @param caller - Initiator or founder.
  * @param action - Stable action name.
  * @param call - Client method.
@@ -394,11 +394,11 @@ async function callRoster(
   try {
     const roster = publicDailyRoster(await call());
     const body = await withRecipientIdentities(roster, async (address) => {
-      const account = await deps.authStore.getAccountByLightningAddress(address);
-      if (account === undefined) {
+      const found = await accountByReceivingAddress(deps.authStore, address, deps.lnurlServer);
+      if (found === undefined) {
         return undefined;
       }
-      return { id: account.id, name: account.name };
+      return { id: found.account.id, name: found.account.name };
     });
     logEvent('funding.daily_roster', { accountId: caller.id, action });
     return { status: 200, body };
@@ -622,7 +622,7 @@ export function fundingRoutes(deps: FundingRouteDeps): Hono {
               id: account.id,
               name: account.name,
               role: account.role,
-              lightningAddress: account.lightningAddress,
+              lightningAddress: receivingAddress(account, deps.lnurlServer)?.address ?? null,
             },
             grant: {
               status: effectiveStatus(grant, nowMs),
@@ -811,7 +811,7 @@ export function fundingRoutes(deps: FundingRouteDeps): Hono {
             id: account.id,
             name: account.name,
             role: account.role,
-            lightningAddress: account.lightningAddress,
+            lightningAddress: receivingAddress(account, deps.lnurlServer)?.address ?? null,
           })),
           grants,
           gifts: giftRows,
@@ -1015,8 +1015,8 @@ export function fundingRoutes(deps: FundingRouteDeps): Hono {
       if (account === undefined) {
         return c.json({ error: DAILY_ROSTER_UNKNOWN_PERSON }, 400);
       }
-      const address = account.lightningAddress === null ? '' : account.lightningAddress.trim();
-      if (address === '') {
+      const address = receivingAddress(account, deps.lnurlServer)?.address ?? null;
+      if (address === null) {
         return c.json({ error: DAILY_ROSTER_NO_LIGHTNING }, 400);
       }
       const result = await callRoster(deps, opened.caller, 'recipient-add', () =>

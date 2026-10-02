@@ -35,6 +35,10 @@ describe('AUTH_SCHEMA_SQL', () => {
     expect(AUTH_SCHEMA_SQL.join('\n')).toMatch(
       /CREATE UNIQUE INDEX IF NOT EXISTS account_lightning_address_uidx/i,
     );
+    expect(AUTH_SCHEMA_SQL).toContain(
+      'ALTER TABLE account ALTER COLUMN lightning_address_verified SET DEFAULT false',
+    );
+    expect(AUTH_SCHEMA_SQL.join('\n')).not.toMatch(/DROP COLUMN/i);
     expect(AUTH_SCHEMA_SQL.join('\n')).toMatch(
       /DROP INDEX IF EXISTS passkey_credential_account_uidx/i,
     );

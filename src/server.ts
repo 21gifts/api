@@ -87,8 +87,6 @@ import {
   resolveLnurlServerConfig,
 } from '@/lib/config';
 import { InMemorySparkInvoiceStore, type SparkInvoiceStore } from '@/lib/spark-invoice-store';
-import { UnconfiguredInvoicePayer } from '@/lib/invoice-payer';
-import type { InvoicePayer } from '@/lib/invoice-payer';
 import { InMemoryInvoiceStore } from '@/lib/invoice-store';
 import type { InvoiceStore } from '@/lib/invoice-store';
 import type { GiftRecorder } from '@/lib/gift-recorder';
@@ -115,11 +113,6 @@ export interface AppDeps {
   now?: () => number;
   /** Browser origins allowed by CORS (default: from `CORS_ALLOWED_ORIGINS` / app surfaces). */
   allowedOrigins?: string[];
-  /**
-   * Pays verification micro-payment invoices (default:
-   * {@link UnconfiguredInvoicePayer} — process boots; start verification returns 503).
-   */
-  invoicePayer?: InvoicePayer;
   /** Injected `fetch` for LNURL-pay (default: `globalThis.fetch`). */
   fetchImpl?: FetchFn;
   /**
@@ -261,7 +254,7 @@ export interface AppDeps {
    */
   nostrQuerier?: NostrQuerier;
   /**
-   * Relay URLs for that lookup. Omitted → `resolveZapReadRelays(env)`.
+   * Relay URLs for that lookup. Omitted → `resolveZapRelays(env)`.
    * An empty list skips the lookup.
    */
   nostrRelayUrls?: readonly string[];
@@ -367,7 +360,7 @@ function debugList(store: object, limit: number): Promise<unknown[]> {
  * public `GET /view/:viewKey` alongside `/me`, `/pay`, `/lnurl`, Web Push subscription routes,
  * `/notifications`, `/debug/dump`, and the rest of the surface.
  *
- * @param deps - Optional overrides for the auth store, clock, invoice payer,
+ * @param deps - Optional overrides for the auth store, clock,
  *   LNURL-pay fetch, LN-Address cache, brand reader, debugToken,
  *   debugReadToken (optional; default `process.env.DEBUG_READ_TOKEN`;
  *   equal to debugToken after trim throws before routes mount),
@@ -402,7 +395,6 @@ export function createApp(deps: AppDeps = {}): Hono {
   const store = deps.authStore ?? new InMemoryAuthStore();
   const now = deps.now ?? Date.now;
   const allowedOrigins = deps.allowedOrigins ?? resolveAllowedOrigins(process.env);
-  const invoicePayer = deps.invoicePayer ?? new UnconfiguredInvoicePayer();
   const fetchImpl = deps.fetchImpl ?? globalThis.fetch;
   const lnAddressCache = deps.lnAddressCache ?? new InMemoryLnAddressCache();
   const readBrand = deps.readBrand ?? readPublicBrandFile;
@@ -579,6 +571,7 @@ export function createApp(deps: AppDeps = {}): Hono {
       passkeyCeremony,
       messages: messageStore,
       fundingStore,
+      ...receivingDeps,
       ...(nostrKek === undefined ? {} : { nostrKek }),
     }),
   );
@@ -590,8 +583,6 @@ export function createApp(deps: AppDeps = {}): Hono {
       store,
       messages: messageStore,
       now,
-      payer: invoicePayer,
-      fetchImpl,
       pushStore,
       notificationStore,
       conversationStore,
@@ -599,8 +590,7 @@ export function createApp(deps: AppDeps = {}): Hono {
       rates: btcUsdRates,
       fiatRates,
       fundingStore,
-      walletEnabled: lnurlServer !== null,
-      ...(nostrKek === undefined ? {} : { nostrKek }),
+      ...receivingDeps,
       ...(spendPing === undefined ? {} : { spendPing }),
     }),
   );
@@ -622,7 +612,15 @@ export function createApp(deps: AppDeps = {}): Hono {
   app.route('/links', linksRoutes({ messages: messageStore, accounts: store }));
   app.route(
     '/view',
-    viewRoutes({ store, messageStore, giftStore, rates: btcUsdRates, fiatRates, now }),
+    viewRoutes({
+      store,
+      messageStore,
+      giftStore,
+      rates: btcUsdRates,
+      fiatRates,
+      now,
+      ...receivingDeps,
+    }),
   );
   app.route(
     '/lightning-address',
@@ -633,7 +631,7 @@ export function createApp(deps: AppDeps = {}): Hono {
     debugRoutes({
       store,
       debugToken,
-      fetchImpl,
+      ...receivingDeps,
       conversationStore,
       messageStore,
       pushStore,
@@ -674,6 +672,7 @@ export function createApp(deps: AppDeps = {}): Hono {
       notificationStore,
       ...(spendPing === undefined ? {} : { spendPing }),
       fundingStore,
+      ...receivingDeps,
     }),
   );
   app.route(
@@ -710,6 +709,7 @@ export function createApp(deps: AppDeps = {}): Hono {
       listBtcUsdDaily: (limit) => debugList(btcUsdRates, limit),
       listUsdFiatDaily: (limit) => debugList(fiatRates, limit),
       ...(deps.listDbChange === undefined ? {} : { listDbChange: deps.listDbChange }),
+      ...receivingDeps,
       debugToken,
     }),
   );
@@ -724,6 +724,7 @@ export function createApp(deps: AppDeps = {}): Hono {
       pushStore,
       conversationStore,
       messages: messageStore,
+      ...receivingDeps,
       ...(spendPing === undefined ? {} : { spendPing }),
     }),
   );
@@ -789,7 +790,13 @@ export function createApp(deps: AppDeps = {}): Hono {
   );
   app.route(
     '/habits',
-    memberHabitRoutes({ store: memberHabitStore, authStore: store, now, fetchImpl }),
+    memberHabitRoutes({
+      store: memberHabitStore,
+      authStore: store,
+      now,
+      fetchImpl,
+      ...receivingDeps,
+    }),
   );
   const activity = resolveActivityPing(env, fetchImpl);
   app.route(
@@ -857,6 +864,7 @@ export function createApp(deps: AppDeps = {}): Hono {
       fundingStore,
       fiatRates,
       gifts: giftStore,
+      ...receivingDeps,
       ...(giftRecorder === undefined ? {} : { giftRecorder }),
     }),
   );
@@ -870,6 +878,7 @@ export function createApp(deps: AppDeps = {}): Hono {
       gifts: giftStore,
       rosterStore,
       now,
+      ...receivingDeps,
     }),
   );
 

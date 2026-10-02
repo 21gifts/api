@@ -14,7 +14,6 @@ import {
   type Account,
   type AccountFiat,
   type AccountLocale,
-  type AddressVerification,
   type AmountUnit,
   type AuthStore,
   type NostrKeyListRow,
@@ -23,10 +22,12 @@ import {
   type PasskeyCredential,
   type Session,
 } from '@/lib/auth/store';
+import type { LnurlServerConfig } from '@/lib/config';
 import { serializeOwnerFunding, type OwnerFundingJson } from '@/lib/funding';
 import type { FundingStore } from '@/lib/funding-store';
 import type { MessageStore } from '@/lib/message-store';
 import { parseNotificationLevel } from '@/lib/notification';
+import { receivingAddress } from '@/lib/receiving-address';
 
 /**
  * Public JSON shape of an account (eleven fields always present). Never
@@ -47,9 +48,12 @@ export interface AccountResponse {
   username: string | null;
   /** Free-text location set by the owner, or `null` when unset. */
   location: string | null;
-  /** Linked Lightning Address, or `null`. */
+  /**
+   * Receiving address: the verified in-app wallet (`username` at the host of
+   * `PUBLIC_BASE_URL`), or `null` without one. Name kept for app compatibility.
+   */
   lightningAddress: string | null;
-  /** Whether control of the linked address has been proven. */
+  /** True when {@link AccountResponse.lightningAddress} is set (verified wallet). */
   lightningAddressVerified: boolean;
   /** True after the user dismissed the welcome-forum living-room laws hint. */
   forumLawsDismissed: boolean;
@@ -195,9 +199,9 @@ export interface ViewProfileResponse {
   username: string | null;
   /** Free-text location set by the owner, or `null` when unset. */
   location: string | null;
-  /** Linked Lightning Address, or `null`. */
+  /** Receiving address (verified in-app wallet), or `null`. Name kept for app compatibility. */
   lightningAddress: string | null;
-  /** Whether control of the linked address has been proven. */
+  /** True when {@link ViewProfileResponse.lightningAddress} is set. */
   lightningAddressVerified: boolean;
   /** Creation time (epoch ms). */
   createdAt: number;
@@ -230,10 +234,18 @@ export interface ViewProfileResponse {
  * `viewKey`, Nostr columns, or `isPlatform`. The eleven public fields stay
  * always present; `staffTag` is added only when set to `software_developer`.
  *
+ * `lightningAddress` is the account's receiving address (verified in-app
+ * wallet) from {@link receivingAddress}, never the stored external address.
+ *
  * @param account - Stored account.
+ * @param lnurlServer - LNURL server config, or `undefined` when off (no receiving address).
  * @returns The eleven public fields, plus `staffTag` only when set.
  */
-export function serializeAccount(account: Account): AccountResponse {
+export function serializeAccount(
+  account: Account,
+  lnurlServer?: LnurlServerConfig,
+): AccountResponse {
+  const receiving = receivingAddress(account, lnurlServer);
   const body: AccountResponse = {
     id: account.id,
     linkingKey: account.linkingKey,
@@ -241,8 +253,8 @@ export function serializeAccount(account: Account): AccountResponse {
     name: account.name,
     username: account.username ?? null,
     location: account.location,
-    lightningAddress: account.lightningAddress,
-    lightningAddressVerified: account.lightningAddressVerified,
+    lightningAddress: receiving?.address ?? null,
+    lightningAddressVerified: receiving !== null,
     forumLawsDismissed: account.forumLawsDismissed,
     createdAt: account.createdAt,
     rulesAgreedAt: account.rulesAgreedAt,
@@ -287,7 +299,7 @@ export interface DebugAccountResponse extends AccountResponse {
   viewKey: string;
   /** Epoch ms when the owner skipped the name wizard step, or `null`. */
   nameSkippedAt: number | null;
-  /** Epoch ms when the owner skipped the Lightning Address wizard step, or `null`. */
+  /** Epoch ms when the owner skipped the receiving-wallet wizard step, or `null`. */
   lightningAddressSkippedAt: number | null;
   /** Id of the single top-level profile forum message, or `null`. */
   profileMessageId: string | null;
@@ -353,18 +365,6 @@ export interface SessionDebug {
   createdAt: number;
 }
 
-/** Operator address-verification JSON. */
-export interface AddressVerificationDebug {
-  /** Owning account id. */
-  accountId: string;
-  /** Lightning Address under proof. */
-  address: string;
-  /** One-time nonce. */
-  nonce: string;
-  /** Issue time (epoch ms). */
-  createdAt: number;
-}
-
 /** Operator passkey-challenge JSON. */
 export interface PasskeyChallengeDebug {
   /** Opaque challenge id. */
@@ -389,8 +389,6 @@ export interface DebugAccountDetailResponse extends DebugAccountResponse {
   passkeys: PasskeyDebug[];
   /** Sessions for this account (plaintext tokens). */
   sessions: SessionDebug[];
-  /** Pending address verification, or `null`. */
-  addressVerification: AddressVerificationDebug | null;
   /** Passkey challenges whose `accountId` matches. */
   passkeyChallenges: PasskeyChallengeDebug[];
 }
@@ -453,23 +451,6 @@ export function serializeDebugSession(session: Session): SessionDebug {
 }
 
 /**
- * Project a pending address verification for operator debug JSON.
- *
- * @param verification - Stored verification.
- * @returns Debug fields.
- */
-export function serializeDebugAddressVerification(
-  verification: AddressVerification,
-): AddressVerificationDebug {
-  return {
-    accountId: verification.accountId,
-    address: verification.address,
-    nonce: verification.nonce,
-    createdAt: verification.createdAt,
-  };
-}
-
-/**
  * Project a passkey challenge for operator debug JSON.
  *
  * @param challenge - Stored challenge.
@@ -513,15 +494,17 @@ function aboutMessageIdFor(account: Account, aboutMe: string | null): string | n
  *
  * @param account - Stored account.
  * @param nostr - Optional Nostr columns (defaults to JSON `null`s).
+ * @param lnurlServer - LNURL server config for the receiving address, or `undefined`.
  * @returns Debug fields including `viewKey`, `sessionRefused`, `locale`,
  * `fiat`, `sparkPubkey`, `sparkPubkeyVerifiedAt`, and Nostr columns.
  */
 export function serializeDebugAccount(
   account: Account,
   nostr: DebugNostrFields = EMPTY_DEBUG_NOSTR,
+  lnurlServer?: LnurlServerConfig,
 ): DebugAccountResponse {
   return {
-    ...serializeAccount(account),
+    ...serializeAccount(account, lnurlServer),
     isPlatform: account.isPlatform === true,
     sessionRefused: account.sessionRefused === true,
     viewKey: account.viewKey,
@@ -550,7 +533,8 @@ export function serializeDebugAccount(
  *
  * @param account - Stored account.
  * @param nostr - Nostr debug fields.
- * @param nested - Passkeys, sessions, verification, and matching challenges.
+ * @param nested - Passkeys, sessions, and matching challenges.
+ * @param lnurlServer - LNURL server config for the receiving address, or `undefined`.
  * @returns Detail JSON.
  */
 export function serializeDebugAccountDetail(
@@ -559,18 +543,14 @@ export function serializeDebugAccountDetail(
   nested: {
     passkeys: readonly PasskeyCredential[];
     sessions: readonly Session[];
-    addressVerification: AddressVerification | undefined;
     passkeyChallenges: readonly PasskeyChallenge[];
   },
+  lnurlServer?: LnurlServerConfig,
 ): DebugAccountDetailResponse {
   return {
-    ...serializeDebugAccount(account, nostr),
+    ...serializeDebugAccount(account, nostr, lnurlServer),
     passkeys: nested.passkeys.map(serializeDebugPasskey),
     sessions: nested.sessions.map(serializeDebugSession),
-    addressVerification:
-      nested.addressVerification === undefined
-        ? null
-        : serializeDebugAddressVerification(nested.addressVerification),
     passkeyChallenges: nested.passkeyChallenges.map(serializeDebugPasskeyChallenge),
   };
 }
@@ -605,6 +585,8 @@ export function serializeDebugAccountDetail(
  *   and an acknowledged failed renew exists. Defaults to `false`.
  * @param passkeyRenewPrfUnsupported - True when the newest unacknowledged
  *   failed renew is `prfUnsupported`. Defaults to `false`.
+ * @param lnurlServer - LNURL server config for the receiving address
+ *   (`lightningAddress`), or `undefined` when off.
  * @returns Owner fields including `viewKey`, `setup`, `missing`,
  * `hasPosted`, `location`, `aboutMe`, `aboutMeHasPhoto`,
  * `notificationLevel`, `amountUnit`, `locale`, `fiat`, `funding`,
@@ -622,9 +604,10 @@ export function serializeOwnerAccount(
   passkeyRenewFailed = false,
   passkeyRenewClosed = false,
   passkeyRenewPrfUnsupported = false,
+  lnurlServer?: LnurlServerConfig,
 ): OwnerAccountResponse {
   return {
-    ...serializeAccount(account),
+    ...serializeAccount(account, lnurlServer),
     viewKey: account.viewKey,
     setup: accountSetup(account),
     missing: accountMissing(account),
@@ -696,6 +679,7 @@ export interface OwnerFundingLookup {
  *   `walletRequired` is not true and `hasAcknowledgedPasskeyRenewFailure`
  *   is true. `walletRequired` is read after that predicate, so a seed that
  *   already acknowledged the failure is not closed.
+ * @param lnurlServer - LNURL server config for the receiving address, or `undefined`.
  * @returns Owner JSON including `hasPosted`, `aboutMe`, `aboutMeHasPhoto`,
  *   `notificationLevel`, `amountUnit`, `locale`, `fiat`, `funding`,
  *   `walletRequired`, `walletBackupSeenAt`, `sparkPubkey`,
@@ -711,6 +695,7 @@ export async function serializeOwnerAccountWithPosts(
   account: Account,
   messages: Pick<MessageStore, 'accountHasLivePost' | 'getById'>,
   funding?: OwnerFundingLookup,
+  lnurlServer?: LnurlServerConfig,
 ): Promise<OwnerAccountResponse> {
   const livePost = await messages.accountHasLivePost(account.id, account.profileMessageId ?? null);
   const profileId = account.profileMessageId;
@@ -772,6 +757,7 @@ export async function serializeOwnerAccountWithPosts(
     passkeyRenewFailed,
     passkeyRenewClosed,
     passkeyRenewPrfUnsupported,
+    lnurlServer,
   );
 }
 
@@ -784,6 +770,7 @@ export async function serializeOwnerAccountWithPosts(
  * @param hasPasskey - Whether the account already has a passkey credential.
  * @param aboutMe - Profile bio, or `null` when unfilled.
  * @param aboutMeHasPhoto - True when the live profile note has a photo.
+ * @param lnurlServer - LNURL server config for the receiving address, or `undefined`.
  * @returns Ten public profile fields (including username, location, aboutMe,
  *   aboutMeHasPhoto, and aboutMessageId).
  */
@@ -792,13 +779,15 @@ export function serializeViewProfile(
   hasPasskey: boolean,
   aboutMe: string | null,
   aboutMeHasPhoto: boolean,
+  lnurlServer?: LnurlServerConfig,
 ): ViewProfileResponse {
+  const receiving = receivingAddress(account, lnurlServer);
   return {
     name: account.name,
     username: account.username ?? null,
     location: account.location,
-    lightningAddress: account.lightningAddress,
-    lightningAddressVerified: account.lightningAddressVerified,
+    lightningAddress: receiving?.address ?? null,
+    lightningAddressVerified: receiving !== null,
     createdAt: account.createdAt,
     hasPasskey,
     aboutMe,

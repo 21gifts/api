@@ -28,7 +28,7 @@ export const DAILY_ROSTER_INVALID_PERSON = 'Invalid person or amount';
 /** Route text when the add account id is not in the store. */
 export const DAILY_ROSTER_UNKNOWN_PERSON = 'Unknown person';
 
-/** Route text when the add account has no Lightning address after trim. */
+/** Route text when the add account has no receiving address (no verified wallet). */
 export const DAILY_ROSTER_NO_LIGHTNING = 'Person has no Lightning address';
 
 /** Maximum daily payment comment after newline folding and trim. */
@@ -130,7 +130,7 @@ export function normalizeDailyRosterComment(raw: string): string | undefined {
  * becomes null. Lookup errors are not caught. Moderator rows are not copied.
  *
  * @param roster - Daily roster (recipients only).
- * @param lookup - Account lookup by the stored Lightning address.
+ * @param lookup - Account lookup by the stored address (the member's receiving address).
  * @returns The public roster.
  */
 export async function withRecipientIdentities(

@@ -7,12 +7,12 @@ import type { PushStore } from '@/lib/push-store';
 
 /**
  * Ensure the account has exactly one top-level profile forum note when a
- * non-blank display name and either a non-blank Lightning Address or a
- * verified wallet (`sparkPubkeyVerifiedAt` set) are present.
+ * non-blank display name and a verified wallet (`sparkPubkeyVerifiedAt` set)
+ * are present.
  *
  * No-ops (returns the input account, no `messages.create`) when the name is
- * null/blank after trim, or when the Lightning Address is null/blank and the
- * account has no verified wallet. When both are set, the first
+ * null/blank after trim, or when the account has no verified wallet. When
+ * both are set, the first
  * insert creates one kind:1-pipeline message and claims `profileMessageId`.
  * A `profileMessageId` whose row is missing or soft-hidden (`deletedAt` set)
  * is treated as missing. Rename does not insert a second note and does not
@@ -23,8 +23,7 @@ import type { PushStore } from '@/lib/push-store';
  * winner when one exists. A hidden winner is missing: the created live note
  * is kept and `profileMessageId` is claimed onto it. A failed insert returns
  * the input account (name may still be persisted by the caller; worker
- * backfill creates the missing note once a Lightning Address is linked or a
- * wallet is verified). A won insert does
+ * backfill creates the missing note once the wallet is verified). A won insert does
  * not fan out `notifyForumPost`: the note text is the display name.
  *
  * @param args - Auth store, message store, account snapshot, clock, optional
@@ -44,8 +43,7 @@ export async function ensureProfileMessage(args: {
   if (trimmed === '') {
     return args.account;
   }
-  const ln = args.account.lightningAddress === null ? '' : args.account.lightningAddress.trim();
-  if (ln === '' && typeof args.account.sparkPubkeyVerifiedAt !== 'number') {
+  if (typeof args.account.sparkPubkeyVerifiedAt !== 'number') {
     return args.account;
   }
 

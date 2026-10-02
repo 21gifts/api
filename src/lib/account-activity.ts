@@ -154,7 +154,8 @@ export function matchConfirmedGivenZaps(
  * ingest amounts on **top-level** non-loan notes (a loan note is omitted
  * entirely, including a hidden one; gift-as-reply `sats` do not inflate the
  * payer's Received), plus house gifts of kind daily and welcome whose recipient
- * handle matches the account Lightning Address. A loan is a note with
+ * handle matches the local part of the account's receiving address (its
+ * username, once the in-app wallet is verified). A loan is a note with
  * `goalRepayable === true`. Self-zaps on a non-loan note count on both sides.
  * Does not change `GET /gifts/stats`. Empty input is zeros without Coinbase and
  * without Frankfurter. Missing BTC-USD throws the same `fx.rate.missing` as
@@ -183,8 +184,8 @@ export async function buildAccountActivity(args: {
 }): Promise<AccountActivity> {
   const outbound = await args.gifts.listOutbound();
   const house = outbound.filter((row) => row.kind !== 'moderator');
-  const handle = args.account.lightningAddress;
-  const receivedHouse = handle ? giftsForRecipient(house, handle) : [];
+  const handle = walletHandle(args.account);
+  const receivedHouse = handle === null ? [] : giftsForRecipient(house, handle);
   const givenHouse = args.account.isPlatform === true ? house : [];
   const invoices = await args.messages.listInvoiceAttemptsForPayer(args.account.id);
   const indexed = await args.messages.listIndexedZapIngests();
@@ -312,7 +313,7 @@ async function receivedZapsForAccount(
   const rows: GiftRow[] = [];
   const creditedByMessageId = new Map<string, number>();
   const creditedFiatByMessageId = new Map<string, FiatCents>();
-  const recipientWosUser = recipientHandle(account.lightningAddress);
+  const recipientWosUser = walletHandle(account) ?? FALLBACK_RECIPIENT;
   for (const ingest of oldestFirst) {
     if (seenReceipts.has(ingest.receiptId)) {
       continue;
@@ -367,6 +368,21 @@ async function receivedZapsForAccount(
     }
   }
   return rows;
+}
+
+/**
+ * Local part of the account's receiving address: its lower-case username when
+ * the in-app wallet is verified, else `null` (the account cannot receive).
+ *
+ * @param account - Account wallet and username fields.
+ * @returns The handle, or `null`.
+ */
+function walletHandle(account: Account): string | null {
+  const username = account.username?.trim().toLowerCase() ?? '';
+  if (typeof account.sparkPubkeyVerifiedAt !== 'number' || username === '') {
+    return null;
+  }
+  return username;
 }
 
 /**

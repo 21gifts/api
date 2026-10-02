@@ -549,8 +549,8 @@ function zapIngestRow(args: {
  * as a compose post/reply (`insertGiftReply`).
  *
  * @param args - Stores, clock, payment hash, operator note, optional preimage,
- *   and optional `spendPing`, `postLimiter`, `fundingStore`, and `conversations` for
- *   platform-note compose.
+ *   and optional `spendPing`, `postLimiter`, `fundingStore`, `conversations`, and
+ *   `lnurlServer` (the spend ping's receiving address) for platform-note compose.
  * @returns The credited receipt details and resume status, or the first
  *   validation/lookup failure.
  * @throws Propagates store lookup, note-author lookup (before claim),
@@ -570,6 +570,7 @@ export async function settleInvoiceManually(args: {
   postLimiter?: PostRateLimiter;
   fundingStore?: FundingStore;
   conversations?: ConversationStore;
+  lnurlServer?: LnurlServerConfig;
   /** Spot fetch. Default `fetch`. A failure does not fail the settle. */
   fetchImpl?: FetchFn;
   /** Optional crosses for the payment-time snapshot. */
@@ -782,6 +783,7 @@ export async function settleInvoiceManually(args: {
         ...(args.postLimiter === undefined ? {} : { postLimiter: args.postLimiter }),
         ...(args.fundingStore === undefined ? {} : { fundingStore: args.fundingStore }),
         ...(args.conversations === undefined ? {} : { conversations: args.conversations }),
+        ...(args.lnurlServer === undefined ? {} : { lnurlServer: args.lnurlServer }),
       });
     } catch {
       logEvent('nostr.zap.gift_reply.failed', { receiptId });
@@ -1939,6 +1941,7 @@ interface BaseGiftReplyDeps {
   spendPing?: SpendPing;
   postLimiter?: PostRateLimiter;
   fundingStore?: FundingStore;
+  lnurlServer?: LnurlServerConfig;
 }
 
 /** Collaborators for creating a gift-reply after a zap is indexed. */
@@ -2453,7 +2456,8 @@ async function insertGiftReply(
   } catch {
     logEvent(parentId === null ? 'push.enqueue.failed' : 'messages.reply.notify.failed');
   }
-  if (parentId === null && args.payer.lightningAddress !== null && args.spendPing !== undefined) {
+  const spendAddress = receivingAddress(args.payer, args.lnurlServer)?.address ?? null;
+  if (parentId === null && spendAddress !== null && args.spendPing !== undefined) {
     try {
       const grant = await (args.fundingStore ?? new InMemoryFundingStore()).getByAccountId(
         args.payer.id,
@@ -2462,7 +2466,7 @@ async function insertGiftReply(
         logEvent('spend.ping.skipped', { reason: 'not_eligible' });
       } else {
         await args.spendPing.ping(
-          args.payer.lightningAddress,
+          spendAddress,
           created.id,
           'daily',
           effectiveStatus(grant, args.now()),

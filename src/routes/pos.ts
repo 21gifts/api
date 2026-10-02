@@ -14,9 +14,8 @@ import { bearerToken } from '@/routes/me';
 
 /**
  * `/pos` — signed-in member point-of-sale amount in whole sats.
- * Settlement goes to the member's receiving address (a verified wallet when
- * the LNURL server is configured, else the linked address). There is no paid
- * status.
+ * Settlement goes to the member's receiving address (their verified wallet;
+ * without one a charge is refused). There is no paid status.
  * Shares the {@link AuthStore} with `/auth` and `/me`.
  */
 
@@ -100,7 +99,7 @@ export function posRoutes(deps: PosRouteDeps): Hono {
       }
       const receiving = receivingAddress(account, deps.lnurlServer);
       if (receiving === null) {
-        return c.json({ error: 'Set a Wallet of Satoshi address first' }, 400);
+        return c.json({ error: 'Set up your wallet first' }, 400);
       }
       const open = await deps.store.currentPending(account.id, deps.now());
       if (open !== null) {

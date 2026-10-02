@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# gifts-debug — operator listing, role assignment, Lightning Address unlink,
+# gifts-debug — operator listing, role assignment,
 #               forum-note debug reads, HTTP audit log, external-pubkey inspection,
 #               forum-video restore, forum-note unhide,
 #               spend live roster, trust-edge backfill, account-by-id, and
@@ -27,12 +27,11 @@
 #   gifts-debug accounts [--raw]     # table (default) or JSON
 #   gifts-debug account <id>         # GET /debug/accounts/:id JSON
 #   gifts-debug dump [table] [--raw] # GET /debug/dump or /debug/dump/:table JSON
-#                                    # tables: account, passkey_credential, passkey_challenge, auth_session, address_verification, api_log, contact, conversation, conversation_message, conversation_read, message, message_extra_photo, message_invoice, nostr_zap_ingest, nostr_zap_receipt, nostr_zap_payment, nostr_zapper, nostr_blocked_pubkey, notification, push_subscription, push_outbox, trust_edge, gift, btc_usd_daily, usd_fiat_daily, db_change
+#                                    # tables: account, passkey_credential, passkey_challenge, auth_session, api_log, contact, conversation, conversation_message, conversation_read, message, message_extra_photo, message_invoice, nostr_zap_ingest, nostr_zap_receipt, nostr_zap_payment, nostr_zapper, nostr_blocked_pubkey, notification, push_subscription, push_outbox, trust_edge, gift, btc_usd_daily, usd_fiat_daily, db_change
 #   gifts-debug trust-edges [--raw]  # GET /debug/trust-edges JSON
 #   gifts-debug role <id> <role>     # set account.role; print updated account JSON
 #   gifts-debug refuse-session <id> [true|false]
 #                                    # set account.sessionRefused; print updated account JSON
-#   gifts-debug unlink <id>          # hard-delete Lightning Address; print updated account JSON
 #   gifts-debug messages [--raw]     # forum notes table (default) or JSON
 #   gifts-debug api-log [account-uuid] [--raw]
 #                                    # every HTTP audit page, table (default) or JSON
@@ -64,7 +63,6 @@
 #   gifts-debug role <account-id> moderator
 #   gifts-debug refuse-session <account-id>
 #   gifts-debug refuse-session <account-id> false
-#   gifts-debug unlink <account-id>
 #   gifts-debug messages
 #   gifts-debug api-log
 #   gifts-debug api-log <account-uuid>
@@ -270,27 +268,6 @@ cmd_role() {
     -H "Authorization: Bearer ${DEBUG_TOKEN}" \
     -H "Content-Type: application/json" \
     -d "{\"role\":\"${role}\"}" \
-    "${DEBUG_API_URL}/debug/accounts/${id}") || {
-    rm -f "$tmp"
-    die "request failed"
-  }
-  body=$(cat "$tmp")
-  rm -f "$tmp"
-  if [ "$status" != "200" ]; then
-    die "HTTP ${status}: ${body}"
-  fi
-  printf '%s\n' "$body"
-}
-
-cmd_unlink() {
-  local id="${1:-}" tmp status body
-  [ -n "$id" ] || die "usage: gifts-debug unlink <account-id>"
-  tmp=$(mktemp)
-  status=$(curl -sS -o "$tmp" -w '%{http_code}' \
-    -X PATCH \
-    -H "Authorization: Bearer ${DEBUG_TOKEN}" \
-    -H "Content-Type: application/json" \
-    -d '{"lightningAddress":null}' \
     "${DEBUG_API_URL}/debug/accounts/${id}") || {
     rm -f "$tmp"
     die "request failed"
@@ -734,7 +711,6 @@ case "${1:-}" in
   trust-edges) cmd_trust_edges ;;
   role) shift; cmd_role "$@" ;;
   refuse-session) shift; cmd_refuse_session "$@" ;;
-  unlink) shift; cmd_unlink "$@" ;;
   messages) cmd_messages ;;
   api-log) shift; cmd_api_log "$@" ;;
   passkey-renew-reopen) shift; cmd_passkey_renew_reopen "$@" ;;

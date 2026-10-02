@@ -993,8 +993,8 @@ export function conversationRoutes(deps: ConversationRouteDeps): Hono {
         );
         if (thread.kind === 'moderator_group') {
           try {
-            const address = account.lightningAddress?.trim() ?? '';
-            if (address !== '' && deps.spendPing !== undefined) {
+            const address = receivingAddress(account, deps.lnurlServer)?.address ?? null;
+            if (address !== null && deps.spendPing !== undefined) {
               const publicToday = await hasLivingRoomPostOnUtcDay(
                 deps.messageStore,
                 account,
@@ -1216,7 +1216,7 @@ export function conversationRoutes(deps: ConversationRouteDeps): Hono {
             authorAccountId: counterpart.id,
             amountSats: parsed.data.sats,
             shown,
-            lightningAddress: receiving?.address ?? counterpart.lightningAddress,
+            lightningAddress: receiving?.address ?? null,
             zapRequest: null,
             result: 'no_author',
             httpStatus: 400,
