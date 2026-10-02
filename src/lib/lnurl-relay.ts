@@ -1,4 +1,6 @@
 import { createHash } from 'node:crypto';
+import { lookup } from 'node:dns/promises';
+import { isIPv4 } from 'node:net';
 import { inspectBolt11 } from '@/lib/bolt11';
 import { normalizeLightningAddress } from '@/lib/lightning-address';
 import type { FetchFn } from '@/lib/lnurlp';
@@ -10,8 +12,8 @@ import type { FetchFn } from '@/lib/lnurlp';
  * request or invoice from the browser. The api fetches both on the member's
  * behalf and validates them before returning them. Every outbound URL is
  * checked as input: `https`, a DNS name with at least two labels, no
- * address literal, no `localhost` / `.local` / `.internal`, no port, and no
- * credentials. Fetches do not follow redirects, stop after
+ * address literal, no `localhost` / `.local` / `.internal`, no port, no
+ * credentials, and a name that resolves to public addresses only. Fetches do not follow redirects, stop after
  * {@link LNURL_RELAY_TIMEOUT_MS}, and read at most
  * {@link LNURL_RELAY_BODY_CAP_BYTES}.
  */
@@ -76,7 +78,12 @@ export interface RelayDeps {
   ownHost: string | null;
   /** Fetch timeout override (tests); defaults to {@link LNURL_RELAY_TIMEOUT_MS}. */
   timeoutMs?: number;
+  /** Host name resolver (tests supply a fake); defaults to the system resolver. */
+  lookupImpl?: RelayLookup | undefined;
 }
+
+/** Resolve a host name to its IP addresses. */
+export type RelayLookup = (host: string) => Promise<string[]>;
 
 /** Pay request plus the raw metadata needed to check the invoice. */
 type LoadedPayRequest = {
@@ -230,6 +237,10 @@ function parseRelayTarget(
     const at = address.lastIndexOf('@');
     const name = address.slice(0, at);
     const domain = address.slice(at + 1);
+    // A name of only dots would turn the well-known path into a parent path.
+    if (/^\.+$/.test(name)) {
+      return null;
+    }
     const url = outsideUrl(
       `https://${domain}/.well-known/lnurlp/${encodeURIComponent(name)}`,
       ownHost,
@@ -248,6 +259,67 @@ function parseRelayTarget(
   }
   const url = outsideUrl(decodedUrl, ownHost);
   return url === null ? null : { target: text, url };
+}
+
+/**
+ * Resolve `host` with the system resolver.
+ *
+ * @param host - DNS name.
+ * @returns Every address the name resolves to.
+ */
+async function systemLookup(host: string): Promise<string[]> {
+  const records = await lookup(host, { all: true, verbatim: true });
+  return records.map((record) => record.address);
+}
+
+/**
+ * Whether an IP address is a public unicast address.
+ *
+ * IPv4: not `0/8`, `10/8`, `100.64/10`, `127/8`, `169.254/16`, `172.16/12`,
+ * `192.168/16`, `198.18/15`, or `224/3`. IPv4-mapped IPv6 is checked as
+ * IPv4. Other IPv6: only global unicast `2000::/3`.
+ *
+ * @param ip - Address text from the resolver.
+ * @returns `true` for a public address.
+ */
+function isPublicAddress(ip: string): boolean {
+  const lower = ip.toLowerCase();
+  const v4 = lower.startsWith('::ffff:') ? lower.slice('::ffff:'.length) : lower;
+  if (isIPv4(v4)) {
+    const [a, b] = v4.split('.').map(Number) as [number, number];
+    const blocked =
+      a === 0 ||
+      a === 10 ||
+      a === 127 ||
+      a >= 224 ||
+      (a === 100 && b >= 64 && b <= 127) ||
+      (a === 169 && b === 254) ||
+      (a === 172 && b >= 16 && b <= 31) ||
+      (a === 192 && b === 168) ||
+      (a === 198 && (b === 18 || b === 19));
+    return !blocked;
+  }
+  return /^[23][0-9a-f]{0,3}:/.test(lower);
+}
+
+/**
+ * Resolve the URL's host and require public addresses only.
+ *
+ * @param url - Checked outbound URL.
+ * @param deps - Resolver.
+ * @returns `ok`, `private` (some address is not public), or `unresolved`.
+ */
+async function hostAddresses(url: URL, deps: RelayDeps): Promise<'ok' | 'private' | 'unresolved'> {
+  let addresses: string[];
+  try {
+    addresses = await (deps.lookupImpl ?? systemLookup)(url.hostname);
+  } catch {
+    return 'unresolved';
+  }
+  if (addresses.length === 0) {
+    return 'unresolved';
+  }
+  return addresses.every(isPublicAddress) ? 'ok' : 'private';
 }
 
 /**
@@ -383,6 +455,13 @@ async function loadPayRequest(
     return fail(400, NOT_PAYABLE_ERROR, 'target');
   }
   const domain = parsed.url.hostname.toLowerCase();
+  const target = await hostAddresses(parsed.url, deps);
+  if (target === 'private') {
+    return fail(400, NOT_PAYABLE_ERROR, 'address');
+  }
+  if (target === 'unresolved') {
+    return fail(502, UNREACHABLE_ERROR, 'dns');
+  }
   const fetched = await fetchRelayJson(parsed.url, deps);
   if (!fetched.ok) {
     if (fetched.status === 404 || fetched.status === 410) {
@@ -426,6 +505,13 @@ async function loadPayRequest(
   if (callbackUrl === null) {
     return fail(400, NOT_PAYABLE_ERROR, 'callback');
   }
+  const callbackHost = await hostAddresses(callbackUrl, deps);
+  if (callbackHost === 'private') {
+    return fail(400, NOT_PAYABLE_ERROR, 'callback_address');
+  }
+  if (callbackHost === 'unresolved') {
+    return fail(502, UNREACHABLE_ERROR, 'callback_dns');
+  }
   return {
     ok: true,
     payRequest: {
@@ -444,7 +530,7 @@ async function loadPayRequest(
 /**
  * Fetch and validate the LNURL pay request of an outside target.
  *
- * @param args - Raw target plus fetch, own host, and optional timeout.
+ * @param args - Raw target plus fetch, own host, optional timeout, and optional resolver.
  * @returns `{ ok: true, payRequest }` or a {@link RelayFailure}.
  */
 export async function resolveRelayPayRequest(
@@ -463,7 +549,7 @@ export async function resolveRelayPayRequest(
  * The invoice must decode to exactly `amountMsat` and carry a description
  * hash equal to SHA-256 of the pay request's metadata.
  *
- * @param args - Raw target, amount, optional comment, plus fetch, own host, and optional timeout.
+ * @param args - Raw target, amount, optional comment, plus fetch, own host, optional timeout, and optional resolver.
  * @returns `{ ok: true, pr }` or a {@link RelayFailure}.
  */
 export async function requestRelayInvoice(
