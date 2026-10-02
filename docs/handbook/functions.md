@@ -2024,7 +2024,7 @@
 - **Purpose:** Run `runSparkInvoiceTick` once immediately and then every 2 s. A tick does not start while the previous one is still running, so a slow coordinator cannot stack requests.
 - **Inputs:** `SparkWorkerDeps` and an optional interval in milliseconds.
 - **Returns / side effects:** `{ stop }`, which clears the interval. A rejecting tick logs `spark.worker.tick.failed` with the error fields.
-- **Used by:** The entry point when `LNURL_SERVER_URL`, `PUBLIC_BASE_URL`, and `LNURL_ZAP_NSEC_HEX` resolve.
+- **Used by:** The entry point when `resolveLnurlServerConfig` and `resolveFreePaymentsConfig` both resolve (`LNURL_SERVER_URL`, `PUBLIC_BASE_URL`, `LNURL_ZAP_NSEC_HEX`, and a usable or unset `SPARK_OPERATOR_URL`).
 
 ## Function: ingestZapReceipt
 
