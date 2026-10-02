@@ -403,7 +403,7 @@ export interface Kind0ProfileContent {
   banner: string;
   /** Avatar: the account's own profile photo, or the shared 21.gifts icon. */
   picture: string;
-  /** LUD-16 receiving address (verified wallet or linked address) when the account has one. */
+  /** LUD-16 receiving address (verified in-app wallet) when the account has one. */
   lud16?: string;
   /** NIP-05 identifier (`name@21.gifts`) when the public host is set. */
   nip05?: string;

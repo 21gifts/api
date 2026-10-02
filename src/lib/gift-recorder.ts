@@ -10,7 +10,7 @@ export interface GiftRecord {
   amountSats: number;
   /** Routing fee in whole satoshis (0 when unknown). */
   feeSats: number;
-  /** Wallet of Satoshi username, or LN-address local part. */
+  /** Recipient handle: the local part of the receiving address. */
   recipientWosUser: string;
   /** Unique BOLT11 payment request (`pr`). */
   lightningInvoice: string;

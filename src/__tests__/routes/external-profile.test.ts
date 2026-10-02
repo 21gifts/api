@@ -109,8 +109,6 @@ async function authNamed(name: string): Promise<InMemoryAuthStore> {
     linkingKey: `02${'ab'.repeat(32)}`,
     role: 'basis',
     name: null,
-    lightningAddress: null,
-    lightningAddressVerified: false,
     forumLawsDismissed: false,
     location: null,
     viewKey: 'a'.repeat(64),

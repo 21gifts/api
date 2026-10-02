@@ -1,10 +1,8 @@
 /**
  * Lightning Address (LUD-16) validation.
  *
- * v1 links a receiver's Lightning Address free-form — a wrong address is
- * self-punishing (gifts simply go elsewhere), so only its `local@domain.tld`
- * shape is checked here. Proving control of the address is a separate
- * verification step and is not done by this module.
+ * Only the `local@domain.tld` shape is checked here (guest pay lookups and
+ * spend-worker address queries).
  */
 
 /** Matches a Lightning Address: `local-part@domain.tld`. */

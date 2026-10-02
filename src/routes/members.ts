@@ -306,7 +306,7 @@ export function membersRoutes(deps: MembersRouteDeps): Hono {
             username: account.username ?? null,
             location: account.location,
             role: account.role,
-            lightningAddress: account.lightningAddress,
+            lightningAddress: receivingAddress(account, deps.lnurlServer)?.address ?? null,
             createdAt: new Date(account.createdAt).toISOString(),
             profileMessage,
             aboutMe,

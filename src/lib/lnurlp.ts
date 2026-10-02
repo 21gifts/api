@@ -29,10 +29,6 @@ export interface LnurlpMetadata {
 export type ResolveLnurlpResult =
   { ok: true; metadata: LnurlpMetadata } | { ok: false; reason: 'unreachable' };
 
-/** Successful raw LNURL-pay JSON, or a collapsed failure reason. */
-export type ResolveLnurlpDocumentResult =
-  { ok: true; body: Record<string, unknown> } | { ok: false; reason: 'unreachable' };
-
 /** LNURL-pay metadata from `/.well-known/lnurlp/...`. */
 const lnurlpMetadataSchema = z
   .object({
@@ -48,9 +44,7 @@ const lnurlpMetadataSchema = z
 /**
  * Fetch and validate LNURL-pay JSON for a LUD-16 address.
  *
- * Same reachability rules as {@link resolveLnurlp}. The raw object is kept so
- * `/.well-known/lnurlp/:username` can pass Wallet of Satoshi's payload through
- * (invoice `description_hash` stays valid; settlement stays at WoS).
+ * Same reachability rules as {@link resolveLnurlp}.
  *
  * @param args - Address (`name@domain`) and injected fetch.
  * @returns Raw JSON plus parsed metadata, or `{ ok: false, reason: 'unreachable' }`.
@@ -145,24 +139,4 @@ export async function resolveLnurlp(args: {
     return loaded;
   }
   return { ok: true, metadata: loaded.metadata };
-}
-
-/**
- * Resolve a LUD-16 address to the provider's LNURL-pay JSON object.
- *
- * Used to serve `username@21.gifts` while settlement stays on the linked
- * Wallet of Satoshi callback.
- *
- * @param args - Address (`name@domain`) and injected fetch.
- * @returns The provider JSON, or `{ ok: false, reason: 'unreachable' }`.
- */
-export async function resolveLnurlpDocument(args: {
-  address: string;
-  fetchImpl: FetchFn;
-}): Promise<ResolveLnurlpDocumentResult> {
-  const loaded = await loadLnurlpJson(args);
-  if (!loaded.ok) {
-    return loaded;
-  }
-  return { ok: true, body: loaded.body };
 }

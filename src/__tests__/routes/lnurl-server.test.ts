@@ -56,8 +56,6 @@ async function seedWallet(
     role: 'basis',
     name: 'Ada',
     username: opts.username,
-    lightningAddress: null,
-    lightningAddressVerified: false,
     forumLawsDismissed: false,
     location: null,
     viewKey: opts.viewKey ?? `${opts.id.replace(/-/g, '').slice(0, 8)}${'c'.repeat(56)}`,

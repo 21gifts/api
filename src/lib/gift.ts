@@ -24,7 +24,7 @@ export interface GiftRow {
   paidAt: Date;
   /** Amount in whole satoshis (fees excluded). */
   amountSats: number;
-  /** Wallet of Satoshi username the gift was paid to. */
+  /** Recipient handle (local part of the receiving address) the gift was paid to. */
   recipientWosUser: string;
   /** Daily funding, welcome gift, moderator stipend, or in-memory member zap (`other`). */
   kind: GiftKind | 'other';
@@ -77,7 +77,7 @@ export interface SpendDay {
 
 /** Totals for one recipient. */
 export interface RecipientSpend {
-  /** Wallet of Satoshi username. */
+  /** Recipient handle (local part of the receiving address). */
   recipient: string;
   /** Number of outbound gifts to this recipient. */
   giftCount: number;
@@ -185,7 +185,7 @@ export interface GiftDayGift {
   amountEur: string | null;
   /** Stored payment-time PHP, or `null` when missing. */
   amountPhp: string | null;
-  /** Wallet of Satoshi username. */
+  /** Recipient handle (local part of the receiving address). */
   recipient: string;
 }
 
@@ -407,7 +407,7 @@ function storedCents(value: string | null): number | null {
 }
 
 /**
- * Gifts whose Wallet of Satoshi handle matches `recipient` case-insensitively.
+ * Gifts whose recipient handle matches `recipient` case-insensitively.
  *
  * Trims `recipient`. When `indexOf('@') > 0`, compares the local-part before `@`;
  * otherwise the whole trimmed string. Empty after trim matches nothing

@@ -144,7 +144,8 @@ export function matchConfirmedGivenZaps(
  * (oldest wins), plus a remainder when `message.sats` exceeds those ingest
  * amounts on **top-level** notes (so a visible ₿21 post is never “no gifts”;
  * gift-as-reply `sats` do not inflate the payer's Received), plus house gifts whose
- * recipient handle matches the account Lightning Address. Self-zaps count on
+ * recipient handle matches the local part of the account's receiving address
+ * (its username, once the in-app wallet is verified). Self-zaps count on
  * both sides. Empty input is zeros without Coinbase and without Frankfurter.
  * Missing BTC-USD throws the same `fx.rate.missing` as {@link buildGiftStats}.
  * Missing CHF/EUR/PHP is JSON `null`, never a throw; when fiat `ensureDays`
@@ -171,8 +172,8 @@ export async function buildAccountActivity(args: {
   fiatRates?: FiatRateBook;
 }): Promise<AccountActivity> {
   const house = await args.gifts.listOutbound();
-  const handle = args.account.lightningAddress;
-  const receivedHouse = handle ? giftsForRecipient(house, handle) : [];
+  const handle = walletHandle(args.account);
+  const receivedHouse = handle === null ? [] : giftsForRecipient(house, handle);
   const givenHouse = args.account.isPlatform === true ? house : [];
   const invoices = await args.messages.listInvoiceAttemptsForPayer(args.account.id);
   const indexed = await args.messages.listIndexedZapIngests();
@@ -264,7 +265,7 @@ async function receivedZapsForAccount(
   const rows: GiftRow[] = [];
   const creditedByMessageId = new Map<string, number>();
   const creditedFiatByMessageId = new Map<string, FiatCents>();
-  const recipientWosUser = recipientHandle(account.lightningAddress);
+  const recipientWosUser = walletHandle(account) ?? FALLBACK_RECIPIENT;
   for (const ingest of oldestFirst) {
     if (seenReceipts.has(ingest.receiptId)) {
       continue;
@@ -315,6 +316,21 @@ async function receivedZapsForAccount(
     }
   }
   return rows;
+}
+
+/**
+ * Local part of the account's receiving address: its lower-case username when
+ * the in-app wallet is verified, else `null` (the account cannot receive).
+ *
+ * @param account - Account wallet and username fields.
+ * @returns The handle, or `null`.
+ */
+function walletHandle(account: Account): string | null {
+  const username = account.username?.trim().toLowerCase() ?? '';
+  if (typeof account.sparkPubkeyVerifiedAt !== 'number' || username === '') {
+    return null;
+  }
+  return username;
 }
 
 /**

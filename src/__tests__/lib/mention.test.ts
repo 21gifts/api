@@ -18,7 +18,7 @@ describe('mentionUsernames', () => {
 describe('resolveMentionMarks', () => {
   it('stores a known username and skips an address and an unknown name', async () => {
     const marks = await resolveMentionMarks(
-      'see @Marites, pay ada@walletofsatoshi.com, not @nobody',
+      'see @Marites, pay ada@example.com, not @nobody',
       async (username) => (username === 'marites' ? { id: 'acc-marites' } : undefined),
     );
     expect(marks).toEqual([{ accountId: 'acc-marites', username: 'marites' }]);

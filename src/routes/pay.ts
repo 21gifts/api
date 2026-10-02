@@ -4,8 +4,8 @@
  * `POST /pay/:username/invoice` — one BOLT11 invoice via `requestGiftInvoice`.
  *
  * Settlement goes to the member's receiving address (`receivingAddress`):
- * a verified wallet, resolved internally against the LNURL server when it is
- * configured, otherwise the linked Lightning Address. No spend token. An unexpired pending point-of-sale
+ * their verified wallet, resolved internally against the LNURL server. A
+ * member without one is not found. No spend token. An unexpired pending point-of-sale
  * charge pins both returned sat bounds to that amount; provider metadata
  * used for the millisatoshi check is not mutated.
  */
@@ -16,7 +16,6 @@ import type { AuthStore } from '@/lib/auth/store';
 import type { LnurlServerConfig } from '@/lib/config';
 import { decodeBolt11 } from '@/lib/bolt11';
 import { requestGiftInvoice } from '@/lib/gift-invoice';
-import { normalizeLightningAddress } from '@/lib/lightning-address';
 import type { FetchFn } from '@/lib/lnurlp';
 import { resolveLnurlp } from '@/lib/lnurlp';
 import { logEvent } from '@/lib/log';
@@ -70,14 +69,7 @@ async function lookupPayAccount(
       logEvent('pay.unknown', { username });
       return { ok: false, status: 404, error: 'Not found' };
     }
-    const address =
-      receiving.kind === 'wallet'
-        ? receiving.address
-        : normalizeLightningAddress(receiving.address);
-    if (address === null) {
-      logEvent('pay.unreachable', { username });
-      return { ok: false, status: 502, error: 'Lightning Address could not be resolved' };
-    }
+    const address = receiving.address;
     const resolved = await resolveLnurlp({
       address,
       fetchImpl: lnurlServerFetch(deps.lnurlServer, deps.fetchImpl, deps.auth),

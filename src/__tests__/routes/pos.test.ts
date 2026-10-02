@@ -7,6 +7,7 @@ import { posRoutes } from '@/routes/pos';
 import { createApp } from '@/server';
 import {
   LNURL_SERVER,
+  WALLET_PUBKEY,
   allInternal,
   createWalletAccount,
   walletLnurlFetch,
@@ -16,12 +17,14 @@ import {
 const nowMs = 1_700_000_000_000;
 const now = (): number => nowMs;
 const AUTH = { authorization: 'Bearer tok' };
+/** Public callback of `ada@example.test`. */
+const CALLBACK = `${LNURL_SERVER.publicBaseUrl}/lnurlp/ada/invoice`;
 
-function wosFetch(minSendable = 1000, maxSendable = 100_000_000): typeof fetch {
+function lnurlFetch(minSendable = 1000, maxSendable = 100_000_000): typeof fetch {
   return (async () =>
     new Response(
       JSON.stringify({
-        callback: 'https://walletofsatoshi.com/lnurlp/callback',
+        callback: CALLBACK,
         minSendable,
         maxSendable,
         metadata: '[["text/plain","ada"]]',
@@ -31,7 +34,7 @@ function wosFetch(minSendable = 1000, maxSendable = 100_000_000): typeof fetch {
     )) as unknown as typeof fetch;
 }
 
-async function readyStore(): Promise<InMemoryAuthStore> {
+async function readyStore(wallet = true): Promise<InMemoryAuthStore> {
   const store = new InMemoryAuthStore();
   await store.createAccount({
     id: 'acc',
@@ -39,22 +42,31 @@ async function readyStore(): Promise<InMemoryAuthStore> {
     role: 'basis',
     name: 'Ada',
     username: 'ada',
-    lightningAddress: 'alice@walletofsatoshi.com',
-    lightningAddressVerified: true,
+    walletRequired: true,
     forumLawsDismissed: false,
     location: null,
     viewKey: 'a'.repeat(64),
     createdAt: 1,
     rulesAgreedAt: nowMs,
   });
+  if (wallet) {
+    await store.claimSparkPubkey('acc', WALLET_PUBKEY);
+    await store.markSparkPubkeyVerified('acc', WALLET_PUBKEY, 'ada', 2);
+  }
   await store.createSession({ token: 'tok', accountId: 'acc', createdAt: nowMs });
   return store;
 }
 
-function mount(authStore: InMemoryAuthStore, fetchImpl: typeof fetch = wosFetch()): Hono {
+function mount(authStore: InMemoryAuthStore, fetchImpl: typeof fetch = lnurlFetch()): Hono {
   return new Hono().route(
     '/pos',
-    posRoutes({ store: new InMemoryPosStore(), authStore, now, fetchImpl }),
+    posRoutes({
+      store: new InMemoryPosStore(),
+      authStore,
+      now,
+      fetchImpl,
+      lnurlServer: LNURL_SERVER,
+    }),
   );
 }
 
@@ -76,7 +88,7 @@ describe('POS routes', () => {
     expect((await app.request('/pos', { method: 'DELETE' })).status).toBe(401);
   });
 
-  it('rejects a bad body, missing username, and missing lightning address', async () => {
+  it('rejects a bad body, missing username, and no verified wallet', async () => {
     const auth = await readyStore();
     const app = mount(auth);
     const bad = await app.request('/pos', {
@@ -107,8 +119,6 @@ describe('POS routes', () => {
       linkingKey: null,
       role: 'basis',
       name: 'Ada',
-      lightningAddress: 'alice@walletofsatoshi.com',
-      lightningAddressVerified: true,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'b'.repeat(64),
@@ -124,25 +134,30 @@ describe('POS routes', () => {
     expect(nameRes.status).toBe(400);
     expect(await nameRes.json()).toEqual({ error: 'Set a username first' });
 
-    const existing = await auth.getAccount('acc');
-    if (existing === undefined) {
-      throw new Error('expected account');
-    }
-    await auth.updateAccount({ ...existing, lightningAddress: null });
-    const addr = await mount(auth).request('/pos', {
+    const addr = await mount(await readyStore(false)).request('/pos', {
       method: 'POST',
       headers: AUTH,
       body: '{"amountSats":21}',
     });
     expect(addr.status).toBe(400);
-    expect(await addr.json()).toEqual({ error: 'Set a Wallet of Satoshi address first' });
+    expect(await addr.json()).toEqual({ error: 'Set up your wallet first' });
   });
 
   it('creates one open charge, pins LNURL bounds, and cancels it', async () => {
     const auth = await readyStore();
     const pos = new InMemoryPosStore();
-    const fetchImpl = wosFetch();
-    const app = createApp({ authStore: auth, posStore: pos, now, fetchImpl });
+    const fetchImpl = lnurlFetch();
+    const app = createApp({
+      authStore: auth,
+      posStore: pos,
+      now,
+      fetchImpl,
+      env: {
+        ...process.env,
+        LNURL_SERVER_URL: LNURL_SERVER.baseUrl,
+        PUBLIC_BASE_URL: LNURL_SERVER.publicBaseUrl,
+      },
+    });
     const empty = await app.request('/pos', { headers: AUTH });
     expect(empty.status).toBe(200);
     expect(await empty.json()).toEqual({ charge: null, history: [] });
@@ -180,7 +195,7 @@ describe('POS routes', () => {
     };
     expect(pay.minSendable).toBe(21_000);
     expect(pay.maxSendable).toBe(21_000);
-    expect(pay.callback).toBe('https://walletofsatoshi.com/lnurlp/callback');
+    expect(pay.callback).toBe(CALLBACK);
 
     const removed = await app.request('/pos', { method: 'DELETE', headers: AUTH });
     expect(removed.status).toBe(200);
@@ -195,7 +210,7 @@ describe('POS routes', () => {
 
   it('rejects an amount outside the wallet range and an unreachable address', async () => {
     const auth = await readyStore();
-    const low = await mount(auth, wosFetch(50_000)).request('/pos', {
+    const low = await mount(auth, lnurlFetch(50_000)).request('/pos', {
       method: 'POST',
       headers: AUTH,
       body: '{"amountSats":21}',
@@ -203,7 +218,7 @@ describe('POS routes', () => {
     expect(low.status).toBe(400);
     expect(await low.json()).toEqual({ error: 'Amount is outside the wallet range' });
 
-    const high = await mount(auth, wosFetch()).request('/pos', {
+    const high = await mount(auth, lnurlFetch()).request('/pos', {
       method: 'POST',
       headers: AUTH,
       body: '{"amountSats":100000000}',
@@ -235,7 +250,7 @@ describe('POS routes', () => {
       }
       return new Response(
         JSON.stringify({
-          callback: 'https://walletofsatoshi.com/lnurlp/callback',
+          callback: CALLBACK,
           minSendable: 1000,
           maxSendable: 100_000_000,
           metadata: '[["text/plain","ada"]]',
@@ -279,7 +294,13 @@ describe('POS routes', () => {
       };
       return new Hono().route(
         '/pos',
-        posRoutes({ store, authStore: auth, now, fetchImpl: wosFetch() }),
+        posRoutes({
+          store,
+          authStore: auth,
+          now,
+          fetchImpl: lnurlFetch(),
+          lnurlServer: LNURL_SERVER,
+        }),
       );
     }
     const unique = await routes(() =>
@@ -340,7 +361,7 @@ describe('POS for a wallet-backed member', () => {
     expect(allInternal(seen)).toBe(true);
   });
 
-  it('asks for an address when the LNURL server is off', async () => {
+  it('asks for a wallet when the LNURL server is off', async () => {
     const { app, seen } = await walletPos(false);
     const res = await app.request('/pos', {
       method: 'POST',
@@ -348,6 +369,7 @@ describe('POS for a wallet-backed member', () => {
       body: JSON.stringify({ amountSats: 21 }),
     });
     expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: 'Set up your wallet first' });
     expect(seen).toEqual([]);
   });
 });

@@ -15,6 +15,7 @@ import { InMemoryAuthStore, type Account } from '@/lib/auth/store';
 import { InMemoryFundingStore } from '@/lib/funding-store';
 import { unsignedNostrDefaults } from '@/lib/message';
 import type { MessageRow } from '@/lib/message';
+import { LNURL_SERVER } from '@/__tests__/helpers/wallet-lnurl';
 
 const account: Account = {
   id: 'acc',
@@ -22,13 +23,18 @@ const account: Account = {
   role: 'basis',
   name: 'Ada',
   username: 'ada',
-  lightningAddress: 'ada@walletofsatoshi.com',
-  lightningAddressVerified: false,
   forumLawsDismissed: false,
   location: null,
   viewKey: 'a'.repeat(64),
   createdAt: 1,
   rulesAgreedAt: null,
+};
+
+/** {@link account} with a verified wallet. */
+const wallet: Account = {
+  ...account,
+  sparkPubkey: `02${'a'.repeat(64)}`,
+  sparkPubkeyVerifiedAt: 3,
 };
 
 function note(text: string, hasPhoto = false): MessageRow {
@@ -43,6 +49,52 @@ function note(text: string, hasPhoto = false): MessageRow {
   };
 }
 
+describe('receiving address fields', () => {
+  it('is the wallet address only with a verified wallet and the LNURL server', () => {
+    expect(serializeAccount(wallet, LNURL_SERVER)).toMatchObject({
+      lightningAddress: 'ada@example.test',
+      lightningAddressVerified: true,
+    });
+    expect(serializeAccount(wallet)).toMatchObject({
+      lightningAddress: null,
+      lightningAddressVerified: false,
+    });
+    expect(
+      serializeAccount({ ...wallet, sparkPubkeyVerifiedAt: null }, LNURL_SERVER),
+    ).toMatchObject({ lightningAddress: null, lightningAddressVerified: false });
+    expect(serializeViewProfile(wallet, true, null, false, LNURL_SERVER)).toMatchObject({
+      lightningAddress: 'ada@example.test',
+      lightningAddressVerified: true,
+    });
+    const owner = serializeOwnerAccount(
+      wallet,
+      false,
+      null,
+      false,
+      null,
+      null,
+      false,
+      false,
+      false,
+      LNURL_SERVER,
+    );
+    expect(owner.lightningAddress).toBe('ada@example.test');
+    expect(owner.setup).toBe('rules');
+    expect(owner.missing).toEqual(['rules']);
+  });
+
+  it('passes the LNURL server through serializeOwnerAccountWithPosts', async () => {
+    const json = await serializeOwnerAccountWithPosts(
+      wallet,
+      { accountHasLivePost: async () => false, getById: async () => undefined },
+      undefined,
+      LNURL_SERVER,
+    );
+    expect(json.lightningAddress).toBe('ada@example.test');
+    expect(json.lightningAddressVerified).toBe(true);
+  });
+});
+
 describe('serializeAccount', () => {
   it('emits only the eleven public fields without viewKey', () => {
     const json = serializeAccount(account);
@@ -53,7 +105,7 @@ describe('serializeAccount', () => {
       name: 'Ada',
       username: 'ada',
       location: null,
-      lightningAddress: 'ada@walletofsatoshi.com',
+      lightningAddress: null,
       lightningAddressVerified: false,
       forumLawsDismissed: false,
       createdAt: 1,
@@ -237,14 +289,17 @@ describe('serializeDebugAccount', () => {
 });
 
 describe('serializeDebugAccountDetail', () => {
-  it('emits null addressVerification when none is stored', () => {
-    const json = serializeDebugAccountDetail(account, EMPTY_DEBUG_NOSTR, {
-      passkeys: [],
-      sessions: [],
-      addressVerification: undefined,
-      passkeyChallenges: [],
-    });
-    expect(json.addressVerification).toBeNull();
+  it('has no address verification and shows the wallet address with the LNURL server', () => {
+    const json = serializeDebugAccountDetail(
+      wallet,
+      EMPTY_DEBUG_NOSTR,
+      { passkeys: [], sessions: [], passkeyChallenges: [] },
+      LNURL_SERVER,
+    );
+    expect(json).not.toHaveProperty('addressVerification');
+    expect(json.lightningAddress).toBe('ada@example.test');
+    expect(json.lightningAddressVerified).toBe(true);
+    expect(serializeDebugAccount(wallet).lightningAddress).toBeNull();
   });
 });
 
@@ -285,14 +340,14 @@ describe('serializeOwnerAccount', () => {
       name: 'Ada',
       username: 'ada',
       location: null,
-      lightningAddress: 'ada@walletofsatoshi.com',
+      lightningAddress: null,
       lightningAddressVerified: false,
       forumLawsDismissed: false,
       createdAt: 1,
       rulesAgreedAt: null,
       viewKey: 'a'.repeat(64),
-      setup: 'rules',
-      missing: ['rules'],
+      setup: 'lightning-address',
+      missing: ['lightning-address', 'rules'],
       hasPosted: false,
       aboutMe: null,
       aboutMeHasPhoto: false,
@@ -312,8 +367,8 @@ describe('serializeOwnerAccount', () => {
       passkeyRenewPrfUnsupported: false,
     });
     expect(json.viewKey).toBe(account.viewKey);
-    expect(json.setup).toBe('rules');
-    expect(json.missing).toEqual(['rules']);
+    expect(json.setup).toBe('lightning-address');
+    expect(json.missing).toEqual(['lightning-address', 'rules']);
     expect(json.hasPosted).toBe(false);
     expect(json.aboutMe).toBeNull();
     expect(json.aboutMeHasPhoto).toBe(false);
@@ -341,8 +396,8 @@ describe('serializeOwnerAccount', () => {
     );
     expect(json.walletRequired).toBe(true);
     expect(json.walletBackupSeenAt).toBe(9);
-    expect(json.setup).toBe('rules');
-    expect(json.missing).toEqual(['rules']);
+    expect(json.setup).toBe('lightning-address');
+    expect(json.missing).toEqual(['lightning-address', 'rules']);
   });
 
   it('defaults omitted wallet fields on owner JSON', () => {
@@ -1028,7 +1083,7 @@ describe('serializeViewProfile', () => {
       name: 'Ada',
       username: 'ada',
       location: null,
-      lightningAddress: 'ada@walletofsatoshi.com',
+      lightningAddress: null,
       lightningAddressVerified: false,
       createdAt: 1,
       hasPasskey: false,
@@ -1047,6 +1102,12 @@ describe('serializeViewProfile', () => {
     expect(json).not.toHaveProperty('locale');
     expect(json).not.toHaveProperty('fiat');
     expect(Object.keys(json)).toHaveLength(10);
+  });
+
+  it('maps a missing username to null', () => {
+    const { username: _omit, ...withoutUsername } = account;
+    void _omit;
+    expect(serializeViewProfile(withoutUsername, false, null, false).username).toBeNull();
   });
 
   it('passes through hasPasskey and aboutMe', () => {

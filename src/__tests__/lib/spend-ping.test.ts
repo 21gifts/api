@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { FetchFn } from '@/lib/lnurlp';
 import { HttpSpendPing, NoopSpendPing, resolveSpendPing } from '@/lib/spend-ping';
 
-const ADDRESS = 'ada@walletofsatoshi.com';
+const ADDRESS = 'ada@example.com';
 const MESSAGE_ID = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
 const TOKEN = 'spend-secret-token';
 const SPEND_URL = 'https://spend.example';

@@ -177,8 +177,8 @@ async function pingTodayMedia(
   if (deps.spendPing === undefined) {
     return;
   }
-  const address = account.lightningAddress === null ? '' : account.lightningAddress.trim();
-  if (address === '') {
+  const address = receivingAddress(account, deps.lnurlServer)?.address ?? null;
+  if (address === null) {
     return;
   }
   try {
@@ -352,7 +352,7 @@ export function fundingRoutes(deps: FundingRouteDeps): Hono {
               id: account.id,
               name: account.name,
               role: account.role,
-              lightningAddress: account.lightningAddress,
+              lightningAddress: receivingAddress(account, deps.lnurlServer)?.address ?? null,
             },
             grant: {
               status: effectiveStatus(grant, nowMs),
@@ -541,7 +541,7 @@ export function fundingRoutes(deps: FundingRouteDeps): Hono {
             id: account.id,
             name: account.name,
             role: account.role,
-            lightningAddress: account.lightningAddress,
+            lightningAddress: receivingAddress(account, deps.lnurlServer)?.address ?? null,
           })),
           grants,
           gifts: giftRows,
