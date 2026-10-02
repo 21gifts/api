@@ -80,7 +80,7 @@ async function lookupPayAccount(
     }
     const resolved = await resolveLnurlp({
       address,
-      fetchImpl: lnurlServerFetch(deps.lnurlServer, deps.fetchImpl),
+      fetchImpl: lnurlServerFetch(deps.lnurlServer, deps.fetchImpl, deps.auth),
     });
     if (!resolved.ok) {
       logEvent('pay.unreachable', { username });
@@ -181,7 +181,7 @@ export function payRoutes(deps: {
       const invoice = await requestGiftInvoice({
         address,
         amountMsat,
-        fetchImpl: lnurlServerFetch(deps.lnurlServer, deps.fetchImpl),
+        fetchImpl: lnurlServerFetch(deps.lnurlServer, deps.fetchImpl, deps.auth),
       });
       if (!invoice.ok) {
         logEvent('pay.invoice_failed', { username });
