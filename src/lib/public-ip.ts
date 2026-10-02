@@ -83,6 +83,9 @@ function isNonPublicIpv4(octets: readonly [number, number, number, number]): boo
   if (a === 192 && b === 0 && (c === 0 || c === 2)) {
     return true;
   }
+  if (a === 192 && b === 88 && c === 99) {
+    return true;
+  }
   if (a === 198 && (b === 18 || b === 19)) {
     return true;
   }
