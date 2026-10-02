@@ -1518,8 +1518,9 @@ async function servePublicActiveList(deps: MessagesRouteDeps, c: Context): Promi
  * header must be a live session, or the response is 401. A session still
  * needs `forum.read`.
  *
- * @param deps - Stores, clock, and optional push, notification, and inbox
- * dependencies.
+ * @param deps - Stores, clock, optional push, notification, and inbox
+ * dependencies, and the optional `lnurlServer` and `sparkInvoices` for
+ * wallet-backed recipients.
  * @returns Hono app mounted at `/messages`.
  */
 export function messagesRoutes(deps: MessagesRouteDeps): Hono {

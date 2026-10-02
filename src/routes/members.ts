@@ -151,7 +151,8 @@ async function loadMember(deps: MembersRouteDeps, c: Context): Promise<MemberLoa
  * `GET /members/:accountId/replies`. More-specific paths register before
  * `/:accountId`.
  *
- * @param deps - Auth store, message store, trust store, funding store, clock, and optional gift/rate/fiat stores.
+ * @param deps - Auth store, message store, trust store, funding store, clock, optional
+ *   gift/rate/fiat stores, and optional LNURL server.
  * @returns A Hono app with activity, posts, replies, and member GET.
  */
 export function membersRoutes(deps: MembersRouteDeps): Hono {
