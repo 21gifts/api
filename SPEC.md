@@ -636,7 +636,7 @@ No session → **Response** `401` `{ "error": "Unauthorized" }`. More than 30
 requests to `/lnurl/pay-request` and `/lnurl/invoice` together within one
 minute for the same member → **Response** `429`
 `{ "error": "Too many requests" }` with `Retry-After: 60`. Missing or malformed
-target, a target that fails the URL or address checks, a target on this app's
+target (including one over 2048 characters), a target that fails the URL or address checks, a target on this app's
 host, or a response that is not a valid pay request (including a callback host
 that resolves to a non-public address) → **Response** `400`
 `{ "error": "Not a payable address" }`. HTTP 404 or 410, or an LNURL
@@ -669,8 +669,8 @@ and carry a description hash equal to SHA-256 of the pay request's
 
 Errors as for `POST /lnurl/pay-request`, plus: `amountMsat` not a number, not
 a whole number, or outside the bounds → **Response** `400`
-`{ "error": "Amount out of range" }`; `comment` not a string or longer than
-`commentAllowed` → **Response** `400` `{ "error": "Comment too long" }`; the
+`{ "error": "Amount out of range" }`; `comment` not a string, not well-formed
+Unicode, longer than 2000 UTF-16 code units, or longer than `commentAllowed` → **Response** `400` `{ "error": "Comment too long" }`; the
 invoice fetch fails, or the invoice is missing, undecodable, for another
 amount, or for another description hash → **Response** `502`
 `{ "error": "Address could not be reached" }`.

@@ -31,6 +31,12 @@ export const LNURL_RELAY_WINDOW_MS = 60_000;
 /** Relay requests per member per {@link LNURL_RELAY_WINDOW_MS}. */
 export const LNURL_RELAY_CAP = 30;
 
+/** Longest target accepted, in UTF-16 code units, checked before parsing. */
+export const LNURL_RELAY_TARGET_MAX_LENGTH = 2048;
+
+/** Longest comment accepted, in UTF-16 code units, checked before any request. */
+export const LNURL_RELAY_COMMENT_MAX_LENGTH = 2000;
+
 /** 400 body for a target that cannot be paid through the relay. */
 export const NOT_PAYABLE_ERROR = 'Not a payable address';
 
@@ -226,6 +232,9 @@ function parseRelayTarget(
   raw: string,
   ownHost: string | null,
 ): { target: string; url: URL } | null {
+  if (raw.length > LNURL_RELAY_TARGET_MAX_LENGTH) {
+    return null;
+  }
   let text = raw.trim().toLowerCase();
   if (text.startsWith('lightning:')) {
     text = text.slice('lightning:'.length);
@@ -537,6 +546,14 @@ export async function requestRelayInvoice(
   // A non-whole amount is refused before any outbound request.
   if (!Number.isSafeInteger(args.amountMsat)) {
     return fail(400, AMOUNT_ERROR, 'amount');
+  }
+  // An oversized comment, or one that is not well-formed Unicode (a lone
+  // surrogate), is refused before any outbound request.
+  if (
+    args.comment !== undefined &&
+    (args.comment.length > LNURL_RELAY_COMMENT_MAX_LENGTH || /\p{Surrogate}/u.test(args.comment))
+  ) {
+    return fail(400, COMMENT_ERROR, 'comment');
   }
   const loaded = await loadPayRequest(args.target, args);
   if (!loaded.ok) {
