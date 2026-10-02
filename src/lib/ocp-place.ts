@@ -2,16 +2,16 @@
  * Public OpenCryptoPay place: validated ingest body and shop-note mapping.
  *
  * Coordinates follow the same 6-decimal rounding as forum pins. A shop note
- * that receives its first pin maps onto one OCP place (`origin` `21gifts`).
+ * pin maps onto one OCP place (`origin` `21gifts`, `techProvider` `21.gifts`).
  */
 
 import { logEvent } from '@/lib/log';
 import type { ForumPlace } from '@/lib/place';
 import { SHOP_PLACE_PUSH_ENABLED } from '@/lib/shop-place-push-enabled';
-/** HTTP fetch for the one-shot map ingest. */
+/** HTTP fetch for the map ingest. */
 export type MapFetch = (input: string, init: RequestInit) => Promise<Response>;
 
-/** Where a first shop pin is posted. Both fields are required together. */
+/** Where a shop pin is put or deleted. Both fields are required together. */
 export type MapPush = {
   baseUrl: string;
   token: string;
@@ -64,6 +64,9 @@ const PLACE_NAME_ERROR = 'Place name is required' as const;
 /** 400 when `category` is missing or illegal. */
 const PLACE_CATEGORY_ERROR = 'Place category is required' as const;
 
+/** 400 when `techProvider` is present and illegal. */
+const PLACE_TECH_PROVIDER_ERROR = 'Place tech provider is invalid' as const;
+
 /** Maximum stored place name / external id length after trim. */
 const PLACE_NAME_MAX = 80;
 
@@ -73,11 +76,17 @@ const PLACE_CATEGORY_MAX = 40;
 /** Allowed payment-method CSV after trim. */
 const PAYMENT_METHODS_RE = /^(onchain|lightning|nfc)(,(onchain|lightning|nfc))*$/;
 
-/** Shop hashtag that triggers an OCP place on the first pin. */
+/** Allowed tech-provider slug after trim. */
+const TECH_PROVIDER_RE = /^[A-Za-z0-9][A-Za-z0-9.-]{0,39}$/;
+
+/** Shop hashtag that triggers an OCP place. */
 const SHOP_HASHTAG = '21GiftsShop';
 
 /** Fixed origin for forum shop pins. */
 const SHOP_ORIGIN = '21gifts';
+
+/** Fixed tech provider for forum shop pins. */
+const SHOP_TECH_PROVIDER = '21.gifts';
 
 /** Fixed category for forum shop pins. */
 const SHOP_CATEGORY = 'shopping';
@@ -85,7 +94,10 @@ const SHOP_CATEGORY = 'shopping';
 /** Fixed payment methods for forum shop pins. */
 const SHOP_PAYMENT_METHODS = 'lightning';
 
-/** Validated body posted to `POST /map/places`. */
+/** Cap for one process-start walk of existing shop pins. */
+const EXISTING_SHOP_PLACE_LIMIT = 1000;
+
+/** Validated body sent to `PUT /map/places`. */
 export type OcpPlaceInput = {
   origin: string;
   externalId: string;
@@ -94,6 +106,7 @@ export type OcpPlaceInput = {
   lon: number;
   category: string;
   paymentMethods: string | null;
+  techProvider?: string;
 };
 
 /**
@@ -132,7 +145,9 @@ function hasNoControls(value: string): boolean {
  * strings of length 1–80 without C0/DEL. `category` is a trimmed string of
  * length 1–40 matching `/^[a-z0-9_-]+$/`. `paymentMethods` absent, null, or
  * `""` → `null`; a trim-matching onchain/lightning/nfc CSV is kept trimmed;
- * any other value becomes `null` (no 400).
+ * any other value becomes `null` (no 400). `techProvider` omitted, null, or
+ * trim-empty → omitted; a trim-matching `/^[A-Za-z0-9][A-Za-z0-9.-]{0,39}$/`
+ * string is kept trimmed; any other value is 400.
  *
  * @param input - JSON body.
  * @returns `{ ok: true, value }` or `{ ok: false, error }`.
@@ -216,6 +231,23 @@ export function normalizeOcpPlace(
     }
   }
 
+  const rawTech = rec['techProvider'];
+  let techProvider: string | undefined;
+  if (rawTech === undefined || rawTech === null) {
+    techProvider = undefined;
+  } else if (typeof rawTech !== 'string') {
+    return { ok: false, error: PLACE_TECH_PROVIDER_ERROR };
+  } else {
+    const trimmed = rawTech.trim();
+    if (trimmed === '') {
+      techProvider = undefined;
+    } else if (TECH_PROVIDER_RE.test(trimmed)) {
+      techProvider = trimmed;
+    } else {
+      return { ok: false, error: PLACE_TECH_PROVIDER_ERROR };
+    }
+  }
+
   return {
     ok: true,
     value: {
@@ -226,6 +258,7 @@ export function normalizeOcpPlace(
       lon: roundCoord(lon),
       category,
       paymentMethods,
+      ...(techProvider === undefined ? {} : { techProvider }),
     },
   };
 }
@@ -247,13 +280,13 @@ export function shopOcpPlaceName(place: ForumPlace, authorName: string | null | 
 }
 
 /**
- * Build the OCP ingest input for a first shop pin.
+ * Build the OCP ingest input for a shop pin.
  *
  * @param messageId - Forum message id (`externalId`).
  * @param place - Forum pin (lat/lng; mapped to lat/lon).
  * @param authorName - Message author display name, if any.
- * @returns Input with `origin` `21gifts`, `category` `shopping`,
- *   `paymentMethods` `lightning`.
+ * @returns Input with `origin` `21gifts`, `techProvider` `21.gifts`,
+ *   `category` `shopping`, `paymentMethods` `lightning`.
  */
 export function shopOcpPlaceInput(
   messageId: string,
@@ -268,32 +301,61 @@ export function shopOcpPlaceInput(
     lon: place.lng,
     category: SHOP_CATEGORY,
     paymentMethods: SHOP_PAYMENT_METHODS,
+    techProvider: SHOP_TECH_PROVIDER,
   };
 }
 
 /**
- * Post a shop pin to the OpenCryptoPay map the first time it is set.
+ * PUT or DELETE one map place. Failures are logged as `ocp.place.failed` and swallowed.
+ *
+ * @param mapPush - Configured map target.
+ * @param method - `PUT` (pin body) or `DELETE` (`origin` + `externalId`).
+ * @param body - JSON body.
+ */
+async function mapPlacesRequest(
+  mapPush: MapPush,
+  method: 'PUT' | 'DELETE',
+  body: unknown,
+): Promise<void> {
+  try {
+    const response = await mapPush.fetchImpl(`${mapPush.baseUrl}/map/places`, {
+      method,
+      headers: {
+        Authorization: `Bearer ${mapPush.token}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(5_000),
+    });
+    if (!response.ok) {
+      logEvent('ocp.place.failed');
+    }
+  } catch {
+    logEvent('ocp.place.failed');
+  }
+}
+
+/**
+ * PUT a shop pin to the OpenCryptoPay map.
  *
  * Only when `parentId` is null, the text contains `#21GiftsShop`, a pin is
- * present, and `mapPush` is configured. BTC Map is not called here. Failures
- * are logged as `ocp.place.failed` and swallowed.
+ * present, and `mapPush` is configured. A pin that already existed is still
+ * sent. BTC Map is not called here. Failures are logged as `ocp.place.failed`
+ * and swallowed.
  *
  * @param opts - Optional map push, message fields, and pin.
  */
-export async function recordFirstShopOcpPlace(opts: {
+export async function syncShopOcpPlace(opts: {
   mapPush?: MapPush;
   messageId: string;
   text: string;
   parentId: string | null;
   place: ForumPlace | null;
   authorName: string | null | undefined;
-  /** When true, the note already had a pin before this write. */
-  hadPlaceBefore: boolean;
   /** Hashtag token check (injected so tests need not import the message helper). */
   textHasHashtagToken: (text: string, name: string) => boolean;
 }): Promise<void> {
   if (
-    opts.hadPlaceBefore ||
     opts.parentId !== null ||
     opts.place === null ||
     !opts.textHasHashtagToken(opts.text, SHOP_HASHTAG) ||
@@ -302,20 +364,88 @@ export async function recordFirstShopOcpPlace(opts: {
     return;
   }
   const mapPush = opts.mapPush;
+  await mapPlacesRequest(
+    mapPush,
+    'PUT',
+    shopOcpPlaceInput(opts.messageId, opts.place, opts.authorName),
+  );
+}
+
+/**
+ * DELETE a shop pin from the OpenCryptoPay map.
+ *
+ * No-op when `mapPush` is missing. Failures are logged as `ocp.place.failed`
+ * and swallowed.
+ *
+ * @param opts - Optional map push and forum message id (`externalId`).
+ */
+export async function removeShopOcpPlace(opts: {
+  mapPush?: MapPush;
+  messageId: string;
+}): Promise<void> {
+  if (opts.mapPush === undefined) {
+    return;
+  }
+  await mapPlacesRequest(opts.mapPush, 'DELETE', {
+    origin: SHOP_ORIGIN,
+    externalId: opts.messageId,
+  });
+}
+
+type ExistingShopNote = {
+  id: string;
+  text: string;
+  name: string;
+  parentId: string | null;
+  place?: ForumPlace | null;
+  deletedAt?: Date | null;
+};
+
+/**
+ * PUT each existing live top-level shop pin to the OpenCryptoPay map.
+ *
+ * A missing map push does nothing. Replies, hidden notes, notes without a
+ * pin, and notes without the shop tag are skipped. A later 200 is success.
+ * BTC Map is not called here. Failures are logged as `ocp.place.failed` and
+ * swallowed.
+ *
+ * @param opts - Optional map push, listed pin ids, row loader, and hashtag check.
+ */
+export async function publishExistingShopPlaces(opts: {
+  mapPush?: MapPush;
+  listPlaces: (limit: number) => Promise<ReadonlyArray<{ id: string }>>;
+  getById: (id: string) => Promise<ExistingShopNote | undefined>;
+  textHasHashtagToken: (text: string, name: string) => boolean;
+}): Promise<void> {
+  if (opts.mapPush === undefined) {
+    return;
+  }
+  const mapPush = opts.mapPush;
+  let listed: ReadonlyArray<{ id: string }>;
   try {
-    const response = await mapPush.fetchImpl(`${mapPush.baseUrl}/map/places`, {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${mapPush.token}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify(shopOcpPlaceInput(opts.messageId, opts.place, opts.authorName)),
-      signal: AbortSignal.timeout(5_000),
-    });
-    if (!response.ok) {
-      logEvent('ocp.place.failed');
-    }
+    listed = await opts.listPlaces(EXISTING_SHOP_PLACE_LIMIT);
   } catch {
     logEvent('ocp.place.failed');
+    return;
+  }
+  for (const item of listed) {
+    let row: ExistingShopNote | undefined;
+    try {
+      row = await opts.getById(item.id);
+    } catch {
+      logEvent('ocp.place.failed');
+      continue;
+    }
+    if (
+      row === undefined ||
+      row.parentId !== null ||
+      (row.deletedAt !== null && row.deletedAt !== undefined) ||
+      row.place === null ||
+      row.place === undefined ||
+      !opts.textHasHashtagToken(row.text, SHOP_HASHTAG)
+    ) {
+      continue;
+    }
+    await mapPlacesRequest(mapPush, 'PUT', shopOcpPlaceInput(row.id, row.place, row.name));
   }
 }

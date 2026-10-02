@@ -62,18 +62,19 @@ only and does not `addSats`; no `notifyForumReply`). Optional `messageId` on
 `POST /invoices`. `GET /invoices/posted` returns `{ hasPosted, messageId, postedAt, hasMedia, welcomeHasMedia, welcomeMessageId }`.
 
 CORS allows the configured origins (`CORS_ALLOWED_ORIGINS`, or the default
-surfaces `https://21.gifts`, `https://dev.21.gifts`, `https://app.21.gifts`,
-`https://dev-app.21.gifts`, and `http://localhost:3000`) and methods `GET`,
+surfaces `https://21.gifts`, `https://dev.21.gifts`, `https://staging.21.gifts`, `https://app.21.gifts`,
+`https://dev-app.21.gifts`, `https://staging-app.21.gifts`, and `http://localhost:3000`) and methods `GET`,
 `POST`, `PUT`, `PATCH`, `DELETE`, `OPTIONS`, with headers `Authorization` and `Content-Type`.
 Sessions are sent as `Authorization: Bearer` headers — no cookies,
 credentials not enabled.
 
 Public base URLs used in examples:
 
-| Environment | API                        | App                    |
-| ----------- | -------------------------- | ---------------------- |
-| PRD         | `https://api.21.gifts`     | `https://21.gifts`     |
-| DEV         | `https://dev-api.21.gifts` | `https://dev.21.gifts` |
+| Environment | API                            | App                        |
+| ----------- | ------------------------------ | -------------------------- |
+| PRD         | `https://api.21.gifts`         | `https://21.gifts`         |
+| DEV         | `https://dev-api.21.gifts`     | `https://dev.21.gifts`     |
+| STAGING     | `https://staging-api.21.gifts` | `https://staging.21.gifts` |
 
 | Method | Path                                                 | Auth                       | Purpose                                                                                                                                                                                                                                                                                                                                                |
 | ------ | ---------------------------------------------------- | -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
@@ -142,7 +143,7 @@ Public base URLs used in examples:
 | POST   | `/funding/admit`                                     | Bearer (moderator+)        | Admit grant                                                                                                                                                                                                                                                                                                                                            |
 | POST   | `/funding/reject`                                    | Bearer (moderator+)        | Reject grant                                                                                                                                                                                                                                                                                                                                           |
 | GET    | `/funding/payout-days`                               | Bearer (moderator+)        | Staff seven-UTC-day grant payout matrix (`days`: `blocked` / `missed` / `paid`; `welcome`: seven booleans, same order)                                                                                                                                                                                                                                 |
-| GET    | `/shops/activity`                                    | Bearer (moderator+)        | Staff 30-UTC-day shop till-charge counts (`days`: `{ day, shopCount }`, oldest first, zeros included)                                                                                                                                                                                                                                                  |
+| GET    | `/shops/activity`                                    | none                       | 30-UTC-day shop till-charge counts (`days`: `{ day, shopCount }`, oldest first, zeros included)                                                                                                                                                                                                                                                        |
 | GET    | `/messages`                                          | none for active / Bearer   | Public active window with no header; otherwise Bearer. List top-level notes (+ visible `replyCount`); 409 if rules missing; name-copy notes without photo, extra stills, or video are omitted; About me text stays                                                                                                                                     |
 | GET    | `/messages/compose-target`                           | Bearer                     | Platform profile note `{ messageId, sats }` for a 1-sat compose fee to 21.gifts                                                                                                                                                                                                                                                                        |
 | GET    | `/messages/places`                                   | Bearer                     | Live top-level forum pins; 409 if rules missing                                                                                                                                                                                                                                                                                                        |
@@ -472,7 +473,7 @@ normalised handle; `user.name` and `user.displayName` are that handle.
 `user.id` remains the pending account UUID encoded as UTF-8.
 
 When `WEBAUTHN_RP_ID` is unset, blank, not on the allowlist (`21.gifts` /
-`dev.21.gifts` / `localhost`), or no CORS origin matches that RP ID:
+`dev.21.gifts` / `staging.21.gifts` / `localhost`), or no CORS origin matches that RP ID:
 
 **Response** `500`:
 
@@ -1257,7 +1258,8 @@ No session → **401** `{ "error": "Unauthorized" }`. Below moderator →
 
 ### `GET /shops/activity`
 
-Staff Bearer (moderator or founder). Thirty UTC days ending on the
+No session is required. Missing or invalid bearer is still 200 with
+the same body. Thirty UTC days ending on the
 server clock's today, oldest first. A shop is a live top-level forum
 note (`parent_id` null, `deleted_at` null) whose text has the hashtag
 token `21GiftsShop` (case-insensitive, not followed by `[A-Za-z0-9_]`)
@@ -1270,9 +1272,7 @@ clearing it, removing the hashtag, or soft-deleting the note rewrites
 every past day. This is not a historical usage log. JSON
 `{ "days": [ { "day": "YYYY-MM-DD", "shopCount": 0 } ] }` with exactly
 30 objects, missing days included as zero. No Sunday-rest gate. Does
-not create a BOLT11 invoice. No session → **401**
-`{ "error": "Unauthorized" }`. Below moderator → **403**
-`{ "error": "Forbidden" }`. A store throw → **503**
+not create a BOLT11 invoice. A store throw → **503**
 `{ "error": "Shop activity is unavailable" }` and log
 `shops.activity.failed` with no account, note, or charge ids.
 
@@ -4394,11 +4394,14 @@ two ids per store.
 ### `GET /messages/:id/external-profile`
 
 Public profile for an external author. No Bearer. Registered **before**
-`GET /messages/:id`. **200** `{ "name", "npub" }` and, when present,
-`nip05` and `lud16`. `name` is the stored snapshot (truncated pubkey when
-blank). A live kind 0 name replaces it only when `externalDisplayName`
-accepts it. `npub` is the NIP-19 bech32 encoding of the stored 64-hex
-author pubkey. `nip05` requires `fetchImpl` and
+`GET /messages/:id`. **200** `{ "name", "npub", "postCount", "replyCount" }`
+and, when present, `nip05` and `lud16`. `name` is the stored snapshot
+(truncated pubkey when blank). A live kind 0 name replaces it only when
+`externalDisplayName` accepts it. `npub` is the NIP-19 bech32 encoding of
+the stored 64-hex author pubkey. `postCount` and `replyCount` are always
+present, including 0: uncapped live top-level notes, and uncapped live
+public replies (`replyCount` is 0 when the pubkey is not a recorded
+zapper). `nip05` requires `fetchImpl` and
 a guarded HTTPS `/.well-known/nostr.json` whose `names` entry matches the
 pubkey. `lud16` must be `user@host` and is not fetched. No hex pubkey,
 picture, callback, or invoice. **404** `{ "error": "Not found" }` for a
@@ -4408,11 +4411,34 @@ member author, or a pubkey that is not 64 hex. **503**
 throws (`messages.external_profile.failed`). Relay, DNS, and well-known
 failures omit the failed field and stay 200.
 
+### `GET /messages/:id/external-posts`
+
+Public list of live top-level notes for an external author. No Bearer.
+Registered **before** `GET /messages/:id`. Same 404 gate as
+`GET /messages/:id/external-profile`. **200** `{ "messages" }` capped at
+200, newest first (`createdAt` desc, `id` desc). Each item includes
+`replyCount` of live attributed children, `payable` false, `via: "nostr"`,
+and omits `role`. **503** `{ "error": "Messages are unavailable" }`
+(`messages.external_posts.failed`). A serialize failure skips that row
+and still returns 200.
+
+### `GET /messages/:id/external-replies`
+
+Public list of live public replies for an external author. No Bearer.
+Registered **before** `GET /messages/:id`. Same 404 gate as
+`GET /messages/:id/external-profile`. **200** `{ "messages" }` capped at
+200, newest first (`createdAt` desc, `id` desc). Each item includes
+`parentId`, omits `replyCount`, `payable` false, `via: "nostr"`, and omits
+`role`. A non-zapper author's list is empty. **503**
+`{ "error": "Messages are unavailable" }` (`messages.external_replies.failed`).
+A serialize failure skips that row and still returns 200.
+
 ### `GET /messages/:id`
 
 Public single-note fetch. Live rows need **no Bearer.** `:id` is a UUID.
 Registered **after** photo, video, `GET /messages/:id/replies`,
 `GET /messages/:id/external-profile`,
+`GET /messages/:id/external-posts`, `GET /messages/:id/external-replies`,
 `DELETE /messages/:id`, `PATCH /messages/:id/place`, `PATCH /messages/:id/shop-account`, `PATCH /messages/:id/text`, `PATCH /messages/:id/photos`, `GET /messages/:id/edits`, `GET /messages/stats`, `GET /messages/hidden`, and
 `GET /messages/places` so
 those paths are not captured as `:id`. A live GET returns

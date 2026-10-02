@@ -1,12 +1,9 @@
 import { Hono } from 'hono';
-import { roleAtLeast } from '@/lib/auth/roles';
-import { resolveSession } from '@/lib/auth/service';
-import type { Account, AuthStore } from '@/lib/auth/store';
+import type { AuthStore } from '@/lib/auth/store';
 import { logEvent } from '@/lib/log';
 import type { ShopNoteRef } from '@/lib/message-store';
 import type { PosChargeRef } from '@/lib/pos-store';
 import { activeShopDays, WINDOW_DAYS } from '@/lib/shop-activity';
-import { bearerToken } from '@/routes/me';
 
 const MS_PER_DAY = 86_400_000;
 
@@ -22,18 +19,6 @@ export interface ShopActivityRouteDeps {
   pos: { listCreatedBetween(startMs: number, endMs: number): Promise<PosChargeRef[]> };
 }
 
-/** Resolve the account behind a request's bearer session, or `null`. */
-async function authedAccount(
-  deps: ShopActivityRouteDeps,
-  header: string | undefined,
-): Promise<Account | null> {
-  const token = bearerToken(header);
-  if (token === null) {
-    return null;
-  }
-  return resolveSession(deps.authStore, deps.now(), token);
-}
-
 /**
  * Build the `/shops/activity` route group.
  *
@@ -44,13 +29,6 @@ async function authedAccount(
  */
 export function shopActivityRoutes(deps: ShopActivityRouteDeps): Hono {
   return new Hono().get('/', async (c) => {
-    const account = await authedAccount(deps, c.req.header('authorization'));
-    if (account === null) {
-      return c.json({ error: 'Unauthorized' }, 401);
-    }
-    if (!roleAtLeast(account.role, 'moderator')) {
-      return c.json({ error: 'Forbidden' }, 403);
-    }
     const today = new Date(deps.now()).toISOString().slice(0, 10);
     const todayMs = Date.parse(`${today}T00:00:00.000Z`);
     const startMs = todayMs - (WINDOW_DAYS - 1) * MS_PER_DAY;

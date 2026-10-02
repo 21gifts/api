@@ -1,10 +1,12 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import {
   normalizeOcpPlace,
-  recordFirstShopOcpPlace,
+  publishExistingShopPlaces,
+  removeShopOcpPlace,
   resolveMapPush,
   shopOcpPlaceInput,
   shopOcpPlaceName,
+  syncShopOcpPlace,
   type MapFetch,
   type MapPush,
 } from '@/lib/ocp-place';
@@ -17,6 +19,7 @@ const ORIGIN_ERROR = 'Place origin is invalid';
 const EXTERNAL_ID_ERROR = 'Place external id is required';
 const NAME_ERROR = 'Place name is required';
 const CATEGORY_ERROR = 'Place category is required';
+const TECH_PROVIDER_ERROR = 'Place tech provider is invalid';
 
 const VALID = {
   origin: 'partner',
@@ -178,6 +181,42 @@ describe('normalizeOcpPlace', () => {
       value: { paymentMethods: null },
     });
   });
+
+  it('normalizes optional techProvider', () => {
+    expect(normalizeOcpPlace(VALID)).toEqual({ ok: true, value: VALID });
+    expect(normalizeOcpPlace({ ...VALID, techProvider: null })).toEqual({
+      ok: true,
+      value: VALID,
+    });
+    expect(normalizeOcpPlace({ ...VALID, techProvider: '   ' })).toEqual({
+      ok: true,
+      value: VALID,
+    });
+    expect(normalizeOcpPlace({ ...VALID, techProvider: ' 21.gifts ' })).toEqual({
+      ok: true,
+      value: { ...VALID, techProvider: '21.gifts' },
+    });
+    expect(normalizeOcpPlace({ ...VALID, techProvider: 'A'.repeat(40) })).toEqual({
+      ok: true,
+      value: { ...VALID, techProvider: 'A'.repeat(40) },
+    });
+    expect(normalizeOcpPlace({ ...VALID, techProvider: 1 })).toEqual({
+      ok: false,
+      error: TECH_PROVIDER_ERROR,
+    });
+    expect(normalizeOcpPlace({ ...VALID, techProvider: 'bad_name' })).toEqual({
+      ok: false,
+      error: TECH_PROVIDER_ERROR,
+    });
+    expect(normalizeOcpPlace({ ...VALID, techProvider: '.start' })).toEqual({
+      ok: false,
+      error: TECH_PROVIDER_ERROR,
+    });
+    expect(normalizeOcpPlace({ ...VALID, techProvider: 'A'.repeat(41) })).toEqual({
+      ok: false,
+      error: TECH_PROVIDER_ERROR,
+    });
+  });
 });
 
 describe('shopOcpPlaceName / shopOcpPlaceInput', () => {
@@ -197,11 +236,12 @@ describe('shopOcpPlaceName / shopOcpPlaceInput', () => {
       lon: 8.5,
       category: 'shopping',
       paymentMethods: 'lightning',
+      techProvider: '21.gifts',
     });
   });
 });
 
-type RecordedCall = { url: string; authorization: string; body: string };
+type RecordedCall = { url: string; method: string; authorization: string; body: string };
 
 function recordingPush(status = 201): { mapPush: MapPush; calls: RecordedCall[] } {
   const calls: RecordedCall[] = [];
@@ -209,6 +249,7 @@ function recordingPush(status = 201): { mapPush: MapPush; calls: RecordedCall[] 
     const headers = new Headers(init.headers);
     calls.push({
       url: String(input),
+      method: init.method ?? 'GET',
       authorization: headers.get('authorization') ?? '',
       body: String(init.body),
     });
@@ -254,14 +295,14 @@ describe('resolveMapPush', () => {
     ).toBeUndefined();
   });
 
-  it('returns undefined even when the url and token are set', () => {
+  it('returns the trimmed url and token when both are set', () => {
     const fetchImpl: MapFetch = async () => new Response('{}');
     expect(
       resolveMapPush(
         { OCP_MAP_BASE_URL: ' http://map.test/// ', OCP_PLACE_INGEST_TOKEN: ' secret ' },
         fetchImpl,
       ),
-    ).toBeUndefined();
+    ).toMatchObject({ baseUrl: 'http://map.test', token: 'secret' });
   });
 });
 
@@ -293,12 +334,13 @@ describe('createApp map push', () => {
     expect(calls).toEqual([]);
   });
 
-  it('posts nothing even when the url and token are set', async () => {
+  it('posts one shop pin when the url and token are set', async () => {
     const calls: RecordedCall[] = [];
     const fetchImpl: FetchFn = async (input, init) => {
       const headers = new Headers(init?.headers);
       calls.push({
         url: String(input),
+        method: init?.method ?? 'GET',
         authorization: headers.get('authorization') ?? '',
         body: String(init?.body),
       });
@@ -310,11 +352,26 @@ describe('createApp map push', () => {
       authStore: await shopAccount(),
     });
     expect(await postShop(app)).toBe(200);
-    expect(calls).toEqual([]);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.url).toBe('http://map.test/map/places');
+    expect(calls[0]?.method).toBe('PUT');
+    expect(calls[0]?.authorization).toBe('Bearer secret');
+    const body = JSON.parse(calls[0]?.body ?? '{}') as Record<string, unknown>;
+    expect(body).toMatchObject({
+      origin: '21gifts',
+      category: 'shopping',
+      paymentMethods: 'lightning',
+      techProvider: '21.gifts',
+      name: 'Stall',
+      lat: 47.3,
+      lon: 8.5,
+    });
+    expect(typeof body['externalId']).toBe('string');
+    expect(String(body['externalId']).length).toBeGreaterThan(0);
   });
 });
 
-describe('recordFirstShopOcpPlace', () => {
+describe('syncShopOcpPlace', () => {
   let warn: ReturnType<typeof vi.spyOn>;
 
   beforeEach(() => {
@@ -325,21 +382,21 @@ describe('recordFirstShopOcpPlace', () => {
     warn.mockRestore();
   });
 
-  it('posts a first top-level shop pin to /map/places', async () => {
+  it('puts a top-level shop pin to /map/places', async () => {
     const timeoutSpy = vi.spyOn(AbortSignal, 'timeout');
     const { mapPush, calls } = recordingPush();
-    await recordFirstShopOcpPlace({
+    await syncShopOcpPlace({
       mapPush,
       messageId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
       text: 'Open #21GiftsShop',
       parentId: null,
       place: { lat: 1, lng: 2, label: 'Stall' },
       authorName: 'Ada',
-      hadPlaceBefore: false,
       textHasHashtagToken: (text, name) => text.includes(`#${name}`),
     });
     expect(calls).toHaveLength(1);
     expect(calls[0]?.url).toBe('http://map.test/map/places');
+    expect(calls[0]?.method).toBe('PUT');
     expect(calls[0]?.authorization).toBe('Bearer secret');
     expect(timeoutSpy).toHaveBeenCalledWith(5_000);
     expect(JSON.parse(calls[0]?.body ?? '{}')).toMatchObject({
@@ -347,11 +404,36 @@ describe('recordFirstShopOcpPlace', () => {
       name: 'Stall',
       category: 'shopping',
       paymentMethods: 'lightning',
+      techProvider: '21.gifts',
     });
     timeoutSpy.mockRestore();
   });
 
-  it('skips replies, non-shops, missing pins, prior pins, and a missing push', async () => {
+  it('puts again when a pin already existed', async () => {
+    const { mapPush, calls } = recordingPush();
+    const opts = {
+      mapPush,
+      messageId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+      text: 'Open #21GiftsShop',
+      parentId: null,
+      place: { lat: 1, lng: 2, label: 'Stall' },
+      authorName: 'Ada',
+      textHasHashtagToken: (text: string, name: string) => text.includes(`#${name}`),
+    };
+    await syncShopOcpPlace(opts);
+    await syncShopOcpPlace({ ...opts, place: { lat: 3, lng: 4, label: 'Moved' } });
+    expect(calls).toHaveLength(2);
+    expect(calls[0]?.method).toBe('PUT');
+    expect(calls[1]?.method).toBe('PUT');
+    expect(JSON.parse(calls[1]?.body ?? '{}')).toMatchObject({
+      lat: 3,
+      lon: 4,
+      name: 'Moved',
+      techProvider: '21.gifts',
+    });
+  });
+
+  it('skips replies, non-shops, missing pins, and a missing push', async () => {
     const { mapPush, calls } = recordingPush();
     const base = {
       mapPush,
@@ -361,42 +443,37 @@ describe('recordFirstShopOcpPlace', () => {
       authorName: 'Ada',
       textHasHashtagToken: (text: string, name: string) => text.includes(`#${name}`),
     };
-    await recordFirstShopOcpPlace({ ...base, parentId: 'parent', hadPlaceBefore: false });
-    await recordFirstShopOcpPlace({
+    await syncShopOcpPlace({ ...base, parentId: 'parent' });
+    await syncShopOcpPlace({
       ...base,
       parentId: null,
       text: 'plain',
-      hadPlaceBefore: false,
     });
-    await recordFirstShopOcpPlace({
+    await syncShopOcpPlace({
       ...base,
       parentId: null,
       place: null,
-      hadPlaceBefore: false,
     });
-    await recordFirstShopOcpPlace({ ...base, parentId: null, hadPlaceBefore: true });
-    await recordFirstShopOcpPlace({
+    await syncShopOcpPlace({
       messageId: base.messageId,
       text: base.text,
       place: base.place,
       authorName: base.authorName,
       textHasHashtagToken: base.textHasHashtagToken,
       parentId: null,
-      hadPlaceBefore: false,
     });
     expect(calls).toEqual([]);
   });
 
   it('logs ocp.place.failed when the map answers an error or the call throws', async () => {
     const { mapPush } = recordingPush(500);
-    await recordFirstShopOcpPlace({
+    await syncShopOcpPlace({
       mapPush,
       messageId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
       text: '#21GiftsShop',
       parentId: null,
       place: { lat: 1, lng: 2, label: null },
       authorName: null,
-      hadPlaceBefore: false,
       textHasHashtagToken: () => true,
     });
     const throwing: MapPush = {
@@ -407,17 +484,299 @@ describe('recordFirstShopOcpPlace', () => {
       },
     };
     await expect(
-      recordFirstShopOcpPlace({
+      syncShopOcpPlace({
         mapPush: throwing,
         messageId: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd',
         text: '#21GiftsShop',
         parentId: null,
         place: { lat: 1, lng: 2, label: null },
         authorName: null,
-        hadPlaceBefore: false,
         textHasHashtagToken: () => true,
       }),
     ).resolves.toBeUndefined();
     expect(parsedEvents(warn).filter((e) => e['event'] === 'ocp.place.failed')).toHaveLength(2);
+  });
+});
+
+describe('removeShopOcpPlace', () => {
+  let warn: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+  });
+
+  afterEach(() => {
+    warn.mockRestore();
+  });
+
+  it('deletes origin 21gifts and the message id', async () => {
+    const timeoutSpy = vi.spyOn(AbortSignal, 'timeout');
+    const { mapPush, calls } = recordingPush();
+    await removeShopOcpPlace({
+      mapPush,
+      messageId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+    });
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.url).toBe('http://map.test/map/places');
+    expect(calls[0]?.method).toBe('DELETE');
+    expect(calls[0]?.authorization).toBe('Bearer secret');
+    expect(timeoutSpy).toHaveBeenCalledWith(5_000);
+    expect(JSON.parse(calls[0]?.body ?? '{}')).toEqual({
+      origin: '21gifts',
+      externalId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+    });
+    timeoutSpy.mockRestore();
+  });
+
+  it('does nothing when mapPush is omitted', async () => {
+    const { calls } = recordingPush();
+    await removeShopOcpPlace({ messageId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa' });
+    expect(calls).toEqual([]);
+  });
+
+  it('logs ocp.place.failed when the map answers an error or the call throws', async () => {
+    const { mapPush } = recordingPush(500);
+    await removeShopOcpPlace({
+      mapPush,
+      messageId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
+    });
+    const throwing: MapPush = {
+      baseUrl: 'http://map.test',
+      token: 'secret',
+      fetchImpl: async () => {
+        throw new Error('down');
+      },
+    };
+    await expect(
+      removeShopOcpPlace({
+        mapPush: throwing,
+        messageId: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd',
+      }),
+    ).resolves.toBeUndefined();
+    expect(parsedEvents(warn).filter((e) => e['event'] === 'ocp.place.failed')).toHaveLength(2);
+  });
+});
+
+describe('publishExistingShopPlaces', () => {
+  const hasShopTag = (text: string, name: string) => text.includes(`#${name}`);
+  const stall = { lat: 47.3, lng: 8.5, label: 'Stall' };
+
+  let warn: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+  });
+
+  afterEach(() => {
+    warn.mockRestore();
+  });
+
+  it('does not call listPlaces when mapPush is omitted', async () => {
+    const listPlaces = vi.fn(async () => [{ id: 'keep' }]);
+    await publishExistingShopPlaces({
+      listPlaces,
+      getById: async () => undefined,
+      textHasHashtagToken: hasShopTag,
+    });
+    expect(listPlaces).not.toHaveBeenCalled();
+  });
+
+  it('puts a live shop pin and skips replies, hidden notes, missing rows, and non-shops', async () => {
+    const timeoutSpy = vi.spyOn(AbortSignal, 'timeout');
+    const { mapPush, calls } = recordingPush();
+    const listPlaces = vi.fn(async () => [
+      { id: 'keep' },
+      { id: 'notag' },
+      { id: 'reply' },
+      { id: 'missing' },
+      { id: 'nullplace' },
+      { id: 'undefplace' },
+      { id: 'hidden' },
+    ]);
+    await publishExistingShopPlaces({
+      mapPush,
+      listPlaces,
+      getById: async (id) => {
+        if (id === 'keep') {
+          return {
+            id: 'keep',
+            text: 'Open #21GiftsShop',
+            name: 'Ada',
+            parentId: null,
+            place: stall,
+          };
+        }
+        if (id === 'notag') {
+          return {
+            id: 'notag',
+            text: 'plain',
+            name: 'Ada',
+            parentId: null,
+            place: { lat: 1, lng: 2, label: null },
+          };
+        }
+        if (id === 'reply') {
+          return {
+            id: 'reply',
+            text: 'Open #21GiftsShop',
+            name: 'Ada',
+            parentId: 'parent',
+            place: { lat: 1, lng: 2, label: null },
+          };
+        }
+        if (id === 'nullplace') {
+          return {
+            id: 'nullplace',
+            text: 'Open #21GiftsShop',
+            name: 'Ada',
+            parentId: null,
+            place: null,
+          };
+        }
+        if (id === 'undefplace') {
+          return {
+            id: 'undefplace',
+            text: 'Open #21GiftsShop',
+            name: 'Ada',
+            parentId: null,
+          };
+        }
+        if (id === 'hidden') {
+          return {
+            id: 'hidden',
+            text: 'Open #21GiftsShop',
+            name: 'Ada',
+            parentId: null,
+            place: { lat: 1, lng: 2, label: null },
+            deletedAt: new Date('2026-01-01T00:00:00.000Z'),
+          };
+        }
+        return undefined;
+      },
+      textHasHashtagToken: hasShopTag,
+    });
+    expect(listPlaces).toHaveBeenCalledWith(1000);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.url).toBe('http://map.test/map/places');
+    expect(calls[0]?.method).toBe('PUT');
+    expect(calls[0]?.authorization).toBe('Bearer secret');
+    expect(timeoutSpy).toHaveBeenCalledWith(5_000);
+    expect(JSON.parse(calls[0]?.body ?? '{}')).toEqual(shopOcpPlaceInput('keep', stall, 'Ada'));
+    timeoutSpy.mockRestore();
+  });
+
+  it('treats HTTP 200 as success and logs no failure', async () => {
+    const { mapPush, calls } = recordingPush(200);
+    await publishExistingShopPlaces({
+      mapPush,
+      listPlaces: async () => [{ id: 'keep' }],
+      getById: async () => ({
+        id: 'keep',
+        text: 'Open #21GiftsShop',
+        name: 'Ada',
+        parentId: null,
+        place: stall,
+        deletedAt: null,
+      }),
+      textHasHashtagToken: hasShopTag,
+    });
+    expect(calls).toHaveLength(1);
+    expect(parsedEvents(warn).filter((e) => e['event'] === 'ocp.place.failed')).toHaveLength(0);
+  });
+
+  it('logs ocp.place.failed on HTTP 500 and still puts the next shop row', async () => {
+    const calls: RecordedCall[] = [];
+    const fetchImpl: MapFetch = async (input, init) => {
+      const headers = new Headers(init.headers);
+      calls.push({
+        url: String(input),
+        method: init.method ?? 'GET',
+        authorization: headers.get('authorization') ?? '',
+        body: String(init.body),
+      });
+      return new Response('{}', { status: calls.length === 1 ? 500 : 201 });
+    };
+    await publishExistingShopPlaces({
+      mapPush: { baseUrl: 'http://map.test', token: 'secret', fetchImpl },
+      listPlaces: async () => [{ id: 'first' }, { id: 'second' }],
+      getById: async (id) => ({
+        id,
+        text: 'Open #21GiftsShop',
+        name: 'Ada',
+        parentId: null,
+        place: stall,
+      }),
+      textHasHashtagToken: hasShopTag,
+    });
+    expect(calls).toHaveLength(2);
+    expect(JSON.parse(calls[0]?.body ?? '{}')).toEqual(shopOcpPlaceInput('first', stall, 'Ada'));
+    expect(JSON.parse(calls[1]?.body ?? '{}')).toEqual(shopOcpPlaceInput('second', stall, 'Ada'));
+    expect(parsedEvents(warn).filter((e) => e['event'] === 'ocp.place.failed')).toHaveLength(1);
+  });
+
+  it('logs ocp.place.failed when fetch throws and does not reject', async () => {
+    const throwing: MapPush = {
+      baseUrl: 'http://map.test',
+      token: 'secret',
+      fetchImpl: async () => {
+        throw new Error('down');
+      },
+    };
+    await expect(
+      publishExistingShopPlaces({
+        mapPush: throwing,
+        listPlaces: async () => [{ id: 'keep' }],
+        getById: async () => ({
+          id: 'keep',
+          text: 'Open #21GiftsShop',
+          name: 'Ada',
+          parentId: null,
+          place: stall,
+        }),
+        textHasHashtagToken: hasShopTag,
+      }),
+    ).resolves.toBeUndefined();
+    expect(parsedEvents(warn).filter((e) => e['event'] === 'ocp.place.failed')).toHaveLength(1);
+  });
+
+  it('logs ocp.place.failed once when listPlaces throws and does not reject', async () => {
+    const getById = vi.fn(async () => undefined);
+    const { mapPush } = recordingPush();
+    await expect(
+      publishExistingShopPlaces({
+        mapPush,
+        listPlaces: async () => {
+          throw new Error('list');
+        },
+        getById,
+        textHasHashtagToken: hasShopTag,
+      }),
+    ).resolves.toBeUndefined();
+    expect(getById).not.toHaveBeenCalled();
+    expect(parsedEvents(warn).filter((e) => e['event'] === 'ocp.place.failed')).toHaveLength(1);
+  });
+
+  it('logs ocp.place.failed when getById throws and still loads the next id', async () => {
+    const { mapPush, calls } = recordingPush();
+    await publishExistingShopPlaces({
+      mapPush,
+      listPlaces: async () => [{ id: 'bad' }, { id: 'keep' }],
+      getById: async (id) => {
+        if (id === 'bad') {
+          throw new Error('load');
+        }
+        return {
+          id: 'keep',
+          text: 'Open #21GiftsShop',
+          name: 'Ada',
+          parentId: null,
+          place: stall,
+        };
+      },
+      textHasHashtagToken: hasShopTag,
+    });
+    expect(calls).toHaveLength(1);
+    expect(JSON.parse(calls[0]?.body ?? '{}')).toEqual(shopOcpPlaceInput('keep', stall, 'Ada'));
+    expect(parsedEvents(warn).filter((e) => e['event'] === 'ocp.place.failed')).toHaveLength(1);
   });
 });

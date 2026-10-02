@@ -15,7 +15,8 @@ import { WebsocketNostrQuerier } from './lib/nostr/query';
 import { PostRateLimiter } from './lib/nostr/rate-limit';
 import { InMemoryBannerStore } from './lib/banner-store';
 import { RELAY_TIMEOUT_MS, startNostrWorker, WORKER_INTERVAL_MS } from './lib/nostr/worker';
-import { InMemoryMessageStore } from './lib/message-store';
+import { InMemoryMessageStore, textHasHashtagToken } from './lib/message-store';
+import { publishExistingShopPlaces, resolveMapPush } from './lib/ocp-place';
 import { resolveSpendPing } from './lib/spend-ping';
 import { syncWelcomePing } from './lib/welcome-media';
 import { resolveZapRelays, resolveZapReadRelays } from './lib/nostr/relays';
@@ -135,6 +136,15 @@ if (import.meta.main) {
     });
   };
   welcomeCatchUp();
+  const mapPush = resolveMapPush(process.env, globalThis.fetch);
+  void publishExistingShopPlaces({
+    ...(mapPush === undefined ? {} : { mapPush }),
+    listPlaces: (limit) => forumMessages.listPlaces(limit),
+    getById: (id) => forumMessages.getById(id),
+    textHasHashtagToken,
+  }).catch(() => {
+    console.warn(JSON.stringify({ event: 'ocp.place.failed' }));
+  });
   setInterval(welcomeCatchUp, 15 * 60 * 1000).unref();
   if (sender.isConfigured()) {
     startPushWorker({ store: pushStore, sender, now: Date.now }, PUSH_WORKER_INTERVAL_MS);
