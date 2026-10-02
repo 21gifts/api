@@ -2280,9 +2280,7 @@ Success → **Response** `200` with the updated account JSON (same
 `isPlatform`, `sessionRefused`, `viewKey`, `walletRequired`,
 `walletBackupSeenAt`, `sparkPubkey`, `sparkPubkeyVerifiedAt`, and Nostr
 debug fields). Role changes log `debug.accounts.role_set`
-with the account id and new role. Unlink logs
-`debug.accounts.lightning_address.cleared` with the account id (never the
-token or the previous address). Platform changes log
+with the account id and new role. Platform changes log
 `debug.accounts.platform_set` with the account id and the new flag.
 Session-refusal changes log `debug.accounts.session_refused_set` with the
 account id and the new flag.
