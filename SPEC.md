@@ -974,12 +974,12 @@ week. Invalid or later weeks → **Response** `400`:
 
 ```json
 {
-  "week": { "start": "2026-09-22", "label": "2026-W39", "nextAt": 1758508800000 },
-  "currentWeek": "2026-09-22",
+  "week": { "start": "2026-09-21", "label": "2026-W39", "nextAt": 1791158400000 },
+  "currentWeek": "2026-09-21",
   "commentsAllowed": false,
-  "commentsAllowedAt": 1756972800000,
-  "commentsCloseAt": 1757421600000,
-  "firstWeek": "2026-09-22",
+  "commentsAllowedAt": 1790582400000,
+  "commentsCloseAt": 1791028800000,
+  "firstWeek": "2026-09-21",
   "habits": [
     {
       "id": "<uuid>",
@@ -987,12 +987,12 @@ week. Invalid or later weeks → **Response** `400`:
       "role": "initiator",
       "name": "Ada",
       "text": "Read",
-      "firstWeek": "2026-09-22",
+      "firstWeek": "2026-09-21",
       "lastWeek": null
     }
   ],
   "results": [
-    { "habitId": "<uuid>", "week": "2026-09-22", "status": "achieved" }
+    { "habitId": "<uuid>", "week": "2026-09-21", "status": "achieved" }
   ],
   "comments": [
     {
@@ -1000,8 +1000,8 @@ week. Invalid or later weeks → **Response** `400`:
       "accountId": "<uuid>",
       "name": "Ada",
       "text": "Noted",
-      "week": "2026-09-22",
-      "createdAt": 1756972800000,
+      "week": "2026-09-21",
+      "createdAt": 1790582400000,
       "canReceiveDonation": false
     }
   ]

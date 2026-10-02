@@ -180,7 +180,7 @@ export interface BootFxOptions {
 
 /**
  * Open auth, optional gift, forum, contact, conversation, notification,
- * push, trust, and funding persistence, and the BTC-USD and USD-fiat rate
+ * push, trust, habit, and funding persistence, and the BTC-USD and USD-fiat rate
  * books from `DATABASE_URL`.
  *
  * Blank or unset URL yields in-memory auth, `giftStore: undefined`,
@@ -192,21 +192,21 @@ export interface BootFxOptions {
  * `diagnosticStore: undefined`,
  * `conversationStore: undefined`,
  * `notificationStore: undefined`, `pushStore: undefined`,
- * `trustStore: undefined`, `fundingStore: undefined`, `bannerStore: undefined`,
+ * `trustStore: undefined`, `habitStore: undefined`, `fundingStore: undefined`, `bannerStore: undefined`,
  * `listDbChange: undefined`,
  * `debugDbStore: undefined`, `nostrKek: undefined`,
  * an empty {@link InMemoryBtcUsdStore}, and an empty {@link InMemoryFiatStore}.
  * A set URL asks `createClient` for one `SqlClient`, migrates auth (via
  * `openAuthStore`) then the FX tables (`btc_usd_daily` then `usd_fiat_daily`),
- * `message`, `contact`, `pos_charge` (via `migratePosSchema`), `conversation`, `push`, `notification`, `trust_edge`,
+ * `message`, `contact`, `pos_charge` (via `migratePosSchema`), `conversation`, `push`, `notification`, `trust_edge`, `habit` / `habit_revision` / `habit_result` / `habit_comment` (via `migrateHabitSchema`),
  * `funding_grant`, `api_log`, `account_image`, `diagnostic_event`, and `db_change` schemas (notification after push, trust
- * after notification, funding after trust, `api_log` then `account_image` via
+ * after notification, habit after trust, funding after habit, `api_log` then `account_image` via
  * `migrateBannerSchema`, then `diagnostic_event` between `account_image` and `db_change` so `trg_db_change` attaches), builds a {@link QueryGiftStore},
  * {@link SqlGiftRecorder}, {@link PostgresMessageStore},
  * {@link PostgresTranslationStore},
  * {@link PostgresContactStore}, {@link PostgresPosStore}, {@link PostgresConversationStore},
  * {@link PostgresNotificationStore}, {@link PostgresPushStore},
- * {@link PostgresTrustStore}, {@link PostgresFundingStore}, and
+ * {@link PostgresTrustStore}, {@link PostgresHabitStore}, {@link PostgresFundingStore}, and
  * {@link PostgresBannerStore}, parses
  * `NOSTR_NSEC_KEK` into `nostrKek`, constructs {@link PostgresBtcUsdStore} and
  * {@link PostgresFiatStore}, and best-effort fills rates for the outbound gift
@@ -217,14 +217,14 @@ export interface BootFxOptions {
  * before the remaining Postgres stores are constructed. External-zapper
  * backfill failures log `nostr.zapper.backfill.failed` and do not abort boot.
  * Memory boots omit
- * `notificationStore`, `trustStore`, and `fundingStore`, leave `nostrKek`
+ * `notificationStore`, `trustStore`, `habitStore`, and `fundingStore`, leave `nostrKek`
  * undefined, and do not run the `db_change` migrate. SQL boots return
  * {@link PostgresNotificationStore}, {@link PostgresTrustStore},
- * {@link PostgresFundingStore}, {@link PostgresBannerStore},
+ * {@link PostgresHabitStore}, {@link PostgresFundingStore}, {@link PostgresBannerStore},
  * {@link PostgresApiLogStore}, {@link PostgresDiagnosticStore}, and {@link PostgresDebugDbStore}.
- * `migrateTrustSchema` then `migrateFundingSchema` run after auth/`account`
+ * `migrateTrustSchema`, then `migrateHabitSchema`, then `migrateFundingSchema` run after auth/`account`
  * exists and before `migrateApiLogSchema` / `migrateDbChangeSchema` so
- * `trg_db_change` attaches to `trust_edge` and `funding_grant`.
+ * `trg_db_change` attaches to `trust_edge`, `habit`, `habit_revision`, `habit_result`, `habit_comment`, and `funding_grant`.
  * `migrateApiLogSchema` runs after `openAuthStore` (account exists).
  * `migrateBannerSchema` runs next, then `migrateDiagnosticSchema`, then
  * `migrateDbChangeSchema`, so `diagnostic_event` is migrated between
