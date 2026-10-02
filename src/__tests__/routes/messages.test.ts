@@ -21,6 +21,7 @@ import { messagesRoutes, type MessagesRouteDeps } from '@/routes/messages';
 import { InMemorySparkInvoiceStore } from '@/lib/spark-invoice-store';
 import {
   BOLT11,
+  BOLT11_250K,
   BOLT11_PAYMENT_HASH,
   LNURL_SERVER,
   allInternal,
@@ -12490,6 +12491,7 @@ describe('wallet-backed receiving on POST /messages/:id/invoice', () => {
     lnurlServer: boolean;
     spark: boolean;
     authorId?: string;
+    pr?: string;
   }): Promise<{
     app: Hono;
     messageStore: InMemoryMessageStore;
@@ -12510,7 +12512,7 @@ describe('wallet-backed receiving on POST /messages/:id/invoice', () => {
       ...unsignedNostrDefaults(),
       eventId: 'ee'.repeat(32),
     });
-    const { fetchImpl, seen } = walletLnurlFetch('wally');
+    const { fetchImpl, seen } = walletLnurlFetch('wally', options.pr);
     const app = new Hono().route(
       '/messages',
       messagesRoutes({
@@ -12572,6 +12574,19 @@ describe('wallet-backed receiving on POST /messages/:id/invoice', () => {
       expect(res.status).toBe(200);
       expect(await res.json()).toEqual({ pr: BOLT11, amountSats: 21, sparkInvoice: null });
       expect(allInternal(seen)).toBe(true);
+    } finally {
+      nip57.mockRestore();
+    }
+  });
+
+  it('returns sparkInvoice null when pr is for another amount', async () => {
+    const bolt11 = await import('@/lib/bolt11');
+    const nip57 = vi.spyOn(bolt11, 'isNip57Invoice').mockReturnValue(true);
+    try {
+      const { app } = await walletSetup({ lnurlServer: true, spark: true, pr: BOLT11_250K });
+      const res = await pay(app);
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ pr: BOLT11_250K, amountSats: 21, sparkInvoice: null });
     } finally {
       nip57.mockRestore();
     }

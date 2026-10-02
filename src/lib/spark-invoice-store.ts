@@ -92,6 +92,7 @@ export const SPARK_INVOICE_SCHEMA_SQL: readonly string[] = [
  *
  * @param sql - Parameter-bound SQL client.
  * @returns Resolves when every statement has executed.
+ * @throws Propagates SQL failures.
  */
 export async function migrateSparkInvoiceSchema(sql: SqlClient): Promise<void> {
   for (const statement of SPARK_INVOICE_SCHEMA_SQL) {

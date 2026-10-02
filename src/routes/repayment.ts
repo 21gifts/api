@@ -283,6 +283,7 @@ export async function repaymentInvoice(deps: RepaymentDeps, c: Context): Promise
         : await issueSparkInvoice(deps, receiving, {
             pr: outstanding.pr,
             paymentHash: outstanding.paymentHash,
+            prAmountMsat: inspectBolt11(outstanding.pr)?.amountMsat ?? null,
             amountSats: outstanding.amountSats,
             zapRequestJson: serializeZapRequest(storedRequest as unknown as VerifiedEvent),
           });
@@ -359,6 +360,7 @@ export async function repaymentInvoice(deps: RepaymentDeps, c: Context): Promise
   const sparkInvoice = await issueSparkInvoice(deps, receiving, {
     pr: zap.pr,
     paymentHash: attempt.paymentHash,
+    prAmountMsat: inspected?.amountMsat ?? null,
     amountSats: next.share.sats,
     zapRequestJson,
   });
