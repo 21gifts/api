@@ -163,8 +163,7 @@ export function habitTrackerRoutes(deps: {
       });
       return c.json({ ok: true }, 201);
     }
-    if (!roleAtLeast(caller.role, 'initiator'))
-      return c.json({ error: 'Forbidden' }, 403);
+    if (!roleAtLeast(caller.role, 'initiator')) return c.json({ error: 'Forbidden' }, 403);
     if (input.action === 'deleteComment') {
       if (!(await deps.habitStore.findComment(input.id)))
         return c.json({ error: 'Not found' }, 404);
