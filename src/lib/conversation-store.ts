@@ -341,7 +341,7 @@ export interface ConversationStore {
   ): Promise<number>;
 
   /**
-   * Count of listed inbox threads with unread inbound for this viewer.
+   * Count of unread incoming messages in listed conversations for this viewer.
    * Does not keep a thread only because its latest message is from the
    * viewer. The number still matches GET `/conversations` `unreadCount`
    * because those extra rows are unread false. Outbound-only own platform
@@ -353,7 +353,7 @@ export interface ConversationStore {
    * @param staff - Moderator (sees all platform threads).
    * @param platformId - Official platform account id, or `null` when none.
    * @param moderator - When true, include `moderator_group`.
-   * @returns Number of listed unread threads.
+   * @returns Number of unread incoming messages.
    */
   unreadCount(
     accountId: string,
