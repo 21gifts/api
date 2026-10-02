@@ -957,7 +957,7 @@ export class InMemoryConversationStore implements ConversationStore {
   }
 
   /**
-   * Count listed unread threads for this viewer.
+   * Count unread incoming messages in listed conversations for this viewer.
    * Does not keep a thread only because its latest message is from the
    * viewer. The number still matches GET `/conversations` `unreadCount`
    * because those extra rows are unread false.
@@ -1584,7 +1584,7 @@ export class PostgresConversationStore implements ConversationStore {
   }
 
   /**
-   * Count listed unread threads for this viewer.
+   * Count unread incoming messages in listed conversations for this viewer.
    * Does not keep a thread only because its latest message is from the
    * viewer. The number still matches GET `/conversations` `unreadCount`
    * because those extra rows are unread false.
