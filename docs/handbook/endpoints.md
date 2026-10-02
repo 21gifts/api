@@ -646,7 +646,7 @@
 
 ## Endpoint: GET /pos
 
-- **Purpose:** Bearer required. Returns the signed-in member's open point-of-sale charge, or `charge: null`, plus up to 20 newest rows of any status. A pending row whose `expiresAt` is not in the future is marked `expired` before the response and is not `charge`. Amounts are whole sats. There is no paid status: Wallet of Satoshi settles the invoice and this API does not see it. TTL is five minutes (`POS_CHARGE_TTL_MS`).
+- **Purpose:** Bearer required. Returns the signed-in member's open point-of-sale charge, or `charge: null`, plus up to 20 newest rows of any status. A pending row whose `expiresAt` is not in the future is marked `expired` before the response and is not `charge`. Amounts are whole sats. There is no paid status: the member's receiving wallet (a verified wallet when the LNURL server is configured, else the linked Wallet of Satoshi address) settles the invoice and this API does not observe settlement. TTL is five minutes (`POS_CHARGE_TTL_MS`).
 - **Errors:** 401 Unauthorized.
 - **Used by:** App `/pos` page.
 - **Auth:** `Authorization: Bearer` session.
