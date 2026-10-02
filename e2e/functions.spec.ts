@@ -2893,27 +2893,62 @@ test('Function: debugExternalRoutes — GET /debug/external-pubkeys without bear
   expect((await request.get('/debug/external-pubkeys')).status()).toBe(401);
 });
 
-// Posting needs a verified wallet, which needs LNURL_SERVER_URL (blank here).
-test('Function: normalizePlace — a pinned note is 409 without a verified wallet', async ({
+test('Function: normalizePlace — PATCH /messages/:id/place refuses a bad place and pins a shop note', async ({
   request,
 }) => {
   const stamp = `${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
-  const auth = await verifiedPinSession(request, stamp);
-  const res = await request.post('/messages', {
+  const { auth, noteId } = await moderatorShopNote(request, stamp);
+  const bad = await request.patch(`/messages/${noteId}/place`, {
     headers: auth,
-    data: { text: 'pin', place: { lat: 47.3, lng: 8.5, label: 'Zürich' } },
+    data: { place: { lat: 999, lng: 8.5 } },
   });
-  expect(res.status()).toBe(409);
-  expect(await res.json()).toEqual({
-    error: 'missing_requirements',
-    missing: ['lightning-address'],
+  expect(bad.status()).toBe(400);
+  expect(((await bad.json()) as { error: string }).error).not.toBe('Invalid body');
+  const pinned = await request.patch(`/messages/${noteId}/place`, {
+    headers: auth,
+    data: { place: { lat: 47.3, lng: 8.5, label: 'Zürich' } },
   });
+  expect(pinned.status()).toBe(200);
 });
+
+/**
+ * A moderator whose About-me note is a shop note (`#21GiftsShop`). Saving About
+ * me needs no wallet, so the default boot can reach the place route.
+ *
+ * @param request - Playwright request context.
+ * @param stamp - Unique suffix.
+ * @returns The moderator bearer and the About-me note id.
+ */
+async function moderatorShopNote(
+  request: APIRequestContext,
+  stamp: string,
+): Promise<{ auth: { authorization: string }; noteId: string }> {
+  const { auth, id } = await pinSession(request, stamp, 'moderator');
+  const saved = await request.put('/me/about', {
+    headers: auth,
+    data: { text: 'My shop #21GiftsShop' },
+  });
+  expect(saved.status()).toBe(200);
+  const listed = await request.get('/debug/accounts', { headers: DEBUG });
+  const row = (
+    (await listed.json()) as { accounts: Array<{ id: string; profileMessageId: string | null }> }
+  ).accounts.find((item) => item.id === id);
+  expect(typeof row?.profileMessageId).toBe('string');
+  return { auth, noteId: row!.profileMessageId! };
+}
 
 async function verifiedPinSession(
   request: APIRequestContext,
   stamp: string,
 ): Promise<{ authorization: string }> {
+  return (await pinSession(request, stamp, 'verified')).auth;
+}
+
+async function pinSession(
+  request: APIRequestContext,
+  stamp: string,
+  role: 'verified' | 'moderator',
+): Promise<{ auth: { authorization: string }; id: string }> {
   const adaName = `E2ePin${stamp}`;
   const provision = await request.post('/debug/accounts', {
     headers: DEBUG,
@@ -2941,27 +2976,24 @@ async function verifiedPinSession(
   expect(agreed.status()).toBe(200);
   const promoted = await request.patch(`/debug/accounts/${ada!.id}`, {
     headers: DEBUG,
-    data: { role: 'verified' },
+    data: { role },
   });
   expect(promoted.status()).toBe(200);
-  return auth;
+  return { auth, id: ada!.id };
 }
 
-// Posting needs a verified wallet, which needs LNURL_SERVER_URL (blank here).
-test('Function: placesMatch — a photo note is 409 without a verified wallet', async ({
+test('Function: placesMatch — PATCH /messages/:id/place with the same place twice is 200', async ({
   request,
 }) => {
   const stamp = `${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
-  const auth = await verifiedPinSession(request, stamp);
-  const res = await request.post('/messages', {
-    headers: auth,
-    data: { text: 'same caption', photo: { contentType: 'image/jpeg', data: '/9j/2Q==' } },
-  });
-  expect(res.status()).toBe(409);
-  expect(await res.json()).toEqual({
-    error: 'missing_requirements',
-    missing: ['lightning-address'],
-  });
+  const { auth, noteId } = await moderatorShopNote(request, stamp);
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const res = await request.patch(`/messages/${noteId}/place`, {
+      headers: auth,
+      data: { place: { lat: 47.3, lng: 8.5, label: 'Zürich' } },
+    });
+    expect(res.status()).toBe(200);
+  }
 });
 
 // Posting needs a verified wallet, which needs LNURL_SERVER_URL (blank here).
