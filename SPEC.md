@@ -662,7 +662,7 @@ host, or a response that is not a valid pay request (including a callback host
 that resolves to a non-public address) → **Response** `400`
 `{ "error": "Not a payable address" }`. HTTP 404 or 410, or an LNURL
 `{ "status": "ERROR" }` body → **Response** `404`
-`{ "error": "Address not found" }`. A host that does not resolve, network failure, timeout, redirect, any
+`{ "error": "Address not found" }`. A host that does not resolve within 5 seconds, network failure, timeout, redirect, any
 other non-2xx status, a body over 64 KB, or a body that is not a JSON object →
 **Response** `502` `{ "error": "Address could not be reached" }`.
 
