@@ -92,11 +92,12 @@ describe('GET /shops/activity', () => {
   });
 
   it.each(['verified', 'basis'] as const)(
-    'returns 403 for a %s account',
+    'returns 200 for a %s account',
     async (role: AccountRole) => {
       const res = await get(mount(await staffed()), role);
-      expect(res.status).toBe(403);
-      expect(await res.json()).toEqual({ error: 'Forbidden' });
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as { days: Array<{ day: string; shopCount: number }> };
+      expect(body.days).toHaveLength(30);
     },
   );
 

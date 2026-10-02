@@ -1,5 +1,4 @@
 import { Hono } from 'hono';
-import { roleAtLeast } from '@/lib/auth/roles';
 import { resolveSession } from '@/lib/auth/service';
 import type { Account, AuthStore } from '@/lib/auth/store';
 import { logEvent } from '@/lib/log';
@@ -47,9 +46,6 @@ export function shopActivityRoutes(deps: ShopActivityRouteDeps): Hono {
     const account = await authedAccount(deps, c.req.header('authorization'));
     if (account === null) {
       return c.json({ error: 'Unauthorized' }, 401);
-    }
-    if (!roleAtLeast(account.role, 'moderator')) {
-      return c.json({ error: 'Forbidden' }, 403);
     }
     const today = new Date(deps.now()).toISOString().slice(0, 10);
     const todayMs = Date.parse(`${today}T00:00:00.000Z`);

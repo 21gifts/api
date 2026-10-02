@@ -142,7 +142,7 @@ Public base URLs used in examples:
 | POST   | `/funding/admit`                                     | Bearer (moderator+)        | Admit grant                                                                                                                                                                                                                                                                                                                                            |
 | POST   | `/funding/reject`                                    | Bearer (moderator+)        | Reject grant                                                                                                                                                                                                                                                                                                                                           |
 | GET    | `/funding/payout-days`                               | Bearer (moderator+)        | Staff seven-UTC-day grant payout matrix (`days`: `blocked` / `missed` / `paid`; `welcome`: seven booleans, same order)                                                                                                                                                                                                                                 |
-| GET    | `/shops/activity`                                    | Bearer (moderator+)        | Staff 30-UTC-day shop till-charge counts (`days`: `{ day, shopCount }`, oldest first, zeros included)                                                                                                                                                                                                                                                  |
+| GET    | `/shops/activity`                                    | Bearer (any signed-in role)| 30-UTC-day shop till-charge counts (`days`: `{ day, shopCount }`, oldest first, zeros included)                                                                                                                                                                                                                                                        |
 | GET    | `/messages`                                          | none for active / Bearer   | Public active window with no header; otherwise Bearer. List top-level notes (+ visible `replyCount`); 409 if rules missing; name-copy notes without photo, extra stills, or video are omitted; About me text stays                                                                                                                                     |
 | GET    | `/messages/compose-target`                           | Bearer                     | Platform profile note `{ messageId, sats }` for a 1-sat compose fee to 21.gifts                                                                                                                                                                                                                                                                        |
 | GET    | `/messages/places`                                   | Bearer                     | Live top-level forum pins; 409 if rules missing                                                                                                                                                                                                                                                                                                        |
@@ -1257,7 +1257,7 @@ No session → **401** `{ "error": "Unauthorized" }`. Below moderator →
 
 ### `GET /shops/activity`
 
-Staff Bearer (moderator or founder). Thirty UTC days ending on the
+Bearer session, any signed-in role. Thirty UTC days ending on the
 server clock's today, oldest first. A shop is a live top-level forum
 note (`parent_id` null, `deleted_at` null) whose text has the hashtag
 token `21GiftsShop` (case-insensitive, not followed by `[A-Za-z0-9_]`)
@@ -1271,8 +1271,7 @@ every past day. This is not a historical usage log. JSON
 `{ "days": [ { "day": "YYYY-MM-DD", "shopCount": 0 } ] }` with exactly
 30 objects, missing days included as zero. No Sunday-rest gate. Does
 not create a BOLT11 invoice. No session → **401**
-`{ "error": "Unauthorized" }`. Below moderator → **403**
-`{ "error": "Forbidden" }`. A store throw → **503**
+`{ "error": "Unauthorized" }`. A store throw → **503**
 `{ "error": "Shop activity is unavailable" }` and log
 `shops.activity.failed` with no account, note, or charge ids.
 
