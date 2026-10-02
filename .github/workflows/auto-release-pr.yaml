@@ -78,5 +78,8 @@ jobs:
               --title "Release: ${head} -> ${base}" \
               --body-file "/tmp/pr-body-${head}.md"
           }
+          # Hard requirement: staging is experimental testing. Release it
+          # into develop, and release develop into main. Never open a
+          # release from staging directly into main.
           open_release develop main production false
           open_release staging develop develop true
