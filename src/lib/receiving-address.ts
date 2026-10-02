@@ -3,10 +3,12 @@
  *
  * With a verified wallet and the self-hosted LNURL server configured, that is
  * the wallet-backed `<username>@<host of PUBLIC_BASE_URL>`; otherwise the
- * linked external Lightning address. Every money route and the receipt ingest
- * resolve the address through {@link receivingAddress} and fetch LNURL
- * documents through {@link lnurlServerFetch}, which answers wallet-backed
- * addresses from the LNURL server directly instead of over the public URL.
+ * linked external Lightning address. The member payment routes (gift,
+ * conversation and repayment invoices, pay link, point of sale) and the
+ * receipt ingest resolve the address through {@link receivingAddress} and fetch
+ * LNURL documents through {@link lnurlServerFetch}, which answers wallet-backed
+ * addresses from the LNURL server directly instead of over the public URL. The
+ * spend invoices (`POST /invoices`) still pay the linked Lightning address.
  */
 
 import type { Account, AuthStore } from '@/lib/auth/store';
