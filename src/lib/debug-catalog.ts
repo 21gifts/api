@@ -344,6 +344,7 @@ async function loadTable(deps: DebugCatalogDeps, table: DebugCatalogTable): Prom
         claimedUntil: iso(row.claimedUntil),
         createdAt: row.createdAt.toISOString(),
         deliveredEndpoints: row.deliveredEndpoints,
+        skipEndpoints: row.skipEndpoints,
       }));
     }
     case 'trust_edge': {

@@ -297,7 +297,7 @@
 
 ## Function: migratePushSchema
 
-- **Purpose:** Applies `PUSH_SCHEMA_SQL` in order (`CREATE TABLE IF NOT EXISTS` for `push_subscription` and `push_outbox` with `delivered_endpoints` and `type` CHECK `('forum', 'zap', 'conversation')`, supporting indexes, `ALTER TABLE … ADD COLUMN IF NOT EXISTS delivered_endpoints`, then an idempotent `DO` that drops/adds `push_outbox_type_check` so live two-value CHECKs accept `'conversation'`).
+- **Purpose:** Applies `PUSH_SCHEMA_SQL` in order (`CREATE TABLE IF NOT EXISTS` for `push_subscription` and `push_outbox` with `delivered_endpoints`, `skip_endpoints text NOT NULL DEFAULT '[]'`, and `type` CHECK `('forum', 'zap', 'conversation', 'dismiss')`, supporting indexes, `ALTER TABLE … ADD COLUMN IF NOT EXISTS delivered_endpoints`, `ALTER TABLE … ADD COLUMN IF NOT EXISTS skip_endpoints`, then an idempotent `DO` that drops/adds `push_outbox_type_check` so live CHECKs accept `'conversation'` and `'dismiss'`).
 - **Inputs:** `SqlClient` already opened by boot.
 - **Returns / side effects:** Void; idempotent DDL matching `docs/schema/push.sql`. Does not attach `db_change` triggers (that runs later via `migrateDbChangeSchema`).
 - **Used by:** `openBootStores` when SQL opens, after `migrateConversationSchema` and before `migrateDbChangeSchema`.
@@ -327,7 +327,7 @@
 
 - **Purpose:** Ordered idempotent SQL that creates the append-only `db_change` log, secret-redacting helpers, immutability guard (including a one-time live `view_key` rewrite in that same `DO`), and per-table `trg_db_change` triggers on every public table except `db_change`. On UPDATE, every bytea column (found via `pg_attribute` on `TG_RELID`) whose value is unchanged and was not hashed by `db_change_redact` is stored in both `before` and `after` as an object with `unchanged` true, `sha256` as the hex digest of the column text, and `bytes` as the `octet_length` of that text; INSERT, DELETE and the UPDATE that changes the bytes keep the full value, so any row state is reconstructable by chaining to the latest earlier full image; secret columns keep their sha256 hash; the no-op comparison still happens on the raw images before redaction.
 - **Inputs:** None (readonly string array constant).
-- **Returns / side effects:** Statement texts only; executed by `migrateDbChangeSchema`. Secrets `token`, `challenge`, `nostr_nsec_ciphertext`, `nonce`, `view_key`, `endpoint`, `p256dh`, `auth`, and `delivered_endpoints` become SHA-256 hex in logged JSON; other columns including `name` stay plaintext except unchanged bytea columns on UPDATE. The guard `DO` hashes JSON `view_key` that still equals a live `account.view_key` and leaves other rows unchanged.
+- **Returns / side effects:** Statement texts only; executed by `migrateDbChangeSchema`. Secrets `token`, `challenge`, `nostr_nsec_ciphertext`, `nonce`, `view_key`, `endpoint`, `p256dh`, `auth`, `delivered_endpoints`, and `skip_endpoints` become SHA-256 hex in logged JSON; other columns including `name` stay plaintext except unchanged bytea columns on UPDATE. The guard `DO` hashes JSON `view_key` that still equals a live `account.view_key` and leaves other rows unchanged.
 - **Used by:** `migrateDbChangeSchema`; documented mirror in `docs/schema/db_change.sql`.
 
 ## Function: InMemoryBtcUsdStore
@@ -568,24 +568,38 @@
 
 ## Function: InMemoryNotificationStore
 
-- **Purpose:** Process-local `NotificationStore` for in-app forum post, reply, zap, moderator appointment, and open moderator-proposal notifications. Default empty so the process boots without a database. `deleteByMessageIds` removes rows whose `parentId` or `replyId` is in the id list (any type). `deleteByTypeAndReplyId` removes rows whose `type` and `replyId` both match. Mark-read skips `moderator_proposal`.
-- **Inputs:** Optional seed `NotificationRow[]` (copied). `create` is unique on `(recipientAccountId, type, replyId)` and returns the existing row on duplicate. `listByRecipient(accountId, limit)` is newest `createdAt` then `id` DESC. `unreadCount` is total unread (`readAt === null`), not page length. `markRead` / `markAllRead` stamp unread rows only except `moderator_proposal` (left unread). `deleteByMessageIds(ids)` is a no-op for empty `ids`. `deleteByTypeAndReplyId(type, replyId)` returns the removed count. Operator dump: `listAll(limit)` newest-first (cap 200).
+- **Purpose:** Process-local `NotificationStore` for in-app forum post, reply, zap, moderator appointment, and open moderator-proposal notifications. Default empty so the process boots without a database. `deleteByMessageIds` removes rows whose `parentId` or `replyId` is in the id list (any type). `deleteByTypeAndReplyId` removes rows whose `type` and `replyId` both match. Mark-read and mark-all skip `moderator_proposal`. `markReadByMessage` stamps unread `forum_post`, `forum_reply`, `forum_mention`, and `zap` for that account when `parentId` or `replyId` equals the message id, returns those rows sorted by id, and returns `[]` on a second call. It does not stamp `moderator_appointed` or another account. `markRead` returns `{ row, stamped }` and `stamped` is true only when this call changed `readAt` from null.
+- **Inputs:** Optional seed `NotificationRow[]` (copied). `create` is unique on `(recipientAccountId, type, replyId)` and returns the existing row on duplicate. `listByRecipient(accountId, limit)` is newest `createdAt` then `id` DESC. `unreadCount` is total unread (`readAt === null`), not page length. `markRead` returns `{ row, stamped }` and `stamped` is true only when this call changed `readAt` from null. `markAllRead` stamps unread rows only except `moderator_proposal` (left unread). `deleteByMessageIds(ids)` is a no-op for empty `ids`. `deleteByTypeAndReplyId(type, replyId)` returns the removed count. Operator dump: `listAll(limit)` newest-first (cap 200).
 - **Returns / side effects:** Promise of row copies; mutating results does not change the store. No I/O.
 - **Used by:** `createApp` default `notificationStore`; memory `openBootStores` omits it.
 
 ## Function: PostgresPushStore
 
-- **Purpose:** Durable `PushStore` over Postgres (`push_subscription`, `push_outbox`). Same port semantics as the in-memory adapter, including claim leases, attempt counting, and `recordDelivered` for successful endpoint URLs.
+- **Purpose:** Durable `PushStore` over Postgres (`push_subscription`, `push_outbox`). Same port semantics as the in-memory adapter, including claim leases, attempt counting, and `recordDelivered` for successful endpoint URLs. `claimPending` returns the leased rows oldest `createdAt` then `id`, because `RETURNING` does not keep the subquery order.
 - **Inputs:** Constructor takes a shared boot `SqlClient` (already migrated via `migratePushSchema`). Operator dump: `listAllSubscriptions` (`ORDER BY created_at DESC, endpoint DESC`); `listAllOutbox(limit)` newest `created_at` then `id`.
 - **Returns / side effects:** Parameter-bound SQL; maps snake_case rows to domain objects including `delivered_endpoints` JSON. Errors propagate to callers.
 - **Used by:** `openBootStores` when `DATABASE_URL` is set.
 
 ## Function: PostgresNotificationStore
 
-- **Purpose:** Durable `NotificationStore` over Postgres (`notification`). Same port as the in-memory adapter: unique create, newest-first list, total unread count, get/mark-one/mark-all for the recipient only (mark-read / mark-all skip `type = 'moderator_proposal'`), `deleteByMessageIds` (`parent_id` or `reply_id` in the id list; the ids are bound as one `uuid[]` array-literal string built from well-formed UUIDs only, because the driver does not encode a JavaScript array for `$1::uuid[]`), and `deleteByTypeAndReplyId` (`DELETE FROM notification WHERE type = $1 AND reply_id = $2 RETURNING id`).
+- **Purpose:** Durable `NotificationStore` over Postgres (`notification`). Same port as the in-memory adapter: unique create, newest-first list, total unread count, get/mark-one/mark-all for the recipient only (mark-read / mark-all skip `type = 'moderator_proposal'`), `markReadByMessage` (`UPDATE … RETURNING` via `sql.query`, not `sql.execute`, for unread `forum_post` / `forum_reply` / `forum_mention` / `zap` where `parent_id` or `reply_id` matches, sorted by id in JS; a second call returns `[]`), `deleteByMessageIds` (`parent_id` or `reply_id` in the id list; the ids are bound as one `uuid[]` array-literal string built from well-formed UUIDs only, because the driver does not encode a JavaScript array for `$1::uuid[]`), and `deleteByTypeAndReplyId` (`DELETE FROM notification WHERE type = $1 AND reply_id = $2 RETURNING id`). `markAllRead` also uses `sql.query` because it returns the stamped rows. `markRead` returns `{ row, stamped }` and `stamped` is true only when this call changed `readAt` from null, which is only when `UPDATE … RETURNING` yields a row, never on the fallback select.
 - **Inputs:** Constructor takes a shared boot `SqlClient` (already migrated via `migrateNotificationSchema`). Operator dump: `listAll(limit)` newest-first (cap 200).
-- **Returns / side effects:** Parameter-bound SQL; maps snake_case rows to `NotificationRow`. Unique violation re-selects the existing row. Errors propagate to the route (503).
+- **Returns / side effects:** Parameter-bound SQL; maps snake_case rows to `NotificationRow`. `markRead` returns `{ row, stamped }`; `stamped` is true only when this call changed `readAt` from null, and only when `UPDATE … RETURNING` yields a row, never on the fallback select. Unique violation re-selects the existing row. Errors propagate to the route (503).
 - **Used by:** `openBootStores` when `DATABASE_URL` is set.
+
+## Function: markReadByMessage
+
+- **Purpose:** Store method on `InMemoryNotificationStore` and `PostgresNotificationStore`. Stamps `readAt` on unread `forum_post`, `forum_reply`, `forum_mention`, and `zap` rows for one account when `parentId` or `replyId` equals the message id. Does not stamp `moderator_appointed`, `moderator_proposal`, another account, or an already-read row.
+- **Inputs:** `accountId`, `messageId`, and `readAt`. Postgres runs `UPDATE … RETURNING` via `sql.query`, not `sql.execute`.
+- **Returns / side effects:** Newly stamped row copies, sorted by `id` ascending. A second call returns `[]`.
+- **Used by:** `POST /notifications/read-by-message`.
+
+## Function: enqueueNotificationDismiss
+
+- **Purpose:** Enqueue dismiss Web Push rows so other devices close banners for tags this account just marked read. Empty `tags` is a no-op and does not throw. Tags are uniqued first-seen, then written in chunks of 30. Each row has type `dismiss`, `messageId` null, and `skipEndpoints` `[endpoint]` or `[]`.
+- **Inputs:** `pushStore`, `accountId`, `tags`, `nowMs`, `unreadCount`, and optional `skipEndpoint`.
+- **Returns / side effects:** Resolves after every chunk is attempted. A throwing `enqueue` logs `push.dismiss.failed` and does not throw. The payload is `{ type: 'dismiss', tags, unreadCount }` and does not contain an endpoint.
+- **Used by:** `notificationRoutes` after read-all, read-by-message, and a freshly stamped single read.
 
 ## Function: enqueueForumPushes
 
@@ -617,9 +631,9 @@
 
 ## Function: runPushWorkerTick
 
-- **Purpose:** Claim a batch of pending outbox rows and deliver each payload to every subscription for the recipient account.
+- **Purpose:** Claim a batch of pending outbox rows and deliver each payload to every subscription for the recipient account except endpoints listed in `skipEndpoints`. A skipped endpoint is not sent and is not recorded as delivered. When every subscription is skipped, or none remain, the row is `markSent`.
 - **Inputs:** `PushWorkerDeps` (`store`, `sender`, `now`). Batch size and lease from module constants.
-- **Returns / side effects:** No-op when `sender.isConfigured()` is false. Records successful endpoints via `recordDelivered` and does not resend them on retry; deletes gone subscriptions without recording them; logs `push.send.failed` with optional numeric `status` (HTTP status from the sender) and no endpoint/keys/payload, then `markFailed` on fail after recording successes; `markSent` when remaining sends succeed / all gone / no subs left to try.
+- **Returns / side effects:** No-op when `sender.isConfigured()` is false. Records successful endpoints via `recordDelivered` and does not resend them on retry; deletes gone subscriptions without recording them; logs `push.send.failed` with optional numeric `status` (HTTP status from the sender) and no endpoint/keys/payload, then `markFailed` on fail after recording successes, except a failed send is `markSent` (not `markFailed`) when the same claim includes a dismiss whose tags include that row's payload tag for the same account; `markSent` when remaining sends succeed / all gone / no subs left to try.
 - **Used by:** `startPushWorker` interval; unit tests.
 
 ## Function: startPushWorker
@@ -635,6 +649,13 @@
 - **Inputs:** Unknown request body expecting `{ endpoint, keys: { p256dh, auth } }`.
 - **Returns / side effects:** Parsed fields, or `null` when invalid (blank endpoint, bad url-safe base64 keys, non-https endpoint except localhost http).
 - **Used by:** `pushRoutes` `POST /me/push-subscriptions`.
+
+## Function: pushTagForNotification
+
+- **Purpose:** Collapse tag for one notification row: `forum_post:<parentId>`, `forum_reply:<replyId>`, `forum_mention:<replyId>`, `zap:<replyId>`, `moderator_appointed:<parentId>`. `moderator_proposal` returns null.
+- **Inputs:** `type`, `parentId`, and `replyId` from the row. A zap tag uses `replyId` (the receipt id), not the note id.
+- **Returns / side effects:** Tag string or `null`. No I/O.
+- **Used by:** `notificationRoutes` when it builds dismiss tags.
 
 ## Function: buildForumPushPayload
 
@@ -1169,9 +1190,9 @@
 
 ## Function: notificationRoutes
 
-- **Purpose:** Hono sub-app for signed-in in-app notifications: `GET /` lists `{ notifications, unreadCount }` (scan newest 1000, `notificationsMatchingLevel` for the owner's `notificationLevel`, then drop rows whose parent **message** is missing or `deletedAt !== null` (`forum_reply` also checks the child `replyId` message; `zap` `replyId` is a receipt UUID and is not looked up), then cap 200; `unreadCount` is matching unread among kept rows; each item `type` is `'forum_post' | 'forum_reply' | 'forum_mention' | 'zap' | 'moderator_appointed' | 'moderator_proposal'`; `moderator_appointed` and `moderator_proposal` always stay through the level filter and the hidden filter), `POST /read-all` marks all read except `moderator_proposal`, `POST /:id/read` marks one UUID (`moderator_proposal` stays unread). Mount `read-all` before `/:id/read`. Never exposes recipient or actor account ids. `DEBUG_TOKEN` cannot read this list. `createApp` always passes `messages` (`getById`). Hidden/missing forum rows are then best-effort `deleteByMessageIds` (`notifications.hidden.purged`). Appointed/proposal `parentId`/`replyId` are account ids in prod, so a purge of hidden **message** ids does not remove them. If purge throws, count kept unread rows (do not 503 the list).
-- **Inputs:** `NotificationRouteDeps`: notification `store`, shared `authStore`, `messages` (`getById`), `now`.
-- **Returns / side effects:** Hono app mounted at `/notifications`. 401 without session; 404 `{ error: 'Not found' }` for unknown / other-account / non-uuid `:id`; 503 `{ error: 'Notifications are unavailable' }` (`notifications.list.failed` / `notifications.read_all.failed` / `notifications.read.failed`). Hidden-row purge failure is not 503.
+- **Purpose:** Hono sub-app for signed-in in-app notifications: `GET /` lists `{ notifications, unreadCount }` (scan newest 1000, `notificationsMatchingLevel` for the owner's `notificationLevel`, then drop rows whose parent **message** is missing or `deletedAt !== null` (`forum_reply` also checks the child `replyId` message; `zap` `replyId` is a receipt UUID and is not looked up), then cap 200; `unreadCount` is matching unread among kept rows; each item `type` is `'forum_post' | 'forum_reply' | 'forum_mention' | 'zap' | 'moderator_appointed' | 'moderator_proposal'`; `moderator_appointed` and `moderator_proposal` always stay through the level filter and the hidden filter), `POST /read-all` marks all read except `moderator_proposal`, `POST /:id/read` marks one UUID (`moderator_proposal` stays unread). Mount `read-all` and `read-by-message` before `/:id/read`. `POST /read-all` returns `{ ok: true, tags }` for rows this call stamped. `POST /read-by-message` stamps unread `forum_post`, `forum_reply`, `forum_mention`, and `zap` for this account when `parentId` or `replyId` equals the message id and returns the same `{ ok: true, tags }`. `POST /:id/read` still returns the public notification; a fresh stamp enqueues that row's dismiss tag, and a proposal or an already-read row does not. Never exposes recipient or actor account ids. `DEBUG_TOKEN` cannot read this list. `createApp` always passes `messages` (`getById`). Hidden/missing forum rows are then best-effort `deleteByMessageIds` (`notifications.hidden.purged`). Appointed/proposal `parentId`/`replyId` are account ids in prod, so a purge of hidden **message** ids does not remove them. If purge throws, count kept unread rows (do not 503 the list).
+- **Inputs:** `NotificationRouteDeps`: notification `store`, shared `authStore`, `messages` (`getById`), `now`, optional `pushStore`, and optional `inboxUnreadCount`.
+- **Returns / side effects:** Hono app mounted at `/notifications`. 401 without session; 404 `{ error: 'Not found' }` for unknown / other-account / non-uuid `:id` and for a bad `read-by-message` body; 503 `{ error: 'Notifications are unavailable' }` (`notifications.list.failed` / `notifications.read_all.failed` / `notifications.read.failed` / `notifications.read_message.failed`). `POST /read-all` and `POST /read-by-message` are 200 `{ ok: true, tags }`. A fresh single-read stamp enqueues dismiss; proposals and already-read rows do not. Dismiss enqueue failure is still 200. Hidden-row purge failure is not 503.
 - **Used by:** `createApp`.
 
 ## Function: normalizeDisplayName
@@ -2053,7 +2074,7 @@
 
 ## Function: loadDebugTables
 
-- **Purpose:** Load operator dump rows for one table or every allowlisted table (cap 200). The forum `message` dump includes stored still metadata as lengths/MIME only (`photoContentType`, `photoBytes`, nested `extraPhotos: [{ idx, photoContentType, bytes, photoTakenAt }]`). The `conversation_message` dump uses that length/MIME shape without `photoTakenAt`. No payloads; missing photo is `null` / `0` / `[]`.
+- **Purpose:** Load operator dump rows for one table or every allowlisted table (cap 200). The forum `message` dump includes stored still metadata as lengths/MIME only (`photoContentType`, `photoBytes`, nested `extraPhotos: [{ idx, photoContentType, bytes, photoTakenAt }]`). The `conversation_message` dump uses that length/MIME shape without `photoTakenAt`. No payloads; missing photo is `null` / `0` / `[]`. A `push_outbox` dump row includes `deliveredEndpoints` and `skipEndpoints`.
 - **Inputs:** `DebugCatalogDeps` and optional table name.
 - **Returns / side effects:** `Record<DebugCatalogTable, unknown[]>`. Missing optional stores dump as `[]`.
 - **Used by:** `debugCatalogRoutes`.

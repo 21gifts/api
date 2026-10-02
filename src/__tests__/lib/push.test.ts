@@ -6,7 +6,22 @@ import {
   buildConversationPushPayload,
   buildZapPushPayload,
   parsePushSubscription,
+  pushTagForNotification,
 } from '@/lib/push';
+
+describe('pushTagForNotification', () => {
+  it('maps notification kinds to their stored collapse ids', () => {
+    const ids = { parentId: 'parent', replyId: 'reply' };
+    expect(pushTagForNotification({ type: 'forum_post', ...ids })).toBe('forum_post:parent');
+    expect(pushTagForNotification({ type: 'forum_reply', ...ids })).toBe('forum_reply:reply');
+    expect(pushTagForNotification({ type: 'forum_mention', ...ids })).toBe('forum_mention:reply');
+    expect(pushTagForNotification({ type: 'zap', ...ids })).toBe('zap:reply');
+    expect(pushTagForNotification({ type: 'moderator_appointed', ...ids })).toBe(
+      'moderator_appointed:parent',
+    );
+    expect(pushTagForNotification({ type: 'moderator_proposal', ...ids })).toBeNull();
+  });
+});
 
 describe('parsePushSubscription', () => {
   const validKeys = { p256dh: 'abcABC123_-', auth: 'xyzXYZ789_-' };

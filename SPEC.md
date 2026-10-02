@@ -4,7 +4,7 @@
 > Product decisions live in [`CONCEPT.md`](./CONCEPT.md); this file owns
 > request/response contracts for routes that exist in code today.
 
-**Status**: living document. Last revised 2026-10-02 (bounded conversation read acknowledgements and unread message totals; 2026-09-30: `GET /mentions` matches the start of the username, a `.` `_` `-` segment, or the start of the display name or one of its words; a token containing `.` `_` `-` matches only a whole-string start. 2026-09-28: `GET /mentions` username prefix suggestions. GET /mentions returns at most 20 username-prefix suggestions for a signed-in forum reader. 2026-09-24: `POST /conversations/:id/messages/:messageId/translate`; owner and view JSON include `aboutMessageId`; conversation rows include `lastMessageId`. 2026-09-23: `eligibleToday` does not require a grant until UTC 2026-10-10; funding-program grants independent of `account.role`; spend ping and `POST /invoices` require `eligibleToday`; verified top-level media also welcome-pings independent of `eligibleToday`; `GET /invoices/eligible`; `GET /conversations` list/open rows include per-row `unreadMessageCount`; envelope `unreadCount` now sums unread messages; `GET /trust-chain` requires a member Bearer session; public graph uses at most one incoming edge per subject: the oldest eligible sibling (`createdAt` then `id`), skipping a non-chain oldest sibling so a later displayable contact can show; eligible `verify`, `moderator_appoint`, and `moderator_propose` only when the subject is a moderator; `moderator_confirm` and `moderator_reject` never; later appoint/confirm/propose do not replace the first eligible contact; staff may reject an open proposal (`POST /trust/reject-moderator`, append-only `moderator_reject`, role stays `verified`) and re-propose after reject (new `moderator_propose`; 409 while currently pending, any confirm/appoint, or a concurrent older open propose wins after insert); confirm/reject re-list after insert and undo when the other grant already closed; pending = latest propose/reject is propose, verified, no confirm/appoint; live-unique kinds are verify/confirm/appoint only; open proposal fans out in-app `moderator_proposal` plus Web Push to other staff until confirm, until reject when pending is then empty, or until appoint; GET `/notifications` keeps `moderator_appointed` and `moderator_proposal` (mark-read / read-all do not stamp the proposal); owner `notificationLevel` on GET `/me` and `POST /me/notification-level`; fan-out filters in-app and Web Push by `all` / `active` / `mentions`; GET `/notifications` applies the same filter to stored rows (`moderator_appointed` always stays; `unreadCount` is unread among kept rows after the hidden filter (before the 200 cap), not `store.unreadCount()` and not the unfiltered matching unread of the newest 1000); a zap that inserts a gift-reply fans out only `notifyZap`, not a second `forum_reply`; gift-reply row still lands in the thread; confirm/appoint notify the subject only with `moderator_appointed` and Web Push url `/welcome`; official platform account (`isPlatform`) never fans out living-room `forum_post` / `forum_reply` / `zap`; house daily gift-replies still persist; GET /messages omits name-copy profile notes and About me text stays).
+**Status**: living document. Last revised 2026-10-02 (bounded conversation read acknowledgements and unread message totals; 2026-09-30: `GET /mentions` matches the start of the username, a `.` `_` `-` segment, or the start of the display name or one of its words; a token containing `.` `_` `-` matches only a whole-string start. 2026-09-28: `GET /mentions` username prefix suggestions. GET /mentions returns at most 20 username-prefix suggestions for a signed-in forum reader. 2026-09-24: `POST /conversations/:id/messages/:messageId/translate`; owner and view JSON include `aboutMessageId`; conversation rows include `lastMessageId`. 2026-09-23: `eligibleToday` does not require a grant until UTC 2026-10-10; funding-program grants independent of `account.role`; spend ping and `POST /invoices` require `eligibleToday`; verified top-level media also welcome-pings independent of `eligibleToday`; `GET /invoices/eligible`; `GET /conversations` list/open rows include per-row `unreadMessageCount`; envelope `unreadCount` now sums unread messages; `GET /trust-chain` requires a member Bearer session; public graph uses at most one incoming edge per subject: the oldest eligible sibling (`createdAt` then `id`), skipping a non-chain oldest sibling so a later displayable contact can show; eligible `verify`, `moderator_appoint`, and `moderator_propose` only when the subject is a moderator; `moderator_confirm` and `moderator_reject` never; later appoint/confirm/propose do not replace the first eligible contact; staff may reject an open proposal (`POST /trust/reject-moderator`, append-only `moderator_reject`, role stays `verified`) and re-propose after reject (new `moderator_propose`; 409 while currently pending, any confirm/appoint, or a concurrent older open propose wins after insert); confirm/reject re-list after insert and undo when the other grant already closed; pending = latest propose/reject is propose, verified, no confirm/appoint; live-unique kinds are verify/confirm/appoint only; open proposal fans out in-app `moderator_proposal` plus Web Push to other staff until confirm, until reject when pending is then empty, or until appoint; GET `/notifications` keeps `moderator_appointed` and `moderator_proposal` (mark-read / read-all do not stamp the proposal); owner `notificationLevel` on GET `/me` and `POST /me/notification-level`; fan-out filters in-app and Web Push by `all` / `active` / `mentions`; GET `/notifications` applies the same filter to stored rows (`moderator_appointed` always stays; `unreadCount` is unread among kept rows after the hidden filter (before the 200 cap), not `store.unreadCount()` and not the unfiltered matching unread of the newest 1000); a zap that inserts a gift-reply fans out only `notifyZap`, not a second `forum_reply`; gift-reply row still lands in the thread; confirm/appoint notify the subject only with `moderator_appointed` and Web Push url `/welcome`; official platform account (`isPlatform`) never fans out living-room `forum_post` / `forum_reply` / `zap`; house daily gift-replies still persist; GET /messages omits name-copy profile notes and About me text stays). 2026-10-01: opening a forum note, translating it, or opening Notifications stamps the matching unread forum and zap rows and tells the account's other devices to close those banners (`POST /notifications/read-by-message`; read-all and read-by-message return tags; a freshly stamped `POST /notifications/:id/read` only enqueues the dismiss tag and still returns the public notification). `moderator_proposal` stays unread. Private-message pushes are not dismissed.
 
 ---
 
@@ -178,6 +178,7 @@ Public base URLs used in examples:
 | POST   | `/conversations/:id/messages/:messageId/translate`   | Bearer                     | Translate stored conversation text (`{ target }` → `{ translatedText, cached }`)                                                                                                                                                                                                                                                                       |
 | GET    | `/notifications`                                     | Bearer                     | List + unreadCount; drop leftover hidden forum_post/forum_reply (zap checks parent only)                                                                                                                                                                                                                                                               |
 | POST   | `/notifications/read-all`                            | Bearer                     | Mark all notifications read                                                                                                                                                                                                                                                                                                                            |
+| POST   | `/notifications/read-by-message`                     | Bearer                     | Mark forum and zap notifications for one opened note read and return dismiss tags                                                                                                                                                                                                                                                                      |
 | POST   | `/notifications/:id/read`                            | Bearer                     | Mark one notification read                                                                                                                                                                                                                                                                                                                             |
 | GET    | `/lightning-address`                                 | none                       | Resolve LUD-16 metadata (cached)                                                                                                                                                                                                                                                                                                                       |
 | POST   | `/diagnostics`                                       | none                       | `{ event }` plus optional `name`, `message`, `prfPresent`, `challengeId`, `accountId`, `stage`, `status`, `path` → `204`; 60/IP and 600 global per minute                                                                                                                                                                                              |
@@ -1956,7 +1957,7 @@ process has no SQL client → **Response** `503`
 `nextCursor` when another page exists. Follow `nextCursor` until it is
 absent. `bytea` cells, including `nostr_nsec_ciphertext`, are octet lengths.
 Text in `token`, `challenge`, `nonce`, `view_key`, `endpoint`, `p256dh`,
-`auth`, and `delivered_endpoints` is the string `"redacted"`. A primary key
+`auth`, `delivered_endpoints`, and `skip_endpoints` is the string `"redacted"`. A primary key
 that is one of those columns is paged by `ctid`, so the cursor is not the
 secret. A cursor that does not match the key is **Response** `400`
 `{ "error": "Invalid cursor" }`. An unknown table is **Response** `404`
@@ -5184,11 +5185,48 @@ rows drop on confirm, on reject when pending is then empty, or on appoint).
 Missing/invalid/expired bearer → **401** `{ "error": "Unauthorized" }`.
 Store failure → **503** `{ "error": "Notifications are unavailable" }`.
 
+A missing or invalid body is not **404**. An optional `endpoint` string is
+recorded as the dismiss skip list only when it exactly matches one push
+subscription of this account. The response never contains that endpoint.
+Enqueue failure still returns **200**.
+
 Success → **Response** `200`:
 
 ```json
-{ "ok": true }
+{ "ok": true, "tags": [] }
 ```
+
+`tags` are the collapse tags of rows this call stamped, first-seen unique,
+in id order. `moderator_appointed` is included. `moderator_proposal` is
+not stamped, so it contributes no tag. An empty `tags` array enqueues
+nothing.
+
+### `POST /notifications/read-by-message`
+
+Bearer session required. Body is a JSON object `{ "messageId": "<uuid>", "endpoint"?: "<string>" }`.
+Stamps unread `forum_post`, `forum_reply`, `forum_mention`, and `zap` rows
+for this account whose `parentId` or `replyId` equals `messageId`. Does not
+stamp `moderator_appointed`, `moderator_proposal`, another account, or a
+row that already has `readAt`. A second call returns `tags: []`.
+
+Missing JSON, `null`, an array, a string, a missing `messageId`, or a
+non-UUID → **404** `{ "error": "Not found" }` (not 400). Missing or invalid
+bearer → **401** `{ "error": "Unauthorized" }`. Store failure → **503**
+`{ "error": "Notifications are unavailable" }` (`notifications.read_message.failed`).
+
+The optional `endpoint` is skipped on the dismiss push only when it exactly
+matches one subscription of this account. It is never echoed. A bad or
+unowned `endpoint` does not change the status and does not skip anyone.
+Dismiss enqueue failure still returns **200**.
+
+Success → **Response** `200`:
+
+```json
+{ "ok": true, "tags": ["forum_post:<id>", "zap:<replyId>"] }
+```
+
+Zap tags use `replyId` (the receipt-derived id), not the note id.
+`tags` lists only rows this call stamped.
 
 ### `POST /notifications/:id/read`
 
@@ -5197,6 +5235,13 @@ returns that `PublicNotification` with `readAt` set. A `moderator_proposal`
 row is **200** with `readAt` still `null` (mark-read does not dismiss it).
 Unknown id, another account's notification, or a non-uuid `:id` → **404**
 `{ "error": "Not found" }`. Same **401** / **503** as list.
+
+Dismiss happens only when this call changes `readAt` from null. The row's
+collapse tag is then enqueued as a dismiss push for the account's other
+subscriptions. An already-read row does not enqueue, even when its `readAt`
+equals the route clock. A proposal does not enqueue. The response stays the
+public notification, not `{ "ok", "tags" }`. Enqueue failure still returns
+**200**.
 
 Success → **Response** `200` (one public notification with `readAt` set,
 or still `null` for `moderator_proposal`).

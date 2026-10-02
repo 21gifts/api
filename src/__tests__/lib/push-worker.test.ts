@@ -205,11 +205,73 @@ describe('runPushWorkerTick', () => {
       claimedUntil: null,
       createdAt: new Date(1),
       deliveredEndpoints: [],
+      skipEndpoints: [],
     };
     await store.enqueue(row);
     const sender = new FakeSender(true);
     await runPushWorkerTick({ store, sender, now: () => 1 });
     expect(await store.claimPending(10, 1, 1000)).toEqual([]);
+    expect((await store.listAllOutbox(10))[0]?.status).toBe('sent');
+    expect(sender.calls).toEqual([]);
+  });
+
+  it('marks sent without sending when every subscription is skipped', async () => {
+    const store = new InMemoryPushStore();
+    await store.upsertSubscription(SUB_B);
+    await store.enqueue({
+      id: 'dismiss-all-skipped',
+      accountId: 'other',
+      type: 'dismiss',
+      messageId: null,
+      payload: JSON.stringify({ type: 'dismiss', tags: ['forum_post:m'], unreadCount: 0 }),
+      status: 'pending',
+      attempts: 0,
+      claimedUntil: null,
+      createdAt: new Date(1),
+      deliveredEndpoints: [],
+      skipEndpoints: [SUB_B.endpoint],
+    });
+    const sender = new FakeSender(true);
+    await runPushWorkerTick({ store, sender, now: () => 1 });
+    expect(sender.calls).toEqual([]);
+    expect((await store.listAllOutbox(10))[0]).toMatchObject({
+      status: 'sent',
+      deliveredEndpoints: [],
+    });
+  });
+
+  it('skips one device and sends the same dismiss payload to another device', async () => {
+    const store = new InMemoryPushStore();
+    const skipped = { ...SUB_B, endpoint: 'https://push.example/skipped' };
+    const target = { ...SUB_B, endpoint: 'https://push.example/target' };
+    await store.upsertSubscription(skipped);
+    await store.upsertSubscription(target);
+    const payload = JSON.stringify({
+      type: 'dismiss',
+      tags: ['forum_reply:message'],
+      unreadCount: 2,
+    });
+    await store.enqueue({
+      id: 'dismiss-one-skipped',
+      accountId: 'other',
+      type: 'dismiss',
+      messageId: null,
+      payload,
+      status: 'pending',
+      attempts: 0,
+      claimedUntil: null,
+      createdAt: new Date(1),
+      deliveredEndpoints: [],
+      skipEndpoints: [skipped.endpoint],
+    });
+    const sender = new FakeSender(true);
+    await runPushWorkerTick({ store, sender, now: () => 1 });
+    expect(sender.calls).toEqual([{ endpoint: target.endpoint, payload }]);
+    expect(sender.calls[0]?.payload).not.toContain(skipped.endpoint);
+    expect((await store.listAllOutbox(10))[0]).toMatchObject({
+      status: 'sent',
+      deliveredEndpoints: [target.endpoint],
+    });
   });
 
   it('deletes gone subscriptions and marks sent when all gone', async () => {
@@ -321,6 +383,174 @@ describe('runPushWorkerTick', () => {
     await runPushWorkerTick({ store, sender, now: () => 2 });
     expect(sender.calls).toHaveLength(callsBefore);
     expect(await store.claimPending(10, 2, 1000)).toEqual([]);
+  });
+
+  it('marks sent when a failed content send is dismissed in the same claim', async () => {
+    const store = new InMemoryPushStore();
+    await store.upsertSubscription(SUB_B);
+    await enqueueForumPushes(store, 'author', 'm', 1);
+    const forumRow = (await store.listAllOutbox(10))[0];
+    const tag = JSON.parse(forumRow?.payload ?? '{}').tag;
+    await store.enqueue({
+      id: 'dismiss-same-claim-tag',
+      accountId: forumRow?.accountId ?? 'other',
+      type: 'dismiss',
+      messageId: null,
+      payload: JSON.stringify({ type: 'dismiss', tags: [tag], unreadCount: 0 }),
+      status: 'pending',
+      attempts: 0,
+      claimedUntil: null,
+      createdAt: new Date(2),
+      deliveredEndpoints: [],
+      skipEndpoints: [],
+    });
+    const sender = new FakeSender(true, [{ ok: false, reason: 'fail' }, { ok: true }]);
+    await runPushWorkerTick({ store, sender, now: () => 1 });
+    expect(await store.claimPending(10, 70_000, 1000)).toEqual([]);
+    const listed = await store.listAllOutbox(10);
+    expect(listed.find((row) => row.id === forumRow?.id)?.status).toBe('sent');
+    expect(listed.find((row) => row.id === 'dismiss-same-claim-tag')?.status).toBe('sent');
+    const forumPayload = forumRow?.payload;
+    const callsAfterFirst = sender.calls.length;
+    await runPushWorkerTick({ store, sender, now: () => 70_000 });
+    expect(sender.calls).toHaveLength(callsAfterFirst);
+    expect(sender.calls.filter((call) => call.payload === forumPayload)).toHaveLength(1);
+  });
+
+  it('marks failed when the same tag is dismissed for another account', async () => {
+    const store = new InMemoryPushStore();
+    await store.upsertSubscription(SUB_B);
+    await enqueueForumPushes(store, 'author', 'm', 1);
+    const forumRow = (await store.listAllOutbox(10))[0];
+    const tag = JSON.parse(forumRow?.payload ?? '{}').tag;
+    await store.enqueue({
+      id: 'dismiss-other-account',
+      accountId: 'author',
+      type: 'dismiss',
+      messageId: null,
+      payload: JSON.stringify({ type: 'dismiss', tags: [tag], unreadCount: 0 }),
+      status: 'pending',
+      attempts: 0,
+      claimedUntil: null,
+      createdAt: new Date(2),
+      deliveredEndpoints: [],
+      skipEndpoints: [],
+    });
+    const sender = new FakeSender(true, [{ ok: false, reason: 'fail' }]);
+    await runPushWorkerTick({ store, sender, now: () => 1 });
+    const again = await store.claimPending(10, 1, 1000);
+    expect(again).toHaveLength(1);
+    expect(again[0]?.id).toBe(forumRow?.id);
+    expect(again[0]?.attempts).toBe(1);
+    const listed = await store.listAllOutbox(10);
+    expect(listed.find((row) => row.id === 'dismiss-other-account')?.status).toBe('sent');
+  });
+
+  it('marks failed when same-claim dismiss tags omit the content tag', async () => {
+    const store = new InMemoryPushStore();
+    await store.upsertSubscription(SUB_B);
+    await enqueueForumPushes(store, 'author', 'm', 1);
+    const forumRow = (await store.listAllOutbox(10))[0];
+    await store.enqueue({
+      id: 'dismiss-other-tag',
+      accountId: forumRow?.accountId ?? 'other',
+      type: 'dismiss',
+      messageId: null,
+      payload: JSON.stringify({
+        type: 'dismiss',
+        tags: ['forum_post:other'],
+        unreadCount: 0,
+      }),
+      status: 'pending',
+      attempts: 0,
+      claimedUntil: null,
+      createdAt: new Date(2),
+      deliveredEndpoints: [],
+      skipEndpoints: [],
+    });
+    const sender = new FakeSender(true, [{ ok: false, reason: 'fail' }, { ok: true }]);
+    await runPushWorkerTick({ store, sender, now: () => 1 });
+    const again = await store.claimPending(10, 1, 1000);
+    expect(again).toHaveLength(1);
+    expect(again[0]?.id).toBe(forumRow?.id);
+    expect(again[0]?.attempts).toBe(1);
+  });
+
+  it.each(['{', 'null', '1', '{"tag":""}', '{"tag":1}'])(
+    'marks failed when content payload is %j',
+    async (contentPayload) => {
+      const store = new InMemoryPushStore();
+      await store.upsertSubscription(SUB_B);
+      await store.enqueue({
+        id: 'content-bad-payload',
+        accountId: 'other',
+        type: 'forum',
+        messageId: 'm',
+        payload: contentPayload,
+        status: 'pending',
+        attempts: 0,
+        claimedUntil: null,
+        createdAt: new Date(1),
+        deliveredEndpoints: [],
+        skipEndpoints: [],
+      });
+      await store.enqueue({
+        id: 'dismiss-well-formed',
+        accountId: 'other',
+        type: 'dismiss',
+        messageId: null,
+        payload: JSON.stringify({ type: 'dismiss', tags: ['forum_post:covered'], unreadCount: 0 }),
+        status: 'pending',
+        attempts: 0,
+        claimedUntil: null,
+        createdAt: new Date(2),
+        deliveredEndpoints: [],
+        skipEndpoints: [],
+      });
+      const sender = new FakeSender(true, [{ ok: false, reason: 'fail' }, { ok: true }]);
+      await runPushWorkerTick({ store, sender, now: () => 1 });
+      const again = await store.claimPending(10, 1, 1000);
+      expect(again).toHaveLength(1);
+      expect(again[0]?.id).toBe('content-bad-payload');
+      expect(again[0]?.attempts).toBe(1);
+      const listed = await store.listAllOutbox(10);
+      expect(listed.find((row) => row.id === 'dismiss-well-formed')?.status).toBe('sent');
+    },
+  );
+
+  it.each([
+    '{',
+    'null',
+    '1',
+    '{"type":"nope"}',
+    '{"type":"dismiss"}',
+    '{"type":"dismiss","tags":[1]}',
+  ])('marks failed when same-claim dismiss payload is %j', async (dismissPayload) => {
+    const store = new InMemoryPushStore();
+    await store.upsertSubscription(SUB_B);
+    await enqueueForumPushes(store, 'author', 'm', 1);
+    const forumRow = (await store.listAllOutbox(10))[0];
+    await store.enqueue({
+      id: 'dismiss-bad-payload',
+      accountId: forumRow?.accountId ?? 'other',
+      type: 'dismiss',
+      messageId: null,
+      payload: dismissPayload,
+      status: 'pending',
+      attempts: 0,
+      claimedUntil: null,
+      createdAt: new Date(2),
+      deliveredEndpoints: [],
+      skipEndpoints: [],
+    });
+    const sender = new FakeSender(true, [{ ok: false, reason: 'fail' }, { ok: true }]);
+    await runPushWorkerTick({ store, sender, now: () => 1 });
+    const again = await store.claimPending(10, 1, 1000);
+    expect(again).toHaveLength(1);
+    expect(again[0]?.id).toBe(forumRow?.id);
+    expect(again[0]?.attempts).toBe(1);
+    const listed = await store.listAllOutbox(10);
+    expect(listed.find((row) => row.id === 'dismiss-bad-payload')?.status).toBe('sent');
   });
 });
 
