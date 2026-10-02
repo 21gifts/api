@@ -2240,8 +2240,7 @@ export class InMemoryMessageStore implements MessageStore {
       if (query.mode === 'active') {
         return (
           row.sats > 0 ||
-          (row.accountId !== null && query.staffAccountIds.has(row.accountId)) ||
-          (typeof row.goalSats === 'number' && row.goalSats > 0)
+          (row.accountId !== null && query.staffAccountIds.has(row.accountId))
         );
       }
       if (query.mode === 'popular') {
@@ -4463,7 +4462,7 @@ export class PostgresMessageStore implements MessageStore {
     } else if (query.mode === 'active') {
       params.push(postgresTextArrayLiteral([...query.staffAccountIds]));
       filters.push(
-        `(sats > 0 OR account_id::text = ANY($${params.length}::text[]) OR COALESCE(goal_sats, 0) > 0)`,
+        `(sats > 0 OR account_id::text = ANY($${params.length}::text[]))`,
       );
     } else if (query.mode === 'popular') {
       filters.push('sats > 0');
