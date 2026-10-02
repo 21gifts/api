@@ -3023,6 +3023,13 @@ Builds the operator-only external-pubkey inspection route.
 - **Returns / side effects:** `boolean`. No I/O.
 - **Used by:** `eligibleToday`.
 
+## Function: applicationPauseExempt
+
+- **Purpose:** Whether this username may `POST /funding/apply` while applications are paused. Exact, case-sensitive match against `joey-rosima`, `vincent`, and `jewel-bacolbas`. Null, omitted, empty, and every other username (including `Vincent`) are not exempt. A `basis` account is still refused before this check.
+- **Inputs:** `username` string, null, or undefined.
+- **Returns / side effects:** `true` only for those three strings. No I/O.
+- **Used by:** `fundingRoutes` `POST /apply`.
+
 ## Function: comparePayoutRows
 
 - **Purpose:** Sort key for the staff payout matrix. Named rows come before unnamed ones. Names use base English comparison. When names tie, a row with an account id comes before an unmatched handle, then account ids ascending.
