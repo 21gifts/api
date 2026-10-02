@@ -28,6 +28,7 @@ import { wellKnownRoutes } from '@/routes/well-known';
 import { payRoutes } from '@/routes/pay';
 import { contactRoutes } from '@/routes/contact';
 import { posRoutes } from '@/routes/pos';
+import { shopActivityRoutes } from '@/routes/shop-activity';
 import { conversationRoutes } from '@/routes/conversations';
 import { notificationRoutes } from '@/routes/notifications';
 import { debugApiLogRoutes } from '@/routes/debug-api-log';
@@ -643,6 +644,10 @@ export function createApp(deps: AppDeps = {}): Hono {
     }),
   );
   app.route('/pos', posRoutes({ store: posStore, authStore: store, now, fetchImpl }));
+  app.route(
+    '/shops/activity',
+    shopActivityRoutes({ authStore: store, now, messages: messageStore, pos: posStore }),
+  );
   app.route(
     '/conversations',
     conversationRoutes({

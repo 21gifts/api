@@ -2179,6 +2179,31 @@ describe('InMemoryMessageStore', () => {
     expect((await store.listPlaces(1)).map((row) => row.id)).toEqual(['zb']);
   });
 
+  it('listLiveAssignedShops returns live top-level assigned notes and skips the rest', async () => {
+    const hiddenAt = new Date('2026-09-01T00:00:00.000Z');
+    const shop = { id: 'shop-acc', username: 'ada', name: 'Ada' };
+    const store = new InMemoryMessageStore([
+      { ...EARLY, id: 'plain' },
+      { ...EARLY, id: 'assigned', accountId: 'author', text: 'no tag', shopAccount: shop },
+      {
+        ...EARLY,
+        id: 'reply',
+        parentId: 'assigned',
+        shopAccount: shop,
+      },
+      {
+        ...EARLY,
+        id: 'hidden',
+        deletedAt: hiddenAt,
+        deletedBy: 'staff',
+        shopAccount: shop,
+      },
+    ]);
+    expect(await store.listLiveAssignedShops()).toEqual([
+      { id: 'assigned', accountId: 'shop-acc', text: 'no tag' },
+    ]);
+  });
+
   it('create nulls place on a reply even when the input row carried a pin', async () => {
     const store = new InMemoryMessageStore([EARLY]);
     const created = await store.create({
@@ -5125,6 +5150,19 @@ describe('PostgresMessageStore', () => {
     ];
     const listed = await new PostgresMessageStore(sql).listPlaces(1);
     expect(listed[0]?.label).toBeNull();
+  });
+
+  it('listLiveAssignedShops selects live assigned shops without a hashtag filter', async () => {
+    const sql = new MockSql();
+    sql.nextRows = [{ id: 'n1', shop_account_id: 'shop-acc', text: 'plain' }];
+    const listed = await new PostgresMessageStore(sql).listLiveAssignedShops();
+    expect(sql.queries[0]?.text).toMatch(/SELECT id, shop_account_id, text/);
+    expect(sql.queries[0]?.text).toMatch(
+      /WHERE parent_id IS NULL AND deleted_at IS NULL AND shop_account_id IS NOT NULL/,
+    );
+    expect(sql.queries[0]?.text).not.toMatch(/21GiftsShop/);
+    expect(sql.queries[0]?.text).not.toMatch(/~\*/);
+    expect(listed).toEqual([{ id: 'n1', accountId: 'shop-acc', text: 'plain' }]);
   });
 
   it('create binds capture time and place', async () => {
