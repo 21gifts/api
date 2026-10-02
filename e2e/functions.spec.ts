@@ -33,7 +33,7 @@ async function memberSession(
 async function rosterRoleSession(
   request: APIRequestContext,
   role: 'moderator' | 'initiator' | 'founder',
-): Promise<{ authorization: string }> {
+): Promise<{ authorization: string; id: string }> {
   const stamp = `${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
   const name = `E2eRoster${stamp}`;
   const provision = await request.post('/debug/accounts', {
@@ -53,19 +53,29 @@ async function rosterRoleSession(
   const accounts = ((await listed.json()) as { accounts: Array<{ id: string; name: string }> })
     .accounts;
   const row = accounts.find((item) => item.name === name);
-  expect(row).toBeDefined();
-  const patched = await request.patch(`/debug/accounts/${row?.id}`, {
+  expect(row?.id).toBeTruthy();
+  const id = row?.id ?? '';
+  const patched = await request.patch(`/debug/accounts/${id}`, {
     headers: DEBUG,
     data: { role },
   });
   expect(patched.status()).toBe(200);
   const patchedBody = (await patched.json()) as { id: string; role: string };
-  expect(patchedBody.id).toBe(row?.id);
+  expect(patchedBody.id).toBe(id);
   expect(patchedBody.role).toBe(role);
-  const session = await request.post(`/debug/accounts/${row?.id}/session`, { headers: DEBUG });
+  const session = await request.post(`/debug/accounts/${id}/session`, { headers: DEBUG });
   expect(session.status()).toBe(200);
   const token = ((await session.json()) as { token: string }).token;
-  return { authorization: `Bearer ${token}` };
+  return { authorization: `Bearer ${token}`, id };
+}
+
+/** Bare GET /trust-chain lists every founder. A mirror must not leave that role on the shared server. */
+async function releaseRosterFounder(request: APIRequestContext, id: string): Promise<void> {
+  const cleared = await request.patch(`/debug/accounts/${id}`, {
+    headers: DEBUG,
+    data: { role: 'basis' },
+  });
+  expect(cleared.status()).toBe(200);
 }
 
 async function passkeyBegin(request: APIRequestContext): Promise<{ challengeId: string }> {
@@ -2481,7 +2491,9 @@ test('Function: canEditDailyPayoutRoster — GET /funding/daily-roster as a mode
   request,
 }) => {
   const auth = await rosterRoleSession(request, 'moderator');
-  const res = await request.get('/funding/daily-roster', { headers: auth });
+  const res = await request.get('/funding/daily-roster', {
+    headers: { authorization: auth.authorization },
+  });
   expect(res.status()).toBe(403);
   expect(await res.json()).toEqual({ error: 'Forbidden' });
 });
@@ -2490,25 +2502,39 @@ test('Function: resolveDailyRoster — GET /funding/daily-roster unconfigured is
   request,
 }) => {
   const auth = await rosterRoleSession(request, 'founder');
-  const res = await request.get('/funding/daily-roster', { headers: auth });
-  expect(res.status()).toBe(503);
-  expect(await res.json()).toEqual({ error: 'Daily roster is not configured' });
+  try {
+    const res = await request.get('/funding/daily-roster', {
+      headers: { authorization: auth.authorization },
+    });
+    expect(res.status()).toBe(503);
+    expect(await res.json()).toEqual({ error: 'Daily roster is not configured' });
+  } finally {
+    await releaseRosterFounder(request, auth.id);
+  }
 });
 
 test('Function: HttpDailyRoster — GET /funding/daily-roster unconfigured is 503', async ({
   request,
 }) => {
   const auth = await rosterRoleSession(request, 'founder');
-  const res = await request.get('/funding/daily-roster', { headers: auth });
-  expect(res.status()).toBe(503);
-  expect(await res.json()).toEqual({ error: 'Daily roster is not configured' });
+  try {
+    const res = await request.get('/funding/daily-roster', {
+      headers: { authorization: auth.authorization },
+    });
+    expect(res.status()).toBe(503);
+    expect(await res.json()).toEqual({ error: 'Daily roster is not configured' });
+  } finally {
+    await releaseRosterFounder(request, auth.id);
+  }
 });
 
 test('Function: mapDailyRosterResponse — GET /funding/daily-roster unconfigured is 503', async ({
   request,
 }) => {
   const auth = await rosterRoleSession(request, 'initiator');
-  const res = await request.get('/funding/daily-roster', { headers: auth });
+  const res = await request.get('/funding/daily-roster', {
+    headers: { authorization: auth.authorization },
+  });
   expect(res.status()).toBe(503);
   expect(await res.json()).toEqual({ error: 'Daily roster is not configured' });
 });
@@ -2517,7 +2543,9 @@ test('Function: DailyRosterRequestError — GET /funding/daily-roster unconfigur
   request,
 }) => {
   const auth = await rosterRoleSession(request, 'initiator');
-  const res = await request.get('/funding/daily-roster', { headers: auth });
+  const res = await request.get('/funding/daily-roster', {
+    headers: { authorization: auth.authorization },
+  });
   expect(res.status()).toBe(503);
   expect(await res.json()).toEqual({ error: 'Daily roster is not configured' });
 });
