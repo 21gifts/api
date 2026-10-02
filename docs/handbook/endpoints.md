@@ -955,10 +955,10 @@
 
 ## Endpoint: GET /shops/activity
 
-- **Purpose:** How many shops were used per UTC day for the last 30 UTC days ending today (oldest first, zeros included). A shop is a live top-level forum note whose text contains `#21GiftsShop` (case-insensitive token; the next character must not be a letter, digit, or underscore) and whose `shop_account_id` is set. It counts on a UTC day when that currently assigned account has at least one `pos_charge` with `created_at` on that UTC day. Any status (`pending`, `cancelled`, `expired`) counts; creating the charge is the till use. There is no paid status. One account assigned to two qualifying notes counts as two shops that day. Replies, deleted notes, notes without an assigned account, and notes that are not shop notes do not count. JSON `{ days: [{ day, shopCount }] }`.
-- **Errors:** 401 `{ error: 'Unauthorized' }` without a bearer session; 503 `{ error: 'Shop activity is unavailable' }` (`shops.activity.failed`).
-- **Used by:** The statistics shop chart for any signed-in user.
-- **Auth:** `Authorization: Bearer` session (any signed-in role).
+- **Purpose:** No staff and no bearer. How many shops were used per UTC day for the last 30 UTC days ending today (oldest first, zeros included). A shop is a live top-level forum note whose text contains `#21GiftsShop` (case-insensitive token; the next character must not be a letter, digit, or underscore) and whose `shop_account_id` is set. It counts on a UTC day when that currently assigned account has at least one `pos_charge` with `created_at` on that UTC day. Any status (`pending`, `cancelled`, `expired`) counts; creating the charge is the till use. There is no paid status. One account assigned to two qualifying notes counts as two shops that day. Replies, deleted notes, notes without an assigned account, and notes that are not shop notes do not count. JSON `{ days: [{ day, shopCount }] }`.
+- **Errors:** 503 `{ error: 'Shop activity is unavailable' }` (`shops.activity.failed`).
+- **Used by:** The statistics shop chart for every visitor.
+- **Auth:** none.
 
 ## Endpoint: GET /funding/payout-days
 

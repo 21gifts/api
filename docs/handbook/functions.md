@@ -16,8 +16,8 @@
 
 ## Function: shopActivityRoutes
 
-- **Purpose:** Hono sub-app for `GET /shops/activity`. Bearer session required; any live role (founder passes because every role does). Loads live assigned shop notes and POS charges in the 30-UTC-day window, then returns `{ days }` from `activeShopDays`. Does not log account ids, note ids, or charge rows. No Sunday-rest gate on this GET.
-- **Inputs:** `{ authStore, now, messages: { listLiveAssignedShops }, pos: { listCreatedBetween } }`. Session resolution copies `/pos` (`resolveSession`, `bearerToken`).
+- **Purpose:** Hono sub-app for `GET /shops/activity`. No bearer. Any caller, including no session, gets `{ days }`. Loads live assigned shop notes and POS charges in the 30-UTC-day window, then returns `{ days }` from `activeShopDays`. Does not log account ids, note ids, or charge rows. No Sunday-rest gate on this GET.
+- **Inputs:** `{ authStore, now, messages: { listLiveAssignedShops }, pos: { listCreatedBetween } }`.
 - **Returns / side effects:** Hono app mounted at `/shops/activity`. 200 `{ days }`. Store throw → 503 `{ error: 'Shop activity is unavailable' }` and `shops.activity.failed`.
 - **Used by:** `createApp`.
 

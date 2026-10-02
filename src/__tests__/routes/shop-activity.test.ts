@@ -79,16 +79,18 @@ describe('GET /shops/activity', () => {
     warn.mockRestore();
   });
 
-  it('returns 401 without a session', async () => {
+  it('returns 200 without a session', async () => {
     const res = await get(mount(await staffed()), undefined);
-    expect(res.status).toBe(401);
-    expect(await res.json()).toEqual({ error: 'Unauthorized' });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { days: Array<{ day: string; shopCount: number }> };
+    expect(body.days).toHaveLength(30);
   });
 
-  it('returns 401 for an invalid bearer session', async () => {
+  it('returns 200 for an invalid bearer session', async () => {
     const res = await get(mount(await staffed()), 'missing');
-    expect(res.status).toBe(401);
-    expect(await res.json()).toEqual({ error: 'Unauthorized' });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { days: Array<{ day: string; shopCount: number }> };
+    expect(body.days).toHaveLength(30);
   });
 
   it.each(['verified', 'basis'] as const)(
