@@ -443,9 +443,9 @@ reputation (who follows / vouches for whom).
 - No KYC, no government ID
 
 (v1 note: NIP-05 badging and NOSTR-identity vouching are post-v1 — v1 NOSTR
-identities are custodial, server-held. Proof of Lightning-Address control is
-the account flag `lightningAddressVerified` via micro-payment nonce, see
-"Receiver address verification". That flag is not the forum role **Verified**,
+identities are custodial, server-held. The account flag
+`lightningAddressVerified` is true once the in-app wallet is verified, see
+"Receiving address". That flag is not the forum role **Verified**,
 which means a moderator physically met the person (`account.role`,
 via `POST /trust/verify` or an edge-less operator `PATCH /debug/accounts/:id`).)
 
@@ -475,8 +475,8 @@ the same endpoints later.
   detection at the edge
 - **v1 additions** (see "v1 Transitional Model"): passkey register/authenticate
   and sessions; spend-worker invoice HTTP (`POST /invoices`,
-  `POST /invoices/proof`); receiver address verification via micro-payment
-  nonce; custodial per-account NOSTR identities (`nsec` encrypted at rest)
+  `POST /invoices/proof`); receiving address = verified in-app wallet;
+  custodial per-account NOSTR identities (`nsec` encrypted at rest)
   with server-side event signing
 
 **Non-responsibilities** (stay client-side; target state — the v1 additions
@@ -543,8 +543,7 @@ Encryption: AES-GCM 256, with two key-derivation paths:
 - Passkey endpoints: register/authenticate/replace begin and finish, session issuance; `POST /me/wallet-backup-seen`
 - Spend-worker invoice HTTP: `POST /invoices` / `POST /invoices/proof`
   (paying and LNDHub stay in the external worker)
-- Receiver address verification: micro-payment with one-time nonce in the
-  LUD-12 comment
+- Receiving address: verified in-app wallet only
 - Custodial NOSTR identities: per-account keypair generated on sign-up,
   `nsec` stored encrypted at rest, events signed server-side
 - NOSTR fan-out to a default relay set
