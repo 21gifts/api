@@ -28,8 +28,8 @@ export interface PushOutboxRow {
   /** Recipient account id. */
   accountId: string;
   /** Notification kind. */
-  type: 'forum' | 'zap' | 'conversation';
-  /** Forum or conversation message id when applicable; null for debug pings. */
+  type: 'forum' | 'zap' | 'conversation' | 'dismiss';
+  /** Forum or conversation message id when applicable; null for debug pings and dismiss rows. */
   messageId: string | null;
   /** JSON string payload. */
   payload: string;
@@ -43,6 +43,8 @@ export interface PushOutboxRow {
   createdAt: Date;
   /** Endpoints that already received this payload (url strings). */
   deliveredEndpoints: string[];
+  /** Endpoints that must not receive this payload (url strings). */
+  skipEndpoints: string[];
 }
 
 /**
@@ -151,22 +153,24 @@ export const PUSH_SCHEMA_SQL: readonly string[] = [
   `CREATE TABLE IF NOT EXISTS push_outbox (
   id uuid PRIMARY KEY,
   account_id uuid NOT NULL REFERENCES account (id),
-  type text NOT NULL CHECK (type IN ('forum', 'zap', 'conversation')),
+  type text NOT NULL CHECK (type IN ('forum', 'zap', 'conversation', 'dismiss')),
   message_id uuid,
   payload text NOT NULL,
   status text NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'sent', 'failed')),
   attempts integer NOT NULL DEFAULT 0,
   claimed_until timestamptz,
   created_at timestamptz NOT NULL,
-  delivered_endpoints text NOT NULL DEFAULT '[]'
+  delivered_endpoints text NOT NULL DEFAULT '[]',
+  skip_endpoints text NOT NULL DEFAULT '[]'
 )`,
   `CREATE INDEX IF NOT EXISTS push_outbox_pending_idx ON push_outbox (created_at, id) WHERE status = 'pending'`,
   `ALTER TABLE push_outbox ADD COLUMN IF NOT EXISTS delivered_endpoints text NOT NULL DEFAULT '[]'`,
+  `ALTER TABLE push_outbox ADD COLUMN IF NOT EXISTS skip_endpoints text NOT NULL DEFAULT '[]'`,
   `DO $push_outbox_type$
 BEGIN
   ALTER TABLE push_outbox DROP CONSTRAINT IF EXISTS push_outbox_type_check;
   ALTER TABLE push_outbox ADD CONSTRAINT push_outbox_type_check
-    CHECK (type IN ('forum', 'zap', 'conversation'));
+    CHECK (type IN ('forum', 'zap', 'conversation', 'dismiss'));
 END
 $push_outbox_type$;`,
 ];
@@ -244,6 +248,7 @@ function copyOutbox(row: PushOutboxRow): PushOutboxRow {
     createdAt: new Date(row.createdAt.getTime()),
     claimedUntil: row.claimedUntil === null ? null : new Date(row.claimedUntil.getTime()),
     deliveredEndpoints: row.deliveredEndpoints.slice(),
+    skipEndpoints: row.skipEndpoints.slice(),
   };
 }
 
@@ -464,6 +469,7 @@ interface PushOutboxSqlRow {
   claimed_until: Date | string | null;
   created_at: Date | string;
   delivered_endpoints: string | null;
+  skip_endpoints: string | null;
 }
 
 function mapSub(row: PushSubSqlRow): PushSubscriptionRecord {
@@ -478,7 +484,12 @@ function mapSub(row: PushSubSqlRow): PushSubscriptionRecord {
 
 function mapOutbox(row: PushOutboxSqlRow): PushOutboxRow {
   const type =
-    row.type === 'forum' || row.type === 'zap' || row.type === 'conversation' ? row.type : 'forum';
+    row.type === 'forum' ||
+    row.type === 'zap' ||
+    row.type === 'conversation' ||
+    row.type === 'dismiss'
+      ? row.type
+      : 'forum';
   const status =
     row.status === 'pending' || row.status === 'sent' || row.status === 'failed'
       ? row.status
@@ -499,11 +510,12 @@ function mapOutbox(row: PushOutboxSqlRow): PushOutboxRow {
           : new Date(row.claimed_until),
     createdAt: row.created_at instanceof Date ? row.created_at : new Date(row.created_at),
     deliveredEndpoints: parseDeliveredEndpoints(row.delivered_endpoints),
+    skipEndpoints: parseDeliveredEndpoints(row.skip_endpoints),
   };
 }
 
 const OUTBOX_SELECT =
-  'id, account_id, type, message_id, payload, status, attempts, claimed_until, created_at, delivered_endpoints';
+  'id, account_id, type, message_id, payload, status, attempts, claimed_until, created_at, delivered_endpoints, skip_endpoints';
 
 /**
  * Durable {@link PushStore} backed by Postgres.
@@ -623,8 +635,8 @@ export class PostgresPushStore implements PushStore {
   async enqueue(row: PushOutboxRow): Promise<void> {
     await this.#sql.execute(
       `INSERT INTO push_outbox
-         (id, account_id, type, message_id, payload, status, attempts, claimed_until, created_at, delivered_endpoints)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+         (id, account_id, type, message_id, payload, status, attempts, claimed_until, created_at, delivered_endpoints, skip_endpoints)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
       [
         row.id,
         row.accountId,
@@ -636,6 +648,7 @@ export class PostgresPushStore implements PushStore {
         row.claimedUntil,
         row.createdAt,
         JSON.stringify(row.deliveredEndpoints),
+        JSON.stringify(row.skipEndpoints),
       ],
     );
   }
@@ -663,7 +676,15 @@ export class PostgresPushStore implements PushStore {
        RETURNING ${OUTBOX_SELECT}`,
       [until, new Date(nowMs), limit],
     );
-    return rows.map((row) => mapOutbox(row));
+    return rows
+      .map((row) => mapOutbox(row))
+      .sort((a, b) => {
+        const byTime = a.createdAt.getTime() - b.createdAt.getTime();
+        if (byTime !== 0) {
+          return byTime;
+        }
+        return a.id.localeCompare(b.id);
+      });
   }
 
   /**

@@ -5,6 +5,7 @@ import { unsignedNostrDefaults, type MessageRow } from '@/lib/message';
 import { InMemoryMessageStore } from '@/lib/message-store';
 import type { NotificationRow } from '@/lib/notification';
 import { InMemoryNotificationStore } from '@/lib/notification-store';
+import { InMemoryPushStore } from '@/lib/push-store';
 import { notificationRoutes } from '@/routes/notifications';
 
 function parsedEvents(warn: ReturnType<typeof vi.spyOn>): Array<Record<string, unknown>> {
@@ -30,16 +31,32 @@ const ID_A = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 const ID_B = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
 const ID_READ = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
 const ID_OTHER = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd';
+const ID_E = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee';
+const ID_F = 'ffffffff-ffff-4fff-8fff-ffffffffffff';
 const READ_ISO = new Date(now()).toISOString();
 
 function mount(
   authStore: InMemoryAuthStore,
   store = new InMemoryNotificationStore(),
   messages: InMemoryMessageStore = new InMemoryMessageStore(),
+  optional: {
+    now?: () => number;
+    pushStore?: InMemoryPushStore;
+    inboxUnreadCount?: (accountId: string) => Promise<number>;
+  } = {},
 ): Hono {
   return new Hono().route(
     '/notifications',
-    notificationRoutes({ store, authStore, messages, now }),
+    notificationRoutes({
+      store,
+      authStore,
+      messages,
+      now: optional.now ?? now,
+      ...(optional.pushStore === undefined ? {} : { pushStore: optional.pushStore }),
+      ...(optional.inboxUnreadCount === undefined
+        ? {}
+        : { inboxUnreadCount: optional.inboxUnreadCount }),
+    }),
   );
 }
 
@@ -618,7 +635,10 @@ describe('POST /notifications/read-all', () => {
       headers: AUTH,
     });
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ ok: true });
+    expect(await res.json()).toEqual({
+      ok: true,
+      tags: [`forum_reply:${ID_A}`, `forum_reply:${ID_B}`],
+    });
     expect(await store.unreadCount('acc')).toBe(0);
   });
 
@@ -640,7 +660,7 @@ describe('POST /notifications/read-all', () => {
       headers: AUTH,
     });
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ ok: true });
+    expect(await res.json()).toEqual({ ok: true, tags: [`forum_reply:${ID_A}`] });
     expect((await store.getByIdForRecipient(ID_A, 'acc'))?.readAt?.toISOString()).toBe(READ_ISO);
     expect((await store.getByIdForRecipient(proposalId, 'acc'))?.readAt).toBeNull();
   });
@@ -651,7 +671,186 @@ describe('POST /notifications/read-all', () => {
       headers: AUTH,
     });
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ ok: true });
+    expect(await res.json()).toEqual({ ok: true, tags: [] });
+  });
+
+  it('uniques first-seen tags and does not enqueue a second dismiss', async () => {
+    const sharedReply = '11111111-1111-4111-8111-111111111111';
+    const store = new InMemoryNotificationStore([
+      note({ id: ID_A, replyId: sharedReply }),
+      note({ id: ID_B, replyId: sharedReply }),
+    ]);
+    const pushStore = new InMemoryPushStore();
+    const app = mount(await seeded(), store, new InMemoryMessageStore(), { pushStore });
+    const first = await app.request('/notifications/read-all', {
+      method: 'POST',
+      headers: AUTH,
+    });
+    expect(await first.json()).toEqual({ ok: true, tags: [`forum_reply:${sharedReply}`] });
+    expect(await pushStore.listAllOutbox(10)).toHaveLength(1);
+
+    const second = await app.request('/notifications/read-all', {
+      method: 'POST',
+      headers: AUTH,
+    });
+    expect(await second.json()).toEqual({ ok: true, tags: [] });
+    expect(await pushStore.listAllOutbox(10)).toHaveLength(1);
+  });
+
+  it('skips only an endpoint subscribed by the account and never echoes it', async () => {
+    const pushStore = new InMemoryPushStore();
+    const endpoint = 'https://push.example/current';
+    await pushStore.upsertSubscription({
+      endpoint,
+      accountId: 'acc',
+      p256dh: 'p',
+      auth: 'a',
+      createdAt: new Date(now()),
+    });
+    const store = new InMemoryNotificationStore([note({ id: ID_A })]);
+    const res = await mount(await seeded(), store, new InMemoryMessageStore(), {
+      pushStore,
+    }).request('/notifications/read-all', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ endpoint }),
+    });
+    expect(await res.json()).toEqual({ ok: true, tags: [`forum_reply:${ID_A}`] });
+    expect((await pushStore.listAllOutbox(10))[0]?.skipEndpoints).toEqual([endpoint]);
+  });
+
+  it.each([
+    { name: 'missing JSON', request: {} },
+    {
+      name: 'array body',
+      request: { headers: { 'content-type': 'application/json' }, body: '[]' },
+    },
+    {
+      name: 'numeric endpoint',
+      request: {
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ endpoint: 1 }),
+      },
+    },
+    {
+      name: 'empty endpoint',
+      request: {
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ endpoint: '' }),
+      },
+    },
+    {
+      name: 'unowned endpoint',
+      request: {
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ endpoint: 'https://push.example/unowned' }),
+      },
+    },
+  ])('accepts $name and does not skip an endpoint', async ({ request }) => {
+    const pushStore = new InMemoryPushStore();
+    const store = new InMemoryNotificationStore([note({ id: ID_A })]);
+    const res = await mount(await seeded(), store, new InMemoryMessageStore(), {
+      pushStore,
+    }).request('/notifications/read-all', {
+      method: 'POST',
+      headers: { ...AUTH, ...request.headers },
+      ...('body' in request ? { body: request.body } : {}),
+    });
+    expect(res.status).toBe(200);
+    expect((await pushStore.listAllOutbox(10))[0]?.skipEndpoints).toEqual([]);
+  });
+
+  it('adds inbox unread to the dismiss badge', async () => {
+    const proposalId = '10101010-1010-4101-8101-101010101010';
+    const pushStore = new InMemoryPushStore();
+    const store = new InMemoryNotificationStore([
+      note({ id: ID_A }),
+      note({
+        id: proposalId,
+        type: 'moderator_proposal',
+        parentId: ID_OTHER,
+        replyId: ID_OTHER,
+      }),
+    ]);
+    const res = await mount(await seeded(), store, new InMemoryMessageStore(), {
+      pushStore,
+      inboxUnreadCount: async () => 3,
+    }).request('/notifications/read-all', { method: 'POST', headers: AUTH });
+    expect(res.status).toBe(200);
+    const payload = JSON.parse((await pushStore.listAllOutbox(1))[0]?.payload ?? '{}') as Record<
+      string,
+      unknown
+    >;
+    expect(payload['unreadCount']).toBe(4);
+  });
+
+  it('keeps notification unread count when inbox unread fails', async () => {
+    const proposalId = '10101010-1010-4101-8101-101010101010';
+    const pushStore = new InMemoryPushStore();
+    const store = new InMemoryNotificationStore([
+      note({ id: ID_A }),
+      note({
+        id: proposalId,
+        type: 'moderator_proposal',
+        parentId: ID_OTHER,
+        replyId: ID_OTHER,
+      }),
+    ]);
+    const res = await mount(await seeded(), store, new InMemoryMessageStore(), {
+      pushStore,
+      inboxUnreadCount: async () => {
+        throw new Error('inbox boom');
+      },
+    }).request('/notifications/read-all', { method: 'POST', headers: AUTH });
+    expect(res.status).toBe(200);
+    const payload = JSON.parse((await pushStore.listAllOutbox(1))[0]?.payload ?? '{}') as Record<
+      string,
+      unknown
+    >;
+    expect(payload['unreadCount']).toBe(1);
+    expect(parsedEvents(warn).some((event) => event['event'] === 'push.dismiss.failed')).toBe(true);
+  });
+
+  it('keeps 200 when dismiss dependency lookup or enqueue fails', async () => {
+    const listStore = new InMemoryNotificationStore([note({ id: ID_A })]);
+    const listPushStore = new InMemoryPushStore();
+    listPushStore.listByAccount = async () => {
+      throw new Error('list boom');
+    };
+    const listRes = await mount(await seeded(), listStore, new InMemoryMessageStore(), {
+      pushStore: listPushStore,
+    }).request('/notifications/read-all', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ endpoint: 'https://push.example/current' }),
+    });
+    expect(listRes.status).toBe(200);
+    expect(await listPushStore.listAllOutbox(10)).toEqual([]);
+
+    const unreadStore = new InMemoryNotificationStore([note({ id: ID_B })]);
+    unreadStore.unreadCount = async () => {
+      throw new Error('unread boom');
+    };
+    const unreadPushStore = new InMemoryPushStore();
+    const unreadRes = await mount(await seeded(), unreadStore, new InMemoryMessageStore(), {
+      pushStore: unreadPushStore,
+    }).request('/notifications/read-all', { method: 'POST', headers: AUTH });
+    expect(unreadRes.status).toBe(200);
+    expect(await unreadPushStore.listAllOutbox(10)).toEqual([]);
+
+    const enqueueStore = new InMemoryNotificationStore([note({ id: ID_READ })]);
+    const enqueuePushStore = new InMemoryPushStore();
+    enqueuePushStore.enqueue = async () => {
+      throw new Error('enqueue boom');
+    };
+    const enqueueRes = await mount(await seeded(), enqueueStore, new InMemoryMessageStore(), {
+      pushStore: enqueuePushStore,
+    }).request('/notifications/read-all', { method: 'POST', headers: AUTH });
+    expect(enqueueRes.status).toBe(200);
+    expect(await enqueuePushStore.listAllOutbox(10)).toEqual([]);
+    expect(
+      parsedEvents(warn).filter((event) => event['event'] === 'push.dismiss.failed').length,
+    ).toBe(3);
   });
 
   it('returns 503 when markAllRead throws', async () => {
@@ -671,6 +870,113 @@ describe('POST /notifications/read-all', () => {
   });
 });
 
+describe('POST /notifications/read-by-message', () => {
+  const messageId = '11111111-1111-4111-8111-111111111111';
+
+  it('returns 401 without a session', async () => {
+    const res = await mount(new InMemoryAuthStore()).request('/notifications/read-by-message', {
+      method: 'POST',
+    });
+    expect(res.status).toBe(401);
+    expect(await res.json()).toEqual({ error: 'Unauthorized' });
+  });
+
+  it.each([
+    { name: 'missing JSON', body: undefined },
+    { name: 'null', body: 'null' },
+    { name: 'array', body: '[]' },
+    { name: 'string', body: '"message"' },
+    { name: 'missing messageId', body: '{}' },
+    { name: 'invalid messageId', body: '{"messageId":"not-a-uuid"}' },
+  ])('returns 404 for $name', async ({ body }) => {
+    const res = await mount(await seeded()).request('/notifications/read-by-message', {
+      method: 'POST',
+      headers: {
+        ...AUTH,
+        ...(body === undefined ? {} : { 'content-type': 'application/json' }),
+      },
+      ...(body === undefined ? {} : { body }),
+    });
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ error: 'Not found' });
+  });
+
+  it('stamps matching kinds in id order, dismisses once, and leaves excluded rows unread', async () => {
+    const replyId = '22222222-2222-4222-8222-222222222222';
+    const receiptId = '44444444-4444-4444-8444-444444444444';
+    const store = new InMemoryNotificationStore([
+      note({ id: ID_F, type: 'moderator_proposal', parentId: messageId, replyId: ID_F }),
+      note({ id: ID_E, type: 'moderator_appointed', parentId: messageId, replyId: ID_E }),
+      note({ id: ID_OTHER, type: 'zap', parentId: messageId, replyId: receiptId }),
+      note({ id: ID_READ, type: 'forum_mention', parentId: ID_OTHER, replyId: messageId }),
+      note({ id: ID_B, type: 'forum_reply', parentId: messageId, replyId }),
+      note({ id: ID_A, type: 'forum_post', parentId: messageId, replyId: messageId }),
+      note({
+        id: '99999999-9999-4999-8999-999999999999',
+        recipientAccountId: 'other',
+        parentId: messageId,
+      }),
+    ]);
+    const pushStore = new InMemoryPushStore();
+    const app = mount(await seeded(), store, new InMemoryMessageStore(), { pushStore });
+    const request = {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ messageId }),
+    };
+    const first = await app.request('/notifications/read-by-message', request);
+    expect(first.status).toBe(200);
+    const tags = [
+      `forum_post:${messageId}`,
+      `forum_reply:${replyId}`,
+      `forum_mention:${messageId}`,
+      `zap:${receiptId}`,
+    ];
+    expect(await first.json()).toEqual({ ok: true, tags });
+    expect((await store.getByIdForRecipient(ID_E, 'acc'))?.readAt).toBeNull();
+    expect((await store.getByIdForRecipient(ID_F, 'acc'))?.readAt).toBeNull();
+    expect(
+      (await store.getByIdForRecipient('99999999-9999-4999-8999-999999999999', 'other'))?.readAt,
+    ).toBeNull();
+    expect(await pushStore.listAllOutbox(10)).toHaveLength(1);
+    expect(JSON.parse((await pushStore.listAllOutbox(1))[0]?.payload ?? '{}')).toMatchObject({
+      type: 'dismiss',
+      tags,
+    });
+
+    const firstReadAt = (await store.getByIdForRecipient(ID_A, 'acc'))?.readAt;
+    const second = await app.request('/notifications/read-by-message', request);
+    expect(await second.json()).toEqual({ ok: true, tags: [] });
+    expect((await store.getByIdForRecipient(ID_A, 'acc'))?.readAt).toEqual(firstReadAt);
+    expect(await pushStore.listAllOutbox(10)).toHaveLength(1);
+
+    const readAll = await app.request('/notifications/read-all', { method: 'POST', headers: AUTH });
+    expect(await readAll.json()).toEqual({
+      ok: true,
+      tags: [`moderator_appointed:${messageId}`],
+    });
+    expect((await store.getByIdForRecipient(ID_E, 'acc'))?.readAt?.toISOString()).toBe(READ_ISO);
+    expect((await store.getByIdForRecipient(ID_F, 'acc'))?.readAt).toBeNull();
+  });
+
+  it('returns 503 and logs when the store throws', async () => {
+    const store = new InMemoryNotificationStore();
+    store.markReadByMessage = async () => {
+      throw new Error('boom');
+    };
+    const res = await mount(await seeded(), store).request('/notifications/read-by-message', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ messageId }),
+    });
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({ error: 'Notifications are unavailable' });
+    expect(
+      parsedEvents(warn).some((event) => event['event'] === 'notifications.read_message.failed'),
+    ).toBe(true);
+  });
+});
+
 describe('POST /notifications/:id/read', () => {
   it('returns 401 without a session', async () => {
     const res = await mount(new InMemoryAuthStore()).request(`/notifications/${ID_A}/read`, {
@@ -681,7 +987,10 @@ describe('POST /notifications/:id/read', () => {
 
   it('sets readAt and is idempotent', async () => {
     const store = new InMemoryNotificationStore([note({ id: ID_A })]);
-    const app = mount(await seeded(), store);
+    let clock = now();
+    const app = mount(await seeded(), store, new InMemoryMessageStore(), {
+      now: () => clock,
+    });
     const first = await app.request(`/notifications/${ID_A}/read`, {
       method: 'POST',
       headers: AUTH,
@@ -689,6 +998,7 @@ describe('POST /notifications/:id/read', () => {
     expect(first.status).toBe(200);
     const body = (await first.json()) as { readAt: string };
     expect(body.readAt).toBe(READ_ISO);
+    clock += 1;
     const second = await app.request(`/notifications/${ID_A}/read`, {
       method: 'POST',
       headers: AUTH,
@@ -757,5 +1067,122 @@ describe('POST /notifications/:id/read', () => {
     expect(res.status).toBe(503);
     expect(await res.json()).toEqual({ error: 'Notifications are unavailable' });
     expect(parsedEvents(warn).some((e) => e['event'] === 'notifications.read.failed')).toBe(true);
+  });
+
+  it('dismisses a freshly stamped row once and keeps the serialized body', async () => {
+    const store = new InMemoryNotificationStore([note({ id: ID_A })]);
+    const pushStore = new InMemoryPushStore();
+    const clock = now();
+    const app = mount(await seeded(), store, new InMemoryMessageStore(), {
+      now: () => clock,
+      pushStore,
+    });
+    const first = await app.request(`/notifications/${ID_A}/read`, {
+      method: 'POST',
+      headers: AUTH,
+    });
+    expect(first.status).toBe(200);
+    const body = (await first.json()) as { id: string; readAt: string };
+    expect(body.id).toBe(ID_A);
+    expect(body.readAt).toBe(READ_ISO);
+    expect(body).not.toHaveProperty('ok');
+    expect(body).not.toHaveProperty('tags');
+    const outbox = await pushStore.listAllOutbox(10);
+    expect(outbox).toHaveLength(1);
+    const payload = JSON.parse(outbox[0]?.payload ?? '{}') as Record<string, unknown>;
+    expect(payload).toEqual({
+      type: 'dismiss',
+      tags: [`forum_reply:${ID_A}`],
+      unreadCount: 0,
+    });
+    expect(payload).not.toHaveProperty('endpoint');
+    const second = await app.request(`/notifications/${ID_A}/read`, {
+      method: 'POST',
+      headers: AUTH,
+    });
+    expect(second.status).toBe(200);
+    expect(((await second.json()) as { readAt: string }).readAt).toBe(READ_ISO);
+    expect(await pushStore.listAllOutbox(10)).toHaveLength(1);
+  });
+
+  it('does not dismiss a moderator_proposal', async () => {
+    const proposalId = '10101010-1010-4101-8101-101010101010';
+    const accountId = '88888888-8888-4888-8888-888888888888';
+    const store = new InMemoryNotificationStore([
+      note({
+        id: proposalId,
+        type: 'moderator_proposal',
+        parentId: accountId,
+        replyId: accountId,
+        text: 'Sub',
+      }),
+    ]);
+    const pushStore = new InMemoryPushStore();
+    const res = await mount(await seeded(), store, new InMemoryMessageStore(), {
+      pushStore,
+    }).request(`/notifications/${proposalId}/read`, {
+      method: 'POST',
+      headers: AUTH,
+    });
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as { readAt: string | null }).readAt).toBeNull();
+    expect(await pushStore.listAllOutbox(10)).toEqual([]);
+  });
+
+  it('does not dismiss a proposal whose returned readAt equals the clock', async () => {
+    const store = new InMemoryNotificationStore();
+    const pushStore = new InMemoryPushStore();
+    store.markRead = async () => ({
+      row: note({
+        id: ID_A,
+        type: 'moderator_proposal',
+        readAt: new Date(now()),
+      }),
+      stamped: false,
+    });
+    const res = await mount(await seeded(), store, new InMemoryMessageStore(), {
+      pushStore,
+    }).request(`/notifications/${ID_A}/read`, {
+      method: 'POST',
+      headers: AUTH,
+    });
+    expect(res.status).toBe(200);
+    expect(await pushStore.listAllOutbox(10)).toEqual([]);
+  });
+
+  it('does not dismiss an already-read forum row when readAt equals the clock', async () => {
+    const store = new InMemoryNotificationStore();
+    const pushStore = new InMemoryPushStore();
+    const readAt = new Date(now());
+    const forum = note({ id: ID_A, type: 'forum_reply', readAt });
+    store.markRead = async () => ({ row: forum, stamped: false });
+    const res = await mount(await seeded(), store, new InMemoryMessageStore(), {
+      pushStore,
+    }).request(`/notifications/${ID_A}/read`, {
+      method: 'POST',
+      headers: AUTH,
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      id: string;
+      type: string;
+      parentId: string;
+      replyId: string;
+      name: string;
+      text: string;
+      createdAt: string;
+      readAt: string | null;
+    };
+    expect(body).toEqual({
+      id: forum.id,
+      type: forum.type,
+      parentId: forum.parentId,
+      replyId: forum.replyId,
+      name: forum.name,
+      text: forum.text,
+      createdAt: forum.createdAt.toISOString(),
+      readAt: readAt.toISOString(),
+    });
+    expect(await pushStore.listAllOutbox(10)).toEqual([]);
   });
 });

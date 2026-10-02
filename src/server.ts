@@ -59,6 +59,7 @@ import { InMemoryDiagnosticStore, type DiagnosticStore } from '@/lib/diagnostic-
 import { InMemoryContactStore } from '@/lib/contact-store';
 import type { ContactStore } from '@/lib/contact-store';
 import { InMemoryPosStore, type PosStore } from '@/lib/pos-store';
+import { inboxUnreadCountFor } from '@/lib/conversation-push';
 import { InMemoryConversationStore } from '@/lib/conversation-store';
 import type { ConversationStore } from '@/lib/conversation-store';
 import { aboutMeFromNote } from '@/lib/about-me';
@@ -674,6 +675,8 @@ export function createApp(deps: AppDeps = {}): Hono {
       authStore: store,
       messages: messageStore,
       now,
+      pushStore,
+      inboxUnreadCount: inboxUnreadCountFor(conversationStore, store),
     }),
   );
   app.route(
