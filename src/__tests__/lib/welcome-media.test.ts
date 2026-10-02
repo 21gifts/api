@@ -568,8 +568,21 @@ describe('syncWelcomePing', () => {
     });
     expect(ping).toHaveBeenCalledTimes(1);
     ping.mockClear();
+    const before = new InMemoryGiftStore([
+      { paidAt: new Date(1), amountSats: 1, recipientWosUser: 'acc', kind: 'welcome' },
+    ]);
+    await syncWelcomePing({
+      lnurlServer: LNURL_SERVER,
+      spendPing: { ping },
+      messages,
+      auth,
+      gifts: before,
+      account: { ...verified, sparkPubkeyVerifiedAt: 2 },
+    });
+    expect(ping).toHaveBeenCalledTimes(1);
+    ping.mockClear();
     const welcomed = new InMemoryGiftStore([
-      { paidAt: new Date(1), amountSats: 1, recipientWosUser: ' ACC ', kind: 'welcome' },
+      { paidAt: new Date(5), amountSats: 1, recipientWosUser: ' ACC ', kind: 'welcome' },
     ]);
     await syncWelcomePing({
       lnurlServer: LNURL_SERVER,

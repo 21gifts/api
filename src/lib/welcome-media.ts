@@ -35,24 +35,33 @@ function platformAccountId(accounts: readonly Account[]): string | null {
   return accounts.find((account) => account.isPlatform === true)?.id ?? null;
 }
 
+/** One recorded welcome gift: lower-case recipient handle and payment time. */
+interface WelcomeRecord {
+  handle: string;
+  paidAtMs: number;
+}
+
 /**
- * Lower-case recipient handles of every recorded welcome gift. A welcome paid
- * to a wallet address is recorded under the member's username.
+ * Every recorded welcome gift. A welcome paid to a wallet address is recorded
+ * under the member's username; the caller only counts records paid at or after
+ * the account's wallet verification, because an older record with the same
+ * handle went to some other address (the local part of an external one).
  *
  * @param gifts - Outbound gift store, or `undefined` (no gift records read).
- * @returns The handle set (empty without a store).
+ * @returns The records (empty without a store).
  */
-async function welcomedHandles(
+async function welcomeRecords(
   gifts: Pick<GiftStore, 'listOutbound'> | undefined,
-): Promise<ReadonlySet<string>> {
+): Promise<readonly WelcomeRecord[]> {
   if (gifts === undefined) {
-    return new Set();
+    return [];
   }
-  return new Set(
-    (await gifts.listOutbound())
-      .filter((row) => row.kind === 'welcome')
-      .map((row) => row.recipientWosUser.trim().toLowerCase()),
-  );
+  return (await gifts.listOutbound())
+    .filter((row) => row.kind === 'welcome')
+    .map((row) => ({
+      handle: row.recipientWosUser.trim().toLowerCase(),
+      paidAtMs: row.paidAt.getTime(),
+    }));
 }
 
 /**
@@ -61,8 +70,9 @@ async function welcomedHandles(
  * not throw.
  *
  * The welcome gift is once per account: a platform `Welcome` reply under one
- * of the account's notes, or a recorded welcome gift under its username, means
- * it was paid, whichever address it went to.
+ * of the account's notes, or a welcome gift recorded under its username at or
+ * after its wallet was verified, means it was paid, whichever address it went
+ * to.
  *
  * @param args - Spend ping, forum store, account, platform account id, the
  *   recorded welcome handles, and LNURL server config.
@@ -72,7 +82,7 @@ async function pingOne(args: {
   messages: MessageStore;
   account: Account;
   platformId: string | null;
-  welcomed: ReadonlySet<string>;
+  welcomed: readonly WelcomeRecord[];
   lnurlServer: LnurlServerConfig | undefined;
 }): Promise<void> {
   const address = receivingAddress(args.account, args.lnurlServer)?.address ?? null;
@@ -85,7 +95,11 @@ async function pingOne(args: {
       return;
     }
     if (
-      args.welcomed.has(address.slice(0, address.lastIndexOf('@'))) ||
+      args.welcomed.some(
+        (record) =>
+          record.handle === address.slice(0, address.lastIndexOf('@')) &&
+          record.paidAtMs >= Number(args.account.sparkPubkeyVerifiedAt),
+      ) ||
       (args.platformId !== null &&
         (await args.messages.accountHasWelcomeGift(args.account.id, args.platformId)))
     ) {
@@ -117,10 +131,10 @@ async function catchUpVerifiedMedia(args: {
     return;
   }
   let accounts: Account[];
-  let welcomed: ReadonlySet<string>;
+  let welcomed: readonly WelcomeRecord[];
   try {
     accounts = await args.auth.listAccounts();
-    welcomed = await welcomedHandles(args.gifts);
+    welcomed = await welcomeRecords(args.gifts);
   } catch {
     logEvent('spend.ping.failed');
     return;
@@ -159,8 +173,8 @@ async function catchUpVerifiedMedia(args: {
  * Omitted spend ping, a role other than `verified`, no receiving address (no
  * verified wallet, or the LNURL server off), no photo/video, or a welcome gift
  * already paid to the account (a platform `Welcome` reply under one of its
- * notes, or a recorded `welcome` gift under its username in `gifts`) is a
- * no-op. The gift is once per account, not
+ * notes, or a `welcome` gift recorded under its username in `gifts` at or after
+ * its wallet was verified) is a no-op. The gift is once per account, not
  * once per address, so a member whose receiving address changed is not paid
  * twice.
  *
@@ -180,10 +194,10 @@ export async function syncWelcomePing(args: {
       return;
     }
     let platformId: string | null;
-    let welcomed: ReadonlySet<string>;
+    let welcomed: readonly WelcomeRecord[];
     try {
       platformId = platformAccountId(await args.auth.listAccounts());
-      welcomed = await welcomedHandles(args.gifts);
+      welcomed = await welcomeRecords(args.gifts);
     } catch {
       logEvent('spend.ping.failed');
       return;

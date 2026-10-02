@@ -62,7 +62,9 @@ export interface MeRouteDeps {
   conversationStore?: ConversationStore;
   /**
    * Outbound house gifts (default: empty {@link InMemoryGiftStore}).
-   * Used by `GET /activity`.
+   * Used by `GET /activity` and by the About-me welcome ping, where a
+   * `welcome` gift recorded under the username at or after the wallet
+   * verification stops a second ping.
    */
   giftStore?: GiftStore;
   /**
