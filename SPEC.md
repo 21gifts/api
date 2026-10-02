@@ -605,9 +605,10 @@ loopback, private, shared, link-local, benchmark, documentation, multicast,
 or reserved IPv4 (also when carried as IPv4-mapped, IPv4-compatible,
 IPv4-translated, 6to4, or NAT64 IPv6). IPv6 unique-local, link-local, site-local, multicast,
 documentation, Teredo, benchmarking, ORCHID, discard, and local NAT64 ranges
-are refused. A Lightning Address whose name is only dots is refused. A
-target on the host of `PUBLIC_BASE_URL` is refused (the app pays those
-itself). The fetch does not follow redirects, stops after 5 seconds, and reads
+are refused, and any other IPv6 answer must lie in global unicast `2000::/3` or
+the well-known NAT64 prefix `64:ff9b::/96`. A Lightning Address whose name is only dots is refused. A
+target on the host of `PUBLIC_BASE_URL` (compared without a trailing dot) is
+refused (the app pays those itself). The fetch does not follow redirects, stops after 5 seconds, and reads
 at most 64 KB.
 
 The response must be a pay request: `tag` `payRequest`, an `https` `callback`
@@ -668,8 +669,8 @@ and carry a description hash equal to SHA-256 of the pay request's
 
 Errors as for `POST /lnurl/pay-request`, plus: `amountMsat` not a number, not
 a whole number, or outside the bounds → **Response** `400`
-`{ "error": "Amount out of range" }`; `comment` not a string, not well-formed
-Unicode, longer than 2000 UTF-16 code units, or longer than `commentAllowed` → **Response** `400` `{ "error": "Comment too long" }`; the
+`{ "error": "Amount out of range" }`; `comment` neither absent, null, nor a
+string, not well-formed Unicode, longer than 2000 UTF-16 code units, or longer than `commentAllowed` → **Response** `400` `{ "error": "Comment too long" }`; the
 invoice fetch fails, or the invoice is missing, undecodable, for another
 amount, or for another description hash → **Response** `502`
 `{ "error": "Address could not be reached" }`.

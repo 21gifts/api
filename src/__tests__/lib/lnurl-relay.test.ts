@@ -81,8 +81,12 @@ function payRequestFetch(body: unknown = PAY_REQUEST): {
 const BECH32 = 'qpzry9x8gf2tvdw0s3jn54khce6mua7l';
 
 /** Test-side bech32 encoder (hrp + bytes). */
-function bech32(hrp: string, bytes: Uint8Array): string {
-  const words: number[] = [];
+function bech32(
+  hrp: string,
+  bytes: Uint8Array,
+  tweak: (words: number[]) => number[] = (words) => words,
+): string {
+  let words: number[] = [];
   let acc = 0;
   let bits = 0;
   for (const byte of bytes) {
@@ -96,6 +100,7 @@ function bech32(hrp: string, bytes: Uint8Array): string {
   if (bits > 0) {
     words.push((acc << (5 - bits)) & 31);
   }
+  words = tweak(words);
   const gen = [0x3b6a57b2, 0x26508e6d, 0x1ea119fa, 0x3d4233dd, 0x2a1462b3];
   const polymod = (values: number[]): number => {
     let chk = 1;
@@ -197,6 +202,16 @@ describe('resolveRelayPayRequest', () => {
     ['LNURL to the own host', lnurl('https://21.gifts/x')],
     ['LNURL that is not a URL', lnurl('not a url')],
     ['LNURL that is not UTF-8', bech32('lnurl', Uint8Array.from([0xff, 0xfe, 0xfd]))],
+    [
+      'LNURL with an extra padding word',
+      bech32('lnurl', new TextEncoder().encode('https://a.example.com/x'), (w) => [...w, 0]),
+    ],
+    [
+      'LNURL with non-zero padding bits',
+      bech32('lnurl', new TextEncoder().encode('https://a.example.com/x'), (w) =>
+        w.map((v, i) => (i === w.length - 1 ? v | 1 : v)),
+      ),
+    ],
   ])('refuses %s with 400 and does not fetch', async (_label, target) => {
     const { fetchImpl, calls } = payRequestFetch();
     const result = await resolveRelayPayRequest({ target, fetchImpl, ...DEPS });
@@ -265,6 +280,10 @@ describe('resolveRelayPayRequest', () => {
     ['fe80::1'],
     ['ff02::1'],
     ['64:ff9b::a00:1'],
+    ['::ffff:8.8.8.8'],
+    ['1::'],
+    ['200::1'],
+    ['4000::1'],
     ['2002:7f00:1::'],
     ['2001:db8::1'],
     ['192.0.2.1'],
@@ -290,9 +309,10 @@ describe('resolveRelayPayRequest', () => {
     ['198.17.0.1'],
     ['198.20.0.1'],
     ['223.255.255.254'],
-    ['::ffff:8.8.8.8'],
     ['2001:4860:4860::8888'],
     ['2a00:1450:4001::1'],
+    ['3fff:1000::1'],
+    ['64:ff9b::808:808'],
   ])('accepts a target that resolves to %s', async (address) => {
     const { fetchImpl } = payRequestFetch();
     const result = await resolveRelayPayRequest({

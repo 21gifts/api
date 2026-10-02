@@ -49,7 +49,8 @@ export interface LnurlRouteDeps {
 function ownHost(env: Record<string, string | undefined>): string | null {
   const base = env['PUBLIC_BASE_URL']?.trim() ?? '';
   try {
-    return new URL(base).hostname.toLowerCase();
+    // A trailing dot names the same host; compare without it.
+    return new URL(base).hostname.toLowerCase().replace(/\.$/, '');
   } catch {
     return null;
   }
