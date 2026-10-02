@@ -954,8 +954,8 @@ async function signBatch(deps: NostrWorkerDeps, nowMs: number): Promise<void> {
 
 /**
  * Create a profile forum note for named accounts with a verified wallet that
- * lack one (or whose stored id no longer
- * points at a message row). `ensureProfileMessage` no-ops without a verified wallet.
+ * lack one (or whose stored id no longer points at a message row).
+ * `ensureProfileMessage` no-ops without a verified wallet.
  *
  * @param deps - Auth and message stores (and optional push / notifications).
  */
