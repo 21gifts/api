@@ -1,5 +1,6 @@
 import type { Account, AuthStore } from '@/lib/auth/store';
 import type { LnurlServerConfig } from '@/lib/config';
+import { WELCOME_GIFT_DESCRIPTION } from '@/lib/gift';
 import type { GiftStore } from '@/lib/gift-store';
 import { logEvent } from '@/lib/log';
 import type { MessageStore } from '@/lib/message-store';
@@ -42,10 +43,12 @@ interface WelcomeRecord {
 }
 
 /**
- * Every recorded welcome gift. A welcome paid to a wallet address is recorded
- * under the member's username; the caller only counts records paid at or after
- * the account's wallet verification, because an older record with the same
- * handle went to some other address (the local part of an external one).
+ * Every recorded welcome gift paid to a wallet address
+ * ({@link WELCOME_GIFT_DESCRIPTION}), recorded under the member's username.
+ * Older welcome records keep only the local part of an external address, which
+ * may be another member's, so they are left out. The caller only counts records
+ * paid at or after the account's wallet verification, because the username may
+ * have belonged to another account before.
  *
  * @param gifts - Outbound gift store, or `undefined` (no gift records read).
  * @returns The records (empty without a store).
@@ -57,7 +60,7 @@ async function welcomeRecords(
     return [];
   }
   return (await gifts.listOutbound())
-    .filter((row) => row.kind === 'welcome')
+    .filter((row) => row.kind === 'welcome' && row.description === WELCOME_GIFT_DESCRIPTION)
     .map((row) => ({
       handle: row.recipientWosUser.trim().toLowerCase(),
       paidAtMs: row.paidAt.getTime(),
@@ -70,7 +73,7 @@ async function welcomeRecords(
  * not throw.
  *
  * The welcome gift is once per account: a platform `Welcome` reply under one
- * of the account's notes, or a welcome gift recorded under its username at or
+ * of the account's notes, or a welcome gift with description `21gifts welcome` recorded under its username at or
  * after its wallet was verified, means it was paid, whichever address it went
  * to.
  *
@@ -173,7 +176,7 @@ async function catchUpVerifiedMedia(args: {
  * Omitted spend ping, a role other than `verified`, no receiving address (no
  * verified wallet, or the LNURL server off), no photo/video, or a welcome gift
  * already paid to the account (a platform `Welcome` reply under one of its
- * notes, or a `welcome` gift recorded under its username in `gifts` at or after
+ * notes, or a `welcome` gift with description `21gifts welcome` recorded under its username in `gifts` at or after
  * its wallet was verified) is a no-op. The gift is once per account, not
  * once per address, so a member whose receiving address changed is not paid
  * twice.

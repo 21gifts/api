@@ -293,7 +293,7 @@ export interface MessagesRouteDeps {
    */
   fundingStore?: FundingStore;
   /**
-   * Outbound house gifts. A `welcome` gift recorded under the author's
+   * Outbound house gifts. A `welcome` gift with description `21gifts welcome` recorded under the author's
    * username at or after the wallet verification stops a second welcome ping.
    * Omitted → only the platform `Welcome` reply counts.
    */
