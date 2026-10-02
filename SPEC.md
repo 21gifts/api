@@ -3998,10 +3998,10 @@ author LN). `role` is the posting session account's live `account.role`. Web Pus
 `forum_post`, `url` `/messages/<id>`, `tag` `forum_post:<id>`) and for a
 **reply** (`notifyForumReply`, kind `forum_reply`, `url` `/messages/<replyId>`,
 `tag` `forum_reply:<replyId>`) fan out in-app to every account except the
-actor (no-op when the actor is the official platform account), then filter recipients by each account's `notificationLevel`
-(`all` / `active` / `mentions`). Web Push still goes only to bell subscribers
+actor and except each account marked on the created row (no-op when the actor is the official platform account), then filter recipients by each account's `notificationLevel`
+(`all` / `active` / `mentions`). The excluded ids are the created row's mention account ids other than the author, deduped; an empty list omits `excludeAccountIds`. Web Push still goes only to bell subscribers
 and uses the same level filter. Damus-only parents still
-fan out. A self-reply skips only the actor. `GET /notifications` applies the
+fan out. A self-reply skips only the actor. The same mark exclusion applies to the reply fan-out. `GET /notifications` applies the
 same `notificationLevel` filter to stored rows.
 The booted process always has notification and push stores (in-memory without
 `DATABASE_URL`, Postgres when it is set). Photo-only empty text still
