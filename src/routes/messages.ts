@@ -23,7 +23,12 @@ import { buildPostStats } from '@/lib/post-stats';
 import type { FetchFn } from '@/lib/lnurlp';
 import { requestZapInvoice } from '@/lib/lnurl-pay';
 import type { LnurlServerConfig } from '@/lib/config';
-import { lnurlServerFetch, receivingAddress, type ReceivingAccount } from '@/lib/receiving-address';
+import {
+  CANNOT_RECEIVE,
+  lnurlServerFetch,
+  receivingAddress,
+  type ReceivingAccount,
+} from '@/lib/receiving-address';
 import { issueSparkInvoice } from '@/lib/spark-invoice';
 import type { SparkInvoiceStore } from '@/lib/spark-invoice-store';
 import {
@@ -1870,7 +1875,10 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
         if (row.deletedAt !== null) {
           return c.json({ error: 'Messages are unavailable' }, 503);
         }
-        if (!payableOf(row, live, deps.lnurlServer) || row.eventId === null || row.eventId === '') {
+        if (receivingAddress(live, deps.lnurlServer) === null) {
+          return c.json({ error: 'This message cannot be paid yet', code: CANNOT_RECEIVE }, 400);
+        }
+        if (!payableOf(row, live, deps.lnurlServer)) {
           return c.json({ error: 'This message cannot be paid yet' }, 400);
         }
         return c.json({ messageId: row.id, sats: row.sats }, 200);
@@ -2923,7 +2931,7 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
             isNip57Invoice: false,
           }),
         );
-        return c.json({ error: "The author's wallet cannot receive this Bitcoin payment" }, 400);
+        return c.json({ error: AUTHOR_WALLET_CANNOT_RECEIVE, code: CANNOT_RECEIVE }, 400);
       }
       if (row.eventId === null || row.eventId === '') {
         await persistInvoiceAttempt(
@@ -2969,7 +2977,7 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
             isNip57Invoice: false,
           }),
         );
-        return c.json({ error: 'This message cannot be paid yet' }, 400);
+        return c.json({ error: 'This message cannot be paid yet', code: CANNOT_RECEIVE }, 400);
       }
       const recipientPubkey = await deps.authStore.getNostrPublicKey(author.id);
       /* v8 ignore start -- payable notes have keys after the worker */
@@ -3108,7 +3116,7 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
           }),
         );
         if (zap.reason === 'noZap') {
-          return c.json({ error: AUTHOR_WALLET_CANNOT_RECEIVE }, 400);
+          return c.json({ error: AUTHOR_WALLET_CANNOT_RECEIVE, code: CANNOT_RECEIVE }, 400);
         }
         return c.json({ error: 'Could not start the Bitcoin payment' }, 400);
       }
@@ -3137,7 +3145,7 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
             lnurlResponse: zap.lnurlResponse,
           }),
         );
-        return c.json({ error: AUTHOR_WALLET_CANNOT_RECEIVE }, 400);
+        return c.json({ error: AUTHOR_WALLET_CANNOT_RECEIVE, code: CANNOT_RECEIVE }, 400);
       }
       await persistInvoiceAttempt(
         deps.store,

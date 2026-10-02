@@ -9,7 +9,7 @@ import { textHasHashtagToken, type ShopNoteRef } from '@/lib/message-store';
 import { logActivityFailure, pingShopActivity, type ActivityPing } from '@/lib/ocp-activity';
 import { POS_CHARGE_TTL_MS, serializePosCharge, type PosCharge } from '@/lib/pos-charge';
 import type { PosStore } from '@/lib/pos-store';
-import { lnurlServerFetch, receivingAddress } from '@/lib/receiving-address';
+import { WALLET_REQUIRED, lnurlServerFetch, receivingAddress } from '@/lib/receiving-address';
 import { bearerToken } from '@/routes/me';
 
 /**
@@ -99,7 +99,7 @@ export function posRoutes(deps: PosRouteDeps): Hono {
       }
       const receiving = receivingAddress(account, deps.lnurlServer);
       if (receiving === null) {
-        return c.json({ error: 'Set up your wallet first' }, 400);
+        return c.json({ error: 'Set up your wallet first', code: WALLET_REQUIRED }, 400);
       }
       const open = await deps.store.currentPending(account.id, deps.now());
       if (open !== null) {
