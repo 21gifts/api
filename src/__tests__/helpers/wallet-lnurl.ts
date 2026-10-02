@@ -18,8 +18,12 @@ export const FREE_PAYMENTS_ENV: Record<string, string> = {
   LNURL_ZAP_NSEC_HEX: '11'.repeat(32),
 };
 
-/** BOLT11 spec example invoice (decodes; 250 000 sats). */
+/** BOLT11 spec example re-encoded for 21 sats (decodes; its signature does not verify). */
 export const BOLT11 =
+  'lnbc210n1pvjluezpp5qqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqypqdq5xysxxatsyp3k7enxv4jsxqzpuaztrnwngzn3kdzw5hydlzf03qdgm2hdq27cqv3agm2awhz5se903vruatfhq77w3ls4evs3ch9zw97j25emudupq63nyw24cg27h2rspc3jnwk';
+
+/** The unmodified BOLT11 spec example (250 000 sats, same payment hash). */
+export const BOLT11_250K =
   'lnbc2500u1pvjluezpp5qqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqypqdq5xysxxatsyp3k7enxv4jsxqzpuaztrnwngzn3kdzw5hydlzf03qdgm2hdq27cqv3agm2awhz5se903vruatfhq77w3ls4evs3ch9zw97j25emudupq63nyw24cg27h2rspfj9srp';
 
 /** Payment hash of {@link BOLT11}. */

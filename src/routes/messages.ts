@@ -3093,6 +3093,7 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
       const sparkInvoice = await issueSparkInvoice(deps, receiving, {
         pr: zap.pr,
         paymentHash: inspected?.paymentHash ?? null,
+        prAmountMsat: inspected?.amountMsat ?? null,
         amountSats: zap.amountSats,
         zapRequestJson,
       });

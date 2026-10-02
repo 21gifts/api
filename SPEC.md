@@ -4464,8 +4464,8 @@ Success → **Response** `200`:
 
 `sparkInvoice` is a Spark invoice (`spark1…`) for the same amount to the
 recipient's verified wallet with memo `zap:<payment hash of pr>`, or `null`
-when the recipient has no verified wallet or free in-app payments are off
-(see [Free in-app payments](#free-in-app-payments)). `pr` is unchanged, so a
+when the recipient has no verified wallet, `pr` is not for exactly that amount,
+or free in-app payments are off (see [Free in-app payments](#free-in-app-payments)). `pr` is unchanged, so a
 payer without an in-app wallet still pays over Lightning.
 
 The author's address is the receiving address
@@ -4546,8 +4546,8 @@ Success → **Response** `200`:
 
 `sparkInvoice` is a Spark invoice (`spark1…`) for the same amount to the
 giver's verified wallet with memo `zap:<payment hash of pr>`, or `null`
-when the giver has no verified wallet or free in-app payments are off
-(see [Free in-app payments](#free-in-app-payments)). `pr` is unchanged, so a
+when the giver has no verified wallet, `pr` is not for exactly that amount,
+or free in-app payments are off (see [Free in-app payments](#free-in-app-payments)). `pr` is unchanged, so a
 payer without an in-app wallet still pays over Lightning.
 The giver's address is the receiving address. The outstanding invoice
 returned for a repeat carries the same Spark invoice (issued on demand if it
@@ -5452,8 +5452,8 @@ Success → **Response** `200`:
 
 `sparkInvoice` is a Spark invoice (`spark1…`) for the same amount to the
 counterpart's verified wallet with memo `zap:<payment hash of pr>`, or `null`
-when the counterpart has no verified wallet or free in-app payments are off
-(see [Free in-app payments](#free-in-app-payments)). `pr` is unchanged, so a
+when the counterpart has no verified wallet, `pr` is not for exactly that amount,
+or free in-app payments are off (see [Free in-app payments](#free-in-app-payments)). `pr` is unchanged, so a
 payer without an in-app wallet still pays over Lightning.
 The counterpart's address is the receiving address
 (see [Receiving address](#receiving-address)).
