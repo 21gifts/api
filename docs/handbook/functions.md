@@ -1887,7 +1887,7 @@
 
 ## Function: normalizeWebAuthnRpId
 
-- **Purpose:** Trims `WEBAUTHN_RP_ID`; missing/blank/unknown is `null` (only `21.gifts` / `dev.21.gifts` / `localhost`; fail closed on passkey routes).
+- **Purpose:** Trims `WEBAUTHN_RP_ID`; missing/blank/unknown is `null` (only `21.gifts` / `dev.21.gifts` / `staging.21.gifts` / `localhost`; fail closed on passkey routes).
 - **Inputs:** Raw env string or `undefined`.
 - **Returns / side effects:** Trimmed RP ID or `null`.
 - **Used by:** `resolveWebAuthnConfig`.

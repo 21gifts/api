@@ -473,7 +473,7 @@ normalised handle; `user.name` and `user.displayName` are that handle.
 `user.id` remains the pending account UUID encoded as UTF-8.
 
 When `WEBAUTHN_RP_ID` is unset, blank, not on the allowlist (`21.gifts` /
-`dev.21.gifts` / `localhost`), or no CORS origin matches that RP ID:
+`dev.21.gifts` / `staging.21.gifts` / `localhost`), or no CORS origin matches that RP ID:
 
 **Response** `500`:
 
