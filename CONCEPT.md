@@ -13,9 +13,12 @@ Help people in difficult situations by enabling **direct gifts** from one human
 to another — without any organizational middleman taking a cut, gatekeeping, or
 politicizing the flow of help.
 
-Bitcoin Lightning is the only payment rail. NOSTR is the only message rail.
-Both are plumbing — the user just sees a website where they can ask for help
-or send help.
+Bitcoin Lightning is the only payment rail for a gift. A shop till is the
+decided exception: USDT or USDC on the same OpenCryptoPay QR still leaves
+the shop with bitcoin on Spark, specified in
+[`docs/shop-spark-payment.md`](./docs/shop-spark-payment.md), not implemented.
+NOSTR is the only message rail. Both are plumbing — the user just sees a
+website where they can ask for help or send help.
 
 ---
 
@@ -327,6 +330,9 @@ it does, then chooses two people. Both are required.
 If a moderator verified the owner, that person is suggested as person 1 and
 can be replaced. 21.gifts does not hold a share. Specified in
 [`docs/social-recovery.md`](./docs/social-recovery.md). Not implemented.
+Restoring those words does not move bitcoin. The same words are the Spark
+wallet seed in [`docs/shop-spark-payment.md`](./docs/shop-spark-payment.md),
+which is also not implemented.
 
 **The server never holds the nsec.** All NOSTR signing happens in the browser.
 
@@ -360,6 +366,14 @@ non-custodial phase (this table, like the rest of this section, is post-v1).
   the invoice and verifies the preimage — it is not in the LNDHub pay path.
   The browser flow above remains for guests and one-off gifts.
 - Optional: **NIP-57 Zap receipts** published to NOSTR for transparent acknowledgements
+
+### Shop till (concept)
+
+The shop QR stays the OpenCryptoPay link. A customer who pays USDT or USDC
+through that same QR leaves bitcoin on the shop's own Breez Spark wallet.
+The shop does not hold USDT or USDC. The 12-word seed that wallet uses is
+the phrase the phone already derives and never sends. Specified in
+[`docs/shop-spark-payment.md`](./docs/shop-spark-payment.md). Not implemented.
 
 ### Communication
 
@@ -995,6 +1009,7 @@ repository — they're intentionally not part of this project's scope.
 | 2026-09-24 | Initiator shares the moderator rank; permissions still name the minimum rank only. **Supersedes** the 2026-09-20 strict total order founder > moderator > verified > basis.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
 | 2026-09-29 | Social recovery of the user-held seed is specified in docs/social-recovery.md and is not implemented. Guardians hold SLIP-39 shares of the frozen mnemonic-v1 entropy. They do not hold the passkey. The api must not be the source of the public keys those shares are encrypted to. Custodial nsecs are out of scope.                                                                                                                                                                                                                                                                                                                                               |
 | 2026-09-30 | Mein Konto absichern is optional. The account works without it. An owner who continues is told what social recovery does, then chooses two people. Both are required to open the same account on a new device and restore the same 12 seed words. If a moderator verified the owner, that person is suggested as person 1 and can be replaced. 21.gifts does not hold a share. Specified in docs/social-recovery.md. Not implemented. **Supersedes** the 2026-09-29 social-recovery row.                                                                                                                                                                              |
+| 2026-10-01 | A shop's OpenCryptoPay QR stays the same link. USDT or USDC paid through it settles as bitcoin on the shop's own Breez Spark wallet. The shop does not hold USDT or USDC. The till is paid only when those sats have arrived. The wallet seed is the 12-word phrase the app already derives (`mnemonicFromPrfFirst`); the api already records that seed passkey (`POST /auth/passkey/seed/begin` and `/finish`). Specified in docs/shop-spark-payment.md. Not implemented. Today's Lightning pay link is unchanged.                                                                                                                                                   |
 
 ## Next Steps
 

@@ -102,6 +102,47 @@ describe('InMemoryPosStore', () => {
     expect(await store.listLatest(10)).toEqual([]);
     expect(await store.listForAccount('acc', 10)).toEqual([]);
     expect(await store.currentPending('acc', T0)).toBeNull();
+    expect(await store.listCreatedBetween(0, T0)).toEqual([]);
+  });
+
+  it('listCreatedBetween includes every status inside [start, end)', async () => {
+    const store = new InMemoryPosStore();
+    const start = Date.parse('2026-09-01T00:00:00.000Z');
+    const end = Date.parse('2026-09-02T00:00:00.000Z');
+    await store.create(charge({ id: 'pending', createdAt: new Date(start) }));
+    await store.create(
+      charge({
+        id: 'cancelled',
+        status: 'cancelled',
+        createdAt: new Date(start + 1),
+      }),
+    );
+    await store.create(
+      charge({
+        id: 'expired',
+        status: 'expired',
+        createdAt: new Date(end - 1),
+      }),
+    );
+    await store.create(
+      charge({
+        id: 'before',
+        status: 'cancelled',
+        createdAt: new Date(start - 1),
+      }),
+    );
+    await store.create(
+      charge({
+        id: 'after',
+        status: 'cancelled',
+        createdAt: new Date(end),
+      }),
+    );
+    expect(await store.listCreatedBetween(start, end)).toEqual([
+      { accountId: 'acc', createdAtMs: start },
+      { accountId: 'acc', createdAtMs: start + 1 },
+      { accountId: 'acc', createdAtMs: end - 1 },
+    ]);
   });
 
   it('copies created and listed rows so callers cannot mutate store state', async () => {
@@ -303,6 +344,28 @@ describe('PostgresPosStore', () => {
     expect(sql.queries[0]?.params).toEqual(['acc', 20]);
     expect(listed[0]?.amountSats).toBe(21);
     expect(listed[0]?.createdAt).toEqual(new Date('2026-09-01T12:00:00.000Z'));
+  });
+
+  it('listCreatedBetween binds the half-open window and maps created_at', async () => {
+    const sql = new MockSql();
+    const start = Date.parse('2026-09-01T00:00:00.000Z');
+    const end = Date.parse('2026-09-02T00:00:00.000Z');
+    sql.listRows = [
+      { account_id: 'acc', created_at: new Date(start) },
+      { account_id: 'other', created_at: '2026-09-01T23:59:59.000Z' },
+    ];
+    const listed = await new PostgresPosStore(sql).listCreatedBetween(start, end);
+    expect(sql.queries[0]?.text).toMatch(/SELECT account_id, created_at/);
+    expect(sql.queries[0]?.text).toMatch(/WHERE created_at >= \$1 AND created_at < \$2/);
+    expect(sql.queries[0]?.text).not.toMatch(/status/);
+    expect(sql.queries[0]?.params).toEqual([
+      new Date(start).toISOString(),
+      new Date(end).toISOString(),
+    ]);
+    expect(listed).toEqual([
+      { accountId: 'acc', createdAtMs: start },
+      { accountId: 'other', createdAtMs: Date.parse('2026-09-01T23:59:59.000Z') },
+    ]);
   });
 
   it('create binds ISO timestamps and a numeric amount_sats, then logs pos.create', async () => {

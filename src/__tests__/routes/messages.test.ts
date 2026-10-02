@@ -193,6 +193,7 @@ function throwingStore(overrides: Partial<MessageStore> = {}): MessageStore {
     listHidden: boom,
     listIdsByPrefix: boom,
     listPlaces: async () => [],
+    listLiveAssignedShops: boom,
     listDirectChildren: boom,
     listChildIds: boom,
     listPublishedEventIds: boom,
@@ -3516,6 +3517,7 @@ describe('POST /messages', () => {
       listHidden: (limit) => base.listHidden(limit),
       listIdsByPrefix: (prefix) => base.listIdsByPrefix(prefix),
       listPlaces: (limit) => base.listPlaces(limit),
+      listLiveAssignedShops: () => base.listLiveAssignedShops(),
       listDirectChildren: (parentId) => base.listDirectChildren(parentId),
       listChildIds: (parentId) => base.listChildIds(parentId),
       listReplies: (parentId, limit, includeHidden) =>
@@ -3642,6 +3644,7 @@ describe('POST /messages', () => {
       listHidden: (limit) => base.listHidden(limit),
       listIdsByPrefix: (prefix) => base.listIdsByPrefix(prefix),
       listPlaces: (limit) => base.listPlaces(limit),
+      listLiveAssignedShops: () => base.listLiveAssignedShops(),
       listDirectChildren: (parentId) => base.listDirectChildren(parentId),
       listChildIds: (parentId) => base.listChildIds(parentId),
       listReplies: (parentId, limit, includeHidden) =>
@@ -5299,6 +5302,7 @@ describe('POST /messages/:id/invoice', () => {
       listHidden: (limit) => base.listHidden(limit),
       listIdsByPrefix: (prefix) => base.listIdsByPrefix(prefix),
       listPlaces: (limit) => base.listPlaces(limit),
+      listLiveAssignedShops: () => base.listLiveAssignedShops(),
       listDirectChildren: (parentId) => base.listDirectChildren(parentId),
       listChildIds: (parentId) => base.listChildIds(parentId),
       listReplies: (parentId, limit, includeHidden) =>
