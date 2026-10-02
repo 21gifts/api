@@ -5,14 +5,18 @@ import { logEvent } from '@/lib/log';
 import type { MessageRow } from '@/lib/message';
 import type { MessageStore } from '@/lib/message-store';
 import {
+  enqueueNotificationDismiss,
   NOTIFICATION_FILTER_SCAN_LIMIT,
   NOTIFICATION_LIST_LIMIT,
   notificationsMatchingLevel,
   parseNotificationLevel,
   serializeNotification,
+  type NotificationRow,
   type PublicNotification,
 } from '@/lib/notification';
 import type { NotificationStore } from '@/lib/notification-store';
+import { pushTagForNotification } from '@/lib/push';
+import type { PushStore } from '@/lib/push-store';
 import { bearerToken } from '@/routes/me';
 
 /**
@@ -30,6 +34,10 @@ export interface NotificationRouteDeps {
   messages: Pick<MessageStore, 'getById'>;
   /** Clock returning epoch milliseconds (injected for testability). */
   now: () => number;
+  /** Optional push outbox; omitted skips dismiss enqueue. */
+  pushStore?: PushStore;
+  /** Optional listed inbox unread; omitted contributes 0 to dismiss badge. */
+  inboxUnreadCount?: (accountId: string) => Promise<number>;
 }
 
 const NOTIFICATION_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -46,13 +54,91 @@ async function authedAccount(
   return resolveSession(deps.authStore, deps.now(), token);
 }
 
+/** First-seen unique collapse tags from newly stamped rows. */
+function tagsFromRows(rows: readonly NotificationRow[]): string[] {
+  const tags: string[] = [];
+  const seen = new Set<string>();
+  for (const row of rows) {
+    const tag = pushTagForNotification(row);
+    if (tag === null || seen.has(tag)) {
+      continue;
+    }
+    seen.add(tag);
+    tags.push(tag);
+  }
+  return tags;
+}
+
+/** Optional `endpoint` string from a JSON object body. */
+function endpointFromBody(body: unknown): string | undefined {
+  if (body === null || typeof body !== 'object' || Array.isArray(body)) {
+    return undefined;
+  }
+  const endpoint = (body as Record<string, unknown>)['endpoint'];
+  if (typeof endpoint !== 'string' || endpoint === '') {
+    return undefined;
+  }
+  return endpoint;
+}
+
+/**
+ * Enqueue dismiss pushes for newly stamped tags. Never throws.
+ *
+ * @param args - Route deps, recipient, tags, and optional request body.
+ * @returns Resolves after dismiss is attempted or skipped.
+ */
+async function enqueueDismissForAccount(args: {
+  deps: NotificationRouteDeps;
+  accountId: string;
+  tags: readonly string[];
+  body: unknown;
+}): Promise<void> {
+  const pushStore = args.deps.pushStore;
+  if (pushStore === undefined || args.tags.length === 0) {
+    return;
+  }
+  try {
+    let skipEndpoint: string | undefined;
+    const candidate = endpointFromBody(args.body);
+    if (candidate !== undefined) {
+      const subs = await pushStore.listByAccount(args.accountId);
+      for (const sub of subs) {
+        if (sub.endpoint === candidate) {
+          skipEndpoint = candidate;
+          break;
+        }
+      }
+    }
+    let unreadCount = await args.deps.store.unreadCount(args.accountId);
+    const inboxUnreadCount = args.deps.inboxUnreadCount;
+    if (inboxUnreadCount !== undefined) {
+      try {
+        unreadCount += await inboxUnreadCount(args.accountId);
+      } catch {
+        logEvent('push.dismiss.failed');
+      }
+    }
+    await enqueueNotificationDismiss({
+      pushStore,
+      accountId: args.accountId,
+      tags: args.tags,
+      nowMs: args.deps.now(),
+      unreadCount,
+      ...(skipEndpoint === undefined ? {} : { skipEndpoint }),
+    });
+  } catch {
+    logEvent('push.dismiss.failed');
+  }
+}
+
 /**
  * Build the `/notifications` route group.
  *
- * Mount `read-all` before `/:id/read` so `read-all` is not captured as an id.
+ * Mount `read-all` and `read-by-message` before `/:id/read` so those paths
+ * are not captured as an id.
  *
- * @param deps - Notification store, auth store, message store, and clock.
- * @returns A Hono app with list / mark-one / mark-all.
+ * @param deps - Notification store, auth store, message store, clock, and optional push.
+ * @returns A Hono app with list / mark-one / mark-all / mark-by-message.
  */
 export function notificationRoutes(deps: NotificationRouteDeps): Hono {
   return new Hono()
@@ -128,11 +214,51 @@ export function notificationRoutes(deps: NotificationRouteDeps): Hono {
       if (account === null) {
         return c.json({ error: 'Unauthorized' }, 401);
       }
+      const body = await c.req.json().catch(() => null);
       try {
-        await deps.store.markAllRead(account.id, new Date(deps.now()));
-        return c.json({ ok: true }, 200);
+        const stamped = await deps.store.markAllRead(account.id, new Date(deps.now()));
+        const tags = tagsFromRows(stamped);
+        await enqueueDismissForAccount({
+          deps,
+          accountId: account.id,
+          tags,
+          body,
+        });
+        return c.json({ ok: true, tags }, 200);
       } catch {
         logEvent('notifications.read_all.failed');
+        return c.json({ error: 'Notifications are unavailable' }, 503);
+      }
+    })
+    .post('/read-by-message', async (c) => {
+      const account = await authedAccount(deps, c.req.header('authorization'));
+      if (account === null) {
+        return c.json({ error: 'Unauthorized' }, 401);
+      }
+      const body = await c.req.json().catch(() => null);
+      if (body === null || typeof body !== 'object' || Array.isArray(body)) {
+        return c.json({ error: 'Not found' }, 404);
+      }
+      const messageId = (body as Record<string, unknown>)['messageId'];
+      if (typeof messageId !== 'string' || !NOTIFICATION_ID_RE.test(messageId)) {
+        return c.json({ error: 'Not found' }, 404);
+      }
+      try {
+        const stamped = await deps.store.markReadByMessage(
+          account.id,
+          messageId,
+          new Date(deps.now()),
+        );
+        const tags = tagsFromRows(stamped);
+        await enqueueDismissForAccount({
+          deps,
+          accountId: account.id,
+          tags,
+          body,
+        });
+        return c.json({ ok: true, tags }, 200);
+      } catch {
+        logEvent('notifications.read_message.failed');
         return c.json({ error: 'Notifications are unavailable' }, 503);
       }
     })
@@ -145,12 +271,24 @@ export function notificationRoutes(deps: NotificationRouteDeps): Hono {
       if (!NOTIFICATION_ID_RE.test(id)) {
         return c.json({ error: 'Not found' }, 404);
       }
+      const body = await c.req.json().catch(() => null);
       try {
-        const row = await deps.store.markRead(id, account.id, new Date(deps.now()));
-        if (row === undefined) {
+        const outcome = await deps.store.markRead(id, account.id, new Date(deps.now()));
+        if (outcome.row === undefined) {
           return c.json({ error: 'Not found' }, 404);
         }
-        return c.json(serializeNotification(row), 200);
+        if (outcome.stamped) {
+          const tag = pushTagForNotification(outcome.row);
+          if (tag !== null) {
+            await enqueueDismissForAccount({
+              deps,
+              accountId: account.id,
+              tags: [tag],
+              body,
+            });
+          }
+        }
+        return c.json(serializeNotification(outcome.row), 200);
       } catch {
         logEvent('notifications.read.failed');
         return c.json({ error: 'Notifications are unavailable' }, 503);
