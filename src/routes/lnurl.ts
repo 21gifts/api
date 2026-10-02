@@ -4,7 +4,9 @@
  * host for a signed-in member, so the app can pay it with its own wallet.
  *
  * The client never sends a callback URL: the invoice route resolves the
- * target again. Logs carry the target domain and a short reason only.
+ * target again. A pay request logs its domain, an invoice its amount, and a
+ * failure its reason and status; the target, comment, and invoice are never
+ * logged.
  */
 
 import { Hono, type Context } from 'hono';
