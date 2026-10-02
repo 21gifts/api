@@ -4056,6 +4056,67 @@ describe('spend lookups by wallet address', () => {
     expect(allInternal(seen)).toBe(true);
   });
 
+  it('accepts a wallet address whose public host carries a port', async () => {
+    const authStore = new InMemoryAuthStore();
+    await seedPasskeyAccount(authStore);
+    const invoiceStore = new InMemoryInvoiceStore();
+    const seen: string[] = [];
+    const fetchImpl: FetchFn = async (input) => {
+      const url = String(input);
+      seen.push(url);
+      if (url === 'http://lnurl.test/.well-known/lnurlp/alice') {
+        return Response.json({
+          tag: 'payRequest',
+          callback: 'https://example.test:8443/lnurlp/alice/invoice',
+          metadata: '[["text/plain","x"]]',
+          minSendable: 1000,
+          maxSendable: 1_000_000_000,
+        });
+      }
+      if (url.startsWith('http://lnurl.test/lnurlp/alice/invoice?')) {
+        return Response.json({ pr: PR });
+      }
+      return new Response('unexpected', { status: 500 });
+    };
+    const app = createApp({
+      spendApiToken: TOKEN,
+      authStore,
+      invoiceStore,
+      messageStore: livePostStore(),
+      fetchImpl,
+      now: () => NOW_MS,
+      env: { ...process.env, ...LNURL_ENV, PUBLIC_BASE_URL: 'https://example.test:8443' },
+    });
+    const result = await lookups(app, 'Alice@Example.Test:8443');
+    expect(result.passkey).toEqual({ hasPasskey: true });
+    expect(result.eligible).toEqual({ eligible: true, status: 'admitted' });
+    expect(result.posted).toMatchObject({ hasPosted: true, messageId: 'post-alice' });
+    expect(result.post.status).toBe(200);
+    const body = (await result.post.json()) as { id: string };
+    expect(invoiceStore.get(body.id)?.address).toBe('alice@example.test:8443');
+    expect(seen.every((url) => url.startsWith('http://lnurl.test/'))).toBe(true);
+    for (const address of [
+      'alice@other.test:8443',
+      '@example.test:8443',
+      `${'a'.repeat(250)}@example.test:8443`,
+    ]) {
+      const refused = await app.request(
+        `/invoices/passkey?address=${encodeURIComponent(address)}`,
+        auth(),
+      );
+      expect(refused.status).toBe(400);
+    }
+    const off = await createApp({
+      spendApiToken: TOKEN,
+      authStore,
+      env: { ...process.env, LNURL_SERVER_URL: '', PUBLIC_BASE_URL: '' },
+    }).request(
+      `/invoices/passkey?address=${encodeURIComponent('alice@example.test:8443')}`,
+      auth(),
+    );
+    expect(off.status).toBe(400);
+  });
+
   it('does not find a foreign domain', async () => {
     const authStore = new InMemoryAuthStore();
     await seedPasskeyAccount(authStore);
