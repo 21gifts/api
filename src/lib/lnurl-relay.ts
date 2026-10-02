@@ -7,9 +7,9 @@
  * checked as input: `https`, a DNS name with at least two labels, no
  * address literal, no `localhost` / `.localhost` / `.local` / `.internal`,
  * no port, no credentials, and a name that resolves to public addresses
- * only. Each host lookup and each fetch stops after
- * {@link LNURL_RELAY_TIMEOUT_MS}; fetches do not follow redirects and read at
- * most {@link LNURL_RELAY_BODY_CAP_BYTES}.
+ * only. The relay waits at most {@link LNURL_RELAY_TIMEOUT_MS} for each host
+ * lookup and each fetch; fetches do not follow redirects and read at most
+ * {@link LNURL_RELAY_BODY_CAP_BYTES}.
  */
 
 import { createHash } from 'node:crypto';
@@ -19,7 +19,7 @@ import { normalizeLightningAddress } from '@/lib/lightning-address';
 import type { FetchFn } from '@/lib/lnurlp';
 import { isPublicIp } from '@/lib/public-ip';
 
-/** Limit for one host lookup or one outbound LNURL fetch (headers and body), in milliseconds. */
+/** Longest wait for one host lookup or one outbound LNURL fetch (headers and body), in milliseconds. */
 export const LNURL_RELAY_TIMEOUT_MS = 5_000;
 
 /** Largest LNURL response body read, in bytes. */
@@ -288,8 +288,9 @@ async function systemLookup(host: string): Promise<string[]> {
 /**
  * Resolve the URL's host and require public addresses only.
  *
- * The lookup shares the fetch time limit; an answer that does not arrive in
- * time counts as `unresolved`.
+ * The relay waits for the lookup no longer than the fetch time limit; an
+ * answer that does not arrive in time counts as `unresolved`. The system
+ * resolver may still finish the lookup in the background.
  *
  * @param url - Checked outbound URL.
  * @param deps - Resolver and timeout.

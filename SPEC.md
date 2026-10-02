@@ -625,8 +625,8 @@ must be a DNS name with at least two labels: no address literal, no
 `localhost`, no `.local`, `.internal`, or `.localhost` name, no trailing dot.
 Every address the host resolves to must pass the public address check: no
 loopback, private, shared, link-local, benchmark, documentation, multicast,
-or reserved IPv4 (also when carried as IPv4-mapped, IPv4-compatible, 6to4, or
-NAT64 IPv6). IPv6 unique-local, link-local, site-local, multicast,
+or reserved IPv4 (also when carried as IPv4-mapped, IPv4-compatible,
+IPv4-translated, 6to4, or NAT64 IPv6). IPv6 unique-local, link-local, site-local, multicast,
 documentation, Teredo, benchmarking, ORCHID, discard, and local NAT64 ranges
 are refused. A Lightning Address whose name is only dots is refused. A
 target on the host of `PUBLIC_BASE_URL` is refused (the app pays those
@@ -666,8 +666,9 @@ that resolves to a non-public address) → **Response** `400`
 other non-2xx status, a body over 64 KB, or a body that is not a JSON object →
 **Response** `502` `{ "error": "Address could not be reached" }`.
 
-Logs carry a short reason, the status, and the domain on success. The target,
-its query string, the comment, and the invoice are never logged.
+Logs carry a short reason and the status on failure, the domain on a
+pay-request success, and `amountMsat` on an invoice success. The target, its
+query string, the comment, and the invoice are never logged.
 
 ### `POST /lnurl/invoice`
 
