@@ -1976,7 +1976,7 @@
 
 ## Function: receivingAddress
 
-- **Purpose:** The one place that decides where an account receives in-app payments. A member receives only on their in-app wallet: with the LNURL server configured and a verified wallet (`sparkPubkeyVerifiedAt` a number, `sparkPubkey` and `username` set), the address is the wallet-backed `<username>@<host of PUBLIC_BASE_URL>`. Without a verified wallet, or with the LNURL server off, the account cannot receive (`null`). The stored external `lightning_address` column is never read.
+- **Purpose:** The one place that decides where an account receives in-app payments. A member receives only on their in-app wallet: with the LNURL server configured and a verified wallet (`sparkPubkeyVerifiedAt` a number, `sparkPubkey` and `username` set), the address is the wallet-backed `<username>@<host of PUBLIC_BASE_URL>`. Without a verified wallet, or with the LNURL server off, the account cannot receive (`null`). It never reads the stored external `lightning_address` column; only the legacy boot repair `repairGiftKind` still matches old gift rows by it.
 - **Inputs:** Account fields `username`, `sparkPubkey`, `sparkPubkeyVerifiedAt`, and the `LnurlServerConfig` or `undefined` when that feature is off.
 - **Returns / side effects:** `{ address, sparkPubkey }` or `null`. No I/O.
 - **Used by:** `POST /messages/:id/invoice` (forum gift and the compose-target posting fee), `POST /conversations/:id/invoice`, `POST /messages/:id/repayment`, `GET /pay/:username`, `POST /pay/:username/invoice`, `POST /pos`, the payable flag on forum and member feeds, owner/public/debug account JSON `lightningAddress`, spend pings, the zap receipt ingest (provider pubkey of the recipient), and the Nostr worker for kind:0 `lud16`.
