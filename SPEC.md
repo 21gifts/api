@@ -2137,9 +2137,12 @@ verification do not clear the timestamp.
 
 ### `GET /lightning-address`
 
-Public LUD-16 metadata resolve for a future guest Donate flow. The api is
-**not** in the payment path: this route returns cached well-known LNURL-pay
-metadata only. It never fetches a BOLT11 invoice (`pr`) and never pays.
+Public LUD-16 metadata resolve for a future guest Donate flow. This route
+returns cached well-known LNURL-pay metadata only; it never fetches a BOLT11
+invoice (`pr`) and never pays. The callback in that metadata is served by the
+api (`/lnurlp/:username/invoice`) and forwarded to the self-hosted LNURL
+server, so the api sees the requested amount and the invoice of a guest
+payment, but it never pays the invoice or holds the funds.
 
 Query parameter:
 
