@@ -186,6 +186,13 @@ describe('querySparkInvoices', () => {
     expect(init.body).toEqual(encodeQuerySparkInvoicesRequest(['a']));
   });
 
+  it('appends the RPC path to the URL path, keeping a query and dropping a fragment', async () => {
+    const fetchImpl = vi.fn(async () => new Response(null, { status: 503 }));
+    await querySparkInvoices('https://op.example/base?token=abc#frag', fetchImpl, ['a']);
+    const [url] = fetchImpl.mock.calls[0] as unknown as [string];
+    expect(url).toBe('https://op.example/base/spark.SparkService/query_spark_invoices?token=abc');
+  });
+
   it('reads grpc-status from the response header', async () => {
     const fetchImpl = vi.fn(
       async () => new Response(null, { status: 200, headers: { 'grpc-status': '7' } }),
