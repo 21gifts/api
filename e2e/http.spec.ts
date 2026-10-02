@@ -130,6 +130,12 @@ test('POST /me/wallet-backup-seen without bearer is 401', async ({ request }) =>
   expect(res.status()).toBe(401);
 });
 
+test('PUT /me/wallet is 404 when LNURL server is off', async ({ request }) => {
+  const res = await request.put('/me/wallet');
+  expect(res.status()).toBe(404);
+  expect(await res.text()).toBe('404 Not Found');
+});
+
 test('Function: capPasskeyRenewText — POST /me/passkey-renew/report without bearer is 401', async ({
   request,
 }) => {
@@ -410,6 +416,36 @@ test('GET /.well-known/nostr.json is 200', async ({ request }) => {
 test('GET /.well-known/lnurlp/:username is 404 when unknown', async ({ request }) => {
   const res = await request.get('/.well-known/lnurlp/:username');
   expect(res.status()).toBe(404);
+});
+
+test('POST /lnurlpay/:pubkey is 404 when LNURL server is off', async ({ request }) => {
+  const res = await request.post('/lnurlpay/:pubkey');
+  expect(res.status()).toBe(404);
+  expect(await res.text()).toBe('404 Not Found');
+});
+
+test('POST /lnurlpay/:pubkey/recover is 404 when LNURL server is off', async ({ request }) => {
+  const res = await request.post('/lnurlpay/:pubkey/recover');
+  expect(res.status()).toBe(404);
+  expect(await res.text()).toBe('404 Not Found');
+});
+
+test('GET /lnurlpay/:pubkey/metadata is 404 when LNURL server is off', async ({ request }) => {
+  const res = await request.get('/lnurlpay/:pubkey/metadata');
+  expect(res.status()).toBe(404);
+  expect(await res.text()).toBe('404 Not Found');
+});
+
+test('GET /lnurlp/:username/invoice is 404 when LNURL server is off', async ({ request }) => {
+  const res = await request.get('/lnurlp/:username/invoice');
+  expect(res.status()).toBe(404);
+  expect(await res.text()).toBe('404 Not Found');
+});
+
+test('GET /verify/:paymentHash is 404 when LNURL server is off', async ({ request }) => {
+  const res = await request.get('/verify/:paymentHash');
+  expect(res.status()).toBe(404);
+  expect(await res.text()).toBe('404 Not Found');
 });
 
 test('GET /pay/:username is 404 when unknown', async ({ request }) => {

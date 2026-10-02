@@ -4,7 +4,7 @@
 > Product decisions live in [`CONCEPT.md`](./CONCEPT.md); this file owns
 > request/response contracts for routes that exist in code today.
 
-**Status**: living document. Last revised 2026-09-30 (`GET /mentions` matches the start of the username, a `.` `_` `-` segment, or the start of the display name or one of its words; a token containing `.` `_` `-` matches only a whole-string start. 2026-09-28: `GET /mentions` username prefix suggestions. GET /mentions returns at most 20 username-prefix suggestions for a signed-in forum reader. 2026-09-24: `POST /conversations/:id/messages/:messageId/translate`; owner and view JSON include `aboutMessageId`; conversation rows include `lastMessageId`. 2026-09-23: `eligibleToday` does not require a grant until UTC 2026-10-10; funding-program grants independent of `account.role`; spend ping and `POST /invoices` require `eligibleToday`; verified top-level media also welcome-pings independent of `eligibleToday`; `GET /invoices/eligible`; `GET /conversations` list/open rows include per-row `unreadMessageCount`; envelope `unreadCount` remains unread thread count; `GET /trust-chain` requires a member Bearer session; public graph uses at most one incoming edge per subject: the oldest eligible sibling (`createdAt` then `id`), skipping a non-chain oldest sibling so a later displayable contact can show; eligible `verify`, `moderator_appoint`, and `moderator_propose` only when the subject is a moderator; `moderator_confirm` and `moderator_reject` never; later appoint/confirm/propose do not replace the first eligible contact; staff may reject an open proposal (`POST /trust/reject-moderator`, append-only `moderator_reject`, role stays `verified`) and re-propose after reject (new `moderator_propose`; 409 while currently pending, any confirm/appoint, or a concurrent older open propose wins after insert); confirm/reject re-list after insert and undo when the other grant already closed; pending = latest propose/reject is propose, verified, no confirm/appoint; live-unique kinds are verify/confirm/appoint only; open proposal fans out in-app `moderator_proposal` plus Web Push to other staff until confirm, until reject when pending is then empty, or until appoint; GET `/notifications` keeps `moderator_appointed` and `moderator_proposal` (mark-read / read-all do not stamp the proposal); owner `notificationLevel` on GET `/me` and `POST /me/notification-level`; fan-out filters in-app and Web Push by `all` / `active` / `mentions`; GET `/notifications` applies the same filter to stored rows (`moderator_appointed` always stays; `unreadCount` is unread among kept rows after the hidden filter (before the 200 cap), not `store.unreadCount()` and not the unfiltered matching unread of the newest 1000); a zap that inserts a gift-reply fans out only `notifyZap`, not a second `forum_reply`; gift-reply row still lands in the thread; confirm/appoint notify the subject only with `moderator_appointed` and Web Push url `/welcome`; official platform account (`isPlatform`) never fans out living-room `forum_post` / `forum_reply` / `zap`; house daily gift-replies still persist; GET /messages omits name-copy profile notes and About me text stays). 2026-10-01: opening a forum note, translating it, or opening Notifications stamps the matching unread forum and zap rows and tells the account's other devices to close those banners (`POST /notifications/read-by-message`; read-all and read-by-message return tags; a freshly stamped `POST /notifications/:id/read` only enqueues the dismiss tag and still returns the public notification). `moderator_proposal` stays unread. Private-message pushes are not dismissed.
+**Status**: living document. Last revised 2026-10-01 (`PUT /me/wallet` and forwarded LNURL routes when `LNURL_SERVER_URL` and `PUBLIC_BASE_URL` resolve; owner `sparkPubkey` / `sparkWalletVerified`; wallet-backed `GET /.well-known/lnurlp/:username`; username fixed once verified; trailing/double-dot username reject. 2026-09-30: `GET /mentions` matches the start of the username, a `.` `_` `-` segment, or the start of the display name or one of its words; a token containing `.` `_` `-` matches only a whole-string start. 2026-09-28: `GET /mentions` username prefix suggestions. GET /mentions returns at most 20 username-prefix suggestions for a signed-in forum reader. 2026-09-24: `POST /conversations/:id/messages/:messageId/translate`; owner and view JSON include `aboutMessageId`; conversation rows include `lastMessageId`. 2026-09-23: `eligibleToday` does not require a grant until UTC 2026-10-10; funding-program grants independent of `account.role`; spend ping and `POST /invoices` require `eligibleToday`; verified top-level media also welcome-pings independent of `eligibleToday`; `GET /invoices/eligible`; `GET /conversations` list/open rows include per-row `unreadMessageCount`; envelope `unreadCount` remains unread thread count; `GET /trust-chain` requires a member Bearer session; public graph uses at most one incoming edge per subject: the oldest eligible sibling (`createdAt` then `id`), skipping a non-chain oldest sibling so a later displayable contact can show; eligible `verify`, `moderator_appoint`, and `moderator_propose` only when the subject is a moderator; `moderator_confirm` and `moderator_reject` never; later appoint/confirm/propose do not replace the first eligible contact; staff may reject an open proposal (`POST /trust/reject-moderator`, append-only `moderator_reject`, role stays `verified`) and re-propose after reject (new `moderator_propose`; 409 while currently pending, any confirm/appoint, or a concurrent older open propose wins after insert); confirm/reject re-list after insert and undo when the other grant already closed; pending = latest propose/reject is propose, verified, no confirm/appoint; live-unique kinds are verify/confirm/appoint only; open proposal fans out in-app `moderator_proposal` plus Web Push to other staff until confirm, until reject when pending is then empty, or until appoint; GET `/notifications` keeps `moderator_appointed` and `moderator_proposal` (mark-read / read-all do not stamp the proposal); owner `notificationLevel` on GET `/me` and `POST /me/notification-level`; fan-out filters in-app and Web Push by `all` / `active` / `mentions`; GET `/notifications` applies the same filter to stored rows (`moderator_appointed` always stays; `unreadCount` is unread among kept rows after the hidden filter (before the 200 cap), not `store.unreadCount()` and not the unfiltered matching unread of the newest 1000); a zap that inserts a gift-reply fans out only `notifyZap`, not a second `forum_reply`; gift-reply row still lands in the thread; confirm/appoint notify the subject only with `moderator_appointed` and Web Push url `/welcome`; official platform account (`isPlatform`) never fans out living-room `forum_post` / `forum_reply` / `zap`; house daily gift-replies still persist; GET /messages omits name-copy profile notes and About me text stays). 2026-10-01: opening a forum note, translating it, or opening Notifications stamps the matching unread forum and zap rows and tells the account's other devices to close those banners (`POST /notifications/read-by-message`; read-all and read-by-message return tags; a freshly stamped `POST /notifications/:id/read` only enqueues the dismiss tag and still returns the public notification). `moderator_proposal` stays unread. Private-message pushes are not dismissed.
 
 ---
 
@@ -80,7 +80,13 @@ Public base URLs used in examples:
 | ------ | ---------------------------------------------------- | -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | GET    | `/healthz`                                           | none                       | Liveness                                                                                                                                                                                                                                                                                                                                               |
 | GET    | `/info`                                              | none                       | Service identity                                                                                                                                                                                                                                                                                                                                       |
-| GET    | `/.well-known/lnurlp/:username`                      | none                       | LUD-16 payRequest; WoS callback stays; an open till charge pins both sendable bounds                                                                                                                                                                                                                                                                   |
+| GET    | `/.well-known/lnurlp/:username`                      | none                       | LUD-16 payRequest; WoS callback stays; an open till charge pins both sendable bounds; a verified wallet key is served from the LNURL server when `LNURL_SERVER_URL` and `PUBLIC_BASE_URL` resolve                                                                                                                                                      |
+| PUT    | `/me/wallet`                                         | Bearer                     | Bind wallet identity pubkey while unverified (mounted only when `LNURL_SERVER_URL` and `PUBLIC_BASE_URL` resolve)                                                                                                                                                                                                                                      |
+| POST   | `/lnurlpay/:pubkey`                                  | none                       | Forward wallet name registration (mounted only when `LNURL_SERVER_URL` and `PUBLIC_BASE_URL` resolve)                                                                                                                                                                                                                                                  |
+| POST   | `/lnurlpay/:pubkey/recover`                          | none                       | Forward signed recover (mounted only when `LNURL_SERVER_URL` and `PUBLIC_BASE_URL` resolve)                                                                                                                                                                                                                                                            |
+| GET    | `/lnurlpay/:pubkey/metadata`                         | none                       | Forward signed payment metadata (mounted only when `LNURL_SERVER_URL` and `PUBLIC_BASE_URL` resolve)                                                                                                                                                                                                                                                   |
+| GET    | `/lnurlp/:username/invoice`                          | none                       | Forward LNURL-pay invoice for a wallet-backed username (mounted only when `LNURL_SERVER_URL` and `PUBLIC_BASE_URL` resolve)                                                                                                                                                                                                                            |
+| GET    | `/verify/:paymentHash`                               | none                       | LUD-21 verify forward (mounted only when `LNURL_SERVER_URL` and `PUBLIC_BASE_URL` resolve)                                                                                                                                                                                                                                                             |
 | GET    | `/pay/:username`                                     | none                       | Public pay-link card: display name and satoshi bounds                                                                                                                                                                                                                                                                                                  |
 | POST   | `/pay/:username/invoice`                             | none                       | One BOLT11 invoice for an exact satoshi amount on the linked address                                                                                                                                                                                                                                                                                   |
 | GET    | `/favicon.ico`                                       | none                       | Brand mark (favicon)                                                                                                                                                                                                                                                                                                                                   |
@@ -94,7 +100,7 @@ Public base URLs used in examples:
 | POST   | `/auth/passkey/replace/finish`                       | Bearer                     | 409 refusal that deletes nothing and keeps the session                                                                                                                                                                                                                                                                                                 |
 | POST   | `/auth/passkey/seed/begin`                           | Bearer                     | Creation options for one extra seed passkey; 409 when walletRequired is already true stores a failed renew row and does not change the account; a 200 stores no row; no excludeCredentials.                                                                                                                                                            |
 | POST   | `/auth/passkey/seed/finish`                          | Bearer                     | Verify attestation, insert an additional passkey, set walletRequired true, keep the login passkey and the session. Failure stores a failed renew row. Success stores succeeded, acknowledges open failures, and returns passkeyRenewClosed false.                                                                                                      |
-| GET    | `/me`                                                | `Authorization: Bearer`    | Account (`setup` + factual `missing` + `hasPosted` + `aboutMe` + `aboutMeHasPhoto` + `aboutMessageId` + `notificationLevel` + `amountUnit` + `locale` + `fiat`)                                                                                                                                                                                        |
+| GET    | `/me`                                                | `Authorization: Bearer`    | Account (`setup` + factual `missing` + `hasPosted` + `aboutMe` + `aboutMeHasPhoto` + `aboutMessageId` + `notificationLevel` + `amountUnit` + `locale` + `fiat` + `sparkPubkey` + `sparkWalletVerified`)                                                                                                                                                |
 | POST   | `/me/amount-unit`                                    | Bearer                     | Set owner amount-entry unit (`btc` or `fiat`, default `btc`)                                                                                                                                                                                                                                                                                           |
 | POST   | `/me/locale`                                         | Bearer                     | Set owner UI language (`en`, `de`, `es`, or `fil`). Null until set. `onlyIfUnset` does not overwrite a stored value.                                                                                                                                                                                                                                   |
 | POST   | `/me/fiat`                                           | Bearer                     | Set owner fiat (`CHF`, `EUR`, `USD`, or `PHP`). Null until set. `onlyIfUnset` does not overwrite a stored value.                                                                                                                                                                                                                                       |
@@ -107,7 +113,7 @@ Public base URLs used in examples:
 | GET    | `/view/:viewKey/activity`                            | none                       | Public given/received payload for the account behind the view key                                                                                                                                                                                                                                                                                      |
 | POST   | `/me/setup/skip`                                     | Bearer                     | Skip name or Lightning Address wizard step                                                                                                                                                                                                                                                                                                             |
 | POST   | `/me/name`                                           | Bearer                     | Set/replace display name (profile note when name + LN are both set); auto-assign username when free                                                                                                                                                                                                                                                    |
-| POST   | `/me/username`                                       | Bearer                     | Set unique LUD-16 / NIP-05 local-part (cannot skip)                                                                                                                                                                                                                                                                                                    |
+| POST   | `/me/username`                                       | Bearer                     | Set unique LUD-16 / NIP-05 local-part (cannot skip; fixed once wallet verified; no trailing/double dot)                                                                                                                                                                                                                                                |
 | POST   | `/me/location`                                       | Bearer                     | Set, change, or clear free-text profile location                                                                                                                                                                                                                                                                                                       |
 | PUT    | `/me/about`                                          | Bearer                     | Set/clear About me text and optional photo on the profile note                                                                                                                                                                                                                                                                                         |
 | GET    | `/me/about/photo`                                    | Bearer                     | Owner profile-note photo bytes                                                                                                                                                                                                                                                                                                                         |
@@ -283,6 +289,16 @@ Satoshi. While an unexpired pending `pos_charge` exists, both
 does not mint invoices. Settlement stays on the linked Wallet of Satoshi
 address.
 
+When `LNURL_SERVER_URL` and `PUBLIC_BASE_URL` resolve and the account has
+a verified wallet key (`sparkPubkeyVerifiedAt` is a number), the pay
+request comes from the self-hosted LNURL server instead
+(`GET /.well-known/lnurlp/<username>`, 5 s timeout, fixed `Host`, 120
+requests per minute per client address); it is returned only when
+`walletPayRequest` accepts it with callback
+`<PUBLIC_BASE_URL>/lnurlp/<username>/invoice`; the pending point-of-sale
+rule above applies to it as well; an account without a verified wallet
+key is served as described above.
+
 CORS origin and methods match `/.well-known/nostr.json`
 (`Access-Control-Allow-Origin: *`, methods `GET` / `OPTIONS`).
 The pay request itself is `Cache-Control: no-store`. `public, max-age=60`
@@ -296,6 +312,11 @@ Username invalid (`normalizeUsername` returns null), unknown
 { "error": "Not found" }
 ```
 
+For a verified wallet key, an upstream 404 → **Response** `404` with the
+same body. An account with a verified wallet key is served from the
+LNURL server whether or not a Lightning Address is linked (only when the
+feature is on).
+
 Wallet of Satoshi unreachable (`!resolved.ok`) or the store throws →
 **Response** `502`:
 
@@ -303,9 +324,148 @@ Wallet of Satoshi unreachable (`!resolved.ok`) or the store throws →
 { "error": "Lightning Address could not be resolved" }
 ```
 
+For a verified wallet key, over the limit → **Response** `429`
+`{ "error": "Too many requests" }`.
+
+For a verified wallet key, the LNURL server being unreachable, another
+non-2xx status, unparsable JSON, or a document `walletPayRequest` rejects
+→ **Response** `503`
+`{ "error": "Lightning Address could not be resolved" }`.
+
 Success → **Response** `200` with the provider payRequest JSON. Callback
 and metadata are not rewritten. An unexpired pending till charge rewrites
 only `minSendable` and `maxSendable`, both to that amount in millisats.
+
+### `PUT /me/wallet`
+
+Bearer session. Mounted only when `LNURL_SERVER_URL` and
+`PUBLIC_BASE_URL` resolve; otherwise Hono's default 404.
+`LNURL_SERVER_URL` and `PUBLIC_BASE_URL` resolve when both are http or
+https URLs (`resolveLnurlServerConfig`); otherwise the feature is off.
+Body:
+
+```json
+{ "sparkPubkey": "02aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" }
+```
+
+`sparkPubkey` must normalise to 66 lowercase hex matching
+`/^0[23][0-9a-f]{64}$/`. Claims the key via `claimSparkPubkey` while the
+account is unverified. A second PUT overwrites freely until verification.
+Requires a non-blank username and `walletRequired: true`.
+
+Missing/invalid bearer → **Response** `401` `{ "error": "Unauthorized" }`.
+
+Bad body or key → **Response** `400`
+`{ "error": "Expected a JSON body with a \"sparkPubkey\" of 66 hex characters" }`.
+
+Blank/null username → **Response** `409`
+`{ "error": "missing_requirements", "missing": ["username"] }`.
+
+`walletRequired` not true → **Response** `409`
+`{ "error": "Wallet is not set up" }`.
+
+Already verified (or concurrent verification) → **Response** `409`
+`{ "error": "Wallet is already connected" }`.
+
+Success → **Response** `200` with the owner JSON (includes `sparkPubkey`
+and `sparkWalletVerified`). Logs `account.wallet.claimed` `{ accountId }`
+(never the key).
+
+### `POST /lnurlpay/:pubkey`
+
+Forward wallet name registration to the self-hosted LNURL server.
+Mounted only when `LNURL_SERVER_URL` and `PUBLIC_BASE_URL` resolve. No api
+session; the wallet sends signature data in the body or
+`x-breez-signature` / `x-breez-timestamp` headers. Rate limit
+30/min/client. Body cap 1 MB (1 048 576 bytes); a
+larger body gets 413 `{ "error": "Request body is too large" }` and the
+upstream is not contacted. A request without a validated
+`cf-connecting-ip` is not counted by the per-address limits.
+
+**Gate** (fail → 404 `{ "error": "Not found" }`, upstream not contacted):
+`normalizeSparkPubkey(:pubkey)` not null; body is a JSON object with
+string `username`; `body.username` must consist only of printable ASCII
+characters; the body has no other key that equals `username` after NFKC
+normalisation and lower-casing (for example `Username`);
+`normalizeUsername(username)` not null; the
+account for that name exists with `sparkPubkey === pubkey`; no other
+account is verified on that key.
+
+Upstream `POST /lnurlpay/<pubkey>` with the parsed JSON re-serialised as
+the body (15 s), so the LNURL server receives exactly one `username`
+member — the one the gate checked. Path segments forwarded to the LNURL
+server are only `A-Z a-z 0-9 . _ ~ -` and never `.` or `..`; a refused
+segment is 404 without contacting upstream. On upstream 2xx,
+`markSparkPubkeyVerified` runs before the response
+(`account.wallet.verified` when it stores the timestamp). When that write
+does not store a timestamp, the account is re-read: if it still holds
+this key with `sparkPubkeyVerifiedAt` a number (a repeat of an already
+verified registration), the upstream response is passed through;
+otherwise **Response** `409`
+`{ "error": "Wallet registration could not be confirmed" }` and
+`account.wallet.unconfirmed` `{ accountId }`. Upstream 2xx passed through
+with its status, body and only the `content-type` / `cache-control`
+headers (a 204 stays a 204). Upstream 4xx passes body and status through
+without verifying. Unreachable, store throw, or any other upstream status
+outside 2xx and 4xx (for example 5xx) → **Response** `503`
+`{ "error": "Lightning address service is unavailable" }`. Over limit → 429. Body too large → 413.
+
+On `/lnurlpay/*`, the allow-list CORS (same origins) additionally allows
+the request headers `X-Breez-Signature` and `X-Breez-Timestamp`.
+
+### `POST /lnurlpay/:pubkey/recover`
+
+Forward signed recover. Mounted only when `LNURL_SERVER_URL` and
+`PUBLIC_BASE_URL` resolve. Rate limit 30/min/client. Body cap 1 MB
+(1 048 576 bytes); a larger body gets 413
+`{ "error": "Request body is too large" }` and the upstream is not contacted.
+
+**Gate:** pubkey normalises; `auth.isSparkPubkeyClaimed(pubkey)`. Fail → 404. Upstream `POST /lnurlpay/<pubkey>/recover` (15 s). Status mapping:
+upstream 2xx passed through with its status, body and only the
+`content-type` / `cache-control` headers (a 204 stays a 204); upstream
+404 → 404; unreachable, store throw, or any other upstream status (other
+4xx and 5xx) → 503 as above.
+
+### `GET /lnurlpay/:pubkey/metadata`
+
+Forward signed metadata for received payments. Mounted only when
+`LNURL_SERVER_URL` and `PUBLIC_BASE_URL` resolve. Rate limit
+120/min/client. Raw query string forwarded unchanged. A `HEAD` request is
+answered 404 and the LNURL server is not contacted.
+
+**Gate:** pubkey normalises; `getAccountByVerifiedSparkPubkey(pubkey)`
+exists. Fail → 404. Upstream `GET /lnurlpay/<pubkey>/metadata` + query
+(15 s). Status mapping as recover.
+
+### `GET /lnurlp/:username/invoice`
+
+Forward LNURL-pay invoice for a wallet-backed username. Mounted only when
+`LNURL_SERVER_URL` and `PUBLIC_BASE_URL` resolve. Rate limit 20/min/client.
+CORS `*`
+(`Access-Control-Allow-Origin: *`, methods `GET` / `OPTIONS`). Raw query
+string forwarded unchanged. A `HEAD` request is answered 404 and the LNURL
+server is not contacted.
+
+**Gate:** `normalizeUsername(:username)` not null; account exists and
+`sparkPubkeyVerifiedAt` is a number. Fail → 404. Upstream
+`GET /lnurlp/<username>/invoice` + query (15 s). Status mapping as
+recover. Upstream may return HTTP 200 with
+`{ "status": "ERROR", "reason": … }`. Unreachable → 503 as above.
+
+### `GET /verify/:paymentHash`
+
+LUD-21 payment verification forward. Mounted only when
+`LNURL_SERVER_URL` and `PUBLIC_BASE_URL` resolve. Forwarded for a payment
+hash whose path segment is only
+`A-Z a-z 0-9 . _ ~ -` and is neither `.` nor `..` (for example
+`a%2Fb` decoded to `a/b` is refused). A refused segment → 404
+`{ "error": "Not found" }` without contacting upstream and without an
+`lnurl_server.unreachable` log. No query string. Rate limit
+120/min/client. CORS `*`. A `HEAD` request is answered 404 and the LNURL
+server is not contacted. Upstream `GET /verify/<paymentHash>` (15 s) with
+the segment joined as-is (no percent-encoding). Status mapping as recover
+for reachable outcomes; network / timeout / redirect / body-read failure →
+503 as above.
 
 ### `GET /pos`
 
@@ -333,6 +493,7 @@ One unexpired pending charge at a time. The insert enforces that again
 append), so a second request that already passed the earlier read is still 409. `201` `{ "charge" }` with `expiresAt` five minutes after `now`. While
 pending, `GET /.well-known/lnurlp/:username` keeps the Wallet of Satoshi
 callback and metadata and sets both sendable bounds to that millisat amount.
+For an account served from the LNURL server, the same two bounds are set on that pay request.
 
 **Response** `400`: `{ "error": "Expected a JSON body with an integer \"amountSats\"" }`,
 `{ "error": "Set a username first" }`,
@@ -557,6 +718,8 @@ ID).
     "funding": null,
     "walletRequired": true,
     "walletBackupSeenAt": null,
+    "sparkPubkey": null,
+    "sparkWalletVerified": false,
     "passkeyCredentialId": "<base64url>",
     "passkeyRenewFailed": false,
     "passkeyRenewClosed": false,
@@ -565,7 +728,7 @@ ID).
 }
 ```
 
-The `account` object is the same owner JSON as `GET /me` (includes `viewKey`, `setup`, `missing`, `hasPosted`, `aboutMe`, `aboutMeHasPhoto`, `aboutMessageId`, `notificationLevel`, `amountUnit`, `locale`, `fiat`, `walletRequired`, `walletBackupSeenAt`, `passkeyCredentialId`, `passkeyRenewFailed`, `passkeyRenewClosed`, and `passkeyRenewPrfUnsupported`). `passkeyRenewPrfUnsupported` is true only when the newest unacknowledged failed row has error name `prfUnsupported`. `locale` and `fiat` are null until the member's app stores them. The example above is a nameless new register (`name: null`, `username: null`, `setup: "name"`). When begin stored a name, `name` and `username` are that normalised handle (example `ada`), `nameSkippedAt` stays null, there is no profile note, and `setup` is `lightning-address`. Finish does not take `name` from the body. The recovery phrase is not a setup step and does not change `setup` or `missing`. Existing members start with `walletRequired: false`. Seed finish sets `walletRequired: true` and does not change `walletBackupSeenAt`. Replace refuses and changes nothing. `walletBackupSeenAt` does not decide whether a seed exists. The nameless example remains `walletRequired: true` with `setup: "name"` when the name is unset.
+The `account` object is the same owner JSON as `GET /me` (includes `viewKey`, `setup`, `missing`, `hasPosted`, `aboutMe`, `aboutMeHasPhoto`, `aboutMessageId`, `notificationLevel`, `amountUnit`, `locale`, `fiat`, `walletRequired`, `walletBackupSeenAt`, `sparkPubkey`, `sparkWalletVerified`, `passkeyCredentialId`, `passkeyRenewFailed`, `passkeyRenewClosed`, and `passkeyRenewPrfUnsupported`). `passkeyRenewPrfUnsupported` is true only when the newest unacknowledged failed row has error name `prfUnsupported`. `locale` and `fiat` are null until the member's app stores them. The example above is a nameless new register (`name: null`, `username: null`, `setup: "name"`). When begin stored a name, `name` and `username` are that normalised handle (example `ada`), `nameSkippedAt` stays null, there is no profile note, and `setup` is `lightning-address`. Finish does not take `name` from the body. The recovery phrase is not a setup step and does not change `setup` or `missing`. Existing members start with `walletRequired: false`. Seed finish sets `walletRequired: true` and does not change `walletBackupSeenAt`. Replace refuses and changes nothing. `walletBackupSeenAt` does not decide whether a seed exists. The nameless example remains `walletRequired: true` with `setup: "name"` when the name is unset.
 
 A new register row is stored with `walletRequired: true` and `walletBackupSeenAt: null`. First-passkey claim of a provisioned row sets `walletRequired: true` in the same write as the credential (`createFirstPasskeyCredential`: Postgres CTE locks the account row with `FOR UPDATE`, then inserts and sets `wallet_required`; memory store writes both in one method) and does not clear a seen timestamp. Passkey replace refuses and does not change these columns. Seed finish sets `walletRequired: true` without changing `walletBackupSeenAt`. Operator `POST /debug/accounts` provision leaves `walletRequired` false. The api never stores a mnemonic or PRF output.
 
@@ -708,6 +871,8 @@ An account with `sessionRefused` and a still-valid minted token → **Response**
   "funding": null,
   "walletRequired": false,
   "walletBackupSeenAt": null,
+  "sparkPubkey": null,
+  "sparkWalletVerified": false,
   "passkeyCredentialId": null,
   "passkeyRenewFailed": false,
   "passkeyRenewClosed": false,
@@ -716,9 +881,12 @@ An account with `sessionRefused` and a still-valid minted token → **Response**
 ```
 
 The example above is an existing member (`walletRequired: false`,
-`walletBackupSeenAt: null`). New register/claim owner JSON has
-`walletRequired: true` and `setup: "name"` when the name is unset.
-The recovery phrase is not a setup step and does not change `setup` or `missing`.
+`walletBackupSeenAt: null`, `sparkPubkey: null`, `sparkWalletVerified: false`).
+New register/claim owner JSON has `walletRequired: true` and `setup: "name"`
+when the name is unset. The recovery phrase is not a setup step and does not
+change `setup` or `missing`. `sparkPubkey` / `sparkWalletVerified` are set
+when the member binds a wallet (`PUT /me/wallet`) and when registration is
+accepted; they are owner-only.
 
 About me is the profile-note text when it is a real bio, else null (auto
 name-copy is not a bio, including after a display-name rename when the note
@@ -731,7 +899,7 @@ stays `null`)).
 | `linkingKey`                 | string \| null | Historical LNURL-auth linking key (hex), or `null` for passkey accounts                                                                                                                                                                                                                                                                                  |
 | `role`                       | string         | `basis`, `verified`, `moderator`, `initiator`, or `founder`                                                                                                                                                                                                                                                                                              |
 | `name`                       | string \| null | Display name, or `null` until set                                                                                                                                                                                                                                                                                                                        |
-| `username`                   | string \| null | Unique LUD-16 / NIP-05 local-part (`a-z0-9-_.`), or `null` until set. Cannot skip.                                                                                                                                                                                                                                                                       |
+| `username`                   | string \| null | Unique LUD-16 / NIP-05 local-part (`a-z0-9-_.`, no trailing `.`, no `..`), or `null` until set. Cannot skip. Fixed once the wallet is verified.                                                                                                                                                                                                          |
 | `location`                   | string \| null | Free-text location set by the owner, or `null` when unset. Not unique. Not a setup step.                                                                                                                                                                                                                                                                 |
 | `lightningAddress`           | string \| null | Linked LUD-16 address, or `null`                                                                                                                                                                                                                                                                                                                         |
 | `lightningAddressVerified`   | boolean        | Proof-of-control flag (`true` only after confirm)                                                                                                                                                                                                                                                                                                        |
@@ -752,6 +920,8 @@ stays `null`)).
 | `funding`                    | object \| null | Funding-program grant. `null` for `basis`. Otherwise always an object; no row is `{ status: "none", trialUtcDate: null, admittedAt: null, reviewedByName: null, dailyPayoutStoppedNotice: false }`. `dailyPayoutStoppedNotice` is true only for the six legacy daily accounts while effective status is `none`. Admitted includes live `reviewedByName`. |
 | `walletRequired`             | boolean        | True when a seed-bearing passkey exists (new register/claim, or seed finish). Default false does not mean a seed is present. It does not make `setup` `'wallet'`.                                                                                                                                                                                        |
 | `walletBackupSeenAt`         | number \| null | Epoch ms recorded after an existing member activates a passkey that can show a recovery phrase, so the app can offer Show recovery phrase next time instead of Activate. Not a confirmation. Not a seed check; it does not decide whether a seed exists. Null when that has not been recorded.                                                           |
+| `sparkPubkey`                | string \| null | Identity public key of the member's wallet (66 lower-case hex), or `null` until claimed. Owner-only; omitted from public member cards and view profiles.                                                                                                                                                                                                 |
+| `sparkWalletVerified`        | boolean        | True when `sparkPubkeyVerifiedAt` is a number (LNURL server accepted a registration signed by that key). Owner-only.                                                                                                                                                                                                                                     |
 | `passkeyCredentialId`        | string \| null | Null when `walletRequired` is not true, even if a login passkey exists. When `walletRequired` is true it is the newest credential id (`created_at` desc, `credential_id` desc with `COLLATE "C"`). Owner-only.                                                                                                                                           |
 | `passkeyRenewFailed`         | boolean        | True only when that account has a failed renew row whose `acknowledged_at` is null. Owner-only.                                                                                                                                                                                                                                                          |
 | `passkeyRenewClosed`         | boolean        | True only when `walletRequired` is not true and a failed renew row has non-null `acknowledged_at`. A later seed (`walletRequired` true) is not closed. While this is true the account still has no seed. Owner-only.                                                                                                                                     |
@@ -1371,9 +1541,15 @@ Set the unique LUD-16 / NIP-05 local-part. Body:
 ```
 
 Charset is lowercase `a-z0-9-_.`, 1–32 characters, leading letter or
-digit. Cannot skip (no `POST /me/setup/skip` step for username; skip
-body is only `"name" | "lightning-address"`). Same handle on the same
-account is idempotent **200**.
+digit. A trailing `.` or two dots in a row (`..`) is rejected. Routes that
+look an account up by a normalised username
+(`GET /.well-known/lnurlp/:username`, `GET /pay/:username`, `@` mentions
+and the username lookups in `/messages`) apply the same rule, so a stored
+username of that shape is not matched until it is renamed; existing
+accounts are not migrated. `a.b_c-d` is valid. Cannot skip (no
+`POST /me/setup/skip` step for username; skip body is only
+`"name" | "lightning-address"`). Same handle on the same account is
+idempotent **200**. Once the wallet is verified, a request with a valid session, body and handle is 409, including the same handle; a missing session is still 401 and an invalid body or handle still 400.
 
 Missing/invalid bearer → **Response** `401` `{ "error": "Unauthorized" }`.
 
@@ -1384,10 +1560,16 @@ Body is not JSON with a `username` string → **Response** `400`:
 ```
 
 `normalizeUsername` fails (invalid charset / length / leading character /
-`_` alone) → **Response** `400`:
+`_` alone / trailing `.` / `..`) → **Response** `400`:
 
 ```json
 { "error": "Username must be 1–32 characters of a-z, 0-9, hyphen, underscore, or dot" }
+```
+
+Wallet already verified → **Response** `409`:
+
+```json
+{ "error": "Username is fixed once the wallet is connected" }
 ```
 
 Another account owns the handle, including a unique-index race
@@ -2013,6 +2195,8 @@ Success → **Response** `200`:
       "fiat": null,
       "walletRequired": false,
       "walletBackupSeenAt": null,
+      "sparkPubkey": null,
+      "sparkPubkeyVerifiedAt": null,
       "nostrPubkey": "<64-hex>",
       "nostrNsecCiphertext": "<envelope-hex>",
       "nostrKekId": 1,
@@ -2025,9 +2209,12 @@ Success → **Response** `200`:
 
 The listing uses `serializeDebugAccount` (public fields plus `isPlatform`,
 `sessionRefused`, `viewKey`, `locale`, `fiat`, `walletRequired`,
-`walletBackupSeenAt`, and Nostr debug fields). `locale` and `fiat` are null
-until stored. Member `GET /me` does not include `isPlatform` or
-`sessionRefused`. Public member cards omit `locale` and `fiat`.
+`walletBackupSeenAt`, `sparkPubkey`, `sparkPubkeyVerifiedAt`, and Nostr debug
+fields). `locale` and `fiat` are null until stored. `sparkPubkey` /
+`sparkPubkeyVerifiedAt` are null until claimed / verified. Member `GET /me`
+does not include `isPlatform` or `sessionRefused` (it exposes
+`sparkWalletVerified` instead of the raw timestamp). Public member cards omit
+`locale`, `fiat`, and the wallet key fields.
 
 Accounts are ordered by `createdAt` ascending, then `id`. An empty store
 returns `"accounts": []`.
@@ -2161,7 +2348,8 @@ Unknown account id → **Response** `404`:
 Success → **Response** `200` with the updated account JSON (same
 `serializeDebugAccount` shape as `GET /debug/accounts`, including
 `isPlatform`, `sessionRefused`, `viewKey`, `walletRequired`,
-`walletBackupSeenAt`, and Nostr debug fields). Role changes log `debug.accounts.role_set`
+`walletBackupSeenAt`, `sparkPubkey`, `sparkPubkeyVerifiedAt`, and Nostr
+debug fields). Role changes log `debug.accounts.role_set`
 with the account id and new role. Unlink logs
 `debug.accounts.lightning_address.cleared` with the account id (never the
 token or the previous address). Platform changes log

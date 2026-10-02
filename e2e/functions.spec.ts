@@ -325,6 +325,58 @@ test('Function: normalizeUsername — POST /me/username without bearer is 401', 
   expect(res.status()).toBe(401);
 });
 
+test('Function: normalizeSparkPubkey — PUT /me/wallet is 404 when LNURL server is off', async ({
+  request,
+}) => {
+  const res = await request.put('/me/wallet');
+  expect(res.status()).toBe(404);
+  expect(await res.text()).toBe('404 Not Found');
+});
+
+test('Function: IpRateLimiter — POST /lnurlpay/:pubkey is 404 when LNURL server is off', async ({
+  request,
+}) => {
+  const res = await request.post('/lnurlpay/:pubkey');
+  expect(res.status()).toBe(404);
+  expect(await res.text()).toBe('404 Not Found');
+});
+
+test('Function: resolveLnurlServerConfig — PUT /me/wallet is 404 when LNURL server is off', async ({
+  request,
+}) => {
+  const res = await request.put('/me/wallet');
+  expect(res.status()).toBe(404);
+  expect(await res.text()).toBe('404 Not Found');
+});
+
+test('Function: callLnurlServer — GET /lnurlp/:username/invoice is 404 when LNURL server is off', async ({
+  request,
+}) => {
+  const res = await request.get('/lnurlp/:username/invoice');
+  expect(res.status()).toBe(404);
+  expect(await res.text()).toBe('404 Not Found');
+});
+
+// PUT /me/wallet unmounted (plain-text 404) proves the feature is off; /.well-known/lnurlp/:username
+// is the only route that calls walletPayRequest (only for a verified wallet key when on).
+test('Function: walletPayRequest — GET /.well-known/lnurlp/:username is 404 and PUT /me/wallet is unmounted when LNURL server is off', async ({
+  request,
+}) => {
+  const wallet = await request.put('/me/wallet');
+  expect(wallet.status()).toBe(404);
+  expect(await wallet.text()).toBe('404 Not Found');
+  const wellKnown = await request.get('/.well-known/lnurlp/:username');
+  expect(wellKnown.status()).toBe(404);
+});
+
+test('Function: lnurlServerRoutes — GET /verify/:paymentHash is 404 when LNURL server is off', async ({
+  request,
+}) => {
+  const res = await request.get('/verify/:paymentHash');
+  expect(res.status()).toBe(404);
+  expect(await res.text()).toBe('404 Not Found');
+});
+
 test('Function: usernameFromDisplayName — POST /me/name without bearer is 401', async ({
   request,
 }) => {
