@@ -299,10 +299,9 @@ export async function mergeAccounts(db: MergeDb, input: MergeInput): Promise<Mer
         accountParams,
       );
     } else {
-      await tx.query(
-        "DELETE FROM trust_edge WHERE subject_id = $1 AND kind = 'verify'",
-        accountParams,
-      );
+      await tx.query("DELETE FROM trust_edge WHERE subject_id = $1 AND kind = 'verify'", [
+        input.from,
+      ]);
     }
     await tx.query(
       `DELETE FROM trust_edge AS src

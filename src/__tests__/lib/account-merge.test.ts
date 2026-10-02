@@ -131,6 +131,7 @@ describe('mergeAccounts', () => {
       queries.some(
         (query) =>
           query.text.includes("DELETE FROM trust_edge WHERE subject_id = $1 AND kind = 'verify'") &&
+          query.params.length === 1 &&
           query.params[0] === FROM,
       ),
     ).toBe(true);
