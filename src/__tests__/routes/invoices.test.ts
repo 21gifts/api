@@ -843,7 +843,7 @@ describe('GET /invoices/posted', () => {
       authStore,
       messageStore,
       giftStore: new InMemoryGiftStore([
-        { paidAt: new Date(1), amountSats: 1, recipientWosUser: 'alice', kind: 'welcome' },
+        { paidAt: new Date(5), amountSats: 1, recipientWosUser: 'alice', kind: 'welcome' },
       ]),
     }).request(`/invoices/posted?address=${encodeURIComponent(ADDRESS)}`, auth());
     expect(res.status).toBe(200);
@@ -1763,6 +1763,84 @@ describe('POST /invoices', () => {
     expect(await res.json()).toEqual({ error: 'Welcome gift already paid' });
     expect(fetchImpl).not.toHaveBeenCalled();
   });
+  it('returns 409 for a welcome invoice without messageId after a platform Welcome reply', async () => {
+    const authStore = new InMemoryAuthStore();
+    await authStore.createAccount({
+      id: 'acc-alice',
+      username: 'alice',
+      walletRequired: true,
+      linkingKey: null,
+      role: 'verified',
+      name: 'Ada',
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: 'a'.repeat(64),
+      createdAt: 1,
+      rulesAgreedAt: null,
+      profileMessageId: PROFILE_NOTE_ID,
+    });
+    await verifyWallet(authStore);
+    await authStore.createPasskeyCredential({
+      credentialId: 'cred-alice',
+      publicKey: new Uint8Array([1]),
+      signCount: 0,
+      accountId: 'acc-alice',
+      createdAt: 1,
+    });
+    await authStore.createAccount({
+      id: 'plat',
+      linkingKey: null,
+      role: 'founder',
+      name: '21.gifts',
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: 'b'.repeat(64),
+      createdAt: 2,
+      rulesAgreedAt: null,
+      isPlatform: true,
+    });
+    const fetchImpl = vi.fn<FetchFn>(happyFetch());
+    const messageStore = new InMemoryMessageStore([
+      {
+        id: PROFILE_NOTE_ID,
+        accountId: 'acc-alice',
+        name: 'Ada',
+        text: 'about',
+        createdAt: new Date('2026-08-01T00:00:00.000Z'),
+        hasPhoto: true,
+        ...unsignedNostrDefaults(),
+      },
+      {
+        id: 'welcome-reply',
+        accountId: 'plat',
+        name: '21.gifts',
+        text: 'Welcome',
+        createdAt: new Date('2026-08-02T00:00:00.000Z'),
+        hasPhoto: false,
+        ...unsignedNostrDefaults(),
+        parentId: PROFILE_NOTE_ID,
+      },
+    ]);
+    const res = await createApp({
+      spendApiToken: TOKEN,
+      authStore,
+      messageStore,
+      fetchImpl,
+    }).request(
+      '/invoices',
+      auth({
+        method: 'POST',
+        body: JSON.stringify({
+          address: ADDRESS,
+          amountMsat: 1000,
+          comment: 'Welcome',
+        }),
+      }),
+    );
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({ error: 'Welcome gift already paid' });
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
 
   it("returns 403 when messageId is another account's post", async () => {
     const authStore = new InMemoryAuthStore();
@@ -1890,7 +1968,7 @@ describe('POST /invoices', () => {
     const welcome = JSON.stringify({ address: ADDRESS, amountMsat: 1000, comment: 'Welcome' });
     const refused = await app(
       new InMemoryGiftStore([
-        { paidAt: new Date(1), amountSats: 1, recipientWosUser: 'Alice', kind: 'welcome' },
+        { paidAt: new Date(5), amountSats: 1, recipientWosUser: 'Alice', kind: 'welcome' },
       ]),
     ).request('/invoices', auth({ method: 'POST', body: welcome }));
     expect(refused.status).toBe(409);
@@ -1898,10 +1976,35 @@ describe('POST /invoices', () => {
     expect(fetchImpl).not.toHaveBeenCalled();
     const first = await app(
       new InMemoryGiftStore([
-        { paidAt: new Date(1), amountSats: 1, recipientWosUser: 'alice', kind: 'daily' },
+        { paidAt: new Date(5), amountSats: 1, recipientWosUser: 'alice', kind: 'daily' },
+        { paidAt: new Date(1), amountSats: 1, recipientWosUser: 'alice', kind: 'welcome' },
       ]),
     ).request('/invoices', auth({ method: 'POST', body: welcome }));
     expect(first.status).toBe(200);
+  });
+
+  it('checks the funding grant before the welcome gift', async () => {
+    const authStore = new InMemoryAuthStore();
+    await seedPasskeyAccount(authStore);
+    const res = await spendApp({
+      spendApiToken: TOKEN,
+      authStore,
+      messageStore: livePostStore(),
+      giftStore: new InMemoryGiftStore([
+        { paidAt: new Date(5), amountSats: 1, recipientWosUser: 'alice', kind: 'welcome' },
+      ]),
+      fetchImpl: happyFetch(),
+      fundingStore: new InMemoryFundingStore(),
+      now: () => GATE_MS,
+    }).request(
+      '/invoices',
+      auth({
+        method: 'POST',
+        body: JSON.stringify({ address: ADDRESS, amountMsat: 1000, comment: 'Welcome' }),
+      }),
+    );
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: 'Funding grant required' });
   });
 
   it('returns 200 when messageId is omitted even without a platform account', async () => {
