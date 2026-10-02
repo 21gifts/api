@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import type { MergeDb } from '@/lib/account-merge';
 import { InMemoryAuthStore } from '@/lib/auth/store';
+import { InMemoryGiftStore } from '@/lib/gift-store';
 import type { DiagnosticStore } from '@/lib/diagnostic-log';
 import { setDiagnosticSink } from '@/lib/log';
 import { unsignedNostrDefaults } from '@/lib/message';
@@ -756,6 +757,80 @@ describe('LNURL server wiring', () => {
   function routePairs(app: ReturnType<typeof createApp>): Array<{ method: string; path: string }> {
     return app.routes.map((route) => ({ method: route.method, path: route.path }));
   }
+
+  it('passes the gift store to the welcome ping of verify, About me, and posting', async () => {
+    const member = '11111111-1111-4111-8111-111111111111';
+    const authStore = new InMemoryAuthStore();
+    await createWalletAccount(authStore, member, 'ada');
+    await authStore.updateAccount({ ...(await authStore.getAccount(member))!, role: 'basis' });
+    await authStore.createAccount({
+      id: 'mod',
+      linkingKey: null,
+      role: 'founder',
+      name: 'Mod',
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: 'd'.repeat(64),
+      createdAt: 1,
+      rulesAgreedAt: 1,
+    });
+    await authStore.createSession({ token: 'tok', accountId: member, createdAt: Date.now() });
+    await authStore.createSession({ token: 'mod-tok', accountId: 'mod', createdAt: Date.now() });
+    const messageStore = new InMemoryMessageStore();
+    await messageStore.create(
+      {
+        id: 'photo-post',
+        accountId: member,
+        name: 'ada',
+        text: 'photo',
+        createdAt: new Date(1),
+        hasPhoto: true,
+        hasVideo: false,
+        videoContentType: null,
+        ...unsignedNostrDefaults(),
+      },
+      { contentType: 'image/jpeg', bytes: new Uint8Array([0xff, 0xd8, 0xff, 0xd9]) },
+    );
+    const ping = vi.fn(async (_address: string, _messageId: string, _kind?: string) => undefined);
+    const app = createApp({
+      authStore,
+      messageStore,
+      spendPing: { ping },
+      giftStore: new InMemoryGiftStore([
+        {
+          paidAt: new Date(5),
+          amountSats: 1,
+          recipientWosUser: 'ada',
+          kind: 'welcome',
+          description: '21gifts welcome',
+        },
+      ]),
+      env: FREE_PAYMENTS_ENV,
+    });
+    const verified = await app.request('/trust/verify', {
+      method: 'POST',
+      headers: { authorization: 'Bearer mod-tok', 'content-type': 'application/json' },
+      body: JSON.stringify({ accountId: member, confirmedName: 'ada' }),
+    });
+    expect(verified.status).toBe(200);
+    const photo = {
+      contentType: 'image/jpeg',
+      data: Buffer.from([0xff, 0xd8, 0xff, 0xd9]).toString('base64'),
+    };
+    const about = await app.request('/me/about', {
+      method: 'PUT',
+      headers: { authorization: 'Bearer tok', 'content-type': 'application/json' },
+      body: JSON.stringify({ text: 'I build on Bitcoin', photo }),
+    });
+    expect(about.status).toBe(200);
+    const posted = await app.request('/messages', {
+      method: 'POST',
+      headers: { authorization: 'Bearer tok', 'content-type': 'application/json' },
+      body: JSON.stringify({ text: 'hello', photo }),
+    });
+    expect(posted.status).toBe(200);
+    expect(ping.mock.calls.filter((call) => call[2] === 'welcome')).toEqual([]);
+  });
 
   it('does not mount the new routes when LNURL_SERVER_URL is unset', async () => {
     const app = createApp({ env: {} });

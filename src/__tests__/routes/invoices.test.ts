@@ -1368,6 +1368,61 @@ describe('POST /invoices', () => {
     expect(res.status).toBe(200);
   });
 
+  it('records a welcome gift sent without messageId as welcome and refuses a second one', async () => {
+    mockedDecode.mockReturnValue({ paymentHash: MATCHING_HASH, amountMsat: 1000 });
+    const authStore = new InMemoryAuthStore();
+    await seedPasskeyAndPlatform(authStore);
+    const invoiceStore = new InMemoryInvoiceStore();
+    const recorded: GiftRecord[] = [];
+    const deps = {
+      spendApiToken: TOKEN,
+      authStore,
+      messageStore: livePostStore(),
+      invoiceStore,
+      fetchImpl: happyFetch(),
+      now: () => NOW_MS,
+      giftRecorder: {
+        recordOutbound: async (row: GiftRecord): Promise<void> => {
+          recorded.push(row);
+        },
+      },
+    };
+    const welcome = JSON.stringify({ address: ADDRESS, amountMsat: 1000, comment: 'Welcome' });
+    const issued = await createApp(deps).request(
+      '/invoices',
+      auth({ method: 'POST', body: welcome }),
+    );
+    expect(issued.status).toBe(200);
+    const body = (await issued.json()) as { id: string };
+    expect(invoiceStore.get(body.id)?.comment).toBe('Welcome');
+    expect(invoiceStore.get(body.id)?.messageId).toBeUndefined();
+    const proved = await createApp(deps).request(
+      '/invoices/proof',
+      auth({ method: 'POST', body: JSON.stringify({ id: body.id, preimage: PREIMAGE }) }),
+    );
+    expect(proved.status).toBe(200);
+    expect(recorded).toHaveLength(1);
+    expect(recorded[0]).toMatchObject({
+      recipientWosUser: 'alice',
+      kind: 'welcome',
+      description: '21gifts welcome',
+    });
+    const again = await createApp({
+      ...deps,
+      giftStore: new InMemoryGiftStore(
+        recorded.map((row) => ({
+          paidAt: row.paidAt,
+          amountSats: row.amountSats,
+          recipientWosUser: row.recipientWosUser,
+          kind: row.kind,
+          description: row.description,
+        })),
+      ),
+    }).request('/invoices', auth({ method: 'POST', body: welcome }));
+    expect(again.status).toBe(409);
+    expect(await again.json()).toEqual({ error: 'Welcome gift already paid' });
+  });
+
   it('stores normalized amountUsd and freezes that USD on the proven gift', async () => {
     mockedDecode.mockReturnValue({ paymentHash: MATCHING_HASH, amountMsat: 1000 });
     const authStore = new InMemoryAuthStore();
