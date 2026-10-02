@@ -45,8 +45,9 @@ export interface FundingRouteDeps {
   /** Outbound gifts. Daily rows mark a payout day collected. */
   gifts: GiftStore;
   /**
-   * When omitted or true, new applications are paused and the apply checks
-   * below are not run. Pass false only to exercise the stored apply walk.
+   * When omitted or true, new applications are paused except joey-rosima,
+   * vincent, and jewel-bacolbas. Pass false to run the stored apply walk
+   * for every caller.
    */
   applicationsPaused?: boolean;
 }
