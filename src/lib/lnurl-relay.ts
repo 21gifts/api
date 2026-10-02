@@ -8,7 +8,8 @@
  * address literal, no `localhost` / `.localhost` / `.local` / `.internal`,
  * no port, no credentials, and a name that resolves to public addresses
  * only. The relay waits at most {@link LNURL_RELAY_TIMEOUT_MS} for each host
- * lookup and each fetch; fetches do not follow redirects and read at most
+ * lookup and each fetch, and at most {@link LNURL_RELAY_TOTAL_MS} for the whole
+ * call; fetches do not follow redirects and read at most
  * {@link LNURL_RELAY_BODY_CAP_BYTES}.
  */
 
@@ -21,6 +22,13 @@ import { isPublicIp } from '@/lib/public-ip';
 
 /** Longest wait for one host lookup or one outbound LNURL fetch (headers and body), in milliseconds. */
 export const LNURL_RELAY_TIMEOUT_MS = 5_000;
+
+/**
+ * Longest time one relay call (all lookups and fetches together) may take, in
+ * milliseconds; below the server's 10 s idle timeout so the client always gets
+ * an answer.
+ */
+export const LNURL_RELAY_TOTAL_MS = 8_000;
 
 /** Largest LNURL response body read, in bytes. */
 export const LNURL_RELAY_BODY_CAP_BYTES = 64 * 1024;
@@ -88,8 +96,37 @@ export interface RelayDeps {
   ownHost: string | null;
   /** Lookup and fetch timeout override (tests); defaults to {@link LNURL_RELAY_TIMEOUT_MS}. */
   timeoutMs?: number;
+  /** Whole-call deadline override (tests); defaults to {@link LNURL_RELAY_TOTAL_MS}. */
+  totalMs?: number;
   /** Host name resolver (tests supply a fake); defaults to the system resolver. */
   lookupImpl?: RelayLookup | undefined;
+}
+
+/** Relay collaborators plus the deadline of the current call (epoch ms). */
+type RelayRun = RelayDeps & { deadlineAt: number };
+
+/**
+ * How long the next lookup or fetch may wait: the step limit, cut to the time
+ * left before the call's deadline.
+ *
+ * @param run - Collaborators and deadline.
+ * @returns Milliseconds, at least 0.
+ */
+function stepMs(run: RelayRun): number {
+  return Math.max(
+    0,
+    Math.min(run.timeoutMs ?? LNURL_RELAY_TIMEOUT_MS, run.deadlineAt - Date.now()),
+  );
+}
+
+/**
+ * Start one relay call with its deadline.
+ *
+ * @param deps - Relay collaborators.
+ * @returns The collaborators with `deadlineAt` set.
+ */
+function startRun(deps: RelayDeps): RelayRun {
+  return { ...deps, deadlineAt: Date.now() + (deps.totalMs ?? LNURL_RELAY_TOTAL_MS) };
 }
 
 /** Resolve a host name to its IP addresses. */
@@ -323,10 +360,10 @@ function isRelayAddress(ip: string): boolean {
  * @param deps - Resolver and timeout.
  * @returns `ok`, `private` (some address is not public), or `unresolved`.
  */
-async function hostAddresses(url: URL, deps: RelayDeps): Promise<'ok' | 'private' | 'unresolved'> {
+async function hostAddresses(url: URL, deps: RelayRun): Promise<'ok' | 'private' | 'unresolved'> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   const late = new Promise<null>((resolve) => {
-    timer = setTimeout(() => resolve(null), deps.timeoutMs ?? LNURL_RELAY_TIMEOUT_MS);
+    timer = setTimeout(() => resolve(null), stepMs(deps));
   });
   let addresses: string[] | null;
   try {
@@ -388,7 +425,7 @@ async function readCapped(response: Response, cap: number): Promise<string | nul
  * @param deps - Fetch and timeout.
  * @returns Parsed body, or the HTTP status (`null` for network, size, or JSON failure).
  */
-async function fetchRelayJson(url: URL, deps: RelayDeps): Promise<FetchedJson> {
+async function fetchRelayJson(url: URL, deps: RelayRun): Promise<FetchedJson> {
   const done = new AbortController();
   const result = await fetchAndParse(url, deps, done.signal);
   done.abort();
@@ -403,15 +440,12 @@ async function fetchRelayJson(url: URL, deps: RelayDeps): Promise<FetchedJson> {
  * @param stop - Signal the caller aborts once the result is known.
  * @returns Parsed body, or the HTTP status (`null` for network, size, or JSON failure).
  */
-async function fetchAndParse(url: URL, deps: RelayDeps, stop: AbortSignal): Promise<FetchedJson> {
+async function fetchAndParse(url: URL, deps: RelayRun, stop: AbortSignal): Promise<FetchedJson> {
   try {
     const response = await deps.fetchImpl(url.toString(), {
       redirect: 'error',
       headers: { accept: 'application/json' },
-      signal: AbortSignal.any([
-        stop,
-        AbortSignal.timeout(deps.timeoutMs ?? LNURL_RELAY_TIMEOUT_MS),
-      ]),
+      signal: AbortSignal.any([stop, AbortSignal.timeout(stepMs(deps))]),
     });
     if (response.status < 200 || response.status >= 300) {
       return { ok: false, status: response.status };
@@ -467,7 +501,7 @@ function plainDescription(metadata: string): string {
  */
 async function loadPayRequest(
   rawTarget: string,
-  deps: RelayDeps,
+  deps: RelayRun,
 ): Promise<LoadedPayRequest | RelayFailure> {
   const parsed = parseRelayTarget(rawTarget, deps.ownHost);
   if (parsed === null) {
@@ -549,13 +583,13 @@ async function loadPayRequest(
 /**
  * Fetch and validate the LNURL pay request of an outside target.
  *
- * @param args - Raw target plus fetch, own host, optional timeout, and optional resolver.
+ * @param args - Raw target plus fetch, own host, optional timeouts, and optional resolver.
  * @returns `{ ok: true, payRequest }` or a {@link RelayFailure}.
  */
 export async function resolveRelayPayRequest(
   args: RelayDeps & { target: string },
 ): Promise<{ ok: true; payRequest: RelayPayRequest } | RelayFailure> {
-  const loaded = await loadPayRequest(args.target, args);
+  const loaded = await loadPayRequest(args.target, startRun(args));
   if (!loaded.ok) {
     return loaded;
   }
@@ -568,7 +602,7 @@ export async function resolveRelayPayRequest(
  * The invoice must decode to exactly `amountMsat` and carry a description
  * hash equal to SHA-256 of the pay request's metadata.
  *
- * @param args - Raw target, amount, optional comment, plus fetch, own host, optional timeout, and optional resolver.
+ * @param args - Raw target, amount, optional comment, plus fetch, own host, optional timeouts, and optional resolver.
  * @returns `{ ok: true, pr }` or a {@link RelayFailure}.
  */
 export async function requestRelayInvoice(
@@ -586,7 +620,8 @@ export async function requestRelayInvoice(
   ) {
     return fail(400, COMMENT_ERROR, 'comment');
   }
-  const loaded = await loadPayRequest(args.target, args);
+  const run = startRun(args);
+  const loaded = await loadPayRequest(args.target, run);
   if (!loaded.ok) {
     return loaded;
   }
@@ -609,7 +644,7 @@ export async function requestRelayInvoice(
   const invoiceUrl = new URL(callback);
   invoiceUrl.search =
     invoiceUrl.search === '' ? `?${extra.join('&')}` : `${invoiceUrl.search}&${extra.join('&')}`;
-  const fetched = await fetchRelayJson(invoiceUrl, args);
+  const fetched = await fetchRelayJson(invoiceUrl, run);
   if (!fetched.ok) {
     return fail(
       502,

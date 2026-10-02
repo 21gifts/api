@@ -9,6 +9,7 @@ import {
   LNURL_RELAY_COMMENT_MAX_LENGTH,
   LNURL_RELAY_TARGET_MAX_LENGTH,
   LNURL_RELAY_TIMEOUT_MS,
+  LNURL_RELAY_TOTAL_MS,
   LNURL_RELAY_WINDOW_MS,
   LnurlRelayRateLimiter,
   NOT_FOUND_ERROR,
@@ -478,6 +479,24 @@ describe('resolveRelayPayRequest', () => {
     });
     expect(result).toMatchObject({ ok: false, status: 502, reason: 'fetch' });
     expect(LNURL_RELAY_TIMEOUT_MS).toBe(5_000);
+  });
+
+  it('cuts every step to the time left before the whole-call deadline', async () => {
+    const fetchImpl: FetchFn = (_input, init) =>
+      new Promise((_resolve, reject) => {
+        init?.signal?.addEventListener('abort', () => reject(new Error('aborted')));
+      });
+    const started = Date.now();
+    const result = await resolveRelayPayRequest({
+      target: 'bob@example.com',
+      fetchImpl,
+      ...DEPS,
+      timeoutMs: 60_000,
+      totalMs: 20,
+    });
+    expect(result).toMatchObject({ ok: false, status: 502, reason: 'fetch' });
+    expect(Date.now() - started).toBeLessThan(5_000);
+    expect(LNURL_RELAY_TOTAL_MS).toBe(8_000);
   });
 
   it.each([
