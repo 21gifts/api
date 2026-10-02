@@ -5244,3 +5244,7 @@ exist on the account model; `GET /debug/accounts` and
 - Internationalization of api response text and push payloads (they stay English). A signed-in account may store `locale` and `fiat`; that is not translated copy.
 - Platform custody of **receiver** funds (receiving stays LUD-16 only)
 - Arbitrary LNDHub URLs (the external spend worker uses lightning.space only)
+
+### Inbox and moderator unread acknowledgement
+
+Opening the inbox list acknowledges its loaded conversations; opening the moderator chat acknowledges its loaded messages. Badges count unread incoming messages rather than conversations. `POST /conversations/:id/read` optionally accepts `{ throughMessageId }`, verified against the accessible thread, to avoid acknowledging newer arrivals. Read timestamps are monotonic in memory and PostgreSQL. Existing empty-body clients retain server-time acknowledgement; authorization and Sunday restrictions remain unchanged.

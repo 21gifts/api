@@ -507,7 +507,7 @@ export interface ConversationStore {
 async function listedUnreadCount(
   store: Pick<
     ConversationStore,
-    'listVisible' | 'hasInboundMessage' | 'hasUnread' | 'getModeratorGroup'
+    'listVisible' | 'hasInboundMessage' | 'countUnread' | 'getModeratorGroup'
   >,
   accountId: string,
   staff: boolean,
@@ -538,9 +538,7 @@ async function listedUnreadCount(
     if (!inbound && !ownContactTicket && thread.kind !== 'moderator_group') {
       continue;
     }
-    if (await store.hasUnread(thread.id, accountId, staff, platformId)) {
-      count += 1;
-    }
+    count += await store.countUnread(thread.id, accountId, staff, platformId);
   }
   return count;
 }
@@ -980,7 +978,11 @@ export class InMemoryConversationStore implements ConversationStore {
   }
 
   markRead(conversationId: string, accountId: string, readAt: Date): Promise<void> {
-    this.#lastRead.set(lastReadKey(accountId, conversationId), new Date(readAt.getTime()));
+    const key = lastReadKey(accountId, conversationId);
+    this.#lastRead.set(
+      key,
+      new Date(Math.max(readAt.getTime(), this.#lastRead.get(key)?.getTime() ?? -Infinity)),
+    );
     return Promise.resolve();
   }
 
@@ -1607,7 +1609,7 @@ export class PostgresConversationStore implements ConversationStore {
       `INSERT INTO conversation_read (account_id, conversation_id, last_read_at)
        VALUES ($1, $2, $3)
        ON CONFLICT (account_id, conversation_id)
-       DO UPDATE SET last_read_at = EXCLUDED.last_read_at`,
+       DO UPDATE SET last_read_at = GREATEST(conversation_read.last_read_at, EXCLUDED.last_read_at)`,
       [accountId, conversationId, readAt],
     );
   }

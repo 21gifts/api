@@ -967,6 +967,10 @@ describe('InMemoryConversationStore', () => {
     await store.appendMessage(message({ conversationId: group.id, senderAccountId: 'mod-b' }));
     expect(await store.unreadCount('mod-a', true, 'plat')).toBe(0);
     expect(await store.unreadCount('mod-a', true, 'plat', true)).toBe(1);
+    await store.appendMessage(
+      message({ id: 'second-unread', conversationId: group.id, senderAccountId: 'mod-b' }),
+    );
+    expect(await store.unreadCount('mod-a', true, 'plat', true)).toBe(2);
   });
 
   it('unreadCount inspects outbound-only moderator_group without counting it unread', async () => {
@@ -1342,7 +1346,7 @@ describe('PostgresConversationStore', () => {
     expect(await new PostgresConversationStore(sql).countUnread('c1', 'a', false, null)).toBe(0);
   });
 
-  it('unreadCount uses listVisible then inbound/unread EXISTS', async () => {
+  it('unreadCount uses listVisible then inbound EXISTS and message COUNT', async () => {
     const sql = new MockSql();
     let calls = 0;
     sql.queryImpl = (sqlText: string) => {
@@ -1362,9 +1366,9 @@ describe('PostgresConversationStore', () => {
           },
         ];
       }
-      return [{ exists: true }];
+      return sqlText.includes('COUNT') ? [{ count: 4 }] : [{ exists: true }];
     };
-    expect(await new PostgresConversationStore(sql).unreadCount('a', false, null)).toBe(1);
+    expect(await new PostgresConversationStore(sql).unreadCount('a', false, null)).toBe(4);
     expect(calls).toBe(3);
   });
 
@@ -1398,6 +1402,9 @@ describe('PostgresConversationStore', () => {
     expect(sql.executes[0]?.text).toMatch(/INSERT INTO conversation_read/);
     expect(sql.executes[0]?.text).toMatch(/ON CONFLICT/);
     expect(sql.executes[0]?.text).toMatch(/DO UPDATE/);
+    expect(sql.executes[0]?.text).toContain(
+      'GREATEST(conversation_read.last_read_at, EXCLUDED.last_read_at)',
+    );
     expect(sql.executes[0]?.params).toEqual(['acc', 'c1', NOW]);
   });
 

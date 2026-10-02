@@ -1063,7 +1063,7 @@ describe('GET /conversations', () => {
     expect(body.conversations).toHaveLength(1);
     expect(body.conversations[0]?.unread).toBe(true);
     expect(body.conversations[0]?.unreadMessageCount).toBe(2);
-    expect(body.unreadCount).toBe(1);
+    expect(body.unreadCount).toBe(2);
   });
 
   it('returns 503 when countUnread throws', async () => {
@@ -4991,4 +4991,75 @@ describe('GET /conversations/:id?sinceMessageId=', () => {
     ]);
     expect(olderBody).not.toHaveProperty('nextCursor');
   });
+});
+
+it('acknowledges only loaded messages and never regresses the read boundary', async () => {
+  const auth = await seeded();
+  await withOther(auth);
+  await withPlatform(auth);
+  const store = new InMemoryConversationStore();
+  const thread = await store.openMemberMember('acc', 'other', new Date(now()));
+  const first = '00000000-0000-4000-8000-000000000001';
+  const second = '00000000-0000-4000-8000-000000000002';
+  for (const [id, offset] of [
+    [first, -2000],
+    [second, -1000],
+  ] as const) {
+    await store.appendMessage({
+      id,
+      conversationId: thread.id,
+      text: 'Hi',
+      createdAt: new Date(now() + offset),
+      senderAccountId: 'other',
+      senderPubkey: null,
+      name: 'Bob',
+      sats: 0,
+      eventId: null,
+      nostrPublishState: 'pending',
+      nostrEvent: null,
+      claimedUntil: null,
+    });
+  }
+  const app = mount(auth, store);
+  const read = (throughMessageId: string) =>
+    app.request(`/conversations/${thread.id}/read`, {
+      method: 'POST',
+      headers: { ...AUTH, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ throughMessageId }),
+    });
+  expect((await read(first)).status).toBe(200);
+  expect(await store.countUnread(thread.id, 'acc', false, null)).toBe(1);
+  expect((await read(second)).status).toBe(200);
+  expect(await store.countUnread(thread.id, 'acc', false, null)).toBe(0);
+  expect((await read(first)).status).toBe(200);
+  expect(await store.countUnread(thread.id, 'acc', false, null)).toBe(0);
+  const otherThread = await store.openMemberMember('acc', 'plat', new Date(now()));
+  expect(
+    (
+      await app.request(`/conversations/${otherThread.id}/read`, {
+        method: 'POST',
+        headers: AUTH,
+        body: JSON.stringify({ throughMessageId: first }),
+      })
+    ).status,
+  ).toBe(400);
+  for (const body of [
+    '{',
+    'null',
+    '[]',
+    '1',
+    '{}',
+    '{"throughMessageId":"bad"}',
+    '{"throughMessageId":"00000000-0000-4000-8000-999999999999"}',
+  ]) {
+    expect(
+      (
+        await app.request(`/conversations/${thread.id}/read`, {
+          method: 'POST',
+          headers: AUTH,
+          body,
+        })
+      ).status,
+    ).toBe(400);
+  }
 });
