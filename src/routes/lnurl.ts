@@ -73,6 +73,17 @@ async function jsonObject(c: Context): Promise<Record<string, unknown> | null> {
 }
 
 /**
+ * A 400 failure for a request body that fails validation before any lookup.
+ *
+ * @param error - Response body text.
+ * @param reason - Short reason for the log.
+ * @returns The failure to answer and log.
+ */
+function invalid(error: string, reason: string): RelayFailure {
+  return { ok: false, status: 400, error, reason };
+}
+
+/**
  * Build the `/lnurl` route group.
  *
  * Both routes need a member Bearer session (401 otherwise) and share one
@@ -113,7 +124,7 @@ export function lnurlRoutes(deps: LnurlRouteDeps): Hono {
       const body = await jsonObject(c);
       const target = body?.['target'];
       if (typeof target !== 'string') {
-        return c.json({ error: NOT_PAYABLE_ERROR }, 400);
+        return failed(c, 'lnurl.pay_request.failed', invalid(NOT_PAYABLE_ERROR, 'target'));
       }
       const result = await resolveRelayPayRequest({
         target,
@@ -137,13 +148,13 @@ export function lnurlRoutes(deps: LnurlRouteDeps): Hono {
       const amountMsat = body?.['amountMsat'];
       const comment = body?.['comment'];
       if (typeof target !== 'string') {
-        return c.json({ error: NOT_PAYABLE_ERROR }, 400);
+        return failed(c, 'lnurl.invoice.failed', invalid(NOT_PAYABLE_ERROR, 'target'));
       }
       if (typeof amountMsat !== 'number') {
-        return c.json({ error: AMOUNT_ERROR }, 400);
+        return failed(c, 'lnurl.invoice.failed', invalid(AMOUNT_ERROR, 'amount'));
       }
       if (comment !== undefined && comment !== null && typeof comment !== 'string') {
-        return c.json({ error: COMMENT_ERROR }, 400);
+        return failed(c, 'lnurl.invoice.failed', invalid(COMMENT_ERROR, 'comment'));
       }
       const result = await requestRelayInvoice({
         target,
