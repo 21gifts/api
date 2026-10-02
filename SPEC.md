@@ -610,7 +610,11 @@ The pay-request URL (`https://<domain>/.well-known/lnurlp/<user>`, or the
 decoded LNURL) must use `https`, have no port and no credentials, and its host
 must be a DNS name with at least two labels: no address literal, no
 `localhost`, no `.local`, `.internal`, or `.localhost` name, no trailing dot.
-A target on the host of `PUBLIC_BASE_URL` is refused (the app pays those
+Every address the host resolves to must be a public unicast address (IPv4
+outside `0/8`, `10/8`, `100.64/10`, `127/8`, `169.254/16`, `172.16/12`,
+`192.168/16`, `198.18/15`, and `224/3`, IPv4-mapped IPv6 checked as IPv4, other
+IPv6 in `2000::/3`). A Lightning Address whose name is only dots is refused. A
+target on the host of `PUBLIC_BASE_URL` is refused (the app pays those
 itself). The fetch does not follow redirects, stops after 5 seconds, and reads
 at most 64 KB.
 
@@ -638,11 +642,12 @@ No session → **Response** `401` `{ "error": "Unauthorized" }`. More than 30
 requests to `/lnurl/pay-request` and `/lnurl/invoice` together within one
 minute for the same member → **Response** `429`
 `{ "error": "Too many requests" }` with `Retry-After: 60`. Missing or malformed
-target, a target that fails the URL checks, a target on this app's host, or a
-response that is not a valid pay request → **Response** `400`
+target, a target that fails the URL or address checks, a target on this app's
+host, or a response that is not a valid pay request (including a callback host
+that resolves to a non-public address) → **Response** `400`
 `{ "error": "Not a payable address" }`. HTTP 404 or 410, or an LNURL
 `{ "status": "ERROR" }` body → **Response** `404`
-`{ "error": "Address not found" }`. Network failure, timeout, redirect, any
+`{ "error": "Address not found" }`. A host that does not resolve, network failure, timeout, redirect, any
 other non-2xx status, a body over 64 KB, or a body that is not a JSON object →
 **Response** `502` `{ "error": "Address could not be reached" }`.
 

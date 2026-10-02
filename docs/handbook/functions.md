@@ -3039,21 +3039,21 @@
 ## Function: lnurlRoutes
 
 - **Purpose:** Hono sub-app for `POST /pay-request` and `POST /invoice`, mounted at `/lnurl`. Both need a Bearer session and share one `LnurlRelayRateLimiter` instance per app. The own host is the hostname of `PUBLIC_BASE_URL` (none when unset or not a URL).
-- **Inputs:** `{ auth: AuthStore, fetchImpl: FetchFn, now: () => number, env }`. `createApp` passes its store, the shared fetch, its clock, and its env.
+- **Inputs:** `{ auth: AuthStore, fetchImpl: FetchFn, now: () => number, env, lookupImpl? }`. `createApp` passes its store, the shared fetch, its clock, and its env; `lookupImpl` is omitted there so the system resolver is used.
 - **Returns / side effects:** Hono app. Logs `lnurl.pay_request.ok` (domain), `lnurl.pay_request.failed`, `lnurl.invoice.ok` (amount), and `lnurl.invoice.failed` (reason and status). Never logs the target, its query string, the comment, or the invoice.
 - **Used by:** `createApp`.
 
 ## Function: resolveRelayPayRequest
 
-- **Purpose:** Normalises a Lightning Address or bech32 LNURL, checks the URL as input (`https`, a DNS name with two or more labels, no address literal, no `localhost` / `.local` / `.internal` / `.localhost`, no port, no credentials, not the own host), fetches it without redirects within 5 s and 64 KB, and validates the LNURL pay request.
-- **Inputs:** `{ target, fetchImpl, ownHost, timeoutMs? }`. `timeoutMs` defaults to 5000.
+- **Purpose:** Normalises a Lightning Address or bech32 LNURL, checks the URL as input (`https`, a DNS name with two or more labels, no address literal, no `localhost` / `.local` / `.internal` / `.localhost`, no port, no credentials, not the own host, a name that is not only dots), requires every resolved address of the host (and of the callback host) to be public unicast, fetches it without redirects within 5 s and 64 KB, and validates the LNURL pay request.
+- **Inputs:** `{ target, fetchImpl, ownHost, timeoutMs?, lookupImpl? }`. `timeoutMs` defaults to 5000; `lookupImpl` defaults to the system resolver (`dns.lookup` with `all`).
 - **Returns / side effects:** `{ ok: true, payRequest }` with `target`, `minSendableMsat`, `maxSendableMsat`, `commentAllowed`, `description`, `domain`, or `{ ok: false, status: 400 | 404 | 502, error, reason }`. One outbound GET at most.
 - **Used by:** `POST /lnurl/pay-request`.
 
 ## Function: requestRelayInvoice
 
 - **Purpose:** Resolves the target like `resolveRelayPayRequest`, checks the amount (safe integer within the bounds) and the comment (at most `commentAllowed` characters), calls the callback with `amount` and an optional `comment`, and checks that the BOLT11 amount equals the request and its description hash equals SHA-256 of the metadata.
-- **Inputs:** `{ target, amountMsat, comment?, fetchImpl, ownHost, timeoutMs? }`.
+- **Inputs:** `{ target, amountMsat, comment?, fetchImpl, ownHost, timeoutMs?, lookupImpl? }`.
 - **Returns / side effects:** `{ ok: true, pr }` or `{ ok: false, status, error, reason }` (`Amount out of range`, `Comment too long`, or the pay-request errors). Two outbound GETs at most.
 - **Used by:** `POST /lnurl/invoice`.
 
