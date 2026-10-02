@@ -14,6 +14,7 @@ const SPEND_URL = 'https://spend.example';
 const ROSTER = {
   comment: 'thanks',
   paymentsEnabled: true,
+  defaultAmountUsd: 3,
   recipients: [{ address: 'ada@example.com', amountUsd: 2 }],
 };
 
@@ -117,8 +118,27 @@ describe('mapDailyRosterResponse', () => {
       }),
     ).toEqual({ ok: true, roster: ROSTER });
     expect(
+      mapDailyRosterResponse(200, {
+        comment: '',
+        paymentsEnabled: false,
+        defaultAmountUsd: 3,
+        recipients: [],
+      }),
+    ).toEqual({
+      ok: true,
+      roster: { comment: '', paymentsEnabled: false, defaultAmountUsd: 3, recipients: [] },
+    });
+    expect(
       mapDailyRosterResponse(200, { comment: '', paymentsEnabled: false, recipients: [] }),
-    ).toEqual({ ok: true, roster: { comment: '', paymentsEnabled: false, recipients: [] } });
+    ).toEqual({ ok: false, status: 502, error: DAILY_ROSTER_UNAVAILABLE });
+    expect(
+      mapDailyRosterResponse(200, {
+        comment: '',
+        paymentsEnabled: false,
+        defaultAmountUsd: Number.NaN,
+        recipients: [],
+      }),
+    ).toEqual({ ok: false, status: 502, error: DAILY_ROSTER_UNAVAILABLE });
     expect(mapDailyRosterResponse(200, { comment: 'x', paymentsEnabled: true })).toEqual({
       ok: false,
       status: 502,

@@ -918,7 +918,7 @@
 
 ## Function: mapDailyRosterResponse
 
-- **Purpose:** Map a spend HTTP status and parsed JSON body to a daily roster or a route failure. A spend 400 whose `error` is exactly `Invalid comment`, `Invalid payments switch`, `Invalid address or amount`, `Address already listed`, or `Unknown address` stays 400 with that string. Any other spend 400 is 400 `Invalid daily roster change`. Spend 401, 403, 500, any other status, or a 200 body that is not a `DailyRoster` is 502 `Daily roster is unavailable`.
+- **Purpose:** Map a spend HTTP status and parsed JSON body to a daily roster or a route failure. A spend 400 whose `error` is exactly `Invalid comment`, `Invalid payments switch`, `Invalid address or amount`, `Address already listed`, or `Unknown address` stays 400 with that string. Any other spend 400 is 400 `Invalid daily roster change`. A 200 body must include finite `defaultAmountUsd` (the USD spend pays an unlisted admitted or trial grant). It is forwarded unchanged and is not stored in the roster file. A missing or non-finite value is not a `DailyRoster`. Spend 401, 403, 500, any other status, or a 200 body that is not a `DailyRoster` is 502 `Daily roster is unavailable`.
 - **Inputs:** `status` (HTTP status) and `body` (parsed JSON, or `undefined` when the body was empty or not JSON).
 - **Returns / side effects:** `{ ok: true, roster }` or `{ ok: false, status, error }`. No I/O.
 - **Used by:** `HttpDailyRoster`.
