@@ -184,6 +184,9 @@ export function lnurlServerRoutes(deps: LnurlServerRouteDeps): Hono {
         if (typeof usernameRaw !== 'string') {
           return c.json(NOT_FOUND, 404);
         }
+        if (!/^[\x20-\x7e]*$/.test(usernameRaw)) {
+          return c.json(NOT_FOUND, 404);
+        }
         const name = normalizeUsername(usernameRaw);
         if (name === null) {
           return c.json(NOT_FOUND, 404);
