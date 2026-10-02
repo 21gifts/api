@@ -87,9 +87,15 @@ describe('uuidV7', () => {
 });
 
 describe('issueSparkInvoice', () => {
-  const zap = { pr: 'lnbc21n1test', paymentHash: HASH, amountSats: 21, zapRequestJson: '{"a":1}' };
+  const zap = {
+    pr: 'lnbc21n1test',
+    paymentHash: HASH,
+    prAmountMsat: 21_000,
+    amountSats: 21,
+    zapRequestJson: '{"a":1}',
+  };
 
-  it('returns null when off, external, or without a payment hash', async () => {
+  it('returns null when off, external, without a payment hash, or for another amount', async () => {
     const store = new InMemorySparkInvoiceStore();
     const now = (): number => 1;
     expect(await issueSparkInvoice({ now }, wallet, zap)).toBeNull();
@@ -102,6 +108,18 @@ describe('issueSparkInvoice', () => {
     ).toBeNull();
     expect(
       await issueSparkInvoice({ now, sparkInvoices: store }, wallet, { ...zap, paymentHash: null }),
+    ).toBeNull();
+    expect(
+      await issueSparkInvoice({ now, sparkInvoices: store }, wallet, {
+        ...zap,
+        prAmountMsat: 1_000_000,
+      }),
+    ).toBeNull();
+    expect(
+      await issueSparkInvoice({ now, sparkInvoices: store }, wallet, {
+        ...zap,
+        prAmountMsat: null,
+      }),
     ).toBeNull();
     expect(await store.listOpen(new Date(0))).toEqual([]);
   });

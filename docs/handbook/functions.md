@@ -1952,8 +1952,8 @@
 ## Function: issueSparkInvoice
 
 - **Purpose:** Issue the Spark invoice that stands next to a member-to-member zap invoice: same amount, addressed to the recipient's verified wallet key, memo `zap:<payment hash of pr>`. Stores it with the zap invoice and the exact zap request string so the worker can later build the receipt. One payment hash has one Spark invoice; asking again returns the stored string and, while it is open, restarts its watch window.
-- **Inputs:** `{ sparkInvoices?, now, randomBytes? }`, the recipient's `ReceivingAddress`, and `{ pr, paymentHash, amountSats, zapRequestJson }`.
-- **Returns / side effects:** `spark1…` string, or `null` when the feature is off (`sparkInvoices` omitted), the recipient is not wallet-backed, or the payment hash is unknown. A store failure logs `spark.invoice.issue_failed` and resolves `null`, so the route still returns `pr`.
+- **Inputs:** `{ sparkInvoices?, now, randomBytes? }`, the recipient's `ReceivingAddress`, and `{ pr, paymentHash, prAmountMsat, amountSats, zapRequestJson }` (`paymentHash` and `prAmountMsat` decoded from `pr`, `null` when it does not decode).
+- **Returns / side effects:** `spark1…` string, or `null` when the feature is off (`sparkInvoices` omitted), the recipient is not wallet-backed, the payment hash is unknown, or `pr` is not for exactly `amountSats` (the receipt credits the amount of `pr`). A store failure logs `spark.invoice.issue_failed` and resolves `null`, so the route still returns `pr`.
 - **Used by:** `POST /messages/:id/invoice`, `POST /conversations/:id/invoice`, `POST /messages/:id/repayment`.
 
 ## Function: migrateSparkInvoiceSchema

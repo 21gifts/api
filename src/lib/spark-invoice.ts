@@ -84,6 +84,8 @@ export interface SparkZap {
   pr: string;
   /** Payment hash of `pr` (64 lower-case hex), or `null` when `pr` did not decode. */
   paymentHash: string | null;
+  /** Amount of `pr` in millisats, or `null` when `pr` did not decode. */
+  prAmountMsat: number | null;
   /** Amount in whole sats. */
   amountSats: number;
   /** Exact zap request string sent to the LNURL server as `nostr=`. */
@@ -104,8 +106,9 @@ export interface IssueSparkInvoiceDeps {
  * Issue (or return the already issued) Spark invoice for a zap invoice.
  *
  * Returns `null` without writing when the feature is off (`sparkInvoices`
- * omitted), the receiver is not wallet-backed, or the payment hash is
- * unknown. One payment hash has at most one
+ * omitted), the receiver is not wallet-backed, the payment hash is unknown, or
+ * the amount of `pr` is not `amountSats` (the receipt credits the amount of
+ * `pr`, so the Spark invoice must charge the same). One payment hash has at most one
  * Spark invoice; a second call returns the stored string. A store failure logs
  * `spark.invoice.issue_failed` and resolves `null` so the caller still returns `pr`.
  *
@@ -121,7 +124,12 @@ export async function issueSparkInvoice(
 ): Promise<string | null> {
   const store = deps.sparkInvoices;
   const paymentHash = zap.paymentHash;
-  if (store === undefined || receiving.kind !== 'wallet' || paymentHash === null) {
+  if (
+    store === undefined ||
+    receiving.kind !== 'wallet' ||
+    paymentHash === null ||
+    zap.prAmountMsat !== zap.amountSats * 1000
+  ) {
     return null;
   }
   const randomBytes =
