@@ -505,6 +505,39 @@ describe('requestRelayInvoice', () => {
     expect(inspectMock).toHaveBeenCalledWith(PR);
   });
 
+  it('appends amount and comment to the callback query as received', async () => {
+    const { fetchImpl, calls } = payRequestFetch({
+      ...PAY_REQUEST,
+      callback: 'https://pay.example.com/cb?t=ab/c%3D&flag&k=a+b',
+    });
+    const result = await requestRelayInvoice({
+      target: 'bob@example.com',
+      amountMsat: 21_000,
+      comment: 'a b+c',
+      fetchImpl,
+      ...DEPS,
+    });
+    expect(result.ok).toBe(true);
+    expect(calls[1]?.url).toBe(
+      'https://pay.example.com/cb?t=ab/c%3D&flag&k=a+b&amount=21000&comment=a%20b%2Bc',
+    );
+  });
+
+  it('starts the query when the callback has none', async () => {
+    const { fetchImpl, calls } = payRequestFetch({
+      ...PAY_REQUEST,
+      callback: 'https://pay.example.com/cb',
+    });
+    const result = await requestRelayInvoice({
+      target: 'bob@example.com',
+      amountMsat: 21_000,
+      fetchImpl,
+      ...DEPS,
+    });
+    expect(result.ok).toBe(true);
+    expect(calls[1]?.url).toBe('https://pay.example.com/cb?amount=21000');
+  });
+
   it('omits an empty comment', async () => {
     const { fetchImpl, calls } = payRequestFetch();
     const result = await requestRelayInvoice({

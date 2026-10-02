@@ -7,9 +7,9 @@
  * checked as input: `https`, a DNS name with at least two labels, no
  * address literal, no `localhost` / `.localhost` / `.local` / `.internal`,
  * no port, no credentials, and a name that resolves to public addresses
- * only. Fetches do not follow redirects, stop after
- * {@link LNURL_RELAY_TIMEOUT_MS}, and read at most
- * {@link LNURL_RELAY_BODY_CAP_BYTES}.
+ * only. Each host lookup and each fetch stops after
+ * {@link LNURL_RELAY_TIMEOUT_MS}; fetches do not follow redirects and read at
+ * most {@link LNURL_RELAY_BODY_CAP_BYTES}.
  */
 
 import { createHash } from 'node:crypto';
@@ -19,7 +19,7 @@ import { normalizeLightningAddress } from '@/lib/lightning-address';
 import type { FetchFn } from '@/lib/lnurlp';
 import { isPublicIp } from '@/lib/public-ip';
 
-/** Abort one outbound LNURL fetch (headers and body) after this many milliseconds. */
+/** Limit for one host lookup or one outbound LNURL fetch (headers and body), in milliseconds. */
 export const LNURL_RELAY_TIMEOUT_MS = 5_000;
 
 /** Largest LNURL response body read, in bytes. */
@@ -77,7 +77,7 @@ export interface RelayDeps {
   fetchImpl: FetchFn;
   /** Host of `PUBLIC_BASE_URL` (lowercase), or `null` when unset. */
   ownHost: string | null;
-  /** Fetch timeout override (tests); defaults to {@link LNURL_RELAY_TIMEOUT_MS}. */
+  /** Lookup and fetch timeout override (tests); defaults to {@link LNURL_RELAY_TIMEOUT_MS}. */
   timeoutMs?: number;
   /** Host name resolver (tests supply a fake); defaults to the system resolver. */
   lookupImpl?: RelayLookup | undefined;
@@ -553,11 +553,14 @@ export async function requestRelayInvoice(
   if ([...comment].length > payRequest.commentAllowed) {
     return fail(400, COMMENT_ERROR, 'comment');
   }
-  const invoiceUrl = new URL(callback);
-  invoiceUrl.searchParams.set('amount', String(args.amountMsat));
+  // LUD-06: append to the callback's query as received, without re-encoding it.
+  const extra = [`amount=${args.amountMsat}`];
   if (comment !== '') {
-    invoiceUrl.searchParams.set('comment', comment);
+    extra.push(`comment=${encodeURIComponent(comment)}`);
   }
+  const invoiceUrl = new URL(callback);
+  invoiceUrl.search =
+    invoiceUrl.search === '' ? `?${extra.join('&')}` : `${invoiceUrl.search}&${extra.join('&')}`;
   const fetched = await fetchRelayJson(invoiceUrl, args);
   if (!fetched.ok) {
     return fail(
