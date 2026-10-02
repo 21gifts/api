@@ -2,8 +2,18 @@ import { describe, expect, it } from 'vitest';
 import { Hono } from 'hono';
 import { InMemoryAuthStore, type Account } from '@/lib/auth/store';
 import { InMemoryHabitStore } from '@/lib/habit-store';
-import { habitWeek } from '@/lib/habit-tracker';
+import { habitWeek, type Habit, type HabitResult, type HabitComment } from '@/lib/habit-tracker';
 import { habitTrackerRoutes } from '@/routes/habit-tracker';
+
+async function payload(
+  response: Promise<Response>,
+): Promise<{ habits: Habit[]; results: HabitResult[]; comments: HabitComment[] }> {
+  return (await (await response).json()) as {
+    habits: Habit[];
+    results: HabitResult[];
+    comments: HabitComment[];
+  };
+}
 
 async function setup() {
   let clock = Date.parse('2026-12-28T00:00:00+08:00');
@@ -108,12 +118,12 @@ describe('habit permissions and history', () => {
     await s.post('f', { action: 'retire', id: read!.id });
     await s.post('f', { action: 'retire', id: read!.id });
     s.setClock('2027-01-04T00:00:00+08:00');
-    const next = await (await s.get()).json();
+    const next = await payload(s.get());
     expect(next.habits.map((row: { id: string }) => row.id)).toEqual([walk!.id]);
     expect(next.results).toEqual([]);
-    const past = await (await s.get('2026-12-28')).json();
+    const past = await payload(s.get('2026-12-28'));
     expect(past.habits).toHaveLength(2);
-    expect(past.results[0].status).toBe('achieved');
+    expect(past.results[0]!.status).toBe('achieved');
     expect(
       (await s.post('f', { action: 'rate', id: read!.id, week: '2027-01-04', status: 'partial' }))
         .status,
@@ -123,7 +133,7 @@ describe('habit permissions and history', () => {
         .status,
     ).toBe(200);
     s.setClock('2027-01-25T00:00:00+08:00');
-    expect((await (await s.get('2027-01-11')).json()).habits).toHaveLength(1);
+    expect((await payload(s.get('2027-01-11'))).habits).toHaveLength(1);
     expect(
       (await s.post('f', { action: 'rate', id: walk!.id, week: '2026-12-28', status: 'achieved' }))
         .status,
@@ -135,7 +145,7 @@ describe('habit permissions and history', () => {
       expect(
         (await s.post(token, { action: 'comment', week: '2026-12-28', text: 'Keep going' })).status,
       ).toBe(201);
-    expect((await (await s.get()).json()).comments).toHaveLength(5);
+    expect((await payload(s.get())).comments).toHaveLength(5);
     expect(
       (await s.post('unknown', { action: 'comment', week: '2026-12-28', text: 'Spam' })).status,
     ).toBe(401);
@@ -149,8 +159,8 @@ describe('habit permissions and history', () => {
       400,
     );
     s.setClock('2027-01-04T00:00:00+08:00');
-    expect((await (await s.get()).json()).comments).toHaveLength(0);
-    expect((await (await s.get('2026-12-28')).json()).comments).toHaveLength(5);
+    expect((await payload(s.get())).comments).toHaveLength(0);
+    expect((await payload(s.get('2026-12-28'))).comments).toHaveLength(5);
   });
 });
 
