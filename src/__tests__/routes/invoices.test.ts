@@ -1422,6 +1422,64 @@ describe('POST /invoices', () => {
     expect(await again.json()).toEqual({ error: 'Welcome gift already paid' });
   });
 
+  it('pays a moderator payout with comment Welcome after the welcome gift, but not an ignored group id', async () => {
+    mockedDecode.mockReturnValue({ paymentHash: MATCHING_HASH, amountMsat: 1000 });
+    const authStore = new InMemoryAuthStore();
+    await seedPasskeyAndPlatform(authStore);
+    const conversationStore = new InMemoryConversationStore();
+    await seedGroupTrigger(conversationStore);
+    const invoiceStore = new InMemoryInvoiceStore();
+    const recorded: GiftRecord[] = [];
+    const app = createApp({
+      spendApiToken: TOKEN,
+      authStore,
+      messageStore: livePostStore(),
+      invoiceStore,
+      conversationStore,
+      fetchImpl: happyFetch(),
+      now: () => NOW_MS,
+      giftStore: new InMemoryGiftStore([
+        {
+          paidAt: new Date(5),
+          amountSats: 1,
+          recipientWosUser: 'alice',
+          kind: 'welcome',
+          description: '21gifts welcome',
+        },
+      ]),
+      giftRecorder: {
+        recordOutbound: async (row) => {
+          recorded.push(row);
+        },
+      },
+    });
+    const issue = async (groupMessageId: string): Promise<Response> =>
+      app.request(
+        '/invoices',
+        auth({
+          method: 'POST',
+          body: JSON.stringify({
+            address: ADDRESS,
+            amountMsat: 1000,
+            comment: 'Welcome',
+            groupMessageId,
+          }),
+        }),
+      );
+    const moderator = await issue(GROUP_MSG_ID);
+    expect(moderator.status).toBe(200);
+    const body = (await moderator.json()) as { id: string };
+    const proved = await app.request(
+      '/invoices/proof',
+      auth({ method: 'POST', body: JSON.stringify({ id: body.id, preimage: PREIMAGE }) }),
+    );
+    expect(proved.status).toBe(200);
+    expect(recorded[0]).toMatchObject({ kind: 'moderator', description: '21gifts moderator' });
+    const ignored = await issue('99999999-9999-4999-8999-999999999999');
+    expect(ignored.status).toBe(409);
+    expect(await ignored.json()).toEqual({ error: 'Welcome gift already paid' });
+  });
+
   it('stores normalized amountUsd and freezes that USD on the proven gift', async () => {
     mockedDecode.mockReturnValue({ paymentHash: MATCHING_HASH, amountMsat: 1000 });
     const authStore = new InMemoryAuthStore();
@@ -4061,48 +4119,68 @@ describe('spend lookups by wallet address', () => {
     expect(allInternal(seen)).toBe(true);
   });
 
-  it('accepts a wallet address whose public host carries a port', async () => {
+  it('accepts a wallet address whose public host carries a port or is an IP address', async () => {
     const authStore = new InMemoryAuthStore();
     await seedPasskeyAccount(authStore);
-    const invoiceStore = new InMemoryInvoiceStore();
-    const seen: string[] = [];
-    const fetchImpl: FetchFn = async (input) => {
-      const url = String(input);
-      seen.push(url);
-      if (url === 'http://lnurl.test/.well-known/lnurlp/alice') {
-        return Response.json({
-          tag: 'payRequest',
-          callback: 'https://example.test:8443/lnurlp/alice/invoice',
-          metadata: '[["text/plain","x"]]',
-          minSendable: 1000,
-          maxSendable: 1_000_000_000,
-        });
-      }
-      if (url.startsWith('http://lnurl.test/lnurlp/alice/invoice?')) {
-        return Response.json({ pr: PR });
-      }
-      return new Response('unexpected', { status: 500 });
-    };
-    const app = createApp({
-      spendApiToken: TOKEN,
-      authStore,
-      invoiceStore,
-      messageStore: livePostStore(),
-      fetchImpl,
-      now: () => NOW_MS,
-      env: { ...process.env, ...LNURL_ENV, PUBLIC_BASE_URL: 'https://example.test:8443' },
-    });
-    const result = await lookups(app, 'Alice@Example.Test:8443');
-    expect(result.passkey).toEqual({ hasPasskey: true });
-    expect(result.eligible).toEqual({ eligible: true, status: 'admitted' });
-    expect(result.posted).toMatchObject({ hasPosted: true, messageId: 'post-alice' });
-    expect(result.post.status).toBe(200);
-    const body = (await result.post.json()) as { id: string };
-    expect(invoiceStore.get(body.id)?.address).toBe('alice@example.test:8443');
-    expect(seen.every((url) => url.startsWith('http://lnurl.test/'))).toBe(true);
+    /** App whose `PUBLIC_BASE_URL` is `https://<host>`, with a fake internal LNURL server. */
+    function hostApp(host: string): {
+      app: ReturnType<typeof createAppRaw>;
+      invoiceStore: InMemoryInvoiceStore;
+      seen: string[];
+    } {
+      const invoiceStore = new InMemoryInvoiceStore();
+      const seen: string[] = [];
+      const fetchImpl: FetchFn = async (input) => {
+        const url = String(input);
+        seen.push(url);
+        if (url === 'http://lnurl.test/.well-known/lnurlp/alice') {
+          return Response.json({
+            tag: 'payRequest',
+            callback: `https://${host}/lnurlp/alice/invoice`,
+            metadata: '[["text/plain","x"]]',
+            minSendable: 1000,
+            maxSendable: 1_000_000_000,
+          });
+        }
+        if (url.startsWith('http://lnurl.test/lnurlp/alice/invoice?')) {
+          return Response.json({ pr: PR });
+        }
+        return new Response('unexpected', { status: 500 });
+      };
+      const app = createApp({
+        spendApiToken: TOKEN,
+        authStore,
+        invoiceStore,
+        messageStore: livePostStore(),
+        fetchImpl,
+        now: () => NOW_MS,
+        env: { ...process.env, ...LNURL_ENV, PUBLIC_BASE_URL: `https://${host}` },
+      });
+      return { app, invoiceStore, seen };
+    }
+    for (const host of ['example.test:8443', '127.0.0.1', '[::1]:3000']) {
+      const { app, invoiceStore, seen } = hostApp(host);
+      const result = await lookups(app, `Alice@${host.toUpperCase()}`);
+      expect(result.passkey).toEqual({ hasPasskey: true });
+      expect(result.eligible).toEqual({ eligible: true, status: 'admitted' });
+      expect(result.posted).toMatchObject({ hasPosted: true, messageId: 'post-alice' });
+      expect(result.post.status).toBe(200);
+      const body = (await result.post.json()) as { id: string };
+      expect(invoiceStore.get(body.id)?.address).toBe(`alice@${host}`);
+      expect(seen.length).toBeGreaterThan(0);
+      expect(seen.every((url) => url.startsWith('http://lnurl.test/'))).toBe(true);
+      const bare = await app.request(
+        `/invoices/passkey?address=${encodeURIComponent(host)}`,
+        auth(),
+      );
+      expect(bare.status).toBe(400);
+    }
+    const { app } = hostApp('example.test:8443');
     for (const address of [
       'alice@other.test:8443',
       '@example.test:8443',
+      'alice@@example.test:8443',
+      'al ice@example.test:8443',
       `${'a'.repeat(250)}@example.test:8443`,
     ]) {
       const refused = await app.request(
