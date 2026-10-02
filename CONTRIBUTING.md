@@ -489,12 +489,12 @@ LNURL-pay;
 `InMemorySparkInvoiceStore`, `encodeQuerySparkInvoicesRequest`, `parseQuerySparkInvoicesResponse`,
 `querySparkInvoices`, `zapReceiptSecretKey`, `buildZapReceipt`, `runSparkInvoiceTick`,
 `startSparkInvoiceWorker`, and `zapReceiptIngest`, which are reached only when free in-app payments
-are on (`LNURL_SERVER_URL` and `PUBLIC_BASE_URL` resolve, `LNURL_ZAP_NSEC_HEX` is 64 hex characters, and `SPARK_OPERATOR_URL` is unset, blank, or an `http:` / `https:` URL; see `resolveFreePaymentsConfig`); `ingestZapReceipt`, which needs `DATABASE_URL` and `NOSTR_NSEC_KEK` (relay
+are on (`LNURL_SERVER_URL` and `PUBLIC_BASE_URL` resolve, `LNURL_ZAP_NSEC_HEX` is 64 hex characters, and `SPARK_OPERATOR_URL` is unset, blank, or an `http:` / `https:` URL; see `resolveFreePaymentsConfig`); `resolveFreePaymentsConfig`, which runs only once at boot and resolves to off on the default boot; `ingestZapReceipt`, which needs `DATABASE_URL` and `NOSTR_NSEC_KEK` (relay
 ingest) or free in-app payments (Spark worker)),
-that test still exists and asserts the default-boot outcome that proves it is
-not invoked (verification `503`, spend invoices unconfigured `503`, an
-unmounted route answering `404` with `LNURL_SERVER_URL` blank, or a
-healthy process with `DATABASE_URL` blank). Playwright `webServer.env` pins
+that test still exists and asserts the default-boot outcome (verification
+`503`, spend invoices unconfigured `503`, an unmounted route answering `404`
+with `LNURL_SERVER_URL` blank, or a healthy process with `DATABASE_URL` blank
+or for a resolver that runs only at boot). Playwright `webServer.env` pins
 `DATABASE_URL`, `SPEND_API_TOKEN`, `NOSTR_NSEC_KEK`, `NOSTR_PUBLISH`,
 `NOSTR_PUBLISH_PUBLIC`, `NOSTR_RELAY_URL`, `NOSTR_RELAY_SPACE`,
 `NOSTR_RELAY_PUBLIC`, `VAPID_PUBLIC_KEY`, `VAPID_PRIVATE_KEY`,
