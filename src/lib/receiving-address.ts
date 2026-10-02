@@ -16,6 +16,19 @@ import { LNURL_SERVER_TIMEOUT_MS, callLnurlServer } from '@/lib/lnurl-server';
 import type { FetchFn } from '@/lib/lnurlp';
 import { normalizeUsername } from '@/lib/username';
 
+/**
+ * Machine-readable `code` on a 400 when the caller must set up and verify the
+ * in-app wallet first. Clients decide by this field, not by status or text.
+ */
+export const WALLET_REQUIRED = 'wallet_required';
+
+/**
+ * Machine-readable `code` on a 400 when the recipient cannot receive: no
+ * member account, no verified wallet, or its wallet refuses the zap. Clients
+ * decide by this field, not by status or text.
+ */
+export const CANNOT_RECEIVE = 'cannot_receive';
+
 /** Where an account receives: its verified in-app wallet. */
 export interface ReceivingAddress {
   /** `<username>@<host of PUBLIC_BASE_URL>`. */

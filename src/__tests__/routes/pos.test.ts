@@ -140,7 +140,10 @@ describe('POS routes', () => {
       body: '{"amountSats":21}',
     });
     expect(addr.status).toBe(400);
-    expect(await addr.json()).toEqual({ error: 'Set up your wallet first' });
+    expect(await addr.json()).toEqual({
+      error: 'Set up your wallet first',
+      code: 'wallet_required',
+    });
   });
 
   it('creates one open charge, pins LNURL bounds, and cancels it', async () => {
@@ -369,7 +372,10 @@ describe('POS for a wallet-backed member', () => {
       body: JSON.stringify({ amountSats: 21 }),
     });
     expect(res.status).toBe(400);
-    expect(await res.json()).toEqual({ error: 'Set up your wallet first' });
+    expect(await res.json()).toEqual({
+      error: 'Set up your wallet first',
+      code: 'wallet_required',
+    });
     expect(seen).toEqual([]);
   });
 });

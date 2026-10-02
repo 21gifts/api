@@ -401,7 +401,10 @@ describe('credit repayment', () => {
       headers: { authorization: 'Bearer acc-noaddr' },
     });
     expect(noAddress.status).toBe(400);
-    expect(await noAddress.json()).toEqual({ error: 'A giver has no Lightning address' });
+    expect(await noAddress.json()).toEqual({
+      error: 'A giver has no Lightning address',
+      code: 'cannot_receive',
+    });
     const missingKey = await readyCredit({ authorId: 'acc-nokey', giverKey: false });
     const noKey = await missingKey.app.request(`/messages/${CREDIT}/repayment`, {
       method: 'POST',
