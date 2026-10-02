@@ -14,21 +14,23 @@ CREATE INDEX IF NOT EXISTS push_subscription_account_id_idx ON push_subscription
 CREATE TABLE IF NOT EXISTS push_outbox (
   id uuid PRIMARY KEY,
   account_id uuid NOT NULL REFERENCES account (id),
-  type text NOT NULL CHECK (type IN ('forum', 'zap', 'conversation')),
+  type text NOT NULL CHECK (type IN ('forum', 'zap', 'conversation', 'dismiss')),
   message_id uuid,
   payload text NOT NULL,
   status text NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'sent', 'failed')),
   attempts integer NOT NULL DEFAULT 0,
   claimed_until timestamptz,
   created_at timestamptz NOT NULL,
-  delivered_endpoints text NOT NULL DEFAULT '[]'
+  delivered_endpoints text NOT NULL DEFAULT '[]',
+  skip_endpoints text NOT NULL DEFAULT '[]'
 );
 CREATE INDEX IF NOT EXISTS push_outbox_pending_idx ON push_outbox (created_at, id) WHERE status = 'pending';
 ALTER TABLE push_outbox ADD COLUMN IF NOT EXISTS delivered_endpoints text NOT NULL DEFAULT '[]';
+ALTER TABLE push_outbox ADD COLUMN IF NOT EXISTS skip_endpoints text NOT NULL DEFAULT '[]';
 DO $push_outbox_type$
 BEGIN
   ALTER TABLE push_outbox DROP CONSTRAINT IF EXISTS push_outbox_type_check;
   ALTER TABLE push_outbox ADD CONSTRAINT push_outbox_type_check
-    CHECK (type IN ('forum', 'zap', 'conversation'));
+    CHECK (type IN ('forum', 'zap', 'conversation', 'dismiss'));
 END
 $push_outbox_type$;

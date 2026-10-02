@@ -27,8 +27,12 @@ import {
   buildModeratorAppointedPushPayload,
   buildReplyPushPayload,
   buildZapPushPayload,
+  type DismissPushPayload,
 } from '@/lib/push';
 import type { PushOutboxRow, PushStore } from '@/lib/push-store';
+
+/** Max collapse tags per dismiss outbox row. */
+const DISMISS_TAG_CHUNK = 30;
 
 /** Cap for `GET /notifications` after the owner's level filter. */
 export const NOTIFICATION_LIST_LIMIT = 200;
@@ -398,6 +402,7 @@ export async function fanoutToBellSubscribers(args: {
           claimedUntil: null,
           createdAt,
           deliveredEndpoints: [],
+          skipEndpoints: [],
         };
         await args.pushStore.enqueue(row);
       } catch {
@@ -855,6 +860,7 @@ export async function notifyModeratorAppointed(args: {
         claimedUntil: null,
         createdAt,
         deliveredEndpoints: [],
+        skipEndpoints: [],
       };
       await args.pushStore.enqueue(row);
     } catch {
@@ -964,6 +970,7 @@ export async function notifyModeratorProposed(args: {
           claimedUntil: null,
           createdAt,
           deliveredEndpoints: [],
+          skipEndpoints: [],
         };
         await args.pushStore.enqueue(row);
       } catch {
@@ -974,5 +981,72 @@ export async function notifyModeratorProposed(args: {
   }
   if (failed) {
     throw new Error('push.fanout.failed');
+  }
+}
+
+/** First-seen unique strings, original order. */
+function uniqueFirstSeen(values: readonly string[]): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const value of values) {
+    if (seen.has(value)) {
+      continue;
+    }
+    seen.add(value);
+    out.push(value);
+  }
+  return out;
+}
+
+/**
+ * Enqueue dismiss Web Push outbox rows for the given tags.
+ *
+ * Empty `tags` is a no-op. Tags are uniqued first-seen, then chunked 30
+ * per outbox row. A throwing `enqueue` logs `push.dismiss.failed` and
+ * continues with later chunks. Does not throw.
+ *
+ * @param args - Push store, account, tags, clock, badge unread, optional skip endpoint.
+ * @returns Resolves after every chunk is attempted.
+ */
+export async function enqueueNotificationDismiss(args: {
+  pushStore: PushStore;
+  accountId: string;
+  tags: readonly string[];
+  nowMs: number;
+  unreadCount: number;
+  skipEndpoint?: string;
+}): Promise<void> {
+  const unique = uniqueFirstSeen(args.tags);
+  if (unique.length === 0) {
+    return;
+  }
+  const skipEndpoints =
+    args.skipEndpoint !== undefined && args.skipEndpoint !== '' ? [args.skipEndpoint] : [];
+  const createdAt = new Date(args.nowMs);
+  for (let i = 0; i < unique.length; i += DISMISS_TAG_CHUNK) {
+    const chunk = unique.slice(i, i + DISMISS_TAG_CHUNK);
+    const payload: DismissPushPayload = {
+      type: 'dismiss',
+      tags: chunk,
+      unreadCount: args.unreadCount,
+    };
+    const row: PushOutboxRow = {
+      id: crypto.randomUUID(),
+      accountId: args.accountId,
+      type: 'dismiss',
+      messageId: null,
+      payload: JSON.stringify(payload),
+      status: 'pending',
+      attempts: 0,
+      claimedUntil: null,
+      createdAt,
+      deliveredEndpoints: [],
+      skipEndpoints: skipEndpoints.slice(),
+    };
+    try {
+      await args.pushStore.enqueue(row);
+    } catch {
+      logEvent('push.dismiss.failed');
+    }
   }
 }

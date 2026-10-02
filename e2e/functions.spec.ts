@@ -2137,6 +2137,21 @@ test('Function: notificationRoutes — GET /notifications without bearer is 401'
   expect((await request.post('/notifications/read-all')).status()).toBe(401);
   expect((await request.post('/notifications/:id/read')).status()).toBe(401);
 });
+test('Function: markReadByMessage — POST /notifications/read-by-message without bearer is 401', async ({
+  request,
+}) => {
+  expect((await request.post('/notifications/read-by-message')).status()).toBe(401);
+});
+test('Function: enqueueNotificationDismiss — POST /notifications/read-by-message without bearer is 401', async ({
+  request,
+}) => {
+  expect((await request.post('/notifications/read-by-message')).status()).toBe(401);
+});
+test('Function: pushTagForNotification — POST /notifications/read-by-message without bearer is 401', async ({
+  request,
+}) => {
+  expect((await request.post('/notifications/read-by-message')).status()).toBe(401);
+});
 test('Function: serializeConversationMessage — GET /conversations/:id without bearer is 401', async ({
   request,
 }) => {

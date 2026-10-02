@@ -383,7 +383,8 @@ describe('loadDebugTables', () => {
       attempts: 0,
       claimedUntil: new Date('2026-09-01T00:30:00.000Z'),
       createdAt: new Date('2026-09-01T00:00:00.000Z'),
-      deliveredEndpoints: [],
+      deliveredEndpoints: ['https://push.example/sent'],
+      skipEndpoints: ['https://push.example/skip'],
     });
     await push.enqueue({
       id: 'outbox-2',
@@ -396,6 +397,7 @@ describe('loadDebugTables', () => {
       claimedUntil: null,
       createdAt: new Date('2026-09-01T00:00:00.000Z'),
       deliveredEndpoints: [],
+      skipEndpoints: [],
     });
     await push.enqueue({
       id: 'outbox-3',
@@ -408,6 +410,7 @@ describe('loadDebugTables', () => {
       claimedUntil: null,
       createdAt: new Date('2026-09-01T04:00:00.000Z'),
       deliveredEndpoints: [],
+      skipEndpoints: [],
     });
     const trust = new InMemoryTrustStore();
     await trust.insertEdge({
@@ -584,6 +587,15 @@ describe('loadDebugTables', () => {
     expect(tables.trust_edge[0]).toEqual(expect.objectContaining({ id: 'edge-0' }));
     expect(tables.push_subscription).toHaveLength(3);
     expect(tables.push_outbox).toHaveLength(3);
+    expect(tables.push_outbox).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: 'outbox-1',
+          deliveredEndpoints: ['https://push.example/sent'],
+          skipEndpoints: ['https://push.example/skip'],
+        }),
+      ]),
+    );
     expect(tables.trust_edge).toHaveLength(3);
     expect(tables.gift[0]).toEqual(
       expect.objectContaining({ direction: 'outbound', amountSats: 1000 }),

@@ -156,7 +156,7 @@
 
 ## Endpoint: GET /debug/db
 
-- **Purpose:** Operator read of every ordinary table in schema `public`. With no `table`, returns `{ tables: [{ name, rowCount }] }` sorted by name. With `table`, returns one page of 200 rows (`columns`, `rows`) and `nextCursor` when another page exists. Follow `nextCursor` until it is absent to read the whole table. `bytea` values, including `nostr_nsec_ciphertext`, are octet lengths (or null), never the bytes. Text columns named `token`, `challenge`, `nonce`, `view_key`, `endpoint`, `p256dh`, `auth`, or `delivered_endpoints` are the string `"redacted"` when not null. A primary key that is one of those secret columns is paged by `ctid`, so `nextCursor` is not the secret. There is no `limit` that stops early.
+- **Purpose:** Operator read of every ordinary table in schema `public`. With no `table`, returns `{ tables: [{ name, rowCount }] }` sorted by name. With `table`, returns one page of 200 rows (`columns`, `rows`) and `nextCursor` when another page exists. Follow `nextCursor` until it is absent to read the whole table. `bytea` values, including `nostr_nsec_ciphertext`, are octet lengths (or null), never the bytes. Text columns named `token`, `challenge`, `nonce`, `view_key`, `endpoint`, `p256dh`, `auth`, `delivered_endpoints`, or `skip_endpoints` are the string `"redacted"` when not null. A primary key that is one of those secret columns is paged by `ctid`, so `nextCursor` is not the secret. There is no `limit` that stops early.
 - **Errors:** 503 `{ error: 'Debug is not configured' }` when `DEBUG_TOKEN` is unset or blank; 401 `{ error: 'Unauthorized' }` when the Bearer token does not match; 503 `{ error: 'Database is not configured' }` when this process has no SQL client; 404 `{ error: 'Not found' }` when `table` is not an ordinary public table; 400 `{ error: 'Invalid cursor' }` when `cursor` is present without `table` or does not match the table key; 503 `{ error: 'Database is unavailable' }` if the store throws (`debug.db.failed`).
 - **Used by:** Operators reading the whole database (`gifts-debug db`).
 - **Auth:** `Authorization: Bearer` with `DEBUG_TOKEN`. Not an end-user session.
@@ -688,15 +688,22 @@
 
 ## Endpoint: POST /notifications/read-all
 
-- **Purpose:** Bearer required. 200 `{ ok: true }`. Marks every unread notification for the session account read except `moderator_proposal` (mark-read does not stamp them; rows drop on confirm, on reject when pending is then empty, or on appoint).
+- **Purpose:** Bearer required. 200 `{ ok: true, tags }`. Marks every unread notification for the session account read except `moderator_proposal` (those rows stay until confirm, until reject when pending is then empty, or until appoint). `tags` are the collapse tags of rows this call stamped, including `moderator_appointed`. A missing or invalid body is not 404. An optional `endpoint` is skipped on the dismiss push only when it is one of this account's subscriptions, and it is never echoed. Enqueue failure is still 200. Empty `tags` enqueues nothing.
 - **Errors:** 401 Unauthorized; 503 Notifications are unavailable (`notifications.read_all.failed`).
 - **Used by:** App mark-all-read control.
 - **Auth:** Bearer session.
 
+## Endpoint: POST /notifications/read-by-message
+
+- **Purpose:** Bearer required. Body `{ messageId }` must be a JSON object with a UUID. Stamps unread `forum_post`, `forum_reply`, `forum_mention`, and `zap` for this account whose `parentId` or `replyId` equals that id. Does not stamp `moderator_appointed`, `moderator_proposal`, another account, or an already-read row. 200 `{ ok: true, tags }` lists only rows this call stamped (zap tag is `zap:<replyId>`). A second call returns `tags: []`. Optional `endpoint` is skipped on the dismiss push only when it belongs to this account and is never echoed.
+- **Errors:** 401 Unauthorized; 404 `{ error: 'Not found' }` for a missing, non-object, or non-UUID body (not 400); 503 `{ error: 'Notifications are unavailable' }` (`notifications.read_message.failed`). Dismiss enqueue failure is still 200.
+- **Used by:** App when a signed-in member expands a note, asks for a translation, or opens the message page.
+- **Auth:** Bearer session.
+
 ## Endpoint: POST /notifications/:id/read
 
-- **Purpose:** Bearer required. UUID `:id`. 200 `PublicNotification` with `readAt` set. A `moderator_proposal` row is 200 with `readAt` still `null` (mark-read does not dismiss it).
-- **Errors:** 401 Unauthorized; 404 Not found (unknown/other/non-uuid); 503 Notifications are unavailable (`notifications.read.failed`).
+- **Purpose:** Bearer required. UUID `:id`. 200 `PublicNotification` with `readAt` set. The body stays that notification, not `{ ok, tags }`. Dismiss happens only when this call changes `readAt` from null, which enqueues that row's dismiss tag for the account's other devices. An already-read row does not enqueue, even when its `readAt` equals the route clock. A `moderator_proposal` does not enqueue and is 200 with `readAt` still `null`.
+- **Errors:** 401 Unauthorized; 404 Not found (unknown/other/non-uuid); 503 Notifications are unavailable (`notifications.read.failed`). Dismiss enqueue failure is still 200.
 - **Used by:** App mark-one-read control.
 - **Auth:** Bearer session.
 

@@ -1,7 +1,7 @@
 -- Append-only row-change log. AFTER INSERT/UPDATE/DELETE triggers on every
 -- public table (except db_change) write redacted before/after JSON. Secret
 -- columns token, challenge, nostr_nsec_ciphertext, nonce, view_key, endpoint,
--- p256dh, auth, and delivered_endpoints are stored as SHA-256 hex; other columns including name stay
+-- p256dh, auth, delivered_endpoints, and skip_endpoints are stored as SHA-256 hex; other columns including name stay
 -- plaintext. On UPDATE, every bytea column (found via pg_attribute on TG_RELID)
 -- whose value is unchanged and was not hashed by db_change_redact is stored in
 -- both before and after as an object with unchanged true, sha256 as the hex
@@ -39,7 +39,7 @@ BEGIN
   IF j IS NULL THEN
     RETURN NULL;
   END IF;
-  FOREACH k IN ARRAY ARRAY['token', 'challenge', 'nostr_nsec_ciphertext', 'nonce', 'view_key', 'endpoint', 'p256dh', 'auth', 'delivered_endpoints']
+  FOREACH k IN ARRAY ARRAY['token', 'challenge', 'nostr_nsec_ciphertext', 'nonce', 'view_key', 'endpoint', 'p256dh', 'auth', 'delivered_endpoints', 'skip_endpoints']
   LOOP
     IF outj ? k AND jsonb_typeof(outj -> k) IS DISTINCT FROM 'null' THEN
       outj := jsonb_set(
