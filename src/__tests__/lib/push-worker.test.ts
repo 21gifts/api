@@ -417,6 +417,35 @@ describe('runPushWorkerTick', () => {
     expect(sender.calls.filter((call) => call.payload === forumPayload)).toHaveLength(1);
   });
 
+  it('marks failed when the same tag is dismissed for another account', async () => {
+    const store = new InMemoryPushStore();
+    await store.upsertSubscription(SUB_B);
+    await enqueueForumPushes(store, 'author', 'm', 1);
+    const forumRow = (await store.listAllOutbox(10))[0];
+    const tag = JSON.parse(forumRow?.payload ?? '{}').tag;
+    await store.enqueue({
+      id: 'dismiss-other-account',
+      accountId: 'author',
+      type: 'dismiss',
+      messageId: null,
+      payload: JSON.stringify({ type: 'dismiss', tags: [tag], unreadCount: 0 }),
+      status: 'pending',
+      attempts: 0,
+      claimedUntil: null,
+      createdAt: new Date(2),
+      deliveredEndpoints: [],
+      skipEndpoints: [],
+    });
+    const sender = new FakeSender(true, [{ ok: false, reason: 'fail' }]);
+    await runPushWorkerTick({ store, sender, now: () => 1 });
+    const again = await store.claimPending(10, 1, 1000);
+    expect(again).toHaveLength(1);
+    expect(again[0]?.id).toBe(forumRow?.id);
+    expect(again[0]?.attempts).toBe(1);
+    const listed = await store.listAllOutbox(10);
+    expect(listed.find((row) => row.id === 'dismiss-other-account')?.status).toBe('sent');
+  });
+
   it('marks failed when same-claim dismiss tags omit the content tag', async () => {
     const store = new InMemoryPushStore();
     await store.upsertSubscription(SUB_B);

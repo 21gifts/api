@@ -262,6 +262,9 @@ function sameClaimDismissesTag(rows: readonly PushOutboxRow[], row: PushOutboxRo
     if (other.id === row.id) {
       continue;
     }
+    if (other.accountId !== row.accountId) {
+      continue;
+    }
     const tags = dismissPayloadTags(other.payload);
     if (tags !== undefined && tags.includes(tag)) {
       return true;
@@ -276,8 +279,8 @@ function sameClaimDismissesTag(rows: readonly PushOutboxRow[], row: PushOutboxRo
  * not recorded as delivered. Skips endpoints already recorded on the outbox
  * row so retries do not re-send a payload that succeeded on a previous tick.
  * A failed send is marked sent when the same claim includes a dismiss for
- * that payload tag, so a later tick cannot deliver the content after the
- * dismiss.
+ * that payload tag for the same account, so a later tick cannot deliver the
+ * content after the dismiss.
  *
  * @param deps - Store, sender, clock.
  */
