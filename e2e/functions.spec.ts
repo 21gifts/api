@@ -2764,12 +2764,13 @@ test('Function: normalizePlace — PATCH /messages/:id/place refuses a bad place
 }) => {
   const stamp = `${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
   const { auth, noteId } = await moderatorShopNote(request, stamp);
-  const bad = await request.patch(`/messages/${noteId}/place`, {
+  // The place is checked before the note lookup: an unknown note still gets the place error.
+  const bad = await request.patch('/messages/00000000-0000-4000-8000-000000000000/place', {
     headers: auth,
     data: { place: { lat: 999, lng: 8.5 } },
   });
   expect(bad.status()).toBe(400);
-  expect(((await bad.json()) as { error: string }).error).not.toBe('Invalid body');
+  expect(await bad.json()).toEqual({ error: 'Place must be a latitude and longitude' });
   const pinned = await request.patch(`/messages/${noteId}/place`, {
     headers: auth,
     data: { place: { lat: 47.3, lng: 8.5, label: 'Zürich' } },
@@ -2860,6 +2861,13 @@ test('Function: placesMatch — PATCH /messages/:id/place with the same place tw
     });
     expect(res.status()).toBe(200);
   }
+  // The second, matching place writes no second edit entry.
+  const edits = await request.get(`/messages/${noteId}/edits`, { headers: auth });
+  expect(edits.status()).toBe(200);
+  const fields = ((await edits.json()) as { edits: Array<{ field: string }> }).edits.map(
+    (edit) => edit.field,
+  );
+  expect(fields.filter((field) => field === 'place')).toHaveLength(1);
 });
 
 // Posting needs a verified wallet, which needs LNURL_SERVER_URL (blank here).
