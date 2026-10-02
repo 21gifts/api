@@ -1107,3 +1107,28 @@ Operator inspection of external Nostr identities that have earned visibility or 
 - **Errors:** 400 `{ error: 'invalid_code' }` when `:code` is not exactly eight hex digits after `toLowerCase()` (no trim); 404 `{ error: 'not_found' }` when neither store has a match; 409 `{ error: 'ambiguous' }` when two or more ids match (two messages, two accounts, or one of each). No ids in error bodies. No 503 path.
 - **Used by:** Website short-link landing (`/l/<8 hex>`).
 - **Auth:** none. Public. Soft-hidden messages are included; the public message page decides who may see them.
+
+## Endpoint: GET /habit-tracker
+
+- **Access:** Public, read-only.
+- **Input:** Optional Monday date in the week query.
+- **Output:** No-store weekly history payload.
+
+Public, uncached weekly tracker. Optional `week=YYYY-MM-DD` must be an ISO Monday no later than the current Manila week. Returns `week` (start, ISO label, nextAt), `currentWeek`, `firstWeek`, resolutions active that week, outcomes, and that week's comments. Invalid dates return 400.
+
+Weekly blocks are a deterministic projection of immutable resolution text and inclusive first/last weeks. This makes all missed weeks available after downtime without a cron job or duplicate snapshots. Active resolutions automatically appear without an outcome in each new week. A retired resolution remains visible in its retirement week and all preceding applicable weeks.
+
+## Endpoint: POST /habit-tracker
+
+- **Access:** Bearer session, plus owner and role checks for resolutions.
+- **Input:** Discriminated add/retire/rate/comment JSON.
+- **Output:** Success acknowledgement or explicit validation/permission error.
+
+Bearer session required (401 otherwise). JSON operations:
+
+- `{ action: "add", text }`: founder/initiator only; trim to 1–200 characters; starts in the current Manila week.
+- `{ action: "retire", id }`: owner only; ends future carry-over and retains history.
+- `{ action: "rate", id, week, status }`: owner only, current or previous week while the resolution existed; `achieved`, `partial`, or `missed`. New weeks are unselected, never implicitly missed.
+- `{ action: "comment", week, text }`: any signed-in role; 1–2000 characters. Stored only in the tracker, not the forum, notifications, or Nostr.
+
+Unknown/non-owned IDs return 404; lower roles cannot mutate resolutions (403); closed/out-of-range outcome weeks return 409; invalid input returns 400. Comments may be added to historical tracker weeks. Reads and mutations send `Cache-Control: no-store`.

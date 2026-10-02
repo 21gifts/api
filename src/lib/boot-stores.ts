@@ -1,3 +1,4 @@
+import { migrateHabitSchema, PostgresHabitStore, type HabitStore } from '@/lib/habit-store';
 import { openAuthStore } from '@/lib/auth/open-store';
 import type { SqlClient } from '@/lib/auth/sql';
 import type { AuthStore } from '@/lib/auth/store';
@@ -134,6 +135,7 @@ export interface BootStores {
    * Postgres-backed trust-edge store, or `undefined` when no SQL client was
    * opened so `createApp` keeps the empty in-memory default.
    */
+  habitStore: HabitStore | undefined;
   trustStore: TrustStore | undefined;
   /**
    * Postgres-backed funding-grant store, or `undefined` when no SQL client was
@@ -267,6 +269,7 @@ export async function openBootStores(
       conversationStore: undefined,
       notificationStore: undefined,
       pushStore: undefined,
+      habitStore: undefined,
       trustStore: undefined,
       fundingStore: undefined,
       listDbChange: undefined,
@@ -288,6 +291,7 @@ export async function openBootStores(
   await migratePushSchema(sqlClient);
   await migrateNotificationSchema(sqlClient);
   await migrateTrustSchema(sqlClient);
+  await migrateHabitSchema(sqlClient);
   await migrateFundingSchema(sqlClient);
   await migrateApiLogSchema(sqlClient);
   await migrateBannerSchema(sqlClient);
@@ -460,6 +464,7 @@ export async function openBootStores(
     conversationStore,
     notificationStore,
     pushStore,
+    habitStore: new PostgresHabitStore(sqlClient),
     trustStore,
     fundingStore,
     listDbChange: (limit) => listDbChanges(sql, limit),

@@ -1,3 +1,5 @@
+import { InMemoryHabitStore, type HabitStore } from '@/lib/habit-store';
+import { habitTrackerRoutes } from '@/routes/habit-tracker';
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
 import { healthRoute } from '@/routes/health';
@@ -295,6 +297,7 @@ export interface AppDeps {
    * when `DATABASE_URL` is set. `PATCH /debug/accounts/:id` does not write
    * this store.
    */
+  habitStore?: HabitStore;
   trustStore?: TrustStore;
   /**
    * Stored funding grants (default: empty {@link InMemoryFundingStore}).
@@ -591,6 +594,14 @@ export function createApp(deps: AppDeps = {}): Hono {
       listUsdFiatDaily: (limit) => debugList(fiatRates, limit),
       ...(deps.listDbChange === undefined ? {} : { listDbChange: deps.listDbChange }),
       debugToken,
+    }),
+  );
+  app.route(
+    '/habit-tracker',
+    habitTrackerRoutes({
+      authStore: store,
+      habitStore: deps.habitStore ?? new InMemoryHabitStore(),
+      now,
     }),
   );
   app.route('/trust-chain', trustChainRoutes({ authStore: store, trustStore, now }));

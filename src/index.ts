@@ -132,6 +132,7 @@ if (import.meta.main) {
     ...(diagnosticStore === undefined ? {} : { diagnosticStore }),
     ...(conversationStore === undefined ? {} : { conversationStore }),
     ...(notificationStore === undefined ? {} : { notificationStore }),
+    ...(boot.habitStore === undefined ? {} : { habitStore: boot.habitStore }),
     ...(trustStore === undefined ? {} : { trustStore }),
     ...(fundingStore === undefined ? {} : { fundingStore }),
     ...(boot.listDbChange === undefined ? {} : { listDbChange: boot.listDbChange }),

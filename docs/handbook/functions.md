@@ -3253,3 +3253,43 @@ Builds the operator-only external-pubkey inspection route.
 - **Inputs:** `{ store, rates, fiatRates, now }` — the same collaborators as {@link loadLatestGoalRateDay}.
 - **Returns / side effects:** A function that calls `loadLatestGoalRateDay` with those collaborators.
 - **Used by:** `createApp`.
+
+## Function: habitWeek
+
+- **Input:** Epoch milliseconds.
+- **Output:** Monday date, ISO label, and next boundary timestamp.
+- **Validation:** Unit tests cover the ISO year boundary and Manila midnight.
+
+Returns the Monday local date, ISO week-year label, and next Monday boundary in Asia/Manila (UTC+08:00). A week changes at Sunday 16:00 UTC, including the ISO year boundary.
+
+## Function: habitTrackerRoutes
+
+- **Input:** Auth store, habit store, and injected clock.
+- **Output:** Hono GET/POST routes.
+- **Failures:** 400 input, 401 session, 403 role, 404 ownership, 409 closed week.
+
+Serves public weekly history and authenticated mutations. Only founder and initiator accounts can manage their own resolutions. Any authenticated account can comment. Current and previous week outcomes can be edited; older outcomes are closed. The previous week stays editable after the Sunday rest.
+
+## Function: InMemoryHabitStore
+
+- **Input:** Habit, result, and comment records.
+- **Output:** Copied records and earliest history week.
+- **Lifetime:** Process-local, suitable for development and tests.
+
+Development/test persistence with copied rows, one outcome per resolution/week, inclusive retirement week, and comments isolated from forum messages. Comment-only weeks contribute to the earliest navigable week.
+
+## Function: PostgresHabitStore
+
+- **Input:** Parameter-bound SQL client.
+- **Output:** Durable records with API field names.
+- **Concurrency:** Result uniqueness is enforced by the database; retirement is idempotent.
+
+Durable parameter-bound persistence in `habit`, `habit_result`, and `habit_comment`. Retirement sets the final inclusive week once; it never deletes history. Outcome writes use a composite primary key and upsert.
+
+## Function: migrateHabitSchema
+
+- **Input:** SQL client with an existing account table.
+- **Output:** Habit tables and indexes.
+- **Failure:** Database errors abort boot, preventing silent memory fallback.
+
+Idempotently creates habit tables and week indexes after accounts exist and before database audit triggers are attached. Production boot injects the resulting Postgres store.
