@@ -197,10 +197,14 @@ function authGate(
   return null;
 }
 
+/** Local part of a Lightning Address, as `normalizeLightningAddress` accepts it. */
+const LOCAL_PART = /^[a-zA-Z0-9._%+-]+$/;
+
 /**
  * Validate a spend lookup address. Any `local@domain.tld` passes, and so does
- * an address on the configured wallet host, whose `PUBLIC_BASE_URL` host may
- * carry a port or be an IP address that the general check refuses.
+ * an address with exactly one `@`, a valid local part, and the configured
+ * wallet host, whose `PUBLIC_BASE_URL` host may carry a port or be an IP
+ * address that the general check refuses.
  *
  * @param raw - The address as sent by the spend worker.
  * @param lnurlServer - LNURL server config, or `undefined` when off.
@@ -218,6 +222,7 @@ function spendLookupAddress(
   const at = trimmed.lastIndexOf('@');
   return trimmed.length <= 255 &&
     at > 0 &&
+    LOCAL_PART.test(trimmed.slice(0, at)) &&
     trimmed.slice(at + 1).toLowerCase() === lnurlServer.host.toLowerCase()
     ? trimmed
     : null;
@@ -765,7 +770,11 @@ export function invoiceRoutes(deps: InvoiceRouteDeps): Hono {
         return c.json({ error: 'Funding grant required' }, 403);
       }
 
-      if (parsed.data.comment === 'Welcome' && (await alreadyWelcomed(deps, receiver))) {
+      const welcomeRefused = async (): Promise<boolean> =>
+        parsed.data.comment === 'Welcome' && (await alreadyWelcomed(deps, receiver));
+      // With a groupMessageId the check waits until it is resolved: a resolved
+      // moderator payout is recorded as `moderator`, not as a welcome.
+      if (parsed.data.groupMessageId === undefined && (await welcomeRefused())) {
         logEvent('invoice.welcome_already_paid', { address });
         return c.json({ error: 'Welcome gift already paid' }, 409);
       }
@@ -833,6 +842,15 @@ export function invoiceRoutes(deps: InvoiceRouteDeps): Hono {
             logEvent('invoice.group_message_ignored', { address });
           }
         }
+      }
+
+      if (
+        parsed.data.groupMessageId !== undefined &&
+        resolvedGroupMessageId === undefined &&
+        (await welcomeRefused())
+      ) {
+        logEvent('invoice.welcome_already_paid', { address });
+        return c.json({ error: 'Welcome gift already paid' }, 409);
       }
 
       const fetchArgs: {

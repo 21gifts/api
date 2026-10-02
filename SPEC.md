@@ -3620,7 +3620,9 @@ media requirement). Missing
 an account that already received the welcome gift (a platform `Welcome`
 reply under one of its notes, live or hidden, or a recorded `welcome` gift with description `21gifts welcome`
 under its username at or after its wallet verification) → **409** `{ "error": "Welcome gift already paid" }`
-after the passkey and grant checks and before LNURL; the welcome gift is once
+after the passkey and grant checks and before LNURL (with `groupMessageId`,
+after that id is resolved: a resolved moderator payout is recorded as
+`moderator` and is not refused; an ignored id is); the welcome gift is once
 per account, whichever address it went to. Stores `comment` on the invoice whenever it is sent, so a `Welcome` invoice without `messageId` is still recorded as a welcome gift on proof; with `messageId` it stores `messageId` and `comment` (or `''`).
 When `groupMessageId` is set (no `messageId`), the living-room post gate
 still applies. The id is display-only: it is stored only when it is that
