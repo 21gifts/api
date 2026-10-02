@@ -4017,6 +4017,7 @@ describe('POST /conversations/:id/invoice', () => {
     expect(res.status).toBe(400);
     expect(await res.json()).toEqual({
       error: "The author's wallet cannot receive this Bitcoin payment",
+      code: 'cannot_receive',
     });
   });
 
@@ -4378,6 +4379,7 @@ describe('POST /conversations/:id/invoice', () => {
     expect(res.status).toBe(400);
     expect(await res.json()).toEqual({
       error: "The author's wallet cannot receive this Bitcoin payment",
+      code: 'cannot_receive',
     });
   });
 
@@ -4394,6 +4396,7 @@ describe('POST /conversations/:id/invoice', () => {
     expect(res.status).toBe(400);
     expect(await res.json()).toEqual({
       error: "The author's wallet cannot receive this Bitcoin payment",
+      code: 'cannot_receive',
     });
   });
 
@@ -4515,6 +4518,7 @@ describe('POST /conversations/:id/invoice', () => {
     expect(res.status).toBe(400);
     expect(await res.json()).toEqual({
       error: "The author's wallet cannot receive this Bitcoin payment",
+      code: 'cannot_receive',
     });
     const attempt = (await messages.listInvoiceAttempts(5))[0];
     expect(attempt?.result).toBe('no_author');
@@ -4631,6 +4635,7 @@ describe('POST /conversations/:id/invoice', () => {
     expect(res.status).toBe(400);
     expect(await res.json()).toEqual({
       error: "The author's wallet cannot receive this Bitcoin payment",
+      code: 'cannot_receive',
     });
   });
 
@@ -4697,6 +4702,7 @@ describe('POST /conversations/:id/invoice', () => {
     expect(res.status).toBe(400);
     expect(await res.json()).toEqual({
       error: "The author's wallet cannot receive this Bitcoin payment",
+      code: 'cannot_receive',
     });
   });
 
@@ -4732,6 +4738,7 @@ describe('POST /conversations/:id/invoice', () => {
     expect(res.status).toBe(400);
     expect(await res.json()).toEqual({
       error: "The author's wallet cannot receive this Bitcoin payment",
+      code: 'cannot_receive',
     });
   });
 
