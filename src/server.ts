@@ -721,6 +721,7 @@ export function createApp(deps: AppDeps = {}): Hono {
       conversationStore,
       messages: messageStore,
       ...receivingDeps,
+      giftStore,
       ...(spendPing === undefined ? {} : { spendPing }),
     }),
   );
@@ -757,6 +758,7 @@ export function createApp(deps: AppDeps = {}): Hono {
       env,
       translationStore,
       fundingStore,
+      giftStore,
       ...(mapPush === undefined ? {} : { mapPush }),
       goalRateDay: bindGoalRateDay({
         store: giftStore,
@@ -850,6 +852,7 @@ export function createApp(deps: AppDeps = {}): Hono {
       fundingStore,
       fiatRates,
       ...receivingDeps,
+      giftStore,
       ...(giftRecorder === undefined ? {} : { giftRecorder }),
     }),
   );

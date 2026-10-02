@@ -761,6 +761,7 @@ export function meRoutes(deps: MeRouteDeps): Hono {
           ...(deps.spendPing === undefined ? {} : { spendPing: deps.spendPing }),
           messages: deps.messages,
           auth: deps.store,
+          gifts: giftStore,
           account: latest,
           ...(deps.lnurlServer === undefined ? {} : { lnurlServer: deps.lnurlServer }),
         });

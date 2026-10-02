@@ -12,10 +12,15 @@ import {
 } from '@/lib/config';
 import type { ConversationStore } from '@/lib/conversation-store';
 import { requestGiftInvoice } from '@/lib/gift-invoice';
+import type { GiftStore } from '@/lib/gift-store';
 import { newInvoiceId, type GiftInvoice, type InvoiceStore } from '@/lib/invoice-store';
 import { normalizeLightningAddress } from '@/lib/lightning-address';
 import type { FetchFn } from '@/lib/lnurlp';
-import { accountByReceivingAddress, lnurlServerFetch } from '@/lib/receiving-address';
+import {
+  accountByReceivingAddress,
+  lnurlServerFetch,
+  type ReceivingAddress,
+} from '@/lib/receiving-address';
 import { MESSAGE_LIST_LIMIT, unsignedNostrDefaults } from '@/lib/message';
 import type { MessageStore } from '@/lib/message-store';
 import {
@@ -92,6 +97,12 @@ export interface InvoiceRouteDeps {
    * `<username>@<host of PUBLIC_BASE_URL>`; omitted → no member is found.
    */
   lnurlServer?: LnurlServerConfig;
+  /**
+   * Outbound house gifts. A recorded `welcome` gift under the member's
+   * username counts as a paid welcome gift. Omitted → only the platform
+   * `Welcome` reply counts.
+   */
+  giftStore?: Pick<GiftStore, 'listOutbound'>;
   /**
    * Persist a proven gift into `gift` for `/gifts/stats`. Default no-op.
    * Insert failures are logged; proof still returns 200.
@@ -218,18 +229,29 @@ async function addressHasPasskey(
 
 /**
  * Whether the account already received the one-time welcome gift: a platform
- * `Welcome` reply under one of its notes. The gift is once per account, so a
- * member whose receiving address changed is not paid again. No platform
- * account → `false` (no welcome gift can have been recorded).
+ * `Welcome` reply under one of its notes, or a recorded `welcome` gift under
+ * its username (a welcome paid to the wallet address is recorded there). The
+ * gift is once per account, so a member whose receiving address changed is not
+ * paid again.
  *
- * @param deps - Auth store (platform lookup) and forum store.
- * @param account - Receiving account.
+ * @param deps - Auth store (platform lookup), forum store, optional gift store.
+ * @param receiver - Receiving account and its wallet address.
  * @returns `true` when the welcome gift was already paid.
  */
 async function alreadyWelcomed(
-  deps: Pick<InvoiceRouteDeps, 'authStore' | 'messageStore'>,
-  account: { id: string },
+  deps: Pick<InvoiceRouteDeps, 'authStore' | 'messageStore' | 'giftStore'>,
+  receiver: { account: Pick<Account, 'id'>; receiving: ReceivingAddress },
 ): Promise<boolean> {
+  const { account, receiving } = receiver;
+  const handle = receiving.address.slice(0, receiving.address.lastIndexOf('@'));
+  if (
+    deps.giftStore !== undefined &&
+    (await deps.giftStore.listOutbound()).some(
+      (row) => row.kind === 'welcome' && row.recipientWosUser.trim().toLowerCase() === handle,
+    )
+  ) {
+    return true;
+  }
   const platform = (await deps.authStore.listAccounts()).find((item) => item.isPlatform === true);
   return (
     platform !== undefined &&
@@ -242,15 +264,16 @@ async function alreadyWelcomed(
  * Daily `hasMedia` still excludes that note. An account that already received
  * the welcome gift reports no welcome media.
  *
- * @param deps - Auth store and forum store.
- * @param account - Address owner.
+ * @param deps - Auth store, forum store, and optional gift store.
+ * @param receiver - Address owner and its wallet address.
  * @returns `welcomeHasMedia` and the newest media note id (or null).
  */
 async function welcomePostedFields(
-  deps: Pick<InvoiceRouteDeps, 'authStore' | 'messageStore'>,
-  account: { id: string },
+  deps: Pick<InvoiceRouteDeps, 'authStore' | 'messageStore' | 'giftStore'>,
+  receiver: { account: Pick<Account, 'id'>; receiving: ReceivingAddress },
 ): Promise<{ welcomeHasMedia: boolean; welcomeMessageId: string | null }> {
-  if (await alreadyWelcomed(deps, account)) {
+  const { account } = receiver;
+  if (await alreadyWelcomed(deps, receiver)) {
     return { welcomeHasMedia: false, welcomeMessageId: null };
   }
   const welcomeMessageId = await deps.messageStore.latestLiveTopLevelMediaId(account.id);
@@ -589,8 +612,8 @@ export function invoiceRoutes(deps: InvoiceRouteDeps): Hono {
         return c.json({ error: 'Not a valid Lightning Address (expected name@domain)' }, 400);
       }
 
-      const account = await receiverOf(deps, address);
-      if (account === undefined) {
+      const receiver = await accountByReceivingAddress(deps.authStore, address, deps.lnurlServer);
+      if (receiver === undefined) {
         return c.json(
           {
             hasPosted: false,
@@ -603,7 +626,8 @@ export function invoiceRoutes(deps: InvoiceRouteDeps): Hono {
           200,
         );
       }
-      const welcome = await welcomePostedFields(deps, account);
+      const { account } = receiver;
+      const welcome = await welcomePostedFields(deps, receiver);
       const excludeId = account.profileMessageId ?? null;
       const hasPosted = await deps.messageStore.accountHasLiveTopLevelPost(account.id, excludeId);
       if (!hasPosted) {
@@ -697,6 +721,11 @@ export function invoiceRoutes(deps: InvoiceRouteDeps): Hono {
         return c.json({ error: 'Funding grant required' }, 403);
       }
 
+      if (parsed.data.comment === 'Welcome' && (await alreadyWelcomed(deps, receiver))) {
+        logEvent('invoice.welcome_already_paid', { address });
+        return c.json({ error: 'Welcome gift already paid' }, 409);
+      }
+
       let resolvedGroupMessageId: string | undefined;
       if (parsed.data.messageId !== undefined) {
         const message = await deps.messageStore.getById(parsed.data.messageId);
@@ -722,13 +751,6 @@ export function invoiceRoutes(deps: InvoiceRouteDeps): Hono {
         const platform = accounts.find((item) => item.isPlatform === true);
         if (platform === undefined) {
           return c.json({ error: 'Platform account is not configured' }, 503);
-        }
-        if (
-          parsed.data.comment === 'Welcome' &&
-          (await deps.messageStore.accountHasWelcomeGift(account.id, platform.id))
-        ) {
-          logEvent('invoice.welcome_already_paid', { address });
-          return c.json({ error: 'Welcome gift already paid' }, 409);
         }
       } else {
         const hasPosted = await accountHasPosted(deps.messageStore, account);
