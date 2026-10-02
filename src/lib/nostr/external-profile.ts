@@ -10,13 +10,8 @@ import { npubEncode } from 'nostr-tools/nip19';
 import type { AuthStore } from '@/lib/auth/store';
 import { logEvent } from '@/lib/log';
 import type { FetchFn } from '@/lib/lnurlp';
-import {
-  MESSAGE_LIST_LIMIT,
-  truncatePubkeyDisplay,
-  type MessageListRow,
-  type MessageRow,
-} from '@/lib/message';
-import type { MessageStore } from '@/lib/message-store';
+import { MESSAGE_LIST_LIMIT, truncatePubkeyDisplay, type MessageRow } from '@/lib/message';
+import type { MessageListRow, MessageStore } from '@/lib/message-store';
 import {
   externalDisplayName,
   resolveExternalProfileFields,
