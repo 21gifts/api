@@ -132,10 +132,13 @@ export interface BootStores {
    */
   pushStore: PushStore | undefined;
   /**
+   * Postgres-backed habit store, or undefined when no SQL client was opened so createApp keeps the empty in-memory default
+   */
+  habitStore: HabitStore | undefined;
+  /**
    * Postgres-backed trust-edge store, or `undefined` when no SQL client was
    * opened so `createApp` keeps the empty in-memory default.
    */
-  habitStore: HabitStore | undefined;
   trustStore: TrustStore | undefined;
   /**
    * Postgres-backed funding-grant store, or `undefined` when no SQL client was

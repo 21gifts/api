@@ -47,6 +47,23 @@ describe('habit persistence', () => {
     expect((await store.results(habit.firstWeek))[0]!.status).toBe('partial');
     expect(await store.results('2026-10-05')).toEqual([]);
   });
+  it('lists in-memory habits by firstWeek then id and comments by createdAt then id', async () => {
+    const store = new InMemoryHabitStore();
+    await store.add({ ...habit, id: 'b', firstWeek: '2026-10-05' });
+    await store.add({ ...habit, id: 'a', firstWeek: '2026-09-28' });
+    expect((await store.habits()).map((row) => row.id)).toEqual(['a', 'b']);
+    const sameWeek = new InMemoryHabitStore();
+    await sameWeek.add({ ...habit, id: 'b', firstWeek: '2026-09-28' });
+    await sameWeek.add({ ...habit, id: 'a', firstWeek: '2026-09-28' });
+    expect((await sameWeek.habits()).map((row) => row.id)).toEqual(['a', 'b']);
+    await store.comment({ ...comment, id: 'd', createdAt: 200 });
+    await store.comment({ ...comment, id: 'c', createdAt: 100 });
+    expect((await store.comments(comment.week)).map((row) => row.id)).toEqual(['c', 'd']);
+    const sameTime = new InMemoryHabitStore();
+    await sameTime.comment({ ...comment, id: 'd', createdAt: 100 });
+    await sameTime.comment({ ...comment, id: 'c', createdAt: 100 });
+    expect((await sameTime.comments(comment.week)).map((row) => row.id)).toEqual(['c', 'd']);
+  });
   it('runs idempotent DDL and binds all user data in Postgres operations', async () => {
     const query = vi.fn().mockResolvedValue([]);
     const execute = vi.fn().mockResolvedValue(undefined);
