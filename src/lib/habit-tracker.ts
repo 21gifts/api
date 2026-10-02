@@ -2,7 +2,12 @@
 export const HABIT_WEEK_MS = 7 * 24 * 60 * 60 * 1000;
 const OFFSET = 8 * 60 * 60 * 1000;
 
-/** Monday's local date and ISO week number, independent of the server timezone. */
+/**
+ * Monday's local date and ISO week number, independent of the server timezone.
+ *
+ * @param now - Epoch milliseconds.
+ * @returns Week `start` (ISO Monday), `label` (`YYYY-Www`), and `nextAt`.
+ */
 export function habitWeek(now: number): { start: string; label: string; nextAt: number } {
   const local = new Date(now + OFFSET);
   local.setUTCHours(0, 0, 0, 0);
@@ -18,23 +23,44 @@ export function habitWeek(now: number): { start: string; label: string; nextAt: 
   };
 }
 
-/** Latest completed ISO week, published Mondays at 08:00 Asia/Manila. */
+/**
+ * Latest completed ISO week, published Mondays at 08:00 Asia/Manila.
+ *
+ * @param now - Epoch milliseconds.
+ * @returns The published review week (`start`, `label`, `nextAt`).
+ */
 export function habitReviewWeek(now: number): { start: string; label: string; nextAt: number } {
   const week = habitWeek(now - OFFSET - HABIT_WEEK_MS);
   return { ...week, nextAt: week.nextAt + OFFSET + HABIT_WEEK_MS };
 }
 
-/** Comments for a completed week are admitted on the following Monday at 16:00 Manila. */
+/**
+ * Comments for a completed week are admitted on the following Monday at 16:00 Manila.
+ *
+ * @param week - ISO Monday date of the completed week.
+ * @returns Epoch milliseconds when comments open.
+ */
 export function habitCommentsAllowedAt(week: string): number {
   return Date.parse(`${week}T16:00:00+08:00`) + HABIT_WEEK_MS;
 }
 
-/** End of the comment window: Saturday 20:00 Manila, exclusive. */
+/**
+ * End of the comment window: Saturday 20:00 Manila, exclusive.
+ *
+ * @param week - ISO Monday date of the completed week.
+ * @returns Epoch milliseconds when comments close (exclusive).
+ */
 export function habitCommentsCloseAt(week: string): number {
   return habitCommentsAllowedAt(week) + (5 * 24 + 4) * 60 * 60 * 1000;
 }
 
-/** Only the latest published review week accepts comments, within its time window. */
+/**
+ * Only the latest published review week accepts comments, within its time window.
+ *
+ * @param week - ISO Monday date of the completed week.
+ * @param now - Epoch milliseconds.
+ * @returns Whether comments are admitted at `now`.
+ */
 export function habitCommentsAllowed(week: string, now: number): boolean {
   return (
     week === habitReviewWeek(now).start &&

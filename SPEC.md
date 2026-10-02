@@ -4,7 +4,7 @@
 > Product decisions live in [`CONCEPT.md`](./CONCEPT.md); this file owns
 > request/response contracts for routes that exist in code today.
 
-**Status**: living document. Last revised 2026-09-30 (`GET /mentions` matches the start of the username, a `.` `_` `-` segment, or the start of the display name or one of its words; a token containing `.` `_` `-` matches only a whole-string start. 2026-09-28: `GET /mentions` username prefix suggestions. GET /mentions returns at most 20 username-prefix suggestions for a signed-in forum reader. 2026-09-24: `POST /conversations/:id/messages/:messageId/translate`; owner and view JSON include `aboutMessageId`; conversation rows include `lastMessageId`. 2026-09-23: `eligibleToday` does not require a grant until UTC 2026-10-10; funding-program grants independent of `account.role`; spend ping and `POST /invoices` require `eligibleToday`; verified top-level media also welcome-pings independent of `eligibleToday`; `GET /invoices/eligible`; `GET /conversations` list/open rows include per-row `unreadMessageCount`; envelope `unreadCount` remains unread thread count; `GET /trust-chain` requires a member Bearer session; public graph uses at most one incoming edge per subject: the oldest eligible sibling (`createdAt` then `id`), skipping a non-chain oldest sibling so a later displayable contact can show; eligible `verify`, `moderator_appoint`, and `moderator_propose` only when the subject is a moderator; `moderator_confirm` and `moderator_reject` never; later appoint/confirm/propose do not replace the first eligible contact; staff may reject an open proposal (`POST /trust/reject-moderator`, append-only `moderator_reject`, role stays `verified`) and re-propose after reject (new `moderator_propose`; 409 while currently pending, any confirm/appoint, or a concurrent older open propose wins after insert); confirm/reject re-list after insert and undo when the other grant already closed; pending = latest propose/reject is propose, verified, no confirm/appoint; live-unique kinds are verify/confirm/appoint only; open proposal fans out in-app `moderator_proposal` plus Web Push to other staff until confirm, until reject when pending is then empty, or until appoint; GET `/notifications` keeps `moderator_appointed` and `moderator_proposal` (mark-read / read-all do not stamp the proposal); owner `notificationLevel` on GET `/me` and `POST /me/notification-level`; fan-out filters in-app and Web Push by `all` / `active` / `mentions`; GET `/notifications` applies the same filter to stored rows (`moderator_appointed` always stays; `unreadCount` is unread among kept rows after the hidden filter (before the 200 cap), not `store.unreadCount()` and not the unfiltered matching unread of the newest 1000); a zap that inserts a gift-reply fans out only `notifyZap`, not a second `forum_reply`; gift-reply row still lands in the thread; confirm/appoint notify the subject only with `moderator_appointed` and Web Push url `/welcome`; official platform account (`isPlatform`) never fans out living-room `forum_post` / `forum_reply` / `zap`; house daily gift-replies still persist; GET /messages omits name-copy profile notes and About me text stays). 2026-10-01: opening a forum note, translating it, or opening Notifications stamps the matching unread forum and zap rows and tells the account's other devices to close those banners (`POST /notifications/read-by-message`; read-all and read-by-message return tags; a freshly stamped `POST /notifications/:id/read` only enqueues the dismiss tag and still returns the public notification). `moderator_proposal` stays unread. Private-message pushes are not dismissed.
+**Status**: living document. Last revised 2026-10-02 (`GET /habit-tracker` and `POST /habit-tracker` are implemented). 2026-09-30 (`GET /mentions` matches the start of the username, a `.` `_` `-` segment, or the start of the display name or one of its words; a token containing `.` `_` `-` matches only a whole-string start. 2026-09-28: `GET /mentions` username prefix suggestions. GET /mentions returns at most 20 username-prefix suggestions for a signed-in forum reader. 2026-09-24: `POST /conversations/:id/messages/:messageId/translate`; owner and view JSON include `aboutMessageId`; conversation rows include `lastMessageId`. 2026-09-23: `eligibleToday` does not require a grant until UTC 2026-10-10; funding-program grants independent of `account.role`; spend ping and `POST /invoices` require `eligibleToday`; verified top-level media also welcome-pings independent of `eligibleToday`; `GET /invoices/eligible`; `GET /conversations` list/open rows include per-row `unreadMessageCount`; envelope `unreadCount` remains unread thread count; `GET /trust-chain` requires a member Bearer session; public graph uses at most one incoming edge per subject: the oldest eligible sibling (`createdAt` then `id`), skipping a non-chain oldest sibling so a later displayable contact can show; eligible `verify`, `moderator_appoint`, and `moderator_propose` only when the subject is a moderator; `moderator_confirm` and `moderator_reject` never; later appoint/confirm/propose do not replace the first eligible contact; staff may reject an open proposal (`POST /trust/reject-moderator`, append-only `moderator_reject`, role stays `verified`) and re-propose after reject (new `moderator_propose`; 409 while currently pending, any confirm/appoint, or a concurrent older open propose wins after insert); confirm/reject re-list after insert and undo when the other grant already closed; pending = latest propose/reject is propose, verified, no confirm/appoint; live-unique kinds are verify/confirm/appoint only; open proposal fans out in-app `moderator_proposal` plus Web Push to other staff until confirm, until reject when pending is then empty, or until appoint; GET `/notifications` keeps `moderator_appointed` and `moderator_proposal` (mark-read / read-all do not stamp the proposal); owner `notificationLevel` on GET `/me` and `POST /me/notification-level`; fan-out filters in-app and Web Push by `all` / `active` / `mentions`; GET `/notifications` applies the same filter to stored rows (`moderator_appointed` always stays; `unreadCount` is unread among kept rows after the hidden filter (before the 200 cap), not `store.unreadCount()` and not the unfiltered matching unread of the newest 1000); a zap that inserts a gift-reply fans out only `notifyZap`, not a second `forum_reply`; gift-reply row still lands in the thread; confirm/appoint notify the subject only with `moderator_appointed` and Web Push url `/welcome`; official platform account (`isPlatform`) never fans out living-room `forum_post` / `forum_reply` / `zap`; house daily gift-replies still persist; GET /messages omits name-copy profile notes and About me text stays). 2026-10-01: opening a forum note, translating it, or opening Notifications stamps the matching unread forum and zap rows and tells the account's other devices to close those banners (`POST /notifications/read-by-message`; read-all and read-by-message return tags; a freshly stamped `POST /notifications/:id/read` only enqueues the dismiss tag and still returns the public notification). `moderator_proposal` stays unread. Private-message pushes are not dismissed.
 
 ---
 
@@ -129,6 +129,8 @@ Public base URLs used in examples:
 | GET    | `/members/:accountId/posts`                          | Bearer                     | Live member top-level notes (latest 200)                                                                                                                                                                                                                                                                                                               |
 | GET    | `/members/:accountId/replies`                        | Bearer                     | Live member replies (latest 200)                                                                                                                                                                                                                                                                                                                       |
 | GET    | `/mentions`                                          | Bearer                     | Suggestions for `@` (`q` empty = first 20 alphabetical). A token matches the start of the username, a `.` `_` `-` segment, or the start of the display name or one of its words; a token containing `.` `_` `-` is whole-string only. Does not store `@` marks                                                                                         |
+| GET    | `/habit-tracker`                                     | none                       | Public weekly history                                                                                                                                                                                                                                                                                                                                  |
+| POST   | `/habit-tracker`                                     | Bearer                     | Owner and rank mutations plus comments and a donation invoice                                                                                                                                                                                                                                                                                          |
 | GET    | `/trust-chain`                                       | Bearer                     | Founder seeds (empty edges); `?around=<id>` one hop of stored public edges                                                                                                                                                                                                                                                                             |
 | POST   | `/trust/verify`                                      | Bearer (moderator+)        | Staff: confirm a person in real life (`verified`)                                                                                                                                                                                                                                                                                                      |
 | POST   | `/trust/propose-moderator`                           | Bearer (moderator+)        | Staff: propose a verified member as moderator                                                                                                                                                                                                                                                                                                          |
@@ -950,6 +952,115 @@ Comparison is lowercase. `_` is a literal separator, not a wildcard.
 At most 20 rows, ordered by `lower(trim(username))` then `id`. Blank
 usernames are skipped. `name` is the trimmed display name, or the stored
 username when that name is blank. Does not store `@username` marks.
+
+### `GET /habit-tracker`
+
+Public weekly history. No auth. `Cache-Control: no-store`.
+
+Every Monday at 08:00 Asia/Manila the completed previous ISO week opens
+for review. Active resolutions carry forward unrated. Weekly text
+history is preserved. Retirement keeps history: a retired resolution
+stays visible in its retirement week and all earlier applicable weeks.
+
+Optional `week=YYYY-MM-DD` must be an ISO Monday no later than the
+latest published review week. Omitted `week` is that latest review
+week. Invalid or later weeks → **Response** `400`:
+
+```json
+{ "error": "Invalid week" }
+```
+
+**Response** `200`:
+
+```json
+{
+  "week": { "start": "2026-09-22", "label": "2026-W39", "nextAt": 1758508800000 },
+  "currentWeek": "2026-09-22",
+  "commentsAllowed": false,
+  "commentsAllowedAt": 1756972800000,
+  "commentsCloseAt": 1757421600000,
+  "firstWeek": "2026-09-22",
+  "habits": [
+    {
+      "id": "<uuid>",
+      "accountId": "<uuid>",
+      "role": "initiator",
+      "name": "Ada",
+      "text": "Read",
+      "firstWeek": "2026-09-22",
+      "lastWeek": null
+    }
+  ],
+  "results": [
+    { "habitId": "<uuid>", "week": "2026-09-22", "status": "achieved" }
+  ],
+  "comments": [
+    {
+      "id": "<uuid>",
+      "accountId": "<uuid>",
+      "name": "Ada",
+      "text": "Noted",
+      "week": "2026-09-22",
+      "createdAt": 1756972800000,
+      "canReceiveDonation": false
+    }
+  ]
+}
+```
+
+`week` is `{ start, label, nextAt }`. `habits` are resolutions active in
+that week. `results` are outcomes for that week. Each comment includes
+`canReceiveDonation`. Comments are not forum or Nostr posts.
+
+### `POST /habit-tracker`
+
+Bearer required. Missing or invalid Bearer → **Response** `401`:
+
+```json
+{ "error": "Unauthorized" }
+```
+
+JSON `action` is one of `add`, `edit`, `retire`, `rate`, `comment`,
+`deleteComment`, `invoice`. Invalid JSON or an unknown action →
+**Response** `400`:
+
+```json
+{ "error": "Invalid habit operation" }
+```
+
+Initiator rank is `roleAtLeast(initiator)`, which includes founder and
+moderator and excludes verified and basis. Owners `add` / `edit` /
+`retire` / `rate` only their own resolutions. A foreign habit id after
+the rank gate is **404** `{ "error": "Not found" }`, not 403. Below
+initiator rank those mutations and `deleteComment` are **403**
+`{ "error": "Forbidden" }`. Closed or out-of-range weeks for `edit` /
+`rate` → **409** `{ "error": "Week is closed" }`.
+
+Any signed-in role may `comment`, only on the latest review week,
+Monday 16:00 inclusive through Saturday 20:00 exclusive Asia/Manila.
+Outside that window every role gets **403**
+`{ "error": "Comments are closed for this week", "commentsAllowedAt": … }`.
+A comment week after the latest review week or before `firstWeek` →
+**400** `{ "error": "Invalid week" }`. Comments are not forum or Nostr
+posts.
+
+`deleteComment` soft-deletes any tracker comment and has no author
+check. Missing id after the rank gate is **404**.
+
+`invoice` checks a positive integer `amountSats` for any signed-in role, returns
+`{ "pr": "<bolt11>", "amountSats": 1 }`, and does not pay. Self-donation
+or a missing author wallet → **409**. Rate-limit → **429**
+`{ "error": "Too many requests" }`. LNURL or BOLT11 failure → **502**
+`{ "error": "Invoice unavailable" }`. Missing comment → **404**.
+
+Statuses: **400**, **401**, **403**, **404**, **409**, **429**, **502**.
+`Cache-Control: no-store`. `add` and `comment` succeed with **201**
+`{ "ok": true }`; other mutations succeed with **200** `{ "ok": true }`
+except `invoice` as above.
+
+Every Monday at 08:00 Asia/Manila the completed previous ISO week opens
+for review. Active resolutions carry forward unrated. Weekly text
+history is preserved. Retirement keeps history.
 
 ### `GET /trust-chain`
 
@@ -5425,24 +5536,3 @@ exist on the account model; `GET /debug/accounts` and
 - Internationalization of api response text and push payloads (they stay English). A signed-in account may store `locale` and `fiat`; that is not translated copy.
 - Platform custody of **receiver** funds (receiving stays LUD-16 only)
 - Arbitrary LNDHub URLs (the external spend worker uses lightning.space only)
-
-## Habit-Tracker
-
-`GET /habit-tracker` is public. Every Monday at 08:00 Asia/Manila the completed
-previous ISO week opens for review. Adding, editing, retiring, and rating require
-initiator rank (roleAtLeast initiator; the same rank qualifies), which includes
-founder because that rank is higher and excludes verified and basis, and apply
-only to the caller's own resolutions in the latest published review week.
-Active resolutions carry forward without ratings. Text revisions and outcomes
-preserve older weeks; retirement ends future carry-over without deleting history.
-Outcomes are `achieved`, `partial`, or `missed`; absence means not yet rated.
-
-Comments are separate from forum messages and Nostr. Every signed-in role may
-comment on the latest review week from Monday 16:00 (inclusive) to Saturday
-20:00 (exclusive), Asia/Manila. Older comments remain readable. Soft-deleting any
-tracker comment requires initiator rank (roleAtLeast initiator; the same rank
-qualifies), which includes founder because that rank is higher and excludes
-verified and basis. Signed-in donors can request an
-exact-amount Lightning invoice for another comment author's current linked
-wallet; deleted comments, self-donations, missing wallets, invalid amounts and
-rate-limited requests are rejected. The recipient is resolved server-side.

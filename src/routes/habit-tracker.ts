@@ -65,7 +65,12 @@ const operation = z.discriminatedUnion('action', [
     .strict(),
 ]);
 
-/** Public weekly history; all mutations require a session and owner checks. */
+/**
+ * Public weekly history; all mutations require a session and owner checks.
+ *
+ * @param deps - Auth store, habit store, clock, and optional fetch.
+ * @returns The Hono app.
+ */
 export function habitTrackerRoutes(deps: {
   authStore: AuthStore;
   habitStore: HabitStore;
