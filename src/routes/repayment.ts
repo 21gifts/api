@@ -314,7 +314,7 @@ export async function repaymentInvoice(deps: RepaymentDeps, c: Context): Promise
     address,
     amountMsat,
     zapRequestJson,
-    fetchImpl: lnurlServerFetch(deps.lnurlServer, fetchImpl),
+    fetchImpl: lnurlServerFetch(deps.lnurlServer, fetchImpl, deps.authStore),
   });
   if (!zap.ok) {
     if (zap.reason === 'noZap') {

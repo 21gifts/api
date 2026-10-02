@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import type { Account } from '@/lib/auth/store';
 import type { LnurlServerConfig } from '@/lib/config';
 import type { FetchFn } from '@/lib/lnurlp';
 import { lnurlServerFetch, receivingAddress, type ReceivingAccount } from '@/lib/receiving-address';
@@ -56,15 +57,40 @@ describe('receivingAddress', () => {
 });
 
 describe('lnurlServerFetch', () => {
+  // `alice` has a verified wallet; `bob` has an account without one.
+  const accounts = {
+    getAccountByUsername: async (username: string): Promise<Account | undefined> => {
+      if (username === 'alice') {
+        return { sparkPubkeyVerifiedAt: 1 } as Account;
+      }
+      return username === 'bob' ? ({ sparkPubkeyVerifiedAt: null } as Account) : undefined;
+    },
+  };
+
   it('returns the given fetch when the LNURL server is off', () => {
     const fetchImpl: FetchFn = vi.fn();
-    expect(lnurlServerFetch(undefined, fetchImpl)).toBe(fetchImpl);
+    expect(lnurlServerFetch(undefined, fetchImpl, accounts)).toBe(fetchImpl);
+  });
+
+  it('sends the LUD-16 document of a username without a verified wallet over the public URL', async () => {
+    const response = new Response('ok');
+    const fetchImpl = vi.fn(async () => response);
+    const routed = lnurlServerFetch(config, fetchImpl, accounts);
+    for (const url of [
+      'https://21.gifts/.well-known/lnurlp/bob',
+      'https://21.gifts/.well-known/lnurlp/nobody',
+      'https://21.gifts/.well-known/lnurlp/a%20b',
+      'https://21.gifts/.well-known/lnurlp',
+    ]) {
+      expect(await routed(url)).toBe(response);
+      expect(fetchImpl).toHaveBeenLastCalledWith(url, undefined);
+    }
   });
 
   it('passes other hosts through unchanged', async () => {
     const response = new Response('ok');
     const fetchImpl = vi.fn(async () => response);
-    const routed = lnurlServerFetch(config, fetchImpl);
+    const routed = lnurlServerFetch(config, fetchImpl, accounts);
     const init = { redirect: 'error' as const };
     expect(await routed('https://walletofsatoshi.com/.well-known/lnurlp/a', init)).toBe(response);
     expect(fetchImpl).toHaveBeenCalledWith(
@@ -81,7 +107,7 @@ describe('lnurlServerFetch', () => {
           headers: { 'content-type': 'application/json', 'x-other': '1' },
         }),
     );
-    const routed = lnurlServerFetch(config, fetchImpl);
+    const routed = lnurlServerFetch(config, fetchImpl, accounts);
     const response = await routed('https://21.gifts/lnurlp/alice/invoice?amount=1000&nostr=%7B%7D');
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual({ pr: 'lnbc1' });
@@ -94,7 +120,7 @@ describe('lnurlServerFetch', () => {
 
   it('accepts a Request and an empty upstream body', async () => {
     const fetchImpl = vi.fn(async () => new Response(null, { status: 404 }));
-    const routed = lnurlServerFetch(config, fetchImpl);
+    const routed = lnurlServerFetch(config, fetchImpl, accounts);
     const response = await routed(new Request('https://21.gifts/.well-known/lnurlp/alice'));
     expect(response.status).toBe(404);
     expect(await response.text()).toBe('');
@@ -107,7 +133,7 @@ describe('lnurlServerFetch', () => {
     const fetchImpl = vi.fn(async () => {
       throw new Error('down');
     });
-    const routed = lnurlServerFetch(config, fetchImpl);
+    const routed = lnurlServerFetch(config, fetchImpl, accounts);
     await expect(routed('https://21.gifts/lnurlp/a%20b')).rejects.toThrow(
       'LNURL server request failed',
     );

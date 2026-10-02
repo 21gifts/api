@@ -3015,7 +3015,7 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
         address: receiving.address,
         amountMsat,
         zapRequestJson,
-        fetchImpl: lnurlServerFetch(deps.lnurlServer, fetchImpl),
+        fetchImpl: lnurlServerFetch(deps.lnurlServer, fetchImpl, deps.authStore),
       });
       if (!zap.ok) {
         await persistInvoiceAttempt(

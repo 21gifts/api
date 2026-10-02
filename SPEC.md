@@ -5723,7 +5723,7 @@ failure → **503** `{ "error": "Habits are unavailable" }`.
 
 ## Receiving address
 
-Every money route resolves an account's receiving address the same way
+The routes listed below resolve an account's receiving address the same way
 (`receivingAddress`):
 
 - With `LNURL_SERVER_URL` and `PUBLIC_BASE_URL` resolving and a verified
@@ -5734,7 +5734,9 @@ Every money route resolves an account's receiving address the same way
   public URL.
 - Otherwise it is the linked `lightningAddress` (trimmed), as before. Linking
   an external address still runs the NIP-57 mint probe; the wallet-backed
-  address is not probed.
+  address is not probed. A linked address on the host of `PUBLIC_BASE_URL`
+  whose username has no verified wallet is fetched over the public URL, as
+  `GET /.well-known/lnurlp/:username` serves it.
 
 Used by `POST /messages/:id/invoice` (forum gift and compose-target posting
 fee), `POST /conversations/:id/invoice`, `POST /messages/:id/repayment`,
@@ -5745,6 +5747,7 @@ LNURL `nostrPubkey` that must sign a receipt). A verified wallet also clears
 of `POST /messages`. That rule and the profile note do not check the LNURL server, so the
 LNURL server must stay configured once members have verified wallets: with it
 off, a wallet-only member can still post but has no receiving address.
+The spend invoices (`POST /invoices`) still pay the linked Lightning address.
 
 ## Free in-app payments
 
@@ -5780,9 +5783,9 @@ The receipt is signed with the receiver's receipt key, HMAC-SHA256 keyed with
 the `LNURL_ZAP_NSEC_HEX` bytes over `lnurl-zap-receipt-key:`, the lower-case
 hex of the wallet key, and a counter byte from 0 (the first valid secp256k1
 secret key); its public key is the `nostrPubkey` the LNURL server advertises
-for that member. The receipt is fed straight into the receipt ingest. When the ingest credited this receipt, it is published to the
-relays named in the zap request and the row is settled (transfer id and
-receipt id). Publishing is best effort: when no relay accepts the receipt, the api logs `spark.receipt.publish_failed` and the row is still settled. When another receipt already owns the payment hash of `pr`, the
+for that member. The receipt is fed straight into the receipt ingest. When the ingest credited this receipt and it holds the payment hash claim, it
+is published to the relays named in the zap request (if any) and the row is
+settled (transfer id and receipt id). Publishing is best effort: when no relay accepts the receipt, the api logs `spark.receipt.publish_failed` and the row is still settled. When another receipt already owns the payment hash of `pr`, the
 row is settled without publishing. Otherwise the row stays open and the next
 tick ingests the same receipt again. Crediting is the existing
 receipt path; the payment hash is claimed once, so a second receipt for the
