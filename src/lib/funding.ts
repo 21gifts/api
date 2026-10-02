@@ -111,6 +111,9 @@ export const APPLICATION_PAUSE_EXEMPT_USERNAMES: readonly string[] = [
 /**
  * Whether this username may apply while applications are paused.
  * Exact match. Null, omitted, and every other username are not exempt.
+ *
+ * @param username - Account username, or null or undefined when it is unset.
+ * @returns `true` only for `joey-rosima`, `vincent`, and `jewel-bacolbas`.
  */
 export function applicationPauseExempt(username: string | null | undefined): boolean {
   return (

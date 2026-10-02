@@ -136,7 +136,7 @@ Public base URLs used in examples:
 | POST   | `/trust/confirm-moderator`                           | Bearer (moderator+)        | Staff: second, independent confirmation → `moderator`                                                                                                                                                                                                                                                                                                  |
 | POST   | `/trust/reject-moderator`                            | Bearer (moderator+)        | Staff: reject an open proposal (subject stays verified)                                                                                                                                                                                                                                                                                                |
 | POST   | `/trust/appoint-moderator`                           | Bearer (founder)           | Founder: appoint a moderator directly                                                                                                                                                                                                                                                                                                                  |
-| POST   | `/funding/apply`                                     | Bearer                     | Paused. joey-rosima, vincent, jewel-bacolbas still get 400/409/200. Every other verified caller → 403 Applications are paused, no write. basis → 403 Forbidden.                                                                                                                                                                                        |
+| POST   | `/funding/apply`                                     | Bearer                     | Paused except joey-rosima, vincent, jewel-bacolbas, who still get 400/409/200/503. Every other verified caller → 403 Applications are paused, no write. basis → 403 Forbidden.                                                                                                                                                                         |
 | GET    | `/funding/applications`                              | Bearer (moderator+)        | Staff pending grant queue                                                                                                                                                                                                                                                                                                                              |
 | GET    | `/funding/applications/:accountId`                   | Bearer (moderator+)        | Staff grant review                                                                                                                                                                                                                                                                                                                                     |
 | POST   | `/funding/trial`                                     | Bearer (moderator+)        | One-UTC-day trial                                                                                                                                                                                                                                                                                                                                      |
@@ -1194,14 +1194,25 @@ not fail the POST.
 ### `POST /funding/apply`
 
 Bearer session. Role `basis` → **403** `{ "error": "Forbidden" }`.
-While applications are paused, usernames `joey-rosima`, `vincent`, and
-`jewel-bacolbas` still run the About me, photo, location, and grant write
-and receive the existing 400/409/200 outcomes. Every other verified caller
-still gets **403** `{ "error": "Applications are paused" }` with no grant
-write. Those checks and the grant write also run when the route is built
-with `applicationsPaused` set to false. Production omits that flag. Logs
-`funding.apply.paused` `{ accountId }` while paused (not for an exempt
-caller). Missing session → **401** `{ "error": "Unauthorized" }`.
+While applications are paused, every verified caller except
+`joey-rosima`, `vincent`, and `jewel-bacolbas` gets **403**
+`{ "error": "Applications are paused" }` with no About me, photo,
+location, or grant write, and the route logs `funding.apply.paused`
+`{ accountId }`. Those three usernames are not paused. They, and every
+caller when the route is built with `applicationsPaused` set to false,
+still run the checks below. Production omits that flag. Apply requires a
+filled About me (real bio, not empty/name-only), an About me photo, and a
+non-empty location, checked in that order: missing About me → **400**
+`{ "error": "About me is required" }`; missing photo → **400**
+`{ "error": "About me photo is required" }`; missing location → **400**
+`{ "error": "Location is required" }`. Effective status `none` or
+`rejected` upserts `pending` (`appliedAt` now; trial/admitted/decided
+cleared). `pending` / `trial` / `admitted`, or a pending write that
+matches no row, → **409** `{ "error": "Conflict" }`. **200**
+`{ "funding": OwnerFundingJson }` logs `funding.applied` `{ accountId }`.
+Store throw → **503** `{ "error": "Funding is unavailable" }`
+(`funding.write.failed`). Missing session → **401**
+`{ "error": "Unauthorized" }`.
 
 ### `GET /funding/applications`
 
