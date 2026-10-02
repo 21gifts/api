@@ -195,10 +195,11 @@ export function parseQuerySparkInvoicesResponse(
  * Ask the Spark coordinator for the status of up to {@link SPARK_QUERY_LIMIT} invoices.
  *
  * `POST <operatorUrl>/spark.SparkService/query_spark_invoices` with
- * `content-type: application/grpc-web+proto` and `x-grpc-web: 1`. Never logs
- * an invoice.
+ * `content-type: application/grpc-web+proto` and `x-grpc-web: 1`. The RPC path
+ * is appended to the URL path, so a query on `operatorUrl` is kept and a
+ * fragment dropped. Never logs an invoice.
  *
- * @param operatorUrl - Coordinator base URL without a trailing slash.
+ * @param operatorUrl - Coordinator base URL.
  * @param fetchImpl - Injected `fetch`.
  * @param invoices - Invoice strings (at most {@link SPARK_QUERY_LIMIT}).
  * @returns Invoice states, or `unreachable` (fetch or body read failed),
@@ -212,7 +213,10 @@ export async function querySparkInvoices(
   let response: Response;
   let body: Uint8Array;
   try {
-    response = await fetchImpl(`${operatorUrl}/spark.SparkService/query_spark_invoices`, {
+    const endpoint = new URL(operatorUrl);
+    endpoint.pathname = `${endpoint.pathname.replace(/\/$/, '')}/spark.SparkService/query_spark_invoices`;
+    endpoint.hash = '';
+    response = await fetchImpl(endpoint.toString(), {
       method: 'POST',
       headers: { 'content-type': 'application/grpc-web+proto', 'x-grpc-web': '1' },
       body: encodeQuerySparkInvoicesRequest(invoices),

@@ -2043,7 +2043,7 @@
 
 ## Function: querySparkInvoices
 
-- **Purpose:** Ask the Spark coordinator for the status of up to 100 invoices: `POST <operatorUrl>/spark.SparkService/query_spark_invoices` with `content-type: application/grpc-web+proto` and `x-grpc-web: 1`, no authentication, no redirects, 10 s timeout. Never logs an invoice.
+- **Purpose:** Ask the Spark coordinator for the status of up to 100 invoices: `POST <operatorUrl>/spark.SparkService/query_spark_invoices` (the RPC path appended to the URL path, a query kept, a fragment dropped) with `content-type: application/grpc-web+proto` and `x-grpc-web: 1`, no authentication, no redirects, 10 s timeout. Never logs an invoice.
 - **Inputs:** Operator base URL, injected fetch, invoice strings.
 - **Returns / side effects:** The parsed result, `{ ok: false, reason: 'unreachable' }` when the fetch or body read fails, or `{ ok: false, reason: 'http' }` for an HTTP status other than 200.
 - **Used by:** `runSparkInvoiceTick`.
@@ -2057,7 +2057,7 @@
 
 ## Function: buildZapReceipt
 
-- **Purpose:** Build and sign the NIP-57 kind 9735 receipt for a zap invoice paid by a Spark transfer. Tags: `p` (recipient from the zap request), `P` (zap request pubkey), `e` (zapped event, when present), `bolt11` (the zap `pr`), `description` (the exact zap request string the invoice commits to). No `preimage` tag; content is empty. `created_at` is the zap request's `created_at`, so the same zap invoice always gives the same receipt id.
+- **Purpose:** Build and sign the NIP-57 kind 9735 receipt for a zap invoice paid by a Spark transfer. Tags: `p` (recipient from the zap request), `P` (zap request pubkey), `e` (zapped event, when present), `bolt11` (the zap `pr`), `description` (the exact zap request string the invoice commits to). No `preimage` tag; content is empty. `created_at` is the zap request's `created_at`, so the same zap invoice and signing key always give the same receipt id.
 - **Inputs:** `{ secretKey, bolt11, zapRequestJson }`.
 - **Returns / side effects:** `{ event, relays }` with the deduplicated relays named in the zap request's `relays` tag, or `null` when the zap request is not a kind 9734 object with a pubkey, a non-negative integer `created_at`, and a `p` tag. No I/O.
 - **Used by:** `runSparkInvoiceTick`.
