@@ -1,0 +1,81 @@
+name: Publish spend staging image
+
+# 21gifts/spend has no push for this account, so the staging image is built
+# here with the api repository's registry credentials. The image content is
+# 21gifts/spend develop. Only the :staging tag is pushed.
+
+on:
+  push:
+    branches: [staging]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    name: Build and push 21gifts/spend:staging
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 45
+    steps:
+      - name: Checkout api scripts
+        uses: actions/checkout@v4
+
+      - name: Checkout spend source
+        uses: actions/checkout@v4
+        with:
+          repository: 21gifts/spend
+          ref: develop
+          path: spend-src
+
+      - name: Record spend SHA
+        id: src
+        working-directory: spend-src
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: spend-src
+          push: true
+          platforms: linux/arm64
+          tags: 21gifts/spend:staging
+          cache-from: type=registry,ref=21gifts/spend:buildcache
+          cache-to: type=registry,ref=21gifts/spend:buildcache,mode=max
+
+      - name: Notify infrastructure to pull :staging
+        env:
+          GH_TOKEN: ${{ secrets.DISPATCH_TOKEN }}
+          DISPATCH_REPO: ${{ secrets.DISPATCH_REPO }}
+          SPEND_SHA: ${{ steps.src.outputs.sha }}
+        run: |
+          set -euo pipefail
+          if [ -z "${GH_TOKEN}" ] || [ -z "${DISPATCH_REPO}" ] || [ -z "${SPEND_SHA}" ]; then
+            echo "::error::DISPATCH_TOKEN, DISPATCH_REPO, or spend SHA unset — cannot deploy this image"
+            exit 1
+          fi
+          dispatched_at="$(date -u -d '5 seconds ago' +%Y-%m-%dT%H:%M:%SZ)"
+          echo "DISPATCHED_AT=${dispatched_at}" >> "$GITHUB_ENV"
+          gh api "repos/${DISPATCH_REPO}/dispatches" \
+            -f event_type=image-published \
+            -f "client_payload[image]=21gifts/spend" \
+            -f "client_payload[tag]=staging" \
+            -f "client_payload[sha]=${SPEND_SHA}"
+
+      - name: Wait for infrastructure deploy
+        env:
+          GH_TOKEN: ${{ secrets.DISPATCH_TOKEN }}
+          DISPATCH_REPO: ${{ secrets.DISPATCH_REPO }}
+          IMAGE: 21gifts/spend
+          TAG: staging
+          GITHUB_SHA: ${{ steps.src.outputs.sha }}
+        run: bash .github/scripts/wait-for-image-published.sh

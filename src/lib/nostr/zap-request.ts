@@ -1,4 +1,4 @@
-import type { EventTemplate } from 'nostr-tools/pure';
+import type { EventTemplate, VerifiedEvent } from 'nostr-tools/pure';
 
 /**
  * Build an unsigned kind:9734 zap request (not published to relays).
@@ -27,6 +27,26 @@ export function buildZapRequest(args: {
       ['relays', ...args.relays],
     ],
   };
+}
+
+/**
+ * Serialise a signed kind 9734 event with the NIP-01 field order
+ * `id, pubkey, created_at, kind, tags, content, sig`.
+ *
+ * @param event - Signed zap request.
+ * @returns JSON string with exactly those seven keys in that order; the value
+ *   sent as LNURL `nostr=` and hashed by `isNip57Invoice`.
+ */
+export function serializeZapRequest(event: VerifiedEvent): string {
+  return JSON.stringify({
+    id: event.id,
+    pubkey: event.pubkey,
+    created_at: event.created_at,
+    kind: event.kind,
+    tags: event.tags,
+    content: event.content,
+    sig: event.sig,
+  });
 }
 
 /**
