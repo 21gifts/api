@@ -845,6 +845,7 @@ export function invoiceRoutes(deps: InvoiceRouteDeps): Hono {
         amountMsat,
         createdAt: now,
         expiresAt: now + GIFT_INVOICE_TTL_MS,
+        ...(parsed.data.comment === undefined ? {} : { comment: parsed.data.comment }),
         ...(parsed.data.messageId === undefined
           ? {}
           : {
