@@ -1377,7 +1377,7 @@ const translateBody = z.object({
  * optional `translationStore` (default `InMemoryTranslationStore`), and
  * test injects `waitSatsSleep` / `waitSatsTimeoutMs` / `waitSatsPollMs`
  * (defaults `defaultWaitSatsSleep` / `WAIT_SATS_TIMEOUT_MS` /
- * `WAIT_SATS_POLL_MS`).
+ * `WAIT_SATS_POLL_MS`), and the optional `lnurlServer` and `sparkInvoices`.
  * @returns A Hono app with `GET /`, `POST /`, `GET /compose-target`,
  * `GET /places`, `GET /:id/photo` plus `.jpg` / `.jpeg` / `.png` / `.webp`,
  * `GET /:id/video.mp4|.webm|.mov`, public `GET /:id/replies` (`accountId` when
