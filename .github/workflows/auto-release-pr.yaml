@@ -34,37 +34,49 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          for HEAD_BRANCH in develop staging; do
-            if ! git rev-parse --verify "origin/${HEAD_BRANCH}" >/dev/null 2>&1; then
-              echo "skip ${HEAD_BRANCH}: branch is not on origin"
-              continue
+          open_release() {
+            local head="$1"
+            local base="$2"
+            local ready_for="$3"
+            local require_file_diff="$4"
+            if ! git rev-parse --verify "origin/${head}" >/dev/null 2>&1; then
+              echo "skip ${head}: branch is not on origin"
+              return 0
             fi
-            if ! git rev-parse --verify origin/main >/dev/null 2>&1; then
-              echo "skip ${HEAD_BRANCH}: main is not on origin"
-              continue
+            if ! git rev-parse --verify "origin/${base}" >/dev/null 2>&1; then
+              echo "skip ${head}: ${base} is not on origin"
+              return 0
             fi
-            PR_COUNT="$(gh pr list --base main --head "${HEAD_BRANCH}" --state open --json number --jq 'length')"
-            if [ "${PR_COUNT}" -gt 0 ]; then
-              echo "release pull request for ${HEAD_BRANCH} is already open"
-              continue
+            local pr_count
+            pr_count="$(gh pr list --base "${base}" --head "${head}" --state open --json number --jq 'length')"
+            if [ "${pr_count}" -gt 0 ]; then
+              echo "release pull request for ${head} into ${base} is already open"
+              return 0
             fi
-            DIFF_COUNT="$(git rev-list --count "origin/main..origin/${HEAD_BRANCH}")"
-            if [ "${DIFF_COUNT}" -eq 0 ]; then
-              echo "no commits on ${HEAD_BRANCH} beyond main"
-              continue
+            local diff_count
+            diff_count="$(git rev-list --count "origin/${base}..origin/${head}")"
+            if [ "${diff_count}" -eq 0 ]; then
+              echo "no commits on ${head} beyond ${base}"
+              return 0
+            fi
+            if [ "${require_file_diff}" = "true" ] && git diff --quiet "origin/${base}...origin/${head}"; then
+              echo "no file changes on ${head} beyond ${base}"
+              return 0
             fi
             printf '%s\n' \
               "## Automatic Release PR" \
               "" \
-              "**Commits:** ${DIFF_COUNT} new commit(s)" \
+              "**Commits:** ${diff_count} new commit(s)" \
               "" \
               "- [ ] Review all changes" \
               "- [ ] Verify CI passes" \
-              "- [ ] Merge when ready for production" \
-              > "/tmp/pr-body-${HEAD_BRANCH}.md"
+              "- [ ] Merge when ready for ${ready_for}" \
+              > "/tmp/pr-body-${head}.md"
             gh pr create \
-              --base main \
-              --head "${HEAD_BRANCH}" \
-              --title "Release: ${HEAD_BRANCH} -> main" \
-              --body-file "/tmp/pr-body-${HEAD_BRANCH}.md"
-          done
+              --base "${base}" \
+              --head "${head}" \
+              --title "Release: ${head} -> ${base}" \
+              --body-file "/tmp/pr-body-${head}.md"
+          }
+          open_release develop main production false
+          open_release staging develop develop true
