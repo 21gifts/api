@@ -112,6 +112,20 @@
 - **Used by:** The browser pay page minting the open till amount when a charge is present, not a freely typed amount.
 - **Auth:** none.
 
+## Endpoint: POST /lnurl/pay-request
+
+- **Purpose:** Fetches and checks the LNURL pay request of a Lightning Address or bech32 LNURL on another host, for addresses the app cannot read from the browser (no CORS). Body `{ target }`; an optional `lightning:` prefix is dropped and the target is lowercased. The URL must be `https`, on a DNS name with at least two labels (no address literal, no `localhost`, no `.local` / `.internal` / `.localhost`, no trailing dot), with no port and no credentials. The fetch does not follow redirects, stops after 5 s, and reads at most 64 KB. The pay request needs `tag: 'payRequest'`, an `https` callback that passes the same host checks, a string `metadata`, safe-integer `minSendable` ≥ 1 and `maxSendable` ≥ `minSendable`, and an optional non-negative integer `commentAllowed` (missing or null is 0). Response `{ target, minSendableMsat, maxSendableMsat, commentAllowed, description, domain }`; `description` is the metadata's `text/plain` entry or an empty string.
+- **Errors:** 401 `{ error: 'Unauthorized' }` without a session; 429 `{ error: 'Too many requests' }` with `Retry-After: 60` over 30 relay requests per member per minute (shared with `POST /lnurl/invoice`); 400 `{ error: 'Not a payable address' }` for a missing or malformed target, a target on the host of `PUBLIC_BASE_URL`, or a pay request that fails the checks; 404 `{ error: 'Address not found' }` for HTTP 404/410 or an LNURL `ERROR` body; 502 `{ error: 'Address could not be reached' }` for a network failure, timeout, redirect, other non-2xx status, oversize or non-JSON body.
+- **Used by:** The app when a member pays a Lightning Address or LNURL on another host with the in-app wallet.
+- **Auth:** Bearer session.
+
+## Endpoint: POST /lnurl/invoice
+
+- **Purpose:** Resolves `target` again (same checks as `POST /lnurl/pay-request`; the client never sends a callback URL), checks `amountMsat` and `comment`, and requests a BOLT11 from the callback with `amount` and, when non-empty, `comment`. Body `{ target, amountMsat, comment? }`. The invoice must decode to exactly `amountMsat` and carry a description hash equal to SHA-256 of the pay request's `metadata`. Response `{ pr }`. Logs carry a short reason and status only, never the target, comment, or invoice.
+- **Errors:** As `POST /lnurl/pay-request`, plus 400 `{ error: 'Amount out of range' }` when `amountMsat` is not a number, not a whole number of millisatoshis, or outside `[minSendable, maxSendable]`; 400 `{ error: 'Comment too long' }` when `comment` is not a string (null is no comment) or has more characters than `commentAllowed`; 502 `{ error: 'Address could not be reached' }` when the invoice fetch fails or the invoice is missing, undecodable, for another amount, or for another description hash.
+- **Used by:** The app before it pays the returned `pr` with the in-app wallet.
+- **Auth:** Bearer session.
+
 ## Endpoint: GET /apple-touch-icon.png
 
 - **Purpose:** PNG brand mark (apple-touch). `Cache-Control: public, max-age=86400`.
