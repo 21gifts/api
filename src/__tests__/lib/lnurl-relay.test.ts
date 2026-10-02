@@ -252,6 +252,9 @@ describe('resolveRelayPayRequest', () => {
     ['fe80::1'],
     ['ff02::1'],
     ['64:ff9b::a00:1'],
+    ['2002:7f00:1::'],
+    ['2001:db8::1'],
+    ['192.0.2.1'],
   ])('refuses a target that resolves to %s with 400 and does not fetch', async (address) => {
     const { fetchImpl, calls } = payRequestFetch();
     const result = await resolveRelayPayRequest({
@@ -276,7 +279,7 @@ describe('resolveRelayPayRequest', () => {
     ['223.255.255.254'],
     ['::ffff:8.8.8.8'],
     ['2001:4860:4860::8888'],
-    ['3fff::1'],
+    ['2a00:1450:4001::1'],
   ])('accepts a target that resolves to %s', async (address) => {
     const { fetchImpl } = payRequestFetch();
     const result = await resolveRelayPayRequest({

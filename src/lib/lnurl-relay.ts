@@ -1,9 +1,9 @@
 import { createHash } from 'node:crypto';
 import { lookup } from 'node:dns/promises';
-import { isIPv4 } from 'node:net';
 import { inspectBolt11 } from '@/lib/bolt11';
 import { normalizeLightningAddress } from '@/lib/lightning-address';
 import type { FetchFn } from '@/lib/lnurlp';
+import { isPublicIp } from '@/lib/public-ip';
 
 /**
  * LNURL-pay relay for addresses on other hosts.
@@ -273,36 +273,6 @@ async function systemLookup(host: string): Promise<string[]> {
 }
 
 /**
- * Whether an IP address is a public unicast address.
- *
- * IPv4: not `0/8`, `10/8`, `100.64/10`, `127/8`, `169.254/16`, `172.16/12`,
- * `192.168/16`, `198.18/15`, or `224/3`. IPv4-mapped IPv6 is checked as
- * IPv4. Other IPv6: only global unicast `2000::/3`.
- *
- * @param ip - Address text from the resolver.
- * @returns `true` for a public address.
- */
-function isPublicAddress(ip: string): boolean {
-  const lower = ip.toLowerCase();
-  const v4 = lower.startsWith('::ffff:') ? lower.slice('::ffff:'.length) : lower;
-  if (isIPv4(v4)) {
-    const [a, b] = v4.split('.').map(Number) as [number, number];
-    const blocked =
-      a === 0 ||
-      a === 10 ||
-      a === 127 ||
-      a >= 224 ||
-      (a === 100 && b >= 64 && b <= 127) ||
-      (a === 169 && b === 254) ||
-      (a === 172 && b >= 16 && b <= 31) ||
-      (a === 192 && b === 168) ||
-      (a === 198 && (b === 18 || b === 19));
-    return !blocked;
-  }
-  return /^[23][0-9a-f]{0,3}:/.test(lower);
-}
-
-/**
  * Resolve the URL's host and require public addresses only.
  *
  * @param url - Checked outbound URL.
@@ -319,7 +289,7 @@ async function hostAddresses(url: URL, deps: RelayDeps): Promise<'ok' | 'private
   if (addresses.length === 0) {
     return 'unresolved';
   }
-  return addresses.every(isPublicAddress) ? 'ok' : 'private';
+  return addresses.every(isPublicIp) ? 'ok' : 'private';
 }
 
 /**

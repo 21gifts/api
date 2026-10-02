@@ -136,6 +136,7 @@ api/
 │   │   ├── log.ts            # JSON event lines (console.warn); requestLog middleware
 │   │   ├── lnurl-pay.ts      # LUD-16 → LNURL-pay invoice (amount + LUD-12 comment)
 │   │   ├── lnurl-relay.ts    # Outside Lightning Address / LNURL pay request + invoice for the app
+│   │   ├── public-ip.ts      # Public unicast check for resolved addresses (relay + external profile)
 │   │   ├── gift-invoice.ts   # LUD-16 → LNURL-pay invoice for gift amounts (no 10-sat cap)
 │   │   ├── bolt11.ts         # Decode/inspect BOLT11 (hash, amount, description / description_hash)
 │   │   ├── proof.ts          # sha256(preimage) === payment hash
@@ -208,6 +209,7 @@ api/
 │       │   ├── log.test.ts
 │       │   ├── lnurl-pay.test.ts
 │       │   ├── lnurl-relay.test.ts
+│       │   ├── public-ip.test.ts
 │       │   ├── gift-invoice.test.ts
 │       │   ├── bolt11.test.ts
 │       │   ├── proof.test.ts
@@ -486,8 +488,8 @@ the default boot surface (today: `requestPayInvoice`, which needs a configured
 `resolveCandlesUrl`, `fetchFiatRates`, `parseFrankfurterRates`,
 `resolveFrankfurterUrl`, and `SqlGiftRecorder`, which need `DATABASE_URL`;
 `verifiedExternalZapRequest`, `externalDisplayName`, `resolveExternalProfileName`,
-`resolveExternalProfileFields`, `ExternalIngestLimiter`, and
-`notifyExternalForumReply`, which have no direct default-boot HTTP trigger;
+`resolveExternalProfileFields`, `ExternalIngestLimiter`, `isPublicIp` (only reached after a
+host resolves), and `notifyExternalForumReply`, which have no direct default-boot HTTP trigger;
 `InMemoryInvoiceStore`, `requestGiftInvoice`, `decodeBolt11`, `newInvoiceId`,
 `normalizeHex32`, `preimageMatchesHash`, `NoopGiftRecorder`, and
 `recipientHandleFromAddress`, which need `SPEND_API_TOKEN` and a reachable
