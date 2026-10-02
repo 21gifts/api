@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { Hono } from 'hono';
 import { unsignedNostrDefaults, type ForumPhoto, type MessageRow } from '@/lib/message';
 import { InMemoryMessageStore, type MessageStore } from '@/lib/message-store';
+import type { MapPush } from '@/lib/ocp-place';
 import {
   MESSAGE_VIDEO_MAX_BYTES,
   readForumVideoBytes,
@@ -87,8 +88,15 @@ function videoRow(overrides: Partial<MessageRow> = {}): MessageRow {
   };
 }
 
-function mount(store: MessageStore, debugToken: string | undefined): Hono {
-  return new Hono().route('/debug/messages', debugMessagesRoutes({ store, debugToken }));
+function mount(store: MessageStore, debugToken: string | undefined, mapPush?: MapPush): Hono {
+  return new Hono().route(
+    '/debug/messages',
+    debugMessagesRoutes({
+      store,
+      debugToken,
+      ...(mapPush === undefined ? {} : { mapPush }),
+    }),
+  );
 }
 
 describe('debugMessagesRoutes', () => {
@@ -907,5 +915,47 @@ describe('debugMessagesRoutes', () => {
     expect(parsedEvents(warn).some((e) => e['event'] === 'debug.messages.restore_failed')).toBe(
       true,
     );
+  });
+
+  it('puts a restored live top-level shop pin', async () => {
+    const store = new InMemoryMessageStore();
+    await store.create(forumRow({ text: 'Open #21GiftsShop' }));
+    await store.setPlace(HIDDEN_ID, { lat: 47.3, lng: 8.5, label: 'Stall' });
+    await store.markDeleted(HIDDEN_ID, HIDDEN_AT, 'staff');
+    const calls: Array<{ method: string; body: string }> = [];
+    const mapPush: MapPush = {
+      baseUrl: 'http://map.test',
+      token: 'ingest',
+      fetchImpl: async (_input, init) => {
+        calls.push({ method: String(init.method), body: String(init.body) });
+        return new Response('{}', { status: 201 });
+      },
+    };
+    const app = mount(store, 'secret', mapPush);
+    const res = await app.request(`/debug/messages/${HIDDEN_ID}/restore`, {
+      method: 'POST',
+      headers: { authorization: 'Bearer secret' },
+    });
+    expect(res.status).toBe(204);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.method).toBe('PUT');
+    expect(JSON.parse(calls[0]?.body ?? '{}')).toMatchObject({
+      techProvider: '21.gifts',
+      origin: '21gifts',
+      externalId: HIDDEN_ID,
+    });
+  });
+
+  it('returns 204 on shop restore when mapPush is omitted', async () => {
+    const store = new InMemoryMessageStore();
+    await store.create(forumRow({ text: 'Open #21GiftsShop' }));
+    await store.setPlace(HIDDEN_ID, { lat: 47.3, lng: 8.5, label: 'Stall' });
+    await store.markDeleted(HIDDEN_ID, HIDDEN_AT, 'staff');
+    const app = mount(store, 'secret');
+    const res = await app.request(`/debug/messages/${HIDDEN_ID}/restore`, {
+      method: 'POST',
+      headers: { authorization: 'Bearer secret' },
+    });
+    expect(res.status).toBe(204);
   });
 });

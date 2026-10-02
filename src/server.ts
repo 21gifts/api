@@ -208,9 +208,9 @@ export interface AppDeps {
    */
   messageStore?: MessageStore;
   /**
-   * Optional push of a first shop pin to `POST /map/places`. Default:
-   * {@link resolveMapPush} on `env`. Off while `SHOP_PLACE_PUSH_ENABLED` is
-   * false, even when the URL and token are set.
+   * Optional push of a shop pin to `PUT /map/places` (and `DELETE` on
+   * clear or hide). Default: {@link resolveMapPush} on `env`. Off while
+   * `SHOP_PLACE_PUSH_ENABLED` is false, even when the URL and token are set.
    */
   mapPush?: MapPush;
   /** Optional AES-256 KEK for custodial nsec (memory boots may omit). */
@@ -523,7 +523,14 @@ export function createApp(deps: AppDeps = {}): Hono {
   app.route('/debug/diagnostics', debugDiagnosticsRoutes({ store: diagnosticStore, debugToken }));
   app.route('/diagnostics', diagnosticsRoutes({ store: diagnosticStore, now }));
   app.route('/debug/db', debugDbRoutes({ store: deps.debugDbStore, debugToken }));
-  app.route('/debug/messages', debugMessagesRoutes({ store: messageStore, debugToken }));
+  app.route(
+    '/debug/messages',
+    debugMessagesRoutes({
+      store: messageStore,
+      debugToken,
+      ...(mapPush === undefined ? {} : { mapPush }),
+    }),
+  );
   app.route('/debug/external-pubkeys', debugExternalRoutes({ store: messageStore, debugToken }));
   app.route(
     '/debug',
