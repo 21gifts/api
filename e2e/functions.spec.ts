@@ -466,14 +466,18 @@ test('Function: debugRoutes — GET /debug/accounts with the e2e token is 200', 
   expect(Array.isArray(body.accounts)).toBe(true);
 });
 
-test('Function: mergeAccounts — POST /debug/accounts/merge with an empty body is 400', async ({
+test('Function: mergeAccounts — POST /debug/accounts/merge is 503 on default boot', async ({
   request,
 }) => {
   const res = await request.post('/debug/accounts/merge', {
     headers: DEBUG,
-    data: {},
+    data: {
+      from: '00000000-0000-4000-8000-000000000001',
+      into: '00000000-0000-4000-8000-000000000002',
+    },
   });
-  expect(res.status()).toBe(400);
+  expect(res.status()).toBe(503);
+  expect(((await res.json()) as { error: string }).error).toBe('Merge is unavailable');
 });
 
 test('Function: bearerMatchesDebugToken — GET /debug/accounts without bearer is 401', async ({
