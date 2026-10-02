@@ -28,6 +28,7 @@ import { wellKnownRoutes } from '@/routes/well-known';
 import { payRoutes } from '@/routes/pay';
 import { contactRoutes } from '@/routes/contact';
 import { posRoutes } from '@/routes/pos';
+import { grantContinuationRoutes } from '@/routes/grant-continuation';
 import { shopActivityRoutes } from '@/routes/shop-activity';
 import { conversationRoutes } from '@/routes/conversations';
 import { notificationRoutes } from '@/routes/notifications';
@@ -665,6 +666,10 @@ export function createApp(deps: AppDeps = {}): Hono {
   app.route(
     '/shops/activity',
     shopActivityRoutes({ authStore: store, now, messages: messageStore, pos: posStore }),
+  );
+  app.route(
+    '/funding/goal',
+    grantContinuationRoutes({ authStore: store, now, messages: messageStore, pos: posStore }),
   );
   app.route(
     '/conversations',

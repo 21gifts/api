@@ -144,6 +144,7 @@ Public base URLs used in examples:
 | POST   | `/funding/reject`                                    | Bearer (moderator+)        | Reject grant                                                                                                                                                                                                                                                                                                                                           |
 | GET    | `/funding/payout-days`                               | Bearer (moderator+)        | Staff seven-UTC-day grant payout matrix (`days`: `blocked` / `missed` / `paid`; `welcome`: seven booleans, same order)                                                                                                                                                                                                                                 |
 | GET    | `/shops/activity`                                    | none                       | 30-UTC-day shop till-charge counts (`days`: `{ day, shopCount }`, oldest first, zeros included)                                                                                                                                                                                                                                                        |
+| GET    | `/funding/goal`                                      | Bearer (any role)          | 7-UTC-day shop till-charge counts plus how many shops had a charge on 5 of those days (`days`, `qualifyingShops`)                                                                                                                                                                                                                                      |
 | GET    | `/messages`                                          | none for active / Bearer   | Public active window with no header; otherwise Bearer. List top-level notes (+ visible `replyCount`); 409 if rules missing; name-copy notes without photo, extra stills, or video are omitted; About me text stays                                                                                                                                     |
 | GET    | `/messages/compose-target`                           | Bearer                     | Platform profile note `{ messageId, sats }` for a 1-sat compose fee to 21.gifts                                                                                                                                                                                                                                                                        |
 | GET    | `/messages/places`                                   | Bearer                     | Live top-level forum pins; 409 if rules missing                                                                                                                                                                                                                                                                                                        |
@@ -1256,6 +1257,28 @@ Logs `funding.payouts.listed` `{ count }`.
 No session → **401** `{ "error": "Unauthorized" }`. Below moderator →
 **403** `{ "error": "Forbidden" }`. Store throw → **503**
 `{ "error": "Funding is unavailable" }` (`funding.payouts.failed`).
+
+### `GET /funding/goal`
+
+Bearer session. Any signed-in role, including `basis`. Missing or
+invalid bearer is **401** `{ "error": "Unauthorized" }`. Seven UTC days
+ending on the server clock's today, oldest first. A shop is a live
+top-level forum note (`parent_id` null, `deleted_at` null) whose text
+has the hashtag token `21GiftsShop` (case-insensitive, not followed by
+`[A-Za-z0-9_]`) and whose `shop_account_id` is set. That note counts on
+a UTC day when the account currently assigned to it has at least one
+`pos_charge` with `created_at` on that day, any status (`pending`,
+`cancelled`, or `expired`). Distinct notes, not accounts. A note
+qualifies when that account has a charge on at least 5 distinct UTC
+days inside the window. Those 5 days need not be consecutive.
+Duplicate note ids count once. Reassigning the account, clearing it,
+removing the hashtag, or soft-deleting the note rewrites every past
+day. This is not `GET /shops/activity` and not a historical usage log.
+JSON `{ "days": [ { "day": "YYYY-MM-DD", "shopCount": 0 } ], "qualifyingShops": 0 }`
+with exactly 7 day objects, missing days included as zero. No
+Sunday-rest gate. A store throw → **503**
+`{ "error": "Funding goal is unavailable" }` and log
+`funding.goal.failed` with no account, note, or charge ids.
 
 ### `GET /shops/activity`
 
@@ -3988,17 +4011,20 @@ column is true (omitted when null; never false). May include `goalTermDays`
 when the stored column is not null (omitted when null). May include `accountId` (21gifts author id) and `mentions`
 (`{ accountId, username }[]`, only when that list is non-empty). A stored
 self mark does not notify the author. Other marks fan out one
-`forum_mention` per person. No
+`forum_mention` per person. That is the only in-app row and the only Web
+Push for that note for that person (`forum_post` / `forum_reply` exclude
+them). `GET /notifications` drops and deletes a stored generic row when
+the scan also has `forum_mention` for the same `replyId`. No
 `replyCount`, and no photo or video bytes in the JSON. `sats` is 0 and
 `payable` is false until the worker signs the note (and stays false without
 author LN). `role` is the posting session account's live `account.role`. Web Push and in-app rows for a **top-level** note (`notifyForumPost`, kind
 `forum_post`, `url` `/messages/<id>`, `tag` `forum_post:<id>`) and for a
 **reply** (`notifyForumReply`, kind `forum_reply`, `url` `/messages/<replyId>`,
 `tag` `forum_reply:<replyId>`) fan out in-app to every account except the
-actor (no-op when the actor is the official platform account), then filter recipients by each account's `notificationLevel`
-(`all` / `active` / `mentions`). Web Push still goes only to bell subscribers
+actor and except each account marked on the created row (no-op when the actor is the official platform account), then filter recipients by each account's `notificationLevel`
+(`all` / `active` / `mentions`). The excluded ids are the created row's mention account ids other than the author, deduped; an empty list omits `excludeAccountIds`. Web Push still goes only to bell subscribers
 and uses the same level filter. Damus-only parents still
-fan out. A self-reply skips only the actor. `GET /notifications` applies the
+fan out. A self-reply skips only the actor. The same mark exclusion applies to the reply fan-out. `GET /notifications` applies the
 same `notificationLevel` filter to stored rows.
 The booted process always has notification and push stores (in-memory without
 `DATABASE_URL`, Postgres when it is set). Photo-only empty text still
@@ -5220,16 +5246,25 @@ Bearer session required. Lists the recipient's notifications newest-first
 plus `unreadCount`. Fan-out already applied the owner's
 `notificationLevel` when the row was written; this list applies the same
 `notificationLevel` filter to stored rows (`notificationsMatchingLevel`
-on the newest 1000). After the level filter, drop `forum_post` /
+on the newest 1000). From those scanned rows (this recipient only), if a
+`forum_mention` has `replyId` R, drop every `forum_post` and
+`forum_reply` in that scan with the same `replyId` before the level
+filter and the hidden-message filter. Do not drop `zap`, `forum_mention`,
+`moderator_appointed`, or `moderator_proposal`. Best-effort
+`deleteForRecipient` of those dropped ids (`notifications.duplicate.purged`;
+a throw logs `notifications.duplicate.purge_failed` and still returns 200
+with the filtered list). After the level filter, drop `forum_post` /
 `forum_reply` / `forum_mention` whose parent message is missing or hidden; also drop
 `forum_reply` when the child (`replyId`) is missing or hidden. Never drop
 `moderator_appointed` or `moderator_proposal` (do not look up a forum
 message; do not add the parent id to the purge set). Zap only checks the
 parent (`replyId` is a receipt-derived UUID, not a message id).
 Best-effort purge of those message ids. Then cap the kept list at **200**.
-`unreadCount` is unread among kept rows after the hidden filter (not the
-unfiltered matching unread of the 1000, and not necessarily the page
-length). Member JSON never includes recipient or actor account ids. Each
+`unreadCount` is unread among kept rows after this drop and the existing
+hidden filter, before the 200 cap (not the unfiltered matching unread of
+the 1000, and not necessarily the page length). A generic row whose
+matching mention is outside the 1000-row scan stays. Member JSON never
+includes recipient or actor account ids. Each
 item `type` is `"forum_post"`, `"forum_reply"`, `"forum_mention"`, `"zap"`,
 `"moderator_appointed"`, or `"moderator_proposal"`.
 

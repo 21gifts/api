@@ -124,6 +124,17 @@ export interface NotificationStore {
    * @returns Number of rows removed.
    */
   deleteByTypeAndReplyId(type: NotificationType, replyId: string): Promise<number>;
+
+  /**
+   * Delete notifications whose `id` is in `ids` and whose
+   * `recipientAccountId` is `accountId`. Empty `ids` returns 0.
+   * Never removes another recipient's row.
+   *
+   * @param accountId - Recipient account.
+   * @param ids - Notification ids to remove for that recipient.
+   * @returns Number of rows removed.
+   */
+  deleteForRecipient(accountId: string, ids: readonly string[]): Promise<number>;
 }
 
 /** Idempotent DDL for the notification table (matches `docs/schema/notification.sql`). */
@@ -380,6 +391,29 @@ export class InMemoryNotificationStore implements NotificationStore {
     }
     return Promise.resolve(removed);
   }
+
+  /**
+   * Remove rows whose `id` is in `ids` and whose recipient is `accountId`.
+   *
+   * @param accountId - Recipient account.
+   * @param ids - Notification ids.
+   * @returns Removed count (`0` when `ids` is empty).
+   */
+  deleteForRecipient(accountId: string, ids: readonly string[]): Promise<number> {
+    if (ids.length === 0) {
+      return Promise.resolve(0);
+    }
+    const match = new Set(ids);
+    let removed = 0;
+    for (let i = this.#rows.length - 1; i >= 0; i -= 1) {
+      const row = this.#rows[i];
+      if (row !== undefined && row.recipientAccountId === accountId && match.has(row.id)) {
+        this.#rows.splice(i, 1);
+        removed += 1;
+      }
+    }
+    return Promise.resolve(removed);
+  }
 }
 
 /** Row shape selected from `notification`. */
@@ -618,6 +652,30 @@ export class PostgresNotificationStore implements NotificationStore {
     const rows = await this.#sql.query<{ id: string }>(
       `DELETE FROM notification WHERE type = $1 AND reply_id = $2 RETURNING id`,
       [type, replyId],
+    );
+    return rows.length;
+  }
+
+  /**
+   * Delete rows whose `id` is in `ids` and whose `recipient_account_id` is
+   * `accountId`.
+   *
+   * The driver does not encode a JavaScript array for `$2::uuid[]` (Postgres
+   * answers `malformed array literal`), so the ids travel as one array-literal
+   * string `{a,b}`. Only well-formed UUIDs go into the literal.
+   *
+   * @param accountId - Recipient (`$1`).
+   * @param ids - Notification ids.
+   * @returns Removed count (`0` when no well-formed id is given; skips SQL).
+   */
+  async deleteForRecipient(accountId: string, ids: readonly string[]): Promise<number> {
+    const uuids = ids.filter((id) => UUID_RE.test(id));
+    if (uuids.length === 0) {
+      return 0;
+    }
+    const rows = await this.#sql.query<{ id: string }>(
+      `DELETE FROM notification WHERE recipient_account_id = $1 AND id = ANY($2::uuid[]) RETURNING id`,
+      [accountId, `{${uuids.join(',')}}`],
     );
     return rows.length;
   }

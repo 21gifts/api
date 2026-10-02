@@ -149,21 +149,47 @@ export function notificationRoutes(deps: NotificationRouteDeps): Hono {
       }
       try {
         const rows = await deps.store.listByRecipient(account.id, NOTIFICATION_FILTER_SCAN_LIMIT);
+        const mentionReplyIds = new Set<string>();
+        for (const row of rows) {
+          if (row.type === 'forum_mention') {
+            mentionReplyIds.add(row.replyId);
+          }
+        }
+        const duplicateIds: string[] = [];
+        const deduped: NotificationRow[] = [];
+        for (const row of rows) {
+          if (
+            (row.type === 'forum_post' || row.type === 'forum_reply') &&
+            mentionReplyIds.has(row.replyId)
+          ) {
+            duplicateIds.push(row.id);
+            continue;
+          }
+          deduped.push(row);
+        }
+        if (duplicateIds.length > 0) {
+          try {
+            await deps.store.deleteForRecipient(account.id, duplicateIds);
+            logEvent('notifications.duplicate.purged', { count: duplicateIds.length });
+          } catch {
+            logEvent('notifications.duplicate.purge_failed');
+          }
+        }
         const accounts = await deps.authStore.listAccounts();
-        const lookupIds = [...new Set(rows.flatMap((row) => [row.parentId, row.replyId]))];
+        const lookupIds = [...new Set(deduped.flatMap((row) => [row.parentId, row.replyId]))];
         const messageById = new Map<string, MessageRow | undefined>();
         for (const id of lookupIds) {
           messageById.set(id, await deps.messages.getById(id));
         }
         const parentById = new Map<string, MessageRow>();
-        for (const id of new Set(rows.map((row) => row.parentId))) {
+        for (const id of new Set(deduped.map((row) => row.parentId))) {
           const parent = messageById.get(id);
           if (parent !== undefined) {
             parentById.set(id, parent);
           }
         }
         const matched = notificationsMatchingLevel({
-          rows,
+          rows: deduped,
           level: parseNotificationLevel(account.notificationLevel),
           recipientAccountId: account.id,
           accounts,
