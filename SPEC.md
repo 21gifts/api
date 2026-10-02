@@ -600,12 +600,12 @@ The pay-request URL (`https://<domain>/.well-known/lnurlp/<user>`, or the
 decoded LNURL) must use `https`, have no port and no credentials, and its host
 must be a DNS name with at least two labels: no address literal, no
 `localhost`, no `.local`, `.internal`, or `.localhost` name, no trailing dot.
-Every address the host resolves to must be a public unicast address: no
+Every address the host resolves to must pass the public address check: no
 loopback, private, shared, link-local, benchmark, documentation, multicast,
 or reserved IPv4 (also when carried as IPv4-mapped, IPv4-compatible, 6to4, or
-NAT64 IPv6), and no IPv6 outside globally reachable unicast (unique-local,
-link-local, site-local, multicast, documentation, Teredo, and similar ranges
-are refused). A Lightning Address whose name is only dots is refused. A
+NAT64 IPv6). IPv6 unique-local, link-local, site-local, multicast,
+documentation, Teredo, benchmarking, ORCHID, discard, and local NAT64 ranges
+are refused. A Lightning Address whose name is only dots is refused. A
 target on the host of `PUBLIC_BASE_URL` is refused (the app pays those
 itself). The fetch does not follow redirects, stops after 5 seconds, and reads
 at most 64 KB.
