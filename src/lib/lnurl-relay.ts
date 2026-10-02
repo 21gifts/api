@@ -139,7 +139,8 @@ function isRelayDnsHost(host: string): boolean {
 }
 
 /**
- * Decode a bech32 string (checksum verified, no length limit).
+ * Decode a bech32 string (checksum and canonical padding verified; the caller
+ * limits the length).
  *
  * @param raw - Lowercase bech32 string.
  * @returns Human-readable part and decoded bytes, or `null`.
@@ -189,6 +190,10 @@ function bech32Decode(raw: string): { hrp: string; bytes: Uint8Array } | null {
       bits -= 8;
       bytes.push((acc >> bits) & 0xff);
     }
+  }
+  // Canonical padding only: fewer than 5 leftover bits, all zero.
+  if (bits >= 5 || (acc & ((1 << bits) - 1)) !== 0) {
+    return null;
   }
   return { hrp, bytes: Uint8Array.from(bytes) };
 }
@@ -286,6 +291,23 @@ async function systemLookup(host: string): Promise<string[]> {
 }
 
 /**
+ * Whether the relay may connect to one resolved address.
+ *
+ * The address must pass {@link isPublicIp}. An IPv6 answer must also lie in
+ * global unicast `2000::/3` or the well-known NAT64 prefix `64:ff9b::/96`.
+ *
+ * @param ip - Address text from the resolver.
+ * @returns `true` when the relay may connect.
+ */
+function isRelayAddress(ip: string): boolean {
+  if (!isPublicIp(ip)) {
+    return false;
+  }
+  const lower = ip.trim().toLowerCase();
+  return !lower.includes(':') || /^[23][0-9a-f]{3}:/.test(lower) || lower.startsWith('64:ff9b:');
+}
+
+/**
  * Resolve the URL's host and require public addresses only.
  *
  * The relay waits for the lookup no longer than the fetch time limit; an
@@ -311,7 +333,7 @@ async function hostAddresses(url: URL, deps: RelayDeps): Promise<'ok' | 'private
   if (addresses === null || addresses.length === 0) {
     return 'unresolved';
   }
-  return addresses.every(isPublicIp) ? 'ok' : 'private';
+  return addresses.every(isRelayAddress) ? 'ok' : 'private';
 }
 
 /**

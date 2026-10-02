@@ -2988,14 +2988,14 @@
 
 ## Function: lnurlRoutes
 
-- **Purpose:** Hono sub-app for `POST /pay-request` and `POST /invoice`, mounted at `/lnurl`. Both need a Bearer session and share one `LnurlRelayRateLimiter` instance per app. The own host is the hostname of `PUBLIC_BASE_URL` (none when unset or not a URL).
+- **Purpose:** Hono sub-app for `POST /pay-request` and `POST /invoice`, mounted at `/lnurl`. Both need a Bearer session and share one `LnurlRelayRateLimiter` instance per app. The own host is the hostname of `PUBLIC_BASE_URL` without a trailing dot (none when unset or not a URL).
 - **Inputs:** `{ auth: AuthStore, fetchImpl: FetchFn, now: () => number, env, lookupImpl? }`. `createApp` passes its store, the shared fetch, its clock, and its env; `lookupImpl` is omitted there so the system resolver is used.
 - **Returns / side effects:** Hono app. Logs `lnurl.pay_request.ok` (domain), `lnurl.pay_request.failed`, `lnurl.invoice.ok` (amount), and `lnurl.invoice.failed` (reason and status). Never logs the target, its query string, the comment, or the invoice.
 - **Used by:** `createApp`.
 
 ## Function: resolveRelayPayRequest
 
-- **Purpose:** Normalises a Lightning Address or bech32 LNURL, checks the URL as input (`https`, a DNS name with two or more labels, no address literal, no `localhost` / `.local` / `.internal` / `.localhost`, no port, no credentials, not the own host, a name that is not only dots), requires every resolved address of the host (and of the callback host) to pass `isPublicIp`, fetches it without redirects within 5 s and 64 KB, and validates the LNURL pay request.
+- **Purpose:** Normalises a Lightning Address or bech32 LNURL, checks the URL as input (`https`, a DNS name with two or more labels, no address literal, no `localhost` / `.local` / `.internal` / `.localhost`, no port, no credentials, not the own host, a name that is not only dots), requires every resolved address of the host (and of the callback host) to pass `isPublicIp` and, for IPv6, to lie in `2000::/3` or `64:ff9b::/96`, fetches it without redirects within 5 s and 64 KB, and validates the LNURL pay request.
 - **Inputs:** `{ target, fetchImpl, ownHost, timeoutMs?, lookupImpl? }`. `timeoutMs` defaults to 5000 and is the longest wait for each host lookup and each fetch (an answer that comes too late gives 502; the system resolver may still finish in the background); `lookupImpl` defaults to the system resolver (`dns.lookup` with `all`).
 - **Returns / side effects:** `{ ok: true, payRequest }` with `target`, `minSendableMsat`, `maxSendableMsat`, `commentAllowed`, `description`, `domain`, or `{ ok: false, status: 400 | 404 | 502, error, reason }`. One outbound GET at most.
 - **Used by:** `POST /lnurl/pay-request`.

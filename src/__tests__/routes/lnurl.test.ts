@@ -140,6 +140,13 @@ describe('POST /lnurl/pay-request', () => {
     expect(await res.json()).toEqual({ error: 'Not a payable address' });
   });
 
+  it('is 400 for the own host when PUBLIC_BASE_URL ends with a dot', async () => {
+    const app = await mount({ PUBLIC_BASE_URL: 'https://21.gifts./' });
+    const res = await post(app, '/pay-request', { target: 'bob@21.gifts' });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: 'Not a payable address' });
+  });
+
   it.each([
     ['unset', {}],
     ['not a URL', { PUBLIC_BASE_URL: 'not a url' }],
