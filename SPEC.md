@@ -5428,12 +5428,17 @@ exist on the account model; `GET /debug/accounts` and
 
 ## Habit-Tracker
 
-`GET /habit-tracker` is publicly readable. Only founders and initiators can add,
-retire, and rate their own resolutions. Each Monday at 00:00 Asia/Manila a new
-ISO week begins with active resolutions and no selected outcomes. Outcomes are
-`achieved`, `partial`, or `missed`; absence means not yet rated. The current and
-previous week remain rateable, including Monday reporting after Sunday rest.
-Retirement preserves the current and preceding weeks and stops future carry-over.
-Week blocks are derived from persisted first/last weeks, so downtime cannot omit
-weeks or duplicate snapshots. Comments require a session of any role and are
-persisted separately from forum messages and Nostr publication.
+`GET /habit-tracker` is public. Every Monday at 08:00 Asia/Manila the completed
+previous ISO week opens for review. Only founders and initiators can add, edit,
+retire, and rate their own resolutions in the latest published review week.
+Active resolutions carry forward without ratings. Text revisions and outcomes
+preserve older weeks; retirement ends future carry-over without deleting history.
+Outcomes are `achieved`, `partial`, or `missed`; absence means not yet rated.
+
+Comments are separate from forum messages and Nostr. Every signed-in role may
+comment on the latest review week from Monday 16:00 (inclusive) to Saturday
+20:00 (exclusive), Asia/Manila. Older comments remain readable. Founder and
+initiator may soft-delete any tracker comment. Signed-in donors can request an
+exact-amount Lightning invoice for another comment author's current linked
+wallet; deleted comments, self-donations, missing wallets, invalid amounts and
+rate-limited requests are rejected. The recipient is resolved server-side.

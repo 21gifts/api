@@ -8,6 +8,12 @@ CREATE TABLE IF NOT EXISTS habit (
     CHECK (last_week IS NULL OR last_week >= first_week)
   );
 
+CREATE TABLE IF NOT EXISTS habit_revision (
+    habit_id uuid NOT NULL REFERENCES habit(id), week text NOT NULL,
+    text text NOT NULL CHECK (length(text) BETWEEN 1 AND 200),
+    PRIMARY KEY (habit_id, week)
+  );
+
 CREATE TABLE IF NOT EXISTS habit_result (
     habit_id uuid NOT NULL REFERENCES habit(id), week text NOT NULL,
     status text NOT NULL CHECK (status IN ('achieved', 'partial', 'missed')),
@@ -19,6 +25,8 @@ CREATE TABLE IF NOT EXISTS habit_comment (
     name text NOT NULL, text text NOT NULL CHECK (length(text) BETWEEN 1 AND 2000),
     week text NOT NULL, created_at double precision NOT NULL
   );
+
+ALTER TABLE habit_comment ADD COLUMN IF NOT EXISTS deleted_at timestamptz;
 
 CREATE INDEX IF NOT EXISTS habit_result_week_idx ON habit_result (week);
 
