@@ -35,7 +35,7 @@ async function rosterRoleSession(
   role: 'moderator' | 'initiator' | 'founder',
 ): Promise<{ authorization: string }> {
   const stamp = `${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
-  const name = `E2eRoster${stamp.slice(0, 8)}`;
+  const name = `E2eRoster${stamp}`;
   const provision = await request.post('/debug/accounts', {
     headers: DEBUG,
     data: {
@@ -59,6 +59,9 @@ async function rosterRoleSession(
     data: { role },
   });
   expect(patched.status()).toBe(200);
+  const patchedBody = (await patched.json()) as { id: string; role: string };
+  expect(patchedBody.id).toBe(row?.id);
+  expect(patchedBody.role).toBe(role);
   const session = await request.post(`/debug/accounts/${row?.id}/session`, { headers: DEBUG });
   expect(session.status()).toBe(200);
   const token = ((await session.json()) as { token: string }).token;
