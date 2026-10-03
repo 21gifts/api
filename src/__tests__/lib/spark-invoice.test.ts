@@ -95,7 +95,7 @@ describe('issueSparkInvoice', () => {
     zapRequestJson: '{"a":1}',
   };
 
-  it('returns null when off or without a payment hash', async () => {
+  it('returns null when off, without a payment hash, or for another amount', async () => {
     const store = new InMemorySparkInvoiceStore();
     const now = (): number => 1;
     expect(await issueSparkInvoice({ now }, wallet, zap)).toBeNull();

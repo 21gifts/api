@@ -903,7 +903,7 @@ export function invoiceRoutes(deps: InvoiceRouteDeps): Hono {
       } = {
         address: receiver.receiving.address,
         amountMsat,
-        fetchImpl: lnurlServerFetch(deps.lnurlServer, deps.fetchImpl),
+        fetchImpl: lnurlServerFetch(deps.lnurlServer, deps.fetchImpl, deps.authStore),
       };
       if (parsed.data.comment !== undefined) {
         fetchArgs.comment = parsed.data.comment;
