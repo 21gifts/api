@@ -12201,7 +12201,10 @@ describe('wallet-backed receiving on POST /messages/:id/invoice', () => {
       ...unsignedNostrDefaults(),
       eventId: 'ee'.repeat(32),
     });
-    const { fetchImpl, seen } = walletLnurlFetch(options.authorId === 'plat' ? 'gifts' : 'wally');
+    const { fetchImpl, seen } = walletLnurlFetch(
+      options.authorId === 'plat' ? 'gifts' : 'wally',
+      options.pr,
+    );
     const app = new Hono().route(
       '/messages',
       messagesRoutes({
