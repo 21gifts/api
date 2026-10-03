@@ -554,7 +554,7 @@ export function conversationRoutes(deps: ConversationRouteDeps): Hono {
         return c.json(
           {
             conversations,
-            unreadCount: conversations.filter((row) => row.unread).length,
+            unreadCount: conversations.reduce((sum, row) => sum + row.unreadMessageCount, 0),
           },
           200,
         );
@@ -859,7 +859,26 @@ export function conversationRoutes(deps: ConversationRouteDeps): Hono {
         ) {
           return c.json({ error: 'SUNDAY_REST' }, 403);
         }
-        await deps.store.markRead(id, account.id, new Date(deps.now()));
+        let readAt = new Date(deps.now());
+        const raw = await c.req.text();
+        if (raw !== '') {
+          let body: unknown;
+          try {
+            body = JSON.parse(raw);
+          } catch {
+            return c.json({ error: 'Invalid read boundary' }, 400);
+          }
+          if (typeof body !== 'object' || body === null || Array.isArray(body))
+            return c.json({ error: 'Invalid read boundary' }, 400);
+          const messageId = (body as Record<string, unknown>)['throughMessageId'];
+          if (typeof messageId !== 'string' || !CONVERSATION_ID_RE.test(messageId))
+            return c.json({ error: 'Invalid read boundary' }, 400);
+          const message = await deps.store.getMessageById(messageId);
+          if (message === undefined || message.conversationId !== id)
+            return c.json({ error: 'Invalid read boundary' }, 400);
+          readAt = message.createdAt;
+        }
+        await deps.store.markRead(id, account.id, readAt);
         return c.json({ ok: true }, 200);
       } catch {
         logEvent('conversations.read.failed');
