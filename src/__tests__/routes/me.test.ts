@@ -1430,7 +1430,7 @@ describe('POST /me/name', () => {
     expect(await res.json()).toEqual({ error: 'Name must be 1–80 characters' });
   });
 
-  it('trims, stores, and returns the name without a profile note when LN is missing', async () => {
+  it('trims, stores, and returns the name without a profile note when no wallet is verified', async () => {
     const store = await seededStore();
     const messages = new InMemoryMessageStore();
     const res = await mount(store, { messages }).request('/me/name', {

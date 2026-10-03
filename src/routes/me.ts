@@ -50,7 +50,7 @@ import type { PushStore } from '@/lib/push-store';
 export interface MeRouteDeps {
   /** Shared auth persistence port. */
   store: AuthStore;
-  /** Forum persistence (About me without LN, activity zaps/invoices, profile notes). */
+  /** Forum persistence (About me with or without a verified wallet, activity zaps/invoices, profile notes). */
   messages: MessageStore;
   /** Clock returning epoch milliseconds (injected for testability). */
   now: () => number;
