@@ -1640,6 +1640,11 @@ omits `id`, `linkingKey`, `role`, `viewKey`):
 }
 ```
 
+`lightningAddress` is the wallet address `<username>@<host of PUBLIC_BASE_URL>`
+and `lightningAddressVerified` is `true` when the account has a verified wallet
+and the LNURL server is configured; otherwise they are `null` and `false`. A
+stored external address is ignored.
+
 `hasPasskey` is `true` when the account has at least one passkey credential,
 otherwise `false`. Clients use it to show an activation banner only while the
 profile is still unclaimed. `aboutMe` is the profile-note text when it is a

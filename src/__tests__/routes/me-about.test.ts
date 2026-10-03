@@ -195,7 +195,7 @@ describe('PUT /me/about', () => {
     });
   });
 
-  it('returns 409 missing name even when a Lightning Address is linked', async () => {
+  it('returns 409 missing name even when the in-app wallet is verified', async () => {
     const store = await seededStore({ wallet: true });
     const res = await putAbout(store, { text: BIO });
     expect(res.status).toBe(409);
