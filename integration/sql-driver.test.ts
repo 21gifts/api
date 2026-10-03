@@ -143,3 +143,78 @@ VALUES ($1, 'verified', false, false, $2)`,
     }
   });
 });
+
+describe('Habit-Tracker Postgres persistence', () => {
+  test('retains history across store recreation and upserts one outcome per week', async () => {
+    const { migrateHabitSchema, PostgresHabitStore } = await import('@/lib/habit-store');
+    const { client, sql } = createBunSqlClient(databaseUrl);
+    try {
+      await migrateAuthSchema(client);
+      await migrateHabitSchema(client);
+      await migrateHabitSchema(client);
+      const accountId = crypto.randomUUID();
+      const habitId = crypto.randomUUID();
+      const commentId = crypto.randomUUID();
+      await client.execute(
+        `INSERT INTO account (id, role, lightning_address_verified, forum_laws_dismissed, created_at) VALUES ($1, 'founder', false, false, $2)`,
+        [accountId, new Date()],
+      );
+      const store = new PostgresHabitStore(client);
+      const habit = {
+        id: habitId,
+        accountId,
+        role: 'founder' as const,
+        name: 'Founder',
+        text: 'Read daily',
+        firstWeek: '2026-09-28',
+        lastWeek: null,
+      };
+      await store.add(habit);
+      await store.setResult({ habitId, week: '2026-09-28', status: 'partial' });
+      await store.setResult({ habitId, week: '2026-09-28', status: 'achieved' });
+      await store.comment({
+        id: commentId,
+        accountId,
+        name: 'Founder',
+        text: 'Progress',
+        week: '2026-09-28',
+        createdAt: 1790899200000,
+      });
+      await store.retire(habitId, accountId, '2026-10-05');
+      await store.retire(habitId, accountId, '2026-10-12');
+      const reopened = new PostgresHabitStore(client);
+      expect((await reopened.habits()).find((row) => row.id === habitId)).toEqual({
+        ...habit,
+        lastWeek: '2026-10-05',
+      });
+      expect(
+        (await reopened.results('2026-09-28')).filter((row) => row.habitId === habitId),
+      ).toEqual([{ habitId, week: '2026-09-28', status: 'achieved' }]);
+      expect(
+        (await reopened.results('2026-10-05')).filter((row) => row.habitId === habitId),
+      ).toEqual([]);
+      expect(
+        (await reopened.comments('2026-09-28')).find((row) => row.id === commentId)?.createdAt,
+      ).toBe(1790899200000);
+      expect(await reopened.firstWeek()).toBe('2026-09-28');
+      await reopened.updateText(habitId, '2026-10-05', 'Read thirty minutes');
+      const persisted = new PostgresHabitStore(client);
+      expect((await persisted.habits('2026-09-28')).find((row) => row.id === habitId)?.text).toBe(
+        'Read daily',
+      );
+      expect((await persisted.habits('2026-10-05')).find((row) => row.id === habitId)?.text).toBe(
+        'Read thirty minutes',
+      );
+      expect((await persisted.findComment(commentId))?.text).toBe('Progress');
+      await persisted.deleteComment(commentId);
+      await persisted.deleteComment(commentId);
+      expect(await new PostgresHabitStore(client).findComment(commentId)).toBeNull();
+      expect((await persisted.comments('2026-09-28')).some((row) => row.id === commentId)).toBe(
+        false,
+      );
+      expect(await persisted.firstWeek()).toBe('2026-09-28');
+    } finally {
+      await closeIfPossible(sql);
+    }
+  });
+});

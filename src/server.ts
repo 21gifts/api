@@ -1,3 +1,5 @@
+import { InMemoryHabitStore, type HabitStore } from '@/lib/habit-store';
+import { habitTrackerRoutes } from '@/routes/habit-tracker';
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
 import { healthRoute } from '@/routes/health';
@@ -289,6 +291,11 @@ export interface AppDeps {
    * `resolveVapidConfig(process.env)?.publicKey`). Missing → push HTTP 503.
    */
   vapidPublicKey?: string;
+  /**
+   * Stored habit history (default: empty {@link InMemoryHabitStore}).
+   * Boot injects {@link PostgresHabitStore} when `DATABASE_URL` is set.
+   */
+  habitStore?: HabitStore;
   /**
    * Stored trust edges for the public chain and staff POSTs (default: empty
    * {@link InMemoryTrustStore}). Boot injects {@link PostgresTrustStore}
@@ -591,6 +598,15 @@ export function createApp(deps: AppDeps = {}): Hono {
       listUsdFiatDaily: (limit) => debugList(fiatRates, limit),
       ...(deps.listDbChange === undefined ? {} : { listDbChange: deps.listDbChange }),
       debugToken,
+    }),
+  );
+  app.route(
+    '/habit-tracker',
+    habitTrackerRoutes({
+      authStore: store,
+      habitStore: deps.habitStore ?? new InMemoryHabitStore(),
+      now,
+      fetchImpl,
     }),
   );
   app.route('/trust-chain', trustChainRoutes({ authStore: store, trustStore, now }));

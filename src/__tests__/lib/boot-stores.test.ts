@@ -16,6 +16,7 @@ import { PostgresTranslationStore } from '@/lib/translation-store';
 import { PostgresNotificationStore } from '@/lib/notification-store';
 import { RecordingQuerier } from '@/lib/nostr/query';
 import { PostgresPushStore } from '@/lib/push-store';
+import { PostgresHabitStore } from '@/lib/habit-store';
 import { PostgresTrustStore } from '@/lib/trust-store';
 import { PostgresApiLogStore } from '@/lib/api-log';
 import { PostgresDiagnosticStore } from '@/lib/diagnostic-log';
@@ -72,6 +73,7 @@ describe('openBootStores', () => {
       conversationStore,
       notificationStore,
       pushStore,
+      habitStore,
       trustStore,
       apiLogStore,
       fundingStore,
@@ -90,6 +92,7 @@ describe('openBootStores', () => {
     expect(conversationStore).toBeUndefined();
     expect(notificationStore).toBeUndefined();
     expect(pushStore).toBeUndefined();
+    expect(habitStore).toBeUndefined();
     expect(trustStore).toBeUndefined();
     expect(apiLogStore).toBeUndefined();
     expect(fundingStore).toBeUndefined();
@@ -205,6 +208,7 @@ describe('openBootStores', () => {
       conversationStore,
       notificationStore,
       pushStore,
+      habitStore,
       trustStore,
       apiLogStore,
       diagnosticStore,
@@ -235,6 +239,7 @@ describe('openBootStores', () => {
     expect(conversationStore).toBeInstanceOf(PostgresConversationStore);
     expect(notificationStore).toBeInstanceOf(PostgresNotificationStore);
     expect(pushStore).toBeInstanceOf(PostgresPushStore);
+    expect(habitStore).toBeInstanceOf(PostgresHabitStore);
     expect(trustStore).toBeInstanceOf(PostgresTrustStore);
     expect(apiLogStore).toBeInstanceOf(PostgresApiLogStore);
     expect(diagnosticStore).toBeInstanceOf(PostgresDiagnosticStore);
@@ -255,6 +260,7 @@ describe('openBootStores', () => {
     expect(executes.some((q) => q.includes('api_log'))).toBe(true);
     expect(executes.some((q) => q.includes('db_change'))).toBe(true);
     const trustIdx = executes.findIndex((q) => /CREATE TABLE IF NOT EXISTS trust_edge/i.test(q));
+    const habitIdx = executes.findIndex((q) => /CREATE TABLE IF NOT EXISTS habit \(/i.test(q));
     const fundingIdx = executes.findIndex((q) =>
       /CREATE TABLE IF NOT EXISTS funding_grant/i.test(q),
     );
@@ -267,6 +273,8 @@ describe('openBootStores', () => {
     );
     const dbChangeIdx = executes.findIndex((q) => /CREATE TABLE IF NOT EXISTS db_change/i.test(q));
     expect(trustIdx).toBeGreaterThanOrEqual(0);
+    expect(habitIdx).toBeGreaterThan(trustIdx);
+    expect(fundingIdx).toBeGreaterThan(habitIdx);
     expect(fundingIdx).toBeGreaterThan(trustIdx);
     expect(apiLogIdx).toBeGreaterThan(fundingIdx);
     expect(accountImageIdx).toBeGreaterThan(apiLogIdx);

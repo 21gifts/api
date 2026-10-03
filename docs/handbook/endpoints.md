@@ -1107,3 +1107,33 @@ Operator inspection of external Nostr identities that have earned visibility or 
 - **Errors:** 400 `{ error: 'invalid_code' }` when `:code` is not exactly eight hex digits after `toLowerCase()` (no trim); 404 `{ error: 'not_found' }` when neither store has a match; 409 `{ error: 'ambiguous' }` when two or more ids match (two messages, two accounts, or one of each). No ids in error bodies. No 503 path.
 - **Used by:** Website short-link landing (`/l/<8 hex>`).
 - **Auth:** none. Public. Soft-hidden messages are included; the public message page decides who may see them.
+
+## Endpoint: GET /habit-tracker
+
+Public, uncached weekly tracker.
+
+- **Purpose:** Public weekly history. Optional `week=YYYY-MM-DD` must be an ISO Monday no later than the latest published review week; omitted `week` is that latest review week. JSON includes `week` (start, label, nextAt), `currentWeek`, `firstWeek`, `commentsAllowed`, `commentsAllowedAt`, `commentsCloseAt`, resolutions (`habits`) active that week, outcomes (`results`), and that week's `comments`. Each comment includes `canReceiveDonation` derived from the current author wallet. Every Monday at 08:00 Asia/Manila the completed previous ISO week opens for review. Weekly blocks are a deterministic projection of versioned resolution text and inclusive first/last weeks, so missed weeks are available after downtime without a cron job or duplicate snapshots. Active resolutions automatically appear without an outcome in each new week. A retired resolution remains visible in its retirement week and all preceding applicable weeks. `Cache-Control: no-store`.
+- **Errors:** 400 `{ error: 'Invalid week' }` when `week` is not an ISO Monday or is after the latest published review week.
+- **Used by:** App weekly habit tracker.
+- **Auth:** none. Public.
+
+## Endpoint: POST /habit-tracker
+
+Bearer session, plus owner and rank checks for resolutions.
+
+- **Purpose:** Owner and rank mutations plus comments and a donation invoice. JSON `action` is `add`, `edit`, `retire`, `rate`, `comment`, `deleteComment`, or `invoice`. `add` / `edit` / `retire` / `rate` require initiator rank (`roleAtLeast(initiator)`), which includes founder and moderator and excludes verified and basis; owners mutate only their own resolutions in the latest published review week. Any signed-in role may `comment` on the latest review week from Monday 16:00 inclusive through Saturday 20:00 exclusive Asia/Manila. `deleteComment` soft-deletes any tracker comment and has no author check. `invoice` checks a positive integer `amountSats` for any signed-in role, returns `{ pr, amountSats }`, and does not pay. Comments are not forum or Nostr posts. Active resolutions carry forward unrated; weekly text history is preserved; retirement keeps history. Reads and mutations send `Cache-Control: no-store`.
+- **Errors:** 400 `{ error: 'Invalid habit operation' }` or `{ error: 'Invalid week' }`; 401 `{ error: 'Unauthorized' }` without a session; 403 `{ error: 'Forbidden' }` below initiator rank for resolution mutations and `deleteComment`; 403 `{ error: 'Comments are closed for this week' }` outside the comment window for every role; 404 `{ error: 'Not found' }` for a missing comment or a foreign habit id after the rank gate (not 403); 409 `{ error: 'Week is closed' }`, `{ error: 'Cannot donate to yourself' }`, or `{ error: 'Author wallet unavailable' }`; 429 `{ error: 'Too many requests' }`; 502 `{ error: 'Invoice unavailable' }`.
+- **Used by:** App habit-tracker mutations (resolutions, comments, donation invoice).
+- **Auth:** `Authorization: Bearer` session. Initiator rank (`roleAtLeast(initiator)`) includes founder and moderator and excludes verified and basis. Owners add/edit/retire/rate only their own resolutions. Any signed-in role may comment inside the window. `deleteComment` has no author check.
+
+JSON operations:
+
+- `{ action: "add", text }`: initiator rank required (`roleAtLeast(initiator)`), which includes founder and moderator and excludes verified and basis; trim to 1–200 characters; starts in the latest published review week.
+- `{ action: "edit", id, text }`: owner only; versions text starting in the latest published review week and carries it forward, preserving earlier weeks.
+- `{ action: "deleteComment", id }`: initiator rank required (`roleAtLeast(initiator)`), which includes founder and moderator and excludes verified and basis; soft-deletes any tracker comment and has no author check.
+- `{ action: "invoice", id, amountSats }`: signed-in donor; positive integer `amountSats` for any signed-in role; exact-amount BOLT11 for the comment author, excluding self-donations and deleted comments. Returns `{ pr, amountSats }` and does not pay; rate limited.
+- `{ action: "retire", id }`: owner only; ends future carry-over and retains history.
+- `{ action: "rate", id, week, status }`: owner only, latest published review week while the resolution existed; `achieved`, `partial`, or `missed`. New weeks are unselected, never implicitly missed.
+- `{ action: "comment", week, text }`: any signed-in role; 1–2000 characters. Stored only in the tracker, not the forum, notifications, or Nostr. Outside Monday 16:00 inclusive through Saturday 20:00 exclusive Asia/Manila, every role gets 403.
+
+Tracker comments for each review week are admitted from the following Monday at 16:00 Asia/Manila. GET exposes `commentsAllowed`, `commentsAllowedAt`, and `commentsCloseAt`; POST `comment` returns 403 before that timestamp for every role. Comments are accepted only for the latest review week, until Saturday 20:00 Asia/Manila (exclusive). Historical weeks are read-only for comments. Authenticated invoice requests resolve the comment author server-side. No tracker comment or donation publishes a forum post.
