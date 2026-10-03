@@ -209,7 +209,7 @@ describe('PUT /me/about', () => {
     expect(await res.json()).toEqual({ error: 'missing_requirements', missing: ['name'] });
   });
 
-  it('updates an existing name-only note when name and Lightning Address are set', async () => {
+  it('updates an existing name-only note when the name is set and the wallet is verified', async () => {
     const store = await seededStore({ name: 'Ada', wallet: true });
     await patchAccount(store, { profileMessageId: NOTE_ID });
     const messages = new InMemoryMessageStore([nameOnlyNote()]);
@@ -307,7 +307,7 @@ describe('PUT /me/about', () => {
     expect((await store.getAccount('acc'))?.profileMessageId).toBe(NOTE_ID);
   });
 
-  it('creates a profile note without a Lightning Address', async () => {
+  it('creates a profile note without a verified wallet', async () => {
     const store = await seededStore({ name: 'Ada' });
     const messages = new InMemoryMessageStore();
     const res = await putAbout(store, { text: BIO }, messages);
@@ -351,7 +351,7 @@ describe('PUT /me/about', () => {
     expect(listed[0]?.text).toBe(BIO);
   });
 
-  it('writes in-app rows to accounts without a push subscription on a no-LN create', async () => {
+  it('writes in-app rows to accounts without a push subscription on a create without a verified wallet', async () => {
     const store = await seededStore({ name: 'Ada' });
     await store.createAccount({
       id: 'other',
@@ -379,7 +379,7 @@ describe('PUT /me/about', () => {
     expect(await notificationStore.listByRecipient('acc', 10)).toEqual([]);
   });
 
-  it('returns 200 when forum push enqueue throws on a no-LN create', async () => {
+  it('returns 200 when forum push enqueue throws on a create without a verified wallet', async () => {
     const store = await seededStore({ name: 'Ada' });
     const messages = new InMemoryMessageStore();
     const pushStore = new InMemoryPushStore();
@@ -430,7 +430,7 @@ describe('PUT /me/about', () => {
     expect(await notificationStore.listByRecipient('other', 10)).toEqual([]);
   });
 
-  it('creates a note when a stale profileMessageId has no row and LN is missing', async () => {
+  it('creates a note when a stale profileMessageId has no row and no wallet is verified', async () => {
     const store = await seededStore({ name: 'Ada' });
     await patchAccount(store, { profileMessageId: 'gone' });
     const messages = new InMemoryMessageStore();
@@ -443,7 +443,7 @@ describe('PUT /me/about', () => {
     expect((await messages.getById(stored!.profileMessageId!))?.text).toBe(BIO);
   });
 
-  it('creates a new live note when the profile note is soft-hidden and LN is missing', async () => {
+  it('creates a new live note when the profile note is soft-hidden and no wallet is verified', async () => {
     const store = await seededStore({ name: 'Ada' });
     await patchAccount(store, { profileMessageId: NOTE_ID });
     const messages = new InMemoryMessageStore([nameOnlyNote()]);
@@ -461,7 +461,7 @@ describe('PUT /me/about', () => {
     expect(live?.text).toBe(BIO);
   });
 
-  it('ensures a missing note when name and Lightning Address are set, then writes the bio', async () => {
+  it('ensures a missing note when the name is set and the wallet is verified, then writes the bio', async () => {
     const store = await seededStore({ name: 'Ada', wallet: true });
     const messages = new InMemoryMessageStore();
     const res = await putAbout(store, { text: BIO }, messages);
@@ -516,7 +516,7 @@ describe('PUT /me/about', () => {
     expect(body.aboutMe).toBe(BIO);
   });
 
-  it('ensures then updates when profileMessageId points at a missing row and LN is set', async () => {
+  it('ensures then updates when profileMessageId points at a missing row and the wallet is verified', async () => {
     const store = await seededStore({ name: 'Ada', wallet: true });
     await patchAccount(store, { profileMessageId: 'gone' });
     const messages = new InMemoryMessageStore();
@@ -529,7 +529,7 @@ describe('PUT /me/about', () => {
     expect((await messages.getById(stored!.profileMessageId!))?.text).toBe(BIO);
   });
 
-  it('ensures a new live note when the profile note is soft-hidden and LN is set', async () => {
+  it('ensures a new live note when the profile note is soft-hidden and the wallet is verified', async () => {
     const store = await seededStore({ name: 'Ada', wallet: true });
     await patchAccount(store, { profileMessageId: NOTE_ID });
     const messages = new InMemoryMessageStore([nameOnlyNote()]);
