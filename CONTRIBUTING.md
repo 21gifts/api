@@ -489,11 +489,12 @@ LNURL-pay;
 run only when a member may post; posting needs a verified wallet, which only the LNURL
 server (`LNURL_SERVER_URL`) can confirm, so no member on the default boot can post (their
 tests assert 409 `missing: ['lightning-address']`);
-`receivingAddress` and `lnurlServerFetch` past the account lookup, and `issueSparkInvoice`, which need
-an account and a session;
-`resolveFreePaymentsConfig`, `concatBytes`, `protoVarintField`, `protoBytesField`, `decodeProto`,
-`encodeSparkInvoice`, `uuidV7`, `migrateSparkInvoiceSchema`, `InMemorySparkInvoiceStore`,
-`PostgresSparkInvoiceStore`, `encodeQuerySparkInvoicesRequest`, `parseQuerySparkInvoicesResponse`,
+`receivingAddress` and `lnurlServerFetch` past the account lookup, which need a member with a
+verified wallet and therefore `LNURL_SERVER_URL` (their tests assert `GET /pay/:username` 404);
+`issueSparkInvoice`, which runs only after a reachable LNURL server mints a NIP-57 invoice;
+`migrateSparkInvoiceSchema` and `PostgresSparkInvoiceStore`, which need `DATABASE_URL`;
+`concatBytes`, `protoVarintField`, `protoBytesField`, `decodeProto`, `encodeSparkInvoice`, `uuidV7`,
+`InMemorySparkInvoiceStore`, `encodeQuerySparkInvoicesRequest`, `parseQuerySparkInvoicesResponse`,
 `querySparkInvoices`, `zapReceiptSecretKey`, `buildZapReceipt`, `runSparkInvoiceTick`,
 `startSparkInvoiceWorker`, and `zapReceiptIngest`, which are reached only when free in-app payments
 are on (`LNURL_SERVER_URL` and `PUBLIC_BASE_URL` resolve, `LNURL_ZAP_NSEC_HEX` is 64 hex characters, and `SPARK_OPERATOR_URL` is unset, blank, or an `http:` / `https:` URL; see `resolveFreePaymentsConfig`); `resolveFreePaymentsConfig`, which runs only once at boot and resolves to off on the default boot; `ingestZapReceipt`, which needs `DATABASE_URL` and `NOSTR_NSEC_KEK` (relay

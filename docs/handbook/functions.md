@@ -1494,7 +1494,7 @@
 
 - **Purpose:** `POST /messages/:id/repayment`. BOLT11 for the next giver share. A second request for the same unpaid share returns the outstanding invoice instead of minting another, including when the sat price of that fiat share has moved, but only while it was minted for the giver's current wallet address; while an open invoice minted for another address is still payable it answers 409 `A payment for this share is still open`, and after it expires a new one is minted.
 - **Inputs:** Route deps and the request.
-- **Returns / side effects:** `{ pr, amountSats, sparkInvoice }` or an error. `sparkInvoice` is `null` when free in-app payments are off; a giver without a verified wallet is the 400 `cannot_receive` instead. Records the invoice attempt only when a new invoice is minted.
+- **Returns / side effects:** `{ pr, amountSats, sparkInvoice }` or an error. `sparkInvoice` is `null` when free in-app payments are off or `pr` is not for exactly the share amount; a giver without a verified wallet is the 400 `cannot_receive` instead. Records the invoice attempt only when a new invoice is minted.
 
 ## Function: serializeMessage
 
@@ -1926,8 +1926,8 @@
 
 ## Function: lnurlServerFetch
 
-- **Purpose:** Keeps LNURL traffic for wallet-backed addresses inside the deployment. A request whose URL host equals the host of `PUBLIC_BASE_URL` (the LUD-16 document of `<username>@<host>` and its pay callback) is sent as a `GET` to the LNURL server through `callLnurlServer` (path segments and query kept, fixed `Host`, 15 s timeout) instead of over the public URL. Any other host goes to the wrapped fetch unchanged.
-- **Inputs:** `LnurlServerConfig` or `undefined`, and the fetch to wrap.
+- **Purpose:** Keeps LNURL traffic for wallet-backed addresses inside the deployment. A request whose URL host equals the host of `PUBLIC_BASE_URL` (the LUD-16 document of `<username>@<host>` and its pay callback) is sent as a `GET` to the LNURL server through `callLnurlServer` (path segments and query kept, fixed `Host`, 15 s timeout) instead of over the public URL. Any other host goes to the wrapped fetch unchanged. A LUD-16 document request for a username without a verified wallet also goes to the wrapped fetch, like the public `GET /.well-known/lnurlp/:username`, which answers it with 404.
+- **Inputs:** `LnurlServerConfig` or `undefined`, the fetch to wrap, and a username lookup (`getAccountByUsername`).
 - **Returns / side effects:** A `FetchFn`. With `undefined` config it is the wrapped fetch itself. A refused path segment or an unreachable LNURL server rejects like a failed `fetch`, which the LNURL helpers already map to `unreachable`.
 - **Used by:** The same routes as `receivingAddress` and the receipt ingest provider lookup.
 
@@ -1983,8 +1983,8 @@
 ## Function: issueSparkInvoice
 
 - **Purpose:** Issue the Spark invoice that stands next to a member-to-member zap invoice: same amount, addressed to the recipient's verified wallet key, memo `zap:<payment hash of pr>`. Stores it with the zap invoice and the exact zap request string so the worker can later build the receipt. One payment hash has one Spark invoice; asking again returns the stored string and, while it is open, restarts its watch window.
-- **Inputs:** `{ sparkInvoices?, now, randomBytes? }`, the recipient's `ReceivingAddress`, and `{ pr, paymentHash, amountSats, zapRequestJson }`.
-- **Returns / side effects:** `spark1…` string, or `null` when the feature is off (`sparkInvoices` omitted) or the payment hash is unknown. A store failure logs `spark.invoice.issue_failed` and resolves `null`, so the route still returns `pr`.
+- **Inputs:** `{ sparkInvoices?, now, randomBytes? }`, the recipient's `ReceivingAddress`, and `{ pr, paymentHash, prAmountMsat, amountSats, zapRequestJson }` (`paymentHash` and `prAmountMsat` decoded from `pr`, `null` when it does not decode).
+- **Returns / side effects:** `spark1…` string, or `null` when the feature is off (`sparkInvoices` omitted) or the payment hash is unknown, or `pr` is not for exactly `amountSats` (the receipt credits the amount of `pr`). A store failure logs `spark.invoice.issue_failed` and resolves `null`, so the route still returns `pr`.
 - **Used by:** `POST /messages/:id/invoice`, `POST /conversations/:id/invoice`, `POST /messages/:id/repayment`.
 
 ## Function: migrateSparkInvoiceSchema

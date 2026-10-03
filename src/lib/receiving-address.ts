@@ -112,10 +112,10 @@ export async function accountByReceivingAddress(
  * a wallet-backed address and its pay callback) is sent as a `GET` to the
  * LNURL server with {@link callLnurlServer} (path segments and query kept,
  * fixed `Host`, 15 s timeout); every other request goes to `fetchImpl`
- * unchanged. Like the public `GET /.well-known/lnurlp/:username`, a LUD-16
- * document request for a username without a verified wallet goes to
- * `fetchImpl` too, so an external address on that host keeps resolving over
- * the public URL. A refused path segment or an unreachable LNURL server
+ * unchanged. A LUD-16 document request for a username without a verified
+ * wallet goes to `fetchImpl` too, like the public
+ * `GET /.well-known/lnurlp/:username`, which answers it with 404 because such a
+ * member cannot receive. A refused path segment or an unreachable LNURL server
  * rejects like a failed `fetch`.
  *
  * @param lnurlServer - LNURL server config, or `undefined` (returns `fetchImpl`).
