@@ -24,7 +24,7 @@ import { InMemoryMessageStore, textHasHashtagToken } from './lib/message-store';
 import { publishExistingShopPlaces, resolveMapPush } from './lib/ocp-place';
 import { resolveSpendPing } from './lib/spend-ping';
 import { syncWelcomePing } from './lib/welcome-media';
-import { resolveZapRelays, resolveZapReadRelays } from './lib/nostr/relays';
+import { resolveZapRelays } from './lib/nostr/relays';
 import { ExternalIngestLimiter } from './lib/nostr/external';
 import { resolveVapidConfig } from './lib/push-config';
 import { UnconfiguredPushSender, WebPushSender, type PushSender } from './lib/push-sender';
@@ -126,7 +126,7 @@ if (import.meta.main) {
     ...(nostrKek === undefined ? {} : { nostrKek }),
     ...(publisher === undefined ? {} : { nostrPublisher: publisher }),
     nostrQuerier: querier,
-    nostrRelayUrls: resolveZapReadRelays(process.env),
+    nostrRelayUrls: resolveZapRelays(process.env),
     ...(contactStore === undefined ? {} : { contactStore }),
     ...(apiLogStore === undefined ? {} : { apiLogStore }),
     ...(diagnosticStore === undefined ? {} : { diagnosticStore }),
@@ -148,6 +148,8 @@ if (import.meta.main) {
       ...(spendPing === undefined ? {} : { spendPing }),
       messages: forumMessages,
       auth: authStore,
+      ...(giftStore === undefined ? {} : { gifts: giftStore }),
+      ...(lnurlServer === undefined ? {} : { lnurlServer }),
     });
   };
   welcomeCatchUp();

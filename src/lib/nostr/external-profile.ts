@@ -20,7 +20,7 @@ import {
   type ExternalProfileFields,
 } from '@/lib/nostr/external';
 import type { NostrQuerier } from '@/lib/nostr/query';
-import { resolveZapReadRelays } from '@/lib/nostr/relays';
+import { resolveZapRelays } from '@/lib/nostr/relays';
 import { RELAY_TIMEOUT_MS } from '@/lib/nostr/worker';
 
 /** One DNS label that is not an IP. */
@@ -52,7 +52,7 @@ export interface ExternalAuthorProfileDeps {
   env?: Record<string, string | undefined>;
   /** Kind:0 querier. Omitted → stored name and npub only. */
   nostrQuerier?: NostrQuerier;
-  /** Relay URLs for that querier. Omitted → {@link resolveZapReadRelays}. */
+  /** Relay URLs for that querier. Omitted → {@link resolveZapRelays}. */
   nostrRelayUrls?: readonly string[];
   /**
    * DNS lookup. Tests inject this. Production resolves A/AAAA and rejects
@@ -259,7 +259,7 @@ async function liveFields(
   if (deps.nostrQuerier === undefined) {
     return null;
   }
-  const urls = deps.nostrRelayUrls ?? resolveZapReadRelays(deps.env ?? {});
+  const urls = deps.nostrRelayUrls ?? resolveZapRelays(deps.env ?? {});
   if (urls.length === 0) {
     return null;
   }

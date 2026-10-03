@@ -13,7 +13,6 @@ import {
 } from '@/lib/credit-repayment';
 import type { LnurlServerConfig } from '@/lib/config';
 import { fiatToSats, type GoalFiatCode, type GoalRateDay } from '@/lib/goal-rate';
-import { normalizeLightningAddress } from '@/lib/lightning-address';
 import { logEvent } from '@/lib/log';
 import type { FetchFn } from '@/lib/lnurlp';
 import { requestZapInvoice } from '@/lib/lnurl-pay';
@@ -26,7 +25,7 @@ import { signEventForAccount } from '@/lib/nostr/sign';
 import { buildZapRequest, serializeZapRequest } from '@/lib/nostr/zap-request';
 import type { VerifiedEvent } from 'nostr-tools/pure';
 import { normalizeSignedEvent } from '@/lib/nostr/publish';
-import { lnurlServerFetch, receivingAddress } from '@/lib/receiving-address';
+import { CANNOT_RECEIVE, lnurlServerFetch, receivingAddress } from '@/lib/receiving-address';
 import { issueSparkInvoice } from '@/lib/spark-invoice';
 import type { SparkInvoiceStore } from '@/lib/spark-invoice-store';
 import { bearerToken } from '@/routes/me';
@@ -251,15 +250,10 @@ export async function repaymentInvoice(deps: RepaymentDeps, c: Context): Promise
   }
   const recipient = await deps.authStore.getAccount(next.share.accountId);
   const receiving = recipient === undefined ? null : receivingAddress(recipient, deps.lnurlServer);
-  const address =
-    receiving === null
-      ? null
-      : receiving.kind === 'wallet'
-        ? receiving.address
-        : normalizeLightningAddress(receiving.address);
-  if (recipient === undefined || receiving === null || address === null) {
-    return c.json({ error: 'A giver has no Lightning address' }, 400);
+  if (recipient === undefined || receiving === null) {
+    return c.json({ error: 'A giver has no Lightning address', code: CANNOT_RECEIVE }, 400);
   }
+  const address = receiving.address;
   const recipientPubkey = await deps.authStore.getNostrPublicKey(recipient.id);
   if (recipientPubkey === undefined) {
     return c.json({ error: 'A giver has no Lightning address' }, 400);
@@ -274,11 +268,21 @@ export async function repaymentInvoice(deps: RepaymentDeps, c: Context): Promise
   if (
     outstanding !== undefined &&
     outstanding.pr !== null &&
+    invoiceStillOpen(outstanding.pr, outstanding.createdAt.getTime(), opened.nowMs) &&
+    outstanding.lightningAddress !== address
+  ) {
+    // Minted for an earlier receiving address and still payable: a second
+    // invoice could pay the same share twice, so wait until it expires.
+    return c.json({ error: 'A payment for this share is still open' }, 409);
+  }
+  if (
+    outstanding !== undefined &&
+    outstanding.pr !== null &&
     invoiceStillOpen(outstanding.pr, outstanding.createdAt.getTime(), opened.nowMs)
   ) {
     const storedRequest = normalizeSignedEvent(outstanding.zapRequest);
     const sparkInvoice =
-      storedRequest === null || outstanding.lightningAddress !== address
+      storedRequest === null
         ? null
         : await issueSparkInvoice(deps, receiving, {
             pr: outstanding.pr,
@@ -318,13 +322,22 @@ export async function repaymentInvoice(deps: RepaymentDeps, c: Context): Promise
   });
   if (!zap.ok) {
     if (zap.reason === 'noZap') {
-      return c.json({ error: "The recipient's wallet cannot receive this Bitcoin payment" }, 400);
+      return c.json(
+        {
+          error: "The recipient's wallet cannot receive this Bitcoin payment",
+          code: CANNOT_RECEIVE,
+        },
+        400,
+      );
     }
     return c.json({ error: 'Could not start the Bitcoin payment' }, 400);
   }
   const inspected = inspectBolt11(zap.pr);
   if (!isNip57Invoice(inspected?.descriptionHash ?? null, zapRequestJson)) {
-    return c.json({ error: "The recipient's wallet cannot receive this Bitcoin payment" }, 400);
+    return c.json(
+      { error: "The recipient's wallet cannot receive this Bitcoin payment", code: CANNOT_RECEIVE },
+      400,
+    );
   }
   const attempt: MessageInvoiceAttempt = {
     id: crypto.randomUUID(),

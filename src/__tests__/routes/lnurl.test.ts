@@ -48,8 +48,6 @@ async function seeded(): Promise<InMemoryAuthStore> {
     linkingKey: null,
     role: 'basis',
     name: 'Caller',
-    lightningAddress: null,
-    lightningAddressVerified: false,
     forumLawsDismissed: false,
     location: null,
     viewKey: 'a'.repeat(64),

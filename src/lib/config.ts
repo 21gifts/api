@@ -1,13 +1,11 @@
 /**
- * Auth, verification, and gift-invoice configuration.
+ * Auth and gift-invoice configuration.
  *
  * Configuration is read from the environment only (no config files, per
  * CONTRIBUTING). `WEBAUTHN_RP_ID` pins the passkey relying party (missing →
  * passkey routes 500; the process still boots).
- * Verification TTL and micro-payment amounts for Lightning Address
- * proof-of-control also live here, as does the in-memory LUD-16 metadata
- * cache TTL (`LN_ADDRESS_CACHE_TTL_MS` — a code constant, not an
- * environment variable). `LNURL_SERVER_URL` (with `PUBLIC_BASE_URL`) enables
+ * The in-memory LUD-16 metadata cache TTL (`LN_ADDRESS_CACHE_TTL_MS`) is a
+ * code constant, not an environment variable. `LNURL_SERVER_URL` (with `PUBLIC_BASE_URL`) enables
  * the self-hosted LNURL server; unset or blank leaves that feature off.
  * `LNURL_ZAP_NSEC_HEX` (with `SPARK_OPERATOR_URL`) additionally enables free
  * in-app payments between members with a verified wallet.
@@ -18,18 +16,6 @@ export const CHALLENGE_TTL_MS = 10 * 60 * 1000;
 
 /** Lifetime of an issued session token, in milliseconds. */
 export const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000;
-
-/** Lifetime of a pending Lightning Address verification, in milliseconds. */
-export const VERIFICATION_TTL_MS = 15 * 60 * 1000;
-
-/** Preferred verification micro-payment amount, in millisatoshis (1 sat). */
-export const VERIFICATION_AMOUNT_MSAT = 1_000;
-
-/**
- * Maximum amount the api will pay for verification, in millisatoshis (10 sat).
- * If the provider's `minSendable` exceeds this, verification is refused.
- */
-export const VERIFICATION_AMOUNT_CAP_MSAT = 10_000;
 
 /** In-memory TTL for a successful LUD-16 metadata resolve, in milliseconds. */
 export const LN_ADDRESS_CACHE_TTL_MS = 5 * 60 * 1000;

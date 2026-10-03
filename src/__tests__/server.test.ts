@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { InMemoryAuthStore } from '@/lib/auth/store';
+import { InMemoryGiftStore } from '@/lib/gift-store';
 import type { DiagnosticStore } from '@/lib/diagnostic-log';
 import { setDiagnosticSink } from '@/lib/log';
 import { unsignedNostrDefaults } from '@/lib/message';
@@ -164,8 +165,6 @@ describe('createApp', () => {
       linkingKey: `02${'a'.repeat(64)}`,
       role: 'basis',
       name: 'Ada',
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'a'.repeat(64),
@@ -295,8 +294,6 @@ describe('createApp', () => {
       linkingKey: `02${'a'.repeat(64)}`,
       role: 'basis',
       name: 'Ada',
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'a'.repeat(64),
@@ -309,8 +306,6 @@ describe('createApp', () => {
       linkingKey: `02${'b'.repeat(64)}`,
       role: 'basis',
       name: 'Bea',
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'b'.repeat(64),
@@ -323,8 +318,6 @@ describe('createApp', () => {
       linkingKey: `02${'d'.repeat(64)}`,
       role: 'basis',
       name: 'Ada',
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'd'.repeat(64),
@@ -337,8 +330,6 @@ describe('createApp', () => {
       linkingKey: `02${'e'.repeat(64)}`,
       role: 'basis',
       name: 'Ada',
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'e'.repeat(64),
@@ -351,8 +342,6 @@ describe('createApp', () => {
       linkingKey: `02${'f'.repeat(64)}`,
       role: 'basis',
       name: 'Ada',
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'f'.repeat(64),
@@ -365,8 +354,6 @@ describe('createApp', () => {
       linkingKey: `02${'0'.repeat(64)}`,
       role: 'basis',
       name: 'Ada',
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: '0'.repeat(64),
@@ -379,8 +366,6 @@ describe('createApp', () => {
       linkingKey: `02${'1'.repeat(64)}`,
       role: 'basis',
       name: 'Ada',
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: '1'.repeat(64),
@@ -393,8 +378,6 @@ describe('createApp', () => {
       linkingKey: `02${'2'.repeat(64)}`,
       role: 'basis',
       name: 'Ada',
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: '2'.repeat(64),
@@ -407,8 +390,6 @@ describe('createApp', () => {
       linkingKey: `02${'3'.repeat(64)}`,
       role: 'basis',
       name: null,
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: '3'.repeat(64),
@@ -421,8 +402,6 @@ describe('createApp', () => {
       linkingKey: `02${'c'.repeat(64)}`,
       role: 'basis',
       name: 'Ada',
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'c'.repeat(64),
@@ -626,8 +605,8 @@ describe('CORS', () => {
     expect(parsedEvents(warn).some((e) => e['event'] === 'http.request')).toBe(false);
   });
 
-  it('allows DELETE on the lightning-address preflight', async () => {
-    const res = await createApp().request('/me/lightning-address', {
+  it('allows DELETE on the point-of-sale preflight', async () => {
+    const res = await createApp().request('/pos', {
       method: 'OPTIONS',
       headers: {
         origin: 'https://app.21.gifts',
@@ -763,6 +742,85 @@ describe('LNURL server wiring', () => {
     return app.routes.map((route) => ({ method: route.method, path: route.path }));
   }
 
+  it('passes the gift store to the welcome ping of verify, About me, and posting', async () => {
+    const welcome = {
+      amountSats: 1,
+      recipientWosUser: 'ada',
+      kind: 'welcome' as const,
+      description: '21gifts welcome',
+    };
+    /** Verify, save About me, and post a photo; returns the welcome pings sent. */
+    async function welcomePings(paidAtMs: number): Promise<number> {
+      const member = '11111111-1111-4111-8111-111111111111';
+      const authStore = new InMemoryAuthStore();
+      await createWalletAccount(authStore, member, 'ada');
+      await authStore.updateAccount({ ...(await authStore.getAccount(member))!, role: 'basis' });
+      await authStore.createAccount({
+        id: 'mod',
+        linkingKey: null,
+        role: 'founder',
+        name: 'Mod',
+        forumLawsDismissed: false,
+        location: null,
+        viewKey: 'd'.repeat(64),
+        createdAt: 1,
+        rulesAgreedAt: 1,
+      });
+      await authStore.createSession({ token: 'tok', accountId: member, createdAt: Date.now() });
+      await authStore.createSession({ token: 'mod-tok', accountId: 'mod', createdAt: Date.now() });
+      const messageStore = new InMemoryMessageStore();
+      await messageStore.create(
+        {
+          id: 'photo-post',
+          accountId: member,
+          name: 'ada',
+          text: 'photo',
+          createdAt: new Date(1),
+          hasPhoto: true,
+          hasVideo: false,
+          videoContentType: null,
+          ...unsignedNostrDefaults(),
+        },
+        { contentType: 'image/jpeg', bytes: new Uint8Array([0xff, 0xd8, 0xff, 0xd9]) },
+      );
+      const ping = vi.fn(async (_address: string, _messageId: string, _kind?: string) => undefined);
+      const app = createApp({
+        authStore,
+        messageStore,
+        spendPing: { ping },
+        giftStore: new InMemoryGiftStore([{ ...welcome, paidAt: new Date(paidAtMs) }]),
+        env: FREE_PAYMENTS_ENV,
+      });
+      const verified = await app.request('/trust/verify', {
+        method: 'POST',
+        headers: { authorization: 'Bearer mod-tok', 'content-type': 'application/json' },
+        body: JSON.stringify({ accountId: member }),
+      });
+      expect(verified.status).toBe(200);
+      const photo = {
+        contentType: 'image/jpeg',
+        data: Buffer.from([0xff, 0xd8, 0xff, 0xd9]).toString('base64'),
+      };
+      const about = await app.request('/me/about', {
+        method: 'PUT',
+        headers: { authorization: 'Bearer tok', 'content-type': 'application/json' },
+        body: JSON.stringify({ text: 'I build on Bitcoin', photo }),
+      });
+      expect(about.status).toBe(200);
+      const posted = await app.request('/messages', {
+        method: 'POST',
+        headers: { authorization: 'Bearer tok', 'content-type': 'application/json' },
+        body: JSON.stringify({ text: 'hello', photo }),
+      });
+      expect(posted.status).toBe(200);
+      return ping.mock.calls.filter((call) => call[2] === 'welcome').length;
+    }
+
+    // The wallet was verified at 2: a record paid at 5 is the welcome gift, one paid at 1 is not.
+    expect(await welcomePings(5)).toBe(0);
+    expect(await welcomePings(1)).toBe(3);
+  });
+
   it('does not mount the new routes when LNURL_SERVER_URL is unset', async () => {
     const app = createApp({ env: {} });
     const pairs = routePairs(app);
@@ -897,8 +955,6 @@ describe('free in-app payments wiring', () => {
       linkingKey: null,
       role: 'basis',
       name: 'Payer',
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'e'.repeat(64),

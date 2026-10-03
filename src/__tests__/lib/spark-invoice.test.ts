@@ -12,7 +12,7 @@ const VECTOR_STRING =
   'spark1pgssyzwt0544600n5zkya7rvlnaz98l622mg04uhyaxgv6wt6534anx4zg3qsqgjzqrswpc8qurswpc8qurswpc8qurj5zr6v9cr5ar9wd6zyqsgz532drgt';
 const HASH = 'ab'.repeat(32);
 
-const wallet: ReceivingAddress = { kind: 'wallet', address: 'alice@21.gifts', sparkPubkey: PUBKEY };
+const wallet: ReceivingAddress = { address: 'alice@21.gifts', sparkPubkey: PUBKEY };
 
 function parsedEvents(warn: ReturnType<typeof vi.spyOn>): Array<Record<string, unknown>> {
   return warn.mock.calls
@@ -95,17 +95,10 @@ describe('issueSparkInvoice', () => {
     zapRequestJson: '{"a":1}',
   };
 
-  it('returns null when off, external, without a payment hash, or for another amount', async () => {
+  it('returns null when off, without a payment hash, or for another amount', async () => {
     const store = new InMemorySparkInvoiceStore();
     const now = (): number => 1;
     expect(await issueSparkInvoice({ now }, wallet, zap)).toBeNull();
-    expect(
-      await issueSparkInvoice(
-        { now, sparkInvoices: store },
-        { kind: 'external', address: 'a@b.com' },
-        zap,
-      ),
-    ).toBeNull();
     expect(
       await issueSparkInvoice({ now, sparkInvoices: store }, wallet, { ...zap, paymentHash: null }),
     ).toBeNull();

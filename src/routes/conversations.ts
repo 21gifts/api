@@ -23,7 +23,7 @@ import { isSundayRestHeader } from '@/lib/sunday-rest';
 import { shownFiatFromBody, type FiatAmounts } from '@/lib/money';
 import type { FetchFn } from '@/lib/lnurlp';
 import { requestZapInvoice } from '@/lib/lnurl-pay';
-import { lnurlServerFetch, receivingAddress } from '@/lib/receiving-address';
+import { CANNOT_RECEIVE, lnurlServerFetch, receivingAddress } from '@/lib/receiving-address';
 import { issueSparkInvoice } from '@/lib/spark-invoice';
 import type { SparkInvoiceStore } from '@/lib/spark-invoice-store';
 import {
@@ -993,8 +993,8 @@ export function conversationRoutes(deps: ConversationRouteDeps): Hono {
         );
         if (thread.kind === 'moderator_group') {
           try {
-            const address = account.lightningAddress?.trim() ?? '';
-            if (address !== '' && deps.spendPing !== undefined) {
+            const address = receivingAddress(account, deps.lnurlServer)?.address ?? null;
+            if (address !== null && deps.spendPing !== undefined) {
               const publicToday = await hasLivingRoomPostOnUtcDay(
                 deps.messageStore,
                 account,
@@ -1179,7 +1179,7 @@ export function conversationRoutes(deps: ConversationRouteDeps): Hono {
             isNip57Invoice: false,
             conversationMessageId: null,
           });
-          return c.json({ error: AUTHOR_WALLET_CANNOT_RECEIVE }, 400);
+          return c.json({ error: AUTHOR_WALLET_CANNOT_RECEIVE, code: CANNOT_RECEIVE }, 400);
         }
         const counterpart = await giftCounterpart(thread, account, platform, deps.authStore);
         if (counterpart === undefined) {
@@ -1199,7 +1199,7 @@ export function conversationRoutes(deps: ConversationRouteDeps): Hono {
             isNip57Invoice: false,
             conversationMessageId: null,
           });
-          return c.json({ error: AUTHOR_WALLET_CANNOT_RECEIVE }, 400);
+          return c.json({ error: AUTHOR_WALLET_CANNOT_RECEIVE, code: CANNOT_RECEIVE }, 400);
         }
         if (counterpart.id === account.id) {
           return c.json({ error: 'Cannot message yourself' }, 400);
@@ -1216,7 +1216,7 @@ export function conversationRoutes(deps: ConversationRouteDeps): Hono {
             authorAccountId: counterpart.id,
             amountSats: parsed.data.sats,
             shown,
-            lightningAddress: receiving?.address ?? counterpart.lightningAddress,
+            lightningAddress: receiving?.address ?? null,
             zapRequest: null,
             result: 'no_author',
             httpStatus: 400,
@@ -1227,7 +1227,7 @@ export function conversationRoutes(deps: ConversationRouteDeps): Hono {
             isNip57Invoice: false,
             conversationMessageId: null,
           });
-          return c.json({ error: AUTHOR_WALLET_CANNOT_RECEIVE }, 400);
+          return c.json({ error: AUTHOR_WALLET_CANNOT_RECEIVE, code: CANNOT_RECEIVE }, 400);
         }
         const address = receiving.address;
         const profile = await deps.messageStore.getById(profileId);
@@ -1370,7 +1370,7 @@ export function conversationRoutes(deps: ConversationRouteDeps): Hono {
             lnurlResponse: zap.lnurlResponse,
           });
           if (zap.reason === 'noZap') {
-            return c.json({ error: AUTHOR_WALLET_CANNOT_RECEIVE }, 400);
+            return c.json({ error: AUTHOR_WALLET_CANNOT_RECEIVE, code: CANNOT_RECEIVE }, 400);
           }
           return c.json({ error: 'Could not start the Bitcoin payment' }, 400);
         }
@@ -1396,7 +1396,7 @@ export function conversationRoutes(deps: ConversationRouteDeps): Hono {
             conversationMessageId,
             lnurlResponse: zap.lnurlResponse,
           });
-          return c.json({ error: AUTHOR_WALLET_CANNOT_RECEIVE }, 400);
+          return c.json({ error: AUTHOR_WALLET_CANNOT_RECEIVE, code: CANNOT_RECEIVE }, 400);
         }
         await deps.messageStore.recordInvoiceAttempt(
           invoiceAttemptBase({

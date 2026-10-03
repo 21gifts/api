@@ -73,6 +73,9 @@ export const AUTH_SCHEMA_SQL: readonly string[] = [
   `ALTER TABLE account ADD COLUMN IF NOT EXISTS rules_agreed_at timestamptz`,
   `CREATE UNIQUE INDEX IF NOT EXISTS account_lightning_address_uidx
     ON account (lower(trim(lightning_address))) WHERE lightning_address IS NOT NULL`,
+  // The legacy lightning_address column is kept as data but no longer written or read
+  // (except by repairGiftKind); new rows default lightning_address_verified.
+  `ALTER TABLE account ALTER COLUMN lightning_address_verified SET DEFAULT false`,
   `ALTER TABLE account ADD COLUMN IF NOT EXISTS is_platform boolean NOT NULL DEFAULT false`,
   `CREATE UNIQUE INDEX IF NOT EXISTS account_is_platform_uidx ON account (is_platform) WHERE is_platform`,
   // Skip / profile-note columns: no FK to message here (auth migrates before message).

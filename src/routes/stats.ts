@@ -113,8 +113,8 @@ export function bindGoalRateDay(deps: {
  * Build the `/gifts/stats` route group.
  *
  * Mounted at `/gifts/stats` so the public path is `GET /gifts/stats`.
- * Optional `?recipient=` filters outbound gifts to one Wallet of Satoshi
- * handle before aggregation (see {@link giftsForRecipient}).
+ * Optional `?recipient=` filters outbound gifts to one recipient handle (the
+ * local part of the receiving address) before aggregation (see {@link giftsForRecipient}).
  *
  * @param deps - Gift store, optional BTC-USD book, optional fiat book, and clock.
  * @returns A Hono app with `GET /`.

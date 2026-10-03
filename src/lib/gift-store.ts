@@ -223,19 +223,19 @@ export interface GiftDebugRow {
   amountPhp: string | null;
   /** Fee sats, or `null` when the adapter does not store one. */
   feeSats: number | null;
-  /** Wallet of Satoshi username. */
+  /** Recipient handle (local part of the receiving address). */
   recipientWosUser: string;
   /** Daily funding, welcome gift, or moderator stipend. */
   kind: GiftKind;
   /** BOLT11, or `null` when the adapter does not store one. */
   lightningInvoice: string | null;
-  /** Wallet of Satoshi tx id. */
+  /** Payout transaction id. */
   wosTransactionId: string | null;
   /** Description, or `null` when the adapter does not store one. */
   description: string | null;
   /** Point-of-sale flag. */
   pointOfSale: boolean;
-  /** Wallet of Satoshi status. */
+  /** Payout status. */
   wosStatus: string | null;
   /** Source wallet, or `null` when the adapter does not store one. */
   sourceWallet: string | null;
@@ -311,7 +311,7 @@ export class InMemoryGiftStore implements GiftStore {
           kind: row.kind as GiftKind,
           lightningInvoice: null,
           wosTransactionId: null,
-          description: null,
+          description: row.description ?? null,
           pointOfSale: false,
           wosStatus: null,
           sourceWallet: null,
@@ -374,7 +374,7 @@ export class QueryGiftStore implements GiftStore {
           kind: row.kind as GiftKind,
           lightningInvoice: null,
           wosTransactionId: null,
-          description: null,
+          description: row.description ?? null,
           pointOfSale: false,
           wosStatus: null,
           sourceWallet: null,

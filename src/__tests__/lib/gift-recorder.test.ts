@@ -21,7 +21,7 @@ const RECORD: GiftRecord = {
 
 describe('recipientHandleFromAddress', () => {
   it('returns the local part of a Lightning Address', () => {
-    expect(recipientHandleFromAddress('alice@walletofsatoshi.com')).toBe('alice');
+    expect(recipientHandleFromAddress('alice@example.com')).toBe('alice');
   });
 
   it('returns the input when there is no @', () => {

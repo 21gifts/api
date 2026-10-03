@@ -1,6 +1,5 @@
 import { Hono } from 'hono';
 import type { MiddlewareHandler } from 'hono';
-import { finalizeEvent, generateSecretKey } from 'nostr-tools/pure';
 import { z } from 'zod';
 import {
   EMPTY_DEBUG_NOSTR,
@@ -14,15 +13,12 @@ import { issueSession } from '@/lib/auth/service';
 import type { Account, AuthStore } from '@/lib/auth/store';
 import { isWrongAccount, WRONG_ACCOUNT_ERROR } from '@/lib/auth/wrong-account';
 import { bearerMatchesDebugToken } from '@/lib/debug-token';
-import { normalizeLightningAddress } from '@/lib/lightning-address';
-import type { FetchFn } from '@/lib/lnurlp';
+import type { LnurlServerConfig } from '@/lib/config';
 import { logEvent } from '@/lib/log';
 import type { MessageStore } from '@/lib/message-store';
 import { normalizeDisplayName } from '@/lib/name';
 import { allocateNip05Local } from '@/lib/nip05';
 import { normalizeUsername, usernameFromDisplayName } from '@/lib/username';
-import { LIGHTNING_ADDRESS_NOT_ZAP, probeNip57Mint } from '@/lib/nip57-probe';
-import { publicKeyHexFromSecret } from '@/lib/nostr/keys';
 import type { ConversationStore } from '@/lib/conversation-store';
 import type { NotificationStore } from '@/lib/notification-store';
 import type { PushStore } from '@/lib/push-store';
@@ -33,7 +29,7 @@ import { MESSAGE_ID_RE } from '@/routes/messages';
  * Authenticated by `DEBUG_TOKEN` (Bearer), not by an end-user session.
  * Exposes `GET /` (list), `GET /:id` (detail with nested auth rows),
  * `POST /` (provision), `PATCH /:id`
- * (set role, unlink Lightning Address, the official platform flag, and/or sessionRefused),
+ * (set role, the official platform flag, and/or sessionRefused),
  * and `POST /:id/session` (mint a member bearer).
  */
 
@@ -43,8 +39,8 @@ export interface DebugRouteDeps {
   store: AuthStore;
   /** Configured operator token, or `undefined` when debug is disabled. */
   debugToken: string | undefined;
-  /** Injected `fetch` for NIP-57 mint probe on new addresses. */
-  fetchImpl: FetchFn;
+  /** LNURL server config for each account's receiving address; omitted → none. */
+  lnurlServer?: LnurlServerConfig;
   /**
    * Private-message store. When set, `PATCH platform: true` points every
    * member→platform thread at the new official account.
@@ -105,64 +101,26 @@ function provisionUsername(name: string, id: string, taken: Set<string>): string
   return normalizeUsername(allocateNip05Local(name, id, taken));
 }
 
-/**
- * Set a username on an existing provisioned row when it is still blank.
- *
- * @param store - Auth persistence.
- * @param account - Row after the name write.
- * @param name - Display name.
- * @param taken - Usernames reserved in this pass.
- * @returns The account, possibly with username set.
- */
-async function maybeSetProvisionUsername(
-  store: AuthStore,
-  account: Account,
-  name: string,
-  taken: Set<string>,
-): Promise<Account> {
-  const raw = account.username;
-  if (raw !== null && raw !== undefined && raw.trim() !== '') {
-    taken.add(raw.trim().toLowerCase());
-    return account;
-  }
-  const username = provisionUsername(name, account.id, taken);
-  /* v8 ignore next 3 -- allocateNip05Local locals always pass normalizeUsername */
-  if (username === null) {
-    return account;
-  }
-  const updated: Account = { ...account, username };
-  await store.updateAccount(updated);
-  taken.add(username);
-  return updated;
-}
-
-/** Body schema for operator role, Lightning Address unlink, platform flag, and session refusal. */
+/** Body schema for operator role, platform flag, and session refusal. */
 const patchBody = z
   .object({
     role: z.enum(['basis', 'verified', 'moderator', 'initiator', 'founder']).optional(),
-    lightningAddress: z.null().optional(),
     platform: z.boolean().optional(),
     sessionRefused: z.boolean().optional(),
   })
+  .strict()
   .refine(
     (body) =>
-      body.role !== undefined ||
-      body.lightningAddress === null ||
-      body.platform !== undefined ||
-      body.sessionRefused !== undefined,
+      body.role !== undefined || body.platform !== undefined || body.sessionRefused !== undefined,
   );
 
-/** One row in the operator provision body. */
-const provisionAccountRow = z.object({
-  name: z.string().trim().min(1).max(80),
-  lightningAddress: z
-    .string()
-    .trim()
-    .refine((value) => {
-      const at = value.indexOf('@');
-      return at > 0 && at === value.lastIndexOf('@') && at < value.length - 1;
-    }),
-});
+/** One row in the operator provision body. Unknown keys are refused. */
+const provisionAccountRow = z
+  .object({
+    name: z.string().trim().min(1).max(80),
+    username: z.string().optional(),
+  })
+  .strict();
 
 /** Body schema for operator account provisioning. */
 const provisionBody = z.object({
@@ -186,7 +144,7 @@ function requireDebugToken(deps: DebugRouteDeps): MiddlewareHandler {
 /**
  * Build the `/debug/accounts` route group.
  *
- * @param deps - Store, optional debug token, required `fetchImpl` for the NIP-57 mint probe, optional `conversationStore`, optional `now`.
+ * @param deps - Store, optional debug token, optional `lnurlServer` for the receiving address, optional `conversationStore`, optional `now`.
  * @returns A Hono app exposing `GET /`, `GET /:id`, `POST /`, `PATCH /:id`, and `POST /:id/session`.
  */
 export function debugRoutes(deps: DebugRouteDeps): Hono {
@@ -204,7 +162,7 @@ export function debugRoutes(deps: DebugRouteDeps): Hono {
       return c.json(
         {
           accounts: accounts.map((a) =>
-            serializeDebugAccount(a, nostrById.get(a.id) ?? EMPTY_DEBUG_NOSTR),
+            serializeDebugAccount(a, nostrById.get(a.id) ?? EMPTY_DEBUG_NOSTR, deps.lnurlServer),
           ),
         },
         200,
@@ -221,20 +179,23 @@ export function debugRoutes(deps: DebugRouteDeps): Hono {
       }
       const nostrRows = await deps.store.listNostrKeys();
       const nostr = debugNostrFieldsFromListRow(nostrRows.find((row) => row.accountId === id));
-      const [passkeys, sessions, addressVerifications, passkeyChallenges] = await Promise.all([
+      const [passkeys, sessions, passkeyChallenges] = await Promise.all([
         deps.store.listPasskeyCredentials(),
         deps.store.listSessions(),
-        deps.store.listAddressVerifications(),
         deps.store.listPasskeyChallenges(),
       ]);
       logEvent('debug.accounts.shown', { accountId: id });
       return c.json(
-        serializeDebugAccountDetail(account, nostr, {
-          passkeys: passkeys.filter((row) => row.accountId === id),
-          sessions: sessions.filter((row) => row.accountId === id),
-          addressVerification: addressVerifications.find((row) => row.accountId === id),
-          passkeyChallenges: passkeyChallenges.filter((row) => row.accountId === id),
-        }),
+        serializeDebugAccountDetail(
+          account,
+          nostr,
+          {
+            passkeys: passkeys.filter((row) => row.accountId === id),
+            sessions: sessions.filter((row) => row.accountId === id),
+            passkeyChallenges: passkeyChallenges.filter((row) => row.accountId === id),
+          },
+          deps.lnurlServer,
+        ),
         200,
       );
     })
@@ -243,57 +204,20 @@ export function debugRoutes(deps: DebugRouteDeps): Hono {
       if (!parsed.success) {
         return c.json({ error: 'Expected a JSON body with an "accounts" array' }, 400);
       }
-      const accounts: Array<{ name: string; lightningAddress: string }> = [];
+      const rows: Array<{ name: string; username: string | null }> = [];
       for (const raw of parsed.data.accounts) {
         const name = normalizeDisplayName(raw.name);
-        const lightningAddress = normalizeLightningAddress(raw.lightningAddress);
-        if (name === null || lightningAddress === null) {
+        const username = raw.username === undefined ? null : normalizeUsername(raw.username);
+        if (name === null || (raw.username !== undefined && username === null)) {
           return c.json({ error: 'Expected a JSON body with an "accounts" array' }, 400);
         }
-        accounts.push({ name, lightningAddress });
-      }
-      const classified: Array<{
-        name: string;
-        lightningAddress: string;
-        existing: Account | undefined;
-      }> = [];
-      for (const row of accounts) {
-        classified.push({
-          name: row.name,
-          lightningAddress: row.lightningAddress,
-          existing: await deps.store.getAccountByLightningAddress(row.lightningAddress),
-        });
-      }
-      const skipNip57Probe = process.env['NIP57_PROBE'] === '0';
-      for (const row of classified) {
-        if (row.existing !== undefined) {
-          continue;
-        }
-        if (skipNip57Probe) {
-          continue;
-        }
-        const ephemeral = generateSecretKey();
-        const recipientPubkey = publicKeyHexFromSecret(ephemeral);
-        const probe = await probeNip57Mint({
-          address: row.lightningAddress,
-          recipientPubkey,
-          sign: async (unsigned) => finalizeEvent(unsigned, ephemeral),
-          fetchImpl: deps.fetchImpl,
-          env: process.env,
-        });
-        ephemeral.fill(0);
-        if (probe === 'not_zap') {
-          return c.json({ error: LIGHTNING_ADDRESS_NOT_ZAP }, 400);
-        }
-        if (probe === 'unreachable') {
-          return c.json({ error: 'Lightning Address could not be resolved' }, 400);
-        }
+        rows.push({ name, username });
       }
       let created = 0;
       let updated = 0;
       const results: Array<{
         name: string;
-        lightningAddress: string;
+        username: string | null;
         viewKey: string;
         created: boolean;
       }> = [];
@@ -309,33 +233,29 @@ export function debugRoutes(deps: DebugRouteDeps): Hono {
           taken.add(needle);
         }
       }
-      for (const row of classified) {
-        if (row.existing !== undefined) {
-          const named = await deps.store.updateAccountNameByLightningAddress(
-            row.lightningAddress,
-            row.name,
-          );
-          if (named === undefined || named.name !== row.name) {
-            return c.json({ error: 'Could not save the account' }, 500);
-          }
-          const withUsername = await maybeSetProvisionUsername(deps.store, named, row.name, taken);
+      for (const row of rows) {
+        const existing =
+          row.username === null ? undefined : await deps.store.getAccountByUsername(row.username);
+        if (existing !== undefined) {
+          const named: Account = { ...existing, name: row.name };
+          await deps.store.updateAccount(named);
           if (deps.messageStore !== undefined) {
             await ensureProfileMessage(
-              profileEnsureArgs({ ...deps, messageStore: deps.messageStore }, withUsername, clock),
+              profileEnsureArgs({ ...deps, messageStore: deps.messageStore }, named, clock),
             );
           }
           updated += 1;
           results.push({
             name: row.name,
-            lightningAddress: withUsername.lightningAddress ?? row.lightningAddress,
-            viewKey: withUsername.viewKey,
+            username: row.username,
+            viewKey: named.viewKey,
             created: false,
           });
           continue;
         }
         const viewKey = randomHex(32);
         const id = crypto.randomUUID();
-        const username = provisionUsername(row.name, id, taken);
+        const username = row.username ?? provisionUsername(row.name, id, taken);
         if (username !== null) {
           taken.add(username);
         }
@@ -345,8 +265,6 @@ export function debugRoutes(deps: DebugRouteDeps): Hono {
           role: 'basis',
           name: row.name,
           location: null,
-          lightningAddress: row.lightningAddress,
-          lightningAddressVerified: false,
           forumLawsDismissed: false,
           viewKey,
           createdAt: clock(),
@@ -356,46 +274,23 @@ export function debugRoutes(deps: DebugRouteDeps): Hono {
           profileMessageId: null,
           username,
         });
-        const stored = await deps.store.getAccountByLightningAddress(row.lightningAddress);
+        const stored = await deps.store.getAccount(id);
+        /* v8 ignore next 3 -- a fresh id, view key, and free username are refused only by a concurrent writer */
         if (stored === undefined) {
           return c.json({ error: 'Could not save the account' }, 500);
         }
-        const didCreate = stored.viewKey === viewKey;
-        if (didCreate) {
-          if (deps.messageStore !== undefined) {
-            await ensureProfileMessage(
-              profileEnsureArgs({ ...deps, messageStore: deps.messageStore }, stored, clock),
-            );
-          }
-          created += 1;
-          results.push({
-            name: stored.name ?? row.name,
-            lightningAddress: stored.lightningAddress ?? row.lightningAddress,
-            viewKey: stored.viewKey,
-            created: true,
-          });
-        } else {
-          const named = await deps.store.updateAccountNameByLightningAddress(
-            row.lightningAddress,
-            row.name,
+        if (deps.messageStore !== undefined) {
+          await ensureProfileMessage(
+            profileEnsureArgs({ ...deps, messageStore: deps.messageStore }, stored, clock),
           );
-          if (named === undefined || named.name !== row.name) {
-            return c.json({ error: 'Could not save the account' }, 500);
-          }
-          const withUsername = await maybeSetProvisionUsername(deps.store, named, row.name, taken);
-          if (deps.messageStore !== undefined) {
-            await ensureProfileMessage(
-              profileEnsureArgs({ ...deps, messageStore: deps.messageStore }, withUsername, clock),
-            );
-          }
-          updated += 1;
-          results.push({
-            name: row.name,
-            lightningAddress: withUsername.lightningAddress ?? row.lightningAddress,
-            viewKey: withUsername.viewKey,
-            created: false,
-          });
         }
+        created += 1;
+        results.push({
+          name: row.name,
+          username,
+          viewKey: stored.viewKey,
+          created: true,
+        });
       }
       logEvent('debug.accounts.provisioned', { created, updated });
       return c.json({ accounts: results }, 200);
@@ -406,7 +301,7 @@ export function debugRoutes(deps: DebugRouteDeps): Hono {
         return c.json(
           {
             error:
-              'Expected a JSON body with a "role" string, lightningAddress null, platform boolean, and/or sessionRefused boolean',
+              'Expected a JSON body with a "role" string, platform boolean, and/or sessionRefused boolean',
           },
           400,
         );
@@ -419,18 +314,11 @@ export function debugRoutes(deps: DebugRouteDeps): Hono {
       if (parsed.data.role !== undefined) {
         updated.role = parsed.data.role;
       }
-      if (parsed.data.lightningAddress === null) {
-        updated.lightningAddress = null;
-        updated.lightningAddressVerified = false;
-        updated.lightningAddressSkippedAt = null;
-      }
       if (parsed.data.platform !== undefined) {
         updated.isPlatform = parsed.data.platform;
       }
       const shouldUpdateAccount =
-        parsed.data.role !== undefined ||
-        parsed.data.lightningAddress === null ||
-        parsed.data.platform !== undefined;
+        parsed.data.role !== undefined || parsed.data.platform !== undefined;
       if (shouldUpdateAccount) {
         await deps.store.updateAccount(updated);
       }
@@ -439,10 +327,6 @@ export function debugRoutes(deps: DebugRouteDeps): Hono {
         if (flagged !== undefined) {
           updated.sessionRefused = flagged.sessionRefused === true;
         }
-      }
-      if (parsed.data.lightningAddress === null) {
-        await deps.store.deleteVerification(updated.id);
-        logEvent('debug.accounts.lightning_address.cleared', { accountId: updated.id });
       }
       if (parsed.data.role !== undefined) {
         logEvent('debug.accounts.role_set', { accountId: updated.id, role: updated.role });
@@ -465,7 +349,7 @@ export function debugRoutes(deps: DebugRouteDeps): Hono {
       const nostr = debugNostrFieldsFromListRow(
         (await deps.store.listNostrKeys()).find((row) => row.accountId === updated.id),
       );
-      return c.json(serializeDebugAccount(updated, nostr), 200);
+      return c.json(serializeDebugAccount(updated, nostr, deps.lnurlServer), 200);
     })
     .post('/:id/session', async (c) => {
       const existing = await deps.store.getAccount(c.req.param('id'));

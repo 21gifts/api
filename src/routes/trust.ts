@@ -4,6 +4,8 @@ import { roleAtLeast, sameRoleRank } from '@/lib/auth/roles';
 import { resolveSession } from '@/lib/auth/service';
 import type { Account, AuthStore } from '@/lib/auth/store';
 import { inboxUnreadCountFor } from '@/lib/conversation-push';
+import type { LnurlServerConfig } from '@/lib/config';
+import type { GiftStore } from '@/lib/gift-store';
 import type { ConversationStore } from '@/lib/conversation-store';
 import { logEvent } from '@/lib/log';
 import { notifyModeratorAppointed, notifyModeratorProposed } from '@/lib/notification';
@@ -46,6 +48,14 @@ export interface TrustRouteDeps {
   messages?: MessageStore;
   /** Optional spend ping. Omitted → skip the welcome ping. Failures do not fail the 200. */
   spendPing?: SpendPing;
+  /** LNURL server config for the welcome ping's receiving address; omitted → no ping. */
+  lnurlServer?: LnurlServerConfig;
+  /**
+   * Outbound house gifts. A `welcome` gift with description `21gifts welcome` recorded under the username at or
+   * after the wallet verification stops a second welcome ping. Omitted → only
+   * the platform `Welcome` reply counts.
+   */
+  giftStore?: Pick<GiftStore, 'listOutbound'>;
 }
 
 /**
@@ -62,7 +72,10 @@ async function welcomeVerified(deps: TrustRouteDeps, account: Account): Promise<
   await syncWelcomePing({
     ...(deps.spendPing === undefined ? {} : { spendPing: deps.spendPing }),
     messages: deps.messages,
+    auth: deps.authStore,
+    gifts: deps.giftStore,
     account,
+    ...(deps.lnurlServer === undefined ? {} : { lnurlServer: deps.lnurlServer }),
   });
 }
 

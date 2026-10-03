@@ -5,6 +5,8 @@ import type { SqlClient } from '@/lib/auth/sql';
 import type { FundingGrant } from '@/lib/funding';
 import { migrateFundingSchema, PostgresFundingStore } from '@/lib/funding-store';
 import { migrateDbChangeSchema } from '@/lib/db-change';
+import { unsignedNostrDefaults } from '@/lib/message';
+import { migrateMessageSchema, PostgresMessageStore } from '@/lib/message-store';
 import { postgresTextArrayLiteral } from '@/lib/postgres-text-array';
 import { migrateSparkInvoiceSchema, PostgresSparkInvoiceStore } from '@/lib/spark-invoice-store';
 
@@ -172,8 +174,6 @@ describe('PostgresAuthStore spark pubkey', () => {
         name: null,
         username: usernameA,
         location: null,
-        lightningAddress: null,
-        lightningAddressVerified: false,
         forumLawsDismissed: false,
         viewKey: viewA,
         createdAt: Date.now(),
@@ -187,8 +187,6 @@ describe('PostgresAuthStore spark pubkey', () => {
         name: null,
         username: usernameB,
         location: null,
-        lightningAddress: null,
-        lightningAddressVerified: false,
         forumLawsDismissed: false,
         viewKey: viewB,
         createdAt: Date.now() + 1,
@@ -347,6 +345,134 @@ describe('PostgresSparkInvoiceStore', () => {
             change.after?.['status'] === 'open',
         ),
       ).toBe(true);
+    } finally {
+      await closeIfPossible(sql);
+    }
+  });
+});
+
+describe('PostgresAuthStore stored external address', () => {
+  test('new rows leave it unset and writes keep existing data', async () => {
+    const { client, sql } = createBunSqlClient(databaseUrl);
+    try {
+      await migrateAuthSchema(client);
+      await migrateDbChangeSchema(client);
+
+      const store = new PostgresAuthStore(client);
+      const hex64 = (): string =>
+        `${crypto.randomUUID().replaceAll('-', '')}${crypto.randomUUID().replaceAll('-', '')}`;
+      const stamp = `${Date.now()}-${Math.random().toString(16).slice(2, 10)}`;
+      const fresh = crypto.randomUUID();
+      await store.createAccount({
+        id: fresh,
+        linkingKey: null,
+        role: 'basis',
+        name: null,
+        username: `fresh_${stamp}`,
+        location: null,
+        forumLawsDismissed: false,
+        viewKey: hex64(),
+        createdAt: Date.now(),
+        rulesAgreedAt: null,
+      });
+      const [created] = await client.query<{
+        lightning_address: string | null;
+        lightning_address_verified: boolean;
+      }>('SELECT lightning_address, lightning_address_verified FROM account WHERE id = $1', [
+        fresh,
+      ]);
+      expect(created).toEqual({ lightning_address: null, lightning_address_verified: false });
+
+      const legacy = crypto.randomUUID();
+      const address = `legacy_${stamp}@example.com`;
+      await client.execute(
+        `INSERT INTO account (id, role, name, lightning_address, lightning_address_verified,
+           forum_laws_dismissed, created_at, view_key)
+         VALUES ($1, 'basis', 'Legacy', $2, true, false, now(), $3)`,
+        [legacy, address, hex64()],
+      );
+      const stored = await store.getAccount(legacy);
+      expect(stored).toBeDefined();
+      expect(stored).not.toHaveProperty('lightningAddress');
+      await store.updateAccount({ ...stored!, name: 'Renamed' });
+      const [kept] = await client.query<{
+        name: string;
+        lightning_address: string | null;
+        lightning_address_verified: boolean;
+      }>('SELECT name, lightning_address, lightning_address_verified FROM account WHERE id = $1', [
+        legacy,
+      ]);
+      expect(kept).toEqual({
+        name: 'Renamed',
+        lightning_address: address,
+        lightning_address_verified: true,
+      });
+    } finally {
+      await closeIfPossible(sql);
+    }
+  });
+});
+
+describe('PostgresMessageStore welcome gift', () => {
+  test('a platform Welcome reply under the account notes counts, live or hidden', async () => {
+    const { client, sql } = createBunSqlClient(databaseUrl);
+    try {
+      await migrateAuthSchema(client);
+      await migrateMessageSchema(client);
+      const auth = new PostgresAuthStore(client);
+      const messages = new PostgresMessageStore(client);
+      const hex64 = (): string =>
+        `${crypto.randomUUID().replaceAll('-', '')}${crypto.randomUUID().replaceAll('-', '')}`;
+      const stamp = `${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
+      const member = crypto.randomUUID();
+      const platform = crypto.randomUUID();
+      for (const [id, name] of [
+        [member, `welcome_m_${stamp}`],
+        [platform, `welcome_p_${stamp}`],
+      ] as const) {
+        await auth.createAccount({
+          id,
+          linkingKey: null,
+          role: 'basis',
+          name,
+          username: name,
+          location: null,
+          forumLawsDismissed: false,
+          viewKey: hex64(),
+          createdAt: Date.now(),
+          rulesAgreedAt: null,
+        });
+      }
+      const note = crypto.randomUUID();
+      const base = {
+        name: 'n',
+        createdAt: new Date(),
+        hasPhoto: false,
+        hasVideo: false,
+        videoContentType: null,
+        ...unsignedNostrDefaults(),
+      };
+      await messages.create({ ...base, id: note, accountId: member, text: 'note' });
+      expect(await messages.accountHasWelcomeGift(member, platform)).toBe(false);
+      await messages.create({
+        ...base,
+        id: crypto.randomUUID(),
+        accountId: platform,
+        parentId: note,
+        text: '21gifts daily',
+      });
+      expect(await messages.accountHasWelcomeGift(member, platform)).toBe(false);
+      const welcome = crypto.randomUUID();
+      await messages.create({
+        ...base,
+        id: welcome,
+        accountId: platform,
+        parentId: note,
+        text: 'Welcome',
+      });
+      expect(await messages.accountHasWelcomeGift(member, platform)).toBe(true);
+      await messages.markDeleted(welcome, new Date(), platform);
+      expect(await messages.accountHasWelcomeGift(member, platform)).toBe(true);
     } finally {
       await closeIfPossible(sql);
     }

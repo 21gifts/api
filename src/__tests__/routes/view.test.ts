@@ -4,6 +4,7 @@ import { InMemoryAuthStore } from '@/lib/auth/store';
 import { unsignedNostrDefaults } from '@/lib/message';
 import { InMemoryMessageStore } from '@/lib/message-store';
 import { viewRoutes } from '@/routes/view';
+import { LNURL_SERVER, WALLET_PUBKEY } from '@/__tests__/helpers/wallet-lnurl';
 
 const VIEW_KEY = 'a'.repeat(64);
 const NOTE_ID = 'note-ada';
@@ -13,14 +14,17 @@ function mount(
   store: InMemoryAuthStore,
   messages: InMemoryMessageStore = new InMemoryMessageStore(),
 ): Hono {
-  return new Hono().route('/view', viewRoutes({ store, messageStore: messages }));
+  return new Hono().route(
+    '/view',
+    viewRoutes({ store, messageStore: messages, lnurlServer: LNURL_SERVER }),
+  );
 }
 
 async function adaAccount(
   store: InMemoryAuthStore,
   overrides: {
-    lightningAddress?: string | null;
-    lightningAddressVerified?: boolean;
+    /** `false` leaves the wallet unverified. Default: verified wallet `ada@example.test`. */
+    wallet?: boolean;
     profileMessageId?: string;
   } = {},
 ): Promise<void> {
@@ -29,11 +33,8 @@ async function adaAccount(
     linkingKey: null,
     role: 'basis',
     name: 'Ada',
-    lightningAddress:
-      overrides.lightningAddress === undefined
-        ? 'ada@walletofsatoshi.com'
-        : overrides.lightningAddress,
-    lightningAddressVerified: overrides.lightningAddressVerified ?? true,
+    username: 'ada',
+    walletRequired: true,
     forumLawsDismissed: false,
     location: null,
     viewKey: VIEW_KEY,
@@ -43,6 +44,10 @@ async function adaAccount(
       ? {}
       : { profileMessageId: overrides.profileMessageId }),
   });
+  if (overrides.wallet !== false) {
+    await store.claimSparkPubkey('acc', WALLET_PUBKEY);
+    await store.markSparkPubkeyVerified('acc', WALLET_PUBKEY, 'ada', 1);
+  }
 }
 
 describe('GET /view/:viewKey', () => {
@@ -86,9 +91,9 @@ describe('GET /view/:viewKey', () => {
     const body = (await res.json()) as Record<string, unknown>;
     expect(body).toEqual({
       name: 'Ada',
-      username: null,
+      username: 'ada',
       location: null,
-      lightningAddress: 'ada@walletofsatoshi.com',
+      lightningAddress: 'ada@example.test',
       lightningAddressVerified: true,
       createdAt: 1_000_000,
       hasPasskey: false,
@@ -118,7 +123,7 @@ describe('GET /view/:viewKey', () => {
 
   it('sets hasPasskey true when this account has a credential', async () => {
     const store = new InMemoryAuthStore();
-    await adaAccount(store, { lightningAddress: null, lightningAddressVerified: false });
+    await adaAccount(store, { wallet: false });
     await store.createPasskeyCredential({
       credentialId: 'cred-acc',
       publicKey: new Uint8Array([1]),
@@ -130,7 +135,7 @@ describe('GET /view/:viewKey', () => {
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({
       name: 'Ada',
-      username: null,
+      username: 'ada',
       location: null,
       lightningAddress: null,
       lightningAddressVerified: false,
@@ -144,14 +149,12 @@ describe('GET /view/:viewKey', () => {
 
   it('does not flip hasPasskey from another account credential', async () => {
     const store = new InMemoryAuthStore();
-    await adaAccount(store, { lightningAddress: null, lightningAddressVerified: false });
+    await adaAccount(store, { wallet: false });
     await store.createAccount({
       id: 'other',
       linkingKey: null,
       role: 'basis',
       name: 'Other',
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'b'.repeat(64),

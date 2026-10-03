@@ -17,13 +17,19 @@ import {
 } from '@/lib/goal-rate';
 import { eligibleToday } from '@/lib/funding';
 import { InMemoryFundingStore, type FundingStore } from '@/lib/funding-store';
+import type { GiftStore } from '@/lib/gift-store';
 import { logEvent } from '@/lib/log';
 import { shownFiatFromBody, type FiatAmounts } from '@/lib/money';
 import { buildPostStats } from '@/lib/post-stats';
 import type { FetchFn } from '@/lib/lnurlp';
 import { requestZapInvoice } from '@/lib/lnurl-pay';
 import type { LnurlServerConfig } from '@/lib/config';
-import { lnurlServerFetch, receivingAddress, type ReceivingAccount } from '@/lib/receiving-address';
+import {
+  CANNOT_RECEIVE,
+  lnurlServerFetch,
+  receivingAddress,
+  type ReceivingAccount,
+} from '@/lib/receiving-address';
 import { issueSparkInvoice } from '@/lib/spark-invoice';
 import type { SparkInvoiceStore } from '@/lib/spark-invoice-store';
 import {
@@ -147,9 +153,9 @@ const AUTHOR_WALLET_CANNOT_RECEIVE = "The author's wallet cannot receive this Bi
 
 /**
  * Whether a forum row can mint a zap: non-empty signed `eventId` plus an
- * author receiving address ({@link receivingAddress}: a verified wallet when
- * the LNURL server is configured, else a non-blank Lightning Address). Null or
- * empty `eventId` and whitespace-only addresses are not payable.
+ * author receiving address ({@link receivingAddress}: a verified wallet with
+ * the LNURL server configured). Null or empty `eventId` and an author without
+ * a verified wallet are not payable.
  *
  * @param row - Forum row (`eventId` is the mint gate).
  * @param author - Author account when known.
@@ -287,6 +293,12 @@ export interface MessagesRouteDeps {
    */
   fundingStore?: FundingStore;
   /**
+   * Outbound house gifts. A `welcome` gift with description `21gifts welcome` recorded under the author's
+   * username at or after the wallet verification stops a second welcome ping.
+   * Omitted → only the platform `Welcome` reply counts.
+   */
+  giftStore?: Pick<GiftStore, 'listOutbound'>;
+  /**
    * Optional in-app notification store. When present, living-room events
    * fan out via {@link notifyForumPost} / {@link notifyForumReply} to every
    * account except the actor (no-op when the actor is the official platform
@@ -311,7 +323,7 @@ export interface MessagesRouteDeps {
    */
   nostrQuerier?: NostrQuerier;
   /**
-   * Relay URLs for that lookup. Omitted → `resolveZapReadRelays(env)`.
+   * Relay URLs for that lookup. Omitted → `resolveZapRelays(env)`.
    * An empty list skips the lookup.
    */
   nostrRelayUrls?: readonly string[];
@@ -1021,16 +1033,26 @@ async function persistForumPost(
         logEvent('push.enqueue.failed');
       }
     }
+    const lnurlServer = deps.lnurlServer;
+    const spendAddress =
+      lnurlServer === undefined
+        ? null
+        : /* v8 ignore next -- forum.post already required a verified wallet and a username */
+          (receivingAddress(account, lnurlServer)?.address ?? null);
     if (
       !isReplay &&
       parentId === null &&
-      account.lightningAddress !== null &&
+      lnurlServer !== undefined &&
+      spendAddress !== null &&
       deps.spendPing !== undefined
     ) {
       await syncWelcomePing({
         spendPing: deps.spendPing,
         messages: deps.store,
+        auth: deps.authStore,
+        gifts: deps.giftStore,
         account,
+        lnurlServer,
       });
       try {
         const grant = await (deps.fundingStore ?? new InMemoryFundingStore()).getByAccountId(
@@ -1043,7 +1065,7 @@ async function persistForumPost(
           created.hasVideo === true ||
           Number(created.photoCount) > 0
         ) {
-          await deps.spendPing.ping(account.lightningAddress, created.id);
+          await deps.spendPing.ping(spendAddress, created.id);
         } else {
           logEvent('spend.ping.skipped', { reason: 'no_media' });
         }
@@ -1823,7 +1845,10 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
         if (row.deletedAt !== null) {
           return c.json({ error: 'Messages are unavailable' }, 503);
         }
-        if (!payableOf(row, live, deps.lnurlServer) || row.eventId === null || row.eventId === '') {
+        if (receivingAddress(live, deps.lnurlServer) === null) {
+          return c.json({ error: 'This message cannot be paid yet', code: CANNOT_RECEIVE }, 400);
+        }
+        if (!payableOf(row, live, deps.lnurlServer)) {
           return c.json({ error: 'This message cannot be paid yet' }, 400);
         }
         return c.json({ messageId: row.id, sats: row.sats }, 200);
@@ -2825,7 +2850,7 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
             isNip57Invoice: false,
           }),
         );
-        return c.json({ error: "The author's wallet cannot receive this Bitcoin payment" }, 400);
+        return c.json({ error: AUTHOR_WALLET_CANNOT_RECEIVE, code: CANNOT_RECEIVE }, 400);
       }
       if (row.eventId === null || row.eventId === '') {
         await persistInvoiceAttempt(
@@ -2860,7 +2885,7 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
             authorAccountId: row.accountId,
             amountSats: parsed.data.sats,
             shown,
-            lightningAddress: author?.lightningAddress ?? null,
+            lightningAddress: null,
             zapRequest: null,
             result: 'no_author',
             httpStatus: 400,
@@ -2871,7 +2896,7 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
             isNip57Invoice: false,
           }),
         );
-        return c.json({ error: 'This message cannot be paid yet' }, 400);
+        return c.json({ error: 'This message cannot be paid yet', code: CANNOT_RECEIVE }, 400);
       }
       const recipientPubkey = await deps.authStore.getNostrPublicKey(author.id);
       /* v8 ignore start -- payable notes have keys after the worker */
@@ -3010,7 +3035,7 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
           }),
         );
         if (zap.reason === 'noZap') {
-          return c.json({ error: AUTHOR_WALLET_CANNOT_RECEIVE }, 400);
+          return c.json({ error: AUTHOR_WALLET_CANNOT_RECEIVE, code: CANNOT_RECEIVE }, 400);
         }
         return c.json({ error: 'Could not start the Bitcoin payment' }, 400);
       }
@@ -3039,7 +3064,7 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
             lnurlResponse: zap.lnurlResponse,
           }),
         );
-        return c.json({ error: AUTHOR_WALLET_CANNOT_RECEIVE }, 400);
+        return c.json({ error: AUTHOR_WALLET_CANNOT_RECEIVE, code: CANNOT_RECEIVE }, 400);
       }
       await persistInvoiceAttempt(
         deps.store,

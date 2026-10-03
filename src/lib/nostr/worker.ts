@@ -54,7 +54,6 @@ import {
   replyHintRelay,
   resolvePublicApiBase,
   resolveWriteSet,
-  resolveZapReadRelays,
   resolveZapRelays,
   writeRelayUrls,
   type ResolvedWriteSet,
@@ -284,7 +283,7 @@ function indexOpenZapReceiptsArgs(
 export function zapReceiptIngest(
   deps: ZapIngestDeps,
 ): (event: NostrEventFrame) => Promise<boolean> {
-  const args = indexOpenZapReceiptsArgs(deps, resolveZapReadRelays(deps.env));
+  const args = indexOpenZapReceiptsArgs(deps, resolveZapRelays(deps.env));
   return (event) => ingestZapReceipt(event, args);
 }
 
@@ -346,7 +345,7 @@ async function indexHotZapReceipts(deps: NostrWorkerDeps, nowMs: number): Promis
   if (oldestKeptCreatedAtMs === undefined) {
     return;
   }
-  const urls = resolveZapReadRelays(deps.env);
+  const urls = resolveZapRelays(deps.env);
   const since = Math.floor(oldestKeptCreatedAtMs / 1000) - HOT_ZAP_SINCE_SLACK_S;
   await indexOpenZapReceipts({
     ...indexOpenZapReceiptsArgs(deps, urls),
@@ -399,10 +398,9 @@ async function indexHotZapReceipts(deps: NostrWorkerDeps, nowMs: number): Promis
  * publish timeouts. `nowMs` for sign/publish leases is sampled only after zap
  * ingest returns, so an overlapping fast tick cannot reclaim with a later
  * clock while this tick still signs/publishes under a stale lease time. Full
- * ingest and the hot lane query kind 9735 on `resolveZapReadRelays` (space plus
- * the public list, then `wss://nostr.wine` and `wss://nostr.bitcoiner.social`
- * when those exact URLs are absent), and those two URLs are not used for the
- * kind 9734 tag or for inbound replies and direct messages. After sign/publish,
+ * ingest and the hot lane query kind 9735 on `resolveZapRelays` (space plus
+ * the public list), the same relays every kind 9734 request names and inbound
+ * replies and direct messages are read from. After sign/publish,
  * `'all'` (and the ingest lane) also REQs kind:1 replies (`#e` = our note event ids) and
  * persists inbound replies whose pubkey maps to a 21.gifts account or to an
  * entitled, unblocked external zapper (even when publish is off). Other npubs
@@ -438,18 +436,17 @@ export async function runNostrWorkerTick(
   mode: NostrWorkerTickMode = 'all',
 ): Promise<void> {
   const writeSet = resolveWriteSet(deps.env);
-  const zapReadUrls = resolveZapReadRelays(deps.env);
-  const replyUrls = resolveZapRelays(deps.env);
+  const readUrls = resolveZapRelays(deps.env);
   if (mode === 'ingest') {
-    await indexOpenZapReceipts(indexOpenZapReceiptsArgs(deps, zapReadUrls));
-    await indexInboundForumReplies(deps, replyUrls);
-    await indexInboundDirectMessages(deps, replyUrls);
+    await indexOpenZapReceipts(indexOpenZapReceiptsArgs(deps, readUrls));
+    await indexInboundForumReplies(deps, readUrls);
+    await indexInboundDirectMessages(deps, readUrls);
     return;
   }
   if (mode === 'fast') {
     await indexHotZapReceipts(deps, deps.now());
   } else {
-    await indexOpenZapReceipts(indexOpenZapReceiptsArgs(deps, zapReadUrls));
+    await indexOpenZapReceipts(indexOpenZapReceiptsArgs(deps, readUrls));
   }
   const nowMs = deps.now();
   await resignLegacyKind1Tags(deps);
@@ -465,8 +462,8 @@ export async function runNostrWorkerTick(
     await publishConversationBatch(deps, writeSet, nowMs);
   }
   if (mode === 'all') {
-    await indexInboundForumReplies(deps, replyUrls);
-    await indexInboundDirectMessages(deps, replyUrls);
+    await indexInboundForumReplies(deps, readUrls);
+    await indexInboundDirectMessages(deps, readUrls);
   }
   await backfillProfileMessages(deps);
 }
@@ -956,9 +953,9 @@ async function signBatch(deps: NostrWorkerDeps, nowMs: number): Promise<void> {
 }
 
 /**
- * Create a profile forum note for named accounts with a non-blank Lightning
- * Address or a verified wallet that lack one (or whose stored id no longer
- * points at a message row). `ensureProfileMessage` no-ops without either.
+ * Create a profile forum note for named accounts with a verified wallet that
+ * lack one (or whose stored id no longer points at a message row).
+ * `ensureProfileMessage` no-ops without a verified wallet.
  *
  * @param deps - Auth and message stores (and optional push / notifications).
  */

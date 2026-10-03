@@ -1,11 +1,13 @@
 import { Hono } from 'hono';
 import type { AuthStore } from '@/lib/auth/store';
+import type { LnurlServerConfig } from '@/lib/config';
 import { bearerMatchesDebugToken } from '@/lib/debug-token';
 import { logEvent } from '@/lib/log';
 import type { MessageInvoiceAttempt, MessageStore, ZapIngestRow } from '@/lib/message-store';
 import type { NotificationStore } from '@/lib/notification-store';
 import { settleInvoiceManually } from '@/lib/nostr/zap-index';
 import type { PushStore } from '@/lib/push-store';
+import { receivingAddress } from '@/lib/receiving-address';
 import { eligibleToday, utcDayKey } from '@/lib/funding';
 import type { FundingStore } from '@/lib/funding-store';
 import type { SpendPing } from '@/lib/spend-ping';
@@ -34,6 +36,8 @@ export interface DebugPaymentsRouteDeps {
   spendPing?: SpendPing;
   /** Optional funding grants; compose spend pings use the same `eligibleToday` gate as `POST /messages`. */
   fundingStore?: FundingStore;
+  /** LNURL server config for the spend ping's receiving address; omitted → none. */
+  lnurlServer?: LnurlServerConfig;
   /** Configured operator token, or `undefined` when debug is disabled. */
   debugToken: string | undefined;
 }
@@ -161,6 +165,7 @@ export function debugPaymentsRoutes(deps: DebugPaymentsRouteDeps): Hono {
             : { notificationStore: deps.notificationStore }),
           ...(deps.spendPing === undefined ? {} : { spendPing: deps.spendPing }),
           ...(deps.fundingStore === undefined ? {} : { fundingStore: deps.fundingStore }),
+          ...(deps.lnurlServer === undefined ? {} : { lnurlServer: deps.lnurlServer }),
         });
         if (result.ok) {
           logEvent('debug.invoices.settled', {
@@ -249,8 +254,8 @@ export function debugPaymentsRoutes(deps: DebugPaymentsRouteDeps): Hono {
       if (utcDayKey(message.createdAt.getTime()) !== utcDayKey(deps.now())) {
         return c.json({ error: 'Message is not from today' }, 409);
       }
-      const address = account.lightningAddress?.trim() ?? '';
-      if (address === '') {
+      const address = receivingAddress(account, deps.lnurlServer)?.address ?? null;
+      if (address === null) {
         return c.json({ error: 'No Lightning address' }, 409);
       }
       let grant;
