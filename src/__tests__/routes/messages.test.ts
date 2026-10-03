@@ -2445,7 +2445,7 @@ describe('POST /messages', () => {
     expect(await notificationStore.listByRecipient('acc', 10)).toEqual([]);
   });
 
-  it('gives a marked account only forum_mention and a subscriber only forum_post', async () => {
+  it('lists a marked account mention and preserves subscriber post push delivery', async () => {
     const authStore = await namedStore('Ada');
     await authStore.createAccount({
       id: 'marked',
@@ -2504,7 +2504,7 @@ describe('POST /messages', () => {
     const markedRows = await notificationStore.listByRecipient('marked', 10);
     expect(markedRows.map((row) => row.type)).toEqual(['forum_mention']);
     const subRows = await notificationStore.listByRecipient('sub', 10);
-    expect(subRows.map((row) => row.type)).toEqual(['forum_post']);
+    expect(subRows).toEqual([]);
     expect(await notificationStore.listByRecipient('acc', 10)).toEqual([]);
     const claimed = await pushStore.claimPending(10, now() + 1, 60_000);
     expect(claimed).toHaveLength(2);
