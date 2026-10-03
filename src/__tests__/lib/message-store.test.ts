@@ -9306,3 +9306,76 @@ describe('message fiat accumulator SQL', () => {
     expect(child.goalRepayable).toBeNull();
   });
 });
+
+it('paginates donations and loans across open and funded goals with stable ties', async () => {
+  const store = new InMemoryMessageStore();
+  const rows = [
+    { id: 'funded', goalSats: 9000, sats: 9000 },
+    { id: 'small', goalSats: 100 },
+    { id: 'large', goalSats: 1000 },
+    { id: 'z-tie', goalSats: 1000 },
+    { id: 'newer', goalSats: 1000, createdAt: LATE.createdAt },
+    { id: 'credit', goalSats: 500, goalRepayable: true as const },
+    { id: 'over', goalSats: 10000, sats: 20000 },
+    { id: 'plain' },
+    { id: 'reply', goalSats: 99999, parentId: 'large' },
+    { id: 'hidden', goalSats: 99999, deletedAt: new Date() },
+  ];
+  for (const row of rows) await store.create({ ...EARLY, ...row });
+  const query = {
+    mode: 'donations' as const,
+    limit: 20,
+    cursor: null,
+    staffAccountIds: new Set<string>(),
+  };
+  const all = await store.listFeed(query);
+  expect(all.map((row) => row.id)).toEqual([
+    'newer',
+    'z-tie',
+    'large',
+    'credit',
+    'small',
+    'over',
+    'funded',
+  ]);
+  for (let index = 0; index < all.length; index++) {
+    const row = all[index]!;
+    const page = await store.listFeed({
+      ...query,
+      cursor: {
+        k: 'g',
+        d: row.sats >= row.goalSats!,
+        g: row.goalSats!,
+        c: row.createdAt,
+        i: row.id,
+      },
+    });
+    expect(page.map((item) => item.id)).toEqual(all.slice(index + 1).map((item) => item.id));
+  }
+  expect(
+    await store.listFeed({ ...query, cursor: { k: 't', c: EARLY.createdAt, i: 'bad' } }),
+  ).toHaveLength(all.length);
+});
+
+it('binds goal ordering cursors in PostgreSQL and keeps funding comparisons in the definition currency', async () => {
+  const sql = new MockSql();
+  const store = new PostgresMessageStore(sql);
+  const query = {
+    mode: 'donations' as const,
+    limit: 2,
+    cursor: null,
+    staffAccountIds: new Set<string>(),
+  };
+  await store.listFeed(query);
+  await store.listFeed({
+    ...query,
+    cursor: { k: 'g', d: false, g: 123, c: EARLY.createdAt, i: 'a' },
+  });
+  await store.listFeed({ ...query, cursor: { k: 't', c: EARLY.createdAt, i: 'a' } });
+  expect(sql.queries[0]!.text).toContain('goal_sats > 0');
+  expect(sql.queries[0]!.text).toContain('ASC, goal_sats DESC, created_at DESC, id DESC');
+  expect(sql.queries[1]!.text).toContain('goal_amount > 0');
+  expect(sql.queries[1]!.text).toContain('goal_sats, created_at, id) < ($3, $4, $5)');
+  expect(sql.queries[1]!.params).toEqual([2, false, 123, EARLY.createdAt, 'a']);
+  expect(sql.queries[2]!.params).toEqual([2]);
+});

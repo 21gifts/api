@@ -3253,3 +3253,10 @@ Builds the operator-only external-pubkey inspection route.
 - **Inputs:** `{ store, rates, fiatRates, now }` — the same collaborators as {@link loadLatestGoalRateDay}.
 - **Returns / side effects:** A function that calls `loadLatestGoalRateDay` with those collaborators.
 - **Used by:** `createApp`.
+
+## Function: messageGoalComplete
+
+- **Purpose:** Match the progress bar funding status for donation-feed sorting and cursor generation.
+- **Inputs:** A message row's goal and collected totals.
+- **Returns / side effects:** True at or above the goal. Fiat totals use exact decimal comparison in the definition currency; BTC and legacy goals use sats. Missing fiat totals are incomplete. No I/O; this is funding, not credit repayment status.
+- **Used by:** `messagesRoutes`, `InMemoryMessageStore.listFeed`.

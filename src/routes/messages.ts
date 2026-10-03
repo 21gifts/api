@@ -37,6 +37,7 @@ import {
   serializeMessage,
   unsignedNostrDefaults,
   type ForumFeedMode,
+  messageGoalComplete,
   type ForumPhoto,
   type MessageRow,
 } from '@/lib/message';
@@ -1525,6 +1526,7 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
         modeQuery === 'all' ||
         modeQuery === 'active' ||
         modeQuery === 'unpaid' ||
+        modeQuery === 'donations' ||
         modeQuery === 'popular'
       ) {
         mode = modeQuery;
@@ -1554,7 +1556,10 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
         if (!MESSAGE_ID_RE.test(decoded.i)) {
           return c.json({ error: 'Invalid cursor' }, 400);
         }
-        if (mode === 'popular') {
+        if (mode === 'donations') {
+          if (decoded.k !== 'g') return c.json({ error: 'Invalid cursor' }, 400);
+          cursor = { ...decoded, c: new Date(decoded.c) };
+        } else if (mode === 'popular') {
           if (decoded.k !== 's') {
             return c.json({ error: 'Invalid cursor' }, 400);
           }
@@ -1606,18 +1611,26 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
           const last = rows[rows.length - 1];
           if (last !== undefined) {
             nextCursor =
-              mode === 'popular'
+              mode === 'donations'
                 ? encodeMessageFeedCursor({
-                    k: 's',
-                    s: last.sats,
+                    k: 'g',
+                    d: messageGoalComplete(last),
+                    g: last.goalSats!,
                     c: last.createdAt.toISOString(),
                     i: last.id,
                   })
-                : encodeMessageFeedCursor({
-                    k: 't',
-                    c: last.createdAt.toISOString(),
-                    i: last.id,
-                  });
+                : mode === 'popular'
+                  ? encodeMessageFeedCursor({
+                      k: 's',
+                      s: last.sats,
+                      c: last.createdAt.toISOString(),
+                      i: last.id,
+                    })
+                  : encodeMessageFeedCursor({
+                      k: 't',
+                      c: last.createdAt.toISOString(),
+                      i: last.id,
+                    });
           }
         }
         return c.json(nextCursor === undefined ? { messages } : { messages, nextCursor }, 200);

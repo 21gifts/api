@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   MESSAGE_INBOUND_REPLY_MAX_LENGTH,
   MESSAGE_MAX_LENGTH,
+  messageGoalComplete,
   MESSAGE_PHOTO_MAX_BASE64_LENGTH,
   MESSAGE_PHOTO_MAX_BYTES,
   decodeForumPhoto,
@@ -1315,6 +1316,68 @@ describe('forumPhotoResponse', () => {
       expect(res.headers.get('Content-Type')).toBe(contentType);
       expect(res.headers.get('Content-Disposition')).toBe(`inline; filename="photo.${ext}"`);
       expect(new Uint8Array(await res.arrayBuffer())).toEqual(bytes);
+    }
+  });
+});
+
+describe('donation feed cursor and completion', () => {
+  it('validates goal cursors before use', () => {
+    const cursor = { k: 'g' as const, d: false, g: 1000, c: '2026-09-01T00:00:00.000Z', i: 'a' };
+    expect(decodeMessageFeedCursor(encodeMessageFeedCursor(cursor))).toEqual(cursor);
+    for (const change of [
+      { g: '1' },
+      { g: 1.1 },
+      { g: 0 },
+      { g: -1 },
+      { g: Number.MAX_SAFE_INTEGER + 1 },
+      { d: 0 },
+    ]) {
+      expect(
+        decodeMessageFeedCursor(
+          Buffer.from(JSON.stringify({ ...cursor, ...change })).toString('base64url'),
+        ),
+      ).toBeNull();
+    }
+  });
+  it('matches funding bars including exact fiat boundaries and legacy Bitcoin goals', () => {
+    const base: MessageRow = {
+      id: 'a',
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'Goal',
+      createdAt: new Date(),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+      goalSats: 1000,
+      sats: 1000,
+    };
+    expect(messageGoalComplete(base)).toBe(true);
+    expect(messageGoalComplete({ ...base, goalCurrency: null })).toBe(true);
+    expect(messageGoalComplete({ ...base, goalCurrency: 'BTC' })).toBe(true);
+    expect(messageGoalComplete({ ...base, goalSats: null })).toBe(false);
+    expect(messageGoalComplete({ ...base, goalSats: 0 })).toBe(false);
+    expect(messageGoalComplete({ ...base, sats: 999 })).toBe(false);
+    for (const [goalCurrency, field] of [
+      ['USD', 'amountUsd'],
+      ['CHF', 'amountChf'],
+      ['EUR', 'amountEur'],
+      ['PHP', 'amountPhp'],
+    ] as const) {
+      expect(
+        messageGoalComplete({ ...base, goalCurrency, goalAmount: '10', [field]: '10.00', sats: 0 }),
+      ).toBe(true);
+      expect(
+        messageGoalComplete({ ...base, goalCurrency, goalAmount: '10.00000001', [field]: '10.00' }),
+      ).toBe(false);
+      expect(
+        messageGoalComplete({ ...base, goalCurrency, goalAmount: '0', [field]: '10.00' }),
+      ).toBe(false);
+      expect(messageGoalComplete({ ...base, goalCurrency, goalAmount: '10' })).toBe(false);
+      expect(messageGoalComplete({ ...base, goalCurrency, goalAmount: '10', [field]: 'bad' })).toBe(
+        false,
+      );
+      expect(messageGoalComplete({ ...base, goalCurrency, goalAmount: null })).toBe(true);
+      expect(messageGoalComplete({ ...base, goalCurrency, goalAmount: 'bad' })).toBe(true);
     }
   });
 });

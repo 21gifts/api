@@ -12313,3 +12313,58 @@ describe('PATCH /messages/:id/text and GET /messages/:id/edits', () => {
     ).toEqual(['place', 'place', 'shop_account', 'shop_account']);
   });
 });
+
+it('serves donations and loans in goal order across keyset pages and rejects other cursor modes', async () => {
+  const authStore = await namedStore('Ada');
+  const store = new InMemoryMessageStore();
+  for (const [n, goalSats, sats] of [
+    [1, 9000, 9000],
+    [2, 100, 0],
+    [3, 1000, 1],
+    [4, 0, 10000],
+  ] as const) {
+    await store.create({
+      id: `00000000-0000-4000-8000-${String(n).padStart(12, '0')}`,
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'Goal',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+      ...(goalSats === 0 ? {} : { goalSats }),
+      sats,
+    });
+  }
+  const app = mount(authStore, store);
+  let cursor: string | undefined;
+  const ids: string[] = [];
+  for (let page = 0; page < 4; page++) {
+    const res = await app.request(
+      '/messages?mode=donations&limit=1' + (cursor ? '&cursor=' + encodeURIComponent(cursor) : ''),
+      { headers: AUTH },
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { messages: { id: string }[]; nextCursor?: string };
+    ids.push(...body.messages.map((row) => row.id.slice(-1)));
+    cursor = body.nextCursor;
+  }
+  expect(ids).toEqual(['3', '2', '1']);
+  const wrong = encodeMessageFeedCursor({
+    k: 't',
+    c: new Date(now()).toISOString(),
+    i: '00000000-0000-4000-8000-000000000001',
+  });
+  expect(
+    (await app.request('/messages?mode=donations&cursor=' + wrong, { headers: AUTH })).status,
+  ).toBe(400);
+  const goal = encodeMessageFeedCursor({
+    k: 'g',
+    d: false,
+    g: 100,
+    c: new Date(now()).toISOString(),
+    i: '00000000-0000-4000-8000-000000000001',
+  });
+  expect((await app.request('/messages?mode=all&cursor=' + goal, { headers: AUTH })).status).toBe(
+    400,
+  );
+});

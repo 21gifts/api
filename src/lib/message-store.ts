@@ -27,6 +27,7 @@ import { postgresTextArrayLiteral } from '@/lib/postgres-text-array';
 import { canonicalGoalAmount, type GoalCurrency } from '@/lib/goal-rate';
 import {
   forumContentFingerprint,
+  messageGoalComplete,
   unsignedNostrDefaults,
   type ForumFeedMode,
   type ForumPhoto,
@@ -259,7 +260,11 @@ export type MessageFeedQuery = {
   /** Server-side feed filter. */
   mode: ForumFeedMode;
   /** Exclusive keyset cursor, or `null` for the first page. */
-  cursor: { k: 't'; c: Date; i: string } | { k: 's'; s: number; c: Date; i: string } | null;
+  cursor:
+    | { k: 't'; c: Date; i: string }
+    | { k: 's'; s: number; c: Date; i: string }
+    | { k: 'g'; d: boolean; g: number; c: Date; i: string }
+    | null;
   /** Founder + moderator account ids; used only when mode==='active'. */
   staffAccountIds: ReadonlySet<string>;
   /** Optional hashtag name without `#`. When set, only notes whose `text` contains that token. */
@@ -1875,7 +1880,12 @@ function matchesFeedCursor(row: MessageRow, query: MessageFeedQuery): boolean {
   if (cursor === null) {
     return true;
   }
-  if (query.mode === 'popular') {
+  if (query.mode === 'donations') {
+    if (cursor.k !== 'g') return true;
+    const done = messageGoalComplete(row);
+    if (done !== cursor.d) return done;
+    if (row.goalSats !== cursor.g) return row.goalSats! < cursor.g;
+  } else if (query.mode === 'popular') {
     if (cursor.k !== 's') {
       return true;
     }
@@ -2244,6 +2254,9 @@ export class InMemoryMessageStore implements MessageStore {
           (typeof row.goalSats === 'number' && row.goalSats > 0)
         );
       }
+      if (query.mode === 'donations') {
+        return typeof row.goalSats === 'number' && row.goalSats > 0;
+      }
       if (query.mode === 'popular') {
         return row.sats > 0;
       }
@@ -2255,6 +2268,12 @@ export class InMemoryMessageStore implements MessageStore {
         ? topLevel.filter((row) => textHasHashtagToken(row.text, hashtag))
         : topLevel;
     const sorted = [...tagged].sort((a, b) => {
+      if (query.mode === 'donations') {
+        const byDone = Number(messageGoalComplete(a)) - Number(messageGoalComplete(b));
+        if (byDone !== 0) return byDone;
+        const byGoal = b.goalSats! - a.goalSats!;
+        if (byGoal !== 0) return byGoal;
+      }
       if (query.mode === 'popular') {
         const bySats = b.sats - a.sats;
         if (bySats !== 0) {
@@ -4457,6 +4476,12 @@ export class PostgresMessageStore implements MessageStore {
            )
        )`,
     ];
+    // Use the same definition currency as the progress bar, before pagination.
+    const goalDone = `(CASE WHEN goal_currency IN ('USD', 'CHF', 'EUR', 'PHP') AND goal_amount IS NOT NULL
+      THEN goal_amount > 0 AND COALESCE(CASE goal_currency
+        WHEN 'USD' THEN fiat_usd WHEN 'CHF' THEN fiat_chf
+        WHEN 'EUR' THEN fiat_eur WHEN 'PHP' THEN fiat_php END, 0) >= goal_amount
+      ELSE sats >= goal_sats END)`;
     let orderBy = 'created_at DESC, id DESC';
     if (query.mode === 'unpaid') {
       filters.push('sats = 0');
@@ -4465,6 +4490,9 @@ export class PostgresMessageStore implements MessageStore {
       filters.push(
         `(sats > 0 OR account_id::text = ANY($${params.length}::text[]) OR COALESCE(goal_sats, 0) > 0)`,
       );
+    } else if (query.mode === 'donations') {
+      filters.push('goal_sats > 0');
+      orderBy = `${goalDone} ASC, goal_sats DESC, created_at DESC, id DESC`;
     } else if (query.mode === 'popular') {
       filters.push('sats > 0');
       orderBy = 'sats DESC, created_at DESC, id DESC';
@@ -4475,7 +4503,15 @@ export class PostgresMessageStore implements MessageStore {
       filters.push(`text ~* $${params.length}`);
     }
     if (query.cursor !== null) {
-      if (query.mode === 'popular') {
+      if (query.mode === 'donations') {
+        if (query.cursor.k === 'g') {
+          params.push(query.cursor.d, query.cursor.g, query.cursor.c, query.cursor.i);
+          const n = params.length;
+          filters.push(
+            `(${goalDone} > $${n - 3}::boolean OR (${goalDone} = $${n - 3}::boolean AND (goal_sats, created_at, id) < ($${n - 2}, $${n - 1}, $${n})))`,
+          );
+        }
+      } else if (query.mode === 'popular') {
         if (query.cursor.k === 's') {
           params.push(query.cursor.s, query.cursor.c, query.cursor.i);
           filters.push(
