@@ -55,7 +55,11 @@ import {
   translateForumNote,
 } from '@/lib/translate-note';
 import { InMemoryTranslationStore, type TranslationStore } from '@/lib/translation-store';
-import { publicExternalAuthorProfile } from '@/lib/nostr/external-profile';
+import {
+  publicExternalAuthorPosts,
+  publicExternalAuthorProfile,
+  publicExternalAuthorReplies,
+} from '@/lib/nostr/external-profile';
 import { ensureAccountNostrKey } from '@/lib/nostr/keys';
 import type { NostrPublisher } from '@/lib/nostr/publish';
 import type { NostrQuerier } from '@/lib/nostr/query';
@@ -74,7 +78,7 @@ import type { PushStore } from '@/lib/push-store';
 import type { SpendPing } from '@/lib/spend-ping';
 import { syncWelcomePing } from '@/lib/welcome-media';
 import { normalizePlace, parseMultipartCoord, placesMatch, type ForumPlace } from '@/lib/place';
-import { recordFirstShopOcpPlace, type MapPush } from '@/lib/ocp-place';
+import { removeShopOcpPlace, syncShopOcpPlace, type MapPush } from '@/lib/ocp-place';
 import { repaymentInvoice, repaymentStatus } from '@/routes/repayment';
 import { bearerToken } from '@/routes/me';
 import {
@@ -257,8 +261,9 @@ export interface MessagesRouteDeps {
    */
   spendPing?: SpendPing;
   /**
-   * Optional push of a first `#21GiftsShop` pin to the OpenCryptoPay map.
-   * Omitted → the forum write still succeeds and nothing is sent.
+   * Optional push of a `#21GiftsShop` pin to the OpenCryptoPay map (PUT on
+   * write, DELETE on clear or hide). Omitted → the forum write still
+   * succeeds and nothing is sent.
    */
   mapPush?: MapPush;
   /**
@@ -269,8 +274,9 @@ export interface MessagesRouteDeps {
   /**
    * Optional in-app notification store. When present, living-room events
    * fan out via {@link notifyForumPost} / {@link notifyForumReply} to every
-   * account except the actor (no-op when the actor is the official platform
-   * account); Web Push still uses `pushStore` subscriptions.
+   * account except the actor and except mention account ids on the created
+   * row (no-op when the actor is the official platform account); Web Push
+   * still uses `pushStore` subscriptions.
    */
   notificationStore?: NotificationStore;
   /** Optional inbox store; forum/zap payloads include listed unread when set. */
@@ -851,9 +857,10 @@ async function postedShopAccount(
 
 /**
  * Media collapse → burst limiter → create → optional {@link notifyForumPost}
- * (every account except the actor; no-op when the actor is the official
- * platform account) for a top-level note, or {@link notifyForumReply} (same
- * skip) when `parentId` is set. Web Push still uses `pushStore` subscriptions.
+ * (every account except the actor and except mention account ids on the
+ * created row; no-op when the actor is the official platform account) for a
+ * top-level note, or {@link notifyForumReply} (same skip) when `parentId`
+ * is set. Web Push still uses `pushStore` subscriptions.
  * Shared by JSON and multipart after body parse / normalize / decode.
  *
  * @param deps - Store, clock, optional push / spend ping / notification stores.
@@ -974,6 +981,13 @@ async function persistForumPost(
           ? await deps.store.create(row)
           : await deps.store.create(row, photo, video);
     const isReplay = created.id !== id;
+    const excludeAccountIds = [
+      ...new Set(
+        (created.mentions ?? [])
+          .filter((mark) => mark.accountId !== account.id)
+          .map((mark) => mark.accountId),
+      ),
+    ];
     if (!isReplay && parentId === null) {
       try {
         await notifyForumPost({
@@ -990,6 +1004,7 @@ async function persistForumPost(
             : {
                 inboxUnreadCount: inboxUnreadCountFor(deps.conversationStore, deps.authStore),
               }),
+          ...(excludeAccountIds.length === 0 ? {} : { excludeAccountIds }),
         });
       } catch {
         logEvent('push.enqueue.failed');
@@ -1043,6 +1058,7 @@ async function persistForumPost(
             : {
                 inboxUnreadCount: inboxUnreadCountFor(deps.conversationStore, deps.authStore),
               }),
+          ...(excludeAccountIds.length === 0 ? {} : { excludeAccountIds }),
         });
       } catch {
         logEvent('messages.reply.notify.failed');
@@ -1079,14 +1095,13 @@ async function persistForumPost(
     }
     const published = created;
     if (!isReplay) {
-      await recordFirstShopOcpPlace({
+      await syncShopOcpPlace({
         ...(deps.mapPush === undefined ? {} : { mapPush: deps.mapPush }),
         messageId: published.id,
         text: published.text,
         parentId: published.parentId ?? null,
         place: published.place ?? null,
         authorName: published.name,
-        hadPlaceBefore: false,
         textHasHashtagToken,
       });
     }
@@ -1321,8 +1336,8 @@ const translateBody = z.object({
  * long-polls until `sats` is strictly greater; timeout still returns 200 with
  * the current body; invalid value 400), `POST /messages/:id/invoice`, and
  * `POST /:id/translate` / `POST /messages/:id/translate`.
- * Photo, video, replies, DELETE, `GET /stats`, `GET /hidden`, and `GET /places`
- * register before the public single-note `GET /:id`. Soft-hidden rows (`deletedAt`) are omitted from
+ * Photo, video, replies, DELETE, `GET /stats`, `GET /hidden`, `GET /places`,
+ * `GET /:id/external-posts`, and `GET /:id/external-replies` register before the public single-note `GET /:id`. Soft-hidden rows (`deletedAt`) are omitted from
  * lists and 404 on unsigned/non-staff reads; a founder/moderator session may
  * GET the hidden permalink, its replies (including hidden children), and
  * photo/video bytes. `getById` still returns hidden rows for workers. Public
@@ -1882,6 +1897,60 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
       }
       return c.json({ error: 'Not found' }, 404);
     })
+    .get('/:id/external-posts', async (c) => {
+      const result = await publicExternalAuthorPosts(deps, c.req.param('id'));
+      if (result.status === 404) {
+        return c.json({ error: 'Not found' }, 404);
+      }
+      if (result.status === 503) {
+        return c.json({ error: 'Messages are unavailable' }, 503);
+      }
+      try {
+        const messages = [];
+        for (const row of result.messages) {
+          const kept = await dropMissingVideoRow(deps.store, row);
+          if (kept === null) {
+            continue;
+          }
+          try {
+            messages.push(serializeMessage(kept, false, undefined, row.replyCount, true));
+          } catch {
+            continue;
+          }
+        }
+        return c.json({ messages }, 200);
+      } catch {
+        logEvent('messages.external_posts.failed');
+        return c.json({ error: 'Messages are unavailable' }, 503);
+      }
+    })
+    .get('/:id/external-replies', async (c) => {
+      const result = await publicExternalAuthorReplies(deps, c.req.param('id'));
+      if (result.status === 404) {
+        return c.json({ error: 'Not found' }, 404);
+      }
+      if (result.status === 503) {
+        return c.json({ error: 'Messages are unavailable' }, 503);
+      }
+      try {
+        const messages = [];
+        for (const row of result.messages) {
+          const kept = await dropMissingVideoRow(deps.store, row);
+          if (kept === null) {
+            continue;
+          }
+          try {
+            messages.push(serializeMessage(kept, false, undefined, undefined, true));
+          } catch {
+            continue;
+          }
+        }
+        return c.json({ messages }, 200);
+      } catch {
+        logEvent('messages.external_replies.failed');
+        return c.json({ error: 'Messages are unavailable' }, 503);
+      }
+    })
     .delete('/:id', async (c) => {
       const account = await authedAccount(deps, c.req.header('authorization'));
       if (account === null) {
@@ -1903,6 +1972,17 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
         const tagged = await deps.store.markDeleted(id, at, account.id);
         if (!tagged) {
           return c.json({ error: 'Not found' }, 404);
+        }
+        if (
+          target.parentId === null &&
+          target.place !== null &&
+          target.place !== undefined &&
+          textHasHashtagToken(target.text, '21GiftsShop')
+        ) {
+          await removeShopOcpPlace({
+            ...(deps.mapPush === undefined ? {} : { mapPush: deps.mapPush }),
+            messageId: target.id,
+          });
         }
         if (target.accountId === null && target.authorPubkey !== null) {
           const cascaded = await deps.store.blockPubkeyAndHideRows(
@@ -1986,7 +2066,6 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
         if (!textHasHashtagToken(row.text, '21GiftsShop')) {
           return c.json({ error: 'Only a shop note can set a place' }, 400);
         }
-        const hadPlaceBefore = row.place !== null && row.place !== undefined;
         const placeChanged = !placesMatch(row.place ?? null, parsed.value);
         const written = placeChanged
           ? await deps.store.setPlace(id, parsed.value, {
@@ -2017,16 +2096,20 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
           accountId: account.id,
           role: account.role,
         });
-        if (!hadPlaceBefore && parsed.value !== null) {
-          await recordFirstShopOcpPlace({
+        if (parsed.value !== null) {
+          await syncShopOcpPlace({
             ...(deps.mapPush === undefined ? {} : { mapPush: deps.mapPush }),
             messageId: updated.id,
             text: updated.text,
             parentId: updated.parentId ?? null,
             place: parsed.value,
             authorName: updated.name,
-            hadPlaceBefore: false,
             textHasHashtagToken,
+          });
+        } else {
+          await removeShopOcpPlace({
+            ...(deps.mapPush === undefined ? {} : { mapPush: deps.mapPush }),
+            messageId: updated.id,
           });
         }
         return c.json(
@@ -2134,6 +2217,17 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
           accountId: account.id,
           role: account.role,
         });
+        if (updated.place !== null && updated.place !== undefined) {
+          await syncShopOcpPlace({
+            ...(deps.mapPush === undefined ? {} : { mapPush: deps.mapPush }),
+            messageId: updated.id,
+            text: updated.text,
+            parentId: updated.parentId ?? null,
+            place: updated.place,
+            authorName: updated.name,
+            textHasHashtagToken,
+          });
+        }
         return c.json(
           serializeMessage(
             updated,

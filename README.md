@@ -22,13 +22,14 @@ argument is in [`CONCEPT.md`](./CONCEPT.md) (Convictions) and on
 
 ## 🐳 Docker images
 
-Pre-built images are published to Docker Hub on every push to `develop` (`:beta`)
-and `main` (`:latest`).
+Pre-built images are published to Docker Hub on every push to `develop` (`:beta`),
+`staging` (`:staging`), and `main` (`:latest`).
 
-| Tag                                                                           | Source    | Deploy target | Public URL                 |
-| ----------------------------------------------------------------------------- | --------- | ------------- | -------------------------- |
-| [`21gifts/api:beta`](https://hub.docker.com/r/21gifts/api/tags?name=beta)     | `develop` | DEV           | `https://dev-api.21.gifts` |
-| [`21gifts/api:latest`](https://hub.docker.com/r/21gifts/api/tags?name=latest) | `main`    | PRD           | `https://api.21.gifts`     |
+| Tag                                                                             | Source    | Deploy target | Public URL                     |
+| ------------------------------------------------------------------------------- | --------- | ------------- | ------------------------------ |
+| [`21gifts/api:beta`](https://hub.docker.com/r/21gifts/api/tags?name=beta)       | `develop` | DEV           | `https://dev-api.21.gifts`     |
+| [`21gifts/api:staging`](https://hub.docker.com/r/21gifts/api/tags?name=staging) | `staging` | staging       | `https://staging-api.21.gifts` |
+| [`21gifts/api:latest`](https://hub.docker.com/r/21gifts/api/tags?name=latest)   | `main`    | PRD           | `https://api.21.gifts`         |
 
 **Pull and run locally:**
 
@@ -95,12 +96,12 @@ bun run e2e             # Playwright against bun src/index.ts
 
 ## Runtime configuration
 
-| Variable               | Required          | Purpose                                                                                                                             |
-| ---------------------- | ----------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
-| `MEDIA_DIR`            | yes               | Directory for forum video files. Missing or blank → process does not boot. Image/Compose pin `/data/media`. Not a secret.           |
-| `WEBAUTHN_RP_ID`       | For passkey login | WebAuthn RP ID (`21.gifts` / `dev.21.gifts` / `localhost`). Missing → passkey routes return 500; process still boots. Not a secret. |
-| `WEBAUTHN_RP_NAME`     | no                | Human-readable RP name (default `21.gifts`).                                                                                        |
-| `CORS_ALLOWED_ORIGINS` | no                | Comma-separated browser origins. Passkey finish allows those whose hostname is the RP ID or `app.<rpId>` only.                      |
+| Variable               | Required          | Purpose                                                                                                                                                  |
+| ---------------------- | ----------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `MEDIA_DIR`            | yes               | Directory for forum video files. Missing or blank → process does not boot. Image/Compose pin `/data/media`. Not a secret.                                |
+| `WEBAUTHN_RP_ID`       | For passkey login | WebAuthn RP ID (`21.gifts` / `dev.21.gifts` / `staging.21.gifts` / `localhost`). Missing → passkey routes return 500; process still boots. Not a secret. |
+| `WEBAUTHN_RP_NAME`     | no                | Human-readable RP name (default `21.gifts`).                                                                                                             |
+| `CORS_ALLOWED_ORIGINS` | no                | Comma-separated browser origins. Passkey finish allows those whose hostname is the RP ID or `app.<rpId>` only.                                           |
 
 ## Documentation
 

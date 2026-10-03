@@ -521,6 +521,156 @@ describe('GET /notifications', () => {
     expect(await store.getByIdForRecipient(ID_A, 'acc')).toBeDefined();
   });
 
+  it('keeps forum_mention, preserves hidden post rows, and drops duplicate reply rows', async () => {
+    const postId = '11111111-1111-4111-8111-111111111111';
+    const replyId = '22222222-2222-4222-8222-222222222222';
+    const zapReplyId = 'cafef00d-cafe-4f00-8d00-cafef00d0001';
+    const messages = new InMemoryMessageStore();
+    await messages.create({
+      id: postId,
+      accountId: 'actor',
+      name: 'Ada',
+      text: 'post',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      hasVideo: false,
+      videoContentType: null,
+      ...unsignedNostrDefaults(),
+    });
+    await messages.create({
+      id: replyId,
+      accountId: 'actor',
+      name: 'Ada',
+      text: 'reply',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      hasVideo: false,
+      videoContentType: null,
+      ...unsignedNostrDefaults(),
+      parentId: postId,
+    });
+    const store = new InMemoryNotificationStore([
+      note({
+        id: ID_A,
+        type: 'forum_post',
+        parentId: postId,
+        replyId: postId,
+        text: 'posted',
+      }),
+      note({
+        id: ID_B,
+        type: 'forum_mention',
+        parentId: postId,
+        replyId: postId,
+        text: 'marked on post',
+      }),
+      note({
+        id: ID_READ,
+        type: 'forum_reply',
+        parentId: postId,
+        replyId,
+        text: 'replied',
+      }),
+      note({
+        id: ID_E,
+        type: 'forum_mention',
+        parentId: postId,
+        replyId,
+        text: 'marked on reply',
+      }),
+      note({
+        id: ID_F,
+        type: 'zap',
+        parentId: postId,
+        replyId: zapReplyId,
+        text: '21',
+      }),
+      note({
+        id: ID_OTHER,
+        recipientAccountId: 'other',
+        type: 'forum_post',
+        parentId: postId,
+        replyId: postId,
+        text: 'other post',
+      }),
+    ]);
+    const res = await mount(await seeded(), store, messages).request('/notifications', {
+      headers: AUTH,
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      notifications: Array<Record<string, unknown>>;
+      unreadCount: number;
+    };
+    expect(body.notifications.map((item) => item['id'])).toEqual([ID_F, ID_E, ID_B]);
+    expect(body.notifications.map((item) => item['type'])).toEqual([
+      'zap',
+      'forum_mention',
+      'forum_mention',
+    ]);
+    expect(body.unreadCount).toBe(3);
+    expect(await store.getByIdForRecipient(ID_A, 'acc')).toBeDefined();
+    expect(await store.getByIdForRecipient(ID_READ, 'acc')).toBeUndefined();
+    expect(await store.getByIdForRecipient(ID_B, 'acc')).toBeDefined();
+    expect(await store.getByIdForRecipient(ID_E, 'acc')).toBeDefined();
+    expect(await store.getByIdForRecipient(ID_F, 'acc')).toBeDefined();
+    expect(await store.getByIdForRecipient(ID_OTHER, 'other')).toBeDefined();
+    expect(
+      parsedEvents(warn).some(
+        (event) => event['event'] === 'notifications.duplicate.purged' && event['count'] === 1,
+      ),
+    ).toBe(true);
+  });
+
+  it('still lists the mention when duplicate purge throws', async () => {
+    const postId = '11111111-1111-4111-8111-111111111111';
+    const messages = new InMemoryMessageStore();
+    await messages.create({
+      id: postId,
+      accountId: 'actor',
+      name: 'Ada',
+      text: 'post',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      hasVideo: false,
+      videoContentType: null,
+      ...unsignedNostrDefaults(),
+    });
+    const store = new InMemoryNotificationStore([
+      note({
+        id: ID_A,
+        type: 'forum_reply',
+        parentId: postId,
+        replyId: postId,
+        text: 'posted',
+      }),
+      note({
+        id: ID_B,
+        type: 'forum_mention',
+        parentId: postId,
+        replyId: postId,
+        text: 'marked',
+      }),
+    ]);
+    store.deleteForRecipient = async () => {
+      throw new Error('purge boom');
+    };
+    const res = await mount(await seeded(), store, messages).request('/notifications', {
+      headers: AUTH,
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      notifications: Array<Record<string, unknown>>;
+      unreadCount: number;
+    };
+    expect(body.notifications.map((item) => item['id'])).toEqual([ID_B]);
+    expect(body.unreadCount).toBe(1);
+    expect(await store.getByIdForRecipient(ID_A, 'acc')).toBeDefined();
+    expect(
+      parsedEvents(warn).some((event) => event['event'] === 'notifications.duplicate.purge_failed'),
+    ).toBe(true);
+  });
+
   it('drops a zap when its parent note is hidden', async () => {
     const parentHidden = '33333333-3333-4333-8333-333333333333';
     const receiptReplyId = 'cafef00d-cafe-4f00-8d00-cafef00d0001';

@@ -293,7 +293,10 @@ function filterIdsByMatch(
  * recipients whose {@link wantsNotification} is false (level from
  * `listAccounts()` via {@link parseNotificationLevel}, omitted or unknown
  * → `all`; push-only ids not in that list are `all`).
- * When `auth` is unset, do not filter by level. Missing both `auth` and
+ * When `auth` is unset, do not filter by level. Optional
+ * `excludeAccountIds` is applied after skip and after `onlyAccountIds`,
+ * to both the in-app list and the push list, even when `auth` is omitted.
+ * Unknown ids are a no-op. Missing both `auth` and
  * `pushStore` is a no-op. Unique duplicate `create` is fine. When
  * `notifications` is set, each outbox JSON includes that recipient's current
  * unread count after in-app create (`unreadCount`, for the home-screen
@@ -301,7 +304,7 @@ function filterIdsByMatch(
  * source exists, `unreadCount` is written (missing source contributes 0).
  * When both are omitted, `payload` is enqueued unchanged.
  *
- * @param args - Optional stores, skip id, optional match, row template, outbox fields, clock.
+ * @param args - Optional stores, skip id, optional exclude/allow lists, optional match, row template, outbox fields, clock.
  * @returns Resolves after each recipient is written (including no-ops).
  * @throws If recipient listing rejects. Per-recipient `create` /
  *   `unreadCount` / inbox unread / `enqueue` failures log `push.fanout.failed`,
@@ -318,6 +321,12 @@ export async function fanoutToBellSubscribers(args: {
   skipAccountId: string | null;
   /** Optional allowlist applied to both in-app and push recipients before level matching. */
   onlyAccountIds?: readonly string[];
+  /**
+   * Optional denylist applied to both in-app and push recipients after skip
+   * and after `onlyAccountIds`, before level matching. Unknown ids are a no-op.
+   * Applied even when `auth` is omitted.
+   */
+  excludeAccountIds?: readonly string[];
   /**
    * Event match context. Omitted → today's every-id-except-skip behaviour.
    * Applied only when `auth` is also set.
@@ -346,6 +355,11 @@ export async function fanoutToBellSubscribers(args: {
     const only = new Set(args.onlyAccountIds);
     inAppIds = inAppIds.filter((id) => only.has(id));
     pushIds = pushIds.filter((id) => only.has(id));
+  }
+  if (args.excludeAccountIds !== undefined) {
+    const exclude = new Set(args.excludeAccountIds);
+    inAppIds = inAppIds.filter((id) => !exclude.has(id));
+    pushIds = pushIds.filter((id) => !exclude.has(id));
   }
   const match = args.match;
   if (match !== undefined && args.auth !== undefined) {
@@ -418,16 +432,24 @@ export async function fanoutToBellSubscribers(args: {
 }
 
 /**
- * Enqueue Web Push for a new top-level forum post except the actor.
- * Generic post rows are stored for push dismissal, but excluded from member
- * lists and unread counts. Explicit mentions
- * are handled separately by `notifyForumMentions`. Platform actors are skipped.
- * Existing recipient levels and Web Push payloads are preserved. The optional
- * notification store supplies the remaining unread count.
+ * Notify living-room members of a new top-level forum post except the actor.
+ * No-op when the actor is the official platform account (`isPlatform === true`
+ * via `auth.listAccounts()`). Missing auth, missing id, missing account, or
+ * `isPlatform` not true still fans out. Persist a `forum_post` row for every
+ * matching account (when `auth` is set) or every bell subscriber (otherwise)
+ * when `notifications` is set, and enqueue a `/messages/<id>` Web Push when
+ * `pushStore` is set. Matching uses {@link wantsNotification}: `isActive` is
+ * `created.sats > 0`, `mentionedAccountId` is null (top-level posts are never
+ * personal). A staff or platform actor does not satisfy `mentions`. When
+ * `auth` is unset, do not filter by level. Missing `pushStore` still writes
+ * rows when `auth` is set. Generic `forum_post` rows remain stored for push
+ * dismissal but are excluded from member lists and unread counts. Optional `excludeAccountIds` is forwarded
+ * to fan-out (omitted means today's recipients). This helper may throw;
+ * callers wrap it.
  *
- * @param args - Optional stores, actor, persisted post.
- * @returns Resolves after optional persistence and push enqueue (including no-ops).
- * @throws If recipient lookup, persistence, unread counts, or enqueue rejects.
+ * @param args - Optional stores, actor, persisted post, optional exclude ids.
+ * @returns Resolves after the optional persist and push enqueue (including no-ops).
+ * @throws If fan-out `create`, `unreadCount`, or `enqueue` rejects.
  */
 export async function notifyForumPost(args: {
   /** Optional notification persistence. */
@@ -442,6 +464,8 @@ export async function notifyForumPost(args: {
   created: MessageRow;
   /** Optional listed inbox unread; forwarded to fan-out. */
   inboxUnreadCount?: (accountId: string) => Promise<number>;
+  /** Optional denylist forwarded to fan-out (omitted → today's recipients). */
+  excludeAccountIds?: readonly string[];
 }): Promise<void> {
   if (await actorIsPlatformAccount(args.auth, args.account.id)) {
     return;
@@ -452,6 +476,7 @@ export async function notifyForumPost(args: {
     ...(args.auth === undefined ? {} : { auth: args.auth }),
     ...(args.inboxUnreadCount === undefined ? {} : { inboxUnreadCount: args.inboxUnreadCount }),
     skipAccountId: args.account.id,
+    ...(args.excludeAccountIds === undefined ? {} : { excludeAccountIds: args.excludeAccountIds }),
     match: {
       isActive: args.created.sats > 0,
       mentionedAccountId: null,
@@ -493,10 +518,11 @@ export async function notifyForumPost(args: {
  * `mentionedAccountId` is `parent.accountId` (null when the parent has no
  * account). A staff or platform actor does not satisfy `mentions`. When `auth`
  * is unset, do not filter by level. Missing `pushStore` still writes in-app
- * rows when `auth` is set. Unique duplicate create is fine. This helper may
- * throw; callers wrap it.
+ * rows when `auth` is set. Optional `excludeAccountIds` is forwarded to
+ * fan-out (omitted means today's recipients). Unique duplicate create is
+ * fine. This helper may throw; callers wrap it.
  *
- * @param args - Message store, optional notification/push/auth stores, actor, reply, parent id.
+ * @param args - Message store, optional notification/push/auth stores, actor, reply, parent id, optional exclude ids.
  * @returns Resolves after the optional persist and push enqueue (including no-ops).
  * @throws If parent lookup, notification `create`, `unreadCount`, or outbox `enqueue` rejects.
  */
@@ -517,6 +543,8 @@ export async function notifyForumReply(args: {
   parentId: string;
   /** Optional listed inbox unread; forwarded to fan-out. */
   inboxUnreadCount?: (accountId: string) => Promise<number>;
+  /** Optional denylist forwarded to fan-out (omitted → today's recipients). */
+  excludeAccountIds?: readonly string[];
 }): Promise<void> {
   const parent = await args.messages.getById(args.parentId);
   if (parent === undefined) {
@@ -531,6 +559,7 @@ export async function notifyForumReply(args: {
     ...(args.auth === undefined ? {} : { auth: args.auth }),
     ...(args.inboxUnreadCount === undefined ? {} : { inboxUnreadCount: args.inboxUnreadCount }),
     skipAccountId: args.account.id,
+    ...(args.excludeAccountIds === undefined ? {} : { excludeAccountIds: args.excludeAccountIds }),
     match: {
       isActive: parent.sats > 0,
       mentionedAccountId: parent.accountId ?? null,

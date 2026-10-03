@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import type { MergeDb } from '@/lib/account-merge';
 import { InMemoryAuthStore } from '@/lib/auth/store';
 import type { DiagnosticStore } from '@/lib/diagnostic-log';
 import { setDiagnosticSink } from '@/lib/log';
@@ -48,6 +49,21 @@ describe('createApp', () => {
 
   it('accepts an injected spendPing', async () => {
     const app = createApp({ spendPing: { ping: async () => undefined } });
+    const res = await app.request('/healthz');
+    expect(res.status).toBe(200);
+  });
+
+  it('accepts an injected mergeDb', async () => {
+    const mergeDb: MergeDb = {
+      async begin(run) {
+        return run({
+          async query<T>(): Promise<T[]> {
+            return [] as T[];
+          },
+        });
+      },
+    };
+    const app = createApp({ mergeDb });
     const res = await app.request('/healthz');
     expect(res.status).toBe(200);
   });

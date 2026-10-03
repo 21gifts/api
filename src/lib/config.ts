@@ -42,15 +42,17 @@ export const GIFT_INVOICE_TTL_MS = 15 * 60 * 1000;
 
 /**
  * Browser origins allowed to call the api by default — the 21.gifts apex
- * (prd, dev), transitional app-subdomain aliases, and local dev. These are
+ * (prd, staging, dev), transitional app-subdomain aliases, and local dev. These are
  * public, fixed hostnames, not secrets; `CORS_ALLOWED_ORIGINS` overrides them
  * when a different surface needs cross-origin access.
  */
 const DEFAULT_ALLOWED_ORIGINS = [
   'https://21.gifts',
   'https://dev.21.gifts',
+  'https://staging.21.gifts',
   'https://app.21.gifts',
   'https://dev-app.21.gifts',
+  'https://staging-app.21.gifts',
   'http://localhost:3000',
 ];
 
@@ -73,7 +75,7 @@ export function resolveAllowedOrigins(env: Record<string, string | undefined>): 
 }
 
 /** RP IDs the process will mint credentials under. Anything else is `null`. */
-const WEBAUTHN_RP_IDS = new Set(['21.gifts', 'dev.21.gifts', 'localhost']);
+const WEBAUTHN_RP_IDS = new Set(['21.gifts', 'dev.21.gifts', 'staging.21.gifts', 'localhost']);
 
 /**
  * Normalise `WEBAUTHN_RP_ID`. A missing, blank, or unknown value yields
