@@ -4,7 +4,7 @@
 > Product decisions live in [`CONCEPT.md`](./CONCEPT.md); this file owns
 > request/response contracts for routes that exist in code today.
 
-**Status**: living document. Last revised 2026-09-30 (`GET /mentions` matches the start of the username, a `.` `_` `-` segment, or the start of the display name or one of its words; a token containing `.` `_` `-` matches only a whole-string start. 2026-09-28: `GET /mentions` username prefix suggestions. GET /mentions returns at most 20 username-prefix suggestions for a signed-in forum reader. 2026-09-24: `POST /conversations/:id/messages/:messageId/translate`; owner and view JSON include `aboutMessageId`; conversation rows include `lastMessageId`. 2026-09-23: `eligibleToday` does not require a grant until UTC 2026-10-10; funding-program grants independent of `account.role`; spend ping and `POST /invoices` require `eligibleToday`; verified top-level media also welcome-pings independent of `eligibleToday`; `GET /invoices/eligible`; `GET /conversations` list/open rows include per-row `unreadMessageCount`; envelope `unreadCount` remains unread thread count; `GET /trust-chain` requires a member Bearer session; public graph uses at most one incoming edge per subject: the oldest eligible sibling (`createdAt` then `id`), skipping a non-chain oldest sibling so a later displayable contact can show; eligible `verify`, `moderator_appoint`, and `moderator_propose` only when the subject is a moderator; `moderator_confirm` and `moderator_reject` never; later appoint/confirm/propose do not replace the first eligible contact; staff may reject an open proposal (`POST /trust/reject-moderator`, append-only `moderator_reject`, role stays `verified`) and re-propose after reject (new `moderator_propose`; 409 while currently pending, any confirm/appoint, or a concurrent older open propose wins after insert); confirm/reject re-list after insert and undo when the other grant already closed; pending = latest propose/reject is propose, verified, no confirm/appoint; live-unique kinds are verify/confirm/appoint only; open proposal fans out in-app `moderator_proposal` plus Web Push to other staff until confirm, until reject when pending is then empty, or until appoint; GET `/notifications` keeps `moderator_appointed` and `moderator_proposal` (mark-read / read-all do not stamp the proposal); owner `notificationLevel` on GET `/me` and `POST /me/notification-level`; fan-out filters in-app and Web Push by `all` / `active` / `mentions`; GET `/notifications` applies the same filter to stored rows (`moderator_appointed` always stays; `unreadCount` is unread among kept rows after the hidden filter (before the 200 cap), not `store.unreadCount()` and not the unfiltered matching unread of the newest 1000); a zap that inserts a gift-reply fans out only `notifyZap`, not a second `forum_reply`; gift-reply row still lands in the thread; confirm/appoint notify the subject only with `moderator_appointed` and Web Push url `/welcome`; official platform account (`isPlatform`) never fans out living-room `forum_post` / `forum_reply` / `zap`; house daily gift-replies still persist; GET /messages omits name-copy profile notes and About me text stays).
+**Status**: living document. Last revised 2026-09-30 (`GET /mentions` matches the start of the username, a `.` `_` `-` segment, or the start of the display name or one of its words; a token containing `.` `_` `-` matches only a whole-string start. 2026-09-28: `GET /mentions` username prefix suggestions. GET /mentions returns at most 20 username-prefix suggestions for a signed-in forum reader. 2026-09-24: `POST /conversations/:id/messages/:messageId/translate`; owner and view JSON include `aboutMessageId`; conversation rows include `lastMessageId`. 2026-09-23: `eligibleToday` does not require a grant until UTC 2026-10-10; funding-program grants independent of `account.role`; spend ping and `POST /invoices` require `eligibleToday`; verified top-level media also welcome-pings independent of `eligibleToday`; `GET /invoices/eligible`; `GET /conversations` list/open rows include per-row `unreadMessageCount`; envelope `unreadCount` remains unread thread count; `GET /trust-chain` requires a member Bearer session; public graph uses at most one incoming edge per subject: the oldest eligible sibling (`createdAt` then `id`), skipping a non-chain oldest sibling so a later displayable contact can show; eligible `verify`, `moderator_appoint`, and `moderator_propose` only when the subject is a moderator; `moderator_confirm` and `moderator_reject` never; later appoint/confirm/propose do not replace the first eligible contact; staff may reject an open proposal (`POST /trust/reject-moderator`, append-only `moderator_reject`, role stays `verified`) and re-propose after reject (new `moderator_propose`; 409 while currently pending, any confirm/appoint, or a concurrent older open propose wins after insert); confirm/reject re-list after insert and undo when the other grant already closed; pending = latest propose/reject is propose, verified, no confirm/appoint; live-unique kinds are verify/confirm/appoint only; open proposal fans out in-app `moderator_proposal` plus Web Push to other staff until confirm, until reject when pending is then empty, or until appoint; GET `/notifications` keeps `moderator_appointed` and `moderator_proposal` (mark-read / read-all do not stamp the proposal); owner `notificationLevel` on GET `/me` and `POST /me/notification-level`; fan-out filters in-app and Web Push by `all` / `active` / `mentions`; GET `/notifications` applies the same filter to stored rows (`moderator_appointed` always stays; `unreadCount` is unread among kept rows after the hidden filter (before the 200 cap), not `store.unreadCount()` and not the unfiltered matching unread of the newest 1000); a zap that inserts a gift-reply fans out only `notifyZap`, not a second `forum_reply`; gift-reply row still lands in the thread; confirm/appoint notify the subject only with `moderator_appointed` and Web Push url `/welcome`; official platform account (`isPlatform`) never fans out living-room `forum_post` / `forum_reply` / `zap`; house daily gift-replies still persist; GET /messages omits name-copy profile notes and About me text stays). 2026-10-01: opening a forum note, translating it, or opening Notifications stamps the matching unread forum and zap rows and tells the account's other devices to close those banners (`POST /notifications/read-by-message`; read-all and read-by-message return tags; a freshly stamped `POST /notifications/:id/read` only enqueues the dismiss tag and still returns the public notification). `moderator_proposal` stays unread. Private-message pushes are not dismissed.
 
 ---
 
@@ -62,18 +62,19 @@ only and does not `addSats`; no `notifyForumReply`). Optional `messageId` on
 `POST /invoices`. `GET /invoices/posted` returns `{ hasPosted, messageId, postedAt, hasMedia, welcomeHasMedia, welcomeMessageId }`.
 
 CORS allows the configured origins (`CORS_ALLOWED_ORIGINS`, or the default
-surfaces `https://21.gifts`, `https://dev.21.gifts`, `https://app.21.gifts`,
-`https://dev-app.21.gifts`, and `http://localhost:3000`) and methods `GET`,
+surfaces `https://21.gifts`, `https://dev.21.gifts`, `https://staging.21.gifts`, `https://app.21.gifts`,
+`https://dev-app.21.gifts`, `https://staging-app.21.gifts`, and `http://localhost:3000`) and methods `GET`,
 `POST`, `PUT`, `PATCH`, `DELETE`, `OPTIONS`, with headers `Authorization` and `Content-Type`.
 Sessions are sent as `Authorization: Bearer` headers — no cookies,
 credentials not enabled.
 
 Public base URLs used in examples:
 
-| Environment | API                        | App                    |
-| ----------- | -------------------------- | ---------------------- |
-| PRD         | `https://api.21.gifts`     | `https://21.gifts`     |
-| DEV         | `https://dev-api.21.gifts` | `https://dev.21.gifts` |
+| Environment | API                            | App                        |
+| ----------- | ------------------------------ | -------------------------- |
+| PRD         | `https://api.21.gifts`         | `https://21.gifts`         |
+| DEV         | `https://dev-api.21.gifts`     | `https://dev.21.gifts`     |
+| STAGING     | `https://staging-api.21.gifts` | `https://staging.21.gifts` |
 
 | Method | Path                                                 | Auth                       | Purpose                                                                                                                                                                                                                                                                                                                                                |
 | ------ | ---------------------------------------------------- | -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
@@ -142,6 +143,8 @@ Public base URLs used in examples:
 | POST   | `/funding/admit`                                     | Bearer (moderator+)        | Admit grant                                                                                                                                                                                                                                                                                                                                            |
 | POST   | `/funding/reject`                                    | Bearer (moderator+)        | Reject grant                                                                                                                                                                                                                                                                                                                                           |
 | GET    | `/funding/payout-days`                               | Bearer (moderator+)        | Staff seven-UTC-day grant payout matrix (`days`: `blocked` / `missed` / `paid`; `welcome`: seven booleans, same order)                                                                                                                                                                                                                                 |
+| GET    | `/shops/activity`                                    | none                       | 30-UTC-day shop till-charge counts (`days`: `{ day, shopCount }`, oldest first, zeros included)                                                                                                                                                                                                                                                        |
+| GET    | `/funding/goal`                                      | Bearer (any role)          | 7-UTC-day shop till-charge counts plus how many shops had a charge on 5 of those days (`days`, `qualifyingShops`)                                                                                                                                                                                                                                      |
 | GET    | `/messages`                                          | none for active / Bearer   | Public active window with no header; otherwise Bearer. List top-level notes (+ visible `replyCount`); 409 if rules missing; name-copy notes without photo, extra stills, or video are omitted; About me text stays                                                                                                                                     |
 | GET    | `/messages/compose-target`                           | Bearer                     | Platform profile note `{ messageId, sats }` for a 1-sat compose fee to 21.gifts                                                                                                                                                                                                                                                                        |
 | GET    | `/messages/places`                                   | Bearer                     | Live top-level forum pins; 409 if rules missing                                                                                                                                                                                                                                                                                                        |
@@ -177,6 +180,7 @@ Public base URLs used in examples:
 | POST   | `/conversations/:id/messages/:messageId/translate`   | Bearer                     | Translate stored conversation text (`{ target }` → `{ translatedText, cached }`)                                                                                                                                                                                                                                                                       |
 | GET    | `/notifications`                                     | Bearer                     | List + unreadCount; drop leftover hidden forum_post/forum_reply (zap checks parent only)                                                                                                                                                                                                                                                               |
 | POST   | `/notifications/read-all`                            | Bearer                     | Mark all notifications read                                                                                                                                                                                                                                                                                                                            |
+| POST   | `/notifications/read-by-message`                     | Bearer                     | Mark forum and zap notifications for one opened note read and return dismiss tags                                                                                                                                                                                                                                                                      |
 | POST   | `/notifications/:id/read`                            | Bearer                     | Mark one notification read                                                                                                                                                                                                                                                                                                                             |
 | GET    | `/lightning-address`                                 | none                       | Resolve LUD-16 metadata (cached)                                                                                                                                                                                                                                                                                                                       |
 | POST   | `/diagnostics`                                       | none                       | `{ event }` plus optional `name`, `message`, `prfPresent`, `challengeId`, `accountId`, `stage`, `status`, `path` → `204`; 60/IP and 600 global per minute                                                                                                                                                                                              |
@@ -185,6 +189,7 @@ Public base URLs used in examples:
 | POST   | `/debug/accounts`                                    | `Authorization: Bearer`    | Operator provision name + Lightning Address (`DEBUG_TOKEN`)                                                                                                                                                                                                                                                                                            |
 | PATCH  | `/debug/accounts/:id`                                | `Authorization: Bearer`    | Operator set `role` / unlink Lightning Address / `platform` / `sessionRefused`                                                                                                                                                                                                                                                                         |
 | POST   | `/debug/accounts/:id/session`                        | `Authorization: Bearer`    | Operator mint of a member bearer (`DEBUG_TOKEN`)                                                                                                                                                                                                                                                                                                       |
+| POST   | `/debug/accounts/merge`                              | `Authorization: Bearer`    | Operator merge of one account into another (`DEBUG_TOKEN`)                                                                                                                                                                                                                                                                                             |
 | GET    | `/debug/api-log`                                     | `Authorization: Bearer`    | Operator HTTP audit log (`DEBUG_TOKEN`); follow `before`/`beforeId`; no query string, body, or Authorization stored                                                                                                                                                                                                                                    |
 | GET    | `/debug/diagnostics`                                 | `Authorization: Bearer`    | Operator diagnostic log (`DEBUG_TOKEN`); newest 200; no secrets                                                                                                                                                                                                                                                                                        |
 | GET    | `/debug/db`                                          | `Authorization: Bearer`    | Operator page through every public table (`DEBUG_TOKEN`); follow `nextCursor`                                                                                                                                                                                                                                                                          |
@@ -470,7 +475,7 @@ normalised handle; `user.name` and `user.displayName` are that handle.
 `user.id` remains the pending account UUID encoded as UTF-8.
 
 When `WEBAUTHN_RP_ID` is unset, blank, not on the allowlist (`21.gifts` /
-`dev.21.gifts` / `localhost`), or no CORS origin matches that RP ID:
+`dev.21.gifts` / `staging.21.gifts` / `localhost`), or no CORS origin matches that RP ID:
 
 **Response** `500`:
 
@@ -1253,6 +1258,48 @@ No session → **401** `{ "error": "Unauthorized" }`. Below moderator →
 **403** `{ "error": "Forbidden" }`. Store throw → **503**
 `{ "error": "Funding is unavailable" }` (`funding.payouts.failed`).
 
+### `GET /funding/goal`
+
+Bearer session. Any signed-in role, including `basis`. Missing or
+invalid bearer is **401** `{ "error": "Unauthorized" }`. Seven UTC days
+ending on the server clock's today, oldest first. A shop is a live
+top-level forum note (`parent_id` null, `deleted_at` null) whose text
+has the hashtag token `21GiftsShop` (case-insensitive, not followed by
+`[A-Za-z0-9_]`) and whose `shop_account_id` is set. That note counts on
+a UTC day when the account currently assigned to it has at least one
+`pos_charge` with `created_at` on that day, any status (`pending`,
+`cancelled`, or `expired`). Distinct notes, not accounts. A note
+qualifies when that account has a charge on at least 5 distinct UTC
+days inside the window. Those 5 days need not be consecutive.
+Duplicate note ids count once. Reassigning the account, clearing it,
+removing the hashtag, or soft-deleting the note rewrites every past
+day. This is not `GET /shops/activity` and not a historical usage log.
+JSON `{ "days": [ { "day": "YYYY-MM-DD", "shopCount": 0 } ], "qualifyingShops": 0 }`
+with exactly 7 day objects, missing days included as zero. No
+Sunday-rest gate. A store throw → **503**
+`{ "error": "Funding goal is unavailable" }` and log
+`funding.goal.failed` with no account, note, or charge ids.
+
+### `GET /shops/activity`
+
+No session is required. Missing or invalid bearer is still 200 with
+the same body. Thirty UTC days ending on the
+server clock's today, oldest first. A shop is a live top-level forum
+note (`parent_id` null, `deleted_at` null) whose text has the hashtag
+token `21GiftsShop` (case-insensitive, not followed by `[A-Za-z0-9_]`)
+and whose `shop_account_id` is set. That note counts on a UTC day when
+the account currently assigned to it has at least one `pos_charge` with
+`created_at` on that day, any status (`pending`, `cancelled`, or
+`expired`). Distinct notes, not accounts: one account on two notes
+counts twice. Duplicate note ids count once. Reassigning the account,
+clearing it, removing the hashtag, or soft-deleting the note rewrites
+every past day. This is not a historical usage log. JSON
+`{ "days": [ { "day": "YYYY-MM-DD", "shopCount": 0 } ] }` with exactly
+30 objects, missing days included as zero. No Sunday-rest gate. Does
+not create a BOLT11 invoice. A store throw → **503**
+`{ "error": "Shop activity is unavailable" }` and log
+`shops.activity.failed` with no account, note, or charge ids.
+
 ### `GET /view/:viewKey`
 
 Public capability URL for a read-only profile card. No auth. Not a session:
@@ -1934,7 +1981,7 @@ process has no SQL client → **Response** `503`
 `nextCursor` when another page exists. Follow `nextCursor` until it is
 absent. `bytea` cells, including `nostr_nsec_ciphertext`, are octet lengths.
 Text in `token`, `challenge`, `nonce`, `view_key`, `endpoint`, `p256dh`,
-`auth`, and `delivered_endpoints` is the string `"redacted"`. A primary key
+`auth`, `delivered_endpoints`, and `skip_endpoints` is the string `"redacted"`. A primary key
 that is one of those columns is paged by `ctid`, so the cursor is not the
 secret. A cursor that does not match the key is **Response** `400`
 `{ "error": "Invalid cursor" }`. An unknown table is **Response** `404`
@@ -2154,6 +2201,80 @@ Unknown account id → **404** `{ "error": "Not found" }`. An account with
 with no minted bearer and no `debug.accounts.session_minted` log. Same
 503/401 gate as the other debug account routes. Not a member login path;
 for e2e and operator debugging.
+
+### `POST /debug/accounts/merge`
+
+Operator merge of one account into another. Authenticated with
+`Authorization: Bearer` matching `DEBUG_TOKEN`. Not a member route.
+Body is `{ "from": "<uuid>", "into": "<uuid>", "verify": "from" | "into" }`.
+`verify` defaults to `"into"`. Success is **200**
+`{ "into": "<uuid>", "deleted": "<uuid>", "messages": <count> }`.
+`deleted` is the source id. `messages` counts message rows that belonged
+to `from` before they moved, including soft-deleted rows.
+
+The account named by `into` remains. The account named by `from` is
+deleted at the end of the same transaction. A failure, including a
+unique-index collision that this route does not already clear, rolls
+every write back. Nothing is half-moved.
+
+The survivor keeps the login the operator chose. Name, username,
+location, and Lightning Address are not copied from the source, and
+neither is the verified flag on that address. Gifts are stored against
+the Wallet of Satoshi username, not the account id, so they are not
+reassigned. Nostr keys, the view key, and the linking key stay on the
+survivor. `sessionRefused` stays the survivor's: closing an account
+does not lock the account that remains. Notification level and amount
+unit stay the survivor's. Locale and fiat are copied from the source
+only when the survivor's value is empty.
+
+Three stamps record the person, not the replacement login.
+`created_at` becomes the earlier of the two times. `rules_agreed_at`
+becomes the earlier agreement; one agreement is enough, and neither
+agreement leaves the column empty. `wallet_required` becomes true when
+either account already has it, so the recovery-phrase prompt is not
+opened again. `wallet_backup_seen_at` becomes the earlier seen time.
+`forum_laws_dismissed` becomes true when either account dismissed the
+laws. The role stays the survivor's and is never lowered. A basis
+survivor becomes verified when a verify edge is still present after
+the move. The profile note stays the survivor's when the survivor has
+one. It becomes the source profile note only when the survivor has
+none.
+
+`verify` chooses which verification remains. `"into"` keeps the
+survivor's verify edge and deletes the source's. `"from"` deletes the
+survivor's verify edge and moves the source's onto the survivor.
+Moderator confirmations and appointments keep the survivor's row when
+both accounts have that kind, and otherwise move. Proposals and
+rejections move even when they repeat.
+
+Passkeys of both accounts are kept, so both phones can sign in.
+Sessions of the source are deleted. Messages, invoice rows, edit
+history, contacts, push subscriptions, and the other foreign keys to
+`account(id)` are moved. Those foreign keys are read from the catalog
+inside the transaction, so a later table is moved too. A conversation
+that exists only between these two accounts is deleted. Two
+conversations with the same other person are folded into one, and the
+messages are kept. Where a second row would break a unique key, the
+survivor's row stays and the source's row is dropped: the same image
+slot, the same notification, the same repayment day, a second address
+check, and a second open till charge. Two funding grants are refused
+before any of those writes.
+
+An invalid body is **400**
+`{ "error": "Expected a JSON body with \"from\" and \"into\"" }`
+before the database is required. The same id is **409**
+`{ "error": "Cannot merge an account into itself" }`. A missing
+account is **404** `{ "error": "Not found" }`. The platform account
+is **409** `{ "error": "Cannot merge the platform account" }`. Two
+funding grants are **409**
+`{ "error": "Both accounts have a funding grant" }`. A database that
+cannot run the merge, and any thrown write, is **503**
+`{ "error": "Merge is unavailable" }`. The same 503/401 debug-token
+gate as the other debug account routes applies. Success logs
+`debug.accounts.merged` with the two ids and the message count.
+Failure logs `debug.accounts.merge_failed` with the two ids and the
+SQLSTATE when the driver reported one. The text of a message, a
+token, an nsec, and a view key are not logged.
 
 ### `GET /debug/trust-edges`
 
@@ -3890,17 +4011,20 @@ column is true (omitted when null; never false). May include `goalTermDays`
 when the stored column is not null (omitted when null). May include `accountId` (21gifts author id) and `mentions`
 (`{ accountId, username }[]`, only when that list is non-empty). A stored
 self mark does not notify the author. Other marks fan out one
-`forum_mention` per person. No
+`forum_mention` per person. That is the only in-app row and the only Web
+Push for that note for that person (`forum_post` / `forum_reply` exclude
+them). `GET /notifications` drops and deletes a stored generic row when
+the scan also has `forum_mention` for the same `replyId`. No
 `replyCount`, and no photo or video bytes in the JSON. `sats` is 0 and
 `payable` is false until the worker signs the note (and stays false without
 author LN). `role` is the posting session account's live `account.role`. Web Push and in-app rows for a **top-level** note (`notifyForumPost`, kind
 `forum_post`, `url` `/messages/<id>`, `tag` `forum_post:<id>`) and for a
 **reply** (`notifyForumReply`, kind `forum_reply`, `url` `/messages/<replyId>`,
 `tag` `forum_reply:<replyId>`) fan out in-app to every account except the
-actor (no-op when the actor is the official platform account), then filter recipients by each account's `notificationLevel`
-(`all` / `active` / `mentions`). Web Push still goes only to bell subscribers
+actor and except each account marked on the created row (no-op when the actor is the official platform account), then filter recipients by each account's `notificationLevel`
+(`all` / `active` / `mentions`). The excluded ids are the created row's mention account ids other than the author, deduped; an empty list omits `excludeAccountIds`. Web Push still goes only to bell subscribers
 and uses the same level filter. Damus-only parents still
-fan out. A self-reply skips only the actor. `GET /notifications` applies the
+fan out. A self-reply skips only the actor. The same mark exclusion applies to the reply fan-out. `GET /notifications` applies the
 same `notificationLevel` filter to stored rows.
 The booted process always has notification and push stores (in-memory without
 `DATABASE_URL`, Postgres when it is set). Photo-only empty text still
@@ -4371,11 +4495,14 @@ two ids per store.
 ### `GET /messages/:id/external-profile`
 
 Public profile for an external author. No Bearer. Registered **before**
-`GET /messages/:id`. **200** `{ "name", "npub" }` and, when present,
-`nip05` and `lud16`. `name` is the stored snapshot (truncated pubkey when
-blank). A live kind 0 name replaces it only when `externalDisplayName`
-accepts it. `npub` is the NIP-19 bech32 encoding of the stored 64-hex
-author pubkey. `nip05` requires `fetchImpl` and
+`GET /messages/:id`. **200** `{ "name", "npub", "postCount", "replyCount" }`
+and, when present, `nip05` and `lud16`. `name` is the stored snapshot
+(truncated pubkey when blank). A live kind 0 name replaces it only when
+`externalDisplayName` accepts it. `npub` is the NIP-19 bech32 encoding of
+the stored 64-hex author pubkey. `postCount` and `replyCount` are always
+present, including 0: uncapped live top-level notes, and uncapped live
+public replies (`replyCount` is 0 when the pubkey is not a recorded
+zapper). `nip05` requires `fetchImpl` and
 a guarded HTTPS `/.well-known/nostr.json` whose `names` entry matches the
 pubkey. `lud16` must be `user@host` and is not fetched. No hex pubkey,
 picture, callback, or invoice. **404** `{ "error": "Not found" }` for a
@@ -4385,11 +4512,34 @@ member author, or a pubkey that is not 64 hex. **503**
 throws (`messages.external_profile.failed`). Relay, DNS, and well-known
 failures omit the failed field and stay 200.
 
+### `GET /messages/:id/external-posts`
+
+Public list of live top-level notes for an external author. No Bearer.
+Registered **before** `GET /messages/:id`. Same 404 gate as
+`GET /messages/:id/external-profile`. **200** `{ "messages" }` capped at
+200, newest first (`createdAt` desc, `id` desc). Each item includes
+`replyCount` of live attributed children, `payable` false, `via: "nostr"`,
+and omits `role`. **503** `{ "error": "Messages are unavailable" }`
+(`messages.external_posts.failed`). A serialize failure skips that row
+and still returns 200.
+
+### `GET /messages/:id/external-replies`
+
+Public list of live public replies for an external author. No Bearer.
+Registered **before** `GET /messages/:id`. Same 404 gate as
+`GET /messages/:id/external-profile`. **200** `{ "messages" }` capped at
+200, newest first (`createdAt` desc, `id` desc). Each item includes
+`parentId`, omits `replyCount`, `payable` false, `via: "nostr"`, and omits
+`role`. A non-zapper author's list is empty. **503**
+`{ "error": "Messages are unavailable" }` (`messages.external_replies.failed`).
+A serialize failure skips that row and still returns 200.
+
 ### `GET /messages/:id`
 
 Public single-note fetch. Live rows need **no Bearer.** `:id` is a UUID.
 Registered **after** photo, video, `GET /messages/:id/replies`,
 `GET /messages/:id/external-profile`,
+`GET /messages/:id/external-posts`, `GET /messages/:id/external-replies`,
 `DELETE /messages/:id`, `PATCH /messages/:id/place`, `PATCH /messages/:id/shop-account`, `PATCH /messages/:id/text`, `PATCH /messages/:id/photos`, `GET /messages/:id/edits`, `GET /messages/stats`, `GET /messages/hidden`, and
 `GET /messages/places` so
 those paths are not captured as `:id`. A live GET returns
@@ -5096,16 +5246,25 @@ Bearer session required. Lists the recipient's notifications newest-first
 plus `unreadCount`. Fan-out already applied the owner's
 `notificationLevel` when the row was written; this list applies the same
 `notificationLevel` filter to stored rows (`notificationsMatchingLevel`
-on the newest 1000). After the level filter, drop `forum_post` /
+on the newest 1000). From those scanned rows (this recipient only), if a
+`forum_mention` has `replyId` R, drop every `forum_post` and
+`forum_reply` in that scan with the same `replyId` before the level
+filter and the hidden-message filter. Do not drop `zap`, `forum_mention`,
+`moderator_appointed`, or `moderator_proposal`. Best-effort
+`deleteForRecipient` of those dropped ids (`notifications.duplicate.purged`;
+a throw logs `notifications.duplicate.purge_failed` and still returns 200
+with the filtered list). After the level filter, drop `forum_post` /
 `forum_reply` / `forum_mention` whose parent message is missing or hidden; also drop
 `forum_reply` when the child (`replyId`) is missing or hidden. Never drop
 `moderator_appointed` or `moderator_proposal` (do not look up a forum
 message; do not add the parent id to the purge set). Zap only checks the
 parent (`replyId` is a receipt-derived UUID, not a message id).
 Best-effort purge of those message ids. Then cap the kept list at **200**.
-`unreadCount` is unread among kept rows after the hidden filter (not the
-unfiltered matching unread of the 1000, and not necessarily the page
-length). Member JSON never includes recipient or actor account ids. Each
+`unreadCount` is unread among kept rows after this drop and the existing
+hidden filter, before the 200 cap (not the unfiltered matching unread of
+the 1000, and not necessarily the page length). A generic row whose
+matching mention is outside the 1000-row scan stays. Member JSON never
+includes recipient or actor account ids. Each
 item `type` is `"forum_post"`, `"forum_reply"`, `"forum_mention"`, `"zap"`,
 `"moderator_appointed"`, or `"moderator_proposal"`.
 
@@ -5154,11 +5313,48 @@ rows drop on confirm, on reject when pending is then empty, or on appoint).
 Missing/invalid/expired bearer → **401** `{ "error": "Unauthorized" }`.
 Store failure → **503** `{ "error": "Notifications are unavailable" }`.
 
+A missing or invalid body is not **404**. An optional `endpoint` string is
+recorded as the dismiss skip list only when it exactly matches one push
+subscription of this account. The response never contains that endpoint.
+Enqueue failure still returns **200**.
+
 Success → **Response** `200`:
 
 ```json
-{ "ok": true }
+{ "ok": true, "tags": [] }
 ```
+
+`tags` are the collapse tags of rows this call stamped, first-seen unique,
+in id order. `moderator_appointed` is included. `moderator_proposal` is
+not stamped, so it contributes no tag. An empty `tags` array enqueues
+nothing.
+
+### `POST /notifications/read-by-message`
+
+Bearer session required. Body is a JSON object `{ "messageId": "<uuid>", "endpoint"?: "<string>" }`.
+Stamps unread `forum_post`, `forum_reply`, `forum_mention`, and `zap` rows
+for this account whose `parentId` or `replyId` equals `messageId`. Does not
+stamp `moderator_appointed`, `moderator_proposal`, another account, or a
+row that already has `readAt`. A second call returns `tags: []`.
+
+Missing JSON, `null`, an array, a string, a missing `messageId`, or a
+non-UUID → **404** `{ "error": "Not found" }` (not 400). Missing or invalid
+bearer → **401** `{ "error": "Unauthorized" }`. Store failure → **503**
+`{ "error": "Notifications are unavailable" }` (`notifications.read_message.failed`).
+
+The optional `endpoint` is skipped on the dismiss push only when it exactly
+matches one subscription of this account. It is never echoed. A bad or
+unowned `endpoint` does not change the status and does not skip anyone.
+Dismiss enqueue failure still returns **200**.
+
+Success → **Response** `200`:
+
+```json
+{ "ok": true, "tags": ["forum_post:<id>", "zap:<replyId>"] }
+```
+
+Zap tags use `replyId` (the receipt-derived id), not the note id.
+`tags` lists only rows this call stamped.
 
 ### `POST /notifications/:id/read`
 
@@ -5167,6 +5363,13 @@ returns that `PublicNotification` with `readAt` set. A `moderator_proposal`
 row is **200** with `readAt` still `null` (mark-read does not dismiss it).
 Unknown id, another account's notification, or a non-uuid `:id` → **404**
 `{ "error": "Not found" }`. Same **401** / **503** as list.
+
+Dismiss happens only when this call changes `readAt` from null. The row's
+collapse tag is then enqueued as a dismiss push for the account's other
+subscriptions. An already-read row does not enqueue, even when its `readAt`
+equals the route clock. A proposal does not enqueue. The response stays the
+public notification, not `{ "ok", "tags" }`. Enqueue failure still returns
+**200**.
 
 Success → **Response** `200` (one public notification with `readAt` set,
 or still `null` for `moderator_proposal`).

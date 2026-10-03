@@ -9,13 +9,15 @@
  */
 import { SQL } from 'bun';
 import { openBootStores } from './lib/boot-stores';
+import type { MergeDb, MergeTx } from './lib/account-merge';
 import type { SqlClient } from './lib/auth/sql';
 import { WebsocketNostrPublisher } from './lib/nostr/publish';
 import { WebsocketNostrQuerier } from './lib/nostr/query';
 import { PostRateLimiter } from './lib/nostr/rate-limit';
 import { InMemoryBannerStore } from './lib/banner-store';
 import { RELAY_TIMEOUT_MS, startNostrWorker, WORKER_INTERVAL_MS } from './lib/nostr/worker';
-import { InMemoryMessageStore } from './lib/message-store';
+import { InMemoryMessageStore, textHasHashtagToken } from './lib/message-store';
+import { publishExistingShopPlaces, resolveMapPush } from './lib/ocp-place';
 import { resolveSpendPing } from './lib/spend-ping';
 import { syncWelcomePing } from './lib/welcome-media';
 import { resolveZapRelays, resolveZapReadRelays } from './lib/nostr/relays';
@@ -28,15 +30,26 @@ import { resolveMediaDir } from './lib/video';
 import { createApp, parseBindAddr, resolveBindAddr } from './server';
 
 /* v8 ignore start — Bun runtime boot path; exercised by smoke tests, not unit tests */
-function createBunSqlClient(databaseUrl: string): SqlClient {
+function createBunDatabase(databaseUrl: string): { client: SqlClient; mergeDb: MergeDb } {
   const sql = new SQL(databaseUrl);
   return {
-    async query<T>(text: string, params: readonly unknown[] = []): Promise<T[]> {
-      const rows = (await sql.unsafe(text, [...params])) as T[];
-      return rows;
+    client: {
+      async query<T>(text: string, params: readonly unknown[] = []): Promise<T[]> {
+        return (await sql.unsafe(text, [...params])) as T[];
+      },
+      async execute(text: string, params: readonly unknown[] = []): Promise<void> {
+        await sql.unsafe(text, [...params]);
+      },
     },
-    async execute(text: string, params: readonly unknown[] = []): Promise<void> {
-      await sql.unsafe(text, [...params]);
+    mergeDb: {
+      async begin<T>(run: (tx: MergeTx) => Promise<T>): Promise<T> {
+        return sql.begin(async (tx) =>
+          run({
+            query: async <R>(text: string, params: readonly unknown[] = []): Promise<R[]> =>
+              (await tx.unsafe(text, [...params])) as R[],
+          }),
+        );
+      },
     },
   };
 }
@@ -46,11 +59,13 @@ if (import.meta.main) {
   const { host, port } = parseBindAddr(addr);
   resolveMediaDir(process.env);
   const databaseUrl = process.env['DATABASE_URL'];
+  const trimmedDatabaseUrl = databaseUrl?.trim() ?? '';
+  const bun = trimmedDatabaseUrl === '' ? undefined : createBunDatabase(trimmedDatabaseUrl);
   // BTC_USD_CANDLES_URL and FRANKFURTER_RATES_URL are optional — resolvers
   // inside openBootStores fall back to Coinbase / Frankfurter ECB; unset
   // does not fail boot.
   const querier = new WebsocketNostrQuerier();
-  const boot = await openBootStores(databaseUrl, createBunSqlClient, {
+  const boot = await openBootStores(databaseUrl, bun === undefined ? undefined : () => bun.client, {
     nostrQuerier: querier,
     zapRelayUrls: resolveZapRelays(process.env),
     nostrRelayTimeoutMs: RELAY_TIMEOUT_MS,
@@ -121,6 +136,7 @@ if (import.meta.main) {
     ...(fundingStore === undefined ? {} : { fundingStore }),
     ...(boot.listDbChange === undefined ? {} : { listDbChange: boot.listDbChange }),
     ...(debugDbStore === undefined ? {} : { debugDbStore }),
+    ...(bun === undefined ? {} : { mergeDb: bun.mergeDb }),
     vapidPublicKey: vapidPublicKey ?? '',
     postLimiter,
     bannerStore: banners,
@@ -135,6 +151,15 @@ if (import.meta.main) {
     });
   };
   welcomeCatchUp();
+  const mapPush = resolveMapPush(process.env, globalThis.fetch);
+  void publishExistingShopPlaces({
+    ...(mapPush === undefined ? {} : { mapPush }),
+    listPlaces: (limit) => forumMessages.listPlaces(limit),
+    getById: (id) => forumMessages.getById(id),
+    textHasHashtagToken,
+  }).catch(() => {
+    console.warn(JSON.stringify({ event: 'ocp.place.failed' }));
+  });
   setInterval(welcomeCatchUp, 15 * 60 * 1000).unref();
   if (sender.isConfigured()) {
     startPushWorker({ store: pushStore, sender, now: Date.now }, PUSH_WORKER_INTERVAL_MS);

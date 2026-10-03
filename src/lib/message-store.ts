@@ -48,6 +48,9 @@ import {
   type ForumVideoContentType,
 } from '@/lib/video';
 
+/** Live top-level shop note with its current till account. */
+export type ShopNoteRef = { id: string; accountId: string; text: string };
+
 const MAX_PUBLISH_ATTEMPTS = 5;
 
 interface PaymentFiatStoreOptions {
@@ -423,6 +426,15 @@ export interface MessageStore {
   >;
 
   /**
+   * Live top-level notes with a current `shop_account_id` (`parent_id` null,
+   * `deleted_at` null, `shop_account_id` not null). Does not filter the
+   * shop hashtag — callers apply {@link textHasHashtagToken}.
+   *
+   * @returns Note id, assigned account id, and text (caller-owned).
+   */
+  listLiveAssignedShops(): Promise<ShopNoteRef[]>;
+
+  /**
    * Persist a new message row and optional photo, video, and extra stills.
    *
    * When `photo` or `video` is present, `row.accountId` is not null, and
@@ -549,6 +561,20 @@ export interface MessageStore {
   countByAccount(accountId: string): Promise<AccountMessageCounts>;
 
   /**
+   * Live post/reply totals for one external Nostr author.
+   *
+   * Live = `deletedAt` null, `accountId` null, and `authorPubkey` matching
+   * `pubkey` case-insensitively. `postCount` is live top-level (`parentId`
+   * null) and is always public. `replyCount` is 0 when `pubkey` is not a
+   * recorded zapper; otherwise the uncapped count of live public replies
+   * (`parentId` not null). One query; not derived from a capped list.
+   *
+   * @param pubkey - External author pubkey (compared case-insensitively).
+   * @returns `{ postCount, replyCount }` (zeros when the pubkey has no live rows).
+   */
+  countByPubkey(pubkey: string): Promise<AccountMessageCounts>;
+
+  /**
    * Uncapped count of live attributed direct children of `parentId`.
    *
    * Live = `deletedAt` null. Attributed = `accountId` not null, or
@@ -573,6 +599,19 @@ export interface MessageStore {
   listPostsByAccount(accountId: string, limit: number): Promise<MessageListRow[]>;
 
   /**
+   * Newest live top-level notes for an external pubkey (`parentId` null,
+   * `deletedAt` null, `accountId` null, `authorPubkey` matching
+   * case-insensitively), capped at `limit`, with `replyCount` of live
+   * attributed children (`deletedAt` null and either an account or a
+   * recorded zapper pubkey).
+   *
+   * @param pubkey - External author pubkey (compared case-insensitively).
+   * @param limit - Maximum rows to return.
+   * @returns Message list rows (caller-owned copies).
+   */
+  listPostsByPubkey(pubkey: string, limit: number): Promise<MessageListRow[]>;
+
+  /**
    * Newest live replies for `accountId` (`parentId` not null, `deletedAt`
    * null), capped at `limit`. No `replyCount` — this is a member history
    * feed, not a thread.
@@ -582,6 +621,18 @@ export interface MessageStore {
    * @returns Reply rows (caller-owned copies).
    */
   listRepliesByAccount(accountId: string, limit: number): Promise<MessageRow[]>;
+
+  /**
+   * Newest live replies for an external pubkey (`parentId` not null,
+   * `deletedAt` null, `accountId` null, `authorPubkey` matching
+   * case-insensitively), capped at `limit`. Empty when `pubkey` is not a
+   * recorded zapper — withheld rows are not included. No `replyCount`.
+   *
+   * @param pubkey - External author pubkey (compared case-insensitively).
+   * @param limit - Maximum rows to return.
+   * @returns Reply rows (caller-owned copies).
+   */
+  listRepliesByPubkey(pubkey: string, limit: number): Promise<MessageRow[]>;
 
   /**
    * Load photo bytes for a message id.
@@ -1630,6 +1681,9 @@ END
 $message_goal_term_days$`,
   `CREATE INDEX IF NOT EXISTS message_feed_created_idx ON message (created_at DESC, id DESC) WHERE parent_id IS NULL AND deleted_at IS NULL`,
   `CREATE INDEX IF NOT EXISTS message_feed_popular_idx ON message (sats DESC, created_at DESC, id DESC) WHERE parent_id IS NULL AND deleted_at IS NULL AND sats > 0`,
+  `CREATE INDEX IF NOT EXISTS message_external_author_idx
+  ON message (lower(author_pubkey), created_at DESC, id DESC)
+  WHERE account_id IS NULL AND deleted_at IS NULL AND author_pubkey IS NOT NULL`,
   TRANSLATION_SCHEMA_SQL,
   `DO $unwrap$
    DECLARE
@@ -2427,6 +2481,27 @@ export class InMemoryMessageStore implements MessageStore {
   }
 
   /**
+   * Live top-level notes with a current shop account. Does not filter the
+   * shop hashtag.
+   *
+   * @returns Note id, assigned account id, and text copies.
+   */
+  listLiveAssignedShops(): Promise<ShopNoteRef[]> {
+    const listed: ShopNoteRef[] = [];
+    for (const row of this.#rows) {
+      if (row.parentId !== null || row.deletedAt !== null) {
+        continue;
+      }
+      const shop = row.shopAccount;
+      if (shop === undefined || shop === null || shop.id === '') {
+        continue;
+      }
+      listed.push({ id: row.id, accountId: shop.id, text: row.text });
+    }
+    return Promise.resolve(listed);
+  }
+
+  /**
    * Non-null event ids for published/pending signed notes (inbound reply REQ).
    * Top-level only (`parentId` null). Newest `createdAt` then `id` first.
    *
@@ -2696,6 +2771,35 @@ export class InMemoryMessageStore implements MessageStore {
   }
 
   /**
+   * Live post/reply totals for one external Nostr author.
+   *
+   * @param pubkey - External author pubkey (compared case-insensitively).
+   * @returns `{ postCount, replyCount }` (zeros when empty).
+   */
+  countByPubkey(pubkey: string): Promise<AccountMessageCounts> {
+    const key = pubkey.toLowerCase();
+    const isZapper = this.#zappers.has(key);
+    let postCount = 0;
+    let replyCount = 0;
+    for (const row of this.#rows) {
+      if (
+        row.accountId !== null ||
+        row.deletedAt !== null ||
+        row.authorPubkey === null ||
+        row.authorPubkey.toLowerCase() !== key
+      ) {
+        continue;
+      }
+      if (row.parentId === null) {
+        postCount += 1;
+      } else if (isZapper) {
+        replyCount += 1;
+      }
+    }
+    return Promise.resolve({ postCount, replyCount });
+  }
+
+  /**
    * Uncapped count of live attributed direct children of `parentId`.
    *
    * @param parentId - Parent message id.
@@ -2748,6 +2852,47 @@ export class InMemoryMessageStore implements MessageStore {
   }
 
   /**
+   * Newest-first live top-level notes for an external pubkey, capped at
+   * `limit`, with `replyCount` of live attributed children (account or
+   * recorded zapper pubkey).
+   *
+   * @param pubkey - External author pubkey (compared case-insensitively).
+   * @param limit - Maximum rows.
+   * @returns A new array of list row copies.
+   */
+  listPostsByPubkey(pubkey: string, limit: number): Promise<MessageListRow[]> {
+    const key = pubkey.toLowerCase();
+    const posts = this.#rows.filter(
+      (row) =>
+        row.parentId === null &&
+        row.deletedAt === null &&
+        row.accountId === null &&
+        row.authorPubkey !== null &&
+        row.authorPubkey.toLowerCase() === key,
+    );
+    const sorted = [...posts].sort((a, b) => {
+      const byTime = b.createdAt.getTime() - a.createdAt.getTime();
+      if (byTime !== 0) {
+        return byTime;
+      }
+      return b.id.localeCompare(a.id);
+    });
+    return Promise.resolve(
+      sorted.slice(0, limit).map((row) => {
+        const copy = this.#withListedMedia(row);
+        const replyCount = this.#rows.filter(
+          (child) =>
+            child.parentId === row.id &&
+            child.deletedAt === null &&
+            (child.accountId !== null ||
+              (child.authorPubkey !== null && this.#zappers.has(child.authorPubkey.toLowerCase()))),
+        ).length;
+        return { ...copy, replyCount };
+      }),
+    );
+  }
+
+  /**
    * Newest-first live replies for `accountId`, capped at `limit`.
    *
    * @param accountId - Author account id.
@@ -2758,6 +2903,40 @@ export class InMemoryMessageStore implements MessageStore {
     const replies = this.#rows
       .filter(
         (row) => row.parentId !== null && row.deletedAt === null && row.accountId === accountId,
+      )
+      .sort((a, b) => {
+        const byTime = b.createdAt.getTime() - a.createdAt.getTime();
+        if (byTime !== 0) {
+          return byTime;
+        }
+        return b.id.localeCompare(a.id);
+      })
+      .slice(0, limit)
+      .map((row) => this.#withListedMedia(row));
+    return Promise.resolve(replies);
+  }
+
+  /**
+   * Newest-first live replies for an external pubkey, capped at `limit`.
+   * Empty when the pubkey is not a recorded zapper.
+   *
+   * @param pubkey - External author pubkey (compared case-insensitively).
+   * @param limit - Maximum rows.
+   * @returns Reply row copies.
+   */
+  listRepliesByPubkey(pubkey: string, limit: number): Promise<MessageRow[]> {
+    const key = pubkey.toLowerCase();
+    if (!this.#zappers.has(key)) {
+      return Promise.resolve([]);
+    }
+    const replies = this.#rows
+      .filter(
+        (row) =>
+          row.parentId !== null &&
+          row.deletedAt === null &&
+          row.accountId === null &&
+          row.authorPubkey !== null &&
+          row.authorPubkey.toLowerCase() === key,
       )
       .sort((a, b) => {
         const byTime = b.createdAt.getTime() - a.createdAt.getTime();
@@ -4527,6 +4706,29 @@ export class PostgresMessageStore implements MessageStore {
   }
 
   /**
+   * Live top-level notes with a current `shop_account_id`. Does not filter
+   * the shop hashtag in SQL.
+   *
+   * @returns Note id, assigned account id, and text.
+   */
+  async listLiveAssignedShops(): Promise<ShopNoteRef[]> {
+    const rows = await this.#sql.query<{
+      id: string;
+      shop_account_id: string;
+      text: string;
+    }>(
+      `SELECT id, shop_account_id, text
+       FROM message
+       WHERE parent_id IS NULL AND deleted_at IS NULL AND shop_account_id IS NOT NULL`,
+    );
+    return rows.map((row) => ({
+      id: row.id,
+      accountId: row.shop_account_id,
+      text: row.text,
+    }));
+  }
+
+  /**
    * Whether `accountId` has at least one live forum row that is not `excludeId`.
    *
    * @param accountId - Author account id (`$1`).
@@ -4647,6 +4849,41 @@ export class PostgresMessageStore implements MessageStore {
   }
 
   /**
+   * Live post/reply totals for one external Nostr author
+   * (`account_id IS NULL`, `deleted_at IS NULL`, `author_pubkey` present,
+   * `lower(author_pubkey) = $1`). `replyCount` is 0 unless `$1` is a
+   * recorded zapper. One `COUNT(*) FILTER` query; empty is zeros.
+   *
+   * @param pubkey - External author pubkey (`$1`, already lowercased).
+   * @returns `{ postCount, replyCount }` mapped via `Number`.
+   */
+  async countByPubkey(pubkey: string): Promise<AccountMessageCounts> {
+    const key = pubkey.toLowerCase();
+    const rows = await this.#sql.query<{
+      post_count: string | number | null;
+      reply_count: string | number | null;
+    }>(
+      `SELECT
+         COUNT(*) FILTER (WHERE parent_id IS NULL)::int AS post_count,
+         COUNT(*) FILTER (
+           WHERE parent_id IS NOT NULL
+             AND EXISTS (SELECT 1 FROM nostr_zapper z WHERE z.pubkey = $1)
+         )::int AS reply_count
+       FROM message
+       WHERE account_id IS NULL
+         AND deleted_at IS NULL
+         AND author_pubkey IS NOT NULL
+         AND lower(author_pubkey) = $1`,
+      [key],
+    );
+    const row = rows[0];
+    return {
+      postCount: Number(row?.post_count ?? 0),
+      replyCount: Number(row?.reply_count ?? 0),
+    };
+  }
+
+  /**
    * Uncapped count of live attributed direct children of `parentId`
    * (`parent_id = $1` and `deleted_at IS NULL`, account or recorded zapper
    * pubkey). Unknown id is 0.
@@ -4707,6 +4944,43 @@ export class PostgresMessageStore implements MessageStore {
   }
 
   /**
+   * Newest-first live top-level notes for one external pubkey, capped at
+   * `limit`, with `replyCount` of live attributed children — a 21.gifts
+   * author or an external zapper row with `author_pubkey` (same subquery as
+   * {@link listPostsByAccount}).
+   *
+   * @param pubkey - External author pubkey (`$1`, already lowercased).
+   * @param limit - Maximum rows (`$2`).
+   * @returns Mapped list rows.
+   */
+  async listPostsByPubkey(pubkey: string, limit: number): Promise<MessageListRow[]> {
+    const key = pubkey.toLowerCase();
+    const rows = await this.#sql.query<MessageSqlRow>(
+      `SELECT ${MESSAGE_SELECT_COLUMNS},
+              (SELECT COUNT(*)::int FROM message child
+               WHERE child.parent_id = message.id AND child.deleted_at IS NULL
+                 AND (child.account_id IS NOT NULL
+                   OR (child.author_pubkey IS NOT NULL
+                     AND EXISTS (
+                       SELECT 1 FROM nostr_zapper z
+                       WHERE z.pubkey = lower(child.author_pubkey))))) AS reply_count
+       FROM message
+       WHERE parent_id IS NULL
+         AND deleted_at IS NULL
+         AND account_id IS NULL
+         AND author_pubkey IS NOT NULL
+         AND lower(author_pubkey) = $1
+       ORDER BY created_at DESC, id DESC
+       LIMIT $2`,
+      [key, limit],
+    );
+    return rows.map((row) => ({
+      ...mapMessageRow(row),
+      replyCount: Number(row.reply_count ?? 0),
+    }));
+  }
+
+  /**
    * Newest-first live replies for one account (`parent_id IS NOT NULL`,
    * `deleted_at IS NULL`, `account_id = $1`). No `replyCount`.
    *
@@ -4722,6 +4996,34 @@ export class PostgresMessageStore implements MessageStore {
        ORDER BY created_at DESC, id DESC
        LIMIT $2`,
       [accountId, limit],
+    );
+    return rows.map((row) => mapMessageRow(row));
+  }
+
+  /**
+   * Newest-first live replies for one external pubkey.
+   * `parent_id IS NOT NULL`, `deleted_at IS NULL`, `account_id IS NULL`,
+   * and `lower(author_pubkey) = $1`. Empty when `$1` is not a recorded zapper.
+   * No `replyCount`.
+   *
+   * @param pubkey - External author pubkey (`$1`, already lowercased).
+   * @param limit - Maximum rows (`$2`).
+   * @returns Mapped reply rows.
+   */
+  async listRepliesByPubkey(pubkey: string, limit: number): Promise<MessageRow[]> {
+    const key = pubkey.toLowerCase();
+    const rows = await this.#sql.query<MessageSqlRow>(
+      `SELECT ${MESSAGE_SELECT_COLUMNS}
+       FROM message
+       WHERE parent_id IS NOT NULL
+         AND deleted_at IS NULL
+         AND account_id IS NULL
+         AND author_pubkey IS NOT NULL
+         AND lower(author_pubkey) = $1
+         AND EXISTS (SELECT 1 FROM nostr_zapper z WHERE z.pubkey = $1)
+       ORDER BY created_at DESC, id DESC
+       LIMIT $2`,
+      [key, limit],
     );
     return rows.map((row) => mapMessageRow(row));
   }

@@ -268,6 +268,7 @@ describe('POS routes', () => {
         cancelPending: (accountId, nowMs) => base.cancelPending(accountId, nowMs),
         listForAccount: (accountId, limit) => base.listForAccount(accountId, limit),
         listLatest: (limit) => base.listLatest(limit),
+        listCreatedBetween: (startMs, endMs) => base.listCreatedBetween(startMs, endMs),
       };
       return new Hono().route(
         '/pos',

@@ -9,6 +9,7 @@ import {
   serializeDebugAccountDetail,
 } from '@/lib/auth/account-json';
 import { randomHex } from '@/lib/auth/hex';
+import { sqlState } from '@/lib/auth/sql';
 import { ensureProfileMessage } from '@/lib/auth/profile-message';
 import { issueSession } from '@/lib/auth/service';
 import type { Account, AuthStore } from '@/lib/auth/store';
@@ -26,6 +27,7 @@ import { publicKeyHexFromSecret } from '@/lib/nostr/keys';
 import type { ConversationStore } from '@/lib/conversation-store';
 import type { NotificationStore } from '@/lib/notification-store';
 import type { PushStore } from '@/lib/push-store';
+import { mergeAccounts, type MergeDb } from '@/lib/account-merge';
 import { MESSAGE_ID_RE } from '@/routes/messages';
 
 /**
@@ -34,7 +36,7 @@ import { MESSAGE_ID_RE } from '@/routes/messages';
  * Exposes `GET /` (list), `GET /:id` (detail with nested auth rows),
  * `POST /` (provision), `PATCH /:id`
  * (set role, unlink Lightning Address, the official platform flag, and/or sessionRefused),
- * and `POST /:id/session` (mint a member bearer).
+ * `POST /:id/session` (mint a member bearer), and `POST /merge` (fold accounts).
  */
 
 /** Collaborators the debug routes need. */
@@ -58,6 +60,8 @@ export interface DebugRouteDeps {
   notificationStore?: NotificationStore;
   /** Clock for minted debug sessions. Defaults to `Date.now`. */
   now?: () => number;
+  /** Reserved-connection transaction port for `POST /merge`. */
+  mergeDb?: MergeDb;
 }
 
 /**
@@ -169,6 +173,13 @@ const provisionBody = z.object({
   accounts: z.array(provisionAccountRow).min(1).max(100),
 });
 
+/** Body schema for folding one account into another. */
+const mergeBody = z.object({
+  from: z.string().regex(MESSAGE_ID_RE),
+  into: z.string().regex(MESSAGE_ID_RE),
+  verify: z.enum(['from', 'into']).default('into'),
+});
+
 /** Shared 503/401 gate for every `/debug/accounts` method. */
 function requireDebugToken(deps: DebugRouteDeps): MiddlewareHandler {
   return async (c, next) => {
@@ -187,11 +198,45 @@ function requireDebugToken(deps: DebugRouteDeps): MiddlewareHandler {
  * Build the `/debug/accounts` route group.
  *
  * @param deps - Store, optional debug token, required `fetchImpl` for the NIP-57 mint probe, optional `conversationStore`, optional `now`.
- * @returns A Hono app exposing `GET /`, `GET /:id`, `POST /`, `PATCH /:id`, and `POST /:id/session`.
+ * @returns A Hono app exposing `GET /`, `GET /:id`, `POST /`, `PATCH /:id`, `POST /:id/session`, and `POST /merge`.
  */
 export function debugRoutes(deps: DebugRouteDeps): Hono {
   return new Hono()
     .use('*', requireDebugToken(deps))
+    .post('/merge', async (c) => {
+      const parsed = mergeBody.safeParse(await c.req.json().catch(() => null));
+      if (!parsed.success) {
+        return c.json({ error: 'Expected a JSON body with "from" and "into"' }, 400);
+      }
+      if (deps.mergeDb === undefined) {
+        return c.json({ error: 'Merge is unavailable' }, 503);
+      }
+      const { from, into, verify } = parsed.data;
+      try {
+        const result = await mergeAccounts(deps.mergeDb, { from, into, verify });
+        if (!result.ok) {
+          if (result.error === 'same_account') {
+            return c.json({ error: 'Cannot merge an account into itself' }, 409);
+          }
+          if (result.error === 'not_found') {
+            return c.json({ error: 'Not found' }, 404);
+          }
+          if (result.error === 'platform') {
+            return c.json({ error: 'Cannot merge the platform account' }, 409);
+          }
+          return c.json({ error: 'Both accounts have a funding grant' }, 409);
+        }
+        logEvent('debug.accounts.merged', { from, into, messages: result.messages });
+        return c.json({ into, deleted: from, messages: result.messages }, 200);
+      } catch (error) {
+        const state = sqlState(error);
+        logEvent(
+          'debug.accounts.merge_failed',
+          state === null ? { from, into } : { from, into, sqlState: state },
+        );
+        return c.json({ error: 'Merge is unavailable' }, 503);
+      }
+    })
     .get('/', async (c) => {
       const accounts = await deps.store.listAccounts();
       const nostrById = new Map(

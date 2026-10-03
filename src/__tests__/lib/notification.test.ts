@@ -3,6 +3,7 @@ import type { AuthStore } from '@/lib/auth/store';
 import { unsignedNostrDefaults, type MessageRow } from '@/lib/message';
 import { InMemoryMessageStore } from '@/lib/message-store';
 import {
+  enqueueNotificationDismiss,
   fanoutToBellSubscribers,
   isStaffAccount,
   notifyExternalForumReply,
@@ -142,6 +143,102 @@ describe('serializeNotification', () => {
         }),
       ).type,
     ).toBe('moderator_appointed');
+  });
+});
+
+describe('enqueueNotificationDismiss', () => {
+  it('does not enqueue an empty tag list', async () => {
+    const pushStore = new InMemoryPushStore();
+    await enqueueNotificationDismiss({
+      pushStore,
+      accountId: 'account',
+      tags: [],
+      nowMs: NOW.getTime(),
+      unreadCount: 4,
+    });
+    expect(await pushStore.listAllOutbox(10)).toEqual([]);
+  });
+
+  it('uniques tags first-seen and chunks 31 tags into complete pending rows', async () => {
+    const pushStore = new InMemoryPushStore();
+    const tags = Array.from({ length: 31 }, (_, index) => `tag:${index}`);
+    await enqueueNotificationDismiss({
+      pushStore,
+      accountId: 'account',
+      tags: [tags[0] ?? '', ...tags, tags[30] ?? ''],
+      nowMs: NOW.getTime(),
+      unreadCount: 7,
+      skipEndpoint: 'https://push.example/current',
+    });
+    const rows = (await pushStore.listAllOutbox(10)).sort((a, b) =>
+      a.payload.localeCompare(b.payload),
+    );
+    expect(rows).toHaveLength(2);
+    const payloads = rows.map((row) => payloadObject(row.payload));
+    const chunks = payloads.map((payload) => payload['tags'] as string[]);
+    expect(chunks.find((chunk) => chunk.length === 30)).toEqual(tags.slice(0, 30));
+    expect(chunks.find((chunk) => chunk.length === 1)).toEqual(tags.slice(30));
+    for (const row of rows) {
+      expect(row).toMatchObject({
+        accountId: 'account',
+        type: 'dismiss',
+        messageId: null,
+        status: 'pending',
+        attempts: 0,
+        claimedUntil: null,
+        deliveredEndpoints: [],
+        skipEndpoints: ['https://push.example/current'],
+      });
+      expect(row.createdAt).toEqual(NOW);
+      expect(payloadObject(row.payload)).toMatchObject({ type: 'dismiss', unreadCount: 7 });
+    }
+  });
+
+  it.each([undefined, ''] as const)('omits an empty skip endpoint (%s)', async (skipEndpoint) => {
+    const pushStore = new InMemoryPushStore();
+    await enqueueNotificationDismiss({
+      pushStore,
+      accountId: 'account',
+      tags: ['tag:one'],
+      nowMs: NOW.getTime(),
+      unreadCount: 0,
+      ...(skipEndpoint === undefined ? {} : { skipEndpoint }),
+    });
+    expect((await pushStore.listAllOutbox(1))[0]?.skipEndpoints).toEqual([]);
+  });
+
+  it('logs one failed chunk and continues with the next chunk', async () => {
+    const pushStore = new InMemoryPushStore();
+    const enqueue = pushStore.enqueue.bind(pushStore);
+    let calls = 0;
+    pushStore.enqueue = async (row) => {
+      calls += 1;
+      if (calls === 1) {
+        throw new Error('boom');
+      }
+      await enqueue(row);
+    };
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      await expect(
+        enqueueNotificationDismiss({
+          pushStore,
+          accountId: 'account',
+          tags: Array.from({ length: 31 }, (_, index) => `tag:${index}`),
+          nowMs: NOW.getTime(),
+          unreadCount: 2,
+        }),
+      ).resolves.toBeUndefined();
+      expect(calls).toBe(2);
+      expect(await pushStore.listAllOutbox(10)).toHaveLength(1);
+      const events = warn.mock.calls
+        .map((call) => call[0])
+        .filter((value): value is string => typeof value === 'string')
+        .map((value) => JSON.parse(value) as Record<string, unknown>);
+      expect(events.some((event) => event['event'] === 'push.dismiss.failed')).toBe(true);
+    } finally {
+      warn.mockRestore();
+    }
   });
 });
 
@@ -493,6 +590,28 @@ describe('fanoutToBellSubscribers', () => {
     const claimed = await pushStore.claimPending(10, NOW.getTime(), 60_000);
     expect(claimed.map((row) => row.accountId)).toEqual(['allowed']);
   });
+
+  it('drops excludeAccountIds from in-app and push lists even when auth is omitted', async () => {
+    const notifications = new InMemoryNotificationStore();
+    const pushStore = new InMemoryPushStore();
+    await subscribe(pushStore, 'kept');
+    await subscribe(pushStore, 'dropped');
+    await fanoutToBellSubscribers({
+      notifications,
+      pushStore,
+      skipAccountId: 'actor',
+      excludeAccountIds: ['dropped', 'unknown'],
+      template,
+      outboxType: 'forum',
+      outboxMessageId: 'reply-1',
+      payload: '{}',
+      nowMs: NOW.getTime(),
+    });
+    expect(await notifications.listByRecipient('kept', 10)).toHaveLength(1);
+    expect(await notifications.listByRecipient('dropped', 10)).toEqual([]);
+    const claimed = await pushStore.claimPending(10, NOW.getTime(), 60_000);
+    expect(claimed.map((row) => row.accountId)).toEqual(['kept']);
+  });
 });
 
 describe('notifyForumReply', () => {
@@ -807,6 +926,31 @@ describe('notifyForumReply', () => {
     const claimed = await pushStore.claimPending(10, NOW.getTime(), 60_000);
     expect(claimed).toHaveLength(2);
     expect(claimed.map((row) => row.accountId).sort()).toEqual(['one', 'two']);
+  });
+
+  it('writes no in-app row and enqueues no push for excludeAccountIds', async () => {
+    const messages = new InMemoryMessageStore();
+    await seedParent(messages);
+    const created = await messages.create(
+      message({ id: 'reply-1', accountId: 'actor', parentId: 'parent-note' }),
+    );
+    const notifications = new InMemoryNotificationStore();
+    const pushStore = new InMemoryPushStore();
+    await subscribe(pushStore, 'marked');
+    await subscribe(pushStore, 'other');
+    await notifyForumReply({
+      messages,
+      notifications,
+      pushStore,
+      account: { id: 'actor' },
+      created,
+      parentId: 'parent-note',
+      excludeAccountIds: ['marked'],
+    });
+    expect(await notifications.listByRecipient('marked', 10)).toEqual([]);
+    expect(await notifications.listByRecipient('other', 10)).toHaveLength(1);
+    const claimed = await pushStore.claimPending(10, NOW.getTime(), 60_000);
+    expect(claimed.map((row) => row.accountId)).toEqual(['other']);
   });
 
   it('is a no-op when the reply actor is the platform account', async () => {
@@ -1142,6 +1286,27 @@ describe('notifyForumPost', () => {
       body: 'Posted a video.',
       tag: 'forum_post:post-video',
     });
+  });
+
+  it('writes no in-app row and enqueues no push for excludeAccountIds', async () => {
+    const created = message({ id: 'post-1', accountId: 'actor', name: 'Ada', text: 'hello' });
+    const notifications = new InMemoryNotificationStore();
+    const pushStore = new InMemoryPushStore();
+    await subscribe(pushStore, 'marked');
+    await subscribe(pushStore, 'other');
+    await notifyForumPost({
+      notifications,
+      pushStore,
+      account: { id: 'actor' },
+      created,
+      excludeAccountIds: ['marked'],
+    });
+    expect(await notifications.listByRecipient('marked', 10)).toEqual([]);
+    const listed = await notifications.listByRecipient('other', 10);
+    expect(listed).toHaveLength(1);
+    expect(listed[0]?.type).toBe('forum_post');
+    const claimed = await pushStore.claimPending(10, NOW.getTime(), 60_000);
+    expect(claimed.map((row) => row.accountId)).toEqual(['other']);
   });
 });
 

@@ -24,6 +24,7 @@ export const DEBUG_DB_SECRET_COLUMNS: readonly string[] = [
   'p256dh',
   'auth',
   'delivered_endpoints',
+  'skip_endpoints',
 ];
 
 /** One ordinary public table and its row count. */

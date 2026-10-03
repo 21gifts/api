@@ -12,7 +12,7 @@ if (databaseUrl === undefined || databaseUrl === '') {
 }
 
 /**
- * `query` / `execute` body matches `createBunSqlClient` in `src/index.ts`.
+ * `query` / `execute` body matches `createBunDatabase(...).client` in `src/index.ts`.
  * `sql` is that same instance so the test can close it.
  */
 function createBunSqlClient(databaseUrl: string): { client: SqlClient; sql: SQL } {

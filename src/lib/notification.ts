@@ -27,8 +27,12 @@ import {
   buildModeratorAppointedPushPayload,
   buildReplyPushPayload,
   buildZapPushPayload,
+  type DismissPushPayload,
 } from '@/lib/push';
 import type { PushOutboxRow, PushStore } from '@/lib/push-store';
+
+/** Max collapse tags per dismiss outbox row. */
+const DISMISS_TAG_CHUNK = 30;
 
 /** Cap for `GET /notifications` after the owner's level filter. */
 export const NOTIFICATION_LIST_LIMIT = 200;
@@ -288,7 +292,10 @@ function filterIdsByMatch(
  * recipients whose {@link wantsNotification} is false (level from
  * `listAccounts()` via {@link parseNotificationLevel}, omitted or unknown
  * → `all`; push-only ids not in that list are `all`).
- * When `auth` is unset, do not filter by level. Missing both `auth` and
+ * When `auth` is unset, do not filter by level. Optional
+ * `excludeAccountIds` is applied after skip and after `onlyAccountIds`,
+ * to both the in-app list and the push list, even when `auth` is omitted.
+ * Unknown ids are a no-op. Missing both `auth` and
  * `pushStore` is a no-op. Unique duplicate `create` is fine. When
  * `notifications` is set, each outbox JSON includes that recipient's current
  * unread count after in-app create (`unreadCount`, for the home-screen
@@ -296,7 +303,7 @@ function filterIdsByMatch(
  * source exists, `unreadCount` is written (missing source contributes 0).
  * When both are omitted, `payload` is enqueued unchanged.
  *
- * @param args - Optional stores, skip id, optional match, row template, outbox fields, clock.
+ * @param args - Optional stores, skip id, optional exclude/allow lists, optional match, row template, outbox fields, clock.
  * @returns Resolves after each recipient is written (including no-ops).
  * @throws If recipient listing rejects. Per-recipient `create` /
  *   `unreadCount` / inbox unread / `enqueue` failures log `push.fanout.failed`,
@@ -313,6 +320,12 @@ export async function fanoutToBellSubscribers(args: {
   skipAccountId: string | null;
   /** Optional allowlist applied to both in-app and push recipients before level matching. */
   onlyAccountIds?: readonly string[];
+  /**
+   * Optional denylist applied to both in-app and push recipients after skip
+   * and after `onlyAccountIds`, before level matching. Unknown ids are a no-op.
+   * Applied even when `auth` is omitted.
+   */
+  excludeAccountIds?: readonly string[];
   /**
    * Event match context. Omitted → today's every-id-except-skip behaviour.
    * Applied only when `auth` is also set.
@@ -341,6 +354,11 @@ export async function fanoutToBellSubscribers(args: {
     const only = new Set(args.onlyAccountIds);
     inAppIds = inAppIds.filter((id) => only.has(id));
     pushIds = pushIds.filter((id) => only.has(id));
+  }
+  if (args.excludeAccountIds !== undefined) {
+    const exclude = new Set(args.excludeAccountIds);
+    inAppIds = inAppIds.filter((id) => !exclude.has(id));
+    pushIds = pushIds.filter((id) => !exclude.has(id));
   }
   const match = args.match;
   if (match !== undefined && args.auth !== undefined) {
@@ -398,6 +416,7 @@ export async function fanoutToBellSubscribers(args: {
           claimedUntil: null,
           createdAt,
           deliveredEndpoints: [],
+          skipEndpoints: [],
         };
         await args.pushStore.enqueue(row);
       } catch {
@@ -422,9 +441,11 @@ export async function fanoutToBellSubscribers(args: {
  * `created.sats > 0`, `mentionedAccountId` is null (top-level posts are never
  * personal). A staff or platform actor does not satisfy `mentions`. When
  * `auth` is unset, do not filter by level. Missing `pushStore` still writes
- * in-app rows when `auth` is set. This helper may throw; callers wrap it.
+ * in-app rows when `auth` is set. Optional `excludeAccountIds` is forwarded
+ * to fan-out (omitted means today's recipients). This helper may throw;
+ * callers wrap it.
  *
- * @param args - Optional stores, actor, persisted post.
+ * @param args - Optional stores, actor, persisted post, optional exclude ids.
  * @returns Resolves after the optional persist and push enqueue (including no-ops).
  * @throws If fan-out `create`, `unreadCount`, or `enqueue` rejects.
  */
@@ -441,6 +462,8 @@ export async function notifyForumPost(args: {
   created: MessageRow;
   /** Optional listed inbox unread; forwarded to fan-out. */
   inboxUnreadCount?: (accountId: string) => Promise<number>;
+  /** Optional denylist forwarded to fan-out (omitted → today's recipients). */
+  excludeAccountIds?: readonly string[];
 }): Promise<void> {
   if (await actorIsPlatformAccount(args.auth, args.account.id)) {
     return;
@@ -451,6 +474,7 @@ export async function notifyForumPost(args: {
     ...(args.auth === undefined ? {} : { auth: args.auth }),
     ...(args.inboxUnreadCount === undefined ? {} : { inboxUnreadCount: args.inboxUnreadCount }),
     skipAccountId: args.account.id,
+    ...(args.excludeAccountIds === undefined ? {} : { excludeAccountIds: args.excludeAccountIds }),
     match: {
       isActive: args.created.sats > 0,
       mentionedAccountId: null,
@@ -492,10 +516,11 @@ export async function notifyForumPost(args: {
  * `mentionedAccountId` is `parent.accountId` (null when the parent has no
  * account). A staff or platform actor does not satisfy `mentions`. When `auth`
  * is unset, do not filter by level. Missing `pushStore` still writes in-app
- * rows when `auth` is set. Unique duplicate create is fine. This helper may
- * throw; callers wrap it.
+ * rows when `auth` is set. Optional `excludeAccountIds` is forwarded to
+ * fan-out (omitted means today's recipients). Unique duplicate create is
+ * fine. This helper may throw; callers wrap it.
  *
- * @param args - Message store, optional notification/push/auth stores, actor, reply, parent id.
+ * @param args - Message store, optional notification/push/auth stores, actor, reply, parent id, optional exclude ids.
  * @returns Resolves after the optional persist and push enqueue (including no-ops).
  * @throws If parent lookup, notification `create`, `unreadCount`, or outbox `enqueue` rejects.
  */
@@ -516,6 +541,8 @@ export async function notifyForumReply(args: {
   parentId: string;
   /** Optional listed inbox unread; forwarded to fan-out. */
   inboxUnreadCount?: (accountId: string) => Promise<number>;
+  /** Optional denylist forwarded to fan-out (omitted → today's recipients). */
+  excludeAccountIds?: readonly string[];
 }): Promise<void> {
   const parent = await args.messages.getById(args.parentId);
   if (parent === undefined) {
@@ -530,6 +557,7 @@ export async function notifyForumReply(args: {
     ...(args.auth === undefined ? {} : { auth: args.auth }),
     ...(args.inboxUnreadCount === undefined ? {} : { inboxUnreadCount: args.inboxUnreadCount }),
     skipAccountId: args.account.id,
+    ...(args.excludeAccountIds === undefined ? {} : { excludeAccountIds: args.excludeAccountIds }),
     match: {
       isActive: parent.sats > 0,
       mentionedAccountId: parent.accountId ?? null,
@@ -855,6 +883,7 @@ export async function notifyModeratorAppointed(args: {
         claimedUntil: null,
         createdAt,
         deliveredEndpoints: [],
+        skipEndpoints: [],
       };
       await args.pushStore.enqueue(row);
     } catch {
@@ -964,6 +993,7 @@ export async function notifyModeratorProposed(args: {
           claimedUntil: null,
           createdAt,
           deliveredEndpoints: [],
+          skipEndpoints: [],
         };
         await args.pushStore.enqueue(row);
       } catch {
@@ -974,5 +1004,72 @@ export async function notifyModeratorProposed(args: {
   }
   if (failed) {
     throw new Error('push.fanout.failed');
+  }
+}
+
+/** First-seen unique strings, original order. */
+function uniqueFirstSeen(values: readonly string[]): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const value of values) {
+    if (seen.has(value)) {
+      continue;
+    }
+    seen.add(value);
+    out.push(value);
+  }
+  return out;
+}
+
+/**
+ * Enqueue dismiss Web Push outbox rows for the given tags.
+ *
+ * Empty `tags` is a no-op. Tags are uniqued first-seen, then chunked 30
+ * per outbox row. A throwing `enqueue` logs `push.dismiss.failed` and
+ * continues with later chunks. Does not throw.
+ *
+ * @param args - Push store, account, tags, clock, badge unread, optional skip endpoint.
+ * @returns Resolves after every chunk is attempted.
+ */
+export async function enqueueNotificationDismiss(args: {
+  pushStore: PushStore;
+  accountId: string;
+  tags: readonly string[];
+  nowMs: number;
+  unreadCount: number;
+  skipEndpoint?: string;
+}): Promise<void> {
+  const unique = uniqueFirstSeen(args.tags);
+  if (unique.length === 0) {
+    return;
+  }
+  const skipEndpoints =
+    args.skipEndpoint !== undefined && args.skipEndpoint !== '' ? [args.skipEndpoint] : [];
+  const createdAt = new Date(args.nowMs);
+  for (let i = 0; i < unique.length; i += DISMISS_TAG_CHUNK) {
+    const chunk = unique.slice(i, i + DISMISS_TAG_CHUNK);
+    const payload: DismissPushPayload = {
+      type: 'dismiss',
+      tags: chunk,
+      unreadCount: args.unreadCount,
+    };
+    const row: PushOutboxRow = {
+      id: crypto.randomUUID(),
+      accountId: args.accountId,
+      type: 'dismiss',
+      messageId: null,
+      payload: JSON.stringify(payload),
+      status: 'pending',
+      attempts: 0,
+      claimedUntil: null,
+      createdAt,
+      deliveredEndpoints: [],
+      skipEndpoints: skipEndpoints.slice(),
+    };
+    try {
+      await args.pushStore.enqueue(row);
+    } catch {
+      logEvent('push.dismiss.failed');
+    }
   }
 }

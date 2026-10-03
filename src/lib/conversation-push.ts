@@ -136,6 +136,7 @@ export async function notifyConversationMessage(args: {
         claimedUntil: null,
         createdAt,
         deliveredEndpoints: [],
+        skipEndpoints: [],
       };
       await args.pushStore.enqueue(row);
     } catch {

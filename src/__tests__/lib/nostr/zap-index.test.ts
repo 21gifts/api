@@ -4803,6 +4803,7 @@ describe('indexOpenZapReceipts', () => {
       listHidden: (limit: number) => base.listHidden(limit),
       listIdsByPrefix: (prefix: string) => base.listIdsByPrefix(prefix),
       listPlaces: (limit: number) => base.listPlaces(limit),
+      listLiveAssignedShops: () => base.listLiveAssignedShops(),
       listDirectChildren: (parentId: string) => base.listDirectChildren(parentId),
       listChildIds: (parentId: string) => base.listChildIds(parentId),
       listReplies: (parentId: string, limit?: number, includeHidden?: boolean) =>
@@ -4825,13 +4826,19 @@ describe('indexOpenZapReceipts', () => {
       ) => base.latestLiveTopLevelMediaId(...args),
       countByAccount: (...args: Parameters<InMemoryMessageStore['countByAccount']>) =>
         base.countByAccount(...args),
+      countByPubkey: (...args: Parameters<InMemoryMessageStore['countByPubkey']>) =>
+        base.countByPubkey(...args),
       countAttributedReplies: (
         ...args: Parameters<InMemoryMessageStore['countAttributedReplies']>
       ) => base.countAttributedReplies(...args),
       listPostsByAccount: (...args: Parameters<InMemoryMessageStore['listPostsByAccount']>) =>
         base.listPostsByAccount(...args),
+      listPostsByPubkey: (...args: Parameters<InMemoryMessageStore['listPostsByPubkey']>) =>
+        base.listPostsByPubkey(...args),
       listRepliesByAccount: (...args: Parameters<InMemoryMessageStore['listRepliesByAccount']>) =>
         base.listRepliesByAccount(...args),
+      listRepliesByPubkey: (...args: Parameters<InMemoryMessageStore['listRepliesByPubkey']>) =>
+        base.listRepliesByPubkey(...args),
       getPhoto: (id: string) => base.getPhoto(id),
       getExtraPhoto: (id: string, index: number) => base.getExtraPhoto(id, index),
       listExtraPhotos: (id: string) => base.listExtraPhotos(id),
@@ -5053,6 +5060,7 @@ describe('indexOpenZapReceipts', () => {
         listHidden: (limit: number) => base.listHidden(limit),
         listIdsByPrefix: (prefix: string) => base.listIdsByPrefix(prefix),
         listPlaces: (limit: number) => base.listPlaces(limit),
+        listLiveAssignedShops: () => base.listLiveAssignedShops(),
         listDirectChildren: (parentId: string) => base.listDirectChildren(parentId),
         listChildIds: (parentId: string) => base.listChildIds(parentId),
         listReplies: (parentId: string, limit?: number, includeHidden?: boolean) =>
@@ -5075,13 +5083,19 @@ describe('indexOpenZapReceipts', () => {
         ) => base.latestLiveTopLevelMediaId(...args),
         countByAccount: (...args: Parameters<InMemoryMessageStore['countByAccount']>) =>
           base.countByAccount(...args),
+        countByPubkey: (...args: Parameters<InMemoryMessageStore['countByPubkey']>) =>
+          base.countByPubkey(...args),
         countAttributedReplies: (
           ...args: Parameters<InMemoryMessageStore['countAttributedReplies']>
         ) => base.countAttributedReplies(...args),
         listPostsByAccount: (...args: Parameters<InMemoryMessageStore['listPostsByAccount']>) =>
           base.listPostsByAccount(...args),
+        listPostsByPubkey: (...args: Parameters<InMemoryMessageStore['listPostsByPubkey']>) =>
+          base.listPostsByPubkey(...args),
         listRepliesByAccount: (...args: Parameters<InMemoryMessageStore['listRepliesByAccount']>) =>
           base.listRepliesByAccount(...args),
+        listRepliesByPubkey: (...args: Parameters<InMemoryMessageStore['listRepliesByPubkey']>) =>
+          base.listRepliesByPubkey(...args),
         getPhoto: (id: string) => base.getPhoto(id),
         getExtraPhoto: (id: string, index: number) => base.getExtraPhoto(id, index),
         listExtraPhotos: (id: string) => base.listExtraPhotos(id),
@@ -5847,6 +5861,7 @@ describe('indexOpenZapReceipts', () => {
         listHidden: (limit: number) => base.listHidden(limit),
         listIdsByPrefix: (prefix: string) => base.listIdsByPrefix(prefix),
         listPlaces: (limit: number) => base.listPlaces(limit),
+        listLiveAssignedShops: () => base.listLiveAssignedShops(),
         listDirectChildren: (parentId: string) => base.listDirectChildren(parentId),
         listChildIds: (parentId: string) => base.listChildIds(parentId),
         listReplies: (parentId: string, limit?: number, includeHidden?: boolean) =>
@@ -5869,13 +5884,19 @@ describe('indexOpenZapReceipts', () => {
         ) => base.latestLiveTopLevelMediaId(...args),
         countByAccount: (...args: Parameters<InMemoryMessageStore['countByAccount']>) =>
           base.countByAccount(...args),
+        countByPubkey: (...args: Parameters<InMemoryMessageStore['countByPubkey']>) =>
+          base.countByPubkey(...args),
         countAttributedReplies: (
           ...args: Parameters<InMemoryMessageStore['countAttributedReplies']>
         ) => base.countAttributedReplies(...args),
         listPostsByAccount: (...args: Parameters<InMemoryMessageStore['listPostsByAccount']>) =>
           base.listPostsByAccount(...args),
+        listPostsByPubkey: (...args: Parameters<InMemoryMessageStore['listPostsByPubkey']>) =>
+          base.listPostsByPubkey(...args),
         listRepliesByAccount: (...args: Parameters<InMemoryMessageStore['listRepliesByAccount']>) =>
           base.listRepliesByAccount(...args),
+        listRepliesByPubkey: (...args: Parameters<InMemoryMessageStore['listRepliesByPubkey']>) =>
+          base.listRepliesByPubkey(...args),
         getPhoto: (id: string) => base.getPhoto(id),
         getExtraPhoto: (id: string, index: number) => base.getExtraPhoto(id, index),
         listExtraPhotos: (id: string) => base.listExtraPhotos(id),

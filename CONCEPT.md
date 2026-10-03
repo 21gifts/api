@@ -193,7 +193,7 @@ Initiator, and Founder.
 - **Accepted trade-off**: if the user loses the passkey and any platform
   sync, the account is unrecoverable. LNURL-auth was removed (2026-08-24);
   leftover `account.linking_key` values are historical and cannot log in.
-- WebAuthn RP ID is `WEBAUTHN_RP_ID` (`21.gifts` / `dev.21.gifts`). Missing
+- WebAuthn RP ID is `WEBAUTHN_RP_ID` (`21.gifts` / `dev.21.gifts` / `staging.21.gifts`). Missing
   RP ID → passkey routes 500; the process still boots.
 - **Operator provision / viewKey claim (2026-08-30):** `POST /debug/accounts`
   can create accounts with name + Lightning Address and no passkey. The
@@ -756,7 +756,8 @@ GitHub organization: **`21gifts`** (created 2026-05-25).
 - Image names match the repo: `21gifts/app`, `21gifts/api`
 - Tag convention per image:
   - `:beta` — built from `develop`, deployed to DEV
-  - `:latest` — built from `main`, deployed to PRD
+  - `:staging` — built from `staging`, deployed to staging
+  - `:latest` — built from `main`, deployed to PRD. `:latest` is an independent rebuild from `main`, not a retag of `:staging`
 - **One image, multiple environments** — for the app, build-time placeholders
   for `NEXT_PUBLIC_*` variables are replaced at container start by an
   `entrypoint.sh` with runtime values; the api reads its config purely from
@@ -766,14 +767,15 @@ GitHub organization: **`21gifts`** (created 2026-05-25).
 
 ## CI / CD (per product repo)
 
-Four GitHub Actions workflows, identical structure for `app` and `api`:
+Five GitHub Actions workflows, identical structure for `app` and `api`:
 
-| Workflow               | Trigger             | Action                                            |
-| ---------------------- | ------------------- | ------------------------------------------------- |
-| `ci.yaml`              | PR, push to develop | Lint + build + test (required for merge)          |
-| `deploy-dev.yaml`      | push to develop     | Docker build → push `:beta` → notify infra repo   |
-| `deploy-prd.yaml`      | push to main        | Docker build → push `:latest` → notify infra repo |
-| `auto-release-pr.yaml` | push to develop     | Auto-create release PR `develop → main`           |
+| Workflow               | Trigger                    | Action                                                                             |
+| ---------------------- | -------------------------- | ---------------------------------------------------------------------------------- |
+| `ci.yaml`              | PR, push to develop        | Lint + build + test (required for merge)                                           |
+| `deploy-dev.yaml`      | push to develop            | Docker build → push `:beta` → notify infra repo                                    |
+| `deploy-staging.yaml`  | push to staging            | Docker build → push `:staging` → notify infra repo                                 |
+| `deploy-prd.yaml`      | push to main               | Docker build → push `:latest` → notify infra repo                                  |
+| `auto-release-pr.yaml` | push to develop or staging | Auto-create `staging → develop` and `develop → main` only. Never `staging → main`. |
 
 **Pre-push local checks**:
 
@@ -798,21 +800,24 @@ DNS, and reverse-proxy routing.
 
 ## Hosting & Operations
 
-Two environments per service, mapped 1:1 to the branch model:
+Three environments per service. Staging is the environment for experimental testing. A change that is good there is released to `develop` first. `main` receives changes only from `develop`. Staging is never released directly to `main`. Feature pull requests always target `develop`, not `staging` and not `main`. Developers rebase `staging` onto `develop` regularly, because those pull requests land on `develop` and do not update `staging`:
 
-| Service | Env | Source branch | Image tag | Public URL         |
-| ------- | --- | ------------- | --------- | ------------------ |
-| app     | DEV | `develop`     | `:beta`   | `dev.21.gifts`     |
-| app     | PRD | `main`        | `:latest` | `21.gifts`         |
-| api     | DEV | `develop`     | `:beta`   | `dev-api.21.gifts` |
-| api     | PRD | `main`        | `:latest` | `api.21.gifts`     |
+| Service | Env     | Source branch | Image tag  | Public URL             |
+| ------- | ------- | ------------- | ---------- | ---------------------- |
+| app     | DEV     | `develop`     | `:beta`    | `dev.21.gifts`         |
+| app     | PRD     | `main`        | `:latest`  | `21.gifts`             |
+| api     | DEV     | `develop`     | `:beta`    | `dev-api.21.gifts`     |
+| api     | PRD     | `main`        | `:latest`  | `api.21.gifts`         |
+| app     | staging | `staging`     | `:staging` | `staging.21.gifts`     |
+| api     | staging | `staging`     | `:staging` | `staging-api.21.gifts` |
 
 `app.21.gifts` / `dev-app.21.gifts` remain transitional aliases for the app
-container. Passkey RP ID is the apex (`21.gifts` / `dev.21.gifts`), not the
+container. `staging-app.21.gifts` redirects to the apex `staging.21.gifts`.
+Passkey RP ID is the apex (`21.gifts` / `dev.21.gifts` / `staging.21.gifts`), not the
 api hostname.
 
 Subdomain convention: **dash, not dot** (e.g., `dev-api.21.gifts` rather than
-`dev.api.21.gifts`). This keeps every subdomain at exactly one level deep,
+`dev.api.21.gifts`). `staging.api.21.gifts` is not a name. This keeps every subdomain at exactly one level deep,
 which sidesteps the multi-level wildcard certificate problem on Cloudflare.
 
 Public routing: behind a reverse proxy / tunnel that terminates TLS and
@@ -826,6 +831,8 @@ repository — they're intentionally not part of this project's scope.
 
 | Date       | Decision                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
 | ---------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 2026-10-02 | Staging is the experimental test environment. A change that is good there is released to `develop` first. `main` receives changes only from `develop`. A release from `staging` directly to `main` is not allowed. Feature pull requests always target `develop`, not `staging` and not `main`. Developers rebase `staging` onto `develop` regularly, because those pull requests land on `develop` and do not update `staging`. This supersedes the release-direction sentence of 2026-10-01.                                                                                                                                                                        |
+| 2026-10-01 | Three environments per service. Branch `staging` publishes image tag `:staging`. The app public URL is `staging.21.gifts`. The api public URL is `staging-api.21.gifts`. `staging-app.21.gifts` redirects to the apex. `staging.api.21.gifts` is not a name. Release pull requests stay develop → main. `:latest` is an independent rebuild from `main`, not a retag of `:staging`. The passkey RP ID includes `staging.21.gifts`.                                                                                                                                                                                                                                    |
 | 2026-09-25 | A moderator can set, replace, or clear the map pin on an existing live top-level shop note (`#21GiftsShop`) via `PATCH /messages/:id/place`. Columns stay `place_lat` / `place_lng` / `place_label`. No Nostr republish, no text change, no notification.                                                                                                                                                                                                                                                                                                                                                                                                             |
 | 2026-09-24 | Signed-in language and fiat are stored on the account (locale, fiat, both nullable). Null means not defined yet: the app writes the resolved value once (onlyIfUnset). A stored value always wins over Accept-Language and the cookies. An explicit control updates the stored value. Signed-out visitors stay on the cookie and Accept-Language and write nothing.                                                                                                                                                                                                                                                                                                   |
 | 2026-05-25 | Domain `21.gifts` registered (premium .gifts TLD on Identity Digital)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
@@ -1010,6 +1017,8 @@ repository — they're intentionally not part of this project's scope.
 | 2026-09-29 | Social recovery of the user-held seed is specified in docs/social-recovery.md and is not implemented. Guardians hold SLIP-39 shares of the frozen mnemonic-v1 entropy. They do not hold the passkey. The api must not be the source of the public keys those shares are encrypted to. Custodial nsecs are out of scope.                                                                                                                                                                                                                                                                                                                                               |
 | 2026-09-30 | Mein Konto absichern is optional. The account works without it. An owner who continues is told what social recovery does, then chooses two people. Both are required to open the same account on a new device and restore the same 12 seed words. If a moderator verified the owner, that person is suggested as person 1 and can be replaced. 21.gifts does not hold a share. Specified in docs/social-recovery.md. Not implemented. **Supersedes** the 2026-09-29 social-recovery row.                                                                                                                                                                              |
 | 2026-10-01 | A shop's OpenCryptoPay QR stays the same link. USDT or USDC paid through it settles as bitcoin on the shop's own Breez Spark wallet. The shop does not hold USDT or USDC. The till is paid only when those sats have arrived. The wallet seed is the 12-word phrase the app already derives (`mnemonicFromPrfFirst`); the api already records that seed passkey (`POST /auth/passkey/seed/begin` and `/finish`). Specified in docs/shop-spark-payment.md. Not implemented. Today's Lightning pay link is unchanged.                                                                                                                                                   |
+| 2026-10-01 | Opening a forum note, translating it, or opening Notifications stamps the matching unread in-app rows and tells the account's other devices to close those banners. `POST /notifications/read-by-message` stamps unread forum_post, forum_reply, forum_mention, and zap whose parent or reply id is that note. Read-all and a freshly stamped single read do the same for the rows they mark. `moderator_proposal` stays unread and is not dismissed. Private-message pushes are not dismissed.                                                                                                                                                                       |
+| 2026-10-02 | One forum note notifies each recipient once. The marked account keeps only `forum_mention`; everyone else keeps the single `forum_post` or `forum_reply`. `POST /messages` excludes mention account ids from the post/reply fan-out. `GET /notifications` drops and deletes a stored generic row when the scan also has `forum_mention` for the same `replyId`. Zaps stay a separate event. **Supersedes** the extra mention-on-top-of-post fan-out.                                                                                                                                                                                                                  |
 
 ## Next Steps
 

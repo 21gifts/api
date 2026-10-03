@@ -133,6 +133,8 @@ function extractEndpoints() {
     'banner.ts': '/banners',
     'lightning-address.ts': '/lightning-address',
     'stats.ts': '/gifts/stats',
+    'shop-activity.ts': '/shops/activity',
+    'grant-continuation.ts': '/funding/goal',
     'brand.ts': '',
     'push.ts': '',
     'debug.ts': '/debug/accounts',

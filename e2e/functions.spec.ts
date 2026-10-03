@@ -466,6 +466,20 @@ test('Function: debugRoutes — GET /debug/accounts with the e2e token is 200', 
   expect(Array.isArray(body.accounts)).toBe(true);
 });
 
+test('Function: mergeAccounts — POST /debug/accounts/merge is 503 on default boot', async ({
+  request,
+}) => {
+  const res = await request.post('/debug/accounts/merge', {
+    headers: DEBUG,
+    data: {
+      from: '00000000-0000-4000-8000-000000000001',
+      into: '00000000-0000-4000-8000-000000000002',
+    },
+  });
+  expect(res.status()).toBe(503);
+  expect(((await res.json()) as { error: string }).error).toBe('Merge is unavailable');
+});
+
 test('Function: bearerMatchesDebugToken — GET /debug/accounts without bearer is 401', async ({
   request,
 }) => {
@@ -2137,6 +2151,21 @@ test('Function: notificationRoutes — GET /notifications without bearer is 401'
   expect((await request.post('/notifications/read-all')).status()).toBe(401);
   expect((await request.post('/notifications/:id/read')).status()).toBe(401);
 });
+test('Function: markReadByMessage — POST /notifications/read-by-message without bearer is 401', async ({
+  request,
+}) => {
+  expect((await request.post('/notifications/read-by-message')).status()).toBe(401);
+});
+test('Function: enqueueNotificationDismiss — POST /notifications/read-by-message without bearer is 401', async ({
+  request,
+}) => {
+  expect((await request.post('/notifications/read-by-message')).status()).toBe(401);
+});
+test('Function: pushTagForNotification — POST /notifications/read-by-message without bearer is 401', async ({
+  request,
+}) => {
+  expect((await request.post('/notifications/read-by-message')).status()).toBe(401);
+});
 test('Function: serializeConversationMessage — GET /conversations/:id without bearer is 401', async ({
   request,
 }) => {
@@ -2916,4 +2945,12 @@ test('Function: messageGoalComplete — donation feed filters and paginates fund
   expect(
     ((await second.json()) as { messages: { id: string }[] }).messages.map((row) => row.id),
   ).toEqual([ids[0]]);
+});
+
+test('Function: publicExternalAuthorPosts — unknown id is not found', async ({ request }) => {
+  expect((await request.get('/messages/not-a-uuid/external-posts')).status()).toBe(404);
+});
+
+test('Function: publicExternalAuthorReplies — unknown id is not found', async ({ request }) => {
+  expect((await request.get('/messages/not-a-uuid/external-replies')).status()).toBe(404);
 });
