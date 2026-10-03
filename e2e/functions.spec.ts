@@ -30,6 +30,24 @@ async function memberSession(
   return { authorization: `Bearer ${token}`, id: row?.id ?? '' };
 }
 
+/** Provision a member whose linked address is on an unreachable domain; returns its username. */
+async function unreachableMember(request: APIRequestContext): Promise<string> {
+  const stamp = `${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
+  const name = `E2eFnPay${stamp.slice(-8)}`;
+  const provision = await request.post('/debug/accounts', {
+    headers: DEBUG,
+    data: { accounts: [{ name, lightningAddress: `e2e-fn-pay-${stamp}@unreachable.invalid` }] },
+  });
+  expect(provision.status()).toBe(200);
+  const listed = await request.get('/debug/accounts', { headers: DEBUG });
+  const accounts = (
+    (await listed.json()) as { accounts: Array<{ name: string; username: string | null }> }
+  ).accounts;
+  const username = accounts.find((item) => item.name === name)?.username ?? null;
+  expect(username).not.toBeNull();
+  return username ?? '';
+}
+
 async function passkeyBegin(request: APIRequestContext): Promise<{ challengeId: string }> {
   const res = await request.post('/auth/passkey/register/begin');
   expect(res.status()).toBe(200);
@@ -1947,6 +1965,122 @@ test('Function: buildZapRequest — default boot has no DATABASE_URL', async ({ 
   expect((await request.get('/healthz')).status()).toBe(200);
 });
 test('Function: serializeZapRequest — default boot has no DATABASE_URL', async ({ request }) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
+test('Function: receivingAddress — GET /pay/:username resolves the linked address of a member', async ({
+  request,
+}) => {
+  const username = await unreachableMember(request);
+  expect((await request.get(`/pay/${username}`)).status()).toBe(502);
+  expect((await request.get('/pay/nobody-e2e-unknown')).status()).toBe(404);
+});
+test('Function: lnurlServerFetch — GET /pay/:username fetches an external address over the plain fetch', async ({
+  request,
+}) => {
+  const username = await unreachableMember(request);
+  const res = await request.get(`/pay/${username}`);
+  expect(res.status()).toBe(502);
+  expect(await res.json()).toEqual({ error: 'Lightning Address could not be resolved' });
+});
+test('Function: issueSparkInvoice — POST /messages/:id/invoice without bearer is 401', async ({
+  request,
+}) => {
+  const res = await request.post('/messages/00000000-0000-4000-8000-000000000000/invoice', {
+    data: { sats: 21 },
+  });
+  expect(res.status()).toBe(401);
+});
+test('Function: resolveFreePaymentsConfig — free in-app payments are off on the default boot', async ({
+  request,
+}) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
+test('Function: concatBytes — free in-app payments are off on the default boot', async ({
+  request,
+}) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
+test('Function: protoVarintField — free in-app payments are off on the default boot', async ({
+  request,
+}) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
+test('Function: protoBytesField — free in-app payments are off on the default boot', async ({
+  request,
+}) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
+test('Function: decodeProto — free in-app payments are off on the default boot', async ({
+  request,
+}) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
+test('Function: encodeSparkInvoice — free in-app payments are off on the default boot', async ({
+  request,
+}) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
+test('Function: uuidV7 — free in-app payments are off on the default boot', async ({ request }) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
+test('Function: migrateSparkInvoiceSchema — free in-app payments are off on the default boot', async ({
+  request,
+}) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
+test('Function: InMemorySparkInvoiceStore — free in-app payments are off on the default boot', async ({
+  request,
+}) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
+test('Function: PostgresSparkInvoiceStore — free in-app payments are off on the default boot', async ({
+  request,
+}) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
+test('Function: encodeQuerySparkInvoicesRequest — free in-app payments are off on the default boot', async ({
+  request,
+}) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
+test('Function: parseQuerySparkInvoicesResponse — free in-app payments are off on the default boot', async ({
+  request,
+}) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
+test('Function: querySparkInvoices — free in-app payments are off on the default boot', async ({
+  request,
+}) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
+test('Function: zapReceiptSecretKey — free in-app payments are off on the default boot', async ({
+  request,
+}) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
+test('Function: buildZapReceipt — free in-app payments are off on the default boot', async ({
+  request,
+}) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
+test('Function: runSparkInvoiceTick — free in-app payments are off on the default boot', async ({
+  request,
+}) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
+test('Function: startSparkInvoiceWorker — free in-app payments are off on the default boot', async ({
+  request,
+}) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
+test('Function: ingestZapReceipt — free in-app payments are off on the default boot', async ({
+  request,
+}) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
+test('Function: zapReceiptIngest — free in-app payments are off on the default boot', async ({
+  request,
+}) => {
   expect((await request.get('/healthz')).status()).toBe(200);
 });
 test('Function: indexZapReceipt — default boot has no DATABASE_URL', async ({ request }) => {

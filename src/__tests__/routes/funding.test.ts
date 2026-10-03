@@ -607,6 +607,62 @@ describe('GET /funding/applications/:accountId', () => {
     expect(body.messages[0]?.payable).toBe(true);
   });
 
+  it('marks a wallet-only applicant post payable only with the LNURL server configured', async () => {
+    const { authStore, fundingStore } = await staffed();
+    const existing = await authStore.getAccount(VERIFIED);
+    if (existing === undefined) {
+      throw new Error('expected verified');
+    }
+    const original = authStore.getAccount.bind(authStore);
+    vi.spyOn(authStore, 'getAccount').mockImplementation(async (id) =>
+      id === VERIFIED
+        ? {
+            ...existing,
+            lightningAddress: null,
+            username: 'ada',
+            sparkPubkey: `02${'ab'.repeat(32)}`,
+            sparkPubkeyVerifiedAt: 1,
+          }
+        : original(id),
+    );
+    await fundingStore.upsert(grant({ accountId: VERIFIED, status: 'pending' }));
+    const postId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaab';
+    const messageStore = new InMemoryMessageStore([
+      {
+        id: postId,
+        accountId: VERIFIED,
+        name: 'Ada',
+        text: 'hello',
+        createdAt: new Date(now()),
+        hasPhoto: false,
+        ...unsignedNostrDefaults(),
+        eventId: 'e'.repeat(64),
+      },
+    ]);
+    const payable = async (app: Hono): Promise<boolean | undefined> => {
+      const res = await get(app, `/funding/applications/${VERIFIED}`, 'founder');
+      const body = (await res.json()) as { messages: Array<{ payable?: boolean }> };
+      return body.messages[0]?.payable;
+    };
+    expect(await payable(mount(authStore, fundingStore, messageStore))).toBe(false);
+    const withServer = new Hono().route(
+      '/funding',
+      fundingRoutes({
+        authStore,
+        fundingStore,
+        messageStore,
+        now,
+        gifts: new InMemoryGiftStore(),
+        lnurlServer: {
+          baseUrl: 'http://lnurl.internal',
+          publicBaseUrl: 'https://21.gifts',
+          host: '21.gifts',
+        },
+      }),
+    );
+    expect(await payable(withServer)).toBe(true);
+  });
+
   it('subtracts missing-file video replies from replyCount', async () => {
     const { authStore, fundingStore } = await staffed();
     await fundingStore.upsert(grant({ accountId: VERIFIED, status: 'pending' }));

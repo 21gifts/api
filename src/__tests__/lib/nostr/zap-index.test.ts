@@ -33,12 +33,15 @@ import {
   backfillExternalZappers,
   indexOpenZapReceipts,
   indexZapReceipt,
+  ingestZapReceipt,
   manualReceiptIdForPaymentHash,
   settleInvoiceManually,
 } from '@/lib/nostr/zap-index';
 import { PostRateLimiter } from '@/lib/nostr/rate-limit';
 import { InMemoryPushStore } from '@/lib/push-store';
 import { InMemoryFiatStore } from '@/lib/usd-fiat-store';
+import type { LnurlServerConfig } from '@/lib/config';
+import { buildZapReceipt, zapReceiptSecretKey } from '@/lib/nostr/zap-receipt';
 
 vi.mock('@/lib/bolt11', () => ({
   decodeBolt11: vi.fn(),
@@ -4885,6 +4888,7 @@ describe('indexOpenZapReceipts', () => {
         base.markRepaymentPaid(row),
       claimZapPayment: (...args: Parameters<InMemoryMessageStore['claimZapPayment']>) =>
         base.claimZapPayment(...args),
+      zapPaymentReceiptId: (hash: string) => base.zapPaymentReceiptId(hash),
       recordZapReceipt: (...args: Parameters<InMemoryMessageStore['recordZapReceipt']>) =>
         base.recordZapReceipt(...args),
       recordInvoiceAttempt: (...args: Parameters<InMemoryMessageStore['recordInvoiceAttempt']>) =>
@@ -5139,6 +5143,7 @@ describe('indexOpenZapReceipts', () => {
           base.markRepaymentPaid(row),
         claimZapPayment: (...args: Parameters<InMemoryMessageStore['claimZapPayment']>) =>
           base.claimZapPayment(...args),
+        zapPaymentReceiptId: (hash: string) => base.zapPaymentReceiptId(hash),
         recordZapReceipt: (...args: Parameters<InMemoryMessageStore['recordZapReceipt']>) =>
           base.recordZapReceipt(...args),
         recordInvoiceAttempt: (...args: Parameters<InMemoryMessageStore['recordInvoiceAttempt']>) =>
@@ -5940,6 +5945,7 @@ describe('indexOpenZapReceipts', () => {
           base.markRepaymentPaid(row),
         claimZapPayment: (...args: Parameters<InMemoryMessageStore['claimZapPayment']>) =>
           base.claimZapPayment(...args),
+        zapPaymentReceiptId: (hash: string) => base.zapPaymentReceiptId(hash),
         recordZapReceipt: (...args: Parameters<InMemoryMessageStore['recordZapReceipt']>) =>
           base.recordZapReceipt(...args),
         recordInvoiceAttempt: (...args: Parameters<InMemoryMessageStore['recordInvoiceAttempt']>) =>
@@ -11544,5 +11550,331 @@ describe('conversation zap ingest', () => {
         expect(call.filter['since']).toBe(1_234_567);
       }
     }
+  });
+});
+
+describe('wallet-backed receipt ingest', () => {
+  const NSEC = new Uint8Array(32).fill(0x11);
+  const OWNER = '0209cb7d2b5d3df3a0ac4ef86cfcfa229ffa52b687d797274c8669cbd5235eccd5';
+  const RECEIPT_PUBKEY = '5b70420d181375ab9972fcc465486a20833999ad1101e0f4332e832e41292619';
+  const LNURL: LnurlServerConfig = {
+    baseUrl: 'http://lnurl.internal:8080',
+    publicBaseUrl: 'https://gifts.test',
+    host: 'gifts.test',
+  };
+
+  /** Fake LNURL server on the internal URL; every other URL (spot price) answers 500. */
+  function walletFetch(calls: string[]): FetchFn {
+    return async (input, init) => {
+      const url = String(input);
+      calls.push(url);
+      const prefix = `${LNURL.baseUrl}/.well-known/lnurlp/`;
+      if (!url.startsWith(prefix)) {
+        return new Response('{}', { status: 500 });
+      }
+      expect((init?.headers as Record<string, string>)['host']).toBe('gifts.test');
+      const username = url.slice(prefix.length);
+      return new Response(
+        JSON.stringify({
+          tag: 'payRequest',
+          callback: `https://gifts.test/lnurlp/${username}/invoice`,
+          metadata: '[]',
+          minSendable: 1000,
+          maxSendable: 10_000_000,
+          allowsNostr: true,
+          nostrPubkey: RECEIPT_PUBKEY,
+        }),
+        { status: 200, headers: { 'content-type': 'application/json' } },
+      );
+    };
+  }
+
+  /** Create an account whose wallet key `OWNER` is verified under `username`. */
+  async function walletAccount(auth: InMemoryAuthStore, id: string, username: string) {
+    await auth.createAccount({
+      id,
+      linkingKey: null,
+      role: 'basis',
+      name: 'Wally',
+      username,
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: viewKeyFor(id),
+      createdAt: 1,
+      rulesAgreedAt: null,
+      walletRequired: true,
+    });
+    expect((await auth.claimSparkPubkey(id, OWNER))?.wrote).toBe(true);
+    expect(await auth.markSparkPubkeyVerified(id, OWNER, username, 2)).toBe(true);
+  }
+
+  /** Signed receipt for `bolt11` from the member's derived receipt key. */
+  function signedReceipt(bolt11: string, createdAt: number): NostrEventFrame {
+    const payer = generateSecretKey();
+    const zapRequest = finalizeEvent(
+      {
+        kind: 9734,
+        created_at: createdAt,
+        content: '',
+        tags: [
+          ['p', 'cc'.repeat(32)],
+          ['e', NOTE_EVENT_ID],
+          ['relays', 'wss://relay.example'],
+        ],
+      },
+      payer,
+    );
+    const built = buildZapReceipt({
+      secretKey: zapReceiptSecretKey(NSEC, OWNER),
+      bolt11,
+      zapRequestJson: JSON.stringify(zapRequest),
+    });
+    if (built === null) {
+      throw new Error('expected a receipt');
+    }
+    return built.event as unknown as NostrEventFrame;
+  }
+
+  it('credits a forum receipt signed by the derived key once, resolving the signer internally', async () => {
+    const store = new InMemoryMessageStore();
+    const auth = new InMemoryAuthStore();
+    await walletAccount(auth, 'acc-wallet-forum', 'wallet-forum');
+    const messageId = await seedStore({
+      store,
+      auth,
+      accountId: 'acc-wallet-forum',
+      createAccount: false,
+    });
+    mockedDecode.mockReturnValue({ paymentHash: 'c1'.repeat(32), amountMsat: 21_000 });
+    const calls: string[] = [];
+    const args = {
+      store,
+      auth,
+      querier: new RecordingQuerier(),
+      urls: URLS,
+      timeoutMs: 50,
+      now: () => 10,
+      fetchImpl: walletFetch(calls),
+      lnurlServer: LNURL,
+    };
+    const first = signedReceipt('lnbc-wallet-forum', 100);
+    expect(first.pubkey).toBe(RECEIPT_PUBKEY);
+    expect(await ingestZapReceipt(first, args)).toBe(true);
+    expect((await store.getById(messageId))?.sats).toBe(21);
+    expect(calls).toContain(`${LNURL.baseUrl}/.well-known/lnurlp/wallet-forum`);
+    expect(calls.some((url) => url.includes('gifts.test'))).toBe(false);
+
+    expect(await ingestZapReceipt(signedReceipt('lnbc-wallet-forum', 101), args)).toBe(false);
+    expect((await store.getById(messageId))?.sats).toBe(21);
+    const ingests = await store.listZapIngests(10);
+    expect(ingests.filter((row) => row.outcome === 'indexed')).toHaveLength(1);
+    expect(ingests.some((row) => row.outcome === 'rejected' && row.reason === 'settled')).toBe(
+      true,
+    );
+  });
+
+  it('resolves the signer of an address on the LNURL server host on every receipt, without the cache', async () => {
+    const store = new InMemoryMessageStore();
+    const auth = new InMemoryAuthStore();
+    await walletAccount(auth, 'acc-wallet-nocache', 'wallet-nocache');
+    await seedStore({ store, auth, accountId: 'acc-wallet-nocache', createAccount: false });
+    const calls: string[] = [];
+    const args = {
+      store,
+      auth,
+      querier: new RecordingQuerier(),
+      urls: URLS,
+      timeoutMs: 50,
+      now: () => 10,
+      fetchImpl: walletFetch(calls),
+      lnurlServer: LNURL,
+    };
+    mockedDecode.mockReturnValue({ paymentHash: 'c3'.repeat(32), amountMsat: 21_000 });
+    expect(await ingestZapReceipt(signedReceipt('lnbc-wallet-nocache-1', 100), args)).toBe(true);
+    mockedDecode.mockReturnValue({ paymentHash: 'c4'.repeat(32), amountMsat: 21_000 });
+    expect(await ingestZapReceipt(signedReceipt('lnbc-wallet-nocache-2', 101), args)).toBe(true);
+    const doc = `${LNURL.baseUrl}/.well-known/lnurlp/wallet-nocache`;
+    expect(calls.filter((url) => url === doc)).toHaveLength(2);
+  });
+
+  it('persists a rejected error row when an ingest step throws', async () => {
+    const store = new InMemoryMessageStore();
+    const auth = new InMemoryAuthStore();
+    mockedDecode.mockReturnValue(null);
+    vi.spyOn(store, 'getByEventId').mockRejectedValue(new Error('boom'));
+    const event: NostrEventFrame = {
+      id: 'r-throw',
+      pubkey: PROVIDER_PUBKEY,
+      kind: 9735,
+      tags: [['e', NOTE_EVENT_ID]],
+    };
+    expect(
+      await ingestZapReceipt(event, {
+        store,
+        auth,
+        querier: new RecordingQuerier(),
+        urls: URLS,
+        timeoutMs: 50,
+        now: () => 1,
+        fetchImpl: failFetch(),
+        verifyReceipt: () => true,
+      }),
+    ).toBe(false);
+    const ingests = await store.listZapIngests(10);
+    expect(ingests).toHaveLength(1);
+    expect(ingests[0]).toMatchObject({
+      receiptId: 'r-throw',
+      outcome: 'rejected',
+      reason: 'error',
+      receiptPubkey: PROVIDER_PUBKEY,
+    });
+  });
+
+  it('appends a conversation gift for a wallet-backed stored address', async () => {
+    const store = new InMemoryMessageStore();
+    const auth = new InMemoryAuthStore();
+    await walletAccount(auth, 'acc-wallet-pn', 'wallet-pn');
+    const conversations = new InMemoryConversationStore();
+    const thread = await conversations.openMemberMember(
+      'acc-wallet-pn-payer',
+      'acc-wallet-pn',
+      new Date('2026-10-01T00:00:00.000Z'),
+    );
+    const giftId = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee';
+    const paymentHash = 'c2'.repeat(32);
+    await store.recordInvoiceAttempt({
+      id: 'inv-wallet-pn',
+      createdAt: new Date('2026-10-01T00:00:00.000Z'),
+      messageId: 'm-wallet-pn-profile',
+      payerAccountId: 'acc-wallet-pn-payer',
+      authorAccountId: 'acc-wallet-pn',
+      amountSats: 21,
+      lightningAddress: 'wallet-pn@gifts.test',
+      zapRequest: { tags: [['e', NOTE_EVENT_ID]], content: 'thanks' },
+      result: 'ok',
+      httpStatus: 200,
+      pr: 'lnbc-wallet-pn',
+      paymentHash,
+      description: null,
+      descriptionHash: null,
+      isNip57Invoice: true,
+      lnurlResponse: null,
+      conversationId: thread.id,
+      conversationMessageId: giftId,
+    });
+    mockedDecode.mockReturnValue({ paymentHash, amountMsat: 21_000 });
+    const calls: string[] = [];
+    await ingestZapReceipt(signedReceipt('lnbc-wallet-pn', 100), {
+      store,
+      auth,
+      querier: new RecordingQuerier(),
+      urls: URLS,
+      timeoutMs: 50,
+      now: () => Date.parse('2026-10-01T00:00:00.000Z'),
+      fetchImpl: walletFetch(calls),
+      conversations,
+      lnurlServer: LNURL,
+    });
+    expect(calls).toContain(`${LNURL.baseUrl}/.well-known/lnurlp/wallet-pn`);
+    expect(calls.some((url) => url.includes('gifts.test'))).toBe(false);
+    const rows = await conversations.listMessages(thread.id, 10);
+    expect(rows.map((row) => row.id)).toEqual([giftId]);
+  });
+
+  it('rejects a repayment receipt when the giver has no receiving address', async () => {
+    const store = new InMemoryMessageStore();
+    const auth = new InMemoryAuthStore();
+    const messageId = await seedStore({ store, auth, accountId: 'acc-noaddr-repay' });
+    const giver = '33333333-3333-4333-8333-333333333333';
+    await seedStore({
+      store,
+      auth,
+      accountId: giver,
+      lightningAddress: null,
+      messageId: 'm-noaddr-giver',
+      eventId: 'f0'.repeat(32),
+    });
+    const paymentHash = 'c4'.repeat(32);
+    await store.recordInvoiceAttempt({
+      id: 'inv-noaddr-repay',
+      createdAt: new Date(1),
+      messageId,
+      payerAccountId: 'acc-noaddr-repay',
+      authorAccountId: giver,
+      amountSats: 21,
+      lightningAddress: 'gone@example.com',
+      zapRequest: null,
+      result: 'ok',
+      httpStatus: 200,
+      pr: 'lnbc-noaddr-repay',
+      paymentHash,
+      description: repaymentDescription(0, giver),
+      descriptionHash: null,
+      isNip57Invoice: true,
+      lnurlResponse: null,
+    });
+    mockedDecode.mockReturnValue({ paymentHash, amountMsat: 21_000 });
+    await ingestZapReceipt(signedReceipt('lnbc-noaddr-repay', 100), {
+      store,
+      auth,
+      querier: new RecordingQuerier(),
+      urls: URLS,
+      timeoutMs: 50,
+      now: () => 5,
+      fetchImpl: failFetch(),
+      lnurlServer: LNURL,
+    });
+    expect(await store.listRepayments(messageId)).toEqual([]);
+    expect((await store.listZapIngests(10))[0]).toMatchObject({
+      outcome: 'rejected',
+      reason: 'pubkey',
+    });
+  });
+
+  it('records a repayment to a giver with a verified wallet', async () => {
+    const store = new InMemoryMessageStore();
+    const auth = new InMemoryAuthStore();
+    const messageId = await seedStore({ store, auth, accountId: 'acc-wallet-repay' });
+    const giver = '22222222-2222-4222-8222-222222222222';
+    await walletAccount(auth, giver, 'wallet-giver');
+    const paymentHash = 'c3'.repeat(32);
+    await store.recordInvoiceAttempt({
+      id: 'inv-wallet-repay',
+      createdAt: new Date(1),
+      messageId,
+      payerAccountId: 'acc-wallet-repay',
+      authorAccountId: giver,
+      amountSats: 21,
+      lightningAddress: 'wallet-giver@gifts.test',
+      zapRequest: null,
+      result: 'ok',
+      httpStatus: 200,
+      pr: 'lnbc-wallet-repay',
+      paymentHash,
+      description: repaymentDescription(0, giver),
+      descriptionHash: null,
+      isNip57Invoice: true,
+      lnurlResponse: null,
+    });
+    mockedDecode.mockReturnValue({ paymentHash, amountMsat: 21_000 });
+    const calls: string[] = [];
+    await ingestZapReceipt(signedReceipt('lnbc-wallet-repay', 100), {
+      store,
+      auth,
+      querier: new RecordingQuerier(),
+      urls: URLS,
+      timeoutMs: 50,
+      now: () => 5,
+      fetchImpl: walletFetch(calls),
+      lnurlServer: LNURL,
+    });
+    expect(calls).toContain(`${LNURL.baseUrl}/.well-known/lnurlp/wallet-giver`);
+    expect(calls.some((url) => url.includes('gifts.test'))).toBe(false);
+    expect((await store.getById(messageId))?.sats).toBe(0);
+    expect(await store.listRepayments(messageId)).toEqual([
+      { dayIndex: 0, recipientAccountId: giver, dueSats: 21, paidAt: new Date(5) },
+    ]);
   });
 });

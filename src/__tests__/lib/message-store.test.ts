@@ -2956,6 +2956,14 @@ describe('InMemoryMessageStore', () => {
     expect(await store.claimZapPayment(paymentHash.toLowerCase(), 'receipt-b', at)).toBe(false);
   });
 
+  it('zapPaymentReceiptId reads the claim owner without claiming', async () => {
+    const store = new InMemoryMessageStore();
+    const paymentHash = 'CD'.repeat(32);
+    expect(await store.zapPaymentReceiptId(paymentHash)).toBeUndefined();
+    expect(await store.claimZapPayment(paymentHash, 'receipt-a', new Date(0))).toBe(true);
+    expect(await store.zapPaymentReceiptId(paymentHash.toLowerCase())).toBe('receipt-a');
+  });
+
   it('lists zap receipts by event id descending', async () => {
     const store = new InMemoryMessageStore();
     await store.create(EARLY);
@@ -7224,6 +7232,17 @@ describe('PostgresMessageStore', () => {
     expect(sql.queries[0]?.text).toMatch(/SELECT receipt_event_id/);
     expect(sql.queries[0]?.text).toMatch(/WHERE payment_hash = \$1/);
     expect(sql.queries[0]?.params).toEqual([paymentHash.toLowerCase()]);
+  });
+
+  it('zapPaymentReceiptId selects the owner of the lowercased hash', async () => {
+    const sql = new MockSql();
+    const store = new PostgresMessageStore(sql);
+    expect(await store.zapPaymentReceiptId('CD'.repeat(32))).toBeUndefined();
+    sql.nextRows = [{ receipt_event_id: 'receipt-a' }];
+    expect(await store.zapPaymentReceiptId('CD'.repeat(32))).toBe('receipt-a');
+    expect(sql.executes).toEqual([]);
+    expect(sql.queries[0]?.text).toMatch(/SELECT receipt_event_id\s+FROM nostr_zap_payment/);
+    expect(sql.queries[0]?.params).toEqual(['cd'.repeat(32)]);
   });
 
   it('claimZapPayment rejects a receipt id that does not own the hash', async () => {

@@ -5,6 +5,7 @@ import { resolveSession } from '@/lib/auth/service';
 import { MISSING_REQUIREMENTS_ERROR, requireAction } from '@/lib/auth/requirements';
 import type { Account, AuthStore } from '@/lib/auth/store';
 import { InMemoryBtcUsdStore, type BtcUsdRateBook } from '@/lib/btc-usd-store';
+import type { LnurlServerConfig } from '@/lib/config';
 import { InMemoryGiftStore, type GiftStore } from '@/lib/gift-store';
 import { InMemoryFiatStore, type FiatRateBook } from '@/lib/usd-fiat-store';
 import { logEvent } from '@/lib/log';
@@ -12,6 +13,7 @@ import { MESSAGE_LIST_LIMIT, serializeMessage, type MessageRow } from '@/lib/mes
 import type { MessageStore } from '@/lib/message-store';
 import { fundingReviewedAt, fundingReviewedByName } from '@/lib/funding';
 import { InMemoryFundingStore, type FundingStore } from '@/lib/funding-store';
+import { receivingAddress } from '@/lib/receiving-address';
 import { accountTrust } from '@/lib/trust';
 import type { TrustStore } from '@/lib/trust-store';
 import { forumVideoFilePresent, resolveMediaDir } from '@/lib/video';
@@ -27,6 +29,8 @@ import { MESSAGE_ID_RE } from '@/routes/messages';
 export interface MembersRouteDeps {
   /** Shared auth persistence port. */
   authStore: AuthStore;
+  /** LNURL server; omitted when off. A verified wallet makes a member's notes payable. */
+  lnurlServer?: LnurlServerConfig;
   /** Forum persistence (About me, member feeds, and activity zaps/invoices). */
   messageStore: MessageStore;
   /** Stored trust edges for the `trust` object on GET JSON. */
@@ -147,7 +151,8 @@ async function loadMember(deps: MembersRouteDeps, c: Context): Promise<MemberLoa
  * `GET /members/:accountId/replies`. More-specific paths register before
  * `/:accountId`.
  *
- * @param deps - Auth store, message store, trust store, funding store, clock, and optional gift/rate/fiat stores.
+ * @param deps - Auth store, message store, trust store, clock, optional
+ *   funding/gift/rate/fiat stores, and optional LNURL server.
  * @returns A Hono app with activity, posts, replies, and member GET.
  */
 export function membersRoutes(deps: MembersRouteDeps): Hono {
@@ -211,8 +216,7 @@ export function membersRoutes(deps: MembersRouteDeps): Hono {
           const payable =
             kept.eventId !== null &&
             kept.eventId !== '' &&
-            account.lightningAddress !== null &&
-            account.lightningAddress.trim() !== '';
+            receivingAddress(account, deps.lnurlServer) !== null;
           messages.push(
             serializeMessage(
               kept,
@@ -251,8 +255,7 @@ export function membersRoutes(deps: MembersRouteDeps): Hono {
             const payable =
               kept.eventId !== null &&
               kept.eventId !== '' &&
-              account.lightningAddress !== null &&
-              account.lightningAddress.trim() !== '';
+              receivingAddress(account, deps.lnurlServer) !== null;
             messages.push(serializeMessage(kept, payable, account.role, undefined, true));
           } catch {
             continue;
@@ -285,8 +288,7 @@ export function membersRoutes(deps: MembersRouteDeps): Hono {
             const payable =
               row.eventId !== null &&
               row.eventId !== '' &&
-              account.lightningAddress !== null &&
-              account.lightningAddress.trim() !== '';
+              receivingAddress(account, deps.lnurlServer) !== null;
             const children = await deps.messageStore.listReplies(row.id, MESSAGE_LIST_LIMIT);
             profileMessage = serializeMessage(row, payable, account.role, children.length, true);
             aboutMe = aboutMeFromNote(account.name, row.text, row.name);

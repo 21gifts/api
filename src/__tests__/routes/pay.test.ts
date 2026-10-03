@@ -2,6 +2,15 @@ import { describe, expect, it } from 'vitest';
 import { createApp } from '@/server';
 import { InMemoryAuthStore } from '@/lib/auth/store';
 import { InMemoryPosStore, type PosStore } from '@/lib/pos-store';
+import { Hono } from 'hono';
+import { payRoutes } from '@/routes/pay';
+import {
+  LNURL_SERVER,
+  allInternal,
+  createWalletAccount,
+  walletLnurlFetch,
+  type SeenRequest,
+} from '@/__tests__/helpers/wallet-lnurl';
 
 const ADA_ID = '00000000-0000-4000-8000-000000000001';
 const WIDE_MAX_SENDABLE = 100_000_000_000;
@@ -601,5 +610,49 @@ describe('POST /pay/:username/invoice', () => {
     expect(postRes.status).toBe(400);
     expect(await postRes.json()).toEqual({ error: 'Enter a whole number of sats' });
     expect(urls.some((url) => url.includes(CALLBACK))).toBe(false);
+  });
+});
+
+describe('wallet-backed pay link', () => {
+  async function walletPayApp(lnurlServer: boolean): Promise<{
+    app: Hono;
+    seen: SeenRequest[];
+  }> {
+    const auth = new InMemoryAuthStore();
+    await createWalletAccount(auth, ADA_ID, 'wally');
+    const { fetchImpl, seen } = walletLnurlFetch('wally', PR);
+    const app = new Hono().route(
+      '/pay',
+      payRoutes({
+        auth,
+        fetchImpl,
+        posStore: new InMemoryPosStore(),
+        now: () => 1,
+        ...(lnurlServer ? { lnurlServer: LNURL_SERVER } : {}),
+      }),
+    );
+    return { app, seen };
+  }
+
+  it('resolves the wallet internally for the card and the invoice', async () => {
+    const { app, seen } = await walletPayApp(true);
+    const card = await app.request('/pay/wally');
+    expect(card.status).toBe(200);
+    expect(await card.json()).toMatchObject({ username: 'wally', minSats: 1, maxSats: 1_000_000 });
+    const invoice = await app.request('/pay/wally/invoice', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ amountSats: PR_SATS }),
+    });
+    expect(invoice.status).toBe(200);
+    expect(await invoice.json()).toEqual({ pr: PR, amountSats: PR_SATS });
+    expect(allInternal(seen)).toBe(true);
+    expect(seen.some((request) => request.url.includes('/lnurlp/wally/invoice?'))).toBe(true);
+  });
+
+  it('is not found for a wallet-only member when the LNURL server is off', async () => {
+    const { app, seen } = await walletPayApp(false);
+    expect((await app.request('/pay/wally')).status).toBe(404);
+    expect(seen).toEqual([]);
   });
 });

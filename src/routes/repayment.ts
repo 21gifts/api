@@ -11,6 +11,7 @@ import {
   repaymentLedger,
   repaymentSchedule,
 } from '@/lib/credit-repayment';
+import type { LnurlServerConfig } from '@/lib/config';
 import { fiatToSats, type GoalFiatCode, type GoalRateDay } from '@/lib/goal-rate';
 import { normalizeLightningAddress } from '@/lib/lightning-address';
 import { logEvent } from '@/lib/log';
@@ -23,6 +24,11 @@ import { InvoiceRateLimiter } from '@/lib/nostr/rate-limit';
 import { resolveZapRelays } from '@/lib/nostr/relays';
 import { signEventForAccount } from '@/lib/nostr/sign';
 import { buildZapRequest, serializeZapRequest } from '@/lib/nostr/zap-request';
+import type { VerifiedEvent } from 'nostr-tools/pure';
+import { normalizeSignedEvent } from '@/lib/nostr/publish';
+import { lnurlServerFetch, receivingAddress } from '@/lib/receiving-address';
+import { issueSparkInvoice } from '@/lib/spark-invoice';
+import type { SparkInvoiceStore } from '@/lib/spark-invoice-store';
 import { bearerToken } from '@/routes/me';
 
 const MESSAGE_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -51,6 +57,10 @@ export interface RepaymentDeps {
   nostrKek?: Uint8Array;
   fetchImpl?: FetchFn;
   goalRateDay?: () => Promise<GoalRateDay | null>;
+  /** LNURL server; omitted when off. A giver with a verified wallet is repaid on it. */
+  lnurlServer?: LnurlServerConfig;
+  /** Issued Spark invoices; omitted when free in-app payments are off. */
+  sparkInvoices?: SparkInvoiceStore;
 }
 
 const limiter = new InvoiceRateLimiter();
@@ -212,11 +222,13 @@ async function readableCredit(deps: RepaymentDeps, c: Context): Promise<Response
 }
 
 /**
- * BOLT11 that pays the next giver their share, at that giver's Lightning address.
+ * BOLT11 that pays the next giver their share, at that giver's receiving address
+ * (`receivingAddress`), plus a Spark invoice for it when the giver is wallet-backed.
  *
- * @param deps - Store, auth, clock, and LNURL fetch.
+ * @param deps - Store, auth, clock, LNURL fetch, and the optional LNURL server and
+ *   Spark invoice store.
  * @param c - Request.
- * @returns `{ pr, amountSats }`, or an error.
+ * @returns `{ pr, amountSats, sparkInvoice }`, or an error.
  */
 export async function repaymentInvoice(deps: RepaymentDeps, c: Context): Promise<Response> {
   const opened = await openCredit(deps, c);
@@ -238,9 +250,14 @@ export async function repaymentInvoice(deps: RepaymentDeps, c: Context): Promise
     return c.json({ error: 'This message cannot be paid yet' }, 400);
   }
   const recipient = await deps.authStore.getAccount(next.share.accountId);
+  const receiving = recipient === undefined ? null : receivingAddress(recipient, deps.lnurlServer);
   const address =
-    recipient === undefined ? null : normalizeLightningAddress(recipient.lightningAddress ?? '');
-  if (recipient === undefined || address === null) {
+    receiving === null
+      ? null
+      : receiving.kind === 'wallet'
+        ? receiving.address
+        : normalizeLightningAddress(receiving.address);
+  if (recipient === undefined || receiving === null || address === null) {
     return c.json({ error: 'A giver has no Lightning address' }, 400);
   }
   const recipientPubkey = await deps.authStore.getNostrPublicKey(recipient.id);
@@ -259,7 +276,18 @@ export async function repaymentInvoice(deps: RepaymentDeps, c: Context): Promise
     outstanding.pr !== null &&
     invoiceStillOpen(outstanding.pr, outstanding.createdAt.getTime(), opened.nowMs)
   ) {
-    return c.json({ pr: outstanding.pr, amountSats: outstanding.amountSats }, 200);
+    const storedRequest = normalizeSignedEvent(outstanding.zapRequest);
+    const sparkInvoice =
+      storedRequest === null || outstanding.lightningAddress !== address
+        ? null
+        : await issueSparkInvoice(deps, receiving, {
+            pr: outstanding.pr,
+            paymentHash: outstanding.paymentHash,
+            prAmountMsat: inspectBolt11(outstanding.pr)?.amountMsat ?? null,
+            amountSats: outstanding.amountSats,
+            zapRequestJson: serializeZapRequest(storedRequest as unknown as VerifiedEvent),
+          });
+    return c.json({ pr: outstanding.pr, amountSats: outstanding.amountSats, sparkInvoice }, 200);
   }
   if (!limiter.allow(opened.account.id, opened.nowMs)) {
     c.header('Retry-After', '10');
@@ -286,7 +314,7 @@ export async function repaymentInvoice(deps: RepaymentDeps, c: Context): Promise
     address,
     amountMsat,
     zapRequestJson,
-    fetchImpl,
+    fetchImpl: lnurlServerFetch(deps.lnurlServer, fetchImpl, deps.authStore),
   });
   if (!zap.ok) {
     if (zap.reason === 'noZap') {
@@ -329,7 +357,14 @@ export async function repaymentInvoice(deps: RepaymentDeps, c: Context): Promise
     logEvent('message.invoice.record_failed');
     return c.json({ error: 'Messages are unavailable' }, 503);
   }
-  return c.json({ pr: zap.pr, amountSats: next.share.sats }, 200);
+  const sparkInvoice = await issueSparkInvoice(deps, receiving, {
+    pr: zap.pr,
+    paymentHash: attempt.paymentHash,
+    prAmountMsat: inspected?.amountMsat ?? null,
+    amountSats: next.share.sats,
+    zapRequestJson,
+  });
+  return c.json({ pr: zap.pr, amountSats: next.share.sats, sparkInvoice }, 200);
 }
 
 async function openCredit(

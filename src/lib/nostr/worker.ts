@@ -7,6 +7,7 @@ import type { Account, AuthStore } from '@/lib/auth/store';
 import { unsignedConversationDefaults, type ConversationThread } from '@/lib/conversation';
 import { inboxUnreadCountFor, notifyConversationMessage } from '@/lib/conversation-push';
 import type { ConversationStore } from '@/lib/conversation-store';
+import type { LnurlServerConfig } from '@/lib/config';
 import type { FundingStore } from '@/lib/funding-store';
 import type { FiatRateBook } from '@/lib/usd-fiat-store';
 import type { FetchFn } from '@/lib/lnurlp';
@@ -60,7 +61,8 @@ import {
 } from '@/lib/nostr/relays';
 import { signEventForAccount } from '@/lib/nostr/sign';
 import type { PostRateLimiter } from '@/lib/nostr/rate-limit';
-import { indexOpenZapReceipts } from '@/lib/nostr/zap-index';
+import { indexOpenZapReceipts, ingestZapReceipt } from '@/lib/nostr/zap-index';
+import { receivingAddress } from '@/lib/receiving-address';
 import type { PushStore } from '@/lib/push-store';
 import type { SpendPing } from '@/lib/spend-ping';
 import {
@@ -150,7 +152,29 @@ export interface NostrWorkerDeps {
   banners?: BannerStore;
   /** Optional crosses for the one spot taken per newly indexed zap. */
   fiatRates?: FiatRateBook;
+  /** Optional LNURL server; wallet-backed recipients resolve their receipt signer through it. */
+  lnurlServer?: LnurlServerConfig;
 }
+
+/** Worker collaborators the zap receipt ingest uses (no key, no publisher). */
+export type ZapIngestDeps = Pick<
+  NostrWorkerDeps,
+  | 'messages'
+  | 'auth'
+  | 'querier'
+  | 'fetchImpl'
+  | 'verifyReceipt'
+  | 'now'
+  | 'env'
+  | 'pushStore'
+  | 'conversations'
+  | 'notificationStore'
+  | 'spendPing'
+  | 'postLimiter'
+  | 'fundingStore'
+  | 'fiatRates'
+  | 'lnurlServer'
+>;
 
 const externalLimiters = new WeakMap<MessageStore, ExternalIngestLimiter>();
 const externalInFlightEventIds = new WeakMap<MessageStore, Set<string>>();
@@ -224,7 +248,7 @@ function reservedContent(
  * @returns Args object with identical optional collaborators for every call site.
  */
 function indexOpenZapReceiptsArgs(
-  deps: NostrWorkerDeps,
+  deps: ZapIngestDeps,
   urls: readonly string[],
 ): Parameters<typeof indexOpenZapReceipts>[0] {
   return {
@@ -243,7 +267,25 @@ function indexOpenZapReceiptsArgs(
     ...(deps.postLimiter === undefined ? {} : { postLimiter: deps.postLimiter }),
     ...(deps.fundingStore === undefined ? {} : { fundingStore: deps.fundingStore }),
     ...(deps.fiatRates === undefined ? {} : { fiatRates: deps.fiatRates }),
+    ...(deps.lnurlServer === undefined ? {} : { lnurlServer: deps.lnurlServer }),
   };
+}
+
+/**
+ * Receipt ingest for one event with the worker's collaborators.
+ *
+ * Runs {@link ingestZapReceipt} with the same arguments as the relay ingest
+ * passes (zap read relays from `deps.env`). Used by the Spark invoice worker.
+ *
+ * @param deps - The worker collaborators the ingest uses.
+ * @returns A function that ingests one kind 9735 event and resolves `true`
+ *   when that receipt is credited.
+ */
+export function zapReceiptIngest(
+  deps: ZapIngestDeps,
+): (event: NostrEventFrame) => Promise<boolean> {
+  const args = indexOpenZapReceiptsArgs(deps, resolveZapReadRelays(deps.env));
+  return (event) => ingestZapReceipt(event, args);
 }
 
 /**
@@ -385,7 +427,8 @@ async function indexHotZapReceipts(deps: NostrWorkerDeps, nowMs: number): Promis
  * relay and reply inboxes, and a fully successful kind:0 or kind:10002 is
  * copied to the indexer; those NACKs do not change publish state.
  *
- * @param deps - Stores, kek, publisher, querier, fetch, clock, env.
+ * @param deps - Stores, kek, publisher, querier, fetch, clock, env, and the
+ *   optional LNURL server (receipt signer lookup and kind:0 `lud16`).
  * @param mode - Which lane work to run (default `'all'`).
  * @returns Resolves when the selected work has finished (notify failures are
  *   swallowed).
@@ -914,8 +957,8 @@ async function signBatch(deps: NostrWorkerDeps, nowMs: number): Promise<void> {
 
 /**
  * Create a profile forum note for named accounts with a non-blank Lightning
- * Address that lack one (or whose stored id no longer points at a message
- * row). `ensureProfileMessage` no-ops without LN.
+ * Address or a verified wallet that lack one (or whose stored id no longer
+ * points at a message row). `ensureProfileMessage` no-ops without either.
  *
  * @param deps - Auth and message stores (and optional push / notifications).
  */
@@ -1145,7 +1188,8 @@ async function publishProfiles(deps: NostrWorkerDeps, writeSet: ResolvedWriteSet
       }
     }
     const images = { picture, banner };
-    const content = buildKind0Content(live.name, live.lightningAddress, nip05, about, images);
+    const lud16 = receivingAddress(live, deps.lnurlServer)?.address ?? null;
+    const content = buildKind0Content(live.name, lud16, nip05, about, images);
     if (reservedContent(cache, live.id) === content) {
       continue;
     }
@@ -1172,7 +1216,7 @@ async function publishProfiles(deps: NostrWorkerDeps, writeSet: ResolvedWriteSet
       watermarks.set(live.id, reservation.createdAt);
       const unsigned = buildKind0Event(
         live.name,
-        live.lightningAddress,
+        lud16,
         reservation.createdAt,
         nip05,
         about,
