@@ -178,7 +178,7 @@ Public base URLs used in examples:
 | POST   | `/conversations/:id/invoice`                         | Bearer                     | NIP-57 zap / BOLT11 for a private gift (`{ sats, text? }` → `{ pr, amountSats, messageId }`)                                                                                                                                                                                                                                                           |
 | POST   | `/conversations/:id/read`                            | Bearer                     | Stamp last-read for the viewer                                                                                                                                                                                                                                                                                                                         |
 | POST   | `/conversations/:id/messages/:messageId/translate`   | Bearer                     | Translate stored conversation text (`{ target }` → `{ translatedText, cached }`)                                                                                                                                                                                                                                                                       |
-| GET    | `/notifications`                                     | Bearer                     | List + unreadCount; drop leftover hidden forum_post/forum_reply (zap checks parent only)                                                                                                                                                                                                                                                               |
+| GET    | `/notifications`                                     | Bearer                     | List + unreadCount; exclude generic forum_post; drop hidden replies (zap checks parent only)                                                                                                                                                                                                                                                           |
 | POST   | `/notifications/read-all`                            | Bearer                     | Mark all notifications read                                                                                                                                                                                                                                                                                                                            |
 | POST   | `/notifications/read-by-message`                     | Bearer                     | Mark forum and zap notifications for one opened note read and return dismiss tags                                                                                                                                                                                                                                                                      |
 | POST   | `/notifications/:id/read`                            | Bearer                     | Mark one notification read                                                                                                                                                                                                                                                                                                                             |
@@ -4017,10 +4017,10 @@ them). `GET /notifications` drops and deletes a stored generic row when
 the scan also has `forum_mention` for the same `replyId`. No
 `replyCount`, and no photo or video bytes in the JSON. `sats` is 0 and
 `payable` is false until the worker signs the note (and stays false without
-author LN). `role` is the posting session account's live `account.role`. Web Push and in-app rows for a **top-level** note (`notifyForumPost`, kind
+author LN). `role` is the posting session account's live `account.role`. Web Push for a **top-level** note (`notifyForumPost`, kind
 `forum_post`, `url` `/messages/<id>`, `tag` `forum_post:<id>`) and for a
 **reply** (`notifyForumReply`, kind `forum_reply`, `url` `/messages/<replyId>`,
-`tag` `forum_reply:<replyId>`) fan out in-app to every account except the
+`tag` `forum_reply:<replyId>`) create internal notification rows to every account except the
 actor and except each account marked on the created row (no-op when the actor is the official platform account), then filter recipients by each account's `notificationLevel`
 (`all` / `active` / `mentions`). The excluded ids are the created row's mention account ids other than the author, deduped; an empty list omits `excludeAccountIds`. Web Push still goes only to bell subscribers
 and uses the same level filter. Damus-only parents still
@@ -4028,7 +4028,9 @@ fan out. A self-reply skips only the actor. The same mark exclusion applies to t
 same `notificationLevel` filter to stored rows.
 The booted process always has notification and push stores (in-memory without
 `DATABASE_URL`, Postgres when it is set). Photo-only empty text still
-notifies. Missing `pushStore` still writes in-app rows. Notification or
+notifies. Missing `pushStore` still writes notification rows. Generic new-post
+rows support cross-device push dismissal but are excluded from the member list
+and unread badge counts; explicit `@username` mentions remain visible. Notification or
 push failure does not fail the **200**. Over-limit posters
 get **429** `{ "error": "Too many messages" }`
 with `Retry-After: 10` (1/10s, 6/h, 20/UTC-day). A second **live** photo/video
@@ -5246,14 +5248,15 @@ Bearer session required. Lists the recipient's notifications newest-first
 plus `unreadCount`. Fan-out already applied the owner's
 `notificationLevel` when the row was written; this list applies the same
 `notificationLevel` filter to stored rows (`notificationsMatchingLevel`
-on the newest 1000). From those scanned rows (this recipient only), if a
+on the newest 1000 eligible rows). Both stores exclude all `forum_post` rows
+before this limit and from unread counts, without deleting them. From those scanned rows (this recipient only), if a
 `forum_mention` has `replyId` R, drop every `forum_post` and
 `forum_reply` in that scan with the same `replyId` before the level
 filter and the hidden-message filter. Do not drop `zap`, `forum_mention`,
 `moderator_appointed`, or `moderator_proposal`. Best-effort
 `deleteForRecipient` of those dropped ids (`notifications.duplicate.purged`;
 a throw logs `notifications.duplicate.purge_failed` and still returns 200
-with the filtered list). After the level filter, drop `forum_post` /
+with the filtered list). After the level filter, drop
 `forum_reply` / `forum_mention` whose parent message is missing or hidden; also drop
 `forum_reply` when the child (`replyId`) is missing or hidden. Never drop
 `moderator_appointed` or `moderator_proposal` (do not look up a forum
@@ -5262,8 +5265,7 @@ parent (`replyId` is a receipt-derived UUID, not a message id).
 Best-effort purge of those message ids. Then cap the kept list at **200**.
 `unreadCount` is unread among kept rows after this drop and the existing
 hidden filter, before the 200 cap (not the unfiltered matching unread of
-the 1000, and not necessarily the page length). A generic row whose
-matching mention is outside the 1000-row scan stays. Member JSON never
+the 1000, and not necessarily the page length). A generic reply whose matching mention is outside the 1000-row scan stays. Member JSON never
 includes recipient or actor account ids. Each
 item `type` is `"forum_post"`, `"forum_reply"`, `"forum_mention"`, `"zap"`,
 `"moderator_appointed"`, or `"moderator_proposal"`.

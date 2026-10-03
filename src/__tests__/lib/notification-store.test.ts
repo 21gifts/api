@@ -91,6 +91,17 @@ describe('migrateNotificationSchema', () => {
 });
 
 describe('InMemoryNotificationStore', () => {
+  it('excludes legacy posts before the list limit and unread count without deleting them', async () => {
+    const store = new InMemoryNotificationStore([
+      row({ id: 'post', type: 'forum_post', createdAt: NOW }),
+      row({ id: 'mention', type: 'forum_mention', createdAt: EARLIER }),
+      row({ id: 'read-post', type: 'forum_post', readAt: READ_AT }),
+    ]);
+    expect((await store.listByRecipient('parent', 1)).map((item) => item.id)).toEqual(['mention']);
+    expect(await store.unreadCount('parent')).toBe(1);
+    expect(await store.listAll(10)).toHaveLength(3);
+  });
+
   it('lists nothing when constructed empty', async () => {
     expect(await new InMemoryNotificationStore().listByRecipient('parent', 10)).toEqual([]);
   });
@@ -363,6 +374,18 @@ describe('InMemoryNotificationStore', () => {
 });
 
 describe('PostgresNotificationStore', () => {
+  it('excludes legacy posts in SQL before pagination and from unread badges', async () => {
+    const sql = new MockSql();
+    const store = new PostgresNotificationStore(sql);
+    await store.listByRecipient('parent', 1);
+    await store.unreadCount('parent');
+    expect(sql.queries[0]?.text).toMatch(
+      /WHERE recipient_account_id = \$1 AND type <> 'forum_post'[\s\S]*LIMIT \$2/,
+    );
+    expect(sql.queries[0]?.params).toEqual(['parent', 1]);
+    expect(sql.queries[1]?.text).toContain("AND type <> 'forum_post'");
+  });
+
   it('listByRecipient maps Date and date-string timestamps and binds accountId + limit', async () => {
     const sql = new MockSql();
     sql.nextRows = [

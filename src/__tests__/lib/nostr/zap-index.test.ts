@@ -1567,7 +1567,7 @@ describe('manual invoice settlement', () => {
     expect(created?.sats).toBe(0);
     expect(spendPing.ping).toHaveBeenCalledTimes(0);
     const kinds = (await notifications.listByRecipient('manual-author', 10)).map((row) => row.type);
-    expect(kinds).toEqual(['forum_post']);
+    expect(kinds).toEqual([]);
   });
 
   it('pings spend after a compose post when the payer is eligible today', async () => {
@@ -6514,7 +6514,7 @@ describe('indexOpenZapReceipts', () => {
     expect(spendPing.ping).toHaveBeenCalledTimes(0);
     const forPlatform = await notifications.listByRecipient('acc-ingest-platform', 10);
     expect(forPlatform.filter((row) => row.type === 'zap')).toEqual([]);
-    expect(forPlatform.filter((row) => row.type === 'forum_post')).toHaveLength(1);
+    expect(forPlatform).toEqual([]);
   });
 
   it('still queries the platform profile event after it ages out of listLatest', async () => {
