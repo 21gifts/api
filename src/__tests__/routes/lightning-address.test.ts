@@ -2,7 +2,14 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { LN_ADDRESS_CACHE_TTL_MS } from '@/lib/config';
 import { InMemoryLnAddressCache } from '@/lib/ln-address-cache';
 import type { FetchFn } from '@/lib/lnurlp';
+import { InMemoryAuthStore } from '@/lib/auth/store';
 import { createApp } from '@/server';
+import {
+  BOLT11,
+  FREE_PAYMENTS_ENV,
+  createWalletAccount,
+  walletLnurlFetch,
+} from '@/__tests__/helpers/wallet-lnurl';
 
 const ADDRESS = 'alice@example.com';
 const MAX_SENDABLE = 100_000_000_000;
@@ -124,6 +131,33 @@ describe('GET /lightning-address', () => {
       parsedEvents(warn).some(
         (e) => e['event'] === 'lightning_address.resolve_failed' && e['address'] === ADDRESS,
       ),
+    ).toBe(true);
+  });
+
+  it('resolves a member wallet address to the api forwarded callback', async () => {
+    const authStore = new InMemoryAuthStore();
+    await createWalletAccount(authStore, 'acc-ada', 'ada');
+    const wallet = walletLnurlFetch('ada');
+    // The public host is this app; the LNURL server is the fake wallet server.
+    const fetchImpl: FetchFn = async (input, init) => {
+      const url = String(input);
+      if (url.startsWith('https://example.test/')) {
+        return app.request(url.slice('https://example.test'.length), init);
+      }
+      return wallet.fetchImpl(input, init);
+    };
+    const app = createApp({ authStore, fetchImpl, env: FREE_PAYMENTS_ENV });
+    const res = await app.request(
+      `/lightning-address?address=${encodeURIComponent('ada@example.test')}`,
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { callback: string };
+    expect(body.callback).toBe('https://example.test/lnurlp/ada/invoice');
+    const invoice = await app.request('/lnurlp/ada/invoice?amount=1000');
+    expect(invoice.status).toBe(200);
+    expect(await invoice.json()).toEqual({ pr: BOLT11 });
+    expect(
+      wallet.seen.some((seen) => seen.url.startsWith('http://lnurl.test/lnurlp/ada/invoice?')),
     ).toBe(true);
   });
 
