@@ -16,8 +16,8 @@ const LIGHTNING_ADDRESS = /^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/;
  */
 export function normalizeLightningAddress(raw: string): string | null {
   const trimmed = raw.trim();
-  // Bound the input so an over-long address cannot be stored and re-served on
-  // every /me response; 255 comfortably exceeds any real LUD-16 address.
+  // Bound untrusted lookup input (GET /lightning-address and the spend-worker
+  // lookups); 255 comfortably exceeds any real LUD-16 address.
   if (trimmed.length > 255) {
     return null;
   }
