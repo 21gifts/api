@@ -474,6 +474,80 @@ test('Function: resolveLnurlpDocument — GET /.well-known/lnurlp/missing is 404
   expect(res.status()).toBe(404);
 });
 
+test('Function: lnurlRoutes — POST /lnurl/pay-request without bearer is 401', async ({
+  request,
+}) => {
+  const res = await request.post('/lnurl/pay-request', { data: { target: 'bob@example.com' } });
+  expect(res.status()).toBe(401);
+  expect(await res.json()).toEqual({ error: 'Unauthorized' });
+});
+
+test('Function: resolveRelayPayRequest — a Lightning Address on a .localhost host is 400 without a fetch', async ({
+  request,
+}) => {
+  const { authorization } = await memberSession(request);
+  const res = await request.post('/lnurl/pay-request', {
+    headers: { authorization },
+    data: { target: 'bob@printer.localhost' },
+  });
+  expect(res.status()).toBe(400);
+  expect(await res.json()).toEqual({ error: 'Not a payable address' });
+});
+
+test('Function: requestRelayInvoice — a target on a .internal host is 400 without a fetch', async ({
+  request,
+}) => {
+  const { authorization } = await memberSession(request);
+  const res = await request.post('/lnurl/invoice', {
+    headers: { authorization },
+    data: { target: 'bob@wallet.internal', amountMsat: 1000 },
+  });
+  expect(res.status()).toBe(400);
+  expect(await res.json()).toEqual({ error: 'Not a payable address' });
+});
+
+test('Function: LnurlRelayRateLimiter — the 31st relay request in a minute is 429', async ({
+  request,
+}) => {
+  // Own member, so other relay tests in this file never share these hits.
+  const stamp = `${Date.now()}-${Math.random().toString(16).slice(2, 10)}`;
+  const name = `E2eRelayLimit${stamp}`;
+  const provision = await request.post('/debug/accounts', {
+    headers: DEBUG,
+    data: { accounts: [{ name, lightningAddress: `e2e-relay-${stamp}@walletofsatoshi.com` }] },
+  });
+  expect(provision.status()).toBe(200);
+  const listed = await request.get('/debug/accounts', { headers: DEBUG });
+  const accounts = ((await listed.json()) as { accounts: Array<{ id: string; name: string }> })
+    .accounts;
+  const row = accounts.find((item) => item.name === name);
+  expect(row).toBeDefined();
+  const session = await request.post(`/debug/accounts/${row?.id}/session`, { headers: DEBUG });
+  expect(session.status()).toBe(200);
+  const authorization = `Bearer ${((await session.json()) as { token: string }).token}`;
+  const statuses: number[] = [];
+  for (let i = 0; i < 31; i += 1) {
+    const res = await request.post('/lnurl/pay-request', {
+      headers: { authorization },
+      data: { target: 'not-an-address' },
+    });
+    statuses.push(res.status());
+  }
+  expect(statuses).toEqual([...Array<number>(30).fill(400), 429]);
+});
+
+test('Function: isPublicIp — a relay target whose host does not resolve is 502 before any address check', async ({
+  request,
+}) => {
+  const { authorization } = await memberSession(request);
+  const res = await request.post('/lnurl/pay-request', {
+    headers: { authorization },
+    data: { target: 'bob@not-a-lnurlp.invalid' },
+  });
+  expect(res.status()).toBe(502);
+  expect(await res.json()).toEqual({ error: 'Address could not be reached' });
+});
+
 test('Function: resolveLnurlp — GET an unresolvable address is 502', async ({ request }) => {
   const res = await request.get('/lightning-address?address=alice@not-a-lnurlp.invalid');
   expect(res.status()).toBe(502);

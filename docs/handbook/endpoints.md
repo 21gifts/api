@@ -112,6 +112,20 @@
 - **Used by:** The browser pay page minting the open till amount when a charge is present, not a freely typed amount.
 - **Auth:** none.
 
+## Endpoint: POST /lnurl/pay-request
+
+- **Purpose:** Fetches and checks the LNURL pay request of a Lightning Address or bech32 LNURL on another host, for addresses the app cannot read from the browser (no CORS). Body `{ target }`; an optional `lightning:` prefix (any case) is dropped and the target is lowercased; a bech32 LNURL in mixed case is refused. The URL must be `https`, on a DNS name of at most 253 characters with at least two labels (no address literal, no `localhost`, no `.local` / `.internal` / `.localhost`, no trailing dot), with no port other than the default 443 and no user name or password, and every address it resolves to must pass `isPublicIp` (public unicast only, IPv4 carried in IPv6 checked as IPv4), and an IPv6 answer must also lie in `2000::/3` or the well-known NAT64 prefix `64:ff9b::/96` and not in `2001::/23`. A Lightning Address whose name is only dots is refused. The fetch does not follow redirects and reads at most 64 KB; each lookup and each fetch waits at most 5 s and the whole call at most 8 s (below the server's 10 s idle timeout). The pay request needs `tag: 'payRequest'`, an `https` callback that passes the same host checks, a string `metadata`, safe-integer `minSendable` ≥ 1 and `maxSendable` ≥ `minSendable`, and an optional non-negative integer `commentAllowed` (missing or null is 0). Response `{ target, minSendableMsat, maxSendableMsat, commentAllowed, description, domain }`; `description` is the metadata's `text/plain` entry or an empty string.
+- **Errors:** 401 `{ error: 'Unauthorized' }` without a session; 429 `{ error: 'Too many requests' }` with `Retry-After: 60` over 30 relay requests per member per minute (shared with `POST /lnurl/invoice`); 400 `{ error: 'Not a payable address' }` for a missing or malformed target (including one over 2048 characters), a target on the host of `PUBLIC_BASE_URL`, a target or callback host that resolves to a non-public address, or a pay request that fails the checks; 404 `{ error: 'Address not found' }` for HTTP 404/410 or an LNURL `ERROR` body; 502 `{ error: 'Address could not be reached' }` for a host that does not resolve in time, a step or the whole call running out of time, a network failure, timeout, redirect, other non-2xx status, an oversize body, or a body that is not a JSON object.
+- **Used by:** The app when a member pays a Lightning Address or LNURL on another host with the in-app wallet.
+- **Auth:** `Authorization: Bearer` session.
+
+## Endpoint: POST /lnurl/invoice
+
+- **Purpose:** Resolves `target` again (same checks as `POST /lnurl/pay-request`; the client never sends a callback URL), checks `amountMsat` and `comment`, and requests a BOLT11 from the callback with `amount` and, when non-empty, `comment`. Body `{ target, amountMsat, comment? }`. The invoice must decode to exactly `amountMsat` and carry a description hash equal to SHA-256 of the pay request's `metadata`. Response `{ pr }`. Success logs `lnurl.invoice.ok` with `amountMsat`; failure logs `lnurl.invoice.failed` with `reason` and `status`; the target, comment, and invoice are never logged.
+- **Errors:** As `POST /lnurl/pay-request`, plus 400 `{ error: 'Amount out of range' }` when `amountMsat` is not a number, not a whole number of millisatoshis, or outside `[minSendable, maxSendable]`; 400 `{ error: 'Comment too long' }` when `comment` is not a string (null is no comment), is not well-formed Unicode (a lone surrogate) or longer than 2000 UTF-16 code units (both refused before any outbound request), or has more characters than `commentAllowed`; 502 `{ error: 'Address could not be reached' }` when the invoice fetch fails or the invoice is missing, undecodable, for another amount, or for another description hash.
+- **Used by:** The app before it pays the returned `pr` with the in-app wallet.
+- **Auth:** `Authorization: Bearer` session.
+
 ## Endpoint: GET /apple-touch-icon.png
 
 - **Purpose:** PNG brand mark (apple-touch). `Cache-Control: public, max-age=86400`.

@@ -89,6 +89,8 @@ Public base URLs used in examples:
 | GET    | `/verify/:paymentHash`                               | none                       | LUD-21 verify forward (mounted only when `LNURL_SERVER_URL` and `PUBLIC_BASE_URL` resolve)                                                                                                                                                                                                                                                             |
 | GET    | `/pay/:username`                                     | none                       | Public pay-link card: display name and satoshi bounds                                                                                                                                                                                                                                                                                                  |
 | POST   | `/pay/:username/invoice`                             | none                       | One BOLT11 invoice for an exact satoshi amount on the member's receiving address                                                                                                                                                                                                                                                                       |
+| POST   | `/lnurl/pay-request`                                 | Bearer                     | Fetch and check the LNURL pay request of an address on another host                                                                                                                                                                                                                                                                                    |
+| POST   | `/lnurl/invoice`                                     | Bearer                     | Fetch and check a BOLT11 from an address on another host for an exact amount                                                                                                                                                                                                                                                                           |
 | GET    | `/favicon.ico`                                       | none                       | Brand mark (favicon)                                                                                                                                                                                                                                                                                                                                   |
 | GET    | `/favicon.svg`                                       | none                       | Brand mark (SVG favicon)                                                                                                                                                                                                                                                                                                                               |
 | GET    | `/apple-touch-icon.png`                              | none                       | Brand mark (Apple touch icon)                                                                                                                                                                                                                                                                                                                          |
@@ -586,6 +588,100 @@ amount outside the window → **Response** `400`
 empty or non-safe-integer window, a failed invoice fetch, or a BOLT11 that
 is missing, not a safe integer amount, or not the requested amount →
 **Response** `502` `{ "error": "Lightning Address could not be resolved" }`.
+
+### `POST /lnurl/pay-request`
+
+Bearer session. Fetches the LNURL pay request of a Lightning Address or a
+bech32 LNURL on another host, so the app can pay addresses whose server sends
+no CORS headers. Body `{ "target": "<user@domain>" | "<bech32 LNURL>" }`. An
+optional `lightning:` prefix (any case) is dropped and the target is lowercased.
+A bech32 LNURL written in mixed case is refused.
+
+The pay-request URL (`https://<domain>/.well-known/lnurlp/<user>`, or the
+decoded LNURL) must use `https`, have no port other than the default 443 and no user name or
+password, and its host
+must be a DNS name of at most 253 characters with at least two labels: no
+address literal, no
+`localhost`, no `.local`, `.internal`, or `.localhost` name, no trailing dot.
+Every address the host resolves to must pass the public address check: no
+loopback, private, shared, link-local, benchmark, documentation, 6to4 relay
+(`192.88.99/24`), multicast, or reserved IPv4 (also when carried as IPv4-mapped, IPv4-compatible,
+IPv4-translated, 6to4, or NAT64 IPv6). IPv6 unique-local, link-local, site-local, multicast,
+documentation, Teredo, `2001:1::/32`, benchmarking, ORCHID, `5f00::/16`,
+discard, and local NAT64 ranges
+are refused, and any other IPv6 answer must lie in global unicast `2000::/3` or
+the well-known NAT64 prefix `64:ff9b::/96` and not in the IETF special-purpose
+block `2001::/23`. A Lightning Address whose name is only dots is refused. A
+target on the host of `PUBLIC_BASE_URL` (compared without a trailing dot) is
+refused (the app pays those itself). The fetch does not follow redirects and reads at most 64 KB. Each host lookup
+and each fetch waits at most 5 seconds, and one relay call waits at most 8
+seconds in total (below the server's 10-second idle timeout), so the client
+always gets an answer.
+
+The response must be a pay request: `tag` `payRequest`, an `https` `callback`
+that passes the same host checks, a string `metadata`, safe-integer
+`minSendable` of at least 1 and `maxSendable` not below it, and an optional
+non-negative integer `commentAllowed` (missing or null means 0).
+
+**Response** `200`:
+
+```json
+{
+  "target": "bob@example.com",
+  "minSendableMsat": 1000,
+  "maxSendableMsat": 100000000,
+  "commentAllowed": 255,
+  "description": "Pay bob",
+  "domain": "example.com"
+}
+```
+
+`description` is the metadata's `text/plain` entry, or an empty string.
+
+No session → **Response** `401` `{ "error": "Unauthorized" }`. More than 30
+requests to `/lnurl/pay-request` and `/lnurl/invoice` together within one
+minute for the same member → **Response** `429`
+`{ "error": "Too many requests" }` with `Retry-After: 60`. Missing or malformed
+target (including one over 2048 characters), a target that fails the URL or address checks, a target on this app's
+host, or a response that is not a valid pay request (including a callback host
+that resolves to a non-public address) → **Response** `400`
+`{ "error": "Not a payable address" }`. HTTP 404 or 410, or an LNURL
+`{ "status": "ERROR" }` body → **Response** `404`
+`{ "error": "Address not found" }`. A host that does not resolve in time, network failure, timeout (per step or
+for the whole call), redirect, any
+other non-2xx status, a body over 64 KB, or a body that is not a JSON object →
+**Response** `502` `{ "error": "Address could not be reached" }`.
+
+Logs carry a short reason and the status on failure, the domain on a
+pay-request success, and `amountMsat` on an invoice success. The target, its
+query string, the comment, and the invoice are never logged.
+
+### `POST /lnurl/invoice`
+
+Bearer session. Body
+`{ "target": "...", "amountMsat": <integer>, "comment"?: "<string>" }`.
+Resolves `target` again with the same checks as `POST /lnurl/pay-request`
+(the client never sends a callback URL). `amountMsat` must be a whole number
+of millisatoshis within `[minSendable, maxSendable]`. `comment` may be absent,
+null, or a string of at most `commentAllowed` characters. The callback is
+called with `amount` and, when the comment is not empty, `comment`, under the
+same fetch limits. The returned BOLT11 must decode to exactly `amountMsat`
+and carry a description hash equal to SHA-256 of the pay request's
+`metadata`.
+
+**Response** `200`:
+
+```json
+{ "pr": "lnbc..." }
+```
+
+Errors as for `POST /lnurl/pay-request`, plus: `amountMsat` not a number, not
+a whole number, or outside the bounds → **Response** `400`
+`{ "error": "Amount out of range" }`; `comment` neither absent, null, nor a
+string, not well-formed Unicode, longer than 2000 UTF-16 code units, or longer than `commentAllowed` → **Response** `400` `{ "error": "Comment too long" }`; the
+invoice fetch fails, or the invoice is missing, undecodable, for another
+amount, or for another description hash → **Response** `502`
+`{ "error": "Address could not be reached" }`.
 
 ### `GET /favicon.ico`
 
