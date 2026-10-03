@@ -203,7 +203,12 @@ describe('GET /messages/:id/external-profile', () => {
       nostrRelayUrls: ['wss://relay.example'],
     }).request(`/messages/${NOTE}/external-profile`);
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ name: 'Ada', npub: npubEncode(pubkey) });
+    expect(await res.json()).toEqual({
+      name: 'Ada',
+      npub: npubEncode(pubkey),
+      postCount: 1,
+      replyCount: 0,
+    });
   });
 
   it('keeps the stored name when the live name collides with a member', async () => {
@@ -220,7 +225,12 @@ describe('GET /messages/:id/external-profile', () => {
     }).request(`/messages/${NOTE}/external-profile`);
     expect(res.status).toBe(200);
     const body = (await res.json()) as Record<string, unknown>;
-    expect(body).toEqual({ name: 'Snapshot', npub: npubEncode(pubkey) });
+    expect(body).toEqual({
+      name: 'Snapshot',
+      npub: npubEncode(pubkey),
+      postCount: 1,
+      replyCount: 0,
+    });
     expect(body).not.toHaveProperty('pubkey');
     expect(body).not.toHaveProperty('callback');
     expect(querier.calls[0]?.timeoutMs).toBe(RELAY_TIMEOUT_MS);
@@ -251,6 +261,8 @@ describe('GET /messages/:id/external-profile', () => {
     expect(await res.json()).toEqual({
       name: 'Robin',
       npub: npubEncode(pubkey),
+      postCount: 1,
+      replyCount: 0,
       nip05: 'lone@example.com',
       lud16: 'pay@ln.example',
     });
@@ -277,7 +289,12 @@ describe('GET /messages/:id/external-profile', () => {
     }).request(`/messages/${NOTE}/external-profile`);
     expect(res.status).toBe(200);
     const body = (await res.json()) as Record<string, unknown>;
-    expect(body).toEqual({ name: 'Robin', npub: npubEncode(pubkey) });
+    expect(body).toEqual({
+      name: 'Robin',
+      npub: npubEncode(pubkey),
+      postCount: 1,
+      replyCount: 0,
+    });
     expect(body).not.toHaveProperty('nip05');
     expect(fetchImpl).not.toHaveBeenCalled();
   });
@@ -343,7 +360,12 @@ describe('GET /messages/:id/external-profile', () => {
     }).request(`/messages/${NOTE}/external-profile`);
     expect(res.status).toBe(200);
     const body = (await res.json()) as Record<string, unknown>;
-    expect(body).toEqual({ name: 'Robin', npub: npubEncode(pubkey) });
+    expect(body).toEqual({
+      name: 'Robin',
+      npub: npubEncode(pubkey),
+      postCount: 1,
+      replyCount: 0,
+    });
     expect(lookupHost).not.toHaveBeenCalled();
   });
 
@@ -371,6 +393,8 @@ describe('GET /messages/:id/external-profile', () => {
     const body = (await res.json()) as Record<string, unknown>;
     expect(body['name']).toBe('Robin');
     expect(body['npub']).toBe(npubEncode(pubkey));
+    expect(body['postCount']).toBe(1);
+    expect(body['replyCount']).toBe(0);
     if (expected === null) {
       expect(body).not.toHaveProperty('lud16');
     } else {
@@ -398,6 +422,24 @@ describe('GET /messages/:id/external-profile', () => {
     });
     expect(JSON.stringify(line)).not.toContain('pubkey');
     expect(JSON.stringify(line)).not.toContain('boom');
+  });
+
+  it('returns 503 when countByPubkey throws and logs no pubkey', async () => {
+    const pubkey = 'ab'.repeat(32);
+    const store = {
+      getById: () => Promise.resolve(row({ id: NOTE, authorPubkey: pubkey, hasVideo: false })),
+      countByPubkey: () => Promise.reject(new Error('boom pubkey')),
+    } as unknown as MessageStore;
+    const res = await mount(store).request(`/messages/${NOTE}/external-profile`);
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({ error: 'Messages are unavailable' });
+    const events = parsedEvents(warn);
+    const line = events.find((event) => event['event'] === 'messages.external_profile.failed');
+    expect(line).toEqual({
+      ts: expect.any(String),
+      event: 'messages.external_profile.failed',
+    });
+    expect(JSON.stringify(line)).not.toContain('pubkey');
   });
 
   it('returns 404 for a member reply and for a reply with no pubkey', async () => {
@@ -438,7 +480,12 @@ describe('GET /messages/:id/external-profile', () => {
     await store.create(row({ id: NOTE, parentId: PARENT, authorPubkey: pubkey, name: 'Ada' }));
     const res = await mount(store).request(`/messages/${NOTE}/external-profile`);
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ name: 'Ada', npub: npubEncode(pubkey) });
+    expect(await res.json()).toEqual({
+      name: 'Ada',
+      npub: npubEncode(pubkey),
+      postCount: 0,
+      replyCount: 1,
+    });
   });
 
   it('shows a truncated pubkey when the stored name is blank and no querier is set', async () => {
@@ -450,6 +497,8 @@ describe('GET /messages/:id/external-profile', () => {
     expect(await res.json()).toEqual({
       name: truncatePubkeyDisplay(pubkey),
       npub: npubEncode(pubkey),
+      postCount: 1,
+      replyCount: 0,
     });
   });
 
@@ -463,7 +512,12 @@ describe('GET /messages/:id/external-profile', () => {
       nostrRelayUrls: [],
     }).request(`/messages/${NOTE}/external-profile`);
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ name: 'Ada', npub: npubEncode(pubkey) });
+    expect(await res.json()).toEqual({
+      name: 'Ada',
+      npub: npubEncode(pubkey),
+      postCount: 1,
+      replyCount: 0,
+    });
     expect(querier.calls).toHaveLength(0);
   });
 
@@ -478,7 +532,12 @@ describe('GET /messages/:id/external-profile', () => {
       `/messages/${NOTE}/external-profile`,
     );
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ name: 'Robin', npub: npubEncode(pubkey) });
+    expect(await res.json()).toEqual({
+      name: 'Robin',
+      npub: npubEncode(pubkey),
+      postCount: 1,
+      replyCount: 0,
+    });
     expect(querier.calls[0]?.urls.length).toBeGreaterThan(0);
   });
 
@@ -497,7 +556,12 @@ describe('GET /messages/:id/external-profile', () => {
       nostrRelayUrls: ['wss://relay.example'],
     }).request(`/messages/${NOTE}/external-profile`);
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ name: 'Snapshot', npub: npubEncode(pubkey) });
+    expect(await res.json()).toEqual({
+      name: 'Snapshot',
+      npub: npubEncode(pubkey),
+      postCount: 1,
+      replyCount: 0,
+    });
   });
 
   it.each([
@@ -525,7 +589,12 @@ describe('GET /messages/:id/external-profile', () => {
       lookupHost,
     }).request(`/messages/${NOTE}/external-profile`);
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ name: 'Robin', npub: npubEncode(pubkey) });
+    expect(await res.json()).toEqual({
+      name: 'Robin',
+      npub: npubEncode(pubkey),
+      postCount: 1,
+      replyCount: 0,
+    });
     expect(fetchImpl).not.toHaveBeenCalled();
     expect(lookupHost).not.toHaveBeenCalled();
   });
@@ -1019,5 +1088,427 @@ describe('GET /messages/:id/external-profile', () => {
     expect(res.status).toBe(200);
     expect(await res.json()).not.toHaveProperty('nip05');
     expect(fetchImpl).not.toHaveBeenCalled();
+  });
+});
+
+describe('GET /messages/:id/external-posts', () => {
+  let warn: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+  });
+
+  afterEach(() => {
+    warn.mockRestore();
+  });
+
+  it('returns 404 for a bad id, a missing row, a deleted row, and a member note', async () => {
+    const store = new InMemoryMessageStore();
+    const pubkey = 'ab'.repeat(32);
+    await store.create(row({ id: NOTE, authorPubkey: pubkey, name: 'Ada' }));
+    await store.markDeleted(NOTE, new Date(NOW), 'staff');
+    await store.create(
+      row({
+        id: '16161616-1616-4161-8161-161616161616',
+        accountId: 'acc',
+        authorPubkey: pubkey,
+        name: 'Ada',
+      }),
+    );
+    const app = mount(store);
+    const bad = await app.request('/messages/not-a-uuid/external-posts');
+    expect(bad.status).toBe(404);
+    expect(await bad.json()).toEqual({ error: 'Not found' });
+    const missing = await app.request(
+      '/messages/17171717-1717-4171-8171-171717171717/external-posts',
+    );
+    expect(missing.status).toBe(404);
+    expect(await missing.json()).toEqual({ error: 'Not found' });
+    const deleted = await app.request(`/messages/${NOTE}/external-posts`, {
+      headers: { authorization: 'Bearer staff' },
+    });
+    expect(deleted.status).toBe(404);
+    expect(await deleted.json()).toEqual({ error: 'Not found' });
+    const member = await app.request(
+      '/messages/16161616-1616-4161-8161-161616161616/external-posts',
+    );
+    expect(member.status).toBe(404);
+    expect(await member.json()).toEqual({ error: 'Not found' });
+  });
+
+  it('returns 404 for a reply whose pubkey was not recorded as a zapper', async () => {
+    const store = new InMemoryMessageStore();
+    await store.create(row({ id: PARENT, accountId: 'acc', name: 'Parent' }));
+    await store.create(
+      row({
+        id: NOTE,
+        parentId: PARENT,
+        authorPubkey: 'ab'.repeat(32),
+        name: 'Ada',
+      }),
+    );
+    const res = await mount(store).request(`/messages/${NOTE}/external-posts`);
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ error: 'Not found' });
+  });
+
+  it('returns live posts newest-first with replyCount of attributed children', async () => {
+    const store = new InMemoryMessageStore();
+    const pubkey = 'ab'.repeat(32);
+    const newer = '19191919-1919-4191-8191-191919191919';
+    const zapperChild = 'cd'.repeat(32);
+    await store.create(
+      row({ id: NOTE, authorPubkey: pubkey, name: 'Ada', createdAt: new Date(NOW) }),
+    );
+    await store.create(
+      row({
+        id: newer,
+        authorPubkey: pubkey,
+        name: 'Ada',
+        createdAt: new Date(NOW + 1000),
+      }),
+    );
+    await store.create(
+      row({
+        id: '1b1b1b1b-1b1b-41b1-81b1-1b1b1b1b1b1b',
+        parentId: NOTE,
+        accountId: 'acc',
+        name: 'Member child',
+      }),
+    );
+    await store.recordZapper(zapperChild, '11'.repeat(32), new Date(NOW));
+    await store.create(
+      row({
+        id: '1c1c1c1c-1c1c-41c1-81c1-1c1c1c1c1c1c',
+        parentId: NOTE,
+        authorPubkey: zapperChild,
+        name: 'Zapper child',
+      }),
+    );
+    await store.create(
+      row({
+        id: '1d1d1d1d-1d1d-41d1-81d1-1d1d1d1d1d1d',
+        parentId: NOTE,
+        authorPubkey: 'ef'.repeat(32),
+        name: 'External child',
+      }),
+    );
+    const res = await mount(store).request(`/messages/${NOTE}/external-posts`);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { messages: Array<Record<string, unknown>> };
+    expect(body.messages.map((message) => message['id'])).toEqual([newer, NOTE]);
+    const seed = body.messages.find((message) => message['id'] === NOTE);
+    expect(seed).toMatchObject({
+      payable: false,
+      via: 'nostr',
+      replyCount: 2,
+    });
+    expect(seed).not.toHaveProperty('role');
+    expect(seed).not.toHaveProperty('accountId');
+    const later = body.messages.find((message) => message['id'] === newer);
+    expect(later).toMatchObject({
+      payable: false,
+      via: 'nostr',
+      replyCount: 0,
+    });
+    expect(later).not.toHaveProperty('role');
+    expect(later).not.toHaveProperty('accountId');
+  });
+
+  it('returns 503 and logs no pubkey when listPostsByPubkey throws', async () => {
+    const pubkey = 'ab'.repeat(32);
+    const store = {
+      getById: () => Promise.resolve(row({ id: NOTE, authorPubkey: pubkey, hasVideo: false })),
+      listPostsByPubkey: () => Promise.reject(new Error('boom pubkey')),
+    } as unknown as MessageStore;
+    const res = await mount(store).request(`/messages/${NOTE}/external-posts`);
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({ error: 'Messages are unavailable' });
+    const events = parsedEvents(warn);
+    expect(events).toContainEqual(
+      expect.objectContaining({ event: 'messages.external_posts.failed' }),
+    );
+    const line = events.find((event) => event['event'] === 'messages.external_posts.failed');
+    expect(line).toEqual({
+      ts: expect.any(String),
+      event: 'messages.external_posts.failed',
+    });
+    expect(JSON.stringify(line)).not.toContain('pubkey');
+  });
+
+  it('skips a post whose video file is missing and still returns the other note', async () => {
+    const pubkey = 'ab'.repeat(32);
+    const clipId = '1e1e1e1e-1e1e-41e1-81e1-1e1e1e1e1e1e';
+    const good = row({ id: NOTE, authorPubkey: pubkey, name: 'Ada' });
+    const clip = row({
+      id: clipId,
+      authorPubkey: pubkey,
+      name: 'Ada',
+      text: 'clip',
+      hasVideo: true,
+      videoContentType: 'video/mp4',
+    });
+    const store = {
+      getById: () => Promise.resolve(good),
+      listPostsByPubkey: () => Promise.resolve([clip, good]),
+      deleteById: () => Promise.resolve(true),
+    } as unknown as MessageStore;
+    const res = await mount(store).request(`/messages/${NOTE}/external-posts`);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { messages: Array<{ id: string }> };
+    expect(body.messages.map((message) => message.id)).toEqual([NOTE]);
+    expect(parsedEvents(warn)).toContainEqual(
+      expect.objectContaining({ event: 'messages.video.dropped' }),
+    );
+  });
+
+  it('skips a post that cannot be serialized and still returns the other note', async () => {
+    const pubkey = 'ab'.repeat(32);
+    const good = row({ id: NOTE, authorPubkey: pubkey, name: 'Ada' });
+    const bad = row({
+      id: '1f1f1f1f-1f1f-41f1-81f1-1f1f1f1f1f1f',
+      authorPubkey: pubkey,
+      name: 'Ada',
+      createdAt: {
+        toISOString() {
+          throw new Error('bad date');
+        },
+      } as unknown as Date,
+    });
+    const store = {
+      getById: () => Promise.resolve(good),
+      listPostsByPubkey: () => Promise.resolve([bad, good]),
+    } as unknown as MessageStore;
+    const res = await mount(store).request(`/messages/${NOTE}/external-posts`);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { messages: Array<{ id: string }> };
+    expect(body.messages.map((message) => message.id)).toEqual([NOTE]);
+  });
+
+  it('returns 503 when dropping a missing video throws', async () => {
+    const pubkey = 'ab'.repeat(32);
+    const clip = row({
+      id: '1e1e1e1e-1e1e-41e1-81e1-1e1e1e1e1e1e',
+      authorPubkey: pubkey,
+      hasVideo: true,
+      videoContentType: 'video/mp4',
+    });
+    const store = {
+      getById: () => Promise.resolve(row({ id: NOTE, authorPubkey: pubkey, hasVideo: false })),
+      listPostsByPubkey: () => Promise.resolve([clip]),
+      deleteById: () => Promise.reject(new Error('disk')),
+    } as unknown as MessageStore;
+    const res = await mount(store).request(`/messages/${NOTE}/external-posts`);
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({ error: 'Messages are unavailable' });
+    const line = parsedEvents(warn).find(
+      (event) => event['event'] === 'messages.external_posts.failed',
+    );
+    expect(line).toEqual({
+      ts: expect.any(String),
+      event: 'messages.external_posts.failed',
+    });
+    expect(JSON.stringify(line)).not.toContain(pubkey);
+  });
+});
+
+describe('GET /messages/:id/external-replies', () => {
+  let warn: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+  });
+
+  afterEach(() => {
+    warn.mockRestore();
+  });
+
+  it('returns 404 for a bad id, a missing row, a deleted row, and a member note', async () => {
+    const store = new InMemoryMessageStore();
+    const pubkey = 'ab'.repeat(32);
+    await store.create(row({ id: NOTE, authorPubkey: pubkey, name: 'Ada' }));
+    await store.markDeleted(NOTE, new Date(NOW), 'staff');
+    await store.create(
+      row({
+        id: '16161616-1616-4161-8161-161616161616',
+        accountId: 'acc',
+        authorPubkey: pubkey,
+        name: 'Ada',
+      }),
+    );
+    const app = mount(store);
+    const bad = await app.request('/messages/not-a-uuid/external-replies');
+    expect(bad.status).toBe(404);
+    expect(await bad.json()).toEqual({ error: 'Not found' });
+    const missing = await app.request(
+      '/messages/17171717-1717-4171-8171-171717171717/external-replies',
+    );
+    expect(missing.status).toBe(404);
+    expect(await missing.json()).toEqual({ error: 'Not found' });
+    const deleted = await app.request(`/messages/${NOTE}/external-replies`, {
+      headers: { authorization: 'Bearer staff' },
+    });
+    expect(deleted.status).toBe(404);
+    expect(await deleted.json()).toEqual({ error: 'Not found' });
+    const member = await app.request(
+      '/messages/16161616-1616-4161-8161-161616161616/external-replies',
+    );
+    expect(member.status).toBe(404);
+    expect(await member.json()).toEqual({ error: 'Not found' });
+  });
+
+  it('returns 404 for a reply whose pubkey was not recorded as a zapper', async () => {
+    const store = new InMemoryMessageStore();
+    await store.create(row({ id: PARENT, accountId: 'acc', name: 'Parent' }));
+    await store.create(
+      row({
+        id: NOTE,
+        parentId: PARENT,
+        authorPubkey: 'ab'.repeat(32),
+        name: 'Ada',
+      }),
+    );
+    const res = await mount(store).request(`/messages/${NOTE}/external-replies`);
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ error: 'Not found' });
+  });
+
+  it('returns a zapper reply with parentId and without replyCount', async () => {
+    const store = new InMemoryMessageStore();
+    const pubkey = 'cd'.repeat(32);
+    await store.create(row({ id: PARENT, accountId: 'acc', name: 'Parent' }));
+    await store.recordZapper(pubkey, '11'.repeat(32), new Date(NOW));
+    await store.create(row({ id: NOTE, parentId: PARENT, authorPubkey: pubkey, name: 'Ada' }));
+    const res = await mount(store).request(`/messages/${NOTE}/external-replies`);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { messages: Array<Record<string, unknown>> };
+    expect(body.messages).toHaveLength(1);
+    expect(body.messages[0]).toMatchObject({
+      id: NOTE,
+      parentId: PARENT,
+      payable: false,
+      via: 'nostr',
+    });
+    expect(body.messages[0]).not.toHaveProperty('role');
+    expect(body.messages[0]).not.toHaveProperty('replyCount');
+  });
+
+  it('returns an empty list for a non-zapper top-level author even when replies exist', async () => {
+    const store = new InMemoryMessageStore();
+    const pubkey = 'ab'.repeat(32);
+    await store.create(row({ id: NOTE, authorPubkey: pubkey, name: 'Ada' }));
+    await store.create(
+      row({
+        id: '19191919-1919-4191-8191-191919191919',
+        parentId: NOTE,
+        authorPubkey: pubkey,
+        name: 'Ada',
+      }),
+    );
+    const res = await mount(store).request(`/messages/${NOTE}/external-replies`);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ messages: [] });
+  });
+
+  it('returns 503 and logs no pubkey when listRepliesByPubkey throws', async () => {
+    const pubkey = 'ab'.repeat(32);
+    const store = {
+      getById: () => Promise.resolve(row({ id: NOTE, authorPubkey: pubkey, hasVideo: false })),
+      listRepliesByPubkey: () => Promise.reject(new Error('boom pubkey')),
+    } as unknown as MessageStore;
+    const res = await mount(store).request(`/messages/${NOTE}/external-replies`);
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({ error: 'Messages are unavailable' });
+    const events = parsedEvents(warn);
+    expect(events).toContainEqual(
+      expect.objectContaining({ event: 'messages.external_replies.failed' }),
+    );
+    const line = events.find((event) => event['event'] === 'messages.external_replies.failed');
+    expect(line).toEqual({
+      ts: expect.any(String),
+      event: 'messages.external_replies.failed',
+    });
+    expect(JSON.stringify(line)).not.toContain('pubkey');
+  });
+
+  it('skips a reply whose video file is missing and still returns the other note', async () => {
+    const pubkey = 'cd'.repeat(32);
+    const clipId = '2e2e2e2e-2e2e-42e2-82e2-2e2e2e2e2e2e';
+    const good = row({ id: NOTE, parentId: PARENT, authorPubkey: pubkey, name: 'Ada' });
+    const clip = row({
+      id: clipId,
+      parentId: PARENT,
+      authorPubkey: pubkey,
+      name: 'Ada',
+      text: 'clip',
+      hasVideo: true,
+      videoContentType: 'video/mp4',
+    });
+    const store = {
+      getById: () => Promise.resolve(good),
+      isZapperPubkey: () => Promise.resolve(true),
+      listRepliesByPubkey: () => Promise.resolve([clip, good]),
+      deleteById: () => Promise.resolve(true),
+    } as unknown as MessageStore;
+    const res = await mount(store).request(`/messages/${NOTE}/external-replies`);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { messages: Array<{ id: string }> };
+    expect(body.messages.map((message) => message.id)).toEqual([NOTE]);
+    expect(parsedEvents(warn)).toContainEqual(
+      expect.objectContaining({ event: 'messages.video.dropped' }),
+    );
+  });
+
+  it('skips a reply that cannot be serialized and still returns the other note', async () => {
+    const pubkey = 'cd'.repeat(32);
+    const good = row({ id: NOTE, parentId: PARENT, authorPubkey: pubkey, name: 'Ada' });
+    const bad = row({
+      id: '2f2f2f2f-2f2f-42f2-82f2-2f2f2f2f2f2f',
+      parentId: PARENT,
+      authorPubkey: pubkey,
+      name: 'Ada',
+      createdAt: {
+        toISOString() {
+          throw new Error('bad date');
+        },
+      } as unknown as Date,
+    });
+    const store = {
+      getById: () => Promise.resolve(good),
+      isZapperPubkey: () => Promise.resolve(true),
+      listRepliesByPubkey: () => Promise.resolve([bad, good]),
+    } as unknown as MessageStore;
+    const res = await mount(store).request(`/messages/${NOTE}/external-replies`);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { messages: Array<{ id: string }> };
+    expect(body.messages.map((message) => message.id)).toEqual([NOTE]);
+  });
+
+  it('returns 503 when dropping a missing reply video throws', async () => {
+    const pubkey = 'cd'.repeat(32);
+    const gate = row({ id: NOTE, authorPubkey: pubkey, hasVideo: false });
+    const clip = row({
+      id: '2e2e2e2e-2e2e-42e2-82e2-2e2e2e2e2e2e',
+      parentId: PARENT,
+      authorPubkey: pubkey,
+      hasVideo: true,
+      videoContentType: 'video/mp4',
+    });
+    const store = {
+      getById: () => Promise.resolve(gate),
+      listRepliesByPubkey: () => Promise.resolve([clip]),
+      deleteById: () => Promise.reject(new Error('disk')),
+    } as unknown as MessageStore;
+    const res = await mount(store).request(`/messages/${NOTE}/external-replies`);
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({ error: 'Messages are unavailable' });
+    const line = parsedEvents(warn).find(
+      (event) => event['event'] === 'messages.external_replies.failed',
+    );
+    expect(line).toEqual({
+      ts: expect.any(String),
+      event: 'messages.external_replies.failed',
+    });
+    expect(JSON.stringify(line)).not.toContain(pubkey);
   });
 });

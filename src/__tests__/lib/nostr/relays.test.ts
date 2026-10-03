@@ -157,6 +157,9 @@ describe('relays', () => {
     expect(resolvePublicApiBase({ PUBLIC_BASE_URL: 'https://dev.21.gifts' })).toBe(
       'https://dev-api.21.gifts',
     );
+    expect(resolvePublicApiBase({ PUBLIC_BASE_URL: 'https://staging.21.gifts/' })).toBe(
+      'https://staging-api.21.gifts',
+    );
     expect(resolvePublicApiBase({ PUBLIC_BASE_URL: 'http://127.0.0.1:3000' })).toBe(
       'http://127.0.0.1:3000',
     );

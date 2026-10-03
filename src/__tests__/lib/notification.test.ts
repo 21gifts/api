@@ -590,6 +590,28 @@ describe('fanoutToBellSubscribers', () => {
     const claimed = await pushStore.claimPending(10, NOW.getTime(), 60_000);
     expect(claimed.map((row) => row.accountId)).toEqual(['allowed']);
   });
+
+  it('drops excludeAccountIds from in-app and push lists even when auth is omitted', async () => {
+    const notifications = new InMemoryNotificationStore();
+    const pushStore = new InMemoryPushStore();
+    await subscribe(pushStore, 'kept');
+    await subscribe(pushStore, 'dropped');
+    await fanoutToBellSubscribers({
+      notifications,
+      pushStore,
+      skipAccountId: 'actor',
+      excludeAccountIds: ['dropped', 'unknown'],
+      template,
+      outboxType: 'forum',
+      outboxMessageId: 'reply-1',
+      payload: '{}',
+      nowMs: NOW.getTime(),
+    });
+    expect(await notifications.listByRecipient('kept', 10)).toHaveLength(1);
+    expect(await notifications.listByRecipient('dropped', 10)).toEqual([]);
+    const claimed = await pushStore.claimPending(10, NOW.getTime(), 60_000);
+    expect(claimed.map((row) => row.accountId)).toEqual(['kept']);
+  });
 });
 
 describe('notifyForumReply', () => {
@@ -904,6 +926,31 @@ describe('notifyForumReply', () => {
     const claimed = await pushStore.claimPending(10, NOW.getTime(), 60_000);
     expect(claimed).toHaveLength(2);
     expect(claimed.map((row) => row.accountId).sort()).toEqual(['one', 'two']);
+  });
+
+  it('writes no in-app row and enqueues no push for excludeAccountIds', async () => {
+    const messages = new InMemoryMessageStore();
+    await seedParent(messages);
+    const created = await messages.create(
+      message({ id: 'reply-1', accountId: 'actor', parentId: 'parent-note' }),
+    );
+    const notifications = new InMemoryNotificationStore();
+    const pushStore = new InMemoryPushStore();
+    await subscribe(pushStore, 'marked');
+    await subscribe(pushStore, 'other');
+    await notifyForumReply({
+      messages,
+      notifications,
+      pushStore,
+      account: { id: 'actor' },
+      created,
+      parentId: 'parent-note',
+      excludeAccountIds: ['marked'],
+    });
+    expect(await notifications.listByRecipient('marked', 10)).toEqual([]);
+    expect(await notifications.listByRecipient('other', 10)).toHaveLength(1);
+    const claimed = await pushStore.claimPending(10, NOW.getTime(), 60_000);
+    expect(claimed.map((row) => row.accountId)).toEqual(['other']);
   });
 
   it('is a no-op when the reply actor is the platform account', async () => {
@@ -1239,6 +1286,27 @@ describe('notifyForumPost', () => {
       body: 'Posted a video.',
       tag: 'forum_post:post-video',
     });
+  });
+
+  it('writes no in-app row and enqueues no push for excludeAccountIds', async () => {
+    const created = message({ id: 'post-1', accountId: 'actor', name: 'Ada', text: 'hello' });
+    const notifications = new InMemoryNotificationStore();
+    const pushStore = new InMemoryPushStore();
+    await subscribe(pushStore, 'marked');
+    await subscribe(pushStore, 'other');
+    await notifyForumPost({
+      notifications,
+      pushStore,
+      account: { id: 'actor' },
+      created,
+      excludeAccountIds: ['marked'],
+    });
+    expect(await notifications.listByRecipient('marked', 10)).toEqual([]);
+    const listed = await notifications.listByRecipient('other', 10);
+    expect(listed).toHaveLength(1);
+    expect(listed[0]?.type).toBe('forum_post');
+    const claimed = await pushStore.claimPending(10, NOW.getTime(), 60_000);
+    expect(claimed.map((row) => row.accountId)).toEqual(['other']);
   });
 });
 

@@ -335,6 +335,31 @@ describe('InMemoryNotificationStore', () => {
       'wrong-type',
     ]);
   });
+
+  it('deleteForRecipient is a no-op for empty ids', async () => {
+    const store = new InMemoryNotificationStore([row()]);
+    expect(await store.deleteForRecipient('parent', [])).toBe(0);
+    expect((await store.listByRecipient('parent', 10)).map((item) => item.id)).toEqual(['n-1']);
+  });
+
+  it('deleteForRecipient never removes another recipient row', async () => {
+    const store = new InMemoryNotificationStore([
+      row({ id: 'mine' }),
+      row({ id: 'theirs', recipientAccountId: 'other', replyId: 'r-other' }),
+    ]);
+    expect(await store.deleteForRecipient('parent', ['mine', 'theirs'])).toBe(1);
+    expect(await store.getByIdForRecipient('mine', 'parent')).toBeUndefined();
+    expect((await store.getByIdForRecipient('theirs', 'other'))?.id).toBe('theirs');
+  });
+
+  it('deleteForRecipient removes matching ids for that recipient', async () => {
+    const store = new InMemoryNotificationStore([
+      row({ id: 'keep', replyId: 'r-keep' }),
+      row({ id: 'drop', replyId: 'r-drop' }),
+    ]);
+    expect(await store.deleteForRecipient('parent', ['drop'])).toBe(1);
+    expect((await store.listByRecipient('parent', 10)).map((item) => item.id)).toEqual(['keep']);
+  });
 });
 
 describe('PostgresNotificationStore', () => {
@@ -612,6 +637,40 @@ describe('PostgresNotificationStore', () => {
       `DELETE FROM notification WHERE type = $1 AND reply_id = $2 RETURNING id`,
     );
     expect(sql.queries[0]?.params).toEqual(['moderator_proposal', 'r-1']);
+    expect(sql.executes).toEqual([]);
+  });
+
+  it('deleteForRecipient skips SQL when ids is empty', async () => {
+    const sql = new MockSql();
+    expect(await new PostgresNotificationStore(sql).deleteForRecipient('parent', [])).toBe(0);
+    expect(sql.queries).toEqual([]);
+    expect(sql.executes).toEqual([]);
+  });
+
+  it('deleteForRecipient skips SQL when no id is a well-formed UUID', async () => {
+    const sql = new MockSql();
+    expect(
+      await new PostgresNotificationStore(sql).deleteForRecipient('parent', ['n-1', "x'}"]),
+    ).toBe(0);
+    expect(sql.queries).toEqual([]);
+  });
+
+  it('deleteForRecipient deletes by recipient and id with a uuid[] literal', async () => {
+    const sql = new MockSql();
+    sql.nextRows = [{ id: '11111111-1111-4111-8111-111111111111' }];
+    const removed = await new PostgresNotificationStore(sql).deleteForRecipient('parent', [
+      '11111111-1111-4111-8111-111111111111',
+      'not-a-uuid',
+      '22222222-2222-4222-8222-222222222222',
+    ]);
+    expect(removed).toBe(1);
+    expect(sql.queries[0]?.text).toBe(
+      `DELETE FROM notification WHERE recipient_account_id = $1 AND id = ANY($2::uuid[]) RETURNING id`,
+    );
+    expect(sql.queries[0]?.params).toEqual([
+      'parent',
+      '{11111111-1111-4111-8111-111111111111,22222222-2222-4222-8222-222222222222}',
+    ]);
     expect(sql.executes).toEqual([]);
   });
 });

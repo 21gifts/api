@@ -1,7 +1,7 @@
 /**
- * Shop place push is off.
+ * Shop place push is on.
  *
- * A later pull request sets this to true. `OCP_MAP_BASE_URL` and
- * `OCP_PLACE_INGEST_TOKEN` do not turn the push on.
+ * `OCP_MAP_BASE_URL` and `OCP_PLACE_INGEST_TOKEN` do not turn the push on or
+ * off. A blank URL or token still posts nothing.
  */
-export const SHOP_PLACE_PUSH_ENABLED = false;
+export const SHOP_PLACE_PUSH_ENABLED = true;
