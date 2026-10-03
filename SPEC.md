@@ -4375,7 +4375,7 @@ Success → **Response** `200`:
 
 `sparkInvoice` is a Spark invoice (`spark1…`) for the same amount to the
 recipient's verified wallet with memo `zap:<payment hash of pr>`, or `null`
-when free in-app payments are off (see
+when `pr` is not for exactly that amount or free in-app payments are off (see
 [Free in-app payments](#free-in-app-payments)). A recipient without a
 verified wallet never reaches this 200; it is the **400** `cannot_receive`
 below. `pr` is unchanged, so a
@@ -4461,7 +4461,7 @@ Success → **Response** `200`:
 
 `sparkInvoice` is a Spark invoice (`spark1…`) for the same amount to the
 giver's verified wallet with memo `zap:<payment hash of pr>`, or `null`
-when free in-app payments are off (see
+when `pr` is not for exactly that amount or free in-app payments are off (see
 [Free in-app payments](#free-in-app-payments)). A giver without a verified
 wallet never reaches this 200; it is the **400** `cannot_receive` below. `pr` is unchanged, so a
 payer without an in-app wallet still pays over Lightning.
@@ -5373,7 +5373,7 @@ Success → **Response** `200`:
 
 `sparkInvoice` is a Spark invoice (`spark1…`) for the same amount to the
 counterpart's verified wallet with memo `zap:<payment hash of pr>`, or `null`
-when free in-app payments are off (see
+when `pr` is not for exactly that amount or free in-app payments are off (see
 [Free in-app payments](#free-in-app-payments)). A counterpart without a
 verified wallet never reaches this 200; it is the **400** `cannot_receive`
 below. `pr` is unchanged, so a

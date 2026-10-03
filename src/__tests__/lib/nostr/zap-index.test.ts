@@ -5379,7 +5379,7 @@ describe('indexOpenZapReceipts', () => {
     expect((await store.listZapIngests(10))[0]?.reason).toBe('address');
   });
 
-  it('caches provider pubkey within TTL and refreshes after expiry', async () => {
+  it('resolves the wallet-host provider pubkey on every receipt, without the cache', async () => {
     const store = new InMemoryMessageStore();
     const auth = new InMemoryAuthStore();
     const querier = new RecordingQuerier();
@@ -5440,7 +5440,8 @@ describe('indexOpenZapReceipts', () => {
         fetchImpl: countingFetch,
       });
     }
-    expect(fetchCount).toBe(1);
+    // Every member receives on the LNURL server host, whose keys are not cached.
+    expect(fetchCount).toBe(2);
 
     querier.events = [
       {
@@ -5462,7 +5463,7 @@ describe('indexOpenZapReceipts', () => {
       now: () => t0 + LN_ADDRESS_CACHE_TTL_MS + 1,
       fetchImpl: countingFetch,
     });
-    expect(fetchCount).toBe(2);
+    expect(fetchCount).toBe(3);
     expect((await store.getByEventId(NOTE_EVENT_ID))?.sats).toBe(3);
   });
 
