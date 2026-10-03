@@ -458,7 +458,7 @@ test('Function: LnurlRelayRateLimiter — the 31st relay request in a minute is 
   const name = `E2eRelayLimit${stamp}`;
   const provision = await request.post('/debug/accounts', {
     headers: DEBUG,
-    data: { accounts: [{ name, lightningAddress: `e2e-relay-${stamp}@walletofsatoshi.com` }] },
+    data: { accounts: [{ name, username: `e2e-relay-${stamp}`.slice(0, 32) }] },
   });
   expect(provision.status()).toBe(200);
   const listed = await request.get('/debug/accounts', { headers: DEBUG });
