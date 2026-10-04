@@ -21,6 +21,7 @@ import {
   callLnurlServer,
   type LnurlServerResult,
 } from '@/lib/lnurl-server';
+import type { PosCharge } from '@/lib/pos-charge';
 import type { PosStore } from '@/lib/pos-store';
 import { readClientRequestMeta } from '@/lib/request-meta';
 import { normalizeSparkPubkey } from '@/lib/spark-pubkey';
@@ -142,20 +143,44 @@ function mapUpstream(
 }
 
 /**
- * Record the BOLT11 in a successful upstream invoice body against the
- * account's open point-of-sale charge when its amount is the charge amount.
- *
- * Best effort: an unparsable body, a BOLT11 that does not decode, no open
- * charge, or another amount records nothing; a store failure logs
- * `pos.invoice.record_failed`. Never changes the response.
+ * The account's open point-of-sale charge before an invoice is minted, or
+ * `null`. A store failure logs `pos.invoice.record_failed` and resolves
+ * `null`, so the invoice is still forwarded.
  *
  * @param deps - Route collaborators.
  * @param accountId - Shop account id.
+ * @param issuedAtMs - Issue time (epoch ms).
+ */
+async function pendingCharge(
+  deps: LnurlServerRouteDeps,
+  accountId: string,
+  issuedAtMs: number,
+): Promise<PosCharge | null> {
+  try {
+    return await deps.posStore.currentPending(accountId, issuedAtMs);
+  } catch {
+    logEvent('pos.invoice.record_failed', { accountId });
+    return null;
+  }
+}
+
+/**
+ * Record the BOLT11 in a successful upstream invoice body against the charge
+ * that was open before the mint, when its amount is the charge amount.
+ *
+ * Best effort: an unparsable body, a BOLT11 that does not decode, or another
+ * amount records nothing; a store failure logs `pos.invoice.record_failed`.
+ * Never changes the response.
+ *
+ * @param deps - Route collaborators.
+ * @param pending - The charge open before the mint.
+ * @param issuedAtMs - When that charge was found open (epoch ms).
  * @param body - Upstream response body.
  */
 async function recordPosInvoice(
   deps: LnurlServerRouteDeps,
-  accountId: string,
+  pending: PosCharge,
+  issuedAtMs: number,
   body: string,
 ): Promise<void> {
   let pr: unknown;
@@ -165,18 +190,13 @@ async function recordPosInvoice(
     return;
   }
   const decoded = typeof pr === 'string' ? decodeBolt11(pr) : null;
-  if (decoded === null) {
+  if (decoded === null || decoded.amountMsat !== pending.amountSats * 1000) {
     return;
   }
   try {
-    const nowMs = deps.now();
-    const pending = await deps.posStore.currentPending(accountId, nowMs);
-    if (pending === null || decoded.amountMsat !== pending.amountSats * 1000) {
-      return;
-    }
-    await deps.posStore.recordInvoice(pending.id, decoded.paymentHash, nowMs);
+    await deps.posStore.recordInvoice(pending.id, decoded.paymentHash, issuedAtMs);
   } catch {
-    logEvent('pos.invoice.record_failed', { accountId });
+    logEvent('pos.invoice.record_failed', { accountId: pending.accountId });
   }
 }
 
@@ -358,6 +378,8 @@ export function lnurlServerRoutes(deps: LnurlServerRouteDeps): Hono {
         if (account === undefined || typeof account.sparkPubkeyVerifiedAt !== 'number') {
           return c.json(NOT_FOUND, 404);
         }
+        const issuedAtMs = deps.now();
+        const pending = await pendingCharge(deps, account.id, issuedAtMs);
         const result = await callLnurlServer(deps.config, deps.fetchImpl, {
           method: 'GET',
           segments: ['lnurlp', username, 'invoice'],
@@ -365,8 +387,8 @@ export function lnurlServerRoutes(deps: LnurlServerRouteDeps): Hono {
           headers: c.req.raw.headers,
           timeoutMs: LNURL_SERVER_TIMEOUT_MS,
         });
-        if (result.ok && result.status >= 200 && result.status < 300) {
-          await recordPosInvoice(deps, account.id, result.body);
+        if (pending !== null && result.ok && result.status >= 200 && result.status < 300) {
+          await recordPosInvoice(deps, pending, issuedAtMs, result.body);
         }
         return mapUpstream(result, route);
       } catch {
