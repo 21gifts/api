@@ -779,6 +779,37 @@ describe('till payments on POST /pay/:username/invoice', () => {
     ]);
   });
 
+  it('uses the issue time before the mint, so a mint that ends after expiry still counts', async () => {
+    const posStore = new InMemoryPosStore();
+    await posStore.create(pendingCharge());
+    const auth = new InMemoryAuthStore();
+    await auth.createAccount(createAccount());
+    await auth.claimSparkPubkey(ADA_ID, WALLET_PUBKEY);
+    await auth.markSparkPubkeyVerified(ADA_ID, WALLET_PUBKEY, 'ada', 2);
+    let clock = NOW_MS;
+    const fetchImpl = async (input: string | URL | Request): Promise<Response> => {
+      if (String(input).includes('/.well-known/lnurlp/')) {
+        return metadataResponse(1000, WIDE_MAX_SENDABLE);
+      }
+      clock = NOW_MS + 120_000;
+      return invoiceResponse();
+    };
+    const app = new Hono().route(
+      '/pay',
+      payRoutes({
+        auth,
+        fetchImpl,
+        posStore,
+        now: () => clock,
+        lnurlServer: LNURL_SERVER,
+        freePayments: true,
+      }),
+    );
+    const body = (await (await mint(app)).json()) as { sparkInvoice: string | null };
+    expect(body.sparkInvoice?.startsWith('spark1')).toBe(true);
+    expect((await posStore.listWatched(0))[0]?.paymentHashes).toEqual([PAYMENT_HASH]);
+  });
+
   it('records the BOLT11 but returns no Spark invoice when free in-app payments are off', async () => {
     const posStore = new InMemoryPosStore();
     await posStore.create(pendingCharge());
