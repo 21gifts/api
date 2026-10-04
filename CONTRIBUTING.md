@@ -67,10 +67,10 @@ api/
 │   │   ├── translate.ts      # GET /translate (DeepL configured?)
 │   │   ├── well-known.ts     # GET /.well-known/nostr.json (NIP-05); GET /.well-known/lnurlp/:username (LUD-16; wallet-backed when LNURL_SERVER_URL and PUBLIC_BASE_URL resolve)
 │   │   ├── lnurl-server.ts   # Forwarded LNURL routes when LNURL_SERVER_URL and PUBLIC_BASE_URL resolve (register/recover/metadata/invoice/verify)
-│   │   ├── pay.ts            # GET /pay/:username; POST /pay/:username/invoice
+│   │   ├── pay.ts            # GET /pay/:username; POST /pay/:username/invoice (+ Spark invoice for an open till)
 │   │   ├── lnurl.ts          # POST /lnurl/pay-request; POST /lnurl/invoice (Bearer; outside LNURL relay)
 │   │   ├── contact.ts        # POST /contact (private mailbox + platform thread)
-│   │   ├── pos.ts            # GET/POST/DELETE /pos (one exact sat amount on the receiving wallet)
+│   │   ├── pos.ts            # GET/POST/DELETE /pos (one exact sat amount on the receiving wallet; paid status)
 │   │   ├── conversations.ts  # GET/POST /conversations, GET /conversations/moderator-group, GET/POST /conversations/:id, POST /conversations/:id/read, POST /conversations/:id/invoice, GET /conversations/:id/messages/:messageId/photo, GET /conversations/:id/messages/:messageId/photo/:file, POST /conversations/:id/messages/:messageId/translate
 │   │   └── notifications.ts  # GET /notifications, POST /notifications/read-by-message, POST /notifications/read-all, POST /notifications/:id/read
 │   ├── lib/
@@ -103,8 +103,9 @@ api/
 │   │   ├── translate-note.ts # cache lookup, in-flight coalesce, DeepL, upsert
 │   │   ├── contact.ts        # Contact public/debug JSON projection (reuses forum text rules)
 │   │   ├── contact-store.ts  # ContactStore port, InMemoryContactStore, PostgresContactStore
-│   │   ├── pos-charge.ts     # Point-of-sale charge types, TTL, and JSON
-│   │   ├── pos-store.ts      # PosStore port, InMemoryPosStore, PostgresPosStore, POS_SCHEMA_SQL
+│   │   ├── pos-charge.ts     # Point-of-sale charge types, TTL, paid display window, and JSON
+│   │   ├── pos-store.ts      # PosStore port, InMemoryPosStore, PostgresPosStore, POS_SCHEMA_SQL (charges + recorded invoices)
+│   │   ├── pos-paid-worker.ts # Paid watcher: Spark invoice FINALIZED or LUD-21 settled → charge paid
 │   │   ├── trust.ts          # Trust-chain types, buildTrustChain, accountTrust, serializeTrustEdge
 │   │   ├── trust-store.ts    # TrustStore port, InMemoryTrustStore, PostgresTrustStore, TRUST_SCHEMA_SQL
 │   │   ├── funding.ts        # Funding-grant types, utcDayKey, FUNDING_REQUIRED_FROM_UTC, fundingGrantRequired, eligibleToday, dailyPayoutStoppedNotice, serializeOwnerFunding, fundingReviewedAt, expiredTrialAsPending
@@ -341,7 +342,7 @@ api/
 │   ├── notification.sql      # in-app Notifications rows (`forum_post`, `forum_reply`, `zap`)
 │   ├── trust_edge.sql        # who granted which staff status (GET /trust-chain)
 │   ├── funding_grant.sql     # funding-program grant (one row per account; spend ping / invoice gate)
-│   ├── pos_charge.sql        # point-of-sale charges (GET/POST/DELETE /pos)
+│   ├── pos_charge.sql        # point-of-sale charges (GET/POST/DELETE /pos) + pos_charge_invoice (BOLT11 hashes per charge)
 │   ├── account_image.sql     # profile photo and wide image, one row per account per slot
 │   ├── spark_invoice.sql     # Spark invoices issued next to member-to-member zap invoices
 │   └── db_change.sql         # append-only row-change log
@@ -484,6 +485,8 @@ tests assert 409 `missing: ['lightning-address']`);
 `receivingAddress` and `lnurlServerFetch` past the account lookup, which need a member with a
 verified wallet and therefore `LNURL_SERVER_URL` (their tests assert `GET /pay/:username` 404);
 `issueSparkInvoice`, which runs only after a reachable LNURL server mints a NIP-57 invoice;
+`runPosPaidTick` and `startPosPaidWorker`, which start only when the LNURL server
+(`LNURL_SERVER_URL` and `PUBLIC_BASE_URL`) resolves;
 `migrateSparkInvoiceSchema` and `PostgresSparkInvoiceStore`, which need `DATABASE_URL`;
 `concatBytes`, `protoVarintField`, `protoBytesField`, `decodeProto`, `encodeSparkInvoice`, `uuidV7`,
 `InMemorySparkInvoiceStore`, `encodeQuerySparkInvoicesRequest`, `parseQuerySparkInvoicesResponse`,

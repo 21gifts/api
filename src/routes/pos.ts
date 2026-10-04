@@ -5,7 +5,12 @@ import type { Account, AuthStore } from '@/lib/auth/store';
 import type { LnurlServerConfig } from '@/lib/config';
 import type { FetchFn } from '@/lib/lnurlp';
 import { resolveLnurlp } from '@/lib/lnurlp';
-import { POS_CHARGE_TTL_MS, serializePosCharge, type PosCharge } from '@/lib/pos-charge';
+import {
+  POS_CHARGE_TTL_MS,
+  POS_PAID_SHOW_MS,
+  serializePosCharge,
+  type PosCharge,
+} from '@/lib/pos-charge';
 import type { PosStore } from '@/lib/pos-store';
 import { WALLET_REQUIRED, lnurlServerFetch, receivingAddress } from '@/lib/receiving-address';
 import { bearerToken } from '@/routes/me';
@@ -13,7 +18,8 @@ import { bearerToken } from '@/routes/me';
 /**
  * `/pos` — signed-in member point-of-sale amount in whole sats.
  * Settlement goes to the member's receiving address (their verified wallet;
- * without one a charge is refused). There is no paid status.
+ * without one a charge is refused). The paid watcher marks a charge `paid`;
+ * `GET /pos` keeps returning it as `charge` for {@link POS_PAID_SHOW_MS}.
  * Shares the {@link AuthStore} with `/auth` and `/me`.
  */
 
@@ -59,11 +65,21 @@ export function posRoutes(deps: PosRouteDeps): Hono {
       if (account === null) {
         return c.json({ error: 'Unauthorized' }, 401);
       }
-      const pending = await deps.store.currentPending(account.id, deps.now());
+      const nowMs = deps.now();
+      const pending = await deps.store.currentPending(account.id, nowMs);
       const history = await deps.store.listForAccount(account.id, 20);
+      const latest = history[0];
+      const recentlyPaid =
+        latest !== undefined &&
+        latest.status === 'paid' &&
+        latest.paidAt !== null &&
+        latest.paidAt.getTime() > nowMs - POS_PAID_SHOW_MS
+          ? latest
+          : null;
+      const charge = pending ?? recentlyPaid;
       return c.json(
         {
-          charge: pending === null ? null : serializePosCharge(pending),
+          charge: charge === null ? null : serializePosCharge(charge),
           history: history.map((row) => serializePosCharge(row)),
         },
         200,
@@ -113,6 +129,8 @@ export function posRoutes(deps: PosRouteDeps): Hono {
         status: 'pending',
         createdAt: new Date(createdMs),
         expiresAt: new Date(createdMs + POS_CHARGE_TTL_MS),
+        paidAt: null,
+        sparkInvoice: null,
       };
       try {
         const created = await deps.store.create(row);
