@@ -164,6 +164,7 @@ async function lookupPayAccount(
  * @param pending - The open charge.
  * @param sparkPubkey - The shop's verified wallet key.
  * @param paymentHash - Payment hash of the minted BOLT11.
+ * @param issuedAtMs - When the charge was found open, before the mint (epoch ms).
  * @returns The Spark invoice, or `null`.
  */
 async function attachToCharge(
@@ -171,10 +172,10 @@ async function attachToCharge(
   pending: PosCharge,
   sparkPubkey: string,
   paymentHash: string,
+  issuedAtMs: number,
 ): Promise<string | null> {
-  const nowMs = deps.now();
   try {
-    await deps.posStore.recordInvoice(pending.id, paymentHash, nowMs);
+    await deps.posStore.recordInvoice(pending.id, paymentHash, issuedAtMs);
   } catch {
     logEvent('pos.invoice.record_failed', { accountId: pending.accountId });
   }
@@ -187,12 +188,12 @@ async function attachToCharge(
     pending.sparkInvoice ??
     encodeSparkInvoice({
       identityPublicKey: sparkPubkey,
-      id: uuidV7(nowMs, randomBytes(10)),
+      id: uuidV7(issuedAtMs, randomBytes(10)),
       memo: `pos:${pending.id}`,
       amountSats: pending.amountSats,
     });
   try {
-    return await deps.posStore.issueSparkInvoice(pending.id, invoice, nowMs);
+    return await deps.posStore.issueSparkInvoice(pending.id, invoice, issuedAtMs);
   } catch {
     logEvent('pos.spark_invoice.issue_failed', { accountId: pending.accountId });
     return null;
@@ -246,6 +247,7 @@ export function payRoutes(deps: PayRouteDeps): Hono {
       if (((outsideSat ? 1 : 0) | (belowMsat ? 1 : 0) | (aboveMsat ? 1 : 0)) !== 0) {
         return c.json({ error: 'Enter a whole number of sats' }, 400);
       }
+      const issuedAtMs = deps.now();
       const invoice = await requestGiftInvoice({
         address,
         amountMsat,
@@ -264,7 +266,13 @@ export function payRoutes(deps: PayRouteDeps): Hono {
       const sparkInvoice =
         lookup.pending === null
           ? null
-          : await attachToCharge(deps, lookup.pending, lookup.sparkPubkey, decoded.paymentHash);
+          : await attachToCharge(
+              deps,
+              lookup.pending,
+              lookup.sparkPubkey,
+              decoded.paymentHash,
+              issuedAtMs,
+            );
       logEvent('pay.invoice', { username, amountSats });
       return c.json({ pr: invoice.pr, amountSats, sparkInvoice });
     });

@@ -593,6 +593,10 @@ describe('PostgresPosStore paid tracking', () => {
       expect(await store.recordInvoice(chargeId, hashB, now + POS_CHARGE_TTL_MS)).toBe(false);
       expect(await store.recordInvoice(crypto.randomUUID(), hashB, now)).toBe(false);
       expect(await store.recordInvoice(chargeId, hashB, now + 3)).toBe(true);
+      // Marked expired by a later read; an invoice issued before expiry still records.
+      await store.currentPending(accountId, now + POS_CHARGE_TTL_MS);
+      const hashC = hex64();
+      expect(await store.recordInvoice(chargeId, hashC, now + 4)).toBe(true);
 
       expect(await store.issueSparkInvoice(chargeId, `spark1a${chargeId}`, now)).toBe(
         `spark1a${chargeId}`,
@@ -605,12 +609,14 @@ describe('PostgresPosStore paid tracking', () => {
       ).toBeNull();
 
       const watched = (await store.listWatched(now)).find((entry) => entry.charge.id === chargeId);
-      expect(watched?.paymentHashes).toEqual([hashA, hashB]);
+      expect(watched?.paymentHashes).toEqual([hashA, hashB, hashC]);
+      expect(watched?.charge.status).toBe('expired');
       expect(watched?.charge.sparkInvoice).toBe(`spark1a${chargeId}`);
       expect(watched?.charge.amountSats).toBe(21);
 
       const paid = await store.markPaid(chargeId, now + 10_000);
       expect(paid?.status).toBe('paid');
+      expect(await store.recordInvoice(chargeId, hex64(), now + 5)).toBe(false);
       expect(paid?.paidAt?.getTime()).toBe(now + 10_000);
       expect(await store.markPaid(chargeId, now + 20_000)).toBeNull();
       expect((await store.listWatched(now)).some((entry) => entry.charge.id === chargeId)).toBe(
@@ -643,11 +649,11 @@ describe('PostgresPosStore paid tracking', () => {
          ORDER BY id ASC`,
         [chargeId],
       );
-      expect(changes.filter((change) => change.table_name === 'pos_charge_invoice').length).toBe(2);
+      expect(changes.filter((change) => change.table_name === 'pos_charge_invoice').length).toBe(3);
       const pay = changes.find(
         (change) => change.op === 'UPDATE' && change.after?.['status'] === 'paid',
       );
-      expect(pay?.before?.['status']).toBe('pending');
+      expect(pay?.before?.['status']).toBe('expired');
       expect(pay?.after?.['paid_at']).not.toBeNull();
     } finally {
       await closeIfPossible(sql);

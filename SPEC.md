@@ -94,7 +94,7 @@ Public base URLs used in examples:
 | GET    | `/lnurlp/:username/invoice`                          | none                                         | Forward LNURL-pay invoice for a wallet-backed username (mounted only when `LNURL_SERVER_URL` and `PUBLIC_BASE_URL` resolve)                                                                                                                                                                                                                                                                                                                                                                                                   |
 | GET    | `/verify/:paymentHash`                               | none                                         | LUD-21 verify forward (mounted only when `LNURL_SERVER_URL` and `PUBLIC_BASE_URL` resolve)                                                                                                                                                                                                                                                                                                                                                                                                                                    |
 | GET    | `/pay/:username`                                     | none                                         | Public pay-link card: display name and satoshi bounds                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
-| POST   | `/pay/:username/invoice`                             | none                                         | One BOLT11 invoice for an exact satoshi amount on the member's receiving address                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| POST   | `/pay/:username/invoice`                             | none                                         | One BOLT11 invoice for an exact satoshi amount on the member's receiving address, plus `sparkInvoice` (or `null`) for an open till when free in-app payments are on                                                                                                                                                                                                                                                                                                                                                           |
 | POST   | `/lnurl/pay-request`                                 | Bearer                                       | Fetch and check the LNURL pay request of an address on another host                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
 | POST   | `/lnurl/invoice`                                     | Bearer                                       | Fetch and check a BOLT11 from an address on another host for an exact amount                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
 | GET    | `/favicon.ico`                                       | none                                         | Brand mark (favicon)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
@@ -470,9 +470,9 @@ server is not contacted.
 recover. Upstream may return HTTP 200 with
 `{ "status": "ERROR", "reason": … }`. Unreachable → 503 as above.
 
-After an upstream 2xx whose JSON `pr` decodes to exactly
-`amountSats * 1000` of the account's pending point-of-sale charge, the
-payment hash is recorded against that charge for
+The account's pending point-of-sale charge is read before the upstream
+call. After an upstream 2xx whose JSON `pr` decodes to exactly
+`amountSats * 1000` of that charge, the payment hash is recorded against that charge for
 [paid detection](#point-of-sale-paid-detection). The response is unchanged;
 a store failure logs `pos.invoice.record_failed`.
 
@@ -512,9 +512,13 @@ paid or cancelled.
 
 Marking paid is one conditional update: the first confirmation wins and
 later ones change nothing. A charge can become paid only from `pending` or
-`expired`, never from `cancelled`. Invoices are recorded only while the
-charge is pending and unexpired, so a payment confirmed after the five
-minutes for an invoice issued inside them still marks the charge paid. No
+`expired`, never from `cancelled`. The api reads the open charge
+before it mints an invoice and records the invoice against that charge
+only when the charge's `expiresAt` is after that issue time (and it is not
+cancelled or paid). So the issue time decides, not the write or poll time:
+a payment confirmed after the five minutes for an invoice issued inside
+them still marks the charge paid, and an invoice is never attached to a
+charge opened while it was being minted. No
 zap receipt, gift, or message is written for a till payment. Logs:
 `pos.paid` (account id only), `pos.spark.query_failed`,
 `pos.verify.failed` (count only), `pos.worker.tick.failed`.

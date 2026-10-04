@@ -80,27 +80,30 @@ export interface PosStore {
 
   /**
    * Store `invoice` as the charge's Spark invoice unless it already has one.
-   * Only a pending charge whose `expiresAt` is after `nowMs` gets one.
+   * Only a charge that was open at `issuedAtMs` gets one: status `pending`
+   * or `expired` (never `paid` or `cancelled`) and `expiresAt` after
+   * `issuedAtMs`.
    *
    * @param chargeId - Charge id.
    * @param invoice - New `spark1…` string.
-   * @param nowMs - Clock (epoch ms).
+   * @param issuedAtMs - When the caller found the charge open (epoch ms).
    * @returns The stored Spark invoice (the existing one when present), or
-   *   `null` when the charge is not pending and unexpired.
+   *   `null` when the charge was not open at `issuedAtMs`.
    */
-  issueSparkInvoice(chargeId: string, invoice: string, nowMs: number): Promise<string | null>;
+  issueSparkInvoice(chargeId: string, invoice: string, issuedAtMs: number): Promise<string | null>;
 
   /**
-   * Record a BOLT11 payment hash handed out for a charge. Only a pending
-   * charge whose `expiresAt` is after `nowMs` records; a hash already
-   * recorded is left unchanged.
+   * Record a BOLT11 payment hash handed out for a charge. Only a charge that
+   * was open at `issuedAtMs` records (status `pending` or `expired`,
+   * `expiresAt` after `issuedAtMs`), so the issue time decides, not the
+   * write time; a hash already recorded is left unchanged.
    *
    * @param chargeId - Charge id.
    * @param paymentHash - Payment hash of the BOLT11 (64 lower-case hex).
-   * @param nowMs - Clock (epoch ms); stored as the issue time.
+   * @param issuedAtMs - When the caller found the charge open (epoch ms); stored as the issue time.
    * @returns `true` when this call recorded the hash.
    */
-  recordInvoice(chargeId: string, paymentHash: string, nowMs: number): Promise<boolean>;
+  recordInvoice(chargeId: string, paymentHash: string, issuedAtMs: number): Promise<boolean>;
 
   /**
    * Charges still watched for a payment: `pending` or `expired` with
@@ -206,14 +209,18 @@ export class InMemoryPosStore implements PosStore {
   readonly #invoices: { paymentHash: string; chargeId: string; createdAtMs: number }[] = [];
 
   /**
-   * The stored row with `id` when it is pending and `expiresAt` is after `nowMs`.
+   * The stored row with `id` when it was open at `issuedAtMs`: `pending` or
+   * `expired`, with `expiresAt` after `issuedAtMs`.
    *
    * @param id - Charge id.
-   * @param nowMs - Clock (epoch ms).
+   * @param issuedAtMs - Issue time (epoch ms).
    */
-  #openRow(id: string, nowMs: number): PosCharge | undefined {
+  #openRow(id: string, issuedAtMs: number): PosCharge | undefined {
     return this.#rows.find(
-      (row) => row.id === id && row.status === 'pending' && row.expiresAt.getTime() > nowMs,
+      (row) =>
+        row.id === id &&
+        (row.status === 'pending' || row.status === 'expired') &&
+        row.expiresAt.getTime() > issuedAtMs,
     );
   }
 
@@ -366,11 +373,11 @@ export class InMemoryPosStore implements PosStore {
    *
    * @param chargeId - Charge id.
    * @param invoice - New `spark1…` string.
-   * @param nowMs - Clock (epoch ms).
-   * @returns The stored Spark invoice, or `null` when the charge is not pending and unexpired.
+   * @param issuedAtMs - Issue time (epoch ms).
+   * @returns The stored Spark invoice, or `null` when the charge was not open at `issuedAtMs`.
    */
-  issueSparkInvoice(chargeId: string, invoice: string, nowMs: number): Promise<string | null> {
-    const row = this.#openRow(chargeId, nowMs);
+  issueSparkInvoice(chargeId: string, invoice: string, issuedAtMs: number): Promise<string | null> {
+    const row = this.#openRow(chargeId, issuedAtMs);
     if (row === undefined) {
       return Promise.resolve(null);
     }
@@ -379,21 +386,21 @@ export class InMemoryPosStore implements PosStore {
   }
 
   /**
-   * Record a payment hash for a pending, unexpired charge once.
+   * Record a payment hash once for a charge that was open at `issuedAtMs`.
    *
    * @param chargeId - Charge id.
    * @param paymentHash - BOLT11 payment hash.
-   * @param nowMs - Clock (epoch ms).
+   * @param issuedAtMs - Issue time (epoch ms).
    * @returns `true` when this call recorded the hash.
    */
-  recordInvoice(chargeId: string, paymentHash: string, nowMs: number): Promise<boolean> {
+  recordInvoice(chargeId: string, paymentHash: string, issuedAtMs: number): Promise<boolean> {
     if (
-      this.#openRow(chargeId, nowMs) === undefined ||
+      this.#openRow(chargeId, issuedAtMs) === undefined ||
       this.#invoices.some((invoice) => invoice.paymentHash === paymentHash)
     ) {
       return Promise.resolve(false);
     }
-    this.#invoices.push({ paymentHash, chargeId, createdAtMs: nowMs });
+    this.#invoices.push({ paymentHash, chargeId, createdAtMs: issuedAtMs });
     return Promise.resolve(true);
   }
 
@@ -656,42 +663,42 @@ WHERE created_at >= $1 AND created_at < $2`,
    *
    * @param chargeId - Charge id (`$1`).
    * @param invoice - New `spark1…` string (`$2`).
-   * @param nowMs - Clock (epoch ms); bound as ISO `$3`.
-   * @returns The stored Spark invoice, or `null` when the charge is not pending and unexpired.
+   * @param issuedAtMs - Issue time (epoch ms); bound as ISO `$3`.
+   * @returns The stored Spark invoice, or `null` when the charge was not open at `issuedAtMs`.
    */
   async issueSparkInvoice(
     chargeId: string,
     invoice: string,
-    nowMs: number,
+    issuedAtMs: number,
   ): Promise<string | null> {
     const rows = await this.#sql.query<{ spark_invoice: string }>(
       `UPDATE pos_charge
 SET spark_invoice = COALESCE(spark_invoice, $2)
-WHERE id = $1 AND status = 'pending' AND expires_at > $3
+WHERE id = $1 AND status IN ('pending', 'expired') AND expires_at > $3
 RETURNING spark_invoice`,
-      [chargeId, invoice, new Date(nowMs).toISOString()],
+      [chargeId, invoice, new Date(issuedAtMs).toISOString()],
     );
     return rows[0]?.spark_invoice ?? null;
   }
 
   /**
-   * Insert the payment hash when the charge is pending and unexpired; a
+   * Insert the payment hash when the charge was open at `issuedAtMs`; a
    * conflicting hash is left unchanged.
    *
    * @param chargeId - Charge id (`$1`).
    * @param paymentHash - BOLT11 payment hash (`$2`).
-   * @param nowMs - Clock (epoch ms); bound as ISO `$3`.
+   * @param issuedAtMs - Issue time (epoch ms); bound as ISO `$3`.
    * @returns `true` when this call inserted the row.
    */
-  async recordInvoice(chargeId: string, paymentHash: string, nowMs: number): Promise<boolean> {
+  async recordInvoice(chargeId: string, paymentHash: string, issuedAtMs: number): Promise<boolean> {
     const rows = await this.#sql.query<{ payment_hash: string }>(
       `INSERT INTO pos_charge_invoice (payment_hash, charge_id, created_at)
 SELECT $2::text, id, $3::timestamptz
 FROM pos_charge
-WHERE id = $1 AND status = 'pending' AND expires_at > $3::timestamptz
+WHERE id = $1 AND status IN ('pending', 'expired') AND expires_at > $3::timestamptz
 ON CONFLICT (payment_hash) DO NOTHING
 RETURNING payment_hash`,
-      [chargeId, paymentHash, new Date(nowMs).toISOString()],
+      [chargeId, paymentHash, new Date(issuedAtMs).toISOString()],
     );
     return rows.length > 0;
   }
