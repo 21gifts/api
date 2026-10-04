@@ -2,7 +2,8 @@
  * Persistence for member point-of-sale charges.
  *
  * v1 default is in-memory. Production boot injects Postgres when
- * `DATABASE_URL` is set. Table name is `pos_charge`.
+ * `DATABASE_URL` is set. Tables are `pos_charge` and `pos_charge_invoice`
+ * (the BOLT11 payment hashes handed out for a pending charge).
  */
 
 import type { SqlClient } from '@/lib/auth/sql';
@@ -11,6 +12,14 @@ import type { PosCharge, PosChargeStatus } from '@/lib/pos-charge';
 
 /** POS charge used to mark an account as active on a UTC day. */
 export type PosChargeRef = { accountId: string; createdAtMs: number };
+
+/** A charge the paid watcher still polls, with the BOLT11 payment hashes recorded for it. */
+export interface PosWatch {
+  /** The pending or expired charge (its `sparkInvoice` is polled too). */
+  charge: PosCharge;
+  /** Payment hashes (64 lower-case hex) recorded for this charge, oldest first. */
+  paymentHashes: string[];
+}
 
 /**
  * Persistence port for point-of-sale charges.
@@ -68,22 +77,89 @@ export interface PosStore {
    * @returns Account id and created-at epoch ms.
    */
   listCreatedBetween(startMs: number, endMs: number): Promise<PosChargeRef[]>;
+
+  /**
+   * Store `invoice` as the charge's Spark invoice unless it already has one.
+   * Only a charge that was open at `issuedAtMs` gets one: status `pending`
+   * or `expired` (never `paid` or `cancelled`) and `expiresAt` after
+   * `issuedAtMs`.
+   *
+   * @param chargeId - Charge id.
+   * @param invoice - New `spark1…` string.
+   * @param issuedAtMs - When the caller found the charge open (epoch ms).
+   * @returns The stored Spark invoice (the existing one when present), or
+   *   `null` when the charge was not open at `issuedAtMs`.
+   */
+  issueSparkInvoice(chargeId: string, invoice: string, issuedAtMs: number): Promise<string | null>;
+
+  /**
+   * Record a BOLT11 payment hash handed out for a charge. Only a charge that
+   * was open at `issuedAtMs` records (status `pending` or `expired`,
+   * `expiresAt` after `issuedAtMs`), so the issue time decides, not the
+   * write time; a hash already recorded is left unchanged.
+   *
+   * @param chargeId - Charge id.
+   * @param paymentHash - Payment hash of the BOLT11 (64 lower-case hex).
+   * @param issuedAtMs - When the caller found the charge open (epoch ms); stored as the issue time.
+   * @returns `true` when this call recorded the hash.
+   */
+  recordInvoice(chargeId: string, paymentHash: string, issuedAtMs: number): Promise<boolean>;
+
+  /**
+   * Charges still watched for a payment: `pending` or `expired` with
+   * `expiresAt` after `sinceMs`, oldest first, each with its recorded
+   * payment hashes. Paid and cancelled charges are never listed.
+   *
+   * @param sinceMs - Watch window start (epoch ms).
+   * @returns Watched charges.
+   */
+  listWatched(sinceMs: number): Promise<PosWatch[]>;
+
+  /**
+   * Mark a pending or expired charge paid. Atomic and once only: a charge
+   * that is already paid or cancelled is left unchanged. Logs `pos.paid`.
+   *
+   * @param chargeId - Charge id.
+   * @param paidAtMs - Confirmation instant (epoch ms).
+   * @returns The paid row, or `null` when this call did not change it.
+   */
+  markPaid(chargeId: string, paidAtMs: number): Promise<PosCharge | null>;
 }
 
-/** Idempotent DDL for the pos_charge table (matches `docs/schema/pos_charge.sql`). */
+/**
+ * Idempotent DDL for the `pos_charge` and `pos_charge_invoice` tables
+ * (matches `docs/schema/pos_charge.sql`). Existing tables gain `paid_at`,
+ * `spark_invoice`, and the `paid` status.
+ */
 export const POS_SCHEMA_SQL: readonly string[] = [
   `CREATE TABLE IF NOT EXISTS pos_charge (
   id uuid PRIMARY KEY,
   account_id uuid NOT NULL REFERENCES account (id),
   amount_sats bigint NOT NULL CHECK (amount_sats > 0),
-  status text NOT NULL CHECK (status IN ('pending', 'cancelled', 'expired')),
+  status text NOT NULL CHECK (status IN ('pending', 'paid', 'cancelled', 'expired')),
   created_at timestamptz NOT NULL,
-  expires_at timestamptz NOT NULL
+  expires_at timestamptz NOT NULL,
+  paid_at timestamptz,
+  spark_invoice text
 )`,
   `CREATE INDEX IF NOT EXISTS pos_charge_account_created_idx
   ON pos_charge (account_id, created_at DESC, id DESC)`,
   `CREATE UNIQUE INDEX IF NOT EXISTS pos_charge_account_pending_idx
   ON pos_charge (account_id) WHERE status = 'pending'`,
+  `ALTER TABLE pos_charge ADD COLUMN IF NOT EXISTS paid_at timestamptz`,
+  `ALTER TABLE pos_charge ADD COLUMN IF NOT EXISTS spark_invoice text`,
+  `ALTER TABLE pos_charge DROP CONSTRAINT IF EXISTS pos_charge_status_check`,
+  `ALTER TABLE pos_charge ADD CONSTRAINT pos_charge_status_check
+  CHECK (status IN ('pending', 'paid', 'cancelled', 'expired'))`,
+  `CREATE INDEX IF NOT EXISTS pos_charge_watch_idx
+  ON pos_charge (expires_at) WHERE status IN ('pending', 'expired')`,
+  `CREATE TABLE IF NOT EXISTS pos_charge_invoice (
+  payment_hash text PRIMARY KEY,
+  charge_id uuid NOT NULL REFERENCES pos_charge (id),
+  created_at timestamptz NOT NULL
+)`,
+  `CREATE INDEX IF NOT EXISTS pos_charge_invoice_charge_idx
+  ON pos_charge_invoice (charge_id, created_at)`,
 ];
 
 /**
@@ -104,7 +180,13 @@ function copyCharge(row: PosCharge): PosCharge {
     ...row,
     createdAt: new Date(row.createdAt.getTime()),
     expiresAt: new Date(row.expiresAt.getTime()),
+    paidAt: row.paidAt === null ? null : new Date(row.paidAt.getTime()),
   };
+}
+
+/** Oldest `createdAt` first, then `id` ascending. */
+function oldestFirst(rows: readonly PosCharge[]): PosCharge[] {
+  return newestFirst(rows).reverse();
 }
 
 /** Newest `createdAt` first, then `id` descending. */
@@ -124,6 +206,23 @@ function newestFirst(rows: readonly PosCharge[]): PosCharge[] {
  */
 export class InMemoryPosStore implements PosStore {
   readonly #rows: PosCharge[] = [];
+  readonly #invoices: { paymentHash: string; chargeId: string; createdAtMs: number }[] = [];
+
+  /**
+   * The stored row with `id` when it was open at `issuedAtMs`: `pending` or
+   * `expired`, with `expiresAt` after `issuedAtMs`.
+   *
+   * @param id - Charge id.
+   * @param issuedAtMs - Issue time (epoch ms).
+   */
+  #openRow(id: string, issuedAtMs: number): PosCharge | undefined {
+    return this.#rows.find(
+      (row) =>
+        row.id === id &&
+        (row.status === 'pending' || row.status === 'expired') &&
+        row.expiresAt.getTime() > issuedAtMs,
+    );
+  }
 
   /**
    * Mark due pending rows expired (log `pos.expired` once when any flip).
@@ -268,6 +367,88 @@ export class InMemoryPosStore implements PosStore {
     }
     return Promise.resolve(listed);
   }
+
+  /**
+   * Store the charge's Spark invoice unless it has one.
+   *
+   * @param chargeId - Charge id.
+   * @param invoice - New `spark1…` string.
+   * @param issuedAtMs - Issue time (epoch ms).
+   * @returns The stored Spark invoice, or `null` when the charge was not open at `issuedAtMs`.
+   */
+  issueSparkInvoice(chargeId: string, invoice: string, issuedAtMs: number): Promise<string | null> {
+    const row = this.#openRow(chargeId, issuedAtMs);
+    if (row === undefined) {
+      return Promise.resolve(null);
+    }
+    row.sparkInvoice ??= invoice;
+    return Promise.resolve(row.sparkInvoice);
+  }
+
+  /**
+   * Record a payment hash once for a charge that was open at `issuedAtMs`.
+   *
+   * @param chargeId - Charge id.
+   * @param paymentHash - BOLT11 payment hash.
+   * @param issuedAtMs - Issue time (epoch ms).
+   * @returns `true` when this call recorded the hash.
+   */
+  recordInvoice(chargeId: string, paymentHash: string, issuedAtMs: number): Promise<boolean> {
+    if (
+      this.#openRow(chargeId, issuedAtMs) === undefined ||
+      this.#invoices.some((invoice) => invoice.paymentHash === paymentHash)
+    ) {
+      return Promise.resolve(false);
+    }
+    this.#invoices.push({ paymentHash, chargeId, createdAtMs: issuedAtMs });
+    return Promise.resolve(true);
+  }
+
+  /**
+   * Pending or expired charges with `expiresAt` after `sinceMs`, oldest first.
+   *
+   * @param sinceMs - Watch window start (epoch ms).
+   * @returns Copies of the watched charges with their payment hashes.
+   */
+  listWatched(sinceMs: number): Promise<PosWatch[]> {
+    const watched = oldestFirst(
+      this.#rows.filter(
+        (row) =>
+          (row.status === 'pending' || row.status === 'expired') &&
+          row.expiresAt.getTime() > sinceMs,
+      ),
+    );
+    return Promise.resolve(
+      watched.map((row) => ({
+        charge: copyCharge(row),
+        paymentHashes: this.#invoices
+          .filter((invoice) => invoice.chargeId === row.id)
+          .map((invoice) => invoice.paymentHash),
+      })),
+    );
+  }
+
+  /**
+   * Mark a pending or expired charge paid once. Logs `pos.paid`.
+   *
+   * @param chargeId - Charge id.
+   * @param paidAtMs - Confirmation instant (epoch ms).
+   * @returns A copy of the paid row, or `null` when nothing changed.
+   */
+  markPaid(chargeId: string, paidAtMs: number): Promise<PosCharge | null> {
+    const row = this.#rows.find(
+      (candidate) =>
+        candidate.id === chargeId &&
+        (candidate.status === 'pending' || candidate.status === 'expired'),
+    );
+    if (row === undefined) {
+      return Promise.resolve(null);
+    }
+    row.status = 'paid';
+    row.paidAt = new Date(paidAtMs);
+    logEvent('pos.paid', { accountId: row.accountId });
+    return Promise.resolve(copyCharge(row));
+  }
 }
 
 /** Row shape selected from `pos_charge`. */
@@ -278,7 +459,13 @@ interface PosSqlRow {
   status: string;
   created_at: Date | string;
   expires_at: Date | string;
+  paid_at: Date | string | null;
+  spark_invoice: string | null;
 }
+
+/** Columns selected into {@link PosSqlRow}. */
+const POS_COLUMNS =
+  'id, account_id, amount_sats, status, created_at, expires_at, paid_at, spark_invoice';
 
 /** Coerce Postgres timestamps; copy so callers cannot mutate driver dates. */
 function asDate(value: Date | string): Date {
@@ -299,6 +486,8 @@ function mapPosRow(row: PosSqlRow): PosCharge {
     status: row.status as PosChargeStatus,
     createdAt: asDate(row.created_at),
     expiresAt: asDate(row.expires_at),
+    paidAt: row.paid_at === null ? null : asDate(row.paid_at),
+    sparkInvoice: row.spark_invoice,
   };
 }
 
@@ -345,7 +534,7 @@ RETURNING id`,
   async currentPending(accountId: string, nowMs: number): Promise<PosCharge | null> {
     await this.#expireDue(accountId, nowMs);
     const rows = await this.#sql.query<PosSqlRow>(
-      `SELECT id, account_id, amount_sats, status, created_at, expires_at
+      `SELECT ${POS_COLUMNS}
 FROM pos_charge
 WHERE account_id = $1 AND status = 'pending'
 ORDER BY created_at DESC, id DESC
@@ -368,8 +557,8 @@ LIMIT 1`,
       await this.#expireDue(row.accountId, row.createdAt.getTime());
     }
     await this.#sql.execute(
-      `INSERT INTO pos_charge (id, account_id, amount_sats, status, created_at, expires_at)
-VALUES ($1,$2,$3,$4,$5,$6)`,
+      `INSERT INTO pos_charge (${POS_COLUMNS})
+VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
       [
         row.id,
         row.accountId,
@@ -377,6 +566,8 @@ VALUES ($1,$2,$3,$4,$5,$6)`,
         row.status,
         row.createdAt.toISOString(),
         row.expiresAt.toISOString(),
+        row.paidAt === null ? null : row.paidAt.toISOString(),
+        row.sparkInvoice,
       ],
     );
     logEvent('pos.create', { accountId: row.accountId });
@@ -396,7 +587,7 @@ VALUES ($1,$2,$3,$4,$5,$6)`,
       `UPDATE pos_charge
 SET status = 'cancelled'
 WHERE account_id = $1 AND status = 'pending'
-RETURNING id, account_id, amount_sats, status, created_at, expires_at`,
+RETURNING ${POS_COLUMNS}`,
       [accountId],
     );
     const cancelled = newestFirst(rows.map((row) => mapPosRow(row)));
@@ -417,7 +608,7 @@ RETURNING id, account_id, amount_sats, status, created_at, expires_at`,
    */
   async listForAccount(accountId: string, limit: number): Promise<PosCharge[]> {
     const rows = await this.#sql.query<PosSqlRow>(
-      `SELECT id, account_id, amount_sats, status, created_at, expires_at
+      `SELECT ${POS_COLUMNS}
 FROM pos_charge
 WHERE account_id = $1
 ORDER BY created_at DESC, id DESC
@@ -435,7 +626,7 @@ LIMIT $2`,
    */
   async listLatest(limit: number): Promise<PosCharge[]> {
     const rows = await this.#sql.query<PosSqlRow>(
-      `SELECT id, account_id, amount_sats, status, created_at, expires_at
+      `SELECT ${POS_COLUMNS}
 FROM pos_charge
 ORDER BY created_at DESC, id DESC
 LIMIT $1`,
@@ -465,5 +656,106 @@ WHERE created_at >= $1 AND created_at < $2`,
       accountId: row.account_id,
       createdAtMs: asDate(row.created_at).getTime(),
     }));
+  }
+
+  /**
+   * One conditional `UPDATE` that keeps an existing `spark_invoice`.
+   *
+   * @param chargeId - Charge id (`$1`).
+   * @param invoice - New `spark1…` string (`$2`).
+   * @param issuedAtMs - Issue time (epoch ms); bound as ISO `$3`.
+   * @returns The stored Spark invoice, or `null` when the charge was not open at `issuedAtMs`.
+   */
+  async issueSparkInvoice(
+    chargeId: string,
+    invoice: string,
+    issuedAtMs: number,
+  ): Promise<string | null> {
+    const rows = await this.#sql.query<{ spark_invoice: string }>(
+      `UPDATE pos_charge
+SET spark_invoice = COALESCE(spark_invoice, $2)
+WHERE id = $1 AND status IN ('pending', 'expired') AND expires_at > $3
+RETURNING spark_invoice`,
+      [chargeId, invoice, new Date(issuedAtMs).toISOString()],
+    );
+    return rows[0]?.spark_invoice ?? null;
+  }
+
+  /**
+   * Insert the payment hash when the charge was open at `issuedAtMs`; a
+   * conflicting hash is left unchanged.
+   *
+   * @param chargeId - Charge id (`$1`).
+   * @param paymentHash - BOLT11 payment hash (`$2`).
+   * @param issuedAtMs - Issue time (epoch ms); bound as ISO `$3`.
+   * @returns `true` when this call inserted the row.
+   */
+  async recordInvoice(chargeId: string, paymentHash: string, issuedAtMs: number): Promise<boolean> {
+    const rows = await this.#sql.query<{ payment_hash: string }>(
+      `INSERT INTO pos_charge_invoice (payment_hash, charge_id, created_at)
+SELECT $2::text, id, $3::timestamptz
+FROM pos_charge
+WHERE id = $1 AND status IN ('pending', 'expired') AND expires_at > $3::timestamptz
+ON CONFLICT (payment_hash) DO NOTHING
+RETURNING payment_hash`,
+      [chargeId, paymentHash, new Date(issuedAtMs).toISOString()],
+    );
+    return rows.length > 0;
+  }
+
+  /**
+   * Pending or expired charges with `expires_at` after `sinceMs`, joined to
+   * their recorded payment hashes, oldest first.
+   *
+   * @param sinceMs - Watch window start (epoch ms); bound as ISO `$1`.
+   * @returns Watched charges with their payment hashes.
+   */
+  async listWatched(sinceMs: number): Promise<PosWatch[]> {
+    const rows = await this.#sql.query<PosSqlRow & { payment_hash: string | null }>(
+      `SELECT c.id, c.account_id, c.amount_sats, c.status, c.created_at, c.expires_at,
+       c.paid_at, c.spark_invoice, i.payment_hash
+FROM pos_charge c
+LEFT JOIN pos_charge_invoice i ON i.charge_id = c.id
+WHERE c.status IN ('pending', 'expired') AND c.expires_at > $1
+ORDER BY c.created_at ASC, c.id ASC, i.created_at ASC, i.payment_hash ASC`,
+      [new Date(sinceMs).toISOString()],
+    );
+    const watched = new Map<string, PosWatch>();
+    for (const row of rows) {
+      let entry = watched.get(row.id);
+      if (entry === undefined) {
+        entry = { charge: mapPosRow(row), paymentHashes: [] };
+        watched.set(row.id, entry);
+      }
+      if (row.payment_hash !== null) {
+        entry.paymentHashes.push(row.payment_hash);
+      }
+    }
+    return [...watched.values()];
+  }
+
+  /**
+   * One conditional `UPDATE … WHERE status IN ('pending', 'expired')`. Logs
+   * `pos.paid` when a row is returned.
+   *
+   * @param chargeId - Charge id (`$1`).
+   * @param paidAtMs - Confirmation instant (epoch ms); bound as ISO `$2`.
+   * @returns The mapped paid row, or `null` when nothing changed.
+   */
+  async markPaid(chargeId: string, paidAtMs: number): Promise<PosCharge | null> {
+    const rows = await this.#sql.query<PosSqlRow>(
+      `UPDATE pos_charge
+SET status = 'paid', paid_at = $2
+WHERE id = $1 AND status IN ('pending', 'expired')
+RETURNING ${POS_COLUMNS}`,
+      [chargeId, new Date(paidAtMs).toISOString()],
+    );
+    const row = rows[0];
+    if (row === undefined) {
+      return null;
+    }
+    const paid = mapPosRow(row);
+    logEvent('pos.paid', { accountId: paid.accountId });
+    return paid;
   }
 }

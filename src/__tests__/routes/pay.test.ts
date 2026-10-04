@@ -1,9 +1,12 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createApp } from '@/server';
 import { InMemoryAuthStore } from '@/lib/auth/store';
 import { InMemoryPosStore, type PosStore } from '@/lib/pos-store';
 import { Hono } from 'hono';
 import { payRoutes } from '@/routes/pay';
+import { decodeBolt11 } from '@/lib/bolt11';
+import type { PosCharge } from '@/lib/pos-charge';
+import { encodeSparkInvoice, uuidV7 } from '@/lib/spark-invoice';
 import {
   LNURL_SERVER,
   WALLET_PUBKEY,
@@ -80,6 +83,7 @@ async function seededApp(
     throwOnLookup?: boolean;
     posStore?: PosStore;
     now?: () => number;
+    env?: Record<string, string>;
   } = {},
 ) {
   const authStore = new InMemoryAuthStore();
@@ -113,7 +117,11 @@ async function seededApp(
     posStore?: PosStore;
     now?: () => number;
     env: Record<string, string | undefined>;
-  } = { authStore, fetchImpl, env: { ...process.env, ...LNURL_ENV } };
+  } = {
+    authStore,
+    fetchImpl,
+    env: { ...process.env, ...LNURL_ENV, ...(overrides.env ?? {}) },
+  };
   if (overrides.posStore !== undefined) {
     appOpts.posStore = overrides.posStore;
   }
@@ -251,6 +259,8 @@ describe('GET /pay/:username', () => {
       status: 'pending',
       createdAt: new Date(nowMs),
       expiresAt,
+      paidAt: null,
+      sparkInvoice: null,
     });
     const { app } = await seededApp({ posStore, now });
     const res = await app.request('/pay/ada');
@@ -280,6 +290,8 @@ describe('GET /pay/:username', () => {
       status: 'pending',
       createdAt: new Date(nowMs - 1),
       expiresAt: new Date(nowMs),
+      paidAt: null,
+      sparkInvoice: null,
     });
     const { app } = await seededApp({ posStore, now });
     const res = await app.request('/pay/ada');
@@ -304,6 +316,8 @@ describe('GET /pay/:username', () => {
       status: 'cancelled',
       createdAt: new Date(nowMs),
       expiresAt: new Date(nowMs + 60_000),
+      paidAt: null,
+      sparkInvoice: null,
     });
     const { app } = await seededApp({ posStore, now });
     const res = await app.request('/pay/ada');
@@ -339,8 +353,8 @@ describe('POST /pay/:username/invoice', () => {
     });
     expect(res.status).toBe(200);
     const body = (await res.json()) as Record<string, unknown>;
-    expect(body).toEqual({ pr: PR, amountSats: PR_SATS });
-    expect(Object.keys(body).sort()).toEqual(['amountSats', 'pr']);
+    expect(body).toEqual({ pr: PR, amountSats: PR_SATS, sparkInvoice: null });
+    expect(Object.keys(body).sort()).toEqual(['amountSats', 'pr', 'sparkInvoice']);
     expect(urls.length).toBeGreaterThan(1);
     expect(urls[0]).toBe(WELL_KNOWN_URL);
     expect(urls[1]).toBe(WELL_KNOWN_URL);
@@ -549,6 +563,8 @@ describe('POST /pay/:username/invoice', () => {
       status: 'pending',
       createdAt: new Date(nowMs),
       expiresAt: new Date(nowMs + 60_000),
+      paidAt: null,
+      sparkInvoice: null,
     });
     const { app, urls } = await seededApp({ posStore, now });
     const res = await app.request('/pay/ada/invoice', {
@@ -572,6 +588,8 @@ describe('POST /pay/:username/invoice', () => {
       status: 'pending',
       createdAt: new Date(nowMs),
       expiresAt: new Date(nowMs + 60_000),
+      paidAt: null,
+      sparkInvoice: null,
     });
     const { app } = await seededApp({ posStore, now });
     const res = await app.request('/pay/ada/invoice', {
@@ -580,7 +598,7 @@ describe('POST /pay/:username/invoice', () => {
       body: JSON.stringify({ amountSats: PR_SATS }),
     });
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ pr: PR, amountSats: PR_SATS });
+    expect(await res.json()).toEqual({ pr: PR, amountSats: PR_SATS, sparkInvoice: null });
   });
 
   it('pins GET to a charge outside the provider window and rejects that POST amount', async () => {
@@ -594,6 +612,8 @@ describe('POST /pay/:username/invoice', () => {
       status: 'pending',
       createdAt: new Date(nowMs),
       expiresAt: new Date(nowMs + 60_000),
+      paidAt: null,
+      sparkInvoice: null,
     });
     const { app, urls } = await seededApp({ posStore, now, maxSendable: 5000 });
     const getRes = await app.request('/pay/ada');
@@ -648,7 +668,7 @@ describe('wallet-backed pay link', () => {
       body: JSON.stringify({ amountSats: PR_SATS }),
     });
     expect(invoice.status).toBe(200);
-    expect(await invoice.json()).toEqual({ pr: PR, amountSats: PR_SATS });
+    expect(await invoice.json()).toEqual({ pr: PR, amountSats: PR_SATS, sparkInvoice: null });
     expect(allInternal(seen)).toBe(true);
     expect(seen.some((request) => request.url.includes('/lnurlp/wally/invoice?'))).toBe(true);
   });
@@ -657,5 +677,198 @@ describe('wallet-backed pay link', () => {
     const { app, seen } = await walletPayApp(false);
     expect((await app.request('/pay/wally')).status).toBe(404);
     expect(seen).toEqual([]);
+  });
+});
+
+describe('till payments on POST /pay/:username/invoice', () => {
+  const NOW_MS = 1_700_000_000_000;
+  const CHARGE_ID = '77777777-7777-4777-8777-777777777777';
+  const PAYMENT_HASH = decodeBolt11(PR)?.paymentHash ?? '';
+  let warn: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+  });
+
+  afterEach(() => {
+    warn.mockRestore();
+  });
+
+  function events(): string[] {
+    return warn.mock.calls
+      .map((call) => call[0])
+      .filter((arg): arg is string => typeof arg === 'string' && arg.startsWith('{'))
+      .map((arg) => (JSON.parse(arg) as { event: string }).event);
+  }
+
+  function pendingCharge(): PosCharge {
+    return {
+      id: CHARGE_ID,
+      accountId: ADA_ID,
+      amountSats: PR_SATS,
+      status: 'pending',
+      createdAt: new Date(NOW_MS),
+      expiresAt: new Date(NOW_MS + 60_000),
+      paidAt: null,
+      sparkInvoice: null,
+    };
+  }
+
+  async function tillApp(opts: {
+    posStore: PosStore;
+    freePayments?: boolean;
+    randomBytes?: (length: number) => Uint8Array;
+  }): Promise<Hono> {
+    const auth = new InMemoryAuthStore();
+    await auth.createAccount(createAccount());
+    await auth.claimSparkPubkey(ADA_ID, WALLET_PUBKEY);
+    await auth.markSparkPubkeyVerified(ADA_ID, WALLET_PUBKEY, 'ada', 2);
+    const fetchImpl = async (input: string | URL | Request): Promise<Response> =>
+      String(input).includes('/.well-known/lnurlp/')
+        ? metadataResponse(1000, WIDE_MAX_SENDABLE)
+        : invoiceResponse();
+    return new Hono().route(
+      '/pay',
+      payRoutes({
+        auth,
+        fetchImpl,
+        posStore: opts.posStore,
+        now: () => NOW_MS,
+        lnurlServer: LNURL_SERVER,
+        ...(opts.freePayments === undefined ? {} : { freePayments: opts.freePayments }),
+        ...(opts.randomBytes === undefined ? {} : { randomBytes: opts.randomBytes }),
+      }),
+    );
+  }
+
+  async function mint(app: Hono): Promise<Response> {
+    return app.request('/pay/ada/invoice', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ amountSats: PR_SATS }),
+    });
+  }
+
+  it('returns one Spark invoice per charge and records the BOLT11 against it', async () => {
+    const posStore = new InMemoryPosStore();
+    await posStore.create(pendingCharge());
+    let fill = 0;
+    const app = await tillApp({
+      posStore,
+      freePayments: true,
+      randomBytes: (length) => new Uint8Array(length).fill((fill += 1)),
+    });
+    const expected = encodeSparkInvoice({
+      identityPublicKey: WALLET_PUBKEY,
+      id: uuidV7(NOW_MS, new Uint8Array(10).fill(1)),
+      memo: `pos:${CHARGE_ID}`,
+      amountSats: PR_SATS,
+    });
+    const first = await mint(app);
+    expect(first.status).toBe(200);
+    expect(await first.json()).toEqual({ pr: PR, amountSats: PR_SATS, sparkInvoice: expected });
+    const second = await mint(app);
+    expect(await second.json()).toEqual({ pr: PR, amountSats: PR_SATS, sparkInvoice: expected });
+    expect(fill).toBe(1);
+    const watched = await posStore.listWatched(NOW_MS);
+    expect(watched).toEqual([
+      {
+        charge: expect.objectContaining({ id: CHARGE_ID, sparkInvoice: expected }),
+        paymentHashes: [PAYMENT_HASH],
+      },
+    ]);
+  });
+
+  it('uses the issue time before the mint, so a mint that ends after expiry still counts', async () => {
+    const posStore = new InMemoryPosStore();
+    await posStore.create(pendingCharge());
+    const auth = new InMemoryAuthStore();
+    await auth.createAccount(createAccount());
+    await auth.claimSparkPubkey(ADA_ID, WALLET_PUBKEY);
+    await auth.markSparkPubkeyVerified(ADA_ID, WALLET_PUBKEY, 'ada', 2);
+    let clock = NOW_MS;
+    const fetchImpl = async (input: string | URL | Request): Promise<Response> => {
+      if (String(input).includes('/.well-known/lnurlp/')) {
+        return metadataResponse(1000, WIDE_MAX_SENDABLE);
+      }
+      clock = NOW_MS + 120_000;
+      return invoiceResponse();
+    };
+    const app = new Hono().route(
+      '/pay',
+      payRoutes({
+        auth,
+        fetchImpl,
+        posStore,
+        now: () => clock,
+        lnurlServer: LNURL_SERVER,
+        freePayments: true,
+      }),
+    );
+    const body = (await (await mint(app)).json()) as { sparkInvoice: string | null };
+    expect(body.sparkInvoice?.startsWith('spark1')).toBe(true);
+    expect((await posStore.listWatched(0))[0]?.paymentHashes).toEqual([PAYMENT_HASH]);
+  });
+
+  it('records the BOLT11 but returns no Spark invoice when free in-app payments are off', async () => {
+    const posStore = new InMemoryPosStore();
+    await posStore.create(pendingCharge());
+    const res = await mint(await tillApp({ posStore }));
+    expect(await res.json()).toEqual({ pr: PR, amountSats: PR_SATS, sparkInvoice: null });
+    expect((await posStore.listWatched(NOW_MS))[0]?.paymentHashes).toEqual([PAYMENT_HASH]);
+    expect((await posStore.listWatched(NOW_MS))[0]?.charge.sparkInvoice).toBeNull();
+  });
+
+  it('returns no Spark invoice and records nothing without an open charge', async () => {
+    const posStore = new InMemoryPosStore();
+    const res = await mint(await tillApp({ posStore, freePayments: true }));
+    expect(await res.json()).toEqual({ pr: PR, amountSats: PR_SATS, sparkInvoice: null });
+    expect(await posStore.listWatched(0)).toEqual([]);
+  });
+
+  it('draws the Spark invoice id from crypto randomness by default', async () => {
+    const posStore = new InMemoryPosStore();
+    await posStore.create(pendingCharge());
+    const body = (await (await mint(await tillApp({ posStore, freePayments: true }))).json()) as {
+      sparkInvoice: string;
+    };
+    expect(body.sparkInvoice.startsWith('spark1')).toBe(true);
+  });
+
+  it('still answers with the Spark invoice when recording the BOLT11 fails', async () => {
+    const posStore = new InMemoryPosStore();
+    await posStore.create(pendingCharge());
+    posStore.recordInvoice = async () => {
+      throw new Error('db');
+    };
+    const body = (await (await mint(await tillApp({ posStore, freePayments: true }))).json()) as {
+      sparkInvoice: string | null;
+    };
+    expect(body.sparkInvoice).not.toBeNull();
+    expect(events()).toContain('pos.invoice.record_failed');
+  });
+
+  it('answers with the BOLT11 and no Spark invoice when storing it fails', async () => {
+    const posStore = new InMemoryPosStore();
+    await posStore.create(pendingCharge());
+    posStore.issueSparkInvoice = async () => {
+      throw new Error('db');
+    };
+    const res = await mint(await tillApp({ posStore, freePayments: true }));
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ pr: PR, amountSats: PR_SATS, sparkInvoice: null });
+    expect(events()).toContain('pos.spark_invoice.issue_failed');
+  });
+
+  it('turns Spark invoices on in createApp when free in-app payments resolve', async () => {
+    const posStore = new InMemoryPosStore();
+    await posStore.create(pendingCharge());
+    const { app } = await seededApp({
+      posStore,
+      now: () => NOW_MS,
+      env: { LNURL_ZAP_NSEC_HEX: 'ab'.repeat(32), SPARK_OPERATOR_URL: '' },
+    });
+    const body = (await (await mint(app)).json()) as { sparkInvoice: string | null };
+    expect(body.sparkInvoice?.startsWith('spark1')).toBe(true);
   });
 });

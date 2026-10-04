@@ -510,9 +510,22 @@ export function createApp(deps: AppDeps = {}): Hono {
     }),
   );
   if (lnurlServer !== null) {
-    app.route('/', lnurlServerRoutes({ auth: store, config: lnurlServer, fetchImpl, now }));
+    app.route(
+      '/',
+      lnurlServerRoutes({ auth: store, config: lnurlServer, fetchImpl, now, posStore }),
+    );
   }
-  app.route('/pay', payRoutes({ auth: store, fetchImpl, posStore, now, ...receivingDeps }));
+  app.route(
+    '/pay',
+    payRoutes({
+      auth: store,
+      fetchImpl,
+      posStore,
+      now,
+      ...receivingDeps,
+      ...(sparkInvoices === undefined ? {} : { freePayments: true }),
+    }),
+  );
   app.route('/lnurl', lnurlRoutes({ auth: store, fetchImpl, now, env }));
   app.route(
     '/auth',
