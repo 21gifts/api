@@ -334,6 +334,19 @@ describe('InMemoryPosStore paid tracking', () => {
     ]);
   });
 
+  it('decides by issue time: a charge already marked expired still records an earlier invoice', async () => {
+    const store = new InMemoryPosStore();
+    await store.create(charge({ id: 'c1' }));
+    await store.currentPending('acc', T0 + POS_CHARGE_TTL_MS);
+    expect((await store.listLatest(1))[0]?.status).toBe('expired');
+    expect(await store.recordInvoice('c1', 'a'.repeat(64), T0 + 1)).toBe(true);
+    expect(await store.issueSparkInvoice('c1', 'spark1x', T0 + 1)).toBe('spark1x');
+    expect(await store.recordInvoice('c1', 'b'.repeat(64), T0 + POS_CHARGE_TTL_MS)).toBe(false);
+    await store.markPaid('c1', T0 + 2);
+    expect(await store.recordInvoice('c1', 'c'.repeat(64), T0 + 1)).toBe(false);
+    expect(await store.issueSparkInvoice('c1', 'spark1y', T0 + 1)).toBeNull();
+  });
+
   it('listWatched lists pending and recently expired charges oldest first', async () => {
     const store = new InMemoryPosStore();
     await store.create(charge({ id: 'old', accountId: 'a1', status: 'expired' }));
@@ -621,20 +634,22 @@ describe('PostgresPosStore', () => {
     expect(await store.issueSparkInvoice('c1', 'spark1second', T0)).toBe('spark1first');
     expect(sql.queries[0]?.text).toMatch(/SET spark_invoice = COALESCE\(spark_invoice, \$2\)/);
     expect(sql.queries[0]?.text).toMatch(
-      /WHERE id = \$1 AND status = 'pending' AND expires_at > \$3/,
+      /WHERE id = \$1 AND status IN \('pending', 'expired'\) AND expires_at > \$3/,
     );
     expect(sql.queries[0]?.params).toEqual(['c1', 'spark1second', new Date(T0).toISOString()]);
     sql.listRows = [];
     expect(await store.issueSparkInvoice('c1', 'spark1second', T0)).toBeNull();
   });
 
-  it('recordInvoice inserts only for a pending, unexpired charge and skips a known hash', async () => {
+  it('recordInvoice inserts only for a charge open at the issue time and skips a known hash', async () => {
     const sql = new MockSql();
     sql.listRows = [{ payment_hash: 'a'.repeat(64) }];
     const store = new PostgresPosStore(sql);
     expect(await store.recordInvoice('c1', 'a'.repeat(64), T0)).toBe(true);
     expect(sql.queries[0]?.text).toMatch(/INSERT INTO pos_charge_invoice/);
-    expect(sql.queries[0]?.text).toMatch(/status = 'pending' AND expires_at > \$3::timestamptz/);
+    expect(sql.queries[0]?.text).toMatch(
+      /status IN \('pending', 'expired'\) AND expires_at > \$3::timestamptz/,
+    );
     expect(sql.queries[0]?.text).toMatch(/ON CONFLICT \(payment_hash\) DO NOTHING/);
     expect(sql.queries[0]?.params).toEqual(['c1', 'a'.repeat(64), new Date(T0).toISOString()]);
     sql.listRows = [];

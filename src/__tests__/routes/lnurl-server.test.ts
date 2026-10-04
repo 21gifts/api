@@ -967,6 +967,36 @@ describe('lnurlServerRoutes', () => {
         );
       });
 
+      it('keeps the hash off a same-amount charge opened while the invoice was minted', async () => {
+        const posStore = new InMemoryPosStore();
+        await posStore.create(charge(250_000));
+        const store = new InMemoryAuthStore();
+        await seedWallet(store, { id: 'acc', username: 'ada', verified: true });
+        const { fetchImpl } = recordingFetch(async () => {
+          await posStore.cancelPending('acc', NOW);
+          await posStore.create({ ...charge(250_000), id: 'c2' });
+          return new Response(JSON.stringify({ pr: TILL_PR }), { status: 200 });
+        });
+        const res = await mount(store, fetchImpl, () => NOW, posStore).request(
+          '/lnurlp/ada/invoice?amount=250000000',
+        );
+        expect(res.status).toBe(200);
+        expect(await recorded(posStore)).toEqual([]);
+      });
+
+      it('logs when recording the hash fails and still forwards the invoice', async () => {
+        const posStore = new InMemoryPosStore();
+        await posStore.create(charge(250_000));
+        posStore.recordInvoice = async () => {
+          throw new Error('db');
+        };
+        const res = await forward(posStore, JSON.stringify({ pr: TILL_PR }));
+        expect(res.status).toBe(200);
+        expect(parsedEvents(warn)).toContainEqual(
+          expect.objectContaining({ event: 'pos.invoice.record_failed', accountId: 'acc' }),
+        );
+      });
+
       it('still forwards the invoice and logs when the charge store fails', async () => {
         const posStore = new InMemoryPosStore();
         posStore.currentPending = async () => {
