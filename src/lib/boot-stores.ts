@@ -229,7 +229,7 @@ export interface BootFxOptions {
  * A set URL asks `createClient` for one `SqlClient`, migrates auth (via
  * `openAuthStore`) then the FX tables (`btc_usd_daily` then `usd_fiat_daily`),
  * `message`, `contact`, `member_habit` (via `migrateMemberHabitSchema`),
- * `pos_charge` (via `migratePosSchema`), `conversation`, `push`, `notification`, `trust_edge`,
+ * `pos_charge` and `pos_charge_invoice` (via `migratePosSchema`), `conversation`, `push`, `notification`, `trust_edge`,
  * `funding_grant`, `daily_roster`, `api_log`, `account_image`, `diagnostic_event`, `spark_invoice`, and `db_change` schemas (notification after push, trust
  * after notification, funding after trust, `api_log` then `account_image` via
  * `migrateBannerSchema`, then `diagnostic_event` and `spark_invoice` between `account_image` and `db_change` so `trg_db_change` attaches), builds a {@link QueryGiftStore},
