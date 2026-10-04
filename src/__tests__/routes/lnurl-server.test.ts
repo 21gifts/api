@@ -4,6 +4,9 @@ import { InMemoryAuthStore } from '@/lib/auth/store';
 import type { LnurlServerConfig } from '@/lib/config';
 import { LNURL_BODY_LIMIT_BYTES } from '@/lib/lnurl-server';
 import type { FetchFn } from '@/lib/lnurlp';
+import { decodeBolt11 } from '@/lib/bolt11';
+import type { PosCharge } from '@/lib/pos-charge';
+import { InMemoryPosStore, type PosStore } from '@/lib/pos-store';
 import { lnurlServerRoutes } from '@/routes/lnurl-server';
 
 const PUBKEY = `02${'a'.repeat(64)}`;
@@ -14,6 +17,9 @@ const CONFIG: LnurlServerConfig = {
   host: 'example.test',
 };
 const NOW = 1_000_000;
+/** BOLT11 for 250_000 sats. */
+const TILL_PR =
+  'lnbc2500u1pvjluezpp5qqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqypqdq5xysxxatsyp3k7enxv4jsxqzpuaztrnwngzn3kdzw5hydlzf03qdgm2hdq27cqv3agm2awhz5se903vruatfhq77w3ls4evs3ch9zw97j25emudupq63nyw24cg27h2rspfj9srp';
 
 function parsedEvents(warn: ReturnType<typeof vi.spyOn>): Array<Record<string, unknown>> {
   return warn.mock.calls
@@ -73,10 +79,11 @@ function mount(
   store: InMemoryAuthStore,
   fetchImpl: FetchFn,
   clock: () => number = () => NOW,
+  posStore: PosStore = new InMemoryPosStore(),
 ): Hono {
   return new Hono().route(
     '/',
-    lnurlServerRoutes({ auth: store, config: CONFIG, fetchImpl, now: clock }),
+    lnurlServerRoutes({ auth: store, config: CONFIG, fetchImpl, now: clock, posStore }),
   );
 }
 
@@ -898,6 +905,81 @@ describe('lnurlServerRoutes', () => {
       );
     });
 
+    describe('open till charge', () => {
+      const HASH = decodeBolt11(TILL_PR)?.paymentHash ?? '';
+
+      function charge(amountSats: number): PosCharge {
+        return {
+          id: 'c1',
+          accountId: 'acc',
+          amountSats,
+          status: 'pending',
+          createdAt: new Date(NOW),
+          expiresAt: new Date(NOW + 60_000),
+          paidAt: null,
+          sparkInvoice: null,
+        };
+      }
+
+      async function forward(posStore: PosStore, body: string, status = 200): Promise<Response> {
+        const store = new InMemoryAuthStore();
+        await seedWallet(store, { id: 'acc', username: 'ada', verified: true });
+        const { fetchImpl } = recordingFetch(
+          async () =>
+            new Response(body, { status, headers: { 'content-type': 'application/json' } }),
+        );
+        return mount(store, fetchImpl, () => NOW, posStore).request(
+          '/lnurlp/ada/invoice?amount=250000000',
+        );
+      }
+
+      async function recorded(posStore: PosStore): Promise<string[]> {
+        return (await posStore.listWatched(0)).flatMap((entry) => entry.paymentHashes);
+      }
+
+      it('records a BOLT11 at the charge amount against the open charge', async () => {
+        const posStore = new InMemoryPosStore();
+        await posStore.create(charge(250_000));
+        const body = JSON.stringify({ pr: TILL_PR, routes: [] });
+        const res = await forward(posStore, body);
+        expect(res.status).toBe(200);
+        expect(await res.text()).toBe(body);
+        expect(await recorded(posStore)).toEqual([HASH]);
+      });
+
+      it('records nothing for another amount, no charge, or a body without a BOLT11', async () => {
+        const other = new InMemoryPosStore();
+        await other.create(charge(21));
+        await forward(other, JSON.stringify({ pr: TILL_PR }));
+        expect(await recorded(other)).toEqual([]);
+        const none = new InMemoryPosStore();
+        expect((await forward(none, JSON.stringify({ pr: TILL_PR }))).status).toBe(200);
+        expect(await recorded(none)).toEqual([]);
+        const open = new InMemoryPosStore();
+        await open.create(charge(250_000));
+        for (const body of ['not json', 'null', '{"status":"ERROR"}', '{"pr":"lnbc1"}']) {
+          expect((await forward(open, body)).status).toBe(200);
+        }
+        expect((await forward(open, JSON.stringify({ pr: TILL_PR }), 404)).status).toBe(404);
+        expect(await recorded(open)).toEqual([]);
+        expect(parsedEvents(warn).some((e) => e['event'] === 'pos.invoice.record_failed')).toBe(
+          false,
+        );
+      });
+
+      it('still forwards the invoice and logs when the charge store fails', async () => {
+        const posStore = new InMemoryPosStore();
+        posStore.currentPending = async () => {
+          throw new Error('db');
+        };
+        const res = await forward(posStore, JSON.stringify({ pr: TILL_PR }));
+        expect(res.status).toBe(200);
+        expect(parsedEvents(warn)).toContainEqual(
+          expect.objectContaining({ event: 'pos.invoice.record_failed', accountId: 'acc' }),
+        );
+      });
+    });
+
     it('returns 404 when the username is invalid or the wallet is not verified', async () => {
       const store = new InMemoryAuthStore();
       await seedWallet(store, { id: 'acc', username: 'ada', verified: false });
@@ -1026,6 +1108,7 @@ describe('lnurlServerRoutes', () => {
         auth: new InMemoryAuthStore(),
         config: CONFIG,
         fetchImpl: async () => new Response('no'),
+        posStore: new InMemoryPosStore(),
         now: () => {
           throw new Error('clock');
         },
