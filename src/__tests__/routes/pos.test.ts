@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
 import { InMemoryAuthStore } from '@/lib/auth/store';
 import { InMemoryPosStore, type PosStore } from '@/lib/pos-store';
-import { POS_CHARGE_TTL_MS } from '@/lib/pos-charge';
+import { POS_CHARGE_TTL_MS, POS_PAID_SHOW_MS, type PosCharge } from '@/lib/pos-charge';
 import { posRoutes } from '@/routes/pos';
 import { createApp } from '@/server';
 import {
@@ -294,6 +294,12 @@ describe('POS routes', () => {
         listForAccount: (accountId, limit) => base.listForAccount(accountId, limit),
         listLatest: (limit) => base.listLatest(limit),
         listCreatedBetween: (startMs, endMs) => base.listCreatedBetween(startMs, endMs),
+        issueSparkInvoice: (chargeId, invoice, nowMs) =>
+          base.issueSparkInvoice(chargeId, invoice, nowMs),
+        recordInvoice: (chargeId, paymentHash, nowMs) =>
+          base.recordInvoice(chargeId, paymentHash, nowMs),
+        listWatched: (sinceMs) => base.listWatched(sinceMs),
+        markPaid: (chargeId, paidAtMs) => base.markPaid(chargeId, paidAtMs),
       };
       return new Hono().route(
         '/pos',
@@ -377,5 +383,94 @@ describe('POS for a wallet-backed member', () => {
       code: 'wallet_required',
     });
     expect(seen).toEqual([]);
+  });
+});
+
+describe('GET /pos paid confirmation', () => {
+  let warn: ReturnType<typeof vi.spyOn>;
+  let clock: number;
+
+  beforeEach(() => {
+    warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    clock = nowMs;
+  });
+
+  afterEach(() => {
+    warn.mockRestore();
+  });
+
+  function row(partial: Partial<PosCharge> & Pick<PosCharge, 'id'>): PosCharge {
+    return {
+      accountId: 'acc',
+      amountSats: 21,
+      status: 'pending',
+      createdAt: new Date(nowMs),
+      expiresAt: new Date(nowMs + POS_CHARGE_TTL_MS),
+      paidAt: null,
+      sparkInvoice: null,
+      ...partial,
+    };
+  }
+
+  async function tillApp(store: PosStore): Promise<Hono> {
+    return new Hono().route(
+      '/pos',
+      posRoutes({
+        store,
+        authStore: await readyStore(),
+        now: () => clock,
+        fetchImpl: lnurlFetch(),
+        lnurlServer: LNURL_SERVER,
+      }),
+    );
+  }
+
+  async function read(app: Hono): Promise<{ charge: unknown; history: unknown[] }> {
+    return (await (await app.request('/pos', { headers: AUTH })).json()) as {
+      charge: unknown;
+      history: unknown[];
+    };
+  }
+
+  it('keeps a charge paid within the last 60 s as charge, then only in history', async () => {
+    const store = new InMemoryPosStore();
+    await store.create(row({ id: 'c1', sparkInvoice: 'spark1x' }));
+    await store.markPaid('c1', nowMs + 10_000);
+    const app = await tillApp(store);
+    const paidJson = {
+      id: 'c1',
+      amountSats: 21,
+      status: 'paid',
+      createdAt: new Date(nowMs).toISOString(),
+      expiresAt: new Date(nowMs + POS_CHARGE_TTL_MS).toISOString(),
+      paidAt: new Date(nowMs + 10_000).toISOString(),
+    };
+    clock = nowMs + 10_000 + POS_PAID_SHOW_MS - 1;
+    expect(await read(app)).toEqual({ charge: paidJson, history: [paidJson] });
+    clock = nowMs + 10_000 + POS_PAID_SHOW_MS;
+    expect(await read(app)).toEqual({ charge: null, history: [paidJson] });
+  });
+
+  it('prefers the pending charge over an older paid one', async () => {
+    const store = new InMemoryPosStore();
+    await store.create(row({ id: 'c1' }));
+    await store.markPaid('c1', nowMs + 1_000);
+    await store.create(row({ id: 'c2', createdAt: new Date(nowMs + 2_000) }));
+    clock = nowMs + 3_000;
+    const body = (await read(await tillApp(store))) as { charge: { id: string; status: string } };
+    expect(body.charge).toEqual(expect.objectContaining({ id: 'c2', status: 'pending' }));
+  });
+
+  it('does not show a newest row that is not paid, or a paid row without paidAt', async () => {
+    const cancelled = new InMemoryPosStore();
+    await cancelled.create(row({ id: 'c1', status: 'cancelled' }));
+    expect((await read(await tillApp(cancelled))).charge).toBeNull();
+    const legacy = new InMemoryPosStore();
+    await legacy.create(row({ id: 'c1', status: 'paid' }));
+    expect((await read(await tillApp(legacy))).charge).toBeNull();
+    expect(await read(await tillApp(new InMemoryPosStore()))).toEqual({
+      charge: null,
+      history: [],
+    });
   });
 });

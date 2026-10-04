@@ -4,11 +4,13 @@
  * Mounted at `/` only when `LNURL_SERVER_URL` and `PUBLIC_BASE_URL` resolve.
  * Every gate is a store lookup (the wallet carries no session of this api).
  * Rate-limited per client IP; never logs a query string, body, signature header,
- * comment, or zap request.
+ * comment, or zap request. A BOLT11 minted for a shop at the amount of its
+ * open point-of-sale charge is recorded against that charge.
  */
 
 import { Hono } from 'hono';
 import type { AuthStore } from '@/lib/auth/store';
+import { decodeBolt11 } from '@/lib/bolt11';
 import type { LnurlServerConfig } from '@/lib/config';
 import { IpRateLimiter } from '@/lib/ip-rate-limit';
 import { logEvent } from '@/lib/log';
@@ -19,6 +21,7 @@ import {
   callLnurlServer,
   type LnurlServerResult,
 } from '@/lib/lnurl-server';
+import type { PosStore } from '@/lib/pos-store';
 import { readClientRequestMeta } from '@/lib/request-meta';
 import { normalizeSparkPubkey } from '@/lib/spark-pubkey';
 import { normalizeUsername } from '@/lib/username';
@@ -33,6 +36,8 @@ export interface LnurlServerRouteDeps {
   fetchImpl: FetchFn;
   /** Clock in epoch milliseconds. */
   now: () => number;
+  /** Point-of-sale charges; a minted BOLT11 at the open charge amount is recorded. */
+  posStore: PosStore;
 }
 
 /** Stable 404 body when a gate fails or the upstream returns 404. */
@@ -137,9 +142,48 @@ function mapUpstream(
 }
 
 /**
+ * Record the BOLT11 in a successful upstream invoice body against the
+ * account's open point-of-sale charge when its amount is the charge amount.
+ *
+ * Best effort: an unparsable body, a BOLT11 that does not decode, no open
+ * charge, or another amount records nothing; a store failure logs
+ * `pos.invoice.record_failed`. Never changes the response.
+ *
+ * @param deps - Route collaborators.
+ * @param accountId - Shop account id.
+ * @param body - Upstream response body.
+ */
+async function recordPosInvoice(
+  deps: LnurlServerRouteDeps,
+  accountId: string,
+  body: string,
+): Promise<void> {
+  let pr: unknown;
+  try {
+    pr = (JSON.parse(body) as { pr?: unknown } | null)?.pr;
+  } catch {
+    return;
+  }
+  const decoded = typeof pr === 'string' ? decodeBolt11(pr) : null;
+  if (decoded === null) {
+    return;
+  }
+  try {
+    const nowMs = deps.now();
+    const pending = await deps.posStore.currentPending(accountId, nowMs);
+    if (pending === null || decoded.amountMsat !== pending.amountSats * 1000) {
+      return;
+    }
+    await deps.posStore.recordInvoice(pending.id, decoded.paymentHash, nowMs);
+  } catch {
+    logEvent('pos.invoice.record_failed', { accountId });
+  }
+}
+
+/**
  * Build the forwarded LNURL route group.
  *
- * @param deps - Auth store, LNURL config, fetch, and clock.
+ * @param deps - Auth store, LNURL config, fetch, clock, and POS store.
  * @returns A Hono app with the five forwarded routes.
  */
 export function lnurlServerRoutes(deps: LnurlServerRouteDeps): Hono {
@@ -321,6 +365,9 @@ export function lnurlServerRoutes(deps: LnurlServerRouteDeps): Hono {
           headers: c.req.raw.headers,
           timeoutMs: LNURL_SERVER_TIMEOUT_MS,
         });
+        if (result.ok && result.status >= 200 && result.status < 300) {
+          await recordPosInvoice(deps, account.id, result.body);
+        }
         return mapUpstream(result, route);
       } catch {
         logEvent('lnurl_server.failed', { route });

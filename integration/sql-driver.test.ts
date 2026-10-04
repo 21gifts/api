@@ -9,6 +9,8 @@ import { migrateDbChangeSchema } from '@/lib/db-change';
 import { unsignedNostrDefaults } from '@/lib/message';
 import { migrateMessageSchema, PostgresMessageStore } from '@/lib/message-store';
 import { postgresTextArrayLiteral } from '@/lib/postgres-text-array';
+import { POS_CHARGE_TTL_MS } from '@/lib/pos-charge';
+import { migratePosSchema, PostgresPosStore } from '@/lib/pos-store';
 import { migrateSparkInvoiceSchema, PostgresSparkInvoiceStore } from '@/lib/spark-invoice-store';
 
 const databaseUrl = process.env['DATABASE_URL'];
@@ -496,6 +498,124 @@ describe('PostgresSparkInvoiceStore', () => {
             change.after?.['status'] === 'open',
         ),
       ).toBe(true);
+    } finally {
+      await closeIfPossible(sql);
+    }
+  });
+});
+
+describe('PostgresPosStore paid tracking', () => {
+  test('migrate an old status check, record invoices, watch, pay once, and db_change', async () => {
+    const { client, sql } = createBunSqlClient(databaseUrl);
+    try {
+      await migrateAuthSchema(client);
+      await migratePosSchema(client);
+      // An install from before the paid status: the old check, added NOT VALID so
+      // rows paid by an earlier run do not block it.
+      await client.execute(`ALTER TABLE pos_charge DROP CONSTRAINT pos_charge_status_check`);
+      await client.execute(
+        `ALTER TABLE pos_charge ADD CONSTRAINT pos_charge_status_check
+         CHECK (status IN ('pending', 'cancelled', 'expired')) NOT VALID`,
+      );
+      await migratePosSchema(client);
+      await migratePosSchema(client);
+      await migrateDbChangeSchema(client);
+
+      const auth = new PostgresAuthStore(client);
+      const hex64 = (): string =>
+        `${crypto.randomUUID().replaceAll('-', '')}${crypto.randomUUID().replaceAll('-', '')}`;
+      const accountId = crypto.randomUUID();
+      await auth.createAccount({
+        id: accountId,
+        linkingKey: null,
+        role: 'basis',
+        name: null,
+        username: `till_${Date.now()}_${Math.random().toString(16).slice(2, 10)}`,
+        location: null,
+        forumLawsDismissed: false,
+        viewKey: hex64(),
+        createdAt: Date.now(),
+        rulesAgreedAt: null,
+        walletRequired: true,
+      });
+
+      const store = new PostgresPosStore(client);
+      const now = Date.now();
+      const chargeId = crypto.randomUUID();
+      await store.create({
+        id: chargeId,
+        accountId,
+        amountSats: 21,
+        status: 'pending',
+        createdAt: new Date(now),
+        expiresAt: new Date(now + POS_CHARGE_TTL_MS),
+        paidAt: null,
+        sparkInvoice: null,
+      });
+
+      const hashA = hex64();
+      const hashB = hex64();
+      expect(await store.recordInvoice(chargeId, hashA, now + 1)).toBe(true);
+      expect(await store.recordInvoice(chargeId, hashA, now + 2)).toBe(false);
+      expect(await store.recordInvoice(chargeId, hashB, now + POS_CHARGE_TTL_MS)).toBe(false);
+      expect(await store.recordInvoice(crypto.randomUUID(), hashB, now)).toBe(false);
+      expect(await store.recordInvoice(chargeId, hashB, now + 3)).toBe(true);
+
+      expect(await store.issueSparkInvoice(chargeId, `spark1a${chargeId}`, now)).toBe(
+        `spark1a${chargeId}`,
+      );
+      expect(await store.issueSparkInvoice(chargeId, `spark1b${chargeId}`, now)).toBe(
+        `spark1a${chargeId}`,
+      );
+      expect(
+        await store.issueSparkInvoice(chargeId, `spark1c${chargeId}`, now + POS_CHARGE_TTL_MS),
+      ).toBeNull();
+
+      const watched = (await store.listWatched(now)).find((entry) => entry.charge.id === chargeId);
+      expect(watched?.paymentHashes).toEqual([hashA, hashB]);
+      expect(watched?.charge.sparkInvoice).toBe(`spark1a${chargeId}`);
+      expect(watched?.charge.amountSats).toBe(21);
+
+      const paid = await store.markPaid(chargeId, now + 10_000);
+      expect(paid?.status).toBe('paid');
+      expect(paid?.paidAt?.getTime()).toBe(now + 10_000);
+      expect(await store.markPaid(chargeId, now + 20_000)).toBeNull();
+      expect((await store.listWatched(now)).some((entry) => entry.charge.id === chargeId)).toBe(
+        false,
+      );
+      expect(await store.currentPending(accountId, now + 30_000)).toBeNull();
+      const listed = await store.listForAccount(accountId, 5);
+      expect(listed[0]?.status).toBe('paid');
+      expect(listed[0]?.paidAt?.getTime()).toBe(now + 10_000);
+
+      let refused: unknown;
+      try {
+        await client.execute(`UPDATE pos_charge SET status = 'bogus' WHERE id = $1`, [chargeId]);
+      } catch (error) {
+        refused = error;
+      }
+      expect(refused).toBeDefined();
+
+      const changes = await client.query<{
+        table_name: string;
+        op: string;
+        before: Record<string, unknown> | null;
+        after: Record<string, unknown> | null;
+      }>(
+        `SELECT table_name, op, before, after
+         FROM db_change
+         WHERE (table_name = 'pos_charge'
+                AND (before ->> 'id' = $1 OR after ->> 'id' = $1))
+            OR (table_name = 'pos_charge_invoice' AND after ->> 'charge_id' = $1)
+         ORDER BY id ASC`,
+        [chargeId],
+      );
+      expect(changes.filter((change) => change.table_name === 'pos_charge_invoice').length).toBe(2);
+      const pay = changes.find(
+        (change) => change.op === 'UPDATE' && change.after?.['status'] === 'paid',
+      );
+      expect(pay?.before?.['status']).toBe('pending');
+      expect(pay?.after?.['paid_at']).not.toBeNull();
     } finally {
       await closeIfPossible(sql);
     }

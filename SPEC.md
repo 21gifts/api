@@ -457,6 +457,12 @@ server is not contacted.
 recover. Upstream may return HTTP 200 with
 `{ "status": "ERROR", "reason": … }`. Unreachable → 503 as above.
 
+After an upstream 2xx whose JSON `pr` decodes to exactly
+`amountSats * 1000` of the account's pending point-of-sale charge, the
+payment hash is recorded against that charge for
+[paid detection](#point-of-sale-paid-detection). The response is unchanged;
+a store failure logs `pos.invoice.record_failed`.
+
 ### `GET /verify/:paymentHash`
 
 LUD-21 payment verification forward. Mounted only when
@@ -472,18 +478,79 @@ the segment joined as-is (no percent-encoding). Status mapping as recover
 for reachable outcomes; network / timeout / redirect / body-read failure →
 503 as above.
 
+### Point-of-sale paid detection
+
+No HTTP route. A background worker (`startPosPaidWorker`, every 2 s like
+the Spark invoice worker) runs when `LNURL_SERVER_URL` and
+`PUBLIC_BASE_URL` resolve. It watches charges that are `pending`, or
+`expired` less than ten minutes ago; it stops watching a charge once it is
+paid or cancelled.
+
+- **Spark:** with free in-app payments on, the Spark invoice stored for a
+  charge (`POST /pay/:username/invoice`) is queried through
+  `query_spark_invoices` on the Spark coordinator. `FINALIZED` marks the
+  charge paid.
+- **Lightning:** every BOLT11 the api hands out for the shop at exactly the
+  charge amount while the charge is pending (the forwarded
+  `GET /lnurlp/:username/invoice` and `POST /pay/:username/invoice`) is
+  recorded with its payment hash in `pos_charge_invoice`. The worker asks
+  the LNURL server's LUD-21 `GET /verify/<paymentHash>`; `settled: true`
+  marks the charge paid.
+
+Marking paid is one conditional update: the first confirmation wins and
+later ones change nothing. A charge can become paid only from `pending` or
+`expired`, never from `cancelled`. Invoices are recorded only while the
+charge is pending and unexpired, so a payment confirmed after the five
+minutes for an invoice issued inside them still marks the charge paid. No
+zap receipt, gift, or message is written for a till payment. Logs:
+`pos.paid` (account id only), `pos.spark.query_failed`,
+`pos.verify.failed` (count only), `pos.worker.tick.failed`.
+
 ### `GET /pos`
 
 Bearer session. Returns the signed-in member's open point-of-sale charge,
 or `charge: null`, plus up to 20 newest rows of any status. A pending row
 whose `expiresAt` is not in the future is marked `expired` before the
-response and is not `charge`. Amounts are whole sats. There is no paid
-status. TTL is five minutes.
+response and is not `charge`. Amounts are whole sats. TTL is five minutes.
+
+Status is `pending`, `paid`, `cancelled`, or `expired`. Every charge object
+carries `paidAt` (ISO-8601, or `null` until paid). The api marks a charge
+`paid` once a payment for an invoice it handed out for that charge is
+confirmed (see [Point-of-sale paid detection](#point-of-sale-paid-detection)).
+`charge` is the pending charge, or else the newest row when it was paid less
+than 60 s ago, so the till can show the confirmation after a late poll.
+`history` includes paid rows. A paid charge no longer pins the LNURL-pay
+bounds.
 
 **Response** `200`:
 
 ```json
 { "charge": null, "history": [] }
+```
+
+**Response** `200` (paid 10 s ago):
+
+```json
+{
+  "charge": {
+    "id": "0b6f…",
+    "amountSats": 21,
+    "status": "paid",
+    "createdAt": "2026-10-04T12:00:00.000Z",
+    "expiresAt": "2026-10-04T12:05:00.000Z",
+    "paidAt": "2026-10-04T12:01:00.000Z"
+  },
+  "history": [
+    {
+      "id": "0b6f…",
+      "amountSats": 21,
+      "status": "paid",
+      "createdAt": "2026-10-04T12:00:00.000Z",
+      "expiresAt": "2026-10-04T12:05:00.000Z",
+      "paidAt": "2026-10-04T12:01:00.000Z"
+    }
+  ]
+}
 ```
 
 **Response** `401`: `{ "error": "Unauthorized" }`.
@@ -573,11 +640,22 @@ No spend token.
 **Response** `200`:
 
 ```json
-{ "pr": "lnbc...", "amountSats": 21 }
+{ "pr": "lnbc...", "amountSats": 21, "sparkInvoice": null }
 ```
 
 The `pr` is returned only when it decodes to exactly `amountSats * 1000`
 millisatoshis.
+
+While a point-of-sale charge is pending, the payment hash of `pr` is
+recorded against that charge. `sparkInvoice` is non-null only when the
+shop has a pending charge, `amountSats` equals its amount (the till pin
+already enforces that), and free in-app payments are on (the same
+condition that issues Spark invoices for gifts). It is a `spark1…`
+invoice for exactly `amountSats` to the shop's verified wallet key with
+memo `pos:<chargeId>`; one per charge, so a repeat call returns the stored
+string. A 21.gifts in-app wallet pays it without a fee. A store failure
+while recording or issuing is logged (`pos.invoice.record_failed`,
+`pos.spark_invoice.issue_failed`) and does not fail the response.
 
 Invalid username, unknown account, or no receiving address (no verified
 wallet with the LNURL server configured) → **Response** `404`
@@ -1599,7 +1677,7 @@ note (`parent_id` null, `deleted_at` null) whose text has the hashtag
 token `21GiftsShop` (case-insensitive, not followed by `[A-Za-z0-9_]`)
 and whose `shop_account_id` is set. That note counts on a UTC day when
 the account currently assigned to it has at least one `pos_charge` with
-`created_at` on that day, any status (`pending`, `cancelled`, or
+`created_at` on that day, any status (`pending`, `paid`, `cancelled`, or
 `expired`). Distinct notes, not accounts: one account on two notes
 counts twice. Duplicate note ids count once. Reassigning the account,
 clearing it, removing the hashtag, or soft-deleting the note rewrites

@@ -36,6 +36,7 @@ import { resolveMediaDir } from './lib/video';
 import { resolveFreePaymentsConfig, resolveLnurlServerConfig } from './lib/config';
 import { InMemorySparkInvoiceStore } from './lib/spark-invoice-store';
 import { startSparkInvoiceWorker } from './lib/spark-worker';
+import { startPosPaidWorker } from './lib/pos-paid-worker';
 import { createApp, parseBindAddr, resolveBindAddr } from './server';
 
 /* v8 ignore start — Bun runtime boot path; exercised by smoke tests, not unit tests */
@@ -225,6 +226,17 @@ if (import.meta.main) {
       publisher: publisher ?? new WebsocketNostrPublisher(),
       ingest: zapReceiptIngest(ingestDeps),
       claims: forumMessages,
+      now: Date.now,
+    });
+  }
+  if (lnurlServer !== undefined) {
+    startPosPaidWorker({
+      store: posStore,
+      lnurlServer,
+      ...(sparkInvoiceStore === undefined || freePayments === null
+        ? {}
+        : { operatorUrl: freePayments.operatorUrl }),
+      fetchImpl: globalThis.fetch,
       now: Date.now,
     });
   }

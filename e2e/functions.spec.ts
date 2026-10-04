@@ -2165,6 +2165,18 @@ test('Function: startSparkInvoiceWorker — free in-app payments are off on the 
 }) => {
   expect((await request.get('/healthz')).status()).toBe(200);
 });
+test('Function: runPosPaidTick — the LNURL server is off on the default boot', async ({
+  request,
+}) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+  expect((await request.get('/pos')).status()).toBe(401);
+});
+test('Function: startPosPaidWorker — the LNURL server is off on the default boot', async ({
+  request,
+}) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+  expect((await request.get('/pos')).status()).toBe(401);
+});
 test('Function: ingestZapReceipt — free in-app payments are off on the default boot', async ({
   request,
 }) => {

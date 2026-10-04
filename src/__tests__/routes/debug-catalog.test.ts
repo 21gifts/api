@@ -137,6 +137,8 @@ describe('debugCatalogRoutes', () => {
       status: 'pending',
       createdAt,
       expiresAt: new Date('2026-09-22T00:05:00.000Z'),
+      paidAt: null,
+      sparkInvoice: null,
     });
     const res = await new Hono()
       .route(
@@ -163,6 +165,8 @@ describe('debugCatalogRoutes', () => {
           status: 'pending',
           createdAt: createdAt.toISOString(),
           expiresAt: '2026-09-22T00:05:00.000Z',
+          paidAt: null,
+          sparkInvoice: null,
         },
       ],
     });

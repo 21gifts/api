@@ -223,6 +223,8 @@ describe('GET /.well-known/lnurlp/:username', () => {
         status: 'pending',
         createdAt: new Date(NOW),
         expiresAt: new Date(NOW + POS_CHARGE_TTL_MS),
+        paidAt: null,
+        sparkInvoice: null,
       });
       const fetchImpl: FetchFn = async () =>
         new Response(JSON.stringify(walletPayDoc()), { status: 200 });
