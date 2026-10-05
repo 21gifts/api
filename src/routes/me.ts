@@ -621,6 +621,7 @@ export function meRoutes(deps: MeRouteDeps): Hono {
             noteId = existingId;
             const keepsMedia =
               existing.hasVideo === true ||
+              Number(existing.photoCount) > Number(existing.hasPhoto) ||
               (decodedPhoto === undefined ? existing.hasPhoto : decodedPhoto !== null);
             if (normalized === '' && !keepsMedia) {
               // Removal: back to the auto name-copy, never an empty note.

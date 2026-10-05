@@ -323,6 +323,22 @@ describe('PUT /me/about', () => {
     expect(note?.hasPhoto).toBe(true);
   });
 
+  it('keeps empty text when a null photo leaves extra stills on the note', async () => {
+    const store = await seededStore({ name: 'Ada' });
+    await patchAccount(store, { profileMessageId: NOTE_ID });
+    const messages = await seedNoteWithPhoto('Hi');
+    const still = { contentType: 'image/jpeg' as const, bytes: JPEG_BYTES };
+    const dated = { ...still, takenAt: '2026-10-05T10:00:00' };
+    await messages.replacePhotos(NOTE_ID, [still, dated, still]);
+    const res = await putAbout(store, { text: '', photo: null }, messages);
+    expect(res.status).toBe(200);
+    const note = await messages.getById(NOTE_ID);
+    expect(note?.text).toBe('');
+    expect(note?.hasPhoto).toBe(false);
+    expect(note?.photoCount).toBe(2);
+    expect(note?.photoTakenAts).toEqual(['2026-10-05T10:00:00', null]);
+  });
+
   it('keeps empty text on a live note with a video', async () => {
     const store = await seededStore({ name: 'Ada' });
     await patchAccount(store, { profileMessageId: NOTE_ID });
