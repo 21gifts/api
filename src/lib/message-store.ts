@@ -348,6 +348,16 @@ export interface MessageStore {
   listReplies(parentId: string, limit?: number, includeHidden?: boolean): Promise<MessageRow[]>;
 
   /**
+   * Newest live replies with a non-empty event id, even when the parent is
+   * outside {@link listLatest}. No zapper-attribution filter. Live rows only
+   * (`deletedAt` null). Rows never include photo or video bytes.
+   *
+   * @param limit - Maximum rows.
+   * @returns Reply rows (caller-owned copies).
+   */
+  listRecentReplies(limit: number): Promise<MessageRow[]>;
+
+  /**
    * Direct-child ids of `parentId` (any `deletedAt`), newest not required.
    * Empty array when the parent id is unknown or has no children.
    *
@@ -2305,6 +2315,35 @@ export class InMemoryMessageStore implements MessageStore {
           return byTime;
         }
         return a.id.localeCompare(b.id);
+      })
+      .slice(0, limit)
+      .map((row) => this.#withListedMedia(row));
+    return Promise.resolve(replies);
+  }
+
+  /**
+   * Newest-first live replies with a non-empty event id, capped at `limit`.
+   * No zapper-attribution filter. Listed objects never expose photo or video
+   * bytes.
+   *
+   * @param limit - Maximum rows.
+   * @returns Reply row copies.
+   */
+  listRecentReplies(limit: number): Promise<MessageRow[]> {
+    const replies = this.#rows
+      .filter(
+        (row) =>
+          row.parentId !== null &&
+          row.deletedAt === null &&
+          row.eventId !== null &&
+          row.eventId !== '',
+      )
+      .sort((a, b) => {
+        const byTime = b.createdAt.getTime() - a.createdAt.getTime();
+        if (byTime !== 0) {
+          return byTime;
+        }
+        return b.id.localeCompare(a.id);
       })
       .slice(0, limit)
       .map((row) => this.#withListedMedia(row));
@@ -4529,6 +4568,29 @@ export class PostgresMessageStore implements MessageStore {
        ORDER BY created_at ASC, id ASC
        LIMIT $2`,
       [parentId, limit],
+    );
+    return rows.map((row) => mapMessageRow(row));
+  }
+
+  /**
+   * Newest-first live replies with a non-empty event id, capped at `limit`.
+   * No zapper-attribution filter. Same {@link MESSAGE_SELECT_COLUMNS} as
+   * {@link listReplies} — never the `photo` bytea column.
+   *
+   * @param limit - Maximum rows (`$1`).
+   * @returns Mapped reply rows.
+   */
+  async listRecentReplies(limit: number): Promise<MessageRow[]> {
+    const rows = await this.#sql.query<MessageSqlRow>(
+      `SELECT ${MESSAGE_SELECT_COLUMNS}
+       FROM message
+       WHERE parent_id IS NOT NULL
+         AND deleted_at IS NULL
+         AND event_id IS NOT NULL
+         AND event_id <> ''
+       ORDER BY created_at DESC, id DESC
+       LIMIT $1`,
+      [limit],
     );
     return rows.map((row) => mapMessageRow(row));
   }

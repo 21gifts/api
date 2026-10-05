@@ -4808,6 +4808,7 @@ describe('indexOpenZapReceipts', () => {
       listChildIds: (parentId: string) => base.listChildIds(parentId),
       listReplies: (parentId: string, limit?: number, includeHidden?: boolean) =>
         base.listReplies(parentId, limit, includeHidden),
+      listRecentReplies: (limit: number) => base.listRecentReplies(limit),
       listPublishedEventIds: (limit: number) => base.listPublishedEventIds(limit),
       create: (...args: Parameters<InMemoryMessageStore['create']>) => base.create(...args),
       findLiveByAccountContent: (
@@ -5065,6 +5066,7 @@ describe('indexOpenZapReceipts', () => {
         listChildIds: (parentId: string) => base.listChildIds(parentId),
         listReplies: (parentId: string, limit?: number, includeHidden?: boolean) =>
           base.listReplies(parentId, limit, includeHidden),
+        listRecentReplies: (limit: number) => base.listRecentReplies(limit),
         listPublishedEventIds: (limit: number) => base.listPublishedEventIds(limit),
         create: (...args: Parameters<InMemoryMessageStore['create']>) => base.create(...args),
         findLiveByAccountContent: (
@@ -5866,6 +5868,7 @@ describe('indexOpenZapReceipts', () => {
         listChildIds: (parentId: string) => base.listChildIds(parentId),
         listReplies: (parentId: string, limit?: number, includeHidden?: boolean) =>
           base.listReplies(parentId, limit, includeHidden),
+        listRecentReplies: (limit: number) => base.listRecentReplies(limit),
         listPublishedEventIds: (limit: number) => base.listPublishedEventIds(limit),
         create: (...args: Parameters<InMemoryMessageStore['create']>) => base.create(...args),
         findLiveByAccountContent: (
@@ -7344,6 +7347,335 @@ describe('indexOpenZapReceipts', () => {
     const siblings = await store.listReplies(parentId);
     expect(siblings).toHaveLength(1);
     expect(siblings[0]?.id).toBe(replyId);
+  });
+
+  it('queries a reply whose parent has left listLatest', async () => {
+    const store = new InMemoryMessageStore();
+    const auth = new InMemoryAuthStore();
+    const parentId = await seedStore({
+      store,
+      auth,
+      accountId: 'acc-reply-window-old',
+      lightningAddress: 'zap-reply-window-old@example.com',
+      messageId: 'm-reply-window-old',
+    });
+    const newer = new Date('2026-09-21T00:00:00.000Z');
+    for (let i = 0; i < MESSAGE_LIST_LIMIT; i += 1) {
+      const n = i.toString(16).padStart(2, '0');
+      await store.create({
+        id: `m-reply-window-newer-${n}`,
+        accountId: 'acc-reply-window-old',
+        name: 'Ada',
+        text: `newer ${n}`,
+        createdAt: newer,
+        hasPhoto: false,
+        ...unsignedNostrDefaults(),
+        eventId: `${n}${'d'.repeat(62)}`,
+      });
+    }
+    expect((await store.listLatest(MESSAGE_LIST_LIMIT)).some((row) => row.id === parentId)).toBe(
+      false,
+    );
+    const replyEventId = 'bb'.repeat(32);
+    const replyId = 'm-reply-window-old-child';
+    await store.create({
+      id: replyId,
+      accountId: 'acc-reply-window-old',
+      name: 'Ada',
+      text: 'child',
+      createdAt: new Date('2026-09-22T00:00:00.000Z'),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+      parentId,
+      eventId: replyEventId,
+    });
+    await auth.createAccount({
+      id: 'payer-reply-window-old',
+      linkingKey: null,
+      role: 'basis',
+      name: 'Bob',
+      lightningAddress: 'bob-reply-window-old@example.com',
+      lightningAddressVerified: true,
+      location: null,
+      forumLawsDismissed: false,
+      viewKey: viewKeyFor('payer-reply-window-old'),
+      createdAt: 2,
+      rulesAgreedAt: null,
+    });
+    const invoice: MessageInvoiceAttempt = {
+      id: 'inv-reply-window-old',
+      createdAt: new Date('2026-08-28T00:00:00.000Z'),
+      messageId: replyId,
+      payerAccountId: 'payer-reply-window-old',
+      authorAccountId: 'acc-reply-window-old',
+      amountSats: 21,
+      lightningAddress: 'zap-reply-window-old@example.com',
+      zapRequest: null,
+      result: 'ok',
+      httpStatus: 200,
+      pr: 'lnbc-reply-window-old',
+      paymentHash: '55'.repeat(32),
+      description: null,
+      descriptionHash: null,
+      isNip57Invoice: true,
+      lnurlResponse: null,
+    };
+    await store.recordInvoiceAttempt(invoice);
+    const querier = new RecordingQuerier();
+    querier.events = [
+      {
+        id: 'r-reply-window-old',
+        pubkey: PROVIDER_PUBKEY,
+        kind: 9735,
+        tags: [
+          ['e', replyEventId],
+          ['bolt11', 'lnbc-reply-window-old'],
+        ],
+      },
+    ];
+    mockedDecode.mockReturnValue({ paymentHash: '55'.repeat(32), amountMsat: 21_000 });
+    await ingest({
+      store,
+      auth,
+      querier,
+      urls: URLS,
+      timeoutMs: 50,
+      now: () => 1,
+      fetchImpl: lnurlFetch(PROVIDER_PUBKEY),
+    });
+    expect(
+      querier.calls.some((call) => {
+        const tagged = call.filter['#e'];
+        return Array.isArray(tagged) && tagged.includes(replyEventId);
+      }),
+    ).toBe(true);
+    expect((await store.getById(replyId))?.sats).toBe(21);
+    expect(await store.listReplies(replyId)).toEqual([]);
+  });
+
+  it('still queries a child of listLatest when newer replies fill listRecentReplies', async () => {
+    const store = new InMemoryMessageStore();
+    const auth = new InMemoryAuthStore();
+    const otherParentId = 'm-reply-window-other';
+    await store.create({
+      id: otherParentId,
+      accountId: 'acc-reply-window-fresh',
+      name: 'Ada',
+      text: 'other parent',
+      createdAt: new Date('2026-08-01T00:00:00.000Z'),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+      eventId: '11'.repeat(32),
+    });
+    const parentId = await seedStore({
+      store,
+      auth,
+      accountId: 'acc-reply-window-fresh',
+      lightningAddress: 'zap-reply-window-fresh@example.com',
+      messageId: 'm-reply-window-fresh',
+    });
+    expect((await store.listLatest(MESSAGE_LIST_LIMIT)).some((row) => row.id === parentId)).toBe(
+      true,
+    );
+    const replyEventId = 'cc'.repeat(32);
+    const replyId = 'm-reply-window-fresh-child';
+    await store.create({
+      id: replyId,
+      accountId: 'acc-reply-window-fresh',
+      name: 'Ada',
+      text: 'old child',
+      createdAt: new Date('2026-08-01T00:00:01.000Z'),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+      parentId,
+      eventId: replyEventId,
+    });
+    const newer = new Date('2026-09-21T00:00:00.000Z');
+    for (let i = 0; i < MESSAGE_LIST_LIMIT; i += 1) {
+      const n = i.toString(16).padStart(2, '0');
+      await store.create({
+        id: `m-reply-window-filler-${n}`,
+        accountId: 'acc-reply-window-fresh',
+        name: 'Ada',
+        text: `filler ${n}`,
+        createdAt: newer,
+        hasPhoto: false,
+        ...unsignedNostrDefaults(),
+        parentId: otherParentId,
+        eventId: `${n}${'f'.repeat(62)}`,
+      });
+    }
+    expect(
+      (await store.listRecentReplies(MESSAGE_LIST_LIMIT)).some((row) => row.id === replyId),
+    ).toBe(false);
+    await auth.createAccount({
+      id: 'payer-reply-window-fresh',
+      linkingKey: null,
+      role: 'basis',
+      name: 'Cara',
+      lightningAddress: 'cara-reply-window-fresh@example.com',
+      lightningAddressVerified: true,
+      location: null,
+      forumLawsDismissed: false,
+      viewKey: viewKeyFor('payer-reply-window-fresh'),
+      createdAt: 2,
+      rulesAgreedAt: null,
+    });
+    const invoice: MessageInvoiceAttempt = {
+      id: 'inv-reply-window-fresh',
+      createdAt: new Date('2026-08-28T00:00:00.000Z'),
+      messageId: replyId,
+      payerAccountId: 'payer-reply-window-fresh',
+      authorAccountId: 'acc-reply-window-fresh',
+      amountSats: 21,
+      lightningAddress: 'zap-reply-window-fresh@example.com',
+      zapRequest: null,
+      result: 'ok',
+      httpStatus: 200,
+      pr: 'lnbc-reply-window-fresh',
+      paymentHash: '66'.repeat(32),
+      description: null,
+      descriptionHash: null,
+      isNip57Invoice: true,
+      lnurlResponse: null,
+    };
+    await store.recordInvoiceAttempt(invoice);
+    const querier = new RecordingQuerier();
+    querier.events = [
+      {
+        id: 'r-reply-window-fresh',
+        pubkey: PROVIDER_PUBKEY,
+        kind: 9735,
+        tags: [
+          ['e', replyEventId],
+          ['bolt11', 'lnbc-reply-window-fresh'],
+        ],
+      },
+    ];
+    mockedDecode.mockReturnValue({ paymentHash: '66'.repeat(32), amountMsat: 21_000 });
+    await ingest({
+      store,
+      auth,
+      querier,
+      urls: URLS,
+      timeoutMs: 50,
+      now: () => 1,
+      fetchImpl: lnurlFetch(PROVIDER_PUBKEY),
+    });
+    expect(
+      querier.calls.some((call) => {
+        const tagged = call.filter['#e'];
+        return Array.isArray(tagged) && tagged.includes(replyEventId);
+      }),
+    ).toBe(true);
+    expect((await store.getById(replyId))?.sats).toBe(21);
+  });
+
+  it('skips recent replies that have no event id', async () => {
+    class BlankRecentReplyStore extends InMemoryMessageStore {
+      override async listRecentReplies(limit: number): Promise<MessageRow[]> {
+        const rows = await super.listRecentReplies(limit);
+        const sample = rows[0];
+        if (sample === undefined) {
+          return rows;
+        }
+        return [
+          { ...sample, id: 'blank-null', eventId: null },
+          { ...sample, id: 'blank-empty', eventId: '' },
+          ...rows,
+        ];
+      }
+    }
+    const store = new BlankRecentReplyStore();
+    const auth = new InMemoryAuthStore();
+    const parentId = await seedStore({
+      store,
+      auth,
+      accountId: 'acc-reply-window-blank',
+      lightningAddress: 'zap-reply-window-blank@example.com',
+      messageId: 'm-reply-window-blank',
+    });
+    const replyEventId = '99'.repeat(32);
+    const replyId = 'm-reply-window-blank-child';
+    await store.create({
+      id: replyId,
+      accountId: 'acc-reply-window-blank',
+      name: 'Ada',
+      text: 'child',
+      createdAt: new Date('2026-09-22T00:00:00.000Z'),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+      parentId,
+      eventId: replyEventId,
+    });
+    await auth.createAccount({
+      id: 'payer-reply-window-blank',
+      linkingKey: null,
+      role: 'basis',
+      name: 'Bob',
+      lightningAddress: 'bob-reply-window-blank@example.com',
+      lightningAddressVerified: true,
+      location: null,
+      forumLawsDismissed: false,
+      viewKey: viewKeyFor('payer-reply-window-blank'),
+      createdAt: 2,
+      rulesAgreedAt: null,
+    });
+    const invoice: MessageInvoiceAttempt = {
+      id: 'inv-reply-window-blank',
+      createdAt: new Date('2026-08-28T00:00:00.000Z'),
+      messageId: replyId,
+      payerAccountId: 'payer-reply-window-blank',
+      authorAccountId: 'acc-reply-window-blank',
+      amountSats: 21,
+      lightningAddress: 'zap-reply-window-blank@example.com',
+      zapRequest: null,
+      result: 'ok',
+      httpStatus: 200,
+      pr: 'lnbc-reply-window-blank',
+      paymentHash: '77'.repeat(32),
+      description: null,
+      descriptionHash: null,
+      isNip57Invoice: true,
+      lnurlResponse: null,
+    };
+    await store.recordInvoiceAttempt(invoice);
+    const querier = new RecordingQuerier();
+    querier.events = [
+      {
+        id: 'r-reply-window-blank',
+        pubkey: PROVIDER_PUBKEY,
+        kind: 9735,
+        tags: [
+          ['e', replyEventId],
+          ['bolt11', 'lnbc-reply-window-blank'],
+        ],
+      },
+    ];
+    mockedDecode.mockReturnValue({ paymentHash: '77'.repeat(32), amountMsat: 21_000 });
+    await ingest({
+      store,
+      auth,
+      querier,
+      urls: URLS,
+      timeoutMs: 50,
+      now: () => 1,
+      fetchImpl: lnurlFetch(PROVIDER_PUBKEY),
+    });
+    expect(
+      querier.calls.some((call) => {
+        const tagged = call.filter['#e'];
+        return Array.isArray(tagged) && tagged.includes(replyEventId);
+      }),
+    ).toBe(true);
+    expect(
+      querier.calls.some((call) => {
+        const tagged = call.filter['#e'];
+        return Array.isArray(tagged) && tagged.includes('');
+      }),
+    ).toBe(false);
+    expect((await store.getById(replyId))?.sats).toBe(21);
+    expect(await store.listReplies(replyId)).toEqual([]);
   });
 
   it('retries a pending gift reply on the next tick', async () => {
