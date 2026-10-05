@@ -5469,7 +5469,7 @@ Success is the same gift body as `POST /pay/:username/invoice`:
 
 Donating to the caller's own comment is **400**
 `{ "error": "Cannot donate to yourself" }`. No Lightning Address on the
-author is **409** `{ "error": "No wallet" }`. The existing invoice
+author is **409** `{ "error": "The author's wallet cannot receive this Bitcoin payment" }`. The existing invoice
 limiter answers **429** `{ "error": "Too many payments" }`. A failed
 mint is **502** `{ "error": "Lightning Address could not be resolved" }`,
 the same failure as `POST /pay/:username/invoice`.

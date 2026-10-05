@@ -437,7 +437,9 @@ describe('memberHabitRoutes', () => {
       AUTH,
     );
     expect(res.status).toBe(409);
-    expect(await res.json()).toEqual({ error: 'No wallet' });
+    expect(await res.json()).toEqual({
+      error: "The author's wallet cannot receive this Bitcoin payment",
+    });
   });
 
   it('invoice when fetchImpl throws is 502', async () => {
@@ -934,14 +936,18 @@ describe('memberHabitRoutes', () => {
       AUTH,
     );
     expect(emptyWallet.status).toBe(409);
-    expect(await emptyWallet.json()).toEqual({ error: 'No wallet' });
+    expect(await emptyWallet.json()).toEqual({
+      error: "The author's wallet cannot receive this Bitcoin payment",
+    });
     const stillNoWallet = await post(
       app,
       { action: 'invoice', commentId: 'c-alice', amountSats: 1 },
       AUTH,
     );
     expect(stillNoWallet.status).toBe(409);
-    expect(await stillNoWallet.json()).toEqual({ error: 'No wallet' });
+    expect(await stillNoWallet.json()).toEqual({
+      error: "The author's wallet cannot receive this Bitcoin payment",
+    });
     const atCeiling = await post(
       mount({
         store,

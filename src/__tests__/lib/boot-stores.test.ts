@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 import { openBootStores } from '@/lib/boot-stores';
 import { InMemoryAuthStore } from '@/lib/auth/store';
@@ -602,5 +604,18 @@ describe('openBootStores', () => {
     expect(giftRecorder).toBeInstanceOf(SqlGiftRecorder);
     expect(btcUsdRates).toBeInstanceOf(PostgresBtcUsdStore);
     expect(fiatRates).toBeInstanceOf(PostgresFiatStore);
+  });
+});
+
+describe('process entry store wiring', () => {
+  it('passes the SQL habit store into createApp the same way as the contact store', () => {
+    const source = readFileSync(join(process.cwd(), 'src/index.ts'), 'utf8');
+    const taken = source.indexOf('memberHabitStore,');
+    const passed = source.indexOf(
+      '...(memberHabitStore === undefined ? {} : { memberHabitStore })',
+    );
+    expect(taken).toBeGreaterThanOrEqual(0);
+    expect(passed).toBeGreaterThan(taken);
+    expect(source).toContain('...(contactStore === undefined ? {} : { contactStore })');
   });
 });

@@ -469,7 +469,7 @@ export function memberHabitRoutes(deps: {
         author.lightningAddress === null ||
         author.lightningAddress === ''
       ) {
-        return c.json({ error: 'No wallet' }, 409);
+        return c.json({ error: "The author's wallet cannot receive this Bitcoin payment" }, 409);
       }
       if (!invoiceLimiter.allow(account.id, nowMs)) {
         return c.json({ error: 'Too many payments' }, 429);
