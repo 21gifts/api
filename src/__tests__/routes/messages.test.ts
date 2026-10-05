@@ -188,6 +188,7 @@ function throwingStore(overrides: Partial<MessageStore> = {}): MessageStore {
     listLatest: boom,
     listFeed: boom,
     listReplies: boom,
+    listRecentReplies: boom,
     listDebug: boom,
     postCountsByUtcDay: boom,
     listHidden: boom,
@@ -3670,6 +3671,7 @@ describe('POST /messages', () => {
       listChildIds: (parentId) => base.listChildIds(parentId),
       listReplies: (parentId, limit, includeHidden) =>
         base.listReplies(parentId, limit, includeHidden),
+      listRecentReplies: (limit) => base.listRecentReplies(limit),
       create: (row, photo, video) => base.create(row, photo, video),
       findLiveByAccountContent: async () => {
         throw new Error('find boom');
@@ -3800,6 +3802,7 @@ describe('POST /messages', () => {
       listChildIds: (parentId) => base.listChildIds(parentId),
       listReplies: (parentId, limit, includeHidden) =>
         base.listReplies(parentId, limit, includeHidden),
+      listRecentReplies: (limit) => base.listRecentReplies(limit),
       findLiveByAccountContent: async () => undefined,
       accountHasLivePost: (accountId, excludeId) => base.accountHasLivePost(accountId, excludeId),
       accountHasLiveTopLevelPost: (accountId, excludeId) =>
@@ -5461,6 +5464,7 @@ describe('POST /messages/:id/invoice', () => {
       listChildIds: (parentId) => base.listChildIds(parentId),
       listReplies: (parentId, limit, includeHidden) =>
         base.listReplies(parentId, limit, includeHidden),
+      listRecentReplies: (limit) => base.listRecentReplies(limit),
       listPublishedEventIds: (limit) => base.listPublishedEventIds(limit),
       create: (row, photo) => base.create(row, photo),
       findLiveByAccountContent: (...args) => base.findLiveByAccountContent(...args),
@@ -7312,6 +7316,7 @@ describe('GET /messages/:id/replies', () => {
     const store = throwingStore({
       getById: (id) => base.getById(id),
       listReplies: async () => [member, damusOnly],
+      listRecentReplies: async () => [],
       deleteById: (id) => base.deleteById(id),
     });
     const res = await mount(auth, store).request(`/messages/${parentId}/replies`, {
@@ -7362,6 +7367,7 @@ describe('GET /messages/:id/replies', () => {
     const store = throwingStore({
       getById: (id) => base.getById(id),
       listReplies: async () => [missingVideo],
+      listRecentReplies: async () => [],
     });
     const res = await mount(auth, store).request(`/messages/${parentId}/replies`, {
       headers: AUTH,
@@ -7551,6 +7557,7 @@ describe('GET /messages/:id/replies', () => {
           row.id === badId ? { ...row, createdAt: new Date(Number.NaN) } : row,
         );
       },
+      listRecentReplies: (limit) => store.listRecentReplies(limit),
     });
     const res = await mount(auth, wrapped).request(`/messages/${parentId}/replies`, {
       headers: AUTH,

@@ -238,7 +238,9 @@ export async function backfillExternalZappers(
  * Empty after process restart; the first tick may then re-persist a forgotten
  * decision, but only for the receipts that tick still queries. A receipt is
  * queried while its message is in the current `listLatest` result, or is a
- * reply of one of those latest rows (non-null child `eventId`).
+ * reply of one of those latest rows (non-null child `eventId`), or is among
+ * the newest `MESSAGE_LIST_LIMIT` live replies that have an event id
+ * (`listRecentReplies`), even when the parent is not in `listLatest`.
  *
  * Note the asymmetry with `MessageStore.deleteById`: both store adapters forget
  * the receipt id when the message goes away and would record it again, but this
@@ -937,7 +939,9 @@ export async function indexZapReceipt(args: {
 
 /**
  * Query zap relays for kind:9735 receipts on recent forum notes, their
- * nested replies, the official platform profile note (even after it ages
+ * nested replies, the newest `MESSAGE_LIST_LIMIT` live replies that have
+ * an event id (`listRecentReplies`) even when the parent is not in
+ * `listLatest`, the official platform profile note (even after it ages
  * out of `listLatest`), and open conversation-invoice e-tags, index validated
  * ones, then insert a payer gift-reply (forum) or append the paid PN row
  * (conversation invoice) and fan out zap in-app notifications to every
@@ -1093,6 +1097,16 @@ export async function indexOpenZapReceipts(args: {
       seen.add(child.eventId);
       eventIds.push(child.eventId);
     }
+  }
+  for (const child of await args.store.listRecentReplies(MESSAGE_LIST_LIMIT)) {
+    if (child.eventId === null || child.eventId === '') {
+      continue;
+    }
+    if (seen.has(child.eventId)) {
+      continue;
+    }
+    seen.add(child.eventId);
+    eventIds.push(child.eventId);
   }
   if (eventIds.length === 0) {
     await retryGiftReplies(args);
