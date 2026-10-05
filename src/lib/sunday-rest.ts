@@ -1,11 +1,11 @@
 import type { MiddlewareHandler } from 'hono';
 
 /**
- * True when a non-empty `Time-Zone` header names a zone that is in Sunday.
+ * True during Sunday rest through Monday 08:00 in the header's zone.
  *
  * @param nowMs - Epoch milliseconds on the server clock.
  * @param timeZoneHeader - Raw `Time-Zone` header. Missing, blank, or invalid does not count as Sunday.
- * @returns True only when the header names a valid IANA zone whose local calendar day is Sunday.
+ * @returns True only during the rest interval in a valid IANA zone.
  */
 export function isSundayRestHeader(nowMs: number, timeZoneHeader: string | undefined): boolean {
   const zone = (timeZoneHeader ?? '').trim();
@@ -16,16 +16,25 @@ export function isSundayRestHeader(nowMs: number, timeZoneHeader: string | undef
 }
 
 /**
- * Sunday 00:00 inclusive through Monday 00:00 exclusive in an IANA zone.
+ * Sunday 00:00 inclusive through Monday 08:00 exclusive in an IANA zone.
  * Invalid timeZone returns false. Does not default to Asia/Manila.
  *
  * @param nowMs - Epoch milliseconds.
  * @param timeZone - IANA zone name.
- * @returns True when that zone's local weekday is Sunday. False for an invalid zone.
+ * @returns True on Sunday or before 08:00 on Monday. False for an invalid zone.
  */
 export function isSundayInZone(nowMs: number, timeZone: string): boolean {
   try {
-    return new Intl.DateTimeFormat('en-US', { timeZone, weekday: 'short' }).format(nowMs) === 'Sun';
+    const parts = new Intl.DateTimeFormat('en-US', {
+      timeZone,
+      weekday: 'short',
+      hour: 'numeric',
+      hourCycle: 'h23',
+    }).formatToParts(nowMs);
+    const values = new Map(parts.map((part) => [part.type, part.value]));
+    const weekday = values.get('weekday');
+    const hour = Number(values.get('hour'));
+    return weekday === 'Sun' || (weekday === 'Mon' && hour < 8);
   } catch {
     return false;
   }
@@ -72,7 +81,7 @@ function isSundayRestWrite(method: string, path: string): boolean {
 }
 
 /**
- * Refuse listed public writes with 403 `SUNDAY_REST` when `Time-Zone` is Sunday.
+ * Refuse listed public writes with 403 `SUNDAY_REST` until local Monday 08:00.
  *
  * Uses the injected clock. Missing, blank, or invalid zones call `next()`.
  * Does not pause the process, `/healthz`, or workers.

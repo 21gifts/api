@@ -19,6 +19,21 @@ describe('sunday rest routes', () => {
     warn.mockRestore();
   });
 
+  it('keeps public writes blocked until exactly 08:00 on local Monday', async () => {
+    let instant = Date.parse('2026-10-05T05:59:59.999Z');
+    const server = createApp({ now: () => instant });
+    for (const path of ['/messages', '/funding/apply', '/me/name']) {
+      const response = await server.request(path, { method: 'POST', headers: { 'Time-Zone': 'Europe/Zurich' } });
+      expect(response.status).toBe(403);
+      expect(await response.json()).toEqual({ error: 'SUNDAY_REST' });
+    }
+    expect((await server.request('/healthz')).status).toBe(200);
+    instant = Date.parse('2026-10-05T06:00:00.000Z');
+    const response = await server.request('/messages', { method: 'POST', headers: { 'Time-Zone': 'Europe/Zurich' } });
+    expect(response.status).toBe(401);
+    expect(await response.json()).not.toEqual({ error: 'SUNDAY_REST' });
+  });
+
   it('refuses POST /messages with Time-Zone Europe/Zurich on Sunday', async () => {
     const res = await app().request('/messages', {
       method: 'POST',

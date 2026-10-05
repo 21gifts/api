@@ -36,3 +36,24 @@ describe('isSundayRestHeader', () => {
     expect(isSundayRestHeader(ZURICH_SUNDAY_MS, 'Not/AZone')).toBe(false);
   });
 });
+
+// Local boundaries, including the spring/fall DST Sundays in Zurich.
+describe('local Monday reopening', () => {
+  it.each([
+    ['2026-10-03T15:59:59.999Z', 'Asia/Manila', false],
+    ['2026-10-03T16:00:00.000Z', 'Asia/Manila', true],
+    ['2026-10-04T16:00:00.000Z', 'Asia/Manila', true],
+    ['2026-10-04T23:59:59.999Z', 'Asia/Manila', true],
+    ['2026-10-05T00:00:00.000Z', 'Asia/Manila', false],
+    ['2026-10-05T05:59:59.999Z', 'Europe/Zurich', true],
+    ['2026-10-05T06:00:00.000Z', 'Europe/Zurich', false],
+    ['2026-03-30T05:59:59.999Z', 'Europe/Zurich', true],
+    ['2026-03-30T06:00:00.000Z', 'Europe/Zurich', false],
+    ['2026-10-26T06:59:59.999Z', 'Europe/Zurich', true],
+    ['2026-10-26T07:00:00.000Z', 'Europe/Zurich', false],
+    ['2026-10-05T17:59:59.999Z', 'Pacific/Honolulu', true],
+    ['2026-10-05T18:00:00.000Z', 'Pacific/Honolulu', false],
+  ])('%s in %s has rest=%s', (instant, zone, expected) => {
+    expect(isSundayInZone(Date.parse(instant), zone)).toBe(expected);
+  });
+});

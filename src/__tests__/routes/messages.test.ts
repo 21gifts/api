@@ -3294,6 +3294,21 @@ describe('POST /messages', () => {
     expect(spendPing.ping).not.toHaveBeenCalled();
   });
 
+  it('sends the posting device zone with the daily payout request', async () => {
+    const spendPing = { ping: vi.fn(async () => undefined) };
+    const res = await mount(await staffStore('Ada'), new InMemoryMessageStore(), {
+      spendPing,
+      fundingStore: admittedFunding(),
+    }).request('/messages', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json', 'Time-Zone': 'Pacific/Honolulu' },
+      body: JSON.stringify({ text: 'photo', photo: { contentType: 'image/jpeg', data: JPEG_B64 } }),
+    });
+    expect(res.status).toBe(200);
+    const created = (await res.json()) as { id: string };
+    expect(spendPing.ping).toHaveBeenCalledWith('ada@walletofsatoshi.com', created.id, 'daily', 'Pacific/Honolulu');
+  });
+
   it('does not ping spend a second time on photo replay', async () => {
     const spendPing = { ping: vi.fn(async (_address: string, _messageId: string) => undefined) };
     const app = mount(await staffStore('Ada'), new InMemoryMessageStore(), {

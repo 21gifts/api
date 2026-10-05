@@ -94,6 +94,18 @@ describe('HttpSpendPing', () => {
     expect(JSON.stringify(parsedEvents(warn))).not.toContain(TOKEN);
   });
 
+  it('forwards the recipient zone for the daily Monday allowance', async () => {
+    let seen: RequestInit | undefined;
+    const fetchImpl: FetchFn = async (_input, init) => {
+      seen = init;
+      return new Response(null, { status: 202 });
+    };
+    await new HttpSpendPing({ spendUrl: SPEND_URL, token: TOKEN, fetchImpl })
+      .ping(ADDRESS, MESSAGE_ID, 'daily', 'Pacific/Honolulu');
+    expect(new Headers(seen?.headers).get('Time-Zone')).toBe('Pacific/Honolulu');
+    expect(JSON.parse(String(seen?.body))).toEqual({ address: ADDRESS, messageId: MESSAGE_ID });
+  });
+
   it('logs spend.ping.ok on 202 accepted', async () => {
     const fetchImpl: FetchFn = async () => new Response(null, { status: 202 });
     await new HttpSpendPing({ spendUrl: SPEND_URL, token: TOKEN, fetchImpl }).ping(
