@@ -166,6 +166,9 @@ export const MEMBER_HABIT_SCHEMA_SQL: readonly string[] = [
 
 /**
  * Runs each `MEMBER_HABIT_SCHEMA_SQL` statement. Safe to call more than once.
+ *
+ * @param sql - SQL client whose `query` returns `{ rows }`.
+ * @returns Resolves when every statement has executed.
  */
 export async function migrateMemberHabitSchema(sql: SqlClient): Promise<void> {
   for (const statement of MEMBER_HABIT_SCHEMA_SQL) {

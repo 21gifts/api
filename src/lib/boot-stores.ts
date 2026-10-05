@@ -192,7 +192,8 @@ export interface BootFxOptions {
  * `giftRecorder: undefined`, `messageStore: undefined`,
  * `translationStore: undefined`,
  * `conversationTranslationStore: undefined`,
- * `contactStore: undefined`, a fresh {@link InMemoryPosStore} as `posStore`,
+ * `contactStore: undefined`, `memberHabitStore: undefined`,
+ * a fresh {@link InMemoryPosStore} as `posStore`,
  * `apiLogStore: undefined`,
  * `diagnosticStore: undefined`,
  * `conversationStore: undefined`,
@@ -203,13 +204,15 @@ export interface BootFxOptions {
  * an empty {@link InMemoryBtcUsdStore}, and an empty {@link InMemoryFiatStore}.
  * A set URL asks `createClient` for one `SqlClient`, migrates auth (via
  * `openAuthStore`) then the FX tables (`btc_usd_daily` then `usd_fiat_daily`),
- * `message`, `contact`, `pos_charge` (via `migratePosSchema`), `conversation`, `push`, `notification`, `trust_edge`,
+ * `message`, `contact`, `member_habit` (via `migrateMemberHabitSchema`),
+ * `pos_charge` (via `migratePosSchema`), `conversation`, `push`, `notification`, `trust_edge`,
  * `funding_grant`, `api_log`, `account_image`, `diagnostic_event`, and `db_change` schemas (notification after push, trust
  * after notification, funding after trust, `api_log` then `account_image` via
  * `migrateBannerSchema`, then `diagnostic_event` between `account_image` and `db_change` so `trg_db_change` attaches), builds a {@link QueryGiftStore},
  * {@link SqlGiftRecorder}, {@link PostgresMessageStore},
  * {@link PostgresTranslationStore},
- * {@link PostgresContactStore}, {@link PostgresPosStore}, {@link PostgresConversationStore},
+ * {@link PostgresContactStore}, {@link PostgresMemberHabitStore},
+ * {@link PostgresPosStore}, {@link PostgresConversationStore},
  * {@link PostgresNotificationStore}, {@link PostgresPushStore},
  * {@link PostgresTrustStore}, {@link PostgresFundingStore}, and
  * {@link PostgresBannerStore}, parses
@@ -453,15 +456,14 @@ export async function openBootStores(
     logEvent('nostr.zapper.backfill.failed');
   }
   const contactStore = new PostgresContactStore(sqlClient);
+  /* Invoice reads the auth store. This port does not keep a second address. */
   const memberHabitStore = new PostgresMemberHabitStore(habitSql, {
-    /* v8 ignore start -- wallets are read from the auth store, not this adapter */
     async get() {
       return null;
     },
     async set() {
       return undefined;
     },
-    /* v8 ignore stop */
   });
   const posStore = new PostgresPosStore(sqlClient);
   const apiLogStore = new PostgresApiLogStore(sqlClient);

@@ -357,6 +357,8 @@ function debugList(store: object, limit: number): Promise<unknown[]> {
  *   mapPush (optional; default resolveMapPush on env),
  *   translationStore (optional; default InMemoryTranslationStore; SQL boot
  *   injects PostgresTranslationStore), contact store,
+ *   memberHabitStore (optional; default InMemoryMemberHabitStore; SQL boot
+ *   injects PostgresMemberHabitStore),
  *   conversation store, notification store, push store, trust store,
  *   debugDbStore (`GET /debug/db`; omitted on a memory boot),
  *   funding store (injected into `/funding`, `/me`, `/auth`, `/members`,

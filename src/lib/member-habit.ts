@@ -72,6 +72,9 @@ function addUtcDays(key: string, days: number): string {
 
 /**
  * True only when `zone` is non-empty and `Intl` accepts it as a time zone.
+ *
+ * @param zone - IANA time zone name, or empty.
+ * @returns `true` when `Intl` accepts `zone`.
  */
 export function isValidTimeZone(zone: string): boolean {
   if (zone === '') {
@@ -87,6 +90,10 @@ export function isValidTimeZone(zone: string): boolean {
 
 /**
  * Calendar date `YYYY-MM-DD` of `nowMs` in `timeZone`.
+ *
+ * @param nowMs - Epoch milliseconds.
+ * @param timeZone - IANA zone `Intl` accepts.
+ * @returns `YYYY-MM-DD` in that zone.
  */
 export function dayKey(nowMs: number, timeZone: string): string {
   const parts = zonedParts(nowMs, timeZone);
@@ -96,6 +103,10 @@ export function dayKey(nowMs: number, timeZone: string): string {
 /**
  * Monday `YYYY-MM-DD` of the calendar week (Monday start) that contains
  * `dayKey(nowMs, timeZone)`. Uses UTC date arithmetic on that Y-M-D.
+ *
+ * @param nowMs - Epoch milliseconds.
+ * @param timeZone - IANA zone `Intl` accepts.
+ * @returns The Monday of that week, `YYYY-MM-DD`.
  */
 export function weekKey(nowMs: number, timeZone: string): string {
   const day = dayKey(nowMs, timeZone);
@@ -107,6 +118,11 @@ export function weekKey(nowMs: number, timeZone: string): string {
 
 /**
  * `dayKey` when `cadence` is `daily`, `weekKey` when `weekly`.
+ *
+ * @param nowMs - Epoch milliseconds.
+ * @param cadence - `daily` or `weekly`.
+ * @param timeZone - IANA zone `Intl` accepts.
+ * @returns The period key for that cadence.
  */
 export function periodKey(nowMs: number, cadence: Cadence, timeZone: string): string {
   if (cadence === 'daily') {
@@ -117,6 +133,11 @@ export function periodKey(nowMs: number, cadence: Cadence, timeZone: string): st
 
 /**
  * Next calendar day, or the Monday seven days later. `key` is `YYYY-MM-DD`.
+ *
+ * @param key - `YYYY-MM-DD` period start.
+ * @param cadence - `daily` adds one day; `weekly` adds seven.
+ * @returns The following period key.
+ * @throws When `key` is not `YYYY-MM-DD`.
  */
 export function nextPeriod(key: string, cadence: Cadence): string {
   if (cadence === 'daily') {
@@ -128,6 +149,10 @@ export function nextPeriod(key: string, cadence: Cadence): string {
 /**
  * Lexical compare of `YYYY-MM-DD`, which is chronological.
  * `-1` when `a < b`, `0` when equal, `1` when `a > b`.
+ *
+ * @param a - First `YYYY-MM-DD` key.
+ * @param b - Second `YYYY-MM-DD` key.
+ * @returns `-1`, `0`, or `1`.
  */
 export function comparePeriod(a: string, b: string): -1 | 0 | 1 {
   if (a < b) {
@@ -142,6 +167,10 @@ export function comparePeriod(a: string, b: string): -1 | 0 | 1 {
 /**
  * Latest Monday that is ratable at `nowMs` in `timeZone`.
  * A week becomes ratable at 08:00 on the following Monday in that zone.
+ *
+ * @param nowMs - Epoch milliseconds.
+ * @param timeZone - IANA zone `Intl` accepts.
+ * @returns The latest ratable Monday, `YYYY-MM-DD`.
  */
 export function weeklyRatableThrough(nowMs: number, timeZone: string): string {
   const monday = weekKey(nowMs, timeZone);
@@ -154,6 +183,9 @@ export function weeklyRatableThrough(nowMs: number, timeZone: string): string {
 
 /**
  * Manila review week: `{ start: weeklyRatableThrough(nowMs, 'Asia/Manila') }`.
+ *
+ * @param nowMs - Epoch milliseconds.
+ * @returns `{ start }` for that Monday.
  */
 export function manilaReviewWeek(nowMs: number): { start: string } {
   return { start: weeklyRatableThrough(nowMs, 'Asia/Manila') };

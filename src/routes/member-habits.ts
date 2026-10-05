@@ -178,6 +178,9 @@ function publicComments(
 
 /**
  * Hono routes `GET /` and `POST /` mounted at `/habits`.
+ *
+ * @param deps - Habit store, auth store, clock, and fetch.
+ * @returns The Hono app mounted at `/habits`.
  */
 export function memberHabitRoutes(deps: {
   store: MemberHabitStore;

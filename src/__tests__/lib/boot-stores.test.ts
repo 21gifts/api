@@ -8,6 +8,7 @@ import { InMemoryFiatStore, PostgresFiatStore } from '@/lib/usd-fiat-store';
 import { QueryGiftStore } from '@/lib/gift-store';
 import { SqlGiftRecorder } from '@/lib/gift-recorder';
 import { PostgresContactStore } from '@/lib/contact-store';
+import { PostgresMemberHabitStore } from '@/lib/member-habit-store';
 import { InMemoryPosStore, PostgresPosStore } from '@/lib/pos-store';
 
 import { PostgresConversationStore } from '@/lib/conversation-store';
@@ -68,6 +69,7 @@ describe('openBootStores', () => {
       translationStore,
       conversationTranslationStore,
       contactStore,
+      memberHabitStore,
       posStore,
       conversationStore,
       notificationStore,
@@ -86,6 +88,7 @@ describe('openBootStores', () => {
     expect(translationStore).toBeUndefined();
     expect(conversationTranslationStore).toBeUndefined();
     expect(contactStore).toBeUndefined();
+    expect(memberHabitStore).toBeUndefined();
     expect(posStore).toBeInstanceOf(InMemoryPosStore);
     expect(conversationStore).toBeUndefined();
     expect(notificationStore).toBeUndefined();
@@ -115,6 +118,7 @@ describe('openBootStores', () => {
       translationStore,
       conversationTranslationStore,
       contactStore,
+      memberHabitStore,
       posStore,
       conversationStore,
       notificationStore,
@@ -132,6 +136,7 @@ describe('openBootStores', () => {
     expect(translationStore).toBeUndefined();
     expect(conversationTranslationStore).toBeUndefined();
     expect(contactStore).toBeUndefined();
+    expect(memberHabitStore).toBeUndefined();
     expect(posStore).toBeInstanceOf(InMemoryPosStore);
     expect(conversationStore).toBeUndefined();
     expect(notificationStore).toBeUndefined();
@@ -539,6 +544,14 @@ describe('openBootStores', () => {
     expect(stores.conversationTranslationStore).toBeInstanceOf(PostgresTranslationStore);
     expect(stores.conversationTranslationStore).not.toBe(stores.translationStore);
     expect(stores.contactStore).toBeInstanceOf(PostgresContactStore);
+    expect(stores.memberHabitStore).toBeInstanceOf(PostgresMemberHabitStore);
+    const habits = stores.memberHabitStore;
+    if (!(habits instanceof PostgresMemberHabitStore)) {
+      throw new Error('expected PostgresMemberHabitStore');
+    }
+    expect(await habits.lightning('acc')).toBeNull();
+    await habits.setLightning('acc', 'ada@example.com');
+    expect(await habits.lightning('acc')).toBeNull();
     expect(stores.posStore).toBeInstanceOf(PostgresPosStore);
     expect(stores.conversationStore).toBeInstanceOf(PostgresConversationStore);
     expect(stores.notificationStore).toBeInstanceOf(PostgresNotificationStore);
