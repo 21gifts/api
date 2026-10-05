@@ -3317,3 +3317,94 @@ Builds the operator-only external-pubkey inspection route.
 - **Inputs:** `{ store, rates, fiatRates, now }` — the same collaborators as {@link loadLatestGoalRateDay}.
 - **Returns / side effects:** A function that calls `loadLatestGoalRateDay` with those collaborators.
 - **Used by:** `createApp`.
+
+## Function: memberHabitRoutes
+
+- **Purpose:** Hono routes `GET /habits` and `POST /habits` for member habits, comments, and a Lightning invoice. Does not pay.
+- **Inputs:** `{ store, authStore, now, fetchImpl }`.
+- **Returns / side effects:** Hono app. Writes through `MemberHabitStore`. Logs only `{ event: 'habits.failed', ts }` on failure.
+- **Used by:** `createApp`.
+
+## Function: isValidTimeZone
+
+- **Purpose:** Accept a non-empty IANA time zone and reject an empty string or a name `Intl` does not know.
+- **Inputs:** A time-zone string from the `Time-Zone` header.
+- **Returns / side effects:** `true` or `false`. No writes.
+- **Used by:** `POST /habits` action `add`.
+
+## Function: dayKey
+
+- **Purpose:** Calendar date `YYYY-MM-DD` of an instant in a time zone.
+- **Inputs:** Epoch milliseconds and an IANA time zone.
+- **Returns / side effects:** The date string. No writes.
+- **Used by:** daily habit periods and the daily log bound.
+
+## Function: weekKey
+
+- **Purpose:** Monday `YYYY-MM-DD` of the week that contains `dayKey` for that instant. Weeks start Monday.
+- **Inputs:** Epoch milliseconds and an IANA time zone.
+- **Returns / side effects:** The Monday string. No writes.
+- **Used by:** weekly periods and the weekly log check.
+
+## Function: periodKey
+
+- **Purpose:** `dayKey` when the cadence is daily, `weekKey` when it is weekly.
+- **Inputs:** Epoch milliseconds, cadence `daily` or `weekly`, and an IANA time zone.
+- **Returns / side effects:** The period string. No writes.
+- **Used by:** `add`, `edit`, and `archive` when they stamp the current period.
+
+## Function: nextPeriod
+
+- **Purpose:** The next calendar day, or the Monday seven days later.
+- **Inputs:** A `YYYY-MM-DD` key and a cadence.
+- **Returns / side effects:** The following period key. Throws when the key is not `YYYY-MM-DD`.
+- **Used by:** period ranges and the Manila comment week.
+
+## Function: comparePeriod
+
+- **Purpose:** Lexical compare of `YYYY-MM-DD`, which is chronological.
+- **Inputs:** Two period keys.
+- **Returns / side effects:** `-1`, `0`, or `1`. No writes.
+- **Used by:** the closed-period check and period ranges.
+
+## Function: weeklyRatableThrough
+
+- **Purpose:** Latest Monday that is ratable at this instant. A week becomes ratable at 08:00 on the following Monday in the habit time zone.
+- **Inputs:** Epoch milliseconds and an IANA time zone.
+- **Returns / side effects:** A Monday `YYYY-MM-DD`. No writes.
+- **Used by:** weekly logs and `manilaReviewWeek`.
+
+## Function: manilaReviewWeek
+
+- **Purpose:** The Manila review week, which is `weeklyRatableThrough` in `Asia/Manila`.
+- **Inputs:** Epoch milliseconds.
+- **Returns / side effects:** `{ start }` with that Monday. No writes.
+- **Used by:** `GET /habits` and comment creation.
+
+## Function: commentsOpen
+
+- **Purpose:** Whether comments are open: Monday 16:00 inclusive through Saturday 20:00 exclusive Asia/Manila, in the week after the Manila review week.
+- **Inputs:** Epoch milliseconds.
+- **Returns / side effects:** `true` or `false`. No writes.
+- **Used by:** `GET /habits` and `POST /habits` action `comment`.
+
+## Function: migrateMemberHabitSchema
+
+- **Purpose:** Run the idempotent `CREATE TABLE IF NOT EXISTS` statements for `member_habit`, `member_habit_revision`, `member_habit_log`, and `member_habit_comment`.
+- **Inputs:** A SQL client whose `query` returns `{ rows }`.
+- **Returns / side effects:** Resolves when the four statements have run. Safe to call more than once.
+- **Used by:** `openBootStores` when `DATABASE_URL` is set.
+
+## Function: InMemoryMemberHabitStore
+
+- **Purpose:** Process-local `MemberHabitStore` for tests and for boot without a database URL. Notes stay on the row and are copied onto the public view only for the owner.
+- **Inputs:** None. Starts empty.
+- **Returns / side effects:** Add, edit, archive, log, list, comment, delete, and Lightning methods. Mutates private maps.
+- **Used by:** unit tests and `createApp` when no database URL is set.
+
+## Function: PostgresMemberHabitStore
+
+- **Purpose:** `MemberHabitStore` against the `member_habit*` tables. Lightning addresses go through the injected address port, not a habit column.
+- **Inputs:** A SQL client whose `query` returns `{ rows }`, and a Lightning address port.
+- **Returns / side effects:** Same port as the in-memory store, persisted in Postgres.
+- **Used by:** `openBootStores` when `DATABASE_URL` is set.

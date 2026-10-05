@@ -41,6 +41,11 @@ import {
 } from '@/lib/diagnostic-log';
 import { migrateContactSchema, PostgresContactStore, type ContactStore } from '@/lib/contact-store';
 import {
+  migrateMemberHabitSchema,
+  PostgresMemberHabitStore,
+  type MemberHabitStore,
+} from '@/lib/member-habit-store';
+import {
   InMemoryPosStore,
   PostgresPosStore,
   migratePosSchema,
@@ -104,6 +109,11 @@ export interface BootStores {
    * opened so `createApp` keeps the empty in-memory default.
    */
   contactStore: ContactStore | undefined;
+  /**
+   * Postgres-backed member habits, or `undefined` when no SQL client was
+   * opened so `createApp` keeps the empty in-memory default.
+   */
+  memberHabitStore: MemberHabitStore | undefined;
   /** POS charge store (memory when no SQL; Postgres otherwise). */
   posStore: PosStore;
   /**
@@ -261,6 +271,7 @@ export async function openBootStores(
       conversationTranslationStore: undefined,
       nostrKek: undefined,
       contactStore: undefined,
+      memberHabitStore: undefined,
       posStore: new InMemoryPosStore(),
       apiLogStore: undefined,
       diagnosticStore: undefined,
@@ -283,6 +294,12 @@ export async function openBootStores(
   await migrateGiftSchema(sqlClient);
   await migrateMessageSchema(sqlClient);
   await migrateContactSchema(sqlClient);
+  const habitSql = {
+    query: async (text: string, params?: unknown[]) => ({
+      rows: await sql.query<Record<string, unknown>>(text, params),
+    }),
+  };
+  await migrateMemberHabitSchema(habitSql);
   await migratePosSchema(sqlClient);
   await migrateConversationSchema(sqlClient);
   await migratePushSchema(sqlClient);
@@ -436,6 +453,16 @@ export async function openBootStores(
     logEvent('nostr.zapper.backfill.failed');
   }
   const contactStore = new PostgresContactStore(sqlClient);
+  const memberHabitStore = new PostgresMemberHabitStore(habitSql, {
+    /* v8 ignore start -- wallets are read from the auth store, not this adapter */
+    async get() {
+      return null;
+    },
+    async set() {
+      return undefined;
+    },
+    /* v8 ignore stop */
+  });
   const posStore = new PostgresPosStore(sqlClient);
   const apiLogStore = new PostgresApiLogStore(sqlClient);
   const conversationStore = new PostgresConversationStore(sqlClient, { fetchImpl, fiatRates, now });
@@ -454,6 +481,7 @@ export async function openBootStores(
     conversationTranslationStore,
     nostrKek,
     contactStore,
+    memberHabitStore,
     posStore,
     apiLogStore,
     diagnosticStore,
