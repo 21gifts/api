@@ -28,7 +28,12 @@ export interface SpendPing {
    * @param timeZone - Recipient IANA zone, forwarded as Time-Zone for the daily Monday limit.
    * @param kind - `'daily'` (default), `'moderator'`, or `'welcome'`.
    */
-  ping(address: string, messageId: string, kind?: 'daily' | 'moderator' | 'welcome', timeZone?: string): Promise<void>;
+  ping(
+    address: string,
+    messageId: string,
+    kind?: 'daily' | 'moderator' | 'welcome',
+    timeZone?: string,
+  ): Promise<void>;
 }
 
 /**
