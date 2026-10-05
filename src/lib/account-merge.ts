@@ -308,9 +308,10 @@ export async function mergeAccounts(db: MergeDb, input: MergeInput): Promise<Mer
       accountParams,
     );
     if (input.verify === 'from') {
+      // Only the survivor id is bound, so the placeholder stays $1.
       await tx.query(
-        "DELETE FROM trust_edge WHERE subject_id = $2 AND kind = 'verify'",
-        accountParams,
+        "DELETE FROM trust_edge WHERE subject_id = $1 AND kind = 'verify'",
+        [input.into],
       );
       await tx.query(
         "UPDATE trust_edge SET subject_id = $2 WHERE subject_id = $1 AND kind = 'verify'",

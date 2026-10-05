@@ -187,10 +187,14 @@ describe('mergeAccounts', () => {
     expect(
       queries.some(
         (query) =>
-          query.text.includes("DELETE FROM trust_edge WHERE subject_id = $2 AND kind = 'verify'") &&
-          query.params[1] === INTO,
+          query.text.includes("DELETE FROM trust_edge WHERE subject_id = $1 AND kind = 'verify'") &&
+          query.params.length === 1 &&
+          query.params[0] === INTO,
       ),
     ).toBe(true);
+    expect(
+      queries.some((query) => query.text.includes('$2') && !query.text.includes('$1')),
+    ).toBe(false);
   });
 
   it('returns same_account without opening a transaction', async () => {
