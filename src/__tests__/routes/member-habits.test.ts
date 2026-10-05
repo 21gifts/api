@@ -467,7 +467,7 @@ describe('memberHabitRoutes', () => {
     expect(await res.json()).toEqual({ error: 'Invoice unavailable' });
   });
 
-  it('invoice when fetchImpl succeeds is 200 { pr: lnbc1 }', async () => {
+  it('invoice when fetchImpl succeeds is 200 { pr, amountSats }', async () => {
     const store = new InMemoryMemberHabitStore();
     await store.add(sampleHabit({ id: 'h-comment', accountId: ALICE.id, role: 'basis' }));
     await store.comment({
@@ -491,7 +491,7 @@ describe('memberHabitRoutes', () => {
       AUTH,
     );
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ pr: 'lnbc1' });
+    expect(await res.json()).toEqual({ pr: 'lnbc1', amountSats: 1 });
   });
 
   it('invoice on Sunday in Europe/Zurich is 403 SUNDAY_REST before the amount check', async () => {
@@ -547,7 +547,7 @@ describe('memberHabitRoutes', () => {
       AUTH,
     );
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ pr: 'lnbc1' });
+    expect(await res.json()).toEqual({ pr: 'lnbc1', amountSats: 1 });
   });
 
   it('invoice on Sunday with an invalid Time-Zone is 200', async () => {
@@ -575,7 +575,7 @@ describe('memberHabitRoutes', () => {
       { ...AUTH, 'Time-Zone': 'Not/AZone' },
     );
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ pr: 'lnbc1' });
+    expect(await res.json()).toEqual({ pr: 'lnbc1', amountSats: 1 });
   });
 
   it('a store whose listPublic throws returns 503 and the body error Habits are unavailable', async () => {
@@ -901,7 +901,9 @@ describe('memberHabitRoutes', () => {
     });
     const zero = await post(app, { action: 'invoice', commentId: 'c-alice', amountSats: 0 }, AUTH);
     expect(zero.status).toBe(400);
-    expect(await zero.json()).toEqual({ error: 'Invalid amount' });
+    expect(await zero.json()).toEqual({
+      error: 'Expected a JSON body with an integer "amountSats"',
+    });
     const fraction = await post(
       app,
       { action: 'invoice', commentId: 'c-alice', amountSats: 1.5 },
@@ -910,10 +912,13 @@ describe('memberHabitRoutes', () => {
     expect(fraction.status).toBe(400);
     const huge = await post(
       app,
-      { action: 'invoice', commentId: 'c-alice', amountSats: 100000001 },
+      { action: 'invoice', commentId: 'c-alice', amountSats: 10_000_001 },
       AUTH,
     );
     expect(huge.status).toBe(400);
+    expect(await huge.json()).toEqual({
+      error: 'Expected a JSON body with an integer "amountSats"',
+    });
     const missing = await post(app, { action: 'invoice', commentId: 'nope', amountSats: 1 }, AUTH);
     expect(missing.status).toBe(404);
     const emptyWallet = await post(
@@ -923,6 +928,17 @@ describe('memberHabitRoutes', () => {
     );
     expect(emptyWallet.status).toBe(409);
     expect(await emptyWallet.json()).toEqual({ error: 'No wallet' });
+    const atCeiling = await post(
+      mount({
+        store,
+        account: BASIS,
+        accounts: { [ALICE.id]: { ...ALICE, lightningAddress: '' } },
+        fetchImpl: successFetch,
+      }),
+      { action: 'invoice', commentId: 'c-alice', amountSats: 10_000_000 },
+      AUTH,
+    );
+    expect(atCeiling.status).toBe(409);
 
     const paying = mount({
       store,
@@ -942,7 +958,7 @@ describe('memberHabitRoutes', () => {
       AUTH,
     );
     expect(second.status).toBe(429);
-    expect(await second.json()).toEqual({ error: 'Too many invoices' });
+    expect(await second.json()).toEqual({ error: 'Too many payments' });
 
     const failFetch: FetchFn = async () => new Response('no', { status: 500 });
     const failed = await post(

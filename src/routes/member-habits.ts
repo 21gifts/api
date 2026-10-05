@@ -5,6 +5,7 @@ import { resolveSession } from '@/lib/auth/service';
 import { roleAtLeast } from '@/lib/auth/roles';
 import type { AccountRole } from '@/lib/auth/store';
 import { InvoiceRateLimiter } from '@/lib/nostr/rate-limit';
+import { GIFT_INVOICE_MAX_MSAT } from '@/lib/config';
 import { requestGiftInvoice } from '@/lib/gift-invoice';
 import type { FetchFn } from '@/lib/lnurlp';
 import {
@@ -445,9 +446,9 @@ export function memberHabitRoutes(deps: {
       if (
         !Number.isInteger(body.amountSats) ||
         body.amountSats < 1 ||
-        body.amountSats > 100000000
+        body.amountSats > GIFT_INVOICE_MAX_MSAT / 1000
       ) {
-        return c.json({ error: 'Invalid amount' }, 400);
+        return c.json({ error: 'Expected a JSON body with an integer "amountSats"' }, 400);
       }
       const comment = await deps.store.findComment(body.commentId);
       if (comment === null) {
@@ -457,7 +458,7 @@ export function memberHabitRoutes(deps: {
         return c.json({ error: 'Cannot donate to yourself' }, 400);
       }
       if (!invoiceLimiter.allow(account.id, nowMs)) {
-        return c.json({ error: 'Too many invoices' }, 429);
+        return c.json({ error: 'Too many payments' }, 429);
       }
       const author = await deps.authStore.getAccount(comment.accountId);
       if (
@@ -482,7 +483,7 @@ export function memberHabitRoutes(deps: {
       if (!invoice.ok) {
         return c.json({ error: 'Invoice unavailable' }, 502);
       }
-      return c.json({ pr: invoice.pr }, 200);
+      return c.json({ pr: invoice.pr, amountSats: body.amountSats }, 200);
     } catch {
       console.warn(JSON.stringify({ ts: new Date().toISOString(), event: 'habits.failed' }));
       return c.json({ error: 'Habits are unavailable' }, 503);

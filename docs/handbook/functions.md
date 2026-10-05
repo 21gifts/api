@@ -3320,7 +3320,7 @@ Builds the operator-only external-pubkey inspection route.
 
 ## Function: memberHabitRoutes
 
-- **Purpose:** Hono routes `GET /habits` and `POST /habits` for member habits, comments, and a Lightning invoice. `invoice` uses the same Sunday rest as `POST /messages/:id/invoice`: 403 `{ error: 'SUNDAY_REST' }` when `Time-Zone` names a Sunday, before the amount check. A missing, blank, or invalid zone does not refuse. Does not pay. Add, edit, archive, and log stay open on Sunday.
+- **Purpose:** Hono routes `GET /habits` and `POST /habits` for member habits, comments, and a Lightning invoice. `invoice` uses the same Sunday rest as `POST /messages/:id/invoice`: 403 `{ error: 'SUNDAY_REST' }` when `Time-Zone` names a Sunday, before the amount check. A missing, blank, or invalid zone does not refuse. Success is `{ pr, amountSats }`. A bad or over-cap `amountSats` is 400 `{ error: 'Expected a JSON body with an integer "amountSats"' }` (ceiling 10_000_000). The limiter answer is 429 `{ error: 'Too many payments' }`. Does not pay. Add, edit, archive, and log stay open on Sunday.
 - **Inputs:** `{ store, authStore, now, fetchImpl }`.
 - **Returns / side effects:** Hono app. Writes through `MemberHabitStore`. Logs only `{ event: 'habits.failed', ts }` on failure.
 - **Used by:** `createApp`.
