@@ -77,7 +77,7 @@ const invoiceBody = z
   .object({
     action: z.literal('invoice'),
     commentId: z.string(),
-    amountSats: z.number(),
+    amountSats: z.unknown().optional(),
   })
   .strict();
 
@@ -447,10 +447,12 @@ export function memberHabitRoutes(deps: {
       if (isSundayRestHeader(nowMs, c.req.header('Time-Zone'))) {
         return c.json({ error: 'SUNDAY_REST' }, 403);
       }
+      const amountSats = body.amountSats;
       if (
-        !Number.isInteger(body.amountSats) ||
-        body.amountSats < 1 ||
-        body.amountSats > GIFT_INVOICE_MAX_MSAT / 1000
+        typeof amountSats !== 'number' ||
+        !Number.isInteger(amountSats) ||
+        amountSats < 1 ||
+        amountSats > GIFT_INVOICE_MAX_MSAT / 1000
       ) {
         return c.json({ error: 'Expected a JSON body with an integer "amountSats"' }, 400);
       }
@@ -477,17 +479,17 @@ export function memberHabitRoutes(deps: {
       try {
         invoice = await requestGiftInvoice({
           address,
-          amountMsat: body.amountSats * 1000,
+          amountMsat: amountSats * 1000,
           fetchImpl: deps.fetchImpl,
         });
         /* v8 ignore next 3 -- requestGiftInvoice returns ok:false instead of throwing */
       } catch {
-        return c.json({ error: 'Invoice unavailable' }, 502);
+        return c.json({ error: 'Lightning Address could not be resolved' }, 502);
       }
       if (!invoice.ok) {
-        return c.json({ error: 'Invoice unavailable' }, 502);
+        return c.json({ error: 'Lightning Address could not be resolved' }, 502);
       }
-      return c.json({ pr: invoice.pr, amountSats: body.amountSats }, 200);
+      return c.json({ pr: invoice.pr, amountSats }, 200);
     } catch {
       console.warn(JSON.stringify({ ts: new Date().toISOString(), event: 'habits.failed' }));
       return c.json({ error: 'Habits are unavailable' }, 503);

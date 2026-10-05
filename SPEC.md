@@ -5459,6 +5459,8 @@ be an integer from 1 through 10_000_000 (the whole-sat form of
 `GIFT_INVOICE_MAX_MSAT`). A non-integer, a value below 1, or a value
 above that ceiling is **400**
 `{ "error": "Expected a JSON body with an integer \"amountSats\"" }`.
+A missing `amountSats`, or a value that is not a number, is that same
+**400**.
 Success is the same gift body as `POST /pay/:username/invoice`:
 
 ```json
@@ -5469,7 +5471,8 @@ Donating to the caller's own comment is **400**
 `{ "error": "Cannot donate to yourself" }`. No Lightning Address on the
 author is **409** `{ "error": "No wallet" }`. The existing invoice
 limiter answers **429** `{ "error": "Too many payments" }`. A failed
-mint is **502** `{ "error": "Invoice unavailable" }`.
+mint is **502** `{ "error": "Lightning Address could not be resolved" }`,
+the same failure as `POST /pay/:username/invoice`.
 
 Missing bearer → **401** `{ "error": "Unauthorized" }`. A body that is
 not one of the actions → **400** `{ "error": "Invalid body" }`. Unknown

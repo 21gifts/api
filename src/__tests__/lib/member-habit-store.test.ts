@@ -455,6 +455,21 @@ describe('PostgresMemberHabitStore', () => {
     await migrateMemberHabitSchema(sql);
     expect(statements).toEqual([...MEMBER_HABIT_SCHEMA_SQL]);
     expect(MEMBER_HABIT_SCHEMA_SQL).toHaveLength(4);
+    expect(MEMBER_HABIT_SCHEMA_SQL[0]).toMatch(
+      /account_id uuid NOT NULL REFERENCES account \(id\)/,
+    );
+    expect(MEMBER_HABIT_SCHEMA_SQL[1]).toMatch(
+      /habit_id uuid NOT NULL REFERENCES member_habit \(id\)/,
+    );
+    expect(MEMBER_HABIT_SCHEMA_SQL[2]).toMatch(
+      /habit_id uuid NOT NULL REFERENCES member_habit \(id\)/,
+    );
+    expect(MEMBER_HABIT_SCHEMA_SQL[3]).toMatch(
+      /habit_id uuid NOT NULL REFERENCES member_habit \(id\)/,
+    );
+    expect(MEMBER_HABIT_SCHEMA_SQL[3]).toMatch(
+      /account_id uuid NOT NULL REFERENCES account \(id\)/,
+    );
 
     const store = new PostgresMemberHabitStore(sql, lightning);
     await store.add(sampleHabit());

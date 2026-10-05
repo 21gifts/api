@@ -464,7 +464,7 @@ describe('memberHabitRoutes', () => {
       AUTH,
     );
     expect(res.status).toBe(502);
-    expect(await res.json()).toEqual({ error: 'Invoice unavailable' });
+    expect(await res.json()).toEqual({ error: 'Lightning Address could not be resolved' });
   });
 
   it('invoice when fetchImpl succeeds is 200 { pr, amountSats }', async () => {
@@ -986,7 +986,35 @@ describe('memberHabitRoutes', () => {
       AUTH,
     );
     expect(failed.status).toBe(502);
-    expect(await failed.json()).toEqual({ error: 'Invoice unavailable' });
+    expect(await failed.json()).toEqual({ error: 'Lightning Address could not be resolved' });
+    const textAmount = await post(
+      mount({
+        store,
+        account: BASIS,
+        accounts: { [ALICE.id]: ALICE },
+        fetchImpl: successFetch,
+      }),
+      { action: 'invoice', commentId: 'c-alice', amountSats: '21' },
+      AUTH,
+    );
+    expect(textAmount.status).toBe(400);
+    expect(await textAmount.json()).toEqual({
+      error: 'Expected a JSON body with an integer "amountSats"',
+    });
+    const missingAmount = await post(
+      mount({
+        store,
+        account: BASIS,
+        accounts: { [ALICE.id]: ALICE },
+        fetchImpl: successFetch,
+      }),
+      { action: 'invoice', commentId: 'c-alice' },
+      AUTH,
+    );
+    expect(missingAmount.status).toBe(400);
+    expect(await missingAmount.json()).toEqual({
+      error: 'Expected a JSON body with an integer "amountSats"',
+    });
   });
 
   it('a store whose add throws returns 503', async () => {

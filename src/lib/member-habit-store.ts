@@ -128,7 +128,7 @@ export interface MemberHabitStore {
 export const MEMBER_HABIT_SCHEMA_SQL: readonly string[] = [
   `CREATE TABLE IF NOT EXISTS member_habit (
   id uuid PRIMARY KEY,
-  account_id uuid NOT NULL,
+  account_id uuid NOT NULL REFERENCES account (id),
   owner_name text NOT NULL,
   role text NOT NULL,
   name text NOT NULL CHECK (char_length(name) BETWEEN 1 AND 80),
@@ -140,22 +140,22 @@ export const MEMBER_HABIT_SCHEMA_SQL: readonly string[] = [
   last_period text NULL CHECK (last_period IS NULL OR last_period >= first_period)
 );`,
   `CREATE TABLE IF NOT EXISTS member_habit_revision (
-  habit_id uuid NOT NULL,
+  habit_id uuid NOT NULL REFERENCES member_habit (id),
   period text NOT NULL,
   name text NOT NULL,
   description text NOT NULL,
   PRIMARY KEY (habit_id, period)
 );`,
   `CREATE TABLE IF NOT EXISTS member_habit_log (
-  habit_id uuid NOT NULL,
+  habit_id uuid NOT NULL REFERENCES member_habit (id),
   period text NOT NULL,
   status text NOT NULL CHECK (status IN ('achieved', 'partial', 'missed')),
   PRIMARY KEY (habit_id, period)
 );`,
   `CREATE TABLE IF NOT EXISTS member_habit_comment (
   id uuid PRIMARY KEY,
-  habit_id uuid NOT NULL,
-  account_id uuid NOT NULL,
+  habit_id uuid NOT NULL REFERENCES member_habit (id),
+  account_id uuid NOT NULL REFERENCES account (id),
   name text NOT NULL,
   "text" text NOT NULL CHECK (char_length("text") BETWEEN 1 AND 2000),
   week text NOT NULL,
