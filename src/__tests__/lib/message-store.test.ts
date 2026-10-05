@@ -1806,7 +1806,14 @@ describe('InMemoryMessageStore', () => {
       cursor: null,
       staffAccountIds: new Set(['staff']),
     });
-    expect(activeWithAsk.map((row) => row.id)).toContain('ask-open');
+    expect(activeWithAsk.map((row) => row.id)).not.toContain('ask-open');
+    const unpaidWithAsk = await store.listFeed({
+      limit: 10,
+      mode: 'unpaid',
+      cursor: null,
+      staffAccountIds: new Set(['staff']),
+    });
+    expect(unpaidWithAsk.map((row) => row.id)).toContain('ask-open');
     const popular = await store.listFeed({
       limit: 10,
       mode: 'popular',
@@ -6635,7 +6642,8 @@ describe('PostgresMessageStore', () => {
     }
     const active = sql.queries.filter((query) => query.text.includes('ANY('));
     expect(active).toHaveLength(2);
-    expect(active[0]?.text).toMatch(/COALESCE\(goal_sats, 0\) > 0/);
+    expect(active[0]?.text).toMatch(/sats > 0 OR account_id::text = ANY\(\$/);
+    expect(active[0]?.text).not.toMatch(/COALESCE\(goal_sats, 0\) > 0/);
     expect(active[0]?.params).toEqual([10, '{"staff-1"}']);
     expect(active[1]?.params.slice(0, 2)).toEqual([10, '{"staff-1"}']);
     const popular = sql.queries.filter((query) => query.text.includes('sats DESC'));
