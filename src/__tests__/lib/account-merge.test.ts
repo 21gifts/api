@@ -192,9 +192,9 @@ describe('mergeAccounts', () => {
           query.params[0] === INTO,
       ),
     ).toBe(true);
-    expect(
-      queries.some((query) => query.text.includes('$2') && !query.text.includes('$1')),
-    ).toBe(false);
+    expect(queries.some((query) => query.text.includes('$2') && !query.text.includes('$1'))).toBe(
+      false,
+    );
   });
 
   it('returns same_account without opening a transaction', async () => {
