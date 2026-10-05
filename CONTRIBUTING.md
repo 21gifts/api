@@ -1,5 +1,7 @@
 # Contributing to 21.gifts api
 
+[REVIEW.md](REVIEW.md) is binding. A new endpoint, function, user-interface control, error text, clock, or permission check is allowed only when nothing in this repository already does that job. The review reads this file and `REVIEW.md` and does not change files. `CONCEPT.md` and `SPEC.md` are binding. `FLOWS.md` is a sketch and is not binding.
+
 ## Quick start
 
 ```bash
@@ -350,6 +352,7 @@ api/
 ├── FLOWS.md                  # Core UI journey sketch (CONCEPT next-step 7)
 ├── README.md
 ├── CONTRIBUTING.md
+├── REVIEW.md
 ├── SECURITY.md
 └── LICENSE
 ```
