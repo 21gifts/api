@@ -8,7 +8,6 @@ import { InvoiceRateLimiter } from '@/lib/nostr/rate-limit';
 import { requestGiftInvoice } from '@/lib/gift-invoice';
 import type { FetchFn } from '@/lib/lnurlp';
 import {
-  commentsOpen,
   comparePeriod,
   dayKey,
   isValidTimeZone,
@@ -17,6 +16,7 @@ import {
   weekKey,
   weeklyRatableThrough,
 } from '@/lib/member-habit';
+import { isSundayRestHeader } from '@/lib/sunday-rest';
 import type { MemberHabit, MemberHabitStore } from '@/lib/member-habit-store';
 
 const PERIOD_RE = /^\d{4}-\d{2}-\d{2}$/;
@@ -259,7 +259,7 @@ export function memberHabitRoutes(deps: {
       });
       const review = manilaReviewWeek(nowMs);
       return c.json({
-        reviewWeek: { start: review.start, commentsOpen: commentsOpen(nowMs) },
+        reviewWeek: { start: review.start },
         habits,
       });
     } catch {
@@ -396,12 +396,12 @@ export function memberHabitRoutes(deps: {
       }
 
       if (body.action === 'comment') {
+        if (isSundayRestHeader(nowMs, c.req.header('Time-Zone'))) {
+          return c.json({ error: 'SUNDAY_REST' }, 403);
+        }
         const text = body.text.trim();
         if (text.length < 1 || text.length > 2000) {
           return c.json({ error: 'Invalid comment' }, 400);
-        }
-        if (!commentsOpen(nowMs)) {
-          return c.json({ error: 'Comments are closed' }, 403);
         }
         const habits = await deps.store.listPublic(null, nowMs);
         const habit = habits.find((row) => row.id === body.habitId);
@@ -422,6 +422,9 @@ export function memberHabitRoutes(deps: {
       }
 
       if (body.action === 'deleteComment') {
+        if (isSundayRestHeader(nowMs, c.req.header('Time-Zone'))) {
+          return c.json({ error: 'SUNDAY_REST' }, 403);
+        }
         if (!isAccountRole(account.role) || !roleAtLeast(account.role, 'initiator')) {
           return c.json({ error: 'Forbidden' }, 403);
         }

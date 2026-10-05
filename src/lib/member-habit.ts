@@ -158,26 +158,3 @@ export function weeklyRatableThrough(nowMs: number, timeZone: string): string {
 export function manilaReviewWeek(nowMs: number): { start: string } {
   return { start: weeklyRatableThrough(nowMs, 'Asia/Manila') };
 }
-
-/**
- * True only inside `[Monday 16:00, Saturday 20:00)` Asia/Manila of the
- * calendar week that follows `manilaReviewWeek(nowMs).start`.
- */
-export function commentsOpen(nowMs: number): boolean {
-  const manila = 'Asia/Manila';
-  const openWeekMonday = nextPeriod(manilaReviewWeek(nowMs).start, 'weekly');
-  if (weekKey(nowMs, manila) !== openWeekMonday) {
-    return false;
-  }
-  const parts = zonedParts(nowMs, manila);
-  if (parts.weekday === 'Sun') {
-    return false;
-  }
-  if (parts.weekday === 'Mon') {
-    return parts.hour >= 16;
-  }
-  if (parts.weekday === 'Sat') {
-    return parts.hour < 20;
-  }
-  return true;
-}

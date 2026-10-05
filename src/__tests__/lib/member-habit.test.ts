@@ -1,6 +1,5 @@
 import { describe, expect, it } from 'vitest';
 import {
-  commentsOpen,
   comparePeriod,
   dayKey,
   isValidTimeZone,
@@ -93,36 +92,8 @@ describe('manilaReviewWeek', () => {
   });
 });
 
-describe('commentsOpen', () => {
-  it('opens at Monday 16:00 Manila of the week after the review week', () => {
-    expect(commentsOpen(Date.parse('2026-10-05T07:59:00Z'))).toBe(false);
-    expect(commentsOpen(Date.parse('2026-10-05T08:00:00Z'))).toBe(true);
-  });
-
-  it('closes at Saturday 20:00 Manila', () => {
-    expect(commentsOpen(Date.parse('2026-10-10T11:59:00Z'))).toBe(true);
-    expect(commentsOpen(Date.parse('2026-10-10T12:00:00Z'))).toBe(false);
-  });
-
-  it('is closed on Sunday and on Monday before 16:00', () => {
-    expect(commentsOpen(Date.parse('2026-10-04T15:00:00Z'))).toBe(false);
-    expect(commentsOpen(Date.parse('2026-10-05T07:59:00Z'))).toBe(false);
-  });
-});
-
 describe('nextPeriod rejects', () => {
   it('throws when the key is not YYYY-MM-DD', () => {
     expect(() => nextPeriod('bad', 'daily')).toThrow(/invalid YYYY-MM-DD/);
-  });
-});
-
-describe('commentsOpen outside the open week', () => {
-  it('is closed on Monday before 08:00 Manila because that week is not the comment week', () => {
-    expect(commentsOpen(Date.parse('2026-10-04T23:59:00.000Z'))).toBe(false);
-  });
-
-  it('is open Tuesday through Friday of the comment week', () => {
-    expect(commentsOpen(Date.parse('2026-10-06T04:00:00.000Z'))).toBe(true);
-    expect(commentsOpen(Date.parse('2026-10-08T04:00:00.000Z'))).toBe(true);
   });
 });

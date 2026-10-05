@@ -1215,7 +1215,7 @@
 - **Purpose:** True when a non-empty `Time-Zone` header names an IANA zone that is in Sunday at `nowMs`. A blank header is false. An invalid zone is false.
 - **Inputs:** `nowMs` epoch milliseconds and the raw `Time-Zone` header.
 - **Returns / side effects:** boolean. No I/O.
-- **Used by:** conversation routes for a `moderator_group` thread.
+- **Used by:** conversation routes for a `moderator_group` thread, and `memberHabitRoutes` for `comment` and `deleteComment`.
 
 ## Function: isSundayInZone
 
@@ -3358,7 +3358,7 @@ Builds the operator-only external-pubkey inspection route.
 - **Purpose:** The next calendar day, or the Monday seven days later.
 - **Inputs:** A `YYYY-MM-DD` key and a cadence.
 - **Returns / side effects:** The following period key. Throws when the key is not `YYYY-MM-DD`.
-- **Used by:** period ranges and the Manila comment week.
+- **Used by:** period ranges.
 
 ## Function: comparePeriod
 
@@ -3380,13 +3380,6 @@ Builds the operator-only external-pubkey inspection route.
 - **Inputs:** Epoch milliseconds.
 - **Returns / side effects:** `{ start }` with that Monday. No writes.
 - **Used by:** `GET /habits` and comment creation.
-
-## Function: commentsOpen
-
-- **Purpose:** Whether comments are open: Monday 16:00 inclusive through Saturday 20:00 exclusive Asia/Manila, in the week after the Manila review week.
-- **Inputs:** Epoch milliseconds.
-- **Returns / side effects:** `true` or `false`. No writes.
-- **Used by:** `GET /habits` and `POST /habits` action `comment`.
 
 ## Function: migrateMemberHabitSchema
 

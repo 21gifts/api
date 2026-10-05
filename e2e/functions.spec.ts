@@ -3065,9 +3065,13 @@ test('Function: publicExternalAuthorReplies — unknown id is not found', async 
   expect((await request.get('/messages/not-a-uuid/external-replies')).status()).toBe(404);
 });
 
-test('Function: memberHabitRoutes — GET /habits is public', async ({ request }) => {
+test('Function: memberHabitRoutes — GET /habits is public and POST without bearer is 401', async ({
+  request,
+}) => {
   const res = await request.get('/habits');
   expect(res.status()).toBe(200);
+  const denied = await request.post('/habits', { data: { action: 'add' } });
+  expect(denied.status()).toBe(401);
 });
 
 test('Function: isValidTimeZone — GET /habits is public', async ({ request }) => {
@@ -3108,11 +3112,6 @@ test('Function: weeklyRatableThrough — GET /habits is public', async ({ reques
 test('Function: manilaReviewWeek — GET /habits is public', async ({ request }) => {
   const res = await request.get('/habits');
   expect(res.status()).toBe(200);
-});
-
-test('Function: commentsOpen — POST /habits without bearer is 401', async ({ request }) => {
-  const res = await request.post('/habits', { data: { action: 'add' } });
-  expect(res.status()).toBe(401);
 });
 
 test('Function: migrateMemberHabitSchema — GET /habits is public', async ({ request }) => {

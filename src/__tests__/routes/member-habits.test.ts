@@ -5,7 +5,7 @@ import type { FetchFn } from '@/lib/lnurlp';
 import { InMemoryAuthStore } from '@/lib/auth/store';
 
 const NOW_OPEN = Date.parse('2026-10-05T08:00:00.000Z');
-const NOW_CLOSED = Date.parse('2026-10-05T07:59:00.000Z');
+const SUNDAY_ZURICH = Date.parse('2026-09-27T12:00:00.000Z');
 const AUTH = { Authorization: 'Bearer tok' };
 
 type AccountView = {
@@ -141,8 +141,10 @@ describe('memberHabitRoutes', () => {
     const res = await mount({ store, account: null }).request('/');
     expect(res.status).toBe(200);
     const body = (await res.json()) as {
+      reviewWeek: { start: string };
       habits: Array<{ id: string; role: string; notes?: string }>;
     };
+    expect(body.reviewWeek).toEqual({ start: '2026-09-28' });
     expect(body.habits.map((habit) => habit.role)).toEqual(['founder', 'initiator', 'basis']);
     for (const habit of body.habits) {
       expect('notes' in habit).toBe(false);
@@ -276,16 +278,40 @@ describe('memberHabitRoutes', () => {
     expect(await res.json()).toEqual({ ok: true });
   });
 
-  it('comment at 2026-10-05T07:59:00.000Z is 403', async () => {
+  it('comment on Sunday in Europe/Zurich is 403 SUNDAY_REST', async () => {
     const store = new InMemoryMemberHabitStore();
     await store.add(sampleHabit({ id: 'h-comment', accountId: BASIS.id, role: 'basis' }));
     const res = await post(
-      mount({ store, account: BASIS, now: () => NOW_CLOSED }),
+      mount({ store, account: BASIS, now: () => SUNDAY_ZURICH }),
+      { action: 'comment', habitId: 'h-comment', text: 'nice' },
+      { ...AUTH, 'Time-Zone': 'Europe/Zurich' },
+    );
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: 'SUNDAY_REST' });
+  });
+
+  it('comment on Sunday without Time-Zone is 201', async () => {
+    const store = new InMemoryMemberHabitStore();
+    await store.add(sampleHabit({ id: 'h-comment', accountId: BASIS.id, role: 'basis' }));
+    const res = await post(
+      mount({ store, account: BASIS, now: () => SUNDAY_ZURICH }),
       { action: 'comment', habitId: 'h-comment', text: 'nice' },
       AUTH,
     );
-    expect(res.status).toBe(403);
-    expect(await res.json()).toEqual({ error: 'Comments are closed' });
+    expect(res.status).toBe(201);
+    expect(await res.json()).toEqual({ ok: true });
+  });
+
+  it('comment on Sunday with an invalid Time-Zone is 201', async () => {
+    const store = new InMemoryMemberHabitStore();
+    await store.add(sampleHabit({ id: 'h-comment', accountId: BASIS.id, role: 'basis' }));
+    const res = await post(
+      mount({ store, account: BASIS, now: () => SUNDAY_ZURICH }),
+      { action: 'comment', habitId: 'h-comment', text: 'nice' },
+      { ...AUTH, 'Time-Zone': 'Not/AZone' },
+    );
+    expect(res.status).toBe(201);
+    expect(await res.json()).toEqual({ ok: true });
   });
 
   it('comment at 2026-10-05T08:00:00.000Z by a basis account is 201', async () => {
@@ -320,6 +346,28 @@ describe('memberHabitRoutes', () => {
     );
     expect(res.status).toBe(403);
     expect(await res.json()).toEqual({ error: 'Forbidden' });
+  });
+
+  it('deleteComment by initiator on Sunday in Europe/Zurich is 403 SUNDAY_REST', async () => {
+    const store = new InMemoryMemberHabitStore();
+    await store.add(sampleHabit({ id: 'h-comment', accountId: BASIS.id, role: 'basis' }));
+    await store.comment({
+      id: 'c-1',
+      habitId: 'h-comment',
+      accountId: BASIS.id,
+      name: 'Basis',
+      text: 'nice',
+      week: '2026-09-28',
+      createdAt: NOW_OPEN,
+      deletedAt: null,
+    });
+    const res = await post(
+      mount({ store, account: INITIATOR, now: () => SUNDAY_ZURICH }),
+      { action: 'deleteComment', id: 'c-1' },
+      { ...AUTH, 'Time-Zone': 'Europe/Zurich' },
+    );
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: 'SUNDAY_REST' });
   });
 
   it('deleteComment by initiator is 200', async () => {
@@ -441,6 +489,34 @@ describe('memberHabitRoutes', () => {
       }),
       { action: 'invoice', commentId: 'c-alice', amountSats: 1 },
       AUTH,
+    );
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ pr: 'lnbc1' });
+  });
+
+  it('invoice on Sunday in Europe/Zurich is still 200', async () => {
+    const store = new InMemoryMemberHabitStore();
+    await store.add(sampleHabit({ id: 'h-comment', accountId: ALICE.id, role: 'basis' }));
+    await store.comment({
+      id: 'c-alice',
+      habitId: 'h-comment',
+      accountId: ALICE.id,
+      name: 'Alice',
+      text: 'nice',
+      week: '2026-09-28',
+      createdAt: NOW_OPEN,
+      deletedAt: null,
+    });
+    const res = await post(
+      mount({
+        store,
+        account: BASIS,
+        accounts: { [ALICE.id]: ALICE },
+        fetchImpl: successFetch,
+        now: () => SUNDAY_ZURICH,
+      }),
+      { action: 'invoice', commentId: 'c-alice', amountSats: 1 },
+      { ...AUTH, 'Time-Zone': 'Europe/Zurich' },
     );
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ pr: 'lnbc1' });

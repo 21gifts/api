@@ -1153,13 +1153,13 @@ Operator inspection of external Nostr identities that have earned visibility or 
 ## Endpoint: GET /habits
 
 - **Purpose:** Public list of member habits. No bearer required. A valid bearer includes `notes` only on the caller's own habits. `notes` is omitted for everyone else. Periods run from `firstPeriod` through the latest ratable day or week and stop at `lastPeriod`. `logged` is false and `status` is null when the owner has not recorded that period.
-- **Inputs:** Optional `Authorization: Bearer`. `reviewWeek.start` is the Manila review Monday. `reviewWeek.commentsOpen` is Monday 16:00 inclusive through Saturday 20:00 exclusive Asia/Manila of the following week.
+- **Inputs:** Optional `Authorization: Bearer`. `reviewWeek.start` is the Manila review Monday.
 - **Returns / side effects:** 200 `{ reviewWeek, habits }`. No writes.
 - **Used by:** the habit tracker page.
 
 ## Endpoint: POST /habits
 
-- **Purpose:** One strict JSON action: `add`, `edit`, `archive`, `log`, `comment`, `deleteComment`, `invoice`. Bearer required. `add` requires `Time-Zone`. `invoice` returns a BOLT11 `pr` and does not pay. Comments are not forum posts.
-- **Inputs:** Bearer session. Body is one action object. `add` also sends `Time-Zone`.
-- **Returns / side effects:** 201 `{ ok: true, id }` for add. 201 `{ ok: true }` for comment, with no id. 200 `{ ok: true }` for edit, archive, log, and deleteComment. 200 `{ pr }` for invoice. 400 invalid body, name, description, notes, time zone, status, period, comment, or amount, and self-donation. 401 missing bearer. 403 comments closed or delete without initiator rank. 404 missing habit or comment. 409 closed period or no wallet. 429 too many invoices. 502 invoice unavailable. 503 store failure, event `habits.failed`.
+- **Purpose:** One strict JSON action: `add`, `edit`, `archive`, `log`, `comment`, `deleteComment`, `invoice`. Bearer required. `add` requires `Time-Zone`. `comment` and `deleteComment` follow the same Sunday rest as other public writing: 403 `{ error: 'SUNDAY_REST' }` when `Time-Zone` names an IANA zone that is Sunday. A missing, blank, or invalid zone does not refuse. Rating, add, edit, archive, and `invoice` are not that refusal. `invoice` returns a BOLT11 `pr` and does not pay. Comments are not forum posts.
+- **Inputs:** Bearer session. Body is one action object. `add`, `comment`, and `deleteComment` also send `Time-Zone`.
+- **Returns / side effects:** 201 `{ ok: true, id }` for add. 201 `{ ok: true }` for comment, with no id. 200 `{ ok: true }` for edit, archive, log, and deleteComment. 200 `{ pr }` for invoice. 400 invalid body, name, description, notes, time zone, status, period, comment, or amount, and self-donation. 401 missing bearer. 403 `{ error: 'SUNDAY_REST' }` for `comment` and `deleteComment` on Sunday, or `{ error: 'Forbidden' }` for `deleteComment` below initiator rank. 404 missing habit or comment. 409 closed period or no wallet. 429 too many invoices. 502 invoice unavailable. 503 store failure, event `habits.failed`.
 - **Used by:** the habit tracker page.
