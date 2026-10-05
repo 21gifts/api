@@ -121,7 +121,10 @@ after trim stores `null`. Location is public on member and view cards. It is
 not a setup step, not a posting requirement, not a profile forum note, and
 not Nostr `kind:0`. About me is `PUT /me/about` (Bearer `{ text, photo? }`): a
 non-blank name is required (409 otherwise); a verified wallet is not; empty
-text clears the bio (`aboutMe` null; a live note row is kept). Optional
+text clears the bio (`aboutMe` null; a live note row is kept, and without a
+photo or video its text goes back to the name-copy, never empty). Empty text
+without a photo and without a live note is 400 `Write something about
+yourself`. Optional
 `photo` uses the same JPEG/PNG/WebP decode as a forum post (`omitted` keeps,
 `null` clears, object sets). When no live note exists, empty text without a
 new photo does not create or notify; a photo-only or non-empty write against

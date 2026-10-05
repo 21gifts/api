@@ -171,6 +171,9 @@ const aboutBody = z.object({
 /** Same decode-failure string as `POST /messages`. */
 const ABOUT_PHOTO_ERROR = 'Photo must be a JPEG, PNG, or WebP under 1 MiB';
 
+/** Empty About me with no photo or video and no live note to clear. */
+const ABOUT_EMPTY_ERROR = 'Write something about yourself';
+
 /** Body schema for setting the owner notification level. */
 const notificationLevelBody = z.object({
   level: z.enum(['all', 'active', 'mentions']),
@@ -610,11 +613,19 @@ export function meRoutes(deps: MeRouteDeps): Hono {
         let owner = current;
         let noteId: string | undefined;
         let createdThisRequest = false;
+        let textToWrite = normalized;
         const existingId = owner.profileMessageId;
         if (typeof existingId === 'string' && existingId.trim() !== '') {
           const existing = await deps.messages.getById(existingId);
           if (existing !== undefined && existing.deletedAt === null) {
             noteId = existingId;
+            const keepsMedia =
+              existing.hasVideo === true ||
+              (decodedPhoto === undefined ? existing.hasPhoto : decodedPhoto !== null);
+            if (normalized === '' && !keepsMedia) {
+              // Removal: back to the auto name-copy, never an empty note.
+              textToWrite = existing.name.trim() === '' ? displayName : existing.name;
+            }
           }
         }
         if (
@@ -622,13 +633,7 @@ export function meRoutes(deps: MeRouteDeps): Hono {
           normalized === '' &&
           (decodedPhoto === undefined || decodedPhoto === null)
         ) {
-          const latest = await storedAccount(deps, owner.id);
-          /* v8 ignore next 3 -- the account row cannot vanish mid-request after auth */
-          if (latest === null) {
-            return c.json({ error: 'Unauthorized' }, 401);
-          }
-          logEvent('account.about.set', { accountId: latest.id });
-          return c.json(await ownerJson(deps, latest), 200);
+          return c.json({ error: ABOUT_EMPTY_ERROR }, 400);
         }
         if (noteId === undefined) {
           const messageId = crypto.randomUUID();
@@ -724,7 +729,7 @@ export function meRoutes(deps: MeRouteDeps): Hono {
             }
           }
         }
-        await deps.messages.updateText(noteId, normalized);
+        await deps.messages.updateText(noteId, textToWrite);
         if (photoKeyPresent && !createdThisRequest) {
           await deps.messages.updatePhoto(noteId, decodedPhoto ?? null);
         }
