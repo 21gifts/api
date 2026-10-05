@@ -328,3 +328,63 @@ CREATE TABLE IF NOT EXISTS message_edit (
 );
 CREATE INDEX IF NOT EXISTS message_edit_message_created_idx
   ON message_edit (message_id, created_at DESC, id DESC);
+-- Later receipts on a reply. Boot repair moves nostr_zap_receipt sums off reply
+-- sats onto received_sats; it does not read message_invoice, so historical
+-- spend-proof credits that never became a nostr_zap_receipt stay inside reply sats.
+ALTER TABLE message ADD COLUMN IF NOT EXISTS received_sats bigint;
+ALTER TABLE message ADD COLUMN IF NOT EXISTS received_fiat_usd numeric(20, 2);
+ALTER TABLE message ADD COLUMN IF NOT EXISTS received_fiat_chf numeric(20, 2);
+ALTER TABLE message ADD COLUMN IF NOT EXISTS received_fiat_eur numeric(20, 2);
+ALTER TABLE message ADD COLUMN IF NOT EXISTS received_fiat_php numeric(20, 2);
+UPDATE message AS m
+SET received_sats = src.receipt_sats,
+    sats = GREATEST(m.sats - src.receipt_sats, 0),
+    received_fiat_usd = src.received_usd,
+    fiat_usd = CASE WHEN src.received_usd IS NULL THEN m.fiat_usd ELSE m.fiat_usd - src.received_usd END,
+    received_fiat_chf = src.received_chf,
+    fiat_chf = CASE WHEN src.received_chf IS NULL THEN m.fiat_chf ELSE m.fiat_chf - src.received_chf END,
+    received_fiat_eur = src.received_eur,
+    fiat_eur = CASE WHEN src.received_eur IS NULL THEN m.fiat_eur ELSE m.fiat_eur - src.received_eur END,
+    received_fiat_php = src.received_php,
+    fiat_php = CASE WHEN src.received_php IS NULL THEN m.fiat_php ELSE m.fiat_php - src.received_php END
+FROM (
+  SELECT m2.id,
+         COALESCE(SUM(r.sats), 0) AS receipt_sats,
+         CASE
+           WHEN COUNT(r.event_id) = 0 THEN NULL
+           WHEN COUNT(i.fiat_usd) = COUNT(r.event_id) THEN SUM(i.fiat_usd)
+           ELSE NULL
+         END AS received_usd,
+         CASE
+           WHEN COUNT(r.event_id) = 0 THEN NULL
+           WHEN COUNT(i.fiat_chf) = COUNT(r.event_id) THEN SUM(i.fiat_chf)
+           ELSE NULL
+         END AS received_chf,
+         CASE
+           WHEN COUNT(r.event_id) = 0 THEN NULL
+           WHEN COUNT(i.fiat_eur) = COUNT(r.event_id) THEN SUM(i.fiat_eur)
+           ELSE NULL
+         END AS received_eur,
+         CASE
+           WHEN COUNT(r.event_id) = 0 THEN NULL
+           WHEN COUNT(i.fiat_php) = COUNT(r.event_id) THEN SUM(i.fiat_php)
+           ELSE NULL
+         END AS received_php
+  FROM message m2
+  LEFT JOIN nostr_zap_receipt r ON r.message_id = m2.id
+  LEFT JOIN LATERAL (
+    SELECT fiat_usd, fiat_chf, fiat_eur, fiat_php
+    FROM nostr_zap_ingest
+    WHERE receipt_id = r.event_id
+      AND outcome = 'indexed'
+      AND message_id = r.message_id
+    ORDER BY created_at DESC, id DESC
+    LIMIT 1
+  ) i ON r.event_id IS NOT NULL
+  WHERE m2.parent_id IS NOT NULL AND m2.received_sats IS NULL
+  GROUP BY m2.id
+) src
+WHERE m.id = src.id AND m.parent_id IS NOT NULL AND m.received_sats IS NULL;
+UPDATE message SET received_sats = 0 WHERE received_sats IS NULL;
+ALTER TABLE message ALTER COLUMN received_sats SET DEFAULT 0;
+ALTER TABLE message ALTER COLUMN received_sats SET NOT NULL;

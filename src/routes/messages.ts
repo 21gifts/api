@@ -1333,8 +1333,10 @@ const translateBody = z.object({
  * staff `GET /messages/hidden` (moderator session log), public
  * `GET /messages/stats` (no session; living notes and replies as one count),
  * public `GET /messages/:id` (optional `?sinceSats=` non-negative integer
- * long-polls until `sats` is strictly greater; timeout still returns 200 with
- * the current body; invalid value 400), `POST /messages/:id/invoice`, and
+ * long-polls until `sats` is strictly greater; optional `?sinceReceivedSats=`
+ * long-polls a live reply until `receivedSats` is strictly greater, ignored on
+ * a top-level note; timeout still returns 200 with the current body; invalid
+ * value 400), `POST /messages/:id/invoice`, and
  * `POST /:id/translate` / `POST /messages/:id/translate`.
  * Photo, video, replies, DELETE, `GET /stats`, `GET /hidden`, `GET /places`,
  * `GET /:id/external-posts`, and `GET /:id/external-replies` register before the public single-note `GET /:id`. Soft-hidden rows (`deletedAt`) are omitted from
@@ -1369,7 +1371,7 @@ const translateBody = z.object({
  * staff `PATCH /:id/shop-account`, staff `PATCH /:id/text`, staff
  * `PATCH /:id/photos`, and staff `GET /:id/edits` (moderator session; no `forum.read`),
  * staff `GET /hidden` (moderator session; no `forum.read`), public
- * `GET /:id` (optional `?sinceSats=`), and
+ * `GET /:id` (optional `?sinceSats=` / `?sinceReceivedSats=`), and
  * `POST /:id/invoice`, `POST /:id/translate`, and public `GET /stats`.
  */
 /**
@@ -2608,6 +2610,14 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
         }
         sinceSats = Number(sinceSatsRaw);
       }
+      const sinceReceivedSatsRaw = c.req.query('sinceReceivedSats');
+      let sinceReceivedSats: number | undefined;
+      if (sinceReceivedSatsRaw !== undefined) {
+        if (!/^\d+$/.test(sinceReceivedSatsRaw)) {
+          return c.json({ error: 'Expected sinceReceivedSats to be a non-negative integer' }, 400);
+        }
+        sinceReceivedSats = Number(sinceReceivedSatsRaw);
+      }
       const started = deps.now();
       const timeoutMs = deps.waitSatsTimeoutMs ?? WAIT_SATS_TIMEOUT_MS;
       const pollMs = deps.waitSatsPollMs ?? WAIT_SATS_POLL_MS;
@@ -2646,8 +2656,10 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
             return c.json({ error: 'Not found' }, 404);
           }
           if (
-            sinceSats !== undefined &&
-            row.sats <= sinceSats &&
+            ((sinceSats !== undefined && row.sats <= sinceSats) ||
+              (row.parentId !== null &&
+                sinceReceivedSats !== undefined &&
+                (row.receivedSats ?? 0) <= sinceReceivedSats)) &&
             deps.now() - started < timeoutMs
           ) {
             await sleep(pollMs);

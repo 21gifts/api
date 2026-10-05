@@ -96,7 +96,7 @@ const JPEG2: ForumPhoto = {
 
 describe('MESSAGE_SCHEMA_SQL', () => {
   it('creates message with photo columns, Nostr columns, index, and additive ALTERs', () => {
-    expect(MESSAGE_SCHEMA_SQL).toHaveLength(99);
+    expect(MESSAGE_SCHEMA_SQL).toHaveLength(108);
     expect(MESSAGE_SCHEMA_SQL.join('\n')).toMatch(
       /ALTER TABLE message ADD COLUMN IF NOT EXISTS place_lat double precision/i,
     );
@@ -234,6 +234,26 @@ describe('MESSAGE_SCHEMA_SQL', () => {
     );
     expect(MESSAGE_SCHEMA_SQL.join('\n')).toMatch(
       /ALTER TABLE message ADD COLUMN IF NOT EXISTS goal_term_days integer/,
+    );
+    expect(MESSAGE_SCHEMA_SQL.join('\n')).toMatch(
+      /ALTER TABLE message ADD COLUMN IF NOT EXISTS received_sats bigint/,
+    );
+    expect(MESSAGE_SCHEMA_SQL.join('\n')).toMatch(
+      /ALTER TABLE message ADD COLUMN IF NOT EXISTS received_fiat_usd numeric\(20, 2\)/,
+    );
+    expect(MESSAGE_SCHEMA_SQL.join('\n')).toMatch(
+      /ALTER TABLE message ADD COLUMN IF NOT EXISTS received_fiat_php numeric\(20, 2\)/,
+    );
+    expect(MESSAGE_SCHEMA_SQL.join('\n')).toMatch(/GREATEST\(m\.sats - src\.receipt_sats, 0\)/);
+    expect(MESSAGE_SCHEMA_SQL.join('\n')).not.toMatch(/FROM message_invoice/);
+    expect(MESSAGE_SCHEMA_SQL.join('\n')).toMatch(
+      /UPDATE message SET received_sats = 0 WHERE received_sats IS NULL/,
+    );
+    expect(MESSAGE_SCHEMA_SQL.join('\n')).toMatch(
+      /ALTER TABLE message ALTER COLUMN received_sats SET DEFAULT 0/,
+    );
+    expect(MESSAGE_SCHEMA_SQL.join('\n')).toMatch(
+      /ALTER TABLE message ALTER COLUMN received_sats SET NOT NULL/,
     );
     expect(MESSAGE_SCHEMA_SQL.join('\n')).toMatch(
       /DROP CONSTRAINT IF EXISTS message_goal_term_days_chk[\s\S]*ADD CONSTRAINT message_goal_term_days_chk\s+CHECK \(goal_term_days IS NULL OR \(goal_repayable IS TRUE AND goal_term_days BETWEEN 1 AND 3650\)\)/,
@@ -2689,11 +2709,28 @@ describe('InMemoryMessageStore', () => {
     const created = await store.create(EARLY);
     expect(created.text).toBe('first');
     expect(created.hasPhoto).toBe(false);
+    expect(created.receivedSats).toBe(0);
     expect(created.goalSats).toBeNull();
     expect(created.goalRepayable).toBeNull();
     expect(created.goalTermDays).toBeNull();
     expect(created).not.toBe(EARLY);
     expect((await store.listLatest(10))[0]?.id).toBe('a');
+  });
+
+  it('create stores receivedSats 0 when the incoming property is undefined', async () => {
+    const store = new InMemoryMessageStore();
+    const row: MessageRow = {
+      id: 'undef-received',
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'hi',
+      createdAt: new Date('2026-08-01T00:00:00.000Z'),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+    };
+    (row as { receivedSats: number | undefined }).receivedSats = undefined;
+    await store.create(row);
+    expect((await store.getById('undef-received'))?.receivedSats).toBe(0);
   });
 
   it('create round-trips a top-level goalSats and defaults null without one', async () => {
@@ -3093,8 +3130,72 @@ describe('InMemoryMessageStore', () => {
     await store.create(EARLY);
     expect(await store.recordZapReceipt('r1', 'a', 21, null)).toBe(true);
     expect((await store.getById('a'))?.sats).toBe(21);
+    expect((await store.getById('a'))?.receivedSats).toBe(0);
     expect(await store.recordZapReceipt('r1', 'a', 21, null)).toBe(false);
     expect((await store.getById('a'))?.sats).toBe(21);
+  });
+
+  it('recordZapReceipt on a reply leaves sats and increases receivedSats', async () => {
+    const store = new InMemoryMessageStore();
+    await store.create(EARLY);
+    await store.create({
+      ...LATE,
+      id: 'reply',
+      parentId: 'a',
+      sats: 21000,
+    });
+    const createdReply = await store.getById('reply');
+    const amountUsd = createdReply?.amountUsd;
+    const amountChf = createdReply?.amountChf;
+    const amountEur = createdReply?.amountEur;
+    const amountPhp = createdReply?.amountPhp;
+    expect(
+      await store.recordZapReceipt('r-reply', 'reply', 100, {
+        usd: '0.10',
+        chf: null,
+        eur: '0.09',
+        php: null,
+      }),
+    ).toBe(true);
+    const reply = await store.getById('reply');
+    expect(reply?.sats).toBe(21000);
+    expect(reply?.amountUsd).toBe(amountUsd);
+    expect(reply?.amountChf).toBe(amountChf);
+    expect(reply?.amountEur).toBe(amountEur);
+    expect(reply?.amountPhp).toBe(amountPhp);
+    expect(reply?.receivedSats).toBe(100);
+    expect(reply?.receivedAmountUsd).toBe('0.10');
+    expect(reply?.receivedAmountChf).toBeNull();
+    expect(reply?.receivedAmountEur).toBe('0.09');
+    expect(reply?.receivedAmountPhp).toBeNull();
+    expect((await store.getById('a'))?.sats).toBe(0);
+    expect(await store.recordZapReceipt('r-reply', 'reply', 100, null)).toBe(false);
+    expect((await store.getById('reply'))?.receivedSats).toBe(100);
+  });
+
+  it('addReceivedSats folds received fiat and is a no-op for a missing id', async () => {
+    const store = new InMemoryMessageStore();
+    await store.create(EARLY);
+    await store.create({ ...LATE, id: 'reply', parentId: 'a', sats: 21 });
+    const createdReply = await store.getById('reply');
+    const amountUsd = createdReply?.amountUsd;
+    const amountChf = createdReply?.amountChf;
+    const amountEur = createdReply?.amountEur;
+    const amountPhp = createdReply?.amountPhp;
+    await store.addReceivedSats('reply', 7, { usd: '1.00', chf: null, eur: '0.90', php: null });
+    const reply = await store.getById('reply');
+    expect(reply?.sats).toBe(21);
+    expect(reply?.amountUsd).toBe(amountUsd);
+    expect(reply?.amountChf).toBe(amountChf);
+    expect(reply?.amountEur).toBe(amountEur);
+    expect(reply?.amountPhp).toBe(amountPhp);
+    expect(reply?.receivedSats).toBe(7);
+    expect(reply?.receivedAmountUsd).toBe('1.00');
+    expect(reply?.receivedAmountEur).toBe('0.90');
+    await store.addReceivedSats('reply', 0, { usd: '9.00', chf: '9.00', eur: '9.00', php: '9.00' });
+    expect((await store.getById('reply'))?.receivedAmountUsd).toBe('1.00');
+    await store.addReceivedSats('missing', 21, { usd: '1.00', chf: null, eur: null, php: null });
+    expect(await store.getById('missing')).toBeUndefined();
   });
 
   it('claimZapPayment allows idempotent re-claims and rejects another receipt id', async () => {
@@ -5693,10 +5794,10 @@ describe('PostgresMessageStore', () => {
     };
     const created = await store.create(row);
     expect(sql.executes[0]?.text).toMatch(
-      /INSERT INTO message \(\s*id, account_id, name, text, photo, photo_content_type, video_content_type, created_at,\s*nostr_publish_state, sats, parent_id, author_pubkey, event_id, nostr_event, content_fp, goal_sats,\s*fiat_usd, fiat_chf, fiat_eur, fiat_php, photo_taken_at, video_taken_at,\s*place_lat, place_lng, place_label,\s*goal_currency, goal_amount, goal_fiat_usd, goal_fiat_chf, goal_fiat_eur, goal_fiat_php, goal_repayable, goal_term_days,\s*shop_account_id\s*\)/,
+      /INSERT INTO message \(\s*id, account_id, name, text, photo, photo_content_type, video_content_type, created_at,\s*nostr_publish_state, sats, parent_id, author_pubkey, event_id, nostr_event, content_fp, goal_sats,\s*fiat_usd, fiat_chf, fiat_eur, fiat_php, photo_taken_at, video_taken_at,\s*place_lat, place_lng, place_label,\s*goal_currency, goal_amount, goal_fiat_usd, goal_fiat_chf, goal_fiat_eur, goal_fiat_php, goal_repayable, goal_term_days,\s*shop_account_id, received_sats, received_fiat_usd, received_fiat_chf, received_fiat_eur, received_fiat_php\s*\)/,
     );
     expect(sql.executes[0]?.text).toMatch(
-      /\$14::jsonb,\$15,\$16,\s*\$17::numeric,\$18::numeric,\$19::numeric,\$20::numeric,\$21,\$22,\$23,\$24,\$25,\s*\$26,\$27::numeric,\$28::numeric,\$29::numeric,\$30::numeric,\$31::numeric,\$32,\$33,\$34/,
+      /\$14::jsonb,\$15,\$16,\s*\$17::numeric,\$18::numeric,\$19::numeric,\$20::numeric,\$21,\$22,\$23,\$24,\$25,\s*\$26,\$27::numeric,\$28::numeric,\$29::numeric,\$30::numeric,\$31::numeric,\$32,\$33,\$34,\s*\$35,\$36::numeric,\$37::numeric,\$38::numeric,\$39::numeric/,
     );
     expect(sql.executes[0]?.text).not.toMatch(/ON CONFLICT/i);
     expect(sql.executes[0]?.params).toEqual([
@@ -5734,10 +5835,16 @@ describe('PostgresMessageStore', () => {
       null,
       null,
       null,
+      0,
+      null,
+      null,
+      null,
+      null,
     ]);
-    expect(sql.executes[0]?.params).toHaveLength(34);
+    expect(sql.executes[0]?.params).toHaveLength(39);
     expect(created.id).toBe(row.id);
     expect(created.hasVideo).toBe(false);
+    expect(created.receivedSats).toBe(0);
     expect(created.goalSats).toBeNull();
     expect(created.goalRepayable).toBeNull();
     expect(created.goalTermDays).toBeNull();
@@ -5768,6 +5875,11 @@ describe('PostgresMessageStore', () => {
       null,
       null,
       null,
+      null,
+      null,
+      null,
+      null,
+      0,
       null,
       null,
       null,
@@ -5805,6 +5917,11 @@ describe('PostgresMessageStore', () => {
       null,
       null,
       null,
+      null,
+      null,
+      null,
+      null,
+      0,
       null,
       null,
       null,
@@ -5954,10 +6071,10 @@ describe('PostgresMessageStore', () => {
     const created = await store.create(row);
     expect(sql.executes).toEqual([]);
     expect(sql.queries[0]?.text).toMatch(
-      /INSERT INTO message \(\s*id, account_id, name, text, photo, photo_content_type, video_content_type, created_at,\s*nostr_publish_state, sats, parent_id, author_pubkey, event_id, nostr_event, content_fp, goal_sats,\s*fiat_usd, fiat_chf, fiat_eur, fiat_php, photo_taken_at, video_taken_at,\s*place_lat, place_lng, place_label,\s*goal_currency, goal_amount, goal_fiat_usd, goal_fiat_chf, goal_fiat_eur, goal_fiat_php, goal_repayable, goal_term_days,\s*shop_account_id\s*\)/,
+      /INSERT INTO message \(\s*id, account_id, name, text, photo, photo_content_type, video_content_type, created_at,\s*nostr_publish_state, sats, parent_id, author_pubkey, event_id, nostr_event, content_fp, goal_sats,\s*fiat_usd, fiat_chf, fiat_eur, fiat_php, photo_taken_at, video_taken_at,\s*place_lat, place_lng, place_label,\s*goal_currency, goal_amount, goal_fiat_usd, goal_fiat_chf, goal_fiat_eur, goal_fiat_php, goal_repayable, goal_term_days,\s*shop_account_id, received_sats, received_fiat_usd, received_fiat_chf, received_fiat_eur, received_fiat_php\s*\)/,
     );
     expect(sql.queries[0]?.text).toMatch(
-      /SELECT \$1,\$2,\$3,\$4,\$5,\$6,\$7,\$8,\$9,\$10,\$11,\$12,\$13,\$14::jsonb,\$15,\$16,\s*\$17::numeric,\$18::numeric,\$19::numeric,\$20::numeric,\$21,\$22,\$23,\$24,\$25,\s*\$26,\$27::numeric,\$28::numeric,\$29::numeric,\$30::numeric,\$31::numeric,\$32,\$33,\$34/,
+      /SELECT \$1,\$2,\$3,\$4,\$5,\$6,\$7,\$8,\$9,\$10,\$11,\$12,\$13,\$14::jsonb,\$15,\$16,\s*\$17::numeric,\$18::numeric,\$19::numeric,\$20::numeric,\$21,\$22,\$23,\$24,\$25,\s*\$26,\$27::numeric,\$28::numeric,\$29::numeric,\$30::numeric,\$31::numeric,\$32,\$33,\$34,\s*\$35,\$36::numeric,\$37::numeric,\$38::numeric,\$39::numeric/,
     );
     expect(sql.queries[0]?.text).toMatch(
       /WHERE EXISTS \(SELECT 1 FROM message p WHERE p\.id = \$11 AND p\.deleted_at IS NULL\)/,
@@ -5999,8 +6116,13 @@ describe('PostgresMessageStore', () => {
       null,
       null,
       null,
+      0,
+      null,
+      null,
+      null,
+      null,
     ]);
-    expect(sql.queries[0]?.params).toHaveLength(34);
+    expect(sql.queries[0]?.params).toHaveLength(39);
     expect(created.id).toBe('child-1');
     expect(created.parentId).toBe('parent-1');
   });
@@ -6037,6 +6159,11 @@ describe('PostgresMessageStore', () => {
       null,
       null,
       null,
+      null,
+      null,
+      null,
+      null,
+      0,
       null,
       null,
       null,
@@ -6079,6 +6206,11 @@ describe('PostgresMessageStore', () => {
       null,
       null,
       null,
+      0,
+      null,
+      null,
+      null,
+      null,
     ]);
     expect(created.place).toEqual({ lat: 47.3, lng: 8.5, label: 'Zürich' });
   });
@@ -6114,6 +6246,11 @@ describe('PostgresMessageStore', () => {
       null,
       null,
       null,
+      null,
+      null,
+      null,
+      null,
+      0,
       null,
       null,
       null,
@@ -6903,6 +7040,8 @@ describe('PostgresMessageStore', () => {
     ];
     const store = new PostgresMessageStore(sql);
     expect((await store.getById('m1'))?.mentions).toEqual([{ accountId: 'acc', username: 'ada' }]);
+    expect(sql.queries[0]?.text).toMatch(/received_sats/);
+    expect(sql.queries[0]?.text).toMatch(/received_fiat_php::text AS received_fiat_php/);
     sql.nextRows = [];
     expect(await store.getById('missing')).toBeUndefined();
     sql.nextRows = [
@@ -6956,6 +7095,32 @@ describe('PostgresMessageStore', () => {
     expect(priced?.amountChf).toBe('0.80');
     expect(priced?.amountEur).toBe('0.90');
     expect(priced?.amountPhp).toBe('50.00');
+    expect(priced?.receivedSats).toBe(0);
+    sql.nextRows = [
+      {
+        id: 'm-received',
+        account_id: 'acc',
+        name: 'Ada',
+        text: 're',
+        created_at: new Date(0),
+        has_photo: false,
+        parent_id: 'm-fiat',
+        nostr_publish_state: 'pending',
+        sats: 21000,
+        received_sats: '100',
+        received_fiat_usd: '0.10',
+        received_fiat_chf: '0.08',
+        received_fiat_eur: '0.09',
+        received_fiat_php: '5.00',
+      },
+    ];
+    const received = await store.getById('m-received');
+    expect(received?.sats).toBe(21000);
+    expect(received?.receivedSats).toBe(100);
+    expect(received?.receivedAmountUsd).toBe('0.10');
+    expect(received?.receivedAmountChf).toBe('0.08');
+    expect(received?.receivedAmountEur).toBe('0.09');
+    expect(received?.receivedAmountPhp).toBe('5.00');
     expect(mapped?.claimedUntil).toBe(Date.parse('2026-08-28T00:01:00.000Z'));
     sql.nextRows = [];
     expect(await store.claimUnsigned(5, 1_000, 60_000)).toEqual([]);
@@ -6969,6 +7134,9 @@ describe('PostgresMessageStore', () => {
     await store.addSats('m1', 7, null);
     expect(sql.executes.some((e) => e.text.includes('sats = sats +'))).toBe(true);
     await store.addSats('m1', 7, { usd: '1.00', chf: null, eur: '0.90', php: null });
+    expect(sql.executes.at(-1)?.params).toEqual(['m1', 7, '1.00', null, '0.90', null]);
+    await store.addReceivedSats('m1', 7, { usd: '1.00', chf: null, eur: '0.90', php: null });
+    expect(sql.executes.at(-1)?.text).toMatch(/received_sats = received_sats \+/);
     expect(sql.executes.at(-1)?.params).toEqual(['m1', 7, '1.00', null, '0.90', null]);
   });
 
@@ -7367,9 +7535,27 @@ describe('PostgresMessageStore', () => {
     expect(sql.queries[0]?.text).toMatch(/nostr_zap_receipt/);
     expect(sql.queries[0]?.text).toMatch(/ON CONFLICT/);
     expect(sql.queries[0]?.text).toMatch(/message\.sats \+ inserted\.sats/);
+    expect(sql.queries[0]?.text).toMatch(
+      /message\.parent_id IS NOT NULL THEN message\.received_sats \+ inserted\.sats/,
+    );
+    expect(sql.queries[0]?.text).toMatch(/message\.id = inserted\.message_id/);
+    expect(sql.queries[0]?.text).not.toMatch(/gift_reply_id/);
     expect(sql.queries[0]?.text).toMatch(/goal_funded_at = CASE/);
     expect(sql.queries[0]?.text).toMatch(/message\.goal_repayable IS TRUE/);
     expect(sql.executes).toEqual([]);
+  });
+
+  it('addReceivedSats updates received columns and leaves sats', async () => {
+    const sql = new MockSql();
+    const store = new PostgresMessageStore(sql);
+    await store.addReceivedSats('m1', 7, { usd: '1.00', chf: null, eur: '0.90', php: null });
+    expect(sql.executes[0]?.text).toMatch(/received_sats = received_sats \+/);
+    expect(sql.executes[0]?.text).toContain('WHEN $2::bigint = 0 THEN received_fiat_usd');
+    expect(sql.executes[0]?.text).not.toMatch(/sats = sats \+/);
+    expect(sql.executes[0]?.text).not.toMatch(/goal_funded_at/);
+    expect(sql.executes[0]?.params).toEqual(['m1', 7, '1.00', null, '0.90', null]);
+    await store.addReceivedSats('m1', 3, null);
+    expect(sql.executes[1]?.params).toEqual(['m1', 3, null, null, null, null]);
   });
 
   it('claimZapPayment lowercases the hash and accepts the stored receipt owner', async () => {
@@ -9372,6 +9558,11 @@ describe('message fiat accumulator SQL', () => {
       null,
       null,
       null,
+      0,
+      null,
+      null,
+      null,
+      null,
     ]);
     sql.nextRows = [{ id: 'child-cur' }];
     await store.create({
@@ -9388,6 +9579,11 @@ describe('message fiat accumulator SQL', () => {
       null,
       null,
       null,
+      null,
+      null,
+      null,
+      null,
+      0,
       null,
       null,
       null,

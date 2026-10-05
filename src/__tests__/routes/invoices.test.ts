@@ -2451,7 +2451,7 @@ describe('POST /invoices/proof', () => {
     expect(replies[0]?.nostrPublishState).toBe('pending');
   });
 
-  it('addSats a reply invoice without creating a nested gift-reply', async () => {
+  it('addReceivedSats a reply invoice without creating a nested gift-reply', async () => {
     const authStore = new InMemoryAuthStore();
     await seedPasskeyAndPlatform(authStore);
     const messageStore = uuidReplyStore();
@@ -2467,7 +2467,8 @@ describe('POST /invoices/proof', () => {
       auth({ method: 'POST', body: JSON.stringify({ id: unpaid().id, preimage: PREIMAGE }) }),
     );
     expect(res.status).toBe(200);
-    expect((await messageStore.getById(REPLY_ID))?.sats).toBe(1);
+    expect((await messageStore.getById(REPLY_ID))?.sats).toBe(0);
+    expect((await messageStore.getById(REPLY_ID))?.receivedSats).toBe(1);
     expect(await messageStore.listReplies(REPLY_ID, 200)).toEqual([]);
     expect(await messageStore.listReplies(POST_ID, 200)).toHaveLength(1);
     const marker = await messageStore.getById(spendGiftReplyId(unpaid().id));
@@ -2517,9 +2518,11 @@ describe('POST /invoices/proof', () => {
       body: JSON.stringify({ id: unpaid().id, preimage: PREIMAGE }),
     });
     expect((await app.request('/invoices/proof', body)).status).toBe(200);
-    expect((await messageStore.getById(REPLY_ID))?.sats).toBe(1);
+    expect((await messageStore.getById(REPLY_ID))?.sats).toBe(0);
+    expect((await messageStore.getById(REPLY_ID))?.receivedSats).toBe(1);
     expect((await app.request('/invoices/proof', body)).status).toBe(200);
-    expect((await messageStore.getById(REPLY_ID))?.sats).toBe(1);
+    expect((await messageStore.getById(REPLY_ID))?.sats).toBe(0);
+    expect((await messageStore.getById(REPLY_ID))?.receivedSats).toBe(1);
     expect(await messageStore.listReplies(REPLY_ID, 200)).toEqual([]);
     expect(await messageStore.listReplies(POST_ID, 200)).toHaveLength(1);
   });
@@ -2827,8 +2830,10 @@ describe('POST /invoices/proof', () => {
     });
     expect((await app.request('/invoices/proof', body)).status).toBe(200);
     expect((await inner.getById(REPLY_ID))?.sats).toBe(0);
+    expect((await inner.getById(REPLY_ID))?.receivedSats).toBe(0);
     expect((await app.request('/invoices/proof', body)).status).toBe(200);
-    expect((await inner.getById(REPLY_ID))?.sats).toBe(1);
+    expect((await inner.getById(REPLY_ID))?.sats).toBe(0);
+    expect((await inner.getById(REPLY_ID))?.receivedSats).toBe(1);
     expect(await inner.listReplies(REPLY_ID, 200)).toEqual([]);
     const marker = await inner.getById(spendGiftReplyId(unpaid().id));
     expect(marker).toBeDefined();

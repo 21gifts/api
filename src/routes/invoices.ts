@@ -39,8 +39,8 @@ import { MESSAGE_ID_RE } from '@/routes/messages';
  * with `messageId` attaches a platform gift-reply when that message is a
  * top-level post. If `messageId` is already a reply, the proof persists a
  * deterministic `spendGiftReplyId` marker under that reply, `markDeleted`
- * so live `listReplies` omits it, then `addSats`s the reply. A live existing
- * marker is `markDeleted` only and does not `addSats`. Platform gift-replies
+ * so live `listReplies` omits it, then `addReceivedSats`s the reply. A live existing
+ * marker is `markDeleted` only and does not `addReceivedSats`. Platform gift-replies
  * do not notify. The api does not pay.
  */
 
@@ -74,6 +74,7 @@ export interface InvoiceRouteDeps {
     | 'latestLiveTopLevelMediaId'
     | 'getById'
     | 'addSats'
+    | 'addReceivedSats'
     | 'create'
     | 'listPostsByAccount'
     | 'markDeleted'
@@ -370,7 +371,7 @@ export function invoiceRoutes(deps: InvoiceRouteDeps): Hono {
           fiat,
         );
         await deps.messageStore.markDeleted(replyId, new Date(paidAtMs), platform.id);
-        await deps.messageStore.addSats(invoice.messageId, sats, fiat);
+        await deps.messageStore.addReceivedSats(invoice.messageId, sats, fiat);
         return;
       }
       if (existing !== undefined) {

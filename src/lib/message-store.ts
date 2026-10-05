@@ -920,6 +920,13 @@ export interface MessageStore {
   addSats(id: string, extraSats: number, delta: FiatAmounts | null): Promise<void>;
 
   /**
+   * Add later receipts on a reply (`received_sats` / `received_fiat_*`).
+   * Same null/zero folding as {@link MessageStore.addSats}. Does not change
+   * `sats`, `fiat_*`, or `goal_funded_at`. Missing id is a no-op.
+   */
+  addReceivedSats(id: string, extraSats: number, delta: FiatAmounts | null): Promise<void>;
+
+  /**
    * Sum of zap sats per 21.gifts payer of one note.
    *
    * @param messageId - Forum note.
@@ -981,7 +988,9 @@ export interface MessageStore {
   claimZapPayment(paymentHash: string, receiptEventId: string, at: Date): Promise<boolean>;
 
   /**
-   * Persist a zap receipt once and add its sats to the message.
+   * Persist a zap receipt once and credit the message. A reply folds into
+   * `received_*`; a top-level note folds into `sats` / `fiat_*` /
+   * `goal_funded_at`. Join is `message_id`, never `gift_reply_id`.
    * Both adapters forget the receipt id when {@link MessageStore.deleteById}
    * removes that message, so the same event id may be recorded again.
    *
@@ -1740,6 +1749,63 @@ $message_goal_term_days$`,
 )`,
   `CREATE INDEX IF NOT EXISTS message_edit_message_created_idx
   ON message_edit (message_id, created_at DESC, id DESC)`,
+  `ALTER TABLE message ADD COLUMN IF NOT EXISTS received_sats bigint`,
+  `ALTER TABLE message ADD COLUMN IF NOT EXISTS received_fiat_usd numeric(20, 2)`,
+  `ALTER TABLE message ADD COLUMN IF NOT EXISTS received_fiat_chf numeric(20, 2)`,
+  `ALTER TABLE message ADD COLUMN IF NOT EXISTS received_fiat_eur numeric(20, 2)`,
+  `ALTER TABLE message ADD COLUMN IF NOT EXISTS received_fiat_php numeric(20, 2)`,
+  `UPDATE message AS m
+SET received_sats = src.receipt_sats,
+    sats = GREATEST(m.sats - src.receipt_sats, 0),
+    received_fiat_usd = src.received_usd,
+    fiat_usd = CASE WHEN src.received_usd IS NULL THEN m.fiat_usd ELSE m.fiat_usd - src.received_usd END,
+    received_fiat_chf = src.received_chf,
+    fiat_chf = CASE WHEN src.received_chf IS NULL THEN m.fiat_chf ELSE m.fiat_chf - src.received_chf END,
+    received_fiat_eur = src.received_eur,
+    fiat_eur = CASE WHEN src.received_eur IS NULL THEN m.fiat_eur ELSE m.fiat_eur - src.received_eur END,
+    received_fiat_php = src.received_php,
+    fiat_php = CASE WHEN src.received_php IS NULL THEN m.fiat_php ELSE m.fiat_php - src.received_php END
+FROM (
+  SELECT m2.id,
+         COALESCE(SUM(r.sats), 0) AS receipt_sats,
+         CASE
+           WHEN COUNT(r.event_id) = 0 THEN NULL
+           WHEN COUNT(i.fiat_usd) = COUNT(r.event_id) THEN SUM(i.fiat_usd)
+           ELSE NULL
+         END AS received_usd,
+         CASE
+           WHEN COUNT(r.event_id) = 0 THEN NULL
+           WHEN COUNT(i.fiat_chf) = COUNT(r.event_id) THEN SUM(i.fiat_chf)
+           ELSE NULL
+         END AS received_chf,
+         CASE
+           WHEN COUNT(r.event_id) = 0 THEN NULL
+           WHEN COUNT(i.fiat_eur) = COUNT(r.event_id) THEN SUM(i.fiat_eur)
+           ELSE NULL
+         END AS received_eur,
+         CASE
+           WHEN COUNT(r.event_id) = 0 THEN NULL
+           WHEN COUNT(i.fiat_php) = COUNT(r.event_id) THEN SUM(i.fiat_php)
+           ELSE NULL
+         END AS received_php
+  FROM message m2
+  LEFT JOIN nostr_zap_receipt r ON r.message_id = m2.id
+  LEFT JOIN LATERAL (
+    SELECT fiat_usd, fiat_chf, fiat_eur, fiat_php
+    FROM nostr_zap_ingest
+    WHERE receipt_id = r.event_id
+      AND outcome = 'indexed'
+      AND message_id = r.message_id
+    ORDER BY created_at DESC, id DESC
+    LIMIT 1
+  ) i ON r.event_id IS NOT NULL
+  WHERE m2.parent_id IS NOT NULL AND m2.received_sats IS NULL
+  GROUP BY m2.id
+) src
+WHERE m.id = src.id AND m.parent_id IS NOT NULL AND m.received_sats IS NULL`,
+  `UPDATE message SET received_sats = 0 WHERE received_sats IS NULL`,
+  `ALTER TABLE message ALTER COLUMN received_sats SET DEFAULT 0`,
+  `ALTER TABLE message ALTER COLUMN received_sats SET NOT NULL`,
 ];
 
 /**
@@ -1918,6 +1984,11 @@ function copyRow(row: MessageRow): MessageRow {
     amountChf: row.amountChf ?? null,
     amountEur: row.amountEur ?? null,
     amountPhp: row.amountPhp ?? null,
+    receivedSats: row.receivedSats ?? 0,
+    receivedAmountUsd: row.receivedAmountUsd ?? null,
+    receivedAmountChf: row.receivedAmountChf ?? null,
+    receivedAmountEur: row.receivedAmountEur ?? null,
+    receivedAmountPhp: row.receivedAmountPhp ?? null,
     goalSats: row.goalSats ?? null,
     goalRepayable: row.goalRepayable === true ? true : null,
     goalTermDays: row.goalTermDays ?? null,
@@ -3300,6 +3371,19 @@ export class InMemoryMessageStore implements MessageStore {
     return Promise.resolve();
   }
 
+  addReceivedSats(id: string, extraSats: number, delta: FiatAmounts | null): Promise<void> {
+    const row = this.#rows.find((item) => item.id === id);
+    if (row !== undefined) {
+      row.receivedAmountUsd = foldFiatColumn(row.receivedAmountUsd, delta?.usd ?? null, extraSats);
+      row.receivedAmountChf = foldFiatColumn(row.receivedAmountChf, delta?.chf ?? null, extraSats);
+      row.receivedAmountEur = foldFiatColumn(row.receivedAmountEur, delta?.eur ?? null, extraSats);
+      row.receivedAmountPhp = foldFiatColumn(row.receivedAmountPhp, delta?.php ?? null, extraSats);
+      /* v8 ignore next -- copyRow already stored a number */
+      row.receivedSats = (row.receivedSats ?? 0) + extraSats;
+    }
+    return Promise.resolve();
+  }
+
   listCreditPayers(messageId: string): Promise<
     {
       accountId: string;
@@ -3459,6 +3543,10 @@ export class InMemoryMessageStore implements MessageStore {
       comment: '',
       recordedAt: at,
     });
+    if (before !== undefined && before.parentId !== null) {
+      await this.addReceivedSats(messageId, sats, delta);
+      return true;
+    }
     await this.addSats(messageId, sats, delta);
     const after = this.#rows.find((row) => row.id === messageId);
     const fundedAfter = after?.goalFundedAt;
@@ -4131,6 +4219,11 @@ interface MessageSqlRow {
   fiat_chf?: string | number | null;
   fiat_eur?: string | number | null;
   fiat_php?: string | number | null;
+  received_sats?: string | number | null;
+  received_fiat_usd?: string | number | null;
+  received_fiat_chf?: string | number | null;
+  received_fiat_eur?: string | number | null;
+  received_fiat_php?: string | number | null;
   goal_sats?: string | number | null;
   goal_repayable?: boolean | string | number | null;
   goal_term_days?: string | number | null;
@@ -4320,6 +4413,23 @@ function mapMessageRow(row: MessageSqlRow): MessageRow {
     amountChf: row.fiat_chf === null || row.fiat_chf === undefined ? null : String(row.fiat_chf),
     amountEur: row.fiat_eur === null || row.fiat_eur === undefined ? null : String(row.fiat_eur),
     amountPhp: row.fiat_php === null || row.fiat_php === undefined ? null : String(row.fiat_php),
+    receivedSats: Number(row.received_sats ?? 0),
+    receivedAmountUsd:
+      row.received_fiat_usd === null || row.received_fiat_usd === undefined
+        ? null
+        : String(row.received_fiat_usd),
+    receivedAmountChf:
+      row.received_fiat_chf === null || row.received_fiat_chf === undefined
+        ? null
+        : String(row.received_fiat_chf),
+    receivedAmountEur:
+      row.received_fiat_eur === null || row.received_fiat_eur === undefined
+        ? null
+        : String(row.received_fiat_eur),
+    receivedAmountPhp:
+      row.received_fiat_php === null || row.received_fiat_php === undefined
+        ? null
+        : String(row.received_fiat_php),
     goalSats: row.goal_sats === null || row.goal_sats === undefined ? null : Number(row.goal_sats),
     goalRepayable: row.goal_repayable === true ? true : null,
     goalTermDays:
@@ -4383,6 +4493,11 @@ const MESSAGE_SELECT_COLUMNS = `id, account_id, name, text, created_at,
               goal_funded_at,
               fiat_usd::text AS fiat_usd, fiat_chf::text AS fiat_chf,
               fiat_eur::text AS fiat_eur, fiat_php::text AS fiat_php,
+              received_sats,
+              received_fiat_usd::text AS received_fiat_usd,
+              received_fiat_chf::text AS received_fiat_chf,
+              received_fiat_eur::text AS received_fiat_eur,
+              received_fiat_php::text AS received_fiat_php,
               place_lat, place_lng, place_label,
               shop_account_id,
               (SELECT username FROM account WHERE account.id = message.shop_account_id) AS shop_username,
@@ -5180,6 +5295,11 @@ export class PostgresMessageStore implements MessageStore {
       stored.goalRepayable === true ? true : null,
       stored.goalTermDays ?? null,
       stored.shopAccount?.id ?? null,
+      stored.receivedSats,
+      stored.receivedAmountUsd ?? null,
+      stored.receivedAmountChf ?? null,
+      stored.receivedAmountEur ?? null,
+      stored.receivedAmountPhp ?? null,
     ];
     try {
       if (stored.parentId !== null) {
@@ -5190,11 +5310,12 @@ export class PostgresMessageStore implements MessageStore {
            fiat_usd, fiat_chf, fiat_eur, fiat_php, photo_taken_at, video_taken_at,
            place_lat, place_lng, place_label,
            goal_currency, goal_amount, goal_fiat_usd, goal_fiat_chf, goal_fiat_eur, goal_fiat_php, goal_repayable, goal_term_days,
-           shop_account_id
+           shop_account_id, received_sats, received_fiat_usd, received_fiat_chf, received_fiat_eur, received_fiat_php
          )
          SELECT $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14::jsonb,$15,$16,
                 $17::numeric,$18::numeric,$19::numeric,$20::numeric,$21,$22,$23,$24,$25,
-                $26,$27::numeric,$28::numeric,$29::numeric,$30::numeric,$31::numeric,$32,$33,$34
+                $26,$27::numeric,$28::numeric,$29::numeric,$30::numeric,$31::numeric,$32,$33,$34,
+                $35,$36::numeric,$37::numeric,$38::numeric,$39::numeric
          WHERE EXISTS (SELECT 1 FROM message p WHERE p.id = $11 AND p.deleted_at IS NULL)
          RETURNING id`,
           params,
@@ -5214,11 +5335,12 @@ export class PostgresMessageStore implements MessageStore {
            fiat_usd, fiat_chf, fiat_eur, fiat_php, photo_taken_at, video_taken_at,
            place_lat, place_lng, place_label,
            goal_currency, goal_amount, goal_fiat_usd, goal_fiat_chf, goal_fiat_eur, goal_fiat_php, goal_repayable, goal_term_days,
-           shop_account_id
+           shop_account_id, received_sats, received_fiat_usd, received_fiat_chf, received_fiat_eur, received_fiat_php
          ) VALUES (
            $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14::jsonb,$15,$16,
            $17::numeric,$18::numeric,$19::numeric,$20::numeric,$21,$22,$23,$24,$25,
-           $26,$27::numeric,$28::numeric,$29::numeric,$30::numeric,$31::numeric,$32,$33,$34
+           $26,$27::numeric,$28::numeric,$29::numeric,$30::numeric,$31::numeric,$32,$33,$34,
+           $35,$36::numeric,$37::numeric,$38::numeric,$39::numeric
          )`,
           params,
         );
@@ -5930,6 +6052,46 @@ export class PostgresMessageStore implements MessageStore {
     );
   }
 
+  async addReceivedSats(id: string, extraSats: number, delta: FiatAmounts | null): Promise<void> {
+    await this.#sql.execute(
+      `UPDATE message
+       SET received_sats = received_sats + $2,
+           received_fiat_usd = CASE
+             WHEN $2::bigint = 0 THEN received_fiat_usd
+             WHEN $3::numeric IS NULL THEN received_fiat_usd
+             WHEN received_fiat_usd IS NULL THEN $3::numeric
+             ELSE received_fiat_usd + $3::numeric
+           END,
+           received_fiat_chf = CASE
+             WHEN $2::bigint = 0 THEN received_fiat_chf
+             WHEN $4::numeric IS NULL THEN received_fiat_chf
+             WHEN received_fiat_chf IS NULL THEN $4::numeric
+             ELSE received_fiat_chf + $4::numeric
+           END,
+           received_fiat_eur = CASE
+             WHEN $2::bigint = 0 THEN received_fiat_eur
+             WHEN $5::numeric IS NULL THEN received_fiat_eur
+             WHEN received_fiat_eur IS NULL THEN $5::numeric
+             ELSE received_fiat_eur + $5::numeric
+           END,
+           received_fiat_php = CASE
+             WHEN $2::bigint = 0 THEN received_fiat_php
+             WHEN $6::numeric IS NULL THEN received_fiat_php
+             WHEN received_fiat_php IS NULL THEN $6::numeric
+             ELSE received_fiat_php + $6::numeric
+           END
+       WHERE id = $1`,
+      [
+        id,
+        extraSats,
+        delta?.usd ?? null,
+        delta?.chf ?? null,
+        delta?.eur ?? null,
+        delta?.php ?? null,
+      ],
+    );
+  }
+
   async listCreditPayers(messageId: string): Promise<
     {
       accountId: string;
@@ -6078,32 +6240,72 @@ export class PostgresMessageStore implements MessageStore {
          RETURNING event_id, message_id, sats
        )
        UPDATE message
-       SET sats = message.sats + inserted.sats,
+       SET sats = CASE
+             WHEN message.parent_id IS NULL THEN message.sats + inserted.sats
+             ELSE message.sats
+           END,
+           received_sats = CASE
+             WHEN message.parent_id IS NOT NULL THEN message.received_sats + inserted.sats
+             ELSE message.received_sats
+           END,
            fiat_usd = CASE
+             WHEN message.parent_id IS NOT NULL THEN message.fiat_usd
              WHEN inserted.sats = 0 THEN message.fiat_usd
              WHEN $4::numeric IS NULL THEN message.fiat_usd
              WHEN message.fiat_usd IS NULL THEN $4::numeric
              ELSE message.fiat_usd + $4::numeric
            END,
+           received_fiat_usd = CASE
+             WHEN message.parent_id IS NULL THEN message.received_fiat_usd
+             WHEN inserted.sats = 0 THEN message.received_fiat_usd
+             WHEN $4::numeric IS NULL THEN message.received_fiat_usd
+             WHEN message.received_fiat_usd IS NULL THEN $4::numeric
+             ELSE message.received_fiat_usd + $4::numeric
+           END,
            fiat_chf = CASE
+             WHEN message.parent_id IS NOT NULL THEN message.fiat_chf
              WHEN inserted.sats = 0 THEN message.fiat_chf
              WHEN $5::numeric IS NULL THEN message.fiat_chf
              WHEN message.fiat_chf IS NULL THEN $5::numeric
              ELSE message.fiat_chf + $5::numeric
            END,
+           received_fiat_chf = CASE
+             WHEN message.parent_id IS NULL THEN message.received_fiat_chf
+             WHEN inserted.sats = 0 THEN message.received_fiat_chf
+             WHEN $5::numeric IS NULL THEN message.received_fiat_chf
+             WHEN message.received_fiat_chf IS NULL THEN $5::numeric
+             ELSE message.received_fiat_chf + $5::numeric
+           END,
            fiat_eur = CASE
+             WHEN message.parent_id IS NOT NULL THEN message.fiat_eur
              WHEN inserted.sats = 0 THEN message.fiat_eur
              WHEN $6::numeric IS NULL THEN message.fiat_eur
              WHEN message.fiat_eur IS NULL THEN $6::numeric
              ELSE message.fiat_eur + $6::numeric
            END,
+           received_fiat_eur = CASE
+             WHEN message.parent_id IS NULL THEN message.received_fiat_eur
+             WHEN inserted.sats = 0 THEN message.received_fiat_eur
+             WHEN $6::numeric IS NULL THEN message.received_fiat_eur
+             WHEN message.received_fiat_eur IS NULL THEN $6::numeric
+             ELSE message.received_fiat_eur + $6::numeric
+           END,
            fiat_php = CASE
+             WHEN message.parent_id IS NOT NULL THEN message.fiat_php
              WHEN inserted.sats = 0 THEN message.fiat_php
              WHEN $7::numeric IS NULL THEN message.fiat_php
              WHEN message.fiat_php IS NULL THEN $7::numeric
              ELSE message.fiat_php + $7::numeric
            END,
+           received_fiat_php = CASE
+             WHEN message.parent_id IS NULL THEN message.received_fiat_php
+             WHEN inserted.sats = 0 THEN message.received_fiat_php
+             WHEN $7::numeric IS NULL THEN message.received_fiat_php
+             WHEN message.received_fiat_php IS NULL THEN $7::numeric
+             ELSE message.received_fiat_php + $7::numeric
+           END,
            goal_funded_at = CASE
+             WHEN message.parent_id IS NOT NULL THEN message.goal_funded_at
              WHEN message.goal_repayable IS TRUE
               AND message.goal_funded_at IS NULL
               AND message.goal_sats IS NOT NULL
