@@ -100,8 +100,12 @@ describe('HttpSpendPing', () => {
       seen = init;
       return new Response(null, { status: 202 });
     };
-    await new HttpSpendPing({ spendUrl: SPEND_URL, token: TOKEN, fetchImpl })
-      .ping(ADDRESS, MESSAGE_ID, 'daily', 'Pacific/Honolulu');
+    await new HttpSpendPing({ spendUrl: SPEND_URL, token: TOKEN, fetchImpl }).ping(
+      ADDRESS,
+      MESSAGE_ID,
+      'daily',
+      'Pacific/Honolulu',
+    );
     expect(new Headers(seen?.headers).get('Time-Zone')).toBe('Pacific/Honolulu');
     expect(JSON.parse(String(seen?.body))).toEqual({ address: ADDRESS, messageId: MESSAGE_ID });
   });

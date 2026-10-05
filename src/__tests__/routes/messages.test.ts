@@ -3306,7 +3306,12 @@ describe('POST /messages', () => {
     });
     expect(res.status).toBe(200);
     const created = (await res.json()) as { id: string };
-    expect(spendPing.ping).toHaveBeenCalledWith('ada@walletofsatoshi.com', created.id, 'daily', 'Pacific/Honolulu');
+    expect(spendPing.ping).toHaveBeenCalledWith(
+      'ada@walletofsatoshi.com',
+      created.id,
+      'daily',
+      'Pacific/Honolulu',
+    );
   });
 
   it('does not ping spend a second time on photo replay', async () => {
