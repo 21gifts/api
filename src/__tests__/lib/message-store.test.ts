@@ -2503,6 +2503,149 @@ describe('InMemoryMessageStore', () => {
     expect((await store.listReplies('a')).map((r) => r.id)).toEqual(['ra', 'rb', 'rc']);
   });
 
+  it('listRecentReplies is newest createdAt first and breaks ties by id descending', async () => {
+    const store = new InMemoryMessageStore([EARLY]);
+    await store.create({
+      ...LATE,
+      id: 'r-early',
+      parentId: 'a',
+      text: 'early',
+      createdAt: new Date('2026-08-01T12:00:00.000Z'),
+      eventId: '11'.repeat(32),
+    });
+    await store.create({
+      ...LATE,
+      id: 'r-late',
+      parentId: 'a',
+      text: 'late',
+      createdAt: new Date('2026-08-01T13:00:00.000Z'),
+      eventId: '22'.repeat(32),
+    });
+    const same = new Date('2026-08-01T14:00:00.000Z');
+    await store.create({
+      ...LATE,
+      id: 'rb',
+      parentId: 'a',
+      text: 'tie-b',
+      createdAt: same,
+      eventId: '33'.repeat(32),
+    });
+    await store.create({
+      ...LATE,
+      id: 'ra',
+      parentId: 'a',
+      text: 'tie-a',
+      createdAt: same,
+      eventId: '44'.repeat(32),
+    });
+    expect((await store.listRecentReplies(10)).map((row) => row.id)).toEqual([
+      'rb',
+      'ra',
+      'r-late',
+      'r-early',
+    ]);
+  });
+
+  it('listRecentReplies honors limit', async () => {
+    const store = new InMemoryMessageStore([EARLY]);
+    await store.create({
+      ...LATE,
+      id: 'r-early',
+      parentId: 'a',
+      text: 'early',
+      createdAt: new Date('2026-08-01T12:00:00.000Z'),
+      eventId: '11'.repeat(32),
+    });
+    await store.create({
+      ...LATE,
+      id: 'r-late',
+      parentId: 'a',
+      text: 'late',
+      createdAt: new Date('2026-08-01T13:00:00.000Z'),
+      eventId: '22'.repeat(32),
+    });
+    expect((await store.listRecentReplies(1)).map((row) => row.id)).toEqual(['r-late']);
+  });
+
+  it('listRecentReplies excludes top-level, hidden, null eventId, and empty eventId', async () => {
+    const store = new InMemoryMessageStore();
+    await store.create({
+      ...EARLY,
+      eventId: 'aa'.repeat(32),
+    });
+    await store.create({
+      ...LATE,
+      id: 'r-live',
+      parentId: 'a',
+      text: 'live',
+      eventId: '11'.repeat(32),
+    });
+    await store.create({
+      ...LATE,
+      id: 'r-hidden',
+      parentId: 'a',
+      text: 'hidden',
+      eventId: '22'.repeat(32),
+      deletedAt: new Date('2026-09-01T00:00:00.000Z'),
+      deletedBy: 'staff',
+    });
+    await store.create({
+      ...LATE,
+      id: 'r-null',
+      parentId: 'a',
+      text: 'null event',
+      eventId: null,
+    });
+    await store.create({
+      ...LATE,
+      id: 'r-empty',
+      parentId: 'a',
+      text: 'empty event',
+      eventId: '',
+    });
+    expect((await store.listRecentReplies(10)).map((row) => row.id)).toEqual(['r-live']);
+  });
+
+  it('listRecentReplies includes a live unattributed reply with an event id', async () => {
+    const store = new InMemoryMessageStore([EARLY]);
+    await store.create({
+      ...LATE,
+      id: 'r-orphan',
+      parentId: 'a',
+      accountId: null,
+      authorPubkey: 'ee'.repeat(32),
+      text: 'orphan',
+      eventId: '11'.repeat(32),
+    });
+    expect(await store.isZapperPubkey('ee'.repeat(32))).toBe(false);
+    expect((await store.listRecentReplies(10)).map((row) => row.id)).toEqual(['r-orphan']);
+    expect((await store.listReplies('a')).map((row) => row.id)).toEqual([]);
+  });
+
+  it('listRecentReplies returns copies without photo bytes', async () => {
+    const store = new InMemoryMessageStore();
+    await store.create(EARLY);
+    await store.create(
+      {
+        ...LATE,
+        id: 'r-copy',
+        parentId: 'a',
+        text: 'reply',
+        eventId: '11'.repeat(32),
+      },
+      JPEG,
+    );
+    const listed = await store.listRecentReplies(10);
+    expect(listed).toHaveLength(1);
+    expect(listed[0]?.hasPhoto).toBe(true);
+    expect(listed[0]).not.toHaveProperty('bytes');
+    expect(listed[0]).not.toHaveProperty('photo');
+    if (listed[0] !== undefined) {
+      listed[0].text = 'mutated';
+    }
+    expect((await store.listRecentReplies(10))[0]?.text).toBe('reply');
+  });
+
   it('listPublishedEventIds returns top-level non-null event ids newest-first', async () => {
     const store = new InMemoryMessageStore();
     await store.create({
@@ -4723,6 +4866,19 @@ describe('PostgresMessageStore', () => {
     expect(sql.queries[0]?.text).toMatch(/ORDER BY created_at ASC, id ASC/);
     expect(sql.queries[0]?.text).not.toMatch(/deleted_at IS NULL/);
     expect(sql.queries[0]?.params).toEqual(['parent']);
+  });
+
+  it('listRecentReplies selects live replies with a non-empty event id newest-first', async () => {
+    const sql = new MockSql();
+    sql.nextRows = [];
+    expect(await new PostgresMessageStore(sql).listRecentReplies(200)).toEqual([]);
+    expect(sql.queries[0]?.text).toMatch(/parent_id IS NOT NULL/);
+    expect(sql.queries[0]?.text).toMatch(/deleted_at IS NULL/);
+    expect(sql.queries[0]?.text).toMatch(/event_id IS NOT NULL/);
+    expect(sql.queries[0]?.text).toMatch(/event_id <> ''/);
+    expect(sql.queries[0]?.text).toMatch(/ORDER BY created_at DESC, id DESC/);
+    expect(sql.queries[0]?.text).toMatch(/LIMIT/);
+    expect(sql.queries[0]?.params).toEqual([200]);
   });
 
   it('accountHasLivePost queries live message rows for the account', async () => {
