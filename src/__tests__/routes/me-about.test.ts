@@ -256,7 +256,7 @@ describe('PUT /me/about', () => {
     expect(ping).not.toHaveBeenCalled();
   });
 
-  it('clears About me when text is empty', async () => {
+  it('clears About me when text is empty by restoring the name-copy', async () => {
     const store = await seededStore({ name: 'Ada', wallet: true });
     await patchAccount(store, { profileMessageId: NOTE_ID });
     const messages = new InMemoryMessageStore([nameOnlyNote({ text: BIO })]);
@@ -264,10 +264,93 @@ describe('PUT /me/about', () => {
     expect(res.status).toBe(200);
     const body = (await res.json()) as { aboutMe: string | null };
     expect(body.aboutMe).toBeNull();
+    expect((await messages.getById(NOTE_ID))?.text).toBe('Ada');
+  });
+
+  it('clears with whitespace to the stored note name after a rename', async () => {
+    const store = await seededStore({ name: 'Grace', wallet: true });
+    await patchAccount(store, { profileMessageId: NOTE_ID });
+    const messages = new InMemoryMessageStore([nameOnlyNote({ text: BIO })]);
+    const res = await putAbout(store, { text: '  \n ' }, messages);
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as { aboutMe: string | null }).aboutMe).toBeNull();
+    expect((await messages.getById(NOTE_ID))?.text).toBe('Ada');
+  });
+
+  it('clears to the display name when the stored note name is blank', async () => {
+    const store = await seededStore({ name: 'Ada', wallet: true });
+    await patchAccount(store, { profileMessageId: NOTE_ID });
+    const messages = new InMemoryMessageStore([{ ...nameOnlyNote({ text: BIO }), name: ' ' }]);
+    const res = await putAbout(store, { text: '' }, messages);
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as { aboutMe: string | null }).aboutMe).toBeNull();
+    expect((await messages.getById(NOTE_ID))?.text).toBe('Ada');
+  });
+
+  it('clears to the name-copy when empty text also removes the photo', async () => {
+    const store = await seededStore({ name: 'Ada' });
+    await patchAccount(store, { profileMessageId: NOTE_ID });
+    const messages = await seedNoteWithPhoto('');
+    const res = await putAbout(store, { text: '', photo: null }, messages);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { aboutMe: string | null; aboutMeHasPhoto: boolean };
+    expect(body).toMatchObject({ aboutMe: null, aboutMeHasPhoto: false });
+    const note = await messages.getById(NOTE_ID);
+    expect(note?.text).toBe('Ada');
+    expect(note?.hasPhoto).toBe(false);
+  });
+
+  it('keeps empty text on a live note that keeps its photo', async () => {
+    const store = await seededStore({ name: 'Ada' });
+    await patchAccount(store, { profileMessageId: NOTE_ID });
+    const messages = await seedNoteWithPhoto('Hi');
+    const res = await putAbout(store, { text: '' }, messages);
+    expect(res.status).toBe(200);
+    expect((await res.json()) as { aboutMeHasPhoto: boolean }).toMatchObject({
+      aboutMeHasPhoto: true,
+    });
     expect((await messages.getById(NOTE_ID))?.text).toBe('');
   });
 
-  it('does not create a note when empty text and no live profile note', async () => {
+  it('keeps empty text on a live note that replaces its photo', async () => {
+    const store = await seededStore({ name: 'Ada' });
+    await patchAccount(store, { profileMessageId: NOTE_ID });
+    const messages = new InMemoryMessageStore([nameOnlyNote({ text: BIO })]);
+    const res = await putAbout(store, { text: '', photo: JPEG_PHOTO }, messages);
+    expect(res.status).toBe(200);
+    const note = await messages.getById(NOTE_ID);
+    expect(note?.text).toBe('');
+    expect(note?.hasPhoto).toBe(true);
+  });
+
+  it('keeps empty text when a null photo leaves extra stills on the note', async () => {
+    const store = await seededStore({ name: 'Ada' });
+    await patchAccount(store, { profileMessageId: NOTE_ID });
+    const messages = await seedNoteWithPhoto('Hi');
+    const still = { contentType: 'image/jpeg' as const, bytes: JPEG_BYTES };
+    const dated = { ...still, takenAt: '2026-10-05T10:00:00' };
+    await messages.replacePhotos(NOTE_ID, [still, dated, still]);
+    const res = await putAbout(store, { text: '', photo: null }, messages);
+    expect(res.status).toBe(200);
+    const note = await messages.getById(NOTE_ID);
+    expect(note?.text).toBe('');
+    expect(note?.hasPhoto).toBe(false);
+    expect(note?.photoCount).toBe(2);
+    expect(note?.photoTakenAts).toEqual(['2026-10-05T10:00:00', null]);
+  });
+
+  it('keeps empty text on a live note with a video', async () => {
+    const store = await seededStore({ name: 'Ada' });
+    await patchAccount(store, { profileMessageId: NOTE_ID });
+    const messages = new InMemoryMessageStore([
+      { ...nameOnlyNote({ text: BIO }), hasVideo: true, videoContentType: 'video/mp4' },
+    ]);
+    const res = await putAbout(store, { text: '' }, messages);
+    expect(res.status).toBe(200);
+    expect((await messages.getById(NOTE_ID))?.text).toBe('');
+  });
+
+  it('refuses empty text when there is no live profile note', async () => {
     const store = await seededStore({ name: 'Ada' });
     const messages = new InMemoryMessageStore();
     const pushStore = new InMemoryPushStore();
@@ -287,22 +370,22 @@ describe('PUT /me/about', () => {
         body: JSON.stringify({ text: '   ' }),
       },
     );
-    expect(res.status).toBe(200);
-    expect((await res.json()) as { aboutMe: string | null }).toMatchObject({ aboutMe: null });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: 'Write something about yourself' });
     expect(await messages.listLatest(10)).toEqual([]);
     expect((await store.getAccount('acc'))?.profileMessageId ?? null).toBeNull();
     expect(await pushStore.claimPending(10, now(), 60_000)).toEqual([]);
     expect(await notificationStore.listByRecipient('other', 10)).toEqual([]);
   });
 
-  it('does not create a note when empty text and the profile note is hidden', async () => {
+  it('refuses empty text with a null photo when the profile note is hidden', async () => {
     const store = await seededStore({ name: 'Ada' });
     await patchAccount(store, { profileMessageId: NOTE_ID });
     const messages = new InMemoryMessageStore([nameOnlyNote({ text: BIO })]);
     expect(await messages.markDeleted(NOTE_ID, new Date(now()), 'staff')).toBe(true);
-    const res = await putAbout(store, { text: '' }, messages);
-    expect(res.status).toBe(200);
-    expect((await res.json()) as { aboutMe: string | null }).toMatchObject({ aboutMe: null });
+    const res = await putAbout(store, { text: '', photo: null }, messages);
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: 'Write something about yourself' });
     expect(await messages.listLatest(10)).toEqual([]);
     expect((await store.getAccount('acc'))?.profileMessageId).toBe(NOTE_ID);
   });
