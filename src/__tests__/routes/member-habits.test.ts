@@ -494,7 +494,35 @@ describe('memberHabitRoutes', () => {
     expect(await res.json()).toEqual({ pr: 'lnbc1' });
   });
 
-  it('invoice on Sunday in Europe/Zurich is still 200', async () => {
+  it('invoice on Sunday in Europe/Zurich is 403 SUNDAY_REST before the amount check', async () => {
+    const store = new InMemoryMemberHabitStore();
+    await store.add(sampleHabit({ id: 'h-comment', accountId: ALICE.id, role: 'basis' }));
+    await store.comment({
+      id: 'c-alice',
+      habitId: 'h-comment',
+      accountId: ALICE.id,
+      name: 'Alice',
+      text: 'nice',
+      week: '2026-09-28',
+      createdAt: NOW_OPEN,
+      deletedAt: null,
+    });
+    const res = await post(
+      mount({
+        store,
+        account: BASIS,
+        accounts: { [ALICE.id]: ALICE },
+        fetchImpl: successFetch,
+        now: () => SUNDAY_ZURICH,
+      }),
+      { action: 'invoice', commentId: 'c-alice', amountSats: 0 },
+      { ...AUTH, 'Time-Zone': 'Europe/Zurich' },
+    );
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: 'SUNDAY_REST' });
+  });
+
+  it('invoice on Sunday without Time-Zone is 200', async () => {
     const store = new InMemoryMemberHabitStore();
     await store.add(sampleHabit({ id: 'h-comment', accountId: ALICE.id, role: 'basis' }));
     await store.comment({
@@ -516,7 +544,35 @@ describe('memberHabitRoutes', () => {
         now: () => SUNDAY_ZURICH,
       }),
       { action: 'invoice', commentId: 'c-alice', amountSats: 1 },
-      { ...AUTH, 'Time-Zone': 'Europe/Zurich' },
+      AUTH,
+    );
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ pr: 'lnbc1' });
+  });
+
+  it('invoice on Sunday with an invalid Time-Zone is 200', async () => {
+    const store = new InMemoryMemberHabitStore();
+    await store.add(sampleHabit({ id: 'h-comment', accountId: ALICE.id, role: 'basis' }));
+    await store.comment({
+      id: 'c-alice',
+      habitId: 'h-comment',
+      accountId: ALICE.id,
+      name: 'Alice',
+      text: 'nice',
+      week: '2026-09-28',
+      createdAt: NOW_OPEN,
+      deletedAt: null,
+    });
+    const res = await post(
+      mount({
+        store,
+        account: BASIS,
+        accounts: { [ALICE.id]: ALICE },
+        fetchImpl: successFetch,
+        now: () => SUNDAY_ZURICH,
+      }),
+      { action: 'invoice', commentId: 'c-alice', amountSats: 1 },
+      { ...AUTH, 'Time-Zone': 'Not/AZone' },
     );
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ pr: 'lnbc1' });

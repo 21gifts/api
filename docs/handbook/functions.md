@@ -1215,7 +1215,7 @@
 - **Purpose:** True when a non-empty `Time-Zone` header names an IANA zone that is in Sunday at `nowMs`. A blank header is false. An invalid zone is false.
 - **Inputs:** `nowMs` epoch milliseconds and the raw `Time-Zone` header.
 - **Returns / side effects:** boolean. No I/O.
-- **Used by:** conversation routes for a `moderator_group` thread, and `memberHabitRoutes` for `comment` and `deleteComment`.
+- **Used by:** conversation routes for a `moderator_group` thread, and `memberHabitRoutes` for `comment`, `deleteComment`, and `invoice`.
 
 ## Function: isSundayInZone
 
@@ -3320,7 +3320,7 @@ Builds the operator-only external-pubkey inspection route.
 
 ## Function: memberHabitRoutes
 
-- **Purpose:** Hono routes `GET /habits` and `POST /habits` for member habits, comments, and a Lightning invoice. Does not pay.
+- **Purpose:** Hono routes `GET /habits` and `POST /habits` for member habits, comments, and a Lightning invoice. `invoice` uses the same Sunday rest as `POST /messages/:id/invoice`: 403 `{ error: 'SUNDAY_REST' }` when `Time-Zone` names a Sunday, before the amount check. A missing, blank, or invalid zone does not refuse. Does not pay. Add, edit, archive, and log stay open on Sunday.
 - **Inputs:** `{ store, authStore, now, fetchImpl }`.
 - **Returns / side effects:** Hono app. Writes through `MemberHabitStore`. Logs only `{ event: 'habits.failed', ts }` on failure.
 - **Used by:** `createApp`.

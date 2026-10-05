@@ -439,6 +439,9 @@ export function memberHabitRoutes(deps: {
         return c.json({ ok: true }, 200);
       }
 
+      if (isSundayRestHeader(nowMs, c.req.header('Time-Zone'))) {
+        return c.json({ error: 'SUNDAY_REST' }, 403);
+      }
       if (
         !Number.isInteger(body.amountSats) ||
         body.amountSats < 1 ||
