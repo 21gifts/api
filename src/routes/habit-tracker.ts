@@ -72,7 +72,9 @@ const operation = z.discriminatedUnion('action', [
  * also require the caller to own the resolution. Deleting a comment requires
  * initiator rank and does not check the author. Commenting and requesting a
  * donation invoice are open to any signed-in role. The invoice does not check
- * the comment window or initiator rank.
+ * the comment window or initiator rank. Rate applies to every already published
+ * week from firstWeek through the published review week and not after lastWeek;
+ * edit and retire remain on the latest published week.
  *
  * @param deps - Auth store, habit store, clock, and optional fetch.
  * @returns The Hono app.
@@ -204,9 +206,10 @@ export function habitTrackerRoutes(deps: {
     if (input.action === 'retire') {
       await deps.habitStore.retire(habit.id, caller.id, current);
     } else {
-      // Only the currently published retrospective week is editable.
+      // Already published weeks in which this resolution was active stay rateable.
+      // A week after the published review week, before firstWeek, or after lastWeek does not.
       if (
-        input.week !== current ||
+        input.week > current ||
         input.week < habit.firstWeek ||
         (habit.lastWeek !== null && input.week > habit.lastWeek)
       )

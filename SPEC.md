@@ -1031,8 +1031,13 @@ moderator and excludes verified and basis. Owners `add` / `edit` /
 `retire` / `rate` only their own resolutions. A foreign habit id after
 the rank gate is **404** `{ "error": "Not found" }`, not 403. Below
 initiator rank those mutations and `deleteComment` are **403**
-`{ "error": "Forbidden" }`. Closed or out-of-range weeks for `edit` /
-`rate` → **409** `{ "error": "Week is closed" }`.
+`{ "error": "Forbidden" }`. `edit` outside the latest published review
+week, or while the resolution is not active in that week, → **409**
+`{ "error": "Week is closed" }`. `rate` of a week after the latest
+published review week, before `firstWeek`, or after `lastWeek` → **409**
+`{ "error": "Week is closed" }`. `rate` succeeds for every already
+published week from `firstWeek` through the latest published review
+week, including the retirement week when `lastWeek` is set.
 
 Any signed-in role may `comment`, only on the latest review week,
 Monday 16:00 inclusive through Saturday 20:00 exclusive Asia/Manila.
@@ -1058,7 +1063,9 @@ except `invoice` as above.
 
 Every Monday at 08:00 Asia/Manila the completed previous ISO week opens
 for review. Active resolutions carry forward unrated. Weekly text
-history is preserved. Retirement keeps history.
+history is preserved. Retirement keeps history. An owner may set or
+change the outcome for every already published week in which their
+resolution was active. Weeks that are not yet published stay closed.
 
 ### `GET /trust-chain`
 

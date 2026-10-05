@@ -120,6 +120,14 @@ describe('habit permissions and history', () => {
       expect(
         (await s.post('f', { action: 'rate', id: habit.id, week: '2026-12-28', status })).status,
       ).toBe(200);
+    expect(
+      (await s.post('f', { action: 'rate', id: habit.id, week: '2027-01-04', status: 'achieved' }))
+        .status,
+    ).toBe(409);
+    expect(
+      (await s.post('f', { action: 'rate', id: habit.id, week: '2026-12-21', status: 'achieved' }))
+        .status,
+    ).toBe(409);
     expect(await s.habitStore.results('2026-12-28')).toEqual([
       { habitId: habit.id, week: '2026-12-28', status: 'missed' },
     ]);
@@ -162,13 +170,20 @@ describe('habit permissions and history', () => {
     expect(
       (await s.post('f', { action: 'rate', id: read!.id, week: '2026-12-28', status: 'partial' }))
         .status,
-    ).toBe(409);
+    ).toBe(200);
+    expect(await s.habitStore.results('2026-12-28')).toEqual([
+      { habitId: read!.id, week: '2026-12-28', status: 'partial' },
+    ]);
     s.setClock('2027-01-25T00:00:00+08:00');
     expect((await payload(s.get('2027-01-11'))).habits).toHaveLength(1);
     expect(
       (await s.post('f', { action: 'rate', id: walk!.id, week: '2026-12-28', status: 'achieved' }))
         .status,
-    ).toBe(409);
+    ).toBe(200);
+    expect(await s.habitStore.results('2026-12-28')).toEqual([
+      { habitId: read!.id, week: '2026-12-28', status: 'partial' },
+      { habitId: walk!.id, week: '2026-12-28', status: 'achieved' },
+    ]);
   });
   it('stores comments from all signed-in roles only in their selected tracker week', async () => {
     const s = await setup();
