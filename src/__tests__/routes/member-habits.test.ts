@@ -780,6 +780,13 @@ describe('memberHabitRoutes', () => {
     );
     expect(tuesday.status).toBe(400);
     expect(await tuesday.json()).toEqual({ error: 'Invalid period' });
+    const impossibleWeek = await post(
+      app,
+      { action: 'log', id: 'weekly', period: '2026-13-01', status: 'achieved' },
+      AUTH,
+    );
+    expect(impossibleWeek.status).toBe(400);
+    expect(await impossibleWeek.json()).toEqual({ error: 'Invalid period' });
     const monday = await post(
       app,
       { action: 'log', id: 'weekly', period: '2026-09-28', status: 'achieved' },
@@ -928,6 +935,13 @@ describe('memberHabitRoutes', () => {
     );
     expect(emptyWallet.status).toBe(409);
     expect(await emptyWallet.json()).toEqual({ error: 'No wallet' });
+    const stillNoWallet = await post(
+      app,
+      { action: 'invoice', commentId: 'c-alice', amountSats: 1 },
+      AUTH,
+    );
+    expect(stillNoWallet.status).toBe(409);
+    expect(await stillNoWallet.json()).toEqual({ error: 'No wallet' });
     const atCeiling = await post(
       mount({
         store,

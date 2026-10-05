@@ -371,13 +371,14 @@ export function memberHabitRoutes(deps: {
         if (habit === undefined) {
           return c.json({ error: 'Not found' }, 404);
         }
+        if (!isRealYmd(body.period)) {
+          return c.json({ error: 'Invalid period' }, 400);
+        }
         if (habit.cadence === 'weekly') {
           const instant = Date.parse(`${body.period}T12:00:00Z`);
           if (body.period !== weekKey(instant, habit.timeZone)) {
             return c.json({ error: 'Invalid period' }, 400);
           }
-        } else if (!isRealYmd(body.period)) {
-          return c.json({ error: 'Invalid period' }, 400);
         }
         const latest =
           habit.cadence === 'daily'
@@ -457,9 +458,6 @@ export function memberHabitRoutes(deps: {
       if (comment.accountId === account.id) {
         return c.json({ error: 'Cannot donate to yourself' }, 400);
       }
-      if (!invoiceLimiter.allow(account.id, nowMs)) {
-        return c.json({ error: 'Too many payments' }, 429);
-      }
       const author = await deps.authStore.getAccount(comment.accountId);
       if (
         author === undefined ||
@@ -467,6 +465,9 @@ export function memberHabitRoutes(deps: {
         author.lightningAddress === ''
       ) {
         return c.json({ error: 'No wallet' }, 409);
+      }
+      if (!invoiceLimiter.allow(account.id, nowMs)) {
+        return c.json({ error: 'Too many payments' }, 429);
       }
       const address = author.lightningAddress;
       let invoice: { ok: true; pr: string } | { ok: false };
