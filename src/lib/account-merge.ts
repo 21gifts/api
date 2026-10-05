@@ -151,6 +151,7 @@ export async function mergeAccounts(db: MergeDb, input: MergeInput): Promise<Mer
       accountParams,
     );
 
+    // $2 is only a CASE result here and in the following member_member update, so Postgres leaves it untyped unless it is cast.
     const memberPairCollisions = `
       SELECT src.id AS source_id, dst.id AS target_id
       FROM conversation AS src
@@ -158,12 +159,12 @@ export async function mergeAccounts(db: MergeDb, input: MergeInput): Promise<Mer
         ON dst.kind = 'member_member'
        AND dst.id <> src.id
        AND dst.account_a = LEAST(
-         CASE WHEN src.account_a = $1 THEN $2 ELSE src.account_a END,
-         CASE WHEN src.account_b = $1 THEN $2 ELSE src.account_b END
+         CASE WHEN src.account_a = $1 THEN $2::uuid ELSE src.account_a END,
+         CASE WHEN src.account_b = $1 THEN $2::uuid ELSE src.account_b END
        )
        AND dst.account_b = GREATEST(
-         CASE WHEN src.account_a = $1 THEN $2 ELSE src.account_a END,
-         CASE WHEN src.account_b = $1 THEN $2 ELSE src.account_b END
+         CASE WHEN src.account_a = $1 THEN $2::uuid ELSE src.account_a END,
+         CASE WHEN src.account_b = $1 THEN $2::uuid ELSE src.account_b END
        )
       WHERE src.kind = 'member_member'
         AND (src.account_a = $1 OR src.account_b = $1)`;
@@ -189,12 +190,12 @@ export async function mergeAccounts(db: MergeDb, input: MergeInput): Promise<Mer
     await tx.query(
       `UPDATE conversation
        SET account_a = LEAST(
-             CASE WHEN account_a = $1 THEN $2 ELSE account_a END,
-             CASE WHEN account_b = $1 THEN $2 ELSE account_b END
+             CASE WHEN account_a = $1 THEN $2::uuid ELSE account_a END,
+             CASE WHEN account_b = $1 THEN $2::uuid ELSE account_b END
            ),
            account_b = GREATEST(
-             CASE WHEN account_a = $1 THEN $2 ELSE account_a END,
-             CASE WHEN account_b = $1 THEN $2 ELSE account_b END
+             CASE WHEN account_a = $1 THEN $2::uuid ELSE account_a END,
+             CASE WHEN account_b = $1 THEN $2::uuid ELSE account_b END
            )
        WHERE kind = 'member_member' AND (account_a = $1 OR account_b = $1)`,
       accountParams,
