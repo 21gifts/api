@@ -122,7 +122,7 @@ not a setup step, not a posting requirement, not a profile forum note, and
 not Nostr `kind:0`. About me is `PUT /me/about` (Bearer `{ text, photo? }`): a
 non-blank name is required (409 otherwise); a verified wallet is not; empty
 text clears the bio (`aboutMe` null; a live note row is kept, and without a
-photo or video its text goes back to the name-copy, never empty). Empty text
+photo, extra still, or video its text goes back to the name-copy, never empty). Empty text
 without a photo and without a live note is 400 `Write something about
 yourself`. Optional
 `photo` uses the same JPEG/PNG/WebP decode as a forum post (`omitted` keeps,
