@@ -138,6 +138,17 @@ describe('mergeAccounts', () => {
     expect(queries.some((query) => query.text.includes('DELETE FROM account WHERE id = $1'))).toBe(
       true,
     );
+    expect(
+      queries.some(
+        (query) => query.text.includes('dst.account_a = LEAST(') && query.text.includes('$2::uuid'),
+      ),
+    ).toBe(true);
+    expect(
+      queries.some(
+        (query) => query.text.includes('SET account_a = LEAST(') && query.text.includes('$2::uuid'),
+      ),
+    ).toBe(true);
+    expect(queries.some((query) => /THEN \$2(?!::uuid)/.test(query.text))).toBe(false);
   });
 
   it('copies earlier join time and consent onto the survivor before deleting the source', async () => {
