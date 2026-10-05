@@ -25,8 +25,8 @@ export interface SpendPing {
    * @param messageId - Forum post id (daily JSON `messageId` / welcome
    *   JSON `messageId`) or conversation message id (moderator JSON
    *   `groupMessageId`).
-   * @param timeZone - Recipient IANA zone, forwarded as Time-Zone for the daily Monday limit.
    * @param kind - `'daily'` (default), `'moderator'`, or `'welcome'`.
+   * @param timeZone - Recipient IANA zone, forwarded as Time-Zone for the daily Monday limit.
    */
   ping(
     address: string,
@@ -96,8 +96,8 @@ export class HttpSpendPing implements SpendPing {
    * @param messageId - Forum post id for daily/welcome pings (JSON
    *   `messageId`); conversation message id for moderator pings (JSON
    *   `groupMessageId`).
-   * @param timeZone - Recipient IANA zone, forwarded as Time-Zone for the daily Monday limit.
    * @param kind - `'daily'` (default), `'moderator'`, or `'welcome'`.
+   * @param timeZone - Recipient IANA zone, forwarded as Time-Zone for the daily Monday limit.
    */
   async ping(
     address: string,
