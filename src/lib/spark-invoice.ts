@@ -20,8 +20,8 @@ export interface SparkInvoiceFields {
   identityPublicKey: string;
   /** 16-byte invoice id (UUIDv7). */
   id: Uint8Array;
-  /** Memo; `zap:<payment hash>` for a zap. */
-  memo: string;
+  /** Memo; `zap:<payment hash>` for a zap. Omitted: the invoice carries no memo field. */
+  memo?: string;
   /** Amount in whole sats (a safe integer, 0 or more). */
   amountSats: number;
 }
@@ -34,7 +34,8 @@ const SPARK_INVOICE_VERSION = 1;
  *
  * `SparkInvoiceFields` is written in the canonical order `version (1)`,
  * `id (2)`, `memo (5)`, `sats_payment (4)`; that order is part of the
- * encoding the Spark operators accept and is not field-number order.
+ * encoding the Spark operators accept and is not field-number order. Without
+ * a memo, field 5 is left out.
  *
  * @param fields - Receiver key, id, memo, and amount.
  * @returns `spark1…` string (bech32m, no length limit).
@@ -52,7 +53,7 @@ export function encodeSparkInvoice(fields: SparkInvoiceFields): string {
   const invoiceFields = concatBytes(
     protoVarintField(1, SPARK_INVOICE_VERSION),
     protoBytesField(2, fields.id),
-    protoBytesField(5, fields.memo),
+    ...(fields.memo === undefined ? [] : [protoBytesField(5, fields.memo)]),
     protoBytesField(4, protoVarintField(1, fields.amountSats)),
   );
   const address = concatBytes(protoBytesField(1, identity), protoBytesField(2, invoiceFields));

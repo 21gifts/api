@@ -94,7 +94,7 @@ Public base URLs used in examples:
 | GET    | `/lnurlp/:username/invoice`                          | none                       | Forward LNURL-pay invoice for a wallet-backed username (mounted only when `LNURL_SERVER_URL` and `PUBLIC_BASE_URL` resolve)                                                                                                                                                                                                                            |
 | GET    | `/verify/:paymentHash`                               | none                       | LUD-21 verify forward (mounted only when `LNURL_SERVER_URL` and `PUBLIC_BASE_URL` resolve)                                                                                                                                                                                                                                                             |
 | GET    | `/pay/:username`                                     | none                       | Public pay-link card: display name and satoshi bounds                                                                                                                                                                                                                                                                                                  |
-| POST   | `/pay/:username/invoice`                             | none                       | One BOLT11 invoice for an exact satoshi amount on the member's receiving address, plus `sparkInvoice` (or `null`) for an open till when free in-app payments are on                                                                                                                                                                                    |
+| POST   | `/pay/:username/invoice`                             | none                       | One BOLT11 invoice for an exact satoshi amount on the member's receiving address, plus `sparkInvoice` (or `null`) when free in-app payments are on: the open till's, or one for the posted amount                                                                                                                                                      |
 | POST   | `/lnurl/pay-request`                                 | Bearer                     | Fetch and check the LNURL pay request of an address on another host                                                                                                                                                                                                                                                                                    |
 | POST   | `/lnurl/invoice`                                     | Bearer                     | Fetch and check a BOLT11 from an address on another host for an exact amount                                                                                                                                                                                                                                                                           |
 | GET    | `/favicon.ico`                                       | none                       | Brand mark (favicon)                                                                                                                                                                                                                                                                                                                                   |
@@ -624,14 +624,15 @@ is not a safe integer, or `maxSats < minSats` → **Response** `502`
 
 One BOLT11 invoice for an exact satoshi amount. No auth. Same account
 lookup as `GET /pay/:username` (including the till pin). Body
-`{ "amountSats": <integer> }` must sit inside `[minSats, maxSats]` and the
+`{ "amountSats": <integer>, "comment"?: <string> }` (amount) must sit inside `[minSats, maxSats]` and the
 millisatoshi value must sit inside the provider window. A different amount
 while a charge is open is the existing 400 and does not call the invoice
 callback. The charge amount must still sit in the provider millisatoshi
 window or that same 400 is returned and the callback is not called.
 Settlement calls the member's receiving address: their verified wallet
-through the LNURL server (internally, never over the public URL). No comment.
-No spend token.
+through the LNURL server (internally, never over the public URL). `comment`
+is never sent to the invoice callback; it only becomes the memo of a Spark
+invoice without a charge (below). No spend token.
 
 **Response** `200`:
 
@@ -651,7 +652,18 @@ invoice for exactly `amountSats` to the shop's verified wallet key with
 memo `pos:<chargeId>`; one per charge, so a repeat call returns the stored
 string. A 21.gifts in-app wallet pays it without a fee. A store failure
 while recording or issuing is logged (`pos.invoice.record_failed`,
-`pos.spark_invoice.issue_failed`) and does not fail the response.
+`pos.spark_invoice.issue_failed`) and does not fail the response. While
+a charge is open, `comment` is ignored.
+
+Without a pending charge, `sparkInvoice` is non-null when free in-app
+payments are on: a `spark1…` invoice for exactly `amountSats` to the
+member's verified wallet key, so a 21.gifts in-app wallet sending to a
+member pays it without a fee. Its memo is the optional `comment`, trimmed,
+cut to the member's `commentAllowed` characters (missing is 0) and then to
+120 UTF-8 bytes without splitting a character; a blank, non-string, or
+not-allowed comment leaves the memo out. It is minted after `pr`, is not
+stored, and nothing watches it (no zap receipt, no gift record). Free
+in-app payments off → `sparkInvoice` is `null`.
 
 Invalid username, unknown account, or no receiving address (no verified
 wallet with the LNURL server configured) → **Response** `404`

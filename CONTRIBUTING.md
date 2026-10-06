@@ -69,7 +69,7 @@ api/
 │   │   ├── translate.ts      # GET /translate (DeepL configured?)
 │   │   ├── well-known.ts     # GET /.well-known/nostr.json (NIP-05); GET /.well-known/lnurlp/:username (LUD-16; wallet-backed when LNURL_SERVER_URL and PUBLIC_BASE_URL resolve)
 │   │   ├── lnurl-server.ts   # Forwarded LNURL routes when LNURL_SERVER_URL and PUBLIC_BASE_URL resolve (register/recover/metadata/invoice/verify)
-│   │   ├── pay.ts            # GET /pay/:username; POST /pay/:username/invoice (+ Spark invoice for an open till)
+│   │   ├── pay.ts            # GET /pay/:username; POST /pay/:username/invoice (+ Spark invoice when free in-app payments are on)
 │   │   ├── lnurl.ts          # POST /lnurl/pay-request; POST /lnurl/invoice (Bearer; outside LNURL relay)
 │   │   ├── contact.ts        # POST /contact (private mailbox + platform thread)
 │   │   ├── pos.ts            # GET/POST/DELETE /pos (one exact sat amount on the receiving wallet; paid status)
