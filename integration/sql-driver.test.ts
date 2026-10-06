@@ -604,3 +604,82 @@ describe('PostgresMessageStore welcome gift', () => {
     }
   });
 });
+
+describe('PostgresMessageStore free first post', () => {
+  test('concurrent first posts store one row; profile note and replies do not count', async () => {
+    const { client, sql } = createBunSqlClient(databaseUrl);
+    try {
+      await migrateAuthSchema(client);
+      await migrateMessageSchema(client);
+      const auth = new PostgresAuthStore(client);
+      const messages = new PostgresMessageStore(client);
+      const hex64 = (): string =>
+        `${crypto.randomUUID().replaceAll('-', '')}${crypto.randomUUID().replaceAll('-', '')}`;
+      const stamp = `${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
+      const member = crypto.randomUUID();
+      const other = crypto.randomUUID();
+      for (const [id, name] of [
+        [member, `first_m_${stamp}`],
+        [other, `first_o_${stamp}`],
+      ] as const) {
+        await auth.createAccount({
+          id,
+          linkingKey: null,
+          role: 'basis',
+          name,
+          username: name,
+          location: null,
+          forumLawsDismissed: false,
+          viewKey: hex64(),
+          createdAt: Date.now(),
+          rulesAgreedAt: null,
+        });
+      }
+      const base = {
+        name: 'n',
+        createdAt: new Date(),
+        hasPhoto: false,
+        hasVideo: false,
+        videoContentType: null,
+        ...unsignedNostrDefaults(),
+      };
+      const profile = crypto.randomUUID();
+      await messages.create({ ...base, id: profile, accountId: member, text: 'about me' });
+      const parent = crypto.randomUUID();
+      await messages.create({ ...base, id: parent, accountId: other, text: 'parent' });
+      await messages.create({
+        ...base,
+        id: crypto.randomUUID(),
+        accountId: member,
+        parentId: parent,
+        text: 'a reply',
+      });
+      expect(await messages.accountHasTopLevelPost(member, profile)).toBe(false);
+      const attempts = await Promise.all(
+        Array.from({ length: 10 }, (_, i) =>
+          messages.createFirstPost(
+            { ...base, id: crypto.randomUUID(), accountId: member, text: `first ${i}` },
+            profile,
+          ),
+        ),
+      );
+      const stored = attempts.filter((row) => row !== undefined);
+      expect(stored).toHaveLength(1);
+      const rows = (await sql.unsafe(
+        `SELECT id FROM message WHERE account_id = $1 AND parent_id IS NULL AND first_post_free IS TRUE`,
+        [member],
+      )) as { id: string }[];
+      expect(rows.map((row) => row.id)).toEqual([stored[0]!.id]);
+      await messages.markDeleted(stored[0]!.id, new Date(), other);
+      expect(await messages.accountHasTopLevelPost(member, profile)).toBe(true);
+      expect(
+        await messages.createFirstPost(
+          { ...base, id: crypto.randomUUID(), accountId: member, text: 'again' },
+          profile,
+        ),
+      ).toBeUndefined();
+    } finally {
+      await closeIfPossible(sql);
+    }
+  });
+});

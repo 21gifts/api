@@ -520,6 +520,36 @@ export interface MessageStore {
   accountHasLiveTopLevelPost(accountId: string, excludeId: string | null): Promise<boolean>;
 
   /**
+   * Whether `accountId` has at least one **top-level** forum row that is not
+   * `excludeId`, live or soft-hidden. `parentId` null and `accountId` equals
+   * the argument (Damus-only `accountId: null` rows never match). `excludeId`
+   * is the auto profile note id; `null` excludes nothing extra. Replies do
+   * not count. `false` means the account's next note is its first post.
+   *
+   * @param accountId - Author account id.
+   * @param excludeId - Auto profile note id, or `null` to exclude nothing extra.
+   * @returns `true` when a matching top-level row exists.
+   */
+  accountHasTopLevelPost(accountId: string, excludeId: string | null): Promise<boolean>;
+
+  /**
+   * Insert a text-only top-level note as the account's free first post.
+   *
+   * Inserts only when {@link accountHasTopLevelPost} is `false` for
+   * `row.accountId` and `excludeId` at write time. Two concurrent calls for
+   * the same account store at most one row; the other returns `undefined`.
+   * Postgres marks the row `first_post_free` (unique per account). The row
+   * must be top-level with a non-null `accountId`; photo, video, and extra
+   * stills are not accepted.
+   *
+   * @param row - Fully formed top-level row (`parentId` null, `accountId` set).
+   * @param excludeId - Auto profile note id, or `null` to exclude nothing extra.
+   * @returns The stored row, or `undefined` when the account already has a top-level note.
+   * @throws Error `first post must be a top-level note of an account` for a reply or a null account.
+   */
+  createFirstPost(row: MessageRow, excludeId: string | null): Promise<MessageRow | undefined>;
+
+  /**
    * Whether `accountId` has at least one live **top-level** forum row that
    * is not `excludeId` and has media (photo 0, extra stills, or video).
    * Live = `deletedAt` null, `parentId` null, and `accountId` equals the
@@ -1750,6 +1780,10 @@ $message_goal_term_days$`,
 )`,
   `CREATE INDEX IF NOT EXISTS message_edit_message_created_idx
   ON message_edit (message_id, created_at DESC, id DESC)`,
+  `ALTER TABLE message ADD COLUMN IF NOT EXISTS first_post_free boolean`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS message_first_post_free_uidx
+  ON message (account_id)
+  WHERE first_post_free IS TRUE`,
 ];
 
 /**
@@ -2163,6 +2197,8 @@ export class InMemoryMessageStore implements MessageStore {
   readonly #zappers = new Map<string, NostrZapperRow>();
   readonly #blockedPubkeys = new Map<string, NostrBlockedPubkeyRow>();
   readonly #edits: MessageEditRow[] = [];
+  /** Account ids with a free first post still being stored. */
+  readonly #firstPostClaims = new Set<string>();
   readonly #paymentFiat: Required<PaymentFiatStoreOptions>;
 
   /**
@@ -2702,6 +2738,56 @@ export class InMemoryMessageStore implements MessageStore {
         (excludeId === null || row.id !== excludeId),
     );
     return Promise.resolve(found);
+  }
+
+  /**
+   * Whether `accountId` has at least one top-level forum row that is not
+   * `excludeId`, live or soft-hidden.
+   *
+   * @param accountId - Author account id.
+   * @param excludeId - Auto profile note id, or `null` to exclude nothing extra.
+   * @returns `true` when a matching top-level row exists.
+   */
+  accountHasTopLevelPost(accountId: string, excludeId: string | null): Promise<boolean> {
+    const found = this.#rows.some(
+      (row) =>
+        row.accountId === accountId &&
+        row.parentId === null &&
+        (excludeId === null || row.id !== excludeId),
+    );
+    return Promise.resolve(found);
+  }
+
+  /**
+   * Insert a text-only top-level note as the account's free first post.
+   * A claim set keeps a second concurrent call for the same account out
+   * while the first one is still storing.
+   *
+   * @param row - Fully formed top-level row (`parentId` null, `accountId` set).
+   * @param excludeId - Auto profile note id, or `null` to exclude nothing extra.
+   * @returns The stored row, or `undefined` when the account already has a top-level note.
+   * @throws Error `first post must be a top-level note of an account` for a reply or a null account.
+   */
+  async createFirstPost(
+    row: MessageRow,
+    excludeId: string | null,
+  ): Promise<MessageRow | undefined> {
+    const accountId = row.accountId;
+    if (accountId === null || row.parentId !== null) {
+      throw new Error('first post must be a top-level note of an account');
+    }
+    if (this.#firstPostClaims.has(accountId)) {
+      return undefined;
+    }
+    this.#firstPostClaims.add(accountId);
+    try {
+      if (await this.accountHasTopLevelPost(accountId, excludeId)) {
+        return undefined;
+      }
+      return await this.create(row);
+    } finally {
+      this.#firstPostClaims.delete(accountId);
+    }
   }
 
   /**
@@ -4782,6 +4868,111 @@ export class PostgresMessageStore implements MessageStore {
       [accountId, excludeId],
     );
     return rows[0] !== undefined;
+  }
+
+  /**
+   * Whether `accountId` has at least one top-level forum row that is not
+   * `excludeId`, live or soft-hidden.
+   *
+   * @param accountId - Author account id (`$1`).
+   * @param excludeId - Auto profile note id (`$2`), or `null` to exclude nothing extra.
+   * @returns `true` when a matching top-level row exists.
+   */
+  async accountHasTopLevelPost(accountId: string, excludeId: string | null): Promise<boolean> {
+    const rows = await this.#sql.query<Record<string, unknown>>(
+      `SELECT 1 FROM message
+       WHERE account_id = $1
+         AND parent_id IS NULL
+         AND ($2::uuid IS NULL OR id <> $2::uuid)
+       LIMIT 1`,
+      [accountId, excludeId],
+    );
+    return rows[0] !== undefined;
+  }
+
+  /**
+   * Insert a text-only top-level note as the account's free first post in
+   * one statement. `NOT EXISTS` skips an account that already has a
+   * top-level note (live or hidden, other than `excludeId`). The row stores
+   * `first_post_free = true`; the partial unique index
+   * `message_first_post_free_uidx` makes a concurrent second first post wait
+   * and then insert nothing (`ON CONFLICT DO NOTHING`).
+   *
+   * @param row - Fully formed top-level row (`parentId` null, `accountId` set).
+   * @param excludeId - Auto profile note id, or `null` to exclude nothing extra.
+   * @returns The stored row, or `undefined` when nothing was inserted.
+   * @throws Error `first post must be a top-level note of an account` for a reply or a null account.
+   */
+  async createFirstPost(
+    row: MessageRow,
+    excludeId: string | null,
+  ): Promise<MessageRow | undefined> {
+    if (row.accountId === null || row.parentId !== null) {
+      throw new Error('first post must be a top-level note of an account');
+    }
+    const stored = copyRow({
+      ...unsignedNostrDefaults(),
+      ...row,
+      hasPhoto: false,
+      hasVideo: false,
+      videoContentType: null,
+      contentFp: null,
+      photoCount: 0,
+      amountUsd: null,
+      amountChf: null,
+      amountEur: null,
+      amountPhp: null,
+      photoTakenAts: [],
+    });
+    applyStoredGoal(stored);
+    const place = stored.place ?? null;
+    const inserted = await this.#sql.query<{ id: string }>(
+      `INSERT INTO message (
+         id, account_id, name, text, created_at, nostr_publish_state, sats, author_pubkey,
+         event_id, nostr_event, goal_sats, place_lat, place_lng, place_label,
+         goal_currency, goal_amount, goal_fiat_usd, goal_fiat_chf, goal_fiat_eur, goal_fiat_php,
+         goal_repayable, goal_term_days, shop_account_id, mentions, first_post_free
+       )
+       SELECT $1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb,$11,$12,$13,$14,
+              $15,$16::numeric,$17::numeric,$18::numeric,$19::numeric,$20::numeric,
+              $21,$22,$23,$24::jsonb,TRUE
+       WHERE NOT EXISTS (
+         SELECT 1 FROM message
+         WHERE account_id = $2
+           AND parent_id IS NULL
+           AND ($25::uuid IS NULL OR id <> $25::uuid)
+       )
+       ON CONFLICT DO NOTHING
+       RETURNING id`,
+      [
+        stored.id,
+        stored.accountId,
+        stored.name,
+        stored.text,
+        stored.createdAt,
+        stored.nostrPublishState,
+        stored.sats,
+        stored.authorPubkey,
+        stored.eventId,
+        stored.nostrEvent,
+        stored.goalSats ?? null,
+        place === null ? null : place.lat,
+        place === null ? null : place.lng,
+        place === null ? null : place.label,
+        stored.goalCurrency ?? null,
+        stored.goalAmount ?? null,
+        stored.goalAmountUsd ?? null,
+        stored.goalAmountChf ?? null,
+        stored.goalAmountEur ?? null,
+        stored.goalAmountPhp ?? null,
+        stored.goalRepayable === true ? true : null,
+        stored.goalTermDays ?? null,
+        stored.shopAccount?.id ?? null,
+        JSON.stringify(stored.mentions ?? []),
+        excludeId,
+      ],
+    );
+    return inserted.length === 0 ? undefined : stored;
   }
 
   /**

@@ -234,6 +234,8 @@ function throwingStore(overrides: Partial<MessageStore> = {}): MessageStore {
     findLiveByAccountContent: boom,
     accountHasLivePost: boom,
     accountHasLiveTopLevelPost: boom,
+    accountHasTopLevelPost: boom,
+    createFirstPost: boom,
     accountHasLiveTopLevelMediaPost: boom,
     latestLiveTopLevelMediaId: boom,
     accountHasWelcomeGift: boom,
@@ -1212,7 +1214,40 @@ describe('GET /messages/compose-target', () => {
       { headers: AUTH },
     );
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ messageId: noteId, sats: 0 });
+    expect(await res.json()).toEqual({ messageId: noteId, sats: 0, firstPostFree: true });
+  });
+
+  it('reports firstPostFree false once the member has a hidden top-level note', async () => {
+    const authStore = await namedStore('Ada');
+    await withPlatform(authStore);
+    const platform = await authStore.getAccount('plat');
+    const noteId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa9';
+    await authStore.updateAccount({ ...platform!, profileMessageId: noteId });
+    const messageStore = new InMemoryMessageStore();
+    for (const [id, accountId] of [
+      [noteId, 'plat'],
+      ['bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbb9', 'acc'],
+    ] as const) {
+      await messageStore.create({
+        id,
+        accountId,
+        name: 'Ada',
+        text: 'hello',
+        createdAt: new Date(now()),
+        hasPhoto: false,
+        hasVideo: false,
+        videoContentType: null,
+        ...unsignedNostrDefaults(),
+        eventId: id === noteId ? 'ee'.repeat(32) : null,
+      });
+    }
+    await messageStore.markDeleted('bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbb9', new Date(now()), 'plat');
+    const res = await mount(authStore, messageStore, { lnurlServer: LNURL_SERVER }).request(
+      '/messages/compose-target',
+      { headers: AUTH },
+    );
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ messageId: noteId, sats: 0, firstPostFree: false });
   });
 
   it('returns 400 when the platform account has no verified wallet', async () => {
@@ -1294,12 +1329,39 @@ describe('POST /messages', () => {
     expect(await hit()).toBe(429);
   });
 
-  it('returns 403 when a basis account posts without paying', async () => {
+  /** `namedStore('Ada')` with `acc` lowered to basis. */
+  async function basisStore(): Promise<InMemoryAuthStore> {
+    const store = await namedStore('Ada');
+    const acc = await store.getAccount('acc');
+    await store.updateAccount({ ...acc!, role: 'basis' });
+    return store;
+  }
+
+  /** A top-level or reply row by `accountId` for the first-post rule. */
+  function ownRow(id: string, accountId: string, parentId: string | null = null): MessageRow {
+    return {
+      id,
+      accountId,
+      name: 'Ada',
+      text: 'earlier',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      hasVideo: false,
+      videoContentType: null,
+      ...unsignedNostrDefaults(),
+      parentId,
+    };
+  }
+
+  it('returns 403 when a basis account posts without paying after its first post', async () => {
     const store = await namedStore('Ada');
     const acc = await store.getAccount('acc');
     expect(acc).toBeDefined();
     await store.updateAccount({ ...acc!, role: 'basis' });
-    const res = await mount(store).request('/messages', {
+    const messages = new InMemoryMessageStore([
+      ownRow('bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbb1', 'acc'),
+    ]);
+    const res = await mount(store, messages).request('/messages', {
       method: 'POST',
       headers: { ...AUTH, 'content-type': 'application/json' },
       body: JSON.stringify({ text: 'hi' }),
@@ -1308,8 +1370,127 @@ describe('POST /messages', () => {
     expect(await res.json()).toEqual({ error: 'A post needs a Bitcoin payment' });
   });
 
+  it('returns 403 for an unpaid text post when the earlier note is hidden', async () => {
+    const store = await basisStore();
+    const messages = new InMemoryMessageStore([
+      ownRow('bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbb2', 'acc'),
+    ]);
+    await messages.markDeleted('bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbb2', new Date(now()), 'mod');
+    const res = await mount(store, messages).request('/messages', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ text: 'hi' }),
+    });
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: 'A post needs a Bitcoin payment' });
+  });
+
+  it('stores a basis member first text post free once', async () => {
+    const store = await basisStore();
+    const messages = new InMemoryMessageStore();
+    const app = mount(store, messages);
+    const first = await app.request('/messages', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ text: 'my first post', goalCurrency: 'BTC', goalAmount: '2100' }),
+    });
+    expect(first.status).toBe(200);
+    const created = (await first.json()) as { id: string; text: string; goalSats: number };
+    expect(created.text).toBe('my first post');
+    expect(created.goalSats).toBe(2100);
+    const second = await app.request('/messages', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ text: 'my second post' }),
+    });
+    expect(second.status).toBe(403);
+    expect(await second.json()).toEqual({ error: 'A post needs a Bitcoin payment' });
+  });
+
+  it('ignores the profile note and replies when deciding the first post', async () => {
+    const store = await basisStore();
+    const acc = await store.getAccount('acc');
+    const profileId = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbb3';
+    await store.updateAccount({ ...acc!, profileMessageId: profileId });
+    const messages = new InMemoryMessageStore([
+      ownRow(profileId, 'acc'),
+      ownRow('cccccccc-cccc-4ccc-8ccc-ccccccccccc3', 'other'),
+      ownRow('bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbb4', 'acc', 'cccccccc-cccc-4ccc-8ccc-ccccccccccc3'),
+    ]);
+    const res = await mount(store, messages).request('/messages', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ text: 'hi' }),
+    });
+    expect(res.status).toBe(200);
+  });
+
+  it('keeps an unpaid text reply at 403 for a member without a post', async () => {
+    const store = await basisStore();
+    const messages = new InMemoryMessageStore([
+      ownRow('cccccccc-cccc-4ccc-8ccc-ccccccccccc5', 'other'),
+    ]);
+    const res = await mount(store, messages).request('/messages', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ text: 'hi', inReplyTo: 'cccccccc-cccc-4ccc-8ccc-ccccccccccc5' }),
+    });
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: 'A reply needs a Bitcoin payment' });
+  });
+
+  it('lets only one of two concurrent first posts through free', async () => {
+    const store = await basisStore();
+    const messages = new InMemoryMessageStore();
+    const app = mount(store, messages, {
+      postLimiter: { allow: () => true } as unknown as PostRateLimiter,
+    });
+    const post = (text: string): Promise<Response> =>
+      Promise.resolve(
+        app.request('/messages', {
+          method: 'POST',
+          headers: { ...AUTH, 'content-type': 'application/json' },
+          body: JSON.stringify({ text }),
+        }),
+      );
+    const statuses = (await Promise.all([post('one'), post('two')])).map((res) => res.status);
+    expect(statuses.sort()).toEqual([200, 403]);
+    expect(await messages.accountHasTopLevelPost('acc', null)).toBe(true);
+  });
+
+  it('returns 403 when the first-post insert finds a note written meanwhile', async () => {
+    const store = await basisStore();
+    class RacedStore extends InMemoryMessageStore {
+      override createFirstPost(): Promise<MessageRow | undefined> {
+        return Promise.resolve(undefined);
+      }
+    }
+    const messages = new RacedStore();
+    const res = await mount(store, messages).request('/messages', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ text: 'hi' }),
+    });
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: 'A post needs a Bitcoin payment' });
+  });
+
+  it('returns 503 when the first-post check fails', async () => {
+    const store = await basisStore();
+    const res = await mount(
+      store,
+      throwingStore({ findLiveByAccountContent: () => Promise.resolve(undefined) }),
+    ).request('/messages', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ text: 'hi' }),
+    });
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({ error: 'Messages are unavailable' });
+  });
+
   it('allows a basis account to post a photo', async () => {
-    const store = await namedStore('Ada');
+    const store = await basisStore();
     const acc = await store.getAccount('acc');
     expect(acc).toBeDefined();
     await store.updateAccount({ ...acc!, role: 'basis' });
@@ -3602,6 +3783,9 @@ describe('POST /messages', () => {
       accountHasLivePost: (accountId, excludeId) => base.accountHasLivePost(accountId, excludeId),
       accountHasLiveTopLevelPost: (accountId, excludeId) =>
         base.accountHasLiveTopLevelPost(accountId, excludeId),
+      accountHasTopLevelPost: (accountId, excludeId) =>
+        base.accountHasTopLevelPost(accountId, excludeId),
+      createFirstPost: (row, excludeId) => base.createFirstPost(row, excludeId),
       accountHasLiveTopLevelMediaPost: (accountId, excludeId) =>
         base.accountHasLiveTopLevelMediaPost(accountId, excludeId),
       latestLiveTopLevelMediaId: (accountId) => base.latestLiveTopLevelMediaId(accountId),
@@ -3732,6 +3916,9 @@ describe('POST /messages', () => {
       accountHasLivePost: (accountId, excludeId) => base.accountHasLivePost(accountId, excludeId),
       accountHasLiveTopLevelPost: (accountId, excludeId) =>
         base.accountHasLiveTopLevelPost(accountId, excludeId),
+      accountHasTopLevelPost: (accountId, excludeId) =>
+        base.accountHasTopLevelPost(accountId, excludeId),
+      createFirstPost: (row, excludeId) => base.createFirstPost(row, excludeId),
       accountHasLiveTopLevelMediaPost: (accountId, excludeId) =>
         base.accountHasLiveTopLevelMediaPost(accountId, excludeId),
       latestLiveTopLevelMediaId: (accountId) => base.latestLiveTopLevelMediaId(accountId),
@@ -5398,6 +5585,9 @@ describe('POST /messages/:id/invoice', () => {
       accountHasLivePost: (accountId, excludeId) => base.accountHasLivePost(accountId, excludeId),
       accountHasLiveTopLevelPost: (accountId, excludeId) =>
         base.accountHasLiveTopLevelPost(accountId, excludeId),
+      accountHasTopLevelPost: (accountId, excludeId) =>
+        base.accountHasTopLevelPost(accountId, excludeId),
+      createFirstPost: (row, excludeId) => base.createFirstPost(row, excludeId),
       accountHasLiveTopLevelMediaPost: (accountId, excludeId) =>
         base.accountHasLiveTopLevelMediaPost(accountId, excludeId),
       latestLiveTopLevelMediaId: (accountId) => base.latestLiveTopLevelMediaId(accountId),

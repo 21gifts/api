@@ -4905,6 +4905,11 @@ describe('indexOpenZapReceipts', () => {
       accountHasLiveTopLevelPost: (
         ...args: Parameters<InMemoryMessageStore['accountHasLiveTopLevelPost']>
       ) => base.accountHasLiveTopLevelPost(...args),
+      accountHasTopLevelPost: (
+        ...args: Parameters<InMemoryMessageStore['accountHasTopLevelPost']>
+      ) => base.accountHasTopLevelPost(...args),
+      createFirstPost: (...args: Parameters<InMemoryMessageStore['createFirstPost']>) =>
+        base.createFirstPost(...args),
       accountHasLiveTopLevelMediaPost: (
         ...args: Parameters<InMemoryMessageStore['accountHasLiveTopLevelMediaPost']>
       ) => base.accountHasLiveTopLevelMediaPost(...args),
@@ -5165,6 +5170,11 @@ describe('indexOpenZapReceipts', () => {
         accountHasLiveTopLevelPost: (
           ...args: Parameters<InMemoryMessageStore['accountHasLiveTopLevelPost']>
         ) => base.accountHasLiveTopLevelPost(...args),
+        accountHasTopLevelPost: (
+          ...args: Parameters<InMemoryMessageStore['accountHasTopLevelPost']>
+        ) => base.accountHasTopLevelPost(...args),
+        createFirstPost: (...args: Parameters<InMemoryMessageStore['createFirstPost']>) =>
+          base.createFirstPost(...args),
         accountHasLiveTopLevelMediaPost: (
           ...args: Parameters<InMemoryMessageStore['accountHasLiveTopLevelMediaPost']>
         ) => base.accountHasLiveTopLevelMediaPost(...args),
@@ -5974,6 +5984,11 @@ describe('indexOpenZapReceipts', () => {
         accountHasLiveTopLevelPost: (
           ...args: Parameters<InMemoryMessageStore['accountHasLiveTopLevelPost']>
         ) => base.accountHasLiveTopLevelPost(...args),
+        accountHasTopLevelPost: (
+          ...args: Parameters<InMemoryMessageStore['accountHasTopLevelPost']>
+        ) => base.accountHasTopLevelPost(...args),
+        createFirstPost: (...args: Parameters<InMemoryMessageStore['createFirstPost']>) =>
+          base.createFirstPost(...args),
         accountHasLiveTopLevelMediaPost: (
           ...args: Parameters<InMemoryMessageStore['accountHasLiveTopLevelMediaPost']>
         ) => base.accountHasLiveTopLevelMediaPost(...args),
