@@ -8,6 +8,23 @@
 
 ---
 
+## Weekly rest and regular gifts
+
+The public-write Sunday rest interval is **Sunday 00:00 inclusive to Monday
+08:00 exclusive in the user's IANA zone** (`Time-Zone`), including DST changes.
+The listed writes and moderator-room routes continue returning 403
+`SUNDAY_REST` during this interval. Reads, private messages, onboarding requests
+that omit the header, health checks, and workers retain their existing rules.
+Missing, blank, or invalid zones retain the existing middleware bypass.
+
+After an eligible top-level media post, the API forwards `Time-Zone` on the
+daily spend ping. Spend rejects an invalid supplied zone and defaults absent
+zones to Manila. It persists the zone for retries and enforces at most one
+regular payout per local Monday, in addition to its existing UTC-day limit.
+Friday's UTC payout day (Friday 08:00–Saturday 08:00 Manila) pays twice the
+configured daily USD amount. Welcome gifts and moderator stipends are unchanged.
+Deploy spend before this API and the corresponding app change.
+
 ## Implemented HTTP surface (normative)
 
 Auth state uses `InMemoryAuthStore` when `DATABASE_URL` is unset (tests and
@@ -1571,7 +1588,7 @@ Body is not JSON with a `photo` field, or `photo` is not `null` and not
 `{ "error": "Expected a JSON body with a \"photo\" field" }`.
 Bytes that are not a decodable still → **400**
 `{ "error": "Profile photo must be a JPEG, PNG, or WebP" }`.
-When `Time-Zone` names an IANA zone that is Sunday on the server clock,
+When `Time-Zone` names an IANA zone within Sunday 00:00–Monday 08:00 on the server clock,
 the PUT is **403** `{ "error": "SUNDAY_REST" }` before auth. A missing,
 blank, or invalid zone does not refuse. GET is not refused.
 
@@ -1604,7 +1621,7 @@ Body is not JSON with a `photo` field, or `photo` is not `null` and not
 `{ "error": "Expected a JSON body with a \"photo\" field" }`.
 Bytes that are not a decodable wide image → **400**
 `{ "error": "Wide image must be at least 640 px wide and at least 1.5 times as wide as it is tall" }`.
-When `Time-Zone` names an IANA zone that is Sunday on the server clock,
+When `Time-Zone` names an IANA zone within Sunday 00:00–Monday 08:00 on the server clock,
 the PUT is **403** `{ "error": "SUNDAY_REST" }` before auth. A missing,
 blank, or invalid zone does not refuse. GET is not refused.
 
@@ -4305,7 +4322,7 @@ Giver without a Lightning address → **400** `{ "error": "A giver has no Lightn
 Recipient wallet cannot take the payment → **400** `{ "error": "The recipient's wallet cannot receive this Bitcoin payment" }`.
 Other payment start failure → **400** `{ "error": "Could not start the Bitcoin payment" }`.
 Author missing forum pay → **409** `{ "error": "missing_requirements", "missing": ["rules"] }`.
-Device `Time-Zone` in Sunday → **403** `{ "error": "SUNDAY_REST" }`. A missing, blank, or invalid zone does not refuse.
+Device `Time-Zone` in Sunday 00:00–Monday 08:00 → **403** `{ "error": "SUNDAY_REST" }`. A missing, blank, or invalid zone does not refuse.
 Over-limit → **429** `{ "error": "Too many payments" }`.
 Fiat share cannot be priced → **503** `{ "error": "Ask amount is unavailable" }`.
 Signing keys missing or the invoice attempt cannot be stored → **503** `{ "error": "Messages are unavailable" }`.

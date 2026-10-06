@@ -1055,3 +1055,13 @@ repository — they're intentionally not part of this project's scope.
 _This document is the canonical source for product-level decisions on 21.gifts.
 Hosting, secrets, DNS, and any other operator-specific details are out of scope
 and live in the operator's separate infrastructure repository._
+
+## Weekly rest and Friday daily gifts
+
+Public writing and the moderator room pause from Sunday 00:00 to Monday 08:00
+in each user's own time zone. Regular daily recipients receive twice their
+configured USD amount on the existing Friday UTC payout day (Friday 08:00 to
+Saturday 08:00 Manila), compensating for Sunday. Welcome and moderator gifts
+keep their amounts. A regular recipient receives at most one payment per local
+Monday even when that Monday spans two UTC payout days; durable payment attempts
+enforce this through retries and restarts.

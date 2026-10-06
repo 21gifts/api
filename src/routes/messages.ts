@@ -1032,7 +1032,12 @@ async function persistForumPost(
           created.hasVideo === true ||
           Number(created.photoCount) > 0
         ) {
-          await deps.spendPing.ping(account.lightningAddress, created.id);
+          const timeZone = c.req.header('Time-Zone');
+          if (timeZone === undefined) {
+            await deps.spendPing.ping(account.lightningAddress, created.id);
+          } else {
+            await deps.spendPing.ping(account.lightningAddress, created.id, 'daily', timeZone);
+          }
         } else {
           logEvent('spend.ping.skipped', { reason: 'no_media' });
         }

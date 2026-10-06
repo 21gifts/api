@@ -26,8 +26,14 @@ export interface SpendPing {
    *   JSON `messageId`) or conversation message id (moderator JSON
    *   `groupMessageId`).
    * @param kind - `'daily'` (default), `'moderator'`, or `'welcome'`.
+   * @param timeZone - Recipient IANA zone, forwarded as Time-Zone for the daily Monday limit.
    */
-  ping(address: string, messageId: string, kind?: 'daily' | 'moderator' | 'welcome'): Promise<void>;
+  ping(
+    address: string,
+    messageId: string,
+    kind?: 'daily' | 'moderator' | 'welcome',
+    timeZone?: string,
+  ): Promise<void>;
 }
 
 /**
@@ -41,11 +47,13 @@ export class NoopSpendPing implements SpendPing {
    * @param _address - Unused.
    * @param _messageId - Unused.
    * @param _kind - Unused.
+   * @param _timeZone - Unused.
    */
   ping(
     _address: string,
     _messageId: string,
     _kind?: 'daily' | 'moderator' | 'welcome',
+    _timeZone?: string,
   ): Promise<void> {
     return Promise.resolve();
   }
@@ -89,11 +97,13 @@ export class HttpSpendPing implements SpendPing {
    *   `messageId`); conversation message id for moderator pings (JSON
    *   `groupMessageId`).
    * @param kind - `'daily'` (default), `'moderator'`, or `'welcome'`.
+   * @param timeZone - Recipient IANA zone, forwarded as Time-Zone for the daily Monday limit.
    */
   async ping(
     address: string,
     messageId: string,
     kind?: 'daily' | 'moderator' | 'welcome',
+    timeZone?: string,
   ): Promise<void> {
     const body =
       kind === 'moderator'
@@ -107,6 +117,7 @@ export class HttpSpendPing implements SpendPing {
         headers: {
           Authorization: `Bearer ${this.#token}`,
           'Content-Type': 'application/json',
+          ...(timeZone === undefined ? {} : { 'Time-Zone': timeZone }),
         },
         body: JSON.stringify(body),
         signal: AbortSignal.timeout(this.#timeoutMs),
