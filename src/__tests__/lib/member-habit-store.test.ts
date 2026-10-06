@@ -642,6 +642,8 @@ describe('PostgresMemberHabitStore', () => {
         '2026-09-28',
       ),
     ).toBe('missing');
+    expect(await store.archive('weekly', accountId, '2026-10-05')).toBe('missing');
+    expect(await store.log('weekly', accountId, '2026-09-28', 'achieved')).toBe('missing');
     expect(await store.archive('missing', accountId, '2026-10-05')).toBe('missing');
     expect(await store.archive('ended', accountId, '2026-10-05')).toBe('ok');
     expect(await store.archive(id, accountId, '2026-10-05')).toBe('ok');
@@ -662,7 +664,9 @@ describe('PostgresMemberHabitStore', () => {
     expect(owned?.comments.map((row) => row.id)).toEqual(['c-a', 'c-b']);
     const weekly = listed.find((row) => row.id === 'weekly');
     expect(weekly?.notes).toBeUndefined();
+    expect(weekly?.lastPeriod).toBeNull();
     expect(weekly?.periods[0]?.period).toBe('2026-09-28');
+    expect(weekly?.periods[0]?.logged).toBe(false);
     expect(await store.findComment('missing')).toBeNull();
     expect((await store.findComment('c-a'))?.text).toBe('earlier');
     await store.comment({
