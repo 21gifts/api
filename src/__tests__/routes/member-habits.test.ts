@@ -671,6 +671,69 @@ describe('memberHabitRoutes', () => {
     expect(await longNotes.json()).toEqual({ error: 'Invalid notes' });
   });
 
+  it('add and comment count Unicode code points, not UTF-16 units', async () => {
+    const emoji = '😀';
+    expect(emoji.length).toBe(2);
+    expect([...emoji].length).toBe(1);
+    const app = mount({ account: BASIS });
+    const headers = { ...AUTH, 'Time-Zone': 'Asia/Manila' };
+    const name = emoji.repeat(80);
+    const description = emoji.repeat(2000);
+    const notes = emoji.repeat(2000);
+    const created = await post(
+      app,
+      { action: 'add', name, description, notes, cadence: 'daily' },
+      headers,
+    );
+    expect(created.status).toBe(201);
+    const added = (await created.json()) as { ok: boolean; id: string };
+    expect(added.ok).toBe(true);
+    const listed = await app.request('/', { headers: AUTH });
+    const body = (await listed.json()) as {
+      habits: Array<{ id: string; name: string; description: string; notes?: string }>;
+    };
+    const habit = body.habits.find((row) => row.id === added.id);
+    expect(habit?.name).toBe(name);
+    expect(habit?.description).toBe(description);
+    expect(habit?.notes).toBe(notes);
+
+    const longName = await post(
+      app,
+      { action: 'add', name: emoji.repeat(81), cadence: 'daily' },
+      headers,
+    );
+    expect(longName.status).toBe(400);
+    expect(await longName.json()).toEqual({ error: 'Invalid name' });
+    const longDescription = await post(
+      app,
+      { action: 'add', name: 'Walk', description: emoji.repeat(2001), cadence: 'daily' },
+      headers,
+    );
+    expect(longDescription.status).toBe(400);
+    expect(await longDescription.json()).toEqual({ error: 'Invalid description' });
+    const longNotes = await post(
+      app,
+      { action: 'add', name: 'Walk', notes: emoji.repeat(2001), cadence: 'daily' },
+      headers,
+    );
+    expect(longNotes.status).toBe(400);
+    expect(await longNotes.json()).toEqual({ error: 'Invalid notes' });
+
+    const comment = await post(
+      app,
+      { action: 'comment', habitId: added.id, text: emoji.repeat(2000) },
+      headers,
+    );
+    expect(comment.status).toBe(201);
+    const longComment = await post(
+      app,
+      { action: 'comment', habitId: added.id, text: emoji.repeat(2001) },
+      headers,
+    );
+    expect(longComment.status).toBe(400);
+    expect(await longComment.json()).toEqual({ error: 'Invalid comment' });
+  });
+
   it('add with a null account name stores an empty owner name', async () => {
     const store = new InMemoryMemberHabitStore();
     const app = mount({ store, account: { id: 'acc-noname', role: 'basis', name: null } });

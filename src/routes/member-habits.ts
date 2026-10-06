@@ -117,19 +117,24 @@ function roleGroup(role: string): number {
   return 2;
 }
 
+/** Unicode code points, the same count as PostgreSQL `char_length`. */
+function unicodeLength(value: string): number {
+  return [...value].length;
+}
+
 function invalidText(
   name: string,
   description: string,
   notes: string,
 ): 'Invalid name' | 'Invalid description' | 'Invalid notes' | null {
   const trimmed = name.trim();
-  if (trimmed.length < 1 || trimmed.length > 80) {
+  if (unicodeLength(trimmed) < 1 || unicodeLength(trimmed) > 80) {
     return 'Invalid name';
   }
-  if (description.length > 2000) {
+  if (unicodeLength(description) > 2000) {
     return 'Invalid description';
   }
-  if (notes.length > 2000) {
+  if (unicodeLength(notes) > 2000) {
     return 'Invalid notes';
   }
   return null;
@@ -395,7 +400,7 @@ export function memberHabitRoutes(deps: {
           return c.json({ error: 'SUNDAY_REST' }, 403);
         }
         const text = body.text.trim();
-        if (text.length < 1 || text.length > 2000) {
+        if (unicodeLength(text) < 1 || unicodeLength(text) > 2000) {
           return c.json({ error: 'Invalid comment' }, 400);
         }
         const habits = await deps.store.listPublic(null, nowMs);
