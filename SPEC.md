@@ -173,7 +173,7 @@ Public base URLs used in examples:
 | GET    | `/shops/activity`                                    | none                                         | 30-UTC-day shop till-charge counts (`days`: `{ day, shopCount }`, oldest first, zeros included)                                                                                                                                                                                                                                                                                                                                                                                                                               |
 | GET    | `/funding/goal`                                      | Bearer (any role)                            | 7-UTC-day shop till-charge counts plus how many shops had a charge on 5 of those days (`days`, `qualifyingShops`)                                                                                                                                                                                                                                                                                                                                                                                                             |
 | GET    | `/messages`                                          | none for active / Bearer                     | Public active window with no header; otherwise Bearer. List top-level notes (+ visible `replyCount`); 409 if rules missing; name-copy notes without photo, extra stills, or video are omitted; About me text stays                                                                                                                                                                                                                                                                                                            |
-| GET    | `/messages/compose-target`                           | Bearer                                       | Platform profile note `{ messageId, sats }` for a 1-sat compose fee to 21.gifts                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| GET    | `/messages/compose-target`                           | Bearer                                       | Platform profile note `{ messageId, sats, firstPostFree }` for a 1-sat compose fee to 21.gifts                                                                                                                                                                                                                                                                                                                                                                                                                                |
 | GET    | `/messages/places`                                   | Bearer                                       | Live top-level forum pins; 409 if rules missing                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
 | POST   | `/messages`                                          | Bearer                                       | Post text/photo; 409 if rules/name/username/verified wallet missing; 403 text-only below verified                                                                                                                                                                                                                                                                                                                                                                                                                             |
 | GET    | `/messages/hidden`                                   | Bearer (moderator+)                          | Staff log of soft-hidden notes (session, not DEBUG_TOKEN)                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
@@ -4287,8 +4287,14 @@ profile note so a basis account can invoice 1 sat to 21.gifts before posting
 or replying:
 
 ```json
-{ "messageId": "<uuid>", "sats": 0 }
+{ "messageId": "<uuid>", "sats": 0, "firstPostFree": true }
 ```
+
+`firstPostFree` is `true` when the caller has no top-level note of its own
+other than its profile note (About me), live or soft-hidden. Replies and
+conversation messages do not count. It does not reset. While it is `true`, a
+text-only top-level `POST /messages` is stored without the 1-sat fee (see
+[First post free](#first-post-free)).
 
 Ensures that profile note exists. The client then calls
 `POST /messages/:id/invoice` on `messageId`. A later indexed member/invoice zap
@@ -4377,7 +4383,7 @@ is not in the store, or a parent that is itself a reply (`parentId` not
 null) → **404** `{ "error": "Not found" }`. Anyone below `verified`
 (including the parent author) posting unpaid **text-only** → **403**
 `{ "error": "A post needs a Bitcoin payment" }` or `{ "error": "A reply needs a Bitcoin payment" }`
-for `inReplyTo`. A photo or video body from `basis` is **200**. Pay 1 sat to
+for `inReplyTo`, except the free first post below. A photo or video body from `basis` is **200**. Pay 1 sat to
 21.gifts first (`GET /messages/compose-target`
 then `POST /messages/:id/invoice` on that platform profile note). Optional
 `goalSats` omitted, JSON `null`, or a missing/empty multipart field means
@@ -4529,12 +4535,25 @@ is itself a reply →
 { "error": "Not found" }
 ```
 
-Anyone below `verified` posting an unpaid text-only top-level note →
+Anyone below `verified` posting an unpaid text-only top-level note after
+their first post →
 **Response** `403`:
 
 ```json
 { "error": "A post needs a Bitcoin payment" }
 ```
+
+<a id="first-post-free"></a>
+**First post free.** A text-only top-level note from anyone below `verified`
+is stored without the fee when the account has no top-level note of its own
+other than its profile note (About me), live or soft-hidden. Replies and
+conversation messages do not count, and a reply stays **403** without the fee.
+The rule is checked again inside the insert: the row is written only while it
+still holds and is marked `first_post_free`, which is unique per account. Of
+two concurrent first posts, one is **200** and the other is **403**
+`{ "error": "A post needs a Bitcoin payment" }`, so the client falls back to
+the paid flow. `GET /messages/compose-target` reports the rule as
+`firstPostFree`. A failing check is **503** `{ "error": "Messages are unavailable" }`.
 
 Anyone below `verified` posting an unpaid text-only reply (`inReplyTo`) →
 **Response** `403`:

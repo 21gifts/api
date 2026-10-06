@@ -243,7 +243,9 @@ reply and does not nest a gift-reply. Gift-only (empty text) replies are not pub
 posts and replies from `basis` (including the parent author) are **403** until
 the author pays 1 sat to 21.gifts (`GET /messages/compose-target` then
 `POST /messages/:id/invoice` on the platform profile note). `verified` stays
-unpaid-write exempt. A member/invoice zap on that platform note with a comment becomes the
+unpaid-write exempt. A member's first top-level post is free: while
+`GET /messages/compose-target` reports `firstPostFree: true`, the app posts
+directly with `POST /messages` and pays nothing. A member/invoice zap on that platform note with a comment becomes the
 payer’s top-level post (`sats` 0). An external zap on that same note still
 inserts a gift-reply under it. The worker always queries that profile
 note’s event id, even after the note ages out of `listLatest`. A comment `inReplyTo:<uuid>\n<body>` becomes
