@@ -151,6 +151,24 @@ describe('mergeAccounts', () => {
     expect(queries.some((query) => /THEN \$2(?!::uuid)/.test(query.text))).toBe(false);
   });
 
+  it('clears the source free first post mark before moving messages when the survivor has one', async () => {
+    const { db, queries } = fakeDatabase();
+
+    await mergeAccounts(db, { from: FROM, into: INTO, verify: 'into' });
+
+    const firstPostFree = queries.findIndex((query) =>
+      query.text.includes('SET first_post_free = NULL'),
+    );
+    const messageAccount = queries.findIndex((query) =>
+      query.text.includes('UPDATE "public"."message" SET "account_id"'),
+    );
+    expect(firstPostFree).toBeGreaterThanOrEqual(0);
+    expect(queries[firstPostFree]?.params).toEqual([FROM, INTO]);
+    expect(queries[firstPostFree]?.text).toContain('dst.account_id = $2');
+    expect(queries[firstPostFree]?.text).toContain('dst.first_post_free IS TRUE');
+    expect(messageAccount).toBeGreaterThan(firstPostFree);
+  });
+
   it('copies earlier join time and consent onto the survivor before deleting the source', async () => {
     const { db, queries } = fakeDatabase();
 

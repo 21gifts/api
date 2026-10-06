@@ -960,14 +960,22 @@ async function persistForumPost(
       return c.json({ error: 'Messages are unavailable' }, 503);
     }
   }
-  if (!roleAtLeast(account.role, 'verified') && photo === undefined && video === undefined) {
-    return c.json(
-      {
-        error:
-          parentId === null ? 'A post needs a Bitcoin payment' : 'A reply needs a Bitcoin payment',
-      },
-      403,
-    );
+  // Below verified, a text-only note is unpaid. Only a first top-level post is free.
+  const firstPost =
+    !roleAtLeast(account.role, 'verified') && photo === undefined && video === undefined;
+  const profileNoteId = account.profileMessageId ?? null;
+  if (firstPost) {
+    if (parentId !== null) {
+      return c.json({ error: 'A reply needs a Bitcoin payment' }, 403);
+    }
+    try {
+      if (await deps.store.accountHasTopLevelPost(account.id, profileNoteId)) {
+        return c.json({ error: 'A post needs a Bitcoin payment' }, 403);
+      }
+    } catch {
+      logEvent('messages.create.failed');
+      return c.json({ error: 'Messages are unavailable' }, 503);
+    }
   }
   if (!postLimiter.allow(account.id, deps.now())) {
     logEvent('messages.rate_limited', { accountId: account.id });
@@ -1007,12 +1015,17 @@ async function persistForumPost(
     ...(parentId === null && shopAccount !== null ? { shopAccount } : {}),
   };
   try {
-    const created =
-      extras.length > 0
+    const created = firstPost
+      ? await deps.store.createFirstPost(row, profileNoteId)
+      : extras.length > 0
         ? await deps.store.create(row, photo, video, extras)
         : photo === undefined && video === undefined
           ? await deps.store.create(row)
           : await deps.store.create(row, photo, video);
+    if (created === undefined) {
+      // Another top-level note landed between the check and the insert.
+      return c.json({ error: 'A post needs a Bitcoin payment' }, 403);
+    }
     const isReplay = created.id !== id;
     const excludeAccountIds = [
       ...new Set(
@@ -1373,7 +1386,8 @@ const translateBody = z.object({
  * optional `goalSats` whole-sat ask on a top-level note; optional
  * `goalRepayable` and `goalTermDays` on that ask; replies 400),
  * `GET /messages/places` (live top-level map pins),
- * `GET /messages/compose-target` (platform profile note for a 1-sat write),
+ * `GET /messages/compose-target` (platform profile note for a 1-sat write, plus
+ * `firstPostFree` while the caller has no top-level note besides its profile note),
  * `GET /messages/:id/photo` (and `.jpg` / `.jpeg` / `.png` / `.webp`),
  * `GET /messages/:id/video.mp4|.webm|.mov`, public `GET /messages/:id/replies`
  * (`accountId` when the stored author id is non-null), staff `DELETE /messages/:id` (soft-hide)
@@ -1862,7 +1876,11 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
         if (!payableOf(row, live, deps.lnurlServer)) {
           return c.json({ error: 'This message cannot be paid yet' }, 400);
         }
-        return c.json({ messageId: row.id, sats: row.sats }, 200);
+        const firstPostFree = !(await deps.store.accountHasTopLevelPost(
+          account.id,
+          account.profileMessageId ?? null,
+        ));
+        return c.json({ messageId: row.id, sats: row.sats, firstPostFree }, 200);
       } catch {
         logEvent('messages.compose_target.failed');
         return c.json({ error: 'Messages are unavailable' }, 503);

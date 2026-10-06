@@ -2473,7 +2473,9 @@ conversations with the same other person are folded into one, and the
 messages are kept. Where a second row would break a unique key, the
 survivor's row stays and the source's row is dropped: the same image
 slot, the same notification, the same repayment day, a second address
-check, and a second open till charge. Two funding grants are refused
+check, and a second open till charge. When both accounts have a free
+first post, the source note moves but is no longer marked free, so the
+survivor keeps one free first post. Two funding grants are refused
 before any of those writes.
 
 An invalid body is **400**

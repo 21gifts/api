@@ -96,7 +96,13 @@ const JPEG2: ForumPhoto = {
 
 describe('MESSAGE_SCHEMA_SQL', () => {
   it('creates message with photo columns, Nostr columns, index, and additive ALTERs', () => {
-    expect(MESSAGE_SCHEMA_SQL).toHaveLength(99);
+    expect(MESSAGE_SCHEMA_SQL).toHaveLength(101);
+    expect(MESSAGE_SCHEMA_SQL.join('\n')).toMatch(
+      /ALTER TABLE message ADD COLUMN IF NOT EXISTS first_post_free boolean/,
+    );
+    expect(MESSAGE_SCHEMA_SQL.join('\n')).toMatch(
+      /CREATE UNIQUE INDEX IF NOT EXISTS message_first_post_free_uidx\s+ON message \(account_id\)\s+WHERE first_post_free IS TRUE/,
+    );
     expect(MESSAGE_SCHEMA_SQL.join('\n')).toMatch(
       /ALTER TABLE message ADD COLUMN IF NOT EXISTS place_lat double precision/i,
     );
@@ -374,6 +380,53 @@ describe('InMemoryMessageStore', () => {
 
   it('accountHasLivePost is false for another account live row', async () => {
     expect(await new InMemoryMessageStore([EARLY]).accountHasLivePost('other', null)).toBe(false);
+  });
+
+  it('accountHasTopLevelPost counts live and hidden top-level rows but not replies or the profile note', async () => {
+    expect(await new InMemoryMessageStore().accountHasTopLevelPost('acc', null)).toBe(false);
+    expect(await new InMemoryMessageStore([EARLY]).accountHasTopLevelPost('acc', null)).toBe(true);
+    expect(await new InMemoryMessageStore([EARLY]).accountHasTopLevelPost('acc', 'a')).toBe(false);
+    expect(await new InMemoryMessageStore([EARLY]).accountHasTopLevelPost('other', null)).toBe(
+      false,
+    );
+    const replyOnly = new InMemoryMessageStore([{ ...EARLY, parentId: 'parent' }]);
+    expect(await replyOnly.accountHasTopLevelPost('acc', null)).toBe(false);
+    const hidden = new InMemoryMessageStore([EARLY]);
+    await hidden.markDeleted('a', new Date('2026-08-05T00:00:00.000Z'), 'mod');
+    expect(await hidden.accountHasTopLevelPost('acc', null)).toBe(true);
+  });
+
+  it('createFirstPost stores the first top-level note and refuses the next', async () => {
+    const store = new InMemoryMessageStore();
+    const created = await store.createFirstPost(EARLY, null);
+    expect(created?.id).toBe('a');
+    expect(await store.createFirstPost(LATE, null)).toBeUndefined();
+    expect(await store.getById('b')).toBeUndefined();
+  });
+
+  it('createFirstPost ignores the excluded profile note', async () => {
+    const store = new InMemoryMessageStore([EARLY]);
+    expect((await store.createFirstPost(LATE, 'a'))?.id).toBe('b');
+  });
+
+  it('createFirstPost lets one of two concurrent calls through', async () => {
+    const store = new InMemoryMessageStore();
+    const results = await Promise.all([
+      store.createFirstPost(EARLY, null),
+      store.createFirstPost(LATE, null),
+    ]);
+    expect(results.filter((row) => row !== undefined)).toHaveLength(1);
+    expect(await store.createFirstPost({ ...LATE, id: 'c' }, null)).toBeUndefined();
+  });
+
+  it('createFirstPost rejects a reply or a row without an account', async () => {
+    const store = new InMemoryMessageStore();
+    await expect(store.createFirstPost({ ...EARLY, parentId: 'p' }, null)).rejects.toThrow(
+      'first post must be a top-level note of an account',
+    );
+    await expect(store.createFirstPost({ ...EARLY, accountId: null }, null)).rejects.toThrow(
+      'first post must be a top-level note of an account',
+    );
   });
 
   it('accountHasLiveTopLevelPost is false on an empty store', async () => {
@@ -5042,6 +5095,116 @@ describe('PostgresMessageStore', () => {
     expect(await store.accountHasLiveTopLevelPost('acc', null)).toBe(true);
     expect(await store.accountHasLiveTopLevelPost('acc', 'prof')).toBe(true);
     expect(sql.queries[2]?.params).toEqual(['acc', 'prof']);
+  });
+
+  it('accountHasTopLevelPost queries live and hidden top-level rows for the account', async () => {
+    const sql = new MockSql();
+    const store = new PostgresMessageStore(sql);
+    sql.nextRows = [];
+    expect(await store.accountHasTopLevelPost('acc', null)).toBe(false);
+    expect(sql.queries[0]?.text).toMatch(/account_id = \$1/);
+    expect(sql.queries[0]?.text).toMatch(/parent_id IS NULL/);
+    expect(sql.queries[0]?.text).not.toMatch(/deleted_at/);
+    expect(sql.queries[0]?.text).toMatch(/\$2::uuid IS NULL OR id <> \$2::uuid/);
+    expect(sql.queries[0]?.params).toEqual(['acc', null]);
+    sql.nextRows = [{ '?column?': 1 }];
+    expect(await store.accountHasTopLevelPost('acc', 'prof')).toBe(true);
+    expect(sql.queries[1]?.params).toEqual(['acc', 'prof']);
+  });
+
+  it('createFirstPost inserts a flagged row only when the account has no top-level note', async () => {
+    const sql = new MockSql();
+    const store = new PostgresMessageStore(sql);
+    sql.nextRows = [{ id: 'a' }];
+    const created = await store.createFirstPost(EARLY, 'prof');
+    expect(created).toMatchObject({ id: 'a', accountId: 'acc', place: null, photoCount: 0 });
+    const insert = sql.queries[0];
+    expect(insert?.text).toMatch(/INSERT INTO message/);
+    expect(insert?.text).toMatch(/first_post_free/);
+    expect(insert?.text).toMatch(/TRUE\s+WHERE NOT EXISTS/);
+    expect(insert?.text).not.toMatch(/deleted_at/);
+    expect(insert?.text).toMatch(/\$25::uuid IS NULL OR id <> \$25::uuid/);
+    expect(insert?.text).toMatch(/ON CONFLICT DO NOTHING/);
+    expect(insert?.params).toEqual([
+      'a',
+      'acc',
+      'Ada',
+      'first',
+      EARLY.createdAt,
+      'pending',
+      0,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      '[]',
+      'prof',
+    ]);
+    sql.nextRows = [];
+    expect(await store.createFirstPost(LATE, null)).toBeUndefined();
+  });
+
+  it('createFirstPost binds goal, place, shop, and mentions', async () => {
+    const sql = new MockSql();
+    const store = new PostgresMessageStore(sql);
+    sql.nextRows = [{ id: 'a' }];
+    await store.createFirstPost(
+      {
+        ...EARLY,
+        goalSats: 2100,
+        goalCurrency: 'USD',
+        goalAmount: '10',
+        goalAmountUsd: '10.00',
+        goalAmountChf: '9.00',
+        goalAmountEur: '9.50',
+        goalAmountPhp: '560.00',
+        goalRepayable: true,
+        goalTermDays: 30,
+        place: { lat: 1, lng: 2, label: 'Here' },
+        shopAccount: { id: 'shop', username: 'luna', name: 'Luna' },
+        mentions: [{ accountId: 'bob', username: 'bob' }],
+      },
+      null,
+    );
+    expect(sql.queries[0]?.params.slice(10, 25)).toEqual([
+      2100,
+      1,
+      2,
+      'Here',
+      'USD',
+      '10',
+      '10.00',
+      '9.00',
+      '9.50',
+      '560.00',
+      true,
+      30,
+      'shop',
+      JSON.stringify([{ accountId: 'bob', username: 'bob' }]),
+      null,
+    ]);
+  });
+
+  it('createFirstPost rejects a reply or a row without an account', async () => {
+    const store = new PostgresMessageStore(new MockSql());
+    await expect(store.createFirstPost({ ...EARLY, parentId: 'p' }, null)).rejects.toThrow(
+      'first post must be a top-level note of an account',
+    );
+    await expect(store.createFirstPost({ ...EARLY, accountId: null }, null)).rejects.toThrow(
+      'first post must be a top-level note of an account',
+    );
   });
 
   it('accountHasWelcomeGift joins platform Welcome replies to the account notes', async () => {

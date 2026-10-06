@@ -505,7 +505,7 @@
 
 ## Function: mergeAccounts
 
-- **Purpose:** Fold account `from` into account `into` on one reserved transaction (`MergeDb.begin`). Moves every single-column foreign key that the catalog says references `public.account(id)`, keeps one verify edge, copies the earlier join time and the consent that must not get worse onto the survivor, and deletes `from`. The same id returns before a transaction is opened. Name, username, location, and in-app wallet key (`spark_pubkey`, `spark_pubkey_verified_at`) of the survivor are not written.
+- **Purpose:** Fold account `from` into account `into` on one reserved transaction (`MergeDb.begin`). Moves every single-column foreign key that the catalog says references `public.account(id)`, keeps one verify edge, copies the earlier join time and the consent that must not get worse onto the survivor, and deletes `from`. Clears `first_post_free` on the source note before the move when the survivor already has a free first post, so the per-account unique index holds. The same id returns before a transaction is opened. Name, username, location, and in-app wallet key (`spark_pubkey`, `spark_pubkey_verified_at`) of the survivor are not written.
 - **Inputs:** `MergeDb` and `{ from, into, verify }` where `verify` is `'from'` or `'into'`.
 - **Returns / side effects:** `{ ok: true, messages }` with the source message count, or `{ ok: false, error }` of `not_found`, `same_account`, `platform`, or `both_grants`. Does not catch driver errors, so a throw rolls the transaction back. Does not log tokens, text, or keys.
 - **Used by:** `POST /debug/accounts/merge` in `debugRoutes`.
