@@ -131,6 +131,18 @@ export async function mergeAccounts(db: MergeDb, input: MergeInput): Promise<Mer
          )`,
       accountParams,
     );
+    await tx.query(
+      `UPDATE message AS src
+       SET first_post_free = NULL
+       WHERE src.account_id = $1
+         AND src.first_post_free IS TRUE
+         AND EXISTS (
+           SELECT 1 FROM message AS dst
+           WHERE dst.account_id = $2
+             AND dst.first_post_free IS TRUE
+         )`,
+      accountParams,
+    );
 
     const directMemberPair = `
       SELECT id FROM conversation
