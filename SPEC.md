@@ -665,10 +665,10 @@ The `pr` is returned only when it decodes to exactly `amountSats * 1000`
 millisatoshis.
 
 While a point-of-sale charge is pending, the payment hash of `pr` is
-recorded against that charge. `sparkInvoice` is non-null only when the
-shop has a pending charge, `amountSats` equals its amount (the till pin
-already enforces that), and free in-app payments are on (the same
-condition that issues Spark invoices for gifts). It is a `spark1…`
+recorded against that charge. While that charge is pending,
+`sparkInvoice` is non-null when `amountSats` equals its amount (the till
+pin already enforces that) and free in-app payments are on (the same
+condition that issues Spark invoices for gifts). It is then a `spark1…`
 invoice for exactly `amountSats` to the shop's verified wallet key with
 memo `pos:<chargeId>`; one per charge, so a repeat call returns the stored
 string. A 21.gifts in-app wallet pays it without a fee. A store failure
