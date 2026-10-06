@@ -91,17 +91,7 @@ const postBody = z.discriminatedUnion('action', [
   invoiceBody,
 ]);
 
-type Viewer = { id: string; role: string; name: string | null };
-
-function isAccountRole(role: string): role is AccountRole {
-  return (
-    role === 'basis' ||
-    role === 'verified' ||
-    role === 'moderator' ||
-    role === 'initiator' ||
-    role === 'founder'
-  );
-}
+type Viewer = { id: string; role: AccountRole; name: string | null };
 
 function isHabitStatus(status: string): status is 'achieved' | 'partial' | 'missed' {
   return status === 'achieved' || status === 'partial' || status === 'missed';
@@ -430,7 +420,7 @@ export function memberHabitRoutes(deps: {
         if (isSundayRestHeader(nowMs, c.req.header('Time-Zone'))) {
           return c.json({ error: 'SUNDAY_REST' }, 403);
         }
-        if (!isAccountRole(account.role) || !roleAtLeast(account.role, 'initiator')) {
+        if (!roleAtLeast(account.role, 'initiator')) {
           return c.json({ error: 'Forbidden' }, 403);
         }
         const comment = await deps.store.findComment(body.id);

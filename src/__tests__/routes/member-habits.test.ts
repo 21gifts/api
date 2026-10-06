@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { InMemoryMemberHabitStore, type MemberHabit } from '@/lib/member-habit-store';
 import { memberHabitRoutes } from '@/routes/member-habits';
 import type { FetchFn } from '@/lib/lnurlp';
-import { InMemoryAuthStore } from '@/lib/auth/store';
+import { InMemoryAuthStore, type AccountRole } from '@/lib/auth/store';
 
 const NOW_OPEN = Date.parse('2026-10-05T08:00:00.000Z');
 const SUNDAY_ZURICH = Date.parse('2026-09-27T12:00:00.000Z');
@@ -10,7 +10,7 @@ const AUTH = { Authorization: 'Bearer tok' };
 
 type AccountView = {
   id: string;
-  role: string;
+  role: AccountRole;
   name: string | null;
   lightningAddress: string | null;
 };
@@ -73,7 +73,7 @@ function sampleHabit(
 
 function mount(opts: {
   store?: InMemoryMemberHabitStore;
-  account?: { id: string; role: string; name: string | null } | null;
+  account?: { id: string; role: AccountRole; name: string | null } | null;
   accounts?: Record<string, AccountView>;
   now?: () => number;
   fetchImpl?: FetchFn;
@@ -839,7 +839,7 @@ describe('memberHabitRoutes', () => {
   });
 
   it('deleteComment allows moderator and founder, rejects verified and an unknown role, and 404s when missing', async () => {
-    async function seed(role: string): Promise<Response> {
+    async function seed(role: AccountRole): Promise<Response> {
       const store = new InMemoryMemberHabitStore();
       await store.add(sampleHabit({ id: 'h', accountId: 'owner', role: 'basis' }));
       await store.comment({
@@ -861,7 +861,7 @@ describe('memberHabitRoutes', () => {
     expect((await seed('verified')).status).toBe(403);
     expect((await seed('moderator')).status).toBe(200);
     expect((await seed('founder')).status).toBe(200);
-    expect((await seed('guest')).status).toBe(403);
+    expect((await seed('guest' as AccountRole)).status).toBe(403);
     const store = new InMemoryMemberHabitStore();
     const missing = await post(
       mount({ store, account: INITIATOR }),
