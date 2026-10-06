@@ -484,7 +484,11 @@ describe('PostgresMemberHabitStore', () => {
 
     await migrateMemberHabitSchema(sql);
     expect(statements).toEqual([...MEMBER_HABIT_SCHEMA_SQL]);
-    expect(MEMBER_HABIT_SCHEMA_SQL).toHaveLength(4);
+    expect(MEMBER_HABIT_SCHEMA_SQL).toHaveLength(5);
+    expect(MEMBER_HABIT_SCHEMA_SQL[1]).toMatch(/char_length\(name\) BETWEEN 1 AND 80/);
+    expect(MEMBER_HABIT_SCHEMA_SQL[1]).toMatch(/char_length\(description\) <= 2000/);
+    expect(MEMBER_HABIT_SCHEMA_SQL[4]).toMatch(/member_habit_revision_name_len/);
+    expect(MEMBER_HABIT_SCHEMA_SQL[4]).toMatch(/member_habit_revision_description_len/);
     expect(MEMBER_HABIT_SCHEMA_SQL[0]).toMatch(
       /account_id uuid NOT NULL REFERENCES account \(id\)/,
     );
@@ -509,6 +513,29 @@ describe('PostgresMemberHabitStore', () => {
     expect(writes).toHaveLength(1);
     expect(writes[0]).toContain('INSERT INTO member_habit_revision');
     expect(statements.some((text) => text.includes('FROM member_habit'))).toBe(true);
+  });
+
+  it('treats a postgres uuid syntax error on a comment id as missing', async () => {
+    const invalid = Object.assign(new Error('invalid input syntax for type uuid'), {
+      code: '22P02',
+    });
+    const other = new Error('connection refused');
+    const sql = {
+      query: async (): Promise<{ rows: Record<string, unknown>[] }> => {
+        throw invalid;
+      },
+    };
+    const store = new PostgresMemberHabitStore(sql, addressesOf(null));
+    expect(await store.findComment('nope')).toBeNull();
+    expect(await store.deleteComment('nope')).toBe(false);
+    const failing = {
+      query: async (): Promise<{ rows: Record<string, unknown>[] }> => {
+        throw other;
+      },
+    };
+    const broken = new PostgresMemberHabitStore(failing, addressesOf(null));
+    await expect(broken.findComment('nope')).rejects.toThrow('connection refused');
+    await expect(broken.deleteComment('nope')).rejects.toThrow('connection refused');
   });
 
   it('edits the wording and the period revision in one statement', async () => {

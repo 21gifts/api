@@ -1,9 +1,10 @@
 import { SQL } from 'bun';
 import { describe, expect, test } from 'bun:test';
 import { migrateAuthSchema } from '@/lib/auth/postgres-store';
-import type { SqlClient } from '@/lib/auth/sql';
+import { sqlState, type SqlClient } from '@/lib/auth/sql';
 import type { FundingGrant } from '@/lib/funding';
 import { migrateFundingSchema, PostgresFundingStore } from '@/lib/funding-store';
+import { migrateMemberHabitSchema, PostgresMemberHabitStore } from '@/lib/member-habit-store';
 import { postgresTextArrayLiteral } from '@/lib/postgres-text-array';
 
 const databaseUrl = process.env['DATABASE_URL'];
@@ -139,6 +140,102 @@ VALUES ($1, 'verified', false, false, $2)`,
       );
       expect(admitted?.status).toBe('admitted');
     } finally {
+      await closeIfPossible(sql);
+    }
+  });
+});
+
+describe('member habit revision checks', () => {
+  test('a reused table gains char_length checks and a bad comment id is missing', async () => {
+    const { client, sql } = createBunSqlClient(databaseUrl);
+    const habitSql = {
+      async query(text: string, params?: unknown[]) {
+        const rows = await client.query<Record<string, unknown>>(text, params);
+        return { rows };
+      },
+    };
+    const accountId = crypto.randomUUID();
+    const habitId = crypto.randomUUID();
+    let ready = false;
+    try {
+      await migrateAuthSchema(client);
+      await migrateMemberHabitSchema(habitSql);
+      await migrateMemberHabitSchema(habitSql);
+      ready = true;
+      const defs = await client.query<{ def: string }>(
+        `SELECT pg_get_constraintdef(oid) AS def
+         FROM pg_constraint
+         WHERE conrelid = 'member_habit_revision'::regclass AND contype = 'c'`,
+      );
+      const text = defs.map((row) => row.def).join('\n');
+      expect(text).toContain('char_length(name)');
+      expect(text).toContain('char_length(description)');
+
+      await client.execute(
+        `INSERT INTO account (id, role, lightning_address_verified, forum_laws_dismissed, created_at)
+VALUES ($1, 'basis', false, false, $2)`,
+        [accountId, new Date()],
+      );
+      const store = new PostgresMemberHabitStore(habitSql, {
+        get: async () => null,
+        set: async () => {
+          return;
+        },
+      });
+      await store.add({
+        id: habitId,
+        accountId,
+        ownerName: 'Owner',
+        role: 'basis',
+        name: 'Walk',
+        description: '',
+        notes: '',
+        cadence: 'daily',
+        timeZone: 'Asia/Manila',
+        firstPeriod: '2026-10-01',
+        lastPeriod: null,
+      });
+      await client.execute(
+        `INSERT INTO member_habit_revision (habit_id, period, name, description)
+VALUES ($1, '2026-10-02', $2, 'ok')`,
+        [habitId, 'a'.repeat(80)],
+      );
+
+      let tooLongName: unknown;
+      try {
+        await client.execute(
+          `INSERT INTO member_habit_revision (habit_id, period, name, description)
+VALUES ($1, '2026-10-03', $2, 'ok')`,
+          [habitId, 'a'.repeat(81)],
+        );
+      } catch (error) {
+        tooLongName = error;
+      }
+      expect(sqlState(tooLongName)).toBe('23514');
+
+      let tooLongDescription: unknown;
+      try {
+        await client.execute(
+          `INSERT INTO member_habit_revision (habit_id, period, name, description)
+VALUES ($1, '2026-10-04', 'ok', $2)`,
+          [habitId, 'b'.repeat(2001)],
+        );
+      } catch (error) {
+        tooLongDescription = error;
+      }
+      expect(sqlState(tooLongDescription)).toBe('23514');
+
+      expect(await store.findComment('nope')).toBeNull();
+      expect(await store.deleteComment('nope')).toBe(false);
+      expect(await store.findComment(crypto.randomUUID())).toBeNull();
+    } finally {
+      if (ready) {
+        await client.execute(`DELETE FROM member_habit_revision WHERE habit_id = $1`, [habitId]);
+        await client.execute(`DELETE FROM member_habit_log WHERE habit_id = $1`, [habitId]);
+        await client.execute(`DELETE FROM member_habit_comment WHERE habit_id = $1`, [habitId]);
+        await client.execute(`DELETE FROM member_habit WHERE id = $1`, [habitId]);
+        await client.execute(`DELETE FROM account WHERE id = $1`, [accountId]);
+      }
       await closeIfPossible(sql);
     }
   });

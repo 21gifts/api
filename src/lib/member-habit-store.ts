@@ -1,3 +1,4 @@
+import { sqlState } from '@/lib/auth/sql';
 import { comparePeriod, dayKey, nextPeriod, weeklyRatableThrough } from '@/lib/member-habit';
 
 /**
@@ -123,7 +124,10 @@ export interface MemberHabitStore {
 }
 
 /**
- * Idempotent `CREATE TABLE IF NOT EXISTS` statements for the member-habit tables.
+ * Idempotent member-habit schema statements.
+ *
+ * The first four create the tables. The last adds the revision length checks
+ * when a table created before those checks is still missing them.
  */
 export const MEMBER_HABIT_SCHEMA_SQL: readonly string[] = [
   `CREATE TABLE IF NOT EXISTS member_habit (
@@ -142,8 +146,8 @@ export const MEMBER_HABIT_SCHEMA_SQL: readonly string[] = [
   `CREATE TABLE IF NOT EXISTS member_habit_revision (
   habit_id uuid NOT NULL REFERENCES member_habit (id),
   period text NOT NULL,
-  name text NOT NULL,
-  description text NOT NULL,
+  name text NOT NULL CHECK (char_length(name) BETWEEN 1 AND 80),
+  description text NOT NULL CHECK (char_length(description) <= 2000),
   PRIMARY KEY (habit_id, period)
 );`,
   `CREATE TABLE IF NOT EXISTS member_habit_log (
@@ -162,6 +166,31 @@ export const MEMBER_HABIT_SCHEMA_SQL: readonly string[] = [
   created_at double precision NOT NULL,
   deleted_at double precision NULL
 );`,
+  `DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1
+    FROM pg_constraint
+    WHERE conrelid = 'member_habit_revision'::regclass
+      AND contype = 'c'
+      AND pg_get_constraintdef(oid) LIKE '%char_length(name)%'
+  ) THEN
+    ALTER TABLE member_habit_revision
+      ADD CONSTRAINT member_habit_revision_name_len
+      CHECK (char_length(name) BETWEEN 1 AND 80);
+  END IF;
+  IF NOT EXISTS (
+    SELECT 1
+    FROM pg_constraint
+    WHERE conrelid = 'member_habit_revision'::regclass
+      AND contype = 'c'
+      AND pg_get_constraintdef(oid) LIKE '%char_length(description)%'
+  ) THEN
+    ALTER TABLE member_habit_revision
+      ADD CONSTRAINT member_habit_revision_description_len
+      CHECK (char_length(description) <= 2000);
+  END IF;
+END $$;`,
 ];
 
 /**
@@ -756,12 +785,20 @@ export class PostgresMemberHabitStore implements MemberHabitStore {
   }
 
   async findComment(id: string): Promise<MemberHabitComment | null> {
-    const result = await this.sql.query(
-      `SELECT id, habit_id, account_id, name, "text", week, created_at, deleted_at
-       FROM member_habit_comment
-       WHERE id = $1 AND deleted_at IS NULL`,
-      [id],
-    );
+    let result: { rows: Record<string, unknown>[] };
+    try {
+      result = await this.sql.query(
+        `SELECT id, habit_id, account_id, name, "text", week, created_at, deleted_at
+         FROM member_habit_comment
+         WHERE id = $1 AND deleted_at IS NULL`,
+        [id],
+      );
+    } catch (error) {
+      if (sqlState(error) === '22P02') {
+        return null;
+      }
+      throw error;
+    }
     const row = firstRow(result.rows);
     if (row === null) {
       return null;
@@ -788,10 +825,17 @@ export class PostgresMemberHabitStore implements MemberHabitStore {
   }
 
   async deleteComment(id: string): Promise<boolean> {
-    const result = await this.sql.query(
-      `SELECT deleted_at FROM member_habit_comment WHERE id = $1`,
-      [id],
-    );
+    let result: { rows: Record<string, unknown>[] };
+    try {
+      result = await this.sql.query(`SELECT deleted_at FROM member_habit_comment WHERE id = $1`, [
+        id,
+      ]);
+    } catch (error) {
+      if (sqlState(error) === '22P02') {
+        return false;
+      }
+      throw error;
+    }
     const row = firstRow(result.rows);
     if (row === null) {
       return false;

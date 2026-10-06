@@ -330,7 +330,7 @@ describe('memberHabitRoutes', () => {
     const store = new InMemoryMemberHabitStore();
     await store.add(sampleHabit({ id: 'h-comment', accountId: BASIS.id, role: 'basis' }));
     await store.comment({
-      id: 'c-1',
+      id: '11111111-1111-4111-8111-111111111111',
       habitId: 'h-comment',
       accountId: BASIS.id,
       name: 'Basis',
@@ -341,7 +341,7 @@ describe('memberHabitRoutes', () => {
     });
     const res = await post(
       mount({ store, account: BASIS }),
-      { action: 'deleteComment', id: 'c-1' },
+      { action: 'deleteComment', id: '11111111-1111-4111-8111-111111111111' },
       AUTH,
     );
     expect(res.status).toBe(403);
@@ -352,7 +352,7 @@ describe('memberHabitRoutes', () => {
     const store = new InMemoryMemberHabitStore();
     await store.add(sampleHabit({ id: 'h-comment', accountId: BASIS.id, role: 'basis' }));
     await store.comment({
-      id: 'c-1',
+      id: '11111111-1111-4111-8111-111111111111',
       habitId: 'h-comment',
       accountId: BASIS.id,
       name: 'Basis',
@@ -363,7 +363,7 @@ describe('memberHabitRoutes', () => {
     });
     const res = await post(
       mount({ store, account: INITIATOR, now: () => SUNDAY_ZURICH }),
-      { action: 'deleteComment', id: 'c-1' },
+      { action: 'deleteComment', id: '11111111-1111-4111-8111-111111111111' },
       { ...AUTH, 'Time-Zone': 'Europe/Zurich' },
     );
     expect(res.status).toBe(403);
@@ -374,7 +374,7 @@ describe('memberHabitRoutes', () => {
     const store = new InMemoryMemberHabitStore();
     await store.add(sampleHabit({ id: 'h-comment', accountId: BASIS.id, role: 'basis' }));
     await store.comment({
-      id: 'c-1',
+      id: '11111111-1111-4111-8111-111111111111',
       habitId: 'h-comment',
       accountId: BASIS.id,
       name: 'Basis',
@@ -385,7 +385,7 @@ describe('memberHabitRoutes', () => {
     });
     const res = await post(
       mount({ store, account: INITIATOR }),
-      { action: 'deleteComment', id: 'c-1' },
+      { action: 'deleteComment', id: '11111111-1111-4111-8111-111111111111' },
       AUTH,
     );
     expect(res.status).toBe(200);
@@ -396,7 +396,7 @@ describe('memberHabitRoutes', () => {
     const store = new InMemoryMemberHabitStore();
     await store.add(sampleHabit({ id: 'h-comment', accountId: BASIS.id, role: 'basis' }));
     await store.comment({
-      id: 'c-own',
+      id: '22222222-2222-4222-8222-222222222222',
       habitId: 'h-comment',
       accountId: BASIS.id,
       name: 'Basis',
@@ -407,7 +407,7 @@ describe('memberHabitRoutes', () => {
     });
     const res = await post(
       mount({ store, account: BASIS }),
-      { action: 'invoice', commentId: 'c-own', amountSats: 1 },
+      { action: 'invoice', commentId: '22222222-2222-4222-8222-222222222222', amountSats: 1 },
       AUTH,
     );
     expect(res.status).toBe(400);
@@ -418,7 +418,7 @@ describe('memberHabitRoutes', () => {
     const store = new InMemoryMemberHabitStore();
     await store.add(sampleHabit({ id: 'h-comment', accountId: ALICE.id, role: 'basis' }));
     await store.comment({
-      id: 'c-alice',
+      id: '33333333-3333-4333-8333-333333333333',
       habitId: 'h-comment',
       accountId: ALICE.id,
       name: 'Alice',
@@ -433,7 +433,7 @@ describe('memberHabitRoutes', () => {
         account: BASIS,
         accounts: { [ALICE.id]: { ...ALICE, lightningAddress: null } },
       }),
-      { action: 'invoice', commentId: 'c-alice', amountSats: 1 },
+      { action: 'invoice', commentId: '33333333-3333-4333-8333-333333333333', amountSats: 1 },
       AUTH,
     );
     expect(res.status).toBe(409);
@@ -446,7 +446,7 @@ describe('memberHabitRoutes', () => {
     const store = new InMemoryMemberHabitStore();
     await store.add(sampleHabit({ id: 'h-comment', accountId: ALICE.id, role: 'basis' }));
     await store.comment({
-      id: 'c-alice',
+      id: '33333333-3333-4333-8333-333333333333',
       habitId: 'h-comment',
       accountId: ALICE.id,
       name: 'Alice',
@@ -462,7 +462,7 @@ describe('memberHabitRoutes', () => {
         accounts: { [ALICE.id]: ALICE },
         fetchImpl: throwingFetch,
       }),
-      { action: 'invoice', commentId: 'c-alice', amountSats: 1 },
+      { action: 'invoice', commentId: '33333333-3333-4333-8333-333333333333', amountSats: 1 },
       AUTH,
     );
     expect(res.status).toBe(502);
@@ -473,7 +473,7 @@ describe('memberHabitRoutes', () => {
     const store = new InMemoryMemberHabitStore();
     await store.add(sampleHabit({ id: 'h-comment', accountId: ALICE.id, role: 'basis' }));
     await store.comment({
-      id: 'c-alice',
+      id: '33333333-3333-4333-8333-333333333333',
       habitId: 'h-comment',
       accountId: ALICE.id,
       name: 'Alice',
@@ -489,7 +489,7 @@ describe('memberHabitRoutes', () => {
         accounts: { [ALICE.id]: ALICE },
         fetchImpl: successFetch,
       }),
-      { action: 'invoice', commentId: 'c-alice', amountSats: 1 },
+      { action: 'invoice', commentId: '33333333-3333-4333-8333-333333333333', amountSats: 1 },
       AUTH,
     );
     expect(res.status).toBe(200);
@@ -500,7 +500,7 @@ describe('memberHabitRoutes', () => {
     const store = new InMemoryMemberHabitStore();
     await store.add(sampleHabit({ id: 'h-comment', accountId: ALICE.id, role: 'basis' }));
     await store.comment({
-      id: 'c-alice',
+      id: '33333333-3333-4333-8333-333333333333',
       habitId: 'h-comment',
       accountId: ALICE.id,
       name: 'Alice',
@@ -517,7 +517,7 @@ describe('memberHabitRoutes', () => {
         fetchImpl: successFetch,
         now: () => SUNDAY_ZURICH,
       }),
-      { action: 'invoice', commentId: 'c-alice', amountSats: 0 },
+      { action: 'invoice', commentId: '33333333-3333-4333-8333-333333333333', amountSats: 0 },
       { ...AUTH, 'Time-Zone': 'Europe/Zurich' },
     );
     expect(res.status).toBe(403);
@@ -528,7 +528,7 @@ describe('memberHabitRoutes', () => {
     const store = new InMemoryMemberHabitStore();
     await store.add(sampleHabit({ id: 'h-comment', accountId: ALICE.id, role: 'basis' }));
     await store.comment({
-      id: 'c-alice',
+      id: '33333333-3333-4333-8333-333333333333',
       habitId: 'h-comment',
       accountId: ALICE.id,
       name: 'Alice',
@@ -545,7 +545,7 @@ describe('memberHabitRoutes', () => {
         fetchImpl: successFetch,
         now: () => SUNDAY_ZURICH,
       }),
-      { action: 'invoice', commentId: 'c-alice', amountSats: 1 },
+      { action: 'invoice', commentId: '33333333-3333-4333-8333-333333333333', amountSats: 1 },
       AUTH,
     );
     expect(res.status).toBe(200);
@@ -556,7 +556,7 @@ describe('memberHabitRoutes', () => {
     const store = new InMemoryMemberHabitStore();
     await store.add(sampleHabit({ id: 'h-comment', accountId: ALICE.id, role: 'basis' }));
     await store.comment({
-      id: 'c-alice',
+      id: '33333333-3333-4333-8333-333333333333',
       habitId: 'h-comment',
       accountId: ALICE.id,
       name: 'Alice',
@@ -573,7 +573,7 @@ describe('memberHabitRoutes', () => {
         fetchImpl: successFetch,
         now: () => SUNDAY_ZURICH,
       }),
-      { action: 'invoice', commentId: 'c-alice', amountSats: 1 },
+      { action: 'invoice', commentId: '33333333-3333-4333-8333-333333333333', amountSats: 1 },
       { ...AUTH, 'Time-Zone': 'Not/AZone' },
     );
     expect(res.status).toBe(200);
@@ -906,7 +906,7 @@ describe('memberHabitRoutes', () => {
       const store = new InMemoryMemberHabitStore();
       await store.add(sampleHabit({ id: 'h', accountId: 'owner', role: 'basis' }));
       await store.comment({
-        id: 'c-1',
+        id: '11111111-1111-4111-8111-111111111111',
         habitId: 'h',
         accountId: 'owner',
         name: 'Owner',
@@ -917,7 +917,7 @@ describe('memberHabitRoutes', () => {
       });
       return post(
         mount({ store, account: { id: 'staff', role, name: 'Staff' } }),
-        { action: 'deleteComment', id: 'c-1' },
+        { action: 'deleteComment', id: '11111111-1111-4111-8111-111111111111' },
         AUTH,
       );
     }
@@ -932,9 +932,27 @@ describe('memberHabitRoutes', () => {
       AUTH,
     );
     expect(missing.status).toBe(404);
+    const unknownId = await post(
+      mount({ store, account: INITIATOR }),
+      { action: 'deleteComment', id: '55555555-5555-4555-8555-555555555555' },
+      AUTH,
+    );
+    expect(unknownId.status).toBe(404);
+    expect(await unknownId.json()).toEqual({ error: 'Not found' });
+    const malformed = new InMemoryMemberHabitStore();
+    malformed.findComment = async () => {
+      throw new Error('uuid syntax');
+    };
+    const refused = await post(
+      mount({ store: malformed, account: INITIATOR }),
+      { action: 'deleteComment', id: 'nope' },
+      AUTH,
+    );
+    expect(refused.status).toBe(404);
+    expect(await refused.json()).toEqual({ error: 'Not found' });
     await store.add(sampleHabit({ id: 'h', accountId: 'owner', role: 'basis' }));
     await store.comment({
-      id: 'c-stuck',
+      id: '44444444-4444-4444-8444-444444444444',
       habitId: 'h',
       accountId: 'owner',
       name: 'Owner',
@@ -946,7 +964,7 @@ describe('memberHabitRoutes', () => {
     store.deleteComment = async () => false;
     const stuck = await post(
       mount({ store, account: INITIATOR }),
-      { action: 'deleteComment', id: 'c-stuck' },
+      { action: 'deleteComment', id: '44444444-4444-4444-8444-444444444444' },
       AUTH,
     );
     expect(stuck.status).toBe(404);
@@ -956,7 +974,7 @@ describe('memberHabitRoutes', () => {
     const store = new InMemoryMemberHabitStore();
     await store.add(sampleHabit({ id: 'h', accountId: ALICE.id, role: 'basis' }));
     await store.comment({
-      id: 'c-alice',
+      id: '33333333-3333-4333-8333-333333333333',
       habitId: 'h',
       accountId: ALICE.id,
       name: 'Alice',
@@ -971,20 +989,28 @@ describe('memberHabitRoutes', () => {
       accounts: { [ALICE.id]: { ...ALICE, lightningAddress: '' } },
       fetchImpl: successFetch,
     });
-    const zero = await post(app, { action: 'invoice', commentId: 'c-alice', amountSats: 0 }, AUTH);
+    const zero = await post(
+      app,
+      { action: 'invoice', commentId: '33333333-3333-4333-8333-333333333333', amountSats: 0 },
+      AUTH,
+    );
     expect(zero.status).toBe(400);
     expect(await zero.json()).toEqual({
       error: 'Expected a JSON body with an integer "amountSats"',
     });
     const fraction = await post(
       app,
-      { action: 'invoice', commentId: 'c-alice', amountSats: 1.5 },
+      { action: 'invoice', commentId: '33333333-3333-4333-8333-333333333333', amountSats: 1.5 },
       AUTH,
     );
     expect(fraction.status).toBe(400);
     const huge = await post(
       app,
-      { action: 'invoice', commentId: 'c-alice', amountSats: 10_000_001 },
+      {
+        action: 'invoice',
+        commentId: '33333333-3333-4333-8333-333333333333',
+        amountSats: 10_000_001,
+      },
       AUTH,
     );
     expect(huge.status).toBe(400);
@@ -993,9 +1019,27 @@ describe('memberHabitRoutes', () => {
     });
     const missing = await post(app, { action: 'invoice', commentId: 'nope', amountSats: 1 }, AUTH);
     expect(missing.status).toBe(404);
+    const unknownComment = await post(
+      app,
+      { action: 'invoice', commentId: '55555555-5555-4555-8555-555555555555', amountSats: 1 },
+      AUTH,
+    );
+    expect(unknownComment.status).toBe(404);
+    expect(await unknownComment.json()).toEqual({ error: 'Not found' });
+    const malformed = new InMemoryMemberHabitStore();
+    malformed.findComment = async () => {
+      throw new Error('uuid syntax');
+    };
+    const refused = await post(
+      mount({ store: malformed, account: BASIS, fetchImpl: successFetch }),
+      { action: 'invoice', commentId: 'nope', amountSats: 1 },
+      AUTH,
+    );
+    expect(refused.status).toBe(404);
+    expect(await refused.json()).toEqual({ error: 'Not found' });
     const emptyWallet = await post(
       app,
-      { action: 'invoice', commentId: 'c-alice', amountSats: 1 },
+      { action: 'invoice', commentId: '33333333-3333-4333-8333-333333333333', amountSats: 1 },
       AUTH,
     );
     expect(emptyWallet.status).toBe(409);
@@ -1004,7 +1048,7 @@ describe('memberHabitRoutes', () => {
     });
     const stillNoWallet = await post(
       app,
-      { action: 'invoice', commentId: 'c-alice', amountSats: 1 },
+      { action: 'invoice', commentId: '33333333-3333-4333-8333-333333333333', amountSats: 1 },
       AUTH,
     );
     expect(stillNoWallet.status).toBe(409);
@@ -1018,7 +1062,11 @@ describe('memberHabitRoutes', () => {
         accounts: { [ALICE.id]: { ...ALICE, lightningAddress: '' } },
         fetchImpl: successFetch,
       }),
-      { action: 'invoice', commentId: 'c-alice', amountSats: 10_000_000 },
+      {
+        action: 'invoice',
+        commentId: '33333333-3333-4333-8333-333333333333',
+        amountSats: 10_000_000,
+      },
       AUTH,
     );
     expect(atCeiling.status).toBe(409);
@@ -1031,13 +1079,13 @@ describe('memberHabitRoutes', () => {
     });
     const first = await post(
       paying,
-      { action: 'invoice', commentId: 'c-alice', amountSats: 1 },
+      { action: 'invoice', commentId: '33333333-3333-4333-8333-333333333333', amountSats: 1 },
       AUTH,
     );
     expect(first.status).toBe(200);
     const second = await post(
       paying,
-      { action: 'invoice', commentId: 'c-alice', amountSats: 1 },
+      { action: 'invoice', commentId: '33333333-3333-4333-8333-333333333333', amountSats: 1 },
       AUTH,
     );
     expect(second.status).toBe(429);
@@ -1051,7 +1099,7 @@ describe('memberHabitRoutes', () => {
         accounts: { [ALICE.id]: ALICE },
         fetchImpl: failFetch,
       }),
-      { action: 'invoice', commentId: 'c-alice', amountSats: 1 },
+      { action: 'invoice', commentId: '33333333-3333-4333-8333-333333333333', amountSats: 1 },
       AUTH,
     );
     expect(failed.status).toBe(502);
@@ -1063,7 +1111,7 @@ describe('memberHabitRoutes', () => {
         accounts: { [ALICE.id]: ALICE },
         fetchImpl: successFetch,
       }),
-      { action: 'invoice', commentId: 'c-alice', amountSats: '21' },
+      { action: 'invoice', commentId: '33333333-3333-4333-8333-333333333333', amountSats: '21' },
       AUTH,
     );
     expect(textAmount.status).toBe(400);
@@ -1077,7 +1125,7 @@ describe('memberHabitRoutes', () => {
         accounts: { [ALICE.id]: ALICE },
         fetchImpl: successFetch,
       }),
-      { action: 'invoice', commentId: 'c-alice' },
+      { action: 'invoice', commentId: '33333333-3333-4333-8333-333333333333' },
       AUTH,
     );
     expect(missingAmount.status).toBe(400);

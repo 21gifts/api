@@ -3319,7 +3319,7 @@ Builds the operator-only external-pubkey inspection route.
 
 ## Function: memberHabitRoutes
 
-- **Purpose:** Hono routes `GET /habits` and `POST /habits` for member habits, comments, and a Lightning invoice. `invoice` uses the same Sunday rest as `POST /messages/:id/invoice`: 403 `{ error: 'SUNDAY_REST' }` when `Time-Zone` names a Sunday, before the amount check. A missing, blank, or invalid zone does not refuse. Success is `{ pr, amountSats }`. A missing, non-numeric, non-integer, or over-cap `amountSats` is 400 `{ error: 'Expected a JSON body with an integer "amountSats"' }` (ceiling 10_000_000). The limiter answer is 429 `{ error: 'Too many payments' }`. A failed mint is 502 `{ error: 'Lightning Address could not be resolved' }`. Does not pay. Add, edit, archive, and log stay open on Sunday.
+- **Purpose:** Hono routes `GET /habits` and `POST /habits` for member habits, comments, and a Lightning invoice. `invoice` uses the same Sunday rest as `POST /messages/:id/invoice`: 403 `{ error: 'SUNDAY_REST' }` when `Time-Zone` names a Sunday, before the amount check. A missing, blank, or invalid zone does not refuse. Success is `{ pr, amountSats }`. A missing, non-numeric, non-integer, or over-cap `amountSats` is 400 `{ error: 'Expected a JSON body with an integer "amountSats"' }` (ceiling 10_000_000). The limiter answer is 429 `{ error: 'Too many payments' }`. A failed mint is 502 `{ error: 'Lightning Address could not be resolved' }`. A comment id that is not a UUID is 404 `{ error: 'Not found' }` on `deleteComment` and `invoice`, not 503. Does not pay. Add, edit, archive, and log stay open on Sunday.
 - **Inputs:** `{ store, authStore, now, fetchImpl }`.
 - **Returns / side effects:** Hono app. Writes through `MemberHabitStore`. Logs only `{ event: 'habits.failed', ts }` on failure.
 - **Used by:** `createApp`.
@@ -3382,9 +3382,9 @@ Builds the operator-only external-pubkey inspection route.
 
 ## Function: migrateMemberHabitSchema
 
-- **Purpose:** Run the idempotent `CREATE TABLE IF NOT EXISTS` statements for `member_habit`, `member_habit_revision`, `member_habit_log`, and `member_habit_comment`.
+- **Purpose:** Run the idempotent statements for `member_habit`, `member_habit_revision`, `member_habit_log`, and `member_habit_comment`. Revision `name` is `char_length` 1–80 and `description` is at most 2000, the same limits as the habit row. A table created before those checks receives them on the next run.
 - **Inputs:** A SQL client whose `query` returns `{ rows }`.
-- **Returns / side effects:** Resolves when the four statements have run. Safe to call more than once.
+- **Returns / side effects:** Resolves when the five statements have run. Safe to call more than once.
 - **Used by:** `openBootStores` when `DATABASE_URL` is set.
 
 ## Function: InMemoryMemberHabitStore
@@ -3398,5 +3398,5 @@ Builds the operator-only external-pubkey inspection route.
 
 - **Purpose:** `MemberHabitStore` against the `member_habit*` tables. Lightning addresses go through the injected address port, not a habit column.
 - **Inputs:** A SQL client whose `query` returns `{ rows }`, and a Lightning address port.
-- **Returns / side effects:** Same port as the in-memory store, persisted in Postgres. Adding a habit inserts the row and its first revision in one statement. Editing the wording updates the owned row and upserts that period's revision in one statement, matching the habit id and the owner together. A missing or unowned habit writes nothing. A failed statement leaves both unchanged.
+- **Returns / side effects:** Same port as the in-memory store, persisted in Postgres. Adding a habit inserts the row and its first revision in one statement. Editing the wording updates the owned row and upserts that period's revision in one statement, matching the habit id and the owner together. A missing or unowned habit writes nothing. A failed statement leaves both unchanged. A comment id Postgres rejects as uuid text is missing, not an error. Revision `name` and `description` use the same `char_length` checks as the habit row.
 - **Used by:** `openBootStores` when `DATABASE_URL` is set.
