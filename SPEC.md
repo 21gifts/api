@@ -5467,12 +5467,17 @@ Success is the same gift body as `POST /pay/:username/invoice`:
 { "pr": "lnbc...", "amountSats": 21 }
 ```
 
+The `pr` is returned only when it decodes to exactly `amountSats * 1000`
+millisatoshis, the same rule as `POST /pay/:username/invoice`.
+
 Donating to the caller's own comment is **400**
 `{ "error": "Cannot donate to yourself" }`. No Lightning Address on the
 author is **409** `{ "error": "The author's wallet cannot receive this Bitcoin payment" }`. The existing invoice
 limiter answers **429** `{ "error": "Too many payments" }`. A failed
-mint is **502** `{ "error": "Lightning Address could not be resolved" }`,
-the same failure as `POST /pay/:username/invoice`.
+mint, or a BOLT11 that is missing, not a safe integer amount, or not the
+requested amount, is **502**
+`{ "error": "Lightning Address could not be resolved" }`, the same failure
+as `POST /pay/:username/invoice`.
 
 Missing bearer → **401** `{ "error": "Unauthorized" }`. A body that is
 not one of the actions → **400** `{ "error": "Invalid body" }`. Unknown

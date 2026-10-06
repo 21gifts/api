@@ -6,6 +6,7 @@ import { roleAtLeast } from '@/lib/auth/roles';
 import type { AccountRole } from '@/lib/auth/store';
 import { InvoiceRateLimiter } from '@/lib/nostr/rate-limit';
 import { GIFT_INVOICE_MAX_MSAT } from '@/lib/config';
+import { decodeBolt11 } from '@/lib/bolt11';
 import { requestGiftInvoice } from '@/lib/gift-invoice';
 import type { FetchFn } from '@/lib/lnurlp';
 import {
@@ -481,11 +482,12 @@ export function memberHabitRoutes(deps: {
         return c.json({ error: 'Too many payments' }, 429);
       }
       const address = author.lightningAddress;
+      const amountMsat = amountSats * 1000;
       let invoice: { ok: true; pr: string } | { ok: false };
       try {
         invoice = await requestGiftInvoice({
           address,
-          amountMsat: amountSats * 1000,
+          amountMsat,
           fetchImpl: deps.fetchImpl,
         });
         /* v8 ignore next 3 -- requestGiftInvoice returns ok:false instead of throwing */
@@ -493,6 +495,10 @@ export function memberHabitRoutes(deps: {
         return c.json({ error: 'Lightning Address could not be resolved' }, 502);
       }
       if (!invoice.ok) {
+        return c.json({ error: 'Lightning Address could not be resolved' }, 502);
+      }
+      const decoded = decodeBolt11(invoice.pr);
+      if (decoded === null || decoded.amountMsat !== amountMsat) {
         return c.json({ error: 'Lightning Address could not be resolved' }, 502);
       }
       return c.json({ pr: invoice.pr, amountSats }, 200);

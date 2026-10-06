@@ -38,18 +38,27 @@ const ALICE: AccountView = {
 
 const unusedFetch: FetchFn = async () => new Response(null, { status: 500 });
 
-const successFetch: FetchFn = async (input) => {
-  const url = String(input);
-  if (url.includes('/.well-known/lnurlp/')) {
-    return Response.json({
-      callback: 'https://wallet.example/callback',
-      minSendable: 1000,
-      maxSendable: 100000000000,
-      metadata: '[]',
-    });
-  }
-  return Response.json({ pr: 'lnbc1' });
-};
+/** BOLT11 spec example: 2500 uBTC = 250_000 sats = 250_000_000 msat. */
+const MATCHING_PR =
+  'lnbc2500u1pvjluezpp5qqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqypqdq5xysxxatsyp3k7enxv4jsxqzpuaztrnwngzn3kdzw5hydlzf03qdgm2hdq27cqv3agm2awhz5se903vruatfhq77w3ls4evs3ch9zw97j25emudupq63nyw24cg27h2rspfj9srp';
+const MATCHING_SATS = 250_000;
+
+function invoiceFetch(pr: string): FetchFn {
+  return async (input) => {
+    const url = String(input);
+    if (url.includes('/.well-known/lnurlp/')) {
+      return Response.json({
+        callback: 'https://wallet.example/callback',
+        minSendable: 1000,
+        maxSendable: 100000000000,
+        metadata: '[]',
+      });
+    }
+    return Response.json({ pr });
+  };
+}
+
+const successFetch = invoiceFetch(MATCHING_PR);
 
 const throwingFetch: FetchFn = async () => {
   throw new Error('network');
@@ -489,11 +498,69 @@ describe('memberHabitRoutes', () => {
         accounts: { [ALICE.id]: ALICE },
         fetchImpl: successFetch,
       }),
-      { action: 'invoice', commentId: '33333333-3333-4333-8333-333333333333', amountSats: 1 },
+      {
+        action: 'invoice',
+        commentId: '33333333-3333-4333-8333-333333333333',
+        amountSats: MATCHING_SATS,
+      },
       AUTH,
     );
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ pr: 'lnbc1', amountSats: 1 });
+    expect(await res.json()).toEqual({ pr: MATCHING_PR, amountSats: MATCHING_SATS });
+  });
+
+  it('invoice when the BOLT11 does not decode is 502', async () => {
+    const store = new InMemoryMemberHabitStore();
+    await store.add(sampleHabit({ id: 'h-comment', accountId: ALICE.id, role: 'basis' }));
+    await store.comment({
+      id: '33333333-3333-4333-8333-333333333333',
+      habitId: 'h-comment',
+      accountId: ALICE.id,
+      name: 'Alice',
+      text: 'nice',
+      week: '2026-09-28',
+      createdAt: NOW_OPEN,
+      deletedAt: null,
+    });
+    const res = await post(
+      mount({
+        store,
+        account: BASIS,
+        accounts: { [ALICE.id]: ALICE },
+        fetchImpl: invoiceFetch('not-an-invoice'),
+      }),
+      { action: 'invoice', commentId: '33333333-3333-4333-8333-333333333333', amountSats: 1 },
+      AUTH,
+    );
+    expect(res.status).toBe(502);
+    expect(await res.json()).toEqual({ error: 'Lightning Address could not be resolved' });
+  });
+
+  it('invoice when the BOLT11 amount is not the requested amount is 502', async () => {
+    const store = new InMemoryMemberHabitStore();
+    await store.add(sampleHabit({ id: 'h-comment', accountId: ALICE.id, role: 'basis' }));
+    await store.comment({
+      id: '33333333-3333-4333-8333-333333333333',
+      habitId: 'h-comment',
+      accountId: ALICE.id,
+      name: 'Alice',
+      text: 'nice',
+      week: '2026-09-28',
+      createdAt: NOW_OPEN,
+      deletedAt: null,
+    });
+    const res = await post(
+      mount({
+        store,
+        account: BASIS,
+        accounts: { [ALICE.id]: ALICE },
+        fetchImpl: successFetch,
+      }),
+      { action: 'invoice', commentId: '33333333-3333-4333-8333-333333333333', amountSats: 1 },
+      AUTH,
+    );
+    expect(res.status).toBe(502);
+    expect(await res.json()).toEqual({ error: 'Lightning Address could not be resolved' });
   });
 
   it('invoice on Sunday in Europe/Zurich is 403 SUNDAY_REST before the amount check', async () => {
@@ -545,11 +612,15 @@ describe('memberHabitRoutes', () => {
         fetchImpl: successFetch,
         now: () => SUNDAY_ZURICH,
       }),
-      { action: 'invoice', commentId: '33333333-3333-4333-8333-333333333333', amountSats: 1 },
+      {
+        action: 'invoice',
+        commentId: '33333333-3333-4333-8333-333333333333',
+        amountSats: MATCHING_SATS,
+      },
       AUTH,
     );
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ pr: 'lnbc1', amountSats: 1 });
+    expect(await res.json()).toEqual({ pr: MATCHING_PR, amountSats: MATCHING_SATS });
   });
 
   it('invoice on Sunday with an invalid Time-Zone is 200', async () => {
@@ -573,11 +644,15 @@ describe('memberHabitRoutes', () => {
         fetchImpl: successFetch,
         now: () => SUNDAY_ZURICH,
       }),
-      { action: 'invoice', commentId: '33333333-3333-4333-8333-333333333333', amountSats: 1 },
+      {
+        action: 'invoice',
+        commentId: '33333333-3333-4333-8333-333333333333',
+        amountSats: MATCHING_SATS,
+      },
       { ...AUTH, 'Time-Zone': 'Not/AZone' },
     );
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ pr: 'lnbc1', amountSats: 1 });
+    expect(await res.json()).toEqual({ pr: MATCHING_PR, amountSats: MATCHING_SATS });
   });
 
   it('a store whose listPublic throws returns 503 and the body error Habits are unavailable', async () => {
@@ -1079,7 +1154,11 @@ describe('memberHabitRoutes', () => {
     });
     const first = await post(
       paying,
-      { action: 'invoice', commentId: '33333333-3333-4333-8333-333333333333', amountSats: 1 },
+      {
+        action: 'invoice',
+        commentId: '33333333-3333-4333-8333-333333333333',
+        amountSats: MATCHING_SATS,
+      },
       AUTH,
     );
     expect(first.status).toBe(200);
