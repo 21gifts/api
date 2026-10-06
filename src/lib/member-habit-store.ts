@@ -640,24 +640,20 @@ export class PostgresMemberHabitStore implements MemberHabitStore {
     patch: { name: string; description: string; notes: string },
     atPeriod: string,
   ): Promise<'ok' | 'missing'> {
-    const habit = await this.ownedHabit(id, accountId);
-    if (habit === null) {
-      return 'missing';
-    }
     const written = await this.sql.query(
       `WITH updated AS (
          UPDATE member_habit
          SET name = $1, description = $2, notes = $3
-         WHERE id = $4
+         WHERE id = $4 AND account_id = $5
          RETURNING id
        )
        INSERT INTO member_habit_revision (habit_id, period, name, description)
-       SELECT id, $5, $1, $2 FROM updated
+       SELECT id, $6, $1, $2 FROM updated
        ON CONFLICT (habit_id, period) DO UPDATE SET
          name = EXCLUDED.name,
          description = EXCLUDED.description
        RETURNING habit_id`,
-      [patch.name, patch.description, patch.notes, id, atPeriod],
+      [patch.name, patch.description, patch.notes, id, accountId, atPeriod],
     );
     if (firstRow(written.rows) === null) {
       return 'missing';

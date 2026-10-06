@@ -3398,5 +3398,5 @@ Builds the operator-only external-pubkey inspection route.
 
 - **Purpose:** `MemberHabitStore` against the `member_habit*` tables. Lightning addresses go through the injected address port, not a habit column.
 - **Inputs:** A SQL client whose `query` returns `{ rows }`, and a Lightning address port.
-- **Returns / side effects:** Same port as the in-memory store, persisted in Postgres. Adding a habit inserts the row and its first revision in one statement. Editing the wording updates the row and upserts that period's revision in one statement. A failed statement leaves both unchanged.
+- **Returns / side effects:** Same port as the in-memory store, persisted in Postgres. Adding a habit inserts the row and its first revision in one statement. Editing the wording updates the owned row and upserts that period's revision in one statement, matching the habit id and the owner together. A missing or unowned habit writes nothing. A failed statement leaves both unchanged.
 - **Used by:** `openBootStores` when `DATABASE_URL` is set.
