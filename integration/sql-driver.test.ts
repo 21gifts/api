@@ -160,16 +160,51 @@ describe('member habit revision checks', () => {
     try {
       await migrateAuthSchema(client);
       await migrateMemberHabitSchema(habitSql);
-      await migrateMemberHabitSchema(habitSql);
       ready = true;
-      const defs = await client.query<{ def: string }>(
-        `SELECT pg_get_constraintdef(oid) AS def
-         FROM pg_constraint
-         WHERE conrelid = 'member_habit_revision'::regclass AND contype = 'c'`,
+      // A table created before the length checks has no char_length constraint.
+      // CREATE TABLE IF NOT EXISTS does not add one, so only the DO block can.
+      await client.execute(
+        `DO $$
+DECLARE
+  constraint_name text;
+BEGIN
+  FOR constraint_name IN
+    SELECT con.conname
+    FROM pg_constraint AS con
+    WHERE con.conrelid = 'member_habit_revision'::regclass
+      AND con.contype = 'c'
+      AND (
+        pg_get_constraintdef(con.oid) LIKE '%char_length(name)%'
+        OR pg_get_constraintdef(con.oid) LIKE '%char_length(description)%'
+      )
+  LOOP
+    EXECUTE format('ALTER TABLE member_habit_revision DROP CONSTRAINT %I', constraint_name);
+  END LOOP;
+END $$;`,
       );
-      const text = defs.map((row) => row.def).join('\n');
-      expect(text).toContain('char_length(name)');
-      expect(text).toContain('char_length(description)');
+      const revisionChecks = async (): Promise<{ name: string; def: string }[]> => {
+        return client.query<{ name: string; def: string }>(
+          `SELECT conname AS name, pg_get_constraintdef(oid) AS def
+           FROM pg_constraint
+           WHERE conrelid = 'member_habit_revision'::regclass AND contype = 'c'`,
+        );
+      };
+      const dropped = await revisionChecks();
+      expect(dropped.map((row) => row.def).join('\n')).not.toContain('char_length(');
+      await migrateMemberHabitSchema(habitSql);
+      const added = await revisionChecks();
+      expect(added.map((row) => row.name).sort()).toEqual([
+        'member_habit_revision_description_len',
+        'member_habit_revision_name_len',
+      ]);
+      expect(added.map((row) => row.def).join('\n')).toContain('char_length(name)');
+      expect(added.map((row) => row.def).join('\n')).toContain('char_length(description)');
+      await migrateMemberHabitSchema(habitSql);
+      const again = await revisionChecks();
+      expect(again.map((row) => row.name).sort()).toEqual([
+        'member_habit_revision_description_len',
+        'member_habit_revision_name_len',
+      ]);
 
       await client.execute(
         `INSERT INTO account (id, role, lightning_address_verified, forum_laws_dismissed, created_at)
