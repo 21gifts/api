@@ -1,5 +1,7 @@
 # Contributing to 21.gifts api
 
+[REVIEW.md](REVIEW.md) is binding for every change and for every review of a change. Read it and this file at the base revision of the pull request. A pull request that changes either file does not replace that base text for the rest of its diff. The review does not change files.
+
 ## Quick start
 
 ```bash
@@ -350,6 +352,7 @@ api/
 ├── FLOWS.md                  # Core UI journey sketch (CONCEPT next-step 7)
 ├── README.md
 ├── CONTRIBUTING.md
+├── REVIEW.md
 ├── SECURITY.md
 └── LICENSE
 ```
