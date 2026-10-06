@@ -240,7 +240,7 @@ validated kind:9735 is indexed, a payer gift-reply is inserted only when the
 paid row is top-level (`parentId` null) and is not the official platform
 profile note. A zap on a signed reply credits that
 reply and does not nest a gift-reply. Gift-only (empty text) replies are not published to Nostr. Unpaid
-posts and replies from `basis` (including the parent author) are **403** until
+replies, and text-only top-level posts after the first, from `basis` (including the parent author) are **403** until
 the author pays 1 sat to 21.gifts (`GET /messages/compose-target` then
 `POST /messages/:id/invoice` on the platform profile note). `verified` stays
 unpaid-write exempt. A member's first top-level post is free: while
