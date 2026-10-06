@@ -1897,17 +1897,17 @@
 
 ## Function: encodeSparkInvoice
 
-- **Purpose:** Serialise a Spark invoice: protobuf `SparkAddress { 1: identity_public_key (33 bytes), 2: spark_invoice_fields }` with no signature field, where `SparkInvoiceFields` is written in the canonical order `1: version = 1`, `2: id (16 bytes)`, `5: memo`, `4: SatsPayment { 1: amount }` (not field-number order), then bech32m with prefix `spark` and no length limit.
-- **Inputs:** `{ identityPublicKey (66 hex), id (16 bytes), memo, amountSats }`.
+- **Purpose:** Serialise a Spark invoice: protobuf `SparkAddress { 1: identity_public_key (33 bytes), 2: spark_invoice_fields }` with no signature field, where `SparkInvoiceFields` is written in the canonical order `1: version = 1`, `2: id (16 bytes)`, `5: memo` (left out when `memo` is omitted), `4: SatsPayment { 1: amount }` (not field-number order), then bech32m with prefix `spark` and no length limit.
+- **Inputs:** `{ identityPublicKey (66 hex), id (16 bytes), memo?, amountSats }`.
 - **Returns / side effects:** The `spark1…` string. Throws when the key is not 33 bytes or the id not 16 bytes, and `RangeError` when `amountSats` is negative or not a safe integer. No I/O.
-- **Used by:** `issueSparkInvoice`.
+- **Used by:** `issueSparkInvoice`, `payRoutes`.
 
 ## Function: uuidV7
 
 - **Purpose:** Build an RFC 9562 UUIDv7 as 16 bytes: 48-bit Unix milliseconds big-endian, version nibble 7, variant bits `10`, and the remaining bits from the given random bytes. Used as the Spark invoice id.
 - **Inputs:** Clock in epoch milliseconds and 10 random bytes.
 - **Returns / side effects:** 16 bytes. Throws `RangeError` when `nowMs` is not an integer. No I/O.
-- **Used by:** `issueSparkInvoice`.
+- **Used by:** `issueSparkInvoice`, `payRoutes`.
 
 ## Function: issueSparkInvoice
 
@@ -2958,7 +2958,7 @@
 
 - **Purpose:** Hono sub-app for the public pay link: `GET /:username` (name, username, minSats, maxSats, and charge) and `POST /:username/invoice` (one BOLT11 via `requestGiftInvoice`; rejects any other amount while a charge is open). `charge` is `null`, or `{ amountSats, expiresAt }` when an unexpired pending point-of-sale charge exists; then both sat bounds are that amount. Mounted at `/pay`. No auth and no extra CORS headers.
 - **Inputs:** `{ auth: AuthStore, fetchImpl: FetchFn, posStore: PosStore, now: () => number, lnurlServer?, freePayments?, randomBytes? }`. The first four are required; there is no default store and no default clock inside `payRoutes`. `createApp` passes the same `posStore` and `now` already used by `/.well-known` and `/pos`, the shared LNURL-pay fetch as `fetchImpl`, and `freePayments: true` when free in-app payments are on (the same condition that issues Spark invoices for gifts). `randomBytes` defaults to `crypto.getRandomValues`.
-- **Returns / side effects:** Hono app. The invoice response is `{ pr, amountSats, sparkInvoice }`. While a charge is open, the minted BOLT11's payment hash is recorded against it with the issue time taken before the mint, and with `freePayments` the charge's Spark invoice (`encodeSparkInvoice` to the shop's verified wallet key, the charge amount, memo `pos:<chargeId>`, id `uuidV7`) is issued once and returned again on later calls; otherwise `sparkInvoice` is `null`. Logs `pay.unknown`, `pay.unreachable`, `pay.failed`, `pay.invoice_failed`, `pay.invoice`, `pos.invoice.record_failed`, and `pos.spark_invoice.issue_failed` (a store failure never fails the BOLT11 response). Resolves the member with `receivingAddress`: a verified wallet (with `lnurlServer`) is resolved and invoiced through the LNURL server internally via `lnurlServerFetch`, never over the public URL; a member without a verified wallet is not found.
+- **Returns / side effects:** Hono app. The invoice response is `{ pr, amountSats, sparkInvoice }`. While a charge is open, the minted BOLT11's payment hash is recorded against it with the issue time taken before the mint, and with `freePayments` the charge's Spark invoice (`encodeSparkInvoice` to the shop's verified wallet key, the charge amount, memo `pos:<chargeId>`, id `uuidV7`) is issued once and returned again on later calls, and `comment` is ignored. Without an open charge and with `freePayments`, a Spark invoice for exactly the posted amount to the member's verified wallet key (id `uuidV7`) is minted after `pr` and not stored; its memo is the trimmed `comment` cut to the member's `commentAllowed` characters (missing is 0) and then to 120 UTF-8 bytes on a character boundary, and a blank, non-string, or not-allowed comment leaves the memo out. Without `freePayments` `sparkInvoice` is `null`. Logs `pay.unknown`, `pay.unreachable`, `pay.failed`, `pay.invoice_failed`, `pay.invoice`, `pos.invoice.record_failed`, and `pos.spark_invoice.issue_failed` (a store failure never fails the BOLT11 response). Resolves the member with `receivingAddress`: a verified wallet (with `lnurlServer`) is resolved and invoiced through the LNURL server internally via `lnurlServerFetch`, never over the public URL; a member without a verified wallet is not found.
 - **Used by:** `createApp`.
 
 ## Function: writeForumVideo

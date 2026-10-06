@@ -54,12 +54,17 @@ function createAccount(
   };
 }
 
-function metadataResponse(minSendable: number, maxSendable: number): Response {
+function metadataResponse(
+  minSendable: number,
+  maxSendable: number,
+  commentAllowed?: number,
+): Response {
   return new Response(
     JSON.stringify({
       callback: CALLBACK,
       minSendable,
       maxSendable,
+      ...(commentAllowed === undefined ? {} : { commentAllowed }),
     }),
     { status: 200, headers: { 'content-type': 'application/json' } },
   );
@@ -718,6 +723,7 @@ describe('till payments on POST /pay/:username/invoice', () => {
     posStore: PosStore;
     freePayments?: boolean;
     randomBytes?: (length: number) => Uint8Array;
+    commentAllowed?: number;
   }): Promise<Hono> {
     const auth = new InMemoryAuthStore();
     await auth.createAccount(createAccount());
@@ -725,7 +731,7 @@ describe('till payments on POST /pay/:username/invoice', () => {
     await auth.markSparkPubkeyVerified(ADA_ID, WALLET_PUBKEY, 'ada', 2);
     const fetchImpl = async (input: string | URL | Request): Promise<Response> =>
       String(input).includes('/.well-known/lnurlp/')
-        ? metadataResponse(1000, WIDE_MAX_SENDABLE)
+        ? metadataResponse(1000, WIDE_MAX_SENDABLE, opts.commentAllowed)
         : invoiceResponse();
     return new Hono().route(
       '/pay',
@@ -741,13 +747,25 @@ describe('till payments on POST /pay/:username/invoice', () => {
     );
   }
 
-  async function mint(app: Hono): Promise<Response> {
+  async function mint(app: Hono, extra: Record<string, unknown> = {}): Promise<Response> {
     return app.request('/pay/ada/invoice', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ amountSats: PR_SATS }),
+      body: JSON.stringify({ amountSats: PR_SATS, ...extra }),
     });
   }
+
+  /** The Spark invoice a member send returns for `memo` with id bytes all 1. */
+  function memberInvoice(memo?: string): string {
+    return encodeSparkInvoice({
+      identityPublicKey: WALLET_PUBKEY,
+      id: uuidV7(NOW_MS, new Uint8Array(10).fill(1)),
+      ...(memo === undefined ? {} : { memo }),
+      amountSats: PR_SATS,
+    });
+  }
+
+  const ONES = (length: number): Uint8Array => new Uint8Array(length).fill(1);
 
   it('returns one Spark invoice per charge and records the BOLT11 against it', async () => {
     const posStore = new InMemoryPosStore();
@@ -819,11 +837,140 @@ describe('till payments on POST /pay/:username/invoice', () => {
     expect((await posStore.listWatched(NOW_MS))[0]?.charge.sparkInvoice).toBeNull();
   });
 
-  it('returns no Spark invoice and records nothing without an open charge', async () => {
+  it('returns a Spark invoice for the posted amount without an open charge and records nothing', async () => {
     const posStore = new InMemoryPosStore();
-    const res = await mint(await tillApp({ posStore, freePayments: true }));
-    expect(await res.json()).toEqual({ pr: PR, amountSats: PR_SATS, sparkInvoice: null });
+    const res = await mint(await tillApp({ posStore, freePayments: true, randomBytes: ONES }));
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({
+      pr: PR,
+      amountSats: PR_SATS,
+      sparkInvoice: memberInvoice(),
+    });
     expect(await posStore.listWatched(0)).toEqual([]);
+    expect(events()).toEqual(['pay.invoice']);
+  });
+
+  it('returns no Spark invoice without an open charge when free in-app payments are off', async () => {
+    const posStore = new InMemoryPosStore();
+    const res = await mint(await tillApp({ posStore, commentAllowed: 100 }), { comment: 'hi' });
+    expect(await res.json()).toEqual({ pr: PR, amountSats: PR_SATS, sparkInvoice: null });
+  });
+
+  it('puts the trimmed comment into the memo without an open charge', async () => {
+    const app = await tillApp({
+      posStore: new InMemoryPosStore(),
+      freePayments: true,
+      randomBytes: ONES,
+      commentAllowed: 100,
+    });
+    const body = (await (await mint(app, { comment: '  Thanks for lunch  ' })).json()) as {
+      sparkInvoice: string;
+    };
+    expect(body.sparkInvoice).toBe(memberInvoice('Thanks for lunch'));
+  });
+
+  it('cuts the memo to commentAllowed characters', async () => {
+    const app = await tillApp({
+      posStore: new InMemoryPosStore(),
+      freePayments: true,
+      randomBytes: ONES,
+      commentAllowed: 3,
+    });
+    const body = (await (await mint(app, { comment: '🍕🍕🍕🍕' })).json()) as {
+      sparkInvoice: string;
+    };
+    expect(body.sparkInvoice).toBe(memberInvoice('🍕🍕🍕'));
+  });
+
+  it('cuts the memo to 120 UTF-8 bytes without splitting a character', async () => {
+    const app = await tillApp({
+      posStore: new InMemoryPosStore(),
+      freePayments: true,
+      randomBytes: ONES,
+      commentAllowed: 500,
+    });
+    const body = (await (await mint(app, { comment: `a${'🍕'.repeat(40)}` })).json()) as {
+      sparkInvoice: string;
+    };
+    expect(body.sparkInvoice).toBe(memberInvoice(`a${'🍕'.repeat(29)}`));
+  });
+
+  it('leaves the memo out for a blank, non-string, or not-allowed comment', async () => {
+    const cases: Array<{ commentAllowed?: number; comment: unknown }> = [
+      { commentAllowed: 100, comment: '   ' },
+      { commentAllowed: 100, comment: 42 },
+      { commentAllowed: 100, comment: null },
+      { commentAllowed: 0, comment: 'hi' },
+      { commentAllowed: -1, comment: 'hi' },
+      { comment: 'hi' },
+    ];
+    for (const { commentAllowed, comment } of cases) {
+      const app = await tillApp({
+        posStore: new InMemoryPosStore(),
+        freePayments: true,
+        randomBytes: ONES,
+        ...(commentAllowed === undefined ? {} : { commentAllowed }),
+      });
+      const res = await mint(app, { comment });
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({
+        pr: PR,
+        amountSats: PR_SATS,
+        sparkInvoice: memberInvoice(),
+      });
+    }
+  });
+
+  it('keeps the charge memo and ignores the comment while a charge is open', async () => {
+    const posStore = new InMemoryPosStore();
+    await posStore.create(pendingCharge());
+    const app = await tillApp({
+      posStore,
+      freePayments: true,
+      randomBytes: ONES,
+      commentAllowed: 100,
+    });
+    const body = (await (await mint(app, { comment: 'hi' })).json()) as { sparkInvoice: string };
+    expect(body.sparkInvoice).toBe(
+      encodeSparkInvoice({
+        identityPublicKey: WALLET_PUBKEY,
+        id: uuidV7(NOW_MS, ONES(10)),
+        memo: `pos:${CHARGE_ID}`,
+        amountSats: PR_SATS,
+      }),
+    );
+  });
+
+  it('returns no Spark invoice when the BOLT11 mint fails without an open charge', async () => {
+    const auth = new InMemoryAuthStore();
+    await auth.createAccount(createAccount());
+    await auth.claimSparkPubkey(ADA_ID, WALLET_PUBKEY);
+    await auth.markSparkPubkeyVerified(ADA_ID, WALLET_PUBKEY, 'ada', 2);
+    const fetchImpl = async (input: string | URL | Request): Promise<Response> =>
+      String(input).includes('/.well-known/lnurlp/')
+        ? metadataResponse(1000, WIDE_MAX_SENDABLE)
+        : new Response('down', { status: 500 });
+    const app = new Hono().route(
+      '/pay',
+      payRoutes({
+        auth,
+        fetchImpl,
+        posStore: new InMemoryPosStore(),
+        now: () => NOW_MS,
+        lnurlServer: LNURL_SERVER,
+        freePayments: true,
+      }),
+    );
+    const res = await mint(app);
+    expect(res.status).toBe(502);
+    expect(await res.json()).toEqual({ error: 'Lightning Address could not be resolved' });
+  });
+
+  it('draws the member Spark invoice id from crypto randomness by default', async () => {
+    const body = (await (
+      await mint(await tillApp({ posStore: new InMemoryPosStore(), freePayments: true }))
+    ).json()) as { sparkInvoice: string };
+    expect(body.sparkInvoice.startsWith('spark1')).toBe(true);
   });
 
   it('draws the Spark invoice id from crypto randomness by default', async () => {
