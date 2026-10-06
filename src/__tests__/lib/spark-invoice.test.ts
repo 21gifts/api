@@ -52,6 +52,19 @@ describe('encodeSparkInvoice', () => {
     expect(decodeProto(inner[3]?.value as Uint8Array)).toEqual([{ field: 1, wire: 0, value: 21n }]);
   });
 
+  it('leaves the memo field out when there is no memo', () => {
+    const invoice = encodeSparkInvoice({
+      identityPublicKey: PUBKEY,
+      id: new Uint8Array(16).fill(0x07),
+      amountSats: 21,
+    });
+    const decoded = bech32m.decode(invoice as `${string}1${string}`, false);
+    const [, fields] = decodeProto(bech32m.fromWords(decoded.words));
+    const inner = decodeProto(fields?.value as Uint8Array);
+    expect(inner.map((f) => f.field)).toEqual([1, 2, 4]);
+    expect(decodeProto(inner[2]?.value as Uint8Array)).toEqual([{ field: 1, wire: 0, value: 21n }]);
+  });
+
   it('rejects a key that is not 33 bytes and an id that is not 16 bytes', () => {
     expect(() =>
       encodeSparkInvoice({
