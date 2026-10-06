@@ -183,6 +183,23 @@ describe('GET /notifications', () => {
     }
   });
 
+  it('hides old posts at all while retaining explicit mentions on the same post', async () => {
+    const messages = new InMemoryMessageStore();
+    await messages.create(forumNote({ id: 'parent-note' }));
+    const store = new InMemoryNotificationStore([
+      note({ id: ID_A, type: 'forum_post', replyId: 'parent-note' }),
+      note({ id: ID_B, type: 'forum_mention', replyId: 'parent-note' }),
+    ]);
+    const res = await mount(await seeded(), store, messages).request('/notifications', {
+      headers: AUTH,
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { notifications: NotificationRow[]; unreadCount: number };
+    expect(body.notifications.map((item) => item.type)).toEqual(['forum_mention']);
+    expect(body.unreadCount).toBe(1);
+    expect(await store.unreadCount('acc')).toBe(1);
+  });
+
   it('hides a non-staff unpaid forum_post at mentions and keeps a reply to the owner', async () => {
     const postId = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee';
     const parentId = 'ffffffff-ffff-4fff-8fff-ffffffffffff';
@@ -316,7 +333,7 @@ describe('GET /notifications', () => {
     expect(body.notifications[1]?.['type']).toBe('forum_reply');
     expect(body.unreadCount).toBe(2);
     expect(await store.getByIdForRecipient(ID_B, 'acc')).toBeUndefined();
-    expect(await store.getByIdForRecipient(ID_READ, 'acc')).toBeUndefined();
+    expect(await store.getByIdForRecipient(ID_READ, 'acc')).toBeDefined(); // Legacy posts stay stored but hidden.
     expect(await store.getByIdForRecipient(appointedId, 'acc')).toBeDefined();
   });
 
@@ -504,7 +521,7 @@ describe('GET /notifications', () => {
     expect(await store.getByIdForRecipient(ID_A, 'acc')).toBeDefined();
   });
 
-  it('keeps forum_mention and drops a stored generic row for the same replyId', async () => {
+  it('keeps forum_mention, preserves hidden post rows, and drops duplicate reply rows', async () => {
     const postId = '11111111-1111-4111-8111-111111111111';
     const replyId = '22222222-2222-4222-8222-222222222222';
     const zapReplyId = 'cafef00d-cafe-4f00-8d00-cafef00d0001';
@@ -592,7 +609,7 @@ describe('GET /notifications', () => {
       'forum_mention',
     ]);
     expect(body.unreadCount).toBe(3);
-    expect(await store.getByIdForRecipient(ID_A, 'acc')).toBeUndefined();
+    expect(await store.getByIdForRecipient(ID_A, 'acc')).toBeDefined();
     expect(await store.getByIdForRecipient(ID_READ, 'acc')).toBeUndefined();
     expect(await store.getByIdForRecipient(ID_B, 'acc')).toBeDefined();
     expect(await store.getByIdForRecipient(ID_E, 'acc')).toBeDefined();
@@ -600,7 +617,7 @@ describe('GET /notifications', () => {
     expect(await store.getByIdForRecipient(ID_OTHER, 'other')).toBeDefined();
     expect(
       parsedEvents(warn).some(
-        (event) => event['event'] === 'notifications.duplicate.purged' && event['count'] === 2,
+        (event) => event['event'] === 'notifications.duplicate.purged' && event['count'] === 1,
       ),
     ).toBe(true);
   });
@@ -622,7 +639,7 @@ describe('GET /notifications', () => {
     const store = new InMemoryNotificationStore([
       note({
         id: ID_A,
-        type: 'forum_post',
+        type: 'forum_reply',
         parentId: postId,
         replyId: postId,
         text: 'posted',

@@ -286,6 +286,7 @@ function filterIdsByMatch(
 
 /**
  * Fan out in-app rows and optional Web Push outbox rows except `skipAccountId`.
+ * Generic `forum_post` rows support push dismissal but stay out of member lists.
  * In-app recipients are the union of `auth.listAccounts()` (when `auth` is
  * set) and `push_subscription` account ids. Web Push outbox rows go only to
  * `push_subscription` accounts. When `auth` is set and `match` is set, drop
@@ -441,7 +442,8 @@ export async function fanoutToBellSubscribers(args: {
  * `created.sats > 0`, `mentionedAccountId` is null (top-level posts are never
  * personal). A staff or platform actor does not satisfy `mentions`. When
  * `auth` is unset, do not filter by level. Missing `pushStore` still writes
- * in-app rows when `auth` is set. Optional `excludeAccountIds` is forwarded
+ * rows when `auth` is set. Generic `forum_post` rows remain stored for push
+ * dismissal but are excluded from member lists and unread counts. Optional `excludeAccountIds` is forwarded
  * to fan-out (omitted means today's recipients). This helper may throw;
  * callers wrap it.
  *

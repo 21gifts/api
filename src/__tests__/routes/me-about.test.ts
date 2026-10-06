@@ -328,12 +328,10 @@ describe('PUT /me/about', () => {
     const pending = await pushStore.claimPending(10, now(), 60_000);
     expect(pending.some((row) => row.type === 'forum')).toBe(true);
     const listed = await notificationStore.listByRecipient('other', 10);
-    expect(listed).toHaveLength(1);
-    expect(listed[0]?.type).toBe('forum_post');
-    expect(listed[0]?.text).toBe(BIO);
+    expect(listed).toEqual([]);
   });
 
-  it('writes in-app rows to accounts without a push subscription on a no-LN create', async () => {
+  it('does not list generic in-app post rows on a no-LN create', async () => {
     const store = await seededStore({ name: 'Ada' });
     await store.createAccount({
       id: 'other',
@@ -357,9 +355,7 @@ describe('PUT /me/about', () => {
     });
     expect(res.status).toBe(200);
     const listed = await notificationStore.listByRecipient('other', 10);
-    expect(listed).toHaveLength(1);
-    expect(listed[0]?.type).toBe('forum_post');
-    expect(listed[0]?.text).toBe(BIO);
+    expect(listed).toEqual([]);
     expect(await notificationStore.listByRecipient('acc', 10)).toEqual([]);
   });
 
@@ -477,16 +473,27 @@ describe('PUT /me/about', () => {
     });
     const messages = new InMemoryMessageStore();
     const notificationStore = new InMemoryNotificationStore();
-    const res = await mount(store, { messages, notificationStore }).request('/me/about', {
-      method: 'PUT',
-      headers: JSON_HEADERS,
-      body: JSON.stringify({ text: BIO }),
+    const pushStore = new InMemoryPushStore();
+    await pushStore.upsertSubscription({
+      accountId: 'other',
+      endpoint: 'https://push.example/bio',
+      p256dh: 'p',
+      auth: 'a',
+      createdAt: new Date(now()),
     });
+    const res = await mount(store, { messages, notificationStore, pushStore }).request(
+      '/me/about',
+      {
+        method: 'PUT',
+        headers: JSON_HEADERS,
+        body: JSON.stringify({ text: BIO }),
+      },
+    );
     expect(res.status).toBe(200);
     const listed = await notificationStore.listByRecipient('other', 10);
-    expect(listed).toHaveLength(1);
-    expect(listed[0]?.text).toBe(BIO);
-    expect(listed[0]?.text).not.toBe('Ada');
+    expect(listed).toEqual([]);
+    const pending = await pushStore.claimPending(10, now(), 60_000);
+    expect(JSON.parse(pending[0]?.payload ?? '{}')).toMatchObject({ body: BIO });
     expect(await notificationStore.listByRecipient('acc', 10)).toEqual([]);
   });
 

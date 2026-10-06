@@ -422,7 +422,7 @@ describe('notifyConversationMessage', () => {
     expect(await push.claimPending(10, NOW.getTime(), 60_000)).toEqual([]);
   });
 
-  it('enqueues one conversation outbox with notif+inbox unreadCount', async () => {
+  it('counts visible notifications and inbox unread, excluding generic posts', async () => {
     const conversations = new InMemoryConversationStore();
     const opened = await conversations.openMemberMember('acc-a', 'acc-b', NOW);
     await conversations.appendMessage(
@@ -440,6 +440,18 @@ describe('notifyConversationMessage', () => {
       replyId: 'p',
       name: 'Ada',
       text: 'post',
+      createdAt: NOW,
+      readAt: null,
+    });
+    await notifications.create({
+      id: 'n-2',
+      recipientAccountId: 'acc-b',
+      actorAccountId: 'acc-a',
+      type: 'forum_reply',
+      parentId: 'p',
+      replyId: 'r',
+      name: 'Ada',
+      text: 'reply',
       createdAt: NOW,
       readAt: null,
     });
