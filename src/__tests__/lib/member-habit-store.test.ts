@@ -126,6 +126,34 @@ function scriptedSql(initial: { habits: Row[]; revisions: Row[]; logs: Row[]; co
         return { rows: state.comments.filter((row) => row['deleted_at'] === null) };
       }
       if (text.includes('member_habit_revision')) {
+        if (text.includes('UPDATE member_habit')) {
+          const found = state.habits.find((row) => row['id'] === params[3]);
+          if (found === undefined) {
+            return { rows: [] };
+          }
+          found['name'] = params[0];
+          found['description'] = params[1];
+          found['notes'] = params[2];
+          const period = params[4];
+          const existing = state.revisions.find(
+            (row) => row['habit_id'] === params[3] && row['period'] === period,
+          );
+          if (existing === undefined) {
+            state.revisions.push({
+              habit_id: params[3],
+              period,
+              name: params[0],
+              description: params[1],
+            });
+          } else {
+            existing['name'] = params[0];
+            existing['description'] = params[1];
+          }
+          return { rows: [{ habit_id: params[3] }] };
+        }
+        if (text.includes('INSERT INTO member_habit (')) {
+          return { rows: [] };
+        }
         if (text.includes('INSERT')) {
           state.revisions.push({
             habit_id: params[0],
@@ -475,11 +503,93 @@ describe('PostgresMemberHabitStore', () => {
     await store.add(sampleHabit());
     await store.listPublic(null, nowMs);
 
-    expect(statements.some((text) => text.includes('INSERT INTO member_habit'))).toBe(true);
-    expect(statements.some((text) => text.includes('INSERT INTO member_habit_revision'))).toBe(
-      true,
-    );
+    const writes = statements.filter((text) => text.includes('INSERT INTO member_habit ('));
+    expect(writes).toHaveLength(1);
+    expect(writes[0]).toContain('INSERT INTO member_habit_revision');
     expect(statements.some((text) => text.includes('FROM member_habit'))).toBe(true);
+  });
+
+  it('edits the wording and the period revision in one statement', async () => {
+    const statements: string[] = [];
+    const habit = sampleHabit();
+    const sql = {
+      query: async (text: string): Promise<{ rows: Record<string, unknown>[] }> => {
+        statements.push(text);
+        if (text.includes('WHERE id = $1')) {
+          return {
+            rows: [
+              {
+                id: habit.id,
+                account_id: habit.accountId,
+                owner_name: habit.ownerName,
+                role: habit.role,
+                name: habit.name,
+                description: habit.description,
+                notes: habit.notes,
+                cadence: habit.cadence,
+                time_zone: habit.timeZone,
+                first_period: habit.firstPeriod,
+                last_period: habit.lastPeriod,
+              },
+            ],
+          };
+        }
+        if (text.includes('RETURNING habit_id')) {
+          return { rows: [{ habit_id: habit.id }] };
+        }
+        return { rows: [] };
+      },
+    };
+    const store = new PostgresMemberHabitStore(sql, addressesOf(null));
+    expect(
+      await store.edit(
+        habit.id,
+        habit.accountId,
+        { name: 'Run', description: 'Outside', notes: 'secret' },
+        '2026-10-05',
+      ),
+    ).toBe('ok');
+    const edits = statements.filter(
+      (text) =>
+        text.includes('UPDATE member_habit') && text.includes('INSERT INTO member_habit_revision'),
+    );
+    expect(edits).toHaveLength(1);
+    statements.length = 0;
+    const vanished = {
+      query: async (text: string): Promise<{ rows: Record<string, unknown>[] }> => {
+        statements.push(text);
+        if (text.includes('WHERE id = $1')) {
+          return {
+            rows: [
+              {
+                id: habit.id,
+                account_id: habit.accountId,
+                owner_name: habit.ownerName,
+                role: habit.role,
+                name: habit.name,
+                description: habit.description,
+                notes: habit.notes,
+                cadence: habit.cadence,
+                time_zone: habit.timeZone,
+                first_period: habit.firstPeriod,
+                last_period: habit.lastPeriod,
+              },
+            ],
+          };
+        }
+        return { rows: [] };
+      },
+    };
+    const raced = new PostgresMemberHabitStore(vanished, addressesOf(null));
+    expect(
+      await raced.edit(
+        habit.id,
+        habit.accountId,
+        { name: 'Run', description: 'Outside', notes: 'secret' },
+        '2026-10-05',
+      ),
+    ).toBe('missing');
+    expect(statements).toHaveLength(2);
   });
 
   it('edits, archives, logs, lists, comments, and reads lightning through scripted rows', async () => {

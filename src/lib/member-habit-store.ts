@@ -598,6 +598,10 @@ export class InMemoryMemberHabitStore implements MemberHabitStore {
  * Postgres `MemberHabitStore`. Lightning addresses are stored via `addresses`.
  */
 export class PostgresMemberHabitStore implements MemberHabitStore {
+  /**
+   * @param sql - Parameter-bound SQL client (already migrated).
+   * @param addresses - Account Lightning addresses. Habit tables do not store them.
+   */
   constructor(
     private readonly sql: SqlClient,
     private readonly addresses: LightningAddresses,
@@ -605,10 +609,15 @@ export class PostgresMemberHabitStore implements MemberHabitStore {
 
   async add(habit: MemberHabit): Promise<void> {
     await this.sql.query(
-      `INSERT INTO member_habit (
-         id, account_id, owner_name, role, name, description, notes,
-         cadence, time_zone, first_period, last_period
-       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
+      `WITH habit AS (
+         INSERT INTO member_habit (
+           id, account_id, owner_name, role, name, description, notes,
+           cadence, time_zone, first_period, last_period
+         ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+         RETURNING id
+       )
+       INSERT INTO member_habit_revision (habit_id, period, name, description)
+       SELECT id, $10, $5, $6 FROM habit`,
       [
         habit.id,
         habit.accountId,
@@ -623,11 +632,6 @@ export class PostgresMemberHabitStore implements MemberHabitStore {
         habit.lastPeriod,
       ],
     );
-    await this.sql.query(
-      `INSERT INTO member_habit_revision (habit_id, period, name, description)
-       VALUES ($1, $2, $3, $4)`,
-      [habit.id, habit.firstPeriod, habit.name, habit.description],
-    );
   }
 
   async edit(
@@ -640,18 +644,24 @@ export class PostgresMemberHabitStore implements MemberHabitStore {
     if (habit === null) {
       return 'missing';
     }
-    await this.sql.query(
-      `UPDATE member_habit SET name = $1, description = $2, notes = $3 WHERE id = $4`,
-      [patch.name, patch.description, patch.notes, id],
-    );
-    await this.sql.query(
-      `INSERT INTO member_habit_revision (habit_id, period, name, description)
-       VALUES ($1, $2, $3, $4)
+    const written = await this.sql.query(
+      `WITH updated AS (
+         UPDATE member_habit
+         SET name = $1, description = $2, notes = $3
+         WHERE id = $4
+         RETURNING id
+       )
+       INSERT INTO member_habit_revision (habit_id, period, name, description)
+       SELECT id, $5, $1, $2 FROM updated
        ON CONFLICT (habit_id, period) DO UPDATE SET
          name = EXCLUDED.name,
-         description = EXCLUDED.description`,
-      [id, atPeriod, patch.name, patch.description],
+         description = EXCLUDED.description
+       RETURNING habit_id`,
+      [patch.name, patch.description, patch.notes, id, atPeriod],
     );
+    if (firstRow(written.rows) === null) {
+      return 'missing';
+    }
     return 'ok';
   }
 
