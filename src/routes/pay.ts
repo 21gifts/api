@@ -214,18 +214,22 @@ async function attachToCharge(
  * @returns The memo, or `undefined` when nothing is left.
  */
 function sparkMemo(comment: unknown, commentAllowed: number | undefined): string | undefined {
-  if (typeof comment !== 'string') {
+  const maxChars = commentAllowed ?? 0;
+  if (typeof comment !== 'string' || maxChars <= 0) {
     return undefined;
   }
   const encoder = new TextEncoder();
   let memo = '';
+  let chars = 0;
   let bytes = 0;
-  for (const char of [...comment.trim()].slice(0, Math.max(0, commentAllowed ?? 0))) {
+  // Walk the comment lazily so a long body never becomes one array.
+  for (const char of comment.trim()) {
     bytes += encoder.encode(char).byteLength;
-    if (bytes > SPARK_INVOICE_MEMO_MAX_BYTES) {
+    if (chars === maxChars || bytes > SPARK_INVOICE_MEMO_MAX_BYTES) {
       break;
     }
     memo += char;
+    chars += 1;
   }
   return memo === '' ? undefined : memo;
 }
@@ -233,12 +237,14 @@ function sparkMemo(comment: unknown, commentAllowed: number | undefined): string
 /**
  * Spark invoice for an amount with no open charge, when free in-app
  * payments are on: the member's verified wallet key, exactly `amountSats`,
- * and the memo from {@link sparkMemo}. Not stored; nothing waits for it.
+ * and the memo from {@link sparkMemo} (built only when the feature is on).
+ * Not stored; nothing waits for it.
  *
  * @param deps - Route collaborators.
  * @param sparkPubkey - The member's verified wallet key.
  * @param amountSats - Accepted amount in whole sats.
- * @param memo - Memo, or `undefined` for none.
+ * @param comment - The posted `comment`, unchecked.
+ * @param commentAllowed - The member's LNURL-pay `commentAllowed`.
  * @param issuedAtMs - Clock for the invoice id (epoch ms).
  * @returns The Spark invoice, or `null` when free in-app payments are off.
  */
@@ -246,12 +252,14 @@ function memberSparkInvoice(
   deps: PayRouteDeps,
   sparkPubkey: string,
   amountSats: number,
-  memo: string | undefined,
+  comment: unknown,
+  commentAllowed: number | undefined,
   issuedAtMs: number,
 ): string | null {
   if (deps.freePayments !== true) {
     return null;
   }
+  const memo = sparkMemo(comment, commentAllowed);
   const randomBytes =
     deps.randomBytes ?? ((length: number) => crypto.getRandomValues(new Uint8Array(length)));
   return encodeSparkInvoice({
@@ -333,7 +341,8 @@ export function payRoutes(deps: PayRouteDeps): Hono {
               deps,
               lookup.sparkPubkey,
               amountSats,
-              sparkMemo(parsed.data.comment, metadata.commentAllowed),
+              parsed.data.comment,
+              metadata.commentAllowed,
               issuedAtMs,
             )
           : await attachToCharge(
