@@ -4147,8 +4147,9 @@ conversation messages do not count. It does not reset. While it is `true`, a
 text-only top-level `POST /messages` is stored without the 1-sat fee (see
 [First post free](#first-post-free)).
 
-Ensures that profile note exists. The client then calls
-`POST /messages/:id/invoice` on `messageId`. A later indexed member/invoice zap
+Ensures that profile note exists. Unless `firstPostFree` is `true` (then the
+client posts directly), the client calls `POST /messages/:id/invoice` on
+`messageId`. A later indexed member/invoice zap
 on that note turns the zap comment into the payer’s top-level post (`sats` 0
 on the new row). An external zap on that same note still inserts a gift-reply
 under it. The worker always includes that profile note’s `event_id` in the relay
