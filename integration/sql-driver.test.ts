@@ -6,6 +6,7 @@ import type { FundingGrant } from '@/lib/funding';
 import { migrateFundingSchema, PostgresFundingStore } from '@/lib/funding-store';
 import { migrateDbChangeSchema } from '@/lib/db-change';
 import { unsignedNostrDefaults } from '@/lib/message';
+import { migrateMemberDataSchema, PostgresMemberDataStore } from '@/lib/member-data-store';
 import { migrateMessageSchema, PostgresMessageStore } from '@/lib/message-store';
 import { postgresTextArrayLiteral } from '@/lib/postgres-text-array';
 import { POS_CHARGE_TTL_MS } from '@/lib/pos-charge';
@@ -678,6 +679,173 @@ describe('PostgresMessageStore free first post', () => {
           profile,
         ),
       ).toBeUndefined();
+    } finally {
+      await closeIfPossible(sql);
+    }
+  });
+});
+
+describe('PostgresMemberDataStore', () => {
+  test('reads reported wallet data and events, pages them, and audits with db_change', async () => {
+    const { client, sql } = createBunSqlClient(databaseUrl);
+    try {
+      await migrateAuthSchema(client);
+      await migrateMemberDataSchema(client);
+      await migrateMemberDataSchema(client);
+      await migrateDbChangeSchema(client);
+
+      const auth = new PostgresAuthStore(client);
+      const hex64 = (): string =>
+        `${crypto.randomUUID().replaceAll('-', '')}${crypto.randomUUID().replaceAll('-', '')}`;
+      const memberId = crypto.randomUUID();
+      const viewerId = crypto.randomUUID();
+      for (const id of [memberId, viewerId]) {
+        await auth.createAccount({
+          id,
+          linkingKey: null,
+          role: id === viewerId ? 'moderator' : 'basis',
+          name: null,
+          location: null,
+          forumLawsDismissed: false,
+          viewKey: hex64(),
+          createdAt: Date.now(),
+          rulesAgreedAt: null,
+        });
+      }
+
+      const day = (d: number): Date => new Date(Date.UTC(2026, 8, d, 12));
+      const insertPayment = async (
+        paymentId: string,
+        paidAt: Date,
+        fields: { direction: string; status: string; category: string; amount: number },
+      ): Promise<void> => {
+        await client.execute(
+          `INSERT INTO wallet_payment (account_id, payment_id, direction, status, amount_sats,
+             fee_sats, paid_at, method, payment_hash, invoice, destination, description,
+             lnurl_comment, category, counterparty_account_id, first_seen_at, updated_at)
+           VALUES ($1, $2, $3, $4, $5, 2, $6, 'lightning', NULL, 'lnbc1test', 'x@21.gifts',
+             'bread', NULL, $7, $8, $6, $6)`,
+          [
+            memberId,
+            paymentId,
+            fields.direction,
+            fields.status,
+            fields.amount,
+            paidAt,
+            fields.category,
+            fields.category === 'member' ? viewerId : null,
+          ],
+        );
+      };
+      await insertPayment('B', day(3), {
+        direction: 'out',
+        status: 'completed',
+        category: 'member',
+        amount: 300,
+      });
+      await insertPayment('a', day(3), {
+        direction: 'out',
+        status: 'completed',
+        category: 'onchain',
+        amount: 700,
+      });
+      await insertPayment('c', day(2), {
+        direction: 'in',
+        status: 'completed',
+        category: 'gift',
+        amount: 21,
+      });
+      await insertPayment('d', day(1), {
+        direction: 'out',
+        status: 'pending',
+        category: 'shop',
+        amount: 5,
+      });
+      await client.execute(
+        `INSERT INTO wallet_balance_snapshot (id, account_id, balance_sats, synced_at, received_at)
+         VALUES ($1, $2, 100, $3, $3), ($4, $2, 250, $5, $5)`,
+        [crypto.randomUUID(), memberId, day(1), crypto.randomUUID(), day(2)],
+      );
+      const eventIds = [crypto.randomUUID(), crypto.randomUUID()];
+      await client.execute(
+        `INSERT INTO member_event (id, account_id, name, at, path, props, received_at)
+         VALUES ($1, $3, 'search', $4, '/search', '{"query":"bread","count":2}'::jsonb, $4),
+                ($2, $3, 'screen_view', $5, '/forum', '{}'::jsonb, $5)`,
+        [eventIds[0], eventIds[1], memberId, day(1), day(2)],
+      );
+
+      const store = new PostgresMemberDataStore(client);
+      expect((await store.latestBalance(memberId))?.balanceSats).toBe(250);
+      expect(await store.latestBalance(viewerId)).toBeNull();
+
+      const first = await store.listPayments(memberId, { since: null }, null, 2);
+      expect(first.map((row) => row.paymentId)).toEqual(['a', 'B']);
+      expect(first[1]?.counterpartyAccountId).toBe(viewerId);
+      const last = first[1]!;
+      const rest = await store.listPayments(
+        memberId,
+        { since: null },
+        { at: last.paidAt, id: last.paymentId },
+        10,
+      );
+      expect(rest.map((row) => row.paymentId)).toEqual(['c', 'd']);
+      const filtered = await store.listPayments(
+        memberId,
+        { since: day(2), category: 'gift', direction: 'in' },
+        null,
+        10,
+      );
+      expect(filtered.map((row) => row.paymentId)).toEqual(['c']);
+
+      const totals = await store.paymentTotals(memberId, null);
+      expect(totals.find((row) => row.category === 'onchain')).toEqual({
+        category: 'onchain',
+        direction: 'out',
+        count: 1,
+        amountSats: 700,
+        feeSats: 2,
+      });
+      expect(totals.some((row) => row.category === 'shop')).toBe(false);
+      expect(
+        (await store.paymentTotals(memberId, day(3))).map((row) => row.category).sort(),
+      ).toEqual(['member', 'onchain']);
+
+      const events = await store.listEvents(memberId, null, 1);
+      expect(events.map((row) => row.name)).toEqual(['screen_view']);
+      const older = await store.listEvents(memberId, { at: events[0]!.at, id: events[0]!.id }, 10);
+      expect(older[0]?.props).toEqual({ query: 'bread', count: 2 });
+
+      const auditId = crypto.randomUUID();
+      const at = new Date();
+      await store.appendAccess({
+        id: auditId,
+        viewerAccountId: viewerId,
+        memberAccountId: memberId,
+        what: 'wallet',
+        at,
+      });
+      const listed = await store.listAccess(null, 500);
+      expect(listed.find((row) => row.id === auditId)).toEqual({
+        id: auditId,
+        viewerAccountId: viewerId,
+        memberAccountId: memberId,
+        what: 'wallet',
+        at,
+      });
+      const changes = await client.query<{ op: string; after: Record<string, unknown> | null }>(
+        `SELECT op, after FROM db_change
+         WHERE table_name = 'team_access_audit' AND after ->> 'id' = $1`,
+        [auditId],
+      );
+      expect(changes).toHaveLength(1);
+      expect(changes[0]?.op).toBe('INSERT');
+      expect(changes[0]?.after?.['member_account_id']).toBe(memberId);
+      const paymentChanges = await client.query<{ count: number | string }>(
+        `SELECT count(*) AS count FROM db_change
+         WHERE table_name = 'wallet_payment' AND after ->> 'account_id' = $1`,
+        [memberId],
+      );
+      expect(Number(paymentChanges[0]?.count)).toBe(4);
     } finally {
       await closeIfPossible(sql);
     }
