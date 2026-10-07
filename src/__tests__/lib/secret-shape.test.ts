@@ -31,6 +31,8 @@ describe('isSecretFieldName', () => {
   it('matches snake_case, kebab-case, and dotted forms of secret names', () => {
     for (const name of [
       'spending_key',
+      'spendKey',
+      'spend_key',
       'priv_key',
       'x_prv',
       'n_sec',
@@ -84,6 +86,19 @@ describe('looksLikeSecretValue', () => {
     const korean = '가격 가끔 가난 가능 가득 가르침 가뭄 가방 가상 가슴 가운데 가을';
     for (const phrase of [japanese, chinese, spanish, korean]) {
       expect(looksLikeSecretValue(phrase)).toBe(true);
+    }
+  });
+
+  it('detects the decomposed (NFKD) form of the official wordlists', () => {
+    const phrases = [
+      'ábaco abdomen abeja abierto abogado abono aborto abrazo abrir abuelo abuso acabar',
+      'あいこくしん　あいさつ　あいだ　あおぞら　あかちゃん　あきる　あけがた　あける　あこがれる　あさい　あさひ　あしあと',
+      '가격 가끔 가난 가능 가득 가르침 가뭄 가방 가상 가슴 가운데 가을',
+    ];
+    for (const phrase of phrases) {
+      const decomposed = phrase.normalize('NFKD');
+      expect(decomposed).not.toBe(phrase);
+      expect(looksLikeSecretValue(decomposed)).toBe(true);
     }
   });
 

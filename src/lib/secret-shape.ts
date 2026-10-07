@@ -13,6 +13,7 @@ const SECRET_FIELD_TOKENS: readonly string[] = [
   'password',
   'passphrase',
   'spendingkey',
+  'spendkey',
 ];
 
 /** An encoded key (`nsec1…`, `xprv…` and the other extended private key prefixes) starting a token. */
@@ -57,12 +58,14 @@ export function isSecretFieldName(name: string): boolean {
  * @returns Whether `value` holds an encoded key or a recovery-phrase-shaped word run.
  */
 export function looksLikeSecretValue(value: string): boolean {
-  if (ENCODED_KEY_RE.test(value)) {
+  // NFC, so the decomposed (NFKD) form of the official wordlists keeps its accents inside the words.
+  const text = value.normalize('NFC');
+  if (ENCODED_KEY_RE.test(text)) {
     return true;
   }
   let run = 0;
   // Any non-letter, non-digit separates words, the ideographic space of Japanese phrases included.
-  for (const token of value.split(/[^\p{L}\p{N}]+/u)) {
+  for (const token of text.split(/[^\p{L}\p{N}]+/u)) {
     if (token === '') {
       continue;
     }

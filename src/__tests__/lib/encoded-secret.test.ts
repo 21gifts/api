@@ -268,4 +268,30 @@ describe('containsEncodedSecret', () => {
     );
     expect(containsEncodedSecret(raw)).toBe(false);
   });
+
+  it('reads percent-encoded LNURL text, including %20, + and UTF-8 escapes', () => {
+    const lnurl = (url: string): string =>
+      bech32.encode('lnurl', bech32.toWords(new TextEncoder().encode(url)), false);
+    const words = PHRASE.split(' ');
+    expect(containsEncodedSecret(lnurl(`https://x.example/p?comment=${words.join('%20')}`))).toBe(
+      true,
+    );
+    expect(containsEncodedSecret(lnurl(`https://x.example/p?comment=${words.join('+')}`))).toBe(
+      true,
+    );
+    const korean = '가격 가끔 가난 가능 가득 가르침 가뭄 가방 가상 가슴 가운데 가을';
+    expect(
+      containsEncodedSecret(lnurl(`https://x.example/p?c=${encodeURIComponent(korean)}`)),
+    ).toBe(true);
+    expect(containsEncodedSecret(lnurl('https://x.example/p?comment=thanks%20for%20coffee'))).toBe(
+      false,
+    );
+    expect(containsEncodedSecret('100%ZZ and %E0%A4')).toBe(false);
+  });
+
+  it('finds a decomposed (NFKD) phrase inside a Spark memo', () => {
+    const spanish =
+      'ábaco abdomen abeja abierto abogado abono aborto abrazo abrir abuelo abuso acabar';
+    expect(containsEncodedSecret(spark(spanish.normalize('NFKD')))).toBe(true);
+  });
 });
