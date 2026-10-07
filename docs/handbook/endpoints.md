@@ -1135,3 +1135,54 @@ Operator inspection of external Nostr identities that have earned visibility or 
 - **Errors:** 400 `{ error: 'invalid_code' }` when `:code` is not exactly eight hex digits after `toLowerCase()` (no trim); 404 `{ error: 'not_found' }` when neither store has a match; 409 `{ error: 'ambiguous' }` when two or more ids match (two messages, two accounts, or one of each). No ids in error bodies. No 503 path.
 - **Used by:** Website short-link landing (`/l/<8 hex>`).
 - **Auth:** none. Public. Soft-hidden messages are included; the public message page decides who may see them.
+
+## Endpoint: GET /team/members
+
+- **Purpose:** Team search for the member data screens. Query `query` is optional and is normalised exactly like `q` on `GET /mentions` (`mentionQueryPrefix`): trim, one leading `@` stripped, lowercased, then it must be a username prefix. It matches the start of the username, a username segment, the display name, or a display-name word (`AuthStore.listAccountsByUsernamePrefix`, at most 20 rows, blank usernames skipped). Each row is `{ id, username, name, role }`; `role` is the live role, or `null` if the account vanished between the search and the lookup. A search reads no member data and writes no audit row.
+- **Errors:** 401 `{ error: 'Unauthorized' }` without a usable bearer session; 403 `{ error: 'Forbidden' }` below moderator; 400 `{ error: 'Invalid query' }` when the normalised value is not a username prefix; 503 `{ error: 'Member data is unavailable' }` when the lookup throws (`team.members.search_failed`).
+- **Used by:** The app's Team → Member data search.
+- **Auth:** Bearer session, moderator or above (`roleAtLeast(role, 'moderator')`).
+
+## Endpoint: GET /team/members/:id/wallet
+
+- **Purpose:** The team's view of one member's reported wallet. Body `{ member: { id, name, username, role }, balance, period, summary, payments, nextCursor }`. `balance` is the newest `wallet_balance_snapshot` (`{ balanceSats, syncedAt, receivedAt }`) or `null`. `period` is `7`, `30` (default), `90`, or `all`. `payments` is one page of at most 50 `wallet_payment` rows, newest first (`timestamp` desc, then payment id in byte order), filtered by `period` and the optional `category` (`member`, `shop`, `platform`, `gift`, `outside_lightning`, `onchain`, `unknown`) and `direction` (`in`, `out`). Each payment lists `id`, `direction`, `status`, `amountSats`, `feeSats`, `timestamp`, `method`, `paymentHash`, `invoice`, `destination`, `description`, `lnurlComment`, `category`, `counterparty` (`{ id, name, username }` when the member on the other side is known, else `null`), `firstSeenAt`, and `updatedAt`, and nothing else. `summary` covers completed payments in the period (filters other than `period` do not apply): `inSats`, `outSats`, `feeSats`, `inCount`, `outCount`, `byCategory` (every category with `{ inSats, outSats, count }`), `communityOutSats` (`member` + `shop` + `platform` + `gift`), `outsideOutSats` (`outside_lightning` + `onchain`), and `communityShare` (community over community plus outside; `null` when both are 0; `unknown` counts on neither side). `nextCursor` is the opaque `cursor` for the next page, or `null`.
+- **Audit:** After the member and the query are valid and before any member data is read, one `team_access_audit` row `(viewer, member, 'wallet', now)` is written. If that write fails, the route answers 503 and reads nothing. 404 and 400 answers write no row.
+- **Errors:** 401 `{ error: 'Unauthorized' }`; 403 `{ error: 'Forbidden' }` below moderator; 404 `{ error: 'Not found' }` when `:id` is not a UUID or no such account exists; 400 `{ error: 'Invalid period' }`, `{ error: 'Invalid category' }`, `{ error: 'Invalid direction' }`, or `{ error: 'Invalid cursor' }`; 503 `{ error: 'Member data is unavailable' }` when the audit write or a read throws (`team.member_wallet.failed`). A 200 logs `team.member_wallet.read` without ids or amounts.
+- **Used by:** The app's member page (balance, payments table, summary cards).
+- **Auth:** Bearer session, moderator or above.
+
+## Endpoint: GET /team/members/:id/events
+
+- **Purpose:** The team's view of one member's interaction events. Body `{ member: { id, name, username, role }, events, nextCursor }`. `events` is one page of at most 100 `member_event` rows, newest first (`at` desc, then `id` desc), each `{ id, name, at, path, props, receivedAt }`. `props` keeps only string, number, boolean, and null values, and drops every prop whose key names a secret (seed, mnemonic, recovery, phrase, preimage, private, secret, prf, nsec, xprv, spending). `nextCursor` is the opaque `cursor` for the next page, or `null`.
+- **Audit:** After the member and the cursor are valid and before any event is read, one `team_access_audit` row `(viewer, member, 'events', now)` is written. If that write fails, the route answers 503 and reads nothing.
+- **Errors:** 401 `{ error: 'Unauthorized' }`; 403 `{ error: 'Forbidden' }` below moderator; 404 `{ error: 'Not found' }`; 400 `{ error: 'Invalid cursor' }`; 503 `{ error: 'Member data is unavailable' }` (`team.member_events.failed`). A 200 logs `team.member_events.read`.
+- **Used by:** The app's member page events tab.
+- **Auth:** Bearer session, moderator or above.
+
+## Endpoint: GET /team/audit
+
+- **Purpose:** The team access audit log, newest first (`at` desc, then `id` desc), at most 100 rows per page. Body `{ entries: [{ id, viewer, member, what, at }], nextCursor }`; `viewer` and `member` are `{ id, name, username }` (name and username `null` when the account no longer exists); `what` is `wallet` or `events`. Reading the log writes no audit row.
+- **Errors:** 401 `{ error: 'Unauthorized' }`; 403 `{ error: 'Forbidden' }` for any role other than initiator and founder, moderator included; 400 `{ error: 'Invalid cursor' }`; 503 `{ error: 'Member data is unavailable' }` (`team.audit.failed`).
+- **Used by:** The app's audit view for initiator and founder.
+- **Auth:** Bearer session, initiator or founder (`canReadTeamAudit`).
+
+## Endpoint: GET /debug/team/members/:id/wallet
+
+- **Purpose:** Operator read-only equivalent of `GET /team/members/:id/wallet`: same query values, same body, same 404 and 400 answers. Writes no `team_access_audit` row (an operator read is not a team member's read; the HTTP request log records it).
+- **Errors:** 503 `{ error: 'Debug is not configured' }` when `DEBUG_TOKEN` is unset or blank; 401 `{ error: 'Unauthorized' }` when the Bearer token does not match; 404, 400 as on the team route; 503 `{ error: 'Member data is unavailable' }` when a read throws (`debug.team.wallet_failed`).
+- **Used by:** Operators checking what the team screens show.
+- **Auth:** `Authorization: Bearer` with `DEBUG_TOKEN`. Not an end-user session.
+
+## Endpoint: GET /debug/team/members/:id/events
+
+- **Purpose:** Operator read-only equivalent of `GET /team/members/:id/events`: same cursor, same body, same prop filtering. Writes no `team_access_audit` row.
+- **Errors:** 503 `{ error: 'Debug is not configured' }`; 401 `{ error: 'Unauthorized' }`; 404 `{ error: 'Not found' }`; 400 `{ error: 'Invalid cursor' }`; 503 `{ error: 'Member data is unavailable' }` (`debug.team.events_failed`).
+- **Used by:** Operators checking what the team screens show.
+- **Auth:** `Authorization: Bearer` with `DEBUG_TOKEN`. Not an end-user session.
+
+## Endpoint: GET /debug/team/audit
+
+- **Purpose:** Operator read-only equivalent of `GET /team/audit`: same cursor and body.
+- **Errors:** 503 `{ error: 'Debug is not configured' }`; 401 `{ error: 'Unauthorized' }`; 400 `{ error: 'Invalid cursor' }`; 503 `{ error: 'Member data is unavailable' }` (`debug.team.audit_failed`).
+- **Used by:** Operators reviewing who on the team read which member's data.
+- **Auth:** `Authorization: Bearer` with `DEBUG_TOKEN`. Not an end-user session.

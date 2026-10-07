@@ -3003,7 +3003,7 @@
 - **Purpose:** Whether a caller's live role meets a minimum, including equal rank. Initiator has the same rank as moderator; founder stays strictly above. True when `roleRank(role)` is ≥ `roleRank(min)`. Every permission names a minimum role; an equality test on the caller's role is a defect. Subject rank equality uses `sameRoleRank`, not this caller check.
 - **Inputs:** `role` (caller's live `AccountRole`), `min` (minimum `AccountRole` that may proceed).
 - **Returns / side effects:** boolean. No I/O.
-- **Used by:** `isStaffRole`, `isStaffAccount`, `isChainAccount`, `conversationRoutes`, `messagesRoutes`, `trustRoutes` (`POST /trust/appoint-moderator`), `inboxUnreadCountFor`, `isModeratorGroupMember`.
+- **Used by:** `isStaffRole`, `isStaffAccount`, `isChainAccount`, `conversationRoutes`, `messagesRoutes`, `trustRoutes` (`POST /trust/appoint-moderator`), `inboxUnreadCountFor`, `isModeratorGroupMember`, `teamRoutes`.
 
 ## Function: sameRoleRank
 
@@ -3465,3 +3465,129 @@ Builds the operator-only external-pubkey inspection route.
 - **Inputs:** `{ store, rates, fiatRates, now }` — the same collaborators as {@link loadLatestGoalRateDay}.
 - **Returns / side effects:** A function that calls `loadLatestGoalRateDay` with those collaborators.
 - **Used by:** `createApp`.
+
+## Function: canReadTeamAudit
+
+- **Purpose:** Whether a caller may read the team access audit log. True for initiator and founder only. Moderator has the same rank as initiator, so `roleAtLeast` cannot leave moderators out; this helper is the one place the audit view names its roles.
+- **Inputs:** `role` (caller's live `AccountRole`).
+- **Returns / side effects:** boolean. No I/O.
+- **Used by:** `teamRoutes` (`GET /team/audit`).
+
+## Function: migrateMemberDataSchema
+
+- **Purpose:** Applies `MEMBER_DATA_SCHEMA_SQL` in order: `CREATE TABLE IF NOT EXISTS` for `wallet_balance_snapshot`, `wallet_payment` (primary key `(account_id, payment_id)`, CHECKs on direction, status, category, and non-negative amounts, `ADD COLUMN IF NOT EXISTS invoice`), `member_event`, and `team_access_audit`, each with its newest-first index. The first three are the tables the wallet report and event routes write; the DDL is the same so either side can create them first.
+- **Inputs:** `SqlClient`.
+- **Returns / side effects:** Void; idempotent DDL matching `docs/schema/member_data.sql`. Runs before `migrateDbChangeSchema`, so `trg_db_change` attaches to all four tables.
+- **Used by:** `openBootStores` when SQL opens.
+
+## Function: InMemoryMemberDataStore
+
+- **Purpose:** Process-local `MemberDataStore` for tests and memory boots. Optional seed of balances, payments, and events; audit rows are appended at runtime. Every read returns copies.
+- **Inputs:** Optional `{ balances, payments, events }` seed.
+- **Returns / side effects:** Newest-first lists with the same `(time, id)` keyset rule as Postgres (ids compare in byte order); `paymentTotals` groups completed payments by category and direction.
+- **Used by:** `createApp` default; unit tests.
+
+## Function: PostgresMemberDataStore
+
+- **Purpose:** Durable `MemberDataStore`. Reads `wallet_balance_snapshot`, `wallet_payment`, and `member_event`; inserts into and reads `team_access_audit`. It never writes the three report tables.
+- **Inputs:** Migrated `SqlClient`.
+- **Returns / side effects:** `listPayments` builds its WHERE from the period, category, direction, and cursor (`payment_id COLLATE "C"` keeps the order equal to the in-memory store); `paymentTotals` is one grouped query over `status = 'completed'`; `listEvents` and `listAccess` page on `(at, id)`. jsonb `props` is accepted as object or text. Bigint sums are read as text and converted to numbers.
+- **Used by:** `openBootStores` (SQL boot) → `createApp`.
+
+## Function: parseMemberDataPeriod
+
+- **Purpose:** Parse the `period` query value of the member wallet view.
+- **Inputs:** Raw query value or `undefined`.
+- **Returns / side effects:** `'7'`, `'30'`, `'90'`, or `'all'`; `'30'` when omitted; `null` for anything else (the routes answer 400 `Invalid period`).
+- **Used by:** `readMemberWallet`.
+
+## Function: memberDataPeriodSince
+
+- **Purpose:** Lower bound of a summary period.
+- **Inputs:** Period and the current epoch milliseconds.
+- **Returns / side effects:** `now` minus 7, 30, or 90 days as a `Date`, or `null` for `all`. No I/O.
+- **Used by:** `readMemberWallet`.
+
+## Function: encodeMemberDataCursor
+
+- **Purpose:** Encode the keyset position of the last row on a page as the opaque `cursor` value. Uses the forum feed cursor format (`encodeMessageFeedCursor` with `k: 't'`).
+- **Inputs:** `{ at, id }`.
+- **Returns / side effects:** Base64url string. No I/O.
+- **Used by:** `readMemberWallet`, `readMemberEvents`, `readTeamAudit` (`nextCursor`).
+
+## Function: decodeMemberDataCursor
+
+- **Purpose:** Decode a `cursor` query value of the team views.
+- **Inputs:** Raw value; `uuidId` true when the id must be a UUID (events and audit rows), false for wallet payment ids.
+- **Returns / side effects:** `{ at, id }` (a UUID id lowercased), or `null` for a malformed value, a popular-feed cursor, an empty id, or a non-UUID id where one is required.
+- **Used by:** `readMemberWallet`, `readMemberEvents`, `readTeamAudit`.
+
+## Function: summarizeWalletPayments
+
+- **Purpose:** Fold grouped completed-payment totals into the wallet summary: totals in and out, counts, fees, per-category `{ inSats, outSats, count }` for all seven categories, outgoing sats inside the community (`member`, `shop`, `platform`, `gift`) and outside (`outside_lightning`, `onchain`), and `communityShare`.
+- **Inputs:** Period, its lower bound, and `MemberDataStore.paymentTotals` rows.
+- **Returns / side effects:** The summary object; `communityShare` is `null` when nothing went out to either side. `unknown` counts on neither side of the share. No I/O.
+- **Used by:** `readMemberWallet`.
+
+## Function: serializeMemberRef
+
+- **Purpose:** The `{ id, name, username }` form of an account used in the team views.
+- **Inputs:** `Account`.
+- **Returns / side effects:** Object; a missing username is `null`.
+- **Used by:** `readMemberWallet`, `readMemberEvents`, `readTeamAudit`.
+
+## Function: serializeWalletPayment
+
+- **Purpose:** JSON form of one wallet payment for the team views. Lists every field by name, so a stored column or property outside that list (for example a preimage) never reaches a response.
+- **Inputs:** Stored payment row; counterparty `{ id, name, username }` or `null`.
+- **Returns / side effects:** `{ id, direction, status, amountSats, feeSats, timestamp, method, paymentHash, invoice, destination, description, lnurlComment, category, counterparty, firstSeenAt, updatedAt }`.
+- **Used by:** `readMemberWallet`.
+
+## Function: serializeMemberEvent
+
+- **Purpose:** JSON form of one interaction event for the team views.
+- **Inputs:** Stored event row.
+- **Returns / side effects:** `{ id, name, at, path, props, receivedAt }`. `props` drops every key that names a secret (seed, mnemonic, recovery, phrase, preimage, private, secret, prf, nsec, xprv, spending) and every non-scalar value.
+- **Used by:** `readMemberEvents`.
+
+## Function: serializeTeamAccess
+
+- **Purpose:** JSON form of one audit row with both accounts resolved.
+- **Inputs:** Stored audit row; an async resolver from account id to `{ id, name, username }`.
+- **Returns / side effects:** `{ id, viewer, member, what, at }`.
+- **Used by:** `readTeamAudit`.
+
+## Function: readMemberWallet
+
+- **Purpose:** Build the member wallet view shared by `GET /team/members/:id/wallet` and `GET /debug/team/members/:id/wallet`.
+- **Inputs:** `{ store, auth, nowMs, beforeRead? }`, the path id, and `{ period, category, direction, cursor }`.
+- **Returns / side effects:** 404 for a non-UUID or unknown member; 400 for an invalid period, category, direction, or cursor; otherwise runs `beforeRead` (the team route writes the audit row there) and only then reads the newest balance, one page of 51 rows (50 shown, the extra one sets `nextCursor`), each distinct counterparty once, and the period totals. Throws when the store, the lookup, or `beforeRead` throws.
+- **Used by:** `teamRoutes`, `debugTeamRoutes`.
+
+## Function: readMemberEvents
+
+- **Purpose:** Build the member events view shared by `GET /team/members/:id/events` and its debug equivalent.
+- **Inputs:** `{ store, auth, nowMs, beforeRead? }`, the path id, and the raw `cursor`.
+- **Returns / side effects:** 404 or 400 before `beforeRead`; otherwise runs `beforeRead`, then reads one page of 101 events (100 shown). Throws when the store, the lookup, or `beforeRead` throws.
+- **Used by:** `teamRoutes`, `debugTeamRoutes`.
+
+## Function: readTeamAudit
+
+- **Purpose:** Build one page of the team access audit log shared by `GET /team/audit` and `GET /debug/team/audit`.
+- **Inputs:** `{ store, auth }` and the raw `cursor`.
+- **Returns / side effects:** 400 for an invalid cursor; otherwise 100 entries newest first with each account looked up once per page and `nextCursor`. Throws when the store or the lookup throws.
+- **Used by:** `teamRoutes`, `debugTeamRoutes`.
+
+## Function: teamRoutes
+
+- **Purpose:** Builds the `/team` Hono group: `GET /members`, `GET /members/:id/wallet`, `GET /members/:id/events`, and `GET /audit`.
+- **Inputs:** `{ authStore, memberDataStore, now }`.
+- **Returns / side effects:** Hono app. Every route resolves the bearer session first (401), then the role (403; moderator or above, the audit log initiator or founder via `canReadTeamAudit`). Wallet and events reads pass a `beforeRead` that appends a `team_access_audit` row; a failure there is 503 and nothing is read.
+- **Used by:** `createApp` (mounted at `/team`).
+
+## Function: debugTeamRoutes
+
+- **Purpose:** Builds the `/debug/team` Hono group: read-only operator equivalents of the `/team` wallet, events, and audit routes.
+- **Inputs:** `{ authStore, memberDataStore, debugToken, now }`.
+- **Returns / side effects:** Hono app. 503 when `DEBUG_TOKEN` is unset or blank, 401 on a mismatch, then the shared readers without `beforeRead`, so no audit row is written.
+- **Used by:** `createApp` (mounted at `/debug/team`).
