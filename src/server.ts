@@ -37,6 +37,7 @@ import { debugDiagnosticsRoutes } from '@/routes/debug-diagnostics';
 import { diagnosticsRoutes } from '@/routes/diagnostics';
 import { debugDbRoutes } from '@/routes/debug-db';
 import type { DebugDbStore } from '@/lib/debug-db';
+import { assertDistinctDebugTokens } from '@/lib/debug-token';
 import type { MergeDb } from '@/lib/account-merge';
 import { debugContactsRoutes } from '@/routes/debug-contacts';
 import { debugMessagesRoutes } from '@/routes/debug-messages';
@@ -131,11 +132,19 @@ export interface AppDeps {
    * `PUT /debug/messages/:id/video`, `POST /debug/messages/:id/restore`,
    * `GET /debug/external-pubkeys`, `GET /debug/accounts/:id`,
    * `GET /debug/trust-edges`, `GET /debug/dump`, `GET /debug/dump/:table`,
-   * `POST /debug/trust-edges`, `GET /debug/db`, and
+   * `POST /debug/trust-edges`, and
    * `POST /debug/passkey-renew/reopen`
-   * return 503.
+   * return 503. `GET /debug/db` returns 503 when this token and
+   * `debugReadToken` are both unset or blank.
    */
   debugToken?: string;
+  /**
+   * Read-only bearer for `GET /debug/db` (default: `process.env.DEBUG_READ_TOKEN`).
+   * Trim. Empty → omitted. Non-empty and equal to `debugToken` after trim
+   * throws `DEBUG_READ_TOKEN matches DEBUG_TOKEN` before routes mount, without
+   * interpolating either value. Other debug routes do not receive this value.
+   */
+  debugReadToken?: string;
   /**
    * Reserved-connection transaction port for `POST /debug/accounts/merge`.
    * Omitted on a memory boot. A valid body then returns 503. An invalid body
@@ -335,6 +344,8 @@ function debugList(store: object, limit: number): Promise<unknown[]> {
  *
  * @param deps - Optional overrides for the auth store, clock, invoice payer,
  *   LNURL-pay fetch, LN-Address cache, brand reader, debugToken,
+ *   debugReadToken (optional; default `process.env.DEBUG_READ_TOKEN`;
+ *   equal to debugToken after trim throws before routes mount),
  *   mergeDb, gift store,
  *   gift recorder, BTC-USD rates, USD-fiat rates, message store,
  *   mapPush (optional; default resolveMapPush on env),
@@ -351,6 +362,8 @@ function debugList(store: object, limit: number): Promise<unknown[]> {
  *   and the Nostr worker), gift invoice store, listDbChange, and
  *   diagnosticStore (optional; default {@link InMemoryDiagnosticStore};
  *   mounts `POST /diagnostics` and `GET /debug/diagnostics`).
+ * @throws {@link Error}
+ * When the trimmed read token is non-empty and equal to the trimmed write token, before routes mount. The message is `DEBUG_READ_TOKEN matches DEBUG_TOKEN` and includes neither token value. An empty or missing read token does not throw.
  * @returns A Hono app with all routes and middleware attached.
  */
 export function createApp(deps: AppDeps = {}): Hono {
@@ -362,6 +375,8 @@ export function createApp(deps: AppDeps = {}): Hono {
   const lnAddressCache = deps.lnAddressCache ?? new InMemoryLnAddressCache();
   const readBrand = deps.readBrand ?? readPublicBrandFile;
   const debugToken = deps.debugToken ?? process.env['DEBUG_TOKEN'];
+  const debugReadToken = deps.debugReadToken ?? process.env['DEBUG_READ_TOKEN'];
+  assertDistinctDebugTokens(debugToken, debugReadToken);
   const giftStore = deps.giftStore ?? new InMemoryGiftStore();
   const btcUsdRates = deps.btcUsdRates ?? new InMemoryBtcUsdStore();
   const fiatRates = deps.fiatRates ?? new InMemoryFiatStore();
@@ -543,7 +558,14 @@ export function createApp(deps: AppDeps = {}): Hono {
   app.route('/debug/api-log', debugApiLogRoutes({ store: apiLogStore, debugToken }));
   app.route('/debug/diagnostics', debugDiagnosticsRoutes({ store: diagnosticStore, debugToken }));
   app.route('/diagnostics', diagnosticsRoutes({ store: diagnosticStore, now }));
-  app.route('/debug/db', debugDbRoutes({ store: deps.debugDbStore, debugToken }));
+  app.route(
+    '/debug/db',
+    debugDbRoutes({
+      store: deps.debugDbStore,
+      debugToken,
+      ...(debugReadToken === undefined ? {} : { debugReadToken }),
+    }),
+  );
   app.route(
     '/debug/messages',
     debugMessagesRoutes({
