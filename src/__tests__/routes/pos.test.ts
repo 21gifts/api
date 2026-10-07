@@ -349,6 +349,7 @@ describe('POS routes', () => {
           base.issueSparkInvoice(chargeId, invoice, nowMs),
         recordInvoice: (chargeId, paymentHash, nowMs) =>
           base.recordInvoice(chargeId, paymentHash, nowMs),
+        findChargeForPayment: (ref) => base.findChargeForPayment(ref),
         listWatched: (sinceMs) => base.listWatched(sinceMs),
         markPaid: (chargeId, paidAtMs) => base.markPaid(chargeId, paidAtMs),
       };

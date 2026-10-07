@@ -334,6 +334,20 @@ describe('InMemoryPosStore paid tracking', () => {
     ]);
   });
 
+  it('findChargeForPayment resolves a recorded hash or charge id and returns copies', async () => {
+    const store = new InMemoryPosStore();
+    await store.create(charge({ id: 'c1' }));
+    await store.recordInvoice('c1', 'a'.repeat(64), T0 + 1);
+    const byHash = await store.findChargeForPayment({ paymentHash: 'a'.repeat(64) });
+    const byId = await store.findChargeForPayment({ chargeId: 'c1' });
+    expect(byHash?.id).toBe('c1');
+    expect(byId?.id).toBe('c1');
+    byHash?.createdAt.setTime(0);
+    expect((await store.findChargeForPayment({ chargeId: 'c1' }))?.createdAt).toEqual(new Date(T0));
+    expect(await store.findChargeForPayment({ paymentHash: 'b'.repeat(64) })).toBeUndefined();
+    expect(await store.findChargeForPayment({ chargeId: 'missing' })).toBeUndefined();
+  });
+
   it('decides by issue time: a charge already marked expired still records an earlier invoice', async () => {
     const store = new InMemoryPosStore();
     await store.create(charge({ id: 'c1' }));
@@ -654,6 +668,38 @@ describe('PostgresPosStore', () => {
     expect(sql.queries[0]?.params).toEqual(['c1', 'a'.repeat(64), new Date(T0).toISOString()]);
     sql.listRows = [];
     expect(await store.recordInvoice('c1', 'a'.repeat(64), T0)).toBe(false);
+  });
+
+  it('findChargeForPayment queries by hash or valid UUID and refuses a malformed id', async () => {
+    const sql = new MockSql();
+    sql.listRows = [
+      {
+        id: '11111111-1111-4111-8111-111111111111',
+        account_id: 'acc',
+        amount_sats: '21',
+        status: 'paid',
+        created_at: '2026-09-01T12:00:00.000Z',
+        expires_at: '2026-09-01T12:05:00.000Z',
+        paid_at: new Date('2026-09-01T12:01:00.000Z'),
+        spark_invoice: null,
+      },
+    ];
+    const store = new PostgresPosStore(sql);
+    expect((await store.findChargeForPayment({ paymentHash: 'a'.repeat(64) }))?.amountSats).toBe(
+      21,
+    );
+    expect(sql.queries[0]?.text).toMatch(/FROM pos_charge_invoice i\s+JOIN pos_charge c/);
+    expect(sql.queries[0]?.params).toEqual(['a'.repeat(64)]);
+    expect(
+      (await store.findChargeForPayment({ chargeId: '11111111-1111-4111-8111-111111111111' }))?.id,
+    ).toBe('11111111-1111-4111-8111-111111111111');
+    expect(sql.queries[1]?.text).toMatch(/FROM pos_charge\s+WHERE id = \$1/);
+    expect(sql.queries[1]?.params).toEqual(['11111111-1111-4111-8111-111111111111']);
+    const queryCount = sql.queries.length;
+    expect(await store.findChargeForPayment({ chargeId: 'not-a-uuid' })).toBeUndefined();
+    expect(sql.queries).toHaveLength(queryCount);
+    sql.listRows = [];
+    expect(await store.findChargeForPayment({ paymentHash: 'b'.repeat(64) })).toBeUndefined();
   });
 
   it('listWatched groups joined payment hashes per charge in query order', async () => {

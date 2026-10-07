@@ -122,6 +122,20 @@ describe('mergeAccounts', () => {
     );
     expect(contentFingerprint).toBeGreaterThanOrEqual(0);
     expect(messageAccount).toBeGreaterThan(contentFingerprint);
+    const walletCollision = queries.findIndex((query) =>
+      query.text.includes('DELETE FROM wallet_payment AS src'),
+    );
+    const posCollision = queries.findIndex((query) =>
+      query.text.includes('DELETE FROM pos_charge'),
+    );
+    const catalog = queries.findIndex(
+      (query) => query.text.includes('pg_constraint') && query.text.includes('JOIN LATERAL'),
+    );
+    expect(walletCollision).toBeGreaterThanOrEqual(0);
+    expect(walletCollision).toBeGreaterThan(posCollision);
+    expect(walletCollision).toBeLessThan(catalog);
+    expect(queries[walletCollision]?.params).toEqual([FROM, INTO]);
+    expect(queries[walletCollision]?.text).toContain('dst.payment_id = src.payment_id');
     expect(queries.some((query) => query.text.includes('DELETE FROM auth_session'))).toBe(true);
     expect(queries).toContainEqual({
       text: 'UPDATE "public"."passkey_credential" SET "account_id" = $1 WHERE "account_id" = $2',
