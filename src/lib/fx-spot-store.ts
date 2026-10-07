@@ -18,7 +18,11 @@ export const BTC_FIAT_SPOT_SCHEMA_SQL: readonly string[] = [
 )`,
 ];
 
-/** Keeps the latest quote. A save replaces the whole stored quote unless the stored one is newer. */
+/**
+ * Keeps the latest quote. A save replaces the whole stored quote unless the stored
+ * one is newer; the Postgres store still replaces a stored `as_of` that lies in
+ * the future of the database clock.
+ */
 export interface FxSpotStore {
   /**
    * Read the stored quote.
@@ -28,7 +32,8 @@ export interface FxSpotStore {
   latest(): Promise<FxSpotQuote | null>;
   /**
    * Replace the stored quote unless the stored one has a later `asOf` (several
-   * processes refresh the same store). Currencies missing from `quote` are cleared.
+   * processes refresh the same store; see {@link PostgresFxSpotStore.save} for a
+   * stored `asOf` in the future). Currencies missing from `quote` are cleared.
    *
    * @param quote - Quote to keep.
    */
