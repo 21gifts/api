@@ -367,6 +367,9 @@ describe('walletPaymentClassifier', () => {
       counterpartyAccountId: MEMBER,
     });
     await expect(
+      first.classify(payment({ method: 'lightning', invoice: BOLT11, destination: address })),
+    ).resolves.toEqual({ category: 'member', counterpartyAccountId: MEMBER });
+    await expect(
       first.classify(payment({ destination: ` ${OTHER_KEY.toUpperCase()} ` })),
     ).resolves.toEqual({
       category: 'member',

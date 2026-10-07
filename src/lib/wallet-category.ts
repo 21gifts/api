@@ -116,8 +116,10 @@ export function walletPaymentClassifier(
     if (hash === null && payment.invoice !== null) {
       hash = decodeBolt11(payment.invoice)?.paymentHash ?? null;
     }
-    const sparkSource = payment.invoice ?? payment.destination;
-    const spark = sparkSource === null ? null : decodeSparkAddress(sparkSource);
+    // Memos live on a Spark invoice; a Spark address in `destination` still names the receiver.
+    const spark =
+      (payment.invoice === null ? null : decodeSparkAddress(payment.invoice)) ??
+      (payment.destination === null ? null : decodeSparkAddress(payment.destination));
     const zapMemoHash = spark?.memo?.match(/^zap:([0-9a-fA-F]{64})$/)?.[1]?.toLowerCase();
     // A zap memo names the zap invoice the Spark invoice stands in for; try it after the reported hash.
     const knownHashes = [hash, zapMemoHash].filter(
