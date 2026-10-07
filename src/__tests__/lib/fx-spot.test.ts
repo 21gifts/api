@@ -75,6 +75,16 @@ describe('fetchFxSpot', () => {
     expect(timeout).toHaveBeenCalledWith(BTC_USD_SPOT_TIMEOUT_MS);
   });
 
+  it('stamps asOf with the time the request started', async () => {
+    let clock = NOW;
+    const fetchImpl = vi.fn(async () => {
+      clock += 4_000;
+      return response(coinbase({ USD: '1' }));
+    });
+    const quote = await fetchFxSpot({ fetchImpl, url: URL, now: () => clock });
+    expect(quote?.asOf).toBe('2026-10-07T12:00:00.000Z');
+  });
+
   it('omits a currency whose rate is missing or unusable', async () => {
     const fetchImpl = vi.fn(async () =>
       response(coinbase({ USD: '62345.12', CHF: '0', EUR: '-1', PHP: '1e5' })),

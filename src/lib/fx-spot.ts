@@ -73,6 +73,8 @@ function usableRate(value: unknown): string | null {
  *
  * Expects the Coinbase body `{ data: { currency: "BTC", rates: { USD: "…", … } } }`.
  * A currency whose rate is missing or not positive decimal text is omitted.
+ * `asOf` is the time the request started, so of two overlapping fetches the one
+ * sent later is the newer quote.
  *
  * @param args - Fetch implementation, provider URL, and clock for `asOf`.
  * @returns A quote with at least one currency, or `null` for every transport,
@@ -84,6 +86,7 @@ export async function fetchFxSpot(args: {
   url: string;
   now: () => number;
 }): Promise<FxSpotQuote | null> {
+  const asOf = new Date(args.now()).toISOString();
   try {
     const response = await args.fetchImpl(args.url, {
       signal: AbortSignal.timeout(BTC_USD_SPOT_TIMEOUT_MS),
@@ -112,7 +115,7 @@ export async function fetchFxSpot(args: {
       return null;
     }
     return {
-      asOf: new Date(args.now()).toISOString(),
+      asOf,
       source: FX_SPOT_SOURCE_COINBASE,
       rates: out,
     };
