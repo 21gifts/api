@@ -156,6 +156,7 @@ if (import.meta.main) {
     postLimiter,
     bannerStore: banners,
     ...(sparkInvoiceStore === undefined ? {} : { sparkInvoiceStore }),
+    ...(boot.memberDataStore === undefined ? {} : { memberDataStore: boot.memberDataStore }),
   });
   Bun.serve({ fetch: app.fetch, hostname: host, port });
   console.warn(`21gifts-api listening on ${host}:${port}`);

@@ -13,6 +13,9 @@ import { pictureRoutes } from '@/routes/pictures';
 import { InMemoryBannerStore, type BannerStore } from '@/lib/banner-store';
 import { membersRoutes } from '@/routes/members';
 import { mentionsRoutes } from '@/routes/mentions';
+import { teamRoutes } from '@/routes/team';
+import { debugTeamRoutes } from '@/routes/debug-team';
+import { InMemoryMemberDataStore, type MemberDataStore } from '@/lib/member-data-store';
 import { linksRoutes } from '@/routes/links';
 import { viewRoutes } from '@/routes/view';
 import { lightningAddressRoutes } from '@/routes/lightning-address';
@@ -130,8 +133,9 @@ export interface AppDeps {
    * `PUT /debug/messages/:id/video`, `POST /debug/messages/:id/restore`,
    * `GET /debug/external-pubkeys`, `GET /debug/accounts/:id`,
    * `GET /debug/trust-edges`, `GET /debug/dump`, `GET /debug/dump/:table`,
-   * `POST /debug/trust-edges`, `GET /debug/db`, and
-   * `POST /debug/passkey-renew/reopen`
+   * `POST /debug/trust-edges`, `GET /debug/db`,
+   * `GET /debug/team/members/:id/wallet`, `GET /debug/team/members/:id/events`,
+   * `GET /debug/team/audit`, and `POST /debug/passkey-renew/reopen`
    * return 503.
    */
   debugToken?: string;
@@ -320,6 +324,13 @@ export interface AppDeps {
    * same instance is passed to the Spark invoice worker.
    */
   sparkInvoiceStore?: SparkInvoiceStore;
+  /**
+   * Reported wallet data, interaction events, and the team access audit log
+   * for `/team` and `/debug/team` (default: empty
+   * {@link InMemoryMemberDataStore}). Boot injects
+   * {@link PostgresMemberDataStore} when `DATABASE_URL` is set.
+   */
+  memberDataStore?: MemberDataStore;
 }
 
 /** Optional `listDebug` on a rate book, or `[]` when the adapter has none. */
@@ -358,7 +369,9 @@ function debugList(store: object, limit: number): Promise<unknown[]> {
  *   (optional; default `new PostRateLimiter()`, shared with `messagesRoutes`
  *   and the Nostr worker), gift invoice store, listDbChange, and
  *   diagnosticStore (optional; default {@link InMemoryDiagnosticStore};
- *   mounts `POST /diagnostics` and `GET /debug/diagnostics`).
+ *   mounts `POST /diagnostics` and `GET /debug/diagnostics`), and
+ *   memberDataStore (optional; default {@link InMemoryMemberDataStore};
+ *   mounts `/team` and `/debug/team`).
  * @returns A Hono app with all routes and middleware attached.
  */
 export function createApp(deps: AppDeps = {}): Hono {
@@ -432,6 +445,7 @@ export function createApp(deps: AppDeps = {}): Hono {
   const trustStore = deps.trustStore ?? new InMemoryTrustStore();
   const fundingStore = deps.fundingStore ?? new InMemoryFundingStore();
   const bannerStore = deps.bannerStore ?? new InMemoryBannerStore();
+  const memberDataStore = deps.memberDataStore ?? new InMemoryMemberDataStore();
   const vapidPublicKey = deps.vapidPublicKey ?? resolveVapidConfig(process.env)?.publicKey;
   const webAuthnRpId = deps.webAuthnRpId ?? process.env['WEBAUTHN_RP_ID'];
   const webAuthnRpName = deps.webAuthnRpName ?? process.env['WEBAUTHN_RP_NAME'];
@@ -586,6 +600,7 @@ export function createApp(deps: AppDeps = {}): Hono {
     }),
   );
   app.route('/mentions', mentionsRoutes({ auth: store, now }));
+  app.route('/team', teamRoutes({ authStore: store, memberDataStore, now }));
   app.route('/links', linksRoutes({ messages: messageStore, accounts: store }));
   app.route(
     '/view',
@@ -663,6 +678,7 @@ export function createApp(deps: AppDeps = {}): Hono {
     }),
   );
   app.route('/debug/trust-edges', debugTrustRoutes({ store, trustStore, debugToken, now }));
+  app.route('/debug/team', debugTeamRoutes({ authStore: store, memberDataStore, debugToken, now }));
   app.route(
     '/debug/dump',
     debugCatalogRoutes({

@@ -148,6 +148,7 @@ function extractEndpoints() {
     'debug-push.ts': '/debug/push-ping',
     'debug-passkey-renew.ts': '/debug/passkey-renew',
     'debug-trust.ts': '/debug/trust-edges',
+    'debug-team.ts': '/debug/team',
     'debug-catalog.ts': '/debug/dump',
     'well-known.ts': '/.well-known',
     'lnurl-server.ts': '',
