@@ -5447,6 +5447,7 @@ describe('POST /messages/:id/invoice', () => {
       throw new Error('expected account');
     }
     await ensureAccountNostrKey(authStore, 'acc', kek);
+    await ensureAccountNostrKey(authStore, 'author', kek);
     const messageStore = new InMemoryMessageStore();
     await messageStore.create({
       id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
