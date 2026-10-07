@@ -85,6 +85,16 @@ describe('fetchFxSpot', () => {
     expect(quote?.asOf).toBe('2026-10-07T12:00:00.000Z');
   });
 
+  it('returns null for a clock that throws or is not a time', async () => {
+    const fetchImpl = vi.fn(async () => response(coinbase({ USD: '1' })));
+    const broken = (): number => {
+      throw new Error('clock');
+    };
+    await expect(fetchFxSpot({ fetchImpl, url: URL, now: broken })).resolves.toBeNull();
+    await expect(fetchFxSpot({ fetchImpl, url: URL, now: () => Number.NaN })).resolves.toBeNull();
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
   it('omits a currency whose rate is missing or unusable', async () => {
     const fetchImpl = vi.fn(async () =>
       response(coinbase({ USD: '62345.12', CHF: '0', EUR: '-1', PHP: '1e5' })),

@@ -77,7 +77,7 @@ function usableRate(value: unknown): string | null {
  * sent later is the newer quote.
  *
  * @param args - Fetch implementation, provider URL, and clock for `asOf`.
- * @returns A quote with at least one currency, or `null` for every transport,
+ * @returns A quote with at least one currency, or `null` for every clock, transport,
  * shape, or value failure, including a fetch that aborts after
  * `BTC_USD_SPOT_TIMEOUT_MS`.
  */
@@ -86,8 +86,8 @@ export async function fetchFxSpot(args: {
   url: string;
   now: () => number;
 }): Promise<FxSpotQuote | null> {
-  const asOf = new Date(args.now()).toISOString();
   try {
+    const asOf = new Date(args.now()).toISOString();
     const response = await args.fetchImpl(args.url, {
       signal: AbortSignal.timeout(BTC_USD_SPOT_TIMEOUT_MS),
     });
