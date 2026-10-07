@@ -3,7 +3,6 @@
 import { createHash } from 'node:crypto';
 import { base58, bech32, bech32m } from '@scure/base';
 import { bolt11Descriptions } from '@/lib/bolt11';
-import { decodeProto } from '@/lib/protobuf';
 import { looksLikeSecretValue } from '@/lib/secret-shape';
 
 /** Shortest token worth decoding: a bech32 checksum alone is six characters. */
@@ -37,6 +36,63 @@ function payloadBytes(token: string): Uint8Array | null {
 /** Most bytes the protobuf walk may decode, as a multiple of the payload length (real Spark invoices nest 2–3 levels). */
 const PROTO_WORK_FACTOR = 8;
 
+/** Longest varint read: a length or tag never needs more than eight bytes here. */
+const MAX_VARINT_BYTES = 8;
+
+/** Read one base-128 varint as a number, or `null` when it is truncated or too long. */
+function readVarint(bytes: Uint8Array, offset: number): { value: number; next: number } | null {
+  let value = 0;
+  for (let i = 0; i < MAX_VARINT_BYTES; i += 1) {
+    const byte = bytes[offset + i];
+    if (byte === undefined) {
+      return null;
+    }
+    value += (byte & 0x7f) * 2 ** (7 * i);
+    if (byte < 0x80) {
+      return { value, next: offset + i + 1 };
+    }
+  }
+  return null;
+}
+
+/**
+ * Values of the length-delimited fields at the start of a protobuf message, in
+ * order. Unlike `decodeProto`, a malformed or truncated later field only ends
+ * the read; every field decoded before it is kept, so a valid field cannot be
+ * hidden behind a broken one.
+ */
+function lengthDelimitedValues(bytes: Uint8Array): Uint8Array[] {
+  const values: Uint8Array[] = [];
+  let offset = 0;
+  while (offset < bytes.length) {
+    const tag = readVarint(bytes, offset);
+    if (tag === null || tag.value < 8) {
+      break;
+    }
+    const wire = tag.value % 8;
+    offset = tag.next;
+    if (wire === 0) {
+      const skipped = readVarint(bytes, offset);
+      if (skipped === null) {
+        break;
+      }
+      offset = skipped.next;
+    } else if (wire === 2) {
+      const length = readVarint(bytes, offset);
+      if (length === null || length.next + length.value > bytes.length) {
+        break;
+      }
+      values.push(bytes.subarray(length.next, length.next + length.value));
+      offset = length.next + length.value;
+    } else if (wire === 1 || wire === 5) {
+      offset += wire === 1 ? 8 : 4;
+    } else {
+      break;
+    }
+  }
+  return values;
+}
+
 /**
  * Text of every length-delimited protobuf field, repeated and nested ones
  * included at any depth, so a field's length byte never glues onto the first
@@ -56,17 +112,9 @@ function protoTexts(bytes: Uint8Array): string[] | null {
     if (budget < 0) {
       return null;
     }
-    let fields: ReturnType<typeof decodeProto>;
-    try {
-      fields = decodeProto(next);
-    } catch {
-      continue;
-    }
-    for (const field of fields) {
-      if (field.wire === 2) {
-        out.push(printable(field.value));
-        pending.push(field.value);
-      }
+    for (const value of lengthDelimitedValues(next)) {
+      out.push(printable(value));
+      pending.push(value);
     }
   }
   return out;
@@ -118,7 +166,9 @@ export function containsEncodedSecret(value: string): boolean {
   if (textHoldsSecret(value)) {
     return true;
   }
-  for (const token of value.split(/[^A-Za-z0-9]+/)) {
+  // Alphanumeric runs, plus whole whitespace-separated chunks: a bech32 prefix may hold punctuation (`a-b1…`).
+  const tokens = new Set([...value.split(/[^A-Za-z0-9]+/), ...value.split(/\s+/)]);
+  for (const token of tokens) {
     if (token.length < ENCODED_TOKEN_MIN_LENGTH || !token.includes('1')) {
       continue;
     }

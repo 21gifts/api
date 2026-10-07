@@ -212,6 +212,39 @@ describe('POST /me/wallet/report', () => {
     expect((await walletStore.latestBalance(ACCOUNT))?.receivedAt).toEqual(new Date(START + 1));
   });
 
+  it('keeps the observation clock per account and drops idle accounts after the window', async () => {
+    let now = START;
+    const auth = await authStore();
+    const other = '22222222-2222-4222-8222-222222222222';
+    await auth.createAccount({
+      id: other,
+      linkingKey: null,
+      role: 'verified',
+      name: 'Bea',
+      location: null,
+      forumLawsDismissed: false,
+      viewKey: 'b'.repeat(64),
+      createdAt: 1,
+      rulesAgreedAt: 1,
+    });
+    await auth.createSession({ token: 'other-token', accountId: other, createdAt: START });
+    const otherAuth = { ...AUTH, authorization: 'Bearer other-token' };
+    const walletStore = new InMemoryWalletStore();
+    const { app } = await mount({ walletStore, auth, now: () => now });
+    expect((await post(app, body({ payments: [reported()] }))).status).toBe(200);
+    expect((await post(app, body({ payments: [reported()] }), otherAuth)).status).toBe(200);
+    // Another account in the same millisecond is not pushed forward.
+    expect((await walletStore.latestBalance(other))?.receivedAt).toEqual(new Date(START));
+    now = START + 30_000;
+    expect((await post(app, body({ payments: [reported()] }), otherAuth)).status).toBe(200);
+    now = START + 61_000;
+    // The sweep drops the first account (idle for a full window) and keeps the second.
+    expect((await post(app, body({ payments: [reported()] }))).status).toBe(200);
+    expect((await walletStore.latestBalance(ACCOUNT))?.receivedAt).toEqual(
+      new Date(START + 61_000),
+    );
+  });
+
   it('deduplicates payment ids with the later entry winning and later-position order', async () => {
     const { app, walletStore } = await mount();
     const response = await post(
