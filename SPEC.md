@@ -3653,8 +3653,9 @@ successful fetch.
 | `rates`  | object | Fiat per 1 BTC as decimal text at provider precision; keys `USD`, `CHF`, `EUR`, `PHP` |
 
 A currency without a usable quote (missing, not decimal text, or not
-positive) is **omitted** from `rates`, never `null` or `"0"`. Every fetch
-replaces the whole quote, so all present rates share one `asOf`.
+positive) is **omitted** from `rates`, never `null` or `"0"`. Every stored
+refresh replaces the whole quote (an older one is skipped, see above), so all
+present rates share one `asOf`.
 
 **Response** `200` without a quote (never fetched, or the store failed;
 `fx.spot.read_failed` is logged), `Cache-Control: no-store`:
