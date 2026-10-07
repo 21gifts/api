@@ -3519,8 +3519,10 @@ A background worker fetches one Coinbase response with every pair
 with an earlier `asOf` than the stored quote is skipped, so several replicas
 that refresh the same row cannot move it backwards. A request
 only reads that stored quote and never calls the provider. A failed fetch
-keeps the last good quote, so after a restart or during a provider outage the
-route keeps serving it with its original `asOf`.
+keeps the last good quote, so during a provider outage the route keeps serving
+it with its original `asOf`. With `DATABASE_URL` set this also holds after a
+restart; the in-memory store starts empty and has no quote until its first
+successful fetch.
 
 **Response** `200` with a quote, `Cache-Control: public, max-age=60`:
 
