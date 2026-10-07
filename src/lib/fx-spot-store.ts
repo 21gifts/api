@@ -27,7 +27,8 @@ export interface FxSpotStore {
    */
   latest(): Promise<FxSpotQuote | null>;
   /**
-   * Replace the stored quote. Currencies missing from `quote` are cleared.
+   * Replace the stored quote unless the stored one has a later `asOf` (several
+   * processes refresh the same store). Currencies missing from `quote` are cleared.
    *
    * @param quote - Quote to keep.
    */
@@ -97,12 +98,15 @@ export class InMemoryFxSpotStore implements FxSpotStore {
   }
 
   /**
-   * Replace the stored quote.
+   * Replace the stored quote unless the stored one has a later `asOf`.
    *
    * @param quote - Quote to keep.
-   * @returns Resolves once stored.
+   * @returns Resolves once stored or skipped.
    */
   save(quote: FxSpotQuote): Promise<void> {
+    if (this.#quote !== null && Date.parse(this.#quote.asOf) > Date.parse(quote.asOf)) {
+      return Promise.resolve();
+    }
     this.#quote = { ...quote, rates: copyRates(quote.rates) };
     return Promise.resolve();
   }
@@ -159,7 +163,9 @@ export class PostgresFxSpotStore implements FxSpotStore {
   }
 
   /**
-   * Upsert the single row with every currency (missing ones become `NULL`).
+   * Upsert the single row with every currency (missing ones become `NULL`). The
+   * update only applies when the stored `as_of` is not later, so a delayed write
+   * from another replica never replaces a newer quote.
    *
    * @param quote - Quote to keep.
    * @returns Resolves once written.
@@ -174,7 +180,8 @@ export class PostgresFxSpotStore implements FxSpotStore {
          eur = EXCLUDED.eur,
          php = EXCLUDED.php,
          source = EXCLUDED.source,
-         as_of = EXCLUDED.as_of`,
+         as_of = EXCLUDED.as_of
+       WHERE btc_fiat_spot.as_of <= EXCLUDED.as_of`,
       [
         quote.rates.USD ?? null,
         quote.rates.CHF ?? null,
