@@ -7,6 +7,7 @@ import { PostgresAuthStore } from '@/lib/auth/postgres-store';
 import type { SqlClient } from '@/lib/auth/sql';
 import { InMemoryBtcUsdStore, PostgresBtcUsdStore } from '@/lib/btc-usd-store';
 import { InMemoryFiatStore, PostgresFiatStore } from '@/lib/usd-fiat-store';
+import { InMemoryFxSpotStore, PostgresFxSpotStore } from '@/lib/fx-spot-store';
 import { QueryGiftStore } from '@/lib/gift-store';
 import { SqlGiftRecorder } from '@/lib/gift-recorder';
 import { PostgresContactStore } from '@/lib/contact-store';
@@ -69,6 +70,7 @@ describe('openBootStores', () => {
       giftRecorder,
       btcUsdRates,
       fiatRates,
+      fxSpotStore,
       messageStore,
       translationStore,
       conversationTranslationStore,
@@ -109,6 +111,7 @@ describe('openBootStores', () => {
     expect(sparkInvoiceStore).toBeUndefined();
     expect(btcUsdRates).toBeInstanceOf(InMemoryBtcUsdStore);
     expect(fiatRates).toBeInstanceOf(InMemoryFiatStore);
+    expect(fxSpotStore).toBeInstanceOf(InMemoryFxSpotStore);
     expect(factory).not.toHaveBeenCalled();
     expect(parsedEvents(warn).some((e) => e['event'] === 'nostr.zap.backfill.done')).toBe(false);
     expect(parsedEvents(warn).some((e) => e['event'] === 'nostr.zapper.backfill.done')).toBe(false);
@@ -212,6 +215,7 @@ describe('openBootStores', () => {
       giftRecorder,
       btcUsdRates,
       fiatRates,
+      fxSpotStore,
       messageStore,
       translationStore,
       conversationTranslationStore,
@@ -262,6 +266,7 @@ describe('openBootStores', () => {
     expect(sparkInvoiceStore).toBeInstanceOf(PostgresSparkInvoiceStore);
     expect(btcUsdRates).toBeInstanceOf(PostgresBtcUsdStore);
     expect(fiatRates).toBeInstanceOf(PostgresFiatStore);
+    expect(fxSpotStore).toBeInstanceOf(PostgresFxSpotStore);
     expect(executes.length).toBeGreaterThan(0);
     expect(executes.some((q) => q.includes('message'))).toBe(true);
     expect(executes.some((q) => q.includes('contact'))).toBe(true);
@@ -309,6 +314,11 @@ describe('openBootStores', () => {
     expect(btcUsdIdx).toBeGreaterThanOrEqual(0);
     expect(fiatIdx).toBeGreaterThan(btcUsdIdx);
     expect(dbChangeIdx).toBeGreaterThan(fiatIdx);
+    const fxSpotIdx = executes.findIndex((q) =>
+      /CREATE TABLE IF NOT EXISTS btc_fiat_spot/i.test(q),
+    );
+    expect(fxSpotIdx).toBeGreaterThan(fiatIdx);
+    expect(dbChangeIdx).toBeGreaterThan(fxSpotIdx);
     const zapPaymentIdx = executes.findIndex((q) =>
       /CREATE TABLE IF NOT EXISTS nostr_zap_payment/i.test(q),
     );

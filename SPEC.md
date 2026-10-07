@@ -246,6 +246,7 @@ Public base URLs used in examples:
 | GET    | `/debug/dump/:table`                                 | `Authorization: Bearer`                      | Operator catalog of one allowlisted table (`DEBUG_TOKEN`)                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
 | GET    | `/gifts`                                             | none                                         | Outbound gifts for one UTC day (`?day=`)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
 | GET    | `/gifts/stats`                                       | none                                         | Aggregated outbound gift statistics                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| GET    | `/fx/spot`                                           | none                                         | Current BTC price in USD, CHF, EUR, PHP (stored quote, refreshed every 5 minutes)                                                                                                                                                                                                                                                                                                                                                                                                                                             |
 | GET    | `/messages/stats`                                    | none                                         | Living forum notes and replies counted together, by UTC day                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
 | GET    | `/invoices/passkey`                                  | Bearer `SPEND_API_TOKEN`                     | Whether a wallet address has a passkey-backed account                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
 | GET    | `/invoices/posted`                                   | Bearer `SPEND_API_TOKEN`                     | Live top-level post flag plus welcome media (`welcomeHasMedia` includes About me)                                                                                                                                                                                                                                                                                                                                                                                                                                             |
@@ -3615,6 +3616,51 @@ or CHF/EUR/PHP cross is JSON `null` on the matching total and per-gift amount, n
 | `recipient`  | string         | Recipient handle (`recipient_wos_user`)         |
 
 **Response** `503`: `{ "error": "Gift stats are unavailable" }` (store failure or missing BTC-USD only; missing fiat is never 503).
+
+### `GET /fx/spot`
+
+Public current price of 1 BTC in USD, CHF, EUR, and PHP. No auth. It is
+independent of gifts: it does not read `gift` and does not change how
+`GET /gifts/stats` prices its days (those keep their daily rates).
+
+A background worker fetches one Coinbase response with every pair
+(`BTC_FIAT_SPOT_URL`, default
+`https://api.coinbase.com/v2/exchange-rates?currency=BTC`, aborted after
+10 seconds) at boot and then every 5 minutes, and stores the result in
+`btc_fiat_spot` (one row; in memory when `DATABASE_URL` is unset). A request
+only reads that stored quote and never calls the provider. A failed fetch
+keeps the last good quote, so after a restart or during a provider outage the
+route keeps serving it with its original `asOf`.
+
+**Response** `200` with a quote, `Cache-Control: public, max-age=60`:
+
+```json
+{
+  "asOf": "2026-10-07T12:00:00.000Z",
+  "source": "coinbase-exchange-rates",
+  "rates": { "USD": "62345.12", "CHF": "55000.5", "EUR": "57000", "PHP": "3500000.12" }
+}
+```
+
+| Field    | Type   | Meaning                                                                               |
+| -------- | ------ | ------------------------------------------------------------------------------------- |
+| `asOf`   | string | ISO-8601 time the stored quote was fetched                                            |
+| `source` | string | Provider tag (`coinbase-exchange-rates`)                                              |
+| `rates`  | object | Fiat per 1 BTC as decimal text at provider precision; keys `USD`, `CHF`, `EUR`, `PHP` |
+
+A currency without a usable quote (missing, not decimal text, or not
+positive) is **omitted** from `rates`, never `null` or `"0"`. Every fetch
+replaces the whole quote, so all present rates share one `asOf`.
+
+**Response** `200` without a quote (never fetched, or the store failed;
+`fx.spot.read_failed` is logged), `Cache-Control: no-store`:
+
+```json
+{ "asOf": null, "source": null, "rates": {} }
+```
+
+The app treats `asOf: null` (equivalently an empty `rates`) as "no rate".
+This route has no error status. The response shape is stable.
 
 ### `GET /gifts/stats`
 

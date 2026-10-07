@@ -7,6 +7,7 @@ import type { FundingGrant } from '@/lib/funding';
 import { migrateFundingSchema, PostgresFundingStore } from '@/lib/funding-store';
 import { migrateMemberHabitSchema, PostgresMemberHabitStore } from '@/lib/member-habit-store';
 import { migrateDbChangeSchema } from '@/lib/db-change';
+import { migrateFxSpotSchema, PostgresFxSpotStore } from '@/lib/fx-spot-store';
 import { unsignedNostrDefaults } from '@/lib/message';
 import { migrateMessageSchema, PostgresMessageStore } from '@/lib/message-store';
 import { postgresTextArrayLiteral } from '@/lib/postgres-text-array';
@@ -862,6 +863,53 @@ describe('PostgresMessageStore free first post', () => {
           profile,
         ),
       ).toBeUndefined();
+    } finally {
+      await closeIfPossible(sql);
+    }
+  });
+});
+
+describe('PostgresFxSpotStore', () => {
+  test('keeps provider digits, clears missing currencies, and logs db_change', async () => {
+    const { client, sql } = createBunSqlClient(databaseUrl);
+    try {
+      await migrateAuthSchema(client);
+      await migrateFxSpotSchema(client);
+      await migrateDbChangeSchema(client);
+      const store = new PostgresFxSpotStore(client);
+      const stamp = `test-${Date.now()}-${Math.random().toString(16).slice(2, 10)}`;
+      await store.save({
+        asOf: '2026-10-07T12:00:00.000Z',
+        source: stamp,
+        rates: { USD: '62345.12', CHF: '55000.5', EUR: '57000', PHP: '5218637.18388173333610621' },
+      });
+      expect(await store.latest()).toEqual({
+        asOf: '2026-10-07T12:00:00.000Z',
+        source: stamp,
+        rates: { USD: '62345.12', CHF: '55000.5', EUR: '57000', PHP: '5218637.18388173333610621' },
+      });
+      await store.save({
+        asOf: '2026-10-07T12:05:00.000Z',
+        source: stamp,
+        rates: { USD: '62400' },
+      });
+      expect(await store.latest()).toEqual({
+        asOf: '2026-10-07T12:05:00.000Z',
+        source: stamp,
+        rates: { USD: '62400' },
+      });
+      const rows = await client.query<{ op: string; after: { usd: unknown; php: unknown } | null }>(
+        `SELECT op, after
+         FROM db_change
+         WHERE table_name = 'btc_fiat_spot' AND after ->> 'source' = $1
+         ORDER BY id ASC`,
+        [stamp],
+      );
+      expect(rows.length).toBeGreaterThanOrEqual(2);
+      const last = rows[rows.length - 1];
+      expect(last?.op).toBe('UPDATE');
+      expect(Number(last?.after?.usd)).toBe(62400);
+      expect(last?.after?.php).toBeNull();
     } finally {
       await closeIfPossible(sql);
     }

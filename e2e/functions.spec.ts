@@ -3391,3 +3391,37 @@ test('Function: accountByReceivingAddress — GET /invoices/eligible unconfigure
   const res = await request.get('/invoices/eligible?address=ada@127.0.0.1');
   expect(res.status()).toBe(503);
 });
+
+async function expectEmptySpot(request: APIRequestContext): Promise<void> {
+  const res = await request.get('/fx/spot');
+  expect(res.status()).toBe(200);
+  expect(await res.json()).toEqual({ asOf: null, source: null, rates: {} });
+}
+
+test('Function: fxRoutes — GET /fx/spot is public', async ({ request }) => {
+  await expectEmptySpot(request);
+});
+test('Function: resolveFxSpotUrl — the pinned unreachable provider URL is used', async ({
+  request,
+}) => {
+  await expectEmptySpot(request);
+});
+test('Function: fetchFxSpot — an unreachable provider yields no quote', async ({ request }) => {
+  await expectEmptySpot(request);
+});
+test('Function: runFxSpotTick — a failed fetch stores nothing', async ({ request }) => {
+  await expectEmptySpot(request);
+});
+test('Function: startFxSpotWorker — the worker runs on the default boot', async ({ request }) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+  await expectEmptySpot(request);
+});
+test('Function: InMemoryFxSpotStore — memory boot starts without a quote', async ({ request }) => {
+  await expectEmptySpot(request);
+});
+test('Function: PostgresFxSpotStore — default boot has no DATABASE_URL', async ({ request }) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
+test('Function: migrateFxSpotSchema — default boot has no DATABASE_URL', async ({ request }) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});

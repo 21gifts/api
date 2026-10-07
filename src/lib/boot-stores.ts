@@ -22,6 +22,12 @@ import {
   type FiatRateBook,
 } from '@/lib/usd-fiat-store';
 import { listDbChanges, migrateDbChangeSchema } from '@/lib/db-change';
+import {
+  InMemoryFxSpotStore,
+  PostgresFxSpotStore,
+  migrateFxSpotSchema,
+  type FxSpotStore,
+} from '@/lib/fx-spot-store';
 import { migrateBannerSchema, PostgresBannerStore, type BannerStore } from '@/lib/banner-store';
 import { mapGiftQueryRow } from '@/lib/gift';
 import {
@@ -97,6 +103,8 @@ export interface BootStores {
   btcUsdRates: BtcUsdRateBook;
   /** USD→CHF/EUR/PHP rate book (memory when no SQL; Postgres otherwise). */
   fiatRates: FiatRateBook;
+  /** Last good BTC spot quote for `GET /fx/spot` (memory when no SQL; `btc_fiat_spot` otherwise). */
+  fxSpotStore: FxSpotStore;
   /**
    * Postgres-backed forum store, or `undefined` when no SQL client was
    * opened so `createApp` keeps the empty in-memory default.
@@ -225,9 +233,11 @@ export interface BootFxOptions {
  * `sparkInvoiceStore: undefined`,
  * `listDbChange: undefined`,
  * `debugDbStore: undefined`, `nostrKek: undefined`,
- * an empty {@link InMemoryBtcUsdStore}, and an empty {@link InMemoryFiatStore}.
+ * an empty {@link InMemoryBtcUsdStore}, an empty {@link InMemoryFiatStore}, and an
+ * empty {@link InMemoryFxSpotStore}.
  * A set URL asks `createClient` for one `SqlClient`, migrates auth (via
- * `openAuthStore`) then the FX tables (`btc_usd_daily` then `usd_fiat_daily`),
+ * `openAuthStore`) then the FX tables (`btc_usd_daily`, `usd_fiat_daily`, then
+ * `btc_fiat_spot`, served by {@link PostgresFxSpotStore}),
  * `message`, `contact`, `member_habit` (via `migrateMemberHabitSchema`),
  * `pos_charge` and `pos_charge_invoice` (via `migratePosSchema`), `conversation`, `push`, `notification`, `trust_edge`,
  * `funding_grant`, `daily_roster`, `api_log`, `account_image`, `diagnostic_event`, `spark_invoice`, and `db_change` schemas (notification after push, trust
@@ -297,6 +307,7 @@ export async function openBootStores(
       giftRecorder: undefined,
       btcUsdRates: new InMemoryBtcUsdStore(),
       fiatRates: new InMemoryFiatStore(),
+      fxSpotStore: new InMemoryFxSpotStore(),
       messageStore: undefined,
       translationStore: undefined,
       conversationTranslationStore: undefined,
@@ -324,6 +335,7 @@ export async function openBootStores(
 
   await migrateBtcUsdSchema(sqlClient);
   await migrateFiatSchema(sqlClient);
+  await migrateFxSpotSchema(sqlClient);
   await migrateGiftSchema(sqlClient);
   await migrateMessageSchema(sqlClient);
   await migrateContactSchema(sqlClient);
@@ -512,6 +524,7 @@ export async function openBootStores(
     giftRecorder,
     btcUsdRates,
     fiatRates,
+    fxSpotStore: new PostgresFxSpotStore(sqlClient),
     messageStore,
     translationStore,
     conversationTranslationStore,
