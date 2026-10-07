@@ -367,13 +367,13 @@ export function memberHabitRoutes(deps: {
         if (!isHabitStatus(body.status)) {
           return c.json({ error: 'Invalid status' }, 400);
         }
-        if (!PERIOD_RE.test(body.period)) {
-          return c.json({ error: 'Invalid period' }, 400);
-        }
         const habits = await deps.store.listPublic(account.id, nowMs);
         const habit = habits.find((row) => row.id === body.id);
         if (habit === undefined || habit.accountId !== account.id) {
           return c.json({ error: 'Not found' }, 404);
+        }
+        if (!PERIOD_RE.test(body.period)) {
+          return c.json({ error: 'Invalid period' }, 400);
         }
         if (!isRealYmd(body.period)) {
           return c.json({ error: 'Invalid period' }, 400);

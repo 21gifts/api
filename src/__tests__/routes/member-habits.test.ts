@@ -968,6 +968,13 @@ describe('memberHabitRoutes', () => {
       AUTH,
     );
     expect(otherTuesday.status).toBe(404);
+    const otherNope = await post(
+      app,
+      { action: 'log', id: 'theirs', period: 'nope', status: 'achieved' },
+      AUTH,
+    );
+    expect(otherNope.status).toBe(404);
+    expect(await otherNope.json()).toEqual({ error: 'Not found' });
     const unknown = await post(
       app,
       { action: 'log', id: 'missing', period: '2026-10-01', status: 'achieved' },
