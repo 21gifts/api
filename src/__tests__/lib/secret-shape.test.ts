@@ -84,7 +84,10 @@ describe('looksLikeSecretValue', () => {
     const spanish =
       'ábaco abdomen abeja abierto abogado abono aborto abrazo abrir abuelo abuso acabar';
     const korean = '가격 가끔 가난 가능 가득 가르침 가뭄 가방 가상 가슴 가운데 가을';
-    for (const phrase of [japanese, chinese, spanish, korean]) {
+    // Italian is the only official list with nine-letter words.
+    const italian =
+      'avvolgere brillante cartolina abaco abbaglio abbinato abete abisso abolire abrasivo abrogato accadere';
+    for (const phrase of [japanese, chinese, spanish, korean, italian]) {
       expect(looksLikeSecretValue(phrase)).toBe(true);
     }
   });
@@ -129,7 +132,7 @@ describe('looksLikeSecretValue', () => {
     shortWord[0] = 'ab';
     expect(looksLikeSecretValue(shortWord.join(' '))).toBe(false);
     const longWord = Array.from({ length: 12 }, () => 'abandon');
-    longWord[0] = 'abcdefghi';
+    longWord[0] = 'abcdefghij';
     expect(looksLikeSecretValue(longWord.join(' '))).toBe(false);
     const numbered = Array.from({ length: 12 }, () => 'abandon');
     numbered[0] = 'aban1on';

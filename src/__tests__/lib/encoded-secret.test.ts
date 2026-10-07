@@ -293,5 +293,8 @@ describe('containsEncodedSecret', () => {
     const spanish =
       'ábaco abdomen abeja abierto abogado abono aborto abrazo abrir abuelo abuso acabar';
     expect(containsEncodedSecret(spark(spanish.normalize('NFKD')))).toBe(true);
+    const italian =
+      'avvolgere brillante cartolina abaco abbaglio abbinato abete abisso abolire abrasivo abrogato accadere';
+    expect(containsEncodedSecret(spark(italian))).toBe(true);
   });
 });
