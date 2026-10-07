@@ -2832,6 +2832,28 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
         );
         return c.json({ error: 'Expected a JSON body with a positive "sats" integer' }, 400);
       }
+      if (heart && parsed.data.sats !== 1) {
+        await persistInvoiceAttempt(
+          deps.store,
+          invoiceAttemptBase({
+            messageId: messageIdParam,
+            payerAccountId: account.id,
+            heart,
+            authorAccountId: UNKNOWN_ACCOUNT_ID,
+            amountSats: 0,
+            lightningAddress: null,
+            zapRequest: null,
+            result: 'bad_body',
+            httpStatus: 400,
+            pr: null,
+            paymentHash: null,
+            description: null,
+            descriptionHash: null,
+            isNip57Invoice: false,
+          }),
+        );
+        return c.json({ error: 'A heart sends 1 sat' }, 400);
+      }
       const amountMsat = parsed.data.sats * 1000;
       const invoiceText = normalizeForumText(parsed.data.text ?? '');
       if (invoiceText === null) {
