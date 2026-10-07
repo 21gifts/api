@@ -145,7 +145,7 @@ One exclusive `account.role` per account. Initiator has the same rank as
 moderator; founder stays strictly above. A higher rank can always do and
 see everything a lower rank can; equal ranks can do the same things.
 Permission text names the minimum rank only. Do not write "moderator or
-initiator" or „Moderator oder Initiator“. New passkey accounts are
+initiator" or „Moderator oder Initiator“. The single named exception is `canEditDailyPayoutRoster`: initiator and moderator share rank 2, so `roleAtLeast` cannot exclude moderators; true only for initiator and founder. New passkey accounts are
 **Basis**.
 `verified` is a moderator confirming this person in real life
 (forum badge), not Lightning-Address proof. A **funding-program grant** is
