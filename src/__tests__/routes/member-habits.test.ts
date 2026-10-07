@@ -977,6 +977,19 @@ describe('memberHabitRoutes', () => {
     expect(await unknown.json()).toEqual({ error: 'Not found' });
   });
 
+  it('log of an owned habit the store then misses is not found', async () => {
+    const store = new InMemoryMemberHabitStore();
+    await store.add(sampleHabit({ id: 'h-log', accountId: BASIS.id, role: 'basis' }));
+    store.log = async () => 'missing';
+    const res = await post(
+      mount({ store, account: BASIS }),
+      { action: 'log', id: 'h-log', period: '2026-10-05', status: 'achieved' },
+      AUTH,
+    );
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ error: 'Not found' });
+  });
+
   it('comment rejects blank text, text over 2000, a missing habit, and a null author name', async () => {
     const store = new InMemoryMemberHabitStore();
     await store.add(sampleHabit({ id: 'h-comment', accountId: ALICE.id, role: 'basis' }));
