@@ -249,6 +249,18 @@ describe('InMemoryWalletStore', () => {
 });
 
 describe('PostgresWalletStore', () => {
+  it('writes more payments than one concurrency batch, one statement each', async () => {
+    const sql = new MockSql();
+    const store = new PostgresWalletStore(sql);
+    await store.upsertPayments(
+      Array.from({ length: 20 }, (_, index) => payment({ paymentId: `p${index}` })),
+    );
+    expect(sql.executes).toHaveLength(20);
+    expect(sql.executes.map((entry) => entry.params[1])).toEqual(
+      Array.from({ length: 20 }, (_, index) => `p${index}`),
+    );
+  });
+
   it('inserts balance and payment rows in order with guarded coalescing upserts', async () => {
     const sql = new MockSql();
     const store = new PostgresWalletStore(sql);

@@ -245,6 +245,16 @@ describe('POST /me/wallet/report', () => {
     );
   });
 
+  it('classifies and stores reports larger than one concurrency batch, in report order', async () => {
+    const walletStore = new InMemoryWalletStore();
+    const { app } = await mount({ walletStore });
+    const ids = Array.from({ length: 20 }, (_, index) => `batch-${String(index).padStart(2, '0')}`);
+    const response = await post(app, body({ payments: ids.map((id) => reported({ id })) }));
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ acknowledgedIds: ids });
+    expect(await walletStore.listPayments(ACCOUNT, 50)).toHaveLength(20);
+  });
+
   it('deduplicates payment ids with the later entry winning and later-position order', async () => {
     const { app, walletStore } = await mount();
     const response = await post(

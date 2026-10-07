@@ -3449,7 +3449,11 @@ payments the api has not acknowledged yet.
   material there is stored as `null`, and a payment with such an id is skipped,
   so an encoded invoice cannot carry a recovery phrase into storage.
 - Limit of the shape screening: it finds key tokens and recovery-phrase word
-  runs. A raw 32-byte value (hex or base64) looks exactly like the payment
+  runs, also inside canonical encodings (Spark and BOLT11 memos, bech32
+  payloads). It is a safety net against accidental exposure (a phrase typed or
+  pasted into a memo), not against a client that deliberately obfuscates a
+  secret (base64, XOR, protobuf groups, or unusual token boundaries); the
+  allow-list and the client contract cover that. A raw 32-byte value (hex or base64) looks exactly like the payment
   hashes, transaction ids, payment ids and NIP-57 zap requests (64-hex keys and
   ids) this route collects, so it is not screened by shape. Such values are
   kept out by the allow-list (secret-named fields are never read) and by the
