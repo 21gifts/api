@@ -248,10 +248,12 @@ export interface BootFxOptions {
  * `trg_db_change` attaches to `trust_edge` and `funding_grant`.
  * `migrateApiLogSchema` runs after `openAuthStore` (account exists).
  * `migrateBannerSchema` runs next, then `migrateDiagnosticSchema`, then
- * `migrateSparkInvoiceSchema`, then `migrateDbChangeSchema`, so
- * `diagnostic_event` and `spark_invoice` are migrated between `account_image`
- * and `db_change` and `trg_db_change` attaches to `api_log`, `account_image`,
- * `diagnostic_event`, and `spark_invoice`.
+ * `migrateSparkInvoiceSchema`, then `migrateMemberDataSchema`, then
+ * `migrateDbChangeSchema`, so `diagnostic_event`, `spark_invoice`, and the
+ * member data tables are migrated between `account_image` and `db_change` and
+ * `trg_db_change` attaches to `api_log`, `account_image`, `diagnostic_event`,
+ * `spark_invoice`, `wallet_balance_snapshot`, `wallet_payment`,
+ * `member_event`, and `team_access_audit`.
  *
  * @param databaseUrl - `postgres://` URL, or `undefined` / blank for memory.
  * @param createClient - SQL factory; required when `databaseUrl` is set.
