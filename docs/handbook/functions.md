@@ -544,6 +544,7 @@
 - **Inputs:** `databaseUrl`; optional `createClient` (required when URL set); optional `fx: { fetchImpl, candlesUrl, frankfurterUrl, now, nostrQuerier, zapRelayUrls, nostrRelayTimeoutMs }` so tests avoid the network (`candlesUrl` defaults via `resolveCandlesUrl(process.env)`; `frankfurterUrl` defaults via `resolveFrankfurterUrl(process.env)`; the last three feed `backfillExternalZappers` and default to a `WebsocketNostrQuerier`, `resolveZapRelays(process.env)` and a 5000 ms per-relay timeout). SQL path reads `process.env.NOSTR_NSEC_KEK`.
 - **Returns / side effects:** `{ authStore, giftStore, giftRecorder, btcUsdRates, fiatRates, fxSpotStore, messageStore, translationStore, conversationTranslationStore, contactStore, memberHabitStore, posStore, conversationStore, notificationStore, pushStore, trustStore, fundingStore, bannerStore, apiLogStore, diagnosticStore, nostrKek, listDbChange, debugDbStore, sparkInvoiceStore }` (`sparkInvoiceStore` is a `PostgresSparkInvoiceStore` on SQL boots after `migrateSparkInvoiceSchema` ran before the `db_change` migrate, `undefined` on memory boots). `fxSpotStore` is a `PostgresFxSpotStore` on SQL boots and an empty `InMemoryFxSpotStore` on memory boots. Migrates `btc_usd_daily` then `usd_fiat_daily`, then `btc_fiat_spot` (via `migrateFxSpotSchema`, before the `db_change` migrate so `trg_db_change` attaches), `message`, `contact`, `member_habit` (via `migrateMemberHabitSchema`), `pos_charge` and `pos_charge_invoice` (via `migratePosSchema`), `conversation` (via `migrateConversationSchema`), `push_subscription`/`push_outbox` (via `migratePushSchema`), `notification` (via `migrateNotificationSchema` after push before `db_change`), then `trust_edge` (via `migrateTrustSchema`) after notification, then `funding_grant` (via `migrateFundingSchema`), then `api_log` (via `migrateApiLogSchema`), then `account_image` (via `migrateBannerSchema`), then `diagnostic_event` (via `migrateDiagnosticSchema`), then `spark_invoice` (via `migrateSparkInvoiceSchema`); the diagnostic sink is installed on that store before the FX fill and the zap backfills, immediately before `migrateDbChangeSchema` so `trg_db_change` attaches to `trust_edge`, `funding_grant`, `api_log`, `account_image`, `diagnostic_event`, and `spark_invoice`, then `db_change` after auth migrate; best-effort `fillRatesForGiftRange` logs `gifts.fx.boot_fill.failed` and does not throw; best-effort `fillFiatRatesForGiftRange` logs `gifts.fx.fiat_boot_fill.failed` and does not throw. Throws if the URL is set without a factory, or if the SQL path has a missing/malformed KEK. SQL path returns `SqlGiftRecorder`, `PostgresMessageStore`, `PostgresTranslationStore` (forum) plus a second `PostgresTranslationStore` on `conversation_message_translation`, `PostgresContactStore`, `PostgresMemberHabitStore`, `PostgresPosStore`, `PostgresConversationStore`, `PostgresNotificationStore`, `PostgresPushStore`, `PostgresFiatStore`, `PostgresTrustStore`, `PostgresFundingStore`, `PostgresBannerStore`, `PostgresApiLogStore`, `PostgresDiagnosticStore`, `PostgresDebugDbStore`, and `PostgresSparkInvoiceStore`; memory path returns `giftRecorder`/`messageStore`/`translationStore`/`conversationTranslationStore`/`contactStore`/`memberHabitStore`/`conversationStore`/`notificationStore`/`pushStore`/`trustStore`/`fundingStore`/`bannerStore`/`apiLogStore`/`diagnosticStore`/`listDbChange`/`debugDbStore`/`sparkInvoiceStore`/`nostrKek` undefined, returns a fresh `InMemoryPosStore` as `posStore`, and skips migrates including `migrateMemberHabitSchema` / `migratePosSchema` / `migrateConversationSchema` / `migratePushSchema` / `migrateNotificationSchema` / `migrateTrustSchema` / `migrateFundingSchema` / `migrateApiLogSchema` / `migrateBannerSchema` / `migrateDiagnosticSchema` / `migrateSparkInvoiceSchema` / `migrateDbChangeSchema`. SQL path calls `migrateMemberHabitSchema` for `member_habit` before `PostgresMemberHabitStore`, and `migratePosSchema` for `pos_charge` before `PostgresPosStore`.
 - **Payment and external-zapper backfills:** Only after `migrateDbChangeSchema` has attached `trg_db_change` to every public table (so the payment backfill's `nostr_zap_payment` inserts are logged), constructs `PostgresMessageStore`, runs `backfillZapPayments`, and immediately runs `backfillExternalZappers` before constructing the remaining Postgres stores and returning. The external-zapper backfill pages through unattributed receipts with a 10,000-row ceiling and logs `nostr.zapper.backfill.done` with its aggregate counts; a failure logs `nostr.zapper.backfill.failed` and boot continues. Payment-backfill failures still propagate. In-memory boots call neither backfill.
+- **Member data:** A SQL boot runs `migrateWalletSchema` and then `migrateMemberEventSchema` after `migrateSparkInvoiceSchema` and before `migrateDbChangeSchema`, so `trg_db_change` attaches to `wallet_balance_snapshot`, `wallet_payment`, and `member_event`, and returns `walletStore: PostgresWalletStore` and `memberEventStore: PostgresMemberEventStore`. A memory boot returns `undefined` for both, and `createApp` falls back to the in-memory stores.
 - **Used by:** `src/index.ts` boot.
 
 ## Function: bearerMatchesDebugToken
@@ -1130,6 +1131,7 @@
 - **Returns / side effects:** Hono app. Default `btcUsdRates` is an empty `InMemoryBtcUsdStore`. Default `fiatRates` is an empty `InMemoryFiatStore`. Default `fxSpotStore` is an empty `InMemoryFxSpotStore`, passed to `fxRoutes` at `/fx`. `createApp` passes the same `fiatRates` object into `/gifts`, `/gifts/stats`, `/me`, `/members`, and `/view`, and the same `now` into `/mentions`. Used by Bun.serve in `index.ts` and by tests via `app.request()`. Before routes mount, equal trimmed tokens throw `DEBUG_READ_TOKEN matches DEBUG_TOKEN` and neither value is printed; an empty or missing read token does not fail boot.
 - **Used by:** Boot path and every HTTP test.
 - **Daily roster:** Optional `dailyRoster` defaults to `resolveDailyRoster(process.env, fetchImpl)`, the same env the spend ping reads. Unset or blank `SPEND_URL` or `SPEND_API_TOKEN` omits it. Roster routes then return 503 after the initiator or founder gate and do not call fetch.
+- **Member data:** Optional `walletStore` (default `InMemoryWalletStore`) and `memberEventStore` (default `InMemoryMemberEventStore`); SQL boot injects `PostgresWalletStore` and `PostgresMemberEventStore`. Mounts `walletReportRoutes` (`POST /me/wallet/report`, with the message store, POS store, and LNURL server config when it resolves) and `memberEventRoutes` (`POST /me/events`) at `/`.
 - **Free in-app payments:** When `resolveLnurlServerConfig` resolves, `lnurlServer` is passed to `/auth`, `/me`, `/view`, `/members`, `/messages`, `/conversations`, `/funding`, `/habits`, `/trust`, `/invoices`, `/pay`, `/pos`, `/debug/accounts`, the debug payment routes, and `/debug/dump`, so each resolves the member's receiving address. When `resolveFreePaymentsConfig` also resolves, `sparkInvoices` (`AppDeps.sparkInvoiceStore`, default `InMemorySparkInvoiceStore`) is passed to `/messages` and `/conversations`, and `/pay` gets `freePayments: true`, so `POST /pay/:username/invoice` returns a Spark invoice for an open till, or without a charge one for the posted amount; otherwise every invoice response has `sparkInvoice: null`.
 
 ## Function: healthRoute
@@ -3676,3 +3678,115 @@ Builds the operator-only external-pubkey inspection route.
 - **Inputs:** A SQL client whose `query` returns `{ rows }`, and a Lightning address port.
 - **Returns / side effects:** Same port as the in-memory store, persisted in Postgres. Adding a habit inserts the row and its first revision in one statement. Editing the wording updates the owned row and upserts that period's revision in one statement, matching the habit id and the owner together. A missing or unowned habit writes nothing. A failed statement leaves both unchanged. A comment id Postgres rejects as uuid text is missing, not an error. Revision `name` and `description` use the same `char_length` checks as the habit row.
 - **Used by:** `openBootStores` when `DATABASE_URL` is set.
+
+## Function: readCappedText
+
+- **Purpose:** Read a request body as UTF-8 text without buffering more than a byte cap. A declared `Content-Length` above the cap is refused before anything is read; otherwise the stream is read chunk by chunk and cancelled as soon as the total passes the cap. Shared by the forwarded LNURL routes (`LNURL_BODY_LIMIT_BYTES`), `POST /me/wallet/report` (1 MiB), and `POST /me/events` (64 KiB).
+- **Inputs:** The incoming `Request` and the largest accepted body in bytes.
+- **Returns / side effects:** The decoded text, `''` when the request has no body, or `null` when the body is larger than the cap (the caller answers 413 `{ error: 'Request body is too large' }`). Never logs the body.
+- **Used by:** `lnurlServerRoutes`, `walletReportRoutes`, `memberEventRoutes`.
+
+## Function: isSecretFieldName
+
+- **Purpose:** Tell whether a body or prop key names secret material, so the member-data ingest never reads or stores it. Case-insensitive substring match on `seed`, `mnemonic`, `phrase`, `preimage`, `private`, `privkey`, `secret`, `prf`, `nsec`, `xprv`, `password`, `passphrase`, and `spendingkey`.
+- **Inputs:** One key name.
+- **Returns / side effects:** `true` when the key contains one of those tokens. Pure; no logging.
+- **Used by:** `parseMemberEventBatch` (prop keys are skipped) and `parseWalletReport` (such keys are never read).
+
+## Function: looksLikeSecretValue
+
+- **Purpose:** Tell whether a string value has the shape of secret material: after trimming it starts (case-insensitive) with `nsec1`, `xprv`, `tprv`, `yprv`, `zprv`, `uprv`, or `vprv`, or it is 12, 15, 18, 21, or 24 whitespace-separated words of 3–8 ASCII letters (a recovery-phrase shape).
+- **Inputs:** One string.
+- **Returns / side effects:** `true` for a secret-shaped value. Pure; no logging. Defence in depth: the app never sends such values, and the ingest drops them if it does.
+- **Used by:** `parseMemberEventBatch` (prop values) and `parseWalletReport` (description, comment, and other detail fields become `null`).
+
+## Function: parseClientInstant
+
+- **Purpose:** Parse a timestamp sent by the app: an ISO-8601 string (`Date.parse`) or a finite number, where a number below `1e11` is epoch seconds and anything else epoch milliseconds. Bounds are `CLIENT_INSTANT_MIN_MS` (2009-01-03T00:00:00Z) and now plus `CLIENT_INSTANT_FUTURE_SKEW_MS` (5 minutes).
+- **Inputs:** The raw value and the server clock in epoch milliseconds.
+- **Returns / side effects:** A `Date`, or `null` for any other type, an unparseable string, a non-finite number, or an instant outside the bounds. Pure.
+- **Used by:** `parseMemberEventBatch` (`at`) and `parseWalletReport` (`syncedAt`, payment `timestamp`).
+
+## Function: parseMemberEventBatch
+
+- **Purpose:** Validate a `POST /me/events` body `{ events: [...] }` against the allow-list. The batch is refused when the body is not a plain object, `events` is not an array, or it has more than `MEMBER_EVENT_BATCH_MAX` (50) entries. Each entry needs a `name` in `MEMBER_EVENT_NAMES` and an `at` that `parseClientInstant` accepts; `path` is cut at `?` / `#` and must start with `/` (1–256 characters, no control characters); `props` must be a plain object of at most `MEMBER_EVENT_PROPS_MAX` (20) keys. Inside `props`, keys that fail `[A-Za-z][A-Za-z0-9_]{0,39}`, secret-named keys, secret-shaped strings, strings over 200 characters or with control characters, non-finite numbers, and nested values are skipped without dropping the event.
+- **Inputs:** The parsed JSON body and the server clock in epoch milliseconds.
+- **Returns / side effects:** `{ ok: false }` for a refused batch, otherwise `{ ok: true, events, dropped }` where `dropped` counts entries that failed a rule. Unknown keys are ignored and never copied. Pure.
+- **Used by:** `memberEventRoutes`.
+
+## Function: migrateMemberEventSchema
+
+- **Purpose:** Apply `MEMBER_EVENT_SCHEMA_SQL` in order: `member_event (id, account_id → account, name, at, path, props jsonb, received_at)` and the index `member_event_account_at_idx (account_id, at DESC, id DESC)`. Idempotent; the same text is in `docs/schema/member_event.sql`.
+- **Inputs:** A `SqlClient`.
+- **Returns / side effects:** Resolves after every statement ran. Runs at a SQL boot before `migrateDbChangeSchema`, so `trg_db_change` attaches to the table. Needs `DATABASE_URL`; not reached on the default boot.
+- **Used by:** `openBootStores`.
+
+## Function: InMemoryMemberEventStore
+
+- **Purpose:** Process-local `MemberEventStore` for boots without `DATABASE_URL` and for tests. `appendMany` keeps defensive copies of each row; `listForAccount` returns one account's rows newest `at` first (ties by `id` descending), capped at `limit`, as copies.
+- **Inputs:** No constructor arguments. `appendMany` takes `MemberEvent` rows; `listForAccount` takes an account id and a limit.
+- **Returns / side effects:** Promises of void and of row copies. Rows live for the process lifetime. Only allow-listed fields are stored; no secret material.
+- **Used by:** `createApp` default; route and store tests.
+
+## Function: PostgresMemberEventStore
+
+- **Purpose:** Postgres `member_event` store. `appendMany` writes all rows in one multi-row `INSERT` (props as `jsonb`); an empty array runs nothing. `listForAccount` reads one account newest-first with `LIMIT`, maps `Date` or string timestamps, and keeps only scalar or `null` prop values (unparseable props become `{}`).
+- **Inputs:** Constructor takes a migrated `SqlClient`.
+- **Returns / side effects:** Query failures propagate (the route answers 503). Every insert is logged by `trg_db_change`. Needs `DATABASE_URL`; not reached on the default boot.
+- **Used by:** `openBootStores` → `createApp` → `memberEventRoutes`.
+
+## Function: memberEventRoutes
+
+- **Purpose:** Hono group mounted at `/` that serves `POST /me/events`. Order: bearer session (401), per-account rate limit with `IpRateLimiter` keyed by the account id, `MEMBER_EVENTS_PER_MINUTE` (30) per 60 seconds (429), body cap `MEMBER_EVENTS_BODY_LIMIT_BYTES` (64 KiB) via `readCappedText` (413), JSON and `parseMemberEventBatch` (400), then one `appendMany` with a fresh id, the account id, and the receive time per event.
+- **Inputs:** `authStore`, `store` (`MemberEventStore`), `now`, optional `limiter`.
+- **Returns / side effects:** 200 `{ accepted, dropped }`. A store failure logs `member_event.write.failed` with `accountId` only and answers 503 `{ error: 'Log is unavailable' }`. Never logs the body, props, or path.
+- **Used by:** `createApp`.
+
+## Function: decodeSparkAddress
+
+- **Purpose:** Decode a Spark address or Spark invoice (bech32m with a Spark prefix such as `spark`, `sparkrt`, `sp`, or `sprt`, no length limit) into the receiver's identity public key (protobuf field 1, 33 bytes) and the invoice memo (field 5 of field 2), for example `zap:<payment hash>` or `pos:<charge id>`. The input is trimmed and lower-cased first.
+- **Inputs:** One candidate string (the reported `invoice` or `destination`).
+- **Returns / side effects:** `{ identityPublicKey, memo }` (66 lower-case hex, memo or `null`), or `null` for any decoding failure. Never throws and never logs.
+- **Used by:** `walletPaymentClassifier`.
+
+## Function: parseWalletReport
+
+- **Purpose:** Validate a `POST /me/wallet/report` body. `balanceSats` must be a safe integer from 0 to `MAX_SATS` (21 million BTC) and `syncedAt` must pass `parseClientInstant`; `payments` is optional and at most `WALLET_REPORT_PAYMENTS_MAX` (200). A payment needs `id` (1–256 characters, no control characters), `direction` `in` / `out`, `status` `pending` / `completed` / `failed`, `amountSats`, `timestamp`, and a lower-case `method`; `feeSats` missing or `null` is 0. Detail fields `paymentHash` (64 hex), `invoice` (≤ 4096), `destination` (≤ 512), `description` (≤ 640), and `lnurlComment` (≤ 640) become `null` when missing, too long, holding control characters, or secret-shaped (`looksLikeSecretValue`).
+- **Inputs:** The parsed JSON body and the server clock in epoch milliseconds.
+- **Returns / side effects:** `{ ok: false }` for a refused report, otherwise `{ ok: true, report }` with `payments` in request order and `skipped` for invalid entries. Output objects are built field by field, so unknown fields such as `preimage` are never copied. Pure.
+- **Used by:** `walletReportRoutes`.
+
+## Function: walletPaymentClassifier
+
+- **Purpose:** Build a per-request classifier that gives each reported payment a `category` (`member`, `shop`, `platform`, `gift`, `outside_lightning`, `onchain`, `unknown`) and a `counterpartyAccountId`. First match wins: a forum or conversation invoice the api issued (`findOkInvoiceByPaymentHash`, hash from the field, the BOLT11, or a `zap:` Spark memo) or an indexed zap receipt → `gift`, or `platform` when the other side is the platform account; a point-of-sale charge by recorded BOLT11 hash or `pos:` memo (`findChargeForPayment`) → `shop`; an own-host Lightning address (`accountByReceivingAddress`), a Spark identity key, or a raw Spark public key of a verified wallet → `platform`, `shop` (live `#21GiftsShop` note, loaded once per request), or `member`; otherwise `onchain`, `outside_lightning`, or `unknown` from the method, a foreign address, or an `ln…` invoice. The reporting account itself never counts as the counterparty.
+- **Inputs:** `WalletCategoryDeps` (auth store, message store, POS store, optional LNURL server config) and the reporting account id.
+- **Returns / side effects:** An async function from `ReportedWalletPayment` to `{ category, counterpartyAccountId }`. Read-only; a lookup failure propagates (the route answers 503).
+- **Used by:** `walletReportRoutes`.
+
+## Function: migrateWalletSchema
+
+- **Purpose:** Apply `WALLET_SCHEMA_SQL` in order: `wallet_balance_snapshot` with index `wallet_balance_snapshot_account_received_idx`, `wallet_payment` (primary key `(account_id, payment_id)`, CHECKs on direction, status, category, and non-negative amounts, `counterparty_account_id → account`), an `ADD COLUMN IF NOT EXISTS invoice`, and index `wallet_payment_account_paid_idx`. Idempotent; the same text is in `docs/schema/wallet.sql`.
+- **Inputs:** A `SqlClient`.
+- **Returns / side effects:** Resolves after every statement ran. Runs at a SQL boot before `migrateDbChangeSchema`, so `trg_db_change` attaches to both tables. Needs `DATABASE_URL`; not reached on the default boot.
+- **Used by:** `openBootStores`.
+
+## Function: InMemoryWalletStore
+
+- **Purpose:** Process-local `WalletStore` for boots without `DATABASE_URL` and for tests. `recordBalance` appends a snapshot; `upsertPayments` inserts or updates by `(accountId, paymentId)` with the same rules as the Postgres store (overwrite status, amounts, method, time, category, counterparty; keep stored detail fields when the new value is `null`; keep `firstSeenAt`; move `updatedAt` only on a change). `latestBalance` and `listPayments` (newest `paidAt` first) return copies.
+- **Inputs:** No constructor arguments.
+- **Returns / side effects:** Promises of void, of the latest snapshot, and of payment copies. Rows live for the process lifetime. Only allow-listed fields are stored.
+- **Used by:** `createApp` default; route and store tests.
+
+## Function: PostgresWalletStore
+
+- **Purpose:** Postgres store for `wallet_balance_snapshot` and `wallet_payment`. `recordBalance` inserts one snapshot. `upsertPayments` runs one `INSERT … ON CONFLICT (account_id, payment_id) DO UPDATE` per row that `COALESCE`s the detail fields and updates only when the row is `IS DISTINCT FROM` the stored one, so an unchanged re-send writes nothing and adds no `db_change` row. `latestBalance` and `listPayments` read newest-first and map `bigint` and timestamp columns.
+- **Inputs:** Constructor takes a migrated `SqlClient`.
+- **Returns / side effects:** Query failures propagate (the route answers 503). Every insert and update is logged by `trg_db_change`. Needs `DATABASE_URL`; not reached on the default boot.
+- **Used by:** `openBootStores` → `createApp` → `walletReportRoutes`.
+
+## Function: walletReportRoutes
+
+- **Purpose:** Hono group mounted at `/` that serves `POST /me/wallet/report`. Order: bearer session (401), per-account rate limit with `IpRateLimiter` keyed by the account id, `WALLET_REPORTS_PER_MINUTE` (60) per 60 seconds (429), body cap `WALLET_REPORT_BODY_LIMIT_BYTES` (1 MiB) via `readCappedText` (413), JSON and `parseWalletReport` (400), then classification with `walletPaymentClassifier`, one `recordBalance`, and one `upsertPayments` (a later duplicate id in the same report wins).
+- **Inputs:** `authStore`, `walletStore`, `messages`, `posStore`, optional `lnurlServer`, `now`, optional `limiter`.
+- **Returns / side effects:** 200 `{ acknowledgedIds }`. A lookup or write failure logs `wallet_report.write.failed` with `accountId` only and answers 503 `{ error: 'Wallet data is unavailable' }`. Never logs the body, amounts, addresses, invoices, or memos.
+- **Used by:** `createApp`.
