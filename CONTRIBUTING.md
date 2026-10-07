@@ -37,7 +37,7 @@ api/
 │   │   ├── info.ts           # GET /info
 │   │   ├── brand.ts          # GET /favicon.ico, /favicon.svg, /apple-touch-icon.png
 │   │   ├── auth.ts           # Passkey: /auth/passkey/register|authenticate|replace begin/finish
-│   │   ├── me.ts             # GET /me; GET /me/activity; PUT /me/about; GET /me/about/photo; POST /me/wallet-backup-seen; PUT /me/wallet (when LNURL_SERVER_URL and PUBLIC_BASE_URL resolve); POST /me/setup/skip; POST /me/name; POST /me/username; POST /me/location; POST /me/forum-laws-dismissed; POST /me/notification-level; POST /me/amount-unit; POST /me/locale; POST /me/fiat; POST /me/rules-agreement
+│   │   ├── me.ts             # GET /me; GET /me/activity; PUT /me/about; GET /me/about/photo; POST /me/wallet-backup-seen; PUT /me/wallet (when LNURL_SERVER_URL and PUBLIC_BASE_URL resolve); POST /me/setup/skip; POST /me/name; POST /me/username; POST /me/location; POST /me/forum-laws-dismissed; POST /me/notification-level; POST /me/heart-notifications; POST /me/amount-unit; POST /me/locale; POST /me/fiat; POST /me/rules-agreement
 │   │   ├── pictures.ts       # GET/PUT /pictures/me; public GET /pictures/:accountId.jpg|.png|.webp (round profile photo; not the About me photo)
 │   │   ├── banner.ts         # GET/PUT /banners/me; public GET /banners/:accountId.jpg|.png|.webp (wide image; not the About me photo)
 │   │   ├── members.ts        # GET /members/:accountId (Bearer; live identity + profile note + counts + trust + fundingReviewedAt); GET /members/:accountId/activity; GET /members/:accountId/posts; GET /members/:accountId/replies
@@ -135,10 +135,10 @@ api/
 │   │   ├── request-meta.ts   # Validated client IP, country, ray, user agent, language, origin
 │   │   ├── conversation-store.ts  # ConversationStore port, memory + Postgres
 │   │   ├── conversation-push.ts  # notifyConversationMessage (DM Web Push; no in-app rows)
-│   │   ├── notification.ts   # Notification public JSON + bell fan-out (`notifyForumPost` / `notifyForumReply` / `notifyZap`) filtered by `notificationLevel` (`parseNotificationLevel` / `isStaffAccount` / `wantsNotification`); staff `notifyModeratorProposed`; targeted `notifyModeratorAppointed` and `notifyExternalForumReply` (not fan-out; the latter reaches only the parent note's author)
+│   │   ├── notification.ts   # Notification public JSON + bell fan-out (`notifyForumPost` / `notifyForumReply` / `notifyZap` / `notifyHeart`) filtered by `notificationLevel` (`parseNotificationLevel` / `isStaffAccount` / `wantsNotification`); staff `notifyModeratorProposed`; targeted `notifyModeratorAppointed` and `notifyExternalForumReply` (not fan-out; the latter reaches only the parent note's author)
 │   │   ├── notification-store.ts  # NotificationStore port, memory + Postgres
 │   │   ├── push-config.ts    # resolveVapidConfig (VAPID env; missing → null)
-│   │   ├── push.ts           # parsePushSubscription + English forum/zap/conversation payloads
+│   │   ├── push.ts           # parsePushSubscription + English forum/zap/heart/conversation payloads
 │   │   ├── push-store.ts     # PushStore port, memory + Postgres, PUSH_SCHEMA_SQL
 │   │   ├── push-sender.ts    # PushSender port, UnconfiguredPushSender, WebPushSender
 │   │   ├── push-worker.ts    # enqueue + outbox tick
@@ -382,7 +382,7 @@ api/
 │   ├── diagnostic_event.sql  # Append-only diagnostic rows (no TTL)
 │   ├── passkey_renew_attempt.sql  # Safe renew-attempt rows (no phrase or credential)
 │   ├── push.sql              # push_subscription + push_outbox
-│   ├── notification.sql      # in-app Notifications rows (`forum_post`, `forum_reply`, `zap`)
+│   ├── notification.sql      # in-app Notifications rows (`forum_post`, `forum_reply`, `zap`, `heart`)
 │   ├── trust_edge.sql        # who granted which staff status (GET /trust-chain)
 │   ├── funding_grant.sql     # funding-program grant (one row per account; spend ping / invoice gate)
 │   ├── daily_roster.sql      # API-owned daily payout roster (singleton settings + daily/moderator rows)
