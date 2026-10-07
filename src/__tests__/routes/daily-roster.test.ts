@@ -5,6 +5,7 @@ import {
   DailyRosterRequestError,
   type DailyRoster,
   type DailyRosterClient,
+  type DailyRosterPublic,
 } from '@/lib/daily-roster';
 import { InMemoryFundingStore } from '@/lib/funding-store';
 import { InMemoryGiftStore } from '@/lib/gift-store';
@@ -26,6 +27,13 @@ const ROSTER: DailyRoster = {
   paymentsEnabled: true,
   defaultAmountUsd: 3,
   recipients: [{ address: 'ada@example.com', amountUsd: 1 }],
+};
+
+const PUBLIC_ROSTER: DailyRosterPublic = {
+  comment: 'thanks',
+  paymentsEnabled: true,
+  defaultAmountUsd: 3,
+  recipients: [{ address: 'ada@example.com', amountUsd: 1, accountId: null, name: null }],
 };
 
 const POSTS = [
@@ -141,7 +149,7 @@ describe('daily payout roster routes', () => {
     const authStore = await seeded();
     const res = await get(mount(authStore, fakeRoster()), '/funding/daily-roster', 'founder');
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual(ROSTER);
+    expect(await res.json()).toEqual(PUBLIC_ROSTER);
     const events = parsedEvents(warn).filter((event) => event['event'] === 'funding.daily_roster');
     expect(events).toEqual([expect.objectContaining({ accountId: FOUNDER, action: 'read' })]);
     expect(JSON.stringify(events)).not.toContain('ada@example.com');
@@ -167,7 +175,7 @@ describe('daily payout roster routes', () => {
       { comment: 'hush-comment' },
     );
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ ...ROSTER, comment: 'hush-comment' });
+    expect(await res.json()).toEqual({ ...PUBLIC_ROSTER, comment: 'hush-comment' });
     expect(seen).toBe('hush-comment');
     expect(JSON.stringify(parsedEvents(warn))).not.toContain('hush-comment');
     expect(JSON.stringify(parsedEvents(warn))).not.toContain('test-token');
@@ -401,7 +409,51 @@ describe('daily payout roster routes', () => {
       headers: { authorization: 'Bearer founder' },
     });
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual(ROSTER);
+    expect(await res.json()).toEqual(PUBLIC_ROSTER);
+  });
+
+  it('adds account id and trimmed name for a matching lightning address', async () => {
+    const authStore = await seeded();
+    const memberId = '88888888-8888-4888-8888-888888888888';
+    await authStore.createAccount(
+      account({
+        id: memberId,
+        role: 'verified',
+        name: '  Ada  ',
+        lightningAddress: '  ADA@example.com  ',
+      }),
+    );
+    const roster: DailyRoster = {
+      comment: 'thanks',
+      paymentsEnabled: true,
+      defaultAmountUsd: 3,
+      recipients: [
+        { address: 'ada@example.com', amountUsd: 1 },
+        { address: 'unknown@example.com', amountUsd: 2 },
+      ],
+    };
+    const res = await get(
+      mount(authStore, fakeRoster({ get: async () => roster })),
+      '/funding/daily-roster',
+      'founder',
+    );
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({
+      comment: 'thanks',
+      paymentsEnabled: true,
+      defaultAmountUsd: 3,
+      recipients: [
+        { address: 'ada@example.com', amountUsd: 1, accountId: memberId, name: 'Ada' },
+        { address: 'unknown@example.com', amountUsd: 2, accountId: null, name: null },
+      ],
+    });
+    const events = parsedEvents(warn).filter((event) => event['event'] === 'funding.daily_roster');
+    expect(events).toEqual([expect.objectContaining({ accountId: FOUNDER, action: 'read' })]);
+    const logged = JSON.stringify(events);
+    expect(logged).not.toContain('ada@example.com');
+    expect(logged).not.toContain('unknown@example.com');
+    expect(logged).not.toContain(memberId);
+    expect(logged).not.toContain('Ada');
   });
 
   it('returns 400 and does not call spend when the body is not the documented JSON', async () => {

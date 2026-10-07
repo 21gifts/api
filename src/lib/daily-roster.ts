@@ -63,6 +63,90 @@ export interface DailyRoster {
 }
 
 /**
+ * One listed recipient on the public daily roster, with optional member identity.
+ */
+export interface DailyRosterRecipientPublic {
+  /** Stored Lightning address; spend still keys the row by this. */
+  address: string;
+  /** USD amount for this recipient. */
+  amountUsd: number;
+  /** Matching account id, or `null` when none. */
+  accountId: string | null;
+  /** Trimmed display name, or `null` when missing or blank. */
+  name: string | null;
+}
+
+/**
+ * Daily roster JSON returned by GET and successful POST of `/funding/daily-roster*`.
+ */
+export interface DailyRosterPublic {
+  /** Payment comment stored with the roster. */
+  comment: string;
+  /** Whether daily payments are switched on. */
+  paymentsEnabled: boolean;
+  /**
+   * USD paid to an unlisted admitted or trial grant. Spend sends
+   * `NEW_MEMBER_DAILY_USD`. Not stored in the roster file.
+   */
+  defaultAmountUsd: number;
+  /** Listed recipients with amounts and optional member identity. */
+  recipients: DailyRosterRecipientPublic[];
+}
+
+/**
+ * Copy a spend roster and attach account id and display name per recipient.
+ *
+ * Lookup is called once per recipient with the stored address, in parallel.
+ * Recipient order, address, and amountUsd are unchanged. A miss is null
+ * identity fields. A found name is trimmed; null, missing, or trim-empty
+ * becomes null. Lookup errors are not caught.
+ *
+ * @param roster - Spend roster.
+ * @param lookup - Account lookup by the stored Lightning address.
+ * @returns The public roster.
+ */
+export async function withRecipientIdentities(
+  roster: DailyRoster,
+  lookup: (address: string) => Promise<{ id: string; name: string | null } | undefined>,
+): Promise<DailyRosterPublic> {
+  const recipients = await Promise.all(
+    roster.recipients.map(async (recipient): Promise<DailyRosterRecipientPublic> => {
+      const found = await lookup(recipient.address);
+      if (found === undefined) {
+        return {
+          address: recipient.address,
+          amountUsd: recipient.amountUsd,
+          accountId: null,
+          name: null,
+        };
+      }
+      const rawName = found.name;
+      if (typeof rawName !== 'string') {
+        return {
+          address: recipient.address,
+          amountUsd: recipient.amountUsd,
+          accountId: found.id,
+          name: null,
+        };
+      }
+      const trimmed = rawName.trim();
+      return {
+        address: recipient.address,
+        amountUsd: recipient.amountUsd,
+        accountId: found.id,
+        name: trimmed === '' ? null : trimmed,
+      };
+    }),
+  );
+  return {
+    comment: roster.comment,
+    paymentsEnabled: roster.paymentsEnabled,
+    defaultAmountUsd: roster.defaultAmountUsd,
+    recipients,
+  };
+}
+
+/**
  * Read and edit the spend daily payout roster.
  */
 export interface DailyRosterClient {
