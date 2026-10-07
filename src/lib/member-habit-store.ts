@@ -107,7 +107,7 @@ export interface MemberHabitStore {
     accountId: string,
     patch: { name: string; description: string; notes: string },
     atPeriod: string,
-  ): Promise<'ok' | 'missing'>;
+  ): Promise<'ok' | 'missing' | 'closed'>;
   archive(id: string, accountId: string, lastPeriod: string): Promise<'ok' | 'missing'>;
   log(
     habitId: string,
@@ -118,7 +118,7 @@ export interface MemberHabitStore {
   listPublic(viewerAccountId: string | null, nowMs: number): Promise<MemberHabitPublic[]>;
   findComment(id: string): Promise<MemberHabitComment | null>;
   comment(row: MemberHabitComment): Promise<void>;
-  deleteComment(id: string): Promise<boolean>;
+  deleteComment(id: string, deletedAt: number): Promise<boolean>;
   setLightning(accountId: string, address: string | null): Promise<void>;
   lightning(accountId: string): Promise<string | null>;
 }
@@ -493,10 +493,13 @@ export class InMemoryMemberHabitStore implements MemberHabitStore {
     accountId: string,
     patch: { name: string; description: string; notes: string },
     atPeriod: string,
-  ): Promise<'ok' | 'missing'> {
+  ): Promise<'ok' | 'missing' | 'closed'> {
     const habit = this.habits.get(id);
     if (habit === undefined || habit.accountId !== accountId) {
       return 'missing';
+    }
+    if (habit.lastPeriod !== null && comparePeriod(atPeriod, habit.lastPeriod) > 0) {
+      return 'closed';
     }
     habit.notes = patch.notes;
     if (habit.name !== patch.name || habit.description !== patch.description) {
@@ -597,12 +600,12 @@ export class InMemoryMemberHabitStore implements MemberHabitStore {
     this.comments.set(row.id, cloneComment(row));
   }
 
-  async deleteComment(id: string): Promise<boolean> {
+  async deleteComment(id: string, deletedAt: number): Promise<boolean> {
     const row = this.comments.get(id);
     if (row === undefined || row.deletedAt !== null) {
       return false;
     }
-    row.deletedAt = Date.now();
+    row.deletedAt = deletedAt;
     return true;
   }
 
@@ -668,24 +671,41 @@ export class PostgresMemberHabitStore implements MemberHabitStore {
     accountId: string,
     patch: { name: string; description: string; notes: string },
     atPeriod: string,
-  ): Promise<'ok' | 'missing'> {
+  ): Promise<'ok' | 'missing' | 'closed'> {
     const written = await this.sql.query(
-      `WITH updated AS (
-         UPDATE member_habit
+      `WITH target AS (
+         SELECT id, last_period FROM member_habit WHERE id = $4 AND account_id = $5
+       ),
+       updated AS (
+         UPDATE member_habit AS habit
          SET name = $1, description = $2, notes = $3
-         WHERE id = $4 AND account_id = $5
-         RETURNING id
+         FROM target
+         WHERE habit.id = target.id
+           AND (target.last_period IS NULL OR $6 <= target.last_period)
+         RETURNING habit.id
+       ),
+       revision AS (
+         INSERT INTO member_habit_revision (habit_id, period, name, description)
+         SELECT id, $6, $1, $2 FROM updated
+         ON CONFLICT (habit_id, period) DO UPDATE SET
+           name = EXCLUDED.name,
+           description = EXCLUDED.description
+         RETURNING habit_id
        )
-       INSERT INTO member_habit_revision (habit_id, period, name, description)
-       SELECT id, $6, $1, $2 FROM updated
-       ON CONFLICT (habit_id, period) DO UPDATE SET
-         name = EXCLUDED.name,
-         description = EXCLUDED.description
-       RETURNING habit_id`,
+       SELECT CASE
+         WHEN NOT EXISTS (SELECT 1 FROM target) THEN 'missing'
+         WHEN NOT EXISTS (SELECT 1 FROM revision) THEN 'closed'
+         ELSE 'ok'
+       END AS status`,
       [patch.name, patch.description, patch.notes, id, accountId, atPeriod],
     );
-    if (firstRow(written.rows) === null) {
+    const row = firstRow(written.rows);
+    if (row === null) {
       return 'missing';
+    }
+    const status = stringColumn(row, 'status');
+    if (status === 'closed' || status === 'missing') {
+      return status;
     }
     return 'ok';
   }
@@ -824,7 +844,7 @@ export class PostgresMemberHabitStore implements MemberHabitStore {
     );
   }
 
-  async deleteComment(id: string): Promise<boolean> {
+  async deleteComment(id: string, deletedAt: number): Promise<boolean> {
     let result: { rows: Record<string, unknown>[] };
     try {
       result = await this.sql.query(`SELECT deleted_at FROM member_habit_comment WHERE id = $1`, [
@@ -845,7 +865,7 @@ export class PostgresMemberHabitStore implements MemberHabitStore {
     }
     await this.sql.query(
       `UPDATE member_habit_comment SET deleted_at = $1 WHERE id = $2 AND deleted_at IS NULL`,
-      [Date.now(), id],
+      [deletedAt, id],
     );
     return true;
   }

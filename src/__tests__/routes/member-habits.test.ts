@@ -857,6 +857,53 @@ describe('memberHabitRoutes', () => {
     expect(await longName.json()).toEqual({ error: 'Invalid name' });
   });
 
+  it('edit on the archive period still saves', async () => {
+    const store = new InMemoryMemberHabitStore();
+    await store.add(sampleHabit({ id: 'mine', accountId: BASIS.id, role: 'basis' }));
+    const app = mount({ store, account: BASIS });
+    expect((await post(app, { action: 'archive', id: 'mine' }, AUTH)).status).toBe(200);
+    const sameDay = await post(
+      app,
+      { action: 'edit', id: 'mine', name: 'Run', description: '', notes: '' },
+      AUTH,
+    );
+    expect(sameDay.status).toBe(200);
+    const listed = await app.request('/', { headers: AUTH });
+    const body = (await listed.json()) as { habits: Array<{ name: string }> };
+    expect(body.habits[0]?.name).toBe('Run');
+  });
+
+  it('edit after the archived period is closed and does not change the wording', async () => {
+    const store = new InMemoryMemberHabitStore();
+    await store.add(sampleHabit({ id: 'mine', accountId: BASIS.id, role: 'basis' }));
+    expect(await store.archive('mine', BASIS.id, '2026-10-04')).toBe('ok');
+    const app = mount({ store, account: BASIS });
+    const closed = await post(
+      app,
+      { action: 'edit', id: 'mine', name: 'Later', description: 'Nope', notes: 'x' },
+      AUTH,
+    );
+    expect(closed.status).toBe(409);
+    expect(await closed.json()).toEqual({ error: 'Period is closed' });
+    const listed = await app.request('/', { headers: AUTH });
+    const body = (await listed.json()) as { habits: Array<{ name: string; notes?: string }> };
+    expect(body.habits[0]?.name).toBe('Walk');
+    expect(body.habits[0]?.notes).toBe('secret');
+  });
+
+  it('edit the store then closes is closed', async () => {
+    const store = new InMemoryMemberHabitStore();
+    await store.add(sampleHabit({ id: 'mine', accountId: BASIS.id, role: 'basis' }));
+    store.edit = async () => 'closed';
+    const res = await post(
+      mount({ store, account: BASIS }),
+      { action: 'edit', id: 'mine', name: 'Run', description: '', notes: '' },
+      AUTH,
+    );
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({ error: 'Period is closed' });
+  });
+
   it('archive of an unknown id is 404 and archive of another person is 404', async () => {
     const store = new InMemoryMemberHabitStore();
     await store.add(sampleHabit({ id: 'theirs', accountId: ALICE.id, role: 'basis' }));

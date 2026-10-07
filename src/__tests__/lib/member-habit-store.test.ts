@@ -131,12 +131,16 @@ function scriptedSql(initial: { habits: Row[]; revisions: Row[]; logs: Row[]; co
             (row) => row['id'] === params[3] && row['account_id'] === params[4],
           );
           if (found === undefined) {
-            return { rows: [] };
+            return { rows: [{ status: 'missing' }] };
+          }
+          const period = params[5];
+          const last = found['last_period'];
+          if (typeof last === 'string' && typeof period === 'string' && period > last) {
+            return { rows: [{ status: 'closed' }] };
           }
           found['name'] = params[0];
           found['description'] = params[1];
           found['notes'] = params[2];
-          const period = params[5];
           const existing = state.revisions.find(
             (row) => row['habit_id'] === params[3] && row['period'] === period,
           );
@@ -151,7 +155,7 @@ function scriptedSql(initial: { habits: Row[]; revisions: Row[]; logs: Row[]; co
             existing['name'] = params[0];
             existing['description'] = params[1];
           }
-          return { rows: [{ habit_id: params[3] }] };
+          return { rows: [{ status: 'ok' }] };
         }
         if (text.includes('INSERT INTO member_habit (')) {
           return { rows: [] };
@@ -409,6 +413,33 @@ describe('InMemoryMemberHabitStore', () => {
     expect(revised[0]?.notes).toBe('n4');
   });
 
+  it('refuses an edit after the archived period and keeps the wording', async () => {
+    const store = new InMemoryMemberHabitStore();
+    const habit = sampleHabit();
+    await store.add(habit);
+    expect(await store.archive(habit.id, habit.accountId, '2026-10-04')).toBe('ok');
+    expect(
+      await store.edit(
+        habit.id,
+        habit.accountId,
+        { name: 'Later', description: 'x', notes: 'y' },
+        '2026-10-05',
+      ),
+    ).toBe('closed');
+    const view = await store.listPublic(habit.accountId, nowMs);
+    expect(view[0]?.name).toBe('Walk');
+    expect(view[0]?.notes).toBe('keep a secret');
+    expect(
+      await store.edit(
+        habit.id,
+        habit.accountId,
+        { name: 'Same', description: '', notes: '' },
+        '2026-10-04',
+      ),
+    ).toBe('ok');
+    expect((await store.listPublic(habit.accountId, nowMs))[0]?.name).toBe('Same');
+  });
+
   it('archive and log of an unknown id or another owner are missing', async () => {
     const store = new InMemoryMemberHabitStore();
     const habit = sampleHabit();
@@ -445,12 +476,12 @@ describe('InMemoryMemberHabitStore', () => {
     const habit = sampleHabit();
     await store.add(habit);
     expect(await store.findComment('missing')).toBeNull();
-    expect(await store.deleteComment('missing')).toBe(false);
+    expect(await store.deleteComment('missing', 1)).toBe(false);
     await store.comment(comment({ id: 'c-live', habitId: habit.id }));
     expect((await store.findComment('c-live'))?.text).toBe('nice');
-    expect(await store.deleteComment('c-live')).toBe(true);
+    expect(await store.deleteComment('c-live', 1)).toBe(true);
     expect(await store.findComment('c-live')).toBeNull();
-    expect(await store.deleteComment('c-live')).toBe(false);
+    expect(await store.deleteComment('c-live', 1)).toBe(false);
   });
 
   it('stores and clears a lightning address', async () => {
@@ -527,7 +558,7 @@ describe('PostgresMemberHabitStore', () => {
     };
     const store = new PostgresMemberHabitStore(sql, addressesOf(null));
     expect(await store.findComment('nope')).toBeNull();
-    expect(await store.deleteComment('nope')).toBe(false);
+    expect(await store.deleteComment('nope', 1)).toBe(false);
     const failing = {
       query: async (): Promise<{ rows: Record<string, unknown>[] }> => {
         throw other;
@@ -535,7 +566,7 @@ describe('PostgresMemberHabitStore', () => {
     };
     const broken = new PostgresMemberHabitStore(failing, addressesOf(null));
     await expect(broken.findComment('nope')).rejects.toThrow('connection refused');
-    await expect(broken.deleteComment('nope')).rejects.toThrow('connection refused');
+    await expect(broken.deleteComment('nope', 1)).rejects.toThrow('connection refused');
   });
 
   it('edits the wording and the period revision in one statement', async () => {
@@ -558,7 +589,7 @@ describe('PostgresMemberHabitStore', () => {
       ): Promise<{ rows: Record<string, unknown>[] }> => {
         calls.push({ text, params });
         if (text.includes('RETURNING habit_id') && text.includes('account_id = $5')) {
-          return { rows: [{ habit_id: habit.id }] };
+          return { rows: [{ status: 'ok' }] };
         }
         return { rows: [] };
       },
@@ -674,6 +705,14 @@ describe('PostgresMemberHabitStore', () => {
     expect(await store.archive('missing', accountId, '2026-10-05')).toBe('missing');
     expect(await store.archive('ended', accountId, '2026-10-05')).toBe('ok');
     expect(await store.archive(id, accountId, '2026-10-05')).toBe('ok');
+    expect(
+      await store.edit(
+        id,
+        accountId,
+        { name: 'Later', description: 'x', notes: 'y' },
+        '2026-10-06',
+      ),
+    ).toBe('closed');
     expect(await store.log('missing', accountId, '2026-10-01', 'achieved')).toBe('missing');
     expect(await store.log(id, accountId, '2026-09-01', 'achieved')).toBe('closed');
     expect(await store.log('ended', accountId, '2026-10-08', 'missed')).toBe('closed');
@@ -706,9 +745,9 @@ describe('PostgresMemberHabitStore', () => {
       createdAt: 3,
       deletedAt: null,
     });
-    expect(await store.deleteComment('missing')).toBe(false);
-    expect(await store.deleteComment('c-new')).toBe(true);
-    expect(await store.deleteComment('c-new')).toBe(false);
+    expect(await store.deleteComment('missing', 1)).toBe(false);
+    expect(await store.deleteComment('c-new', 1)).toBe(true);
+    expect(await store.deleteComment('c-new', 1)).toBe(false);
     expect(await store.lightning(accountId)).toBe('ada@wallet.example');
     await store.setLightning(accountId, null);
     expect(await store.lightning(accountId)).toBeNull();

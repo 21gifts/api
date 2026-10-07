@@ -230,6 +230,25 @@ VALUES ($1, 'basis', false, false, $2)`,
         firstPeriod: '2026-10-01',
         lastPeriod: null,
       });
+      expect(
+        await store.edit(
+          habitId,
+          accountId,
+          { name: 'Run', description: 'Out', notes: 'n' },
+          '2026-10-05',
+        ),
+      ).toBe('ok');
+      expect(await store.archive(habitId, accountId, '2026-10-05')).toBe('ok');
+      expect(
+        await store.edit(
+          habitId,
+          accountId,
+          { name: 'Later', description: 'Out', notes: 'n' },
+          '2026-10-06',
+        ),
+      ).toBe('closed');
+      const kept = await store.listPublic(accountId, Date.parse('2026-10-07T04:00:00.000Z'));
+      expect(kept.find((row) => row.id === habitId)?.name).toBe('Run');
       await client.execute(
         `INSERT INTO member_habit_revision (habit_id, period, name, description)
 VALUES ($1, '2026-10-02', $2, 'ok')`,
@@ -261,7 +280,7 @@ VALUES ($1, '2026-10-04', 'ok', $2)`,
       expect(sqlState(tooLongDescription)).toBe('23514');
 
       expect(await store.findComment('nope')).toBeNull();
-      expect(await store.deleteComment('nope')).toBe(false);
+      expect(await store.deleteComment('nope', 1)).toBe(false);
       expect(await store.findComment(crypto.randomUUID())).toBeNull();
     } finally {
       if (ready) {

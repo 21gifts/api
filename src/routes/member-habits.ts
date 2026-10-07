@@ -334,14 +334,21 @@ export function memberHabitRoutes(deps: {
         if (habit === undefined) {
           return c.json({ error: 'Not found' }, 404);
         }
+        const atPeriod = periodKey(nowMs, habit.cadence, habit.timeZone);
+        if (habit.lastPeriod !== null && comparePeriod(atPeriod, habit.lastPeriod) > 0) {
+          return c.json({ error: 'Period is closed' }, 409);
+        }
         const result = await deps.store.edit(
           body.id,
           account.id,
           { name: body.name.trim(), description: body.description, notes: body.notes },
-          periodKey(nowMs, habit.cadence, habit.timeZone),
+          atPeriod,
         );
         if (result === 'missing') {
           return c.json({ error: 'Not found' }, 404);
+        }
+        if (result === 'closed') {
+          return c.json({ error: 'Period is closed' }, 409);
         }
         return c.json({ ok: true }, 200);
       }
@@ -441,7 +448,7 @@ export function memberHabitRoutes(deps: {
         if (comment === null) {
           return c.json({ error: 'Not found' }, 404);
         }
-        const deleted = await deps.store.deleteComment(body.id);
+        const deleted = await deps.store.deleteComment(body.id, nowMs);
         if (!deleted) {
           return c.json({ error: 'Not found' }, 404);
         }
