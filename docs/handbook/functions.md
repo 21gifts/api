@@ -242,7 +242,7 @@
 
 - **Purpose:** One refresh of the stored BTC spot quote.
 - **Inputs:** `FxSpotWorkerDeps` (`store`, `fetchImpl`, `url`, `now`).
-- **Returns / side effects:** `true` after `store.save` of a fetched quote (the store still keeps a stored quote with a later `asOf`). When `fetchFxSpot` returns `null` it logs `fx.spot.fetch_failed`, keeps the stored quote, and returns `false`. A store write failure throws.
+- **Returns / side effects:** `true` once a fetched quote was handed to `store.save`, which may keep a newer stored quote instead (see `PostgresFxSpotStore` for a stored `as_of` in the future). When `fetchFxSpot` returns `null` it logs `fx.spot.fetch_failed`, keeps the stored quote, and returns `false`. A store write failure throws.
 - **Used by:** `startFxSpotWorker`.
 
 ## Function: startFxSpotWorker
