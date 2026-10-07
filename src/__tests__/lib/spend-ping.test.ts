@@ -489,7 +489,7 @@ describe('HttpSpendPing', () => {
     ).toBe(true);
   });
 
-  it('POSTs the old daily body when unlisted even if defaultAmountUsd is present', async () => {
+  it('does not POST daily when unlisted without grantStatus even if defaultAmountUsd is present', async () => {
     const fetchImpl = vi.fn<FetchFn>(
       rosterThenPing({
         roster: {
