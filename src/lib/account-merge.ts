@@ -376,6 +376,15 @@ export async function mergeAccounts(db: MergeDb, input: MergeInput): Promise<Mer
        )`,
       accountParams,
     );
+    await tx.query(
+      `DELETE FROM wallet_payment AS src
+       WHERE src.account_id = $1
+         AND EXISTS (
+           SELECT 1 FROM wallet_payment AS dst
+           WHERE dst.account_id = $2 AND dst.payment_id = src.payment_id
+         )`,
+      accountParams,
+    );
     await tx.query('DELETE FROM auth_session WHERE account_id = $1', [input.from]);
 
     const composite = await tx.query<{ constraint_name: string }>(
