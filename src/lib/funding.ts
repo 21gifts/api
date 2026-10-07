@@ -133,12 +133,11 @@ export function fundingGrantRequired(nowMs: number): boolean {
 }
 
 /**
- * Whether the account may receive a spend ping today, and whether
- * `GET /eligible` reports that.
+ * Whether the account may receive a spend ping / spend invoice today.
  *
  * `basis` is always false. Before {@link FUNDING_REQUIRED_FROM_UTC}, every
- * other role is true. From that UTC day, true iff admitted OR
- * (trial AND `trialUtcDate === utcDayKey(nowMs)`).
+ * other role is true (passkey and living-room post still gate issue). From
+ * that UTC day, true iff admitted OR (trial AND `trialUtcDate === utcDayKey(nowMs)`).
  * Expired trial, pending, rejected, and missing grants are then false.
  *
  * @param role - Live account role.

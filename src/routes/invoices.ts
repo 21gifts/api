@@ -33,11 +33,9 @@ import { logEvent } from '@/lib/log';
 import { MESSAGE_ID_RE } from '@/routes/messages';
 
 /**
- * Spend-worker invoice routes: passkey lookup (`GET /passkey`), funding-grant
- * eligibility (`GET /eligible`), live top-level forum-post lookup (`GET /posted`),
- * invoice issue (`POST /`), and preimage proof. Issue fetches a recipient
- * BOLT11 via LNURL-pay. Who is paid is decided before this route; issue does
- * not refuse for passkey, funding grant, or a missing/no-media post. A proof
+ * Spend-worker invoice routes: check passkey eligibility, a funding grant
+ * (`eligibleToday`), and a live top-level forum post, fetch a recipient
+ * BOLT11 via LNURL-pay, then accept the payment preimage as proof. A proof
  * with `messageId` attaches a platform gift-reply when that message is a
  * top-level post. If `messageId` is already a reply, the proof persists a
  * deterministic `spendGiftReplyId` marker under that reply, `markDeleted`
@@ -96,7 +94,7 @@ export interface InvoiceRouteDeps {
    */
   conversationStore?: Pick<ConversationStore, 'getById' | 'getMessageById' | 'appendMessage'>;
   /**
-   * Funding grants for `GET /eligible` (default: empty
+   * Funding grants for spend eligibility (default: empty
    * {@link InMemoryFundingStore}).
    */
   fundingStore?: FundingStore;
@@ -212,6 +210,28 @@ async function welcomePostedFields(
     welcomeHasMedia: welcomeMessageId !== null,
     welcomeMessageId,
   };
+}
+
+/**
+ * Whether a normalised Lightning Address belongs to an account that has at
+ * least one live top-level forum row that is not the auto-created profile
+ * note. Replies do not count. Missing account → false (fail closed).
+ *
+ * @param authStore - Account lookup.
+ * @param messageStore - Live top-level post lookup.
+ * @param address - Normalised `local@domain`.
+ * @returns `true` only when the account has a live top-level non-profile forum row.
+ */
+async function addressHasPosted(
+  authStore: InvoiceRouteDeps['authStore'],
+  messageStore: InvoiceRouteDeps['messageStore'],
+  address: string,
+): Promise<boolean> {
+  const account = await authStore.getAccountByLightningAddress(address);
+  return (
+    account !== undefined &&
+    (await messageStore.accountHasLiveTopLevelPost(account.id, account.profileMessageId ?? null))
+  );
 }
 
 /**
@@ -620,13 +640,19 @@ export function invoiceRoutes(deps: InvoiceRouteDeps): Hono {
       }
 
       const account = await deps.authStore.getAccountByLightningAddress(address);
+      if (account === undefined || !(await deps.authStore.accountHasPasskey(account.id))) {
+        logEvent('invoice.passkey_required', { address });
+        return c.json({ error: 'Passkey required' }, 403);
+      }
+
+      const grant = await fundingStore.getByAccountId(account.id);
+      if (!eligibleToday(account.role, grant, deps.now())) {
+        logEvent('invoice.funding_required', { address });
+        return c.json({ error: 'Funding grant required' }, 403);
+      }
 
       let resolvedGroupMessageId: string | undefined;
       if (parsed.data.messageId !== undefined) {
-        if (account === undefined) {
-          logEvent('invoice.forum_post_required', { address });
-          return c.json({ error: 'Forum post required' }, 403);
-        }
         const message = await deps.messageStore.getById(parsed.data.messageId);
         if (
           message === undefined ||
@@ -645,16 +671,27 @@ export function invoiceRoutes(deps: InvoiceRouteDeps): Hono {
           logEvent('invoice.forum_post_required', { address });
           return c.json({ error: 'Forum post required' }, 403);
         }
+        if (
+          message.hasPhoto !== true &&
+          message.hasVideo !== true &&
+          !(Number(message.photoCount) > 0)
+        ) {
+          logEvent('invoice.forum_post_required', { address });
+          return c.json({ error: 'Forum post required' }, 403);
+        }
         const accounts = await deps.authStore.listAccounts();
         const platform = accounts.find((item) => item.isPlatform === true);
         if (platform === undefined) {
           return c.json({ error: 'Platform account is not configured' }, 503);
         }
-      } else if (parsed.data.groupMessageId !== undefined) {
-        // Display only: a failing lookup must never block the payout.
-        if (account === undefined) {
-          logEvent('invoice.group_message_ignored', { address });
-        } else {
+      } else {
+        const hasPosted = await addressHasPosted(deps.authStore, deps.messageStore, address);
+        if (!hasPosted) {
+          logEvent('invoice.forum_post_required', { address });
+          return c.json({ error: 'Forum post required' }, 403);
+        }
+        if (parsed.data.groupMessageId !== undefined) {
+          // Display only: a failing lookup must never block the payout.
           try {
             const conversationStore = deps.conversationStore;
             const row =
