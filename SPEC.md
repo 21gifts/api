@@ -3432,8 +3432,9 @@ payments the api has not acknowledged yet.
 - Optional detail fields: `paymentHash` (64 hex), `invoice` (≤ 4096),
   `destination` (≤ 512), `description` (≤ 640), `lnurlComment` (≤ 640). A
   value that is missing, too long, holds control characters, or has the shape
-  of secret material (an `nsec1…` / extended private key, or a 12–24 word
-  phrase) is stored as `null`.
+  of secret material (a token starting with `nsec1…` or an extended private
+  key prefix, or a run of at least 12 consecutive words of 3–8 letters
+  anywhere in the value) is stored as `null`.
 - Every other field is ignored and never stored or logged. A `preimage` is not
   read even when the app sends one; the app does not send it.
 
@@ -3492,8 +3493,9 @@ at most 50 events.
   `shop_opened`, `profile_opened`, `login`, `signup_completed`.
 - `at`: same instant rules as `syncedAt` above.
 - `path`: optional; cut at the first `?` or `#`; must start with `/`, at most
-  256 characters; a path with a secret-shaped segment (also URL-decoded, or a
-  phrase spread over segments) drops the event.
+  256 characters; a path that holds secret material anywhere (after URL decoding,
+  a key token or at least 12 consecutive 3–8 letter words across segments)
+  drops the event.
 - `props`: optional flat object, at most 20 keys; key `[A-Za-z][A-Za-z0-9_]{0,39}`;
   value `null`, boolean, finite number, or string up to 200 characters. Keys
   naming secret material (seed, mnemonic, phrase, preimage, private key,

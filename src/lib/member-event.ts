@@ -87,15 +87,8 @@ function isValidMemberPath(path: string): boolean {
   if (hasC0OrDel(path)) {
     return false;
   }
-  // A secret-shaped segment, or a phrase spread over segments, never reaches storage.
-  const segments = path
-    .split('/')
-    .filter((segment) => segment !== '')
-    .map(decodeSegment);
-  return (
-    !segments.some((segment) => looksLikeSecretValue(segment)) &&
-    !looksLikeSecretValue(segments.join(' '))
-  );
+  // A key or a recovery phrase anywhere in the path, also URL-encoded, never reaches storage.
+  return !looksLikeSecretValue(path.split('/').map(decodeSegment).join('/'));
 }
 
 function parseIncomingProps(raw: Record<string, unknown>): Record<string, MemberEventPropValue> {
