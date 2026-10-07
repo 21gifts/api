@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   ROLE_ORDER,
+  canReadTeamAudit,
   isModeratorGroupMember,
   roleAtLeast,
   roleRank,
@@ -89,5 +90,15 @@ describe('isModeratorGroupMember', () => {
     expect(isModeratorGroupMember({ role: 'founder', isPlatform: true })).toBe(false);
     expect(isModeratorGroupMember({ role: 'moderator', isPlatform: true })).toBe(false);
     expect(isModeratorGroupMember({ role: 'initiator', isPlatform: true })).toBe(false);
+  });
+});
+
+describe('canReadTeamAudit', () => {
+  it('lets initiator and founder read the audit log, not moderator or below', () => {
+    expect(canReadTeamAudit('founder')).toBe(true);
+    expect(canReadTeamAudit('initiator')).toBe(true);
+    expect(canReadTeamAudit('moderator')).toBe(false);
+    expect(canReadTeamAudit('verified')).toBe(false);
+    expect(canReadTeamAudit('basis')).toBe(false);
   });
 });

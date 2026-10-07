@@ -74,3 +74,20 @@ export function isModeratorGroupMember(account: {
 }): boolean {
   return account.isPlatform !== true && roleAtLeast(account.role, 'moderator');
 }
+
+/** Roles that may read the team access audit log. */
+const TEAM_AUDIT_ROLES: ReadonlySet<AccountRole> = new Set<AccountRole>(['initiator', 'founder']);
+
+/**
+ * Whether a caller may read the team access audit log (`GET /team/audit`).
+ *
+ * Initiator and founder only. Moderator has the same rank as initiator, so
+ * {@link roleAtLeast} cannot leave moderators out; this is the one place the
+ * audit view names its roles.
+ *
+ * @param role - Caller's live role.
+ * @returns `true` for initiator and founder.
+ */
+export function canReadTeamAudit(role: AccountRole): boolean {
+  return TEAM_AUDIT_ROLES.has(role);
+}
