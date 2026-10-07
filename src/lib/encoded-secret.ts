@@ -108,7 +108,9 @@ export function containsEncodedSecret(value: string): boolean {
     if (token.length < ENCODED_TOKEN_MIN_LENGTH || !token.includes('1')) {
       continue;
     }
-    const bytes = payloadBytes(token);
+    // Bech32 rejects mixed case, but decoders that lower-case first (the Spark decoder) still read it.
+    const lower = token.toLowerCase();
+    const bytes = payloadBytes(lower);
     if (bytes !== null) {
       const texts = [printable(bytes)];
       protoTexts(bytes, 0, texts);
@@ -116,7 +118,7 @@ export function containsEncodedSecret(value: string): boolean {
         return true;
       }
     }
-    if (bolt11Descriptions(token).some(textHoldsSecret)) {
+    if (bolt11Descriptions(lower).some(textHoldsSecret)) {
       return true;
     }
   }

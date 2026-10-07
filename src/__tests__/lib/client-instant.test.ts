@@ -51,6 +51,21 @@ describe('parseClientInstant', () => {
     expect(parseClientInstant([], NOW)).toBeNull();
   });
 
+  it('accepts only ISO-8601 instants with a zone, and rejects impossible ones', () => {
+    const now = Date.parse('2026-10-07T12:00:00Z');
+    expect(parseClientInstant('2026-10-07T08:00:00.123456789Z', now)?.getTime()).toBe(
+      Date.parse('2026-10-07T08:00:00.123Z'),
+    );
+    expect(parseClientInstant('2026-10-07T08:00+02:00', now)?.getTime()).toBe(
+      Date.parse('2026-10-07T06:00:00Z'),
+    );
+    expect(parseClientInstant('2026-10-07T08:00:00-0130', now)).not.toBeNull();
+    expect(parseClientInstant('Jan 1 2024', now)).toBeNull();
+    expect(parseClientInstant('2026-10-07', now)).toBeNull();
+    expect(parseClientInstant('2026-10-07T08:00:00', now)).toBeNull();
+    expect(parseClientInstant('2026-13-45T25:99:00Z', now)).toBeNull();
+  });
+
   it('returns null before the minimum instant or after the future skew', () => {
     expect(parseClientInstant(CLIENT_INSTANT_MIN_MS - 1, NOW)).toBeNull();
     expect(parseClientInstant('2009-01-02T23:59:59.999Z', NOW)).toBeNull();

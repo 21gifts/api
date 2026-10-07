@@ -3705,7 +3705,7 @@ Builds the operator-only external-pubkey inspection route.
 
 ## Function: parseClientInstant
 
-- **Purpose:** Parse a timestamp sent by the app: an ISO-8601 string (`Date.parse`) or a finite number, where a number below `1e11` is epoch seconds and anything else epoch milliseconds. Bounds are `CLIENT_INSTANT_MIN_MS` (2009-01-03T00:00:00Z) and now plus `CLIENT_INSTANT_FUTURE_SKEW_MS` (5 minutes).
+- **Purpose:** Parse a timestamp sent by the app: an ISO-8601 instant string (date, time to the minute or finer, and `Z` or a numeric offset, checked before `Date.parse`; a date alone or a locale string is refused) or a finite number, where a number below `1e11` is epoch seconds and anything else epoch milliseconds. Bounds are `CLIENT_INSTANT_MIN_MS` (2009-01-03T00:00:00Z) and now plus `CLIENT_INSTANT_FUTURE_SKEW_MS` (5 minutes).
 - **Inputs:** The raw value and the server clock in epoch milliseconds.
 - **Returns / side effects:** A `Date`, or `null` for any other type, an unparseable string, a non-finite number, or an instant outside the bounds. Pure.
 - **Used by:** `parseMemberEventBatch` (`at`) and `parseWalletReport` (`syncedAt`, payment `timestamp`).
@@ -3789,7 +3789,7 @@ Builds the operator-only external-pubkey inspection route.
 
 ## Function: walletReportRoutes
 
-- **Purpose:** Hono group mounted at `/` that serves `POST /me/wallet/report`. Order: bearer session (401), per-account rate limit with `IpRateLimiter` keyed by the account id, `WALLET_REPORTS_PER_MINUTE` (60) per 60 seconds (429), body cap `WALLET_REPORT_BODY_LIMIT_BYTES` (1 MiB) via `readCappedText` (413), JSON and `parseWalletReport` (400), then classification with `walletPaymentClassifier` (payments concurrently), one `recordBalance`, and one `upsertPayments` (a later duplicate id in the same report wins).
+- **Purpose:** Hono group mounted at `/` that serves `POST /me/wallet/report`. Order: bearer session (401), per-account rate limit with `IpRateLimiter` keyed by the account id, `WALLET_REPORTS_PER_MINUTE` (60) per 60 seconds (429), body cap `WALLET_REPORT_BODY_LIMIT_BYTES` (1 MiB) via `readCappedText` (413), JSON and `parseWalletReport` (400), then classification with `walletPaymentClassifier` (payments concurrently) under one observation time that is strictly increasing per process (a later report in the same millisecond gets the next millisecond), one `recordBalance`, and one `upsertPayments` (a later duplicate id in the same report wins).
 - **Inputs:** `authStore`, `walletStore`, `messages`, `posStore`, optional `lnurlServer`, `now`, optional `limiter`.
 - **Returns / side effects:** 200 `{ acknowledgedIds }`. A lookup or write failure logs `wallet_report.write.failed` with `accountId` only and answers 503 `{ error: 'Wallet data is unavailable' }`. Never logs the body, amounts, addresses, invoices, or memos.
 - **Used by:** `createApp`.
@@ -3803,7 +3803,7 @@ Builds the operator-only external-pubkey inspection route.
 
 ## Function: containsEncodedSecret
 
-- **Purpose:** Tell whether a value holds secret material, also inside an encoded token. Flags a key token, a recovery-phrase run (`looksLikeSecretValue`), or a WIF private key token (Base58Check, version `0x80` or `0xef`, 32-byte key, optional `0x01` flag, valid checksum) in the value itself and in every text decoded from it: for every bech32 or bech32m token it screens the whole payload (printable ASCII kept, so the text of an LNURL is covered) plus every length-delimited protobuf field in it on its own, repeated and nested fields included up to depth 4, so every memo of a Spark address or invoice is read without its length byte, and every description tag of a BOLT11 token (`bolt11Descriptions`). Tokens shorter than 20 characters or without the separator `1` are only screened by their visible text.
+- **Purpose:** Tell whether a value holds secret material, also inside an encoded token. Flags a key token, a recovery-phrase run (`looksLikeSecretValue`), or a WIF private key token (Base58Check, version `0x80` or `0xef`, 32-byte key, optional `0x01` flag, valid checksum) in the value itself and in every text decoded from it: for every bech32 or bech32m token (lower-cased first, as case-folding decoders read it) it screens the whole payload (printable ASCII kept, so the text of an LNURL is covered) plus every length-delimited protobuf field in it on its own, repeated and nested fields included up to depth 4, so every memo of a Spark address or invoice is read without its length byte, and every description tag of a BOLT11 token (`bolt11Descriptions`). Tokens shorter than 20 characters or without the separator `1` are only screened by their visible text.
 - **Inputs:** One string: a wallet detail field, a payment id, a decoded event path, or an event prop value.
 - **Returns / side effects:** `true` when anything visible or encoded looks like secret material. Pure; never logs. A raw 32-byte value is not screened by shape (it looks like the hashes, ids and NIP-57 zap requests that are collected).
 - **Used by:** `parseWalletReport` (payment id and detail fields) and `parseMemberEventBatch` (path and prop strings).

@@ -59,6 +59,7 @@ export const MEMBER_EVENT_SCHEMA_SQL: readonly string[] = [
  *
  * @param sql - Parameter-bound SQL client.
  * @returns Resolves when every statement has executed.
+ * @throws Propagates SQL failures.
  */
 export async function migrateMemberEventSchema(sql: SqlClient): Promise<void> {
   for (const statement of MEMBER_EVENT_SCHEMA_SQL) {
