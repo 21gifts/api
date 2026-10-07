@@ -149,6 +149,10 @@ const DETAIL_PAYMENT_FIELDS = [
 ] as const;
 
 function updatePayment(existing: WalletPaymentRecord, row: WalletPaymentRecord): void {
+  // A report observed before the stored state (a slower concurrent request) never overwrites it.
+  if (row.updatedAt.getTime() < existing.updatedAt.getTime()) {
+    return;
+  }
   let changed = existing.paidAt.getTime() !== row.paidAt.getTime();
   existing.paidAt = new Date(row.paidAt.getTime());
   for (const field of REQUIRED_PAYMENT_FIELDS) {
@@ -371,7 +375,8 @@ IS DISTINCT FROM
        COALESCE(EXCLUDED.destination, wallet_payment.destination),
        COALESCE(EXCLUDED.description, wallet_payment.description),
        COALESCE(EXCLUDED.lnurl_comment, wallet_payment.lnurl_comment), EXCLUDED.category,
-       EXCLUDED.counterparty_account_id)`,
+       EXCLUDED.counterparty_account_id)
+  AND EXCLUDED.updated_at >= wallet_payment.updated_at`,
         [
           row.accountId,
           row.paymentId,

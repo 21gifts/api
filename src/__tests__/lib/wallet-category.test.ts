@@ -425,6 +425,28 @@ describe('walletPaymentClassifier', () => {
     expect(state.refs.at(-1)).toEqual({ paymentHash: 'f'.repeat(64) });
   });
 
+  it('tries the BOLT11 hash when the reported hash is unknown, for gifts and POS charges', async () => {
+    const gift = setup();
+    gift.state.invoice = invoice(MEMBER, PAYER);
+    gift.state.invoiceHash = BOLT11_PAYMENT_HASH;
+    gift.state.accounts.set(MEMBER, account(MEMBER));
+    await expect(
+      gift.classify(payment({ paymentHash: 'c'.repeat(64), invoice: BOLT11 })),
+    ).resolves.toEqual({ category: 'gift', counterpartyAccountId: MEMBER });
+    expect(gift.state.invoiceHashes).toEqual(['c'.repeat(64), BOLT11_PAYMENT_HASH]);
+
+    const pos = setup();
+    pos.state.posStore = (ref) =>
+      'paymentHash' in ref && ref.paymentHash === BOLT11_PAYMENT_HASH ? charge(SHOP) : undefined;
+    await expect(
+      pos.classify(payment({ paymentHash: 'c'.repeat(64), invoice: BOLT11 })),
+    ).resolves.toEqual({ category: 'shop', counterpartyAccountId: SHOP });
+    expect(pos.state.refs).toEqual([
+      { paymentHash: 'c'.repeat(64) },
+      { paymentHash: BOLT11_PAYMENT_HASH },
+    ]);
+  });
+
   it('uses onchain, Lightning, foreign-address, ln-invoice, and unknown fallbacks', async () => {
     const { classify } = setup();
     for (const method of ['onchain', 'bitcoin']) {

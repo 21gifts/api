@@ -4,6 +4,7 @@ import type { AuthStore, Account } from '@/lib/auth/store';
 import { decodeBolt11 } from '@/lib/bolt11';
 import type { LnurlServerConfig } from '@/lib/config';
 import { textHasHashtagToken, type MessageStore } from '@/lib/message-store';
+import type { PosCharge } from '@/lib/pos-charge';
 import type { PosStore } from '@/lib/pos-store';
 import { accountByReceivingAddress } from '@/lib/receiving-address';
 import { decodeSparkAddress } from '@/lib/spark-address';
@@ -112,17 +113,15 @@ export function walletPaymentClassifier(
   };
 
   return async (payment): Promise<WalletPaymentClass> => {
-    let hash = payment.paymentHash;
-    if (hash === null && payment.invoice !== null) {
-      hash = decodeBolt11(payment.invoice)?.paymentHash ?? null;
-    }
+    const invoiceHash =
+      payment.invoice === null ? null : (decodeBolt11(payment.invoice)?.paymentHash ?? null);
     // Memos live on a Spark invoice; a Spark address in `destination` still names the receiver.
     const spark =
       (payment.invoice === null ? null : decodeSparkAddress(payment.invoice)) ??
       (payment.destination === null ? null : decodeSparkAddress(payment.destination));
     const zapMemoHash = spark?.memo?.match(/^zap:([0-9a-fA-F]{64})$/)?.[1]?.toLowerCase();
-    // A zap memo names the zap invoice the Spark invoice stands in for; try it after the reported hash.
-    const knownHashes = [hash, zapMemoHash].filter(
+    // Try the reported hash, then the hash of the reported BOLT11, then the zap invoice a Spark memo names.
+    const knownHashes = [payment.paymentHash, invoiceHash, zapMemoHash].filter(
       (candidate, index, all): candidate is string =>
         typeof candidate === 'string' && all.indexOf(candidate) === index,
     );
@@ -149,8 +148,13 @@ export function walletPaymentClassifier(
       }
     }
 
-    let charge =
-      hash === null ? undefined : await deps.posStore.findChargeForPayment({ paymentHash: hash });
+    let charge: PosCharge | undefined;
+    for (const candidate of knownHashes) {
+      charge = await deps.posStore.findChargeForPayment({ paymentHash: candidate });
+      if (charge !== undefined) {
+        break;
+      }
+    }
     if (charge === undefined && spark?.memo?.startsWith('pos:') === true) {
       charge = await deps.posStore.findChargeForPayment({ chargeId: spark.memo.slice(4) });
     }

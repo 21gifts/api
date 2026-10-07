@@ -580,6 +580,7 @@
 - **Purpose:** Fold account `from` into account `into` on one reserved transaction (`MergeDb.begin`). Moves every single-column foreign key that the catalog says references `public.account(id)`, keeps one verify edge, copies the earlier join time and the consent that must not get worse onto the survivor, and deletes `from`. Clears `first_post_free` on the source note before the move when the survivor already has a free first post, so the per-account unique index holds. The same id returns before a transaction is opened. Name, username, location, and in-app wallet key (`spark_pubkey`, `spark_pubkey_verified_at`) of the survivor are not written.
 - **Inputs:** `MergeDb` and `{ from, into, verify }` where `verify` is `'from'` or `'into'`.
 - **Returns / side effects:** `{ ok: true, messages }` with the source message count, or `{ ok: false, error }` of `not_found`, `same_account`, `platform`, or `both_grants`. Does not catch driver errors, so a throw rolls the transaction back. Does not log tokens, text, or keys.
+- **Wallet data:** Before the catalog repoint, deletes each source `wallet_payment` row whose `payment_id` the survivor already has (the primary key is `(account_id, payment_id)`), then sets `counterparty_account_id` to `NULL` on payments of either account whose counterparty is one of the two, so no payment ends up with its own account as counterparty.
 - **Used by:** `POST /debug/accounts/merge` in `debugRoutes`.
 
 ## Function: debugRoutes
@@ -3772,14 +3773,14 @@ Builds the operator-only external-pubkey inspection route.
 
 ## Function: InMemoryWalletStore
 
-- **Purpose:** Process-local `WalletStore` for boots without `DATABASE_URL` and for tests. `recordBalance` appends a snapshot; `upsertPayments` inserts or updates by `(accountId, paymentId)` with the same rules as the Postgres store (overwrite status, amounts, method, time, category, counterparty; keep stored detail fields when the new value is `null`; keep `firstSeenAt`; move `updatedAt` only on a change). `latestBalance` and `listPayments` (newest `paidAt` first) return copies.
+- **Purpose:** Process-local `WalletStore` for boots without `DATABASE_URL` and for tests. `recordBalance` appends a snapshot; `upsertPayments` inserts or updates by `(accountId, paymentId)` with the same rules as the Postgres store (overwrite status, amounts, method, time, category, counterparty; keep stored detail fields when the new value is `null`; keep `firstSeenAt`; move `updatedAt` only on a change; ignore a row whose `updatedAt` is older than the stored one). `latestBalance` and `listPayments` (newest `paidAt` first) return copies.
 - **Inputs:** No constructor arguments.
 - **Returns / side effects:** Promises of void, of the latest snapshot, and of payment copies. Rows live for the process lifetime. Only allow-listed fields are stored.
 - **Used by:** `createApp` default; route and store tests.
 
 ## Function: PostgresWalletStore
 
-- **Purpose:** Postgres store for `wallet_balance_snapshot` and `wallet_payment`. `recordBalance` inserts one snapshot. `upsertPayments` runs one `INSERT … ON CONFLICT (account_id, payment_id) DO UPDATE` per row that `COALESCE`s the detail fields and updates only when the row is `IS DISTINCT FROM` the stored one, so an unchanged re-send writes nothing and adds no `db_change` row. `latestBalance` and `listPayments` read newest-first and map `bigint` and timestamp columns.
+- **Purpose:** Postgres store for `wallet_balance_snapshot` and `wallet_payment`. `recordBalance` inserts one snapshot. `upsertPayments` runs one `INSERT … ON CONFLICT (account_id, payment_id) DO UPDATE` per row that `COALESCE`s the detail fields and updates only when the row is `IS DISTINCT FROM` the stored one and `EXCLUDED.updated_at >= wallet_payment.updated_at` (an older observation never overwrites newer state), so an unchanged re-send writes nothing and adds no `db_change` row. `latestBalance` and `listPayments` read newest-first and map `bigint` and timestamp columns.
 - **Inputs:** Constructor takes a migrated `SqlClient`.
 - **Returns / side effects:** Query failures propagate (the route answers 503). Every insert and update is logged by `trg_db_change`. Needs `DATABASE_URL`; not reached on the default boot.
 - **Used by:** `openBootStores` → `createApp` → `walletReportRoutes`.

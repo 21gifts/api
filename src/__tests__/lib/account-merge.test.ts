@@ -136,6 +136,13 @@ describe('mergeAccounts', () => {
     expect(walletCollision).toBeLessThan(catalog);
     expect(queries[walletCollision]?.params).toEqual([FROM, INTO]);
     expect(queries[walletCollision]?.text).toContain('dst.payment_id = src.payment_id');
+    const walletSelfCounterparty = queries.findIndex((query) =>
+      query.text.includes('SET counterparty_account_id = NULL'),
+    );
+    expect(walletSelfCounterparty).toBeGreaterThan(walletCollision);
+    expect(walletSelfCounterparty).toBeLessThan(catalog);
+    expect(queries[walletSelfCounterparty]?.params).toEqual([FROM, INTO]);
+    expect(queries[walletSelfCounterparty]?.text).toContain('counterparty_account_id IN ($1, $2)');
     expect(queries.some((query) => query.text.includes('DELETE FROM auth_session'))).toBe(true);
     expect(queries).toContainEqual({
       text: 'UPDATE "public"."passkey_credential" SET "account_id" = $1 WHERE "account_id" = $2',

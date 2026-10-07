@@ -168,6 +168,16 @@ describe('InMemoryWalletStore', () => {
     await store.upsertPayments([{ ...changed!, updatedAt: later }]);
     expect((await store.listPayments('account', 1))[0]?.updatedAt).toEqual(T2);
   });
+
+  it('ignores a report observed before the stored state', async () => {
+    const store = new InMemoryWalletStore();
+    await store.upsertPayments([payment({ status: 'completed', updatedAt: T2, firstSeenAt: T2 })]);
+    await store.upsertPayments([payment({ status: 'pending', updatedAt: T1, firstSeenAt: T1 })]);
+    expect((await store.listPayments('account', 1))[0]).toMatchObject({
+      status: 'completed',
+      updatedAt: T2,
+    });
+  });
 });
 
 describe('PostgresWalletStore', () => {
@@ -184,6 +194,7 @@ describe('PostgresWalletStore', () => {
     expect(sql.executes[1]?.text).toContain('ON CONFLICT (account_id, payment_id) DO UPDATE');
     expect(sql.executes[1]?.text).toContain('COALESCE(EXCLUDED.invoice, wallet_payment.invoice)');
     expect(sql.executes[1]?.text).toContain('IS DISTINCT FROM');
+    expect(sql.executes[1]?.text).toContain('AND EXCLUDED.updated_at >= wallet_payment.updated_at');
     expect(sql.executes[1]?.params).toEqual([
       'account',
       'a',
