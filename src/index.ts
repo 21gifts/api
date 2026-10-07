@@ -37,6 +37,7 @@ import { resolveFreePaymentsConfig, resolveLnurlServerConfig } from './lib/confi
 import { InMemorySparkInvoiceStore } from './lib/spark-invoice-store';
 import { startSparkInvoiceWorker } from './lib/spark-worker';
 import { startPosPaidWorker } from './lib/pos-paid-worker';
+import { resolveFxSpotUrl, startFxSpotWorker } from './lib/fx-spot';
 import { createApp, parseBindAddr, resolveBindAddr } from './server';
 
 /* v8 ignore start — Bun runtime boot path; exercised by smoke tests, not unit tests */
@@ -87,6 +88,7 @@ if (import.meta.main) {
     giftRecorder,
     btcUsdRates,
     fiatRates,
+    fxSpotStore,
     messageStore,
     nostrKek,
     contactStore,
@@ -130,6 +132,7 @@ if (import.meta.main) {
     authStore,
     btcUsdRates,
     fiatRates,
+    fxSpotStore,
     pushStore,
     posStore,
     env: process.env,
@@ -187,6 +190,12 @@ if (import.meta.main) {
     console.warn(JSON.stringify({ event: 'ocp.place.failed' }));
   });
   setInterval(welcomeCatchUp, 15 * 60 * 1000).unref();
+  startFxSpotWorker({
+    store: fxSpotStore,
+    fetchImpl: globalThis.fetch,
+    url: resolveFxSpotUrl(process.env),
+    now: Date.now,
+  });
   if (sender.isConfigured()) {
     startPushWorker({ store: pushStore, sender, now: Date.now }, PUSH_WORKER_INTERVAL_MS);
   }

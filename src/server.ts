@@ -57,6 +57,8 @@ import { InMemoryAuthStore } from '@/lib/auth/store';
 import type { AuthStore } from '@/lib/auth/store';
 import { InMemoryBtcUsdStore, type BtcUsdRateBook } from '@/lib/btc-usd-store';
 import { InMemoryFiatStore, type FiatRateBook } from '@/lib/usd-fiat-store';
+import { InMemoryFxSpotStore, type FxSpotStore } from '@/lib/fx-spot-store';
+import { fxRoutes } from '@/routes/fx';
 import { InMemoryGiftStore } from '@/lib/gift-store';
 import type { GiftStore } from '@/lib/gift-store';
 import { InMemoryApiLogStore, type ApiLogStore } from '@/lib/api-log';
@@ -231,6 +233,12 @@ export interface AppDeps {
    */
   fiatRates?: FiatRateBook;
   /**
+   * Last good BTC spot quote for `GET /fx/spot` (default: empty
+   * {@link InMemoryFxSpotStore} — answers `rates: {}`). Boot keeps it fresh
+   * with the spot worker.
+   */
+  fxSpotStore?: FxSpotStore;
+  /**
    * Member forum messages (default: empty {@link InMemoryMessageStore}).
    * Boot injects {@link PostgresMessageStore} when `DATABASE_URL` is set.
    */
@@ -403,6 +411,7 @@ export function createApp(deps: AppDeps = {}): Hono {
   const giftStore = deps.giftStore ?? new InMemoryGiftStore();
   const btcUsdRates = deps.btcUsdRates ?? new InMemoryBtcUsdStore();
   const fiatRates = deps.fiatRates ?? new InMemoryFiatStore();
+  const fxSpotStore = deps.fxSpotStore ?? new InMemoryFxSpotStore();
   const messageStore = deps.messageStore ?? new InMemoryMessageStore();
   const env = deps.env ?? process.env;
   const lnurlServer = resolveLnurlServerConfig(env);
@@ -757,6 +766,7 @@ export function createApp(deps: AppDeps = {}): Hono {
     '/gifts/stats',
     giftsStatsRoutes({ store: giftStore, rates: btcUsdRates, fiatRates, now }),
   );
+  app.route('/fx', fxRoutes({ store: fxSpotStore }));
   app.route(
     '/messages',
     messagesRoutes({

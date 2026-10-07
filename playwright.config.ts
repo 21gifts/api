@@ -41,6 +41,8 @@ export default defineConfig({
       TRANSLATE_API_KEY: '',
       OCP_MAP_BASE_URL: '',
       OCP_PLACE_INGEST_TOKEN: '',
+      // Refused port: GET /fx/spot stays the empty result, independent of the network.
+      BTC_FIAT_SPOT_URL: 'http://127.0.0.1:9/',
       DEBUG_TOKEN: 'e2e-debug-token',
       DEBUG_READ_TOKEN: '',
       WEBAUTHN_RP_ID: 'localhost',

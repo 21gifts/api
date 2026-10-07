@@ -217,6 +217,41 @@
 - **Returns / side effects:** Coinbase decimal text, or `null` for every transport, shape, or value failure, including a fetch that aborts after 10 seconds (`BTC_USD_SPOT_TIMEOUT_MS`). Does not throw.
 - **Used by:** `invoiceRoutes`, message create, zap indexing, conversation message append (`InMemoryConversationStore` / `PostgresConversationStore` `appendMessage`).
 
+## Function: fxRoutes
+
+- **Purpose:** Hono sub-app for public `GET /fx/spot`: the stored BTC price in USD, CHF, EUR, and PHP. It only reads the spot store and never calls the provider.
+- **Inputs:** `{ store: FxSpotStore }` (`createApp` passes `fxSpotStore`, default empty `InMemoryFxSpotStore`).
+- **Returns / side effects:** Hono app mounted at `/fx`. A stored quote answers 200 `{ asOf, source, rates }` with `Cache-Control: public, max-age=60`. No quote, or a store that throws (logs `fx.spot.read_failed`), answers 200 `{ asOf: null, source: null, rates: {} }` with `Cache-Control: no-store`.
+- **Used by:** `createApp`.
+
+## Function: resolveFxSpotUrl
+
+- **Purpose:** Resolve the provider URL for the BTC spot quote from `BTC_FIAT_SPOT_URL`.
+- **Inputs:** Process environment slice.
+- **Returns / side effects:** The trimmed override, or `https://api.coinbase.com/v2/exchange-rates?currency=BTC` when unset or blank. Pure; the process still boots without the variable.
+- **Used by:** Boot (`src/index.ts`) before `startFxSpotWorker`.
+
+## Function: fetchFxSpot
+
+- **Purpose:** Fetch the current price of 1 BTC in USD, CHF, EUR, and PHP from one Coinbase exchange-rates response, without ever throwing.
+- **Inputs:** `{ fetchImpl, url, now }`. The body must be `{ data: { currency: "BTC", rates: { … } } }`.
+- **Returns / side effects:** `{ asOf, source: 'coinbase-exchange-rates', rates }` with `asOf` from `now`. A currency whose rate is missing, not decimal text (string or number, no exponent), or not positive is omitted. `null` for a non-ok response, a wrong shape, no usable currency, a thrown fetch, or a fetch that aborts after `BTC_USD_SPOT_TIMEOUT_MS` (10 seconds).
+- **Used by:** `runFxSpotTick`.
+
+## Function: runFxSpotTick
+
+- **Purpose:** One refresh of the stored BTC spot quote.
+- **Inputs:** `FxSpotWorkerDeps` (`store`, `fetchImpl`, `url`, `now`).
+- **Returns / side effects:** `true` after `store.save` of a fetched quote. When `fetchFxSpot` returns `null` it logs `fx.spot.fetch_failed`, keeps the stored quote, and returns `false`. A store write failure throws.
+- **Used by:** `startFxSpotWorker`.
+
+## Function: startFxSpotWorker
+
+- **Purpose:** Keep the BTC spot quote fresh in the background so `GET /fx/spot` never calls the provider per request.
+- **Inputs:** `FxSpotWorkerDeps` and an optional interval (default `FX_SPOT_REFRESH_MS`, 5 minutes).
+- **Returns / side effects:** Runs `runFxSpotTick` at once and then every interval; ticks never overlap. A throwing tick logs `fx.spot.tick.failed` and the next interval retries. Returns `{ stop }`, which clears the interval.
+- **Used by:** Boot (`src/index.ts`), on every boot (memory and Postgres).
+
 ## Function: resolveCandlesUrl
 
 - **Purpose:** Resolve the Coinbase (or override) candles HTTP URL from env.
@@ -350,6 +385,27 @@
 - **Inputs:** Optional `ReadonlyMap` or `Record` of day → rate. `ensureDays(days, nowMs)` returns the seed subset for valid requested days. `listDebug(limit)` dumps seeded `{ day, usdPerBtc, source: null, fetchedAt: null }` newest day first.
 - **Returns / side effects:** Map of available rates; missing days omitted. No network.
 - **Used by:** `createApp` / `giftsStatsRoutes` defaults; memory `openBootStores`.
+
+## Function: migrateFxSpotSchema
+
+- **Purpose:** Applies `BTC_FIAT_SPOT_SCHEMA_SQL` (`CREATE TABLE IF NOT EXISTS btc_fiat_spot`, one row with `id = 1`).
+- **Inputs:** `SqlClient`.
+- **Returns / side effects:** Void; idempotent DDL execute matching `docs/schema/btc_fiat_spot.sql`.
+- **Used by:** `openBootStores` when SQL opens, after `migrateFiatSchema` and before `migrateDbChangeSchema`, so `trg_db_change` attaches.
+
+## Function: InMemoryFxSpotStore
+
+- **Purpose:** In-memory `FxSpotStore` for memory boots and tests; the quote is lost on restart.
+- **Inputs:** Optional seed `FxSpotQuote`.
+- **Returns / side effects:** `latest()` returns a copy of the saved quote or `null`; `save(quote)` replaces it. Only `USD`, `CHF`, `EUR`, and `PHP` are kept. No HTTP.
+- **Used by:** `createApp` default, `openBootStores` when `DATABASE_URL` is unset, tests.
+
+## Function: PostgresFxSpotStore
+
+- **Purpose:** Durable `FxSpotStore` on the single `btc_fiat_spot` row, so a restart or a provider outage still serves the last good quote with its `asOf`.
+- **Inputs:** `SqlClient`.
+- **Returns / side effects:** `save(quote)` upserts row `id = 1` with every currency (a missing one becomes `NULL`), `source`, and `as_of`; one `db_change` UPDATE row per refresh. `latest()` reads `numeric::text`, so provider digits come back unchanged; a missing row or a row without any rate is `null`.
+- **Used by:** `openBootStores` when `DATABASE_URL` is set.
 
 ## Function: InMemoryFiatStore
 
