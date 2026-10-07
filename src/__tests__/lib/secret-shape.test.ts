@@ -28,6 +28,20 @@ describe('isSecretFieldName', () => {
     expect(isSecretFieldName('recoveryPhrase')).toBe(true);
   });
 
+  it('matches snake_case, kebab-case, and dotted forms of secret names', () => {
+    for (const name of [
+      'spending_key',
+      'priv_key',
+      'x_prv',
+      'n_sec',
+      'pass_phrase',
+      'Spending-Key',
+      'pre.image',
+    ]) {
+      expect(isSecretFieldName(name)).toBe(true);
+    }
+  });
+
   it('rejects names that do not contain a secret token', () => {
     expect(isSecretFieldName('screen')).toBe(false);
     expect(isSecretFieldName('query')).toBe(false);
