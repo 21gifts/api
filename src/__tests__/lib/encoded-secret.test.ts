@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { base58, bech32, bech32m } from '@scure/base';
 import { describe, expect, it } from 'vitest';
 import { containsEncodedSecret } from '@/lib/encoded-secret';
-import { concatBytes, protoBytesField } from '@/lib/protobuf';
+import { concatBytes, protoBytesField, protoVarintField } from '@/lib/protobuf';
 import { encodeSparkInvoice } from '@/lib/spark-invoice';
 
 const PHRASE =
@@ -182,5 +182,50 @@ describe('containsEncodedSecret', () => {
     expect(mixed).not.toBe(lower);
     expect(containsEncodedSecret(mixed)).toBe(true);
     expect(containsEncodedSecret(BOLT11_PHRASE.toUpperCase())).toBe(true);
+  });
+
+  it('keeps every field read before a malformed one, so a broken suffix cannot hide a secret', () => {
+    // 49 bytes: its length byte is ASCII "1", so only the field-by-field read finds it.
+    const phrase = `${Array.from({ length: 11 }, () => 'zoo').join(' ')} wrong`;
+    const memo = protoBytesField(5, phrase);
+    const suffixes: Uint8Array[] = [
+      Uint8Array.from([0x00]), // field number 0
+      Uint8Array.from([0x0b]), // wire type 3
+      Uint8Array.from([0x80]), // truncated tag varint
+      Uint8Array.from([0x08]), // varint field without its value
+      Uint8Array.from([0x12, 0x7f]), // length past the end
+      Uint8Array.from([0x12]), // length varint missing
+      Uint8Array.from(Array.from({ length: 9 }, () => 0x80)), // varint longer than eight bytes
+    ];
+    for (const suffix of suffixes) {
+      const token = sparkRaw(
+        protoBytesField(1, IDENTITY),
+        protoBytesField(2, concatBytes(memo, suffix)),
+      );
+      expect(containsEncodedSecret(token)).toBe(true);
+    }
+  });
+
+  it('reads past varint, fixed64, and fixed32 fields to the memo after them', () => {
+    const phrase = `${Array.from({ length: 11 }, () => 'zoo').join(' ')} wrong`;
+    const invoice = concatBytes(
+      protoVarintField(1, 300),
+      Uint8Array.from([0x19, 1, 2, 3, 4, 5, 6, 7, 8]), // field 3, fixed64
+      Uint8Array.from([0x25, 1, 2, 3, 4]), // field 4, fixed32
+      protoBytesField(5, phrase),
+    );
+    expect(
+      containsEncodedSecret(sparkRaw(protoBytesField(1, IDENTITY), protoBytesField(2, invoice))),
+    ).toBe(true);
+  });
+
+  it('decodes a bech32 token whose prefix holds punctuation', () => {
+    const punctuated = bech32m.encode(
+      'a-b',
+      bech32m.toWords(new TextEncoder().encode(PHRASE)),
+      false,
+    );
+    expect(punctuated.startsWith('a-b1')).toBe(true);
+    expect(containsEncodedSecret(`see ${punctuated} here`)).toBe(true);
   });
 });
