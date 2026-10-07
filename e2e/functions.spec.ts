@@ -2579,6 +2579,17 @@ test('Function: DailyRosterRequestError — GET /funding/daily-roster unconfigur
   expect(await res.json()).toEqual({ error: 'Daily roster is not configured' });
 });
 
+test('Function: withRecipientIdentities — GET /funding/daily-roster unconfigured is 503', async ({
+  request,
+}) => {
+  const auth = await rosterRoleSession(request, 'initiator');
+  const res = await request.get('/funding/daily-roster', {
+    headers: { authorization: auth.authorization },
+  });
+  expect(res.status()).toBe(503);
+  expect(await res.json()).toEqual({ error: 'Daily roster is not configured' });
+});
+
 test('Function: effectiveStatus — default boot has no DATABASE_URL', async ({ request }) => {
   expect((await request.get('/healthz')).status()).toBe(200);
 });
