@@ -202,6 +202,15 @@ describe('InMemoryWalletStore', () => {
     });
   });
 
+  it('orders equal paidAt by payment id in code-unit order, like Postgres COLLATE "C"', async () => {
+    const store = new InMemoryWalletStore();
+    await store.upsertPayments([payment({ paymentId: 'B' }), payment({ paymentId: 'a' })]);
+    expect((await store.listPayments('account', 10)).map((row) => row.paymentId)).toEqual([
+      'a',
+      'B',
+    ]);
+  });
+
   it('ignores a report observed before the stored state', async () => {
     const store = new InMemoryWalletStore();
     await store.upsertPayments([payment({ status: 'completed', updatedAt: T2, firstSeenAt: T2 })]);
@@ -295,7 +304,7 @@ describe('PostgresWalletStore', () => {
       },
     ];
     const rows = await new PostgresWalletStore(sql).listPayments('account', 20);
-    expect(sql.queries[0]?.text).toContain('ORDER BY paid_at DESC, payment_id DESC');
+    expect(sql.queries[0]?.text).toContain('ORDER BY paid_at DESC, payment_id COLLATE "C" DESC');
     expect(sql.queries[0]?.params).toEqual(['account', 20]);
     expect(rows).toEqual([
       payment({

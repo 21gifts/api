@@ -187,6 +187,22 @@ describe('parseMemberEventBatch', () => {
     expect(result.events[0]?.props).toEqual({ n: 1 });
   });
 
+  it('decodes each escape on its own, so a malformed escape cannot hide an encoded key', () => {
+    const result = parse({
+      events: [
+        event({ path: '/a%E0%A4%ZZ%20%6Esec1abc' }),
+        event({ path: `/a%ZZ%20${encodeURIComponent(PHRASE_12)}` }),
+        event({ path: '/a%ZZ%20coffee' }),
+      ],
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) {
+      return;
+    }
+    expect(result.dropped).toBe(2);
+    expect(result.events.map((row) => row.path)).toEqual(['/a%ZZ%20coffee']);
+  });
+
   it('keeps a plain path unchanged', () => {
     const result = parse({ events: [event({ path: '/ok' })] });
     expect(result.ok).toBe(true);

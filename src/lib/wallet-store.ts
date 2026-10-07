@@ -184,6 +184,11 @@ function updatePayment(existing: WalletPaymentRecord, row: WalletPaymentRecord):
   }
 }
 
+/** Code-unit order, the same order as Postgres `COLLATE "C"` for the ASCII ids wallets use. */
+function byteOrder(left: string, right: string): number {
+  return Number(left > right) - Number(left < right);
+}
+
 /** Process-local wallet store used by tests and database-free boots. */
 export class InMemoryWalletStore implements WalletStore {
   readonly #balances: WalletBalanceSnapshot[] = [];
@@ -246,7 +251,7 @@ export class InMemoryWalletStore implements WalletStore {
         .filter((row) => row.accountId === accountId)
         .sort((a, b) => {
           const byTime = b.paidAt.getTime() - a.paidAt.getTime();
-          return byTime === 0 ? b.paymentId.localeCompare(a.paymentId) : byTime;
+          return byTime === 0 ? byteOrder(b.paymentId, a.paymentId) : byTime;
         })
         .slice(0, limit)
         .map(copyPayment),
@@ -443,7 +448,7 @@ LIMIT 1`,
       `SELECT ${PAYMENT_COLUMNS}
 FROM wallet_payment
 WHERE account_id = $1
-ORDER BY paid_at DESC, payment_id DESC
+ORDER BY paid_at DESC, payment_id COLLATE "C" DESC
 LIMIT $2`,
       [accountId, limit],
     );
