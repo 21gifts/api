@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   ROLE_ORDER,
+  canEditDailyPayoutRoster,
   isModeratorGroupMember,
   roleAtLeast,
   roleRank,
@@ -89,5 +90,15 @@ describe('isModeratorGroupMember', () => {
     expect(isModeratorGroupMember({ role: 'founder', isPlatform: true })).toBe(false);
     expect(isModeratorGroupMember({ role: 'moderator', isPlatform: true })).toBe(false);
     expect(isModeratorGroupMember({ role: 'initiator', isPlatform: true })).toBe(false);
+  });
+});
+
+describe('canEditDailyPayoutRoster', () => {
+  it('is true only for initiator and founder', () => {
+    expect(canEditDailyPayoutRoster('initiator')).toBe(true);
+    expect(canEditDailyPayoutRoster('founder')).toBe(true);
+    expect(canEditDailyPayoutRoster('moderator')).toBe(false);
+    expect(canEditDailyPayoutRoster('verified')).toBe(false);
+    expect(canEditDailyPayoutRoster('basis')).toBe(false);
   });
 });

@@ -957,7 +957,8 @@ export async function indexZapReceipt(args: {
  * only when `eligibleToday` (same gate as `POST /messages`; otherwise
  * `spend.ping.skipped` / `not_eligible`).
  * An external zap (`payerPubkey`) on that same note still inserts
- * `insertExternalGiftReply`. A reply zap is `addSats` only (no nested gift-reply) and
+ * `insertExternalGiftReply`. A reply zap is `recordZapReceipt` onto `received_*`
+ * (no nested gift-reply) and
  * clears `payerAccountId` so the receipt never occupies the
  * awaiting-gift-reply queue. Retries receipts that have a payer and no
  * gift-reply id yet, and drops already-queued reply receipts from that

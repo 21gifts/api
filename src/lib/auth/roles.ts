@@ -35,7 +35,8 @@ export function roleRank(role: AccountRole): number {
  * rank can; equal ranks can do the same things. Every permission check
  * names a minimum role — an equality test on the caller's role is a
  * defect. Subject rank equality uses {@link sameRoleRank} (state, not
- * permission).
+ * permission). The single permission that is not a rank check is
+ * {@link canEditDailyPayoutRoster}.
  *
  * @param role - Caller's live role.
  * @param min - Minimum role that may proceed.
@@ -73,4 +74,19 @@ export function isModeratorGroupMember(account: {
   isPlatform?: boolean;
 }): boolean {
   return account.isPlatform !== true && roleAtLeast(account.role, 'moderator');
+}
+
+/**
+ * Whether the caller may read and edit the daily payout roster.
+ *
+ * Not a rank check. Initiator and moderator share rank 2, so
+ * {@link roleAtLeast} cannot close the surface to moderators. True only
+ * for `initiator` and `founder`. This is the single non-rank permission;
+ * rank permissions stay on {@link roleAtLeast}.
+ *
+ * @param role - Caller's live role.
+ * @returns `true` for `initiator` and `founder` only.
+ */
+export function canEditDailyPayoutRoster(role: AccountRole): boolean {
+  return role === 'initiator' || role === 'founder';
 }
