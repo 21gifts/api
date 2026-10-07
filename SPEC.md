@@ -3501,7 +3501,8 @@ payments the api has not acknowledged yet.
 - `balanceSats` (required) and every sat amount: safe integer, `0` to
   `2100000000000000` (21 million BTC).
 - `syncedAt` and `timestamp`: ISO-8601 instant string (date, time, and `Z` or a
-  numeric offset; a date alone or a locale string is refused), or a number (below `1e11` it is
+  numeric offset; a date alone, a locale string, or an impossible calendar
+  value such as February 30 is refused, not rolled over), or a number (below `1e11` it is
   epoch seconds, otherwise epoch milliseconds); not before 2009-01-03 and not
   more than 5 minutes in the future.
 - `payments` is optional (missing = `[]`), at most 200 entries.
@@ -3536,7 +3537,8 @@ The api stores one row in `wallet_balance_snapshot` per report and upserts
 each payment into `wallet_payment` by `(account, id)`. Re-sending a payment
 is harmless: status, amounts, method, time, category, and counterparty are
 overwritten (so `pending` becomes `completed`), detail fields keep their
-stored value when the new report has none, `first_seen_at` never changes,
+stored value when the new report has none, `first_seen_at` (the observation
+time of the report that first stored the payment) never changes,
 and `updated_at` changes only when a stored value changes. A report observed
 before the stored state (a slower concurrent request) does not overwrite it.
 

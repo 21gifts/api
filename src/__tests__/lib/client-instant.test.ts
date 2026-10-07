@@ -64,6 +64,25 @@ describe('parseClientInstant', () => {
     expect(parseClientInstant('2026-10-07', now)).toBeNull();
     expect(parseClientInstant('2026-10-07T08:00:00', now)).toBeNull();
     expect(parseClientInstant('2026-13-45T25:99:00Z', now)).toBeNull();
+    expect(parseClientInstant('2026-02-29T08:00:00Z', now)).toBeNull();
+    expect(parseClientInstant('2026-02-30T08:00:00Z', now)).toBeNull();
+    expect(parseClientInstant('2026-04-31T08:00:00Z', now)).toBeNull();
+    expect(parseClientInstant('2026-00-10T08:00:00Z', now)).toBeNull();
+    expect(parseClientInstant('2026-04-00T08:00:00Z', now)).toBeNull();
+    expect(parseClientInstant('2026-04-10T24:00:00Z', now)).toBeNull();
+    expect(parseClientInstant('2026-04-10T08:60:00Z', now)).toBeNull();
+    expect(parseClientInstant('2026-04-10T08:00:60Z', now)).toBeNull();
+    expect(parseClientInstant('2026-04-10T08:00:00+24:00', now)).toBeNull();
+    expect(parseClientInstant('2026-04-10T08:00:00+02:60', now)).toBeNull();
+    expect(parseClientInstant('2024-02-29T08:00:00Z', now)?.toISOString()).toBe(
+      '2024-02-29T08:00:00.000Z',
+    );
+    expect(parseClientInstant('2026-10-07T08:00:00.5Z', now)?.toISOString()).toBe(
+      '2026-10-07T08:00:00.500Z',
+    );
+    expect(parseClientInstant(new Date(now - 1_000).toISOString(), now)?.getTime()).toBe(
+      now - 1_000,
+    );
   });
 
   it('returns null before the minimum instant or after the future skew', () => {
