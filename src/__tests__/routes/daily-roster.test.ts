@@ -235,6 +235,14 @@ describe('daily payout roster routes', () => {
   it('forwards spend 400 Address already listed', async () => {
     let seen: { address: string; amountUsd: number } | undefined;
     const authStore = await seeded();
+    const memberId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+    await authStore.createAccount(
+      account({
+        id: memberId,
+        role: 'verified',
+        lightningAddress: 'hide-me@example.com',
+      }),
+    );
     const res = await post(
       mount(
         authStore,
@@ -247,13 +255,213 @@ describe('daily payout roster routes', () => {
       ),
       '/funding/daily-roster/recipients',
       'founder',
-      { address: 'hide-me@example.com', amountUsd: 5 },
+      { accountId: memberId, amountUsd: 5 },
     );
     expect(res.status).toBe(400);
     expect(await res.json()).toEqual({ error: 'Address already listed' });
     expect(seen).toEqual({ address: 'hide-me@example.com', amountUsd: 5 });
-    expect(JSON.stringify(parsedEvents(warn))).not.toContain('hide-me@example.com');
-    expect(JSON.stringify(parsedEvents(warn))).not.toContain('test-token');
+    const logged = JSON.stringify(parsedEvents(warn));
+    expect(logged).not.toContain('hide-me@example.com');
+    expect(logged).not.toContain(memberId);
+    expect(logged).not.toContain('test-token');
+  });
+
+  it('returns 400 Unknown person and does not call spend when the account is missing', async () => {
+    let called = false;
+    const authStore = await seeded();
+    const missingId = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+    const res = await post(
+      mount(
+        authStore,
+        fakeRoster({
+          addRecipient: async () => {
+            called = true;
+            return ROSTER;
+          },
+        }),
+      ),
+      '/funding/daily-roster/recipients',
+      'founder',
+      { accountId: missingId, amountUsd: 5 },
+    );
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: 'Unknown person' });
+    expect(called).toBe(false);
+  });
+
+  it('returns 400 Person has no Lightning address and does not call spend when the address is blank', async () => {
+    let called = false;
+    const authStore = await seeded();
+    const noneId = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
+    const blankId = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd';
+    await authStore.createAccount(
+      account({ id: noneId, role: 'verified', lightningAddress: null }),
+    );
+    await authStore.createAccount(
+      account({ id: blankId, role: 'verified', lightningAddress: '   ' }),
+    );
+    const app = mount(
+      authStore,
+      fakeRoster({
+        addRecipient: async () => {
+          called = true;
+          return ROSTER;
+        },
+      }),
+    );
+    for (const accountId of [noneId, blankId]) {
+      const res = await post(app, '/funding/daily-roster/recipients', 'founder', {
+        accountId,
+        amountUsd: 5,
+      });
+      expect(res.status).toBe(400);
+      expect(await res.json()).toEqual({ error: 'Person has no Lightning address' });
+    }
+    expect(called).toBe(false);
+  });
+
+  it('trims the stored Lightning address and does not lowercase it', async () => {
+    let seen: { address: string; amountUsd: number } | undefined;
+    const authStore = await seeded();
+    const memberId = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee';
+    await authStore.createAccount(
+      account({
+        id: memberId,
+        role: 'verified',
+        lightningAddress: '  Hide-Me@Example.com  ',
+      }),
+    );
+    const res = await post(
+      mount(
+        authStore,
+        fakeRoster({
+          addRecipient: async (address, amountUsd) => {
+            seen = { address, amountUsd };
+            return ROSTER;
+          },
+        }),
+      ),
+      '/funding/daily-roster/recipients',
+      'founder',
+      { accountId: memberId, amountUsd: 5 },
+    );
+    expect(res.status).toBe(200);
+    expect(seen).toEqual({ address: 'Hide-Me@Example.com', amountUsd: 5 });
+  });
+
+  it('returns 502 when loading the person throws and does not call spend', async () => {
+    let called = false;
+    const authStore = await seeded();
+    const memberId = 'ffffffff-ffff-4fff-8fff-ffffffffffff';
+    await authStore.createAccount(
+      account({
+        id: memberId,
+        role: 'verified',
+        name: 'Leaked Name',
+        lightningAddress: 'hide-me@example.com',
+      }),
+    );
+    const inner = authStore.getAccount.bind(authStore);
+    vi.spyOn(authStore, 'getAccount').mockImplementation(async (id) => {
+      if (id === memberId) {
+        throw new Error('person leaked');
+      }
+      return inner(id);
+    });
+    const res = await post(
+      mount(
+        authStore,
+        fakeRoster({
+          addRecipient: async () => {
+            called = true;
+            return ROSTER;
+          },
+        }),
+      ),
+      '/funding/daily-roster/recipients',
+      'founder',
+      { accountId: memberId, amountUsd: 5 },
+    );
+    expect(res.status).toBe(502);
+    expect(await res.json()).toEqual({ error: 'Daily roster is unavailable' });
+    expect(called).toBe(false);
+    const events = parsedEvents(warn).filter(
+      (event) => event['event'] === 'funding.daily_roster.failed',
+    );
+    expect(events).toEqual([
+      expect.objectContaining({ accountId: FOUNDER, action: 'recipient-add' }),
+    ]);
+    const logged = JSON.stringify(events);
+    expect(logged).not.toContain('hide-me@example.com');
+    expect(logged).not.toContain(memberId);
+    expect(logged).not.toContain('person leaked');
+    expect(logged).not.toContain('Leaked Name');
+  });
+
+  it('returns 400 Invalid person or amount and does not call spend when the body is still an address', async () => {
+    let called = false;
+    const authStore = await seeded();
+    const res = await post(
+      mount(
+        authStore,
+        fakeRoster({
+          addRecipient: async () => {
+            called = true;
+            return ROSTER;
+          },
+        }),
+      ),
+      '/funding/daily-roster/recipients',
+      'founder',
+      { address: 'hide-me@example.com', amountUsd: 5 },
+    );
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: 'Invalid person or amount' });
+    expect(called).toBe(false);
+  });
+
+  it('returns 400 Invalid person or amount and does not call spend when the account id is not a uuid', async () => {
+    let called = false;
+    const authStore = await seeded();
+    const res = await post(
+      mount(
+        authStore,
+        fakeRoster({
+          addRecipient: async () => {
+            called = true;
+            return ROSTER;
+          },
+        }),
+      ),
+      '/funding/daily-roster/recipients',
+      'founder',
+      { accountId: 'not-a-uuid', amountUsd: 5 },
+    );
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: 'Invalid person or amount' });
+    expect(called).toBe(false);
+  });
+
+  it('returns 400 Invalid person or amount and does not call spend when the amount is a numeric string', async () => {
+    let called = false;
+    const authStore = await seeded();
+    const res = await post(
+      mount(
+        authStore,
+        fakeRoster({
+          addRecipient: async () => {
+            called = true;
+            return ROSTER;
+          },
+        }),
+      ),
+      '/funding/daily-roster/recipients',
+      'founder',
+      { accountId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', amountUsd: '1' },
+    );
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: 'Invalid person or amount' });
+    expect(called).toBe(false);
   });
 
   it('proxies each founder edit to the matching client method', async () => {
@@ -487,7 +695,7 @@ describe('daily payout roster routes', () => {
     const cases = [
       ['/funding/daily-roster/comment', 'Invalid comment'],
       ['/funding/daily-roster/payments', 'Invalid payments switch'],
-      ['/funding/daily-roster/recipients', 'Invalid address or amount'],
+      ['/funding/daily-roster/recipients', 'Invalid person or amount'],
       ['/funding/daily-roster/recipients/update', 'Unknown address'],
       ['/funding/daily-roster/recipients/delete', 'Unknown address'],
     ] as const;

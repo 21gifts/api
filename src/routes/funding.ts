@@ -24,9 +24,12 @@ import {
   DAILY_ROSTER_INVALID_ADDRESS,
   DAILY_ROSTER_INVALID_COMMENT,
   DAILY_ROSTER_INVALID_PAYMENTS,
+  DAILY_ROSTER_INVALID_PERSON,
   DAILY_ROSTER_NOT_CONFIGURED,
+  DAILY_ROSTER_NO_LIGHTNING,
   DAILY_ROSTER_UNAVAILABLE,
   DAILY_ROSTER_UNKNOWN_ADDRESS,
+  DAILY_ROSTER_UNKNOWN_PERSON,
   DailyRosterRequestError,
   withRecipientIdentities,
   type DailyRoster,
@@ -103,7 +106,13 @@ function normalizeDailyRosterComment(raw: string): string | undefined {
 /** Body schema for `POST /funding/daily-roster/payments`. */
 const rosterPaymentsBody = z.object({ enabled: z.boolean() });
 
-/** Body schema for recipient add and update. */
+/** Body schema for `POST /funding/daily-roster/recipients`. */
+const rosterRecipientAddBody = z.object({
+  accountId: z.string(),
+  amountUsd: z.number().finite(),
+});
+
+/** Body schema for recipient update. */
 const rosterRecipientBody = z.object({
   address: z.string(),
   amountUsd: z.number().finite(),
@@ -792,12 +801,28 @@ export function fundingRoutes(deps: FundingRouteDeps): Hono {
       if ('status' in opened) {
         return stopRoster(c, opened);
       }
-      const parsed = rosterRecipientBody.safeParse(await c.req.json().catch(() => null));
-      if (!parsed.success) {
-        return c.json({ error: DAILY_ROSTER_INVALID_ADDRESS }, 400);
+      const parsed = rosterRecipientAddBody.safeParse(await c.req.json().catch(() => null));
+      if (!parsed.success || !MESSAGE_ID_RE.test(parsed.data.accountId)) {
+        return c.json({ error: DAILY_ROSTER_INVALID_PERSON }, 400);
       }
-      const address = parsed.data.address;
       const amountUsd = parsed.data.amountUsd;
+      let account: Account | undefined;
+      try {
+        account = await deps.authStore.getAccount(parsed.data.accountId);
+      } catch {
+        logEvent('funding.daily_roster.failed', {
+          accountId: opened.caller.id,
+          action: 'recipient-add',
+        });
+        return c.json({ error: DAILY_ROSTER_UNAVAILABLE }, 502);
+      }
+      if (account === undefined) {
+        return c.json({ error: DAILY_ROSTER_UNKNOWN_PERSON }, 400);
+      }
+      const address = account.lightningAddress === null ? '' : account.lightningAddress.trim();
+      if (address === '') {
+        return c.json({ error: DAILY_ROSTER_NO_LIGHTNING }, 400);
+      }
       const result = await callRoster(deps, opened.caller, 'recipient-add', () =>
         opened.client.addRecipient(address, amountUsd),
       );

@@ -37,6 +37,15 @@ export const DAILY_ROSTER_UNAVAILABLE = 'Daily roster is unavailable';
 /** Route text when spend URL or token is missing or blank. */
 export const DAILY_ROSTER_NOT_CONFIGURED = 'Daily roster is not configured';
 
+/** Route text when the add body is not a person id and a finite amount. */
+export const DAILY_ROSTER_INVALID_PERSON = 'Invalid person or amount';
+
+/** Route text when the add account id is not in the store. */
+export const DAILY_ROSTER_UNKNOWN_PERSON = 'Unknown person';
+
+/** Route text when the add account has no Lightning address after trim. */
+export const DAILY_ROSTER_NO_LIGHTNING = 'Person has no Lightning address';
+
 const FORWARDED_DAILY_ROSTER_ERRORS: ReadonlySet<string> = new Set([
   DAILY_ROSTER_INVALID_COMMENT,
   DAILY_ROSTER_INVALID_PAYMENTS,
