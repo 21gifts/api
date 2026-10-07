@@ -73,12 +73,11 @@ function cutQueryAndFragment(path: string): string {
   return path.slice(0, end);
 }
 
+/** Decode each `%XX` byte on its own, so one malformed escape cannot keep the rest of a segment encoded. */
 function decodeSegment(segment: string): string {
-  try {
-    return decodeURIComponent(segment);
-  } catch {
-    return segment;
-  }
+  return segment.replace(/%([0-9A-Fa-f]{2})/g, (_match, byte: string) =>
+    String.fromCharCode(parseInt(byte, 16)),
+  );
 }
 
 function isValidMemberPath(path: string): boolean {

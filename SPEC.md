@@ -3439,8 +3439,9 @@ payments the api has not acknowledged yet.
 - Every other field is ignored and never stored or logged. A `preimage` is not
   read even when the app sends one; the app does not send it.
 - The payment id and every detail field are also screened inside encoded
-  tokens: every memo of a Spark address or invoice, every description tag of a
-  BOLT11, and the payload of any bech32 token. A detail field that holds secret
+  tokens: every memo of a Spark address or invoice (each protobuf field on its
+  own, repeated fields included), every description tag of a BOLT11, the payload
+  of any bech32 token, and any WIF private key (Base58Check). A detail field that holds secret
   material there is stored as `null`, and a payment with such an id is skipped,
   so an encoded invoice cannot carry a recovery phrase into storage.
 - Limit of the shape screening: it finds key tokens and recovery-phrase word
@@ -3509,8 +3510,8 @@ at most 50 events.
   `shop_opened`, `profile_opened`, `login`, `signup_completed`.
 - `at`: same instant rules as `syncedAt` above.
 - `path`: optional; cut at the first `?` or `#`; must start with `/`, at most
-  256 characters; a path that holds secret material anywhere (after URL decoding,
-  a key token or at least 12 consecutive 3–8 letter words across segments)
+  256 characters; a path that holds secret material anywhere (after decoding each
+  `%XX` escape on its own, so a malformed escape does not hide the rest; a key token or at least 12 consecutive 3–8 letter words across segments)
   drops the event.
 - `props`: optional flat object, at most 20 keys; key `[A-Za-z][A-Za-z0-9_]{0,39}`;
   value `null`, boolean, finite number, or string up to 200 characters. Keys

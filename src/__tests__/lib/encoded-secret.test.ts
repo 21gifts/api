@@ -1,4 +1,5 @@
-import { bech32, bech32m } from '@scure/base';
+import { createHash } from 'node:crypto';
+import { base58, bech32, bech32m } from '@scure/base';
 import { describe, expect, it } from 'vitest';
 import { containsEncodedSecret } from '@/lib/encoded-secret';
 import { concatBytes, protoBytesField } from '@/lib/protobuf';
@@ -83,5 +84,52 @@ describe('containsEncodedSecret', () => {
     );
     expect(badPadding.length).toBeGreaterThanOrEqual(20);
     expect(containsEncodedSecret(badPadding)).toBe(false);
+  });
+
+  it('reads each protobuf field on its own, so a length byte cannot glue onto the first word', () => {
+    // 49 bytes: the memo length byte is ASCII "1", which would otherwise make "1zoo" and hide one word.
+    const phrase = `${Array.from({ length: 11 }, () => 'zoo').join(' ')} wrong`;
+    expect(new TextEncoder().encode(phrase).length).toBe(49);
+    expect(containsEncodedSecret(spark(phrase))).toBe(true);
+    const deep = sparkRaw(
+      protoBytesField(1, IDENTITY),
+      protoBytesField(2, protoBytesField(7, protoBytesField(5, phrase))),
+    );
+    expect(containsEncodedSecret(deep)).toBe(true);
+  });
+
+  it('stops walking protobuf nesting deeper than four levels and ignores undecodable fields', () => {
+    let nested: Uint8Array = protoBytesField(5, PHRASE.replace(/ /g, ''));
+    for (let i = 0; i < 6; i += 1) {
+      nested = protoBytesField(2, nested);
+    }
+    expect(containsEncodedSecret(sparkRaw(protoBytesField(1, IDENTITY), nested))).toBe(false);
+    const truncated = sparkRaw(protoBytesField(1, IDENTITY), Uint8Array.from([0x12, 0x40, 0x01]));
+    expect(containsEncodedSecret(truncated)).toBe(false);
+  });
+
+  it('flags a WIF private key (mainnet or testnet, compressed or not) and keeps near misses', () => {
+    const key = new Uint8Array(32).fill(7);
+    const wif = (version: number, flag: number | null, corrupt = false): string => {
+      const payload = Uint8Array.from([version, ...key, ...(flag === null ? [] : [flag])]);
+      const check = createHash('sha256')
+        .update(createHash('sha256').update(payload).digest())
+        .digest()
+        .subarray(0, 4);
+      if (corrupt) {
+        check[3] = (check[3] ?? 0) ^ 1;
+      }
+      return base58.encode(Uint8Array.from([...payload, ...check]));
+    };
+    for (const token of [wif(0x80, null), wif(0x80, 1), wif(0xef, null), wif(0xef, 1)]) {
+      expect([51, 52]).toContain(token.length);
+      expect(containsEncodedSecret(`key ${token} here`)).toBe(true);
+    }
+    for (const token of [wif(0x81, 1), wif(0x80, 2), wif(0x80, 1, true)]) {
+      expect([51, 52]).toContain(token.length);
+      expect(containsEncodedSecret(token)).toBe(false);
+    }
+    expect(containsEncodedSecret('1'.repeat(51))).toBe(false);
+    expect(containsEncodedSecret(`0${'2'.repeat(50)}`)).toBe(false);
   });
 });
