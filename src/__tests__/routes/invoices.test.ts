@@ -979,6 +979,59 @@ describe('POST /invoices', () => {
     expect(parsedEvents(warn).some((e) => e['event'] === 'invoice.passkey_required')).toBe(false);
   });
 
+  it('returns 403 when messageId is set and the address has no account', async () => {
+    const fetchImpl = vi.fn<FetchFn>(happyFetch());
+    const res = await createApp({ spendApiToken: TOKEN, fetchImpl }).request(
+      '/invoices',
+      auth({
+        method: 'POST',
+        body: JSON.stringify({
+          address: ADDRESS,
+          amountMsat: 1000,
+          messageId: POST_ID,
+        }),
+      }),
+    );
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: 'Forum post required' });
+    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(
+      parsedEvents(warn).some(
+        (e) => e['event'] === 'invoice.forum_post_required' && e['address'] === ADDRESS,
+      ),
+    ).toBe(true);
+  });
+
+  it('returns 200 and ignores groupMessageId when the address has no account', async () => {
+    const invoiceStore = new InMemoryInvoiceStore();
+    const fetchImpl = vi.fn<FetchFn>(happyFetch());
+    const res = await createApp({
+      spendApiToken: TOKEN,
+      invoiceStore,
+      fetchImpl,
+    }).request(
+      '/invoices',
+      auth({
+        method: 'POST',
+        body: JSON.stringify({
+          address: ADDRESS,
+          amountMsat: 1000,
+          groupMessageId: GROUP_MSG_ID,
+        }),
+      }),
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { id: string };
+    expect(invoiceStore.get(body.id)).toBeDefined();
+    expect(invoiceStore.get(body.id)?.groupMessageId).toBeUndefined();
+    expect(fetchImpl).toHaveBeenCalled();
+    expect(
+      parsedEvents(warn).some(
+        (e) => e['event'] === 'invoice.group_message_ignored' && e['address'] === ADDRESS,
+      ),
+    ).toBe(true);
+  });
+
   it('returns 200 when the account has no passkey credential', async () => {
     const authStore = new InMemoryAuthStore();
     await authStore.createAccount({
