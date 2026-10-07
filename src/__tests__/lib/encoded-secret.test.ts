@@ -254,4 +254,18 @@ describe('containsEncodedSecret', () => {
       ).toBe(true);
     }
   });
+
+  it('reads Spark memos as UTF-8, so a non-English recovery phrase is found', () => {
+    const japanese =
+      'あいこくしん　あいさつ　あいだ　あおぞら　あかちゃん　あきる　あけがた　あける　あこがれる　あさい　あさひ　あしあと';
+    expect(containsEncodedSecret(spark(japanese))).toBe(true);
+    expect(containsEncodedSecret(spark('的 一 是 在 不 了 有 和 人 这 中 大'))).toBe(true);
+    expect(containsEncodedSecret(spark('ありがとう'))).toBe(false);
+    // Control characters and invalid UTF-8 inside a field become spaces.
+    const raw = sparkRaw(
+      protoBytesField(1, IDENTITY),
+      protoBytesField(2, protoBytesField(5, Uint8Array.from([0xff, 0x01, 0x7f, 0x61]))),
+    );
+    expect(containsEncodedSecret(raw)).toBe(false);
+  });
 });

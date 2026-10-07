@@ -17,6 +17,16 @@ function printable(bytes: Uint8Array): string {
   return text;
 }
 
+/** A field's bytes as UTF-8 text (memos are UTF-8, in any language), control characters as spaces. */
+function fieldText(bytes: Uint8Array): string {
+  let text = '';
+  for (const char of new TextDecoder('utf-8').decode(bytes)) {
+    const code = char.charCodeAt(0);
+    text += code < 32 || code === 127 || char === '\ufffd' ? ' ' : char;
+  }
+  return text;
+}
+
 /** Payload bytes of a bech32 or bech32m token, or `null`. */
 function payloadBytes(token: string): Uint8Array | null {
   for (const codec of [bech32m, bech32]) {
@@ -113,7 +123,7 @@ function protoTexts(bytes: Uint8Array): string[] | null {
       return null;
     }
     for (const value of lengthDelimitedValues(next)) {
-      out.push(printable(value));
+      out.push(fieldText(value));
       pending.push(value);
     }
   }
