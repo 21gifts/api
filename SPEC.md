@@ -3424,7 +3424,7 @@ payments the api has not acknowledged yet.
   epoch seconds, otherwise epoch milliseconds); not before 2009-01-03 and not
   more than 5 minutes in the future.
 - `payments` is optional (missing = `[]`), at most 200 entries.
-- Per payment, required: `id` (1–256 characters), `direction` (`in` / `out`),
+- Per payment, required: `id` (1–256 characters, not secret-shaped), `direction` (`in` / `out`),
   `status` (`pending` / `completed` / `failed`), `amountSats`, `timestamp`,
   `method` (lower-case word, e.g. `lightning`, `spark`, `onchain`, `token`).
   `feeSats` missing or `null` is `0`. A payment that fails a required rule is
@@ -3492,7 +3492,8 @@ at most 50 events.
   `shop_opened`, `profile_opened`, `login`, `signup_completed`.
 - `at`: same instant rules as `syncedAt` above.
 - `path`: optional; cut at the first `?` or `#`; must start with `/`, at most
-  256 characters.
+  256 characters; a path with a secret-shaped segment (also URL-decoded, or a
+  phrase spread over segments) drops the event.
 - `props`: optional flat object, at most 20 keys; key `[A-Za-z][A-Za-z0-9_]{0,39}`;
   value `null`, boolean, finite number, or string up to 200 characters. Keys
   naming secret material (seed, mnemonic, phrase, preimage, private key,
