@@ -235,7 +235,7 @@
 
 - **Purpose:** Fetch the current price of 1 BTC in USD, CHF, EUR, and PHP from one Coinbase exchange-rates response, without ever throwing.
 - **Inputs:** `{ fetchImpl, url, now }`. The body must be `{ data: { currency: "BTC", rates: { … } } }`.
-- **Returns / side effects:** `{ asOf, source: 'coinbase-exchange-rates', rates }` with `asOf` from `now`. A currency whose rate is missing, not decimal text (string or number, no exponent), or not positive is omitted. `null` for a non-ok response, a wrong shape, no usable currency, a thrown fetch, or a fetch that aborts after `BTC_USD_SPOT_TIMEOUT_MS` (10 seconds).
+- **Returns / side effects:** `{ asOf, source: 'coinbase-exchange-rates', rates }` with `asOf` from `now`, read when the request starts (so of two overlapping fetches the later request is the newer quote). A currency whose rate is missing, not decimal text (string or number, no exponent), or not positive is omitted. `null` for a non-ok response, a wrong shape, no usable currency, a thrown fetch, or a fetch that aborts after `BTC_USD_SPOT_TIMEOUT_MS` (10 seconds).
 - **Used by:** `runFxSpotTick`.
 
 ## Function: runFxSpotTick
