@@ -117,7 +117,10 @@ interface State {
   shops: ShopNoteRef[];
   shopCalls: number;
   charge?: PosCharge;
+  posStore?: (ref: { paymentHash: string } | { chargeId: string }) => PosCharge | undefined;
   refs: Array<{ paymentHash: string } | { chargeId: string }>;
+  invoiceHashes: string[];
+  invoiceHash?: string;
   throwLookup?: boolean;
 }
 
@@ -132,6 +135,7 @@ function setup(withLnurlServer: boolean = true): {
     shops: [],
     shopCalls: 0,
     refs: [],
+    invoiceHashes: [],
   };
   const deps: WalletCategoryDeps = {
     authStore: {
@@ -140,9 +144,12 @@ function setup(withLnurlServer: boolean = true): {
       getAccountByVerifiedSparkPubkey: async (pubkey) => state.pubkeys.get(pubkey),
     },
     messages: {
-      findOkInvoiceByPaymentHash: async () => {
+      findOkInvoiceByPaymentHash: async (paymentHash) => {
         if (state.throwLookup === true) throw new Error('lookup failed');
-        return state.invoice;
+        state.invoiceHashes.push(paymentHash);
+        return state.invoiceHash === undefined || state.invoiceHash === paymentHash
+          ? state.invoice
+          : undefined;
       },
       zapPaymentReceiptId: async () => state.receiptId,
       getZapReceiptGift: async () => state.gift,
@@ -155,7 +162,7 @@ function setup(withLnurlServer: boolean = true): {
     posStore: {
       findChargeForPayment: async (ref) => {
         state.refs.push(ref);
-        return state.charge;
+        return state.posStore === undefined ? state.charge : state.posStore(ref);
       },
     },
     ...(withLnurlServer ? { lnurlServer: LNURL_SERVER } : {}),
@@ -275,6 +282,15 @@ describe('walletPaymentClassifier', () => {
     expect(second.state.refs).toEqual([{ chargeId: 'not-a-uuid' }]);
   });
 
+  it('falls back to the pos memo when the payment hash matches no recorded charge invoice', async () => {
+    const { state, classify } = setup();
+    state.posStore = (ref) => ('chargeId' in ref ? charge(SHOP) : undefined);
+    await expect(
+      classify(payment({ paymentHash: 'b'.repeat(64), invoice: spark('pos:charge-1') })),
+    ).resolves.toEqual({ category: 'shop', counterpartyAccountId: SHOP });
+    expect(state.refs).toEqual([{ paymentHash: 'b'.repeat(64) }, { chargeId: 'charge-1' }]);
+  });
+
   it('resolves own-host member, shop, and platform addresses and loads shops once', async () => {
     const { state, classify } = setup();
     const member = account(MEMBER, {
@@ -373,14 +389,32 @@ describe('walletPaymentClassifier', () => {
     });
   });
 
-  it('extracts a zap hash from a Spark memo only when no explicit hash exists', async () => {
+  it('tries the reported hash first and then the zap hash of a Spark memo', async () => {
     const { state, classify } = setup();
     state.invoice = invoice(MEMBER, PAYER);
     state.accounts.set(MEMBER, account(MEMBER));
     await expect(
       classify(payment({ invoice: spark(`zap:${BOLT11_PAYMENT_HASH.toUpperCase()}`) })),
     ).resolves.toEqual({ category: 'gift', counterpartyAccountId: MEMBER });
+    expect(state.invoiceHashes).toEqual([BOLT11_PAYMENT_HASH]);
+
+    state.invoiceHashes.length = 0;
+    state.invoiceHash = BOLT11_PAYMENT_HASH;
+    await expect(
+      classify(
+        payment({ paymentHash: 'f'.repeat(64), invoice: spark(`zap:${BOLT11_PAYMENT_HASH}`) }),
+      ),
+    ).resolves.toEqual({ category: 'gift', counterpartyAccountId: MEMBER });
+    expect(state.invoiceHashes).toEqual(['f'.repeat(64), BOLT11_PAYMENT_HASH]);
+
+    state.invoiceHashes.length = 0;
+    await classify(
+      payment({ paymentHash: BOLT11_PAYMENT_HASH, invoice: spark(`zap:${BOLT11_PAYMENT_HASH}`) }),
+    );
+    expect(state.invoiceHashes).toEqual([BOLT11_PAYMENT_HASH]);
+
     delete state.invoice;
+    delete state.invoiceHash;
     state.charge = charge(SHOP);
     await classify(
       payment({ paymentHash: 'f'.repeat(64), invoice: spark(`zap:${BOLT11_PAYMENT_HASH}`) }),
