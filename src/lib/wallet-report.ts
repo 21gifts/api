@@ -108,7 +108,12 @@ function parsePayment(value: unknown, nowMs: number): ReportedWalletPayment | nu
     return null;
   }
   const paymentId = rawId.trim();
-  if (paymentId.length < 1 || paymentId.length > 256 || hasControlCharacter(paymentId)) {
+  if (
+    paymentId.length < 1 ||
+    paymentId.length > 256 ||
+    hasControlCharacter(paymentId) ||
+    looksLikeSecretValue(paymentId)
+  ) {
     return null;
   }
   const direction = value['direction'];

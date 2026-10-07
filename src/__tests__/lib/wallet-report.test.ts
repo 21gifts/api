@@ -121,6 +121,10 @@ describe('parseWalletReport', () => {
       payment({ id: ' ' }),
       payment({ id: 'x'.repeat(257) }),
       payment({ id: 'x\u007f' }),
+      payment({ id: 'nsec1abcdefghijklmnopqrstuvwxyz123456' }),
+      payment({
+        id: 'abandon ability able about above absent absorb abstract absurd abuse access accident',
+      }),
       payment({ direction: 'sideways' }),
       payment({ status: 'ok' }),
       payment({ amountSats: -1 }),

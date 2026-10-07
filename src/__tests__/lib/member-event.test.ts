@@ -134,7 +134,7 @@ describe('parseMemberEventBatch', () => {
     ]);
   });
 
-  it('drops events with a non-string or invalid path', () => {
+  it('drops events with a non-string, invalid, or secret-shaped path', () => {
     const result = parse({
       events: [
         event({ path: 1 }),
@@ -148,6 +148,10 @@ describe('parseMemberEventBatch', () => {
         event({ path: `/${'a'.repeat(256)}` }),
         event({ path: '/ok\t' }),
         event({ path: '/ok\u007f' }),
+        event({ path: `/u/${NSEC1}` }),
+        event({ path: `/u/${encodeURIComponent(PHRASE_12)}` }),
+        event({ path: `/${PHRASE_12.split(' ').join('/')}` }),
+        event({ path: '/bad%E0%A4%A' }),
         event({ path: '/ok' }),
       ],
     });
@@ -155,7 +159,19 @@ describe('parseMemberEventBatch', () => {
     if (!result.ok) {
       return;
     }
-    expect(result.dropped).toBe(11);
+    expect(result.dropped).toBe(14);
+    expect(result.events).toHaveLength(2);
+    expect(result.events[0]?.path).toBe('/bad%E0%A4%A');
+    expect(result.events[1]?.path).toBe('/ok');
+  });
+
+  it('keeps a plain path unchanged', () => {
+    const result = parse({ events: [event({ path: '/ok' })] });
+    expect(result.ok).toBe(true);
+    if (!result.ok) {
+      return;
+    }
+    expect(result.dropped).toBe(0);
     expect(result.events[0]?.path).toBe('/ok');
   });
 

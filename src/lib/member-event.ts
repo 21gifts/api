@@ -72,11 +72,30 @@ function cutQueryAndFragment(path: string): string {
   return path.slice(0, end);
 }
 
+function decodeSegment(segment: string): string {
+  try {
+    return decodeURIComponent(segment);
+  } catch {
+    return segment;
+  }
+}
+
 function isValidMemberPath(path: string): boolean {
   if (path.length < 1 || path.length > PATH_MAX || !path.startsWith('/')) {
     return false;
   }
-  return !hasC0OrDel(path);
+  if (hasC0OrDel(path)) {
+    return false;
+  }
+  // A secret-shaped segment, or a phrase spread over segments, never reaches storage.
+  const segments = path
+    .split('/')
+    .filter((segment) => segment !== '')
+    .map(decodeSegment);
+  return (
+    !segments.some((segment) => looksLikeSecretValue(segment)) &&
+    !looksLikeSecretValue(segments.join(' '))
+  );
 }
 
 function parseIncomingProps(raw: Record<string, unknown>): Record<string, MemberEventPropValue> {
