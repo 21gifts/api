@@ -18,7 +18,7 @@ export const BTC_FIAT_SPOT_SCHEMA_SQL: readonly string[] = [
 )`,
 ];
 
-/** Keeps the latest quote. A save replaces the whole quote. */
+/** Keeps the latest quote. A save replaces the whole stored quote unless the stored one is newer. */
 export interface FxSpotStore {
   /**
    * Read the stored quote.
@@ -168,7 +168,7 @@ export class PostgresFxSpotStore implements FxSpotStore {
    * from another replica never replaces a newer quote.
    *
    * @param quote - Quote to keep.
-   * @returns Resolves once written.
+   * @returns Resolves once the quote is written or skipped as older.
    */
   async save(quote: FxSpotQuote): Promise<void> {
     await this.#sql.execute(
