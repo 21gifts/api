@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { encodeSparkInvoice } from '@/lib/spark-invoice';
 import {
   MEMBER_EVENT_BATCH_MAX,
   MEMBER_EVENT_NAMES,
@@ -166,6 +167,24 @@ describe('parseMemberEventBatch', () => {
     expect(result.events).toHaveLength(2);
     expect(result.events[0]?.path).toBe('/bad%E0%A4%A');
     expect(result.events[1]?.path).toBe('/ok');
+  });
+
+  it('drops a path and skips a prop that carry a phrase inside a Spark invoice memo', () => {
+    const encoded = encodeSparkInvoice({
+      identityPublicKey: `02${'c'.repeat(64)}`,
+      id: new Uint8Array(16),
+      memo: PHRASE_12,
+      amountSats: 21,
+    });
+    const result = parse({
+      events: [event({ path: `/pay/${encoded}` }), event({ props: { target: encoded, n: 1 } })],
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) {
+      return;
+    }
+    expect(result.dropped).toBe(1);
+    expect(result.events[0]?.props).toEqual({ n: 1 });
   });
 
   it('keeps a plain path unchanged', () => {

@@ -1,5 +1,6 @@
 import { parseClientInstant } from '@/lib/client-instant';
-import { isSecretFieldName, looksLikeSecretValue } from '@/lib/secret-shape';
+import { containsEncodedSecret } from '@/lib/encoded-secret';
+import { isSecretFieldName } from '@/lib/secret-shape';
 
 /** Allow-listed first-party interaction event names. */
 export const MEMBER_EVENT_NAMES: ReadonlySet<string> = new Set([
@@ -87,8 +88,8 @@ function isValidMemberPath(path: string): boolean {
   if (hasC0OrDel(path)) {
     return false;
   }
-  // A key or a recovery phrase anywhere in the path, also URL-encoded, never reaches storage.
-  return !looksLikeSecretValue(path.split('/').map(decodeSegment).join('/'));
+  // A key or a recovery phrase anywhere in the path, also URL-encoded or inside an encoded token, never reaches storage.
+  return !containsEncodedSecret(path.split('/').map(decodeSegment).join('/'));
 }
 
 function parseIncomingProps(raw: Record<string, unknown>): Record<string, MemberEventPropValue> {
@@ -108,7 +109,7 @@ function parseIncomingProps(raw: Record<string, unknown>): Record<string, Member
       continue;
     }
     if (typeof value === 'string') {
-      if (value.length > PROP_STRING_MAX || hasC0OrDel(value) || looksLikeSecretValue(value)) {
+      if (value.length > PROP_STRING_MAX || hasC0OrDel(value) || containsEncodedSecret(value)) {
         continue;
       }
       out[key] = value;

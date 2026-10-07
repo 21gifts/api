@@ -1,9 +1,7 @@
 /** Allowlisted parsing for wallet balance and payment reports. */
 
 import { parseClientInstant } from '@/lib/client-instant';
-import { bolt11Description } from '@/lib/bolt11';
-import { looksLikeSecretValue } from '@/lib/secret-shape';
-import { decodeSparkAddress } from '@/lib/spark-address';
+import { containsEncodedSecret } from '@/lib/encoded-secret';
 
 /** Maximum payment entries accepted in one wallet report. */
 export const WALLET_REPORT_PAYMENTS_MAX = 200;
@@ -94,31 +92,11 @@ function safeDetail(value: unknown, maxLength: number): string | null {
     trimmed === '' ||
     trimmed.length > maxLength ||
     hasControlCharacter(trimmed) ||
-    looksLikeSecretValue(trimmed)
+    containsEncodedSecret(trimmed)
   ) {
     return null;
   }
   return trimmed;
-}
-
-/**
- * Like {@link safeDetail}, and also `null` when the value is an invoice or Spark
- * address whose embedded memo or description holds secret material.
- */
-function safeEncodedDetail(value: unknown, maxLength: number): string | null {
-  const detail = safeDetail(value, maxLength);
-  if (detail === null) {
-    return null;
-  }
-  const memo = decodeSparkAddress(detail)?.memo ?? null;
-  const description = bolt11Description(detail);
-  if (
-    (memo !== null && looksLikeSecretValue(memo)) ||
-    (description !== null && looksLikeSecretValue(description))
-  ) {
-    return null;
-  }
-  return detail;
 }
 
 function parsePayment(value: unknown, nowMs: number): ReportedWalletPayment | null {
@@ -134,7 +112,7 @@ function parsePayment(value: unknown, nowMs: number): ReportedWalletPayment | nu
     paymentId.length < 1 ||
     paymentId.length > 256 ||
     hasControlCharacter(paymentId) ||
-    looksLikeSecretValue(paymentId)
+    containsEncodedSecret(paymentId)
   ) {
     return null;
   }
@@ -181,8 +159,8 @@ function parsePayment(value: unknown, nowMs: number): ReportedWalletPayment | nu
     paidAt,
     method,
     paymentHash,
-    invoice: safeEncodedDetail(value['invoice'], 4096),
-    destination: safeEncodedDetail(value['destination'], 512),
+    invoice: safeDetail(value['invoice'], 4096),
+    destination: safeDetail(value['destination'], 512),
     description: safeDetail(value['description'], 640),
     lnurlComment: safeDetail(value['lnurlComment'], 640),
   };

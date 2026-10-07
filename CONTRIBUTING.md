@@ -86,6 +86,7 @@ api/
 │   │   ├── ip-rate-limit.ts  # IpRateLimiter (per-client sliding window for forwarded LNURL routes)
 │   │   ├── capped-body.ts    # readCappedText (request body as text up to a byte cap)
 │   │   ├── secret-shape.ts   # isSecretFieldName / looksLikeSecretValue (never store keys, seeds, phrases)
+│   │   ├── encoded-secret.ts # containsEncodedSecret (secret material inside Spark/BOLT11/bech32 tokens)
 │   │   ├── client-instant.ts # parseClientInstant (ISO or epoch timestamp from the app, bounded)
 │   │   ├── spark-address.ts  # decodeSparkAddress (identity key + memo of a Spark address or invoice)
 │   │   ├── wallet-report.ts  # parseWalletReport (allow-listed wallet report body)
@@ -206,6 +207,7 @@ api/
 │       │   ├── ip-rate-limit.test.ts
 │       │   ├── capped-body.test.ts
 │       │   ├── secret-shape.test.ts
+│       │   ├── encoded-secret.test.ts
 │       │   ├── client-instant.test.ts
 │       │   ├── spark-address.test.ts
 │       │   ├── wallet-report.test.ts
