@@ -362,6 +362,8 @@ function debugList(store: object, limit: number): Promise<unknown[]> {
  *   and the Nostr worker), gift invoice store, listDbChange, and
  *   diagnosticStore (optional; default {@link InMemoryDiagnosticStore};
  *   mounts `POST /diagnostics` and `GET /debug/diagnostics`).
+ * @throws {@link Error}
+ * When the trimmed read token is non-empty and equal to the trimmed write token, before routes mount. The message is `DEBUG_READ_TOKEN matches DEBUG_TOKEN` and includes neither token value. An empty or missing read token does not throw.
  * @returns A Hono app with all routes and middleware attached.
  */
 export function createApp(deps: AppDeps = {}): Hono {

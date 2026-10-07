@@ -539,6 +539,28 @@ test('Function: bearerMatchesDebugToken — GET /debug/accounts without bearer i
   expect(wrong.status()).toBe(401);
 });
 
+test('Function: assertDistinctDebugTokens — booted process stays up when the read token is empty', async ({
+  request,
+}) => {
+  const res = await request.get('/healthz');
+  expect(res.status()).toBe(200);
+});
+
+test('Function: classifyDebugDbBearer — write token reaches GET /debug/db and a wrong bearer is 401', async ({
+  request,
+}) => {
+  const ok = await request.get('/debug/db', {
+    headers: { authorization: 'Bearer e2e-debug-token' },
+  });
+  expect(ok.status()).toBe(503);
+  expect(((await ok.json()) as { error: string }).error).toBe('Database is not configured');
+  const wrong = await request.get('/debug/db', {
+    headers: { authorization: 'Bearer wrong-token' },
+  });
+  expect(wrong.status()).toBe(401);
+  expect(((await wrong.json()) as { error: string }).error).toBe('Unauthorized');
+});
+
 test('Function: compareAccountsForList — debug listing is ordered by createdAt', async ({
   request,
 }) => {
