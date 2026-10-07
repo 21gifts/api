@@ -17,6 +17,7 @@ import { PostRateLimiter } from './lib/nostr/rate-limit';
 import { InMemoryBannerStore } from './lib/banner-store';
 import { RELAY_TIMEOUT_MS, startNostrWorker, WORKER_INTERVAL_MS } from './lib/nostr/worker';
 import { InMemoryMessageStore, textHasHashtagToken } from './lib/message-store';
+import { seedDevShopPlaces } from './lib/dev-shop-places';
 import { publishExistingShopPlaces, resolveMapPush } from './lib/ocp-place';
 import { resolveSpendPing } from './lib/spend-ping';
 import { syncWelcomePing } from './lib/welcome-media';
@@ -151,6 +152,11 @@ if (import.meta.main) {
     });
   };
   welcomeCatchUp();
+  // Copies the public production shop pins only when the public base URL is dev.
+  await seedDevShopPlaces({
+    env: process.env,
+    ...(bun === undefined ? {} : { sql: bun.client }),
+  });
   const mapPush = resolveMapPush(process.env, globalThis.fetch);
   void publishExistingShopPlaces({
     ...(mapPush === undefined ? {} : { mapPush }),
