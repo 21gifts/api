@@ -2,7 +2,8 @@
 -- One row (`id = 1`), replaced by the spot worker every 5 minutes from one
 -- Coinbase exchange-rates response. A currency without a usable quote is NULL.
 -- `as_of` is the fetch time; a failed fetch leaves the row unchanged, and an
--- upsert never replaces a row whose `as_of` is later (several replicas refresh it).
+-- upsert never replaces a row whose `as_of` is later (several replicas refresh it)
+-- unless that `as_of` lies in the future of the database clock.
 -- Source tag is `coinbase-exchange-rates`. Not used by GET /gifts/stats.
 
 CREATE TABLE IF NOT EXISTS btc_fiat_spot (

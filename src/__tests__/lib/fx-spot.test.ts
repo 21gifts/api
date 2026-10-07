@@ -56,7 +56,7 @@ describe('fetchFxSpot', () => {
         coinbase({
           USD: '62345.12',
           CHF: '55000.5',
-          EUR: 57000,
+          EUR: '57000',
           PHP: '3500000.123456789',
           JPY: '9000000',
         }),
@@ -97,7 +97,7 @@ describe('fetchFxSpot', () => {
 
   it('omits a currency whose rate is missing or unusable', async () => {
     const fetchImpl = vi.fn(async () =>
-      response(coinbase({ USD: '62345.12', CHF: '0', EUR: '-1', PHP: '1e5' })),
+      response(coinbase({ USD: '62345.12', CHF: '0', EUR: 57000, PHP: '1e5' })),
     );
     await expect(fetchFxSpot({ fetchImpl, url: URL, now: () => NOW })).resolves.toEqual({
       asOf: '2026-10-07T12:00:00.000Z',

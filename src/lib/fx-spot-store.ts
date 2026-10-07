@@ -165,7 +165,9 @@ export class PostgresFxSpotStore implements FxSpotStore {
   /**
    * Upsert the single row with every currency (missing ones become `NULL`). The
    * update only applies when the stored `as_of` is not later, so a delayed write
-   * from another replica never replaces a newer quote.
+   * from another replica never replaces a newer quote. A stored `as_of` in the
+   * future of the database clock (a replica with a fast clock) is always
+   * replaced, so it cannot block newer quotes.
    *
    * @param quote - Quote to keep.
    * @returns Resolves once the quote is written or skipped as older.
@@ -181,7 +183,7 @@ export class PostgresFxSpotStore implements FxSpotStore {
          php = EXCLUDED.php,
          source = EXCLUDED.source,
          as_of = EXCLUDED.as_of
-       WHERE btc_fiat_spot.as_of <= EXCLUDED.as_of`,
+       WHERE btc_fiat_spot.as_of <= EXCLUDED.as_of OR btc_fiat_spot.as_of > now()`,
       [
         quote.rates.USD ?? null,
         quote.rates.CHF ?? null,

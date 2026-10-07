@@ -256,7 +256,7 @@
 
 - **Purpose:** Fetch the current price of 1 BTC in USD, CHF, EUR, and PHP from one Coinbase exchange-rates response, without ever throwing.
 - **Inputs:** `{ fetchImpl, url, now }`. The body must be `{ data: { currency: "BTC", rates: { … } } }`.
-- **Returns / side effects:** `{ asOf, source: 'coinbase-exchange-rates', rates }` with `asOf` from `now`, read when the request starts (so of two overlapping fetches the later request is the newer quote). A currency whose rate is missing, not decimal text (string or number, no exponent), or not positive is omitted. `null` for a non-ok response, a wrong shape, no usable currency, a thrown fetch, or a fetch that aborts after `BTC_USD_SPOT_TIMEOUT_MS` (10 seconds).
+- **Returns / side effects:** `{ asOf, source: 'coinbase-exchange-rates', rates }` with `asOf` from `now`, read when the request starts (so of two overlapping fetches the later request is the newer quote). A currency whose rate is missing, not a decimal string (a JSON number is refused because parsing may have rounded it; no exponent), or not positive is omitted. `null` for a non-ok response, a wrong shape, no usable currency, a thrown fetch, or a fetch that aborts after `BTC_USD_SPOT_TIMEOUT_MS` (10 seconds).
 - **Used by:** `runFxSpotTick`.
 
 ## Function: runFxSpotTick
@@ -425,7 +425,7 @@
 
 - **Purpose:** Durable `FxSpotStore` on the single `btc_fiat_spot` row, so a restart or a provider outage still serves the last good quote with its `asOf`.
 - **Inputs:** `SqlClient`.
-- **Returns / side effects:** `save(quote)` upserts row `id = 1` with every currency (a missing one becomes `NULL`), `source`, and `as_of`, only when the stored `as_of` is not later (a delayed write from another replica never replaces a newer quote). `trg_db_change` logs an INSERT for the first quote and an UPDATE for each later refresh. `latest()` reads `numeric::text`, so the provider's decimal value comes back with its fractional digits; a missing row or a row without any rate is `null`.
+- **Returns / side effects:** `save(quote)` upserts row `id = 1` with every currency (a missing one becomes `NULL`), `source`, and `as_of`, only when the stored `as_of` is not later (a delayed write from another replica never replaces a newer quote) or lies in the future of the database clock (a replica with a fast clock cannot block newer quotes). `trg_db_change` logs an INSERT for the first quote and an UPDATE for each later refresh. `latest()` reads `numeric::text`, so the provider's decimal value comes back with its fractional digits; a missing row or a row without any rate is `null`.
 - **Used by:** `openBootStores` when `DATABASE_URL` is set.
 
 ## Function: InMemoryFiatStore

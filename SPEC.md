@@ -3629,7 +3629,9 @@ A background worker fetches one Coinbase response with every pair
 10 seconds) at boot and then every 5 minutes, and stores the result in
 `btc_fiat_spot` (one row; in memory when `DATABASE_URL` is unset). A write
 with an earlier `asOf` than the stored quote is skipped, so several replicas
-that refresh the same row cannot move it backwards. A request
+that refresh the same row cannot move it backwards; a stored `asOf` in the
+future of the database clock is always replaced, so a replica with a fast clock
+cannot block newer quotes. A request
 only reads that stored quote and never calls the provider. A failed fetch
 keeps the last good quote, so during a provider outage the route keeps serving
 it with its original `asOf`. With `DATABASE_URL` set this also holds after a
