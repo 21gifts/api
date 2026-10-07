@@ -878,26 +878,33 @@ describe('PostgresFxSpotStore', () => {
       await migrateDbChangeSchema(client);
       const store = new PostgresFxSpotStore(client);
       const stamp = `test-${Date.now()}-${Math.random().toString(16).slice(2, 10)}`;
+      // The row is shared across runs on one database: start after whatever it holds.
+      const stored = await store.latest();
+      const startMs = Math.max(Date.now(), stored === null ? 0 : Date.parse(stored.asOf) + 60_000);
+      const first = new Date(startMs).toISOString();
+      const second = new Date(startMs + 5 * 60_000).toISOString();
       await store.save({
-        asOf: '2026-10-07T12:00:00.000Z',
+        asOf: first,
         source: stamp,
         rates: { USD: '62345.12', CHF: '55000.5', EUR: '57000', PHP: '5218637.18388173333610621' },
       });
       expect(await store.latest()).toEqual({
-        asOf: '2026-10-07T12:00:00.000Z',
+        asOf: first,
         source: stamp,
         rates: { USD: '62345.12', CHF: '55000.5', EUR: '57000', PHP: '5218637.18388173333610621' },
       });
       await store.save({
-        asOf: '2026-10-07T12:05:00.000Z',
+        asOf: second,
         source: stamp,
         rates: { USD: '62400' },
       });
       expect(await store.latest()).toEqual({
-        asOf: '2026-10-07T12:05:00.000Z',
+        asOf: second,
         source: stamp,
         rates: { USD: '62400' },
       });
+      await store.save({ asOf: first, source: stamp, rates: { USD: '1' } });
+      expect((await store.latest())?.rates).toEqual({ USD: '62400' });
       const rows = await client.query<{ op: string; after: { usd: unknown; php: unknown } | null }>(
         `SELECT op, after
          FROM db_change

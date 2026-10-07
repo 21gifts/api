@@ -56,6 +56,13 @@ describe('InMemoryFxSpotStore', () => {
     await expect(store.latest()).resolves.toEqual(next);
   });
 
+  it('keeps a newer quote when an older one is saved later', async () => {
+    const newer: FxSpotQuote = { ...QUOTE, asOf: '2026-10-07T12:05:00.000Z', rates: { USD: '2' } };
+    const store = new InMemoryFxSpotStore(newer);
+    await store.save({ ...QUOTE, rates: { USD: '1' } });
+    await expect(store.latest()).resolves.toEqual(newer);
+  });
+
   it('keeps only the four currencies and hands out copies', async () => {
     const rates = { USD: '1', JPY: '2' } as FxSpotQuote['rates'];
     const store = new InMemoryFxSpotStore();
@@ -77,6 +84,7 @@ describe('PostgresFxSpotStore', () => {
     await store.save({ ...QUOTE, rates: { USD: '62000' } });
     await store.save({ ...QUOTE, rates: { PHP: '3500000' } });
     expect(executes[0]?.text).toContain('ON CONFLICT (id) DO UPDATE');
+    expect(executes[0]?.text).toContain('WHERE btc_fiat_spot.as_of <= EXCLUDED.as_of');
     expect(executes[0]?.params).toEqual([
       '62345.12',
       '55000.5',
