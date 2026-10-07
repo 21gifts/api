@@ -97,7 +97,7 @@ describe('resolveSpendPing', () => {
       recording,
     );
     expect(ping).toBeInstanceOf(HttpSpendPing);
-    await ping?.ping(ADDRESS, MESSAGE_ID);
+    await ping?.ping(ADDRESS, MESSAGE_ID, 'daily', 'admitted');
     expect(seen).toBe('https://spend.example/ping');
   });
 });
@@ -113,35 +113,29 @@ describe('HttpSpendPing', () => {
     warn.mockRestore();
   });
 
-  it('POSTs JSON { address, messageId } with Bearer token and logs spend.ping.ok on 200', async () => {
-    let seenInput = '';
-    let seenInit: RequestInit | undefined;
+  it('does not POST daily when the roster is undecided and logs spend.ping.skipped', async () => {
     const fetchImpl = vi.fn<FetchFn>(async (input, init) => {
-      seenInput = String(input);
-      seenInit = init;
+      expect(String(input)).toBe(`${SPEND_URL}/daily-roster`);
+      expect(init?.method).toBe('GET');
+      expect(init?.body).toBeUndefined();
+      expect(new Headers(init?.headers).get('Authorization')).toBe(`Bearer ${TOKEN}`);
       return jsonResponse(UNDECIDED_ROSTER);
     });
     await new HttpSpendPing({ spendUrl: SPEND_URL, token: TOKEN, fetchImpl }).ping(
       ADDRESS,
       MESSAGE_ID,
     );
-    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
     expect(String(fetchImpl.mock.calls[0]?.[0])).toBe(`${SPEND_URL}/daily-roster`);
-    expect(fetchImpl.mock.calls[0]?.[1]?.method).toBe('GET');
-    expect(fetchImpl.mock.calls[0]?.[1]?.body).toBeUndefined();
-    expect(new Headers(fetchImpl.mock.calls[0]?.[1]?.headers).get('Authorization')).toBe(
-      `Bearer ${TOKEN}`,
-    );
-    expect(seenInput).toBe(`${SPEND_URL}/ping`);
-    expect(seenInit?.method).toBe('POST');
-    expect(new Headers(seenInit?.headers).get('Authorization')).toBe(`Bearer ${TOKEN}`);
-    expect(new Headers(seenInit?.headers).get('Content-Type')).toBe('application/json');
-    expect(seenInit?.body).toBe(JSON.stringify({ address: ADDRESS, messageId: MESSAGE_ID }));
-    expect(seenInit?.signal).toBeDefined();
     expect(
-      parsedEvents(warn).some((e) => e['event'] === 'spend.ping.ok' && e['address'] === ADDRESS),
+      parsedEvents(warn).some(
+        (e) =>
+          e['event'] === 'spend.ping.skipped' &&
+          e['address'] === ADDRESS &&
+          e['reason'] === 'undecided',
+      ),
     ).toBe(true);
-    expect(parsedEvents(warn).some((e) => e['event'] === 'spend.ping.skipped')).toBe(false);
+    expect(parsedEvents(warn).some((e) => e['event'] === 'spend.ping.ok')).toBe(false);
     expect(JSON.stringify(parsedEvents(warn))).not.toContain(TOKEN);
   });
 
@@ -150,6 +144,8 @@ describe('HttpSpendPing', () => {
     await new HttpSpendPing({ spendUrl: SPEND_URL, token: TOKEN, fetchImpl }).ping(
       ADDRESS,
       MESSAGE_ID,
+      'daily',
+      'admitted',
     );
     expect(parsedEvents(warn).some((e) => e['event'] === 'spend.ping.ok')).toBe(true);
   });
@@ -160,6 +156,8 @@ describe('HttpSpendPing', () => {
     await new HttpSpendPing({ spendUrl: SPEND_URL, token: TOKEN, fetchImpl }).ping(
       ADDRESS,
       MESSAGE_ID,
+      'daily',
+      'admitted',
     );
     expect(timeoutSpy).toHaveBeenCalledWith(5000);
     await new HttpSpendPing({
@@ -167,7 +165,7 @@ describe('HttpSpendPing', () => {
       token: TOKEN,
       fetchImpl,
       timeoutMs: 1_000,
-    }).ping(ADDRESS, MESSAGE_ID);
+    }).ping(ADDRESS, MESSAGE_ID, 'daily', 'admitted');
     expect(timeoutSpy).toHaveBeenCalledWith(1_000);
     timeoutSpy.mockRestore();
   });
@@ -175,7 +173,12 @@ describe('HttpSpendPing', () => {
   it('logs spend.ping.failed on POST non-2xx and does not throw', async () => {
     const fetchImpl = vi.fn<FetchFn>(rosterThenPing({ pingStatus: 500 }));
     await expect(
-      new HttpSpendPing({ spendUrl: SPEND_URL, token: TOKEN, fetchImpl }).ping(ADDRESS, MESSAGE_ID),
+      new HttpSpendPing({ spendUrl: SPEND_URL, token: TOKEN, fetchImpl }).ping(
+        ADDRESS,
+        MESSAGE_ID,
+        'daily',
+        'admitted',
+      ),
     ).resolves.toBeUndefined();
     expect(fetchImpl).toHaveBeenCalledTimes(2);
     expect(String(fetchImpl.mock.calls[1]?.[0])).toBe(`${SPEND_URL}/ping`);
@@ -190,7 +193,12 @@ describe('HttpSpendPing', () => {
   it('logs spend.ping.failed on POST network error and does not throw', async () => {
     const fetchImpl = vi.fn<FetchFn>(rosterThenPing({ pingError: new Error('network down') }));
     await expect(
-      new HttpSpendPing({ spendUrl: SPEND_URL, token: TOKEN, fetchImpl }).ping(ADDRESS, MESSAGE_ID),
+      new HttpSpendPing({ spendUrl: SPEND_URL, token: TOKEN, fetchImpl }).ping(
+        ADDRESS,
+        MESSAGE_ID,
+        'daily',
+        'admitted',
+      ),
     ).resolves.toBeUndefined();
     expect(fetchImpl).toHaveBeenCalledTimes(2);
     expect(parsedEvents(warn).some((e) => e['event'] === 'spend.ping.failed')).toBe(true);
@@ -199,7 +207,12 @@ describe('HttpSpendPing', () => {
   it('logs spend.ping.failed on POST abort and does not throw', async () => {
     const fetchImpl = vi.fn<FetchFn>(rosterThenPing({ pingError: abortError() }));
     await expect(
-      new HttpSpendPing({ spendUrl: SPEND_URL, token: TOKEN, fetchImpl }).ping(ADDRESS, MESSAGE_ID),
+      new HttpSpendPing({ spendUrl: SPEND_URL, token: TOKEN, fetchImpl }).ping(
+        ADDRESS,
+        MESSAGE_ID,
+        'daily',
+        'admitted',
+      ),
     ).resolves.toBeUndefined();
     expect(fetchImpl).toHaveBeenCalledTimes(2);
     expect(parsedEvents(warn).some((e) => e['event'] === 'spend.ping.failed')).toBe(true);
@@ -265,32 +278,24 @@ describe('HttpSpendPing', () => {
     expect(parsedEvents(warn).some((e) => e['event'] === 'spend.ping.failed')).toBe(true);
   });
 
-  it('POSTs JSON { address, kind: "moderator", groupMessageId } without messageId', async () => {
-    let seenInit: RequestInit | undefined;
-    const fetchImpl: FetchFn = rosterThenPing({
-      onCall: (_url, init) => {
-        seenInit = init;
-      },
-    });
+  it('does not POST moderator when the roster has no moderators key and logs spend.ping.skipped', async () => {
+    const fetchImpl = vi.fn<FetchFn>(rosterThenPing({}));
     await new HttpSpendPing({ spendUrl: SPEND_URL, token: TOKEN, fetchImpl }).ping(
       ADDRESS,
       MESSAGE_ID,
       'moderator',
     );
-    expect(seenInit?.method).toBe('POST');
-    expect(new Headers(seenInit?.headers).get('Authorization')).toBe(`Bearer ${TOKEN}`);
-    expect(new Headers(seenInit?.headers).get('Content-Type')).toBe('application/json');
-    expect(seenInit?.body).toBe(
-      JSON.stringify({
-        address: ADDRESS,
-        kind: 'moderator',
-        groupMessageId: MESSAGE_ID,
-      }),
-    );
-    expect(String(seenInit?.body)).not.toContain('messageId');
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(String(fetchImpl.mock.calls[0]?.[0])).toBe(`${SPEND_URL}/daily-roster`);
     expect(
-      parsedEvents(warn).some((e) => e['event'] === 'spend.ping.ok' && e['address'] === ADDRESS),
+      parsedEvents(warn).some(
+        (e) =>
+          e['event'] === 'spend.ping.skipped' &&
+          e['address'] === ADDRESS &&
+          e['reason'] === 'undecided',
+      ),
     ).toBe(true);
+    expect(parsedEvents(warn).some((e) => e['event'] === 'spend.ping.ok')).toBe(false);
   });
 
   it('POSTs welcome JSON with amountUsd 1 and comment Welcome', async () => {
@@ -485,7 +490,6 @@ describe('HttpSpendPing', () => {
   });
 
   it('POSTs the old daily body when unlisted even if defaultAmountUsd is present', async () => {
-    let seenInit: RequestInit | undefined;
     const fetchImpl = vi.fn<FetchFn>(
       rosterThenPing({
         roster: {
@@ -494,23 +498,23 @@ describe('HttpSpendPing', () => {
           defaultAmountUsd: 9,
           recipients: [],
         },
-        onCall: (_url, init) => {
-          seenInit = init;
-        },
       }),
     );
     await new HttpSpendPing({ spendUrl: SPEND_URL, token: TOKEN, fetchImpl }).ping(
       ADDRESS,
       MESSAGE_ID,
     );
-    expect(fetchImpl).toHaveBeenCalledTimes(2);
-    expect(seenInit?.body).toBe(JSON.stringify({ address: ADDRESS, messageId: MESSAGE_ID }));
-    expect(String(seenInit?.body)).not.toContain('amountUsd');
-    expect(String(seenInit?.body)).not.toContain('comment');
-    expect(parsedEvents(warn).some((e) => e['event'] === 'spend.ping.skipped')).toBe(false);
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(String(fetchImpl.mock.calls[0]?.[0])).toBe(`${SPEND_URL}/daily-roster`);
     expect(
-      parsedEvents(warn).some((e) => e['event'] === 'spend.ping.ok' && e['address'] === ADDRESS),
+      parsedEvents(warn).some(
+        (e) =>
+          e['event'] === 'spend.ping.skipped' &&
+          e['address'] === ADDRESS &&
+          e['reason'] === 'undecided',
+      ),
     ).toBe(true);
+    expect(parsedEvents(warn).some((e) => e['event'] === 'spend.ping.ok')).toBe(false);
   });
 
   it('POSTs defaultAmountUsd 9 for an unlisted admitted daily address', async () => {

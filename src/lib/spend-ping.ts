@@ -64,9 +64,9 @@ export class NoopSpendPing implements SpendPing {
 /**
  * GET `{spendUrl}/daily-roster` with Bearer `SPEND_API_TOKEN`, then POST
  * `{spendUrl}/ping` with the same Bearer. A decided amount adds
- * `amountUsd` and `comment` to the ping JSON. An undecided roster POSTs
- * the previous ping body. Skipped reasons `payments_disabled` and
- * `not_listed` log `spend.ping.skipped` and do not POST.
+ * `amountUsd` and `comment` to the ping JSON. Skipped reasons
+ * `payments_disabled`, `not_listed`, and `undecided` log
+ * `spend.ping.skipped` and do not POST.
  *
  * 2xx (including 200 skipped and 202 accepted) logs `spend.ping.ok`.
  * Network, abort, non-2xx, and a roster that is not a JSON object log
@@ -92,8 +92,10 @@ export class HttpSpendPing implements SpendPing {
   }
 
   /**
-   * GET `{spendUrl}/daily-roster`, then POST the decided or previous ping
-   * JSON to `{spendUrl}/ping`. Resolves on success and failure.
+   * GET `{spendUrl}/daily-roster`, then POST the decided ping JSON to
+   * `{spendUrl}/ping`. An undecided, disabled, or not-listed decision
+   * logs `spend.ping.skipped` and does not POST. Resolves on success and
+   * failure.
    *
    * @param address - Recipient Lightning Address (JSON body).
    * @param messageId - Forum post id for daily/welcome pings (JSON
@@ -138,15 +140,7 @@ export class HttpSpendPing implements SpendPing {
       ...(resolvedKind === 'daily' && grantStatus !== undefined ? { grantStatus } : {}),
     });
     if ('skip' in decision) {
-      if (decision.skip !== 'undecided') {
-        logEvent('spend.ping.skipped', { address, reason: decision.skip });
-        return;
-      }
-      const body =
-        resolvedKind === 'moderator'
-          ? { address, kind: 'moderator', groupMessageId: messageId }
-          : { address, messageId };
-      await this.#postPing(address, body);
+      logEvent('spend.ping.skipped', { address, reason: decision.skip });
       return;
     }
     const body =
