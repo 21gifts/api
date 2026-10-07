@@ -148,7 +148,7 @@ api/
 │   │   ├── gift-recorder.ts  # Persist proven spend gifts into `gift` (no-op or SQL)
 │   │   ├── debug-token.ts    # Constant-time DEBUG_TOKEN Bearer compare
 │   │   ├── debug-catalog.ts  # GET /debug/dump table loaders (every stored column; envelope hex, never decrypt)
-│   │   ├── boot-stores.ts    # DATABASE_URL → auth, optional QueryGiftStore + SqlGiftRecorder, message, contact, conversation, notification, push, trust_edge, funding_grant, account_image, diagnostic_event, spark_invoice, BTC-USD and USD-fiat rates, KEK, db_change
+│   │   ├── boot-stores.ts    # DATABASE_URL → auth, optional QueryGiftStore + SqlGiftRecorder, message, contact, conversation, notification, push, trust_edge, funding_grant, account_image, diagnostic_event, spark_invoice, member data tables (wallet_balance_snapshot, wallet_payment, member_event, team_access_audit), BTC-USD and USD-fiat rates, KEK, db_change
 │   │   ├── money.ts          # Sats/BTC strings and historical USD cents
 │   │   ├── credit-repayment.ts # Repayment schedule, cent amounts, and the public ledger rows
 │   │   ├── btc-usd-candles.ts # Coinbase Exchange BTC-USD daily closes
