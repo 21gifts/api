@@ -3780,7 +3780,7 @@ Builds the operator-only external-pubkey inspection route.
 - **Purpose:** Tell whether a body or prop key names secret material, so the member-data ingest never reads or stores it. Case-insensitive substring match on `seed`, `mnemonic`, `phrase`, `preimage`, `private`, `privkey`, `secret`, `prf`, `nsec`, `xprv`, `password`, `passphrase`, and `spendingkey`.
 - **Inputs:** One key name.
 - **Returns / side effects:** `true` when the key contains one of those tokens. Pure; no logging.
-- **Used by:** `parseMemberEventBatch` (prop keys are skipped) and `parseWalletReport` (such keys are never read).
+- **Used by:** `parseMemberEventBatch` (prop keys are skipped). `parseWalletReport` reads only its named fields, so a secret-named key in a wallet report is never read at all.
 
 ## Function: looksLikeSecretValue
 
