@@ -1019,8 +1019,8 @@ describe('POST /funding/trial', () => {
     );
     expect(res.status).toBe(200);
     expect(ping).toHaveBeenCalledTimes(1);
-    expect(ping).toHaveBeenCalledWith('ada@walletofsatoshi.com', PHOTO_A);
-    expect(ping.mock.calls[0]).toHaveLength(2);
+    expect(ping).toHaveBeenCalledWith('ada@walletofsatoshi.com', PHOTO_A, 'daily', 'trial');
+    expect(ping.mock.calls[0]).toHaveLength(4);
   });
 
   it('returns 503 when upsert throws', async () => {
@@ -1192,8 +1192,8 @@ describe('POST /funding/admit', () => {
     );
     expect(res.status).toBe(200);
     expect(ping).toHaveBeenCalledTimes(1);
-    expect(ping).toHaveBeenCalledWith('ada@walletofsatoshi.com', PHOTO_B);
-    expect(ping.mock.calls[0]).toHaveLength(2);
+    expect(ping).toHaveBeenCalledWith('ada@walletofsatoshi.com', PHOTO_B, 'daily', 'admitted');
+    expect(ping.mock.calls[0]).toHaveLength(4);
   });
 
   it('does not ping when admitting from an active trial the same UTC day', async () => {

@@ -6,6 +6,7 @@
 
 import type { FetchFn } from '@/lib/lnurlp';
 import { logEvent } from '@/lib/log';
+import { decideSpendInstruction, type SpendGrantStatus } from '@/lib/spend-instruction';
 
 /** Default HTTP timeout for {@link HttpSpendPing}. */
 const DEFAULT_TIMEOUT_MS = 5_000;
@@ -26,8 +27,14 @@ export interface SpendPing {
    *   JSON `messageId`) or conversation message id (moderator JSON
    *   `groupMessageId`).
    * @param kind - `'daily'` (default), `'moderator'`, or `'welcome'`.
+   * @param grantStatus - Effective grant status; daily only.
    */
-  ping(address: string, messageId: string, kind?: 'daily' | 'moderator' | 'welcome'): Promise<void>;
+  ping(
+    address: string,
+    messageId: string,
+    kind?: 'daily' | 'moderator' | 'welcome',
+    grantStatus?: SpendGrantStatus,
+  ): Promise<void>;
 }
 
 /**
@@ -36,30 +43,36 @@ export interface SpendPing {
 export class NoopSpendPing implements SpendPing {
   /**
    * Ignore the address, message id (daily `messageId` / welcome
-   * `messageId` / moderator `groupMessageId`), and optional kind.
+   * `messageId` / moderator `groupMessageId`), optional kind, and
+   * optional grant status.
    *
    * @param _address - Unused.
    * @param _messageId - Unused.
    * @param _kind - Unused.
+   * @param _grantStatus - Unused.
    */
   ping(
     _address: string,
     _messageId: string,
     _kind?: 'daily' | 'moderator' | 'welcome',
+    _grantStatus?: SpendGrantStatus,
   ): Promise<void> {
     return Promise.resolve();
   }
 }
 
 /**
- * POST `{ address, messageId }` (daily),
- * `{ address, messageId, kind: "welcome" }` (welcome), or
- * `{ address, kind: "moderator", groupMessageId }` to `{spendUrl}/ping`
- * with Bearer `SPEND_API_TOKEN`.
+ * GET `{spendUrl}/daily-roster` with Bearer `SPEND_API_TOKEN`, then POST
+ * `{spendUrl}/ping` with the same Bearer. A decided amount adds
+ * `amountUsd` and `comment` to the ping JSON. An undecided roster POSTs
+ * the previous ping body. Skipped reasons `payments_disabled` and
+ * `not_listed` log `spend.ping.skipped` and do not POST.
  *
  * 2xx (including 200 skipped and 202 accepted) logs `spend.ping.ok`.
- * Network, abort, and non-2xx log `spend.ping.failed` and resolve.
- * Never throws. Never logs the token.
+ * Network, abort, non-2xx, and a roster that is not a JSON object log
+ * `spend.ping.failed` and resolve. Never throws. Never logs the token.
+ * Optional `grantStatus` is passed to {@link decideSpendInstruction} only
+ * when the resolved kind is daily.
  */
 export class HttpSpendPing implements SpendPing {
   readonly #spendUrl: string;
@@ -79,28 +92,90 @@ export class HttpSpendPing implements SpendPing {
   }
 
   /**
-   * POST `{ address, messageId }` (daily),
-   * `{ address, messageId, kind: "welcome" }` (welcome), or
-   * `{ address, kind: "moderator", groupMessageId }` to `{spendUrl}/ping`.
-   * Resolves on success and failure.
+   * GET `{spendUrl}/daily-roster`, then POST the decided or previous ping
+   * JSON to `{spendUrl}/ping`. Resolves on success and failure.
    *
    * @param address - Recipient Lightning Address (JSON body).
    * @param messageId - Forum post id for daily/welcome pings (JSON
    *   `messageId`); conversation message id for moderator pings (JSON
    *   `groupMessageId`).
    * @param kind - `'daily'` (default), `'moderator'`, or `'welcome'`.
+   * @param grantStatus - Effective grant status; forwarded only for daily.
    */
   async ping(
     address: string,
     messageId: string,
     kind?: 'daily' | 'moderator' | 'welcome',
+    grantStatus?: SpendGrantStatus,
   ): Promise<void> {
-    const body =
-      kind === 'moderator'
-        ? { address, kind: 'moderator', groupMessageId: messageId }
-        : kind === 'welcome'
-          ? { address, messageId, kind: 'welcome' }
+    const resolvedKind = kind === 'moderator' || kind === 'welcome' ? kind : 'daily';
+    let roster: unknown;
+    try {
+      const rosterResponse = await this.#fetchImpl(`${this.#spendUrl}/daily-roster`, {
+        method: 'GET',
+        headers: {
+          Authorization: `Bearer ${this.#token}`,
+        },
+        signal: AbortSignal.timeout(this.#timeoutMs),
+      });
+      if (!rosterResponse.ok) {
+        logEvent('spend.ping.failed', { address });
+        return;
+      }
+      roster = await rosterResponse.json();
+    } catch {
+      logEvent('spend.ping.failed', { address });
+      return;
+    }
+    if (typeof roster !== 'object' || roster === null || Array.isArray(roster)) {
+      logEvent('spend.ping.failed', { address });
+      return;
+    }
+    const decision = decideSpendInstruction({
+      address,
+      kind: resolvedKind,
+      roster,
+      ...(resolvedKind === 'daily' && grantStatus !== undefined ? { grantStatus } : {}),
+    });
+    if ('skip' in decision) {
+      if (decision.skip !== 'undecided') {
+        logEvent('spend.ping.skipped', { address, reason: decision.skip });
+        return;
+      }
+      const body =
+        resolvedKind === 'moderator'
+          ? { address, kind: 'moderator', groupMessageId: messageId }
           : { address, messageId };
+      await this.#postPing(address, body);
+      return;
+    }
+    const body =
+      resolvedKind === 'moderator'
+        ? {
+            address,
+            kind: 'moderator',
+            groupMessageId: messageId,
+            amountUsd: decision.amountUsd,
+            comment: decision.comment,
+          }
+        : resolvedKind === 'welcome'
+          ? {
+              address,
+              messageId,
+              kind: 'welcome',
+              amountUsd: decision.amountUsd,
+              comment: decision.comment,
+            }
+          : {
+              address,
+              messageId,
+              amountUsd: decision.amountUsd,
+              comment: decision.comment,
+            };
+    await this.#postPing(address, body);
+  }
+
+  async #postPing(address: string, body: Record<string, string | number>): Promise<void> {
     try {
       const response = await this.#fetchImpl(`${this.#spendUrl}/ping`, {
         method: 'POST',
