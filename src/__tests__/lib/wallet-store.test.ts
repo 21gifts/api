@@ -71,7 +71,7 @@ function payment(extra: Partial<WalletPaymentRecord> = {}): WalletPaymentRecord 
 
 describe('wallet schema', () => {
   it('contains the exact idempotent tables, migration order, and mirrored documentation', async () => {
-    expect(WALLET_SCHEMA_SQL).toHaveLength(5);
+    expect(WALLET_SCHEMA_SQL).toHaveLength(6);
     expect(WALLET_SCHEMA_SQL[0]).toMatch(/CREATE TABLE IF NOT EXISTS wallet_balance_snapshot/);
     expect(WALLET_SCHEMA_SQL[1]).toMatch(/received_at DESC, id DESC/);
     expect(WALLET_SCHEMA_SQL[2]).toMatch(/PRIMARY KEY \(account_id, payment_id\)/);
@@ -79,7 +79,10 @@ describe('wallet schema', () => {
     expect(WALLET_SCHEMA_SQL[3]).toBe(
       'ALTER TABLE wallet_payment ADD COLUMN IF NOT EXISTS invoice text',
     );
-    expect(WALLET_SCHEMA_SQL[4]).toMatch(/paid_at DESC, payment_id DESC/);
+    expect(WALLET_SCHEMA_SQL[4]).toBe(
+      'ALTER TABLE wallet_payment ADD COLUMN IF NOT EXISTS last_observed_at timestamptz',
+    );
+    expect(WALLET_SCHEMA_SQL[5]).toMatch(/paid_at DESC, payment_id DESC/);
     const documented = readFileSync(join(process.cwd(), 'docs/schema/wallet.sql'), 'utf8');
     for (const statement of WALLET_SCHEMA_SQL) {
       expect(documented).toContain(statement);
@@ -219,6 +222,21 @@ describe('InMemoryWalletStore', () => {
     ]);
   });
 
+  it('advances the staleness watermark on a no-op re-send, so an older different report is ignored', async () => {
+    const t0 = new Date('2026-10-01T00:00:00.000Z');
+    const t1 = new Date('2026-10-01T00:00:01.000Z');
+    const t2 = new Date('2026-10-01T00:00:02.000Z');
+    const store = new InMemoryWalletStore();
+    await store.upsertPayments([payment({ status: 'completed', firstSeenAt: t0, updatedAt: t0 })]);
+    await store.upsertPayments([payment({ status: 'completed', firstSeenAt: t2, updatedAt: t2 })]);
+    expect((await store.listPayments('account', 1))[0]?.updatedAt).toEqual(t0);
+    await store.upsertPayments([payment({ status: 'pending', firstSeenAt: t1, updatedAt: t1 })]);
+    expect((await store.listPayments('account', 1))[0]).toMatchObject({
+      status: 'completed',
+      updatedAt: t0,
+    });
+  });
+
   it('ignores a report observed before the stored state', async () => {
     const store = new InMemoryWalletStore();
     await store.upsertPayments([payment({ status: 'completed', updatedAt: T2, firstSeenAt: T2 })]);
@@ -244,7 +262,11 @@ describe('PostgresWalletStore', () => {
     expect(sql.executes[1]?.text).toContain('ON CONFLICT (account_id, payment_id) DO UPDATE');
     expect(sql.executes[1]?.text).toContain('COALESCE(EXCLUDED.invoice, wallet_payment.invoice)');
     expect(sql.executes[1]?.text).toContain('IS DISTINCT FROM');
-    expect(sql.executes[1]?.text).toContain('AND EXCLUDED.updated_at >= wallet_payment.updated_at');
+    expect(sql.executes[1]?.text).toContain(
+      'WHERE EXCLUDED.last_observed_at >= COALESCE(wallet_payment.last_observed_at, wallet_payment.updated_at)',
+    );
+    expect(sql.executes[1]?.text).toContain('last_observed_at = EXCLUDED.last_observed_at');
+    expect(sql.executes[1]?.text).toContain('$17,$17)');
     expect(sql.executes[1]?.text).toContain(
       "category = CASE WHEN (EXCLUDED.category IN ('outside_lightning', 'onchain', 'unknown') AND wallet_payment.category NOT IN ('outside_lightning', 'onchain', 'unknown')) THEN wallet_payment.category ELSE EXCLUDED.category END",
     );
