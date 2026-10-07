@@ -20,6 +20,9 @@ export const WALLET_REPORT_BODY_LIMIT_BYTES = 1024 * 1024;
 /** Per-account wallet report cap inside the shared one-minute limiter window. */
 export const WALLET_REPORTS_PER_MINUTE = 60;
 
+/** Payments of one report classified at the same time (each runs a few store lookups). */
+export const WALLET_REPORT_CONCURRENCY = 8;
+
 /** Collaborators required by the wallet report route. */
 export interface WalletReportRouteDeps {
   /** Session and wallet-counterparty account store. */
@@ -94,16 +97,23 @@ export function walletReportRoutes(deps: WalletReportRouteDeps): Hono {
       const seenMs = Math.max(nowMs, (lastSeenByAccount.get(account.id) ?? 0) + 1);
       lastSeenByAccount.set(account.id, seenMs);
       const seenAt = new Date(seenMs);
-      // Payments are classified concurrently; the database pool bounds the parallel lookups.
-      const records: WalletPaymentRecord[] = await Promise.all(
-        [...byId.values()].map(async (payment) => ({
-          ...payment,
-          ...(await classify(payment)),
-          accountId: account.id,
-          firstSeenAt: new Date(seenAt.getTime()),
-          updatedAt: new Date(seenAt.getTime()),
-        })),
-      );
+      // Payments are classified in batches of WALLET_REPORT_CONCURRENCY, so one report never queues
+      // more than that many lookups at once.
+      const payments = [...byId.values()];
+      const records: WalletPaymentRecord[] = [];
+      for (let start = 0; start < payments.length; start += WALLET_REPORT_CONCURRENCY) {
+        records.push(
+          ...(await Promise.all(
+            payments.slice(start, start + WALLET_REPORT_CONCURRENCY).map(async (payment) => ({
+              ...payment,
+              ...(await classify(payment)),
+              accountId: account.id,
+              firstSeenAt: new Date(seenAt.getTime()),
+              updatedAt: new Date(seenAt.getTime()),
+            })),
+          )),
+        );
+      }
       await deps.walletStore.recordBalance({
         id: crypto.randomUUID(),
         accountId: account.id,

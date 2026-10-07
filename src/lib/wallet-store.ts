@@ -333,6 +333,9 @@ const PAYMENT_COLUMNS = `account_id, payment_id, direction, status, amount_sats,
 paid_at, method, payment_hash, invoice, destination, description, lnurl_comment, category,
 counterparty_account_id, first_seen_at, updated_at`;
 
+/** Payments written at the same time by one `upsertPayments` call. */
+const UPSERT_CONCURRENCY = 8;
+
 /** A later row with only a fallback category keeps the stored resolved category and counterparty. */
 const KEEP_RESOLVED_CATEGORY = `(EXCLUDED.category IN ('outside_lightning', 'onchain', 'unknown') AND wallet_payment.category NOT IN ('outside_lightning', 'onchain', 'unknown'))`;
 
@@ -388,19 +391,22 @@ VALUES ($1,$2,$3,$4,$5)`,
    * @param rows - Classified payment observations.
    */
   async upsertPayments(rows: readonly WalletPaymentRecord[]): Promise<void> {
-    // Distinct payments are written concurrently (the pool bounds it); a key repeated in one call keeps its order.
+    // Distinct payments are written UPSERT_CONCURRENCY at a time; a key repeated in one call keeps its order.
     const byKey = new Map<string, WalletPaymentRecord[]>();
     for (const row of rows) {
       const key = `${row.accountId}\u0000${row.paymentId}`;
       byKey.set(key, [...(byKey.get(key) ?? []), row]);
     }
-    await Promise.all(
-      [...byKey.values()].map(async (group) => {
-        for (const row of group) {
-          await this.upsertPayment(row);
-        }
-      }),
-    );
+    const groups = [...byKey.values()];
+    for (let start = 0; start < groups.length; start += UPSERT_CONCURRENCY) {
+      await Promise.all(
+        groups.slice(start, start + UPSERT_CONCURRENCY).map(async (group) => {
+          for (const row of group) {
+            await this.upsertPayment(row);
+          }
+        }),
+      );
+    }
   }
 
   /** Upsert one payment row with the guarded conflict update. */

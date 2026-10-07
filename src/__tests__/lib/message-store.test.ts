@@ -96,7 +96,10 @@ const JPEG2: ForumPhoto = {
 
 describe('MESSAGE_SCHEMA_SQL', () => {
   it('creates message with photo columns, Nostr columns, index, and additive ALTERs', () => {
-    expect(MESSAGE_SCHEMA_SQL).toHaveLength(110);
+    expect(MESSAGE_SCHEMA_SQL).toHaveLength(111);
+    expect(MESSAGE_SCHEMA_SQL.at(-1)).toMatch(
+      /CREATE INDEX IF NOT EXISTS message_invoice_ok_payment_hash_idx\s+ON message_invoice \(payment_hash, created_at DESC, id DESC\)\s+WHERE result = 'ok'/,
+    );
     expect(MESSAGE_SCHEMA_SQL.join('\n')).toMatch(
       /ALTER TABLE message ADD COLUMN IF NOT EXISTS first_post_free boolean/,
     );
