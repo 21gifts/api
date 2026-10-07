@@ -254,9 +254,7 @@ describe('buildReplyPushPayload', () => {
 
 describe('buildHeartPushPayload', () => {
   it('names the payer and uses the heart body and tag', () => {
-    expect(
-      buildHeartPushPayload({ replyId: 'reply-1', name: 'Ada', noteId: 'note-9' }),
-    ).toEqual({
+    expect(buildHeartPushPayload({ replyId: 'reply-1', name: 'Ada', noteId: 'note-9' })).toEqual({
       type: 'zap',
       title: 'Ada',
       body: 'Sent you a heart.',

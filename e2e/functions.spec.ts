@@ -1321,6 +1321,11 @@ test('Function: buildZapPushPayload — POST /me/push-subscriptions without bear
 }) => {
   expect((await request.post('/me/push-subscriptions')).status()).toBe(401);
 });
+test('Function: buildHeartPushPayload — POST /me/push-subscriptions without bearer is 401', async ({
+  request,
+}) => {
+  expect((await request.post('/me/push-subscriptions')).status()).toBe(401);
+});
 
 test('Function: buildConversationPushPayload — POST /me/push-subscriptions without bearer is 401', async ({
   request,
@@ -2432,6 +2437,9 @@ test('Function: notifyModeratorProposed — POST /trust/propose-moderator withou
   ).toBe(401);
 });
 test('Function: notifyZap — POST /messages without bearer is 401', async ({ request }) => {
+  expect((await request.post('/messages')).status()).toBe(401);
+});
+test('Function: notifyHeart — POST /messages without bearer is 401', async ({ request }) => {
   expect((await request.post('/messages')).status()).toBe(401);
 });
 test('Function: fanoutToBellSubscribers — POST /messages without bearer is 401', async ({
