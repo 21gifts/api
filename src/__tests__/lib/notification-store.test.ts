@@ -630,7 +630,7 @@ describe('PostgresNotificationStore', () => {
     );
     expect(sql.queries).toHaveLength(1);
     expect(sql.queries[0]?.text).toMatch(
-      /type IN \('forum_post', 'forum_reply', 'forum_mention', 'zap'\)/,
+      /type IN \('forum_post', 'forum_reply', 'forum_mention', 'zap', 'heart'\)/,
     );
     expect(sql.queries[0]?.text).toMatch(/parent_id = \$2 OR reply_id = \$2/);
     expect(sql.queries[0]?.text).toMatch(/RETURNING/);
