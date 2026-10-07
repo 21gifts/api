@@ -118,13 +118,15 @@ export function walletPaymentClassifier(
     }
     const sparkSource = payment.invoice ?? payment.destination;
     const spark = sparkSource === null ? null : decodeSparkAddress(sparkSource);
-    const zapMemo = spark?.memo?.match(/^zap:([0-9a-fA-F]{64})/);
-    if (hash === null && zapMemo?.[1] !== undefined) {
-      hash = zapMemo[1].toLowerCase();
-    }
+    const zapMemoHash = spark?.memo?.match(/^zap:([0-9a-fA-F]{64})$/)?.[1]?.toLowerCase();
+    // A zap memo names the zap invoice the Spark invoice stands in for; try it after the reported hash.
+    const knownHashes = [hash, zapMemoHash].filter(
+      (candidate, index, all): candidate is string =>
+        typeof candidate === 'string' && all.indexOf(candidate) === index,
+    );
 
-    if (hash !== null) {
-      const invoice = await deps.messages.findOkInvoiceByPaymentHash(hash);
+    for (const candidate of knownHashes) {
+      const invoice = await deps.messages.findOkInvoiceByPaymentHash(candidate);
       if (invoice !== undefined) {
         return toKnown(
           payment.direction === 'out' ? invoice.authorAccountId : invoice.payerAccountId,
@@ -132,7 +134,7 @@ export function walletPaymentClassifier(
         );
       }
 
-      const receiptId = await deps.messages.zapPaymentReceiptId(hash);
+      const receiptId = await deps.messages.zapPaymentReceiptId(candidate);
       if (receiptId !== undefined) {
         const gift = await deps.messages.getZapReceiptGift(receiptId);
         if (gift !== undefined) {
@@ -145,12 +147,11 @@ export function walletPaymentClassifier(
       }
     }
 
-    const charge =
-      hash !== null
-        ? await deps.posStore.findChargeForPayment({ paymentHash: hash })
-        : spark?.memo?.startsWith('pos:') === true
-          ? await deps.posStore.findChargeForPayment({ chargeId: spark.memo.slice(4) })
-          : undefined;
+    let charge =
+      hash === null ? undefined : await deps.posStore.findChargeForPayment({ paymentHash: hash });
+    if (charge === undefined && spark?.memo?.startsWith('pos:') === true) {
+      charge = await deps.posStore.findChargeForPayment({ chargeId: spark.memo.slice(4) });
+    }
     if (charge !== undefined) {
       return {
         category: 'shop',
