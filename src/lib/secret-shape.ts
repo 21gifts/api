@@ -23,13 +23,13 @@ const ENCODED_KEY_RE = /(?:^|[^A-Za-z0-9])(?:nsec1|[xtyzuv]prv)[A-Za-z0-9]/i;
 const PHRASE_MIN_WORDS = 12;
 
 /**
- * One BIP-39-shaped word in any of the official wordlists: 3–9 letters of any
- * script (English and the accented Latin lists; Italian has nine-letter words),
- * or 1–8 Han, Hiragana, Katakana, or Hangul characters (Chinese, Japanese, and
- * Korean lists).
+ * One BIP-39-shaped word in any of the official wordlists: 3–9 letters of a
+ * script other than Han, Hiragana, Katakana, or Hangul (English and the
+ * accented Latin lists; Italian has nine-letter words), or 1–8 Han, Hiragana,
+ * Katakana, or Hangul characters (Chinese, Japanese, and Korean lists).
  */
 const BIP39_WORD_RE =
-  /^(?:\p{L}{3,9}|[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]{1,8})$/u;
+  /^(?:(?:(?![\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}])\p{L}){3,9}|[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]{1,8})$/u;
 
 /**
  * True when a body/prop key names secret material.
@@ -50,7 +50,7 @@ export function isSecretFieldName(name: string): boolean {
  * Flags a token that starts with `nsec1` or an extended private key prefix
  * (`xprv`, `tprv`, `yprv`, `zprv`, `uprv`, `vprv`), and any run of at least
  * twelve consecutive recovery-phrase-shaped words in any official BIP-39
- * language (3–9 letters, or 1–8 CJK or Hangul characters), whatever
+ * language (3–9 non-CJK letters, or 1–8 CJK or Hangul characters), whatever
  * non-alphanumeric characters separate them (spaces, the ideographic space,
  * slashes, commas, dashes). A sentence with a shorter word, a digit, or fewer
  * than twelve such words in a row is kept.
