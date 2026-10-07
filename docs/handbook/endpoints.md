@@ -412,6 +412,13 @@
 - **Used by:** The public statistics page.
 - **Auth:** Public.
 
+## Endpoint: GET /fx/spot
+
+- **Purpose:** Public current price of 1 BTC in USD, CHF, EUR, and PHP, independent of gifts: `{ asOf, source, rates }` where `asOf` is the ISO fetch time, `source` is `coinbase-exchange-rates`, and `rates` holds fiat per 1 BTC as decimal text at provider precision. A currency without a usable quote is omitted from `rates`. The background worker refreshes the stored quote every 5 minutes from one Coinbase response (`BTC_FIAT_SPOT_URL`); the request never calls the provider. A failed fetch keeps the last good quote and its `asOf` (Postgres `btc_fiat_spot` survives a restart). Does not change `GET /gifts/stats`.
+- **Errors:** None. No quote ever fetched, or a store that throws (`fx.spot.read_failed`), is 200 `{ asOf: null, source: null, rates: {} }` with `Cache-Control: no-store`; a stored quote is cached `public, max-age=60`.
+- **Used by:** App fiat amount entry (point of sale, gift amounts).
+- **Auth:** Public.
+
 ## Endpoint: GET /gifts/stats
 
 - **Purpose:** Public JSON of outbound gift totals: `totalSats` / `totalBtc` / `totalUsd` plus additive `totalChf` / `totalEur` / `totalPhp`, `giftCount`, `recipientCount`, date range, `spendOverTime` (giftCount+officialCount+sats+BTC+USD+fiat; `officialCount` is the distinct case-insensitive recipient handles that UTC day with kind `daily` or `welcome`, one person once, moderator excluded, gap days 0; `giftCount` remains every outbound row), `byRecipient`, `byMonth`, and `fx` (`quote` stays BTC-USD; `fx.quotes` lists USD always and CHF/EUR/PHP when at least one selected gift day has that cross). The stored payment-time USD/CHF/EUR/PHP is what is returned (not recomputed from that day's close). A gift day that lacks a fiat cross returns that currency as JSON `null` (totals go null if any selected gift lacks that cross). Optional query `recipient` filters to one recipient handle (the local part of the receiving address; case-insensitive). When `recipient` contains `@` after the first character, the local-part before `@` is used; otherwise the whole trimmed string. Missing/blank `recipient` = unfiltered. Unknown handle = empty stats **200** with zeros and USD-only `fx.quotes` (no Coinbase / Frankfurter). Empty boots are empty **200** with zeros and USD-only `fx.quotes` (no Coinbase / Frankfurter). No invoices.

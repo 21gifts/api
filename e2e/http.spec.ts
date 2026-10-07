@@ -712,6 +712,13 @@ test('GET /messages/stats returns a posts total', async ({ request }) => {
   expect(body.postsOverTime.reduce((sum, row) => sum + row.postCount, 0)).toBe(body.postCount);
 });
 
+test('GET /fx/spot is the empty result while the provider is unreachable', async ({ request }) => {
+  const res = await request.get('/fx/spot');
+  expect(res.status()).toBe(200);
+  expect(res.headers()['cache-control']).toBe('no-store');
+  expect(await res.json()).toEqual({ asOf: null, source: null, rates: {} });
+});
+
 test('GET /gifts/stats is empty without a database', async ({ request }) => {
   const res = await request.get('/gifts/stats');
   expect(res.status()).toBe(200);
