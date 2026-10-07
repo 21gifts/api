@@ -132,4 +132,26 @@ describe('containsEncodedSecret', () => {
     expect(containsEncodedSecret('1'.repeat(51))).toBe(false);
     expect(containsEncodedSecret(`0${'2'.repeat(50)}`)).toBe(false);
   });
+
+  it('flags a WIF private key inside a Spark memo and inside a BOLT11 description', () => {
+    const key = new Uint8Array(32).fill(9);
+    const payload = Uint8Array.from([0x80, ...key, 1]);
+    const check = createHash('sha256')
+      .update(createHash('sha256').update(payload).digest())
+      .digest()
+      .subarray(0, 4);
+    const wif = base58.encode(Uint8Array.from([...payload, ...check]));
+    expect(containsEncodedSecret(spark(`backup ${wif}`))).toBe(true);
+    const words: number[] = [];
+    const tag = (code: number, data: number[]): void => {
+      words.push(code, data.length >> 5, data.length & 31, ...data);
+    };
+    for (let i = 6; i >= 0; i -= 1) {
+      words.push(Math.floor(1496314658 / 32 ** i) % 32);
+    }
+    tag(1, bech32.toWords(new Uint8Array(32).fill(1)));
+    tag(13, bech32.toWords(new TextEncoder().encode(`key ${wif}`)));
+    words.push(...bech32.toWords(new Uint8Array(65)));
+    expect(containsEncodedSecret(bech32.encode('lnbc', words, false))).toBe(true);
+  });
 });

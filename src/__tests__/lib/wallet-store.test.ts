@@ -202,10 +202,18 @@ describe('InMemoryWalletStore', () => {
     });
   });
 
-  it('orders equal paidAt by payment id in code-unit order, like Postgres COLLATE "C"', async () => {
+  it('orders equal paidAt by payment id in UTF-8 byte order, like Postgres COLLATE "C"', async () => {
     const store = new InMemoryWalletStore();
-    await store.upsertPayments([payment({ paymentId: 'B' }), payment({ paymentId: 'a' })]);
+    await store.upsertPayments([
+      payment({ paymentId: 'B' }),
+      payment({ paymentId: 'a' }),
+      payment({ paymentId: '\uE000' }),
+      payment({ paymentId: '\u{10000}' }),
+    ]);
+    // UTF-8: U+10000 (F0 …) sorts after U+E000 (EE …), unlike UTF-16 code units.
     expect((await store.listPayments('account', 10)).map((row) => row.paymentId)).toEqual([
+      '\u{10000}',
+      '\uE000',
       'a',
       'B',
     ]);
