@@ -3515,7 +3515,9 @@ A background worker fetches one Coinbase response with every pair
 (`BTC_FIAT_SPOT_URL`, default
 `https://api.coinbase.com/v2/exchange-rates?currency=BTC`, aborted after
 10 seconds) at boot and then every 5 minutes, and stores the result in
-`btc_fiat_spot` (one row; in memory when `DATABASE_URL` is unset). A request
+`btc_fiat_spot` (one row; in memory when `DATABASE_URL` is unset). A write
+never replaces a stored quote with a later `asOf`, so several replicas that
+refresh the same row cannot move it backwards. A request
 only reads that stored quote and never calls the provider. A failed fetch
 keeps the last good quote, so after a restart or during a provider outage the
 route keeps serving it with its original `asOf`.
