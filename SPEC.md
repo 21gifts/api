@@ -3523,13 +3523,14 @@ each payment into `wallet_payment` by `(account, id)`. Re-sending a payment
 is harmless: status, amounts, method, time, category, and counterparty are
 overwritten (so `pending` becomes `completed`), detail fields keep their
 stored value when the new report has none, `first_seen_at` never changes,
-and `updated_at` changes only when a stored value changes.
+and `updated_at` changes only when a stored value changes. A report observed
+before the stored state (a slower concurrent request) does not overwrite it.
 
 **Category** (computed on every insert and update, first match wins; the
 reporting account itself never counts as the counterparty):
 
-1. a forum or conversation invoice the api issued (by payment hash, from the
-   field, the BOLT11, or the `zap:` memo of a Spark invoice) → `gift`, or
+1. a forum or conversation invoice the api issued (by payment hash, trying the
+   field, then the BOLT11, then the `zap:` memo of a Spark invoice) → `gift`, or
    `platform` when the other side is the platform account;
 2. a zap receipt the api indexed → `gift` / `platform` the same way;
 3. a point-of-sale charge (recorded BOLT11 hash, or the `pos:` memo of a Spark
@@ -3545,7 +3546,7 @@ reporting account itself never counts as the counterparty):
 
 `counterpartyAccountId` is set whenever one of steps 1–4 resolves an account.
 
-**Storage.** `wallet_balance_snapshot` and `wallet_payment` (`docs/schema/wallet.sql`), migrated at boot when `DATABASE_URL` is set and covered by `db_change`; in memory otherwise. A merge deletes a source payment row whose id the surviving account already has, then moves the rest.
+**Storage.** `wallet_balance_snapshot` and `wallet_payment` (`docs/schema/wallet.sql`), migrated at boot when `DATABASE_URL` is set and covered by `db_change`; in memory otherwise. A merge deletes a source payment row whose id the surviving account already has, clears a counterparty that is one of the two merged accounts, then moves the rest.
 
 **Response** `200` `{ "acknowledgedIds": ["sdk-payment-id"] }` — every stored
 payment id, once each (a later duplicate in the same report wins).
