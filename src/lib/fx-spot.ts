@@ -140,8 +140,8 @@ export interface FxSpotWorkerDeps {
  * Fetch one quote and store it. A failed fetch keeps the stored quote.
  *
  * @param deps - Store, fetch, URL, and clock.
- * @returns `true` when a fetched quote was saved (the store still keeps a newer
- * stored quote over an older one), `false` when the fetch failed.
+ * @returns `true` when a fetched quote was handed to `store.save` (which may keep
+ * a newer stored quote instead), `false` when the fetch failed.
  * @throws When the store write fails.
  */
 export async function runFxSpotTick(deps: FxSpotWorkerDeps): Promise<boolean> {
