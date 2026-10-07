@@ -28,11 +28,13 @@ const BIP39_WORD_RE = /^[A-Za-z]{3,8}$/;
  * True when a body/prop key names secret material.
  *
  * @param name - Property or field name.
- * @returns Whether `name` contains a secret-material token (case-insensitive substring).
+ * @returns Whether `name`, lower-cased with every non-alphanumeric character removed, contains a
+ *   secret-material token.
  */
 export function isSecretFieldName(name: string): boolean {
-  const lower = name.toLowerCase();
-  return SECRET_FIELD_TOKENS.some((token) => lower.includes(token));
+  // `spending_key`, `priv-key`, and `x.prv` name the same material as `spendingkey`, `privkey`, and `xprv`.
+  const normalised = name.toLowerCase().replace(/[^a-z0-9]/g, '');
+  return SECRET_FIELD_TOKENS.some((token) => normalised.includes(token));
 }
 
 /**

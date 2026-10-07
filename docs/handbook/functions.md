@@ -3691,7 +3691,7 @@ Builds the operator-only external-pubkey inspection route.
 
 ## Function: isSecretFieldName
 
-- **Purpose:** Tell whether a body or prop key names secret material, so the member-data ingest never reads or stores it. Case-insensitive substring match on `seed`, `mnemonic`, `phrase`, `preimage`, `private`, `privkey`, `secret`, `prf`, `nsec`, `xprv`, `password`, `passphrase`, and `spendingkey`.
+- **Purpose:** Tell whether a body or prop key names secret material, so the member-data ingest never reads or stores it. The name is lower-cased and stripped of every non-alphanumeric character (so `spending_key`, `priv-key`, and `x.prv` count), then matched as a substring against `seed`, `mnemonic`, `phrase`, `preimage`, `private`, `privkey`, `secret`, `prf`, `nsec`, `xprv`, `password`, `passphrase`, and `spendingkey`.
 - **Inputs:** One key name.
 - **Returns / side effects:** `true` when the key contains one of those tokens. Pure; no logging.
 - **Used by:** `parseMemberEventBatch` (prop keys are skipped). `parseWalletReport` reads only its named fields, so a secret-named key in a wallet report is never read at all.
@@ -3803,7 +3803,7 @@ Builds the operator-only external-pubkey inspection route.
 
 ## Function: containsEncodedSecret
 
-- **Purpose:** Tell whether a value holds secret material, also inside an encoded token. Flags a key token, a recovery-phrase run (`looksLikeSecretValue`), or a WIF private key token (Base58Check, version `0x80` or `0xef`, 32-byte key, optional `0x01` flag, valid checksum) in the value itself and in every text decoded from it: for every bech32 or bech32m token (lower-cased first, as case-folding decoders read it) it screens the whole payload (printable ASCII kept, so the text of an LNURL is covered) plus every length-delimited protobuf field in it on its own, repeated and nested fields included up to depth 4, so every memo of a Spark address or invoice is read without its length byte, and every description tag of a BOLT11 token (`bolt11Descriptions`). Tokens shorter than 20 characters or without the separator `1` are only screened by their visible text.
+- **Purpose:** Tell whether a value holds secret material, also inside an encoded token. Flags a key token, a recovery-phrase run (`looksLikeSecretValue`), or a WIF private key token (Base58Check, version `0x80` or `0xef`, 32-byte key, optional `0x01` flag, valid checksum) in the value itself and in every text decoded from it: for every bech32 or bech32m token (lower-cased first, as case-folding decoders read it) it screens the whole payload (printable ASCII kept, so the text of an LNURL is covered) plus every length-delimited protobuf field in it on its own, repeated and nested fields included at any depth (a token whose nesting would cost more than eight times its payload to walk counts as secret, fail-closed), so every memo of a Spark address or invoice is read without its length byte, and every description tag of a BOLT11 token (`bolt11Descriptions`). Tokens shorter than 20 characters or without the separator `1` are only screened by their visible text.
 - **Inputs:** One string: a wallet detail field, a payment id, a decoded event path, or an event prop value.
 - **Returns / side effects:** `true` when anything visible or encoded looks like secret material. Pure; never logs. A raw 32-byte value is not screened by shape (it looks like the hashes, ids and NIP-57 zap requests that are collected).
 - **Used by:** `parseWalletReport` (payment id and detail fields) and `parseMemberEventBatch` (path and prop strings).

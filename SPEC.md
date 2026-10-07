@@ -3442,7 +3442,8 @@ payments the api has not acknowledged yet.
   read even when the app sends one; the app does not send it.
 - The payment id and every detail field are also screened inside encoded
   tokens: every memo of a Spark address or invoice (each protobuf field on its
-  own, repeated fields included), every description tag of a BOLT11, the payload
+  own, repeated and nested fields included at any depth; pathological nesting
+  counts as secret), every description tag of a BOLT11, the payload
   of any bech32 token, and any WIF private key (Base58Check). A detail field that holds secret
   material there is stored as `null`, and a payment with such an id is skipped,
   so an encoded invoice cannot carry a recovery phrase into storage.

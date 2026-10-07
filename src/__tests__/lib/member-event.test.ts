@@ -203,6 +203,19 @@ describe('parseMemberEventBatch', () => {
     expect(result.events.map((row) => row.path)).toEqual(['/a%ZZ%20coffee']);
   });
 
+  it('skips snake_case secret-named props holding raw 32-byte values', () => {
+    const raw = 'ab'.repeat(32);
+    const result = parse({
+      events: [event({ props: { spending_key: raw, priv_key: raw, n_sec: raw, count: 2 } })],
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) {
+      return;
+    }
+    expect(result.events[0]?.props).toEqual({ count: 2 });
+    expect(JSON.stringify(result)).not.toContain(raw);
+  });
+
   it('keeps a plain path unchanged', () => {
     const result = parse({ events: [event({ path: '/ok' })] });
     expect(result.ok).toBe(true);

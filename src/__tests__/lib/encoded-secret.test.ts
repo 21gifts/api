@@ -98,7 +98,7 @@ describe('containsEncodedSecret', () => {
     expect(containsEncodedSecret(deep)).toBe(true);
   });
 
-  it('walks protobuf nesting down to depth four and no deeper, and ignores undecodable fields', () => {
+  it('walks protobuf nesting at any depth and ignores undecodable fields', () => {
     // 49 bytes: its own length byte (ASCII "1") hides one word unless the field is read on its own.
     const phrase = `${Array.from({ length: 11 }, () => 'zoo').join(' ')} wrong`;
     const nestedTo = (levels: number): Uint8Array => {
@@ -108,11 +108,24 @@ describe('containsEncodedSecret', () => {
       }
       return nested;
     };
-    // Levels 0..4 below the top-level field are walked; the memo then sits at depth 4.
-    expect(containsEncodedSecret(sparkRaw(protoBytesField(1, IDENTITY), nestedTo(4)))).toBe(true);
-    expect(containsEncodedSecret(sparkRaw(protoBytesField(1, IDENTITY), nestedTo(5)))).toBe(false);
+    for (const levels of [4, 5, 12]) {
+      expect(containsEncodedSecret(sparkRaw(protoBytesField(1, IDENTITY), nestedTo(levels)))).toBe(
+        true,
+      );
+    }
     const truncated = sparkRaw(protoBytesField(1, IDENTITY), Uint8Array.from([0x12, 0x40, 0x01]));
     expect(containsEncodedSecret(truncated)).toBe(false);
+  });
+
+  it('treats pathological nesting beyond the walk budget as secret, and keeps a real invoice', () => {
+    let nested: Uint8Array = protoBytesField(5, 'coffee');
+    for (let i = 0; i < 200; i += 1) {
+      nested = protoBytesField(2, nested);
+    }
+    const started = performance.now();
+    expect(containsEncodedSecret(sparkRaw(protoBytesField(1, IDENTITY), nested))).toBe(true);
+    expect(performance.now() - started).toBeLessThan(1_000);
+    expect(containsEncodedSecret(spark('coffee'))).toBe(false);
   });
 
   it('flags a WIF private key (mainnet or testnet, compressed or not) and keeps near misses', () => {
