@@ -3289,6 +3289,20 @@ Builds the operator-only external-pubkey inspection route.
 - **Returns / side effects:** Resolves after the DELETE. A non-2xx answer or a thrown fetch logs `ocp.place.failed` and does not throw. Timeout is 5000 ms.
 - **Used by:** `messagesRoutes` when a place is cleared and when a top-level shop note that had a place is deleted.
 
+## Function: isDevShopSeedTarget
+
+- **Purpose:** True only when `PUBLIC_BASE_URL` is exactly `https://dev.21.gifts` after trim and trailing-slash strip. Does not case-fold and does not use prefix matching. Missing or blank is false.
+- **Inputs:** Environment slice with `PUBLIC_BASE_URL`.
+- **Returns / side effects:** `boolean`. No I/O.
+- **Used by:** `seedDevShopPlaces`.
+
+## Function: seedDevShopPlaces
+
+- **Purpose:** On the dev 21.gifts API only, insert four public shop pins into `message` with production message ids, `account_id` null, `nostr_publish_state` skipped, and `event_id` null. Idempotent via `ON CONFLICT (id) DO NOTHING`. Stored text is the public label or name plus `#21GiftsShop`, not the production note body. Does not create accounts and does not publish to Nostr.
+- **Inputs:** `{ env, sql? }`. Seeds only when `isDevShopSeedTarget(env)` is true and `sql` is set.
+- **Returns / side effects:** Resolves after one parameterised INSERT of all four rows, or immediately on a no-op. A failed insert logs `dev.shop.places.failed` and does not stop boot. Success does not log.
+- **Used by:** `src/index.ts`, awaited after `welcomeCatchUp` and before `publishExistingShopPlaces`.
+
 ## Function: publishExistingShopPlaces
 
 - **Purpose:** After listen, PUT each existing live top-level shop pin to the OpenCryptoPay map at `/map/places`. A missing map push does nothing. Replies, hidden notes, notes without a pin, and notes without the shop tag are skipped. A 200 is success. The body includes techProvider `21.gifts`. BTC Map is not called here.
