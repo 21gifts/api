@@ -1071,22 +1071,30 @@ only. On throw it logs `trust.proposals.failed`.
 
 ### `POST /trust/verify`
 
-Bearer session. Body `{ "accountId": "<uuid>" }`. Caller must be at least
-`moderator`. Inserts a `verify` edge from the caller to the subject,
-then sets `account.role` to `verified`. `verified` is a real-life
-confirmation (forum badge), not Lightning-Address proof.
+Bearer session. Body `{ "accountId": "<uuid>", "confirmedName": "<string>" }`.
+Caller must be at least `moderator`. Inserts a `verify` edge from the caller
+to the subject, then sets `account.role` to `verified`. `verified` is a
+real-life confirmation (forum badge), not Lightning-Address proof.
 
 Missing/invalid bearer → **401** `{ "error": "Unauthorized" }`.
 Caller not staff → **403** `{ "error": "Forbidden" }`.
 Body is not JSON with an `accountId` string → **400**
 `{ "error": "Expected a JSON body with an \"accountId\" string" }`.
+Body is not JSON with a `confirmedName` string → **400**
+`{ "error": "Expected a JSON body with a \"confirmedName\" string" }`.
 `accountId` is not a UUID or the subject is missing → **404**
 `{ "error": "Not found" }`.
 Subject is the caller, a verify edge belongs to someone else, or the
 subject is ineligible (`role` is not `basis`, except the caller-owned
 retry below) → **409** `{ "error": "Conflict" }`.
+Stored `name` is null or empty after trim, or `confirmedName` is not
+exactly the stored name, including on the idempotent path → **409**
+`{ "error": "Conflict" }`.
 Unexpected store throw → **503** `{ "error": "Trust chain is unavailable" }`
 logged as `trust.write.failed`.
+
+The `confirmedName` check applies only to verify; the other staff POSTs
+still take `{ "accountId" }` and the original accountId 400 sentence.
 
 Idempotent **200** when the existing verify edge's actor is the caller and
 the subject is already `verified` (no second insert). If that caller-owned

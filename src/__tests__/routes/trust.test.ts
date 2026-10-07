@@ -211,10 +211,33 @@ describe('POST /trust/*', () => {
       });
     });
 
+    it('returns 400 when confirmedName is missing or not a string', async () => {
+      const { authStore, trustStore } = await staffed([
+        account({ id: SUBJECT, role: 'basis', name: 'Sub' }),
+      ]);
+      const app = mount(authStore, trustStore);
+      const missing = await post(app, '/trust/verify', 'founder', { accountId: SUBJECT });
+      expect(missing.status).toBe(400);
+      expect(await missing.json()).toEqual({
+        error: 'Expected a JSON body with a "confirmedName" string',
+      });
+      const notString = await post(app, '/trust/verify', 'founder', {
+        accountId: SUBJECT,
+        confirmedName: 1,
+      });
+      expect(notString.status).toBe(400);
+      expect(await notString.json()).toEqual({
+        error: 'Expected a JSON body with a "confirmedName" string',
+      });
+      expect((await authStore.getAccount(SUBJECT))?.role).toBe('basis');
+      expect(await trustStore.listEdges()).toEqual([]);
+    });
+
     it('returns 404 for a non-uuid accountId', async () => {
       const { authStore, trustStore } = await staffed();
       const res = await post(mount(authStore, trustStore), '/trust/verify', 'founder', {
         accountId: 'not-a-uuid',
+        confirmedName: 'Sub',
       });
       expect(res.status).toBe(404);
       expect(await res.json()).toEqual({ error: 'Not found' });
@@ -224,6 +247,7 @@ describe('POST /trust/*', () => {
       const { authStore, trustStore } = await staffed();
       const res = await post(mount(authStore, trustStore), '/trust/verify', 'mod', {
         accountId: SUBJECT,
+        confirmedName: 'Sub',
       });
       expect(res.status).toBe(404);
     });
@@ -232,9 +256,66 @@ describe('POST /trust/*', () => {
       const { authStore, trustStore } = await staffed();
       const res = await post(mount(authStore, trustStore), '/trust/verify', 'founder', {
         accountId: FOUNDER,
+        confirmedName: 'Founder',
       });
       expect(res.status).toBe(409);
       expect(await res.json()).toEqual({ error: 'Conflict' });
+    });
+
+    it('returns 409 when confirmedName does not match the stored name', async () => {
+      const { authStore, trustStore } = await staffed([
+        account({ id: SUBJECT, role: 'basis', name: 'Sub' }),
+      ]);
+      const res = await post(mount(authStore, trustStore), '/trust/verify', 'founder', {
+        accountId: SUBJECT,
+        confirmedName: 'nope',
+      });
+      expect(res.status).toBe(409);
+      expect(await res.json()).toEqual({ error: 'Conflict' });
+      expect((await authStore.getAccount(SUBJECT))?.role).toBe('basis');
+      expect(await trustStore.listEdges()).toEqual([]);
+    });
+
+    it('returns 409 when the stored name is null', async () => {
+      const { authStore, trustStore } = await staffed([
+        account({ id: SUBJECT, role: 'basis', name: null }),
+      ]);
+      const res = await post(mount(authStore, trustStore), '/trust/verify', 'founder', {
+        accountId: SUBJECT,
+        confirmedName: '',
+      });
+      expect(res.status).toBe(409);
+      expect(await res.json()).toEqual({ error: 'Conflict' });
+      expect((await authStore.getAccount(SUBJECT))?.role).toBe('basis');
+      expect(await trustStore.listEdges()).toEqual([]);
+    });
+
+    it('returns 409 when the stored name is trim-empty', async () => {
+      const { authStore, trustStore } = await staffed([
+        account({ id: SUBJECT, role: 'basis', name: '   ' }),
+      ]);
+      const res = await post(mount(authStore, trustStore), '/trust/verify', 'founder', {
+        accountId: SUBJECT,
+        confirmedName: '   ',
+      });
+      expect(res.status).toBe(409);
+      expect(await res.json()).toEqual({ error: 'Conflict' });
+      expect((await authStore.getAccount(SUBJECT))?.role).toBe('basis');
+      expect(await trustStore.listEdges()).toEqual([]);
+    });
+
+    it('returns 409 when confirmedName differs only by case', async () => {
+      const { authStore, trustStore } = await staffed([
+        account({ id: SUBJECT, role: 'basis', name: 'Sub' }),
+      ]);
+      const res = await post(mount(authStore, trustStore), '/trust/verify', 'founder', {
+        accountId: SUBJECT,
+        confirmedName: 'sub',
+      });
+      expect(res.status).toBe(409);
+      expect(await res.json()).toEqual({ error: 'Conflict' });
+      expect((await authStore.getAccount(SUBJECT))?.role).toBe('basis');
+      expect(await trustStore.listEdges()).toEqual([]);
     });
 
     it('returns 409 when the subject role is not basis', async () => {
@@ -243,6 +324,7 @@ describe('POST /trust/*', () => {
       ]);
       const res = await post(mount(authStore, trustStore), '/trust/verify', 'founder', {
         accountId: SUBJECT,
+        confirmedName: 'Sub',
       });
       expect(res.status).toBe(409);
     });
@@ -260,6 +342,7 @@ describe('POST /trust/*', () => {
       });
       const res = await post(mount(authStore, trustStore), '/trust/verify', 'founder', {
         accountId: SUBJECT,
+        confirmedName: 'Sub',
       });
       expect(res.status).toBe(409);
       expect((await authStore.getAccount(SUBJECT))?.role).toBe('basis');
@@ -278,10 +361,37 @@ describe('POST /trust/*', () => {
       });
       const res = await post(mount(authStore, trustStore), '/trust/verify', 'founder', {
         accountId: SUBJECT,
+        confirmedName: 'Sub',
       });
       expect(res.status).toBe(200);
       expect(await res.json()).toEqual({ id: SUBJECT, name: 'Sub', role: 'verified' });
       expect((await trustStore.listEdges()).map((row) => row.id)).toEqual(['e1']);
+    });
+
+    it('returns 409 on an idempotent repeat when confirmedName does not match', async () => {
+      const { authStore, trustStore } = await staffed([
+        account({ id: SUBJECT, role: 'verified', name: 'Sub' }),
+      ]);
+      await trustStore.insertEdge({
+        id: 'e1',
+        subjectId: SUBJECT,
+        actorId: FOUNDER,
+        kind: 'verify',
+        createdAt: 1,
+      });
+      const ping = vi.fn(async () => undefined);
+      const messages = new InMemoryMessageStore();
+      const res = await post(
+        mount(authStore, trustStore, { messages, spendPing: { ping } }),
+        '/trust/verify',
+        'founder',
+        { accountId: SUBJECT, confirmedName: 'nope' },
+      );
+      expect(res.status).toBe(409);
+      expect(await res.json()).toEqual({ error: 'Conflict' });
+      expect((await authStore.getAccount(SUBJECT))?.role).toBe('verified');
+      expect((await trustStore.listEdges()).map((row) => row.id)).toEqual(['e1']);
+      expect(ping).not.toHaveBeenCalled();
     });
 
     it('completes the role write when the caller already stored a verify edge', async () => {
@@ -297,6 +407,7 @@ describe('POST /trust/*', () => {
       });
       const res = await post(mount(authStore, trustStore), '/trust/verify', 'founder', {
         accountId: SUBJECT,
+        confirmedName: 'Sub',
       });
       expect(res.status).toBe(200);
       expect(await res.json()).toEqual({ id: SUBJECT, name: 'Sub', role: 'verified' });
@@ -310,6 +421,7 @@ describe('POST /trust/*', () => {
       ]);
       const res = await post(mount(authStore, trustStore), '/trust/verify', 'mod', {
         accountId: SUBJECT,
+        confirmedName: 'Sub',
       });
       expect(res.status).toBe(200);
       expect(await res.json()).toEqual({ id: SUBJECT, name: 'Sub', role: 'verified' });
@@ -363,7 +475,7 @@ describe('POST /trust/*', () => {
         mount(authStore, trustStore, { messages, spendPing: { ping } }),
         '/trust/verify',
         'mod',
-        { accountId: SUBJECT },
+        { accountId: SUBJECT, confirmedName: 'Sub' },
       );
       expect(res.status).toBe(200);
       expect(ping).toHaveBeenCalledWith('sub@walletofsatoshi.com', photoId, 'welcome');
@@ -381,6 +493,7 @@ describe('POST /trust/*', () => {
       const messages = new InMemoryMessageStore();
       const res = await post(mount(authStore, trustStore, { messages }), '/trust/verify', 'mod', {
         accountId: SUBJECT,
+        confirmedName: 'Sub',
       });
       expect(res.status).toBe(200);
       expect((await authStore.getAccount(SUBJECT))?.role).toBe('verified');
@@ -390,6 +503,7 @@ describe('POST /trust/*', () => {
       const { authStore } = await staffed([account({ id: SUBJECT, role: 'basis', name: 'Sub' })]);
       const res = await post(mount(authStore, throwingList), '/trust/verify', 'founder', {
         accountId: SUBJECT,
+        confirmedName: 'Sub',
       });
       expect(res.status).toBe(503);
       expect(await res.json()).toEqual({ error: 'Trust chain is unavailable' });
@@ -408,6 +522,7 @@ describe('POST /trust/*', () => {
       });
       const res = await post(mount(authStore, trustStore), '/trust/verify', 'founder', {
         accountId: SUBJECT,
+        confirmedName: 'Sub',
       });
       expect(res.status).toBe(503);
       expect(await res.json()).toEqual({ error: 'Trust chain is unavailable' });
@@ -417,6 +532,7 @@ describe('POST /trust/*', () => {
       const { authStore } = await staffed([account({ id: SUBJECT, role: 'basis', name: 'Sub' })]);
       const res = await post(mount(authStore, duplicateInsert), '/trust/verify', 'founder', {
         accountId: SUBJECT,
+        confirmedName: 'Sub',
       });
       expect(res.status).toBe(409);
       expect((await authStore.getAccount(SUBJECT))?.role).toBe('basis');
@@ -426,6 +542,7 @@ describe('POST /trust/*', () => {
       const { authStore } = await staffed([account({ id: SUBJECT, role: 'basis', name: 'Sub' })]);
       const res = await post(mount(authStore, boomInsert), '/trust/verify', 'founder', {
         accountId: SUBJECT,
+        confirmedName: 'Sub',
       });
       expect(res.status).toBe(503);
       expect((await authStore.getAccount(SUBJECT))?.role).toBe('basis');
@@ -440,6 +557,7 @@ describe('POST /trust/*', () => {
         .mockRejectedValueOnce(new Error('role boom'));
       const first = await post(mount(authStore, trustStore), '/trust/verify', 'mod', {
         accountId: SUBJECT,
+        confirmedName: 'Sub',
       });
       expect(first.status).toBe(503);
       expect(await first.json()).toEqual({ error: 'Trust chain is unavailable' });
@@ -449,6 +567,7 @@ describe('POST /trust/*', () => {
       ).toBe(true);
       const retry = await post(mount(authStore, trustStore), '/trust/verify', 'mod', {
         accountId: SUBJECT,
+        confirmedName: 'Sub',
       });
       expect(retry.status).toBe(200);
       expect(await retry.json()).toEqual({ id: SUBJECT, name: 'Sub', role: 'verified' });
@@ -470,6 +589,7 @@ describe('POST /trust/*', () => {
       });
       const res = await post(mount(authStore, trustStore), '/trust/verify', 'mod', {
         accountId: SUBJECT,
+        confirmedName: 'Sub',
       });
       expect(res.status).toBe(409);
       expect((await authStore.getAccount(SUBJECT))?.role).toBe('moderator');
@@ -491,6 +611,7 @@ describe('POST /trust/*', () => {
         .mockRejectedValueOnce(new Error('role boom'));
       const res = await post(mount(authStore, trustStore), '/trust/verify', 'mod', {
         accountId: SUBJECT,
+        confirmedName: 'Sub',
       });
       expect(res.status).toBe(503);
       expect(await res.json()).toEqual({ error: 'Trust chain is unavailable' });
@@ -509,7 +630,7 @@ describe('POST /trust/*', () => {
         mount(authStore, trustStore, { notificationStore: notifications, pushStore }),
         '/trust/verify',
         'mod',
-        { accountId: SUBJECT },
+        { accountId: SUBJECT, confirmedName: 'Sub' },
       );
       expect(res.status).toBe(200);
       expect((await authStore.getAccount(SUBJECT))?.role).toBe('verified');
