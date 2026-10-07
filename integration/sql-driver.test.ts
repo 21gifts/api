@@ -837,7 +837,7 @@ describe('PostgresMessageStore free first post', () => {
 });
 
 describe('PostgresFxSpotStore', () => {
-  test('keeps provider digits, clears missing currencies, and logs db_change', async () => {
+  test('keeps provider digits, orders by asOf, replaces a future row, and logs db_change', async () => {
     const { client, sql } = createBunSqlClient(databaseUrl);
     try {
       await migrateAuthSchema(client);
@@ -845,33 +845,35 @@ describe('PostgresFxSpotStore', () => {
       await migrateDbChangeSchema(client);
       const store = new PostgresFxSpotStore(client);
       const stamp = `test-${Date.now()}-${Math.random().toString(16).slice(2, 10)}`;
-      // The row is shared across runs on one database: start after whatever it holds.
+      // The row is shared across runs on one database: start after whatever it
+      // holds, but stay in the past of the database clock.
       const stored = await store.latest();
-      const startMs = Math.max(Date.now(), stored === null ? 0 : Date.parse(stored.asOf) + 60_000);
-      const first = new Date(startMs).toISOString();
-      const second = new Date(startMs + 5 * 60_000).toISOString();
-      await store.save({
-        asOf: first,
-        source: stamp,
-        rates: { USD: '62345.12', CHF: '55000.5', EUR: '57000', PHP: '5218637.18388173333610621' },
-      });
+      const storedMs = stored === null ? 0 : Date.parse(stored.asOf);
+      const startMs = Math.max(storedMs + 1_000, Date.now() - 10 * 60_000);
+      const iso = (ms: number): string => new Date(ms).toISOString();
+      const digits = {
+        USD: '62345.12',
+        CHF: '55000.5',
+        EUR: '57000',
+        PHP: '5218637.18388173333610621',
+      };
+      await store.save({ asOf: iso(startMs), source: stamp, rates: digits });
+      expect(await store.latest()).toEqual({ asOf: iso(startMs), source: stamp, rates: digits });
+      await store.save({ asOf: iso(startMs + 2_000), source: stamp, rates: { USD: '62400' } });
       expect(await store.latest()).toEqual({
-        asOf: first,
-        source: stamp,
-        rates: { USD: '62345.12', CHF: '55000.5', EUR: '57000', PHP: '5218637.18388173333610621' },
-      });
-      await store.save({
-        asOf: second,
+        asOf: iso(startMs + 2_000),
         source: stamp,
         rates: { USD: '62400' },
       });
-      expect(await store.latest()).toEqual({
-        asOf: second,
-        source: stamp,
-        rates: { USD: '62400' },
-      });
-      await store.save({ asOf: first, source: stamp, rates: { USD: '1' } });
+      await store.save({ asOf: iso(startMs + 1_000), source: stamp, rates: { USD: '1' } });
       expect((await store.latest())?.rates).toEqual({ USD: '62400' });
+      await store.save({ asOf: iso(Date.now() + 3_600_000), source: stamp, rates: { USD: '2' } });
+      await store.save({ asOf: iso(startMs + 3_000), source: stamp, rates: { USD: '62500' } });
+      expect(await store.latest()).toEqual({
+        asOf: iso(startMs + 3_000),
+        source: stamp,
+        rates: { USD: '62500' },
+      });
       const rows = await client.query<{ op: string; after: { usd: unknown; php: unknown } | null }>(
         `SELECT op, after
          FROM db_change
@@ -879,10 +881,10 @@ describe('PostgresFxSpotStore', () => {
          ORDER BY id ASC`,
         [stamp],
       );
-      expect(rows.length).toBeGreaterThanOrEqual(2);
+      expect(rows.length).toBeGreaterThanOrEqual(4);
       const last = rows[rows.length - 1];
       expect(last?.op).toBe('UPDATE');
-      expect(Number(last?.after?.usd)).toBe(62400);
+      expect(Number(last?.after?.usd)).toBe(62500);
       expect(last?.after?.php).toBeNull();
     } finally {
       await closeIfPossible(sql);

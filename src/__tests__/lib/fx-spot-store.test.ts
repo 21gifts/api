@@ -84,7 +84,9 @@ describe('PostgresFxSpotStore', () => {
     await store.save({ ...QUOTE, rates: { USD: '62000' } });
     await store.save({ ...QUOTE, rates: { PHP: '3500000' } });
     expect(executes[0]?.text).toContain('ON CONFLICT (id) DO UPDATE');
-    expect(executes[0]?.text).toContain('WHERE btc_fiat_spot.as_of <= EXCLUDED.as_of');
+    expect(executes[0]?.text).toContain(
+      'WHERE btc_fiat_spot.as_of <= EXCLUDED.as_of OR btc_fiat_spot.as_of > now()',
+    );
     expect(executes[0]?.params).toEqual([
       '62345.12',
       '55000.5',

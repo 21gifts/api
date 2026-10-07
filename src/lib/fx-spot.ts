@@ -55,17 +55,17 @@ export function resolveFxSpotUrl(env: NodeJS.ProcessEnv): string {
 }
 
 /**
- * Keep a provider rate only when it is positive decimal text.
+ * Keep a provider rate only when it is a positive decimal string. A JSON number
+ * is refused: parsing may already have rounded it, so it is not provider precision.
  *
  * @param value - Raw value from the provider body.
  * @returns The decimal text, or `null` when it is not usable.
  */
 function usableRate(value: unknown): string | null {
-  const text = typeof value === 'number' ? String(value) : value;
-  if (typeof text !== 'string' || !DECIMAL_RE.test(text) || !(Number(text) > 0)) {
+  if (typeof value !== 'string' || !DECIMAL_RE.test(value) || !(Number(value) > 0)) {
     return null;
   }
-  return text;
+  return value;
 }
 
 /**
