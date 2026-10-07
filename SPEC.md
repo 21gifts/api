@@ -230,6 +230,7 @@ Public base URLs used in examples:
 | GET    | `/invoices/eligible`                                 | Bearer `SPEND_API_TOKEN`                     | Whether the address is funding-eligible today, plus effective grant `status`                                                                                                                                                                                                                                                                           |
 | POST   | `/invoices`                                          | Bearer `SPEND_API_TOKEN`                     | Fetch a recipient BOLT11 (LNURL-pay; passkey, funding grant, and forum post required)                                                                                                                                                                                                                                                                  |
 | POST   | `/invoices/proof`                                    | Bearer `SPEND_API_TOKEN`                     | Accept payment preimage as proof                                                                                                                                                                                                                                                                                                                       |
+
 Auth column: "Bearer (X+)" means minimum role X — X or any higher role.
 
 ## Role hierarchy
