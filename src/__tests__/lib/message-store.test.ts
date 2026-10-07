@@ -96,8 +96,11 @@ const JPEG2: ForumPhoto = {
 
 describe('MESSAGE_SCHEMA_SQL', () => {
   it('creates message with photo columns, Nostr columns, index, and additive ALTERs', () => {
-    expect(MESSAGE_SCHEMA_SQL).toHaveLength(111);
+    expect(MESSAGE_SCHEMA_SQL).toHaveLength(112);
     expect(MESSAGE_SCHEMA_SQL.at(-1)).toMatch(
+      /ALTER TABLE message_invoice ADD COLUMN IF NOT EXISTS heart boolean NOT NULL DEFAULT false/,
+    );
+    expect(MESSAGE_SCHEMA_SQL.at(-2)).toMatch(
       /CREATE INDEX IF NOT EXISTS message_invoice_ok_payment_hash_idx\s+ON message_invoice \(payment_hash, created_at DESC, id DESC\)\s+WHERE result = 'ok'/,
     );
     expect(MESSAGE_SCHEMA_SQL.join('\n')).toMatch(
@@ -166,6 +169,9 @@ describe('MESSAGE_SCHEMA_SQL', () => {
     expect(zapPaymentDdl).toMatch(/created_at timestamptz NOT NULL/);
     expect(zapPaymentDdl).not.toMatch(/REFERENCES message/);
     expect(MESSAGE_SCHEMA_SQL.join('\n')).toMatch(/CREATE TABLE IF NOT EXISTS message_invoice/i);
+    expect(MESSAGE_SCHEMA_SQL.join('\n')).toMatch(
+      /ALTER TABLE message_invoice ADD COLUMN IF NOT EXISTS heart boolean NOT NULL DEFAULT false/,
+    );
     expect(MESSAGE_SCHEMA_SQL.join('\n')).toMatch(
       /CREATE TABLE IF NOT EXISTS message_translation/i,
     );
@@ -3450,6 +3456,7 @@ describe('InMemoryMessageStore', () => {
       ...invoice,
       id: 'inv-newer',
       createdAt: new Date('2026-08-29T12:00:00.000Z'),
+      heart: true,
     });
     await store.recordInvoiceAttempt(invoice);
     const olderSameTime: MessageInvoiceAttempt = {
@@ -3461,6 +3468,7 @@ describe('InMemoryMessageStore', () => {
     };
     await store.recordInvoiceAttempt(olderSameTime);
     expect((await store.findOkInvoiceByPaymentHash('11'.repeat(32)))?.id).toBe('inv-newer');
+    expect((await store.findOkInvoiceByPaymentHash('11'.repeat(32)))?.heart).toBe(true);
     expect((await store.findOkInvoiceByPr('lnbc21'))?.id).toBe('inv-newer');
     expect(await store.findOkInvoiceByPaymentHash('22'.repeat(32))).toBeUndefined();
     expect(await store.findOkInvoiceByPr('lnbc-miss')).toBeUndefined();
@@ -4804,6 +4812,7 @@ describe('InMemoryMessageStore', () => {
     await store.recordInvoiceAttempt(tieHigh);
     const listed = await store.listInvoiceAttempts(2);
     expect(listed.map((row) => row.id)).toEqual(['inv-z', 'inv-b']);
+    expect(listed[0]?.heart).toBe(false);
     if (listed[0] !== undefined) {
       listed[0].result = 'bad_body';
       listed[0].zapRequest = { mutated: true };
@@ -8572,6 +8581,33 @@ describe('PostgresMessageStore', () => {
     expect(sql.executes[0]?.params[14]).toBe(true);
     expect(typeof sql.executes[0]?.params[15]).not.toBe('string');
     expect(sql.executes[0]?.params[15]).toStrictEqual(row.lnurlResponse);
+    expect(sql.executes[0]?.text).toMatch(/heart/);
+    expect(sql.executes[0]?.params[23]).toBe(false);
+  });
+
+  it('recordInvoiceAttempt binds heart true', async () => {
+    const sql = new MockSql();
+    const store = new PostgresMessageStore(sql);
+    await store.recordInvoiceAttempt({
+      id: 'inv-heart',
+      createdAt: new Date('2026-08-28T00:00:00.000Z'),
+      messageId: 'm1',
+      payerAccountId: 'payer',
+      authorAccountId: 'author',
+      amountSats: 1,
+      lightningAddress: null,
+      zapRequest: null,
+      result: 'ok',
+      httpStatus: 200,
+      pr: 'lnbc1',
+      paymentHash: 'aa'.repeat(32),
+      description: null,
+      descriptionHash: null,
+      isNip57Invoice: true,
+      lnurlResponse: null,
+      heart: true,
+    });
+    expect(sql.executes[0]?.params[23]).toBe(true);
   });
 
   it('recordInvoiceAttempt binds null zap_request when the attempt has none', async () => {
@@ -8629,7 +8665,14 @@ describe('PostgresMessageStore', () => {
       amountPhp: '280.00',
     };
     await store.recordInvoiceAttempt(row);
-    expect(sql.executes[0]?.params.slice(18)).toEqual([true, '5.00', '4.00', '4.50', '280.00']);
+    expect(sql.executes[0]?.params.slice(18)).toEqual([
+      true,
+      '5.00',
+      '4.00',
+      '4.50',
+      '280.00',
+      false,
+    ]);
   });
 
   it('listInvoiceAttempts maps Date/string created_at, numeric amount, and JSON zap_request', async () => {
@@ -8967,7 +9010,9 @@ describe('PostgresMessageStore', () => {
     const store = new PostgresMessageStore(sql);
     const found = await store.findOkInvoiceByPaymentHash('11'.repeat(32));
     expect(sql.queries[0]?.text).toMatch(/payment_hash = \$1 AND result = 'ok'/);
+    expect(sql.queries[0]?.text).toMatch(/heart/);
     expect(found?.id).toBe('inv-1');
+    expect(found?.heart).toBe(false);
     expect(
       await new PostgresMessageStore(new MockSql()).findOkInvoiceByPaymentHash('x'),
     ).toBeUndefined();

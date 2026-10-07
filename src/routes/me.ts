@@ -179,6 +179,11 @@ const notificationLevelBody = z.object({
   level: z.enum(['all', 'active', 'mentions']),
 });
 
+/** Body schema for setting heart-tip notifications. */
+const heartNotificationsBody = z.object({
+  enabled: z.boolean(),
+});
+
 /** Body schema for setting the owner amount-entry unit. */
 const amountUnitBody = z.object({
   unit: z.enum(['btc', 'fiat']),
@@ -819,6 +824,28 @@ export function meRoutes(deps: MeRouteDeps): Hono {
       logEvent('account.notification_level.set', {
         accountId: current.id,
         level: parsed.data.level,
+      });
+      return c.json(await ownerJson(deps, updated), 200);
+    })
+    .post('/heart-notifications', async (c) => {
+      const account = await authedAccount(deps, c.req.header('authorization'));
+      if (account === null) {
+        return c.json({ error: 'Unauthorized' }, 401);
+      }
+      const parsed = heartNotificationsBody.safeParse(await c.req.json().catch(() => null));
+      if (!parsed.success) {
+        return c.json({ error: 'Expected a JSON body with an enabled boolean' }, 400);
+      }
+      const current = await storedAccount(deps, account.id);
+      /* v8 ignore next 3 -- the account row cannot vanish mid-request after auth */
+      if (current === null) {
+        return c.json({ error: 'Unauthorized' }, 401);
+      }
+      const updated: Account = { ...current, notifyHearts: parsed.data.enabled };
+      await deps.store.updateAccount(updated);
+      logEvent('account.heart_notifications.set', {
+        accountId: current.id,
+        enabled: parsed.data.enabled,
       });
       return c.json(await ownerJson(deps, updated), 200);
     })

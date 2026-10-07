@@ -1,5 +1,5 @@
 /**
- * Persistence for in-app notifications (forum posts, replies, zaps,
+ * Persistence for in-app notifications (forum posts, replies, zaps, hearts,
  * moderator appointment, and open moderator proposals).
  *
  * v1 default is in-memory. Production boot injects Postgres when
@@ -95,8 +95,8 @@ export interface NotificationStore {
   markAllRead(accountId: string, readAt: Date): Promise<NotificationRow[]>;
 
   /**
-   * Stamp `readAt` on unread forum post, reply, mention, and zap rows for
-   * this recipient whose `parentId` or `replyId` equals `messageId`.
+   * Stamp `readAt` on unread forum post, reply, mention, zap, and heart rows
+   * for this recipient whose `parentId` or `replyId` equals `messageId`.
    * Does not stamp `moderator_appointed` or `moderator_proposal`. Does not
    * overwrite an existing `readAt`. Does not touch other accounts.
    *
@@ -166,6 +166,7 @@ const MARK_READ_BY_MESSAGE_TYPES: ReadonlySet<NotificationType> = new Set([
   'forum_reply',
   'forum_mention',
   'zap',
+  'heart',
 ]);
 
 /** Sort notification copies by `id` ascending. */
@@ -321,8 +322,8 @@ export class InMemoryNotificationStore implements NotificationStore {
   }
 
   /**
-   * Stamp `readAt` on unread forum post, reply, mention, and zap rows for
-   * `accountId` whose `parentId` or `replyId` equals `messageId`.
+   * Stamp `readAt` on unread forum post, reply, mention, zap, and heart rows
+   * for `accountId` whose `parentId` or `replyId` equals `messageId`.
    *
    * @param accountId - Recipient account.
    * @param messageId - Forum note id.
@@ -595,7 +596,7 @@ export class PostgresNotificationStore implements NotificationStore {
   }
 
   /**
-   * Stamp `read_at` on unread forum post, reply, mention, and zap rows for
+   * Stamp `read_at` on unread forum post, reply, mention, zap, and heart rows for
    * `accountId` whose `parent_id` or `reply_id` equals `messageId`.
    *
    * @param accountId - Recipient (`$1`).
@@ -611,7 +612,7 @@ export class PostgresNotificationStore implements NotificationStore {
     const rows = await this.#sql.query<NotificationSqlRow>(
       `UPDATE notification SET read_at = $3
        WHERE recipient_account_id = $1 AND read_at IS NULL
-         AND type IN ('forum_post', 'forum_reply', 'forum_mention', 'zap')
+         AND type IN ('forum_post', 'forum_reply', 'forum_mention', 'zap', 'heart')
          AND (parent_id = $2 OR reply_id = $2)
        RETURNING ${NOTIFICATION_SELECT}`,
       [accountId, messageId, readAt],

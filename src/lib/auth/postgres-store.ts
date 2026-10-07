@@ -53,9 +53,10 @@ interface AccountRow {
   fiat?: string | null;
   spark_pubkey?: string | null;
   spark_pubkey_verified_at?: Date | string | null;
+  notify_hearts?: boolean | null;
 }
 
-const ACCOUNT_SELECT_COLUMNS = `id, linking_key, role, name, forum_laws_dismissed, view_key, created_at, rules_agreed_at, is_platform, name_skipped_at, lightning_address_skipped_at, profile_message_id, location, notification_level, username, session_refused, nostr_kek_id, nostr_key_custody, nostr_key_created_at, wallet_required, wallet_backup_seen_at, amount_unit, locale, fiat, spark_pubkey, spark_pubkey_verified_at`;
+const ACCOUNT_SELECT_COLUMNS = `id, linking_key, role, name, forum_laws_dismissed, view_key, created_at, rules_agreed_at, is_platform, name_skipped_at, lightning_address_skipped_at, profile_message_id, location, notification_level, username, session_refused, nostr_kek_id, nostr_key_custody, nostr_key_created_at, wallet_required, wallet_backup_seen_at, amount_unit, locale, fiat, spark_pubkey, spark_pubkey_verified_at, notify_hearts`;
 
 /** Escape `\`, `%`, and `_` so they are LIKE literals. Does not append `%`. */
 function mentionLikePattern(prefix: string): string {
@@ -123,8 +124,8 @@ export class PostgresAuthStore implements AuthStore {
         );
       }
       await this.#sql.execute(
-        `INSERT INTO account (id, linking_key, role, name, forum_laws_dismissed, created_at, view_key, rules_agreed_at, is_platform, name_skipped_at, lightning_address_skipped_at, profile_message_id, location, notification_level, username, session_refused, wallet_required, wallet_backup_seen_at, amount_unit)
-         VALUES ($1, $2, $3, $4, $5, to_timestamp($6::double precision / 1000.0), $7, to_timestamp($8::double precision / 1000.0), $9, to_timestamp($10::double precision / 1000.0), to_timestamp($11::double precision / 1000.0), $12, $13, $14, $15, $16, $17, to_timestamp($18::double precision / 1000.0), $19)
+        `INSERT INTO account (id, linking_key, role, name, forum_laws_dismissed, created_at, view_key, rules_agreed_at, is_platform, name_skipped_at, lightning_address_skipped_at, profile_message_id, location, notification_level, username, session_refused, wallet_required, wallet_backup_seen_at, amount_unit, notify_hearts)
+         VALUES ($1, $2, $3, $4, $5, to_timestamp($6::double precision / 1000.0), $7, to_timestamp($8::double precision / 1000.0), $9, to_timestamp($10::double precision / 1000.0), to_timestamp($11::double precision / 1000.0), $12, $13, $14, $15, $16, $17, to_timestamp($18::double precision / 1000.0), $19, $20)
          ON CONFLICT (linking_key) DO NOTHING`,
         [
           account.id,
@@ -146,6 +147,7 @@ export class PostgresAuthStore implements AuthStore {
           account.walletRequired === true,
           account.walletBackupSeenAt ?? null,
           account.amountUnit ?? 'btc',
+          account.notifyHearts !== false,
         ],
       );
     } catch (error: unknown) {
@@ -433,7 +435,8 @@ export class PostgresAuthStore implements AuthStore {
              location = $13,
              notification_level = $14,
              username = CASE WHEN spark_pubkey_verified_at IS NULL THEN $15 ELSE username END,
-             amount_unit = $16
+             amount_unit = $16,
+             notify_hearts = $17
          WHERE id = $1
            AND (
              $2::text IS NULL
@@ -459,6 +462,7 @@ export class PostgresAuthStore implements AuthStore {
           account.notificationLevel ?? 'all',
           account.username ?? null,
           account.amountUnit ?? 'btc',
+          account.notifyHearts !== false,
         ],
       );
     } catch (error: unknown) {
@@ -1050,6 +1054,7 @@ function mapAccount(row: AccountRow): Account | undefined {
         : epochMs(row.lightning_address_skipped_at),
     profileMessageId: row.profile_message_id ?? null,
     notificationLevel: parseNotificationLevel(row.notification_level),
+    notifyHearts: row.notify_hearts !== false,
     amountUnit: parseAmountUnit(row.amount_unit),
     locale: parseStoredLocale(row.locale),
     fiat: parseStoredFiat(row.fiat),

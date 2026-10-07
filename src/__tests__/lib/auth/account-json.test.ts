@@ -115,6 +115,7 @@ describe('serializeAccount', () => {
     expect(json).not.toHaveProperty('hasPosted');
     expect(json).not.toHaveProperty('aboutMe');
     expect(json).not.toHaveProperty('notificationLevel');
+    expect(json).not.toHaveProperty('notifyHearts');
     expect(json).not.toHaveProperty('amountUnit');
     expect(json).not.toHaveProperty('locale');
     expect(json).not.toHaveProperty('fiat');
@@ -353,6 +354,7 @@ describe('serializeOwnerAccount', () => {
       aboutMeHasPhoto: false,
       aboutMessageId: null,
       notificationLevel: 'all',
+      notifyHearts: true,
       amountUnit: 'btc',
       locale: null,
       fiat: null,
@@ -373,6 +375,7 @@ describe('serializeOwnerAccount', () => {
     expect(json.aboutMe).toBeNull();
     expect(json.aboutMeHasPhoto).toBe(false);
     expect(json.notificationLevel).toBe('all');
+    expect(json.notifyHearts).toBe(true);
     expect(json.amountUnit).toBe('btc');
     expect(json.locale).toBeNull();
     expect(json.fiat).toBeNull();
@@ -431,6 +434,16 @@ describe('serializeOwnerAccount', () => {
       false,
     );
     expect(json.notificationLevel).toBe('active');
+  });
+
+  it('includes notifyHearts on owner JSON and defaults omitted to true', () => {
+    expect(serializeOwnerAccount(account, false, null, false).notifyHearts).toBe(true);
+    expect(
+      serializeOwnerAccount({ ...account, notifyHearts: false }, false, null, false).notifyHearts,
+    ).toBe(false);
+    expect(
+      serializeOwnerAccount({ ...account, notifyHearts: true }, false, null, false).notifyHearts,
+    ).toBe(true);
   });
 
   it('includes a stored amountUnit on owner JSON', () => {
@@ -1098,6 +1111,7 @@ describe('serializeViewProfile', () => {
     expect(json).not.toHaveProperty('hasPosted');
     expect(json).not.toHaveProperty('profileMessageId');
     expect(json).not.toHaveProperty('notificationLevel');
+    expect(json).not.toHaveProperty('notifyHearts');
     expect(json).not.toHaveProperty('amountUnit');
     expect(json).not.toHaveProperty('locale');
     expect(json).not.toHaveProperty('fiat');

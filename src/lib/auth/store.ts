@@ -154,6 +154,11 @@ export interface Account {
    */
   notificationLevel?: NotificationLevel;
   /**
+   * Owner preference for heart-tip notifications. Omitted / unknown → true.
+   * Not public on member cards or view profiles.
+   */
+  notifyHearts?: boolean;
+  /**
    * Owner amount-entry unit. Omitted / unknown → `btc`. Not public on member
    * cards or view profiles.
    */
@@ -683,6 +688,7 @@ export class InMemoryAuthStore implements AuthStore {
     this.#accounts.set(account.id, {
       ...account,
       sessionRefused: account.sessionRefused === true,
+      notifyHearts: account.notifyHearts !== false,
       locale: null,
       fiat: null,
       sparkPubkey: null,

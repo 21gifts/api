@@ -1491,6 +1491,8 @@ export interface MessageInvoiceAttempt {
   amountChf?: string | null;
   amountEur?: string | null;
   amountPhp?: string | null;
+  /** True when this invoice is a 1-sat heart tip, not a living-room zap. */
+  heart?: boolean;
 }
 
 /** One persisted kind:9735 ingest decision for operator debug. */
@@ -1875,6 +1877,7 @@ WHERE m.id = src.id AND m.parent_id IS NOT NULL AND m.received_sats IS NULL`,
   `CREATE INDEX IF NOT EXISTS message_invoice_ok_payment_hash_idx
   ON message_invoice (payment_hash, created_at DESC, id DESC)
   WHERE result = 'ok'`,
+  `ALTER TABLE message_invoice ADD COLUMN IF NOT EXISTS heart boolean NOT NULL DEFAULT false`,
 ];
 
 /**
@@ -2199,6 +2202,7 @@ function copyInvoiceAttempt(row: MessageInvoiceAttempt): MessageInvoiceAttempt {
     lnurlResponse: row.lnurlResponse === null ? null : { ...row.lnurlResponse },
     conversationId: row.conversationId ?? null,
     conversationMessageId: row.conversationMessageId ?? null,
+    heart: row.heart === true,
   };
 }
 
@@ -6695,10 +6699,10 @@ export class PostgresMessageStore implements MessageStore {
          amount_sats, lightning_address, zap_request, result, http_status,
          pr, payment_hash, description, description_hash, is_nip57_invoice,
          lnurl_response, conversation_id, conversation_message_id,
-         fiat_pinned, fiat_usd, fiat_chf, fiat_eur, fiat_php
+         fiat_pinned, fiat_usd, fiat_chf, fiat_eur, fiat_php, heart
        ) VALUES (
          $1,$2,$3,$4,$5,$6,$7,$8::jsonb,$9,$10,$11,$12,$13,$14,$15,$16::jsonb,$17,$18,
-         $19,$20::numeric,$21::numeric,$22::numeric,$23::numeric
+         $19,$20::numeric,$21::numeric,$22::numeric,$23::numeric,$24
        )`,
       [
         row.id,
@@ -6724,6 +6728,7 @@ export class PostgresMessageStore implements MessageStore {
         row.amountChf ?? null,
         row.amountEur ?? null,
         row.amountPhp ?? null,
+        row.heart === true,
       ],
     );
   }
@@ -6735,7 +6740,7 @@ export class PostgresMessageStore implements MessageStore {
               pr, payment_hash, description, description_hash, is_nip57_invoice,
               lnurl_response, conversation_id, conversation_message_id,
               fiat_pinned, fiat_usd::text AS fiat_usd, fiat_chf::text AS fiat_chf,
-              fiat_eur::text AS fiat_eur, fiat_php::text AS fiat_php
+              fiat_eur::text AS fiat_eur, fiat_php::text AS fiat_php, heart
        FROM message_invoice
        ORDER BY created_at DESC, id DESC
        LIMIT $1`,
@@ -6751,7 +6756,7 @@ export class PostgresMessageStore implements MessageStore {
               pr, payment_hash, description, description_hash, is_nip57_invoice,
               lnurl_response, conversation_id, conversation_message_id,
               fiat_pinned, fiat_usd::text AS fiat_usd, fiat_chf::text AS fiat_chf,
-              fiat_eur::text AS fiat_eur, fiat_php::text AS fiat_php
+              fiat_eur::text AS fiat_eur, fiat_php::text AS fiat_php, heart
        FROM message_invoice
        WHERE result = 'ok' AND created_at >= $1
        ORDER BY created_at DESC, id DESC
@@ -6897,7 +6902,7 @@ export class PostgresMessageStore implements MessageStore {
               pr, payment_hash, description, description_hash, is_nip57_invoice,
               lnurl_response, conversation_id, conversation_message_id,
               fiat_pinned, fiat_usd::text AS fiat_usd, fiat_chf::text AS fiat_chf,
-              fiat_eur::text AS fiat_eur, fiat_php::text AS fiat_php
+              fiat_eur::text AS fiat_eur, fiat_php::text AS fiat_php, heart
        FROM message_invoice
        WHERE payer_account_id = $1
        ORDER BY created_at DESC, id DESC`,
@@ -6982,7 +6987,7 @@ export class PostgresMessageStore implements MessageStore {
               pr, payment_hash, description, description_hash, is_nip57_invoice,
               lnurl_response, conversation_id, conversation_message_id,
               fiat_pinned, fiat_usd::text AS fiat_usd, fiat_chf::text AS fiat_chf,
-              fiat_eur::text AS fiat_eur, fiat_php::text AS fiat_php
+              fiat_eur::text AS fiat_eur, fiat_php::text AS fiat_php, heart
        FROM message_invoice
        WHERE payment_hash = $1 AND result = 'ok'
        ORDER BY created_at DESC, id DESC
@@ -7003,7 +7008,7 @@ export class PostgresMessageStore implements MessageStore {
               pr, payment_hash, description, description_hash, is_nip57_invoice,
               lnurl_response, conversation_id, conversation_message_id,
               fiat_pinned, fiat_usd::text AS fiat_usd, fiat_chf::text AS fiat_chf,
-              fiat_eur::text AS fiat_eur, fiat_php::text AS fiat_php
+              fiat_eur::text AS fiat_eur, fiat_php::text AS fiat_php, heart
        FROM message_invoice
        WHERE message_id = $1 AND description = $2 AND result = 'ok' AND pr IS NOT NULL
        ORDER BY created_at DESC, id DESC
@@ -7021,7 +7026,7 @@ export class PostgresMessageStore implements MessageStore {
               pr, payment_hash, description, description_hash, is_nip57_invoice,
               lnurl_response, conversation_id, conversation_message_id,
               fiat_pinned, fiat_usd::text AS fiat_usd, fiat_chf::text AS fiat_chf,
-              fiat_eur::text AS fiat_eur, fiat_php::text AS fiat_php
+              fiat_eur::text AS fiat_eur, fiat_php::text AS fiat_php, heart
        FROM message_invoice
        WHERE pr = $1 AND result = 'ok'
        ORDER BY created_at DESC, id DESC
@@ -7421,6 +7426,7 @@ interface MessageInvoiceSqlRow {
   fiat_chf?: string | number | null;
   fiat_eur?: string | number | null;
   fiat_php?: string | number | null;
+  heart?: boolean | null;
 }
 
 /** SQL row shape for `nostr_zap_ingest`. */
@@ -7489,6 +7495,7 @@ function mapInvoiceAttemptRow(row: MessageInvoiceSqlRow): MessageInvoiceAttempt 
     amountChf: row.fiat_chf === null || row.fiat_chf === undefined ? null : String(row.fiat_chf),
     amountEur: row.fiat_eur === null || row.fiat_eur === undefined ? null : String(row.fiat_eur),
     amountPhp: row.fiat_php === null || row.fiat_php === undefined ? null : String(row.fiat_php),
+    heart: row.heart === true,
   };
 }
 
