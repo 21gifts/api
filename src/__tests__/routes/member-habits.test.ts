@@ -891,6 +891,35 @@ describe('memberHabitRoutes', () => {
     expect(body.habits[0]?.notes).toBe('secret');
   });
 
+  it('edit of another member archived habit is not found', async () => {
+    const store = new InMemoryMemberHabitStore();
+    await store.add(sampleHabit({ id: 'theirs', accountId: ALICE.id, role: 'basis' }));
+    expect(await store.archive('theirs', ALICE.id, '2026-10-04')).toBe('ok');
+    const closed = await post(
+      mount({ store, account: BASIS }),
+      { action: 'edit', id: 'theirs', name: 'Later', description: 'Nope', notes: 'x' },
+      AUTH,
+    );
+    expect(closed.status).toBe(404);
+    expect(await closed.json()).toEqual({ error: 'Not found' });
+    const listed = await mount({ store, account: BASIS }).request('/', { headers: AUTH });
+    const body = (await listed.json()) as { habits: Array<{ id: string; name: string }> };
+    expect(body.habits.find((row) => row.id === 'theirs')?.name).toBe('Walk');
+  });
+
+  it('edit the store then misses is not found', async () => {
+    const store = new InMemoryMemberHabitStore();
+    await store.add(sampleHabit({ id: 'mine', accountId: BASIS.id, role: 'basis' }));
+    store.edit = async () => 'missing';
+    const res = await post(
+      mount({ store, account: BASIS }),
+      { action: 'edit', id: 'mine', name: 'Run', description: '', notes: '' },
+      AUTH,
+    );
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ error: 'Not found' });
+  });
+
   it('edit the store then closes is closed', async () => {
     const store = new InMemoryMemberHabitStore();
     await store.add(sampleHabit({ id: 'mine', accountId: BASIS.id, role: 'basis' }));
