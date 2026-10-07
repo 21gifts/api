@@ -3500,7 +3500,8 @@ payments the api has not acknowledged yet.
 
 - `balanceSats` (required) and every sat amount: safe integer, `0` to
   `2100000000000000` (21 million BTC).
-- `syncedAt` and `timestamp`: ISO-8601 string, or a number (below `1e11` it is
+- `syncedAt` and `timestamp`: ISO-8601 instant string (date, time, and `Z` or a
+  numeric offset; a date alone or a locale string is refused), or a number (below `1e11` it is
   epoch seconds, otherwise epoch milliseconds); not before 2009-01-03 and not
   more than 5 minutes in the future.
 - `payments` is optional (missing = `[]`), at most 200 entries.

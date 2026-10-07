@@ -195,6 +195,23 @@ describe('POST /me/wallet/report', () => {
     ]);
   });
 
+  it('gives a later report in the same millisecond a strictly later observation time', async () => {
+    const walletStore = new InMemoryWalletStore();
+    const { app } = await mount({ walletStore, now: () => START });
+    expect((await post(app, body({ payments: [reported()] }))).status).toBe(200);
+    expect((await post(app, body({ payments: [reported({ status: 'completed' })] }))).status).toBe(
+      200,
+    );
+    expect(await walletStore.listPayments(ACCOUNT, 10)).toEqual([
+      expect.objectContaining({
+        status: 'completed',
+        firstSeenAt: new Date(START),
+        updatedAt: new Date(START + 1),
+      }),
+    ]);
+    expect((await walletStore.latestBalance(ACCOUNT))?.receivedAt).toEqual(new Date(START + 1));
+  });
+
   it('deduplicates payment ids with the later entry winning and later-position order', async () => {
     const { app, walletStore } = await mount();
     const response = await post(

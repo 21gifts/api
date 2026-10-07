@@ -46,6 +46,7 @@ export interface WalletReportRouteDeps {
  */
 export function walletReportRoutes(deps: WalletReportRouteDeps): Hono {
   const limiter = deps.limiter ?? new IpRateLimiter(WALLET_REPORTS_PER_MINUTE);
+  let lastSeenMs = 0;
   return new Hono().post('/me/wallet/report', async (c) => {
     const nowMs = deps.now();
     const token = bearerToken(c.req.header('authorization'));
@@ -78,7 +79,10 @@ export function walletReportRoutes(deps: WalletReportRouteDeps): Hono {
         byId.set(payment.paymentId, payment);
       }
       const classify = walletPaymentClassifier(deps, account.id);
-      const seenAt = new Date(nowMs);
+      // Strictly increasing per process, so a later report never ties with an earlier one.
+      const seenMs = Math.max(nowMs, lastSeenMs + 1);
+      lastSeenMs = seenMs;
+      const seenAt = new Date(seenMs);
       // Payments are classified concurrently; the database pool bounds the parallel lookups.
       const records: WalletPaymentRecord[] = await Promise.all(
         [...byId.values()].map(async (payment) => ({

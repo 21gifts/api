@@ -154,4 +154,13 @@ describe('containsEncodedSecret', () => {
     words.push(...bech32.toWords(new Uint8Array(65)));
     expect(containsEncodedSecret(bech32.encode('lnbc', words, false))).toBe(true);
   });
+
+  it('decodes a mixed-case token the way a case-folding decoder reads it', () => {
+    const lower = spark(PHRASE);
+    const at = lower.indexOf('1') + 3;
+    const mixed = `${lower.slice(0, at)}${lower.charAt(at).toUpperCase()}${lower.slice(at + 1)}`;
+    expect(mixed).not.toBe(lower);
+    expect(containsEncodedSecret(mixed)).toBe(true);
+    expect(containsEncodedSecret(BOLT11_PHRASE.toUpperCase())).toBe(true);
+  });
 });
