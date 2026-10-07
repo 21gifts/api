@@ -3605,7 +3605,8 @@ describe('indexOpenZapReceipts', () => {
       now: () => 1_700_000_200_000,
       fetchImpl: lnurlFetch(PROVIDER_PUBKEY),
     });
-    expect((await store.getById('reply-zap-child'))?.sats).toBe(21);
+    expect((await store.getById('reply-zap-child'))?.sats).toBe(0);
+    expect((await store.getById('reply-zap-child'))?.receivedSats).toBe(21);
     expect(await store.listReplies('reply-zap-child')).toEqual([]);
     expect(await store.listZapperPubkeys()).toEqual([fixture.pubkey]);
     expect(await store.getZapReceiptGift(fixture.receipt.id)).toMatchObject({
@@ -4879,6 +4880,8 @@ describe('indexOpenZapReceipts', () => {
       updatePublishState: (...args: Parameters<InMemoryMessageStore['updatePublishState']>) =>
         base.updatePublishState(...args),
       addSats: (...args: Parameters<InMemoryMessageStore['addSats']>) => base.addSats(...args),
+      addReceivedSats: (...args: Parameters<InMemoryMessageStore['addReceivedSats']>) =>
+        base.addReceivedSats(...args),
       listCreditPayers: (messageId: string) => base.listCreditPayers(messageId),
       sumUnassignedCreditSats: (messageId: string) => base.sumUnassignedCreditSats(messageId),
       listRepayments: (messageId: string) => base.listRepayments(messageId),
@@ -5134,6 +5137,8 @@ describe('indexOpenZapReceipts', () => {
         updatePublishState: (...args: Parameters<InMemoryMessageStore['updatePublishState']>) =>
           base.updatePublishState(...args),
         addSats: (...args: Parameters<InMemoryMessageStore['addSats']>) => base.addSats(...args),
+        addReceivedSats: (...args: Parameters<InMemoryMessageStore['addReceivedSats']>) =>
+          base.addReceivedSats(...args),
         listCreditPayers: (messageId: string) => base.listCreditPayers(messageId),
         sumUnassignedCreditSats: (messageId: string) => base.sumUnassignedCreditSats(messageId),
         listRepayments: (messageId: string) => base.listRepayments(messageId),
@@ -5936,6 +5941,8 @@ describe('indexOpenZapReceipts', () => {
         updatePublishState: (...args: Parameters<InMemoryMessageStore['updatePublishState']>) =>
           base.updatePublishState(...args),
         addSats: (...args: Parameters<InMemoryMessageStore['addSats']>) => base.addSats(...args),
+        addReceivedSats: (...args: Parameters<InMemoryMessageStore['addReceivedSats']>) =>
+          base.addReceivedSats(...args),
         listCreditPayers: (messageId: string) => base.listCreditPayers(messageId),
         sumUnassignedCreditSats: (messageId: string) => base.sumUnassignedCreditSats(messageId),
         listRepayments: (messageId: string) => base.listRepayments(messageId),
@@ -7085,7 +7092,8 @@ describe('indexOpenZapReceipts', () => {
       now: () => 1,
       fetchImpl: lnurlFetch(PROVIDER_PUBKEY),
     });
-    expect((await store.getById(replyId))?.sats).toBe(21);
+    expect((await store.getById(replyId))?.sats).toBe(0);
+    expect((await store.getById(replyId))?.receivedSats).toBe(21);
     expect(await store.listReplies(replyId)).toEqual([]);
     const siblings = await store.listReplies(parentId);
     expect(siblings).toHaveLength(1);
@@ -7207,7 +7215,8 @@ describe('indexOpenZapReceipts', () => {
       now: () => 1,
       fetchImpl: lnurlFetch(PROVIDER_PUBKEY),
     });
-    expect((await store.getById(replyId))?.sats).toBe(21);
+    expect((await store.getById(replyId))?.sats).toBe(0);
+    expect((await store.getById(replyId))?.receivedSats).toBe(21);
     expect(await store.listReplies(replyId)).toEqual([]);
     const gift = await store.getZapReceiptGift('r-queue-drop-reply');
     expect(gift?.payerAccountId).toBeNull();
@@ -7342,7 +7351,8 @@ describe('indexOpenZapReceipts', () => {
         return Array.isArray(tagged) && tagged.includes(replyEventId);
       }),
     ).toBe(true);
-    expect((await store.getById(replyId))?.sats).toBe(21);
+    expect((await store.getById(replyId))?.sats).toBe(0);
+    expect((await store.getById(replyId))?.receivedSats).toBe(21);
     expect(await store.listReplies(replyId)).toEqual([]);
     const siblings = await store.listReplies(parentId);
     expect(siblings).toHaveLength(1);
@@ -7449,7 +7459,8 @@ describe('indexOpenZapReceipts', () => {
         return Array.isArray(tagged) && tagged.includes(replyEventId);
       }),
     ).toBe(true);
-    expect((await store.getById(replyId))?.sats).toBe(21);
+    expect((await store.getById(replyId))?.sats).toBe(0);
+    expect((await store.getById(replyId))?.receivedSats).toBe(21);
     expect(await store.listReplies(replyId)).toEqual([]);
   });
 
@@ -7568,7 +7579,8 @@ describe('indexOpenZapReceipts', () => {
         return Array.isArray(tagged) && tagged.includes(replyEventId);
       }),
     ).toBe(true);
-    expect((await store.getById(replyId))?.sats).toBe(21);
+    expect((await store.getById(replyId))?.sats).toBe(0);
+    expect((await store.getById(replyId))?.receivedSats).toBe(21);
   });
 
   it('skips recent replies that have no event id', async () => {
@@ -7674,7 +7686,8 @@ describe('indexOpenZapReceipts', () => {
         return Array.isArray(tagged) && tagged.includes('');
       }),
     ).toBe(false);
-    expect((await store.getById(replyId))?.sats).toBe(21);
+    expect((await store.getById(replyId))?.sats).toBe(0);
+    expect((await store.getById(replyId))?.receivedSats).toBe(21);
     expect(await store.listReplies(replyId)).toEqual([]);
   });
 
@@ -7775,7 +7788,8 @@ describe('indexOpenZapReceipts', () => {
     const siblings = await store.listReplies(parentId);
     expect(siblings).toHaveLength(1);
     expect(siblings[0]?.id).toBe(replyId);
-    expect((await store.getById(replyId))?.sats).toBe(7);
+    expect((await store.getById(replyId))?.sats).toBe(0);
+    expect((await store.getById(replyId))?.receivedSats).toBe(7);
     expect(await store.listZapReceiptsAwaitingGiftReply(10)).toEqual([]);
   });
 

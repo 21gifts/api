@@ -97,7 +97,10 @@ export interface MessageRow {
   eventId: string | null;
   /** Fan-out state. */
   nostrPublishState: NostrPublishState;
-  /** Validated zap total in whole sats. */
+  /**
+   * Amount sent with a reply, or collected zap total on a top-level note,
+   * in whole sats.
+   */
   sats: number;
   /** USD snapshot frozen when sats were credited. */
   amountUsd?: string | null;
@@ -107,6 +110,19 @@ export interface MessageRow {
   amountEur?: string | null;
   /** PHP snapshot frozen when sats were credited. */
   amountPhp?: string | null;
+  /**
+   * Later zap or spend-proof receipts on a reply, in whole sats. Omitted
+   * means none yet. Never negative.
+   */
+  receivedSats?: number;
+  /** USD snapshot of later receipts on a reply, or null. */
+  receivedAmountUsd?: string | null;
+  /** CHF snapshot of later receipts on a reply, or null. */
+  receivedAmountChf?: string | null;
+  /** EUR snapshot of later receipts on a reply, or null. */
+  receivedAmountEur?: string | null;
+  /** PHP snapshot of later receipts on a reply, or null. */
+  receivedAmountPhp?: string | null;
   /**
    * `@username` marks resolved when the note was sent. Empty or omitted
    * means none. A later username change does not rewrite this list.
@@ -219,7 +235,10 @@ export interface PublicMessage {
   text: string;
   /** ISO-8601 creation timestamp. */
   createdAt: string;
-  /** Validated zap total in whole sats (always present). */
+  /**
+   * Amount sent with a reply, or collected zap total on a top-level note
+   * (always present).
+   */
   sats: number;
   /** Stored USD snapshot, or null when pricing was unavailable. */
   amountUsd: string | null;
@@ -229,6 +248,19 @@ export interface PublicMessage {
   amountEur: string | null;
   /** Stored PHP snapshot, or null when pricing was unavailable. */
   amountPhp: string | null;
+  /**
+   * Later payments on a reply. Present on replies (0 when none). Omitted on
+   * top-level notes.
+   */
+  receivedSats?: number;
+  /** USD snapshot of later reply receipts, or null. Omitted on notes. */
+  receivedAmountUsd?: string | null;
+  /** CHF snapshot of later reply receipts, or null. Omitted on notes. */
+  receivedAmountChf?: string | null;
+  /** EUR snapshot of later reply receipts, or null. Omitted on notes. */
+  receivedAmountEur?: string | null;
+  /** PHP snapshot of later reply receipts, or null. Omitted on notes. */
+  receivedAmountPhp?: string | null;
   /**
    * Optional whole-sat ask on a top-level note. Included only when the stored
    * value is a positive integer; omitted on replies and when unset.
@@ -614,6 +646,9 @@ export function truncatePubkeyDisplay(pubkeyHex: string): string {
  * `goalAmountEur` / `goalAmountPhp` when `goalCurrency` is null.
  * Omits `place` when unset or null.
  * Omits `shopAccount` when unset or null.
+ * On a reply, always includes `receivedSats` (`row.receivedSats ?? 0`) and
+ * the four `receivedAmount*` keys (stored string or null). Omits those five
+ * keys on a top-level note.
  * Live serialize omits `deletedAt` / `deletedBy`.
  * @throws RangeError (or Error) when createdAt is invalid.
  */
@@ -669,6 +704,11 @@ export function serializeMessage(
   }
   if (row.parentId !== null) {
     body.parentId = row.parentId;
+    body.receivedSats = row.receivedSats ?? 0;
+    body.receivedAmountUsd = row.receivedAmountUsd ?? null;
+    body.receivedAmountChf = row.receivedAmountChf ?? null;
+    body.receivedAmountEur = row.receivedAmountEur ?? null;
+    body.receivedAmountPhp = row.receivedAmountPhp ?? null;
   }
   const goalSats = publicGoalSats(row);
   if (goalSats !== undefined) {
@@ -907,6 +947,11 @@ export function unsignedNostrDefaults(): Pick<
   | 'amountChf'
   | 'amountEur'
   | 'amountPhp'
+  | 'receivedSats'
+  | 'receivedAmountUsd'
+  | 'receivedAmountChf'
+  | 'receivedAmountEur'
+  | 'receivedAmountPhp'
   | 'goalSats'
   | 'goalRepayable'
   | 'goalTermDays'
@@ -934,6 +979,11 @@ export function unsignedNostrDefaults(): Pick<
     amountChf: null,
     amountEur: null,
     amountPhp: null,
+    receivedSats: 0,
+    receivedAmountUsd: null,
+    receivedAmountChf: null,
+    receivedAmountEur: null,
+    receivedAmountPhp: null,
     goalSats: null,
     goalRepayable: null,
     goalTermDays: null,

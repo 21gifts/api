@@ -346,6 +346,73 @@ describe('serializeMessage', () => {
     expect(serializeMessage(reply, false, 'basis').parentId).toBe('msg-top');
   });
 
+  it('omits received keys on notes and includes zeros and nulls on replies', () => {
+    const top: MessageRow = {
+      id: 'msg-top',
+      accountId: 'acc-1',
+      name: 'Ada',
+      text: 'hi',
+      createdAt: new Date('2026-08-28T12:00:00.000Z'),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+    };
+    const note = serializeMessage(top, false, 'basis');
+    expect(note).not.toHaveProperty('receivedSats');
+    expect(note).not.toHaveProperty('receivedAmountUsd');
+    expect(note).not.toHaveProperty('receivedAmountChf');
+    expect(note).not.toHaveProperty('receivedAmountEur');
+    expect(note).not.toHaveProperty('receivedAmountPhp');
+    const reply: MessageRow = {
+      id: 'msg-reply',
+      accountId: 'acc-1',
+      name: 'Ada',
+      text: 're',
+      createdAt: new Date('2026-08-28T12:00:00.000Z'),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+      parentId: 'msg-top',
+    };
+    const body = serializeMessage(reply, false, 'basis');
+    expect(body.receivedSats).toBe(0);
+    expect(body.receivedAmountUsd).toBeNull();
+    expect(body.receivedAmountChf).toBeNull();
+    expect(body.receivedAmountEur).toBeNull();
+    expect(body.receivedAmountPhp).toBeNull();
+    const credited = serializeMessage(
+      {
+        ...reply,
+        receivedSats: 100,
+        receivedAmountUsd: '0.10',
+        receivedAmountChf: null,
+        receivedAmountEur: '0.09',
+        receivedAmountPhp: null,
+      },
+      false,
+      'basis',
+    );
+    expect(credited.sats).toBe(0);
+    expect(credited.receivedSats).toBe(100);
+    expect(credited.receivedAmountUsd).toBe('0.10');
+    expect(credited.receivedAmountChf).toBeNull();
+    expect(credited.receivedAmountEur).toBe('0.09');
+    expect(credited.receivedAmountPhp).toBeNull();
+  });
+
+  it('serializes a reply without receivedSats as 0', () => {
+    const reply: MessageRow = {
+      id: 'msg-reply-omit',
+      accountId: 'acc-1',
+      name: 'Ada',
+      text: 're',
+      createdAt: new Date('2026-08-28T12:00:00.000Z'),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+      parentId: 'msg-top',
+    };
+    delete (reply as { receivedSats?: number }).receivedSats;
+    expect(serializeMessage(reply, false, 'basis').receivedSats).toBe(0);
+  });
+
   it('emits photoCount 0 when the row omits photoCount and hasPhoto is false', () => {
     const row: MessageRow = {
       id: 'msg-pc-0',

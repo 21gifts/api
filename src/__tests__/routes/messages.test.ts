@@ -237,6 +237,7 @@ function throwingStore(overrides: Partial<MessageStore> = {}): MessageStore {
     updateSignedEvent: boom,
     updatePublishState: boom,
     addSats: boom,
+    addReceivedSats: boom,
     claimZapPayment: boom,
     recordZapReceipt: boom,
     recordInvoiceAttempt: boom,
@@ -2055,8 +2056,16 @@ describe('POST /messages', () => {
       body: JSON.stringify({ text: 'child', inReplyTo: parentId }),
     });
     expect(res.status).toBe(200);
-    const created = (await res.json()) as { text: string };
+    const created = (await res.json()) as {
+      text: string;
+      sats: number;
+      receivedSats: number;
+      receivedAmountUsd: string | null;
+    };
     expect(created.text).toBe('child');
+    expect(created.sats).toBe(0);
+    expect(created.receivedSats).toBe(0);
+    expect(created.receivedAmountUsd).toBeNull();
     const replies = await messageStore.listReplies(parentId);
     expect(replies).toHaveLength(1);
     expect(replies[0]?.parentId).toBe(parentId);
@@ -3716,6 +3725,7 @@ describe('POST /messages', () => {
         base.updateSignedEvent(id, eventId, nostrEvent),
       updatePublishState: (id, state, epoch) => base.updatePublishState(id, state, epoch),
       addSats: (id, extra, delta) => base.addSats(id, extra, delta),
+      addReceivedSats: (id, extra, delta) => base.addReceivedSats(id, extra, delta),
       claimZapPayment: (hash, receiptId, at) => base.claimZapPayment(hash, receiptId, at),
       recordZapReceipt: (receiptId, messageId, sats, delta) =>
         base.recordZapReceipt(receiptId, messageId, sats, delta),
@@ -3845,6 +3855,7 @@ describe('POST /messages', () => {
         base.updateSignedEvent(id, eventId, nostrEvent),
       updatePublishState: (id, state, epoch) => base.updatePublishState(id, state, epoch),
       addSats: (id, extra, delta) => base.addSats(id, extra, delta),
+      addReceivedSats: (id, extra, delta) => base.addReceivedSats(id, extra, delta),
       claimZapPayment: (hash, receiptId, at) => base.claimZapPayment(hash, receiptId, at),
       recordZapReceipt: (receiptId, messageId, sats, delta) =>
         base.recordZapReceipt(receiptId, messageId, sats, delta),
@@ -5506,6 +5517,7 @@ describe('POST /messages/:id/invoice', () => {
       updateSignedEvent: (...args) => base.updateSignedEvent(...args),
       updatePublishState: (...args) => base.updatePublishState(...args),
       addSats: (...args) => base.addSats(...args),
+      addReceivedSats: (...args) => base.addReceivedSats(...args),
       claimZapPayment: (...args) => base.claimZapPayment(...args),
       recordZapReceipt: (...args) => base.recordZapReceipt(...args),
       recordInvoiceAttempt: async () => {
@@ -6014,6 +6026,8 @@ describe('GET /messages/:id', () => {
       text: 'from damus',
       payable: false,
       via: 'nostr',
+      receivedSats: 0,
+      receivedAmountUsd: null,
     });
     expect(body).not.toHaveProperty('role');
     expect(body).not.toHaveProperty('accountId');
@@ -6371,6 +6385,28 @@ describe('GET /messages/:id', () => {
     expect(body.role).toBe('basis');
   });
 
+  it('returns 400 when sinceReceivedSats is not a non-negative integer', async () => {
+    const messageStore = new InMemoryMessageStore();
+    await messageStore.create({
+      id: '2b2b2b2b-2b2b-42b2-82b2-2b2b2b2b2b2b',
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'hi',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      hasVideo: false,
+      videoContentType: null,
+      ...unsignedNostrDefaults(),
+    });
+    const res = await mount(await seededStore(), messageStore).request(
+      '/messages/2b2b2b2b-2b2b-42b2-82b2-2b2b2b2b2b2b?sinceReceivedSats=nope',
+    );
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({
+      error: 'Expected sinceReceivedSats to be a non-negative integer',
+    });
+  });
+
   it('returns 400 when sinceSats is not a non-negative integer', async () => {
     const messageStore = new InMemoryMessageStore();
     await messageStore.create({
@@ -6513,6 +6549,130 @@ describe('GET /messages/:id', () => {
     }).request(`/messages/${noteId}?sinceSats=0`);
     expect(res.status).toBe(404);
     expect(await res.json()).toEqual({ error: 'Not found' });
+  });
+
+  it('waits until receivedSats increase past sinceReceivedSats on a live reply', async () => {
+    const parentId = '8a8a8a8a-8a8a-48a8-88a8-8a8a8a8a8a8a';
+    const replyId = '9b9b9b9b-9b9b-49b9-89b9-9b9b9b9b9b9b';
+    const messageStore = new InMemoryMessageStore();
+    await messageStore.create({
+      id: parentId,
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'parent',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      hasVideo: false,
+      videoContentType: null,
+      ...unsignedNostrDefaults(),
+    });
+    await messageStore.create({
+      id: replyId,
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'reply',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      hasVideo: false,
+      videoContentType: null,
+      ...unsignedNostrDefaults(),
+      parentId,
+      sats: 21000,
+    });
+    const res = await mount(await seededStore(), messageStore, {
+      waitSatsSleep: async () => {
+        await messageStore.addReceivedSats(replyId, 100, null);
+      },
+    }).request(`/messages/${replyId}?sinceReceivedSats=0`);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { sats: number; receivedSats: number };
+    expect(body.sats).toBe(21000);
+    expect(body.receivedSats).toBe(100);
+  });
+
+  it('waits when a live reply first reads receivedSats as undefined', async () => {
+    const parentId = 'aa0a0a0a-0a0a-40a0-80a0-0a0a0a0a0a0a';
+    const replyId = 'bb1b1b1b-1b1b-41b1-81b1-1b1b1b1b1b1b';
+    const inner = new InMemoryMessageStore();
+    await inner.create({
+      id: parentId,
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'parent',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      hasVideo: false,
+      videoContentType: null,
+      ...unsignedNostrDefaults(),
+    });
+    await inner.create({
+      id: replyId,
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'reply',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      hasVideo: false,
+      videoContentType: null,
+      ...unsignedNostrDefaults(),
+      parentId,
+      sats: 21000,
+    });
+    let firstReplyRead = true;
+    const messageStore = new Proxy(inner, {
+      get(target, prop, receiver) {
+        if (prop === 'getById') {
+          return async (id: string) => {
+            const row = await target.getById(id);
+            if (id === replyId && row !== undefined && firstReplyRead) {
+              firstReplyRead = false;
+              const copy = { ...row } as { receivedSats: number | undefined };
+              copy.receivedSats = undefined;
+              return copy;
+            }
+            return row;
+          };
+        }
+        const value = Reflect.get(target, prop, receiver) as unknown;
+        return typeof value === 'function'
+          ? (value as (...args: never[]) => unknown).bind(target)
+          : value;
+      },
+    });
+    const res = await mount(await seededStore(), messageStore, {
+      waitSatsSleep: async () => {
+        await inner.addReceivedSats(replyId, 100, null);
+      },
+    }).request(`/messages/${replyId}?sinceReceivedSats=0`);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { sats: number; receivedSats: number };
+    expect(body.sats).toBe(21000);
+    expect(body.receivedSats).toBe(100);
+  });
+
+  it('ignores sinceReceivedSats on a top-level note', async () => {
+    const noteId = '1c1c1c1c-1c1c-41c1-81c1-1c1c1c1c1c1c';
+    const messageStore = new InMemoryMessageStore();
+    await messageStore.create({
+      id: noteId,
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'hi',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      hasVideo: false,
+      videoContentType: null,
+      ...unsignedNostrDefaults(),
+    });
+    const res = await mount(await seededStore(), messageStore, {
+      waitSatsSleep: async () => {
+        throw new Error('waitSatsSleep must not be called');
+      },
+    }).request(`/messages/${noteId}?sinceReceivedSats=0`);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { sats: number };
+    expect(body.sats).toBe(0);
+    expect(body).not.toHaveProperty('receivedSats');
   });
 
   it('returns 404 for a hidden note without a session and omits deletedAt', async () => {
