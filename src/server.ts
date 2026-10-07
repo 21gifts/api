@@ -27,6 +27,7 @@ import { InMemoryTranslationStore, type TranslationStore } from '@/lib/translati
 import { wellKnownRoutes } from '@/routes/well-known';
 import { payRoutes } from '@/routes/pay';
 import { contactRoutes } from '@/routes/contact';
+import { memberHabitRoutes } from '@/routes/member-habits';
 import { posRoutes } from '@/routes/pos';
 import { grantContinuationRoutes } from '@/routes/grant-continuation';
 import { shopActivityRoutes } from '@/routes/shop-activity';
@@ -61,6 +62,7 @@ import { InMemoryApiLogStore, type ApiLogStore } from '@/lib/api-log';
 import { InMemoryDiagnosticStore, type DiagnosticStore } from '@/lib/diagnostic-log';
 import { InMemoryContactStore } from '@/lib/contact-store';
 import type { ContactStore } from '@/lib/contact-store';
+import { InMemoryMemberHabitStore, type MemberHabitStore } from '@/lib/member-habit-store';
 import { InMemoryPosStore, type PosStore } from '@/lib/pos-store';
 import { inboxUnreadCountFor } from '@/lib/conversation-push';
 import { InMemoryConversationStore } from '@/lib/conversation-store';
@@ -279,6 +281,10 @@ export interface AppDeps {
    */
   contactStore?: ContactStore;
   /**
+   * Member habit tracker (default: empty {@link InMemoryMemberHabitStore}).
+   */
+  memberHabitStore?: MemberHabitStore;
+  /**
    * Point-of-sale charges (default: empty {@link InMemoryPosStore}).
    * Boot injects {@link PostgresPosStore} when `DATABASE_URL` is set.
    */
@@ -351,6 +357,8 @@ function debugList(store: object, limit: number): Promise<unknown[]> {
  *   mapPush (optional; default resolveMapPush on env),
  *   translationStore (optional; default InMemoryTranslationStore; SQL boot
  *   injects PostgresTranslationStore), contact store,
+ *   memberHabitStore (optional; default InMemoryMemberHabitStore; SQL boot
+ *   injects PostgresMemberHabitStore),
  *   conversation store, notification store, push store, trust store,
  *   debugDbStore (`GET /debug/db`; omitted on a memory boot),
  *   funding store (injected into `/funding`, `/me`, `/auth`, `/members`,
@@ -409,6 +417,7 @@ export function createApp(deps: AppDeps = {}): Hono {
   }
   const nostrKek = deps.nostrKek;
   const contactStore = deps.contactStore ?? new InMemoryContactStore();
+  const memberHabitStore = deps.memberHabitStore ?? new InMemoryMemberHabitStore();
   const posStore = deps.posStore ?? new InMemoryPosStore();
   const apiLogStore = deps.apiLogStore ?? new InMemoryApiLogStore();
   const diagnosticStore = deps.diagnosticStore ?? new InMemoryDiagnosticStore();
@@ -694,6 +703,10 @@ export function createApp(deps: AppDeps = {}): Hono {
       pushStore,
       notificationStore,
     }),
+  );
+  app.route(
+    '/habits',
+    memberHabitRoutes({ store: memberHabitStore, authStore: store, now, fetchImpl }),
   );
   app.route('/pos', posRoutes({ store: posStore, authStore: store, now, fetchImpl }));
   app.route(

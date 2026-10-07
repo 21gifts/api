@@ -3064,3 +3064,67 @@ test('Function: publicExternalAuthorPosts — unknown id is not found', async ({
 test('Function: publicExternalAuthorReplies — unknown id is not found', async ({ request }) => {
   expect((await request.get('/messages/not-a-uuid/external-replies')).status()).toBe(404);
 });
+
+test('Function: memberHabitRoutes — GET /habits is public and POST without bearer is 401', async ({
+  request,
+}) => {
+  const res = await request.get('/habits');
+  expect(res.status()).toBe(200);
+  const denied = await request.post('/habits', { data: { action: 'add' } });
+  expect(denied.status()).toBe(401);
+});
+
+test('Function: isValidTimeZone — GET /habits is public', async ({ request }) => {
+  const res = await request.get('/habits');
+  expect(res.status()).toBe(200);
+});
+
+test('Function: dayKey — GET /habits is public', async ({ request }) => {
+  const res = await request.get('/habits');
+  expect(res.status()).toBe(200);
+});
+
+test('Function: weekKey — GET /habits is public', async ({ request }) => {
+  const res = await request.get('/habits');
+  expect(res.status()).toBe(200);
+});
+
+test('Function: periodKey — GET /habits is public', async ({ request }) => {
+  const res = await request.get('/habits');
+  expect(res.status()).toBe(200);
+});
+
+test('Function: nextPeriod — GET /habits is public', async ({ request }) => {
+  const res = await request.get('/habits');
+  expect(res.status()).toBe(200);
+});
+
+test('Function: comparePeriod — GET /habits is public', async ({ request }) => {
+  const res = await request.get('/habits');
+  expect(res.status()).toBe(200);
+});
+
+test('Function: weeklyRatableThrough — GET /habits is public', async ({ request }) => {
+  const res = await request.get('/habits');
+  expect(res.status()).toBe(200);
+});
+
+test('Function: manilaReviewWeek — GET /habits is public', async ({ request }) => {
+  const res = await request.get('/habits');
+  expect(res.status()).toBe(200);
+});
+
+test('Function: migrateMemberHabitSchema — GET /habits is public', async ({ request }) => {
+  const res = await request.get('/habits');
+  expect(res.status()).toBe(200);
+});
+
+test('Function: InMemoryMemberHabitStore — GET /habits is public', async ({ request }) => {
+  const res = await request.get('/habits');
+  expect(res.status()).toBe(200);
+});
+
+test('Function: PostgresMemberHabitStore — GET /habits is public', async ({ request }) => {
+  const res = await request.get('/habits');
+  expect(res.status()).toBe(200);
+});

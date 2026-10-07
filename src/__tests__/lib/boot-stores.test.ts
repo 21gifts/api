@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 import { openBootStores } from '@/lib/boot-stores';
 import { InMemoryAuthStore } from '@/lib/auth/store';
@@ -8,6 +10,7 @@ import { InMemoryFiatStore, PostgresFiatStore } from '@/lib/usd-fiat-store';
 import { QueryGiftStore } from '@/lib/gift-store';
 import { SqlGiftRecorder } from '@/lib/gift-recorder';
 import { PostgresContactStore } from '@/lib/contact-store';
+import { PostgresMemberHabitStore } from '@/lib/member-habit-store';
 import { InMemoryPosStore, PostgresPosStore } from '@/lib/pos-store';
 
 import { PostgresConversationStore } from '@/lib/conversation-store';
@@ -68,6 +71,7 @@ describe('openBootStores', () => {
       translationStore,
       conversationTranslationStore,
       contactStore,
+      memberHabitStore,
       posStore,
       conversationStore,
       notificationStore,
@@ -86,6 +90,7 @@ describe('openBootStores', () => {
     expect(translationStore).toBeUndefined();
     expect(conversationTranslationStore).toBeUndefined();
     expect(contactStore).toBeUndefined();
+    expect(memberHabitStore).toBeUndefined();
     expect(posStore).toBeInstanceOf(InMemoryPosStore);
     expect(conversationStore).toBeUndefined();
     expect(notificationStore).toBeUndefined();
@@ -115,6 +120,7 @@ describe('openBootStores', () => {
       translationStore,
       conversationTranslationStore,
       contactStore,
+      memberHabitStore,
       posStore,
       conversationStore,
       notificationStore,
@@ -132,6 +138,7 @@ describe('openBootStores', () => {
     expect(translationStore).toBeUndefined();
     expect(conversationTranslationStore).toBeUndefined();
     expect(contactStore).toBeUndefined();
+    expect(memberHabitStore).toBeUndefined();
     expect(posStore).toBeInstanceOf(InMemoryPosStore);
     expect(conversationStore).toBeUndefined();
     expect(notificationStore).toBeUndefined();
@@ -539,6 +546,14 @@ describe('openBootStores', () => {
     expect(stores.conversationTranslationStore).toBeInstanceOf(PostgresTranslationStore);
     expect(stores.conversationTranslationStore).not.toBe(stores.translationStore);
     expect(stores.contactStore).toBeInstanceOf(PostgresContactStore);
+    expect(stores.memberHabitStore).toBeInstanceOf(PostgresMemberHabitStore);
+    const habits = stores.memberHabitStore;
+    if (!(habits instanceof PostgresMemberHabitStore)) {
+      throw new Error('expected PostgresMemberHabitStore');
+    }
+    expect(await habits.lightning('acc')).toBeNull();
+    await habits.setLightning('acc', 'ada@example.com');
+    expect(await habits.lightning('acc')).toBeNull();
     expect(stores.posStore).toBeInstanceOf(PostgresPosStore);
     expect(stores.conversationStore).toBeInstanceOf(PostgresConversationStore);
     expect(stores.notificationStore).toBeInstanceOf(PostgresNotificationStore);
@@ -589,5 +604,18 @@ describe('openBootStores', () => {
     expect(giftRecorder).toBeInstanceOf(SqlGiftRecorder);
     expect(btcUsdRates).toBeInstanceOf(PostgresBtcUsdStore);
     expect(fiatRates).toBeInstanceOf(PostgresFiatStore);
+  });
+});
+
+describe('process entry store wiring', () => {
+  it('passes the SQL habit store into createApp the same way as the contact store', () => {
+    const source = readFileSync(join(process.cwd(), 'src/index.ts'), 'utf8');
+    const taken = source.indexOf('memberHabitStore,');
+    const passed = source.indexOf(
+      '...(memberHabitStore === undefined ? {} : { memberHabitStore })',
+    );
+    expect(taken).toBeGreaterThanOrEqual(0);
+    expect(passed).toBeGreaterThan(taken);
+    expect(source).toContain('...(contactStore === undefined ? {} : { contactStore })');
   });
 });

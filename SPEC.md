@@ -168,6 +168,8 @@ Public base URLs used in examples:
 | PATCH  | `/messages/:id/photos`                               | Bearer (moderator+)                          | Replace the stills of a live top-level shop note; a video stays; no edit history                                                                                                                                                                                                                                                                       |
 | GET    | `/messages/:id/edits`                                | Bearer (moderator+)                          | Staff edit history of a shop note, newest first                                                                                                                                                                                                                                                                                                        |
 | POST   | `/messages/:id/invoice`                              | Bearer                                       | NIP-57 zap / BOLT11                                                                                                                                                                                                                                                                                                                                    |
+| GET    | `/habits`                                            | none                                         | Public member habits. A bearer includes private notes only on the caller's own rows.                                                                                                                                                                                                                                                                   |
+| POST   | `/habits`                                            | Bearer                                       | Add, edit, archive, or log a habit; comment; delete a comment; or mint `{ pr, amountSats }` for a comment.                                                                                                                                                                                                                                             |
 | GET    | `/messages/:id/repayment`                            | none                                         | Public credit ledger: who gave, and each repayment share                                                                                                                                                                                                                                                                                               |
 | POST   | `/messages/:id/repayment`                            | Bearer                                       | Author pays the next giver share from their own wallet. A repeat for that unpaid share returns the outstanding invoice.                                                                                                                                                                                                                                |
 | POST   | `/contact`                                           | Bearer                                       | Send private in-app contact `{ text }`                                                                                                                                                                                                                                                                                                                 |
@@ -5413,6 +5415,76 @@ public notification, not `{ "ok", "tags" }`. Enqueue failure still returns
 
 Success → **Response** `200` (one public notification with `readAt` set,
 or still `null` for `moderator_proposal`).
+
+### `GET /habits`
+
+Public list. No bearer required. `Cache-Control: no-store`. A valid bearer
+includes `notes` only on the caller's own habits; everyone else's JSON
+omits `notes`. Periods run from `firstPeriod` through the latest ratable
+day or week. A daily period is ratable through today in the habit's
+stored IANA zone. A weekly period becomes ratable at 08:00 on the
+following Monday in that zone. `logged` is false and `status` is null
+when the owner has not recorded that period.
+
+Success → **Response** `200` `{ "reviewWeek": { "start" }, "habits" }`.
+Store failure → **503** `{ "error": "Habits are unavailable" }`.
+
+### `POST /habits`
+
+Bearer session required. One strict JSON action: `add`, `edit`, `archive`,
+`log`, `comment`, `deleteComment`, or `invoice`. `Cache-Control: no-store`.
+The api does not pay.
+
+`add` stores the device `Time-Zone` and requires a zone `Intl` accepts.
+A missing, blank, or unknown zone is **400** `{ "error": "Invalid time zone" }`.
+That check is only for `add`: the stored zone is the habit's clock, which
+is a different job from Sunday rest. Name is 1–80 characters after trim.
+Description and private notes are optional and at most 2000 characters.
+Cadence is `daily` or `weekly` and is not changed by `edit`. Notes stay
+owner-only.
+
+`comment`, `deleteComment`, and `invoice` use the Sunday rest already
+stated for public writing (`POST /messages/:id/repayment`: device
+`Time-Zone` in Sunday → **403** `{ "error": "SUNDAY_REST" }`, and a
+missing, blank, or invalid zone does not refuse). `add`, `edit`,
+`archive`, and `log` do not rest on Sunday. The invoice Sunday check is
+before the amount check.
+
+A comment hangs on the habit. It is not a forum post and not a Nostr
+note. Text is 1–2000 characters after trim. `deleteComment` requires
+initiator rank; a lower role is **403** `{ "error": "Forbidden" }`.
+
+`invoice` mints a BOLT11 invoice for the comment author's Lightning
+Address through the existing gift-invoice helper. Body `amountSats` must
+be an integer from 1 through 10_000_000 (the whole-sat form of
+`GIFT_INVOICE_MAX_MSAT`). A non-integer, a value below 1, or a value
+above that ceiling is **400**
+`{ "error": "Expected a JSON body with an integer \"amountSats\"" }`.
+A missing `amountSats`, or a value that is not a number, is that same
+**400**.
+Success is the same gift body as `POST /pay/:username/invoice`:
+
+```json
+{ "pr": "lnbc...", "amountSats": 21 }
+```
+
+The `pr` is returned only when it decodes to exactly `amountSats * 1000`
+millisatoshis, the same rule as `POST /pay/:username/invoice`.
+
+Donating to the caller's own comment is **400**
+`{ "error": "Cannot donate to yourself" }`. No Lightning Address on the
+author is **409** `{ "error": "The author's wallet cannot receive this Bitcoin payment" }`. The existing invoice
+limiter answers **429** `{ "error": "Too many payments" }`. A failed
+mint, or a BOLT11 that is missing, not a safe integer amount, or not the
+requested amount, is **502**
+`{ "error": "Lightning Address could not be resolved" }`, the same failure
+as `POST /pay/:username/invoice`.
+
+Missing bearer → **401** `{ "error": "Unauthorized" }`. A body that is
+not one of the actions → **400** `{ "error": "Invalid body" }`. Unknown
+habit or comment → **404** `{ "error": "Not found" }`. A period that is
+not yet ratable → **409** `{ "error": "Period is closed" }`. Store
+failure → **503** `{ "error": "Habits are unavailable" }`.
 
 ---
 
