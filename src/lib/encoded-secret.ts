@@ -36,8 +36,8 @@ function payloadBytes(token: string): Uint8Array | null {
 /** Most bytes the protobuf walk may decode, as a multiple of the payload length (real Spark invoices nest 2–3 levels). */
 const PROTO_WORK_FACTOR = 8;
 
-/** Longest varint read: a length or tag never needs more than eight bytes here. */
-const MAX_VARINT_BYTES = 8;
+/** Longest varint protobuf allows (a 64-bit value takes ten bytes). */
+const MAX_VARINT_BYTES = 10;
 
 /** Read one base-128 varint as a number, or `null` when it is truncated or too long. */
 function readVarint(bytes: Uint8Array, offset: number): { value: number; next: number } | null {
@@ -166,8 +166,15 @@ export function containsEncodedSecret(value: string): boolean {
   if (textHoldsSecret(value)) {
     return true;
   }
-  // Alphanumeric runs, plus whole whitespace-separated chunks: a bech32 prefix may hold punctuation (`a-b1…`).
-  const tokens = new Set([...value.split(/[^A-Za-z0-9]+/), ...value.split(/\s+/)]);
+  // Alphanumeric runs, plus whitespace-separated chunks split only at common delimiters: a bech32
+  // prefix may hold other punctuation (`a-b1…`), and `/a-b1…`, `(a-b1…)`, `a-b1…,`, or `a-b1….` must still decode.
+  const chunks = value.split(/[\s/()[\]{}<>"',;=?&#]+/);
+  const tokens = new Set([
+    ...value.split(/[^A-Za-z0-9]+/),
+    ...chunks,
+    // Bech32 data never ends in punctuation, so a trailing period or colon belongs to the sentence.
+    ...chunks.map((chunk) => chunk.replace(/[^A-Za-z0-9]+$/, '')),
+  ]);
   for (const token of tokens) {
     if (token.length < ENCODED_TOKEN_MIN_LENGTH || !token.includes('1')) {
       continue;

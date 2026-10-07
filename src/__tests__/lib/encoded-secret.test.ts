@@ -195,7 +195,7 @@ describe('containsEncodedSecret', () => {
       Uint8Array.from([0x08]), // varint field without its value
       Uint8Array.from([0x12, 0x7f]), // length past the end
       Uint8Array.from([0x12]), // length varint missing
-      Uint8Array.from(Array.from({ length: 9 }, () => 0x80)), // varint longer than eight bytes
+      Uint8Array.from(Array.from({ length: 11 }, () => 0x80)), // varint longer than ten bytes
     ];
     for (const suffix of suffixes) {
       const token = sparkRaw(
@@ -226,6 +226,32 @@ describe('containsEncodedSecret', () => {
       false,
     );
     expect(punctuated.startsWith('a-b1')).toBe(true);
-    expect(containsEncodedSecret(`see ${punctuated} here`)).toBe(true);
+    for (const wrapped of [
+      `see ${punctuated} here`,
+      `/pay/${punctuated}`,
+      `(${punctuated})`,
+      `${punctuated},`,
+      `"${punctuated}";`,
+      `ends with ${punctuated}.`,
+      `${punctuated}!`,
+    ]) {
+      expect(containsEncodedSecret(wrapped)).toBe(true);
+    }
+  });
+
+  it('skips valid nine- and ten-byte varints to reach the memo after them', () => {
+    const phrase = `${Array.from({ length: 11 }, () => 'zoo').join(' ')} wrong`;
+    for (const [big, varintBytes] of [
+      [2n ** 56n, 9],
+      [2n ** 63n, 10],
+    ] as const) {
+      const varint = protoVarintField(1, big);
+      // One tag byte plus the value's varint.
+      expect(varint.length - 1).toBe(varintBytes);
+      const invoice = concatBytes(varint, protoBytesField(5, phrase));
+      expect(
+        containsEncodedSecret(sparkRaw(protoBytesField(1, IDENTITY), protoBytesField(2, invoice))),
+      ).toBe(true);
+    }
   });
 });
