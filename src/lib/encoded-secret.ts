@@ -82,27 +82,29 @@ function isWifPrivateKey(token: string): boolean {
   return check.subarray(0, 4).equals(Buffer.from(bytes.subarray(bytes.length - 4)));
 }
 
+/** True when a text holds a key token, a recovery-phrase run, or a WIF private key token. */
+function textHoldsSecret(text: string): boolean {
+  return looksLikeSecretValue(text) || text.split(/[^A-Za-z0-9]+/).some(isWifPrivateKey);
+}
+
 /**
  * True when a value holds secret material, also inside an encoded token.
  *
- * Applies {@link looksLikeSecretValue} to the value itself; flags a WIF
- * private key token (Base58Check); and for every bech32 or bech32m token
- * screens the whole payload plus every length-delimited protobuf field in it
- * (every memo of a Spark address or invoice, repeated and nested fields
- * included), and every description tag of a BOLT11 token. An undecodable
- * token is only screened by its visible text.
+ * Flags a key token, a recovery-phrase run, or a WIF private key (Base58Check)
+ * in the value itself, and the same in every text decoded from it: for every
+ * bech32 or bech32m token the whole payload plus every length-delimited
+ * protobuf field on its own (every memo of a Spark address or invoice,
+ * repeated and nested fields included), and every description tag of a BOLT11
+ * token. An undecodable token is only screened by its visible text.
  *
  * @param value - Candidate string (a detail field, an event path, or a prop value).
  * @returns Whether `value` or anything encoded in it looks like secret material.
  */
 export function containsEncodedSecret(value: string): boolean {
-  if (looksLikeSecretValue(value)) {
+  if (textHoldsSecret(value)) {
     return true;
   }
   for (const token of value.split(/[^A-Za-z0-9]+/)) {
-    if (isWifPrivateKey(token)) {
-      return true;
-    }
     if (token.length < ENCODED_TOKEN_MIN_LENGTH || !token.includes('1')) {
       continue;
     }
@@ -110,11 +112,11 @@ export function containsEncodedSecret(value: string): boolean {
     if (bytes !== null) {
       const texts = [printable(bytes)];
       protoTexts(bytes, 0, texts);
-      if (texts.some((text) => looksLikeSecretValue(text))) {
+      if (texts.some(textHoldsSecret)) {
         return true;
       }
     }
-    if (bolt11Descriptions(token).some((description) => looksLikeSecretValue(description))) {
+    if (bolt11Descriptions(token).some(textHoldsSecret)) {
       return true;
     }
   }

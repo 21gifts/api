@@ -79,16 +79,16 @@ export function walletReportRoutes(deps: WalletReportRouteDeps): Hono {
       }
       const classify = walletPaymentClassifier(deps, account.id);
       const seenAt = new Date(nowMs);
-      const records: WalletPaymentRecord[] = [];
-      for (const payment of byId.values()) {
-        records.push({
+      // Payments are classified concurrently; the database pool bounds the parallel lookups.
+      const records: WalletPaymentRecord[] = await Promise.all(
+        [...byId.values()].map(async (payment) => ({
           ...payment,
           ...(await classify(payment)),
           accountId: account.id,
           firstSeenAt: new Date(seenAt.getTime()),
           updatedAt: new Date(seenAt.getTime()),
-        });
-      }
+        })),
+      );
       await deps.walletStore.recordBalance({
         id: crypto.randomUUID(),
         accountId: account.id,

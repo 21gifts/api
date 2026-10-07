@@ -42,7 +42,8 @@ export interface WalletStore {
   recordBalance(snapshot: WalletBalanceSnapshot): Promise<void>;
 
   /**
-   * Upsert payment rows in order, preserving first-seen time and non-null details.
+   * Upsert payment rows, preserving first-seen time and non-null details. Rows for the same
+   * payment are applied in the given order; distinct payments may be written concurrently.
    *
    * @param rows - Classified payment observations.
    */
@@ -184,9 +185,9 @@ function updatePayment(existing: WalletPaymentRecord, row: WalletPaymentRecord):
   }
 }
 
-/** Code-unit order, the same order as Postgres `COLLATE "C"` for the ASCII ids wallets use. */
+/** UTF-8 byte order, the same order as Postgres `COLLATE "C"`. */
 function byteOrder(left: string, right: string): number {
-  return Number(left > right) - Number(left < right);
+  return Buffer.compare(Buffer.from(left, 'utf8'), Buffer.from(right, 'utf8'));
 }
 
 /** Process-local wallet store used by tests and database-free boots. */
@@ -359,9 +360,25 @@ VALUES ($1,$2,$3,$4,$5)`,
    * @param rows - Classified payment observations.
    */
   async upsertPayments(rows: readonly WalletPaymentRecord[]): Promise<void> {
+    // Distinct payments are written concurrently (the pool bounds it); a key repeated in one call keeps its order.
+    const byKey = new Map<string, WalletPaymentRecord[]>();
     for (const row of rows) {
-      await this.sql.execute(
-        `INSERT INTO wallet_payment (${PAYMENT_COLUMNS})
+      const key = `${row.accountId}\u0000${row.paymentId}`;
+      byKey.set(key, [...(byKey.get(key) ?? []), row]);
+    }
+    await Promise.all(
+      [...byKey.values()].map(async (group) => {
+        for (const row of group) {
+          await this.upsertPayment(row);
+        }
+      }),
+    );
+  }
+
+  /** Upsert one payment row with the guarded conflict update. */
+  private async upsertPayment(row: WalletPaymentRecord): Promise<void> {
+    await this.sql.execute(
+      `INSERT INTO wallet_payment (${PAYMENT_COLUMNS})
 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)
 ON CONFLICT (account_id, payment_id) DO UPDATE SET
 direction = EXCLUDED.direction,
@@ -394,27 +411,26 @@ IS DISTINCT FROM
        CASE WHEN (EXCLUDED.category IN ('outside_lightning', 'onchain', 'unknown') AND wallet_payment.category NOT IN ('outside_lightning', 'onchain', 'unknown')) THEN wallet_payment.category ELSE EXCLUDED.category END,
        CASE WHEN (EXCLUDED.category IN ('outside_lightning', 'onchain', 'unknown') AND wallet_payment.category NOT IN ('outside_lightning', 'onchain', 'unknown')) THEN wallet_payment.counterparty_account_id ELSE EXCLUDED.counterparty_account_id END)
   AND EXCLUDED.updated_at >= wallet_payment.updated_at`,
-        [
-          row.accountId,
-          row.paymentId,
-          row.direction,
-          row.status,
-          row.amountSats,
-          row.feeSats,
-          row.paidAt,
-          row.method,
-          row.paymentHash,
-          row.invoice,
-          row.destination,
-          row.description,
-          row.lnurlComment,
-          row.category,
-          row.counterpartyAccountId,
-          row.firstSeenAt,
-          row.updatedAt,
-        ],
-      );
-    }
+      [
+        row.accountId,
+        row.paymentId,
+        row.direction,
+        row.status,
+        row.amountSats,
+        row.feeSats,
+        row.paidAt,
+        row.method,
+        row.paymentHash,
+        row.invoice,
+        row.destination,
+        row.description,
+        row.lnurlComment,
+        row.category,
+        row.counterpartyAccountId,
+        row.firstSeenAt,
+        row.updatedAt,
+      ],
+    );
   }
 
   /**
