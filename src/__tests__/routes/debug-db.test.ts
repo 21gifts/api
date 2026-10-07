@@ -29,7 +29,11 @@ function store(partial: Partial<DebugDbStore> = {}): DebugDbStore {
   };
 }
 
-function app(deps: { store: DebugDbStore | undefined; debugToken: string | undefined }): Hono {
+function app(deps: {
+  store: DebugDbStore | undefined;
+  debugToken: string | undefined;
+  debugReadToken?: string;
+}): Hono {
   return new Hono().route('/debug/db', debugDbRoutes(deps));
 }
 
@@ -93,6 +97,49 @@ describe('debugDbRoutes', () => {
     expect(parsedEvents(warn)).toContainEqual(
       expect.objectContaining({ event: 'debug.db.listed', count: 1 }),
     );
+  });
+
+  it('lists tables when only the read token is configured and matches', async () => {
+    const tables: DebugDbTable[] = [{ name: 'message', rowCount: 3 }];
+    const res = await app({
+      store: store({ listTables: () => Promise.resolve(tables) }),
+      debugToken: undefined,
+      debugReadToken: 'read-secret',
+    }).request('/debug/db', { headers: { authorization: 'Bearer read-secret' } });
+    expect(res.status).toBe(200);
+    await expect(res.json()).resolves.toEqual({ tables });
+  });
+
+  it('lists tables when the write token matches and a read token is also set', async () => {
+    const tables: DebugDbTable[] = [{ name: 'message', rowCount: 3 }];
+    const res = await app({
+      store: store({ listTables: () => Promise.resolve(tables) }),
+      debugToken: 'secret',
+      debugReadToken: 'read-secret',
+    }).request('/debug/db', { headers: { authorization: 'Bearer secret' } });
+    expect(res.status).toBe(200);
+    await expect(res.json()).resolves.toEqual({ tables });
+  });
+
+  it('lists tables when both tokens are set and the read bearer matches', async () => {
+    const tables: DebugDbTable[] = [{ name: 'message', rowCount: 3 }];
+    const res = await app({
+      store: store({ listTables: () => Promise.resolve(tables) }),
+      debugToken: 'secret',
+      debugReadToken: 'read-secret',
+    }).request('/debug/db', { headers: { authorization: 'Bearer read-secret' } });
+    expect(res.status).toBe(200);
+    await expect(res.json()).resolves.toEqual({ tables });
+  });
+
+  it('returns 401 when only the read token is set and the bearer does not match', async () => {
+    const res = await app({
+      store: store(),
+      debugToken: undefined,
+      debugReadToken: 'read-secret',
+    }).request('/debug/db', { headers: { authorization: 'Bearer other' } });
+    expect(res.status).toBe(401);
+    await expect(res.json()).resolves.toEqual({ error: 'Unauthorized' });
   });
 
   it('omits nextCursor on the last page and returns 404 for an unknown table', async () => {
