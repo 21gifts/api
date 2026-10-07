@@ -957,17 +957,82 @@ describe('POST /invoices', () => {
     expect(res.status).toBe(400);
   });
 
-  it('returns 403 when there is no account for the address', async () => {
-    const res = await createApp({ spendApiToken: TOKEN, fetchImpl: happyFetch() }).request(
+  it('returns 200 when there is no account for the address', async () => {
+    const fetchImpl = vi.fn<FetchFn>(happyFetch());
+    const res = await createApp({ spendApiToken: TOKEN, fetchImpl }).request(
       '/invoices',
       auth({ method: 'POST', body: JSON.stringify({ address: ADDRESS, amountMsat: 1000 }) }),
     );
-    expect(res.status).toBe(403);
-    expect(await res.json()).toEqual({ error: 'Passkey required' });
-    expect(parsedEvents(warn).some((e) => e['event'] === 'invoice.passkey_required')).toBe(true);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      id: string;
+      pr: string;
+      paymentHash: string;
+      amountMsat: number;
+    };
+    expect(body.pr).toBe(PR);
+    expect(body.paymentHash).toBe(HASH);
+    expect(body.amountMsat).toBe(1000);
+    expect(body.id).toMatch(/^[0-9a-f]{32}$/);
+    expect(fetchImpl).toHaveBeenCalled();
+    expect(parsedEvents(warn).some((e) => e['event'] === 'invoice.issued')).toBe(true);
+    expect(parsedEvents(warn).some((e) => e['event'] === 'invoice.passkey_required')).toBe(false);
   });
 
-  it('returns 403 when the account has no passkey credential', async () => {
+  it('returns 403 when messageId is set and the address has no account', async () => {
+    const fetchImpl = vi.fn<FetchFn>(happyFetch());
+    const res = await createApp({ spendApiToken: TOKEN, fetchImpl }).request(
+      '/invoices',
+      auth({
+        method: 'POST',
+        body: JSON.stringify({
+          address: ADDRESS,
+          amountMsat: 1000,
+          messageId: POST_ID,
+        }),
+      }),
+    );
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: 'Forum post required' });
+    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(
+      parsedEvents(warn).some(
+        (e) => e['event'] === 'invoice.forum_post_required' && e['address'] === ADDRESS,
+      ),
+    ).toBe(true);
+  });
+
+  it('returns 200 and ignores groupMessageId when the address has no account', async () => {
+    const invoiceStore = new InMemoryInvoiceStore();
+    const fetchImpl = vi.fn<FetchFn>(happyFetch());
+    const res = await createApp({
+      spendApiToken: TOKEN,
+      invoiceStore,
+      fetchImpl,
+    }).request(
+      '/invoices',
+      auth({
+        method: 'POST',
+        body: JSON.stringify({
+          address: ADDRESS,
+          amountMsat: 1000,
+          groupMessageId: GROUP_MSG_ID,
+        }),
+      }),
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { id: string };
+    expect(invoiceStore.get(body.id)).toBeDefined();
+    expect(invoiceStore.get(body.id)?.groupMessageId).toBeUndefined();
+    expect(fetchImpl).toHaveBeenCalled();
+    expect(
+      parsedEvents(warn).some(
+        (e) => e['event'] === 'invoice.group_message_ignored' && e['address'] === ADDRESS,
+      ),
+    ).toBe(true);
+  });
+
+  it('returns 200 when the account has no passkey credential', async () => {
     const authStore = new InMemoryAuthStore();
     await authStore.createAccount({
       id: 'acc-alice',
@@ -982,25 +1047,25 @@ describe('POST /invoices', () => {
       createdAt: 1,
       rulesAgreedAt: null,
     });
+    const fetchImpl = vi.fn<FetchFn>(happyFetch());
     const res = await createApp({
       spendApiToken: TOKEN,
       authStore,
-      fetchImpl: happyFetch(),
+      fetchImpl,
     }).request(
       '/invoices',
       auth({ method: 'POST', body: JSON.stringify({ address: ADDRESS, amountMsat: 1000 }) }),
     );
-    expect(res.status).toBe(403);
-    expect(await res.json()).toEqual({ error: 'Passkey required' });
-    expect(parsedEvents(warn).some((e) => e['event'] === 'invoice.passkey_required')).toBe(true);
+    expect(res.status).toBe(200);
+    expect(fetchImpl).toHaveBeenCalled();
+    expect(parsedEvents(warn).some((e) => e['event'] === 'invoice.issued')).toBe(true);
+    expect(parsedEvents(warn).some((e) => e['event'] === 'invoice.passkey_required')).toBe(false);
   });
 
-  it('returns 403 when the account has a passkey but no funding grant', async () => {
+  it('returns 200 when the account has a passkey but no funding grant', async () => {
     const authStore = new InMemoryAuthStore();
     await seedPasskeyAccount(authStore);
-    const fetchImpl: FetchFn = async () => {
-      throw new Error('LNURL must not be called');
-    };
+    const fetchImpl = vi.fn<FetchFn>(happyFetch());
     const res = await spendApp({
       spendApiToken: TOKEN,
       authStore,
@@ -1012,32 +1077,32 @@ describe('POST /invoices', () => {
       '/invoices',
       auth({ method: 'POST', body: JSON.stringify({ address: ADDRESS, amountMsat: 1000 }) }),
     );
-    expect(res.status).toBe(403);
-    expect(await res.json()).toEqual({ error: 'Funding grant required' });
-    expect(parsedEvents(warn).some((e) => e['event'] === 'invoice.funding_required')).toBe(true);
+    expect(res.status).toBe(200);
+    expect(fetchImpl).toHaveBeenCalled();
+    expect(parsedEvents(warn).some((e) => e['event'] === 'invoice.issued')).toBe(true);
+    expect(parsedEvents(warn).some((e) => e['event'] === 'invoice.funding_required')).toBe(false);
   });
 
-  it('returns 403 when the account has a passkey but no live forum post', async () => {
+  it('returns 200 when the account has a passkey but no live forum post', async () => {
     const authStore = new InMemoryAuthStore();
     await seedPasskeyAccount(authStore);
-    const fetchImpl: FetchFn = async () => {
-      throw new Error('LNURL must not be called');
-    };
+    const fetchImpl = vi.fn<FetchFn>(happyFetch());
     const res = await createApp({ spendApiToken: TOKEN, authStore, fetchImpl }).request(
       '/invoices',
       auth({ method: 'POST', body: JSON.stringify({ address: ADDRESS, amountMsat: 1000 }) }),
     );
-    expect(res.status).toBe(403);
-    expect(await res.json()).toEqual({ error: 'Forum post required' });
-    expect(parsedEvents(warn).some((e) => e['event'] === 'invoice.forum_post_required')).toBe(true);
+    expect(res.status).toBe(200);
+    expect(fetchImpl).toHaveBeenCalled();
+    expect(parsedEvents(warn).some((e) => e['event'] === 'invoice.issued')).toBe(true);
+    expect(parsedEvents(warn).some((e) => e['event'] === 'invoice.forum_post_required')).toBe(
+      false,
+    );
   });
 
-  it('returns 403 when the account has a passkey but only a live reply', async () => {
+  it('returns 200 when the account has a passkey but only a live reply', async () => {
     const authStore = new InMemoryAuthStore();
     await seedPasskeyAccount(authStore);
-    const fetchImpl: FetchFn = async () => {
-      throw new Error('LNURL must not be called');
-    };
+    const fetchImpl = vi.fn<FetchFn>(happyFetch());
     const res = await createApp({
       spendApiToken: TOKEN,
       authStore,
@@ -1047,9 +1112,12 @@ describe('POST /invoices', () => {
       '/invoices',
       auth({ method: 'POST', body: JSON.stringify({ address: ADDRESS, amountMsat: 1000 }) }),
     );
-    expect(res.status).toBe(403);
-    expect(await res.json()).toEqual({ error: 'Forum post required' });
-    expect(parsedEvents(warn).some((e) => e['event'] === 'invoice.forum_post_required')).toBe(true);
+    expect(res.status).toBe(200);
+    expect(fetchImpl).toHaveBeenCalled();
+    expect(parsedEvents(warn).some((e) => e['event'] === 'invoice.issued')).toBe(true);
+    expect(parsedEvents(warn).some((e) => e['event'] === 'invoice.forum_post_required')).toBe(
+      false,
+    );
   });
 
   it('returns 502 when LNURL-pay cannot issue an invoice', async () => {
@@ -1421,7 +1489,7 @@ describe('POST /invoices', () => {
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 
-  it('returns 403 when messageId is the account profile note', async () => {
+  it('returns 200 when messageId is the account profile note', async () => {
     const authStore = new InMemoryAuthStore();
     await authStore.createAccount({
       id: 'acc-alice',
@@ -1495,9 +1563,12 @@ describe('POST /invoices', () => {
         }),
       }),
     );
-    expect(res.status).toBe(403);
-    expect(await res.json()).toEqual({ error: 'Forum post required' });
-    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(res.status).toBe(200);
+    expect(fetchImpl).toHaveBeenCalled();
+    expect(parsedEvents(warn).some((e) => e['event'] === 'invoice.issued')).toBe(true);
+    expect(parsedEvents(warn).some((e) => e['event'] === 'invoice.forum_post_required')).toBe(
+      false,
+    );
   });
 
   it('returns 200 when messageId is a profile note that has a photo', async () => {
@@ -1628,14 +1699,16 @@ describe('POST /invoices', () => {
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 
-  it('returns 403 when messageId is a live top-level text-only post', async () => {
+  it('returns 200 when messageId is a live top-level text-only post', async () => {
     const authStore = new InMemoryAuthStore();
     await seedPasskeyAndPlatform(authStore);
+    const invoiceStore = new InMemoryInvoiceStore();
     const fetchImpl = vi.fn<FetchFn>(happyFetch());
     const res = await createApp({
       spendApiToken: TOKEN,
       authStore,
       messageStore: uuidPostStore(),
+      invoiceStore,
       fetchImpl,
     }).request(
       '/invoices',
@@ -1648,10 +1721,13 @@ describe('POST /invoices', () => {
         }),
       }),
     );
-    expect(res.status).toBe(403);
-    expect(await res.json()).toEqual({ error: 'Forum post required' });
-    expect(parsedEvents(warn).some((e) => e['event'] === 'invoice.forum_post_required')).toBe(true);
-    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { id: string };
+    expect(fetchImpl).toHaveBeenCalled();
+    expect(invoiceStore.get(body.id)?.messageId).toBe(POST_ID);
+    expect(parsedEvents(warn).some((e) => e['event'] === 'invoice.forum_post_required')).toBe(
+      false,
+    );
   });
 
   it('returns 503 when messageId is set and the platform account is missing', async () => {
@@ -2141,16 +2217,18 @@ describe('POST /invoices', () => {
     ).toBe(true);
   });
 
-  it('returns 403 when groupMessageId is set but the account has no live forum post', async () => {
+  it('returns 200 when groupMessageId is set but the account has no live forum post', async () => {
     const authStore = new InMemoryAuthStore();
     await seedPasskeyAndPlatform(authStore);
     const conversationStore = new InMemoryConversationStore();
     await seedGroupTrigger(conversationStore);
+    const invoiceStore = new InMemoryInvoiceStore();
     const fetchImpl = vi.fn<FetchFn>(happyFetch());
     const res = await createApp({
       spendApiToken: TOKEN,
       authStore,
       messageStore: new InMemoryMessageStore([]),
+      invoiceStore,
       fetchImpl,
       conversationStore,
     }).request(
@@ -2164,9 +2242,13 @@ describe('POST /invoices', () => {
         }),
       }),
     );
-    expect(res.status).toBe(403);
-    expect(await res.json()).toEqual({ error: 'Forum post required' });
-    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { id: string };
+    expect(fetchImpl).toHaveBeenCalled();
+    expect(invoiceStore.get(body.id)?.groupMessageId).toBe(GROUP_MSG_ID);
+    expect(parsedEvents(warn).some((e) => e['event'] === 'invoice.forum_post_required')).toBe(
+      false,
+    );
   });
 });
 
@@ -3451,9 +3533,7 @@ describe('GET /invoices/eligible', () => {
     await seedPasskeyAccount(authStore);
     const stored = expiredTrialGrant();
     const fundingStore = new InMemoryFundingStore([stored]);
-    const fetchImpl: FetchFn = async () => {
-      throw new Error('LNURL must not be called');
-    };
+    const fetchImpl = vi.fn<FetchFn>(happyFetch());
     const res = await spendApp({
       spendApiToken: TOKEN,
       authStore,
@@ -3465,8 +3545,8 @@ describe('GET /invoices/eligible', () => {
       '/invoices',
       auth({ method: 'POST', body: JSON.stringify({ address: ADDRESS, amountMsat: 1000 }) }),
     );
-    expect(res.status).toBe(403);
-    expect(await res.json()).toEqual({ error: 'Funding grant required' });
+    expect(res.status).toBe(200);
+    expect(fetchImpl).toHaveBeenCalled();
     expect(await fundingStore.getByAccountId('acc-alice')).toEqual(stored);
     expect((await fundingStore.getByAccountId('acc-alice'))?.status).toBe('trial');
   });
