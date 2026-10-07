@@ -3705,7 +3705,7 @@ Builds the operator-only external-pubkey inspection route.
 
 ## Function: parseClientInstant
 
-- **Purpose:** Parse a timestamp sent by the app: an ISO-8601 instant string (date, time to the minute or finer, and `Z` or a numeric offset, checked before `Date.parse`; a date alone or a locale string is refused) or a finite number, where a number below `1e11` is epoch seconds and anything else epoch milliseconds. Bounds are `CLIENT_INSTANT_MIN_MS` (2009-01-03T00:00:00Z) and now plus `CLIENT_INSTANT_FUTURE_SKEW_MS` (5 minutes).
+- **Purpose:** Parse a timestamp sent by the app: an ISO-8601 instant string (date, time to the minute or finer, and `Z` or a numeric offset, checked field by field, so a date alone, a locale string, or an impossible calendar date, time, or offset such as February 30 is refused instead of rolled over) or a finite number, where a number below `1e11` is epoch seconds and anything else epoch milliseconds. Bounds are `CLIENT_INSTANT_MIN_MS` (2009-01-03T00:00:00Z) and now plus `CLIENT_INSTANT_FUTURE_SKEW_MS` (5 minutes).
 - **Inputs:** The raw value and the server clock in epoch milliseconds.
 - **Returns / side effects:** A `Date`, or `null` for any other type, an unparseable string, a non-finite number, or an instant outside the bounds. Pure.
 - **Used by:** `parseMemberEventBatch` (`at`) and `parseWalletReport` (`syncedAt`, payment `timestamp`).
@@ -3775,7 +3775,7 @@ Builds the operator-only external-pubkey inspection route.
 
 ## Function: InMemoryWalletStore
 
-- **Purpose:** Process-local `WalletStore` for boots without `DATABASE_URL` and for tests. `recordBalance` appends a snapshot; `upsertPayments` inserts or updates by `(accountId, paymentId)` with the same rules as the Postgres store (overwrite status, amounts, method, time, category, counterparty; keep stored detail fields when the new value is `null`; keep `firstSeenAt`; move `updatedAt` only on a change; ignore a row whose `updatedAt` is older than the stored one; keep a resolved category and its counterparty when the new row only has a fallback category `outside_lightning`, `onchain`, or `unknown`). `latestBalance` and `listPayments` (newest `paidAt` first, ties by `paymentId` in UTF-8 byte order, the same as Postgres `COLLATE "C"`) return copies.
+- **Purpose:** Process-local `WalletStore` for boots without `DATABASE_URL` and for tests. `recordBalance` appends a snapshot; `upsertPayments` inserts or updates by `(accountId, paymentId)` with the same rules as the Postgres store (overwrite status, amounts, method, time, category, counterparty; keep stored detail fields when the new value is `null`; keep `firstSeenAt`, the observation time of the row that first stored the payment; move `updatedAt` only on a change; ignore a row whose `updatedAt` is older than the stored one; keep a resolved category and its counterparty when the new row only has a fallback category `outside_lightning`, `onchain`, or `unknown`). `latestBalance` and `listPayments` (newest `paidAt` first, ties by `paymentId` in UTF-8 byte order, the same as Postgres `COLLATE "C"`) return copies.
 - **Inputs:** No constructor arguments.
 - **Returns / side effects:** Promises of void, of the latest snapshot, and of payment copies. Rows live for the process lifetime. Only allow-listed fields are stored.
 - **Used by:** `createApp` default; route and store tests.
