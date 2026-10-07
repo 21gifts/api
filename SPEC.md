@@ -3540,7 +3540,9 @@ overwritten (so `pending` becomes `completed`), detail fields keep their
 stored value when the new report has none, `first_seen_at` (the observation
 time of the report that first stored the payment) never changes,
 and `updated_at` changes only when a stored value changes. A report observed
-before the stored state (a slower concurrent request) does not overwrite it.
+before the latest accepted report of that payment (a slower concurrent request,
+or a stale second device) does not overwrite it; every accepted report advances
+the watermark `last_observed_at`, also when it changes nothing.
 
 **Category** (computed on every insert and update, first match wins; the
 reporting account itself never counts as the counterparty):

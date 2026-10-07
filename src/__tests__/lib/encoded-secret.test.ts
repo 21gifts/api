@@ -98,12 +98,19 @@ describe('containsEncodedSecret', () => {
     expect(containsEncodedSecret(deep)).toBe(true);
   });
 
-  it('stops walking protobuf nesting deeper than four levels and ignores undecodable fields', () => {
-    let nested: Uint8Array = protoBytesField(5, PHRASE.replace(/ /g, ''));
-    for (let i = 0; i < 6; i += 1) {
-      nested = protoBytesField(2, nested);
-    }
-    expect(containsEncodedSecret(sparkRaw(protoBytesField(1, IDENTITY), nested))).toBe(false);
+  it('walks protobuf nesting down to depth four and no deeper, and ignores undecodable fields', () => {
+    // 49 bytes: its own length byte (ASCII "1") hides one word unless the field is read on its own.
+    const phrase = `${Array.from({ length: 11 }, () => 'zoo').join(' ')} wrong`;
+    const nestedTo = (levels: number): Uint8Array => {
+      let nested: Uint8Array = protoBytesField(5, phrase);
+      for (let i = 0; i < levels; i += 1) {
+        nested = protoBytesField(2, nested);
+      }
+      return nested;
+    };
+    // Levels 0..4 below the top-level field are walked; the memo then sits at depth 4.
+    expect(containsEncodedSecret(sparkRaw(protoBytesField(1, IDENTITY), nestedTo(4)))).toBe(true);
+    expect(containsEncodedSecret(sparkRaw(protoBytesField(1, IDENTITY), nestedTo(5)))).toBe(false);
     const truncated = sparkRaw(protoBytesField(1, IDENTITY), Uint8Array.from([0x12, 0x40, 0x01]));
     expect(containsEncodedSecret(truncated)).toBe(false);
   });

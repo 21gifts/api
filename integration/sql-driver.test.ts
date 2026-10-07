@@ -1027,8 +1027,9 @@ describe('PostgresWalletStore', () => {
       const pendingFirstSeen = storedPending.firstSeenAt.getTime();
 
       await store.upsertPayments([{ ...pending, updatedAt: new Date(Date.now() + 5_000) }]);
+      // An identical re-send changes no value; it only advances the staleness watermark.
       const afterIdentical = await walletPaymentChanges('p-pending');
-      expect(afterIdentical.map((row) => row.op)).toEqual(['INSERT']);
+      expect(afterIdentical.map((row) => row.op)).toEqual(['INSERT', 'UPDATE']);
       const stillPending = (await store.listPayments(accountId, 10)).find(
         (row) => row.paymentId === 'p-pending',
       );
@@ -1053,7 +1054,7 @@ describe('PostgresWalletStore', () => {
       expect(completed.description).toBe('coffee');
       expect(completed.firstSeenAt.getTime()).toBe(pendingFirstSeen);
       const afterCompleted = await walletPaymentChanges('p-pending');
-      expect(afterCompleted.map((row) => row.op)).toEqual(['INSERT', 'UPDATE']);
+      expect(afterCompleted.map((row) => row.op)).toEqual(['INSERT', 'UPDATE', 'UPDATE']);
 
       const ordered = await store.listPayments(accountId, 10);
       expect(ordered.map((row) => row.paymentId)).toEqual(['p-later', 'p-pending']);
@@ -1090,7 +1091,25 @@ describe('PostgresWalletStore', () => {
         'INSERT',
         'UPDATE',
         'UPDATE',
+        'UPDATE',
+        'UPDATE',
       ]);
+
+      // Stored at t0, an identical re-send observed at t2, then a slower different report from t1: t1 is ignored.
+      const t0 = new Date(Date.now() + 40_000);
+      const t1 = new Date(t0.getTime() + 1_000);
+      const t2 = new Date(t0.getTime() + 2_000);
+      const watermark = { ...pending, paymentId: 'p-watermark', status: 'completed' as const };
+      await store.upsertPayments([{ ...watermark, firstSeenAt: t0, updatedAt: t0 }]);
+      await store.upsertPayments([{ ...watermark, firstSeenAt: t2, updatedAt: t2 }]);
+      await store.upsertPayments([
+        { ...watermark, status: 'pending', firstSeenAt: t1, updatedAt: t1 },
+      ]);
+      const watermarked = (await store.listPayments(accountId, 10)).find(
+        (row) => row.paymentId === 'p-watermark',
+      );
+      expect(watermarked?.status).toBe('completed');
+      expect(watermarked?.updatedAt.getTime()).toBe(t0.getTime());
 
       const preimage = '0123456789abcdef'.repeat(4);
       const phrase =

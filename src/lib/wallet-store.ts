@@ -26,7 +26,7 @@ export interface WalletBalanceSnapshot {
 export interface WalletPaymentRecord extends ReportedWalletPayment, WalletPaymentClass {
   /** Reporting account id. */
   accountId: string;
-  /** First server receipt instant for this account/payment id. */
+  /** Observation instant of the report that first stored this account/payment id. */
   firstSeenAt: Date;
   /** Last server receipt instant that changed a stored value. */
   updatedAt: Date;
@@ -98,6 +98,7 @@ export const WALLET_SCHEMA_SQL: readonly string[] = [
   PRIMARY KEY (account_id, payment_id)
 )`,
   `ALTER TABLE wallet_payment ADD COLUMN IF NOT EXISTS invoice text`,
+  `ALTER TABLE wallet_payment ADD COLUMN IF NOT EXISTS last_observed_at timestamptz`,
   `CREATE INDEX IF NOT EXISTS wallet_payment_account_paid_idx ON wallet_payment (account_id, paid_at DESC, payment_id DESC)`,
 ];
 
@@ -149,10 +150,6 @@ const DETAIL_PAYMENT_FIELDS = [
 ] as const;
 
 function updatePayment(existing: WalletPaymentRecord, row: WalletPaymentRecord): void {
-  // A report observed before the stored state (a slower concurrent request) never overwrites it.
-  if (row.updatedAt.getTime() < existing.updatedAt.getTime()) {
-    return;
-  }
   let changed = existing.paidAt.getTime() !== row.paidAt.getTime();
   existing.paidAt = new Date(row.paidAt.getTime());
   for (const field of REQUIRED_PAYMENT_FIELDS) {
@@ -193,7 +190,8 @@ function byteOrder(left: string, right: string): number {
 /** Process-local wallet store used by tests and database-free boots. */
 export class InMemoryWalletStore implements WalletStore {
   readonly #balances: WalletBalanceSnapshot[] = [];
-  readonly #payments = new Map<string, WalletPaymentRecord>();
+  /** Stored row plus the latest accepted observation, also one that changed nothing (the staleness watermark). */
+  readonly #payments = new Map<string, { row: WalletPaymentRecord; observedMs: number }>();
 
   /**
    * Append a copy of a balance snapshot.
@@ -213,12 +211,18 @@ export class InMemoryWalletStore implements WalletStore {
   upsertPayments(rows: readonly WalletPaymentRecord[]): Promise<void> {
     for (const row of rows) {
       const key = `${row.accountId}\u0000${row.paymentId}`;
-      const existing = this.#payments.get(key);
-      if (existing === undefined) {
-        this.#payments.set(key, copyPayment(row));
-      } else {
-        updatePayment(existing, row);
+      const stored = this.#payments.get(key);
+      const observedMs = row.updatedAt.getTime();
+      if (stored === undefined) {
+        this.#payments.set(key, { row: copyPayment(row), observedMs });
+        continue;
       }
+      // A report observed before the latest accepted one (a slower concurrent request) never overwrites it.
+      if (observedMs < stored.observedMs) {
+        continue;
+      }
+      stored.observedMs = observedMs;
+      updatePayment(stored.row, row);
     }
     return Promise.resolve();
   }
@@ -249,6 +253,7 @@ export class InMemoryWalletStore implements WalletStore {
   listPayments(accountId: string, limit: number): Promise<WalletPaymentRecord[]> {
     return Promise.resolve(
       [...this.#payments.values()]
+        .map((entry) => entry.row)
         .filter((row) => row.accountId === accountId)
         .sort((a, b) => {
           const byTime = b.paidAt.getTime() - a.paidAt.getTime();
@@ -328,6 +333,29 @@ const PAYMENT_COLUMNS = `account_id, payment_id, direction, status, amount_sats,
 paid_at, method, payment_hash, invoice, destination, description, lnurl_comment, category,
 counterparty_account_id, first_seen_at, updated_at`;
 
+/** A later row with only a fallback category keeps the stored resolved category and counterparty. */
+const KEEP_RESOLVED_CATEGORY = `(EXCLUDED.category IN ('outside_lightning', 'onchain', 'unknown') AND wallet_payment.category NOT IN ('outside_lightning', 'onchain', 'unknown'))`;
+
+/** Whether the incoming row changes any stored value (after coalescing details and keeping resolved categories). */
+const PAYMENT_VALUES_CHANGE = `(wallet_payment.direction, wallet_payment.status, wallet_payment.amount_sats,
+       wallet_payment.fee_sats, wallet_payment.paid_at, wallet_payment.method,
+       wallet_payment.payment_hash, wallet_payment.invoice, wallet_payment.destination,
+       wallet_payment.description, wallet_payment.lnurl_comment, wallet_payment.category,
+       wallet_payment.counterparty_account_id)
+IS DISTINCT FROM
+      (EXCLUDED.direction, EXCLUDED.status, EXCLUDED.amount_sats,
+       EXCLUDED.fee_sats, EXCLUDED.paid_at, EXCLUDED.method,
+       COALESCE(EXCLUDED.payment_hash, wallet_payment.payment_hash),
+       COALESCE(EXCLUDED.invoice, wallet_payment.invoice),
+       COALESCE(EXCLUDED.destination, wallet_payment.destination),
+       COALESCE(EXCLUDED.description, wallet_payment.description),
+       COALESCE(EXCLUDED.lnurl_comment, wallet_payment.lnurl_comment),
+       CASE WHEN ${KEEP_RESOLVED_CATEGORY} THEN wallet_payment.category ELSE EXCLUDED.category END,
+       CASE WHEN ${KEEP_RESOLVED_CATEGORY} THEN wallet_payment.counterparty_account_id ELSE EXCLUDED.counterparty_account_id END)`;
+
+/** Latest accepted observation of the stored row; rows written before the column existed fall back to `updated_at`. */
+const OBSERVED_WATERMARK = 'COALESCE(wallet_payment.last_observed_at, wallet_payment.updated_at)';
+
 /** Durable wallet store backed by Postgres. */
 export class PostgresWalletStore implements WalletStore {
   /**
@@ -378,8 +406,8 @@ VALUES ($1,$2,$3,$4,$5)`,
   /** Upsert one payment row with the guarded conflict update. */
   private async upsertPayment(row: WalletPaymentRecord): Promise<void> {
     await this.sql.execute(
-      `INSERT INTO wallet_payment (${PAYMENT_COLUMNS})
-VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)
+      `INSERT INTO wallet_payment (${PAYMENT_COLUMNS}, last_observed_at)
+VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$17)
 ON CONFLICT (account_id, payment_id) DO UPDATE SET
 direction = EXCLUDED.direction,
 status = EXCLUDED.status,
@@ -392,25 +420,12 @@ invoice = COALESCE(EXCLUDED.invoice, wallet_payment.invoice),
 destination = COALESCE(EXCLUDED.destination, wallet_payment.destination),
 description = COALESCE(EXCLUDED.description, wallet_payment.description),
 lnurl_comment = COALESCE(EXCLUDED.lnurl_comment, wallet_payment.lnurl_comment),
-category = CASE WHEN (EXCLUDED.category IN ('outside_lightning', 'onchain', 'unknown') AND wallet_payment.category NOT IN ('outside_lightning', 'onchain', 'unknown')) THEN wallet_payment.category ELSE EXCLUDED.category END,
-counterparty_account_id = CASE WHEN (EXCLUDED.category IN ('outside_lightning', 'onchain', 'unknown') AND wallet_payment.category NOT IN ('outside_lightning', 'onchain', 'unknown')) THEN wallet_payment.counterparty_account_id ELSE EXCLUDED.counterparty_account_id END,
-updated_at = EXCLUDED.updated_at
-WHERE (wallet_payment.direction, wallet_payment.status, wallet_payment.amount_sats,
-       wallet_payment.fee_sats, wallet_payment.paid_at, wallet_payment.method,
-       wallet_payment.payment_hash, wallet_payment.invoice, wallet_payment.destination,
-       wallet_payment.description, wallet_payment.lnurl_comment, wallet_payment.category,
-       wallet_payment.counterparty_account_id)
-IS DISTINCT FROM
-      (EXCLUDED.direction, EXCLUDED.status, EXCLUDED.amount_sats,
-       EXCLUDED.fee_sats, EXCLUDED.paid_at, EXCLUDED.method,
-       COALESCE(EXCLUDED.payment_hash, wallet_payment.payment_hash),
-       COALESCE(EXCLUDED.invoice, wallet_payment.invoice),
-       COALESCE(EXCLUDED.destination, wallet_payment.destination),
-       COALESCE(EXCLUDED.description, wallet_payment.description),
-       COALESCE(EXCLUDED.lnurl_comment, wallet_payment.lnurl_comment),
-       CASE WHEN (EXCLUDED.category IN ('outside_lightning', 'onchain', 'unknown') AND wallet_payment.category NOT IN ('outside_lightning', 'onchain', 'unknown')) THEN wallet_payment.category ELSE EXCLUDED.category END,
-       CASE WHEN (EXCLUDED.category IN ('outside_lightning', 'onchain', 'unknown') AND wallet_payment.category NOT IN ('outside_lightning', 'onchain', 'unknown')) THEN wallet_payment.counterparty_account_id ELSE EXCLUDED.counterparty_account_id END)
-  AND EXCLUDED.updated_at >= wallet_payment.updated_at`,
+category = CASE WHEN ${KEEP_RESOLVED_CATEGORY} THEN wallet_payment.category ELSE EXCLUDED.category END,
+counterparty_account_id = CASE WHEN ${KEEP_RESOLVED_CATEGORY} THEN wallet_payment.counterparty_account_id ELSE EXCLUDED.counterparty_account_id END,
+updated_at = CASE WHEN ${PAYMENT_VALUES_CHANGE} THEN EXCLUDED.updated_at ELSE wallet_payment.updated_at END,
+last_observed_at = EXCLUDED.last_observed_at
+WHERE EXCLUDED.last_observed_at >= ${OBSERVED_WATERMARK}
+  AND (${PAYMENT_VALUES_CHANGE} OR EXCLUDED.last_observed_at > ${OBSERVED_WATERMARK})`,
       [
         row.accountId,
         row.paymentId,

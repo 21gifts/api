@@ -33,5 +33,6 @@ CREATE TABLE IF NOT EXISTS wallet_payment (
 );
 
 ALTER TABLE wallet_payment ADD COLUMN IF NOT EXISTS invoice text;
+ALTER TABLE wallet_payment ADD COLUMN IF NOT EXISTS last_observed_at timestamptz;
 
 CREATE INDEX IF NOT EXISTS wallet_payment_account_paid_idx ON wallet_payment (account_id, paid_at DESC, payment_id DESC);
