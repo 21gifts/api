@@ -372,7 +372,7 @@ export function memberHabitRoutes(deps: {
         }
         const habits = await deps.store.listPublic(account.id, nowMs);
         const habit = habits.find((row) => row.id === body.id);
-        if (habit === undefined) {
+        if (habit === undefined || habit.accountId !== account.id) {
           return c.json({ error: 'Not found' }, 404);
         }
         if (!isRealYmd(body.period)) {

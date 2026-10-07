@@ -880,6 +880,15 @@ describe('memberHabitRoutes', () => {
       }),
     );
     await store.add(sampleHabit({ id: 'theirs', accountId: ALICE.id, role: 'basis' }));
+    await store.add(
+      sampleHabit({
+        id: 'theirs-week',
+        accountId: ALICE.id,
+        role: 'basis',
+        cadence: 'weekly',
+        firstPeriod: '2026-09-28',
+      }),
+    );
     const app = mount({ store, account: BASIS });
     const partial = await post(
       app,
@@ -946,6 +955,19 @@ describe('memberHabitRoutes', () => {
       AUTH,
     );
     expect(other.status).toBe(404);
+    const otherFuture = await post(
+      app,
+      { action: 'log', id: 'theirs', period: '2026-10-06', status: 'achieved' },
+      AUTH,
+    );
+    expect(otherFuture.status).toBe(404);
+    expect(await otherFuture.json()).toEqual({ error: 'Not found' });
+    const otherTuesday = await post(
+      app,
+      { action: 'log', id: 'theirs-week', period: '2026-09-29', status: 'achieved' },
+      AUTH,
+    );
+    expect(otherTuesday.status).toBe(404);
     const unknown = await post(
       app,
       { action: 'log', id: 'missing', period: '2026-10-01', status: 'achieved' },
