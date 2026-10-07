@@ -1,9 +1,16 @@
 import { describe, expect, it } from 'vitest';
 import { parseClientInstant } from '@/lib/client-instant';
+import { encodeSparkInvoice } from '@/lib/spark-invoice';
 import { isSecretFieldName, looksLikeSecretValue } from '@/lib/secret-shape';
 import { MAX_SATS, parseWalletReport, WALLET_REPORT_PAYMENTS_MAX } from '@/lib/wallet-report';
 
 const NOW = Date.parse('2026-10-01T12:00:00.000Z');
+/** Zero-amount BOLT11 whose description is a 12-word recovery-phrase shape (unsigned test vector). */
+const BOLT11_PHRASE_DESCRIPTION =
+  'lnbc1pvjluezpp5qyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqsdy8v93xzmnydahzqctzd9kxjareypskymr9ypskymm4wssxzcn0wejjqctzwdjkuapqv938xmmjvgsxzcnnw3exzcm5ypskyum4wfjzqctzw4ek2grpvd3k2umnypskxcmfv3jkuaqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqt0sdnl';
+/** The same invoice shape with the description "1 cup coffee". */
+const BOLT11_PLAIN_DESCRIPTION =
+  'lnbc1pvjluezpp5qyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqsdq5xysxxatsyp3k7enxv4jsqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqznl48l';
 const WHEN = '2026-10-01T11:00:00.000Z';
 const HASH = 'AB'.repeat(32);
 
@@ -195,6 +202,48 @@ describe('parseWalletReport', () => {
         lnurlComment: null,
       },
     ]);
+  });
+
+  it('nulls an invoice or destination whose embedded memo or description holds secret material', () => {
+    const phrase =
+      'abandon ability able about above absent absorb abstract absurd abuse access accident';
+    const key = `02${'c'.repeat(64)}`;
+    const sparkWith = (memo: string): string =>
+      encodeSparkInvoice({ identityPublicKey: key, id: new Uint8Array(16), memo, amountSats: 21 });
+    const parsed = parseWalletReport(
+      {
+        balanceSats: 1,
+        syncedAt: WHEN,
+        payments: [
+          payment({
+            id: 'spark-secret',
+            invoice: sparkWith(phrase),
+            destination: sparkWith(phrase),
+          }),
+          payment({
+            id: 'spark-clean',
+            invoice: sparkWith('zap:abc'),
+            destination: sparkWith('pos:x'),
+          }),
+          payment({ id: 'bolt11-secret', invoice: BOLT11_PHRASE_DESCRIPTION }),
+          payment({ id: 'bolt11-clean', invoice: BOLT11_PLAIN_DESCRIPTION }),
+        ],
+      },
+      NOW,
+    );
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) {
+      return;
+    }
+    expect(
+      parsed.report.payments.map((row) => [row.paymentId, row.invoice, row.destination]),
+    ).toEqual([
+      ['spark-secret', null, null],
+      ['spark-clean', sparkWith('zap:abc'), sparkWith('pos:x')],
+      ['bolt11-secret', null, null],
+      ['bolt11-clean', BOLT11_PLAIN_DESCRIPTION, null],
+    ]);
+    expect(JSON.stringify(parsed.report)).not.toContain(BOLT11_PHRASE_DESCRIPTION);
   });
 
   it('accepts every direction/status and explicit zero fee', () => {

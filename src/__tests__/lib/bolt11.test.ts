@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { describe, it, expect } from 'vitest';
-import { decodeBolt11, inspectBolt11, isNip57Invoice } from '@/lib/bolt11';
+import { bolt11Description, decodeBolt11, inspectBolt11, isNip57Invoice } from '@/lib/bolt11';
 
 const HASH = 'aa'.repeat(32);
 const DESC_HASH = 'bb'.repeat(32);
@@ -162,6 +162,24 @@ describe('inspectBolt11', () => {
       ],
     }));
     expect(inspected?.descriptionHash).toBeNull();
+  });
+});
+
+describe('bolt11Description', () => {
+  it('returns the description of any decodable invoice, zero-amount included', () => {
+    expect(
+      bolt11Description('lnbc1', () => ({ sections: [{ name: 'description', value: 'coffee' }] })),
+    ).toBe('coffee');
+  });
+
+  it('returns null without a string description or when decoding fails', () => {
+    expect(
+      bolt11Description('lnbc1', () => ({ sections: [{ name: 'description_hash', value: 'ab' }] })),
+    ).toBeNull();
+    expect(
+      bolt11Description('lnbc1', () => ({ sections: [{ name: 'description', value: 1 }] })),
+    ).toBeNull();
+    expect(bolt11Description('not an invoice')).toBeNull();
   });
 });
 

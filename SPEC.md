@@ -3437,6 +3437,15 @@ payments the api has not acknowledged yet.
   anywhere in the value) is stored as `null`.
 - Every other field is ignored and never stored or logged. A `preimage` is not
   read even when the app sends one; the app does not send it.
+- `invoice` and `destination` are also stored as `null` when the memo of a
+  Spark invoice or the description of a BOLT11 inside them holds secret
+  material, so an encoded invoice cannot carry a recovery phrase into storage.
+- Limit of the shape screening: it finds key tokens and recovery-phrase word
+  runs. A raw 32-byte value (hex or base64) looks exactly like the payment
+  hashes, transaction ids, payment ids and NIP-57 zap requests (64-hex keys and
+  ids) this route collects, so it is not screened by shape. Such values are
+  kept out by the allow-list (secret-named fields are never read) and by the
+  app, which never sends a preimage, seed, PRF output or key.
 
 The api stores one row in `wallet_balance_snapshot` per report and upserts
 each payment into `wallet_payment` by `(account, id)`. Re-sending a payment
@@ -3502,6 +3511,9 @@ at most 50 events.
   naming secret material (seed, mnemonic, phrase, preimage, private key,
   secret, PRF, nsec, password, …) and secret-shaped string values are dropped;
   other invalid keys are dropped too.
+  The same limit as for the wallet report applies: a raw 32-byte value under a
+  neutral key is not recognisable by shape (event and payment ids look the
+  same); the app never puts secret material into events.
 
 An event that fails a rule is dropped and counted; the rest are stored in
 `member_event` with the account and the server receive time.

@@ -3752,7 +3752,7 @@ Builds the operator-only external-pubkey inspection route.
 
 ## Function: parseWalletReport
 
-- **Purpose:** Validate a `POST /me/wallet/report` body. `balanceSats` must be a safe integer from 0 to `MAX_SATS` (21 million BTC) and `syncedAt` must pass `parseClientInstant`; `payments` is optional and at most `WALLET_REPORT_PAYMENTS_MAX` (200). A payment needs `id` (1–256 characters, no control characters, not secret-shaped), `direction` `in` / `out`, `status` `pending` / `completed` / `failed`, `amountSats`, `timestamp`, and a lower-case `method`; `feeSats` missing or `null` is 0. Detail fields `paymentHash` (64 hex), `invoice` (≤ 4096), `destination` (≤ 512), `description` (≤ 640), and `lnurlComment` (≤ 640) become `null` when missing, too long, holding control characters, or secret-shaped (`looksLikeSecretValue`).
+- **Purpose:** Validate a `POST /me/wallet/report` body. `balanceSats` must be a safe integer from 0 to `MAX_SATS` (21 million BTC) and `syncedAt` must pass `parseClientInstant`; `payments` is optional and at most `WALLET_REPORT_PAYMENTS_MAX` (200). A payment needs `id` (1–256 characters, no control characters, not secret-shaped), `direction` `in` / `out`, `status` `pending` / `completed` / `failed`, `amountSats`, `timestamp`, and a lower-case `method`; `feeSats` missing or `null` is 0. Detail fields `paymentHash` (64 hex), `invoice` (≤ 4096), `destination` (≤ 512), `description` (≤ 640), and `lnurlComment` (≤ 640) become `null` when missing, too long, holding control characters, or secret-shaped (`looksLikeSecretValue`). `invoice` and `destination` also become `null` when the Spark invoice memo (`decodeSparkAddress`) or BOLT11 description (`bolt11Description`) inside them is secret-shaped. A raw 32-byte value is not screened by shape: it looks like the hashes, ids and NIP-57 zap requests the route collects.
 - **Inputs:** The parsed JSON body and the server clock in epoch milliseconds.
 - **Returns / side effects:** `{ ok: false }` for a refused report, otherwise `{ ok: true, report }` with `payments` in request order and `skipped` for invalid entries. Output objects are built field by field, so unknown fields such as `preimage` are never copied. Pure.
 - **Used by:** `walletReportRoutes`.
@@ -3791,3 +3791,10 @@ Builds the operator-only external-pubkey inspection route.
 - **Inputs:** `authStore`, `walletStore`, `messages`, `posStore`, optional `lnurlServer`, `now`, optional `limiter`.
 - **Returns / side effects:** 200 `{ acknowledgedIds }`. A lookup or write failure logs `wallet_report.write.failed` with `accountId` only and answers 503 `{ error: 'Wallet data is unavailable' }`. Never logs the body, amounts, addresses, invoices, or memos.
 - **Used by:** `createApp`.
+
+## Function: bolt11Description
+
+- **Purpose:** Read the plaintext description of any decodable BOLT11, zero-amount invoices included (unlike `inspectBolt11`, which needs an amount). An invoice that carries only a description hash, or that does not decode, has none.
+- **Inputs:** A BOLT11 string and an optional decoder (tests inject a fake).
+- **Returns / side effects:** The description string, or `null`. Pure; never logs the description.
+- **Used by:** `parseWalletReport`, which stores a reported `invoice` or `destination` as `null` when its embedded description (or the memo of a Spark invoice) holds secret material.

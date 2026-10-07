@@ -3537,6 +3537,24 @@ test('Function: walletPaymentClassifier — onchain payment is acknowledged', as
   expect(await res.json()).toEqual({ acknowledgedIds: ['onchain-1'] });
 });
 
+test('Function: bolt11Description — invoice with a plain description is acknowledged', async ({
+  request,
+}) => {
+  const auth = await memberSession(request);
+  const res = await request.post('/me/wallet/report', {
+    headers: auth,
+    data: walletReport([
+      walletPayment({
+        id: 'bolt11-description',
+        invoice:
+          'lnbc1pvjluezpp5qyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqsdq5xysxxatsyp3k7enxv4jsqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqznl48l',
+      }),
+    ]),
+  });
+  expect(res.status()).toBe(200);
+  expect(await res.json()).toEqual({ acknowledgedIds: ['bolt11-description'] });
+});
+
 test('Function: walletReportRoutes — no bearer is 401', async ({ request }) => {
   const res = await request.post('/me/wallet/report');
   expect(res.status()).toBe(401);
