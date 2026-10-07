@@ -153,9 +153,25 @@ function isWifPrivateKey(token: string): boolean {
   return check.subarray(0, 4).equals(Buffer.from(bytes.subarray(bytes.length - 4)));
 }
 
-/** True when a text holds a key token, a recovery-phrase run, or a WIF private key token. */
+/** True when a text, as written or percent-decoded, holds a key token, a recovery-phrase run, or a WIF private key token. */
 function textHoldsSecret(text: string): boolean {
-  return looksLikeSecretValue(text) || text.split(/[^A-Za-z0-9]+/).some(isWifPrivateKey);
+  return [text, percentDecoded(text)].some(
+    (form) => looksLikeSecretValue(form) || form.split(/[^A-Za-z0-9]+/).some(isWifPrivateKey),
+  );
+}
+
+/**
+ * Text with every run of `%XX` escapes decoded as UTF-8 and `+` read as a space, as in URLs and
+ * LNURL query strings. A malformed escape stays as it is and does not stop later runs from decoding.
+ */
+function percentDecoded(text: string): string {
+  return text
+    .replace(/\+/g, ' ')
+    .replace(/(?:%[0-9A-Fa-f]{2})+/g, (run) =>
+      new TextDecoder('utf-8').decode(
+        Uint8Array.from(run.slice(1).split('%'), (byte) => parseInt(byte, 16)),
+      ),
+    );
 }
 
 /**

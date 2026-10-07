@@ -73,13 +73,6 @@ function cutQueryAndFragment(path: string): string {
   return path.slice(0, end);
 }
 
-/** Decode each `%XX` byte on its own, so one malformed escape cannot keep the rest of a segment encoded. */
-function decodeSegment(segment: string): string {
-  return segment.replace(/%([0-9A-Fa-f]{2})/g, (_match, byte: string) =>
-    String.fromCharCode(parseInt(byte, 16)),
-  );
-}
-
 function isValidMemberPath(path: string): boolean {
   if (path.length < 1 || path.length > PATH_MAX || !path.startsWith('/')) {
     return false;
@@ -87,8 +80,8 @@ function isValidMemberPath(path: string): boolean {
   if (hasC0OrDel(path)) {
     return false;
   }
-  // A key or a recovery phrase anywhere in the path, also URL-encoded or inside an encoded token, never reaches storage.
-  return !containsEncodedSecret(path.split('/').map(decodeSegment).join('/'));
+  // A key or a recovery phrase anywhere in the path, also percent-encoded or inside an encoded token, never reaches storage.
+  return !containsEncodedSecret(path);
 }
 
 function parseIncomingProps(raw: Record<string, unknown>): Record<string, MemberEventPropValue> {

@@ -216,6 +216,23 @@ describe('parseMemberEventBatch', () => {
     expect(JSON.stringify(result)).not.toContain(raw);
   });
 
+  it('drops a path holding a percent-encoded non-English phrase', () => {
+    const japanese =
+      'あいこくしん　あいさつ　あいだ　あおぞら　あかちゃん　あきる　あけがた　あける　あこがれる　あさい　あさひ　あしあと';
+    const result = parse({
+      events: [
+        event({ path: `/note/${encodeURIComponent(japanese.normalize('NFKD'))}` }),
+        event({ path: `/note/${encodeURIComponent('ありがとう')}` }),
+      ],
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) {
+      return;
+    }
+    expect(result.dropped).toBe(1);
+    expect(result.events).toHaveLength(1);
+  });
+
   it('keeps a plain path unchanged', () => {
     const result = parse({ events: [event({ path: '/ok' })] });
     expect(result.ok).toBe(true);

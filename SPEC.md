@@ -3449,6 +3449,9 @@ payments the api has not acknowledged yet.
   of any bech32 token, and any WIF private key (Base58Check). A detail field that holds secret
   material there is stored as `null`, and a payment with such an id is skipped,
   so an encoded invoice cannot carry a recovery phrase into storage.
+- Screened text is NFC-normalised (so the decomposed form of the official
+  wordlists counts) and also read percent-decoded (runs of `%XX` as UTF-8, `+`
+  as a space), as in LNURL query strings.
 - Limit of the shape screening: it finds key tokens and recovery-phrase word
   runs, also inside canonical encodings (Spark and BOLT11 memos, bech32
   payloads). It is a safety net against accidental exposure (a phrase typed or
@@ -3522,9 +3525,9 @@ at most 50 events.
   `shop_opened`, `profile_opened`, `login`, `signup_completed`.
 - `at`: same instant rules as `syncedAt` above.
 - `path`: optional; cut at the first `?` or `#`; must start with `/`, at most
-  256 characters; a path that holds secret material anywhere (after decoding each
-  `%XX` escape on its own, so a malformed escape does not hide the rest; a key token or at least 12 consecutive 3–8 letter words across segments)
-  drops the event.
+  256 characters; a path that holds secret material anywhere (as written and with
+  runs of `%XX` escapes decoded as UTF-8, a malformed escape not hiding the rest;
+  a key token or a recovery-phrase run across segments) drops the event.
 - `props`: optional flat object, at most 20 keys; key `[A-Za-z][A-Za-z0-9_]{0,39}`;
   value `null`, boolean, finite number, or string up to 200 characters. Keys
   naming secret material (seed, mnemonic, phrase, preimage, private key,
