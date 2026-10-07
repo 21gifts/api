@@ -130,15 +130,14 @@ function copyPayment(row: WalletPaymentRecord): WalletPaymentRecord {
   };
 }
 
-const REQUIRED_PAYMENT_FIELDS = [
-  'direction',
-  'status',
-  'amountSats',
-  'feeSats',
-  'method',
-  'category',
-  'counterpartyAccountId',
-] as const;
+const REQUIRED_PAYMENT_FIELDS = ['direction', 'status', 'amountSats', 'feeSats', 'method'] as const;
+
+/** Categories the classifier falls back to when nothing in the report names the other side. */
+const FALLBACK_CATEGORIES: ReadonlySet<WalletPaymentCategory> = new Set([
+  'outside_lightning',
+  'onchain',
+  'unknown',
+]);
 
 const DETAIL_PAYMENT_FIELDS = [
   'paymentHash',
@@ -167,6 +166,18 @@ function updatePayment(existing: WalletPaymentRecord, row: WalletPaymentRecord):
       changed = true;
       Object.assign(existing, { [field]: next });
     }
+  }
+  // A later report with less detail never turns a resolved category back into a fallback one.
+  const keepClass =
+    FALLBACK_CATEGORIES.has(row.category) && !FALLBACK_CATEGORIES.has(existing.category);
+  if (
+    !keepClass &&
+    (existing.category !== row.category ||
+      existing.counterpartyAccountId !== row.counterpartyAccountId)
+  ) {
+    changed = true;
+    existing.category = row.category;
+    existing.counterpartyAccountId = row.counterpartyAccountId;
   }
   if (changed) {
     existing.updatedAt = new Date(row.updatedAt.getTime());
@@ -359,8 +370,8 @@ invoice = COALESCE(EXCLUDED.invoice, wallet_payment.invoice),
 destination = COALESCE(EXCLUDED.destination, wallet_payment.destination),
 description = COALESCE(EXCLUDED.description, wallet_payment.description),
 lnurl_comment = COALESCE(EXCLUDED.lnurl_comment, wallet_payment.lnurl_comment),
-category = EXCLUDED.category,
-counterparty_account_id = EXCLUDED.counterparty_account_id,
+category = CASE WHEN (EXCLUDED.category IN ('outside_lightning', 'onchain', 'unknown') AND wallet_payment.category NOT IN ('outside_lightning', 'onchain', 'unknown')) THEN wallet_payment.category ELSE EXCLUDED.category END,
+counterparty_account_id = CASE WHEN (EXCLUDED.category IN ('outside_lightning', 'onchain', 'unknown') AND wallet_payment.category NOT IN ('outside_lightning', 'onchain', 'unknown')) THEN wallet_payment.counterparty_account_id ELSE EXCLUDED.counterparty_account_id END,
 updated_at = EXCLUDED.updated_at
 WHERE (wallet_payment.direction, wallet_payment.status, wallet_payment.amount_sats,
        wallet_payment.fee_sats, wallet_payment.paid_at, wallet_payment.method,
@@ -374,8 +385,9 @@ IS DISTINCT FROM
        COALESCE(EXCLUDED.invoice, wallet_payment.invoice),
        COALESCE(EXCLUDED.destination, wallet_payment.destination),
        COALESCE(EXCLUDED.description, wallet_payment.description),
-       COALESCE(EXCLUDED.lnurl_comment, wallet_payment.lnurl_comment), EXCLUDED.category,
-       EXCLUDED.counterparty_account_id)
+       COALESCE(EXCLUDED.lnurl_comment, wallet_payment.lnurl_comment),
+       CASE WHEN (EXCLUDED.category IN ('outside_lightning', 'onchain', 'unknown') AND wallet_payment.category NOT IN ('outside_lightning', 'onchain', 'unknown')) THEN wallet_payment.category ELSE EXCLUDED.category END,
+       CASE WHEN (EXCLUDED.category IN ('outside_lightning', 'onchain', 'unknown') AND wallet_payment.category NOT IN ('outside_lightning', 'onchain', 'unknown')) THEN wallet_payment.counterparty_account_id ELSE EXCLUDED.counterparty_account_id END)
   AND EXCLUDED.updated_at >= wallet_payment.updated_at`,
         [
           row.accountId,

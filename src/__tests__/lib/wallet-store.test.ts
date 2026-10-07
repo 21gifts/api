@@ -169,6 +169,39 @@ describe('InMemoryWalletStore', () => {
     expect((await store.listPayments('account', 1))[0]?.updatedAt).toEqual(T2);
   });
 
+  it('never turns a resolved category back into a fallback one, but upgrades and switches resolved ones', async () => {
+    const store = new InMemoryWalletStore();
+    await store.upsertPayments([payment({ category: 'gift', counterpartyAccountId: 'other' })]);
+    await store.upsertPayments([
+      payment({ category: 'outside_lightning', counterpartyAccountId: null, updatedAt: T2 }),
+    ]);
+    expect((await store.listPayments('account', 1))[0]).toMatchObject({
+      category: 'gift',
+      counterpartyAccountId: 'other',
+      updatedAt: T1,
+    });
+    await store.upsertPayments([
+      payment({ category: 'shop', counterpartyAccountId: 'shop-account', updatedAt: T2 }),
+    ]);
+    expect((await store.listPayments('account', 1))[0]).toMatchObject({
+      category: 'shop',
+      counterpartyAccountId: 'shop-account',
+      updatedAt: T2,
+    });
+
+    const fallback = new InMemoryWalletStore();
+    await fallback.upsertPayments([payment({ category: 'unknown', counterpartyAccountId: null })]);
+    await fallback.upsertPayments([
+      payment({ category: 'onchain', updatedAt: T2, counterpartyAccountId: null }),
+    ]);
+    expect((await fallback.listPayments('account', 1))[0]?.category).toBe('onchain');
+    await fallback.upsertPayments([payment({ category: 'member', updatedAt: T2 })]);
+    expect((await fallback.listPayments('account', 1))[0]).toMatchObject({
+      category: 'member',
+      counterpartyAccountId: 'other',
+    });
+  });
+
   it('ignores a report observed before the stored state', async () => {
     const store = new InMemoryWalletStore();
     await store.upsertPayments([payment({ status: 'completed', updatedAt: T2, firstSeenAt: T2 })]);
@@ -195,6 +228,9 @@ describe('PostgresWalletStore', () => {
     expect(sql.executes[1]?.text).toContain('COALESCE(EXCLUDED.invoice, wallet_payment.invoice)');
     expect(sql.executes[1]?.text).toContain('IS DISTINCT FROM');
     expect(sql.executes[1]?.text).toContain('AND EXCLUDED.updated_at >= wallet_payment.updated_at');
+    expect(sql.executes[1]?.text).toContain(
+      "category = CASE WHEN (EXCLUDED.category IN ('outside_lightning', 'onchain', 'unknown') AND wallet_payment.category NOT IN ('outside_lightning', 'onchain', 'unknown')) THEN wallet_payment.category ELSE EXCLUDED.category END",
+    );
     expect(sql.executes[1]?.params).toEqual([
       'account',
       'a',

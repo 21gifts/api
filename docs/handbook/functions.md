@@ -61,6 +61,7 @@
 - **Purpose:** Process-local `PosStore` used in tests and when no database URL is set. Always starts empty. `create` refuses a second unexpired pending row for the same account. `cancelPending` cancels every remaining pending row. `issueSparkInvoice` keeps the first Spark invoice of a charge that was open at the given issue time (`pending` or `expired`, `expiresAt` after it); `recordInvoice` records a payment hash once under the same rule, so the issue time decides, not the write time; `listWatched` lists pending and expired charges whose `expiresAt` is after the window start, oldest first, with their hashes; `markPaid` flips a pending or expired charge to `paid` once and logs `pos.paid` with the account id only.
 - **Inputs:** None.
 - **Returns / side effects:** Pending, cancel, expire, list, and paid-tracking methods. Mutates its private arrays. `create` throws `A payment is already open` when one is already open.
+- **Payment lookup:** `findChargeForPayment({ paymentHash })` returns the charge whose recorded BOLT11 hash matches, and `findChargeForPayment({ chargeId })` the charge with that id; `undefined` otherwise. Used by `walletPaymentClassifier` for the `shop` category.
 - **Used by:** `createApp` default and unit tests.
 
 ## Function: PostgresPosStore
@@ -68,6 +69,7 @@
 - **Purpose:** `PosStore` against the `pos_charge` and `pos_charge_invoice` tables. Pending inserts are one per account via `pos_charge_account_pending_idx`. `create` expires due rows first so a finished charge does not block the next one. `cancelPending` cancels every remaining pending row. `issueSparkInvoice` is one conditional `UPDATE … COALESCE(spark_invoice, $2)` on a `pending` or `expired` row whose `expires_at` is after the issue time; `recordInvoice` is one `INSERT … SELECT` gated the same way, with `ON CONFLICT (payment_hash) DO NOTHING`; `listWatched` joins the recorded hashes; `markPaid` is one conditional `UPDATE … WHERE status IN ('pending', 'expired')`, so the first confirmation wins.
 - **Inputs:** A `SqlClient`.
 - **Returns / side effects:** Same port as the in-memory store, persisted in Postgres. A concurrent second pending insert raises unique violation `23505` for the route to map to 409. `markPaid` logs `pos.paid` only when it changed the row. Every write lands in `db_change` through `trg_db_change`.
+- **Payment lookup:** `findChargeForPayment({ paymentHash })` joins `pos_charge_invoice` to `pos_charge` on the recorded hash; `findChargeForPayment({ chargeId })` reads one charge by id, and a non-UUID id answers `undefined` without a query (no uuid cast error). Used by `walletPaymentClassifier` for the `shop` category.
 - **Used by:** `openBootStores` when `DATABASE_URL` is set.
 
 ## Function: buildGiftDay
@@ -3710,7 +3712,7 @@ Builds the operator-only external-pubkey inspection route.
 
 ## Function: parseMemberEventBatch
 
-- **Purpose:** Validate a `POST /me/events` body `{ events: [...] }` against the allow-list. The batch is refused when the body is not a plain object, `events` is not an array, or it has more than `MEMBER_EVENT_BATCH_MAX` (50) entries. Each entry needs a `name` in `MEMBER_EVENT_NAMES` and an `at` that `parseClientInstant` accepts; `path` is cut at `?` / `#` and must start with `/` (1–256 characters, no control characters, no key token or recovery-phrase run anywhere after URL decoding); `props` must be a plain object of at most `MEMBER_EVENT_PROPS_MAX` (20) keys. Inside `props`, keys that fail `[A-Za-z][A-Za-z0-9_]{0,39}`, secret-named keys, secret-shaped strings, strings over 200 characters or with control characters, non-finite numbers, and nested values are skipped without dropping the event.
+- **Purpose:** Validate a `POST /me/events` body `{ events: [...] }` against the allow-list. The batch is refused when the body is not a plain object, `events` is not an array, or it has more than `MEMBER_EVENT_BATCH_MAX` (50) entries. Each entry needs a `name` in `MEMBER_EVENT_NAMES` and an `at` that `parseClientInstant` accepts; `path` is cut at `?` / `#` and must start with `/` (1–256 characters, no control characters, no key token or recovery-phrase run anywhere after URL decoding); `props` must be a plain object of at most `MEMBER_EVENT_PROPS_MAX` (20) keys. Inside `props`, keys that fail `[A-Za-z][A-Za-z0-9_]{0,39}`, secret-named keys, strings that `containsEncodedSecret` flags, strings over 200 characters or with control characters, non-finite numbers, and nested values are skipped without dropping the event.
 - **Inputs:** The parsed JSON body and the server clock in epoch milliseconds.
 - **Returns / side effects:** `{ ok: false }` for a refused batch, otherwise `{ ok: true, events, dropped }` where `dropped` counts entries that failed a rule. Unknown keys are ignored and never copied. Pure.
 - **Used by:** `memberEventRoutes`.
@@ -3748,11 +3750,11 @@ Builds the operator-only external-pubkey inspection route.
 - **Purpose:** Decode a Spark address or Spark invoice (bech32m with a Spark prefix such as `spark`, `sparkrt`, `sp`, or `sprt`, no length limit) into the receiver's identity public key (protobuf field 1, 33 bytes) and the invoice memo (field 5 of field 2), for example `zap:<payment hash>` or `pos:<charge id>`. The input is trimmed and lower-cased first.
 - **Inputs:** One candidate string (the reported `invoice` or `destination`).
 - **Returns / side effects:** `{ identityPublicKey, memo }` (66 lower-case hex, memo or `null`), or `null` for any decoding failure. Never throws and never logs.
-- **Used by:** `walletPaymentClassifier`.
+- **Used by:** `walletPaymentClassifier` (identity key and the `zap:` / `pos:` memo). Secret screening of encoded memos is `containsEncodedSecret`, which reads every memo, not only the first.
 
 ## Function: parseWalletReport
 
-- **Purpose:** Validate a `POST /me/wallet/report` body. `balanceSats` must be a safe integer from 0 to `MAX_SATS` (21 million BTC) and `syncedAt` must pass `parseClientInstant`; `payments` is optional and at most `WALLET_REPORT_PAYMENTS_MAX` (200). A payment needs `id` (1–256 characters, no control characters, not secret-shaped), `direction` `in` / `out`, `status` `pending` / `completed` / `failed`, `amountSats`, `timestamp`, and a lower-case `method`; `feeSats` missing or `null` is 0. Detail fields `paymentHash` (64 hex), `invoice` (≤ 4096), `destination` (≤ 512), `description` (≤ 640), and `lnurlComment` (≤ 640) become `null` when missing, too long, holding control characters, or secret-shaped (`looksLikeSecretValue`). `invoice` and `destination` also become `null` when the Spark invoice memo (`decodeSparkAddress`) or BOLT11 description (`bolt11Description`) inside them is secret-shaped. A raw 32-byte value is not screened by shape: it looks like the hashes, ids and NIP-57 zap requests the route collects.
+- **Purpose:** Validate a `POST /me/wallet/report` body. `balanceSats` must be a safe integer from 0 to `MAX_SATS` (21 million BTC) and `syncedAt` must pass `parseClientInstant`; `payments` is optional and at most `WALLET_REPORT_PAYMENTS_MAX` (200). A payment needs `id` (1–256 characters, no control characters, not secret-shaped), `direction` `in` / `out`, `status` `pending` / `completed` / `failed`, `amountSats`, `timestamp`, and a `method` that is lower-cased and must then match `[a-z][a-z0-9_]{0,31}`; `feeSats` missing or `null` is 0. Detail fields `paymentHash` (64 hex), `invoice` (≤ 4096), `destination` (≤ 512), `description` (≤ 640), and `lnurlComment` (≤ 640) become `null` when missing, too long, holding control characters, or secret-shaped (`looksLikeSecretValue`). Every detail field and the payment id are screened with `containsEncodedSecret`, so an encoded Spark memo, BOLT11 description, or bech32 payload that holds secret material also makes the field `null` (the payment is skipped for a secret-shaped id). A raw 32-byte value is not screened by shape: it looks like the hashes, ids and NIP-57 zap requests the route collects.
 - **Inputs:** The parsed JSON body and the server clock in epoch milliseconds.
 - **Returns / side effects:** `{ ok: false }` for a refused report, otherwise `{ ok: true, report }` with `payments` in request order and `skipped` for invalid entries. Output objects are built field by field, so unknown fields such as `preimage` are never copied. Pure.
 - **Used by:** `walletReportRoutes`.
@@ -3773,14 +3775,14 @@ Builds the operator-only external-pubkey inspection route.
 
 ## Function: InMemoryWalletStore
 
-- **Purpose:** Process-local `WalletStore` for boots without `DATABASE_URL` and for tests. `recordBalance` appends a snapshot; `upsertPayments` inserts or updates by `(accountId, paymentId)` with the same rules as the Postgres store (overwrite status, amounts, method, time, category, counterparty; keep stored detail fields when the new value is `null`; keep `firstSeenAt`; move `updatedAt` only on a change; ignore a row whose `updatedAt` is older than the stored one). `latestBalance` and `listPayments` (newest `paidAt` first) return copies.
+- **Purpose:** Process-local `WalletStore` for boots without `DATABASE_URL` and for tests. `recordBalance` appends a snapshot; `upsertPayments` inserts or updates by `(accountId, paymentId)` with the same rules as the Postgres store (overwrite status, amounts, method, time, category, counterparty; keep stored detail fields when the new value is `null`; keep `firstSeenAt`; move `updatedAt` only on a change; ignore a row whose `updatedAt` is older than the stored one; keep a resolved category and its counterparty when the new row only has a fallback category `outside_lightning`, `onchain`, or `unknown`). `latestBalance` and `listPayments` (newest `paidAt` first) return copies.
 - **Inputs:** No constructor arguments.
 - **Returns / side effects:** Promises of void, of the latest snapshot, and of payment copies. Rows live for the process lifetime. Only allow-listed fields are stored.
 - **Used by:** `createApp` default; route and store tests.
 
 ## Function: PostgresWalletStore
 
-- **Purpose:** Postgres store for `wallet_balance_snapshot` and `wallet_payment`. `recordBalance` inserts one snapshot. `upsertPayments` runs one `INSERT … ON CONFLICT (account_id, payment_id) DO UPDATE` per row that `COALESCE`s the detail fields and updates only when the row is `IS DISTINCT FROM` the stored one and `EXCLUDED.updated_at >= wallet_payment.updated_at` (an older observation never overwrites newer state), so an unchanged re-send writes nothing and adds no `db_change` row. `latestBalance` and `listPayments` read newest-first and map `bigint` and timestamp columns.
+- **Purpose:** Postgres store for `wallet_balance_snapshot` and `wallet_payment`. `recordBalance` inserts one snapshot. `upsertPayments` runs one `INSERT … ON CONFLICT (account_id, payment_id) DO UPDATE` per row that `COALESCE`s the detail fields and updates only when the row is `IS DISTINCT FROM` the stored one and `EXCLUDED.updated_at >= wallet_payment.updated_at` (an older observation never overwrites newer state), and keeps a resolved category and counterparty when the new row only has a fallback category, so an unchanged re-send writes nothing and adds no `db_change` row. `latestBalance` and `listPayments` read newest-first and map `bigint` and timestamp columns.
 - **Inputs:** Constructor takes a migrated `SqlClient`.
 - **Returns / side effects:** Query failures propagate (the route answers 503). Every insert and update is logged by `trg_db_change`. Needs `DATABASE_URL`; not reached on the default boot.
 - **Used by:** `openBootStores` → `createApp` → `walletReportRoutes`.
@@ -3792,9 +3794,16 @@ Builds the operator-only external-pubkey inspection route.
 - **Returns / side effects:** 200 `{ acknowledgedIds }`. A lookup or write failure logs `wallet_report.write.failed` with `accountId` only and answers 503 `{ error: 'Wallet data is unavailable' }`. Never logs the body, amounts, addresses, invoices, or memos.
 - **Used by:** `createApp`.
 
-## Function: bolt11Description
+## Function: bolt11Descriptions
 
-- **Purpose:** Read the plaintext description of any decodable BOLT11, zero-amount invoices included (unlike `inspectBolt11`, which needs an amount). An invoice that carries only a description hash, or that does not decode, has none.
+- **Purpose:** Read every plaintext `description` tag of any decodable BOLT11, zero-amount invoices included (unlike `inspectBolt11`, which needs an amount and reads only the first). An invoice that carries only a description hash, or that does not decode, has none.
 - **Inputs:** A BOLT11 string and an optional decoder (tests inject a fake).
-- **Returns / side effects:** The description string, or `null`. Pure; never logs the description.
-- **Used by:** `parseWalletReport`, which stores a reported `invoice` or `destination` as `null` when its embedded description (or the memo of a Spark invoice) holds secret material.
+- **Returns / side effects:** All string descriptions in tag order, or an empty list. Pure; never logs a description.
+- **Used by:** `containsEncodedSecret`, so a second description tag cannot hide a recovery phrase.
+
+## Function: containsEncodedSecret
+
+- **Purpose:** Tell whether a value holds secret material, also inside an encoded token. Applies `looksLikeSecretValue` to the value itself, to the payload bytes of every bech32 or bech32m token in it (printable ASCII kept, so every memo field of a Spark address or invoice and the text of an LNURL are covered, duplicates and malformed nesting included), and to every description tag of a BOLT11 token (`bolt11Descriptions`). Tokens shorter than 20 characters or without the separator `1` are only screened by their visible text.
+- **Inputs:** One string: a wallet detail field, a payment id, a decoded event path, or an event prop value.
+- **Returns / side effects:** `true` when anything visible or encoded looks like secret material. Pure; never logs. A raw 32-byte value is not screened by shape (it looks like the hashes, ids and NIP-57 zap requests that are collected).
+- **Used by:** `parseWalletReport` (payment id and detail fields) and `parseMemberEventBatch` (path and prop strings).

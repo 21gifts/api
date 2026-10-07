@@ -3426,7 +3426,8 @@ payments the api has not acknowledged yet.
 - `payments` is optional (missing = `[]`), at most 200 entries.
 - Per payment, required: `id` (1–256 characters, not secret-shaped), `direction` (`in` / `out`),
   `status` (`pending` / `completed` / `failed`), `amountSats`, `timestamp`,
-  `method` (lower-case word, e.g. `lightning`, `spark`, `onchain`, `token`).
+  `method` (lower-cased, then one word of `[a-z][a-z0-9_]{0,31}`, e.g. `lightning`,
+  `spark`, `onchain`, `token`).
   `feeSats` missing or `null` is `0`. A payment that fails a required rule is
   skipped and not acknowledged; the rest of the report is stored.
 - Optional detail fields: `paymentHash` (64 hex), `invoice` (≤ 4096),
@@ -3437,9 +3438,11 @@ payments the api has not acknowledged yet.
   anywhere in the value) is stored as `null`.
 - Every other field is ignored and never stored or logged. A `preimage` is not
   read even when the app sends one; the app does not send it.
-- `invoice` and `destination` are also stored as `null` when the memo of a
-  Spark invoice or the description of a BOLT11 inside them holds secret
-  material, so an encoded invoice cannot carry a recovery phrase into storage.
+- The payment id and every detail field are also screened inside encoded
+  tokens: every memo of a Spark address or invoice, every description tag of a
+  BOLT11, and the payload of any bech32 token. A detail field that holds secret
+  material there is stored as `null`, and a payment with such an id is skipped,
+  so an encoded invoice cannot carry a recovery phrase into storage.
 - Limit of the shape screening: it finds key tokens and recovery-phrase word
   runs. A raw 32-byte value (hex or base64) looks exactly like the payment
   hashes, transaction ids, payment ids and NIP-57 zap requests (64-hex keys and
@@ -3474,6 +3477,9 @@ reporting account itself never counts as the counterparty):
    an `ln…` invoice), or `unknown`.
 
 `counterpartyAccountId` is set whenever one of steps 1–4 resolves an account.
+A later report never turns a resolved category (steps 1–4) back into a
+fallback one (step 5): a re-send with fewer details keeps the stored category
+and counterparty.
 
 **Storage.** `wallet_balance_snapshot` and `wallet_payment` (`docs/schema/wallet.sql`), migrated at boot when `DATABASE_URL` is set and covered by `db_change`; in memory otherwise. A merge deletes a source payment row whose id the surviving account already has, clears a counterparty that is one of the two merged accounts, then moves the rest.
 
@@ -3511,7 +3517,8 @@ at most 50 events.
   naming secret material (seed, mnemonic, phrase, preimage, private key,
   secret, PRF, nsec, password, …) and secret-shaped string values are dropped;
   other invalid keys are dropped too.
-  The same limit as for the wallet report applies: a raw 32-byte value under a
+  The path and string props are also screened inside encoded tokens, as for the
+  wallet report. The same limit as for the wallet report applies: a raw 32-byte value under a
   neutral key is not recognisable by shape (event and payment ids look the
   same); the app never puts secret material into events.
 

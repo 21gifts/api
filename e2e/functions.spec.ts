@@ -3537,7 +3537,7 @@ test('Function: walletPaymentClassifier — onchain payment is acknowledged', as
   expect(await res.json()).toEqual({ acknowledgedIds: ['onchain-1'] });
 });
 
-test('Function: bolt11Description — invoice with a plain description is acknowledged', async ({
+test('Function: bolt11Descriptions — invoice with a plain description is acknowledged', async ({
   request,
 }) => {
   const auth = await memberSession(request);
@@ -3545,14 +3545,29 @@ test('Function: bolt11Description — invoice with a plain description is acknow
     headers: auth,
     data: walletReport([
       walletPayment({
-        id: 'bolt11-description',
+        id: 'bolt11-descriptions',
         invoice:
           'lnbc1pvjluezpp5qyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqsdq5xysxxatsyp3k7enxv4jsqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqznl48l',
       }),
     ]),
   });
   expect(res.status()).toBe(200);
-  expect(await res.json()).toEqual({ acknowledgedIds: ['bolt11-description'] });
+  expect(await res.json()).toEqual({ acknowledgedIds: ['bolt11-descriptions'] });
+});
+
+test('Function: containsEncodedSecret — a secret-shaped payment id is skipped, not acknowledged', async ({
+  request,
+}) => {
+  const auth = await memberSession(request);
+  const res = await request.post('/me/wallet/report', {
+    headers: auth,
+    data: walletReport([
+      walletPayment({ id: `nsec1${'q'.repeat(58)}` }),
+      walletPayment({ id: 'plain-id' }),
+    ]),
+  });
+  expect(res.status()).toBe(200);
+  expect(await res.json()).toEqual({ acknowledgedIds: ['plain-id'] });
 });
 
 test('Function: walletReportRoutes — no bearer is 401', async ({ request }) => {

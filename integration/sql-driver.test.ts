@@ -1025,6 +1025,40 @@ describe('PostgresWalletStore', () => {
       const ordered = await store.listPayments(accountId, 10);
       expect(ordered.map((row) => row.paymentId)).toEqual(['p-later', 'p-pending']);
 
+      // An observation older than the stored state never overwrites it.
+      await store.upsertPayments([{ ...pending, status: 'pending', updatedAt: firstSeen }]);
+      const notRegressed = (await store.listPayments(accountId, 10)).find(
+        (row) => row.paymentId === 'p-pending',
+      );
+      expect(notRegressed?.status).toBe('completed');
+
+      // A resolved category is upgraded from a fallback but never turned back into one.
+      await store.upsertPayments([
+        {
+          ...pending,
+          status: 'completed',
+          category: 'gift',
+          updatedAt: new Date(Date.now() + 20_000),
+        },
+      ]);
+      await store.upsertPayments([
+        {
+          ...pending,
+          status: 'completed',
+          category: 'outside_lightning',
+          updatedAt: new Date(Date.now() + 30_000),
+        },
+      ]);
+      const kept = (await store.listPayments(accountId, 10)).find(
+        (row) => row.paymentId === 'p-pending',
+      );
+      expect(kept?.category).toBe('gift');
+      expect((await walletPaymentChanges('p-pending')).map((row) => row.op)).toEqual([
+        'INSERT',
+        'UPDATE',
+        'UPDATE',
+      ]);
+
       const preimage = '0123456789abcdef'.repeat(4);
       const phrase =
         'abandon ability able about above absent absorb abstract absurd abuse access accident';
@@ -1077,6 +1111,22 @@ describe('PostgresWalletStore', () => {
       expect(dump.includes(preimage)).toBe(false);
       expect(dump.includes(phrase)).toBe(false);
       expect(dump.includes('preimage')).toBe(false);
+
+      const snapshotChanges = await client.query<{
+        op: string;
+        before: unknown;
+        after: Record<string, unknown> | null;
+      }>(
+        `SELECT op, before, after FROM db_change
+         WHERE table_name = 'wallet_balance_snapshot' AND after ->> 'id' = $1
+         ORDER BY id ASC`,
+        [snapshotId],
+      );
+      expect(snapshotChanges).toHaveLength(1);
+      expect(snapshotChanges[0]?.op).toBe('INSERT');
+      expect(snapshotChanges[0]?.before).toBeNull();
+      expect(snapshotChanges[0]?.after?.['account_id']).toBe(accountId);
+      expect(Number(snapshotChanges[0]?.after?.['balance_sats'])).toBe(1000);
     } finally {
       await closeIfPossible(sql);
     }
