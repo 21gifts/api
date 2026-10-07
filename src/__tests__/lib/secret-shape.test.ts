@@ -75,6 +75,25 @@ describe('looksLikeSecretValue', () => {
     expect(looksLikeSecretValue('/u/XPRVabc')).toBe(true);
   });
 
+  it('detects recovery phrases from the non-English BIP-39 wordlists', () => {
+    const japanese =
+      'あいこくしん　あいさつ　あいだ　あおぞら　あかちゃん　あきる　あけがた　あける　あこがれる　あさい　あさひ　あしあと';
+    const chinese = '的 一 是 在 不 了 有 和 人 这 中 大';
+    const spanish =
+      'ábaco abdomen abeja abierto abogado abono aborto abrazo abrir abuelo abuso acabar';
+    const korean = '가격 가끔 가난 가능 가득 가르침 가뭄 가방 가상 가슴 가운데 가을';
+    for (const phrase of [japanese, chinese, spanish, korean]) {
+      expect(looksLikeSecretValue(phrase)).toBe(true);
+    }
+  });
+
+  it('keeps unspaced Chinese and Japanese prose', () => {
+    expect(looksLikeSecretValue('今天早上在市场买了一杯咖啡，谢谢你的礼物。')).toBe(false);
+    expect(looksLikeSecretValue('今朝は市場でコーヒーを買いました。ありがとうございます。')).toBe(
+      false,
+    );
+  });
+
   it('keeps ordinary sentences and single tokens that only contain a prefix', () => {
     expect(
       looksLikeSecretValue('Thanks for the coffee this morning, see you at the market next week'),

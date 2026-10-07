@@ -21,8 +21,13 @@ const ENCODED_KEY_RE = /(?:^|[^A-Za-z0-9])(?:nsec1|[xtyzuv]prv)[A-Za-z0-9]/i;
 /** Shortest run of consecutive phrase-shaped words treated as a recovery phrase (BIP-39 minimum). */
 const PHRASE_MIN_WORDS = 12;
 
-/** One BIP-39-shaped word: 3–8 ASCII letters. */
-const BIP39_WORD_RE = /^[A-Za-z]{3,8}$/;
+/**
+ * One BIP-39-shaped word in any of the official wordlists: 3–8 letters of any
+ * script (English and the accented Latin lists), or 1–8 Han, Hiragana,
+ * Katakana, or Hangul characters (Chinese, Japanese, and Korean lists).
+ */
+const BIP39_WORD_RE =
+  /^(?:\p{L}{3,8}|[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]{1,8})$/u;
 
 /**
  * True when a body/prop key names secret material.
@@ -42,9 +47,11 @@ export function isSecretFieldName(name: string): boolean {
  *
  * Flags a token that starts with `nsec1` or an extended private key prefix
  * (`xprv`, `tprv`, `yprv`, `zprv`, `uprv`, `vprv`), and any run of at least
- * twelve consecutive words of 3–8 ASCII letters, whatever non-alphanumeric
- * characters separate them (spaces, slashes, commas, dashes). A sentence with a
- * shorter word, a digit, or fewer than twelve such words in a row is kept.
+ * twelve consecutive recovery-phrase-shaped words in any official BIP-39
+ * language (3–8 letters, or 1–8 CJK or Hangul characters), whatever
+ * non-alphanumeric characters separate them (spaces, the ideographic space,
+ * slashes, commas, dashes). A sentence with a shorter word, a digit, or fewer
+ * than twelve such words in a row is kept.
  *
  * @param value - Candidate string.
  * @returns Whether `value` holds an encoded key or a recovery-phrase-shaped word run.
@@ -54,7 +61,8 @@ export function looksLikeSecretValue(value: string): boolean {
     return true;
   }
   let run = 0;
-  for (const token of value.split(/[^A-Za-z0-9]+/)) {
+  // Any non-letter, non-digit separates words, the ideographic space of Japanese phrases included.
+  for (const token of value.split(/[^\p{L}\p{N}]+/u)) {
     if (token === '') {
       continue;
     }
