@@ -29,6 +29,8 @@ import { InMemoryDailyRosterStore, PostgresDailyRosterStore } from '@/lib/daily-
 import { PostgresDebugDbStore } from '@/lib/debug-db';
 import { PostgresBannerStore } from '@/lib/banner-store';
 import { PostgresSparkInvoiceStore } from '@/lib/spark-invoice-store';
+import { PostgresWalletStore } from '@/lib/wallet-store';
+import { PostgresMemberEventStore } from '@/lib/member-event-store';
 
 function unusedClient(): SqlClient {
   return {
@@ -88,6 +90,8 @@ describe('openBootStores', () => {
       listDbChange,
       debugDbStore,
       sparkInvoiceStore,
+      walletStore,
+      memberEventStore,
     } = await openBootStores(undefined, factory);
     expect(authStore).toBeInstanceOf(InMemoryAuthStore);
     expect(giftStore).toBeUndefined();
@@ -109,6 +113,8 @@ describe('openBootStores', () => {
     expect(listDbChange).toBeUndefined();
     expect(debugDbStore).toBeUndefined();
     expect(sparkInvoiceStore).toBeUndefined();
+    expect(walletStore).toBeUndefined();
+    expect(memberEventStore).toBeUndefined();
     expect(btcUsdRates).toBeInstanceOf(InMemoryBtcUsdStore);
     expect(fiatRates).toBeInstanceOf(InMemoryFiatStore);
     expect(fxSpotStore).toBeInstanceOf(InMemoryFxSpotStore);
@@ -140,6 +146,8 @@ describe('openBootStores', () => {
       rosterStore,
       bannerStore,
       debugDbStore,
+      walletStore,
+      memberEventStore,
     } = await openBootStores('   ', factory);
     expect(authStore).toBeInstanceOf(InMemoryAuthStore);
     expect(giftStore).toBeUndefined();
@@ -159,6 +167,8 @@ describe('openBootStores', () => {
     expect(rosterStore).toBeInstanceOf(InMemoryDailyRosterStore);
     expect(bannerStore).toBeUndefined();
     expect(debugDbStore).toBeUndefined();
+    expect(walletStore).toBeUndefined();
+    expect(memberEventStore).toBeUndefined();
     expect(btcUsdRates).toBeInstanceOf(InMemoryBtcUsdStore);
     expect(fiatRates).toBeInstanceOf(InMemoryFiatStore);
     expect(factory).not.toHaveBeenCalled();
@@ -232,6 +242,8 @@ describe('openBootStores', () => {
       bannerStore,
       debugDbStore,
       sparkInvoiceStore,
+      walletStore,
+      memberEventStore,
     } = await openBootStores(url, factory, {
       fetchImpl: async () => new Response('[]', { status: 200 }),
       candlesUrl: 'https://example.test/candles',
@@ -264,6 +276,8 @@ describe('openBootStores', () => {
     expect(bannerStore).toBeInstanceOf(PostgresBannerStore);
     expect(debugDbStore).toBeInstanceOf(PostgresDebugDbStore);
     expect(sparkInvoiceStore).toBeInstanceOf(PostgresSparkInvoiceStore);
+    expect(walletStore).toBeInstanceOf(PostgresWalletStore);
+    expect(memberEventStore).toBeInstanceOf(PostgresMemberEventStore);
     expect(btcUsdRates).toBeInstanceOf(PostgresBtcUsdStore);
     expect(fiatRates).toBeInstanceOf(PostgresFiatStore);
     expect(fxSpotStore).toBeInstanceOf(PostgresFxSpotStore);
@@ -296,8 +310,17 @@ describe('openBootStores', () => {
     const sparkInvoiceIdx = executes.findIndex((q) =>
       /CREATE TABLE IF NOT EXISTS spark_invoice/i.test(q),
     );
+    const walletIdx = executes.findIndex((q) =>
+      /CREATE TABLE IF NOT EXISTS wallet_balance_snapshot/i.test(q),
+    );
+    const memberEventIdx = executes.findIndex((q) =>
+      /CREATE TABLE IF NOT EXISTS member_event/i.test(q),
+    );
     const dbChangeIdx = executes.findIndex((q) => /CREATE TABLE IF NOT EXISTS db_change/i.test(q));
     expect(sparkInvoiceIdx).toBeGreaterThanOrEqual(0);
+    expect(walletIdx).toBeGreaterThan(sparkInvoiceIdx);
+    expect(memberEventIdx).toBeGreaterThan(walletIdx);
+    expect(dbChangeIdx).toBeGreaterThan(memberEventIdx);
     expect(dbChangeIdx).toBeGreaterThan(sparkInvoiceIdx);
     expect(trustIdx).toBeGreaterThanOrEqual(0);
     expect(fundingIdx).toBeGreaterThan(trustIdx);
@@ -473,6 +496,8 @@ describe('openBootStores', () => {
       fundingStore,
       listDbChange,
       debugDbStore,
+      walletStore,
+      memberEventStore,
     } = await openBootStores('postgres://gifts21@localhost/gifts21', () => client, {
       fetchImpl: async () => new Response('[]', { status: 200 }),
       candlesUrl: 'https://example.test/candles',
@@ -494,6 +519,8 @@ describe('openBootStores', () => {
     expect(diagnosticStore).toBeInstanceOf(PostgresDiagnosticStore);
     expect(fundingStore).toBeInstanceOf(PostgresFundingStore);
     expect(debugDbStore).toBeInstanceOf(PostgresDebugDbStore);
+    expect(walletStore).toBeInstanceOf(PostgresWalletStore);
+    expect(memberEventStore).toBeInstanceOf(PostgresMemberEventStore);
     expect(btcUsdRates).toBeInstanceOf(PostgresBtcUsdStore);
     expect(fiatRates).toBeInstanceOf(PostgresFiatStore);
     expect(typeof listDbChange).toBe('function');
@@ -592,6 +619,8 @@ describe('openBootStores', () => {
     expect(stores.pushStore).toBeInstanceOf(PostgresPushStore);
     expect(stores.trustStore).toBeInstanceOf(PostgresTrustStore);
     expect(stores.debugDbStore).toBeInstanceOf(PostgresDebugDbStore);
+    expect(stores.walletStore).toBeInstanceOf(PostgresWalletStore);
+    expect(stores.memberEventStore).toBeInstanceOf(PostgresMemberEventStore);
     expect(parsedEvents(warn)).toContainEqual(
       expect.objectContaining({ event: 'nostr.zapper.backfill.failed' }),
     );

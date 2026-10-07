@@ -48,6 +48,8 @@ import { debugMessagesRoutes } from '@/routes/debug-messages';
 import { debugExternalRoutes } from '@/routes/debug-external';
 import { debugPaymentsRoutes } from '@/routes/debug-payments';
 import { pushRoutes } from '@/routes/push';
+import { walletReportRoutes } from '@/routes/wallet-report';
+import { memberEventRoutes } from '@/routes/member-events';
 import { debugPushRoutes } from '@/routes/debug-push';
 import { debugPasskeyRenewRoutes } from '@/routes/debug-passkey-renew';
 import { debugTrustRoutes } from '@/routes/debug-trust';
@@ -65,6 +67,8 @@ import { InMemoryGiftStore } from '@/lib/gift-store';
 import type { GiftStore } from '@/lib/gift-store';
 import { InMemoryApiLogStore, type ApiLogStore } from '@/lib/api-log';
 import { InMemoryDiagnosticStore, type DiagnosticStore } from '@/lib/diagnostic-log';
+import { InMemoryWalletStore, type WalletStore } from '@/lib/wallet-store';
+import { InMemoryMemberEventStore, type MemberEventStore } from '@/lib/member-event-store';
 import { InMemoryContactStore } from '@/lib/contact-store';
 import type { ContactStore } from '@/lib/contact-store';
 import { InMemoryMemberHabitStore, type MemberHabitStore } from '@/lib/member-habit-store';
@@ -172,6 +176,18 @@ export interface AppDeps {
    * injects {@link PostgresDiagnosticStore} when `DATABASE_URL` is set.
    */
   diagnosticStore?: DiagnosticStore;
+  /**
+   * Wallet balance snapshots and reported payments (default: empty
+   * {@link InMemoryWalletStore}). Boot injects {@link PostgresWalletStore}
+   * when `DATABASE_URL` is set.
+   */
+  walletStore?: WalletStore;
+  /**
+   * Member interaction-log events (default: empty
+   * {@link InMemoryMemberEventStore}). Boot injects
+   * {@link PostgresMemberEventStore} when `DATABASE_URL` is set.
+   */
+  memberEventStore?: MemberEventStore;
   /**
    * Outbound gifts for public statistics; the same store tells the welcome
    * check (invoices, trust, me, messages) that a welcome gift was already paid
@@ -393,9 +409,14 @@ function debugList(store: object, limit: number): Promise<unknown[]> {
  *   {@link InMemoryDailyRosterStore}, shared by funding routes,
  *   `POST /spend/daily-instruction`, and the default spend ping), postLimiter
  *   (optional; default `new PostRateLimiter()`, shared with `messagesRoutes`
- *   and the Nostr worker), gift invoice store, listDbChange, and
+ *   and the Nostr worker), gift invoice store, listDbChange,
  *   diagnosticStore (optional; default {@link InMemoryDiagnosticStore};
- *   mounts `POST /diagnostics` and `GET /debug/diagnostics`).
+ *   mounts `POST /diagnostics` and `GET /debug/diagnostics`),
+ *   walletStore (optional; default {@link InMemoryWalletStore}; mounts
+ *   `POST /me/wallet/report`; SQL boot injects {@link PostgresWalletStore}),
+ *   and memberEventStore (optional; default {@link InMemoryMemberEventStore};
+ *   mounts `POST /me/events`; SQL boot injects
+ *   {@link PostgresMemberEventStore}).
  * @throws {@link Error}
  * When the trimmed read token is non-empty and equal to the trimmed write token, before routes mount. The message is `DEBUG_READ_TOKEN matches DEBUG_TOKEN` and includes neither token value. An empty or missing read token does not throw.
  * @returns A Hono app with all routes and middleware attached.
@@ -454,6 +475,8 @@ export function createApp(deps: AppDeps = {}): Hono {
   const posStore = deps.posStore ?? new InMemoryPosStore();
   const apiLogStore = deps.apiLogStore ?? new InMemoryApiLogStore();
   const diagnosticStore = deps.diagnosticStore ?? new InMemoryDiagnosticStore();
+  const walletStore = deps.walletStore ?? new InMemoryWalletStore();
+  const memberEventStore = deps.memberEventStore ?? new InMemoryMemberEventStore();
   setDiagnosticSink((event, fields) => {
     void diagnosticStore
       .append({
@@ -552,6 +575,18 @@ export function createApp(deps: AppDeps = {}): Hono {
 
   app.route('/', brandRoutes({ read: readBrand }));
   app.route('/', pushRoutes({ authStore: store, pushStore, now, vapidPublicKey }));
+  app.route(
+    '/',
+    walletReportRoutes({
+      authStore: store,
+      walletStore,
+      messages: messageStore,
+      posStore,
+      now,
+      ...receivingDeps,
+    }),
+  );
+  app.route('/', memberEventRoutes({ authStore: store, store: memberEventStore, now }));
   app.route('/healthz', healthRoute);
   app.route('/info', infoRoute);
   app.route('/translate', translateRoutes({ env }));

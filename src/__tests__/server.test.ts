@@ -4,6 +4,7 @@ import { InMemoryAuthStore } from '@/lib/auth/store';
 import { InMemoryGiftStore } from '@/lib/gift-store';
 import type { DiagnosticStore } from '@/lib/diagnostic-log';
 import { setDiagnosticSink } from '@/lib/log';
+import { InMemoryMemberEventStore } from '@/lib/member-event-store';
 import { unsignedNostrDefaults } from '@/lib/message';
 import { InMemoryMessageStore, PostgresMessageStore } from '@/lib/message-store';
 import { RecordingPublisher } from '@/lib/nostr/publish';
@@ -12,6 +13,7 @@ import { createApp, resolveBindAddr, parseBindAddr } from '@/server';
 import { parseNostrKek } from '@/lib/nostr/kek';
 import { ensureAccountNostrKey } from '@/lib/nostr/keys';
 import { InMemorySparkInvoiceStore } from '@/lib/spark-invoice-store';
+import { InMemoryWalletStore } from '@/lib/wallet-store';
 import {
   BOLT11,
   FREE_PAYMENTS_ENV,
@@ -578,6 +580,134 @@ describe('createApp', () => {
     const app = createApp({ debugToken: '' });
     const res = await app.request('/debug/api-log');
     expect(res.status).toBe(503);
+  });
+
+  it('returns 401 on POST /me/wallet/report and POST /me/events without a session', async () => {
+    const app = createApp();
+    const wallet = await app.request('/me/wallet/report', { method: 'POST' });
+    expect(wallet.status).toBe(401);
+    expect(await wallet.json()).toEqual({ error: 'Unauthorized' });
+    const events = await app.request('/me/events', { method: 'POST' });
+    expect(events.status).toBe(401);
+    expect(await events.json()).toEqual({ error: 'Unauthorized' });
+  });
+
+  it('stores a wallet report and member events when the stores are omitted', async () => {
+    const authStore = new InMemoryAuthStore();
+    await authStore.createAccount({
+      id: 'acc-default',
+      linkingKey: `02${'a'.repeat(64)}`,
+      role: 'basis',
+      name: 'Ada',
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: 'a'.repeat(64),
+      createdAt: 1_000_000,
+      rulesAgreedAt: null,
+    });
+    await authStore.createSession({
+      token: 'tok-default',
+      accountId: 'acc-default',
+      createdAt: Date.now(),
+    });
+    const app = createApp({ authStore });
+    const headers = {
+      authorization: 'Bearer tok-default',
+      'content-type': 'application/json',
+    };
+    const wallet = await app.request('/me/wallet/report', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        balanceSats: 1000,
+        syncedAt: new Date().toISOString(),
+        payments: [
+          {
+            id: 'p1',
+            direction: 'out',
+            status: 'completed',
+            amountSats: 21,
+            feeSats: 0,
+            timestamp: Math.floor(Date.now() / 1000),
+            method: 'lightning',
+          },
+        ],
+      }),
+    });
+    expect(wallet.status).toBe(200);
+    expect(await wallet.json()).toEqual({ acknowledgedIds: ['p1'] });
+    const events = await app.request('/me/events', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ events: [{ name: 'login', at: new Date().toISOString() }] }),
+    });
+    expect(events.status).toBe(200);
+    expect(await events.json()).toEqual({ accepted: 1, dropped: 0 });
+  });
+
+  it('persists wallet reports and member events into injected stores', async () => {
+    const authStore = new InMemoryAuthStore();
+    await authStore.createAccount({
+      id: 'acc-injected',
+      linkingKey: `02${'b'.repeat(64)}`,
+      role: 'basis',
+      name: 'Bea',
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: 'b'.repeat(64),
+      createdAt: 1_000_000,
+      rulesAgreedAt: null,
+    });
+    await authStore.createSession({
+      token: 'tok-injected',
+      accountId: 'acc-injected',
+      createdAt: Date.now(),
+    });
+    const walletStore = new InMemoryWalletStore();
+    const memberEventStore = new InMemoryMemberEventStore();
+    const app = createApp({ authStore, walletStore, memberEventStore });
+    const headers = {
+      authorization: 'Bearer tok-injected',
+      'content-type': 'application/json',
+    };
+    const wallet = await app.request('/me/wallet/report', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        balanceSats: 1000,
+        syncedAt: new Date().toISOString(),
+        payments: [
+          {
+            id: 'p1',
+            direction: 'out',
+            status: 'completed',
+            amountSats: 21,
+            feeSats: 0,
+            timestamp: Math.floor(Date.now() / 1000),
+            method: 'lightning',
+          },
+        ],
+      }),
+    });
+    expect(wallet.status).toBe(200);
+    expect(await wallet.json()).toEqual({ acknowledgedIds: ['p1'] });
+    expect(await walletStore.latestBalance('acc-injected')).toMatchObject({
+      accountId: 'acc-injected',
+      balanceSats: 1000,
+    });
+    expect(await walletStore.listPayments('acc-injected', 10)).toEqual([
+      expect.objectContaining({ paymentId: 'p1', accountId: 'acc-injected' }),
+    ]);
+    const events = await app.request('/me/events', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ events: [{ name: 'login', at: new Date().toISOString() }] }),
+    });
+    expect(events.status).toBe(200);
+    expect(await events.json()).toEqual({ accepted: 1, dropped: 0 });
+    expect(await memberEventStore.listForAccount('acc-injected', 10)).toEqual([
+      expect.objectContaining({ name: 'login', accountId: 'acc-injected' }),
+    ]);
   });
 });
 

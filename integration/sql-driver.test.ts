@@ -14,6 +14,9 @@ import { postgresTextArrayLiteral } from '@/lib/postgres-text-array';
 import { POS_CHARGE_TTL_MS } from '@/lib/pos-charge';
 import { migratePosSchema, PostgresPosStore } from '@/lib/pos-store';
 import { migrateSparkInvoiceSchema, PostgresSparkInvoiceStore } from '@/lib/spark-invoice-store';
+import { migrateMemberEventSchema, PostgresMemberEventStore } from '@/lib/member-event-store';
+import { parseWalletReport } from '@/lib/wallet-report';
+import { migrateWalletSchema, PostgresWalletStore } from '@/lib/wallet-store';
 
 const databaseUrl = process.env['DATABASE_URL'];
 if (databaseUrl === undefined || databaseUrl === '') {
@@ -919,6 +922,267 @@ describe('PostgresFxSpotStore', () => {
       expect(last?.op).toBe('UPDATE');
       expect(Number(last?.after?.usd)).toBe(62500);
       expect(last?.after?.php).toBeNull();
+    } finally {
+      await closeIfPossible(sql);
+    }
+  });
+});
+
+describe('PostgresWalletStore', () => {
+  test('migrate twice, balance, guarded upsert, order, db_change, and secrets', async () => {
+    const { client, sql } = createBunSqlClient(databaseUrl);
+    try {
+      await migrateAuthSchema(client);
+      await migrateWalletSchema(client);
+      await migrateWalletSchema(client);
+      await migrateDbChangeSchema(client);
+
+      const auth = new PostgresAuthStore(client);
+      const hex64 = (): string =>
+        `${crypto.randomUUID().replaceAll('-', '')}${crypto.randomUUID().replaceAll('-', '')}`;
+      const accountId = crypto.randomUUID();
+      await auth.createAccount({
+        id: accountId,
+        linkingKey: null,
+        role: 'basis',
+        name: null,
+        username: `wallet_${Date.now()}_${Math.random().toString(16).slice(2, 10)}`,
+        location: null,
+        forumLawsDismissed: false,
+        viewKey: hex64(),
+        createdAt: Date.now(),
+        rulesAgreedAt: null,
+        walletRequired: true,
+      });
+
+      const store = new PostgresWalletStore(client);
+      const receivedAt = new Date();
+      const snapshotId = crypto.randomUUID();
+      await store.recordBalance({
+        id: snapshotId,
+        accountId,
+        balanceSats: 1000,
+        syncedAt: receivedAt,
+        receivedAt,
+      });
+      const latest = await store.latestBalance(accountId);
+      expect(latest?.id).toBe(snapshotId);
+      expect(latest?.balanceSats).toBe(1000);
+      expect(latest?.accountId).toBe(accountId);
+
+      const paidPending = new Date(Date.now() - 5_000);
+      const paidLater = new Date(Date.now() - 1_000);
+      const firstSeen = new Date(Date.now() - 4_000);
+      const pending = {
+        accountId,
+        paymentId: 'p-pending',
+        direction: 'out' as const,
+        status: 'pending' as const,
+        amountSats: 21,
+        feeSats: 0,
+        paidAt: paidPending,
+        method: 'lightning',
+        paymentHash: null,
+        invoice: null,
+        destination: null,
+        description: 'coffee',
+        lnurlComment: null,
+        category: 'unknown' as const,
+        counterpartyAccountId: null,
+        firstSeenAt: firstSeen,
+        updatedAt: firstSeen,
+      };
+      await store.upsertPayments([pending]);
+      const laterPayment = {
+        ...pending,
+        paymentId: 'p-later',
+        paidAt: paidLater,
+        description: 'later',
+        firstSeenAt: new Date(),
+        updatedAt: new Date(),
+      };
+      await store.upsertPayments([laterPayment]);
+
+      const walletPaymentChanges = (paymentId: string) =>
+        client.query<{ op: string }>(
+          `SELECT op
+           FROM db_change
+           WHERE table_name = 'wallet_payment'
+             AND (before ->> 'payment_id' = $1 OR after ->> 'payment_id' = $1)
+             AND (before ->> 'account_id' = $2 OR after ->> 'account_id' = $2)
+           ORDER BY id ASC`,
+          [paymentId, accountId],
+        );
+
+      const afterInsert = await walletPaymentChanges('p-pending');
+      expect(afterInsert.map((row) => row.op)).toEqual(['INSERT']);
+      const storedPending = (await store.listPayments(accountId, 10)).find(
+        (row) => row.paymentId === 'p-pending',
+      );
+      if (storedPending === undefined) {
+        throw new Error('expected pending payment');
+      }
+      expect(storedPending.updatedAt.getTime()).toBe(firstSeen.getTime());
+      const pendingUpdatedAt = storedPending.updatedAt.getTime();
+      const pendingFirstSeen = storedPending.firstSeenAt.getTime();
+
+      await store.upsertPayments([{ ...pending, updatedAt: new Date(Date.now() + 5_000) }]);
+      const afterIdentical = await walletPaymentChanges('p-pending');
+      expect(afterIdentical.map((row) => row.op)).toEqual(['INSERT']);
+      const stillPending = (await store.listPayments(accountId, 10)).find(
+        (row) => row.paymentId === 'p-pending',
+      );
+      expect(stillPending?.updatedAt.getTime()).toBe(pendingUpdatedAt);
+      expect(stillPending?.status).toBe('pending');
+
+      await store.upsertPayments([
+        {
+          ...pending,
+          status: 'completed',
+          description: null,
+          updatedAt: new Date(Date.now() + 10_000),
+        },
+      ]);
+      const completed = (await store.listPayments(accountId, 10)).find(
+        (row) => row.paymentId === 'p-pending',
+      );
+      if (completed === undefined) {
+        throw new Error('expected completed payment');
+      }
+      expect(completed.status).toBe('completed');
+      expect(completed.description).toBe('coffee');
+      expect(completed.firstSeenAt.getTime()).toBe(pendingFirstSeen);
+      const afterCompleted = await walletPaymentChanges('p-pending');
+      expect(afterCompleted.map((row) => row.op)).toEqual(['INSERT', 'UPDATE']);
+
+      const ordered = await store.listPayments(accountId, 10);
+      expect(ordered.map((row) => row.paymentId)).toEqual(['p-later', 'p-pending']);
+
+      const preimage = '0123456789abcdef'.repeat(4);
+      const phrase =
+        'abandon ability able about above absent absorb abstract absurd abuse access accident';
+      const parsed = parseWalletReport(
+        {
+          balanceSats: 1000,
+          syncedAt: new Date().toISOString(),
+          payments: [
+            {
+              id: 'p-secret',
+              direction: 'out',
+              status: 'completed',
+              amountSats: 21,
+              feeSats: 0,
+              timestamp: Math.floor(Date.now() / 1000),
+              method: 'lightning',
+              preimage,
+              description: phrase,
+            },
+          ],
+        },
+        Date.now(),
+      );
+      if (!parsed.ok) {
+        throw new Error('expected parsed wallet report');
+      }
+      const secretPayment = parsed.report.payments[0];
+      if (secretPayment === undefined) {
+        throw new Error('expected one parsed payment');
+      }
+      const secretSeen = new Date();
+      await store.upsertPayments([
+        {
+          ...secretPayment,
+          accountId,
+          category: 'unknown',
+          counterpartyAccountId: null,
+          firstSeenAt: secretSeen,
+          updatedAt: secretSeen,
+        },
+      ]);
+
+      const paymentRows = await client.query(`SELECT * FROM wallet_payment WHERE account_id = $1`, [
+        accountId,
+      ]);
+      const changeRows = await client.query(
+        `SELECT * FROM db_change WHERE table_name IN ('wallet_payment', 'wallet_balance_snapshot')`,
+      );
+      const dump = JSON.stringify({ paymentRows, changeRows });
+      expect(dump.includes(preimage)).toBe(false);
+      expect(dump.includes(phrase)).toBe(false);
+      expect(dump.includes('preimage')).toBe(false);
+    } finally {
+      await closeIfPossible(sql);
+    }
+  });
+});
+
+describe('PostgresMemberEventStore', () => {
+  test('migrate twice, appendMany, list order, and db_change inserts', async () => {
+    const { client, sql } = createBunSqlClient(databaseUrl);
+    try {
+      await migrateAuthSchema(client);
+      await migrateMemberEventSchema(client);
+      await migrateMemberEventSchema(client);
+      await migrateDbChangeSchema(client);
+
+      const auth = new PostgresAuthStore(client);
+      const hex64 = (): string =>
+        `${crypto.randomUUID().replaceAll('-', '')}${crypto.randomUUID().replaceAll('-', '')}`;
+      const accountId = crypto.randomUUID();
+      await auth.createAccount({
+        id: accountId,
+        linkingKey: null,
+        role: 'basis',
+        name: null,
+        username: `events_${Date.now()}_${Math.random().toString(16).slice(2, 10)}`,
+        location: null,
+        forumLawsDismissed: false,
+        viewKey: hex64(),
+        createdAt: Date.now(),
+        rulesAgreedAt: null,
+        walletRequired: true,
+      });
+
+      const store = new PostgresMemberEventStore(client);
+      const olderId = crypto.randomUUID();
+      const newerId = crypto.randomUUID();
+      const receivedAt = new Date();
+      await store.appendMany([
+        {
+          id: olderId,
+          accountId,
+          name: 'login',
+          at: new Date('2026-01-01T00:00:00.000Z'),
+          path: '/old',
+          props: {},
+          receivedAt,
+        },
+        {
+          id: newerId,
+          accountId,
+          name: 'screen_view',
+          at: new Date('2026-01-02T00:00:00.000Z'),
+          path: '/new',
+          props: { count: 1 },
+          receivedAt,
+        },
+      ]);
+
+      const listed = await store.listForAccount(accountId, 10);
+      expect(listed.map((row) => row.id)).toEqual([newerId, olderId]);
+      expect(listed[0]?.name).toBe('screen_view');
+      expect(listed[1]?.name).toBe('login');
+
+      const inserts = await client.query<{ op: string }>(
+        `SELECT op
+         FROM db_change
+         WHERE table_name = 'member_event'
+           AND op = 'INSERT'
+           AND (after ->> 'account_id' = $1)
+         ORDER BY id ASC`,
+        [accountId],
+      );
+      expect(inserts).toHaveLength(2);
     } finally {
       await closeIfPossible(sql);
     }
