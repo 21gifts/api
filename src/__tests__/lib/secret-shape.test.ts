@@ -105,6 +105,13 @@ describe('looksLikeSecretValue', () => {
     }
   });
 
+  it('keeps twelve CJK tokens longer than eight characters', () => {
+    const nine = Array.from({ length: 12 }, () => '一二三四五六七八九').join(' ');
+    expect(looksLikeSecretValue(nine)).toBe(false);
+    const eight = Array.from({ length: 12 }, () => '一二三四五六七八').join(' ');
+    expect(looksLikeSecretValue(eight)).toBe(true);
+  });
+
   it('keeps unspaced Chinese and Japanese prose', () => {
     expect(looksLikeSecretValue('今天早上在市场买了一杯咖啡，谢谢你的礼物。')).toBe(false);
     expect(looksLikeSecretValue('今朝は市場でコーヒーを買いました。ありがとうございます。')).toBe(
