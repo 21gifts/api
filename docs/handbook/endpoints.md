@@ -730,7 +730,7 @@
 
 ## Endpoint: POST /notifications/read-by-message
 
-- **Purpose:** Bearer required. Body `{ messageId }` must be a JSON object with a UUID. Stamps unread `forum_post`, `forum_reply`, `forum_mention`, and `zap` for this account whose `parentId` or `replyId` equals that id. Does not stamp `moderator_appointed`, `moderator_proposal`, another account, or an already-read row. 200 `{ ok: true, tags }` lists only rows this call stamped (zap tag is `zap:<replyId>`). A second call returns `tags: []`. Optional `endpoint` is skipped on the dismiss push only when it belongs to this account and is never echoed.
+- **Purpose:** Bearer required. Body `{ messageId }` must be a JSON object with a UUID. Stamps unread `forum_post`, `forum_reply`, `forum_mention`, `zap`, and `heart` for this account whose `parentId` or `replyId` equals that id. Does not stamp `moderator_appointed`, `moderator_proposal`, another account, or an already-read row. 200 `{ ok: true, tags }` lists only rows this call stamped (zap tag is `zap:<replyId>`; heart tag is `heart:<replyId>`). A second call returns `tags: []`. Optional `endpoint` is skipped on the dismiss push only when it belongs to this account and is never echoed.
 - **Errors:** 401 Unauthorized; 404 `{ error: 'Not found' }` for a missing, non-object, or non-UUID body (not 400); 503 `{ error: 'Notifications are unavailable' }` (`notifications.read_message.failed`). Dismiss enqueue failure is still 200.
 - **Used by:** App when a signed-in member expands a note, asks for a translation, or opens the message page.
 - **Auth:** Bearer session.
