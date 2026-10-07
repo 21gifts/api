@@ -3781,7 +3781,7 @@ Builds the operator-only external-pubkey inspection route.
 
 ## Function: looksLikeSecretValue
 
-- **Purpose:** Tell whether a string value has the shape of secret material: after trimming it starts (case-insensitive) with `nsec1`, `xprv`, `tprv`, `yprv`, `zprv`, `uprv`, or `vprv`, or it is 12, 15, 18, 21, or 24 whitespace-separated words of 3–8 ASCII letters (a recovery-phrase shape).
+- **Purpose:** Tell whether a string value contains secret material anywhere: a token that starts (case-insensitive) with `nsec1`, `xprv`, `tprv`, `yprv`, `zprv`, `uprv`, or `vprv`, or a run of at least 12 consecutive words of 3–8 ASCII letters, whatever non-alphanumeric characters separate them (a recovery phrase, also inside a sentence or spread over path segments). A word with a digit or of another length breaks the run, so ordinary sentences with short words are kept.
 - **Inputs:** One string.
 - **Returns / side effects:** `true` for a secret-shaped value. Pure; no logging. Defence in depth: the app never sends such values, and the ingest drops them if it does.
 - **Used by:** `parseMemberEventBatch` (prop values) and `parseWalletReport` (description, comment, and other detail fields become `null`).
@@ -3795,7 +3795,7 @@ Builds the operator-only external-pubkey inspection route.
 
 ## Function: parseMemberEventBatch
 
-- **Purpose:** Validate a `POST /me/events` body `{ events: [...] }` against the allow-list. The batch is refused when the body is not a plain object, `events` is not an array, or it has more than `MEMBER_EVENT_BATCH_MAX` (50) entries. Each entry needs a `name` in `MEMBER_EVENT_NAMES` and an `at` that `parseClientInstant` accepts; `path` is cut at `?` / `#` and must start with `/` (1–256 characters, no control characters, no secret-shaped segment after URL decoding, and no phrase spread over segments); `props` must be a plain object of at most `MEMBER_EVENT_PROPS_MAX` (20) keys. Inside `props`, keys that fail `[A-Za-z][A-Za-z0-9_]{0,39}`, secret-named keys, secret-shaped strings, strings over 200 characters or with control characters, non-finite numbers, and nested values are skipped without dropping the event.
+- **Purpose:** Validate a `POST /me/events` body `{ events: [...] }` against the allow-list. The batch is refused when the body is not a plain object, `events` is not an array, or it has more than `MEMBER_EVENT_BATCH_MAX` (50) entries. Each entry needs a `name` in `MEMBER_EVENT_NAMES` and an `at` that `parseClientInstant` accepts; `path` is cut at `?` / `#` and must start with `/` (1–256 characters, no control characters, no key token or recovery-phrase run anywhere after URL decoding); `props` must be a plain object of at most `MEMBER_EVENT_PROPS_MAX` (20) keys. Inside `props`, keys that fail `[A-Za-z][A-Za-z0-9_]{0,39}`, secret-named keys, secret-shaped strings, strings over 200 characters or with control characters, non-finite numbers, and nested values are skipped without dropping the event.
 - **Inputs:** The parsed JSON body and the server clock in epoch milliseconds.
 - **Returns / side effects:** `{ ok: false }` for a refused batch, otherwise `{ ok: true, events, dropped }` where `dropped` counts entries that failed a rule. Unknown keys are ignored and never copied. Pure.
 - **Used by:** `memberEventRoutes`.

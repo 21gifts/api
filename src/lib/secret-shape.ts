@@ -15,19 +15,11 @@ const SECRET_FIELD_TOKENS: readonly string[] = [
   'spendingkey',
 ];
 
-/** Trimmed, case-insensitive prefixes of encoded secret material. */
-const SECRET_VALUE_PREFIXES: readonly string[] = [
-  'nsec1',
-  'xprv',
-  'tprv',
-  'yprv',
-  'zprv',
-  'uprv',
-  'vprv',
-];
+/** An encoded key (`nsec1…`, `xprv…` and the other extended private key prefixes) starting a token. */
+const ENCODED_KEY_RE = /(?:^|[^A-Za-z0-9])(?:nsec1|[xtyzuv]prv)[A-Za-z0-9]/i;
 
-/** BIP-39 phrase lengths we treat as secret-shaped. */
-const BIP39_WORD_COUNTS: ReadonlySet<number> = new Set([12, 15, 18, 21, 24]);
+/** Shortest run of consecutive phrase-shaped words treated as a recovery phrase (BIP-39 minimum). */
+const PHRASE_MIN_WORDS = 12;
 
 /** One BIP-39-shaped word: 3–8 ASCII letters. */
 const BIP39_WORD_RE = /^[A-Za-z]{3,8}$/;
@@ -44,20 +36,30 @@ export function isSecretFieldName(name: string): boolean {
 }
 
 /**
- * True when a string value has the shape of secret material.
+ * True when a string value contains secret material anywhere in it.
  *
- * @param value - Candidate string (trimmed before matching).
- * @returns Whether `value` looks like an encoded key or a BIP-39 phrase.
+ * Flags a token that starts with `nsec1` or an extended private key prefix
+ * (`xprv`, `tprv`, `yprv`, `zprv`, `uprv`, `vprv`), and any run of at least
+ * twelve consecutive words of 3–8 ASCII letters, whatever non-alphanumeric
+ * characters separate them (spaces, slashes, commas, dashes). A sentence with a
+ * shorter word, a digit, or fewer than twelve such words in a row is kept.
+ *
+ * @param value - Candidate string.
+ * @returns Whether `value` holds an encoded key or a recovery-phrase-shaped word run.
  */
 export function looksLikeSecretValue(value: string): boolean {
-  const trimmed = value.trim();
-  const lower = trimmed.toLowerCase();
-  if (SECRET_VALUE_PREFIXES.some((prefix) => lower.startsWith(prefix))) {
+  if (ENCODED_KEY_RE.test(value)) {
     return true;
   }
-  const words = trimmed.split(/\s+/);
-  if (!BIP39_WORD_COUNTS.has(words.length)) {
-    return false;
+  let run = 0;
+  for (const token of value.split(/[^A-Za-z0-9]+/)) {
+    if (token === '') {
+      continue;
+    }
+    run = BIP39_WORD_RE.test(token) ? run + 1 : 0;
+    if (run >= PHRASE_MIN_WORDS) {
+      return true;
+    }
   }
-  return words.every((word) => BIP39_WORD_RE.test(word));
+  return false;
 }

@@ -38,7 +38,7 @@ describe('isSecretFieldName', () => {
 
 describe('looksLikeSecretValue', () => {
   it.each(['nsec1', 'xprv', 'tprv', 'yprv', 'zprv', 'uprv', 'vprv'])(
-    'detects a trimmed value starting with %s',
+    'detects a value starting with %s',
     (prefix) => {
       expect(looksLikeSecretValue(`${prefix}abc`)).toBe(true);
       expect(looksLikeSecretValue(`  ${prefix.toUpperCase()}abc  `)).toBe(true);
@@ -49,6 +49,24 @@ describe('looksLikeSecretValue', () => {
     const words = Array.from({ length: count }, () => 'abandon');
     expect(looksLikeSecretValue(words.join(' '))).toBe(true);
     expect(looksLikeSecretValue(`  ${words.join('\t')}  `)).toBe(true);
+  });
+
+  it('detects a key or a phrase anywhere in a longer value, whatever separates the words', () => {
+    const phrase = Array.from({ length: 12 }, () => 'abandon');
+    expect(looksLikeSecretValue(`my words are ${phrase.join(' ')} ok`)).toBe(true);
+    expect(looksLikeSecretValue(`/wallet/${phrase.join('/')}/done`)).toBe(true);
+    expect(looksLikeSecretValue(phrase.join(',  '))).toBe(true);
+    expect(looksLikeSecretValue([...phrase, 'about'].join(' '))).toBe(true);
+    expect(looksLikeSecretValue('key: nsec1abc and more')).toBe(true);
+    expect(looksLikeSecretValue('/u/XPRVabc')).toBe(true);
+  });
+
+  it('keeps ordinary sentences and single tokens that only contain a prefix', () => {
+    expect(
+      looksLikeSecretValue('Thanks for the coffee this morning, see you at the market next week'),
+    ).toBe(false);
+    expect(looksLikeSecretValue('lnbc1xprvabc')).toBe(false);
+    expect(looksLikeSecretValue('alice@21.gifts')).toBe(false);
   });
 
   it('rejects values that are neither encoded keys nor BIP-39-shaped', () => {

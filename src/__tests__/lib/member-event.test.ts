@@ -151,6 +151,9 @@ describe('parseMemberEventBatch', () => {
         event({ path: `/u/${NSEC1}` }),
         event({ path: `/u/${encodeURIComponent(PHRASE_12)}` }),
         event({ path: `/${PHRASE_12.split(' ').join('/')}` }),
+        event({ path: `/wallet/${PHRASE_12.split(' ').join('/')}` }),
+        event({ path: `/${PHRASE_12.split(' ').join('/')}/done` }),
+        event({ path: `/a/${encodeURIComponent(PHRASE_12)}/b` }),
         event({ path: '/bad%E0%A4%A' }),
         event({ path: '/ok' }),
       ],
@@ -159,7 +162,7 @@ describe('parseMemberEventBatch', () => {
     if (!result.ok) {
       return;
     }
-    expect(result.dropped).toBe(14);
+    expect(result.dropped).toBe(17);
     expect(result.events).toHaveLength(2);
     expect(result.events[0]?.path).toBe('/bad%E0%A4%A');
     expect(result.events[1]?.path).toBe('/ok');
