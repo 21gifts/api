@@ -3519,7 +3519,7 @@ Builds the operator-only external-pubkey inspection route.
 
 - **Purpose:** Decode a `cursor` query value of the team views.
 - **Inputs:** Raw value; `uuidId` true when the id must be a UUID (events and audit rows), false for wallet payment ids.
-- **Returns / side effects:** `{ at, id }` (a UUID id lowercased), or `null` for a malformed value, a popular-feed cursor, an empty id, or a non-UUID id where one is required.
+- **Returns / side effects:** `{ at, id }` (a UUID id lowercased), or `null` for a malformed value, a popular-feed cursor, an empty id, a non-UUID id where one is required, an id containing a NUL character, or a time outside years 1 to 9999 (values Postgres could not bind, so the route answers 400 before the audit row instead of failing after it).
 - **Used by:** `readMemberWallet`, `readMemberEvents`, `readTeamAudit`.
 
 ## Function: summarizeWalletPayments

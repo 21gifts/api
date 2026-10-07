@@ -150,19 +150,35 @@ export function encodeMemberDataCursor(cursor: MemberDataCursor): string {
   return encodeMessageFeedCursor({ k: 't', c: cursor.at.toISOString(), i: cursor.id });
 }
 
+/** Earliest and latest cursor time Postgres `timestamptz` and the stores both accept. */
+const CURSOR_MIN_MS = Date.parse('0001-01-01T00:00:00.000Z');
+const CURSOR_MAX_MS = Date.parse('9999-12-31T23:59:59.999Z');
+
 /**
  * Decode a `cursor` query value.
  *
  * @param raw - Query value.
  * @param uuidId - When true, the id must be a UUID (events and audit rows).
- * @returns The keyset position, or null when the value is not a valid cursor.
+ * @returns The keyset position, or null when the value is not a valid cursor:
+ *   not a time cursor, an empty id, a non-UUID id where one is required, an id
+ *   containing a NUL character (Postgres text cannot hold one), or a time
+ *   outside years 1 to 9999.
  */
 export function decodeMemberDataCursor(raw: string, uuidId: boolean): MemberDataCursor | null {
   const decoded = decodeMessageFeedCursor(raw);
-  if (decoded?.k !== 't' || decoded.i === '' || (uuidId && !UUID_RE.test(decoded.i))) {
+  if (
+    decoded?.k !== 't' ||
+    decoded.i === '' ||
+    decoded.i.includes('\u0000') ||
+    (uuidId && !UUID_RE.test(decoded.i))
+  ) {
     return null;
   }
-  return { at: new Date(decoded.c), id: uuidId ? decoded.i.toLowerCase() : decoded.i };
+  const at = new Date(decoded.c);
+  if (at.getTime() < CURSOR_MIN_MS || at.getTime() > CURSOR_MAX_MS) {
+    return null;
+  }
+  return { at, id: uuidId ? decoded.i.toLowerCase() : decoded.i };
 }
 
 /**

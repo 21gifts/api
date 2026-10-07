@@ -121,6 +121,21 @@ describe('cursors', () => {
     expect(decodeMemberDataCursor(upper, true)).toEqual({ at, id: MEMBER });
   });
 
+  it('rejects a NUL in the id and a time outside years 1 to 9999', () => {
+    const raw = (c: string, i: string): string => encodeMessageFeedCursor({ k: 't', c, i });
+    expect(decodeMemberDataCursor(raw(new Date(NOW).toISOString(), 'p\u00001'), false)).toBeNull();
+    expect(decodeMemberDataCursor(raw('+010000-01-01T00:00:00.000Z', 'p1'), false)).toBeNull();
+    expect(decodeMemberDataCursor(raw('-000001-12-31T00:00:00.000Z', 'p1'), false)).toBeNull();
+    expect(decodeMemberDataCursor(raw('9999-12-31T23:59:59.999Z', 'p1'), false)).toEqual({
+      at: new Date('9999-12-31T23:59:59.999Z'),
+      id: 'p1',
+    });
+    expect(decodeMemberDataCursor(raw('0001-01-01T00:00:00.000Z', 'p1'), false)).toEqual({
+      at: new Date('0001-01-01T00:00:00.000Z'),
+      id: 'p1',
+    });
+  });
+
   it('rejects malformed, popular-feed, empty-id, and non-UUID cursors', () => {
     expect(decodeMemberDataCursor('not-a-cursor', false)).toBeNull();
     expect(

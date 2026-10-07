@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
 import { InMemoryAuthStore, type AccountRole } from '@/lib/auth/store';
+import { encodeMessageFeedCursor } from '@/lib/message';
 import { InMemoryMemberDataStore, type TeamAccessRow } from '@/lib/member-data-store';
 import { teamRoutes } from '@/routes/team';
 
@@ -164,6 +165,23 @@ describe('teamRoutes', () => {
     expect(bad.status).toBe(400);
     expect(await store.listAccess(null, 10)).toEqual([]);
     expect(events(warn)).not.toContain('team.member_wallet.read');
+  });
+
+  it('writes no audit row for a wallet cursor Postgres could not bind', async () => {
+    const store = new InMemoryMemberDataStore();
+    const app = mount(await setup('moderator'), store);
+    for (const [c, i] of [
+      [new Date(NOW).toISOString(), 'p\u00001'],
+      ['+275000-01-01T00:00:00.000Z', 'p1'],
+    ] as const) {
+      const cursor = encodeMessageFeedCursor({ k: 't', c, i });
+      const res = await app.request(`/team/members/${MEMBER}/wallet?cursor=${cursor}`, {
+        headers: AUTH,
+      });
+      expect(res.status).toBe(400);
+      expect(await res.json()).toEqual({ error: 'Invalid cursor' });
+    }
+    expect(await store.listAccess(null, 10)).toEqual([]);
   });
 
   it('answers 503 and reads nothing when the audit write fails', async () => {
