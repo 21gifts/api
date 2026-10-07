@@ -17,6 +17,7 @@ import type { GiftStore } from '@/lib/gift-store';
 import { logEvent } from '@/lib/log';
 import { MESSAGE_LIST_LIMIT, serializeMessage, type MessageRow } from '@/lib/message';
 import type { MessageStore } from '@/lib/message-store';
+import type { SpendGrantStatus } from '@/lib/spend-instruction';
 import type { SpendPing } from '@/lib/spend-ping';
 import { canEditDailyPayoutRoster, roleAtLeast } from '@/lib/auth/roles';
 import {
@@ -251,11 +252,13 @@ function parseAccountId(
  * @param deps - Route collaborators.
  * @param account - Subject after the grant write.
  * @param nowMs - Grant decision clock.
+ * @param grantStatus - Effective grant status after the write.
  */
 async function pingTodayMedia(
   deps: FundingRouteDeps,
   account: Account,
   nowMs: number,
+  grantStatus: SpendGrantStatus,
 ): Promise<void> {
   if (deps.spendPing === undefined) {
     return;
@@ -276,7 +279,7 @@ async function pingTodayMedia(
     if (utcDayKey(row.createdAt.getTime()) !== utcDayKey(nowMs)) {
       return;
     }
-    await deps.spendPing.ping(address, id);
+    await deps.spendPing.ping(address, id, 'daily', grantStatus);
   } catch {
     logEvent('funding.daily_ping.failed', { accountId: account.id });
   }
@@ -593,7 +596,7 @@ export function fundingRoutes(deps: FundingRouteDeps): Hono {
           return c.json({ error: 'Conflict' }, 409);
         }
         logEvent('funding.trial', { accountId: subject.id, actorId: staff.caller.id });
-        await pingTodayMedia(deps, subject, nowMs);
+        await pingTodayMedia(deps, subject, nowMs, effectiveStatus(grant, nowMs));
         return c.json(decisionBody(subject, grant, nowMs, staff.caller.name), 200);
       } catch {
         logEvent('funding.write.failed');
@@ -646,7 +649,7 @@ export function fundingRoutes(deps: FundingRouteDeps): Hono {
         }
         logEvent('funding.admitted', { accountId: subject.id, actorId: staff.caller.id });
         if (status === 'pending') {
-          await pingTodayMedia(deps, subject, nowMs);
+          await pingTodayMedia(deps, subject, nowMs, effectiveStatus(grant, nowMs));
         }
         return c.json(decisionBody(subject, grant, nowMs, staff.caller.name), 200);
       } catch {

@@ -15,7 +15,7 @@ import {
   type GoalFiatCode,
   type GoalRateDay,
 } from '@/lib/goal-rate';
-import { eligibleToday } from '@/lib/funding';
+import { effectiveStatus, eligibleToday } from '@/lib/funding';
 import { InMemoryFundingStore, type FundingStore } from '@/lib/funding-store';
 import { logEvent } from '@/lib/log';
 import { shownFiatFromBody, type FiatAmounts } from '@/lib/money';
@@ -253,10 +253,11 @@ export interface MessagesRouteDeps {
   pushStore?: PushStore;
   /**
    * Optional spend ping. After a new top-level persist with a Lightning
-   * Address, the route awaits `ping(address, created.id)` only when
-   * `eligibleToday` and the new row has media. A verified account also
-   * welcome-pings the newest live top-level photo or video, including an
-   * About-me note that already existed, independent of `eligibleToday`.
+   * Address, the route awaits
+   * `ping(address, created.id, 'daily', effectiveStatus(grant, now))`
+   * only when `eligibleToday` and the new row has media. A verified account
+   * also welcome-pings the newest live top-level photo or video, including
+   * an About-me note that already existed, independent of `eligibleToday`.
    * Omitted → skip. Failures are logged and do not fail the 200.
    */
   spendPing?: SpendPing;
@@ -1032,7 +1033,12 @@ async function persistForumPost(
           created.hasVideo === true ||
           Number(created.photoCount) > 0
         ) {
-          await deps.spendPing.ping(account.lightningAddress, created.id);
+          await deps.spendPing.ping(
+            account.lightningAddress,
+            created.id,
+            'daily',
+            effectiveStatus(grant, deps.now()),
+          );
         } else {
           logEvent('spend.ping.skipped', { reason: 'no_media' });
         }

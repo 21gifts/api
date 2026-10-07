@@ -30,7 +30,7 @@ import {
   verifiedExternalZapRequest,
 } from '@/lib/nostr/external';
 import { inboxUnreadCountFor } from '@/lib/conversation-push';
-import { eligibleToday } from '@/lib/funding';
+import { effectiveStatus, eligibleToday } from '@/lib/funding';
 import { InMemoryFundingStore, type FundingStore } from '@/lib/funding-store';
 import { notifyForumPost, notifyForumReply, notifyZap } from '@/lib/notification';
 import type { PostRateLimiter } from '@/lib/nostr/rate-limit';
@@ -2406,7 +2406,12 @@ async function insertGiftReply(
       if (!eligibleToday(args.payer.role, grant, args.now())) {
         logEvent('spend.ping.skipped', { reason: 'not_eligible' });
       } else {
-        await args.spendPing.ping(args.payer.lightningAddress, created.id);
+        await args.spendPing.ping(
+          args.payer.lightningAddress,
+          created.id,
+          'daily',
+          effectiveStatus(grant, args.now()),
+        );
       }
     } catch {
       logEvent('spend.ping.failed');

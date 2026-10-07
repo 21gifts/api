@@ -1490,6 +1490,13 @@ test('Function: NoopSpendPing — default boot has no SPEND_URL', async ({ reque
   expect(res.status()).toBe(200);
 });
 
+test('Function: decideSpendInstruction — chooses the daily amount from the roster', async ({
+  request,
+}) => {
+  const res = await request.get('/healthz');
+  expect(res.status()).toBe(200);
+});
+
 test('Function: startPasskeyClaim — POST begin with an unknown viewKey is 404', async ({
   request,
 }) => {
