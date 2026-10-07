@@ -3437,7 +3437,7 @@ payments the api has not acknowledged yet.
   value that is missing, too long, holds control characters, or has the shape
   of secret material (a token starting with `nsec1…` or an extended private
   key prefix, or a run of at least 12 consecutive recovery-phrase-shaped words
-  in any BIP-39 language (3–8 letters, or 1–8 CJK or Hangul characters)
+  in any BIP-39 language (3–9 letters, or 1–8 CJK or Hangul characters)
   anywhere in the value) is stored as `null`.
 - Every other field is ignored and never stored or logged. A `preimage` is not
   read even when the app sends one; the app does not send it.
