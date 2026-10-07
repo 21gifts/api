@@ -32,7 +32,7 @@ import {
 import { inboxUnreadCountFor } from '@/lib/conversation-push';
 import { effectiveStatus, eligibleToday } from '@/lib/funding';
 import { InMemoryFundingStore, type FundingStore } from '@/lib/funding-store';
-import { notifyForumPost, notifyForumReply, notifyZap } from '@/lib/notification';
+import { notifyForumPost, notifyForumReply, notifyHeart, notifyZap } from '@/lib/notification';
 import type { PostRateLimiter } from '@/lib/nostr/rate-limit';
 import type { SpendPing } from '@/lib/spend-ping';
 import type { NotificationStore } from '@/lib/notification-store';
@@ -544,7 +544,9 @@ function zapIngestRow(args: {
  * The claim and credit are not one transaction, so the concurrent same-instant
  * race is limited to the window between them; competing different receipt ids
  * are serialised by the claim table's payment-hash primary key.
- * On a member note, fans out `notifyZap` and attempts the payer gift-reply.
+ * On a member note, fans out `notifyZap` and attempts the payer gift-reply
+ * unless the settled invoice is a heart (`heart === true`): then credits
+ * sats, calls `notifyHeart`, and skips `notifyZap` and the gift-reply.
  * On the platform profile note, skips `notifyZap` and treats the zap comment
  * as a compose post/reply (`insertGiftReply`).
  *
@@ -746,7 +748,22 @@ export async function settleInvoiceManually(args: {
     payer = undefined;
     logEvent('nostr.zap.gift_reply.failed', { receiptId });
   }
-  if (!hidden && message.accountId !== null && !feeNote) {
+  if (!hidden && message.accountId !== null && invoice.heart === true) {
+    try {
+      await notifyHeart({
+        note: message,
+        receiptId,
+        nowMs: args.now(),
+        auth: args.auth,
+        payerAccountId: invoice.payerAccountId,
+        ...(args.notificationStore === undefined ? {} : { notifications: args.notificationStore }),
+        ...(args.pushStore === undefined ? {} : { pushStore: args.pushStore }),
+        ...(payer === undefined ? {} : { payerName: payer.name ?? 'Someone' }),
+      });
+    } catch {
+      logEvent('push.enqueue.failed');
+    }
+  } else if (!hidden && message.accountId !== null && !feeNote) {
     try {
       await notifyZap({
         note: message,
@@ -764,7 +781,7 @@ export async function settleInvoiceManually(args: {
       logEvent('push.enqueue.failed');
     }
   }
-  if (!hidden && payer !== undefined) {
+  if (!hidden && payer !== undefined && invoice.heart !== true) {
     try {
       await insertGiftReply({
         store: args.store,
@@ -949,7 +966,9 @@ export async function indexZapReceipt(args: {
  * ones, then insert a payer gift-reply (forum) or append the paid PN row
  * (conversation invoice) and fan out zap in-app notifications to every
  * account except skip (no-op when the payer is the official platform
- * account; Web Push only to bell subscribers). Conversation
+ * account; Web Push only to bell subscribers). A heart invoice
+ * (`heart === true`) credits sats, calls `notifyHeart`, and skips
+ * `notifyZap` and the gift-reply. Conversation
  * invoices skip `addSats`, gift-reply, and `notifyZap`. Gift-reply insert
  * runs only when the paid message is a top-level member note (`parentId`
  * null) that is not the official platform profile note; a member-note
@@ -1690,14 +1709,14 @@ async function ingestOneReceipt(
 
   // A thrown lookup must not reject a receipt that already passed validation.
   // Gift-reply retry looks the invoice up again.
-  let pinnedForum: FiatAmounts | undefined;
+  let invoice: MessageInvoiceAttempt | undefined;
   try {
-    pinnedForum = pinnedInvoiceFiat(
-      await args.store.findOkInvoiceByPaymentHash(decoded.paymentHash),
-    );
+    invoice = await args.store.findOkInvoiceByPaymentHash(decoded.paymentHash);
   } catch {
-    pinnedForum = undefined;
+    invoice = undefined;
   }
+  const pinnedForum = pinnedInvoiceFiat(invoice);
+  const heart = invoice?.heart === true;
   const indexed = await indexZapReceipt({
     store: args.store,
     messageId: row.id,
@@ -1728,7 +1747,28 @@ async function ingestOneReceipt(
     } catch {
       payer = undefined;
     }
-    if (!isPlatformFeeNote(author, row)) {
+    if (heart && invoice !== undefined) {
+      try {
+        await notifyHeart({
+          note: row,
+          receiptId: event.id,
+          nowMs: args.now(),
+          auth: args.auth,
+          payerAccountId: invoice.payerAccountId,
+          ...(args.notificationStore === undefined
+            ? {}
+            : { notifications: args.notificationStore }),
+          ...(args.pushStore === undefined ? {} : { pushStore: args.pushStore }),
+          /* v8 ignore next 3 -- production worker always has conversationStore */
+          ...(args.conversations === undefined
+            ? {}
+            : { inboxUnreadCount: inboxUnreadCountFor(args.conversations, args.auth) }),
+          ...(payer === undefined ? {} : { payerName: payer.name ?? 'Someone' }),
+        });
+      } catch {
+        logEvent('push.enqueue.failed');
+      }
+    } else if (!isPlatformFeeNote(author, row)) {
       try {
         await notifyZap({
           note: row,
@@ -1753,7 +1793,9 @@ async function ingestOneReceipt(
       }
     }
   }
-  await tryEnsureGiftReply(event, args);
+  if (!heart) {
+    await tryEnsureGiftReply(event, args);
+  }
 }
 
 /**
@@ -1970,6 +2012,19 @@ async function tryEnsureGiftReply(event: NostrEventFrame, args: GiftReplyDeps): 
     return;
   }
   try {
+    const taggedPr = event.tags.find((tag) => tag[0] === 'bolt11')?.[1];
+    const pr = typeof taggedPr === 'string' ? taggedPr : '';
+    const decoded = pr === '' ? null : decodeBolt11(pr);
+    if (decoded !== null) {
+      const heartInvoice = await args.store.findOkInvoiceByPaymentHash(decoded.paymentHash);
+      if (heartInvoice?.heart === true) {
+        return;
+      }
+    }
+  } catch {
+    // A thrown lookup is not a heart; the gift-reply path continues.
+  }
+  try {
     const receipt = await args.store.getZapReceiptGift(event.id);
     if (receipt === undefined || receipt.giftReplyId !== null) {
       return;
@@ -2127,6 +2182,10 @@ async function ensureGiftReplyFromReceipt(
     receiptCreatedAt: Date;
   },
 ): Promise<void> {
+  const heartInvoice = await args.store.findOkInvoiceByPaymentHash(args.paymentHash);
+  if (heartInvoice?.heart === true) {
+    return;
+  }
   const resolved = await resolveZapPayer({
     store: args.store,
     auth: args.auth,

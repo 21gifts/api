@@ -172,6 +172,8 @@ export function pushTagForNotification(
       return `forum_mention:${row.replyId}`;
     case 'zap':
       return `zap:${row.replyId}`;
+    case 'heart':
+      return `heart:${row.replyId}`;
     case 'moderator_appointed':
       return `moderator_appointed:${row.parentId}`;
     case 'moderator_proposal':
@@ -273,6 +275,30 @@ export function buildZapPushPayload(args: {
     body: `Sent ${String(args.amountSats)} sats.`,
     url: `/messages/${encodeURIComponent(openId)}`,
     tag: `zap:${args.messageId}`,
+  };
+}
+
+/**
+ * Heart-tip payload for the note author only.
+ *
+ * Title is the collapsed payer name, or `Someone` when blank. Body is
+ * exactly `Sent you a heart.` `url` is
+ * `/messages/${encodeURIComponent(noteId)}`. Tag is `heart:<replyId>`.
+ *
+ * @param args - Tag id, payer name, and note id to open.
+ * @returns Payload object; callers `JSON.stringify`. Omits `unreadCount`.
+ */
+export function buildHeartPushPayload(args: {
+  replyId: string;
+  name: string;
+  noteId: string;
+}): PushPayload {
+  return {
+    type: 'zap',
+    title: pushTitle(args.name),
+    body: 'Sent you a heart.',
+    url: `/messages/${encodeURIComponent(args.noteId)}`,
+    tag: `heart:${args.replyId}`,
   };
 }
 

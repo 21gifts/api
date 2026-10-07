@@ -5,7 +5,7 @@
  * `forum_laws_dismissed`, `rules_agreed_at`, `notification_level`,
  * `amount_unit`, `locale`, `fiat`, `session_refused`, `wallet_required`,
  * `wallet_backup_seen_at`, `staff_tag`, `spark_pubkey`, `spark_pubkey_verified_at`,
- * and `passkey_challenge.requested_name` on databases created before those
+ * `notify_hearts`, and `passkey_challenge.requested_name` on databases created before those
  * columns existed.
  * Also creates `passkey_renew_attempt` (failed, cancelled, and
  * server-written succeeded seed rows).
@@ -181,4 +181,5 @@ export const AUTH_SCHEMA_SQL: readonly string[] = [
   `CREATE INDEX IF NOT EXISTS account_spark_pubkey_idx ON account (spark_pubkey) WHERE spark_pubkey IS NOT NULL`,
   `CREATE UNIQUE INDEX IF NOT EXISTS account_spark_pubkey_verified_uidx
   ON account (spark_pubkey) WHERE spark_pubkey_verified_at IS NOT NULL`,
+  `ALTER TABLE account ADD COLUMN IF NOT EXISTS notify_hearts boolean NOT NULL DEFAULT true`,
 ];

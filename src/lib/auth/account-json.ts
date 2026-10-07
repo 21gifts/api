@@ -72,7 +72,7 @@ export interface AccountResponse {
  * Owner-facing account JSON: the eleven public fields plus the durable
  * view-key capability secret, the next `setup` step, factual `missing`,
  * `hasPosted`, `aboutMe`, `aboutMeHasPhoto`, `notificationLevel`,
- * `amountUnit`, `locale`, `fiat`, `funding`, `walletRequired`,
+ * `notifyHearts`, `amountUnit`, `locale`, `fiat`, `funding`, `walletRequired`,
  * `walletBackupSeenAt`, `sparkPubkey`, `sparkWalletVerified`,
  * `passkeyCredentialId`, `passkeyRenewFailed`, `passkeyRenewClosed`, and
  * `passkeyRenewPrfUnsupported` (true only when the newest unacknowledged
@@ -123,6 +123,11 @@ export interface OwnerAccountResponse extends AccountResponse {
    * Owner-only; omitted from public `GET /view/:viewKey` and member cards.
    */
   notificationLevel: NotificationLevel;
+  /**
+   * Owner preference for heart-tip notifications. Default `true`.
+   * Owner-only; omitted from public `GET /view/:viewKey` and member cards.
+   */
+  notifyHearts: boolean;
   /**
    * Owner amount-entry unit (`btc` \| `fiat`). Default `btc`. Owner-only;
    * omitted from public member cards and view profiles.
@@ -593,7 +598,7 @@ export function serializeDebugAccountDetail(
  *   (`lightningAddress`), or `undefined` when off.
  * @returns Owner fields including `viewKey`, `setup`, `missing`,
  * `hasPosted`, `location`, `aboutMe`, `aboutMeHasPhoto`,
- * `notificationLevel`, `amountUnit`, `locale`, `fiat`, `funding`,
+ * `notificationLevel`, `notifyHearts`, `amountUnit`, `locale`, `fiat`, `funding`,
  * `walletRequired`, `walletBackupSeenAt`, `sparkPubkey`,
  * `sparkWalletVerified`, `passkeyCredentialId`, `passkeyRenewFailed`,
  * `passkeyRenewClosed`, and `passkeyRenewPrfUnsupported`.
@@ -620,6 +625,7 @@ export function serializeOwnerAccount(
     aboutMeHasPhoto,
     aboutMessageId: aboutMessageIdFor(account, aboutMe),
     notificationLevel: parseNotificationLevel(account.notificationLevel),
+    notifyHearts: account.notifyHearts !== false,
     amountUnit: parseAmountUnit(account.amountUnit),
     locale: parseStoredLocale(account.locale),
     fiat: parseStoredFiat(account.fiat),
@@ -685,7 +691,7 @@ export interface OwnerFundingLookup {
  *   already acknowledged the failure is not closed.
  * @param lnurlServer - LNURL server config for the receiving address, or `undefined`.
  * @returns Owner JSON including `hasPosted`, `aboutMe`, `aboutMeHasPhoto`,
- *   `notificationLevel`, `amountUnit`, `locale`, `fiat`, `funding`,
+ *   `notificationLevel`, `notifyHearts`, `amountUnit`, `locale`, `fiat`, `funding`,
  *   `walletRequired`, `walletBackupSeenAt`, `sparkPubkey`,
  *   `sparkWalletVerified`, `passkeyCredentialId`, `passkeyRenewFailed`,
  *   `passkeyRenewClosed`, and `passkeyRenewPrfUnsupported` (true only when
