@@ -9106,6 +9106,172 @@ describe('indexOpenZapReceipts', () => {
     expect(events.some((event) => event['event'] === 'nostr.zap.rejected')).toBe(false);
   });
 
+  it('notifies a heart when the notice lookup rejects once and the retry resolves the stored heart invoice', async () => {
+    class HeartNoticeRetryStore extends InMemoryMessageStore {
+      lookups = 0;
+
+      override findOkInvoiceByPaymentHash(
+        ...args: Parameters<InMemoryMessageStore['findOkInvoiceByPaymentHash']>
+      ): ReturnType<InMemoryMessageStore['findOkInvoiceByPaymentHash']> {
+        this.lookups += 1;
+        if (this.lookups === 3) {
+          return Promise.reject(new Error('heart lookup boom'));
+        }
+        return super.findOkInvoiceByPaymentHash(...args);
+      }
+    }
+    const store = new HeartNoticeRetryStore();
+    const auth = new InMemoryAuthStore();
+    const parentId = await seedStore({
+      store,
+      auth,
+      accountId: 'acc-heart-notice-retry',
+      lightningAddress: 'zap-heart-notice-retry@example.com',
+      messageId: 'm-heart-notice-retry',
+    });
+    await auth.createAccount({
+      id: 'payer-heart-notice-retry',
+      linkingKey: null,
+      role: 'basis',
+      name: 'Pat',
+      location: null,
+      forumLawsDismissed: false,
+      viewKey: viewKeyFor('payer-heart-notice-retry'),
+      createdAt: 2,
+      rulesAgreedAt: null,
+    });
+    await store.recordInvoiceAttempt({
+      id: 'inv-heart-notice-retry',
+      createdAt: new Date('2026-08-28T00:00:00.000Z'),
+      messageId: parentId,
+      payerAccountId: 'payer-heart-notice-retry',
+      authorAccountId: 'acc-heart-notice-retry',
+      amountSats: 1,
+      lightningAddress: null,
+      zapRequest: { content: 'heart' },
+      result: 'ok',
+      httpStatus: 200,
+      pr: 'lnbc-heart-notice-retry',
+      paymentHash: 'e1'.repeat(32),
+      description: null,
+      descriptionHash: null,
+      isNip57Invoice: true,
+      lnurlResponse: null,
+      heart: true,
+    });
+    const notifications = new InMemoryNotificationStore();
+    const querier = new RecordingQuerier();
+    querier.events = [
+      {
+        id: 'r-heart-notice-retry',
+        pubkey: PROVIDER_PUBKEY,
+        kind: 9735,
+        tags: [
+          ['e', NOTE_EVENT_ID],
+          ['bolt11', 'lnbc-heart-notice-retry'],
+        ],
+      },
+    ];
+    mockedDecode.mockReturnValue({ paymentHash: 'e1'.repeat(32), amountMsat: 1000 });
+    await ingest({
+      store,
+      auth,
+      querier,
+      urls: URLS,
+      timeoutMs: 50,
+      now: () => 1,
+      fetchImpl: lnurlFetch(PROVIDER_PUBKEY),
+      notificationStore: notifications,
+    });
+    expect((await store.getById(parentId))?.sats).toBe(1);
+    expect(await store.listReplies(parentId)).toHaveLength(0);
+    const forAuthor = await notifications.listByRecipient('acc-heart-notice-retry', 10);
+    expect(forAuthor).toHaveLength(1);
+    expect(forAuthor[0]?.type).toBe('heart');
+  });
+
+  it('credits the receipt and sends neither notice when both notice lookups reject', async () => {
+    class HeartNoticeFailStore extends InMemoryMessageStore {
+      lookups = 0;
+
+      override findOkInvoiceByPaymentHash(
+        ...args: Parameters<InMemoryMessageStore['findOkInvoiceByPaymentHash']>
+      ): ReturnType<InMemoryMessageStore['findOkInvoiceByPaymentHash']> {
+        this.lookups += 1;
+        if (this.lookups === 3 || this.lookups === 4) {
+          return Promise.reject(new Error('heart lookup boom'));
+        }
+        return super.findOkInvoiceByPaymentHash(...args);
+      }
+    }
+    const store = new HeartNoticeFailStore();
+    const auth = new InMemoryAuthStore();
+    const parentId = await seedStore({
+      store,
+      auth,
+      accountId: 'acc-heart-notice-fail',
+      lightningAddress: 'zap-heart-notice-fail@example.com',
+      messageId: 'm-heart-notice-fail',
+    });
+    await auth.createAccount({
+      id: 'payer-heart-notice-fail',
+      linkingKey: null,
+      role: 'basis',
+      name: 'Pat',
+      location: null,
+      forumLawsDismissed: false,
+      viewKey: viewKeyFor('payer-heart-notice-fail'),
+      createdAt: 2,
+      rulesAgreedAt: null,
+    });
+    await store.recordInvoiceAttempt({
+      id: 'inv-heart-notice-fail',
+      createdAt: new Date('2026-08-28T00:00:00.000Z'),
+      messageId: parentId,
+      payerAccountId: 'payer-heart-notice-fail',
+      authorAccountId: 'acc-heart-notice-fail',
+      amountSats: 1,
+      lightningAddress: null,
+      zapRequest: { content: 'heart' },
+      result: 'ok',
+      httpStatus: 200,
+      pr: 'lnbc-heart-notice-fail',
+      paymentHash: 'e2'.repeat(32),
+      description: null,
+      descriptionHash: null,
+      isNip57Invoice: true,
+      lnurlResponse: null,
+      heart: true,
+    });
+    const notifications = new InMemoryNotificationStore();
+    const querier = new RecordingQuerier();
+    querier.events = [
+      {
+        id: 'r-heart-notice-fail',
+        pubkey: PROVIDER_PUBKEY,
+        kind: 9735,
+        tags: [
+          ['e', NOTE_EVENT_ID],
+          ['bolt11', 'lnbc-heart-notice-fail'],
+        ],
+      },
+    ];
+    mockedDecode.mockReturnValue({ paymentHash: 'e2'.repeat(32), amountMsat: 1000 });
+    await ingest({
+      store,
+      auth,
+      querier,
+      urls: URLS,
+      timeoutMs: 50,
+      now: () => 1,
+      fetchImpl: lnurlFetch(PROVIDER_PUBKEY),
+      notificationStore: notifications,
+    });
+    expect((await store.getById(parentId))?.sats).toBe(1);
+    expect(await store.listReplies(parentId)).toHaveLength(0);
+    expect(await notifications.listByRecipient('acc-heart-notice-fail', 10)).toEqual([]);
+  });
+
   it('settles a heart invoice with notifyHeart and skips the gift-reply', async () => {
     const store = new InMemoryMessageStore();
     const auth = new InMemoryAuthStore();
