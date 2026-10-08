@@ -9013,6 +9013,31 @@ describe('PostgresMessageStore', () => {
     expect(sql.queries[0]?.text).toMatch(/heart/);
     expect(found?.id).toBe('inv-1');
     expect(found?.heart).toBe(false);
+    const heartSql = new MockSql();
+    heartSql.nextRows = [
+      {
+        id: 'inv-1',
+        created_at: new Date('2026-08-28T12:00:00.000Z'),
+        message_id: 'm1',
+        payer_account_id: 'payer',
+        author_account_id: 'auth',
+        amount_sats: 21,
+        lightning_address: null,
+        zap_request: null,
+        result: 'ok',
+        http_status: 200,
+        pr: 'lnbc',
+        payment_hash: '11'.repeat(32),
+        description: null,
+        description_hash: null,
+        is_nip57_invoice: true,
+        lnurl_response: null,
+        heart: true,
+      },
+    ];
+    const heartStore = new PostgresMessageStore(heartSql);
+    const foundHeart = await heartStore.findOkInvoiceByPaymentHash('11'.repeat(32));
+    expect(foundHeart?.heart).toBe(true);
     expect(
       await new PostgresMessageStore(new MockSql()).findOkInvoiceByPaymentHash('x'),
     ).toBeUndefined();
