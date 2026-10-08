@@ -6,6 +6,7 @@ import type { FundingGrant } from '@/lib/funding';
 import { migrateFundingSchema, PostgresFundingStore } from '@/lib/funding-store';
 import { migrateMemberHabitSchema, PostgresMemberHabitStore } from '@/lib/member-habit-store';
 import { migrateDbChangeSchema } from '@/lib/db-change';
+import { DEBUG_DB_PAGE_SIZE, PostgresDebugDbStore } from '@/lib/debug-db';
 import { migrateFxSpotSchema, PostgresFxSpotStore } from '@/lib/fx-spot-store';
 import { unsignedNostrDefaults } from '@/lib/message';
 import { migrateMessageSchema, PostgresMessageStore } from '@/lib/message-store';
@@ -1219,6 +1220,116 @@ describe('PostgresMemberEventStore', () => {
         [accountId],
       );
       expect(inserts).toHaveLength(2);
+    } finally {
+      await closeIfPossible(sql);
+    }
+  });
+});
+
+describe('PostgresDebugDbStore member data tables', () => {
+  test('lists the wallet and event tables and pages wallet_payment by its composite key', async () => {
+    const { client, sql } = createBunSqlClient(databaseUrl);
+    try {
+      await migrateAuthSchema(client);
+      await migrateWalletSchema(client);
+      await migrateMemberEventSchema(client);
+
+      const auth = new PostgresAuthStore(client);
+      const hex64 = (): string =>
+        `${crypto.randomUUID().replaceAll('-', '')}${crypto.randomUUID().replaceAll('-', '')}`;
+      const accountId = crypto.randomUUID();
+      await auth.createAccount({
+        id: accountId,
+        linkingKey: null,
+        role: 'basis',
+        name: null,
+        username: `debugdb_${Date.now()}_${Math.random().toString(16).slice(2, 10)}`,
+        location: null,
+        forumLawsDismissed: false,
+        viewKey: hex64(),
+        createdAt: Date.now(),
+        rulesAgreedAt: null,
+        walletRequired: true,
+      });
+
+      const now = new Date();
+      const wallet = new PostgresWalletStore(client);
+      await wallet.recordBalance({
+        id: crypto.randomUUID(),
+        accountId,
+        balanceSats: 5,
+        syncedAt: now,
+        receivedAt: now,
+      });
+      const paymentIds = Array.from(
+        { length: DEBUG_DB_PAGE_SIZE + 1 },
+        (_, index) => `debugdb-${String(index).padStart(3, '0')}`,
+      );
+      await wallet.upsertPayments(
+        paymentIds.map((paymentId) => ({
+          accountId,
+          paymentId,
+          direction: 'in' as const,
+          status: 'completed' as const,
+          amountSats: 1,
+          feeSats: 0,
+          paidAt: now,
+          method: 'spark',
+          paymentHash: null,
+          invoice: null,
+          destination: null,
+          description: null,
+          lnurlComment: null,
+          category: 'unknown' as const,
+          counterpartyAccountId: null,
+          firstSeenAt: now,
+          updatedAt: now,
+        })),
+      );
+      await new PostgresMemberEventStore(client).appendMany([
+        {
+          id: crypto.randomUUID(),
+          accountId,
+          name: 'logout',
+          at: now,
+          path: '/settings',
+          props: {},
+          receivedAt: now,
+        },
+      ]);
+
+      const store = new PostgresDebugDbStore(client);
+      const tables = await store.listTables();
+      const count = (name: string): number =>
+        tables.find((table) => table.name === name)?.rowCount ?? -1;
+      expect(count('wallet_balance_snapshot')).toBeGreaterThanOrEqual(1);
+      expect(count('wallet_payment')).toBeGreaterThanOrEqual(paymentIds.length);
+      expect(count('member_event')).toBeGreaterThanOrEqual(1);
+
+      const seen: string[] = [];
+      let pages = 0;
+      let cursor: string | null = null;
+      do {
+        const page = await store.readPage('wallet_payment', cursor);
+        if (page === undefined) {
+          throw new Error('expected wallet_payment to be listed');
+        }
+        expect(page.columns).toContain('last_observed_at');
+        for (const row of page.rows) {
+          if (row['account_id'] === accountId) {
+            seen.push(String(row['payment_id']));
+          }
+        }
+        pages += 1;
+        cursor = page.nextCursor;
+      } while (cursor !== null);
+      expect(pages).toBeGreaterThan(1);
+      expect(seen.sort()).toEqual(paymentIds);
+
+      const events = await store.readPage('member_event', null);
+      expect(events?.columns).toEqual(
+        expect.arrayContaining(['account_id', 'name', 'at', 'path', 'props', 'received_at']),
+      );
     } finally {
       await closeIfPossible(sql);
     }
