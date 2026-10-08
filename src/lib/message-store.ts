@@ -1457,7 +1457,9 @@ export type MessageInvoiceResult =
   | 'sign_failed'
   | 'rate_limited'
   | 'bad_body'
-  | 'not_found';
+  | 'not_found'
+  | 'self_heart'
+  | 'heart_unavailable';
 
 /** One persisted invoice attempt for operator debug. */
 export interface MessageInvoiceAttempt {
