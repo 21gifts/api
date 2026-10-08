@@ -2421,7 +2421,7 @@ Reads the country of a map pin from its coordinates with the offline boundary da
 
 - **Purpose:** Operator account JSON: the stored account columns except the legacy `lightning_address` and `lightning_address_verified` (no longer output; only `repairGiftKind` still reads them), plus Nostr debug fields. Never used by member `GET /me`.
 - **Inputs:** `Account`, optional `DebugNostrFields` (defaults to all-null), and optional `lnurlServer` (`lightningAddress` is the wallet-backed receiving address; the stored external address is never read).
-- **Returns / side effects:** `DebugAccountResponse` including `username`, `viewKey`, `sessionRefused`, skip stamps, `profileMessageId`, `notificationLevel`, `amountUnit`, `locale`, `fiat`, `walletRequired`, `walletBackupSeenAt`, `sparkPubkey` (`string | null`), `sparkPubkeyVerifiedAt` (`number | null` epoch ms), and envelope hex `nostrNsecCiphertext`. Never decrypts. No I/O.
+- **Returns / side effects:** `DebugAccountResponse` including `username`, `viewKey`, `sessionRefused`, skip stamps, `profileMessageId`, `notificationLevel`, `notifyHearts` (boolean, default true), `amountUnit`, `locale`, `fiat`, `walletRequired`, `walletBackupSeenAt`, `sparkPubkey` (`string | null`), `sparkPubkeyVerifiedAt` (`number | null` epoch ms), and envelope hex `nostrNsecCiphertext`. Never decrypts. No I/O.
 - **Used by:** `GET /debug/accounts`, `PATCH /debug/accounts/:id`, and the operator dump.
 
 ## Function: serializeDebugAccountDetail

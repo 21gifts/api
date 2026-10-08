@@ -313,6 +313,8 @@ export interface DebugAccountResponse extends AccountResponse {
   profileMessageId: string | null;
   /** Owner fan-out filter (`all` \| `active` \| `mentions`). */
   notificationLevel: NotificationLevel;
+  /** Owner preference for heart-tip notifications. Default `true`. */
+  notifyHearts: boolean;
   /** Owner amount-entry unit (`btc` \| `fiat`). Default `btc`. */
   amountUnit: AmountUnit;
   /**
@@ -521,6 +523,7 @@ export function serializeDebugAccount(
     lightningAddressSkippedAt: account.lightningAddressSkippedAt ?? null,
     profileMessageId: account.profileMessageId ?? null,
     notificationLevel: parseNotificationLevel(account.notificationLevel),
+    notifyHearts: account.notifyHearts !== false,
     amountUnit: parseAmountUnit(account.amountUnit),
     locale: parseStoredLocale(account.locale),
     fiat: parseStoredFiat(account.fiat),

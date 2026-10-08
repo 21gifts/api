@@ -256,6 +256,12 @@ describe('serializeDebugAccount', () => {
     );
   });
 
+  it('includes notifyHearts on debug JSON and defaults an omitted value to true', () => {
+    expect(serializeDebugAccount(account).notifyHearts).toBe(true);
+    expect(serializeDebugAccount({ ...account, notifyHearts: false }).notifyHearts).toBe(false);
+    expect(serializeDebugAccount({ ...account, notifyHearts: true }).notifyHearts).toBe(true);
+  });
+
   it('includes sparkPubkey and sparkPubkeyVerifiedAt on debug JSON', () => {
     const pubkey = `02${'a'.repeat(64)}`;
     const unset = serializeDebugAccount(account);
