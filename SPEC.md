@@ -2287,9 +2287,11 @@ own-host Lightning address or Spark key, `platform` (platform account), `shop`
 
 A payment between two members is reported by both wallets: the payer's row has
 `direction` `out`, the payee's row has `direction` `in`, and their `payment_id`
-values can differ. When the apps reported it, the two rows share `payment_hash`
-(Lightning) or `invoice` (Spark invoice), so a total over all members counts
-such a payment once, not once per row.
+values can differ, so `GET /debug/db` returns two rows for one payment. When the
+apps reported it, the two rows share `payment_hash` (Lightning) or `invoice`
+(Spark invoice). A total over all members must keep one row per payment, for
+example by deduplicating on `payment_hash` or `invoice`; summing every row counts
+such a payment twice.
 
 ### `GET /debug/accounts`
 
@@ -3430,8 +3432,8 @@ Success → **Response** `200`:
 ### `POST /me/wallet/report`
 
 Bearer required. The app sends this after each successful wallet sync while
-the member is signed in (signing in opens the wallet; at least after login,
-after a payment, and every few minutes while the app is open). The first report after install sends the
+the member is signed in, at least after login, after a payment, and every few
+minutes while the app is open. The first report after install sends the
 whole payment history in pages of at most 200; later reports send only
 payments the api has not acknowledged yet.
 
@@ -3488,14 +3490,14 @@ payments the api has not acknowledged yet.
   own, repeated and nested fields included at any depth, read leniently so a
   malformed field cannot hide earlier ones; pathological nesting counts as
   secret), every description tag of a BOLT11, the payload
-  of any bech32 token, and any WIF private key (Base58Check). A detail field that holds secret
+  of any bech32 or bech32m token (read as printable ASCII and as UTF-8), and any WIF private key (Base58Check). A detail field that holds secret
   material there is stored as `null`, and a payment with such an id is skipped,
   so an encoded invoice cannot carry a recovery phrase into storage.
 - Screened text is NFC-normalised (so the decomposed form of the official
   wordlists counts) and also read percent-decoded (runs of `%XX` as UTF-8, `+`
   as a space), as in LNURL query strings.
 - Limit of the shape screening: it finds key tokens and recovery-phrase word
-  runs, also inside canonical encodings (Spark and BOLT11 memos, bech32
+  runs, also inside canonical encodings (Spark and BOLT11 memos, bech32 and bech32m
   payloads). It is a safety net against accidental exposure (a phrase typed or
   pasted into a memo), not against a client that deliberately obfuscates a
   secret (base64, XOR, protobuf groups, or unusual token boundaries); the
@@ -3554,8 +3556,8 @@ after 60 reports from one account in 60 seconds; `413`
 
 ### `POST /me/events`
 
-Bearer required. First-party interaction log; there is no third-party
-analytics. The app batches events (flush about every 10 seconds and when the
+Bearer required. First-party interaction log, stored only in this api's
+database. The app batches events (flush about every 10 seconds and when the
 page is hidden). Events before login are not collected.
 
 **Request** (at most 64 KiB): `{ "events": [{ "name", "at", "path", "props" }] }`,
