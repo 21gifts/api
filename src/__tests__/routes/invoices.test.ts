@@ -2352,6 +2352,48 @@ describe('POST /invoices', () => {
     expect(fetchImpl).toHaveBeenCalled();
   });
 
+  it('returns 403 when an unresolved groupMessageId follows a welcome gift paid today', async () => {
+    const authStore = new InMemoryAuthStore();
+    await seedPasskeyAndPlatform(authStore);
+    const conversationStore = new InMemoryConversationStore();
+    await seedGroupTrigger(conversationStore);
+    const fetchImpl = vi.fn<FetchFn>(happyFetch());
+    const welcomeToday: GiftRow = {
+      paidAt: new Date('2026-09-20T08:00:00.000Z'),
+      amountSats: 1000,
+      recipientWosUser: 'Alice',
+      kind: 'welcome',
+    };
+    const res = await createApp({
+      spendApiToken: TOKEN,
+      authStore,
+      messageStore: uuidPostStore(),
+      fetchImpl,
+      conversationStore,
+      giftStore: new InMemoryGiftStore([welcomeToday]),
+      now: () => NOW_MS,
+    }).request(
+      '/invoices',
+      auth({
+        method: 'POST',
+        body: JSON.stringify({
+          address: ADDRESS,
+          amountMsat: 1000,
+          groupMessageId: OTHER_GROUP_MSG_ID,
+          comment: '21gifts daily',
+        }),
+      }),
+    );
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: 'Welcome gift already paid' });
+    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(
+      parsedEvents(warn).some(
+        (e) => e['event'] === 'invoice.welcome_paid' && e['address'] === ADDRESS,
+      ),
+    ).toBe(true);
+  });
+
   it('returns 200 when the welcome gift was paid on the previous UTC day', async () => {
     const authStore = new InMemoryAuthStore();
     await seedPasskeyAccount(authStore);

@@ -744,7 +744,7 @@ export function invoiceRoutes(deps: InvoiceRouteDeps): Hono {
 
       if (
         parsed.data.comment !== 'Welcome' &&
-        parsed.data.groupMessageId === undefined &&
+        resolvedGroupMessageId === undefined &&
         deps.gifts !== undefined
       ) {
         let outbound: Awaited<ReturnType<GiftStore['listOutbound']>>;
