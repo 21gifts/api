@@ -34,7 +34,7 @@ import {
   type MessageRow,
   type NostrPublishState,
 } from '@/lib/message';
-import { placesMatch, type ForumPlace } from '@/lib/place';
+import { placeCountryCode, placesMatch, type ForumPlace } from '@/lib/place';
 
 export type { ForumFeedMode };
 import { kind1ContentWithHashtags } from '@/lib/nostr/event';
@@ -264,6 +264,11 @@ export type MessageFeedQuery = {
   staffAccountIds: ReadonlySet<string>;
   /** Optional hashtag name without `#`. When set, only notes whose `text` contains that token. */
   hashtag?: string;
+  /**
+   * Optional ISO 3166-1 alpha-2 code. When set, only notes whose pin lies in
+   * that country ({@link placeCountryCode}); a note without a pin never matches.
+   */
+  country?: string;
 };
 
 /** Top-level list row with computed reply count. */
@@ -328,7 +333,7 @@ export interface MessageStore {
    * those ids).
    * A real About me stays.
    *
-   * @param query - Mode, limit, exclusive cursor, staff ids (`active` only), and optional hashtag.
+   * @param query - Mode, limit, exclusive cursor, staff ids (`active` only), and optional hashtag and country.
    * @returns At most `query.limit` list row copies.
    */
   listFeed(query: MessageFeedQuery): Promise<MessageListRow[]>;
@@ -2361,7 +2366,7 @@ export class InMemoryMessageStore implements MessageStore {
    * children (`deletedAt` null and either an account or a recorded zapper pubkey).
    * Profile notes are omitted when {@link useProfileNoteIds} was set.
    *
-   * @param query - Mode, limit, exclusive keyset cursor, staff ids, and optional hashtag.
+   * @param query - Mode, limit, exclusive keyset cursor, staff ids, and optional hashtag and country.
    * @returns A new array of list row copies; mutating it does not change the store.
    */
   async listFeed(query: MessageFeedQuery): Promise<MessageListRow[]> {
@@ -2390,7 +2395,17 @@ export class InMemoryMessageStore implements MessageStore {
       typeof hashtag === 'string' && hashtag !== ''
         ? topLevel.filter((row) => textHasHashtagToken(row.text, hashtag))
         : topLevel;
-    const sorted = [...tagged].sort((a, b) => {
+    const country = query.country;
+    const located =
+      typeof country === 'string' && country !== ''
+        ? tagged.filter(
+            (row) =>
+              row.place !== undefined &&
+              row.place !== null &&
+              placeCountryCode(row.place) === country,
+          )
+        : tagged;
+    const sorted = [...located].sort((a, b) => {
       if (query.mode === 'popular') {
         const bySats = b.sats - a.sats;
         if (bySats !== 0) {
@@ -4722,7 +4737,7 @@ export class PostgresMessageStore implements MessageStore {
    * `photo` bytea column. Name-copy profile notes without a photo, extra
    * stills, or video are omitted. A real About me stays.
    *
-   * @param query - Mode, limit, exclusive keyset cursor, staff ids, and optional hashtag.
+   * @param query - Mode, limit, exclusive keyset cursor, staff ids, and optional hashtag and country.
    * @returns Mapped list rows.
    */
   async listFeed(query: MessageFeedQuery): Promise<MessageListRow[]> {
@@ -4762,6 +4777,30 @@ export class PostgresMessageStore implements MessageStore {
     if (typeof hashtag === 'string' && hashtag !== '') {
       params.push(posixHashtagTokenPattern(hashtag));
       filters.push(`text ~* $${params.length}`);
+    }
+    const country = query.country;
+    if (typeof country === 'string' && country !== '') {
+      // The country is read from the coordinates in code, not stored, so the
+      // pinned notes in that country are resolved first and filtered by id.
+      const pinned = await this.#sql.query<{
+        id: string;
+        place_lat: string | number;
+        place_lng: string | number;
+      }>(
+        `SELECT id, place_lat, place_lng FROM message
+         WHERE parent_id IS NULL AND deleted_at IS NULL
+           AND place_lat IS NOT NULL AND place_lng IS NOT NULL`,
+        [],
+      );
+      const ids = pinned
+        .filter(
+          (row) =>
+            placeCountryCode({ lat: Number(row.place_lat), lng: Number(row.place_lng) }) ===
+            country,
+        )
+        .map((row) => row.id);
+      params.push(postgresTextArrayLiteral(ids));
+      filters.push(`id::text = ANY($${params.length}::text[])`);
     }
     if (query.cursor !== null) {
       if (query.mode === 'popular') {

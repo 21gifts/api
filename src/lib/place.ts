@@ -6,6 +6,8 @@
  * stored beside them and is not a Nostr hashtag.
  */
 
+import { iso1A2Code } from '@rapideditor/country-coder';
+
 /** Maximum stored place label length after trim. */
 export const PLACE_LABEL_MAX = 80;
 
@@ -141,4 +143,21 @@ export function normalizePlace(
     ok: true,
     value: { lat: roundCoord(lat), lng: roundCoord(lng), label },
   };
+}
+
+/**
+ * ISO 3166-1 alpha-2 code of the country or territory that contains a pin.
+ *
+ * Read from the coordinates only, never from the free-text label, with the
+ * offline boundary dataset of `@rapideditor/country-coder` (territory level,
+ * so Hong Kong is `HK` and Puerto Rico is `PR`; coastal waters count as that
+ * country). A point in the open sea or outside every boundary has no country.
+ * Nothing is stored: the code is derived again on every read, so no pin can
+ * carry a stale country.
+ *
+ * @param place - Pin coordinates (`lat`, `lng`).
+ * @returns Two upper-case letters, or `null` when the point lies in no country.
+ */
+export function placeCountryCode(place: { lat: number; lng: number }): string | null {
+  return iso1A2Code([place.lng, place.lat], { level: 'territory' });
 }

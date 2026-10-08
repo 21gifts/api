@@ -87,7 +87,13 @@ import type { NotificationStore } from '@/lib/notification-store';
 import type { PushStore } from '@/lib/push-store';
 import type { SpendPing } from '@/lib/spend-ping';
 import { syncWelcomePing } from '@/lib/welcome-media';
-import { normalizePlace, parseMultipartCoord, placesMatch, type ForumPlace } from '@/lib/place';
+import {
+  normalizePlace,
+  parseMultipartCoord,
+  placeCountryCode,
+  placesMatch,
+  type ForumPlace,
+} from '@/lib/place';
 import { removeShopOcpPlace, syncShopOcpPlace, type MapPush } from '@/lib/ocp-place';
 import { repaymentInvoice, repaymentStatus } from '@/routes/repayment';
 import { bearerToken } from '@/routes/me';
@@ -1395,7 +1401,9 @@ const translateBody = z.object({
  * `POST /messages` (JSON photo or multipart `video` + optional `poster`,
  * optional `goalSats` whole-sat ask on a top-level note; optional
  * `goalRepayable` and `goalTermDays` on that ask; replies 400),
- * `GET /messages/places` (live top-level map pins),
+ * `GET /messages/places` (live top-level map pins, each with the `countryCode` of
+ * its coordinates), optional `?country=` on signed-in `GET /messages` (notes
+ * pinned in that ISO 3166-1 alpha-2 country),
  * `GET /messages/compose-target` (platform profile note for a 1-sat write, plus
  * `firstPostFree` while the caller has no top-level note besides its profile note),
  * `GET /messages/:id/photo` (and `.jpg` / `.jpeg` / `.png` / `.webp`),
@@ -1453,7 +1461,7 @@ const translateBody = z.object({
  * A cursor that points at the 200th row is 401. A cursor whose id is gone
  * continues at the first row strictly older than its timestamp, or is 401
  * when nothing in the window is older. Anything other than `mode=active`
- * without a hashtag is 401.
+ * without a hashtag or a country is 401.
  * Malformed limit or cursor stays 400.
  *
  * @param deps - Route collaborators.
@@ -1461,7 +1469,11 @@ const translateBody = z.object({
  * @returns The public page, 400, or 401.
  */
 async function servePublicActiveList(deps: MessagesRouteDeps, c: Context): Promise<Response> {
-  if (c.req.query('mode') !== 'active' || c.req.query('hashtag') !== undefined) {
+  if (
+    c.req.query('mode') !== 'active' ||
+    c.req.query('hashtag') !== undefined ||
+    c.req.query('country') !== undefined
+  ) {
     return c.json({ error: 'Unauthorized' }, 401);
   }
   const limitQuery = c.req.query('limit');
@@ -1653,6 +1665,10 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
       if (hashtagQuery !== undefined && !/^[A-Za-z0-9][A-Za-z0-9_]{0,63}$/.test(hashtagQuery)) {
         return c.json({ error: 'Invalid hashtag' }, 400);
       }
+      const countryQuery = c.req.query('country');
+      if (countryQuery !== undefined && !/^[A-Z]{2}$/.test(countryQuery)) {
+        return c.json({ error: 'Invalid country' }, 400);
+      }
       try {
         const staffAccountIds =
           mode === 'active'
@@ -1664,6 +1680,7 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
           cursor,
           staffAccountIds,
           ...(hashtagQuery === undefined ? {} : { hashtag: hashtagQuery }),
+          ...(countryQuery === undefined ? {} : { country: countryQuery }),
         });
         const maybeKept = await Promise.all(
           rows.map(async (row) => {
@@ -2675,6 +2692,7 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
               lng: row.lng,
               label: row.label,
               shop: row.shop,
+              countryCode: placeCountryCode(row),
               ...(row.accountId === null ? {} : { accountId: row.accountId }),
             })),
           },
