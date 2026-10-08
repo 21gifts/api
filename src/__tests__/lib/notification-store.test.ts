@@ -299,7 +299,12 @@ describe('InMemoryNotificationStore', () => {
         replyId: 'message',
         readAt: original,
       }),
-      row({ id: 'appointed', type: 'moderator_appointed', parentId: 'message', replyId: 'message' }),
+      row({
+        id: 'appointed',
+        type: 'moderator_appointed',
+        parentId: 'message',
+        replyId: 'message',
+      }),
       row({ id: 'proposal', type: 'moderator_proposal', parentId: 'message', replyId: 'message' }),
       row({ id: 'miss', parentId: 'other', replyId: 'other-reply' }),
       row({
