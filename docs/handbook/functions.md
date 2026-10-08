@@ -3,8 +3,8 @@
 ## Function: posRoutes
 
 - **Purpose:** Hono routes `GET /pos`, `POST /pos`, and `DELETE /pos` for one open point-of-sale amount in whole sats. Pins nothing itself; the well-known route reads the store.
-- **Inputs:** `PosRouteDeps` (`store`, `authStore`, `now`, `fetchImpl`).
-- **Returns / side effects:** A Hono app. Writes charges through `PosStore`. No paid status.
+- **Inputs:** `PosRouteDeps` (`store`, `authStore`, `now`, and `fetchImpl` required; optional `messageStore` with `listLiveAssignedShops`, optional `activity`). The LNURL `fetchImpl` is not the map fetch.
+- **Returns / side effects:** A Hono app. Writes charges through `PosStore`. No paid status. After a successful `POST /pos` `store.create`, when both optional collaborators are set, lists live assigned shop notes and best-effort POSTs each matching `#21GiftsShop` note for this account to the OpenCryptoPay map (`pingShopActivity`). GET and DELETE do not ping. A map failure logs `ocp.activity.failed` and does not change 201.
 - **Used by:** `createApp`.
 
 ## Function: activeShopDays
@@ -3351,6 +3351,27 @@ Builds the operator-only external-pubkey inspection route.
 - **Inputs:** Environment slice and fetch.
 - **Returns / side effects:** `{ baseUrl, token, fetchImpl }` or `undefined`. Trims both values and strips trailing slashes from the URL.
 - **Used by:** `createApp` when `mapPush` is not injected.
+
+## Function: resolveActivityPing
+
+- **Purpose:** Build the OpenCryptoPay map activity ping from `OCP_MAP_BASE_URL` and `OCP_PLACE_INGEST_TOKEN`. Unlike `resolveMapPush`, this ping ignores `SHOP_PLACE_PUSH_ENABLED`. A missing or blank URL or token means no ping. The process still boots.
+- **Inputs:** Environment slice and fetch (`MapFetch`).
+- **Returns / side effects:** `{ baseUrl, token, fetchImpl }` or `undefined`. Trims both values and strips trailing slashes from the URL with `/\/+$/u`.
+- **Used by:** `createApp` when wiring `posRoutes` (`activity`).
+
+## Function: pingShopActivity
+
+- **Purpose:** POST each unique shop note id to `{baseUrl}/map/places/transactions` so the OpenCryptoPay map can record a till charge. Failures log `ocp.activity.failed` and do not throw. Non-2xx logs only numeric `status`. A thrown fetch logs the allowlisted name plus `code` or `errno` from the error or its cause and never the message, the address, or the bearer. Each request uses `AbortSignal.timeout(5000)` so a hung map cannot hold `POST /pos`.
+- **Inputs:** Optional `ActivityPing`, shop note ids (empty strings skipped, first occurrence kept), and `occurredAt` ISO-8601 from the stored charge `createdAt`.
+- **Returns / side effects:** `Promise<void>`. Sequential POSTs with body `{ origin: '21gifts', externalId, occurredAt }`. No-op when ping is undefined or no ids remain. Does not read the response body. A failure does not skip later ids.
+- **Used by:** `posRoutes` after a successful `POST /pos` `store.create`.
+
+## Function: logActivityFailure
+
+- **Purpose:** Log `ocp.activity.failed` for a thrown map ping or a thrown `listLiveAssignedShops`, using allowlisted fields only. Never logs the message, the address, or the bearer. Empty allowlist logs the event with no second argument.
+- **Inputs:** The thrown value.
+- **Returns / side effects:** Calls `logEvent('ocp.activity.failed')` or `logEvent('ocp.activity.failed', fields)`. Does not throw.
+- **Used by:** `pingShopActivity` for thrown fetches and `posRoutes` when `listLiveAssignedShops` throws.
 
 ## Function: loadLatestGoalRateDay
 

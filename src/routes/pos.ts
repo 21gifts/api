@@ -4,6 +4,8 @@ import { isUniqueViolation } from '@/lib/auth/sql';
 import type { Account, AuthStore } from '@/lib/auth/store';
 import type { FetchFn } from '@/lib/lnurlp';
 import { resolveLnurlp } from '@/lib/lnurlp';
+import { textHasHashtagToken, type ShopNoteRef } from '@/lib/message-store';
+import { logActivityFailure, pingShopActivity, type ActivityPing } from '@/lib/ocp-activity';
 import { POS_CHARGE_TTL_MS, serializePosCharge, type PosCharge } from '@/lib/pos-charge';
 import type { PosStore } from '@/lib/pos-store';
 import { bearerToken } from '@/routes/me';
@@ -14,7 +16,10 @@ import { bearerToken } from '@/routes/me';
  * Shares the {@link AuthStore} with `/auth` and `/me`.
  */
 
-/** Collaborators the `/pos` routes need. All required (no defaults). */
+/**
+ * Collaborators the `/pos` routes need. `store`, `authStore`, `now`, and
+ * `fetchImpl` are required. The LNURL `fetchImpl` is not the map fetch.
+ */
 export interface PosRouteDeps {
   /** Charge persistence. */
   store: PosStore;
@@ -24,6 +29,10 @@ export interface PosRouteDeps {
   now: () => number;
   /** Injected `fetch` for LNURL-pay range checks. */
   fetchImpl: FetchFn;
+  /** Live assigned shop notes. Omitted → `POST /pos` does not ping the map. */
+  messageStore?: { listLiveAssignedShops(): Promise<ShopNoteRef[]> };
+  /** Map activity ping. Omitted → `POST /pos` does not ping the map. */
+  activity?: ActivityPing;
 }
 
 /** Resolve the account behind a request's bearer session, or `null`. */
@@ -45,6 +54,8 @@ async function authedAccount(
  * and `DELETE /pos`.
  *
  * @param deps - Charge store, auth store, clock, and LNURL fetch.
+ *   Optional `messageStore` and `activity` enable a best-effort map ping
+ *   after a successful charge create. GET and DELETE do not ping.
  * @returns A Hono app with `GET /`, `POST /`, and `DELETE /`.
  */
 export function posRoutes(deps: PosRouteDeps): Hono {
@@ -108,6 +119,20 @@ export function posRoutes(deps: PosRouteDeps): Hono {
       };
       try {
         const created = await deps.store.create(row);
+        if (deps.messageStore !== undefined && deps.activity !== undefined) {
+          try {
+            const notes = await deps.messageStore.listLiveAssignedShops();
+            const ids = notes
+              .filter(
+                (note) =>
+                  note.accountId === account.id && textHasHashtagToken(note.text, '21GiftsShop'),
+              )
+              .map((note) => note.id);
+            await pingShopActivity(deps.activity, ids, created.createdAt.toISOString());
+          } catch (error) {
+            logActivityFailure(error);
+          }
+        }
         return c.json({ charge: serializePosCharge(created) }, 201);
       } catch (error) {
         if (
