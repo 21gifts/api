@@ -41,7 +41,7 @@ jobs:
     timeout-minutes: ${{ (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.all_open)) && 45 || 10 }}
     steps:
       - name: dfx pr guard
-        uses: DFXswiss/agent/.github/actions/a38-guard@d165602daf7b4a0c73aaac3774da9c8a1ff7e852
+        uses: DFXswiss/agent/.github/actions/a38-guard@59e31ebd11ab587897dc8e5b2a6f21e489f35f3d
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           repository: ${{ github.repository }}

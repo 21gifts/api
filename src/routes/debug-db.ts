@@ -1,11 +1,12 @@
 import { Hono } from 'hono';
-import { bearerMatchesDebugToken } from '@/lib/debug-token';
+import { classifyDebugDbBearer } from '@/lib/debug-token';
 import { DebugDbCursorError, type DebugDbStore } from '@/lib/debug-db';
 import { logEvent } from '@/lib/log';
 
 /**
  * Operator debug surface for the whole database.
- * Authenticated by `DEBUG_TOKEN` (Bearer), not by an end-user session.
+ * Authenticated by `DEBUG_TOKEN` or `DEBUG_READ_TOKEN` (Bearer), not by an
+ * end-user session. `DEBUG_READ_TOKEN` is GET and HEAD on this route only.
  * `GET /` lists ordinary public tables or one keyset page. It does not
  * create or update rows.
  */
@@ -16,6 +17,8 @@ export interface DebugDbRouteDeps {
   store: DebugDbStore | undefined;
   /** Configured operator token, or `undefined` when debug is disabled. */
   debugToken: string | undefined;
+  /** Optional read-only bearer. `GET /debug/db` only. */
+  debugReadToken?: string;
 }
 
 /**
@@ -25,16 +28,20 @@ export interface DebugDbRouteDeps {
  * No `table` returns `{ tables }`. `table` returns one page and omits
  * `nextCursor` when there is no further page. `cursor` without `table` is 400.
  *
- * @param deps - Optional store and optional debug token.
+ * @param deps - Optional store, optional write token, optional read token.
  * @returns A Hono app exposing `GET /`.
  */
 export function debugDbRoutes(deps: DebugDbRouteDeps): Hono {
   return new Hono().get('/', async (c) => {
-    const token = deps.debugToken;
-    if (token === undefined || token.trim() === '') {
+    const access = classifyDebugDbBearer(
+      deps.debugToken,
+      deps.debugReadToken,
+      c.req.header('authorization'),
+    );
+    if (access === 'unconfigured') {
       return c.json({ error: 'Debug is not configured' }, 503);
     }
-    if (!bearerMatchesDebugToken(token, c.req.header('authorization'))) {
+    if (access === 'unauthorized') {
       return c.json({ error: 'Unauthorized' }, 401);
     }
     const table = c.req.query('table');

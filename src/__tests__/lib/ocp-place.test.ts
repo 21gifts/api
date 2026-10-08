@@ -480,7 +480,7 @@ describe('syncShopOcpPlace', () => {
       baseUrl: 'http://map.test',
       token: 'secret',
       fetchImpl: async () => {
-        throw new Error('down');
+        throw Object.assign(new Error('down'), { address: 'addr-must-not-appear' });
       },
     };
     await expect(
@@ -494,7 +494,228 @@ describe('syncShopOcpPlace', () => {
         textHasHashtagToken: () => true,
       }),
     ).resolves.toBeUndefined();
-    expect(parsedEvents(warn).filter((e) => e['event'] === 'ocp.place.failed')).toHaveLength(2);
+    const failed = parsedEvents(warn).filter((e) => e['event'] === 'ocp.place.failed');
+    expect(failed).toHaveLength(2);
+    expect(failed[0]?.['status']).toBe(500);
+    expect(failed[1]?.['name']).toBe('Error');
+    expect(failed[1]).not.toHaveProperty('address');
+    const warned = warn.mock.calls.map((call) => String(call[0])).join('\n');
+    expect(warned).not.toContain('secret');
+    expect(warned).not.toContain('down');
+    expect(warned).not.toContain('addr-must-not-appear');
+  });
+
+  it('logs ocp.place.failed with the syscall code from cause', async () => {
+    const throwing: MapPush = {
+      baseUrl: 'http://map.test',
+      token: 'secret',
+      fetchImpl: async () => {
+        throw Object.assign(new TypeError('fetch failed'), {
+          cause: Object.assign(new Error('connect'), { code: 'ECONNREFUSED' }),
+        });
+      },
+    };
+    await expect(
+      syncShopOcpPlace({
+        mapPush: throwing,
+        messageId: 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee',
+        text: '#21GiftsShop',
+        parentId: null,
+        place: { lat: 1, lng: 2, label: null },
+        authorName: null,
+        textHasHashtagToken: () => true,
+      }),
+    ).resolves.toBeUndefined();
+    const failed = parsedEvents(warn).filter((e) => e['event'] === 'ocp.place.failed');
+    expect(failed).toHaveLength(1);
+    expect(failed[0]?.['code']).toBe('ECONNREFUSED');
+    expect(failed[0]?.['name']).toBe('TypeError');
+    const warned = warn.mock.calls.map((call) => String(call[0])).join('\n');
+    expect(warned).not.toContain('fetch failed');
+    expect(warned).not.toContain('connect');
+  });
+
+  it('logs ocp.place.failed with the outer code, not the cause code', async () => {
+    const throwing: MapPush = {
+      baseUrl: 'http://map.test',
+      token: 'secret',
+      fetchImpl: async () => {
+        throw Object.assign(new TypeError('fetch failed'), {
+          code: 'EPIPE',
+          cause: Object.assign(new Error('connect'), { code: 'ECONNREFUSED' }),
+        });
+      },
+    };
+    await expect(
+      syncShopOcpPlace({
+        mapPush: throwing,
+        messageId: 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee',
+        text: '#21GiftsShop',
+        parentId: null,
+        place: { lat: 1, lng: 2, label: null },
+        authorName: null,
+        textHasHashtagToken: () => true,
+      }),
+    ).resolves.toBeUndefined();
+    const failed = parsedEvents(warn).filter((e) => e['event'] === 'ocp.place.failed');
+    expect(failed).toHaveLength(1);
+    expect(failed[0]?.['code']).toBe('EPIPE');
+    expect(failed[0]?.['name']).toBe('TypeError');
+    expect(Object.values(failed[0] ?? {})).not.toContain('ECONNREFUSED');
+    const warned = warn.mock.calls.map((call) => String(call[0])).join('\n');
+    expect(warned).not.toContain('ECONNREFUSED');
+    expect(warned).not.toContain('fetch failed');
+    expect(warned).not.toContain('connect');
+  });
+
+  it('logs ocp.place.failed with the outer errno when outer has no code', async () => {
+    const throwing: MapPush = {
+      baseUrl: 'http://map.test',
+      token: 'secret',
+      fetchImpl: async () => {
+        throw Object.assign(new Error('outer-hidden'), {
+          errno: 'EAGAIN',
+          cause: Object.assign(new Error('inner-hidden'), { code: 'ECONNREFUSED' }),
+        });
+      },
+    };
+    await expect(
+      syncShopOcpPlace({
+        mapPush: throwing,
+        messageId: 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee',
+        text: '#21GiftsShop',
+        parentId: null,
+        place: { lat: 1, lng: 2, label: null },
+        authorName: null,
+        textHasHashtagToken: () => true,
+      }),
+    ).resolves.toBeUndefined();
+    const failed = parsedEvents(warn).filter((e) => e['event'] === 'ocp.place.failed');
+    expect(failed).toHaveLength(1);
+    expect(failed[0]?.['name']).toBe('Error');
+    expect(failed[0]?.['errno']).toBe('EAGAIN');
+    expect(failed[0]?.['code']).not.toBe('ECONNREFUSED');
+    const warned = warn.mock.calls.map((call) => String(call[0])).join('\n');
+    expect(warned).not.toContain('outer-hidden');
+    expect(warned).not.toContain('inner-hidden');
+    expect(warned).not.toContain('ECONNREFUSED');
+  });
+
+  it('logs the bare ocp.place.failed event for a non-Error throw', async () => {
+    const throwing: MapPush = {
+      baseUrl: 'http://map.test',
+      token: 'secret',
+      fetchImpl: async () => {
+        throw 'token-must-not-appear';
+      },
+    };
+    await expect(
+      syncShopOcpPlace({
+        mapPush: throwing,
+        messageId: 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee',
+        text: '#21GiftsShop',
+        parentId: null,
+        place: { lat: 1, lng: 2, label: null },
+        authorName: null,
+        textHasHashtagToken: () => true,
+      }),
+    ).resolves.toBeUndefined();
+    const failed = parsedEvents(warn).filter((e) => e['event'] === 'ocp.place.failed');
+    expect(failed).toHaveLength(1);
+    expect(failed[0]?.['name']).toBeUndefined();
+    expect(failed[0]?.['code']).toBeUndefined();
+    expect(failed[0]?.['errno']).toBeUndefined();
+    const warned = warn.mock.calls.map((call) => String(call[0])).join('\n');
+    expect(warned).not.toContain('token-must-not-appear');
+  });
+
+  it('does not treat a null cause as a syscall cause', async () => {
+    const throwing: MapPush = {
+      baseUrl: 'http://map.test',
+      token: 'secret',
+      fetchImpl: async () => {
+        throw Object.assign(new Error('null-cause-hidden'), { cause: null });
+      },
+    };
+    await expect(
+      syncShopOcpPlace({
+        mapPush: throwing,
+        messageId: 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee',
+        text: '#21GiftsShop',
+        parentId: null,
+        place: { lat: 1, lng: 2, label: null },
+        authorName: null,
+        textHasHashtagToken: () => true,
+      }),
+    ).resolves.toBeUndefined();
+    const failed = parsedEvents(warn).filter((e) => e['event'] === 'ocp.place.failed');
+    expect(failed).toHaveLength(1);
+    expect(failed[0]?.['name']).toBe('Error');
+    expect(failed[0]?.['code']).toBeUndefined();
+    expect(failed[0]?.['errno']).toBeUndefined();
+    const warned = warn.mock.calls.map((call) => String(call[0])).join('\n');
+    expect(warned).not.toContain('null-cause-hidden');
+  });
+
+  it('logs ocp.place.failed with the cause errno when the cause has no code', async () => {
+    const throwing: MapPush = {
+      baseUrl: 'http://map.test',
+      token: 'secret',
+      fetchImpl: async () => {
+        throw Object.assign(new Error('errno-hidden'), {
+          cause: { errno: 'ENOENT' },
+        });
+      },
+    };
+    await expect(
+      syncShopOcpPlace({
+        mapPush: throwing,
+        messageId: 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee',
+        text: '#21GiftsShop',
+        parentId: null,
+        place: { lat: 1, lng: 2, label: null },
+        authorName: null,
+        textHasHashtagToken: () => true,
+      }),
+    ).resolves.toBeUndefined();
+    const failed = parsedEvents(warn).filter((e) => e['event'] === 'ocp.place.failed');
+    expect(failed).toHaveLength(1);
+    expect(failed[0]?.['name']).toBe('Error');
+    expect(failed[0]?.['errno']).toBe('ENOENT');
+    expect(failed[0]?.['code']).toBeUndefined();
+    const warned = warn.mock.calls.map((call) => String(call[0])).join('\n');
+    expect(warned).not.toContain('errno-hidden');
+  });
+
+  it('logs ocp.place.failed without code or errno when the cause has neither', async () => {
+    const throwing: MapPush = {
+      baseUrl: 'http://map.test',
+      token: 'secret',
+      fetchImpl: async () => {
+        throw Object.assign(new Error('outer-plain'), {
+          cause: new Error('cause-plain'),
+        });
+      },
+    };
+    await expect(
+      syncShopOcpPlace({
+        mapPush: throwing,
+        messageId: 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee',
+        text: '#21GiftsShop',
+        parentId: null,
+        place: { lat: 1, lng: 2, label: null },
+        authorName: null,
+        textHasHashtagToken: () => true,
+      }),
+    ).resolves.toBeUndefined();
+    const failed = parsedEvents(warn).filter((e) => e['event'] === 'ocp.place.failed');
+    expect(failed).toHaveLength(1);
+    expect(failed[0]?.['name']).toBe('Error');
+    expect(failed[0]?.['code']).toBeUndefined();
+    expect(failed[0]?.['errno']).toBeUndefined();
+    const warned = warn.mock.calls.map((call) => String(call[0])).join('\n');
+    expect(warned).not.toContain('outer-plain');
+    expect(warned).not.toContain('cause-plain');
   });
 });
 
@@ -544,7 +765,7 @@ describe('removeShopOcpPlace', () => {
       baseUrl: 'http://map.test',
       token: 'secret',
       fetchImpl: async () => {
-        throw new Error('down');
+        throw Object.assign(new Error('down'), { address: 'addr-must-not-appear' });
       },
     };
     await expect(
@@ -553,7 +774,15 @@ describe('removeShopOcpPlace', () => {
         messageId: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd',
       }),
     ).resolves.toBeUndefined();
-    expect(parsedEvents(warn).filter((e) => e['event'] === 'ocp.place.failed')).toHaveLength(2);
+    const failed = parsedEvents(warn).filter((e) => e['event'] === 'ocp.place.failed');
+    expect(failed).toHaveLength(2);
+    expect(failed[0]?.['status']).toBe(500);
+    expect(failed[1]?.['name']).toBe('Error');
+    expect(failed[1]).not.toHaveProperty('address');
+    const warned = warn.mock.calls.map((call) => String(call[0])).join('\n');
+    expect(warned).not.toContain('secret');
+    expect(warned).not.toContain('down');
+    expect(warned).not.toContain('addr-must-not-appear');
   });
 });
 
@@ -711,7 +940,14 @@ describe('publishExistingShopPlaces', () => {
     expect(calls).toHaveLength(2);
     expect(JSON.parse(calls[0]?.body ?? '{}')).toEqual(shopOcpPlaceInput('first', stall, 'Ada'));
     expect(JSON.parse(calls[1]?.body ?? '{}')).toEqual(shopOcpPlaceInput('second', stall, 'Ada'));
-    expect(parsedEvents(warn).filter((e) => e['event'] === 'ocp.place.failed')).toHaveLength(1);
+    const failed = parsedEvents(warn).filter((e) => e['event'] === 'ocp.place.failed');
+    expect(failed).toHaveLength(1);
+    expect(failed[0]?.['status']).toBe(500);
+    expect(Object.keys(failed[0] ?? {}).filter((key) => key !== 'ts' && key !== 'event')).toEqual([
+      'status',
+    ]);
+    const warned = warn.mock.calls.map((call) => String(call[0])).join('\n');
+    expect(warned).not.toContain('secret');
   });
 
   it('logs ocp.place.failed when fetch throws and does not reject', async () => {
@@ -719,7 +955,7 @@ describe('publishExistingShopPlaces', () => {
       baseUrl: 'http://map.test',
       token: 'secret',
       fetchImpl: async () => {
-        throw new Error('down');
+        throw Object.assign(new Error('down'), { address: 'addr-must-not-appear' });
       },
     };
     await expect(
@@ -736,7 +972,17 @@ describe('publishExistingShopPlaces', () => {
         textHasHashtagToken: hasShopTag,
       }),
     ).resolves.toBeUndefined();
-    expect(parsedEvents(warn).filter((e) => e['event'] === 'ocp.place.failed')).toHaveLength(1);
+    const failed = parsedEvents(warn).filter((e) => e['event'] === 'ocp.place.failed');
+    expect(failed).toHaveLength(1);
+    expect(failed[0]?.['name']).toBe('Error');
+    expect(failed[0]).not.toHaveProperty('address');
+    expect(Object.keys(failed[0] ?? {}).filter((key) => key !== 'ts' && key !== 'event')).toEqual([
+      'name',
+    ]);
+    const warned = warn.mock.calls.map((call) => String(call[0])).join('\n');
+    expect(warned).not.toContain('down');
+    expect(warned).not.toContain('secret');
+    expect(warned).not.toContain('addr-must-not-appear');
   });
 
   it('logs ocp.place.failed once when listPlaces throws and does not reject', async () => {

@@ -161,6 +161,93 @@ export interface FiatCrossRates {
   PHP?: string;
 }
 
+const PAYMENT_RATE_QUOTES = ['CHF', 'EUR', 'PHP'] as const;
+
+/** How many UTC days, including the payment day, a missing quote may look back. */
+const PAYMENT_RATE_LOOKBACK = 10;
+
+/**
+ * UTC days to load when freezing a payment, newest first.
+ *
+ * The first day is `day`. Each following day is the previous UTC date, up to
+ * ten days in all. An invalid calendar day returns an empty list.
+ *
+ * @param day - Payment UTC day (`YYYY-MM-DD`).
+ * @param count - How many days to return, clamped to 1..10. Default 10.
+ * @returns Newest-first days, or an empty list.
+ */
+export function paymentRateDays(day: string, count = PAYMENT_RATE_LOOKBACK): string[] {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) {
+    return [];
+  }
+  const year = Number(day.slice(0, 4));
+  const month = Number(day.slice(5, 7));
+  const date = Number(day.slice(8, 10));
+  const start = Date.UTC(year, month - 1, date);
+  const check = new Date(start);
+  if (
+    check.getUTCFullYear() !== year ||
+    check.getUTCMonth() !== month - 1 ||
+    check.getUTCDate() !== date
+  ) {
+    return [];
+  }
+  const span = Math.min(
+    PAYMENT_RATE_LOOKBACK,
+    Math.max(1, Number.isFinite(count) ? Math.trunc(count) : PAYMENT_RATE_LOOKBACK),
+  );
+  const days: string[] = [];
+  for (let i = 0; i < span; i += 1) {
+    days.push(new Date(start - i * 86_400_000).toISOString().slice(0, 10));
+  }
+  return days;
+}
+
+/**
+ * Fill each of CHF, EUR, and PHP from the nearest day on or before `day`.
+ *
+ * A quote missing on the payment day is taken from an earlier day in `book`.
+ * Quotes are filled independently. A day after `day` is ignored. A quote that
+ * is not a positive decimal is skipped, the same as a missing quote.
+ *
+ * @param book - Day → crosses already loaded for the payment window.
+ * @param day - Payment UTC day.
+ * @returns Crosses that could be filled. Missing quotes are omitted.
+ */
+export function crossForPaymentDay(
+  book: ReadonlyMap<string, FiatCrossRates>,
+  day: string,
+): FiatCrossRates {
+  const days = [...book.entries()]
+    .filter(([key]) => key <= day)
+    .sort((a, b) => b[0].localeCompare(a[0]));
+  const out: FiatCrossRates = {};
+  for (const quote of PAYMENT_RATE_QUOTES) {
+    for (const [, row] of days) {
+      const rate = row[quote];
+      if (!usablePaymentQuote(rate)) {
+        continue;
+      }
+      out[quote] = rate;
+      break;
+    }
+  }
+  return out;
+}
+
+/** A stored quote can price a payment only when it is a positive decimal. */
+function usablePaymentQuote(rate: string | undefined): rate is string {
+  if (rate === undefined) {
+    return false;
+  }
+  try {
+    parseUsdPerBtc(rate);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 const AMOUNT_USD_RE = /^(?:0|[1-9]\d*)(?:\.\d{1,2})?$/;
 const MAX_AMOUNT_USD_CENTS = 10_000_000;
 
@@ -178,6 +265,50 @@ function centsFromAmount(raw: string): number | null {
   const dollars = dot < 0 ? raw : raw.slice(0, dot);
   const frac = (dot < 0 ? '' : raw.slice(dot + 1)).padEnd(2, '0');
   return Number(dollars) * 100 + Number(frac);
+}
+
+/**
+ * Scale a quote from the largest usable same-day gift onto `amountUsd`.
+ *
+ * The rate is `refQuote / refUsd`, rounded half up to integer cents:
+ * `round(usdCents * refQuoteCents / refUsdCents)`. A zero, missing, or
+ * unusable amount is skipped. Nothing is thrown.
+ *
+ * @param amountUsd - USD of the gift that lacks this quote.
+ * @param refs - Same-day gifts that already store USD and this quote.
+ * @returns Two-decimal quote, or `null` when nothing can scale.
+ */
+export function quoteFromLargestSibling(
+  amountUsd: string,
+  refs: readonly { usd: string; quote: string }[],
+): string | null {
+  let bestUsdCents = 0;
+  let bestQuoteCents = 0;
+  for (const ref of refs) {
+    const usdCents = centsFromAmount(ref.usd);
+    const quoteCents = centsFromAmount(ref.quote);
+    if (usdCents === null || quoteCents === null || usdCents <= 0 || quoteCents <= 0) {
+      continue;
+    }
+    if (usdCents <= bestUsdCents) {
+      continue;
+    }
+    bestUsdCents = usdCents;
+    bestQuoteCents = quoteCents;
+  }
+  const amountCents = centsFromAmount(amountUsd);
+  if (amountCents === null || amountCents <= 0 || bestUsdCents <= 0) {
+    return null;
+  }
+  const numer = BigInt(amountCents) * BigInt(bestQuoteCents);
+  const den = BigInt(bestUsdCents);
+  const quot = numer / den;
+  const rem = numer % den;
+  const rounded = rem * 2n >= den ? quot + 1n : quot;
+  if (rounded > BigInt(Number.MAX_SAFE_INTEGER)) {
+    return null;
+  }
+  return usdCentsToString(Number(rounded));
 }
 
 /**

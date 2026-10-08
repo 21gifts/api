@@ -13,7 +13,9 @@ import { invoiceRoutes } from '@/routes/invoices';
 import { createApp as createAppRaw } from '@/server';
 import { FUNDING_REQUIRED_FROM_UTC, type FundingGrant } from '@/lib/funding';
 import { InMemoryFundingStore } from '@/lib/funding-store';
+import type { GiftRow } from '@/lib/gift';
 import type { GiftRecord } from '@/lib/gift-recorder';
+import { InMemoryGiftStore } from '@/lib/gift-store';
 import { InMemoryFiatStore } from '@/lib/usd-fiat-store';
 import { decodeBolt11 } from '@/lib/bolt11';
 import { fetchBtcUsdSpot } from '@/lib/btc-usd-spot';
@@ -2168,6 +2170,159 @@ describe('POST /invoices', () => {
     expect(await res.json()).toEqual({ error: 'Forum post required' });
     expect(fetchImpl).not.toHaveBeenCalled();
   });
+
+  it('returns 403 when a welcome gift was already paid today', async () => {
+    const authStore = new InMemoryAuthStore();
+    await seedPasskeyAccount(authStore);
+    const fetchImpl = vi.fn<FetchFn>(happyFetch());
+    const welcomeToday: GiftRow = {
+      paidAt: new Date('2026-09-20T08:00:00.000Z'),
+      amountSats: 1000,
+      recipientWosUser: 'Alice',
+      kind: 'welcome',
+    };
+    const res = await createApp({
+      spendApiToken: TOKEN,
+      authStore,
+      messageStore: livePostStore(),
+      fetchImpl,
+      giftStore: new InMemoryGiftStore([welcomeToday]),
+      now: () => NOW_MS,
+    }).request(
+      '/invoices',
+      auth({
+        method: 'POST',
+        body: JSON.stringify({ address: ADDRESS, amountMsat: 1000, comment: '21gifts daily' }),
+      }),
+    );
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: 'Welcome gift already paid' });
+    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(
+      parsedEvents(warn).some(
+        (e) => e['event'] === 'invoice.welcome_paid' && e['address'] === ADDRESS,
+      ),
+    ).toBe(true);
+  });
+
+  it('returns 200 when the comment is Welcome even if a welcome gift was paid today', async () => {
+    const authStore = new InMemoryAuthStore();
+    await seedPasskeyAccount(authStore);
+    const fetchImpl = vi.fn<FetchFn>(happyFetch());
+    const welcomeToday: GiftRow = {
+      paidAt: new Date('2026-09-20T08:00:00.000Z'),
+      amountSats: 1000,
+      recipientWosUser: 'Alice',
+      kind: 'welcome',
+    };
+    const res = await createApp({
+      spendApiToken: TOKEN,
+      authStore,
+      messageStore: livePostStore(),
+      fetchImpl,
+      giftStore: new InMemoryGiftStore([welcomeToday]),
+      now: () => NOW_MS,
+    }).request(
+      '/invoices',
+      auth({
+        method: 'POST',
+        body: JSON.stringify({ address: ADDRESS, amountMsat: 1000, comment: 'Welcome' }),
+      }),
+    );
+    expect(res.status).toBe(200);
+    expect(fetchImpl).toHaveBeenCalled();
+  });
+
+  it('returns 200 when groupMessageId is set even if a welcome gift was paid today', async () => {
+    const authStore = new InMemoryAuthStore();
+    await seedPasskeyAndPlatform(authStore);
+    const conversationStore = new InMemoryConversationStore();
+    await seedGroupTrigger(conversationStore);
+    const fetchImpl = vi.fn<FetchFn>(happyFetch());
+    const welcomeToday: GiftRow = {
+      paidAt: new Date('2026-09-20T08:00:00.000Z'),
+      amountSats: 1000,
+      recipientWosUser: 'Alice',
+      kind: 'welcome',
+    };
+    const res = await createApp({
+      spendApiToken: TOKEN,
+      authStore,
+      messageStore: uuidPostStore(),
+      fetchImpl,
+      conversationStore,
+      giftStore: new InMemoryGiftStore([welcomeToday]),
+      now: () => NOW_MS,
+    }).request(
+      '/invoices',
+      auth({
+        method: 'POST',
+        body: JSON.stringify({
+          address: ADDRESS,
+          amountMsat: 1000,
+          groupMessageId: GROUP_MSG_ID,
+          comment: '21gifts moderator',
+        }),
+      }),
+    );
+    expect(res.status).toBe(200);
+    expect(await res.json()).not.toEqual({ error: 'Welcome gift already paid' });
+    expect(fetchImpl).toHaveBeenCalled();
+  });
+
+  it('returns 200 when the welcome gift was paid on the previous UTC day', async () => {
+    const authStore = new InMemoryAuthStore();
+    await seedPasskeyAccount(authStore);
+    const fetchImpl = vi.fn<FetchFn>(happyFetch());
+    const welcomeYesterday: GiftRow = {
+      paidAt: new Date('2026-09-19T08:00:00.000Z'),
+      amountSats: 1000,
+      recipientWosUser: 'Alice',
+      kind: 'welcome',
+    };
+    const res = await createApp({
+      spendApiToken: TOKEN,
+      authStore,
+      messageStore: livePostStore(),
+      fetchImpl,
+      giftStore: new InMemoryGiftStore([welcomeYesterday]),
+      now: () => NOW_MS,
+    }).request(
+      '/invoices',
+      auth({
+        method: 'POST',
+        body: JSON.stringify({ address: ADDRESS, amountMsat: 1000, comment: '21gifts daily' }),
+      }),
+    );
+    expect(res.status).toBe(200);
+    expect(fetchImpl).toHaveBeenCalled();
+  });
+
+  it('returns 503 when the gift ledger cannot be listed', async () => {
+    const authStore = new InMemoryAuthStore();
+    await seedPasskeyAccount(authStore);
+    const fetchImpl = vi.fn<FetchFn>(happyFetch());
+    const giftStore = {
+      listOutbound: () => Promise.reject(new Error('ledger down')),
+    };
+    const res = await createApp({
+      spendApiToken: TOKEN,
+      authStore,
+      messageStore: livePostStore(),
+      fetchImpl,
+      giftStore,
+      now: () => NOW_MS,
+    }).request(
+      '/invoices',
+      auth({
+        method: 'POST',
+        body: JSON.stringify({ address: ADDRESS, amountMsat: 1000, comment: '21gifts daily' }),
+      }),
+    );
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({ error: 'Gift ledger unreadable' });
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
 });
 
 describe('POST /invoices/proof', () => {
@@ -3523,6 +3678,51 @@ describe('POST /invoices/proof payment fiat', () => {
     expect(recorded[0]?.fiat?.chf).toBeNull();
   });
 
+  it('uses an earlier stored rate when loading the payment day throws', async () => {
+    const invoice: GiftInvoice = {
+      id: 'd0'.repeat(16),
+      address: ADDRESS,
+      pr: PR,
+      paymentHash: MATCHING_HASH,
+      amountMsat: 1000,
+      createdAt: 1,
+      expiresAt: 1_000_000,
+      amountUsd: '5.00',
+    };
+    const recorded: GiftRecord[] = [];
+    const calls: string[][] = [];
+    const invoiceStore = new InMemoryInvoiceStore();
+    invoiceStore.put(invoice);
+    const res = await createApp({
+      spendApiToken: TOKEN,
+      invoiceStore,
+      now: () => Date.parse('2026-06-01T12:00:00.000Z'),
+      fiatRates: {
+        ensureDays: async (days) => {
+          calls.push([...days]);
+          if (days.includes('2026-06-01')) {
+            throw new Error('today unpublished');
+          }
+          return new Map([['2026-05-31', { CHF: '0.80', EUR: '0.90', PHP: '50' }]]);
+        },
+      },
+      giftRecorder: {
+        recordOutbound: async (row) => {
+          recorded.push(row);
+        },
+      },
+    }).request(
+      '/invoices/proof',
+      auth({ method: 'POST', body: JSON.stringify({ id: invoice.id, preimage: PREIMAGE }) }),
+    );
+    expect(res.status).toBe(200);
+    expect(parsedEvents(warn).some((event) => event['event'] === 'invoice.fiat_failed')).toBe(true);
+    expect(calls[0]?.[0]).toBe('2026-06-01');
+    expect(calls[1]?.includes('2026-06-01')).toBe(false);
+    expect(calls[1]?.includes('2026-05-31')).toBe(true);
+    expect(recorded[0]?.fiat).toEqual({ usd: '5.00', chf: '4.00', eur: '4.50', php: '250.00' });
+  });
+
   it('stores null fiat when amountUsd is not normalized', async () => {
     const invoice: GiftInvoice = {
       id: 'ce'.repeat(16),
@@ -3616,6 +3816,46 @@ describe('POST /invoices/proof payment fiat', () => {
     expect(res.status).toBe(200);
     expect(recorded[0]?.fiat?.usd).toBe('1.00');
     expect(recorded[0]?.fiat?.chf).toBe('0.80');
+  });
+
+  it('fills a quote the payment day has not published yet from the previous day', async () => {
+    const invoice: GiftInvoice = {
+      id: 'd2'.repeat(16),
+      address: ADDRESS,
+      pr: PR,
+      paymentHash: MATCHING_HASH,
+      amountMsat: 1_000_000,
+      createdAt: 1,
+      expiresAt: 1_000_000,
+      amountUsd: '5.00',
+    };
+    const recorded: GiftRecord[] = [];
+    const invoiceStore = new InMemoryInvoiceStore();
+    invoiceStore.put(invoice);
+    const res = await createApp({
+      spendApiToken: TOKEN,
+      invoiceStore,
+      now: () => Date.parse('2026-06-02T00:08:00.000Z'),
+      fiatRates: new InMemoryFiatStore({
+        '2026-06-02': { CHF: '0.80' },
+        '2026-06-01': { EUR: '0.90', PHP: '50' },
+      }),
+      giftRecorder: {
+        recordOutbound: async (row) => {
+          recorded.push(row);
+        },
+      },
+    }).request(
+      '/invoices/proof',
+      auth({ method: 'POST', body: JSON.stringify({ id: invoice.id, preimage: PREIMAGE }) }),
+    );
+    expect(res.status).toBe(200);
+    expect(recorded[0]?.fiat).toEqual({
+      usd: '5.00',
+      chf: '4.00',
+      eur: '4.50',
+      php: '250.00',
+    });
   });
 
   it('stores null fiat when the spot text cannot be priced', async () => {

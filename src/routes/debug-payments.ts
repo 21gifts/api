@@ -6,7 +6,7 @@ import type { MessageInvoiceAttempt, MessageStore, ZapIngestRow } from '@/lib/me
 import type { NotificationStore } from '@/lib/notification-store';
 import { settleInvoiceManually } from '@/lib/nostr/zap-index';
 import type { PushStore } from '@/lib/push-store';
-import { eligibleToday, utcDayKey } from '@/lib/funding';
+import { effectiveStatus, eligibleToday, utcDayKey } from '@/lib/funding';
 import type { FundingStore } from '@/lib/funding-store';
 import type { SpendPing } from '@/lib/spend-ping';
 import { MESSAGE_ID_RE } from '@/routes/messages';
@@ -273,7 +273,7 @@ export function debugPaymentsRoutes(deps: DebugPaymentsRouteDeps): Hono {
         return c.json({ error: 'Message has no media' }, 409);
       }
       try {
-        await deps.spendPing.ping(address, message.id);
+        await deps.spendPing.ping(address, message.id, 'daily', effectiveStatus(grant, deps.now()));
       } catch {
         logEvent('debug.spend_ping.failed', { messageId });
         return c.json({ error: 'Messages are unavailable' }, 503);

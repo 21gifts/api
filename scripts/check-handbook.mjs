@@ -127,6 +127,7 @@ function extractEndpoints() {
   }
   const mountByFile = {
     'health.ts': '/healthz',
+    'member-habits.ts': '/habits',
     'info.ts': '/info',
     'auth.ts': '/auth',
     'me.ts': '/me',

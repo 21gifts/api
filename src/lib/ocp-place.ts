@@ -5,7 +5,7 @@
  * pin maps onto one OCP place (`origin` `21gifts`, `techProvider` `21.gifts`).
  */
 
-import { logEvent } from '@/lib/log';
+import { errorLogFields, logEvent } from '@/lib/log';
 import type { ForumPlace } from '@/lib/place';
 import { SHOP_PLACE_PUSH_ENABLED } from '@/lib/shop-place-push-enabled';
 /** HTTP fetch for the map ingest. */
@@ -306,7 +306,35 @@ export function shopOcpPlaceInput(
 }
 
 /**
+ * Allowlisted fields for a thrown map ingest error, including a syscall code on `cause`.
+ *
+ * @param error - Thrown value.
+ * @returns Fields for `ocp.place.failed`; empty when nothing is allowlisted.
+ */
+function mapPlacesCatchFields(error: unknown): ReturnType<typeof errorLogFields> {
+  const outer = errorLogFields(error);
+  if (outer['code'] !== undefined || outer['errno'] !== undefined) {
+    return outer;
+  }
+  if (!(error instanceof Error) || error.cause === null || error.cause === undefined) {
+    return outer;
+  }
+  const cause = errorLogFields(error.cause);
+  const fields: { [key: string]: string | number | boolean } = { ...outer };
+  if (cause['code'] !== undefined) {
+    fields['code'] = cause['code'];
+  }
+  if (cause['errno'] !== undefined) {
+    fields['errno'] = cause['errno'];
+  }
+  return fields;
+}
+
+/**
  * PUT or DELETE one map place. Failures are logged as `ocp.place.failed` and swallowed.
+ * The failure log includes the HTTP status, or the allowlisted error name and an
+ * allowlisted `code` or `errno` from the error or its cause, and never the message,
+ * the address, or the bearer.
  *
  * @param mapPush - Configured map target.
  * @param method - `PUT` (pin body) or `DELETE` (`origin` + `externalId`).
@@ -328,10 +356,15 @@ async function mapPlacesRequest(
       signal: AbortSignal.timeout(5_000),
     });
     if (!response.ok) {
-      logEvent('ocp.place.failed');
+      logEvent('ocp.place.failed', { status: response.status });
     }
-  } catch {
-    logEvent('ocp.place.failed');
+  } catch (error) {
+    const fields = mapPlacesCatchFields(error);
+    if (Object.keys(fields).length === 0) {
+      logEvent('ocp.place.failed');
+    } else {
+      logEvent('ocp.place.failed', fields);
+    }
   }
 }
 

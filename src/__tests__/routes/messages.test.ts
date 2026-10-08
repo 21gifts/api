@@ -3274,7 +3274,12 @@ describe('POST /messages', () => {
     expect(res.status).toBe(200);
     const created = (await res.json()) as { id: string };
     expect(spendPing.ping).toHaveBeenCalledTimes(1);
-    expect(spendPing.ping).toHaveBeenCalledWith('ada@walletofsatoshi.com', created.id);
+    expect(spendPing.ping).toHaveBeenCalledWith(
+      'ada@walletofsatoshi.com',
+      created.id,
+      'daily',
+      'admitted',
+    );
   });
 
   it('does not ping spend on a reply', async () => {
@@ -3322,7 +3327,12 @@ describe('POST /messages', () => {
     expect(first.status).toBe(200);
     const created = (await first.json()) as { id: string };
     expect(spendPing.ping).toHaveBeenCalledTimes(1);
-    expect(spendPing.ping).toHaveBeenCalledWith('ada@walletofsatoshi.com', created.id);
+    expect(spendPing.ping).toHaveBeenCalledWith(
+      'ada@walletofsatoshi.com',
+      created.id,
+      'daily',
+      'admitted',
+    );
     const second = await app.request('/messages', {
       method: 'POST',
       headers: { ...AUTH, 'content-type': 'application/json' },
@@ -3384,7 +3394,12 @@ describe('POST /messages', () => {
     expect(res.status).toBe(200);
     const created = (await res.json()) as { id: string };
     expect(spendPing.ping).toHaveBeenCalledTimes(1);
-    expect(spendPing.ping).toHaveBeenCalledWith('ada@walletofsatoshi.com', created.id);
+    expect(spendPing.ping).toHaveBeenCalledWith(
+      'ada@walletofsatoshi.com',
+      created.id,
+      'daily',
+      'admitted',
+    );
     expect(parsedEvents(warn).some((e) => e['event'] === 'spend.ping.failed')).toBe(true);
   });
 
@@ -3423,7 +3438,12 @@ describe('POST /messages', () => {
     expect(res.status).toBe(200);
     const created = (await res.json()) as { id: string };
     expect(spendPing.ping).toHaveBeenCalledTimes(1);
-    expect(spendPing.ping).toHaveBeenCalledWith('ada@walletofsatoshi.com', created.id);
+    expect(spendPing.ping).toHaveBeenCalledWith(
+      'ada@walletofsatoshi.com',
+      created.id,
+      'daily',
+      'admitted',
+    );
   });
 
   it('pings spend once on a multipart video top-level post', async () => {
@@ -3448,7 +3468,12 @@ describe('POST /messages', () => {
     expect(res.status).toBe(200);
     const created = (await res.json()) as { id: string };
     expect(spendPing.ping).toHaveBeenCalledTimes(1);
-    expect(spendPing.ping).toHaveBeenCalledWith('ada@walletofsatoshi.com', created.id);
+    expect(spendPing.ping).toHaveBeenCalledWith(
+      'ada@walletofsatoshi.com',
+      created.id,
+      'daily',
+      'admitted',
+    );
   });
 
   it('pings spend daily and welcome on a verified top-level JPEG', async () => {
@@ -3474,7 +3499,13 @@ describe('POST /messages', () => {
       created.id,
       'welcome',
     );
-    expect(spendPing.ping).toHaveBeenNthCalledWith(2, 'ada@walletofsatoshi.com', created.id);
+    expect(spendPing.ping).toHaveBeenNthCalledWith(
+      2,
+      'ada@walletofsatoshi.com',
+      created.id,
+      'daily',
+      'none',
+    );
   });
 
   it('does not welcome-ping spend on a verified text-only post', async () => {
@@ -3597,7 +3628,12 @@ describe('POST /messages', () => {
     expect(res.status).toBe(200);
     const created = (await res.json()) as { id: string };
     expect(spendPing.ping).toHaveBeenCalledTimes(1);
-    expect(spendPing.ping).toHaveBeenCalledWith('ada@walletofsatoshi.com', created.id);
+    expect(spendPing.ping).toHaveBeenCalledWith(
+      'ada@walletofsatoshi.com',
+      created.id,
+      'daily',
+      'admitted',
+    );
     expect(spendPing.ping).not.toHaveBeenCalledWith(
       'ada@walletofsatoshi.com',
       created.id,
@@ -3660,7 +3696,13 @@ describe('POST /messages', () => {
       created.id,
       'welcome',
     );
-    expect(spendPing.ping).toHaveBeenNthCalledWith(2, 'ada@walletofsatoshi.com', created.id);
+    expect(spendPing.ping).toHaveBeenNthCalledWith(
+      2,
+      'ada@walletofsatoshi.com',
+      created.id,
+      'daily',
+      'none',
+    );
     expect(parsedEvents(warn).some((e) => e['event'] === 'spend.ping.failed')).toBe(true);
   });
 

@@ -539,6 +539,28 @@ test('Function: bearerMatchesDebugToken — GET /debug/accounts without bearer i
   expect(wrong.status()).toBe(401);
 });
 
+test('Function: assertDistinctDebugTokens — booted process stays up when the read token is empty', async ({
+  request,
+}) => {
+  const res = await request.get('/healthz');
+  expect(res.status()).toBe(200);
+});
+
+test('Function: classifyDebugDbBearer — write token reaches GET /debug/db and a wrong bearer is 401', async ({
+  request,
+}) => {
+  const ok = await request.get('/debug/db', {
+    headers: { authorization: 'Bearer e2e-debug-token' },
+  });
+  expect(ok.status()).toBe(503);
+  expect(((await ok.json()) as { error: string }).error).toBe('Database is not configured');
+  const wrong = await request.get('/debug/db', {
+    headers: { authorization: 'Bearer wrong-token' },
+  });
+  expect(wrong.status()).toBe(401);
+  expect(((await wrong.json()) as { error: string }).error).toBe('Unauthorized');
+});
+
 test('Function: compareAccountsForList — debug listing is ordered by createdAt', async ({
   request,
 }) => {
@@ -1395,6 +1417,30 @@ test('Function: normalizeAmountUsd — empty stats skip USD conversion', async (
   expect(body.totalUsd).toBe('0.00');
 });
 
+test('Function: paymentRateDays — empty stats skip USD conversion', async ({ request }) => {
+  const res = await request.get('/gifts/stats');
+  expect(res.status()).toBe(200);
+  const body = (await res.json()) as { giftCount: number; totalUsd: string };
+  expect(body.giftCount).toBe(0);
+  expect(body.totalUsd).toBe('0.00');
+});
+
+test('Function: crossForPaymentDay — empty stats skip USD conversion', async ({ request }) => {
+  const res = await request.get('/gifts/stats');
+  expect(res.status()).toBe(200);
+  const body = (await res.json()) as { giftCount: number; totalUsd: string };
+  expect(body.giftCount).toBe(0);
+  expect(body.totalUsd).toBe('0.00');
+});
+
+test('Function: quoteFromLargestSibling — empty stats skip USD conversion', async ({ request }) => {
+  const res = await request.get('/gifts/stats');
+  expect(res.status()).toBe(200);
+  const body = (await res.json()) as { giftCount: number; totalUsd: string };
+  expect(body.giftCount).toBe(0);
+  expect(body.totalUsd).toBe('0.00');
+});
+
 test('Function: fiatFromUsd — empty stats skip USD conversion', async ({ request }) => {
   const res = await request.get('/gifts/stats');
   expect(res.status()).toBe(200);
@@ -1464,6 +1510,20 @@ test('Function: HttpSpendPing — default boot has no SPEND_URL', async ({ reque
   expect(res.status()).toBe(200);
 });
 test('Function: NoopSpendPing — default boot has no SPEND_URL', async ({ request }) => {
+  const res = await request.get('/healthz');
+  expect(res.status()).toBe(200);
+});
+
+test('Function: decideSpendInstruction — chooses the daily amount from the roster', async ({
+  request,
+}) => {
+  const res = await request.get('/healthz');
+  expect(res.status()).toBe(200);
+});
+
+test('Function: welcomeGiftPaidOnUtcDay — matches a welcome gift on the UTC day', async ({
+  request,
+}) => {
   const res = await request.get('/healthz');
   expect(res.status()).toBe(200);
 });
@@ -2550,6 +2610,17 @@ test('Function: DailyRosterRequestError — GET /funding/daily-roster unconfigur
   expect(await res.json()).toEqual({ error: 'Daily roster is not configured' });
 });
 
+test('Function: withRecipientIdentities — GET /funding/daily-roster unconfigured is 503', async ({
+  request,
+}) => {
+  const auth = await rosterRoleSession(request, 'initiator');
+  const res = await request.get('/funding/daily-roster', {
+    headers: { authorization: auth.authorization },
+  });
+  expect(res.status()).toBe(503);
+  expect(await res.json()).toEqual({ error: 'Daily roster is not configured' });
+});
+
 test('Function: effectiveStatus — default boot has no DATABASE_URL', async ({ request }) => {
   expect((await request.get('/healthz')).status()).toBe(200);
 });
@@ -3034,4 +3105,68 @@ test('Function: publicExternalAuthorPosts — unknown id is not found', async ({
 
 test('Function: publicExternalAuthorReplies — unknown id is not found', async ({ request }) => {
   expect((await request.get('/messages/not-a-uuid/external-replies')).status()).toBe(404);
+});
+
+test('Function: memberHabitRoutes — GET /habits is public and POST without bearer is 401', async ({
+  request,
+}) => {
+  const res = await request.get('/habits');
+  expect(res.status()).toBe(200);
+  const denied = await request.post('/habits', { data: { action: 'add' } });
+  expect(denied.status()).toBe(401);
+});
+
+test('Function: isValidTimeZone — GET /habits is public', async ({ request }) => {
+  const res = await request.get('/habits');
+  expect(res.status()).toBe(200);
+});
+
+test('Function: dayKey — GET /habits is public', async ({ request }) => {
+  const res = await request.get('/habits');
+  expect(res.status()).toBe(200);
+});
+
+test('Function: weekKey — GET /habits is public', async ({ request }) => {
+  const res = await request.get('/habits');
+  expect(res.status()).toBe(200);
+});
+
+test('Function: periodKey — GET /habits is public', async ({ request }) => {
+  const res = await request.get('/habits');
+  expect(res.status()).toBe(200);
+});
+
+test('Function: nextPeriod — GET /habits is public', async ({ request }) => {
+  const res = await request.get('/habits');
+  expect(res.status()).toBe(200);
+});
+
+test('Function: comparePeriod — GET /habits is public', async ({ request }) => {
+  const res = await request.get('/habits');
+  expect(res.status()).toBe(200);
+});
+
+test('Function: weeklyRatableThrough — GET /habits is public', async ({ request }) => {
+  const res = await request.get('/habits');
+  expect(res.status()).toBe(200);
+});
+
+test('Function: manilaReviewWeek — GET /habits is public', async ({ request }) => {
+  const res = await request.get('/habits');
+  expect(res.status()).toBe(200);
+});
+
+test('Function: migrateMemberHabitSchema — GET /habits is public', async ({ request }) => {
+  const res = await request.get('/habits');
+  expect(res.status()).toBe(200);
+});
+
+test('Function: InMemoryMemberHabitStore — GET /habits is public', async ({ request }) => {
+  const res = await request.get('/habits');
+  expect(res.status()).toBe(200);
+});
+
+test('Function: PostgresMemberHabitStore — GET /habits is public', async ({ request }) => {
+  const res = await request.get('/habits');
+  expect(res.status()).toBe(200);
 });

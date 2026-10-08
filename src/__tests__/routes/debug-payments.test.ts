@@ -533,7 +533,7 @@ describe('debugPaymentsRoutes', () => {
     expect(json).toEqual({ messageId });
     expect(JSON.stringify(json)).not.toContain('ada@example.com');
     expect(spendPing.ping).toHaveBeenCalledTimes(1);
-    expect(spendPing.ping.mock.calls[0]).toEqual(['ada@example.com', messageId]);
+    expect(spendPing.ping.mock.calls[0]).toEqual(['ada@example.com', messageId, 'daily', 'none']);
     const sent = parsedEvents(warn).find((e) => e['event'] === 'debug.spend_ping.sent');
     expect(sent?.['messageId']).toBe(messageId);
     expect(sent).not.toHaveProperty('address');
@@ -1055,7 +1055,7 @@ describe('debugPaymentsRoutes', () => {
     expect(res.status).toBe(202);
     expect(await res.json()).toEqual({ messageId });
     expect(spendPing.ping).toHaveBeenCalledTimes(1);
-    expect(spendPing.ping.mock.calls[0]).toEqual(['ada@example.com', messageId]);
+    expect(spendPing.ping.mock.calls[0]).toEqual(['ada@example.com', messageId, 'daily', 'none']);
   });
 
   it('replays spend ping when getById reports photoCount without hasPhoto', async () => {

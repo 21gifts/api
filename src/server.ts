@@ -27,6 +27,7 @@ import { InMemoryTranslationStore, type TranslationStore } from '@/lib/translati
 import { wellKnownRoutes } from '@/routes/well-known';
 import { payRoutes } from '@/routes/pay';
 import { contactRoutes } from '@/routes/contact';
+import { memberHabitRoutes } from '@/routes/member-habits';
 import { posRoutes } from '@/routes/pos';
 import { grantContinuationRoutes } from '@/routes/grant-continuation';
 import { shopActivityRoutes } from '@/routes/shop-activity';
@@ -37,6 +38,7 @@ import { debugDiagnosticsRoutes } from '@/routes/debug-diagnostics';
 import { diagnosticsRoutes } from '@/routes/diagnostics';
 import { debugDbRoutes } from '@/routes/debug-db';
 import type { DebugDbStore } from '@/lib/debug-db';
+import { assertDistinctDebugTokens } from '@/lib/debug-token';
 import type { MergeDb } from '@/lib/account-merge';
 import { debugContactsRoutes } from '@/routes/debug-contacts';
 import { debugMessagesRoutes } from '@/routes/debug-messages';
@@ -60,6 +62,7 @@ import { InMemoryApiLogStore, type ApiLogStore } from '@/lib/api-log';
 import { InMemoryDiagnosticStore, type DiagnosticStore } from '@/lib/diagnostic-log';
 import { InMemoryContactStore } from '@/lib/contact-store';
 import type { ContactStore } from '@/lib/contact-store';
+import { InMemoryMemberHabitStore, type MemberHabitStore } from '@/lib/member-habit-store';
 import { InMemoryPosStore, type PosStore } from '@/lib/pos-store';
 import { inboxUnreadCountFor } from '@/lib/conversation-push';
 import { InMemoryConversationStore } from '@/lib/conversation-store';
@@ -131,11 +134,19 @@ export interface AppDeps {
    * `PUT /debug/messages/:id/video`, `POST /debug/messages/:id/restore`,
    * `GET /debug/external-pubkeys`, `GET /debug/accounts/:id`,
    * `GET /debug/trust-edges`, `GET /debug/dump`, `GET /debug/dump/:table`,
-   * `POST /debug/trust-edges`, `GET /debug/db`, and
+   * `POST /debug/trust-edges`, and
    * `POST /debug/passkey-renew/reopen`
-   * return 503.
+   * return 503. `GET /debug/db` returns 503 when this token and
+   * `debugReadToken` are both unset or blank.
    */
   debugToken?: string;
+  /**
+   * Read-only bearer for `GET /debug/db` (default: `process.env.DEBUG_READ_TOKEN`).
+   * Trim. Empty → omitted. Non-empty and equal to `debugToken` after trim
+   * throws `DEBUG_READ_TOKEN matches DEBUG_TOKEN` before routes mount, without
+   * interpolating either value. Other debug routes do not receive this value.
+   */
+  debugReadToken?: string;
   /**
    * Reserved-connection transaction port for `POST /debug/accounts/merge`.
    * Omitted on a memory boot. A valid body then returns 503. An invalid body
@@ -183,7 +194,7 @@ export interface AppDeps {
   spendApiToken?: string;
   /**
    * Spend-worker ping after a new top-level forum post or a `moderator_group`
-   * persist (default: `resolveSpendPing(process.env, fetchImpl)`). Unset
+   * persist (default: `resolveSpendPing(process.env, fetchImpl, { gifts: giftStore, now })`). Unset
    * `SPEND_URL` or `SPEND_API_TOKEN` → omitted; `POST /messages` and
    * `POST /conversations/:id` still 200.
    */
@@ -270,6 +281,10 @@ export interface AppDeps {
    */
   contactStore?: ContactStore;
   /**
+   * Member habit tracker (default: empty {@link InMemoryMemberHabitStore}).
+   */
+  memberHabitStore?: MemberHabitStore;
+  /**
    * Point-of-sale charges (default: empty {@link InMemoryPosStore}).
    * Boot injects {@link PostgresPosStore} when `DATABASE_URL` is set.
    */
@@ -335,11 +350,15 @@ function debugList(store: object, limit: number): Promise<unknown[]> {
  *
  * @param deps - Optional overrides for the auth store, clock, invoice payer,
  *   LNURL-pay fetch, LN-Address cache, brand reader, debugToken,
+ *   debugReadToken (optional; default `process.env.DEBUG_READ_TOKEN`;
+ *   equal to debugToken after trim throws before routes mount),
  *   mergeDb, gift store,
  *   gift recorder, BTC-USD rates, USD-fiat rates, message store,
  *   mapPush (optional; default resolveMapPush on env),
  *   translationStore (optional; default InMemoryTranslationStore; SQL boot
  *   injects PostgresTranslationStore), contact store,
+ *   memberHabitStore (optional; default InMemoryMemberHabitStore; SQL boot
+ *   injects PostgresMemberHabitStore),
  *   conversation store, notification store, push store, trust store,
  *   debugDbStore (`GET /debug/db`; omitted on a memory boot),
  *   funding store (injected into `/funding`, `/me`, `/auth`, `/members`,
@@ -351,6 +370,8 @@ function debugList(store: object, limit: number): Promise<unknown[]> {
  *   and the Nostr worker), gift invoice store, listDbChange, and
  *   diagnosticStore (optional; default {@link InMemoryDiagnosticStore};
  *   mounts `POST /diagnostics` and `GET /debug/diagnostics`).
+ * @throws {@link Error}
+ * When the trimmed read token is non-empty and equal to the trimmed write token, before routes mount. The message is `DEBUG_READ_TOKEN matches DEBUG_TOKEN` and includes neither token value. An empty or missing read token does not throw.
  * @returns A Hono app with all routes and middleware attached.
  */
 export function createApp(deps: AppDeps = {}): Hono {
@@ -362,6 +383,8 @@ export function createApp(deps: AppDeps = {}): Hono {
   const lnAddressCache = deps.lnAddressCache ?? new InMemoryLnAddressCache();
   const readBrand = deps.readBrand ?? readPublicBrandFile;
   const debugToken = deps.debugToken ?? process.env['DEBUG_TOKEN'];
+  const debugReadToken = deps.debugReadToken ?? process.env['DEBUG_READ_TOKEN'];
+  assertDistinctDebugTokens(debugToken, debugReadToken);
   const giftStore = deps.giftStore ?? new InMemoryGiftStore();
   const btcUsdRates = deps.btcUsdRates ?? new InMemoryBtcUsdStore();
   const fiatRates = deps.fiatRates ?? new InMemoryFiatStore();
@@ -394,6 +417,7 @@ export function createApp(deps: AppDeps = {}): Hono {
   }
   const nostrKek = deps.nostrKek;
   const contactStore = deps.contactStore ?? new InMemoryContactStore();
+  const memberHabitStore = deps.memberHabitStore ?? new InMemoryMemberHabitStore();
   const posStore = deps.posStore ?? new InMemoryPosStore();
   const apiLogStore = deps.apiLogStore ?? new InMemoryApiLogStore();
   const diagnosticStore = deps.diagnosticStore ?? new InMemoryDiagnosticStore();
@@ -423,7 +447,8 @@ export function createApp(deps: AppDeps = {}): Hono {
   const webAuthnRpName = deps.webAuthnRpName ?? process.env['WEBAUTHN_RP_NAME'];
   const passkeyCeremony = deps.passkeyCeremony ?? new SimpleWebAuthnPasskeyCeremony();
   const spendApiToken = deps.spendApiToken ?? process.env['SPEND_API_TOKEN'];
-  const spendPing = deps.spendPing ?? resolveSpendPing(process.env, fetchImpl);
+  const spendPing =
+    deps.spendPing ?? resolveSpendPing(process.env, fetchImpl, { gifts: giftStore, now });
   const dailyRoster = deps.dailyRoster ?? resolveDailyRoster(process.env, fetchImpl);
   const postLimiter = deps.postLimiter ?? new PostRateLimiter();
   const invoiceStore = deps.invoiceStore ?? new InMemoryInvoiceStore();
@@ -543,7 +568,14 @@ export function createApp(deps: AppDeps = {}): Hono {
   app.route('/debug/api-log', debugApiLogRoutes({ store: apiLogStore, debugToken }));
   app.route('/debug/diagnostics', debugDiagnosticsRoutes({ store: diagnosticStore, debugToken }));
   app.route('/diagnostics', diagnosticsRoutes({ store: diagnosticStore, now }));
-  app.route('/debug/db', debugDbRoutes({ store: deps.debugDbStore, debugToken }));
+  app.route(
+    '/debug/db',
+    debugDbRoutes({
+      store: deps.debugDbStore,
+      debugToken,
+      ...(debugReadToken === undefined ? {} : { debugReadToken }),
+    }),
+  );
   app.route(
     '/debug/messages',
     debugMessagesRoutes({
@@ -673,6 +705,10 @@ export function createApp(deps: AppDeps = {}): Hono {
       notificationStore,
     }),
   );
+  app.route(
+    '/habits',
+    memberHabitRoutes({ store: memberHabitStore, authStore: store, now, fetchImpl }),
+  );
   app.route('/pos', posRoutes({ store: posStore, authStore: store, now, fetchImpl }));
   app.route(
     '/shops/activity',
@@ -724,6 +760,7 @@ export function createApp(deps: AppDeps = {}): Hono {
       conversationStore,
       fundingStore,
       fiatRates,
+      gifts: giftStore,
       ...(giftRecorder === undefined ? {} : { giftRecorder }),
     }),
   );

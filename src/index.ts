@@ -17,6 +17,7 @@ import { PostRateLimiter } from './lib/nostr/rate-limit';
 import { InMemoryBannerStore } from './lib/banner-store';
 import { RELAY_TIMEOUT_MS, startNostrWorker, WORKER_INTERVAL_MS } from './lib/nostr/worker';
 import { InMemoryMessageStore, textHasHashtagToken } from './lib/message-store';
+import { seedDevShopPlaces } from './lib/dev-shop-places';
 import { publishExistingShopPlaces, resolveMapPush } from './lib/ocp-place';
 import { resolveSpendPing } from './lib/spend-ping';
 import { syncWelcomePing } from './lib/welcome-media';
@@ -80,6 +81,7 @@ if (import.meta.main) {
     messageStore,
     nostrKek,
     contactStore,
+    memberHabitStore,
     posStore,
     apiLogStore,
     diagnosticStore,
@@ -105,7 +107,11 @@ if (import.meta.main) {
     nostrKek !== undefined && messageStore !== undefined
       ? new WebsocketNostrPublisher()
       : undefined;
-  const spendPing = resolveSpendPing(process.env, globalThis.fetch);
+  const spendPing = resolveSpendPing(
+    process.env,
+    globalThis.fetch,
+    giftStore === undefined ? undefined : { gifts: giftStore },
+  );
   const postLimiter = new PostRateLimiter();
   const forumMessages = messageStore ?? new InMemoryMessageStore();
   const banners = boot.bannerStore ?? new InMemoryBannerStore();
@@ -128,6 +134,7 @@ if (import.meta.main) {
     nostrQuerier: querier,
     nostrRelayUrls: resolveZapReadRelays(process.env),
     ...(contactStore === undefined ? {} : { contactStore }),
+    ...(memberHabitStore === undefined ? {} : { memberHabitStore }),
     ...(apiLogStore === undefined ? {} : { apiLogStore }),
     ...(diagnosticStore === undefined ? {} : { diagnosticStore }),
     ...(conversationStore === undefined ? {} : { conversationStore }),
@@ -151,6 +158,11 @@ if (import.meta.main) {
     });
   };
   welcomeCatchUp();
+  // Copies the public production shop pins only when the public base URL is dev.
+  await seedDevShopPlaces({
+    env: process.env,
+    ...(bun === undefined ? {} : { sql: bun.client }),
+  });
   const mapPush = resolveMapPush(process.env, globalThis.fetch);
   void publishExistingShopPlaces({
     ...(mapPush === undefined ? {} : { mapPush }),

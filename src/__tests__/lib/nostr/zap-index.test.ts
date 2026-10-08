@@ -1639,7 +1639,12 @@ describe('manual invoice settlement', () => {
     const created = (await store.listLatest(20)).find((row) => row.text === 'Eligible compose');
     expect(created?.accountId).toBe('eligible-payer');
     expect(spendPing.ping).toHaveBeenCalledTimes(1);
-    expect(spendPing.ping).toHaveBeenCalledWith('eligible@example.com', created?.id);
+    expect(spendPing.ping).toHaveBeenCalledWith(
+      'eligible@example.com',
+      created?.id,
+      'daily',
+      'admitted',
+    );
   });
 
   it('logs spend.ping.failed when compose funding lookup throws', async () => {

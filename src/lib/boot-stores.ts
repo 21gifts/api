@@ -41,6 +41,11 @@ import {
 } from '@/lib/diagnostic-log';
 import { migrateContactSchema, PostgresContactStore, type ContactStore } from '@/lib/contact-store';
 import {
+  migrateMemberHabitSchema,
+  PostgresMemberHabitStore,
+  type MemberHabitStore,
+} from '@/lib/member-habit-store';
+import {
   InMemoryPosStore,
   PostgresPosStore,
   migratePosSchema,
@@ -104,6 +109,11 @@ export interface BootStores {
    * opened so `createApp` keeps the empty in-memory default.
    */
   contactStore: ContactStore | undefined;
+  /**
+   * Postgres-backed member habits, or `undefined` when no SQL client was
+   * opened so `createApp` keeps the empty in-memory default.
+   */
+  memberHabitStore: MemberHabitStore | undefined;
   /** POS charge store (memory when no SQL; Postgres otherwise). */
   posStore: PosStore;
   /**
@@ -182,7 +192,8 @@ export interface BootFxOptions {
  * `giftRecorder: undefined`, `messageStore: undefined`,
  * `translationStore: undefined`,
  * `conversationTranslationStore: undefined`,
- * `contactStore: undefined`, a fresh {@link InMemoryPosStore} as `posStore`,
+ * `contactStore: undefined`, `memberHabitStore: undefined`,
+ * a fresh {@link InMemoryPosStore} as `posStore`,
  * `apiLogStore: undefined`,
  * `diagnosticStore: undefined`,
  * `conversationStore: undefined`,
@@ -193,13 +204,15 @@ export interface BootFxOptions {
  * an empty {@link InMemoryBtcUsdStore}, and an empty {@link InMemoryFiatStore}.
  * A set URL asks `createClient` for one `SqlClient`, migrates auth (via
  * `openAuthStore`) then the FX tables (`btc_usd_daily` then `usd_fiat_daily`),
- * `message`, `contact`, `pos_charge` (via `migratePosSchema`), `conversation`, `push`, `notification`, `trust_edge`,
+ * `message`, `contact`, `member_habit` (via `migrateMemberHabitSchema`),
+ * `pos_charge` (via `migratePosSchema`), `conversation`, `push`, `notification`, `trust_edge`,
  * `funding_grant`, `api_log`, `account_image`, `diagnostic_event`, and `db_change` schemas (notification after push, trust
  * after notification, funding after trust, `api_log` then `account_image` via
  * `migrateBannerSchema`, then `diagnostic_event` between `account_image` and `db_change` so `trg_db_change` attaches), builds a {@link QueryGiftStore},
  * {@link SqlGiftRecorder}, {@link PostgresMessageStore},
  * {@link PostgresTranslationStore},
- * {@link PostgresContactStore}, {@link PostgresPosStore}, {@link PostgresConversationStore},
+ * {@link PostgresContactStore}, {@link PostgresMemberHabitStore},
+ * {@link PostgresPosStore}, {@link PostgresConversationStore},
  * {@link PostgresNotificationStore}, {@link PostgresPushStore},
  * {@link PostgresTrustStore}, {@link PostgresFundingStore}, and
  * {@link PostgresBannerStore}, parses
@@ -261,6 +274,7 @@ export async function openBootStores(
       conversationTranslationStore: undefined,
       nostrKek: undefined,
       contactStore: undefined,
+      memberHabitStore: undefined,
       posStore: new InMemoryPosStore(),
       apiLogStore: undefined,
       diagnosticStore: undefined,
@@ -283,6 +297,12 @@ export async function openBootStores(
   await migrateGiftSchema(sqlClient);
   await migrateMessageSchema(sqlClient);
   await migrateContactSchema(sqlClient);
+  const habitSql = {
+    query: async (text: string, params?: unknown[]) => ({
+      rows: await sql.query<Record<string, unknown>>(text, params),
+    }),
+  };
+  await migrateMemberHabitSchema(habitSql);
   await migratePosSchema(sqlClient);
   await migrateConversationSchema(sqlClient);
   await migratePushSchema(sqlClient);
@@ -436,6 +456,15 @@ export async function openBootStores(
     logEvent('nostr.zapper.backfill.failed');
   }
   const contactStore = new PostgresContactStore(sqlClient);
+  /* Invoice reads the auth store. This port does not keep a second address. */
+  const memberHabitStore = new PostgresMemberHabitStore(habitSql, {
+    async get() {
+      return null;
+    },
+    async set() {
+      return undefined;
+    },
+  });
   const posStore = new PostgresPosStore(sqlClient);
   const apiLogStore = new PostgresApiLogStore(sqlClient);
   const conversationStore = new PostgresConversationStore(sqlClient, { fetchImpl, fiatRates, now });
@@ -454,6 +483,7 @@ export async function openBootStores(
     conversationTranslationStore,
     nostrKek,
     contactStore,
+    memberHabitStore,
     posStore,
     apiLogStore,
     diagnosticStore,
