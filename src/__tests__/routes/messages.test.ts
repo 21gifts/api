@@ -970,6 +970,53 @@ describe('GET /messages', () => {
     }
   });
 
+  it('returns 400 for an invalid country', async () => {
+    const app = mount(await rulesStore());
+    for (const country of ['', 'ph', 'PHL', 'P1', '%20PH']) {
+      const res = await app.request(`/messages?country=${country}`, { headers: AUTH });
+      expect(res.status).toBe(400);
+      expect(await res.json()).toEqual({ error: 'Invalid country' });
+    }
+  });
+
+  it('lists only notes pinned in the country', async () => {
+    const authStore = await namedStore('Ada');
+    const messageStore = new InMemoryMessageStore();
+    const pins = [
+      { id: '00000000-0000-4000-8000-000000000031', lat: 14.5995, lng: 120.9842 },
+      { id: '00000000-0000-4000-8000-000000000032', lat: -1.2921, lng: 36.8219 },
+      { id: '00000000-0000-4000-8000-000000000033', lat: 30, lng: -40 },
+    ];
+    for (const [index, pin] of pins.entries()) {
+      await messageStore.create({
+        id: pin.id,
+        accountId: 'acc',
+        name: 'Ada',
+        text: 'Shop #21GiftsShop',
+        createdAt: new Date(now() + index),
+        hasPhoto: false,
+        ...unsignedNostrDefaults(),
+        place: { lat: pin.lat, lng: pin.lng, label: null },
+      });
+    }
+    const app = mount(authStore, messageStore);
+    const philippines = await app.request('/messages?hashtag=21GiftsShop&country=PH', {
+      headers: AUTH,
+    });
+    expect(philippines.status).toBe(200);
+    expect(
+      ((await philippines.json()) as { messages: Array<{ id: string }> }).messages.map(
+        (row) => row.id,
+      ),
+    ).toEqual(['00000000-0000-4000-8000-000000000031']);
+    const kenya = await app.request('/messages?country=KE', { headers: AUTH });
+    expect(
+      ((await kenya.json()) as { messages: Array<{ id: string }> }).messages.map((row) => row.id),
+    ).toEqual(['00000000-0000-4000-8000-000000000032']);
+    const none = await app.request('/messages?country=CH', { headers: AUTH });
+    expect(await none.json()).toEqual({ messages: [] });
+  });
+
   it('lists only notes whose text contains the hashtag token', async () => {
     const authStore = await namedStore('Ada');
     const messageStore = new InMemoryMessageStore();
@@ -6064,6 +6111,7 @@ describe('GET /messages/places', () => {
         lat: number;
         lng: number;
         label: string | null;
+        countryCode: string | null;
       }>;
     };
     expect(body.places.map((row) => row.id)).toEqual([
@@ -6080,8 +6128,10 @@ describe('GET /messages/places', () => {
       label: 'B',
       accountId: 'acc',
       shop: true,
+      countryCode: 'NG',
     });
-    expect(body.places[1]).toMatchObject({ shop: false });
+    expect(body.places[1]).toMatchObject({ shop: false, countryCode: 'NG' });
+    expect(body.places[2]?.countryCode).toBeNull();
     expect(body.places[1]?.label).toBe('A');
     expect(body.places[2]?.label).toBeNull();
     expect(body.places[2]?.createdAt).toBe(new Date('2026-08-01T00:00:00.000Z').toISOString());

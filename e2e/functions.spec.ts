@@ -3010,6 +3010,39 @@ test('Function: placesMatch — PATCH /messages/:id/place with the same place tw
   expect(fields.filter((field) => field === 'place')).toHaveLength(1);
 });
 
+test('Function: placeCountryCode — a shop pinned in Manila is PH on the map and in the PH feed', async ({
+  request,
+}) => {
+  const stamp = `${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
+  const { auth, noteId } = await moderatorShopNote(request, stamp);
+  const pinned = await request.patch(`/messages/${noteId}/place`, {
+    headers: auth,
+    data: { place: { lat: 14.5995, lng: 120.9842, label: 'Kenya Street' } },
+  });
+  expect(pinned.status()).toBe(200);
+  const places = await request.get('/messages/places', { headers: auth });
+  expect(places.status()).toBe(200);
+  const row = (
+    (await places.json()) as { places: Array<{ id: string; countryCode: string | null }> }
+  ).places.find((place) => place.id === noteId);
+  // The label names Kenya; the coordinates decide.
+  expect(row?.countryCode).toBe('PH');
+  const ids = async (country: string): Promise<string[]> => {
+    const res = await request.get(`/messages?mode=all&hashtag=21GiftsShop&country=${country}`, {
+      headers: auth,
+    });
+    expect(res.status()).toBe(200);
+    return ((await res.json()) as { messages: Array<{ id: string }> }).messages.map(
+      (message) => message.id,
+    );
+  };
+  expect(await ids('PH')).toContain(noteId);
+  expect(await ids('KE')).not.toContain(noteId);
+  const invalid = await request.get('/messages?country=ph', { headers: auth });
+  expect(invalid.status()).toBe(400);
+  expect(await invalid.json()).toEqual({ error: 'Invalid country' });
+});
+
 // Posting needs a verified wallet, which needs LNURL_SERVER_URL (blank here).
 test('Function: parseMultipartCoord — a multipart pinned note is 409 without a verified wallet', async ({
   request,

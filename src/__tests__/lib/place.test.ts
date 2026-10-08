@@ -1,5 +1,11 @@
 import { describe, it, expect } from 'vitest';
-import { PLACE_LABEL_MAX, normalizePlace, parseMultipartCoord, placesMatch } from '@/lib/place';
+import {
+  PLACE_LABEL_MAX,
+  normalizePlace,
+  parseMultipartCoord,
+  placeCountryCode,
+  placesMatch,
+} from '@/lib/place';
 
 const COORD_ERROR = 'Place must be a latitude and longitude';
 const LABEL_ERROR = 'Place label must be at most 80 characters';
@@ -184,5 +190,24 @@ describe('parseMultipartCoord', () => {
     expect(parseMultipartCoord(' +8 ')).toBe(8);
     expect(parseMultipartCoord('-0.5')).toBe(-0.5);
     expect(parseMultipartCoord('.5')).toBe(0.5);
+  });
+});
+
+describe('placeCountryCode', () => {
+  it('reads the ISO alpha-2 code from the coordinates', () => {
+    expect(placeCountryCode({ lat: 14.5995, lng: 120.9842 })).toBe('PH');
+    expect(placeCountryCode({ lat: -1.2921, lng: 36.8219 })).toBe('KE');
+    expect(placeCountryCode({ lat: 47.37, lng: 8.54 })).toBe('CH');
+  });
+
+  it('counts coastal pins and territories as their own code', () => {
+    expect(placeCountryCode({ lat: 10.293, lng: 123.902 })).toBe('PH');
+    expect(placeCountryCode({ lat: -2.27, lng: 40.9 })).toBe('KE');
+    expect(placeCountryCode({ lat: 22.3, lng: 114.17 })).toBe('HK');
+  });
+
+  it('gives a pin in the open sea no country', () => {
+    expect(placeCountryCode({ lat: 30, lng: -40 })).toBeNull();
+    expect(placeCountryCode({ lat: 0, lng: 0 })).toBeNull();
   });
 });
