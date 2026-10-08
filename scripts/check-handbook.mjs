@@ -138,6 +138,8 @@ function extractEndpoints() {
     'grant-continuation.ts': '/funding/goal',
     'brand.ts': '',
     'push.ts': '',
+    'member-events.ts': '',
+    'wallet-report.ts': '',
     'debug.ts': '/debug/accounts',
     'debug-contacts.ts': '/debug/contacts',
     'debug-api-log.ts': '/debug/api-log',

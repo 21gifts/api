@@ -106,6 +106,16 @@ export interface PosStore {
   recordInvoice(chargeId: string, paymentHash: string, issuedAtMs: number): Promise<boolean>;
 
   /**
+   * Find the charge a payment belongs to by recorded BOLT11 hash or charge id.
+   *
+   * @param ref - Payment hash or POS charge id.
+   * @returns The matching charge, or `undefined`.
+   */
+  findChargeForPayment(
+    ref: { paymentHash: string } | { chargeId: string },
+  ): Promise<PosCharge | undefined>;
+
+  /**
    * Charges still watched for a payment: `pending` or `expired` with
    * `expiresAt` after `sinceMs`, oldest first, each with its recorded
    * payment hashes. Paid and cancelled charges are never listed.
@@ -405,6 +415,26 @@ export class InMemoryPosStore implements PosStore {
   }
 
   /**
+   * Find a charge from its recorded payment hash or its id.
+   *
+   * @param ref - Payment hash or charge id.
+   * @returns A caller-owned charge copy, or `undefined`.
+   */
+  findChargeForPayment(
+    ref: { paymentHash: string } | { chargeId: string },
+  ): Promise<PosCharge | undefined> {
+    const chargeId =
+      'paymentHash' in ref
+        ? this.#invoices.find((invoice) => invoice.paymentHash === ref.paymentHash)?.chargeId
+        : ref.chargeId;
+    const row =
+      chargeId === undefined
+        ? undefined
+        : this.#rows.find((candidate) => candidate.id === chargeId);
+    return Promise.resolve(row === undefined ? undefined : copyCharge(row));
+  }
+
+  /**
    * Pending or expired charges with `expiresAt` after `sinceMs`, oldest first.
    *
    * @param sinceMs - Watch window start (epoch ms).
@@ -466,6 +496,8 @@ interface PosSqlRow {
 /** Columns selected into {@link PosSqlRow}. */
 const POS_COLUMNS =
   'id, account_id, amount_sats, status, created_at, expires_at, paid_at, spark_invoice';
+
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /** Coerce Postgres timestamps; copy so callers cannot mutate driver dates. */
 function asDate(value: Date | string): Date {
@@ -701,6 +733,40 @@ RETURNING payment_hash`,
       [chargeId, paymentHash, new Date(issuedAtMs).toISOString()],
     );
     return rows.length > 0;
+  }
+
+  /**
+   * Select the charge owning a recorded payment hash, or select it directly by id.
+   *
+   * A malformed charge id returns without a query so Postgres never attempts
+   * to cast it to `uuid`.
+   *
+   * @param ref - Payment hash or charge id (`$1`).
+   * @returns The mapped charge, or `undefined`.
+   */
+  async findChargeForPayment(
+    ref: { paymentHash: string } | { chargeId: string },
+  ): Promise<PosCharge | undefined> {
+    if ('chargeId' in ref && !UUID.test(ref.chargeId)) {
+      return undefined;
+    }
+    const rows =
+      'paymentHash' in ref
+        ? await this.#sql.query<PosSqlRow>(
+            `SELECT c.${POS_COLUMNS.replaceAll(', ', ', c.')}
+FROM pos_charge_invoice i
+JOIN pos_charge c ON c.id = i.charge_id
+WHERE i.payment_hash = $1`,
+            [ref.paymentHash],
+          )
+        : await this.#sql.query<PosSqlRow>(
+            `SELECT ${POS_COLUMNS}
+FROM pos_charge
+WHERE id = $1`,
+            [ref.chargeId],
+          );
+    const row = rows[0];
+    return row === undefined ? undefined : mapPosRow(row);
   }
 
   /**

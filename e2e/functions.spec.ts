@@ -3350,3 +3350,269 @@ test('Function: PostgresFxSpotStore — default boot has no DATABASE_URL', async
 test('Function: migrateFxSpotSchema — default boot has no DATABASE_URL', async ({ request }) => {
   expect((await request.get('/healthz')).status()).toBe(200);
 });
+
+const PHRASE_12 =
+  'abandon ability able about above absent absorb abstract absurd abuse access accident';
+
+function walletPayment(extra: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    id: 'p1',
+    direction: 'out',
+    status: 'completed',
+    amountSats: 21,
+    feeSats: 0,
+    timestamp: Math.floor(Date.now() / 1000),
+    method: 'lightning',
+    ...extra,
+  };
+}
+
+function walletReport(
+  payments: Array<Record<string, unknown>> = [walletPayment()],
+  extra: Record<string, unknown> = {},
+): Record<string, unknown> {
+  return {
+    balanceSats: 1000,
+    syncedAt: new Date().toISOString(),
+    payments,
+    ...extra,
+  };
+}
+
+test('Function: readCappedText — POST /me/events body over 64 KiB is 413', async ({ request }) => {
+  const auth = await memberSession(request);
+  const res = await request.post('/me/events', {
+    headers: { ...auth, 'content-type': 'application/json' },
+    data: 'x'.repeat(64 * 1024 + 1),
+  });
+  expect(res.status()).toBe(413);
+});
+
+test('Function: isSecretFieldName — secret prop key is dropped and the event is accepted', async ({
+  request,
+}) => {
+  const auth = await memberSession(request);
+  const res = await request.post('/me/events', {
+    headers: auth,
+    data: {
+      events: [
+        {
+          name: 'login',
+          at: new Date().toISOString(),
+          props: { seedWords: 'x', count: 1 },
+        },
+      ],
+    },
+  });
+  expect(res.status()).toBe(200);
+  expect((await res.json()) as { accepted: number }).toMatchObject({ accepted: 1 });
+});
+
+test('Function: looksLikeSecretValue — 12-word phrase prop is dropped and the event is accepted', async ({
+  request,
+}) => {
+  const auth = await memberSession(request);
+  const res = await request.post('/me/events', {
+    headers: auth,
+    data: {
+      events: [
+        {
+          name: 'login',
+          at: new Date().toISOString(),
+          props: { note: PHRASE_12 },
+        },
+      ],
+    },
+  });
+  expect(res.status()).toBe(200);
+  expect((await res.json()) as { accepted: number }).toMatchObject({ accepted: 1 });
+});
+
+test('Function: parseClientInstant — event with at far in the future is dropped', async ({
+  request,
+}) => {
+  const auth = await memberSession(request);
+  const res = await request.post('/me/events', {
+    headers: auth,
+    data: {
+      events: [
+        {
+          name: 'login',
+          at: new Date(Date.now() + 86_400_000).toISOString(),
+        },
+      ],
+    },
+  });
+  expect(res.status()).toBe(200);
+  expect(await res.json()).toEqual({ accepted: 0, dropped: 1 });
+});
+
+test('Function: parseMemberEventBatch — 51 events is 400 Invalid events', async ({ request }) => {
+  const auth = await memberSession(request);
+  const res = await request.post('/me/events', {
+    headers: auth,
+    data: {
+      events: Array.from({ length: 51 }, () => ({
+        name: 'login',
+        at: new Date().toISOString(),
+      })),
+    },
+  });
+  expect(res.status()).toBe(400);
+  expect(await res.json()).toEqual({ error: 'Invalid events' });
+});
+
+test('Function: memberEventRoutes — no bearer is 401', async ({ request }) => {
+  const res = await request.post('/me/events');
+  expect(res.status()).toBe(401);
+});
+
+test('Function: InMemoryMemberEventStore — valid event is 200 accepted 1', async ({ request }) => {
+  const auth = await memberSession(request);
+  const res = await request.post('/me/events', {
+    headers: auth,
+    data: { events: [{ name: 'login', at: new Date().toISOString() }] },
+  });
+  expect(res.status()).toBe(200);
+  expect(await res.json()).toEqual({ accepted: 1, dropped: 0 });
+});
+
+test('Function: PostgresMemberEventStore — needs DATABASE_URL; default boot stores in memory (200)', async ({
+  request,
+}) => {
+  const auth = await memberSession(request);
+  const res = await request.post('/me/events', {
+    headers: auth,
+    data: { events: [{ name: 'login', at: new Date().toISOString() }] },
+  });
+  expect(res.status()).toBe(200);
+  expect(await res.json()).toEqual({ accepted: 1, dropped: 0 });
+});
+
+test('Function: migrateMemberEventSchema — needs DATABASE_URL; default boot stores in memory (200)', async ({
+  request,
+}) => {
+  const auth = await memberSession(request);
+  const res = await request.post('/me/events', {
+    headers: auth,
+    data: { events: [{ name: 'login', at: new Date().toISOString() }] },
+  });
+  expect(res.status()).toBe(200);
+  expect(await res.json()).toEqual({ accepted: 1, dropped: 0 });
+});
+
+test('Function: decodeSparkAddress — non-Spark spark1 invoice is acknowledged', async ({
+  request,
+}) => {
+  const auth = await memberSession(request);
+  const res = await request.post('/me/wallet/report', {
+    headers: auth,
+    data: walletReport([
+      walletPayment({ id: 'spark-bad', invoice: 'spark1notvalid', method: 'spark' }),
+    ]),
+  });
+  expect(res.status()).toBe(200);
+  expect(await res.json()).toEqual({ acknowledgedIds: ['spark-bad'] });
+});
+
+test('Function: parseWalletReport — balanceSats -1 is 400 Invalid wallet report', async ({
+  request,
+}) => {
+  const auth = await memberSession(request);
+  const res = await request.post('/me/wallet/report', {
+    headers: auth,
+    data: walletReport([], { balanceSats: -1 }),
+  });
+  expect(res.status()).toBe(400);
+  expect(await res.json()).toEqual({ error: 'Invalid wallet report' });
+});
+
+test('Function: walletPaymentClassifier — onchain payment is acknowledged', async ({ request }) => {
+  const auth = await memberSession(request);
+  const res = await request.post('/me/wallet/report', {
+    headers: auth,
+    data: walletReport([walletPayment({ id: 'onchain-1', method: 'onchain' })]),
+  });
+  expect(res.status()).toBe(200);
+  expect(await res.json()).toEqual({ acknowledgedIds: ['onchain-1'] });
+});
+
+test('Function: bolt11Descriptions — invoice with a plain description is acknowledged', async ({
+  request,
+}) => {
+  const auth = await memberSession(request);
+  const res = await request.post('/me/wallet/report', {
+    headers: auth,
+    data: walletReport([
+      walletPayment({
+        id: 'bolt11-descriptions',
+        invoice:
+          'lnbc1pvjluezpp5qyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqsdq5xysxxatsyp3k7enxv4jsqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqznl48l',
+      }),
+    ]),
+  });
+  expect(res.status()).toBe(200);
+  expect(await res.json()).toEqual({ acknowledgedIds: ['bolt11-descriptions'] });
+});
+
+test('Function: containsEncodedSecret — a secret-shaped payment id is skipped, not acknowledged', async ({
+  request,
+}) => {
+  const auth = await memberSession(request);
+  const res = await request.post('/me/wallet/report', {
+    headers: auth,
+    data: walletReport([
+      walletPayment({ id: `nsec1${'q'.repeat(58)}` }),
+      walletPayment({ id: 'plain-id' }),
+    ]),
+  });
+  expect(res.status()).toBe(200);
+  expect(await res.json()).toEqual({ acknowledgedIds: ['plain-id'] });
+});
+
+test('Function: walletReportRoutes — no bearer is 401', async ({ request }) => {
+  const res = await request.post('/me/wallet/report');
+  expect(res.status()).toBe(401);
+});
+
+test('Function: InMemoryWalletStore — pending then completed same id both 200', async ({
+  request,
+}) => {
+  const auth = await memberSession(request);
+  const pending = await request.post('/me/wallet/report', {
+    headers: auth,
+    data: walletReport([walletPayment({ id: 'same', status: 'pending' })]),
+  });
+  expect(pending.status()).toBe(200);
+  expect(await pending.json()).toEqual({ acknowledgedIds: ['same'] });
+  const completed = await request.post('/me/wallet/report', {
+    headers: auth,
+    data: walletReport([walletPayment({ id: 'same', status: 'completed' })]),
+  });
+  expect(completed.status()).toBe(200);
+  expect(await completed.json()).toEqual({ acknowledgedIds: ['same'] });
+});
+
+test('Function: PostgresWalletStore — needs DATABASE_URL; default boot stores in memory (200)', async ({
+  request,
+}) => {
+  const auth = await memberSession(request);
+  const res = await request.post('/me/wallet/report', {
+    headers: auth,
+    data: walletReport(),
+  });
+  expect(res.status()).toBe(200);
+  expect(await res.json()).toEqual({ acknowledgedIds: ['p1'] });
+});
+
+test('Function: migrateWalletSchema — needs DATABASE_URL; default boot stores in memory (200)', async ({
+  request,
+}) => {
+  const auth = await memberSession(request);
+  const res = await request.post('/me/wallet/report', {
+    headers: auth,
+    data: walletReport(),
+  });
+  expect(res.status()).toBe(200);
+  expect(await res.json()).toEqual({ acknowledgedIds: ['p1'] });
+});

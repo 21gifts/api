@@ -10,6 +10,7 @@
 
 import { Hono } from 'hono';
 import type { AuthStore } from '@/lib/auth/store';
+import { readCappedText } from '@/lib/capped-body';
 import { decodeBolt11 } from '@/lib/bolt11';
 import type { LnurlServerConfig } from '@/lib/config';
 import { IpRateLimiter } from '@/lib/ip-rate-limit';
@@ -63,39 +64,6 @@ type LnurlServerRouteName = 'register' | 'recover' | 'metadata' | 'invoice' | 'v
 function rawSearch(url: string): string {
   const q = url.indexOf('?');
   return q === -1 ? '' : url.slice(q);
-}
-
-/** Read the request body as text, or `null` when it exceeds {@link LNURL_BODY_LIMIT_BYTES}. */
-async function cappedText(request: Request): Promise<string | null> {
-  const declared = Number(request.headers.get('content-length') ?? '0');
-  if (declared > LNURL_BODY_LIMIT_BYTES) {
-    return null;
-  }
-  if (request.body === null) {
-    return '';
-  }
-  const reader = request.body.getReader();
-  const chunks: Uint8Array[] = [];
-  let total = 0;
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) {
-      break;
-    }
-    total += value.byteLength;
-    if (total > LNURL_BODY_LIMIT_BYTES) {
-      await reader.cancel();
-      return null;
-    }
-    chunks.push(value);
-  }
-  const bytes = new Uint8Array(total);
-  let offset = 0;
-  for (const chunk of chunks) {
-    bytes.set(chunk, offset);
-    offset += chunk.byteLength;
-  }
-  return new TextDecoder().decode(bytes);
 }
 
 /**
@@ -225,7 +193,7 @@ export function lnurlServerRoutes(deps: LnurlServerRouteDeps): Hono {
         if (pubkey === null) {
           return c.json(NOT_FOUND, 404);
         }
-        const text = await cappedText(c.req.raw);
+        const text = await readCappedText(c.req.raw, LNURL_BODY_LIMIT_BYTES);
         if (text === null) {
           return c.json(TOO_LARGE, 413);
         }
@@ -312,7 +280,7 @@ export function lnurlServerRoutes(deps: LnurlServerRouteDeps): Hono {
         if (!claimed) {
           return c.json(NOT_FOUND, 404);
         }
-        const text = await cappedText(c.req.raw);
+        const text = await readCappedText(c.req.raw, LNURL_BODY_LIMIT_BYTES);
         if (text === null) {
           return c.json(TOO_LARGE, 413);
         }

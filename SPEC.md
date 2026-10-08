@@ -4,7 +4,7 @@
 > Product decisions live in [`CONCEPT.md`](./CONCEPT.md); this file owns
 > request/response contracts for routes that exist in code today.
 
-**Status**: living document. Last revised 2026-10-05 (`PUT /me/about` never stores an empty profile note: empty text on a live note that keeps no photo, extra still, or video restores the auto name-copy, so the bio clears; with no live note it is 400 `Write something about yourself`. 2026-10-02: a 400 that means "needs a wallet" or "cannot receive" carries `code` `wallet_required` or `cannot_receive`; a member's only receiving address is the verified in-app wallet `<username>@<host>`: linking, verifying, or removing an external Lightning address is gone, money routes, spend lookups, `GET /.well-known/lnurlp/:username`, and kind 0 `lud16` are wallet-only, posting needs a verified wallet, `POST /pos` without one is `Set up your wallet first`, debug provisioning takes `{ name, username? }`, receipts are read only on the relays every zap request names. Earlier the same day: one receiving address per account: a verified wallet receives on `<username>@<host>` resolved internally against the LNURL server; `sparkInvoice` on `POST /messages/:id/invoice`, `POST /conversations/:id/invoice`, and `POST /messages/:id/repayment` when `LNURL_ZAP_NSEC_HEX` is also set; Spark invoice worker publishes and ingests the zap receipt; `spark_invoice` table. 2026-10-01: `PUT /me/wallet` and forwarded LNURL routes when `LNURL_SERVER_URL` and `PUBLIC_BASE_URL` resolve; owner `sparkPubkey` / `sparkWalletVerified`; wallet-backed `GET /.well-known/lnurlp/:username`; username fixed once verified; trailing/double-dot username reject. 2026-09-30: `GET /mentions` matches the start of the username, a `.` `_` `-` segment, or the start of the display name or one of its words; a token containing `.` `_` `-` matches only a whole-string start. 2026-09-28: `GET /mentions` username prefix suggestions. GET /mentions returns at most 20 username-prefix suggestions for a signed-in forum reader. 2026-09-24: `POST /conversations/:id/messages/:messageId/translate`; owner and view JSON include `aboutMessageId`; conversation rows include `lastMessageId`. 2026-09-23: `eligibleToday` does not require a grant until UTC 2026-10-10; funding-program grants independent of `account.role`; spend ping and `POST /invoices` require `eligibleToday`; verified top-level media also welcome-pings independent of `eligibleToday`; `GET /invoices/eligible`; `GET /conversations` list/open rows include per-row `unreadMessageCount`; envelope `unreadCount` remains unread thread count; `GET /trust-chain` requires a member Bearer session; public graph uses at most one incoming edge per subject: the oldest eligible sibling (`createdAt` then `id`), skipping a non-chain oldest sibling so a later displayable contact can show; eligible `verify`, `moderator_appoint`, and `moderator_propose` only when the subject is a moderator; `moderator_confirm` and `moderator_reject` never; later appoint/confirm/propose do not replace the first eligible contact; staff may reject an open proposal (`POST /trust/reject-moderator`, append-only `moderator_reject`, role stays `verified`) and re-propose after reject (new `moderator_propose`; 409 while currently pending, any confirm/appoint, or a concurrent older open propose wins after insert); confirm/reject re-list after insert and undo when the other grant already closed; pending = latest propose/reject is propose, verified, no confirm/appoint; live-unique kinds are verify/confirm/appoint only; open proposal fans out in-app `moderator_proposal` plus Web Push to other staff until confirm, until reject when pending is then empty, or until appoint; GET `/notifications` keeps `moderator_appointed` and `moderator_proposal` (mark-read / read-all do not stamp the proposal); owner `notificationLevel` on GET `/me` and `POST /me/notification-level`; fan-out filters in-app and Web Push by `all` / `active` / `mentions`; GET `/notifications` applies the same filter to stored rows (`moderator_appointed` always stays; `unreadCount` is unread among kept rows after the hidden filter (before the 200 cap), not `store.unreadCount()` and not the unfiltered matching unread of the newest 1000); a zap that inserts a gift-reply fans out only `notifyZap`, not a second `forum_reply`; gift-reply row still lands in the thread; confirm/appoint notify the subject only with `moderator_appointed` and Web Push url `/welcome`; official platform account (`isPlatform`) never fans out living-room `forum_post` / `forum_reply` / `zap`; house daily gift-replies still persist; GET /messages omits name-copy profile notes and About me text stays). 2026-10-01: opening a forum note, translating it, or opening Notifications stamps the matching unread forum and zap rows and tells the account's other devices to close those banners (`POST /notifications/read-by-message`; read-all and read-by-message return tags; a freshly stamped `POST /notifications/:id/read` only enqueues the dismiss tag and still returns the public notification). `moderator_proposal` stays unread. Private-message pushes are not dismissed. 2026-10-02: `GET /messages?mode=active` is paid notes plus unpaid founder/moderator notes. An ask with `sats = 0` is not active. Initiator or founder daily payout roster proxies spend; a moderator is refused before spend configuration is checked.
+**Status**: living document. Last revised 2026-10-07 (`POST /me/wallet/report` stores the wallet balance and payments with a server-side category; `POST /me/events` stores the first-party interaction log; never a recovery phrase, seed, PRF output, preimage, or private key). Before that, 2026-10-05 (`PUT /me/about` never stores an empty profile note: empty text on a live note that keeps no photo, extra still, or video restores the auto name-copy, so the bio clears; with no live note it is 400 `Write something about yourself`. 2026-10-02: a 400 that means "needs a wallet" or "cannot receive" carries `code` `wallet_required` or `cannot_receive`; a member's only receiving address is the verified in-app wallet `<username>@<host>`: linking, verifying, or removing an external Lightning address is gone, money routes, spend lookups, `GET /.well-known/lnurlp/:username`, and kind 0 `lud16` are wallet-only, posting needs a verified wallet, `POST /pos` without one is `Set up your wallet first`, debug provisioning takes `{ name, username? }`, receipts are read only on the relays every zap request names. Earlier the same day: one receiving address per account: a verified wallet receives on `<username>@<host>` resolved internally against the LNURL server; `sparkInvoice` on `POST /messages/:id/invoice`, `POST /conversations/:id/invoice`, and `POST /messages/:id/repayment` when `LNURL_ZAP_NSEC_HEX` is also set; Spark invoice worker publishes and ingests the zap receipt; `spark_invoice` table. 2026-10-01: `PUT /me/wallet` and forwarded LNURL routes when `LNURL_SERVER_URL` and `PUBLIC_BASE_URL` resolve; owner `sparkPubkey` / `sparkWalletVerified`; wallet-backed `GET /.well-known/lnurlp/:username`; username fixed once verified; trailing/double-dot username reject. 2026-09-30: `GET /mentions` matches the start of the username, a `.` `_` `-` segment, or the start of the display name or one of its words; a token containing `.` `_` `-` matches only a whole-string start. 2026-09-28: `GET /mentions` username prefix suggestions. GET /mentions returns at most 20 username-prefix suggestions for a signed-in forum reader. 2026-09-24: `POST /conversations/:id/messages/:messageId/translate`; owner and view JSON include `aboutMessageId`; conversation rows include `lastMessageId`. 2026-09-23: `eligibleToday` does not require a grant until UTC 2026-10-10; funding-program grants independent of `account.role`; spend ping and `POST /invoices` require `eligibleToday`; verified top-level media also welcome-pings independent of `eligibleToday`; `GET /invoices/eligible`; `GET /conversations` list/open rows include per-row `unreadMessageCount`; envelope `unreadCount` remains unread thread count; `GET /trust-chain` requires a member Bearer session; public graph uses at most one incoming edge per subject: the oldest eligible sibling (`createdAt` then `id`), skipping a non-chain oldest sibling so a later displayable contact can show; eligible `verify`, `moderator_appoint`, and `moderator_propose` only when the subject is a moderator; `moderator_confirm` and `moderator_reject` never; later appoint/confirm/propose do not replace the first eligible contact; staff may reject an open proposal (`POST /trust/reject-moderator`, append-only `moderator_reject`, role stays `verified`) and re-propose after reject (new `moderator_propose`; 409 while currently pending, any confirm/appoint, or a concurrent older open propose wins after insert); confirm/reject re-list after insert and undo when the other grant already closed; pending = latest propose/reject is propose, verified, no confirm/appoint; live-unique kinds are verify/confirm/appoint only; open proposal fans out in-app `moderator_proposal` plus Web Push to other staff until confirm, until reject when pending is then empty, or until appoint; GET `/notifications` keeps `moderator_appointed` and `moderator_proposal` (mark-read / read-all do not stamp the proposal); owner `notificationLevel` on GET `/me` and `POST /me/notification-level`; fan-out filters in-app and Web Push by `all` / `active` / `mentions`; GET `/notifications` applies the same filter to stored rows (`moderator_appointed` always stays; `unreadCount` is unread among kept rows after the hidden filter (before the 200 cap), not `store.unreadCount()` and not the unfiltered matching unread of the newest 1000); a zap that inserts a gift-reply fans out only `notifyZap`, not a second `forum_reply`; gift-reply row still lands in the thread; confirm/appoint notify the subject only with `moderator_appointed` and Web Push url `/welcome`; official platform account (`isPlatform`) never fans out living-room `forum_post` / `forum_reply` / `zap`; house daily gift-replies still persist; GET /messages omits name-copy profile notes and About me text stays). 2026-10-01: opening a forum note, translating it, or opening Notifications stamps the matching unread forum and zap rows and tells the account's other devices to close those banners (`POST /notifications/read-by-message`; read-all and read-by-message return tags; a freshly stamped `POST /notifications/:id/read` only enqueues the dismiss tag and still returns the public notification). `moderator_proposal` stays unread. Private-message pushes are not dismissed. 2026-10-02: `GET /messages?mode=active` is paid notes plus unpaid founder/moderator notes. An ask with `sats = 0` is not active. Initiator or founder daily payout roster proxies spend; a moderator is refused before spend configuration is checked.
 
 ---
 
@@ -228,6 +228,8 @@ Public base URLs used in examples:
 | GET    | `/push/vapid-public`                                 | Bearer                                       | VAPID public key for Web Push subscribe                                                                                                                                                                                                                                                                                                                |
 | POST   | `/me/push-subscriptions`                             | Bearer                                       | Upsert a browser PushSubscription                                                                                                                                                                                                                                                                                                                      |
 | DELETE | `/me/push-subscriptions`                             | Bearer                                       | Remove a browser PushSubscription                                                                                                                                                                                                                                                                                                                      |
+| POST   | `/me/wallet/report`                                  | Bearer                                       | `{ balanceSats, syncedAt, payments }` → `{ acknowledgedIds }`; balance snapshot plus idempotent payment upsert with a server-side category; 60/account/min; 1 MiB                                                                                                                                                                                      |
+| POST   | `/me/events`                                         | Bearer                                       | `{ events: [{ name, at, path, props }] }` (at most 50) → `{ accepted, dropped }`; allow-listed interaction log; 30/account/min; 64 KiB                                                                                                                                                                                                                 |
 | POST   | `/debug/push-ping`                                   | Bearer `DEBUG_TOKEN`                         | Enqueue a test push for one account                                                                                                                                                                                                                                                                                                                    |
 | POST   | `/debug/passkey-renew/reopen`                        | Bearer `DEBUG_TOKEN`                         | Delete one account's failed passkey-renew rows so the blocking dialog opens again. Refuses when a seed is already stored.                                                                                                                                                                                                                              |
 | GET    | `/debug/dump`                                        | `Authorization: Bearer`                      | Operator catalog of allowlisted tables (`DEBUG_TOKEN`)                                                                                                                                                                                                                                                                                                 |
@@ -2247,6 +2249,50 @@ secret. A cursor that does not match the key is **Response** `400`
 `{ "error": "Not found" }`. A store failure is **Response** `503`
 `{ "error": "Database is unavailable" }`.
 
+#### Wallet and interaction tables
+
+`GET /debug/db` lists `wallet_balance_snapshot`, `wallet_payment`, and
+`member_event` like every other table; `?table=<name>` pages their rows. They
+are filled by `POST /me/wallet/report` and `POST /me/events`
+(`docs/schema/wallet.sql`, `docs/schema/member_event.sql`). No column is
+redacted. An account merge moves these rows to the surviving account, with the
+two `wallet_payment` exceptions under `POST /me/wallet/report` (Storage).
+
+- `wallet_balance_snapshot`: one row per accepted report. `id`, `account_id`
+  (reporting member), `balance_sats` (wallet balance at sync), `synced_at`
+  (sync time the app reported), `received_at` (server time of the report).
+- `wallet_payment`: one row per member and wallet payment id, key
+  `(account_id, payment_id)`. `direction` (`in` / `out`, seen from
+  `account_id`), `status` (`pending` / `completed` / `failed`), `amount_sats`,
+  `fee_sats`, `paid_at` (payment time the app reported), `method` (reported, lower-cased,
+  e.g. `lightning`, `spark`, `onchain`), `payment_hash`, `invoice` (BOLT11 or
+  Spark invoice), `destination`, `description`, `lnurl_comment` (each `null`
+  when not reported or screened out), `category`, `counterparty_account_id`
+  (the other member, platform account, or shop account when the category
+  resolved one), `first_seen_at` (report that first stored the row),
+  `updated_at` (last change of a stored value), `last_observed_at` (last
+  accepted report that carried the payment).
+- `member_event`: one row per accepted event. `id`, `account_id`, `name` (one
+  of `MEMBER_EVENT_NAMES`), `at` (client time), `path` (no query or fragment),
+  `props` (flat JSON object of scalars), `received_at` (server time of the
+  batch).
+
+`category`, first match wins (full rules under `POST /me/wallet/report`): `gift`
+for an invoice the api issued for a forum or conversation note or an indexed zap
+receipt (`platform` when the other side is the platform account); `shop` for a
+point-of-sale charge; then, for another account of this deployment found by
+own-host Lightning address or Spark key, `platform` (platform account), `shop`
+(live `#21GiftsShop` note), or `member`; otherwise `onchain`,
+`outside_lightning`, or `unknown`.
+
+A payment between two members is reported by both wallets: the payer's row has
+`direction` `out`, the payee's row has `direction` `in`, and their `payment_id`
+values can differ, so `GET /debug/db` returns two rows for one payment. When the
+apps reported it, the two rows share `payment_hash` (Lightning) or `invoice`
+(Spark invoice). A total over all members must keep one row per payment, for
+example by deduplicating on `payment_hash` or `invoice`; summing every row counts
+such a payment twice.
+
 ### `GET /debug/accounts`
 
 Operator listing of every stored account. Authenticated with
@@ -3382,6 +3428,174 @@ Success → **Response** `200`:
 ```json
 { "ok": true }
 ```
+
+### `POST /me/wallet/report`
+
+Bearer required. The app sends this after each successful wallet sync while
+the member is signed in, at least after login, after a payment, and every few
+minutes while the app is open. The first report after install sends the
+whole payment history in pages of at most 200; later reports send only
+payments the api has not acknowledged yet.
+
+**Request** (`Content-Type: application/json`, at most 1 MiB):
+
+```json
+{
+  "balanceSats": 12345,
+  "syncedAt": "2026-10-07T08:00:00.000Z",
+  "payments": [
+    {
+      "id": "sdk-payment-id",
+      "direction": "out",
+      "status": "completed",
+      "amountSats": 21,
+      "feeSats": 0,
+      "timestamp": 1791360000,
+      "method": "lightning",
+      "paymentHash": "<64 hex>",
+      "invoice": "lnbc… | spark1…",
+      "destination": "alice@21.gifts | domain | Spark address | on-chain address | txid",
+      "description": "memo",
+      "lnurlComment": "comment"
+    }
+  ]
+}
+```
+
+- `balanceSats` (required) and every sat amount: safe integer, `0` to
+  `2100000000000000` (21 million BTC).
+- `syncedAt` and `timestamp`: ISO-8601 instant string (date, time, and `Z` or a
+  numeric offset; a date alone, a locale string, or an impossible calendar
+  value such as February 30 is refused, not rolled over), or a number (below `1e11` it is
+  epoch seconds, otherwise epoch milliseconds); not before 2009-01-03 and not
+  more than 5 minutes in the future.
+- `payments` is optional (missing = `[]`), at most 200 entries.
+- Per payment, required: `id` (1–256 characters, not secret-shaped), `direction` (`in` / `out`),
+  `status` (`pending` / `completed` / `failed`), `amountSats`, `timestamp`,
+  `method` (lower-cased, then one word of `[a-z][a-z0-9_]{0,31}`, e.g. `lightning`,
+  `spark`, `onchain`, `token`).
+  `feeSats` missing or `null` is `0`. A payment that fails a required rule is
+  skipped and not acknowledged; the rest of the report is stored.
+- Optional detail fields: `paymentHash` (64 hex), `invoice` (≤ 4096),
+  `destination` (≤ 512), `description` (≤ 640), `lnurlComment` (≤ 640). A
+  value that is missing, too long, holds control characters, or has the shape
+  of secret material (a token starting with `nsec1…` or an extended private
+  key prefix, or a run of at least 12 consecutive recovery-phrase-shaped words
+  in any BIP-39 language (3–9 non-CJK letters, or 1–8 CJK or Hangul characters)
+  anywhere in the value) is stored as `null`.
+- Every other field is ignored and never stored or logged. A `preimage` is not
+  read even when the app sends one; the app does not send it.
+- The payment id and every detail field are also screened inside encoded
+  tokens: every memo of a Spark address or invoice (each protobuf field on its
+  own, repeated and nested fields included at any depth, read leniently so a
+  malformed field cannot hide earlier ones; pathological nesting counts as
+  secret), every description tag of a BOLT11, the payload
+  of any bech32 or bech32m token (read as printable ASCII and as UTF-8), and any WIF private key (Base58Check). A detail field that holds secret
+  material there is stored as `null`, and a payment with such an id is skipped,
+  so an encoded invoice cannot carry a recovery phrase into storage.
+- Screened text is NFC-normalised (so the decomposed form of the official
+  wordlists counts) and also read percent-decoded (runs of `%XX` as UTF-8, `+`
+  as a space), as in LNURL query strings.
+- Limit of the shape screening: it finds key tokens and recovery-phrase word
+  runs, also inside canonical encodings (Spark and BOLT11 memos, bech32 and bech32m
+  payloads). It is a safety net against accidental exposure (a phrase typed or
+  pasted into a memo), not against a client that deliberately obfuscates a
+  secret (base64, XOR, protobuf groups, or unusual token boundaries); the
+  allow-list and the client contract cover that. A raw 32-byte value (hex or base64) looks exactly like the payment
+  hashes, transaction ids, payment ids and NIP-57 zap requests (64-hex keys and
+  ids) this route collects, so it is not screened by shape. Such values are
+  kept out by the allow-list (secret-named fields are never read) and by the
+  app, which never sends a preimage, seed, PRF output or key.
+
+The api stores one row in `wallet_balance_snapshot` per report and upserts
+each payment into `wallet_payment` by `(account, id)`. Re-sending a payment
+is harmless: status, amounts, method, time, category, and counterparty are
+overwritten (so `pending` becomes `completed`), detail fields keep their
+stored value when the new report has none, `first_seen_at` (the observation
+time of the report that first stored the payment) never changes,
+and `updated_at` changes only when a stored value changes. A report observed
+before the latest accepted report of that payment (a slower concurrent request,
+or a stale second device) does not overwrite it; every accepted report advances
+the watermark `last_observed_at`, also when it changes nothing.
+
+**Category** (computed on every insert and update, first match wins; the
+reporting account itself never counts as the counterparty):
+
+1. a forum or conversation invoice the api issued (by payment hash, trying the
+   field, then the BOLT11, then the `zap:` memo of a Spark invoice) → `gift`, or
+   `platform` when the other side is the platform account;
+2. a zap receipt the api indexed → `gift` / `platform` the same way;
+3. a point-of-sale charge (recorded BOLT11 hash, or the `pos:` memo of a Spark
+   invoice) → `shop`;
+4. a member of this deployment, by own-host Lightning address
+   `<username>@<host of PUBLIC_BASE_URL>`, by the identity key of a Spark
+   address or invoice, or by a raw Spark public key → `platform` for the
+   platform account, `shop` for a member with a live `#21GiftsShop` note,
+   otherwise `member`;
+5. otherwise `onchain` (`method` `onchain` / `bitcoin`), `outside_lightning`
+   (`method` `lightning` / `bolt11` / `lnurl`, a foreign Lightning address, or
+   an `ln…` invoice), or `unknown`.
+
+`counterpartyAccountId` is set whenever one of steps 1–4 resolves an account.
+A later report never turns a resolved category (steps 1–4) back into a
+fallback one (step 5): a re-send with fewer details keeps the stored category
+and counterparty.
+
+**Storage.** `wallet_balance_snapshot` and `wallet_payment` (`docs/schema/wallet.sql`), migrated at boot when `DATABASE_URL` is set and covered by `db_change`; in memory otherwise. A merge deletes a source payment row whose id the surviving account already has, clears a counterparty that is one of the two merged accounts, then moves the rest.
+
+**Response** `200` `{ "acknowledgedIds": ["sdk-payment-id"] }` — every stored
+payment id, once each (a later duplicate in the same report wins).
+
+Errors: `401` `{ "error": "Unauthorized" }`; `429` `{ "error": "Too many requests" }`
+after 60 reports from one account in 60 seconds; `413`
+`{ "error": "Request body is too large" }`; `400`
+`{ "error": "Invalid wallet report" }` (bad JSON, bad balance or sync time,
+`payments` not an array or longer than 200); `503`
+`{ "error": "Wallet data is unavailable" }` when a lookup or write fails
+(logs `wallet_report.write.failed` with `{ accountId }` only).
+
+### `POST /me/events`
+
+Bearer required. First-party interaction log, stored only in this api's
+database. The app batches events (flush about every 10 seconds and when the
+page is hidden). Events before login are not collected.
+
+**Request** (at most 64 KiB): `{ "events": [{ "name", "at", "path", "props" }] }`,
+at most 50 events.
+
+- `name`: one of `screen_view`, `post_created`, `reply_created`, `gift_sent`,
+  `payment_sent`, `payment_received_seen`, `pos_charge_created`,
+  `pos_charge_paid_seen`, `search`, `shop_opened`, `profile_opened`, `login`,
+  `logout`, `signup_completed`. `logout` is sent while the session is still
+  valid, before the app ends it.
+- `at`: same instant rules as `syncedAt` above.
+- `path`: optional; cut at the first `?` or `#`; must start with `/`, at most
+  256 characters; a path that holds secret material anywhere (as written and with
+  runs of `%XX` escapes decoded as UTF-8, a malformed escape not hiding the rest;
+  a key token or a recovery-phrase run across segments) drops the event.
+- `props`: optional flat object, at most 20 keys; key `[A-Za-z][A-Za-z0-9_]{0,39}`;
+  value `null`, boolean, finite number, or string up to 200 characters. Keys
+  naming secret material or a credential (seed, mnemonic, phrase, preimage,
+  private key, secret, PRF, nsec, password, token, authorization, bearer,
+  cookie, credential, session, …) and secret-shaped string values are dropped;
+  other invalid keys are dropped too.
+  The path and string props are also screened inside encoded tokens, as for the
+  wallet report. The same limit as for the wallet report applies: a raw 32-byte value under a
+  neutral key is not recognisable by shape (event and payment ids look the
+  same); the app never puts secret material into events.
+
+An event that fails a rule is dropped and counted; the rest are stored in
+`member_event` with the account and the server receive time.
+
+**Storage.** `member_event` (`docs/schema/member_event.sql`), migrated at boot when `DATABASE_URL` is set and covered by `db_change`; in memory otherwise.
+
+**Response** `200` `{ "accepted": 3, "dropped": 1 }`.
+
+Errors: `401` `{ "error": "Unauthorized" }`; `429` `{ "error": "Too many requests" }`
+after 30 batches from one account in 60 seconds; `413`
+`{ "error": "Request body is too large" }`; `400` `{ "error": "Invalid events" }`
+(bad JSON, `events` not an array, more than 50); `503`
+`{ "error": "Log is unavailable" }` when the insert fails.
 
 ### `POST /debug/push-ping`
 

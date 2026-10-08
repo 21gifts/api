@@ -136,6 +136,59 @@ test('PUT /me/wallet is 404 when LNURL server is off', async ({ request }) => {
   expect(await res.text()).toBe('404 Not Found');
 });
 
+test('POST /me/wallet/report without bearer is 401', async ({ request }) => {
+  const res = await request.post('/me/wallet/report');
+  expect(res.status()).toBe(401);
+});
+
+test('POST /me/wallet/report with a session acknowledges p1', async ({ request }) => {
+  const auth = await memberSession(request);
+  const res = await request.post('/me/wallet/report', {
+    headers: auth,
+    data: {
+      balanceSats: 1000,
+      syncedAt: new Date().toISOString(),
+      payments: [
+        {
+          id: 'p1',
+          direction: 'out',
+          status: 'completed',
+          amountSats: 21,
+          feeSats: 0,
+          timestamp: Math.floor(Date.now() / 1000),
+          method: 'lightning',
+        },
+      ],
+    },
+  });
+  expect(res.status()).toBe(200);
+  expect(await res.json()).toEqual({ acknowledgedIds: ['p1'] });
+});
+
+test('POST /me/events without bearer is 401', async ({ request }) => {
+  const res = await request.post('/me/events');
+  expect(res.status()).toBe(401);
+});
+
+test('POST /me/events with a session accepts login and logout and drops unknown names', async ({
+  request,
+}) => {
+  const auth = await memberSession(request);
+  const res = await request.post('/me/events', {
+    headers: auth,
+    data: {
+      events: [
+        { name: 'login', at: new Date().toISOString() },
+        { name: 'logout', at: new Date().toISOString() },
+        { name: 'wallet_unlocked', at: new Date().toISOString() },
+        { name: 'not_a_real_event', at: new Date().toISOString() },
+      ],
+    },
+  });
+  expect(res.status()).toBe(200);
+  expect(await res.json()).toEqual({ accepted: 2, dropped: 2 });
+});
+
 test('Function: capPasskeyRenewText — POST /me/passkey-renew/report without bearer is 401', async ({
   request,
 }) => {
