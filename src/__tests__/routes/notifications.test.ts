@@ -1127,6 +1127,103 @@ describe('POST /notifications/read-by-message', () => {
   });
 });
 
+describe('POST /notifications/read-visible', () => {
+  const messageId = '11111111-1111-4111-8111-111111111111';
+
+  it('returns 401 without a session', async () => {
+    const res = await mount(new InMemoryAuthStore()).request('/notifications/read-visible', {
+      method: 'POST',
+    });
+    expect(res.status).toBe(401);
+    expect(await res.json()).toEqual({ error: 'Unauthorized' });
+  });
+
+  it.each([
+    { name: 'missing JSON', body: undefined },
+    { name: 'null', body: 'null' },
+    { name: 'array', body: '[]' },
+    { name: 'string', body: '"message"' },
+    { name: 'missing messageId', body: '{}' },
+    { name: 'invalid messageId', body: '{"messageId":"not-a-uuid"}' },
+  ])('returns 404 for $name', async ({ body }) => {
+    const res = await mount(await seeded()).request('/notifications/read-visible', {
+      method: 'POST',
+      headers: {
+        ...AUTH,
+        ...(body === undefined ? {} : { 'content-type': 'application/json' }),
+      },
+      ...(body === undefined ? {} : { body }),
+    });
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ error: 'Not found' });
+  });
+
+  it('stamps matching kinds in id order, dismisses once, and leaves excluded rows unread', async () => {
+    const replyId = '22222222-2222-4222-8222-222222222222';
+    const receiptId = '44444444-4444-4444-8444-444444444444';
+    const store = new InMemoryNotificationStore([
+      note({ id: ID_F, type: 'moderator_proposal', parentId: messageId, replyId: ID_F }),
+      note({ id: ID_E, type: 'moderator_appointed', parentId: messageId, replyId: ID_E }),
+      note({ id: ID_OTHER, type: 'zap', parentId: messageId, replyId: receiptId }),
+      note({ id: ID_READ, type: 'forum_mention', parentId: ID_OTHER, replyId: messageId }),
+      note({ id: ID_B, type: 'forum_reply', parentId: messageId, replyId }),
+      note({ id: ID_A, type: 'forum_post', parentId: messageId, replyId: messageId }),
+      note({
+        id: '99999999-9999-4999-8999-999999999999',
+        recipientAccountId: 'other',
+        parentId: messageId,
+        replyId: messageId,
+      }),
+    ]);
+    const pushStore = new InMemoryPushStore();
+    const app = mount(await seeded(), store, new InMemoryMessageStore(), { pushStore });
+    const request = {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ messageId }),
+    };
+    const first = await app.request('/notifications/read-visible', request);
+    expect(first.status).toBe(200);
+    const tags = [`forum_post:${messageId}`, `forum_mention:${messageId}`];
+    expect(await first.json()).toEqual({ ok: true, tags });
+    expect((await store.getByIdForRecipient(ID_B, 'acc'))?.readAt).toBeNull();
+    expect((await store.getByIdForRecipient(ID_OTHER, 'acc'))?.readAt).toBeNull();
+    expect((await store.getByIdForRecipient(ID_E, 'acc'))?.readAt).toBeNull();
+    expect((await store.getByIdForRecipient(ID_F, 'acc'))?.readAt).toBeNull();
+    expect(
+      (await store.getByIdForRecipient('99999999-9999-4999-8999-999999999999', 'other'))?.readAt,
+    ).toBeNull();
+    expect(await pushStore.listAllOutbox(10)).toHaveLength(1);
+    expect(JSON.parse((await pushStore.listAllOutbox(1))[0]?.payload ?? '{}')).toMatchObject({
+      type: 'dismiss',
+      tags,
+    });
+
+    const firstReadAt = (await store.getByIdForRecipient(ID_A, 'acc'))?.readAt;
+    const second = await app.request('/notifications/read-visible', request);
+    expect(await second.json()).toEqual({ ok: true, tags: [] });
+    expect((await store.getByIdForRecipient(ID_A, 'acc'))?.readAt).toEqual(firstReadAt);
+    expect(await pushStore.listAllOutbox(10)).toHaveLength(1);
+  });
+
+  it('returns 503 and logs when the store throws', async () => {
+    const store = new InMemoryNotificationStore();
+    store.markReadForVisibleMessage = async () => {
+      throw new Error('boom');
+    };
+    const res = await mount(await seeded(), store).request('/notifications/read-visible', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ messageId }),
+    });
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({ error: 'Notifications are unavailable' });
+    expect(
+      parsedEvents(warn).some((event) => event['event'] === 'notifications.read_visible.failed'),
+    ).toBe(true);
+  });
+});
+
 describe('POST /notifications/:id/read', () => {
   it('returns 401 without a session', async () => {
     const res = await mount(new InMemoryAuthStore()).request(`/notifications/${ID_A}/read`, {

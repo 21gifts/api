@@ -720,6 +720,13 @@
 - **Used by:** App when a signed-in member expands a note, asks for a translation, or opens the message page.
 - **Auth:** Bearer session.
 
+## Endpoint: POST /notifications/read-visible
+
+- **Purpose:** Bearer required. Body `{ messageId }` must be a JSON object with a UUID. Stamps unread `forum_post`, `forum_reply`, and `forum_mention` for this account whose `replyId` equals that id. Does not match `parentId`. Does not stamp `zap`, a child reply matched only by `parentId`, `moderator_appointed`, `moderator_proposal`, another account, or an already-read row. 200 `{ ok: true, tags }` lists only rows this call stamped. A second call returns `tags: []`. Optional `endpoint` is skipped on the dismiss push only when it belongs to this account and is never echoed.
+- **Errors:** 401 Unauthorized; 404 `{ error: 'Not found' }` for a missing, non-object, or non-UUID body (not 400); 503 `{ error: 'Notifications are unavailable' }` (`notifications.read_visible.failed`). Dismiss enqueue failure is still 200.
+- **Used by:** App when a signed-in member has fully shown a note.
+- **Auth:** Bearer session.
+
 ## Endpoint: POST /notifications/:id/read
 
 - **Purpose:** Bearer required. UUID `:id`. 200 `PublicNotification` with `readAt` set. The body stays that notification, not `{ ok, tags }`. Dismiss happens only when this call changes `readAt` from null, which enqueues that row's dismiss tag for the account's other devices. An already-read row does not enqueue, even when its `readAt` equals the route clock. A `moderator_proposal` does not enqueue and is 200 with `readAt` still `null`.
