@@ -1137,7 +1137,8 @@ delete those rows again; if a different propose is pending, fan out for
 that actor only when a second re-list still shows that same id, and
 delete the rows if a re-list after that fan-out no longer matches.
 HTTP still **200** if notify (or the purge) fails.
-Same 401/403/400/404/409/503 shapes as `POST /trust/verify`.
+Same 401/403/404/409/503 shapes as `POST /trust/verify`. **400**
+`{ "error": "Expected a JSON body with an \"accountId\" string" }`.
 **200** `{ id, name, role }` (role unchanged).
 
 ### `POST /trust/confirm-moderator`
@@ -1155,8 +1156,10 @@ already stored `moderator_confirm` and the subject is still `verified`,
 completes the role write and returns **200**. If the caller already stored
 that edge and the subject's rank equals the moderator rank, returns **200**
 with the stored role unchanged. A founder subject is **409** and stays
-`founder`. Same 401/403/400/404/409/503 JSON shapes (409 when a confirm
-edge belongs to someone else). A new grant returns **200**
+`founder`. Same 401/403/404/409/503 JSON shapes (409 when a confirm
+edge belongs to someone else). **400**
+`{ "error": "Expected a JSON body with an \"accountId\" string" }`.
+A new grant returns **200**
 `{ id, name, role }` with `role: "moderator"`. An idempotent **200**
 returns the stored role. After a 200 that leaves the subject at the
 moderator rank (new grant and idempotent same-actor 200), the api deletes
@@ -1183,8 +1186,10 @@ after insert, re-lists once more and deletes `moderator_proposal` rows with
 `replyId === subject.id` only if pending is still empty; if a re-list after
 that delete shows a new pending propose, fan out for that actor and
 re-list again so a concurrent close drops those rows. No notify
-for the reject itself. Same 401/403/400/404/409/503 JSON shapes as
-`POST /trust/verify`. **200** `{ id, name, role }` (role unchanged).
+for the reject itself. Same 401/403/404/409/503 JSON shapes as
+`POST /trust/verify`. **400**
+`{ "error": "Expected a JSON body with an \"accountId\" string" }`.
+**200** `{ id, name, role }` (role unchanged).
 
 ### `POST /trust/appoint-moderator`
 
@@ -1197,8 +1202,10 @@ and the subject's rank equals the moderator rank, returns **200** with the
 stored role unchanged. If that edge exists and the subject is not yet at
 that rank, completes the role write and returns **200**. A subject already
 at the moderator rank with no caller-owned appoint edge is **409**.
-Same 401/403/400/404/409/503 shapes as `POST /trust/verify` (403
-when the caller is not a founder). A new grant returns **200**
+Same 401/403/404/409/503 shapes as `POST /trust/verify` (403
+when the caller is not a founder). **400**
+`{ "error": "Expected a JSON body with an \"accountId\" string" }`.
+A new grant returns **200**
 `{ id, name, role }` with `role: "moderator"`. An idempotent **200**
 returns the stored role. After a 200 that leaves the subject at the
 moderator rank (new grant and idempotent same-actor 200), the api deletes
