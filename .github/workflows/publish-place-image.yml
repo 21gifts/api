@@ -51,7 +51,7 @@ jobs:
           match = re.search(r"repository_dispatch:\s*\n\s*types:\s*\[([^\]]+)\]", text)
           if not match:
               sys.exit(1)
-          types = [item.strip().strip("\"'") for item in match.group(1).split(",")]
+          types = [item.strip() for item in match.group(1).split(",")]
           chosen = [item for item in types if item.endswith("-develop")]
           if len(chosen) != 1 or not chosen[0]:
               sys.exit(1)
