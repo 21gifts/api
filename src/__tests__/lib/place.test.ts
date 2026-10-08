@@ -206,6 +206,11 @@ describe('placeCountryCode', () => {
     expect(placeCountryCode({ lat: 22.3, lng: 114.17 })).toBe('HK');
   });
 
+  it('gives a territory without its own ISO code the code of its country', () => {
+    expect(placeCountryCode({ lat: 35.89, lng: -5.32 })).toBe('ES');
+    expect(placeCountryCode({ lat: 42.66, lng: 21.16 })).toBe('XK');
+  });
+
   it('gives a pin in the open sea no country', () => {
     expect(placeCountryCode({ lat: 30, lng: -40 })).toBeNull();
     expect(placeCountryCode({ lat: 0, lng: 0 })).toBeNull();

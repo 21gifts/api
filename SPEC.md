@@ -4291,7 +4291,7 @@ Lightning addresses are not logged.
 ### `GET /messages`
 
 Public member forum thread. With no `Authorization` header, `mode=active`,
-and no hashtag, this is the public window: the first 200 active rows;
+no hashtag, and no country, this is the public window: the first 200 active rows;
 includes `accountId` whenever the stored author id is non-null, omits it
 for an external row, and includes `mentions` when that flag is on and the
 stored list is non-empty; 200 not 401. A present header that is not a

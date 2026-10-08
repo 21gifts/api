@@ -27,6 +27,7 @@ import { postgresTextArrayLiteral } from '@/lib/postgres-text-array';
 import { canonicalGoalAmount, type GoalCurrency } from '@/lib/goal-rate';
 import {
   forumContentFingerprint,
+  MESSAGE_LIST_LIMIT,
   unsignedNostrDefaults,
   type ForumFeedMode,
   type ForumPhoto,
@@ -249,6 +250,12 @@ function pendingKind1LacksBitcoinTag(event: Record<string, unknown> | null): boo
   }
   return !tags.some((tag) => Array.isArray(tag) && tag[0] === 't' && tag[1] === 'bitcoin');
 }
+
+/**
+ * Rows per query when {@link PostgresMessageStore.listFeed} filters by country:
+ * the largest page `GET /messages` serves, so a full page usually needs one query.
+ */
+const COUNTRY_FEED_BATCH = MESSAGE_LIST_LIMIT;
 
 /**
  * Keyset page query for {@link MessageStore.listFeed}.
@@ -4739,10 +4746,11 @@ export class PostgresMessageStore implements MessageStore {
    *
    * With a `country`, the country is read from each row's own coordinates
    * ({@link placeCountryCode}): pinned rows are read in keyset batches of
-   * `query.limit`, in feed order and with every other filter, until the page
-   * is full or no row is left. Each batch reads only the rows it returns, so a
-   * page never scans every pin, and a row is judged by the coordinates read
-   * with it.
+   * {@link COUNTRY_FEED_BATCH}, in feed order and with every other filter,
+   * until the page is full or no row is left. No single query loads every pin,
+   * a page that fills early stops reading, and a row is judged by the
+   * coordinates read with it. A country with few matches walks the pinned rows
+   * after the cursor, one batch per {@link COUNTRY_FEED_BATCH} rows.
    *
    * @param query - Mode, limit, exclusive keyset cursor, staff ids, and optional hashtag and country.
    * @returns Mapped list rows.
@@ -4755,7 +4763,7 @@ export class PostgresMessageStore implements MessageStore {
     const matches: MessageListRow[] = [];
     let cursor = query.cursor;
     for (;;) {
-      const batch = await this.#listFeedPage({ ...rest, cursor }, true);
+      const batch = await this.#listFeedPage({ ...rest, limit: COUNTRY_FEED_BATCH, cursor }, true);
       for (const row of batch) {
         if (
           row.place !== undefined &&
@@ -4769,7 +4777,7 @@ export class PostgresMessageStore implements MessageStore {
         }
       }
       const last = batch[batch.length - 1];
-      if (last === undefined || batch.length < query.limit) {
+      if (last === undefined || batch.length < COUNTRY_FEED_BATCH) {
         return matches;
       }
       cursor =
