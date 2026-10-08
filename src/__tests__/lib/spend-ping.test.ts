@@ -102,6 +102,76 @@ describe('resolveSpendPing', () => {
     await ping?.ping(ADDRESS, MESSAGE_ID, 'daily', 'admitted');
     expect(seen).toBe('https://spend.example/ping');
   });
+
+  it('accepts an options object that omits the gift ledger and the clock', async () => {
+    const fetchImpl = vi.fn<FetchFn>(
+      rosterThenPing({
+        roster: {
+          comment: 'thanks',
+          paymentsEnabled: true,
+          recipients: [{ address: ADDRESS, amountUsd: 2 }],
+        },
+      }),
+    );
+    const ping = resolveSpendPing({ SPEND_URL, SPEND_API_TOKEN: TOKEN }, fetchImpl, {});
+    expect(ping).toBeInstanceOf(HttpSpendPing);
+    await ping?.ping(ADDRESS, MESSAGE_ID);
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    expect(String(fetchImpl.mock.calls[1]?.[0])).toBe(`${SPEND_URL}/ping`);
+  });
+
+  it('uses the current clock when the gift ledger is set and now is omitted', async () => {
+    const fetchImpl = vi.fn<FetchFn>(
+      rosterThenPing({
+        roster: {
+          comment: 'thanks',
+          paymentsEnabled: true,
+          recipients: [{ address: ADDRESS, amountUsd: 2 }],
+        },
+      }),
+    );
+    const ping = resolveSpendPing({ SPEND_URL, SPEND_API_TOKEN: TOKEN }, fetchImpl, {
+      gifts: new InMemoryGiftStore([]),
+    });
+    await ping?.ping(ADDRESS, MESSAGE_ID);
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    expect(String(fetchImpl.mock.calls[1]?.[0])).toBe(`${SPEND_URL}/ping`);
+  });
+
+  it('forwards the gift ledger and the clock into the daily decision', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const nowMs = Date.parse('2026-09-20T12:00:00.000Z');
+    const fetchImpl = vi.fn<FetchFn>(
+      rosterThenPing({
+        roster: {
+          comment: 'thanks',
+          paymentsEnabled: true,
+          recipients: [{ address: ADDRESS, amountUsd: 2 }],
+        },
+      }),
+    );
+    const welcomeToday: GiftRow = {
+      paidAt: new Date('2026-09-20T08:00:00.000Z'),
+      amountSats: 1000,
+      recipientWosUser: 'Ada',
+      kind: 'welcome',
+    };
+    const ping = resolveSpendPing({ SPEND_URL, SPEND_API_TOKEN: TOKEN }, fetchImpl, {
+      gifts: new InMemoryGiftStore([welcomeToday]),
+      now: () => nowMs,
+    });
+    await ping?.ping(ADDRESS, MESSAGE_ID);
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(
+      parsedEvents(warn).some(
+        (e) =>
+          e['event'] === 'spend.ping.skipped' &&
+          e['address'] === ADDRESS &&
+          e['reason'] === 'welcome_paid',
+      ),
+    ).toBe(true);
+    warn.mockRestore();
+  });
 });
 
 describe('HttpSpendPing', () => {
