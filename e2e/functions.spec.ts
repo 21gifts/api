@@ -2240,6 +2240,9 @@ test('Function: markReadByMessage — POST /notifications/read-by-message withou
 }) => {
   expect((await request.post('/notifications/read-by-message')).status()).toBe(401);
 });
+test('Function: notificationRoutes — POST /notifications/read-visible without bearer is 401', async ({ request }) => {
+  expect((await request.post('/notifications/read-visible')).status()).toBe(401);
+});
 test('Function: enqueueNotificationDismiss — POST /notifications/read-by-message without bearer is 401', async ({
   request,
 }) => {

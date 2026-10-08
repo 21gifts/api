@@ -189,6 +189,7 @@ Public base URLs used in examples:
 | GET    | `/notifications`                                     | Bearer                                       | List + unreadCount; drop leftover hidden forum_post/forum_reply (zap checks parent only)                                                                                                                                                                                                                                                                                                                                                                                                                                            |
 | POST   | `/notifications/read-all`                            | Bearer                                       | Mark all notifications read                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
 | POST   | `/notifications/read-by-message`                     | Bearer                                       | Mark forum and zap notifications for one opened note read and return dismiss tags                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| POST   | `/notifications/read-visible`                        | Bearer                                       | Mark forum notifications whose event is the fully shown note read and return dismiss tags                                                                                                                                                                                                                                                                                                                                                                                                                                           |
 | POST   | `/notifications/:id/read`                            | Bearer                                       | Mark one notification read                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
 | GET    | `/lightning-address`                                 | none                                         | Resolve LUD-16 metadata (cached)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
 | POST   | `/diagnostics`                                       | none                                         | `{ event }` plus optional `name`, `message`, `prfPresent`, `challengeId`, `accountId`, `stage`, `status`, `path` → `204`; 60/IP and 600 global per minute                                                                                                                                                                                                                                                                                                                                                                           |
@@ -5411,6 +5412,33 @@ Success → **Response** `200`:
 ```
 
 Zap tags use `replyId` (the receipt-derived id), not the note id.
+`tags` lists only rows this call stamped.
+
+### `POST /notifications/read-visible`
+
+Bearer session required. Body is a JSON object `{ "messageId": "<uuid>", "endpoint"?: "<string>" }`.
+Stamps unread `forum_post`, `forum_reply`, and `forum_mention` rows for this
+account whose `replyId` equals `messageId`. Does not match `parentId`. Does
+not stamp `zap`, a child reply matched only by `parentId`,
+`moderator_appointed`, `moderator_proposal`, another account, or a row that
+already has `readAt`. A second call returns `tags: []`.
+
+Missing JSON, `null`, an array, a string, a missing `messageId`, or a
+non-UUID → **404** `{ "error": "Not found" }` (not 400). Missing or invalid
+bearer → **401** `{ "error": "Unauthorized" }`. Store failure → **503**
+`{ "error": "Notifications are unavailable" }` (`notifications.read_visible.failed`).
+
+The optional `endpoint` is skipped on the dismiss push only when it exactly
+matches one subscription of this account. It is never echoed. A bad or
+unowned `endpoint` does not change the status and does not skip anyone.
+Dismiss enqueue failure still returns **200**.
+
+Success → **Response** `200`:
+
+```json
+{ "ok": true, "tags": ["forum_post:<id>", "forum_mention:<id>"] }
+```
+
 `tags` lists only rows this call stamped.
 
 ### `POST /notifications/:id/read`
