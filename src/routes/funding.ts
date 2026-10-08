@@ -24,12 +24,17 @@ import {
   DAILY_ROSTER_INVALID_ADDRESS,
   DAILY_ROSTER_INVALID_COMMENT,
   DAILY_ROSTER_INVALID_PAYMENTS,
+  DAILY_ROSTER_INVALID_PERSON,
   DAILY_ROSTER_NOT_CONFIGURED,
+  DAILY_ROSTER_NO_LIGHTNING,
   DAILY_ROSTER_UNAVAILABLE,
   DAILY_ROSTER_UNKNOWN_ADDRESS,
+  DAILY_ROSTER_UNKNOWN_PERSON,
   DailyRosterRequestError,
+  withRecipientIdentities,
   type DailyRoster,
   type DailyRosterClient,
+  type DailyRosterPublic,
 } from '@/lib/daily-roster';
 import { isStaffRole } from '@/lib/trust';
 import { forumVideoFilePresent, resolveMediaDir } from '@/lib/video';
@@ -101,7 +106,13 @@ function normalizeDailyRosterComment(raw: string): string | undefined {
 /** Body schema for `POST /funding/daily-roster/payments`. */
 const rosterPaymentsBody = z.object({ enabled: z.boolean() });
 
-/** Body schema for recipient add and update. */
+/** Body schema for `POST /funding/daily-roster/recipients`. */
+const rosterRecipientAddBody = z.object({
+  accountId: z.string(),
+  amountUsd: z.number().finite(),
+});
+
+/** Body schema for recipient update. */
 const rosterRecipientBody = z.object({
   address: z.string(),
   amountUsd: z.number().finite(),
@@ -134,7 +145,7 @@ type DailyRosterAction =
 type RosterStop = { error: string; status: 401 | 403 | 503 };
 
 type RosterReply =
-  { status: 200; body: DailyRoster } | { status: 400 | 502; body: { error: string } };
+  { status: 200; body: DailyRosterPublic } | { status: 400 | 502; body: { error: string } };
 
 /** Resolve the account behind a request's bearer session, or `null`. */
 async function authedAccount(
@@ -313,20 +324,29 @@ async function openDailyRoster(
 /**
  * Call spend and map failures. Success and 502 log the actor id and action only.
  *
+ * @param deps - Route collaborators (auth store for recipient identity).
  * @param caller - Initiator or founder.
  * @param action - Stable action name.
  * @param call - Client method.
- * @returns 200 roster, 400 forwarded change, or 502 unavailable.
+ * @returns 200 public roster, 400 forwarded change, or 502 unavailable.
  */
 async function callRoster(
+  deps: FundingRouteDeps,
   caller: Account,
   action: DailyRosterAction,
   call: () => Promise<DailyRoster>,
 ): Promise<RosterReply> {
   try {
     const roster = await call();
+    const body = await withRecipientIdentities(roster, async (address) => {
+      const account = await deps.authStore.getAccountByLightningAddress(address);
+      if (account === undefined) {
+        return undefined;
+      }
+      return { id: account.id, name: account.name };
+    });
     logEvent('funding.daily_roster', { accountId: caller.id, action });
-    return { status: 200, body: roster };
+    return { status: 200, body };
   } catch (err) {
     if (err instanceof DailyRosterRequestError && err.status === 400) {
       return { status: 400, body: { error: err.error } };
@@ -740,7 +760,7 @@ export function fundingRoutes(deps: FundingRouteDeps): Hono {
       if ('status' in opened) {
         return stopRoster(c, opened);
       }
-      const result = await callRoster(opened.caller, 'read', () => opened.client.get());
+      const result = await callRoster(deps, opened.caller, 'read', () => opened.client.get());
       return answerRoster(c, result);
     })
     .post('/daily-roster/comment', async (c) => {
@@ -756,7 +776,7 @@ export function fundingRoutes(deps: FundingRouteDeps): Hono {
       if (comment === undefined) {
         return c.json({ error: DAILY_ROSTER_INVALID_COMMENT }, 400);
       }
-      const result = await callRoster(opened.caller, 'comment', () =>
+      const result = await callRoster(deps, opened.caller, 'comment', () =>
         opened.client.setComment(comment),
       );
       return answerRoster(c, result);
@@ -771,7 +791,7 @@ export function fundingRoutes(deps: FundingRouteDeps): Hono {
         return c.json({ error: DAILY_ROSTER_INVALID_PAYMENTS }, 400);
       }
       const enabled = parsed.data.enabled;
-      const result = await callRoster(opened.caller, 'payments', () =>
+      const result = await callRoster(deps, opened.caller, 'payments', () =>
         opened.client.setPaymentsEnabled(enabled),
       );
       return answerRoster(c, result);
@@ -781,13 +801,29 @@ export function fundingRoutes(deps: FundingRouteDeps): Hono {
       if ('status' in opened) {
         return stopRoster(c, opened);
       }
-      const parsed = rosterRecipientBody.safeParse(await c.req.json().catch(() => null));
-      if (!parsed.success) {
-        return c.json({ error: DAILY_ROSTER_INVALID_ADDRESS }, 400);
+      const parsed = rosterRecipientAddBody.safeParse(await c.req.json().catch(() => null));
+      if (!parsed.success || !MESSAGE_ID_RE.test(parsed.data.accountId)) {
+        return c.json({ error: DAILY_ROSTER_INVALID_PERSON }, 400);
       }
-      const address = parsed.data.address;
       const amountUsd = parsed.data.amountUsd;
-      const result = await callRoster(opened.caller, 'recipient-add', () =>
+      let account: Account | undefined;
+      try {
+        account = await deps.authStore.getAccount(parsed.data.accountId);
+      } catch {
+        logEvent('funding.daily_roster.failed', {
+          accountId: opened.caller.id,
+          action: 'recipient-add',
+        });
+        return c.json({ error: DAILY_ROSTER_UNAVAILABLE }, 502);
+      }
+      if (account === undefined) {
+        return c.json({ error: DAILY_ROSTER_UNKNOWN_PERSON }, 400);
+      }
+      const address = account.lightningAddress === null ? '' : account.lightningAddress.trim();
+      if (address === '') {
+        return c.json({ error: DAILY_ROSTER_NO_LIGHTNING }, 400);
+      }
+      const result = await callRoster(deps, opened.caller, 'recipient-add', () =>
         opened.client.addRecipient(address, amountUsd),
       );
       return answerRoster(c, result);
@@ -811,7 +847,7 @@ export function fundingRoutes(deps: FundingRouteDeps): Hono {
       }
       const address = parsed.data.address;
       const amountUsd = parsed.data.amountUsd;
-      const result = await callRoster(opened.caller, 'recipient-update', () =>
+      const result = await callRoster(deps, opened.caller, 'recipient-update', () =>
         opened.client.updateRecipient(address, amountUsd),
       );
       return answerRoster(c, result);
@@ -826,7 +862,7 @@ export function fundingRoutes(deps: FundingRouteDeps): Hono {
         return c.json({ error: DAILY_ROSTER_UNKNOWN_ADDRESS }, 400);
       }
       const address = parsed.data.address;
-      const result = await callRoster(opened.caller, 'recipient-delete', () =>
+      const result = await callRoster(deps, opened.caller, 'recipient-delete', () =>
         opened.client.deleteRecipient(address),
       );
       return answerRoster(c, result);

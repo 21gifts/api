@@ -6,6 +6,7 @@ import {
   HttpDailyRoster,
   mapDailyRosterResponse,
   resolveDailyRoster,
+  withRecipientIdentities,
 } from '@/lib/daily-roster';
 import type { FetchFn } from '@/lib/lnurlp';
 
@@ -179,6 +180,97 @@ describe('mapDailyRosterResponse', () => {
         error: DAILY_ROSTER_UNAVAILABLE,
       });
     }
+  });
+});
+
+describe('withRecipientIdentities', () => {
+  it('fills identities from lookup and preserves order and stored addresses', async () => {
+    const seen: string[] = [];
+    const roster = {
+      comment: 'thanks',
+      paymentsEnabled: true,
+      defaultAmountUsd: 3,
+      recipients: [
+        { address: 'Ada@example.com', amountUsd: 2 },
+        { address: 'bob@example.com', amountUsd: 1 },
+      ],
+    };
+    await expect(
+      withRecipientIdentities(roster, async (address) => {
+        seen.push(address);
+        if (address === 'Ada@example.com') {
+          return { id: 'ada-id', name: '  Ada  ' };
+        }
+        return undefined;
+      }),
+    ).resolves.toEqual({
+      comment: 'thanks',
+      paymentsEnabled: true,
+      defaultAmountUsd: 3,
+      recipients: [
+        { address: 'Ada@example.com', amountUsd: 2, accountId: 'ada-id', name: 'Ada' },
+        { address: 'bob@example.com', amountUsd: 1, accountId: null, name: null },
+      ],
+    });
+    expect(seen).toEqual(['Ada@example.com', 'bob@example.com']);
+  });
+
+  it('maps null, missing, and blank names to null', async () => {
+    const roster = {
+      comment: '',
+      paymentsEnabled: false,
+      defaultAmountUsd: 3,
+      recipients: [
+        { address: 'a@example.com', amountUsd: 1 },
+        { address: 'b@example.com', amountUsd: 1 },
+        { address: 'c@example.com', amountUsd: 1 },
+      ],
+    };
+    await expect(
+      withRecipientIdentities(roster, async (address) => {
+        if (address === 'a@example.com') {
+          return { id: 'a', name: null };
+        }
+        if (address === 'b@example.com') {
+          return { id: 'b', name: '   ' };
+        }
+        return { id: 'c' } as { id: string; name: string | null };
+      }),
+    ).resolves.toEqual({
+      comment: '',
+      paymentsEnabled: false,
+      defaultAmountUsd: 3,
+      recipients: [
+        { address: 'a@example.com', amountUsd: 1, accountId: 'a', name: null },
+        { address: 'b@example.com', amountUsd: 1, accountId: 'b', name: null },
+        { address: 'c@example.com', amountUsd: 1, accountId: 'c', name: null },
+      ],
+    });
+  });
+
+  it('does not call lookup when there are no recipients', async () => {
+    const lookup = vi.fn();
+    await expect(
+      withRecipientIdentities(
+        { comment: '', paymentsEnabled: false, defaultAmountUsd: 3, recipients: [] },
+        lookup,
+      ),
+    ).resolves.toEqual({
+      comment: '',
+      paymentsEnabled: false,
+      defaultAmountUsd: 3,
+      recipients: [],
+    });
+    expect(lookup).not.toHaveBeenCalled();
+  });
+
+  it('propagates a lookup throw', async () => {
+    const boom = new Error('lookup failed');
+    await expect(
+      withRecipientIdentities(ROSTER, async () => {
+        throw boom;
+      }),
+    ).rejects.toBe(boom);
   });
 });
 
