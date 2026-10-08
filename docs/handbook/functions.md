@@ -1406,7 +1406,7 @@
 
 ## Function: placeCountryCode
 
-Reads the country of a map pin from its coordinates with the offline boundary dataset of `@rapideditor/country-coder` at territory level, so Hong Kong is `HK` and Puerto Rico is `PR`. Coastal waters count as that country. A territory the dataset codes outside ISO 3166-1 (`AC`, `CP`, `CQ`, `DG`, `EA`, `IC`, `TA`) takes its country's code, so Ceuta is `ES`; Kosovo stays `XK`. The free-text label is never read. Nothing is stored: the code is derived again on every read, so a moved pin or a newer dataset never leaves a stale country behind, and existing pins need no backfill.
+Reads the country of a map pin from its coordinates with the offline boundary dataset of `@rapideditor/country-coder` at territory level, so Hong Kong is `HK` and Puerto Rico is `PR`. Coastal waters count as that country. Ceuta and Melilla, the one territory the dataset returns with a code ISO 3166-1 does not assign (`EA`), take their country's code (`ES`); smaller reserved areas such as Ascension already roll up to an assigned code (`SH`). Kosovo stays `XK`. The free-text label is never read. Nothing is stored: the code is derived again on every read, so a moved pin or a newer dataset never leaves a stale country behind, and existing pins need no backfill.
 
 - **Purpose:** ISO 3166-1 alpha-2 code of the country or territory that contains a pin.
 - **Inputs:** `{ lat, lng }` of a stored pin.

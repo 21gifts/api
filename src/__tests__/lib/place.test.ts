@@ -206,8 +206,11 @@ describe('placeCountryCode', () => {
     expect(placeCountryCode({ lat: 22.3, lng: 114.17 })).toBe('HK');
   });
 
-  it('gives a territory without its own ISO code the code of its country', () => {
+  it('gives Ceuta its country and keeps reserved areas on an assigned code', () => {
     expect(placeCountryCode({ lat: 35.89, lng: -5.32 })).toBe('ES');
+    expect(placeCountryCode({ lat: -7.95, lng: -14.36 })).toBe('SH');
+    expect(placeCountryCode({ lat: 28.1, lng: -15.4 })).toBe('ES');
+    expect(placeCountryCode({ lat: -7.31, lng: 72.41 })).toBe('IO');
     expect(placeCountryCode({ lat: 42.66, lng: 21.16 })).toBe('XK');
   });
 
