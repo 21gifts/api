@@ -1708,12 +1708,18 @@ async function ingestOneReceipt(
   }
 
   // A thrown lookup must not reject a receipt that already passed validation.
-  // Gift-reply retry looks the invoice up again.
+  // Retry the lookup once; a second throw skips both notices. Gift-reply looks the invoice up again.
   let invoice: MessageInvoiceAttempt | undefined;
+  let lookupFailed = false;
   try {
     invoice = await args.store.findOkInvoiceByPaymentHash(decoded.paymentHash);
   } catch {
-    invoice = undefined;
+    try {
+      invoice = await args.store.findOkInvoiceByPaymentHash(decoded.paymentHash);
+    } catch {
+      invoice = undefined;
+      lookupFailed = true;
+    }
   }
   const pinnedForum = pinnedInvoiceFiat(invoice);
   const heart = invoice?.heart === true;
@@ -1747,7 +1753,7 @@ async function ingestOneReceipt(
     } catch {
       payer = undefined;
     }
-    if (heart && invoice !== undefined) {
+    if (!lookupFailed && heart && invoice !== undefined) {
       try {
         await notifyHeart({
           note: row,
@@ -1768,7 +1774,7 @@ async function ingestOneReceipt(
       } catch {
         logEvent('push.enqueue.failed');
       }
-    } else if (!isPlatformFeeNote(author, row)) {
+    } else if (!lookupFailed && !isPlatformFeeNote(author, row)) {
       try {
         await notifyZap({
           note: row,

@@ -114,7 +114,6 @@ ALTER TABLE message_invoice ADD COLUMN IF NOT EXISTS fiat_usd numeric(20, 2);
 ALTER TABLE message_invoice ADD COLUMN IF NOT EXISTS fiat_chf numeric(20, 2);
 ALTER TABLE message_invoice ADD COLUMN IF NOT EXISTS fiat_eur numeric(20, 2);
 ALTER TABLE message_invoice ADD COLUMN IF NOT EXISTS fiat_php numeric(20, 2);
-ALTER TABLE message_invoice ADD COLUMN IF NOT EXISTS heart boolean NOT NULL DEFAULT false;
 CREATE INDEX IF NOT EXISTS message_invoice_created_at_idx
   ON message_invoice (created_at DESC, id DESC);
 CREATE INDEX IF NOT EXISTS message_invoice_message_id_idx
@@ -401,3 +400,4 @@ CREATE UNIQUE INDEX IF NOT EXISTS message_first_post_free_uidx
 CREATE INDEX IF NOT EXISTS message_invoice_ok_payment_hash_idx
   ON message_invoice (payment_hash, created_at DESC, id DESC)
   WHERE result = 'ok';
+ALTER TABLE message_invoice ADD COLUMN IF NOT EXISTS heart boolean NOT NULL DEFAULT false;
