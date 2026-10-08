@@ -256,13 +256,14 @@ describe('InMemoryNotificationStore', () => {
     expect((await store.getByIdForRecipient('a', 'parent'))?.readAt).toEqual(READ_AT);
   });
 
-  it('markReadByMessage stamps only unread matching forum and zap rows', async () => {
+  it('markReadByMessage stamps only unread matching forum, zap, and heart rows', async () => {
     const original = new Date('2026-08-29T18:00:00.000Z');
     const store = new InMemoryNotificationStore([
       row({ id: 'z', type: 'zap', parentId: 'message', replyId: 'receipt' }),
       row({ id: 'a', type: 'forum_post', parentId: 'message', replyId: 'post' }),
       row({ id: 'b', type: 'forum_reply', parentId: 'other', replyId: 'message' }),
       row({ id: 'c', type: 'forum_mention', parentId: 'message', replyId: 'mention' }),
+      row({ id: 'h', type: 'heart', parentId: 'message', replyId: 'heart-receipt' }),
       row({ id: 'read', parentId: 'message', replyId: 'read', readAt: original }),
       row({ id: 'appointed', type: 'moderator_appointed', parentId: 'message' }),
       row({ id: 'proposal', type: 'moderator_proposal', parentId: 'message' }),
@@ -270,7 +271,7 @@ describe('InMemoryNotificationStore', () => {
       row({ id: 'other', recipientAccountId: 'other', parentId: 'message' }),
     ]);
     const stamped = await store.markReadByMessage('parent', 'message', READ_AT);
-    expect(stamped.map((item) => item.id)).toEqual(['a', 'b', 'c', 'z']);
+    expect(stamped.map((item) => item.id)).toEqual(['a', 'b', 'c', 'h', 'z']);
     expect(stamped.every((item) => item.readAt?.getTime() === READ_AT.getTime())).toBe(true);
     expect((await store.getByIdForRecipient('read', 'parent'))?.readAt).toEqual(original);
     expect((await store.getByIdForRecipient('appointed', 'parent'))?.readAt).toBeNull();
@@ -582,7 +583,7 @@ describe('PostgresNotificationStore', () => {
     );
     expect(sql.queries).toHaveLength(1);
     expect(sql.queries[0]?.text).toMatch(
-      /type IN \('forum_post', 'forum_reply', 'forum_mention', 'zap'\)/,
+      /type IN \('forum_post', 'forum_reply', 'forum_mention', 'zap', 'heart'\)/,
     );
     expect(sql.queries[0]?.text).toMatch(/parent_id = \$2 OR reply_id = \$2/);
     expect(sql.queries[0]?.text).toMatch(/RETURNING/);

@@ -220,6 +220,7 @@ function invoiceAttemptBase(args: {
   isNip57Invoice: boolean;
   lnurlResponse?: Record<string, unknown> | null;
   shown?: { pinned: false } | { pinned: true; fiat: FiatAmounts };
+  heart?: boolean;
 }): MessageInvoiceAttempt {
   const shown = args.shown?.pinned === true ? args.shown : undefined;
   return {
@@ -246,6 +247,7 @@ function invoiceAttemptBase(args: {
     amountChf: shown?.fiat.chf ?? null,
     amountEur: shown?.fiat.eur ?? null,
     amountPhp: shown?.fiat.php ?? null,
+    heart: args.heart === true,
   };
 }
 
@@ -1384,6 +1386,7 @@ const invoiceBody = z.object({
   amountChf: z.string().nullable().optional(),
   amountEur: z.string().nullable().optional(),
   amountPhp: z.string().nullable().optional(),
+  heart: z.boolean().optional(),
 });
 
 const translateBody = z.object({
@@ -2806,12 +2809,14 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
       }
       const parsed = invoiceBody.safeParse(await c.req.json().catch(() => null));
       const shown = parsed.success ? shownFiatFromBody(parsed.data) : { pinned: false as const };
+      const heart = parsed.success && parsed.data.heart === true;
       if (!parsed.success || shown === null) {
         await persistInvoiceAttempt(
           deps.store,
           invoiceAttemptBase({
             messageId: messageIdParam,
             payerAccountId: account.id,
+            heart,
             authorAccountId: UNKNOWN_ACCOUNT_ID,
             amountSats: 0,
             lightningAddress: null,
@@ -2827,6 +2832,28 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
         );
         return c.json({ error: 'Expected a JSON body with a positive "sats" integer' }, 400);
       }
+      if (heart && parsed.data.sats !== 1) {
+        await persistInvoiceAttempt(
+          deps.store,
+          invoiceAttemptBase({
+            messageId: messageIdParam,
+            payerAccountId: account.id,
+            heart,
+            authorAccountId: UNKNOWN_ACCOUNT_ID,
+            amountSats: 0,
+            lightningAddress: null,
+            zapRequest: null,
+            result: 'bad_body',
+            httpStatus: 400,
+            pr: null,
+            paymentHash: null,
+            description: null,
+            descriptionHash: null,
+            isNip57Invoice: false,
+          }),
+        );
+        return c.json({ error: 'A heart sends 1 sat' }, 400);
+      }
       const amountMsat = parsed.data.sats * 1000;
       const invoiceText = normalizeForumText(parsed.data.text ?? '');
       if (invoiceText === null) {
@@ -2835,6 +2862,7 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
           invoiceAttemptBase({
             messageId: messageIdParam,
             payerAccountId: account.id,
+            heart,
             authorAccountId: UNKNOWN_ACCOUNT_ID,
             amountSats: parsed.data.sats,
             shown,
@@ -2857,6 +2885,7 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
           invoiceAttemptBase({
             messageId: messageIdParam,
             payerAccountId: account.id,
+            heart,
             authorAccountId: UNKNOWN_ACCOUNT_ID,
             amountSats: 0,
             lightningAddress: null,
@@ -2879,6 +2908,7 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
           invoiceAttemptBase({
             messageId: messageIdParam,
             payerAccountId: account.id,
+            heart,
             authorAccountId: UNKNOWN_ACCOUNT_ID,
             amountSats: parsed.data.sats,
             shown,
@@ -2901,6 +2931,7 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
           invoiceAttemptBase({
             messageId: row.id,
             payerAccountId: account.id,
+            heart,
             authorAccountId: account.id,
             amountSats: parsed.data.sats,
             shown,
@@ -2923,6 +2954,7 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
           invoiceAttemptBase({
             messageId: row.id,
             payerAccountId: account.id,
+            heart,
             authorAccountId: row.accountId,
             amountSats: parsed.data.sats,
             shown,
@@ -2947,6 +2979,7 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
           invoiceAttemptBase({
             messageId: row.id,
             payerAccountId: account.id,
+            heart,
             authorAccountId: row.accountId,
             amountSats: parsed.data.sats,
             shown,
@@ -2971,6 +3004,7 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
           invoiceAttemptBase({
             messageId: row.id,
             payerAccountId: account.id,
+            heart,
             authorAccountId: author.id,
             amountSats: parsed.data.sats,
             shown,
@@ -2995,6 +3029,7 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
           invoiceAttemptBase({
             messageId: row.id,
             payerAccountId: account.id,
+            heart,
             authorAccountId: author.id,
             amountSats: parsed.data.sats,
             shown,
@@ -3011,6 +3046,9 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
         );
         return c.json({ error: 'Messages are unavailable' }, 503);
       }
+      if (heart && row.accountId === account.id) {
+        return c.json({ error: 'You cannot send a heart to yourself' }, 400);
+      }
       if (!invoiceLimiter.allow(account.id, deps.now())) {
         c.header('Retry-After', '10');
         await persistInvoiceAttempt(
@@ -3018,6 +3056,7 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
           invoiceAttemptBase({
             messageId: row.id,
             payerAccountId: account.id,
+            heart,
             authorAccountId: author.id,
             amountSats: parsed.data.sats,
             shown,
@@ -3054,6 +3093,7 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
           invoiceAttemptBase({
             messageId: row.id,
             payerAccountId: account.id,
+            heart,
             authorAccountId: author.id,
             amountSats: parsed.data.sats,
             shown,
@@ -3084,6 +3124,7 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
           invoiceAttemptBase({
             messageId: row.id,
             payerAccountId: account.id,
+            heart,
             authorAccountId: author.id,
             amountSats: parsed.data.sats,
             shown,
@@ -3114,6 +3155,7 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
           invoiceAttemptBase({
             messageId: row.id,
             payerAccountId: account.id,
+            heart,
             authorAccountId: author.id,
             amountSats: parsed.data.sats,
             shown,
@@ -3136,6 +3178,7 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
         invoiceAttemptBase({
           messageId: row.id,
           payerAccountId: account.id,
+          heart,
           authorAccountId: author.id,
           amountSats: parsed.data.sats,
           shown,

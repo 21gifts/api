@@ -138,6 +138,7 @@ describe('PostgresAuthStore', () => {
     expect(mapped?.profileMessageId).toBeNull();
     expect(mapped?.location).toBeNull();
     expect(mapped?.notificationLevel).toBe('all');
+    expect(mapped?.notifyHearts).toBe(true);
     expect(mapped?.amountUnit).toBe('btc');
     expect(mapped?.username).toBeNull();
     expect(mapped?.walletRequired).toBe(false);
@@ -267,6 +268,7 @@ describe('PostgresAuthStore', () => {
       'session_refused',
       'wallet_required',
       'wallet_backup_seen_at',
+      'notify_hearts',
     ]) {
       expect(insert.text).toMatch(new RegExp(column));
     }
@@ -290,6 +292,7 @@ describe('PostgresAuthStore', () => {
       false,
       null,
       'btc',
+      true,
     ]);
     const update = sql.executes[1]!;
     expect(update.text).toMatch(/UPDATE account/);
@@ -309,6 +312,7 @@ describe('PostgresAuthStore', () => {
       /username = CASE WHEN spark_pubkey_verified_at IS NULL THEN \$15 ELSE username END/,
     );
     expect(update.text).toMatch(/amount_unit = \$16/);
+    expect(update.text).toMatch(/notify_hearts = \$17/);
     expect(update.text).toMatch(/NOT EXISTS/);
     expect(update.text).not.toMatch(/IS NOT DISTINCT FROM/);
     const setClause = update.text.split(/\bWHERE\b/)[0]!;
@@ -335,6 +339,7 @@ describe('PostgresAuthStore', () => {
       'all',
       null,
       'btc',
+      true,
     ]);
     expect(insert.text).not.toMatch(/spark_pubkey/);
   });
@@ -387,6 +392,29 @@ describe('PostgresAuthStore', () => {
     sql.nextRows = [{ ...ACCOUNT_ROW, amount_unit: null }];
     expect((await store.getAccount('acc'))?.amountUnit).toBe('btc');
     expect(sql.queries[0]?.text).toMatch(/amount_unit/);
+  });
+
+  it('writes notifyHearts as $20 on insert and $17 on update', async () => {
+    const sql = new MockSql();
+    const store = new PostgresAuthStore(sql);
+    const account = {
+      id: 'acc',
+      linkingKey: ACCOUNT_ROW.linking_key,
+      role: 'basis' as const,
+      name: null,
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: VIEW_KEY,
+      createdAt: 1,
+      rulesAgreedAt: null,
+      notifyHearts: false,
+    };
+    await store.createAccount(account);
+    expect(sql.executes[0]?.text).toMatch(/notify_hearts/);
+    expect(sql.executes[0]?.params[19]).toBe(false);
+    await store.updateAccount({ ...account, notifyHearts: true });
+    expect(sql.executes[1]?.text).toMatch(/notify_hearts = \$17/);
+    expect(sql.executes[1]?.params[16]).toBe(true);
   });
 
   it('writes a stored amountUnit as $19 on insert and $16 on update', async () => {

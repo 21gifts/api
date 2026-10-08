@@ -40,7 +40,7 @@ import type { PushStore } from '@/lib/push-store';
 /**
  * `/me` — the authenticated account and its editable profile (display name,
  * unique username, optional location, About me, welcome-forum laws dismiss,
- * living-room rules agreement, notification level, amount-entry unit, wallet backup seen,
+ * living-room rules agreement, notification level, `POST /heart-notifications`, amount-entry unit, wallet backup seen,
  * and the optional wallet public-key bind (`PUT /wallet` when the LNURL server
  * is configured). The verified wallet is the member's only receiving address.
  * Shares the {@link AuthStore} instance with `/auth`.
@@ -179,6 +179,11 @@ const notificationLevelBody = z.object({
   level: z.enum(['all', 'active', 'mentions']),
 });
 
+/** Body schema for setting heart-tip notifications. */
+const heartNotificationsBody = z.object({
+  enabled: z.boolean(),
+});
+
 /** Body schema for setting the owner amount-entry unit. */
 const amountUnitBody = z.object({
   unit: z.enum(['btc', 'fiat']),
@@ -243,7 +248,7 @@ function ownerJson(deps: MeRouteDeps, account: Account): Promise<OwnerAccountRes
  *
  * @param deps - Shared store, message store, clock, optional push, optional notification and conversation stores, optional gift/rate/fiat stores for activity, optional funding store, and optional `lnurlServer` for `PUT /wallet` and the receiving address.
  * @returns A Hono app exposing account, activity, display-name, username, location, About me, wallet-backup-seen, optional wallet bind, passkey-renew/report, passkey-renew/ack, setup skip, forum-laws dismiss,
- * living-room rules agreement, notification level, amount-entry unit, locale, and fiat routes.
+ * living-room rules agreement, notification level, `POST /heart-notifications`, amount-entry unit, locale, and fiat routes.
  */
 export function meRoutes(deps: MeRouteDeps): Hono {
   const giftStore = deps.giftStore ?? new InMemoryGiftStore();
@@ -819,6 +824,28 @@ export function meRoutes(deps: MeRouteDeps): Hono {
       logEvent('account.notification_level.set', {
         accountId: current.id,
         level: parsed.data.level,
+      });
+      return c.json(await ownerJson(deps, updated), 200);
+    })
+    .post('/heart-notifications', async (c) => {
+      const account = await authedAccount(deps, c.req.header('authorization'));
+      if (account === null) {
+        return c.json({ error: 'Unauthorized' }, 401);
+      }
+      const parsed = heartNotificationsBody.safeParse(await c.req.json().catch(() => null));
+      if (!parsed.success) {
+        return c.json({ error: 'Expected a JSON body with an enabled boolean' }, 400);
+      }
+      const current = await storedAccount(deps, account.id);
+      /* v8 ignore next 3 -- the account row cannot vanish mid-request after auth */
+      if (current === null) {
+        return c.json({ error: 'Unauthorized' }, 401);
+      }
+      const updated: Account = { ...current, notifyHearts: parsed.data.enabled };
+      await deps.store.updateAccount(updated);
+      logEvent('account.heart_notifications.set', {
+        accountId: current.id,
+        enabled: parsed.data.enabled,
       });
       return c.json(await ownerJson(deps, updated), 200);
     })

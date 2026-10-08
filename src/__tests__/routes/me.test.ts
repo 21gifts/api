@@ -181,6 +181,7 @@ describe('GET /me', () => {
       missing: string[];
       hasPosted: boolean;
       notificationLevel: 'all' | 'active' | 'mentions';
+      notifyHearts: boolean;
       amountUnit: 'btc' | 'fiat';
       locale: 'en' | 'de' | 'es' | 'fil' | null;
       fiat: 'CHF' | 'EUR' | 'USD' | 'PHP' | null;
@@ -203,6 +204,7 @@ describe('GET /me', () => {
     expect(body.missing).toEqual(['name', 'username', 'lightning-address', 'rules']);
     expect(body.hasPosted).toBe(false);
     expect(body.notificationLevel).toBe('all');
+    expect(body.notifyHearts).toBe(true);
     expect(body.amountUnit).toBe('btc');
     expect(body.locale).toBeNull();
     expect(body.fiat).toBeNull();
@@ -1003,6 +1005,69 @@ describe('POST /me/notification-level', () => {
     expect(res.status).toBe(200);
     expect(((await res.json()) as { notificationLevel: string }).notificationLevel).toBe('active');
     expect((await store.getAccount('acc'))?.notificationLevel).toBe('active');
+  });
+});
+
+describe('POST /me/heart-notifications', () => {
+  it('returns 401 without a valid session', async () => {
+    const res = await mount(new InMemoryAuthStore()).request('/me/heart-notifications', {
+      method: 'POST',
+    });
+    expect(res.status).toBe(401);
+    expect(await res.json()).toEqual({ error: 'Unauthorized' });
+  });
+
+  it('rejects a missing body', async () => {
+    const res = await mount(await seededStore()).request('/me/heart-notifications', {
+      method: 'POST',
+      headers: AUTH,
+    });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({
+      error: 'Expected a JSON body with an enabled boolean',
+    });
+  });
+
+  it('writes true and false and owner JSON shows the value', async () => {
+    const store = await seededStore();
+    const app = mount(store);
+    const headers = { ...AUTH, 'content-type': 'application/json' };
+    const off = await app.request('/me/heart-notifications', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ enabled: false }),
+    });
+    expect(off.status).toBe(200);
+    expect(((await off.json()) as { notifyHearts: boolean }).notifyHearts).toBe(false);
+    expect((await store.getAccount('acc'))?.notifyHearts).toBe(false);
+    const on = await app.request('/me/heart-notifications', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ enabled: true }),
+    });
+    expect(on.status).toBe(200);
+    expect(((await on.json()) as { notifyHearts: boolean }).notifyHearts).toBe(true);
+    expect((await store.getAccount('acc'))?.notifyHearts).toBe(true);
+    expect(
+      parsedEvents(warn).some(
+        (e) =>
+          e['event'] === 'account.heart_notifications.set' &&
+          e['accountId'] === 'acc' &&
+          e['enabled'] === false,
+      ),
+    ).toBe(true);
+  });
+
+  it('is idempotent on a second POST of the same value', async () => {
+    const store = await seededStore();
+    const app = mount(store);
+    const headers = { ...AUTH, 'content-type': 'application/json' };
+    const body = JSON.stringify({ enabled: false });
+    await app.request('/me/heart-notifications', { method: 'POST', headers, body });
+    const res = await app.request('/me/heart-notifications', { method: 'POST', headers, body });
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as { notifyHearts: boolean }).notifyHearts).toBe(false);
+    expect((await store.getAccount('acc'))?.notifyHearts).toBe(false);
   });
 });
 

@@ -135,9 +135,11 @@ describe('AUTH_SCHEMA_SQL', () => {
     expect(AUTH_SCHEMA_SQL.join('\n')).toMatch(
       /CREATE INDEX IF NOT EXISTS account_spark_pubkey_idx ON account \(spark_pubkey\) WHERE spark_pubkey IS NOT NULL/,
     );
+    expect(AUTH_SCHEMA_SQL.join('\n')).toMatch(
+      /ALTER TABLE account ADD COLUMN IF NOT EXISTS notify_hearts boolean NOT NULL DEFAULT true/,
+    );
     expect(AUTH_SCHEMA_SQL[AUTH_SCHEMA_SQL.length - 1]).toBe(
-      `CREATE UNIQUE INDEX IF NOT EXISTS account_spark_pubkey_verified_uidx
-  ON account (spark_pubkey) WHERE spark_pubkey_verified_at IS NOT NULL`,
+      'ALTER TABLE account ADD COLUMN IF NOT EXISTS notify_hearts boolean NOT NULL DEFAULT true',
     );
   });
 });
