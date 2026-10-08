@@ -33,6 +33,78 @@ describe('decideSpendInstruction', () => {
       ).toEqual({ amountUsd: 2.5, comment: 'thanks' });
     });
 
+    it('returns welcome_paid when welcomePaidOnUtcDay is true even if a listed row or grant would pay', () => {
+      expect(
+        decideSpendInstruction({
+          address: ADDRESS,
+          kind: 'daily',
+          welcomePaidOnUtcDay: true,
+          roster: {
+            comment: 'thanks',
+            paymentsEnabled: true,
+            recipients: [{ address: ADDRESS, amountUsd: 2.5 }],
+          },
+        }),
+      ).toEqual({ skip: 'welcome_paid' });
+      expect(
+        decideSpendInstruction({
+          address: ADDRESS,
+          kind: 'daily',
+          grantStatus: 'admitted',
+          welcomePaidOnUtcDay: true,
+          roster: {
+            comment: 'thanks',
+            paymentsEnabled: true,
+            defaultAmountUsd: 9,
+            recipients: [],
+          },
+        }),
+      ).toEqual({ skip: 'welcome_paid' });
+      expect(
+        decideSpendInstruction({
+          address: ADDRESS,
+          kind: 'daily',
+          grantStatus: 'trial',
+          welcomePaidOnUtcDay: true,
+          roster: {
+            comment: 'thanks',
+            paymentsEnabled: true,
+            defaultAmountUsd: 9,
+            recipients: [],
+          },
+        }),
+      ).toEqual({ skip: 'welcome_paid' });
+    });
+
+    it('returns payments_disabled when paymentsEnabled is false even if welcomePaidOnUtcDay is true', () => {
+      expect(
+        decideSpendInstruction({
+          address: ADDRESS,
+          kind: 'daily',
+          welcomePaidOnUtcDay: true,
+          roster: {
+            comment: 'thanks',
+            paymentsEnabled: false,
+            recipients: [{ address: ADDRESS, amountUsd: 2 }],
+          },
+        }),
+      ).toEqual({ skip: 'payments_disabled' });
+    });
+
+    it('returns the listed amountUsd and roster comment when welcomePaidOnUtcDay is omitted', () => {
+      expect(
+        decideSpendInstruction({
+          address: ADDRESS,
+          kind: 'daily',
+          roster: {
+            comment: 'thanks',
+            paymentsEnabled: true,
+            recipients: [{ address: ADDRESS, amountUsd: 2.5 }],
+          },
+        }),
+      ).toEqual({ amountUsd: 2.5, comment: 'thanks' });
+    });
+
     it('matches the listed address case-insensitively', () => {
       expect(
         decideSpendInstruction({
@@ -399,6 +471,22 @@ describe('decideSpendInstruction', () => {
       ).toEqual({ amountUsd: 1, comment: 'Welcome' });
     });
 
+    it('returns amountUsd 1 and comment Welcome when welcomePaidOnUtcDay is true', () => {
+      expect(
+        decideSpendInstruction({
+          address: ADDRESS,
+          kind: 'welcome',
+          welcomePaidOnUtcDay: true,
+          roster: {
+            comment: 'thanks',
+            paymentsEnabled: true,
+            defaultAmountUsd: 9,
+            recipients: [{ address: ADDRESS, amountUsd: 4 }],
+          },
+        }),
+      ).toEqual({ amountUsd: 1, comment: 'Welcome' });
+    });
+
     it('treats missing paymentsEnabled as enabled', () => {
       expect(
         decideSpendInstruction({
@@ -491,6 +579,21 @@ describe('decideSpendInstruction', () => {
         decideSpendInstruction({
           address: ADDRESS,
           kind: 'moderator',
+          roster: {
+            comment: 'thanks',
+            moderatorPaymentsEnabled: true,
+            moderators: [{ address: ADDRESS, amountUsd: 3 }],
+          },
+        }),
+      ).toEqual({ amountUsd: 3, comment: '21gifts moderator' });
+    });
+
+    it('returns the listed moderator amount when welcomePaidOnUtcDay is true', () => {
+      expect(
+        decideSpendInstruction({
+          address: ADDRESS,
+          kind: 'moderator',
+          welcomePaidOnUtcDay: true,
           roster: {
             comment: 'thanks',
             moderatorPaymentsEnabled: true,
