@@ -9270,6 +9270,7 @@ describe('indexOpenZapReceipts', () => {
     expect((await store.getById(parentId))?.sats).toBe(1);
     expect(await store.listReplies(parentId)).toHaveLength(0);
     expect(await notifications.listByRecipient('acc-heart-notice-fail', 10)).toEqual([]);
+    expect(store.lookups).toBe(6);
   });
 
   it('settles a heart invoice with notifyHeart and skips the gift-reply', async () => {
