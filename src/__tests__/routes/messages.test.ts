@@ -5644,6 +5644,53 @@ describe('POST /messages/:id/invoice', () => {
     expect(await messageStore.listInvoiceAttempts(10)).toEqual([]);
   });
 
+  it('rejects a heart with 400 no_key when the author has no nostr public key', async () => {
+    const { parseNostrKek } = await import('@/lib/nostr/kek');
+    const kek = parseNostrKek('11'.repeat(32));
+    const authStore = await namedStore('Ada');
+    const messageStore = new InMemoryMessageStore();
+    await messageStore.create({
+      id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'hi',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+      eventId: 'ee'.repeat(32),
+    });
+    const fetchImpl = vi.fn(async (): Promise<Response> => {
+      throw new Error('LNURL must not run when the author has no nostr key');
+    });
+    const app = new Hono().route(
+      '/messages',
+      messagesRoutes({
+        store: messageStore,
+        authStore,
+        now,
+        nostrKek: kek,
+        lnurlServer: LNURL_SERVER,
+        fetchImpl,
+        postLimiter: new PostRateLimiter(),
+        invoiceLimiter: new InvoiceRateLimiter(),
+      }),
+    );
+    const res = await app.request('/messages/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/invoice', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ sats: 1, heart: true }),
+    });
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body).toEqual({ error: 'This message cannot be paid yet' });
+    expect(body).not.toEqual({ error: 'You cannot send a heart to yourself' });
+    const attempts = await messageStore.listInvoiceAttempts(10);
+    expect(attempts).toHaveLength(1);
+    expect(attempts[0]?.result).toBe('no_key');
+    expect(attempts[0]?.heart).toBe(true);
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
   it('rejects a heart that is not 1 sat before LNURL', async () => {
     const { parseNostrKek } = await import('@/lib/nostr/kek');
     const { ensureAccountNostrKey } = await import('@/lib/nostr/keys');
