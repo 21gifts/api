@@ -69,6 +69,17 @@ async function welcomeVerified(deps: TrustRouteDeps, account: Account): Promise<
 /** Body schema for staff POSTs that target one account. */
 const accountIdBody = z.object({ accountId: z.string() });
 
+/** Verify-only body field. Not part of `accountIdBody`. */
+const confirmedNameBody = z.object({ confirmedName: z.string() });
+
+/**
+ * True when `confirmedName` equals the stored account name exactly.
+ * A null or trim-empty stored name never matches. `confirmedName` is not trimmed.
+ */
+function confirmedNameMatchesStored(name: string | null, confirmedName: string): boolean {
+  return name !== null && name.trim() !== '' && confirmedName === name;
+}
+
 /** Resolve the account behind a request's bearer session, or `null`. */
 async function authedAccount(
   deps: TrustRouteDeps,
@@ -162,9 +173,14 @@ export function trustRoutes(deps: TrustRouteDeps): Hono {
       if (!isStaffRole(caller.role)) {
         return c.json({ error: 'Forbidden' }, 403);
       }
-      const parsed = accountIdBody.safeParse(await c.req.json().catch(() => null));
+      const body = await c.req.json().catch(() => null);
+      const parsed = accountIdBody.safeParse(body);
       if (!parsed.success) {
         return c.json({ error: 'Expected a JSON body with an "accountId" string' }, 400);
+      }
+      const confirmed = confirmedNameBody.safeParse(body);
+      if (!confirmed.success) {
+        return c.json({ error: 'Expected a JSON body with a "confirmedName" string' }, 400);
       }
       if (!MESSAGE_ID_RE.test(parsed.data.accountId)) {
         return c.json({ error: 'Not found' }, 404);
@@ -175,6 +191,9 @@ export function trustRoutes(deps: TrustRouteDeps): Hono {
       }
       const subject = loaded.account;
       if (subject.id === caller.id) {
+        return c.json({ error: 'Conflict' }, 409);
+      }
+      if (!confirmedNameMatchesStored(subject.name, confirmed.data.confirmedName)) {
         return c.json({ error: 'Conflict' }, 409);
       }
       let existing: TrustEdge[];
