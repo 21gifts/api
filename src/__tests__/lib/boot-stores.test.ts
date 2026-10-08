@@ -24,6 +24,7 @@ import { PostgresApiLogStore } from '@/lib/api-log';
 import { PostgresDiagnosticStore } from '@/lib/diagnostic-log';
 import { setDiagnosticSink } from '@/lib/log';
 import { PostgresFundingStore } from '@/lib/funding-store';
+import { InMemoryDailyRosterStore, PostgresDailyRosterStore } from '@/lib/daily-roster-store';
 import { PostgresDebugDbStore } from '@/lib/debug-db';
 import { PostgresBannerStore } from '@/lib/banner-store';
 
@@ -79,6 +80,7 @@ describe('openBootStores', () => {
       trustStore,
       apiLogStore,
       fundingStore,
+      rosterStore,
       bannerStore,
       listDbChange,
       debugDbStore,
@@ -98,6 +100,7 @@ describe('openBootStores', () => {
     expect(trustStore).toBeUndefined();
     expect(apiLogStore).toBeUndefined();
     expect(fundingStore).toBeUndefined();
+    expect(rosterStore).toBeInstanceOf(InMemoryDailyRosterStore);
     expect(bannerStore).toBeUndefined();
     expect(listDbChange).toBeUndefined();
     expect(debugDbStore).toBeUndefined();
@@ -128,6 +131,7 @@ describe('openBootStores', () => {
       trustStore,
       apiLogStore,
       fundingStore,
+      rosterStore,
       bannerStore,
       debugDbStore,
     } = await openBootStores('   ', factory);
@@ -146,6 +150,7 @@ describe('openBootStores', () => {
     expect(trustStore).toBeUndefined();
     expect(apiLogStore).toBeUndefined();
     expect(fundingStore).toBeUndefined();
+    expect(rosterStore).toBeInstanceOf(InMemoryDailyRosterStore);
     expect(bannerStore).toBeUndefined();
     expect(debugDbStore).toBeUndefined();
     expect(btcUsdRates).toBeInstanceOf(InMemoryBtcUsdStore);
@@ -216,6 +221,7 @@ describe('openBootStores', () => {
       apiLogStore,
       diagnosticStore,
       fundingStore,
+      rosterStore,
       bannerStore,
       debugDbStore,
     } = await openBootStores(url, factory, {
@@ -246,6 +252,7 @@ describe('openBootStores', () => {
     expect(apiLogStore).toBeInstanceOf(PostgresApiLogStore);
     expect(diagnosticStore).toBeInstanceOf(PostgresDiagnosticStore);
     expect(fundingStore).toBeInstanceOf(PostgresFundingStore);
+    expect(rosterStore).toBeInstanceOf(PostgresDailyRosterStore);
     expect(bannerStore).toBeInstanceOf(PostgresBannerStore);
     expect(debugDbStore).toBeInstanceOf(PostgresDebugDbStore);
     expect(btcUsdRates).toBeInstanceOf(PostgresBtcUsdStore);
@@ -259,11 +266,15 @@ describe('openBootStores', () => {
     expect(executes.some((q) => q.includes('notification'))).toBe(true);
     expect(executes.some((q) => q.includes('trust_edge'))).toBe(true);
     expect(executes.some((q) => q.includes('funding_grant'))).toBe(true);
+    expect(executes.some((q) => q.includes('daily_roster'))).toBe(true);
     expect(executes.some((q) => q.includes('api_log'))).toBe(true);
     expect(executes.some((q) => q.includes('db_change'))).toBe(true);
     const trustIdx = executes.findIndex((q) => /CREATE TABLE IF NOT EXISTS trust_edge/i.test(q));
     const fundingIdx = executes.findIndex((q) =>
       /CREATE TABLE IF NOT EXISTS funding_grant/i.test(q),
+    );
+    const rosterIdx = executes.findIndex((q) =>
+      /CREATE TABLE IF NOT EXISTS daily_roster /i.test(q),
     );
     const apiLogIdx = executes.findIndex((q) => /CREATE TABLE IF NOT EXISTS api_log/i.test(q));
     const accountImageIdx = executes.findIndex((q) =>
@@ -275,7 +286,8 @@ describe('openBootStores', () => {
     const dbChangeIdx = executes.findIndex((q) => /CREATE TABLE IF NOT EXISTS db_change/i.test(q));
     expect(trustIdx).toBeGreaterThanOrEqual(0);
     expect(fundingIdx).toBeGreaterThan(trustIdx);
-    expect(apiLogIdx).toBeGreaterThan(fundingIdx);
+    expect(rosterIdx).toBeGreaterThan(fundingIdx);
+    expect(apiLogIdx).toBeGreaterThan(rosterIdx);
     expect(accountImageIdx).toBeGreaterThan(apiLogIdx);
     expect(diagnosticIdx).toBeGreaterThan(accountImageIdx);
     expect(dbChangeIdx).toBeGreaterThan(diagnosticIdx);

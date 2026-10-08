@@ -89,6 +89,7 @@ if (import.meta.main) {
     notificationStore,
     trustStore,
     fundingStore,
+    rosterStore,
     debugDbStore,
   } = boot;
   const pushStore = boot.pushStore ?? new InMemoryPushStore();
@@ -110,7 +111,7 @@ if (import.meta.main) {
   const spendPing = resolveSpendPing(
     process.env,
     globalThis.fetch,
-    giftStore === undefined ? undefined : { gifts: giftStore },
+    giftStore === undefined ? { rosterStore } : { gifts: giftStore, rosterStore },
   );
   const postLimiter = new PostRateLimiter();
   const forumMessages = messageStore ?? new InMemoryMessageStore();
@@ -141,6 +142,7 @@ if (import.meta.main) {
     ...(notificationStore === undefined ? {} : { notificationStore }),
     ...(trustStore === undefined ? {} : { trustStore }),
     ...(fundingStore === undefined ? {} : { fundingStore }),
+    rosterStore,
     ...(boot.listDbChange === undefined ? {} : { listDbChange: boot.listDbChange }),
     ...(debugDbStore === undefined ? {} : { debugDbStore }),
     ...(bun === undefined ? {} : { mergeDb: bun.mergeDb }),

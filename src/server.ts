@@ -93,7 +93,7 @@ import { sundayRest } from '@/lib/sunday-rest';
 import type { FetchFn } from '@/lib/lnurlp';
 import type { NostrPublisher } from '@/lib/nostr/publish';
 import type { NostrQuerier } from '@/lib/nostr/query';
-import { resolveDailyRoster, type DailyRosterClient } from '@/lib/daily-roster';
+import { InMemoryDailyRosterStore, type DailyRosterStore } from '@/lib/daily-roster-store';
 import { resolveSpendPing, type SpendPing } from '@/lib/spend-ping';
 
 /**
@@ -202,11 +202,10 @@ export interface AppDeps {
    */
   spendPing?: SpendPing;
   /**
-   * Daily payout roster (default: `resolveDailyRoster(process.env, fetchImpl)`).
-   * Unset or blank `SPEND_URL` or `SPEND_API_TOKEN` omits it. Roster routes
-   * then answer 503 after the initiator or founder gate and do not call fetch.
+   * Daily payout roster (default: a fresh {@link InMemoryDailyRosterStore}).
+   * Boot injects the same instance used by {@link resolveSpendPing}.
    */
-  dailyRoster?: DailyRosterClient;
+  rosterStore?: DailyRosterStore;
   /**
    * Forum post limiter shared with zap compose ingest (default: a new
    * {@link PostRateLimiter}). Boot injects one instance into both
@@ -366,8 +365,9 @@ function debugList(store: object, limit: number): Promise<unknown[]> {
  *   funding store (injected into `/funding`, `/me`, `/auth`, `/members`,
  *   `/messages`, `/conversations`, `/invoices`, and `debugPaymentsRoutes`), vapidPublicKey, nostrKek,
  *   nostrPublisher, env, WebAuthn RP, spend token, spend ping, daily roster
- *   (optional; default {@link resolveDailyRoster} on `process.env`, the same
- *   env as the spend ping), postLimiter
+ *   store (optional; default a fresh {@link InMemoryDailyRosterStore}, shared
+ *   by funding routes, `POST /spend/daily-instruction`, and the default
+ *   spend ping), postLimiter
  *   (optional; default `new PostRateLimiter()`, shared with `messagesRoutes`
  *   and the Nostr worker), gift invoice store, listDbChange, and
  *   diagnosticStore (optional; default {@link InMemoryDiagnosticStore};
@@ -449,9 +449,10 @@ export function createApp(deps: AppDeps = {}): Hono {
   const webAuthnRpName = deps.webAuthnRpName ?? process.env['WEBAUTHN_RP_NAME'];
   const passkeyCeremony = deps.passkeyCeremony ?? new SimpleWebAuthnPasskeyCeremony();
   const spendApiToken = deps.spendApiToken ?? process.env['SPEND_API_TOKEN'];
+  const rosterStore = deps.rosterStore ?? new InMemoryDailyRosterStore();
   const spendPing =
-    deps.spendPing ?? resolveSpendPing(process.env, fetchImpl, { gifts: giftStore, now });
-  const dailyRoster = deps.dailyRoster ?? resolveDailyRoster(process.env, fetchImpl);
+    deps.spendPing ??
+    resolveSpendPing(process.env, fetchImpl, { gifts: giftStore, now, rosterStore });
   const postLimiter = deps.postLimiter ?? new PostRateLimiter();
   const invoiceStore = deps.invoiceStore ?? new InMemoryInvoiceStore();
   const giftRecorder = deps.giftRecorder;
@@ -659,8 +660,9 @@ export function createApp(deps: AppDeps = {}): Hono {
       messageStore,
       now,
       gifts: giftStore,
+      ...(spendApiToken === undefined ? {} : { spendApiToken }),
+      rosterStore,
       ...(spendPing === undefined ? {} : { spendPing }),
-      ...(dailyRoster === undefined ? {} : { dailyRoster }),
     }),
   );
   app.route('/gifts', giftsRoutes({ store: giftStore, rates: btcUsdRates, fiatRates, now }));
@@ -785,7 +787,7 @@ export function createApp(deps: AppDeps = {}): Hono {
       messageStore,
       fundingStore,
       gifts: giftStore,
-      ...(dailyRoster === undefined ? {} : { dailyRoster }),
+      rosterStore,
       now,
     }),
   );

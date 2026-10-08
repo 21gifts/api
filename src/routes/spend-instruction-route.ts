@@ -6,12 +6,8 @@
 
 import { Hono } from 'hono';
 import type { AuthStore } from '@/lib/auth/store';
-import {
-  DailyRosterRequestError,
-  DAILY_ROSTER_NOT_CONFIGURED,
-  DAILY_ROSTER_UNAVAILABLE,
-  type DailyRosterClient,
-} from '@/lib/daily-roster';
+import { DailyRosterRequestError, DAILY_ROSTER_UNAVAILABLE } from '@/lib/daily-roster';
+import { InMemoryDailyRosterStore, type DailyRosterStore } from '@/lib/daily-roster-store';
 import { effectiveStatus, eligibleToday } from '@/lib/funding';
 import type { FundingStore } from '@/lib/funding-store';
 import type { GiftStore } from '@/lib/gift-store';
@@ -50,9 +46,9 @@ export interface SpendInstructionRouteDeps {
    */
   gifts?: Pick<GiftStore, 'listOutbound'>;
   /**
-   * Daily payout roster. Omitted → 503 after the gift read.
+   * Daily payout roster. Omitted → a fresh in-memory store.
    */
-  dailyRoster?: Pick<DailyRosterClient, 'get'>;
+  rosterStore?: DailyRosterStore;
 }
 
 /**
@@ -79,10 +75,11 @@ function authGate(
  * Build the `/spend` route group.
  *
  * @param deps - Token, auth store, message store, funding store, clock,
- *   optional gift store, optional daily roster.
+ *   optional gift store, optional roster store.
  * @returns Hono app mounted at `/spend`.
  */
 export function spendInstructionRoutes(deps: SpendInstructionRouteDeps): Hono {
+  const rosterStore = deps.rosterStore ?? new InMemoryDailyRosterStore();
   return new Hono().post('/daily-instruction', async (c) => {
     const denied = authGate(
       checkSpendAuth(deps.spendApiToken, c.req.header('Authorization')),
@@ -150,12 +147,9 @@ export function spendInstructionRoutes(deps: SpendInstructionRouteDeps): Hono {
       );
     }
 
-    if (deps.dailyRoster === undefined) {
-      return c.json({ error: DAILY_ROSTER_NOT_CONFIGURED }, 503);
-    }
     let roster: unknown;
     try {
-      roster = await deps.dailyRoster.get();
+      roster = await rosterStore.get();
     } catch (err) {
       if (err instanceof DailyRosterRequestError) {
         if (err.status === 400) {

@@ -3,11 +3,10 @@ import { Hono } from 'hono';
 import { InMemoryAuthStore } from '@/lib/auth/store';
 import {
   DailyRosterRequestError,
-  DAILY_ROSTER_NOT_CONFIGURED,
   DAILY_ROSTER_UNAVAILABLE,
-  type DailyRoster,
-  type DailyRosterClient,
+  type DailyRosterDocument,
 } from '@/lib/daily-roster';
+import { InMemoryDailyRosterStore, type DailyRosterStore } from '@/lib/daily-roster-store';
 import { InMemoryFundingStore } from '@/lib/funding-store';
 import type { GiftRow } from '@/lib/gift';
 import { InMemoryGiftStore } from '@/lib/gift-store';
@@ -28,11 +27,13 @@ const JPEG: ForumPhoto = {
   bytes: new Uint8Array([0xff, 0xd8, 0xff, 0xd9]),
 };
 
-const PAYING_ROSTER: DailyRoster = {
+const PAYING_ROSTER: DailyRosterDocument = {
   comment: 'thanks',
   paymentsEnabled: true,
-  defaultAmountUsd: 3,
+  moderatorPaymentsEnabled: true,
+  defaultAmountUsd: 1,
   recipients: [{ address: ADDRESS, amountUsd: 2 }],
+  moderators: [],
 };
 
 const welcomeToday: GiftRow = {
@@ -57,16 +58,27 @@ function admittedStore(accountId = 'acc-alice'): InMemoryFundingStore {
   ]);
 }
 
-function fakeRoster(get?: DailyRosterClient['get']): Pick<DailyRosterClient, 'get'> {
+function fakeStore(get?: DailyRosterStore['get']): DailyRosterStore {
+  const fallback = new InMemoryDailyRosterStore(PAYING_ROSTER);
   return {
     get: get ?? (async () => PAYING_ROSTER),
+    setComment: (comment) => fallback.setComment(comment),
+    setPaymentsEnabled: (enabled) => fallback.setPaymentsEnabled(enabled),
+    setModeratorPaymentsEnabled: (enabled) => fallback.setModeratorPaymentsEnabled(enabled),
+    addRecipient: (address, amountUsd) => fallback.addRecipient(address, amountUsd),
+    updateRecipient: (address, amountUsd) => fallback.updateRecipient(address, amountUsd),
+    deleteRecipient: (address) => fallback.deleteRecipient(address),
+    addModerator: (address, amountUsd) => fallback.addModerator(address, amountUsd),
+    updateModerator: (address, amountUsd) => fallback.updateModerator(address, amountUsd),
+    deleteModerator: (address) => fallback.deleteModerator(address),
+    importDocument: (body) => fallback.importDocument(body),
   };
 }
 
 function createSpendApp(deps: Parameters<typeof createApp>[0] = {}): ReturnType<typeof createApp> {
   return createApp({
     spendApiToken: TOKEN,
-    dailyRoster: fakeRoster() as DailyRosterClient,
+    rosterStore: fakeStore(),
     fundingStore: admittedStore(),
     now: () => NOW_MS,
     ...deps,
@@ -171,7 +183,7 @@ describe('POST /spend/daily-instruction', () => {
     const get = vi.fn(async () => PAYING_ROSTER);
     const res = await createSpendApp({
       spendApiToken: '',
-      dailyRoster: fakeRoster(get) as DailyRosterClient,
+      rosterStore: fakeStore(get),
     }).request(
       '/spend/daily-instruction',
       auth({ method: 'POST', body: JSON.stringify({ address: ADDRESS }) }),
@@ -333,10 +345,10 @@ describe('POST /spend/daily-instruction', () => {
     const res = await createSpendApp({
       authStore,
       messageStore: await liveMediaPostStore(),
-      dailyRoster: fakeRoster(async () => ({
+      rosterStore: fakeStore(async () => ({
         ...PAYING_ROSTER,
         paymentsEnabled: false,
-      })) as DailyRosterClient,
+      })),
     }).request(
       '/spend/daily-instruction',
       auth({ method: 'POST', body: JSON.stringify({ address: ADDRESS }) }),
@@ -442,7 +454,7 @@ describe('POST /spend/daily-instruction', () => {
     };
     const res = await createSpendApp({
       giftStore,
-      dailyRoster: fakeRoster(get) as DailyRosterClient,
+      rosterStore: fakeStore(get),
     }).request(
       '/spend/daily-instruction',
       auth({ method: 'POST', body: JSON.stringify({ address: ADDRESS }) }),
@@ -461,7 +473,7 @@ describe('POST /spend/daily-instruction', () => {
       authStore,
       messageStore,
       fundingStore,
-      dailyRoster: fakeRoster(),
+      rosterStore: fakeStore(),
     });
     const paid = await omitted.request(
       '/spend/daily-instruction',
@@ -487,21 +499,21 @@ describe('POST /spend/daily-instruction', () => {
     expect(await flagged.json()).toEqual({ action: 'skip', reason: 'welcome_paid' });
   });
 
-  it('returns 503 when the roster client is omitted', async () => {
+  it('skips when the roster store is omitted and the account has no passkey', async () => {
     const authStore = new InMemoryAuthStore();
     const res = await mount({ authStore }).request(
       '/spend/daily-instruction',
       auth({ method: 'POST', body: JSON.stringify({ address: ADDRESS }) }),
     );
-    expect(res.status).toBe(503);
-    expect(await res.json()).toEqual({ error: DAILY_ROSTER_NOT_CONFIGURED });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ action: 'skip', reason: 'no_passkey' });
   });
 
   it('forwards DailyRosterRequestError status 400 and the error string', async () => {
     const res = await createSpendApp({
-      dailyRoster: fakeRoster(async () => {
+      rosterStore: fakeStore(async () => {
         throw new DailyRosterRequestError(400, 'Invalid comment');
-      }) as DailyRosterClient,
+      }),
     }).request(
       '/spend/daily-instruction',
       auth({ method: 'POST', body: JSON.stringify({ address: ADDRESS }) }),
@@ -512,9 +524,9 @@ describe('POST /spend/daily-instruction', () => {
 
   it('forwards DailyRosterRequestError status 502 and the error string', async () => {
     const res = await createSpendApp({
-      dailyRoster: fakeRoster(async () => {
+      rosterStore: fakeStore(async () => {
         throw new DailyRosterRequestError(502, DAILY_ROSTER_UNAVAILABLE);
-      }) as DailyRosterClient,
+      }),
     }).request(
       '/spend/daily-instruction',
       auth({ method: 'POST', body: JSON.stringify({ address: ADDRESS }) }),
@@ -525,9 +537,9 @@ describe('POST /spend/daily-instruction', () => {
 
   it('returns 502 when roster get throws any other error', async () => {
     const res = await createSpendApp({
-      dailyRoster: fakeRoster(async () => {
+      rosterStore: fakeStore(async () => {
         throw new Error('network');
-      }) as DailyRosterClient,
+      }),
     }).request(
       '/spend/daily-instruction',
       auth({ method: 'POST', body: JSON.stringify({ address: ADDRESS }) }),

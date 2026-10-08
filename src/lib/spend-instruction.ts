@@ -2,6 +2,7 @@
  * Decide the USD amount and memo for a spend ping from a live roster object.
  */
 
+import { DAILY_ROSTER_DEFAULT_AMOUNT_USD } from '@/lib/daily-roster-store';
 import type { GiftRow } from '@/lib/gift';
 
 /** Effective funding status used when an unlisted daily address is paid. */
@@ -40,7 +41,7 @@ export function decideSpendInstruction(input: {
       if (typeof rawDefault === 'number' && Number.isFinite(rawDefault) && rawDefault > 0) {
         decided = { amountUsd: rawDefault, comment: rosterComment(record) };
       } else {
-        decided = { amountUsd: 1, comment: rosterComment(record) };
+        decided = { amountUsd: DAILY_ROSTER_DEFAULT_AMOUNT_USD, comment: rosterComment(record) };
       }
     } else if (
       input.grantStatus === 'none' ||

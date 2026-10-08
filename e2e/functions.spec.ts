@@ -2583,7 +2583,7 @@ test('Function: canEditDailyPayoutRoster — GET /funding/daily-roster as a mode
   expect(await res.json()).toEqual({ error: 'Forbidden' });
 });
 
-test('Function: resolveDailyRoster — GET /funding/daily-roster unconfigured is 503', async ({
+test('Function: InMemoryDailyRosterStore — GET /funding/daily-roster as founder is 200', async ({
   request,
 }) => {
   const auth = await rosterRoleSession(request, 'founder');
@@ -2591,59 +2591,61 @@ test('Function: resolveDailyRoster — GET /funding/daily-roster unconfigured is
     const res = await request.get('/funding/daily-roster', {
       headers: { authorization: auth.authorization },
     });
-    expect(res.status()).toBe(503);
-    expect(await res.json()).toEqual({ error: 'Daily roster is not configured' });
-  } finally {
-    await releaseRosterFounder(request, auth.id);
-  }
-});
-
-test('Function: HttpDailyRoster — GET /funding/daily-roster unconfigured is 503', async ({
-  request,
-}) => {
-  const auth = await rosterRoleSession(request, 'founder');
-  try {
-    const res = await request.get('/funding/daily-roster', {
-      headers: { authorization: auth.authorization },
+    expect(res.status()).toBe(200);
+    expect(await res.json()).toEqual({
+      comment: '',
+      paymentsEnabled: true,
+      defaultAmountUsd: 1,
+      recipients: [],
     });
-    expect(res.status()).toBe(503);
-    expect(await res.json()).toEqual({ error: 'Daily roster is not configured' });
   } finally {
     await releaseRosterFounder(request, auth.id);
   }
 });
 
-test('Function: mapDailyRosterResponse — GET /funding/daily-roster unconfigured is 503', async ({
+test('Function: PostgresDailyRosterStore — default boot has no DATABASE_URL', async ({
   request,
 }) => {
-  const auth = await rosterRoleSession(request, 'initiator');
-  const res = await request.get('/funding/daily-roster', {
-    headers: { authorization: auth.authorization },
-  });
-  expect(res.status()).toBe(503);
-  expect(await res.json()).toEqual({ error: 'Daily roster is not configured' });
+  expect((await request.get('/healthz')).status()).toBe(200);
 });
 
-test('Function: DailyRosterRequestError — GET /funding/daily-roster unconfigured is 503', async ({
+test('Function: migrateDailyRosterSchema — default boot has no DATABASE_URL', async ({
   request,
 }) => {
-  const auth = await rosterRoleSession(request, 'initiator');
-  const res = await request.get('/funding/daily-roster', {
-    headers: { authorization: auth.authorization },
-  });
-  expect(res.status()).toBe(503);
-  expect(await res.json()).toEqual({ error: 'Daily roster is not configured' });
+  expect((await request.get('/healthz')).status()).toBe(200);
 });
 
-test('Function: withRecipientIdentities — GET /funding/daily-roster unconfigured is 503', async ({
+test('Function: normalizeDailyRosterComment — POST /funding/daily-roster/comment without bearer is 401', async ({
+  request,
+}) => {
+  const res = await request.post('/funding/daily-roster/comment', { data: { comment: 'x' } });
+  expect(res.status()).toBe(401);
+});
+
+test('Function: DailyRosterRequestError — GET /funding/daily-roster as initiator is 200', async ({
   request,
 }) => {
   const auth = await rosterRoleSession(request, 'initiator');
   const res = await request.get('/funding/daily-roster', {
     headers: { authorization: auth.authorization },
   });
-  expect(res.status()).toBe(503);
-  expect(await res.json()).toEqual({ error: 'Daily roster is not configured' });
+  expect(res.status()).toBe(200);
+  expect(await res.json()).toEqual({
+    comment: '',
+    paymentsEnabled: true,
+    defaultAmountUsd: 1,
+    recipients: [],
+  });
+});
+
+test('Function: withRecipientIdentities — GET /funding/daily-roster as initiator is 200', async ({
+  request,
+}) => {
+  const auth = await rosterRoleSession(request, 'initiator');
+  const res = await request.get('/funding/daily-roster', {
+    headers: { authorization: auth.authorization },
+  });
+  expect(res.status()).toBe(200);
 });
 
 test('Function: effectiveStatus — default boot has no DATABASE_URL', async ({ request }) => {
