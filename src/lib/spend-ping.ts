@@ -74,7 +74,7 @@ export class NoopSpendPing implements SpendPing {
  * `spend.ping.skipped` and do not POST.
  *
  * 2xx (including 200 skipped and 202 accepted) logs `spend.ping.ok`.
- * Network, abort, non-2xx, and a roster that is not a JSON object log
+ * Network, abort, non-2xx, a non-object roster, and a gift-ledger throw log
  * `spend.ping.failed` and resolve. Never throws. Never logs the token.
  * Optional `grantStatus` is passed to {@link decideSpendInstruction} only
  * when the resolved kind is daily.
@@ -109,7 +109,7 @@ export class HttpSpendPing implements SpendPing {
 
   /**
    * GET `{spendUrl}/daily-roster`, then POST the decided ping JSON to
-   * `{spendUrl}/ping`. An undecided, disabled, or not-listed decision
+   * `{spendUrl}/ping`. A skip, including welcome already paid today,
    * logs `spend.ping.skipped` and does not POST. Resolves on success and
    * failure.
    *
