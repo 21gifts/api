@@ -3773,6 +3773,46 @@ describe('POST /invoices/proof payment fiat', () => {
     expect(recorded[0]?.fiat?.chf).toBe('0.80');
   });
 
+  it('fills a quote the payment day has not published yet from the previous day', async () => {
+    const invoice: GiftInvoice = {
+      id: 'd2'.repeat(16),
+      address: ADDRESS,
+      pr: PR,
+      paymentHash: MATCHING_HASH,
+      amountMsat: 1_000_000,
+      createdAt: 1,
+      expiresAt: 1_000_000,
+      amountUsd: '5.00',
+    };
+    const recorded: GiftRecord[] = [];
+    const invoiceStore = new InMemoryInvoiceStore();
+    invoiceStore.put(invoice);
+    const res = await createApp({
+      spendApiToken: TOKEN,
+      invoiceStore,
+      now: () => Date.parse('2026-06-02T00:08:00.000Z'),
+      fiatRates: new InMemoryFiatStore({
+        '2026-06-02': { CHF: '0.80' },
+        '2026-06-01': { EUR: '0.90', PHP: '50' },
+      }),
+      giftRecorder: {
+        recordOutbound: async (row) => {
+          recorded.push(row);
+        },
+      },
+    }).request(
+      '/invoices/proof',
+      auth({ method: 'POST', body: JSON.stringify({ id: invoice.id, preimage: PREIMAGE }) }),
+    );
+    expect(res.status).toBe(200);
+    expect(recorded[0]?.fiat).toEqual({
+      usd: '5.00',
+      chf: '4.00',
+      eur: '4.50',
+      php: '250.00',
+    });
+  });
+
   it('stores null fiat when the spot text cannot be priced', async () => {
     mockedSpot.mockResolvedValueOnce('1e2');
     const invoice: GiftInvoice = {

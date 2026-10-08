@@ -141,10 +141,12 @@ describe('migrateGiftSchema fiat backfill', () => {
         { id: 3, paid_at: '2026-07-01T00:00:00.000Z', amount_sats: 1000 },
       ],
       [
+        { day: '2026-06-01', usd_per_btc: null, quote: 'CHF', rate: '0.80' },
         { day: '2026-06-01', usd_per_btc: '100000', quote: null, rate: null },
         { day: '2026-06-01', usd_per_btc: '100000', quote: 'EUR', rate: null },
         { day: '2026-06-01', usd_per_btc: '100000', quote: 'CHF', rate: '0.80' },
         { day: '2026-06-01', usd_per_btc: '100000', quote: 'PHP', rate: '50' },
+        { day: '2026-06-01', usd_per_btc: '100000', quote: 'JPY', rate: '150' },
       ],
     );
     await migrateGiftSchema(sql);
@@ -167,6 +169,93 @@ describe('migrateGiftSchema fiat backfill', () => {
       [],
     );
     await migrateGiftSchema(sql);
+    expect(updates(sql)).toEqual([]);
+  });
+
+  it('does not price a missing USD amount from an earlier bitcoin rate', async () => {
+    const sql = sqlFor(
+      [{ id: 7, paid_at: '2026-07-01T00:00:00.000Z', amount_sats: 1000 }],
+      [{ day: '2026-06-30', usd_per_btc: '100000', quote: 'CHF', rate: '0.80' }],
+    );
+    await migrateGiftSchema(sql);
+    expect(updates(sql)).toEqual([]);
+  });
+
+  it('leaves a legacy row alone when its own day has no bitcoin price', async () => {
+    const sql = sqlFor(
+      [{ id: 12, paid_at: '2026-06-30T00:00:00.000Z', amount_sats: 1000 }],
+      [{ day: '2026-06-30', usd_per_btc: null, quote: 'CHF', rate: '0.80' }],
+    );
+    await migrateGiftSchema(sql);
+    expect(updates(sql)).toEqual([]);
+  });
+
+  it('fills null crosses from the previous published day without changing USD', async () => {
+    const rates = [
+      { day: '2026-10-07', usd_per_btc: null, quote: 'CHF', rate: '0.80' },
+      { day: '2026-10-07', usd_per_btc: '100000', quote: 'EUR', rate: '0.90' },
+      { day: '2026-10-07', usd_per_btc: '100000', quote: 'PHP', rate: '50' },
+    ];
+    const sql = sqlFor(
+      [
+        {
+          id: 8,
+          paid_at: '2026-10-08T00:08:39.982Z',
+          amount_sats: 1201,
+          fiat_usd: '1.00',
+          fiat_chf: null,
+          fiat_eur: null,
+          fiat_php: null,
+        },
+        {
+          id: 9,
+          paid_at: '2026-10-08T01:00:00.000Z',
+          amount_sats: 1201,
+          fiat_usd: '1.00',
+          fiat_chf: '9.00',
+          fiat_eur: null,
+          fiat_php: null,
+        },
+        {
+          id: 10,
+          paid_at: '2026-09-01T00:00:00.000Z',
+          amount_sats: 1201,
+          fiat_usd: '1.00',
+          fiat_chf: null,
+          fiat_eur: null,
+          fiat_php: null,
+        },
+      ],
+      rates,
+    );
+    await migrateGiftSchema(sql);
+    expect(updates(sql)).toEqual([
+      expect.objectContaining({
+        params: [8, '0.80', '0.90', '50.00'],
+      }),
+      expect.objectContaining({
+        params: [9, '0.80', '0.90', '50.00'],
+      }),
+    ]);
+    expect(updates(sql).every((row) => row.text.includes('fiat_usd IS NOT NULL'))).toBe(true);
+  });
+
+  it('skips a stored amount that cannot be priced', async () => {
+    const sql = sqlFor(
+      [
+        {
+          id: 11,
+          paid_at: '2026-06-01T00:00:00.000Z',
+          amount_sats: 1000,
+          fiat_usd: 'nope',
+          fiat_chf: null,
+          fiat_eur: null,
+          fiat_php: null,
+        },
+      ],
+      [{ day: '2026-06-01', usd_per_btc: '0', quote: 'CHF', rate: '0.80' }],
+    );
+    await expect(migrateGiftSchema(sql)).resolves.toBeUndefined();
     expect(updates(sql)).toEqual([]);
   });
 });
