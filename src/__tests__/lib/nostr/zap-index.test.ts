@@ -9190,7 +9190,7 @@ describe('indexOpenZapReceipts', () => {
     expect(forAuthor[0]?.type).toBe('heart');
   });
 
-  it('credits the receipt and sends neither notice when both notice lookups reject', async () => {
+  it('treats a heart as a normal gift for the notice when both notice lookups reject', async () => {
     class HeartNoticeFailStore extends InMemoryMessageStore {
       lookups = 0;
 
@@ -9269,8 +9269,92 @@ describe('indexOpenZapReceipts', () => {
     });
     expect((await store.getById(parentId))?.sats).toBe(1);
     expect(await store.listReplies(parentId)).toHaveLength(0);
-    expect(await notifications.listByRecipient('acc-heart-notice-fail', 10)).toEqual([]);
+    const forAuthor = await notifications.listByRecipient('acc-heart-notice-fail', 10);
+    expect(forAuthor.map((row) => row.type)).toEqual(['zap']);
     expect(store.lookups).toBe(6);
+  });
+
+  it('keeps notifyZap and the gift-reply for a normal gift when both notice lookups reject', async () => {
+    class GiftNoticeFailStore extends InMemoryMessageStore {
+      lookups = 0;
+
+      override findOkInvoiceByPaymentHash(
+        ...args: Parameters<InMemoryMessageStore['findOkInvoiceByPaymentHash']>
+      ): ReturnType<InMemoryMessageStore['findOkInvoiceByPaymentHash']> {
+        this.lookups += 1;
+        if (this.lookups === 3 || this.lookups === 4) {
+          return Promise.reject(new Error('heart lookup boom'));
+        }
+        return super.findOkInvoiceByPaymentHash(...args);
+      }
+    }
+    const store = new GiftNoticeFailStore();
+    const auth = new InMemoryAuthStore();
+    const parentId = await seedStore({
+      store,
+      auth,
+      accountId: 'acc-gift-notice-fail',
+      lightningAddress: 'zap-gift-notice-fail@example.com',
+      messageId: 'm-gift-notice-fail',
+    });
+    await auth.createAccount({
+      id: 'payer-gift-notice-fail',
+      linkingKey: null,
+      role: 'basis',
+      name: 'Pat',
+      location: null,
+      forumLawsDismissed: false,
+      viewKey: viewKeyFor('payer-gift-notice-fail'),
+      createdAt: 2,
+      rulesAgreedAt: null,
+    });
+    await store.recordInvoiceAttempt({
+      id: 'inv-gift-notice-fail',
+      createdAt: new Date('2026-08-28T00:00:00.000Z'),
+      messageId: parentId,
+      payerAccountId: 'payer-gift-notice-fail',
+      authorAccountId: 'acc-gift-notice-fail',
+      amountSats: 21,
+      lightningAddress: null,
+      zapRequest: { content: 'thanks' },
+      result: 'ok',
+      httpStatus: 200,
+      pr: 'lnbc-gift-notice-fail',
+      paymentHash: 'e3'.repeat(32),
+      description: null,
+      descriptionHash: null,
+      isNip57Invoice: true,
+      lnurlResponse: null,
+    });
+    const notifications = new InMemoryNotificationStore();
+    const querier = new RecordingQuerier();
+    querier.events = [
+      {
+        id: 'r-gift-notice-fail',
+        pubkey: PROVIDER_PUBKEY,
+        kind: 9735,
+        tags: [
+          ['e', NOTE_EVENT_ID],
+          ['bolt11', 'lnbc-gift-notice-fail'],
+        ],
+      },
+    ];
+    mockedDecode.mockReturnValue({ paymentHash: 'e3'.repeat(32), amountMsat: 21_000 });
+    await ingest({
+      store,
+      auth,
+      querier,
+      urls: URLS,
+      timeoutMs: 50,
+      now: () => 1,
+      fetchImpl: lnurlFetch(PROVIDER_PUBKEY),
+      notificationStore: notifications,
+    });
+    expect((await store.getById(parentId))?.sats).toBe(21);
+    expect(await store.listReplies(parentId)).toHaveLength(1);
+    const forAuthor = await notifications.listByRecipient('acc-gift-notice-fail', 10);
+    expect(forAuthor.map((row) => row.type)).toEqual(['zap']);
+    expect(store.lookups).toBe(8);
   });
 
   it('settles a heart invoice with notifyHeart and skips the gift-reply', async () => {

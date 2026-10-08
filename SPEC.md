@@ -3010,7 +3010,8 @@ was stored. Rows are newest-first, capped at **200**. Never includes nsec.
 `amountEur`, and `amountPhp` (`null` when unset).
 `result` is one of `ok`, `noZap`, `not_zap`, `unreachable`, `no_event`,
 `no_author`, `no_key`,
-`sign_failed`, `rate_limited`, `bad_body`, `not_found`. `isNip57Invoice` is
+`sign_failed`, `rate_limited`, `bad_body`, `not_found`, `self_heart`,
+`heart_unavailable`. `isNip57Invoice` is
 true only when `descriptionHash` equals SHA-256 of the zap-request JSON string
 (serialised with NIP-01 field order `id, pubkey, created_at, kind, tags,
 content, sig`) sent as LNURL `nostr=`. Failure rows have `pr` null and
@@ -4756,8 +4757,10 @@ Success → **Response** `200`:
 ### `POST /messages/:id/invoice`
 
 Signed-in pay-on-note. Bearer session required. `:id` is a UUID (`MESSAGE_ID_RE`).
-Body `{ "sats": <int 1..10_000_000>, "text"?: "<string>", "amountUsd"?: "<string>|null", "amountChf"?: "<string>|null", "amountEur"?: "<string>|null", "amountPhp"?: "<string>|null" }`. Optional `text` is the
+Body `{ "sats": <int 1..10_000_000>, "text"?: "<string>", "amountUsd"?: "<string>|null", "amountChf"?: "<string>|null", "amountEur"?: "<string>|null", "amountPhp"?: "<string>|null", "heart"?: <boolean> }`. Optional `text` is the
 NIP-57 zap-request `content` (same 1–8000 forum rules; omit or whitespace = gift-only).
+Optional `heart: true` asks for a 1-sat heart instead of a gift (see
+[Hearts](#hearts) below); omitted or `false` is a gift.
 Omitting every amount key leaves the invoice unpinned. Any present amount key pins all four; a missing sibling is null. `"0"`, `"0.0"`, and `"0.00"` are stored as `"0.00"`. An unusable amount string is **400** `{ "error": "Expected a JSON body with a positive \"sats\" integer" }`.
 Invalid `text` → **400** `{ "error": "Text must be 1–8000 characters" }`.
 The api signs a NIP-57 zap request with the
@@ -4844,6 +4847,37 @@ limiter still counts. Author-wallet zap failure (`noZap` or `not_zap`) →
 Other LNURL/zap failure (`unreachable`) →
 **400** `{ "error": "Could not start the Bitcoin payment" }`. Keygen/sign failure →
 **503** `{ "error": "Messages are unavailable" }`.
+
+#### Hearts
+
+A heart is always fee-free: it is paid only with the in-app Spark invoice,
+never over Lightning.
+
+- `heart: true` needs `sats: 1`; any other amount is **400**
+  `{ "error": "A heart sends 1 sat" }` (attempt `bad_body`, no LNURL).
+- A heart on the payer's own note is **400**
+  `{ "error": "You cannot send a heart to yourself" }` (attempt `self_heart`,
+  no LNURL).
+- When free in-app payments are off, a heart is **503**
+  `{ "error": "HEART_UNAVAILABLE" }` before the limiter and before LNURL
+  (attempt `heart_unavailable`).
+- When the Spark invoice cannot be issued for the minted `pr` (store failure,
+  or `pr` is not for exactly 1 sat), the heart is the same **503**
+  `{ "error": "HEART_UNAVAILABLE" }`. The body has no `pr`, and the attempt is
+  `heart_unavailable` with `pr` null, so no `ok` row exists for that payment
+  hash. A gift keeps `sparkInvoice: null` and its `pr` in that case.
+- Success is the same **200** `{ pr, amountSats: 1, sparkInvoice }` with a
+  non-null `sparkInvoice`. The attempt is `ok` with `heart: true`.
+- Hearts have their own budget, separate from the gift limiter (1 per 10 s,
+  20 per hour per account). A heart neither checks nor consumes it, and a gift
+  does not consume the heart budget. Per account: one heart per note per
+  10 seconds, and at most 60 hearts per sliding hour across all notes. Over
+  either cap → **429** `{ "error": "Too many payments" }` (`Retry-After: 10`,
+  attempt `rate_limited` with `heart: true`).
+- When the heart is indexed, sats are credited, only the note author is
+  notified (`notifyHeart`), and no gift-reply or living-room zap notice is
+  written. If the invoice lookup for a receipt fails twice, the receipt is
+  handled as a gift for the notice: `notifyZap` runs as for any gift.
 
 ### `GET /messages/:id/repayment`
 
@@ -6140,7 +6174,10 @@ On when `LNURL_SERVER_URL` and `PUBLIC_BASE_URL` resolve,
 blank (both use `https://0.spark.lightspark.com`), or an `http:` / `https:`
 URL; any other `SPARK_OPERATOR_URL` turns the feature off
 (`resolveFreePaymentsConfig`). Off →
-every `sparkInvoice` is `null` and no worker runs.
+every `sparkInvoice` is `null` and no worker runs, and a heart
+(`POST /messages/:id/invoice` with `heart: true`) is refused with **503**
+`{ "error": "HEART_UNAVAILABLE" }` instead of falling back to Lightning (see
+[Hearts](#hearts)).
 
 **Spark invoice.** For a wallet-backed recipient, when `pr` is for exactly the
 invoiced amount, the three invoice routes store and return a Spark invoice next

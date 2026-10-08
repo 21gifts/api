@@ -15,7 +15,7 @@ import {
   truncatePubkeyDisplay,
   unsignedNostrDefaults,
 } from '@/lib/message';
-import { InvoiceRateLimiter, PostRateLimiter } from '@/lib/nostr/rate-limit';
+import { HeartRateLimiter, InvoiceRateLimiter, PostRateLimiter } from '@/lib/nostr/rate-limit';
 import { FUNDING_REQUIRED_FROM_UTC } from '@/lib/funding';
 import { InMemoryFundingStore } from '@/lib/funding-store';
 import { messagesRoutes, type MessagesRouteDeps } from '@/routes/messages';
@@ -5498,6 +5498,7 @@ describe('POST /messages/:id/invoice', () => {
           fetchImpl,
           postLimiter: new PostRateLimiter(),
           invoiceLimiter: new InvoiceRateLimiter(),
+          sparkInvoices: new InMemorySparkInvoiceStore(),
         }),
       );
       const res = await app.request('/messages/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/invoice', {
@@ -5506,6 +5507,9 @@ describe('POST /messages/:id/invoice', () => {
         body: JSON.stringify({ sats: 1, heart: true }),
       });
       expect(res.status).toBe(200);
+      const body = (await res.json()) as { pr: string; amountSats: number; sparkInvoice: string };
+      expect(body.amountSats).toBe(1);
+      expect(body.sparkInvoice.startsWith('spark1')).toBe(true);
       const attempts = await messageStore.listInvoiceAttempts(10);
       expect(attempts).toHaveLength(1);
       expect(attempts[0]?.result).toBe('ok');
@@ -5596,7 +5600,7 @@ describe('POST /messages/:id/invoice', () => {
     }
   });
 
-  it('rejects a self-heart with 400 and does not persist an invoice', async () => {
+  it('rejects a self-heart with 400 and records a self_heart attempt without LNURL', async () => {
     const { parseNostrKek } = await import('@/lib/nostr/kek');
     const { ensureAccountNostrKey } = await import('@/lib/nostr/keys');
     const kek = parseNostrKek('11'.repeat(32));
@@ -5641,7 +5645,13 @@ describe('POST /messages/:id/invoice', () => {
     });
     expect(res.status).toBe(400);
     expect(await res.json()).toEqual({ error: 'You cannot send a heart to yourself' });
-    expect(await messageStore.listInvoiceAttempts(10)).toEqual([]);
+    const attempts = await messageStore.listInvoiceAttempts(10);
+    expect(attempts).toHaveLength(1);
+    expect(attempts[0]?.result).toBe('self_heart');
+    expect(attempts[0]?.httpStatus).toBe(400);
+    expect(attempts[0]?.heart).toBe(true);
+    expect(attempts[0]?.authorAccountId).toBe('acc');
+    expect(attempts[0]?.pr).toBeNull();
   });
 
   it('rejects a heart with 400 no_key when the author has no nostr public key', async () => {
@@ -13290,5 +13300,195 @@ describe('wallet-backed receiving on POST /messages/:id/invoice', () => {
       code: 'cannot_receive',
     });
     expect(seen).toEqual([]);
+  });
+});
+
+describe('heart invoices on POST /messages/:id/invoice', () => {
+  const NOTE_A = '44444444-4444-4444-8444-444444444444';
+  const NOTE_B = '55555555-5555-4555-8555-555555555555';
+  const kek = parseNostrKek('11'.repeat(32));
+
+  /** Spark store whose issue always throws (issue failure). */
+  class FailingSparkInvoiceStore extends InMemorySparkInvoiceStore {
+    override issue(): Promise<string> {
+      return Promise.reject(new Error('spark store down'));
+    }
+  }
+
+  async function heartSetup(options: {
+    sparkInvoices?: InMemorySparkInvoiceStore;
+    invoiceLimiter?: InvoiceRateLimiter;
+    heartLimiter?: HeartRateLimiter;
+  }): Promise<{ app: Hono; messageStore: InMemoryMessageStore; lnurlCalls: () => number }> {
+    const authStore = await namedStore('Ada');
+    await ensureAccountNostrKey(authStore, 'acc', kek);
+    await createWalletAccount(authStore, 'wal', 'wally');
+    await ensureAccountNostrKey(authStore, 'wal', kek);
+    const messageStore = new InMemoryMessageStore();
+    for (const [id, eventId] of [
+      [NOTE_A, 'ee'.repeat(32)],
+      [NOTE_B, 'ef'.repeat(32)],
+    ] as const) {
+      await messageStore.create({
+        id,
+        accountId: 'wal',
+        name: 'wally',
+        text: `note ${id}`,
+        createdAt: new Date(now()),
+        hasPhoto: false,
+        ...unsignedNostrDefaults(),
+        eventId,
+      });
+    }
+    let calls = 0;
+    const wallet = walletLnurlFetch('wally');
+    const fetchImpl = async (
+      input: string | URL | Request,
+      init?: RequestInit,
+    ): Promise<Response> => {
+      calls += 1;
+      const url = new URL(String(input));
+      if (url.pathname.endsWith('/invoice')) {
+        // One distinct BOLT11 per mint, carrying the requested msat amount.
+        return Response.json({ pr: `lnbc-test-${url.searchParams.get('amount')}-${calls}` });
+      }
+      return wallet.fetchImpl(input, init);
+    };
+    const app = new Hono().route(
+      '/messages',
+      messagesRoutes({
+        store: messageStore,
+        authStore,
+        now,
+        nostrKek: kek,
+        lnurlServer: LNURL_SERVER,
+        fetchImpl,
+        postLimiter: new PostRateLimiter(),
+        invoiceLimiter: options.invoiceLimiter ?? new InvoiceRateLimiter(),
+        heartLimiter: options.heartLimiter ?? new HeartRateLimiter(),
+        ...(options.sparkInvoices === undefined ? {} : { sparkInvoices: options.sparkInvoices }),
+      }),
+    );
+    return { app, messageStore, lnurlCalls: () => calls };
+  }
+
+  async function send(app: Hono, note: string, body: Record<string, unknown>): Promise<Response> {
+    return app.request(`/messages/${note}/invoice`, {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+  }
+
+  async function withMintedInvoices<T>(run: () => Promise<T>): Promise<T> {
+    const bolt11 = await import('@/lib/bolt11');
+    const inspectSpy = vi.spyOn(bolt11, 'inspectBolt11').mockImplementation((pr: string) => {
+      const amountMsat = Number(pr.split('-')[2]);
+      return {
+        paymentHash: createHash('sha256').update(pr).digest('hex'),
+        amountMsat,
+        description: null,
+        descriptionHash: 'bb'.repeat(32),
+        expirySeconds: 86400,
+      };
+    });
+    const nip57Spy = vi.spyOn(bolt11, 'isNip57Invoice').mockReturnValue(true);
+    try {
+      return await run();
+    } finally {
+      inspectSpy.mockRestore();
+      nip57Spy.mockRestore();
+    }
+  }
+
+  it('refuses a heart with 503 HEART_UNAVAILABLE before LNURL when free payments are off', async () => {
+    const invoiceLimiter = new InvoiceRateLimiter();
+    const heartLimiter = new HeartRateLimiter();
+    const allowGift = vi.spyOn(invoiceLimiter, 'allow');
+    const allowHeart = vi.spyOn(heartLimiter, 'allow');
+    const { app, messageStore, lnurlCalls } = await heartSetup({ invoiceLimiter, heartLimiter });
+    const res = await send(app, NOTE_A, { sats: 1, heart: true });
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({ error: 'HEART_UNAVAILABLE' });
+    expect(lnurlCalls()).toBe(0);
+    expect(allowGift).not.toHaveBeenCalled();
+    expect(allowHeart).not.toHaveBeenCalled();
+    const attempts = await messageStore.listInvoiceAttempts(10);
+    expect(attempts).toHaveLength(1);
+    expect(attempts[0]?.result).toBe('heart_unavailable');
+    expect(attempts[0]?.httpStatus).toBe(503);
+    expect(attempts[0]?.heart).toBe(true);
+    expect(attempts[0]?.pr).toBeNull();
+    expect(attempts[0]?.lightningAddress).toBe('wally@example.test');
+  });
+
+  it('refuses a heart without returning pr when the Spark invoice cannot be issued', async () => {
+    await withMintedInvoices(async () => {
+      const { app, messageStore } = await heartSetup({
+        sparkInvoices: new FailingSparkInvoiceStore(),
+      });
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+      const res = await send(app, NOTE_A, { sats: 1, heart: true });
+      warn.mockRestore();
+      expect(res.status).toBe(503);
+      expect(await res.json()).toEqual({ error: 'HEART_UNAVAILABLE' });
+      const attempts = await messageStore.listInvoiceAttempts(10);
+      expect(attempts).toHaveLength(1);
+      expect(attempts[0]?.result).toBe('heart_unavailable');
+      expect(attempts[0]?.pr).toBeNull();
+      expect(attempts[0]?.paymentHash).toBeNull();
+      expect(attempts[0]?.zapRequest).not.toBeNull();
+    });
+  });
+
+  it('keeps the Lightning fallback for a normal gift when the Spark invoice cannot be issued', async () => {
+    await withMintedInvoices(async () => {
+      const { app, messageStore } = await heartSetup({
+        sparkInvoices: new FailingSparkInvoiceStore(),
+      });
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+      const res = await send(app, NOTE_A, { sats: 21 });
+      warn.mockRestore();
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as { pr: string; sparkInvoice: string | null };
+      expect(body.pr.startsWith('lnbc-test-21000-')).toBe(true);
+      expect(body.sparkInvoice).toBeNull();
+      expect((await messageStore.listInvoiceAttempts(10))[0]?.result).toBe('ok');
+    });
+  });
+
+  it('keeps the heart and gift budgets independent of each other', async () => {
+    await withMintedInvoices(async () => {
+      const { app } = await heartSetup({ sparkInvoices: new InMemorySparkInvoiceStore() });
+      // A gift uses its 1 per 10 s burst; a heart right after is still allowed.
+      expect((await send(app, NOTE_A, { sats: 21 })).status).toBe(200);
+      const heart = await send(app, NOTE_A, { sats: 1, heart: true });
+      expect(heart.status).toBe(200);
+      const heartBody = (await heart.json()) as { pr: string; sparkInvoice: string };
+      expect(heartBody.sparkInvoice.startsWith('spark1')).toBe(true);
+      // The gift budget is spent, so the next gift is limited; hearts still pass on another note.
+      expect((await send(app, NOTE_B, { sats: 21 })).status).toBe(429);
+      expect((await send(app, NOTE_B, { sats: 1, heart: true })).status).toBe(200);
+    });
+  });
+
+  it('limits a second heart on the same note with 429 and a rate_limited heart row', async () => {
+    await withMintedInvoices(async () => {
+      const { app, messageStore } = await heartSetup({
+        sparkInvoices: new InMemorySparkInvoiceStore(),
+      });
+      expect((await send(app, NOTE_A, { sats: 1, heart: true })).status).toBe(200);
+      const again = await send(app, NOTE_A, { sats: 1, heart: true });
+      expect(again.status).toBe(429);
+      expect(again.headers.get('Retry-After')).toBe('10');
+      expect(await again.json()).toEqual({ error: 'Too many payments' });
+      const limited = (await messageStore.listInvoiceAttempts(10)).filter(
+        (row) => row.result === 'rate_limited',
+      );
+      expect(limited).toHaveLength(1);
+      expect(limited[0]?.heart).toBe(true);
+      // The gift budget was never touched by the hearts.
+      expect((await send(app, NOTE_A, { sats: 21 })).status).toBe(200);
+    });
   });
 });

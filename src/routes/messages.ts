@@ -73,7 +73,7 @@ import {
 import { ensureAccountNostrKey } from '@/lib/nostr/keys';
 import type { NostrPublisher } from '@/lib/nostr/publish';
 import type { NostrQuerier } from '@/lib/nostr/query';
-import { InvoiceRateLimiter, PostRateLimiter } from '@/lib/nostr/rate-limit';
+import { HeartRateLimiter, InvoiceRateLimiter, PostRateLimiter } from '@/lib/nostr/rate-limit';
 import { resolveZapRelays } from '@/lib/nostr/relays';
 import { retractHiddenForumNotes } from '@/lib/nostr/retract';
 import { signEventForAccount } from '@/lib/nostr/sign';
@@ -156,6 +156,9 @@ const GOAL_SATS_MAX = GIFT_INVOICE_MAX_MSAT / 1000;
 
 /** 400 body when the author's LNURL cannot mint a forum-creditable zap (`noZap` / `not_zap`). */
 const AUTHOR_WALLET_CANNOT_RECEIVE = "The author's wallet cannot receive this Bitcoin payment";
+
+/** 503 code when a heart cannot get its fee-free Spark invoice; a heart never falls back to Lightning. */
+const HEART_UNAVAILABLE = 'HEART_UNAVAILABLE';
 
 /**
  * Whether a forum row can mint a zap: non-empty signed `eventId` plus an
@@ -278,6 +281,8 @@ export interface MessagesRouteDeps {
   postLimiter?: PostRateLimiter;
   /** Invoice limiter (tests inject). */
   invoiceLimiter?: InvoiceRateLimiter;
+  /** Heart limiter, separate from the invoice limiter (tests inject). */
+  heartLimiter?: HeartRateLimiter;
   /** Optional push outbox; also the bell-subscriber list. */
   pushStore?: PushStore;
   /**
@@ -363,6 +368,7 @@ export interface MessagesRouteDeps {
 
 const defaultPostLimiter = new PostRateLimiter();
 const defaultInvoiceLimiter = new InvoiceRateLimiter();
+const defaultHeartLimiter = new HeartRateLimiter();
 
 /** Resolve the account behind a request's bearer session, or `null`. */
 async function authedAccount(
@@ -1585,6 +1591,7 @@ async function servePublicActiveList(deps: MessagesRouteDeps, c: Context): Promi
 export function messagesRoutes(deps: MessagesRouteDeps): Hono {
   const postLimiter = deps.postLimiter ?? defaultPostLimiter;
   const invoiceLimiter = deps.invoiceLimiter ?? defaultInvoiceLimiter;
+  const heartLimiter = deps.heartLimiter ?? defaultHeartLimiter;
   const fetchImpl = deps.fetchImpl ?? globalThis.fetch;
   const translationStore = deps.translationStore ?? new InMemoryTranslationStore();
 
@@ -3047,9 +3054,56 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
         return c.json({ error: 'Messages are unavailable' }, 503);
       }
       if (heart && row.accountId === account.id) {
+        await persistInvoiceAttempt(
+          deps.store,
+          invoiceAttemptBase({
+            messageId: row.id,
+            payerAccountId: account.id,
+            heart,
+            authorAccountId: author.id,
+            amountSats: parsed.data.sats,
+            shown,
+            lightningAddress: receiving.address,
+            zapRequest: null,
+            result: 'self_heart',
+            httpStatus: 400,
+            pr: null,
+            paymentHash: null,
+            description: null,
+            descriptionHash: null,
+            isNip57Invoice: false,
+          }),
+        );
         return c.json({ error: 'You cannot send a heart to yourself' }, 400);
       }
-      if (!invoiceLimiter.allow(account.id, deps.now())) {
+      // A heart is paid only fee-free in the app: without Spark invoices it is refused.
+      if (heart && deps.sparkInvoices === undefined) {
+        await persistInvoiceAttempt(
+          deps.store,
+          invoiceAttemptBase({
+            messageId: row.id,
+            payerAccountId: account.id,
+            heart,
+            authorAccountId: author.id,
+            amountSats: parsed.data.sats,
+            shown,
+            lightningAddress: receiving.address,
+            zapRequest: null,
+            result: 'heart_unavailable',
+            httpStatus: 503,
+            pr: null,
+            paymentHash: null,
+            description: null,
+            descriptionHash: null,
+            isNip57Invoice: false,
+          }),
+        );
+        return c.json({ error: HEART_UNAVAILABLE }, 503);
+      }
+      const allowed = heart
+        ? heartLimiter.allow(account.id, row.id, deps.now())
+        : invoiceLimiter.allow(account.id, deps.now());
+      if (!allowed) {
         c.header('Retry-After', '10');
         await persistInvoiceAttempt(
           deps.store,
@@ -3173,6 +3227,38 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
         );
         return c.json({ error: AUTHOR_WALLET_CANNOT_RECEIVE, code: CANNOT_RECEIVE }, 400);
       }
+      const sparkInvoice = await issueSparkInvoice(deps, receiving, {
+        pr: zap.pr,
+        paymentHash: inspected?.paymentHash ?? null,
+        prAmountMsat: inspected?.amountMsat ?? null,
+        amountSats: zap.amountSats,
+        zapRequestJson,
+      });
+      // No Spark invoice for a heart: refuse, and never hand out or record `pr` as ok.
+      if (heart && sparkInvoice === null) {
+        await persistInvoiceAttempt(
+          deps.store,
+          invoiceAttemptBase({
+            messageId: row.id,
+            payerAccountId: account.id,
+            heart,
+            authorAccountId: author.id,
+            amountSats: parsed.data.sats,
+            shown,
+            lightningAddress: receiving.address,
+            zapRequest,
+            result: 'heart_unavailable',
+            httpStatus: 503,
+            pr: null,
+            paymentHash: null,
+            description: null,
+            descriptionHash: null,
+            isNip57Invoice: false,
+            lnurlResponse: zap.lnurlResponse,
+          }),
+        );
+        return c.json({ error: HEART_UNAVAILABLE }, 503);
+      }
       await persistInvoiceAttempt(
         deps.store,
         invoiceAttemptBase({
@@ -3194,13 +3280,6 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
           lnurlResponse: zap.lnurlResponse,
         }),
       );
-      const sparkInvoice = await issueSparkInvoice(deps, receiving, {
-        pr: zap.pr,
-        paymentHash: inspected?.paymentHash ?? null,
-        prAmountMsat: inspected?.amountMsat ?? null,
-        amountSats: zap.amountSats,
-        zapRequestJson,
-      });
       return c.json({ pr: zap.pr, amountSats: zap.amountSats, sparkInvoice }, 200);
     });
 }
