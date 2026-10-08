@@ -2093,6 +2093,12 @@ test('Function: PostRateLimiter — POST /messages without bearer is 401', async
 test('Function: InvoiceRateLimiter — POST /messages without bearer is 401', async ({ request }) => {
   expect((await request.post('/messages', { data: { text: 'hi' } })).status()).toBe(401);
 });
+test('Function: HeartRateLimiter — heart invoice without bearer is 401', async ({ request }) => {
+  const res = await request.post('/messages/00000000-0000-4000-8000-000000000000/invoice', {
+    data: { sats: 1, heart: true },
+  });
+  expect(res.status()).toBe(401);
+});
 test('Function: RecordingPublisher — default boot has no DATABASE_URL', async ({ request }) => {
   expect((await request.get('/healthz')).status()).toBe(200);
 });

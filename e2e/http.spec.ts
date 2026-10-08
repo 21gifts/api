@@ -329,6 +329,13 @@ test('POST /messages/:id/invoice without bearer is 401', async ({ request }) => 
   expect(res.status()).toBe(401);
 });
 
+// A heart (Spark-only, own budget) needs a payable wallet author, which needs the LNURL
+// server; the default boot asserts the session gate in front of it.
+test('POST /messages/:id/invoice heart without bearer is 401', async ({ request }) => {
+  const res = await request.post('/messages/:id/invoice', { data: { sats: 1, heart: true } });
+  expect(res.status()).toBe(401);
+});
+
 test('POST /messages/:id/translate without bearer is 404 on default boot', async ({ request }) => {
   const res = await request.post('/messages/:id/translate', { data: { target: 'en' } });
   expect(res.status()).toBe(404);
