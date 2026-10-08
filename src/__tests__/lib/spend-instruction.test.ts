@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { decideSpendInstruction } from '@/lib/spend-instruction';
+import type { GiftRow } from '@/lib/gift';
+import { decideSpendInstruction, welcomeGiftPaidOnUtcDay } from '@/lib/spend-instruction';
 
 const ADDRESS = 'ada@walletofsatoshi.com';
 
@@ -665,5 +666,63 @@ describe('decideSpendInstruction', () => {
         { skip: 'undecided' },
       );
     });
+  });
+});
+
+describe('welcomeGiftPaidOnUtcDay', () => {
+  const day = '2026-09-20';
+
+  function row(partial: Pick<GiftRow, 'paidAt' | 'recipientWosUser' | 'kind'>): GiftRow {
+    return { amountSats: 1, ...partial };
+  }
+
+  it('matches only a welcome gift for that handle on that UTC day', () => {
+    const gifts: GiftRow[] = [
+      row({
+        paidAt: new Date('2026-09-20T01:00:00.000Z'),
+        recipientWosUser: 'bob',
+        kind: 'daily',
+      }),
+      row({
+        paidAt: new Date('2026-09-20T01:00:00.000Z'),
+        recipientWosUser: '   ',
+        kind: 'welcome',
+      }),
+      row({
+        paidAt: new Date('2026-09-20T01:00:00.000Z'),
+        recipientWosUser: '@',
+        kind: 'welcome',
+      }),
+      row({
+        paidAt: new Date('2026-09-20T01:00:00.000Z'),
+        recipientWosUser: 'bob',
+        kind: 'welcome',
+      }),
+      row({
+        paidAt: new Date(Number.NaN),
+        recipientWosUser: 'ada',
+        kind: 'welcome',
+      }),
+      row({
+        paidAt: 'not-a-date' as unknown as Date,
+        recipientWosUser: 'ada',
+        kind: 'welcome',
+      }),
+      row({
+        paidAt: new Date('2026-09-19T08:00:00.000Z'),
+        recipientWosUser: 'ada',
+        kind: 'welcome',
+      }),
+      row({
+        paidAt: new Date('2026-09-20T08:00:00.000Z'),
+        recipientWosUser: 'Ada',
+        kind: 'welcome',
+      }),
+    ];
+    expect(welcomeGiftPaidOnUtcDay(gifts, '  ada@walletofsatoshi.com ', day)).toBe(true);
+    expect(welcomeGiftPaidOnUtcDay(gifts, 'Ada', day)).toBe(true);
+    expect(welcomeGiftPaidOnUtcDay(gifts, '   ', day)).toBe(false);
+    expect(welcomeGiftPaidOnUtcDay(gifts, '@', day)).toBe(false);
+    expect(welcomeGiftPaidOnUtcDay([], 'ada', day)).toBe(false);
   });
 });
