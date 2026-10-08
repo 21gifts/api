@@ -1,5 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import { InvoiceRateLimiter, PostRateLimiter, utcDayKey } from '@/lib/nostr/rate-limit';
+import {
+  HEART_HOUR_CAP,
+  HEART_NOTE_COOLDOWN_MS,
+  HeartRateLimiter,
+  InvoiceRateLimiter,
+  PostRateLimiter,
+  utcDayKey,
+} from '@/lib/nostr/rate-limit';
 
 describe('utcDayKey', () => {
   it('uses UTC calendar day', () => {
@@ -41,5 +48,43 @@ describe('InvoiceRateLimiter', () => {
     const limiter = new InvoiceRateLimiter();
     expect(limiter.allow('idle', 0)).toBe(true);
     expect(limiter.allow('idle', 48 * 60 * 60 * 1000 + 1)).toBe(true);
+  });
+});
+
+describe('HeartRateLimiter', () => {
+  it('allows one heart per note per cooldown and other notes meanwhile', () => {
+    const limiter = new HeartRateLimiter();
+    const t0 = 1_000_000;
+    expect(limiter.allow('a', 'n1', t0)).toBe(true);
+    expect(limiter.allow('a', 'n1', t0 + 100)).toBe(false);
+    expect(limiter.allow('a', 'n2', t0 + 100)).toBe(true);
+    expect(limiter.allow('b', 'n1', t0 + 100)).toBe(true);
+    expect(limiter.allow('a', 'n1', t0 + HEART_NOTE_COOLDOWN_MS)).toBe(true);
+  });
+
+  it('caps hearts per account per hour across notes', () => {
+    const limiter = new HeartRateLimiter();
+    const t0 = 1_000_000;
+    for (let i = 0; i < HEART_HOUR_CAP; i += 1) {
+      expect(limiter.allow('a', `n${i}`, t0 + i)).toBe(true);
+    }
+    expect(limiter.allow('a', 'fresh', t0 + HEART_HOUR_CAP)).toBe(false);
+    expect(limiter.allow('b', 'fresh', t0 + HEART_HOUR_CAP)).toBe(true);
+    expect(limiter.allow('a', 'fresh', t0 + 60 * 60 * 1000)).toBe(true);
+  });
+
+  it('does not share a budget with the invoice limiter', () => {
+    const hearts = new HeartRateLimiter();
+    const invoices = new InvoiceRateLimiter();
+    expect(invoices.allow('a', 1_000_000)).toBe(true);
+    expect(hearts.allow('a', 'n1', 1_000_000)).toBe(true);
+    expect(invoices.allow('a', 1_000_001)).toBe(false);
+    expect(hearts.allow('a', 'n2', 1_000_001)).toBe(true);
+  });
+
+  it('evicts idle heart keys after 48h', () => {
+    const limiter = new HeartRateLimiter();
+    expect(limiter.allow('idle', 'n1', 0)).toBe(true);
+    expect(limiter.allow('idle', 'n1', 48 * 60 * 60 * 1000 + 1)).toBe(true);
   });
 });
