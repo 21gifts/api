@@ -28,6 +28,7 @@ describe('MEMBER_EVENT_NAMES', () => {
       [
         'gift_sent',
         'login',
+        'logout',
         'payment_received_seen',
         'payment_sent',
         'pos_charge_created',
@@ -39,8 +40,6 @@ describe('MEMBER_EVENT_NAMES', () => {
         'search',
         'shop_opened',
         'signup_completed',
-        'wallet_locked',
-        'wallet_unlocked',
       ].sort(),
     );
   });
@@ -90,6 +89,8 @@ describe('parseMemberEventBatch', () => {
         1,
         event({ name: 1 }),
         event({ name: 'not_an_event' }),
+        event({ name: 'wallet_unlocked' }),
+        event({ name: 'wallet_locked' }),
         event({ at: 'nope' }),
         event({ at: null }),
         event({ at: NOW + 1_000_000 }),
@@ -100,7 +101,7 @@ describe('parseMemberEventBatch', () => {
     if (!result.ok) {
       return;
     }
-    expect(result.dropped).toBe(9);
+    expect(result.dropped).toBe(11);
     expect(result.events).toHaveLength(1);
     expect(result.events[0]?.at.getTime()).toBe(AT_MS);
   });

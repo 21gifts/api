@@ -3468,8 +3468,8 @@ Success → **Response** `200`:
 ### `POST /me/wallet/report`
 
 Bearer required. The app sends this after each successful wallet sync while
-the wallet is unlocked (at least on unlock, after a payment, and every few
-minutes while the app is open). The first report after install sends the
+the member is signed in (signing in opens the wallet; at least after login,
+after a payment, and every few minutes while the app is open). The first report after install sends the
 whole payment history in pages of at most 200; later reports send only
 payments the api has not acknowledged yet.
 
@@ -3601,8 +3601,9 @@ at most 50 events.
 
 - `name`: one of `screen_view`, `post_created`, `reply_created`, `gift_sent`,
   `payment_sent`, `payment_received_seen`, `pos_charge_created`,
-  `pos_charge_paid_seen`, `wallet_unlocked`, `wallet_locked`, `search`,
-  `shop_opened`, `profile_opened`, `login`, `signup_completed`.
+  `pos_charge_paid_seen`, `search`, `shop_opened`, `profile_opened`, `login`,
+  `logout`, `signup_completed`. `logout` is sent while the session is still
+  valid, before the app ends it.
 - `at`: same instant rules as `syncedAt` above.
 - `path`: optional; cut at the first `?` or `#`; must start with `/`, at most
   256 characters; a path that holds secret material anywhere (as written and with

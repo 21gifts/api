@@ -12,12 +12,11 @@ export const MEMBER_EVENT_NAMES: ReadonlySet<string> = new Set([
   'payment_received_seen',
   'pos_charge_created',
   'pos_charge_paid_seen',
-  'wallet_unlocked',
-  'wallet_locked',
   'search',
   'shop_opened',
   'profile_opened',
   'login',
+  'logout',
   'signup_completed',
 ]);
 
