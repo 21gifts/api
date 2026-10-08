@@ -325,6 +325,126 @@ describe('buildGiftStats', () => {
     expect(stats.fx).toEqual(FIAT_FX);
   });
 
+  it('prices a missing stored cross from the largest same-day gift', () => {
+    const earlier = {
+      ...row('2026-10-07T12:00:00.000Z', 1000, 'carol'),
+      amountUsd: '1.00',
+      amountChf: '0.80',
+      amountEur: '0.90',
+      amountPhp: '50.00',
+    };
+    const hole = {
+      ...row('2026-10-08T00:08:39.982Z', 1201, 'ada'),
+      amountUsd: '1.00',
+      amountChf: null,
+      amountEur: null,
+      amountPhp: null,
+    };
+    const sibling = {
+      ...row('2026-10-08T00:16:05.934Z', 3603, 'bea'),
+      amountUsd: '3.00',
+      amountChf: '2.50',
+      amountEur: '2.68',
+      amountPhp: '188.43',
+    };
+    const stats = buildGiftStats([hole, sibling, earlier], new Map());
+    expect(stats.totalUsd).toBe('5.00');
+    expect(stats.totalChf).toBe('4.13');
+    expect(stats.totalEur).toBe('4.47');
+    expect(stats.totalPhp).toBe('301.24');
+    expect(stats.spendOverTime[1]).toMatchObject({
+      day: '2026-10-08',
+      chf: '3.33',
+      cumulativeChf: '4.13',
+      eur: '3.57',
+      cumulativeEur: '4.47',
+      php: '251.24',
+      cumulativePhp: '301.24',
+    });
+    const listed = buildGiftDay('2026-10-08', [hole, sibling], new Map());
+    expect(listed.gifts.map((gift) => gift.amountPhp)).toEqual(['62.81', '188.43']);
+    expect(listed.totalChf).toBe('3.33');
+    expect(listed.totalEur).toBe('3.57');
+    expect(listed.totalPhp).toBe('251.24');
+  });
+
+  it('does not replace a stored cross and ignores a smaller same-day gift', () => {
+    const hole = {
+      ...row('2026-10-08T00:08:39.982Z', 1000, 'ada'),
+      amountUsd: '1.00',
+      amountChf: '0.90',
+      amountEur: null,
+      amountPhp: null,
+    };
+    const small = {
+      ...row('2026-10-08T00:10:00.000Z', 1000, 'bea'),
+      amountUsd: '1.00',
+      amountChf: '0.70',
+      amountEur: '0.80',
+      amountPhp: '60.00',
+    };
+    const large = {
+      ...row('2026-10-08T00:16:00.000Z', 3000, 'carol'),
+      amountUsd: '3.00',
+      amountChf: '2.50',
+      amountEur: '2.68',
+      amountPhp: '188.43',
+    };
+    const listed = buildGiftDay('2026-10-08', [hole, small, large], new Map());
+    expect(listed.gifts[0]).toMatchObject({
+      amountChf: '0.90',
+      amountEur: '0.89',
+      amountPhp: '62.81',
+    });
+    expect(listed.totalChf).toBe('4.10');
+    expect(listed.totalPhp).toBe('311.24');
+  });
+
+  it('leaves a stored hole null when no same-day gift has that cross', () => {
+    const stats = buildGiftStats(
+      [
+        {
+          ...row('2026-10-08T00:08:39.982Z', 1201, 'ada'),
+          amountUsd: '1.00',
+          amountChf: null,
+          amountEur: null,
+          amountPhp: null,
+        },
+      ],
+      new Map([['2026-10-08', '100000']]),
+      new Map([['2026-10-08', { CHF: '0.80', EUR: '0.90', PHP: '62.81' }]]),
+    );
+    expect(stats.totalUsd).toBe('1.00');
+    expect(stats.totalChf).toBeNull();
+    expect(stats.totalEur).toBeNull();
+    expect(stats.totalPhp).toBeNull();
+    expect(stats.spendOverTime[0]?.php).toBeNull();
+  });
+
+  it('does not scale a stored row that has no USD amount', () => {
+    const stats = buildGiftStats(
+      [
+        {
+          ...row('2026-10-08T00:08:39.982Z', 1201, 'ada'),
+          amountUsd: null,
+          amountChf: null,
+          amountEur: null,
+          amountPhp: null,
+        },
+        {
+          ...row('2026-10-08T00:16:05.934Z', 3603, 'bea'),
+          amountUsd: '3.00',
+          amountChf: '2.50',
+          amountEur: '2.68',
+          amountPhp: '188.43',
+        },
+      ],
+      new Map(),
+    );
+    expect(stats.totalPhp).toBeNull();
+    expect(stats.spendOverTime[0]?.php).toBeNull();
+  });
+
   it('keeps a currency total null when any gift day lacks that cross, but still lists it on fx.quotes', () => {
     const rates = new Map([
       ['2026-06-01', '100000'],

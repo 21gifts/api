@@ -3678,6 +3678,51 @@ describe('POST /invoices/proof payment fiat', () => {
     expect(recorded[0]?.fiat?.chf).toBeNull();
   });
 
+  it('uses an earlier stored rate when loading the payment day throws', async () => {
+    const invoice: GiftInvoice = {
+      id: 'd0'.repeat(16),
+      address: ADDRESS,
+      pr: PR,
+      paymentHash: MATCHING_HASH,
+      amountMsat: 1000,
+      createdAt: 1,
+      expiresAt: 1_000_000,
+      amountUsd: '5.00',
+    };
+    const recorded: GiftRecord[] = [];
+    const calls: string[][] = [];
+    const invoiceStore = new InMemoryInvoiceStore();
+    invoiceStore.put(invoice);
+    const res = await createApp({
+      spendApiToken: TOKEN,
+      invoiceStore,
+      now: () => Date.parse('2026-06-01T12:00:00.000Z'),
+      fiatRates: {
+        ensureDays: async (days) => {
+          calls.push([...days]);
+          if (days.includes('2026-06-01')) {
+            throw new Error('today unpublished');
+          }
+          return new Map([['2026-05-31', { CHF: '0.80', EUR: '0.90', PHP: '50' }]]);
+        },
+      },
+      giftRecorder: {
+        recordOutbound: async (row) => {
+          recorded.push(row);
+        },
+      },
+    }).request(
+      '/invoices/proof',
+      auth({ method: 'POST', body: JSON.stringify({ id: invoice.id, preimage: PREIMAGE }) }),
+    );
+    expect(res.status).toBe(200);
+    expect(parsedEvents(warn).some((event) => event['event'] === 'invoice.fiat_failed')).toBe(true);
+    expect(calls[0]?.[0]).toBe('2026-06-01');
+    expect(calls[1]?.includes('2026-06-01')).toBe(false);
+    expect(calls[1]?.includes('2026-05-31')).toBe(true);
+    expect(recorded[0]?.fiat).toEqual({ usd: '5.00', chf: '4.00', eur: '4.50', php: '250.00' });
+  });
+
   it('stores null fiat when amountUsd is not normalized', async () => {
     const invoice: GiftInvoice = {
       id: 'ce'.repeat(16),
@@ -3771,6 +3816,46 @@ describe('POST /invoices/proof payment fiat', () => {
     expect(res.status).toBe(200);
     expect(recorded[0]?.fiat?.usd).toBe('1.00');
     expect(recorded[0]?.fiat?.chf).toBe('0.80');
+  });
+
+  it('fills a quote the payment day has not published yet from the previous day', async () => {
+    const invoice: GiftInvoice = {
+      id: 'd2'.repeat(16),
+      address: ADDRESS,
+      pr: PR,
+      paymentHash: MATCHING_HASH,
+      amountMsat: 1_000_000,
+      createdAt: 1,
+      expiresAt: 1_000_000,
+      amountUsd: '5.00',
+    };
+    const recorded: GiftRecord[] = [];
+    const invoiceStore = new InMemoryInvoiceStore();
+    invoiceStore.put(invoice);
+    const res = await createApp({
+      spendApiToken: TOKEN,
+      invoiceStore,
+      now: () => Date.parse('2026-06-02T00:08:00.000Z'),
+      fiatRates: new InMemoryFiatStore({
+        '2026-06-02': { CHF: '0.80' },
+        '2026-06-01': { EUR: '0.90', PHP: '50' },
+      }),
+      giftRecorder: {
+        recordOutbound: async (row) => {
+          recorded.push(row);
+        },
+      },
+    }).request(
+      '/invoices/proof',
+      auth({ method: 'POST', body: JSON.stringify({ id: invoice.id, preimage: PREIMAGE }) }),
+    );
+    expect(res.status).toBe(200);
+    expect(recorded[0]?.fiat).toEqual({
+      usd: '5.00',
+      chf: '4.00',
+      eur: '4.50',
+      php: '250.00',
+    });
   });
 
   it('stores null fiat when the spot text cannot be priced', async () => {

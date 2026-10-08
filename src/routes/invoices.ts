@@ -14,9 +14,11 @@ import type { FetchFn } from '@/lib/lnurlp';
 import { MESSAGE_LIST_LIMIT, unsignedNostrDefaults } from '@/lib/message';
 import type { MessageStore } from '@/lib/message-store';
 import {
+  crossForPaymentDay,
   fiatFromSats,
   fiatFromUsd,
   normalizeAmountUsd,
+  paymentRateDays,
   type FiatAmounts,
   type FiatCrossRates,
 } from '@/lib/money';
@@ -257,8 +259,13 @@ export function invoiceRoutes(deps: InvoiceRouteDeps): Hono {
    * One payment-time snapshot for the gift, the forum credit, and the group row.
    *
    * A caller-supplied `amountUsd` stays the USD string (not a sats conversion).
-   * Otherwise one Coinbase spot is used. A missing cross, a spot failure, or
-   * a Frankfurter failure yields null amounts and does not throw.
+   * Otherwise one Coinbase spot is used. Each of CHF, EUR, and PHP comes from
+   * the payment UTC day, or from the nearest earlier quote within 10 days
+   * when that day has not been published yet. When loading that window throws,
+   * the earlier days are loaded on their own, so one failed fetch of today
+   * still uses a rate already on file. A second failure keeps the sent USD and
+   * leaves the missing crosses null. A spot failure yields null amounts and
+   * does not throw.
    *
    * @param invoice - Proven invoice.
    * @param paidAtMs - Proof clock, epoch milliseconds.
@@ -266,14 +273,19 @@ export function invoiceRoutes(deps: InvoiceRouteDeps): Hono {
    */
   async function paymentFiat(invoice: GiftInvoice, paidAtMs: number): Promise<FiatAmounts | null> {
     const day = new Date(paidAtMs).toISOString().slice(0, 10);
+    const window = paymentRateDays(day);
     let crosses: FiatCrossRates = {};
     try {
-      const found = (await fiatRates.ensureDays([day], paidAtMs)).get(day);
-      if (found !== undefined) {
-        crosses = found;
-      }
+      const found = await fiatRates.ensureDays(window, paidAtMs);
+      crosses = crossForPaymentDay(found, day);
     } catch {
       logEvent('invoice.fiat_failed', { id: invoice.id });
+      try {
+        const found = await fiatRates.ensureDays(window.slice(1), paidAtMs);
+        crosses = crossForPaymentDay(found, day);
+      } catch {
+        crosses = {};
+      }
     }
     if (invoice.amountUsd !== undefined) {
       try {

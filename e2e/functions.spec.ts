@@ -1417,6 +1417,30 @@ test('Function: normalizeAmountUsd — empty stats skip USD conversion', async (
   expect(body.totalUsd).toBe('0.00');
 });
 
+test('Function: paymentRateDays — empty stats skip USD conversion', async ({ request }) => {
+  const res = await request.get('/gifts/stats');
+  expect(res.status()).toBe(200);
+  const body = (await res.json()) as { giftCount: number; totalUsd: string };
+  expect(body.giftCount).toBe(0);
+  expect(body.totalUsd).toBe('0.00');
+});
+
+test('Function: crossForPaymentDay — empty stats skip USD conversion', async ({ request }) => {
+  const res = await request.get('/gifts/stats');
+  expect(res.status()).toBe(200);
+  const body = (await res.json()) as { giftCount: number; totalUsd: string };
+  expect(body.giftCount).toBe(0);
+  expect(body.totalUsd).toBe('0.00');
+});
+
+test('Function: quoteFromLargestSibling — empty stats skip USD conversion', async ({ request }) => {
+  const res = await request.get('/gifts/stats');
+  expect(res.status()).toBe(200);
+  const body = (await res.json()) as { giftCount: number; totalUsd: string };
+  expect(body.giftCount).toBe(0);
+  expect(body.totalUsd).toBe('0.00');
+});
+
 test('Function: fiatFromUsd — empty stats skip USD conversion', async ({ request }) => {
   const res = await request.get('/gifts/stats');
   expect(res.status()).toBe(200);

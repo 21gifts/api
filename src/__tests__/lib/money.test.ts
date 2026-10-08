@@ -1,9 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import {
   SATS_PER_BTC,
+  crossForPaymentDay,
   fiatFromSats,
   fiatFromUsd,
   normalizeAmountUsd,
+  paymentRateDays,
+  quoteFromLargestSibling,
   shownFiatFromBody,
   parseUsdPerBtc,
   satsToBtcString,
@@ -50,6 +53,97 @@ describe('shownFiatFromBody', () => {
     expect(shownFiatFromBody({ amountUsd: '100000.01' })).toBeNull();
     expect(shownFiatFromBody({ amountChf: '1.001' })).toBeNull();
     expect(shownFiatFromBody({ amountEur: '9007199254740993' })).toBeNull();
+  });
+});
+
+describe('paymentRateDays', () => {
+  it('returns the payment day and the previous nine', () => {
+    const days = paymentRateDays('2026-10-08');
+    expect(days).toHaveLength(10);
+    expect(days[0]).toBe('2026-10-08');
+    expect(days[1]).toBe('2026-10-07');
+    expect(days[9]).toBe('2026-09-29');
+  });
+
+  it('clamps the window and rejects a day that is not a calendar date', () => {
+    expect(paymentRateDays('2026-10-08', 3)).toEqual(['2026-10-08', '2026-10-07', '2026-10-06']);
+    expect(paymentRateDays('2026-10-08', 0)).toEqual(['2026-10-08']);
+    expect(paymentRateDays('2026-10-08', 40)).toHaveLength(10);
+    expect(paymentRateDays('2026-10-08', Number.NaN)).toHaveLength(10);
+    expect(paymentRateDays('nope')).toEqual([]);
+    expect(paymentRateDays('2026-02-31')).toEqual([]);
+    expect(paymentRateDays('2026-02-29')).toEqual([]);
+    expect(paymentRateDays('2024-02-29')).toEqual([
+      '2024-02-29',
+      '2024-02-28',
+      '2024-02-27',
+      '2024-02-26',
+      '2024-02-25',
+      '2024-02-24',
+      '2024-02-23',
+      '2024-02-22',
+      '2024-02-21',
+      '2024-02-20',
+    ]);
+  });
+});
+
+describe('crossForPaymentDay', () => {
+  it('fills each quote from the nearest day on or before the payment', () => {
+    const book = new Map([
+      ['2026-10-08', { CHF: '0.80' }],
+      ['2026-10-07', { EUR: '0.90', PHP: '50' }],
+      ['2026-10-09', { PHP: '99' }],
+    ]);
+    expect(crossForPaymentDay(book, '2026-10-08')).toEqual({
+      CHF: '0.80',
+      EUR: '0.90',
+      PHP: '50',
+    });
+    expect(crossForPaymentDay(new Map(), '2026-10-08')).toEqual({});
+    expect(
+      crossForPaymentDay(
+        new Map([
+          ['2026-10-08', { PHP: 'nope', CHF: '0' }],
+          ['2026-10-07', { PHP: '50', CHF: '0.80' }],
+        ]),
+        '2026-10-08',
+      ),
+    ).toEqual({ PHP: '50', CHF: '0.80' });
+  });
+});
+
+describe('quoteFromLargestSibling', () => {
+  it('scales from the largest positive reference and rounds half up', () => {
+    const refs = [
+      { usd: '1.00', quote: '60.00' },
+      { usd: '3.00', quote: '188.43' },
+      { usd: '0.00', quote: '999.00' },
+      { usd: '10.00', quote: '0.00' },
+    ];
+    expect(quoteFromLargestSibling('1.00', refs)).toBe('62.81');
+    expect(quoteFromLargestSibling('1.00', [{ usd: '3.00', quote: '2.50' }])).toBe('0.83');
+    expect(quoteFromLargestSibling('1.00', [{ usd: '2.00', quote: '0.01' }])).toBe('0.01');
+    expect(quoteFromLargestSibling('3.00', [{ usd: '3.00', quote: '2.68' }])).toBe('2.68');
+  });
+
+  it('returns null for an unusable amount and does not throw', () => {
+    expect(quoteFromLargestSibling('1.00', [])).toBeNull();
+    expect(quoteFromLargestSibling('0.00', [{ usd: '3.00', quote: '1.00' }])).toBeNull();
+    expect(quoteFromLargestSibling('nope', [{ usd: '3.00', quote: '1.00' }])).toBeNull();
+    expect(quoteFromLargestSibling('1.00', [{ usd: 'nope', quote: '1.00' }])).toBeNull();
+    expect(
+      quoteFromLargestSibling('90071992547409.91', [{ usd: '1.00', quote: '90071992547409.91' }]),
+    ).toBeNull();
+  });
+
+  it('keeps the first reference when two have the same USD amount', () => {
+    expect(
+      quoteFromLargestSibling('1.00', [
+        { usd: '3.00', quote: '188.43' },
+        { usd: '3.00', quote: '180.00' },
+      ]),
+    ).toBe('62.81');
   });
 });
 
