@@ -1410,6 +1410,15 @@
 - **Returns / side effects:** `true` when the pins are the same, otherwise `false`. No I/O.
 - **Used by:** `POST /messages` and `MessageStore.create`, which reject a repeated live photo when the pin differs.
 
+## Function: placeCountryCode
+
+Reads the country of a map pin from its coordinates with the offline boundary dataset of `@rapideditor/country-coder` at territory level, so Hong Kong is `HK` and Puerto Rico is `PR`. Coastal waters count as that country. Ceuta and Melilla, the one territory the dataset returns with a code ISO 3166-1 does not assign (`EA`), take their country's code (`ES`); smaller reserved areas such as Ascension already roll up to an assigned code (`SH`). Kosovo stays `XK`. The free-text label is never read. Nothing is stored: the code is derived again on every read, so a moved pin or a newer dataset never leaves a stale country behind, and existing pins need no backfill.
+
+- **Purpose:** ISO 3166-1 alpha-2 code of the country or territory that contains a pin.
+- **Inputs:** `{ lat, lng }` of a stored pin.
+- **Returns / side effects:** Two upper-case letters, or `null` for a point in the open sea or outside every boundary. No I/O and no network call.
+- **Used by:** `GET /messages/places` (`countryCode` on each pin) and `MessageStore.listFeed` (the `country` filter of `GET /messages`).
+
 ## Function: detectImageContentType
 
 - **Purpose:** Detect JPEG / PNG / WebP from magic bytes for forum photo storage.

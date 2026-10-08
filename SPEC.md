@@ -4180,7 +4180,7 @@ Success → **Response** `200`:
 ### `GET /messages`
 
 Public member forum thread. With no `Authorization` header, `mode=active`,
-and no hashtag, this is the public window: the first 200 active rows;
+no hashtag, and no country, this is the public window: the first 200 active rows;
 includes `accountId` whenever the stored author id is non-null, omits it
 for an external row, and includes `mentions` when that flag is on and the
 stored list is non-empty; 200 not 401. A present header that is not a
@@ -4193,8 +4193,14 @@ extra stills, and no video. A profile note with other About me text stays. Those
 stored. `GET /messages/:id`, `listLatest`, and `listPostsByAccount` are
 unchanged. Query `mode`
 (`all` default, `active`, `unpaid`, `popular`), `limit` (1–200, default
-**200**), opaque `cursor`, and optional `hashtag` (name without `#`;
-token match on live top-level `text`; combines with mode/limit/cursor).
+**200**), opaque `cursor`, optional `hashtag` (name without `#`;
+token match on live top-level `text`; combines with mode/limit/cursor), and
+optional `country` (two upper-case letters, ISO 3166-1 alpha-2; only notes
+whose pin lies in that country or territory, read from the pin's coordinates
+with an offline boundary dataset and never from its label; a note without a
+pin, or with a pin in the open sea, never matches; combines with the other
+parameters, and the cursor pages only matches; any other value is **400**
+`{ "error": "Invalid country" }`).
 Response `{ messages }` plus `nextCursor`
 only when the page is full. Newest first (`createdAt` descending, then
 `id`) except `popular` (sats descending). Replies are never listed here —
@@ -4236,7 +4242,7 @@ session, and omit it for an external row. `mentions`
 `accountId` is included and the stored list is non-empty). Nostr event ids are never included in the JSON.
 
 A present Authorization header that is not a live session, a signed-out
-request that is not `mode=active` without a hashtag, or a public cursor
+request that is not `mode=active` without a hashtag or a country, or a public cursor
 outside the window → **Response** `401`. A missing header on that public
 window is not 401. Missing/invalid/expired bearer on the signed-in list
 → **Response** `401`:
@@ -4245,7 +4251,7 @@ window is not 401. Missing/invalid/expired bearer on the signed-in list
 { "error": "Unauthorized" }
 ```
 
-Unknown `mode`, `limit` outside 1–200, a bad/mismatched `cursor`, or an invalid `hashtag` → **Response** `400`:
+Unknown `mode`, `limit` outside 1–200, a bad/mismatched `cursor`, an invalid `hashtag`, or an invalid `country` → **Response** `400`:
 
 ```json
 { "error": "Invalid mode" }
@@ -4261,6 +4267,10 @@ Unknown `mode`, `limit` outside 1–200, a bad/mismatched `cursor`, or an invali
 
 ```json
 { "error": "Invalid hashtag" }
+```
+
+```json
+{ "error": "Invalid country" }
 ```
 
 `mode=active` is paid notes (`sats > 0`) plus unpaid founder/moderator notes; a top-level ask with `goalSats` > 0 and `sats = 0` is not active; `unpaid` is `sats = 0`; `popular` is paid notes ordered by sats descending.
@@ -4423,8 +4433,13 @@ Bearer session required. After auth, the same `forum.read` gate as
 `GET /messages` (401 without a session; 409 `missing_requirements` when
 rules are missing). Query `limit` is an integer 1..1000 (default **1000**);
 otherwise **400** `{ "error": "Invalid limit" }`. Body
-`{ "places": [{ "id", "name", "createdAt", "lat", "lng", "label", "shop", "accountId?" }] }`.
-`shop` is true when the note text contains the shop tag. `accountId` is set for a 21gifts author and omitted for an external pin.
+`{ "places": [{ "id", "name", "createdAt", "lat", "lng", "label", "shop", "countryCode", "accountId?" }] }`.
+`shop` is true when the note text contains the shop tag. `countryCode` is the
+ISO 3166-1 alpha-2 code of the country or territory that contains the pin,
+read from its coordinates on every request (never stored, so existing pins need
+no backfill), or `null` for a pin in the open sea. The app counts the shops per
+`countryCode` for the Shops country filter and passes the same code to
+`GET /messages?country=`. `accountId` is set for a 21gifts author and omitted for an external pin.
 `createdAt` is ISO-8601. Newest first (`created_at` desc, `id` desc). Only
 live top-level rows with both coordinates. Replies and hidden notes are
 excluded.

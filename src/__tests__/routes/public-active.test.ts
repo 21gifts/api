@@ -113,6 +113,7 @@ describe('public active window', () => {
     expect((await app.request('/messages')).status).toBe(401);
     expect((await app.request('/messages?mode=all')).status).toBe(401);
     expect((await app.request('/messages?mode=active&hashtag=shop')).status).toBe(401);
+    expect((await app.request('/messages?mode=active&country=PH')).status).toBe(401);
     expect(
       (await app.request('/messages?mode=active', { headers: { authorization: 'Bearer no' } }))
         .status,

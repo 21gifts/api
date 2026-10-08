@@ -1163,6 +1163,11 @@ test('GET /messages/:id/external-replies without bearer is 404 on default boot',
   expect(res.status()).toBe(404);
 });
 
+test('GET /messages with a country and no bearer is 401', async ({ request }) => {
+  const res = await request.get('/messages?mode=active&country=PH');
+  expect(res.status()).toBe(401);
+});
+
 test('GET /messages/places without bearer is 401', async ({ request }) => {
   const res = await request.get('/messages/places');
   expect(res.status()).toBe(401);

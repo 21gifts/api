@@ -2143,6 +2143,69 @@ describe('InMemoryMessageStore', () => {
     expect(unpaidTagged.map((row) => row.id)).toEqual(['shop', 'shop-case']);
   });
 
+  it('listFeed filters by the country of the pin and pages only matches', async () => {
+    const manila = {
+      ...EARLY,
+      id: 'manila',
+      text: 'Manila #21GiftsShop',
+      createdAt: new Date('2026-08-10T00:00:00.000Z'),
+      place: { lat: 14.5995, lng: 120.9842, label: 'Kenya Street' },
+    };
+    const nairobi = {
+      ...EARLY,
+      id: 'nairobi',
+      text: 'Nairobi #21GiftsShop',
+      createdAt: new Date('2026-08-09T00:00:00.000Z'),
+      place: { lat: -1.2921, lng: 36.8219, label: null },
+    };
+    const cebu = {
+      ...EARLY,
+      id: 'cebu',
+      text: 'Cebu #21GiftsShop',
+      createdAt: new Date('2026-08-08T00:00:00.000Z'),
+      place: { lat: 10.293, lng: 123.902, label: null },
+    };
+    const sea = {
+      ...EARLY,
+      id: 'sea',
+      text: 'Boat #21GiftsShop',
+      createdAt: new Date('2026-08-07T00:00:00.000Z'),
+      place: { lat: 30, lng: -40, label: null },
+    };
+    const unpinned = {
+      ...EARLY,
+      id: 'unpinned',
+      text: 'No pin #21GiftsShop',
+      createdAt: new Date('2026-08-06T00:00:00.000Z'),
+      place: null,
+    };
+    const store = new InMemoryMessageStore([manila, nairobi, cebu, sea, unpinned]);
+    const emptyStaff = new Set<string>();
+    const query = { limit: 10, mode: 'all' as const, cursor: null, staffAccountIds: emptyStaff };
+    expect((await store.listFeed({ ...query, country: 'PH' })).map((row) => row.id)).toEqual([
+      'manila',
+      'cebu',
+    ]);
+    expect((await store.listFeed({ ...query, country: 'KE' })).map((row) => row.id)).toEqual([
+      'nairobi',
+    ]);
+    expect((await store.listFeed({ ...query, country: 'CH' })).map((row) => row.id)).toEqual([]);
+    expect(
+      (await store.listFeed({ ...query, country: '', hashtag: '21GiftsShop' })).map(
+        (row) => row.id,
+      ),
+    ).toEqual(['manila', 'nairobi', 'cebu', 'sea', 'unpinned']);
+    const firstPage = await store.listFeed({ ...query, limit: 1, country: 'PH' });
+    expect(firstPage.map((row) => row.id)).toEqual(['manila']);
+    const secondPage = await store.listFeed({
+      ...query,
+      limit: 1,
+      country: 'PH',
+      cursor: { k: 't', c: manila.createdAt, i: 'manila' },
+    });
+    expect(secondPage.map((row) => row.id)).toEqual(['cebu']);
+  });
+
   it('listFeed replyCount includes zapper children like listLatest', async () => {
     const store = new InMemoryMessageStore([EARLY]);
     await store.create({
@@ -7192,6 +7255,102 @@ describe('PostgresMessageStore', () => {
     });
     expect(mapped[0]?.id).toBe('m1');
     expect(mapped[0]?.replyCount).toBe(0);
+  });
+
+  it('listFeed SQL reads pinned rows in batches of 200 and keeps those in the country', async () => {
+    const sql = new MockSql();
+    const at = new Date('2026-08-10T00:00:00.000Z');
+    const row = (id: string, lat: number | string, lng: number | string, sats = 0) => ({
+      id,
+      account_id: 'acc',
+      name: 'Ada',
+      text: 'Shop #21GiftsShop',
+      created_at: at,
+      has_photo: false,
+      event_id: null,
+      nostr_publish_state: 'pending',
+      sats,
+      place_lat: lat,
+      place_lng: lng,
+      place_label: null,
+      reply_count: 0,
+    });
+    // A full batch of 199 Kenyan pins and one in Manila, then a short batch with Cebu.
+    const kenya = Array.from({ length: 199 }, (_, index) => row(`ke-${index}`, -1.2921, 36.8219));
+    sql.queryQueue = [
+      [row('manila', '14.5995', '120.9842'), ...kenya],
+      [row('sea', 30, -40), row('cebu', 10.293, 123.902)],
+    ];
+    const store = new PostgresMessageStore(sql);
+    const staff = new Set<string>();
+    const page = await store.listFeed({
+      limit: 2,
+      mode: 'all',
+      cursor: null,
+      staffAccountIds: staff,
+      hashtag: '21GiftsShop',
+      country: 'PH',
+    });
+    expect(page.map((item) => item.id)).toEqual(['manila', 'cebu']);
+    expect(sql.queries).toHaveLength(2);
+    expect(sql.queries[0]?.text).toMatch(/place_lat IS NOT NULL AND place_lng IS NOT NULL/);
+    expect(sql.queries[0]?.text).toMatch(/text ~\*/);
+    expect(sql.queries[0]?.params).toEqual([200, '#21giftsshop([^a-z0-9_]|$)']);
+    // The second batch continues after the last row of the first one.
+    expect(sql.queries[1]?.text).toMatch(/\(created_at, id\) < \(\$3, \$4\)/);
+    expect(sql.queries[1]?.params.slice(2)).toEqual([at, 'ke-198']);
+
+    // A page that fills inside a batch stops reading.
+    sql.queryQueue = [[row('nairobi', -1.2921, 36.8219, 7), row('lamu', -2.27, 40.9, 5)]];
+    const before = sql.queries.length;
+    const popular = await store.listFeed({
+      limit: 1,
+      mode: 'popular',
+      cursor: null,
+      staffAccountIds: staff,
+      country: 'KE',
+    });
+    expect(popular.map((item) => item.id)).toEqual(['nairobi']);
+    expect(sql.queries).toHaveLength(before + 1);
+
+    // A popular batch continues with the sats of its last row; an empty batch ends the page.
+    const manilaSats = Array.from({ length: 200 }, (_, index) =>
+      row(`ph-${index}`, 14.5995, 120.9842, 5),
+    );
+    sql.queryQueue = [manilaSats, []];
+    expect(
+      await store.listFeed({
+        limit: 2,
+        mode: 'popular',
+        cursor: null,
+        staffAccountIds: staff,
+        country: 'KE',
+      }),
+    ).toEqual([]);
+    const last = sql.queries[sql.queries.length - 1];
+    expect(last?.text).toMatch(/\(sats, created_at, id\) < \(\$2, \$3, \$4\)/);
+    expect(last?.params.slice(1)).toEqual([5, at, 'ph-199']);
+
+    sql.queryQueue = [[row('unpinned', '', '')]];
+    expect(
+      await store.listFeed({
+        limit: 2,
+        mode: 'all',
+        cursor: null,
+        staffAccountIds: staff,
+        country: 'PH',
+      }),
+    ).toEqual([]);
+    await store.listFeed({
+      limit: 2,
+      mode: 'all',
+      cursor: null,
+      staffAccountIds: staff,
+      country: '',
+    });
+    const plain = sql.queries[sql.queries.length - 1];
+    expect(plain?.text).not.toMatch(/place_lat IS NOT NULL/);
+    expect(plain?.params).toEqual([2]);
   });
 
   it('listFeed SQL filters by hashtag token', async () => {

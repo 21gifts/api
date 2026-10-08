@@ -27,6 +27,7 @@ import { postgresTextArrayLiteral } from '@/lib/postgres-text-array';
 import { canonicalGoalAmount, type GoalCurrency } from '@/lib/goal-rate';
 import {
   forumContentFingerprint,
+  MESSAGE_LIST_LIMIT,
   unsignedNostrDefaults,
   type ForumFeedMode,
   type ForumPhoto,
@@ -34,7 +35,7 @@ import {
   type MessageRow,
   type NostrPublishState,
 } from '@/lib/message';
-import { placesMatch, type ForumPlace } from '@/lib/place';
+import { placeCountryCode, placesMatch, type ForumPlace } from '@/lib/place';
 
 export type { ForumFeedMode };
 import { kind1ContentWithHashtags } from '@/lib/nostr/event';
@@ -251,6 +252,12 @@ function pendingKind1LacksBitcoinTag(event: Record<string, unknown> | null): boo
 }
 
 /**
+ * Rows per query when {@link PostgresMessageStore.listFeed} filters by country:
+ * the largest page `GET /messages` serves, so a full page usually needs one query.
+ */
+const COUNTRY_FEED_BATCH = MESSAGE_LIST_LIMIT;
+
+/**
  * Keyset page query for {@link MessageStore.listFeed}.
  */
 export type MessageFeedQuery = {
@@ -264,6 +271,11 @@ export type MessageFeedQuery = {
   staffAccountIds: ReadonlySet<string>;
   /** Optional hashtag name without `#`. When set, only notes whose `text` contains that token. */
   hashtag?: string;
+  /**
+   * Optional ISO 3166-1 alpha-2 code. When set, only notes whose pin lies in
+   * that country ({@link placeCountryCode}); a note without a pin never matches.
+   */
+  country?: string;
 };
 
 /** Top-level list row with computed reply count. */
@@ -328,7 +340,7 @@ export interface MessageStore {
    * those ids).
    * A real About me stays.
    *
-   * @param query - Mode, limit, exclusive cursor, staff ids (`active` only), and optional hashtag.
+   * @param query - Mode, limit, exclusive cursor, staff ids (`active` only), and optional hashtag and country.
    * @returns At most `query.limit` list row copies.
    */
   listFeed(query: MessageFeedQuery): Promise<MessageListRow[]>;
@@ -2361,7 +2373,7 @@ export class InMemoryMessageStore implements MessageStore {
    * children (`deletedAt` null and either an account or a recorded zapper pubkey).
    * Profile notes are omitted when {@link useProfileNoteIds} was set.
    *
-   * @param query - Mode, limit, exclusive keyset cursor, staff ids, and optional hashtag.
+   * @param query - Mode, limit, exclusive keyset cursor, staff ids, and optional hashtag and country.
    * @returns A new array of list row copies; mutating it does not change the store.
    */
   async listFeed(query: MessageFeedQuery): Promise<MessageListRow[]> {
@@ -2390,7 +2402,17 @@ export class InMemoryMessageStore implements MessageStore {
       typeof hashtag === 'string' && hashtag !== ''
         ? topLevel.filter((row) => textHasHashtagToken(row.text, hashtag))
         : topLevel;
-    const sorted = [...tagged].sort((a, b) => {
+    const country = query.country;
+    const located =
+      typeof country === 'string' && country !== ''
+        ? tagged.filter(
+            (row) =>
+              row.place !== undefined &&
+              row.place !== null &&
+              placeCountryCode(row.place) === country,
+          )
+        : tagged;
+    const sorted = [...located].sort((a, b) => {
       if (query.mode === 'popular') {
         const bySats = b.sats - a.sats;
         if (bySats !== 0) {
@@ -4722,10 +4744,60 @@ export class PostgresMessageStore implements MessageStore {
    * `photo` bytea column. Name-copy profile notes without a photo, extra
    * stills, or video are omitted. A real About me stays.
    *
-   * @param query - Mode, limit, exclusive keyset cursor, staff ids, and optional hashtag.
+   * With a `country`, the country is read from each row's own coordinates
+   * ({@link placeCountryCode}): pinned rows are read in keyset batches of
+   * {@link COUNTRY_FEED_BATCH}, in feed order and with every other filter,
+   * until the page is full or no row is left. No single query loads every pin,
+   * a page that fills early stops reading, and a row is judged by the
+   * coordinates read with it. A country with few matches walks the pinned rows
+   * after the cursor, one batch per {@link COUNTRY_FEED_BATCH} rows.
+   *
+   * @param query - Mode, limit, exclusive keyset cursor, staff ids, and optional hashtag and country.
    * @returns Mapped list rows.
    */
   async listFeed(query: MessageFeedQuery): Promise<MessageListRow[]> {
+    const { country, ...rest } = query;
+    if (country === undefined || country === '') {
+      return this.#listFeedPage(rest, false);
+    }
+    const matches: MessageListRow[] = [];
+    let cursor = query.cursor;
+    for (;;) {
+      const batch = await this.#listFeedPage({ ...rest, limit: COUNTRY_FEED_BATCH, cursor }, true);
+      for (const row of batch) {
+        if (
+          row.place !== undefined &&
+          row.place !== null &&
+          placeCountryCode(row.place) === country
+        ) {
+          matches.push(row);
+          if (matches.length === query.limit) {
+            return matches;
+          }
+        }
+      }
+      const last = batch[batch.length - 1];
+      if (last === undefined || batch.length < COUNTRY_FEED_BATCH) {
+        return matches;
+      }
+      cursor =
+        query.mode === 'popular'
+          ? { k: 's', s: last.sats, c: last.createdAt, i: last.id }
+          : { k: 't', c: last.createdAt, i: last.id };
+    }
+  }
+
+  /**
+   * One keyset page for {@link listFeed}, without the country filter.
+   *
+   * @param query - The feed query without `country`.
+   * @param pinnedOnly - Keep only rows with both place coordinates.
+   * @returns Mapped list rows.
+   */
+  async #listFeedPage(
+    query: Omit<MessageFeedQuery, 'country'>,
+    pinnedOnly: boolean,
+  ): Promise<MessageListRow[]> {
     const params: unknown[] = [query.limit];
     const filters: string[] = [
       'parent_id IS NULL',
@@ -4762,6 +4834,9 @@ export class PostgresMessageStore implements MessageStore {
     if (typeof hashtag === 'string' && hashtag !== '') {
       params.push(posixHashtagTokenPattern(hashtag));
       filters.push(`text ~* $${params.length}`);
+    }
+    if (pinnedOnly) {
+      filters.push('place_lat IS NOT NULL AND place_lng IS NOT NULL');
     }
     if (query.cursor !== null) {
       if (query.mode === 'popular') {
