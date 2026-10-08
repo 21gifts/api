@@ -480,7 +480,7 @@ describe('syncShopOcpPlace', () => {
       baseUrl: 'http://map.test',
       token: 'secret',
       fetchImpl: async () => {
-        throw new Error('down');
+        throw Object.assign(new Error('down'), { address: 'addr-must-not-appear' });
       },
     };
     await expect(
@@ -498,9 +498,11 @@ describe('syncShopOcpPlace', () => {
     expect(failed).toHaveLength(2);
     expect(failed[0]?.['status']).toBe(500);
     expect(failed[1]?.['name']).toBe('Error');
+    expect(failed[1]).not.toHaveProperty('address');
     const warned = warn.mock.calls.map((call) => String(call[0])).join('\n');
     expect(warned).not.toContain('secret');
     expect(warned).not.toContain('down');
+    expect(warned).not.toContain('addr-must-not-appear');
   });
 
   it('logs ocp.place.failed with the syscall code from cause', async () => {
@@ -763,7 +765,7 @@ describe('removeShopOcpPlace', () => {
       baseUrl: 'http://map.test',
       token: 'secret',
       fetchImpl: async () => {
-        throw new Error('down');
+        throw Object.assign(new Error('down'), { address: 'addr-must-not-appear' });
       },
     };
     await expect(
@@ -776,9 +778,11 @@ describe('removeShopOcpPlace', () => {
     expect(failed).toHaveLength(2);
     expect(failed[0]?.['status']).toBe(500);
     expect(failed[1]?.['name']).toBe('Error');
+    expect(failed[1]).not.toHaveProperty('address');
     const warned = warn.mock.calls.map((call) => String(call[0])).join('\n');
     expect(warned).not.toContain('secret');
     expect(warned).not.toContain('down');
+    expect(warned).not.toContain('addr-must-not-appear');
   });
 });
 
@@ -951,7 +955,7 @@ describe('publishExistingShopPlaces', () => {
       baseUrl: 'http://map.test',
       token: 'secret',
       fetchImpl: async () => {
-        throw new Error('down');
+        throw Object.assign(new Error('down'), { address: 'addr-must-not-appear' });
       },
     };
     await expect(
@@ -971,12 +975,14 @@ describe('publishExistingShopPlaces', () => {
     const failed = parsedEvents(warn).filter((e) => e['event'] === 'ocp.place.failed');
     expect(failed).toHaveLength(1);
     expect(failed[0]?.['name']).toBe('Error');
+    expect(failed[0]).not.toHaveProperty('address');
     expect(Object.keys(failed[0] ?? {}).filter((key) => key !== 'ts' && key !== 'event')).toEqual([
       'name',
     ]);
     const warned = warn.mock.calls.map((call) => String(call[0])).join('\n');
     expect(warned).not.toContain('down');
     expect(warned).not.toContain('secret');
+    expect(warned).not.toContain('addr-must-not-appear');
   });
 
   it('logs ocp.place.failed once when listPlaces throws and does not reject', async () => {
