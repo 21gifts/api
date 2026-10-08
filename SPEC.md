@@ -2342,7 +2342,7 @@ two `wallet_payment` exceptions under `POST /me/wallet/report` (Storage).
 - `wallet_payment`: one row per member and wallet payment id, key
   `(account_id, payment_id)`. `direction` (`in` / `out`, seen from
   `account_id`), `status` (`pending` / `completed` / `failed`), `amount_sats`,
-  `fee_sats`, `paid_at` (payment time the app reported), `method` (as reported,
+  `fee_sats`, `paid_at` (payment time the app reported), `method` (reported, lower-cased,
   e.g. `lightning`, `spark`, `onchain`), `payment_hash`, `invoice` (BOLT11 or
   Spark invoice), `destination`, `description`, `lnurl_comment` (each `null`
   when not reported or screened out), `category`, `counterparty_account_id`
@@ -3655,8 +3655,9 @@ at most 50 events.
   a key token or a recovery-phrase run across segments) drops the event.
 - `props`: optional flat object, at most 20 keys; key `[A-Za-z][A-Za-z0-9_]{0,39}`;
   value `null`, boolean, finite number, or string up to 200 characters. Keys
-  naming secret material (seed, mnemonic, phrase, preimage, private key,
-  secret, PRF, nsec, password, …) and secret-shaped string values are dropped;
+  naming secret material or a credential (seed, mnemonic, phrase, preimage,
+  private key, secret, PRF, nsec, password, token, authorization, bearer,
+  cookie, credential, session, …) and secret-shaped string values are dropped;
   other invalid keys are dropped too.
   The path and string props are also screened inside encoded tokens, as for the
   wallet report. The same limit as for the wallet report applies: a raw 32-byte value under a

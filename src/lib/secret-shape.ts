@@ -1,4 +1,4 @@
-/** Substrings that mark a body/prop key as secret material (matched case-insensitively). */
+/** Substrings that mark a body/prop key as secret material or a credential (matched case-insensitively). */
 const SECRET_FIELD_TOKENS: readonly string[] = [
   'seed',
   'mnemonic',
@@ -14,6 +14,12 @@ const SECRET_FIELD_TOKENS: readonly string[] = [
   'passphrase',
   'spendingkey',
   'spendkey',
+  'token',
+  'authorization',
+  'bearer',
+  'cookie',
+  'credential',
+  'session',
 ];
 
 /** An encoded key (`nsec1…`, `xprv…` and the other extended private key prefixes) starting a token. */

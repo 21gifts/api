@@ -16,6 +16,13 @@ describe('isSecretFieldName', () => {
     'password',
     'passphrase',
     'spendingkey',
+    'spendkey',
+    'token',
+    'authorization',
+    'bearer',
+    'cookie',
+    'credential',
+    'session',
   ])('matches the token %s as a case-insensitive substring', (token) => {
     expect(isSecretFieldName(token)).toBe(true);
     expect(isSecretFieldName(token.toUpperCase())).toBe(true);

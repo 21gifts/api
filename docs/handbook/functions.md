@@ -3778,7 +3778,7 @@ Builds the operator-only external-pubkey inspection route.
 
 ## Function: isSecretFieldName
 
-- **Purpose:** Tell whether a body or prop key names secret material, so the member-data ingest never reads or stores it. The name is lower-cased and stripped of every non-alphanumeric character (so `spending_key`, `priv-key`, and `x.prv` count), then matched as a substring against `seed`, `mnemonic`, `phrase`, `preimage`, `private`, `privkey`, `secret`, `prf`, `nsec`, `xprv`, `password`, `passphrase`, `spendingkey`, and `spendkey`.
+- **Purpose:** Tell whether a body or prop key names secret material, so the member-data ingest never reads or stores it. The name is lower-cased and stripped of every non-alphanumeric character (so `spending_key`, `priv-key`, and `x.prv` count), then matched as a substring against `seed`, `mnemonic`, `phrase`, `preimage`, `private`, `privkey`, `secret`, `prf`, `nsec`, `xprv`, `password`, `passphrase`, `spendingkey`, `spendkey`, `token`, `authorization`, `bearer`, `cookie`, `credential`, and `session`.
 - **Inputs:** One key name.
 - **Returns / side effects:** `true` when the key contains one of those tokens. Pure; no logging.
 - **Used by:** `parseMemberEventBatch` (prop keys are skipped). `parseWalletReport` reads only its named fields, so a secret-named key in a wallet report is never read at all.

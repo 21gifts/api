@@ -233,6 +233,31 @@ describe('parseMemberEventBatch', () => {
     expect(JSON.stringify(result)).not.toContain(raw);
   });
 
+  it('skips credential-named props holding a raw 64-hex session token', () => {
+    const raw = 'cd'.repeat(32);
+    const result = parse({
+      events: [
+        event({
+          props: {
+            token: raw,
+            sessionToken: raw,
+            authorization: `Bearer ${raw}`,
+            bearer: raw,
+            cookie: raw,
+            credential: raw,
+            count: 3,
+          },
+        }),
+      ],
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) {
+      return;
+    }
+    expect(result.events[0]?.props).toEqual({ count: 3 });
+    expect(JSON.stringify(result)).not.toContain(raw);
+  });
+
   it('drops a path holding a percent-encoded non-English phrase', () => {
     const japanese =
       'あいこくしん　あいさつ　あいだ　あおぞら　あかちゃん　あきる　あけがた　あける　あこがれる　あさい　あさひ　あしあと';
