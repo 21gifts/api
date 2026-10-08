@@ -2327,6 +2327,48 @@ secret. A cursor that does not match the key is **Response** `400`
 `{ "error": "Not found" }`. A store failure is **Response** `503`
 `{ "error": "Database is unavailable" }`.
 
+#### Wallet and interaction tables
+
+`GET /debug/db` lists `wallet_balance_snapshot`, `wallet_payment`, and
+`member_event` like every other table; `?table=<name>` pages their rows. They
+are filled by `POST /me/wallet/report` and `POST /me/events`
+(`docs/schema/wallet.sql`, `docs/schema/member_event.sql`). No column is
+redacted. An account merge moves these rows to the surviving account, with the
+two `wallet_payment` exceptions under `POST /me/wallet/report` (Storage).
+
+- `wallet_balance_snapshot`: one row per accepted report. `id`, `account_id`
+  (reporting member), `balance_sats` (wallet balance at sync), `synced_at`
+  (sync time the app reported), `received_at` (server time of the report).
+- `wallet_payment`: one row per member and wallet payment id, key
+  `(account_id, payment_id)`. `direction` (`in` / `out`, seen from
+  `account_id`), `status` (`pending` / `completed` / `failed`), `amount_sats`,
+  `fee_sats`, `paid_at` (payment time the app reported), `method` (as reported,
+  e.g. `lightning`, `spark`, `onchain`), `payment_hash`, `invoice` (BOLT11 or
+  Spark invoice), `destination`, `description`, `lnurl_comment` (each `null`
+  when not reported or screened out), `category`, `counterparty_account_id`
+  (the other member, platform account, or shop account when the category
+  resolved one), `first_seen_at` (report that first stored the row),
+  `updated_at` (last change of a stored value), `last_observed_at` (last
+  accepted report that carried the payment).
+- `member_event`: one row per accepted event. `id`, `account_id`, `name` (one
+  of `MEMBER_EVENT_NAMES`), `at` (client time), `path` (no query or fragment),
+  `props` (flat JSON object of scalars), `received_at` (server time of the
+  batch).
+
+`category`, first match wins (full rules under `POST /me/wallet/report`): `gift`
+for an invoice the api issued for a forum or conversation note or an indexed zap
+receipt (`platform` when the other side is the platform account); `shop` for a
+point-of-sale charge; then, for another account of this deployment found by
+own-host Lightning address or Spark key, `platform` (platform account), `shop`
+(live `#21GiftsShop` note), or `member`; otherwise `onchain`,
+`outside_lightning`, or `unknown`.
+
+A payment between two members is reported by both wallets: the payer's row has
+`direction` `out`, the payee's row has `direction` `in`, and their `payment_id`
+values can differ. When the apps reported it, the two rows share `payment_hash`
+(Lightning) or `invoice` (Spark invoice), so a total over all members counts
+such a payment once, not once per row.
+
 ### `GET /debug/accounts`
 
 Operator listing of every stored account. Authenticated with
