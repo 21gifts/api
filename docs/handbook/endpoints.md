@@ -461,6 +461,13 @@
 - **Used by:** the external spend worker after LNDHub `payinvoice` returns a preimage.
 - **Auth:** `Authorization: Bearer` matching `SPEND_API_TOKEN`.
 
+## Endpoint: POST /spend/daily-instruction
+
+- **Purpose:** Spend-worker only. Bearer `SPEND_API_TOKEN`. Body `{ address }`. Extra keys are ignored. The kind is always daily. Auth runs before JSON parsing and before gifts or roster. After a valid address, facts are: missing account → no passkey, no post, no media, `messageId` null, not eligible, omit grant status (no message or funding read); else passkey, posted fields as `GET /invoices/posted` (no media lookup when `hasPosted` is false), and eligible / grant status as `GET /invoices/eligible` (`basis` omits the grant). A configured gift store lists outbound gifts and sets the same-UTC-day welcome flag; an omitted gift store does not apply that rule. Then the daily roster is read and `decideCliDailyInstruction` returns the skip or pay. A skip is not logged. The token, comments, and Lightning addresses are not logged.
+- **Errors:** 503 `{ error: 'Spend invoices are not configured' }` if the token env is unset (before body and roster); 401 `{ error: 'Unauthorized' }` wrong/missing Bearer; 400 `{ error: 'Expected a JSON body with address' }` on JSON parse failure, a non-object body, or a missing or non-string `address`; 400 `{ error: 'Not a valid Lightning Address (expected name@domain)' }` when `address` is a string that is not a Lightning Address; 503 `{ error: 'Gift ledger unreadable' }` when listing outbound gifts throws (roster `get` is not called); 503 `{ error: 'Daily roster is not configured' }` when the roster client is omitted (after the gift read); a `DailyRosterRequestError` keeps its status and `{ error }`; any other roster throw is 502 `{ error: 'Daily roster is unavailable' }`.
+- **Used by:** the external spend worker before paying a daily gift.
+- **Auth:** `Authorization: Bearer` matching `SPEND_API_TOKEN`.
+
 ## Endpoint: GET /lightning-address
 
 - **Purpose:** Query `address=local@domain`. Resolves LUD-16, cached 5 minutes on success.

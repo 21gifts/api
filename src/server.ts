@@ -20,6 +20,7 @@ import { debugRoutes } from '@/routes/debug';
 import { bindGoalRateDay, giftsStatsRoutes } from '@/routes/stats';
 import { giftsRoutes } from '@/routes/gifts';
 import { invoiceRoutes } from '@/routes/invoices';
+import { spendInstructionRoutes } from '@/routes/spend-instruction-route';
 import { messagesRoutes } from '@/routes/messages';
 import { resolveActivityPing } from '@/lib/ocp-activity';
 import { resolveMapPush, type MapPush } from '@/lib/ocp-place';
@@ -774,6 +775,18 @@ export function createApp(deps: AppDeps = {}): Hono {
       fiatRates,
       gifts: giftStore,
       ...(giftRecorder === undefined ? {} : { giftRecorder }),
+    }),
+  );
+  app.route(
+    '/spend',
+    spendInstructionRoutes({
+      spendApiToken,
+      authStore: store,
+      messageStore,
+      fundingStore,
+      gifts: giftStore,
+      ...(dailyRoster === undefined ? {} : { dailyRoster }),
+      now,
     }),
   );
 

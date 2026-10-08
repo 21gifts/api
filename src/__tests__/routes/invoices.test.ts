@@ -2233,6 +2233,88 @@ describe('POST /invoices', () => {
     expect(fetchImpl).toHaveBeenCalled();
   });
 
+  it('stores comment Welcome without messageId or groupMessageId and records kind welcome', async () => {
+    mockedDecode.mockReturnValue({ paymentHash: MATCHING_HASH, amountMsat: 1000 });
+    const authStore = new InMemoryAuthStore();
+    await seedPasskeyAccount(authStore);
+    const invoiceStore = new InMemoryInvoiceStore();
+    const recorded: GiftRecord[] = [];
+    const welcomeToday: GiftRow = {
+      paidAt: new Date('2026-09-20T08:00:00.000Z'),
+      amountSats: 1000,
+      recipientWosUser: 'Alice',
+      kind: 'welcome',
+    };
+    const app = createApp({
+      spendApiToken: TOKEN,
+      authStore,
+      messageStore: livePostStore(),
+      invoiceStore,
+      fetchImpl: happyFetch(),
+      giftStore: new InMemoryGiftStore([welcomeToday]),
+      now: () => NOW_MS,
+      giftRecorder: {
+        recordOutbound: async (row) => {
+          recorded.push(row);
+        },
+      },
+    });
+    const issued = await app.request(
+      '/invoices',
+      auth({
+        method: 'POST',
+        body: JSON.stringify({ address: ADDRESS, amountMsat: 1000, comment: 'Welcome' }),
+      }),
+    );
+    expect(issued.status).toBe(200);
+    const body = (await issued.json()) as { id: string };
+    const row = invoiceStore.get(body.id);
+    expect(row?.comment).toBe('Welcome');
+    expect(row?.messageId).toBeUndefined();
+    expect(row?.groupMessageId).toBeUndefined();
+    const proved = await app.request(
+      '/invoices/proof',
+      auth({
+        method: 'POST',
+        body: JSON.stringify({ id: body.id, preimage: PREIMAGE }),
+      }),
+    );
+    expect(proved.status).toBe(200);
+    expect(recorded[0]?.kind).toBe('welcome');
+  });
+
+  it('stores comment Welcome when groupMessageId is stored', async () => {
+    const authStore = new InMemoryAuthStore();
+    await seedPasskeyAndPlatform(authStore);
+    const conversationStore = new InMemoryConversationStore();
+    await seedGroupTrigger(conversationStore);
+    const invoiceStore = new InMemoryInvoiceStore();
+    const res = await createApp({
+      spendApiToken: TOKEN,
+      authStore,
+      messageStore: uuidPostStore(),
+      invoiceStore,
+      fetchImpl: happyFetch(),
+      conversationStore,
+    }).request(
+      '/invoices',
+      auth({
+        method: 'POST',
+        body: JSON.stringify({
+          address: ADDRESS,
+          amountMsat: 1000,
+          groupMessageId: GROUP_MSG_ID,
+          comment: 'Welcome',
+        }),
+      }),
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { id: string };
+    expect(invoiceStore.get(body.id)?.groupMessageId).toBe(GROUP_MSG_ID);
+    expect(invoiceStore.get(body.id)?.comment).toBe('Welcome');
+    expect(invoiceStore.get(body.id)?.messageId).toBeUndefined();
+  });
+
   it('returns 200 when groupMessageId is set even if a welcome gift was paid today', async () => {
     const authStore = new InMemoryAuthStore();
     await seedPasskeyAndPlatform(authStore);

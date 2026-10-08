@@ -3692,6 +3692,35 @@ Success → **Response** `200`:
 { "status": "paid", "id": "<id>", "paymentHash": "<64 hex>" }
 ```
 
+### `POST /spend/daily-instruction`
+
+Spend-worker daily instruction. Bearer `SPEND_API_TOKEN`. Body `{ "address" }`.
+Extra keys are ignored. The kind is always daily. The api collects passkey,
+live top-level post, media, funding eligibility, the same-UTC-day welcome
+flag, and the daily roster, then returns whether to pay and the amount,
+comment, and optional `messageId`. Spend does not choose those fields.
+
+Auth runs before JSON parsing and before gifts or roster. Unset or blank
+token → **503** `{ "error": "Spend invoices are not configured" }`. Missing
+or wrong `Authorization: Bearer` → **401** `{ "error": "Unauthorized" }`.
+
+JSON parse failure, a non-object body, or a missing or non-string `address`
+→ **400** `{ "error": "Expected a JSON body with address" }`. A string that
+is not a Lightning Address → **400**
+`{ "error": "Not a valid Lightning Address (expected name@domain)" }`.
+
+A gift-ledger list throw → **503** `{ "error": "Gift ledger unreadable" }`
+and does not read the roster. An omitted gift store does not apply the
+welcome-paid rule. An omitted roster client → **503**
+`{ "error": "Daily roster is not configured" }` after the gift read. A
+roster request error keeps its status and `{ "error" }`. Any other roster
+throw → **502** `{ "error": "Daily roster is unavailable" }`.
+
+Success is always **200**: `{ "action": "skip", "reason" }` or
+`{ "action": "pay", "amountUsd", "comment" }` plus `messageId` only when
+the decision includes it. A skip is not logged. The token, comments, and
+Lightning addresses are not logged.
+
 ### `GET /messages`
 
 Public member forum thread. With no `Authorization` header, `mode=active`,

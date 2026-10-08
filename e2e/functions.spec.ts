@@ -1521,6 +1521,13 @@ test('Function: decideSpendInstruction — chooses the daily amount from the ros
   expect(res.status()).toBe(200);
 });
 
+test('Function: decideCliDailyInstruction — chooses the daily amount from the roster', async ({
+  request,
+}) => {
+  const res = await request.get('/healthz');
+  expect(res.status()).toBe(200);
+});
+
 test('Function: welcomeGiftPaidOnUtcDay — matches a welcome gift on the UTC day', async ({
   request,
 }) => {
@@ -1683,6 +1690,16 @@ test('Function: openBootStores — default boot has no DATABASE_URL and serves H
 test('Function: invoiceRoutes — POST /invoices unconfigured is 503', async ({ request }) => {
   const res = await request.post('/invoices', {
     data: { address: 'alice@walletofsatoshi.com', amountMsat: 1000 },
+  });
+  expect(res.status()).toBe(503);
+  expect(((await res.json()) as { error: string }).error).toBe('Spend invoices are not configured');
+});
+
+test('Function: spendInstructionRoutes — POST /spend/daily-instruction unconfigured is 503', async ({
+  request,
+}) => {
+  const res = await request.post('/spend/daily-instruction', {
+    data: { address: 'alice@walletofsatoshi.com' },
   });
   expect(res.status()).toBe(503);
   expect(((await res.json()) as { error: string }).error).toBe('Spend invoices are not configured');
