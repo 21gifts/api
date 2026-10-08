@@ -170,19 +170,23 @@ test('POST /me/events without bearer is 401', async ({ request }) => {
   expect(res.status()).toBe(401);
 });
 
-test('POST /me/events with a session accepts one and drops one', async ({ request }) => {
+test('POST /me/events with a session accepts login and logout and drops unknown names', async ({
+  request,
+}) => {
   const auth = await memberSession(request);
   const res = await request.post('/me/events', {
     headers: auth,
     data: {
       events: [
         { name: 'login', at: new Date().toISOString() },
+        { name: 'logout', at: new Date().toISOString() },
+        { name: 'wallet_unlocked', at: new Date().toISOString() },
         { name: 'not_a_real_event', at: new Date().toISOString() },
       ],
     },
   });
   expect(res.status()).toBe(200);
-  expect(await res.json()).toEqual({ accepted: 1, dropped: 1 });
+  expect(await res.json()).toEqual({ accepted: 2, dropped: 2 });
 });
 
 test('Function: capPasskeyRenewText — POST /me/passkey-renew/report without bearer is 401', async ({
