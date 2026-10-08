@@ -1514,18 +1514,24 @@ test('Function: NoopSpendPing — default boot has no SPEND_URL', async ({ reque
   expect(res.status()).toBe(200);
 });
 
-test('Function: decideSpendInstruction — chooses the daily amount from the roster', async ({
+test('Function: decideSpendInstruction — POST /spend/daily-instruction unconfigured is 503', async ({
   request,
 }) => {
-  const res = await request.get('/healthz');
-  expect(res.status()).toBe(200);
+  const res = await request.post('/spend/daily-instruction', {
+    data: { address: 'alice@walletofsatoshi.com' },
+  });
+  expect(res.status()).toBe(503);
+  expect(((await res.json()) as { error: string }).error).toBe('Spend invoices are not configured');
 });
 
-test('Function: decideCliDailyInstruction — chooses the daily amount from the roster', async ({
+test('Function: decideCliDailyInstruction — POST /spend/daily-instruction unconfigured is 503', async ({
   request,
 }) => {
-  const res = await request.get('/healthz');
-  expect(res.status()).toBe(200);
+  const res = await request.post('/spend/daily-instruction', {
+    data: { address: 'alice@walletofsatoshi.com' },
+  });
+  expect(res.status()).toBe(503);
+  expect(((await res.json()) as { error: string }).error).toBe('Spend invoices are not configured');
 });
 
 test('Function: welcomeGiftPaidOnUtcDay — matches a welcome gift on the UTC day', async ({
