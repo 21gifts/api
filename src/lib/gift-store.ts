@@ -4,6 +4,7 @@ import {
   crossForPaymentDay,
   fiatFromUsd,
   paymentRateDays,
+  quoteFromLargestSibling,
   satsToUsdCents,
   usdCentsToString,
   type FiatCrossRates,
@@ -164,6 +165,81 @@ export async function repairGiftKind(sql: SqlClient): Promise<void> {
   await sql.execute(`ALTER TABLE gift ALTER COLUMN kind SET NOT NULL`);
 }
 
+interface GiftSiblingRow {
+  paid_at: Date | string;
+  fiat_usd?: string | number | null;
+  fiat_chf?: string | number | null;
+  fiat_eur?: string | number | null;
+  fiat_php?: string | number | null;
+}
+
+interface SiblingQuotes {
+  chf: { usd: string; quote: string }[];
+  eur: { usd: string; quote: string }[];
+  php: { usd: string; quote: string }[];
+}
+
+/** Same-day gifts that already store a USD amount and at least one cross. */
+const GIFT_SIBLING_SQL = `SELECT paid_at, fiat_usd::text AS fiat_usd,
+            fiat_chf::text AS fiat_chf, fiat_eur::text AS fiat_eur,
+            fiat_php::text AS fiat_php
+     FROM gift
+     WHERE fiat_usd IS NOT NULL
+       AND (fiat_chf IS NOT NULL OR fiat_eur IS NOT NULL OR fiat_php IS NOT NULL)
+       AND paid_at >= $1::timestamptz
+       AND paid_at < $2::timestamptz`;
+
+/**
+ * Quotes already stored on the candidate days, grouped by UTC day.
+ *
+ * The window is the first candidate day through the start of the day after
+ * the last. A row outside those days is ignored. The statement does not
+ * select rows whose USD amount is null.
+ *
+ * @param sql - Parameter-bound SQL client.
+ * @param days - UTC days that have a gift still missing a cross.
+ * @returns Per-day CHF, EUR, and PHP references.
+ */
+async function loadSiblingQuotes(
+  sql: SqlClient,
+  days: readonly string[],
+): Promise<Map<string, SiblingQuotes>> {
+  const out = new Map<string, SiblingQuotes>();
+  const sorted = [...days].sort();
+  const first = sorted[0] as string;
+  const last = sorted[sorted.length - 1] as string;
+  const year = Number(last.slice(0, 4));
+  const month = Number(last.slice(5, 7));
+  const date = Number(last.slice(8, 10));
+  const rows = await sql.query<GiftSiblingRow>(GIFT_SIBLING_SQL, [
+    `${first}T00:00:00.000Z`,
+    new Date(Date.UTC(year, month - 1, date + 1)).toISOString(),
+  ]);
+  const wanted = new Set(days);
+  for (const row of rows) {
+    const day = utcDayOrNull(row.paid_at);
+    const usd = textOrNull(row.fiat_usd);
+    if (day === null || usd === null || !wanted.has(day)) {
+      continue;
+    }
+    const bucket = out.get(day) ?? { chf: [], eur: [], php: [] };
+    const chf = textOrNull(row.fiat_chf);
+    const eur = textOrNull(row.fiat_eur);
+    const php = textOrNull(row.fiat_php);
+    if (chf !== null) {
+      bucket.chf.push({ usd, quote: chf });
+    }
+    if (eur !== null) {
+      bucket.eur.push({ usd, quote: eur });
+    }
+    if (php !== null) {
+      bucket.php.push({ usd, quote: php });
+    }
+    out.set(day, bucket);
+  }
+  return out;
+}
+
 /**
  * Add stored fiat columns and backfill priceable gifts from daily tables.
  *
@@ -171,8 +247,9 @@ export async function repairGiftKind(sql: SqlClient): Promise<void> {
  * priced from that UTC day's BTC-USD rate and is left alone when that day
  * has none; an earlier day's bitcoin price is not reused. A row that already
  * has `fiat_usd` keeps that USD. A null CHF, EUR, or PHP cross is filled from
- * the nearest published quote on or before the payment day, within 10 days.
- * A `paid_at` that is not a real timestamp is skipped. `kind` is added here
+ * the largest same-day gift that already has that cross. When that day has no
+ * such gift, the nearest published quote on or before the payment day is used,
+ * within 10 days. A `paid_at` that is not a real timestamp is skipped. `kind` is added here
  * as a nullable column. {@link repairGiftKind} classifies it after the audit
  * trigger.
  *
@@ -227,6 +304,7 @@ export async function migrateGiftSchema(sql: SqlClient): Promise<void> {
   for (const [day, value] of rates) {
     crossBook.set(day, value.crosses);
   }
+  const siblings = await loadSiblingQuotes(sql, days);
   for (const row of candidates) {
     const day = utcDayOrNull(row.paid_at);
     if (day === null) {
@@ -249,7 +327,13 @@ export async function migrateGiftSchema(sql: SqlClient): Promise<void> {
         );
         continue;
       }
-      const fiat = fiatFromUsd(storedUsd, crossForPaymentDay(crossBook, day));
+      const book = fiatFromUsd(storedUsd, crossForPaymentDay(crossBook, day));
+      const sameDay = siblings.get(day);
+      const fiat = {
+        chf: quoteFromLargestSibling(storedUsd, sameDay?.chf ?? []) ?? book.chf,
+        eur: quoteFromLargestSibling(storedUsd, sameDay?.eur ?? []) ?? book.eur,
+        php: quoteFromLargestSibling(storedUsd, sameDay?.php ?? []) ?? book.php,
+      };
       const fillsChf = textOrNull(row.fiat_chf) === null && fiat.chf !== null;
       const fillsEur = textOrNull(row.fiat_eur) === null && fiat.eur !== null;
       const fillsPhp = textOrNull(row.fiat_php) === null && fiat.php !== null;

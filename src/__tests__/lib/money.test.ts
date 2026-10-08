@@ -6,6 +6,7 @@ import {
   fiatFromUsd,
   normalizeAmountUsd,
   paymentRateDays,
+  quoteFromLargestSibling,
   shownFiatFromBody,
   parseUsdPerBtc,
   satsToBtcString,
@@ -109,6 +110,40 @@ describe('crossForPaymentDay', () => {
         '2026-10-08',
       ),
     ).toEqual({ PHP: '50', CHF: '0.80' });
+  });
+});
+
+describe('quoteFromLargestSibling', () => {
+  it('scales from the largest positive reference and rounds half up', () => {
+    const refs = [
+      { usd: '1.00', quote: '60.00' },
+      { usd: '3.00', quote: '188.43' },
+      { usd: '0.00', quote: '999.00' },
+      { usd: '10.00', quote: '0.00' },
+    ];
+    expect(quoteFromLargestSibling('1.00', refs)).toBe('62.81');
+    expect(quoteFromLargestSibling('1.00', [{ usd: '3.00', quote: '2.50' }])).toBe('0.83');
+    expect(quoteFromLargestSibling('1.00', [{ usd: '2.00', quote: '0.01' }])).toBe('0.01');
+    expect(quoteFromLargestSibling('3.00', [{ usd: '3.00', quote: '2.68' }])).toBe('2.68');
+  });
+
+  it('returns null for an unusable amount and does not throw', () => {
+    expect(quoteFromLargestSibling('1.00', [])).toBeNull();
+    expect(quoteFromLargestSibling('0.00', [{ usd: '3.00', quote: '1.00' }])).toBeNull();
+    expect(quoteFromLargestSibling('nope', [{ usd: '3.00', quote: '1.00' }])).toBeNull();
+    expect(quoteFromLargestSibling('1.00', [{ usd: 'nope', quote: '1.00' }])).toBeNull();
+    expect(
+      quoteFromLargestSibling('90071992547409.91', [{ usd: '1.00', quote: '90071992547409.91' }]),
+    ).toBeNull();
+  });
+
+  it('keeps the first reference when two have the same USD amount', () => {
+    expect(
+      quoteFromLargestSibling('1.00', [
+        { usd: '3.00', quote: '188.43' },
+        { usd: '3.00', quote: '180.00' },
+      ]),
+    ).toBe('62.81');
   });
 });
 

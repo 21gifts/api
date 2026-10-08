@@ -72,16 +72,16 @@
 
 ## Function: buildGiftDay
 
-- **Purpose:** Pure list of outbound gifts that fall on one UTC calendar day. The stored payment-time USD/CHF/EUR/PHP is what is returned; a legacy row with no snapshot still uses that day's close.
+- **Purpose:** Pure list of outbound gifts that fall on one UTC calendar day. The stored payment-time USD/CHF/EUR/PHP is what is returned; a legacy row with no snapshot still uses that day's close. A null CHF, EUR, or PHP on a stored snapshot is scaled from the largest same-day gift that has a positive USD amount and that cross. The stored USD is not changed. A missing cross with no such gift stays null.
 - **Inputs:** `day` (`YYYY-MM-DD`), `readonly GiftRow[]` (other days ignored), `ReadonlyMap` of UTC day → USD-per-BTC, optional `ReadonlyMap` of UTC day → USD→CHF/EUR/PHP. Empty matching set needs no rates.
 - **Returns / side effects:** `GiftDay` (`gifts` sorted by `paidAt` then `recipient`) with `totalChf`/`totalEur`/`totalPhp` and `fx.quotes`. Empty day is `"0.00"` fiat and USD-only `quotes`. Throws `Error('fx.rate.missing')` when a listed gift has no BTC-USD rate. Missing CHF/EUR/PHP is JSON `null`, never a throw. No I/O.
 - **Used by:** `giftsRoutes`.
 
 ## Function: buildAccountActivity
 
-- **Purpose:** Aggregate given and received sats for one account: confirmed forum zaps paid by the account, indexed zaps on notes it authored including hidden, plus `message.sats` remainder on **top-level** notes only (gift-as-reply `sats` are not Received), house gifts to its Lightning handle, and every outbound house gift when `isPlatform` is true. Does not change `GET /gifts/stats`. Activity series (`donatedOverTime` / `receivedOverTime`) are the same `spendOverTime` day objects as `GET /gifts/stats` including additive CHF/EUR/PHP. The stored payment-time USD/CHF/EUR/PHP is what is returned.
+- **Purpose:** Aggregate given and received sats for one account: confirmed forum zaps paid by the account, indexed zaps on notes it authored including hidden, plus `message.sats` remainder on **top-level** notes only (gift-as-reply `sats` are not Received), house gifts to its Lightning handle, and every outbound house gift when `isPlatform` is true. Does not change `GET /gifts/stats`. Activity series (`donatedOverTime` / `receivedOverTime`) are the same `spendOverTime` day objects as `GET /gifts/stats` including additive CHF/EUR/PHP. The stored payment-time USD is what is returned. A null CHF, EUR, or PHP on that snapshot is scaled from the largest same-day gift that already has that cross.
 - **Inputs:** `{ account, gifts, messages, rates, now, fiatRates? }`. Uses `listInvoiceAttemptsForPayer`, `listIndexedZapIngests`, `listAuthoredMessages`, `listOutbound`, and `giftsForRecipient`. Optional `fiatRates` defaults to an empty `InMemoryFiatStore`.
-- **Returns / side effects:** `AccountActivity` (`donatedSats`, `receivedSats`, `donatedOverTime`, `receivedOverTime`, `fx`). Empty input is zeros with USD-only `fx.quotes`, without Coinbase and without Frankfurter. Throws `Error('fx.rate.missing')` only when a row omits `amountUsd` and that UTC day has no BTC-USD rate after `ensureDays`. A set `amountUsd` (including `null`) is the stored snapshot: it is not recomputed and it does not throw. Missing CHF/EUR/PHP is JSON `null`, never a throw (`account.activity.fiat_failed` still returns USD).
+- **Returns / side effects:** `AccountActivity` (`donatedSats`, `receivedSats`, `donatedOverTime`, `receivedOverTime`, `fx`). Empty input is zeros with USD-only `fx.quotes`, without Coinbase and without Frankfurter. Throws `Error('fx.rate.missing')` only when a row omits `amountUsd` and that UTC day has no BTC-USD rate after `ensureDays`. A set `amountUsd` (including `null`) is not recomputed from bitcoin and it does not throw. A null CHF, EUR, or PHP on a positive stored USD is scaled from the largest same-day gift that has that cross. A lone missing cross stays JSON `null`, never a throw (`account.activity.fiat_failed` still returns USD).
 - **Used by:** `GET /me/activity`, `GET /members/:accountId/activity`, `GET /view/:viewKey/activity`.
 
 ## Function: matchConfirmedGivenZaps
@@ -100,7 +100,7 @@
 
 ## Function: buildGiftStats
 
-- **Purpose:** Pure aggregation of outbound gifts into the public stats JSON (UTC daily series with gap days and per-day `giftCount` plus `officialCount`, months with gap months, recipients) including BTC strings. `officialCount` is the distinct case-insensitive recipient handles that UTC day with kind `daily` or `welcome` (one person once; moderator excluded; gap days 0). `giftCount` remains every outbound row. The stored payment-time USD/CHF/EUR/PHP is what is returned; a legacy row with no snapshot still uses that day's close.
+- **Purpose:** Pure aggregation of outbound gifts into the public stats JSON (UTC daily series with gap days and per-day `giftCount` plus `officialCount`, months with gap months, recipients) including BTC strings. `officialCount` is the distinct case-insensitive recipient handles that UTC day with kind `daily` or `welcome` (one person once; moderator excluded; gap days 0). `giftCount` remains every outbound row. The stored payment-time USD is what is returned. A null CHF, EUR, or PHP on that snapshot is scaled from the largest same-day gift that has a positive USD amount and that cross. A legacy row with no snapshot still uses that day's close. A missing cross with no such gift stays null, and one null still makes that day's sum null.
 - **Inputs:** `readonly GiftRow[]` (`paidAt`, `amountSats`, `recipientWosUser`, `kind`), `ReadonlyMap<string, string>` of UTC day → USD-per-BTC, optional `ReadonlyMap` of UTC day → USD→CHF/EUR/PHP. Empty rows need no rates.
 - **Returns / side effects:** `GiftStats` with `totalBtc`, `totalUsd`, `totalChf`/`totalEur`/`totalPhp`, `fx` (including `fx.quotes`), BTC/USD/fiat on series/buckets, and `spendOverTime[].officialCount` (not on recipient or month buckets). Throws `Error('fx.rate.missing')` when a gift day has no BTC-USD rate. Missing CHF/EUR/PHP is JSON `null`, never a throw. Gap days and gap months are zero sats/BTC/USD/`officialCount` and `"0.00"` fiat without a rate. No I/O.
 - **Used by:** `giftsStatsRoutes`.
@@ -217,6 +217,13 @@
 - **Returns / side effects:** The crosses that could be filled. Missing quotes are omitted. No I/O.
 - **Used by:** `invoiceRoutes`, `migrateGiftSchema`.
 
+## Function: quoteFromLargestSibling
+
+- **Purpose:** Scale one stored CHF, EUR, or PHP amount onto another USD amount at the rate of the largest same-day gift. The rate is that gift's quote divided by its USD, rounded half up to integer cents. A zero, missing, or unusable amount is skipped. Equal USD amounts keep the first reference.
+- **Inputs:** `amountUsd` text and references `{ usd, quote }`. Both amounts are integer cents (`"5"`, `"5.1"`, `"5.00"`).
+- **Returns / side effects:** A two-decimal quote string, or `null` when nothing can scale, including when the rounded cents exceed `Number.MAX_SAFE_INTEGER`. Does not throw. No I/O.
+- **Used by:** `buildGiftStats`, `buildGiftDay`, `migrateGiftSchema`.
+
 ## Function: fiatFromSats
 
 - **Purpose:** Freeze USD/CHF/EUR/PHP from whole sats at one Coinbase spot. The USD is that spot, not a later UTC-day close.
@@ -289,7 +296,7 @@
 
 ## Function: migrateGiftSchema
 
-- **Purpose:** Adds nullable `fiat_usd`, `fiat_chf`, `fiat_eur`, and `fiat_php` on `gift`, then backfills rows with `amount_sats > 0` and a null `fiat_usd` or a null CHF, EUR, or PHP cross from `btc_usd_daily` and `usd_fiat_daily`. Also adds nullable `kind text`. Classifying existing rows is `repairGiftKind`, after `trg_db_change` is attached. No HTTP. A missing BTC day leaves a row with null `fiat_usd` unchanged; an earlier day's bitcoin price is not reused. A row that already has `fiat_usd` keeps that USD, and a null cross is filled from the nearest published quote on or before that UTC day, within 10 days. `'other'` is not a database value.
+- **Purpose:** Adds nullable `fiat_usd`, `fiat_chf`, `fiat_eur`, and `fiat_php` on `gift`, then backfills rows with `amount_sats > 0` and a null `fiat_usd` or a null CHF, EUR, or PHP cross from `btc_usd_daily` and `usd_fiat_daily`. Also adds nullable `kind text`. Classifying existing rows is `repairGiftKind`, after `trg_db_change` is attached. No HTTP. A missing BTC day leaves a row with null `fiat_usd` unchanged; an earlier day's bitcoin price is not reused. A row that already has `fiat_usd` keeps that USD. A null cross is scaled from the largest same-day gift that already stores that cross. When that day has no such gift, the nearest published quote on or before that UTC day is used, within 10 days. `'other'` is not a database value.
 - **Inputs:** `SqlClient`.
 - **Returns / side effects:** Void; idempotent. A null cross is filled again on a later boot until a quote exists. Does not UPDATE `kind` and does not change a stored `fiat_usd`.
 - **Used by:** `openBootStores` when SQL opens.

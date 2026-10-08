@@ -8,6 +8,7 @@
 
 import { FX_SOURCE_COINBASE_DAILY_CLOSE } from '@/lib/btc-usd-store';
 import {
+  quoteFromLargestSibling,
   satsToBtcString,
   satsToUsdCents,
   usdCentsToFiatCents,
@@ -406,6 +407,103 @@ function storedCents(value: string | null): number | null {
   return Number(match[1]) * 100 + Number(match[2]);
 }
 
+type StoredQuoteKey = 'amountChf' | 'amountEur' | 'amountPhp';
+
+/** A gift whose USD was stored, so a missing cross can be scaled. */
+function isStoredUsd(row: GiftRow): row is GiftRow & { amountUsd: string } {
+  return typeof row.amountUsd === 'string';
+}
+
+/**
+ * Same-day gifts that can price one stored cross.
+ *
+ * A null quote is not a reference. Order is the caller's order.
+ *
+ * @param rows - Stored snapshots already limited to one UTC day.
+ * @param key - Stored cross to copy.
+ * @returns USD plus that quote.
+ */
+function siblingQuoteRefs(
+  rows: readonly (GiftRow & { amountUsd: string })[],
+  key: StoredQuoteKey,
+): { usd: string; quote: string }[] {
+  const refs: { usd: string; quote: string }[] = [];
+  for (const row of rows) {
+    const quote = row[key];
+    if (typeof quote !== 'string') {
+      continue;
+    }
+    refs.push({ usd: row.amountUsd, quote });
+  }
+  return refs;
+}
+
+/**
+ * Fill a null stored cross from the largest same-day gift. An existing cross
+ * stays. No reference leaves the cross null. The stored USD is not changed.
+ *
+ * @param amountUsd - USD of the gift being filled.
+ * @param current - Stored cross, or null when it was not saved.
+ * @param refs - Same-day references for this cross.
+ * @returns The cross to aggregate.
+ */
+function filledStoredQuote(
+  amountUsd: string,
+  current: string | null | undefined,
+  refs: readonly { usd: string; quote: string }[],
+): string | null | undefined {
+  if (typeof current === 'string') {
+    return current;
+  }
+  return quoteFromLargestSibling(amountUsd, refs) ?? current;
+}
+
+/**
+ * Copy missing stored CHF/EUR/PHP from the largest same-day gift that has them.
+ *
+ * A legacy row (`amountUsd` omitted) is unchanged, so a missing daily close
+ * still fails closed. A stored USD with no same-day reference stays null and
+ * still makes that day's sum null. Input rows are not mutated.
+ *
+ * @param rows - Gifts in the order the caller will aggregate.
+ * @returns Rows with null stored crosses filled where a sibling can price them.
+ */
+function withSiblingCrosses(rows: readonly GiftRow[]): GiftRow[] {
+  const byDay = new Map<string, (GiftRow & { amountUsd: string })[]>();
+  for (const row of rows) {
+    if (!isStoredUsd(row)) {
+      continue;
+    }
+    const day = utcDayString(row.paidAt);
+    const list = byDay.get(day) ?? [];
+    list.push(row);
+    byDay.set(day, list);
+  }
+  if (byDay.size === 0) {
+    return [...rows];
+  }
+  const replaced = new Map<GiftRow, GiftRow>();
+  for (const list of byDay.values()) {
+    const chfRefs = siblingQuoteRefs(list, 'amountChf');
+    const eurRefs = siblingQuoteRefs(list, 'amountEur');
+    const phpRefs = siblingQuoteRefs(list, 'amountPhp');
+    for (const row of list) {
+      const amountChf = filledStoredQuote(row.amountUsd, row.amountChf, chfRefs) ?? null;
+      const amountEur = filledStoredQuote(row.amountUsd, row.amountEur, eurRefs) ?? null;
+      const amountPhp = filledStoredQuote(row.amountUsd, row.amountPhp, phpRefs) ?? null;
+      if (
+        amountChf === (row.amountChf ?? null) &&
+        amountEur === (row.amountEur ?? null) &&
+        amountPhp === (row.amountPhp ?? null)
+      ) {
+        continue;
+      }
+      replaced.set(row, { ...row, amountChf, amountEur, amountPhp });
+    }
+  }
+  return rows.map((row) => replaced.get(row) ?? row);
+}
+
 /**
  * Gifts whose Wallet of Satoshi handle matches `recipient` case-insensitively.
  *
@@ -633,8 +731,11 @@ function cumulativeFiat(running: number | null): string | null {
  * Empty input yields zeros (including `totalChf`/`totalEur`/`totalPhp`
  * `"0.00"`), null dates, empty series, and `fx` with USD-only `quotes` — no
  * rates required. Non-empty input looks up each gift's UTC-day BTC-USD rate;
- * a missing BTC-USD rate throws `Error('fx.rate.missing')`. Missing CHF/EUR/PHP
- * does **not** throw: those fields are `null`. Gap days in `spendOverTime` and
+ * a missing BTC-USD rate throws `Error('fx.rate.missing')`. A stored snapshot
+ * whose CHF, EUR, or PHP is null takes that amount from the largest same-day
+ * gift that has a positive USD amount and that cross. The stored USD is not
+ * changed. A legacy row still uses that day's close. A missing cross with no
+ * such gift stays `null` and does **not** throw. Gap days in `spendOverTime` and
  * gap months in `byMonth` use zero `giftCount`/sats/BTC/USD and `"0.00"` fiat
  * without needing a rate. `spendOverTime[].officialCount` is the number of
  * distinct case-insensitive recipient handles that UTC day with kind `daily`
@@ -672,7 +773,9 @@ export function buildGiftStats(
     };
   }
 
-  const sorted = [...rows].sort((a, b) => a.paidAt.getTime() - b.paidAt.getTime());
+  const sorted = withSiblingCrosses(
+    [...rows].sort((a, b) => a.paidAt.getTime() - b.paidAt.getTime()),
+  );
   const first = sorted[0] as GiftRow;
   const last = sorted[sorted.length - 1] as GiftRow;
 
@@ -826,8 +929,10 @@ export function buildGiftStats(
  * Empty (no rows that day) yields zeros (including `totalChf`/`totalEur`/
  * `totalPhp` `"0.00"`) and `gifts: []` with no rates required. Non-empty looks
  * up `day`'s BTC-USD rate; a missing BTC-USD rate throws
- * `Error('fx.rate.missing')`. Missing CHF/EUR/PHP does **not** throw: those
- * fields are `null`.
+ * `Error('fx.rate.missing')`. A stored snapshot whose CHF, EUR, or PHP is null
+ * takes that amount from the largest same-day gift that has it. The stored USD
+ * is not changed. A missing cross with no such gift stays `null` and does
+ * **not** throw.
  *
  * @param day - UTC `YYYY-MM-DD` (caller already validated).
  * @param rows - Outbound gifts (any days; other days are ignored).
@@ -843,13 +948,15 @@ export function buildGiftDay(
   fiatRates?: ReadonlyMap<string, FiatCross>,
 ): GiftDay {
   const fiat = fiatRates ?? new Map<string, FiatCross>();
-  const matching = rows
-    .filter((row) => utcDayFromPaidAt(row.paidAt) === day)
-    .sort(
-      (a, b) =>
-        a.paidAt.getTime() - b.paidAt.getTime() ||
-        a.recipientWosUser.localeCompare(b.recipientWosUser),
-    );
+  const matching = withSiblingCrosses(
+    rows
+      .filter((row) => utcDayFromPaidAt(row.paidAt) === day)
+      .sort(
+        (a, b) =>
+          a.paidAt.getTime() - b.paidAt.getTime() ||
+          a.recipientWosUser.localeCompare(b.recipientWosUser),
+      ),
+  );
   if (matching.length === 0) {
     return {
       day,

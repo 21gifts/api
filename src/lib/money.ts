@@ -268,6 +268,50 @@ function centsFromAmount(raw: string): number | null {
 }
 
 /**
+ * Scale a quote from the largest usable same-day gift onto `amountUsd`.
+ *
+ * The rate is `refQuote / refUsd`, rounded half up to integer cents:
+ * `round(usdCents * refQuoteCents / refUsdCents)`. A zero, missing, or
+ * unusable amount is skipped. Nothing is thrown.
+ *
+ * @param amountUsd - USD of the gift that lacks this quote.
+ * @param refs - Same-day gifts that already store USD and this quote.
+ * @returns Two-decimal quote, or `null` when nothing can scale.
+ */
+export function quoteFromLargestSibling(
+  amountUsd: string,
+  refs: readonly { usd: string; quote: string }[],
+): string | null {
+  let bestUsdCents = 0;
+  let bestQuoteCents = 0;
+  for (const ref of refs) {
+    const usdCents = centsFromAmount(ref.usd);
+    const quoteCents = centsFromAmount(ref.quote);
+    if (usdCents === null || quoteCents === null || usdCents <= 0 || quoteCents <= 0) {
+      continue;
+    }
+    if (usdCents <= bestUsdCents) {
+      continue;
+    }
+    bestUsdCents = usdCents;
+    bestQuoteCents = quoteCents;
+  }
+  const amountCents = centsFromAmount(amountUsd);
+  if (amountCents === null || amountCents <= 0 || bestUsdCents <= 0) {
+    return null;
+  }
+  const numer = BigInt(amountCents) * BigInt(bestQuoteCents);
+  const den = BigInt(bestUsdCents);
+  const quot = numer / den;
+  const rem = numer % den;
+  const rounded = rem * 2n >= den ? quot + 1n : quot;
+  if (rounded > BigInt(Number.MAX_SAFE_INTEGER)) {
+    return null;
+  }
+  return usdCentsToString(Number(rounded));
+}
+
+/**
  * Normalize a spend-worker USD amount to two decimals.
  *
  * Accepts `"5"` / `"5.1"` / `"5.00"` with value `> 0` and `<= 100000`.
