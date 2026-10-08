@@ -4734,10 +4734,59 @@ export class PostgresMessageStore implements MessageStore {
    * `photo` bytea column. Name-copy profile notes without a photo, extra
    * stills, or video are omitted. A real About me stays.
    *
+   * With a `country`, the country is read from each row's own coordinates
+   * ({@link placeCountryCode}): pinned rows are read in keyset batches of
+   * `query.limit`, in feed order and with every other filter, until the page
+   * is full or no row is left. Each batch reads only the rows it returns, so a
+   * page never scans every pin, and a row is judged by the coordinates read
+   * with it.
+   *
    * @param query - Mode, limit, exclusive keyset cursor, staff ids, and optional hashtag and country.
    * @returns Mapped list rows.
    */
   async listFeed(query: MessageFeedQuery): Promise<MessageListRow[]> {
+    const { country, ...rest } = query;
+    if (country === undefined || country === '') {
+      return this.#listFeedPage(rest, false);
+    }
+    const matches: MessageListRow[] = [];
+    let cursor = query.cursor;
+    for (;;) {
+      const batch = await this.#listFeedPage({ ...rest, cursor }, true);
+      for (const row of batch) {
+        if (
+          row.place !== undefined &&
+          row.place !== null &&
+          placeCountryCode(row.place) === country
+        ) {
+          matches.push(row);
+          if (matches.length === query.limit) {
+            return matches;
+          }
+        }
+      }
+      const last = batch[batch.length - 1];
+      if (last === undefined || batch.length < query.limit) {
+        return matches;
+      }
+      cursor =
+        query.mode === 'popular'
+          ? { k: 's', s: last.sats, c: last.createdAt, i: last.id }
+          : { k: 't', c: last.createdAt, i: last.id };
+    }
+  }
+
+  /**
+   * One keyset page for {@link listFeed}, without the country filter.
+   *
+   * @param query - The feed query without `country`.
+   * @param pinnedOnly - Keep only rows with both place coordinates.
+   * @returns Mapped list rows.
+   */
+  async #listFeedPage(
+    query: Omit<MessageFeedQuery, 'country'>,
+    pinnedOnly: boolean,
+  ): Promise<MessageListRow[]> {
     const params: unknown[] = [query.limit];
     const filters: string[] = [
       'parent_id IS NULL',
@@ -4775,29 +4824,8 @@ export class PostgresMessageStore implements MessageStore {
       params.push(posixHashtagTokenPattern(hashtag));
       filters.push(`text ~* $${params.length}`);
     }
-    const country = query.country;
-    if (typeof country === 'string' && country !== '') {
-      // The country is read from the coordinates in code, not stored, so the
-      // pinned notes in that country are resolved first and filtered by id.
-      const pinned = await this.#sql.query<{
-        id: string;
-        place_lat: string | number;
-        place_lng: string | number;
-      }>(
-        `SELECT id, place_lat, place_lng FROM message
-         WHERE parent_id IS NULL AND deleted_at IS NULL
-           AND place_lat IS NOT NULL AND place_lng IS NOT NULL`,
-        [],
-      );
-      const ids = pinned
-        .filter(
-          (row) =>
-            placeCountryCode({ lat: Number(row.place_lat), lng: Number(row.place_lng) }) ===
-            country,
-        )
-        .map((row) => row.id);
-      params.push(postgresTextArrayLiteral(ids));
-      filters.push(`id::text = ANY($${params.length}::text[])`);
+    if (pinnedOnly) {
+      filters.push('place_lat IS NOT NULL AND place_lng IS NOT NULL');
     }
     if (query.cursor !== null) {
       if (query.mode === 'popular') {

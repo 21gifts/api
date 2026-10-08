@@ -7254,53 +7254,94 @@ describe('PostgresMessageStore', () => {
     expect(mapped[0]?.replyCount).toBe(0);
   });
 
-  it('listFeed SQL resolves the pinned notes of a country and filters by id', async () => {
+  it('listFeed SQL reads pinned rows in keyset batches and keeps those in the country', async () => {
     const sql = new MockSql();
+    const row = (id: string, lat: number | string, lng: number | string, sats = 0) => ({
+      id,
+      account_id: 'acc',
+      name: 'Ada',
+      text: 'Shop #21GiftsShop',
+      created_at: new Date('2026-08-10T00:00:00.000Z'),
+      has_photo: false,
+      event_id: null,
+      nostr_publish_state: 'pending',
+      sats,
+      place_lat: lat,
+      place_lng: lng,
+      place_label: null,
+      reply_count: 0,
+    });
     sql.queryQueue = [
-      [
-        { id: 'manila', place_lat: '14.5995', place_lng: '120.9842' },
-        { id: 'nairobi', place_lat: -1.2921, place_lng: 36.8219 },
-        { id: 'cebu', place_lat: 10.293, place_lng: 123.902 },
-        { id: 'sea', place_lat: 30, place_lng: -40 },
-      ],
-      [],
-      [],
-      [],
+      [row('manila', '14.5995', '120.9842'), row('nairobi', -1.2921, 36.8219)],
+      [row('sea', 30, -40), row('cebu', 10.293, 123.902)],
     ];
     const store = new PostgresMessageStore(sql);
     const staff = new Set<string>();
-    await store.listFeed({
-      limit: 10,
+    const page = await store.listFeed({
+      limit: 2,
       mode: 'all',
       cursor: null,
       staffAccountIds: staff,
       hashtag: '21GiftsShop',
       country: 'PH',
     });
-    const pinned = sql.queries[0];
-    expect(pinned?.text).toMatch(/place_lat IS NOT NULL AND place_lng IS NOT NULL/);
-    expect(pinned?.text).toMatch(/deleted_at IS NULL/);
-    const filtered = sql.queries[1];
-    expect(filtered?.text).toMatch(/id::text = ANY\(\$3::text\[\]\)/);
-    expect(filtered?.params[2]).toBe('{"manila","cebu"}');
-    sql.queryQueue = [[], []];
-    await store.listFeed({
-      limit: 10,
-      mode: 'all',
+    expect(page.map((item) => item.id)).toEqual(['manila', 'cebu']);
+    expect(sql.queries).toHaveLength(2);
+    expect(sql.queries[0]?.text).toMatch(/place_lat IS NOT NULL AND place_lng IS NOT NULL/);
+    expect(sql.queries[0]?.text).toMatch(/text ~\*/);
+    expect(sql.queries[0]?.params).toEqual([2, '#21giftsshop([^a-z0-9_]|$)']);
+    // The second batch continues after the last row of the first one.
+    expect(sql.queries[1]?.text).toMatch(/\(created_at, id\) < \(\$3, \$4\)/);
+    expect(sql.queries[1]?.params.slice(2)).toEqual([
+      new Date('2026-08-10T00:00:00.000Z'),
+      'nairobi',
+    ]);
+
+    // A short batch ends the page; a popular cursor carries the sats.
+    sql.queryQueue = [[row('nairobi', -1.2921, 36.8219, 7), row('lamu', -2.27, 40.9, 5)], []];
+    const popular = await store.listFeed({
+      limit: 2,
+      mode: 'popular',
       cursor: null,
       staffAccountIds: staff,
-      country: 'CH',
+      country: 'KE',
     });
-    expect(sql.queries[3]?.params[1]).toBe('{}');
+    expect(popular.map((item) => item.id)).toEqual(['nairobi', 'lamu']);
+    sql.queryQueue = [
+      [row('nairobi', -1.2921, 36.8219, 7), row('manila', 14.5995, 120.9842, 5)],
+      [],
+    ];
     await store.listFeed({
-      limit: 10,
+      limit: 2,
+      mode: 'popular',
+      cursor: null,
+      staffAccountIds: staff,
+      country: 'KE',
+    });
+    const last = sql.queries[sql.queries.length - 1];
+    expect(last?.text).toMatch(/\(sats, created_at, id\) < \(\$2, \$3, \$4\)/);
+    expect(last?.params.slice(1)).toEqual([5, new Date('2026-08-10T00:00:00.000Z'), 'manila']);
+
+    sql.queryQueue = [[row('unpinned', '', '')]];
+    const before = sql.queries.length;
+    expect(
+      await store.listFeed({
+        limit: 2,
+        mode: 'all',
+        cursor: null,
+        staffAccountIds: staff,
+        country: 'PH',
+      }),
+    ).toEqual([]);
+    expect(sql.queries).toHaveLength(before + 1);
+    await store.listFeed({
+      limit: 2,
       mode: 'all',
       cursor: null,
       staffAccountIds: staff,
       country: '',
     });
-    expect(sql.queries).toHaveLength(5);
-    expect(sql.queries[4]?.text).not.toMatch(/ANY\(/);
+    expect(sql.queries[sql.queries.length - 1]?.text).not.toMatch(/place_lat IS NOT NULL/);
   });
 
   it('listFeed SQL filters by hashtag token', async () => {
