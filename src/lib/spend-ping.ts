@@ -4,9 +4,14 @@
  * Missing env skips the ping; the process still boots. Failures never throw.
  */
 
+import type { GiftStore } from '@/lib/gift-store';
 import type { FetchFn } from '@/lib/lnurlp';
 import { logEvent } from '@/lib/log';
-import { decideSpendInstruction, type SpendGrantStatus } from '@/lib/spend-instruction';
+import {
+  decideSpendInstruction,
+  welcomeGiftPaidOnUtcDay,
+  type SpendGrantStatus,
+} from '@/lib/spend-instruction';
 
 /** Default HTTP timeout for {@link HttpSpendPing}. */
 const DEFAULT_TIMEOUT_MS = 5_000;
@@ -65,11 +70,11 @@ export class NoopSpendPing implements SpendPing {
  * GET `{spendUrl}/daily-roster` with Bearer `SPEND_API_TOKEN`, then POST
  * `{spendUrl}/ping` with the same Bearer. A decided amount adds
  * `amountUsd` and `comment` to the ping JSON. Skipped reasons
- * `payments_disabled`, `not_listed`, and `undecided` log
+ * `payments_disabled`, `not_listed`, `undecided`, and `welcome_paid` log
  * `spend.ping.skipped` and do not POST.
  *
  * 2xx (including 200 skipped and 202 accepted) logs `spend.ping.ok`.
- * Network, abort, non-2xx, and a roster that is not a JSON object log
+ * Network, abort, non-2xx, a non-object roster, and a gift-ledger throw log
  * `spend.ping.failed` and resolve. Never throws. Never logs the token.
  * Optional `grantStatus` is passed to {@link decideSpendInstruction} only
  * when the resolved kind is daily.
@@ -79,21 +84,32 @@ export class HttpSpendPing implements SpendPing {
   readonly #token: string;
   readonly #fetchImpl: FetchFn;
   readonly #timeoutMs: number;
+  readonly #gifts: Pick<GiftStore, 'listOutbound'> | undefined;
+  readonly #now: () => number;
 
   /**
    * @param opts - Already-trimmed base URL (no trailing slash), Bearer token,
-   *   fetch, optional timeout (default 5000 ms).
+   *   fetch, optional timeout (default 5000 ms), optional gift ledger, optional clock.
    */
-  constructor(opts: { spendUrl: string; token: string; fetchImpl: FetchFn; timeoutMs?: number }) {
+  constructor(opts: {
+    spendUrl: string;
+    token: string;
+    fetchImpl: FetchFn;
+    timeoutMs?: number;
+    gifts?: Pick<GiftStore, 'listOutbound'>;
+    now?: () => number;
+  }) {
     this.#spendUrl = opts.spendUrl;
     this.#token = opts.token;
     this.#fetchImpl = opts.fetchImpl;
     this.#timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+    this.#gifts = opts.gifts;
+    this.#now = opts.now ?? (() => Date.now());
   }
 
   /**
    * GET `{spendUrl}/daily-roster`, then POST the decided ping JSON to
-   * `{spendUrl}/ping`. An undecided, disabled, or not-listed decision
+   * `{spendUrl}/ping`. A skip, including welcome already paid today,
    * logs `spend.ping.skipped` and does not POST. Resolves on success and
    * failure.
    *
@@ -133,11 +149,25 @@ export class HttpSpendPing implements SpendPing {
       logEvent('spend.ping.failed', { address });
       return;
     }
+    let welcomePaidOnUtcDay: boolean | undefined;
+    if (resolvedKind === 'daily' && this.#gifts !== undefined) {
+      try {
+        welcomePaidOnUtcDay = welcomeGiftPaidOnUtcDay(
+          await this.#gifts.listOutbound(),
+          address,
+          new Date(this.#now()).toISOString().slice(0, 10),
+        );
+      } catch {
+        logEvent('spend.ping.failed', { address });
+        return;
+      }
+    }
     const decision = decideSpendInstruction({
       address,
       kind: resolvedKind,
       roster,
       ...(resolvedKind === 'daily' && grantStatus !== undefined ? { grantStatus } : {}),
+      ...(welcomePaidOnUtcDay === undefined ? {} : { welcomePaidOnUtcDay }),
     });
     if ('skip' in decision) {
       logEvent('spend.ping.skipped', { address, reason: decision.skip });
@@ -199,11 +229,13 @@ export class HttpSpendPing implements SpendPing {
  *
  * @param env - Process environment slice (injected so tests need not mutate it).
  * @param fetchImpl - HTTP fetch used by {@link HttpSpendPing}.
+ * @param opts - Optional gift ledger and clock forwarded to {@link HttpSpendPing}.
  * @returns {@link HttpSpendPing} when both env values are set; otherwise `undefined`.
  */
 export function resolveSpendPing(
   env: Record<string, string | undefined>,
   fetchImpl: FetchFn,
+  opts?: { gifts?: Pick<GiftStore, 'listOutbound'>; now?: () => number },
 ): SpendPing | undefined {
   const rawUrl = env['SPEND_URL'];
   const rawToken = env['SPEND_API_TOKEN'];
@@ -216,5 +248,15 @@ export function resolveSpendPing(
     return undefined;
   }
   const spendUrl = rawUrl.trim().replace(/\/+$/u, '');
-  return new HttpSpendPing({ spendUrl, token: rawToken.trim(), fetchImpl });
+  return new HttpSpendPing({
+    spendUrl,
+    token: rawToken.trim(),
+    fetchImpl,
+    ...(opts === undefined
+      ? {}
+      : {
+          ...(opts.gifts === undefined ? {} : { gifts: opts.gifts }),
+          ...(opts.now === undefined ? {} : { now: opts.now }),
+        }),
+  });
 }

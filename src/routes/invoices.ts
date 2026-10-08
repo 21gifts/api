@@ -7,6 +7,7 @@ import { fetchBtcUsdSpot } from '@/lib/btc-usd-spot';
 import { GIFT_INVOICE_MAX_MSAT, GIFT_INVOICE_MIN_MSAT, GIFT_INVOICE_TTL_MS } from '@/lib/config';
 import type { ConversationStore } from '@/lib/conversation-store';
 import { requestGiftInvoice } from '@/lib/gift-invoice';
+import type { GiftStore } from '@/lib/gift-store';
 import { newInvoiceId, type GiftInvoice, type InvoiceStore } from '@/lib/invoice-store';
 import { normalizeLightningAddress } from '@/lib/lightning-address';
 import type { FetchFn } from '@/lib/lnurlp';
@@ -24,6 +25,7 @@ import { InMemoryFiatStore, type FiatRateBook } from '@/lib/usd-fiat-store';
 import { effectiveStatus, eligibleToday } from '@/lib/funding';
 import { InMemoryFundingStore, type FundingStore } from '@/lib/funding-store';
 import { checkSpendAuth } from '@/lib/spend-auth';
+import { welcomeGiftPaidOnUtcDay } from '@/lib/spend-instruction';
 import {
   NoopGiftRecorder,
   recipientHandleFromAddress,
@@ -98,6 +100,11 @@ export interface InvoiceRouteDeps {
    * {@link InMemoryFundingStore}).
    */
   fundingStore?: FundingStore;
+  /**
+   * Outbound gifts for the same-UTC-day welcome veto. Omitted → the rule
+   * is not applied.
+   */
+  gifts?: Pick<GiftStore, 'listOutbound'>;
   /**
    * USD→CHF/EUR/PHP crosses for the payment-time snapshot (default: empty
    * {@link InMemoryFiatStore}). A missing cross or a Frankfurter failure
@@ -720,6 +727,29 @@ export function invoiceRoutes(deps: InvoiceRouteDeps): Hono {
           if (resolvedGroupMessageId === undefined) {
             logEvent('invoice.group_message_ignored', { address });
           }
+        }
+      }
+
+      if (
+        parsed.data.comment !== 'Welcome' &&
+        parsed.data.groupMessageId === undefined &&
+        deps.gifts !== undefined
+      ) {
+        let outbound: Awaited<ReturnType<GiftStore['listOutbound']>>;
+        try {
+          outbound = await deps.gifts.listOutbound();
+        } catch {
+          return c.json({ error: 'Gift ledger unreadable' }, 503);
+        }
+        if (
+          welcomeGiftPaidOnUtcDay(
+            outbound,
+            address,
+            new Date(deps.now()).toISOString().slice(0, 10),
+          )
+        ) {
+          logEvent('invoice.welcome_paid', { address });
+          return c.json({ error: 'Welcome gift already paid' }, 403);
         }
       }
 

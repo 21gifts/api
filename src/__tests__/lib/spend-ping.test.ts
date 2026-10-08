@@ -1,4 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import type { GiftRow } from '@/lib/gift';
+import { InMemoryGiftStore } from '@/lib/gift-store';
 import type { FetchFn } from '@/lib/lnurlp';
 import { HttpSpendPing, NoopSpendPing, resolveSpendPing } from '@/lib/spend-ping';
 
@@ -99,6 +101,76 @@ describe('resolveSpendPing', () => {
     expect(ping).toBeInstanceOf(HttpSpendPing);
     await ping?.ping(ADDRESS, MESSAGE_ID, 'daily', 'admitted');
     expect(seen).toBe('https://spend.example/ping');
+  });
+
+  it('accepts an options object that omits the gift ledger and the clock', async () => {
+    const fetchImpl = vi.fn<FetchFn>(
+      rosterThenPing({
+        roster: {
+          comment: 'thanks',
+          paymentsEnabled: true,
+          recipients: [{ address: ADDRESS, amountUsd: 2 }],
+        },
+      }),
+    );
+    const ping = resolveSpendPing({ SPEND_URL, SPEND_API_TOKEN: TOKEN }, fetchImpl, {});
+    expect(ping).toBeInstanceOf(HttpSpendPing);
+    await ping?.ping(ADDRESS, MESSAGE_ID);
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    expect(String(fetchImpl.mock.calls[1]?.[0])).toBe(`${SPEND_URL}/ping`);
+  });
+
+  it('uses the current clock when the gift ledger is set and now is omitted', async () => {
+    const fetchImpl = vi.fn<FetchFn>(
+      rosterThenPing({
+        roster: {
+          comment: 'thanks',
+          paymentsEnabled: true,
+          recipients: [{ address: ADDRESS, amountUsd: 2 }],
+        },
+      }),
+    );
+    const ping = resolveSpendPing({ SPEND_URL, SPEND_API_TOKEN: TOKEN }, fetchImpl, {
+      gifts: new InMemoryGiftStore([]),
+    });
+    await ping?.ping(ADDRESS, MESSAGE_ID);
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    expect(String(fetchImpl.mock.calls[1]?.[0])).toBe(`${SPEND_URL}/ping`);
+  });
+
+  it('forwards the gift ledger and the clock into the daily decision', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const nowMs = Date.parse('2026-09-20T12:00:00.000Z');
+    const fetchImpl = vi.fn<FetchFn>(
+      rosterThenPing({
+        roster: {
+          comment: 'thanks',
+          paymentsEnabled: true,
+          recipients: [{ address: ADDRESS, amountUsd: 2 }],
+        },
+      }),
+    );
+    const welcomeToday: GiftRow = {
+      paidAt: new Date('2026-09-20T08:00:00.000Z'),
+      amountSats: 1000,
+      recipientWosUser: 'Ada',
+      kind: 'welcome',
+    };
+    const ping = resolveSpendPing({ SPEND_URL, SPEND_API_TOKEN: TOKEN }, fetchImpl, {
+      gifts: new InMemoryGiftStore([welcomeToday]),
+      now: () => nowMs,
+    });
+    await ping?.ping(ADDRESS, MESSAGE_ID);
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(
+      parsedEvents(warn).some(
+        (e) =>
+          e['event'] === 'spend.ping.skipped' &&
+          e['address'] === ADDRESS &&
+          e['reason'] === 'welcome_paid',
+      ),
+    ).toBe(true);
+    warn.mockRestore();
   });
 });
 
@@ -710,5 +782,147 @@ describe('HttpSpendPing', () => {
       ),
     ).toBe(true);
     expect(parsedEvents(warn).some((e) => e['event'] === 'spend.ping.ok')).toBe(false);
+  });
+
+  it('does not POST daily when a welcome gift was paid today and logs spend.ping.skipped', async () => {
+    const nowMs = Date.parse('2026-09-20T12:00:00.000Z');
+    const fetchImpl = vi.fn<FetchFn>(
+      rosterThenPing({
+        roster: {
+          comment: 'thanks',
+          paymentsEnabled: true,
+          recipients: [{ address: ADDRESS, amountUsd: 2 }],
+        },
+      }),
+    );
+    const welcomeToday: GiftRow = {
+      paidAt: new Date('2026-09-20T08:00:00.000Z'),
+      amountSats: 1000,
+      recipientWosUser: 'Ada',
+      kind: 'welcome',
+    };
+    await new HttpSpendPing({
+      spendUrl: SPEND_URL,
+      token: TOKEN,
+      fetchImpl,
+      gifts: new InMemoryGiftStore([welcomeToday]),
+      now: () => nowMs,
+    }).ping(ADDRESS, MESSAGE_ID);
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(String(fetchImpl.mock.calls[0]?.[0])).toBe(`${SPEND_URL}/daily-roster`);
+    expect(
+      parsedEvents(warn).some(
+        (e) =>
+          e['event'] === 'spend.ping.skipped' &&
+          e['address'] === ADDRESS &&
+          e['reason'] === 'welcome_paid',
+      ),
+    ).toBe(true);
+    expect(parsedEvents(warn).some((e) => e['event'] === 'spend.ping.ok')).toBe(false);
+  });
+
+  it('POSTs listed daily when the welcome gift was paid on the previous UTC day', async () => {
+    const nowMs = Date.parse('2026-09-20T12:00:00.000Z');
+    let seenInit: RequestInit | undefined;
+    const fetchImpl = vi.fn<FetchFn>(
+      rosterThenPing({
+        roster: {
+          comment: 'thanks',
+          paymentsEnabled: true,
+          recipients: [{ address: ADDRESS, amountUsd: 2 }],
+        },
+        onCall: (_url, init) => {
+          seenInit = init;
+        },
+      }),
+    );
+    const welcomeYesterday: GiftRow = {
+      paidAt: new Date('2026-09-19T08:00:00.000Z'),
+      amountSats: 1000,
+      recipientWosUser: 'Ada',
+      kind: 'welcome',
+    };
+    await new HttpSpendPing({
+      spendUrl: SPEND_URL,
+      token: TOKEN,
+      fetchImpl,
+      gifts: new InMemoryGiftStore([welcomeYesterday]),
+      now: () => nowMs,
+    }).ping(ADDRESS, MESSAGE_ID);
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    expect(String(fetchImpl.mock.calls[1]?.[0])).toBe(`${SPEND_URL}/ping`);
+    expect(seenInit?.body).toBe(
+      JSON.stringify({
+        address: ADDRESS,
+        messageId: MESSAGE_ID,
+        amountUsd: 2,
+        comment: 'thanks',
+      }),
+    );
+  });
+
+  it('logs spend.ping.failed when listOutbound rejects and does not POST', async () => {
+    const fetchImpl = vi.fn<FetchFn>(
+      rosterThenPing({
+        roster: {
+          comment: 'thanks',
+          paymentsEnabled: true,
+          recipients: [{ address: ADDRESS, amountUsd: 2 }],
+        },
+      }),
+    );
+    const gifts = {
+      listOutbound: async () => {
+        throw new Error('ledger down');
+      },
+    };
+    await expect(
+      new HttpSpendPing({ spendUrl: SPEND_URL, token: TOKEN, fetchImpl, gifts }).ping(
+        ADDRESS,
+        MESSAGE_ID,
+      ),
+    ).resolves.toBeUndefined();
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(String(fetchImpl.mock.calls[0]?.[0])).toBe(`${SPEND_URL}/daily-roster`);
+    expect(fetchImpl.mock.calls.some((call) => String(call[0]) === `${SPEND_URL}/ping`)).toBe(
+      false,
+    );
+    expect(
+      parsedEvents(warn).some(
+        (e) => e['event'] === 'spend.ping.failed' && e['address'] === ADDRESS,
+      ),
+    ).toBe(true);
+  });
+
+  it('POSTs welcome JSON when gifts is set and does not list outbound gifts', async () => {
+    let listCalls = 0;
+    const gifts = {
+      listOutbound: async () => {
+        listCalls += 1;
+        throw new Error('must not list');
+      },
+    };
+    let seenInit: RequestInit | undefined;
+    const fetchImpl: FetchFn = rosterThenPing({
+      onCall: (_url, init) => {
+        seenInit = init;
+      },
+    });
+    await new HttpSpendPing({ spendUrl: SPEND_URL, token: TOKEN, fetchImpl, gifts }).ping(
+      ADDRESS,
+      MESSAGE_ID,
+      'welcome',
+    );
+    expect(listCalls).toBe(0);
+    expect(seenInit?.method).toBe('POST');
+    expect(seenInit?.body).toBe(
+      JSON.stringify({
+        address: ADDRESS,
+        messageId: MESSAGE_ID,
+        kind: 'welcome',
+        amountUsd: 1,
+        comment: 'Welcome',
+      }),
+    );
   });
 });

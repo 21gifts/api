@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { decideSpendInstruction } from '@/lib/spend-instruction';
+import type { GiftRow } from '@/lib/gift';
+import { decideSpendInstruction, welcomeGiftPaidOnUtcDay } from '@/lib/spend-instruction';
 
 const ADDRESS = 'ada@walletofsatoshi.com';
 
@@ -20,6 +21,78 @@ describe('decideSpendInstruction', () => {
     });
 
     it('returns the row amountUsd and roster comment when listed', () => {
+      expect(
+        decideSpendInstruction({
+          address: ADDRESS,
+          kind: 'daily',
+          roster: {
+            comment: 'thanks',
+            paymentsEnabled: true,
+            recipients: [{ address: ADDRESS, amountUsd: 2.5 }],
+          },
+        }),
+      ).toEqual({ amountUsd: 2.5, comment: 'thanks' });
+    });
+
+    it('returns welcome_paid when welcomePaidOnUtcDay is true even if a listed row or grant would pay', () => {
+      expect(
+        decideSpendInstruction({
+          address: ADDRESS,
+          kind: 'daily',
+          welcomePaidOnUtcDay: true,
+          roster: {
+            comment: 'thanks',
+            paymentsEnabled: true,
+            recipients: [{ address: ADDRESS, amountUsd: 2.5 }],
+          },
+        }),
+      ).toEqual({ skip: 'welcome_paid' });
+      expect(
+        decideSpendInstruction({
+          address: ADDRESS,
+          kind: 'daily',
+          grantStatus: 'admitted',
+          welcomePaidOnUtcDay: true,
+          roster: {
+            comment: 'thanks',
+            paymentsEnabled: true,
+            defaultAmountUsd: 9,
+            recipients: [],
+          },
+        }),
+      ).toEqual({ skip: 'welcome_paid' });
+      expect(
+        decideSpendInstruction({
+          address: ADDRESS,
+          kind: 'daily',
+          grantStatus: 'trial',
+          welcomePaidOnUtcDay: true,
+          roster: {
+            comment: 'thanks',
+            paymentsEnabled: true,
+            defaultAmountUsd: 9,
+            recipients: [],
+          },
+        }),
+      ).toEqual({ skip: 'welcome_paid' });
+    });
+
+    it('returns payments_disabled when paymentsEnabled is false even if welcomePaidOnUtcDay is true', () => {
+      expect(
+        decideSpendInstruction({
+          address: ADDRESS,
+          kind: 'daily',
+          welcomePaidOnUtcDay: true,
+          roster: {
+            comment: 'thanks',
+            paymentsEnabled: false,
+            recipients: [{ address: ADDRESS, amountUsd: 2 }],
+          },
+        }),
+      ).toEqual({ skip: 'payments_disabled' });
+    });
+
+    it('returns the listed amountUsd and roster comment when welcomePaidOnUtcDay is omitted', () => {
       expect(
         decideSpendInstruction({
           address: ADDRESS,
@@ -399,6 +472,22 @@ describe('decideSpendInstruction', () => {
       ).toEqual({ amountUsd: 1, comment: 'Welcome' });
     });
 
+    it('returns amountUsd 1 and comment Welcome when welcomePaidOnUtcDay is true', () => {
+      expect(
+        decideSpendInstruction({
+          address: ADDRESS,
+          kind: 'welcome',
+          welcomePaidOnUtcDay: true,
+          roster: {
+            comment: 'thanks',
+            paymentsEnabled: true,
+            defaultAmountUsd: 9,
+            recipients: [{ address: ADDRESS, amountUsd: 4 }],
+          },
+        }),
+      ).toEqual({ amountUsd: 1, comment: 'Welcome' });
+    });
+
     it('treats missing paymentsEnabled as enabled', () => {
       expect(
         decideSpendInstruction({
@@ -500,6 +589,21 @@ describe('decideSpendInstruction', () => {
       ).toEqual({ amountUsd: 3, comment: '21gifts moderator' });
     });
 
+    it('returns the listed moderator amount when welcomePaidOnUtcDay is true', () => {
+      expect(
+        decideSpendInstruction({
+          address: ADDRESS,
+          kind: 'moderator',
+          welcomePaidOnUtcDay: true,
+          roster: {
+            comment: 'thanks',
+            moderatorPaymentsEnabled: true,
+            moderators: [{ address: ADDRESS, amountUsd: 3 }],
+          },
+        }),
+      ).toEqual({ amountUsd: 3, comment: '21gifts moderator' });
+    });
+
     it('matches the listed moderator address case-insensitively', () => {
       expect(
         decideSpendInstruction({
@@ -562,5 +666,63 @@ describe('decideSpendInstruction', () => {
         { skip: 'undecided' },
       );
     });
+  });
+});
+
+describe('welcomeGiftPaidOnUtcDay', () => {
+  const day = '2026-09-20';
+
+  function row(partial: Pick<GiftRow, 'paidAt' | 'recipientWosUser' | 'kind'>): GiftRow {
+    return { amountSats: 1, ...partial };
+  }
+
+  it('matches only a welcome gift for that handle on that UTC day', () => {
+    const gifts: GiftRow[] = [
+      row({
+        paidAt: new Date('2026-09-20T01:00:00.000Z'),
+        recipientWosUser: 'bob',
+        kind: 'daily',
+      }),
+      row({
+        paidAt: new Date('2026-09-20T01:00:00.000Z'),
+        recipientWosUser: '   ',
+        kind: 'welcome',
+      }),
+      row({
+        paidAt: new Date('2026-09-20T01:00:00.000Z'),
+        recipientWosUser: '@',
+        kind: 'welcome',
+      }),
+      row({
+        paidAt: new Date('2026-09-20T01:00:00.000Z'),
+        recipientWosUser: 'bob',
+        kind: 'welcome',
+      }),
+      row({
+        paidAt: new Date(Number.NaN),
+        recipientWosUser: 'ada',
+        kind: 'welcome',
+      }),
+      row({
+        paidAt: 'not-a-date' as unknown as Date,
+        recipientWosUser: 'ada',
+        kind: 'welcome',
+      }),
+      row({
+        paidAt: new Date('2026-09-19T08:00:00.000Z'),
+        recipientWosUser: 'ada',
+        kind: 'welcome',
+      }),
+      row({
+        paidAt: new Date('2026-09-20T08:00:00.000Z'),
+        recipientWosUser: 'Ada',
+        kind: 'welcome',
+      }),
+    ];
+    expect(welcomeGiftPaidOnUtcDay(gifts, '  ada@walletofsatoshi.com ', day)).toBe(true);
+    expect(welcomeGiftPaidOnUtcDay(gifts, 'Ada', day)).toBe(true);
+    expect(welcomeGiftPaidOnUtcDay(gifts, '   ', day)).toBe(false);
+    expect(welcomeGiftPaidOnUtcDay(gifts, '@', day)).toBe(false);
+    expect(welcomeGiftPaidOnUtcDay([], 'ada', day)).toBe(false);
   });
 });

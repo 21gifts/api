@@ -194,7 +194,7 @@ export interface AppDeps {
   spendApiToken?: string;
   /**
    * Spend-worker ping after a new top-level forum post or a `moderator_group`
-   * persist (default: `resolveSpendPing(process.env, fetchImpl)`). Unset
+   * persist (default: `resolveSpendPing(process.env, fetchImpl, { gifts: giftStore, now })`). Unset
    * `SPEND_URL` or `SPEND_API_TOKEN` → omitted; `POST /messages` and
    * `POST /conversations/:id` still 200.
    */
@@ -447,7 +447,8 @@ export function createApp(deps: AppDeps = {}): Hono {
   const webAuthnRpName = deps.webAuthnRpName ?? process.env['WEBAUTHN_RP_NAME'];
   const passkeyCeremony = deps.passkeyCeremony ?? new SimpleWebAuthnPasskeyCeremony();
   const spendApiToken = deps.spendApiToken ?? process.env['SPEND_API_TOKEN'];
-  const spendPing = deps.spendPing ?? resolveSpendPing(process.env, fetchImpl);
+  const spendPing =
+    deps.spendPing ?? resolveSpendPing(process.env, fetchImpl, { gifts: giftStore, now });
   const dailyRoster = deps.dailyRoster ?? resolveDailyRoster(process.env, fetchImpl);
   const postLimiter = deps.postLimiter ?? new PostRateLimiter();
   const invoiceStore = deps.invoiceStore ?? new InMemoryInvoiceStore();
@@ -759,6 +760,7 @@ export function createApp(deps: AppDeps = {}): Hono {
       conversationStore,
       fundingStore,
       fiatRates,
+      gifts: giftStore,
       ...(giftRecorder === undefined ? {} : { giftRecorder }),
     }),
   );

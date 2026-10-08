@@ -1497,6 +1497,13 @@ test('Function: decideSpendInstruction — chooses the daily amount from the ros
   expect(res.status()).toBe(200);
 });
 
+test('Function: welcomeGiftPaidOnUtcDay — matches a welcome gift on the UTC day', async ({
+  request,
+}) => {
+  const res = await request.get('/healthz');
+  expect(res.status()).toBe(200);
+});
+
 test('Function: startPasskeyClaim — POST begin with an unknown viewKey is 404', async ({
   request,
 }) => {

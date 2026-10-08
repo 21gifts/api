@@ -107,7 +107,11 @@ if (import.meta.main) {
     nostrKek !== undefined && messageStore !== undefined
       ? new WebsocketNostrPublisher()
       : undefined;
-  const spendPing = resolveSpendPing(process.env, globalThis.fetch);
+  const spendPing = resolveSpendPing(
+    process.env,
+    globalThis.fetch,
+    giftStore === undefined ? undefined : { gifts: giftStore },
+  );
   const postLimiter = new PostRateLimiter();
   const forumMessages = messageStore ?? new InMemoryMessageStore();
   const banners = boot.bannerStore ?? new InMemoryBannerStore();
