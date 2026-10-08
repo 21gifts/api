@@ -995,7 +995,7 @@
 
 ## Function: PostgresDailyRosterStore
 
-- **Purpose:** Durable `DailyRosterStore` over `daily_roster` and `daily_roster_entry`. No settings row is the empty start document. Unique violation `23505` is `Address already listed`. `defaultAmountUsd` is not a column; every read sets 1. `importDocument` inserts only when no settings row exists.
+- **Purpose:** Durable `DailyRosterStore` over `daily_roster` and `daily_roster_entry`. No settings row is the empty start document. Unique violation `23505` is `Address already listed`. `defaultAmountUsd` is not a column; every read sets 1. `importDocument` inserts only when no settings row exists. Comment, both switches, add, update, and delete each run as one SQL statement, so a failed write does not leave a new settings row that would block that first import.
 - **Inputs:** Constructor takes a shared boot `SqlClient` (already migrated).
 - **Returns / side effects:** Parameter-bound SQL; copies on return. Throws `DailyRosterRequestError` 400 for the five roster texts.
 - **Used by:** `openBootStores` when `DATABASE_URL` is set.
@@ -1037,7 +1037,7 @@
 
 ## Function: spendInstructionRoutes
 
-- **Purpose:** Hono sub-app for the spend-worker daily instruction (`POST /daily-instruction`). Auth is the same three-way spend-token check as invoice routes and runs before JSON parsing and before gifts or roster. The body needs only a Lightning Address; extra keys are ignored and the kind is always daily. Facts come from the auth store, forum store, funding store, optional gift ledger, and daily roster. A skip is not logged. The token, comments, and Lightning addresses are not logged.
+- **Purpose:** Hono sub-app for the spend-worker daily instruction (`POST /daily-instruction`). Auth is the same three-way spend-token check as invoice routes and runs before JSON parsing and before gifts or roster. The body needs only a Lightning Address; extra keys are ignored and the kind is always daily. Facts come from the auth store, forum store, funding store, optional gift ledger, and daily roster. A pay's `messageId` is the newest listed live top-level non-profile post with a photo, a video, or `photoCount` > 0, or null when that capped list has none. A skip is not logged. The token, comments, and Lightning addresses are not logged.
 - **Inputs:** `SpendInstructionRouteDeps`: spend token, `authStore` (address and passkey lookup), `messageStore` (live top-level post, media, and `listPostsByAccount`), `fundingStore` (grant lookup), clock, optional `gifts` (`listOutbound`; omitted → the welcome-paid flag is not applied), optional `rosterStore` (omitted → a fresh `InMemoryDailyRosterStore`).
 - **Returns / side effects:** Hono app mounted at `/spend`. Success is always 200 `{ action: 'skip', reason }` or `{ action: 'pay', amountUsd, comment }` plus `messageId` only when the decision includes it. No logging.
 - **Used by:** `createApp`.

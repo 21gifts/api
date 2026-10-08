@@ -20,6 +20,7 @@ const TOKEN = 'spend-secret-token';
 const ADDRESS = 'alice@walletofsatoshi.com';
 const NOW_MS = Date.parse('2026-10-08T12:00:00.000Z');
 const POST_ID = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+const NEWER_POST_ID = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
 const PROFILE_NOTE_ID = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee';
 
 const JPEG: ForumPhoto = {
@@ -391,6 +392,61 @@ describe('POST /spend/daily-instruction', () => {
       amountUsd: 2,
       comment: 'thanks',
       messageId: POST_ID,
+    });
+  });
+
+  it('returns a pay with the older media post when a newer note is text only', async () => {
+    const authStore = new InMemoryAuthStore();
+    await seedPasskeyAccount(authStore);
+    const messageStore = await liveMediaPostStore();
+    await messageStore.create({
+      id: NEWER_POST_ID,
+      accountId: 'acc-alice',
+      name: 'Ada',
+      text: 'later',
+      createdAt: new Date('2026-08-02T00:00:00.000Z'),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+    });
+    const res = await createSpendApp({ authStore, messageStore }).request(
+      '/spend/daily-instruction',
+      auth({ method: 'POST', body: JSON.stringify({ address: ADDRESS }) }),
+    );
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({
+      action: 'pay',
+      amountUsd: 2,
+      comment: 'thanks',
+      messageId: POST_ID,
+    });
+  });
+
+  it('returns a pay with the newer media post when an older note also has a photo', async () => {
+    const authStore = new InMemoryAuthStore();
+    await seedPasskeyAccount(authStore);
+    const messageStore = await liveMediaPostStore();
+    await messageStore.create(
+      {
+        id: NEWER_POST_ID,
+        accountId: 'acc-alice',
+        name: 'Ada',
+        text: 'later photo',
+        createdAt: new Date('2026-08-02T00:00:00.000Z'),
+        hasPhoto: false,
+        ...unsignedNostrDefaults(),
+      },
+      JPEG,
+    );
+    const res = await createSpendApp({ authStore, messageStore }).request(
+      '/spend/daily-instruction',
+      auth({ method: 'POST', body: JSON.stringify({ address: ADDRESS }) }),
+    );
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({
+      action: 'pay',
+      amountUsd: 2,
+      comment: 'thanks',
+      messageId: NEWER_POST_ID,
     });
   });
 

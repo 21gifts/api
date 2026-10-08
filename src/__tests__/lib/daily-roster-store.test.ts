@@ -302,10 +302,13 @@ describe('PostgresDailyRosterStore', () => {
     await store.setComment('hi');
     await store.setPaymentsEnabled(false);
     await store.setModeratorPaymentsEnabled(false);
-    expect(sql.executes[0]?.text).toMatch(/ON CONFLICT \(singleton\) DO NOTHING/);
-    expect(sql.executes[1]?.params).toEqual(['hi']);
-    expect(sql.executes[3]?.params).toEqual([false]);
-    expect(sql.executes[5]?.params).toEqual([false]);
+    expect(sql.executes).toHaveLength(3);
+    expect(sql.executes[0]?.text).toMatch(/ON CONFLICT \(singleton\) DO UPDATE SET comment/);
+    expect(sql.executes[0]?.params).toEqual(['hi']);
+    expect(sql.executes[1]?.text).toMatch(/DO UPDATE SET payments_enabled/);
+    expect(sql.executes[1]?.params).toEqual([false]);
+    expect(sql.executes[2]?.text).toMatch(/SET moderator_payments_enabled/);
+    expect(sql.executes[2]?.params).toEqual([false]);
   });
 
   it('inserts a recipient and maps unique violation to Address already listed', async () => {
@@ -316,7 +319,10 @@ describe('PostgresDailyRosterStore', () => {
       [],
     ];
     await store.addRecipient('Ada@Example.com', 2);
-    expect(sql.executes[1]?.params).toEqual(['ada@example.com', 2, 'daily']);
+    expect(sql.executes).toHaveLength(1);
+    expect(sql.executes[0]?.text).toMatch(/INSERT INTO daily_roster /);
+    expect(sql.executes[0]?.text).toMatch(/INSERT INTO daily_roster_entry/);
+    expect(sql.executes[0]?.params).toEqual(['ada@example.com', 2, 'daily']);
     const inner = sql.execute.bind(sql);
     sql.execute = async (text, params) => {
       if (text.includes('INSERT INTO daily_roster_entry')) {
@@ -357,6 +363,8 @@ describe('PostgresDailyRosterStore', () => {
       [],
     ];
     await store.updateRecipient(' ADA@EXAMPLE.COM ', 5);
+    expect(sql.queries[0]?.text).toMatch(/UPDATE daily_roster_entry/);
+    expect(sql.queries[0]?.text).toMatch(/INSERT INTO daily_roster /);
     expect(sql.queries[0]?.params).toEqual([5, 'ada@example.com', 'daily']);
     await expect(store.updateRecipient('missing@example.com', 1)).rejects.toMatchObject({
       status: 400,
@@ -474,6 +482,8 @@ describe('PostgresDailyRosterStore', () => {
       [{ address: 'mod@example.com', amount_usd: 3, bucket: 'moderator' }],
     ];
     await new PostgresDailyRosterStore(sql).addModerator('mod@example.com', 3);
-    expect(sql.executes[1]?.params).toEqual(['mod@example.com', 3, 'moderator']);
+    expect(sql.executes).toHaveLength(1);
+    expect(sql.executes[0]?.text).toMatch(/INSERT INTO daily_roster_entry/);
+    expect(sql.executes[0]?.params).toEqual(['mod@example.com', 3, 'moderator']);
   });
 });

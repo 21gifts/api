@@ -12,7 +12,7 @@ import { effectiveStatus, eligibleToday } from '@/lib/funding';
 import type { FundingStore } from '@/lib/funding-store';
 import type { GiftStore } from '@/lib/gift-store';
 import { normalizeLightningAddress } from '@/lib/lightning-address';
-import { MESSAGE_LIST_LIMIT } from '@/lib/message';
+import { MESSAGE_LIST_LIMIT, type MessageRow } from '@/lib/message';
 import type { MessageStore } from '@/lib/message-store';
 import { checkSpendAuth } from '@/lib/spend-auth';
 import {
@@ -20,6 +20,18 @@ import {
   welcomeGiftPaidOnUtcDay,
   type SpendGrantStatus,
 } from '@/lib/spend-instruction';
+
+/**
+ * Same media test as `POST /invoices`: photo 0, a video, or `photoCount` \> 0.
+ *
+ * @param row - One listed forum note.
+ * @returns Whether that note can be the paid `messageId`.
+ */
+function listedPostHasMedia(
+  row: Pick<MessageRow, 'hasPhoto' | 'hasVideo' | 'photoCount'>,
+): boolean {
+  return row.hasPhoto === true || row.hasVideo === true || Number(row.photoCount) > 0;
+}
 
 /** Collaborators the daily-instruction route needs. */
 export interface SpendInstructionRouteDeps {
@@ -30,7 +42,7 @@ export interface SpendInstructionRouteDeps {
    */
   authStore: Pick<AuthStore, 'getAccountByLightningAddress' | 'accountHasPasskey'>;
   /**
-   * Forum store for live top-level post, media, and newest non-profile id.
+   * Forum store for live top-level post, media, and the newest payable note id.
    */
   messageStore: Pick<
     MessageStore,
@@ -122,8 +134,8 @@ export function spendInstructionRoutes(deps: SpendInstructionRouteDeps): Hono {
       if (hasPosted) {
         hasMedia = await deps.messageStore.accountHasLiveTopLevelMediaPost(account.id, excludeId);
         const posts = await deps.messageStore.listPostsByAccount(account.id, MESSAGE_LIST_LIMIT);
-        const newest = posts.find((row) => row.id !== excludeId);
-        messageId = newest === undefined ? null : newest.id;
+        const newestMedia = posts.find((row) => row.id !== excludeId && listedPostHasMedia(row));
+        messageId = newestMedia === undefined ? null : newestMedia.id;
       }
       if (account.role !== 'basis') {
         const grant = await deps.fundingStore.getByAccountId(account.id);

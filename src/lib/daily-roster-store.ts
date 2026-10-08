@@ -425,10 +425,12 @@ export class PostgresDailyRosterStore implements DailyRosterStore {
    */
   async setComment(comment: string): Promise<DailyRosterDocument> {
     const folded = foldedComment(comment);
-    await this.#ensureSettings();
-    await this.#sql.execute('UPDATE daily_roster SET comment = $1 WHERE singleton = true', [
-      folded,
-    ]);
+    await this.#sql.execute(
+      `INSERT INTO daily_roster (singleton, comment, payments_enabled, moderator_payments_enabled)
+       VALUES (true, $1, true, true)
+       ON CONFLICT (singleton) DO UPDATE SET comment = EXCLUDED.comment`,
+      [folded],
+    );
     return this.#load();
   }
 
@@ -440,9 +442,10 @@ export class PostgresDailyRosterStore implements DailyRosterStore {
    */
   async setPaymentsEnabled(enabled: boolean): Promise<DailyRosterDocument> {
     requireSwitch(enabled);
-    await this.#ensureSettings();
     await this.#sql.execute(
-      'UPDATE daily_roster SET payments_enabled = $1 WHERE singleton = true',
+      `INSERT INTO daily_roster (singleton, comment, payments_enabled, moderator_payments_enabled)
+       VALUES (true, '', $1, true)
+       ON CONFLICT (singleton) DO UPDATE SET payments_enabled = EXCLUDED.payments_enabled`,
       [enabled],
     );
     return this.#load();
@@ -456,9 +459,11 @@ export class PostgresDailyRosterStore implements DailyRosterStore {
    */
   async setModeratorPaymentsEnabled(enabled: boolean): Promise<DailyRosterDocument> {
     requireSwitch(enabled);
-    await this.#ensureSettings();
     await this.#sql.execute(
-      'UPDATE daily_roster SET moderator_payments_enabled = $1 WHERE singleton = true',
+      `INSERT INTO daily_roster (singleton, comment, payments_enabled, moderator_payments_enabled)
+       VALUES (true, '', true, $1)
+       ON CONFLICT (singleton) DO UPDATE
+         SET moderator_payments_enabled = EXCLUDED.moderator_payments_enabled`,
       [enabled],
     );
     return this.#load();
@@ -586,9 +591,17 @@ FROM unnest($4::text[], $5::float8[], $6::text[]) AS imported(addr, amt, bucket)
     amountUsd: number,
   ): Promise<DailyRosterDocument> {
     const row = listedRow(address, amountUsd);
-    await this.#ensureSettings();
     try {
-      await this.#insertEntry(bucket, row);
+      await this.#sql.execute(
+        `WITH ensured AS (
+  INSERT INTO daily_roster (singleton, comment, payments_enabled, moderator_payments_enabled)
+  VALUES (true, '', true, true)
+  ON CONFLICT (singleton) DO NOTHING
+)
+INSERT INTO daily_roster_entry (address, amount_usd, bucket)
+VALUES ($1, $2, $3)`,
+        [row.address, row.amountUsd, bucket],
+      );
     } catch (error) {
       if (isUniqueViolation(error)) {
         throw new DailyRosterRequestError(400, DAILY_ROSTER_ADDRESS_LISTED);
@@ -605,47 +618,43 @@ FROM unnest($4::text[], $5::float8[], $6::text[]) AS imported(addr, amt, bucket)
   ): Promise<DailyRosterDocument> {
     const row = listedRow(address, amountUsd);
     const updated = await this.#sql.query<{ address: string }>(
-      `UPDATE daily_roster_entry SET amount_usd = $1
-       WHERE address = $2 AND bucket = $3
-       RETURNING address`,
+      `WITH updated AS (
+  UPDATE daily_roster_entry SET amount_usd = $1
+  WHERE address = $2 AND bucket = $3
+  RETURNING address
+), ensured AS (
+  INSERT INTO daily_roster (singleton, comment, payments_enabled, moderator_payments_enabled)
+  SELECT true, '', true, true FROM updated
+  ON CONFLICT (singleton) DO NOTHING
+)
+SELECT address FROM updated`,
       [row.amountUsd, row.address, bucket],
     );
     if (updated[0] === undefined) {
       throw new DailyRosterRequestError(400, DAILY_ROSTER_UNKNOWN_ADDRESS);
     }
-    await this.#ensureSettings();
     return this.#load();
   }
 
   async #delete(bucket: DailyRosterBucket, address: string): Promise<DailyRosterDocument> {
     const normalized = rosterAddress(address);
     const deleted = await this.#sql.query<{ address: string }>(
-      `DELETE FROM daily_roster_entry
-       WHERE address = $1 AND bucket = $2
-       RETURNING address`,
+      `WITH deleted AS (
+  DELETE FROM daily_roster_entry
+  WHERE address = $1 AND bucket = $2
+  RETURNING address
+), ensured AS (
+  INSERT INTO daily_roster (singleton, comment, payments_enabled, moderator_payments_enabled)
+  SELECT true, '', true, true FROM deleted
+  ON CONFLICT (singleton) DO NOTHING
+)
+SELECT address FROM deleted`,
       [normalized, bucket],
     );
     if (deleted[0] === undefined) {
       throw new DailyRosterRequestError(400, DAILY_ROSTER_UNKNOWN_ADDRESS);
     }
-    await this.#ensureSettings();
     return this.#load();
-  }
-
-  async #insertEntry(bucket: DailyRosterBucket, row: DailyRosterEntry): Promise<void> {
-    await this.#sql.execute(
-      `INSERT INTO daily_roster_entry (address, amount_usd, bucket)
-       VALUES ($1, $2, $3)`,
-      [row.address, row.amountUsd, bucket],
-    );
-  }
-
-  async #ensureSettings(): Promise<void> {
-    await this.#sql.execute(
-      `INSERT INTO daily_roster (singleton, comment, payments_enabled, moderator_payments_enabled)
-       VALUES (true, '', true, true)
-       ON CONFLICT (singleton) DO NOTHING`,
-    );
   }
 
   async #settings(): Promise<DailyRosterSettingsRow | undefined> {
