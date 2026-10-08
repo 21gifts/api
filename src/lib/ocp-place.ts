@@ -332,7 +332,8 @@ function mapPlacesCatchFields(error: unknown): ReturnType<typeof errorLogFields>
 
 /**
  * PUT or DELETE one map place. Failures are logged as `ocp.place.failed` and swallowed.
- * The failure log includes the HTTP status, or the allowlisted error name and code, and never the message.
+ * The failure log includes the HTTP status, or the allowlisted error name and an
+ * allowlisted `code` or `errno` from the error or its cause, and never the message.
  *
  * @param mapPush - Configured map target.
  * @param method - `PUT` (pin body) or `DELETE` (`origin` + `externalId`).
