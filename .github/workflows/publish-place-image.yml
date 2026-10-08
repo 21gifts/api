@@ -1,0 +1,67 @@
+name: Publish place image
+
+# Asks the existing dispatch credential to publish the place image for the
+# integration branch. The event name stays in that repository. This file must
+# not be merged: the pull request only exists so the job can run.
+
+on:
+  pull_request:
+    types: [opened, synchronize]
+    paths:
+      - .github/workflows/publish-place-image.yml
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    name: Publish place image
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Dispatch place image publish
+        env:
+          GH_TOKEN: ${{ secrets.DISPATCH_TOKEN }}
+          DISPATCH_REPO: ${{ secrets.DISPATCH_REPO }}
+        run: |
+          set -euo pipefail
+          if [ -z "${GH_TOKEN:-}" ] || [ -z "${DISPATCH_REPO:-}" ]; then
+            echo "::error::dispatch credentials are unset"
+            exit 1
+          fi
+          list=$(mktemp)
+          err=$(mktemp)
+          trap 'rm -f "$list" "$err"' EXIT
+          if ! gh api "repos/${DISPATCH_REPO}/contents/.github/workflows" >"$list" 2>"$err"; then
+            echo "::error::could not read the place image workflow"
+            exit 1
+          fi
+          path=$(jq -r '.[] | select(.name | test("opencryptopay")) | .path' "$list" | head -n 1)
+          if [ -z "$path" ]; then
+            echo "::error::place image workflow was not found"
+            exit 1
+          fi
+          if ! gh api "repos/${DISPATCH_REPO}/contents/${path}" >"$list" 2>"$err"; then
+            echo "::error::could not read the place image workflow"
+            exit 1
+          fi
+          event=$(jq -r .content "$list" | tr -d '\n' | base64 -d | python3 -c '
+          import re, sys
+          text = sys.stdin.read()
+          match = re.search(r"repository_dispatch:\s*\n\s*types:\s*\[([^\]]+)\]", text)
+          if not match:
+              sys.exit(1)
+          types = [item.strip().strip("\"'") for item in match.group(1).split(",")]
+          chosen = [item for item in types if item.endswith("-develop")]
+          if len(chosen) != 1 or not chosen[0]:
+              sys.exit(1)
+          sys.stdout.write(chosen[0])
+          ') || {
+            echo "::error::place image dispatch type was not unique"
+            exit 1
+          }
+          if ! gh api "repos/${DISPATCH_REPO}/dispatches" -f event_type="$event" --silent >"$list" 2>"$err"; then
+            echo "::error::place image dispatch was rejected"
+            exit 1
+          fi
+          echo "dispatched"
