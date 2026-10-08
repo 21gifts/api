@@ -494,7 +494,43 @@ describe('syncShopOcpPlace', () => {
         textHasHashtagToken: () => true,
       }),
     ).resolves.toBeUndefined();
-    expect(parsedEvents(warn).filter((e) => e['event'] === 'ocp.place.failed')).toHaveLength(2);
+    const failed = parsedEvents(warn).filter((e) => e['event'] === 'ocp.place.failed');
+    expect(failed).toHaveLength(2);
+    expect(failed[0]?.['status']).toBe(500);
+    expect(failed[1]?.['name']).toBe('Error');
+    const warned = warn.mock.calls.map((call) => String(call[0])).join('\n');
+    expect(warned).not.toContain('secret');
+    expect(warned).not.toContain('down');
+  });
+
+  it('logs ocp.place.failed with the syscall code from cause', async () => {
+    const throwing: MapPush = {
+      baseUrl: 'http://map.test',
+      token: 'secret',
+      fetchImpl: async () => {
+        throw Object.assign(new TypeError('fetch failed'), {
+          cause: Object.assign(new Error('connect'), { code: 'ECONNREFUSED' }),
+        });
+      },
+    };
+    await expect(
+      syncShopOcpPlace({
+        mapPush: throwing,
+        messageId: 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee',
+        text: '#21GiftsShop',
+        parentId: null,
+        place: { lat: 1, lng: 2, label: null },
+        authorName: null,
+        textHasHashtagToken: () => true,
+      }),
+    ).resolves.toBeUndefined();
+    const failed = parsedEvents(warn).filter((e) => e['event'] === 'ocp.place.failed');
+    expect(failed).toHaveLength(1);
+    expect(failed[0]?.['code']).toBe('ECONNREFUSED');
+    expect(failed[0]?.['name']).toBe('TypeError');
+    const warned = warn.mock.calls.map((call) => String(call[0])).join('\n');
+    expect(warned).not.toContain('fetch failed');
+    expect(warned).not.toContain('connect');
   });
 });
 
@@ -553,7 +589,13 @@ describe('removeShopOcpPlace', () => {
         messageId: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd',
       }),
     ).resolves.toBeUndefined();
-    expect(parsedEvents(warn).filter((e) => e['event'] === 'ocp.place.failed')).toHaveLength(2);
+    const failed = parsedEvents(warn).filter((e) => e['event'] === 'ocp.place.failed');
+    expect(failed).toHaveLength(2);
+    expect(failed[0]?.['status']).toBe(500);
+    expect(failed[1]?.['name']).toBe('Error');
+    const warned = warn.mock.calls.map((call) => String(call[0])).join('\n');
+    expect(warned).not.toContain('secret');
+    expect(warned).not.toContain('down');
   });
 });
 
@@ -711,7 +753,14 @@ describe('publishExistingShopPlaces', () => {
     expect(calls).toHaveLength(2);
     expect(JSON.parse(calls[0]?.body ?? '{}')).toEqual(shopOcpPlaceInput('first', stall, 'Ada'));
     expect(JSON.parse(calls[1]?.body ?? '{}')).toEqual(shopOcpPlaceInput('second', stall, 'Ada'));
-    expect(parsedEvents(warn).filter((e) => e['event'] === 'ocp.place.failed')).toHaveLength(1);
+    const failed = parsedEvents(warn).filter((e) => e['event'] === 'ocp.place.failed');
+    expect(failed).toHaveLength(1);
+    expect(failed[0]?.['status']).toBe(500);
+    expect(
+      Object.keys(failed[0] ?? {}).filter((key) => key !== 'ts' && key !== 'event'),
+    ).toEqual(['status']);
+    const warned = warn.mock.calls.map((call) => String(call[0])).join('\n');
+    expect(warned).not.toContain('secret');
   });
 
   it('logs ocp.place.failed when fetch throws and does not reject', async () => {
@@ -736,7 +785,15 @@ describe('publishExistingShopPlaces', () => {
         textHasHashtagToken: hasShopTag,
       }),
     ).resolves.toBeUndefined();
-    expect(parsedEvents(warn).filter((e) => e['event'] === 'ocp.place.failed')).toHaveLength(1);
+    const failed = parsedEvents(warn).filter((e) => e['event'] === 'ocp.place.failed');
+    expect(failed).toHaveLength(1);
+    expect(failed[0]?.['name']).toBe('Error');
+    expect(
+      Object.keys(failed[0] ?? {}).filter((key) => key !== 'ts' && key !== 'event'),
+    ).toEqual(['name']);
+    const warned = warn.mock.calls.map((call) => String(call[0])).join('\n');
+    expect(warned).not.toContain('down');
+    expect(warned).not.toContain('secret');
   });
 
   it('logs ocp.place.failed once when listPlaces throws and does not reject', async () => {

@@ -3279,14 +3279,14 @@ Builds the operator-only external-pubkey inspection route.
 
 - **Purpose:** PUT the current shop pin to `/map/places` when mapPush is set, the note is top-level, the text has the shop hashtag, and a pin is present. A pin that already existed is still sent. Replies, a missing pin, a missing shop tag, and a missing map push do nothing. BTC Map is not called.
 - **Inputs:** Optional map push, message id, text, parent id, place, author name, and the hashtag check. There is no hadPlaceBefore flag.
-- **Returns / side effects:** Resolves after the PUT. A non-2xx answer or a thrown fetch logs `ocp.place.failed` and does not throw. Timeout is 5000 ms. The body includes techProvider `21.gifts`.
+- **Returns / side effects:** Resolves after the PUT. A non-2xx answer logs `ocp.place.failed` with numeric `status`, and a thrown fetch logs `ocp.place.failed` with the allowlisted error name and code, never the message. It does not throw. Timeout is 5000 ms. The body includes techProvider `21.gifts`.
 - **Used by:** `messagesRoutes` on create (not a replay), on every place write that sets a pin, on a shop-account change when a place exists, and debug restore of a live top-level shop pin.
 
 ## Function: removeShopOcpPlace
 
 - **Purpose:** DELETE `/map/places` with `{ origin: "21gifts", externalId }`. No-op when mapPush is missing.
 - **Inputs:** Optional map push and the forum message id used as `externalId`.
-- **Returns / side effects:** Resolves after the DELETE. A non-2xx answer or a thrown fetch logs `ocp.place.failed` and does not throw. Timeout is 5000 ms.
+- **Returns / side effects:** Resolves after the DELETE. A non-2xx answer logs `ocp.place.failed` with numeric `status`, and a thrown fetch logs `ocp.place.failed` with the allowlisted error name and code, never the message. It does not throw. Timeout is 5000 ms.
 - **Used by:** `messagesRoutes` when a place is cleared and when a top-level shop note that had a place is deleted.
 
 ## Function: isDevShopSeedTarget
@@ -3307,7 +3307,7 @@ Builds the operator-only external-pubkey inspection route.
 
 - **Purpose:** After listen, PUT each existing live top-level shop pin to the OpenCryptoPay map at `/map/places`. A missing map push does nothing. Replies, hidden notes, notes without a pin, and notes without the shop tag are skipped. A 200 is success. The body includes techProvider `21.gifts`. BTC Map is not called here.
 - **Inputs:** Optional map push, `listPlaces` (capped at 1000), `getById`, and the hashtag check.
-- **Returns / side effects:** Resolves when the walk finishes or when listing pins fails. Does not reject. A failed list logs `ocp.place.failed` and returns. A failed load, a non-2xx answer, or a thrown fetch logs `ocp.place.failed` and the walk continues. Timeout is 5000 ms. Nothing is logged except that event name.
+- **Returns / side effects:** Resolves when the walk finishes or when listing pins fails. Does not reject. A failed list logs only the event name `ocp.place.failed` and returns. A failed load logs only the event name `ocp.place.failed` and the walk continues. A non-2xx answer logs `ocp.place.failed` with numeric `status` and the walk continues. A thrown fetch logs `ocp.place.failed` with the allowlisted error name and code, never the message, and the walk continues. Timeout is 5000 ms.
 - **Used by:** The process entry point, once, after listen. Not on the welcome interval.
 
 ## Function: resolveMapPush
