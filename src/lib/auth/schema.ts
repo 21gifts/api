@@ -4,7 +4,7 @@
  * `ALTER TABLE` backfills `account.name`, nullable `linking_key`,
  * `forum_laws_dismissed`, `rules_agreed_at`, `notification_level`,
  * `amount_unit`, `locale`, `fiat`, `session_refused`, `wallet_required`,
- * `wallet_backup_seen_at`, and `passkey_challenge.requested_name` on
+ * `wallet_backup_seen_at`, `staff_tag`, and `passkey_challenge.requested_name` on
  * databases created before those columns existed.
  * Also creates `passkey_renew_attempt` (failed, cancelled, and
  * server-written succeeded seed rows).
@@ -164,4 +164,8 @@ export const AUTH_SCHEMA_SQL: readonly string[] = [
   `CREATE INDEX IF NOT EXISTS passkey_renew_attempt_account_idx
     ON passkey_renew_attempt (account_id, created_at DESC)`,
   `ALTER TABLE passkey_challenge ADD COLUMN IF NOT EXISTS requested_name text`,
+  `ALTER TABLE account ADD COLUMN IF NOT EXISTS staff_tag text`,
+  `ALTER TABLE account DROP CONSTRAINT IF EXISTS account_staff_tag_chk`,
+  `ALTER TABLE account ADD CONSTRAINT account_staff_tag_chk CHECK (staff_tag IS NULL OR staff_tag IN ('software_developer'))`,
+  `UPDATE account SET staff_tag = 'software_developer' WHERE lower(trim(username)) = 'dansw' AND staff_tag IS DISTINCT FROM 'software_developer'`,
 ];

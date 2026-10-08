@@ -2,7 +2,7 @@ import { Hono, type Context } from 'hono';
 import { z } from 'zod';
 import { serializeOwnerAccountWithPosts } from '@/lib/auth/account-json';
 import { resolveSession } from '@/lib/auth/service';
-import type { Account, AuthStore } from '@/lib/auth/store';
+import { staffTagOf, type Account, type AuthStore } from '@/lib/auth/store';
 import {
   applicationPauseExempt,
   effectiveStatus,
@@ -545,6 +545,8 @@ export function fundingRoutes(deps: FundingRouteDeps): Hono {
               account.role,
               Math.max(0, row.replyCount - dropped),
               true,
+              undefined,
+              staffTagOf(account.staffTag),
             ),
           );
         }

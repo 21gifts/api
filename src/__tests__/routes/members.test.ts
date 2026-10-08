@@ -172,6 +172,7 @@ describe('GET /members/:accountId', () => {
     expect(body).not.toHaveProperty('viewKey');
     expect(body).not.toHaveProperty('eventId');
     expect(body).not.toHaveProperty('linkingKey');
+    expect(body).not.toHaveProperty('staffTag');
     const profile = body['profileMessage'] as Record<string, unknown>;
     expect(profile['text']).toBe('Ada');
     expect(profile['accountId']).toBe(ACCOUNT_ID);
@@ -181,6 +182,37 @@ describe('GET /members/:accountId', () => {
     expect(body['aboutMe']).toBeNull();
     expect(body['aboutMeHasPhoto']).toBe(false);
     expect(body['fundingReviewedAt']).toBeNull();
+  });
+
+  it('includes staffTag only when the account has the software_developer label', async () => {
+    const authStore = await seededCaller();
+    await authStore.createAccount({
+      id: ACCOUNT_ID,
+      linkingKey: null,
+      role: 'verified',
+      name: 'Dan',
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: 'b'.repeat(64),
+      createdAt: 1_700_000_000_000,
+      rulesAgreedAt: now(),
+      staffTag: 'software_developer',
+    });
+    const withTag = await mount(authStore).request(`/members/${ACCOUNT_ID}`, {
+      headers: AUTH,
+    });
+    expect(withTag.status).toBe(200);
+    expect(((await withTag.json()) as { staffTag?: string }).staffTag).toBe('software_developer');
+
+    const otherId = OTHER_ID;
+    await addAccount(authStore, otherId, 'c'.repeat(64));
+    const withoutTag = await mount(authStore).request(`/members/${otherId}`, {
+      headers: AUTH,
+    });
+    expect(withoutTag.status).toBe(200);
+    expect(await withoutTag.json()).not.toHaveProperty('staffTag');
   });
 
   it('defaults fundingStore when omitted from membersRoutes', async () => {

@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import type { AccountRole } from '@/lib/auth/store';
+import type { AccountRole, StaffTag } from '@/lib/auth/store';
 import type { GoalCurrency } from '@/lib/goal-rate';
 import type { ForumPlace } from '@/lib/place';
 import type { ForumVideoContentType } from '@/lib/video';
@@ -331,6 +331,12 @@ export interface PublicMessage {
    * authors.
    */
   role?: AccountRole;
+  /**
+   * Author's staff display label. Present only as `software_developer` when
+   * that argument is set; omitted otherwise. Never JSON `null`. Not a
+   * permission role.
+   */
+  staffTag?: 'software_developer';
   /** Marks a visible external Nostr-authored row; the pubkey remains private. */
   via?: 'nostr';
   /**
@@ -622,13 +628,17 @@ export function truncatePubkeyDisplay(pubkeyHex: string): string {
  * @param hidden - When set, stamp `deletedAt` / `deletedBy` and force
  * `payable` false (the `payable` argument is ignored). Omit on live JSON so
  * those keys are absent.
+ * @param staffTag - Author's staff display label, or `null` / omitted when
+ * unset. JSON `staffTag` is `"software_developer"` only when this argument
+ * is exactly that string; otherwise the key is omitted (never JSON `null`).
  *
  * @returns Public fields (`sats`, `payable`, `hasPhoto`, `photoCount`,
  * `photoTakenAts` (always, length === photoCount, nulls when unknown, `[]`
  * when no stills), optional `photoTakenAt` only when photoCount === 1
  * (equal to slot 0, null allowed; omitted otherwise), `hasVideo`,
  * `videoContentType`; live `role` for 21gifts authors; optional
- * `via: 'nostr'` when `row.accountId === null && row.authorPubkey !== null`;
+ * `staffTag` only when that argument is exactly `software_developer`;
+ * optional `via: 'nostr'` when `row.accountId === null && row.authorPubkey !== null`;
  * optional `accountId` when requested; optional `parentId` when
  * `row.parentId !== null`; optional `mentions` (`{ username, accountId }[]`) when `includeAccountId` is true and the stored list is non-empty; optional `goalSats` when the stored value is a
  * positive integer on a top-level note; optional `goalRepayable: true` when
@@ -646,6 +656,7 @@ export function truncatePubkeyDisplay(pubkeyHex: string): string {
  * `goalAmountEur` / `goalAmountPhp` when `goalCurrency` is null.
  * Omits `place` when unset or null.
  * Omits `shopAccount` when unset or null.
+ * Omits `staffTag` when the argument is not exactly `software_developer`.
  * On a reply, always includes `receivedSats` (`row.receivedSats ?? 0`) and
  * the four `receivedAmount*` keys (stored string or null). Omits those five
  * keys on a top-level note.
@@ -662,6 +673,7 @@ export function serializeMessage(
     deletedAt: Date;
     deletedBy: { id: string | null; name: string | null; role: AccountRole | null };
   },
+  staffTag?: StaffTag | null,
 ): PublicMessage {
   const taken = photoTakenJson(row);
   const body: PublicMessage = {
@@ -686,6 +698,9 @@ export function serializeMessage(
   }
   if (role !== undefined) {
     body.role = role;
+  }
+  if (staffTag === 'software_developer') {
+    body.staffTag = staffTag;
   }
   if (row.accountId === null && row.authorPubkey !== null) {
     body.via = 'nostr';

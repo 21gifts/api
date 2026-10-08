@@ -2226,6 +2226,9 @@ test('Function: parseStoredLocale — GET /me without bearer is 401', async ({ r
 test('Function: parseStoredFiat — GET /me without bearer is 401', async ({ request }) => {
   expect((await request.get('/me')).status()).toBe(401);
 });
+test('Function: staffTagOf — GET /me without bearer is 401', async ({ request }) => {
+  expect((await request.get('/me')).status()).toBe(401);
+});
 test('Function: isStaffAccount — GET /me without bearer is 401', async ({ request }) => {
   expect((await request.get('/me')).status()).toBe(401);
 });

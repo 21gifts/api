@@ -10,6 +10,7 @@ import {
   parseAmountUnit,
   parseStoredFiat,
   parseStoredLocale,
+  staffTagOf,
   type Account,
   type AccountFiat,
   type AccountLocale,
@@ -28,9 +29,10 @@ import type { MessageStore } from '@/lib/message-store';
 import { parseNotificationLevel } from '@/lib/notification';
 
 /**
- * Public JSON shape of an account (eleven fields). Never includes Nostr
- * pubkey, ciphertext, or other key material. Omits `viewKey` (operator
- * debug listing only — not `/me` or passkey finish).
+ * Public JSON shape of an account (eleven fields always present). Never
+ * includes Nostr pubkey, ciphertext, or other key material. Omits `viewKey`
+ * (operator debug listing only — not `/me` or passkey finish). Optional
+ * `staffTag` is added only when set to `software_developer`.
  */
 export interface AccountResponse {
   /** Opaque unique account id. */
@@ -55,6 +57,11 @@ export interface AccountResponse {
   createdAt: number;
   /** Epoch ms of first living-room rules agreement, or `null`. */
   rulesAgreedAt: number | null;
+  /**
+   * Staff display label. Present only as `software_developer` when set;
+   * omitted otherwise. Never JSON `null`. Not a permission role.
+   */
+  staffTag?: 'software_developer';
 }
 
 /**
@@ -212,13 +219,14 @@ export interface ViewProfileResponse {
  * Shared by {@link serializeDebugAccount} and {@link serializeOwnerAccount}.
  * Debug routes (`GET /debug/accounts`, `PATCH /debug/accounts/:id`) use
  * {@link serializeDebugAccount}, not this function. Does not include
- * `viewKey`, Nostr columns, or `isPlatform`.
+ * `viewKey`, Nostr columns, or `isPlatform`. The eleven public fields stay
+ * always present; `staffTag` is added only when set to `software_developer`.
  *
  * @param account - Stored account.
- * @returns The eleven public fields only.
+ * @returns The eleven public fields, plus `staffTag` only when set.
  */
 export function serializeAccount(account: Account): AccountResponse {
-  return {
+  const body: AccountResponse = {
     id: account.id,
     linkingKey: account.linkingKey,
     role: account.role,
@@ -231,6 +239,11 @@ export function serializeAccount(account: Account): AccountResponse {
     createdAt: account.createdAt,
     rulesAgreedAt: account.rulesAgreedAt,
   };
+  const tag = staffTagOf(account.staffTag);
+  if (tag !== null) {
+    body.staffTag = tag;
+  }
+  return body;
 }
 
 /** Operator Nostr columns for debug JSON. Never decrypts the nsec envelope. */

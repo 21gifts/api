@@ -10,6 +10,7 @@ import {
   parseAmountUnit,
   parseStoredFiat,
   parseStoredLocale,
+  staffTagOf,
   type Account,
   type AccountFiat,
   type AccountLocale,
@@ -54,9 +55,10 @@ interface AccountRow {
   amount_unit?: string | null;
   locale?: string | null;
   fiat?: string | null;
+  staff_tag?: string | null;
 }
 
-const ACCOUNT_SELECT_COLUMNS = `id, linking_key, role, name, lightning_address, lightning_address_verified, forum_laws_dismissed, view_key, created_at, rules_agreed_at, is_platform, name_skipped_at, lightning_address_skipped_at, profile_message_id, location, notification_level, username, session_refused, nostr_kek_id, nostr_key_custody, nostr_key_created_at, wallet_required, wallet_backup_seen_at, amount_unit, locale, fiat`;
+const ACCOUNT_SELECT_COLUMNS = `id, linking_key, role, name, lightning_address, lightning_address_verified, forum_laws_dismissed, view_key, created_at, rules_agreed_at, is_platform, name_skipped_at, lightning_address_skipped_at, profile_message_id, location, notification_level, username, session_refused, nostr_kek_id, nostr_key_custody, nostr_key_created_at, wallet_required, wallet_backup_seen_at, amount_unit, locale, fiat, staff_tag`;
 
 /** Escape `\`, `%`, and `_` so they are LIKE literals. Does not append `%`. */
 function mentionLikePattern(prefix: string): string {
@@ -1069,6 +1071,7 @@ function mapAccount(row: AccountRow): Account | undefined {
       row.wallet_backup_seen_at === null || row.wallet_backup_seen_at === undefined
         ? null
         : epochMs(row.wallet_backup_seen_at),
+    staffTag: staffTagOf(row.staff_tag),
   };
 }
 

@@ -730,6 +730,9 @@ The example above is an existing member (`walletRequired: false`,
 `walletBackupSeenAt: null`). New register/claim owner JSON has
 `walletRequired: true` and `setup: "name"` when the name is unset.
 The recovery phrase is not a setup step and does not change `setup` or `missing`.
+`staffTag` is present only as `"software_developer"` when set and is omitted
+otherwise (never JSON `null`). It is not a permission and does not change
+`role`.
 
 About me is the profile-note text when it is a real bio, else null (auto
 name-copy is not a bio, including after a display-name rename when the note
@@ -741,6 +744,7 @@ stays `null`)).
 | `id`                         | string         | Opaque account id                                                                                                                                                                                                                                                                                                                                        |
 | `linkingKey`                 | string \| null | Historical LNURL-auth linking key (hex), or `null` for passkey accounts                                                                                                                                                                                                                                                                                  |
 | `role`                       | string         | `basis`, `verified`, `moderator`, `initiator`, or `founder`                                                                                                                                                                                                                                                                                              |
+| `staffTag`                   | string         | Present only as `"software_developer"` when set; omitted otherwise. Never JSON `null`. Not a permission and does not change `role`.                                                                                                                                                                                                                      |
 | `name`                       | string \| null | Display name, or `null` until set                                                                                                                                                                                                                                                                                                                        |
 | `username`                   | string \| null | Unique LUD-16 / NIP-05 local-part (`a-z0-9-_.`), or `null` until set. Cannot skip.                                                                                                                                                                                                                                                                       |
 | `location`                   | string \| null | Free-text location set by the owner, or `null` when unset. Not unique. Not a setup step.                                                                                                                                                                                                                                                                 |
@@ -897,7 +901,9 @@ live profile note has a stored photo; false when `profileMessage` is
 `fundingReviewedAt` (`grant.admittedAt` when the effective grant is
 admitted, else `null`) and `fundingReviewedByName` (the live display name
 of `decidedBy` when that time is set and the trimmed name is non-empty,
-otherwise `null`). Default
+otherwise `null`). `staffTag` is present only as `"software_developer"`
+when set and is omitted otherwise (never JSON `null`). It is not a
+permission and does not change `role`. Default
 `trust` is all-null when no stored edges exist. Never `viewKey` /
 `eventId`. Never pending/trial/rejected on the member card.
 
@@ -2106,7 +2112,9 @@ Success → **Response** `200`:
 The listing uses `serializeDebugAccount` (public fields plus `isPlatform`,
 `sessionRefused`, `viewKey`, `locale`, `fiat`, `walletRequired`,
 `walletBackupSeenAt`, and Nostr debug fields). `locale` and `fiat` are null
-until stored. Member `GET /me` does not include `isPlatform` or
+until stored. `staffTag` is present only as `"software_developer"` when set
+and is omitted otherwise (never JSON `null`). It is not a permission and
+does not change `role`. Member `GET /me` does not include `isPlatform` or
 `sessionRefused`. Public member cards omit `locale` and `fiat`.
 
 Accounts are ordered by `createdAt` ascending, then `id`. An empty store
@@ -3728,7 +3736,9 @@ equals `photoCount`, null when unknown, `[]` when there are no stills) and
 `photoTakenAt` only when `photoCount` is 1 (equals `photoTakenAts[0]`, null
 allowed), `hasVideo`, `videoContentType` (`null` when
 `hasVideo` is false), live `role` (the author's current `account.role`, or
-`"basis"` if the author is missing; omitted for external authors), and
+`"basis"` if the author is missing; omitted for external authors),
+`staffTag` (present only as `"software_developer"` when set; omitted
+otherwise; never JSON `null`; not a permission and does not change `role`), and
 `replyCount` of live attributed children (`parent_id` match, `deleted_at`
 null, and `account_id` set, or `author_pubkey` set and that pubkey is a
 recorded zapper (`nostr_zapper` entitlement, checked via `isZapperPubkey` /
@@ -3811,6 +3821,10 @@ Success → **Response** `200`:
   ]
 }
 ```
+
+`staffTag` is present only as `"software_developer"` when set and is omitted
+otherwise (never JSON `null`). It is not a permission and does not change
+`role`.
 
 An empty thread is **200** with `"messages": []`. When `DATABASE_URL` is
 unset the default in-memory store starts empty; when set, rows come from

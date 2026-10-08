@@ -3,7 +3,7 @@ import { aboutMeFromNote } from '@/lib/about-me';
 import { buildAccountActivity } from '@/lib/account-activity';
 import { resolveSession } from '@/lib/auth/service';
 import { MISSING_REQUIREMENTS_ERROR, requireAction } from '@/lib/auth/requirements';
-import type { Account, AuthStore } from '@/lib/auth/store';
+import { staffTagOf, type Account, type AuthStore } from '@/lib/auth/store';
 import { InMemoryBtcUsdStore, type BtcUsdRateBook } from '@/lib/btc-usd-store';
 import { InMemoryGiftStore, type GiftStore } from '@/lib/gift-store';
 import { InMemoryFiatStore, type FiatRateBook } from '@/lib/usd-fiat-store';
@@ -220,6 +220,8 @@ export function membersRoutes(deps: MembersRouteDeps): Hono {
               account.role,
               Math.max(0, row.replyCount - dropped),
               true,
+              undefined,
+              staffTagOf(account.staffTag),
             ),
           );
         }
@@ -253,7 +255,17 @@ export function membersRoutes(deps: MembersRouteDeps): Hono {
               kept.eventId !== '' &&
               account.lightningAddress !== null &&
               account.lightningAddress.trim() !== '';
-            messages.push(serializeMessage(kept, payable, account.role, undefined, true));
+            messages.push(
+              serializeMessage(
+                kept,
+                payable,
+                account.role,
+                undefined,
+                true,
+                undefined,
+                staffTagOf(account.staffTag),
+              ),
+            );
           } catch {
             continue;
           }
@@ -288,7 +300,15 @@ export function membersRoutes(deps: MembersRouteDeps): Hono {
               account.lightningAddress !== null &&
               account.lightningAddress.trim() !== '';
             const children = await deps.messageStore.listReplies(row.id, MESSAGE_LIST_LIMIT);
-            profileMessage = serializeMessage(row, payable, account.role, children.length, true);
+            profileMessage = serializeMessage(
+              row,
+              payable,
+              account.role,
+              children.length,
+              true,
+              undefined,
+              staffTagOf(account.staffTag),
+            );
             aboutMe = aboutMeFromNote(account.name, row.text, row.name);
             aboutMeHasPhoto = row.hasPhoto === true;
           }
@@ -297,6 +317,7 @@ export function membersRoutes(deps: MembersRouteDeps): Hono {
         const edges = await deps.trustStore.listEdgesForSubject(account.id);
         const accounts = await deps.authStore.listAccounts();
         const grant = await fundingStore.getByAccountId(account.id);
+        const memberTag = staffTagOf(account.staffTag);
         return c.json(
           {
             id: account.id,
@@ -316,6 +337,7 @@ export function membersRoutes(deps: MembersRouteDeps): Hono {
             fundingReviewedByName: await fundingReviewedByName(grant, deps.now(), (accountId) =>
               deps.authStore.getAccount(accountId),
             ),
+            ...(memberTag === null ? {} : { staffTag: memberTag }),
           },
           200,
         );
