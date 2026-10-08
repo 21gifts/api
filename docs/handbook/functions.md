@@ -914,7 +914,7 @@
 - **Purpose:** Resolve a spend ping collaborator from env. Unset or blank `SPEND_URL` or `SPEND_API_TOKEN` → `undefined` (caller skips). Trims both values and strips trailing slashes from the URL. The process still boots. An optional third argument forwards a gift ledger and a clock.
 - **Inputs:** `env` (`Record<string, string | undefined>`), `fetchImpl` (`FetchFn`), and optional `{ gifts?, now? }`.
 - **Returns / side effects:** `HttpSpendPing` when both env values are set; otherwise `undefined`. No HTTP.
-- **Used by:** `createApp`.
+- **Used by:** `createApp`, and the process entry `src/index.ts`, which forwards the boot gift store. A zap-composed daily ping then uses the same welcome-paid skip. Welcome kind does not read the ledger.
 
 ## Function: decideSpendInstruction
 
