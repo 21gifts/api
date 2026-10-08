@@ -179,7 +179,7 @@ function percentDecoded(text: string): string {
  *
  * Flags a key token, a recovery-phrase run, or a WIF private key (Base58Check)
  * in the value itself, and the same in every text decoded from it: for every
- * bech32 or bech32m token the whole payload plus every length-delimited
+ * bech32 or bech32m token the whole payload (as printable ASCII and as UTF-8) plus every length-delimited
  * protobuf field on its own (every memo of a Spark address or invoice,
  * repeated and nested fields included at any depth; a token whose nesting
  * would cost more than eight times its payload to walk counts as secret, fail-closed), and every description tag of a BOLT11
@@ -210,7 +210,10 @@ export function containsEncodedSecret(value: string): boolean {
     const bytes = payloadBytes(lower);
     if (bytes !== null) {
       const nested = protoTexts(bytes);
-      if (nested === null || [printable(bytes), ...nested].some(textHoldsSecret)) {
+      if (
+        nested === null ||
+        [printable(bytes), fieldText(bytes), ...nested].some(textHoldsSecret)
+      ) {
         return true;
       }
     }

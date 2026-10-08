@@ -1,3 +1,4 @@
+import { bech32, bech32m } from '@scure/base';
 import { describe, expect, it } from 'vitest';
 import { parseClientInstant } from '@/lib/client-instant';
 import { encodeSparkInvoice } from '@/lib/spark-invoice';
@@ -244,6 +245,32 @@ describe('parseWalletReport', () => {
       ['bolt11-clean', BOLT11_PLAIN_DESCRIPTION, null],
     ]);
     expect(JSON.stringify(parsed.report)).not.toContain(BOLT11_PHRASE_DESCRIPTION);
+  });
+
+  it('nulls a detail whose bech32 or bech32m payload is a CJK phrase as plain UTF-8', () => {
+    const words = (codec: typeof bech32): number[] =>
+      codec.toWords(new TextEncoder().encode('的 一 是 在 不 了 有 和 人 这 中 大'));
+    const parsed = parseWalletReport(
+      {
+        balanceSats: 1,
+        syncedAt: WHEN,
+        payments: [
+          payment({
+            id: 'cjk-payload',
+            invoice: bech32m.encode('spark', words(bech32m), false),
+            destination: bech32.encode('lnurl', words(bech32), false),
+          }),
+        ],
+      },
+      NOW,
+    );
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) {
+      return;
+    }
+    expect(parsed.report.payments.map((row) => [row.invoice, row.destination])).toEqual([
+      [null, null],
+    ]);
   });
 
   it('accepts every direction/status and explicit zero fee', () => {

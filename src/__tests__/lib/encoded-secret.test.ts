@@ -73,6 +73,20 @@ describe('containsEncodedSecret', () => {
     expect(containsEncodedSecret(lnurlLike)).toBe(true);
   });
 
+  it('flags a CJK phrase carried directly as UTF-8 in a bech32 or bech32m payload', () => {
+    const payload = new TextEncoder().encode('的 一 是 在 不 了 有 和 人 这 中 大');
+    expect(containsEncodedSecret(bech32.encode('lnurl', bech32.toWords(payload), false))).toBe(
+      true,
+    );
+    expect(containsEncodedSecret(bech32m.encode('spark', bech32m.toWords(payload), false))).toBe(
+      true,
+    );
+    const plain = new TextEncoder().encode('咖啡 一杯');
+    expect(containsEncodedSecret(bech32m.encode('spark', bech32m.toWords(plain), false))).toBe(
+      false,
+    );
+  });
+
   it('keeps short tokens, tokens without a separator digit, undecodable tokens, and bad padding', () => {
     expect(containsEncodedSecret('alice@21.gifts')).toBe(false);
     expect(containsEncodedSecret('a'.repeat(40))).toBe(false);
