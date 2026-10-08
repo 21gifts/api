@@ -1,3 +1,4 @@
+import { bech32, bech32m } from '@scure/base';
 import { describe, expect, it } from 'vitest';
 import { encodeSparkInvoice } from '@/lib/spark-invoice';
 import {
@@ -179,6 +180,21 @@ describe('parseMemberEventBatch', () => {
     });
     const result = parse({
       events: [event({ path: `/pay/${encoded}` }), event({ props: { target: encoded, n: 1 } })],
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) {
+      return;
+    }
+    expect(result.dropped).toBe(1);
+    expect(result.events[0]?.props).toEqual({ n: 1 });
+  });
+
+  it('drops a path and skips a prop whose bech32 or bech32m payload is a CJK phrase as UTF-8', () => {
+    const payload = new TextEncoder().encode('的 一 是 在 不 了 有 和 人 这 中 大');
+    const spark = bech32m.encode('spark', bech32m.toWords(payload), false);
+    const lnurl = bech32.encode('lnurl', bech32.toWords(payload), false);
+    const result = parse({
+      events: [event({ path: `/pay/${spark}` }), event({ props: { target: lnurl, n: 1 } })],
     });
     expect(result.ok).toBe(true);
     if (!result.ok) {
