@@ -135,7 +135,7 @@ api/
 │   │   ├── request-meta.ts   # Validated client IP, country, ray, user agent, language, origin
 │   │   ├── conversation-store.ts  # ConversationStore port, memory + Postgres
 │   │   ├── conversation-push.ts  # notifyConversationMessage (DM Web Push; no in-app rows)
-│   │   ├── notification.ts   # Notification public JSON + bell fan-out (`notifyForumPost` / `notifyForumReply` / `notifyZap` / `notifyHeart`) filtered by `notificationLevel` (`parseNotificationLevel` / `isStaffAccount` / `wantsNotification`); staff `notifyModeratorProposed`; targeted `notifyModeratorAppointed` and `notifyExternalForumReply` (not fan-out; the latter reaches only the parent note's author)
+│   │   ├── notification.ts   # Notification public JSON + bell fan-out (`notifyForumPost` / `notifyForumReply` / `notifyZap`) filtered by `notificationLevel` (`parseNotificationLevel` / `isStaffAccount` / `wantsNotification`); staff `notifyModeratorProposed`; targeted `notifyModeratorAppointed`, `notifyHeart` (note author only, not a fan-out), and `notifyExternalForumReply` (not fan-out; the latter reaches only the parent note's author)
 │   │   ├── notification-store.ts  # NotificationStore port, memory + Postgres
 │   │   ├── push-config.ts    # resolveVapidConfig (VAPID env; missing → null)
 │   │   ├── push.ts           # parsePushSubscription + English forum/zap/heart/conversation payloads

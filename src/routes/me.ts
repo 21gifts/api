@@ -40,7 +40,7 @@ import type { PushStore } from '@/lib/push-store';
 /**
  * `/me` — the authenticated account and its editable profile (display name,
  * unique username, optional location, About me, welcome-forum laws dismiss,
- * living-room rules agreement, notification level, amount-entry unit, `POST /heart-notifications`, wallet backup seen,
+ * living-room rules agreement, notification level, `POST /heart-notifications`, amount-entry unit, wallet backup seen,
  * and the optional wallet public-key bind (`PUT /wallet` when the LNURL server
  * is configured). The verified wallet is the member's only receiving address.
  * Shares the {@link AuthStore} instance with `/auth`.
@@ -248,7 +248,7 @@ function ownerJson(deps: MeRouteDeps, account: Account): Promise<OwnerAccountRes
  *
  * @param deps - Shared store, message store, clock, optional push, optional notification and conversation stores, optional gift/rate/fiat stores for activity, optional funding store, and optional `lnurlServer` for `PUT /wallet` and the receiving address.
  * @returns A Hono app exposing account, activity, display-name, username, location, About me, wallet-backup-seen, optional wallet bind, passkey-renew/report, passkey-renew/ack, setup skip, forum-laws dismiss,
- * living-room rules agreement, notification level, amount-entry unit, `POST /heart-notifications`, locale, and fiat routes.
+ * living-room rules agreement, notification level, `POST /heart-notifications`, amount-entry unit, locale, and fiat routes.
  */
 export function meRoutes(deps: MeRouteDeps): Hono {
   const giftStore = deps.giftStore ?? new InMemoryGiftStore();
