@@ -146,18 +146,38 @@ export function normalizePlace(
 }
 
 /**
+ * Territory codes of the boundary dataset that ISO 3166-1 does not assign:
+ * Ascension, Clipperton, Sark, Diego Garcia, Ceuta and Melilla, the Canary
+ * Islands, and Tristan da Cunha. A pin there takes its country's code instead.
+ */
+const RESERVED_TERRITORY_CODES: ReadonlySet<string> = new Set([
+  'AC',
+  'CP',
+  'CQ',
+  'DG',
+  'EA',
+  'IC',
+  'TA',
+]);
+
+/**
  * ISO 3166-1 alpha-2 code of the country or territory that contains a pin.
  *
  * Read from the coordinates only, never from the free-text label, with the
  * offline boundary dataset of `@rapideditor/country-coder` (territory level,
  * so Hong Kong is `HK` and Puerto Rico is `PR`; coastal waters count as that
- * country). A point in the open sea or outside every boundary has no country.
- * Nothing is stored: the code is derived again on every read, so no pin can
- * carry a stale country.
+ * country). A territory the dataset codes outside ISO 3166-1 (such as `EA`,
+ * Ceuta and Melilla) takes its country's code (`ES`). Kosovo is `XK`. A point
+ * in the open sea or outside every boundary has no country. Nothing is stored:
+ * the code is derived again on every read, so no pin can carry a stale country.
  *
  * @param place - Pin coordinates (`lat`, `lng`).
  * @returns Two upper-case letters, or `null` when the point lies in no country.
  */
 export function placeCountryCode(place: { lat: number; lng: number }): string | null {
-  return iso1A2Code([place.lng, place.lat], { level: 'territory' });
+  const point: [number, number] = [place.lng, place.lat];
+  const territory = iso1A2Code(point, { level: 'territory' });
+  return territory !== null && RESERVED_TERRITORY_CODES.has(territory)
+    ? iso1A2Code(point, { level: 'country' })
+    : territory;
 }
