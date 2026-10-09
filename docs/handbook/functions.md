@@ -2839,10 +2839,17 @@ Reads the country of a map pin from its coordinates with the offline boundary da
 
 ## Function: InvoiceRateLimiter
 
-- **Purpose:** In-process invoice caps (1/10s, 20/h) for gifts. A heart does not check or consume this budget.
-- **Inputs:** `allow(accountId, nowMs)`.
-- **Returns / side effects:** boolean.
-- **Used by:** `POST /messages/:id/invoice` (gifts, not hearts).
+- **Purpose:** In-process invoice caps (1/10s, 20/h by default) for gifts and repayment invoices. A heart does not check or consume this budget. The constructor takes optional `InvoiceRateCaps` (`burstCap`, `hourCap`); omitted caps are `INVOICE_BURST_CAP` / `INVOICE_HOUR_CAP`. A local test boot may pass raised caps from `resolveTestInvoiceRateCaps`.
+- **Inputs:** Optional `caps: InvoiceRateCaps`. `allow(accountId, nowMs)`.
+- **Returns / side effects:** boolean; idle eviction 48h.
+- **Used by:** `POST /messages/:id/invoice` (gifts, not hearts) and `POST /messages/:id/repayment`.
+
+## Function: resolveTestInvoiceRateCaps
+
+- **Purpose:** Resolve test-only per-account invoice caps from `TEST_INVOICE_BURST_CAP` and `TEST_INVOICE_HOUR_CAP`. Both unset or blank yields `null` (the default 1/10s and 20/h stay). Production never sets them. The values are honoured only when the host of `BIND_ADDR` (text before the last `:`; unset or blank is `0.0.0.0` and fails the gate) is `127.0.0.1`, `localhost`, `::1`, or `[::1]`, and `WEBAUTHN_RP_ID` trims to `localhost`. A gate miss returns `null` without parsing, so a malformed value on a non-local boot is ignored. On a gated boot a blank value keeps that cap's default; any other value must be an integer from the default through 100000 or boot throws `TEST_INVOICE_BURST_CAP must be an integer from 1 to 100000` / `TEST_INVOICE_HOUR_CAP must be an integer from 20 to 100000`. Used by `scripts/loan-e2e` to mint several hundred invoices per hour.
+- **Inputs:** Environment slice (`TEST_INVOICE_BURST_CAP`, `TEST_INVOICE_HOUR_CAP`, `BIND_ADDR`, `WEBAUTHN_RP_ID`).
+- **Returns / side effects:** `{ burstCap, hourCap }` or `null`. No I/O. Throws on a gated boot with a malformed or out-of-range value. `createApp` passes non-null caps into `InvoiceRateLimiter` for gift and repayment minting and `console.warn`s `test invoice rate caps burst=<n>/10s hour=<n>/h` once.
+- **Used by:** `createApp` (default `AppDeps.invoiceRateCaps`).
 
 ## Function: HeartRateLimiter
 
