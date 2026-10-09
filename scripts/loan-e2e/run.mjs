@@ -11,6 +11,12 @@
  * has no event id; `payable` is the signed-note gate. A local relay accepts
  * receipts so they are not sent to a public relay. Wallets, the Breez API
  * key, and the test database password stay in LOAN_E2E_DIR.
+ *
+ * `LOAN_E2E_UI=1` drives the same cycle through the app screens
+ * (`LOAN_E2E_APP`). The screens mint every invoice. This process pays the
+ * Spark invoice each click created, because the pay slot only sends from an
+ * in-app wallet. `LOAN_E2E_FRESH=1` drops the previous test database and loan
+ * state. Wallet files in LOAN_E2E_DIR stay.
  */
 import { spawn, spawnSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
@@ -755,8 +761,232 @@ function sweep(fundingAddress) {
   }
 }
 
+function resetLoanDatabase() {
+  spawnSync('docker', ['rm', '-f', 'loan-e2e-pg'], { encoding: 'utf8' });
+  const file = path.join(dir, 'database-url');
+  if (fs.existsSync(file)) {
+    fs.unlinkSync(file);
+  }
+  writeState({ paid: [] });
+}
+
+function fundGiverWallets() {
+  for (const giver of GIVERS) {
+    const have = Number(lines(spark(['balance', giver.role]))['balance_sats'] ?? '0');
+    if (have < giver.sats) {
+      const shortfall = giver.sats - have;
+      const fundingNow = Number(lines(spark(['balance', 'funding']))['balance_sats'] ?? '0');
+      const last = giver === GIVERS[GIVERS.length - 1];
+      const amount = last && fundingNow >= shortfall ? fundingNow : shortfall;
+      const request = spark(['invoice', giver.role, String(amount)]).trim();
+      spark(['pay', 'funding', request]);
+      process.stdout.write(`split ${giver.role} ${amount}\n`);
+    }
+  }
+}
+
+/**
+ * @param {Record<string, { id: string, token: string }>} accounts
+ */
+async function prepareMembers(accounts) {
+  for (const party of PARTIES) {
+    const account = accounts[party.role];
+    if (account === undefined || !/^[0-9a-f-]{36}$/i.test(account.id)) {
+      fail(`account ${party.role} is missing`);
+    }
+    const token = account.token;
+    const me = ok(await api('GET', '/me', { token }), `me ${party.username}`);
+    if (typeof me.username !== 'string' || me.username === '') {
+      ok(
+        await api('POST', '/me/username', { token, body: { username: party.username } }),
+        `username ${party.username}`,
+      );
+    }
+    ok(await api('POST', '/me/fiat', { token, body: { fiat: 'PHP' } }), `fiat ${party.username}`);
+    ok(
+      await api('POST', '/me/amount-unit', { token, body: { unit: 'fiat' } }),
+      `unit ${party.username}`,
+    );
+    psql(`UPDATE account SET role = 'verified' WHERE id = '${account.id}'`);
+    process.stdout.write(`prepared ${party.username}\n`);
+  }
+}
+
+/**
+ * @param {import('node:http').IncomingMessage} request
+ * @returns {Promise<string>}
+ */
+function readBody(request) {
+  return new Promise((resolve, reject) => {
+    /** @type {Buffer[]} */
+    const chunks = [];
+    let size = 0;
+    request.on('data', (chunk) => {
+      size += chunk.length;
+      if (size > 16_000) {
+        reject(new Error('body too large'));
+        request.destroy();
+        return;
+      }
+      chunks.push(chunk);
+    });
+    request.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')));
+    request.on('error', reject);
+  });
+}
+
+/**
+ * @param {Record<string, unknown>} state
+ * @returns {Promise<void>}
+ */
+async function driveApp(state) {
+  const appDir = process.env['LOAN_E2E_APP'] ?? '';
+  if (appDir === '') {
+    fail('LOAN_E2E_APP is required');
+  }
+  const accounts = /** @type {Record<string, { id: string, token: string }>} */ (state['accounts']);
+  const controlToken = randomBytes(16).toString('hex');
+  const ui = {
+    controlToken,
+    goalAmount: '8.68',
+    termDays: 110,
+    text: 'Loan of 8.68 PHP over 110 days',
+    borrower: {
+      role: BORROWER.role,
+      username: BORROWER.username,
+      token: accounts[BORROWER.role]?.token,
+    },
+    givers: GIVERS.map((giver) => ({
+      role: giver.role,
+      username: giver.username,
+      php: giver.php,
+      sats: giver.sats,
+      token: accounts[giver.role]?.token,
+    })),
+  };
+  fs.writeFileSync(path.join(dir, 'ui.json'), `${JSON.stringify(ui)}\n`, { mode: 0o600 });
+  for (const giver of GIVERS) {
+    spark(['optimize', giver.role]);
+  }
+  spark(['optimize', BORROWER.role]);
+  /** @type {import('node:http').Server} */
+  const server = http.createServer((request, response) => {
+    void (async () => {
+      if ((request.headers.authorization ?? '') !== `Bearer ${controlToken}`) {
+        response.writeHead(401);
+        response.end();
+        return;
+      }
+      if (request.method === 'GET' && request.url === '/health') {
+        response.writeHead(200);
+        response.end('ok');
+        return;
+      }
+      let json = {};
+      try {
+        const text = await readBody(request);
+        json = text === '' ? {} : JSON.parse(text);
+      } catch {
+        response.writeHead(400);
+        response.end();
+        return;
+      }
+      try {
+        if (request.method === 'POST' && request.url === '/message') {
+          const id = json.id;
+          if (typeof id !== 'string' || !/^[0-9a-f-]{36}$/i.test(id)) {
+            response.writeHead(400);
+            response.end();
+            return;
+          }
+          state['messageId'] = id;
+          writeState(state);
+          response.writeHead(204);
+          response.end();
+          return;
+        }
+        if (request.method === 'POST' && request.url === '/pay') {
+          const invoice = json.invoice;
+          const role = json.role;
+          if (typeof invoice !== 'string' || invoice === '' || typeof role !== 'string') {
+            response.writeHead(400);
+            response.end();
+            return;
+          }
+          if (json.mode === 'repay') {
+            payInvoice(state, invoice, String(json.recipientAccountId ?? ''));
+          } else {
+            spark(['pay', role, invoice]);
+          }
+          response.writeHead(204);
+          response.end();
+          return;
+        }
+        if (request.method === 'POST' && request.url === '/backdate') {
+          const messageId = state['messageId'];
+          if (typeof messageId !== 'string' || !/^[0-9a-f-]{36}$/i.test(messageId)) {
+            response.writeHead(400);
+            response.end();
+            return;
+          }
+          psql(
+            `UPDATE message SET goal_funded_at = now() - interval '400 days' WHERE id = '${messageId}'`,
+          );
+          keepGiftsInsideFunding(messageId);
+          state['backdated'] = true;
+          writeState(state);
+          response.writeHead(204);
+          response.end();
+          return;
+        }
+        if (request.method === 'POST' && request.url === '/restart') {
+          await restartApi();
+          response.writeHead(204);
+          response.end();
+          return;
+        }
+        response.writeHead(404);
+        response.end();
+      } catch {
+        if (!response.headersSent) {
+          response.writeHead(500);
+          response.end();
+        }
+      }
+    })();
+  });
+  await new Promise((resolve) => {
+    server.listen(3997, '127.0.0.1', () => resolve(undefined));
+  });
+  process.stdout.write('app screens\n');
+  const result = spawnSync(
+    'npx',
+    ['playwright', 'test', '-c', 'playwright.loan.config.ts', '--reporter=line'],
+    {
+      cwd: appDir,
+      env: { ...process.env, LOAN_E2E_DIR: dir },
+      encoding: 'utf8',
+      stdio: 'inherit',
+      timeout: 6 * 60 * 60 * 1000,
+    },
+  );
+  server.close();
+  if (result.status !== 0) {
+    fail('app screens failed');
+  }
+  if (typeof state['messageId'] !== 'string') {
+    const latest = readState();
+    if (typeof latest['messageId'] === 'string') {
+      state['messageId'] = latest['messageId'];
+    }
+  }
+}
+
 async function main() {
   ensureDir();
+  if (process.env['LOAN_E2E_UI'] === '1' && process.env['LOAN_E2E_FRESH'] === '1') {
+    resetLoanDatabase();
+  }
   await selfCheck();
   ensureDatabase();
   await waitDatabase();
@@ -806,83 +1036,94 @@ async function main() {
       process.stdout.write(`registered ${party.username}\n`);
     }
   }
-  if (typeof state['messageId'] !== 'string') {
-    for (const giver of GIVERS) {
-      const have = Number(lines(spark(['balance', giver.role]))['balance_sats'] ?? '0');
-      if (have < giver.sats) {
-        const shortfall = giver.sats - have;
-        const fundingNow = Number(lines(spark(['balance', 'funding']))['balance_sats'] ?? '0');
-        const last = giver === GIVERS[GIVERS.length - 1];
-        const amount = last && fundingNow >= shortfall ? fundingNow : shortfall;
-        const request = spark(['invoice', giver.role, String(amount)]).trim();
-        spark(['pay', 'funding', request]);
-        process.stdout.write(`split ${giver.role} ${amount}\n`);
+  const returnAddress = wallets['funding'].address;
+  let finished = false;
+  try {
+    const throughApp = process.env['LOAN_E2E_UI'] === '1';
+    if (typeof state['messageId'] !== 'string') {
+      fundGiverWallets();
+    }
+    if (throughApp) {
+      await prepareMembers(accounts);
+      await driveApp(state);
+    } else if (typeof state['messageId'] !== 'string') {
+      process.stdout.write('posting loan\n');
+      const created = ok(
+        await api('POST', '/messages', {
+          token: accounts[BORROWER.role].token,
+          body: {
+            text: 'Loan of 8.682 PHP over 110 days',
+            goalCurrency: 'PHP',
+            goalAmount: '8.682',
+            goalRepayable: true,
+            goalTermDays: 110,
+          },
+        }),
+        'post loan',
+      );
+      state['messageId'] = created.id;
+      writeState(state);
+    }
+    const messageId = /** @type {string} */ (state['messageId']);
+    if (!/^[0-9a-f-]{36}$/i.test(messageId)) {
+      fail('loan id is not a uuid');
+    }
+    if (!throughApp) {
+      for (let i = 0; i < 30; i += 1) {
+        const note = ok(
+          await api('GET', `/messages/${messageId}`, { token: accounts[BORROWER.role].token }),
+          'read loan',
+        );
+        if (note.payable === true) {
+          process.stdout.write('loan payable\n');
+          break;
+        }
+        if (i === 29) {
+          fail('loan is not payable');
+        }
+        await sleep(1000);
+      }
+      for (const giver of GIVERS) {
+        spark(['optimize', giver.role]);
+      }
+      keepGiftsInsideFunding(messageId);
+      await fundGifts(state);
+      const funded = await repayment(messageId, accounts[BORROWER.role].token);
+      if (funded.fundedAt === null) {
+        fail('loan did not fund');
+      }
+      if (state['backdated'] !== true) {
+        psql(
+          `UPDATE message SET goal_funded_at = now() - interval '400 days' WHERE id = '${messageId}'`,
+        );
+        state['backdated'] = true;
+        writeState(state);
+      }
+      keepGiftsInsideFunding(messageId);
+      spark(['optimize', BORROWER.role]);
+      await repayAll(state);
+    }
+    await assertLedger(messageId, Promise.resolve(accounts[BORROWER.role].token));
+    const fundingBefore = Number(lines(spark(['balance', 'funding']))['balance_sats'] ?? '0');
+    sweep(wallets['funding'].address);
+    const fundingAfter = Number(lines(spark(['balance', 'funding']))['balance_sats'] ?? '0');
+    process.stdout.write(`funding ${fundingBefore} -> ${fundingAfter}\n`);
+    if (fundingAfter < 1000) {
+      fail(`funding address holds ${fundingAfter}, started from 1000`);
+    }
+    spawnSync('docker', ['rm', '-f', 'loan-e2e-pg'], { encoding: 'utf8' });
+    finished = true;
+    process.stdout.write('loan cycle complete\n');
+  } finally {
+    if (!finished && returnAddress !== '') {
+      try {
+        sweep(returnAddress);
+        process.stdout.write('returned sats after a failed cycle\n');
+      } catch {
+        process.stderr.write('could not return sats after a failed cycle\n');
       }
     }
-    process.stdout.write('posting loan\n');
-    const created = ok(
-      await api('POST', '/messages', {
-        token: accounts[BORROWER.role].token,
-        body: {
-          text: 'Loan of 8.682 PHP over 110 days',
-          goalCurrency: 'PHP',
-          goalAmount: '8.682',
-          goalRepayable: true,
-          goalTermDays: 110,
-        },
-      }),
-      'post loan',
-    );
-    state['messageId'] = created.id;
-    writeState(state);
   }
-  const messageId = /** @type {string} */ (state['messageId']);
-  if (!/^[0-9a-f-]{36}$/i.test(messageId)) {
-    fail('loan id is not a uuid');
-  }
-  for (let i = 0; i < 30; i += 1) {
-    const note = ok(
-      await api('GET', `/messages/${messageId}`, { token: accounts[BORROWER.role].token }),
-      'read loan',
-    );
-    if (note.payable === true) {
-      process.stdout.write('loan payable\n');
-      break;
-    }
-    if (i === 29) {
-      fail('loan is not payable');
-    }
-    await sleep(1000);
-  }
-  for (const giver of GIVERS) {
-    spark(['optimize', giver.role]);
-  }
-  keepGiftsInsideFunding(messageId);
-  await fundGifts(state);
-  const funded = await repayment(messageId, accounts[BORROWER.role].token);
-  if (funded.fundedAt === null) {
-    fail('loan did not fund');
-  }
-  if (state['backdated'] !== true) {
-    psql(
-      `UPDATE message SET goal_funded_at = now() - interval '400 days' WHERE id = '${messageId}'`,
-    );
-    state['backdated'] = true;
-    writeState(state);
-  }
-  keepGiftsInsideFunding(messageId);
-  spark(['optimize', BORROWER.role]);
-  await repayAll(state);
-  await assertLedger(messageId, Promise.resolve(accounts[BORROWER.role].token));
-  const fundingBefore = Number(lines(spark(['balance', 'funding']))['balance_sats'] ?? '0');
-  sweep(wallets['funding'].address);
-  const fundingAfter = Number(lines(spark(['balance', 'funding']))['balance_sats'] ?? '0');
-  process.stdout.write(`funding ${fundingBefore} -> ${fundingAfter}\n`);
-  if (fundingAfter < 1000) {
-    fail(`funding address holds ${fundingAfter}, started from 1000`);
-  }
-  spawnSync('docker', ['rm', '-f', 'loan-e2e-pg'], { encoding: 'utf8' });
-  process.stdout.write('loan cycle complete\n');
 }
 
 process.on('exit', () => {
