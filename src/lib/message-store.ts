@@ -50,6 +50,26 @@ import {
 /** Live top-level shop note with its current till account. */
 export type ShopNoteRef = { id: string; accountId: string; text: string };
 
+/**
+ * One grant or repayment movement for an account's outstanding loan ledger.
+ *
+ * `sats` is always positive; the caller applies the sign. Omit a row when both
+ * `owed` and `credit` are false. One receipt can set both flags when payer and
+ * author are the same account — that is one row, not two.
+ */
+export interface LoanLedgerMovement {
+  /** When the movement applies. */
+  at: Date;
+  /** Positive sats. The caller applies the sign. */
+  sats: number;
+  /** True when this account authored the note. */
+  owed: boolean;
+  /** True when this account is the grant payer or the repayment recipient. */
+  credit: boolean;
+  /** Tie-break: grants sort before repayments. */
+  kind: 'grant' | 'repayment';
+}
+
 const MAX_PUBLISH_ATTEMPTS = 5;
 
 interface PaymentFiatStoreOptions {
@@ -960,6 +980,18 @@ export interface MessageStore {
   listRepayments(
     messageId: string,
   ): Promise<{ dayIndex: number; recipientAccountId: string; dueSats: number; paidAt: Date }[]>;
+
+  /**
+   * Grant and repayment movements that touch this account's loan balances.
+   *
+   * Grants: identified payer receipts on `goalRepayable` notes that count
+   * toward the credit plan. Repayments: paid shares with no freeze. Caller
+   * sorts. Returns caller-owned `Date` copies.
+   *
+   * @param accountId - Account whose owed/credit sides are collected.
+   * @returns One row per movement (both flags may be true on one row).
+   */
+  listLoanLedger(accountId: string): Promise<LoanLedgerMovement[]>;
 
   /**
    * Record one paid repayment share. A repeat of the same day and giver is a no-op.
@@ -3471,6 +3503,54 @@ export class InMemoryMessageStore implements MessageStore {
           paidAt: new Date(row.paidAt.getTime()),
         })),
     );
+  }
+
+  listLoanLedger(accountId: string): Promise<LoanLedgerMovement[]> {
+    const out: LoanLedgerMovement[] = [];
+    for (const receipt of this.#receipts.values()) {
+      const message = this.#rows.find((row) => row.id === receipt.messageId);
+      if (message === undefined || message.goalRepayable !== true) {
+        continue;
+      }
+      if (receipt.payerAccountId === null) {
+        continue;
+      }
+      const freezeAt = this.#creditFreezeAt.get(receipt.messageId) ?? null;
+      if (!receiptCountsTowardCredit(receipt.recordedAt, freezeAt)) {
+        continue;
+      }
+      const owed = message.accountId === accountId;
+      const credit = receipt.payerAccountId === accountId;
+      if (!owed && !credit) {
+        continue;
+      }
+      out.push({
+        at: new Date(receipt.recordedAt.getTime()),
+        sats: receipt.sats,
+        owed,
+        credit,
+        kind: 'grant',
+      });
+    }
+    for (const repayment of this.#repayments) {
+      const message = this.#rows.find((row) => row.id === repayment.messageId);
+      if (message === undefined) {
+        continue;
+      }
+      const owed = message.accountId === accountId;
+      const credit = repayment.recipientAccountId === accountId;
+      if (!owed && !credit) {
+        continue;
+      }
+      out.push({
+        at: new Date(repayment.paidAt.getTime()),
+        sats: repayment.dueSats,
+        owed,
+        credit,
+        kind: 'repayment',
+      });
+    }
+    return Promise.resolve(out);
   }
 
   markRepaymentPaid(row: {
@@ -6181,6 +6261,49 @@ export class PostgresMessageStore implements MessageStore {
       recipientAccountId: row.recipient_account_id,
       dueSats: Number(row.due_sats),
       paidAt: row.paid_at instanceof Date ? row.paid_at : new Date(row.paid_at),
+    }));
+  }
+
+  async listLoanLedger(accountId: string): Promise<LoanLedgerMovement[]> {
+    const rows = await this.#sql.query<{
+      at: Date | string;
+      sats: string | number;
+      owed: boolean | string;
+      credit: boolean | string;
+      kind: string;
+    }>(
+      `SELECT COALESCE(r.recorded_at, m.goal_funded_at, m.created_at) AS at,
+              r.sats AS sats,
+              (m.account_id = $1) AS owed,
+              (r.payer_account_id = $1) AS credit,
+              'grant' AS kind
+       FROM nostr_zap_receipt r
+       JOIN message m ON m.id = r.message_id
+       WHERE m.goal_repayable IS TRUE
+         AND r.payer_account_id IS NOT NULL
+         AND (m.account_id = $1 OR r.payer_account_id = $1)
+         AND (
+           m.goal_funded_at IS NULL
+           OR r.recorded_at IS NULL
+           OR r.recorded_at <= m.goal_funded_at
+         )
+       UNION ALL
+       SELECT p.paid_at AS at,
+              p.due_sats AS sats,
+              (m.account_id = $1) AS owed,
+              (p.recipient_account_id = $1) AS credit,
+              'repayment' AS kind
+       FROM message_repayment p
+       JOIN message m ON m.id = p.message_id
+       WHERE m.account_id = $1 OR p.recipient_account_id = $1`,
+      [accountId],
+    );
+    return rows.map((row) => ({
+      at: row.at instanceof Date ? row.at : new Date(row.at),
+      sats: Number(row.sats),
+      owed: row.owed === true || row.owed === 't',
+      credit: row.credit === true || row.credit === 't',
+      kind: row.kind === 'repayment' ? 'repayment' : 'grant',
     }));
   }
 

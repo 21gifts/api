@@ -8715,6 +8715,271 @@ describe('PostgresMessageStore', () => {
     expect(await store.sumUnassignedCreditSats('filled')).toBe(0);
   });
 
+  it('listLoanLedger returns identified grants and repayments for payer and author', async () => {
+    const store = new InMemoryMessageStore();
+    await store.create({
+      ...EARLY,
+      id: 'loan',
+      accountId: 'author',
+      goalSats: 100,
+      goalRepayable: true,
+    });
+    await store.recordZapReceipt('r-grant', 'loan', 100, null);
+    await store.updateZapReceiptGift('r-grant', { payerAccountId: 'payer' });
+    const payerRows = await store.listLoanLedger('payer');
+    expect(payerRows).toHaveLength(1);
+    expect(payerRows[0]).toMatchObject({
+      sats: 100,
+      owed: false,
+      credit: true,
+      kind: 'grant',
+    });
+    expect(payerRows[0]?.at).toBeInstanceOf(Date);
+    const authorRows = await store.listLoanLedger('author');
+    expect(authorRows).toHaveLength(1);
+    expect(authorRows[0]).toMatchObject({
+      sats: 100,
+      owed: true,
+      credit: false,
+      kind: 'grant',
+    });
+    const selfStore = new InMemoryMessageStore();
+    await selfStore.create({
+      ...EARLY,
+      id: 'self-loan',
+      accountId: 'same',
+      goalSats: 100,
+      goalRepayable: true,
+    });
+    await selfStore.recordZapReceipt('r-self', 'self-loan', 100, null);
+    await selfStore.updateZapReceiptGift('r-self', { payerAccountId: 'same' });
+    const both = await selfStore.listLoanLedger('same');
+    expect(both).toHaveLength(1);
+    expect(both[0]).toMatchObject({ owed: true, credit: true, kind: 'grant', sats: 100 });
+  });
+
+  it('listLoanLedger omits non-repayable and anonymous receipts', async () => {
+    const store = new InMemoryMessageStore();
+    await store.create({ ...EARLY, id: 'gift', accountId: 'author', goalSats: 100 });
+    await store.recordZapReceipt('r-gift', 'gift', 100, null);
+    await store.updateZapReceiptGift('r-gift', { payerAccountId: 'payer' });
+    expect(await store.listLoanLedger('payer')).toEqual([]);
+    expect(await store.listLoanLedger('author')).toEqual([]);
+    await store.create({
+      ...EARLY,
+      id: 'loan',
+      accountId: 'author',
+      goalSats: 100,
+      goalRepayable: true,
+    });
+    await store.recordZapReceipt('r-anon', 'loan', 50, null);
+    expect(await store.listLoanLedger('author')).toEqual([]);
+    expect(await store.listLoanLedger('anyone')).toEqual([]);
+  });
+
+  it('listLoanLedger ignores a gift that arrives after the credit has filled', async () => {
+    const store = new InMemoryMessageStore();
+    await store.create({
+      ...EARLY,
+      id: 'filled',
+      accountId: 'author',
+      goalSats: 100,
+      goalRepayable: true,
+      goalTermDays: 2,
+    });
+    expect(await store.recordZapReceipt('fund', 'filled', 100, null)).toBe(true);
+    await store.updateZapReceiptGift('fund', { payerAccountId: 'payer' });
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    expect(await store.recordZapReceipt('later', 'filled', 50, null)).toBe(true);
+    await store.updateZapReceiptGift('later', { payerAccountId: 'payer' });
+    const payerRows = await store.listLoanLedger('payer');
+    expect(payerRows).toHaveLength(1);
+    expect(payerRows[0]?.sats).toBe(100);
+    const authorRows = await store.listLoanLedger('author');
+    expect(authorRows).toHaveLength(1);
+    expect(authorRows[0]).toMatchObject({
+      sats: 100,
+      owed: true,
+      credit: false,
+      kind: 'grant',
+    });
+  });
+
+  it('listLoanLedger includes repayments without a freeze', async () => {
+    const store = new InMemoryMessageStore();
+    await store.create({
+      ...EARLY,
+      id: 'loan',
+      accountId: 'author',
+      goalSats: 100,
+      goalRepayable: true,
+    });
+    await store.recordZapReceipt('r-grant', 'loan', 100, null);
+    await store.updateZapReceiptGift('r-grant', { payerAccountId: 'payer' });
+    const paidAt = new Date('2026-09-28T00:00:00.000Z');
+    await store.markRepaymentPaid({
+      messageId: 'loan',
+      dayIndex: 0,
+      recipientAccountId: 'payer',
+      dueSats: 40,
+      paidAt,
+    });
+    const payerRows = await store.listLoanLedger('payer');
+    expect(payerRows).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ kind: 'grant', credit: true, owed: false, sats: 100 }),
+        expect.objectContaining({
+          kind: 'repayment',
+          credit: true,
+          owed: false,
+          sats: 40,
+          at: paidAt,
+        }),
+      ]),
+    );
+    const authorRows = await store.listLoanLedger('author');
+    expect(authorRows).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ kind: 'grant', owed: true, credit: false, sats: 100 }),
+        expect.objectContaining({
+          kind: 'repayment',
+          owed: true,
+          credit: false,
+          sats: 40,
+          at: paidAt,
+        }),
+      ]),
+    );
+  });
+
+  it('listLoanLedger keeps an open note grant and skips unrelated accounts', async () => {
+    const store = new InMemoryMessageStore();
+    await store.create({
+      ...EARLY,
+      id: 'loan',
+      accountId: 'author',
+      goalSats: 200,
+      goalRepayable: true,
+    });
+    await store.recordZapReceipt('r-grant', 'loan', 40, null);
+    await store.updateZapReceiptGift('r-grant', { payerAccountId: 'payer' });
+    const payerRows = await store.listLoanLedger('payer');
+    expect(payerRows).toHaveLength(1);
+    expect(payerRows[0]).toMatchObject({
+      sats: 40,
+      kind: 'grant',
+      credit: true,
+      owed: false,
+    });
+    expect(await store.listLoanLedger('stranger')).toEqual([]);
+  });
+
+  it('listLoanLedger skips repayments for a missing note or unrelated account', async () => {
+    const store = new InMemoryMessageStore();
+    await store.create({
+      ...EARLY,
+      id: 'loan',
+      accountId: 'author',
+      goalSats: 200,
+      goalRepayable: true,
+    });
+    await store.recordZapReceipt('r-grant', 'loan', 40, null);
+    await store.updateZapReceiptGift('r-grant', { payerAccountId: 'payer' });
+    const paidAt = new Date('2026-09-28T00:00:00.000Z');
+    await store.markRepaymentPaid({
+      messageId: 'missing-note',
+      dayIndex: 0,
+      recipientAccountId: 'payer',
+      dueSats: 10,
+      paidAt,
+    });
+    expect(await store.listLoanLedger('payer')).toEqual([
+      expect.objectContaining({ kind: 'grant', credit: true, owed: false, sats: 40 }),
+    ]);
+    await store.markRepaymentPaid({
+      messageId: 'loan',
+      dayIndex: 0,
+      recipientAccountId: 'payer',
+      dueSats: 10,
+      paidAt,
+    });
+    expect(await store.listLoanLedger('stranger')).toEqual([]);
+    const payerRows = await store.listLoanLedger('payer');
+    expect(payerRows).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ kind: 'grant', credit: true, owed: false, sats: 40 }),
+        expect.objectContaining({
+          kind: 'repayment',
+          credit: true,
+          owed: false,
+          sats: 10,
+          at: paidAt,
+        }),
+      ]),
+    );
+    const authorRows = await store.listLoanLedger('author');
+    expect(authorRows).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ kind: 'grant', owed: true, credit: false, sats: 40 }),
+        expect.objectContaining({
+          kind: 'repayment',
+          owed: true,
+          credit: false,
+          sats: 10,
+          at: paidAt,
+        }),
+      ]),
+    );
+  });
+
+  it('listLoanLedger maps one Postgres UNION ALL query', async () => {
+    const sql = new MockSql();
+    sql.nextRows = [
+      {
+        at: '2026-06-01T12:00:00.000Z',
+        sats: '100',
+        owed: false,
+        credit: true,
+        kind: 'grant',
+      },
+      {
+        at: new Date('2026-06-02T15:00:00.000Z'),
+        sats: '40',
+        owed: true,
+        credit: false,
+        kind: 'repayment',
+      },
+    ];
+    const postgres = new PostgresMessageStore(sql);
+    const rows = await postgres.listLoanLedger('acc');
+    expect(rows).toEqual([
+      {
+        at: new Date('2026-06-01T12:00:00.000Z'),
+        sats: 100,
+        owed: false,
+        credit: true,
+        kind: 'grant',
+      },
+      {
+        at: new Date('2026-06-02T15:00:00.000Z'),
+        sats: 40,
+        owed: true,
+        credit: false,
+        kind: 'repayment',
+      },
+    ]);
+    expect(sql.queries).toHaveLength(1);
+    expect(sql.queries[0]?.params).toEqual(['acc']);
+    const text = sql.queries[0]?.text ?? '';
+    expect(text).toMatch(/nostr_zap_receipt/);
+    expect(text).toMatch(/goal_repayable/);
+    expect(text).toMatch(/payer_account_id IS NOT NULL/);
+    expect(text).toMatch(/goal_funded_at IS NULL/);
+    expect(text).toMatch(/recorded_at <= m.goal_funded_at/);
+    expect(text).toMatch(/message_repayment/);
+    expect(text).toMatch(/due_sats/);
+  });
+
   it('listOpenConversationZapEventIds maps zap_request e-tags', async () => {
     const sql = new MockSql();
     sql.nextRows = [
