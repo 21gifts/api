@@ -10,7 +10,7 @@ and uses the local control server to pay the invoices created by the screens.
 - Python 3.10 or newer with the exact versions in `requirements.txt`
 - Bun 1.3 or newer
 - `psql` and `docker` on `PATH`
-- Node 22 or newer for the screen path
+- Node on `PATH` for the local helpers (both paths); Node 22 or newer for the screen path
 
 Create a dedicated environment and install the pinned Python dependencies:
 
@@ -61,6 +61,7 @@ LOAN_E2E_APP=<app-dir> \
 bun scripts/loan-e2e/run.mjs
 ```
 
-After a finished or a failed cycle, the harness sweeps every party back to the funding wallet. A
-wallet that still holds sats gets up to two more rounds, 30 s apart, and every wallet must end at 0. It then consolidates the funding wallet, removes the test database, and clears stale session
-state. Wallet files remain for the next run.
+After a finished cycle, and after a failed one once the wallets are set up, the harness sweeps every
+party back to the funding wallet. A wallet that still holds sats gets up to two more rounds, 30 s
+apart, and every wallet must end at 0. It then consolidates the funding wallet, removes the test
+database, and clears stale session state. Wallet files remain for the next run.

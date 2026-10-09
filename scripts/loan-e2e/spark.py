@@ -120,9 +120,14 @@ def leaf_values(role: str) -> list[int] | None:
         matches = glob.glob(os.path.join(storage_path(role), "mainnet", "*", "storage.sql"))
         if len(matches) != 1:
             return None
-        fd, temporary = tempfile.mkstemp(prefix="loan-e2e-leaves-", suffix=".sql")
+        # The copy stays next to the wallet in LOAN_E2E_DIR, readable only by
+        # this user, and is removed below.
+        fd, temporary = tempfile.mkstemp(
+            prefix=".leaves-", suffix=".sql", dir=storage_path(role)
+        )
         os.close(fd)
-        shutil.copy2(matches[0], temporary)
+        shutil.copyfile(matches[0], temporary)
+        os.chmod(temporary, 0o600)
         with sqlite3.connect(temporary) as database:
             rows = database.execute(
                 "SELECT value FROM brz_tree_leaves WHERE status = ?",

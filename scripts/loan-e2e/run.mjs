@@ -151,10 +151,14 @@ function checkPrerequisites() {
       fail(`${tool} is not on PATH`);
     }
   }
+  // The spot and relay helpers run on Node in both paths; the app needs 22.
+  const node = spawnSync(appNode, ['--version'], { encoding: 'utf8' });
+  if (node.status !== 0) {
+    fail('node is not on PATH');
+  }
   if (process.env['LOAN_E2E_UI'] === '1') {
-    const result = spawnSync(appNode, ['--version'], { encoding: 'utf8' });
-    const major = Number(/^v?(\d+)/.exec((result.stdout ?? '').trim())?.[1] ?? '0');
-    if (result.status !== 0 || major < 22) {
+    const major = Number(/^v?(\d+)/.exec((node.stdout ?? '').trim())?.[1] ?? '0');
+    if (major < 22) {
       fail('the app needs Node 22');
     }
   }
