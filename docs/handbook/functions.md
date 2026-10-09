@@ -995,7 +995,7 @@
 
 ## Function: PostgresDailyRosterStore
 
-- **Purpose:** Durable `DailyRosterStore` over `daily_roster` and `daily_roster_entry`. No settings row is the empty start document, and `hasBeenWritten` is false only then. A saved empty roster still has the settings row, so `hasBeenWritten` is true. Unique violation `23505` is `Address already listed`. `defaultAmountUsd` is not a column; every read sets 1. `importDocument` inserts only when no settings row exists. Comment, both switches, add, update, and delete each run as one SQL statement, so a failed write does not leave a new settings row that would block that first import.
+- **Purpose:** Durable `DailyRosterStore` over `daily_roster` and `daily_roster_entry`. No settings row is the empty start document, and `hasBeenWritten` is false only then. A saved empty roster still has the settings row, so `hasBeenWritten` is true. On add, unique violation `23505` is `Address already listed`. On `importDocument`, that same violation is a lost race for the first write and returns the stored document. `defaultAmountUsd` is not a column; every read sets 1. `importDocument` inserts only when no settings row exists. Comment, both switches, add, update, and delete each run as one SQL statement, so a failed write does not leave a new settings row that would block that first import.
 - **Inputs:** Constructor takes a shared boot `SqlClient` (already migrated).
 - **Returns / side effects:** Parameter-bound SQL; copies on return. Throws `DailyRosterRequestError` 400 for the five roster texts.
 - **Used by:** `openBootStores` when `DATABASE_URL` is set.
