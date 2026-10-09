@@ -346,16 +346,13 @@ async def command_sweep(role: str, address: str) -> None:
         if seen <= 0:
             print(f"swept amount={moved} fee=0 status=COMPLETED")
             return
-        if seen > 64:
-            print(f"sweep could not move {seen}", file=sys.stderr)
-            sys.exit(3)
         print(f"dust balance={seen}", file=sys.stderr)
         sent_amount = await sweep_integers(role, secret, address)
         if sent_amount < 0:
             continue
-        if sent_amount == 0:
-            # The connection that rejected every size may itself be the
-            # problem. One clean connection per amount is the slower retry.
+        if sent_amount == 0 and seen <= 64:
+            # One connection already tried every size. A fresh connection
+            # per amount is only worth it for a small remainder.
             sent_amount = await sweep_one_fresh(role, secret, address, seen) or 0
         if sent_amount == 0:
             print(f"sweep could not move {seen}", file=sys.stderr)
