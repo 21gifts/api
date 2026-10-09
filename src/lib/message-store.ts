@@ -1459,6 +1459,7 @@ export type MessageInvoiceResult =
   | 'bad_body'
   | 'not_found'
   | 'self_heart'
+  | 'self_reply'
   | 'heart_unavailable';
 
 /** One persisted invoice attempt for operator debug. */
