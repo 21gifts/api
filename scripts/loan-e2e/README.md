@@ -61,6 +61,12 @@ LOAN_E2E_APP=<app-dir> \
 bun scripts/loan-e2e/run.mjs
 ```
 
+The wallet helper turns off the SDK's background leaf optimizer. That optimizer starts a swap after
+every payment, and a helper process that disconnects mid-swap leaves the swapped leaves reserved for
+about five minutes, during which no payment from that wallet can select them. Optimization runs only
+where a command waits for it to finish. If a wallet still has reserved leaves, a payment retry or a
+sweep waits for the reservation to end instead of failing.
+
 After a finished cycle, and after a failed one once the wallets are set up, the harness sweeps every
 party back to the funding wallet. A wallet that still holds sats gets up to two more rounds, 30 s
 apart, and every wallet must end at 0. It then consolidates the funding wallet, removes the test

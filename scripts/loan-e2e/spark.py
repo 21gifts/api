@@ -98,6 +98,12 @@ async def open_sdk(role: str, secret: str, multiplicity: int | None = None):
     os.chmod(storage_path(role), 0o700)
     config = default_config(network=Network.MAINNET)
     config.api_key = api_key
+    # No background optimizer. It starts a swap after every change to the
+    # leaf set, and this helper disconnects right after its command. A swap
+    # cut off that way leaves its leaves reserved until the reservation
+    # expires, and every send fails leaf selection until then. Optimization
+    # runs only where a command awaits it (optimize_full, consolidate).
+    config.leaf_optimization_config.auto_enabled = False
     if multiplicity is not None:
         config.leaf_optimization_config.multiplicity = multiplicity
     return await connect(
@@ -113,8 +119,12 @@ async def synced_info(sdk):
     return await sdk.get_info(request=GetInfoRequest(ensure_synced=True))
 
 
-def leaf_values(role: str) -> list[int] | None:
-    """Read available leaf values from an unlocked copy of the wallet database."""
+def leaf_values(role: str, reserved: bool = False) -> list[int] | None:
+    """Read available leaf values from an unlocked copy of the wallet database.
+
+    ``reserved`` selects the leaves an unfinished swap or send still holds;
+    those cannot be selected for a payment until the reservation ends.
+    """
     temporary = ""
     try:
         matches = glob.glob(os.path.join(storage_path(role), "mainnet", "*", "storage.sql"))
@@ -130,8 +140,9 @@ def leaf_values(role: str) -> list[int] | None:
         os.chmod(temporary, 0o600)
         with sqlite3.connect(temporary) as database:
             rows = database.execute(
-                "SELECT value FROM brz_tree_leaves WHERE status = ?",
-                ('"Available"',),
+                "SELECT value FROM brz_tree_leaves WHERE status = ?"
+                " AND (reservation_id IS NOT NULL) = ?",
+                ('"Available"', 1 if reserved else 0),
             ).fetchall()
         return sorted((int(row[0]) for row in rows), reverse=True)
     except Exception:
@@ -142,6 +153,41 @@ def leaf_values(role: str) -> list[int] | None:
                 os.unlink(temporary)
             except OSError:
                 pass
+
+
+def leaf_text(role: str) -> str:
+    """Free and reserved leaves for an error message."""
+    free = leaf_values(role)
+    held = leaf_values(role, reserved=True)
+    return (
+        f"leaves={'unread' if free is None else free} "
+        f"reserved={'unread' if held is None else held}"
+    )
+
+
+RESERVATION_WAIT_S = 360
+
+
+async def wait_unreserved(role: str, secret: str) -> None:
+    """Wait until no leaf of this wallet is held by an unfinished swap or send.
+
+    The wallet only drops an expired reservation while it is connected and
+    refreshing, about five minutes after the reservation was made. Retrying
+    a payment inside that window fails leaf selection every time.
+    """
+    waited = 0
+    while waited < RESERVATION_WAIT_S:
+        held = leaf_values(role, reserved=True)
+        if not held:
+            return
+        print(f"waiting for reserved leaves {held} of {role}", file=sys.stderr)
+        await asyncio.sleep(20)
+        waited += 20
+        sdk = await open_sdk(role, secret)
+        try:
+            await sdk.sync_wallet(SyncWalletRequest())
+        finally:
+            await sdk.disconnect()
 
 
 def fee_of(prepared) -> int:
@@ -345,17 +391,16 @@ async def command_pay(role: str, request: str, amount: int | None) -> None:
                 print(f"consolidation of {role} failed: {message}", file=sys.stderr)
         if attempt < attempts:
             await asyncio.sleep(8 * (2 ** (attempt - 1)))
+            await wait_unreserved(role, secret)
 
     try:
         balance: int | str = await balance_of(role, secret)
     except Exception:
         balance = "unread"
-    leaves = leaf_values(role)
-    leaves_text = "unread" if leaves is None else str(leaves)
     amount_text = str(amount) if amount is not None else "the invoice amount"
     print(
         f"{role} cannot pay {amount_text} sats after {attempts} attempts: {last}; "
-        f"balance={balance} leaves={leaves_text}",
+        f"balance={balance} {leaf_text(role)}",
         file=sys.stderr,
     )
     sys.exit(3)
@@ -407,6 +452,7 @@ async def send_amount(sdk, address: str, amount: int) -> bool:
 async def command_sweep(role: str, address: str) -> None:
     secret = read_mnemonic(role)
     moved = 0
+    await wait_unreserved(role, secret)
     sdk = await open_sdk(role, secret)
     try:
         await sdk.sync_wallet(SyncWalletRequest())
@@ -430,23 +476,29 @@ async def command_sweep(role: str, address: str) -> None:
     finally:
         await sdk.disconnect()
 
-    while True:
+    for _ in range(8):
         seen = await balance_of(role, secret)
         if seen <= 0:
             print(f"swept amount={moved} fee=0 status=COMPLETED", flush=True)
             return
         print(f"dust balance={seen}", file=sys.stderr)
+        await wait_unreserved(role, secret)
         sent_amount = await sweep_integers(role, secret, address)
         if sent_amount < 0:
+            continue
+        if sent_amount == 0 and leaf_values(role, reserved=True):
+            # A refused size started a swap that now holds the leaves.
             continue
         if sent_amount == 0 and seen <= 64:
             # One connection already tried every size. A fresh connection
             # per amount is only worth it for a small remainder.
             sent_amount = await sweep_one_fresh(role, secret, address, seen) or 0
         if sent_amount == 0:
-            print(f"sweep could not move {seen}", file=sys.stderr)
+            print(f"sweep could not move {seen}; {leaf_text(role)}", file=sys.stderr)
             sys.exit(3)
         moved += sent_amount
+    print(f"sweep could not empty {role}; {leaf_text(role)}", file=sys.stderr)
+    sys.exit(3)
 
 
 async def sweep_integers(role: str, secret: str, address: str) -> int:
@@ -465,6 +517,8 @@ async def sweep_integers(role: str, secret: str, address: str) -> int:
         for amount in range(balance, 0, -1):
             if await send_amount(sdk, address, amount):
                 return amount
+            if leaf_values(role, reserved=True):
+                return 0
         return 0
     finally:
         await sdk.disconnect()
