@@ -4716,7 +4716,9 @@ their first post →
 **First post free.** A text-only top-level note from anyone below `verified`
 is stored without the fee when the account has no top-level note of its own
 other than its profile note (About me), live or soft-hidden. Replies and
-conversation messages do not count, and a reply stays **403** without the fee.
+conversation messages do not count. An unpaid text-only reply on someone else's
+note stays **403** without the fee; a reply on the caller's own note is free and
+does not use the free first post.
 The rule is checked again inside the insert: the row is written only while it
 still holds and is marked `first_post_free`, which is unique per account. Of
 two concurrent first posts, one is **200** and the other is **403**
