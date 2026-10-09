@@ -41,6 +41,7 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..')
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const GAP_MS = 11_000;
 const REPAY_BATCH = 20;
+const SPARK_TIMEOUT_MS = 600_000;
 const GIVERS = [
   { role: 'giver-a', username: 'loangivera', name: 'Giver large', sats: 550, php: '5.50' },
   { role: 'giver-b', username: 'loangiverb', name: 'Giver mid', sats: 220, php: '2.20' },
@@ -122,6 +123,7 @@ function sparkTry(args) {
         env: { ...process.env, LOAN_E2E_DIR: dir, LOAN_E2E_BREEZ_API_KEY: apiKey },
         encoding: 'utf8',
         maxBuffer: 8 * 1024 * 1024,
+        timeout: SPARK_TIMEOUT_MS,
       });
     } catch (error) {
       last = error instanceof Error ? error.message : 'spark failed';
@@ -818,22 +820,56 @@ function sweep(fundingAddress) {
   /** @type {string[]} */
   const stuck = [];
   for (const party of PARTIES) {
-    let balance = partyBalance(party.role);
-    for (let attempt = 1; balance > 0 && attempt <= 4; attempt += 1) {
-      sparkTry(['sweep', party.role, fundingAddress]);
-      balance = partyBalance(party.role);
-      if (balance > 0 && attempt < 4) {
-        spawnSync('sleep', ['8']);
-      }
-    }
-    process.stdout.write(`sweep ${party.role} left ${balance}\n`);
-    if (balance > 0) {
+    const balance = sweepParty(party.role, fundingAddress);
+    process.stdout.write(`sweep ${party.role} left ${balance ?? 'unread'}\n`);
+    if (balance === null) {
+      stuck.push(`${party.role} balance`);
+    } else if (balance > 0) {
       stuck.push(`${party.role} ${balance}`);
     }
   }
   if (stuck.length > 0) {
     fail(`sweep left ${stuck.join(', ')}`);
   }
+}
+
+/**
+ * Sweep one wallet. A failed balance read does not skip the others.
+ *
+ * @param {string} role
+ * @param {string} fundingAddress
+ * @returns {number | null}
+ */
+function sweepParty(role, fundingAddress) {
+  let balance = readBalance(role);
+  if (balance === null) {
+    return null;
+  }
+  for (let attempt = 1; balance > 0 && attempt <= 4; attempt += 1) {
+    sparkTry(['sweep', role, fundingAddress]);
+    const next = readBalance(role);
+    if (next === null) {
+      return null;
+    }
+    balance = next;
+    if (balance > 0 && attempt < 4) {
+      spawnSync('sleep', ['8']);
+    }
+  }
+  return balance;
+}
+
+/**
+ * @param {string} role
+ * @returns {number | null}
+ */
+function readBalance(role) {
+  const result = sparkTry(['balance', role]);
+  if (!result.ok) {
+    return null;
+  }
+  const value = Number(lines(result.stdout)['balance_sats'] ?? '');
+  return Number.isFinite(value) ? value : null;
 }
 
 function resetLoanDatabase() {
