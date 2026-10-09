@@ -120,7 +120,12 @@ function sparkTry(args) {
     let result;
     try {
       result = spawnSync(python, [path.join(HERE, 'spark.py'), ...args], {
-        env: { ...process.env, LOAN_E2E_DIR: dir, LOAN_E2E_BREEZ_API_KEY: apiKey },
+        env: {
+          ...process.env,
+          PYTHONUNBUFFERED: '1',
+          LOAN_E2E_DIR: dir,
+          LOAN_E2E_BREEZ_API_KEY: apiKey,
+        },
         encoding: 'utf8',
         maxBuffer: 8 * 1024 * 1024,
         timeout: SPARK_TIMEOUT_MS,
@@ -133,8 +138,11 @@ function sparkTry(args) {
       spawnSync('sleep', ['2']);
       continue;
     }
-    if (result.status === 0) {
-      return { ok: true, stdout: result.stdout ?? '' };
+    const stdout = result.stdout ?? '';
+    // Completion is printed before disconnect. A timeout while disconnecting
+    // still leaves that line, and the sats have already moved.
+    if (result.status === 0 || stdout.includes('status=COMPLETED')) {
+      return { ok: true, stdout };
     }
     last = redact(`${result.stderr ?? ''}${result.error?.message ?? ''}`);
     if (!retryable || !last.includes('ECONNRESET')) {

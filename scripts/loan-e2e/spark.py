@@ -246,6 +246,7 @@ async def command_pay(role: str, request: str, amount: int | None) -> None:
                 print(f"refusing non-zero spark fee {fee}", file=sys.stderr)
                 sys.exit(4)
             await send_prepared(sdk, prepared)
+            print("status=COMPLETED", flush=True)
             return
         except SystemExit:
             raise
@@ -326,7 +327,7 @@ async def command_sweep(role: str, address: str) -> None:
             info = await synced_info(sdk)
             balance = int(info.balance_sats)
             if balance <= 0:
-                print(f"swept amount={moved} fee=0 status=COMPLETED")
+                print(f"swept amount={moved} fee=0 status=COMPLETED", flush=True)
                 return
             sent = False
             for amount in sweep_amounts(balance):
@@ -344,7 +345,7 @@ async def command_sweep(role: str, address: str) -> None:
     while True:
         seen = await balance_of(role, secret)
         if seen <= 0:
-            print(f"swept amount={moved} fee=0 status=COMPLETED")
+            print(f"swept amount={moved} fee=0 status=COMPLETED", flush=True)
             return
         print(f"dust balance={seen}", file=sys.stderr)
         sent_amount = await sweep_integers(role, secret, address)
