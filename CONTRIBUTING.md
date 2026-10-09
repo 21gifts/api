@@ -444,6 +444,7 @@ the default boot surface (today: `requestPayInvoice`, which needs a configured
 `PostgresPosStore`, `migratePosSchema`,
 `PostgresTrustStore`, `migrateTrustSchema`,
 `PostgresFundingStore`, `migrateFundingSchema`,
+`PostgresDailyRosterStore`, `migrateDailyRosterSchema`,
 `PostgresConversationStore`, `migrateConversationSchema`,
 `PostgresPushStore`, `migratePushSchema`,
 `PostgresNotificationStore`, `migrateNotificationSchema`, `PostgresApiLogStore`,
