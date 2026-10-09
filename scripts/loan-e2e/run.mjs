@@ -17,7 +17,9 @@
  * (`LOAN_E2E_APP`). The screens mint every invoice. This process pays the
  * Spark invoice each click created, because the pay slot only sends from an
  * in-app wallet. `LOAN_E2E_FRESH=1` drops the previous test database and loan
- * state. Wallet files in LOAN_E2E_DIR stay. The screen path reads the peso
+ * state before the run, with or without the screen path. A finished run does
+ * the same, so the next run is not aimed at a database that was removed.
+ * Wallet files in LOAN_E2E_DIR stay. The screen path reads the peso
  * amount through the spot quote, so this process serves the same cent-per-sat
  * price the gift row uses, and it does not open a gift until the note is
  * payable.
@@ -1132,7 +1134,7 @@ async function driveApp(state) {
 
 async function main() {
   ensureDir();
-  if (process.env['LOAN_E2E_UI'] === '1' && process.env['LOAN_E2E_FRESH'] === '1') {
+  if (process.env['LOAN_E2E_FRESH'] === '1') {
     resetLoanDatabase();
   }
   await selfCheck();
@@ -1249,7 +1251,7 @@ async function main() {
     if (fundingAfter < 1000) {
       fail(`funding address holds ${fundingAfter}, started from 1000`);
     }
-    spawnSync('docker', ['rm', '-f', 'loan-e2e-pg'], { encoding: 'utf8' });
+    resetLoanDatabase();
     finished = true;
     process.stdout.write('loan cycle complete\n');
   } finally {
