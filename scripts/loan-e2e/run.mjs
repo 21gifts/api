@@ -28,6 +28,7 @@ import fs from 'node:fs';
 import http from 'node:http';
 import net from 'node:net';
 import path from 'node:path';
+import { clearTimeout, setTimeout } from 'node:timers';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { Buffer } from 'node:buffer';
 import { fileURLToPath } from 'node:url';
