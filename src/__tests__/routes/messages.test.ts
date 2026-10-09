@@ -1488,6 +1488,45 @@ describe('POST /messages', () => {
     expect(await res.json()).toEqual({ error: 'A reply needs a Bitcoin payment' });
   });
 
+  it('posts an unpaid text reply on the member own note and keeps a second top-level post paid', async () => {
+    const store = await basisStore();
+    const parentId = 'cccccccc-cccc-4ccc-8ccc-ccccccccccc6';
+    const messages = new InMemoryMessageStore([ownRow(parentId, 'acc')]);
+    const app = mount(store, messages);
+    const res = await app.request('/messages', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ text: 'my own reply', inReplyTo: parentId }),
+    });
+    expect(res.status).toBe(200);
+    const created = (await res.json()) as { text: string; parentId: string };
+    expect(created.text).toBe('my own reply');
+    expect(created.parentId).toBe(parentId);
+    const topLevel = await app.request('/messages', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ text: 'a second top-level post' }),
+    });
+    expect(topLevel.status).toBe(403);
+    expect(await topLevel.json()).toEqual({ error: 'A post needs a Bitcoin payment' });
+  });
+
+  it('keeps the post limiter on an unpaid reply to the own note', async () => {
+    const store = await basisStore();
+    const parentId = 'cccccccc-cccc-4ccc-8ccc-ccccccccccc7';
+    const messages = new InMemoryMessageStore([ownRow(parentId, 'acc')]);
+    const postLimiter = new PostRateLimiter();
+    vi.spyOn(postLimiter, 'allow').mockReturnValue(false);
+    const res = await mount(store, messages, { postLimiter }).request('/messages', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ text: 'too soon', inReplyTo: parentId }),
+    });
+    expect(res.status).toBe(429);
+    expect(await res.json()).toEqual({ error: 'Too many messages' });
+    expect(await messages.listReplies(parentId, 10, false)).toHaveLength(0);
+  });
+
   it('lets only one of two concurrent first posts through free', async () => {
     const store = await basisStore();
     const messages = new InMemoryMessageStore();
@@ -2510,7 +2549,7 @@ describe('POST /messages', () => {
     expect(await messageStore.listReplies(parentId)).toEqual([]);
   });
 
-  it('returns 403 when the parent author is below verified', async () => {
+  it('returns 403 when a member below verified replies unpaid to someone else', async () => {
     const authStore = await namedStore('Ada');
     const poster = await authStore.getAccount('acc');
     expect(poster).toBeDefined();
@@ -2519,7 +2558,7 @@ describe('POST /messages', () => {
     const parentId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
     await messageStore.create({
       id: parentId,
-      accountId: 'acc',
+      accountId: 'other',
       name: 'Ada',
       text: 'parent',
       createdAt: new Date(now()),
@@ -5598,6 +5637,57 @@ describe('POST /messages/:id/invoice', () => {
       inspectSpy.mockRestore();
       nip57Spy.mockRestore();
     }
+  });
+
+  it('rejects a paid reply on the own note with 400 and records a self_reply attempt', async () => {
+    const { parseNostrKek } = await import('@/lib/nostr/kek');
+    const { ensureAccountNostrKey } = await import('@/lib/nostr/keys');
+    const kek = parseNostrKek('11'.repeat(32));
+    const authStore = await namedStore('Ada');
+    await ensureAccountNostrKey(authStore, 'acc', kek);
+    const messageStore = new InMemoryMessageStore();
+    await messageStore.create({
+      id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaab',
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'hi',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+      eventId: 'ef'.repeat(32),
+    });
+    const fetchImpl = async (): Promise<Response> => {
+      throw new Error('LNURL must not run for a paid self-reply');
+    };
+    const app = new Hono().route(
+      '/messages',
+      messagesRoutes({
+        store: messageStore,
+        authStore,
+        now,
+        nostrKek: kek,
+        lnurlServer: LNURL_SERVER,
+        fetchImpl,
+        postLimiter: new PostRateLimiter(),
+        invoiceLimiter: new InvoiceRateLimiter(),
+      }),
+    );
+    const res = await app.request('/messages/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaab/invoice', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ sats: 21, text: 'my own reply' }),
+    });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({
+      error: 'A reply on your own note is free; post it without a payment',
+    });
+    const attempts = await messageStore.listInvoiceAttempts(10);
+    expect(attempts).toHaveLength(1);
+    expect(attempts[0]?.result).toBe('self_reply');
+    expect(attempts[0]?.httpStatus).toBe(400);
+    expect(attempts[0]?.heart).toBe(false);
+    expect(attempts[0]?.authorAccountId).toBe('acc');
+    expect(attempts[0]?.pr).toBeNull();
   });
 
   it('rejects a self-heart with 400 and records a self_heart attempt without LNURL', async () => {

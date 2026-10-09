@@ -923,8 +923,11 @@ async function postedShopAccount(
  * @param shopAccount - Optional shop assignment for a new top-level shop
  *   note. Default `null`. Stored on the same insert as the note. Not applied
  *   on a media replay, and not written as edit history.
- * @returns 200 / 403 (unpaid text-only below verified) / 409 (same live
- *   media, different pin) / 429 / 503.
+ * @param ownParent - True when `account` wrote the parent note. A text-only
+ *   reply below verified is then unpaid: a wallet cannot pay itself. Default
+ *   `false`.
+ * @returns 200 / 403 (unpaid text-only below verified, except a reply on the
+ *   own note) / 409 (same live media, different pin) / 429 / 503.
  */
 async function persistForumPost(
   deps: MessagesRouteDeps,
@@ -940,6 +943,7 @@ async function persistForumPost(
   goal: FrozenAsk = NO_ASK,
   place: ForumPlace | null = null,
   shopAccount: { id: string; username: string; name: string } | null = null,
+  ownParent = false,
 ): Promise<Response> {
   const extras = video !== undefined ? [] : [...(extraPhotos ?? [])];
   if (photo !== undefined || video !== undefined) {
@@ -977,14 +981,16 @@ async function persistForumPost(
       return c.json({ error: 'Messages are unavailable' }, 503);
     }
   }
-  // Below verified, a text-only note is unpaid. Only a first top-level post is free.
-  const firstPost =
+  // Below verified, a text-only note is unpaid. Only a first top-level post is free,
+  // and a reply on the member's own note: a wallet cannot pay itself.
+  const unpaidBelowVerified =
     !roleAtLeast(account.role, 'verified') && photo === undefined && video === undefined;
+  if (unpaidBelowVerified && parentId !== null && !ownParent) {
+    return c.json({ error: 'A reply needs a Bitcoin payment' }, 403);
+  }
+  const firstPost = unpaidBelowVerified && parentId === null;
   const profileNoteId = account.profileMessageId ?? null;
   if (firstPost) {
-    if (parentId !== null) {
-      return c.json({ error: 'A reply needs a Bitcoin payment' }, 403);
-    }
     try {
       if (await deps.store.accountHasTopLevelPost(account.id, profileNoteId)) {
         return c.json({ error: 'A post needs a Bitcoin payment' }, 403);
@@ -1835,6 +1841,7 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
         return c.json({ error: 'A reply cannot ask for a goal' }, 400);
       }
       let parentId: string | null = null;
+      let ownParent = false;
       if (parsed.data.inReplyTo !== undefined) {
         if (!MESSAGE_ID_RE.test(parsed.data.inReplyTo)) {
           return c.json({ error: 'Not found' }, 404);
@@ -1845,6 +1852,7 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
           return c.json({ error: 'Not found' }, 404);
         }
         parentId = parent.id;
+        ownParent = parent.accountId === account.id;
       }
       const shaped = readGoalPair(
         parsed.data.goalSats ?? null,
@@ -1890,6 +1898,7 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
         termed.goal,
         place,
         shopParsed.snapshot,
+        ownParent,
       );
     })
     .get('/compose-target', async (c) => {
@@ -3114,7 +3123,9 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
         );
         return c.json({ error: 'Messages are unavailable' }, 503);
       }
-      if (heart && row.accountId === account.id) {
+      // A wallet cannot pay its own invoice: no heart and no paid reply on the own note.
+      // A reply there is posted unpaid with POST /messages.
+      if (row.accountId === account.id && (heart || invoiceText !== '')) {
         await persistInvoiceAttempt(
           deps.store,
           invoiceAttemptBase({
@@ -3126,7 +3137,7 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
             shown,
             lightningAddress: receiving.address,
             zapRequest: null,
-            result: 'self_heart',
+            result: heart ? 'self_heart' : 'self_reply',
             httpStatus: 400,
             pr: null,
             paymentHash: null,
@@ -3135,7 +3146,14 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
             isNip57Invoice: false,
           }),
         );
-        return c.json({ error: 'You cannot send a heart to yourself' }, 400);
+        return c.json(
+          {
+            error: heart
+              ? 'You cannot send a heart to yourself'
+              : 'A reply on your own note is free; post it without a payment',
+          },
+          400,
+        );
       }
       // A heart is paid only fee-free in the app: without Spark invoices it is refused.
       if (heart && deps.sparkInvoices === undefined) {
