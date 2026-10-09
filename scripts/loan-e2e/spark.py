@@ -181,6 +181,7 @@ ATTEMPT_RESERVE_S = 60
 
 
 def seconds_left(deadline: float) -> float:
+    """Seconds until the monotonic ``deadline``; negative once it has passed."""
     return deadline - time.monotonic()
 
 
@@ -205,16 +206,6 @@ async def wait_unreserved(role: str, secret: str, deadline: float) -> None:
             await sdk.sync_wallet(SyncWalletRequest())
         finally:
             await sdk.disconnect()
-        print(f"waiting for reserved leaves {held} of {role}", file=sys.stderr)
-        step = min(20, budget - waited)
-        await asyncio.sleep(step)
-        waited += step
-        sdk = await open_sdk(role, secret)
-        try:
-            await sdk.sync_wallet(SyncWalletRequest())
-        finally:
-            await sdk.disconnect()
-    return waited
 
 
 def fee_of(prepared) -> int:
@@ -542,8 +533,9 @@ async def command_sweep(role: str, address: str) -> None:
 async def sweep_integers(role: str, secret: str, address: str, deadline: float) -> int:
     """Send one chunk on a single connection, trying every amount.
 
-    Returns the sats sent, 0 when nothing could be sent, or -1 when the
-    wallet was already empty.
+    Returns the sats sent, 0 when nothing could be sent (also when leaves got
+    reserved or less than ``ATTEMPT_RESERVE_S`` is left before ``deadline``),
+    or -1 when the wallet was already empty.
     """
     sdk = await open_sdk(role, secret)
     try:
@@ -567,6 +559,11 @@ async def sweep_integers(role: str, secret: str, address: str, deadline: float) 
 async def sweep_one_fresh(
     role: str, secret: str, address: str, seen: int, deadline: float
 ) -> int | None:
+    """Try every amount up to ``seen``, each on a fresh connection.
+
+    Returns the sats sent, or None when nothing moved or less than
+    ``ATTEMPT_RESERVE_S`` is left before ``deadline``.
+    """
     for amount in range(seen, 0, -1):
         if seconds_left(deadline) < ATTEMPT_RESERVE_S:
             return None
