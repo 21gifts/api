@@ -17,7 +17,10 @@
  * (`LOAN_E2E_APP`). The screens mint every invoice. This process pays the
  * Spark invoice each click created, because the pay slot only sends from an
  * in-app wallet. `LOAN_E2E_FRESH=1` drops the previous test database and loan
- * state. Wallet files in LOAN_E2E_DIR stay.
+ * state. Wallet files in LOAN_E2E_DIR stay. The screen path reads the peso
+ * amount through the spot quote, so this process serves the same cent-per-sat
+ * price the gift row uses, and it does not open a gift until the note is
+ * payable.
  */
 import { spawn, spawnSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
@@ -55,8 +58,11 @@ let apiProcess = null;
 let lnurlProcess = null;
 /** @type {import('node:child_process').ChildProcess | null} */
 let relayProcess = null;
+/** @type {import('node:child_process').ChildProcess | null} */
+let spotProcess = null;
 
 const RELAY_URL = 'ws://127.0.0.1:3998';
+const SPOT_URL = 'http://127.0.0.1:3996/v2/exchange-rates?currency=BTC';
 
 /**
  * @param {string} message
@@ -304,6 +310,35 @@ function ok(response, what) {
   return response.json;
 }
 
+async function waitFixtureSpot() {
+  for (let i = 0; i < 30; i += 1) {
+    try {
+      const response = await api('GET', '/fx/spot');
+      const php = Number(response.json?.rates?.PHP ?? '0');
+      if (response.status === 200 && php === 1_000_000) {
+        process.stdout.write('spot fixture\n');
+        return;
+      }
+    } catch {
+      /* still booting */
+    }
+    await sleep(500);
+  }
+  fail('spot rate is not the fixture');
+}
+
+async function waitPayable(messageId, token) {
+  for (let i = 0; i < 30; i += 1) {
+    const note = ok(await api('GET', `/messages/${messageId}`, { token }), 'read loan');
+    if (note.payable === true) {
+      process.stdout.write('loan payable\n');
+      return;
+    }
+    await sleep(1000);
+  }
+  fail('loan is not payable');
+}
+
 async function waitHealth() {
   for (let i = 0; i < 60; i += 1) {
     try {
@@ -361,6 +396,7 @@ function apiEnv() {
     NOSTR_NSEC_KEK: secrets.kek,
     NOSTR_RELAY_SPACE: RELAY_URL,
     NOSTR_RELAY_PUBLIC: RELAY_URL,
+    BTC_FIAT_SPOT_URL: SPOT_URL,
     MEDIA_DIR: path.join(dir, 'media'),
   };
 }
@@ -460,6 +496,17 @@ async function waitDatabase() {
   fail('test database did not become ready');
 }
 
+function startSpot() {
+  const log = fs.openSync(path.join(dir, 'spot.log'), 'a');
+  spotProcess = spawn(process.env['LOAN_E2E_NODE'] ?? 'node', [path.join(HERE, 'spot.mjs')], {
+    cwd: ROOT,
+    env: { ...process.env, LOAN_E2E_SPOT_PORT: '3996' },
+    detached: true,
+    stdio: ['ignore', log, log],
+  });
+  spotProcess.unref();
+}
+
 function startRelay() {
   const log = fs.openSync(path.join(dir, 'relay.log'), 'a');
   relayProcess = spawn(process.env['LOAN_E2E_NODE'] ?? 'node', [path.join(HERE, 'relay.mjs')], {
@@ -556,6 +603,18 @@ async function registerParty(party, identity) {
 }
 
 function fixtureGift() {
+  psql(
+    `INSERT INTO btc_fiat_spot (id, usd, chf, eur, php, source, as_of)
+     VALUES (1, 1000000, 1000000, 1000000, 1000000, 'loan-e2e', now())
+     ON CONFLICT (id) DO UPDATE SET
+       usd = EXCLUDED.usd,
+       chf = EXCLUDED.chf,
+       eur = EXCLUDED.eur,
+       php = EXCLUDED.php,
+       source = EXCLUDED.source,
+       as_of = EXCLUDED.as_of
+     WHERE btc_fiat_spot.as_of <= EXCLUDED.as_of OR btc_fiat_spot.as_of > now()`,
+  );
   psql(
     `INSERT INTO gift (
        paid_at, direction, currency, amount_sats, fee_sats, recipient_wos_user,
@@ -998,6 +1057,7 @@ async function driveApp(state) {
           }
           state['messageId'] = id;
           writeState(state);
+          await waitPayable(id, accounts[BORROWER.role].token);
           response.writeHead(204);
           response.end();
           return;
@@ -1103,6 +1163,8 @@ async function main() {
     parties[party.username] = wallets[party.role].identity;
   }
   fs.writeFileSync(path.join(dir, 'parties.json'), `${JSON.stringify(parties)}\n`, { mode: 0o600 });
+  startSpot();
+  await waitPort(3996);
   startRelay();
   await waitPort(3998);
   startLnurl();
@@ -1110,6 +1172,7 @@ async function main() {
   startApi(apiEnv());
   await waitHealth();
   fixtureGift();
+  await waitFixtureSpot();
   const state = readState();
   if (state['accounts'] === undefined) {
     state['accounts'] = {};
@@ -1156,20 +1219,7 @@ async function main() {
       fail('loan id is not a uuid');
     }
     if (!throughApp) {
-      for (let i = 0; i < 30; i += 1) {
-        const note = ok(
-          await api('GET', `/messages/${messageId}`, { token: accounts[BORROWER.role].token }),
-          'read loan',
-        );
-        if (note.payable === true) {
-          process.stdout.write('loan payable\n');
-          break;
-        }
-        if (i === 29) {
-          fail('loan is not payable');
-        }
-        await sleep(1000);
-      }
+      await waitPayable(messageId, accounts[BORROWER.role].token);
       for (const giver of GIVERS) {
         spark(['optimize', giver.role]);
       }
@@ -1217,6 +1267,7 @@ process.on('exit', () => {
   stopChild(apiProcess);
   stopChild(lnurlProcess);
   stopChild(relayProcess);
+  stopChild(spotProcess);
 });
 
 main().catch((error) => {
