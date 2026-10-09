@@ -794,7 +794,7 @@ Missing or invalid bearer → **Response** `401`:
 { "error": "Unauthorized" }
 ```
 
-Store throw or missing BTC-USD day → **Response** `503`:
+Store throw or missing BTC-USD day (a donation day or a loan movement day) → **Response** `503`:
 
 ```json
 { "error": "Gift stats are unavailable" }
@@ -954,8 +954,8 @@ Top-level notes by that member are not listed.
 
 Same auth and 401 / 409 / 404 as `GET /members/:accountId`. Success is the
 same JSON as `GET /me/activity` for **that** member. 503 `{ "error": "Gift
-stats are unavailable" }` when the gift store throws or a gift day lacks
-BTC-USD.
+stats are unavailable" }` on a store throw or a missing BTC-USD day (a donation
+day or a loan movement day).
 
 ### `GET /mentions`
 
@@ -1471,8 +1471,8 @@ profile-note read → **503** `{ "error": "Messages are unavailable" }`
 
 Public. Same 404 as `GET /view/:viewKey` for a bad or unknown key. Success is
 the same JSON as `GET /me/activity` for the account behind the key. 503
-`{ "error": "Gift stats are unavailable" }` when the gift store throws or a
-gift day lacks BTC-USD.
+`{ "error": "Gift stats are unavailable" }` on a store throw or a missing BTC-USD
+day (a donation day or a loan movement day).
 
 ### `POST /me/name`
 
