@@ -25,7 +25,8 @@
  * amount through the spot quote, so this process serves the same cent-per-sat
  * price the gift row uses, and it does not open a gift until the note is
  * payable. Prerequisites are Python 3.10+ with the requirements.txt pins,
- * psql and Docker on PATH, and Node 22+ for the screen path.
+ * psql, Docker and Node on PATH for both paths, and Node 22+ for the screen
+ * path.
  */
 import { spawn, spawnSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
