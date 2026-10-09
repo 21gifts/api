@@ -138,6 +138,11 @@ def leaf_values(role: str, reserved: bool = False) -> list[int] | None:
         os.close(fd)
         shutil.copyfile(matches[0], temporary)
         os.chmod(temporary, 0o600)
+        # A reservation written by an open connection may still be in the
+        # write-ahead log only.
+        if os.path.exists(matches[0] + "-wal"):
+            shutil.copyfile(matches[0] + "-wal", temporary + "-wal")
+            os.chmod(temporary + "-wal", 0o600)
         with sqlite3.connect(temporary) as database:
             rows = database.execute(
                 "SELECT value FROM brz_tree_leaves WHERE status = ?"
@@ -148,9 +153,9 @@ def leaf_values(role: str, reserved: bool = False) -> list[int] | None:
     except Exception:
         return None
     finally:
-        if temporary:
+        for path in (temporary, temporary + "-wal", temporary + "-shm") if temporary else ():
             try:
-                os.unlink(temporary)
+                os.unlink(path)
             except OSError:
                 pass
 
@@ -165,21 +170,25 @@ def leaf_text(role: str) -> str:
     )
 
 
-RESERVATION_WAIT_S = 360
+# A reservation ends about five minutes after it was made. Each command
+# shares one budget so it stays inside the caller's 600 s per-command limit.
+PAY_RESERVATION_WAIT_S = 330
+SWEEP_RESERVATION_WAIT_S = 360
 
 
-async def wait_unreserved(role: str, secret: str) -> None:
+async def wait_unreserved(role: str, secret: str, budget: int) -> int:
     """Wait until no leaf of this wallet is held by an unfinished swap or send.
 
     The wallet only drops an expired reservation while it is connected and
     refreshing, about five minutes after the reservation was made. Retrying
     a payment inside that window fails leaf selection every time.
+    Returns the seconds spent, at most ``budget``.
     """
     waited = 0
-    while waited < RESERVATION_WAIT_S:
+    while waited < budget:
         held = leaf_values(role, reserved=True)
         if not held:
-            return
+            return waited
         print(f"waiting for reserved leaves {held} of {role}", file=sys.stderr)
         await asyncio.sleep(20)
         waited += 20
@@ -188,6 +197,7 @@ async def wait_unreserved(role: str, secret: str) -> None:
             await sdk.sync_wallet(SyncWalletRequest())
         finally:
             await sdk.disconnect()
+    return waited
 
 
 def fee_of(prepared) -> int:
@@ -349,6 +359,7 @@ async def command_pay(role: str, request: str, amount: int | None) -> None:
     last = "not tried"
     consolidated = False
     attempts = 5
+    wait_budget = PAY_RESERVATION_WAIT_S
     for attempt in range(1, attempts + 1):
         if consolidated:
             sdk = await open_sdk(role, secret, multiplicity=0)
@@ -391,7 +402,7 @@ async def command_pay(role: str, request: str, amount: int | None) -> None:
                 print(f"consolidation of {role} failed: {message}", file=sys.stderr)
         if attempt < attempts:
             await asyncio.sleep(8 * (2 ** (attempt - 1)))
-            await wait_unreserved(role, secret)
+            wait_budget -= await wait_unreserved(role, secret, wait_budget)
 
     try:
         balance: int | str = await balance_of(role, secret)
@@ -452,7 +463,8 @@ async def send_amount(sdk, address: str, amount: int) -> bool:
 async def command_sweep(role: str, address: str) -> None:
     secret = read_mnemonic(role)
     moved = 0
-    await wait_unreserved(role, secret)
+    wait_budget = SWEEP_RESERVATION_WAIT_S
+    wait_budget -= await wait_unreserved(role, secret, wait_budget)
     sdk = await open_sdk(role, secret)
     try:
         await sdk.sync_wallet(SyncWalletRequest())
@@ -482,7 +494,7 @@ async def command_sweep(role: str, address: str) -> None:
             print(f"swept amount={moved} fee=0 status=COMPLETED", flush=True)
             return
         print(f"dust balance={seen}", file=sys.stderr)
-        await wait_unreserved(role, secret)
+        wait_budget -= await wait_unreserved(role, secret, wait_budget)
         sent_amount = await sweep_integers(role, secret, address)
         if sent_amount < 0:
             continue
@@ -493,6 +505,8 @@ async def command_sweep(role: str, address: str) -> None:
             # One connection already tried every size. A fresh connection
             # per amount is only worth it for a small remainder.
             sent_amount = await sweep_one_fresh(role, secret, address, seen) or 0
+            if sent_amount == 0 and leaf_values(role, reserved=True):
+                continue
         if sent_amount == 0:
             print(f"sweep could not move {seen}; {leaf_text(role)}", file=sys.stderr)
             sys.exit(3)
