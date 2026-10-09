@@ -45,8 +45,8 @@ export interface DailyRosterEntry {
 }
 
 /**
- * Daily roster JSON used by GET and successful POST of `/funding/daily-roster*`.
- * Moderator rows stay off this public shape.
+ * Recipients-only base of {@link DailyRosterDocument}.
+ * Session responses use {@link DailyRosterPublic}.
  */
 export interface DailyRoster {
   /** Payment comment stored with the roster. */
