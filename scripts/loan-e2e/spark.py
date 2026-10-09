@@ -16,6 +16,7 @@ import shutil
 import sqlite3
 import sys
 import tempfile
+import time
 
 from breez_sdk_spark import (
     ConnectRequest,
@@ -170,26 +171,40 @@ def leaf_text(role: str) -> str:
     )
 
 
-# A reservation ends about five minutes after it was made. Each command
-# shares one budget so it stays inside the caller's 600 s per-command limit.
-PAY_RESERVATION_WAIT_S = 330
-SWEEP_RESERVATION_WAIT_S = 360
+# The harness kills a helper command after 600 s. Pay and sweep stop
+# starting new work at this many seconds, which leaves room for the final
+# balance read and message.
+COMMAND_BUDGET_S = 540
+# A pay attempt (connect, sync, optimize, send) is not started with less
+# time left than this.
+ATTEMPT_RESERVE_S = 60
 
 
-async def wait_unreserved(role: str, secret: str, budget: int) -> int:
+def seconds_left(deadline: float) -> float:
+    return deadline - time.monotonic()
+
+
+async def wait_unreserved(role: str, secret: str, deadline: float) -> None:
     """Wait until no leaf of this wallet is held by an unfinished swap or send.
 
     The wallet only drops an expired reservation while it is connected and
     refreshing, about five minutes after the reservation was made. Retrying
-    a payment inside that window fails leaf selection every time.
-    Returns the seconds slept, at most ``budget``; the syncs in between are
-    not counted.
+    a payment inside that window fails leaf selection every time. Waiting,
+    including the syncs in between, stops at ``deadline`` (a monotonic time).
     """
-    waited = 0
-    while waited < budget:
+    while seconds_left(deadline) > 0:
         held = leaf_values(role, reserved=True)
         if not held:
-            return waited
+            return
+        print(f"waiting for reserved leaves {held} of {role}", file=sys.stderr)
+        await asyncio.sleep(min(20.0, max(0.0, seconds_left(deadline))))
+        if seconds_left(deadline) <= 0:
+            return
+        sdk = await open_sdk(role, secret)
+        try:
+            await sdk.sync_wallet(SyncWalletRequest())
+        finally:
+            await sdk.disconnect()
         print(f"waiting for reserved leaves {held} of {role}", file=sys.stderr)
         step = min(20, budget - waited)
         await asyncio.sleep(step)
@@ -361,8 +376,12 @@ async def command_pay(role: str, request: str, amount: int | None) -> None:
     last = "not tried"
     consolidated = False
     attempts = 5
-    wait_budget = PAY_RESERVATION_WAIT_S
+    tried = 0
+    deadline = time.monotonic() + COMMAND_BUDGET_S
     for attempt in range(1, attempts + 1):
+        if seconds_left(deadline) < ATTEMPT_RESERVE_S:
+            break
+        tried = attempt
         if consolidated:
             sdk = await open_sdk(role, secret, multiplicity=0)
         else:
@@ -403,8 +422,9 @@ async def command_pay(role: str, request: str, amount: int | None) -> None:
                 message = redact(f"{type(error).__name__}: {error}", secret)
                 print(f"consolidation of {role} failed: {message}", file=sys.stderr)
         if attempt < attempts:
-            await asyncio.sleep(8 * (2 ** (attempt - 1)))
-            wait_budget -= await wait_unreserved(role, secret, wait_budget)
+            backoff = 8 * (2 ** (attempt - 1))
+            await asyncio.sleep(min(backoff, max(0.0, seconds_left(deadline))))
+            await wait_unreserved(role, secret, deadline - ATTEMPT_RESERVE_S)
 
     try:
         balance: int | str = await balance_of(role, secret)
@@ -412,7 +432,7 @@ async def command_pay(role: str, request: str, amount: int | None) -> None:
         balance = "unread"
     amount_text = str(amount) if amount is not None else "the invoice amount"
     print(
-        f"{role} cannot pay {amount_text} sats after {attempts} attempts: {last}; "
+        f"{role} cannot pay {amount_text} sats after {tried} attempts: {last}; "
         f"balance={balance} {leaf_text(role)}",
         file=sys.stderr,
     )
@@ -465,8 +485,8 @@ async def send_amount(sdk, address: str, amount: int) -> bool:
 async def command_sweep(role: str, address: str) -> None:
     secret = read_mnemonic(role)
     moved = 0
-    wait_budget = SWEEP_RESERVATION_WAIT_S
-    wait_budget -= await wait_unreserved(role, secret, wait_budget)
+    deadline = time.monotonic() + COMMAND_BUDGET_S
+    await wait_unreserved(role, secret, deadline - ATTEMPT_RESERVE_S)
     sdk = await open_sdk(role, secret)
     try:
         await sdk.sync_wallet(SyncWalletRequest())
@@ -496,8 +516,10 @@ async def command_sweep(role: str, address: str) -> None:
             print(f"swept amount={moved} fee=0 status=COMPLETED", flush=True)
             return
         print(f"dust balance={seen}", file=sys.stderr)
-        wait_budget -= await wait_unreserved(role, secret, wait_budget)
-        sent_amount = await sweep_integers(role, secret, address)
+        if seconds_left(deadline) < ATTEMPT_RESERVE_S:
+            break
+        await wait_unreserved(role, secret, deadline - ATTEMPT_RESERVE_S)
+        sent_amount = await sweep_integers(role, secret, address, deadline)
         if sent_amount < 0:
             continue
         if sent_amount == 0 and leaf_values(role, reserved=True):
@@ -506,7 +528,7 @@ async def command_sweep(role: str, address: str) -> None:
         if sent_amount == 0 and seen <= 64:
             # One connection already tried every size. A fresh connection
             # per amount is only worth it for a small remainder.
-            sent_amount = await sweep_one_fresh(role, secret, address, seen) or 0
+            sent_amount = await sweep_one_fresh(role, secret, address, seen, deadline) or 0
             if sent_amount == 0 and leaf_values(role, reserved=True):
                 continue
         if sent_amount == 0:
@@ -517,7 +539,7 @@ async def command_sweep(role: str, address: str) -> None:
     sys.exit(3)
 
 
-async def sweep_integers(role: str, secret: str, address: str) -> int:
+async def sweep_integers(role: str, secret: str, address: str, deadline: float) -> int:
     """Send one chunk on a single connection, trying every amount.
 
     Returns the sats sent, 0 when nothing could be sent, or -1 when the
@@ -531,6 +553,8 @@ async def sweep_integers(role: str, secret: str, address: str) -> int:
         if balance <= 0:
             return -1
         for amount in range(balance, 0, -1):
+            if seconds_left(deadline) < ATTEMPT_RESERVE_S:
+                return 0
             if await send_amount(sdk, address, amount):
                 return amount
             if leaf_values(role, reserved=True):
@@ -540,8 +564,12 @@ async def sweep_integers(role: str, secret: str, address: str) -> int:
         await sdk.disconnect()
 
 
-async def sweep_one_fresh(role: str, secret: str, address: str, seen: int) -> int | None:
+async def sweep_one_fresh(
+    role: str, secret: str, address: str, seen: int, deadline: float
+) -> int | None:
     for amount in range(seen, 0, -1):
+        if seconds_left(deadline) < ATTEMPT_RESERVE_S:
+            return None
         if await send_fresh(role, secret, address, amount):
             return amount
     return None
