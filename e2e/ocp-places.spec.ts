@@ -35,3 +35,15 @@ test('Function: isDevShopSeedTarget — default boot is healthy', async ({ reque
 test('Function: seedDevShopPlaces — default boot is healthy', async ({ request }) => {
   expect((await request.get('/healthz')).status()).toBe(200);
 });
+
+test('Function: resolveActivityPing — default boot is healthy', async ({ request }) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
+
+test('Function: pingShopActivity — default boot is healthy', async ({ request }) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
+
+test('Function: logActivityFailure — default boot is healthy', async ({ request }) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});

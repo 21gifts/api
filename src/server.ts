@@ -21,6 +21,7 @@ import { bindGoalRateDay, giftsStatsRoutes } from '@/routes/stats';
 import { giftsRoutes } from '@/routes/gifts';
 import { invoiceRoutes } from '@/routes/invoices';
 import { messagesRoutes } from '@/routes/messages';
+import { resolveActivityPing } from '@/lib/ocp-activity';
 import { resolveMapPush, type MapPush } from '@/lib/ocp-place';
 import { translateRoutes } from '@/routes/translate';
 import { InMemoryTranslationStore, type TranslationStore } from '@/lib/translation-store';
@@ -709,7 +710,18 @@ export function createApp(deps: AppDeps = {}): Hono {
     '/habits',
     memberHabitRoutes({ store: memberHabitStore, authStore: store, now, fetchImpl }),
   );
-  app.route('/pos', posRoutes({ store: posStore, authStore: store, now, fetchImpl }));
+  const activity = resolveActivityPing(env, fetchImpl);
+  app.route(
+    '/pos',
+    posRoutes({
+      store: posStore,
+      authStore: store,
+      now,
+      fetchImpl,
+      messageStore,
+      ...(activity === undefined ? {} : { activity }),
+    }),
+  );
   app.route(
     '/shops/activity',
     shopActivityRoutes({ authStore: store, now, messages: messageStore, pos: posStore }),
