@@ -897,6 +897,42 @@ function readBody(request) {
 }
 
 /**
+ * Playwright has to be a child. This process also answers the control
+ * server. A blocking spawn never reads that request, so the health check
+ * waits until it gives up.
+ *
+ * @param {string} appDir
+ * @returns {Promise<number>}
+ */
+function waitForScreens(appDir) {
+  return new Promise((resolve) => {
+    const child = spawn(
+      'npx',
+      ['playwright', 'test', '-c', 'playwright.loan.config.ts', '--reporter=line'],
+      {
+        cwd: appDir,
+        env: { ...process.env, LOAN_E2E_DIR: dir },
+        stdio: 'inherit',
+      },
+    );
+    const timer = setTimeout(
+      () => {
+        child.kill('SIGTERM');
+      },
+      6 * 60 * 60 * 1000,
+    );
+    child.on('exit', (code) => {
+      clearTimeout(timer);
+      resolve(code ?? 1);
+    });
+    child.on('error', () => {
+      clearTimeout(timer);
+      resolve(1);
+    });
+  });
+}
+
+/**
  * @param {Record<string, unknown>} state
  * @returns {Promise<void>}
  */
@@ -1020,19 +1056,9 @@ async function driveApp(state) {
     server.listen(3997, '127.0.0.1', () => resolve(undefined));
   });
   process.stdout.write('app screens\n');
-  const result = spawnSync(
-    'npx',
-    ['playwright', 'test', '-c', 'playwright.loan.config.ts', '--reporter=line'],
-    {
-      cwd: appDir,
-      env: { ...process.env, LOAN_E2E_DIR: dir },
-      encoding: 'utf8',
-      stdio: 'inherit',
-      timeout: 6 * 60 * 60 * 1000,
-    },
-  );
+  const status = await waitForScreens(appDir);
   server.close();
-  if (result.status !== 0) {
+  if (status !== 0) {
     fail('app screens failed');
   }
   if (typeof state['messageId'] !== 'string') {
