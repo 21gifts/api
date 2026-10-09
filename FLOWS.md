@@ -240,10 +240,13 @@ validated kind:9735 is indexed, a payer gift-reply is inserted only when the
 paid row is top-level (`parentId` null) and is not the official platform
 profile note. A zap on a signed reply credits that
 reply and does not nest a gift-reply. Gift-only (empty text) replies are not published to Nostr. Unpaid
-replies, and text-only top-level posts after the first, from `basis` (including the parent author) are **403** until
+replies on someone else's note, and text-only top-level posts after the first, from `basis` are **403** until
 the author pays 1 sat to 21.gifts (`GET /messages/compose-target` then
 `POST /messages/:id/invoice` on the platform profile note). `verified` stays
-unpaid-write exempt. A member's first top-level post is free: while
+unpaid-write exempt. A text reply on the member's own note is free for every
+role (`POST /messages` with `inReplyTo`, still behind the post limiter and the
+Sunday rule), because a wallet cannot pay itself; a paid reply there is refused
+with 400 (attempt `self_reply`). A member's first top-level post is free: while
 `GET /messages/compose-target` reports `firstPostFree: true`, the app posts
 directly with `POST /messages` and pays nothing. A member/invoice zap on that platform note with a comment becomes the
 payer’s top-level post (`sats` 0). An external zap on that same note still
