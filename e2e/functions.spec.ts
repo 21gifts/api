@@ -2601,8 +2601,10 @@ test('Function: InMemoryDailyRosterStore — GET /funding/daily-roster as founde
     expect(await res.json()).toEqual({
       comment: '',
       paymentsEnabled: true,
+      moderatorPaymentsEnabled: true,
       defaultAmountUsd: 1,
       recipients: [],
+      moderators: [],
     });
   } finally {
     await releaseRosterFounder(request, auth.id);
@@ -2639,9 +2641,33 @@ test('Function: DailyRosterRequestError — GET /funding/daily-roster as initiat
   expect(await res.json()).toEqual({
     comment: '',
     paymentsEnabled: true,
+    moderatorPaymentsEnabled: true,
     defaultAmountUsd: 1,
     recipients: [],
+    moderators: [],
   });
+});
+
+test('POST /funding/daily-roster/moderators without bearer is 401', async ({ request }) => {
+  const res = await request.post('/funding/daily-roster/moderators', { data: {} });
+  expect(res.status()).toBe(401);
+});
+
+test('POST /funding/daily-roster/moderators/update without bearer is 401', async ({ request }) => {
+  const res = await request.post('/funding/daily-roster/moderators/update', { data: {} });
+  expect(res.status()).toBe(401);
+});
+
+test('POST /funding/daily-roster/moderators/delete without bearer is 401', async ({ request }) => {
+  const res = await request.post('/funding/daily-roster/moderators/delete', { data: {} });
+  expect(res.status()).toBe(401);
+});
+
+test('POST /funding/daily-roster/moderators/payments without bearer is 401', async ({
+  request,
+}) => {
+  const res = await request.post('/funding/daily-roster/moderators/payments', { data: {} });
+  expect(res.status()).toBe(401);
 });
 
 test('Function: withRecipientIdentities — GET /funding/daily-roster as initiator is 200', async ({
