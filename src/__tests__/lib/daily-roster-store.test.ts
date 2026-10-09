@@ -72,6 +72,14 @@ describe('migrateDailyRosterSchema', () => {
 });
 
 describe('InMemoryDailyRosterStore', () => {
+  it('reports hasBeenWritten false only before the first write', async () => {
+    const fresh = new InMemoryDailyRosterStore();
+    expect(await fresh.hasBeenWritten()).toBe(false);
+    expect(await new InMemoryDailyRosterStore(EMPTY).hasBeenWritten()).toBe(true);
+    await fresh.setComment('');
+    expect(await fresh.hasBeenWritten()).toBe(true);
+  });
+
   it('returns the empty defaults and does not share the array', async () => {
     const store = new InMemoryDailyRosterStore();
     const first = await store.get();
@@ -262,6 +270,22 @@ describe('InMemoryDailyRosterStore', () => {
 });
 
 describe('PostgresDailyRosterStore', () => {
+  it('reports hasBeenWritten false when no settings row exists', async () => {
+    const sql = new MockSql();
+    sql.queryResults = [[]];
+    expect(await new PostgresDailyRosterStore(sql).hasBeenWritten()).toBe(false);
+    expect(sql.queries[0]?.text).toMatch(/FROM daily_roster WHERE singleton = true/);
+    expect(sql.queries).toHaveLength(1);
+  });
+
+  it('reports hasBeenWritten true when a settings row exists', async () => {
+    const sql = new MockSql();
+    sql.queryResults = [
+      [{ comment: '', payments_enabled: true, moderator_payments_enabled: true }],
+    ];
+    expect(await new PostgresDailyRosterStore(sql).hasBeenWritten()).toBe(true);
+  });
+
   it('returns empty defaults when no settings row exists', async () => {
     const sql = new MockSql();
     sql.queryResults = [[]];

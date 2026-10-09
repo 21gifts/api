@@ -185,7 +185,7 @@ describe('HttpSpendPing', () => {
       spendUrl: SPEND_URL,
       token: TOKEN,
       fetchImpl,
-      rosterStore: new InMemoryDailyRosterStore(),
+      rosterStore: writtenStore(),
     }).ping(ADDRESS, MESSAGE_ID);
     expect(fetchImpl).not.toHaveBeenCalled();
     expect(
@@ -206,7 +206,7 @@ describe('HttpSpendPing', () => {
       spendUrl: SPEND_URL,
       token: TOKEN,
       fetchImpl,
-      rosterStore: new InMemoryDailyRosterStore(),
+      rosterStore: writtenStore(),
     }).ping(ADDRESS, MESSAGE_ID, 'daily', 'admitted');
     expect(parsedEvents(warn).some((e) => e['event'] === 'spend.ping.ok')).toBe(true);
   });
@@ -218,14 +218,14 @@ describe('HttpSpendPing', () => {
       spendUrl: SPEND_URL,
       token: TOKEN,
       fetchImpl,
-      rosterStore: new InMemoryDailyRosterStore(),
+      rosterStore: writtenStore(),
     }).ping(ADDRESS, MESSAGE_ID, 'daily', 'admitted');
     expect(timeoutSpy).toHaveBeenCalledWith(5000);
     await new HttpSpendPing({
       spendUrl: SPEND_URL,
       token: TOKEN,
       fetchImpl,
-      rosterStore: new InMemoryDailyRosterStore(),
+      rosterStore: writtenStore(),
       timeoutMs: 1_000,
     }).ping(ADDRESS, MESSAGE_ID, 'daily', 'admitted');
     expect(timeoutSpy).toHaveBeenCalledWith(1_000);
@@ -239,7 +239,7 @@ describe('HttpSpendPing', () => {
         spendUrl: SPEND_URL,
         token: TOKEN,
         fetchImpl,
-        rosterStore: new InMemoryDailyRosterStore(),
+        rosterStore: writtenStore(),
       }).ping(ADDRESS, MESSAGE_ID, 'daily', 'admitted'),
     ).resolves.toBeUndefined();
     expect(fetchImpl).toHaveBeenCalledTimes(1);
@@ -259,7 +259,7 @@ describe('HttpSpendPing', () => {
         spendUrl: SPEND_URL,
         token: TOKEN,
         fetchImpl,
-        rosterStore: new InMemoryDailyRosterStore(),
+        rosterStore: writtenStore(),
       }).ping(ADDRESS, MESSAGE_ID, 'daily', 'admitted'),
     ).resolves.toBeUndefined();
     expect(fetchImpl).toHaveBeenCalledTimes(1);
@@ -273,7 +273,7 @@ describe('HttpSpendPing', () => {
         spendUrl: SPEND_URL,
         token: TOKEN,
         fetchImpl,
-        rosterStore: new InMemoryDailyRosterStore(),
+        rosterStore: writtenStore(),
       }).ping(ADDRESS, MESSAGE_ID, 'daily', 'admitted'),
     ).resolves.toBeUndefined();
     expect(fetchImpl).toHaveBeenCalledTimes(1);
@@ -282,8 +282,27 @@ describe('HttpSpendPing', () => {
 
   it('logs spend.ping.failed on a roster read throw and does not POST', async () => {
     const fetchImpl = vi.fn<FetchFn>(pingFetch());
-    const rosterStore = new InMemoryDailyRosterStore();
+    const rosterStore = writtenStore();
     vi.spyOn(rosterStore, 'get').mockRejectedValue(new Error('network down'));
+    await expect(
+      new HttpSpendPing({ spendUrl: SPEND_URL, token: TOKEN, fetchImpl, rosterStore }).ping(
+        ADDRESS,
+        MESSAGE_ID,
+      ),
+    ).resolves.toBeUndefined();
+    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(
+      parsedEvents(warn).some(
+        (e) => e['event'] === 'spend.ping.failed' && e['address'] === ADDRESS,
+      ),
+    ).toBe(true);
+    expect(JSON.stringify(parsedEvents(warn))).not.toContain(TOKEN);
+  });
+
+  it('logs spend.ping.failed when hasBeenWritten throws and does not GET or POST', async () => {
+    const fetchImpl = vi.fn<FetchFn>(pingFetch());
+    const rosterStore = new InMemoryDailyRosterStore();
+    vi.spyOn(rosterStore, 'hasBeenWritten').mockRejectedValue(new Error('store down'));
     await expect(
       new HttpSpendPing({ spendUrl: SPEND_URL, token: TOKEN, fetchImpl, rosterStore }).ping(
         ADDRESS,
@@ -305,7 +324,7 @@ describe('HttpSpendPing', () => {
       spendUrl: SPEND_URL,
       token: TOKEN,
       fetchImpl,
-      rosterStore: new InMemoryDailyRosterStore(),
+      rosterStore: writtenStore(),
     }).ping(ADDRESS, MESSAGE_ID, 'moderator');
     expect(fetchImpl).not.toHaveBeenCalled();
     expect(
@@ -330,7 +349,7 @@ describe('HttpSpendPing', () => {
       spendUrl: SPEND_URL,
       token: TOKEN,
       fetchImpl,
-      rosterStore: new InMemoryDailyRosterStore(),
+      rosterStore: writtenStore(),
     }).ping(ADDRESS, MESSAGE_ID, 'welcome');
     expect(seenInit?.method).toBe('POST');
     expect(new Headers(seenInit?.headers).get('Authorization')).toBe(`Bearer ${TOKEN}`);
@@ -752,7 +771,7 @@ describe('HttpSpendPing', () => {
       spendUrl: SPEND_URL,
       token: TOKEN,
       fetchImpl,
-      rosterStore: new InMemoryDailyRosterStore(),
+      rosterStore: writtenStore(),
       gifts,
     }).ping(ADDRESS, MESSAGE_ID, 'welcome');
     expect(listCalls).toBe(0);
@@ -766,5 +785,209 @@ describe('HttpSpendPing', () => {
         comment: 'Welcome',
       }),
     );
+  });
+
+  it('GETs live daily-roster when unwritten, POSTs decided daily, and does not import', async () => {
+    const rosterStore = new InMemoryDailyRosterStore();
+    const getSpy = vi.spyOn(rosterStore, 'get');
+    const importSpy = vi.spyOn(rosterStore, 'importDocument');
+    const fetchImpl = vi.fn<FetchFn>(async (input) => {
+      if (String(input) === `${SPEND_URL}/daily-roster`) {
+        return new Response(
+          JSON.stringify({
+            comment: 'thanks',
+            paymentsEnabled: true,
+            defaultAmountUsd: 1,
+            recipients: [{ address: ADDRESS, amountUsd: 2.5 }],
+          }),
+          { status: 200 },
+        );
+      }
+      return new Response(null, { status: 202 });
+    });
+    await new HttpSpendPing({
+      spendUrl: SPEND_URL,
+      token: TOKEN,
+      fetchImpl,
+      rosterStore,
+    }).ping(ADDRESS, MESSAGE_ID, 'daily', 'admitted');
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    expect(String(fetchImpl.mock.calls[0]?.[0])).toBe(`${SPEND_URL}/daily-roster`);
+    const getInit = fetchImpl.mock.calls[0]?.[1];
+    expect(getInit?.method).toBe('GET');
+    expect(getInit?.headers).toEqual({ Authorization: `Bearer ${TOKEN}` });
+    expect(new Headers(getInit?.headers).get('Content-Type')).toBeNull();
+    expect(getInit?.signal).toBeInstanceOf(AbortSignal);
+    expect(String(fetchImpl.mock.calls[1]?.[0])).toBe(`${SPEND_URL}/ping`);
+    expect(fetchImpl.mock.calls[1]?.[1]?.body).toBe(
+      JSON.stringify({
+        address: ADDRESS,
+        messageId: MESSAGE_ID,
+        amountUsd: 2.5,
+        comment: 'thanks',
+      }),
+    );
+    expect(getSpy).not.toHaveBeenCalled();
+    expect(importSpy).not.toHaveBeenCalled();
+    expect(
+      parsedEvents(warn).some((e) => e['event'] === 'spend.ping.ok' && e['address'] === ADDRESS),
+    ).toBe(true);
+    expect(JSON.stringify(parsedEvents(warn))).not.toContain(TOKEN);
+  });
+
+  it('GETs live daily-roster when unwritten and skips moderator as undecided without importing', async () => {
+    const rosterStore = new InMemoryDailyRosterStore();
+    const importSpy = vi.spyOn(rosterStore, 'importDocument');
+    const fetchImpl = vi.fn<FetchFn>(async (input) => {
+      if (String(input) === `${SPEND_URL}/daily-roster`) {
+        return new Response(
+          JSON.stringify({
+            comment: 'thanks',
+            paymentsEnabled: true,
+            defaultAmountUsd: 1,
+            recipients: [{ address: ADDRESS, amountUsd: 2.5 }],
+          }),
+          { status: 200 },
+        );
+      }
+      return new Response(null, { status: 202 });
+    });
+    await new HttpSpendPing({
+      spendUrl: SPEND_URL,
+      token: TOKEN,
+      fetchImpl,
+      rosterStore,
+    }).ping(ADDRESS, MESSAGE_ID, 'moderator');
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(String(fetchImpl.mock.calls[0]?.[0])).toBe(`${SPEND_URL}/daily-roster`);
+    expect(importSpy).not.toHaveBeenCalled();
+    expect(
+      parsedEvents(warn).some(
+        (e) =>
+          e['event'] === 'spend.ping.skipped' &&
+          e['address'] === ADDRESS &&
+          e['reason'] === 'undecided',
+      ),
+    ).toBe(true);
+  });
+
+  it('GETs live daily-roster when unwritten and POSTs listed moderator', async () => {
+    const rosterStore = new InMemoryDailyRosterStore();
+    const fetchImpl = vi.fn<FetchFn>(async (input) => {
+      if (String(input) === `${SPEND_URL}/daily-roster`) {
+        return new Response(
+          JSON.stringify({
+            paymentsEnabled: true,
+            moderatorPaymentsEnabled: true,
+            moderators: [{ address: ADDRESS, amountUsd: 5 }],
+          }),
+          { status: 200 },
+        );
+      }
+      return new Response(null, { status: 202 });
+    });
+    await new HttpSpendPing({
+      spendUrl: SPEND_URL,
+      token: TOKEN,
+      fetchImpl,
+      rosterStore,
+    }).ping(ADDRESS, MESSAGE_ID, 'moderator');
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    expect(String(fetchImpl.mock.calls[0]?.[0])).toBe(`${SPEND_URL}/daily-roster`);
+    expect(String(fetchImpl.mock.calls[1]?.[0])).toBe(`${SPEND_URL}/ping`);
+    expect(fetchImpl.mock.calls[1]?.[1]?.body).toBe(
+      JSON.stringify({
+        address: ADDRESS,
+        kind: 'moderator',
+        groupMessageId: MESSAGE_ID,
+        amountUsd: 5,
+        comment: '21gifts moderator',
+      }),
+    );
+  });
+
+  it('logs spend.ping.failed when unwritten live GET returns non-2xx', async () => {
+    const fetchImpl = vi.fn<FetchFn>(async () => new Response(null, { status: 500 }));
+    await new HttpSpendPing({
+      spendUrl: SPEND_URL,
+      token: TOKEN,
+      fetchImpl,
+      rosterStore: new InMemoryDailyRosterStore(),
+    }).ping(ADDRESS, MESSAGE_ID, 'daily', 'admitted');
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(String(fetchImpl.mock.calls[0]?.[0])).toMatch(/\/daily-roster$/u);
+    expect(
+      parsedEvents(warn).some(
+        (e) => e['event'] === 'spend.ping.failed' && e['address'] === ADDRESS,
+      ),
+    ).toBe(true);
+  });
+
+  it('logs spend.ping.failed when unwritten live GET body is JSON null', async () => {
+    const fetchImpl = vi.fn<FetchFn>(async () => new Response('null', { status: 200 }));
+    await new HttpSpendPing({
+      spendUrl: SPEND_URL,
+      token: TOKEN,
+      fetchImpl,
+      rosterStore: new InMemoryDailyRosterStore(),
+    }).ping(ADDRESS, MESSAGE_ID, 'daily', 'admitted');
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(
+      parsedEvents(warn).some(
+        (e) => e['event'] === 'spend.ping.failed' && e['address'] === ADDRESS,
+      ),
+    ).toBe(true);
+  });
+
+  it('logs spend.ping.failed when unwritten live GET throws', async () => {
+    const fetchImpl = vi.fn<FetchFn>(async () => {
+      throw new Error('network down');
+    });
+    await new HttpSpendPing({
+      spendUrl: SPEND_URL,
+      token: TOKEN,
+      fetchImpl,
+      rosterStore: new InMemoryDailyRosterStore(),
+    }).ping(ADDRESS, MESSAGE_ID, 'daily', 'admitted');
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(
+      parsedEvents(warn).some(
+        (e) => e['event'] === 'spend.ping.failed' && e['address'] === ADDRESS,
+      ),
+    ).toBe(true);
+  });
+
+  it('GETs live daily-roster when unwritten and skips welcome when paymentsEnabled is false', async () => {
+    const fetchImpl = vi.fn<FetchFn>(async () => {
+      return new Response(JSON.stringify({ paymentsEnabled: false }), { status: 200 });
+    });
+    await new HttpSpendPing({
+      spendUrl: SPEND_URL,
+      token: TOKEN,
+      fetchImpl,
+      rosterStore: new InMemoryDailyRosterStore(),
+    }).ping(ADDRESS, MESSAGE_ID, 'welcome');
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(String(fetchImpl.mock.calls[0]?.[0])).toBe(`${SPEND_URL}/daily-roster`);
+    expect(
+      parsedEvents(warn).some(
+        (e) =>
+          e['event'] === 'spend.ping.skipped' &&
+          e['address'] === ADDRESS &&
+          e['reason'] === 'payments_disabled',
+      ),
+    ).toBe(true);
+  });
+
+  it('does not GET when a written store lists the moderator', async () => {
+    const fetchImpl = vi.fn<FetchFn>(pingFetch({ pingStatus: 202 }));
+    await new HttpSpendPing({
+      spendUrl: SPEND_URL,
+      token: TOKEN,
+      fetchImpl,
+      rosterStore: writtenStore({ moderators: [{ address: ADDRESS, amountUsd: 5 }] }),
+    }).ping(ADDRESS, MESSAGE_ID, 'moderator');
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(String(fetchImpl.mock.calls[0]?.[0])).toBe(`${SPEND_URL}/ping`);
   });
 });

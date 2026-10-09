@@ -44,6 +44,12 @@ export interface DailyRosterStore {
   get(): Promise<DailyRosterDocument>;
 
   /**
+   * Whether a roster has been stored. False only before the first write.
+   * A saved empty roster is true. Do not infer this from an empty document.
+   */
+  hasBeenWritten(): Promise<boolean>;
+
+  /**
    * Replace the payment comment.
    *
    * @param comment - Comment text (newlines folded by the store).
@@ -203,6 +209,16 @@ export class InMemoryDailyRosterStore implements DailyRosterStore {
    */
   get(): Promise<DailyRosterDocument> {
     return Promise.resolve(this.#snapshot());
+  }
+
+  /**
+   * Whether a roster has been stored. False only before the first write.
+   * A saved empty roster is true. Do not infer this from an empty document.
+   *
+   * @returns `this.#written`.
+   */
+  hasBeenWritten(): Promise<boolean> {
+    return Promise.resolve(this.#written);
   }
 
   /**
@@ -415,6 +431,17 @@ export class PostgresDailyRosterStore implements DailyRosterStore {
    */
   async get(): Promise<DailyRosterDocument> {
     return this.#load();
+  }
+
+  /**
+   * Whether a roster has been stored. False only before the first write.
+   * A saved empty roster is true. Do not infer this from an empty document.
+   *
+   * @returns True iff the `daily_roster` singleton row exists.
+   */
+  async hasBeenWritten(): Promise<boolean> {
+    const settings = await this.#settings();
+    return settings !== undefined;
   }
 
   /**

@@ -68,17 +68,19 @@ export class NoopSpendPing implements SpendPing {
 }
 
 /**
- * Read the roster from {@link DailyRosterStore}, then POST `{spendUrl}/ping`
- * with Bearer `SPEND_API_TOKEN`. A decided amount adds `amountUsd` and
+ * Until the roster store has been written, `GET {spendUrl}/daily-roster`
+ * and decide from that JSON without importing it. After a roster has been
+ * stored, read only the store (no GET). Then POST `{spendUrl}/ping` with
+ * Bearer `SPEND_API_TOKEN`. A decided amount adds `amountUsd` and
  * `comment` to the ping JSON. Skipped reasons `payments_disabled`,
  * `not_listed`, `undecided`, and `welcome_paid` log `spend.ping.skipped`
  * and do not POST.
  *
  * 2xx (including 200 skipped and 202 accepted) logs `spend.ping.ok`.
- * Network, abort, non-2xx, a store read throw, and a gift-ledger throw log
- * `spend.ping.failed` and resolve. Never throws. Never logs the token.
- * Optional `grantStatus` is passed to {@link decideSpendInstruction} only
- * when the resolved kind is daily.
+ * Network, abort, non-2xx, a store read throw, a live GET failure, and a
+ * gift-ledger throw log `spend.ping.failed` and resolve. Never throws.
+ * Never logs the token. Optional `grantStatus` is passed to
+ * {@link decideSpendInstruction} only when the resolved kind is daily.
  */
 export class HttpSpendPing implements SpendPing {
   readonly #spendUrl: string;
@@ -113,10 +115,12 @@ export class HttpSpendPing implements SpendPing {
   }
 
   /**
-   * Read the roster store, then POST the decided ping JSON to
-   * `{spendUrl}/ping`. A skip, including welcome already paid today,
-   * logs `spend.ping.skipped` and does not POST. A store read throw logs
-   * `spend.ping.failed` and does not POST. Resolves on success and failure.
+   * A never-written store reads `GET {spendUrl}/daily-roster` (body never
+   * imported). A written store reads the store. Then POST the decided ping
+   * JSON to `{spendUrl}/ping`. A skip, including welcome already paid today,
+   * logs `spend.ping.skipped` and does not POST. A store read throw or live
+   * GET failure logs `spend.ping.failed` and does not POST. Resolves on
+   * success and failure. Never throws. Never logs the token.
    *
    * @param address - Recipient Lightning Address (JSON body).
    * @param messageId - Forum post id for daily/welcome pings (JSON
@@ -132,12 +136,44 @@ export class HttpSpendPing implements SpendPing {
     grantStatus?: SpendGrantStatus,
   ): Promise<void> {
     const resolvedKind = kind === 'moderator' || kind === 'welcome' ? kind : 'daily';
-    let roster: unknown;
+    let written: boolean;
     try {
-      roster = await this.#rosterStore.get();
+      written = await this.#rosterStore.hasBeenWritten();
     } catch {
       logEvent('spend.ping.failed', { address });
       return;
+    }
+    let roster: unknown;
+    if (!written) {
+      try {
+        const response = await this.#fetchImpl(`${this.#spendUrl}/daily-roster`, {
+          method: 'GET',
+          headers: {
+            Authorization: `Bearer ${this.#token}`,
+          },
+          signal: AbortSignal.timeout(this.#timeoutMs),
+        });
+        if (!response.ok) {
+          logEvent('spend.ping.failed', { address });
+          return;
+        }
+        const parsed: unknown = await response.json();
+        if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+          logEvent('spend.ping.failed', { address });
+          return;
+        }
+        roster = parsed;
+      } catch {
+        logEvent('spend.ping.failed', { address });
+        return;
+      }
+    } else {
+      try {
+        roster = await this.#rosterStore.get();
+      } catch {
+        logEvent('spend.ping.failed', { address });
+        return;
+      }
     }
     let welcomePaidOnUtcDay: boolean | undefined;
     if (resolvedKind === 'daily' && this.#gifts !== undefined) {

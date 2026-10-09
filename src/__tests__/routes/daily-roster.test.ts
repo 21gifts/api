@@ -113,6 +113,7 @@ function fakeStore(overrides: Partial<DailyRosterStore> = {}): DailyRosterStore 
   const fallback = new InMemoryDailyRosterStore(DOCUMENT);
   return {
     get: overrides.get ?? (async () => DOCUMENT),
+    hasBeenWritten: overrides.hasBeenWritten ?? (async () => true),
     setComment: overrides.setComment ?? ((comment) => fallback.setComment(comment)),
     setPaymentsEnabled:
       overrides.setPaymentsEnabled ?? ((enabled) => fallback.setPaymentsEnabled(enabled)),

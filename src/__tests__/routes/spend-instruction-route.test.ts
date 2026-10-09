@@ -63,6 +63,7 @@ function fakeStore(get?: DailyRosterStore['get']): DailyRosterStore {
   const fallback = new InMemoryDailyRosterStore(PAYING_ROSTER);
   return {
     get: get ?? (async () => PAYING_ROSTER),
+    hasBeenWritten: async () => true,
     setComment: (comment) => fallback.setComment(comment),
     setPaymentsEnabled: (enabled) => fallback.setPaymentsEnabled(enabled),
     setModeratorPaymentsEnabled: (enabled) => fallback.setModeratorPaymentsEnabled(enabled),
