@@ -45,8 +45,8 @@ export interface DailyRosterEntry {
 }
 
 /**
- * Daily roster JSON used by GET and successful POST of `/funding/daily-roster*`.
- * Moderator rows stay off this public shape.
+ * Recipients-only base of {@link DailyRosterDocument}.
+ * Session responses use {@link DailyRosterPublic}.
  */
 export interface DailyRoster {
   /** Payment comment stored with the roster. */
@@ -87,7 +87,8 @@ export interface DailyRosterRecipientPublic {
 }
 
 /**
- * Daily roster JSON returned by GET and successful POST of `/funding/daily-roster*`.
+ * Editor session JSON for GET and successful POST of `/funding/daily-roster*`.
+ * Moderator rows are their own list. They are not mixed into `recipients`.
  */
 export interface DailyRosterPublic {
   /** Payment comment stored with the roster. */
@@ -101,6 +102,10 @@ export interface DailyRosterPublic {
   defaultAmountUsd: number;
   /** Listed recipients with amounts and optional member identity. */
   recipients: DailyRosterRecipientPublic[];
+  /** Whether moderator stipends are switched on. */
+  moderatorPaymentsEnabled: boolean;
+  /** Listed moderators with amounts and optional member identity. */
+  moderators: DailyRosterRecipientPublic[];
 }
 
 /**
@@ -122,55 +127,73 @@ export function normalizeDailyRosterComment(raw: string): string | undefined {
 }
 
 /**
- * Copy a daily roster and attach account id and display name per recipient.
+ * Attach account id and display name to one stored roster row.
  *
- * Lookup is called once per recipient with the stored address, in parallel.
- * Recipient order, address, and amountUsd are unchanged. A miss is null
- * identity fields. A found name is trimmed; null, missing, or trim-empty
- * becomes null. Lookup errors are not caught. Moderator rows are not copied.
+ * A miss is null identity fields. A found name is trimmed; null, missing,
+ * or trim-empty becomes null. Lookup errors are not caught.
  *
- * @param roster - Daily roster (recipients only).
+ * @param row - Stored address and USD amount.
  * @param lookup - Account lookup by the stored Lightning address.
- * @returns The public roster.
+ * @returns The public row.
+ */
+async function attachRosterIdentity(
+  row: DailyRosterEntry,
+  lookup: (address: string) => Promise<{ id: string; name: string | null } | undefined>,
+): Promise<DailyRosterRecipientPublic> {
+  const found = await lookup(row.address);
+  if (found === undefined) {
+    return {
+      address: row.address,
+      amountUsd: row.amountUsd,
+      accountId: null,
+      name: null,
+    };
+  }
+  const rawName = found.name;
+  if (typeof rawName !== 'string') {
+    return {
+      address: row.address,
+      amountUsd: row.amountUsd,
+      accountId: found.id,
+      name: null,
+    };
+  }
+  const trimmed = rawName.trim();
+  return {
+    address: row.address,
+    amountUsd: row.amountUsd,
+    accountId: found.id,
+    name: trimmed === '' ? null : trimmed,
+  };
+}
+
+/**
+ * Copy a stored roster and attach account id and display name on both lists.
+ *
+ * Lookup is called once per recipient and once per moderator, in parallel.
+ * Order, address, and amountUsd are unchanged. A miss is null identity
+ * fields. A found name is trimmed; null, missing, or trim-empty becomes
+ * null. Lookup errors are not caught. Moderator rows stay out of `recipients`.
+ *
+ * @param roster - Full stored document.
+ * @param lookup - Account lookup by the stored Lightning address.
+ * @returns The editor session roster.
  */
 export async function withRecipientIdentities(
-  roster: DailyRoster,
+  roster: DailyRosterDocument,
   lookup: (address: string) => Promise<{ id: string; name: string | null } | undefined>,
 ): Promise<DailyRosterPublic> {
-  const recipients = await Promise.all(
-    roster.recipients.map(async (recipient): Promise<DailyRosterRecipientPublic> => {
-      const found = await lookup(recipient.address);
-      if (found === undefined) {
-        return {
-          address: recipient.address,
-          amountUsd: recipient.amountUsd,
-          accountId: null,
-          name: null,
-        };
-      }
-      const rawName = found.name;
-      if (typeof rawName !== 'string') {
-        return {
-          address: recipient.address,
-          amountUsd: recipient.amountUsd,
-          accountId: found.id,
-          name: null,
-        };
-      }
-      const trimmed = rawName.trim();
-      return {
-        address: recipient.address,
-        amountUsd: recipient.amountUsd,
-        accountId: found.id,
-        name: trimmed === '' ? null : trimmed,
-      };
-    }),
-  );
+  const [recipients, moderators] = await Promise.all([
+    Promise.all(roster.recipients.map((row) => attachRosterIdentity(row, lookup))),
+    Promise.all(roster.moderators.map((row) => attachRosterIdentity(row, lookup))),
+  ]);
   return {
     comment: roster.comment,
     paymentsEnabled: roster.paymentsEnabled,
     defaultAmountUsd: roster.defaultAmountUsd,
     recipients,
+    moderatorPaymentsEnabled: roster.moderatorPaymentsEnabled,
+    moderators,
   };
 }
 
