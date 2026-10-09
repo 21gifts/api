@@ -102,6 +102,7 @@ function note(
     amountChf?: string | null;
     amountEur?: string | null;
     amountPhp?: string | null;
+    goalRepayable?: true;
   } = {},
 ): {
   id: string;
@@ -119,6 +120,7 @@ function note(
     createdAt: overrides.createdAt ?? PAID_AT,
     hasPhoto: false,
     ...unsignedNostrDefaults(),
+    ...(overrides.goalRepayable === true ? { goalRepayable: true } : {}),
     parentId: overrides.parentId === undefined ? null : overrides.parentId,
     sats: overrides.sats ?? 0,
     ...(overrides.amountUsd !== undefined ? { amountUsd: overrides.amountUsd } : {}),
@@ -529,5 +531,122 @@ describe('buildAccountActivity', () => {
     } finally {
       warn.mockRestore();
     }
+  });
+
+  it('does not count a moderator stipend as received', async () => {
+    const gifts = new InMemoryGiftStore([
+      { paidAt: PAID_AT, amountSats: 1000, recipientWosUser: 'ada', kind: 'daily' },
+      { paidAt: PAID_AT, amountSats: 2000, recipientWosUser: 'ada', kind: 'welcome' },
+      { paidAt: PAID_AT, amountSats: 5000, recipientWosUser: 'ada', kind: 'moderator' },
+    ]);
+    const stats = await activity({ gifts });
+    expect(stats.receivedSats).toBe(3000);
+    expect(stats.donatedSats).toBe(0);
+  });
+
+  it('returns empty activity when the only gift is a moderator stipend', async () => {
+    const gifts = new InMemoryGiftStore([
+      { paidAt: PAID_AT, amountSats: 5000, recipientWosUser: 'ada', kind: 'moderator' },
+    ]);
+    await expect(activity({ gifts, rates: new InMemoryBtcUsdStore() })).resolves.toEqual(EMPTY);
+  });
+
+  it('counts only daily/welcome as donated for the platform account', async () => {
+    const gifts = new InMemoryGiftStore([
+      { paidAt: PAID_AT, amountSats: 500, recipientWosUser: 'bob', kind: 'daily' },
+      { paidAt: PAID_AT, amountSats: 9000, recipientWosUser: 'bob', kind: 'moderator' },
+    ]);
+    const stats = await activity({ acc: account({ isPlatform: true }), gifts });
+    expect(stats.donatedSats).toBe(500);
+    expect(stats.receivedSats).toBe(0);
+  });
+
+  it('omits loan note ingests and remainder from received', async () => {
+    const messages = new InMemoryMessageStore([
+      note({ id: 'loan', goalRepayable: true, sats: 100 }),
+      note({ id: 'normal', sats: 21 }),
+    ]);
+    await messages.recordZapIngest(
+      ingest({
+        id: 'zi-loan',
+        receiptId: 'r-loan',
+        messageId: 'loan',
+        amountSats: 80,
+      }),
+    );
+    const stats = await activity({ messages });
+    expect(stats.receivedSats).toBe(21);
+  });
+
+  it('omits a hidden loan remainder from received', async () => {
+    const messages = new InMemoryMessageStore([
+      note({
+        goalRepayable: true,
+        deletedAt: new Date('2026-06-02T00:00:00.000Z'),
+        sats: 30,
+      }),
+    ]);
+    const stats = await activity({ messages });
+    expect(stats.receivedSats).toBe(0);
+  });
+
+  it('does not count a loan invoice as donated', async () => {
+    const loanHash = 'bb'.repeat(32);
+    vi.spyOn(bolt11, 'decodeBolt11').mockImplementation((pr: string) => {
+      if (pr === 'lnbc-good') {
+        return { paymentHash: HASH, amountMsat: 21_000 };
+      }
+      if (pr === 'lnbc-loan') {
+        return { paymentHash: loanHash, amountMsat: 50_000 };
+      }
+      return null;
+    });
+    const messages = new InMemoryMessageStore([
+      note({ id: 'loan', accountId: 'author', goalRepayable: true }),
+      note({ id: 'm1', accountId: 'author' }),
+    ]);
+    await messages.recordInvoiceAttempt(
+      invoice({
+        id: 'inv-loan',
+        messageId: 'loan',
+        amountSats: 50,
+        paymentHash: loanHash,
+        pr: 'lnbc-loan',
+      }),
+    );
+    await messages.recordInvoiceAttempt(invoice());
+    await messages.recordZapIngest(
+      ingest({
+        id: 'zi-loan',
+        receiptId: 'r-loan',
+        messageId: 'loan',
+        amountSats: 50,
+        receipt: { tags: [['bolt11', 'lnbc-loan']] },
+      }),
+    );
+    await messages.recordZapIngest(ingest());
+    const stats = await activity({ messages });
+    expect(stats.donatedSats).toBe(21);
+    expect(stats.receivedSats).toBe(0);
+  });
+
+  it('does not count a repayment invoice as donated', async () => {
+    const messages = new InMemoryMessageStore([note({ id: 'm1', accountId: 'author' })]);
+    await messages.recordInvoiceAttempt(
+      invoice({
+        description: 'repay:0:11111111-1111-1111-1111-111111111111',
+      }),
+    );
+    await messages.recordZapIngest(ingest());
+    const stats = await activity({ messages });
+    expect(stats.donatedSats).toBe(0);
+  });
+
+  it('keeps an invoice whose note is missing as a donation', async () => {
+    const messages = new InMemoryMessageStore();
+    await messages.recordInvoiceAttempt(invoice({ messageId: 'missing' }));
+    await messages.recordZapIngest(ingest({ messageId: 'missing' }));
+    const stats = await activity({ messages });
+    expect(stats.donatedSats).toBe(21);
   });
 });
