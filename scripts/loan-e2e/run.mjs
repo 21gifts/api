@@ -3,8 +3,9 @@
  *
  * Gifts are 550, 220 and 110 sats (5.50, 2.20 and 1.10 PHP at the fixture
  * rate of one cent per sat). That is 330 non-zero shares. Spark moves the
- * sats; Lightning is not used. Afterwards every party sends its remainder
- * to the funding address.
+ * sats; Lightning is not used. Spare sats stay on the funding wallet.
+ * Afterwards every party sends its remainder back there, and a sweep that
+ * Spark refuses is tried again.
  *
  * Not part of `bun run e2e`. The API invoice cap is 20 per hour in memory,
  * so this process restarts the test server between batches. The public note
@@ -752,12 +753,24 @@ function assertLedger(messageId, tokenPromise) {
  * @param {string} fundingAddress
  */
 function sweep(fundingAddress) {
+  /** @type {string[]} */
+  const stuck = [];
   for (const party of PARTIES) {
-    const balance = Number(lines(spark(['balance', party.role]))['balance_sats'] ?? '0');
-    if (balance > 0) {
-      spark(['sweep', party.role, fundingAddress]);
+    let balance = partyBalance(party.role);
+    for (let attempt = 1; balance > 0 && attempt <= 4; attempt += 1) {
+      sparkTry(['sweep', party.role, fundingAddress]);
+      balance = partyBalance(party.role);
+      if (balance > 0 && attempt < 4) {
+        spawnSync('sleep', ['8']);
+      }
     }
-    process.stdout.write(`sweep ${party.role} was ${balance}\n`);
+    process.stdout.write(`sweep ${party.role} left ${balance}\n`);
+    if (balance > 0) {
+      stuck.push(`${party.role} ${balance}`);
+    }
+  }
+  if (stuck.length > 0) {
+    fail(`sweep left ${stuck.join(', ')}`);
   }
 }
 
@@ -770,17 +783,65 @@ function resetLoanDatabase() {
   writeState({ paid: [] });
 }
 
+/**
+ * @param {string} role
+ * @returns {number}
+ */
+function partyBalance(role) {
+  return Number(lines(spark(['balance', role]))['balance_sats'] ?? '0');
+}
+
+/**
+ * Pay one chunk from the funding wallet. The whole amount is tried first.
+ * Spark often cannot select leaves for that exact size, so the next try is
+ * the next smaller power of two. Zero means nothing moved.
+ *
+ * @param {string} role
+ * @param {number} left
+ * @returns {number}
+ */
+function payFundingChunk(role, left) {
+  /** @type {number[]} */
+  const sizes = [left];
+  let chunk = 2 ** Math.floor(Math.log2(left));
+  if (chunk === left) {
+    chunk /= 2;
+  }
+  while (chunk >= 1) {
+    sizes.push(chunk);
+    chunk /= 2;
+  }
+  for (const size of sizes) {
+    const invoiced = sparkTry(['invoice', role, String(size)]);
+    if (!invoiced.ok) {
+      continue;
+    }
+    const request = invoiced.stdout.trim();
+    if (request === '') {
+      continue;
+    }
+    const paid = sparkTry(['pay', 'funding', request]);
+    if (paid.ok) {
+      return size;
+    }
+  }
+  return 0;
+}
+
+/**
+ * Send each giver exactly its gift. Spare sats stay on the funding wallet.
+ * Paying it whatever is left in one payment is the size Spark refuses.
+ */
 function fundGiverWallets() {
   for (const giver of GIVERS) {
-    const have = Number(lines(spark(['balance', giver.role]))['balance_sats'] ?? '0');
-    if (have < giver.sats) {
-      const shortfall = giver.sats - have;
-      const fundingNow = Number(lines(spark(['balance', 'funding']))['balance_sats'] ?? '0');
-      const last = giver === GIVERS[GIVERS.length - 1];
-      const amount = last && fundingNow >= shortfall ? fundingNow : shortfall;
-      const request = spark(['invoice', giver.role, String(amount)]).trim();
-      spark(['pay', 'funding', request]);
-      process.stdout.write(`split ${giver.role} ${amount}\n`);
+    let left = giver.sats - partyBalance(giver.role);
+    while (left > 0) {
+      const size = payFundingChunk(giver.role, left);
+      if (size === 0) {
+        fail(`could not fund ${giver.role}, ${left} still to send`);
+      }
+      left -= size;
+      process.stdout.write(`split ${giver.role} ${size}\n`);
     }
   }
 }
