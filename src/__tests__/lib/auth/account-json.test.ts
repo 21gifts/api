@@ -68,8 +68,18 @@ describe('serializeAccount', () => {
     expect(json).not.toHaveProperty('fiat');
     expect(json).not.toHaveProperty('walletRequired');
     expect(json).not.toHaveProperty('walletBackupSeenAt');
+    expect(json).not.toHaveProperty('staffTag');
     expect(Object.keys(json)).toHaveLength(11);
     expect(JSON.stringify(json)).not.toMatch(/nostr|npub|nsec/i);
+  });
+
+  it('includes staffTag only when set to software_developer', () => {
+    const withTag = serializeAccount({ ...account, staffTag: 'software_developer' });
+    expect(withTag.staffTag).toBe('software_developer');
+    expect(Object.keys(withTag)).toHaveLength(12);
+    const withNull = serializeAccount({ ...account, staffTag: null });
+    expect(withNull).not.toHaveProperty('staffTag');
+    expect(Object.keys(withNull)).toHaveLength(11);
   });
 });
 
@@ -175,9 +185,17 @@ describe('serializeDebugAccount', () => {
     expect(json.nostrNsecCiphertext).toBeNull();
     expect(json).not.toHaveProperty('hasPosted');
     expect(json).not.toHaveProperty('aboutMe');
+    expect(json).not.toHaveProperty('staffTag');
     expect(serializeDebugAccount(account).isPlatform).toBe(false);
     expect(serializeDebugAccount(account).sessionRefused).toBe(false);
     expect(serializeDebugAccount({ ...account, sessionRefused: true }).sessionRefused).toBe(true);
+  });
+
+  it('includes staffTag on debug JSON only when set', () => {
+    expect(serializeDebugAccount(account)).not.toHaveProperty('staffTag');
+    expect(serializeDebugAccount({ ...account, staffTag: 'software_developer' }).staffTag).toBe(
+      'software_developer',
+    );
   });
 
   it('hex-encodes passkey public keys that are not Uint8Array', () => {
@@ -304,6 +322,15 @@ describe('serializeOwnerAccount', () => {
     expect(json).not.toHaveProperty('isPlatform');
     expect(json).not.toHaveProperty('sessionRefused');
     expect(json).not.toHaveProperty('profileMessageId');
+    expect(json).not.toHaveProperty('staffTag');
+  });
+
+  it('includes staffTag on owner JSON only when set', () => {
+    expect(serializeOwnerAccount(account, false, null, false)).not.toHaveProperty('staffTag');
+    expect(
+      serializeOwnerAccount({ ...account, staffTag: 'software_developer' }, false, null, false)
+        .staffTag,
+    ).toBe('software_developer');
   });
 
   it('includes walletRequired and walletBackupSeenAt on owner JSON', () => {
@@ -1003,7 +1030,18 @@ describe('serializeViewProfile', () => {
     expect(json).not.toHaveProperty('amountUnit');
     expect(json).not.toHaveProperty('locale');
     expect(json).not.toHaveProperty('fiat');
+    expect(json).not.toHaveProperty('staffTag');
     expect(Object.keys(json)).toHaveLength(10);
+  });
+
+  it('omits staffTag even when the account has the label', () => {
+    const json = serializeViewProfile(
+      { ...account, staffTag: 'software_developer' },
+      false,
+      null,
+      false,
+    );
+    expect(json).not.toHaveProperty('staffTag');
   });
 
   it('passes through hasPasskey and aboutMe', () => {

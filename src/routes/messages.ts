@@ -4,7 +4,7 @@ import { ensureProfileMessage } from '@/lib/auth/profile-message';
 import { resolveSession } from '@/lib/auth/service';
 import { MISSING_REQUIREMENTS_ERROR, requireAction } from '@/lib/auth/requirements';
 import { roleAtLeast } from '@/lib/auth/roles';
-import type { Account, AccountRole, AuthStore } from '@/lib/auth/store';
+import { staffTagOf, type Account, type AccountRole, type AuthStore } from '@/lib/auth/store';
 import { inspectBolt11, isNip57Invoice } from '@/lib/bolt11';
 import { GIFT_INVOICE_MAX_MSAT } from '@/lib/config';
 import {
@@ -919,7 +919,15 @@ async function persistForumPost(
           return c.json({ error: 'A live note with this media already exists' }, 409);
         }
         return c.json(
-          serializeMessage(existing, payableOf(existing, account), account.role, undefined, true),
+          serializeMessage(
+            existing,
+            payableOf(existing, account),
+            account.role,
+            undefined,
+            true,
+            undefined,
+            staffTagOf(account.staffTag),
+          ),
           200,
         );
       }
@@ -1112,7 +1120,15 @@ async function persistForumPost(
       });
     }
     return c.json(
-      serializeMessage(published, payableOf(published, account), account.role, undefined, true),
+      serializeMessage(
+        published,
+        payableOf(published, account),
+        account.role,
+        undefined,
+        true,
+        undefined,
+        staffTagOf(account.staffTag),
+      ),
       200,
     );
   } catch (err) {
@@ -1466,7 +1482,15 @@ async function servePublicActiveList(deps: MessagesRouteDeps, c: Context): Promi
       const author = authors[i];
       const payable = payableOf(row, author);
       const role = row.accountId === null ? undefined : (author?.role ?? 'basis');
-      return serializeMessage(row, payable, role, row.replyCount, true);
+      return serializeMessage(
+        row,
+        payable,
+        role,
+        row.replyCount,
+        true,
+        undefined,
+        staffTagOf(author?.staffTag),
+      );
     });
     const last = page[page.length - 1];
     const anchor = kept.length > 0 ? kept[kept.length - 1] : last;
@@ -1607,7 +1631,15 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
           const author = authors[i];
           const payable = payableOf(row, author);
           const role = row.accountId === null ? undefined : (author?.role ?? 'basis');
-          return serializeMessage(row, payable, role, row.replyCount, true);
+          return serializeMessage(
+            row,
+            payable,
+            role,
+            row.replyCount,
+            true,
+            undefined,
+            staffTagOf(author?.staffTag),
+          );
         });
         let nextCursor: string | undefined;
         if (rows.length === limit) {
@@ -1863,10 +1895,18 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
               const role = row.accountId === null ? undefined : (author?.role ?? 'basis');
               const deletedBy = await resolveDeletedBy(deps.authStore, row);
               messages.push(
-                serializeMessage(row, false, role, undefined, true, {
-                  deletedAt: row.deletedAt,
-                  deletedBy,
-                }),
+                serializeMessage(
+                  row,
+                  false,
+                  role,
+                  undefined,
+                  true,
+                  {
+                    deletedAt: row.deletedAt,
+                    deletedBy,
+                  },
+                  staffTagOf(author?.staffTag),
+                ),
               );
             } catch {
               // One child must not 503 the thread (invalid createdAt, author lookup).
@@ -1883,7 +1923,17 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
               row.accountId === null ? undefined : await deps.authStore.getAccount(row.accountId);
             const role = row.accountId === null ? undefined : (author?.role ?? 'basis');
             const payable = row.accountId === null ? false : payableOf(kept, author);
-            messages.push(serializeMessage(kept, payable, role, undefined, true));
+            messages.push(
+              serializeMessage(
+                kept,
+                payable,
+                role,
+                undefined,
+                true,
+                undefined,
+                staffTagOf(author?.staffTag),
+              ),
+            );
           } catch {
             // One child must not 503 the thread (invalid createdAt, author lookup).
             continue;
@@ -2126,6 +2176,9 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
             payable,
             role,
             await deps.store.countAttributedReplies(updated.id),
+            undefined,
+            undefined,
+            staffTagOf(author?.staffTag),
           ),
           200,
         );
@@ -2242,6 +2295,9 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
             payable,
             role,
             await deps.store.countAttributedReplies(updated.id),
+            undefined,
+            undefined,
+            staffTagOf(author?.staffTag),
           ),
           200,
         );
@@ -2303,7 +2359,15 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
           const payable = row.accountId === null ? false : payableOf(row, author);
           const role = row.accountId === null ? undefined : (author?.role ?? 'basis');
           return c.json(
-            serializeMessage(row, payable, role, await deps.store.countAttributedReplies(row.id)),
+            serializeMessage(
+              row,
+              payable,
+              role,
+              await deps.store.countAttributedReplies(row.id),
+              undefined,
+              undefined,
+              staffTagOf(author?.staffTag),
+            ),
             200,
           );
         }
@@ -2340,6 +2404,9 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
             payable,
             role,
             await deps.store.countAttributedReplies(updated.id),
+            undefined,
+            undefined,
+            staffTagOf(author?.staffTag),
           ),
           200,
         );
@@ -2425,6 +2492,9 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
             payable,
             role,
             await deps.store.countAttributedReplies(written.id),
+            undefined,
+            undefined,
+            staffTagOf(author?.staffTag),
           ),
           200,
         );
@@ -2654,6 +2724,7 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
                   deletedAt: row.deletedAt,
                   deletedBy,
                 },
+                staffTagOf(author?.staffTag),
               ),
               200,
             );
@@ -2686,6 +2757,8 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
               role,
               kept.parentId === null ? await deps.store.countAttributedReplies(kept.id) : undefined,
               true,
+              undefined,
+              staffTagOf(author?.staffTag),
             ),
             200,
           );

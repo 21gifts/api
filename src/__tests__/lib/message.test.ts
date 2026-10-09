@@ -738,6 +738,26 @@ describe('serializeMessage', () => {
     expect(body).not.toHaveProperty('deletedBy');
     expect(body.payable).toBe(true);
   });
+
+  it('includes staffTag only when the last argument is software_developer', () => {
+    const row: MessageRow = {
+      id: 'msg-staff-tag',
+      accountId: 'acc-1',
+      name: 'Ada',
+      text: 'hi',
+      createdAt: new Date('2026-08-28T12:00:00.000Z'),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+    };
+    expect(serializeMessage(row, true, 'basis')).not.toHaveProperty('staffTag');
+    expect(
+      serializeMessage(row, true, 'basis', undefined, undefined, undefined, 'software_developer')
+        .staffTag,
+    ).toBe('software_developer');
+    expect(
+      serializeMessage(row, true, 'basis', undefined, undefined, undefined, null),
+    ).not.toHaveProperty('staffTag');
+  });
 });
 
 describe('serializeDebugMessage', () => {
