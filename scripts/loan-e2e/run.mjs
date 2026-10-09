@@ -5,8 +5,9 @@
  * rate of one cent per sat). That produces three non-zero shares per loan day.
  * Spark moves the sats; Lightning is not used. Spare sats stay on the
  * funding wallet.
- * Afterwards every party sends its remainder back there and the funding
- * wallet is consolidated so fragmented leaves do not accumulate across runs.
+ * Afterwards every party sends its remainder back there, in up to three
+ * rounds 30 s apart, and the funding wallet is consolidated so fragmented
+ * leaves do not accumulate across runs.
  *
  * Not part of `bun run e2e`. Loopback-only test settings raise the API invoice
  * caps for the cycle, while a 429 still triggers a fallback restart. The public
@@ -262,12 +263,18 @@ function sparkAsync(args) {
     child.on('error', (error) => {
       processError = error.message;
     });
+    /** @type {ReturnType<typeof setTimeout> | undefined} */
+    let killTimer;
     const timer = setTimeout(() => {
       processError = 'spark timed out';
       child.kill('SIGTERM');
+      // A process stuck in disconnect may ignore SIGTERM; never let it hold
+      // the parallel gift step forever.
+      killTimer = setTimeout(() => child.kill('SIGKILL'), 10_000);
     }, SPARK_TIMEOUT_MS);
     child.on('close', (code) => {
       clearTimeout(timer);
+      clearTimeout(killTimer);
       if (code === 0 || stdout.includes('status=COMPLETED')) {
         resolve({ ok: true, stdout });
         return;
@@ -1398,6 +1405,9 @@ async function main() {
       };
       process.stdout.write(`wallet ${role} balance=${wallets[role].balance}\n`);
     }
+    // From here on a failure sweeps the parties back, including sats a
+    // previous run left on them.
+    returnAddress = wallets['funding'].address;
     const fundingBalance = readBalance('funding');
     if (fundingBalance === null) {
       fail('could not read funding balance');
@@ -1447,7 +1457,6 @@ async function main() {
         process.stdout.write(`registered ${party.username}\n`);
       }
     }
-    returnAddress = wallets['funding'].address;
     const throughApp = process.env['LOAN_E2E_UI'] === '1';
     if (typeof state['messageId'] !== 'string') {
       fundGiverWallets();
