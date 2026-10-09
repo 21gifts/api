@@ -3011,7 +3011,7 @@ was stored. Rows are newest-first, capped at **200**. Never includes nsec.
 `result` is one of `ok`, `noZap`, `not_zap`, `unreachable`, `no_event`,
 `no_author`, `no_key`,
 `sign_failed`, `rate_limited`, `bad_body`, `not_found`, `self_heart`,
-`heart_unavailable`. `isNip57Invoice` is
+`self_reply`, `heart_unavailable`. `isNip57Invoice` is
 true only when `descriptionHash` equals SHA-256 of the zap-request JSON string
 (serialised with NIP-01 field order `id, pubkey, created_at, kind, tags,
 content, sig`) sent as LNURL `nostr=`. Failure rows have `pr` null and
@@ -4548,9 +4548,11 @@ is a **top-level** parent message UUID (JSON only; sets `parentId` for a
 one-level NIP-10 reply). Missing or non-UUID `inReplyTo`, a parent that
 is not in the store, or a parent that is itself a reply (`parentId` not
 null) → **404** `{ "error": "Not found" }`. Anyone below `verified`
-(including the parent author) posting unpaid **text-only** → **403**
+posting unpaid **text-only** → **403**
 `{ "error": "A post needs a Bitcoin payment" }` or `{ "error": "A reply needs a Bitcoin payment" }`
-for `inReplyTo`, except the free first post below. A photo or video body from `basis` is **200**. Pay 1 sat to
+for `inReplyTo`, except the free first post below and a reply whose parent
+note the caller wrote: that reply is free for every role, because a wallet
+cannot pay itself. It still passes the post limiter and the Sunday rule. A photo or video body from `basis` is **200**. Pay 1 sat to
 21.gifts first (`GET /messages/compose-target`
 then `POST /messages/:id/invoice` on that platform profile note). Optional
 `goalSats` omitted, JSON `null`, or a missing/empty multipart field means
@@ -4722,8 +4724,8 @@ two concurrent first posts, one is **200** and the other is **403**
 the paid flow. `GET /messages/compose-target` reports the rule as
 `firstPostFree`. A failing check is **503** `{ "error": "Messages are unavailable" }`.
 
-Anyone below `verified` posting an unpaid text-only reply (`inReplyTo`) →
-**Response** `403`:
+Anyone below `verified` posting an unpaid text-only reply (`inReplyTo`) to a
+note someone else wrote → **Response** `403`:
 
 ```json
 { "error": "A reply needs a Bitcoin payment" }
@@ -4858,6 +4860,10 @@ never over Lightning.
 - A heart on the payer's own note is **400**
   `{ "error": "You cannot send a heart to yourself" }` (attempt `self_heart`,
   no LNURL).
+- A paid reply (non-empty `text`) on the payer's own note is **400**
+  `{ "error": "A reply on your own note is free; post it without a payment" }`
+  (attempt `self_reply`, no LNURL). That reply is posted unpaid with
+  `POST /messages` and `inReplyTo`.
 - When free in-app payments are off, a heart is **503**
   `{ "error": "HEART_UNAVAILABLE" }` before the limiter and before LNURL
   (attempt `heart_unavailable`).
