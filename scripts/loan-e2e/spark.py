@@ -182,7 +182,8 @@ async def wait_unreserved(role: str, secret: str, budget: int) -> int:
     The wallet only drops an expired reservation while it is connected and
     refreshing, about five minutes after the reservation was made. Retrying
     a payment inside that window fails leaf selection every time.
-    Returns the seconds spent, at most ``budget``.
+    Returns the seconds slept, at most ``budget``; the syncs in between are
+    not counted.
     """
     waited = 0
     while waited < budget:
@@ -190,8 +191,9 @@ async def wait_unreserved(role: str, secret: str, budget: int) -> int:
         if not held:
             return waited
         print(f"waiting for reserved leaves {held} of {role}", file=sys.stderr)
-        await asyncio.sleep(20)
-        waited += 20
+        step = min(20, budget - waited)
+        await asyncio.sleep(step)
+        waited += step
         sdk = await open_sdk(role, secret)
         try:
             await sdk.sync_wallet(SyncWalletRequest())
