@@ -299,7 +299,10 @@ async def command_pay(role: str, request: str, amount: int | None) -> None:
     consolidated = False
     attempts = 5
     for attempt in range(1, attempts + 1):
-        sdk = await open_sdk(role, secret)
+        if consolidated:
+            sdk = await open_sdk(role, secret, multiplicity=0)
+        else:
+            sdk = await open_sdk(role, secret)
         retryable = False
         try:
             await sdk.sync_wallet(SyncWalletRequest())

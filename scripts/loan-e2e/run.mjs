@@ -318,10 +318,12 @@ function payInvoice(state, invoice, recipientAccountId) {
       text.includes('select leaves') ||
       text.includes('self payment') ||
       text.includes('insufficient funds');
-    if (!skip) {
-      process.stderr.write(`${result.error}\n`);
-      fail(`spark pay ${role} failed`);
+    if (skip) {
+      process.stderr.write(`pay ${role} skipped: ${lastLine(result.error)}\n`);
+      continue;
     }
+    process.stderr.write(`${result.error}\n`);
+    fail(`spark pay ${role} failed`);
   }
   fail(`spark pay failed ${errors.join(' ')}`);
 }
@@ -951,20 +953,35 @@ function assertLedger(messageId, tokenPromise) {
  * @param {string} fundingAddress
  */
 function sweep(fundingAddress) {
+  let pending = PARTIES;
   /** @type {string[]} */
-  const stuck = [];
-  for (const party of PARTIES) {
-    const balance = sweepParty(party.role, fundingAddress);
-    process.stdout.write(`sweep ${party.role} left ${balance ?? 'unread'}\n`);
-    if (balance === null) {
-      stuck.push(`${party.role} balance`);
-    } else if (balance > 0) {
-      stuck.push(`${party.role} ${balance}`);
+  let stuck = [];
+  for (let round = 1; round <= 3; round += 1) {
+    if (round > 1) {
+      spawnSync('sleep', ['30']);
+      process.stdout.write(
+        `sweep round ${round} for ${pending.map((party) => party.role).join(', ')}\n`,
+      );
     }
+    const retry = [];
+    stuck = [];
+    for (const party of pending) {
+      const balance = sweepParty(party.role, fundingAddress);
+      process.stdout.write(`sweep ${party.role} left ${balance ?? 'unread'}\n`);
+      if (balance === null) {
+        retry.push(party);
+        stuck.push(`${party.role} balance`);
+      } else if (balance > 0) {
+        retry.push(party);
+        stuck.push(`${party.role} ${balance}`);
+      }
+    }
+    if (retry.length === 0) {
+      return;
+    }
+    pending = retry;
   }
-  if (stuck.length > 0) {
-    fail(`sweep left ${stuck.join(', ')}`);
-  }
+  fail(`sweep left ${stuck.join(', ')}`);
 }
 
 /**
@@ -980,7 +997,10 @@ function sweepParty(role, fundingAddress) {
     return null;
   }
   for (let attempt = 1; balance > 0 && attempt <= 4; attempt += 1) {
-    sparkTry(['sweep', role, fundingAddress]);
+    const result = sparkTry(['sweep', role, fundingAddress]);
+    if (!result.ok) {
+      process.stderr.write(`sweep ${role} attempt ${attempt}: ${lastLine(result.error)}\n`);
+    }
     const next = readBalance(role);
     if (next === null) {
       return null;
