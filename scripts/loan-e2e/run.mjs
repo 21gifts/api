@@ -1,28 +1,30 @@
 /**
- * Live loan cycle: one borrower, three givers, a PHP ask, 110 days.
+ * Live loan cycle: one borrower, three givers, and a configurable PHP loan term.
  *
  * Gifts are 550, 220 and 110 sats (5.50, 2.20 and 1.10 PHP at the fixture
- * rate of one cent per sat). That is 330 non-zero shares. Spark moves the
- * sats; Lightning is not used. Spare sats stay on the funding wallet.
- * Afterwards every party sends its remainder back there, and a sweep that
- * Spark refuses is tried again.
+ * rate of one cent per sat). That produces three non-zero shares per loan day.
+ * Spark moves the sats; Lightning is not used. Spare sats stay on the
+ * funding wallet.
+ * Afterwards every party sends its remainder back there and the funding
+ * wallet is consolidated so fragmented leaves do not accumulate across runs.
  *
- * Not part of `bun run e2e`. The API invoice cap is 20 per hour in memory,
- * so this process restarts the test server between batches. The public note
- * has no event id; `payable` is the signed-note gate. A local relay accepts
- * receipts so they are not sent to a public relay. Wallets, the Breez API
- * key, and the test database password stay in LOAN_E2E_DIR.
+ * Not part of `bun run e2e`. Loopback-only test settings raise the API invoice
+ * caps for the cycle, while a 429 still triggers a fallback restart. The public
+ * note has no event id; `payable` is the signed-note gate. A local relay accepts
+ * receipts so they are not sent to a public relay. Wallets, the Breez API key,
+ * and the test database password stay in LOAN_E2E_DIR.
  *
  * `LOAN_E2E_UI=1` drives the same cycle through the app screens
  * (`LOAN_E2E_APP`). The screens mint every invoice. This process pays the
  * Spark invoice each click created, because the pay slot only sends from an
  * in-app wallet. `LOAN_E2E_FRESH=1` drops the previous test database and loan
- * state before the run, with or without the screen path. A finished run does
- * the same, so the next run is not aimed at a database that was removed.
+ * state before the run, with or without the screen path. Both successful and
+ * failed runs remove the test database and stale session state.
  * Wallet files in LOAN_E2E_DIR stay. The screen path reads the peso
  * amount through the spot quote, so this process serves the same cent-per-sat
  * price the gift row uses, and it does not open a gift until the note is
- * payable.
+ * payable. Prerequisites are Python 3.10+ with the requirements.txt pins,
+ * psql and Docker on PATH, and Node 22+ for the screen path.
  */
 import { spawn, spawnSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
@@ -39,8 +41,6 @@ import { createPasskey, registrationResponse } from './webauthn.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const HERE = path.dirname(fileURLToPath(import.meta.url));
-const GAP_MS = 11_000;
-const REPAY_BATCH = 20;
 const SPARK_TIMEOUT_MS = 600_000;
 const GIVERS = [
   { role: 'giver-a', username: 'loangivera', name: 'Giver large', sats: 550, php: '5.50' },
@@ -55,6 +55,7 @@ const PUBLIC_BASE_URL = 'https://loan.test';
 let apiKey = process.env['LOAN_E2E_BREEZ_API_KEY'] ?? '';
 const python = process.env['LOAN_E2E_PYTHON'] ?? 'python3';
 const bun = process.env['LOAN_E2E_BUN'] ?? 'bun';
+const appNode = process.env['LOAN_E2E_NODE'] ?? 'node';
 
 /** @type {import('node:child_process').ChildProcess | null} */
 let apiProcess = null;
@@ -73,17 +74,89 @@ const SPOT_URL = 'http://127.0.0.1:3996/v2/exchange-rates?currency=BTC';
  * @returns {never}
  */
 function fail(message) {
-  process.stderr.write(`${message}\n`);
+  const safe = redact(message);
+  process.stderr.write(`${safe}\n`);
   process.exitCode = 1;
-  throw new Error(message);
+  throw new Error(safe);
 }
+
+function loanDays() {
+  const fallback = process.env['LOAN_E2E_UI'] === '1' ? 10 : 110;
+  const raw = process.env['LOAN_E2E_DAYS'] ?? String(fallback);
+  const value = Number(raw);
+  if (!Number.isInteger(value) || value <= 0 || GIVERS.some((giver) => giver.sats % value !== 0)) {
+    fail('LOAN_E2E_DAYS must be a positive integer that divides every giver amount');
+  }
+  return value;
+}
+
+let DAYS = 0;
 
 /**
  * @param {string} text
  * @returns {string}
  */
 function redact(text) {
-  return text.replace(/postgres(?:ql)?:\/\/[^@\s]+@/gi, 'postgres://[redacted]@');
+  let redacted = text.replace(/postgres(?:ql)?:\/\/[^@\s]+@/gi, 'postgres://[redacted]@');
+  if (apiKey !== '') {
+    redacted = redacted.replaceAll(apiKey, '[redacted]');
+  }
+  return redacted;
+}
+
+/**
+ * @param {string} text
+ * @returns {string}
+ */
+function lastLine(text) {
+  const nonempty = redact(text)
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => line !== '');
+  return (nonempty.at(-1) ?? 'unknown error').slice(0, 500);
+}
+
+function checkPrerequisites() {
+  const requirements = path.join(HERE, 'requirements.txt');
+  const checkPython = [
+    'import sys',
+    'if sys.version_info < (3, 10):',
+    '    found = f"{sys.version_info.major}.{sys.version_info.minor}"',
+    '    raise SystemExit(f"Python: expected 3.10 or newer, found {found}")',
+    'import importlib.metadata as metadata',
+    'import pathlib',
+    'errors = []',
+    'for line in pathlib.Path(sys.argv[1]).read_text(encoding="utf-8").splitlines():',
+    '    if not line.strip():',
+    '        continue',
+    '    name, expected = line.split("==", 1)',
+    '    try:',
+    '        actual = metadata.version(name)',
+    '    except metadata.PackageNotFoundError:',
+    '        actual = "not installed"',
+    '    if actual != expected:',
+    '        errors.append(f"{name}: expected {expected}, found {actual}")',
+    'if errors:',
+    '    raise SystemExit("; ".join(errors))',
+  ].join('\n');
+  const checked = spawnSync(python, ['-c', checkPython, requirements], { encoding: 'utf8' });
+  if (checked.status !== 0) {
+    const mismatch = lastLine(redact(`${checked.stderr ?? ''}${checked.error?.message ?? ''}`));
+    fail(`${mismatch}; pip install -r scripts/loan-e2e/requirements.txt`);
+  }
+  for (const tool of ['psql', 'docker']) {
+    const result = spawnSync(tool, ['--version'], { encoding: 'utf8' });
+    if (result.status !== 0) {
+      fail(`${tool} is not on PATH`);
+    }
+  }
+  if (process.env['LOAN_E2E_UI'] === '1') {
+    const result = spawnSync(appNode, ['--version'], { encoding: 'utf8' });
+    const major = Number(/^v?(\d+)/.exec((result.stdout ?? '').trim())?.[1] ?? '0');
+    if (result.status !== 0 || major < 22) {
+      fail('the app needs Node 22');
+    }
+  }
 }
 
 /**
@@ -155,13 +228,64 @@ function sparkTry(args) {
 
 /**
  * @param {string[]} args
+ * @returns {Promise<{ ok: true, stdout: string } | { ok: false, error: string }>}
+ */
+function sparkAsync(args) {
+  return new Promise((resolve) => {
+    let stdout = '';
+    let stderr = '';
+    let processError = '';
+    let child;
+    try {
+      child = spawn(python, [path.join(HERE, 'spark.py'), ...args], {
+        env: {
+          ...process.env,
+          PYTHONUNBUFFERED: '1',
+          LOAN_E2E_DIR: dir,
+          LOAN_E2E_BREEZ_API_KEY: apiKey,
+        },
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'spark failed';
+      resolve({ ok: false, error: redact(message) });
+      return;
+    }
+    child.stdout.setEncoding('utf8');
+    child.stderr.setEncoding('utf8');
+    child.stdout.on('data', (chunk) => {
+      stdout = `${stdout}${chunk}`.slice(-(8 * 1024 * 1024));
+    });
+    child.stderr.on('data', (chunk) => {
+      stderr = `${stderr}${chunk}`.slice(-(8 * 1024 * 1024));
+    });
+    child.on('error', (error) => {
+      processError = error.message;
+    });
+    const timer = setTimeout(() => {
+      processError = 'spark timed out';
+      child.kill('SIGTERM');
+    }, SPARK_TIMEOUT_MS);
+    child.on('close', (code) => {
+      clearTimeout(timer);
+      if (code === 0 || stdout.includes('status=COMPLETED')) {
+        resolve({ ok: true, stdout });
+        return;
+      }
+      resolve({ ok: false, error: redact(`${stderr}${processError}`) });
+    });
+  });
+}
+
+/**
+ * @param {string[]} args
  * @returns {string}
  */
 function spark(args) {
   const result = sparkTry(args);
   if (!result.ok) {
     process.stderr.write(`${result.error}\n`);
-    fail(`spark ${args[0]} ${args[1] ?? ''} failed`);
+    fail(`spark ${args[0]} ${args[1] ?? ''} failed: ${lastLine(result.error)}`);
   }
   return result.stdout;
 }
@@ -403,6 +527,8 @@ function apiEnv() {
     DATABASE_URL: databaseUrl,
     BIND_ADDR: '127.0.0.1:3000',
     WEBAUTHN_RP_ID: 'localhost',
+    TEST_INVOICE_BURST_CAP: '100',
+    TEST_INVOICE_HOUR_CAP: '100000',
     PUBLIC_BASE_URL,
     LNURL_SERVER_URL: 'http://127.0.0.1:3999',
     LNURL_ZAP_NSEC_HEX: secrets.nsec,
@@ -511,7 +637,7 @@ async function waitDatabase() {
 
 function startSpot() {
   const log = fs.openSync(path.join(dir, 'spot.log'), 'a');
-  spotProcess = spawn(process.env['LOAN_E2E_NODE'] ?? 'node', [path.join(HERE, 'spot.mjs')], {
+  spotProcess = spawn(appNode, [path.join(HERE, 'spot.mjs')], {
     cwd: ROOT,
     env: { ...process.env, LOAN_E2E_SPOT_PORT: '3996' },
     detached: true,
@@ -522,7 +648,7 @@ function startSpot() {
 
 function startRelay() {
   const log = fs.openSync(path.join(dir, 'relay.log'), 'a');
-  relayProcess = spawn(process.env['LOAN_E2E_NODE'] ?? 'node', [path.join(HERE, 'relay.mjs')], {
+  relayProcess = spawn(appNode, [path.join(HERE, 'relay.mjs')], {
     cwd: ROOT,
     env: { ...process.env, LOAN_E2E_RELAY_PORT: '3998' },
     detached: true,
@@ -651,27 +777,20 @@ async function repayment(messageId, token) {
 }
 
 /**
- * @param {string} fromRole
- * @param {string} invoice
- */
-function paySpark(fromRole, invoice) {
-  spark(['pay', fromRole, invoice]);
-}
-
-/**
  * @param {Record<string, unknown>} state
  */
 async function fundGifts(state) {
   const accounts = /** @type {Record<string, { token: string }>} */ (state['accounts']);
   const messageId = /** @type {string} */ (state['messageId']);
   const paid = new Set(/** @type {string[]} */ (state['paid'] ?? []));
+  /** @type {{ giver: (typeof GIVERS)[number], invoice: string }[]} */
+  const minted = [];
   for (const giver of GIVERS) {
-    let ledger = await repayment(messageId, accounts[giver.role].token);
+    const ledger = await repayment(messageId, accounts[giver.role].token);
     const row = (ledger.givers ?? []).find((giverRow) => giverRow.username === giver.username);
     if (row !== undefined && Number(row.givenSats) >= giver.sats) {
       continue;
     }
-    const started = Date.now();
     const invoice = ok(
       await api('POST', `/messages/${messageId}/invoice`, {
         token: accounts[giver.role].token,
@@ -689,14 +808,32 @@ async function fundGifts(state) {
     if (typeof invoice.sparkInvoice !== 'string' || invoice.sparkInvoice === '') {
       fail(`gift ${giver.username} has no spark invoice`);
     }
-    if (!paid.has(invoice.sparkInvoice)) {
-      paySpark(giver.role, invoice.sparkInvoice);
-      paid.add(invoice.sparkInvoice);
+    minted.push({ giver, invoice: invoice.sparkInvoice });
+  }
+
+  const unpaid = minted.filter(({ invoice }) => !paid.has(invoice));
+  const results = await Promise.all(
+    unpaid.map(({ giver, invoice }) => sparkAsync(['pay', giver.role, invoice])),
+  );
+  let failed = '';
+  for (let index = 0; index < results.length; index += 1) {
+    const result = results[index];
+    const item = unpaid[index];
+    if (result.ok) {
+      paid.add(item.invoice);
       state['paid'] = [...paid];
       writeState(state);
+    } else if (failed === '') {
+      failed = `gift ${item.giver.username} could not be paid: ${lastLine(result.error)}`;
     }
+  }
+  if (failed !== '') {
+    fail(failed);
+  }
+
+  for (const { giver } of minted) {
     for (let i = 0; i < 30; i += 1) {
-      ledger = await repayment(messageId, accounts[BORROWER.role].token);
+      const ledger = await repayment(messageId, accounts[BORROWER.role].token);
       const updated = (ledger.givers ?? []).find(
         (giverRow) => giverRow.username === giver.username,
       );
@@ -707,10 +844,6 @@ async function fundGifts(state) {
         fail(`gift ${giver.username} was not credited`);
       }
       await sleep(2000);
-    }
-    const wait = GAP_MS - (Date.now() - started);
-    if (wait > 0) {
-      await sleep(wait);
     }
   }
 }
@@ -723,30 +856,27 @@ async function repayAll(state) {
   const messageId = /** @type {string} */ (state['messageId']);
   const token = accounts[BORROWER.role].token;
   const paid = new Set(/** @type {string[]} */ (state['paid'] ?? []));
-  let posts = 0;
   let stalled = 0;
   for (;;) {
     const ledger = await repayment(messageId, token);
-    if (ledger.next === null && ledger.daysPaid === 110) {
+    if (ledger.next === null && ledger.daysPaid === DAYS) {
       return;
     }
     if (ledger.next === null) {
       stalled += 1;
       if (stalled > 5) {
-        fail(`repayment stopped at day ${ledger.daysPaid} of ${ledger.daysDue}`);
+        fail(`repayment stopped at day ${ledger.daysPaid} of ${DAYS}`);
       }
       await sleep(2000);
       continue;
     }
     stalled = 0;
     const key = `${ledger.next.dayIndex}:${ledger.next.recipientAccountId}`;
-    const started = Date.now();
     const response = await api('POST', `/messages/${messageId}/repayment`, { token, body: {} });
     if (response.status === 429) {
       process.stdout.write('repayment batch restart\n');
       await restartApi();
-      posts = 0;
-      await sleep(GAP_MS);
+      await sleep(11_000);
       continue;
     }
     const invoice = ok(response, `repay ${key}`);
@@ -771,16 +901,7 @@ async function repayAll(state) {
       }
       await sleep(2000);
     }
-    posts += 1;
     process.stdout.write(`repaid ${key} amount=${invoice.amountSats}\n`);
-    if (posts >= REPAY_BATCH) {
-      await restartApi();
-      posts = 0;
-    }
-    const wait = GAP_MS - (Date.now() - started);
-    if (wait > 0) {
-      await sleep(wait);
-    }
   }
 }
 
@@ -788,13 +909,14 @@ function assertLedger(messageId, tokenPromise) {
   return tokenPromise.then(async (token) => {
     const ledger = await repayment(messageId, token);
     const paidRows = (ledger.repayments ?? []).filter((row) => row.status === 'paid');
-    if (ledger.currency !== 'PHP' || ledger.termDays !== 110) {
+    if (ledger.currency !== 'PHP' || ledger.termDays !== DAYS) {
       fail(`ledger shape currency=${ledger.currency} term=${ledger.termDays}`);
     }
-    if ((ledger.repayments ?? []).length !== 330 || paidRows.length !== 330) {
+    const expectedSlices = GIVERS.length * DAYS;
+    if ((ledger.repayments ?? []).length !== expectedSlices || paidRows.length !== expectedSlices) {
       fail(`ledger slices ${(ledger.repayments ?? []).length} paid ${paidRows.length}`);
     }
-    if (Number(ledger.daysPaid) !== 110) {
+    if (Number(ledger.daysPaid) !== DAYS) {
       fail(`days paid ${ledger.daysPaid}`);
     }
     const byUser = new Map((ledger.givers ?? []).map((row) => [row.username, row]));
@@ -815,7 +937,11 @@ function assertLedger(messageId, tokenPromise) {
     );
     process.stdout.write(`ledger ${stored}\n`);
     const numbers = stored.split(' ');
-    if (Number(numbers[1]) !== 880 || !(Number(numbers[0]) < 880) || Number(numbers[2]) !== 330) {
+    if (
+      Number(numbers[1]) !== 880 ||
+      !(Number(numbers[0]) < 880) ||
+      Number(numbers[2]) !== expectedSlices
+    ) {
       fail(`stored loan ${stored}`);
     }
   });
@@ -876,25 +1002,42 @@ function readBalance(role) {
   if (!result.ok) {
     return null;
   }
-  const value = Number(lines(result.stdout)['balance_sats'] ?? '');
+  const raw = lines(result.stdout)['balance_sats'];
+  if (raw === undefined || raw.trim() === '') {
+    return null;
+  }
+  const value = Number(raw);
   return Number.isFinite(value) ? value : null;
 }
 
 function resetLoanDatabase() {
   spawnSync('docker', ['rm', '-f', 'loan-e2e-pg'], { encoding: 'utf8' });
-  const file = path.join(dir, 'database-url');
-  if (fs.existsSync(file)) {
-    fs.unlinkSync(file);
+  for (const name of ['database-url', 'ui.json']) {
+    const file = path.join(dir, name);
+    if (fs.existsSync(file)) {
+      fs.unlinkSync(file);
+    }
   }
   writeState({ paid: [] });
 }
 
-/**
- * @param {string} role
- * @returns {number}
- */
-function partyBalance(role) {
-  return Number(lines(spark(['balance', role]))['balance_sats'] ?? '0');
+function consolidateFunding() {
+  let result;
+  try {
+    result = sparkTry(['consolidate', 'funding']);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'unknown error';
+    process.stderr.write(`warning: funding consolidation failed: ${lastLine(message)}\n`);
+    return;
+  }
+  if (result.ok) {
+    const output = result.stdout.trim();
+    if (output !== '') {
+      process.stdout.write(`${output}\n`);
+    }
+    return;
+  }
+  process.stderr.write(`warning: funding consolidation failed: ${lastLine(result.error)}\n`);
 }
 
 /**
@@ -940,14 +1083,41 @@ function payFundingChunk(role, left) {
  */
 function fundGiverWallets() {
   for (const giver of GIVERS) {
-    let left = giver.sats - partyBalance(giver.role);
-    while (left > 0) {
-      const size = payFundingChunk(giver.role, left);
-      if (size === 0) {
-        fail(`could not fund ${giver.role}, ${left} still to send`);
+    const balance = readBalance(giver.role);
+    if (balance === null) {
+      fail(`could not read ${giver.role} balance`);
+    }
+    let left = giver.sats - balance;
+    if (left > 0) {
+      let invoice = spark(['invoice', giver.role, String(left)]).trim();
+      let paid = sparkTry(['pay', 'funding', invoice]);
+      if (!paid.ok) {
+        sparkTry(['consolidate', 'funding']);
+        invoice = spark(['invoice', giver.role, String(left)]).trim();
+        paid = sparkTry(['pay', 'funding', invoice]);
       }
-      left -= size;
-      process.stdout.write(`split ${giver.role} ${size}\n`);
+      if (paid.ok) {
+        process.stdout.write(`funded ${giver.role} ${left} in one payment\n`);
+      } else {
+        process.stderr.write(
+          `funding could not pay ${left} in one payment: ${lastLine(paid.error)}; splitting\n`,
+        );
+        while (left > 0) {
+          const size = payFundingChunk(giver.role, left);
+          if (size === 0) {
+            fail(`could not fund ${giver.role}, ${left} still to send`);
+          }
+          left -= size;
+          process.stdout.write(`split ${giver.role} ${size}\n`);
+        }
+      }
+    }
+    const funded = readBalance(giver.role);
+    if (funded === null) {
+      fail(`could not read ${giver.role} balance`);
+    }
+    if (funded < giver.sats) {
+      fail(`${giver.role} balance is ${funded}, need ${giver.sats}`);
     }
   }
 }
@@ -1052,8 +1222,10 @@ async function driveApp(state) {
   const ui = {
     controlToken,
     goalAmount: '8.68',
-    termDays: 110,
-    text: 'Loan of 8.68 PHP over 110 days',
+    termDays: DAYS,
+    text: `Loan of 8.68 PHP over ${DAYS} days`,
+    invoiceGapMs: 0,
+    restartEvery: null,
     borrower: {
       role: BORROWER.role,
       username: BORROWER.username,
@@ -1151,10 +1323,13 @@ async function driveApp(state) {
         }
         response.writeHead(404);
         response.end();
-      } catch {
+      } catch (error) {
+        const raw = error instanceof Error ? error.message : 'control request failed';
+        const message = redact(raw).slice(0, 2000);
+        process.stderr.write(`control ${request.url ?? ''} failed: ${message}\n`);
         if (!response.headersSent) {
-          response.writeHead(500);
-          response.end();
+          response.writeHead(500, { 'content-type': 'application/json' });
+          response.end(JSON.stringify({ error: message }));
         }
       }
     })();
@@ -1177,65 +1352,82 @@ async function driveApp(state) {
 }
 
 async function main() {
+  DAYS = loanDays();
+  checkPrerequisites();
+  process.stdout.write(`loan term ${DAYS} days\n`);
   ensureDir();
   if (process.env['LOAN_E2E_FRESH'] === '1') {
     resetLoanDatabase();
   }
   await selfCheck();
-  ensureDatabase();
-  await waitDatabase();
-  ensureGiftTable();
-  /** @type {Record<string, { address: string, identity: string, balance: number }>} */
-  const wallets = {};
-  for (const role of ['funding', ...PARTIES.map((party) => party.role)]) {
-    const info = lines(spark(['ensure', role]));
-    wallets[role] = {
-      address: info['address'] ?? '',
-      identity: info['identity'] ?? '',
-      balance: Number(info['balance_sats'] ?? '0'),
-    };
-    process.stdout.write(`wallet ${role} balance=${wallets[role].balance}\n`);
-  }
-  if (wallets['funding'].balance < 1000 && readState()['messageId'] === undefined) {
-    const held = PARTIES.reduce(
-      (sum, party) => sum + wallets[party.role].balance,
-      wallets['funding'].balance,
-    );
-    if (held < 1000) {
-      fail(`funding balance is ${wallets['funding'].balance}, need 1000`);
-    }
-  }
-  const parties = {};
-  for (const party of PARTIES) {
-    parties[party.username] = wallets[party.role].identity;
-  }
-  fs.writeFileSync(path.join(dir, 'parties.json'), `${JSON.stringify(parties)}\n`, { mode: 0o600 });
-  startSpot();
-  await waitPort(3996);
-  startRelay();
-  await waitPort(3998);
-  startLnurl();
-  await waitPort(3999);
-  startApi(apiEnv());
-  await waitHealth();
-  fixtureGift();
-  await waitFixtureSpot();
-  const state = readState();
-  if (state['accounts'] === undefined) {
-    state['accounts'] = {};
-  }
-  const accounts = /** @type {Record<string, { id: string, token: string }>} */ (state['accounts']);
-  for (const party of PARTIES) {
-    if (accounts[party.role] === undefined) {
-      accounts[party.role] = await registerParty(party, wallets[party.role].identity);
-      state['accounts'] = accounts;
-      writeState(state);
-      process.stdout.write(`registered ${party.username}\n`);
-    }
-  }
-  const returnAddress = wallets['funding'].address;
+  let returnAddress = '';
   let finished = false;
+
   try {
+    ensureDatabase();
+    await waitDatabase();
+    ensureGiftTable();
+    /** @type {Record<string, { address: string, identity: string, balance: number }>} */
+    const wallets = {};
+    for (const role of ['funding', ...PARTIES.map((party) => party.role)]) {
+      const info = lines(spark(['ensure', role]));
+      wallets[role] = {
+        address: info['address'] ?? '',
+        identity: info['identity'] ?? '',
+        balance: Number(info['balance_sats'] ?? '0'),
+      };
+      process.stdout.write(`wallet ${role} balance=${wallets[role].balance}\n`);
+    }
+    const fundingBalance = readBalance('funding');
+    if (fundingBalance === null) {
+      fail('could not read funding balance');
+    }
+    if (fundingBalance < 1000 && readState()['messageId'] === undefined) {
+      let held = fundingBalance;
+      for (const party of PARTIES) {
+        const balance = readBalance(party.role);
+        if (balance === null) {
+          fail(`could not read ${party.role} balance`);
+        }
+        held += balance;
+      }
+      if (held < 1000) {
+        fail(`funding balance is ${fundingBalance}, need 1000`);
+      }
+    }
+    const parties = {};
+    for (const party of PARTIES) {
+      parties[party.username] = wallets[party.role].identity;
+    }
+    fs.writeFileSync(path.join(dir, 'parties.json'), `${JSON.stringify(parties)}\n`, {
+      mode: 0o600,
+    });
+    startSpot();
+    await waitPort(3996);
+    startRelay();
+    await waitPort(3998);
+    startLnurl();
+    await waitPort(3999);
+    startApi(apiEnv());
+    await waitHealth();
+    fixtureGift();
+    await waitFixtureSpot();
+    const state = readState();
+    if (state['accounts'] === undefined) {
+      state['accounts'] = {};
+    }
+    const accounts = /** @type {Record<string, { id: string, token: string }>} */ (
+      state['accounts']
+    );
+    for (const party of PARTIES) {
+      if (accounts[party.role] === undefined) {
+        accounts[party.role] = await registerParty(party, wallets[party.role].identity);
+        state['accounts'] = accounts;
+        writeState(state);
+        process.stdout.write(`registered ${party.username}\n`);
+      }
+    }
+    returnAddress = wallets['funding'].address;
     const throughApp = process.env['LOAN_E2E_UI'] === '1';
     if (typeof state['messageId'] !== 'string') {
       fundGiverWallets();
@@ -1249,11 +1441,11 @@ async function main() {
         await api('POST', '/messages', {
           token: accounts[BORROWER.role].token,
           body: {
-            text: 'Loan of 8.682 PHP over 110 days',
+            text: `Loan of 8.682 PHP over ${DAYS} days`,
             goalCurrency: 'PHP',
             goalAmount: '8.682',
             goalRepayable: true,
-            goalTermDays: 110,
+            goalTermDays: DAYS,
           },
         }),
         'post loan',
@@ -1288,9 +1480,16 @@ async function main() {
       await repayAll(state);
     }
     await assertLedger(messageId, Promise.resolve(accounts[BORROWER.role].token));
-    const fundingBefore = Number(lines(spark(['balance', 'funding']))['balance_sats'] ?? '0');
+    const fundingBefore = readBalance('funding');
+    if (fundingBefore === null) {
+      fail('could not read funding balance');
+    }
     sweep(wallets['funding'].address);
-    const fundingAfter = Number(lines(spark(['balance', 'funding']))['balance_sats'] ?? '0');
+    consolidateFunding();
+    const fundingAfter = readBalance('funding');
+    if (fundingAfter === null) {
+      fail('could not read funding balance');
+    }
     process.stdout.write(`funding ${fundingBefore} -> ${fundingAfter}\n`);
     if (fundingAfter < 1000) {
       fail(`funding address holds ${fundingAfter}, started from 1000`);
@@ -1299,12 +1498,24 @@ async function main() {
     finished = true;
     process.stdout.write('loan cycle complete\n');
   } finally {
-    if (!finished && returnAddress !== '') {
+    if (!finished) {
+      if (returnAddress !== '') {
+        try {
+          sweep(returnAddress);
+          process.stdout.write('returned sats after a failed cycle\n');
+        } catch {
+          process.stderr.write('could not return sats after a failed cycle\n');
+        }
+        consolidateFunding();
+      }
+      stopChild(apiProcess);
+      apiProcess = null;
       try {
-        sweep(returnAddress);
-        process.stdout.write('returned sats after a failed cycle\n');
-      } catch {
-        process.stderr.write('could not return sats after a failed cycle\n');
+        resetLoanDatabase();
+        process.stdout.write('removed the test database after a failed cycle\n');
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'cleanup failed';
+        process.stderr.write(`could not remove the test database: ${redact(message)}\n`);
       }
     }
   }
@@ -1318,7 +1529,8 @@ process.on('exit', () => {
 });
 
 main().catch((error) => {
-  const message = error instanceof Error ? error.message : 'loan cycle failed';
+  const raw = error instanceof Error ? error.message : 'loan cycle failed';
+  const message = redact(raw);
   if (process.exitCode === undefined || process.exitCode === 0) {
     process.stderr.write(`${message}\n`);
     process.exitCode = 1;
