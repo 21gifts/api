@@ -88,7 +88,7 @@ api/
 │   │   ├── nip05.ts          # NIP-05 slugs, nostr.json names, kind:0 identifier
 │   │   ├── nip57-probe.ts    # NIP-57 mint probe before linking a Lightning Address
 │   │   ├── about-me.ts       # Profile-note text → About me (name-copy is not a bio)
-│   │   ├── account-activity.ts # Given/received sats: forum zaps, house gifts, message.sats remainder
+│   │   ├── account-activity.ts # Donation given/received: forum zaps, daily and welcome gifts; loans and moderator stipends omitted
 │   │   ├── message-store.ts  # MessageStore port, InMemoryMessageStore, PostgresMessageStore
 │   │   ├── translation-store.ts # message_translation + conversation_message_translation cache (InMemory + Postgres)
 │   │   ├── translate-config.ts # TRANSLATE_URL / TRANSLATE_API_KEY (optional; boot still)

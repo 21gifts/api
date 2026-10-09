@@ -1,13 +1,17 @@
 /**
- * Read-only account activity: house gifts plus confirmed forum zaps.
+ * Read-only account activity: donation given/received sats only.
  *
- * Public JSON never includes invoices, payment hashes, or nsec. Forum zaps
- * stay off `GET /gifts/stats` (that route remains house outbound only).
+ * Counts confirmed forum zaps on non-loan notes, plus house gifts of kind
+ * daily and welcome. Loans (`goalRepayable === true`), repayment invoices, and
+ * moderator stipends are omitted. Public JSON never includes invoices, payment
+ * hashes, or nsec. Does not change `GET /gifts/stats` (that route remains house
+ * outbound only).
  */
 
 import type { Account } from '@/lib/auth/store';
 import { decodeBolt11 } from '@/lib/bolt11';
 import type { BtcUsdRateBook } from '@/lib/btc-usd-store';
+import { parseRepaymentDescription } from '@/lib/credit-repayment';
 import {
   buildGiftStats,
   giftsForRecipient,
@@ -26,9 +30,12 @@ const FALLBACK_RECIPIENT = 'zap';
 
 /** Donated and received sats with UTC spend series and FX metadata. */
 export interface AccountActivity {
-  /** Confirmed given zaps (and platform house outbound) in whole sats. */
+  /** Confirmed given donation zaps (and platform daily/welcome outbound) in whole sats. */
   donatedSats: number;
-  /** Received zaps on this account's notes plus house gifts to its handle. */
+  /**
+   * Received donation zaps on non-loan authored notes plus daily/welcome house
+   * gifts to its handle.
+   */
   receivedSats: number;
   /** UTC daily donated series (`buildGiftStats` `spendOverTime`). */
   donatedOverTime: SpendDay[];
@@ -136,21 +143,25 @@ export function matchConfirmedGivenZaps(
 }
 
 /**
- * Aggregate donated and received activity for one account.
+ * Aggregate donation given and received sats for one account.
  *
- * Given: confirmed forum zaps this account paid, plus every outbound house
- * gift when `account.isPlatform === true`. Received: indexed zaps on messages
- * this account authored (including soft-hidden rows), unique by `receiptId`
- * (oldest wins), plus a remainder when `message.sats` exceeds those ingest
- * amounts on **top-level** notes (so a visible ₿21 post is never “no gifts”;
- * gift-as-reply `sats` do not inflate the payer's Received), plus house gifts whose
- * recipient handle matches the account Lightning Address. Self-zaps count on
- * both sides. Empty input is zeros without Coinbase and without Frankfurter.
- * Missing BTC-USD throws the same `fx.rate.missing` as {@link buildGiftStats}.
- * Missing CHF/EUR/PHP is JSON `null`, never a throw; when fiat `ensureDays`
- * throws, log `account.activity.fiat_failed` and continue with an empty fiat
- * map. Series (`donatedOverTime` / `receivedOverTime`) are the same
- * `spendOverTime` day objects as `GET /gifts/stats`, including additive
+ * Given: confirmed forum zaps this account paid on notes that are not loans,
+ * excluding `repay:` repayment invoices, plus outbound house gifts of kind
+ * daily and welcome when `account.isPlatform === true`. Moderator stipends
+ * (`kind === 'moderator'`) are omitted. Received: indexed zaps on authored
+ * notes that are not loans (including soft-hidden rows and replies), unique by
+ * `receiptId` (oldest wins), plus a remainder when `message.sats` exceeds those
+ * ingest amounts on **top-level** non-loan notes (a loan note is omitted
+ * entirely, including a hidden one; gift-as-reply `sats` do not inflate the
+ * payer's Received), plus house gifts of kind daily and welcome whose recipient
+ * handle matches the account Lightning Address. A loan is a note with
+ * `goalRepayable === true`. Self-zaps on a non-loan note count on both sides.
+ * Does not change `GET /gifts/stats`. Empty input is zeros without Coinbase and
+ * without Frankfurter. Missing BTC-USD throws the same `fx.rate.missing` as
+ * {@link buildGiftStats}. Missing CHF/EUR/PHP is JSON `null`, never a throw;
+ * when fiat `ensureDays` throws, log `account.activity.fiat_failed` and continue
+ * with an empty fiat map. Series (`donatedOverTime` / `receivedOverTime`) are
+ * the same `spendOverTime` day objects as `GET /gifts/stats`, including additive
  * CHF/EUR/PHP.
  *
  * @param args - Account, stores, BTC-USD rate book, optional USD→CHF/EUR/PHP
@@ -170,13 +181,17 @@ export async function buildAccountActivity(args: {
    */
   fiatRates?: FiatRateBook;
 }): Promise<AccountActivity> {
-  const house = await args.gifts.listOutbound();
+  const outbound = await args.gifts.listOutbound();
+  const house = outbound.filter((row) => row.kind !== 'moderator');
   const handle = args.account.lightningAddress;
   const receivedHouse = handle ? giftsForRecipient(house, handle) : [];
   const givenHouse = args.account.isPlatform === true ? house : [];
   const invoices = await args.messages.listInvoiceAttemptsForPayer(args.account.id);
   const indexed = await args.messages.listIndexedZapIngests();
-  const givenZaps = matchConfirmedGivenZaps(invoices, indexed);
+  const givenZaps = matchConfirmedGivenZaps(
+    await donationInvoices(invoices, args.messages),
+    indexed,
+  );
   const receivedZaps = await receivedZapsForAccount(args.account, args.messages, indexed);
   const givenRows = givenZaps.concat(givenHouse);
   const receivedRows = receivedZaps.concat(receivedHouse);
@@ -232,14 +247,47 @@ export async function buildAccountActivity(args: {
 }
 
 /**
- * Indexed zaps credited to messages this account authored, plus a
+ * Payer invoices that may count as given donations.
+ *
+ * Drops repayment invoices (`parseRepaymentDescription` marker) before loading
+ * notes. Then drops invoices whose note has `goalRepayable === true`. An unknown
+ * note (`getById` undefined) stays a donation. Soft-deleted loan rows are still
+ * excluded when `goalRepayable === true` (`deletedAt` is not consulted).
+ *
+ * @param invoices - Payer invoice attempts.
+ * @param messages - Forum store for `getById`.
+ * @returns Invoices passed to {@link matchConfirmedGivenZaps}.
+ */
+async function donationInvoices(
+  invoices: readonly MessageInvoiceAttempt[],
+  messages: MessageStore,
+): Promise<MessageInvoiceAttempt[]> {
+  const candidates = invoices.filter(
+    (invoice) => parseRepaymentDescription(invoice.description) === null,
+  );
+  const messageIds = [...new Set(candidates.map((invoice) => invoice.messageId))];
+  const notes = await Promise.all(messageIds.map((id) => messages.getById(id)));
+  const loanIds = new Set<string>();
+  for (const [index, id] of messageIds.entries()) {
+    const row = notes[index];
+    if (row !== undefined && row.goalRepayable === true) {
+      loanIds.add(id);
+    }
+  }
+  return candidates.filter((invoice) => !loanIds.has(invoice.messageId));
+}
+
+/**
+ * Indexed zaps credited to non-loan messages this account authored, plus a
  * `message.sats` remainder when the stored total exceeds those ingests.
  *
- * Unique by `receiptId` (oldest first). Hidden notes (`deletedAt` set) still
- * count. A top-level note with `sats: 21` and no ingest still yields 21
- * received sats. Remainder is not applied to replies (`parentId` set) so a
- * gift-as-reply does not inflate the payer's Received. Indexed ingests on
- * published replies still count. External/Damus zaps need no payer account.
+ * Unique by `receiptId` (oldest first). Hidden non-loan notes (`deletedAt` set)
+ * still count. A loan note (`goalRepayable === true`) is omitted entirely,
+ * including when hidden. A top-level non-loan note with `sats: 21` and no ingest
+ * still yields 21 received sats. Remainder is not applied to replies
+ * (`parentId` set) so a gift-as-reply does not inflate the payer's Received.
+ * Indexed ingests on published replies still count. External/Damus zaps need no
+ * payer account.
  *
  * @param account - Author whose notes collect received zaps.
  * @param messages - Forum store (`listAuthoredMessages` includes hidden rows).
@@ -275,7 +323,8 @@ async function receivedZapsForAccount(
     if (ingest.amountSats === null || ingest.amountSats <= 0) {
       continue;
     }
-    if (!authoredById.has(ingest.messageId)) {
+    const authoredNote = authoredById.get(ingest.messageId);
+    if (authoredNote === undefined || authoredNote.goalRepayable === true) {
       continue;
     }
     seenReceipts.add(ingest.receiptId);
@@ -292,6 +341,9 @@ async function receivedZapsForAccount(
     creditedFiatByMessageId.set(ingest.messageId, addFiat(prevFiat, fiatCents(ingest)));
   }
   for (const message of authored) {
+    if (message.goalRepayable === true) {
+      continue;
+    }
     if (message.parentId !== null) {
       continue;
     }
