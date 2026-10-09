@@ -315,6 +315,7 @@ function throwingStore(overrides: Partial<MessageStore> = {}): MessageStore {
     listCreditPayers: boom,
     sumUnassignedCreditSats: boom,
     listRepayments: boom,
+    listLoanLedger: boom,
     markRepaymentPaid: boom,
     ...overrides,
   };
@@ -4163,6 +4164,7 @@ describe('POST /messages', () => {
       listCreditPayers: (messageId) => base.listCreditPayers(messageId),
       sumUnassignedCreditSats: (messageId) => base.sumUnassignedCreditSats(messageId),
       listRepayments: (messageId) => base.listRepayments(messageId),
+      listLoanLedger: (accountId) => base.listLoanLedger(accountId),
       markRepaymentPaid: (row) => base.markRepaymentPaid(row),
       findOkInvoiceByPr: (pr) => base.findOkInvoiceByPr(pr),
       updateZapReceiptGift: (...args: Parameters<InMemoryMessageStore['updateZapReceiptGift']>) =>
@@ -4308,6 +4310,7 @@ describe('POST /messages', () => {
       listCreditPayers: (messageId) => base.listCreditPayers(messageId),
       sumUnassignedCreditSats: (messageId) => base.sumUnassignedCreditSats(messageId),
       listRepayments: (messageId) => base.listRepayments(messageId),
+      listLoanLedger: (accountId) => base.listLoanLedger(accountId),
       markRepaymentPaid: (row) => base.markRepaymentPaid(row),
       findOkInvoiceByPr: (pr) => base.findOkInvoiceByPr(pr),
       updateZapReceiptGift: (...args: Parameters<InMemoryMessageStore['updateZapReceiptGift']>) =>
@@ -6368,6 +6371,7 @@ describe('POST /messages/:id/invoice', () => {
       listCreditPayers: (messageId) => base.listCreditPayers(messageId),
       sumUnassignedCreditSats: (messageId) => base.sumUnassignedCreditSats(messageId),
       listRepayments: (messageId) => base.listRepayments(messageId),
+      listLoanLedger: (accountId) => base.listLoanLedger(accountId),
       markRepaymentPaid: (row) => base.markRepaymentPaid(row),
       findOkInvoiceByPr: (pr) => base.findOkInvoiceByPr(pr),
       updateZapReceiptGift: (...args: Parameters<InMemoryMessageStore['updateZapReceiptGift']>) =>
