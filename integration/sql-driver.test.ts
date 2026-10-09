@@ -2,6 +2,7 @@ import { SQL } from 'bun';
 import { describe, expect, test } from 'bun:test';
 import { migrateAuthSchema } from '@/lib/auth/postgres-store';
 import { sqlState, type SqlClient } from '@/lib/auth/sql';
+import { migrateDailyRosterSchema, PostgresDailyRosterStore } from '@/lib/daily-roster-store';
 import type { FundingGrant } from '@/lib/funding';
 import { migrateFundingSchema, PostgresFundingStore } from '@/lib/funding-store';
 import { migrateMemberHabitSchema, PostgresMemberHabitStore } from '@/lib/member-habit-store';
@@ -290,6 +291,38 @@ VALUES ($1, '2026-10-04', 'ok', $2)`,
         await client.execute(`DELETE FROM member_habit WHERE id = $1`, [habitId]);
         await client.execute(`DELETE FROM account WHERE id = $1`, [accountId]);
       }
+      await closeIfPossible(sql);
+    }
+  });
+});
+
+describe('PostgresDailyRosterStore importDocument', () => {
+  test('writes once on real Postgres and no-ops a second import', async () => {
+    const { client, sql } = createBunSqlClient(databaseUrl);
+    try {
+      await migrateDailyRosterSchema(client);
+      await client.execute('DELETE FROM daily_roster_entry');
+      await client.execute('DELETE FROM daily_roster');
+      const store = new PostgresDailyRosterStore(client);
+      const first = await store.importDocument({
+        comment: 'kept',
+        paymentsEnabled: false,
+        moderatorPaymentsEnabled: true,
+        recipients: [{ address: 'roster-import@example.com', amountUsd: 2.5 }],
+        moderators: [{ address: 'roster-mod@example.com', amountUsd: 3 }],
+      });
+      expect(first.comment).toBe('kept');
+      expect(first.paymentsEnabled).toBe(false);
+      expect(first.moderatorPaymentsEnabled).toBe(true);
+      expect(first.defaultAmountUsd).toBe(1);
+      expect(first.recipients).toEqual([{ address: 'roster-import@example.com', amountUsd: 2.5 }]);
+      expect(first.moderators).toEqual([{ address: 'roster-mod@example.com', amountUsd: 3 }]);
+      const second = await store.importDocument({ comment: 'other' });
+      expect(second).toEqual(first);
+      expect(second.comment).toBe('kept');
+    } finally {
+      await client.execute('DELETE FROM daily_roster_entry');
+      await client.execute('DELETE FROM daily_roster');
       await closeIfPossible(sql);
     }
   });

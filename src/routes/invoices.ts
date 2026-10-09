@@ -744,7 +744,7 @@ export function invoiceRoutes(deps: InvoiceRouteDeps): Hono {
 
       if (
         parsed.data.comment !== 'Welcome' &&
-        parsed.data.groupMessageId === undefined &&
+        resolvedGroupMessageId === undefined &&
         deps.gifts !== undefined
       ) {
         let outbound: Awaited<ReturnType<GiftStore['listOutbound']>>;
@@ -809,6 +809,11 @@ export function invoiceRoutes(deps: InvoiceRouteDeps): Hono {
         ...(resolvedGroupMessageId === undefined
           ? {}
           : { groupMessageId: resolvedGroupMessageId, comment: parsed.data.comment ?? '' }),
+        ...(parsed.data.comment === 'Welcome' &&
+        parsed.data.messageId === undefined &&
+        resolvedGroupMessageId === undefined
+          ? { comment: 'Welcome' }
+          : {}),
         ...(amountUsd === undefined ? {} : { amountUsd }),
       });
       logEvent('invoice.issued', { id, address, amountMsat });

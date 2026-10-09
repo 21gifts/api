@@ -4,6 +4,7 @@
  * Missing env skips the ping; the process still boots. Failures never throw.
  */
 
+import type { DailyRosterStore } from '@/lib/daily-roster-store';
 import type { GiftStore } from '@/lib/gift-store';
 import type { FetchFn } from '@/lib/lnurlp';
 import { logEvent } from '@/lib/log';
@@ -67,34 +68,39 @@ export class NoopSpendPing implements SpendPing {
 }
 
 /**
- * GET `{spendUrl}/daily-roster` with Bearer `SPEND_API_TOKEN`, then POST
- * `{spendUrl}/ping` with the same Bearer. A decided amount adds
- * `amountUsd` and `comment` to the ping JSON. Skipped reasons
- * `payments_disabled`, `not_listed`, `undecided`, and `welcome_paid` log
- * `spend.ping.skipped` and do not POST.
+ * Until the roster store has been written, `GET {spendUrl}/daily-roster`
+ * and decide from that JSON without importing it. After a roster has been
+ * stored, read only the store (no GET). Then POST `{spendUrl}/ping` with
+ * Bearer `SPEND_API_TOKEN`. A decided amount adds `amountUsd` and
+ * `comment` to the ping JSON. Skipped reasons `payments_disabled`,
+ * `not_listed`, `undecided`, and `welcome_paid` log `spend.ping.skipped`
+ * and do not POST.
  *
  * 2xx (including 200 skipped and 202 accepted) logs `spend.ping.ok`.
- * Network, abort, non-2xx, a non-object roster, and a gift-ledger throw log
- * `spend.ping.failed` and resolve. Never throws. Never logs the token.
- * Optional `grantStatus` is passed to {@link decideSpendInstruction} only
- * when the resolved kind is daily.
+ * Network, abort, non-2xx, a store read throw, a live GET failure, and a
+ * gift-ledger throw log `spend.ping.failed` and resolve. Never throws.
+ * Never logs the token. Optional `grantStatus` is passed to
+ * {@link decideSpendInstruction} only when the resolved kind is daily.
  */
 export class HttpSpendPing implements SpendPing {
   readonly #spendUrl: string;
   readonly #token: string;
   readonly #fetchImpl: FetchFn;
   readonly #timeoutMs: number;
+  readonly #rosterStore: DailyRosterStore;
   readonly #gifts: Pick<GiftStore, 'listOutbound'> | undefined;
   readonly #now: () => number;
 
   /**
    * @param opts - Already-trimmed base URL (no trailing slash), Bearer token,
-   *   fetch, optional timeout (default 5000 ms), optional gift ledger, optional clock.
+   *   fetch, roster store, optional timeout (default 5000 ms), optional gift
+   *   ledger, optional clock.
    */
   constructor(opts: {
     spendUrl: string;
     token: string;
     fetchImpl: FetchFn;
+    rosterStore: DailyRosterStore;
     timeoutMs?: number;
     gifts?: Pick<GiftStore, 'listOutbound'>;
     now?: () => number;
@@ -103,15 +109,18 @@ export class HttpSpendPing implements SpendPing {
     this.#token = opts.token;
     this.#fetchImpl = opts.fetchImpl;
     this.#timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+    this.#rosterStore = opts.rosterStore;
     this.#gifts = opts.gifts;
     this.#now = opts.now ?? (() => Date.now());
   }
 
   /**
-   * GET `{spendUrl}/daily-roster`, then POST the decided ping JSON to
-   * `{spendUrl}/ping`. A skip, including welcome already paid today,
-   * logs `spend.ping.skipped` and does not POST. Resolves on success and
-   * failure.
+   * A never-written store reads `GET {spendUrl}/daily-roster` (body never
+   * imported). A written store reads the store. Then POST the decided ping
+   * JSON to `{spendUrl}/ping`. A skip, including welcome already paid today,
+   * logs `spend.ping.skipped` and does not POST. A store read throw or live
+   * GET failure logs `spend.ping.failed` and does not POST. Resolves on
+   * success and failure. Never throws. Never logs the token.
    *
    * @param address - Recipient Lightning Address (JSON body).
    * @param messageId - Forum post id for daily/welcome pings (JSON
@@ -127,27 +136,44 @@ export class HttpSpendPing implements SpendPing {
     grantStatus?: SpendGrantStatus,
   ): Promise<void> {
     const resolvedKind = kind === 'moderator' || kind === 'welcome' ? kind : 'daily';
-    let roster: unknown;
+    let written: boolean;
     try {
-      const rosterResponse = await this.#fetchImpl(`${this.#spendUrl}/daily-roster`, {
-        method: 'GET',
-        headers: {
-          Authorization: `Bearer ${this.#token}`,
-        },
-        signal: AbortSignal.timeout(this.#timeoutMs),
-      });
-      if (!rosterResponse.ok) {
-        logEvent('spend.ping.failed', { address });
-        return;
-      }
-      roster = await rosterResponse.json();
+      written = await this.#rosterStore.hasBeenWritten();
     } catch {
       logEvent('spend.ping.failed', { address });
       return;
     }
-    if (typeof roster !== 'object' || roster === null || Array.isArray(roster)) {
-      logEvent('spend.ping.failed', { address });
-      return;
+    let roster: unknown;
+    if (!written) {
+      try {
+        const response = await this.#fetchImpl(`${this.#spendUrl}/daily-roster`, {
+          method: 'GET',
+          headers: {
+            Authorization: `Bearer ${this.#token}`,
+          },
+          signal: AbortSignal.timeout(this.#timeoutMs),
+        });
+        if (!response.ok) {
+          logEvent('spend.ping.failed', { address });
+          return;
+        }
+        const parsed: unknown = await response.json();
+        if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+          logEvent('spend.ping.failed', { address });
+          return;
+        }
+        roster = parsed;
+      } catch {
+        logEvent('spend.ping.failed', { address });
+        return;
+      }
+    } else {
+      try {
+        roster = await this.#rosterStore.get();
+      } catch {
+        logEvent('spend.ping.failed', { address });
+        return;
+      }
     }
     let welcomePaidOnUtcDay: boolean | undefined;
     if (resolvedKind === 'daily' && this.#gifts !== undefined) {
@@ -229,13 +255,18 @@ export class HttpSpendPing implements SpendPing {
  *
  * @param env - Process environment slice (injected so tests need not mutate it).
  * @param fetchImpl - HTTP fetch used by {@link HttpSpendPing}.
- * @param opts - Optional gift ledger and clock forwarded to {@link HttpSpendPing}.
+ * @param opts - Roster store (required when both env values are set), optional
+ *   gift ledger and clock forwarded to {@link HttpSpendPing}.
  * @returns {@link HttpSpendPing} when both env values are set; otherwise `undefined`.
  */
 export function resolveSpendPing(
   env: Record<string, string | undefined>,
   fetchImpl: FetchFn,
-  opts?: { gifts?: Pick<GiftStore, 'listOutbound'>; now?: () => number },
+  opts?: {
+    rosterStore?: DailyRosterStore;
+    gifts?: Pick<GiftStore, 'listOutbound'>;
+    now?: () => number;
+  },
 ): SpendPing | undefined {
   const rawUrl = env['SPEND_URL'];
   const rawToken = env['SPEND_API_TOKEN'];
@@ -247,16 +278,17 @@ export function resolveSpendPing(
   ) {
     return undefined;
   }
+  const rosterStore = opts?.rosterStore;
+  if (rosterStore === undefined) {
+    throw new Error('Daily roster store is required');
+  }
   const spendUrl = rawUrl.trim().replace(/\/+$/u, '');
   return new HttpSpendPing({
     spendUrl,
     token: rawToken.trim(),
     fetchImpl,
-    ...(opts === undefined
-      ? {}
-      : {
-          ...(opts.gifts === undefined ? {} : { gifts: opts.gifts }),
-          ...(opts.now === undefined ? {} : { now: opts.now }),
-        }),
+    rosterStore,
+    ...(opts?.gifts === undefined ? {} : { gifts: opts.gifts }),
+    ...(opts?.now === undefined ? {} : { now: opts.now }),
   });
 }
