@@ -2,6 +2,7 @@
  * Decide the USD amount and memo for a spend ping from a live roster object.
  */
 
+import { DAILY_ROSTER_DEFAULT_AMOUNT_USD } from '@/lib/daily-roster-store';
 import type { GiftRow } from '@/lib/gift';
 
 /** Effective funding status used when an unlisted daily address is paid. */
@@ -28,31 +29,36 @@ export function decideSpendInstruction(input: {
     if (record !== undefined && record['paymentsEnabled'] === false) {
       return { skip: 'payments_disabled' };
     }
-    if (input.welcomePaidOnUtcDay === true) {
-      return { skip: 'welcome_paid' };
-    }
     const row = findCountableRow(
       record === undefined ? undefined : record['recipients'],
       input.address,
     );
+    let decided: { amountUsd: number; comment: string } | { skip: 'not_listed' | 'undecided' };
     if (row !== undefined) {
-      return { amountUsd: row.amountUsd, comment: rosterComment(record) };
-    }
-    if (input.grantStatus === 'admitted' || input.grantStatus === 'trial') {
+      decided = { amountUsd: row.amountUsd, comment: rosterComment(record) };
+    } else if (input.grantStatus === 'admitted' || input.grantStatus === 'trial') {
       const rawDefault = record === undefined ? undefined : record['defaultAmountUsd'];
       if (typeof rawDefault === 'number' && Number.isFinite(rawDefault) && rawDefault > 0) {
-        return { amountUsd: rawDefault, comment: rosterComment(record) };
+        decided = { amountUsd: rawDefault, comment: rosterComment(record) };
+      } else {
+        decided = { amountUsd: DAILY_ROSTER_DEFAULT_AMOUNT_USD, comment: rosterComment(record) };
       }
-      return { amountUsd: 1, comment: rosterComment(record) };
-    }
-    if (
+    } else if (
       input.grantStatus === 'none' ||
       input.grantStatus === 'pending' ||
       input.grantStatus === 'rejected'
     ) {
-      return { skip: 'not_listed' };
+      decided = { skip: 'not_listed' };
+    } else {
+      decided = { skip: 'undecided' };
     }
-    return { skip: 'undecided' };
+    if ('skip' in decided) {
+      return decided;
+    }
+    if (input.welcomePaidOnUtcDay === true && decided.comment !== 'Welcome') {
+      return { skip: 'welcome_paid' };
+    }
+    return decided;
   }
   if (input.kind === 'welcome') {
     if (record !== undefined && record['paymentsEnabled'] === false) {
@@ -71,6 +77,78 @@ export function decideSpendInstruction(input: {
     return { skip: 'not_listed' };
   }
   return { amountUsd: row.amountUsd, comment: '21gifts moderator' };
+}
+
+/**
+ * Decide whether the spend worker should pay a daily gift from already-known
+ * facts: passkey, post, media, eligibility, and the live roster.
+ *
+ * @param input - Recipient address, passkey / post / media / funding facts,
+ *   live roster JSON, optional daily grant status, and optional same-UTC-day
+ *   welcome flag.
+ * @returns A skip reason, or the amount, comment, and optional message id.
+ */
+export function decideCliDailyInstruction(input: {
+  address: string;
+  hasPasskey: boolean;
+  hasPosted: boolean;
+  hasMedia: boolean;
+  eligible: boolean;
+  messageId: string | null;
+  roster: unknown;
+  grantStatus?: SpendGrantStatus;
+  welcomePaidOnUtcDay?: boolean;
+}):
+  | {
+      action: 'skip';
+      reason:
+        | 'no_passkey'
+        | 'no_post'
+        | 'no_media'
+        | 'not_eligible'
+        | 'payments_disabled'
+        | 'not_listed'
+        | 'undecided'
+        | 'welcome_paid';
+    }
+  | { action: 'pay'; amountUsd: number; comment: string; messageId?: string } {
+  if (!input.hasPasskey) {
+    return { action: 'skip', reason: 'no_passkey' };
+  }
+  if (!input.hasPosted) {
+    return { action: 'skip', reason: 'no_post' };
+  }
+  if (!input.hasMedia) {
+    return { action: 'skip', reason: 'no_media' };
+  }
+  if (!input.eligible) {
+    return { action: 'skip', reason: 'not_eligible' };
+  }
+  const decided = decideSpendInstruction({
+    address: input.address,
+    kind: 'daily',
+    roster: input.roster,
+    ...(input.grantStatus === undefined ? {} : { grantStatus: input.grantStatus }),
+    ...(input.welcomePaidOnUtcDay === undefined
+      ? {}
+      : { welcomePaidOnUtcDay: input.welcomePaidOnUtcDay }),
+  });
+  if ('skip' in decided) {
+    return { action: 'skip', reason: decided.skip };
+  }
+  if (typeof input.messageId === 'string' && input.messageId !== '') {
+    return {
+      action: 'pay',
+      amountUsd: decided.amountUsd,
+      comment: decided.comment,
+      messageId: input.messageId,
+    };
+  }
+  return {
+    action: 'pay',
+    amountUsd: decided.amountUsd,
+    comment: decided.comment,
+  };
 }
 
 /**

@@ -284,6 +284,54 @@ describe('InMemoryNotificationStore', () => {
     expect((await store.getByIdForRecipient('a', 'parent'))?.readAt).toEqual(READ_AT);
   });
 
+  it('markReadForVisibleMessage stamps unread forum_post, forum_reply, and forum_mention whose replyId equals the message id', async () => {
+    const original = new Date('2026-08-29T18:00:00.000Z');
+    const store = new InMemoryNotificationStore([
+      row({ id: 'z', type: 'zap', parentId: 'message', replyId: 'receipt' }),
+      row({ id: 'a', type: 'forum_post', parentId: 'message', replyId: 'message' }),
+      row({ id: 'b', type: 'forum_reply', parentId: 'message', replyId: 'child' }),
+      row({ id: 'c', type: 'forum_mention', parentId: 'message', replyId: 'message' }),
+      row({ id: 'd', type: 'forum_reply', parentId: 'other', replyId: 'message' }),
+      row({
+        id: 'read',
+        type: 'forum_mention',
+        parentId: 'other',
+        replyId: 'message',
+        readAt: original,
+      }),
+      row({
+        id: 'appointed',
+        type: 'moderator_appointed',
+        parentId: 'message',
+        replyId: 'message',
+      }),
+      row({ id: 'proposal', type: 'moderator_proposal', parentId: 'message', replyId: 'message' }),
+      row({ id: 'miss', parentId: 'other', replyId: 'other-reply' }),
+      row({
+        id: 'other',
+        recipientAccountId: 'other',
+        type: 'forum_post',
+        parentId: 'message',
+        replyId: 'message',
+      }),
+    ]);
+    const stamped = await store.markReadForVisibleMessage('parent', 'message', READ_AT);
+    expect(stamped.map((item) => item.id)).toEqual(['a', 'c', 'd']);
+    expect(stamped.every((item) => item.readAt?.getTime() === READ_AT.getTime())).toBe(true);
+    expect((await store.getByIdForRecipient('b', 'parent'))?.readAt).toBeNull();
+    expect((await store.getByIdForRecipient('z', 'parent'))?.readAt).toBeNull();
+    expect((await store.getByIdForRecipient('read', 'parent'))?.readAt).toEqual(original);
+    expect((await store.getByIdForRecipient('appointed', 'parent'))?.readAt).toBeNull();
+    expect((await store.getByIdForRecipient('proposal', 'parent'))?.readAt).toBeNull();
+    expect((await store.getByIdForRecipient('miss', 'parent'))?.readAt).toBeNull();
+    expect((await store.getByIdForRecipient('other', 'other'))?.readAt).toBeNull();
+
+    expect(
+      await store.markReadForVisibleMessage('parent', 'message', new Date(READ_AT.getTime() + 1)),
+    ).toEqual([]);
+    expect((await store.getByIdForRecipient('a', 'parent'))?.readAt).toEqual(READ_AT);
+  });
+
   it('unique create returns the existing id', async () => {
     const store = new InMemoryNotificationStore();
     const first = await store.create(row({ id: 'first' }));
@@ -590,6 +638,47 @@ describe('PostgresNotificationStore', () => {
     expect(sql.executes).toEqual([]);
     expect(stamped.map((item) => item.id)).toEqual(['a', 'z']);
     expect(stamped[0]).toMatchObject({ type: 'forum_post', parentId: 'message', replyId: 'post' });
+  });
+
+  it('markReadForVisibleMessage UPDATEs matching kinds by reply_id and maps RETURNING rows by id', async () => {
+    const sql = new MockSql();
+    sql.nextRows = [
+      sqlRow({
+        id: 'c',
+        type: 'forum_mention',
+        parent_id: 'message',
+        reply_id: 'message',
+        read_at: READ_AT,
+      }),
+      sqlRow({
+        id: 'a',
+        type: 'forum_post',
+        parent_id: 'message',
+        reply_id: 'message',
+        read_at: READ_AT,
+      }),
+    ];
+    const stamped = await new PostgresNotificationStore(sql).markReadForVisibleMessage(
+      'parent',
+      'message',
+      READ_AT,
+    );
+    expect(sql.queries).toHaveLength(1);
+    expect(sql.queries[0]?.text).toMatch(
+      /type IN \('forum_post', 'forum_reply', 'forum_mention'\)/,
+    );
+    expect(sql.queries[0]?.text).toMatch(/reply_id = \$2/);
+    expect(sql.queries[0]?.text).not.toMatch(/parent_id = /);
+    expect(sql.queries[0]?.text).not.toMatch(/zap/);
+    expect(sql.queries[0]?.text).toMatch(/RETURNING/);
+    expect(sql.queries[0]?.params).toEqual(['parent', 'message', READ_AT]);
+    expect(sql.executes).toEqual([]);
+    expect(stamped.map((item) => item.id)).toEqual(['a', 'c']);
+    expect(stamped[0]).toMatchObject({
+      type: 'forum_post',
+      parentId: 'message',
+      replyId: 'message',
+    });
   });
 
   it('deleteByMessageIds skips SQL when no id is a well-formed UUID', async () => {

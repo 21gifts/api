@@ -151,6 +151,7 @@ function extractEndpoints() {
     'debug-trust.ts': '/debug/trust-edges',
     'debug-catalog.ts': '/debug/dump',
     'well-known.ts': '/.well-known',
+    'spend-instruction-route.ts': '/spend',
   };
   const methodRe = /\.(get|post|delete|put|patch)\((['"])(\/[-A-Za-z0-9_./:]*)\2/g;
   for (const file of fs.readdirSync(routeDir).filter((n) => n.endsWith('.ts'))) {

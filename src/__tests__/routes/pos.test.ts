@@ -1,6 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
 import { InMemoryAuthStore } from '@/lib/auth/store';
+import type { ShopNoteRef } from '@/lib/message-store';
+import type { ActivityPing } from '@/lib/ocp-activity';
+import type { MapFetch } from '@/lib/ocp-place';
 import { InMemoryPosStore, type PosStore } from '@/lib/pos-store';
 import { POS_CHARGE_TTL_MS } from '@/lib/pos-charge';
 import { posRoutes } from '@/routes/pos';
@@ -44,10 +47,63 @@ async function readyStore(): Promise<InMemoryAuthStore> {
   return store;
 }
 
-function mount(authStore: InMemoryAuthStore, fetchImpl: typeof fetch = wosFetch()): Hono {
+function parsedEvents(warn: ReturnType<typeof vi.spyOn>): Array<Record<string, unknown>> {
+  return warn.mock.calls
+    .map((call) => call[0])
+    .filter((arg): arg is string => typeof arg === 'string' && arg.startsWith('{'))
+    .map((arg) => JSON.parse(arg) as Record<string, unknown>);
+}
+
+type RecordedCall = {
+  url: string;
+  method: string;
+  authorization: string;
+  contentType: string;
+  body: string;
+};
+
+function recordingActivity(status = 200): { activity: ActivityPing; calls: RecordedCall[] } {
+  const calls: RecordedCall[] = [];
+  const fetchImpl: MapFetch = async (input, init) => {
+    const headers = new Headers(init.headers);
+    calls.push({
+      url: String(input),
+      method: init.method ?? 'GET',
+      authorization: headers.get('authorization') ?? '',
+      contentType: headers.get('content-type') ?? '',
+      body: String(init.body),
+    });
+    return new Response('{}', { status });
+  };
+  return {
+    activity: { baseUrl: 'http://map.test', token: 'secret', fetchImpl },
+    calls,
+  };
+}
+
+function shops(notes: ShopNoteRef[]): { listLiveAssignedShops(): Promise<ShopNoteRef[]> } {
+  return { listLiveAssignedShops: async () => notes };
+}
+
+function mount(
+  authStore: InMemoryAuthStore,
+  fetchImpl: typeof fetch = wosFetch(),
+  extras: {
+    messageStore?: { listLiveAssignedShops(): Promise<ShopNoteRef[]> };
+    activity?: ActivityPing;
+    store?: PosStore;
+  } = {},
+): Hono {
   return new Hono().route(
     '/pos',
-    posRoutes({ store: new InMemoryPosStore(), authStore, now, fetchImpl }),
+    posRoutes({
+      store: extras.store === undefined ? new InMemoryPosStore() : extras.store,
+      authStore,
+      now,
+      fetchImpl,
+      ...(extras.messageStore === undefined ? {} : { messageStore: extras.messageStore }),
+      ...(extras.activity === undefined ? {} : { activity: extras.activity }),
+    }),
   );
 }
 
@@ -300,5 +356,222 @@ describe('POS routes', () => {
         body: '{"amountSats":21}',
       }),
     ).rejects.toBe('nope');
+  });
+
+  it('does not list shops when activity is omitted', async () => {
+    const listLiveAssignedShops = vi.fn(async () => [
+      { id: 'shop-1', accountId: 'acc', text: 'Open #21GiftsShop' },
+    ]);
+    const app = mount(await readyStore(), wosFetch(), {
+      messageStore: { listLiveAssignedShops },
+    });
+    const created = await app.request('/pos', {
+      method: 'POST',
+      headers: AUTH,
+      body: '{"amountSats":21}',
+    });
+    expect(created.status).toBe(201);
+    expect(listLiveAssignedShops).not.toHaveBeenCalled();
+  });
+
+  it('does not ping when messageStore is omitted', async () => {
+    const { activity, calls } = recordingActivity();
+    const app = mount(await readyStore(), wosFetch(), { activity });
+    const created = await app.request('/pos', {
+      method: 'POST',
+      headers: AUTH,
+      body: '{"amountSats":21}',
+    });
+    expect(created.status).toBe(201);
+    expect(calls).toEqual([]);
+  });
+
+  it('pings one matching shop at the charge createdAt', async () => {
+    const { activity, calls } = recordingActivity();
+    const app = mount(await readyStore(), wosFetch(), {
+      messageStore: shops([{ id: 'shop-1', accountId: 'acc', text: 'Open #21GiftsShop' }]),
+      activity,
+    });
+    const created = await app.request('/pos', {
+      method: 'POST',
+      headers: AUTH,
+      body: '{"amountSats":21}',
+    });
+    expect(created.status).toBe(201);
+    const createdBody = (await created.json()) as { charge: { createdAt: string } };
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.url).toBe('http://map.test/map/places/transactions');
+    expect(calls[0]?.method).toBe('POST');
+    expect(calls[0]?.authorization).toBe('Bearer secret');
+    expect(calls[0]?.contentType).toBe('application/json');
+    expect(JSON.parse(calls[0]?.body ?? '{}')).toEqual({
+      origin: '21gifts',
+      externalId: 'shop-1',
+      occurredAt: createdBody.charge.createdAt,
+    });
+  });
+
+  it('pings two matching shops in list order', async () => {
+    const { activity, calls } = recordingActivity();
+    const app = mount(await readyStore(), wosFetch(), {
+      messageStore: shops([
+        { id: 'shop-1', accountId: 'acc', text: 'Open #21GiftsShop' },
+        { id: 'shop-2', accountId: 'acc', text: 'Also #21GiftsShop' },
+      ]),
+      activity,
+    });
+    const created = await app.request('/pos', {
+      method: 'POST',
+      headers: AUTH,
+      body: '{"amountSats":21}',
+    });
+    expect(created.status).toBe(201);
+    expect(calls).toHaveLength(2);
+    expect(JSON.parse(calls[0]?.body ?? '{}')).toMatchObject({ externalId: 'shop-1' });
+    expect(JSON.parse(calls[1]?.body ?? '{}')).toMatchObject({ externalId: 'shop-2' });
+  });
+
+  it('does not post a note for another accountId', async () => {
+    const { activity, calls } = recordingActivity();
+    const app = mount(await readyStore(), wosFetch(), {
+      messageStore: shops([
+        { id: 'other', accountId: 'other', text: 'Open #21GiftsShop' },
+        { id: 'shop-1', accountId: 'acc', text: 'Open #21GiftsShop' },
+      ]),
+      activity,
+    });
+    const created = await app.request('/pos', {
+      method: 'POST',
+      headers: AUTH,
+      body: '{"amountSats":21}',
+    });
+    expect(created.status).toBe(201);
+    expect(calls).toHaveLength(1);
+    expect(JSON.parse(calls[0]?.body ?? '{}')).toMatchObject({ externalId: 'shop-1' });
+  });
+
+  it('does not post a note without the shop hashtag token', async () => {
+    const { activity, calls } = recordingActivity();
+    const app = mount(await readyStore(), wosFetch(), {
+      messageStore: shops([
+        { id: 'shopping', accountId: 'acc', text: 'Open #21GiftsShopping' },
+        { id: 'shop-1', accountId: 'acc', text: 'Open #21GiftsShop' },
+      ]),
+      activity,
+    });
+    const created = await app.request('/pos', {
+      method: 'POST',
+      headers: AUTH,
+      body: '{"amountSats":21}',
+    });
+    expect(created.status).toBe(201);
+    expect(calls).toHaveLength(1);
+    expect(JSON.parse(calls[0]?.body ?? '{}')).toMatchObject({ externalId: 'shop-1' });
+  });
+
+  it('returns 201 when listLiveAssignedShops rejects and does not fetch the map', async () => {
+    const { activity, calls } = recordingActivity();
+    const app = mount(await readyStore(), wosFetch(), {
+      messageStore: {
+        listLiveAssignedShops: async () => {
+          throw new Error('list-must-not-appear');
+        },
+      },
+      activity,
+    });
+    const created = await app.request('/pos', {
+      method: 'POST',
+      headers: AUTH,
+      body: '{"amountSats":21}',
+    });
+    expect(created.status).toBe(201);
+    const createdBody = (await created.json()) as { charge: { amountSats: number } };
+    expect(createdBody.charge.amountSats).toBe(21);
+    expect(calls).toEqual([]);
+    const failed = parsedEvents(warn).filter((e) => e['event'] === 'ocp.activity.failed');
+    expect(failed).toHaveLength(1);
+    const warned = warn.mock.calls.map((call) => String(call[0])).join('\n');
+    expect(warned).not.toContain('list-must-not-appear');
+  });
+
+  it('returns 201 with the charge when the map fetch throws', async () => {
+    const activity: ActivityPing = {
+      baseUrl: 'http://map.test',
+      token: 'secret',
+      fetchImpl: async () => {
+        throw new Error('map-down');
+      },
+    };
+    const app = mount(await readyStore(), wosFetch(), {
+      messageStore: shops([{ id: 'shop-1', accountId: 'acc', text: 'Open #21GiftsShop' }]),
+      activity,
+    });
+    const created = await app.request('/pos', {
+      method: 'POST',
+      headers: AUTH,
+      body: '{"amountSats":21}',
+    });
+    expect(created.status).toBe(201);
+    const createdBody = (await created.json()) as { charge: { amountSats: number } };
+    expect(createdBody.charge.amountSats).toBe(21);
+  });
+
+  it('returns 201 with the charge on map HTTP 404 and logs status', async () => {
+    const { activity } = recordingActivity(404);
+    const app = mount(await readyStore(), wosFetch(), {
+      messageStore: shops([{ id: 'shop-1', accountId: 'acc', text: 'Open #21GiftsShop' }]),
+      activity,
+    });
+    const created = await app.request('/pos', {
+      method: 'POST',
+      headers: AUTH,
+      body: '{"amountSats":21}',
+    });
+    expect(created.status).toBe(201);
+    const createdBody = (await created.json()) as { charge: { amountSats: number } };
+    expect(createdBody.charge.amountSats).toBe(21);
+    const failed = parsedEvents(warn).filter((e) => e['event'] === 'ocp.activity.failed');
+    expect(failed).toHaveLength(1);
+    expect(failed[0]?.['status']).toBe(404);
+  });
+
+  it('returns 201 with the charge on map HTTP 200 and logs no failure', async () => {
+    const { activity } = recordingActivity(200);
+    const app = mount(await readyStore(), wosFetch(), {
+      messageStore: shops([{ id: 'shop-1', accountId: 'acc', text: 'Open #21GiftsShop' }]),
+      activity,
+    });
+    const created = await app.request('/pos', {
+      method: 'POST',
+      headers: AUTH,
+      body: '{"amountSats":21}',
+    });
+    expect(created.status).toBe(201);
+    const createdBody = (await created.json()) as { charge: { amountSats: number } };
+    expect(createdBody.charge.amountSats).toBe(21);
+    expect(parsedEvents(warn).filter((e) => e['event'] === 'ocp.activity.failed')).toHaveLength(0);
+  });
+
+  it('does not ping the map on GET or DELETE', async () => {
+    const { activity, calls } = recordingActivity();
+    const pos = new InMemoryPosStore();
+    await pos.create({
+      id: 'charge-1',
+      accountId: 'acc',
+      amountSats: 21,
+      status: 'pending',
+      createdAt: new Date(nowMs),
+      expiresAt: new Date(nowMs + POS_CHARGE_TTL_MS),
+    });
+    const app = mount(await readyStore(), wosFetch(), {
+      store: pos,
+      messageStore: shops([{ id: 'shop-1', accountId: 'acc', text: 'Open #21GiftsShop' }]),
+      activity,
+    });
+    const listed = await app.request('/pos', { headers: AUTH });
+    expect(listed.status).toBe(200);
+    const removed = await app.request('/pos', { method: 'DELETE', headers: AUTH });
+    expect(removed.status).toBe(200);
+    expect(calls).toEqual([]);
   });
 });

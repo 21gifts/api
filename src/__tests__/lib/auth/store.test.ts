@@ -5,6 +5,7 @@ import {
   parseAmountUnit,
   parseStoredFiat,
   parseStoredLocale,
+  staffTagOf,
 } from '@/lib/auth/store';
 import { CHALLENGE_TTL_MS, SESSION_TTL_MS } from '@/lib/config';
 
@@ -45,6 +46,16 @@ describe('parseStoredFiat', () => {
     expect(parseStoredFiat(null)).toBeNull();
     expect(parseStoredFiat(undefined)).toBeNull();
     expect(parseStoredFiat(1)).toBeNull();
+  });
+});
+
+describe('staffTagOf', () => {
+  it('returns software_developer only for that exact string', () => {
+    expect(staffTagOf('software_developer')).toBe('software_developer');
+    expect(staffTagOf(undefined)).toBeNull();
+    expect(staffTagOf(null)).toBeNull();
+    expect(staffTagOf('')).toBeNull();
+    expect(staffTagOf('basis')).toBeNull();
   });
 });
 

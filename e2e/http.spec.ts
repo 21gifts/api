@@ -978,6 +978,82 @@ test('POST /funding/daily-roster/recipients/delete without bearer is 401', async
   expect(res.status()).toBe(401);
 });
 
+test('GET /funding/daily-roster/document unconfigured is 503', async ({ request }) => {
+  const res = await request.get('/funding/daily-roster/document');
+  expect(res.status()).toBe(503);
+  expect(await res.json()).toEqual({ error: 'Spend invoices are not configured' });
+});
+
+test('POST /funding/daily-roster/document unconfigured is 503', async ({ request }) => {
+  const res = await request.post('/funding/daily-roster/document', { data: {} });
+  expect(res.status()).toBe(503);
+  expect(await res.json()).toEqual({ error: 'Spend invoices are not configured' });
+});
+
+test('POST /funding/daily-roster/worker/comment unconfigured is 503', async ({ request }) => {
+  const res = await request.post('/funding/daily-roster/worker/comment', { data: {} });
+  expect(res.status()).toBe(503);
+  expect(await res.json()).toEqual({ error: 'Spend invoices are not configured' });
+});
+
+test('POST /funding/daily-roster/worker/payments unconfigured is 503', async ({ request }) => {
+  const res = await request.post('/funding/daily-roster/worker/payments', { data: {} });
+  expect(res.status()).toBe(503);
+  expect(await res.json()).toEqual({ error: 'Spend invoices are not configured' });
+});
+
+test('POST /funding/daily-roster/worker/recipients unconfigured is 503', async ({ request }) => {
+  const res = await request.post('/funding/daily-roster/worker/recipients', { data: {} });
+  expect(res.status()).toBe(503);
+  expect(await res.json()).toEqual({ error: 'Spend invoices are not configured' });
+});
+
+test('POST /funding/daily-roster/worker/recipients/update unconfigured is 503', async ({
+  request,
+}) => {
+  const res = await request.post('/funding/daily-roster/worker/recipients/update', { data: {} });
+  expect(res.status()).toBe(503);
+  expect(await res.json()).toEqual({ error: 'Spend invoices are not configured' });
+});
+
+test('POST /funding/daily-roster/worker/recipients/delete unconfigured is 503', async ({
+  request,
+}) => {
+  const res = await request.post('/funding/daily-roster/worker/recipients/delete', { data: {} });
+  expect(res.status()).toBe(503);
+  expect(await res.json()).toEqual({ error: 'Spend invoices are not configured' });
+});
+
+test('POST /funding/daily-roster/worker/moderators unconfigured is 503', async ({ request }) => {
+  const res = await request.post('/funding/daily-roster/worker/moderators', { data: {} });
+  expect(res.status()).toBe(503);
+  expect(await res.json()).toEqual({ error: 'Spend invoices are not configured' });
+});
+
+test('POST /funding/daily-roster/worker/moderators/update unconfigured is 503', async ({
+  request,
+}) => {
+  const res = await request.post('/funding/daily-roster/worker/moderators/update', { data: {} });
+  expect(res.status()).toBe(503);
+  expect(await res.json()).toEqual({ error: 'Spend invoices are not configured' });
+});
+
+test('POST /funding/daily-roster/worker/moderators/delete unconfigured is 503', async ({
+  request,
+}) => {
+  const res = await request.post('/funding/daily-roster/worker/moderators/delete', { data: {} });
+  expect(res.status()).toBe(503);
+  expect(await res.json()).toEqual({ error: 'Spend invoices are not configured' });
+});
+
+test('POST /funding/daily-roster/worker/moderators/payments unconfigured is 503', async ({
+  request,
+}) => {
+  const res = await request.post('/funding/daily-roster/worker/moderators/payments', { data: {} });
+  expect(res.status()).toBe(503);
+  expect(await res.json()).toEqual({ error: 'Spend invoices are not configured' });
+});
+
 test('POST /debug/trust-edges without bearer is 401', async ({ request }) => {
   const res = await request.post('/debug/trust-edges');
   expect(res.status()).toBe(401);

@@ -94,6 +94,24 @@ export function parseStoredFiat(raw: unknown): AccountFiat | null {
 }
 
 /**
+ * Staff display label. Not a permission role and does not change {@link Account.role}.
+ */
+export type StaffTag = 'software_developer';
+
+/**
+ * Parse a stored staff label into a {@link StaffTag} or null.
+ *
+ * @param raw - Unknown input (DB text, JSON, omitted).
+ * @returns Exact `software_developer`; anything else → `null`.
+ */
+export function staffTagOf(raw: unknown): StaffTag | null {
+  if (raw === 'software_developer') {
+    return raw;
+  }
+  return null;
+}
+
+/**
  * A registered account.
  *
  * Identity is {@link Account.id}. `linkingKey` is `null` for passkey accounts
@@ -175,6 +193,11 @@ export interface Account {
    * public on member cards or view profiles.
    */
   fiat?: AccountFiat | null;
+  /**
+   * Optional staff display label. Not a permission role and does not change
+   * {@link Account.role}. Omitted or null when unset.
+   */
+  staffTag?: StaffTag | null;
   /**
    * True when a seed-bearing passkey exists. Does not set `setup` to
    * `wallet`. Omit / false = no seed yet. New passkey register and

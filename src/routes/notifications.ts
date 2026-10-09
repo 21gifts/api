@@ -134,11 +134,11 @@ async function enqueueDismissForAccount(args: {
 /**
  * Build the `/notifications` route group.
  *
- * Mount `read-all` and `read-by-message` before `/:id/read` so those paths
- * are not captured as an id.
+ * Mount `read-all`, `read-by-message`, and `read-visible` before `/:id/read`
+ * so those paths are not captured as an id.
  *
  * @param deps - Notification store, auth store, message store, clock, and optional push.
- * @returns A Hono app with list / mark-one / mark-all / mark-by-message.
+ * @returns A Hono app with list / mark-one / mark-all / mark-by-message / mark-visible.
  */
 export function notificationRoutes(deps: NotificationRouteDeps): Hono {
   return new Hono()
@@ -285,6 +285,38 @@ export function notificationRoutes(deps: NotificationRouteDeps): Hono {
         return c.json({ ok: true, tags }, 200);
       } catch {
         logEvent('notifications.read_message.failed');
+        return c.json({ error: 'Notifications are unavailable' }, 503);
+      }
+    })
+    .post('/read-visible', async (c) => {
+      const account = await authedAccount(deps, c.req.header('authorization'));
+      if (account === null) {
+        return c.json({ error: 'Unauthorized' }, 401);
+      }
+      const body = await c.req.json().catch(() => null);
+      if (body === null || typeof body !== 'object' || Array.isArray(body)) {
+        return c.json({ error: 'Not found' }, 404);
+      }
+      const messageId = (body as Record<string, unknown>)['messageId'];
+      if (typeof messageId !== 'string' || !NOTIFICATION_ID_RE.test(messageId)) {
+        return c.json({ error: 'Not found' }, 404);
+      }
+      try {
+        const stamped = await deps.store.markReadForVisibleMessage(
+          account.id,
+          messageId,
+          new Date(deps.now()),
+        );
+        const tags = tagsFromRows(stamped);
+        await enqueueDismissForAccount({
+          deps,
+          accountId: account.id,
+          tags,
+          body,
+        });
+        return c.json({ ok: true, tags }, 200);
+      } catch {
+        logEvent('notifications.read_visible.failed');
         return c.json({ error: 'Notifications are unavailable' }, 503);
       }
     })

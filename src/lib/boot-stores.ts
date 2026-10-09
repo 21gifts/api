@@ -66,6 +66,12 @@ import {
 import { migratePushSchema, PostgresPushStore, type PushStore } from '@/lib/push-store';
 import { migrateTrustSchema, PostgresTrustStore, type TrustStore } from '@/lib/trust-store';
 import { migrateFundingSchema, PostgresFundingStore, type FundingStore } from '@/lib/funding-store';
+import {
+  InMemoryDailyRosterStore,
+  PostgresDailyRosterStore,
+  migrateDailyRosterSchema,
+  type DailyRosterStore,
+} from '@/lib/daily-roster-store';
 import { PostgresDebugDbStore, type DebugDbStore } from '@/lib/debug-db';
 
 /** Auth, gift, forum, contact, conversation, notification, push, trust, funding, and FX persistence produced from `DATABASE_URL`. */
@@ -150,6 +156,11 @@ export interface BootStores {
    * opened so `createApp` keeps the empty in-memory default.
    */
   fundingStore: FundingStore | undefined;
+  /**
+   * Daily payout roster. Always present: in-memory when no SQL client was
+   * opened, Postgres otherwise.
+   */
+  rosterStore: DailyRosterStore;
   /** Operator dump of `db_change`, or `undefined` on memory boots. */
   listDbChange: ((limit: number) => Promise<unknown[]>) | undefined;
   /**
@@ -198,7 +209,8 @@ export interface BootFxOptions {
  * `diagnosticStore: undefined`,
  * `conversationStore: undefined`,
  * `notificationStore: undefined`, `pushStore: undefined`,
- * `trustStore: undefined`, `fundingStore: undefined`, `bannerStore: undefined`,
+ * `trustStore: undefined`, `fundingStore: undefined`, a fresh
+ * {@link InMemoryDailyRosterStore} as `rosterStore`, `bannerStore: undefined`,
  * `listDbChange: undefined`,
  * `debugDbStore: undefined`, `nostrKek: undefined`,
  * an empty {@link InMemoryBtcUsdStore}, and an empty {@link InMemoryFiatStore}.
@@ -206,7 +218,7 @@ export interface BootFxOptions {
  * `openAuthStore`) then the FX tables (`btc_usd_daily` then `usd_fiat_daily`),
  * `message`, `contact`, `member_habit` (via `migrateMemberHabitSchema`),
  * `pos_charge` (via `migratePosSchema`), `conversation`, `push`, `notification`, `trust_edge`,
- * `funding_grant`, `api_log`, `account_image`, `diagnostic_event`, and `db_change` schemas (notification after push, trust
+ * `funding_grant`, `daily_roster`, `api_log`, `account_image`, `diagnostic_event`, and `db_change` schemas (notification after push, trust
  * after notification, funding after trust, `api_log` then `account_image` via
  * `migrateBannerSchema`, then `diagnostic_event` between `account_image` and `db_change` so `trg_db_change` attaches), builds a {@link QueryGiftStore},
  * {@link SqlGiftRecorder}, {@link PostgresMessageStore},
@@ -214,7 +226,8 @@ export interface BootFxOptions {
  * {@link PostgresContactStore}, {@link PostgresMemberHabitStore},
  * {@link PostgresPosStore}, {@link PostgresConversationStore},
  * {@link PostgresNotificationStore}, {@link PostgresPushStore},
- * {@link PostgresTrustStore}, {@link PostgresFundingStore}, and
+ * {@link PostgresTrustStore}, {@link PostgresFundingStore},
+ * {@link PostgresDailyRosterStore}, and
  * {@link PostgresBannerStore}, parses
  * `NOSTR_NSEC_KEK` into `nostrKek`, constructs {@link PostgresBtcUsdStore} and
  * {@link PostgresFiatStore}, and best-effort fills rates for the outbound gift
@@ -230,9 +243,11 @@ export interface BootFxOptions {
  * {@link PostgresNotificationStore}, {@link PostgresTrustStore},
  * {@link PostgresFundingStore}, {@link PostgresBannerStore},
  * {@link PostgresApiLogStore}, {@link PostgresDiagnosticStore}, and {@link PostgresDebugDbStore}.
- * `migrateTrustSchema` then `migrateFundingSchema` run after auth/`account`
+ * `migrateTrustSchema` then `migrateFundingSchema` then
+ * `migrateDailyRosterSchema` run after auth/`account`
  * exists and before `migrateApiLogSchema` / `migrateDbChangeSchema` so
- * `trg_db_change` attaches to `trust_edge` and `funding_grant`.
+ * `trg_db_change` attaches to `trust_edge`, `funding_grant`, `daily_roster`,
+ * and `daily_roster_entry`.
  * `migrateApiLogSchema` runs after `openAuthStore` (account exists).
  * `migrateBannerSchema` runs next, then `migrateDiagnosticSchema`, then
  * `migrateDbChangeSchema`, so `diagnostic_event` is migrated between
@@ -283,6 +298,7 @@ export async function openBootStores(
       pushStore: undefined,
       trustStore: undefined,
       fundingStore: undefined,
+      rosterStore: new InMemoryDailyRosterStore(),
       listDbChange: undefined,
       debugDbStore: undefined,
       bannerStore: undefined,
@@ -309,6 +325,7 @@ export async function openBootStores(
   await migrateNotificationSchema(sqlClient);
   await migrateTrustSchema(sqlClient);
   await migrateFundingSchema(sqlClient);
+  await migrateDailyRosterSchema(sqlClient);
   await migrateApiLogSchema(sqlClient);
   await migrateBannerSchema(sqlClient);
   await migrateDiagnosticSchema(sqlClient);
@@ -472,6 +489,7 @@ export async function openBootStores(
   const notificationStore = new PostgresNotificationStore(sqlClient);
   const trustStore = new PostgresTrustStore(sqlClient);
   const fundingStore = new PostgresFundingStore(sqlClient);
+  const rosterStore = new PostgresDailyRosterStore(sqlClient);
   return {
     authStore,
     giftStore,
@@ -492,6 +510,7 @@ export async function openBootStores(
     pushStore,
     trustStore,
     fundingStore,
+    rosterStore,
     listDbChange: (limit) => listDbChanges(sql, limit),
     debugDbStore: new PostgresDebugDbStore(sqlClient),
     bannerStore: new PostgresBannerStore(sqlClient),
