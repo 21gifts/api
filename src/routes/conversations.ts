@@ -4,7 +4,7 @@ import { isModeratorGroupMember, roleAtLeast } from '@/lib/auth/roles';
 import { resolveSession } from '@/lib/auth/service';
 import type { Account, AuthStore } from '@/lib/auth/store';
 import { inspectBolt11, isNip57Invoice } from '@/lib/bolt11';
-import { GIFT_INVOICE_MAX_MSAT } from '@/lib/config';
+import { GIFT_INVOICE_MAX_MSAT, type LnurlServerConfig } from '@/lib/config';
 import {
   CONVERSATION_LIST_LIMIT,
   conversationFromMe,
@@ -23,6 +23,9 @@ import { isSundayRestHeader } from '@/lib/sunday-rest';
 import { shownFiatFromBody, type FiatAmounts } from '@/lib/money';
 import type { FetchFn } from '@/lib/lnurlp';
 import { requestZapInvoice } from '@/lib/lnurl-pay';
+import { CANNOT_RECEIVE, lnurlServerFetch, receivingAddress } from '@/lib/receiving-address';
+import { issueSparkInvoice } from '@/lib/spark-invoice';
+import type { SparkInvoiceStore } from '@/lib/spark-invoice-store';
 import {
   decodeForumPhoto,
   decodeMessageFeedCursor,
@@ -44,7 +47,7 @@ import { ensureAccountNostrKey } from '@/lib/nostr/keys';
 import { InvoiceRateLimiter } from '@/lib/nostr/rate-limit';
 import { resolveZapRelays } from '@/lib/nostr/relays';
 import { signEventForAccount } from '@/lib/nostr/sign';
-import { buildZapRequest } from '@/lib/nostr/zap-request';
+import { buildZapRequest, serializeZapRequest } from '@/lib/nostr/zap-request';
 import type { NotificationStore } from '@/lib/notification-store';
 import type { PushStore } from '@/lib/push-store';
 import { eligibleToday } from '@/lib/funding';
@@ -85,6 +88,10 @@ export interface ConversationRouteDeps {
   fundingStore?: FundingStore;
   /** LNURL fetch (invoice path). */
   fetchImpl?: FetchFn;
+  /** LNURL server; omitted when off. A counterpart with a verified wallet receives on it. */
+  lnurlServer?: LnurlServerConfig;
+  /** Issued Spark invoices; omitted when free in-app payments are off. */
+  sparkInvoices?: SparkInvoiceStore;
   /** Optional AES KEK; without it invoice signing is 503. */
   nostrKek?: Uint8Array;
   /** Invoice limiter (tests inject). */
@@ -485,7 +492,7 @@ async function serveConversationPhoto(
  * for anyone at least moderator. Photo GET routes and
  * `POST /:id/messages/:messageId/translate` register before `GET /:id`.
  *
- * @param deps - Stores, clock, optional spend ping, invoice collaborators, wait injects, optional push and notification stores, optional `translationStore` (default empty `InMemoryTranslationStore`), and optional `env`.
+ * @param deps - Stores, clock, optional spend ping, invoice collaborators, wait injects, optional push and notification stores, optional `translationStore` (default empty `InMemoryTranslationStore`), optional `env`, and the optional `lnurlServer` and `sparkInvoices` for wallet-backed counterparts.
  * @returns A Hono app with list/open/read/reply/invoice/photo/translate routes and GET `/moderator-group`.
  */
 export function conversationRoutes(deps: ConversationRouteDeps): Hono {
@@ -986,8 +993,8 @@ export function conversationRoutes(deps: ConversationRouteDeps): Hono {
         );
         if (thread.kind === 'moderator_group') {
           try {
-            const address = account.lightningAddress?.trim() ?? '';
-            if (address !== '' && deps.spendPing !== undefined) {
+            const address = receivingAddress(account, deps.lnurlServer)?.address ?? null;
+            if (address !== null && deps.spendPing !== undefined) {
               const publicToday = await hasLivingRoomPostOnUtcDay(
                 deps.messageStore,
                 account,
@@ -1172,7 +1179,7 @@ export function conversationRoutes(deps: ConversationRouteDeps): Hono {
             isNip57Invoice: false,
             conversationMessageId: null,
           });
-          return c.json({ error: AUTHOR_WALLET_CANNOT_RECEIVE }, 400);
+          return c.json({ error: AUTHOR_WALLET_CANNOT_RECEIVE, code: CANNOT_RECEIVE }, 400);
         }
         const counterpart = await giftCounterpart(thread, account, platform, deps.authStore);
         if (counterpart === undefined) {
@@ -1192,7 +1199,7 @@ export function conversationRoutes(deps: ConversationRouteDeps): Hono {
             isNip57Invoice: false,
             conversationMessageId: null,
           });
-          return c.json({ error: AUTHOR_WALLET_CANNOT_RECEIVE }, 400);
+          return c.json({ error: AUTHOR_WALLET_CANNOT_RECEIVE, code: CANNOT_RECEIVE }, 400);
         }
         if (counterpart.id === account.id) {
           return c.json({ error: 'Cannot message yourself' }, 400);
@@ -1201,15 +1208,15 @@ export function conversationRoutes(deps: ConversationRouteDeps): Hono {
         if (senderName === '') {
           return c.json({ error: 'Set a name before posting' }, 400);
         }
-        const address = counterpart.lightningAddress;
+        const receiving = receivingAddress(counterpart, deps.lnurlServer);
         const profileId = counterpart.profileMessageId ?? null;
-        if (address === null || address.trim() === '' || profileId === null) {
+        if (receiving === null || profileId === null) {
           await persist({
             messageId: profileId ?? UNKNOWN_ACCOUNT_ID,
             authorAccountId: counterpart.id,
             amountSats: parsed.data.sats,
             shown,
-            lightningAddress: address,
+            lightningAddress: receiving?.address ?? null,
             zapRequest: null,
             result: 'no_author',
             httpStatus: 400,
@@ -1220,8 +1227,9 @@ export function conversationRoutes(deps: ConversationRouteDeps): Hono {
             isNip57Invoice: false,
             conversationMessageId: null,
           });
-          return c.json({ error: AUTHOR_WALLET_CANNOT_RECEIVE }, 400);
+          return c.json({ error: AUTHOR_WALLET_CANNOT_RECEIVE, code: CANNOT_RECEIVE }, 400);
         }
+        const address = receiving.address;
         const profile = await deps.messageStore.getById(profileId);
         if (profile === undefined || profile.eventId === null || profile.eventId === '') {
           await persist({
@@ -1335,17 +1343,13 @@ export function conversationRoutes(deps: ConversationRouteDeps): Hono {
           });
           return c.json({ error: 'Messages are unavailable' }, 503);
         }
-        const zapRequestJson = JSON.stringify(signed);
-        /* v8 ignore next 4 -- signEventForAccount returns an event object */
-        const zapRequest =
-          signed !== null && typeof signed === 'object'
-            ? (signed as unknown as Record<string, unknown>)
-            : null;
+        const zapRequestJson = serializeZapRequest(signed);
+        const zapRequest = signed as unknown as Record<string, unknown>;
         const zap = await requestZapInvoice({
           address,
           amountMsat,
           zapRequestJson,
-          fetchImpl,
+          fetchImpl: lnurlServerFetch(deps.lnurlServer, fetchImpl, deps.authStore),
         });
         if (!zap.ok) {
           await persist({
@@ -1366,7 +1370,7 @@ export function conversationRoutes(deps: ConversationRouteDeps): Hono {
             lnurlResponse: zap.lnurlResponse,
           });
           if (zap.reason === 'noZap') {
-            return c.json({ error: AUTHOR_WALLET_CANNOT_RECEIVE }, 400);
+            return c.json({ error: AUTHOR_WALLET_CANNOT_RECEIVE, code: CANNOT_RECEIVE }, 400);
           }
           return c.json({ error: 'Could not start the Bitcoin payment' }, 400);
         }
@@ -1392,7 +1396,7 @@ export function conversationRoutes(deps: ConversationRouteDeps): Hono {
             conversationMessageId,
             lnurlResponse: zap.lnurlResponse,
           });
-          return c.json({ error: AUTHOR_WALLET_CANNOT_RECEIVE }, 400);
+          return c.json({ error: AUTHOR_WALLET_CANNOT_RECEIVE, code: CANNOT_RECEIVE }, 400);
         }
         await deps.messageStore.recordInvoiceAttempt(
           invoiceAttemptBase({
@@ -1416,8 +1420,20 @@ export function conversationRoutes(deps: ConversationRouteDeps): Hono {
             lnurlResponse: zap.lnurlResponse,
           }),
         );
+        const sparkInvoice = await issueSparkInvoice(deps, receiving, {
+          pr: zap.pr,
+          paymentHash: inspected?.paymentHash ?? null,
+          prAmountMsat: inspected?.amountMsat ?? null,
+          amountSats: zap.amountSats,
+          zapRequestJson,
+        });
         return c.json(
-          { pr: zap.pr, amountSats: zap.amountSats, messageId: conversationMessageId },
+          {
+            pr: zap.pr,
+            amountSats: zap.amountSats,
+            messageId: conversationMessageId,
+            sparkInvoice,
+          },
           200,
         );
       } catch {

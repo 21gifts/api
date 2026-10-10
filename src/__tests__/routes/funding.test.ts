@@ -9,6 +9,7 @@ import { unsignedNostrDefaults } from '@/lib/message';
 import { InMemoryMessageStore } from '@/lib/message-store';
 import { removeForumVideo, writeForumVideo } from '@/lib/video';
 import { fundingRoutes } from '@/routes/funding';
+import { LNURL_SERVER, WALLET_PUBKEY } from '@/__tests__/helpers/wallet-lnurl';
 
 const now = (): number => 1_700_000_000_000;
 const TODAY = '2023-11-14';
@@ -35,8 +36,6 @@ function account(partial: Pick<Account, 'id' | 'role'> & Partial<Account>): Acco
   return {
     linkingKey: null,
     name: partial.name ?? partial.id,
-    lightningAddress: null,
-    lightningAddressVerified: false,
     forumLawsDismissed: false,
     location: null,
     viewKey: `${partial.id.replace(/-/g, '')}${'a'.repeat(64)}`.slice(0, 64),
@@ -67,7 +66,9 @@ async function staffed(
   await authStore.createAccount(account({ id: FOUNDER, role: 'founder', name: 'Founder' }));
   await authStore.createAccount(account({ id: MOD, role: 'moderator', name: 'Mod' }));
   await authStore.createAccount(account({ id: OTHER, role: 'basis', name: 'Other' }));
-  await authStore.createAccount(account({ id: VERIFIED, role: 'verified', name: 'Ada' }));
+  await authStore.createAccount(
+    account({ id: VERIFIED, role: 'verified', name: 'Ada', walletRequired: true }),
+  );
   await authStore.createSession({ token: 'founder', accountId: FOUNDER, createdAt: now() });
   await authStore.createSession({ token: 'mod', accountId: MOD, createdAt: now() });
   await authStore.createSession({ token: 'other', accountId: OTHER, createdAt: now() });
@@ -95,6 +96,7 @@ function mount(
       messageStore,
       now: clock,
       gifts,
+      lnurlServer: LNURL_SERVER,
       ...(spendPing === undefined ? {} : { spendPing }),
       ...(applicationsPaused === undefined ? {} : { applicationsPaused }),
     }),
@@ -148,13 +150,12 @@ const PHOTO_A = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 const PHOTO_B = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
 const DAY_MS = 86_400_000;
 
-async function setLightning(
-  authStore: InMemoryAuthStore,
-  accountId: string,
-  lightningAddress: string | null,
-): Promise<void> {
+/** Give `accountId` the username `ada` and a verified wallet (`ada@example.test`). */
+async function setWallet(authStore: InMemoryAuthStore, accountId: string): Promise<void> {
   const existing = await authStore.getAccount(accountId);
-  await authStore.updateAccount({ ...existing!, lightningAddress });
+  await authStore.updateAccount({ ...existing!, username: 'ada' });
+  await authStore.claimSparkPubkey(accountId, WALLET_PUBKEY);
+  await authStore.markSparkPubkeyVerified(accountId, WALLET_PUBKEY, 'ada', 1);
 }
 
 async function seedLivePhoto(
@@ -771,17 +772,9 @@ describe('GET /funding/applications/:accountId', () => {
     expect(body.messages[0]?.text).toBe('hello');
   });
 
-  it('marks a post payable when the applicant has a Lightning Address and event id', async () => {
+  it('marks a post payable when the applicant has a verified wallet and event id', async () => {
     const { authStore, fundingStore } = await staffed();
-    const existing = await authStore.getAccount(VERIFIED);
-    expect(existing).toBeDefined();
-    if (existing === undefined) {
-      throw new Error('expected verified');
-    }
-    await authStore.updateAccount({
-      ...existing,
-      lightningAddress: 'ada@walletofsatoshi.com',
-    });
+    await setWallet(authStore, VERIFIED);
     await fundingStore.upsert(grant({ accountId: VERIFIED, status: 'pending' }));
     const postId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
     const messageStore = new InMemoryMessageStore([
@@ -804,6 +797,68 @@ describe('GET /funding/applications/:accountId', () => {
     expect(res.status).toBe(200);
     const body = (await res.json()) as { messages: Array<{ payable?: boolean }> };
     expect(body.messages[0]?.payable).toBe(true);
+    expect(
+      (body as unknown as { account: { lightningAddress: string } }).account.lightningAddress,
+    ).toBe('ada@example.test');
+  });
+
+  it('marks a wallet-only applicant post payable only with the LNURL server configured', async () => {
+    const { authStore, fundingStore } = await staffed();
+    const existing = await authStore.getAccount(VERIFIED);
+    if (existing === undefined) {
+      throw new Error('expected verified');
+    }
+    const original = authStore.getAccount.bind(authStore);
+    vi.spyOn(authStore, 'getAccount').mockImplementation(async (id) =>
+      id === VERIFIED
+        ? {
+            ...existing,
+            username: 'ada',
+            sparkPubkey: `02${'ab'.repeat(32)}`,
+            sparkPubkeyVerifiedAt: 1,
+          }
+        : original(id),
+    );
+    await fundingStore.upsert(grant({ accountId: VERIFIED, status: 'pending' }));
+    const postId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaab';
+    const messageStore = new InMemoryMessageStore([
+      {
+        id: postId,
+        accountId: VERIFIED,
+        name: 'Ada',
+        text: 'hello',
+        createdAt: new Date(now()),
+        hasPhoto: false,
+        ...unsignedNostrDefaults(),
+        eventId: 'e'.repeat(64),
+      },
+    ]);
+    const payable = async (app: Hono): Promise<boolean | undefined> => {
+      const res = await get(app, `/funding/applications/${VERIFIED}`, 'founder');
+      const body = (await res.json()) as { messages: Array<{ payable?: boolean }> };
+      return body.messages[0]?.payable;
+    };
+    const withoutServer = new Hono().route(
+      '/funding',
+      fundingRoutes({ authStore, fundingStore, messageStore, now, gifts: new InMemoryGiftStore() }),
+    );
+    expect(await payable(withoutServer)).toBe(false);
+    const withServer = new Hono().route(
+      '/funding',
+      fundingRoutes({
+        authStore,
+        fundingStore,
+        messageStore,
+        now,
+        gifts: new InMemoryGiftStore(),
+        lnurlServer: {
+          baseUrl: 'http://lnurl.internal',
+          publicBaseUrl: 'https://21.gifts',
+          host: '21.gifts',
+        },
+      }),
+    );
+    expect(await payable(withServer)).toBe(true);
   });
 
   it('subtracts missing-file video replies from replyCount', async () => {
@@ -1004,7 +1059,7 @@ describe('POST /funding/trial', () => {
 
   it("pings today's live top-level photo after trial from pending", async () => {
     const { authStore, fundingStore } = await staffed();
-    await setLightning(authStore, VERIFIED, '  ada@walletofsatoshi.com  ');
+    await setWallet(authStore, VERIFIED);
     await fundingStore.upsert(grant({ accountId: VERIFIED, status: 'pending' }));
     const messageStore = new InMemoryMessageStore();
     await seedLivePhoto(messageStore, VERIFIED, PHOTO_A, new Date(now()));
@@ -1019,7 +1074,7 @@ describe('POST /funding/trial', () => {
     );
     expect(res.status).toBe(200);
     expect(ping).toHaveBeenCalledTimes(1);
-    expect(ping).toHaveBeenCalledWith('ada@walletofsatoshi.com', PHOTO_A, 'daily', 'trial');
+    expect(ping).toHaveBeenCalledWith('ada@example.test', PHOTO_A, 'daily', 'trial');
     expect(ping.mock.calls[0]).toHaveLength(4);
   });
 
@@ -1176,7 +1231,7 @@ describe('POST /funding/admit', () => {
 
   it('pings the newest of two today media posts after admit from pending', async () => {
     const { authStore, fundingStore } = await staffed();
-    await setLightning(authStore, VERIFIED, '  ada@walletofsatoshi.com  ');
+    await setWallet(authStore, VERIFIED);
     await fundingStore.upsert(grant({ accountId: VERIFIED, status: 'pending' }));
     const messageStore = new InMemoryMessageStore();
     await seedLivePhoto(messageStore, VERIFIED, PHOTO_A, new Date(now() - 1), { text: 'older' });
@@ -1192,13 +1247,13 @@ describe('POST /funding/admit', () => {
     );
     expect(res.status).toBe(200);
     expect(ping).toHaveBeenCalledTimes(1);
-    expect(ping).toHaveBeenCalledWith('ada@walletofsatoshi.com', PHOTO_B, 'daily', 'admitted');
+    expect(ping).toHaveBeenCalledWith('ada@example.test', PHOTO_B, 'daily', 'admitted');
     expect(ping.mock.calls[0]).toHaveLength(4);
   });
 
   it('does not ping when admitting from an active trial the same UTC day', async () => {
     const { authStore, fundingStore } = await staffed();
-    await setLightning(authStore, VERIFIED, 'ada@walletofsatoshi.com');
+    await setWallet(authStore, VERIFIED);
     await fundingStore.upsert(grant({ accountId: VERIFIED, status: 'trial', trialUtcDate: TODAY }));
     const messageStore = new InMemoryMessageStore();
     await seedLivePhoto(messageStore, VERIFIED, PHOTO_A, new Date(now()));
@@ -1215,7 +1270,7 @@ describe('POST /funding/admit', () => {
 
   it('does not ping when the only live media post is the previous UTC day', async () => {
     const { authStore, fundingStore } = await staffed();
-    await setLightning(authStore, VERIFIED, 'ada@walletofsatoshi.com');
+    await setWallet(authStore, VERIFIED);
     await fundingStore.upsert(grant({ accountId: VERIFIED, status: 'pending' }));
     const messageStore = new InMemoryMessageStore();
     await seedLivePhoto(messageStore, VERIFIED, PHOTO_A, new Date(now() - DAY_MS));
@@ -1230,11 +1285,11 @@ describe('POST /funding/admit', () => {
     expect(ping).not.toHaveBeenCalled();
   });
 
-  it('does not ping admit-from-pending with no media, a null address, or a whitespace address', async () => {
+  it('does not ping admit-from-pending with no media or no verified wallet', async () => {
     const ping = vi.fn(async () => undefined);
 
     const noMedia = await staffed();
-    await setLightning(noMedia.authStore, VERIFIED, 'ada@walletofsatoshi.com');
+    await setWallet(noMedia.authStore, VERIFIED);
     await noMedia.fundingStore.upsert(grant({ accountId: VERIFIED, status: 'pending' }));
     expect(
       (
@@ -1248,7 +1303,6 @@ describe('POST /funding/admit', () => {
     ).toBe(200);
 
     const nullAddress = await staffed();
-    await setLightning(nullAddress.authStore, VERIFIED, null);
     await nullAddress.fundingStore.upsert(grant({ accountId: VERIFIED, status: 'pending' }));
     const nullMessages = new InMemoryMessageStore();
     await seedLivePhoto(nullMessages, VERIFIED, PHOTO_A, new Date(now()));
@@ -1263,28 +1317,12 @@ describe('POST /funding/admit', () => {
       ).status,
     ).toBe(200);
 
-    const whitespace = await staffed();
-    await setLightning(whitespace.authStore, VERIFIED, '   ');
-    await whitespace.fundingStore.upsert(grant({ accountId: VERIFIED, status: 'pending' }));
-    const whitespaceMessages = new InMemoryMessageStore();
-    await seedLivePhoto(whitespaceMessages, VERIFIED, PHOTO_A, new Date(now()));
-    expect(
-      (
-        await post(
-          mount(whitespace.authStore, whitespace.fundingStore, whitespaceMessages, { ping }),
-          '/funding/admit',
-          'founder',
-          { accountId: VERIFIED },
-        )
-      ).status,
-    ).toBe(200);
-
     expect(ping).not.toHaveBeenCalled();
   });
 
   it('returns 200 and admits when ping throws', async () => {
     const { authStore, fundingStore } = await staffed();
-    await setLightning(authStore, VERIFIED, 'ada@walletofsatoshi.com');
+    await setWallet(authStore, VERIFIED);
     await fundingStore.upsert(grant({ accountId: VERIFIED, status: 'pending' }));
     const messageStore = new InMemoryMessageStore();
     await seedLivePhoto(messageStore, VERIFIED, PHOTO_A, new Date(now()));
@@ -1304,7 +1342,7 @@ describe('POST /funding/admit', () => {
 
   it('does not ping a photo reply with no top-level media', async () => {
     const { authStore, fundingStore } = await staffed();
-    await setLightning(authStore, VERIFIED, 'ada@walletofsatoshi.com');
+    await setWallet(authStore, VERIFIED);
     await fundingStore.upsert(grant({ accountId: VERIFIED, status: 'pending' }));
     const messageStore = new InMemoryMessageStore();
     await messageStore.create({
@@ -1330,7 +1368,7 @@ describe('POST /funding/admit', () => {
 
   it('does not ping admit-from-pending when the media row is missing', async () => {
     const { authStore, fundingStore } = await staffed();
-    await setLightning(authStore, VERIFIED, 'ada@walletofsatoshi.com');
+    await setWallet(authStore, VERIFIED);
     await fundingStore.upsert(grant({ accountId: VERIFIED, status: 'pending' }));
     const inner = new InMemoryMessageStore();
     await seedLivePhoto(inner, VERIFIED, PHOTO_A, new Date(now()));
@@ -1557,7 +1595,7 @@ describe('GET /funding/payout-days', () => {
 
   it('returns missed days for an admitted member and paid only for a daily gift', async () => {
     const { authStore, fundingStore } = await staffed();
-    await setLightning(authStore, VERIFIED, 'ada@walletofsatoshi.com');
+    await setWallet(authStore, VERIFIED);
     await fundingStore.upsert(
       grant({
         accountId: VERIFIED,

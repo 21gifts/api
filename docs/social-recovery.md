@@ -453,4 +453,4 @@ that still works is the cancel path during the 48 hours.
   both chosen people.
 - A SLIP-39 passphrase or a second Shamir group.
 - Remote wipe of a lost authenticator.
-- Wallet of Satoshi recovery.
+- Recovery of an external Lightning wallet.

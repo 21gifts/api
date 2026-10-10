@@ -12,8 +12,6 @@ function account(partial: Partial<Account> & Pick<Account, 'id' | 'name'>): Acco
   return {
     linkingKey: null,
     role: 'basis',
-    lightningAddress: null,
-    lightningAddressVerified: false,
     forumLawsDismissed: false,
     location: null,
     viewKey: 'ab'.repeat(32),

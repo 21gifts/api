@@ -15,7 +15,6 @@ import {
   type AccountFiat,
   type AccountLocale,
   type AccountRole,
-  type AddressVerification,
   type AuthStore,
   type NostrKeyListRow,
   type NostrKeyRecord,
@@ -34,8 +33,6 @@ interface AccountRow {
   role: string;
   name: string | null;
   location: string | null;
-  lightning_address: string | null;
-  lightning_address_verified: boolean;
   forum_laws_dismissed: boolean;
   view_key: string | null;
   created_at: Date | string;
@@ -56,9 +53,12 @@ interface AccountRow {
   locale?: string | null;
   fiat?: string | null;
   staff_tag?: string | null;
+  spark_pubkey?: string | null;
+  spark_pubkey_verified_at?: Date | string | null;
+  notify_hearts?: boolean | null;
 }
 
-const ACCOUNT_SELECT_COLUMNS = `id, linking_key, role, name, lightning_address, lightning_address_verified, forum_laws_dismissed, view_key, created_at, rules_agreed_at, is_platform, name_skipped_at, lightning_address_skipped_at, profile_message_id, location, notification_level, username, session_refused, nostr_kek_id, nostr_key_custody, nostr_key_created_at, wallet_required, wallet_backup_seen_at, amount_unit, locale, fiat, staff_tag`;
+const ACCOUNT_SELECT_COLUMNS = `id, linking_key, role, name, forum_laws_dismissed, view_key, created_at, rules_agreed_at, is_platform, name_skipped_at, lightning_address_skipped_at, profile_message_id, location, notification_level, username, session_refused, nostr_kek_id, nostr_key_custody, nostr_key_created_at, wallet_required, wallet_backup_seen_at, amount_unit, locale, fiat, staff_tag, spark_pubkey, spark_pubkey_verified_at, notify_hearts`;
 
 /** Escape `\`, `%`, and `_` so they are LIKE literals. Does not append `%`. */
 function mentionLikePattern(prefix: string): string {
@@ -69,14 +69,6 @@ function mentionLikePattern(prefix: string): string {
 interface SessionRow {
   token: string;
   account_id: string;
-  created_at: Date | string;
-}
-
-/** Row shape of `address_verification`. */
-interface VerificationRow {
-  account_id: string;
-  address: string;
-  nonce: string;
   created_at: Date | string;
 }
 
@@ -134,16 +126,14 @@ export class PostgresAuthStore implements AuthStore {
         );
       }
       await this.#sql.execute(
-        `INSERT INTO account (id, linking_key, role, name, lightning_address, lightning_address_verified, forum_laws_dismissed, created_at, view_key, rules_agreed_at, is_platform, name_skipped_at, lightning_address_skipped_at, profile_message_id, location, notification_level, username, session_refused, wallet_required, wallet_backup_seen_at, amount_unit)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, to_timestamp($8::double precision / 1000.0), $9, to_timestamp($10::double precision / 1000.0), $11, to_timestamp($12::double precision / 1000.0), to_timestamp($13::double precision / 1000.0), $14, $15, $16, $17, $18, $19, to_timestamp($20::double precision / 1000.0), $21)
+        `INSERT INTO account (id, linking_key, role, name, forum_laws_dismissed, created_at, view_key, rules_agreed_at, is_platform, name_skipped_at, lightning_address_skipped_at, profile_message_id, location, notification_level, username, session_refused, wallet_required, wallet_backup_seen_at, amount_unit, notify_hearts)
+         VALUES ($1, $2, $3, $4, $5, to_timestamp($6::double precision / 1000.0), $7, to_timestamp($8::double precision / 1000.0), $9, to_timestamp($10::double precision / 1000.0), to_timestamp($11::double precision / 1000.0), $12, $13, $14, $15, $16, $17, to_timestamp($18::double precision / 1000.0), $19, $20)
          ON CONFLICT (linking_key) DO NOTHING`,
         [
           account.id,
           account.linkingKey,
           account.role,
           account.name,
-          account.lightningAddress,
-          account.lightningAddressVerified,
           account.forumLawsDismissed,
           account.createdAt,
           account.viewKey,
@@ -159,6 +149,7 @@ export class PostgresAuthStore implements AuthStore {
           account.walletRequired === true,
           account.walletBackupSeenAt ?? null,
           account.amountUnit ?? 'btc',
+          account.notifyHearts !== false,
         ],
       );
     } catch (error: unknown) {
@@ -195,6 +186,70 @@ export class PostgresAuthStore implements AuthStore {
     }
     const account = mapAccount(row);
     return account === undefined ? undefined : { account, wrote: false };
+  }
+
+  async claimSparkPubkey(
+    accountId: string,
+    sparkPubkey: string,
+  ): Promise<{ account: Account; wrote: boolean } | undefined> {
+    const written = await this.#sql.query<AccountRow>(
+      `UPDATE account SET spark_pubkey = $2 WHERE id = $1 AND spark_pubkey_verified_at IS NULL
+  AND wallet_required IS TRUE AND username IS NOT NULL AND trim(username) <> '' RETURNING ${ACCOUNT_SELECT_COLUMNS}`,
+      [accountId, sparkPubkey],
+    );
+    const wroteRow = written[0];
+    if (wroteRow !== undefined) {
+      const account = mapAccount(wroteRow);
+      return account === undefined ? undefined : { account, wrote: true };
+    }
+    const existing = await this.#sql.query<AccountRow>(
+      `SELECT ${ACCOUNT_SELECT_COLUMNS} FROM account WHERE id = $1`,
+      [accountId],
+    );
+    const row = existing[0];
+    if (row === undefined) {
+      return undefined;
+    }
+    const account = mapAccount(row);
+    return account === undefined ? undefined : { account, wrote: false };
+  }
+
+  async markSparkPubkeyVerified(
+    accountId: string,
+    sparkPubkey: string,
+    username: string,
+    now: number,
+  ): Promise<boolean> {
+    try {
+      const rows = await this.#sql.query<{ id: string }>(
+        `UPDATE account SET spark_pubkey_verified_at = to_timestamp($4::double precision / 1000.0)
+  WHERE id = $1 AND spark_pubkey = $2 AND spark_pubkey_verified_at IS NULL AND lower(trim(username)) = $3 RETURNING id`,
+        [accountId, sparkPubkey, username, now],
+      );
+      return rows.length > 0;
+    } catch (error: unknown) {
+      if (isUniqueViolation(error)) {
+        return false;
+      }
+      throw error;
+    }
+  }
+
+  async getAccountByVerifiedSparkPubkey(sparkPubkey: string): Promise<Account | undefined> {
+    const rows = await this.#sql.query<AccountRow>(
+      `SELECT ${ACCOUNT_SELECT_COLUMNS} FROM account WHERE spark_pubkey = $1 AND spark_pubkey_verified_at IS NOT NULL`,
+      [sparkPubkey],
+    );
+    const row = rows[0];
+    return row === undefined ? undefined : mapAccount(row);
+  }
+
+  async isSparkPubkeyClaimed(sparkPubkey: string): Promise<boolean> {
+    const rows = await this.#sql.query<{ one: number }>(
+      `SELECT 1 AS one FROM account WHERE spark_pubkey = $1 LIMIT 1`,
+      [sparkPubkey],
+    );
+    return rows[0] !== undefined;
   }
 
   async insertPasskeyRenewAttempt(input: PasskeyRenewAttemptInput): Promise<void> {
@@ -371,18 +426,19 @@ export class PostgresAuthStore implements AuthStore {
       }
       await this.#sql.execute(
         `UPDATE account
-         SET linking_key = $2, role = $3, name = $4, lightning_address = $5, lightning_address_verified = $6,
-             forum_laws_dismissed = $7,
-             created_at = to_timestamp($8::double precision / 1000.0), view_key = $9,
-             rules_agreed_at = to_timestamp($10::double precision / 1000.0),
-             is_platform = $11,
-             name_skipped_at = to_timestamp($12::double precision / 1000.0),
-             lightning_address_skipped_at = to_timestamp($13::double precision / 1000.0),
-             profile_message_id = $14,
-             location = $15,
-             notification_level = $16,
-             username = $17,
-             amount_unit = $18
+         SET linking_key = $2, role = $3, name = $4,
+             forum_laws_dismissed = $5,
+             created_at = to_timestamp($6::double precision / 1000.0), view_key = $7,
+             rules_agreed_at = to_timestamp($8::double precision / 1000.0),
+             is_platform = $9,
+             name_skipped_at = to_timestamp($10::double precision / 1000.0),
+             lightning_address_skipped_at = to_timestamp($11::double precision / 1000.0),
+             profile_message_id = $12,
+             location = $13,
+             notification_level = $14,
+             username = CASE WHEN spark_pubkey_verified_at IS NULL THEN $15 ELSE username END,
+             amount_unit = $16,
+             notify_hearts = $17
          WHERE id = $1
            AND (
              $2::text IS NULL
@@ -396,8 +452,6 @@ export class PostgresAuthStore implements AuthStore {
           account.linkingKey,
           account.role,
           account.name,
-          account.lightningAddress,
-          account.lightningAddressVerified,
           account.forumLawsDismissed,
           account.createdAt,
           account.viewKey,
@@ -410,6 +464,7 @@ export class PostgresAuthStore implements AuthStore {
           account.notificationLevel ?? 'all',
           account.username ?? null,
           account.amountUnit ?? 'btc',
+          account.notifyHearts !== false,
         ],
       );
     } catch (error: unknown) {
@@ -418,21 +473,6 @@ export class PostgresAuthStore implements AuthStore {
       }
       throw error;
     }
-  }
-
-  async updateAccountNameByLightningAddress(
-    lightningAddress: string,
-    name: string,
-  ): Promise<Account | undefined> {
-    const rows = await this.#sql.query<AccountRow>(
-      `UPDATE account
-       SET name = $2
-       WHERE lower(trim(lightning_address)) = lower(trim($1))
-       RETURNING ${ACCOUNT_SELECT_COLUMNS}`,
-      [lightningAddress, name],
-    );
-    const row = rows[0];
-    return row === undefined ? undefined : mapAccount(row);
   }
 
   async claimProfileMessageId(
@@ -482,16 +522,6 @@ export class PostgresAuthStore implements AuthStore {
       `SELECT ${ACCOUNT_SELECT_COLUMNS}
        FROM account WHERE view_key = $1`,
       [viewKey],
-    );
-    const row = rows[0];
-    return row === undefined ? undefined : mapAccount(row);
-  }
-
-  async getAccountByLightningAddress(address: string): Promise<Account | undefined> {
-    const rows = await this.#sql.query<AccountRow>(
-      `SELECT ${ACCOUNT_SELECT_COLUMNS}
-       FROM account WHERE lower(trim(lightning_address)) = lower(trim($1))`,
-      [address],
     );
     const row = rows[0];
     return row === undefined ? undefined : mapAccount(row);
@@ -611,14 +641,6 @@ LIMIT $2`,
     return rows.map((row) => mapPasskeyChallenge(row));
   }
 
-  async listAddressVerifications(): Promise<AddressVerification[]> {
-    const rows = await this.#sql.query<VerificationRow>(
-      `SELECT account_id, address, nonce, created_at FROM address_verification
-       ORDER BY created_at DESC, account_id DESC`,
-    );
-    return rows.map((row) => mapVerification(row));
-  }
-
   async listNostrKeys(): Promise<NostrKeyListRow[]> {
     const rows = await this.#sql.query<{
       id: string;
@@ -691,31 +713,6 @@ LIMIT $2`,
     );
     const row = rows[0];
     return row === undefined ? undefined : mapSession(row);
-  }
-
-  async putVerification(verification: AddressVerification): Promise<void> {
-    await this.#sql.execute(
-      `INSERT INTO address_verification (account_id, address, nonce, created_at)
-       VALUES ($1, $2, $3, to_timestamp($4::double precision / 1000.0))
-       ON CONFLICT (account_id) DO UPDATE SET
-         address = EXCLUDED.address,
-         nonce = EXCLUDED.nonce,
-         created_at = EXCLUDED.created_at`,
-      [verification.accountId, verification.address, verification.nonce, verification.createdAt],
-    );
-  }
-
-  async getVerification(accountId: string): Promise<AddressVerification | undefined> {
-    const rows = await this.#sql.query<VerificationRow>(
-      'SELECT account_id, address, nonce, created_at FROM address_verification WHERE account_id = $1',
-      [accountId],
-    );
-    const row = rows[0];
-    return row === undefined ? undefined : mapVerification(row);
-  }
-
-  async deleteVerification(accountId: string): Promise<void> {
-    await this.#sql.execute('DELETE FROM address_verification WHERE account_id = $1', [accountId]);
   }
 
   async createPasskeyChallenge(challenge: PasskeyChallenge): Promise<void> {
@@ -1044,8 +1041,6 @@ function mapAccount(row: AccountRow): Account | undefined {
     role: parseRole(row.role),
     name: row.name,
     location: row.location ?? null,
-    lightningAddress: row.lightning_address,
-    lightningAddressVerified: row.lightning_address_verified,
     forumLawsDismissed: row.forum_laws_dismissed,
     viewKey: row.view_key,
     createdAt: epochMs(row.created_at),
@@ -1061,6 +1056,7 @@ function mapAccount(row: AccountRow): Account | undefined {
         : epochMs(row.lightning_address_skipped_at),
     profileMessageId: row.profile_message_id ?? null,
     notificationLevel: parseNotificationLevel(row.notification_level),
+    notifyHearts: row.notify_hearts !== false,
     amountUnit: parseAmountUnit(row.amount_unit),
     locale: parseStoredLocale(row.locale),
     fiat: parseStoredFiat(row.fiat),
@@ -1072,6 +1068,11 @@ function mapAccount(row: AccountRow): Account | undefined {
         ? null
         : epochMs(row.wallet_backup_seen_at),
     staffTag: staffTagOf(row.staff_tag),
+    sparkPubkey: row.spark_pubkey ?? null,
+    sparkPubkeyVerifiedAt:
+      row.spark_pubkey_verified_at === null || row.spark_pubkey_verified_at === undefined
+        ? null
+        : epochMs(row.spark_pubkey_verified_at),
   };
 }
 
@@ -1079,15 +1080,6 @@ function mapSession(row: SessionRow): Session {
   return {
     token: row.token,
     accountId: row.account_id,
-    createdAt: epochMs(row.created_at),
-  };
-}
-
-function mapVerification(row: VerificationRow): AddressVerification {
-  return {
-    accountId: row.account_id,
-    address: row.address,
-    nonce: row.nonce,
     createdAt: epochMs(row.created_at),
   };
 }

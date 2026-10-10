@@ -138,6 +138,8 @@ function extractEndpoints() {
     'grant-continuation.ts': '/funding/goal',
     'brand.ts': '',
     'push.ts': '',
+    'member-events.ts': '',
+    'wallet-report.ts': '',
     'debug.ts': '/debug/accounts',
     'debug-contacts.ts': '/debug/contacts',
     'debug-api-log.ts': '/debug/api-log',
@@ -152,6 +154,7 @@ function extractEndpoints() {
     'debug-catalog.ts': '/debug/dump',
     'well-known.ts': '/.well-known',
     'spend-instruction-route.ts': '/spend',
+    'lnurl-server.ts': '',
   };
   const methodRe = /\.(get|post|delete|put|patch)\((['"])(\/[-A-Za-z0-9_./:]*)\2/g;
   for (const file of fs.readdirSync(routeDir).filter((n) => n.endsWith('.ts'))) {
