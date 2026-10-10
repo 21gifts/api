@@ -1141,11 +1141,13 @@ function settleFundingPayment(giver, request) {
 /**
  * Pay one chunk from the funding wallet. The whole amount is tried first.
  * Spark often cannot select leaves for that exact size, so the next try is
- * the next smaller power of two. Zero means nothing moved.
+ * the next smaller power of two.
  *
  * @param {{ role: string, sats: number }} giver
  * @param {number} left
- * @returns {number}
+ * @returns {{ moved: number, measured: number | null }}
+ *   moved is the sats this call accounts as sent (0 when none paid or arrived).
+ *   measured is settled.left when the settlement was paid, otherwise null.
  */
 function payFundingChunk(giver, left) {
   /** @type {number[]} */
@@ -1169,14 +1171,14 @@ function payFundingChunk(giver, left) {
     }
     const settled = settleFundingPayment(giver, request);
     if (settled.via === 'paid') {
-      return size;
+      return { moved: size, measured: settled.left };
     }
     if (settled.via === 'arrived') {
       const arrived = left - settled.left;
-      return arrived > 0 ? arrived : size;
+      return { moved: arrived > 0 ? arrived : size, measured: null };
     }
   }
-  return 0;
+  return { moved: 0, measured: null };
 }
 
 /**
@@ -1217,12 +1219,16 @@ function fundGiverWallets() {
           }
         }
         while (left > 0) {
-          const size = payFundingChunk(giver, left);
-          if (size === 0) {
+          const chunk = payFundingChunk(giver, left);
+          if (chunk.moved === 0) {
             fail(`could not fund ${giver.role}, ${left} still to send`);
           }
-          process.stdout.write(`split ${giver.role} ${size}\n`);
-          left -= size;
+          process.stdout.write(`split ${giver.role} ${chunk.moved}\n`);
+          if (chunk.measured === null) {
+            left -= chunk.moved;
+          } else {
+            left = Math.min(left - chunk.moved, chunk.measured);
+          }
         }
       }
     }
