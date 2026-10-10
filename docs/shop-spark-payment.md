@@ -29,9 +29,11 @@ an expiry, an id, and the chain amounts quoted for those sats.
 that was still valid. The sat amount stays due. The wallet is told the
 OpenCryptoPay payment succeeded.
 
-**Paid** means those sats are on the Spark address stored for the shop.
-The api records paid when Orchestra has delivered them. Acceptance does
-not record paid.
+**Paid** means the payment has settled once. That is the Spark invoice
+for these sats finalized at the coordinator, the BOLT11 for these sats
+confirmed by LUD-21 verify, or Orchestra's delivery of this sat count
+to the stored Spark address. The first of the three records paid.
+Acceptance does not record paid.
 
 ## Names
 
@@ -66,6 +68,12 @@ and it does not replace that key. A body with no `sparkAddress` stays
 **409** `{ "error": "Wallet is already connected" }`. A different pubkey
 stays that same 409 and writes nothing. An open payment keeps the address
 copied at its creation.
+
+The app that connects the wallet sends `sparkAddress` on that same call.
+It reads the static Spark address of the wallet it connected. It does not
+ask the payer. This payment does not read the phone. The app as it is
+sends only `sparkPubkey` and does not read that address. The column then
+stays null, and the pay link serves no stablecoin amount.
 
 The owner account JSON includes `sparkAddress` when the column is stored,
 and omits it when null. No public pay response includes it. `recipient`
@@ -131,9 +139,10 @@ unknown username or a shop with no verified receiving address is **404**
 `{ "error": "Not found" }`. CORS is the page's existing origin list, the
 same as `POST /pay/:username/invoice`, not `*`.
 
-The call writes a row only when the Orchestra key is configured and
-`account.spark_address` is usable. Otherwise it writes nothing and
-returns **503** `{ "error": "Stablecoin payment is unavailable" }`.
+The call writes a row only when the Orchestra key is configured,
+`account.spark_address` is usable, and Orchestra commits to this sat
+count on that address. Otherwise it writes nothing and returns **503**
+`{ "error": "Stablecoin payment is unavailable" }`.
 
 One pay link has one open amount. While a till charge is pending, the
 amount is that charge. The call returns the one payment for it, creating
@@ -141,7 +150,11 @@ it if it does not exist yet. While no till charge is pending and no
 payment is open, the call creates that one open payment. A later call
 with the same amount returns the same id. A different amount, while a
 payment is open, is **409** `{ "error": "A payment is already open" }`
-and writes nothing. The open amount stays.
+and writes nothing. The open amount stays. While the payment is
+`accepted`, the same call is that same **409** and writes nothing.
+
+On **409** the page shows that error. It does not treat a later fetch of
+the pay link as the amount this payer just entered.
 
 **Response** `200` `{ "payment": "<uuid>" }`. The page does not display
 this body. It fetches the decoded LNURL again and displays that
@@ -163,8 +176,9 @@ null is allowed. At most one row per account has status `open`.
 `spark_address` is the usable address copied at creation. `created_at`
 is set.
 `accepted_at` is set only for `accepted` and `paid`. `paid_at` is set
-only for `paid`. `ended_at` is set only for `ended`. A payment does not
-move from `accepted` to `ended`.
+only for `paid`. `ended_at` is set only for `ended`. A payment moves
+from `accepted` to `ended` only when Orchestra reports that order
+refunded or failed. A lapsed quote does not end it.
 
 `shop_quote` stores one quote. `id` is `quote.id`. `payment_id`
 references `shop_payment`. `expires_at` is `quote.expiration`.
@@ -173,11 +187,13 @@ cannot rewrite it. `provider_ref` is the reference Orchestra returned for
 that quote. It is stored as text, it is not parsed, and it is not shown
 to the wallet. `created_at` is set.
 
-`open` serves the current quote. A lapsed quote is replaced by a new
-`shop_quote` for the same sats. The payment id does not change. A page
-payment stays `open` across those refreshes until it is accepted. A till
-payment moves to `ended` when its charge ends while the payment is still
-`open`.
+`open` serves the current quote. A fetch while that quote has not lapsed
+returns it unchanged and does not mint another. A lapsed quote is
+replaced by a new `shop_quote` for the same sats. The payment id does
+not change. A page payment stays `open` across those refreshes until it
+is accepted. A till payment moves to `ended` when its charge expires
+unpaid while the payment is still `open`. When that charge is paid, the
+payment is `paid`.
 
 The implementing change adds these tables. This document does not migrate
 them.
@@ -200,8 +216,9 @@ When no payment is open, the pay link returns the Lightning pay request
 it already serves. Not **404**. `method` and `asset` on that call do not
 select a stablecoin.
 
-While a payment is `open`, a fetch returns its current quote. A lapsed
-quote is replaced for the same sats. The URL does not change.
+While a payment is `open`, a fetch returns its current quote. A quote
+that has not lapsed is not replaced. A lapsed quote is replaced for the
+same sats. The URL does not change.
 
 While a payment is `accepted`, and until it is `paid`, the response is
 still a pay request for those sats. Every `available` value is false.
@@ -303,7 +320,9 @@ The sat amount does not move after it is fixed. Each stablecoin figure is
 a quote for those sats, including the provider fee and spread. A later
 price does not change the sats.
 
-The page then shows one option per chain and asset. USDT on Tron is not
+The page then shows one option per chain and asset that the pay link
+serves. When no stablecoin row is served, it shows no stablecoin amount.
+USDT on Tron is not
 USDT on Ethereum, and USDC is not USDT. A transfer on the wrong chain is
 not a payment. Chains of one asset may be grouped under one label. The
 amount due is still the amount of that chain and that asset.
@@ -356,8 +375,9 @@ request below. The URL is unchanged. Otherwise the pay link keeps
 today's pinned Lightning request, and its callback stays
 `/lnurlp/<username>/invoice`.
 
-A later fetch while the payment is `open` returns a new quote for the
-same sats. `quote.payment` does not change. After the transfer is
+A later fetch while the payment is `open` returns the current quote for
+the same sats. A quote that has not lapsed is returned unchanged.
+`quote.payment` does not change. After the transfer is
 accepted, and until the payment is `paid`, a fetch does not offer a new
 payable amount: no `available` entry is true, and the response is not
 the Lightning pay request above.
@@ -406,9 +426,11 @@ The wallet calls `callback` with a GET and the query parameters `quote`,
 The response is the transaction detail the standard defines for that
 method, and it expires with the quote. Lightning returns the BOLT11
 invoice in `pr`. A `pr` that is not an invoice is not a Lightning
-detail. A stablecoin returns the `uri` Orchestra gave for that chain
-and asset. This service does not rewrite it. The destination in that
-`uri` is Orchestra's. 21.gifts does not hold it. An EVM `uri` is EIP-681.
+detail. A stablecoin returns a `uri` whose destination is Orchestra's. 21.gifts
+does not hold it. Orchestra's quote does not contain that URI. For an
+EVM source the quote can carry an unsigned transaction: chain id,
+destination, data, and value. The `uri` is the EIP-681 URI built from
+those fields. An EVM `uri` is EIP-681.
 An EVM `uri` Tether Wallet for Android 1.11.0 (134) cannot route as
 EIP-681 fails the check in Tether Wallet.
 
@@ -470,9 +492,25 @@ and it does not publish a USDT or USDC address of its own.
 
 The api learns the delivery from Orchestra, not from a phone.
 
+A stablecoin row is served only when Orchestra commits to delivering
+this sat count to the stored Spark address. Exact-out onto Spark is
+rejected. Fixed delivery onto Spark is switched off. The estimate that
+remains does not commit to the sat count. It names no gas price and no
+payment URI. That estimate is not a quote this pay link serves. This
+service does not ask Orchestra to pay the Lightning invoice, and it does
+not hold a stablecoin refund address. With no committed quote, the pay
+link keeps today's Lightning request.
+
+A chain whose quote names no gas price is absent. A deposit Orchestra
+settles for fewer sats than this count does not pay this payment. A
+refund or a failed order moves the payment from `accepted` to `ended`
+and records nothing paid. Silence after acceptance does not free the
+pay link and does not record paid.
+
 A quote that lapses before acceptance is replaced by a quote for the
-same sats. A quote for an open till charge also ends when the charge
-ends, if that is sooner. After the charge has ended, the sticker takes
+same sats. An unexpired quote is returned as stored. A later fetch does
+not mint a second one. A quote for an open till charge also ends when
+the charge ends, if that is sooner. After the charge has ended, the sticker takes
 a new amount from the next payer and does not keep the charge's quote.
 The sats of the replacement do not change. The Tether Wallet check fails
 if it reports `OPEN_CRYPTO_PAY_AMOUNT_CHANGED` for that replacement.
@@ -487,13 +525,20 @@ amount. Lightning is unchanged.
 
 ## Paid
 
-Paid is recorded only when the quoted sats are on the stored Spark
-address. A success response, a proof, and the payment page do not record
-it.
+Paid is recorded once, on the first of three confirmations: the Spark
+invoice already returned for these sats, finalized at the coordinator;
+the BOLT11 already returned for these sats, confirmed by LUD-21 verify;
+or Orchestra's delivery of this sat count to the stored Spark address.
+A success response, a proof, and the payment page do not record it.
+Acceptance does not record it.
 
-Until that delivery, too little, too much, the wrong chain, a stale
+Until one of those three, too little, too much, the wrong chain, a stale
 amount, or a transfer with no valid quote leaves the payment unpaid. A
-stale amount is not treated as a different number of sats.
+stale amount is not treated as a different number of sats. After
+Orchestra has accepted, the page does not request another invoice for
+these sats. After the invoice is confirmed, the pay link offers no
+stablecoin amount. Coins already in flight on the other rail are not a
+second sale, and this service does not take them back.
 
 The member's app shows the record as an ordinary incoming bitcoin
 payment of those sats. It shows no USDT or USDC balance and no
@@ -513,10 +558,10 @@ receiving address's minimum and maximum, for an account with a username
 and a verified receiving address. One unexpired pending charge. Five
 minutes. While it is pending, both Lightning sendable bounds become that
 sat amount in millisats. Metadata stays as it is. When the Spark address
-is usable and the Orchestra key is configured, the stablecoin amounts
-for those same sats are added beside that pin, and `callback` is
-`/lnurlp/cb/<username>`. Otherwise the callback stays
-`/lnurlp/<username>/invoice`.
+is usable, the Orchestra key is configured, and Orchestra commits to
+those sats on that address, the stablecoin amounts for those same sats
+are added beside that pin, and `callback` is `/lnurlp/cb/<username>`.
+Otherwise the callback stays `/lnurlp/<username>/invoice`.
 
 A lapsed quote is replaced only while the charge is open, and only for
 the same sats.
@@ -524,7 +569,10 @@ the same sats.
 The charge is paid on the first confirmation: the Spark invoice
 finalized at the coordinator, a BOLT11 the api handed out confirmed by
 LUD-21 verify, or Orchestra's delivery of the agreed sats. One charge
-is paid once. The first two stay on the watcher that already exists.
+is paid once. The first two stay on the watcher that already exists. A
+page payment with no charge is paid by those same three events, for the
+invoice this payment issued and for this delivery. It is not left open
+after that invoice is confirmed.
 
 Sats that arrive after the five minutes still pay that charge when the
 transfer was accepted against a quote that was valid for it. A transfer
