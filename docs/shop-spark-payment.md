@@ -289,9 +289,18 @@ amount due is still the amount of that chain and that asset.
 The page shows the quote's expiry. When a quote lapses before it is
 accepted, the page requests the next quote for the same sats.
 
-The page shows no QR. It opens a compatible wallet by a deeplink for the
-quote the api just returned. The deeplink is not printed and is not shown
-as a code. The printed sticker's LNURL encodes the pay link with no payment
+The page keeps the Lightning invoice QR it already shows. That QR is
+the BOLT11 for these sats. It is mounted only when the invoice exists and
+the visitor is not a smartphone. A smartphone is an iPhone, an iPod, or
+an Android user agent that also contains `Mobile`. A tablet is not a
+smartphone. The window width does not decide it. On a smartphone the page
+shows the `lightning:` button and no invoice QR. That QR is not a second
+shop address, and it is not the stablecoin deeplink. `displayQr` false
+does not remove it.
+
+The page opens a compatible wallet by a deeplink for the quote the api
+just returned. The deeplink is not printed and is not shown as a code.
+The printed sticker's LNURL encodes the pay link with no payment
 id. The deeplink encodes that same pay link with `?payment=` and the
 payment UUID, so a wallet that only decodes the LNURL and fetches it
 sends the id. The wallet is not given a second address. A fetch without
