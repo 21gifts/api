@@ -4,7 +4,7 @@
 > Product decisions live in [`CONCEPT.md`](./CONCEPT.md); this file owns
 > request/response contracts for routes that exist in code today.
 
-**Status**: living document. Last revised 2026-10-07 (`POST /me/wallet/report` stores the wallet balance and payments with a server-side category; `POST /me/events` stores the first-party interaction log; never a recovery phrase, seed, PRF output, preimage, or private key). Before that, 2026-10-05 (`PUT /me/about` never stores an empty profile note: empty text on a live note that keeps no photo, extra still, or video restores the auto name-copy, so the bio clears; with no live note it is 400 `Write something about yourself`. 2026-10-02: a 400 that means "needs a wallet" or "cannot receive" carries `code` `wallet_required` or `cannot_receive`; a member's only receiving address is the verified in-app wallet `<username>@<host>`: linking, verifying, or removing an external Lightning address is gone, money routes, spend lookups, `GET /.well-known/lnurlp/:username`, and kind 0 `lud16` are wallet-only, posting needs a verified wallet, `POST /pos` without one is `Set up your wallet first`, debug provisioning takes `{ name, username? }`, receipts are read only on the relays every zap request names. Earlier the same day: one receiving address per account: a verified wallet receives on `<username>@<host>` resolved internally against the LNURL server; `sparkInvoice` on `POST /messages/:id/invoice`, `POST /conversations/:id/invoice`, and `POST /messages/:id/repayment` when `LNURL_ZAP_NSEC_HEX` is also set; Spark invoice worker publishes and ingests the zap receipt; `spark_invoice` table. 2026-10-01: `PUT /me/wallet` and forwarded LNURL routes when `LNURL_SERVER_URL` and `PUBLIC_BASE_URL` resolve; owner `sparkPubkey` / `sparkWalletVerified`; wallet-backed `GET /.well-known/lnurlp/:username`; username fixed once verified; trailing/double-dot username reject. 2026-09-30: `GET /mentions` matches the start of the username, a `.` `_` `-` segment, or the start of the display name or one of its words; a token containing `.` `_` `-` matches only a whole-string start. 2026-09-28: `GET /mentions` username prefix suggestions. GET /mentions returns at most 20 username-prefix suggestions for a signed-in forum reader. 2026-09-24: `POST /conversations/:id/messages/:messageId/translate`; owner and view JSON include `aboutMessageId`; conversation rows include `lastMessageId`. 2026-09-23: `eligibleToday` does not require a grant until UTC 2026-10-10; funding-program grants independent of `account.role`; spend ping and `POST /invoices` require `eligibleToday`; verified top-level media also welcome-pings independent of `eligibleToday`; `GET /invoices/eligible`; `GET /conversations` list/open rows include per-row `unreadMessageCount`; envelope `unreadCount` remains unread thread count; `GET /trust-chain` requires a member Bearer session; public graph uses at most one incoming edge per subject: the oldest eligible sibling (`createdAt` then `id`), skipping a non-chain oldest sibling so a later displayable contact can show; eligible `verify`, `moderator_appoint`, and `moderator_propose` only when the subject is a moderator; `moderator_confirm` and `moderator_reject` never; later appoint/confirm/propose do not replace the first eligible contact; staff may reject an open proposal (`POST /trust/reject-moderator`, append-only `moderator_reject`, role stays `verified`) and re-propose after reject (new `moderator_propose`; 409 while currently pending, any confirm/appoint, or a concurrent older open propose wins after insert); confirm/reject re-list after insert and undo when the other grant already closed; pending = latest propose/reject is propose, verified, no confirm/appoint; live-unique kinds are verify/confirm/appoint only; open proposal fans out in-app `moderator_proposal` plus Web Push to other staff until confirm, until reject when pending is then empty, or until appoint; GET `/notifications` keeps `moderator_appointed` and `moderator_proposal` (mark-read / read-all do not stamp the proposal); owner `notificationLevel` on GET `/me` and `POST /me/notification-level`; fan-out filters in-app and Web Push by `all` / `active` / `mentions`; GET `/notifications` applies the same filter to stored rows (`moderator_appointed` always stays; `unreadCount` is unread among kept rows after the hidden filter (before the 200 cap), not `store.unreadCount()` and not the unfiltered matching unread of the newest 1000); a zap that inserts a gift-reply fans out only `notifyZap`, not a second `forum_reply`; gift-reply row still lands in the thread; confirm/appoint notify the subject only with `moderator_appointed` and Web Push url `/welcome`; official platform account (`isPlatform`) never fans out living-room `forum_post` / `forum_reply` / `zap`; house daily gift-replies still persist; GET /messages omits name-copy profile notes and About me text stays). 2026-10-01: opening a forum note, translating it, or opening Notifications stamps the matching unread forum and zap rows and tells the account's other devices to close those banners (`POST /notifications/read-by-message`; read-all and read-by-message return tags; a freshly stamped `POST /notifications/:id/read` only enqueues the dismiss tag and still returns the public notification). `moderator_proposal` stays unread. Private-message pushes are not dismissed. 2026-10-02: `GET /messages?mode=active` is paid notes plus unpaid founder/moderator notes. An ask with `sats = 0` is not active. 2026-10-09: the API stores the daily roster; initiator or founder edit it and a moderator is refused. Until that store has been written, a spend ping reads the live spend roster and does not import it. 2026-10-09: GET /me/activity, GET /members/:accountId/activity, and GET /view/:viewKey/activity count only donations. Loans (goalRepayable === true, including hidden notes), repay: repayment invoices, and moderator stipends are omitted. Daily and welcome gifts stay. An unknown note still counts as a donation.
+**Status**: living document. Last revised 2026-10-10 (repayment from the in-app wallet: `GET /messages/:id/repayment` gives each giver `canReceive` and each due line `dueSats`; the next share skips a giver who cannot receive, so that giver does not block the others; `POST /messages/:id/repayment/due` makes every payable bill of a loan at once; `GET /me/loans` lists the member's own loans with what is due). Before that, 2026-10-07 (`POST /me/wallet/report` stores the wallet balance and payments with a server-side category; `POST /me/events` stores the first-party interaction log; never a recovery phrase, seed, PRF output, preimage, or private key). Before that, 2026-10-05 (`PUT /me/about` never stores an empty profile note: empty text on a live note that keeps no photo, extra still, or video restores the auto name-copy, so the bio clears; with no live note it is 400 `Write something about yourself`. 2026-10-02: a 400 that means "needs a wallet" or "cannot receive" carries `code` `wallet_required` or `cannot_receive`; a member's only receiving address is the verified in-app wallet `<username>@<host>`: linking, verifying, or removing an external Lightning address is gone, money routes, spend lookups, `GET /.well-known/lnurlp/:username`, and kind 0 `lud16` are wallet-only, posting needs a verified wallet, `POST /pos` without one is `Set up your wallet first`, debug provisioning takes `{ name, username? }`, receipts are read only on the relays every zap request names. Earlier the same day: one receiving address per account: a verified wallet receives on `<username>@<host>` resolved internally against the LNURL server; `sparkInvoice` on `POST /messages/:id/invoice`, `POST /conversations/:id/invoice`, and `POST /messages/:id/repayment` when `LNURL_ZAP_NSEC_HEX` is also set; Spark invoice worker publishes and ingests the zap receipt; `spark_invoice` table. 2026-10-01: `PUT /me/wallet` and forwarded LNURL routes when `LNURL_SERVER_URL` and `PUBLIC_BASE_URL` resolve; owner `sparkPubkey` / `sparkWalletVerified`; wallet-backed `GET /.well-known/lnurlp/:username`; username fixed once verified; trailing/double-dot username reject. 2026-09-30: `GET /mentions` matches the start of the username, a `.` `_` `-` segment, or the start of the display name or one of its words; a token containing `.` `_` `-` matches only a whole-string start. 2026-09-28: `GET /mentions` username prefix suggestions. GET /mentions returns at most 20 username-prefix suggestions for a signed-in forum reader. 2026-09-24: `POST /conversations/:id/messages/:messageId/translate`; owner and view JSON include `aboutMessageId`; conversation rows include `lastMessageId`. 2026-09-23: `eligibleToday` does not require a grant until UTC 2026-10-10; funding-program grants independent of `account.role`; spend ping and `POST /invoices` require `eligibleToday`; verified top-level media also welcome-pings independent of `eligibleToday`; `GET /invoices/eligible`; `GET /conversations` list/open rows include per-row `unreadMessageCount`; envelope `unreadCount` remains unread thread count; `GET /trust-chain` requires a member Bearer session; public graph uses at most one incoming edge per subject: the oldest eligible sibling (`createdAt` then `id`), skipping a non-chain oldest sibling so a later displayable contact can show; eligible `verify`, `moderator_appoint`, and `moderator_propose` only when the subject is a moderator; `moderator_confirm` and `moderator_reject` never; later appoint/confirm/propose do not replace the first eligible contact; staff may reject an open proposal (`POST /trust/reject-moderator`, append-only `moderator_reject`, role stays `verified`) and re-propose after reject (new `moderator_propose`; 409 while currently pending, any confirm/appoint, or a concurrent older open propose wins after insert); confirm/reject re-list after insert and undo when the other grant already closed; pending = latest propose/reject is propose, verified, no confirm/appoint; live-unique kinds are verify/confirm/appoint only; open proposal fans out in-app `moderator_proposal` plus Web Push to other staff until confirm, until reject when pending is then empty, or until appoint; GET `/notifications` keeps `moderator_appointed` and `moderator_proposal` (mark-read / read-all do not stamp the proposal); owner `notificationLevel` on GET `/me` and `POST /me/notification-level`; fan-out filters in-app and Web Push by `all` / `active` / `mentions`; GET `/notifications` applies the same filter to stored rows (`moderator_appointed` always stays; `unreadCount` is unread among kept rows after the hidden filter (before the 200 cap), not `store.unreadCount()` and not the unfiltered matching unread of the newest 1000); a zap that inserts a gift-reply fans out only `notifyZap`, not a second `forum_reply`; gift-reply row still lands in the thread; confirm/appoint notify the subject only with `moderator_appointed` and Web Push url `/welcome`; official platform account (`isPlatform`) never fans out living-room `forum_post` / `forum_reply` / `zap`; house daily gift-replies still persist; GET /messages omits name-copy profile notes and About me text stays). 2026-10-01: opening a forum note, translating it, or opening Notifications stamps the matching unread forum and zap rows and tells the account's other devices to close those banners (`POST /notifications/read-by-message`; read-all and read-by-message return tags; a freshly stamped `POST /notifications/:id/read` only enqueues the dismiss tag and still returns the public notification). `moderator_proposal` stays unread. Private-message pushes are not dismissed. 2026-10-02: `GET /messages?mode=active` is paid notes plus unpaid founder/moderator notes. An ask with `sats = 0` is not active. 2026-10-09: the API stores the daily roster; initiator or founder edit it and a moderator is refused. Until that store has been written, a spend ping reads the live spend roster and does not import it. 2026-10-09: GET /me/activity, GET /members/:accountId/activity, and GET /view/:viewKey/activity count only donations. Loans (goalRepayable === true, including hidden notes), repay: repayment invoices, and moderator stipends are omitted. Daily and welcome gifts stay. An unknown note still counts as a donation.
 
 ---
 
@@ -1177,6 +1177,66 @@ Store throw or missing BTC-USD day → **Response** `503`:
 ```
 
 `donatedOverTime` / `receivedOverTime` reuse the `spendOverTime` day objects from `GET /gifts/stats`, including additive CHF/EUR/PHP. The stored payment-time USD/CHF/EUR/PHP is what is returned. Missing fiat is JSON `null`, never 503 (`account.activity.fiat_failed` still 200). Empty activity is 200 zeros with USD-only `fx.quotes` (no Coinbase / Frankfurter). Given = confirmed forum zaps this account paid on notes that are not loans, excluding repay: repayment invoices, plus outbound house gifts of kind daily and welcome when isPlatform is true. Moderator stipends (kind === 'moderator') are omitted. Received = indexed zaps on authored notes that are not loans (including hidden notes and replies), plus message.sats remainder on top-level non-loan notes only (a loan note is omitted entirely, including a hidden one; gift-as-reply sats are not Received), plus house gifts of kind daily and welcome to the account's recipient handle (its username, matched only once the wallet is verified; the stored external address is not used). A loan is a note with goalRepayable === true. An unknown note (getById undefined) still counts as a donation. Forum zaps are not mixed into GET /gifts/stats.
+
+### `GET /me/loans`
+
+Bearer required. The member's own loans in one call: their live repayable asks (top-level notes with `goalRepayable` true and a term, not hidden) that are still collecting or not fully repaid, newest first. A funded loan whose every share is paid is left out. Read-only; a local Sunday does not refuse it.
+
+Success → **Response** `200`:
+
+```json
+{
+  "sundayRest": false,
+  "loans": [
+    {
+      "messageId": "<uuid>",
+      "text": "first 160 characters of the note",
+      "createdAt": "2026-09-20T00:00:00.000Z",
+      "goalSats": 30000,
+      "sats": 30000,
+      "goalCurrency": "BTC",
+      "goalAmount": "30000",
+      "goalAmountUsd": null,
+      "goalAmountChf": null,
+      "goalAmountEur": null,
+      "goalAmountPhp": null,
+      "amountUsd": null,
+      "amountChf": null,
+      "amountEur": null,
+      "amountPhp": null,
+      "termDays": 30,
+      "fundedAt": "2026-09-26T12:00:00.000Z",
+      "daysDue": 12,
+      "daysPaid": 11,
+      "repaidSats": 11000,
+      "totalSats": 30000,
+      "due": {
+        "payableSats": 800,
+        "payableAmount": null,
+        "payablePeople": 2,
+        "waitingSats": 200,
+        "waitingAmount": null,
+        "waitingPeople": 1,
+        "behindDays": 0,
+        "lastPayment": false
+      },
+      "next": { "dueOn": "2026-10-09", "sats": 1000, "amount": null }
+    }
+  ]
+}
+```
+
+- `text` is the first 160 characters of the note. `goalCurrency` is the ask currency (`BTC` when none is stored) and `goalAmount` the typed amount (the goal sats when none is stored). The `goalAmount*` and `amount*` keys are the stored ask snapshots and collected totals, as on the public note.
+- `fundedAt` is null while the loan is still collecting; such a loan has `daysDue` 0, `daysPaid` 0, `repaidSats` 0, zero `due` counts, and `next: null`.
+- `daysDue` and `daysPaid` are those of `GET /messages/:id/repayment`. `repaidSats` is the sum of settled shares. `totalSats` is `repaidSats` plus every unpaid share in sats.
+- `due` covers every due, unpaid share. `payable*` are the shares whose lender can receive (the ones `POST /messages/:id/repayment/due` bills), `waiting*` the shares whose lender cannot. `*People` counts distinct lenders. `behindDays` is the number of due days before today that still have an unpaid share. `lastPayment` is true when paying `payable` would finish the loan.
+- `next` is the next repayment day after the due days: `dueOn` (`YYYY-MM-DD` UTC), its sats, and its amount; null when no later day remains.
+- `*Amount` and `amount` are two-decimal strings in the loan's currency for a fiat loan, else `null`. For a fiat loan every sat figure that is not yet paid (`totalSats`, `payableSats`, `waitingSats`, `next.sats`) is priced at the rate `POST /messages/:id/repayment` would use now, and is `null` without a rate.
+- `sundayRest` is true when the device `Time-Zone` names a zone that is in Sunday: the existing rule, under which repayments are refused today.
+
+Missing/invalid bearer → **Response** `401` `{ "error": "Unauthorized" }`.
+A loan whose debt cannot be computed → **503** `{ "error": "Ask amount is unavailable" }`.
+Store failure → **503** `{ "error": "Messages are unavailable" }` (logs `me.loans.failed`).
 
 ### `POST /me/wallet-backup-seen`
 
@@ -5040,7 +5100,8 @@ Success → **Response** `200`:
       "name": "Ada",
       "username": "ada",
       "givenSats": 21,
-      "givenAmount": null
+      "givenAmount": null,
+      "canReceive": true
     }
   ],
   "repayments": [
@@ -5053,7 +5114,8 @@ Success → **Response** `200`:
       "amount": null,
       "sats": 21,
       "status": "scheduled",
-      "via": "lightning"
+      "via": "lightning",
+      "dueSats": null
     }
   ],
   "next": null
@@ -5066,7 +5128,7 @@ Fiat amount or gift-day rate missing → **503** `{ "error": "Ask amount is unav
 
 ### `POST /messages/:id/repayment`
 
-Author pays the next giver share from their own wallet. Bearer session required. No body. A missing or invalid Bearer is **401** `{ "error": "Unauthorized" }`, including when `:id` is not a UUID. After a valid session, a non-UUID `:id` is **404** `{ "error": "Not found" }`. The author pays the returned BOLT11. The description is `repay:<day>:<accountId>`. When that zap is indexed, the share is stored on `message_repayment` and `message.sats` does not rise. A repeat for the same unpaid share returns the outstanding invoice instead of minting another, including when the sat price of that fiat share has moved.
+Author pays the next giver share from their own wallet. Bearer session required. No body. A missing or invalid Bearer is **401** `{ "error": "Unauthorized" }`, including when `:id` is not a UUID. After a valid session, a non-UUID `:id` is **404** `{ "error": "Not found" }`. The share is the oldest due, unpaid share (oldest day first, then the order of the repayment list) whose giver can receive; a share whose giver cannot receive is skipped, so that giver does not block the others. The author pays the returned BOLT11. The description is `repay:<day>:<accountId>`. When that zap is indexed, the share is stored on `message_repayment` and `message.sats` does not rise. A repeat for the same unpaid share returns the outstanding invoice instead of minting another, including when the sat price of that fiat share has moved.
 
 Success → **Response** `200`:
 
@@ -5092,7 +5154,7 @@ Missing or invalid Bearer → **401** `{ "error": "Unauthorized" }`, including w
 Unknown id, a non-UUID after a valid session, a note that is not a live repayable ask, a credit that is not funded yet, or a caller who is not the author → **404** `{ "error": "Not found" }`. GET of that same unfunded credit stays **200**.
 Nothing left to pay → **400** `{ "error": "Nothing is due" }`.
 Note not payable yet → **400** `{ "error": "This message cannot be paid yet" }`.
-Giver without a receiving address → **400** `{ "error": "A giver has no Lightning address", "code": "cannot_receive" }`.
+Every due share belongs to a giver without a receiving address → **400** `{ "error": "A giver has no Lightning address", "code": "cannot_receive" }`. The same answer comes when the picked giver has lost the receiving address by the time the invoice is made (the pay-time check stays).
 Giver without a Nostr key → **400** `{ "error": "A giver has no Lightning address" }` (no `code`).
 An open invoice for this share minted for another address → **409** `{ "error": "A payment for this share is still open" }`.
 Recipient wallet cannot take the payment → **400** `{ "error": "The recipient's wallet cannot receive this Bitcoin payment", "code": "cannot_receive" }`.
@@ -5102,6 +5164,53 @@ Device `Time-Zone` in Sunday → **403** `{ "error": "SUNDAY_REST" }`. A missing
 Over-limit → **429** `{ "error": "Too many payments" }`.
 Fiat share cannot be priced → **503** `{ "error": "Ask amount is unavailable" }`.
 Signing keys missing or the invoice attempt cannot be stored → **503** `{ "error": "Messages are unavailable" }`.
+
+### `POST /messages/:id/repayment/due`
+
+Every payable repayment bill of one loan at once, so the author's in-app wallet can pay them without a request per share. Bearer session required. No body. The guards are those of `POST /messages/:id/repayment`: session, `forum.pay`, a live funded repayable ask written by the caller, Sunday rest, and the repayment invoice limiter.
+
+Success → **Response** `200`:
+
+```json
+{
+  "bills": [
+    {
+      "dayIndex": 3,
+      "recipientAccountId": "<uuid>",
+      "name": "Bruno",
+      "username": "bruno",
+      "amountSats": 500,
+      "amount": null,
+      "pr": "lnbc…",
+      "sparkInvoice": "spark1…"
+    }
+  ],
+  "waiting": [
+    {
+      "dayIndex": 3,
+      "recipientAccountId": "<uuid>",
+      "name": "Diego",
+      "username": "diego",
+      "amountSats": 200,
+      "amount": null
+    }
+  ]
+}
+```
+
+`bills` has one entry for every due (day index below `daysDue`), unpaid share whose giver can receive, oldest day first, then the order of the repayment list. Each bill is made exactly as `POST /messages/:id/repayment` makes it: a zap request tagging the credit note, description `repay:<day>:<accountId>`, a BOLT11 from the giver's wallet, a stored invoice attempt, and `sparkInvoice` when free in-app payments are on (else `null`, see [Free in-app payments](#free-in-app-payments)). An open, still-payable bill for the same share is returned again, never a second one. `waiting` lists the due, unpaid shares whose giver cannot receive (no verified wallet, or the giver's wallet refuses the zap); no bill is made for them. `amountSats` is the share in sats (a fiat share is priced at the rate of `POST /messages/:id/repayment`); `amount` is the share as a two-decimal string in the loan's currency for a fiat loan, else `null`. Nothing due → **200** with both lists empty.
+
+At most **60** bills per call. The remaining payable shares come on the next call. The repayment invoice limiter is asked once per call, by the first bill that has to be minted; a call that only returns open bills does not ask it.
+
+Settlement is unchanged: the zap receipt, or the Spark invoice worker for a paid `sparkInvoice`, stores each paid share on `message_repayment`.
+
+Missing or invalid Bearer → **401** `{ "error": "Unauthorized" }`, including when `:id` is not a UUID.
+Unknown id, a non-UUID after a valid session, a note that is not a live repayable ask, a credit that is not funded yet, or a caller who is not the author → **404** `{ "error": "Not found" }`.
+Author missing forum pay → **409** `{ "error": "missing_requirements", "missing": ["rules"] }`.
+Device `Time-Zone` in Sunday → **403** `{ "error": "SUNDAY_REST" }`. A missing, blank, or invalid zone does not refuse.
+Over-limit → **429** `{ "error": "Too many payments" }` (`Retry-After: 10`).
+Debt or a fiat share cannot be priced → **503** `{ "error": "Ask amount is unavailable" }`.
+Any other error of `POST /messages/:id/repayment` while making a bill (`This message cannot be paid yet`, a giver without a Nostr key, `A payment for this share is still open`, `Could not start the Bitcoin payment`, `Messages are unavailable`) answers the whole call with that status and body. Bills minted before it stay stored and are returned again on the next call.
 
 ### `GET /messages/:id/photo`
 
@@ -6308,6 +6417,7 @@ wallet:
 
 Used by `POST /messages/:id/invoice` (forum gift and compose-target posting
 fee), `POST /conversations/:id/invoice`, `POST /messages/:id/repayment`,
+`POST /messages/:id/repayment/due`, `canReceive` on `GET /messages/:id/repayment`, `GET /me/loans`,
 `GET /pay/:username`, `POST /pay/:username/invoice`, `POST /pos`, the
 `payable` flag on forum and member feeds, account JSON `lightningAddress`
 (owner, public card, member card, funding detail, debug), spend pings, the
