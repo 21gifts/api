@@ -278,6 +278,7 @@ function throwingStore(overrides: Partial<MessageStore> = {}): MessageStore {
     zapPaymentReceiptId: boom,
     recordZapReceipt: boom,
     recordInvoiceAttempt: boom,
+    heartStats: boom,
     listInvoiceAttempts: boom,
     listRecentOkInvoiceAttempts: boom,
     recordZapIngest: boom,
@@ -4107,6 +4108,7 @@ describe('POST /messages', () => {
       recordZapReceipt: (receiptId, messageId, sats, delta) =>
         base.recordZapReceipt(receiptId, messageId, sats, delta),
       recordInvoiceAttempt: (row) => base.recordInvoiceAttempt(row),
+      heartStats: (ids, viewer) => base.heartStats(ids, viewer),
       listInvoiceAttempts: (limit) => base.listInvoiceAttempts(limit),
       listRecentOkInvoiceAttempts: (since, limit) => base.listRecentOkInvoiceAttempts(since, limit),
       recordZapIngest: (row) => base.recordZapIngest(row),
@@ -4243,6 +4245,7 @@ describe('POST /messages', () => {
       recordZapReceipt: (receiptId, messageId, sats, delta) =>
         base.recordZapReceipt(receiptId, messageId, sats, delta),
       recordInvoiceAttempt: (row) => base.recordInvoiceAttempt(row),
+      heartStats: (ids, viewer) => base.heartStats(ids, viewer),
       listInvoiceAttempts: (limit) => base.listInvoiceAttempts(limit),
       listRecentOkInvoiceAttempts: (since, limit) => base.listRecentOkInvoiceAttempts(since, limit),
       recordZapIngest: (row) => base.recordZapIngest(row),
@@ -6294,6 +6297,7 @@ describe('POST /messages/:id/invoice', () => {
       recordInvoiceAttempt: async () => {
         throw new Error('persist boom');
       },
+      heartStats: (ids, viewer) => base.heartStats(ids, viewer),
       listInvoiceAttempts: (limit) => base.listInvoiceAttempts(limit),
       listRecentOkInvoiceAttempts: (since, limit) => base.listRecentOkInvoiceAttempts(since, limit),
       recordZapIngest: (row) => base.recordZapIngest(row),
@@ -6836,6 +6840,8 @@ describe('GET /messages/:id', () => {
       videoContentType: null,
       via: 'nostr',
       replyCount: 0,
+      heartCount: 0,
+      hearted: false,
     });
     expect(body).not.toHaveProperty('role');
     expect(body).not.toHaveProperty('accountId');
@@ -8158,6 +8164,7 @@ describe('GET /messages/:id/replies', () => {
       listReplies: async () => [member, damusOnly],
       listRecentReplies: async () => [],
       deleteById: (id) => base.deleteById(id),
+      heartStats: (ids, viewer) => base.heartStats(ids, viewer),
     });
     const res = await mount(auth, store).request(`/messages/${parentId}/replies`, {
       headers: AUTH,
@@ -8398,6 +8405,7 @@ describe('GET /messages/:id/replies', () => {
         );
       },
       listRecentReplies: (limit) => store.listRecentReplies(limit),
+      heartStats: (ids, viewer) => store.heartStats(ids, viewer),
     });
     const res = await mount(auth, wrapped).request(`/messages/${parentId}/replies`, {
       headers: AUTH,

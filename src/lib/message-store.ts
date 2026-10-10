@@ -53,6 +53,9 @@ export type ShopNoteRef = { id: string; accountId: string; text: string };
 
 const MAX_PUBLISH_ATTEMPTS = 5;
 
+/** Canonical UUID text, the only shape allowed into a `uuid[]` array literal. */
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 interface PaymentFiatStoreOptions {
   fetchImpl?: FetchFn;
   fiatRates?: FiatRateBook;
@@ -1071,6 +1074,24 @@ export interface MessageStore {
 
   /** Append one POST /messages/:id/invoice attempt (success or failure). */
   recordInvoiceAttempt(row: MessageInvoiceAttempt): Promise<void>;
+
+  /**
+   * Claimed 1-sat hearts per message, plus whether `viewerAccountId` sent at
+   * least one of them.
+   *
+   * A heart counts only when the invoice is a heart, `result` is `ok`, the
+   * payment hash is set, and that lowercase hash is claimed in
+   * `nostr_zap_payment`. An empty `messageIds` list returns an empty map
+   * without a query. Ids with no matching heart are omitted.
+   *
+   * @param messageIds - Forum message ids to count.
+   * @param viewerAccountId - Session account id, or `null` when unsigned.
+   * @returns Per-id `{ heartCount, hearted }`. Missing ids have no entry.
+   */
+  heartStats(
+    messageIds: readonly string[],
+    viewerAccountId: string | null,
+  ): Promise<Map<string, { heartCount: number; hearted: boolean }>>;
 
   /** Newest invoice attempts first, capped at `limit`. */
   listInvoiceAttempts(limit: number): Promise<MessageInvoiceAttempt[]>;
@@ -3734,6 +3755,43 @@ export class InMemoryMessageStore implements MessageStore {
   recordInvoiceAttempt(row: MessageInvoiceAttempt): Promise<void> {
     this.#invoiceAttempts.push(copyInvoiceAttempt(row));
     return Promise.resolve();
+  }
+
+  /**
+   * Count claimed hearts on invoice attempts whose payment hash is in
+   * `#zapPayments`. Empty `messageIds` returns before the scan.
+   *
+   * @param messageIds - Forum message ids to count.
+   * @param viewerAccountId - Session account id, or `null` when unsigned.
+   * @returns Per-id `{ heartCount, hearted }`. Missing ids have no entry.
+   */
+  heartStats(
+    messageIds: readonly string[],
+    viewerAccountId: string | null,
+  ): Promise<Map<string, { heartCount: number; hearted: boolean }>> {
+    if (messageIds.length === 0) {
+      return Promise.resolve(new Map());
+    }
+    const wanted = new Set(messageIds);
+    const stats = new Map<string, { heartCount: number; hearted: boolean }>();
+    for (const row of this.#invoiceAttempts) {
+      if (row.heart !== true || row.result !== 'ok' || row.paymentHash === null) {
+        continue;
+      }
+      if (!this.#zapPayments.has(row.paymentHash.toLowerCase())) {
+        continue;
+      }
+      if (!wanted.has(row.messageId)) {
+        continue;
+      }
+      const current = stats.get(row.messageId);
+      const heartCount = current === undefined ? 1 : current.heartCount + 1;
+      const alreadyHearted = current !== undefined && current.hearted;
+      const hearted =
+        alreadyHearted || (viewerAccountId !== null && row.payerAccountId === viewerAccountId);
+      stats.set(row.messageId, { heartCount, hearted });
+    }
+    return Promise.resolve(stats);
   }
 
   listInvoiceAttempts(limit: number): Promise<MessageInvoiceAttempt[]> {
@@ -6734,6 +6792,53 @@ export class PostgresMessageStore implements MessageStore {
         row.heart === true,
       ],
     );
+  }
+
+  /**
+   * Count claimed hearts with one join of `message_invoice` to
+   * `nostr_zap_payment`. Only well-formed UUIDs go into `$1::uuid[]`.
+   *
+   * @param messageIds - Forum message ids to count.
+   * @param viewerAccountId - Session account id, or `null` when unsigned.
+   * @returns Per-id `{ heartCount, hearted }`. Missing ids have no entry.
+   */
+  async heartStats(
+    messageIds: readonly string[],
+    viewerAccountId: string | null,
+  ): Promise<Map<string, { heartCount: number; hearted: boolean }>> {
+    if (messageIds.length === 0) {
+      return new Map();
+    }
+    const uuids = messageIds.filter((id) => UUID_RE.test(id));
+    if (uuids.length === 0) {
+      return new Map();
+    }
+    const rows = await this.#sql.query<{
+      message_id: string;
+      heart_count: number | string;
+      hearted: boolean | string | null;
+    }>(
+      `SELECT i.message_id,
+              COUNT(*)::int AS heart_count,
+              BOOL_OR($2::uuid IS NOT NULL AND i.payer_account_id = $2::uuid) AS hearted
+       FROM message_invoice i
+       INNER JOIN nostr_zap_payment p
+         ON p.payment_hash = lower(i.payment_hash)
+       WHERE i.heart = true
+         AND i.result = 'ok'
+         AND i.payment_hash IS NOT NULL
+         AND i.message_id = ANY($1::uuid[])
+       GROUP BY i.message_id`,
+      [postgresTextArrayLiteral(uuids), viewerAccountId],
+    );
+    const stats = new Map<string, { heartCount: number; hearted: boolean }>();
+    for (const row of rows) {
+      stats.set(row.message_id, {
+        heartCount: Number(row.heart_count),
+        hearted: row.hearted === true || row.hearted === 't',
+      });
+    }
+    return stats;
   }
 
   async listInvoiceAttempts(limit: number): Promise<MessageInvoiceAttempt[]> {

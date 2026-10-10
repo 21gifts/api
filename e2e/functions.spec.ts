@@ -939,6 +939,11 @@ test('Function: serializeMessage — GET /messages without bearer is 401', async
   expect(res.status()).toBe(401);
 });
 
+test('Function: attachHeartStats — GET /messages without bearer is 401', async ({ request }) => {
+  const res = await request.get('/messages');
+  expect(res.status()).toBe(401);
+});
+
 test('Function: InMemoryMessageStore — GET /messages without bearer is 401', async ({
   request,
 }) => {
