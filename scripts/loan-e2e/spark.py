@@ -527,14 +527,15 @@ async def command_sweep(role: str, address: str) -> None:
         sent_amount = await sweep_integers(role, secret, address, deadline)
         if sent_amount < 0:
             continue
-        if sent_amount == 0 and leaf_values(role, reserved=True):
-            # A refused size started a swap that now holds the leaves.
+        if sent_amount == 0 and leaf_values(role, reserved=True) != []:
+            # A refused size started a swap that now holds the leaves, or the
+            # leaves could not be read; the next round waits and reads again.
             continue
         if sent_amount == 0 and seen <= 64:
             # One connection already tried every size. A fresh connection
             # per amount is only worth it for a small remainder.
             sent_amount = await sweep_one_fresh(role, secret, address, seen, deadline) or 0
-            if sent_amount == 0 and leaf_values(role, reserved=True):
+            if sent_amount == 0 and leaf_values(role, reserved=True) != []:
                 continue
         if sent_amount == 0:
             print(f"sweep could not move {seen}; {leaf_text(role)}", file=sys.stderr)
