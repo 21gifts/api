@@ -501,6 +501,8 @@ async def command_sweep(role: str, address: str) -> None:
                 return
             sent = False
             for amount in sweep_amounts(balance):
+                if seconds_left(deadline) < ATTEMPT_RESERVE_S:
+                    break
                 if await send_amount(sdk, address, amount):
                     moved += amount
                     sent = True
