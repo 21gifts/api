@@ -86,7 +86,12 @@ import { resolveVapidConfig } from '@/lib/push-config';
 import { InMemoryPushStore, type PushStore } from '@/lib/push-store';
 import { InMemoryTrustStore, type TrustStore } from '@/lib/trust-store';
 import { InMemoryFundingStore, type FundingStore } from '@/lib/funding-store';
-import { PostRateLimiter } from '@/lib/nostr/rate-limit';
+import {
+  InvoiceRateLimiter,
+  PostRateLimiter,
+  resolveTestInvoiceRateCaps,
+  type InvoiceRateCaps,
+} from '@/lib/nostr/rate-limit';
 import {
   resolveAllowedOrigins,
   resolveFreePaymentsConfig,
@@ -231,6 +236,13 @@ export interface AppDeps {
    * `messagesRoutes` and the Nostr worker.
    */
   postLimiter?: PostRateLimiter;
+  /**
+   * Test-only invoice caps for gift and repayment minting (default:
+   * {@link resolveTestInvoiceRateCaps} on the same `env` `createApp`
+   * already resolves). `null` or a resolver miss leaves the process-wide
+   * default limiters (1/10s, 20/h).
+   */
+  invoiceRateCaps?: InvoiceRateCaps | null;
   /** Gift invoices issued for the spend worker (default: in-memory). */
   invoiceStore?: InvoiceStore;
   /**
@@ -409,7 +421,9 @@ function debugList(store: object, limit: number): Promise<unknown[]> {
  *   {@link InMemoryDailyRosterStore}, shared by funding routes,
  *   `POST /spend/daily-instruction`, and the default spend ping), postLimiter
  *   (optional; default `new PostRateLimiter()`, shared with `messagesRoutes`
- *   and the Nostr worker), gift invoice store, listDbChange,
+ *   and the Nostr worker), invoiceRateCaps (optional; default
+ *   {@link resolveTestInvoiceRateCaps} on env; non-null injects gift and
+ *   repayment invoice limiters), gift invoice store, listDbChange,
  *   diagnosticStore (optional; default {@link InMemoryDiagnosticStore};
  *   mounts `POST /diagnostics` and `GET /debug/diagnostics`),
  *   walletStore (optional; default {@link InMemoryWalletStore}; mounts
@@ -437,6 +451,13 @@ export function createApp(deps: AppDeps = {}): Hono {
   const fxSpotStore = deps.fxSpotStore ?? new InMemoryFxSpotStore();
   const messageStore = deps.messageStore ?? new InMemoryMessageStore();
   const env = deps.env ?? process.env;
+  const invoiceRateCaps =
+    deps.invoiceRateCaps === undefined ? resolveTestInvoiceRateCaps(env) : deps.invoiceRateCaps;
+  if (invoiceRateCaps !== null) {
+    console.warn(
+      `test invoice rate caps burst=${invoiceRateCaps.burstCap}/10s hour=${invoiceRateCaps.hourCap}/h`,
+    );
+  }
   const lnurlServer = resolveLnurlServerConfig(env);
   const receivingDeps = lnurlServer === null ? {} : { lnurlServer };
   const sparkInvoices =
@@ -836,6 +857,12 @@ export function createApp(deps: AppDeps = {}): Hono {
       ...(deps.nostrRelayUrls === undefined ? {} : { nostrRelayUrls: deps.nostrRelayUrls }),
       ...(spendPing === undefined ? {} : { spendPing }),
       postLimiter,
+      ...(invoiceRateCaps === null
+        ? {}
+        : {
+            invoiceLimiter: new InvoiceRateLimiter(invoiceRateCaps),
+            repaymentLimiter: new InvoiceRateLimiter(invoiceRateCaps),
+          }),
     }),
   );
   app.route(

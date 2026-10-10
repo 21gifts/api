@@ -60,6 +60,11 @@ export interface RepaymentDeps {
   lnurlServer?: LnurlServerConfig;
   /** Issued Spark invoices; omitted when free in-app payments are off. */
   sparkInvoices?: SparkInvoiceStore;
+  /**
+   * Test-only override of the process-wide invoice limiter. Omitted → the
+   * module limiter (1/10s, 20/h).
+   */
+  repaymentLimiter?: InvoiceRateLimiter;
 }
 
 const limiter = new InvoiceRateLimiter();
@@ -293,7 +298,7 @@ export async function repaymentInvoice(deps: RepaymentDeps, c: Context): Promise
           });
     return c.json({ pr: outstanding.pr, amountSats: outstanding.amountSats, sparkInvoice }, 200);
   }
-  if (!limiter.allow(opened.account.id, opened.nowMs)) {
+  if (!(deps.repaymentLimiter ?? limiter).allow(opened.account.id, opened.nowMs)) {
     c.header('Retry-After', '10');
     return c.json({ error: 'Too many payments' }, 429);
   }

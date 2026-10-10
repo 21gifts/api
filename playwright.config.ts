@@ -26,6 +26,8 @@ export default defineConfig({
       LNURL_SERVER_URL: '',
       LNURL_ZAP_NSEC_HEX: '',
       SPARK_OPERATOR_URL: '',
+      TEST_INVOICE_BURST_CAP: '',
+      TEST_INVOICE_HOUR_CAP: '',
       DATABASE_URL: '',
       NOSTR_NSEC_KEK: '',
       NOSTR_PUBLISH: '',

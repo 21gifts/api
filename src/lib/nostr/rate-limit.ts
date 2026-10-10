@@ -33,6 +33,20 @@ export const INVOICE_BURST_CAP = 1;
 /** Max invoices per sliding hour. */
 export const INVOICE_HOUR_CAP = 20;
 
+/** Per-account invoice caps. */
+export interface InvoiceRateCaps {
+  /** Max invoices per sliding 10s. */
+  burstCap: number;
+  /** Max invoices per sliding hour. */
+  hourCap: number;
+}
+
+/** Highest value `resolveTestInvoiceRateCaps` accepts for either cap. */
+const TEST_INVOICE_CAP_MAX = 100_000;
+
+/** Bind hosts that may honour `TEST_INVOICE_*_CAP`. */
+const LOOPBACK_BIND_HOSTS = new Set(['127.0.0.1', 'localhost', '::1', '[::1]']);
+
 /** Per-note cooldown for hearts: one heart per account and note per 10 s. */
 export const HEART_NOTE_COOLDOWN_MS = 10_000;
 
@@ -128,10 +142,19 @@ export class PostRateLimiter {
 }
 
 /**
- * In-process rate limiter for note invoices (1/10s, 20/h).
+ * In-process rate limiter for note invoices (1/10s, 20/h by default).
  */
 export class InvoiceRateLimiter {
   readonly #byAccount = new Map<string, AccountHits>();
+  readonly #caps: InvoiceRateCaps;
+
+  /**
+   * @param caps - Per-account caps (default {@link INVOICE_BURST_CAP} /
+   *   {@link INVOICE_HOUR_CAP}).
+   */
+  constructor(caps: InvoiceRateCaps = { burstCap: INVOICE_BURST_CAP, hourCap: INVOICE_HOUR_CAP }) {
+    this.#caps = caps;
+  }
 
   /**
    * Check and record an invoice attempt.
@@ -145,7 +168,7 @@ export class InvoiceRateLimiter {
     const hits = this.#hits(accountId);
     const bursts = hits.bursts.filter((t) => nowMs - t < INVOICE_BURST_WINDOW_MS);
     const hours = hits.hours.filter((t) => nowMs - t < INVOICE_HOUR_WINDOW_MS);
-    if (bursts.length >= INVOICE_BURST_CAP || hours.length >= INVOICE_HOUR_CAP) {
+    if (bursts.length >= this.#caps.burstCap || hours.length >= this.#caps.hourCap) {
       return false;
     }
     bursts.push(nowMs);
@@ -178,6 +201,71 @@ export class InvoiceRateLimiter {
       }
     }
   }
+}
+
+/**
+ * Host of `BIND_ADDR` (`host:port`); unset or blank is `0.0.0.0`.
+ *
+ * @param bindAddr - Raw `BIND_ADDR`.
+ * @returns Text before the last `:`, or `0.0.0.0`.
+ */
+function bindAddrHost(bindAddr: string | undefined): string {
+  if (bindAddr === undefined || bindAddr === '') {
+    return '0.0.0.0';
+  }
+  const sep = bindAddr.lastIndexOf(':');
+  return sep === -1 ? bindAddr : bindAddr.slice(0, sep);
+}
+
+/**
+ * Parse one test invoice cap.
+ *
+ * @param raw - Trimmed env value; blank uses `min`.
+ * @param name - Env var name for the error.
+ * @param min - Default and lower bound.
+ * @returns The parsed cap.
+ * @throws If the value is not an integer from `min` to 100000.
+ */
+function parseTestInvoiceCap(raw: string, name: string, min: number): number {
+  if (raw === '') {
+    return min;
+  }
+  const n = Number.parseInt(raw, 10);
+  if (!/^\d+$/.test(raw) || n < min || n > TEST_INVOICE_CAP_MAX) {
+    throw new Error(`${name} must be an integer from ${min} to ${TEST_INVOICE_CAP_MAX}`);
+  }
+  return n;
+}
+
+/**
+ * Resolve test-only invoice caps from the environment.
+ *
+ * Honoured only on a local test boot: the host of `BIND_ADDR` is a loopback
+ * address and `WEBAUTHN_RP_ID` is `localhost`. Both variables unset or blank
+ * yields `null` (default caps). The gate is checked before any parse, so a
+ * production boot ignores malformed values.
+ *
+ * @param env - Environment slice (injected so tests need not mutate process env).
+ * @returns Caps for {@link InvoiceRateLimiter}, or `null` to keep defaults.
+ * @throws If a gated boot has a value that is not an integer from the default
+ *   through 100000.
+ */
+export function resolveTestInvoiceRateCaps(
+  env: Record<string, string | undefined>,
+): InvoiceRateCaps | null {
+  const burstRaw = (env['TEST_INVOICE_BURST_CAP'] ?? '').trim();
+  const hourRaw = (env['TEST_INVOICE_HOUR_CAP'] ?? '').trim();
+  if (burstRaw === '' && hourRaw === '') {
+    return null;
+  }
+  const host = bindAddrHost(env['BIND_ADDR']);
+  if (!LOOPBACK_BIND_HOSTS.has(host) || env['WEBAUTHN_RP_ID']?.trim() !== 'localhost') {
+    return null;
+  }
+  return {
+    burstCap: parseTestInvoiceCap(burstRaw, 'TEST_INVOICE_BURST_CAP', INVOICE_BURST_CAP),
+    hourCap: parseTestInvoiceCap(hourRaw, 'TEST_INVOICE_HOUR_CAP', INVOICE_HOUR_CAP),
+  };
 }
 
 /** Per-account heart timestamps: last heart per note plus the sliding hour. */
