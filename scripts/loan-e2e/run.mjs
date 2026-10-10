@@ -1115,31 +1115,34 @@ function payFundingChunk(role, left) {
  */
 function fundGiverWallets() {
   for (const giver of GIVERS) {
-    const balance = readBalance(giver.role);
-    if (balance === null) {
-      fail(`could not read ${giver.role} balance`);
-    }
-    let left = giver.sats - balance;
+    let left = shortfall(giver);
     if (left > 0) {
+      const wanted = left;
       let invoice = spark(['invoice', giver.role, String(left)]).trim();
       let paid = sparkTry(['pay', 'funding', invoice]);
       if (!paid.ok) {
-        sparkTry(['consolidate', 'funding']);
-        invoice = spark(['invoice', giver.role, String(left)]).trim();
-        paid = sparkTry(['pay', 'funding', invoice]);
+        // A payment can complete even when its helper reports a failure, so
+        // only the shortfall that is still missing is paid again.
+        left = shortfall(giver);
+        if (left > 0) {
+          sparkTry(['consolidate', 'funding']);
+          invoice = spark(['invoice', giver.role, String(left)]).trim();
+          paid = sparkTry(['pay', 'funding', invoice]);
+        }
       }
       if (paid.ok) {
-        process.stdout.write(`funded ${giver.role} ${left} in one payment\n`);
+        process.stdout.write(`funded ${giver.role} ${wanted} in one payment\n`);
+      } else if (left <= 0) {
+        process.stdout.write(`funded ${giver.role} ${wanted}; the reported failure had arrived\n`);
       } else {
         process.stderr.write(
           `funding could not pay ${left} in one payment: ${lastLine(paid.error)}; splitting\n`,
         );
-        while (left > 0) {
+        for (left = shortfall(giver); left > 0; left = shortfall(giver)) {
           const size = payFundingChunk(giver.role, left);
           if (size === 0) {
             fail(`could not fund ${giver.role}, ${left} still to send`);
           }
-          left -= size;
           process.stdout.write(`split ${giver.role} ${size}\n`);
         }
       }
@@ -1152,6 +1155,20 @@ function fundGiverWallets() {
       fail(`${giver.role} balance is ${funded}, need ${giver.sats}`);
     }
   }
+}
+
+/**
+ * Sats the giver still needs before its gift, from a double-checked balance.
+ *
+ * @param {{ role: string, sats: number }} giver
+ * @returns {number}
+ */
+function shortfall(giver) {
+  const balance = readBalance(giver.role);
+  if (balance === null) {
+    fail(`could not read ${giver.role} balance`);
+  }
+  return giver.sats - balance;
 }
 
 /**

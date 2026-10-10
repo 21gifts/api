@@ -67,7 +67,9 @@ about five minutes, during which no payment from that wallet can select them. Op
 where a command waits for it to finish. If a wallet still has reserved leaves, a payment retry or a
 sweep waits for the reservation to end instead of failing.
 
-After a finished cycle, and after a failed one once the wallets are set up, the harness sweeps every
-party back to the funding wallet. A wallet that still holds sats gets up to two more rounds, 30 s
-apart, and every wallet must end at 0. It then consolidates the funding wallet, removes the test
-database, and clears stale session state. Wallet files remain for the next run.
+After a finished cycle the harness sweeps every party back to the funding wallet; a wallet that
+still holds sats gets up to two more rounds, 30 s apart, and the cycle only passes when every wallet
+ends at 0 and the funding wallet holds at least 1000 sats again. After a failed cycle, once the
+wallets are set up, the same sweep runs as a best effort and logs any wallet it could not empty. In
+both cases the harness then consolidates the funding wallet, removes the test database, and clears
+stale session state. Wallet files remain for the next run.

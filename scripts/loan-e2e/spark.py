@@ -192,12 +192,23 @@ async def wait_unreserved(role: str, secret: str, deadline: float) -> None:
     refreshing, about five minutes after the reservation was made. Retrying
     a payment inside that window fails leaf selection every time. Waiting,
     including the syncs in between, stops at ``deadline`` (a monotonic time).
+    An unreadable leaf snapshot is read again; after three unreadable reads
+    in a row the reservation state stays unknown and the wait ends.
     """
+    unread = 0
     while seconds_left(deadline) > 0:
         held = leaf_values(role, reserved=True)
-        if not held:
+        if held == []:
             return
-        print(f"waiting for reserved leaves {held} of {role}", file=sys.stderr)
+        if held is None:
+            unread += 1
+            if unread >= 3:
+                print(f"leaves of {role} unread; not waiting", file=sys.stderr)
+                return
+            print(f"leaves of {role} unread; reading again", file=sys.stderr)
+        else:
+            unread = 0
+            print(f"waiting for reserved leaves {held} of {role}", file=sys.stderr)
         await asyncio.sleep(min(20.0, max(0.0, seconds_left(deadline))))
         if seconds_left(deadline) <= 0:
             return
