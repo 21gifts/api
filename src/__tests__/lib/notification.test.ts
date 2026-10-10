@@ -6,6 +6,7 @@ import {
   enqueueNotificationDismiss,
   fanoutToBellSubscribers,
   isStaffAccount,
+  livingRoomMentionExcludes,
   notifyExternalForumReply,
   notifyForumPost,
   notifyForumReply,
@@ -2335,6 +2336,8 @@ describe('parseNotificationLevel', () => {
     expect(parseNotificationLevel('all')).toBe('all');
     expect(parseNotificationLevel('active')).toBe('active');
     expect(parseNotificationLevel('mentions')).toBe('mentions');
+    expect(parseNotificationLevel('messages')).toBe('messages');
+    expect(parseNotificationLevel('none')).toBe('none');
     expect(parseNotificationLevel('unknown')).toBe('all');
     expect(parseNotificationLevel(1)).toBe('all');
     expect(parseNotificationLevel(null)).toBe('all');
@@ -2422,6 +2425,81 @@ describe('wantsNotification', () => {
           }),
         ).toBe(row.expected[level]);
       }
+    });
+  }
+
+  for (const row of cases) {
+    it(`is true at messages for ${row.name} when mention is omitted`, () => {
+      expect(
+        wantsNotification({
+          level: 'messages',
+          isActive: row.isActive,
+          mentionedAccountId: row.mentionedAccountId,
+          recipientAccountId,
+        }),
+      ).toBe(true);
+    });
+  }
+
+  it('is false at messages when mention is true, including a personal match', () => {
+    expect(
+      wantsNotification({
+        level: 'messages',
+        isActive: false,
+        mentionedAccountId: recipientAccountId,
+        recipientAccountId,
+        mention: true,
+      }),
+    ).toBe(false);
+  });
+
+  it('is false at none with mention omitted and with mention true, including a personal match', () => {
+    for (const row of cases) {
+      expect(
+        wantsNotification({
+          level: 'none',
+          isActive: row.isActive,
+          mentionedAccountId: row.mentionedAccountId,
+          recipientAccountId,
+        }),
+      ).toBe(false);
+      expect(
+        wantsNotification({
+          level: 'none',
+          isActive: row.isActive,
+          mentionedAccountId: row.mentionedAccountId,
+          recipientAccountId,
+          mention: true,
+        }),
+      ).toBe(false);
+    }
+  });
+
+  for (const row of cases) {
+    it(`treats active with mention true as isActive for ${row.name}`, () => {
+      expect(
+        wantsNotification({
+          level: 'active',
+          isActive: row.isActive,
+          mentionedAccountId: row.mentionedAccountId,
+          recipientAccountId,
+          mention: true,
+        }),
+      ).toBe(row.expected.active);
+    });
+  }
+
+  for (const row of cases) {
+    it(`treats mentions with mention true as the personal match for ${row.name}`, () => {
+      expect(
+        wantsNotification({
+          level: 'mentions',
+          isActive: row.isActive,
+          mentionedAccountId: row.mentionedAccountId,
+          recipientAccountId,
+          mention: true,
+        }),
+      ).toBe(row.expected.mentions);
     });
   }
 });
@@ -2898,6 +2976,120 @@ describe('notificationsMatchingLevel', () => {
         parentById,
       }).map((row) => row.id),
     ).toEqual([]);
+  });
+
+  it('keeps a forum_post and drops a forum_mention at messages', () => {
+    const rows: NotificationRow[] = [
+      notification({
+        id: 'n-post',
+        recipientAccountId: 'me',
+        type: 'forum_post',
+        parentId: 'post-1',
+        replyId: 'post-1',
+      }),
+      notification({
+        id: 'n-mark',
+        recipientAccountId: 'me',
+        type: 'forum_mention',
+        parentId: 'post-1',
+        replyId: 'post-1',
+      }),
+    ];
+    const parentById = new Map<string, MessageRow>([
+      [
+        'post-1',
+        message({ id: 'post-1', accountId: 'actor', parentId: null, sats: 0, text: 'hello' }),
+      ],
+    ]);
+    expect(
+      notificationsMatchingLevel({
+        rows,
+        level: 'messages',
+        recipientAccountId: 'me',
+        accounts: [{ id: 'actor', role: 'basis' }],
+        parentById,
+      }).map((row) => row.id),
+    ).toEqual(['n-post']);
+  });
+
+  it('drops stream and mention rows at none and still keeps a heart', () => {
+    const rows: NotificationRow[] = [
+      notification({
+        id: 'n-post',
+        recipientAccountId: 'me',
+        type: 'forum_post',
+        parentId: 'post-1',
+        replyId: 'post-1',
+      }),
+      notification({
+        id: 'n-mark',
+        recipientAccountId: 'me',
+        type: 'forum_mention',
+        parentId: 'post-1',
+        replyId: 'post-1',
+      }),
+      notification({
+        id: 'n-heart',
+        recipientAccountId: 'me',
+        type: 'heart',
+        parentId: 'note-1',
+        replyId: ZAP_REPLY_ID,
+        text: '1',
+      }),
+    ];
+    const parentById = new Map<string, MessageRow>([
+      [
+        'post-1',
+        message({ id: 'post-1', accountId: 'actor', parentId: null, sats: 0, text: 'hello' }),
+      ],
+    ]);
+    expect(
+      notificationsMatchingLevel({
+        rows,
+        level: 'none',
+        recipientAccountId: 'me',
+        accounts: [{ id: 'actor', role: 'basis' }],
+        parentById,
+      }).map((row) => row.id),
+    ).toEqual(['n-heart']);
+  });
+});
+
+describe('livingRoomMentionExcludes', () => {
+  it('omits messages, includes other levels and missing accounts, skips the author, and keeps first-seen order', async () => {
+    const levels: Record<string, 'all' | 'active' | 'mentions' | 'messages' | 'none'> = {
+      'messages-id': 'messages',
+      'all-id': 'all',
+      'active-id': 'active',
+      'mentions-id': 'mentions',
+      'none-id': 'none',
+    };
+    const auth = {
+      getAccount: async (id: string) => {
+        const level = levels[id];
+        if (level === undefined) {
+          return undefined;
+        }
+        return { notificationLevel: level } as Awaited<ReturnType<AuthStore['getAccount']>>;
+      },
+    };
+    const authorId = 'author';
+    const ids = await livingRoomMentionExcludes({
+      auth,
+      authorId,
+      mentions: [
+        { accountId: authorId },
+        { accountId: 'messages-id' },
+        { accountId: 'all-id' },
+        { accountId: 'messages-id' },
+        { accountId: 'active-id' },
+        { accountId: 'none-id' },
+        { accountId: 'mentions-id' },
+        { accountId: 'missing-id' },
+        { accountId: 'all-id' },
+      ],
+    });
+    expect(ids).toEqual(['all-id', 'active-id', 'none-id', 'mentions-id', 'missing-id']);
   });
 });
 

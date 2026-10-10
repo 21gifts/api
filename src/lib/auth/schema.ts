@@ -86,7 +86,7 @@ export const AUTH_SCHEMA_SQL: readonly string[] = [
   `ALTER TABLE account ADD COLUMN IF NOT EXISTS notification_level text NOT NULL DEFAULT 'all'`,
   `ALTER TABLE account DROP CONSTRAINT IF EXISTS account_notification_level_chk`,
   `ALTER TABLE account ADD CONSTRAINT account_notification_level_chk
-    CHECK (notification_level IN ('all', 'active', 'mentions'))`,
+    CHECK (notification_level IN ('all', 'active', 'mentions', 'messages', 'none'))`,
   `ALTER TABLE account ADD COLUMN IF NOT EXISTS amount_unit text NOT NULL DEFAULT 'btc'`,
   `ALTER TABLE account DROP CONSTRAINT IF EXISTS account_amount_unit_chk`,
   `ALTER TABLE account ADD CONSTRAINT account_amount_unit_chk
