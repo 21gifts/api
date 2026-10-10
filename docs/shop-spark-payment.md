@@ -80,15 +80,20 @@ not an amount. `quote.expiration` is UTC, millisecond precision, with a
 is the expiry Orchestra returns for that quote. A quote for an open till
 charge also ends when the charge ends, if that is sooner.
 
-A query value that is not that UUID form, compared case-insensitively, is
-an unknown id.
+The `quote` parameter uses that same form. A value that is not that form,
+compared case-insensitively, is an unknown quote.
 
 ### Pay link
 
-The payment id on the pay link is the query parameter `payment`. The URL
-is `https://<domain>/.well-known/lnurlp/<username>?payment=<uuid>`. The
-path stays `/.well-known/lnurlp/<username>`. This parameter is not the
-`quote` parameter on `callback`.
+The pay link is `https://<domain>/.well-known/lnurlp/<username>`. It
+carries no payment query. The payment page and a wallet both read this
+URL. The page does not build a second one.
+
+The page is opened as `/pl/?lightning=<LNURL>`. It decodes that LNURL
+and fetches the decoded URL. The amounts it shows are `requestedAmount`
+and `transferAmounts` in that response. That is the read the DFX.swiss
+payment page makes of the LNURL it was opened with. An empty result here
+is the Lightning pay request, not a 404, and the fetch does not wait.
 
 ### Callback and proof
 
@@ -97,18 +102,19 @@ When no amount is known, `callback` stays
 segment.
 
 When an amount is known and stablecoin rows are served, `callback` is
-`<PUBLIC_BASE_URL>/lnurlp/cb/<username>/<payment>`. The proof URL is
-`<PUBLIC_BASE_URL>/lnurlp/tx/<username>/<payment>`. The segments `cb` and
-`tx` are literal. `<payment>` is `quote.payment`, not `quote.id`, so a
-refreshed quote keeps the same callback. Replacing the segment `/cb/`
-with `/tx/` leaves the username and the payment id in place. The callback
-has no query string. A wallet appends its query itself. Neither URL is
-`…/lnurlp/<username>/invoice`. `GET /lnurlp/:username/invoice` does not
-take these calls.
+`<PUBLIC_BASE_URL>/lnurlp/cb/<username>`. The proof URL is
+`<PUBLIC_BASE_URL>/lnurlp/tx/<username>`. The segments `cb` and `tx` are
+literal. The username is the path id of the pay link, as the DFX.swiss
+callback uses the payment link's id. Replacing `/cb/` with `/tx/` leaves
+the username in place. `quote.payment` stays in the JSON. It is not a
+path segment and not a query on the pay link. A refreshed quote keeps
+the same callback. The callback has no query string. A wallet appends
+its query itself. Neither URL is `…/lnurlp/<username>/invoice`.
+`GET /lnurlp/:username/invoice` does not take these calls.
 
-`GET /.well-known/lnurlp/:username`, `GET /lnurlp/cb/:username/:payment`,
-and `GET /lnurlp/tx/:username/:payment` take no session. They use the
-headers the pay link already sends: `Access-Control-Allow-Origin: *`,
+`GET /.well-known/lnurlp/:username`, `GET /lnurlp/cb/:username`, and
+`GET /lnurlp/tx/:username` take no session. They use the headers the pay
+link already sends: `Access-Control-Allow-Origin: *`,
 `Access-Control-Allow-Methods: GET, OPTIONS`, and
 `Cache-Control: no-store`.
 
@@ -126,14 +132,17 @@ The call writes a row only when the Orchestra key is configured and
 `account.spark_address` is usable. Otherwise it writes nothing and
 returns **503** `{ "error": "Stablecoin payment is unavailable" }`.
 
-While a till charge is open, the amount is that charge. The call returns
-the one payment for that charge, creating it if it does not exist yet. A
-second call returns the same id. With no till charge, each call creates
-a new payment. It does not pin the pay link, it does not block the next
-payer, and it is not a till charge.
+One pay link has one open amount. While a till charge is pending, the
+amount is that charge. The call returns the one payment for it, creating
+it if it does not exist yet. While no till charge is pending and no
+payment is open, the call creates that one open payment. A later call
+with the same amount returns the same id. A different amount is **400**
+`{ "error": "Enter a whole number of sats" }` and writes nothing.
 
-**Response** `200` `{ "payment": "<uuid>" }`. The page builds the
-deeplink from the pay link plus `?payment=` and that id.
+**Response** `200` `{ "payment": "<uuid>" }`. The page does not display
+this body. It fetches the decoded LNURL again and displays that
+response. A wallet deeplink is `lightning:` plus that same LNURL. It
+does not add a payment query.
 
 ### Rows
 
@@ -145,8 +154,9 @@ not reused for a page payment.
 references `account`. `amount_sats` is a whole sat count of at least 1.
 `status` is `open`, `accepted`, `paid`, or `ended`. `pos_charge_id` is
 nullable, unique, and references `pos_charge` when set. More than one
-null is allowed, so several page payments can exist together. `spark_address`
-is the usable address copied at creation. `created_at` is set.
+null is allowed. At most one row per account has status `open`.
+`spark_address` is the usable address copied at creation. `created_at`
+is set.
 `accepted_at` is set only for `accepted` and `paid`. `paid_at` is set
 only for `paid`. `ended_at` is set only for `ended`. A payment does not
 move from `accepted` to `ended`.
@@ -182,25 +192,29 @@ The api does not invent a fee. The api does not invent a chain. Lightning
 
 ### Errors on the pay link
 
-An unknown payment id, or a payment whose status is `ended`, returns the
-Lightning pay request the pay link already serves. Not **404**. Not the
-till amount. `method` and `asset` on that call do not change this.
+When no payment is open, the pay link returns the Lightning pay request
+it already serves. Not **404**. `method` and `asset` on that call do not
+select a stablecoin.
 
-After `accepted` or `paid`, that payment id returns no `available` entry
-whose value is true, and the response is not that Lightning pay request.
-`method` and `asset` on that call are **400**
-`{ "error": "That payment is not offered" }`.
+While a payment is `open`, a fetch returns its current quote. A lapsed
+quote is replaced for the same sats. The URL does not change.
+
+While a payment is `accepted`, and until it is `paid`, the pay link
+returns no `available` entry whose value is true, and the response is
+not the empty Lightning pay request. `method` and `asset` on that call
+are **400** `{ "error": "That payment is not offered" }`.
+
+When the payment is `paid` or `ended`, the pay link is free. The next
+fetch, with no new amount, is the Lightning pay request.
 
 ### Errors on callback and proof
 
 An unknown username, or a shop with no verified receiving address, is
 **404** `{ "error": "Not found" }`.
 
-On `GET /lnurlp/cb/:username/:payment` or
-`GET /lnurlp/tx/:username/:payment`, an unknown payment, a payment for
-another username, an unknown quote, a quote for another payment, or an
-expired quote is **400** `{ "error": "No such quote" }`. It is not served
-as another quote.
+On `GET /lnurlp/cb/:username` or `GET /lnurlp/tx/:username`, an unknown
+quote, a quote for another username, or an expired quote is **400**
+`{ "error": "No such quote" }`. It is not served as another quote.
 
 A `method` and `asset` pair the quote does not offer is **400**
 `{ "error": "That payment is not offered" }`.
@@ -218,7 +232,7 @@ the reference Orchestra accepted. It is not the payer's transaction hash.
 The call does not wait for bitcoin to arrive. A repeat after acceptance
 is **200** and does not create a second payment.
 
-A Lightning call on `GET /lnurlp/cb/:username/:payment` has no `method`.
+A Lightning call on `GET /lnurlp/cb/:username` has no `method`.
 It sends `amount` in millisats. When that amount is the fixed sat count
 times 1000, the response is `{ "pr": "<bolt11>" }` for those sats. A
 missing or different amount is **400**
@@ -298,15 +312,12 @@ shows the `lightning:` button and no invoice QR. That QR is not a second
 shop address, and it is not the stablecoin deeplink. `displayQr` false
 does not remove it.
 
-The page opens a compatible wallet by a deeplink for the quote the api
-just returned. The deeplink is not printed and is not shown as a code.
-The printed sticker's LNURL encodes the pay link with no payment
-id. The deeplink encodes that same pay link with `?payment=` and the
-payment UUID, so a wallet that only decodes the LNURL and fetches it
-sends the id. The wallet is not given a second address. A fetch without
-that id does not receive another payer's payment. While that payment is
-open and not yet accepted, a later fetch of the same URL returns the
-current quote for those sats.
+The page opens a compatible wallet by a deeplink. The deeplink is
+`lightning:` plus the same LNURL the page decoded. It is not printed and
+is not shown as a code. It does not add a query. A wallet that decodes
+it fetches the same URL the page fetched. The wallet is not given a
+second address. While that payment is open and not yet accepted, a later
+fetch of the same URL returns the current quote for those sats.
 
 The page shows what the api returns. It does not call Orchestra, it does
 not hold a key, and it does not record paid.
@@ -322,24 +333,21 @@ When no amount is known, the response is the Lightning pay request the
 pay link already serves: a minimum, a maximum, the metadata it already
 returns, and its callback, `…/lnurlp/<username>/invoice`. There is no
 stablecoin amount. The response is not an error and does not wait. The
-payment page is where the payer names the amount. A wallet that only
-scans the sticker does not see a quote another payer opened on the page.
+payment page is where the payer names the amount. A wallet that scans
+the sticker fetches this same URL.
 
 ### A known amount
 
-An open till charge is a known amount. When stablecoin rows are served,
-the response is the pay request below, with no payment id on the request.
-Otherwise the pay link keeps today's pinned Lightning request, and its
-callback stays `/lnurlp/<username>/invoice`.
+One open amount on the pay link is a known amount. It is the pending
+till charge when one exists, and otherwise the amount the page
+submitted. When stablecoin rows are served, the response is the pay
+request below. The URL is unchanged. Otherwise the pay link keeps
+today's pinned Lightning request, and its callback stays
+`/lnurlp/<username>/invoice`.
 
-A request that carries `payment` returns the current quote for that
-payment while it is `open`. A lapsed quote is replaced by a quote for the
-same sats, and the response carries the new `quote.id`. The path stays
-`/.well-known/lnurlp/<username>`. `payment` is not the `quote` parameter
-on `callback`. An unknown id, or a payment that ended without being
-accepted, is not served as some other amount, including an open till
-charge. The caller receives the Lightning pay request above. After the
-transfer is accepted, a fetch of that payment id does not offer a new
+A later fetch while the payment is `open` returns a new quote for the
+same sats. `quote.payment` does not change. After the transfer is
+accepted, and until the payment is `paid`, a fetch does not offer a new
 payable amount: no `available` entry is true, and the response is not
 the Lightning pay request above.
 
@@ -348,7 +356,7 @@ For a known amount the pay request contains:
 | Field | Value |
 | --- | --- |
 | `tag` | `payRequest` |
-| `callback` | `<PUBLIC_BASE_URL>/lnurlp/cb/<username>/<payment>` |
+| `callback` | `<PUBLIC_BASE_URL>/lnurlp/cb/<username>` |
 | `minSendable`, `maxSendable` | both that sat amount in millisats |
 | metadata | unchanged |
 | `displayName` | the shop name the payment page already shows |
@@ -382,21 +390,19 @@ chain and asset. The destination in that `uri` is Orchestra's. 21.gifts
 does not hold it.
 
 The same detail is returned by one GET that sets `method` and `asset` on
-the payment-details URL of a payment that is still open. The detail
-belongs to the current quote. An unknown pair, an unknown payment id, or
-a quote that has expired is an error and creates no payment. It is not
-served as another quote.
+the pay link while its payment is still open. The detail belongs to the
+current quote. An unknown pair or a quote that has expired is an error
+and creates no payment. It is not served as another quote.
 
 ### Proof
 
 The wallet pays the instruction. Where the standard requires a proof for
 that method, the wallet sends a GET to the same callback with the path
-segment `/cb/` replaced by `/tx/`. The username and the payment id stay.
-The query carries `quote` (the quote UUID), `method`, and the proof
-parameter the standard defines for that method: `hex` for EVM, Bitcoin,
-and Firo; `tx` for Monero, Zano, Solana, Tron, and Cardano. The paths
-are `GET /lnurlp/cb/:username/:payment` and
-`GET /lnurlp/tx/:username/:payment`. They are not
+segment `/cb/` replaced by `/tx/`. The username stays. The query
+carries `quote` (the quote UUID), `method`, and the proof parameter the
+standard defines for that method: `hex` for EVM, Bitcoin, and Firo;
+`tx` for Monero, Zano, Solana, Tron, and Cardano. The paths are
+`GET /lnurlp/cb/:username` and `GET /lnurlp/tx/:username`. They are not
 `…/lnurlp/<username>/invoice`. Lightning sends no proof. A Lightning
 wallet that calls `callback` with the fixed amount still receives the
 BOLT11 invoice in `pr`. That payment does not go through Orchestra.
@@ -439,11 +445,10 @@ same sats. A quote for an open till charge also ends when the charge
 ends, if that is sooner. After the charge has ended, the sticker takes
 a new amount from the next payer and does not keep the charge's quote.
 
-A quote opened on the payment page, with no till charge, belongs to that
-deeplink. It does not pin the pay link, it does not block the next
-payer, and it is not a till charge. A till charge opened while that
-quote is still valid does not replace it. The sticker, which carries no
-payment id, returns the till amount.
+An amount entered on the page is the one open amount of that pay link.
+A later fetch of the same URL returns it until the payment is accepted
+or ended. A pending till charge is that open amount. The page does not
+replace it, and a page amount does not replace a pending charge.
 
 With no Orchestra key configured, the pay link serves no stablecoin
 amount. Lightning is unchanged.
@@ -479,7 +484,7 @@ minutes. While it is pending, both Lightning sendable bounds become that
 sat amount in millisats. Metadata stays as it is. When the Spark address
 is usable and the Orchestra key is configured, the stablecoin amounts
 for those same sats are added beside that pin, and `callback` is
-`/lnurlp/cb/<username>/<payment>` for that charge's payment. Otherwise
+`/lnurlp/cb/<username>`. Otherwise
 the callback stays `/lnurlp/<username>/invoice`.
 
 A lapsed quote is replaced only while the charge is open, and only for
