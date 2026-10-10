@@ -1256,6 +1256,7 @@ describe('GET /messages/:id/external-posts', () => {
       getById: () => Promise.resolve(good),
       listPostsByPubkey: () => Promise.resolve([clip, good]),
       deleteById: () => Promise.resolve(true),
+      heartStats: () => Promise.resolve(new Map()),
     } as unknown as MessageStore;
     const res = await mount(store).request(`/messages/${NOTE}/external-posts`);
     expect(res.status).toBe(200);
@@ -1282,6 +1283,7 @@ describe('GET /messages/:id/external-posts', () => {
     const store = {
       getById: () => Promise.resolve(good),
       listPostsByPubkey: () => Promise.resolve([bad, good]),
+      heartStats: () => Promise.resolve(new Map()),
     } as unknown as MessageStore;
     const res = await mount(store).request(`/messages/${NOTE}/external-posts`);
     expect(res.status).toBe(200);
@@ -1453,6 +1455,7 @@ describe('GET /messages/:id/external-replies', () => {
       isZapperPubkey: () => Promise.resolve(true),
       listRepliesByPubkey: () => Promise.resolve([clip, good]),
       deleteById: () => Promise.resolve(true),
+      heartStats: () => Promise.resolve(new Map()),
     } as unknown as MessageStore;
     const res = await mount(store).request(`/messages/${NOTE}/external-replies`);
     expect(res.status).toBe(200);
@@ -1481,6 +1484,7 @@ describe('GET /messages/:id/external-replies', () => {
       getById: () => Promise.resolve(good),
       isZapperPubkey: () => Promise.resolve(true),
       listRepliesByPubkey: () => Promise.resolve([bad, good]),
+      heartStats: () => Promise.resolve(new Map()),
     } as unknown as MessageStore;
     const res = await mount(store).request(`/messages/${NOTE}/external-replies`);
     expect(res.status).toBe(200);
