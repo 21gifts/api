@@ -77,5 +77,5 @@ jobs:
           DISPATCH_REPO: ${{ secrets.DISPATCH_REPO }}
           IMAGE: 21gifts/spend
           TAG: staging
-          GITHUB_SHA: ${{ steps.src.outputs.sha }}
+          PUBLISHED_SHA: ${{ steps.src.outputs.sha }}
         run: bash .github/scripts/wait-for-image-published.sh
