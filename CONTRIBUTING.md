@@ -629,14 +629,15 @@ More will be added as concrete subsystems that need runtime configuration
 
 ## CI / CD
 
-| Workflow               | Trigger                                                           | Action                                                                                                                                                                 |
-| ---------------------- | ----------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `ci.yaml`              | PR (including drafts); not `ready_for_review`                     | Lint (`bun run lint` on Bun) + typecheck + handbook + e2e-check + test (100% coverage) + test:postgres + build + e2e; **10 minutes** for Lint, **15** for the rest     |
-| `deploy-dev.yaml`      | push to `develop`                                                 | Docker build → push `21gifts/api:beta` → notify → wait for deploy                                                                                                      |
-| `deploy-staging.yaml`  | push to `staging`                                                 | Docker build → push `21gifts/api:staging` → notify → wait for deploy                                                                                                   |
-| `deploy-prd.yaml`      | push to `main`                                                    | Docker build → push `21gifts/api:latest` → notify → wait for deploy                                                                                                    |
-| `auto-release-pr.yaml` | push to `develop` or `staging`                                    | Open a missing release only (`staging → develop`, and `develop → main`). Leave an open release unchanged. Skip `staging → develop` when that diff has no file changes. |
-| `a38-guard.yml`        | `pull_request_target`; PR comments; schedule; `workflow_dispatch` | `dfx pr guard` verifies the A38 report, releases held fork runs of `ci.yaml`, and sets ready; never checks out the PR code                                             |
+| Workflow               | Trigger                                                           | Action                                                                                                                                                                         |
+| ---------------------- | ----------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `ci.yaml`              | PR (including drafts); not `ready_for_review`                     | Lint (`bun run lint` on Bun) + typecheck + handbook + e2e-check + test (100% coverage) + test:postgres + build + e2e; **10 minutes** for Lint, **15** for the rest             |
+| `loan-e2e.yml`         | `workflow_dispatch` only                                          | Checks out this repo and `21gifts/app` (default ref `staging`) and runs the live loan through the app screens. Not a pull-request job. Six-hour cap. Pays real Spark invoices. |
+| `deploy-dev.yaml`      | push to `develop`                                                 | Docker build → push `21gifts/api:beta` → notify → wait for deploy                                                                                                              |
+| `deploy-staging.yaml`  | push to `staging`                                                 | Docker build → push `21gifts/api:staging` → notify → wait for deploy                                                                                                           |
+| `deploy-prd.yaml`      | push to `main`                                                    | Docker build → push `21gifts/api:latest` → notify → wait for deploy                                                                                                            |
+| `auto-release-pr.yaml` | push to `develop` or `staging`                                    | Open a missing release only (`staging → develop`, and `develop → main`). Leave an open release unchanged. Skip `staging → develop` when that diff has no file changes.         |
+| `a38-guard.yml`        | `pull_request_target`; PR comments; schedule; `workflow_dispatch` | `dfx pr guard` verifies the A38 report, releases held fork runs of `ci.yaml`, and sets ready; never checks out the PR code                                                     |
 
 Images target `linux/arm64`.
 
@@ -677,6 +678,12 @@ env:
 Pass `BREEZ_API_KEY` to the SDK as `apiKey`. Use `BREEZ_API_KEY_PRD` only for
 production and `BREEZ_API_KEY_STAGING` only for staging. The same three secret
 names are set on [`21gifts/app`](https://github.com/21gifts/app).
+
+`loan-e2e.yml` reads `secrets.BREEZ_API_KEY_DEV` and passes it to the harness
+as `LOAN_E2E_BREEZ_API_KEY`. It also reads `secrets.LOAN_E2E_FUNDING_MNEMONIC`,
+writes that mnemonic into the job's temporary loan directory, and does not
+print it. The funding wallet must already hold at least 1000 sats. The job is
+manual. It is not one of the pull-request checks.
 
 ## Related repos
 
