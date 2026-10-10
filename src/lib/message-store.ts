@@ -3775,7 +3775,7 @@ export class InMemoryMessageStore implements MessageStore {
     const wanted = new Set(messageIds);
     const stats = new Map<string, { heartCount: number; hearted: boolean }>();
     for (const row of this.#invoiceAttempts) {
-      if (row.heart !== true || row.result !== 'ok' || row.paymentHash == null) {
+      if (row.heart !== true || row.result !== 'ok' || row.paymentHash === null) {
         continue;
       }
       if (!this.#zapPayments.has(row.paymentHash.toLowerCase())) {
