@@ -7,6 +7,7 @@ import { ensureAccountNostrKey } from '@/lib/nostr/keys';
 import { parseNostrKek } from '@/lib/nostr/kek';
 import { InvoiceRateLimiter, PostRateLimiter } from '@/lib/nostr/rate-limit';
 import { messagesRoutes } from '@/routes/messages';
+import { REPAYMENT_BILLS_MAX, myLoansRoutes } from '@/routes/repayment';
 import { InMemorySparkInvoiceStore } from '@/lib/spark-invoice-store';
 import type { MessageInvoiceAttempt } from '@/lib/message-store';
 import { resolveZapRelays } from '@/lib/nostr/relays';
@@ -189,7 +190,14 @@ describe('credit repayment', () => {
     expect(body.startsOn).toBe('2026-11-03');
     expect(body.unassignedSats).toBe(5);
     expect(body.givers).toEqual([
-      { accountId: GIVER, name: 'Bea', username: 'bea', givenSats: 21, givenAmount: null },
+      {
+        accountId: GIVER,
+        name: 'Bea',
+        username: 'bea',
+        givenSats: 21,
+        givenAmount: null,
+        canReceive: true,
+      },
     ]);
     expect(body.repayments[0]).toMatchObject({
       dueOn: '2026-11-03',
@@ -198,6 +206,7 @@ describe('credit repayment', () => {
       via: 'lightning',
       amount: null,
       name: 'Bea',
+      dueSats: 21,
     });
     const post = await app.request(`/messages/${CREDIT}/repayment`, { method: 'POST' });
     expect(post.status).toBe(401);
