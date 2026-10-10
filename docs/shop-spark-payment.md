@@ -1,12 +1,14 @@
 # Shop payment in USDT and USDC
 
-Status: **concept only**. Decided 2026-10-01. Not implemented. No HTTP path in
-this document is reserved. A later change that builds this adds its routes to
-`SPEC.md` in that same change. Nothing here changes runtime behaviour.
+Status: **concept only**. Decided 2026-10-01. Corrected 2026-10-10: a missing
+till charge is not a stop. Not implemented. No HTTP path in this document is
+reserved. The change that builds this adds its routes and fields to `SPEC.md`
+in that same change. Nothing here changes runtime behaviour.
 
 The shop QR stays the OpenCryptoPay link it already is. A customer who pays
 USDT or USDC through that same QR still leaves the shop with bitcoin on the
-shop's own Spark wallet. The shop does not hold USDT or USDC.
+shop's own Spark wallet. The shop does not hold USDT or USDC. The member sees
+an ordinary bitcoin payment. Gifts, the till, and loans stay in satoshis.
 
 ## Decision
 
@@ -14,78 +16,158 @@ One QR. The string does not grow a second address, and the window sticker
 does not change.
 
 The QR is `https://<domain>/pl/?lightning=<LNURL>`. That LNURL is the shop's
-existing pay link: `https://<domain>/.well-known/lnurlp/<username>`. Lightning
-wallets keep paying it as LNURL-pay. An OpenCryptoPay wallet reads the same
-link and, while a till charge is open, also sees rows for USDT and USDC.
+existing pay link: `https://<domain>/.well-known/lnurlp/<username>`.
 
-Each row is one chain and one asset. USDT on Tron is not USDT on Ethereum,
-and USDC is not USDT. A transfer on the wrong chain is not a payment.
+A Lightning wallet keeps paying that LNURL as today. A browser that opens the
+same QR shows the payment page below. An OpenCryptoPay wallet that reads the
+same link sees the same payment, including USDT and USDC, once the amount is
+known.
 
-The shop typed a number of sats on the till (`POST /pos`, one pending amount,
-five minutes). Those sats are what must arrive. The customer's stablecoin
-amount comes from a quote for that sat amount and includes the provider fee
-and spread. The shop's sat figure does not move after they enter it. A quote ends no
-later than the till charge. When a quote lapses while that charge is still
-open, the customer is shown a new stablecoin amount for the same sats, and
-that new quote also ends when the charge ends. After the charge has ended,
-no new stablecoin amount is shown. A payment at a stale amount is not
-silently accepted as a different number of sats.
+The cashier does not have to be online, and does not have to have saved a sat
+amount. The sticker, this page, and the api are enough. An open till charge
+fixes the amount when one exists. It is not a prerequisite.
 
-The customer sends the stablecoin to the swap provider, Orchestra (Flashnet).
+## The page a browser opens
+
+Opening the QR in a normal browser loads `/pl/?lightning=<LNURL>`. That page
+is the payer's path. It is not an error when no till charge is open.
+
+The page shows the recipient. Then it shows the amount:
+
+- An unexpired till charge fixes the amount. The page shows that amount and
+  does not let the payer change it. This is the same lock the pay link already
+  uses for Lightning.
+- No till charge: the payer enters the amount on this page, in bitcoin or in
+  the viewer's fiat, within the pay link's minimum and maximum, the same way
+  the page already asks for a Lightning amount. That entry is what fixes the
+  sat amount. The cashier does not enter it.
+
+The sat amount does not move after it is fixed. The stablecoin figures are a
+quote for those sats. They include the provider fee and spread. A later price
+move does not change the sats.
+
+Once the amount is known, the page shows the payment methods for those sats.
+Each payable option is one chain and one asset, with its own amount. USDT on
+Tron is not USDT on Ethereum, and USDC is not USDT. A transfer on the wrong
+chain is not a payment. The page may group the chains of one asset under one
+label. The amount that must be paid is still the amount of that chain and
+that asset.
+
+The page then shows an LNURL QR for that quote and tells the payer to scan it
+with a compatible app. That QR is the quote, not a second window sticker and
+not a second address in the sticker string. A Lightning wallet can still pay
+the same sats through the standing pay link, without that quote QR.
+
+The page reads and shows what the api returns. It does not ask Orchestra
+itself, it does not hold a key, and it does not mark the payment paid.
+
+## What the wallet reads
+
+A compatible wallet decodes the `lightning` parameter to the pay-link URL and
+fetches it.
+
+Before an amount is known, that response is today's Lightning pay request:
+a minimum and a maximum, and no fixed stablecoin amounts. It is not an error.
+The browser page above is where the payer names the amount.
+
+Once the amount is known, the pay request for that amount includes today's
+Lightning payment for those sats and one stablecoin amount per chain and
+asset, as on the page. The wallet pays one of those options. Paying a
+different chain, a different asset, or a different amount is not that payment.
+
+## Quote and delivery
+
+The api creates the quote. The cashier's phone does not. The member's phone
+does not. The 12 words are not part of this loop.
+
+The api asks Orchestra (Flashnet) for a quote for the fixed sat amount. The
+quote names the shop's Spark address as the place bitcoin is delivered. That
+address comes from the verified Spark identity pubkey the api already stores
+for the account. The build encodes the address from that pubkey. It does not
+ask the phone for the address, and it must not learn the 12 words.
+
+The customer sends the stablecoin to Orchestra, on the chain and for the
+asset the quote named. 21.gifts does not receive the stablecoin and does not
+hold it.
+
 Orchestra delivers bitcoin to the shop's Spark address. 21.gifts does not
-hold the stablecoin and does not hold the bitcoin.
+hold that bitcoin. This is not Orchestra paying the Lightning invoice, and it
+is not a USDT or USDC address that 21.gifts keeps.
 
-The till shows paid only when those sats are on the shop's Spark wallet.
-The customer's wallet may report success earlier, when the stablecoin
-transfer has been accepted. That is not paid. Before that acceptance, too
-little, too much, or a price move past the quote refunds the customer and
-the charge stays unpaid. A transfer accepted against a quote that was still
-valid for this charge stays tied to this charge: the agreed sats stay due,
-and a later price move does not refund them. If those sats arrive after
-the five minutes have run out, the till still shows paid. A transfer sent
-after the charge has ended, with no quote that was still valid for it, is
-not a payment.
+The api learns that delivery from Orchestra. It does not learn it from the
+phone, and it does not treat the customer's wallet as the source of paid.
 
-Without an open till charge, this document changes nothing. Gifts over the
-member's receiving address stay as they are.
+A quote expires. The page shows that expiry. When a quote lapses before it
+has been accepted, the next quote is for the same sats, not for a different
+sat amount. For an open till charge, the quote also ends when the charge
+ends, if that is sooner. After the charge has ended, the standing QR still
+takes a new payer-chosen amount. It does not keep offering the charge's
+quote.
 
-## The wallet
+If the Orchestra key is not configured, the api serves no stablecoin amounts.
+Lightning stays as it is.
 
-The Spark wallet is 21.gifts' own Breez wallet. It is not a second seed.
+## Paid
 
-The 12 words already exist. The phone derives them and never sends them:
+Paid means the quoted sats are on the shop's Spark wallet.
 
-1. WebAuthn PRF `eval.first`, salt = SHA-256 of the UTF-8 string
-   `21gifts-nostr-v1`.
-2. HKDF-SHA256, salt = UTF-8 `21gifts-seed-derivation`, info = UTF-8
-   `mnemonic-v1`, 128 bits.
-3. BIP-39 English, 12 words.
+The customer's wallet may say the stablecoin transfer succeeded before those
+sats arrive. That is not paid. Seeing the stablecoin transaction is not paid.
 
-That derivation is `mnemonicFromPrfFirst` in the app. The api already records
-that this seed passkey exists: `POST /auth/passkey/seed/begin` issues the
-WebAuthn options, and `POST /auth/passkey/seed/finish` sets `walletRequired`.
-This document does not change either of those.
+Before the stablecoin transfer is accepted, too little, too much, or a price
+move past the quote refunds the customer. The payment stays unpaid. A payment
+at a stale amount is not accepted as a different number of sats. A transfer
+on the wrong chain is not a payment. A transfer with no quote that was still
+valid for it is not a payment.
 
-The Breez SDK is not called yet. Connecting it is part of building this, not
-part of what already runs. Receiving member-to-member payments on Spark already
-runs: see Free in-app payments in SPEC.
+A transfer accepted against a quote that was still valid stays tied to that
+quote. The agreed sats stay due. A later price move does not refund them and
+does not change the sat amount.
 
-The Spark address is produced on the device from those 12 words. The server
-may learn the address. It must not learn the words. The quote names that
-address as the place bitcoin is delivered.
+The api records the result. The member's app shows that record. It shows an
+ordinary incoming bitcoin payment of those sats. It does not show a USDT or
+USDC balance, and it does not show the stablecoin. The app does not create
+the quote, watch the swap, or report the payment. The payment counts while
+the phone is off.
+
+No zap, gift, or message is written for this payment.
+
+## When a till charge is open
+
+Today's till is unchanged, and it is not required for the payment above.
+
+`POST /pos` with a sat amount of at least 1 still needs the username and a
+verified receiving address. One unexpired pending charge. Five minutes.
+While it is pending, the pay link pins both Lightning sendable bounds to
+that amount. The callback and the metadata stay as they are.
+
+The stablecoin quote for that charge is for those same sats. The shop's sat
+figure does not move. A lapsed quote is replaced only while the charge is
+still open, and only for the same sats.
+
+The charge is paid when the first of these is confirmed: the Spark invoice
+the api handed out, a BOLT11 the api handed out, or the Orchestra delivery
+of the agreed sats. The first confirmation wins. One charge is paid once.
+
+Sats that arrive after the five minutes still pay that charge when the
+transfer was accepted against a quote that was valid for it. A transfer sent
+after the charge has ended, with no such quote, is not a payment of that
+charge. The standing QR can still take a new amount from the next payer.
+
+`GET /pos` shows a paid charge for 60 seconds, and a paid charge no longer
+pins the pay link. No zap, gift, or message is written for a till payment.
 
 ## What this does not do
 
-- No second QR and no USDT or USDC balance for the shop.
-- No sticker address that accepts any amount at the rate of the moment.
-  A new stablecoin price is shown only while the till charge is open, and
-  only for the sats on that charge. Once a quote for that charge has been
-  accepted, a later price move does not refund it. Those sats can still
-  settle after the clock.
-- No change to today's Lightning settlement. The pay link resolves to the
-  member's receiving address, the verified in-app wallet through the LNURL
-  server; there is no external Lightning address.
-- No new phrase and no phrase stored on the server.
-- No payment marked paid because the stablecoin transaction was seen.
+- No second sticker and no second address in the sticker string.
+- No USDT or USDC balance for the shop or the member.
+- No phone in the quote, the delivery, or the paid mark. The 12 words stay
+  on the phone and are not read for this payment.
+- No payment marked paid because a wallet saw the stablecoin transaction.
+- No change to today's Lightning settlement. The pay link still resolves to
+  the verified in-app wallet. A Lightning payment of the same sats does not
+  go through Orchestra.
+- No change to gifts or loans. A gift is still sats over the member's
+  receiving address.
 - No route, table, or response field. Those belong to the change that
   builds this.
