@@ -11,6 +11,7 @@ import { InMemoryNotificationStore } from '@/lib/notification-store';
 import { InMemoryPushStore } from '@/lib/push-store';
 import { InMemoryTrustStore } from '@/lib/trust-store';
 import { debugCatalogRoutes } from '@/routes/debug-catalog';
+import { LNURL_SERVER, createWalletAccount } from '@/__tests__/helpers/wallet-lnurl';
 
 function mount(debugToken: string | undefined, auth = new InMemoryAuthStore()): Hono {
   return new Hono().route(
@@ -51,6 +52,27 @@ describe('debugCatalogRoutes', () => {
     expect(res.status).toBe(401);
   });
 
+  it('dumps each account with its wallet receiving address when the LNURL server is set', async () => {
+    const auth = new InMemoryAuthStore();
+    await createWalletAccount(auth, 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', 'ada');
+    const app = new Hono().route(
+      '/debug/dump',
+      debugCatalogRoutes({
+        auth,
+        messages: new InMemoryMessageStore(),
+        contacts: new InMemoryContactStore(),
+        lnurlServer: LNURL_SERVER,
+        debugToken: 'secret',
+      }),
+    );
+    const res = await app.request('/debug/dump/account', {
+      headers: { authorization: 'Bearer secret' },
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { rows: Array<{ lightningAddress: string | null }> };
+    expect(body.rows[0]?.lightningAddress).toBe('ada@example.test');
+  });
+
   it('returns 404 for an unknown table', async () => {
     const res = await mount('secret').request('/debug/dump/not_a_table', {
       headers: { authorization: 'Bearer secret' },
@@ -65,8 +87,6 @@ describe('debugCatalogRoutes', () => {
       linkingKey: null,
       role: 'basis',
       name: 'Ada',
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'a'.repeat(64),
@@ -117,6 +137,8 @@ describe('debugCatalogRoutes', () => {
       status: 'pending',
       createdAt,
       expiresAt: new Date('2026-09-22T00:05:00.000Z'),
+      paidAt: null,
+      sparkInvoice: null,
     });
     const res = await new Hono()
       .route(
@@ -143,6 +165,8 @@ describe('debugCatalogRoutes', () => {
           status: 'pending',
           createdAt: createdAt.toISOString(),
           expiresAt: '2026-09-22T00:05:00.000Z',
+          paidAt: null,
+          sparkInvoice: null,
         },
       ],
     });

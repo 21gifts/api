@@ -6,6 +6,11 @@ import { migrateDailyRosterSchema, PostgresDailyRosterStore } from '@/lib/daily-
 import type { FundingGrant } from '@/lib/funding';
 import { migrateFundingSchema, PostgresFundingStore } from '@/lib/funding-store';
 import { migrateMemberHabitSchema, PostgresMemberHabitStore } from '@/lib/member-habit-store';
+import { migrateDbChangeSchema } from '@/lib/db-change';
+import { DEBUG_DB_PAGE_SIZE, PostgresDebugDbStore } from '@/lib/debug-db';
+import { migrateFxSpotSchema, PostgresFxSpotStore } from '@/lib/fx-spot-store';
+import { unsignedNostrDefaults } from '@/lib/message';
+import { migrateMessageSchema, PostgresMessageStore } from '@/lib/message-store';
 import { postgresTextArrayLiteral } from '@/lib/postgres-text-array';
 import { migrateBtcUsdSchema } from '@/lib/btc-usd-store';
 import { migrateFiatSchema } from '@/lib/usd-fiat-store';

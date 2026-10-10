@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { requestGiftInvoice } from '@/lib/gift-invoice';
 import type { FetchFn } from '@/lib/lnurlp';
 
-const ADDRESS = 'alice@walletofsatoshi.com';
+const ADDRESS = 'alice@example.com';
 const PR = 'lnbc10n1ptest';
 const MAX_SENDABLE = 100_000_000_000;
 
@@ -23,7 +23,7 @@ describe('requestGiftInvoice', () => {
       redirects.push(init?.redirect);
       if (url.includes('/.well-known/lnurlp/')) {
         return jsonResponse({
-          callback: 'https://walletofsatoshi.com/lnurlp/callback',
+          callback: 'https://example.com/lnurlp/callback',
           minSendable: 1000,
           maxSendable: MAX_SENDABLE,
           commentAllowed: 255,
@@ -50,7 +50,7 @@ describe('requestGiftInvoice', () => {
       calls.push(String(input));
       if (String(input).includes('/.well-known/lnurlp/')) {
         return jsonResponse({
-          callback: 'https://walletofsatoshi.com/lnurlp/callback',
+          callback: 'https://example.com/lnurlp/callback',
           minSendable: 1000,
           maxSendable: MAX_SENDABLE,
           commentAllowed: 255,
@@ -71,7 +71,7 @@ describe('requestGiftInvoice', () => {
   it('rejects when amount is below minSendable', async () => {
     const fetchImpl: FetchFn = async () =>
       jsonResponse({
-        callback: 'https://walletofsatoshi.com/lnurlp/callback',
+        callback: 'https://example.com/lnurlp/callback',
         minSendable: 5000,
         maxSendable: MAX_SENDABLE,
       });
@@ -84,7 +84,7 @@ describe('requestGiftInvoice', () => {
   it('rejects when amount is above maxSendable', async () => {
     const fetchImpl: FetchFn = async () =>
       jsonResponse({
-        callback: 'https://walletofsatoshi.com/lnurlp/callback',
+        callback: 'https://example.com/lnurlp/callback',
         minSendable: 1000,
         maxSendable: 2000,
       });
@@ -97,7 +97,7 @@ describe('requestGiftInvoice', () => {
   it('rejects a comment when commentAllowed is missing', async () => {
     const fetchImpl: FetchFn = async () =>
       jsonResponse({
-        callback: 'https://walletofsatoshi.com/lnurlp/callback',
+        callback: 'https://example.com/lnurlp/callback',
         minSendable: 1000,
         maxSendable: MAX_SENDABLE,
       });
@@ -114,7 +114,7 @@ describe('requestGiftInvoice', () => {
   it('rejects a comment longer than commentAllowed', async () => {
     const fetchImpl: FetchFn = async () =>
       jsonResponse({
-        callback: 'https://walletofsatoshi.com/lnurlp/callback',
+        callback: 'https://example.com/lnurlp/callback',
         minSendable: 1000,
         maxSendable: MAX_SENDABLE,
         commentAllowed: 2,
@@ -141,7 +141,7 @@ describe('requestGiftInvoice', () => {
     const fetchImpl: FetchFn = async (input) => {
       if (String(input).includes('/.well-known/lnurlp/')) {
         return jsonResponse({
-          callback: 'https://walletofsatoshi.com/lnurlp/callback',
+          callback: 'https://example.com/lnurlp/callback',
           minSendable: 1000,
           maxSendable: MAX_SENDABLE,
         });
@@ -158,7 +158,7 @@ describe('requestGiftInvoice', () => {
     const fetchImpl: FetchFn = async (input) => {
       if (String(input).includes('/.well-known/lnurlp/')) {
         return jsonResponse({
-          callback: 'https://walletofsatoshi.com/lnurlp/callback',
+          callback: 'https://example.com/lnurlp/callback',
           minSendable: 1000,
           maxSendable: MAX_SENDABLE,
         });
@@ -175,7 +175,7 @@ describe('requestGiftInvoice', () => {
     const fetchImpl: FetchFn = async (input) => {
       if (String(input).includes('/.well-known/lnurlp/')) {
         return jsonResponse({
-          callback: 'https://walletofsatoshi.com/lnurlp/callback',
+          callback: 'https://example.com/lnurlp/callback',
           minSendable: 1000,
           maxSendable: MAX_SENDABLE,
         });
@@ -192,7 +192,7 @@ describe('requestGiftInvoice', () => {
     const fetchImpl: FetchFn = async (input) => {
       if (String(input).includes('/.well-known/lnurlp/')) {
         return jsonResponse({
-          callback: 'https://walletofsatoshi.com/lnurlp/callback',
+          callback: 'https://example.com/lnurlp/callback',
           minSendable: 1000,
           maxSendable: MAX_SENDABLE,
         });

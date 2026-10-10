@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { Hono } from 'hono';
 import { z } from 'zod';
-import { resolveWebAuthnConfig } from '@/lib/config';
+import { resolveWebAuthnConfig, type LnurlServerConfig } from '@/lib/config';
 import {
   finishPasskeyAuthentication,
   finishPasskeyRegistration,
@@ -51,6 +51,8 @@ export interface AuthRouteDeps {
    * Funding grants for owner JSON (default: empty {@link InMemoryFundingStore}).
    */
   fundingStore?: FundingStore;
+  /** LNURL server config for the receiving address in owner JSON; omitted → off. */
+  lnurlServer?: LnurlServerConfig;
 }
 
 /** Body schema for passkey finish (registration or authentication). */
@@ -344,11 +346,16 @@ export function authRoutes(deps: AuthRouteDeps): Hono {
       return c.json(
         {
           token: result.value.token,
-          account: await serializeOwnerAccountWithPosts(result.value.account, deps.messages, {
-            store: deps.fundingStore ?? new InMemoryFundingStore(),
-            nowMs: deps.now(),
-            authStore: deps.store,
-          }),
+          account: await serializeOwnerAccountWithPosts(
+            result.value.account,
+            deps.messages,
+            {
+              store: deps.fundingStore ?? new InMemoryFundingStore(),
+              nowMs: deps.now(),
+              authStore: deps.store,
+            },
+            deps.lnurlServer,
+          ),
         },
         200,
       );
@@ -399,11 +406,16 @@ export function authRoutes(deps: AuthRouteDeps): Hono {
       return c.json(
         {
           token: result.value.token,
-          account: await serializeOwnerAccountWithPosts(result.value.account, deps.messages, {
-            store: deps.fundingStore ?? new InMemoryFundingStore(),
-            nowMs: deps.now(),
-            authStore: deps.store,
-          }),
+          account: await serializeOwnerAccountWithPosts(
+            result.value.account,
+            deps.messages,
+            {
+              store: deps.fundingStore ?? new InMemoryFundingStore(),
+              nowMs: deps.now(),
+              authStore: deps.store,
+            },
+            deps.lnurlServer,
+          ),
         },
         200,
       );
@@ -564,11 +576,16 @@ export function authRoutes(deps: AuthRouteDeps): Hono {
       await deps.store.acknowledgePasskeyRenewFailures(result.account.id, deps.now());
       logEvent('auth.passkey.seed.ok', { accountId: result.account.id });
       return c.json(
-        await serializeOwnerAccountWithPosts(result.account, deps.messages, {
-          store: deps.fundingStore ?? new InMemoryFundingStore(),
-          nowMs: deps.now(),
-          authStore: deps.store,
-        }),
+        await serializeOwnerAccountWithPosts(
+          result.account,
+          deps.messages,
+          {
+            store: deps.fundingStore ?? new InMemoryFundingStore(),
+            nowMs: deps.now(),
+            authStore: deps.store,
+          },
+          deps.lnurlServer,
+        ),
         200,
       );
     });

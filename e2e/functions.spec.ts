@@ -13,7 +13,7 @@ async function memberSession(
       accounts: [
         {
           name,
-          lightningAddress: `e2e-fn-trust-${stamp}@walletofsatoshi.com`,
+          username: `e2e-fn-trust-${stamp}`.slice(0, 32),
         },
       ],
     },
@@ -38,14 +38,7 @@ async function rosterRoleSession(
   const name = `E2eRoster${stamp}`;
   const provision = await request.post('/debug/accounts', {
     headers: DEBUG,
-    data: {
-      accounts: [
-        {
-          name,
-          lightningAddress: `e2e-roster-${stamp}@walletofsatoshi.com`,
-        },
-      ],
-    },
+    data: { accounts: [{ name }] },
   });
   expect(provision.status()).toBe(200);
   const listed = await request.get('/debug/accounts', { headers: DEBUG });
@@ -76,6 +69,19 @@ async function releaseRosterFounder(request: APIRequestContext, id: string): Pro
     data: { role: 'basis' },
   });
   expect(cleared.status()).toBe(200);
+}
+
+/** Provision a member without a verified wallet; returns its username. */
+async function walletlessMember(request: APIRequestContext): Promise<string> {
+  const stamp = `${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
+  const name = `E2eFnPay${stamp.slice(-8)}`;
+  const username = `e2e-fn-pay-${stamp}`.slice(0, 32);
+  const provision = await request.post('/debug/accounts', {
+    headers: DEBUG,
+    data: { accounts: [{ name, username }] },
+  });
+  expect(provision.status()).toBe(200);
+  return username;
 }
 
 async function passkeyBegin(request: APIRequestContext): Promise<{ challengeId: string }> {
@@ -340,20 +346,6 @@ test('Function: ensureProfileMessage — POST /me/name without bearer is 401', a
   expect(res.status()).toBe(401);
 });
 
-test('Function: probeNip57Mint — POST /me/lightning-address without bearer is 401', async ({
-  request,
-}) => {
-  const res = await request.post('/me/lightning-address', {
-    data: { address: 'alice@walletofsatoshi.com' },
-  });
-  expect(res.status()).toBe(401);
-});
-
-test('Function: buildZapProbeRequest — GET /healthz is ok', async ({ request }) => {
-  const res = await request.get('/healthz');
-  expect(res.status()).toBe(200);
-});
-
 test('Function: viewRoutes — GET /view/:viewKey is 404 on default boot', async ({ request }) => {
   const res = await request.get('/view/:viewKey');
   expect(res.status()).toBe(404);
@@ -371,6 +363,58 @@ test('Function: normalizeUsername — POST /me/username without bearer is 401', 
 }) => {
   const res = await request.post('/me/username', { data: { username: 'ada' } });
   expect(res.status()).toBe(401);
+});
+
+test('Function: normalizeSparkPubkey — PUT /me/wallet is 404 when LNURL server is off', async ({
+  request,
+}) => {
+  const res = await request.put('/me/wallet');
+  expect(res.status()).toBe(404);
+  expect(await res.text()).toBe('404 Not Found');
+});
+
+test('Function: IpRateLimiter — POST /lnurlpay/:pubkey is 404 when LNURL server is off', async ({
+  request,
+}) => {
+  const res = await request.post('/lnurlpay/:pubkey');
+  expect(res.status()).toBe(404);
+  expect(await res.text()).toBe('404 Not Found');
+});
+
+test('Function: resolveLnurlServerConfig — PUT /me/wallet is 404 when LNURL server is off', async ({
+  request,
+}) => {
+  const res = await request.put('/me/wallet');
+  expect(res.status()).toBe(404);
+  expect(await res.text()).toBe('404 Not Found');
+});
+
+test('Function: callLnurlServer — GET /lnurlp/:username/invoice is 404 when LNURL server is off', async ({
+  request,
+}) => {
+  const res = await request.get('/lnurlp/:username/invoice');
+  expect(res.status()).toBe(404);
+  expect(await res.text()).toBe('404 Not Found');
+});
+
+// PUT /me/wallet unmounted (plain-text 404) proves the feature is off; /.well-known/lnurlp/:username
+// is the only route that calls walletPayRequest (only for a verified wallet key when on).
+test('Function: walletPayRequest — GET /.well-known/lnurlp/:username is 404 and PUT /me/wallet is unmounted when LNURL server is off', async ({
+  request,
+}) => {
+  const wallet = await request.put('/me/wallet');
+  expect(wallet.status()).toBe(404);
+  expect(await wallet.text()).toBe('404 Not Found');
+  const wellKnown = await request.get('/.well-known/lnurlp/:username');
+  expect(wellKnown.status()).toBe(404);
+});
+
+test('Function: lnurlServerRoutes — GET /verify/:paymentHash is 404 when LNURL server is off', async ({
+  request,
+}) => {
+  const res = await request.get('/verify/:paymentHash');
+  expect(res.status()).toBe(404);
+  expect(await res.text()).toBe('404 Not Found');
 });
 
 test('Function: usernameFromDisplayName — POST /me/name without bearer is 401', async ({
@@ -401,41 +445,11 @@ test('Function: locationHashtagName — POST /me/location without bearer is 401'
   expect(res.status()).toBe(401);
 });
 
-test('Function: normalizeLightningAddress — POST /me/lightning-address without bearer is 401', async ({
+test('Function: normalizeLightningAddress — GET /lightning-address with a malformed address is 400', async ({
   request,
 }) => {
-  const res = await request.post('/me/lightning-address', {
-    data: { address: 'alice@walletofsatoshi.com' },
-  });
-  expect(res.status()).toBe(401);
-});
-
-test('Function: startVerification — POST verification without bearer is 401', async ({
-  request,
-}) => {
-  const res = await request.post('/me/lightning-address/verification');
-  expect(res.status()).toBe(401);
-});
-
-test('Function: UnconfiguredInvoicePayer — POST verification without bearer is 401', async ({
-  request,
-}) => {
-  const res = await request.post('/me/lightning-address/verification');
-  expect(res.status()).toBe(401);
-});
-
-test('Function: requestPayInvoice — POST verification without bearer is 401', async ({
-  request,
-}) => {
-  const res = await request.post('/me/lightning-address/verification');
-  expect(res.status()).toBe(401);
-});
-
-test('Function: confirmVerification — POST confirm without bearer is 401', async ({ request }) => {
-  const res = await request.post('/me/lightning-address/verification/confirm', {
-    data: { nonce: '00' },
-  });
-  expect(res.status()).toBe(401);
+  const res = await request.get('/lightning-address?address=not-an-address');
+  expect(res.status()).toBe(400);
 });
 
 test('Function: lightningAddressRoutes — GET with a public address is 502 when LNURL-pay is unreachable', async ({
@@ -445,11 +459,78 @@ test('Function: lightningAddressRoutes — GET with a public address is 502 when
   expect(res.status()).toBe(502);
 });
 
-test('Function: resolveLnurlpDocument — GET /.well-known/lnurlp/missing is 404', async ({
+test('Function: lnurlRoutes — POST /lnurl/pay-request without bearer is 401', async ({
   request,
 }) => {
-  const res = await request.get('/.well-known/lnurlp/missing');
-  expect(res.status()).toBe(404);
+  const res = await request.post('/lnurl/pay-request', { data: { target: 'bob@example.com' } });
+  expect(res.status()).toBe(401);
+  expect(await res.json()).toEqual({ error: 'Unauthorized' });
+});
+
+test('Function: resolveRelayPayRequest — a Lightning Address on a .localhost host is 400 without a fetch', async ({
+  request,
+}) => {
+  const { authorization } = await memberSession(request);
+  const res = await request.post('/lnurl/pay-request', {
+    headers: { authorization },
+    data: { target: 'bob@printer.localhost' },
+  });
+  expect(res.status()).toBe(400);
+  expect(await res.json()).toEqual({ error: 'Not a payable address' });
+});
+
+test('Function: requestRelayInvoice — a target on a .internal host is 400 without a fetch', async ({
+  request,
+}) => {
+  const { authorization } = await memberSession(request);
+  const res = await request.post('/lnurl/invoice', {
+    headers: { authorization },
+    data: { target: 'bob@wallet.internal', amountMsat: 1000 },
+  });
+  expect(res.status()).toBe(400);
+  expect(await res.json()).toEqual({ error: 'Not a payable address' });
+});
+
+test('Function: LnurlRelayRateLimiter — the 31st relay request in a minute is 429', async ({
+  request,
+}) => {
+  // Own member, so other relay tests in this file never share these hits.
+  const stamp = `${Date.now()}-${Math.random().toString(16).slice(2, 10)}`;
+  const name = `E2eRelayLimit${stamp}`;
+  const provision = await request.post('/debug/accounts', {
+    headers: DEBUG,
+    data: { accounts: [{ name, username: `e2e-relay-${stamp}`.slice(0, 32) }] },
+  });
+  expect(provision.status()).toBe(200);
+  const listed = await request.get('/debug/accounts', { headers: DEBUG });
+  const accounts = ((await listed.json()) as { accounts: Array<{ id: string; name: string }> })
+    .accounts;
+  const row = accounts.find((item) => item.name === name);
+  expect(row).toBeDefined();
+  const session = await request.post(`/debug/accounts/${row?.id}/session`, { headers: DEBUG });
+  expect(session.status()).toBe(200);
+  const authorization = `Bearer ${((await session.json()) as { token: string }).token}`;
+  const statuses: number[] = [];
+  for (let i = 0; i < 31; i += 1) {
+    const res = await request.post('/lnurl/pay-request', {
+      headers: { authorization },
+      data: { target: 'not-an-address' },
+    });
+    statuses.push(res.status());
+  }
+  expect(statuses).toEqual([...Array<number>(30).fill(400), 429]);
+});
+
+test('Function: isPublicIp — a relay target whose host does not resolve is 502 before any address check', async ({
+  request,
+}) => {
+  const { authorization } = await memberSession(request);
+  const res = await request.post('/lnurl/pay-request', {
+    headers: { authorization },
+    data: { target: 'bob@not-a-lnurlp.invalid' },
+  });
+  expect(res.status()).toBe(502);
+  expect(await res.json()).toEqual({ error: 'Address could not be reached' });
 });
 
 test('Function: resolveLnurlp — GET an unresolvable address is 502', async ({ request }) => {
@@ -498,7 +579,7 @@ test('Function: debugRoutes — POST /debug/accounts with the e2e token is 200',
 }) => {
   const res = await request.post('/debug/accounts', {
     headers: { authorization: 'Bearer e2e-debug-token' },
-    data: { accounts: [{ name: 'Ada', lightningAddress: 'guest@walletofsatoshi.com' }] },
+    data: { accounts: [{ name: 'Ada' }] },
   });
   expect(res.status()).toBe(200);
 });
@@ -575,11 +656,11 @@ test('Function: compareAccountsForList — debug listing is ordered by createdAt
   }
 });
 
-test('Function: meRoutes unlink — DELETE /me/lightning-address without bearer is 401', async ({
+test('Function: meRoutes — the removed DELETE /me/lightning-address is 404', async ({
   request,
 }) => {
   const res = await request.delete('/me/lightning-address');
-  expect(res.status()).toBe(401);
+  expect(res.status()).toBe(404);
 });
 
 test('Function: giftsRoutes — GET /gifts without a day is 400', async ({ request }) => {
@@ -678,7 +759,7 @@ async function verifiedAskSession(request: APIRequestContext): Promise<{ authori
       accounts: [
         {
           name,
-          lightningAddress: `ask-${stamp}@walletofsatoshi.com`,
+          username: `ask-${stamp}`.slice(0, 32),
         },
       ],
     },
@@ -703,7 +784,8 @@ async function verifiedAskSession(request: APIRequestContext): Promise<{ authori
   return auth;
 }
 
-test('Function: loadLatestGoalRateDay — a fiat ask without gifts is unavailable', async ({
+// Posting needs a verified wallet, which needs LNURL_SERVER_URL (blank here).
+test('Function: loadLatestGoalRateDay — a fiat ask is 409 without a verified wallet', async ({
   request,
 }) => {
   const auth = await verifiedAskSession(request);
@@ -711,11 +793,15 @@ test('Function: loadLatestGoalRateDay — a fiat ask without gifts is unavailabl
     headers: auth,
     data: { text: 'pesos', goalCurrency: 'PHP', goalAmount: '200' },
   });
-  expect(res.status()).toBe(400);
-  expect(((await res.json()) as { error: string }).error).toBe('Ask amount is unavailable');
+  expect(res.status()).toBe(409);
+  expect(await res.json()).toEqual({
+    error: 'missing_requirements',
+    missing: ['lightning-address'],
+  });
 });
 
-test('Function: bindGoalRateDay — a bitcoin ask is stored without a gift-day rate', async ({
+// Posting needs a verified wallet, which needs LNURL_SERVER_URL (blank here).
+test('Function: bindGoalRateDay — a bitcoin ask is 409 without a verified wallet', async ({
   request,
 }) => {
   const auth = await verifiedAskSession(request);
@@ -723,46 +809,45 @@ test('Function: bindGoalRateDay — a bitcoin ask is stored without a gift-day r
     headers: auth,
     data: { text: 'sats', goalCurrency: 'BTC', goalAmount: '21' },
   });
-  expect(res.status()).toBe(200);
-  const body = (await res.json()) as {
-    goalCurrency: string;
-    goalAmount: string;
-    goalSats: number;
-    goalAmountUsd: string | null;
-  };
-  expect(body.goalCurrency).toBe('BTC');
-  expect(body.goalAmount).toBe('21');
-  expect(body.goalSats).toBe(21);
-  expect(body.goalAmountUsd).toBeNull();
-});
-
-test('Function: canonicalGoalAmount — a malformed ask amount is rejected', async ({ request }) => {
-  const auth = await verifiedAskSession(request);
-  const res = await request.post('/messages', {
-    headers: auth,
-    data: { text: 'bad', goalCurrency: 'USD', goalAmount: '1e2' },
+  expect(res.status()).toBe(409);
+  expect(await res.json()).toEqual({
+    error: 'missing_requirements',
+    missing: ['lightning-address'],
   });
-  expect(res.status()).toBe(400);
-  expect(((await res.json()) as { error: string }).error).toBe(
-    'Send either goalSats or both goalCurrency and goalAmount',
-  );
 });
 
-test('Function: fiatToSats — fiat and bitcoin ask fields together are rejected', async ({
+// Posting needs a verified wallet, which needs LNURL_SERVER_URL (blank here).
+test('Function: canonicalGoalAmount — an ask is 409 without a verified wallet', async ({
   request,
 }) => {
   const auth = await verifiedAskSession(request);
   const res = await request.post('/messages', {
     headers: auth,
-    data: { text: 'both', goalSats: 21, goalCurrency: 'USD', goalAmount: '1' },
+    data: { text: 'bad', goalCurrency: 'USD', goalAmount: '1e2' },
   });
-  expect(res.status()).toBe(400);
-  expect(((await res.json()) as { error: string }).error).toBe(
-    'Send either goalSats or both goalCurrency and goalAmount',
-  );
+  expect(res.status()).toBe(409);
+  expect(await res.json()).toEqual({
+    error: 'missing_requirements',
+    missing: ['lightning-address'],
+  });
 });
 
-test('Function: satsToFiatAmount — a bitcoin ask freezes null fiat when no day exists', async ({
+// Posting needs a verified wallet, which needs LNURL_SERVER_URL (blank here).
+test('Function: fiatToSats — an ask is 409 without a verified wallet', async ({ request }) => {
+  const auth = await verifiedAskSession(request);
+  const res = await request.post('/messages', {
+    headers: auth,
+    data: { text: 'both', goalSats: 21, goalCurrency: 'USD', goalAmount: '1' },
+  });
+  expect(res.status()).toBe(409);
+  expect(await res.json()).toEqual({
+    error: 'missing_requirements',
+    missing: ['lightning-address'],
+  });
+});
+
+// Posting needs a verified wallet, which needs LNURL_SERVER_URL (blank here).
+test('Function: satsToFiatAmount — a bitcoin ask is 409 without a verified wallet', async ({
   request,
 }) => {
   const auth = await verifiedAskSession(request);
@@ -770,15 +855,11 @@ test('Function: satsToFiatAmount — a bitcoin ask freezes null fiat when no day
     headers: auth,
     data: { text: 'freeze', goalCurrency: 'BTC', goalAmount: '21' },
   });
-  expect(res.status()).toBe(200);
-  const body = (await res.json()) as {
-    goalAmountChf: string | null;
-    goalAmountEur: string | null;
-    goalAmountPhp: string | null;
-  };
-  expect(body.goalAmountChf).toBeNull();
-  expect(body.goalAmountEur).toBeNull();
-  expect(body.goalAmountPhp).toBeNull();
+  expect(res.status()).toBe(409);
+  expect(await res.json()).toEqual({
+    error: 'missing_requirements',
+    missing: ['lightning-address'],
+  });
 });
 
 test('Function: QueryGiftStore — default boot has no DATABASE_URL', async ({ request }) => {
@@ -1240,6 +1321,11 @@ test('Function: buildZapPushPayload — POST /me/push-subscriptions without bear
 }) => {
   expect((await request.post('/me/push-subscriptions')).status()).toBe(401);
 });
+test('Function: buildHeartPushPayload — POST /me/push-subscriptions without bearer is 401', async ({
+  request,
+}) => {
+  expect((await request.post('/me/push-subscriptions')).status()).toBe(401);
+});
 
 test('Function: buildConversationPushPayload — POST /me/push-subscriptions without bearer is 401', async ({
   request,
@@ -1695,7 +1781,7 @@ test('Function: openBootStores — default boot has no DATABASE_URL and serves H
 
 test('Function: invoiceRoutes — POST /invoices unconfigured is 503', async ({ request }) => {
   const res = await request.post('/invoices', {
-    data: { address: 'alice@walletofsatoshi.com', amountMsat: 1000 },
+    data: { address: 'alice@example.com', amountMsat: 1000 },
   });
   expect(res.status()).toBe(503);
   expect(((await res.json()) as { error: string }).error).toBe('Spend invoices are not configured');
@@ -1713,49 +1799,49 @@ test('Function: spendInstructionRoutes — POST /spend/daily-instruction unconfi
 
 test('Function: checkSpendAuth — POST /invoices unconfigured is 503', async ({ request }) => {
   const res = await request.post('/invoices', {
-    data: { address: 'alice@walletofsatoshi.com', amountMsat: 1000 },
+    data: { address: 'alice@example.com', amountMsat: 1000 },
   });
   expect(res.status()).toBe(503);
 });
 
 test('Function: InMemoryInvoiceStore — POST /invoices unconfigured is 503', async ({ request }) => {
   const res = await request.post('/invoices', {
-    data: { address: 'alice@walletofsatoshi.com', amountMsat: 1000 },
+    data: { address: 'alice@example.com', amountMsat: 1000 },
   });
   expect(res.status()).toBe(503);
 });
 
 test('Function: requestGiftInvoice — POST /invoices unconfigured is 503', async ({ request }) => {
   const res = await request.post('/invoices', {
-    data: { address: 'alice@walletofsatoshi.com', amountMsat: 1000 },
+    data: { address: 'alice@example.com', amountMsat: 1000 },
   });
   expect(res.status()).toBe(503);
 });
 
 test('Function: decodeBolt11 — POST /invoices unconfigured is 503', async ({ request }) => {
   const res = await request.post('/invoices', {
-    data: { address: 'alice@walletofsatoshi.com', amountMsat: 1000 },
+    data: { address: 'alice@example.com', amountMsat: 1000 },
   });
   expect(res.status()).toBe(503);
 });
 
 test('Function: inspectBolt11 — POST /invoices unconfigured is 503', async ({ request }) => {
   const res = await request.post('/invoices', {
-    data: { address: 'alice@walletofsatoshi.com', amountMsat: 1000 },
+    data: { address: 'alice@example.com', amountMsat: 1000 },
   });
   expect(res.status()).toBe(503);
 });
 
 test('Function: isNip57Invoice — POST /invoices unconfigured is 503', async ({ request }) => {
   const res = await request.post('/invoices', {
-    data: { address: 'alice@walletofsatoshi.com', amountMsat: 1000 },
+    data: { address: 'alice@example.com', amountMsat: 1000 },
   });
   expect(res.status()).toBe(503);
 });
 
 test('Function: newInvoiceId — POST /invoices unconfigured is 503', async ({ request }) => {
   const res = await request.post('/invoices', {
-    data: { address: 'alice@walletofsatoshi.com', amountMsat: 1000 },
+    data: { address: 'alice@example.com', amountMsat: 1000 },
   });
   expect(res.status()).toBe(503);
 });
@@ -1958,12 +2044,6 @@ test('Function: buildKind0Event — default boot has no DATABASE_URL', async ({ 
 test('Function: buildKind10002Event — default boot has no DATABASE_URL', async ({ request }) => {
   expect((await request.get('/healthz')).status()).toBe(200);
 });
-test('Function: buildZapProbeRequest — default boot has no DATABASE_URL', async ({ request }) => {
-  expect((await request.get('/healthz')).status()).toBe(200);
-});
-test('Function: probeNip57Mint — default boot has no DATABASE_URL', async ({ request }) => {
-  expect((await request.get('/healthz')).status()).toBe(200);
-});
 test('Function: truncatePubkeyDisplay — default boot has no DATABASE_URL', async ({ request }) => {
   expect((await request.get('/healthz')).status()).toBe(200);
 });
@@ -2004,9 +2084,6 @@ test('Function: resolvePublicApiBase — default boot has no DATABASE_URL', asyn
 test('Function: resolveZapRelays — default boot has no DATABASE_URL', async ({ request }) => {
   expect((await request.get('/healthz')).status()).toBe(200);
 });
-test('Function: resolveZapReadRelays — default boot has no DATABASE_URL', async ({ request }) => {
-  expect((await request.get('/healthz')).status()).toBe(200);
-});
 test('Function: utcDayKey — default boot has no DATABASE_URL', async ({ request }) => {
   expect((await request.get('/healthz')).status()).toBe(200);
 });
@@ -2015,6 +2092,12 @@ test('Function: PostRateLimiter — POST /messages without bearer is 401', async
 });
 test('Function: InvoiceRateLimiter — POST /messages without bearer is 401', async ({ request }) => {
   expect((await request.post('/messages', { data: { text: 'hi' } })).status()).toBe(401);
+});
+test('Function: HeartRateLimiter — heart invoice without bearer is 401', async ({ request }) => {
+  const res = await request.post('/messages/00000000-0000-4000-8000-000000000000/invoice', {
+    data: { sats: 1, heart: true },
+  });
+  expect(res.status()).toBe(401);
 });
 test('Function: RecordingPublisher — default boot has no DATABASE_URL', async ({ request }) => {
   expect((await request.get('/healthz')).status()).toBe(200);
@@ -2037,6 +2120,136 @@ test('Function: startNostrWorker — default boot has no DATABASE_URL', async ({
   expect((await request.get('/healthz')).status()).toBe(200);
 });
 test('Function: buildZapRequest — default boot has no DATABASE_URL', async ({ request }) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
+test('Function: serializeZapRequest — default boot has no DATABASE_URL', async ({ request }) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
+test('Function: receivingAddress — GET /pay/:username is 404 for a member without a verified wallet', async ({
+  request,
+}) => {
+  const username = await walletlessMember(request);
+  expect((await request.get(`/pay/${username}`)).status()).toBe(404);
+  expect((await request.get('/pay/nobody-e2e-unknown')).status()).toBe(404);
+});
+test('Function: lnurlServerFetch — GET /pay/:username is 404 when the LNURL server is off', async ({
+  request,
+}) => {
+  const username = await walletlessMember(request);
+  const res = await request.get(`/pay/${username}`);
+  expect(res.status()).toBe(404);
+});
+test('Function: issueSparkInvoice — POST /messages/:id/invoice without bearer is 401', async ({
+  request,
+}) => {
+  const res = await request.post('/messages/00000000-0000-4000-8000-000000000000/invoice', {
+    data: { sats: 21 },
+  });
+  expect(res.status()).toBe(401);
+});
+test('Function: resolveFreePaymentsConfig — free in-app payments are off on the default boot', async ({
+  request,
+}) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
+test('Function: concatBytes — free in-app payments are off on the default boot', async ({
+  request,
+}) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
+test('Function: protoVarintField — free in-app payments are off on the default boot', async ({
+  request,
+}) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
+test('Function: protoBytesField — free in-app payments are off on the default boot', async ({
+  request,
+}) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
+test('Function: decodeProto — free in-app payments are off on the default boot', async ({
+  request,
+}) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
+test('Function: encodeSparkInvoice — free in-app payments are off on the default boot', async ({
+  request,
+}) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
+test('Function: uuidV7 — free in-app payments are off on the default boot', async ({ request }) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
+test('Function: migrateSparkInvoiceSchema — free in-app payments are off on the default boot', async ({
+  request,
+}) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
+test('Function: InMemorySparkInvoiceStore — free in-app payments are off on the default boot', async ({
+  request,
+}) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
+test('Function: PostgresSparkInvoiceStore — free in-app payments are off on the default boot', async ({
+  request,
+}) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
+test('Function: encodeQuerySparkInvoicesRequest — free in-app payments are off on the default boot', async ({
+  request,
+}) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
+test('Function: parseQuerySparkInvoicesResponse — free in-app payments are off on the default boot', async ({
+  request,
+}) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
+test('Function: querySparkInvoices — free in-app payments are off on the default boot', async ({
+  request,
+}) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
+test('Function: zapReceiptSecretKey — free in-app payments are off on the default boot', async ({
+  request,
+}) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
+test('Function: buildZapReceipt — free in-app payments are off on the default boot', async ({
+  request,
+}) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
+test('Function: runSparkInvoiceTick — free in-app payments are off on the default boot', async ({
+  request,
+}) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
+test('Function: startSparkInvoiceWorker — free in-app payments are off on the default boot', async ({
+  request,
+}) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
+test('Function: runPosPaidTick — the LNURL server is off on the default boot', async ({
+  request,
+}) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+  expect((await request.get('/pos')).status()).toBe(401);
+});
+test('Function: startPosPaidWorker — the LNURL server is off on the default boot', async ({
+  request,
+}) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+  expect((await request.get('/pos')).status()).toBe(401);
+});
+test('Function: ingestZapReceipt — free in-app payments are off on the default boot', async ({
+  request,
+}) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
+test('Function: zapReceiptIngest — free in-app payments are off on the default boot', async ({
+  request,
+}) => {
   expect((await request.get('/healthz')).status()).toBe(200);
 });
 test('Function: indexZapReceipt — default boot has no DATABASE_URL', async ({ request }) => {
@@ -2232,6 +2445,9 @@ test('Function: notifyModeratorProposed — POST /trust/propose-moderator withou
 test('Function: notifyZap — POST /messages without bearer is 401', async ({ request }) => {
   expect((await request.post('/messages')).status()).toBe(401);
 });
+test('Function: notifyHeart — POST /messages without bearer is 401', async ({ request }) => {
+  expect((await request.post('/messages')).status()).toBe(401);
+});
 test('Function: fanoutToBellSubscribers — POST /messages without bearer is 401', async ({
   request,
 }) => {
@@ -2380,11 +2596,6 @@ test('Function: serializeDebugSession — GET /debug/dump/auth_session without b
 }) => {
   expect((await request.get('/debug/dump/auth_session')).status()).toBe(401);
 });
-test('Function: serializeDebugAddressVerification — GET /debug/dump/address_verification without bearer is 401', async ({
-  request,
-}) => {
-  expect((await request.get('/debug/dump/address_verification')).status()).toBe(401);
-});
 test('Function: serializeDebugPasskeyChallenge — GET /debug/dump/passkey_challenge without bearer is 401', async ({
   request,
 }) => {
@@ -2456,11 +2667,11 @@ test('Function: sameRoleRank — confirm leaves an initiator unchanged when the 
       accounts: [
         {
           name: callerName,
-          lightningAddress: `e2e-rank-caller-${stamp}@walletofsatoshi.com`,
+          username: `e2e-rank-caller-${stamp}`.slice(0, 32),
         },
         {
           name: subjectName,
-          lightningAddress: `e2e-rank-subject-${stamp}@walletofsatoshi.com`,
+          username: `e2e-rank-subject-${stamp}`.slice(0, 32),
         },
       ],
     },
@@ -2777,73 +2988,63 @@ test('Function: debugExternalRoutes — GET /debug/external-pubkeys without bear
   expect((await request.get('/debug/external-pubkeys')).status()).toBe(401);
 });
 
-test('Function: normalizePlace — POST /messages stores a pin and GET /messages/places lists it', async ({
+test('Function: normalizePlace — PATCH /messages/:id/place refuses a bad place and pins a shop note', async ({
   request,
 }) => {
   const stamp = `${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
-  const adaName = `E2ePin${stamp}`;
-  const provision = await request.post('/debug/accounts', {
-    headers: DEBUG,
-    data: {
-      accounts: [
-        {
-          name: adaName,
-          lightningAddress: `e2e-pin-${stamp}@walletofsatoshi.com`,
-        },
-      ],
-    },
+  const { auth, noteId } = await moderatorShopNote(request, stamp);
+  // The place is checked before the note lookup: an unknown note still gets the place error.
+  const bad = await request.patch('/messages/00000000-0000-4000-8000-000000000000/place', {
+    headers: auth,
+    data: { place: { lat: 999, lng: 8.5 } },
   });
-  expect(provision.status()).toBe(200);
-
-  const listed = await request.get('/debug/accounts', { headers: DEBUG });
-  expect(listed.status()).toBe(200);
-  const accounts = ((await listed.json()) as { accounts: Array<{ id: string; name: string }> })
-    .accounts;
-  const ada = accounts.find((row) => row.name === adaName);
-  expect(ada).toBeDefined();
-
-  const session = await request.post(`/debug/accounts/${ada?.id}/session`, { headers: DEBUG });
-  expect(session.status()).toBe(200);
-  const token = ((await session.json()) as { token: string }).token;
-  const auth = { authorization: `Bearer ${token}` };
-  const agreed = await request.post('/me/rules-agreement', { headers: auth });
-  expect(agreed.status()).toBe(200);
-  const promoted = await request.patch(`/debug/accounts/${ada!.id}`, {
-    headers: DEBUG,
-    data: { role: 'verified' },
+  expect(bad.status()).toBe(400);
+  expect(await bad.json()).toEqual({ error: 'Place must be a latitude and longitude' });
+  const pinned = await request.patch(`/messages/${noteId}/place`, {
+    headers: auth,
+    data: { place: { lat: 47.3, lng: 8.5, label: 'Zürich' } },
   });
-  expect(promoted.status()).toBe(200);
-
-  const unauth = await request.get('/messages/places');
-  expect(unauth.status()).toBe(401);
-
-  const posted = await request.post('/messages', {
-    headers: { ...auth, 'content-type': 'application/json' },
-    data: { text: 'pin', place: { lat: 47.3, lng: 8.5, label: 'Zürich' } },
-  });
-  expect(posted.status()).toBe(200);
-  const note = (await posted.json()) as {
-    id: string;
-    place?: { lat: number; lng: number; label: string };
-  };
-  expect(note.place).toEqual({ lat: 47.3, lng: 8.5, label: 'Zürich' });
-
-  const pins = await request.get('/messages/places', { headers: auth });
-  expect(pins.status()).toBe(200);
-  const body = (await pins.json()) as {
-    places: Array<{ id: string; lat: number; lng: number; label: string | null }>;
-  };
-  expect(
-    body.places.some(
-      (row) => row.id === note.id && row.lat === 47.3 && row.lng === 8.5 && row.label === 'Zürich',
-    ),
-  ).toBe(true);
+  expect(pinned.status()).toBe(200);
 });
+
+/**
+ * A moderator whose About-me note is a shop note (`#21GiftsShop`). Saving About
+ * me needs no wallet, so the default boot can reach the place route.
+ *
+ * @param request - Playwright request context.
+ * @param stamp - Unique suffix.
+ * @returns The moderator bearer and the About-me note id.
+ */
+async function moderatorShopNote(
+  request: APIRequestContext,
+  stamp: string,
+): Promise<{ auth: { authorization: string }; noteId: string }> {
+  const { auth, id } = await pinSession(request, stamp, 'moderator');
+  const saved = await request.put('/me/about', {
+    headers: auth,
+    data: { text: 'My shop #21GiftsShop' },
+  });
+  expect(saved.status()).toBe(200);
+  const listed = await request.get('/debug/accounts', { headers: DEBUG });
+  const row = (
+    (await listed.json()) as { accounts: Array<{ id: string; profileMessageId: string | null }> }
+  ).accounts.find((item) => item.id === id);
+  expect(typeof row?.profileMessageId).toBe('string');
+  return { auth, noteId: row!.profileMessageId! };
+}
 
 async function verifiedPinSession(
   request: APIRequestContext,
   stamp: string,
 ): Promise<{ authorization: string }> {
+  return (await pinSession(request, stamp, 'verified')).auth;
+}
+
+async function pinSession(
+  request: APIRequestContext,
+  stamp: string,
+  role: 'verified' | 'moderator',
+): Promise<{ auth: { authorization: string }; id: string }> {
   const adaName = `E2ePin${stamp}`;
   const provision = await request.post('/debug/accounts', {
     headers: DEBUG,
@@ -2851,7 +3052,7 @@ async function verifiedPinSession(
       accounts: [
         {
           name: adaName,
-          lightningAddress: `e2e-pin-${stamp}@walletofsatoshi.com`,
+          username: `e2e-pin-${stamp}`.slice(0, 32),
         },
       ],
     },
@@ -2871,55 +3072,81 @@ async function verifiedPinSession(
   expect(agreed.status()).toBe(200);
   const promoted = await request.patch(`/debug/accounts/${ada!.id}`, {
     headers: DEBUG,
-    data: { role: 'verified' },
+    data: { role },
   });
   expect(promoted.status()).toBe(200);
-  return auth;
+  return { auth, id: ada!.id };
 }
 
-test('Function: placesMatch — a repeated photo with a different pin is 409', async ({
+test('Function: placesMatch — PATCH /messages/:id/place with the same place twice is 200', async ({
   request,
 }) => {
   const stamp = `${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
-  const auth = await verifiedPinSession(request, stamp);
-  const photo = { contentType: 'image/jpeg', data: '/9j/2Q==' };
-  const first = await request.post('/messages', {
-    headers: { ...auth, 'content-type': 'application/json' },
-    data: { text: 'same caption', photo },
-  });
-  expect(first.status()).toBe(200);
-  const firstId = ((await first.json()) as { id: string }).id;
-  const again = await request.post('/messages', {
-    headers: { ...auth, 'content-type': 'application/json' },
-    data: { text: 'same caption', photo },
-  });
-  expect(again.status()).toBe(200);
-  expect(((await again.json()) as { id: string }).id).toBe(firstId);
-  const moved = await request.post('/messages', {
-    headers: { ...auth, 'content-type': 'application/json' },
-    data: { text: 'same caption', photo, place: { lat: 47.3, lng: 8.5, label: 'Stall' } },
-  });
-  expect(moved.status()).toBe(409);
-  expect(await moved.json()).toEqual({ error: 'A live note with this media already exists' });
+  const { auth, noteId } = await moderatorShopNote(request, stamp);
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const res = await request.patch(`/messages/${noteId}/place`, {
+      headers: auth,
+      data: { place: { lat: 47.3, lng: 8.5, label: 'Zürich' } },
+    });
+    expect(res.status()).toBe(200);
+  }
+  // The second, matching place writes no second edit entry.
+  const edits = await request.get(`/messages/${noteId}/edits`, { headers: auth });
+  expect(edits.status()).toBe(200);
+  const fields = ((await edits.json()) as { edits: Array<{ field: string }> }).edits.map(
+    (edit) => edit.field,
+  );
+  expect(fields.filter((field) => field === 'place')).toHaveLength(1);
 });
 
-test('Function: parseMultipartCoord — blank coordinates are no pin and a word is rejected', async ({
+test('Function: placeCountryCode — a shop pinned in Manila is PH on the map and in the PH feed', async ({
+  request,
+}) => {
+  const stamp = `${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
+  const { auth, noteId } = await moderatorShopNote(request, stamp);
+  const pinned = await request.patch(`/messages/${noteId}/place`, {
+    headers: auth,
+    data: { place: { lat: 14.5995, lng: 120.9842, label: 'Kenya Street' } },
+  });
+  expect(pinned.status()).toBe(200);
+  const places = await request.get('/messages/places', { headers: auth });
+  expect(places.status()).toBe(200);
+  const row = (
+    (await places.json()) as { places: Array<{ id: string; countryCode: string | null }> }
+  ).places.find((place) => place.id === noteId);
+  // The label names Kenya; the coordinates decide.
+  expect(row?.countryCode).toBe('PH');
+  const ids = async (country: string): Promise<string[]> => {
+    const res = await request.get(`/messages?mode=all&hashtag=21GiftsShop&country=${country}`, {
+      headers: auth,
+    });
+    expect(res.status()).toBe(200);
+    return ((await res.json()) as { messages: Array<{ id: string }> }).messages.map(
+      (message) => message.id,
+    );
+  };
+  expect(await ids('PH')).toContain(noteId);
+  expect(await ids('KE')).not.toContain(noteId);
+  const invalid = await request.get('/messages?country=ph', { headers: auth });
+  expect(invalid.status()).toBe(400);
+  expect(await invalid.json()).toEqual({ error: 'Invalid country' });
+});
+
+// Posting needs a verified wallet, which needs LNURL_SERVER_URL (blank here).
+test('Function: parseMultipartCoord — a multipart pinned note is 409 without a verified wallet', async ({
   request,
 }) => {
   const stamp = `${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
   const auth = await verifiedPinSession(request, stamp);
-  const blank = await request.post('/messages', {
+  const res = await request.post('/messages', {
     headers: auth,
     multipart: { text: 'pin', placeLat: ' ', placeLng: ' ' },
   });
-  expect(blank.status()).toBe(200);
-  expect(await blank.json()).not.toHaveProperty('place');
-  const bad = await request.post('/messages', {
-    headers: auth,
-    multipart: { text: 'pin', placeLat: 'north', placeLng: '8.5' },
+  expect(res.status()).toBe(409);
+  expect(await res.json()).toEqual({
+    error: 'missing_requirements',
+    missing: ['lightning-address'],
   });
-  expect(bad.status()).toBe(400);
-  expect(await bad.json()).toEqual({ error: 'Place must be a latitude and longitude' });
 });
 
 test('Function: translateRoutes — GET /translate reports availability', async ({ request }) => {
@@ -3202,4 +3429,312 @@ test('Function: InMemoryMemberHabitStore — GET /habits is public', async ({ re
 test('Function: PostgresMemberHabitStore — GET /habits is public', async ({ request }) => {
   const res = await request.get('/habits');
   expect(res.status()).toBe(200);
+});
+
+// Needs SPEND_API_TOKEN and LNURL_SERVER_URL (both blank here): the spend gate answers first.
+test('Function: accountByReceivingAddress — GET /invoices/eligible unconfigured is 503', async ({
+  request,
+}) => {
+  const res = await request.get('/invoices/eligible?address=ada@127.0.0.1');
+  expect(res.status()).toBe(503);
+});
+
+async function expectEmptySpot(request: APIRequestContext): Promise<void> {
+  const res = await request.get('/fx/spot');
+  expect(res.status()).toBe(200);
+  expect(await res.json()).toEqual({ asOf: null, source: null, rates: {} });
+}
+
+test('Function: fxRoutes — GET /fx/spot is public', async ({ request }) => {
+  await expectEmptySpot(request);
+});
+test('Function: resolveFxSpotUrl — the pinned unreachable provider URL is used', async ({
+  request,
+}) => {
+  await expectEmptySpot(request);
+});
+test('Function: fetchFxSpot — an unreachable provider yields no quote', async ({ request }) => {
+  await expectEmptySpot(request);
+});
+test('Function: runFxSpotTick — a failed fetch stores nothing', async ({ request }) => {
+  await expectEmptySpot(request);
+});
+test('Function: startFxSpotWorker — the worker runs on the default boot', async ({ request }) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+  await expectEmptySpot(request);
+});
+test('Function: InMemoryFxSpotStore — memory boot starts without a quote', async ({ request }) => {
+  await expectEmptySpot(request);
+});
+test('Function: PostgresFxSpotStore — default boot has no DATABASE_URL', async ({ request }) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
+test('Function: migrateFxSpotSchema — default boot has no DATABASE_URL', async ({ request }) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
+
+const PHRASE_12 =
+  'abandon ability able about above absent absorb abstract absurd abuse access accident';
+
+function walletPayment(extra: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    id: 'p1',
+    direction: 'out',
+    status: 'completed',
+    amountSats: 21,
+    feeSats: 0,
+    timestamp: Math.floor(Date.now() / 1000),
+    method: 'lightning',
+    ...extra,
+  };
+}
+
+function walletReport(
+  payments: Array<Record<string, unknown>> = [walletPayment()],
+  extra: Record<string, unknown> = {},
+): Record<string, unknown> {
+  return {
+    balanceSats: 1000,
+    syncedAt: new Date().toISOString(),
+    payments,
+    ...extra,
+  };
+}
+
+test('Function: readCappedText — POST /me/events body over 64 KiB is 413', async ({ request }) => {
+  const auth = await memberSession(request);
+  const res = await request.post('/me/events', {
+    headers: { ...auth, 'content-type': 'application/json' },
+    data: 'x'.repeat(64 * 1024 + 1),
+  });
+  expect(res.status()).toBe(413);
+});
+
+test('Function: isSecretFieldName — secret prop key is dropped and the event is accepted', async ({
+  request,
+}) => {
+  const auth = await memberSession(request);
+  const res = await request.post('/me/events', {
+    headers: auth,
+    data: {
+      events: [
+        {
+          name: 'login',
+          at: new Date().toISOString(),
+          props: { seedWords: 'x', count: 1 },
+        },
+      ],
+    },
+  });
+  expect(res.status()).toBe(200);
+  expect((await res.json()) as { accepted: number }).toMatchObject({ accepted: 1 });
+});
+
+test('Function: looksLikeSecretValue — 12-word phrase prop is dropped and the event is accepted', async ({
+  request,
+}) => {
+  const auth = await memberSession(request);
+  const res = await request.post('/me/events', {
+    headers: auth,
+    data: {
+      events: [
+        {
+          name: 'login',
+          at: new Date().toISOString(),
+          props: { note: PHRASE_12 },
+        },
+      ],
+    },
+  });
+  expect(res.status()).toBe(200);
+  expect((await res.json()) as { accepted: number }).toMatchObject({ accepted: 1 });
+});
+
+test('Function: parseClientInstant — event with at far in the future is dropped', async ({
+  request,
+}) => {
+  const auth = await memberSession(request);
+  const res = await request.post('/me/events', {
+    headers: auth,
+    data: {
+      events: [
+        {
+          name: 'login',
+          at: new Date(Date.now() + 86_400_000).toISOString(),
+        },
+      ],
+    },
+  });
+  expect(res.status()).toBe(200);
+  expect(await res.json()).toEqual({ accepted: 0, dropped: 1 });
+});
+
+test('Function: parseMemberEventBatch — 51 events is 400 Invalid events', async ({ request }) => {
+  const auth = await memberSession(request);
+  const res = await request.post('/me/events', {
+    headers: auth,
+    data: {
+      events: Array.from({ length: 51 }, () => ({
+        name: 'login',
+        at: new Date().toISOString(),
+      })),
+    },
+  });
+  expect(res.status()).toBe(400);
+  expect(await res.json()).toEqual({ error: 'Invalid events' });
+});
+
+test('Function: memberEventRoutes — no bearer is 401', async ({ request }) => {
+  const res = await request.post('/me/events');
+  expect(res.status()).toBe(401);
+});
+
+test('Function: InMemoryMemberEventStore — valid event is 200 accepted 1', async ({ request }) => {
+  const auth = await memberSession(request);
+  const res = await request.post('/me/events', {
+    headers: auth,
+    data: { events: [{ name: 'login', at: new Date().toISOString() }] },
+  });
+  expect(res.status()).toBe(200);
+  expect(await res.json()).toEqual({ accepted: 1, dropped: 0 });
+});
+
+test('Function: PostgresMemberEventStore — needs DATABASE_URL; default boot stores in memory (200)', async ({
+  request,
+}) => {
+  const auth = await memberSession(request);
+  const res = await request.post('/me/events', {
+    headers: auth,
+    data: { events: [{ name: 'login', at: new Date().toISOString() }] },
+  });
+  expect(res.status()).toBe(200);
+  expect(await res.json()).toEqual({ accepted: 1, dropped: 0 });
+});
+
+test('Function: migrateMemberEventSchema — needs DATABASE_URL; default boot stores in memory (200)', async ({
+  request,
+}) => {
+  const auth = await memberSession(request);
+  const res = await request.post('/me/events', {
+    headers: auth,
+    data: { events: [{ name: 'login', at: new Date().toISOString() }] },
+  });
+  expect(res.status()).toBe(200);
+  expect(await res.json()).toEqual({ accepted: 1, dropped: 0 });
+});
+
+test('Function: decodeSparkAddress — non-Spark spark1 invoice is acknowledged', async ({
+  request,
+}) => {
+  const auth = await memberSession(request);
+  const res = await request.post('/me/wallet/report', {
+    headers: auth,
+    data: walletReport([
+      walletPayment({ id: 'spark-bad', invoice: 'spark1notvalid', method: 'spark' }),
+    ]),
+  });
+  expect(res.status()).toBe(200);
+  expect(await res.json()).toEqual({ acknowledgedIds: ['spark-bad'] });
+});
+
+test('Function: parseWalletReport — balanceSats -1 is 400 Invalid wallet report', async ({
+  request,
+}) => {
+  const auth = await memberSession(request);
+  const res = await request.post('/me/wallet/report', {
+    headers: auth,
+    data: walletReport([], { balanceSats: -1 }),
+  });
+  expect(res.status()).toBe(400);
+  expect(await res.json()).toEqual({ error: 'Invalid wallet report' });
+});
+
+test('Function: walletPaymentClassifier — onchain payment is acknowledged', async ({ request }) => {
+  const auth = await memberSession(request);
+  const res = await request.post('/me/wallet/report', {
+    headers: auth,
+    data: walletReport([walletPayment({ id: 'onchain-1', method: 'onchain' })]),
+  });
+  expect(res.status()).toBe(200);
+  expect(await res.json()).toEqual({ acknowledgedIds: ['onchain-1'] });
+});
+
+test('Function: bolt11Descriptions — invoice with a plain description is acknowledged', async ({
+  request,
+}) => {
+  const auth = await memberSession(request);
+  const res = await request.post('/me/wallet/report', {
+    headers: auth,
+    data: walletReport([
+      walletPayment({
+        id: 'bolt11-descriptions',
+        invoice:
+          'lnbc1pvjluezpp5qyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqsdq5xysxxatsyp3k7enxv4jsqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqznl48l',
+      }),
+    ]),
+  });
+  expect(res.status()).toBe(200);
+  expect(await res.json()).toEqual({ acknowledgedIds: ['bolt11-descriptions'] });
+});
+
+test('Function: containsEncodedSecret — a secret-shaped payment id is skipped, not acknowledged', async ({
+  request,
+}) => {
+  const auth = await memberSession(request);
+  const res = await request.post('/me/wallet/report', {
+    headers: auth,
+    data: walletReport([
+      walletPayment({ id: `nsec1${'q'.repeat(58)}` }),
+      walletPayment({ id: 'plain-id' }),
+    ]),
+  });
+  expect(res.status()).toBe(200);
+  expect(await res.json()).toEqual({ acknowledgedIds: ['plain-id'] });
+});
+
+test('Function: walletReportRoutes — no bearer is 401', async ({ request }) => {
+  const res = await request.post('/me/wallet/report');
+  expect(res.status()).toBe(401);
+});
+
+test('Function: InMemoryWalletStore — pending then completed same id both 200', async ({
+  request,
+}) => {
+  const auth = await memberSession(request);
+  const pending = await request.post('/me/wallet/report', {
+    headers: auth,
+    data: walletReport([walletPayment({ id: 'same', status: 'pending' })]),
+  });
+  expect(pending.status()).toBe(200);
+  expect(await pending.json()).toEqual({ acknowledgedIds: ['same'] });
+  const completed = await request.post('/me/wallet/report', {
+    headers: auth,
+    data: walletReport([walletPayment({ id: 'same', status: 'completed' })]),
+  });
+  expect(completed.status()).toBe(200);
+  expect(await completed.json()).toEqual({ acknowledgedIds: ['same'] });
+});
+
+test('Function: PostgresWalletStore — needs DATABASE_URL; default boot stores in memory (200)', async ({
+  request,
+}) => {
+  const auth = await memberSession(request);
+  const res = await request.post('/me/wallet/report', {
+    headers: auth,
+    data: walletReport(),
+  });
+  expect(res.status()).toBe(200);
+  expect(await res.json()).toEqual({ acknowledgedIds: ['p1'] });
+});
+
+test('Function: migrateWalletSchema — needs DATABASE_URL; default boot stores in memory (200)', async ({
+  request,
+}) => {
+  const auth = await memberSession(request);
+  const res = await request.post('/me/wallet/report', {
+    headers: auth,
+    data: walletReport(),
+  });
+  expect(res.status()).toBe(200);
+  expect(await res.json()).toEqual({ acknowledgedIds: ['p1'] });
 });

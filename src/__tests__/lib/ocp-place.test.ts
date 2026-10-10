@@ -12,6 +12,7 @@ import {
 } from '@/lib/ocp-place';
 import { createApp } from '@/server';
 import { InMemoryAuthStore } from '@/lib/auth/store';
+import { WALLET_PUBKEY } from '@/__tests__/helpers/wallet-lnurl';
 import type { FetchFn } from '@/lib/lnurlp';
 
 const COORD_ERROR = 'Place must be a latitude and longitude';
@@ -269,15 +270,16 @@ async function shopAccount(): Promise<InMemoryAuthStore> {
     linkingKey: 'a'.repeat(64),
     role: 'verified',
     name: 'Ada',
-    lightningAddress: 'ada@walletofsatoshi.com',
-    lightningAddressVerified: true,
     forumLawsDismissed: false,
     location: null,
     viewKey: 'b'.repeat(64),
     createdAt: now,
     rulesAgreedAt: now,
     username: 'ada',
+    walletRequired: true,
   });
+  await store.claimSparkPubkey('acc', WALLET_PUBKEY);
+  await store.markSparkPubkeyVerified('acc', WALLET_PUBKEY, 'ada', now);
   await store.createSession({ token: 'tok', accountId: 'acc', createdAt: now });
   return store;
 }

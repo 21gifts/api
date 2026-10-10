@@ -1,13 +1,14 @@
 /**
  * In-app notification domain: public JSON projection, living-room fan-out,
- * targeted `moderator_appointed` (subject only, not a fan-out), and staff
+ * targeted `moderator_appointed` (subject only, not a fan-out), targeted
+ * `heart` (note author only, not a fan-out), and staff
  * `moderator_proposal` fan-out.
  *
  * Living-room in-app recipients are the union of `auth.listAccounts()` (when
  * `auth` is set) and `push_subscription` account ids, except skip, then
  * filtered by each recipient's `notificationLevel` when `auth` is set.
  * `GET /notifications` applies the same filter to stored rows. Targeted
- * `moderator_appointed` does not fan out. `moderator_proposal` fans out to
+ * `moderator_appointed` and `heart` do not fan out. `moderator_proposal` fans out to
  * other staff and is not stamped by mark-read; rows drop on confirm, on
  * reject when pending is then empty, or on appoint.
  * Web Push is still only for `push_subscription` rows. Member HTTP never
@@ -24,6 +25,7 @@ import type { NotificationStore } from '@/lib/notification-store';
 import {
   buildForumMentionPushPayload,
   buildForumPushPayload,
+  buildHeartPushPayload,
   buildModeratorAppointedPushPayload,
   buildReplyPushPayload,
   buildZapPushPayload,
@@ -46,6 +48,7 @@ export type NotificationType =
   | 'forum_reply'
   | 'forum_mention'
   | 'zap'
+  | 'heart'
   | 'moderator_appointed'
   | 'moderator_proposal';
 
@@ -182,8 +185,8 @@ export function wantsNotification(args: {
 
 /**
  * Keep stored in-app rows that the owner's current {@link NotificationLevel}
- * would still accept. `moderator_appointed` and `moderator_proposal` always
- * stay (not living-room fan-out). `all` returns `rows` unchanged. Parent lookup uses
+ * would still accept. `moderator_appointed`, `moderator_proposal`, and `heart`
+ * always stay (not living-room fan-out). `all` returns `rows` unchanged. Parent lookup uses
  * `parentById` (`forum_post` / `forum_reply` / `zap` `parentId`); a missing
  * parent is unpaid and not personal. `forum_mention` uses the recipient as `mentionedAccountId` and is active only when the parent exists and `parent.sats > 0`. Zap `text` is the amount string.
  * A staff or platform actor does not satisfy `mentions`.
@@ -202,7 +205,11 @@ export function notificationsMatchingLevel(args: {
     return [...args.rows];
   }
   return args.rows.filter((row) => {
-    if (row.type === 'moderator_appointed' || row.type === 'moderator_proposal') {
+    if (
+      row.type === 'moderator_appointed' ||
+      row.type === 'moderator_proposal' ||
+      row.type === 'heart'
+    ) {
       return true;
     }
     const parent = args.parentById.get(row.parentId);
@@ -805,6 +812,119 @@ export async function notifyZap(args: {
     ),
     nowMs: args.nowMs,
   });
+}
+
+/**
+ * Notify only the author of a newly indexed heart tip. Persist one `heart`
+ * row when `notifications` is set (`text` is `"1"`, `replyId` matches
+ * {@link notifyZap}) and enqueue a `/messages/<noteId>` Web Push
+ * (`tag` `heart:<replyId>`, body `Sent you a heart.`) when `pushStore` is
+ * set. No-op when the note has no `accountId`, when the payer is the author,
+ * when the author account is missing, or when the author's `notifyHearts` is
+ * false. Does not fan out to the living room and does not consult
+ * `wantsNotification` / `notificationLevel`. Missing both stores is a no-op.
+ * This helper may throw; callers wrap it.
+ *
+ * @param args - Optional stores, heart-tipped note, receipt id, clock, payer.
+ * @returns Resolves after the optional persist and push enqueue (including no-ops).
+ * @throws If recipient `create`, `unreadCount`, or `enqueue` rejects.
+ */
+export async function notifyHeart(args: {
+  /** Optional notification persistence. */
+  notifications?: NotificationStore;
+  /** Optional push outbox. */
+  pushStore?: PushStore;
+  /** Optional auth; used to load the note author (`notifyHearts`). */
+  auth?: Pick<AuthStore, 'getAccount'>;
+  /** Heart-tipped forum note; requires `note.accountId`. */
+  note: MessageRow;
+  /** Kind:9735 event id (64 hex). */
+  receiptId: string;
+  /** Enqueue / row clock. */
+  nowMs: number;
+  /** Payer account id (actor; skipped when equal to the author). */
+  payerAccountId: string;
+  /** Actor display-name snapshot; default `'Someone'`. */
+  payerName?: string;
+  /** Optional listed inbox unread; forwarded to the author push. */
+  inboxUnreadCount?: (accountId: string) => Promise<number>;
+}): Promise<void> {
+  const noteAccountId = args.note.accountId;
+  if (noteAccountId === null || args.payerAccountId === noteAccountId) {
+    return;
+  }
+  if (args.notifications === undefined && args.pushStore === undefined) {
+    return;
+  }
+  if (args.auth === undefined) {
+    return;
+  }
+  const author = await args.auth.getAccount(noteAccountId);
+  if (author === undefined || author.notifyHearts === false) {
+    return;
+  }
+  const replyId = zapReplyIdFromReceipt(args.receiptId);
+  const createdAt = new Date(args.nowMs);
+  const name = args.payerName ?? 'Someone';
+  let failed = false;
+  if (args.notifications !== undefined) {
+    try {
+      await args.notifications.create({
+        id: crypto.randomUUID(),
+        recipientAccountId: noteAccountId,
+        actorAccountId: args.payerAccountId,
+        type: 'heart',
+        parentId: args.note.id,
+        replyId,
+        name,
+        text: '1',
+        createdAt,
+        readAt: null,
+      });
+    } catch {
+      failed = true;
+      logEvent('push.fanout.failed');
+    }
+  }
+  if (args.pushStore !== undefined) {
+    try {
+      const base = buildHeartPushPayload({
+        replyId,
+        noteId: args.note.id,
+        name,
+      });
+      let payload = JSON.stringify(base);
+      if (args.notifications !== undefined || args.inboxUnreadCount !== undefined) {
+        const notifUnread =
+          args.notifications === undefined
+            ? 0
+            : await args.notifications.unreadCount(noteAccountId);
+        const inboxUnread =
+          args.inboxUnreadCount === undefined ? 0 : await args.inboxUnreadCount(noteAccountId);
+        payload = JSON.stringify({ ...base, unreadCount: notifUnread + inboxUnread });
+      }
+      const row: PushOutboxRow = {
+        id: crypto.randomUUID(),
+        accountId: noteAccountId,
+        type: 'zap',
+        messageId: args.note.id,
+        payload,
+        status: 'pending',
+        attempts: 0,
+        claimedUntil: null,
+        createdAt,
+        deliveredEndpoints: [],
+        skipEndpoints: [],
+      };
+      await args.pushStore.enqueue(row);
+    } catch {
+      failed = true;
+      logEvent('push.fanout.failed');
+    }
+  }
+  if (failed) {
+    throw new Error('push.fanout.failed');
+  }
 }
 
 /**

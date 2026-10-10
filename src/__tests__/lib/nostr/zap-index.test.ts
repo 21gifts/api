@@ -33,12 +33,16 @@ import {
   backfillExternalZappers,
   indexOpenZapReceipts,
   indexZapReceipt,
+  ingestZapReceipt,
   manualReceiptIdForPaymentHash,
   settleInvoiceManually,
 } from '@/lib/nostr/zap-index';
 import { PostRateLimiter } from '@/lib/nostr/rate-limit';
 import { InMemoryPushStore } from '@/lib/push-store';
 import { InMemoryFiatStore } from '@/lib/usd-fiat-store';
+import type { LnurlServerConfig } from '@/lib/config';
+import { buildZapReceipt, zapReceiptSecretKey } from '@/lib/nostr/zap-receipt';
+import { LNURL_SERVER } from '@/__tests__/helpers/wallet-lnurl';
 
 vi.mock('@/lib/bolt11', () => ({
   decodeBolt11: vi.fn(),
@@ -73,26 +77,34 @@ async function seedStore(args: {
   auth: InMemoryAuthStore;
   accountId: string;
   eventId?: string | null;
+  /**
+   * Author's receiving address: its local part becomes the username of a
+   * verified wallet (default `seed`). `null` or blank → no verified wallet.
+   */
   lightningAddress?: string | null;
   messageId?: string;
   createAccount?: boolean;
 }): Promise<string> {
   const messageId = args.messageId ?? `m-${args.accountId}`;
   if (args.createAccount !== false) {
+    const address =
+      args.lightningAddress === undefined ? 'seed@example.com' : args.lightningAddress;
+    const username = address === null ? '' : (address.trim().split('@')[0] ?? '').toLowerCase();
     await args.auth.createAccount({
       id: args.accountId,
       linkingKey: null,
       role: 'basis',
       name: 'Ada',
-      lightningAddress:
-        args.lightningAddress === undefined ? 'seed@example.com' : args.lightningAddress,
-      lightningAddressVerified: true,
+      ...(username === '' ? {} : { username, walletRequired: true }),
       forumLawsDismissed: false,
       location: null,
       viewKey: viewKeyFor(args.accountId),
       createdAt: 1,
       rulesAgreedAt: null,
     });
+    if (username !== '') {
+      await verifyWallet(args.auth, args.accountId, username);
+    }
   }
   await args.store.create({
     id: messageId,
@@ -105,6 +117,22 @@ async function seedStore(args: {
     eventId: args.eventId === undefined ? NOTE_EVENT_ID : args.eventId,
   });
   return messageId;
+}
+
+/** Claim and verify a wallet key derived from the account id (once). */
+async function verifyWallet(
+  auth: InMemoryAuthStore,
+  accountId: string,
+  username: string,
+): Promise<void> {
+  if (typeof (await auth.getAccount(accountId))?.sparkPubkeyVerifiedAt === 'number') {
+    return;
+  }
+  const key = `02${createHash('sha256').update(accountId).digest('hex')}`;
+  await auth.claimSparkPubkey(accountId, key);
+  if (!(await auth.markSparkPubkeyVerified(accountId, key, username, 1))) {
+    throw new Error(`wallet not verified for ${accountId}`);
+  }
 }
 
 /** LNURL-pay metadata fetch returning a zap-capable provider pubkey. */
@@ -133,6 +161,7 @@ async function ingest(
 ): ReturnType<typeof indexOpenZapReceipts> {
   return indexOpenZapReceipts({
     verifyReceipt: () => true,
+    lnurlServer: LNURL_SERVER,
     ...args,
   });
 }
@@ -350,8 +379,6 @@ async function memberGiftRetryFixture(
     linkingKey: null,
     role: 'basis',
     name: 'Retry Payer',
-    lightningAddress: `${slug}-payer@example.com`,
-    lightningAddressVerified: true,
     location: null,
     forumLawsDismissed: false,
     viewKey: viewKeyFor(payerId),
@@ -1396,8 +1423,6 @@ describe('manual invoice settlement', () => {
       linkingKey: null,
       role: 'basis',
       name: null,
-      lightningAddress: 'payer@example.com',
-      lightningAddressVerified: true,
       forumLawsDismissed: false,
       location: null,
       viewKey: viewKeyFor('manual-payer'),
@@ -1468,8 +1493,6 @@ describe('manual invoice settlement', () => {
       linkingKey: null,
       role: 'basis',
       name: null,
-      lightningAddress: 'payer@example.com',
-      lightningAddressVerified: true,
       forumLawsDismissed: false,
       location: null,
       viewKey: viewKeyFor('manual-payer'),
@@ -1530,14 +1553,14 @@ describe('manual invoice settlement', () => {
       role: 'basis',
       name: 'Ada',
       username: 'ada',
-      lightningAddress: 'payer@example.com',
-      lightningAddressVerified: true,
+      walletRequired: true,
       forumLawsDismissed: false,
       location: null,
       viewKey: viewKeyFor('manual-payer'),
       createdAt: 2,
       rulesAgreedAt: 1,
     });
+    await verifyWallet(auth, 'manual-payer', 'ada');
     const preimage = '12'.repeat(32);
     const paymentHash = createHash('sha256').update(Buffer.from(preimage, 'hex')).digest('hex');
     await seedManualInvoice(store, paymentHash, {
@@ -1570,7 +1593,7 @@ describe('manual invoice settlement', () => {
     expect(kinds).toEqual(['forum_post']);
   });
 
-  it('pings spend after a compose post when the payer is eligible today', async () => {
+  it('pings spend with the payer wallet address after a compose post when eligible today', async () => {
     const store = new InMemoryMessageStore();
     const auth = new InMemoryAuthStore();
     const messageId = await seedStore({
@@ -1592,14 +1615,92 @@ describe('manual invoice settlement', () => {
       role: 'verified',
       name: 'Ada',
       username: 'ada-eligible',
-      lightningAddress: 'eligible@example.com',
-      lightningAddressVerified: true,
+      walletRequired: true,
       forumLawsDismissed: false,
       location: null,
       viewKey: viewKeyFor('eligible-payer'),
       createdAt: 2,
       rulesAgreedAt: 1,
     });
+    await verifyWallet(auth, 'eligible-payer', 'ada-eligible');
+    const fundingStore = new InMemoryFundingStore([
+      {
+        accountId: 'eligible-payer',
+        status: 'admitted',
+        appliedAt: 1,
+        decidedAt: 2,
+        decidedBy: 'staff',
+        trialUtcDate: null,
+        admittedAt: 2,
+        note: null,
+      },
+    ]);
+    const preimage = '13'.repeat(32);
+    const paymentHash = createHash('sha256').update(Buffer.from(preimage, 'hex')).digest('hex');
+    await seedManualInvoice(store, paymentHash, {
+      conversationId: null,
+      messageId: 'eligible-message',
+      payerAccountId: 'eligible-payer',
+      authorAccountId: 'eligible-author',
+      zapRequest: { content: 'Eligible compose' },
+    });
+    const spendPing = { ping: vi.fn(async () => undefined) };
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const result = await settleInvoiceManually({
+      store,
+      auth,
+      now: () => 1_800,
+      paymentHash,
+      note: 'eligible compose',
+      preimage,
+      spendPing,
+      fundingStore,
+      postLimiter: new PostRateLimiter(),
+      lnurlServer: LNURL_SERVER,
+    });
+    warn.mockRestore();
+    expect(result.ok).toBe(true);
+    const created = (await store.listLatest(20)).find((row) => row.text === 'Eligible compose');
+    expect(created?.accountId).toBe('eligible-payer');
+    expect(spendPing.ping).toHaveBeenCalledTimes(1);
+    expect(spendPing.ping).toHaveBeenCalledWith(
+      'ada-eligible@example.test',
+      created?.id,
+      'daily',
+      'admitted',
+    );
+  });
+
+  it('skips the compose spend ping when the payer has no receiving address', async () => {
+    const store = new InMemoryMessageStore();
+    const auth = new InMemoryAuthStore();
+    const messageId = await seedStore({
+      store,
+      auth,
+      accountId: 'eligible-author',
+      messageId: 'eligible-message',
+    });
+    const platform = await auth.getAccount('eligible-author');
+    expect(platform).toBeDefined();
+    await auth.updateAccount({
+      ...platform!,
+      isPlatform: true,
+      profileMessageId: messageId,
+    });
+    await auth.createAccount({
+      id: 'eligible-payer',
+      linkingKey: null,
+      role: 'verified',
+      name: 'Ada',
+      username: 'ada-eligible',
+      walletRequired: true,
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: viewKeyFor('eligible-payer'),
+      createdAt: 2,
+      rulesAgreedAt: 1,
+    });
+    await verifyWallet(auth, 'eligible-payer', 'ada-eligible');
     const fundingStore = new InMemoryFundingStore([
       {
         accountId: 'eligible-payer',
@@ -1638,13 +1739,8 @@ describe('manual invoice settlement', () => {
     expect(result.ok).toBe(true);
     const created = (await store.listLatest(20)).find((row) => row.text === 'Eligible compose');
     expect(created?.accountId).toBe('eligible-payer');
-    expect(spendPing.ping).toHaveBeenCalledTimes(1);
-    expect(spendPing.ping).toHaveBeenCalledWith(
-      'eligible@example.com',
-      created?.id,
-      'daily',
-      'admitted',
-    );
+    // Without the LNURL server the payer has no receiving address to pay out to.
+    expect(spendPing.ping).toHaveBeenCalledTimes(0);
   });
 
   it('logs spend.ping.failed when compose funding lookup throws', async () => {
@@ -1669,14 +1765,14 @@ describe('manual invoice settlement', () => {
       role: 'verified',
       name: 'Ada',
       username: 'ada-throw',
-      lightningAddress: 'throw@example.com',
-      lightningAddressVerified: true,
+      walletRequired: true,
       forumLawsDismissed: false,
       location: null,
       viewKey: viewKeyFor('throw-payer'),
       createdAt: 2,
       rulesAgreedAt: 1,
     });
+    await verifyWallet(auth, 'throw-payer', 'ada-throw');
     const preimage = '14'.repeat(32);
     const paymentHash = createHash('sha256').update(Buffer.from(preimage, 'hex')).digest('hex');
     await seedManualInvoice(store, paymentHash, {
@@ -1700,6 +1796,7 @@ describe('manual invoice settlement', () => {
       spendPing,
       fundingStore,
       postLimiter: new PostRateLimiter(),
+      lnurlServer: LNURL_SERVER,
     });
     warn.mockRestore();
     expect(result.ok).toBe(true);
@@ -1727,8 +1824,6 @@ describe('manual invoice settlement', () => {
       linkingKey: null,
       role: 'basis',
       name: 'Ada',
-      lightningAddress: 'payer@example.com',
-      lightningAddressVerified: true,
       forumLawsDismissed: false,
       location: null,
       viewKey: viewKeyFor('manual-payer'),
@@ -1779,14 +1874,14 @@ describe('manual invoice settlement', () => {
       role: 'basis',
       name: 'Ada',
       username: 'ada',
-      lightningAddress: 'payer@example.com',
-      lightningAddressVerified: true,
+      walletRequired: true,
       forumLawsDismissed: false,
       location: null,
       viewKey: viewKeyFor('manual-payer'),
       createdAt: 2,
       rulesAgreedAt: 1,
     });
+    await verifyWallet(auth, 'manual-payer', 'ada');
     const preimage = '1a'.repeat(32);
     const paymentHash = createHash('sha256').update(Buffer.from(preimage, 'hex')).digest('hex');
     await seedManualInvoice(store, paymentHash, {
@@ -1834,14 +1929,14 @@ describe('manual invoice settlement', () => {
       role: 'basis',
       name: 'Ada',
       username: 'ada',
-      lightningAddress: 'payer@example.com',
-      lightningAddressVerified: true,
+      walletRequired: true,
       forumLawsDismissed: false,
       location: null,
       viewKey: viewKeyFor('manual-payer'),
       createdAt: 2,
       rulesAgreedAt: 1,
     });
+    await verifyWallet(auth, 'manual-payer', 'ada');
     const preimage = '1b'.repeat(32);
     const paymentHash = createHash('sha256').update(Buffer.from(preimage, 'hex')).digest('hex');
     await seedManualInvoice(store, paymentHash, {
@@ -1906,14 +2001,14 @@ describe('manual invoice settlement', () => {
       role: 'basis',
       name: 'Ada',
       username: 'ada',
-      lightningAddress: 'payer@example.com',
-      lightningAddressVerified: true,
+      walletRequired: true,
       forumLawsDismissed: false,
       location: null,
       viewKey: viewKeyFor('manual-payer'),
       createdAt: 2,
       rulesAgreedAt: 1,
     });
+    await verifyWallet(auth, 'manual-payer', 'ada');
     const preimage = '1c'.repeat(32);
     const paymentHash = createHash('sha256').update(Buffer.from(preimage, 'hex')).digest('hex');
     await seedManualInvoice(store, paymentHash, {
@@ -1970,14 +2065,14 @@ describe('manual invoice settlement', () => {
       role: 'basis',
       name: 'Ada',
       username: 'ada',
-      lightningAddress: 'payer@example.com',
-      lightningAddressVerified: true,
+      walletRequired: true,
       forumLawsDismissed: false,
       location: null,
       viewKey: viewKeyFor('manual-payer'),
       createdAt: 2,
       rulesAgreedAt: 1,
     });
+    await verifyWallet(auth, 'manual-payer', 'ada');
     const preimage = '13'.repeat(32);
     const paymentHash = createHash('sha256').update(Buffer.from(preimage, 'hex')).digest('hex');
     await seedManualInvoice(store, paymentHash, {
@@ -2023,14 +2118,14 @@ describe('manual invoice settlement', () => {
       role: 'basis',
       name: 'Ada',
       username: 'ada',
-      lightningAddress: 'payer@example.com',
-      lightningAddressVerified: true,
+      walletRequired: true,
       forumLawsDismissed: false,
       location: null,
       viewKey: viewKeyFor('manual-payer'),
       createdAt: 2,
       rulesAgreedAt: 1,
     });
+    await verifyWallet(auth, 'manual-payer', 'ada');
     const preimage = '14'.repeat(32);
     const paymentHash = createHash('sha256').update(Buffer.from(preimage, 'hex')).digest('hex');
     await seedManualInvoice(store, paymentHash, {
@@ -2085,14 +2180,14 @@ describe('manual invoice settlement', () => {
       role: 'basis',
       name: 'Ada',
       username: 'ada',
-      lightningAddress: 'payer@example.com',
-      lightningAddressVerified: true,
+      walletRequired: true,
       forumLawsDismissed: false,
       location: null,
       viewKey: viewKeyFor('manual-payer'),
       createdAt: 2,
       rulesAgreedAt: 1,
     });
+    await verifyWallet(auth, 'manual-payer', 'ada');
     const preimage = '18'.repeat(32);
     const paymentHash = createHash('sha256').update(Buffer.from(preimage, 'hex')).digest('hex');
     await seedManualInvoice(store, paymentHash, {
@@ -2138,14 +2233,14 @@ describe('manual invoice settlement', () => {
       role: 'basis',
       name: 'Ada',
       username: 'ada',
-      lightningAddress: 'payer@example.com',
-      lightningAddressVerified: true,
+      walletRequired: true,
       forumLawsDismissed: false,
       location: null,
       viewKey: viewKeyFor('manual-payer'),
       createdAt: 2,
       rulesAgreedAt: 1,
     });
+    await verifyWallet(auth, 'manual-payer', 'ada');
     const missingParent = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd';
     const preimage = '15'.repeat(32);
     const paymentHash = createHash('sha256').update(Buffer.from(preimage, 'hex')).digest('hex');
@@ -2213,14 +2308,14 @@ describe('manual invoice settlement', () => {
       role: 'basis',
       name: 'Ada',
       username: 'ada',
-      lightningAddress: 'payer@example.com',
-      lightningAddressVerified: true,
+      walletRequired: true,
       forumLawsDismissed: false,
       location: null,
       viewKey: viewKeyFor('manual-payer'),
       createdAt: 2,
       rulesAgreedAt: 1,
     });
+    await verifyWallet(auth, 'manual-payer', 'ada');
     const preimage = '16'.repeat(32);
     const paymentHash = createHash('sha256').update(Buffer.from(preimage, 'hex')).digest('hex');
     await seedManualInvoice(store, paymentHash, {
@@ -2276,14 +2371,14 @@ describe('manual invoice settlement', () => {
       role: 'basis',
       name: 'Ada',
       username: 'ada',
-      lightningAddress: 'payer@example.com',
-      lightningAddressVerified: true,
+      walletRequired: true,
       forumLawsDismissed: false,
       location: null,
       viewKey: viewKeyFor('manual-payer'),
       createdAt: 2,
       rulesAgreedAt: 1,
     });
+    await verifyWallet(auth, 'manual-payer', 'ada');
     const preimage = '17'.repeat(32);
     const paymentHash = createHash('sha256').update(Buffer.from(preimage, 'hex')).digest('hex');
     await seedManualInvoice(store, paymentHash, {
@@ -2353,8 +2448,6 @@ describe('manual invoice settlement', () => {
       linkingKey: null,
       role: 'basis',
       name: 'Pat',
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: viewKeyFor('manual-payer'),
@@ -2492,8 +2585,6 @@ describe('manual invoice settlement', () => {
       linkingKey: null,
       role: 'basis',
       name: null,
-      lightningAddress: 'payer@example.com',
-      lightningAddressVerified: true,
       forumLawsDismissed: false,
       location: null,
       viewKey: viewKeyFor('manual-payer'),
@@ -2666,8 +2757,6 @@ describe('manual invoice settlement', () => {
       linkingKey: null,
       role: 'basis',
       name: 'Pat',
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: viewKeyFor('manual-payer'),
@@ -3697,8 +3786,6 @@ describe('indexOpenZapReceipts', () => {
       linkingKey: null,
       role: 'basis',
       name: 'Ada',
-      lightningAddress: 'zap-chunk@example.com',
-      lightningAddressVerified: true,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'b'.repeat(64),
@@ -4825,12 +4912,19 @@ describe('indexOpenZapReceipts', () => {
       accountHasLiveTopLevelPost: (
         ...args: Parameters<InMemoryMessageStore['accountHasLiveTopLevelPost']>
       ) => base.accountHasLiveTopLevelPost(...args),
+      accountHasTopLevelPost: (
+        ...args: Parameters<InMemoryMessageStore['accountHasTopLevelPost']>
+      ) => base.accountHasTopLevelPost(...args),
+      createFirstPost: (...args: Parameters<InMemoryMessageStore['createFirstPost']>) =>
+        base.createFirstPost(...args),
       accountHasLiveTopLevelMediaPost: (
         ...args: Parameters<InMemoryMessageStore['accountHasLiveTopLevelMediaPost']>
       ) => base.accountHasLiveTopLevelMediaPost(...args),
       latestLiveTopLevelMediaId: (
         ...args: Parameters<InMemoryMessageStore['latestLiveTopLevelMediaId']>
       ) => base.latestLiveTopLevelMediaId(...args),
+      accountHasWelcomeGift: (...args: Parameters<InMemoryMessageStore['accountHasWelcomeGift']>) =>
+        base.accountHasWelcomeGift(...args),
       countByAccount: (...args: Parameters<InMemoryMessageStore['countByAccount']>) =>
         base.countByAccount(...args),
       countByPubkey: (...args: Parameters<InMemoryMessageStore['countByPubkey']>) =>
@@ -4894,6 +4988,7 @@ describe('indexOpenZapReceipts', () => {
         base.markRepaymentPaid(row),
       claimZapPayment: (...args: Parameters<InMemoryMessageStore['claimZapPayment']>) =>
         base.claimZapPayment(...args),
+      zapPaymentReceiptId: (hash: string) => base.zapPaymentReceiptId(hash),
       recordZapReceipt: (...args: Parameters<InMemoryMessageStore['recordZapReceipt']>) =>
         base.recordZapReceipt(...args),
       recordInvoiceAttempt: (...args: Parameters<InMemoryMessageStore['recordInvoiceAttempt']>) =>
@@ -4990,12 +5085,20 @@ describe('indexOpenZapReceipts', () => {
     const store = new InMemoryMessageStore();
     const auth = new InMemoryAuthStore();
     const accountId = 'acc-decision-change';
-    await seedStore({
-      store,
-      auth,
-      accountId,
-      lightningAddress: null,
+    await auth.createAccount({
+      id: accountId,
+      linkingKey: null,
+      role: 'basis',
+      name: 'Ada',
+      username: 'decision',
+      walletRequired: true,
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: viewKeyFor(accountId),
+      createdAt: 1,
+      rulesAgreedAt: null,
     });
+    await seedStore({ store, auth, accountId, createAccount: false });
     const querier = new RecordingQuerier();
     querier.events = [
       {
@@ -5022,15 +5125,7 @@ describe('indexOpenZapReceipts', () => {
     expect(afterAddress).toHaveLength(1);
     expect(afterAddress[0]?.outcome).toBe('rejected');
     expect(afterAddress[0]?.reason).toBe('address');
-    const account = await auth.getAccount(accountId);
-    expect(account).toBeDefined();
-    if (account === undefined) {
-      throw new Error('expected account');
-    }
-    await auth.updateAccount({
-      ...account,
-      lightningAddress: 'zap-decision-change@example.com',
-    });
+    await verifyWallet(auth, accountId, 'decision');
     await ingest({
       store,
       auth,
@@ -5085,12 +5180,20 @@ describe('indexOpenZapReceipts', () => {
         accountHasLiveTopLevelPost: (
           ...args: Parameters<InMemoryMessageStore['accountHasLiveTopLevelPost']>
         ) => base.accountHasLiveTopLevelPost(...args),
+        accountHasTopLevelPost: (
+          ...args: Parameters<InMemoryMessageStore['accountHasTopLevelPost']>
+        ) => base.accountHasTopLevelPost(...args),
+        createFirstPost: (...args: Parameters<InMemoryMessageStore['createFirstPost']>) =>
+          base.createFirstPost(...args),
         accountHasLiveTopLevelMediaPost: (
           ...args: Parameters<InMemoryMessageStore['accountHasLiveTopLevelMediaPost']>
         ) => base.accountHasLiveTopLevelMediaPost(...args),
         latestLiveTopLevelMediaId: (
           ...args: Parameters<InMemoryMessageStore['latestLiveTopLevelMediaId']>
         ) => base.latestLiveTopLevelMediaId(...args),
+        accountHasWelcomeGift: (
+          ...args: Parameters<InMemoryMessageStore['accountHasWelcomeGift']>
+        ) => base.accountHasWelcomeGift(...args),
         countByAccount: (...args: Parameters<InMemoryMessageStore['countByAccount']>) =>
           base.countByAccount(...args),
         countByPubkey: (...args: Parameters<InMemoryMessageStore['countByPubkey']>) =>
@@ -5151,6 +5254,7 @@ describe('indexOpenZapReceipts', () => {
           base.markRepaymentPaid(row),
         claimZapPayment: (...args: Parameters<InMemoryMessageStore['claimZapPayment']>) =>
           base.claimZapPayment(...args),
+        zapPaymentReceiptId: (hash: string) => base.zapPaymentReceiptId(hash),
         recordZapReceipt: (...args: Parameters<InMemoryMessageStore['recordZapReceipt']>) =>
           base.recordZapReceipt(...args),
         recordInvoiceAttempt: (...args: Parameters<InMemoryMessageStore['recordInvoiceAttempt']>) =>
@@ -5295,7 +5399,7 @@ describe('indexOpenZapReceipts', () => {
     expect((await store.listZapIngests(10))[0]?.reason).toBe('address');
   });
 
-  it('caches provider pubkey within TTL and refreshes after expiry', async () => {
+  it('resolves the wallet-host provider pubkey on every receipt, without the cache', async () => {
     const store = new InMemoryMessageStore();
     const auth = new InMemoryAuthStore();
     const querier = new RecordingQuerier();
@@ -5356,7 +5460,8 @@ describe('indexOpenZapReceipts', () => {
         fetchImpl: countingFetch,
       });
     }
-    expect(fetchCount).toBe(1);
+    // Every member receives on the LNURL server host, whose keys are not cached.
+    expect(fetchCount).toBe(2);
 
     querier.events = [
       {
@@ -5378,7 +5483,7 @@ describe('indexOpenZapReceipts', () => {
       now: () => t0 + LN_ADDRESS_CACHE_TTL_MS + 1,
       fetchImpl: countingFetch,
     });
-    expect(fetchCount).toBe(2);
+    expect(fetchCount).toBe(3);
     expect((await store.getByEventId(NOTE_EVENT_ID))?.sats).toBe(3);
   });
 
@@ -5463,14 +5568,15 @@ describe('indexOpenZapReceipts', () => {
       linkingKey: null,
       role: 'basis',
       name: 'Bea',
-      lightningAddress: 'giver@walletofsatoshi.com',
-      lightningAddressVerified: true,
+      username: 'giver',
+      walletRequired: true,
       forumLawsDismissed: false,
       location: null,
       viewKey: viewKeyFor(giver),
       createdAt: 1,
       rulesAgreedAt: null,
     });
+    await verifyWallet(auth, giver, 'giver');
     const paymentHash = '13'.repeat(32);
     await store.recordInvoiceAttempt({
       id: 'inv-repay',
@@ -5479,7 +5585,7 @@ describe('indexOpenZapReceipts', () => {
       payerAccountId: 'acc-repay',
       authorAccountId: giver,
       amountSats: 21,
-      lightningAddress: 'giver@walletofsatoshi.com',
+      lightningAddress: 'giver@example.test',
       zapRequest: null,
       result: 'ok',
       httpStatus: 200,
@@ -5511,9 +5617,10 @@ describe('indexOpenZapReceipts', () => {
       timeoutMs: 50,
       now: () => 5,
       fetchImpl: async (input, init) =>
-        lnurlFetch(
-          String(input).includes('walletofsatoshi.com') ? 'bb'.repeat(32) : PROVIDER_PUBKEY,
-        )(input, init),
+        lnurlFetch(String(input).includes('/lnurlp/giver') ? 'bb'.repeat(32) : PROVIDER_PUBKEY)(
+          input,
+          init,
+        ),
     });
     expect((await store.getByEventId(NOTE_EVENT_ID))?.sats).toBe(0);
     expect(await store.listRepayments(messageId)).toEqual([
@@ -5543,9 +5650,10 @@ describe('indexOpenZapReceipts', () => {
       timeoutMs: 50,
       now: () => 6,
       fetchImpl: async (input, init) =>
-        lnurlFetch(
-          String(input).includes('walletofsatoshi.com') ? 'bb'.repeat(32) : PROVIDER_PUBKEY,
-        )(input, init),
+        lnurlFetch(String(input).includes('/lnurlp/giver') ? 'bb'.repeat(32) : PROVIDER_PUBKEY)(
+          input,
+          init,
+        ),
     });
     const ingests = await store.listZapIngests(10);
     expect(ingests.some((row) => row.reason === 'settled')).toBe(true);
@@ -5561,14 +5669,15 @@ describe('indexOpenZapReceipts', () => {
       linkingKey: null,
       role: 'basis',
       name: 'Bea',
-      lightningAddress: 'same@example.com',
-      lightningAddressVerified: true,
+      username: 'same',
+      walletRequired: true,
       forumLawsDismissed: false,
       location: null,
       viewKey: viewKeyFor(giver),
       createdAt: 1,
       rulesAgreedAt: null,
     });
+    await verifyWallet(auth, giver, 'same');
     const paymentHash = '14'.repeat(32);
     await store.recordInvoiceAttempt({
       id: 'inv-same',
@@ -5624,8 +5733,6 @@ describe('indexOpenZapReceipts', () => {
       linkingKey: null,
       role: 'basis',
       name: 'Bea',
-      lightningAddress: 'foreign@walletofsatoshi.com',
-      lightningAddressVerified: true,
       forumLawsDismissed: false,
       location: null,
       viewKey: viewKeyFor(giver),
@@ -5640,7 +5747,7 @@ describe('indexOpenZapReceipts', () => {
       payerAccountId: 'acc-foreign-repay',
       authorAccountId: giver,
       amountSats: 21,
-      lightningAddress: 'foreign@walletofsatoshi.com',
+      lightningAddress: 'foreign@example.net',
       zapRequest: null,
       result: 'ok',
       httpStatus: 200,
@@ -5672,9 +5779,10 @@ describe('indexOpenZapReceipts', () => {
       timeoutMs: 50,
       now: () => 8,
       fetchImpl: async (input, init) =>
-        lnurlFetch(
-          String(input).includes('walletofsatoshi.com') ? 'bb'.repeat(32) : PROVIDER_PUBKEY,
-        )(input, init),
+        lnurlFetch(String(input).includes('/lnurlp/giver') ? 'bb'.repeat(32) : PROVIDER_PUBKEY)(
+          input,
+          init,
+        ),
     });
     expect(await store.listRepayments(messageId)).toEqual([]);
     expect(await store.claimZapPayment(paymentHash, 'r-later', new Date(9))).toBe(true);
@@ -5889,12 +5997,20 @@ describe('indexOpenZapReceipts', () => {
         accountHasLiveTopLevelPost: (
           ...args: Parameters<InMemoryMessageStore['accountHasLiveTopLevelPost']>
         ) => base.accountHasLiveTopLevelPost(...args),
+        accountHasTopLevelPost: (
+          ...args: Parameters<InMemoryMessageStore['accountHasTopLevelPost']>
+        ) => base.accountHasTopLevelPost(...args),
+        createFirstPost: (...args: Parameters<InMemoryMessageStore['createFirstPost']>) =>
+          base.createFirstPost(...args),
         accountHasLiveTopLevelMediaPost: (
           ...args: Parameters<InMemoryMessageStore['accountHasLiveTopLevelMediaPost']>
         ) => base.accountHasLiveTopLevelMediaPost(...args),
         latestLiveTopLevelMediaId: (
           ...args: Parameters<InMemoryMessageStore['latestLiveTopLevelMediaId']>
         ) => base.latestLiveTopLevelMediaId(...args),
+        accountHasWelcomeGift: (
+          ...args: Parameters<InMemoryMessageStore['accountHasWelcomeGift']>
+        ) => base.accountHasWelcomeGift(...args),
         countByAccount: (...args: Parameters<InMemoryMessageStore['countByAccount']>) =>
           base.countByAccount(...args),
         countByPubkey: (...args: Parameters<InMemoryMessageStore['countByPubkey']>) =>
@@ -5955,6 +6071,7 @@ describe('indexOpenZapReceipts', () => {
           base.markRepaymentPaid(row),
         claimZapPayment: (...args: Parameters<InMemoryMessageStore['claimZapPayment']>) =>
           base.claimZapPayment(...args),
+        zapPaymentReceiptId: (hash: string) => base.zapPaymentReceiptId(hash),
         recordZapReceipt: (...args: Parameters<InMemoryMessageStore['recordZapReceipt']>) =>
           base.recordZapReceipt(...args),
         recordInvoiceAttempt: (...args: Parameters<InMemoryMessageStore['recordInvoiceAttempt']>) =>
@@ -6133,6 +6250,7 @@ describe('indexOpenZapReceipts', () => {
     await indexOpenZapReceipts({
       store,
       auth,
+      lnurlServer: LNURL_SERVER,
       querier,
       urls: URLS,
       timeoutMs: 50,
@@ -6181,6 +6299,7 @@ describe('indexOpenZapReceipts', () => {
     await indexOpenZapReceipts({
       store,
       auth,
+      lnurlServer: LNURL_SERVER,
       querier,
       urls: URLS,
       timeoutMs: 50,
@@ -6269,6 +6388,7 @@ describe('indexOpenZapReceipts', () => {
     await indexOpenZapReceipts({
       store,
       auth,
+      lnurlServer: LNURL_SERVER,
       querier,
       urls: URLS,
       timeoutMs: 50,
@@ -6298,8 +6418,6 @@ describe('indexOpenZapReceipts', () => {
       linkingKey: null,
       role: 'basis',
       name: 'Pat',
-      lightningAddress: 'pat-zap-skip@example.com',
-      lightningAddressVerified: true,
       location: null,
       forumLawsDismissed: false,
       viewKey: viewKeyFor('payer-zap-skip'),
@@ -6385,8 +6503,6 @@ describe('indexOpenZapReceipts', () => {
       linkingKey: null,
       role: 'basis',
       name: 'Pat',
-      lightningAddress: 'pat-one-notify-empty@example.com',
-      lightningAddressVerified: true,
       location: null,
       forumLawsDismissed: false,
       viewKey: viewKeyFor('payer-one-notify-empty'),
@@ -6469,14 +6585,14 @@ describe('indexOpenZapReceipts', () => {
       role: 'basis',
       name: 'Ada',
       username: 'ada-ingest-platform',
-      lightningAddress: 'ada-ingest-platform@example.com',
-      lightningAddressVerified: true,
+      walletRequired: true,
       location: null,
       forumLawsDismissed: false,
       viewKey: viewKeyFor('payer-ingest-platform'),
       createdAt: 2,
       rulesAgreedAt: 1,
     });
+    await verifyWallet(auth, 'payer-ingest-platform', 'ada-ingest-platform');
     await store.recordInvoiceAttempt({
       id: 'inv-ingest-platform',
       createdAt: new Date('2026-08-28T00:00:00.000Z'),
@@ -6557,14 +6673,14 @@ describe('indexOpenZapReceipts', () => {
       role: 'basis',
       name: 'Ada',
       username: 'ada-aged-platform',
-      lightningAddress: 'ada-aged-platform@example.com',
-      lightningAddressVerified: true,
+      walletRequired: true,
       location: null,
       forumLawsDismissed: false,
       viewKey: viewKeyFor('payer-aged-platform'),
       createdAt: 2,
       rulesAgreedAt: 1,
     });
+    await verifyWallet(auth, 'payer-aged-platform', 'ada-aged-platform');
     const newer = new Date('2026-09-21T00:00:00.000Z');
     for (let i = 0; i < MESSAGE_LIST_LIMIT; i += 1) {
       const n = i.toString(16).padStart(2, '0');
@@ -6663,8 +6779,6 @@ describe('indexOpenZapReceipts', () => {
       linkingKey: null,
       role: 'basis',
       name: 'Pat',
-      lightningAddress: 'pat-one-notify-comment@example.com',
-      lightningAddressVerified: true,
       location: null,
       forumLawsDismissed: false,
       viewKey: viewKeyFor('payer-one-notify-comment'),
@@ -6775,6 +6889,7 @@ describe('indexOpenZapReceipts', () => {
     await indexOpenZapReceipts({
       store,
       auth,
+      lnurlServer: LNURL_SERVER,
       querier,
       urls: URLS,
       timeoutMs: 50,
@@ -6801,8 +6916,6 @@ describe('indexOpenZapReceipts', () => {
       linkingKey: null,
       role: 'basis',
       name: 'Iris',
-      lightningAddress: 'inspect-null-payer@example.com',
-      lightningAddressVerified: true,
       location: null,
       forumLawsDismissed: false,
       viewKey: viewKeyFor('inspect-null-payer'),
@@ -6873,8 +6986,6 @@ describe('indexOpenZapReceipts', () => {
       linkingKey: null,
       role: 'basis',
       name: 'Nia',
-      lightningAddress: 'remembered-no-e-payer@example.com',
-      lightningAddressVerified: true,
       location: null,
       forumLawsDismissed: false,
       viewKey: viewKeyFor('remembered-no-e-payer'),
@@ -6948,8 +7059,6 @@ describe('indexOpenZapReceipts', () => {
       linkingKey: null,
       role: 'basis',
       name: 'Bob',
-      lightningAddress: 'bob@example.com',
-      lightningAddressVerified: true,
       location: null,
       forumLawsDismissed: false,
       viewKey: viewKeyFor('payer-gift'),
@@ -7048,8 +7157,6 @@ describe('indexOpenZapReceipts', () => {
       linkingKey: null,
       role: 'basis',
       name: 'Bob',
-      lightningAddress: 'bob-gift-reply@example.com',
-      lightningAddressVerified: true,
       location: null,
       forumLawsDismissed: false,
       viewKey: viewKeyFor('payer-gift-reply'),
@@ -7171,8 +7278,6 @@ describe('indexOpenZapReceipts', () => {
       linkingKey: null,
       role: 'basis',
       name: 'Bob',
-      lightningAddress: 'bob-queue-drop@example.com',
-      lightningAddressVerified: true,
       location: null,
       forumLawsDismissed: false,
       viewKey: viewKeyFor('payer-queue-drop'),
@@ -7301,8 +7406,6 @@ describe('indexOpenZapReceipts', () => {
       linkingKey: null,
       role: 'basis',
       name: 'Bob',
-      lightningAddress: 'bob-gift-watch@example.com',
-      lightningAddressVerified: true,
       location: null,
       forumLawsDismissed: false,
       viewKey: viewKeyFor('payer-gift-watch'),
@@ -7409,8 +7512,6 @@ describe('indexOpenZapReceipts', () => {
       linkingKey: null,
       role: 'basis',
       name: 'Bob',
-      lightningAddress: 'bob-reply-window-old@example.com',
-      lightningAddressVerified: true,
       location: null,
       forumLawsDismissed: false,
       viewKey: viewKeyFor('payer-reply-window-old'),
@@ -7529,8 +7630,6 @@ describe('indexOpenZapReceipts', () => {
       linkingKey: null,
       role: 'basis',
       name: 'Cara',
-      lightningAddress: 'cara-reply-window-fresh@example.com',
-      lightningAddressVerified: true,
       location: null,
       forumLawsDismissed: false,
       viewKey: viewKeyFor('payer-reply-window-fresh'),
@@ -7630,8 +7729,6 @@ describe('indexOpenZapReceipts', () => {
       linkingKey: null,
       role: 'basis',
       name: 'Bob',
-      lightningAddress: 'bob-reply-window-blank@example.com',
-      lightningAddressVerified: true,
       location: null,
       forumLawsDismissed: false,
       viewKey: viewKeyFor('payer-reply-window-blank'),
@@ -7711,8 +7808,6 @@ describe('indexOpenZapReceipts', () => {
       linkingKey: null,
       role: 'basis',
       name: 'Cara',
-      lightningAddress: 'cara@example.com',
-      lightningAddressVerified: true,
       location: null,
       forumLawsDismissed: false,
       viewKey: viewKeyFor('payer-retry'),
@@ -7767,8 +7862,6 @@ describe('indexOpenZapReceipts', () => {
       linkingKey: null,
       role: 'basis',
       name: 'Cara',
-      lightningAddress: 'cara-retry-reply@example.com',
-      lightningAddressVerified: true,
       location: null,
       forumLawsDismissed: false,
       viewKey: viewKeyFor('payer-retry-reply'),
@@ -8128,8 +8221,6 @@ describe('indexOpenZapReceipts', () => {
       linkingKey: null,
       role: 'basis',
       name: null,
-      lightningAddress: 'damus@example.com',
-      lightningAddressVerified: true,
       location: null,
       forumLawsDismissed: false,
       viewKey: viewKeyFor('payer-damus'),
@@ -8205,8 +8296,6 @@ describe('indexOpenZapReceipts', () => {
       linkingKey: null,
       role: 'basis',
       name: 'Bo',
-      lightningAddress: 'bo@example.com',
-      lightningAddressVerified: true,
       location: null,
       forumLawsDismissed: false,
       viewKey: viewKeyFor('payer-boom'),
@@ -8291,8 +8380,6 @@ describe('indexOpenZapReceipts', () => {
       linkingKey: null,
       role: 'basis',
       name: null,
-      lightningAddress: 'noinv@example.com',
-      lightningAddressVerified: true,
       location: null,
       forumLawsDismissed: false,
       viewKey: viewKeyFor('payer-no-inv'),
@@ -8554,8 +8641,6 @@ describe('indexOpenZapReceipts', () => {
       linkingKey: null,
       role: 'basis',
       name: 'Pat',
-      lightningAddress: 'pat@example.com',
-      lightningAddressVerified: true,
       location: null,
       forumLawsDismissed: false,
       viewKey: viewKeyFor('payer-pr'),
@@ -8622,8 +8707,6 @@ describe('indexOpenZapReceipts', () => {
       linkingKey: null,
       role: 'basis',
       name: 'Ned',
-      lightningAddress: 'ned@example.com',
-      lightningAddressVerified: true,
       location: null,
       forumLawsDismissed: false,
       viewKey: viewKeyFor('payer-notify'),
@@ -8689,6 +8772,1146 @@ describe('indexOpenZapReceipts', () => {
     expect(await store.listReplies(parentId)).toHaveLength(1);
   });
 
+  it('credits a heart receipt, skips gift-reply and living-room notifyZap, and notifies the author', async () => {
+    const store = new InMemoryMessageStore();
+    const auth = new InMemoryAuthStore();
+    const parentId = await seedStore({
+      store,
+      auth,
+      accountId: 'acc-heart-parent',
+      lightningAddress: 'zap-heart-parent@example.com',
+      messageId: 'm-heart-parent',
+    });
+    await auth.createAccount({
+      id: 'payer-heart',
+      linkingKey: null,
+      role: 'basis',
+      name: 'Pat',
+      location: null,
+      forumLawsDismissed: false,
+      viewKey: viewKeyFor('payer-heart'),
+      createdAt: 2,
+      rulesAgreedAt: null,
+    });
+    await auth.createAccount({
+      id: 'bystander-heart',
+      linkingKey: null,
+      role: 'basis',
+      name: 'Sam',
+      location: null,
+      forumLawsDismissed: false,
+      viewKey: viewKeyFor('bystander-heart'),
+      createdAt: 3,
+      rulesAgreedAt: null,
+    });
+    await store.recordInvoiceAttempt({
+      id: 'inv-heart',
+      createdAt: new Date('2026-08-28T00:00:00.000Z'),
+      messageId: parentId,
+      payerAccountId: 'payer-heart',
+      authorAccountId: 'acc-heart-parent',
+      amountSats: 1,
+      lightningAddress: null,
+      zapRequest: { content: 'heart' },
+      result: 'ok',
+      httpStatus: 200,
+      pr: 'lnbc-heart',
+      paymentHash: 'dd'.repeat(32),
+      description: null,
+      descriptionHash: null,
+      isNip57Invoice: true,
+      lnurlResponse: null,
+      heart: true,
+    });
+    const notifications = new InMemoryNotificationStore();
+    const querier = new RecordingQuerier();
+    querier.events = [
+      {
+        id: 'r-heart',
+        pubkey: PROVIDER_PUBKEY,
+        kind: 9735,
+        tags: [
+          ['e', NOTE_EVENT_ID],
+          ['bolt11', 'lnbc-heart'],
+        ],
+      },
+    ];
+    mockedDecode.mockReturnValue({ paymentHash: 'dd'.repeat(32), amountMsat: 1000 });
+    await ingest({
+      store,
+      auth,
+      querier,
+      urls: URLS,
+      timeoutMs: 50,
+      now: () => 1,
+      fetchImpl: lnurlFetch(PROVIDER_PUBKEY),
+      notificationStore: notifications,
+    });
+    expect((await store.getById(parentId))?.sats).toBe(1);
+    expect(await store.listReplies(parentId)).toHaveLength(0);
+    const forAuthor = await notifications.listByRecipient('acc-heart-parent', 10);
+    expect(forAuthor).toHaveLength(1);
+    expect(forAuthor[0]?.type).toBe('heart');
+    expect(forAuthor[0]?.text).toBe('1');
+    expect(forAuthor[0]?.actorAccountId).toBe('payer-heart');
+    expect(await notifications.listByRecipient('bystander-heart', 10)).toEqual([]);
+    expect(await notifications.listByRecipient('payer-heart', 10)).toEqual([]);
+  });
+
+  it('credits a heart when notifyHearts is false and does not notify', async () => {
+    const store = new InMemoryMessageStore();
+    const auth = new InMemoryAuthStore();
+    const parentId = await seedStore({
+      store,
+      auth,
+      accountId: 'acc-heart-off',
+      lightningAddress: 'zap-heart-off@example.com',
+      messageId: 'm-heart-off',
+    });
+    const author = await auth.getAccount('acc-heart-off');
+    expect(author).toBeDefined();
+    if (author === undefined) {
+      throw new Error('expected author');
+    }
+    await auth.updateAccount({ ...author, notifyHearts: false });
+    await auth.createAccount({
+      id: 'payer-heart-off',
+      linkingKey: null,
+      role: 'basis',
+      name: 'Pat',
+      location: null,
+      forumLawsDismissed: false,
+      viewKey: viewKeyFor('payer-heart-off'),
+      createdAt: 2,
+      rulesAgreedAt: null,
+    });
+    await store.recordInvoiceAttempt({
+      id: 'inv-heart-off',
+      createdAt: new Date('2026-08-28T00:00:00.000Z'),
+      messageId: parentId,
+      payerAccountId: 'payer-heart-off',
+      authorAccountId: 'acc-heart-off',
+      amountSats: 1,
+      lightningAddress: null,
+      zapRequest: null,
+      result: 'ok',
+      httpStatus: 200,
+      pr: 'lnbc-heart-off',
+      paymentHash: 'ee'.repeat(32),
+      description: null,
+      descriptionHash: null,
+      isNip57Invoice: true,
+      lnurlResponse: null,
+      heart: true,
+    });
+    const notifications = new InMemoryNotificationStore();
+    const querier = new RecordingQuerier();
+    querier.events = [
+      {
+        id: 'r-heart-off',
+        pubkey: PROVIDER_PUBKEY,
+        kind: 9735,
+        tags: [
+          ['e', NOTE_EVENT_ID],
+          ['bolt11', 'lnbc-heart-off'],
+        ],
+      },
+    ];
+    mockedDecode.mockReturnValue({ paymentHash: 'ee'.repeat(32), amountMsat: 1000 });
+    await ingest({
+      store,
+      auth,
+      querier,
+      urls: URLS,
+      timeoutMs: 50,
+      now: () => 1,
+      fetchImpl: lnurlFetch(PROVIDER_PUBKEY),
+      notificationStore: notifications,
+    });
+    expect((await store.getById(parentId))?.sats).toBe(1);
+    expect(await store.listReplies(parentId)).toHaveLength(0);
+    expect(await notifications.listByRecipient('acc-heart-off', 10)).toEqual([]);
+  });
+
+  it('skips gift-reply on a second ingest of an already indexed heart receipt', async () => {
+    const store = new InMemoryMessageStore();
+    const auth = new InMemoryAuthStore();
+    const parentId = await seedStore({
+      store,
+      auth,
+      accountId: 'acc-heart-retry',
+      lightningAddress: 'zap-heart-retry@example.com',
+      messageId: 'm-heart-retry',
+    });
+    await auth.createAccount({
+      id: 'payer-heart-retry',
+      linkingKey: null,
+      role: 'basis',
+      name: 'Pat',
+      location: null,
+      forumLawsDismissed: false,
+      viewKey: viewKeyFor('payer-heart-retry'),
+      createdAt: 2,
+      rulesAgreedAt: null,
+    });
+    await store.recordInvoiceAttempt({
+      id: 'inv-heart-retry',
+      createdAt: new Date('2026-08-28T00:00:00.000Z'),
+      messageId: parentId,
+      payerAccountId: 'payer-heart-retry',
+      authorAccountId: 'acc-heart-retry',
+      amountSats: 1,
+      lightningAddress: null,
+      zapRequest: { content: 'heart' },
+      result: 'ok',
+      httpStatus: 200,
+      pr: 'lnbc-heart-retry',
+      paymentHash: 'c0'.repeat(32),
+      description: null,
+      descriptionHash: null,
+      isNip57Invoice: true,
+      lnurlResponse: null,
+      heart: true,
+    });
+    const notifications = new InMemoryNotificationStore();
+    const pushStore = new InMemoryPushStore();
+    await pushStore.upsertSubscription({
+      endpoint: 'https://push.example/heart-retry',
+      accountId: 'acc-heart-retry',
+      p256dh: 'p',
+      auth: 'a',
+      createdAt: new Date(1),
+    });
+    const querier = new RecordingQuerier();
+    querier.events = [
+      {
+        id: 'r-heart-retry',
+        pubkey: PROVIDER_PUBKEY,
+        kind: 9735,
+        tags: [
+          ['e', NOTE_EVENT_ID],
+          ['bolt11', 'lnbc-heart-retry'],
+        ],
+      },
+    ];
+    mockedDecode.mockReturnValue({ paymentHash: 'c0'.repeat(32), amountMsat: 1000 });
+    const ingestArgs = {
+      store,
+      auth,
+      querier,
+      urls: URLS,
+      timeoutMs: 50,
+      now: () => 1,
+      fetchImpl: lnurlFetch(PROVIDER_PUBKEY),
+      notificationStore: notifications,
+      pushStore,
+    };
+    await ingest(ingestArgs);
+    await ingest(ingestArgs);
+    expect(await store.listIndexedZapIngests()).toHaveLength(1);
+    expect((await store.getById(parentId))?.sats).toBe(1);
+    expect(await store.listReplies(parentId)).toHaveLength(0);
+    const forAuthor = await notifications.listByRecipient('acc-heart-retry', 10);
+    expect(forAuthor).toHaveLength(1);
+    expect(forAuthor[0]?.type).toBe('heart');
+  });
+
+  it('returns before a gift-reply when a later heart lookup succeeds after a thrown lookup', async () => {
+    class HeartLookupStore extends InMemoryMessageStore {
+      armed = false;
+      lookups = 0;
+
+      override findOkInvoiceByPaymentHash(
+        ...args: Parameters<InMemoryMessageStore['findOkInvoiceByPaymentHash']>
+      ): ReturnType<InMemoryMessageStore['findOkInvoiceByPaymentHash']> {
+        this.lookups += 1;
+        if (this.armed && this.lookups === 2) {
+          return Promise.reject(new Error('heart lookup boom'));
+        }
+        return super.findOkInvoiceByPaymentHash(...args);
+      }
+    }
+    const store = new HeartLookupStore();
+    const auth = new InMemoryAuthStore();
+    const parentId = await seedStore({
+      store,
+      auth,
+      accountId: 'acc-heart-lookup',
+      lightningAddress: 'zap-heart-lookup@example.com',
+      messageId: 'm-heart-lookup',
+    });
+    await auth.createAccount({
+      id: 'payer-heart-lookup',
+      linkingKey: null,
+      role: 'basis',
+      name: 'Pat',
+      location: null,
+      forumLawsDismissed: false,
+      viewKey: viewKeyFor('payer-heart-lookup'),
+      createdAt: 2,
+      rulesAgreedAt: null,
+    });
+    await store.recordInvoiceAttempt({
+      id: 'inv-heart-lookup',
+      createdAt: new Date('2026-08-28T00:00:00.000Z'),
+      messageId: parentId,
+      payerAccountId: 'payer-heart-lookup',
+      authorAccountId: 'acc-heart-lookup',
+      amountSats: 1,
+      lightningAddress: null,
+      zapRequest: { content: 'heart' },
+      result: 'ok',
+      httpStatus: 200,
+      pr: 'lnbc-heart-lookup',
+      paymentHash: 'c1'.repeat(32),
+      description: null,
+      descriptionHash: null,
+      isNip57Invoice: true,
+      lnurlResponse: null,
+      heart: true,
+    });
+    const querier = new RecordingQuerier();
+    querier.events = [
+      {
+        id: 'r-heart-lookup',
+        pubkey: PROVIDER_PUBKEY,
+        kind: 9735,
+        tags: [
+          ['e', NOTE_EVENT_ID],
+          ['bolt11', 'lnbc-heart-lookup'],
+        ],
+      },
+    ];
+    mockedDecode.mockReturnValue({ paymentHash: 'c1'.repeat(32), amountMsat: 1000 });
+    const ingestArgs = {
+      store,
+      auth,
+      querier,
+      urls: URLS,
+      timeoutMs: 50,
+      now: () => 1,
+      fetchImpl: lnurlFetch(PROVIDER_PUBKEY),
+    };
+    await ingest(ingestArgs);
+    store.armed = true;
+    store.lookups = 0;
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    await ingest(ingestArgs);
+    const events = loggedEvents(warn);
+    warn.mockRestore();
+    expect(store.lookups).toBeGreaterThanOrEqual(3);
+    expect(await store.listReplies(parentId)).toHaveLength(0);
+    expect((await store.getById(parentId))?.sats).toBe(1);
+    expect(await store.listIndexedZapIngests()).toHaveLength(1);
+    expect(events.some((event) => event['event'] === 'nostr.zap.rejected')).toBe(false);
+  });
+
+  it('notifies a heart when the notice lookup rejects once and the retry resolves the stored heart invoice', async () => {
+    class HeartNoticeRetryStore extends InMemoryMessageStore {
+      lookups = 0;
+
+      override findOkInvoiceByPaymentHash(
+        ...args: Parameters<InMemoryMessageStore['findOkInvoiceByPaymentHash']>
+      ): ReturnType<InMemoryMessageStore['findOkInvoiceByPaymentHash']> {
+        this.lookups += 1;
+        if (this.lookups === 3) {
+          return Promise.reject(new Error('heart lookup boom'));
+        }
+        return super.findOkInvoiceByPaymentHash(...args);
+      }
+    }
+    const store = new HeartNoticeRetryStore();
+    const auth = new InMemoryAuthStore();
+    const parentId = await seedStore({
+      store,
+      auth,
+      accountId: 'acc-heart-notice-retry',
+      lightningAddress: 'zap-heart-notice-retry@example.com',
+      messageId: 'm-heart-notice-retry',
+    });
+    await auth.createAccount({
+      id: 'payer-heart-notice-retry',
+      linkingKey: null,
+      role: 'basis',
+      name: 'Pat',
+      location: null,
+      forumLawsDismissed: false,
+      viewKey: viewKeyFor('payer-heart-notice-retry'),
+      createdAt: 2,
+      rulesAgreedAt: null,
+    });
+    await store.recordInvoiceAttempt({
+      id: 'inv-heart-notice-retry',
+      createdAt: new Date('2026-08-28T00:00:00.000Z'),
+      messageId: parentId,
+      payerAccountId: 'payer-heart-notice-retry',
+      authorAccountId: 'acc-heart-notice-retry',
+      amountSats: 1,
+      lightningAddress: null,
+      zapRequest: { content: 'heart' },
+      result: 'ok',
+      httpStatus: 200,
+      pr: 'lnbc-heart-notice-retry',
+      paymentHash: 'e1'.repeat(32),
+      description: null,
+      descriptionHash: null,
+      isNip57Invoice: true,
+      lnurlResponse: null,
+      heart: true,
+    });
+    const notifications = new InMemoryNotificationStore();
+    const querier = new RecordingQuerier();
+    querier.events = [
+      {
+        id: 'r-heart-notice-retry',
+        pubkey: PROVIDER_PUBKEY,
+        kind: 9735,
+        tags: [
+          ['e', NOTE_EVENT_ID],
+          ['bolt11', 'lnbc-heart-notice-retry'],
+        ],
+      },
+    ];
+    mockedDecode.mockReturnValue({ paymentHash: 'e1'.repeat(32), amountMsat: 1000 });
+    await ingest({
+      store,
+      auth,
+      querier,
+      urls: URLS,
+      timeoutMs: 50,
+      now: () => 1,
+      fetchImpl: lnurlFetch(PROVIDER_PUBKEY),
+      notificationStore: notifications,
+    });
+    expect((await store.getById(parentId))?.sats).toBe(1);
+    expect(await store.listReplies(parentId)).toHaveLength(0);
+    const forAuthor = await notifications.listByRecipient('acc-heart-notice-retry', 10);
+    expect(forAuthor).toHaveLength(1);
+    expect(forAuthor[0]?.type).toBe('heart');
+  });
+
+  it('treats a heart as a normal gift for the notice when both notice lookups reject', async () => {
+    class HeartNoticeFailStore extends InMemoryMessageStore {
+      lookups = 0;
+
+      override findOkInvoiceByPaymentHash(
+        ...args: Parameters<InMemoryMessageStore['findOkInvoiceByPaymentHash']>
+      ): ReturnType<InMemoryMessageStore['findOkInvoiceByPaymentHash']> {
+        this.lookups += 1;
+        if (this.lookups === 3 || this.lookups === 4) {
+          return Promise.reject(new Error('heart lookup boom'));
+        }
+        return super.findOkInvoiceByPaymentHash(...args);
+      }
+    }
+    const store = new HeartNoticeFailStore();
+    const auth = new InMemoryAuthStore();
+    const parentId = await seedStore({
+      store,
+      auth,
+      accountId: 'acc-heart-notice-fail',
+      lightningAddress: 'zap-heart-notice-fail@example.com',
+      messageId: 'm-heart-notice-fail',
+    });
+    await auth.createAccount({
+      id: 'payer-heart-notice-fail',
+      linkingKey: null,
+      role: 'basis',
+      name: 'Pat',
+      location: null,
+      forumLawsDismissed: false,
+      viewKey: viewKeyFor('payer-heart-notice-fail'),
+      createdAt: 2,
+      rulesAgreedAt: null,
+    });
+    await store.recordInvoiceAttempt({
+      id: 'inv-heart-notice-fail',
+      createdAt: new Date('2026-08-28T00:00:00.000Z'),
+      messageId: parentId,
+      payerAccountId: 'payer-heart-notice-fail',
+      authorAccountId: 'acc-heart-notice-fail',
+      amountSats: 1,
+      lightningAddress: null,
+      zapRequest: { content: 'heart' },
+      result: 'ok',
+      httpStatus: 200,
+      pr: 'lnbc-heart-notice-fail',
+      paymentHash: 'e2'.repeat(32),
+      description: null,
+      descriptionHash: null,
+      isNip57Invoice: true,
+      lnurlResponse: null,
+      heart: true,
+    });
+    const notifications = new InMemoryNotificationStore();
+    const querier = new RecordingQuerier();
+    querier.events = [
+      {
+        id: 'r-heart-notice-fail',
+        pubkey: PROVIDER_PUBKEY,
+        kind: 9735,
+        tags: [
+          ['e', NOTE_EVENT_ID],
+          ['bolt11', 'lnbc-heart-notice-fail'],
+        ],
+      },
+    ];
+    mockedDecode.mockReturnValue({ paymentHash: 'e2'.repeat(32), amountMsat: 1000 });
+    await ingest({
+      store,
+      auth,
+      querier,
+      urls: URLS,
+      timeoutMs: 50,
+      now: () => 1,
+      fetchImpl: lnurlFetch(PROVIDER_PUBKEY),
+      notificationStore: notifications,
+    });
+    expect((await store.getById(parentId))?.sats).toBe(1);
+    expect(await store.listReplies(parentId)).toHaveLength(0);
+    const forAuthor = await notifications.listByRecipient('acc-heart-notice-fail', 10);
+    expect(forAuthor.map((row) => row.type)).toEqual(['zap']);
+    expect(store.lookups).toBe(6);
+  });
+
+  it('keeps notifyZap and the gift-reply for a normal gift when both notice lookups reject', async () => {
+    class GiftNoticeFailStore extends InMemoryMessageStore {
+      lookups = 0;
+
+      override findOkInvoiceByPaymentHash(
+        ...args: Parameters<InMemoryMessageStore['findOkInvoiceByPaymentHash']>
+      ): ReturnType<InMemoryMessageStore['findOkInvoiceByPaymentHash']> {
+        this.lookups += 1;
+        if (this.lookups === 3 || this.lookups === 4) {
+          return Promise.reject(new Error('heart lookup boom'));
+        }
+        return super.findOkInvoiceByPaymentHash(...args);
+      }
+    }
+    const store = new GiftNoticeFailStore();
+    const auth = new InMemoryAuthStore();
+    const parentId = await seedStore({
+      store,
+      auth,
+      accountId: 'acc-gift-notice-fail',
+      lightningAddress: 'zap-gift-notice-fail@example.com',
+      messageId: 'm-gift-notice-fail',
+    });
+    await auth.createAccount({
+      id: 'payer-gift-notice-fail',
+      linkingKey: null,
+      role: 'basis',
+      name: 'Pat',
+      location: null,
+      forumLawsDismissed: false,
+      viewKey: viewKeyFor('payer-gift-notice-fail'),
+      createdAt: 2,
+      rulesAgreedAt: null,
+    });
+    await store.recordInvoiceAttempt({
+      id: 'inv-gift-notice-fail',
+      createdAt: new Date('2026-08-28T00:00:00.000Z'),
+      messageId: parentId,
+      payerAccountId: 'payer-gift-notice-fail',
+      authorAccountId: 'acc-gift-notice-fail',
+      amountSats: 21,
+      lightningAddress: null,
+      zapRequest: { content: 'thanks' },
+      result: 'ok',
+      httpStatus: 200,
+      pr: 'lnbc-gift-notice-fail',
+      paymentHash: 'e3'.repeat(32),
+      description: null,
+      descriptionHash: null,
+      isNip57Invoice: true,
+      lnurlResponse: null,
+    });
+    const notifications = new InMemoryNotificationStore();
+    const querier = new RecordingQuerier();
+    querier.events = [
+      {
+        id: 'r-gift-notice-fail',
+        pubkey: PROVIDER_PUBKEY,
+        kind: 9735,
+        tags: [
+          ['e', NOTE_EVENT_ID],
+          ['bolt11', 'lnbc-gift-notice-fail'],
+        ],
+      },
+    ];
+    mockedDecode.mockReturnValue({ paymentHash: 'e3'.repeat(32), amountMsat: 21_000 });
+    await ingest({
+      store,
+      auth,
+      querier,
+      urls: URLS,
+      timeoutMs: 50,
+      now: () => 1,
+      fetchImpl: lnurlFetch(PROVIDER_PUBKEY),
+      notificationStore: notifications,
+    });
+    expect((await store.getById(parentId))?.sats).toBe(21);
+    expect(await store.listReplies(parentId)).toHaveLength(1);
+    const forAuthor = await notifications.listByRecipient('acc-gift-notice-fail', 10);
+    expect(forAuthor.map((row) => row.type)).toEqual(['zap']);
+    expect(store.lookups).toBe(8);
+  });
+
+  it('settles a heart invoice with notifyHeart and skips the gift-reply', async () => {
+    const store = new InMemoryMessageStore();
+    const auth = new InMemoryAuthStore();
+    await seedStore({
+      store,
+      auth,
+      accountId: 'manual-author',
+      messageId: 'manual-message',
+    });
+    await auth.createAccount({
+      id: 'manual-payer',
+      linkingKey: null,
+      role: 'basis',
+      name: 'Ada',
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: viewKeyFor('manual-payer'),
+      createdAt: 2,
+      rulesAgreedAt: null,
+    });
+    const paymentHash = 'c2'.repeat(32);
+    await seedManualInvoice(store, paymentHash, {
+      heart: true,
+      amountSats: 1,
+      zapRequest: { content: 'heart' },
+    });
+    const notifications = new InMemoryNotificationStore();
+    const pushStore = new InMemoryPushStore();
+    await pushStore.upsertSubscription({
+      endpoint: 'https://push.example/heart-settle',
+      accountId: 'manual-author',
+      p256dh: 'p',
+      auth: 'a',
+      createdAt: new Date(1),
+    });
+    const result = await settleInvoiceManually({
+      store,
+      auth,
+      now: () => 1,
+      paymentHash,
+      note: 'heart settle',
+      notificationStore: notifications,
+      pushStore,
+      fiatRates: new InMemoryFiatStore(),
+    });
+    expect(result.ok).toBe(true);
+    expect((await store.getById('manual-message'))?.sats).toBe(1);
+    expect(await store.listReplies('manual-message')).toHaveLength(0);
+    const forAuthor = await notifications.listByRecipient('manual-author', 10);
+    expect(forAuthor).toHaveLength(1);
+    expect(forAuthor[0]?.type).toBe('heart');
+    expect(forAuthor[0]?.name).toBe('Ada');
+    expect(forAuthor[0]?.text).toBe('1');
+    expect(await notifications.listByRecipient('manual-payer', 10)).toEqual([]);
+    const claimed = await pushStore.claimPending(10, 1, 60_000);
+    expect(claimed).toHaveLength(1);
+    expect(claimed[0]?.accountId).toBe('manual-author');
+    expect(JSON.parse(claimed[0]?.payload ?? '{}')).toMatchObject({
+      body: 'Sent you a heart.',
+    });
+  });
+
+  it('settles a heart when payer lookup throws and does not reject', async () => {
+    class ThrowingPayerAuthStore extends InMemoryAuthStore {
+      override getAccount(id: string): Promise<Account | undefined> {
+        if (id === 'manual-payer') {
+          return Promise.reject(new Error('payer lookup boom'));
+        }
+        return super.getAccount(id);
+      }
+    }
+    const store = new InMemoryMessageStore();
+    const auth = new ThrowingPayerAuthStore();
+    await seedStore({
+      store,
+      auth,
+      accountId: 'manual-author',
+      messageId: 'manual-message',
+    });
+    const paymentHash = 'c3'.repeat(32);
+    await seedManualInvoice(store, paymentHash, {
+      heart: true,
+      amountSats: 1,
+      zapRequest: { content: 'heart' },
+    });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const result = await settleInvoiceManually({
+      store,
+      auth,
+      now: () => 1,
+      paymentHash,
+      note: 'heart settle',
+      fiatRates: new InMemoryFiatStore(),
+    });
+    const events = loggedEvents(warn);
+    warn.mockRestore();
+    expect(result.ok).toBe(true);
+    expect((await store.getById('manual-message'))?.sats).toBe(1);
+    expect(await store.listReplies('manual-message')).toHaveLength(0);
+    expect(events.some((event) => event['event'] === 'nostr.zap.gift_reply.failed')).toBe(true);
+  });
+
+  it('settles a heart with payer name Someone when the payer name is null', async () => {
+    const store = new InMemoryMessageStore();
+    const auth = new InMemoryAuthStore();
+    await seedStore({
+      store,
+      auth,
+      accountId: 'manual-author',
+      messageId: 'manual-message',
+    });
+    await auth.createAccount({
+      id: 'manual-payer',
+      linkingKey: null,
+      role: 'basis',
+      name: null,
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: viewKeyFor('manual-payer'),
+      createdAt: 2,
+      rulesAgreedAt: null,
+    });
+    const paymentHash = 'c4'.repeat(32);
+    await seedManualInvoice(store, paymentHash, {
+      heart: true,
+      amountSats: 1,
+      zapRequest: { content: 'heart' },
+    });
+    const notifications = new InMemoryNotificationStore();
+    const pushStore = new InMemoryPushStore();
+    const result = await settleInvoiceManually({
+      store,
+      auth,
+      now: () => 1,
+      paymentHash,
+      note: 'heart settle',
+      notificationStore: notifications,
+      pushStore,
+      fiatRates: new InMemoryFiatStore(),
+    });
+    expect(result.ok).toBe(true);
+    expect((await notifications.listByRecipient('manual-author', 10))[0]?.name).toBe('Someone');
+  });
+
+  it('keeps a heart settle successful when notifyHeart rejects', async () => {
+    const store = new InMemoryMessageStore();
+    const auth = new InMemoryAuthStore();
+    await seedStore({
+      store,
+      auth,
+      accountId: 'manual-author',
+      messageId: 'manual-message',
+    });
+    await auth.createAccount({
+      id: 'manual-payer',
+      linkingKey: null,
+      role: 'basis',
+      name: 'Ada',
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: viewKeyFor('manual-payer'),
+      createdAt: 2,
+      rulesAgreedAt: null,
+    });
+    const paymentHash = 'c5'.repeat(32);
+    await seedManualInvoice(store, paymentHash, {
+      heart: true,
+      amountSats: 1,
+      zapRequest: { content: 'heart' },
+    });
+    const notifications = new InMemoryNotificationStore();
+    const pushStore = new InMemoryPushStore();
+    notifications.create = async () => {
+      throw new Error('notify boom');
+    };
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const result = await settleInvoiceManually({
+      store,
+      auth,
+      now: () => 1,
+      paymentHash,
+      note: 'heart settle',
+      notificationStore: notifications,
+      pushStore,
+      fiatRates: new InMemoryFiatStore(),
+    });
+    const events = loggedEvents(warn);
+    warn.mockRestore();
+    expect(result.ok).toBe(true);
+    expect((await store.getById('manual-message'))?.sats).toBe(1);
+    expect(await store.listReplies('manual-message')).toHaveLength(0);
+    expect(events.some((event) => event['event'] === 'push.enqueue.failed')).toBe(true);
+  });
+
+  it('credits a heart receipt without notification stores', async () => {
+    const store = new InMemoryMessageStore();
+    const auth = new InMemoryAuthStore();
+    const parentId = await seedStore({
+      store,
+      auth,
+      accountId: 'acc-heart-nostore',
+      lightningAddress: 'zap-heart-nostore@example.com',
+      messageId: 'm-heart-nostore',
+    });
+    await auth.createAccount({
+      id: 'payer-heart-nostore',
+      linkingKey: null,
+      role: 'basis',
+      name: 'Pat',
+      location: null,
+      forumLawsDismissed: false,
+      viewKey: viewKeyFor('payer-heart-nostore'),
+      createdAt: 2,
+      rulesAgreedAt: null,
+    });
+    await store.recordInvoiceAttempt({
+      id: 'inv-heart-nostore',
+      createdAt: new Date('2026-08-28T00:00:00.000Z'),
+      messageId: parentId,
+      payerAccountId: 'payer-heart-nostore',
+      authorAccountId: 'acc-heart-nostore',
+      amountSats: 1,
+      lightningAddress: null,
+      zapRequest: { content: 'heart' },
+      result: 'ok',
+      httpStatus: 200,
+      pr: 'lnbc-heart-nostore',
+      paymentHash: 'c6'.repeat(32),
+      description: null,
+      descriptionHash: null,
+      isNip57Invoice: true,
+      lnurlResponse: null,
+      heart: true,
+    });
+    const querier = new RecordingQuerier();
+    querier.events = [
+      {
+        id: 'r-heart-nostore',
+        pubkey: PROVIDER_PUBKEY,
+        kind: 9735,
+        tags: [
+          ['e', NOTE_EVENT_ID],
+          ['bolt11', 'lnbc-heart-nostore'],
+        ],
+      },
+    ];
+    mockedDecode.mockReturnValue({ paymentHash: 'c6'.repeat(32), amountMsat: 1000 });
+    await ingest({
+      store,
+      auth,
+      querier,
+      urls: URLS,
+      timeoutMs: 50,
+      now: () => 1,
+      fetchImpl: lnurlFetch(PROVIDER_PUBKEY),
+    });
+    expect((await store.getById(parentId))?.sats).toBe(1);
+    expect(await store.listReplies(parentId)).toHaveLength(0);
+  });
+
+  it('names a heart notification Someone when the payer name is null', async () => {
+    const store = new InMemoryMessageStore();
+    const auth = new InMemoryAuthStore();
+    const parentId = await seedStore({
+      store,
+      auth,
+      accountId: 'acc-heart-noname',
+      lightningAddress: 'zap-heart-noname@example.com',
+      messageId: 'm-heart-noname',
+    });
+    await auth.createAccount({
+      id: 'payer-heart-noname',
+      linkingKey: null,
+      role: 'basis',
+      name: null,
+      location: null,
+      forumLawsDismissed: false,
+      viewKey: viewKeyFor('payer-heart-noname'),
+      createdAt: 2,
+      rulesAgreedAt: null,
+    });
+    await store.recordInvoiceAttempt({
+      id: 'inv-heart-noname',
+      createdAt: new Date('2026-08-28T00:00:00.000Z'),
+      messageId: parentId,
+      payerAccountId: 'payer-heart-noname',
+      authorAccountId: 'acc-heart-noname',
+      amountSats: 1,
+      lightningAddress: null,
+      zapRequest: { content: 'heart' },
+      result: 'ok',
+      httpStatus: 200,
+      pr: 'lnbc-heart-noname',
+      paymentHash: 'c7'.repeat(32),
+      description: null,
+      descriptionHash: null,
+      isNip57Invoice: true,
+      lnurlResponse: null,
+      heart: true,
+    });
+    const notifications = new InMemoryNotificationStore();
+    const querier = new RecordingQuerier();
+    querier.events = [
+      {
+        id: 'r-heart-noname',
+        pubkey: PROVIDER_PUBKEY,
+        kind: 9735,
+        tags: [
+          ['e', NOTE_EVENT_ID],
+          ['bolt11', 'lnbc-heart-noname'],
+        ],
+      },
+    ];
+    mockedDecode.mockReturnValue({ paymentHash: 'c7'.repeat(32), amountMsat: 1000 });
+    await ingest({
+      store,
+      auth,
+      querier,
+      urls: URLS,
+      timeoutMs: 50,
+      now: () => 1,
+      fetchImpl: lnurlFetch(PROVIDER_PUBKEY),
+      notificationStore: notifications,
+    });
+    expect((await notifications.listByRecipient('acc-heart-noname', 10))[0]?.name).toBe('Someone');
+    expect(await store.listReplies(parentId)).toHaveLength(0);
+  });
+
+  it('notifies Someone for a heart when payer lookup throws', async () => {
+    class ThrowingPayerAuthStore extends InMemoryAuthStore {
+      override getAccount(id: string): Promise<Account | undefined> {
+        if (id === 'payer-heart-payerboom') {
+          return Promise.reject(new Error('payer lookup boom'));
+        }
+        return super.getAccount(id);
+      }
+    }
+    const store = new InMemoryMessageStore();
+    const auth = new ThrowingPayerAuthStore();
+    const parentId = await seedStore({
+      store,
+      auth,
+      accountId: 'acc-heart-payerboom',
+      lightningAddress: 'zap-heart-payerboom@example.com',
+      messageId: 'm-heart-payerboom',
+    });
+    await auth.createAccount({
+      id: 'payer-heart-payerboom',
+      linkingKey: null,
+      role: 'basis',
+      name: 'Pat',
+      location: null,
+      forumLawsDismissed: false,
+      viewKey: viewKeyFor('payer-heart-payerboom'),
+      createdAt: 2,
+      rulesAgreedAt: null,
+    });
+    await store.recordInvoiceAttempt({
+      id: 'inv-heart-payerboom',
+      createdAt: new Date('2026-08-28T00:00:00.000Z'),
+      messageId: parentId,
+      payerAccountId: 'payer-heart-payerboom',
+      authorAccountId: 'acc-heart-payerboom',
+      amountSats: 1,
+      lightningAddress: null,
+      zapRequest: { content: 'heart' },
+      result: 'ok',
+      httpStatus: 200,
+      pr: 'lnbc-heart-payerboom',
+      paymentHash: 'c8'.repeat(32),
+      description: null,
+      descriptionHash: null,
+      isNip57Invoice: true,
+      lnurlResponse: null,
+      heart: true,
+    });
+    const notifications = new InMemoryNotificationStore();
+    const querier = new RecordingQuerier();
+    querier.events = [
+      {
+        id: 'r-heart-payerboom',
+        pubkey: PROVIDER_PUBKEY,
+        kind: 9735,
+        tags: [
+          ['e', NOTE_EVENT_ID],
+          ['bolt11', 'lnbc-heart-payerboom'],
+        ],
+      },
+    ];
+    mockedDecode.mockReturnValue({ paymentHash: 'c8'.repeat(32), amountMsat: 1000 });
+    await ingest({
+      store,
+      auth,
+      querier,
+      urls: URLS,
+      timeoutMs: 50,
+      now: () => 1,
+      fetchImpl: lnurlFetch(PROVIDER_PUBKEY),
+      notificationStore: notifications,
+    });
+    expect(await store.listIndexedZapIngests()).toHaveLength(1);
+    expect((await store.getById(parentId))?.sats).toBe(1);
+    expect(await store.listReplies(parentId)).toHaveLength(0);
+    expect((await notifications.listByRecipient('acc-heart-payerboom', 10))[0]?.name).toBe(
+      'Someone',
+    );
+  });
+
+  it('keeps a heart ingest indexed when notifyHeart rejects', async () => {
+    const store = new InMemoryMessageStore();
+    const auth = new InMemoryAuthStore();
+    const parentId = await seedStore({
+      store,
+      auth,
+      accountId: 'acc-heart-notifyboom',
+      lightningAddress: 'zap-heart-notifyboom@example.com',
+      messageId: 'm-heart-notifyboom',
+    });
+    await auth.createAccount({
+      id: 'payer-heart-notifyboom',
+      linkingKey: null,
+      role: 'basis',
+      name: 'Pat',
+      location: null,
+      forumLawsDismissed: false,
+      viewKey: viewKeyFor('payer-heart-notifyboom'),
+      createdAt: 2,
+      rulesAgreedAt: null,
+    });
+    await store.recordInvoiceAttempt({
+      id: 'inv-heart-notifyboom',
+      createdAt: new Date('2026-08-28T00:00:00.000Z'),
+      messageId: parentId,
+      payerAccountId: 'payer-heart-notifyboom',
+      authorAccountId: 'acc-heart-notifyboom',
+      amountSats: 1,
+      lightningAddress: null,
+      zapRequest: { content: 'heart' },
+      result: 'ok',
+      httpStatus: 200,
+      pr: 'lnbc-heart-notifyboom',
+      paymentHash: 'c9'.repeat(32),
+      description: null,
+      descriptionHash: null,
+      isNip57Invoice: true,
+      lnurlResponse: null,
+      heart: true,
+    });
+    const notifications = new InMemoryNotificationStore();
+    notifications.create = async () => {
+      throw new Error('notify boom');
+    };
+    const querier = new RecordingQuerier();
+    querier.events = [
+      {
+        id: 'r-heart-notifyboom',
+        pubkey: PROVIDER_PUBKEY,
+        kind: 9735,
+        tags: [
+          ['e', NOTE_EVENT_ID],
+          ['bolt11', 'lnbc-heart-notifyboom'],
+        ],
+      },
+    ];
+    mockedDecode.mockReturnValue({ paymentHash: 'c9'.repeat(32), amountMsat: 1000 });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    await ingest({
+      store,
+      auth,
+      querier,
+      urls: URLS,
+      timeoutMs: 50,
+      now: () => 1,
+      fetchImpl: lnurlFetch(PROVIDER_PUBKEY),
+      notificationStore: notifications,
+    });
+    const events = loggedEvents(warn);
+    warn.mockRestore();
+    expect(await store.listIndexedZapIngests()).toHaveLength(1);
+    expect((await store.getById(parentId))?.sats).toBe(1);
+    expect(await store.listReplies(parentId)).toHaveLength(0);
+    expect(events.some((event) => event['event'] === 'push.enqueue.failed')).toBe(true);
+    expect(events.some((event) => event['event'] === 'nostr.zap.rejected')).toBe(false);
+  });
+
+  it('keeps a 1-sat invoice without heart on the zap path', async () => {
+    const store = new InMemoryMessageStore();
+    const auth = new InMemoryAuthStore();
+    const parentId = await seedStore({
+      store,
+      auth,
+      accountId: 'acc-zap-one',
+      lightningAddress: 'zap-one@example.com',
+      messageId: 'm-zap-one',
+    });
+    await auth.createAccount({
+      id: 'payer-zap-one',
+      linkingKey: null,
+      role: 'basis',
+      name: 'Pat',
+      location: null,
+      forumLawsDismissed: false,
+      viewKey: viewKeyFor('payer-zap-one'),
+      createdAt: 2,
+      rulesAgreedAt: null,
+    });
+    await store.recordInvoiceAttempt({
+      id: 'inv-zap-one',
+      createdAt: new Date('2026-08-28T00:00:00.000Z'),
+      messageId: parentId,
+      payerAccountId: 'payer-zap-one',
+      authorAccountId: 'acc-zap-one',
+      amountSats: 1,
+      lightningAddress: null,
+      zapRequest: { content: 'one sat' },
+      result: 'ok',
+      httpStatus: 200,
+      pr: 'lnbc-zap-one',
+      paymentHash: 'ff'.repeat(32),
+      description: null,
+      descriptionHash: null,
+      isNip57Invoice: true,
+      lnurlResponse: null,
+    });
+    const notifications = new InMemoryNotificationStore();
+    const querier = new RecordingQuerier();
+    querier.events = [
+      {
+        id: 'r-zap-one',
+        pubkey: PROVIDER_PUBKEY,
+        kind: 9735,
+        tags: [
+          ['e', NOTE_EVENT_ID],
+          ['bolt11', 'lnbc-zap-one'],
+        ],
+      },
+    ];
+    mockedDecode.mockReturnValue({ paymentHash: 'ff'.repeat(32), amountMsat: 1000 });
+    await ingest({
+      store,
+      auth,
+      querier,
+      urls: URLS,
+      timeoutMs: 50,
+      now: () => 1,
+      fetchImpl: lnurlFetch(PROVIDER_PUBKEY),
+      notificationStore: notifications,
+    });
+    expect((await store.getById(parentId))?.sats).toBe(1);
+    expect((await store.listReplies(parentId))[0]?.text).toBe('one sat');
+    const forAuthor = await notifications.listByRecipient('acc-zap-one', 10);
+    expect(forAuthor).toHaveLength(1);
+    expect(forAuthor[0]?.type).toBe('zap');
+  });
+
   it('does not attribute a gift reply to a 9734 pubkey when the invoice payer is gone', async () => {
     const store = new InMemoryMessageStore();
     const auth = new InMemoryAuthStore();
@@ -8706,8 +9929,6 @@ describe('indexOpenZapReceipts', () => {
       linkingKey: null,
       role: 'basis',
       name: 'Other',
-      lightningAddress: 'other@example.com',
-      lightningAddressVerified: true,
       location: null,
       forumLawsDismissed: false,
       viewKey: viewKeyFor('payer-other'),
@@ -8800,8 +10021,6 @@ describe('indexOpenZapReceipts', () => {
       linkingKey: null,
       role: 'basis',
       name: 'Lou',
-      lightningAddress: 'lou@example.com',
-      lightningAddressVerified: true,
       location: null,
       forumLawsDismissed: false,
       viewKey: viewKeyFor('payer-lookup'),
@@ -9157,8 +10376,6 @@ describe('indexOpenZapReceipts', () => {
       linkingKey: null,
       role: 'basis',
       name: 'Lia',
-      lightningAddress: 'lia@example.com',
-      lightningAddressVerified: true,
       location: null,
       forumLawsDismissed: false,
       viewKey: viewKeyFor('payer-link'),
@@ -9587,8 +10804,6 @@ describe('indexOpenZapReceipts', () => {
       linkingKey: null,
       role: 'basis',
       name: 'Val',
-      lightningAddress: 'val@example.com',
-      lightningAddressVerified: true,
       location: null,
       forumLawsDismissed: false,
       viewKey: viewKeyFor('payer-vanish'),
@@ -9671,8 +10886,6 @@ describe('indexOpenZapReceipts', () => {
       linkingKey: null,
       role: 'basis',
       name: 'Lee',
-      lightningAddress: 'lee@example.com',
-      lightningAddressVerified: true,
       location: null,
       forumLawsDismissed: false,
       viewKey: viewKeyFor('payer-linked'),
@@ -9742,8 +10955,6 @@ describe('indexOpenZapReceipts', () => {
       linkingKey: null,
       role: 'basis',
       name: 'Mo',
-      lightningAddress: 'mo@example.com',
-      lightningAddressVerified: true,
       location: null,
       forumLawsDismissed: false,
       viewKey: viewKeyFor('payer-missing-parent'),
@@ -9830,8 +11041,6 @@ describe('indexOpenZapReceipts', () => {
       linkingKey: null,
       role: 'basis',
       name: 'Del',
-      lightningAddress: 'del@example.com',
-      lightningAddressVerified: true,
       location: null,
       forumLawsDismissed: false,
       viewKey: viewKeyFor('payer-deleted-parent'),
@@ -10060,8 +11269,6 @@ describe('conversation zap ingest', () => {
       linkingKey: null,
       role: 'basis',
       name: 'Pat',
-      lightningAddress: 'pat@example.com',
-      lightningAddressVerified: true,
       forumLawsDismissed: false,
       location: null,
       viewKey: viewKeyFor('acc-pn-pay'),
@@ -10154,8 +11361,6 @@ describe('conversation zap ingest', () => {
       linkingKey: null,
       role: 'basis',
       name: 'Pat',
-      lightningAddress: 'pat-mark@example.com',
-      lightningAddressVerified: true,
       forumLawsDismissed: false,
       location: null,
       viewKey: viewKeyFor('acc-pn-pay-mark'),
@@ -10168,14 +11373,14 @@ describe('conversation zap ingest', () => {
       role: 'basis',
       name: 'Marites Villanueva',
       username: 'marites',
-      lightningAddress: null,
-      lightningAddressVerified: false,
+      walletRequired: true,
       forumLawsDismissed: false,
       location: null,
       viewKey: viewKeyFor('marites'),
       createdAt: 3,
       rulesAgreedAt: null,
     });
+    await verifyWallet(auth, 'marites', 'marites');
     const conversations = new InMemoryConversationStore();
     const thread = await conversations.openMemberMember(
       'acc-pn-pay-mark',
@@ -10193,7 +11398,7 @@ describe('conversation zap ingest', () => {
       lightningAddress: 'recv-mark@example.com',
       zapRequest: {
         tags: [['e', NOTE_EVENT_ID]],
-        content: 'see @Marites ada@walletofsatoshi.com',
+        content: 'see @Marites ada@example.net',
       },
       result: 'ok',
       httpStatus: 200,
@@ -10231,7 +11436,7 @@ describe('conversation zap ingest', () => {
       fiatRates: new InMemoryFiatStore(),
     });
     const rows = await conversations.listMessages(thread.id, 10);
-    expect(rows[0]?.text).toBe('see @Marites ada@walletofsatoshi.com');
+    expect(rows[0]?.text).toBe('see @Marites ada@example.net');
     expect(rows[0]?.mentions).toEqual([{ accountId: 'marites', username: 'marites' }]);
   });
 
@@ -10250,8 +11455,6 @@ describe('conversation zap ingest', () => {
       linkingKey: null,
       role: 'basis',
       name: 'Pat',
-      lightningAddress: 'pat2@example.com',
-      lightningAddressVerified: true,
       forumLawsDismissed: false,
       location: null,
       viewKey: viewKeyFor('acc-pn-pay2'),
@@ -10354,8 +11557,6 @@ describe('conversation zap ingest', () => {
       linkingKey: null,
       role: 'basis',
       name: 'Pat',
-      lightningAddress: 'pat-cold@example.com',
-      lightningAddressVerified: true,
       forumLawsDismissed: false,
       location: null,
       viewKey: viewKeyFor('acc-pn-pay-cold'),
@@ -10459,8 +11660,6 @@ describe('conversation zap ingest', () => {
       linkingKey: null,
       role: 'basis',
       name: 'Pat',
-      lightningAddress: 'pat3@example.com',
-      lightningAddressVerified: true,
       forumLawsDismissed: false,
       location: null,
       viewKey: viewKeyFor('acc-pn-pay3'),
@@ -10563,8 +11762,6 @@ describe('conversation zap ingest', () => {
       linkingKey: null,
       role: 'basis',
       name: 'Pat',
-      lightningAddress: 'shared-pay@example.com',
-      lightningAddressVerified: true,
       forumLawsDismissed: false,
       location: null,
       viewKey: viewKeyFor('acc-pn-shared-pay'),
@@ -10678,8 +11875,6 @@ describe('conversation zap ingest', () => {
       linkingKey: null,
       role: 'basis',
       name: 'Pat',
-      lightningAddress: 'catch-pay@example.com',
-      lightningAddressVerified: true,
       forumLawsDismissed: false,
       location: null,
       viewKey: viewKeyFor('acc-pn-catch-pay'),
@@ -10777,8 +11972,6 @@ describe('conversation zap ingest', () => {
       linkingKey: null,
       role: 'basis',
       name: 'Pat',
-      lightningAddress: 'catch-pay2@example.com',
-      lightningAddressVerified: true,
       forumLawsDismissed: false,
       location: null,
       viewKey: viewKeyFor('acc-pn-catch-pay2'),
@@ -10880,8 +12073,6 @@ describe('conversation zap ingest', () => {
       linkingKey: null,
       role: 'basis',
       name: 'Pat',
-      lightningAddress: 'catch-pay3@example.com',
-      lightningAddressVerified: true,
       forumLawsDismissed: false,
       location: null,
       viewKey: viewKeyFor('acc-pn-catch-pay3'),
@@ -10973,8 +12164,6 @@ describe('conversation zap ingest', () => {
       linkingKey: null,
       role: 'basis',
       name: 'Pat',
-      lightningAddress: 'catch-pay4@example.com',
-      lightningAddressVerified: true,
       forumLawsDismissed: false,
       location: null,
       viewKey: viewKeyFor('acc-pn-catch-pay4'),
@@ -11067,8 +12256,6 @@ describe('conversation zap ingest', () => {
       linkingKey: null,
       role: 'basis',
       name: '',
-      lightningAddress: 'anon-pay@example.com',
-      lightningAddressVerified: true,
       forumLawsDismissed: false,
       location: null,
       viewKey: viewKeyFor('acc-pn-anon-pay'),
@@ -11316,8 +12503,6 @@ describe('conversation zap ingest', () => {
       linkingKey: null,
       role: 'basis',
       name: 'Pat',
-      lightningAddress: 'pat@example.com',
-      lightningAddressVerified: true,
       forumLawsDismissed: false,
       location: null,
       viewKey: viewKeyFor('acc-pn-mem-pay'),
@@ -11394,8 +12579,6 @@ describe('conversation zap ingest', () => {
       linkingKey: null,
       role: 'basis',
       name: 'Pat',
-      lightningAddress: 'pat-pk@example.com',
-      lightningAddressVerified: true,
       forumLawsDismissed: false,
       location: null,
       viewKey: viewKeyFor('acc-pn-pk-pay'),
@@ -11472,8 +12655,6 @@ describe('conversation zap ingest', () => {
       linkingKey: null,
       role: 'basis',
       name: 'Pat',
-      lightningAddress: 'pat-prov@example.com',
-      lightningAddressVerified: true,
       forumLawsDismissed: false,
       location: null,
       viewKey: viewKeyFor('acc-pn-prov-pay'),
@@ -11550,8 +12731,6 @@ describe('conversation zap ingest', () => {
       linkingKey: null,
       role: 'basis',
       name: 'Pat',
-      lightningAddress: 'pat-addr@example.com',
-      lightningAddressVerified: true,
       forumLawsDismissed: false,
       location: null,
       viewKey: viewKeyFor('acc-pn-addr-pay'),
@@ -11628,8 +12807,6 @@ describe('conversation zap ingest', () => {
       linkingKey: null,
       role: 'basis',
       name: 'Pat',
-      lightningAddress: 'pat-blank@example.com',
-      lightningAddressVerified: true,
       forumLawsDismissed: false,
       location: null,
       viewKey: viewKeyFor('acc-pn-blank-pay'),
@@ -11698,8 +12875,6 @@ describe('conversation zap ingest', () => {
       linkingKey: null,
       role: 'basis',
       name: 'Ada',
-      lightningAddress: 'hot@example.com',
-      lightningAddressVerified: true,
       forumLawsDismissed: false,
       location: null,
       viewKey: viewKeyFor('hot-author'),
@@ -11711,8 +12886,6 @@ describe('conversation zap ingest', () => {
       linkingKey: null,
       role: 'basis',
       name: 'Pat',
-      lightningAddress: 'pat-hot@example.com',
-      lightningAddressVerified: true,
       forumLawsDismissed: false,
       location: null,
       viewKey: viewKeyFor('hot-payer'),
@@ -11895,5 +13068,329 @@ describe('conversation zap ingest', () => {
         expect(call.filter['since']).toBe(1_234_567);
       }
     }
+  });
+});
+
+describe('wallet-backed receipt ingest', () => {
+  const NSEC = new Uint8Array(32).fill(0x11);
+  const OWNER = '0209cb7d2b5d3df3a0ac4ef86cfcfa229ffa52b687d797274c8669cbd5235eccd5';
+  const RECEIPT_PUBKEY = '5b70420d181375ab9972fcc465486a20833999ad1101e0f4332e832e41292619';
+  const LNURL: LnurlServerConfig = {
+    baseUrl: 'http://lnurl.internal:8080',
+    publicBaseUrl: 'https://gifts.test',
+    host: 'gifts.test',
+  };
+
+  /** Fake LNURL server on the internal URL; every other URL (spot price) answers 500. */
+  function walletFetch(calls: string[]): FetchFn {
+    return async (input, init) => {
+      const url = String(input);
+      calls.push(url);
+      const prefix = `${LNURL.baseUrl}/.well-known/lnurlp/`;
+      if (!url.startsWith(prefix)) {
+        return new Response('{}', { status: 500 });
+      }
+      expect((init?.headers as Record<string, string>)['host']).toBe('gifts.test');
+      const username = url.slice(prefix.length);
+      return new Response(
+        JSON.stringify({
+          tag: 'payRequest',
+          callback: `https://gifts.test/lnurlp/${username}/invoice`,
+          metadata: '[]',
+          minSendable: 1000,
+          maxSendable: 10_000_000,
+          allowsNostr: true,
+          nostrPubkey: RECEIPT_PUBKEY,
+        }),
+        { status: 200, headers: { 'content-type': 'application/json' } },
+      );
+    };
+  }
+
+  /** Create an account whose wallet key `OWNER` is verified under `username`. */
+  async function walletAccount(auth: InMemoryAuthStore, id: string, username: string) {
+    await auth.createAccount({
+      id,
+      linkingKey: null,
+      role: 'basis',
+      name: 'Wally',
+      username,
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: viewKeyFor(id),
+      createdAt: 1,
+      rulesAgreedAt: null,
+      walletRequired: true,
+    });
+    expect((await auth.claimSparkPubkey(id, OWNER))?.wrote).toBe(true);
+    expect(await auth.markSparkPubkeyVerified(id, OWNER, username, 2)).toBe(true);
+  }
+
+  /** Signed receipt for `bolt11` from the member's derived receipt key. */
+  function signedReceipt(bolt11: string, createdAt: number): NostrEventFrame {
+    const payer = generateSecretKey();
+    const zapRequest = finalizeEvent(
+      {
+        kind: 9734,
+        created_at: createdAt,
+        content: '',
+        tags: [
+          ['p', 'cc'.repeat(32)],
+          ['e', NOTE_EVENT_ID],
+          ['relays', 'wss://relay.example'],
+        ],
+      },
+      payer,
+    );
+    const built = buildZapReceipt({
+      secretKey: zapReceiptSecretKey(NSEC, OWNER),
+      bolt11,
+      zapRequestJson: JSON.stringify(zapRequest),
+    });
+    if (built === null) {
+      throw new Error('expected a receipt');
+    }
+    return built.event as unknown as NostrEventFrame;
+  }
+
+  it('credits a forum receipt signed by the derived key once, resolving the signer internally', async () => {
+    const store = new InMemoryMessageStore();
+    const auth = new InMemoryAuthStore();
+    await walletAccount(auth, 'acc-wallet-forum', 'wallet-forum');
+    const messageId = await seedStore({
+      store,
+      auth,
+      accountId: 'acc-wallet-forum',
+      createAccount: false,
+    });
+    mockedDecode.mockReturnValue({ paymentHash: 'c1'.repeat(32), amountMsat: 21_000 });
+    const calls: string[] = [];
+    const args = {
+      store,
+      auth,
+      querier: new RecordingQuerier(),
+      urls: URLS,
+      timeoutMs: 50,
+      now: () => 10,
+      fetchImpl: walletFetch(calls),
+      lnurlServer: LNURL,
+    };
+    const first = signedReceipt('lnbc-wallet-forum', 100);
+    expect(first.pubkey).toBe(RECEIPT_PUBKEY);
+    expect(await ingestZapReceipt(first, args)).toBe(true);
+    expect((await store.getById(messageId))?.sats).toBe(21);
+    expect(calls).toContain(`${LNURL.baseUrl}/.well-known/lnurlp/wallet-forum`);
+    expect(calls.some((url) => url.includes('gifts.test'))).toBe(false);
+
+    expect(await ingestZapReceipt(signedReceipt('lnbc-wallet-forum', 101), args)).toBe(false);
+    expect((await store.getById(messageId))?.sats).toBe(21);
+    const ingests = await store.listZapIngests(10);
+    expect(ingests.filter((row) => row.outcome === 'indexed')).toHaveLength(1);
+    expect(ingests.some((row) => row.outcome === 'rejected' && row.reason === 'settled')).toBe(
+      true,
+    );
+  });
+
+  it('resolves the signer of an address on the LNURL server host on every receipt, without the cache', async () => {
+    const store = new InMemoryMessageStore();
+    const auth = new InMemoryAuthStore();
+    await walletAccount(auth, 'acc-wallet-nocache', 'wallet-nocache');
+    await seedStore({ store, auth, accountId: 'acc-wallet-nocache', createAccount: false });
+    const calls: string[] = [];
+    const args = {
+      store,
+      auth,
+      querier: new RecordingQuerier(),
+      urls: URLS,
+      timeoutMs: 50,
+      now: () => 10,
+      fetchImpl: walletFetch(calls),
+      lnurlServer: LNURL,
+    };
+    mockedDecode.mockReturnValue({ paymentHash: 'c3'.repeat(32), amountMsat: 21_000 });
+    expect(await ingestZapReceipt(signedReceipt('lnbc-wallet-nocache-1', 100), args)).toBe(true);
+    mockedDecode.mockReturnValue({ paymentHash: 'c4'.repeat(32), amountMsat: 21_000 });
+    expect(await ingestZapReceipt(signedReceipt('lnbc-wallet-nocache-2', 101), args)).toBe(true);
+    const doc = `${LNURL.baseUrl}/.well-known/lnurlp/wallet-nocache`;
+    expect(calls.filter((url) => url === doc)).toHaveLength(2);
+  });
+
+  it('persists a rejected error row when an ingest step throws', async () => {
+    const store = new InMemoryMessageStore();
+    const auth = new InMemoryAuthStore();
+    mockedDecode.mockReturnValue(null);
+    vi.spyOn(store, 'getByEventId').mockRejectedValue(new Error('boom'));
+    const event: NostrEventFrame = {
+      id: 'r-throw',
+      pubkey: PROVIDER_PUBKEY,
+      kind: 9735,
+      tags: [['e', NOTE_EVENT_ID]],
+    };
+    expect(
+      await ingestZapReceipt(event, {
+        store,
+        auth,
+        querier: new RecordingQuerier(),
+        urls: URLS,
+        timeoutMs: 50,
+        now: () => 1,
+        fetchImpl: failFetch(),
+        verifyReceipt: () => true,
+      }),
+    ).toBe(false);
+    const ingests = await store.listZapIngests(10);
+    expect(ingests).toHaveLength(1);
+    expect(ingests[0]).toMatchObject({
+      receiptId: 'r-throw',
+      outcome: 'rejected',
+      reason: 'error',
+      receiptPubkey: PROVIDER_PUBKEY,
+    });
+  });
+
+  it('appends a conversation gift for a wallet-backed stored address', async () => {
+    const store = new InMemoryMessageStore();
+    const auth = new InMemoryAuthStore();
+    await walletAccount(auth, 'acc-wallet-pn', 'wallet-pn');
+    const conversations = new InMemoryConversationStore();
+    const thread = await conversations.openMemberMember(
+      'acc-wallet-pn-payer',
+      'acc-wallet-pn',
+      new Date('2026-10-01T00:00:00.000Z'),
+    );
+    const giftId = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee';
+    const paymentHash = 'c2'.repeat(32);
+    await store.recordInvoiceAttempt({
+      id: 'inv-wallet-pn',
+      createdAt: new Date('2026-10-01T00:00:00.000Z'),
+      messageId: 'm-wallet-pn-profile',
+      payerAccountId: 'acc-wallet-pn-payer',
+      authorAccountId: 'acc-wallet-pn',
+      amountSats: 21,
+      lightningAddress: 'wallet-pn@gifts.test',
+      zapRequest: { tags: [['e', NOTE_EVENT_ID]], content: 'thanks' },
+      result: 'ok',
+      httpStatus: 200,
+      pr: 'lnbc-wallet-pn',
+      paymentHash,
+      description: null,
+      descriptionHash: null,
+      isNip57Invoice: true,
+      lnurlResponse: null,
+      conversationId: thread.id,
+      conversationMessageId: giftId,
+    });
+    mockedDecode.mockReturnValue({ paymentHash, amountMsat: 21_000 });
+    const calls: string[] = [];
+    await ingestZapReceipt(signedReceipt('lnbc-wallet-pn', 100), {
+      store,
+      auth,
+      querier: new RecordingQuerier(),
+      urls: URLS,
+      timeoutMs: 50,
+      now: () => Date.parse('2026-10-01T00:00:00.000Z'),
+      fetchImpl: walletFetch(calls),
+      conversations,
+      lnurlServer: LNURL,
+    });
+    expect(calls).toContain(`${LNURL.baseUrl}/.well-known/lnurlp/wallet-pn`);
+    expect(calls.some((url) => url.includes('gifts.test'))).toBe(false);
+    const rows = await conversations.listMessages(thread.id, 10);
+    expect(rows.map((row) => row.id)).toEqual([giftId]);
+  });
+
+  it('rejects a repayment receipt when the giver has no receiving address', async () => {
+    const store = new InMemoryMessageStore();
+    const auth = new InMemoryAuthStore();
+    const messageId = await seedStore({ store, auth, accountId: 'acc-noaddr-repay' });
+    const giver = '33333333-3333-4333-8333-333333333333';
+    await seedStore({
+      store,
+      auth,
+      accountId: giver,
+      lightningAddress: null,
+      messageId: 'm-noaddr-giver',
+      eventId: 'f0'.repeat(32),
+    });
+    const paymentHash = 'c4'.repeat(32);
+    await store.recordInvoiceAttempt({
+      id: 'inv-noaddr-repay',
+      createdAt: new Date(1),
+      messageId,
+      payerAccountId: 'acc-noaddr-repay',
+      authorAccountId: giver,
+      amountSats: 21,
+      lightningAddress: 'gone@example.com',
+      zapRequest: null,
+      result: 'ok',
+      httpStatus: 200,
+      pr: 'lnbc-noaddr-repay',
+      paymentHash,
+      description: repaymentDescription(0, giver),
+      descriptionHash: null,
+      isNip57Invoice: true,
+      lnurlResponse: null,
+    });
+    mockedDecode.mockReturnValue({ paymentHash, amountMsat: 21_000 });
+    await ingestZapReceipt(signedReceipt('lnbc-noaddr-repay', 100), {
+      store,
+      auth,
+      querier: new RecordingQuerier(),
+      urls: URLS,
+      timeoutMs: 50,
+      now: () => 5,
+      fetchImpl: failFetch(),
+      lnurlServer: LNURL,
+    });
+    expect(await store.listRepayments(messageId)).toEqual([]);
+    expect((await store.listZapIngests(10))[0]).toMatchObject({
+      outcome: 'rejected',
+      reason: 'pubkey',
+    });
+  });
+
+  it('records a repayment to a giver with a verified wallet', async () => {
+    const store = new InMemoryMessageStore();
+    const auth = new InMemoryAuthStore();
+    const messageId = await seedStore({ store, auth, accountId: 'acc-wallet-repay' });
+    const giver = '22222222-2222-4222-8222-222222222222';
+    await walletAccount(auth, giver, 'wallet-giver');
+    const paymentHash = 'c3'.repeat(32);
+    await store.recordInvoiceAttempt({
+      id: 'inv-wallet-repay',
+      createdAt: new Date(1),
+      messageId,
+      payerAccountId: 'acc-wallet-repay',
+      authorAccountId: giver,
+      amountSats: 21,
+      lightningAddress: 'wallet-giver@gifts.test',
+      zapRequest: null,
+      result: 'ok',
+      httpStatus: 200,
+      pr: 'lnbc-wallet-repay',
+      paymentHash,
+      description: repaymentDescription(0, giver),
+      descriptionHash: null,
+      isNip57Invoice: true,
+      lnurlResponse: null,
+    });
+    mockedDecode.mockReturnValue({ paymentHash, amountMsat: 21_000 });
+    const calls: string[] = [];
+    await ingestZapReceipt(signedReceipt('lnbc-wallet-repay', 100), {
+      store,
+      auth,
+      querier: new RecordingQuerier(),
+      urls: URLS,
+      timeoutMs: 50,
+      now: () => 5,
+      fetchImpl: walletFetch(calls),
+      lnurlServer: LNURL,
+    });
+    expect(calls).toContain(`${LNURL.baseUrl}/.well-known/lnurlp/wallet-giver`);
+    expect(calls.some((url) => url.includes('gifts.test'))).toBe(false);
+    expect((await store.getById(messageId))?.sats).toBe(0);
+    expect(await store.listRepayments(messageId)).toEqual([
+      { dayIndex: 0, recipientAccountId: giver, dueSats: 21, paidAt: new Date(5) },
+    ]);
   });
 });

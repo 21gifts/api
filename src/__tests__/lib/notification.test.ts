@@ -9,6 +9,7 @@ import {
   notifyExternalForumReply,
   notifyForumPost,
   notifyForumReply,
+  notifyHeart,
   notifyModeratorAppointed,
   notifyModeratorProposed,
   notificationsMatchingLevel,
@@ -19,7 +20,7 @@ import {
   type NotificationRow,
 } from '@/lib/notification';
 import { InMemoryNotificationStore } from '@/lib/notification-store';
-import { buildModeratorAppointedPushPayload } from '@/lib/push';
+import { buildHeartPushPayload, buildModeratorAppointedPushPayload } from '@/lib/push';
 import { InMemoryPushStore } from '@/lib/push-store';
 
 const NOW = new Date('2026-08-29T12:00:00.000Z');
@@ -1482,6 +1483,526 @@ describe('notifyZap', () => {
   });
 });
 
+describe('notifyHeart', () => {
+  it('notifies only the author with type heart and the heart push body', async () => {
+    const note = message({ id: 'note-1', accountId: 'author', name: 'Pat', text: 'post' });
+    const notifications = new InMemoryNotificationStore();
+    const pushStore = new InMemoryPushStore();
+    await subscribe(pushStore, 'author');
+    await subscribe(pushStore, 'bystander');
+    const auth = {
+      getAccount: async (id: string) =>
+        id === 'author'
+          ? ({
+              id: 'author',
+              linkingKey: null,
+              role: 'basis',
+              name: 'Pat',
+              forumLawsDismissed: false,
+              location: null,
+              viewKey: 'a'.repeat(64),
+              createdAt: 1,
+              rulesAgreedAt: null,
+              notifyHearts: true,
+            } as Awaited<ReturnType<AuthStore['getAccount']>>)
+          : undefined,
+    };
+    await notifyHeart({
+      notifications,
+      pushStore,
+      auth,
+      note,
+      receiptId: ZAP_RECEIPT_ID,
+      nowMs: NOW.getTime(),
+      payerAccountId: 'payer',
+      payerName: 'Bob',
+    });
+    const listed = await notifications.listByRecipient('author', 10);
+    expect(listed).toHaveLength(1);
+    expect(listed[0]?.type).toBe('heart');
+    expect(listed[0]?.parentId).toBe('note-1');
+    expect(listed[0]?.replyId).toBe(ZAP_REPLY_ID);
+    expect(listed[0]?.text).toBe('1');
+    expect(listed[0]?.actorAccountId).toBe('payer');
+    expect(await notifications.listByRecipient('bystander', 10)).toEqual([]);
+    const claimed = await pushStore.claimPending(10, NOW.getTime(), 60_000);
+    expect(claimed).toHaveLength(1);
+    expect(claimed[0]?.accountId).toBe('author');
+    expect(payloadObject(claimed[0]?.payload ?? '{}')).toEqual({
+      type: 'zap',
+      title: 'Bob',
+      body: 'Sent you a heart.',
+      url: '/messages/note-1',
+      tag: `heart:${ZAP_REPLY_ID}`,
+      unreadCount: 1,
+    });
+  });
+
+  it('is a no-op when notifyHearts is false', async () => {
+    const note = message({ id: 'note-1', accountId: 'author' });
+    const notifications = new InMemoryNotificationStore();
+    const pushStore = new InMemoryPushStore();
+    await subscribe(pushStore, 'author');
+    const auth = {
+      getAccount: async () =>
+        ({
+          id: 'author',
+          linkingKey: null,
+          role: 'basis',
+          name: 'Pat',
+          forumLawsDismissed: false,
+          location: null,
+          viewKey: 'a'.repeat(64),
+          createdAt: 1,
+          rulesAgreedAt: null,
+          notifyHearts: false,
+        }) as Awaited<ReturnType<AuthStore['getAccount']>>,
+    };
+    await notifyHeart({
+      notifications,
+      pushStore,
+      auth,
+      note,
+      receiptId: ZAP_RECEIPT_ID,
+      nowMs: NOW.getTime(),
+      payerAccountId: 'payer',
+    });
+    expect(await notifications.listByRecipient('author', 10)).toEqual([]);
+    expect(await pushStore.claimPending(10, NOW.getTime(), 60_000)).toEqual([]);
+  });
+
+  it('is a no-op when the payer is the author', async () => {
+    const note = message({ id: 'note-1', accountId: 'author' });
+    const notifications = new InMemoryNotificationStore();
+    const auth = {
+      getAccount: async () =>
+        ({
+          id: 'author',
+          linkingKey: null,
+          role: 'basis',
+          name: 'Pat',
+          forumLawsDismissed: false,
+          location: null,
+          viewKey: 'a'.repeat(64),
+          createdAt: 1,
+          rulesAgreedAt: null,
+        }) as Awaited<ReturnType<AuthStore['getAccount']>>,
+    };
+    await notifyHeart({
+      notifications,
+      auth,
+      note,
+      receiptId: ZAP_RECEIPT_ID,
+      nowMs: NOW.getTime(),
+      payerAccountId: 'author',
+    });
+    expect(await notifications.listByRecipient('author', 10)).toEqual([]);
+  });
+
+  it('is a no-op when the note has no accountId', async () => {
+    const note = message({ id: 'note-1', accountId: null });
+    const notifications = new InMemoryNotificationStore();
+    const pushStore = new InMemoryPushStore();
+    await subscribe(pushStore, 'author');
+    const auth = {
+      getAccount: async () =>
+        ({
+          id: 'author',
+          linkingKey: null,
+          role: 'basis',
+          name: 'Pat',
+          forumLawsDismissed: false,
+          location: null,
+          viewKey: 'a'.repeat(64),
+          createdAt: 1,
+          rulesAgreedAt: null,
+          notifyHearts: true,
+        }) as Awaited<ReturnType<AuthStore['getAccount']>>,
+    };
+    await notifyHeart({
+      notifications,
+      pushStore,
+      auth,
+      note,
+      receiptId: ZAP_RECEIPT_ID,
+      nowMs: NOW.getTime(),
+      payerAccountId: 'payer',
+    });
+    expect(await notifications.listByRecipient('author', 10)).toEqual([]);
+    expect(await pushStore.claimPending(10, NOW.getTime(), 60_000)).toEqual([]);
+  });
+
+  it('is a no-op when the author account is missing', async () => {
+    const note = message({ id: 'note-1', accountId: 'author' });
+    const notifications = new InMemoryNotificationStore();
+    const pushStore = new InMemoryPushStore();
+    await subscribe(pushStore, 'author');
+    const auth = {
+      getAccount: async (id: string) =>
+        id === 'author'
+          ? undefined
+          : ({
+              id,
+              linkingKey: null,
+              role: 'basis',
+              name: 'Pat',
+              forumLawsDismissed: false,
+              location: null,
+              viewKey: 'a'.repeat(64),
+              createdAt: 1,
+              rulesAgreedAt: null,
+              notifyHearts: true,
+            } as Awaited<ReturnType<AuthStore['getAccount']>>),
+    };
+    await notifyHeart({
+      notifications,
+      pushStore,
+      auth,
+      note,
+      receiptId: ZAP_RECEIPT_ID,
+      nowMs: NOW.getTime(),
+      payerAccountId: 'payer',
+    });
+    expect(await notifications.listByRecipient('author', 10)).toEqual([]);
+    expect(await pushStore.claimPending(10, NOW.getTime(), 60_000)).toEqual([]);
+  });
+
+  it('is a no-op when both stores are omitted', async () => {
+    const note = message({ id: 'note-1', accountId: 'author' });
+    const auth = {
+      getAccount: async (id: string) =>
+        id === 'author'
+          ? ({
+              id: 'author',
+              linkingKey: null,
+              role: 'basis',
+              name: 'Pat',
+              forumLawsDismissed: false,
+              location: null,
+              viewKey: 'a'.repeat(64),
+              createdAt: 1,
+              rulesAgreedAt: null,
+              notifyHearts: true,
+            } as Awaited<ReturnType<AuthStore['getAccount']>>)
+          : undefined,
+    };
+    await expect(
+      notifyHeart({
+        auth,
+        note,
+        receiptId: ZAP_RECEIPT_ID,
+        nowMs: NOW.getTime(),
+        payerAccountId: 'payer',
+      }),
+    ).resolves.toBeUndefined();
+  });
+
+  it('is a no-op when auth is omitted', async () => {
+    const note = message({ id: 'note-1', accountId: 'author' });
+    const notifications = new InMemoryNotificationStore();
+    const pushStore = new InMemoryPushStore();
+    await subscribe(pushStore, 'author');
+    await notifyHeart({
+      notifications,
+      pushStore,
+      note,
+      receiptId: ZAP_RECEIPT_ID,
+      nowMs: NOW.getTime(),
+      payerAccountId: 'payer',
+    });
+    expect(await notifications.listByRecipient('author', 10)).toEqual([]);
+    expect(await pushStore.claimPending(10, NOW.getTime(), 60_000)).toEqual([]);
+  });
+
+  it('creates the in-app row when only notifications is set', async () => {
+    const note = message({ id: 'note-1', accountId: 'author' });
+    const notifications = new InMemoryNotificationStore();
+    const auth = {
+      getAccount: async (id: string) =>
+        id === 'author'
+          ? ({
+              id: 'author',
+              linkingKey: null,
+              role: 'basis',
+              name: 'Pat',
+              forumLawsDismissed: false,
+              location: null,
+              viewKey: 'a'.repeat(64),
+              createdAt: 1,
+              rulesAgreedAt: null,
+              notifyHearts: true,
+            } as Awaited<ReturnType<AuthStore['getAccount']>>)
+          : undefined,
+    };
+    await notifyHeart({
+      notifications,
+      auth,
+      note,
+      receiptId: ZAP_RECEIPT_ID,
+      nowMs: NOW.getTime(),
+      payerAccountId: 'payer',
+      payerName: 'Bob',
+    });
+    const listed = await notifications.listByRecipient('author', 10);
+    expect(listed).toHaveLength(1);
+    expect(listed[0]?.type).toBe('heart');
+    expect(listed[0]?.text).toBe('1');
+  });
+
+  it('enqueues without unreadCount when only pushStore is set', async () => {
+    const note = message({ id: 'note-1', accountId: 'author' });
+    const pushStore = new InMemoryPushStore();
+    const auth = {
+      getAccount: async (id: string) =>
+        id === 'author'
+          ? ({
+              id: 'author',
+              linkingKey: null,
+              role: 'basis',
+              name: 'Pat',
+              forumLawsDismissed: false,
+              location: null,
+              viewKey: 'a'.repeat(64),
+              createdAt: 1,
+              rulesAgreedAt: null,
+              notifyHearts: true,
+            } as Awaited<ReturnType<AuthStore['getAccount']>>)
+          : undefined,
+    };
+    await notifyHeart({
+      pushStore,
+      auth,
+      note,
+      receiptId: ZAP_RECEIPT_ID,
+      nowMs: NOW.getTime(),
+      payerAccountId: 'payer',
+      payerName: 'Bob',
+    });
+    const claimed = await pushStore.claimPending(10, NOW.getTime(), 60_000);
+    expect(claimed).toHaveLength(1);
+    expect(payloadObject(claimed[0]?.payload ?? '{}')).toEqual(
+      buildHeartPushPayload({
+        replyId: ZAP_REPLY_ID,
+        noteId: 'note-1',
+        name: 'Bob',
+      }),
+    );
+    expect(payloadObject(claimed[0]?.payload ?? '{}')).not.toHaveProperty('unreadCount');
+  });
+
+  it('stores name Someone when payerName is omitted', async () => {
+    const note = message({ id: 'note-1', accountId: 'author' });
+    const notifications = new InMemoryNotificationStore();
+    const auth = {
+      getAccount: async (id: string) =>
+        id === 'author'
+          ? ({
+              id: 'author',
+              linkingKey: null,
+              role: 'basis',
+              name: 'Pat',
+              forumLawsDismissed: false,
+              location: null,
+              viewKey: 'a'.repeat(64),
+              createdAt: 1,
+              rulesAgreedAt: null,
+              notifyHearts: true,
+            } as Awaited<ReturnType<AuthStore['getAccount']>>)
+          : undefined,
+    };
+    await notifyHeart({
+      notifications,
+      auth,
+      note,
+      receiptId: ZAP_RECEIPT_ID,
+      nowMs: NOW.getTime(),
+      payerAccountId: 'payer',
+    });
+    expect((await notifications.listByRecipient('author', 10))[0]?.name).toBe('Someone');
+  });
+
+  it('adds listed inbox unread into the heart payload', async () => {
+    const note = message({ id: 'note-1', accountId: 'author' });
+    const notifications = new InMemoryNotificationStore();
+    const pushStore = new InMemoryPushStore();
+    const auth = {
+      getAccount: async (id: string) =>
+        id === 'author'
+          ? ({
+              id: 'author',
+              linkingKey: null,
+              role: 'basis',
+              name: 'Pat',
+              forumLawsDismissed: false,
+              location: null,
+              viewKey: 'a'.repeat(64),
+              createdAt: 1,
+              rulesAgreedAt: null,
+              notifyHearts: true,
+            } as Awaited<ReturnType<AuthStore['getAccount']>>)
+          : undefined,
+    };
+    await notifyHeart({
+      notifications,
+      pushStore,
+      auth,
+      note,
+      receiptId: ZAP_RECEIPT_ID,
+      nowMs: NOW.getTime(),
+      payerAccountId: 'payer',
+      payerName: 'Bob',
+      inboxUnreadCount: async () => 4,
+    });
+    const claimed = await pushStore.claimPending(10, NOW.getTime(), 60_000);
+    expect(payloadObject(claimed[0]?.payload ?? '{}')['unreadCount']).toBe(5);
+  });
+
+  it('writes inbox-only unreadCount when notifications is omitted', async () => {
+    const note = message({ id: 'note-1', accountId: 'author' });
+    const pushStore = new InMemoryPushStore();
+    const auth = {
+      getAccount: async (id: string) =>
+        id === 'author'
+          ? ({
+              id: 'author',
+              linkingKey: null,
+              role: 'basis',
+              name: 'Pat',
+              forumLawsDismissed: false,
+              location: null,
+              viewKey: 'a'.repeat(64),
+              createdAt: 1,
+              rulesAgreedAt: null,
+              notifyHearts: true,
+            } as Awaited<ReturnType<AuthStore['getAccount']>>)
+          : undefined,
+    };
+    await notifyHeart({
+      pushStore,
+      auth,
+      note,
+      receiptId: ZAP_RECEIPT_ID,
+      nowMs: NOW.getTime(),
+      payerAccountId: 'payer',
+      payerName: 'Bob',
+      inboxUnreadCount: async () => 3,
+    });
+    const claimed = await pushStore.claimPending(10, NOW.getTime(), 60_000);
+    expect(payloadObject(claimed[0]?.payload ?? '{}')['unreadCount']).toBe(3);
+  });
+
+  it('throws push.fanout.failed when create rejects', async () => {
+    const note = message({ id: 'note-1', accountId: 'author' });
+    const notifications = new InMemoryNotificationStore();
+    const pushStore = new InMemoryPushStore();
+    notifications.create = async () => {
+      throw new Error('boom');
+    };
+    const auth = {
+      getAccount: async (id: string) =>
+        id === 'author'
+          ? ({
+              id: 'author',
+              linkingKey: null,
+              role: 'basis',
+              name: 'Pat',
+              forumLawsDismissed: false,
+              location: null,
+              viewKey: 'a'.repeat(64),
+              createdAt: 1,
+              rulesAgreedAt: null,
+              notifyHearts: true,
+            } as Awaited<ReturnType<AuthStore['getAccount']>>)
+          : undefined,
+    };
+    await expect(
+      notifyHeart({
+        notifications,
+        pushStore,
+        auth,
+        note,
+        receiptId: ZAP_RECEIPT_ID,
+        nowMs: NOW.getTime(),
+        payerAccountId: 'payer',
+      }),
+    ).rejects.toThrow('push.fanout.failed');
+  });
+
+  it('throws push.fanout.failed when unreadCount rejects', async () => {
+    const note = message({ id: 'note-1', accountId: 'author' });
+    const notifications = new InMemoryNotificationStore();
+    const pushStore = new InMemoryPushStore();
+    notifications.unreadCount = async () => {
+      throw new Error('boom');
+    };
+    const auth = {
+      getAccount: async (id: string) =>
+        id === 'author'
+          ? ({
+              id: 'author',
+              linkingKey: null,
+              role: 'basis',
+              name: 'Pat',
+              forumLawsDismissed: false,
+              location: null,
+              viewKey: 'a'.repeat(64),
+              createdAt: 1,
+              rulesAgreedAt: null,
+              notifyHearts: true,
+            } as Awaited<ReturnType<AuthStore['getAccount']>>)
+          : undefined,
+    };
+    await expect(
+      notifyHeart({
+        notifications,
+        pushStore,
+        auth,
+        note,
+        receiptId: ZAP_RECEIPT_ID,
+        nowMs: NOW.getTime(),
+        payerAccountId: 'payer',
+      }),
+    ).rejects.toThrow('push.fanout.failed');
+  });
+
+  it('throws push.fanout.failed when enqueue rejects', async () => {
+    const note = message({ id: 'note-1', accountId: 'author' });
+    const notifications = new InMemoryNotificationStore();
+    const pushStore = new InMemoryPushStore();
+    pushStore.enqueue = async () => {
+      throw new Error('boom');
+    };
+    const auth = {
+      getAccount: async (id: string) =>
+        id === 'author'
+          ? ({
+              id: 'author',
+              linkingKey: null,
+              role: 'basis',
+              name: 'Pat',
+              forumLawsDismissed: false,
+              location: null,
+              viewKey: 'a'.repeat(64),
+              createdAt: 1,
+              rulesAgreedAt: null,
+              notifyHearts: true,
+            } as Awaited<ReturnType<AuthStore['getAccount']>>)
+          : undefined,
+    };
+    await expect(
+      notifyHeart({
+        notifications,
+        pushStore,
+        auth,
+        note,
+        receiptId: ZAP_RECEIPT_ID,
+        nowMs: NOW.getTime(),
+        payerAccountId: 'payer',
+      }),
+    ).rejects.toThrow('push.fanout.failed');
+  });
+});
+
 describe('notifyModeratorAppointed', () => {
   it('is a no-op when both stores are omitted', async () => {
     await expect(
@@ -1991,6 +2512,28 @@ describe('notificationsMatchingLevel', () => {
         parentById: paid,
       }).map((item) => item.id),
     ).toEqual(['n-mark']);
+  });
+
+  it('keeps a heart at mentions without consulting notificationLevel', () => {
+    const rows: NotificationRow[] = [
+      notification({
+        id: 'n-heart',
+        recipientAccountId: 'me',
+        type: 'heart',
+        parentId: 'note-1',
+        replyId: ZAP_REPLY_ID,
+        text: '1',
+      }),
+    ];
+    expect(
+      notificationsMatchingLevel({
+        rows,
+        level: 'mentions',
+        recipientAccountId: 'me',
+        accounts: [],
+        parentById: new Map(),
+      }).map((row) => row.id),
+    ).toEqual(['n-heart']);
   });
 
   it('keeps moderator_appointed at mentions', () => {

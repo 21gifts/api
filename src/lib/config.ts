@@ -1,13 +1,14 @@
 /**
- * Auth, verification, and gift-invoice configuration.
+ * Auth and gift-invoice configuration.
  *
  * Configuration is read from the environment only (no config files, per
  * CONTRIBUTING). `WEBAUTHN_RP_ID` pins the passkey relying party (missing →
  * passkey routes 500; the process still boots).
- * Verification TTL and micro-payment amounts for Lightning Address
- * proof-of-control also live here, as does the in-memory LUD-16 metadata
- * cache TTL (`LN_ADDRESS_CACHE_TTL_MS` — a code constant, not an
- * environment variable).
+ * The in-memory LUD-16 metadata cache TTL (`LN_ADDRESS_CACHE_TTL_MS`) is a
+ * code constant, not an environment variable. `LNURL_SERVER_URL` (with `PUBLIC_BASE_URL`) enables
+ * the self-hosted LNURL server; unset or blank leaves that feature off.
+ * `LNURL_ZAP_NSEC_HEX` (with `SPARK_OPERATOR_URL`) additionally enables free
+ * in-app payments between members with a verified wallet.
  */
 
 /** Lifetime of an unclaimed passkey ceremony challenge, in milliseconds. */
@@ -15,18 +16,6 @@ export const CHALLENGE_TTL_MS = 10 * 60 * 1000;
 
 /** Lifetime of an issued session token, in milliseconds. */
 export const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000;
-
-/** Lifetime of a pending Lightning Address verification, in milliseconds. */
-export const VERIFICATION_TTL_MS = 15 * 60 * 1000;
-
-/** Preferred verification micro-payment amount, in millisatoshis (1 sat). */
-export const VERIFICATION_AMOUNT_MSAT = 1_000;
-
-/**
- * Maximum amount the api will pay for verification, in millisatoshis (10 sat).
- * If the provider's `minSendable` exceeds this, verification is refused.
- */
-export const VERIFICATION_AMOUNT_CAP_MSAT = 10_000;
 
 /** In-memory TTL for a successful LUD-16 metadata resolve, in milliseconds. */
 export const LN_ADDRESS_CACHE_TTL_MS = 5 * 60 * 1000;
@@ -160,4 +149,118 @@ export function resolveWebAuthnConfig(
   const rpNameRaw = env['WEBAUTHN_RP_NAME'];
   const rpName = rpNameRaw === undefined || rpNameRaw.trim() === '' ? '21.gifts' : rpNameRaw.trim();
   return { rpId, rpName, expectedOrigins };
+}
+
+/** Resolved configuration of the self-hosted LNURL server. */
+export interface LnurlServerConfig {
+  /** Base URL of the LNURL server, without a trailing slash. */
+  baseUrl: string;
+  /** `PUBLIC_BASE_URL` without a trailing slash; prefix of the pay callback. */
+  publicBaseUrl: string;
+  /** Host (with port when present) of `PUBLIC_BASE_URL`; sent as `Host` on every call. */
+  host: string;
+}
+
+/**
+ * Trim and remove at most one trailing `/`.
+ *
+ * @param raw - Raw env value.
+ * @returns Normalised string (may be empty).
+ */
+function trimBaseUrl(raw: string): string {
+  const trimmed = raw.trim();
+  return trimmed.endsWith('/') ? trimmed.slice(0, -1) : trimmed;
+}
+
+/**
+ * Whether `value` parses as an absolute `http:` or `https:` URL.
+ *
+ * @param value - Candidate base URL (already trimmed, no trailing slash).
+ * @returns The parsed URL, or `null`.
+ */
+function parseHttpUrl(value: string): URL | null {
+  try {
+    const parsed = new URL(value);
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+      return null;
+    }
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Resolve the self-hosted LNURL server configuration from the environment.
+ *
+ * Returns `null` when `LNURL_SERVER_URL` is unset or blank, when either URL
+ * fails to parse, or when either protocol is not `http:` / `https:`.
+ *
+ * @param env - Environment slice (injected so tests need not mutate process env).
+ * @returns The resolved config, or `null` when the feature is off.
+ */
+export function resolveLnurlServerConfig(
+  env: Record<string, string | undefined>,
+): LnurlServerConfig | null {
+  const rawServer = env['LNURL_SERVER_URL'];
+  if (rawServer === undefined || rawServer.trim() === '') {
+    return null;
+  }
+  const baseUrl = trimBaseUrl(rawServer);
+  const rawPublic = env['PUBLIC_BASE_URL'];
+  if (rawPublic === undefined) {
+    return null;
+  }
+  const publicBaseUrl = trimBaseUrl(rawPublic);
+  const serverUrl = parseHttpUrl(baseUrl);
+  const publicUrl = parseHttpUrl(publicBaseUrl);
+  if (serverUrl === null || publicUrl === null) {
+    return null;
+  }
+  return {
+    baseUrl,
+    publicBaseUrl,
+    host: publicUrl.host,
+  };
+}
+
+/** Spark coordinator used when `SPARK_OPERATOR_URL` is unset or blank. */
+export const DEFAULT_SPARK_OPERATOR_URL = 'https://0.spark.lightspark.com';
+
+/** Resolved configuration of free in-app payments between members. */
+export interface FreePaymentsConfig {
+  /** 32-byte server secret from `LNURL_ZAP_NSEC_HEX`; root of the per-member receipt keys. */
+  zapNsec: Uint8Array;
+  /** Spark coordinator base URL, with at most one trailing slash removed. */
+  operatorUrl: string;
+}
+
+/**
+ * Resolve the free in-app payments configuration from the environment.
+ *
+ * Returns `null` (feature off) when `LNURL_ZAP_NSEC_HEX` is unset, blank, or
+ * not 64 hex characters, or when `SPARK_OPERATOR_URL` is set to something
+ * other than an `http:` / `https:` URL. Unset or blank `SPARK_OPERATOR_URL`
+ * uses {@link DEFAULT_SPARK_OPERATOR_URL}. The feature also needs
+ * {@link resolveLnurlServerConfig}; callers check both.
+ *
+ * @param env - Environment slice (injected so tests need not mutate process env).
+ * @returns The resolved config, or `null`.
+ */
+export function resolveFreePaymentsConfig(
+  env: Record<string, string | undefined>,
+): FreePaymentsConfig | null {
+  const nsecHex = (env['LNURL_ZAP_NSEC_HEX'] ?? '').trim().toLowerCase();
+  if (!/^[0-9a-f]{64}$/.test(nsecHex)) {
+    return null;
+  }
+  const rawOperator = env['SPARK_OPERATOR_URL'];
+  const operatorUrl =
+    rawOperator === undefined || rawOperator.trim() === ''
+      ? DEFAULT_SPARK_OPERATOR_URL
+      : trimBaseUrl(rawOperator);
+  if (parseHttpUrl(operatorUrl) === null) {
+    return null;
+  }
+  return { zapNsec: Uint8Array.from(Buffer.from(nsecHex, 'hex')), operatorUrl };
 }

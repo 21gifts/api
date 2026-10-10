@@ -4,7 +4,7 @@ import { requireAction } from '@/lib/auth/requirements';
 import type { Account, AuthStore } from '@/lib/auth/store';
 import { decodeBolt11, inspectBolt11 } from '@/lib/bolt11';
 import { fetchBtcUsdSpot } from '@/lib/btc-usd-spot';
-import { LN_ADDRESS_CACHE_TTL_MS } from '@/lib/config';
+import { LN_ADDRESS_CACHE_TTL_MS, type LnurlServerConfig } from '@/lib/config';
 import { unsignedConversationDefaults } from '@/lib/conversation';
 import { resolveMentionMarks } from '@/lib/mention';
 import type { ConversationStore } from '@/lib/conversation-store';
@@ -32,7 +32,7 @@ import {
 import { inboxUnreadCountFor } from '@/lib/conversation-push';
 import { effectiveStatus, eligibleToday } from '@/lib/funding';
 import { InMemoryFundingStore, type FundingStore } from '@/lib/funding-store';
-import { notifyForumPost, notifyForumReply, notifyZap } from '@/lib/notification';
+import { notifyForumPost, notifyForumReply, notifyHeart, notifyZap } from '@/lib/notification';
 import type { PostRateLimiter } from '@/lib/nostr/rate-limit';
 import type { SpendPing } from '@/lib/spend-ping';
 import type { NotificationStore } from '@/lib/notification-store';
@@ -40,6 +40,7 @@ import { normalizeHex32, preimageMatchesHash } from '@/lib/proof';
 import type { PushStore } from '@/lib/push-store';
 import { verifyEvent } from 'nostr-tools/pure';
 import { parseRepaymentDescription } from '@/lib/credit-repayment';
+import { lnurlServerFetch, receivingAddress } from '@/lib/receiving-address';
 
 /** Minimal zap receipt fields we validate. */
 export interface ZapReceipt {
@@ -543,13 +544,15 @@ function zapIngestRow(args: {
  * The claim and credit are not one transaction, so the concurrent same-instant
  * race is limited to the window between them; competing different receipt ids
  * are serialised by the claim table's payment-hash primary key.
- * On a member note, fans out `notifyZap` and attempts the payer gift-reply.
+ * On a member note, fans out `notifyZap` and attempts the payer gift-reply
+ * unless the settled invoice is a heart (`heart === true`): then credits
+ * sats, calls `notifyHeart`, and skips `notifyZap` and the gift-reply.
  * On the platform profile note, skips `notifyZap` and treats the zap comment
  * as a compose post/reply (`insertGiftReply`).
  *
  * @param args - Stores, clock, payment hash, operator note, optional preimage,
- *   and optional `spendPing`, `postLimiter`, `fundingStore`, and `conversations` for
- *   platform-note compose.
+ *   and optional `spendPing`, `postLimiter`, `fundingStore`, `conversations`, and
+ *   `lnurlServer` (the spend ping's receiving address) for platform-note compose.
  * @returns The credited receipt details and resume status, or the first
  *   validation/lookup failure.
  * @throws Propagates store lookup, note-author lookup (before claim),
@@ -569,6 +572,7 @@ export async function settleInvoiceManually(args: {
   postLimiter?: PostRateLimiter;
   fundingStore?: FundingStore;
   conversations?: ConversationStore;
+  lnurlServer?: LnurlServerConfig;
   /** Spot fetch. Default `fetch`. A failure does not fail the settle. */
   fetchImpl?: FetchFn;
   /** Optional crosses for the payment-time snapshot. */
@@ -744,7 +748,22 @@ export async function settleInvoiceManually(args: {
     payer = undefined;
     logEvent('nostr.zap.gift_reply.failed', { receiptId });
   }
-  if (!hidden && message.accountId !== null && !feeNote) {
+  if (!hidden && message.accountId !== null && invoice.heart === true) {
+    try {
+      await notifyHeart({
+        note: message,
+        receiptId,
+        nowMs: args.now(),
+        auth: args.auth,
+        payerAccountId: invoice.payerAccountId,
+        ...(args.notificationStore === undefined ? {} : { notifications: args.notificationStore }),
+        ...(args.pushStore === undefined ? {} : { pushStore: args.pushStore }),
+        ...(payer === undefined ? {} : { payerName: payer.name ?? 'Someone' }),
+      });
+    } catch {
+      logEvent('push.enqueue.failed');
+    }
+  } else if (!hidden && message.accountId !== null && !feeNote) {
     try {
       await notifyZap({
         note: message,
@@ -762,7 +781,7 @@ export async function settleInvoiceManually(args: {
       logEvent('push.enqueue.failed');
     }
   }
-  if (!hidden && payer !== undefined) {
+  if (!hidden && payer !== undefined && invoice.heart !== true) {
     try {
       await insertGiftReply({
         store: args.store,
@@ -781,6 +800,7 @@ export async function settleInvoiceManually(args: {
         ...(args.postLimiter === undefined ? {} : { postLimiter: args.postLimiter }),
         ...(args.fundingStore === undefined ? {} : { fundingStore: args.fundingStore }),
         ...(args.conversations === undefined ? {} : { conversations: args.conversations }),
+        ...(args.lnurlServer === undefined ? {} : { lnurlServer: args.lnurlServer }),
       });
     } catch {
       logEvent('nostr.zap.gift_reply.failed', { receiptId });
@@ -946,7 +966,9 @@ export async function indexZapReceipt(args: {
  * ones, then insert a payer gift-reply (forum) or append the paid PN row
  * (conversation invoice) and fan out zap in-app notifications to every
  * account except skip (no-op when the payer is the official platform
- * account; Web Push only to bell subscribers). Conversation
+ * account; Web Push only to bell subscribers). A heart invoice
+ * (`heart === true`) credits sats, calls `notifyHeart`, and skips
+ * `notifyZap` and the gift-reply. Conversation
  * invoices skip `addSats`, gift-reply, and `notifyZap`. Gift-reply insert
  * runs only when the paid message is a top-level member note (`parentId`
  * null) that is not the official platform profile note; a member-note
@@ -990,7 +1012,8 @@ export async function indexZapReceipt(args: {
  *   `notificationStore`, and `conversations` (PN invoices append here;
  *   omitted → `rejected`/`conversation`); optional `spendPing`, `postLimiter`,
  *   and `fundingStore` for platform-note compose (`spendPing` only when
- *   `eligibleToday`, same gate as `POST /messages`).
+ *   `eligibleToday`, same gate as `POST /messages`); optional `lnurlServer`
+ *   for wallet-backed recipients.
  * @returns Resolves when the ingest pass finishes.
  * @throws Propagates relay-query and unguarded store failures.
  */
@@ -1018,6 +1041,8 @@ export async function indexOpenZapReceipts(args: {
   fundingStore?: FundingStore;
   /** Optional crosses for the one spot taken per newly indexed zap. */
   fiatRates?: FiatRateBook;
+  /** LNURL server; wallet-backed recipients resolve their receipt signer through it. */
+  lnurlServer?: LnurlServerConfig;
   /** Hot mode: query exactly these note event ids instead of enumerating recent notes. */
   eventIds?: readonly string[];
   /** Unix seconds added as `since` to every kind:9735 receipt filter. */
@@ -1141,6 +1166,8 @@ async function queryAndIngestZapReceipts(
     postLimiter?: PostRateLimiter;
     fundingStore?: FundingStore;
     fiatRates?: FiatRateBook;
+    /** LNURL server; wallet-backed recipients resolve their receipt signer through it. */
+    lnurlServer?: LnurlServerConfig;
     since?: number;
   },
   eventIds: readonly string[],
@@ -1157,30 +1184,61 @@ async function queryAndIngestZapReceipts(
       args.urls,
       args.timeoutMs,
     );
-    const verifyReceipt = args.verifyReceipt ?? defaultVerifyReceipt;
     for (const event of events) {
-      try {
-        await ingestOneReceipt(event, { ...args, verifyReceipt });
-      } catch (error: unknown) {
-        logEvent('nostr.zap.rejected', zapIngestCatchFields(error));
-        if (typeof event.id === 'string' && event.id !== '') {
-          await persistZapIngest(
-            args.store,
-            zapIngestRow({
-              receiptId: event.id,
-              noteEventId: null,
-              messageId: null,
-              outcome: 'rejected',
-              reason: 'error',
-              amountSats: null,
-              /* v8 ignore next -- ingestOneReceipt returns unless pubkey is a string */
-              receiptPubkey: typeof event.pubkey === 'string' ? event.pubkey : null,
-              receipt: receiptFrame(event),
-            }),
-          );
-        }
-      }
+      await ingestZapReceipt(event, args);
     }
+  }
+}
+
+/**
+ * Run the receipt ingest for one kind 9735 event, as the relay passes do.
+ *
+ * Same validation, crediting, and ingest rows as {@link indexOpenZapReceipts}
+ * for one queried receipt (signature, provider pubkey of the recipient's
+ * receiving address, payment hash claimed once). A thrown ingest step logs
+ * `nostr.zap.rejected` and persists a `rejected`/`error` ingest row instead of
+ * rejecting. Used by the Spark invoice worker so a receipt it signs is
+ * credited without waiting for a relay round trip.
+ *
+ * @param event - Candidate receipt.
+ * @param args - The {@link indexOpenZapReceipts} collaborators (`eventIds` and `since` are ignored).
+ * @returns `true` when this receipt is credited: its latest ingest decision on
+ *   this store is `indexed`, or `rejected`/`duplicate` (already recorded under
+ *   the same receipt id). `false` for any other rejection, or when a step threw;
+ *   the `rejected`/`error` ingest row is then persisted when the event has a
+ *   non-empty id. A failure to write an ingest row is logged as
+ *   `nostr.zap.ingest.record_failed` and not propagated.
+ */
+export async function ingestZapReceipt(
+  event: NostrEventFrame,
+  args: Parameters<typeof indexOpenZapReceipts>[0],
+): Promise<boolean> {
+  const verifyReceipt = args.verifyReceipt ?? defaultVerifyReceipt;
+  try {
+    await ingestOneReceipt(event, { ...args, verifyReceipt });
+    const decision = decisionsFor(args.store).get(event.id);
+    return (
+      decision === decisionKey('indexed', null) || decision === decisionKey('rejected', 'duplicate')
+    );
+  } catch (error: unknown) {
+    logEvent('nostr.zap.rejected', zapIngestCatchFields(error));
+    if (typeof event.id === 'string' && event.id !== '') {
+      await persistZapIngest(
+        args.store,
+        zapIngestRow({
+          receiptId: event.id,
+          noteEventId: null,
+          messageId: null,
+          outcome: 'rejected',
+          reason: 'error',
+          amountSats: null,
+          /* v8 ignore next -- ingestOneReceipt returns unless pubkey is a string */
+          receiptPubkey: typeof event.pubkey === 'string' ? event.pubkey : null,
+          receipt: receiptFrame(event),
+        }),
+      );
+    }
+    return false;
   }
 }
 
@@ -1220,6 +1278,8 @@ async function ingestOneReceipt(
     fundingStore?: FundingStore;
     /** Optional crosses. Absent means the spot snapshot uses empty crosses. */
     fiatRates?: FiatRateBook;
+    /** LNURL server; wallet-backed recipients resolve their receipt signer through it. */
+    lnurlServer?: LnurlServerConfig;
   },
 ): Promise<void> {
   if (event.kind !== 9735) {
@@ -1320,8 +1380,9 @@ async function ingestOneReceipt(
     }
     const providerPubkey = await resolveProviderPubkey({
       address: address.trim().toLowerCase(),
-      fetchImpl: args.fetchImpl,
+      fetchImpl: lnurlServerFetch(args.lnurlServer, args.fetchImpl, args.auth),
       nowMs: args.now(),
+      lnurlServerHost: args.lnurlServer?.host,
     });
     if (providerPubkey === null) {
       logEvent('nostr.zap.rejected', { reason: 'provider' });
@@ -1568,8 +1629,9 @@ async function ingestOneReceipt(
     return;
   }
   const author = await args.auth.getAccount(row.accountId);
-  const address = author?.lightningAddress;
-  if (address === undefined || address === null || address.trim() === '') {
+  const address =
+    author === undefined ? undefined : receivingAddress(author, args.lnurlServer)?.address;
+  if (address === undefined) {
     logEvent('nostr.zap.rejected', { reason: 'address' });
     await persistZapIngest(
       args.store,
@@ -1589,8 +1651,9 @@ async function ingestOneReceipt(
 
   const providerPubkey = await resolveProviderPubkey({
     address: address.trim().toLowerCase(),
-    fetchImpl: args.fetchImpl,
+    fetchImpl: lnurlServerFetch(args.lnurlServer, args.fetchImpl, args.auth),
     nowMs: args.now(),
+    lnurlServerHost: args.lnurlServer?.host,
   });
   if (providerPubkey === null) {
     logEvent('nostr.zap.rejected', { reason: 'provider' });
@@ -1645,15 +1708,20 @@ async function ingestOneReceipt(
   }
 
   // A thrown lookup must not reject a receipt that already passed validation.
-  // Gift-reply retry looks the invoice up again.
-  let pinnedForum: FiatAmounts | undefined;
+  // Retry the lookup once; a second throw is not a heart, so the receipt keeps the normal
+  // gift notice, the same as `tryEnsureGiftReply`. Gift-reply looks the invoice up again.
+  let invoice: MessageInvoiceAttempt | undefined;
   try {
-    pinnedForum = pinnedInvoiceFiat(
-      await args.store.findOkInvoiceByPaymentHash(decoded.paymentHash),
-    );
+    invoice = await args.store.findOkInvoiceByPaymentHash(decoded.paymentHash);
   } catch {
-    pinnedForum = undefined;
+    try {
+      invoice = await args.store.findOkInvoiceByPaymentHash(decoded.paymentHash);
+    } catch {
+      invoice = undefined;
+    }
   }
+  const pinnedForum = pinnedInvoiceFiat(invoice);
+  const heart = invoice?.heart === true;
   const indexed = await indexZapReceipt({
     store: args.store,
     messageId: row.id,
@@ -1684,7 +1752,28 @@ async function ingestOneReceipt(
     } catch {
       payer = undefined;
     }
-    if (!isPlatformFeeNote(author, row)) {
+    if (heart && invoice !== undefined) {
+      try {
+        await notifyHeart({
+          note: row,
+          receiptId: event.id,
+          nowMs: args.now(),
+          auth: args.auth,
+          payerAccountId: invoice.payerAccountId,
+          ...(args.notificationStore === undefined
+            ? {}
+            : { notifications: args.notificationStore }),
+          ...(args.pushStore === undefined ? {} : { pushStore: args.pushStore }),
+          /* v8 ignore next 3 -- production worker always has conversationStore */
+          ...(args.conversations === undefined
+            ? {}
+            : { inboxUnreadCount: inboxUnreadCountFor(args.conversations, args.auth) }),
+          ...(payer === undefined ? {} : { payerName: payer.name ?? 'Someone' }),
+        });
+      } catch {
+        logEvent('push.enqueue.failed');
+      }
+    } else if (!isPlatformFeeNote(author, row)) {
       try {
         await notifyZap({
           note: row,
@@ -1709,7 +1798,9 @@ async function ingestOneReceipt(
       }
     }
   }
-  await tryEnsureGiftReply(event, args);
+  if (!heart) {
+    await tryEnsureGiftReply(event, args);
+  }
 }
 
 /**
@@ -1770,14 +1861,18 @@ async function settleRepaymentReceipt(
     return true;
   }
   const giver = await args.auth.getAccount(repayment.recipientAccountId);
-  const address = giver?.lightningAddress?.trim().toLowerCase() ?? '';
+  const address =
+    giver === undefined
+      ? ''
+      : (receivingAddress(giver, args.lnurlServer)?.address.toLowerCase() ?? '');
   const giverProvider =
     address === ''
       ? null
       : await resolveProviderPubkey({
           address,
-          fetchImpl: args.fetchImpl,
+          fetchImpl: lnurlServerFetch(args.lnurlServer, args.fetchImpl, args.auth),
           nowMs: args.now(),
+          lnurlServerHost: args.lnurlServer?.host,
         });
   if (giverProvider === null || event.pubkey.toLowerCase() !== giverProvider) {
     logEvent('nostr.zap.rejected', { reason: 'pubkey' });
@@ -1840,15 +1935,22 @@ async function settleRepaymentReceipt(
 /**
  * Resolve LNURL `nostrPubkey` with a module-local TTL cache (success and miss).
  *
- * @param args - Normalised address, fetch, clock.
+ * An address on the LNURL server host is not cached: whether it resolves
+ * through the LNURL server or over the public URL follows the username's
+ * current wallet verification, so a cached key could be stale.
+ *
+ * @param args - Normalised address, fetch, clock, and the LNURL server host when configured.
  * @returns Provider pubkey, or `null` when unresolved / not zap-capable.
  */
 async function resolveProviderPubkey(args: {
   address: string;
   fetchImpl: FetchFn;
   nowMs: number;
+  lnurlServerHost: string | undefined;
 }): Promise<string | null> {
-  const cached = providerPubkeyCache.get(args.address);
+  const cacheable =
+    args.lnurlServerHost === undefined || !args.address.endsWith(`@${args.lnurlServerHost}`);
+  const cached = cacheable ? providerPubkeyCache.get(args.address) : undefined;
   if (cached !== undefined && cached.expiresAt > args.nowMs) {
     return cached.nostrPubkey;
   }
@@ -1866,10 +1968,12 @@ async function resolveProviderPubkey(args: {
   ) {
     nostrPubkey = resolved.metadata.nostrPubkey.toLowerCase();
   }
-  providerPubkeyCache.set(args.address, {
-    nostrPubkey,
-    expiresAt: args.nowMs + LN_ADDRESS_CACHE_TTL_MS,
-  });
+  if (cacheable) {
+    providerPubkeyCache.set(args.address, {
+      nostrPubkey,
+      expiresAt: args.nowMs + LN_ADDRESS_CACHE_TTL_MS,
+    });
+  }
   return nostrPubkey;
 }
 
@@ -1884,6 +1988,7 @@ interface BaseGiftReplyDeps {
   spendPing?: SpendPing;
   postLimiter?: PostRateLimiter;
   fundingStore?: FundingStore;
+  lnurlServer?: LnurlServerConfig;
 }
 
 /** Collaborators for creating a gift-reply after a zap is indexed. */
@@ -1910,6 +2015,19 @@ async function tryEnsureGiftReply(event: NostrEventFrame, args: GiftReplyDeps): 
   }
   if (noExternalGiftReplyReceiptsFor(args.store).has(event.id)) {
     return;
+  }
+  try {
+    const taggedPr = event.tags.find((tag) => tag[0] === 'bolt11')?.[1];
+    const pr = typeof taggedPr === 'string' ? taggedPr : '';
+    const decoded = pr === '' ? null : decodeBolt11(pr);
+    if (decoded !== null) {
+      const heartInvoice = await args.store.findOkInvoiceByPaymentHash(decoded.paymentHash);
+      if (heartInvoice?.heart === true) {
+        return;
+      }
+    }
+  } catch {
+    // A thrown lookup is not a heart; the gift-reply path continues.
   }
   try {
     const receipt = await args.store.getZapReceiptGift(event.id);
@@ -2069,6 +2187,10 @@ async function ensureGiftReplyFromReceipt(
     receiptCreatedAt: Date;
   },
 ): Promise<void> {
+  const heartInvoice = await args.store.findOkInvoiceByPaymentHash(args.paymentHash);
+  if (heartInvoice?.heart === true) {
+    return;
+  }
   const resolved = await resolveZapPayer({
     store: args.store,
     auth: args.auth,
@@ -2398,7 +2520,8 @@ async function insertGiftReply(
   } catch {
     logEvent(parentId === null ? 'push.enqueue.failed' : 'messages.reply.notify.failed');
   }
-  if (parentId === null && args.payer.lightningAddress !== null && args.spendPing !== undefined) {
+  const spendAddress = receivingAddress(args.payer, args.lnurlServer)?.address ?? null;
+  if (parentId === null && spendAddress !== null && args.spendPing !== undefined) {
     try {
       const grant = await (args.fundingStore ?? new InMemoryFundingStore()).getByAccountId(
         args.payer.id,
@@ -2407,7 +2530,7 @@ async function insertGiftReply(
         logEvent('spend.ping.skipped', { reason: 'not_eligible' });
       } else {
         await args.spendPing.ping(
-          args.payer.lightningAddress,
+          spendAddress,
           created.id,
           'daily',
           effectiveStatus(grant, args.now()),

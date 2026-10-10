@@ -1,8 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { Hono } from 'hono';
 import { InMemoryAuthStore } from '@/lib/auth/store';
-import type { FetchFn } from '@/lib/lnurlp';
-import { LIGHTNING_ADDRESS_NOT_ZAP } from '@/lib/nip57-probe';
 import { InMemoryConversationStore } from '@/lib/conversation-store';
 import { InMemoryMessageStore } from '@/lib/message-store';
 import { InMemoryNotificationStore } from '@/lib/notification-store';
@@ -11,31 +9,7 @@ import * as authService from '@/lib/auth/service';
 import { WRONG_ACCOUNT_ERROR } from '@/lib/auth/wrong-account';
 import type { MergeDb } from '@/lib/account-merge';
 import { debugRoutes } from '@/routes/debug';
-
-const unusedFetch: FetchFn = async () => new Response(null, { status: 500 });
-
-function jsonResponse(body: unknown, status = 200): Response {
-  return new Response(JSON.stringify(body), {
-    status,
-    headers: { 'content-type': 'application/json' },
-  });
-}
-
-/** LNURL-pay that mints a zap-capable invoice (required for NEW-address provision). */
-function zapCapableFetch(): FetchFn {
-  return async (input) => {
-    if (String(input).includes('/.well-known/lnurlp/')) {
-      return jsonResponse({
-        callback: 'https://walletofsatoshi.com/lnurlp/callback',
-        minSendable: 1000,
-        maxSendable: 100_000_000_000,
-        allowsNostr: true,
-        nostrPubkey: 'aa'.repeat(32),
-      });
-    }
-    return jsonResponse({ pr: 'lnbc10n1ptest' });
-  };
-}
+import { LNURL_SERVER, createWalletAccount } from '@/__tests__/helpers/wallet-lnurl';
 
 const MERGE_FROM = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 const MERGE_INTO = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
@@ -53,8 +27,6 @@ async function createMergeAccount(
     linkingKey: null,
     role: 'verified',
     name: 'Ada',
-    lightningAddress: null,
-    lightningAddressVerified: false,
     forumLawsDismissed: false,
     location: null,
     viewKey,
@@ -127,7 +99,6 @@ function mountDebug(
     debugRoutes({
       store,
       debugToken: options.debugToken,
-      fetchImpl: unusedFetch,
       ...(options.mergeDb === undefined ? {} : { mergeDb: options.mergeDb }),
     }),
   );
@@ -154,17 +125,13 @@ function parsedEvents(warn: ReturnType<typeof vi.spyOn>): Array<Record<string, u
 
 describe('debugRoutes', () => {
   let warn: ReturnType<typeof vi.spyOn>;
-  let nip57: { mockRestore: () => void };
 
-  beforeEach(async () => {
+  beforeEach(() => {
     warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
-    const bolt11 = await import('@/lib/bolt11');
-    nip57 = vi.spyOn(bolt11, 'isNip57Invoice').mockReturnValue(true);
   });
 
   afterEach(() => {
     warn.mockRestore();
-    nip57.mockRestore();
   });
 
   it('returns 503 when debug is not configured', async () => {
@@ -173,7 +140,6 @@ describe('debugRoutes', () => {
       debugRoutes({
         store: new InMemoryAuthStore(),
         debugToken: undefined,
-        fetchImpl: async () => new Response(null, { status: 500 }),
       }),
     );
     const res = await app.request('/debug/accounts');
@@ -187,7 +153,6 @@ describe('debugRoutes', () => {
       debugRoutes({
         store: new InMemoryAuthStore(),
         debugToken: '  ',
-        fetchImpl: unusedFetch,
       }),
     );
     const res = await app.request('/debug/accounts', { headers: { authorization: 'Bearer   ' } });
@@ -200,7 +165,6 @@ describe('debugRoutes', () => {
       debugRoutes({
         store: new InMemoryAuthStore(),
         debugToken: 'secret',
-        fetchImpl: unusedFetch,
       }),
     );
     const res = await app.request('/debug/accounts');
@@ -214,8 +178,6 @@ describe('debugRoutes', () => {
       linkingKey: `02${'a'.repeat(64)}`,
       role: 'basis',
       name: null,
-      lightningAddress: 'a@b.com',
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'a'.repeat(64),
@@ -228,10 +190,7 @@ describe('debugRoutes', () => {
       kekId: 1,
       custody: 'custodial',
     });
-    const app = new Hono().route(
-      '/debug/accounts',
-      debugRoutes({ store, debugToken: 'secret', fetchImpl: unusedFetch }),
-    );
+    const app = new Hono().route('/debug/accounts', debugRoutes({ store, debugToken: 'secret' }));
     const res = await app.request('/debug/accounts', {
       headers: { authorization: 'Bearer secret' },
     });
@@ -241,7 +200,7 @@ describe('debugRoutes', () => {
     };
     expect(body.accounts).toHaveLength(1);
     expect(body.accounts[0]?.id).toBe('acc');
-    expect(body.accounts[0]?.lightningAddress).toBe('a@b.com');
+    expect(body.accounts[0]?.lightningAddress).toBeNull();
     expect(body.accounts[0]).toHaveProperty('viewKey');
     expect(body.accounts[0]).toHaveProperty('isPlatform');
     expect(body.accounts[0]).toHaveProperty('sessionRefused');
@@ -263,18 +222,13 @@ describe('debugRoutes', () => {
       linkingKey: null,
       role: 'basis',
       name: null,
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'a'.repeat(64),
       createdAt: 1,
       rulesAgreedAt: null,
     });
-    const app = new Hono().route(
-      '/debug/accounts',
-      debugRoutes({ store, debugToken: 'secret', fetchImpl: unusedFetch }),
-    );
+    const app = new Hono().route('/debug/accounts', debugRoutes({ store, debugToken: 'secret' }));
     const res = await app.request('/debug/accounts', {
       headers: { authorization: 'Bearer secret' },
     });
@@ -305,8 +259,6 @@ describe('debugRoutes', () => {
       linkingKey: null,
       role: 'basis',
       name: null,
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'a'.repeat(64),
@@ -314,10 +266,7 @@ describe('debugRoutes', () => {
       rulesAgreedAt: null,
     });
     Object.assign(store, { listNostrKeys: async () => [] });
-    const app = new Hono().route(
-      '/debug/accounts',
-      debugRoutes({ store, debugToken: 'secret', fetchImpl: unusedFetch }),
-    );
+    const app = new Hono().route('/debug/accounts', debugRoutes({ store, debugToken: 'secret' }));
     const res = await app.request('/debug/accounts', {
       headers: { authorization: 'Bearer secret' },
     });
@@ -348,8 +297,6 @@ describe('debugRoutes', () => {
       linkingKey: null,
       role: 'basis',
       name: 'Ada',
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'a'.repeat(64),
@@ -364,22 +311,13 @@ describe('debugRoutes', () => {
       createdAt: 2,
     });
     await store.createSession({ token: 'tok', accountId: id, createdAt: 3 });
-    await store.putVerification({
-      accountId: id,
-      address: 'ada@walletofsatoshi.com',
-      nonce: 'ab'.repeat(16),
-      createdAt: 4,
-    });
     await store.setNostrKeyIfAbsent(id, {
       pubkey: 'dd'.repeat(32),
       ciphertext: new Uint8Array([1, 2]),
       kekId: 1,
       custody: 'custodial',
     });
-    const app = new Hono().route(
-      '/debug/accounts',
-      debugRoutes({ store, debugToken: 'secret', fetchImpl: unusedFetch }),
-    );
+    const app = new Hono().route('/debug/accounts', debugRoutes({ store, debugToken: 'secret' }));
     const missing = await app.request('/debug/accounts/not-a-uuid', {
       headers: { authorization: 'Bearer secret' },
     });
@@ -397,7 +335,6 @@ describe('debugRoutes', () => {
       viewKey: string;
       passkeys: Array<{ credentialId: string; publicKey: string }>;
       sessions: Array<{ token: string }>;
-      addressVerification: { address: string } | null;
       nostrPubkey: string | null;
     };
     expect(body.id).toBe(id);
@@ -406,9 +343,7 @@ describe('debugRoutes', () => {
       expect.objectContaining({ credentialId: 'cred-1', publicKey: '0102ff' }),
     ]);
     expect(body.sessions).toEqual([expect.objectContaining({ token: 'tok' })]);
-    expect(body.addressVerification).toEqual(
-      expect.objectContaining({ address: 'ada@walletofsatoshi.com' }),
-    );
+    expect(body).not.toHaveProperty('addressVerification');
     expect(body.nostrPubkey).toBe('dd'.repeat(32));
     expect(body).toEqual(expect.objectContaining({ nostrNsecCiphertext: '0102' }));
   });
@@ -419,7 +354,6 @@ describe('debugRoutes', () => {
       debugRoutes({
         store: new InMemoryAuthStore(),
         debugToken: undefined,
-        fetchImpl: async () => new Response(null, { status: 500 }),
       }),
     );
     const res = await app.request('/debug/accounts/acc', {
@@ -437,7 +371,6 @@ describe('debugRoutes', () => {
       debugRoutes({
         store: new InMemoryAuthStore(),
         debugToken: 'secret',
-        fetchImpl: unusedFetch,
       }),
     );
     const res = await app.request('/debug/accounts/acc', {
@@ -454,7 +387,6 @@ describe('debugRoutes', () => {
       debugRoutes({
         store: new InMemoryAuthStore(),
         debugToken: 'secret',
-        fetchImpl: unusedFetch,
       }),
     );
     const res = await app.request('/debug/accounts/acc', {
@@ -465,7 +397,7 @@ describe('debugRoutes', () => {
     expect(res.status).toBe(400);
     expect(await res.json()).toEqual({
       error:
-        'Expected a JSON body with a "role" string, lightningAddress null, platform boolean, and/or sessionRefused boolean',
+        'Expected a JSON body with a "role" string, platform boolean, and/or sessionRefused boolean',
     });
   });
 
@@ -475,7 +407,6 @@ describe('debugRoutes', () => {
       debugRoutes({
         store: new InMemoryAuthStore(),
         debugToken: 'secret',
-        fetchImpl: unusedFetch,
       }),
     );
     const res = await app.request('/debug/accounts/acc', {
@@ -486,7 +417,7 @@ describe('debugRoutes', () => {
     expect(res.status).toBe(400);
     expect(await res.json()).toEqual({
       error:
-        'Expected a JSON body with a "role" string, lightningAddress null, platform boolean, and/or sessionRefused boolean',
+        'Expected a JSON body with a "role" string, platform boolean, and/or sessionRefused boolean',
     });
   });
 
@@ -496,7 +427,6 @@ describe('debugRoutes', () => {
       debugRoutes({
         store: new InMemoryAuthStore(),
         debugToken: 'secret',
-        fetchImpl: unusedFetch,
       }),
     );
     const res = await app.request('/debug/accounts/acc', {
@@ -513,7 +443,6 @@ describe('debugRoutes', () => {
       debugRoutes({
         store: new InMemoryAuthStore(),
         debugToken: 'secret',
-        fetchImpl: unusedFetch,
       }),
     );
     const res = await app.request('/debug/accounts/missing', {
@@ -532,18 +461,13 @@ describe('debugRoutes', () => {
       linkingKey: null,
       role: 'basis',
       name: null,
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'b'.repeat(64),
       createdAt: 1,
       rulesAgreedAt: null,
     });
-    const app = new Hono().route(
-      '/debug/accounts',
-      debugRoutes({ store, debugToken: 'secret', fetchImpl: unusedFetch }),
-    );
+    const app = new Hono().route('/debug/accounts', debugRoutes({ store, debugToken: 'secret' }));
     const res = await app.request('/debug/accounts/acc', {
       method: 'PATCH',
       headers: { authorization: 'Bearer secret', 'content-type': 'application/json' },
@@ -579,18 +503,13 @@ describe('debugRoutes', () => {
       linkingKey: null,
       role: 'basis',
       name: null,
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'b'.repeat(64),
       createdAt: 1,
       rulesAgreedAt: null,
     });
-    const app = new Hono().route(
-      '/debug/accounts',
-      debugRoutes({ store, debugToken: 'secret', fetchImpl: unusedFetch }),
-    );
+    const app = new Hono().route('/debug/accounts', debugRoutes({ store, debugToken: 'secret' }));
     const res = await app.request('/debug/accounts/acc', {
       method: 'PATCH',
       headers: { authorization: 'Bearer secret', 'content-type': 'application/json' },
@@ -615,18 +534,13 @@ describe('debugRoutes', () => {
       linkingKey: null,
       role: 'basis',
       name: 'Ada',
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'b'.repeat(64),
       createdAt: 1,
       rulesAgreedAt: null,
     });
-    const app = new Hono().route(
-      '/debug/accounts',
-      debugRoutes({ store, debugToken: 'secret', fetchImpl: unusedFetch }),
-    );
+    const app = new Hono().route('/debug/accounts', debugRoutes({ store, debugToken: 'secret' }));
     const updateAccount = vi.spyOn(store, 'updateAccount');
     const res = await app.request('/debug/accounts/acc', {
       method: 'PATCH',
@@ -654,8 +568,6 @@ describe('debugRoutes', () => {
       linkingKey: null,
       role: 'basis',
       name: null,
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'b'.repeat(64),
@@ -668,10 +580,7 @@ describe('debugRoutes', () => {
       kekId: 1,
       custody: 'custodial',
     });
-    const app = new Hono().route(
-      '/debug/accounts',
-      debugRoutes({ store, debugToken: 'secret', fetchImpl: unusedFetch }),
-    );
+    const app = new Hono().route('/debug/accounts', debugRoutes({ store, debugToken: 'secret' }));
     const res = await app.request('/debug/accounts/acc', {
       method: 'PATCH',
       headers: { authorization: 'Bearer secret', 'content-type': 'application/json' },
@@ -696,8 +605,6 @@ describe('debugRoutes', () => {
       linkingKey: null,
       role: 'founder',
       name: 'Ada',
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'b'.repeat(64),
@@ -709,8 +616,6 @@ describe('debugRoutes', () => {
       linkingKey: null,
       role: 'founder',
       name: 'Old',
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'c'.repeat(64),
@@ -718,10 +623,7 @@ describe('debugRoutes', () => {
       rulesAgreedAt: null,
       isPlatform: true,
     });
-    const app = new Hono().route(
-      '/debug/accounts',
-      debugRoutes({ store, debugToken: 'secret', fetchImpl: unusedFetch }),
-    );
+    const app = new Hono().route('/debug/accounts', debugRoutes({ store, debugToken: 'secret' }));
     const res = await app.request('/debug/accounts/acc', {
       method: 'PATCH',
       headers: { authorization: 'Bearer secret', 'content-type': 'application/json' },
@@ -743,8 +645,6 @@ describe('debugRoutes', () => {
       linkingKey: null,
       role: 'founder',
       name: 'Ada',
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'b'.repeat(64),
@@ -756,8 +656,6 @@ describe('debugRoutes', () => {
       linkingKey: null,
       role: 'founder',
       name: 'Old',
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'c'.repeat(64),
@@ -771,7 +669,6 @@ describe('debugRoutes', () => {
       debugRoutes({
         store,
         debugToken: 'secret',
-        fetchImpl: unusedFetch,
         conversationStore: conversations,
       }),
     );
@@ -791,8 +688,6 @@ describe('debugRoutes', () => {
       linkingKey: null,
       role: 'basis',
       name: 'Ada',
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'b'.repeat(64),
@@ -804,7 +699,6 @@ describe('debugRoutes', () => {
       debugRoutes({
         store,
         debugToken: 'secret',
-        fetchImpl: unusedFetch,
         now: () => 1_700_000_000_000,
       }),
     );
@@ -823,7 +717,7 @@ describe('debugRoutes', () => {
     expect((await store.getSession(body.token))?.accountId).toBe('acc');
     const defaultClock = new Hono().route(
       '/debug/accounts',
-      debugRoutes({ store, debugToken: 'secret', fetchImpl: unusedFetch }),
+      debugRoutes({ store, debugToken: 'secret' }),
     );
     const again = await defaultClock.request('/debug/accounts/acc/session', {
       method: 'POST',
@@ -840,8 +734,6 @@ describe('debugRoutes', () => {
       linkingKey: null,
       role: 'basis',
       name: 'Ada',
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'b'.repeat(64),
@@ -855,7 +747,6 @@ describe('debugRoutes', () => {
       debugRoutes({
         store,
         debugToken: 'secret',
-        fetchImpl: unusedFetch,
         now: () => 1_700_000_000_000,
       }),
     );
@@ -878,8 +769,6 @@ describe('debugRoutes', () => {
       linkingKey: null,
       role: 'basis',
       name: 'Ada',
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'b'.repeat(64),
@@ -892,7 +781,6 @@ describe('debugRoutes', () => {
       debugRoutes({
         store,
         debugToken: 'secret',
-        fetchImpl: unusedFetch,
         now: () => 1_700_000_000_000,
       }),
     );
@@ -914,8 +802,6 @@ describe('debugRoutes', () => {
       linkingKey: null,
       role: 'basis',
       name: 'Ada',
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'b'.repeat(64),
@@ -928,7 +814,6 @@ describe('debugRoutes', () => {
       debugRoutes({
         store,
         debugToken: 'secret',
-        fetchImpl: unusedFetch,
         now: () => 1_700_000_000_000,
       }),
     );
@@ -939,131 +824,61 @@ describe('debugRoutes', () => {
     expect(res.status).toBe(500);
   });
 
-  it('PATCH clears the Lightning Address and verification flag', async () => {
+  it('PATCH refuses the removed lightningAddress field', async () => {
     const store = new InMemoryAuthStore();
-    await store.createAccount({
-      id: 'acc',
-      linkingKey: null,
-      role: 'basis',
-      name: 'Ada',
-      lightningAddress: 'ada@walletofsatoshi.com',
-      lightningAddressVerified: true,
-      forumLawsDismissed: false,
-      location: null,
-      viewKey: 'b'.repeat(64),
-      createdAt: 1,
-      rulesAgreedAt: 2,
-    });
+    await createWalletAccount(store, 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', 'ada');
+    const app = new Hono().route('/debug/accounts', debugRoutes({ store, debugToken: 'secret' }));
+    for (const body of [
+      { lightningAddress: null },
+      { role: 'moderator', lightningAddress: null },
+    ]) {
+      const res = await app.request('/debug/accounts/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', {
+        method: 'PATCH',
+        headers: { authorization: 'Bearer secret', 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      expect(res.status).toBe(400);
+      expect(await res.json()).toEqual({
+        error:
+          'Expected a JSON body with a "role" string, platform boolean, and/or sessionRefused boolean',
+      });
+    }
+    expect((await store.getAccount('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'))?.role).toBe('verified');
+  });
+
+  it('shows the wallet receiving address with the LNURL server configured', async () => {
+    const store = new InMemoryAuthStore();
+    const id = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+    await createWalletAccount(store, id, 'ada');
     const app = new Hono().route(
       '/debug/accounts',
-      debugRoutes({ store, debugToken: 'secret', fetchImpl: unusedFetch }),
+      debugRoutes({ store, debugToken: 'secret', lnurlServer: LNURL_SERVER }),
     );
-    const res = await app.request('/debug/accounts/acc', {
-      method: 'PATCH',
-      headers: { authorization: 'Bearer secret', 'content-type': 'application/json' },
-      body: JSON.stringify({ lightningAddress: null }),
-    });
-    expect(res.status).toBe(200);
-    const body = (await res.json()) as {
-      lightningAddress: string | null;
-      lightningAddressVerified: boolean;
+    const headers = { authorization: 'Bearer secret' };
+    const list = (await (await app.request('/debug/accounts', { headers })).json()) as {
+      accounts: Array<{ lightningAddress: string | null; lightningAddressVerified: boolean }>;
     };
-    expect(body.lightningAddress).toBeNull();
-    expect(body.lightningAddressVerified).toBe(false);
-    const stored = await store.getAccount('acc');
-    expect(stored?.lightningAddress).toBeNull();
-    expect(stored?.lightningAddressVerified).toBe(false);
-    expect(stored?.name).toBe('Ada');
-    expect(await store.getVerification('acc')).toBeUndefined();
-    expect(
-      parsedEvents(warn).some((e) => e['event'] === 'debug.accounts.lightning_address.cleared'),
-    ).toBe(true);
-  });
-
-  it('PATCH unlink drops in-flight address verification', async () => {
-    const store = new InMemoryAuthStore();
-    await store.createAccount({
-      id: 'acc',
-      linkingKey: null,
-      role: 'basis',
-      name: 'Ada',
-      lightningAddress: 'ada@walletofsatoshi.com',
-      lightningAddressVerified: false,
-      forumLawsDismissed: false,
-      location: null,
-      viewKey: 'b'.repeat(64),
-      createdAt: 1,
-      rulesAgreedAt: 2,
-    });
-    await store.putVerification({
-      accountId: 'acc',
-      address: 'ada@walletofsatoshi.com',
-      nonce: 'a'.repeat(32),
-      createdAt: 1,
-    });
-    const app = new Hono().route(
-      '/debug/accounts',
-      debugRoutes({ store, debugToken: 'secret', fetchImpl: unusedFetch }),
-    );
-    const res = await app.request('/debug/accounts/acc', {
-      method: 'PATCH',
-      headers: { authorization: 'Bearer secret', 'content-type': 'application/json' },
-      body: JSON.stringify({ lightningAddress: null }),
-    });
-    expect(res.status).toBe(200);
-    expect(await store.getVerification('acc')).toBeUndefined();
-  });
-
-  it('PATCH can set role and unlink in one body', async () => {
-    const store = new InMemoryAuthStore();
-    await store.createAccount({
-      id: 'acc',
-      linkingKey: null,
-      role: 'basis',
-      name: 'Ada',
-      lightningAddress: 'ada@walletofsatoshi.com',
+    expect(list.accounts[0]).toMatchObject({
+      lightningAddress: 'ada@example.test',
       lightningAddressVerified: true,
-      forumLawsDismissed: false,
-      location: null,
-      viewKey: 'b'.repeat(64),
-      createdAt: 1,
-      rulesAgreedAt: 2,
     });
-    const app = new Hono().route(
-      '/debug/accounts',
-      debugRoutes({ store, debugToken: 'secret', fetchImpl: unusedFetch }),
-    );
-    const res = await app.request('/debug/accounts/acc', {
-      method: 'PATCH',
-      headers: { authorization: 'Bearer secret', 'content-type': 'application/json' },
-      body: JSON.stringify({ role: 'moderator', lightningAddress: null }),
-    });
-    expect(res.status).toBe(200);
-    const stored = await store.getAccount('acc');
-    expect(stored?.role).toBe('moderator');
-    expect(stored?.lightningAddress).toBeNull();
-    expect(stored?.lightningAddressVerified).toBe(false);
-  });
-
-  it('PATCH returns 400 when lightningAddress is not null', async () => {
-    const app = new Hono().route(
-      '/debug/accounts',
-      debugRoutes({
-        store: new InMemoryAuthStore(),
-        debugToken: 'secret',
-        fetchImpl: unusedFetch,
-      }),
-    );
-    const res = await app.request('/debug/accounts/acc', {
-      method: 'PATCH',
-      headers: { authorization: 'Bearer secret', 'content-type': 'application/json' },
-      body: JSON.stringify({ lightningAddress: 'ada@walletofsatoshi.com' }),
-    });
-    expect(res.status).toBe(400);
-    expect(await res.json()).toEqual({
-      error:
-        'Expected a JSON body with a "role" string, lightningAddress null, platform boolean, and/or sessionRefused boolean',
-    });
+    const detail = (await (await app.request(`/debug/accounts/${id}`, { headers })).json()) as {
+      lightningAddress: string | null;
+    };
+    expect(detail.lightningAddress).toBe('ada@example.test');
+    const patched = (await (
+      await app.request(`/debug/accounts/${id}`, {
+        method: 'PATCH',
+        headers: { ...headers, 'content-type': 'application/json' },
+        body: JSON.stringify({ role: 'moderator' }),
+      })
+    ).json()) as { lightningAddress: string | null };
+    expect(patched.lightningAddress).toBe('ada@example.test');
+    const off = new Hono().route('/debug/accounts', debugRoutes({ store, debugToken: 'secret' }));
+    const plain = (await (await off.request(`/debug/accounts/${id}`, { headers })).json()) as {
+      lightningAddress: string | null;
+    };
+    expect(plain.lightningAddress).toBeNull();
   });
 
   it('POST returns 503 when debug is not configured', async () => {
@@ -1072,14 +887,13 @@ describe('debugRoutes', () => {
       debugRoutes({
         store: new InMemoryAuthStore(),
         debugToken: undefined,
-        fetchImpl: async () => new Response(null, { status: 500 }),
       }),
     );
     const res = await app.request('/debug/accounts', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
-        accounts: [{ name: 'Ada', lightningAddress: 'guest@walletofsatoshi.com' }],
+        accounts: [{ name: 'Ada' }],
       }),
     });
     expect(res.status).toBe(503);
@@ -1092,169 +906,102 @@ describe('debugRoutes', () => {
       debugRoutes({
         store: new InMemoryAuthStore(),
         debugToken: 'secret',
-        fetchImpl: unusedFetch,
       }),
     );
     const res = await app.request('/debug/accounts', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
-        accounts: [{ name: 'Ada', lightningAddress: 'guest@walletofsatoshi.com' }],
+        accounts: [{ name: 'Ada' }],
       }),
     });
     expect(res.status).toBe(401);
   });
 
-  it('POST returns 400 for an invalid body', async () => {
-    const app = new Hono().route(
-      '/debug/accounts',
-      debugRoutes({
-        store: new InMemoryAuthStore(),
-        debugToken: 'secret',
-        fetchImpl: unusedFetch,
-      }),
-    );
-    const res = await app.request('/debug/accounts', {
-      method: 'POST',
-      headers: { authorization: 'Bearer secret', 'content-type': 'application/json' },
-      body: JSON.stringify({}),
-    });
-    expect(res.status).toBe(400);
-    expect(await res.json()).toEqual({
-      error: 'Expected a JSON body with an "accounts" array',
-    });
-  });
-
-  it('POST returns 400 when name or Lightning Address fail normalisation', async () => {
-    const app = new Hono().route(
-      '/debug/accounts',
-      debugRoutes({
-        store: new InMemoryAuthStore(),
-        debugToken: 'secret',
-        fetchImpl: unusedFetch,
-      }),
-    );
-    const badName = await app.request('/debug/accounts', {
-      method: 'POST',
-      headers: { authorization: 'Bearer secret', 'content-type': 'application/json' },
-      body: JSON.stringify({
-        accounts: [{ name: 'Ada\u0001', lightningAddress: 'guest@walletofsatoshi.com' }],
-      }),
-    });
-    expect(badName.status).toBe(400);
-    expect(await badName.json()).toEqual({
-      error: 'Expected a JSON body with an "accounts" array',
-    });
-    const badAddr = await app.request('/debug/accounts', {
-      method: 'POST',
-      headers: { authorization: 'Bearer secret', 'content-type': 'application/json' },
-      body: JSON.stringify({
-        accounts: [{ name: 'Ada', lightningAddress: 'a@b' }],
-      }),
-    });
-    expect(badAddr.status).toBe(400);
-    expect(await badAddr.json()).toEqual({
-      error: 'Expected a JSON body with an "accounts" array',
-    });
-  });
-
-  it('POST returns 400 without persisting earlier rows when one address fails normalisation', async () => {
-    const store = new InMemoryAuthStore();
-    const app = new Hono().route(
-      '/debug/accounts',
-      debugRoutes({ store, debugToken: 'secret', fetchImpl: unusedFetch }),
-    );
-    const res = await app.request('/debug/accounts', {
-      method: 'POST',
-      headers: { authorization: 'Bearer secret', 'content-type': 'application/json' },
-      body: JSON.stringify({
-        accounts: [
-          { name: 'Ada', lightningAddress: 'guest@walletofsatoshi.com' },
-          { name: 'Bob', lightningAddress: 'a@b' },
-        ],
-      }),
-    });
-    expect(res.status).toBe(400);
-    expect(await store.getAccountByLightningAddress('guest@walletofsatoshi.com')).toBeUndefined();
-  });
-
-  it('POST skips the mint probe when NIP57_PROBE is 0', async () => {
-    const previous = process.env['NIP57_PROBE'];
-    process.env['NIP57_PROBE'] = '0';
-    try {
-      const store = new InMemoryAuthStore();
-      const app = new Hono().route(
-        '/debug/accounts',
-        debugRoutes({ store, debugToken: 'secret', fetchImpl: unusedFetch }),
-      );
-      const res = await app.request('/debug/accounts', {
-        method: 'POST',
-        headers: { authorization: 'Bearer secret', 'content-type': 'application/json' },
-        body: JSON.stringify({
-          accounts: [{ name: 'Ada', lightningAddress: 'guest@walletofsatoshi.com' }],
-        }),
-      });
-      expect(res.status).toBe(200);
-      const stored = await store.getAccountByLightningAddress('guest@walletofsatoshi.com');
-      expect(stored?.name).toBe('Ada');
-    } finally {
-      if (previous === undefined) {
-        delete process.env['NIP57_PROBE'];
-      } else {
-        process.env['NIP57_PROBE'] = previous;
-      }
-    }
-  });
-
-  it('POST provisions a new account without a passkey', async () => {
-    const store = new InMemoryAuthStore();
-    const messageStore = new InMemoryMessageStore();
+  function provisionApp(
+    store: InMemoryAuthStore,
+    messageStore?: InMemoryMessageStore,
+  ): (accounts: unknown) => Promise<Response> {
     const app = new Hono().route(
       '/debug/accounts',
       debugRoutes({
         store,
         debugToken: 'secret',
-        fetchImpl: zapCapableFetch(),
-        messageStore,
+        ...(messageStore === undefined ? {} : { messageStore }),
         pushStore: new InMemoryPushStore(),
         notificationStore: new InMemoryNotificationStore(),
       }),
     );
-    const res = await app.request('/debug/accounts', {
-      method: 'POST',
-      headers: { authorization: 'Bearer secret', 'content-type': 'application/json' },
-      body: JSON.stringify({
-        accounts: [{ name: 'Ada', lightningAddress: 'guest@walletofsatoshi.com' }],
-      }),
-    });
+    return async (accounts) =>
+      app.request('/debug/accounts', {
+        method: 'POST',
+        headers: { authorization: 'Bearer secret', 'content-type': 'application/json' },
+        body: typeof accounts === 'string' ? accounts : JSON.stringify({ accounts }),
+      });
+  }
+
+  interface ProvisionRow {
+    name: string;
+    username: string | null;
+    viewKey: string;
+    created: boolean;
+  }
+
+  it('POST returns 400 for an invalid body', async () => {
+    const store = new InMemoryAuthStore();
+    const post = provisionApp(store);
+    const error = { error: 'Expected a JSON body with an "accounts" array' };
+    for (const body of ['not json', JSON.stringify({ accounts: [] })]) {
+      const res = await post(body);
+      expect(res.status).toBe(400);
+      expect(await res.json()).toEqual(error);
+    }
+    for (const rows of [
+      [{ name: 'Ada', lightningAddress: 'ada@example.com' }],
+      [{ name: '   ' }],
+      [{ name: 'Ada\u0001' }],
+      [{ name: 'Ada', username: 'not a handle!' }],
+    ]) {
+      const res = await post(rows);
+      expect(res.status).toBe(400);
+      expect(await res.json()).toEqual(error);
+    }
+    expect(await store.listAccounts()).toEqual([]);
+  });
+
+  it('POST returns 400 without persisting earlier rows when a later row is invalid', async () => {
+    const store = new InMemoryAuthStore();
+    const res = await provisionApp(store)([{ name: 'Ada' }, { name: 'Bob', username: '!!' }]);
+    expect(res.status).toBe(400);
+    expect(await store.listAccounts()).toEqual([]);
+  });
+
+  it('POST provisions a new account without a passkey or receiving address', async () => {
+    const store = new InMemoryAuthStore();
+    const messageStore = new InMemoryMessageStore();
+    const res = await provisionApp(store, messageStore)([{ name: 'Ada' }]);
     expect(res.status).toBe(200);
-    const body = (await res.json()) as {
-      accounts: Array<{
-        name: string;
-        lightningAddress: string;
-        viewKey: string;
-        created: boolean;
-      }>;
-    };
-    expect(body.accounts).toHaveLength(1);
-    expect(body.accounts[0]?.created).toBe(true);
-    expect(body.accounts[0]?.name).toBe('Ada');
-    expect(body.accounts[0]?.lightningAddress).toBe('guest@walletofsatoshi.com');
-    expect(body.accounts[0]?.viewKey).toMatch(/^[0-9a-f]{64}$/);
-    const stored = await store.getAccountByLightningAddress('guest@walletofsatoshi.com');
+    const body = (await res.json()) as { accounts: ProvisionRow[] };
+    expect(body.accounts).toEqual([
+      {
+        name: 'Ada',
+        username: 'ada',
+        viewKey: expect.stringMatching(/^[0-9a-f]{64}$/),
+        created: true,
+      },
+    ]);
+    const stored = await store.getAccountByUsername('ada');
     expect(stored).toMatchObject({
       linkingKey: null,
       role: 'basis',
       name: 'Ada',
-      lightningAddress: 'guest@walletofsatoshi.com',
       rulesAgreedAt: null,
       viewKey: body.accounts[0]?.viewKey,
     });
+    expect(stored).not.toHaveProperty('lightningAddress');
     expect(await store.accountHasPasskey(stored!.id)).toBe(false);
-    expect(stored?.profileMessageId).toEqual(expect.any(String));
-    const profileNote = await messageStore.getById(stored!.profileMessageId as string);
-    expect(profileNote?.text).toBe('Ada');
-    expect(profileNote?.parentId).toBeNull();
+    expect(stored?.profileMessageId).toBeNull();
+    expect(await messageStore.listLatest(10)).toEqual([]);
     expect(
       parsedEvents(warn).some(
         (e) =>
@@ -1263,137 +1010,66 @@ describe('debugRoutes', () => {
     ).toBe(true);
   });
 
-  it('POST backfills a profile note when an existing named account lacks one', async () => {
+  it('POST creates a new account each time without a username, deriving a free one', async () => {
     const store = new InMemoryAuthStore();
-    const messageStore = new InMemoryMessageStore();
     await store.createAccount({
-      id: 'existing',
+      id: 'blank',
       linkingKey: null,
       role: 'basis',
-      name: 'Ada',
-      lightningAddress: 'guest@walletofsatoshi.com',
-      lightningAddressVerified: false,
+      name: null,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'c'.repeat(64),
       createdAt: 1,
       rulesAgreedAt: null,
-      profileMessageId: null,
+      username: '   ',
     });
-    const app = new Hono().route(
-      '/debug/accounts',
-      debugRoutes({
-        store,
-        debugToken: 'secret',
-        fetchImpl: unusedFetch,
-        messageStore,
-      }),
-    );
-    const res = await app.request('/debug/accounts', {
-      method: 'POST',
-      headers: { authorization: 'Bearer secret', 'content-type': 'application/json' },
-      body: JSON.stringify({
-        accounts: [{ name: 'Ada Lovelace', lightningAddress: 'guest@walletofsatoshi.com' }],
-      }),
-    });
-    expect(res.status).toBe(200);
-    const stored = await store.getAccountByLightningAddress('guest@walletofsatoshi.com');
-    expect(typeof stored?.profileMessageId).toBe('string');
-    expect((await messageStore.getById(stored!.profileMessageId as string))?.text).toBe(
-      'Ada Lovelace',
-    );
-  });
-
-  it('POST backfills a profile note after a create race', async () => {
-    class RaceStore extends InMemoryAuthStore {
-      #lookups = 0;
-      override async getAccountByLightningAddress(address: string) {
-        this.#lookups += 1;
-        if (this.#lookups === 1) {
-          return undefined;
-        }
-        return super.getAccountByLightningAddress(address);
-      }
-    }
-    const store = new RaceStore();
-    const messageStore = new InMemoryMessageStore();
     await store.createAccount({
-      id: 'existing',
+      id: 'none',
       linkingKey: null,
       role: 'basis',
-      name: 'Old',
-      lightningAddress: 'guest@walletofsatoshi.com',
-      lightningAddressVerified: false,
+      name: null,
       forumLawsDismissed: false,
       location: null,
-      viewKey: 'c'.repeat(64),
+      viewKey: 'd'.repeat(64),
       createdAt: 1,
       rulesAgreedAt: null,
-      profileMessageId: null,
     });
-    const app = new Hono().route(
-      '/debug/accounts',
-      debugRoutes({
-        store,
-        debugToken: 'secret',
-        fetchImpl: zapCapableFetch(),
-        messageStore,
-      }),
-    );
-    const res = await app.request('/debug/accounts', {
-      method: 'POST',
-      headers: { authorization: 'Bearer secret', 'content-type': 'application/json' },
-      body: JSON.stringify({
-        accounts: [{ name: 'Ada', lightningAddress: 'guest@walletofsatoshi.com' }],
-      }),
-    });
-    expect(res.status).toBe(200);
-    const stored = await store.getAccountByLightningAddress('guest@walletofsatoshi.com');
-    expect(stored?.name).toBe('Ada');
-    expect(typeof stored?.profileMessageId).toBe('string');
-    expect(await messageStore.getById(stored!.profileMessageId as string)).toBeDefined();
+    const post = provisionApp(store);
+    const first = (await (await post([{ name: 'Ada' }, { name: 'Ada' }])).json()) as {
+      accounts: ProvisionRow[];
+    };
+    const second = (await (await post([{ name: 'Ada' }])).json()) as { accounts: ProvisionRow[] };
+    const rows = [...first.accounts, ...second.accounts];
+    expect(rows.map((row) => row.created)).toEqual([true, true, true]);
+    expect(rows[0]?.username).toBe('ada');
+    const names = rows.map((row) => row.username);
+    expect(new Set(names).size).toBe(3);
+    expect(new Set(rows.map((row) => row.viewKey)).size).toBe(3);
+    expect(await store.listAccounts()).toHaveLength(5);
   });
 
-  it('POST updates name idempotently for the same address ignoring case', async () => {
+  it('POST creates under a given username, then upserts the name by that username', async () => {
     const store = new InMemoryAuthStore();
-    const app = new Hono().route(
-      '/debug/accounts',
-      debugRoutes({ store, debugToken: 'secret', fetchImpl: zapCapableFetch() }),
-    );
-    const first = await app.request('/debug/accounts', {
-      method: 'POST',
-      headers: { authorization: 'Bearer secret', 'content-type': 'application/json' },
-      body: JSON.stringify({
-        accounts: [{ name: 'Ada', lightningAddress: 'guest@walletofsatoshi.com' }],
-      }),
-    });
-    const firstBody = (await first.json()) as {
-      accounts: Array<{ viewKey: string; created: boolean }>;
+    const messageStore = new InMemoryMessageStore();
+    const post = provisionApp(store, messageStore);
+    const created = (await (await post([{ name: 'Ada', username: 'Lovelace' }])).json()) as {
+      accounts: ProvisionRow[];
     };
-    const second = await app.request('/debug/accounts', {
-      method: 'POST',
-      headers: { authorization: 'Bearer secret', 'content-type': 'application/json' },
-      body: JSON.stringify({
-        accounts: [{ name: 'Ada Lovelace', lightningAddress: 'Guest@WalletOfSatoshi.com' }],
-      }),
-    });
-    expect(second.status).toBe(200);
-    const secondBody = (await second.json()) as {
-      accounts: Array<{ name: string; viewKey: string; created: boolean }>;
-    };
-    expect(secondBody.accounts[0]?.created).toBe(false);
-    expect(secondBody.accounts[0]?.viewKey).toBe(firstBody.accounts[0]?.viewKey);
-    expect(secondBody.accounts[0]?.name).toBe('Ada Lovelace');
-    expect((await store.getAccountByLightningAddress('guest@walletofsatoshi.com'))?.name).toBe(
-      'Ada Lovelace',
-    );
-    const listed = await app.request('/debug/accounts', {
-      headers: { authorization: 'Bearer secret' },
-    });
-    const listBody = (await listed.json()) as {
-      accounts: Array<Record<string, unknown>>;
-    };
-    expect(listBody.accounts[0]).toHaveProperty('viewKey');
+    expect(created.accounts[0]).toMatchObject({ name: 'Ada', username: 'lovelace', created: true });
+    const updated = (await (
+      await post([{ name: 'Ada Lovelace', username: '  LOVELACE ' }])
+    ).json()) as { accounts: ProvisionRow[] };
+    expect(updated.accounts).toEqual([
+      {
+        name: 'Ada Lovelace',
+        username: 'lovelace',
+        viewKey: created.accounts[0]?.viewKey,
+        created: false,
+      },
+    ]);
+    expect(await store.listAccounts()).toHaveLength(1);
+    expect((await store.getAccountByUsername('lovelace'))?.name).toBe('Ada Lovelace');
     expect(
       parsedEvents(warn).some(
         (e) =>
@@ -1402,475 +1078,49 @@ describe('debugRoutes', () => {
     ).toBe(true);
   });
 
-  it('POST updates only name on an existing moderator account', async () => {
+  it('POST updates only the name of an existing moderator and keeps its wallet', async () => {
     const store = new InMemoryAuthStore();
-    await store.createAccount({
-      id: 'existing',
-      linkingKey: null,
+    await createWalletAccount(store, 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', 'ada');
+    const before = await store.getAccount('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa');
+    await store.updateAccount({ ...before!, role: 'moderator' });
+    const messageStore = new InMemoryMessageStore();
+    const res = await provisionApp(store, messageStore)([{ name: 'Ada L', username: 'ada' }]);
+    expect(res.status).toBe(200);
+    const after = await store.getAccount('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa');
+    expect(after).toMatchObject({
+      name: 'Ada L',
       role: 'moderator',
-      name: 'Old',
-      lightningAddress: 'guest@walletofsatoshi.com',
-      lightningAddressVerified: false,
-      forumLawsDismissed: false,
-      location: null,
-      viewKey: 'c'.repeat(64),
-      createdAt: 1,
-      rulesAgreedAt: 9_000,
+      username: 'ada',
+      viewKey: before?.viewKey,
+      sparkPubkeyVerifiedAt: before?.sparkPubkeyVerifiedAt,
     });
+    expect(typeof after?.profileMessageId).toBe('string');
+    expect((await messageStore.getById(after!.profileMessageId as string))?.text).toBe('Ada L');
+  });
+
+  it('POST backfills a profile note without push or notification stores', async () => {
+    const store = new InMemoryAuthStore();
+    await createWalletAccount(store, 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', 'ada');
+    const messageStore = new InMemoryMessageStore();
     const app = new Hono().route(
       '/debug/accounts',
-      debugRoutes({ store, debugToken: 'secret', fetchImpl: unusedFetch }),
+      debugRoutes({ store, debugToken: 'secret', messageStore }),
     );
     const res = await app.request('/debug/accounts', {
       method: 'POST',
       headers: { authorization: 'Bearer secret', 'content-type': 'application/json' },
-      body: JSON.stringify({
-        accounts: [{ name: 'Ada', lightningAddress: 'guest@walletofsatoshi.com' }],
-      }),
+      body: JSON.stringify({ accounts: [{ name: 'Ada', username: 'ada' }] }),
     });
     expect(res.status).toBe(200);
-    const body = (await res.json()) as {
-      accounts: Array<{ name: string; created: boolean; viewKey: string }>;
-    };
-    expect(body.accounts[0]?.created).toBe(false);
-    expect(body.accounts[0]?.name).toBe('Ada');
-    expect(body.accounts[0]?.viewKey).toBe('c'.repeat(64));
-    const stored = await store.getAccount('existing');
-    expect(stored?.name).toBe('Ada');
-    expect(stored?.role).toBe('moderator');
-    expect(stored?.rulesAgreedAt).toBe(9_000);
+    expect(await messageStore.listLatest(10)).toHaveLength(1);
   });
 
-  it('POST returns 500 when create does not persist the address', async () => {
-    class HollowStore extends InMemoryAuthStore {
-      override async getAccountByLightningAddress(): Promise<undefined> {
-        return undefined;
-      }
-      override async createAccount(): Promise<void> {
-        return;
-      }
-    }
-    const app = new Hono().route(
-      '/debug/accounts',
-      debugRoutes({
-        store: new HollowStore(),
-        debugToken: 'secret',
-        fetchImpl: zapCapableFetch(),
-      }),
-    );
-    const res = await app.request('/debug/accounts', {
-      method: 'POST',
-      headers: { authorization: 'Bearer secret', 'content-type': 'application/json' },
-      body: JSON.stringify({
-        accounts: [{ name: 'Ada', lightningAddress: 'guest@walletofsatoshi.com' }],
-      }),
-    });
-    expect(res.status).toBe(500);
-  });
-
-  it('POST returns 500 when the name-only update finds no row', async () => {
-    class MissingNameUpdateStore extends InMemoryAuthStore {
-      override async getAccountByLightningAddress() {
-        return {
-          id: 'existing',
-          linkingKey: null,
-          role: 'basis' as const,
-          name: 'Old',
-          lightningAddress: 'guest@walletofsatoshi.com',
-          lightningAddressVerified: false,
-          forumLawsDismissed: false,
-          location: null,
-          viewKey: 'c'.repeat(64),
-          createdAt: 1,
-          rulesAgreedAt: null,
-        };
-      }
-      override async updateAccountNameByLightningAddress(): Promise<undefined> {
-        return undefined;
-      }
-    }
-    const app = new Hono().route(
-      '/debug/accounts',
-      debugRoutes({
-        store: new MissingNameUpdateStore(),
-        debugToken: 'secret',
-        fetchImpl: unusedFetch,
-      }),
-    );
-    const res = await app.request('/debug/accounts', {
-      method: 'POST',
-      headers: { authorization: 'Bearer secret', 'content-type': 'application/json' },
-      body: JSON.stringify({
-        accounts: [{ name: 'Ada', lightningAddress: 'guest@walletofsatoshi.com' }],
-      }),
-    });
-    expect(res.status).toBe(500);
-  });
-
-  it('POST applies the name when create loses a race to an existing address', async () => {
-    class RaceStore extends InMemoryAuthStore {
-      #lookups = 0;
-      override async getAccountByLightningAddress(address: string) {
-        this.#lookups += 1;
-        if (this.#lookups === 1) {
-          return undefined;
-        }
-        return super.getAccountByLightningAddress(address);
-      }
-    }
-    const store = new RaceStore();
-    await store.createAccount({
-      id: 'existing',
-      linkingKey: null,
-      role: 'moderator',
-      name: 'Old',
-      lightningAddress: 'guest@walletofsatoshi.com',
-      lightningAddressVerified: false,
-      forumLawsDismissed: false,
-      location: null,
-      viewKey: 'c'.repeat(64),
-      createdAt: 1,
-      rulesAgreedAt: 9_000,
-    });
-    const app = new Hono().route(
-      '/debug/accounts',
-      debugRoutes({ store, debugToken: 'secret', fetchImpl: zapCapableFetch() }),
-    );
-    const res = await app.request('/debug/accounts', {
-      method: 'POST',
-      headers: { authorization: 'Bearer secret', 'content-type': 'application/json' },
-      body: JSON.stringify({
-        accounts: [{ name: 'Ada', lightningAddress: 'guest@walletofsatoshi.com' }],
-      }),
-    });
-    expect(res.status).toBe(200);
-    const body = (await res.json()) as {
-      accounts: Array<{ name: string; created: boolean; viewKey: string }>;
-    };
-    expect(body.accounts[0]?.created).toBe(false);
-    expect(body.accounts[0]?.name).toBe('Ada');
-    expect(body.accounts[0]?.viewKey).toBe('c'.repeat(64));
-    const stored = await store.getAccount('existing');
-    expect(stored?.name).toBe('Ada');
-    expect(stored?.role).toBe('moderator');
-    expect(stored?.rulesAgreedAt).toBe(9_000);
-  });
-
-  it('POST returns 500 when a create race cannot apply the name-only update', async () => {
-    class RaceHollowNameStore extends InMemoryAuthStore {
-      #lookups = 0;
-      override async getAccountByLightningAddress(address: string) {
-        this.#lookups += 1;
-        if (this.#lookups === 1) {
-          return undefined;
-        }
-        return super.getAccountByLightningAddress(address);
-      }
-      override async updateAccountNameByLightningAddress(): Promise<undefined> {
-        return undefined;
-      }
-    }
-    const store = new RaceHollowNameStore();
-    await store.createAccount({
-      id: 'existing',
-      linkingKey: null,
-      role: 'basis',
-      name: 'Old',
-      lightningAddress: 'guest@walletofsatoshi.com',
-      lightningAddressVerified: false,
-      forumLawsDismissed: false,
-      location: null,
-      viewKey: 'c'.repeat(64),
-      createdAt: 1,
-      rulesAgreedAt: null,
-    });
-    const app = new Hono().route(
-      '/debug/accounts',
-      debugRoutes({ store, debugToken: 'secret', fetchImpl: zapCapableFetch() }),
-    );
-    const res = await app.request('/debug/accounts', {
-      method: 'POST',
-      headers: { authorization: 'Bearer secret', 'content-type': 'application/json' },
-      body: JSON.stringify({
-        accounts: [{ name: 'Ada', lightningAddress: 'guest@walletofsatoshi.com' }],
-      }),
-    });
-    expect(res.status).toBe(500);
-  });
-
-  it('POST returns 500 when the name-only update does not persist the request name', async () => {
-    class NullAddressStore extends InMemoryAuthStore {
-      override async getAccountByLightningAddress() {
-        return {
-          id: 'existing',
-          linkingKey: null,
-          role: 'basis' as const,
-          name: 'Old',
-          lightningAddress: null,
-          lightningAddressVerified: false,
-          forumLawsDismissed: false,
-          location: null,
-          viewKey: 'c'.repeat(64),
-          createdAt: 1,
-          rulesAgreedAt: null,
-        };
-      }
-      override async updateAccountNameByLightningAddress() {
-        return {
-          id: 'existing',
-          linkingKey: null,
-          role: 'basis' as const,
-          name: null,
-          lightningAddress: null,
-          lightningAddressVerified: false,
-          forumLawsDismissed: false,
-          location: null,
-          viewKey: 'c'.repeat(64),
-          createdAt: 1,
-          rulesAgreedAt: null,
-        };
-      }
-    }
-    const app = new Hono().route(
-      '/debug/accounts',
-      debugRoutes({ store: new NullAddressStore(), debugToken: 'secret', fetchImpl: unusedFetch }),
-    );
-    const res = await app.request('/debug/accounts', {
-      method: 'POST',
-      headers: { authorization: 'Bearer secret', 'content-type': 'application/json' },
-      body: JSON.stringify({
-        accounts: [{ name: 'Ada', lightningAddress: 'guest@walletofsatoshi.com' }],
-      }),
-    });
-    expect(res.status).toBe(500);
-    expect(await res.json()).toEqual({ error: 'Could not save the account' });
-  });
-
-  it('POST falls back to the request name and address when create returns null fields', async () => {
-    class NullCreatedStore extends InMemoryAuthStore {
-      override async getAccountByLightningAddress(address: string) {
-        const acc = await super.getAccountByLightningAddress(address);
-        if (acc === undefined) {
-          return undefined;
-        }
-        return { ...acc, name: null, lightningAddress: null };
-      }
-    }
-    const store = new NullCreatedStore();
-    const app = new Hono().route(
-      '/debug/accounts',
-      debugRoutes({ store, debugToken: 'secret', fetchImpl: zapCapableFetch() }),
-    );
-    const res = await app.request('/debug/accounts', {
-      method: 'POST',
-      headers: { authorization: 'Bearer secret', 'content-type': 'application/json' },
-      body: JSON.stringify({
-        accounts: [{ name: 'Ada', lightningAddress: 'guest@walletofsatoshi.com' }],
-      }),
-    });
-    expect(res.status).toBe(200);
-    const body = (await res.json()) as {
-      accounts: Array<{ name: string; lightningAddress: string; created: boolean }>;
-    };
-    expect(body.accounts[0]?.created).toBe(true);
-    expect(body.accounts[0]?.name).toBe('Ada');
-    expect(body.accounts[0]?.lightningAddress).toBe('guest@walletofsatoshi.com');
-  });
-
-  it('POST returns 500 when a create-race name-only update does not persist the request name', async () => {
-    class RaceNullAddressStore extends InMemoryAuthStore {
-      #lookups = 0;
-      override async getAccountByLightningAddress(address: string) {
-        this.#lookups += 1;
-        if (this.#lookups === 1) {
-          return undefined;
-        }
-        const acc = await super.getAccountByLightningAddress(address);
-        return acc === undefined ? undefined : { ...acc, name: null, lightningAddress: null };
-      }
-      override async updateAccountNameByLightningAddress(address: string, name: string) {
-        const acc = await super.updateAccountNameByLightningAddress(address, name);
-        return acc === undefined ? undefined : { ...acc, name: null, lightningAddress: null };
-      }
-    }
-    const store = new RaceNullAddressStore();
-    await store.createAccount({
-      id: 'existing',
-      linkingKey: null,
-      role: 'basis',
-      name: 'Old',
-      lightningAddress: 'guest@walletofsatoshi.com',
-      lightningAddressVerified: false,
-      forumLawsDismissed: false,
-      location: null,
-      viewKey: 'c'.repeat(64),
-      createdAt: 1,
-      rulesAgreedAt: null,
-    });
-    const app = new Hono().route(
-      '/debug/accounts',
-      debugRoutes({ store, debugToken: 'secret', fetchImpl: zapCapableFetch() }),
-    );
-    const res = await app.request('/debug/accounts', {
-      method: 'POST',
-      headers: { authorization: 'Bearer secret', 'content-type': 'application/json' },
-      body: JSON.stringify({
-        accounts: [{ name: 'Ada', lightningAddress: 'guest@walletofsatoshi.com' }],
-      }),
-    });
-    expect(res.status).toBe(500);
-    expect(await res.json()).toEqual({ error: 'Could not save the account' });
-  });
-
-  it('POST falls back to the request address when the name-only update omits it', async () => {
-    const saved = {
-      id: 'existing',
-      linkingKey: null,
-      role: 'basis' as const,
-      name: 'Ada',
-      lightningAddress: null as string | null,
-      lightningAddressVerified: false,
-      forumLawsDismissed: false,
-      location: null,
-      viewKey: 'c'.repeat(64),
-      createdAt: 1,
-      rulesAgreedAt: null,
-    };
-    class AddressFallbackStore extends InMemoryAuthStore {
-      override async getAccountByLightningAddress() {
-        return saved;
-      }
-      override async updateAccountNameByLightningAddress() {
-        return saved;
-      }
-    }
-    const app = new Hono().route(
-      '/debug/accounts',
-      debugRoutes({
-        store: new AddressFallbackStore(),
-        debugToken: 'secret',
-        fetchImpl: unusedFetch,
-      }),
-    );
-    const existing = await app.request('/debug/accounts', {
-      method: 'POST',
-      headers: { authorization: 'Bearer secret', 'content-type': 'application/json' },
-      body: JSON.stringify({
-        accounts: [{ name: 'Ada', lightningAddress: 'guest@walletofsatoshi.com' }],
-      }),
-    });
-    expect(existing.status).toBe(200);
-    expect(
-      ((await existing.json()) as { accounts: Array<{ lightningAddress: string }> }).accounts[0]
-        ?.lightningAddress,
-    ).toBe('guest@walletofsatoshi.com');
-
-    class RaceAddressFallbackStore extends InMemoryAuthStore {
-      #lookups = 0;
-      override async getAccountByLightningAddress() {
-        this.#lookups += 1;
-        return this.#lookups === 1 ? undefined : saved;
-      }
-      override async updateAccountNameByLightningAddress() {
-        return saved;
-      }
-    }
-    const raceApp = new Hono().route(
-      '/debug/accounts',
-      debugRoutes({
-        store: new RaceAddressFallbackStore(),
-        debugToken: 'secret',
-        fetchImpl: zapCapableFetch(),
-      }),
-    );
-    const raced = await raceApp.request('/debug/accounts', {
-      method: 'POST',
-      headers: { authorization: 'Bearer secret', 'content-type': 'application/json' },
-      body: JSON.stringify({
-        accounts: [{ name: 'Ada', lightningAddress: 'guest@walletofsatoshi.com' }],
-      }),
-    });
-    expect(raced.status).toBe(200);
-    const racedBody = (await raced.json()) as {
-      accounts: Array<{ lightningAddress: string; created: boolean }>;
-    };
-    expect(racedBody.accounts[0]?.created).toBe(false);
-    expect(racedBody.accounts[0]?.lightningAddress).toBe('guest@walletofsatoshi.com');
-  });
-
-  it('POST returns 400 when a new address is not zap-capable', async () => {
-    const bolt11 = await import('@/lib/bolt11');
-    vi.spyOn(bolt11, 'isNip57Invoice').mockReturnValue(false);
+  it('POST creates a profile note for a new account only once it has a verified wallet', async () => {
     const store = new InMemoryAuthStore();
-    const app = new Hono().route(
-      '/debug/accounts',
-      debugRoutes({ store, debugToken: 'secret', fetchImpl: zapCapableFetch() }),
-    );
-    const res = await app.request('/debug/accounts', {
-      method: 'POST',
-      headers: { authorization: 'Bearer secret', 'content-type': 'application/json' },
-      body: JSON.stringify({
-        accounts: [{ name: 'Ada', lightningAddress: 'guest@walletofsatoshi.com' }],
-      }),
-    });
-    expect(res.status).toBe(400);
-    expect(await res.json()).toEqual({ error: LIGHTNING_ADDRESS_NOT_ZAP });
-    expect(await store.getAccountByLightningAddress('guest@walletofsatoshi.com')).toBeUndefined();
-  });
-
-  it('POST returns 400 when a new address cannot be probed', async () => {
-    const store = new InMemoryAuthStore();
-    const app = new Hono().route(
-      '/debug/accounts',
-      debugRoutes({ store, debugToken: 'secret', fetchImpl: unusedFetch }),
-    );
-    const res = await app.request('/debug/accounts', {
-      method: 'POST',
-      headers: { authorization: 'Bearer secret', 'content-type': 'application/json' },
-      body: JSON.stringify({
-        accounts: [{ name: 'Ada', lightningAddress: 'guest@walletofsatoshi.com' }],
-      }),
-    });
-    expect(res.status).toBe(400);
-    expect(await res.json()).toEqual({ error: 'Lightning Address could not be resolved' });
-    expect(await store.getAccountByLightningAddress('guest@walletofsatoshi.com')).toBeUndefined();
-  });
-
-  it('POST returns 400 without creating earlier new addresses when a later probe fails', async () => {
-    const store = new InMemoryAuthStore();
-    const fetchImpl: FetchFn = async (input) => {
-      if (String(input).includes('/.well-known/lnurlp/other')) {
-        return new Response(null, { status: 500 });
-      }
-      if (String(input).includes('/.well-known/lnurlp/')) {
-        return jsonResponse({
-          callback: 'https://walletofsatoshi.com/lnurlp/callback',
-          minSendable: 1000,
-          maxSendable: 100_000_000_000,
-          allowsNostr: true,
-          nostrPubkey: 'aa'.repeat(32),
-        });
-      }
-      return jsonResponse({ pr: 'lnbc10n1ptest' });
-    };
-    const app = new Hono().route(
-      '/debug/accounts',
-      debugRoutes({ store, debugToken: 'secret', fetchImpl }),
-    );
-    const res = await app.request('/debug/accounts', {
-      method: 'POST',
-      headers: { authorization: 'Bearer secret', 'content-type': 'application/json' },
-      body: JSON.stringify({
-        accounts: [
-          { name: 'Ada', lightningAddress: 'guest@walletofsatoshi.com' },
-          { name: 'Bob', lightningAddress: 'other@walletofsatoshi.com' },
-        ],
-      }),
-    });
-    expect(res.status).toBe(400);
-    expect(await res.json()).toEqual({ error: 'Lightning Address could not be resolved' });
-    expect(await store.getAccountByLightningAddress('guest@walletofsatoshi.com')).toBeUndefined();
-    expect(await store.getAccountByLightningAddress('other@walletofsatoshi.com')).toBeUndefined();
+    const messageStore = new InMemoryMessageStore();
+    const ensured = vi.spyOn(messageStore, 'create');
+    await provisionApp(store, messageStore)([{ name: 'Ada', username: 'ada' }]);
+    expect(ensured).not.toHaveBeenCalled();
   });
 
   it('POST /debug/accounts/merge returns 503 when debug is not configured', async () => {

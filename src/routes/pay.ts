@@ -1,25 +1,50 @@
 /**
  * `GET /pay/:username` — public pay-link card (display name, satoshi bounds,
  * and an open till when one is pending).
- * `POST /pay/:username/invoice` — one BOLT11 invoice via `requestGiftInvoice`.
+ * `POST /pay/:username/invoice` — one BOLT11 invoice via `requestGiftInvoice`,
+ * plus a fee-free Spark invoice when free in-app payments are on: the open
+ * till's invoice while a charge is pending, otherwise one for the posted amount.
  *
- * Settlement stays on the member's linked Lightning Address, never
- * `username@21.gifts`. No spend token. An unexpired pending point-of-sale
+ * Settlement goes to the member's receiving address (`receivingAddress`):
+ * their verified wallet, resolved internally against the LNURL server. A
+ * member without one is not found. No spend token. An unexpired pending point-of-sale
  * charge pins both returned sat bounds to that amount; provider metadata
- * used for the millisatoshi check is not mutated.
+ * used for the millisatoshi check is not mutated. Every BOLT11 minted while
+ * that charge is open is recorded against it, so the paid watcher can see it
+ * settle.
  */
 
 import { Hono } from 'hono';
 import { z } from 'zod';
 import type { AuthStore } from '@/lib/auth/store';
+import type { LnurlServerConfig } from '@/lib/config';
 import { decodeBolt11 } from '@/lib/bolt11';
 import { requestGiftInvoice } from '@/lib/gift-invoice';
-import { normalizeLightningAddress } from '@/lib/lightning-address';
 import type { FetchFn } from '@/lib/lnurlp';
 import { resolveLnurlp } from '@/lib/lnurlp';
 import { logEvent } from '@/lib/log';
+import type { PosCharge } from '@/lib/pos-charge';
 import type { PosStore } from '@/lib/pos-store';
+import { lnurlServerFetch, receivingAddress } from '@/lib/receiving-address';
+import { encodeSparkInvoice, uuidV7 } from '@/lib/spark-invoice';
 import { normalizeUsername } from '@/lib/username';
+
+/** Largest Spark invoice memo the Spark operators accept, in UTF-8 bytes. */
+const SPARK_INVOICE_MEMO_MAX_BYTES = 120;
+
+/** Collaborators the `/pay` routes need. */
+interface PayRouteDeps {
+  auth: AuthStore;
+  fetchImpl: FetchFn;
+  posStore: PosStore;
+  now: () => number;
+  /** LNURL server; omitted when off. */
+  lnurlServer?: LnurlServerConfig;
+  /** `true` when free in-app payments are on (Spark invoices on `POST /:username/invoice`). */
+  freePayments?: boolean;
+  /** Random bytes for the Spark invoice id; default `crypto.getRandomValues`. */
+  randomBytes?: (length: number) => Uint8Array;
+}
 
 type PayLookup =
   | {
@@ -29,20 +54,22 @@ type PayLookup =
       address: string;
       minSats: number;
       maxSats: number;
-      metadata: { minSendable: number; maxSendable: number };
+      metadata: { minSendable: number; maxSendable: number; commentAllowed?: number };
       charge: { amountSats: number; expiresAt: string } | null;
+      sparkPubkey: string;
+      pending: PosCharge | null;
     }
   | { ok: false; status: 404 | 502; error: string };
 
 /**
- * Load the member and the linked Lightning Address LNURL-pay satoshi bounds.
+ * Load the member and the LNURL-pay satoshi bounds of their receiving address.
  * After a valid wallet window, an unexpired pending point-of-sale charge
  * pins both sat bounds to that amount and sets `charge`. Provider
  * `minSendable` / `maxSendable` are left unchanged. `currentPending` is
  * not called when account or LNURL resolution already failed.
  *
  * @param rawUsername - Path parameter before normalisation.
- * @param deps - Auth store, LNURL-pay fetch, POS store, and clock.
+ * @param deps - Auth store, LNURL-pay fetch, POS store, clock, and optional LNURL server.
  * @returns Display fields, bounds, and `charge`, or an HTTP error payload.
  */
 async function lookupPayAccount(
@@ -52,6 +79,7 @@ async function lookupPayAccount(
     fetchImpl: FetchFn;
     posStore: PosStore;
     now: () => number;
+    lnurlServer?: LnurlServerConfig;
   },
 ): Promise<PayLookup> {
   const username = normalizeUsername(rawUsername);
@@ -61,17 +89,16 @@ async function lookupPayAccount(
   }
   try {
     const account = await deps.auth.getAccountByUsername(username);
-    const linked = account?.lightningAddress?.trim() ?? '';
-    if (account === undefined || linked === '') {
+    const receiving = account === undefined ? null : receivingAddress(account, deps.lnurlServer);
+    if (account === undefined || receiving === null) {
       logEvent('pay.unknown', { username });
       return { ok: false, status: 404, error: 'Not found' };
     }
-    const address = normalizeLightningAddress(linked);
-    if (address === null) {
-      logEvent('pay.unreachable', { username });
-      return { ok: false, status: 502, error: 'Lightning Address could not be resolved' };
-    }
-    const resolved = await resolveLnurlp({ address, fetchImpl: deps.fetchImpl });
+    const { address, sparkPubkey } = receiving;
+    const resolved = await resolveLnurlp({
+      address,
+      fetchImpl: lnurlServerFetch(deps.lnurlServer, deps.fetchImpl, deps.auth),
+    });
     if (!resolved.ok) {
       logEvent('pay.unreachable', { username });
       return { ok: false, status: 502, error: 'Lightning Address could not be resolved' };
@@ -94,7 +121,18 @@ async function lookupPayAccount(
     const name = trimmedName === '' ? username : trimmedName;
     const pending = await deps.posStore.currentPending(account.id, deps.now());
     if (pending === null) {
-      return { ok: true, username, name, address, minSats, maxSats, metadata, charge: null };
+      return {
+        ok: true,
+        username,
+        name,
+        address,
+        minSats,
+        maxSats,
+        metadata,
+        charge: null,
+        sparkPubkey,
+        pending: null,
+      };
     }
     return {
       ok: true,
@@ -108,6 +146,8 @@ async function lookupPayAccount(
         amountSats: pending.amountSats,
         expiresAt: pending.expiresAt.toISOString(),
       },
+      sparkPubkey,
+      pending,
     };
   } catch {
     logEvent('pay.failed', { username });
@@ -116,17 +156,129 @@ async function lookupPayAccount(
 }
 
 /**
+ * Record a minted BOLT11 against the open charge and, when free in-app
+ * payments are on, return the charge's Spark invoice (issuing it once).
+ *
+ * The Spark invoice charges the charge amount to the shop's verified wallet
+ * key with memo `pos:<chargeId>`; a repeat call returns the stored string.
+ * Store failures log `pos.invoice.record_failed` or
+ * `pos.spark_invoice.issue_failed` and never fail the BOLT11 response.
+ *
+ * @param deps - Route collaborators.
+ * @param pending - The open charge.
+ * @param sparkPubkey - The shop's verified wallet key.
+ * @param paymentHash - Payment hash of the minted BOLT11.
+ * @param issuedAtMs - When the charge was found open, before the mint (epoch ms).
+ * @returns The Spark invoice, or `null`.
+ */
+async function attachToCharge(
+  deps: PayRouteDeps,
+  pending: PosCharge,
+  sparkPubkey: string,
+  paymentHash: string,
+  issuedAtMs: number,
+): Promise<string | null> {
+  try {
+    await deps.posStore.recordInvoice(pending.id, paymentHash, issuedAtMs);
+  } catch {
+    logEvent('pos.invoice.record_failed', { accountId: pending.accountId });
+  }
+  if (deps.freePayments !== true) {
+    return null;
+  }
+  const randomBytes =
+    deps.randomBytes ?? ((length: number) => crypto.getRandomValues(new Uint8Array(length)));
+  const invoice =
+    pending.sparkInvoice ??
+    encodeSparkInvoice({
+      identityPublicKey: sparkPubkey,
+      id: uuidV7(issuedAtMs, randomBytes(10)),
+      memo: `pos:${pending.id}`,
+      amountSats: pending.amountSats,
+    });
+  try {
+    return await deps.posStore.issueSparkInvoice(pending.id, invoice, issuedAtMs);
+  } catch {
+    logEvent('pos.spark_invoice.issue_failed', { accountId: pending.accountId });
+    return null;
+  }
+}
+
+/**
+ * Memo for a Spark invoice without a charge: the trimmed comment, cut to
+ * `commentAllowed` characters (missing is 0) and then to
+ * {@link SPARK_INVOICE_MEMO_MAX_BYTES} UTF-8 bytes, never inside a character.
+ *
+ * @param comment - The posted `comment`; anything but a string is no comment.
+ * @param commentAllowed - The member's LNURL-pay `commentAllowed`.
+ * @returns The memo, or `undefined` when nothing is left.
+ */
+function sparkMemo(comment: unknown, commentAllowed: number | undefined): string | undefined {
+  const maxChars = commentAllowed ?? 0;
+  if (typeof comment !== 'string' || maxChars <= 0) {
+    return undefined;
+  }
+  const encoder = new TextEncoder();
+  let memo = '';
+  let chars = 0;
+  let bytes = 0;
+  // Walk the comment lazily so a long body never becomes one array.
+  for (const char of comment.trim()) {
+    bytes += encoder.encode(char).byteLength;
+    if (chars === maxChars || bytes > SPARK_INVOICE_MEMO_MAX_BYTES) {
+      break;
+    }
+    memo += char;
+    chars += 1;
+  }
+  return memo === '' ? undefined : memo;
+}
+
+/**
+ * Spark invoice for an amount with no open charge, when free in-app
+ * payments are on: the member's verified wallet key, exactly `amountSats`,
+ * and the memo from {@link sparkMemo} (built only when the feature is on).
+ * Not stored; nothing waits for it.
+ *
+ * @param deps - Route collaborators.
+ * @param sparkPubkey - The member's verified wallet key.
+ * @param amountSats - Accepted amount in whole sats.
+ * @param comment - The posted `comment`, unchecked.
+ * @param commentAllowed - The member's LNURL-pay `commentAllowed`.
+ * @param issuedAtMs - Clock for the invoice id (epoch ms).
+ * @returns The Spark invoice, or `null` when free in-app payments are off.
+ */
+function memberSparkInvoice(
+  deps: PayRouteDeps,
+  sparkPubkey: string,
+  amountSats: number,
+  comment: unknown,
+  commentAllowed: number | undefined,
+  issuedAtMs: number,
+): string | null {
+  if (deps.freePayments !== true) {
+    return null;
+  }
+  const memo = sparkMemo(comment, commentAllowed);
+  const randomBytes =
+    deps.randomBytes ?? ((length: number) => crypto.getRandomValues(new Uint8Array(length)));
+  return encodeSparkInvoice({
+    identityPublicKey: sparkPubkey,
+    id: uuidV7(issuedAtMs, randomBytes(10)),
+    ...(memo === undefined ? {} : { memo }),
+    amountSats,
+  });
+}
+
+/**
  * Build the `/pay` route group.
  *
- * @param deps - Auth store, fetch, POS store, and clock. All required.
+ * @param deps - Auth store, fetch, POS store, and clock (required), the
+ *   optional LNURL server (omitted when it is off), `freePayments` (Spark
+ *   invoices), and optional randomness.
  * @returns Hono app with `GET /:username` and `POST /:username/invoice`.
  */
-export function payRoutes(deps: {
-  auth: AuthStore;
-  fetchImpl: FetchFn;
-  posStore: PosStore;
-  now: () => number;
-}): Hono {
+export function payRoutes(deps: PayRouteDeps): Hono {
   return new Hono()
     .get('/:username', async (c) => {
       const lookup = await lookupPayAccount(c.req.param('username'), deps);
@@ -152,7 +304,9 @@ export function payRoutes(deps: {
       } catch {
         return c.json({ error: 'Enter a whole number of sats' }, 400);
       }
-      const parsed = z.object({ amountSats: z.number().int() }).safeParse(body);
+      const parsed = z
+        .object({ amountSats: z.number().int(), comment: z.unknown().optional() })
+        .safeParse(body);
       if (!parsed.success) {
         return c.json({ error: 'Enter a whole number of sats' }, 400);
       }
@@ -165,10 +319,11 @@ export function payRoutes(deps: {
       if (((outsideSat ? 1 : 0) | (belowMsat ? 1 : 0) | (aboveMsat ? 1 : 0)) !== 0) {
         return c.json({ error: 'Enter a whole number of sats' }, 400);
       }
+      const issuedAtMs = deps.now();
       const invoice = await requestGiftInvoice({
         address,
         amountMsat,
-        fetchImpl: deps.fetchImpl,
+        fetchImpl: lnurlServerFetch(deps.lnurlServer, deps.fetchImpl, deps.auth),
       });
       if (!invoice.ok) {
         logEvent('pay.invoice_failed', { username });
@@ -179,7 +334,25 @@ export function payRoutes(deps: {
         logEvent('pay.invoice_failed', { username });
         return c.json({ error: 'Lightning Address could not be resolved' }, 502);
       }
+      // The till pin makes any accepted amount the charge amount.
+      const sparkInvoice =
+        lookup.pending === null
+          ? memberSparkInvoice(
+              deps,
+              lookup.sparkPubkey,
+              amountSats,
+              parsed.data.comment,
+              metadata.commentAllowed,
+              issuedAtMs,
+            )
+          : await attachToCharge(
+              deps,
+              lookup.pending,
+              lookup.sparkPubkey,
+              decoded.paymentHash,
+              issuedAtMs,
+            );
       logEvent('pay.invoice', { username, amountSats });
-      return c.json({ pr: invoice.pr, amountSats });
+      return c.json({ pr: invoice.pr, amountSats, sparkInvoice });
     });
 }

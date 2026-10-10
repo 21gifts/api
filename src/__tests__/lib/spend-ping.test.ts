@@ -9,7 +9,7 @@ import { InMemoryGiftStore } from '@/lib/gift-store';
 import type { FetchFn } from '@/lib/lnurlp';
 import { HttpSpendPing, NoopSpendPing, resolveSpendPing } from '@/lib/spend-ping';
 
-const ADDRESS = 'ada@walletofsatoshi.com';
+const ADDRESS = 'ada@example.com';
 const MESSAGE_ID = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
 const TOKEN = 'spend-secret-token';
 const SPEND_URL = 'https://spend.example';
@@ -463,7 +463,7 @@ describe('HttpSpendPing', () => {
       fetchImpl,
       rosterStore: writtenStore({
         comment: 'thanks',
-        recipients: [{ address: 'Ada@WalletOfSatoshi.com', amountUsd: 2 }],
+        recipients: [{ address: 'Ada@Example.com', amountUsd: 2 }],
       }),
     }).ping(ADDRESS, MESSAGE_ID);
     expect(seenInit?.body).toBe(

@@ -5,6 +5,7 @@ import {
   giftsForRecipient,
   isUtcDay,
   mapGiftQueryRow,
+  WELCOME_GIFT_DESCRIPTION,
   utcDayFromPaidAt,
   type GiftRow,
 } from '@/lib/gift';
@@ -149,6 +150,22 @@ describe('mapGiftQueryRow', () => {
     expect(mapped.amountSats).toBe(42);
     expect(mapped.recipientWosUser).toBe('bob');
     expect(mapped.kind).toBe('moderator');
+    expect(mapped.description).toBeUndefined();
+  });
+
+  it('carries the stored description when selected', () => {
+    const mapped = mapGiftQueryRow({
+      paid_at: '2026-06-01T12:00:00.000Z',
+      amount_sats: 1,
+      recipient_wos_user: 'bob',
+      kind: 'welcome',
+      description: WELCOME_GIFT_DESCRIPTION,
+      fiat_usd: null,
+      fiat_chf: null,
+      fiat_eur: null,
+      fiat_php: null,
+    });
+    expect(mapped.description).toBe('21gifts welcome');
   });
 });
 
@@ -169,7 +186,7 @@ describe('giftsForRecipient', () => {
   });
 
   it('uses the local-part when indexOf("@") > 0', () => {
-    expect(giftsForRecipient(rows, 'alice@walletofsatoshi.com')).toEqual([alice, aliceCaps]);
+    expect(giftsForRecipient(rows, 'alice@example.com')).toEqual([alice, aliceCaps]);
   });
 
   it('uses the whole string when "@" is at index 0', () => {

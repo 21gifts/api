@@ -15,6 +15,7 @@ import type { FetchFn } from '@/lib/lnurlp';
 import { InMemoryMessageStore } from '@/lib/message-store';
 import { fundingRoutes } from '@/routes/funding';
 import { createApp } from '@/server';
+import { LNURL_SERVER, WALLET_PUBKEY } from '@/__tests__/helpers/wallet-lnurl';
 
 const now = (): number => 1_700_000_000_000;
 const FOUNDER = '11111111-1111-4111-8111-111111111111';
@@ -83,8 +84,6 @@ function account(partial: Pick<Account, 'id' | 'role'> & Partial<Account>): Acco
   return {
     linkingKey: null,
     name: partial.name ?? partial.id,
-    lightningAddress: null,
-    lightningAddressVerified: false,
     forumLawsDismissed: false,
     location: null,
     viewKey: `${partial.id.replace(/-/g, '')}${'a'.repeat(64)}`.slice(0, 64),
@@ -92,6 +91,25 @@ function account(partial: Pick<Account, 'id' | 'role'> & Partial<Account>): Acco
     rulesAgreedAt: now(),
     ...partial,
   };
+}
+
+/**
+ * Give an account a verified wallet so it receives on `<username>@example.test`.
+ *
+ * @param authStore - Store holding the account.
+ * @param id - Account id (its own wallet key is derived from it).
+ * @param username - Lower-case username.
+ */
+async function verifyWallet(
+  authStore: InMemoryAuthStore,
+  id: string,
+  username: string,
+): Promise<void> {
+  const pubkey = `02${id.replace(/-/g, '').padEnd(64, '0')}`;
+  await authStore.claimSparkPubkey(id, pubkey);
+  if (!(await authStore.markSparkPubkeyVerified(id, pubkey, username, 2))) {
+    throw new Error('wallet not verified');
+  }
 }
 
 async function seeded(): Promise<InMemoryAuthStore> {
@@ -149,6 +167,7 @@ function mount(
       messageStore: new InMemoryMessageStore(),
       now,
       gifts: new InMemoryGiftStore(),
+      lnurlServer: LNURL_SERVER,
       ...(rosterStore === undefined ? {} : { rosterStore }),
       ...(spendApiToken === undefined ? {} : { spendApiToken }),
     }),
@@ -291,9 +310,11 @@ describe('daily payout roster routes', () => {
       account({
         id: memberId,
         role: 'verified',
-        lightningAddress: 'hide-me@example.com',
+        username: 'hide-me',
+        walletRequired: true,
       }),
     );
+    await verifyWallet(authStore, memberId, 'hide-me');
     const res = await post(
       mount(
         authStore,
@@ -310,9 +331,9 @@ describe('daily payout roster routes', () => {
     );
     expect(res.status).toBe(400);
     expect(await res.json()).toEqual({ error: 'Address already listed' });
-    expect(seen).toEqual({ address: 'hide-me@example.com', amountUsd: 5 });
+    expect(seen).toEqual({ address: 'hide-me@example.test', amountUsd: 5 });
     const logged = JSON.stringify(parsedEvents(warn));
-    expect(logged).not.toContain('hide-me@example.com');
+    expect(logged).not.toContain('hide-me@example.test');
     expect(logged).not.toContain(memberId);
     expect(logged).not.toContain('test-token');
   });
@@ -340,17 +361,16 @@ describe('daily payout roster routes', () => {
     expect(called).toBe(false);
   });
 
-  it('returns 400 Person has no Lightning address and does not call spend when the address is blank', async () => {
+  it('returns 400 Person has no Lightning address and does not call spend without a verified wallet', async () => {
     let called = false;
     const authStore = await seeded();
     const noneId = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
     const blankId = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd';
+    await authStore.createAccount(account({ id: noneId, role: 'verified', username: 'none' }));
     await authStore.createAccount(
-      account({ id: noneId, role: 'verified', lightningAddress: null }),
+      account({ id: blankId, role: 'verified', username: 'blank', walletRequired: true }),
     );
-    await authStore.createAccount(
-      account({ id: blankId, role: 'verified', lightningAddress: '   ' }),
-    );
+    await authStore.claimSparkPubkey(blankId, WALLET_PUBKEY);
     const app = mount(
       authStore,
       fakeStore({
@@ -371,7 +391,7 @@ describe('daily payout roster routes', () => {
     expect(called).toBe(false);
   });
 
-  it('trims the stored Lightning address and does not lowercase it', async () => {
+  it('adds the wallet address of the person', async () => {
     let seen: { address: string; amountUsd: number } | undefined;
     const authStore = await seeded();
     const memberId = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee';
@@ -379,9 +399,11 @@ describe('daily payout roster routes', () => {
       account({
         id: memberId,
         role: 'verified',
-        lightningAddress: '  Hide-Me@Example.com  ',
+        username: 'hide-me',
+        walletRequired: true,
       }),
     );
+    await verifyWallet(authStore, memberId, 'hide-me');
     const res = await post(
       mount(
         authStore,
@@ -397,7 +419,7 @@ describe('daily payout roster routes', () => {
       { accountId: memberId, amountUsd: 5 },
     );
     expect(res.status).toBe(200);
-    expect(seen).toEqual({ address: 'Hide-Me@Example.com', amountUsd: 5 });
+    expect(seen).toEqual({ address: 'hide-me@example.test', amountUsd: 5 });
   });
 
   it('returns 502 when loading the person throws and does not call spend', async () => {
@@ -409,7 +431,6 @@ describe('daily payout roster routes', () => {
         id: memberId,
         role: 'verified',
         name: 'Leaked Name',
-        lightningAddress: 'hide-me@example.com',
       }),
     );
     const inner = authStore.getAccount.bind(authStore);
@@ -671,7 +692,7 @@ describe('daily payout roster routes', () => {
     expect(await res.json()).toEqual(PUBLIC_ROSTER);
   });
 
-  it('adds account id and trimmed name for a matching lightning address', async () => {
+  it('adds account id and trimmed name for a matching wallet address', async () => {
     const authStore = await seeded();
     const memberId = '88888888-8888-4888-8888-888888888888';
     await authStore.createAccount(
@@ -679,17 +700,19 @@ describe('daily payout roster routes', () => {
         id: memberId,
         role: 'verified',
         name: '  Ada  ',
-        lightningAddress: '  ADA@example.com  ',
+        username: 'ada',
+        walletRequired: true,
       }),
     );
+    await verifyWallet(authStore, memberId, 'ada');
     const roster: DailyRosterDocument = {
       comment: 'thanks',
       paymentsEnabled: true,
       defaultAmountUsd: 1,
       moderatorPaymentsEnabled: true,
       recipients: [
-        { address: 'ada@example.com', amountUsd: 1 },
-        { address: 'unknown@example.com', amountUsd: 2 },
+        { address: 'ADA@example.test', amountUsd: 1 },
+        { address: 'unknown@example.test', amountUsd: 2 },
       ],
       moderators: [],
     };
@@ -704,15 +727,14 @@ describe('daily payout roster routes', () => {
       paymentsEnabled: true,
       defaultAmountUsd: 1,
       recipients: [
-        { address: 'ada@example.com', amountUsd: 1, accountId: memberId, name: 'Ada' },
-        { address: 'unknown@example.com', amountUsd: 2, accountId: null, name: null },
+        { address: 'ADA@example.test', amountUsd: 1, accountId: memberId, name: 'Ada' },
+        { address: 'unknown@example.test', amountUsd: 2, accountId: null, name: null },
       ],
     });
     const events = parsedEvents(warn).filter((event) => event['event'] === 'funding.daily_roster');
     expect(events).toEqual([expect.objectContaining({ accountId: FOUNDER, action: 'read' })]);
     const logged = JSON.stringify(events);
-    expect(logged).not.toContain('ada@example.com');
-    expect(logged).not.toContain('unknown@example.com');
+    expect(logged).not.toContain('example.test');
     expect(logged).not.toContain(memberId);
     expect(logged).not.toContain('Ada');
   });
@@ -1113,7 +1135,6 @@ describe('daily payout roster routes', () => {
         id: '88888888-8888-4888-8888-888888888888',
         role: 'verified',
         name: 'Ada',
-        lightningAddress: 'ada@example.com',
       }),
     );
     const store = new InMemoryDailyRosterStore();

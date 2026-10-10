@@ -53,7 +53,9 @@ It handles everything that doesn't have to run client-side:
 
 It explicitly **does not** hold keys or sign events for the non-custodial
 target (v1 signs custodial identities server-side). Guest Donate LNURL-pay
-stays in the browser; the spend-worker path is the exception
+is paid in the browser; for a member's wallet address this api forwards the
+LNURL metadata and invoice callback, so it sees the amount and the invoice,
+but it never pays or holds funds. The spend-worker path is the exception
 (`POST /invoices` fetches a recipient BOLT11, this api still does not pay).
 
 ## Stack
