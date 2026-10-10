@@ -1075,13 +1075,15 @@ function consolidateFunding() {
 /**
  * Pay one chunk from the funding wallet. The whole amount is tried first.
  * Spark often cannot select leaves for that exact size, so the next try is
- * the next smaller power of two. Zero means nothing moved.
+ * the next smaller power of two. Zero means nothing moved. A payment whose
+ * helper reports a failure can still arrive, so after each failure the
+ * giver's balance is read again and what arrived counts as moved.
  *
- * @param {string} role
+ * @param {{ role: string, sats: number }} giver
  * @param {number} left
  * @returns {number}
  */
-function payFundingChunk(role, left) {
+function payFundingChunk(giver, left) {
   /** @type {number[]} */
   const sizes = [left];
   let chunk = 2 ** Math.floor(Math.log2(left));
@@ -1093,7 +1095,7 @@ function payFundingChunk(role, left) {
     chunk /= 2;
   }
   for (const size of sizes) {
-    const invoiced = sparkTry(['invoice', role, String(size)]);
+    const invoiced = sparkTry(['invoice', giver.role, String(size)]);
     if (!invoiced.ok) {
       continue;
     }
@@ -1104,6 +1106,10 @@ function payFundingChunk(role, left) {
     const paid = sparkTry(['pay', 'funding', request]);
     if (paid.ok) {
       return size;
+    }
+    const arrived = left - shortfall(giver);
+    if (arrived > 0) {
+      return arrived;
     }
   }
   return 0;
@@ -1128,6 +1134,9 @@ function fundGiverWallets() {
           sparkTry(['consolidate', 'funding']);
           invoice = spark(['invoice', giver.role, String(left)]).trim();
           paid = sparkTry(['pay', 'funding', invoice]);
+          if (!paid.ok) {
+            left = shortfall(giver);
+          }
         }
       }
       if (paid.ok) {
@@ -1139,7 +1148,7 @@ function fundGiverWallets() {
           `funding could not pay ${left} in one payment: ${lastLine(paid.error)}; splitting\n`,
         );
         for (left = shortfall(giver); left > 0; left = shortfall(giver)) {
-          const size = payFundingChunk(giver.role, left);
+          const size = payFundingChunk(giver, left);
           if (size === 0) {
             fail(`could not fund ${giver.role}, ${left} still to send`);
           }

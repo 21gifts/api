@@ -572,14 +572,17 @@ async def sweep_one_fresh(
 ) -> int | None:
     """Try every amount up to ``seen``, each on a fresh connection.
 
-    Returns the sats sent, or None when nothing moved or less than
-    ``ATTEMPT_RESERVE_S`` is left before ``deadline``.
+    Returns the sats sent, or None when nothing moved, a refused size left
+    leaves reserved, or less than ``ATTEMPT_RESERVE_S`` is left before
+    ``deadline``.
     """
     for amount in range(seen, 0, -1):
         if seconds_left(deadline) < ATTEMPT_RESERVE_S:
             return None
         if await send_fresh(role, secret, address, amount):
             return amount
+        if leaf_values(role, reserved=True):
+            return None
     return None
 
 
