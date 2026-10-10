@@ -17,8 +17,8 @@ quote, an amount, or a payment. The string does not grow a second address,
 and the window sticker does not change.
 
 The QR is `https://<domain>/pl/?lightning=<LNURL>`. That LNURL is the shop's
-existing pay link: `https://<domain>/.well-known/lnurlp/<username>`. A wallet
-scans this same code. The page does not mint another one.
+existing pay link: `https://<domain>/.well-known/lnurlp/<username>`. It is
+the only QR. It is printed on the sticker at the shop.
 
 A Lightning wallet keeps paying that LNURL as today. A browser that opens the
 same QR shows the payment page below. An OpenCryptoPay wallet that reads the
@@ -55,10 +55,10 @@ chain is not a payment. The page may group the chains of one asset under one
 label. The amount that must be paid is still the amount of that chain and
 that asset.
 
-The QR on that page is the shop and cashier QR above. It is not replaced by
-a code for the quote. A compatible app scans the same code it would scan
-from the sticker. A Lightning wallet pays the same sats through that same
-pay link.
+The page shows no QR. A wallet reaches this payment in one of two ways.
+It scans the sticker at the shop, or the person opens this page from that
+sticker and the page opens the wallet by a deeplink. Both ways use the one
+link above. There is no second QR.
 
 The page reads and shows what the api returns. It does not ask Orchestra
 itself, it does not hold a key, and it does not mark the payment paid.
@@ -163,8 +163,8 @@ pins the pay link. No zap, gift, or message is written for a till payment.
 
 ## What this does not do
 
-- No second sticker, no second address in the sticker string, and no QR
-  that changes per quote or per payment.
+- No second QR, on the page or anywhere else. The only QR is the sticker
+  at the shop. It does not change per quote or per payment.
 - No USDT or USDC balance for the shop or the member.
 - No phone in the quote, the delivery, or the paid mark. The 12 words stay
   on the phone and are not read for this payment. The delivery address is
