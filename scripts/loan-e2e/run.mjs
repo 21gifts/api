@@ -1177,6 +1177,9 @@ function payFundingChunk(giver, left) {
       const arrived = left - settled.left;
       return { moved: arrived > 0 ? arrived : size, measured: null };
     }
+    if (settled.via === 'short' && settled.left < left) {
+      return { moved: left - settled.left, measured: settled.left };
+    }
   }
   return { moved: 0, measured: null };
 }
