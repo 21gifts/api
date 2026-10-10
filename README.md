@@ -113,7 +113,7 @@ bun run e2e             # Playwright against bun src/index.ts
 | [`SPEC.md`](./SPEC.md)                                       | Implemented HTTP surface (request/response contracts)                                                                    |
 | [`FLOWS.md`](./FLOWS.md)                                     | Core UI journeys (sign-in → profile → donate → recurring → message)                                                      |
 | [`docs/social-recovery.md`](./docs/social-recovery.md)       | Optional securing of the account by choosing two people (concept only, not implemented)                                  |
-| [`docs/shop-spark-payment.md`](./docs/shop-spark-payment.md) | USDT or USDC on the shop QR settles as bitcoin on the shop Spark wallet (concept only, not implemented) |
+| [`docs/shop-spark-payment.md`](./docs/shop-spark-payment.md) | USDT or USDC on the shop QR settles as bitcoin on the shop Spark wallet (specified, not implemented) |
 | [`docs/handbook/`](./docs/handbook/)                         | Mandatory: every function and HTTP endpoint                                                                              |
 | [`CONTRIBUTING.md`](./CONTRIBUTING.md)                       | Dev setup, conventions, workflow                                                                                         |
 | [`SECURITY.md`](./SECURITY.md)                               | Reporting vulnerabilities                                                                                                |

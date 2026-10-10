@@ -1,9 +1,9 @@
 # Shop payment in USDT and USDC
 
-Status: **concept only**. Decided 2026-10-01. Corrected 2026-10-10. Not
-implemented. No HTTP path in this document is reserved. The change that
-builds this adds its routes, fields, and id formats to `SPEC.md` in that
-same change. Nothing here changes runtime behaviour.
+Status: **specified, not implemented**. Decided 2026-10-01. Names fixed
+2026-10-10. The names in this document are the contract. The routes are
+not mounted, and `SPEC.md` does not list them. Nothing here changes
+runtime behaviour.
 
 A payer may settle a shop payment in USDT or USDC. The shop receives
 bitcoin on its own Spark wallet and does not hold either stablecoin. The
@@ -32,6 +32,198 @@ OpenCryptoPay payment succeeded.
 **Paid** means those sats are on the Spark address stored for the shop.
 The api records paid when Orchestra has delivered them. Acceptance does
 not record paid.
+
+## Names
+
+These names are the contract. Nothing in this section is mounted.
+`SPEC.md` lists a route only after the change that implements it.
+
+### Spark address
+
+`account.spark_address` is nullable text. The quote reads it. It is not
+derived from `spark_pubkey`, and the api does not encode a Spark address.
+A usable value decodes to that account's `spark_pubkey` and its protobuf
+has no field 2. Any other value is a missing address. The decoder used
+today does not report field 2. The change that stores the column rejects
+a value that has field 2. It does not add an encoder.
+
+A missing address is the same as a missing Orchestra key. The pay link
+serves no stablecoin amount, and Lightning is unchanged.
+
+This payment does not write the column, and it does not ask the phone.
+The 12 words are not read. There is no new route whose purpose is to
+collect the address.
+
+`PUT /me/wallet` remains the only wallet write. The body gains an
+optional string `sparkAddress` beside `sparkPubkey`. On the first claim,
+a usable `sparkAddress` for that pubkey is stored, and a missing
+`sparkAddress` leaves the column null. A present value that is not usable
+is **400** `{ "error": "Expected a Spark address for this wallet" }` and
+the pubkey is not claimed. Once the wallet is connected, the same call
+stores a usable `sparkAddress` when `sparkPubkey` equals the stored key,
+and it does not replace that key. A body with no `sparkAddress` stays
+**409** `{ "error": "Wallet is already connected" }`. A different pubkey
+stays that same 409 and writes nothing. An open payment keeps the address
+copied at its creation.
+
+The owner account JSON includes `sparkAddress` when the column is stored,
+and omits it when null. No public pay response includes it. `recipient`
+has a name and no address.
+
+### Identifiers
+
+`quote.id` and `quote.payment` are UUIDs from `crypto.randomUUID()`, the
+same shape as `pos_charge.id`. The stored form is lowercase hexadecimal,
+eight-four-four-four-twelve. Neither id has a prefix. `quote.payment` is
+not an amount. `quote.expiration` is UTC, millisecond precision, with a
+`Z` suffix, the same form `GET /pay/:username` uses for `expiresAt`. It
+is the expiry Orchestra returns for that quote. A quote for an open till
+charge also ends when the charge ends, if that is sooner.
+
+A query value that is not that UUID form, compared case-insensitively, is
+an unknown id.
+
+### Pay link
+
+The payment id on the pay link is the query parameter `payment`. The URL
+is `https://<domain>/.well-known/lnurlp/<username>?payment=<uuid>`. The
+path stays `/.well-known/lnurlp/<username>`. This parameter is not the
+`quote` parameter on `callback`.
+
+### Callback and proof
+
+When no amount is known, `callback` stays
+`<PUBLIC_BASE_URL>/lnurlp/<username>/invoice`. That URL has no `/cb`
+segment.
+
+When an amount is known and stablecoin rows are served, `callback` is
+`<PUBLIC_BASE_URL>/lnurlp/cb/<username>/<payment>`. The proof URL is
+`<PUBLIC_BASE_URL>/lnurlp/tx/<username>/<payment>`. The segments `cb` and
+`tx` are literal. `<payment>` is `quote.payment`, not `quote.id`, so a
+refreshed quote keeps the same callback. Replacing the segment `/cb/`
+with `/tx/` leaves the username and the payment id in place. The callback
+has no query string. A wallet appends its query itself. Neither URL is
+`…/lnurlp/<username>/invoice`. `GET /lnurlp/:username/invoice` does not
+take these calls.
+
+`GET /.well-known/lnurlp/:username`, `GET /lnurlp/cb/:username/:payment`,
+and `GET /lnurlp/tx/:username/:payment` take no session. They use the
+headers the pay link already sends: `Access-Control-Allow-Origin: *`,
+`Access-Control-Allow-Methods: GET, OPTIONS`, and
+`Cache-Control: no-store`.
+
+### Opening a payment
+
+`POST /pay/:username/payment` opens a payment for the page. No session.
+The body is `{ "amountSats": <integer> }`. The amount uses the same
+window as `POST /pay/:username/invoice`. An amount the page would already
+refuse is **400** `{ "error": "Enter a whole number of sats" }`. An
+unknown username or a shop with no verified receiving address is **404**
+`{ "error": "Not found" }`. CORS is the page's existing origin list, the
+same as `POST /pay/:username/invoice`, not `*`.
+
+The call writes a row only when the Orchestra key is configured and
+`account.spark_address` is usable. Otherwise it writes nothing and
+returns **503** `{ "error": "Stablecoin payment is unavailable" }`.
+
+While a till charge is open, the amount is that charge. The call returns
+the one payment for that charge, creating it if it does not exist yet. A
+second call returns the same id. With no till charge, each call creates
+a new payment. It does not pin the pay link, it does not block the next
+payer, and it is not a till charge.
+
+**Response** `200` `{ "payment": "<uuid>" }`. The page builds the
+deeplink from the pay link plus `?payment=` and that id.
+
+### Rows
+
+A till charge is not the payment row. `quote.payment` is always
+`shop_payment.id`. A page payment has no `pos_charge_id`. `pos_charge` is
+not reused for a page payment.
+
+`shop_payment` stores one payment. `id` is `quote.payment`. `account_id`
+references `account`. `amount_sats` is a whole sat count of at least 1.
+`status` is `open`, `accepted`, `paid`, or `ended`. `pos_charge_id` is
+nullable, unique, and references `pos_charge` when set. More than one
+null is allowed, so several page payments can exist together. `spark_address`
+is the usable address copied at creation. `created_at` is set.
+`accepted_at` is set only for `accepted` and `paid`. `paid_at` is set
+only for `paid`. `ended_at` is set only for `ended`. A payment does not
+move from `accepted` to `ended`.
+
+`shop_quote` stores one quote. `id` is `quote.id`. `payment_id`
+references `shop_payment`. `expires_at` is `quote.expiration`.
+`transfer_amounts` is the JSON array that quote served, so a later price
+cannot rewrite it. `provider_ref` is the reference Orchestra returned for
+that quote. It is stored as text, it is not parsed, and it is not shown
+to the wallet. `created_at` is set.
+
+`open` serves the current quote. A lapsed quote is replaced by a new
+`shop_quote` for the same sats. The payment id does not change. A page
+payment stays `open` across those refreshes until it is accepted. A till
+payment moves to `ended` when its charge ends while the payment is still
+`open`.
+
+The implementing change adds these tables. This document does not migrate
+them.
+
+### Bitcoin quantity
+
+The Lightning asset amount in `transferAmounts` is a decimal string built
+from the integer sat count divided by 100000000. One sat is
+`0.00000001`. 100000000 sats is `1`. The string has no exponent.
+`requestedAmount.amount` is that same quantity as a JSON number.
+`requestedAmount.asset` is `BTC`. The string is not formatted from the
+JSON number. `minSendable` and `maxSendable` are both that sat count in
+millisats, the sat count times 1000.
+
+The api does not invent a fee. The api does not invent a chain. Lightning
+`minFee` is the number 0.
+
+### Errors on the pay link
+
+An unknown payment id, or a payment whose status is `ended`, returns the
+Lightning pay request the pay link already serves. Not **404**. Not the
+till amount. `method` and `asset` on that call do not change this.
+
+After `accepted` or `paid`, that payment id returns no `available` entry
+whose value is true, and the response is not that Lightning pay request.
+`method` and `asset` on that call are **400**
+`{ "error": "That payment is not offered" }`.
+
+### Errors on callback and proof
+
+An unknown username, or a shop with no verified receiving address, is
+**404** `{ "error": "Not found" }`.
+
+On `GET /lnurlp/cb/:username/:payment` or
+`GET /lnurlp/tx/:username/:payment`, an unknown payment, a payment for
+another username, an unknown quote, a quote for another payment, or an
+expired quote is **400** `{ "error": "No such quote" }`. It is not served
+as another quote.
+
+A `method` and `asset` pair the quote does not offer is **400**
+`{ "error": "That payment is not offered" }`.
+
+A proof the quote does not accept, or a transfer Orchestra has not
+accepted, is **400** `{ "error": "Payment was not accepted" }`. The same
+proof may be sent again while that quote is still valid. The error does
+not ask for a second payment.
+
+None of these bodies is the 404 a different provider returns when no fiat
+amount is waiting.
+
+A proof Orchestra has accepted is **200** `{ "txId": "<id>" }`. `txId` is
+the reference Orchestra accepted. It is not the payer's transaction hash.
+The call does not wait for bitcoin to arrive. A repeat after acceptance
+is **200** and does not create a second payment.
+
+A Lightning call on `GET /lnurlp/cb/:username/:payment` has no `method`.
+It sends `amount` in millisats. When that amount is the fixed sat count
+times 1000, the response is `{ "pr": "<bolt11>" }` for those sats. A
+missing or different amount is **400**
+`{ "error": "Enter a whole number of sats" }` and mints no invoice.
+Variable invoices stay on `GET /lnurlp/:username/invoice`.
 
 ## Standard and settlement
 
@@ -100,8 +292,8 @@ accepted, the page requests the next quote for the same sats.
 The page shows no QR. It opens a compatible wallet by a deeplink for the
 quote the api just returned. The deeplink is not printed and is not shown
 as a code. The printed sticker's LNURL encodes the pay link with no payment
-id. The deeplink encodes that same pay link with the payment id as a
-query parameter, so a wallet that only decodes the LNURL and fetches it
+id. The deeplink encodes that same pay link with `?payment=` and the
+payment UUID, so a wallet that only decodes the LNURL and fetches it
 sends the id. The wallet is not given a second address. A fetch without
 that id does not receive another payer's payment. While that payment is
 open and not yet accepted, a later fetch of the same URL returns the
@@ -126,36 +318,37 @@ scans the sticker does not see a quote another payer opened on the page.
 
 ### A known amount
 
-An open till charge is a known amount. The response is the pay request
-below, with no payment id on the request.
+An open till charge is a known amount. When stablecoin rows are served,
+the response is the pay request below, with no payment id on the request.
+Otherwise the pay link keeps today's pinned Lightning request, and its
+callback stays `/lnurlp/<username>/invoice`.
 
-A request that carries a payment id returns the current quote for that
-payment while it is open. A lapsed quote is replaced by a quote for the
-same sats, and the response carries the new quote id. The payment id
-is a query parameter on the pay link. The path stays
-`/.well-known/lnurlp/<username>`. The build names that parameter in
-`SPEC.md`. It is not the `quote` parameter on `callback`. An unknown id,
-or a payment that ended without being accepted, is not served as some
-other amount, including an open till charge. The caller receives the
-Lightning pay request above. After the transfer is accepted, a fetch of
-that payment id does not offer a new payable amount: no `available`
-entry is true, and the response is not the Lightning pay request above.
+A request that carries `payment` returns the current quote for that
+payment while it is `open`. A lapsed quote is replaced by a quote for the
+same sats, and the response carries the new `quote.id`. The path stays
+`/.well-known/lnurlp/<username>`. `payment` is not the `quote` parameter
+on `callback`. An unknown id, or a payment that ended without being
+accepted, is not served as some other amount, including an open till
+charge. The caller receives the Lightning pay request above. After the
+transfer is accepted, a fetch of that payment id does not offer a new
+payable amount: no `available` entry is true, and the response is not
+the Lightning pay request above.
 
 For a known amount the pay request contains:
 
 | Field | Value |
 | --- | --- |
 | `tag` | `payRequest` |
-| `callback` | transaction-details URL; its path contains the segment `/cb/` |
+| `callback` | `<PUBLIC_BASE_URL>/lnurlp/cb/<username>/<payment>` |
 | `minSendable`, `maxSendable` | both that sat amount in millisats |
 | metadata | unchanged |
 | `displayName` | the shop name the payment page already shows |
 | `recipient.name` | the same shop name |
 | `standard` | `OpenCryptoPay` |
 | `displayQr` | `false` |
-| `quote.id` | id of this quote |
-| `quote.expiration` | expiry |
-| `quote.payment` | id of the payment this quote belongs to |
+| `quote.id` | UUID of this quote |
+| `quote.expiration` | expiry, UTC, as named above |
+| `quote.payment` | UUID of the payment this quote belongs to |
 | `requestedAmount` | asset `BTC`; `amount` is a number, the bitcoin quantity of those sats, equal to the Lightning asset amount |
 | `transferAmounts` | Lightning BTC for those sats, then one entry per chain Orchestra quoted, with the USDT amount, the USDC amount, or both |
 
@@ -166,9 +359,8 @@ Lightning's `minFee` is 0. The pay link adds no fee of its own. Each
 asset amount in `transferAmounts` is a decimal string. `available` is
 true only for a pair the wallet may pay. No other asset is listed.
 
-The change that builds this chooses the format of `quote.id` and
-`quote.payment` in `SPEC.md`. Both are ids of this api. `quote.payment`
-is not an amount. The pay link's path does not change.
+Both ids are of this api. `quote.payment` is not an amount. The pay
+link's path does not change.
 
 ### Transaction
 
@@ -190,13 +382,15 @@ served as another quote.
 
 The wallet pays the instruction. Where the standard requires a proof for
 that method, the wallet sends a GET to the same callback with the path
-segment `/cb/` replaced by `/tx/`. The rest of the path, including its
-id, stays. The query carries `quote`, `method`, and the proof parameter
-the standard defines for that method. The build names the two paths in
-`SPEC.md`. They are not `…/lnurlp/<username>/invoice`. Lightning sends
-no proof. A Lightning wallet that calls `callback` with the amount still
-receives the BOLT11 invoice in `pr`. That payment does not go through
-Orchestra.
+segment `/cb/` replaced by `/tx/`. The username and the payment id stay.
+The query carries `quote` (the quote UUID), `method`, and the proof
+parameter the standard defines for that method: `hex` for EVM, Bitcoin,
+and Firo; `tx` for Monero, Zano, Solana, Tron, and Cardano. The paths
+are `GET /lnurlp/cb/:username/:payment` and
+`GET /lnurlp/tx/:username/:payment`. They are not
+`…/lnurlp/<username>/invoice`. Lightning sends no proof. A Lightning
+wallet that calls `callback` with the fixed amount still receives the
+BOLT11 invoice in `pr`. That payment does not go through Orchestra.
 
 For a proof, the api returns success only when the transfer matches the
 quote and Orchestra has accepted it: the offered chain, the offered
@@ -216,9 +410,9 @@ as the place bitcoin is delivered. That address is the one stored for the
 account. It is read from the database. It is not derived from
 `spark_pubkey`.
 
-The account stores no Spark address. It stores `spark_pubkey` and
-`spark_pubkey_verified_at`. The change that builds this stores the Spark
-address on the account and names the column in `SPEC.md`. A missing
+Today the account stores `spark_pubkey` and `spark_pubkey_verified_at`
+and does not store `spark_address`. The change that adds
+`account.spark_address` writes a usable value, as named above. A missing
 address is treated as a missing Orchestra key: the pay link serves no
 stablecoin amount, and Lightning is unchanged. The payment does not ask
 the phone for the address.
@@ -273,9 +467,11 @@ are.
 receiving address's minimum and maximum, for an account with a username
 and a verified receiving address. One unexpired pending charge. Five
 minutes. While it is pending, both Lightning sendable bounds become that
-sat amount in millisats. Metadata stays as it is. The stablecoin amounts
-for those same sats are added beside that pin. `callback` follows the
-known-amount rule above.
+sat amount in millisats. Metadata stays as it is. When the Spark address
+is usable and the Orchestra key is configured, the stablecoin amounts
+for those same sats are added beside that pin, and `callback` is
+`/lnurlp/cb/<username>/<payment>` for that charge's payment. Otherwise
+the callback stays `/lnurlp/<username>/invoice`.
 
 A lapsed quote is replaced only while the charge is open, and only for
 the same sats.
