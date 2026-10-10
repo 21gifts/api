@@ -3306,6 +3306,36 @@ test('Function: repaymentInvoice — POST /messages/:id/repayment without bearer
   ).toBe(401);
 });
 
+test('POST /messages/:id/repayment/due without bearer is 401', async ({ request }) => {
+  expect((await request.post('/messages/:id/repayment/due')).status()).toBe(401);
+});
+
+test('Function: repaymentDueBills — POST /messages/:id/repayment/due is 401 then 404 for a missing loan', async ({
+  request,
+}) => {
+  const path = '/messages/00000000-0000-4000-8000-000000000000/repayment/due';
+  expect((await request.post(path)).status()).toBe(401);
+  const member = await memberSession(request);
+  const res = await request.post(path, { headers: { authorization: member.authorization } });
+  expect(res.status()).toBe(404);
+  expect(await res.json()).toEqual({ error: 'Not found' });
+});
+
+test('GET /me/loans without bearer is 401', async ({ request }) => {
+  expect((await request.get('/me/loans')).status()).toBe(401);
+});
+
+test('Function: myLoansRoutes — GET /me/loans lists no loans for a new member', async ({
+  request,
+}) => {
+  const member = await memberSession(request);
+  const res = await request.get('/me/loans', {
+    headers: { authorization: member.authorization, 'Time-Zone': 'Not/AZone' },
+  });
+  expect(res.status()).toBe(200);
+  expect(await res.json()).toEqual({ sundayRest: false, loans: [] });
+});
+
 test('Function: repaymentLedger — GET /healthz is ok', async ({ request }) => {
   expect((await request.get('/healthz')).status()).toBe(200);
 });

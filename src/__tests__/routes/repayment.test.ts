@@ -7,6 +7,7 @@ import { ensureAccountNostrKey } from '@/lib/nostr/keys';
 import { parseNostrKek } from '@/lib/nostr/kek';
 import { InvoiceRateLimiter, PostRateLimiter } from '@/lib/nostr/rate-limit';
 import { messagesRoutes } from '@/routes/messages';
+import { REPAYMENT_BILLS_MAX, myLoansRoutes } from '@/routes/repayment';
 import { InMemorySparkInvoiceStore } from '@/lib/spark-invoice-store';
 import type { MessageInvoiceAttempt } from '@/lib/message-store';
 import { resolveZapRelays } from '@/lib/nostr/relays';
@@ -187,7 +188,14 @@ describe('credit repayment', () => {
     expect(body.currency).toBe('BTC');
     expect(body.unassignedSats).toBe(5);
     expect(body.givers).toEqual([
-      { accountId: GIVER, name: 'Bea', username: 'bea', givenSats: 21, givenAmount: null },
+      {
+        accountId: GIVER,
+        name: 'Bea',
+        username: 'bea',
+        givenSats: 21,
+        givenAmount: null,
+        canReceive: true,
+      },
     ]);
     expect(body.repayments[0]).toMatchObject({
       dueOn: '2026-09-27',
@@ -196,6 +204,7 @@ describe('credit repayment', () => {
       via: 'lightning',
       amount: null,
       name: 'Bea',
+      dueSats: 21,
     });
     const post = await app.request(`/messages/${CREDIT}/repayment`, { method: 'POST' });
     expect(post.status).toBe(401);
@@ -940,6 +949,724 @@ describe('credit repayment to a wallet-backed giver', () => {
       ]);
     } finally {
       nip57.mockRestore();
+    }
+  });
+});
+
+describe('repayment from the in-app wallet', () => {
+  const AUTHOR = 'loan-author';
+  const WALLET_GIVER = '22222222-2222-4222-8222-222222222222';
+  const NO_WALLET = '33333333-3333-4333-8333-333333333333';
+  const SECOND_CREDIT = '66666666-6666-4666-8666-666666666666';
+  /** Monday 2026-09-28 12:00 UTC: a credit funded 2026-09-26 has days 0 and 1 due. */
+  const MONDAY = Date.UTC(2026, 8, 28, 12);
+  const SUNDAY = Date.UTC(2026, 8, 27, 12);
+
+  interface Giver {
+    id: string;
+    sats: number;
+    /** A verified wallet: the giver can receive. */
+    wallet: boolean;
+    /** Stored identity key; defaults to a per-giver key. */
+    sparkPubkey?: string;
+  }
+
+  /** Answers any wallet-backed username on the LNURL server with a zap-capable pay request. */
+  function anyWalletFetch(options?: {
+    pr?: string;
+    allowsNostr?: boolean;
+  }): (input: string | URL | Request) => Promise<Response> {
+    return async (input) => {
+      const url = String(input);
+      const lud16 = /\/\.well-known\/lnurlp\/([^/?]+)$/.exec(url);
+      if (lud16 !== null) {
+        return Response.json({
+          tag: 'payRequest',
+          callback: `${LNURL_SERVER.publicBaseUrl}/lnurlp/${lud16[1] ?? ''}/invoice`,
+          metadata: '[["text/plain","x"]]',
+          minSendable: 1000,
+          maxSendable: 1_000_000_000,
+          allowsNostr: options?.allowsNostr ?? true,
+          nostrPubkey: 'bb'.repeat(32),
+        });
+      }
+      return Response.json({ pr: options?.pr ?? BOLT11 });
+    };
+  }
+
+  async function loanSetup(options?: {
+    givers?: Giver[];
+    now?: number;
+    termDays?: number;
+    fundedAt?: Date | null;
+    goalCurrency?: 'USD';
+    goalAmount?: string | null;
+    rate?: boolean;
+    eventId?: string | null;
+    rules?: boolean;
+    limiter?: InvoiceRateLimiter;
+    allowsNostr?: boolean;
+    sparkInvoices?: boolean;
+  }): Promise<{
+    app: Hono;
+    messages: InMemoryMessageStore;
+    auth: InMemoryAuthStore;
+    clock: { now: number };
+  }> {
+    const clock = { now: options?.now ?? MONDAY };
+    const now = (): number => clock.now;
+    const kek = parseNostrKek('11'.repeat(32));
+    const auth = new InMemoryAuthStore();
+    await auth.createAccount({
+      id: AUTHOR,
+      linkingKey: `02${'ab'.repeat(32)}`,
+      role: 'verified',
+      name: 'Ada',
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: 'a'.repeat(64),
+      createdAt: 1,
+      rulesAgreedAt: options?.rules === false ? null : 1,
+      username: 'ada',
+    });
+    await auth.createSession({ token: AUTHOR, accountId: AUTHOR, createdAt: clock.now });
+    await ensureAccountNostrKey(auth, AUTHOR, kek);
+    const givers = options?.givers ?? [
+      { id: WALLET_GIVER, sats: 300, wallet: true },
+      { id: NO_WALLET, sats: 500, wallet: false },
+    ];
+    for (const [index, giver] of givers.entries()) {
+      const username = `giver${index}`;
+      await auth.createAccount({
+        id: giver.id,
+        linkingKey: null,
+        role: 'verified',
+        name: `Giver ${index}`,
+        username,
+        forumLawsDismissed: false,
+        location: null,
+        viewKey: `${index}`.repeat(64).slice(0, 64),
+        createdAt: 1,
+        rulesAgreedAt: 1,
+        walletRequired: true,
+      });
+      if (giver.wallet) {
+        const key = giver.sparkPubkey ?? `02${String(index + 1).padStart(64, '0')}`;
+        await auth.claimSparkPubkey(giver.id, key);
+        expect(await auth.markSparkPubkeyVerified(giver.id, key, username, 2)).toBe(true);
+      }
+      await ensureAccountNostrKey(auth, giver.id, kek);
+    }
+    const messages = new InMemoryMessageStore();
+    const total = givers.reduce((sum, giver) => sum + giver.sats, 0);
+    await messages.create({
+      id: CREDIT,
+      accountId: AUTHOR,
+      name: 'Ada',
+      text: `${'x'.repeat(170)}`,
+      createdAt: new Date(Date.UTC(2026, 8, 20)),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+      eventId: options?.eventId === undefined ? 'ee'.repeat(32) : options.eventId,
+      sats: 0,
+      goalSats: options?.fundedAt === null ? total * 2 : total,
+      goalRepayable: true,
+      goalTermDays: options?.termDays ?? 2,
+      goalFundedAt:
+        options?.fundedAt === undefined ? new Date(Date.UTC(2026, 8, 26, 12)) : options.fundedAt,
+      ...(options?.goalCurrency === undefined
+        ? {}
+        : {
+            goalCurrency: options.goalCurrency,
+            goalAmount: options.goalAmount === undefined ? '8.00' : options.goalAmount,
+          }),
+    });
+    for (const giver of givers) {
+      await messages.recordZapReceipt(`r-${giver.id}`, CREDIT, giver.sats, null);
+      await messages.updateZapReceiptGift(`r-${giver.id}`, { payerAccountId: giver.id });
+    }
+    const goalRateDay =
+      options?.rate === true
+        ? async () => ({
+            sats: 100_000_000,
+            usd: '100000.00',
+            chf: null,
+            eur: null,
+            php: null,
+          })
+        : async () => null;
+    const app = new Hono()
+      .route(
+        '/messages',
+        messagesRoutes({
+          store: messages,
+          authStore: auth,
+          now,
+          nostrKek: kek,
+          goalRateDay,
+          fetchImpl: anyWalletFetch({
+            ...(options?.allowsNostr === undefined ? {} : { allowsNostr: options.allowsNostr }),
+          }),
+          lnurlServer: LNURL_SERVER,
+          ...(options?.sparkInvoices === true
+            ? { sparkInvoices: new InMemorySparkInvoiceStore() }
+            : {}),
+          postLimiter: new PostRateLimiter(),
+          invoiceLimiter: new InvoiceRateLimiter(),
+          repaymentLimiter:
+            options?.limiter ?? new InvoiceRateLimiter({ burstCap: 1000, hourCap: 1000 }),
+        }),
+      )
+      .route(
+        '/',
+        myLoansRoutes({
+          store: messages,
+          authStore: auth,
+          now,
+          goalRateDay,
+          lnurlServer: LNURL_SERVER,
+        }),
+      );
+    return { app, messages, auth, clock };
+  }
+
+  function post(app: Hono, path: string, token = AUTHOR): Promise<Response> {
+    return Promise.resolve(
+      app.request(path, { method: 'POST', headers: { authorization: `Bearer ${token}` } }),
+    );
+  }
+
+  function loans(app: Hono, headers: Record<string, string> = {}): Promise<Response> {
+    return Promise.resolve(
+      app.request('/me/loans', { headers: { authorization: `Bearer ${AUTHOR}`, ...headers } }),
+    );
+  }
+
+  async function withNip57<T>(run: () => Promise<T>): Promise<T> {
+    const bolt11 = await import('@/lib/bolt11');
+    const nip57 = vi.spyOn(bolt11, 'isNip57Invoice').mockReturnValue(true);
+    try {
+      return await run();
+    } finally {
+      nip57.mockRestore();
+    }
+  }
+
+  it('marks who can receive and prices each due line on the public ledger', async () => {
+    const { app } = await loanSetup();
+    const res = await app.request(`/messages/${CREDIT}/repayment`);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      daysDue: number;
+      daysPaid: number;
+      givers: { accountId: string; canReceive: boolean }[];
+      repayments: { dayIndex: number; accountId: string; status: string; dueSats: number }[];
+      next: { dayIndex: number; recipientAccountId: string; sats: number } | null;
+    };
+    expect(body.givers.map((giver) => [giver.accountId, giver.canReceive])).toEqual([
+      [WALLET_GIVER, true],
+      [NO_WALLET, false],
+    ]);
+    expect(
+      body.repayments.map((line) => [line.dayIndex, line.accountId, line.status, line.dueSats]),
+    ).toEqual([
+      [0, NO_WALLET, 'due', 250],
+      [0, WALLET_GIVER, 'due', 150],
+      [1, NO_WALLET, 'due', 250],
+      [1, WALLET_GIVER, 'due', 150],
+    ]);
+    expect(body.daysDue).toBe(2);
+    expect(body.daysPaid).toBe(0);
+    expect(body.next).toEqual({ dayIndex: 0, recipientAccountId: WALLET_GIVER, sats: 150 });
+  });
+
+  it('leaves dueSats null on lines that are not due and on a fiat line without a rate', async () => {
+    const early = await loanSetup({ now: Date.UTC(2026, 8, 26, 20) });
+    const scheduled = (await (await early.app.request(`/messages/${CREDIT}/repayment`)).json()) as {
+      repayments: { status: string; dueSats: number | null }[];
+    };
+    expect(scheduled.repayments.every((line) => line.status === 'scheduled')).toBe(true);
+    expect(scheduled.repayments.every((line) => line.dueSats === null)).toBe(true);
+    const fiat = await loanSetup({
+      goalCurrency: 'USD',
+      givers: [{ id: NO_WALLET, sats: 500, wallet: false }],
+    });
+    const res = await fiat.app.request(`/messages/${CREDIT}/repayment`);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      repayments: { status: string; amount: string; dueSats: number | null }[];
+      next: unknown;
+    };
+    expect(body.repayments[0]).toMatchObject({ status: 'due', amount: '4.00', dueSats: null });
+    expect(body.next).toBeNull();
+    const priced = await loanSetup({
+      goalCurrency: 'USD',
+      rate: true,
+      givers: [{ id: NO_WALLET, sats: 500, wallet: false }],
+    });
+    const pricedBody = (await (
+      await priced.app.request(`/messages/${CREDIT}/repayment`)
+    ).json()) as { repayments: { dueSats: number | null }[] };
+    expect(pricedBody.repayments[0]?.dueSats).toBe(4000);
+  });
+
+  it('skips a giver who cannot receive and bills the next share', async () => {
+    await withNip57(async () => {
+      const { app, messages } = await loanSetup();
+      const res = await post(app, `/messages/${CREDIT}/repayment`);
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ pr: BOLT11, amountSats: 150, sparkInvoice: null });
+      const [attempt] = await messages.listInvoiceAttempts(5);
+      expect(attempt?.description).toBe(`repay:0:${WALLET_GIVER}`);
+      expect(attempt?.authorAccountId).toBe(WALLET_GIVER);
+    });
+  });
+
+  it('answers cannot_receive when every due share waits for a giver without a wallet', async () => {
+    const { app } = await loanSetup({ givers: [{ id: NO_WALLET, sats: 500, wallet: false }] });
+    const res = await post(app, `/messages/${CREDIT}/repayment`);
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({
+      error: 'A giver has no Lightning address',
+      code: 'cannot_receive',
+    });
+    const bills = await post(app, `/messages/${CREDIT}/repayment/due`);
+    expect(bills.status).toBe(200);
+    expect(((await bills.json()) as { bills: unknown[] }).bills).toEqual([]);
+  });
+
+  it('bills every payable share at once and lists the shares that wait', async () => {
+    await withNip57(async () => {
+      const limiter = new InvoiceRateLimiter({ burstCap: 1, hourCap: 20 });
+      const { app, messages } = await loanSetup({ limiter });
+      const res = await post(app, `/messages/${CREDIT}/repayment/due`);
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as { bills: unknown[]; waiting: unknown[] };
+      const bill = {
+        recipientAccountId: WALLET_GIVER,
+        name: 'Giver 0',
+        username: 'giver0',
+        amountSats: 150,
+        amount: null,
+        pr: BOLT11,
+        sparkInvoice: null,
+      };
+      expect(body.bills).toEqual([
+        { dayIndex: 0, ...bill },
+        { dayIndex: 1, ...bill },
+      ]);
+      const wait = {
+        recipientAccountId: NO_WALLET,
+        name: 'Giver 1',
+        username: 'giver1',
+        amountSats: 250,
+        amount: null,
+      };
+      expect(body.waiting).toEqual([
+        { dayIndex: 0, ...wait },
+        { dayIndex: 1, ...wait },
+      ]);
+      const attempts = await messages.listInvoiceAttempts(10);
+      expect(attempts.map((row) => row.description).sort()).toEqual([
+        `repay:0:${WALLET_GIVER}`,
+        `repay:1:${WALLET_GIVER}`,
+      ]);
+      // Both bills are open: a second call reuses them and needs no limiter hit.
+      const again = await post(app, `/messages/${CREDIT}/repayment/due`);
+      expect(again.status).toBe(200);
+      expect(((await again.json()) as { bills: unknown[] }).bills).toEqual(body.bills);
+      expect(await messages.listInvoiceAttempts(10)).toHaveLength(2);
+      const single = await post(app, `/messages/${CREDIT}/repayment`);
+      expect(await single.json()).toEqual({ pr: BOLT11, amountSats: 150, sparkInvoice: null });
+      expect(await messages.listInvoiceAttempts(10)).toHaveLength(2);
+    });
+  });
+
+  it('hands out the Spark invoice with each bill for a wallet-backed giver', async () => {
+    await withNip57(async () => {
+      const { app } = await loanSetup({
+        sparkInvoices: true,
+        givers: [{ id: WALLET_GIVER, sats: 42, wallet: true, sparkPubkey: WALLET_PUBKEY }],
+      });
+      const res = await post(app, `/messages/${CREDIT}/repayment/due`);
+      const body = (await res.json()) as { bills: { amountSats: number; sparkInvoice: string }[] };
+      expect(body.bills.map((bill) => bill.amountSats)).toEqual([21, 21]);
+      expect(body.bills.every((bill) => bill.sparkInvoice.startsWith('spark1'))).toBe(true);
+    });
+  });
+
+  it('caps one call at 60 bills and leaves the rest for the next call', async () => {
+    await withNip57(async () => {
+      const { app, messages } = await loanSetup({
+        termDays: 65,
+        fundedAt: new Date(Date.UTC(2026, 5, 1, 12)),
+        givers: [{ id: WALLET_GIVER, sats: 65, wallet: true }],
+      });
+      const first = (await (await post(app, `/messages/${CREDIT}/repayment/due`)).json()) as {
+        bills: { dayIndex: number; amountSats: number }[];
+      };
+      expect(first.bills).toHaveLength(REPAYMENT_BILLS_MAX);
+      expect(first.bills[0]?.dayIndex).toBe(0);
+      expect(first.bills[59]?.dayIndex).toBe(59);
+      for (const bill of first.bills) {
+        await messages.markRepaymentPaid({
+          messageId: CREDIT,
+          dayIndex: bill.dayIndex,
+          recipientAccountId: WALLET_GIVER,
+          dueSats: bill.amountSats,
+          paidAt: new Date(MONDAY),
+        });
+      }
+      const rest = (await (await post(app, `/messages/${CREDIT}/repayment/due`)).json()) as {
+        bills: { dayIndex: number }[];
+      };
+      expect(rest.bills.map((bill) => bill.dayIndex)).toEqual([60, 61, 62, 63, 64]);
+    });
+  });
+
+  it('prices fiat bills at the current rate and refuses them without one', async () => {
+    await withNip57(async () => {
+      const priced = await loanSetup({ goalCurrency: 'USD', rate: true });
+      const body = (await (await post(priced.app, `/messages/${CREDIT}/repayment/due`)).json()) as {
+        bills: { amount: string; amountSats: number }[];
+        waiting: { amount: string; amountSats: number }[];
+      };
+      expect(body.bills[0]).toMatchObject({ amount: '1.50', amountSats: 1500 });
+      expect(body.waiting[0]).toMatchObject({ amount: '2.50', amountSats: 2500 });
+      const unpriced = await loanSetup({ goalCurrency: 'USD' });
+      const res = await post(unpriced.app, `/messages/${CREDIT}/repayment/due`);
+      expect(res.status).toBe(503);
+      expect(await res.json()).toEqual({ error: 'Ask amount is unavailable' });
+      const noAmount = await loanSetup({ goalCurrency: 'USD', goalAmount: null });
+      const missing = await post(noAmount.app, `/messages/${CREDIT}/repayment/due`);
+      expect(missing.status).toBe(503);
+      expect(await missing.json()).toEqual({ error: 'Ask amount is unavailable' });
+    });
+  });
+
+  it('keeps the guards of the single pay route', async () => {
+    const { app } = await loanSetup();
+    expect(
+      (await app.request(`/messages/${CREDIT}/repayment/due`, { method: 'POST' })).status,
+    ).toBe(401);
+    expect((await post(app, `/messages/${SECOND_CREDIT}/repayment/due`)).status).toBe(404);
+    const rules = await loanSetup({ rules: false });
+    const refused = await post(rules.app, `/messages/${CREDIT}/repayment/due`);
+    expect(refused.status).toBe(409);
+    expect(await refused.json()).toMatchObject({ error: 'missing_requirements' });
+    const open = await loanSetup({ fundedAt: null });
+    expect((await post(open.app, `/messages/${CREDIT}/repayment/due`)).status).toBe(404);
+    const today = await loanSetup({ now: Date.UTC(2026, 8, 26, 20) });
+    const nothing = await post(today.app, `/messages/${CREDIT}/repayment/due`);
+    expect(nothing.status).toBe(200);
+    expect(await nothing.json()).toEqual({ bills: [], waiting: [] });
+    const unsigned = await loanSetup({ eventId: null });
+    const notYet = await post(unsigned.app, `/messages/${CREDIT}/repayment/due`);
+    expect(notYet.status).toBe(400);
+    expect(await notYet.json()).toEqual({ error: 'This message cannot be paid yet' });
+    const limited = await loanSetup({
+      limiter: new InvoiceRateLimiter({ burstCap: 0, hourCap: 0 }),
+    });
+    const tooMany = await post(limited.app, `/messages/${CREDIT}/repayment/due`);
+    expect(tooMany.status).toBe(429);
+    expect(tooMany.headers.get('Retry-After')).toBe('10');
+    expect(await tooMany.json()).toEqual({ error: 'Too many payments' });
+    const single = await post(limited.app, `/messages/${CREDIT}/repayment`);
+    expect(single.status).toBe(429);
+    expect(single.headers.get('Retry-After')).toBe('10');
+  });
+
+  it('checks the wallet again when billing a share that was payable a moment ago', async () => {
+    for (const [path, gone] of [
+      [`/messages/${CREDIT}/repayment`, false],
+      [`/messages/${CREDIT}/repayment/due`, false],
+      [`/messages/${CREDIT}/repayment`, true],
+    ] as const) {
+      const { app, auth } = await loanSetup({
+        givers: [{ id: WALLET_GIVER, sats: 300, wallet: true }],
+        now: Date.UTC(2026, 8, 27, 12),
+      });
+      const getAccount = auth.getAccount.bind(auth);
+      let reads = 0;
+      vi.spyOn(auth, 'getAccount').mockImplementation(async (id) => {
+        const account = await getAccount(id);
+        if (id !== WALLET_GIVER || account === undefined) {
+          return account;
+        }
+        reads += 1;
+        // The first read decides the plan; the wallet or the account is gone at billing.
+        if (reads === 1) {
+          return account;
+        }
+        return gone ? undefined : { ...account, sparkPubkeyVerifiedAt: null };
+      });
+      const res = await post(app, path);
+      const body = (await res.json()) as Record<string, unknown>;
+      if (path.endsWith('/due')) {
+        expect(res.status).toBe(200);
+        expect(body).toMatchObject({ bills: [], waiting: [{ recipientAccountId: WALLET_GIVER }] });
+      } else {
+        expect(res.status).toBe(400);
+        expect(body).toEqual({ error: 'A giver has no Lightning address', code: 'cannot_receive' });
+      }
+    }
+  });
+
+  it('moves a share whose wallet refuses the zap to waiting', async () => {
+    const { app, messages } = await loanSetup({ allowsNostr: false });
+    const res = await post(app, `/messages/${CREDIT}/repayment/due`);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      bills: unknown[];
+      waiting: { dayIndex: number; recipientAccountId: string }[];
+    };
+    expect(body.bills).toEqual([]);
+    expect(body.waiting.map((line) => [line.dayIndex, line.recipientAccountId])).toEqual([
+      [0, NO_WALLET],
+      [0, WALLET_GIVER],
+      [1, NO_WALLET],
+      [1, WALLET_GIVER],
+    ]);
+    expect(await messages.listInvoiceAttempts(5)).toEqual([]);
+  });
+
+  it('lists the member loans with what is due now', async () => {
+    const { app, messages } = await loanSetup();
+    await messages.create({
+      id: SECOND_CREDIT,
+      accountId: AUTHOR,
+      name: 'Ada',
+      text: 'second loan',
+      createdAt: new Date(Date.UTC(2026, 8, 25)),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+      eventId: 'ff'.repeat(32),
+      sats: 0,
+      goalSats: 1000,
+      goalRepayable: true,
+      goalTermDays: 10,
+      goalFundedAt: null,
+    });
+    await messages.create({
+      id: '77777777-7777-4777-8777-777777777777',
+      accountId: AUTHOR,
+      name: 'Ada',
+      text: 'a gift ask',
+      createdAt: new Date(Date.UTC(2026, 8, 26)),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+      goalSats: 1000,
+    });
+    await messages.create({
+      id: '88888888-8888-4888-8888-888888888888',
+      accountId: AUTHOR,
+      name: 'Ada',
+      text: 'a hidden loan',
+      createdAt: new Date(Date.UTC(2026, 8, 27)),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+      goalSats: 1000,
+      goalRepayable: true,
+      goalTermDays: 10,
+    });
+    await messages.markDeleted('88888888-8888-4888-8888-888888888888', new Date(MONDAY), AUTHOR);
+    await messages.create({
+      id: '99999999-9999-4999-8999-999999999999',
+      accountId: AUTHOR,
+      name: 'Ada',
+      text: 'a reply',
+      createdAt: new Date(Date.UTC(2026, 8, 27)),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+      parentId: CREDIT,
+    });
+    await messages.markRepaymentPaid({
+      messageId: CREDIT,
+      dayIndex: 0,
+      recipientAccountId: WALLET_GIVER,
+      dueSats: 150,
+      paidAt: new Date(MONDAY),
+    });
+    expect((await app.request('/me/loans')).status).toBe(401);
+    const res = await loans(app);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { sundayRest: boolean; loans: Record<string, unknown>[] };
+    expect(body.sundayRest).toBe(false);
+    expect(body.loans.map((loan) => loan['messageId'])).toEqual([SECOND_CREDIT, CREDIT]);
+    expect(body.loans[0]).toMatchObject({
+      text: 'second loan',
+      goalSats: 1000,
+      sats: 0,
+      goalCurrency: 'BTC',
+      goalAmount: '1000',
+      termDays: 10,
+      fundedAt: null,
+      daysDue: 0,
+      daysPaid: 0,
+      repaidSats: 0,
+      totalSats: 0,
+      due: {
+        payableSats: 0,
+        payableAmount: null,
+        payablePeople: 0,
+        waitingSats: 0,
+        waitingAmount: null,
+        waitingPeople: 0,
+        behindDays: 0,
+        lastPayment: false,
+      },
+      next: null,
+    });
+    const stored = await messages.getById(CREDIT);
+    expect(body.loans[1]).toEqual({
+      messageId: CREDIT,
+      text: 'x'.repeat(160),
+      createdAt: '2026-09-20T00:00:00.000Z',
+      goalSats: 800,
+      sats: 800,
+      goalCurrency: 'BTC',
+      goalAmount: '800',
+      goalAmountUsd: null,
+      goalAmountChf: null,
+      goalAmountEur: null,
+      goalAmountPhp: null,
+      amountUsd: stored?.amountUsd ?? null,
+      amountChf: stored?.amountChf ?? null,
+      amountEur: stored?.amountEur ?? null,
+      amountPhp: stored?.amountPhp ?? null,
+      termDays: 2,
+      fundedAt: '2026-09-26T12:00:00.000Z',
+      daysDue: 2,
+      daysPaid: 0,
+      repaidSats: 150,
+      totalSats: 800,
+      due: {
+        payableSats: 150,
+        payableAmount: null,
+        payablePeople: 1,
+        waitingSats: 500,
+        waitingAmount: null,
+        waitingPeople: 1,
+        behindDays: 1,
+        lastPayment: false,
+      },
+      next: null,
+    });
+  });
+
+  it('shows the next day, the last payment, and drops a repaid loan', async () => {
+    const both = [
+      { id: WALLET_GIVER, sats: 300, wallet: true },
+      { id: NO_WALLET, sats: 500, wallet: true },
+    ];
+    const { app, messages, clock } = await loanSetup({
+      givers: both,
+      fundedAt: new Date(Date.UTC(2026, 8, 27, 12)),
+    });
+    const first = ((await (await loans(app)).json()) as { loans: Record<string, unknown>[] })
+      .loans[0];
+    expect(first).toMatchObject({
+      daysDue: 1,
+      due: { payableSats: 400, payablePeople: 2, behindDays: 0, lastPayment: false },
+      next: { dueOn: '2026-09-29', sats: 400, amount: null },
+    });
+    for (const giver of [
+      { id: NO_WALLET, sats: 250 },
+      { id: WALLET_GIVER, sats: 150 },
+    ]) {
+      await messages.markRepaymentPaid({
+        messageId: CREDIT,
+        dayIndex: 0,
+        recipientAccountId: giver.id,
+        dueSats: giver.sats,
+        paidAt: new Date(MONDAY),
+      });
+    }
+    clock.now = Date.UTC(2026, 8, 29, 12);
+    const last = ((await (await loans(app)).json()) as { loans: Record<string, unknown>[] })
+      .loans[0];
+    expect(last).toMatchObject({
+      daysDue: 2,
+      daysPaid: 1,
+      repaidSats: 400,
+      totalSats: 800,
+      due: { payableSats: 400, behindDays: 0, lastPayment: true },
+      next: null,
+    });
+    for (const giver of [
+      { id: NO_WALLET, sats: 250 },
+      { id: WALLET_GIVER, sats: 150 },
+    ]) {
+      await messages.markRepaymentPaid({
+        messageId: CREDIT,
+        dayIndex: 1,
+        recipientAccountId: giver.id,
+        dueSats: giver.sats,
+        paidAt: new Date(clock.now),
+      });
+    }
+    expect(await (await loans(app)).json()).toEqual({ sundayRest: false, loans: [] });
+  });
+
+  it('counts the days behind after the term has ended', async () => {
+    const { app } = await loanSetup({ now: Date.UTC(2026, 9, 5, 12) });
+    const loan = ((await (await loans(app)).json()) as { loans: Record<string, unknown>[] })
+      .loans[0];
+    expect(loan).toMatchObject({ daysDue: 2, due: { behindDays: 2 } });
+  });
+
+  it('gives fiat amounts and leaves sats null without a rate', async () => {
+    const unpriced = await loanSetup({ goalCurrency: 'USD' });
+    const loan = (
+      (await (await loans(unpriced.app)).json()) as { loans: Record<string, unknown>[] }
+    ).loans[0];
+    expect(loan).toMatchObject({
+      goalCurrency: 'USD',
+      goalAmount: '8.00',
+      totalSats: null,
+      due: {
+        payableSats: null,
+        payableAmount: '3.00',
+        waitingSats: null,
+        waitingAmount: '5.00',
+      },
+      next: null,
+    });
+    const priced = await loanSetup({ goalCurrency: 'USD', rate: true, fundedAt: null });
+    const open = ((await (await loans(priced.app)).json()) as { loans: Record<string, unknown>[] })
+      .loans[0];
+    expect(open).toMatchObject({
+      totalSats: 8000,
+      due: { payableSats: 0, payableAmount: '0.00', waitingAmount: '0.00' },
+    });
+  });
+
+  it('mirrors Sunday rest and answers 503 when a loan cannot be computed', async () => {
+    const sunday = await loanSetup({ now: SUNDAY });
+    const rest = (await (await loans(sunday.app, { 'Time-Zone': 'UTC' })).json()) as {
+      sundayRest: boolean;
+    };
+    expect(rest.sundayRest).toBe(true);
+    for (const fundedAt of [undefined, null]) {
+      const broken = await loanSetup({
+        goalCurrency: 'USD',
+        goalAmount: null,
+        ...(fundedAt === null ? { fundedAt } : {}),
+      });
+      const res = await loans(broken.app);
+      expect(res.status).toBe(503);
+      expect(await res.json()).toEqual({ error: 'Ask amount is unavailable' });
+    }
+    const failing = await loanSetup();
+    vi.spyOn(failing.messages, 'listAuthoredMessages').mockRejectedValue(new Error('db down'));
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      const res = await loans(failing.app);
+      expect(res.status).toBe(503);
+      expect(await res.json()).toEqual({ error: 'Messages are unavailable' });
+      expect(String(warn.mock.calls[0]?.[0])).toContain('me.loans.failed');
+    } finally {
+      warn.mockRestore();
     }
   });
 });

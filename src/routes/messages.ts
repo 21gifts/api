@@ -95,7 +95,7 @@ import {
   type ForumPlace,
 } from '@/lib/place';
 import { removeShopOcpPlace, syncShopOcpPlace, type MapPush } from '@/lib/ocp-place';
-import { repaymentInvoice, repaymentStatus } from '@/routes/repayment';
+import { repaymentDueBills, repaymentInvoice, repaymentStatus } from '@/routes/repayment';
 import { bearerToken } from '@/routes/me';
 import {
   MESSAGE_VIDEO_MAX_BYTES,
@@ -2876,6 +2876,7 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
     })
     .get('/:id/repayment', (c) => repaymentStatus(deps, c))
     .post('/:id/repayment', (c) => repaymentInvoice(deps, c))
+    .post('/:id/repayment/due', (c) => repaymentDueBills(deps, c))
     .post('/:id/invoice', async (c) => {
       const account = await authedAccount(deps, c.req.header('authorization'));
       if (account === null) {
