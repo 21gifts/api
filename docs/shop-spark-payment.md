@@ -5,10 +5,10 @@ till charge is not a stop. Not implemented. No HTTP path in this document is
 reserved. The change that builds this adds its routes and fields to `SPEC.md`
 in that same change. Nothing here changes runtime behaviour.
 
-The shop QR stays the OpenCryptoPay link it already is. A customer who pays
-USDT or USDC through that same QR still leaves the shop with bitcoin on the
-shop's own Spark wallet. The shop does not hold USDT or USDC. The member sees
-an ordinary bitcoin payment. Gifts, the till, and loans stay in satoshis.
+The shop QR stays the OpenCryptoPay link it already is. USDT or USDC paid
+through that same QR still leaves the shop with bitcoin on the shop's own
+Spark wallet. The shop does not hold USDT or USDC. The member sees an
+ordinary bitcoin payment. Gifts, the till, and loans stay in satoshis.
 
 ## Decision
 
@@ -94,16 +94,15 @@ Orchestra key: no stablecoin amounts, and Lightning stays as it is. The
 payment does not ask the phone for the address, and it must not learn the
 12 words.
 
-The customer sends the stablecoin to Orchestra, on the chain and for the
-asset the quote named. 21.gifts does not receive the stablecoin and does not
-hold it.
+The stablecoin for the named chain and asset is paid to Orchestra. 21.gifts
+does not receive the stablecoin and does not hold it.
 
-Orchestra delivers bitcoin to the shop's Spark address. 21.gifts does not
-hold that bitcoin. This is not Orchestra paying the Lightning invoice, and it
-is not a USDT or USDC address that 21.gifts keeps.
+Orchestra delivers bitcoin to the shop's stored Spark address. 21.gifts does
+not hold that bitcoin. This is not Orchestra paying the Lightning invoice,
+and it is not a USDT or USDC address that 21.gifts keeps.
 
 The api learns that delivery from Orchestra. It does not learn it from the
-phone, and it does not treat the customer's wallet as the source of paid.
+phone.
 
 A quote expires. The page shows that expiry. When a quote lapses before it
 has been accepted, the next quote is for the same sats, not for a different
@@ -117,20 +116,17 @@ Lightning stays as it is.
 
 ## Paid
 
-Paid means the quoted sats are on the shop's Spark wallet.
+Paid means the quoted sats are on the shop's stored Spark address. The api
+records that when Orchestra has delivered them. Nothing else marks it paid.
 
-The customer's wallet may say the stablecoin transfer succeeded before those
-sats arrive. That is not paid. Seeing the stablecoin transaction is not paid.
+Until Orchestra has delivered those sats, too little, too much, the wrong
+chain, a stale amount, or a transfer with no quote that was still valid for
+it leaves the payment unpaid. A stale amount is not a different number of
+sats.
 
-Before the stablecoin transfer is accepted, too little, too much, or a price
-move past the quote refunds the customer. The payment stays unpaid. A payment
-at a stale amount is not accepted as a different number of sats. A transfer
-on the wrong chain is not a payment. A transfer with no quote that was still
-valid for it is not a payment.
-
-A transfer accepted against a quote that was still valid stays tied to that
-quote. The agreed sats stay due. A later price move does not refund them and
-does not change the sat amount.
+Once Orchestra has accepted the transfer against a quote that was still
+valid, those sats stay due. A later price move does not change the sat
+amount.
 
 The api records the result. The member's app shows that record. It shows an
 ordinary incoming bitcoin payment of those sats. It does not show a USDT or
@@ -173,7 +169,6 @@ pins the pay link. No zap, gift, or message is written for a till payment.
 - No phone in the quote, the delivery, or the paid mark. The 12 words stay
   on the phone and are not read for this payment. The delivery address is
   not computed from the stored pubkey.
-- No payment marked paid because a wallet saw the stablecoin transaction.
 - No change to today's Lightning settlement. The pay link still resolves to
   the verified in-app wallet. A Lightning payment of the same sats does not
   go through Orchestra.
