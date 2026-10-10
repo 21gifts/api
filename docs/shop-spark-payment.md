@@ -22,8 +22,8 @@ link, `https://<domain>/.well-known/lnurlp/<username>`. The QR is
 The **payment page** is what a phone camera opens from the sticker:
 `/pl/?lightning=<LNURL>`.
 
-A **quote** is a price for one fixed sat amount. It names one amount of
-USDT or USDC on one chain, an expiry, and an id.
+A **quote** is one price for one fixed sat amount. It names those sats,
+an expiry, an id, and the chain amounts quoted for those sats.
 
 **Accepted** means Orchestra has taken a transfer that matches a quote
 that was still valid. The sat amount stays due. The wallet is told the
@@ -43,9 +43,10 @@ These names are the contract. Nothing in this section is mounted.
 `account.spark_address` is nullable text. The quote reads it. It is not
 derived from `spark_pubkey`, and the api does not encode a Spark address.
 A usable value decodes to that account's `spark_pubkey` and its protobuf
-has no field 2. Any other value is a missing address. The decoder used
-today does not report field 2. The change that stores the column rejects
-a value that has field 2. It does not add an encoder.
+has no field 2. Any other value is a missing address. Today's decoder
+returns that pubkey for an invoice as well. A missing memo does not mean
+field 2 was absent. The change that stores the column rejects a value
+that has field 2. It does not add an encoder.
 
 A missing address is the same as a missing Orchestra key. The pay link
 serves no stablecoin amount, and Lightning is unchanged.
@@ -92,10 +93,11 @@ URL. The page does not build a second one. Tether Wallet for Android
 query.
 
 The page is opened as `/pl/?lightning=<LNURL>`. It decodes that LNURL
-and fetches the decoded URL. The amounts it shows are `requestedAmount`
-and `transferAmounts` in that response. That is the read the DFX.swiss
-payment page makes of the LNURL it was opened with. An empty result here
-is the Lightning pay request, not a 404, and the fetch does not wait.
+and fetches the decoded URL. It does not add `timeout`. The amounts it
+shows are `requestedAmount` and `transferAmounts` in that response.
+DFX.swiss decodes the LNURL it was opened with and then sets `timeout`.
+This page does not. An empty result here is the Lightning pay request,
+not a 404.
 
 ### Callback and proof
 
@@ -104,11 +106,10 @@ When no amount is known, `callback` stays
 segment.
 
 When an amount is known and stablecoin rows are served, `callback` is
-`<PUBLIC_BASE_URL>/lnurlp/cb/<username>`. The proof URL is
-`<PUBLIC_BASE_URL>/lnurlp/tx/<username>`. The segments `cb` and `tx` are
-literal. The username is the path id of the pay link, as the DFX.swiss
-callback uses the payment link's id. Replacing `/cb/` with `/tx/` leaves
-the username in place. `quote.payment` stays in the JSON. It is not a
+`<PUBLIC_BASE_URL>/lnurlp/cb/<username>`. The proof URL replaces `/cb`
+with `/tx` in that callback, which is
+`<PUBLIC_BASE_URL>/lnurlp/tx/<username>`. The username stays. It is the
+path id of the pay link. `quote.payment` stays in the JSON. It is not a
 path segment and not a query on the pay link. A refreshed quote keeps
 the same callback. The callback has no query string. A wallet appends
 its query itself. Neither URL is `…/lnurlp/<username>/invoice`.
@@ -138,13 +139,15 @@ One pay link has one open amount. While a till charge is pending, the
 amount is that charge. The call returns the one payment for it, creating
 it if it does not exist yet. While no till charge is pending and no
 payment is open, the call creates that one open payment. A later call
-with the same amount returns the same id. A different amount is **400**
-`{ "error": "Enter a whole number of sats" }` and writes nothing.
+with the same amount returns the same id. A different amount, while a
+payment is open, is **409** `{ "error": "A payment is already open" }`
+and writes nothing. The open amount stays.
 
 **Response** `200` `{ "payment": "<uuid>" }`. The page does not display
 this body. It fetches the decoded LNURL again and displays that
-response. A wallet deeplink is `lightning:` plus that same LNURL. It
-does not add a payment query.
+response. The invoice button stays `lightning:` plus the BOLT11. The
+OpenCryptoPay deeplink is `lightning:` plus that same LNURL. It does
+not add a payment query, and it does not replace the invoice button.
 
 ### Rows
 
@@ -181,13 +184,12 @@ them.
 
 ### Bitcoin quantity
 
-The Lightning asset amount in `transferAmounts` is a decimal string built
-from the integer sat count divided by 100000000. One sat is
-`0.00000001`. 100000000 sats is `1`. The string has no exponent.
-`requestedAmount.amount` is that same quantity as a JSON number.
-`requestedAmount.asset` is `BTC`. The string is not formatted from the
-JSON number. `minSendable` and `maxSendable` are both that sat count in
-millisats, the sat count times 1000.
+The Lightning asset amount is a decimal string of the integer sat count
+divided by 100000000. One sat is `0.00000001`. 100000000 sats is `1`.
+The string has no exponent. It is built from the integer, not printed
+from a JSON number. `requestedAmount.amount` is the JSON number of that
+division. `requestedAmount.asset` is `BTC`. `minSendable` and
+`maxSendable` are both that sat count times 1000.
 
 The api does not invent a fee. The api does not invent a chain. Lightning
 `minFee` is the number 0.
@@ -201,10 +203,11 @@ select a stablecoin.
 While a payment is `open`, a fetch returns its current quote. A lapsed
 quote is replaced for the same sats. The URL does not change.
 
-While a payment is `accepted`, and until it is `paid`, the pay link
-returns no `available` entry whose value is true, and the response is
-not the empty Lightning pay request. `method` and `asset` on that call
-are **400** `{ "error": "That payment is not offered" }`.
+While a payment is `accepted`, and until it is `paid`, the response is
+still a pay request for those sats. Every `available` value is false.
+It does not mint a new quote. It is not the Lightning pay request with
+a minimum and a maximum. `method` and `asset` on that call are **400**
+`{ "error": "That payment is not offered" }`.
 
 When the payment is `paid` or `ended`, the pay link is free. The next
 fetch, with no new amount, is the Lightning pay request.
@@ -313,16 +316,19 @@ the BOLT11 for these sats. It is mounted only when the invoice exists and
 the visitor is not a smartphone. A smartphone is an iPhone, an iPod, or
 an Android user agent that also contains `Mobile`. A tablet is not a
 smartphone. The window width does not decide it. On a smartphone the page
-shows the `lightning:` button and no invoice QR. That QR is not a second
+shows the `lightning:` button and no invoice QR. That button opens
+`lightning:` plus the BOLT11, as it does today. That QR is not a second
 shop address, and it is not the stablecoin deeplink. `displayQr` false
-does not remove it.
+does not remove it. Tether Wallet for Android 1.11.0 (134) does not read
+`displayQr`.
 
-The page opens a compatible wallet by a deeplink. The deeplink is
-`lightning:` plus the same LNURL the page decoded. It is not printed and
-is not shown as a code. It does not add a query. A wallet that decodes
-it fetches the same URL the page fetched. The wallet is not given a
-second address. While that payment is open and not yet accepted, a later
-fetch of the same URL returns the current quote for those sats.
+The page opens an OpenCryptoPay wallet by a separate deeplink. That
+deeplink is `lightning:` plus the same LNURL the page decoded. It is not
+printed and is not shown as a code. It does not add a query. It does not
+replace the invoice button. A wallet that decodes it fetches the same
+URL the page fetched. The wallet is not given a second address. While
+that payment is open and not yet accepted, a later fetch of the same URL
+returns the current quote for those sats.
 
 The page shows what the api returns. It does not call Orchestra, it does
 not hold a key, and it does not record paid.
@@ -358,29 +364,38 @@ the Lightning pay request above.
 
 For a known amount the pay request contains:
 
-| Field | Value |
-| --- | --- |
-| `tag` | `payRequest` |
-| `callback` | `<PUBLIC_BASE_URL>/lnurlp/cb/<username>` |
-| `minSendable`, `maxSendable` | both that sat amount in millisats |
-| metadata | unchanged |
-| `displayName` | the shop name the payment page already shows |
-| `recipient.name` | the same shop name |
-| `standard` | `OpenCryptoPay` |
-| `displayQr` | `false` |
-| `quote.id` | UUID of this quote |
-| `quote.expiration` | expiry, UTC, as named above |
-| `quote.payment` | UUID of the payment this quote belongs to |
-| `requestedAmount` | asset `BTC`; `amount` is a number, the bitcoin quantity of those sats, equal to the Lightning asset amount |
-| `transferAmounts` | Lightning BTC for those sats, then one entry per chain Orchestra quoted, with the USDT amount, the USDC amount, or both |
+| Field                        | Value                                                |
+| ---------------------------- | ---------------------------------------------------- |
+| `tag`                        | `payRequest`                                         |
+| `callback`                   | `<PUBLIC_BASE_URL>/lnurlp/cb/<username>`             |
+| `minSendable`, `maxSendable` | both that sat amount in millisats                    |
+| metadata                     | unchanged                                            |
+| `displayName`                | the shop name the payment page already shows         |
+| `recipient.name`             | the same shop name                                   |
+| `standard`                   | `OpenCryptoPay`                                      |
+| `displayQr`                  | `false`                                              |
+| `quote.id`                   | UUID of this quote                                   |
+| `quote.expiration`           | expiry, UTC, as named above                          |
+| `quote.payment`              | UUID of the payment this quote belongs to            |
+| `requestedAmount`            | asset `BTC`; `amount` is the JSON number named above |
+| `transferAmounts`            | one entry per method, Lightning first                |
 
-`recipient` has that name and no address. A chain Orchestra did not quote
-is absent. A chain whose quote names no minimum fee is absent, because
-the api does not invent one. `minFee` is that minimum, a number.
-Lightning's `minFee` is 0. The pay link adds no fee of its own. Each
-asset amount in `transferAmounts` is a decimal string. `available` is
-true only for a pair the wallet may pay. No other asset is listed.
+A `transferAmounts` entry has `method`, `minFee`, `assets`, and
+`available`. `assets` holds `{ "asset", "amount" }`. `amount` is the
+decimal string named above. Lightning's method is `Lightning`, its asset
+is `BTC`, its `minFee` is the number 0, and `available` is true. Each
+other method is one chain Orchestra quoted. Its assets are `USDT`,
+`USDC`, or both. No other asset is listed. `minFee` is the number
+Orchestra named for that chain. The api does not invent one and does not
+change its unit. The standard reads an EVM `minFee` as a gas price in wei
+and a Bitcoin `minFee` as sat/vB. This service copies that number and does
+not rescale it. A chain Orchestra did not quote is absent. A chain whose
+quote names no minimum fee is absent. A method name Tether Wallet for
+Android 1.11.0 (134) does not recognise is absent. An empty method name
+is absent. A listed method has `available` true.
 
+`recipient` has the shop name and no other field. The pay request does
+not include `id`, `externalId`, `mode`, `route`, or `possibleStandards`.
 Both ids are of this api. `quote.payment` is not an amount. The pay
 link's path does not change.
 
@@ -390,9 +405,12 @@ The wallet calls `callback` with a GET and the query parameters `quote`,
 `method`, and `asset`. The method name is the name in `transferAmounts`.
 The response is the transaction detail the standard defines for that
 method, and it expires with the quote. Lightning returns the BOLT11
-invoice in `pr`. A stablecoin returns the `uri` Orchestra gave for that
-chain and asset. The destination in that `uri` is Orchestra's. 21.gifts
-does not hold it.
+invoice in `pr`. A `pr` that is not an invoice is not a Lightning
+detail. A stablecoin returns the `uri` Orchestra gave for that chain
+and asset. This service does not rewrite it. The destination in that
+`uri` is Orchestra's. 21.gifts does not hold it. An EVM `uri` is EIP-681.
+An EVM `uri` Tether Wallet for Android 1.11.0 (134) cannot route as
+EIP-681 fails the check in Tether Wallet.
 
 The same detail is returned by one GET that sets `method` and `asset` on
 the pay link while its payment is still open. The detail belongs to the
@@ -402,20 +420,22 @@ and creates no payment. It is not served as another quote.
 ### Proof
 
 The wallet pays the instruction. Where the standard requires a proof for
-that method, the wallet sends a GET to the same callback with the path
-segment `/cb/` replaced by `/tx/`. The username stays. The query
-carries `quote` (the quote UUID), `method`, and the proof parameter the
-standard defines for that method: `hex` for EVM, Bitcoin, and Firo;
-`tx` for Monero, Zano, Solana, Tron, and Cardano. The paths are
-`GET /lnurlp/cb/:username` and `GET /lnurlp/tx/:username`. They are not
-`…/lnurlp/<username>/invoice`. Lightning sends no proof. A Lightning
-wallet that calls `callback` with the fixed amount still receives the
-BOLT11 invoice in `pr`. That payment does not go through Orchestra.
+that method, the wallet sends a GET to the proof URL, built by replacing
+`/cb` with `/tx` in `callback`. The username stays. The query carries
+`quote` (the quote UUID), `method`, and the proof parameter the standard
+defines for that method: `hex` for EVM, Bitcoin, and Firo; `tx` for
+Monero, Zano, Solana, Tron, and Cardano. Spark, Internet Computer, and
+BinancePay are not offered, and their parameters are not accepted. The
+paths are `GET /lnurlp/cb/:username` and `GET /lnurlp/tx/:username`. They
+are not `…/lnurlp/<username>/invoice`. Lightning sends no proof. A
+Lightning wallet that calls `callback` with the fixed amount still
+receives the BOLT11 invoice in `pr`. That payment does not go through
+Orchestra.
 
-Tether Wallet for Android 1.11.0 (134) does not contain those two paths.
-It builds the proof request from `callback`. The request that routine
-sends is the proof the check accepts. A path it does not request is not
-that proof. The check is in Tether Wallet.
+Tether Wallet for Android 1.11.0 (134) builds its proof request from
+`callback`. Those two paths are not stored as strings in that build. The
+request the check sends is `GET /lnurlp/tx/:username`. A different URL
+fails the check. This service does not add a second proof path.
 
 For a proof, the api returns success only when the transfer matches the
 quote and Orchestra has accepted it: the offered chain, the offered
@@ -454,9 +474,8 @@ A quote that lapses before acceptance is replaced by a quote for the
 same sats. A quote for an open till charge also ends when the charge
 ends, if that is sooner. After the charge has ended, the sticker takes
 a new amount from the next payer and does not keep the charge's quote.
-A replacement the Tether Wallet check reports as
-`OPEN_CRYPTO_PAY_AMOUNT_CHANGED` is wrong. That check is below. The
-sats of the replacement do not change either way.
+The sats of the replacement do not change. The Tether Wallet check fails
+if it reports `OPEN_CRYPTO_PAY_AMOUNT_CHANGED` for that replacement.
 
 An amount entered on the page is the one open amount of that pay link.
 A later fetch of the same URL returns it until the payment is accepted
@@ -486,9 +505,8 @@ No zap, gift, or message is written.
 
 ## Till
 
-A charge is not required for the payment above. Creating one, its five
-minutes, and the two confirmations the till already uses stay as they
-are.
+A charge is not required for the payment above. Creating one and its five
+minutes stay as they are.
 
 `POST /pos` still takes a whole sat amount of at least 1, inside the
 receiving address's minimum and maximum, for an account with a username
@@ -497,8 +515,8 @@ minutes. While it is pending, both Lightning sendable bounds become that
 sat amount in millisats. Metadata stays as it is. When the Spark address
 is usable and the Orchestra key is configured, the stablecoin amounts
 for those same sats are added beside that pin, and `callback` is
-`/lnurlp/cb/<username>`. Otherwise
-the callback stays `/lnurlp/<username>/invoice`.
+`/lnurlp/cb/<username>`. Otherwise the callback stays
+`/lnurlp/<username>/invoice`.
 
 A lapsed quote is replaced only while the charge is open, and only for
 the same sats.
@@ -534,67 +552,66 @@ the OpenCryptoPay description is not this check.
 That build reads `requestedAmount`, `transferAmounts`, `minSendable`,
 `maxSendable`, `quote`, and `callback`. It requests
 `/.well-known/lnurlp/`. It does not contain a `payment` query. It does
-not read `displayQr`. The strings `/lnurlp/cb` and `/lnurlp/tx` are not
-in the build. The proof URL is the one this client derives from
-`callback`. The test uses that URL.
+not contain `displayQr`. It does not contain `/lnurlp/cb` or
+`/lnurlp/tx`. A method name it sends is a non-empty string. The words are
+`fetchOpenCryptoPayPayment methodName must be a non-empty string`.
+Lightning invoices are one-time payments and can't be saved as a contact.
+Pay it from the home screen instead.
 
-The client says that a call it treats as success, and that returned no
-transaction id, is not a payment. The field it reads as that id is in
-the client. This service returns `txId`. If the client does not read
-`txId`, the success body also carries the field the client reads. The
-test is how that field is known. It is not guessed here.
+A success it cannot read a transaction id from is not a payment. The
+words are `getOpenCryptoPayPayment succeeded but returned no transaction ID`.
+This service returns `txId`. `txId` is the reference Orchestra accepted.
+It is not the payer's transaction hash. If the client does not read
+`txId`, the success body also carries the field the client reads. That
+field is named by the check. It is not guessed here.
 
-For a Lightning invoice the client can no longer pay, it says the
-invoice may have expired or already been paid.
+For a Lightning invoice it can no longer pay, it says `This invoice can
+no longer be paid. It may have expired or already been paid.`
 
 ### Results the build names
 
-The comparison inside each result is in the compiled client. This
-document does not restate it.
+The comparison that returns each name is in the compiled client. This
+document does not restate it. The confirmation name is
+`OPEN_CRYPTO_PAY_CONFIRMING`.
 
-| Result | What the name says |
-| --- | --- |
-| `OPEN_CRYPTO_PAY_NO_PENDING_PAYMENT` | no pending payment |
-| `OPEN_CRYPTO_PAY_STANDARD` | the standard |
-| `OPEN_CRYPTO_PAY_QUOTE_EXPIRED` | the quote has expired |
-| `OPEN_CRYPTO_PAY_AMOUNT_CHANGED` | the amount changed |
-| `OPEN_CRYPTO_PAY_RAILS` | the rails |
-| `OPEN_CRYPTO_PAY_RAIL_UNAVAILABLE` | that rail is not available |
-| `OPEN_CRYPTO_PAY_RAIL_SHORTFALL` | that rail is short |
-| `OPEN_CRYPTO_PAY_INSUFFICIENT_FUNDS` | the funds are insufficient |
-| `OPEN_CRYPTO_PAY_CONFIRM` | confirmation |
-| `OPEN_CRYPTO_PAY_PROOF` | the proof |
-| `OPEN_CRYPTO_PAY_UNCONFIRMED` | not confirmed |
-| `OPEN_CRYPTO_PAY_SETTLED` | settled |
-| `OPEN_CRYPTO_PAY_NOT_SETTLED_PENDING_RAMP_LIMIT` | not settled because a ramp limit is pending |
-| `LNURL_AMOUNT_RANGE` | the LNURL amount is a range |
-| `LIGHTNING_INVOICE_UNPAYABLE` | the Lightning invoice cannot be paid |
-| `LIGHTNING_INVOICE_EXPIRED` | the Lightning invoice has expired |
-| `MAX_SPENDABLE` | the most the wallet can send |
-
+`OPEN_CRYPTO_PAY_NO_PENDING_PAYMENT`, `OPEN_CRYPTO_PAY_STANDARD`,
+`OPEN_CRYPTO_PAY_QUOTE_EXPIRED`, `OPEN_CRYPTO_PAY_AMOUNT_CHANGED`,
+`OPEN_CRYPTO_PAY_RAILS`, `OPEN_CRYPTO_PAY_RAIL_UNAVAILABLE`,
 `OPEN_CRYPTO_PAY_RAIL_SHORTFALL`, `OPEN_CRYPTO_PAY_INSUFFICIENT_FUNDS`,
-and `OPEN_CRYPTO_PAY_NOT_SETTLED_PENDING_RAMP_LIMIT` name the payer's
-own balance and a ramp limit. They are not a verdict on the pay link.
-The HTTP test does not treat them as a failure of this service.
+`OPEN_CRYPTO_PAY_CONFIRMING`, `OPEN_CRYPTO_PAY_PROOF`,
+`OPEN_CRYPTO_PAY_SETTLED`,
+`OPEN_CRYPTO_PAY_NOT_SETTLED_PENDING_RAMP_LIMIT`, `LNURL_AMOUNT_RANGE`,
+`LIGHTNING_INVOICE_UNPAYABLE`, `LIGHTNING_INVOICE_EXPIRED`.
 
-The client's pending proof ends in one of these outcomes:
+`MAX_SPENDABLE` is the wallet's own spend limit.
+`OPEN_CRYPTO_PAY_RAIL_SHORTFALL`, `OPEN_CRYPTO_PAY_INSUFFICIENT_FUNDS`,
+and `OPEN_CRYPTO_PAY_NOT_SETTLED_PENDING_RAMP_LIMIT` are the payer's
+balance or a ramp limit. None of these four is a verdict on the pay link.
 
-- proving again
-- confirming the send off the settled sale
-- the transfer failed on chain, so there is nothing to prove
-- the proof failed before the provider was reached
-- abandoned because the wallet was torn down
-- giving up because the proof has aged out
-- giving up because the transfer stays unproven
-- giving up because the transfer was never confirmed
-- not proving again because the proof is no longer claimable
+The pending proof ends in one of these sentences:
 
-A pass is settled. Giving up, aged out, still unproven, never
-confirmed, or no longer claimable is a failure of this service when the
-quote was still valid and the transfer matched it. A transfer that
-failed on chain, a wallet torn down, and a proof that never reached the
-provider are not failures of this service. Proving again, and confirming
-the send off the settled sale, are not the result of the check.
+- `background proof: proving again`
+- `background proof: confirming the send row off the settled sale`
+- `background proof: transfer failed on chain, nothing to prove`
+- `background proof: failed before the provider was reached`
+- `background proof: abandoned, the wallet was torn down`
+- `background proof: giving up, the proof has aged out`
+- `background proof: giving up, the transfer stays unproven`
+- `background proof: giving up, the transfer was never confirmed`
+- `background proof: not proving again, the proof is no longer claimable`
+
+The build also contains `released: proof kept, the provider never answered`,
+`No armed proof for this payment; a transfer may go unproven`,
+`claimed: proof is now owed`, and `No Open CryptoPay proof attempt yet`.
+None of these is a pass. A proof the provider never answered, while the
+quote was still valid, is a failure of this service.
+
+Settled is a pass. Giving up, aged out, still unproven, never confirmed,
+or no longer claimable is a failure of this service when the quote was
+still valid and the transfer matched it. A transfer that failed on chain,
+a wallet torn down, and a proof that never reached the provider are not
+failures of this service. Proving again, and confirming the send row off
+the settled sale, are not the result of the check.
 
 ### The HTTP check
 
@@ -609,35 +626,31 @@ The driver is the OpenCryptoPay routine from Tether Wallet for Android
 routine decodes that LNURL and requests the decoded URL.
 
 For one open amount, and for each chain and asset the pay link offers,
-the routine reaches settled and does not return a failure result from
-the table above. `requestedAmount` is asset `BTC`. That does not remove
-the stablecoin rows, and the routine still settles each of those rows.
-The proof request is the request the routine sends. If that request is
-not `GET /lnurlp/tx/:username`, that path is not the proof for this
-wallet. A repeat of that same proof is **200** and does not create a
-second payment.
+the routine reaches settled. `requestedAmount` is asset `BTC`. That does
+not remove the stablecoin rows. The proof request is
+`GET /lnurlp/tx/:username`. A different URL fails the check. A repeat of
+that same proof is **200** and does not create a second payment.
 
 With no open amount, the routine receives the Lightning pay request.
-That is `LNURL_AMOUNT_RANGE`, not
-`OPEN_CRYPTO_PAY_NO_PENDING_PAYMENT`.
+The check requires `LNURL_AMOUNT_RANGE`. `OPEN_CRYPTO_PAY_NO_PENDING_PAYMENT`
+fails the check.
 
 A second request while the payment is `open` and the quote has not
 expired does not return `OPEN_CRYPTO_PAY_AMOUNT_CHANGED`. A replacement
-quote that does is wrong.
+quote that does fails the check. `OPEN_CRYPTO_PAY_QUOTE_EXPIRED` while
+that quote has not expired fails the check.
+`OPEN_CRYPTO_PAY_RAIL_UNAVAILABLE` for a method this service offered
+fails the check.
 
-A method name this routine does not recognise is not offered. Offering
-it is `OPEN_CRYPTO_PAY_RAIL_UNAVAILABLE` and the test fails. An EVM
-detail the routine cannot route as EIP-681 fails the test.
-
+The balance, spend limit, and ramp results above do not fail the check.
 The test does not record paid. Paid stays the delivery of the sats.
 
-Four facts stay in the routine, and this document does not copy them
+Three facts stay in the routine, and this document does not copy them
 out:
 
 - when it returns `OPEN_CRYPTO_PAY_AMOUNT_CHANGED`
 - which field it reads as the transaction id
 - which method names are rails
-- the proof request it builds from `callback`
 
 The test is written from the routine. A client written from the
 OpenCryptoPay description is not the test.
