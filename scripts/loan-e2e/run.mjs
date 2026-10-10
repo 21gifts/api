@@ -1,11 +1,12 @@
 /**
- * Live loan cycle: one borrower, three givers, a PHP ask, 110 days.
+ * Live loan cycle: one borrower, three givers, a PHP ask, 4 days.
  *
- * Gifts are 550, 220 and 110 sats (5.50, 2.20 and 1.10 PHP at the fixture
- * rate of one cent per sat). That is 330 non-zero shares. Spark moves the
- * sats; Lightning is not used. Spare sats stay on the funding wallet.
- * Afterwards every party sends its remainder back there, and a sweep that
- * Spark refuses is tried again.
+ * Gifts are 20, 8 and 4 sats (0.20, 0.08 and 0.04 PHP at the fixture
+ * rate of one cent per sat). That is 12 non-zero shares, 5, 2 and 1 sat a
+ * day. The ask is 0.30 PHP (30 sats), so the first two gifts do not fill
+ * it and the third does. Spark moves the sats; Lightning is not used.
+ * Spare sats stay on the funding wallet. Afterwards every party sends its
+ * remainder back there, and a sweep that Spark refuses is tried again.
  *
  * Not part of `bun run e2e`. The API invoice cap is 20 per hour in memory,
  * so this process restarts the test server between batches. The public note
@@ -42,11 +43,16 @@ const HERE = path.dirname(fileURLToPath(import.meta.url));
 const GAP_MS = 11_000;
 const REPAY_BATCH = 20;
 const SPARK_TIMEOUT_MS = 600_000;
+const TERM_DAYS = 4;
+const GOAL_PHP = '0.30';
+const GOAL_SATS = 30;
 const GIVERS = [
-  { role: 'giver-a', username: 'loangivera', name: 'Giver large', sats: 550, php: '5.50' },
-  { role: 'giver-b', username: 'loangiverb', name: 'Giver mid', sats: 220, php: '2.20' },
-  { role: 'giver-c', username: 'loangiverc', name: 'Giver small', sats: 110, php: '1.10' },
+  { role: 'giver-a', username: 'loangivera', name: 'Giver large', sats: 20, php: '0.20' },
+  { role: 'giver-b', username: 'loangiverb', name: 'Giver mid', sats: 8, php: '0.08' },
+  { role: 'giver-c', username: 'loangiverc', name: 'Giver small', sats: 4, php: '0.04' },
 ];
+const COLLECTED_SATS = GIVERS.reduce((sum, giver) => sum + giver.sats, 0);
+const SHARE_COUNT = TERM_DAYS * GIVERS.length;
 const BORROWER = { role: 'borrower', username: 'loanborrower', name: 'Loan borrower' };
 const PARTIES = [BORROWER, ...GIVERS];
 
@@ -727,7 +733,7 @@ async function repayAll(state) {
   let stalled = 0;
   for (;;) {
     const ledger = await repayment(messageId, token);
-    if (ledger.next === null && ledger.daysPaid === 110) {
+    if (ledger.next === null && ledger.daysPaid === TERM_DAYS) {
       return;
     }
     if (ledger.next === null) {
@@ -788,13 +794,13 @@ function assertLedger(messageId, tokenPromise) {
   return tokenPromise.then(async (token) => {
     const ledger = await repayment(messageId, token);
     const paidRows = (ledger.repayments ?? []).filter((row) => row.status === 'paid');
-    if (ledger.currency !== 'PHP' || ledger.termDays !== 110) {
+    if (ledger.currency !== 'PHP' || ledger.termDays !== TERM_DAYS) {
       fail(`ledger shape currency=${ledger.currency} term=${ledger.termDays}`);
     }
-    if ((ledger.repayments ?? []).length !== 330 || paidRows.length !== 330) {
+    if ((ledger.repayments ?? []).length !== SHARE_COUNT || paidRows.length !== SHARE_COUNT) {
       fail(`ledger slices ${(ledger.repayments ?? []).length} paid ${paidRows.length}`);
     }
-    if (Number(ledger.daysPaid) !== 110) {
+    if (Number(ledger.daysPaid) !== TERM_DAYS) {
       fail(`days paid ${ledger.daysPaid}`);
     }
     const byUser = new Map((ledger.givers ?? []).map((row) => [row.username, row]));
@@ -815,7 +821,11 @@ function assertLedger(messageId, tokenPromise) {
     );
     process.stdout.write(`ledger ${stored}\n`);
     const numbers = stored.split(' ');
-    if (Number(numbers[1]) !== 880 || !(Number(numbers[0]) < 880) || Number(numbers[2]) !== 330) {
+    if (
+      Number(numbers[1]) !== COLLECTED_SATS ||
+      Number(numbers[0]) !== GOAL_SATS ||
+      Number(numbers[2]) !== SHARE_COUNT
+    ) {
       fail(`stored loan ${stored}`);
     }
   });
@@ -1051,9 +1061,9 @@ async function driveApp(state) {
   const controlToken = randomBytes(16).toString('hex');
   const ui = {
     controlToken,
-    goalAmount: '8.68',
-    termDays: 110,
-    text: 'Loan of 8.68 PHP over 110 days',
+    goalAmount: GOAL_PHP,
+    termDays: TERM_DAYS,
+    text: `Loan of ${GOAL_PHP} PHP over ${TERM_DAYS} days`,
     borrower: {
       role: BORROWER.role,
       username: BORROWER.username,
@@ -1249,11 +1259,11 @@ async function main() {
         await api('POST', '/messages', {
           token: accounts[BORROWER.role].token,
           body: {
-            text: 'Loan of 8.682 PHP over 110 days',
+            text: `Loan of ${GOAL_PHP} PHP over ${TERM_DAYS} days`,
             goalCurrency: 'PHP',
-            goalAmount: '8.682',
+            goalAmount: GOAL_PHP,
             goalRepayable: true,
-            goalTermDays: 110,
+            goalTermDays: TERM_DAYS,
           },
         }),
         'post loan',
