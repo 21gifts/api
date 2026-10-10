@@ -985,6 +985,7 @@ async function persistForumPost(
           ],
         );
         const body = attached[0];
+        /* v8 ignore next 3 -- attachHeartStats returns one object per input */
         if (body === undefined) {
           throw new Error('attachHeartStats returned no message');
         }
@@ -1219,6 +1220,7 @@ async function persistForumPost(
       ],
     );
     const body = attached[0];
+    /* v8 ignore next 3 -- attachHeartStats returns one object per input */
     if (body === undefined) {
       throw new Error('attachHeartStats returned no message');
     }
@@ -2342,6 +2344,7 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
           ],
         );
         const body = attached[0];
+        /* v8 ignore next 3 -- attachHeartStats returns one object per input */
         if (body === undefined) {
           throw new Error('attachHeartStats returned no message');
         }
@@ -2470,6 +2473,7 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
           ],
         );
         const body = attached[0];
+        /* v8 ignore next 3 -- attachHeartStats returns one object per input */
         if (body === undefined) {
           throw new Error('attachHeartStats returned no message');
         }
@@ -2547,6 +2551,7 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
             ],
           );
           const body = attached[0];
+          /* v8 ignore next 3 -- attachHeartStats returns one object per input */
           if (body === undefined) {
             throw new Error('attachHeartStats returned no message');
           }
@@ -2596,6 +2601,7 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
           ],
         );
         const body = attached[0];
+        /* v8 ignore next 3 -- attachHeartStats returns one object per input */
         if (body === undefined) {
           throw new Error('attachHeartStats returned no message');
         }
@@ -2693,6 +2699,7 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
           ],
         );
         const body = attached[0];
+        /* v8 ignore next 3 -- attachHeartStats returns one object per input */
         if (body === undefined) {
           throw new Error('attachHeartStats returned no message');
         }
@@ -2934,6 +2941,7 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
               ],
             );
             const body = attached[0];
+            /* v8 ignore next 3 -- attachHeartStats returns one object per input */
             if (body === undefined) {
               throw new Error('attachHeartStats returned no message');
             }
@@ -2979,6 +2987,7 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
             ],
           );
           const body = attached[0];
+          /* v8 ignore next 3 -- attachHeartStats returns one object per input */
           if (body === undefined) {
             throw new Error('attachHeartStats returned no message');
           }

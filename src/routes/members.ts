@@ -344,6 +344,7 @@ export function membersRoutes(deps: MembersRouteDeps): Hono {
             [profileMessage],
           );
           const body = attached[0];
+          /* v8 ignore next 3 -- attachHeartStats returns one object per input */
           if (body === undefined) {
             throw new Error('attachHeartStats returned no message');
           }
