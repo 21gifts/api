@@ -84,9 +84,15 @@ does not. The 12 words are not part of this loop.
 
 The api asks Orchestra (Flashnet) for a quote for the fixed sat amount. The
 quote names the shop's Spark address as the place bitcoin is delivered. That
-address comes from the verified Spark identity pubkey the api already stores
-for the account. The build encodes the address from that pubkey. It does not
-ask the phone for the address, and it must not learn the 12 words.
+address is the one stored for the account. The quote reads it from the
+database. It does not encode an address from `spark_pubkey`.
+
+Today the account stores `spark_pubkey` and `spark_pubkey_verified_at` only.
+The change that builds this stores the Spark address on the account and names
+that column in `SPEC.md`. A missing stored address is the same as a missing
+Orchestra key: no stablecoin amounts, and Lightning stays as it is. The
+payment does not ask the phone for the address, and it must not learn the
+12 words.
 
 The customer sends the stablecoin to Orchestra, on the chain and for the
 asset the quote named. 21.gifts does not receive the stablecoin and does not
@@ -165,12 +171,13 @@ pins the pay link. No zap, gift, or message is written for a till payment.
   that changes per quote or per payment.
 - No USDT or USDC balance for the shop or the member.
 - No phone in the quote, the delivery, or the paid mark. The 12 words stay
-  on the phone and are not read for this payment.
+  on the phone and are not read for this payment. The delivery address is
+  not computed from the stored pubkey.
 - No payment marked paid because a wallet saw the stablecoin transaction.
 - No change to today's Lightning settlement. The pay link still resolves to
   the verified in-app wallet. A Lightning payment of the same sats does not
   go through Orchestra.
 - No change to gifts or loans. A gift is still sats over the member's
   receiving address.
-- No route, table, or response field. Those belong to the change that
-  builds this.
+- No route or response field is reserved here. The stored Spark address is
+  required. The change that builds this names the column in `SPEC.md`.
