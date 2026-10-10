@@ -371,8 +371,8 @@ non-custodial phase (this table, like the rest of this section, is post-v1).
 
 ### Shop till (concept)
 
-The shop QR stays the OpenCryptoPay link. A customer who pays USDT or USDC
-through that same QR leaves bitcoin on the shop's own Breez Spark wallet.
+The shop QR stays the OpenCryptoPay link. USDT or USDC paid through that
+same QR leaves bitcoin on the shop's own Breez Spark wallet.
 The shop does not hold USDT or USDC. The payer can do this when the cashier
 is never online and never saved a sat amount. The QR does not change: it is
 the shop's and the cashier's, not a new code per quote. The browser page it
