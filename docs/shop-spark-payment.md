@@ -583,6 +583,9 @@ document does not restate it. The confirmation name is
 `OPEN_CRYPTO_PAY_NOT_SETTLED_PENDING_RAMP_LIMIT`, `LNURL_AMOUNT_RANGE`,
 `LIGHTNING_INVOICE_UNPAYABLE`, `LIGHTNING_INVOICE_EXPIRED`.
 
+The build also contains `OPEN_CRYPTO_PAY_ROUTER_DISMISS_ALL_TYPE`. That
+name is not a payment result of this check.
+
 `MAX_SPENDABLE` is the wallet's own spend limit.
 `OPEN_CRYPTO_PAY_RAIL_SHORTFALL`, `OPEN_CRYPTO_PAY_INSUFFICIENT_FUNDS`,
 and `OPEN_CRYPTO_PAY_NOT_SETTLED_PENDING_RAMP_LIMIT` are the payer's
