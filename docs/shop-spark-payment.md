@@ -12,11 +12,13 @@ an ordinary bitcoin payment. Gifts, the till, and loans stay in satoshis.
 
 ## Decision
 
-One QR. The string does not grow a second address, and the window sticker
-does not change.
+One QR. It belongs to the shop and the cashier. It does not change for a
+quote, an amount, or a payment. The string does not grow a second address,
+and the window sticker does not change.
 
 The QR is `https://<domain>/pl/?lightning=<LNURL>`. That LNURL is the shop's
-existing pay link: `https://<domain>/.well-known/lnurlp/<username>`.
+existing pay link: `https://<domain>/.well-known/lnurlp/<username>`. A wallet
+scans this same code. The page does not mint another one.
 
 A Lightning wallet keeps paying that LNURL as today. A browser that opens the
 same QR shows the payment page below. An OpenCryptoPay wallet that reads the
@@ -53,10 +55,10 @@ chain is not a payment. The page may group the chains of one asset under one
 label. The amount that must be paid is still the amount of that chain and
 that asset.
 
-The page then shows an LNURL QR for that quote and tells the payer to scan it
-with a compatible app. That QR is the quote, not a second window sticker and
-not a second address in the sticker string. A Lightning wallet can still pay
-the same sats through the standing pay link, without that quote QR.
+The QR on that page is the shop and cashier QR above. It is not replaced by
+a code for the quote. A compatible app scans the same code it would scan
+from the sticker. A Lightning wallet pays the same sats through that same
+pay link.
 
 The page reads and shows what the api returns. It does not ask Orchestra
 itself, it does not hold a key, and it does not mark the payment paid.
@@ -159,7 +161,8 @@ pins the pay link. No zap, gift, or message is written for a till payment.
 
 ## What this does not do
 
-- No second sticker and no second address in the sticker string.
+- No second sticker, no second address in the sticker string, and no QR
+  that changes per quote or per payment.
 - No USDT or USDC balance for the shop or the member.
 - No phone in the quote, the delivery, or the paid mark. The 12 words stay
   on the phone and are not read for this payment.
