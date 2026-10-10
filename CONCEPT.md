@@ -371,34 +371,30 @@ non-custodial phase (this table, like the rest of this section, is post-v1).
 
 ### Shop till (concept)
 
-The shop QR stays the OpenCryptoPay link. USDT or USDC paid through that
-same QR leaves bitcoin on the shop's own Breez Spark wallet.
-The shop does not hold USDT or USDC. The payer can do this when the cashier
-is never online and never saved a sat amount. The QR does not change: it is
-the shop's and the cashier's, printed once on the sticker. A phone camera
-opens the page, where the payer names the amount when none was saved, and
-the page starts the wallet by a deeplink. A wallet that scans the sticker
-talks to the api instead. Those are two uses of the one QR. The page shows
-no QR. OpenCryptoPay here is only that wallet exchange. Orchestra delivering
-bitcoin to the Spark address stored for the shop is this provider's
-settlement, not the standard, and another provider's fiat route is not
-copied. The quote reads the address from the database. The cashier's phone
-is not in that path. The 12-word seed stays on the phone and is not read
-for this payment. Specified in
-[`docs/shop-spark-payment.md`](./docs/shop-spark-payment.md). Not implemented.
-The 2026-10-01 limit that stablecoin rows exist only while a till charge is
-open is superseded.
+The shop has one QR, printed for that shop and that cashier. USDT or USDC
+paid through it leaves bitcoin on the shop's own Spark wallet. The shop
+does not hold either stablecoin. The cashier does not have to be online
+and does not have to have saved a sat amount. A phone camera opens the
+payment page, which takes the amount when none was saved and starts the
+wallet by a deeplink. A wallet that scans the sticker calls the api. The
+page shows no QR. OpenCryptoPay is that wallet exchange only. Settlement
+is Orchestra delivering bitcoin to the Spark address stored for the shop.
+The quote reads the address from the database. The 12-word seed stays on
+the phone. Specified in
+[`docs/shop-spark-payment.md`](./docs/shop-spark-payment.md). Not
+implemented. The 2026-10-01 limit that stablecoin rows exist only while a
+till charge is open is superseded.
 
 The till knows when a charge is paid. While a charge is open, a 21.gifts
 in-app wallet that scans the shop's QR (or enters the shop's address) gets a
 Spark invoice for the charge amount from `POST /pay/:username/invoice` and
 pays it without a fee; any other wallet pays over Lightning as before. The
-api watches the invoices it handed out for that charge (the Spark invoice
-through the Spark coordinator, each BOLT11 through the LNURL server's LUD-21
-verify) and marks the charge `paid`; the first confirmation wins. `GET /pos`
-then shows the paid charge for 60 s, and a paid charge no longer pins the
-pay link's amount. No zap receipt, gift, or message is written for a till
-payment.
+api marks the charge `paid` on the first confirmation: that Spark invoice
+finalized at the coordinator, a BOLT11 the api handed out confirmed by
+LUD-21 verify, or Orchestra's delivery of the same sats. One charge is
+paid once. `GET /pos` then shows the paid charge for 60 s, and a paid
+charge no longer pins the pay link's amount. No zap receipt, gift, or
+message is written for a till payment.
 
 ### Communication
 
