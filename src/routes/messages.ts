@@ -18,6 +18,7 @@ import {
 import { effectiveStatus, eligibleToday } from '@/lib/funding';
 import { InMemoryFundingStore, type FundingStore } from '@/lib/funding-store';
 import type { GiftStore } from '@/lib/gift-store';
+import { attachHeartStats } from '@/lib/heart-stats';
 import { logEvent } from '@/lib/log';
 import { shownFiatFromBody, type FiatAmounts } from '@/lib/money';
 import { buildPostStats } from '@/lib/post-stats';
@@ -968,18 +969,26 @@ async function persistForumPost(
         if (!placesMatch(existing.place ?? null, place)) {
           return c.json({ error: 'A live note with this media already exists' }, 409);
         }
-        return c.json(
-          serializeMessage(
-            existing,
-            payableOf(existing, account, deps.lnurlServer),
-            account.role,
-            undefined,
-            true,
-            undefined,
-            staffTagOf(account.staffTag),
-          ),
-          200,
+        const attached = await attachHeartStats(
+          (ids, viewer) => deps.store.heartStats(ids, viewer),
+          account.id,
+          [
+            serializeMessage(
+              existing,
+              payableOf(existing, account, deps.lnurlServer),
+              account.role,
+              undefined,
+              true,
+              undefined,
+              staffTagOf(account.staffTag),
+            ),
+          ],
         );
+        const body = attached[0];
+        if (body === undefined) {
+          throw new Error('attachHeartStats returned no message');
+        }
+        return c.json(body, 200);
       }
     } catch {
       logEvent('messages.create.failed');
@@ -1194,18 +1203,26 @@ async function persistForumPost(
         textHasHashtagToken,
       });
     }
-    return c.json(
-      serializeMessage(
-        published,
-        payableOf(published, account, deps.lnurlServer),
-        account.role,
-        undefined,
-        true,
-        undefined,
-        staffTagOf(account.staffTag),
-      ),
-      200,
+    const attached = await attachHeartStats(
+      (ids, viewer) => deps.store.heartStats(ids, viewer),
+      account.id,
+      [
+        serializeMessage(
+          published,
+          payableOf(published, account, deps.lnurlServer),
+          account.role,
+          undefined,
+          true,
+          undefined,
+          staffTagOf(account.staffTag),
+        ),
+      ],
     );
+    const body = attached[0];
+    if (body === undefined) {
+      throw new Error('attachHeartStats returned no message');
+    }
+    return c.json(body, 200);
   } catch (err) {
     if (err instanceof Error && err.message === 'place conflicts with live media') {
       return c.json({ error: 'A live note with this media already exists' }, 409);
@@ -1561,20 +1578,24 @@ async function servePublicActiveList(deps: MessagesRouteDeps, c: Context): Promi
           : deps.authStore.getAccount(row.accountId),
       ),
     );
-    const messages = kept.map((row, i) => {
-      const author = authors[i];
-      const payable = payableOf(row, author, deps.lnurlServer);
-      const role = row.accountId === null ? undefined : (author?.role ?? 'basis');
-      return serializeMessage(
-        row,
-        payable,
-        role,
-        row.replyCount,
-        true,
-        undefined,
-        staffTagOf(author?.staffTag),
-      );
-    });
+    const messages = await attachHeartStats(
+      (ids, viewer) => deps.store.heartStats(ids, viewer),
+      null,
+      kept.map((row, i) => {
+        const author = authors[i];
+        const payable = payableOf(row, author, deps.lnurlServer);
+        const role = row.accountId === null ? undefined : (author?.role ?? 'basis');
+        return serializeMessage(
+          row,
+          payable,
+          role,
+          row.replyCount,
+          true,
+          undefined,
+          staffTagOf(author?.staffTag),
+        );
+      }),
+    );
     const last = page[page.length - 1];
     const anchor = kept.length > 0 ? kept[kept.length - 1] : last;
     let nextCursor: string | undefined;
@@ -1717,20 +1738,24 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
               : deps.authStore.getAccount(row.accountId),
           ),
         );
-        const messages = kept.map((row, i) => {
-          const author = authors[i];
-          const payable = payableOf(row, author, deps.lnurlServer);
-          const role = row.accountId === null ? undefined : (author?.role ?? 'basis');
-          return serializeMessage(
-            row,
-            payable,
-            role,
-            row.replyCount,
-            true,
-            undefined,
-            staffTagOf(author?.staffTag),
-          );
-        });
+        const messages = await attachHeartStats(
+          (ids, viewer) => deps.store.heartStats(ids, viewer),
+          account.id,
+          kept.map((row, i) => {
+            const author = authors[i];
+            const payable = payableOf(row, author, deps.lnurlServer);
+            const role = row.accountId === null ? undefined : (author?.role ?? 'basis');
+            return serializeMessage(
+              row,
+              payable,
+              role,
+              row.replyCount,
+              true,
+              undefined,
+              staffTagOf(author?.staffTag),
+            );
+          }),
+        );
         let nextCursor: string | undefined;
         if (rows.length === limit) {
           const last = rows[rows.length - 1];
@@ -2040,7 +2065,16 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
             continue;
           }
         }
-        return c.json({ messages }, 200);
+        return c.json(
+          {
+            messages: await attachHeartStats(
+              (ids, viewer) => deps.store.heartStats(ids, viewer),
+              account === null ? null : account.id,
+              messages,
+            ),
+          },
+          200,
+        );
       } catch {
         logEvent('messages.replies.failed');
         return c.json({ error: 'Messages are unavailable' }, 503);
@@ -2065,6 +2099,7 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
         return c.json({ error: 'Messages are unavailable' }, 503);
       }
       try {
+        const viewer = await authedAccount(deps, c.req.header('authorization'));
         const messages = [];
         for (const row of result.messages) {
           const kept = await dropMissingVideoRow(deps.store, row);
@@ -2077,7 +2112,16 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
             continue;
           }
         }
-        return c.json({ messages }, 200);
+        return c.json(
+          {
+            messages: await attachHeartStats(
+              (ids, viewerId) => deps.store.heartStats(ids, viewerId),
+              viewer === null ? null : viewer.id,
+              messages,
+            ),
+          },
+          200,
+        );
       } catch {
         logEvent('messages.external_posts.failed');
         return c.json({ error: 'Messages are unavailable' }, 503);
@@ -2092,6 +2136,7 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
         return c.json({ error: 'Messages are unavailable' }, 503);
       }
       try {
+        const viewer = await authedAccount(deps, c.req.header('authorization'));
         const messages = [];
         for (const row of result.messages) {
           const kept = await dropMissingVideoRow(deps.store, row);
@@ -2104,7 +2149,16 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
             continue;
           }
         }
-        return c.json({ messages }, 200);
+        return c.json(
+          {
+            messages: await attachHeartStats(
+              (ids, viewerId) => deps.store.heartStats(ids, viewerId),
+              viewer === null ? null : viewer.id,
+              messages,
+            ),
+          },
+          200,
+        );
       } catch {
         logEvent('messages.external_replies.failed');
         return c.json({ error: 'Messages are unavailable' }, 503);
@@ -2272,18 +2326,26 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
             messageId: updated.id,
           });
         }
-        return c.json(
-          serializeMessage(
-            updated,
-            payable,
-            role,
-            await deps.store.countAttributedReplies(updated.id),
-            undefined,
-            undefined,
-            staffTagOf(author?.staffTag),
-          ),
-          200,
+        const attached = await attachHeartStats(
+          (ids, viewer) => deps.store.heartStats(ids, viewer),
+          account.id,
+          [
+            serializeMessage(
+              updated,
+              payable,
+              role,
+              await deps.store.countAttributedReplies(updated.id),
+              undefined,
+              undefined,
+              staffTagOf(author?.staffTag),
+            ),
+          ],
         );
+        const body = attached[0];
+        if (body === undefined) {
+          throw new Error('attachHeartStats returned no message');
+        }
+        return c.json(body, 200);
       } catch {
         logEvent('messages.place.failed');
         return c.json({ error: 'Messages are unavailable' }, 503);
@@ -2392,18 +2454,26 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
             textHasHashtagToken,
           });
         }
-        return c.json(
-          serializeMessage(
-            updated,
-            payable,
-            role,
-            await deps.store.countAttributedReplies(updated.id),
-            undefined,
-            undefined,
-            staffTagOf(author?.staffTag),
-          ),
-          200,
+        const attached = await attachHeartStats(
+          (ids, viewer) => deps.store.heartStats(ids, viewer),
+          account.id,
+          [
+            serializeMessage(
+              updated,
+              payable,
+              role,
+              await deps.store.countAttributedReplies(updated.id),
+              undefined,
+              undefined,
+              staffTagOf(author?.staffTag),
+            ),
+          ],
         );
+        const body = attached[0];
+        if (body === undefined) {
+          throw new Error('attachHeartStats returned no message');
+        }
+        return c.json(body, 200);
       } catch {
         logEvent('messages.shop_account.failed');
         return c.json({ error: 'Messages are unavailable' }, 503);
@@ -2461,18 +2531,26 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
             row.accountId === null ? undefined : await deps.authStore.getAccount(row.accountId);
           const payable = row.accountId === null ? false : payableOf(row, author, deps.lnurlServer);
           const role = row.accountId === null ? undefined : (author?.role ?? 'basis');
-          return c.json(
-            serializeMessage(
-              row,
-              payable,
-              role,
-              await deps.store.countAttributedReplies(row.id),
-              undefined,
-              undefined,
-              staffTagOf(author?.staffTag),
-            ),
-            200,
+          const attached = await attachHeartStats(
+            (ids, viewer) => deps.store.heartStats(ids, viewer),
+            account.id,
+            [
+              serializeMessage(
+                row,
+                payable,
+                role,
+                await deps.store.countAttributedReplies(row.id),
+                undefined,
+                undefined,
+                staffTagOf(author?.staffTag),
+              ),
+            ],
           );
+          const body = attached[0];
+          if (body === undefined) {
+            throw new Error('attachHeartStats returned no message');
+          }
+          return c.json(body, 200);
         }
         const written = await deps.store.updateText(id, ensured, {
           id: crypto.randomUUID(),
@@ -2502,18 +2580,26 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
           accountId: account.id,
           role: account.role,
         });
-        return c.json(
-          serializeMessage(
-            updated,
-            payable,
-            role,
-            await deps.store.countAttributedReplies(updated.id),
-            undefined,
-            undefined,
-            staffTagOf(author?.staffTag),
-          ),
-          200,
+        const attached = await attachHeartStats(
+          (ids, viewer) => deps.store.heartStats(ids, viewer),
+          account.id,
+          [
+            serializeMessage(
+              updated,
+              payable,
+              role,
+              await deps.store.countAttributedReplies(updated.id),
+              undefined,
+              undefined,
+              staffTagOf(author?.staffTag),
+            ),
+          ],
         );
+        const body = attached[0];
+        if (body === undefined) {
+          throw new Error('attachHeartStats returned no message');
+        }
+        return c.json(body, 200);
       } catch {
         logEvent('messages.text.failed');
         return c.json({ error: 'Messages are unavailable' }, 503);
@@ -2591,18 +2677,26 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
           accountId: account.id,
           role: account.role,
         });
-        return c.json(
-          serializeMessage(
-            written,
-            payable,
-            role,
-            await deps.store.countAttributedReplies(written.id),
-            undefined,
-            undefined,
-            staffTagOf(author?.staffTag),
-          ),
-          200,
+        const attached = await attachHeartStats(
+          (ids, viewer) => deps.store.heartStats(ids, viewer),
+          account.id,
+          [
+            serializeMessage(
+              written,
+              payable,
+              role,
+              await deps.store.countAttributedReplies(written.id),
+              undefined,
+              undefined,
+              staffTagOf(author?.staffTag),
+            ),
+          ],
         );
+        const body = attached[0];
+        if (body === undefined) {
+          throw new Error('attachHeartStats returned no message');
+        }
+        return c.json(body, 200);
       } catch {
         logEvent('messages.photos.failed');
         return c.json({ error: 'Messages are unavailable' }, 503);
@@ -2819,21 +2913,31 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
               row.accountId === null ? undefined : await deps.authStore.getAccount(row.accountId);
             const role = row.accountId === null ? undefined : (author?.role ?? 'basis');
             const deletedBy = await resolveDeletedBy(deps.authStore, row);
-            return c.json(
-              serializeMessage(
-                row,
-                false,
-                role,
-                row.parentId === null ? await deps.store.countAttributedReplies(row.id) : undefined,
-                true,
-                {
-                  deletedAt: row.deletedAt,
-                  deletedBy,
-                },
-                staffTagOf(author?.staffTag),
-              ),
-              200,
+            const attached = await attachHeartStats(
+              (ids, viewer) => deps.store.heartStats(ids, viewer),
+              account.id,
+              [
+                serializeMessage(
+                  row,
+                  false,
+                  role,
+                  row.parentId === null
+                    ? await deps.store.countAttributedReplies(row.id)
+                    : undefined,
+                  true,
+                  {
+                    deletedAt: row.deletedAt,
+                    deletedBy,
+                  },
+                  staffTagOf(author?.staffTag),
+                ),
+              ],
             );
+            const body = attached[0];
+            if (body === undefined) {
+              throw new Error('attachHeartStats returned no message');
+            }
+            return c.json(body, 200);
           }
           if (await withheldFromPublic(deps, row)) {
             return c.json({ error: 'Not found' }, 404);
@@ -2856,18 +2960,29 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
           if (kept === null) {
             return c.json({ error: 'Not found' }, 404);
           }
-          return c.json(
-            serializeMessage(
-              kept,
-              payable,
-              role,
-              kept.parentId === null ? await deps.store.countAttributedReplies(kept.id) : undefined,
-              true,
-              undefined,
-              staffTagOf(author?.staffTag),
-            ),
-            200,
+          const viewer = await authedAccount(deps, c.req.header('authorization'));
+          const attached = await attachHeartStats(
+            (ids, viewerId) => deps.store.heartStats(ids, viewerId),
+            viewer === null ? null : viewer.id,
+            [
+              serializeMessage(
+                kept,
+                payable,
+                role,
+                kept.parentId === null
+                  ? await deps.store.countAttributedReplies(kept.id)
+                  : undefined,
+                true,
+                undefined,
+                staffTagOf(author?.staffTag),
+              ),
+            ],
           );
+          const body = attached[0];
+          if (body === undefined) {
+            throw new Error('attachHeartStats returned no message');
+          }
+          return c.json(body, 200);
         }
       } catch {
         logEvent('messages.get.failed');
