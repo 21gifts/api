@@ -1,14 +1,22 @@
 #!/usr/bin/env python3
-"""Spark wallet helper for the live loan cycle.
+"""Spark wallet helper for the live loan cycle (Python 3.10 or newer).
 
 Reads each party's mnemonic from ``$LOAN_E2E_DIR/<role>.mnemonic`` and the
 Breez API key from ``LOAN_E2E_BREEZ_API_KEY``. Never prints either secret.
 Roles: funding, borrower, giver-a, giver-b, giver-c.
+
+Commands inspect balances, create and pay invoices, consolidate fragmented
+wallets, and sweep every party back to the funding wallet.
 """
 
 import asyncio
+import glob
 import os
+import shutil
+import sqlite3
 import sys
+import tempfile
+import time
 
 from breez_sdk_spark import (
     ConnectRequest,
@@ -23,8 +31,8 @@ from breez_sdk_spark import (
     Seed,
     SendPaymentRequest,
     SyncWalletRequest,
-    OptimizationMode,
     OptimizeLeavesRequest,
+    OptimizationMode,
     connect,
     default_config,
 )
@@ -71,7 +79,10 @@ def read_mnemonic(role: str) -> str:
 
 def redact(text: str, secret: str) -> str:
     if secret and secret in text:
-        return text.replace(secret, "[redacted]")
+        text = text.replace(secret, "[redacted]")
+    api_key = os.environ.get("LOAN_E2E_BREEZ_API_KEY", "").strip()
+    if api_key:
+        text = text.replace(api_key, "[redacted]")
     return text
 
 
@@ -79,7 +90,7 @@ def status_name(status: object) -> str:
     return getattr(status, "name", type(status).__name__)
 
 
-async def open_sdk(role: str, secret: str):
+async def open_sdk(role: str, secret: str, multiplicity: int | None = None):
     api_key = os.environ.get("LOAN_E2E_BREEZ_API_KEY", "").strip()
     if api_key == "":
         print("LOAN_E2E_BREEZ_API_KEY is required", file=sys.stderr)
@@ -88,6 +99,14 @@ async def open_sdk(role: str, secret: str):
     os.chmod(storage_path(role), 0o700)
     config = default_config(network=Network.MAINNET)
     config.api_key = api_key
+    # No background optimizer. It starts a swap after every change to the
+    # leaf set, and this helper disconnects right after its command. A swap
+    # cut off that way leaves its leaves reserved until the reservation
+    # expires, and every send fails leaf selection until then. Optimization
+    # runs only where a command awaits it (optimize_full, consolidate).
+    config.leaf_optimization_config.auto_enabled = False
+    if multiplicity is not None:
+        config.leaf_optimization_config.multiplicity = multiplicity
     return await connect(
         request=ConnectRequest(
             config=config,
@@ -99,6 +118,105 @@ async def open_sdk(role: str, secret: str):
 
 async def synced_info(sdk):
     return await sdk.get_info(request=GetInfoRequest(ensure_synced=True))
+
+
+def leaf_values(role: str, reserved: bool = False) -> list[int] | None:
+    """Read available leaf values from an unlocked copy of the wallet database.
+
+    ``reserved`` selects the leaves an unfinished swap or send still holds;
+    those cannot be selected for a payment until the reservation ends.
+    """
+    temporary = ""
+    try:
+        matches = glob.glob(os.path.join(storage_path(role), "mainnet", "*", "storage.sql"))
+        if len(matches) != 1:
+            return None
+        # The copy stays next to the wallet in LOAN_E2E_DIR, readable only by
+        # this user, and is removed below.
+        fd, temporary = tempfile.mkstemp(
+            prefix=".leaves-", suffix=".sql", dir=storage_path(role)
+        )
+        os.close(fd)
+        shutil.copyfile(matches[0], temporary)
+        os.chmod(temporary, 0o600)
+        # A reservation written by an open connection may still be in the
+        # write-ahead log only.
+        if os.path.exists(matches[0] + "-wal"):
+            shutil.copyfile(matches[0] + "-wal", temporary + "-wal")
+            os.chmod(temporary + "-wal", 0o600)
+        with sqlite3.connect(temporary) as database:
+            rows = database.execute(
+                "SELECT value FROM brz_tree_leaves WHERE status = ?"
+                " AND (reservation_id IS NOT NULL) = ?",
+                ('"Available"', 1 if reserved else 0),
+            ).fetchall()
+        return sorted((int(row[0]) for row in rows), reverse=True)
+    except Exception:
+        return None
+    finally:
+        for path in (temporary, temporary + "-wal", temporary + "-shm") if temporary else ():
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
+
+
+def leaf_text(role: str) -> str:
+    """Free and reserved leaves for an error message."""
+    free = leaf_values(role)
+    held = leaf_values(role, reserved=True)
+    return (
+        f"leaves={'unread' if free is None else free} "
+        f"reserved={'unread' if held is None else held}"
+    )
+
+
+# The harness kills a helper command after 600 s. Pay and sweep stop
+# starting new work at this many seconds, which leaves room for the final
+# balance read and message.
+COMMAND_BUDGET_S = 540
+# A pay attempt (connect, sync, optimize, send) is not started with less
+# time left than this.
+ATTEMPT_RESERVE_S = 60
+
+
+def seconds_left(deadline: float) -> float:
+    """Seconds until the monotonic ``deadline``; negative once it has passed."""
+    return deadline - time.monotonic()
+
+
+async def wait_unreserved(role: str, secret: str, deadline: float) -> None:
+    """Wait until no leaf of this wallet is held by an unfinished swap or send.
+
+    The wallet only drops an expired reservation while it is connected and
+    refreshing, about five minutes after the reservation was made. Retrying
+    a payment inside that window fails leaf selection every time. Waiting,
+    including the syncs in between, stops at ``deadline`` (a monotonic time).
+    An unreadable leaf snapshot is read again; after three unreadable reads
+    in a row the reservation state stays unknown and the wait ends.
+    """
+    unread = 0
+    while seconds_left(deadline) > 0:
+        held = leaf_values(role, reserved=True)
+        if held == []:
+            return
+        if held is None:
+            unread += 1
+            if unread >= 3:
+                print(f"leaves of {role} unread; not waiting", file=sys.stderr)
+                return
+            print(f"leaves of {role} unread; reading again", file=sys.stderr)
+        else:
+            unread = 0
+            print(f"waiting for reserved leaves {held} of {role}", file=sys.stderr)
+        await asyncio.sleep(min(20.0, max(0.0, seconds_left(deadline))))
+        if seconds_left(deadline) <= 0:
+            return
+        sdk = await open_sdk(role, secret)
+        try:
+            await sdk.sync_wallet(SyncWalletRequest())
+        finally:
+            await sdk.disconnect()
 
 
 def fee_of(prepared) -> int:
@@ -160,9 +278,19 @@ async def command_balance(role: str) -> None:
     secret = read_mnemonic(role)
     sdk = await open_sdk(role, secret)
     try:
-        info = await synced_info(sdk)
-        print(f"role={role}")
-        print(f"balance_sats={int(info.balance_sats)}")
+        reads: list[int] = []
+        for read_index in range(6):
+            if read_index > 0:
+                await asyncio.sleep(2)
+            await sdk.sync_wallet(SyncWalletRequest())
+            info = await synced_info(sdk)
+            reads.append(int(info.balance_sats))
+            if len(reads) >= 2 and reads[-1] == reads[-2]:
+                print(f"role={role}")
+                print(f"balance_sats={reads[-1]}")
+                return
+        print(f"balance of {role} did not settle: {reads}", file=sys.stderr)
+        sys.exit(3)
     finally:
         await sdk.disconnect()
 
@@ -226,20 +354,46 @@ async def optimize_full(sdk) -> str:
     raise RuntimeError("leaf optimization did not finish")
 
 
+async def consolidate(role: str, secret: str) -> str:
+    """Merge the wallet's leaves (full optimization, multiplicity 0); return a summary line."""
+    sdk = await open_sdk(role, secret, multiplicity=0)
+    try:
+        await sdk.sync_wallet(SyncWalletRequest())
+        await optimize_full(sdk)
+        info = await synced_info(sdk)
+        balance = int(info.balance_sats)
+    finally:
+        await sdk.disconnect()
+    leaves = leaf_values(role)
+    count = "unread" if leaves is None else str(len(leaves))
+    return f"consolidated role={role} balance={balance} leaves={count}"
+
+
+async def command_consolidate(role: str) -> None:
+    secret = read_mnemonic(role)
+    print(await consolidate(role, secret))
+
+
 async def command_pay(role: str, request: str, amount: int | None) -> None:
     secret = read_mnemonic(role)
     last = "not tried"
-    stagnant = 0
-    for attempt in range(1, 7):
-        sdk = await open_sdk(role, secret)
+    consolidated = False
+    attempts = 5
+    tried = 0
+    deadline = time.monotonic() + COMMAND_BUDGET_S
+    for attempt in range(1, attempts + 1):
+        if seconds_left(deadline) < ATTEMPT_RESERVE_S:
+            break
+        tried = attempt
+        if consolidated:
+            sdk = await open_sdk(role, secret, multiplicity=0)
+        else:
+            sdk = await open_sdk(role, secret)
+        retryable = False
         try:
             await sdk.sync_wallet(SyncWalletRequest())
             status = await optimize_full(sdk)
             print(f"optimize {status}", file=sys.stderr)
-            if "rounds=0" in status:
-                stagnant += 1
-            else:
-                stagnant = 0
             prepared = await prepare(sdk, request, amount)
             fee = fee_of(prepared)
             if fee != 0:
@@ -252,9 +406,6 @@ async def command_pay(role: str, request: str, amount: int | None) -> None:
             raise
         except Exception as error:
             last = redact(f"{type(error).__name__}: {error}", secret)
-            api_key = os.environ.get("LOAN_E2E_BREEZ_API_KEY", "").strip()
-            if api_key:
-                last = last.replace(api_key, "[redacted]")
             retryable = (
                 "select leaves" in last.lower()
                 or "leaf optimization did not finish" in last.lower()
@@ -263,13 +414,31 @@ async def command_pay(role: str, request: str, amount: int | None) -> None:
                 print(last, file=sys.stderr)
                 sys.exit(3)
             print(f"pay attempt {attempt} {last}", file=sys.stderr)
-            if stagnant >= 2 and "select leaves" in last.lower():
-                print(last, file=sys.stderr)
-                sys.exit(3)
         finally:
             await sdk.disconnect()
-        await asyncio.sleep(8)
-    print(last, file=sys.stderr)
+
+        if retryable and not consolidated:
+            consolidated = True
+            try:
+                print(await consolidate(role, secret), file=sys.stderr)
+            except Exception as error:
+                message = redact(f"{type(error).__name__}: {error}", secret)
+                print(f"consolidation of {role} failed: {message}", file=sys.stderr)
+        if attempt < attempts:
+            backoff = 8 * (2 ** (attempt - 1))
+            await asyncio.sleep(min(backoff, max(0.0, seconds_left(deadline))))
+            await wait_unreserved(role, secret, deadline - ATTEMPT_RESERVE_S)
+
+    try:
+        balance: int | str = await balance_of(role, secret)
+    except Exception:
+        balance = "unread"
+    amount_text = str(amount) if amount is not None else "the invoice amount"
+    print(
+        f"{role} cannot pay {amount_text} sats after {tried} attempts: {last}; "
+        f"balance={balance} {leaf_text(role)}",
+        file=sys.stderr,
+    )
     sys.exit(3)
 
 
@@ -319,6 +488,8 @@ async def send_amount(sdk, address: str, amount: int) -> bool:
 async def command_sweep(role: str, address: str) -> None:
     secret = read_mnemonic(role)
     moved = 0
+    deadline = time.monotonic() + COMMAND_BUDGET_S
+    await wait_unreserved(role, secret, deadline - ATTEMPT_RESERVE_S)
     sdk = await open_sdk(role, secret)
     try:
         await sdk.sync_wallet(SyncWalletRequest())
@@ -331,6 +502,8 @@ async def command_sweep(role: str, address: str) -> None:
                 return
             sent = False
             for amount in sweep_amounts(balance):
+                if seconds_left(deadline) < ATTEMPT_RESERVE_S:
+                    break
                 if await send_amount(sdk, address, amount):
                     moved += amount
                     sent = True
@@ -342,30 +515,41 @@ async def command_sweep(role: str, address: str) -> None:
     finally:
         await sdk.disconnect()
 
-    while True:
+    for _ in range(8):
         seen = await balance_of(role, secret)
         if seen <= 0:
             print(f"swept amount={moved} fee=0 status=COMPLETED", flush=True)
             return
         print(f"dust balance={seen}", file=sys.stderr)
-        sent_amount = await sweep_integers(role, secret, address)
+        if seconds_left(deadline) < ATTEMPT_RESERVE_S:
+            break
+        await wait_unreserved(role, secret, deadline - ATTEMPT_RESERVE_S)
+        sent_amount = await sweep_integers(role, secret, address, deadline)
         if sent_amount < 0:
+            continue
+        if sent_amount == 0 and leaf_values(role, reserved=True):
+            # A refused size started a swap that now holds the leaves.
             continue
         if sent_amount == 0 and seen <= 64:
             # One connection already tried every size. A fresh connection
             # per amount is only worth it for a small remainder.
-            sent_amount = await sweep_one_fresh(role, secret, address, seen) or 0
+            sent_amount = await sweep_one_fresh(role, secret, address, seen, deadline) or 0
+            if sent_amount == 0 and leaf_values(role, reserved=True):
+                continue
         if sent_amount == 0:
-            print(f"sweep could not move {seen}", file=sys.stderr)
+            print(f"sweep could not move {seen}; {leaf_text(role)}", file=sys.stderr)
             sys.exit(3)
         moved += sent_amount
+    print(f"sweep could not empty {role}; {leaf_text(role)}", file=sys.stderr)
+    sys.exit(3)
 
 
-async def sweep_integers(role: str, secret: str, address: str) -> int:
+async def sweep_integers(role: str, secret: str, address: str, deadline: float) -> int:
     """Send one chunk on a single connection, trying every amount.
 
-    Returns the sats sent, 0 when nothing could be sent, or -1 when the
-    wallet was already empty.
+    Returns the sats sent, 0 when nothing could be sent (also when leaves got
+    reserved or less than ``ATTEMPT_RESERVE_S`` is left before ``deadline``),
+    or -1 when the wallet was already empty.
     """
     sdk = await open_sdk(role, secret)
     try:
@@ -375,17 +559,33 @@ async def sweep_integers(role: str, secret: str, address: str) -> int:
         if balance <= 0:
             return -1
         for amount in range(balance, 0, -1):
+            if seconds_left(deadline) < ATTEMPT_RESERVE_S:
+                return 0
             if await send_amount(sdk, address, amount):
                 return amount
+            if leaf_values(role, reserved=True):
+                return 0
         return 0
     finally:
         await sdk.disconnect()
 
 
-async def sweep_one_fresh(role: str, secret: str, address: str, seen: int) -> int | None:
+async def sweep_one_fresh(
+    role: str, secret: str, address: str, seen: int, deadline: float
+) -> int | None:
+    """Try every amount up to ``seen``, each on a fresh connection.
+
+    Returns the sats sent, or None when nothing moved, a refused size left
+    leaves reserved, or less than ``ATTEMPT_RESERVE_S`` is left before
+    ``deadline``.
+    """
     for amount in range(seen, 0, -1):
+        if seconds_left(deadline) < ATTEMPT_RESERVE_S:
+            return None
         if await send_fresh(role, secret, address, amount):
             return amount
+        if leaf_values(role, reserved=True):
+            return None
     return None
 
 
@@ -420,7 +620,8 @@ async def main() -> None:
     argv = sys.argv[1:]
     if len(argv) < 2:
         print(
-            "usage: spark.py ensure|balance|invoice|quote|pay|optimize|sweep <role> ...",
+            "usage: spark.py ensure|balance|invoice|quote|pay|optimize|consolidate|sweep "
+            "<role> ...",
             file=sys.stderr,
         )
         sys.exit(2)
@@ -452,6 +653,8 @@ async def main() -> None:
             await command_pay(role, argv[2], parse_amount(argv[3] if len(argv) > 3 else None))
         elif command == "optimize":
             await command_optimize(role)
+        elif command == "consolidate":
+            await command_consolidate(role)
         elif command == "sweep":
             if len(argv) < 3 or not argv[2].startswith("spark1"):
                 print("sweep needs a spark address", file=sys.stderr)
@@ -468,9 +671,6 @@ async def main() -> None:
         except SystemExit:
             secret = ""
         message = redact(f"{type(error).__name__}: {error}", secret)
-        api_key = os.environ.get("LOAN_E2E_BREEZ_API_KEY", "").strip()
-        if api_key:
-            message = message.replace(api_key, "[redacted]")
         print(message, file=sys.stderr)
         sys.exit(3)
 
