@@ -5,19 +5,29 @@ import type { ShopNoteRef } from '@/lib/message-store';
 import type { ActivityPing } from '@/lib/ocp-activity';
 import type { MapFetch } from '@/lib/ocp-place';
 import { InMemoryPosStore, type PosStore } from '@/lib/pos-store';
-import { POS_CHARGE_TTL_MS } from '@/lib/pos-charge';
+import { POS_CHARGE_TTL_MS, POS_PAID_SHOW_MS, type PosCharge } from '@/lib/pos-charge';
 import { posRoutes } from '@/routes/pos';
 import { createApp } from '@/server';
+import {
+  LNURL_SERVER,
+  WALLET_PUBKEY,
+  allInternal,
+  createWalletAccount,
+  walletLnurlFetch,
+  type SeenRequest,
+} from '@/__tests__/helpers/wallet-lnurl';
 
 const nowMs = 1_700_000_000_000;
 const now = (): number => nowMs;
 const AUTH = { authorization: 'Bearer tok' };
+/** Public callback of `ada@example.test`. */
+const CALLBACK = `${LNURL_SERVER.publicBaseUrl}/lnurlp/ada/invoice`;
 
-function wosFetch(minSendable = 1000, maxSendable = 100_000_000): typeof fetch {
+function lnurlFetch(minSendable = 1000, maxSendable = 100_000_000): typeof fetch {
   return (async () =>
     new Response(
       JSON.stringify({
-        callback: 'https://walletofsatoshi.com/lnurlp/callback',
+        callback: CALLBACK,
         minSendable,
         maxSendable,
         metadata: '[["text/plain","ada"]]',
@@ -27,7 +37,7 @@ function wosFetch(minSendable = 1000, maxSendable = 100_000_000): typeof fetch {
     )) as unknown as typeof fetch;
 }
 
-async function readyStore(): Promise<InMemoryAuthStore> {
+async function readyStore(wallet = true): Promise<InMemoryAuthStore> {
   const store = new InMemoryAuthStore();
   await store.createAccount({
     id: 'acc',
@@ -35,14 +45,17 @@ async function readyStore(): Promise<InMemoryAuthStore> {
     role: 'basis',
     name: 'Ada',
     username: 'ada',
-    lightningAddress: 'alice@walletofsatoshi.com',
-    lightningAddressVerified: true,
+    walletRequired: true,
     forumLawsDismissed: false,
     location: null,
     viewKey: 'a'.repeat(64),
     createdAt: 1,
     rulesAgreedAt: nowMs,
   });
+  if (wallet) {
+    await store.claimSparkPubkey('acc', WALLET_PUBKEY);
+    await store.markSparkPubkeyVerified('acc', WALLET_PUBKEY, 'ada', 2);
+  }
   await store.createSession({ token: 'tok', accountId: 'acc', createdAt: nowMs });
   return store;
 }
@@ -87,7 +100,7 @@ function shops(notes: ShopNoteRef[]): { listLiveAssignedShops(): Promise<ShopNot
 
 function mount(
   authStore: InMemoryAuthStore,
-  fetchImpl: typeof fetch = wosFetch(),
+  fetchImpl: typeof fetch = lnurlFetch(),
   extras: {
     messageStore?: { listLiveAssignedShops(): Promise<ShopNoteRef[]> };
     activity?: ActivityPing;
@@ -101,6 +114,7 @@ function mount(
       authStore,
       now,
       fetchImpl,
+      lnurlServer: LNURL_SERVER,
       ...(extras.messageStore === undefined ? {} : { messageStore: extras.messageStore }),
       ...(extras.activity === undefined ? {} : { activity: extras.activity }),
     }),
@@ -125,7 +139,7 @@ describe('POS routes', () => {
     expect((await app.request('/pos', { method: 'DELETE' })).status).toBe(401);
   });
 
-  it('rejects a bad body, missing username, and missing lightning address', async () => {
+  it('rejects a bad body, missing username, and no verified wallet', async () => {
     const auth = await readyStore();
     const app = mount(auth);
     const bad = await app.request('/pos', {
@@ -156,8 +170,6 @@ describe('POS routes', () => {
       linkingKey: null,
       role: 'basis',
       name: 'Ada',
-      lightningAddress: 'alice@walletofsatoshi.com',
-      lightningAddressVerified: true,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'b'.repeat(64),
@@ -173,25 +185,33 @@ describe('POS routes', () => {
     expect(nameRes.status).toBe(400);
     expect(await nameRes.json()).toEqual({ error: 'Set a username first' });
 
-    const existing = await auth.getAccount('acc');
-    if (existing === undefined) {
-      throw new Error('expected account');
-    }
-    await auth.updateAccount({ ...existing, lightningAddress: null });
-    const addr = await mount(auth).request('/pos', {
+    const addr = await mount(await readyStore(false)).request('/pos', {
       method: 'POST',
       headers: AUTH,
       body: '{"amountSats":21}',
     });
     expect(addr.status).toBe(400);
-    expect(await addr.json()).toEqual({ error: 'Set a Wallet of Satoshi address first' });
+    expect(await addr.json()).toEqual({
+      error: 'Set up your wallet first',
+      code: 'wallet_required',
+    });
   });
 
   it('creates one open charge, pins LNURL bounds, and cancels it', async () => {
     const auth = await readyStore();
     const pos = new InMemoryPosStore();
-    const fetchImpl = wosFetch();
-    const app = createApp({ authStore: auth, posStore: pos, now, fetchImpl });
+    const fetchImpl = lnurlFetch();
+    const app = createApp({
+      authStore: auth,
+      posStore: pos,
+      now,
+      fetchImpl,
+      env: {
+        ...process.env,
+        LNURL_SERVER_URL: LNURL_SERVER.baseUrl,
+        PUBLIC_BASE_URL: LNURL_SERVER.publicBaseUrl,
+      },
+    });
     const empty = await app.request('/pos', { headers: AUTH });
     expect(empty.status).toBe(200);
     expect(await empty.json()).toEqual({ charge: null, history: [] });
@@ -229,7 +249,7 @@ describe('POS routes', () => {
     };
     expect(pay.minSendable).toBe(21_000);
     expect(pay.maxSendable).toBe(21_000);
-    expect(pay.callback).toBe('https://walletofsatoshi.com/lnurlp/callback');
+    expect(pay.callback).toBe(CALLBACK);
 
     const removed = await app.request('/pos', { method: 'DELETE', headers: AUTH });
     expect(removed.status).toBe(200);
@@ -244,7 +264,7 @@ describe('POS routes', () => {
 
   it('rejects an amount outside the wallet range and an unreachable address', async () => {
     const auth = await readyStore();
-    const low = await mount(auth, wosFetch(50_000)).request('/pos', {
+    const low = await mount(auth, lnurlFetch(50_000)).request('/pos', {
       method: 'POST',
       headers: AUTH,
       body: '{"amountSats":21}',
@@ -252,7 +272,7 @@ describe('POS routes', () => {
     expect(low.status).toBe(400);
     expect(await low.json()).toEqual({ error: 'Amount is outside the wallet range' });
 
-    const high = await mount(auth, wosFetch()).request('/pos', {
+    const high = await mount(auth, lnurlFetch()).request('/pos', {
       method: 'POST',
       headers: AUTH,
       body: '{"amountSats":100000000}',
@@ -284,7 +304,7 @@ describe('POS routes', () => {
       }
       return new Response(
         JSON.stringify({
-          callback: 'https://walletofsatoshi.com/lnurlp/callback',
+          callback: CALLBACK,
           minSendable: 1000,
           maxSendable: 100_000_000,
           metadata: '[["text/plain","ada"]]',
@@ -325,10 +345,23 @@ describe('POS routes', () => {
         listForAccount: (accountId, limit) => base.listForAccount(accountId, limit),
         listLatest: (limit) => base.listLatest(limit),
         listCreatedBetween: (startMs, endMs) => base.listCreatedBetween(startMs, endMs),
+        issueSparkInvoice: (chargeId, invoice, nowMs) =>
+          base.issueSparkInvoice(chargeId, invoice, nowMs),
+        recordInvoice: (chargeId, paymentHash, nowMs) =>
+          base.recordInvoice(chargeId, paymentHash, nowMs),
+        findChargeForPayment: (ref) => base.findChargeForPayment(ref),
+        listWatched: (sinceMs) => base.listWatched(sinceMs),
+        markPaid: (chargeId, paidAtMs) => base.markPaid(chargeId, paidAtMs),
       };
       return new Hono().route(
         '/pos',
-        posRoutes({ store, authStore: auth, now, fetchImpl: wosFetch() }),
+        posRoutes({
+          store,
+          authStore: auth,
+          now,
+          fetchImpl: lnurlFetch(),
+          lnurlServer: LNURL_SERVER,
+        }),
       );
     }
     const unique = await routes(() =>
@@ -362,7 +395,7 @@ describe('POS routes', () => {
     const listLiveAssignedShops = vi.fn(async () => [
       { id: 'shop-1', accountId: 'acc', text: 'Open #21GiftsShop' },
     ]);
-    const app = mount(await readyStore(), wosFetch(), {
+    const app = mount(await readyStore(), lnurlFetch(), {
       messageStore: { listLiveAssignedShops },
     });
     const created = await app.request('/pos', {
@@ -376,7 +409,7 @@ describe('POS routes', () => {
 
   it('does not ping when messageStore is omitted', async () => {
     const { activity, calls } = recordingActivity();
-    const app = mount(await readyStore(), wosFetch(), { activity });
+    const app = mount(await readyStore(), lnurlFetch(), { activity });
     const created = await app.request('/pos', {
       method: 'POST',
       headers: AUTH,
@@ -388,7 +421,7 @@ describe('POS routes', () => {
 
   it('pings one matching shop at the charge createdAt', async () => {
     const { activity, calls } = recordingActivity();
-    const app = mount(await readyStore(), wosFetch(), {
+    const app = mount(await readyStore(), lnurlFetch(), {
       messageStore: shops([{ id: 'shop-1', accountId: 'acc', text: 'Open #21GiftsShop' }]),
       activity,
     });
@@ -413,7 +446,7 @@ describe('POS routes', () => {
 
   it('pings two matching shops in list order', async () => {
     const { activity, calls } = recordingActivity();
-    const app = mount(await readyStore(), wosFetch(), {
+    const app = mount(await readyStore(), lnurlFetch(), {
       messageStore: shops([
         { id: 'shop-1', accountId: 'acc', text: 'Open #21GiftsShop' },
         { id: 'shop-2', accountId: 'acc', text: 'Also #21GiftsShop' },
@@ -433,7 +466,7 @@ describe('POS routes', () => {
 
   it('does not post a note for another accountId', async () => {
     const { activity, calls } = recordingActivity();
-    const app = mount(await readyStore(), wosFetch(), {
+    const app = mount(await readyStore(), lnurlFetch(), {
       messageStore: shops([
         { id: 'other', accountId: 'other', text: 'Open #21GiftsShop' },
         { id: 'shop-1', accountId: 'acc', text: 'Open #21GiftsShop' },
@@ -452,7 +485,7 @@ describe('POS routes', () => {
 
   it('does not post a note without the shop hashtag token', async () => {
     const { activity, calls } = recordingActivity();
-    const app = mount(await readyStore(), wosFetch(), {
+    const app = mount(await readyStore(), lnurlFetch(), {
       messageStore: shops([
         { id: 'shopping', accountId: 'acc', text: 'Open #21GiftsShopping' },
         { id: 'shop-1', accountId: 'acc', text: 'Open #21GiftsShop' },
@@ -471,7 +504,7 @@ describe('POS routes', () => {
 
   it('returns 201 when listLiveAssignedShops rejects and does not fetch the map', async () => {
     const { activity, calls } = recordingActivity();
-    const app = mount(await readyStore(), wosFetch(), {
+    const app = mount(await readyStore(), lnurlFetch(), {
       messageStore: {
         listLiveAssignedShops: async () => {
           throw new Error('list-must-not-appear');
@@ -502,7 +535,7 @@ describe('POS routes', () => {
         throw new Error('map-down');
       },
     };
-    const app = mount(await readyStore(), wosFetch(), {
+    const app = mount(await readyStore(), lnurlFetch(), {
       messageStore: shops([{ id: 'shop-1', accountId: 'acc', text: 'Open #21GiftsShop' }]),
       activity,
     });
@@ -518,7 +551,7 @@ describe('POS routes', () => {
 
   it('returns 201 with the charge on map HTTP 404 and logs status', async () => {
     const { activity } = recordingActivity(404);
-    const app = mount(await readyStore(), wosFetch(), {
+    const app = mount(await readyStore(), lnurlFetch(), {
       messageStore: shops([{ id: 'shop-1', accountId: 'acc', text: 'Open #21GiftsShop' }]),
       activity,
     });
@@ -537,7 +570,7 @@ describe('POS routes', () => {
 
   it('returns 201 with the charge on map HTTP 200 and logs no failure', async () => {
     const { activity } = recordingActivity(200);
-    const app = mount(await readyStore(), wosFetch(), {
+    const app = mount(await readyStore(), lnurlFetch(), {
       messageStore: shops([{ id: 'shop-1', accountId: 'acc', text: 'Open #21GiftsShop' }]),
       activity,
     });
@@ -562,8 +595,10 @@ describe('POS routes', () => {
       status: 'pending',
       createdAt: new Date(nowMs),
       expiresAt: new Date(nowMs + POS_CHARGE_TTL_MS),
+      paidAt: null,
+      sparkInvoice: null,
     });
-    const app = mount(await readyStore(), wosFetch(), {
+    const app = mount(await readyStore(), lnurlFetch(), {
       store: pos,
       messageStore: shops([{ id: 'shop-1', accountId: 'acc', text: 'Open #21GiftsShop' }]),
       activity,
@@ -573,5 +608,140 @@ describe('POS routes', () => {
     const removed = await app.request('/pos', { method: 'DELETE', headers: AUTH });
     expect(removed.status).toBe(200);
     expect(calls).toEqual([]);
+  });
+});
+
+describe('POS for a wallet-backed member', () => {
+  async function walletPos(lnurlServer: boolean): Promise<{ app: Hono; seen: SeenRequest[] }> {
+    const auth = new InMemoryAuthStore();
+    await createWalletAccount(auth, 'wal', 'wally');
+    await auth.createSession({ token: 'tok', accountId: 'wal', createdAt: nowMs });
+    const { fetchImpl, seen } = walletLnurlFetch('wally');
+    const app = new Hono().route(
+      '/pos',
+      posRoutes({
+        store: new InMemoryPosStore(),
+        authStore: auth,
+        now,
+        fetchImpl,
+        ...(lnurlServer ? { lnurlServer: LNURL_SERVER } : {}),
+      }),
+    );
+    return { app, seen };
+  }
+
+  it('checks the amount against the wallet resolved internally', async () => {
+    const { app, seen } = await walletPos(true);
+    const res = await app.request('/pos', {
+      method: 'POST',
+      headers: AUTH,
+      body: JSON.stringify({ amountSats: 21 }),
+    });
+    expect(res.status).toBe(201);
+    expect(allInternal(seen)).toBe(true);
+  });
+
+  it('asks for a wallet when the LNURL server is off', async () => {
+    const { app, seen } = await walletPos(false);
+    const res = await app.request('/pos', {
+      method: 'POST',
+      headers: AUTH,
+      body: JSON.stringify({ amountSats: 21 }),
+    });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({
+      error: 'Set up your wallet first',
+      code: 'wallet_required',
+    });
+    expect(seen).toEqual([]);
+  });
+});
+
+describe('GET /pos paid confirmation', () => {
+  let warn: ReturnType<typeof vi.spyOn>;
+  let clock: number;
+
+  beforeEach(() => {
+    warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    clock = nowMs;
+  });
+
+  afterEach(() => {
+    warn.mockRestore();
+  });
+
+  function row(partial: Partial<PosCharge> & Pick<PosCharge, 'id'>): PosCharge {
+    return {
+      accountId: 'acc',
+      amountSats: 21,
+      status: 'pending',
+      createdAt: new Date(nowMs),
+      expiresAt: new Date(nowMs + POS_CHARGE_TTL_MS),
+      paidAt: null,
+      sparkInvoice: null,
+      ...partial,
+    };
+  }
+
+  async function tillApp(store: PosStore): Promise<Hono> {
+    return new Hono().route(
+      '/pos',
+      posRoutes({
+        store,
+        authStore: await readyStore(),
+        now: () => clock,
+        fetchImpl: lnurlFetch(),
+        lnurlServer: LNURL_SERVER,
+      }),
+    );
+  }
+
+  async function read(app: Hono): Promise<{ charge: unknown; history: unknown[] }> {
+    return (await (await app.request('/pos', { headers: AUTH })).json()) as {
+      charge: unknown;
+      history: unknown[];
+    };
+  }
+
+  it('keeps a charge paid within the last 60 s as charge, then only in history', async () => {
+    const store = new InMemoryPosStore();
+    await store.create(row({ id: 'c1', sparkInvoice: 'spark1x' }));
+    await store.markPaid('c1', nowMs + 10_000);
+    const app = await tillApp(store);
+    const paidJson = {
+      id: 'c1',
+      amountSats: 21,
+      status: 'paid',
+      createdAt: new Date(nowMs).toISOString(),
+      expiresAt: new Date(nowMs + POS_CHARGE_TTL_MS).toISOString(),
+      paidAt: new Date(nowMs + 10_000).toISOString(),
+    };
+    clock = nowMs + 10_000 + POS_PAID_SHOW_MS - 1;
+    expect(await read(app)).toEqual({ charge: paidJson, history: [paidJson] });
+    clock = nowMs + 10_000 + POS_PAID_SHOW_MS;
+    expect(await read(app)).toEqual({ charge: null, history: [paidJson] });
+  });
+
+  it('prefers the pending charge over an older paid one', async () => {
+    const store = new InMemoryPosStore();
+    await store.create(row({ id: 'c1' }));
+    await store.markPaid('c1', nowMs + 1_000);
+    await store.create(row({ id: 'c2', createdAt: new Date(nowMs + 2_000) }));
+    clock = nowMs + 3_000;
+    const body = (await read(await tillApp(store))) as { charge: { id: string; status: string } };
+    expect(body.charge).toEqual(expect.objectContaining({ id: 'c2', status: 'pending' }));
+  });
+
+  it('does not show a newest row that is not paid, or a paid row without paidAt', async () => {
+    const cancelled = new InMemoryPosStore();
+    await cancelled.create(row({ id: 'c1', status: 'cancelled' }));
+    expect((await read(await tillApp(cancelled))).charge).toBeNull();
+    const legacy = new InMemoryPosStore();
+    await legacy.create(row({ id: 'c1', status: 'paid' }));
+    expect((await read(await tillApp(legacy))).charge).toBeNull();
+    expect(await read(await tillApp(new InMemoryPosStore()))).toEqual({
+      charge: null,
+      history: [],
+    });
   });
 });

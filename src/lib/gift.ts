@@ -2,8 +2,8 @@
  * Gift statistics domain: outbound gift rows and pure aggregation.
  *
  * The HTTP surface never includes invoices or other payment secrets — only
- * amounts (sats, BTC, historical USD/CHF/EUR/PHP), UTC days, and Wallet of
- * Satoshi recipient handles.
+ * amounts (sats, BTC, historical USD/CHF/EUR/PHP), UTC days, and recipient
+ * handles (the local part of the receiving address).
  */
 
 import { FX_SOURCE_COINBASE_DAILY_CLOSE } from '@/lib/btc-usd-store';
@@ -19,16 +19,28 @@ import { FX_SOURCE_FRANKFURTER_ECB, type FiatCross } from '@/lib/usd-fiat-store'
 /** Outbound gift classification stored on `gift.kind`. */
 export type GiftKind = 'daily' | 'welcome' | 'moderator';
 
+/**
+ * Description of a recorded welcome gift. Only welcome gifts paid to a wallet
+ * address carry it, so a record with it names the member's username; older
+ * welcome records (`21gifts daily`) kept the local part of an external address.
+ */
+export const WELCOME_GIFT_DESCRIPTION = '21gifts welcome';
+
 /** One outbound gift used as stats input. No invoice fields. */
 export interface GiftRow {
   /** Instant the gift was paid. */
   paidAt: Date;
   /** Amount in whole satoshis (fees excluded). */
   amountSats: number;
-  /** Wallet of Satoshi username the gift was paid to. */
+  /** Recipient handle (local part of the receiving address) the gift was paid to. */
   recipientWosUser: string;
   /** Daily funding, welcome gift, moderator stipend, or in-memory member zap (`other`). */
   kind: GiftKind | 'other';
+  /**
+   * Stored `description`. {@link WELCOME_GIFT_DESCRIPTION} marks a welcome
+   * gift paid to a wallet address. `undefined` when the source did not read it.
+   */
+  description?: string | undefined;
   /** Stored payment-time USD. `undefined` selects the legacy daily-close path. */
   amountUsd?: string | null;
   /** Stored payment-time CHF. */
@@ -78,7 +90,7 @@ export interface SpendDay {
 
 /** Totals for one recipient. */
 export interface RecipientSpend {
-  /** Wallet of Satoshi username. */
+  /** Recipient handle (local part of the receiving address). */
   recipient: string;
   /** Number of outbound gifts to this recipient. */
   giftCount: number;
@@ -186,7 +198,7 @@ export interface GiftDayGift {
   amountEur: string | null;
   /** Stored payment-time PHP, or `null` when missing. */
   amountPhp: string | null;
-  /** Wallet of Satoshi username. */
+  /** Recipient handle (local part of the receiving address). */
   recipient: string;
 }
 
@@ -224,6 +236,8 @@ export interface GiftQueryRow {
   recipient_wos_user: string;
   /** `kind` column. */
   kind: string;
+  /** `description` column, when selected. */
+  description?: string;
   /** Stored USD snapshot. */
   fiat_usd: string | number | null;
   /** Stored CHF snapshot. */
@@ -367,6 +381,7 @@ export function mapGiftQueryRow(row: GiftQueryRow): GiftRow {
     amountSats: Number(row.amount_sats),
     recipientWosUser: row.recipient_wos_user,
     kind: parseGiftKind(row.kind),
+    description: row.description,
     amountUsd: storedMoney(row.fiat_usd),
     amountChf: storedMoney(row.fiat_chf),
     amountEur: storedMoney(row.fiat_eur),
@@ -505,7 +520,7 @@ function withSiblingCrosses(rows: readonly GiftRow[]): GiftRow[] {
 }
 
 /**
- * Gifts whose Wallet of Satoshi handle matches `recipient` case-insensitively.
+ * Gifts whose recipient handle matches `recipient` case-insensitively.
  *
  * Trims `recipient`. When `indexOf('@') > 0`, compares the local-part before `@`;
  * otherwise the whole trimmed string. Empty after trim matches nothing

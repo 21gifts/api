@@ -8,6 +8,7 @@ import { InMemoryPushStore, type PushStore } from '@/lib/push-store';
 import type { TrustEdge } from '@/lib/trust';
 import { InMemoryTrustStore, type TrustStore } from '@/lib/trust-store';
 import { trustRoutes } from '@/routes/trust';
+import { LNURL_SERVER, WALLET_PUBKEY } from '@/__tests__/helpers/wallet-lnurl';
 
 const now = (): number => 1_700_000_000_000;
 const FOUNDER = '11111111-1111-4111-8111-111111111111';
@@ -27,8 +28,6 @@ function account(partial: Pick<Account, 'id' | 'role'> & Partial<Account>): Acco
   return {
     linkingKey: null,
     name: partial.name ?? partial.id,
-    lightningAddress: null,
-    lightningAddressVerified: false,
     forumLawsDismissed: false,
     location: null,
     viewKey: `${partial.id.replace(/-/g, '')}${'a'.repeat(64)}`.slice(0, 64),
@@ -63,6 +62,8 @@ function mount(
     now?: () => number;
     messages?: InMemoryMessageStore;
     spendPing?: { ping: (address: string, messageId: string, kind?: string) => Promise<void> };
+    /** `false` omits the LNURL server (no receiving address). Default on. */
+    lnurlServer?: false;
   } = {},
 ): Hono {
   return new Hono().route(
@@ -77,6 +78,7 @@ function mount(
       ...(extras.pushStore === undefined ? {} : { pushStore: extras.pushStore }),
       ...(extras.messages === undefined ? {} : { messages: extras.messages }),
       ...(extras.spendPing === undefined ? {} : { spendPing: extras.spendPing }),
+      ...(extras.lnurlServer === false ? {} : { lnurlServer: LNURL_SERVER }),
     }),
   );
 }
@@ -451,10 +453,13 @@ describe('POST /trust/*', () => {
           id: SUBJECT,
           role: 'basis',
           name: 'Sub',
-          lightningAddress: 'sub@walletofsatoshi.com',
+          username: 'sub',
+          walletRequired: true,
           profileMessageId: photoId,
         }),
       ]);
+      await authStore.claimSparkPubkey(SUBJECT, WALLET_PUBKEY);
+      await authStore.markSparkPubkeyVerified(SUBJECT, WALLET_PUBKEY, 'sub', 1);
       const messages = new InMemoryMessageStore();
       await messages.create(
         {
@@ -478,7 +483,15 @@ describe('POST /trust/*', () => {
         { accountId: SUBJECT, confirmedName: 'Sub' },
       );
       expect(res.status).toBe(200);
-      expect(ping).toHaveBeenCalledWith('sub@walletofsatoshi.com', photoId, 'welcome');
+      expect(ping).toHaveBeenCalledWith('sub@example.test', photoId, 'welcome');
+      const again = await post(
+        mount(authStore, trustStore, { messages, spendPing: { ping }, lnurlServer: false }),
+        '/trust/verify',
+        'mod',
+        { accountId: SUBJECT, confirmedName: 'Sub' },
+      );
+      expect(again.status).toBe(200);
+      expect(ping).toHaveBeenCalledTimes(1);
     });
 
     it('still verifies when the welcome ping collaborator is omitted', async () => {
@@ -487,7 +500,6 @@ describe('POST /trust/*', () => {
           id: SUBJECT,
           role: 'basis',
           name: 'Sub',
-          lightningAddress: 'sub@walletofsatoshi.com',
         }),
       ]);
       const messages = new InMemoryMessageStore();

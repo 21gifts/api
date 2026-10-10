@@ -2,17 +2,26 @@ import { Hono } from 'hono';
 import { resolveSession } from '@/lib/auth/service';
 import { isUniqueViolation } from '@/lib/auth/sql';
 import type { Account, AuthStore } from '@/lib/auth/store';
+import type { LnurlServerConfig } from '@/lib/config';
 import type { FetchFn } from '@/lib/lnurlp';
 import { resolveLnurlp } from '@/lib/lnurlp';
 import { textHasHashtagToken, type ShopNoteRef } from '@/lib/message-store';
 import { logActivityFailure, pingShopActivity, type ActivityPing } from '@/lib/ocp-activity';
-import { POS_CHARGE_TTL_MS, serializePosCharge, type PosCharge } from '@/lib/pos-charge';
+import {
+  POS_CHARGE_TTL_MS,
+  POS_PAID_SHOW_MS,
+  serializePosCharge,
+  type PosCharge,
+} from '@/lib/pos-charge';
 import type { PosStore } from '@/lib/pos-store';
+import { WALLET_REQUIRED, lnurlServerFetch, receivingAddress } from '@/lib/receiving-address';
 import { bearerToken } from '@/routes/me';
 
 /**
  * `/pos` — signed-in member point-of-sale amount in whole sats.
- * Settlement stays at Wallet of Satoshi. There is no paid status.
+ * Settlement goes to the member's receiving address (their verified wallet;
+ * without one a charge is refused). The paid watcher marks a charge `paid`;
+ * `GET /pos` keeps returning it as `charge` for {@link POS_PAID_SHOW_MS}.
  * Shares the {@link AuthStore} with `/auth` and `/me`.
  */
 
@@ -33,6 +42,8 @@ export interface PosRouteDeps {
   messageStore?: { listLiveAssignedShops(): Promise<ShopNoteRef[]> };
   /** Map activity ping. Omitted → `POST /pos` does not ping the map. */
   activity?: ActivityPing;
+  /** LNURL server; omitted when off. A verified wallet is checked against it. */
+  lnurlServer?: LnurlServerConfig;
 }
 
 /** Resolve the account behind a request's bearer session, or `null`. */
@@ -53,7 +64,7 @@ async function authedAccount(
  * Mounted at `/pos` so the public paths are `GET /pos`, `POST /pos`,
  * and `DELETE /pos`.
  *
- * @param deps - Charge store, auth store, clock, and LNURL fetch.
+ * @param deps - Charge store, auth store, clock, LNURL fetch, and optional LNURL server.
  *   Optional `messageStore` and `activity` enable a best-effort map ping
  *   after a successful charge create. GET and DELETE do not ping.
  * @returns A Hono app with `GET /`, `POST /`, and `DELETE /`.
@@ -65,11 +76,21 @@ export function posRoutes(deps: PosRouteDeps): Hono {
       if (account === null) {
         return c.json({ error: 'Unauthorized' }, 401);
       }
-      const pending = await deps.store.currentPending(account.id, deps.now());
+      const nowMs = deps.now();
+      const pending = await deps.store.currentPending(account.id, nowMs);
       const history = await deps.store.listForAccount(account.id, 20);
+      const latest = history[0];
+      const recentlyPaid =
+        latest !== undefined &&
+        latest.status === 'paid' &&
+        latest.paidAt !== null &&
+        latest.paidAt.getTime() > nowMs - POS_PAID_SHOW_MS
+          ? latest
+          : null;
+      const charge = pending ?? recentlyPaid;
       return c.json(
         {
-          charge: pending === null ? null : serializePosCharge(pending),
+          charge: charge === null ? null : serializePosCharge(charge),
           history: history.map((row) => serializePosCharge(row)),
         },
         200,
@@ -92,15 +113,18 @@ export function posRoutes(deps: PosRouteDeps): Hono {
       if (username === '') {
         return c.json({ error: 'Set a username first' }, 400);
       }
-      const address = (account.lightningAddress ?? '').trim();
-      if (address === '') {
-        return c.json({ error: 'Set a Wallet of Satoshi address first' }, 400);
+      const receiving = receivingAddress(account, deps.lnurlServer);
+      if (receiving === null) {
+        return c.json({ error: 'Set up your wallet first', code: WALLET_REQUIRED }, 400);
       }
       const open = await deps.store.currentPending(account.id, deps.now());
       if (open !== null) {
         return c.json({ error: 'A payment is already open' }, 409);
       }
-      const resolved = await resolveLnurlp({ address, fetchImpl: deps.fetchImpl });
+      const resolved = await resolveLnurlp({
+        address: receiving.address,
+        fetchImpl: lnurlServerFetch(deps.lnurlServer, deps.fetchImpl, deps.authStore),
+      });
       if (!resolved.ok) {
         return c.json({ error: 'Lightning Address could not be resolved' }, 502);
       }
@@ -116,6 +140,8 @@ export function posRoutes(deps: PosRouteDeps): Hono {
         status: 'pending',
         createdAt: new Date(createdMs),
         expiresAt: new Date(createdMs + POS_CHARGE_TTL_MS),
+        paidAt: null,
+        sparkInvoice: null,
       };
       try {
         const created = await deps.store.create(row);

@@ -8,6 +8,7 @@ import { InMemoryFundingStore } from '@/lib/funding-store';
 import { InMemoryTrustStore } from '@/lib/trust-store';
 import { removeForumVideo, writeForumVideo } from '@/lib/video';
 import { membersRoutes } from '@/routes/members';
+import { LNURL_SERVER, WALLET_PUBKEY, createWalletAccount } from '@/__tests__/helpers/wallet-lnurl';
 
 const now = (): number => 1_700_000_000_000;
 const AUTH = { authorization: 'Bearer tok' };
@@ -43,7 +44,14 @@ function mount(
 ): Hono {
   return new Hono().route(
     '/members',
-    membersRoutes({ authStore, messageStore, trustStore, fundingStore, now }),
+    membersRoutes({
+      authStore,
+      messageStore,
+      trustStore,
+      fundingStore,
+      now,
+      lnurlServer: LNURL_SERVER,
+    }),
   );
 }
 
@@ -56,8 +64,6 @@ async function seededCaller(
     linkingKey: null,
     role: 'basis',
     name: 'Caller',
-    lightningAddress: null,
-    lightningAddressVerified: false,
     forumLawsDismissed: false,
     location: null,
     viewKey: 'a'.repeat(64),
@@ -72,22 +78,31 @@ async function addAccount(
   store: InMemoryAuthStore,
   id: string,
   viewKey: string,
-  extras: { name?: string; lightningAddress?: string | null } = {},
+  extras: { name?: string; wallet?: boolean } = {},
 ): Promise<void> {
-  const lightningAddress = extras.lightningAddress === undefined ? null : extras.lightningAddress;
   await store.createAccount({
     id,
     linkingKey: null,
     role: 'verified',
     name: extras.name ?? 'Ada',
-    lightningAddress,
-    lightningAddressVerified: lightningAddress !== null && lightningAddress !== '',
+    walletRequired: true,
     forumLawsDismissed: false,
     location: null,
     viewKey,
     createdAt: 1_700_000_000_000,
     rulesAgreedAt: now(),
   });
+  if (extras.wallet === true) {
+    await verifyWallet(store, id);
+  }
+}
+
+/** Give `id` the username `ada` and a verified wallet (`ada@example.test`). */
+async function verifyWallet(store: InMemoryAuthStore, id: string): Promise<void> {
+  const account = await store.getAccount(id);
+  await store.updateAccount({ ...account!, username: 'ada' });
+  await store.claimSparkPubkey(id, WALLET_PUBKEY);
+  await store.markSparkPubkeyVerified(id, WALLET_PUBKEY, 'ada', 1);
 }
 
 describe('GET /members/:accountId', () => {
@@ -132,15 +147,15 @@ describe('GET /members/:accountId', () => {
       linkingKey: null,
       role: 'verified',
       name: 'Ada',
-      lightningAddress: 'ada@walletofsatoshi.com',
-      lightningAddressVerified: true,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'b'.repeat(64),
       createdAt: 1_700_000_000_000,
       rulesAgreedAt: now(),
       profileMessageId: noteId,
+      walletRequired: true,
     });
+    await verifyWallet(authStore, ACCOUNT_ID);
     await messageStore.create({
       id: noteId,
       accountId: ACCOUNT_ID,
@@ -159,10 +174,10 @@ describe('GET /members/:accountId', () => {
     expect(body).toMatchObject({
       id: ACCOUNT_ID,
       name: 'Ada',
-      username: null,
+      username: 'ada',
       location: null,
       role: 'verified',
-      lightningAddress: 'ada@walletofsatoshi.com',
+      lightningAddress: 'ada@example.test',
       createdAt: new Date(1_700_000_000_000).toISOString(),
       aboutMe: null,
       aboutMeHasPhoto: false,
@@ -191,8 +206,6 @@ describe('GET /members/:accountId', () => {
       linkingKey: null,
       role: 'verified',
       name: 'Dan',
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'b'.repeat(64),
@@ -287,9 +300,7 @@ describe('GET /members/:accountId', () => {
   it('marks the profile note not payable when eventId is empty', async () => {
     const authStore = await seededCaller();
     const noteId = '55555555-5555-4555-8555-555555555555';
-    await addAccount(authStore, ACCOUNT_ID, 'b'.repeat(64), {
-      lightningAddress: 'ada@walletofsatoshi.com',
-    });
+    await addAccount(authStore, ACCOUNT_ID, 'b'.repeat(64), { wallet: true });
     const existing = await authStore.getAccount(ACCOUNT_ID);
     expect(existing).toBeDefined();
     if (existing === undefined) {
@@ -328,8 +339,6 @@ describe('GET /members/:accountId', () => {
       linkingKey: null,
       role: 'verified',
       name: 'Ada',
-      lightningAddress: 'ada@walletofsatoshi.com',
-      lightningAddressVerified: true,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'b'.repeat(64),
@@ -374,8 +383,6 @@ describe('GET /members/:accountId', () => {
       role: 'verified',
       name: 'Ada',
       location: null,
-      lightningAddress: 'ada@walletofsatoshi.com',
-      lightningAddressVerified: true,
       forumLawsDismissed: false,
       viewKey: 'b'.repeat(64),
       createdAt: 1_700_000_000_000,
@@ -414,8 +421,6 @@ describe('GET /members/:accountId', () => {
       role: 'verified',
       name: 'Grace',
       location: null,
-      lightningAddress: 'ada@walletofsatoshi.com',
-      lightningAddressVerified: true,
       forumLawsDismissed: false,
       viewKey: 'b'.repeat(64),
       createdAt: 1_700_000_000_000,
@@ -452,8 +457,6 @@ describe('GET /members/:accountId', () => {
       linkingKey: null,
       role: 'basis',
       name: 'Ada',
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'b'.repeat(64),
@@ -487,8 +490,6 @@ describe('GET /members/:accountId', () => {
       linkingKey: null,
       role: 'verified',
       name: 'Ada',
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'b'.repeat(64),
@@ -501,8 +502,6 @@ describe('GET /members/:accountId', () => {
       linkingKey: null,
       role: 'moderator',
       name: 'Mod',
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'c'.repeat(64),
@@ -549,8 +548,6 @@ describe('GET /members/:accountId', () => {
       linkingKey: null,
       role: 'verified',
       name: 'Ada',
-      lightningAddress: 'ada@walletofsatoshi.com',
-      lightningAddressVerified: true,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'b'.repeat(64),
@@ -670,9 +667,7 @@ describe('GET /members/:accountId/posts', () => {
 
   it('lists the member live top-level notes newest-first and omits replies and other authors', async () => {
     const authStore = await seededCaller();
-    await addAccount(authStore, ACCOUNT_ID, 'b'.repeat(64), {
-      lightningAddress: 'ada@walletofsatoshi.com',
-    });
+    await addAccount(authStore, ACCOUNT_ID, 'b'.repeat(64), { wallet: true });
     await addAccount(authStore, OTHER_ID, 'c'.repeat(64), { name: 'Bob' });
     const messageStore = new InMemoryMessageStore();
     await messageStore.create({
@@ -943,11 +938,9 @@ describe('GET /members/:accountId/replies', () => {
     expect(await res.json()).toEqual({ messages: [] });
   });
 
-  it('lists the member live replies newest-first with parentId and payable from eventId and LN', async () => {
+  it('lists the member live replies newest-first with parentId and payable from eventId and wallet', async () => {
     const authStore = await seededCaller();
-    await addAccount(authStore, ACCOUNT_ID, 'b'.repeat(64), {
-      lightningAddress: 'ada@walletofsatoshi.com',
-    });
+    await addAccount(authStore, ACCOUNT_ID, 'b'.repeat(64), { wallet: true });
     await addAccount(authStore, OTHER_ID, 'c'.repeat(64), { name: 'Bob' });
     const messageStore = new InMemoryMessageStore();
     await messageStore.create({
@@ -1024,7 +1017,7 @@ describe('GET /members/:accountId/replies', () => {
     expect(body.messages[1]).not.toHaveProperty('replyCount');
   });
 
-  it('lists member replies as not payable when the member has no Lightning Address', async () => {
+  it('lists member replies as not payable when the member has no verified wallet', async () => {
     const authStore = await seededCaller();
     await addAccount(authStore, ACCOUNT_ID, 'b'.repeat(64));
     await addAccount(authStore, OTHER_ID, 'c'.repeat(64), { name: 'Bob' });
@@ -1061,9 +1054,7 @@ describe('GET /members/:accountId/replies', () => {
 
   it('lists member replies as not payable when eventId is empty', async () => {
     const authStore = await seededCaller();
-    await addAccount(authStore, ACCOUNT_ID, 'b'.repeat(64), {
-      lightningAddress: 'ada@walletofsatoshi.com',
-    });
+    await addAccount(authStore, ACCOUNT_ID, 'b'.repeat(64), { wallet: true });
     await addAccount(authStore, OTHER_ID, 'c'.repeat(64), { name: 'Bob' });
     const messageStore = new InMemoryMessageStore();
     await messageStore.create({
@@ -1085,40 +1076,6 @@ describe('GET /members/:accountId/replies', () => {
       ...unsignedNostrDefaults(),
       parentId: OTHER_POST,
       eventId: '',
-    });
-    const res = await mount(authStore, messageStore).request(`/members/${ACCOUNT_ID}/replies`, {
-      headers: AUTH,
-    });
-    expect(res.status).toBe(200);
-    const body = (await res.json()) as { messages: Array<{ payable: boolean }> };
-    expect(body.messages).toHaveLength(1);
-    expect(body.messages[0]?.payable).toBe(false);
-  });
-
-  it('lists member replies as not payable when the Lightning Address is blank', async () => {
-    const authStore = await seededCaller();
-    await addAccount(authStore, ACCOUNT_ID, 'b'.repeat(64), { lightningAddress: '   ' });
-    await addAccount(authStore, OTHER_ID, 'c'.repeat(64), { name: 'Bob' });
-    const messageStore = new InMemoryMessageStore();
-    await messageStore.create({
-      id: OTHER_POST,
-      accountId: OTHER_ID,
-      name: 'Bob',
-      text: 'other parent',
-      createdAt: new Date(now()),
-      hasPhoto: false,
-      ...unsignedNostrDefaults(),
-    });
-    await messageStore.create({
-      id: MEMBER_REPLY_NEW,
-      accountId: ACCOUNT_ID,
-      name: 'Ada',
-      text: 'signed reply',
-      createdAt: new Date(now() + 2_000),
-      hasPhoto: false,
-      ...unsignedNostrDefaults(),
-      parentId: OTHER_POST,
-      eventId: 'ee'.repeat(32),
     });
     const res = await mount(authStore, messageStore).request(`/members/${ACCOUNT_ID}/replies`, {
       headers: AUTH,
@@ -1224,6 +1181,66 @@ describe('GET /members/:accountId/replies', () => {
       expect(loggedEvents(warn)).toContain('members.replies.failed');
     } finally {
       warn.mockRestore();
+    }
+  });
+});
+
+describe('payable notes of a wallet-backed member', () => {
+  const PROFILE = '66666666-6666-4666-8666-666666666666';
+
+  async function walletMember(lnurlServer: boolean): Promise<Hono> {
+    const authStore = await seededCaller();
+    await createWalletAccount(authStore, ACCOUNT_ID, 'wally');
+    const member = await authStore.getAccount(ACCOUNT_ID);
+    if (member === undefined) {
+      throw new Error('expected member');
+    }
+    await authStore.updateAccount({ ...member, profileMessageId: PROFILE });
+    const messageStore = new InMemoryMessageStore();
+    const note = (id: string, parentId: string | null) => ({
+      id,
+      accountId: ACCOUNT_ID,
+      name: 'wally',
+      text: 'hi',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+      eventId: id.replaceAll('-', '').padEnd(64, '0'),
+      ...(parentId === null ? {} : { parentId }),
+    });
+    await messageStore.create(note(PROFILE, null));
+    await messageStore.create(note(POST_NEW, null));
+    await messageStore.create(note(MEMBER_REPLY_NEW, POST_NEW));
+    return new Hono().route(
+      '/members',
+      membersRoutes({
+        authStore,
+        messageStore,
+        trustStore: new InMemoryTrustStore(),
+        fundingStore: new InMemoryFundingStore(),
+        now,
+        ...(lnurlServer ? { lnurlServer: LNURL_SERVER } : {}),
+      }),
+    );
+  }
+
+  it('marks posts, replies, and the profile note payable only when the LNURL server is on', async () => {
+    for (const lnurlServer of [true, false]) {
+      const app = await walletMember(lnurlServer);
+      const posts = (await (
+        await app.request(`/members/${ACCOUNT_ID}/posts`, { headers: AUTH })
+      ).json()) as { messages: { payable: boolean }[] };
+      expect(posts.messages.length).toBeGreaterThan(0);
+      expect(posts.messages.every((m) => m.payable === lnurlServer)).toBe(true);
+      const replies = (await (
+        await app.request(`/members/${ACCOUNT_ID}/replies`, { headers: AUTH })
+      ).json()) as { messages: { payable: boolean }[] };
+      expect(replies.messages.length).toBeGreaterThan(0);
+      expect(replies.messages.every((m) => m.payable === lnurlServer)).toBe(true);
+      const profile = (await (
+        await app.request(`/members/${ACCOUNT_ID}`, { headers: AUTH })
+      ).json()) as { profileMessage: { payable: boolean } | null };
+      expect(profile.profileMessage?.payable).toBe(lnurlServer);
     }
   });
 });

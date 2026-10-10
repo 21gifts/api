@@ -18,8 +18,6 @@ function account(partial: Partial<Account> & Pick<Account, 'id' | 'name'>): Acco
   return {
     linkingKey: null,
     role: 'basis',
-    lightningAddress: null,
-    lightningAddressVerified: false,
     forumLawsDismissed: false,
     location: null,
     viewKey:
@@ -78,6 +76,20 @@ describe('normalizeUsername', () => {
     expect(normalizeUsername('a'.repeat(USERNAME_MAX_LENGTH))).toBe(
       'a'.repeat(USERNAME_MAX_LENGTH),
     );
+  });
+
+  it('accepts a.b_c-d', () => {
+    expect(normalizeUsername('a.b_c-d')).toBe('a.b_c-d');
+  });
+
+  it('rejects a trailing dot', () => {
+    expect(normalizeUsername('ada.')).toBeNull();
+    expect(normalizeUsername('a.')).toBeNull();
+  });
+
+  it('rejects two dots in a row', () => {
+    expect(normalizeUsername('ada..lovelace')).toBeNull();
+    expect(normalizeUsername('a..b')).toBeNull();
   });
 });
 

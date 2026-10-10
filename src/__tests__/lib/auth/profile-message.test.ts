@@ -8,8 +8,6 @@ import { InMemoryPushStore } from '@/lib/push-store';
 
 const now = (): number => 1_700_000_000_000;
 
-const TEST_LN = 'ada@walletofsatoshi.com';
-
 async function seededAccount(
   overrides: Partial<Account> = {},
 ): Promise<{ auth: InMemoryAuthStore; account: Account }> {
@@ -19,13 +17,13 @@ async function seededAccount(
     linkingKey: null,
     role: 'basis',
     name: 'Ada',
-    lightningAddress: TEST_LN,
-    lightningAddressVerified: false,
     forumLawsDismissed: false,
     location: null,
     viewKey: 'a'.repeat(64),
     createdAt: 1,
     rulesAgreedAt: null,
+    sparkPubkey: `02${'a'.repeat(64)}`,
+    sparkPubkeyVerifiedAt: 1,
     ...overrides,
   };
   await auth.createAccount(account);
@@ -43,8 +41,8 @@ describe('ensureProfileMessage', () => {
     expect(await messages.listLatest(10)).toHaveLength(0);
   });
 
-  it('returns the account without inserting when Lightning Address is blank', async () => {
-    const { auth, account } = await seededAccount({ lightningAddress: null });
+  it('returns the account without inserting without a verified wallet', async () => {
+    const { auth, account } = await seededAccount({ sparkPubkeyVerifiedAt: null });
     const messages = new InMemoryMessageStore();
     const create = vi.spyOn(messages, 'create');
     const result = await ensureProfileMessage({ auth, messages, account, now });
@@ -53,14 +51,12 @@ describe('ensureProfileMessage', () => {
     expect(await messages.listLatest(10)).toHaveLength(0);
   });
 
-  it('returns the account without inserting when Lightning Address is whitespace', async () => {
-    const { auth, account } = await seededAccount({ lightningAddress: '   ' });
+  it('inserts a profile note for a verified wallet', async () => {
+    const { auth, account } = await seededAccount();
     const messages = new InMemoryMessageStore();
-    const create = vi.spyOn(messages, 'create');
     const result = await ensureProfileMessage({ auth, messages, account, now });
-    expect(result.profileMessageId).toBeUndefined();
-    expect(create).not.toHaveBeenCalled();
-    expect(await messages.listLatest(10)).toHaveLength(0);
+    expect(typeof result.profileMessageId).toBe('string');
+    expect(await messages.listLatest(10)).toHaveLength(1);
   });
 
   it('inserts one profile note and is idempotent on rename', async () => {
@@ -125,8 +121,6 @@ describe('ensureProfileMessage', () => {
       linkingKey: null,
       role: 'basis',
       name: 'Other',
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'b'.repeat(64),

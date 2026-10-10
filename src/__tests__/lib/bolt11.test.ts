@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { describe, it, expect } from 'vitest';
-import { decodeBolt11, inspectBolt11, isNip57Invoice } from '@/lib/bolt11';
+import { bolt11Descriptions, decodeBolt11, inspectBolt11, isNip57Invoice } from '@/lib/bolt11';
 
 const HASH = 'aa'.repeat(32);
 const DESC_HASH = 'bb'.repeat(32);
@@ -162,6 +162,30 @@ describe('inspectBolt11', () => {
       ],
     }));
     expect(inspected?.descriptionHash).toBeNull();
+  });
+});
+
+describe('bolt11Descriptions', () => {
+  it('returns every string description tag of any decodable invoice, in order', () => {
+    expect(
+      bolt11Descriptions('lnbc1', () => ({
+        sections: [
+          { name: 'description', value: 'coffee' },
+          { name: 'payment_hash', value: HASH },
+          { name: 'description', value: 'tea' },
+          { name: 'description', value: 1 },
+        ],
+      })),
+    ).toEqual(['coffee', 'tea']);
+  });
+
+  it('returns an empty list without a description or when decoding fails', () => {
+    expect(
+      bolt11Descriptions('lnbc1', () => ({
+        sections: [{ name: 'description_hash', value: 'ab' }],
+      })),
+    ).toEqual([]);
+    expect(bolt11Descriptions('not an invoice')).toEqual([]);
   });
 });
 

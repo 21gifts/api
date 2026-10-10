@@ -50,8 +50,6 @@ describe('notifyForumMentions', () => {
       linkingKey: `02${'b'.repeat(64)}`,
       role: 'basis',
       name: 'Bob',
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'b'.repeat(64),

@@ -15,9 +15,14 @@ import { InMemoryMessageStore } from '@/lib/message-store';
 import { setDiagnosticSink } from '@/lib/log';
 import { spendInstructionRoutes } from '@/routes/spend-instruction-route';
 import { createApp } from '@/server';
+import { LNURL_SERVER, WALLET_PUBKEY } from '@/__tests__/helpers/wallet-lnurl';
 
 const TOKEN = 'spend-secret-token';
-const ADDRESS = 'alice@walletofsatoshi.com';
+const ADDRESS = 'alice@example.test';
+const LNURL_ENV = {
+  LNURL_SERVER_URL: LNURL_SERVER.baseUrl,
+  PUBLIC_BASE_URL: LNURL_SERVER.publicBaseUrl,
+};
 const NOW_MS = Date.parse('2026-10-08T12:00:00.000Z');
 const POST_ID = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 const NEWER_POST_ID = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
@@ -83,6 +88,7 @@ function createSpendApp(deps: Parameters<typeof createApp>[0] = {}): ReturnType<
     rosterStore: fakeStore(),
     fundingStore: admittedStore(),
     now: () => NOW_MS,
+    env: { ...process.env, ...LNURL_ENV },
     ...deps,
   });
 }
@@ -98,6 +104,11 @@ function auth(init?: RequestInit): RequestInit {
   };
 }
 
+async function verifyWallet(authStore: InMemoryAuthStore): Promise<void> {
+  await authStore.claimSparkPubkey('acc-alice', WALLET_PUBKEY);
+  await authStore.markSparkPubkeyVerified('acc-alice', WALLET_PUBKEY, 'alice', 2);
+}
+
 async function seedPasskeyAccount(
   authStore: InMemoryAuthStore,
   role: 'verified' | 'basis' = 'verified',
@@ -107,14 +118,15 @@ async function seedPasskeyAccount(
     linkingKey: null,
     role,
     name: 'Ada',
-    lightningAddress: ADDRESS,
-    lightningAddressVerified: true,
+    username: 'alice',
+    walletRequired: true,
     forumLawsDismissed: false,
     location: null,
     viewKey: 'a'.repeat(64),
     createdAt: 1,
     rulesAgreedAt: null,
   });
+  await verifyWallet(authStore);
   await authStore.createPasskeyCredential({
     credentialId: 'cred-alice',
     publicKey: new Uint8Array([1]),
@@ -164,6 +176,7 @@ function mount(overrides: Partial<Parameters<typeof spendInstructionRoutes>[0]> 
       messageStore: new InMemoryMessageStore(),
       fundingStore: new InMemoryFundingStore(),
       now: () => NOW_MS,
+      lnurlServer: LNURL_SERVER,
       ...overrides,
     }),
   );
@@ -262,14 +275,15 @@ describe('POST /spend/daily-instruction', () => {
       linkingKey: null,
       role: 'verified',
       name: 'Ada',
-      lightningAddress: ADDRESS,
-      lightningAddressVerified: true,
+      username: 'alice',
+      walletRequired: true,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'a'.repeat(64),
       createdAt: 1,
       rulesAgreedAt: null,
     });
+    await verifyWallet(authStore);
     const res = await createSpendApp({ authStore }).request(
       '/spend/daily-instruction',
       auth({ method: 'POST', body: JSON.stringify({ address: ADDRESS }) }),
@@ -458,8 +472,8 @@ describe('POST /spend/daily-instruction', () => {
       linkingKey: null,
       role: 'verified',
       name: 'Ada',
-      lightningAddress: ADDRESS,
-      lightningAddressVerified: true,
+      username: 'alice',
+      walletRequired: true,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'a'.repeat(64),
@@ -467,6 +481,7 @@ describe('POST /spend/daily-instruction', () => {
       rulesAgreedAt: null,
       profileMessageId: PROFILE_NOTE_ID,
     });
+    await verifyWallet(authStore);
     await authStore.createPasskeyCredential({
       credentialId: 'cred-alice',
       publicKey: new Uint8Array([1]),
