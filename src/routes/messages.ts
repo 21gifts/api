@@ -281,6 +281,11 @@ export interface MessagesRouteDeps {
   postLimiter?: PostRateLimiter;
   /** Invoice limiter (tests inject). */
   invoiceLimiter?: InvoiceRateLimiter;
+  /**
+   * Repayment invoice limiter (test-only override; omitted → the module
+   * limiter).
+   */
+  repaymentLimiter?: InvoiceRateLimiter;
   /** Heart limiter, separate from the invoice limiter (tests inject). */
   heartLimiter?: HeartRateLimiter;
   /** Optional push outbox; also the bell-subscriber list. */

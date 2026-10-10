@@ -17,6 +17,7 @@ import { InMemoryWalletStore } from '@/lib/wallet-store';
 import {
   BOLT11,
   FREE_PAYMENTS_ENV,
+  LNURL_SERVER,
   createWalletAccount,
   walletLnurlFetch,
 } from '@/__tests__/helpers/wallet-lnurl';
@@ -1017,6 +1018,113 @@ describe('LNURL server wiring', () => {
     );
     expect((await app.request('/lnurlp/_/invoice')).status).toBe(404);
     expect((await app.request('/verify/abc')).status).toBe(200);
+  });
+
+  async function giftInvoiceApp(
+    invoiceRateCaps: { burstCap: number; hourCap: number } | null,
+  ): Promise<{ app: ReturnType<typeof createApp>; token: string; noteId: string }> {
+    const kek = parseNostrKek('11'.repeat(32));
+    const token = `payer-caps-${invoiceRateCaps === null ? 'default' : 'raised'}`;
+    const noteId = '55555555-5555-4555-8555-555555555555';
+    const authStore = new InMemoryAuthStore();
+    await authStore.createAccount({
+      id: token,
+      linkingKey: null,
+      role: 'basis',
+      name: 'Payer',
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: 'e'.repeat(64),
+      createdAt: 1,
+      rulesAgreedAt: 1,
+    });
+    await authStore.createSession({ token, accountId: token, createdAt: Date.now() });
+    await createWalletAccount(authStore, 'wal-caps', 'wally');
+    await ensureAccountNostrKey(authStore, token, kek);
+    await ensureAccountNostrKey(authStore, 'wal-caps', kek);
+    const messageStore = new InMemoryMessageStore();
+    await messageStore.create({
+      id: noteId,
+      accountId: 'wal-caps',
+      name: 'wally',
+      text: 'hi',
+      createdAt: new Date(),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+      eventId: 'ee'.repeat(32),
+    });
+    const app = createApp({
+      env: {
+        LNURL_SERVER_URL: LNURL_SERVER.baseUrl,
+        PUBLIC_BASE_URL: LNURL_SERVER.publicBaseUrl,
+      },
+      authStore,
+      messageStore,
+      nostrKek: kek,
+      fetchImpl: walletLnurlFetch('wally').fetchImpl,
+      invoiceRateCaps,
+    });
+    return { app, token, noteId };
+  }
+
+  async function postGiftInvoice(
+    app: ReturnType<typeof createApp>,
+    token: string,
+    noteId: string,
+  ): Promise<number> {
+    const bolt11 = await import('@/lib/bolt11');
+    const nip57 = vi.spyOn(bolt11, 'isNip57Invoice').mockReturnValue(true);
+    try {
+      const res = await app.request(`/messages/${noteId}/invoice`, {
+        method: 'POST',
+        headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+        body: JSON.stringify({ sats: 21 }),
+      });
+      return res.status;
+    } finally {
+      nip57.mockRestore();
+    }
+  }
+
+  it('rate-limits gift invoices at the default caps', async () => {
+    const { app, token, noteId } = await giftInvoiceApp(null);
+    expect(await postGiftInvoice(app, token, noteId)).toBe(200);
+    expect(await postGiftInvoice(app, token, noteId)).toBe(429);
+    expect(
+      warn.mock.calls.some((call) => String(call[0]).startsWith('test invoice rate caps')),
+    ).toBe(false);
+  });
+
+  it('raises gift invoice caps when invoiceRateCaps is set', async () => {
+    const { app, token, noteId } = await giftInvoiceApp({ burstCap: 5, hourCap: 20 });
+    expect(await postGiftInvoice(app, token, noteId)).toBe(200);
+    expect(await postGiftInvoice(app, token, noteId)).toBe(200);
+    expect(warn).toHaveBeenCalledWith('test invoice rate caps burst=5/10s hour=20/h');
+  });
+
+  it('resolves test invoice caps from env on a loopback boot', async () => {
+    const app = createApp({
+      env: {
+        BIND_ADDR: '127.0.0.1:3000',
+        WEBAUTHN_RP_ID: 'localhost',
+        TEST_INVOICE_BURST_CAP: '5',
+        TEST_INVOICE_HOUR_CAP: '40',
+      },
+    });
+    expect((await app.request('/healthz')).status).toBe(200);
+    expect(warn).toHaveBeenCalledWith('test invoice rate caps burst=5/10s hour=40/h');
+  });
+
+  it('throws at boot when test invoice caps are malformed on a loopback boot', () => {
+    expect(() =>
+      createApp({
+        env: {
+          BIND_ADDR: '127.0.0.1:3000',
+          WEBAUTHN_RP_ID: 'localhost',
+          TEST_INVOICE_BURST_CAP: 'nope',
+        },
+      }),
+    ).toThrowError('TEST_INVOICE_BURST_CAP must be an integer from 1 to 100000');
   });
 });
 

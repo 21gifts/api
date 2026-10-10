@@ -46,6 +46,8 @@ async function readyCredit(options?: {
   pr?: string;
   /** Giver from `createWalletAccount`, answered by `walletLnurlFetch`, with the Spark store mounted. */
   walletGiver?: boolean;
+  /** Test-only repayment limiter override. */
+  repaymentLimiter?: InvoiceRateLimiter;
 }): Promise<{
   app: Hono;
   messages: InMemoryMessageStore;
@@ -162,6 +164,9 @@ async function readyCredit(options?: {
       ...(options?.walletGiver === true ? { sparkInvoices: new InMemorySparkInvoiceStore() } : {}),
       postLimiter: new PostRateLimiter(),
       invoiceLimiter: new InvoiceRateLimiter(),
+      ...(options?.repaymentLimiter === undefined
+        ? {}
+        : { repaymentLimiter: options.repaymentLimiter }),
     }),
   );
   return { app, messages, auth, seen: wallet.seen };
@@ -345,6 +350,19 @@ describe('credit repayment', () => {
       nip57.mockRestore();
       inspected.mockRestore();
     }
+  });
+
+  it('returns 429 when the injected repayment limiter denies', async () => {
+    const repaymentLimiter = new InvoiceRateLimiter();
+    vi.spyOn(repaymentLimiter, 'allow').mockReturnValue(false);
+    const { app } = await readyCredit({ authorId: 'acc-lim', repaymentLimiter });
+    const res = await app.request(`/messages/${CREDIT}/repayment`, {
+      method: 'POST',
+      headers: { authorization: 'Bearer acc-lim' },
+    });
+    expect(res.status).toBe(429);
+    expect(await res.json()).toEqual({ error: 'Too many payments' });
+    expect(res.headers.get('Retry-After')).toBe('10');
   });
 
   it('refuses an author who has not agreed to the rules', async () => {
