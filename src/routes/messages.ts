@@ -82,7 +82,12 @@ import { inboxUnreadCountFor } from '@/lib/conversation-push';
 import type { ConversationStore } from '@/lib/conversation-store';
 import { mentionUsernames } from '@/lib/mention';
 import { normalizeUsername } from '@/lib/username';
-import { notifyForumMentions, notifyForumPost, notifyForumReply } from '@/lib/notification';
+import {
+  livingRoomMentionExcludes,
+  notifyForumMentions,
+  notifyForumPost,
+  notifyForumReply,
+} from '@/lib/notification';
 import type { NotificationStore } from '@/lib/notification-store';
 import type { PushStore } from '@/lib/push-store';
 import type { SpendPing } from '@/lib/spend-ping';
@@ -1055,13 +1060,11 @@ async function persistForumPost(
       return c.json({ error: 'A post needs a Bitcoin payment' }, 403);
     }
     const isReplay = created.id !== id;
-    const excludeAccountIds = [
-      ...new Set(
-        (created.mentions ?? [])
-          .filter((mark) => mark.accountId !== account.id)
-          .map((mark) => mark.accountId),
-      ),
-    ];
+    const excludeAccountIds = await livingRoomMentionExcludes({
+      auth: deps.authStore,
+      authorId: account.id,
+      mentions: created.mentions ?? [],
+    });
     if (!isReplay && parentId === null) {
       try {
         await notifyForumPost({
