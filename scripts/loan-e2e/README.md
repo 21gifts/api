@@ -20,7 +20,8 @@ python3 -m venv <venv>
 ```
 
 The funding wallet holds the cycle's 1000 sats. The harness moves them only among its test wallets;
-after the cycle, all sats are swept back to funding and its leaves are consolidated.
+after the cycle, all sats are swept back to funding and its leaves are consolidated. A failed
+consolidation fails a finished cycle.
 
 ## Environment
 
@@ -72,6 +73,7 @@ reads in a row it stops waiting and tries anyway.
 After a finished cycle the harness sweeps every party back to the funding wallet; a wallet that
 still holds sats gets up to two more rounds, 30 s apart, and the cycle only passes when every wallet
 ends at 0 and the funding wallet holds at least 1000 sats again. After a failed cycle, once the
-wallets are set up, the same sweep runs as a best effort and logs any wallet it could not empty. In
-both cases the harness then consolidates the funding wallet, removes the test database, and clears
-stale session state. Wallet files remain for the next run.
+wallets are set up, the same sweep runs as a best effort and logs any wallet it could not empty.
+After a finished cycle, consolidation is required and a failure fails the cycle; after a failed
+cycle the same consolidation is only a warning. In both cases the harness then removes the test
+database and clears stale session state. Wallet files remain for the next run.
