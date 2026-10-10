@@ -355,6 +355,7 @@ async def optimize_full(sdk) -> str:
 
 
 async def consolidate(role: str, secret: str) -> str:
+    """Merge the wallet's leaves (full optimization, multiplicity 0); return a summary line."""
     sdk = await open_sdk(role, secret, multiplicity=0)
     try:
         await sdk.sync_wallet(SyncWalletRequest())

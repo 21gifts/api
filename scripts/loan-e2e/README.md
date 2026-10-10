@@ -65,7 +65,9 @@ The wallet helper turns off the SDK's background leaf optimizer. That optimizer 
 every payment, and a helper process that disconnects mid-swap leaves the swapped leaves reserved for
 about five minutes, during which no payment from that wallet can select them. Optimization runs only
 where a command waits for it to finish. If a wallet still has reserved leaves, a payment retry or a
-sweep waits for the reservation to end instead of failing.
+sweep waits for the reservation to end, within the command's own time limit (it stops starting new
+work after 540 s, below the harness's 600 s limit per wallet command); after three unreadable leaf
+reads in a row it stops waiting and tries anyway.
 
 After a finished cycle the harness sweeps every party back to the funding wallet; a wallet that
 still holds sats gets up to two more rounds, 30 s apart, and the cycle only passes when every wallet
