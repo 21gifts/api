@@ -1,9 +1,9 @@
 # Shop payment in USDT and USDC
 
 Status: **specified, not implemented**. Decided 2026-10-01. Names fixed
-2026-10-10. The names in this document are the contract. The routes are
-not mounted, and `SPEC.md` does not list them. Nothing here changes
-runtime behaviour.
+2026-10-10. The wallet check is Tether Wallet for Android 1.11.0 (134).
+The names in this document are the contract. The routes are not mounted,
+and `SPEC.md` does not list them. Nothing here changes runtime behaviour.
 
 A payer may settle a shop payment in USDT or USDC. The shop receives
 bitcoin on its own Spark wallet and does not hold either stablecoin. The
@@ -87,7 +87,9 @@ compared case-insensitively, is an unknown quote.
 
 The pay link is `https://<domain>/.well-known/lnurlp/<username>`. It
 carries no payment query. The payment page and a wallet both read this
-URL. The page does not build a second one.
+URL. The page does not build a second one. Tether Wallet for Android
+1.11.0 (134) requests the URL it decoded and does not add a payment
+query.
 
 The page is opened as `/pl/?lightning=<LNURL>`. It decodes that LNURL
 and fetches the decoded URL. The amounts it shows are `requestedAmount`
@@ -230,7 +232,10 @@ amount is waiting.
 A proof Orchestra has accepted is **200** `{ "txId": "<id>" }`. `txId` is
 the reference Orchestra accepted. It is not the payer's transaction hash.
 The call does not wait for bitcoin to arrive. A repeat after acceptance
-is **200** and does not create a second payment.
+is **200** and does not create a second payment. Tether Wallet for
+Android 1.11.0 (134) does not treat that success as a payment when the
+body carries no transaction id it can read. The id it reads is named in
+the Tether Wallet section.
 
 A Lightning call on `GET /lnurlp/cb/:username` has no `method`.
 It sends `amount` in millisats. When that amount is the fixed sat count
@@ -407,6 +412,11 @@ standard defines for that method: `hex` for EVM, Bitcoin, and Firo;
 wallet that calls `callback` with the fixed amount still receives the
 BOLT11 invoice in `pr`. That payment does not go through Orchestra.
 
+Tether Wallet for Android 1.11.0 (134) does not contain those two paths.
+It builds the proof request from `callback`. The request that routine
+sends is the proof the check accepts. A path it does not request is not
+that proof. The check is in Tether Wallet.
+
 For a proof, the api returns success only when the transfer matches the
 quote and Orchestra has accepted it: the offered chain, the offered
 asset, the quoted amount, and a quote that was still valid. From that
@@ -444,6 +454,9 @@ A quote that lapses before acceptance is replaced by a quote for the
 same sats. A quote for an open till charge also ends when the charge
 ends, if that is sooner. After the charge has ended, the sticker takes
 a new amount from the next payer and does not keep the charge's quote.
+A replacement the Tether Wallet check reports as
+`OPEN_CRYPTO_PAY_AMOUNT_CHANGED` is wrong. That check is below. The
+sats of the replacement do not change either way.
 
 An amount entered on the page is the one open amount of that pay link.
 A later fetch of the same URL returns it until the payment is accepted
@@ -503,6 +516,137 @@ The sticker then takes a new amount from the next payer.
 `GET /pos` shows a paid charge for 60 seconds. A paid charge no longer
 pins the pay link. No zap, gift, or message is written for a till
 payment.
+
+## Tether Wallet
+
+The wallet this payment must satisfy is Tether Wallet for Android,
+version 1.11.0, build 134. A later build is not this check until it has
+been read the same way. The Wallet Development Kit signs a transaction
+and broadcasts it. It is not the OpenCryptoPay client. The client is
+the app module `services/opencryptopay/`. That module has a route and a
+pending-proof store. An EVM payment instruction is an EIP-681 URI.
+
+The client is compiled into that Android package. A client written from
+the OpenCryptoPay description is not this check.
+
+### What that build reads
+
+That build reads `requestedAmount`, `transferAmounts`, `minSendable`,
+`maxSendable`, `quote`, and `callback`. It requests
+`/.well-known/lnurlp/`. It does not contain a `payment` query. It does
+not read `displayQr`. The strings `/lnurlp/cb` and `/lnurlp/tx` are not
+in the build. The proof URL is the one this client derives from
+`callback`. The test uses that URL.
+
+The client says that a call it treats as success, and that returned no
+transaction id, is not a payment. The field it reads as that id is in
+the client. This service returns `txId`. If the client does not read
+`txId`, the success body also carries the field the client reads. The
+test is how that field is known. It is not guessed here.
+
+For a Lightning invoice the client can no longer pay, it says the
+invoice may have expired or already been paid.
+
+### Results the build names
+
+The comparison inside each result is in the compiled client. This
+document does not restate it.
+
+| Result | What the name says |
+| --- | --- |
+| `OPEN_CRYPTO_PAY_NO_PENDING_PAYMENT` | no pending payment |
+| `OPEN_CRYPTO_PAY_STANDARD` | the standard |
+| `OPEN_CRYPTO_PAY_QUOTE_EXPIRED` | the quote has expired |
+| `OPEN_CRYPTO_PAY_AMOUNT_CHANGED` | the amount changed |
+| `OPEN_CRYPTO_PAY_RAILS` | the rails |
+| `OPEN_CRYPTO_PAY_RAIL_UNAVAILABLE` | that rail is not available |
+| `OPEN_CRYPTO_PAY_RAIL_SHORTFALL` | that rail is short |
+| `OPEN_CRYPTO_PAY_INSUFFICIENT_FUNDS` | the funds are insufficient |
+| `OPEN_CRYPTO_PAY_CONFIRM` | confirmation |
+| `OPEN_CRYPTO_PAY_PROOF` | the proof |
+| `OPEN_CRYPTO_PAY_UNCONFIRMED` | not confirmed |
+| `OPEN_CRYPTO_PAY_SETTLED` | settled |
+| `OPEN_CRYPTO_PAY_NOT_SETTLED_PENDING_RAMP_LIMIT` | not settled because a ramp limit is pending |
+| `LNURL_AMOUNT_RANGE` | the LNURL amount is a range |
+| `LIGHTNING_INVOICE_UNPAYABLE` | the Lightning invoice cannot be paid |
+| `LIGHTNING_INVOICE_EXPIRED` | the Lightning invoice has expired |
+| `MAX_SPENDABLE` | the most the wallet can send |
+
+`OPEN_CRYPTO_PAY_RAIL_SHORTFALL`, `OPEN_CRYPTO_PAY_INSUFFICIENT_FUNDS`,
+and `OPEN_CRYPTO_PAY_NOT_SETTLED_PENDING_RAMP_LIMIT` name the payer's
+own balance and a ramp limit. They are not a verdict on the pay link.
+The HTTP test does not treat them as a failure of this service.
+
+The client's pending proof ends in one of these outcomes:
+
+- proving again
+- confirming the send off the settled sale
+- the transfer failed on chain, so there is nothing to prove
+- the proof failed before the provider was reached
+- abandoned because the wallet was torn down
+- giving up because the proof has aged out
+- giving up because the transfer stays unproven
+- giving up because the transfer was never confirmed
+- not proving again because the proof is no longer claimable
+
+A pass is settled. Giving up, aged out, still unproven, never
+confirmed, or no longer claimable is a failure of this service when the
+quote was still valid and the transfer matched it. A transfer that
+failed on chain, a wallet torn down, and a proof that never reached the
+provider are not failures of this service. Proving again, and confirming
+the send off the settled sale, are not the result of the check.
+
+### The HTTP check
+
+The check is one test in the existing HTTP end-to-end suite. That suite
+boots the service and sends HTTP. It does not open a browser and it
+does not broadcast a stablecoin transfer. Orchestra is a stand-in that
+returns one quote and accepts one proof. The test is not in the suite
+today. It cannot pass until the routes in this document exist.
+
+The driver is the OpenCryptoPay routine from Tether Wallet for Android
+1.11.0 (134). The input is the sticker `/pl/?lightning=<LNURL>`. The
+routine decodes that LNURL and requests the decoded URL.
+
+For one open amount, and for each chain and asset the pay link offers,
+the routine reaches settled and does not return a failure result from
+the table above. `requestedAmount` is asset `BTC`. That does not remove
+the stablecoin rows, and the routine still settles each of those rows.
+The proof request is the request the routine sends. If that request is
+not `GET /lnurlp/tx/:username`, that path is not the proof for this
+wallet. A repeat of that same proof is **200** and does not create a
+second payment.
+
+With no open amount, the routine receives the Lightning pay request.
+That is `LNURL_AMOUNT_RANGE`, not
+`OPEN_CRYPTO_PAY_NO_PENDING_PAYMENT`.
+
+A second request while the payment is `open` and the quote has not
+expired does not return `OPEN_CRYPTO_PAY_AMOUNT_CHANGED`. A replacement
+quote that does is wrong.
+
+A method name this routine does not recognise is not offered. Offering
+it is `OPEN_CRYPTO_PAY_RAIL_UNAVAILABLE` and the test fails. An EVM
+detail the routine cannot route as EIP-681 fails the test.
+
+The test does not record paid. Paid stays the delivery of the sats.
+
+Four facts stay in the routine, and this document does not copy them
+out:
+
+- when it returns `OPEN_CRYPTO_PAY_AMOUNT_CHANGED`
+- which field it reads as the transaction id
+- which method names are rails
+- the proof request it builds from `callback`
+
+The test is written from the routine. A client written from the
+OpenCryptoPay description is not the test.
+
+Running that Android package and paying on its screens uses the same
+routine. That run is not a substitute for the HTTP test, and it is not
+required to accept the HTTP contract. A later Android build replaces
+the routine only after that build has been read the same way. Until
+then the test names 1.11.0 (134).
 
 ## Unchanged
 
