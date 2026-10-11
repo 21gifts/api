@@ -1233,7 +1233,7 @@ Success → **Response** `200`:
 - `daysDue` and `daysPaid` are those of `GET /messages/:id/repayment`. `repaidSats` is the sum of settled shares. `totalSats` is `repaidSats` plus every unpaid share in sats; sats with no account are not repaid and not counted.
 - `due` covers every due, unpaid share. `payable*` are the shares whose lender can receive (the ones `POST /messages/:id/repayment/due` bills), `waiting*` the shares whose lender cannot. `*People` counts distinct lenders. `behindDays` is the number of due days before today that still have an unpaid share. `lastPayment` is true when paying `payable` would finish the loan.
 - `next` is the next repayment day after the due days: `dueOn` (`YYYY-MM-DD` UTC), its sats, and its amount; null when no later day remains.
-- `*Amount` and `amount` are two-decimal strings in the loan's currency for a fiat loan, else `null`. For a fiat loan every sat figure that is not yet paid (`totalSats`, `payableSats`, `waitingSats`, `next.sats`) is priced at the rate `POST /messages/:id/repayment` would use now, and is `null` without a rate.
+- `*Amount` and `amount` are two-decimal strings in the loan's currency for a fiat loan, else `null`. For a fiat loan every sat figure that is not yet paid (`totalSats`, `payableSats`, `waitingSats`, `next.sats`) is priced at the rate `POST /messages/:id/repayment` would use now, read once per request for every loan, and is `null` without a rate.
 - `sundayRest` is true when the device `Time-Zone` names a zone that is in Sunday: the existing rule, under which repayments are refused today.
 
 Missing/invalid bearer → **Response** `401` `{ "error": "Unauthorized" }`.
@@ -5108,9 +5108,9 @@ Success → **Response** `200`:
 }
 ```
 
-`currency` is `BTC`, `USD`, `CHF`, `EUR`, or `PHP`. `fundedAt` is ISO-8601 or null until collected sats first reach the ask. `dueOn` is `YYYY-MM-DD` UTC, or null until then. `givenAmount` and `amount` are two-decimal strings in the ask currency, or null for bitcoin. For a fiat ask, `sats` on a repayment is the paid share or null until it is paid. `status` is `paid`, `due`, or `scheduled`. `unassignedSats` is bitcoin with no 21.gifts payer and is not in the plan. `canReceive` is true when the giver has a receiving address (`receivingAddress(account, lnurlServer) !== null`: the LNURL server is configured and the giver has a verified wallet with a username); a giver without an account is false. `dueSats` is set on a line with `status: "due"`: the share in sats for a bitcoin loan, or for a fiat loan the share priced in sats at the rate `POST /messages/:id/repayment` would use now (`null` without a rate); it is `null` on every other line. `next` is the oldest unpaid due share whose giver can receive once the credit has filled, else null. A 1-sat or 1-cent gift is its own row.
+`currency` is `BTC`, `USD`, `CHF`, `EUR`, or `PHP`. `fundedAt` is ISO-8601 or null until collected sats first reach the ask. `dueOn` is `YYYY-MM-DD` UTC, or null until then. `givenAmount` and `amount` are two-decimal strings in the ask currency, or null for bitcoin. For a fiat ask, `sats` on a repayment is the paid share or null until it is paid. `status` is `paid`, `due`, or `scheduled`. `unassignedSats` is bitcoin with no 21.gifts payer and is not in the plan. `canReceive` is true when the giver has a receiving address (`receivingAddress(account, lnurlServer) !== null`: the LNURL server is configured and the giver has a verified wallet with a username); a giver without an account is false. `dueSats` is set on a line with `status: "due"`: the share in sats for a bitcoin loan, or for a fiat loan the share priced in sats at the rate `POST /messages/:id/repayment` would use now; it is `null` on every other line. The rate is read once per request, so `dueSats` and `next.sats` agree. `next` is the oldest unpaid due share whose giver can receive once the credit has filled, else null. A 1-sat or 1-cent gift is its own row.
 
-Fiat amount or gift-day rate missing → **503** `{ "error": "Ask amount is unavailable" }`.
+Fiat amount or gift-day rate missing → **503** `{ "error": "Ask amount is unavailable" }`. This holds whenever a fiat share is due, also when every due share waits for a giver who cannot receive.
 
 ### `POST /messages/:id/repayment`
 
@@ -5148,7 +5148,7 @@ Other payment start failure → **400** `{ "error": "Could not start the Bitcoin
 Author missing forum pay → **409** `{ "error": "missing_requirements", "missing": ["rules"] }`.
 Device `Time-Zone` in Sunday → **403** `{ "error": "SUNDAY_REST" }`. A missing, blank, or invalid zone does not refuse.
 Over-limit → **429** `{ "error": "Too many payments" }`.
-Fiat share cannot be priced → **503** `{ "error": "Ask amount is unavailable" }`.
+Fiat share cannot be priced → **503** `{ "error": "Ask amount is unavailable" }`. Any due share is priced first, so a fiat loan without a rate answers this 503 before the `cannot_receive` 400.
 Signing keys missing or the invoice attempt cannot be stored → **503** `{ "error": "Messages are unavailable" }`.
 
 ### `POST /messages/:id/repayment/due`

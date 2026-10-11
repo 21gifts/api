@@ -8,6 +8,7 @@ import { parseNostrKek } from '@/lib/nostr/kek';
 import { InvoiceRateLimiter, PostRateLimiter } from '@/lib/nostr/rate-limit';
 import { messagesRoutes } from '@/routes/messages';
 import { REPAYMENT_BILLS_MAX, myLoansRoutes } from '@/routes/repayment';
+import type { GoalRateDay } from '@/lib/goal-rate';
 import { InMemorySparkInvoiceStore } from '@/lib/spark-invoice-store';
 import type { MessageInvoiceAttempt } from '@/lib/message-store';
 import { resolveZapRelays } from '@/lib/nostr/relays';
@@ -1004,6 +1005,8 @@ describe('repayment from the in-app wallet', () => {
     goalCurrency?: 'USD';
     goalAmount?: string | null;
     rate?: boolean;
+    /** Rate loader; overrides `rate`. */
+    rates?: () => Promise<GoalRateDay | null>;
     eventId?: string | null;
     rules?: boolean;
     limiter?: InvoiceRateLimiter;
@@ -1090,7 +1093,8 @@ describe('repayment from the in-app wallet', () => {
       await messages.updateZapReceiptGift(`r-${giver.id}`, { payerAccountId: giver.id });
     }
     const goalRateDay =
-      options?.rate === true
+      options?.rates ??
+      (options?.rate === true
         ? async () => ({
             sats: 100_000_000,
             usd: '100000.00',
@@ -1098,7 +1102,7 @@ describe('repayment from the in-app wallet', () => {
             eur: null,
             php: null,
           })
-        : async () => null;
+        : async () => null);
     const app = new Hono()
       .route(
         '/messages',
@@ -1185,7 +1189,7 @@ describe('repayment from the in-app wallet', () => {
     expect(body.next).toEqual({ dayIndex: 0, recipientAccountId: WALLET_GIVER, sats: 150 });
   });
 
-  it('leaves dueSats null on lines that are not due and on a fiat line without a rate', async () => {
+  it('leaves dueSats null on lines that are not due and refuses a due fiat share without a rate', async () => {
     const early = await loanSetup({ now: Date.UTC(2026, 8, 26, 20) });
     const scheduled = (await (await early.app.request(`/messages/${CREDIT}/repayment`)).json()) as {
       repayments: { status: string; dueSats: number | null }[];
@@ -1196,14 +1200,13 @@ describe('repayment from the in-app wallet', () => {
       goalCurrency: 'USD',
       givers: [{ id: NO_WALLET, sats: 500, wallet: false }],
     });
+    // Every due share waits for a giver without a wallet; the missing rate still answers 503.
     const res = await fiat.app.request(`/messages/${CREDIT}/repayment`);
-    expect(res.status).toBe(200);
-    const body = (await res.json()) as {
-      repayments: { status: string; amount: string; dueSats: number | null }[];
-      next: unknown;
-    };
-    expect(body.repayments[0]).toMatchObject({ status: 'due', amount: '4.00', dueSats: null });
-    expect(body.next).toBeNull();
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({ error: 'Ask amount is unavailable' });
+    const single = await post(fiat.app, `/messages/${CREDIT}/repayment`);
+    expect(single.status).toBe(503);
+    expect(await single.json()).toEqual({ error: 'Ask amount is unavailable' });
     const priced = await loanSetup({
       goalCurrency: 'USD',
       rate: true,
@@ -1213,6 +1216,52 @@ describe('repayment from the in-app wallet', () => {
       await priced.app.request(`/messages/${CREDIT}/repayment`)
     ).json()) as { repayments: { dueSats: number | null }[] };
     expect(pricedBody.repayments[0]?.dueSats).toBe(4000);
+  });
+
+  it('prices every figure of one response at one read of the rate', async () => {
+    let reads = 0;
+    // Each read halves the rate, so a second read would show in the figures.
+    const rates = async (): Promise<GoalRateDay> => {
+      reads += 1;
+      return {
+        sats: 100_000_000,
+        usd: reads === 1 ? '100000.00' : '50000.00',
+        chf: null,
+        eur: null,
+        php: null,
+      };
+    };
+    const { app, messages } = await loanSetup({ goalCurrency: 'USD', rates });
+    const body = (await (await app.request(`/messages/${CREDIT}/repayment`)).json()) as {
+      repayments: { dayIndex: number; accountId: string; dueSats: number | null }[];
+      next: { dayIndex: number; recipientAccountId: string; sats: number };
+    };
+    expect(reads).toBe(1);
+    expect(body.next).toEqual({ dayIndex: 0, recipientAccountId: WALLET_GIVER, sats: 1500 });
+    const line = body.repayments.find(
+      (item) => item.dayIndex === 0 && item.accountId === WALLET_GIVER,
+    );
+    expect(line?.dueSats).toBe(1500);
+    await messages.create({
+      id: SECOND_CREDIT,
+      accountId: AUTHOR,
+      name: 'Ada',
+      text: 'second loan',
+      createdAt: new Date(Date.UTC(2026, 8, 27)),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+      sats: 0,
+      goalSats: 1000,
+      goalRepayable: true,
+      goalTermDays: 10,
+      goalCurrency: 'USD',
+      goalAmount: '10.00',
+    });
+    reads = 0;
+    const listed = await loans(app);
+    expect(listed.status).toBe(200);
+    expect(((await listed.json()) as { loans: unknown[] }).loans).toHaveLength(2);
+    expect(reads).toBe(1);
   });
 
   it('skips a giver who cannot receive and bills the next share', async () => {

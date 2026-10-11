@@ -207,6 +207,28 @@ async function duePlan(
 }
 
 /**
+ * The deps with the rate loader read at most once, so every figure of one
+ * response is priced at the same rate.
+ *
+ * @param deps - Deps with an optional rate loader.
+ * @returns The same deps, the loader memoized.
+ */
+function withOneRate<D extends Pick<RepaymentDeps, 'goalRateDay'>>(deps: D): D {
+  const load = deps.goalRateDay;
+  if (load === undefined) {
+    return deps;
+  }
+  let day: Promise<GoalRateDay | null> | undefined;
+  return {
+    ...deps,
+    goalRateDay: () => {
+      day ??= load();
+      return day;
+    },
+  };
+}
+
+/**
  * Prices shares of one credit in sats: a bitcoin share is its units, a fiat
  * share is priced at the rate the pay route uses now. The rate is read once.
  *
@@ -232,7 +254,8 @@ async function sharePricer(
  * @param c - Request. No session is required.
  * @returns The givers and the plan, or an error.
  */
-export async function repaymentStatus(deps: RepaymentDeps, c: Context): Promise<Response> {
+export async function repaymentStatus(routeDeps: RepaymentDeps, c: Context): Promise<Response> {
+  const deps = withOneRate(routeDeps);
   const row = await readableCredit(deps, c);
   if (row instanceof Response) {
     return row;
@@ -704,7 +727,8 @@ async function openCredit(
 
 /**
  * The oldest due, unpaid share whose giver can receive. Shares of a giver who
- * cannot receive are skipped; `waiting` says some were.
+ * cannot receive are skipped; `waiting` says some were. A due share that
+ * cannot be priced (a fiat loan with no rate) is 503, whoever its giver is.
  */
 async function nextShare(
   deps: RepaymentDeps,
@@ -730,19 +754,12 @@ async function nextShare(
     };
   }
   const { daysDue, daysPaid } = plan;
-  const payable = plan.due.find((share) => share.canReceive);
-  if (payable === undefined) {
-    return {
-      daysDue,
-      daysPaid,
-      share: null,
-      waiting: plan.due.length > 0,
-      error: null,
-      status: 400,
-    };
+  if (plan.due.length === 0) {
+    return { daysDue, daysPaid, share: null, waiting: false, error: null, status: 400 };
   }
-  const sats = (await sharePricer(deps, row))(payable.units);
-  if (sats === null) {
+  // Every due share needs a price, whether or not its giver can receive.
+  const price = await sharePricer(deps, row);
+  if (plan.due.some((share) => price(share.units) === null)) {
     return {
       daysDue,
       daysPaid,
@@ -752,6 +769,11 @@ async function nextShare(
       status: 503,
     };
   }
+  const payable = plan.due.find((share) => share.canReceive);
+  if (payable === undefined) {
+    return { daysDue, daysPaid, share: null, waiting: true, error: null, status: 400 };
+  }
+  const sats = price(payable.units) as number;
   return {
     daysDue,
     daysPaid,
@@ -922,6 +944,7 @@ export function myLoansRoutes(deps: MyLoansDeps): Hono {
       return c.json({ error: 'Unauthorized' }, 401);
     }
     const nowMs = deps.now();
+    const oneRate = withOneRate(deps);
     try {
       const authored = await deps.store.listAuthoredMessages(account.id);
       const loans: Record<string, unknown>[] = [];
@@ -934,7 +957,7 @@ export function myLoansRoutes(deps: MyLoansDeps): Hono {
         ) {
           continue;
         }
-        const loan = await loanRow(deps, row, nowMs);
+        const loan = await loanRow(oneRate, row, nowMs);
         if (loan === 'unavailable') {
           return c.json({ error: 'Ask amount is unavailable' }, 503);
         }
