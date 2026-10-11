@@ -143,6 +143,8 @@ describe('PostgresAuthStore', () => {
     expect(mapped?.username).toBeNull();
     expect(mapped?.walletRequired).toBe(false);
     expect(mapped?.walletBackupSeenAt).toBeNull();
+    expect(mapped?.walletIntroSeen).toBe(false);
+    expect(mapped?.hadExternalWallet).toBe(false);
     const account = await store.getAccount('acc');
     expect(account?.linkingKey).toBe(ACCOUNT_ROW.linking_key);
     expect(account?.viewKey).toBe(VIEW_KEY);
@@ -156,6 +158,10 @@ describe('PostgresAuthStore', () => {
     expect(sql.queries[0]?.text).toMatch(/username/);
     expect(sql.queries[0]?.text).toMatch(/wallet_required/);
     expect(sql.queries[0]?.text).toMatch(/wallet_backup_seen_at/);
+    expect(sql.queries[0]?.text).toMatch(/wallet_intro_seen/);
+    expect(sql.queries[0]?.text).toMatch(
+      /\(lightning_address IS NOT NULL AND btrim\(lightning_address\) <> ''\) AS had_external_wallet/,
+    );
     const listed = await store.listAccounts();
     expect(listed).toHaveLength(1);
     expect(sql.queries[2]?.text).toMatch(/ORDER BY created_at ASC, id ASC/);
@@ -214,6 +220,14 @@ describe('PostgresAuthStore', () => {
     expect(mapped?.walletBackupSeenAt).toBe(4_000);
   });
 
+  it('maps wallet_intro_seen and had_external_wallet', async () => {
+    const sql = new MockSql();
+    sql.nextRows = [{ ...ACCOUNT_ROW, wallet_intro_seen: true, had_external_wallet: true }];
+    const mapped = await new PostgresAuthStore(sql).getAccount('acc');
+    expect(mapped?.walletIntroSeen).toBe(true);
+    expect(mapped?.hadExternalWallet).toBe(true);
+  });
+
   it('maps a non-null rules_agreed_at timestamp', async () => {
     const sql = new MockSql();
     sql.nextRows = [{ ...ACCOUNT_ROW, rules_agreed_at: new Date(5_000) }];
@@ -269,6 +283,7 @@ describe('PostgresAuthStore', () => {
       'wallet_required',
       'wallet_backup_seen_at',
       'notify_hearts',
+      'wallet_intro_seen',
     ]) {
       expect(insert.text).toMatch(new RegExp(column));
     }
@@ -293,6 +308,7 @@ describe('PostgresAuthStore', () => {
       null,
       'btc',
       true,
+      false,
     ]);
     const update = sql.executes[1]!;
     expect(update.text).toMatch(/UPDATE account/);
@@ -313,6 +329,8 @@ describe('PostgresAuthStore', () => {
     );
     expect(update.text).toMatch(/amount_unit = \$16/);
     expect(update.text).toMatch(/notify_hearts = \$17/);
+    expect(update.text).toMatch(/wallet_intro_seen = wallet_intro_seen OR \$18/);
+    expect(update.text).not.toMatch(/had_external_wallet/);
     expect(update.text).toMatch(/NOT EXISTS/);
     expect(update.text).not.toMatch(/IS NOT DISTINCT FROM/);
     const setClause = update.text.split(/\bWHERE\b/)[0]!;
@@ -340,6 +358,7 @@ describe('PostgresAuthStore', () => {
       null,
       'btc',
       true,
+      false,
     ]);
     expect(insert.text).not.toMatch(/spark_pubkey/);
   });

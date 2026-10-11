@@ -9,6 +9,7 @@ export const MEMBER_EVENT_NAMES: ReadonlySet<string> = new Set([
   'reply_created',
   'gift_sent',
   'payment_sent',
+  'payment_failed',
   'payment_received_seen',
   'pos_charge_created',
   'pos_charge_paid_seen',
@@ -18,6 +19,15 @@ export const MEMBER_EVENT_NAMES: ReadonlySet<string> = new Set([
   'login',
   'logout',
   'signup_completed',
+  'wallet_open_failed',
+  'wallet_tour_shown',
+  'wallet_tour_step',
+  'wallet_tour_done',
+  'wallet_move_opened',
+  'wallet_move_step',
+  'wallet_move_copied',
+  'wallet_move_closed',
+  'wallet_move_done',
 ]);
 
 /** Maximum events in one `POST /me/events` body. */

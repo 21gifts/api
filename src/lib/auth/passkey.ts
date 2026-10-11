@@ -292,6 +292,7 @@ export async function finishPasskeyRegistration(
     ...(name === null ? {} : { username: name }),
     location: null,
     forumLawsDismissed: false,
+    walletIntroSeen: false,
     viewKey: randomHex(32),
     createdAt: now,
     rulesAgreedAt: null,

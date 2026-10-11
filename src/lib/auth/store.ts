@@ -141,6 +141,17 @@ export interface Account {
   /** True after the user dismissed the welcome-forum living-room laws hint. */
   forumLawsDismissed: boolean;
   /**
+   * True after the owner saw the in-app wallet intro. Omitted → false.
+   * Once true it stays true: `updateAccount` never clears it.
+   */
+  walletIntroSeen?: boolean;
+  /**
+   * True when the account has a stored legacy external payout address
+   * (`account.lightning_address`). Read-only: `createAccount` and
+   * `updateAccount` never write it. Omitted → false.
+   */
+  hadExternalWallet?: boolean;
+  /**
    * Durable capability secret for the public profile URL (`GET /view/:viewKey`).
    * 64 lowercase hex characters. Never a session; never accepted as Bearer.
    */
@@ -335,7 +346,9 @@ export interface AuthStore {
    * matching no row or swallowed unique_violation). An account with a verified
    * wallet (`sparkPubkeyVerifiedAt` set) keeps its stored username; the other
    * fields are written. Wallet columns (`sparkPubkey`, `sparkPubkeyVerifiedAt`)
-   * are never written here.
+   * are never written here. `walletIntroSeen` is only ever raised to true
+   * (a stale `false` does not clear a stored `true`); `hadExternalWallet` is
+   * never written.
    */
   updateAccount(account: Account): Promise<void>;
   /**
@@ -990,6 +1003,8 @@ export class InMemoryAuthStore implements AuthStore {
       sessionRefused: previous?.sessionRefused === true,
       walletRequired: previous?.walletRequired === true,
       walletBackupSeenAt: previous?.walletBackupSeenAt ?? null,
+      walletIntroSeen: previous?.walletIntroSeen === true || account.walletIntroSeen === true,
+      hadExternalWallet: previous?.hadExternalWallet === true,
       locale: previous?.locale ?? null,
       fiat: previous?.fiat ?? null,
       sparkPubkey: previous?.sparkPubkey ?? null,

@@ -247,7 +247,7 @@ function ownerJson(deps: MeRouteDeps, account: Account): Promise<OwnerAccountRes
  * Build the `/me` route group.
  *
  * @param deps - Shared store, message store, clock, optional push, optional notification and conversation stores, optional gift/rate/fiat stores for activity, optional funding store, and optional `lnurlServer` for `PUT /wallet` and the receiving address.
- * @returns A Hono app exposing account, activity, display-name, username, location, About me, wallet-backup-seen, optional wallet bind, passkey-renew/report, passkey-renew/ack, setup skip, forum-laws dismiss,
+ * @returns A Hono app exposing account, activity, display-name, username, location, About me, wallet-backup-seen, optional wallet bind, passkey-renew/report, passkey-renew/ack, setup skip, forum-laws dismiss, wallet-intro seen,
  * living-room rules agreement, notification level, `POST /heart-notifications`, amount-entry unit, locale, and fiat routes.
  */
 export function meRoutes(deps: MeRouteDeps): Hono {
@@ -800,6 +800,24 @@ export function meRoutes(deps: MeRouteDeps): Hono {
       const updated: Account = { ...current, forumLawsDismissed: true };
       await deps.store.updateAccount(updated);
       logEvent('account.forum_laws.dismissed', { accountId: current.id });
+      return c.json(await ownerJson(deps, updated), 200);
+    })
+    .post('/wallet-intro-seen', async (c) => {
+      const account = await authedAccount(deps, c.req.header('authorization'));
+      if (account === null) {
+        return c.json({ error: 'Unauthorized' }, 401);
+      }
+      const current = await storedAccount(deps, account.id);
+      /* v8 ignore next 3 -- the account row cannot vanish mid-request after auth */
+      if (current === null) {
+        return c.json({ error: 'Unauthorized' }, 401);
+      }
+      if (current.walletIntroSeen === true) {
+        return c.json(await ownerJson(deps, current), 200);
+      }
+      const updated: Account = { ...current, walletIntroSeen: true };
+      await deps.store.updateAccount(updated);
+      logEvent('account.wallet_intro.seen', { accountId: current.id });
       return c.json(await ownerJson(deps, updated), 200);
     })
     .post('/notification-level', async (c) => {

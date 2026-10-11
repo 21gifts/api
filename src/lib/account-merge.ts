@@ -464,6 +464,7 @@ SET
     ELSE LEAST(survivor.wallet_backup_seen_at, source.wallet_backup_seen_at)
   END,
   forum_laws_dismissed = survivor.forum_laws_dismissed OR source.forum_laws_dismissed,
+  wallet_intro_seen = survivor.wallet_intro_seen OR source.wallet_intro_seen,
   locale = COALESCE(survivor.locale, source.locale),
   fiat = COALESCE(survivor.fiat, source.fiat)
 FROM account AS source
