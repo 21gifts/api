@@ -640,14 +640,14 @@
 - **Purpose:** Decode BOLT11 payment hash, amount, plaintext description, description_hash, and expiry for operator debug (does not change `decodeBolt11`).
 - **Inputs:** BOLT11 string; optional decoder inject for tests.
 - **Returns / side effects:** `InspectedBolt11` or `null` when malformed, zero-amount, or the amount is not a safe integer.
-- **Used by:** `POST /messages/:id/invoice` for the NIP-57 gate (reject before returning `pr`) and when persisting ok / `not_zap` attempts.
+- **Used by:** `POST /messages/:id/invoice` for the NIP-57 gate (reject before returning `pr`) and when persisting ok / `not_zap` attempts; `POST /messages/:id/repayment` and `POST /messages/:id/repayment/due` for the same gate, the attempt row, and the expiry of an open bill.
 
 ## Function: isNip57Invoice
 
 - **Purpose:** True when `descriptionHash` equals `sha256(utf8(zapRequestJson))`.
 - **Inputs:** description hash (or null) and zap request JSON string (or null).
 - **Returns / side effects:** boolean.
-- **Used by:** `POST /messages/:id/invoice` for the NIP-57 gate (reject before returning `pr`).
+- **Used by:** `POST /messages/:id/invoice` for the NIP-57 gate (reject before returning `pr`); `POST /messages/:id/repayment` and `POST /messages/:id/repayment/due` for the same gate.
 
 ## Function: resolveVapidConfig
 
@@ -2767,7 +2767,7 @@ Reads the country of a map pin from its coordinates with the offline boundary da
 - **Purpose:** Decrypt nsec, `finalizeEvent`, zeroize.
 - **Inputs:** store, accountId, kek, unsigned template.
 - **Returns / side effects:** Signed event. Never logs the secret.
-- **Used by:** Worker, `POST /messages/:id/invoice`.
+- **Used by:** Worker, `POST /messages/:id/invoice`, `POST /messages/:id/repayment` and `POST /messages/:id/repayment/due` (the author signs each repayment zap request).
 
 ## Function: isNostrPublishEnabled
 
@@ -2946,7 +2946,7 @@ Reads the country of a map pin from its coordinates with the offline boundary da
 - **Purpose:** Unsigned kind:9734 for a forum event.
 - **Inputs:** recipient pubkey, event id, amountMsat, relays, optional `content` (NIP-57 comment, default empty).
 - **Returns / side effects:** EventTemplate.
-- **Used by:** `POST /messages/:id/invoice`.
+- **Used by:** `POST /messages/:id/invoice`, `POST /messages/:id/repayment` and `POST /messages/:id/repayment/due`.
 
 ## Function: serializeZapRequest
 
@@ -3624,7 +3624,7 @@ Builds the operator-only external-pubkey inspection route.
 - **Purpose:** Convert a fiat amount to whole sats with the gift-day proportion (`Math.round(amount * day.sats / dayFiat)`). Amount 0 is 0. A product that rounds to 0 becomes 1. Unusable day or quote returns null. Not the spot BigInt helper.
 - **Inputs:** Finite amount, gift-day or null, and `USD` / `CHF` / `EUR` / `PHP`.
 - **Returns / side effects:** Whole sats, or `null` when unusable. No I/O.
-- **Used by:** `messagesRoutes` when freezing a fiat ask.
+- **Used by:** `messagesRoutes` when freezing a fiat ask; the repayment routes when pricing a fiat share in sats (`repaymentStatus` for `dueSats` and `next`, `repaymentInvoice`, `repaymentDueBills`, and `myLoansRoutes` for the sat figures of `GET /me/loans`).
 
 ## Function: satsToFiatAmount
 
