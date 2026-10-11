@@ -4993,6 +4993,7 @@ describe('indexOpenZapReceipts', () => {
         base.recordZapReceipt(...args),
       recordInvoiceAttempt: (...args: Parameters<InMemoryMessageStore['recordInvoiceAttempt']>) =>
         base.recordInvoiceAttempt(...args),
+      heartStats: (ids: readonly string[], viewer: string | null) => base.heartStats(ids, viewer),
       listInvoiceAttempts: (limit: number) => base.listInvoiceAttempts(limit),
       listRecentOkInvoiceAttempts: (since: Date, limit: number) =>
         base.listRecentOkInvoiceAttempts(since, limit),
@@ -5259,6 +5260,7 @@ describe('indexOpenZapReceipts', () => {
           base.recordZapReceipt(...args),
         recordInvoiceAttempt: (...args: Parameters<InMemoryMessageStore['recordInvoiceAttempt']>) =>
           base.recordInvoiceAttempt(...args),
+        heartStats: (ids: readonly string[], viewer: string | null) => base.heartStats(ids, viewer),
         listInvoiceAttempts: (limit: number) => base.listInvoiceAttempts(limit),
         listRecentOkInvoiceAttempts: (since: Date, limit: number) =>
           base.listRecentOkInvoiceAttempts(since, limit),
@@ -6076,6 +6078,7 @@ describe('indexOpenZapReceipts', () => {
           base.recordZapReceipt(...args),
         recordInvoiceAttempt: (...args: Parameters<InMemoryMessageStore['recordInvoiceAttempt']>) =>
           base.recordInvoiceAttempt(...args),
+        heartStats: (ids: readonly string[], viewer: string | null) => base.heartStats(ids, viewer),
         listInvoiceAttempts: (limit: number) => base.listInvoiceAttempts(limit),
         listRecentOkInvoiceAttempts: (since: Date, limit: number) =>
           base.listRecentOkInvoiceAttempts(since, limit),

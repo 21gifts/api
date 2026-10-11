@@ -14,6 +14,7 @@ import {
 import { loadGrantEffective, type FundingStore } from '@/lib/funding-store';
 import { buildFundingPayoutMatrix } from '@/lib/funding-payouts';
 import type { GiftStore } from '@/lib/gift-store';
+import { attachHeartStats } from '@/lib/heart-stats';
 import { logEvent } from '@/lib/log';
 import { MESSAGE_LIST_LIMIT, serializeMessage, type MessageRow } from '@/lib/message';
 import type { MessageStore } from '@/lib/message-store';
@@ -631,7 +632,11 @@ export function fundingRoutes(deps: FundingRouteDeps): Hono {
               admittedAt: grant.admittedAt,
               decidedAt: grant.decidedAt,
             },
-            messages,
+            messages: await attachHeartStats(
+              (ids, viewer) => deps.messageStore.heartStats(ids, viewer),
+              staff.caller.id,
+              messages,
+            ),
           },
           200,
         );

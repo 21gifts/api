@@ -5082,6 +5082,36 @@ describe('InMemoryMessageStore', () => {
     expect(listed.find((row) => row.id === 'hidden')?.deletedAt).not.toBeNull();
     expect(listed.some((row) => row.accountId === 'other')).toBe(false);
   });
+
+  it('heartStats skips a claimed heart whose message id is not requested', async () => {
+    const store = new InMemoryMessageStore();
+    const paymentHash = '44'.repeat(32);
+    await store.claimZapPayment(
+      paymentHash,
+      'receipt-heart-note-a',
+      new Date('2026-08-28T12:00:00.000Z'),
+    );
+    await store.recordInvoiceAttempt({
+      id: 'inv-heart-note-a',
+      createdAt: new Date('2026-08-28T12:00:00.000Z'),
+      messageId: 'note-a',
+      payerAccountId: 'payer',
+      authorAccountId: 'a',
+      amountSats: 21,
+      lightningAddress: null,
+      zapRequest: { content: 'hi' },
+      result: 'ok',
+      httpStatus: 200,
+      pr: 'lnbc21',
+      paymentHash,
+      description: null,
+      descriptionHash: null,
+      isNip57Invoice: true,
+      lnurlResponse: null,
+      heart: true,
+    });
+    expect(await store.heartStats(['note-b'], null)).toEqual(new Map());
+  });
 });
 
 describe('PostgresMessageStore', () => {
@@ -9775,6 +9805,49 @@ describe('PostgresMessageStore', () => {
     expect(sql.queries[0]?.text).toContain('WHERE account_id = $1');
     expect(sql.queries[0]?.text).not.toContain('LIMIT');
     expect(sql.queries[0]?.params).toEqual(['acc']);
+  });
+
+  it('heartStats returns an empty map without querying for an empty id list', async () => {
+    const sql = new MockSql();
+    const store = new PostgresMessageStore(sql);
+    expect(await store.heartStats([], null)).toEqual(new Map());
+    expect(sql.queries).toEqual([]);
+  });
+
+  it('heartStats returns an empty map without querying when no id is a uuid', async () => {
+    const sql = new MockSql();
+    const store = new PostgresMessageStore(sql);
+    expect(await store.heartStats(['not-a-uuid'], null)).toEqual(new Map());
+    expect(sql.queries).toEqual([]);
+  });
+
+  it('heartStats maps heart_count and hearted from query rows', async () => {
+    const sql = new MockSql();
+    const first = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+    const second = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+    const third = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
+    const fourth = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd';
+    sql.nextRows = [
+      { message_id: first, heart_count: '2', hearted: 't' },
+      { message_id: second, heart_count: 1, hearted: true },
+      { message_id: third, heart_count: 1, hearted: false },
+      { message_id: fourth, heart_count: 1, hearted: null },
+    ];
+    const store = new PostgresMessageStore(sql);
+    const stats = await store.heartStats([first, second, third, fourth], 'acc');
+    expect(stats).toEqual(
+      new Map([
+        [first, { heartCount: 2, hearted: true }],
+        [second, { heartCount: 1, hearted: true }],
+        [third, { heartCount: 1, hearted: false }],
+        [fourth, { heartCount: 1, hearted: false }],
+      ]),
+    );
+    expect(sql.queries).toHaveLength(1);
+    expect(sql.queries[0]?.text).toMatch(/message_invoice/);
+    expect(sql.queries[0]?.text).toMatch(/nostr_zap_payment/);
+    expect(sql.queries[0]?.params[0]).not.toBeUndefined();
+    expect(sql.queries[0]?.params[1]).toBe('acc');
   });
 });
 
