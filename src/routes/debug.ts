@@ -311,6 +311,7 @@ export function debugRoutes(deps: DebugRouteDeps): Hono {
           name: row.name,
           location: null,
           forumLawsDismissed: false,
+          walletIntroSeen: false,
           viewKey,
           createdAt: clock(),
           rulesAgreedAt: null,

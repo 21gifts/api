@@ -5,7 +5,7 @@
  * `forum_laws_dismissed`, `rules_agreed_at`, `notification_level`,
  * `amount_unit`, `locale`, `fiat`, `session_refused`, `wallet_required`,
  * `wallet_backup_seen_at`, `staff_tag`, `spark_pubkey`, `spark_pubkey_verified_at`,
- * `notify_hearts`, and `passkey_challenge.requested_name` on databases created before those
+ * `notify_hearts`, `wallet_intro_seen`, and `passkey_challenge.requested_name` on databases created before those
  * columns existed.
  * Also creates `passkey_renew_attempt` (failed, cancelled, and
  * server-written succeeded seed rows).
@@ -67,6 +67,7 @@ export const AUTH_SCHEMA_SQL: readonly string[] = [
   `ALTER TABLE account ADD CONSTRAINT account_nostr_key_custody_chk
     CHECK (nostr_key_custody IN ('custodial', 'user'))`,
   `ALTER TABLE account ADD COLUMN IF NOT EXISTS forum_laws_dismissed boolean NOT NULL DEFAULT false`,
+  `ALTER TABLE account ADD COLUMN IF NOT EXISTS wallet_intro_seen boolean NOT NULL DEFAULT false`,
   `ALTER TABLE account ADD COLUMN IF NOT EXISTS view_key text`,
   `UPDATE account SET view_key = replace(gen_random_uuid()::text || gen_random_uuid()::text, '-', '') WHERE view_key IS NULL`,
   `CREATE UNIQUE INDEX IF NOT EXISTS account_view_key_uidx ON account (view_key) WHERE view_key IS NOT NULL`,

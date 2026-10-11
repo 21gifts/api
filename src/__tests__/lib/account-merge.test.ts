@@ -212,6 +212,9 @@ describe('mergeAccounts', () => {
     expect(history).toBeGreaterThanOrEqual(0);
     expect(deleted).toBeGreaterThan(history);
     expect(queries[history]?.params).toEqual([FROM, INTO]);
+    expect(queries[history]?.text).toContain(
+      'wallet_intro_seen = survivor.wallet_intro_seen OR source.wallet_intro_seen',
+    );
     expect(queries[history]?.text).not.toContain('SET name');
     expect(queries[history]?.text).not.toContain('username =');
     expect(queries[history]?.text).not.toContain('location =');

@@ -61,7 +61,9 @@ const SPARK_PUBKEY = `02${'a'.repeat(64)}`;
 const SPARK_PUBKEY_OTHER = `03${'b'.repeat(64)}`;
 
 /** A store with a signed-in account `acc` reachable via session `tok`. */
-async function seededStore(overrides: { wallet?: boolean } = {}): Promise<InMemoryAuthStore> {
+async function seededStore(
+  overrides: { wallet?: boolean; hadExternalWallet?: boolean } = {},
+): Promise<InMemoryAuthStore> {
   const store = new InMemoryAuthStore();
   await store.createAccount({
     id: 'acc',
@@ -74,6 +76,7 @@ async function seededStore(overrides: { wallet?: boolean } = {}): Promise<InMemo
     createdAt: 1_000_000,
     rulesAgreedAt: null,
     ...(overrides.wallet === true ? { username: 'alice', walletRequired: true } : {}),
+    ...(overrides.hadExternalWallet === true ? { hadExternalWallet: true } : {}),
   });
   if (overrides.wallet === true) {
     await store.claimSparkPubkey('acc', WALLET_PUBKEY);
@@ -926,6 +929,119 @@ describe('POST /me/forum-laws-dismissed', () => {
     expect(body.name).toBe('Ada');
     expect(body.forumLawsDismissed).toBe(true);
     expect((await store.getAccount('acc'))?.forumLawsDismissed).toBe(true);
+  });
+});
+
+describe('POST /me/wallet-intro-seen', () => {
+  it('returns 401 without a valid session', async () => {
+    const res = await mount(new InMemoryAuthStore()).request('/me/wallet-intro-seen', {
+      method: 'POST',
+    });
+    expect(res.status).toBe(401);
+    expect(await res.json()).toEqual({ error: 'Unauthorized' });
+  });
+
+  it('is false on GET /me before the first POST', async () => {
+    const store = await seededStore();
+    const res = await mount(store).request('/me', { headers: AUTH });
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as { walletIntroSeen: boolean }).walletIntroSeen).toBe(false);
+  });
+
+  it('sets walletIntroSeen on first POST and logs', async () => {
+    const store = await seededStore();
+    const res = await mount(store).request('/me/wallet-intro-seen', {
+      method: 'POST',
+      headers: AUTH,
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { walletIntroSeen: boolean; viewKey: string };
+    expect(body.walletIntroSeen).toBe(true);
+    expect(body.viewKey).toBe(VIEW_KEY);
+    expect((await store.getAccount('acc'))?.walletIntroSeen).toBe(true);
+    expect(
+      parsedEvents(warn).some(
+        (e) => e['event'] === 'account.wallet_intro.seen' && e['accountId'] === 'acc',
+      ),
+    ).toBe(true);
+  });
+
+  it('is idempotent on a second POST', async () => {
+    const store = await seededStore();
+    const app = mount(store);
+    await app.request('/me/wallet-intro-seen', { method: 'POST', headers: AUTH });
+    const before = warn.mock.calls.length;
+    const res = await app.request('/me/wallet-intro-seen', {
+      method: 'POST',
+      headers: AUTH,
+    });
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as { walletIntroSeen: boolean }).walletIntroSeen).toBe(true);
+    expect((await store.getAccount('acc'))?.walletIntroSeen).toBe(true);
+    const seenLogs = parsedEvents(warn)
+      .slice(before)
+      .filter((e) => e['event'] === 'account.wallet_intro.seen');
+    expect(seenLogs).toHaveLength(0);
+  });
+
+  it('includes walletIntroSeen true on GET /me after the POST', async () => {
+    const store = await seededStore();
+    const app = mount(store);
+    await app.request('/me/wallet-intro-seen', { method: 'POST', headers: AUTH });
+    const res = await app.request('/me', { headers: AUTH });
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as { walletIntroSeen: boolean }).walletIntroSeen).toBe(true);
+  });
+
+  it('does not clear walletIntroSeen when setting a name', async () => {
+    const store = await seededStore();
+    const app = mount(store);
+    await app.request('/me/wallet-intro-seen', { method: 'POST', headers: AUTH });
+    const res = await app.request('/me/name', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ name: 'Ada' }),
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { name: string; walletIntroSeen: boolean };
+    expect(body.name).toBe('Ada');
+    expect(body.walletIntroSeen).toBe(true);
+    expect((await store.getAccount('acc'))?.walletIntroSeen).toBe(true);
+  });
+
+  it('does not clear walletIntroSeen when a stale snapshot is written', async () => {
+    const store = await seededStore();
+    const stale = await store.getAccount('acc');
+    await mount(store).request('/me/wallet-intro-seen', { method: 'POST', headers: AUTH });
+    await store.updateAccount({ ...stale!, name: 'Stale' });
+    const stored = await store.getAccount('acc');
+    expect(stored?.name).toBe('Stale');
+    expect(stored?.walletIntroSeen).toBe(true);
+  });
+});
+
+describe('GET /me hadExternalWallet', () => {
+  it('is false when the account has no stored external payout address', async () => {
+    const store = await seededStore();
+    const res = await mount(store).request('/me', { headers: AUTH });
+    expect(((await res.json()) as { hadExternalWallet: boolean }).hadExternalWallet).toBe(false);
+  });
+
+  it('is true when the account has a stored external payout address', async () => {
+    const store = await seededStore({ hadExternalWallet: true });
+    const res = await mount(store).request('/me', { headers: AUTH });
+    expect(((await res.json()) as { hadExternalWallet: boolean }).hadExternalWallet).toBe(true);
+  });
+
+  it('stays true when the account is written', async () => {
+    const store = await seededStore({ hadExternalWallet: true });
+    const res = await mount(store).request('/me/name', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ name: 'Ada' }),
+    });
+    expect(((await res.json()) as { hadExternalWallet: boolean }).hadExternalWallet).toBe(true);
+    expect((await store.getAccount('acc'))?.hadExternalWallet).toBe(true);
   });
 });
 

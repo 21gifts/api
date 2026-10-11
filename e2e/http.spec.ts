@@ -580,6 +580,28 @@ test('POST /me/forum-laws-dismissed without bearer is 401', async ({ request }) 
   expect(res.status()).toBe(401);
 });
 
+test('POST /me/wallet-intro-seen without bearer is 401', async ({ request }) => {
+  const res = await request.post('/me/wallet-intro-seen');
+  expect(res.status()).toBe(401);
+});
+
+test('POST /me/wallet-intro-seen sets walletIntroSeen once for a member', async ({ request }) => {
+  const headers = await memberSession(request);
+  const before = await request.get('/me', { headers });
+  expect(before.status()).toBe(200);
+  const fresh = (await before.json()) as { walletIntroSeen: boolean; hadExternalWallet: boolean };
+  expect(fresh.walletIntroSeen).toBe(false);
+  expect(fresh.hadExternalWallet).toBe(false);
+  const first = await request.post('/me/wallet-intro-seen', { headers });
+  expect(first.status()).toBe(200);
+  expect(((await first.json()) as { walletIntroSeen: boolean }).walletIntroSeen).toBe(true);
+  const second = await request.post('/me/wallet-intro-seen', { headers });
+  expect(second.status()).toBe(200);
+  expect(((await second.json()) as { walletIntroSeen: boolean }).walletIntroSeen).toBe(true);
+  const after = await request.get('/me', { headers });
+  expect(((await after.json()) as { walletIntroSeen: boolean }).walletIntroSeen).toBe(true);
+});
+
 test('POST /me/notification-level without bearer is 401', async ({ request }) => {
   const res = await request.post('/me/notification-level');
   expect(res.status()).toBe(401);

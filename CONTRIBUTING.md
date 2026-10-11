@@ -37,7 +37,7 @@ api/
 │   │   ├── info.ts           # GET /info
 │   │   ├── brand.ts          # GET /favicon.ico, /favicon.svg, /apple-touch-icon.png
 │   │   ├── auth.ts           # Passkey: /auth/passkey/register|authenticate|replace begin/finish
-│   │   ├── me.ts             # GET /me; GET /me/activity; PUT /me/about; GET /me/about/photo; POST /me/wallet-backup-seen; PUT /me/wallet (when LNURL_SERVER_URL and PUBLIC_BASE_URL resolve); POST /me/setup/skip; POST /me/name; POST /me/username; POST /me/location; POST /me/forum-laws-dismissed; POST /me/notification-level; POST /me/heart-notifications; POST /me/amount-unit; POST /me/locale; POST /me/fiat; POST /me/rules-agreement
+│   │   ├── me.ts             # GET /me; GET /me/activity; PUT /me/about; GET /me/about/photo; POST /me/wallet-backup-seen; PUT /me/wallet (when LNURL_SERVER_URL and PUBLIC_BASE_URL resolve); POST /me/setup/skip; POST /me/name; POST /me/username; POST /me/location; POST /me/forum-laws-dismissed; POST /me/wallet-intro-seen; POST /me/notification-level; POST /me/heart-notifications; POST /me/amount-unit; POST /me/locale; POST /me/fiat; POST /me/rules-agreement
 │   │   ├── pictures.ts       # GET/PUT /pictures/me; public GET /pictures/:accountId.jpg|.png|.webp (round profile photo; not the About me photo)
 │   │   ├── banner.ts         # GET/PUT /banners/me; public GET /banners/:accountId.jpg|.png|.webp (wide image; not the About me photo)
 │   │   ├── members.ts        # GET /members/:accountId (Bearer; live identity + profile note + counts + trust + fundingReviewedAt); GET /members/:accountId/activity; GET /members/:accountId/posts; GET /members/:accountId/replies

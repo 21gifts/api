@@ -84,7 +84,8 @@ After name/skip, username, and wallet/skip,
 the app records living-room rules agreement via `POST /me/rules-agreement`.
 `GET /me` carries `setup` (wizard; skip counts as done for name and
 the receiving wallet, not username), `missing` (facts; skip does
-not; `lightning-address` stays until the wallet is verified), `walletRequired`, `walletBackupSeenAt`, and `rulesAgreedAt` (epoch
+not; `lightning-address` stays until the wallet is verified), `walletRequired`, `walletBackupSeenAt`, `walletIntroSeen` (set once by
+`POST /me/wallet-intro-seen`), `hadExternalWallet` (read-only), and `rulesAgreedAt` (epoch
 ms of the first agreement, or `null`).
 
 No email, no password. Losing the passkey (and platform sync) loses the
@@ -94,7 +95,7 @@ HTTP cited: `/auth/passkey/register/begin`, `/auth/passkey/register/finish`,
 `/auth/passkey/authenticate/begin`, `/auth/passkey/authenticate/finish`,
 `/auth/passkey/replace/begin`, `/auth/passkey/replace/finish`,
 `/auth/passkey/seed/begin`, `/auth/passkey/seed/finish`,
-`/me`, `/me/wallet-backup-seen`, `/me/setup/skip`, `/me/name`, `/me/username`,
+`/me`, `/me/wallet-backup-seen`, `/me/wallet-intro-seen`, `/me/setup/skip`, `/me/name`, `/me/username`,
 `/me/rules-agreement`.
 
 ---

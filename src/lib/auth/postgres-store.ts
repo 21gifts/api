@@ -34,6 +34,8 @@ interface AccountRow {
   name: string | null;
   location: string | null;
   forum_laws_dismissed: boolean;
+  wallet_intro_seen?: boolean | null;
+  had_external_wallet?: boolean | null;
   view_key: string | null;
   created_at: Date | string;
   rules_agreed_at: Date | string | null;
@@ -58,7 +60,7 @@ interface AccountRow {
   notify_hearts?: boolean | null;
 }
 
-const ACCOUNT_SELECT_COLUMNS = `id, linking_key, role, name, forum_laws_dismissed, view_key, created_at, rules_agreed_at, is_platform, name_skipped_at, lightning_address_skipped_at, profile_message_id, location, notification_level, username, session_refused, nostr_kek_id, nostr_key_custody, nostr_key_created_at, wallet_required, wallet_backup_seen_at, amount_unit, locale, fiat, staff_tag, spark_pubkey, spark_pubkey_verified_at, notify_hearts`;
+const ACCOUNT_SELECT_COLUMNS = `id, linking_key, role, name, forum_laws_dismissed, view_key, created_at, rules_agreed_at, is_platform, name_skipped_at, lightning_address_skipped_at, profile_message_id, location, notification_level, username, session_refused, nostr_kek_id, nostr_key_custody, nostr_key_created_at, wallet_required, wallet_backup_seen_at, amount_unit, locale, fiat, staff_tag, spark_pubkey, spark_pubkey_verified_at, notify_hearts, wallet_intro_seen, (lightning_address IS NOT NULL AND btrim(lightning_address) <> '') AS had_external_wallet`;
 
 /** Escape `\`, `%`, and `_` so they are LIKE literals. Does not append `%`. */
 function mentionLikePattern(prefix: string): string {
@@ -126,8 +128,8 @@ export class PostgresAuthStore implements AuthStore {
         );
       }
       await this.#sql.execute(
-        `INSERT INTO account (id, linking_key, role, name, forum_laws_dismissed, created_at, view_key, rules_agreed_at, is_platform, name_skipped_at, lightning_address_skipped_at, profile_message_id, location, notification_level, username, session_refused, wallet_required, wallet_backup_seen_at, amount_unit, notify_hearts)
-         VALUES ($1, $2, $3, $4, $5, to_timestamp($6::double precision / 1000.0), $7, to_timestamp($8::double precision / 1000.0), $9, to_timestamp($10::double precision / 1000.0), to_timestamp($11::double precision / 1000.0), $12, $13, $14, $15, $16, $17, to_timestamp($18::double precision / 1000.0), $19, $20)
+        `INSERT INTO account (id, linking_key, role, name, forum_laws_dismissed, created_at, view_key, rules_agreed_at, is_platform, name_skipped_at, lightning_address_skipped_at, profile_message_id, location, notification_level, username, session_refused, wallet_required, wallet_backup_seen_at, amount_unit, notify_hearts, wallet_intro_seen)
+         VALUES ($1, $2, $3, $4, $5, to_timestamp($6::double precision / 1000.0), $7, to_timestamp($8::double precision / 1000.0), $9, to_timestamp($10::double precision / 1000.0), to_timestamp($11::double precision / 1000.0), $12, $13, $14, $15, $16, $17, to_timestamp($18::double precision / 1000.0), $19, $20, $21)
          ON CONFLICT (linking_key) DO NOTHING`,
         [
           account.id,
@@ -150,6 +152,7 @@ export class PostgresAuthStore implements AuthStore {
           account.walletBackupSeenAt ?? null,
           account.amountUnit ?? 'btc',
           account.notifyHearts !== false,
+          account.walletIntroSeen === true,
         ],
       );
     } catch (error: unknown) {
@@ -438,7 +441,8 @@ export class PostgresAuthStore implements AuthStore {
              notification_level = $14,
              username = CASE WHEN spark_pubkey_verified_at IS NULL THEN $15 ELSE username END,
              amount_unit = $16,
-             notify_hearts = $17
+             notify_hearts = $17,
+             wallet_intro_seen = wallet_intro_seen OR $18
          WHERE id = $1
            AND (
              $2::text IS NULL
@@ -465,6 +469,7 @@ export class PostgresAuthStore implements AuthStore {
           account.username ?? null,
           account.amountUnit ?? 'btc',
           account.notifyHearts !== false,
+          account.walletIntroSeen === true,
         ],
       );
     } catch (error: unknown) {
@@ -1042,6 +1047,8 @@ function mapAccount(row: AccountRow): Account | undefined {
     name: row.name,
     location: row.location ?? null,
     forumLawsDismissed: row.forum_laws_dismissed,
+    walletIntroSeen: row.wallet_intro_seen === true,
+    hadExternalWallet: row.had_external_wallet === true,
     viewKey: row.view_key,
     createdAt: epochMs(row.created_at),
     rulesAgreedAt: row.rules_agreed_at === null ? null : epochMs(row.rules_agreed_at),
