@@ -5,10 +5,10 @@ Status: **specified, not implemented**. Decided 2026-10-01. Names fixed
 The names in this document are the contract. The routes are not mounted,
 and `SPEC.md` does not list them. Nothing here changes runtime behaviour.
 
-A payer may settle a shop payment in USDT or USDC. The shop receives
-bitcoin on its own Spark wallet and does not hold either stablecoin. The
-member sees an ordinary bitcoin payment. Gifts, the till, and loans stay
-in satoshis.
+A payer may settle a shop payment in USDT or USDC. Orchestra pays the
+BOLT11 this service mints for those sats on the shop's verified Lightning
+address. The shop does not hold either stablecoin. The member sees an
+ordinary bitcoin payment. Gifts, the till, and loans stay in satoshis.
 
 ## Terms
 
@@ -30,54 +30,15 @@ that was still valid. The sat amount stays due. The wallet is told the
 OpenCryptoPay payment succeeded.
 
 **Paid** means the payment has settled once. That is the Spark invoice
-for these sats finalized at the coordinator, the BOLT11 for these sats
-confirmed by LUD-21 verify, or Orchestra's delivery of this sat count
-to the stored Spark address. The first of the three records paid.
-Acceptance does not record paid.
+for these sats finalized at the coordinator, or the BOLT11 for these sats
+confirmed by LUD-21 verify. Orchestra pays that BOLT11. A direct Lightning
+payment of the same invoice is the same confirmation. The first
+confirmation records paid. Acceptance does not record paid.
 
 ## Names
 
 These names are the contract. Nothing in this section is mounted.
 `SPEC.md` lists a route only after the change that implements it.
-
-### Spark address
-
-`account.spark_address` is nullable text. The quote reads it. It is not
-derived from `spark_pubkey`, and the api does not encode a Spark address.
-A usable value decodes to that account's `spark_pubkey` and its protobuf
-has no field 2. Any other value is a missing address. Today's decoder
-returns that pubkey for an invoice as well. A missing memo does not mean
-field 2 was absent. The change that stores the column rejects a value
-that has field 2. It does not add an encoder.
-
-A missing address is the same as a missing Orchestra key. The pay link
-serves no stablecoin amount, and Lightning is unchanged.
-
-This payment does not write the column, and it does not ask the phone.
-The 12 words are not read. There is no new route whose purpose is to
-collect the address.
-
-`PUT /me/wallet` remains the only wallet write. The body gains an
-optional string `sparkAddress` beside `sparkPubkey`. On the first claim,
-a usable `sparkAddress` for that pubkey is stored, and a missing
-`sparkAddress` leaves the column null. A present value that is not usable
-is **400** `{ "error": "Expected a Spark address for this wallet" }` and
-the pubkey is not claimed. Once the wallet is connected, the same call
-stores a usable `sparkAddress` when `sparkPubkey` equals the stored key,
-and it does not replace that key. A body with no `sparkAddress` stays
-**409** `{ "error": "Wallet is already connected" }`. A different pubkey
-stays that same 409 and writes nothing. An open payment keeps the address
-copied at its creation.
-
-The app that connects the wallet sends `sparkAddress` on that same call.
-It reads the static Spark address of the wallet it connected. It does not
-ask the payer. This payment does not read the phone. The app as it is
-sends only `sparkPubkey` and does not read that address. The column then
-stays null, and the pay link serves no stablecoin amount.
-
-The owner account JSON includes `sparkAddress` when the column is stored,
-and omits it when null. No public pay response includes it. `recipient`
-has a name and no address.
 
 ### Identifiers
 
@@ -86,8 +47,9 @@ same shape as `pos_charge.id`. The stored form is lowercase hexadecimal,
 eight-four-four-four-twelve. Neither id has a prefix. `quote.payment` is
 not an amount. `quote.expiration` is UTC, millisecond precision, with a
 `Z` suffix, the same form `GET /pay/:username` uses for `expiresAt`. It
-is the expiry Orchestra returns for that quote. A quote for an open till
-charge also ends when the charge ends, if that is sooner.
+is the earlier of the expiry Orchestra returns for that quote and the
+expiry of the BOLT11 that quote names. A quote for an open till charge
+also ends when the charge ends, if that is sooner.
 
 The `quote` parameter uses that same form. A value that is not that form,
 compared case-insensitively, is an unknown quote.
@@ -139,10 +101,11 @@ unknown username or a shop with no verified receiving address is **404**
 `{ "error": "Not found" }`. CORS is the page's existing origin list, the
 same as `POST /pay/:username/invoice`, not `*`.
 
-The call writes a row only when the Orchestra key is configured,
-`account.spark_address` is usable, and Orchestra commits to this sat
-count on that address. Otherwise it writes nothing and returns **503**
-`{ "error": "Stablecoin payment is unavailable" }`.
+The call writes a row only when the Orchestra key is configured, this
+service can mint or reuse a BOLT11 for this sat count on the shop's
+verified Lightning address, and Orchestra's exact-out quote commits to
+that sat count on that invoice. Otherwise it writes nothing and returns
+**503** `{ "error": "Stablecoin payment is unavailable" }`.
 
 One pay link has one open amount. While a till charge is pending, the
 amount is that charge. The call returns the one payment for it, creating
@@ -173,8 +136,11 @@ references `account`. `amount_sats` is a whole sat count of at least 1.
 `status` is `open`, `accepted`, `paid`, or `ended`. `pos_charge_id` is
 nullable, unique, and references `pos_charge` when set. More than one
 null is allowed. At most one row per account has status `open`.
-`spark_address` is the usable address copied at creation. `created_at`
-is set.
+`bolt11` is the invoice this payment names. `payment_hash` is that
+invoice's payment hash. Both are set when the row is created. A
+replacement quote reuses them while the invoice is unpaid and unexpired.
+When that invoice has expired unpaid, both are replaced by a new invoice
+for the same sats. `created_at` is set.
 `accepted_at` is set only for `accepted` and `paid`. `paid_at` is set
 only for `paid`. `ended_at` is set only for `ended`. A payment moves
 from `accepted` to `ended` only when Orchestra reports that order
@@ -207,8 +173,14 @@ from a JSON number. `requestedAmount.amount` is the JSON number of that
 division. `requestedAmount.asset` is `BTC`. `minSendable` and
 `maxSendable` are both that sat count times 1000.
 
-The api does not invent a fee. The api does not invent a chain. Lightning
-`minFee` is the number 0.
+The api does not invent a gas price. The api does not invent a chain.
+Lightning `minFee` is the number 0.
+
+A stablecoin amount is the decimal string of `requiredAmountIn` divided
+by 10 to the power of that asset's decimals on that chain. The decimals
+are the ones the route catalog names for that chain and asset. The string
+has no exponent. It is built from the integer, not from a JSON number.
+It is not the sat amount.
 
 ### Errors on the pay link
 
@@ -279,12 +251,12 @@ What the provider does with the coins is not part of the standard. Two
 providers can both follow it and settle differently. The provider in the
 published examples holds the payer's coin, settles its merchant in fiat,
 and answers 404 when no amount is waiting. 21.gifts does not. Here the
-stablecoin is paid to Orchestra (Flashnet), and Orchestra delivers
-bitcoin to the shop's stored Spark address.
+stablecoin is paid to Orchestra (Flashnet), and Orchestra pays the BOLT11
+this service minted for those sats.
 
 Spark, in those examples, is a way for the payer to send bitcoin. That
-method is not offered. Here Spark is only the address where the shop
-receives bitcoin after the swap.
+method is not offered. This service does not deliver bitcoin to a Spark
+address.
 
 ## Sticker
 
@@ -331,7 +303,8 @@ The page shows the quote's expiry. When a quote lapses before it is
 accepted, the page requests the next quote for the same sats.
 
 The page keeps the Lightning invoice QR it already shows. That QR is
-the BOLT11 for these sats. It is mounted only when the invoice exists and
+the BOLT11 for these sats. It is the invoice Orchestra pays. The page
+does not mint a second one. It is mounted only when the invoice exists and
 the visitor is not a smartphone. A smartphone is an iPhone, an iPod, or
 an Android user agent that also contains `Mobile`. A tablet is not a
 smartphone. The window width does not decide it. On a smartphone the page
@@ -401,18 +374,22 @@ For a known amount the pay request contains:
 | `transferAmounts`            | one entry per method, Lightning first                |
 
 A `transferAmounts` entry has `method`, `minFee`, `assets`, and
-`available`. `assets` holds `{ "asset", "amount" }`. `amount` is the
-decimal string named above. Lightning's method is `Lightning`, its asset
-is `BTC`, its `minFee` is the number 0, and `available` is true. Each
-other method is one chain Orchestra quoted. Its assets are `USDT`,
-`USDC`, or both. No other asset is listed. `minFee` is the number
-Orchestra named for that chain. The api does not invent one and does not
-change its unit. The standard reads an EVM `minFee` as a gas price in wei
-and a Bitcoin `minFee` as sat/vB. This service copies that number and does
-not rescale it. A chain Orchestra did not quote is absent. A chain whose
-quote names no minimum fee is absent. A method name Tether Wallet for
-Android 1.11.0 (134) does not recognise is absent. An empty method name
-is absent. A listed method has `available` true.
+`available`. `assets` holds `{ "asset", "amount" }`. Lightning's amount
+is the bitcoin quantity named above. A stablecoin amount is the decimal
+string named above. Lightning's method is `Lightning`, its asset is
+`BTC`, its `minFee` is the number 0, and `available` is true. Each other
+method is one chain Orchestra quoted. Its assets are `USDT`, `USDC`, or
+both. No other asset is listed. `minFee` is the number Orchestra named
+for that chain, when the quote names one. The api does not invent a gas
+price and does not change the unit of a fee the quote names. The standard
+reads an EVM `minFee` as a gas price in wei and a Bitcoin `minFee` as
+sat/vB. This service copies a named number and does not rescale it.
+Orchestra's quote names no gas price. A chain whose quote names no
+minimum fee has `minFee` 0. The wallet pays its own network fee. The
+Tether check fails if that build will not send a method whose `minFee`
+is 0. A chain Orchestra did not quote is absent. A method name Tether
+Wallet for Android 1.11.0 (134) does not recognise is absent. An empty
+method name is absent. A listed method has `available` true.
 
 `recipient` has the shop name and no other field. The pay request does
 not include `id`, `externalId`, `mode`, `route`, or `possibleStandards`.
@@ -426,13 +403,17 @@ The wallet calls `callback` with a GET and the query parameters `quote`,
 The response is the transaction detail the standard defines for that
 method, and it expires with the quote. Lightning returns the BOLT11
 invoice in `pr`. A `pr` that is not an invoice is not a Lightning
-detail. A stablecoin returns a `uri` whose destination is Orchestra's. 21.gifts
-does not hold it. Orchestra's quote does not contain that URI. For an
-EVM source the quote can carry an unsigned transaction: chain id,
-destination, data, and value. The `uri` is the EIP-681 URI built from
-those fields. An EVM `uri` is EIP-681.
-An EVM `uri` Tether Wallet for Android 1.11.0 (134) cannot route as
-EIP-681 fails the check in Tether Wallet.
+detail. A stablecoin returns a `uri` whose destination is Orchestra's.
+21.gifts does not hold it. Orchestra's quote does not contain that URI.
+The quote sets `includeCalldata` so an EVM source can return an unsigned
+transaction: chain id, destination, data, and value. For an exact-out
+quote that transaction encodes the source amount, not the sat count. The
+`uri` is the EIP-681 URI built from those fields. An EVM `uri` is
+EIP-681. A source that returns no instruction this service can express
+as that `uri` is absent. This service does not invent a URI for a chain
+that returns only a deposit address. An EVM `uri` Tether Wallet for
+Android 1.11.0 (134) cannot route as EIP-681 fails the check in Tether
+Wallet.
 
 The same detail is returned by one GET that sets `method` and `asset` on
 the pay link while its payment is still open. The detail belongs to the
@@ -451,8 +432,9 @@ BinancePay are not offered, and their parameters are not accepted. The
 paths are `GET /lnurlp/cb/:username` and `GET /lnurlp/tx/:username`. They
 are not `…/lnurlp/<username>/invoice`. Lightning sends no proof. A
 Lightning wallet that calls `callback` with the fixed amount still
-receives the BOLT11 invoice in `pr`. That payment does not go through
-Orchestra.
+receives the BOLT11 invoice in `pr`. That call does not create an
+Orchestra quote. The invoice it returns is the one the stablecoin quote
+names.
 
 Tether Wallet for Android 1.11.0 (134) builds its proof request from
 `callback`. Those two paths are not stored as strings in that build. The
@@ -472,40 +454,51 @@ Any other transfer is an error. Nothing is due, and the shop is not paid.
 The api creates the quote. The cashier's phone does not, and the member's
 phone does not. The 12 words are not read.
 
-The quote is for the fixed sat amount. It names the shop's Spark address
-as the place bitcoin is delivered. That address is the one stored for the
-account. It is read from the database. It is not derived from
-`spark_pubkey`.
+The quote is for the fixed sat amount. This service mints one BOLT11 for
+those sats on the shop's verified Lightning address, the same way
+`POST /pay/:username/invoice` already does. Orchestra's destination is
+that invoice. The invoice amount is that sat count. The quote is
+exact-out. The amount sent to Orchestra is the integer string of that
+sat count, and slippage is 0 basis points, because the invoice amount
+cannot move. The quote commits only when `targetAmountOut` is that same
+count. The stablecoin figure is `requiredAmountIn` for that chain and
+asset.
 
-Today the account stores `spark_pubkey` and `spark_pubkey_verified_at`
-and does not store `spark_address`. The change that adds
-`account.spark_address` writes a usable value, as named above. A missing
-address is treated as a missing Orchestra key: the pay link serves no
-stablecoin amount, and Lightning is unchanged. The payment does not ask
-the phone for the address.
+The page's invoice QR is this invoice. `POST /pay/:username/invoice`,
+while this payment is open for these sats, returns this invoice and does
+not mint another while it is unpaid and unexpired. A replacement quote
+reuses that invoice. When it has expired unpaid, this service mints a
+new invoice for the same sats and the new quote names that invoice.
+After Orchestra has accepted, this service does not mint another invoice
+for these sats. An invoice that is already paid is not named on a quote.
 
 The stablecoin for the named chain and asset is paid to Orchestra.
-21.gifts does not receive it and does not hold it. Orchestra delivers
-the bitcoin to the stored Spark address. 21.gifts does not hold that
-bitcoin. The api does not ask Orchestra to pay the Lightning invoice,
-and it does not publish a USDT or USDC address of its own.
+21.gifts does not receive it and does not hold it. Orchestra pays the
+invoice. The shop receives the bitcoin on its verified Lightning address
+when that invoice is confirmed. 21.gifts does not hold that bitcoin
+before it arrives. This service does not deliver to a Spark address, and
+it does not publish a USDT or USDC address of its own.
 
-The api learns the delivery from Orchestra, not from a phone.
+The api learns that the invoice was paid from the LUD-21 verify it
+already uses, not from a phone.
 
-A stablecoin row is served only when Orchestra commits to delivering
-this sat count to the stored Spark address. Exact-out onto Spark is
-rejected. Fixed delivery onto Spark is switched off. The estimate that
-remains does not commit to the sat count. It names no gas price and no
-payment URI. That estimate is not a quote this pay link serves. This
-service does not ask Orchestra to pay the Lightning invoice, and it does
-not hold a stablecoin refund address. With no committed quote, the pay
-link keeps today's Lightning request.
+A stablecoin row is served only when that exact-out quote commits to
+this sat count on that invoice. Exact-out onto a Spark address is not
+this settlement. An estimate that does not commit to the sat count is
+not a quote this pay link serves. Orchestra requires a source-chain
+refund address for an exact-out quote and for a Lightning destination.
+This service does not hold one, and it does not send one. The payer's
+address is not known when the quote is created. A quote Orchestra does
+not return is not served. A refund goes where Orchestra sends it. This
+service does not receive it and does not add a refund wallet. With no
+committed quote, the pay link keeps today's Lightning request.
 
-A chain whose quote names no gas price is absent. A deposit Orchestra
-settles for fewer sats than this count does not pay this payment. A
-refund or a failed order moves the payment from `accepted` to `ended`
-and records nothing paid. Silence after acceptance does not free the
-pay link and does not record paid.
+A deposit Orchestra settles for fewer sats than this count does not pay
+this payment. A refund or a failed order moves the payment from
+`accepted` to `ended` and records nothing paid. Silence after acceptance
+does not free the pay link and does not record paid. A deposit against
+a quote whose invoice is already paid is not a second sale. This service
+does not take it back.
 
 A quote that lapses before acceptance is replaced by a quote for the
 same sats. An unexpired quote is returned as stored. A later fetch does
@@ -525,20 +518,21 @@ amount. Lightning is unchanged.
 
 ## Paid
 
-Paid is recorded once, on the first of three confirmations: the Spark
+Paid is recorded once, on the first of two confirmations: the Spark
 invoice already returned for these sats, finalized at the coordinator;
-the BOLT11 already returned for these sats, confirmed by LUD-21 verify;
-or Orchestra's delivery of this sat count to the stored Spark address.
-A success response, a proof, and the payment page do not record it.
-Acceptance does not record it.
+or the BOLT11 already returned for these sats, confirmed by LUD-21
+verify. Orchestra paying that BOLT11 is that confirmation, not a third
+one. A direct Lightning payment of the same invoice is the same
+confirmation. A success response, a proof, and the payment page do not
+record it. Acceptance does not record it.
 
-Until one of those three, too little, too much, the wrong chain, a stale
+Until one of those two, too little, too much, the wrong chain, a stale
 amount, or a transfer with no valid quote leaves the payment unpaid. A
 stale amount is not treated as a different number of sats. After
 Orchestra has accepted, the page does not request another invoice for
 these sats. After the invoice is confirmed, the pay link offers no
-stablecoin amount. Coins already in flight on the other rail are not a
-second sale, and this service does not take them back.
+stablecoin amount. The other invoice, when one was already handed out,
+is not a second sale, and this service does not take those coins back.
 
 The member's app shows the record as an ordinary incoming bitcoin
 payment of those sats. It shows no USDT or USDC balance and no
@@ -557,22 +551,21 @@ minutes stay as they are.
 receiving address's minimum and maximum, for an account with a username
 and a verified receiving address. One unexpired pending charge. Five
 minutes. While it is pending, both Lightning sendable bounds become that
-sat amount in millisats. Metadata stays as it is. When the Spark address
-is usable, the Orchestra key is configured, and Orchestra commits to
-those sats on that address, the stablecoin amounts for those same sats
-are added beside that pin, and `callback` is `/lnurlp/cb/<username>`.
-Otherwise the callback stays `/lnurlp/<username>/invoice`.
+sat amount in millisats. Metadata stays as it is. When the Orchestra key
+is configured and Orchestra commits to those sats on the invoice for
+this charge, the stablecoin amounts for those same sats are added beside
+that pin, and `callback` is `/lnurlp/cb/<username>`. Otherwise the
+callback stays `/lnurlp/<username>/invoice`.
 
 A lapsed quote is replaced only while the charge is open, and only for
 the same sats.
 
 The charge is paid on the first confirmation: the Spark invoice
-finalized at the coordinator, a BOLT11 the api handed out confirmed by
-LUD-21 verify, or Orchestra's delivery of the agreed sats. One charge
-is paid once. The first two stay on the watcher that already exists. A
-page payment with no charge is paid by those same three events, for the
-invoice this payment issued and for this delivery. It is not left open
-after that invoice is confirmed.
+finalized at the coordinator, or a BOLT11 the api handed out confirmed
+by LUD-21 verify. Orchestra pays that BOLT11. One charge is paid once.
+Both stay on the watchers that already exist. A page payment with no
+charge is paid by those same two events, for the invoice this payment
+issued. It is not left open after that invoice is confirmed.
 
 Sats that arrive after the five minutes still pay that charge when the
 transfer was accepted against a quote that was valid for it. A transfer
@@ -694,7 +687,8 @@ that quote has not expired fails the check.
 fails the check.
 
 The balance, spend limit, and ramp results above do not fail the check.
-The test does not record paid. Paid stays the delivery of the sats.
+The test does not record paid. Paid stays confirmation of the invoice
+for those sats.
 
 Three facts stay in the routine, and this document does not copy them
 out:
@@ -714,11 +708,11 @@ then the test names 1.11.0 (134).
 
 ## Unchanged
 
-Lightning settlement is unchanged. The pay link still resolves to the
-verified in-app wallet. A Lightning payment of the same sats does not go
-through Orchestra.
+A payer who pays the BOLT11 pays the shop's verified Lightning address
+directly. That payment does not pass through Orchestra. The pay link
+still resolves to that address.
 
 A gift is still sats to the member's receiving address. Loans are
 unchanged.
 
-The 12 words stay on the phone.
+The 12 words stay on the phone. This service does not hold USDT or USDC.
