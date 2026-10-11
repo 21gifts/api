@@ -1086,6 +1086,123 @@ describe('LNURL server wiring', () => {
     }
   }
 
+  async function repayInvoiceApp(
+    invoiceRateCaps: { burstCap: number; hourCap: number } | null,
+  ): Promise<{
+    app: ReturnType<typeof createApp>;
+    token: string;
+    noteIds: [string, string];
+  }> {
+    const now = (): number => Date.UTC(2026, 8, 28, 12);
+    const fundedAt = new Date(Date.UTC(2026, 8, 26, 12));
+    const kek = parseNostrKek('11'.repeat(32));
+    const token = invoiceRateCaps === null ? 'repay-cap-default' : 'repay-cap-raised';
+    const noteIds: [string, string] =
+      invoiceRateCaps === null
+        ? ['66666666-6666-4666-8666-666666666661', '66666666-6666-4666-8666-666666666662']
+        : ['77777777-7777-4777-8777-777777777771', '77777777-7777-4777-8777-777777777772'];
+    const authStore = new InMemoryAuthStore();
+    await authStore.createAccount({
+      id: token,
+      linkingKey: `02${'ab'.repeat(32)}`,
+      role: 'verified',
+      name: 'Ada',
+      username: 'ada',
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: 'a'.repeat(64),
+      createdAt: 1,
+      rulesAgreedAt: 1,
+    });
+    await authStore.createSession({ token, accountId: token, createdAt: now() });
+    await createWalletAccount(authStore, 'repay-cap-giver', 'bea');
+    await ensureAccountNostrKey(authStore, token, kek);
+    await ensureAccountNostrKey(authStore, 'repay-cap-giver', kek);
+    const messageStore = new InMemoryMessageStore();
+    let invoicePr = 0;
+    const fetchImpl = async (input: string | URL | Request): Promise<Response> => {
+      const url = String(input);
+      if (url.includes('/.well-known/lnurlp/')) {
+        return new Response(
+          JSON.stringify({
+            callback: `${LNURL_SERVER.publicBaseUrl}/lnurlp/bea/invoice`,
+            minSendable: 1000,
+            maxSendable: 10_000_000_000,
+            allowsNostr: true,
+            nostrPubkey: 'aa'.repeat(32),
+          }),
+          { headers: { 'content-type': 'application/json' } },
+        );
+      }
+      invoicePr += 1;
+      return new Response(JSON.stringify({ pr: `lnbc21n1repay${invoicePr}` }), {
+        headers: { 'content-type': 'application/json' },
+      });
+    };
+    for (const [index, noteId] of noteIds.entries()) {
+      await messageStore.create({
+        id: noteId,
+        accountId: token,
+        name: 'Ada',
+        text: 'need a ticket',
+        createdAt: new Date(Date.UTC(2026, 8, 28, 12)),
+        hasPhoto: false,
+        ...unsignedNostrDefaults(),
+        eventId: (index === 0 ? 'e1' : 'e2').repeat(32),
+        sats: 21,
+        goalSats: 21,
+        goalRepayable: true,
+        goalTermDays: 1,
+        goalFundedAt: fundedAt,
+      });
+      const receiptId = `r-cap-${index + 1}`;
+      await messageStore.recordZapReceipt(receiptId, noteId, 21, null);
+      await messageStore.updateZapReceiptGift(receiptId, { payerAccountId: 'repay-cap-giver' });
+    }
+    const app = createApp({
+      env: {
+        LNURL_SERVER_URL: LNURL_SERVER.baseUrl,
+        PUBLIC_BASE_URL: LNURL_SERVER.publicBaseUrl,
+      },
+      authStore,
+      messageStore,
+      nostrKek: kek,
+      now,
+      fetchImpl,
+      invoiceRateCaps,
+    });
+    return { app, token, noteIds };
+  }
+
+  async function postRepaymentInvoice(
+    app: ReturnType<typeof createApp>,
+    token: string,
+    noteId: string,
+  ): Promise<Response> {
+    const bolt11 = await import('@/lib/bolt11');
+    const nip57 = vi.spyOn(bolt11, 'isNip57Invoice').mockReturnValue(true);
+    let hash = 0;
+    const inspected = vi.spyOn(bolt11, 'inspectBolt11').mockImplementation(() => {
+      hash += 1;
+      return {
+        paymentHash: hash.toString(16).padStart(64, '0'),
+        amountMsat: 21_000,
+        description: null,
+        descriptionHash: 'cd'.repeat(32),
+        expirySeconds: 3600,
+      };
+    });
+    try {
+      return await app.request(`/messages/${noteId}/repayment`, {
+        method: 'POST',
+        headers: { authorization: `Bearer ${token}` },
+      });
+    } finally {
+      nip57.mockRestore();
+      inspected.mockRestore();
+    }
+  }
+
   it('rate-limits gift invoices at the default caps', async () => {
     const { app, token, noteId } = await giftInvoiceApp(null);
     expect(await postGiftInvoice(app, token, noteId)).toBe(200);
@@ -1099,6 +1216,26 @@ describe('LNURL server wiring', () => {
     const { app, token, noteId } = await giftInvoiceApp({ burstCap: 5, hourCap: 20 });
     expect(await postGiftInvoice(app, token, noteId)).toBe(200);
     expect(await postGiftInvoice(app, token, noteId)).toBe(200);
+    expect(warn).toHaveBeenCalledWith('test invoice rate caps burst=5/10s hour=20/h');
+  });
+
+  it('rate-limits repayment invoices at the default caps', async () => {
+    const { app, token, noteIds } = await repayInvoiceApp(null);
+    const first = await postRepaymentInvoice(app, token, noteIds[0]);
+    expect(first.status).toBe(200);
+    const second = await postRepaymentInvoice(app, token, noteIds[1]);
+    expect(second.status).toBe(429);
+    expect(await second.json()).toEqual({ error: 'Too many payments' });
+    expect(second.headers.get('Retry-After')).toBe('10');
+    expect(
+      warn.mock.calls.some((call) => String(call[0]).startsWith('test invoice rate caps')),
+    ).toBe(false);
+  });
+
+  it('raises repayment invoice caps when invoiceRateCaps is set', async () => {
+    const { app, token, noteIds } = await repayInvoiceApp({ burstCap: 5, hourCap: 20 });
+    expect((await postRepaymentInvoice(app, token, noteIds[0])).status).toBe(200);
+    expect((await postRepaymentInvoice(app, token, noteIds[1])).status).toBe(200);
     expect(warn).toHaveBeenCalledWith('test invoice rate caps burst=5/10s hour=20/h');
   });
 

@@ -1058,13 +1058,23 @@ function resetLoanDatabase() {
   writeState({ paid: [] });
 }
 
-function consolidateFunding() {
+/**
+ * When `required` is true, a failure fails the cycle; the cleanup path
+ * passes false and only warns.
+ *
+ * @param {boolean} [required]
+ */
+function consolidateFunding(required = false) {
   let result;
   try {
     result = sparkTry(['consolidate', 'funding']);
   } catch (error) {
     const message = error instanceof Error ? error.message : 'unknown error';
-    process.stderr.write(`warning: funding consolidation failed: ${lastLine(message)}\n`);
+    const line = lastLine(message);
+    if (required) {
+      fail(`funding consolidation failed: ${line}`);
+    }
+    process.stderr.write(`warning: funding consolidation failed: ${line}\n`);
     return;
   }
   if (result.ok) {
@@ -1074,19 +1084,70 @@ function consolidateFunding() {
     }
     return;
   }
-  process.stderr.write(`warning: funding consolidation failed: ${lastLine(result.error)}\n`);
+  const line = lastLine(result.error);
+  if (required) {
+    fail(`funding consolidation failed: ${line}`);
+  }
+  process.stderr.write(`warning: funding consolidation failed: ${line}\n`);
+}
+
+/** Pauses of 8s after a reported pay failure, before another invoice. */
+const FUNDING_SETTLE_POLLS = 3;
+
+/**
+ * Poll a reported payment. No pause when the gift is already covered.
+ *
+ * @param {{ role: string, sats: number }} giver
+ * @returns {number}
+ */
+function awaitFundingSettle(giver) {
+  let left = shortfall(giver);
+  for (let poll = 0; poll < FUNDING_SETTLE_POLLS && left > 0; poll += 1) {
+    spawnSync('sleep', ['8']);
+    left = shortfall(giver);
+  }
+  return left;
+}
+
+/**
+ * Pay one existing BOLT11 from funding. Success returns without sleeping.
+ * A reported failure retries that same invoice once, with a settle poll
+ * before the retry and again after it. This function never mints.
+ *
+ * @param {{ role: string, sats: number }} giver
+ * @param {string} request
+ * @returns {{ via: 'paid' | 'arrived' | 'short', left: number, error: string }}
+ */
+function settleFundingPayment(giver, request) {
+  let paid = sparkTry(['pay', 'funding', request]);
+  if (paid.ok) {
+    return { via: 'paid', left: shortfall(giver), error: '' };
+  }
+  let left = awaitFundingSettle(giver);
+  if (left <= 0) {
+    return { via: 'arrived', left, error: paid.error };
+  }
+  paid = sparkTry(['pay', 'funding', request]);
+  if (paid.ok) {
+    return { via: 'paid', left: shortfall(giver), error: '' };
+  }
+  left = awaitFundingSettle(giver);
+  if (left <= 0) {
+    return { via: 'arrived', left, error: paid.error };
+  }
+  return { via: 'short', left, error: paid.error };
 }
 
 /**
  * Pay one chunk from the funding wallet. The whole amount is tried first.
  * Spark often cannot select leaves for that exact size, so the next try is
- * the next smaller power of two. Zero means nothing moved. A payment whose
- * helper reports a failure can still arrive, so after each failure the
- * giver's balance is read again and what arrived counts as moved.
+ * the next smaller power of two.
  *
  * @param {{ role: string, sats: number }} giver
  * @param {number} left
- * @returns {number}
+ * @returns {{ moved: number, measured: number | null }}
+ *   moved is the sats this call accounts as sent (0 when none paid or arrived).
+ *   measured is settled.left when the settlement was paid, otherwise null.
  */
 function payFundingChunk(giver, left) {
   /** @type {number[]} */
@@ -1108,16 +1169,19 @@ function payFundingChunk(giver, left) {
     if (request === '') {
       continue;
     }
-    const paid = sparkTry(['pay', 'funding', request]);
-    if (paid.ok) {
-      return size;
+    const settled = settleFundingPayment(giver, request);
+    if (settled.via === 'paid') {
+      return { moved: size, measured: settled.left };
     }
-    const arrived = left - shortfall(giver);
-    if (arrived > 0) {
-      return arrived;
+    if (settled.via === 'arrived') {
+      const arrived = left - settled.left;
+      return { moved: arrived > 0 ? arrived : size, measured: null };
+    }
+    if (settled.via === 'short' && settled.left < left) {
+      return { moved: left - settled.left, measured: settled.left };
     }
   }
-  return 0;
+  return { moved: 0, measured: null };
 }
 
 /**
@@ -1127,37 +1191,47 @@ function payFundingChunk(giver, left) {
 function fundGiverWallets() {
   for (const giver of GIVERS) {
     let left = shortfall(giver);
+    if (left < 0) {
+      fail(`${giver.role} balance is ${readBalance(giver.role)}, need ${giver.sats}`);
+    }
     if (left > 0) {
       const wanted = left;
-      let invoice = spark(['invoice', giver.role, String(left)]).trim();
-      let paid = sparkTry(['pay', 'funding', invoice]);
-      if (!paid.ok) {
-        // A payment can complete even when its helper reports a failure, so
-        // only the shortfall that is still missing is paid again.
-        left = shortfall(giver);
-        if (left > 0) {
-          sparkTry(['consolidate', 'funding']);
-          invoice = spark(['invoice', giver.role, String(left)]).trim();
-          paid = sparkTry(['pay', 'funding', invoice]);
-          if (!paid.ok) {
-            left = shortfall(giver);
-          }
-        }
+      const invoice = spark(['invoice', giver.role, String(left)]).trim();
+      if (invoice === '') {
+        fail(`empty invoice for ${giver.role}`);
       }
-      if (paid.ok) {
+      const first = settleFundingPayment(giver, invoice);
+      if (first.via === 'paid') {
         process.stdout.write(`funded ${giver.role} ${wanted} in one payment\n`);
-      } else if (left <= 0) {
+      } else if (first.via === 'arrived') {
         process.stdout.write(`funded ${giver.role} ${wanted}; the reported failure had arrived\n`);
       } else {
-        process.stderr.write(
-          `funding could not pay ${left} in one payment: ${lastLine(paid.error)}; splitting\n`,
-        );
-        for (left = shortfall(giver); left > 0; left = shortfall(giver)) {
-          const size = payFundingChunk(giver, left);
-          if (size === 0) {
+        left = first.left;
+        if (left > 0) {
+          sparkTry(['consolidate', 'funding']);
+          const remainder = spark(['invoice', giver.role, String(left)]).trim();
+          if (remainder === '') {
+            fail(`empty invoice for ${giver.role}`);
+          }
+          const second = settleFundingPayment(giver, remainder);
+          if (second.via === 'short') {
+            left = second.left;
+          } else {
+            left = 0;
+            process.stdout.write(`funded ${giver.role} ${wanted} after the missing remainder\n`);
+          }
+        }
+        while (left > 0) {
+          const chunk = payFundingChunk(giver, left);
+          if (chunk.moved === 0) {
             fail(`could not fund ${giver.role}, ${left} still to send`);
           }
-          process.stdout.write(`split ${giver.role} ${size}\n`);
+          process.stdout.write(`split ${giver.role} ${chunk.moved}\n`);
+          if (chunk.measured === null) {
+            left -= chunk.moved;
+          } else {
+            left = Math.min(left - chunk.moved, chunk.measured);
+          }
         }
       }
     }
@@ -1165,14 +1239,14 @@ function fundGiverWallets() {
     if (funded === null) {
       fail(`could not read ${giver.role} balance`);
     }
-    if (funded < giver.sats) {
+    if (funded !== giver.sats) {
       fail(`${giver.role} balance is ${funded}, need ${giver.sats}`);
     }
   }
 }
 
 /**
- * Sats the giver still needs before its gift, from a double-checked balance.
+ * Sats the giver still needs before its gift, from one balance read.
  *
  * @param {{ role: string, sats: number }} giver
  * @returns {number}
@@ -1550,7 +1624,7 @@ async function main() {
       fail('could not read funding balance');
     }
     sweep(wallets['funding'].address);
-    consolidateFunding();
+    consolidateFunding(true);
     const fundingAfter = readBalance('funding');
     if (fundingAfter === null) {
       fail('could not read funding balance');
@@ -1571,7 +1645,7 @@ async function main() {
         } catch {
           process.stderr.write('could not return sats after a failed cycle\n');
         }
-        consolidateFunding();
+        consolidateFunding(false);
       }
       stopChild(apiProcess);
       apiProcess = null;
