@@ -73,8 +73,8 @@ export interface AccountResponse {
  * view-key capability secret, the next `setup` step, factual `missing`,
  * `hasPosted`, `aboutMe`, `aboutMeHasPhoto`, `notificationLevel`,
  * `notifyHearts`, `amountUnit`, `locale`, `fiat`, `funding`, `walletRequired`,
- * `walletBackupSeenAt`, `sparkPubkey`, `sparkWalletVerified`,
- * `passkeyCredentialId`, `passkeyRenewFailed`, `passkeyRenewClosed`, and
+ * `walletBackupSeenAt`, `walletIntroSeen`, `hadExternalWallet`, `sparkPubkey`,
+ * `sparkWalletVerified`, `passkeyCredentialId`, `passkeyRenewFailed`, `passkeyRenewClosed`, and
  * `passkeyRenewPrfUnsupported` (true only when the newest unacknowledged
  * failed renew is `prfUnsupported`).
  */
@@ -160,6 +160,16 @@ export interface OwnerAccountResponse extends AccountResponse {
    * that has not been recorded.
    */
   walletBackupSeenAt: number | null;
+  /**
+   * True after `POST /me/wallet-intro-seen`; false until then. Owner-only;
+   * omitted from public member cards and view profiles.
+   */
+  walletIntroSeen: boolean;
+  /**
+   * True when the account has a stored legacy external payout address.
+   * Read-only. Owner-only; omitted from public member cards and view profiles.
+   */
+  hadExternalWallet: boolean;
   /** Identity public key of the member's wallet (66 lower-case hex), or `null`. */
   sparkPubkey: string | null;
   /**
@@ -335,6 +345,8 @@ export interface DebugAccountResponse extends AccountResponse {
    * that has not been recorded.
    */
   walletBackupSeenAt: number | null;
+  /** True after the owner saw the in-app wallet intro. Default `false`. */
+  walletIntroSeen: boolean;
   /** Identity public key of the member's wallet (66 lower-case hex), or `null`. */
   sparkPubkey: string | null;
   /** Epoch ms when the LNURL server accepted a registration for that key, or `null`. */
@@ -507,7 +519,7 @@ function aboutMessageIdFor(account: Account, aboutMe: string | null): string | n
  * @param nostr - Optional Nostr columns (defaults to JSON `null`s).
  * @param lnurlServer - LNURL server config for the receiving address, or `undefined`.
  * @returns Debug fields including `viewKey`, `sessionRefused`, `locale`,
- * `fiat`, `sparkPubkey`, `sparkPubkeyVerifiedAt`, and Nostr columns.
+ * `fiat`, `walletIntroSeen`, `sparkPubkey`, `sparkPubkeyVerifiedAt`, and Nostr columns.
  */
 export function serializeDebugAccount(
   account: Account,
@@ -529,6 +541,7 @@ export function serializeDebugAccount(
     fiat: parseStoredFiat(account.fiat),
     walletRequired: account.walletRequired === true,
     walletBackupSeenAt: account.walletBackupSeenAt ?? null,
+    walletIntroSeen: account.walletIntroSeen === true,
     sparkPubkey: account.sparkPubkey ?? null,
     sparkPubkeyVerifiedAt:
       typeof account.sparkPubkeyVerifiedAt === 'number' ? account.sparkPubkeyVerifiedAt : null,
@@ -602,9 +615,10 @@ export function serializeDebugAccountDetail(
  * @returns Owner fields including `viewKey`, `setup`, `missing`,
  * `hasPosted`, `location`, `aboutMe`, `aboutMeHasPhoto`,
  * `notificationLevel`, `notifyHearts`, `amountUnit`, `locale`, `fiat`, `funding`,
- * `walletRequired`, `walletBackupSeenAt`, `sparkPubkey`,
- * `sparkWalletVerified`, `passkeyCredentialId`, `passkeyRenewFailed`,
- * `passkeyRenewClosed`, and `passkeyRenewPrfUnsupported`.
+ * `walletRequired`, `walletBackupSeenAt`, `walletIntroSeen`,
+ * `hadExternalWallet`, `sparkPubkey`, `sparkWalletVerified`,
+ * `passkeyCredentialId`, `passkeyRenewFailed`, `passkeyRenewClosed`, and
+ * `passkeyRenewPrfUnsupported`.
  */
 export function serializeOwnerAccount(
   account: Account,
@@ -635,6 +649,8 @@ export function serializeOwnerAccount(
     funding,
     walletRequired: account.walletRequired === true,
     walletBackupSeenAt: account.walletBackupSeenAt ?? null,
+    walletIntroSeen: account.walletIntroSeen === true,
+    hadExternalWallet: account.hadExternalWallet === true,
     sparkPubkey: account.sparkPubkey ?? null,
     sparkWalletVerified: typeof account.sparkPubkeyVerifiedAt === 'number',
     passkeyCredentialId,
@@ -695,9 +711,10 @@ export interface OwnerFundingLookup {
  * @param lnurlServer - LNURL server config for the receiving address, or `undefined`.
  * @returns Owner JSON including `hasPosted`, `aboutMe`, `aboutMeHasPhoto`,
  *   `notificationLevel`, `notifyHearts`, `amountUnit`, `locale`, `fiat`, `funding`,
- *   `walletRequired`, `walletBackupSeenAt`, `sparkPubkey`,
- *   `sparkWalletVerified`, `passkeyCredentialId`, `passkeyRenewFailed`,
- *   `passkeyRenewClosed`, and `passkeyRenewPrfUnsupported` (true only when
+ *   `walletRequired`, `walletBackupSeenAt`, `walletIntroSeen`,
+ *   `hadExternalWallet`, `sparkPubkey`, `sparkWalletVerified`,
+ *   `passkeyCredentialId`, `passkeyRenewFailed`, `passkeyRenewClosed`, and
+ *   `passkeyRenewPrfUnsupported` (true only when
  *   the newest unacknowledged failed renew is `prfUnsupported`, via
  *   {@link serializeOwnerAccount}).
  *   `aboutMe` is `null` when the profile note is missing or `deletedAt` is

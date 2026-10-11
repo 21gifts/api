@@ -121,6 +121,8 @@ describe('serializeAccount', () => {
     expect(json).not.toHaveProperty('fiat');
     expect(json).not.toHaveProperty('walletRequired');
     expect(json).not.toHaveProperty('walletBackupSeenAt');
+    expect(json).not.toHaveProperty('walletIntroSeen');
+    expect(json).not.toHaveProperty('hadExternalWallet');
     expect(json).not.toHaveProperty('staffTag');
     expect(json).not.toHaveProperty('sparkPubkey');
     expect(json).not.toHaveProperty('sparkWalletVerified');
@@ -237,6 +239,8 @@ describe('serializeDebugAccount', () => {
     expect(json.profileMessageId).toBeNull();
     expect(json.walletRequired).toBe(false);
     expect(json.walletBackupSeenAt).toBeNull();
+    expect(json.walletIntroSeen).toBe(false);
+    expect(json).not.toHaveProperty('hadExternalWallet');
     expect(json.sparkPubkey).toBeNull();
     expect(json.sparkPubkeyVerifiedAt).toBeNull();
     expect(json.nostrPubkey).toBeNull();
@@ -247,6 +251,7 @@ describe('serializeDebugAccount', () => {
     expect(serializeDebugAccount(account).isPlatform).toBe(false);
     expect(serializeDebugAccount(account).sessionRefused).toBe(false);
     expect(serializeDebugAccount({ ...account, sessionRefused: true }).sessionRefused).toBe(true);
+    expect(serializeDebugAccount({ ...account, walletIntroSeen: true }).walletIntroSeen).toBe(true);
   });
 
   it('includes staffTag on debug JSON only when set', () => {
@@ -385,6 +390,8 @@ describe('serializeOwnerAccount', () => {
       funding: null,
       walletRequired: false,
       walletBackupSeenAt: null,
+      walletIntroSeen: false,
+      hadExternalWallet: false,
       sparkPubkey: null,
       sparkWalletVerified: false,
       passkeyCredentialId: null,
@@ -434,6 +441,17 @@ describe('serializeOwnerAccount', () => {
     expect(json.walletBackupSeenAt).toBe(9);
     expect(json.setup).toBe('lightning-address');
     expect(json.missing).toEqual(['lightning-address', 'rules']);
+  });
+
+  it('includes walletIntroSeen and hadExternalWallet on owner JSON', () => {
+    const json = serializeOwnerAccount(
+      { ...account, walletIntroSeen: true, hadExternalWallet: true },
+      false,
+      null,
+      false,
+    );
+    expect(json.walletIntroSeen).toBe(true);
+    expect(json.hadExternalWallet).toBe(true);
   });
 
   it('defaults omitted wallet fields on owner JSON', () => {

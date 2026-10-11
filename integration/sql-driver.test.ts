@@ -697,6 +697,7 @@ describe('PostgresAuthStore stored external address', () => {
         fresh,
       ]);
       expect(created).toEqual({ lightning_address: null, lightning_address_verified: false });
+      expect((await store.getAccount(fresh))?.hadExternalWallet).toBe(false);
 
       const legacy = crypto.randomUUID();
       const address = `legacy_${stamp}@example.com`;
@@ -709,6 +710,7 @@ describe('PostgresAuthStore stored external address', () => {
       const stored = await store.getAccount(legacy);
       expect(stored).toBeDefined();
       expect(stored).not.toHaveProperty('lightningAddress');
+      expect(stored?.hadExternalWallet).toBe(true);
       await store.updateAccount({ ...stored!, name: 'Renamed' });
       const [kept] = await client.query<{
         name: string;
@@ -722,6 +724,62 @@ describe('PostgresAuthStore stored external address', () => {
         lightning_address: address,
         lightning_address_verified: true,
       });
+    } finally {
+      await closeIfPossible(sql);
+    }
+  });
+});
+
+describe('PostgresAuthStore wallet intro seen', () => {
+  test('defaults false, a write raises it, a stale write keeps it, and db_change logs it', async () => {
+    const { client, sql } = createBunSqlClient(databaseUrl);
+    try {
+      await migrateAuthSchema(client);
+      await migrateDbChangeSchema(client);
+
+      const store = new PostgresAuthStore(client);
+      const hex64 = (): string =>
+        `${crypto.randomUUID().replaceAll('-', '')}${crypto.randomUUID().replaceAll('-', '')}`;
+      const id = crypto.randomUUID();
+      await store.createAccount({
+        id,
+        linkingKey: null,
+        role: 'basis',
+        name: null,
+        location: null,
+        forumLawsDismissed: false,
+        viewKey: hex64(),
+        createdAt: Date.now(),
+        rulesAgreedAt: null,
+      });
+      const stale = await store.getAccount(id);
+      expect(stale?.walletIntroSeen).toBe(false);
+
+      await store.updateAccount({ ...stale!, walletIntroSeen: true });
+      expect((await store.getAccount(id))?.walletIntroSeen).toBe(true);
+
+      await store.updateAccount({ ...stale!, name: 'Stale' });
+      const kept = await store.getAccount(id);
+      expect(kept?.name).toBe('Stale');
+      expect(kept?.walletIntroSeen).toBe(true);
+
+      const changeRows = await client.query<{
+        before: Record<string, unknown> | null;
+        after: Record<string, unknown> | null;
+      }>(
+        `SELECT before, after
+         FROM db_change
+         WHERE table_name = 'account' AND op = 'UPDATE' AND after ->> 'id' = $1
+         ORDER BY id ASC`,
+        [id],
+      );
+      expect(
+        changeRows.some(
+          (row) =>
+            row.before?.['wallet_intro_seen'] === false &&
+            row.after?.['wallet_intro_seen'] === true,
+        ),
+      ).toBe(true);
     } finally {
       await closeIfPossible(sql);
     }

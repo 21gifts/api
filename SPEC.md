@@ -132,6 +132,7 @@ Public base URLs used in examples:
 | PUT    | `/banners/me`                                        | Bearer                                       | Set or clear the wide image. A portrait is rejected. Not the About me photo                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
 | GET    | `/banners/:file`                                     | none                                         | Public wide image when the extension matches. Kind:0 `banner`                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
 | POST   | `/me/forum-laws-dismissed`                           | Bearer                                       | Dismiss welcome-forum living-room laws                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| POST   | `/me/wallet-intro-seen`                              | Bearer                                       | Mark the in-app wallet intro as seen                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
 | POST   | `/me/notification-level`                             | Bearer                                       | Set owner fan-out filter (`all` / `active` / `mentions`)                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
 | POST   | `/me/rules-agreement`                                | Bearer                                       | Record living-room rules agreement                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
 | GET    | `/members/:accountId`                                | Bearer                                       | Live member identity + profile note + `aboutMeHasPhoto` + counts + `trust`                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
@@ -930,6 +931,8 @@ ID).
     "funding": null,
     "walletRequired": true,
     "walletBackupSeenAt": null,
+    "walletIntroSeen": false,
+    "hadExternalWallet": false,
     "sparkPubkey": null,
     "sparkWalletVerified": false,
     "passkeyCredentialId": "<base64url>",
@@ -940,7 +943,7 @@ ID).
 }
 ```
 
-The `account` object is the same owner JSON as `GET /me` (includes `viewKey`, `setup`, `missing`, `hasPosted`, `aboutMe`, `aboutMeHasPhoto`, `aboutMessageId`, `notificationLevel`, `amountUnit`, `locale`, `fiat`, `walletRequired`, `walletBackupSeenAt`, `sparkPubkey`, `sparkWalletVerified`, `passkeyCredentialId`, `passkeyRenewFailed`, `passkeyRenewClosed`, and `passkeyRenewPrfUnsupported`). `passkeyRenewPrfUnsupported` is true only when the newest unacknowledged failed row has error name `prfUnsupported`. `locale` and `fiat` are null until the member's app stores them. The example above is a nameless new register (`name: null`, `username: null`, `setup: "name"`). When begin stored a name, `name` and `username` are that normalised handle (example `ada`), `nameSkippedAt` stays null, there is no profile note, and `setup` is `lightning-address`. Finish does not take `name` from the body. The recovery phrase is not a setup step and does not change `setup` or `missing`. Existing members start with `walletRequired: false`. Seed finish sets `walletRequired: true` and does not change `walletBackupSeenAt`. Replace refuses and changes nothing. `walletBackupSeenAt` does not decide whether a seed exists. The nameless example remains `walletRequired: true` with `setup: "name"` when the name is unset.
+The `account` object is the same owner JSON as `GET /me` (includes `viewKey`, `setup`, `missing`, `hasPosted`, `aboutMe`, `aboutMeHasPhoto`, `aboutMessageId`, `notificationLevel`, `amountUnit`, `locale`, `fiat`, `walletRequired`, `walletBackupSeenAt`, `walletIntroSeen`, `hadExternalWallet`, `sparkPubkey`, `sparkWalletVerified`, `passkeyCredentialId`, `passkeyRenewFailed`, `passkeyRenewClosed`, and `passkeyRenewPrfUnsupported`). `passkeyRenewPrfUnsupported` is true only when the newest unacknowledged failed row has error name `prfUnsupported`. `locale` and `fiat` are null until the member's app stores them. The example above is a nameless new register (`name: null`, `username: null`, `setup: "name"`). When begin stored a name, `name` and `username` are that normalised handle (example `ada`), `nameSkippedAt` stays null, there is no profile note, and `setup` is `lightning-address`. Finish does not take `name` from the body. The recovery phrase is not a setup step and does not change `setup` or `missing`. Existing members start with `walletRequired: false`. Seed finish sets `walletRequired: true` and does not change `walletBackupSeenAt`. Replace refuses and changes nothing. `walletBackupSeenAt` does not decide whether a seed exists. The nameless example remains `walletRequired: true` with `setup: "name"` when the name is unset.
 
 A new register row is stored with `walletRequired: true` and `walletBackupSeenAt: null`. First-passkey claim of a provisioned row sets `walletRequired: true` in the same write as the credential (`createFirstPasskeyCredential`: Postgres CTE locks the account row with `FOR UPDATE`, then inserts and sets `wallet_required`; memory store writes both in one method) and does not clear a seen timestamp. Passkey replace refuses and does not change these columns. Seed finish sets `walletRequired: true` without changing `walletBackupSeenAt`. Operator `POST /debug/accounts` provision leaves `walletRequired` false. The api never stores a mnemonic or PRF output.
 
@@ -1083,6 +1086,8 @@ An account with `sessionRefused` and a still-valid minted token → **Response**
   "funding": null,
   "walletRequired": false,
   "walletBackupSeenAt": null,
+  "walletIntroSeen": false,
+  "hadExternalWallet": false,
   "sparkPubkey": null,
   "sparkWalletVerified": false,
   "passkeyCredentialId": null,
@@ -1093,7 +1098,8 @@ An account with `sessionRefused` and a still-valid minted token → **Response**
 ```
 
 The example above is an existing member (`walletRequired: false`,
-`walletBackupSeenAt: null`, `sparkPubkey: null`, `sparkWalletVerified: false`).
+`walletBackupSeenAt: null`, `walletIntroSeen: false`, `hadExternalWallet: false`,
+`sparkPubkey: null`, `sparkWalletVerified: false`).
 New register/claim owner JSON has `walletRequired: true` and `setup: "name"`
 when the name is unset. The recovery phrase is not a setup step and does not
 change `setup` or `missing`. `sparkPubkey` / `sparkWalletVerified` are set
@@ -1136,6 +1142,8 @@ stays `null`)).
 | `funding`                    | object \| null | Funding-program grant. `null` for `basis`. Otherwise always an object; no row is `{ status: "none", trialUtcDate: null, admittedAt: null, reviewedByName: null, dailyPayoutStoppedNotice: false }`. `dailyPayoutStoppedNotice` is true only for the six legacy daily accounts while effective status is `none`. Admitted includes live `reviewedByName`.                                          |
 | `walletRequired`             | boolean        | True when a seed-bearing passkey exists (new register/claim, or seed finish). Default false does not mean a seed is present. It does not make `setup` `'wallet'`.                                                                                                                                                                                                                                 |
 | `walletBackupSeenAt`         | number \| null | Epoch ms recorded after an existing member activates a passkey that can show a recovery phrase, so the app can offer Show recovery phrase next time instead of Activate. Not a confirmation. Not a seed check; it does not decide whether a seed exists. Null when that has not been recorded.                                                                                                    |
+| `walletIntroSeen`            | boolean        | `false` for every account until `POST /me/wallet-intro-seen`, then `true` for good (no reset; a later account write does not clear it). Owner-only; omitted from public member cards and view profiles.                                                                                                                                                                                           |
+| `hadExternalWallet`          | boolean        | `true` when the account has a stored legacy external payout address (`account.lightning_address`, kept as data). Read-only; no route sets it. Owner-only; omitted from public member cards and view profiles.                                                                                                                                                                                     |
 | `sparkPubkey`                | string \| null | Identity public key of the member's wallet (66 lower-case hex), or `null` until claimed. Owner-only; omitted from public member cards and view profiles.                                                                                                                                                                                                                                          |
 | `sparkWalletVerified`        | boolean        | True when `sparkPubkeyVerifiedAt` is a number (LNURL server accepted a registration signed by that key). Owner-only.                                                                                                                                                                                                                                                                              |
 | `passkeyCredentialId`        | string \| null | Null when `walletRequired` is not true, even if a login passkey exists. When `walletRequired` is true it is the newest credential id (`created_at` desc, `credential_id` desc with `COLLATE "C"`). Owner-only.                                                                                                                                                                                    |
@@ -2138,6 +2146,19 @@ Success → **Response** `200` with the updated account (same shape as
 `GET /me`), with `forumLawsDismissed: true`. Already-dismissed accounts return
 the same shape without a second write (idempotent). There is no un-dismiss.
 
+### `POST /me/wallet-intro-seen`
+
+Mark the in-app wallet intro as seen. No body. Same responses as
+`POST /me/forum-laws-dismissed`.
+
+Missing/invalid bearer → **Response** `401` `{ "error": "Unauthorized" }`.
+
+Success → **Response** `200` with the updated account (same shape as
+`GET /me`), with `walletIntroSeen: true`. Already-seen accounts return the
+same shape without a second write (idempotent). There is no reset, and a later
+write to the account does not clear it. Logs `account.wallet_intro.seen`
+`{ accountId }` on the first write only.
+
 ### `POST /me/notification-level`
 
 Set the owner fan-out filter. Bearer session required (same as
@@ -2418,6 +2439,7 @@ Success → **Response** `200`:
       "fiat": null,
       "walletRequired": false,
       "walletBackupSeenAt": null,
+      "walletIntroSeen": false,
       "sparkPubkey": null,
       "sparkPubkeyVerifiedAt": null,
       "nostrPubkey": "<64-hex>",
@@ -2432,8 +2454,8 @@ Success → **Response** `200`:
 
 The listing uses `serializeDebugAccount` (public fields plus `isPlatform`,
 `sessionRefused`, `viewKey`, `locale`, `fiat`, `walletRequired`,
-`walletBackupSeenAt`, `sparkPubkey`, `sparkPubkeyVerifiedAt`, and Nostr debug
-fields). `locale` and `fiat` are null until stored. `sparkPubkey` /
+`walletBackupSeenAt`, `walletIntroSeen`, `sparkPubkey`, `sparkPubkeyVerifiedAt`,
+and Nostr debug fields). `locale` and `fiat` are null until stored. `sparkPubkey` /
 `sparkPubkeyVerifiedAt` are null until claimed / verified. `staffTag` is
 present only as `"software_developer"` when set and is omitted otherwise (never
 JSON `null`). It is not a permission and does not change `role`. Member `GET /me`
@@ -2559,8 +2581,8 @@ Unknown account id → **Response** `404`:
 Success → **Response** `200` with the updated account JSON (same
 `serializeDebugAccount` shape as `GET /debug/accounts`, including
 `isPlatform`, `sessionRefused`, `viewKey`, `walletRequired`,
-`walletBackupSeenAt`, `sparkPubkey`, `sparkPubkeyVerifiedAt`, and Nostr
-debug fields). Role changes log `debug.accounts.role_set`
+`walletBackupSeenAt`, `walletIntroSeen`, `sparkPubkey`, `sparkPubkeyVerifiedAt`,
+and Nostr debug fields). Role changes log `debug.accounts.role_set`
 with the account id and new role. Platform changes log
 `debug.accounts.platform_set` with the account id and the new flag.
 Session-refusal changes log `debug.accounts.session_refused_set` with the
@@ -2609,7 +2631,8 @@ agreement leaves the column empty. `wallet_required` becomes true when
 either account already has it, so the recovery-phrase prompt is not
 opened again. `wallet_backup_seen_at` becomes the earlier seen time.
 `forum_laws_dismissed` becomes true when either account dismissed the
-laws. The role stays the survivor's and is never lowered. A basis
+laws. `wallet_intro_seen` becomes true when either account saw the wallet
+intro. The role stays the survivor's and is never lowered. A basis
 survivor becomes verified when a verify edge is still present after
 the move. The profile note stays the survivor's when the survivor has
 one. It becomes the source profile note only when the survivor has
