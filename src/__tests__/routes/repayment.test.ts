@@ -975,9 +975,11 @@ describe('repayment from the in-app wallet', () => {
   function anyWalletFetch(options?: {
     pr?: string;
     allowsNostr?: boolean;
+    seen?: string[];
   }): (input: string | URL | Request) => Promise<Response> {
     return async (input) => {
       const url = String(input);
+      options?.seen?.push(url);
       const lud16 = /\/\.well-known\/lnurlp\/([^/?]+)$/.exec(url);
       if (lud16 !== null) {
         return Response.json({
@@ -1012,8 +1014,10 @@ describe('repayment from the in-app wallet', () => {
     messages: InMemoryMessageStore;
     auth: InMemoryAuthStore;
     clock: { now: number };
+    fetched: string[];
   }> {
     const clock = { now: options?.now ?? MONDAY };
+    const fetched: string[] = [];
     const now = (): number => clock.now;
     const kek = parseNostrKek('11'.repeat(32));
     const auth = new InMemoryAuthStore();
@@ -1105,6 +1109,7 @@ describe('repayment from the in-app wallet', () => {
           nostrKek: kek,
           goalRateDay,
           fetchImpl: anyWalletFetch({
+            seen: fetched,
             ...(options?.allowsNostr === undefined ? {} : { allowsNostr: options.allowsNostr }),
           }),
           lnurlServer: LNURL_SERVER,
@@ -1127,7 +1132,7 @@ describe('repayment from the in-app wallet', () => {
           lnurlServer: LNURL_SERVER,
         }),
       );
-    return { app, messages, auth, clock };
+    return { app, messages, auth, clock, fetched };
   }
 
   function post(app: Hono, path: string, token = AUTHOR): Promise<Response> {
@@ -1324,6 +1329,26 @@ describe('repayment from the in-app wallet', () => {
     });
   });
 
+  it('skips payable shares past the cap before looking anything up', async () => {
+    await withNip57(async () => {
+      const lookups: number[] = [];
+      for (const termDays of [REPAYMENT_BILLS_MAX, REPAYMENT_BILLS_MAX + 5]) {
+        const { app, auth } = await loanSetup({
+          termDays,
+          fundedAt: new Date(Date.UTC(2026, 5, 1, 12)),
+          givers: [{ id: WALLET_GIVER, sats: termDays, wallet: true }],
+        });
+        const getAccount = vi.spyOn(auth, 'getAccount');
+        const res = await post(app, `/messages/${CREDIT}/repayment/due`);
+        expect(((await res.json()) as { bills: unknown[] }).bills).toHaveLength(
+          REPAYMENT_BILLS_MAX,
+        );
+        lookups.push(getAccount.mock.calls.length);
+      }
+      expect(lookups[1]).toBe(lookups[0]);
+    });
+  });
+
   it('prices fiat bills at the current rate and refuses them without one', async () => {
     await withNip57(async () => {
       const priced = await loanSetup({ goalCurrency: 'USD', rate: true });
@@ -1412,8 +1437,8 @@ describe('repayment from the in-app wallet', () => {
     }
   });
 
-  it('moves a share whose wallet refuses the zap to waiting', async () => {
-    const { app, messages } = await loanSetup({ allowsNostr: false });
+  it('moves a share whose wallet refuses the zap to waiting and asks that wallet once', async () => {
+    const { app, messages, fetched } = await loanSetup({ allowsNostr: false });
     const res = await post(app, `/messages/${CREDIT}/repayment/due`);
     expect(res.status).toBe(200);
     const body = (await res.json()) as {
@@ -1427,6 +1452,7 @@ describe('repayment from the in-app wallet', () => {
       [1, NO_WALLET],
       [1, WALLET_GIVER],
     ]);
+    expect(fetched.filter((url) => url.includes('/.well-known/lnurlp/'))).toHaveLength(1);
     expect(await messages.listInvoiceAttempts(5)).toEqual([]);
   });
 

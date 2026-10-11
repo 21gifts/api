@@ -585,6 +585,8 @@ export async function repaymentInvoice(deps: RepaymentDeps, c: Context): Promise
  * Bills for every due, unpaid share whose giver can receive (at most
  * {@link REPAYMENT_BILLS_MAX}), each made as `POST /messages/:id/repayment`
  * makes it, plus the due shares that wait for a giver who cannot receive.
+ * A giver whose wallet refuses the zap is tried once per call; their other
+ * shares wait too.
  *
  * @param deps - Same as {@link repaymentInvoice}.
  * @param c - Request.
@@ -611,14 +613,30 @@ export async function repaymentDueBills(deps: RepaymentDeps, c: Context): Promis
     minted ??= repaymentLimiterOf(deps).allow(opened.account.id, opened.nowMs);
     return minted;
   };
+  const givers = new Map<string, ReturnType<typeof publicGiver>>();
+  const giverOf = (accountId: string): ReturnType<typeof publicGiver> => {
+    let giver = givers.get(accountId);
+    if (giver === undefined) {
+      giver = publicGiver(deps, accountId);
+      givers.set(accountId, giver);
+    }
+    return giver;
+  };
+  // Givers whose wallet refused a zap in this call; their later shares wait.
+  const refused = new Set<string>();
   const bills: Record<string, unknown>[] = [];
   const waiting: Record<string, unknown>[] = [];
   for (const share of plan.due) {
+    const payable = share.canReceive && !refused.has(share.accountId);
+    // A payable share past the cap comes on the next call; skip it before any work.
+    if (payable && bills.length >= REPAYMENT_BILLS_MAX) {
+      continue;
+    }
     const sats = price(share.units);
     if (sats === null) {
       return c.json({ error: 'Ask amount is unavailable' }, 503);
     }
-    const giver = await publicGiver(deps, share.accountId);
+    const giver = await giverOf(share.accountId);
     const line = {
       dayIndex: share.dayIndex,
       recipientAccountId: share.accountId,
@@ -627,16 +645,14 @@ export async function repaymentDueBills(deps: RepaymentDeps, c: Context): Promis
       amountSats: sats,
       amount: fiat ? formatCents(share.units) : null,
     };
-    if (!share.canReceive) {
+    if (!payable) {
       waiting.push(line);
-      continue;
-    }
-    if (bills.length >= REPAYMENT_BILLS_MAX) {
       continue;
     }
     const bill = await repaymentBill(deps, opened, { ...share, sats }, mayMint);
     if (!bill.ok) {
       if (bill.body.code === CANNOT_RECEIVE) {
+        refused.add(share.accountId);
         waiting.push(line);
         continue;
       }
