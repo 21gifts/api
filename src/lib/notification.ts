@@ -133,16 +133,10 @@ function exceptSkip(ids: readonly string[], skip: string | null): string[] {
  * Parse a stored or request value into a {@link NotificationLevel}.
  *
  * @param raw - Unknown input (DB text, JSON, omitted).
- * @returns `all`, `active`, `mentions`, `messages`, or `none`; anything else → `all`.
+ * @returns `all`, `active`, `mentions`, or `none`; anything else → `all`.
  */
 export function parseNotificationLevel(raw: unknown): NotificationLevel {
-  if (
-    raw === 'all' ||
-    raw === 'active' ||
-    raw === 'mentions' ||
-    raw === 'messages' ||
-    raw === 'none'
-  ) {
+  if (raw === 'all' || raw === 'active' || raw === 'mentions' || raw === 'none') {
     return raw;
   }
   return 'all';
@@ -167,14 +161,12 @@ export function isStaffAccount(account: { role: string; isPlatform?: boolean }):
 /**
  * Whether a recipient at `level` should receive this living-room event.
  *
- * `none` is always false. `messages` is true unless `mention === true`.
- * `all` is always true. `active` is `isActive` (ignores `mention`).
+ * `none` is always false. `all` is always true. `active` is `isActive`.
  * `mentions` is only
- * `mentionedAccountId !== null && mentionedAccountId === recipientAccountId`
- * (ignores `mention`). Omitted `mention` is not the dedicated `@username`
- * channel. A staff or platform actor does not satisfy `mentions`.
+ * `mentionedAccountId !== null && mentionedAccountId === recipientAccountId`.
+ * A staff or platform actor does not satisfy `mentions`.
  *
- * @param args - Recipient level, active flag, mention target, recipient id, optional mention-channel flag.
+ * @param args - Recipient level, active flag, mention target, and recipient id.
  * @returns True when this recipient should get an in-app row and/or Web Push.
  */
 export function wantsNotification(args: {
@@ -182,14 +174,9 @@ export function wantsNotification(args: {
   isActive: boolean;
   mentionedAccountId: string | null;
   recipientAccountId: string;
-  /** True only for the dedicated @username channel (forum_mention fan-out and stored forum_mention rows). */
-  mention?: boolean;
 }): boolean {
   if (args.level === 'none') {
     return false;
-  }
-  if (args.level === 'messages') {
-    return args.mention !== true;
   }
   if (args.level === 'all') {
     return true;
@@ -206,9 +193,7 @@ export function wantsNotification(args: {
  * always stay (not living-room fan-out). `all` returns `rows` unchanged. Parent lookup uses
  * `parentById` (`forum_post` / `forum_reply` / `zap` `parentId`); a missing
  * parent is unpaid and not personal. `forum_mention` uses the recipient as `mentionedAccountId` and is active only when the parent exists and `parent.sats > 0`. Zap `text` is the amount string.
- * A staff or platform actor does not satisfy `mentions`. When calling
- * {@link wantsNotification}, `forum_mention` passes `mention: true`. Level
- * `messages` keeps stream rows and drops `forum_mention`. Level `none` drops
+ * A staff or platform actor does not satisfy `mentions`. Level `none` drops
  * stream rows and `forum_mention` and still keeps heart and moderator rows.
  *
  * @param args - Stored rows, owner level, recipient id, accounts, parent notes.
@@ -252,43 +237,8 @@ export function notificationsMatchingLevel(args: {
       isActive,
       mentionedAccountId,
       recipientAccountId: args.recipientAccountId,
-      mention: row.type === 'forum_mention',
     });
   });
-}
-
-/**
- * Mention account ids to drop from ordinary post/reply fan-out.
- *
- * Unique ids except the author, first-seen order. Omits an id only when that
- * account's level is exactly `messages`. A missing account parses as `all`
- * and stays excluded. A `messages`-level person stays on the ordinary
- * post/reply fan-out because the mention fan-out no-ops for them.
- *
- * @param args - Auth lookup, author id, mention marks.
- * @returns Exclude ids in first-seen order among the included ids.
- */
-export async function livingRoomMentionExcludes(args: {
-  auth: Pick<AuthStore, 'getAccount'>;
-  authorId: string;
-  mentions: readonly { accountId: string }[];
-}): Promise<string[]> {
-  const seen = new Set<string>();
-  const excluded: string[] = [];
-  for (const mark of args.mentions) {
-    const id = mark.accountId;
-    if (id === args.authorId || seen.has(id)) {
-      continue;
-    }
-    seen.add(id);
-    const account = await args.auth.getAccount(id);
-    const level = parseNotificationLevel(account?.notificationLevel);
-    if (level === 'messages') {
-      continue;
-    }
-    excluded.push(id);
-  }
-  return excluded;
 }
 
 /** Fan-out match context shared by in-app rows and Web Push. */
@@ -297,11 +247,6 @@ interface NotificationMatch {
   isActive: boolean;
   /** Parent/note author id for personal involvement, or `null`. */
   mentionedAccountId: string | null;
-  /**
-   * True only for the dedicated `@username` channel.
-   * Omitted is not the mention channel.
-   */
-  mention?: boolean;
 }
 
 /**
@@ -347,7 +292,6 @@ function filterIdsByMatch(
       isActive: match.isActive,
       mentionedAccountId: match.mentionedAccountId,
       recipientAccountId,
-      mention: match.mention === true,
     });
   });
 }
@@ -660,8 +604,7 @@ export async function notifyForumReply(args: {
  *
  * Level `all` always. Level `active` only when `isActive` (the same flag the
  * sibling post or reply notifier uses). Level `mentions` because
- * `mentionedAccountId` is that recipient. Level `messages` does not receive
- * this channel. Level `none` does not. The match includes `mention: true`.
+ * `mentionedAccountId` is that recipient. Level `none` does not.
  * One fan-out per person so the push body can use that account's locale.
  *
  * @param args - Mentioned ids, author, note, active flag, optional stores.
@@ -698,7 +641,6 @@ export async function notifyForumMentions(args: {
       match: {
         isActive: args.isActive,
         mentionedAccountId: recipientId,
-        mention: true,
       },
       template: {
         actorAccountId: args.account.id,

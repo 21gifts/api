@@ -183,7 +183,7 @@ describe('GET /me', () => {
       setup: 'wallet' | 'name' | 'username' | 'lightning-address' | 'rules' | null;
       missing: string[];
       hasPosted: boolean;
-      notificationLevel: 'all' | 'active' | 'mentions' | 'messages' | 'none';
+      notificationLevel: 'all' | 'active' | 'mentions' | 'none';
       notifyHearts: boolean;
       amountUnit: 'btc' | 'fiat';
       locale: 'en' | 'de' | 'es' | 'fil' | null;
@@ -1061,7 +1061,7 @@ describe('POST /me/notification-level', () => {
     });
     expect(res.status).toBe(400);
     expect(await res.json()).toEqual({
-      error: 'Expected a JSON body with a level of all, active, mentions, messages, or none',
+      error: 'Expected a JSON body with a level of all, active, mentions, or none',
     });
   });
 
@@ -1073,7 +1073,7 @@ describe('POST /me/notification-level', () => {
     });
     expect(res.status).toBe(400);
     expect(await res.json()).toEqual({
-      error: 'Expected a JSON body with a level of all, active, mentions, messages, or none',
+      error: 'Expected a JSON body with a level of all, active, mentions, or none',
     });
   });
 
@@ -1123,17 +1123,16 @@ describe('POST /me/notification-level', () => {
     expect((await store.getAccount('acc'))?.notificationLevel).toBe('active');
   });
 
-  it('sets notificationLevel messages and reads it back from the store', async () => {
-    const store = await seededStore();
-    const res = await mount(store).request('/me/notification-level', {
+  it('rejects messages', async () => {
+    const res = await mount(await seededStore()).request('/me/notification-level', {
       method: 'POST',
       headers: { ...AUTH, 'content-type': 'application/json' },
       body: JSON.stringify({ level: 'messages' }),
     });
-    expect(res.status).toBe(200);
-    const body = (await res.json()) as { notificationLevel: string };
-    expect(body.notificationLevel).toBe('messages');
-    expect((await store.getAccount('acc'))?.notificationLevel).toBe('messages');
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({
+      error: 'Expected a JSON body with a level of all, active, mentions, or none',
+    });
   });
 
   it('sets notificationLevel none and reads it back from the store', async () => {

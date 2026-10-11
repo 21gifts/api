@@ -32,10 +32,9 @@ export type AccountRole = 'basis' | 'verified' | 'moderator' | 'initiator' | 'fo
  * - `active` — related top-level post has `sats > 0` (zaps also when `amountSats > 0`).
  * - `mentions` — a reply or a zap on the recipient's own note, or an `@username`
  *   mark for that recipient. A staff or platform actor is not enough.
- * - `messages` — ordinary living-room stream on; dedicated `@username` channel off.
- * - `none` — both off.
+ * - `none` — none of that living-room stream, including the dedicated `@username` channel.
  */
-export type NotificationLevel = 'all' | 'active' | 'mentions' | 'messages' | 'none';
+export type NotificationLevel = 'all' | 'active' | 'mentions' | 'none';
 
 /**
  * Owner amount-entry unit. Omitted / unknown → `btc`.
