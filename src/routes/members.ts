@@ -8,6 +8,7 @@ import { InMemoryBtcUsdStore, type BtcUsdRateBook } from '@/lib/btc-usd-store';
 import type { LnurlServerConfig } from '@/lib/config';
 import { InMemoryGiftStore, type GiftStore } from '@/lib/gift-store';
 import { InMemoryFiatStore, type FiatRateBook } from '@/lib/usd-fiat-store';
+import { attachHeartStats } from '@/lib/heart-stats';
 import { logEvent } from '@/lib/log';
 import { MESSAGE_LIST_LIMIT, serializeMessage, type MessageRow } from '@/lib/message';
 import type { MessageStore } from '@/lib/message-store';
@@ -202,6 +203,7 @@ export function membersRoutes(deps: MembersRouteDeps): Hono {
         if (!member.ok) {
           return member.response;
         }
+        const viewerAccountId = auth.account.id;
         const account = member.account;
         const rows = await deps.messageStore.listPostsByAccount(account.id, MESSAGE_LIST_LIMIT);
         const messages = [];
@@ -234,7 +236,16 @@ export function membersRoutes(deps: MembersRouteDeps): Hono {
             ),
           );
         }
-        return c.json({ messages }, 200);
+        return c.json(
+          {
+            messages: await attachHeartStats(
+              (ids, viewer) => deps.messageStore.heartStats(ids, viewer),
+              viewerAccountId,
+              messages,
+            ),
+          },
+          200,
+        );
       } catch {
         logEvent('members.posts.failed');
         return c.json({ error: 'Messages are unavailable' }, 503);
@@ -250,6 +261,7 @@ export function membersRoutes(deps: MembersRouteDeps): Hono {
         if (!member.ok) {
           return member.response;
         }
+        const viewerAccountId = auth.account.id;
         const account = member.account;
         const rows = await deps.messageStore.listRepliesByAccount(account.id, MESSAGE_LIST_LIMIT);
         const messages = [];
@@ -278,7 +290,16 @@ export function membersRoutes(deps: MembersRouteDeps): Hono {
             continue;
           }
         }
-        return c.json({ messages }, 200);
+        return c.json(
+          {
+            messages: await attachHeartStats(
+              (ids, viewer) => deps.messageStore.heartStats(ids, viewer),
+              viewerAccountId,
+              messages,
+            ),
+          },
+          200,
+        );
       } catch {
         logEvent('members.replies.failed');
         return c.json({ error: 'Messages are unavailable' }, 503);
@@ -294,6 +315,7 @@ export function membersRoutes(deps: MembersRouteDeps): Hono {
         if (!member.ok) {
           return member.response;
         }
+        const viewerAccountId = auth.account.id;
         const account = member.account;
         let profileMessage: ReturnType<typeof serializeMessage> | null = null;
         let aboutMe: string | null = null;
@@ -319,6 +341,19 @@ export function membersRoutes(deps: MembersRouteDeps): Hono {
             aboutMe = aboutMeFromNote(account.name, row.text, row.name);
             aboutMeHasPhoto = row.hasPhoto === true;
           }
+        }
+        if (profileMessage !== null) {
+          const attached = await attachHeartStats(
+            (ids, viewer) => deps.messageStore.heartStats(ids, viewer),
+            viewerAccountId,
+            [profileMessage],
+          );
+          const body = attached[0];
+          /* v8 ignore next 3 -- attachHeartStats returns one object per input */
+          if (body === undefined) {
+            throw new Error('attachHeartStats returned no message');
+          }
+          profileMessage = body;
         }
         const counts = await deps.messageStore.countByAccount(account.id);
         const edges = await deps.trustStore.listEdgesForSubject(account.id);

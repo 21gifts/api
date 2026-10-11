@@ -1256,6 +1256,7 @@ describe('GET /messages/:id/external-posts', () => {
       getById: () => Promise.resolve(good),
       listPostsByPubkey: () => Promise.resolve([clip, good]),
       deleteById: () => Promise.resolve(true),
+      heartStats: () => Promise.resolve(new Map()),
     } as unknown as MessageStore;
     const res = await mount(store).request(`/messages/${NOTE}/external-posts`);
     expect(res.status).toBe(200);
@@ -1333,6 +1334,7 @@ describe('GET /messages/:id/external-posts', () => {
     const store = {
       getById: () => Promise.resolve(good),
       listPostsByPubkey: () => Promise.resolve([bad, good]),
+      heartStats: () => Promise.resolve(new Map()),
     } as unknown as MessageStore;
     const res = await mount(store).request(`/messages/${NOTE}/external-posts`);
     expect(res.status).toBe(200);
@@ -1364,6 +1366,40 @@ describe('GET /messages/:id/external-posts', () => {
       event: 'messages.external_posts.failed',
     });
     expect(JSON.stringify(line)).not.toContain(pubkey);
+  });
+
+  it('passes the signed-in viewer id to heartStats', async () => {
+    const pubkey = 'ab'.repeat(32);
+    const good = row({ id: NOTE, authorPubkey: pubkey, name: 'Ada' });
+    const heartStats = vi.fn((ids: readonly string[], viewer: string | null) => {
+      void ids;
+      void viewer;
+      return Promise.resolve(new Map());
+    });
+    const store = {
+      getById: () => Promise.resolve(good),
+      listPostsByPubkey: () => Promise.resolve([good]),
+      heartStats,
+    } as unknown as MessageStore;
+    const auth = new InMemoryAuthStore();
+    await auth.createAccount({
+      id: 'acc',
+      linkingKey: 'ab'.repeat(32),
+      role: 'basis',
+      name: null,
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: 'a'.repeat(64),
+      createdAt: 1_000_000,
+      rulesAgreedAt: null,
+      walletRequired: true,
+    });
+    await auth.createSession({ token: 'tok', accountId: 'acc', createdAt: NOW });
+    const res = await mount(store, auth).request(`/messages/${NOTE}/external-posts`, {
+      headers: { authorization: 'Bearer tok' },
+    });
+    expect(res.status).toBe(200);
+    expect(heartStats).toHaveBeenCalledWith([NOTE], 'acc');
   });
 });
 
@@ -1504,6 +1540,7 @@ describe('GET /messages/:id/external-replies', () => {
       isZapperPubkey: () => Promise.resolve(true),
       listRepliesByPubkey: () => Promise.resolve([clip, good]),
       deleteById: () => Promise.resolve(true),
+      heartStats: () => Promise.resolve(new Map()),
     } as unknown as MessageStore;
     const res = await mount(store).request(`/messages/${NOTE}/external-replies`);
     expect(res.status).toBe(200);
@@ -1532,6 +1569,7 @@ describe('GET /messages/:id/external-replies', () => {
       getById: () => Promise.resolve(good),
       isZapperPubkey: () => Promise.resolve(true),
       listRepliesByPubkey: () => Promise.resolve([bad, good]),
+      heartStats: () => Promise.resolve(new Map()),
     } as unknown as MessageStore;
     const res = await mount(store).request(`/messages/${NOTE}/external-replies`);
     expect(res.status).toBe(200);
@@ -1565,5 +1603,40 @@ describe('GET /messages/:id/external-replies', () => {
       event: 'messages.external_replies.failed',
     });
     expect(JSON.stringify(line)).not.toContain(pubkey);
+  });
+
+  it('passes the signed-in viewer id to heartStats', async () => {
+    const pubkey = 'cd'.repeat(32);
+    const good = row({ id: NOTE, parentId: PARENT, authorPubkey: pubkey, name: 'Ada' });
+    const heartStats = vi.fn((ids: readonly string[], viewer: string | null) => {
+      void ids;
+      void viewer;
+      return Promise.resolve(new Map());
+    });
+    const store = {
+      getById: () => Promise.resolve(good),
+      isZapperPubkey: () => Promise.resolve(true),
+      listRepliesByPubkey: () => Promise.resolve([good]),
+      heartStats,
+    } as unknown as MessageStore;
+    const auth = new InMemoryAuthStore();
+    await auth.createAccount({
+      id: 'acc',
+      linkingKey: 'ab'.repeat(32),
+      role: 'basis',
+      name: null,
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: 'a'.repeat(64),
+      createdAt: 1_000_000,
+      rulesAgreedAt: null,
+      walletRequired: true,
+    });
+    await auth.createSession({ token: 'tok', accountId: 'acc', createdAt: NOW });
+    const res = await mount(store, auth).request(`/messages/${NOTE}/external-replies`, {
+      headers: { authorization: 'Bearer tok' },
+    });
+    expect(res.status).toBe(200);
+    expect(heartStats).toHaveBeenCalledWith([NOTE], 'acc');
   });
 });
