@@ -50,6 +50,7 @@ import { debugPaymentsRoutes } from '@/routes/debug-payments';
 import { pushRoutes } from '@/routes/push';
 import { walletReportRoutes } from '@/routes/wallet-report';
 import { memberEventRoutes } from '@/routes/member-events';
+import { myLoansRoutes } from '@/routes/repayment';
 import { debugPushRoutes } from '@/routes/debug-push';
 import { debugPasskeyRenewRoutes } from '@/routes/debug-passkey-renew';
 import { debugTrustRoutes } from '@/routes/debug-trust';
@@ -593,6 +594,12 @@ export function createApp(deps: AppDeps = {}): Hono {
     })(c, next);
   });
   app.use('*', sundayRest(now));
+  const goalRateDay = bindGoalRateDay({
+    store: giftStore,
+    rates: btcUsdRates,
+    fiatRates,
+    now,
+  });
 
   app.route('/', brandRoutes({ read: readBrand }));
   app.route('/', pushRoutes({ authStore: store, pushStore, now, vapidPublicKey }));
@@ -608,6 +615,16 @@ export function createApp(deps: AppDeps = {}): Hono {
     }),
   );
   app.route('/', memberEventRoutes({ authStore: store, store: memberEventStore, now }));
+  app.route(
+    '/',
+    myLoansRoutes({
+      store: messageStore,
+      authStore: store,
+      now,
+      goalRateDay,
+      ...receivingDeps,
+    }),
+  );
   app.route('/healthz', healthRoute);
   app.route('/info', infoRoute);
   app.route('/translate', translateRoutes({ env }));
@@ -845,12 +862,7 @@ export function createApp(deps: AppDeps = {}): Hono {
       fundingStore,
       giftStore,
       ...(mapPush === undefined ? {} : { mapPush }),
-      goalRateDay: bindGoalRateDay({
-        store: giftStore,
-        rates: btcUsdRates,
-        fiatRates,
-        now,
-      }),
+      goalRateDay,
       ...(nostrKek === undefined ? {} : { nostrKek }),
       ...(deps.nostrPublisher === undefined ? {} : { nostrPublisher: deps.nostrPublisher }),
       ...(deps.nostrQuerier === undefined ? {} : { nostrQuerier: deps.nostrQuerier }),
