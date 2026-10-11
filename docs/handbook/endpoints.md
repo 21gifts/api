@@ -1045,44 +1045,72 @@
 
 ## Endpoint: GET /funding/daily-roster
 
-- **Purpose:** Bearer session, initiator or founder only, moderator is 403. Reads the API daily payout roster. Success 200 is only `{ comment, paymentsEnabled, defaultAmountUsd, recipients: [{ address, amountUsd, accountId, name }] }`. `accountId` is the matching account id or null, and `name` is that account's trimmed display name or null when missing or blank. Lookup uses the stored address and does not change it. `defaultAmountUsd` is always 1. Moderators are not mixed into this public list.
+- **Purpose:** Bearer session, initiator or founder only, moderator is 403. Reads the API daily payout roster. Success 200 is only `{ comment, paymentsEnabled, defaultAmountUsd, recipients: [{ address, amountUsd, accountId, name }], moderatorPaymentsEnabled, moderators: [{ address, amountUsd, accountId, name }] }`. `accountId` is the matching account id or null, and `name` is that account's trimmed display name or null when missing or blank. Lookup uses the stored address and does not change it, on recipients and on moderators. `defaultAmountUsd` is always 1. Moderator rows stay out of `recipients`.
 - **Errors:** 401 `{ error: 'Unauthorized' }` with no session; 403 `{ error: 'Forbidden' }` when the live role is not initiator or founder; a store 400 whose `error` is exactly `Invalid comment`, `Invalid payments switch`, `Invalid address or amount`, `Address already listed`, or `Unknown address` stays 400 with that text; 502 `{ error: 'Daily roster is unavailable' }` on any other store throw.
 - **Used by:** App daily payout roster.
 - **Auth:** `Authorization: Bearer` session. Initiator or founder only.
 
 ## Endpoint: POST /funding/daily-roster/comment
 
-- **Purpose:** Bearer session, initiator or founder only, moderator is 403. Newlines become spaces, then trim. Empty after trim is valid. Longer than 500 is 400 `Invalid comment` and is not cut. The normalized string is written to the API roster store. Success 200 is only `{ comment, paymentsEnabled, defaultAmountUsd, recipients: [{ address, amountUsd, accountId, name }] }`. `defaultAmountUsd` is always 1. Moderators stay off this public list.
+- **Purpose:** Bearer session, initiator or founder only, moderator is 403. Newlines become spaces, then trim. Empty after trim is valid. Longer than 500 is 400 `Invalid comment` and is not cut. The normalized string is written to the API roster store. Success 200 is only `{ comment, paymentsEnabled, defaultAmountUsd, recipients: [{ address, amountUsd, accountId, name }], moderatorPaymentsEnabled, moderators: [{ address, amountUsd, accountId, name }] }`. `defaultAmountUsd` is always 1. Moderator rows stay out of `recipients`.
 - **Errors:** 401 `{ error: 'Unauthorized' }`; 403 `{ error: 'Forbidden' }` when the live role is not initiator or founder; 400 `{ error: 'Invalid comment' }` when the body is not `{ comment: string }` or the normalized comment is longer than 500; store 400 `{ error: 'Invalid comment' }`, `{ error: 'Invalid payments switch' }`, `{ error: 'Invalid address or amount' }`, `{ error: 'Address already listed' }`, or `{ error: 'Unknown address' }` returned unchanged; 502 `{ error: 'Daily roster is unavailable' }` on any other store throw.
 - **Used by:** App daily payout roster comment.
 - **Auth:** `Authorization: Bearer` session. Initiator or founder only.
 
 ## Endpoint: POST /funding/daily-roster/payments
 
-- **Purpose:** Bearer session, initiator or founder only, moderator is 403, body `{ enabled }` written to the API roster store. Success 200 is only `{ comment, paymentsEnabled, defaultAmountUsd, recipients: [{ address, amountUsd, accountId, name }] }`. `defaultAmountUsd` is always 1. Moderators stay off this public list.
+- **Purpose:** Bearer session, initiator or founder only, moderator is 403, body `{ enabled }` written to the API roster store. Success 200 is only `{ comment, paymentsEnabled, defaultAmountUsd, recipients: [{ address, amountUsd, accountId, name }], moderatorPaymentsEnabled, moderators: [{ address, amountUsd, accountId, name }] }`. `defaultAmountUsd` is always 1. Moderator rows stay out of `recipients`.
 - **Errors:** 401 `{ error: 'Unauthorized' }`; 403 `{ error: 'Forbidden' }` when the live role is not initiator or founder; 400 `{ error: 'Invalid payments switch' }` when the body is not `{ enabled: boolean }`; store 400 of the five roster texts unchanged; 502 `{ error: 'Daily roster is unavailable' }` on any other store throw.
 - **Used by:** App daily payout roster payments switch.
 - **Auth:** `Authorization: Bearer` session. Initiator or founder only.
 
 ## Endpoint: POST /funding/daily-roster/recipients
 
-- **Purpose:** Bearer session, initiator or founder only, moderator is 403. Public body `{ accountId, amountUsd }`. `accountId` must match `MESSAGE_ID_RE`, otherwise the same 400 `Invalid person or amount` is returned. The route loads the account. Unknown account is 400 `Unknown person`. No Lightning address after trim is 400 `Person has no Lightning address`. A store failure on that load is 502 `Daily roster is unavailable`. The stored trimmed address and the amount are written to the API roster store. Success 200 is only `{ comment, paymentsEnabled, defaultAmountUsd, recipients: [{ address, amountUsd, accountId, name }] }`. `defaultAmountUsd` is always 1. Local bad body is 400 `Invalid person or amount`, not `Invalid address or amount`.
+- **Purpose:** Bearer session, initiator or founder only, moderator is 403. Public body `{ accountId, amountUsd }`. `accountId` must match `MESSAGE_ID_RE`, otherwise the same 400 `Invalid person or amount` is returned. The route loads the account. Unknown account is 400 `Unknown person`. No Lightning address after trim is 400 `Person has no Lightning address`. A store failure on that load is 502 `Daily roster is unavailable`. The stored trimmed address and the amount are written to the API roster store. Success 200 is only `{ comment, paymentsEnabled, defaultAmountUsd, recipients: [{ address, amountUsd, accountId, name }], moderatorPaymentsEnabled, moderators: [{ address, amountUsd, accountId, name }] }`. `defaultAmountUsd` is always 1. Local bad body is 400 `Invalid person or amount`, not `Invalid address or amount`.
 - **Errors:** 401 `{ error: 'Unauthorized' }`; 403 `{ error: 'Forbidden' }` when the live role is not initiator or founder; 400 `{ error: 'Invalid person or amount' }` when the body is not `{ accountId: string, amountUsd: number }` or `accountId` does not match `MESSAGE_ID_RE`; 400 `{ error: 'Unknown person' }` when the account is unknown; 400 `{ error: 'Person has no Lightning address' }` when there is no Lightning address after trim; 502 `{ error: 'Daily roster is unavailable' }` when loading the account fails; store 400 of the five roster texts unchanged; 502 `{ error: 'Daily roster is unavailable' }` on any other store throw.
 - **Used by:** App daily payout roster recipient add.
 - **Auth:** `Authorization: Bearer` session. Initiator or founder only.
 
 ## Endpoint: POST /funding/daily-roster/recipients/update
 
-- **Purpose:** Bearer session, initiator or founder only, moderator is 403, body `{ address, amountUsd }` written to the API roster store. Success 200 is only `{ comment, paymentsEnabled, defaultAmountUsd, recipients: [{ address, amountUsd, accountId, name }] }`. `defaultAmountUsd` is always 1.
+- **Purpose:** Bearer session, initiator or founder only, moderator is 403, body `{ address, amountUsd }` written to the API roster store. Success 200 is only `{ comment, paymentsEnabled, defaultAmountUsd, recipients: [{ address, amountUsd, accountId, name }], moderatorPaymentsEnabled, moderators: [{ address, amountUsd, accountId, name }] }`. `defaultAmountUsd` is always 1.
 - **Errors:** 401 `{ error: 'Unauthorized' }`; 403 `{ error: 'Forbidden' }` when the live role is not initiator or founder; 400 `{ error: 'Invalid address or amount' }` when `address` is a string and the amount is bad; 400 `{ error: 'Unknown address' }` when `address` is not a string; store 400 of the five roster texts unchanged; 502 `{ error: 'Daily roster is unavailable' }` on any other store throw.
 - **Used by:** App daily payout roster recipient update.
 - **Auth:** `Authorization: Bearer` session. Initiator or founder only.
 
 ## Endpoint: POST /funding/daily-roster/recipients/delete
 
-- **Purpose:** Bearer session, initiator or founder only, moderator is 403, body `{ address }` written to the API roster store. Success 200 is only `{ comment, paymentsEnabled, defaultAmountUsd, recipients: [{ address, amountUsd, accountId, name }] }`. `defaultAmountUsd` is always 1.
+- **Purpose:** Bearer session, initiator or founder only, moderator is 403, body `{ address }` written to the API roster store. Success 200 is only `{ comment, paymentsEnabled, defaultAmountUsd, recipients: [{ address, amountUsd, accountId, name }], moderatorPaymentsEnabled, moderators: [{ address, amountUsd, accountId, name }] }`. `defaultAmountUsd` is always 1.
 - **Errors:** 401 `{ error: 'Unauthorized' }`; 403 `{ error: 'Forbidden' }` when the live role is not initiator or founder; 400 `{ error: 'Unknown address' }` when the body is not `{ address: string }`; store 400 of the five roster texts unchanged; 502 `{ error: 'Daily roster is unavailable' }` on any other store throw.
 - **Used by:** App daily payout roster recipient delete.
+- **Auth:** `Authorization: Bearer` session. Initiator or founder only.
+
+## Endpoint: POST /funding/daily-roster/moderators
+
+- **Purpose:** Bearer session, initiator or founder only, moderator is 403. Public body `{ accountId, amountUsd }`. `accountId` must match `MESSAGE_ID_RE`, otherwise the same 400 `Invalid person or amount` is returned. The route loads the account. Unknown account is 400 `Unknown person`. No Lightning address after trim is 400 `Person has no Lightning address`. A store failure on that load is 502 `Daily roster is unavailable` and is logged as `moderator-add`. The stored trimmed address and the amount are written with `addModerator`. Success 200 is only `{ comment, paymentsEnabled, defaultAmountUsd, recipients: [{ address, amountUsd, accountId, name }], moderatorPaymentsEnabled, moderators: [{ address, amountUsd, accountId, name }] }`. `defaultAmountUsd` is always 1. Moderator rows stay out of `recipients`. Local bad body is 400 `Invalid person or amount`, not `Invalid address or amount`.
+- **Errors:** 401 `{ error: 'Unauthorized' }`; 403 `{ error: 'Forbidden' }` when the live role is not initiator or founder; 400 `{ error: 'Invalid person or amount' }` when the body is not `{ accountId: string, amountUsd: number }` or `accountId` does not match `MESSAGE_ID_RE`; 400 `{ error: 'Unknown person' }` when the account is unknown; 400 `{ error: 'Person has no Lightning address' }` when there is no Lightning address after trim; 502 `{ error: 'Daily roster is unavailable' }` when loading the account fails; store 400 of the five roster texts unchanged; 502 `{ error: 'Daily roster is unavailable' }` on any other store throw.
+- **Used by:** App moderator stipend add.
+- **Auth:** `Authorization: Bearer` session. Initiator or founder only.
+
+## Endpoint: POST /funding/daily-roster/moderators/update
+
+- **Purpose:** Bearer session, initiator or founder only, moderator is 403, body `{ address, amountUsd }` written with `updateModerator`. Success 200 is only `{ comment, paymentsEnabled, defaultAmountUsd, recipients: [{ address, amountUsd, accountId, name }], moderatorPaymentsEnabled, moderators: [{ address, amountUsd, accountId, name }] }`. `defaultAmountUsd` is always 1. Moderator rows stay out of `recipients`.
+- **Errors:** 401 `{ error: 'Unauthorized' }`; 403 `{ error: 'Forbidden' }` when the live role is not initiator or founder; 400 `{ error: 'Invalid address or amount' }` when `address` is a string and the amount is bad; 400 `{ error: 'Unknown address' }` when `address` is not a string; store 400 of the five roster texts unchanged; 502 `{ error: 'Daily roster is unavailable' }` on any other store throw.
+- **Used by:** App moderator stipend update.
+- **Auth:** `Authorization: Bearer` session. Initiator or founder only.
+
+## Endpoint: POST /funding/daily-roster/moderators/delete
+
+- **Purpose:** Bearer session, initiator or founder only, moderator is 403, body `{ address }` written with `deleteModerator`. Success 200 is only `{ comment, paymentsEnabled, defaultAmountUsd, recipients: [{ address, amountUsd, accountId, name }], moderatorPaymentsEnabled, moderators: [{ address, amountUsd, accountId, name }] }`. `defaultAmountUsd` is always 1. Moderator rows stay out of `recipients`.
+- **Errors:** 401 `{ error: 'Unauthorized' }`; 403 `{ error: 'Forbidden' }` when the live role is not initiator or founder; 400 `{ error: 'Unknown address' }` when the body is not `{ address: string }`; store 400 of the five roster texts unchanged; 502 `{ error: 'Daily roster is unavailable' }` on any other store throw.
+- **Used by:** App moderator stipend delete.
+- **Auth:** `Authorization: Bearer` session. Initiator or founder only.
+
+## Endpoint: POST /funding/daily-roster/moderators/payments
+
+- **Purpose:** Bearer session, initiator or founder only, moderator is 403, body `{ enabled }` written with `setModeratorPaymentsEnabled`. Success 200 is only `{ comment, paymentsEnabled, defaultAmountUsd, recipients: [{ address, amountUsd, accountId, name }], moderatorPaymentsEnabled, moderators: [{ address, amountUsd, accountId, name }] }`. `defaultAmountUsd` is always 1. Moderator rows stay out of `recipients`. Daily `paymentsEnabled` is unchanged.
+- **Errors:** 401 `{ error: 'Unauthorized' }`; 403 `{ error: 'Forbidden' }` when the live role is not initiator or founder; 400 `{ error: 'Invalid payments switch' }` when the body is not `{ enabled: boolean }`; store 400 of the five roster texts unchanged; 502 `{ error: 'Daily roster is unavailable' }` on any other store throw.
+- **Used by:** App moderator stipend payments switch.
 - **Auth:** `Authorization: Bearer` session. Initiator or founder only.
 
 ## Endpoint: GET /funding/daily-roster/document
