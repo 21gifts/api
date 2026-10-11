@@ -250,7 +250,7 @@ async function sharePricer(
 /**
  * Public ledger of one credit: who gave what, and each Lightning repayment.
  *
- * @param deps - Store, auth, and clock.
+ * @param routeDeps - Store, auth, clock, and rate loader.
  * @param c - Request. No session is required.
  * @returns The givers and the plan, or an error.
  */
@@ -628,6 +628,9 @@ export async function repaymentDueBills(deps: RepaymentDeps, c: Context): Promis
   if (plan === 'unavailable') {
     return c.json({ error: 'Ask amount is unavailable' }, 503);
   }
+  if (plan.due.length === 0) {
+    return c.json({ bills: [], waiting: [] }, 200);
+  }
   const price = await sharePricer(deps, opened.row);
   const fiat = isFiatCredit(opened.row);
   // One limiter hit per call, taken by the first bill that has to be minted.
@@ -785,7 +788,7 @@ async function nextShare(
 }
 
 /** What `GET /me/loans` needs. */
-export type MyLoansDeps = Pick<
+export type MyLoansRouteDeps = Pick<
   RepaymentDeps,
   'store' | 'authStore' | 'now' | 'goalRateDay' | 'lnurlServer'
 >;
@@ -821,13 +824,12 @@ function pricedSum(
  * @returns The row, null, or `unavailable` when the debt cannot be computed.
  */
 async function loanRow(
-  deps: MyLoansDeps,
+  deps: MyLoansRouteDeps,
   row: MessageRow,
   nowMs: number,
 ): Promise<Record<string, unknown> | null | 'unavailable'> {
   const fiat = isFiatCredit(row);
   const cents = (units: bigint): string | null => (fiat ? formatCents(units) : null);
-  const price = await sharePricer(deps, row);
   const fundedAt = row.goalFundedAt instanceof Date ? row.goalFundedAt : null;
   const base = {
     messageId: row.id,
@@ -854,16 +856,15 @@ async function loanRow(
     if (owed === 'unavailable') {
       return 'unavailable';
     }
+    // Sats with no account are not repaid, as in the schedule.
+    const named = owed.filter((payer) => payer.accountId !== '');
     return {
       ...base,
       daysDue: 0,
       daysPaid: 0,
       repaidSats: 0,
-      // Sats with no account are not repaid, as in the schedule.
-      totalSats: pricedSum(
-        price,
-        owed.filter((payer) => payer.accountId !== ''),
-      ),
+      // The rate is read only when there is a debt to price.
+      totalSats: named.length === 0 ? 0 : pricedSum(await sharePricer(deps, row), named),
       due: {
         payableSats: 0,
         payableAmount: cents(0n),
@@ -888,6 +889,8 @@ async function loanRow(
   if (open.length === 0) {
     return null;
   }
+  // Read the rate only now: a repaid loan is left out without it.
+  const price = await sharePricer(deps, row);
   const repaidSats = plan.paid.reduce((sum, item) => sum + item.dueSats, 0);
   const openSats = pricedSum(price, open);
   const payable = plan.due.filter((share) => share.canReceive);
@@ -936,7 +939,7 @@ async function loanRow(
  * @param deps - Store, auth, clock, rate loader, and the optional LNURL server.
  * @returns A Hono app with `GET /me/loans`.
  */
-export function myLoansRoutes(deps: MyLoansDeps): Hono {
+export function myLoansRoutes(deps: MyLoansRouteDeps): Hono {
   return new Hono().get('/me/loans', async (c) => {
     const token = bearerToken(c.req.header('authorization'));
     const account = token === null ? null : await resolveSession(deps.authStore, deps.now(), token);

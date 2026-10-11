@@ -1264,6 +1264,59 @@ describe('repayment from the in-app wallet', () => {
     expect(reads).toBe(1);
   });
 
+  it('reads no rate when nothing needs pricing', async () => {
+    const rates = async (): Promise<GoalRateDay> => {
+      throw new Error('fx.rate.missing');
+    };
+    // Funding day: nothing is due yet.
+    const today = await loanSetup({
+      goalCurrency: 'USD',
+      rates,
+      now: Date.UTC(2026, 8, 26, 20),
+    });
+    const due = await post(today.app, `/messages/${CREDIT}/repayment/due`);
+    expect(due.status).toBe(200);
+    expect(await due.json()).toEqual({ bills: [], waiting: [] });
+    expect((await today.app.request(`/messages/${CREDIT}/repayment`)).status).toBe(200);
+    const single = await post(today.app, `/messages/${CREDIT}/repayment`);
+    expect(single.status).toBe(400);
+    expect(await single.json()).toEqual({ error: 'Nothing is due' });
+    // A repaid fiat loan is left out, and a collecting one with no giver totals 0.
+    const repaid = await loanSetup({ goalCurrency: 'USD', rates });
+    for (const dayIndex of [0, 1]) {
+      for (const recipientAccountId of [WALLET_GIVER, NO_WALLET]) {
+        await repaid.messages.markRepaymentPaid({
+          messageId: CREDIT,
+          dayIndex,
+          recipientAccountId,
+          dueSats: 1,
+          paidAt: new Date(MONDAY),
+        });
+      }
+    }
+    await repaid.messages.create({
+      id: SECOND_CREDIT,
+      accountId: AUTHOR,
+      name: 'Ada',
+      text: 'second loan',
+      createdAt: new Date(Date.UTC(2026, 8, 27)),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+      sats: 0,
+      goalSats: 1000,
+      goalRepayable: true,
+      goalTermDays: 10,
+      goalCurrency: 'USD',
+      goalAmount: '10.00',
+    });
+    const listed = await loans(repaid.app);
+    expect(listed.status).toBe(200);
+    const body = (await listed.json()) as { loans: Record<string, unknown>[] };
+    expect(body.loans.map((loan) => [loan['messageId'], loan['totalSats']])).toEqual([
+      [SECOND_CREDIT, 0],
+    ]);
+  });
+
   it('skips a giver who cannot receive and bills the next share', async () => {
     await withNip57(async () => {
       const { app, messages } = await loanSetup();
