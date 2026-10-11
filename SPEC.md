@@ -3662,7 +3662,7 @@ at most 50 events.
 - `name`: one of `screen_view`, `post_created`, `reply_created`, `gift_sent`,
   `payment_sent`, `payment_failed`, `payment_received_seen`, `pos_charge_created`,
   `pos_charge_paid_seen`, `search`, `shop_opened`, `profile_opened`, `login`,
-  `logout`, `signup_completed`, `wallet_open_failed`. `logout` is sent while the session is still
+  `logout`, `signup_completed`, `wallet_open_failed`, `wallet_tour_shown`, `wallet_tour_step`, `wallet_tour_done`, `wallet_move_opened`, `wallet_move_step`, `wallet_move_copied`, `wallet_move_closed`, `wallet_move_done`. `logout` is sent while the session is still
   valid, before the app ends it.
 - `at`: same instant rules as `syncedAt` above.
 - `path`: optional; cut at the first `?` or `#`; must start with `/`, at most
