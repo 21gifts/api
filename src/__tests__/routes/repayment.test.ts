@@ -1487,6 +1487,7 @@ describe('repayment from the in-app wallet', () => {
       dueSats: 150,
       paidAt: new Date(MONDAY),
     });
+    await messages.recordZapReceipt('r-anon-second', SECOND_CREDIT, 7, null);
     expect((await app.request('/me/loans')).status).toBe(401);
     const res = await loans(app);
     expect(res.status).toBe(200);
@@ -1496,7 +1497,7 @@ describe('repayment from the in-app wallet', () => {
     expect(body.loans[0]).toMatchObject({
       text: 'second loan',
       goalSats: 1000,
-      sats: 0,
+      sats: 7,
       goalCurrency: 'BTC',
       goalAmount: '1000',
       termDays: 10,
