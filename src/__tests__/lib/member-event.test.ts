@@ -30,6 +30,7 @@ describe('MEMBER_EVENT_NAMES', () => {
         'gift_sent',
         'login',
         'logout',
+        'payment_failed',
         'payment_received_seen',
         'payment_sent',
         'pos_charge_created',
@@ -41,12 +42,36 @@ describe('MEMBER_EVENT_NAMES', () => {
         'search',
         'shop_opened',
         'signup_completed',
+        'wallet_open_failed',
       ].sort(),
     );
   });
 });
 
 describe('parseMemberEventBatch', () => {
+  it('keeps payment_failed and wallet_open_failed with their scalar props', () => {
+    const result = parse({
+      events: [
+        event({
+          name: 'payment_failed',
+          props: { stage: 'send', reason: 'timeout', method: 'spark', flow: 'zap', amountSats: 21 },
+        }),
+        event({ name: 'wallet_open_failed', props: { reason: 'prf_unsupported' } }),
+      ],
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) {
+      return;
+    }
+    expect(result.events.map((e) => [e.name, e.props])).toEqual([
+      [
+        'payment_failed',
+        { stage: 'send', reason: 'timeout', method: 'spark', flow: 'zap', amountSats: 21 },
+      ],
+      ['wallet_open_failed', { reason: 'prf_unsupported' }],
+    ]);
+  });
+
   it('rejects a non-object body, a missing events array, and an oversized batch', () => {
     expect(parse(null)).toEqual({ ok: false });
     expect(parse(1)).toEqual({ ok: false });
