@@ -1228,7 +1228,7 @@ Success → **Response** `200`:
 
 - `text` is the first 160 characters of the note. `goalCurrency` is the ask currency (`BTC` when none is stored) and `goalAmount` the typed amount (the goal sats when none is stored). The `goalAmount*` and `amount*` keys are the stored ask snapshots and collected totals, as on the public note.
 - `fundedAt` is null while the loan is still collecting; such a loan has `daysDue` 0, `daysPaid` 0, `repaidSats` 0, zero `due` counts, and `next: null`.
-- `daysDue` and `daysPaid` are those of `GET /messages/:id/repayment`. `repaidSats` is the sum of settled shares. `totalSats` is `repaidSats` plus every unpaid share in sats.
+- `daysDue` and `daysPaid` are those of `GET /messages/:id/repayment`. `repaidSats` is the sum of settled shares. `totalSats` is `repaidSats` plus every unpaid share in sats; sats with no account are not repaid and not counted.
 - `due` covers every due, unpaid share. `payable*` are the shares whose lender can receive (the ones `POST /messages/:id/repayment/due` bills), `waiting*` the shares whose lender cannot. `*People` counts distinct lenders. `behindDays` is the number of due days before today that still have an unpaid share. `lastPayment` is true when paying `payable` would finish the loan.
 - `next` is the next repayment day after the due days: `dueOn` (`YYYY-MM-DD` UTC), its sats, and its amount; null when no later day remains.
 - `*Amount` and `amount` are two-decimal strings in the loan's currency for a fiat loan, else `null`. For a fiat loan every sat figure that is not yet paid (`totalSats`, `payableSats`, `waitingSats`, `next.sats`) is priced at the rate `POST /messages/:id/repayment` would use now, and is `null` without a rate.

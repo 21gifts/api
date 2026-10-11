@@ -822,7 +822,11 @@ async function loanRow(
       daysDue: 0,
       daysPaid: 0,
       repaidSats: 0,
-      totalSats: pricedSum(price, owed),
+      // Sats with no account are not repaid, as in the schedule.
+      totalSats: pricedSum(
+        price,
+        owed.filter((payer) => payer.accountId !== ''),
+      ),
       due: {
         payableSats: 0,
         payableAmount: cents(0n),
