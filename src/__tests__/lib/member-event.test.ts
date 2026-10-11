@@ -43,12 +43,41 @@ describe('MEMBER_EVENT_NAMES', () => {
         'shop_opened',
         'signup_completed',
         'wallet_open_failed',
+        'wallet_tour_shown',
+        'wallet_tour_step',
+        'wallet_tour_done',
+        'wallet_move_opened',
+        'wallet_move_step',
+        'wallet_move_copied',
+        'wallet_move_closed',
+        'wallet_move_done',
       ].sort(),
     );
   });
 });
 
 describe('parseMemberEventBatch', () => {
+  it('keeps the wallet tour and move events with their scalar props', () => {
+    const names = [
+      'wallet_tour_shown',
+      'wallet_tour_step',
+      'wallet_tour_done',
+      'wallet_move_opened',
+      'wallet_move_step',
+      'wallet_move_copied',
+      'wallet_move_closed',
+      'wallet_move_done',
+    ];
+    const result = parse({ events: names.map((name) => event({ name, props: { step: 2 } })) });
+    expect(result.ok).toBe(true);
+    if (!result.ok) {
+      return;
+    }
+    expect(result.events.map((e) => [e.name, e.props])).toEqual(
+      names.map((name) => [name, { step: 2 }]),
+    );
+  });
+
   it('keeps payment_failed and wallet_open_failed with their scalar props', () => {
     const result = parse({
       events: [
