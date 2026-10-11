@@ -1,0 +1,122 @@
+# Manual live loan through the app screens. Not part of the pull-request
+# suite: those jobs must finish within minutes, and this run pays real
+# Spark invoices. It checks out the API and the app, then runs
+# scripts/loan-e2e/run.mjs with the screen path on. The Breez key is
+# BREEZ_API_KEY_DEV. The funding wallet mnemonic is
+# LOAN_E2E_FUNDING_MNEMONIC, and that wallet must already hold 1000 sats.
+name: Live loan screens
+
+on:
+  workflow_dispatch:
+    inputs:
+      api_ref:
+        description: API ref to test
+        required: false
+        default: staging
+        type: string
+      app_ref:
+        description: App ref to test
+        required: false
+        default: staging
+        type: string
+
+concurrency:
+  group: loan-e2e
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  actions: write
+
+jobs:
+  screens:
+    name: Live loan screens
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    steps:
+      - name: Require loan secrets
+        env:
+          LOAN_E2E_BREEZ_API_KEY: ${{ secrets.BREEZ_API_KEY_DEV }}
+          LOAN_E2E_FUNDING_MNEMONIC: ${{ secrets.LOAN_E2E_FUNDING_MNEMONIC }}
+        run: |
+          if [ -z "$LOAN_E2E_BREEZ_API_KEY" ] || [ -z "$LOAN_E2E_FUNDING_MNEMONIC" ]; then
+            echo "loan secrets are missing"
+            exit 1
+          fi
+
+      - name: Checkout API
+        uses: actions/checkout@v4
+        with:
+          repository: 21gifts/api
+          ref: ${{ inputs.api_ref }}
+          path: api
+
+      - name: Checkout app
+        uses: actions/checkout@v4
+        with:
+          repository: 21gifts/app
+          ref: ${{ inputs.app_ref }}
+          path: app
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Postgres client
+        run: sudo apt-get update && sudo apt-get install -y postgresql-client
+
+      - name: Install Spark helper
+        run: |
+          python -m pip install --disable-pip-version-check 'breez-sdk-spark==0.26.0' mnemonic
+          python -c 'import breez_sdk_spark, mnemonic'
+
+      - name: Install API dependencies
+        working-directory: api
+        run: bun install --frozen-lockfile
+
+      - name: Install app dependencies
+        working-directory: app
+        run: npm ci
+
+      - name: Install Chromium
+        working-directory: app
+        run: npx playwright install --with-deps chromium
+
+      - name: Prepare the loan directory
+        env:
+          LOAN_E2E_FUNDING_MNEMONIC: ${{ secrets.LOAN_E2E_FUNDING_MNEMONIC }}
+        run: |
+          install -d -m 700 "$RUNNER_TEMP/loan-e2e"
+          printf '%s\n' "$LOAN_E2E_FUNDING_MNEMONIC" > "$RUNNER_TEMP/loan-e2e/funding.mnemonic"
+          chmod 600 "$RUNNER_TEMP/loan-e2e/funding.mnemonic"
+
+      - name: Run the live loan screens
+        working-directory: api
+        env:
+          LOAN_E2E_DIR: ${{ runner.temp }}/loan-e2e
+          LOAN_E2E_UI: '1'
+          LOAN_E2E_FRESH: '1'
+          LOAN_E2E_APP: ${{ github.workspace }}/app
+          LOAN_E2E_BREEZ_API_KEY: ${{ secrets.BREEZ_API_KEY_DEV }}
+          LOAN_E2E_PYTHON: python
+        run: node scripts/loan-e2e/run.mjs
+
+      - name: Keep screen failure output
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: loan-screen-failure
+          path: app/test-results
+          if-no-files-found: ignore
+          retention-days: 7
