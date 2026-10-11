@@ -8,6 +8,7 @@ import { parseNostrKek } from '@/lib/nostr/kek';
 import { InvoiceRateLimiter, PostRateLimiter } from '@/lib/nostr/rate-limit';
 import { messagesRoutes } from '@/routes/messages';
 import { REPAYMENT_BILLS_MAX, myLoansRoutes } from '@/routes/repayment';
+import type { GoalRateDay } from '@/lib/goal-rate';
 import { InMemorySparkInvoiceStore } from '@/lib/spark-invoice-store';
 import type { MessageInvoiceAttempt } from '@/lib/message-store';
 import { resolveZapRelays } from '@/lib/nostr/relays';
