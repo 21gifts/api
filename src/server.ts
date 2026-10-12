@@ -104,7 +104,7 @@ import type { InvoiceStore } from '@/lib/invoice-store';
 import type { GiftRecorder } from '@/lib/gift-recorder';
 import { InMemoryLnAddressCache } from '@/lib/ln-address-cache';
 import type { LnAddressCache } from '@/lib/ln-address-cache';
-import { requestLog, setDiagnosticSink } from '@/lib/log';
+import { requestLog, setAddressRefKey, setDiagnosticSink } from '@/lib/log';
 import { sundayRest } from '@/lib/sunday-rest';
 import type { FetchFn } from '@/lib/lnurlp';
 import type { NostrPublisher } from '@/lib/nostr/publish';
@@ -525,6 +525,7 @@ export function createApp(deps: AppDeps = {}): Hono {
   const webAuthnRpName = deps.webAuthnRpName ?? process.env['WEBAUTHN_RP_NAME'];
   const passkeyCeremony = deps.passkeyCeremony ?? new SimpleWebAuthnPasskeyCeremony();
   const spendApiToken = deps.spendApiToken ?? process.env['SPEND_API_TOKEN'];
+  setAddressRefKey(spendApiToken);
   const rosterStore = deps.rosterStore ?? new InMemoryDailyRosterStore();
   const spendPing =
     deps.spendPing ??
