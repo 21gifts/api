@@ -150,7 +150,9 @@ null is allowed. At most one row per account has status `open`.
 invoice's payment hash. Both are set when the row is created. A
 replacement quote reuses them while the invoice is unpaid and unexpired.
 When that invoice has expired unpaid, both are replaced by a new invoice
-for the same sats. `created_at` is set.
+for the same sats. `created_at` is set. One proof may be stored. It holds the quote, the
+method, the asset, and the proof parameter. Its result is absent until
+Orchestra answers, then `refused` or `accepted`. Absent is unresolved.
 `accepted_at` is set only for `accepted` and `paid`. `paid_at` is set
 only for `paid`. `ended_at` is set only for `ended`. A payment moves
 from `accepted` to `ended` only when Orchestra reports that order
@@ -219,8 +221,11 @@ fetch, with no new amount, is the Lightning pay request.
 
 ### Errors on callback and proof
 
-An unknown username, or a shop with no linked Wallet of Satoshi address, is
-**404** `{ "error": "Not found" }`.
+An unknown username is **404** `{ "error": "Not found" }`. A shop with no
+linked Wallet of Satoshi address is that same **404** when no payment is
+stored. Callback and proof of a stored payment use that payment, its
+quote, and its BOLT11. Unlinking or replacing the address does not make
+those calls **404**.
 
 On `GET /lnurlp/tx/:username`, and on `GET /lnurlp/cb/:username` when
 `method` is set, an unknown quote, a quote for another username, or an
@@ -594,11 +599,12 @@ minutes stay as they are.
 linked address's minimum and maximum, for an account with a username and
 a linked Wallet of Satoshi address. One unexpired pending charge. Five
 minutes. While a `shop_payment` for that account is `accepted`, or `open` with a
-stored proof that has no result, the call is **409**
+stored proof whose result is absent, the call is **409**
 `{ "error": "A payment is already open" }` and writes nothing. While a
-page payment is `open`, no proof is stored, and no till charge is
-pending, the call marks that payment `ended` and then creates the
-charge. The pay link is one public URL and carries no payment id, so
+page payment is `open`, no till charge is pending, and no proof is stored
+or the stored proof is `refused`, the call marks that payment `ended` and
+then creates the charge. A refused proof is a result, not an in-flight
+payment. The pay link is one public URL and carries no payment id, so
 that open payment pins the URL until this call or the five minutes. While it is pending, both Lightning sendable bounds become that
 sat amount in millisats. Metadata stays on Wallet of Satoshi. When the
 Orchestra key is configured and Orchestra commits to those sats on the
