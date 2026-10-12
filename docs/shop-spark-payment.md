@@ -52,7 +52,7 @@ is the earlier of the expiry Orchestra returns for that quote, the
 expiry of the BOLT11 that quote names, and the instant that payment
 leaves `open`. When that instant is sooner, `shop_quote.expires_at`
 moves to it. A quote for an open till charge also ends when the charge
-ends, if that is sooner.
+ends, if that is sooner, unless a stored proof has no result.
 
 The `quote` parameter uses that same form. A value that is not that form,
 compared case-insensitively, is an unknown quote.
@@ -178,9 +178,7 @@ first. Replacing the quote does not extend those five minutes. When
 they pass while it is still `open`, the next read marks it `ended`
 before the read continues, unless a stored proof has no result. That
 proof does not end the payment and does not replace the quote. A till payment moves to `ended` when its charge expires
-unpaid while the payment is still `open`. `DELETE /pos`, when it cancels
-that pending charge, makes the same move. It does not change an
-`accepted` payment. When that charge is paid, the payment is `paid`.
+unpaid while the payment is still `open`, unless a stored proof has no result. That proof does not end the payment and does not replace the quote. `DELETE /pos`, while the pending charge it would cancel belongs to a payment whose stored proof has no result, is **409** `{ "error": "A payment is already open" }` and cancels nothing. Otherwise, when it cancels that pending charge, an `open` payment moves to `ended`. It does not change an `accepted` payment. When that charge is paid, the payment is `paid`. Once that proof is refused, a till payment whose charge has already expired moves to `ended`.
 
 The implementing change adds these tables. This document does not migrate
 them.
@@ -560,7 +558,7 @@ A quote that lapses before acceptance is replaced by a quote for the
 same sats, and only while the payment is still `open`. No replacement
 is made after the payment has ended. An unexpired quote is returned as
 stored. A later fetch does not mint a second one. A quote for an open till charge also ends when
-the charge ends, if that is sooner. After the charge has ended, the sticker takes
+the charge ends, if that is sooner, unless a stored proof has no result. That proof keeps the quote and the sticker. Otherwise, after the charge has ended, the sticker takes
 a new amount from the next payer and does not keep the charge's quote.
 The sats of the replacement do not change. The Tether Wallet check fails
 if it reports `OPEN_CRYPTO_PAY_AMOUNT_CHANGED` for that replacement.
@@ -568,8 +566,9 @@ if it reports `OPEN_CRYPTO_PAY_AMOUNT_CHANGED` for that replacement.
 An amount entered on the page is the one open amount of that pay link.
 A later fetch of the same URL returns it until the payment is accepted
 or ended. While it is still `open`, it ends five minutes after it was
-created. A pending till charge is that open amount. The page does not
-replace it, and a page amount does not replace a pending charge.
+created, unless a stored proof has no result. A pending till charge is
+that open amount. The page does not replace it, and a page amount does
+not replace a pending charge.
 
 With no Orchestra key configured, the pay link serves no stablecoin
 amount. Lightning is unchanged.
@@ -611,7 +610,8 @@ stored proof whose result is absent, the call is **409**
 page payment is `open`, no till charge is pending, and no proof is stored
 or the stored proof is `refused`, the call marks that payment `ended` and
 then creates the charge. A refused proof is a result, not an in-flight
-payment. The pay link is one public URL and carries no payment id, so
+payment. `DELETE /pos` is that same **409** and cancels nothing while the
+pending charge belongs to a payment whose stored proof has no result. The pay link is one public URL and carries no payment id, so
 that open payment pins the URL until this call or the five minutes. While it is pending, both Lightning sendable bounds become that
 sat amount in millisats. Metadata stays on Wallet of Satoshi. When the
 Orchestra key is configured and Orchestra commits to those sats on the
@@ -619,8 +619,8 @@ invoice for this charge, the stablecoin amounts for those same sats are
 added beside that pin, and `callback` is `/lnurlp/cb/<username>`.
 Otherwise callback and metadata stay on Wallet of Satoshi.
 
-A lapsed quote is replaced only while the charge is open, and only for
-the same sats.
+A lapsed quote is replaced only while the charge is open, only for the
+same sats, and only when no stored proof is unresolved.
 
 The charge is paid when the BOLT11 for those sats is settled. Orchestra
 pays that BOLT11. One charge is paid once. This path does not settle on
