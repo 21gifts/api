@@ -3011,7 +3011,7 @@ There `address` is replaced by `addressRef`: the first 12 lower-case hex
 characters of HMAC-SHA256 over the lower-cased address, keyed with the
 trimmed `SPEND_API_TOKEN`. While `SPEND_API_TOKEN` is unset or blank the line
 prints `"address": "[address]"` and no `addressRef`. In every other string
-field of the printed line, an email-shaped part (`local@domain.tld`) is
+field of the printed line, an email-shaped part (`local@domain.tld`, the `@` literal or written `%40`) is
 replaced by `[address]`. The request client fields are printed unchanged.
 
 `DEBUG_TOKEN` unset or blank → **Response** `503`:

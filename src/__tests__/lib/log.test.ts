@@ -79,6 +79,9 @@ describe('logEvent', () => {
       recipient: 'ada@example.com',
       path: '/pay/ada@example.com/invoice',
       note: 'ada@example.com, bob@example.org',
+      encoded: '/pay/ada%40example.com',
+      long: `${'a'.repeat(200)}@example.com`,
+      percent: '100%40 off',
       plain: 'no at sign',
       handle: 'user@localhost',
       count: 2,
@@ -89,6 +92,9 @@ describe('logEvent', () => {
     expect(line?.['recipient']).toBe('[address]');
     expect(line?.['path']).toBe('/pay/[address]/invoice');
     expect(line?.['note']).toBe('[address], [address]');
+    expect(line?.['encoded']).toBe('/pay/[address]');
+    expect(line?.['long']).toBe('[address]');
+    expect(line?.['percent']).toBe('100%40 off');
     expect(line?.['plain']).toBe('no at sign');
     expect(line?.['handle']).toBe('user@localhost');
     expect(line?.['count']).toBe(2);
