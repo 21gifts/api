@@ -360,9 +360,13 @@ async function creditStillOpen(store: MessageStore, row: MessageRow): Promise<bo
   }
   const slices = repaymentSchedule(row.goalTermDays, owed);
   const paid = new Set(
-    (await store.listRepayments(row.id)).map((item) => `${item.dayIndex}:${item.recipientAccountId}`),
+    (await store.listRepayments(row.id)).map(
+      (item) => `${item.dayIndex}:${item.recipientAccountId}`,
+    ),
   );
-  return slices.length === 0 || slices.some((slice) => !paid.has(`${slice.dayIndex}:${slice.accountId}`));
+  return (
+    slices.length === 0 || slices.some((slice) => !paid.has(`${slice.dayIndex}:${slice.accountId}`))
+  );
 }
 
 /** Resolve the account behind a request's bearer session, or `null`. */

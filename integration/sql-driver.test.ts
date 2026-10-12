@@ -9,7 +9,6 @@ import { migrateMemberHabitSchema, PostgresMemberHabitStore } from '@/lib/member
 import { postgresTextArrayLiteral } from '@/lib/postgres-text-array';
 import { migrateBtcUsdSchema } from '@/lib/btc-usd-store';
 import { migrateFiatSchema } from '@/lib/usd-fiat-store';
-import { migrateGiftSchema } from '@/lib/gift-store';
 import { unsignedNostrDefaults } from '@/lib/message';
 import { migrateMessageSchema, PostgresMessageStore } from '@/lib/message-store';
 
@@ -344,7 +343,6 @@ describe('PostgresMessageStore deleteById on a credit', () => {
       await migrateAuthSchema(client);
       await migrateBtcUsdSchema(client);
       await migrateFiatSchema(client);
-      await migrateGiftSchema(client);
       await migrateMessageSchema(client);
       ready = true;
       await new PostgresAuthStore(client).createAccount({
@@ -368,7 +366,13 @@ describe('PostgresMessageStore deleteById on a credit', () => {
         hasPhoto: false,
         ...unsignedNostrDefaults(),
       };
-      await store.create({ ...base, id: creditId, text: 'credit', goalSats: 10, goalRepayable: true });
+      await store.create({
+        ...base,
+        id: creditId,
+        text: 'credit',
+        goalSats: 10,
+        goalRepayable: true,
+      });
       await store.create({ ...base, id: plainId, text: 'plain' });
       await client.execute('UPDATE message SET sats = 5 WHERE id = $1', [creditId]);
       expect(await store.deleteById(creditId)).toBe(false);
