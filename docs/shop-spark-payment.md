@@ -117,6 +117,11 @@ with the same amount returns the same id. A different amount, while a
 payment is open, is **409** `{ "error": "A payment is already open" }`
 and writes nothing. The open amount stays. While the payment is
 `accepted`, the same call is that same **409** and writes nothing.
+A page payment that is still `open` five minutes after it was created
+is marked `ended` on the next read, before that read continues. Those
+five minutes are the pending-charge window. Replacing the quote does
+not move that time. The read then has no open amount, and a new amount
+may be opened. An `accepted` payment is not ended by this clock.
 
 On **409** the page shows that error. It does not treat a later fetch of
 the pay link as the amount this payer just entered.
@@ -146,7 +151,9 @@ for the same sats. `created_at` is set.
 `accepted_at` is set only for `accepted` and `paid`. `paid_at` is set
 only for `paid`. `ended_at` is set only for `ended`. A payment moves
 from `accepted` to `ended` only when Orchestra reports that order
-refunded or failed. A lapsed quote does not end it.
+refunded or failed. A lapsed quote does not end an `accepted` or
+`paid` payment. A page payment that is still `open` ends as stated
+below.
 
 `shop_quote` stores one quote. `id` is `quote.id`. `payment_id`
 references `shop_payment`. `expires_at` is `quote.expiration`.
@@ -159,7 +166,10 @@ to the wallet. `created_at` is set.
 returns it unchanged and does not mint another. A lapsed quote is
 replaced by a new `shop_quote` for the same sats. The payment id does
 not change. A page payment stays `open` across those refreshes until it
-is accepted. A till payment moves to `ended` when its charge expires
+is accepted, or until five minutes after it was created, whichever is
+first. Replacing the quote does not extend those five minutes. When
+they pass while it is still `open`, the next read marks it `ended`
+before the read continues. A till payment moves to `ended` when its charge expires
 unpaid while the payment is still `open`. `DELETE /pos`, when it cancels
 that pending charge, makes the same move. It does not change an
 `accepted` payment. When that charge is paid, the payment is `paid`.
@@ -497,12 +507,13 @@ BOLT11, not from a phone. This branch does not watch that invoice yet.
 A stablecoin row is served only when that exact-out quote commits to
 this sat count on that invoice. Exact-out onto a Spark address is not
 this settlement. An estimate that does not commit to the sat count is
-not a quote this pay link serves. Orchestra requires a source-chain
-refund address for an exact-out quote and for a Lightning destination.
-This service does not hold one, and it does not send one. The payer's
-address is not known when the quote is created. A quote Orchestra does
-not return is not served. A refund goes where Orchestra sends it. This
-service does not receive it and does not add a refund wallet. With no
+not a quote this pay link serves. This service does not hold a
+source-chain refund address, and the quote request does not send one.
+The payer's address is not known when the quote is created. Omitting
+the address does not withhold the quote. A refund goes to the payer's
+detected source address when that address is a safe return, and it
+does not come to this service. This service does not add a refund
+wallet. A quote Orchestra does not return is not served. With no
 committed quote, the pay link keeps today's Lightning request.
 
 A deposit Orchestra settles for fewer sats than this count does not pay
@@ -513,8 +524,9 @@ a quote whose invoice is already paid is not a second sale. This service
 does not take it back.
 
 A quote that lapses before acceptance is replaced by a quote for the
-same sats. An unexpired quote is returned as stored. A later fetch does
-not mint a second one. A quote for an open till charge also ends when
+same sats, and only while the payment is still `open`. No replacement
+is made after the payment has ended. An unexpired quote is returned as
+stored. A later fetch does not mint a second one. A quote for an open till charge also ends when
 the charge ends, if that is sooner. After the charge has ended, the sticker takes
 a new amount from the next payer and does not keep the charge's quote.
 The sats of the replacement do not change. The Tether Wallet check fails
@@ -522,7 +534,8 @@ if it reports `OPEN_CRYPTO_PAY_AMOUNT_CHANGED` for that replacement.
 
 An amount entered on the page is the one open amount of that pay link.
 A later fetch of the same URL returns it until the payment is accepted
-or ended. A pending till charge is that open amount. The page does not
+or ended. While it is still `open`, it ends five minutes after it was
+created. A pending till charge is that open amount. The page does not
 replace it, and a page amount does not replace a pending charge.
 
 With no Orchestra key configured, the pay link serves no stablecoin
