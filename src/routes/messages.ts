@@ -2066,7 +2066,7 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
         if (target === undefined) {
           return c.json({ error: 'Not found' }, 404);
         }
-        if (await creditStillOpen(deps.store, target)) {
+        if (target.deletedAt === null && (await creditStillOpen(deps.store, target))) {
           logEvent('messages.delete.open_credit', { messageId: id, accountId: account.id });
           return c.json({ error: 'An open credit cannot be deleted' }, 409);
         }

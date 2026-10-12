@@ -783,6 +783,14 @@ describe('DELETE /messages/:id on a credit', () => {
     expect((await messages.getById(CREDIT))?.deletedAt).toBeInstanceOf(Date);
   });
 
+  it('keeps returning 204 for an open credit that is already hidden', async () => {
+    const { app, messages } = await staffCredit();
+    const at = new Date(Date.UTC(2026, 8, 27));
+    expect(await messages.markDeleted(CREDIT, at, 'acc')).toBe(true);
+    expect((await del(app, CREDIT)).status).toBe(204);
+    expect((await messages.getById(CREDIT))?.deletedAt?.getTime()).toBe(at.getTime());
+  });
+
   it('refuses a credit that received sats but never filled', async () => {
     const { app } = await staffCredit({ fundedAt: null });
     expect((await del(app, CREDIT)).status).toBe(409);
