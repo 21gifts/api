@@ -150,7 +150,8 @@ null is allowed. At most one row per account has status `open`.
 invoice's payment hash. Both are set when the row is created. A
 replacement quote reuses them while the invoice is unpaid and unexpired.
 When that invoice has expired unpaid, both are replaced by a new invoice
-for the same sats. `created_at` is set. One proof may be stored. It holds the quote, the
+for the same sats. They are not replaced while a stored proof has no
+result. That proof keeps its quote, this BOLT11, and this payment hash. `created_at` is set. One proof may be stored. It holds the quote, the
 method, the asset, and the proof parameter. Its result is absent until
 Orchestra answers, then `refused` or `accepted`. Absent is unresolved.
 `accepted_at` is set only for `accepted` and `paid`. `paid_at` is set
@@ -169,12 +170,14 @@ to the wallet. `created_at` is set.
 
 `open` serves the current quote. A fetch while that quote has not lapsed
 returns it unchanged and does not mint another. A lapsed quote is
-replaced by a new `shop_quote` for the same sats. The payment id does
+replaced by a new `shop_quote` for the same sats, except while a stored
+proof has no result. The payment id does
 not change. A page payment stays `open` across those refreshes until it
 is accepted, or until five minutes after it was created, whichever is
 first. Replacing the quote does not extend those five minutes. When
 they pass while it is still `open`, the next read marks it `ended`
-before the read continues. A till payment moves to `ended` when its charge expires
+before the read continues, unless a stored proof has no result. That
+proof does not end the payment and does not replace the quote. A till payment moves to `ended` when its charge expires
 unpaid while the payment is still `open`. `DELETE /pos`, when it cancels
 that pending charge, makes the same move. It does not change an
 `accepted` payment. When that charge is paid, the payment is `paid`.
@@ -479,7 +482,11 @@ payment is still `open`, the transfer matches the quote, and Orchestra
 has accepted it: the offered chain, the offered asset, the quoted
 amount, and a quote that was still valid. Before it asks Orchestra, it
 stores that proof: the quote, the method, the asset, and the proof
-parameter. A payment that is `ended`, and that has no such stored proof,
+parameter. The proof query does not carry `asset`. The asset is the one
+that method lists. When the method lists both, the asset is the one the
+callback for this quote and method already returned. If it lists both
+and no such callback was served, the proof is **400**
+`{ "error": "That payment is not offered" }` and nothing is stored. A payment that is `ended`, and that has no such stored proof,
 is not moved to `accepted` by a later proof. While a stored proof has
 no result, that proof is not refused for quote expiry. A retry of it
 asks Orchestra again. Orchestra unreachable is **503**
