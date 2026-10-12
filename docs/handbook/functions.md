@@ -1226,10 +1226,17 @@
 
 ## Function: logEvent
 
-- **Purpose:** One JSON line on `console.warn` (`ts` + `event` + fields). During a request, validated client fields from `readClientRequestMeta` are merged underneath the explicit fields, and explicit fields win. Absent client fields are omitted. Outside a request, only the explicit fields are written. Never log secrets.
-- **Inputs:** `event` string, optional `LogFields`.
-- **Returns / side effects:** void.
+- **Purpose:** One JSON line on `console.warn` (`ts` + `event` + fields). During a request, validated client fields from `readClientRequestMeta` are merged underneath the explicit fields, and explicit fields win. Absent client fields are omitted. Outside a request, only the explicit fields are written. Never log secrets. The console line never carries a Lightning Address: an explicit string field named `address` is printed as `addressRef` (the reference `setAddressRefKey` describes) and the `address` key is left out; with no key installed it is printed as `address: "[address]"`. In every other explicit string field, each email-shaped part (`local@domain.tld`) is printed as `[address]`. Numbers, booleans, and the request client fields are printed unchanged.
+- **Inputs:** `event` string, optional `LogFields`. Call sites pass the recipient as `address` (`spend.ping.ok`, `spend.ping.skipped`, `spend.ping.failed`, the `invoice.*` events of `POST /invoices`, `lightning_address.resolved`, `lightning_address.resolve_failed`).
+- **Returns / side effects:** void. The diagnostic sink runs after the console line and receives the fields exactly as passed, including `address`; only the console line differs.
 - **Used by:** Auth, me, lightning-address, requestLog.
+
+## Function: setAddressRefKey
+
+- **Purpose:** Install or clear the process-wide key `logEvent` uses to print `addressRef` in place of `address` on the console line. `addressRef` is the first 12 lower-case hex characters of HMAC-SHA256 over the lower-cased address (UTF-8), keyed with the trimmed key (UTF-8). The reference is stable for one address and one key and cannot be turned back into the address without the key. The key is `SPEND_API_TOKEN`, the Bearer the spend process shares, so the same derivation there gives the same reference.
+- **Inputs:** `string | null | undefined`. The value is trimmed. `undefined`, `null`, and a blank value clear the key.
+- **Returns / side effects:** void. Replaces the module-level key only. With no key, `logEvent` prints the fixed marker `[address]` for `address` and never an unkeyed hash. The key is never logged.
+- **Used by:** `createApp` (with `deps.spendApiToken`, default `process.env.SPEND_API_TOKEN`).
 
 ## Function: setDiagnosticSink
 
