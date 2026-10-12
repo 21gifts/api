@@ -226,7 +226,7 @@ select a stablecoin.
 
 While a payment is `open`, a fetch returns its current quote. A quote
 that has not lapsed is not replaced. A lapsed quote is replaced for the
-same sats. The URL does not change.
+same sats, except while a stored proof has no result. The URL does not change.
 
 While a payment is `accepted`, and until it is `paid`, the response is
 still a pay request for those sats. Every `available` value is false.
@@ -579,7 +579,7 @@ a quote whose invoice is already paid is not a second sale. This service
 does not take it back.
 
 A quote that lapses before acceptance is replaced by a quote for the
-same sats, and only while the payment is still `open`. No replacement
+same sats, and only while the payment is still `open`, except while a stored proof has no result. No replacement
 is made after the payment has ended. An unexpired quote is returned as
 stored. A later fetch does not mint a second one. A quote for an open till charge also ends when
 the charge ends, if that is sooner, unless a stored proof has no result. That proof keeps the quote and the sticker. Otherwise, after the charge has ended, the sticker takes
