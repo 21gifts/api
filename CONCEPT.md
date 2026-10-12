@@ -14,8 +14,9 @@ to another — without any organizational middleman taking a cut, gatekeeping, o
 politicizing the flow of help.
 
 Bitcoin Lightning is the only payment rail for a gift. A shop till is the
-decided exception: USDT or USDC on the same OpenCryptoPay QR still leaves
-the shop with bitcoin on Spark, specified in
+decided exception: USDT or USDC on the same OpenCryptoPay QR settles when
+Orchestra pays the BOLT11 for the shop's linked Wallet of Satoshi address,
+specified in
 [`docs/shop-spark-payment.md`](./docs/shop-spark-payment.md), not implemented.
 NOSTR is the only message rail. Both are plumbing — the user just sees a
 website where they can ask for help or send help.
@@ -329,9 +330,10 @@ it does, then chooses two people. Both are required.
 If a moderator verified the owner, that person is suggested as person 1 and
 can be replaced. 21.gifts does not hold a share. Specified in
 [`docs/social-recovery.md`](./docs/social-recovery.md). Not implemented.
-Restoring those words does not move bitcoin. The same words are the Spark
-wallet seed in [`docs/shop-spark-payment.md`](./docs/shop-spark-payment.md),
-which is also not implemented.
+Restoring those words does not move bitcoin. The shop payment leaves
+those words on the phone, specified in
+[`docs/shop-spark-payment.md`](./docs/shop-spark-payment.md), and is
+not implemented.
 
 **The server never holds the nsec.** All NOSTR signing happens in the browser.
 

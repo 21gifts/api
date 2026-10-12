@@ -84,7 +84,7 @@ path id of the pay link. `quote.payment` stays in the JSON. It is not a
 path segment and not a query on the pay link. A refreshed quote keeps
 the same callback. The callback has no query string. A wallet appends
 its query itself. Neither URL is `…/lnurlp/<username>/invoice`.
-`GET /lnurlp/:username/invoice` does not take these calls.
+This service has no `GET /lnurlp/:username/invoice`.
 
 `GET /.well-known/lnurlp/:username`, `GET /lnurlp/cb/:username`, and
 `GET /lnurlp/tx/:username` take no session. They use the headers the pay
@@ -160,8 +160,9 @@ returns it unchanged and does not mint another. A lapsed quote is
 replaced by a new `shop_quote` for the same sats. The payment id does
 not change. A page payment stays `open` across those refreshes until it
 is accepted. A till payment moves to `ended` when its charge expires
-unpaid while the payment is still `open`. When that charge is paid, the
-payment is `paid`.
+unpaid while the payment is still `open`. `DELETE /pos`, when it cancels
+that pending charge, makes the same move. It does not change an
+`accepted` payment. When that charge is paid, the payment is `paid`.
 
 The implementing change adds these tables. This document does not migrate
 them.
@@ -236,7 +237,8 @@ It sends `amount` in millisats. When that amount is the fixed sat count
 times 1000, the response is `{ "pr": "<bolt11>" }` for those sats. A
 missing or different amount is **400**
 `{ "error": "Enter a whole number of sats" }` and returns no invoice.
-Variable invoices stay on `GET /lnurlp/:username/invoice`.
+Variable invoices stay on the Wallet of Satoshi callback that
+`GET /.well-known/lnurlp/:username` already passes through.
 
 ## Standard and settlement
 
@@ -551,7 +553,9 @@ minutes stay as they are.
 `POST /pos` still takes a whole sat amount of at least 1, inside the
 linked address's minimum and maximum, for an account with a username and
 a linked Wallet of Satoshi address. One unexpired pending charge. Five
-minutes. While it is pending, both Lightning sendable bounds become that
+minutes. While a `shop_payment` for that account is `open` or `accepted`,
+the call is **409** `{ "error": "A payment is already open" }` and writes
+nothing. While it is pending, both Lightning sendable bounds become that
 sat amount in millisats. Metadata stays on Wallet of Satoshi. When the
 Orchestra key is configured and Orchestra commits to those sats on the
 invoice for this charge, the stablecoin amounts for those same sats are
