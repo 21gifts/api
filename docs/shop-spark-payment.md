@@ -81,9 +81,9 @@ does. This service does not rewrite them.
 Stablecoin rows are served only when `PUBLIC_BASE_URL` is an absolute
 `http` or `https` URL. Otherwise the pay link stays the Wallet of
 Satoshi pay request. When an amount is known and those rows are served,
-`callback` is `<PUBLIC_BASE_URL>/lnurlp/cb/<username>`. The proof URL replaces `/cb`
-with `/tx` in that callback, which is
-`<PUBLIC_BASE_URL>/lnurlp/tx/<username>`. The username stays. It is the
+`callback` is the origin `resolvePublicApiBase` already returns for `PUBLIC_BASE_URL`, plus `/lnurlp/cb/<username>`.
+`https://21.gifts` becomes `https://api.21.gifts`, `https://dev.21.gifts` becomes `https://dev-api.21.gifts`, and `https://staging.21.gifts` becomes `https://staging-api.21.gifts`. One trailing slash is removed first. Any other absolute value is used as given. The proof URL replaces `/cb`
+with `/tx` in that callback. The username stays. It is the
 path id of the pay link. `quote.payment` stays in the JSON. It is not a
 path segment and not a query on the pay link. A refreshed quote keeps
 the same callback. The callback has no query string. A wallet appends
