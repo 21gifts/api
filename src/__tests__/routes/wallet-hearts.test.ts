@@ -160,11 +160,7 @@ afterEach(() => {
 describe('POST /me/wallet/hearts', () => {
   it('returns 401 before reading the body for missing or invalid sessions', async () => {
     const { app } = await mount();
-    const missing = await post(
-      app,
-      { hashes: [HASH_A] },
-      { 'content-type': 'application/json' },
-    );
+    const missing = await post(app, { hashes: [HASH_A] }, { 'content-type': 'application/json' });
     expect(missing.status).toBe(401);
     expect(await missing.json()).toEqual({ error: 'Unauthorized' });
     const invalid = await post(
@@ -242,9 +238,7 @@ describe('POST /me/wallet/hearts', () => {
 
   it('returns 400 for more than 32 hashes', async () => {
     const { app } = await mount();
-    const hashes = Array.from({ length: 33 }, (_, index) =>
-      index.toString(16).padStart(64, '0'),
-    );
+    const hashes = Array.from({ length: 33 }, (_, index) => index.toString(16).padStart(64, '0'));
     const response = await post(app, { hashes });
     expect(response.status).toBe(400);
     expect(await response.json()).toEqual({ error: 'Invalid heart lookup' });
