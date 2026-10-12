@@ -338,7 +338,9 @@ const defaultInvoiceLimiter = new InvoiceRateLimiter();
 /**
  * Whether a credit note still has money out. Once any sats arrived, the note
  * stays open until every share of its repayment plan is paid. A credit that
- * never filled, or whose debt cannot be priced, is open.
+ * never filled, whose debt cannot be priced, or that holds sats not yet
+ * assigned to a giver account is open, so a later assignment cannot reopen a
+ * credit that was already hidden.
  *
  * @param store - Message store.
  * @param row - Store row.
@@ -353,6 +355,9 @@ async function creditStillOpen(store: MessageStore, row: MessageRow): Promise<bo
   }
   const payers = await store.listCreditPayers(row.id);
   const unassignedSats = await store.sumUnassignedCreditSats(row.id);
+  if (unassignedSats > 0) {
+    return true;
+  }
   const owed = payerDebtUnits(row.goalCurrency, row.goalAmount, [
     ...payers,
     { accountId: '', sats: unassignedSats },

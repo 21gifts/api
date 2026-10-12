@@ -770,6 +770,24 @@ describe('DELETE /messages/:id on a credit', () => {
     expect((await messages.getById(CREDIT))?.deletedAt).toBeNull();
   });
 
+  it('refuses a repaid credit that still holds sats without a giver account', async () => {
+    const { app, messages } = await staffCredit();
+    await messages.markRepaymentPaid({
+      messageId: CREDIT,
+      dayIndex: 0,
+      recipientAccountId: GIVER,
+      dueSats: 21,
+      paidAt: new Date(now()),
+    });
+    await messages.recordZapReceipt('r-later', CREDIT, 5, null);
+    expect((await del(app, CREDIT)).status).toBe(409);
+  });
+
+  it('refuses a funded credit whose plan has no payable share', async () => {
+    const { app } = await staffCredit({ goalCurrency: 'USD', goalAmount: '0.00' });
+    expect((await del(app, CREDIT)).status).toBe(409);
+  });
+
   it('hides a credit once every share is repaid', async () => {
     const { app, messages } = await staffCredit();
     await messages.markRepaymentPaid({
