@@ -871,6 +871,109 @@ describe('InMemoryMessageStore', () => {
     expect(listed[0]?.replyCount).toBe(2);
   });
 
+  it('assigns a member shop to the assignee and not to its author', async () => {
+    const assigned = {
+      ...EARLY,
+      id: 'shop-assigned',
+      accountId: 'author',
+      text: 'Visit #21GiftsShop',
+      shopAccount: { id: 'assignee', username: 'ada', name: 'Ada' },
+    };
+    const store = new InMemoryMessageStore([assigned]);
+    expect(await store.countShopsByAccount('assignee')).toBe(1);
+    expect(await store.countShopsByAccount('author')).toBe(0);
+    expect((await store.listShopsByAccount('assignee', 10)).map((row) => row.id)).toEqual([
+      'shop-assigned',
+    ]);
+    expect(await store.listShopsByAccount('author', 10)).toEqual([]);
+  });
+
+  it('assigns null and omitted shop accounts to the author only', async () => {
+    const store = new InMemoryMessageStore([
+      { ...LATE, id: 'shop-null', accountId: 'author', text: '#21GiftsShop!', shopAccount: null },
+      { ...TIE_LOW, id: 'shop-omitted', accountId: 'author', text: '#21giftsshop' },
+    ]);
+    expect(await store.countShopsByAccount('author')).toBe(2);
+    expect(await store.countShopsByAccount('assignee')).toBe(0);
+    expect((await store.listShopsByAccount('author', 10)).map((row) => row.id)).toEqual([
+      'shop-omitted',
+      'shop-null',
+    ]);
+    expect(await store.listShopsByAccount('assignee', 10)).toEqual([]);
+  });
+
+  it('member shops enforce live top-level hashtag-token matching', async () => {
+    const store = new InMemoryMessageStore([
+      { ...EARLY, id: 'shop-end', text: 'Open #21GiftsShop' },
+      { ...LATE, id: 'shop-punctuation', text: '#21GiftsShop.' },
+      { ...TIE_LOW, id: 'shop-case', text: '#21giftsshop' },
+      {
+        ...TIE_HIGH,
+        id: 'shop-deleted',
+        text: '#21GiftsShop',
+        deletedAt: new Date('2026-09-01T00:00:00.000Z'),
+        deletedBy: 'staff',
+      },
+      { ...TIE_HIGH, id: 'shop-reply', text: '#21GiftsShop', parentId: 'shop-end' },
+      { ...TIE_HIGH, id: 'shop-prefix', text: '#21GiftsShopper' },
+      { ...TIE_HIGH, id: 'shop-no-hash', text: '21GiftsShop' },
+    ]);
+    expect(await store.countShopsByAccount('acc')).toBe(3);
+    expect((await store.listShopsByAccount('acc', 10)).map((row) => row.id)).toEqual([
+      'shop-case',
+      'shop-punctuation',
+      'shop-end',
+    ]);
+  });
+
+  it('lists member shops newest-first with an id tie, limit, and attributed replyCount', async () => {
+    const zapper = 'ab'.repeat(32);
+    const store = new InMemoryMessageStore([
+      { ...EARLY, id: 'shop-early', text: '#21GiftsShop' },
+      { ...LATE, id: 'shop-late', text: '#21GiftsShop' },
+      { ...TIE_LOW, id: 'shop-m', text: '#21GiftsShop' },
+      { ...TIE_HIGH, id: 'shop-z', text: '#21GiftsShop' },
+      { ...LATE, id: 'reply-member', parentId: 'shop-z', text: 'member child' },
+      {
+        ...LATE,
+        id: 'reply-zapper',
+        parentId: 'shop-z',
+        accountId: null,
+        authorPubkey: zapper.toUpperCase(),
+        text: 'zapper child',
+      },
+      {
+        ...LATE,
+        id: 'reply-external',
+        parentId: 'shop-z',
+        accountId: null,
+        authorPubkey: 'cd'.repeat(32),
+        text: 'external child',
+      },
+      {
+        ...LATE,
+        id: 'reply-orphan',
+        parentId: 'shop-z',
+        accountId: null,
+        authorPubkey: null,
+        text: 'orphan child',
+      },
+      {
+        ...LATE,
+        id: 'reply-deleted',
+        parentId: 'shop-z',
+        text: 'deleted child',
+        deletedAt: new Date('2026-09-01T00:00:00.000Z'),
+        deletedBy: 'staff',
+      },
+    ]);
+    await store.recordZapper(zapper, 'receipt-shop', new Date('2026-09-18T10:00:00Z'));
+    const listed = await store.listShopsByAccount('acc', 10);
+    expect(listed.map((row) => row.id)).toEqual(['shop-z', 'shop-m', 'shop-late', 'shop-early']);
+    expect(listed[0]?.replyCount).toBe(2);
+    expect((await store.listShopsByAccount('acc', 1)).map((row) => row.id)).toEqual(['shop-z']);
+  });
+
   it('listPostsByPubkey is case-insensitive and excludes account and deleted rows', async () => {
     const pubkey = 'aa'.repeat(32);
     const store = new InMemoryMessageStore();
@@ -997,6 +1100,127 @@ describe('InMemoryMessageStore', () => {
     const listed = await store.listPostsByPubkey(pubkey, 10);
     expect(listed).toHaveLength(1);
     expect(listed[0]?.replyCount).toBe(2);
+  });
+
+  it('counts and lists only unassigned external shops for a case-insensitive pubkey', async () => {
+    const pubkey = 'aa'.repeat(32);
+    const zapper = 'bb'.repeat(32);
+    const store = new InMemoryMessageStore([
+      {
+        ...EARLY,
+        id: 'external-shop-early',
+        accountId: null,
+        authorPubkey: pubkey.toUpperCase(),
+        text: '#21GiftsShop',
+      },
+      {
+        ...LATE,
+        id: 'external-shop-late',
+        accountId: null,
+        authorPubkey: pubkey,
+        text: '#21giftsshop!',
+        shopAccount: null,
+      },
+      {
+        ...TIE_LOW,
+        id: 'external-shop-m',
+        accountId: null,
+        authorPubkey: pubkey,
+        text: '#21GiftsShop',
+      },
+      {
+        ...TIE_HIGH,
+        id: 'external-shop-z',
+        accountId: null,
+        authorPubkey: pubkey,
+        text: '#21GiftsShop',
+      },
+      { ...LATE, id: 'member-shop', authorPubkey: pubkey, text: '#21GiftsShop' },
+      {
+        ...LATE,
+        id: 'assigned-shop',
+        accountId: null,
+        authorPubkey: pubkey,
+        text: '#21GiftsShop',
+        shopAccount: { id: 'acc', username: 'ada', name: 'Ada' },
+      },
+      {
+        ...LATE,
+        id: 'null-pubkey-shop',
+        accountId: null,
+        authorPubkey: null,
+        text: '#21GiftsShop',
+      },
+      {
+        ...LATE,
+        id: 'deleted-external-shop',
+        accountId: null,
+        authorPubkey: pubkey,
+        text: '#21GiftsShop',
+        deletedAt: new Date('2026-09-01T00:00:00.000Z'),
+        deletedBy: 'staff',
+      },
+      {
+        ...LATE,
+        id: 'external-shop-reply',
+        accountId: null,
+        authorPubkey: pubkey,
+        text: '#21GiftsShop',
+        parentId: 'external-shop-early',
+      },
+      {
+        ...LATE,
+        id: 'external-shop-prefix',
+        accountId: null,
+        authorPubkey: pubkey,
+        text: '#21GiftsShopper',
+      },
+      {
+        ...LATE,
+        id: 'other-pubkey-shop',
+        accountId: null,
+        authorPubkey: 'dd'.repeat(32),
+        text: '#21GiftsShop',
+      },
+      { ...LATE, id: 'member-child', parentId: 'external-shop-z', text: 'member child' },
+      {
+        ...LATE,
+        id: 'zapper-child',
+        parentId: 'external-shop-z',
+        accountId: null,
+        authorPubkey: zapper.toUpperCase(),
+        text: 'zapper child',
+      },
+      {
+        ...LATE,
+        id: 'external-child',
+        parentId: 'external-shop-z',
+        accountId: null,
+        authorPubkey: 'cc'.repeat(32),
+        text: 'external child',
+      },
+      {
+        ...LATE,
+        id: 'deleted-child',
+        parentId: 'external-shop-z',
+        text: 'deleted child',
+        deletedAt: new Date('2026-09-01T00:00:00.000Z'),
+        deletedBy: 'staff',
+      },
+    ]);
+    await store.recordZapper(zapper, 'receipt-external-shop', new Date('2026-09-18T10:00:00Z'));
+    expect(await store.countShopsByPubkey(pubkey.toUpperCase())).toBe(4);
+    const listed = await store.listShopsByPubkey(pubkey.toUpperCase(), 10);
+    expect(listed.map((item) => item.id)).toEqual([
+      'external-shop-z',
+      'external-shop-m',
+      'external-shop-late',
+      'external-shop-early',
+    ]);
+    expect(listed[0]?.replyCount).toBe(2);
+    expect((await store.listShopsByPubkey(pubkey, 1)).map((item) => item.id)).toEqual([
+      'external-shop-z',
+    ]);
   });
 
   it('listRepliesByPubkey is empty until the pubkey is a recorded zapper', async () => {
@@ -5538,6 +5762,66 @@ describe('PostgresMessageStore', () => {
     expect(listedNull[0]?.replyCount).toBe(0);
   });
 
+  it('countShopsByAccount selects live owned hashtag-token notes and maps empty counts', async () => {
+    const sql = new MockSql();
+    const store = new PostgresMessageStore(sql);
+    expect(await store.countShopsByAccount('acc')).toBe(0);
+    expect(sql.queries[0]?.text).toMatch(/parent_id IS NULL/);
+    expect(sql.queries[0]?.text).toMatch(/deleted_at IS NULL/);
+    expect(sql.queries[0]?.text).toMatch(/text ~\* \$2/);
+    expect(sql.queries[0]?.text).toMatch(
+      /shop_account_id = \$1 OR \(shop_account_id IS NULL AND account_id = \$1\)/,
+    );
+    expect(sql.queries[0]?.params).toEqual(['acc', '#21giftsshop([^a-z0-9_]|$)']);
+    sql.nextRows = [{ shop_count: null }];
+    expect(await store.countShopsByAccount('acc')).toBe(0);
+    sql.nextRows = [{}];
+    expect(await store.countShopsByAccount('acc')).toBe(0);
+    sql.nextRows = [{ shop_count: '3' }];
+    expect(await store.countShopsByAccount('acc')).toBe(3);
+  });
+
+  it('listShopsByAccount selects live owned hashtag-token notes with replyCount', async () => {
+    const sql = new MockSql();
+    sql.nextRows = [
+      {
+        id: 'shop-1',
+        account_id: 'acc',
+        name: 'Ada',
+        text: '#21GiftsShop',
+        created_at: new Date('2026-08-28T12:00:00.000Z'),
+        has_photo: false,
+        reply_count: '2',
+      },
+    ];
+    const store = new PostgresMessageStore(sql);
+    const listed = await store.listShopsByAccount('acc', 50);
+    expect(sql.queries[0]?.text).toMatch(/parent_id IS NULL/);
+    expect(sql.queries[0]?.text).toMatch(/deleted_at IS NULL/);
+    expect(sql.queries[0]?.text).toMatch(/text ~\* \$2/);
+    expect(sql.queries[0]?.text).toMatch(
+      /shop_account_id = \$1 OR \(shop_account_id IS NULL AND account_id = \$1\)/,
+    );
+    expect(sql.queries[0]?.text).toMatch(
+      /child\.account_id IS NOT NULL\s+OR \(child\.author_pubkey IS NOT NULL\s+AND EXISTS \(\s+SELECT 1 FROM nostr_zapper z\s+WHERE z\.pubkey = lower\(child\.author_pubkey\)/,
+    );
+    expect(sql.queries[0]?.text).toMatch(/ORDER BY created_at DESC, id DESC/);
+    expect(sql.queries[0]?.text).toMatch(/LIMIT \$3/);
+    expect(sql.queries[0]?.params).toEqual(['acc', '#21giftsshop([^a-z0-9_]|$)', 50]);
+    expect(listed[0]?.replyCount).toBe(2);
+    sql.nextRows = [
+      {
+        id: 'shop-2',
+        account_id: 'acc',
+        name: 'Ada',
+        text: '#21GiftsShop',
+        created_at: new Date('2026-08-28T12:00:00.000Z'),
+        has_photo: false,
+      },
+    ];
+    expect((await store.listShopsByAccount('acc', 10))[0]?.replyCount).toBe(0);
+  });
+
   it('listRepliesByAccount selects live replies for the account newest-first', async () => {
     const sql = new MockSql();
     sql.nextRows = [
@@ -5630,6 +5914,70 @@ describe('PostgresMessageStore', () => {
     ];
     const listedNull = await store.listPostsByPubkey(pubkey, 10);
     expect(listedNull[0]?.replyCount).toBe(0);
+  });
+
+  it('countShopsByPubkey selects live unassigned external hashtag-token notes and maps empty counts', async () => {
+    const sql = new MockSql();
+    const store = new PostgresMessageStore(sql);
+    const pubkey = 'aa'.repeat(32);
+    expect(await store.countShopsByPubkey(pubkey.toUpperCase())).toBe(0);
+    expect(sql.queries[0]?.text).toMatch(/parent_id IS NULL/);
+    expect(sql.queries[0]?.text).toMatch(/deleted_at IS NULL/);
+    expect(sql.queries[0]?.text).toMatch(/account_id IS NULL/);
+    expect(sql.queries[0]?.text).toMatch(/shop_account_id IS NULL/);
+    expect(sql.queries[0]?.text).toMatch(/author_pubkey IS NOT NULL/);
+    expect(sql.queries[0]?.text).toMatch(/lower\(author_pubkey\) = \$1/);
+    expect(sql.queries[0]?.text).toMatch(/text ~\* \$2/);
+    expect(sql.queries[0]?.params).toEqual([pubkey, '#21giftsshop([^a-z0-9_]|$)']);
+    sql.nextRows = [{ shop_count: null }];
+    expect(await store.countShopsByPubkey(pubkey)).toBe(0);
+    sql.nextRows = [{}];
+    expect(await store.countShopsByPubkey(pubkey)).toBe(0);
+    sql.nextRows = [{ shop_count: '3' }];
+    expect(await store.countShopsByPubkey(pubkey)).toBe(3);
+  });
+
+  it('listShopsByPubkey selects live unassigned external hashtag-token notes with replyCount', async () => {
+    const sql = new MockSql();
+    const pubkey = 'aa'.repeat(32);
+    sql.nextRows = [
+      {
+        id: 'shop-1',
+        account_id: null,
+        name: 'Ada',
+        text: '#21GiftsShop',
+        created_at: new Date('2026-08-28T12:00:00.000Z'),
+        has_photo: false,
+        reply_count: '2',
+      },
+    ];
+    const store = new PostgresMessageStore(sql);
+    const listed = await store.listShopsByPubkey(pubkey.toUpperCase(), 50);
+    expect(sql.queries[0]?.text).toMatch(/parent_id IS NULL/);
+    expect(sql.queries[0]?.text).toMatch(/deleted_at IS NULL/);
+    expect(sql.queries[0]?.text).toMatch(/account_id IS NULL/);
+    expect(sql.queries[0]?.text).toMatch(/shop_account_id IS NULL/);
+    expect(sql.queries[0]?.text).toMatch(/author_pubkey IS NOT NULL/);
+    expect(sql.queries[0]?.text).toMatch(/lower\(author_pubkey\) = \$1/);
+    expect(sql.queries[0]?.text).toMatch(/text ~\* \$2/);
+    expect(sql.queries[0]?.text).toMatch(
+      /child\.account_id IS NOT NULL\s+OR \(child\.author_pubkey IS NOT NULL\s+AND EXISTS \(\s+SELECT 1 FROM nostr_zapper z\s+WHERE z\.pubkey = lower\(child\.author_pubkey\)/,
+    );
+    expect(sql.queries[0]?.text).toMatch(/ORDER BY created_at DESC, id DESC/);
+    expect(sql.queries[0]?.text).toMatch(/LIMIT \$3/);
+    expect(sql.queries[0]?.params).toEqual([pubkey, '#21giftsshop([^a-z0-9_]|$)', 50]);
+    expect(listed[0]?.replyCount).toBe(2);
+    sql.nextRows = [
+      {
+        id: 'shop-2',
+        account_id: null,
+        name: 'Ada',
+        text: '#21GiftsShop',
+        created_at: new Date('2026-08-28T12:00:00.000Z'),
+        has_photo: false,
+      },
+    ];
+    expect((await store.listShopsByPubkey(pubkey, 10))[0]?.replyCount).toBe(0);
   });
 
   it('listRepliesByPubkey selects live zapper replies for the pubkey newest-first', async () => {

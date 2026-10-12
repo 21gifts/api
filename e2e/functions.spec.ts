@@ -3421,6 +3421,10 @@ test('Function: publicExternalAuthorPosts — unknown id is not found', async ({
   expect((await request.get('/messages/not-a-uuid/external-posts')).status()).toBe(404);
 });
 
+test('Function: publicExternalAuthorShops — unknown id is not found', async ({ request }) => {
+  expect((await request.get('/messages/not-a-uuid/external-shops')).status()).toBe(404);
+});
+
 test('Function: publicExternalAuthorReplies — unknown id is not found', async ({ request }) => {
   expect((await request.get('/messages/not-a-uuid/external-replies')).status()).toBe(404);
 });

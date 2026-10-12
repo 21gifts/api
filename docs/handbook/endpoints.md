@@ -509,6 +509,7 @@
 ## Endpoint: GET /members/:accountId
 
 - **Purpose:** Bearer required. Live member profile card for `:accountId` (UUID): `id`, `name`, `username` (`string | null` LUD-16 / NIP-05 local-part), `location` (`string | null`, never omit, never `""`), `role`, `lightningAddress` (the wallet address `<username>@<host of PUBLIC_BASE_URL>` for a verified wallet with the LNURL server on, otherwise `null`; a stored external address is never returned), ISO `createdAt`, `profileMessage` (`serializeMessage` with `accountId` / `replyCount` like the signed-in forum list, or `null` when no note or when the profile note is soft-hidden via `deletedAt`), derived `aboutMe` (profile-note text when it is a real bio, else `null` when the profile note is missing or soft-hidden via `deletedAt` (same as `profileMessage`); auto name-copy is not a bio; keep `profileMessage`), `aboutMeHasPhoto` (true when the live profile note has a stored photo; false when `profileMessage` is null), uncapped live `postCount` / `replyCount` from `countByAccount` (not the latest-200 window), `trust` (`accountTrust`: `verifiedBy` / `proposedBy` / `confirmedBy` / `appointedBy`, each `{ id, name }` or `null`; all-null when no stored edges), and `fundingReviewedAt` (`grant.admittedAt` when the effective grant is admitted, else `null`; does not expose pending/trial/rejected) and `fundingReviewedByName` (live display name of `decidedBy` when that time is set and the trimmed name is non-empty, else `null`). Soft-hide does **not** clear `account.profileMessageId`. Member GET keeps `profileMessage` and does not include `aboutMessageId`. Never includes `viewKey`, linkingKey, npub, nsec, or `eventId`.
+- **Shop count:** JSON always includes uncapped `shopCount` from `countShopsByAccount`, including 0; it is not derived from the capped shops list. A live top-level shop belongs to its assigned shop account when set and otherwise to its author.
 - **Errors:** 401 without session; 409 `{ error: 'missing_requirements', missing: [...] }` when `requireAction(caller, 'forum.read')` fails; 404 `{ error: 'Not found' }` for a non-UUID id or unknown account; 503 `{ error: 'Messages are unavailable' }` when a store throws (`members.get.failed`).
 - **Used by:** App member profile surfaces.
 - **Auth:** `Authorization: Bearer` session.
@@ -518,6 +519,13 @@
 - **Purpose:** Bearer required. Live-only top-level notes by `:accountId` newest-first, capped at 200 (`listPostsByAccount`). Same `serializeMessage` as signed-in `GET /messages` (`accountId`, `replyCount`, `payable` when a non-empty `eventId` and a receiving address (`receivingAddress`: a verified wallet with the LNURL server configured) are set). Omits `parentId`. Omits `goalSats` when unset (null/0/absent); includes the key only when a positive whole-sat goal is stored on a top-level note. Includes `goalRepayable: true` only when stored true (omitted when null, never false) and `goalTermDays` only when stored (omitted when null). Includes `goalCurrency`, `goalAmount`, and the four `goalAmount*` snapshots only when `goalCurrency` is stored (a snapshot may be null); a legacy row omits them. Replies by that member are not listed. A `hasVideo` row whose file is missing or empty is deleted and omitted. For each kept top-level note, missing-file `hasVideo` direct replies in the replies window (cap 200) are deleted (`messages.video.dropped`); `replyCount` is the live direct-reply count of attributed children (a 21.gifts author, or an external row whose `author_pubkey` is a recorded zapper in `nostr_zapper`) minus those dropped.
 - **Errors:** 401 without session; 409 `{ error: 'missing_requirements', missing: [...] }` when `requireAction(caller, 'forum.read')` fails; 404 `{ error: 'Not found' }` for a non-UUID id or unknown account; 503 `{ error: 'Messages are unavailable' }` when a store throws (`members.posts.failed`).
 - **Used by:** App member profile post feed.
+- **Auth:** `Authorization: Bearer` session.
+
+## Endpoint: GET /members/:accountId/shops
+
+- **Purpose:** Lists the member's live top-level `#21GiftsShop` notes newest-first, capped at 200. Assignment to a shop account owns the note; an unassigned shop belongs to its author. JSON uses the same serialization as the posts feed, including `accountId`, attributed `replyCount`, and conditional `payable`, while omitting `parentId`.
+- **Errors:** 401 without a session; 409 when forum-read requirements are missing; 404 for a non-UUID or unknown member; 503 `{ error: 'Messages are unavailable' }` on store failure, logged as `members.shops.failed`.
+- **Used by:** App member profile shop feed.
 - **Auth:** `Authorization: Bearer` session.
 
 ## Endpoint: GET /members/:accountId/replies
@@ -579,7 +587,8 @@
 
 ## Endpoint: GET /messages/:id/external-profile
 
-- **Purpose:** Public profile for a forum author with no 21.gifts account. No Bearer. 200 `{ name, npub, postCount, replyCount }` plus optional `nip05` and `lud16`. `name` is the stored snapshot, or a truncated pubkey when that is blank; a live kind 0 name replaces it only when `externalDisplayName` accepts it. `npub` comes from the stored pubkey. `postCount` and `replyCount` are always present, including 0: `postCount` is the uncapped live top-level notes for that pubkey; `replyCount` is the uncapped live public replies, and is 0 when the pubkey is not a recorded zapper. `nip05` is included only when `fetchImpl` is set and `https://<host>/.well-known/nostr.json?name=<local>` names that pubkey after a public-address DNS check (at most two HTTPS redirects, 5s, 64 KiB). `lud16` is the published `user@host` and is not fetched. No hex pubkey, picture, about, callback, or invoice. Registered before `GET /messages/:id`. A missing querier, empty relay list, or relay failure still returns 200 with the stored name and npub.
+- **Purpose:** Public profile for a forum author with no 21.gifts account. No Bearer. 200 `{ name, npub, postCount, replyCount, shopCount }` plus optional `nip05` and `lud16`. `name` is the stored snapshot, or a truncated pubkey when that is blank; a live kind 0 name replaces it only when `externalDisplayName` accepts it. `npub` comes from the stored pubkey. `postCount` and `replyCount` are always present, including 0: `postCount` is the uncapped live top-level notes for that pubkey; `replyCount` is the uncapped live public replies, and is 0 when the pubkey is not a recorded zapper. `nip05` is included only when `fetchImpl` is set and `https://<host>/.well-known/nostr.json?name=<local>` names that pubkey after a public-address DNS check (at most two HTTPS redirects, 5s, 64 KiB). `lud16` is the published `user@host` and is not fetched. No hex pubkey, picture, about, callback, or invoice. Registered before `GET /messages/:id`. A missing querier, empty relay list, or relay failure still returns 200 with the stored name and npub.
+- **Shop count:** The 200 JSON is `{ name, npub, postCount, replyCount, shopCount }` plus optional fields. `shopCount` is always present, including 0, and is the uncapped live unassigned external-shop count; a note assigned to a member is not counted.
 - **Errors:** 404 `{ error: 'Not found' }` for a non-UUID id, a missing row, a deleted row (including a founder/moderator Bearer), a withheld reply, a member-authored row, or a pubkey that is not 64 hex. 503 `{ error: 'Messages are unavailable' }` when the store or account list throws (`messages.external_profile.failed`, no pubkey and no profile text). A well-known or DNS failure omits `nip05` and stays 200.
 - **Used by:** App `GET /public-messages/[id]/external-profile`.
 - **Auth:** Public. No staff exception for a deleted row.
@@ -590,6 +599,13 @@
 - **Errors:** 404 `{ error: 'Not found' }` for a non-UUID id, a missing row, a deleted row (including a founder/moderator Bearer), a withheld reply, a member-authored row, or a pubkey that is not 64 hex. 503 `{ error: 'Messages are unavailable' }` when the store throws (`messages.external_posts.failed`, no pubkey and no profile text). A serialize failure skips that row and still returns 200.
 - **Used by:** App `GET /public-messages/[id]/external-posts`.
 - **Auth:** Public. No staff exception for a deleted row.
+
+## Endpoint: GET /messages/:id/external-shops
+
+- **Purpose:** Public list of live, unassigned top-level `#21GiftsShop` notes for the external author of `:id`, capped at 200 and ordered by newest `createdAt` then `id`. Each public message includes attributed `replyCount`, `payable` false, `via: 'nostr'`, and no `role` or `accountId`.
+- **Errors:** Uses the external-profile 404 gate. Store or missing-video cleanup failures return 503 `{ error: 'Messages are unavailable' }` and log `messages.external_shops.failed` without pubkey or profile text; a serialization failure skips only that row.
+- **Used by:** App `GET /public-messages/[id]/external-shops`.
+- **Auth:** Public; no Bearer and no staff exception for a deleted row. Registered before `GET /messages/:id`.
 
 ## Endpoint: GET /messages/:id/external-replies
 

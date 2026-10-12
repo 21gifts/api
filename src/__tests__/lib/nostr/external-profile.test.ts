@@ -7,6 +7,7 @@ import {
   publicExternalAuthorPosts,
   publicExternalAuthorProfile,
   publicExternalAuthorReplies,
+  publicExternalAuthorShops,
 } from '@/lib/nostr/external-profile';
 
 const NOW = 1_700_000_000_000;
@@ -61,7 +62,55 @@ describe('publicExternalAuthorProfile', () => {
     const result = await publicExternalAuthorProfile(deps(store), NOTE);
     expect(result).toEqual({
       status: 200,
-      body: { name: 'Ada', npub: npubEncode(pubkey), postCount: 1, replyCount: 0 },
+      body: {
+        name: 'Ada',
+        npub: npubEncode(pubkey),
+        postCount: 1,
+        replyCount: 0,
+        shopCount: 0,
+      },
+    });
+  });
+
+  it('includes a positive shop count for an external shop note', async () => {
+    const store = new InMemoryMessageStore();
+    const pubkey = 'ac'.repeat(32);
+    await store.create(row({ id: NOTE, authorPubkey: pubkey, name: 'Ada', text: '#21GiftsShop' }));
+    const result = await publicExternalAuthorProfile(deps(store), NOTE);
+    expect(result).toEqual({
+      status: 200,
+      body: {
+        name: 'Ada',
+        npub: npubEncode(pubkey),
+        postCount: 1,
+        replyCount: 0,
+        shopCount: 1,
+      },
+    });
+  });
+
+  it('does not count a shop assigned to a member while retaining its external post count', async () => {
+    const store = new InMemoryMessageStore();
+    const pubkey = 'ad'.repeat(32);
+    await store.create(
+      row({
+        id: NOTE,
+        authorPubkey: pubkey,
+        name: 'Ada',
+        text: '#21GiftsShop',
+        shopAccount: { id: 'acc', username: 'ada', name: 'Ada' },
+      }),
+    );
+    const result = await publicExternalAuthorProfile(deps(store), NOTE);
+    expect(result).toEqual({
+      status: 200,
+      body: {
+        name: 'Ada',
+        npub: npubEncode(pubkey),
+        postCount: 1,
+        replyCount: 0,
+        shopCount: 0,
+      },
     });
   });
 });
@@ -234,6 +283,169 @@ describe('publicExternalAuthorPosts', () => {
     expect(JSON.stringify(line)).not.toContain('pubkey');
     expect(JSON.stringify(line)).not.toContain(pubkey);
     warn.mockRestore();
+  });
+});
+
+describe('publicExternalAuthorShops', () => {
+  it('returns 404 for an id that is not a UUID', async () => {
+    expect(await publicExternalAuthorShops(deps(new InMemoryMessageStore()), 'not-a-uuid')).toEqual(
+      { status: 404 },
+    );
+  });
+
+  it('returns 404 for a missing UUID', async () => {
+    expect(await publicExternalAuthorShops(deps(new InMemoryMessageStore()), MISSING)).toEqual({
+      status: 404,
+    });
+  });
+
+  it('returns 404 for a deleted row', async () => {
+    const store = new InMemoryMessageStore();
+    const pubkey = 'ab'.repeat(32);
+    await store.create(row({ id: NOTE, authorPubkey: pubkey, name: 'Ada' }));
+    await store.markDeleted(NOTE, new Date(NOW), 'staff');
+    expect(await publicExternalAuthorShops(deps(store), NOTE)).toEqual({ status: 404 });
+  });
+
+  it('returns 404 when the seed has an accountId', async () => {
+    const store = new InMemoryMessageStore();
+    const pubkey = 'ab'.repeat(32);
+    await store.create(row({ id: NOTE, accountId: 'acc', authorPubkey: pubkey, name: 'Ada' }));
+    expect(await publicExternalAuthorShops(deps(store), NOTE)).toEqual({ status: 404 });
+  });
+
+  it('returns 404 for a withheld non-zapper reply', async () => {
+    const store = new InMemoryMessageStore();
+    await store.create(row({ id: PARENT, accountId: 'acc', name: 'Parent' }));
+    await store.create(
+      row({ id: NOTE, parentId: PARENT, authorPubkey: 'ab'.repeat(32), name: 'Ada' }),
+    );
+    expect(await publicExternalAuthorShops(deps(store), NOTE)).toEqual({ status: 404 });
+  });
+
+  it('returns 200 empty shops for a zapper reply with no shop', async () => {
+    const store = new InMemoryMessageStore();
+    const pubkey = 'cd'.repeat(32);
+    await store.create(row({ id: PARENT, accountId: 'acc', name: 'Parent' }));
+    await store.recordZapper(pubkey, '11'.repeat(32), new Date(NOW));
+    await store.create(row({ id: NOTE, parentId: PARENT, authorPubkey: pubkey, name: 'Ada' }));
+    expect(await publicExternalAuthorShops(deps(store), NOTE)).toEqual({
+      status: 200,
+      messages: [],
+    });
+  });
+
+  it('lists newest-first shops with attributed replyCount and excludes other ownership', async () => {
+    const store = new InMemoryMessageStore();
+    const pubkey = 'ab'.repeat(32);
+    const zapperChild = 'ef'.repeat(32);
+    await store.create(
+      row({
+        id: NOTE,
+        authorPubkey: pubkey.toUpperCase(),
+        name: 'Ada',
+        text: '#21GiftsShop',
+      }),
+    );
+    await store.create(
+      row({
+        id: NEWER,
+        authorPubkey: pubkey,
+        name: 'Ada',
+        text: 'New #21giftsshop!',
+        createdAt: new Date(NOW + 1000),
+      }),
+    );
+    await store.create(row({ id: OTHER, authorPubkey: 'cd'.repeat(32), text: '#21GiftsShop' }));
+    await store.create(
+      row({
+        id: '12121212-1212-4121-8121-121212121212',
+        accountId: 'acc',
+        authorPubkey: pubkey,
+        text: '#21GiftsShop',
+      }),
+    );
+    await store.create(
+      row({
+        id: '13131313-1313-4131-8131-131313131313',
+        authorPubkey: pubkey,
+        text: '#21GiftsShop',
+      }),
+    );
+    await store.markDeleted('13131313-1313-4131-8131-131313131313', new Date(NOW), 'staff');
+    await store.create(
+      row({
+        id: '18181818-1818-4181-8181-181818181818',
+        authorPubkey: pubkey,
+        text: '#21GiftsShop',
+        shopAccount: { id: 'acc', username: 'ada', name: 'Ada' },
+      }),
+    );
+    await store.create(
+      row({
+        id: '1b1b1b1b-1b1b-41b1-81b1-1b1b1b1b1b1b',
+        parentId: NOTE,
+        accountId: 'acc',
+        name: 'Member child',
+      }),
+    );
+    await store.recordZapper(zapperChild, '22'.repeat(32), new Date(NOW));
+    await store.create(
+      row({
+        id: '1c1c1c1c-1c1c-41c1-81c1-1c1c1c1c1c1c',
+        parentId: NOTE,
+        authorPubkey: zapperChild.toUpperCase(),
+        name: 'Zapper child',
+      }),
+    );
+    await store.create(
+      row({
+        id: '1d1d1d1d-1d1d-41d1-81d1-1d1d1d1d1d1d',
+        parentId: NOTE,
+        authorPubkey: '11'.repeat(32),
+        name: 'External child',
+      }),
+    );
+    await store.create(
+      row({
+        id: '1e1e1e1e-1e1e-41e1-81e1-1e1e1e1e1e1e',
+        parentId: NOTE,
+        accountId: 'acc',
+        name: 'Deleted child',
+      }),
+    );
+    await store.markDeleted('1e1e1e1e-1e1e-41e1-81e1-1e1e1e1e1e1e', new Date(NOW), 'staff');
+    const result = await publicExternalAuthorShops(deps(store), NOTE);
+    expect(result.status).toBe(200);
+    if (result.status !== 200) {
+      return;
+    }
+    expect(result.messages.map((message) => message.id)).toEqual([NEWER, NOTE]);
+    expect(result.messages.find((message) => message.id === NOTE)?.replyCount).toBe(2);
+    expect(result.messages.find((message) => message.id === NEWER)?.replyCount).toBe(0);
+  });
+
+  it('returns 503 when listShopsByPubkey throws and does not log pubkey text', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      const pubkey = 'ab'.repeat(32);
+      const store = {
+        getById: () => Promise.resolve(row({ id: NOTE, authorPubkey: pubkey })),
+        listShopsByPubkey: () => Promise.reject(new Error('boom pubkey')),
+      } as unknown as InMemoryMessageStore;
+      expect(await publicExternalAuthorShops(deps(store), NOTE)).toEqual({ status: 503 });
+      const line = parsedEvents(warn).find(
+        (event) => event['event'] === 'messages.external_shops.failed',
+      );
+      expect(line).toEqual({
+        ts: expect.any(String),
+        event: 'messages.external_shops.failed',
+      });
+      expect(JSON.stringify(line)).not.toContain('pubkey');
+      expect(JSON.stringify(line)).not.toContain(pubkey);
+    } finally {
+      warn.mockRestore();
+    }
   });
 });
 
