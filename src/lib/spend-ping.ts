@@ -19,9 +19,7 @@ const DEFAULT_TIMEOUT_MS = 5_000;
 
 /** Result of {@link SpendPing.pingOnDay}; never includes the Lightning address. */
 export type SpendPingOutcome =
-  | { status: 'accepted' }
-  | { status: 'skipped'; reason: string }
-  | { status: 'failed' };
+  { status: 'accepted' } | { status: 'skipped'; reason: string } | { status: 'failed' };
 
 /**
  * Outbound ping so the spend worker can pay a listed recipient.

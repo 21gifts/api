@@ -37,9 +37,7 @@ function mount(
         day: string,
         grantStatus?: 'none' | 'pending' | 'trial' | 'admitted' | 'rejected',
       ) => Promise<
-        | { status: 'accepted' }
-        | { status: 'skipped'; reason: string }
-        | { status: 'failed' }
+        { status: 'accepted' } | { status: 'skipped'; reason: string } | { status: 'failed' }
       >;
     };
     fundingStore?: InMemoryFundingStore;

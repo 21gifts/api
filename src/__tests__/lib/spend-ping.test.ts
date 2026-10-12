@@ -1081,9 +1081,7 @@ describe('HttpSpendPing', () => {
     expect(
       parsedEvents(warn).some(
         (e) =>
-          e['event'] === 'spend.ping.skipped' &&
-          e['address'] === ADDRESS &&
-          e['reason'] === 'paid',
+          e['event'] === 'spend.ping.skipped' && e['address'] === ADDRESS && e['reason'] === 'paid',
       ),
     ).toBe(true);
   });
@@ -1232,8 +1230,7 @@ describe('HttpSpendPing', () => {
 
   it('pingOnDay returns failed when 200 skipped JSON has an empty reason', async () => {
     const fetchImpl = vi.fn<FetchFn>(
-      async () =>
-        new Response(JSON.stringify({ status: 'skipped', reason: '' }), { status: 200 }),
+      async () => new Response(JSON.stringify({ status: 'skipped', reason: '' }), { status: 200 }),
     );
     await expect(
       new HttpSpendPing({
