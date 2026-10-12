@@ -338,8 +338,8 @@ for Lightning.
 
 With no till charge, the payer enters the amount, in whole sats or in the
 viewer's fiat, within the pay link's minimum and maximum. Fiat is
-converted to whole sats by the same rule the payment page already uses
-for a Lightning amount. The result is the fixed sat amount. The cashier
+converted to whole sats by the rule that page already uses for a Lightning
+amount. This repository does not contain that rule and does not add one. The result is that whole sat amount. The cashier
 does not enter it.
 
 The sat amount does not move after it is fixed. Each stablecoin figure is
