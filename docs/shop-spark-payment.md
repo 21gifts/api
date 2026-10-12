@@ -123,7 +123,8 @@ A page payment that is still `open` five minutes after it was created
 is marked `ended` on the next read, before that read continues. Those
 five minutes are the pending-charge window. Replacing the quote does
 not move that time. The read then has no open amount, and a new amount
-may be opened. An `accepted` payment is not ended by this clock.
+may be opened. An `accepted` payment is not ended by this clock. A stored
+proof that has no result is not ended by this clock either.
 
 On **409** the page shows that error. It does not treat a later fetch of
 the pay link as the amount this payer just entered.
@@ -225,7 +226,8 @@ On `GET /lnurlp/tx/:username`, and on `GET /lnurlp/cb/:username` when
 `method` is set, an unknown quote, a quote for another username, or an
 expired quote is **400** `{ "error": "No such quote" }`. It is not served
 as another quote. Expiry is that error only while the payment is not yet
-`accepted`. After `accepted` or `paid`, a matching proof stays **200**
+`accepted` and the proof was not stored while the quote was valid. After
+`accepted` or `paid`, a matching proof stays **200**
 even when `quote.expiration` is in the past.
 
 A callback with no `method` does not check `quote`. It is the Lightning
@@ -470,11 +472,22 @@ fails the check. This service does not add a second proof path.
 For a proof, the api returns success the first time only when the
 payment is still `open`, the transfer matches the quote, and Orchestra
 has accepted it: the offered chain, the offered asset, the quoted
-amount, and a quote that was still valid. A payment that is `ended` is
-not moved to `accepted` by a later proof. A repeat of a proof already
-stored for `accepted` or `paid` stays 200. From that moment the sats
-stay due. The response does not wait for delivery, and a wallet is not
-told to pay again because the bitcoin has not arrived.
+amount, and a quote that was still valid. Before it asks Orchestra, it
+stores that proof: the quote, the method, the asset, and the proof
+parameter. A payment that is `ended`, and that has no such stored proof,
+is not moved to `accepted` by a later proof. While a stored proof has
+no result, that proof is not refused for quote expiry. A retry of it
+asks Orchestra again. Orchestra unreachable is **503**
+`{ "error": "Stablecoin payment is unavailable" }`. The stored proof
+stays unresolved and the payment stays `open`. When Orchestra accepts,
+the payment is `accepted` and the response is **200**, including when
+the quote has lapsed since the proof was stored. When Orchestra does
+not accept, the stored proof is refused, the response is **400**
+`{ "error": "Payment was not accepted" }`, and the five-minute read may
+end the payment again. A repeat of a proof already stored for
+`accepted` or `paid` stays 200. From that moment the sats stay due. The
+response does not wait for delivery, and a wallet is not told to pay
+again because the bitcoin has not arrived.
 
 Any other transfer is an error. Nothing is due, and the shop is not paid.
 
@@ -580,9 +593,13 @@ minutes stay as they are.
 `POST /pos` still takes a whole sat amount of at least 1, inside the
 linked address's minimum and maximum, for an account with a username and
 a linked Wallet of Satoshi address. One unexpired pending charge. Five
-minutes. While a `shop_payment` for that account is `open` or `accepted`,
-the call is **409** `{ "error": "A payment is already open" }` and writes
-nothing. While it is pending, both Lightning sendable bounds become that
+minutes. While a `shop_payment` for that account is `accepted`, or `open` with a
+stored proof that has no result, the call is **409**
+`{ "error": "A payment is already open" }` and writes nothing. While a
+page payment is `open`, no proof is stored, and no till charge is
+pending, the call marks that payment `ended` and then creates the
+charge. The pay link is one public URL and carries no payment id, so
+that open payment pins the URL until this call or the five minutes. While it is pending, both Lightning sendable bounds become that
 sat amount in millisats. Metadata stays on Wallet of Satoshi. When the
 Orchestra key is configured and Orchestra commits to those sats on the
 invoice for this charge, the stablecoin amounts for those same sats are
