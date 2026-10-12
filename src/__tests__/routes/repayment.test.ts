@@ -826,6 +826,59 @@ describe('DELETE /messages/:id on a credit', () => {
     expect((await del(app, OTHER)).status).toBe(409);
   });
 
+  async function emptyCredit(messages: InMemoryMessageStore): Promise<void> {
+    await messages.create({
+      id: OTHER,
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'empty ask',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+      sats: 0,
+      goalSats: 1000,
+      goalRepayable: true,
+      goalTermDays: 10,
+    });
+  }
+
+  it('refuses when sats arrive between the check and the hide', async () => {
+    const { app, messages } = await staffCredit();
+    await emptyCredit(messages);
+    const markDeleted = messages.markDeleted.bind(messages);
+    messages.markDeleted = async (id, at, by, expectedSats) => {
+      await messages.addSats(id, 5, null);
+      return markDeleted(id, at, by, expectedSats);
+    };
+    const res = await del(app, OTHER);
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({ error: 'An open credit cannot be deleted' });
+    expect((await messages.getById(OTHER))?.deletedAt).toBeNull();
+  });
+
+  it('returns 204 when another hide lands between the check and the hide', async () => {
+    const { app, messages } = await staffCredit();
+    await emptyCredit(messages);
+    const markDeleted = messages.markDeleted.bind(messages);
+    messages.markDeleted = async (id, at, by, expectedSats) => {
+      await markDeleted(id, new Date(1), 'other');
+      return markDeleted(id, at, by, expectedSats);
+    };
+    expect((await del(app, OTHER)).status).toBe(204);
+    expect((await messages.getById(OTHER))?.deletedBy).toBe('other');
+  });
+
+  it('returns 404 when the credit disappears between the check and the hide', async () => {
+    const { app, messages } = await staffCredit();
+    await emptyCredit(messages);
+    const markDeleted = messages.markDeleted.bind(messages);
+    messages.markDeleted = async (id, at, by, expectedSats) => {
+      await messages.deleteById(id);
+      return markDeleted(id, at, by, expectedSats);
+    };
+    expect((await del(app, OTHER)).status).toBe(404);
+  });
+
   it('hides a credit that never received sats', async () => {
     const { app, messages } = await staffCredit();
     await messages.create({

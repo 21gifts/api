@@ -1275,7 +1275,7 @@ describe('GET /messages/:id/external-posts', () => {
       videoContentType: 'video/mp4',
     });
     const store = {
-      getById: () => Promise.resolve(good),
+      getById: (id: string) => Promise.resolve(id === clipId ? clip : good),
       listPostsByPubkey: () => Promise.resolve([clip, good]),
       deleteById: () => Promise.resolve(false),
     } as unknown as MessageStore;
@@ -1286,6 +1286,31 @@ describe('GET /messages/:id/external-posts', () => {
     expect(parsedEvents(warn)).not.toContainEqual(
       expect.objectContaining({ event: 'messages.video.dropped' }),
     );
+  });
+
+  it('omits a missing-video post the store keeps but that is gone or hidden on reread', async () => {
+    const pubkey = 'ab'.repeat(32);
+    const goneId = '1e1e1e1e-1e1e-41e1-81e1-1e1e1e1e1e1f';
+    const hiddenId = '1e1e1e1e-1e1e-41e1-81e1-1e1e1e1e1e20';
+    const good = row({ id: NOTE, authorPubkey: pubkey, name: 'Ada' });
+    const clip = (id: string): MessageRow =>
+      row({ id, authorPubkey: pubkey, name: 'Ada', hasVideo: true, videoContentType: 'video/mp4' });
+    const store = {
+      getById: (id: string) =>
+        Promise.resolve(
+          id === goneId
+            ? undefined
+            : id === hiddenId
+              ? { ...clip(hiddenId), deletedAt: new Date(1), deletedBy: 'staff' }
+              : good,
+        ),
+      listPostsByPubkey: () => Promise.resolve([clip(goneId), clip(hiddenId), good]),
+      deleteById: () => Promise.resolve(false),
+    } as unknown as MessageStore;
+    const res = await mount(store).request(`/messages/${NOTE}/external-posts`);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { messages: Array<{ id: string }> };
+    expect(body.messages.map((message) => message.id)).toEqual([NOTE]);
   });
 
   it('skips a post that cannot be serialized and still returns the other note', async () => {

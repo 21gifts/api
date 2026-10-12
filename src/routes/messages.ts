@@ -102,7 +102,8 @@ import { stat } from 'node:fs/promises';
  * @param store - Message store.
  * @param row - Store row.
  * @returns The row, or `null` when it was deleted. A row the store keeps, such as a
- *   credit with sats, is returned unchanged.
+ *   credit with sats, is read again and returned while it is live; `null` when
+ *   it is gone or hidden.
  */
 async function dropMissingVideoRow(
   store: MessageStore,
@@ -120,7 +121,8 @@ async function dropMissingVideoRow(
     return row;
   }
   if (!(await store.deleteById(row.id))) {
-    return row;
+    const kept = await store.getById(row.id);
+    return kept !== undefined && kept.deletedAt === null ? kept : null;
   }
   logEvent('messages.video.dropped');
   return null;
@@ -2066,14 +2068,27 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
         if (target === undefined) {
           return c.json({ error: 'Not found' }, 404);
         }
-        if (target.deletedAt === null && (await creditStillOpen(deps.store, target))) {
+        const liveCredit = target.deletedAt === null && target.goalRepayable === true;
+        if (liveCredit && (await creditStillOpen(deps.store, target))) {
           logEvent('messages.delete.open_credit', { messageId: id, accountId: account.id });
           return c.json({ error: 'An open credit cannot be deleted' }, 409);
         }
         const at = new Date(deps.now());
-        const tagged = await deps.store.markDeleted(id, at, account.id);
+        const tagged = await deps.store.markDeleted(
+          id,
+          at,
+          account.id,
+          liveCredit ? target.sats : undefined,
+        );
         if (!tagged) {
-          return c.json({ error: 'Not found' }, 404);
+          const now = liveCredit ? await deps.store.getById(id) : undefined;
+          if (now === undefined) {
+            return c.json({ error: 'Not found' }, 404);
+          }
+          if (now.deletedAt === null) {
+            logEvent('messages.delete.open_credit', { messageId: id, accountId: account.id });
+            return c.json({ error: 'An open credit cannot be deleted' }, 409);
+          }
         }
         if (
           target.parentId === null &&

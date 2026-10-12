@@ -194,7 +194,8 @@ async function loadTargetAccount(
  * @param store - Message store.
  * @param row - Store row.
  * @returns The row, or `null` when it was deleted. A row the store keeps, such as a
- *   credit with sats, is returned unchanged.
+ *   credit with sats, is read again and returned while it is live; `null` when
+ *   it is gone or hidden.
  */
 async function dropMissingVideoRow(
   store: MessageStore,
@@ -212,7 +213,8 @@ async function dropMissingVideoRow(
     return row;
   }
   if (!(await store.deleteById(row.id))) {
-    return row;
+    const kept = await store.getById(row.id);
+    return kept !== undefined && kept.deletedAt === null ? kept : null;
   }
   logEvent('messages.video.dropped');
   return null;

@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
 import { InMemoryAuthStore } from '@/lib/auth/store';
-import { unsignedNostrDefaults } from '@/lib/message';
+import { unsignedNostrDefaults, type MessageRow } from '@/lib/message';
 import { InMemoryMessageStore } from '@/lib/message-store';
 import type { TrustEdge } from '@/lib/trust';
 import { InMemoryFundingStore } from '@/lib/funding-store';
@@ -834,6 +834,41 @@ describe('GET /members/:accountId/posts', () => {
     const body = (await res.json()) as { messages: Array<{ id: string }> };
     expect(body.messages.map((row) => row.id)).toEqual([creditId]);
     expect(await messageStore.getById(creditId)).toBeDefined();
+  });
+
+  it('omits a missing-file video row the store keeps but that is gone or hidden on reread', async () => {
+    const authStore = await seededCaller();
+    await addAccount(authStore, ACCOUNT_ID, 'b'.repeat(64));
+    const goneId = '5c5051d3-adba-44f9-a964-9bd0df1ce0a1';
+    const hiddenId = '5c5051d3-adba-44f9-a964-9bd0df1ce0a2';
+    const clip = (id: string): MessageRow => ({
+      id,
+      accountId: ACCOUNT_ID,
+      name: 'Ada',
+      text: 'clip gone',
+      createdAt: new Date(now()),
+      ...unsignedNostrDefaults(),
+      hasPhoto: false,
+      hasVideo: true,
+      videoContentType: 'video/mp4',
+    });
+    class KeepingStore extends InMemoryMessageStore {
+      override deleteById(): Promise<boolean> {
+        return Promise.resolve(false);
+      }
+      override getById(id: string): Promise<MessageRow | undefined> {
+        return Promise.resolve(
+          id === hiddenId ? { ...clip(id), deletedAt: new Date(1), deletedBy: 'staff' } : undefined,
+        );
+      }
+    }
+    const messageStore = new KeepingStore([clip(goneId), clip(hiddenId)]);
+    const res = await mount(authStore, messageStore).request(`/members/${ACCOUNT_ID}/posts`, {
+      headers: AUTH,
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { messages: Array<{ id: string }> };
+    expect(body.messages).toEqual([]);
   });
 
   it('subtracts dropped missing-file video replies from replyCount', async () => {

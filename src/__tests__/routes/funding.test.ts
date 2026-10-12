@@ -5,7 +5,7 @@ import type { FundingGrant } from '@/lib/funding';
 import { InMemoryFundingStore, type FundingStore } from '@/lib/funding-store';
 import type { GiftRow } from '@/lib/gift';
 import { InMemoryGiftStore, type GiftStore } from '@/lib/gift-store';
-import { unsignedNostrDefaults } from '@/lib/message';
+import { unsignedNostrDefaults, type MessageRow } from '@/lib/message';
 import { InMemoryMessageStore } from '@/lib/message-store';
 import { removeForumVideo, writeForumVideo } from '@/lib/video';
 import { fundingRoutes } from '@/routes/funding';
@@ -923,6 +923,43 @@ describe('GET /funding/applications/:accountId', () => {
     const body = (await res.json()) as { messages: Array<{ id: string }> };
     expect(body.messages.map((row) => row.id)).toEqual([creditId]);
     expect(await messageStore.getById(creditId)).toBeDefined();
+  });
+
+  it('omits a missing-file video row the store keeps but that is gone or hidden on reread', async () => {
+    const { authStore, fundingStore } = await staffed();
+    await fundingStore.upsert(grant({ accountId: VERIFIED, status: 'pending' }));
+    const goneId = '6d6162e4-becb-45fa-b075-ace1ef2df1a1';
+    const hiddenId = '6d6162e4-becb-45fa-b075-ace1ef2df1a2';
+    const clip = (id: string): MessageRow => ({
+      id,
+      accountId: VERIFIED,
+      name: 'Ada',
+      text: 'clip gone',
+      createdAt: new Date(now()),
+      ...unsignedNostrDefaults(),
+      hasPhoto: false,
+      hasVideo: true,
+      videoContentType: 'video/mp4',
+    });
+    class KeepingStore extends InMemoryMessageStore {
+      override deleteById(): Promise<boolean> {
+        return Promise.resolve(false);
+      }
+      override getById(id: string): Promise<MessageRow | undefined> {
+        return Promise.resolve(
+          id === hiddenId ? { ...clip(id), deletedAt: new Date(1), deletedBy: 'staff' } : undefined,
+        );
+      }
+    }
+    const messageStore = new KeepingStore([clip(goneId), clip(hiddenId)]);
+    const res = await get(
+      mount(authStore, fundingStore, messageStore),
+      `/funding/applications/${VERIFIED}`,
+      'founder',
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { messages: Array<{ id: string }> };
+    expect(body.messages).toEqual([]);
   });
 
   it('returns 503 when the store throws', async () => {

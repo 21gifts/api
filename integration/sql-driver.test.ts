@@ -387,4 +387,83 @@ describe('PostgresMessageStore deleteById on a credit', () => {
       await closeIfPossible(sql);
     }
   });
+
+  test('a payment committed during a hide or a hard delete wins over both', async () => {
+    const { client, sql } = createBunSqlClient(databaseUrl);
+    const accountId = crypto.randomUUID();
+    const creditId = crypto.randomUUID();
+    const replyId = crypto.randomUUID();
+    const otherId = crypto.randomUUID();
+    let ready = false;
+    const settled = async (pending: Promise<boolean>): Promise<boolean> => {
+      const marker = Symbol('pending');
+      const first = await Promise.race([pending, Bun.sleep(300).then(() => marker)]);
+      return first !== marker;
+    };
+    try {
+      await migrateAuthSchema(client);
+      await migrateBtcUsdSchema(client);
+      await migrateFiatSchema(client);
+      await migrateMessageSchema(client);
+      ready = true;
+      await new PostgresAuthStore(client).createAccount({
+        id: accountId,
+        linkingKey: `02${accountId.replaceAll('-', '').padEnd(64, '1')}`,
+        role: 'verified',
+        name: 'Ada',
+        lightningAddress: null,
+        lightningAddressVerified: false,
+        forumLawsDismissed: false,
+        location: null,
+        viewKey: accountId.replaceAll('-', '').padEnd(64, 'b'),
+        createdAt: 1,
+        rulesAgreedAt: null,
+      });
+      const store = new PostgresMessageStore(client);
+      const base = {
+        accountId,
+        name: 'Ada',
+        createdAt: new Date(),
+        hasPhoto: false,
+        ...unsignedNostrDefaults(),
+      };
+      await store.create({ ...base, id: creditId, text: 'credit', goalSats: 10, goalRepayable: true });
+      await store.create({ ...base, id: replyId, parentId: creditId, text: 'reply' });
+      await store.create({ ...base, id: otherId, text: 'other', goalSats: 10, goalRepayable: true });
+
+      const payer = await sql.reserve();
+      try {
+        await payer.unsafe('BEGIN');
+        await payer.unsafe('UPDATE message SET sats = 5 WHERE id = $1', [creditId]);
+        const hide = store.markDeleted(creditId, new Date(), accountId, 0);
+        expect(await settled(hide)).toBe(false);
+        await payer.unsafe('COMMIT');
+        expect(await hide).toBe(false);
+      } finally {
+        payer.release();
+      }
+      expect((await store.getById(creditId))?.deletedAt).toBeNull();
+      expect((await store.getById(replyId))?.deletedAt).toBeNull();
+
+      const second = await sql.reserve();
+      try {
+        await second.unsafe('BEGIN');
+        await second.unsafe('UPDATE message SET sats = 5 WHERE id = $1', [otherId]);
+        const remove = store.deleteById(otherId);
+        expect(await settled(remove)).toBe(false);
+        await second.unsafe('COMMIT');
+        expect(await remove).toBe(false);
+      } finally {
+        second.release();
+      }
+      expect((await store.getById(otherId))?.sats).toBe(5);
+    } finally {
+      if (ready) {
+        await client.execute('DELETE FROM message WHERE parent_id = $1', [creditId]);
+        await client.execute('DELETE FROM message WHERE account_id = $1', [accountId]);
+        await client.execute('DELETE FROM account WHERE id = $1', [accountId]);
+      }
+      await closeIfPossible(sql);
+    }
+  });
 });
