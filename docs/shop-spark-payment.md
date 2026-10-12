@@ -209,17 +209,23 @@ fetch, with no new amount, is the Lightning pay request.
 An unknown username, or a shop with no linked Wallet of Satoshi address, is
 **404** `{ "error": "Not found" }`.
 
-On `GET /lnurlp/cb/:username` or `GET /lnurlp/tx/:username`, an unknown
-quote, a quote for another username, or an expired quote is **400**
-`{ "error": "No such quote" }`. It is not served as another quote.
+On `GET /lnurlp/tx/:username`, and on `GET /lnurlp/cb/:username` when
+`method` is set, an unknown quote, a quote for another username, or an
+expired quote is **400** `{ "error": "No such quote" }`. It is not served
+as another quote. Expiry is that error only while the payment is not yet
+`accepted`. After `accepted` or `paid`, a matching proof stays **200**
+even when `quote.expiration` is in the past.
+
+A callback with no `method` does not check `quote`. It is the Lightning
+path below.
 
 A `method` and `asset` pair the quote does not offer is **400**
 `{ "error": "That payment is not offered" }`.
 
 A proof the quote does not accept, or a transfer Orchestra has not
-accepted, is **400** `{ "error": "Payment was not accepted" }`. The same
-proof may be sent again while that quote is still valid. The error does
-not ask for a second payment.
+accepted, is **400** `{ "error": "Payment was not accepted" }`. That
+proof may be sent again while the quote is still valid and the payment
+is not yet `accepted`. The error does not ask for a second payment.
 
 None of these bodies is the 404 a different provider returns when no fiat
 amount is waiting.
