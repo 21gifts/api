@@ -214,7 +214,7 @@ Lightning `minFee` is the number 0.
 
 A stablecoin amount is the decimal string of `requiredAmountIn` divided
 by 10 to the power of that asset's decimals on that chain. The decimals
-are the ones the route catalog names for that chain and asset. The string
+are the `decimals` Orchestra names for that chain and asset on `/routes`. A pair `/routes` does not name is not offered. This service does not invent a decimal count, and the quote response's `route` labels are not that source. The string
 has no exponent. It is built from the integer, not from a JSON number.
 It is not the sat amount.
 
@@ -761,8 +761,7 @@ The driver is the OpenCryptoPay routine from Tether Wallet for Android
 1.11.0 (134). The input is the sticker `/pl/?lightning=<LNURL>`. The
 routine decodes that LNURL and requests the decoded URL.
 
-For one open amount, and for each chain and asset the pay link offers,
-the routine reaches settled. `requestedAmount` is asset `BTC`. That does
+For one open amount, the routine reaches settled for each stablecoin method the pay link offers, and only for the asset stored on the quote for that method. Lightning is offered and is not in that loop. A second asset on the same method does not have to reach settled. `requestedAmount` is asset `BTC`. That does
 not remove the stablecoin rows. The proof request is
 `GET /lnurlp/tx/:username`. A different URL fails the check. A repeat of
 that same proof is **200** and does not create a second payment.
