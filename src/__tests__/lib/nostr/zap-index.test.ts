@@ -4944,6 +4944,14 @@ describe('indexOpenZapReceipts', () => {
         base.countShopsByPubkey(...args),
       listShopsByPubkey: (...args: Parameters<InMemoryMessageStore['listShopsByPubkey']>) =>
         base.listShopsByPubkey(...args),
+      countCreditsByAccount: (...args: Parameters<InMemoryMessageStore['countCreditsByAccount']>) =>
+        base.countCreditsByAccount(...args),
+      listCreditsByAccount: (...args: Parameters<InMemoryMessageStore['listCreditsByAccount']>) =>
+        base.listCreditsByAccount(...args),
+      countCreditsByPubkey: (...args: Parameters<InMemoryMessageStore['countCreditsByPubkey']>) =>
+        base.countCreditsByPubkey(...args),
+      listCreditsByPubkey: (...args: Parameters<InMemoryMessageStore['listCreditsByPubkey']>) =>
+        base.listCreditsByPubkey(...args),
       listRepliesByAccount: (...args: Parameters<InMemoryMessageStore['listRepliesByAccount']>) =>
         base.listRepliesByAccount(...args),
       listRepliesByPubkey: (...args: Parameters<InMemoryMessageStore['listRepliesByPubkey']>) =>
@@ -5222,6 +5230,15 @@ describe('indexOpenZapReceipts', () => {
           base.countShopsByPubkey(...args),
         listShopsByPubkey: (...args: Parameters<InMemoryMessageStore['listShopsByPubkey']>) =>
           base.listShopsByPubkey(...args),
+        countCreditsByAccount: (
+          ...args: Parameters<InMemoryMessageStore['countCreditsByAccount']>
+        ) => base.countCreditsByAccount(...args),
+        listCreditsByAccount: (...args: Parameters<InMemoryMessageStore['listCreditsByAccount']>) =>
+          base.listCreditsByAccount(...args),
+        countCreditsByPubkey: (...args: Parameters<InMemoryMessageStore['countCreditsByPubkey']>) =>
+          base.countCreditsByPubkey(...args),
+        listCreditsByPubkey: (...args: Parameters<InMemoryMessageStore['listCreditsByPubkey']>) =>
+          base.listCreditsByPubkey(...args),
         listRepliesByAccount: (...args: Parameters<InMemoryMessageStore['listRepliesByAccount']>) =>
           base.listRepliesByAccount(...args),
         listRepliesByPubkey: (...args: Parameters<InMemoryMessageStore['listRepliesByPubkey']>) =>
@@ -6048,6 +6065,15 @@ describe('indexOpenZapReceipts', () => {
           base.countShopsByPubkey(...args),
         listShopsByPubkey: (...args: Parameters<InMemoryMessageStore['listShopsByPubkey']>) =>
           base.listShopsByPubkey(...args),
+        countCreditsByAccount: (
+          ...args: Parameters<InMemoryMessageStore['countCreditsByAccount']>
+        ) => base.countCreditsByAccount(...args),
+        listCreditsByAccount: (...args: Parameters<InMemoryMessageStore['listCreditsByAccount']>) =>
+          base.listCreditsByAccount(...args),
+        countCreditsByPubkey: (...args: Parameters<InMemoryMessageStore['countCreditsByPubkey']>) =>
+          base.countCreditsByPubkey(...args),
+        listCreditsByPubkey: (...args: Parameters<InMemoryMessageStore['listCreditsByPubkey']>) =>
+          base.listCreditsByPubkey(...args),
         listRepliesByAccount: (...args: Parameters<InMemoryMessageStore['listRepliesByAccount']>) =>
           base.listRepliesByAccount(...args),
         listRepliesByPubkey: (...args: Parameters<InMemoryMessageStore['listRepliesByPubkey']>) =>

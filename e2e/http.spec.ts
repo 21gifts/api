@@ -232,6 +232,11 @@ test('GET /members/:accountId/shops without bearer is 401', async ({ request }) 
   expect(res.status()).toBe(401);
 });
 
+test('GET /members/:accountId/credits without bearer is 401', async ({ request }) => {
+  const res = await request.get('/members/:accountId/credits');
+  expect(res.status()).toBe(401);
+});
+
 test('GET /members/:accountId/replies without bearer is 401', async ({ request }) => {
   const res = await request.get('/members/:accountId/replies');
   expect(res.status()).toBe(401);
@@ -1275,6 +1280,13 @@ test('GET /messages/:id/external-shops without bearer is 404 on default boot', a
   request,
 }) => {
   const res = await request.get('/messages/:id/external-shops');
+  expect(res.status()).toBe(404);
+});
+
+test('GET /messages/:id/external-credits without bearer is 404 on default boot', async ({
+  request,
+}) => {
+  const res = await request.get('/messages/:id/external-credits');
   expect(res.status()).toBe(404);
 });
 

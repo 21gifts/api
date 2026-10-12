@@ -4,6 +4,7 @@ import { InMemoryAuthStore } from '@/lib/auth/store';
 import { unsignedNostrDefaults, type MessageRow } from '@/lib/message';
 import { InMemoryMessageStore } from '@/lib/message-store';
 import {
+  publicExternalAuthorCredits,
   publicExternalAuthorPosts,
   publicExternalAuthorProfile,
   publicExternalAuthorReplies,
@@ -68,6 +69,7 @@ describe('publicExternalAuthorProfile', () => {
         postCount: 1,
         replyCount: 0,
         shopCount: 0,
+        creditCount: 0,
       },
     });
   });
@@ -85,6 +87,25 @@ describe('publicExternalAuthorProfile', () => {
         postCount: 1,
         replyCount: 0,
         shopCount: 1,
+        creditCount: 0,
+      },
+    });
+  });
+
+  it('includes a positive credit count for an external credit note', async () => {
+    const store = new InMemoryMessageStore();
+    const pubkey = 'ae'.repeat(32);
+    await store.create(row({ id: NOTE, authorPubkey: pubkey, name: 'Ada', goalRepayable: true }));
+    const result = await publicExternalAuthorProfile(deps(store), NOTE);
+    expect(result).toEqual({
+      status: 200,
+      body: {
+        name: 'Ada',
+        npub: npubEncode(pubkey),
+        postCount: 1,
+        replyCount: 0,
+        shopCount: 0,
+        creditCount: 1,
       },
     });
   });
@@ -110,6 +131,7 @@ describe('publicExternalAuthorProfile', () => {
         postCount: 1,
         replyCount: 0,
         shopCount: 0,
+        creditCount: 0,
       },
     });
   });
@@ -440,6 +462,173 @@ describe('publicExternalAuthorShops', () => {
       expect(line).toEqual({
         ts: expect.any(String),
         event: 'messages.external_shops.failed',
+      });
+      expect(JSON.stringify(line)).not.toContain('pubkey');
+      expect(JSON.stringify(line)).not.toContain(pubkey);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+});
+
+describe('publicExternalAuthorCredits', () => {
+  it('returns 404 for an id that is not a UUID', async () => {
+    expect(
+      await publicExternalAuthorCredits(deps(new InMemoryMessageStore()), 'not-a-uuid'),
+    ).toEqual({ status: 404 });
+  });
+
+  it('returns 404 for a missing UUID', async () => {
+    expect(await publicExternalAuthorCredits(deps(new InMemoryMessageStore()), MISSING)).toEqual({
+      status: 404,
+    });
+  });
+
+  it('returns 404 for a deleted row', async () => {
+    const store = new InMemoryMessageStore();
+    const pubkey = 'ab'.repeat(32);
+    await store.create(row({ id: NOTE, authorPubkey: pubkey, name: 'Ada' }));
+    await store.markDeleted(NOTE, new Date(NOW), 'staff');
+    expect(await publicExternalAuthorCredits(deps(store), NOTE)).toEqual({ status: 404 });
+  });
+
+  it('returns 404 when the seed has an accountId', async () => {
+    const store = new InMemoryMessageStore();
+    const pubkey = 'ab'.repeat(32);
+    await store.create(row({ id: NOTE, accountId: 'acc', authorPubkey: pubkey, name: 'Ada' }));
+    expect(await publicExternalAuthorCredits(deps(store), NOTE)).toEqual({ status: 404 });
+  });
+
+  it('returns 404 for a withheld non-zapper reply', async () => {
+    const store = new InMemoryMessageStore();
+    await store.create(row({ id: PARENT, accountId: 'acc', name: 'Parent' }));
+    await store.create(
+      row({ id: NOTE, parentId: PARENT, authorPubkey: 'ab'.repeat(32), name: 'Ada' }),
+    );
+    expect(await publicExternalAuthorCredits(deps(store), NOTE)).toEqual({ status: 404 });
+  });
+
+  it('returns 200 empty credits for a zapper reply with no credit', async () => {
+    const store = new InMemoryMessageStore();
+    const pubkey = 'cd'.repeat(32);
+    await store.create(row({ id: PARENT, accountId: 'acc', name: 'Parent' }));
+    await store.recordZapper(pubkey, '11'.repeat(32), new Date(NOW));
+    await store.create(row({ id: NOTE, parentId: PARENT, authorPubkey: pubkey, name: 'Ada' }));
+    expect(await publicExternalAuthorCredits(deps(store), NOTE)).toEqual({
+      status: 200,
+      messages: [],
+    });
+  });
+
+  it('lists newest-first credits with attributed replyCount and excludes other authorship', async () => {
+    const store = new InMemoryMessageStore();
+    const pubkey = 'ab'.repeat(32);
+    const zapperChild = 'ef'.repeat(32);
+    await store.create(
+      row({
+        id: NOTE,
+        authorPubkey: pubkey.toUpperCase(),
+        name: 'Ada',
+        goalRepayable: true,
+      }),
+    );
+    await store.create(
+      row({
+        id: NEWER,
+        authorPubkey: pubkey,
+        name: 'Ada',
+        goalRepayable: true,
+        createdAt: new Date(NOW + 1000),
+      }),
+    );
+    await store.create(row({ id: OTHER, authorPubkey: 'cd'.repeat(32), goalRepayable: true }));
+    await store.create(
+      row({
+        id: '12121212-1212-4121-8121-121212121212',
+        accountId: 'acc',
+        authorPubkey: pubkey,
+        goalRepayable: true,
+      }),
+    );
+    await store.create(
+      row({
+        id: '13131313-1313-4131-8131-131313131313',
+        authorPubkey: pubkey,
+        goalRepayable: true,
+      }),
+    );
+    await store.markDeleted('13131313-1313-4131-8131-131313131313', new Date(NOW), 'staff');
+    await store.create(
+      row({
+        id: '18181818-1818-4181-8181-181818181818',
+        authorPubkey: pubkey,
+        goalRepayable: true,
+        shopAccount: { id: 'acc', username: 'ada', name: 'Ada' },
+      }),
+    );
+    await store.create(
+      row({
+        id: '1b1b1b1b-1b1b-41b1-81b1-1b1b1b1b1b1b',
+        parentId: NOTE,
+        accountId: 'acc',
+        name: 'Member child',
+      }),
+    );
+    await store.recordZapper(zapperChild, '22'.repeat(32), new Date(NOW));
+    await store.create(
+      row({
+        id: '1c1c1c1c-1c1c-41c1-81c1-1c1c1c1c1c1c',
+        parentId: NOTE,
+        authorPubkey: zapperChild.toUpperCase(),
+        name: 'Zapper child',
+      }),
+    );
+    await store.create(
+      row({
+        id: '1d1d1d1d-1d1d-41d1-81d1-1d1d1d1d1d1d',
+        parentId: NOTE,
+        authorPubkey: '11'.repeat(32),
+        name: 'External child',
+      }),
+    );
+    await store.create(
+      row({
+        id: '1e1e1e1e-1e1e-41e1-81e1-1e1e1e1e1e1e',
+        parentId: NOTE,
+        accountId: 'acc',
+        name: 'Deleted child',
+      }),
+    );
+    await store.markDeleted('1e1e1e1e-1e1e-41e1-81e1-1e1e1e1e1e1e', new Date(NOW), 'staff');
+    const result = await publicExternalAuthorCredits(deps(store), NOTE);
+    expect(result.status).toBe(200);
+    if (result.status !== 200) {
+      return;
+    }
+    expect(result.messages.map((message) => message.id)).toEqual([
+      NEWER,
+      '18181818-1818-4181-8181-181818181818',
+      NOTE,
+    ]);
+    expect(result.messages.find((message) => message.id === NOTE)?.replyCount).toBe(2);
+    expect(result.messages.find((message) => message.id === NEWER)?.replyCount).toBe(0);
+  });
+
+  it('returns 503 when listCreditsByPubkey throws and does not log pubkey text', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      const pubkey = 'ab'.repeat(32);
+      const store = {
+        getById: () => Promise.resolve(row({ id: NOTE, authorPubkey: pubkey })),
+        listCreditsByPubkey: () => Promise.reject(new Error('boom pubkey')),
+      } as unknown as InMemoryMessageStore;
+      expect(await publicExternalAuthorCredits(deps(store), NOTE)).toEqual({ status: 503 });
+      const line = parsedEvents(warn).find(
+        (event) => event['event'] === 'messages.external_credits.failed',
+      );
+      expect(line).toEqual({
+        ts: expect.any(String),
+        event: 'messages.external_credits.failed',
       });
       expect(JSON.stringify(line)).not.toContain('pubkey');
       expect(JSON.stringify(line)).not.toContain(pubkey);

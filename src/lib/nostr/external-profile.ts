@@ -73,6 +73,8 @@ export interface ExternalAuthorProfileBody {
   replyCount: number;
   /** Uncapped live unassigned shops for this pubkey. Always present, including 0. */
   shopCount: number;
+  /** Uncapped live credits for this pubkey. Always present, including 0. */
+  creditCount: number;
   /** NIP-05 identifier whose well-known document names this pubkey. */
   nip05?: string;
   /** Published lightning address. Not fetched and not a payment promise. */
@@ -98,8 +100,8 @@ export type ExternalAuthorRepliesResult =
  * staff caller), withheld from the public read, not an external author, or
  * the pubkey is not 64 hex. Store and account throws are 503. A relay or
  * well-known failure keeps the 200 and drops only the field that failed.
- * `postCount`, `replyCount`, and `shopCount` are uncapped live totals for
- * that pubkey.
+ * `postCount`, `replyCount`, `shopCount`, and `creditCount` are uncapped live
+ * totals for that pubkey.
  *
  * @param deps - Store, clock, and optional querier / fetch / DNS.
  * @param id - Path message id.
@@ -117,6 +119,7 @@ export async function publicExternalAuthorProfile(
     const { pubkey, row } = loaded;
     const counts = await deps.store.countByPubkey(pubkey);
     const shopCount = await deps.store.countShopsByPubkey(pubkey);
+    const creditCount = await deps.store.countCreditsByPubkey(pubkey);
     const live = await liveFields(deps, pubkey);
     const accountNames =
       live?.displayName === null || live?.displayName === undefined
@@ -128,6 +131,7 @@ export async function publicExternalAuthorProfile(
       postCount: counts.postCount,
       replyCount: counts.replyCount,
       shopCount,
+      creditCount,
     };
     const nip05 = await confirmedNip05(deps, live?.nip05 ?? null, pubkey);
     if (nip05 !== null) {
@@ -194,6 +198,33 @@ export async function publicExternalAuthorShops(
     return { status: 200, messages };
   } catch {
     logEvent('messages.external_shops.failed');
+    return { status: 503 };
+  }
+}
+
+/**
+ * List live top-level credits for the external author of one forum message.
+ *
+ * Same 404 gate as {@link publicExternalAuthorProfile}. 200 is
+ * {@link MESSAGE_LIST_LIMIT} newest-first credits. Store throws are 503.
+ *
+ * @param deps - Store used for the row, zapper check, and list.
+ * @param id - Path message id.
+ * @returns Status and, on 200, the credit rows.
+ */
+export async function publicExternalAuthorCredits(
+  deps: ExternalAuthorProfileDeps,
+  id: string,
+): Promise<ExternalAuthorPostsResult> {
+  try {
+    const loaded = await loadExternalAuthor(deps, id);
+    if (loaded.status === 404) {
+      return { status: 404 };
+    }
+    const messages = await deps.store.listCreditsByPubkey(loaded.pubkey, MESSAGE_LIST_LIMIT);
+    return { status: 200, messages };
+  } catch {
+    logEvent('messages.external_credits.failed');
     return { status: 503 };
   }
 }

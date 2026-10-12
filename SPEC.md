@@ -140,6 +140,7 @@ Public base URLs used in examples:
 | GET    | `/members/:accountId/activity`                       | Bearer                                       | Same given/received payload as `/me/activity` for that member                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
 | GET    | `/members/:accountId/posts`                          | Bearer                                       | Live member top-level notes (latest 200)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
 | GET    | `/members/:accountId/shops`                          | Bearer                                       | Live member shop notes (latest 200)                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| GET    | `/members/:accountId/credits`                        | Bearer                                       | Live member credit notes (latest 200)                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
 | GET    | `/members/:accountId/replies`                        | Bearer                                       | Live member replies (latest 200)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
 | GET    | `/mentions`                                          | Bearer                                       | Suggestions for `@` (`q` empty = first 20 alphabetical). A token matches the start of the username, a `.` `_` `-` segment, or the start of the display name or one of its words; a token containing `.` `_` `-` is whole-string only. Does not store `@` marks                                                                                                                                                                                                                                                                |
 | GET    | `/trust-chain`                                       | Bearer                                       | Founder seeds (empty edges); `?around=<id>` one hop of stored public edges                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
@@ -182,6 +183,7 @@ Public base URLs used in examples:
 | GET    | `/messages/hidden`                                   | Bearer (moderator+)                          | Staff log of soft-hidden notes (session, not DEBUG_TOKEN)                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
 | GET    | `/messages/:id`                                      | none / Bearer (moderator+)                   | Live public JSON; staff hidden GET includes `deletedAt`/`deletedBy`                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
 | GET    | `/messages/:id/external-shops`                       | none                                         | Public external shop list                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| GET    | `/messages/:id/external-credits`                     | none                                         | Public external credit list                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
 | GET    | `/links/:code`                                       | none                                         | Public 8-hex prefix of exactly one message or account id                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
 | GET    | `/messages/:id/replies`                              | none / Bearer (moderator+)                   | Live replies; staff `listReplies(..., true)` includes hidden children even under a live parent                                                                                                                                                                                                                                                                                                                                                                                                                                |
 | GET    | `/messages/:id/photo`                                | none / Bearer (moderator+)                   | Live photo bytes; staff hidden bytes `Cache-Control: private, no-store`                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
@@ -1354,7 +1356,12 @@ permission and does not change `role`. Default
 including 0, and is not derived from the capped shop list. A live top-level
 `#21GiftsShop` note belongs to its assigned `shopAccount.id` when set and
 otherwise to its author account; a shop assigned to someone else does not
-belong to the author. Never pending/trial/rejected on the member card.
+belong to the author. Uncapped `creditCount` from `countCreditsByAccount` is
+always present, including 0, and is not derived from the capped credit list.
+A live top-level note with `goalRepayable === true` belongs to its author
+account, not a shop assignment and not a hashtag; funded, unfunded, and
+still-live repaid notes all count; deleted notes and replies do not. Never
+pending/trial/rejected on the member card.
 
 ### `GET /members/:accountId/posts`
 
@@ -1381,6 +1388,18 @@ newest-first (`createdAt` desc, `id` desc), capped at 200. Body
 route, including `accountId`, attributed `replyCount`, and `payable` when a
 non-empty `eventId` and a non-blank Lightning Address are set; it omits
 `parentId`.
+
+### `GET /members/:accountId/credits`
+
+Bearer required. Same 401 / 409 / 404 / 503 as `GET /members/:accountId`
+(`members.credits.failed` on 503). Lists only live top-level credit notes
+owned by the member as author (`goalRepayable` exactly true; no shop
+assignment, no hashtag), newest-first (`createdAt` desc, `id` desc),
+capped at 200. Funded, unfunded, and still-live repaid notes all count;
+deleted notes and replies do not. Body `{ "messages": [...] }` uses the
+same `serializeMessage` shape as the posts route, including `accountId`,
+attributed `replyCount`, and `payable` when a non-empty `eventId` and a
+non-blank Lightning Address are set; it omits `parentId`.
 
 ### `GET /members/:accountId/replies`
 
@@ -5446,7 +5465,7 @@ two ids per store.
 
 Public profile for an external author. No Bearer. Registered **before**
 `GET /messages/:id`. **200**
-`{ "name", "npub", "postCount", "replyCount", "shopCount" }`
+`{ "name", "npub", "postCount", "replyCount", "shopCount", "creditCount" }`
 and, when present, `nip05` and `lud16`. `name` is the stored snapshot
 (truncated pubkey when blank). A live kind 0 name replaces it only when
 `externalDisplayName` accepts it. `npub` is the NIP-19 bech32 encoding of
@@ -5455,7 +5474,9 @@ present, including 0: uncapped live top-level notes, and uncapped live
 public replies (`replyCount` is 0 when the pubkey is not a recorded
 zapper). `shopCount` is always present, including 0: the uncapped count of
 live top-level unassigned `#21GiftsShop` notes for that pubkey. A note assigned
-to a member is not counted as an external shop. `nip05` requires `fetchImpl` and
+to a member is not counted as an external shop. `creditCount` is always present,
+including 0: the uncapped count of live top-level notes with
+`goalRepayable` exactly true for that pubkey. `nip05` requires `fetchImpl` and
 a guarded HTTPS `/.well-known/nostr.json` whose `names` entry matches the
 pubkey. `lud16` must be `user@host` and is not fetched. No hex pubkey,
 picture, callback, or invoice. **404** `{ "error": "Not found" }` for a
@@ -5487,6 +5508,17 @@ live attributed children, `payable` false, `via: "nostr"`, and omits `role`.
 (`messages.external_shops.failed`). A serialize failure skips that row and
 still returns 200.
 
+### `GET /messages/:id/external-credits`
+
+Public list of live top-level credit notes for an external author. No Bearer.
+Registered **before** `GET /messages/:id`. Same 404 gate as
+`GET /messages/:id/external-profile`. **200** `{ "messages" }` capped at 200,
+newest first (`createdAt` desc, `id` desc). Each item includes `replyCount` of
+live attributed children, `payable` false, `via: "nostr"`, and omits `role`.
+**503** `{ "error": "Messages are unavailable" }`
+(`messages.external_credits.failed`). A serialize failure skips that row and
+still returns 200.
+
 ### `GET /messages/:id/external-replies`
 
 Public list of live public replies for an external author. No Bearer.
@@ -5504,7 +5536,7 @@ Public single-note fetch. Live rows need **no Bearer.** `:id` is a UUID.
 Registered **after** photo, video, `GET /messages/:id/replies`,
 `GET /messages/:id/external-profile`,
 `GET /messages/:id/external-posts`, `GET /messages/:id/external-shops`,
-`GET /messages/:id/external-replies`,
+`GET /messages/:id/external-credits`, `GET /messages/:id/external-replies`,
 `DELETE /messages/:id`, `PATCH /messages/:id/place`, `PATCH /messages/:id/shop-account`, `PATCH /messages/:id/text`, `PATCH /messages/:id/photos`, `GET /messages/:id/edits`, `GET /messages/stats`, `GET /messages/hidden`, and
 `GET /messages/places` so
 those paths are not captured as `:id`. A live GET returns
