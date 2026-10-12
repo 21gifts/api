@@ -990,4 +990,357 @@ describe('HttpSpendPing', () => {
     expect(fetchImpl).toHaveBeenCalledTimes(1);
     expect(String(fetchImpl.mock.calls[0]?.[0])).toBe(`${SPEND_URL}/ping`);
   });
+
+  it('pingOnDay POSTs the argument day when welcome was paid on the clock day', async () => {
+    const nowMs = Date.parse('2026-09-20T12:00:00.000Z');
+    let seenInit: RequestInit | undefined;
+    const fetchImpl = vi.fn<FetchFn>(async (_input, init) => {
+      seenInit = init;
+      return new Response(null, { status: 202 });
+    });
+    const welcomeToday: GiftRow = {
+      paidAt: new Date('2026-09-20T08:00:00.000Z'),
+      amountSats: 1000,
+      recipientWosUser: 'Ada',
+      kind: 'welcome',
+    };
+    const outcome = await new HttpSpendPing({
+      spendUrl: SPEND_URL,
+      token: TOKEN,
+      fetchImpl,
+      rosterStore: writtenStore({
+        comment: 'thanks',
+        recipients: [{ address: ADDRESS, amountUsd: 2 }],
+      }),
+      gifts: new InMemoryGiftStore([welcomeToday]),
+      now: () => nowMs,
+    }).pingOnDay(ADDRESS, MESSAGE_ID, '2026-09-19');
+    expect(outcome).toEqual({ status: 'accepted' });
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(seenInit?.body).toBe(
+      JSON.stringify({
+        address: ADDRESS,
+        messageId: MESSAGE_ID,
+        amountUsd: 2,
+        comment: 'thanks',
+        day: '2026-09-19',
+      }),
+    );
+    expect(String(seenInit?.body)).not.toContain('2026-09-20');
+    expect(
+      parsedEvents(warn).some((e) => e['event'] === 'spend.ping.ok' && e['address'] === ADDRESS),
+    ).toBe(true);
+    expect(JSON.stringify(parsedEvents(warn))).not.toContain(TOKEN);
+  });
+
+  it('pingOnDay skips when the welcome gift was paid on the argument day', async () => {
+    const fetchImpl = vi.fn<FetchFn>(pingFetch());
+    const welcomeOnDay: GiftRow = {
+      paidAt: new Date('2026-09-19T08:00:00.000Z'),
+      amountSats: 1000,
+      recipientWosUser: 'Ada',
+      kind: 'welcome',
+    };
+    const outcome = await new HttpSpendPing({
+      spendUrl: SPEND_URL,
+      token: TOKEN,
+      fetchImpl,
+      rosterStore: writtenStore({
+        comment: 'thanks',
+        recipients: [{ address: ADDRESS, amountUsd: 2 }],
+      }),
+      gifts: new InMemoryGiftStore([welcomeOnDay]),
+    }).pingOnDay(ADDRESS, MESSAGE_ID, '2026-09-19');
+    expect(outcome).toEqual({ status: 'skipped', reason: 'welcome_paid' });
+    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(
+      parsedEvents(warn).some(
+        (e) =>
+          e['event'] === 'spend.ping.skipped' &&
+          e['address'] === ADDRESS &&
+          e['reason'] === 'welcome_paid',
+      ),
+    ).toBe(true);
+  });
+
+  it('pingOnDay returns skipped when spend responds 200 skipped', async () => {
+    const fetchImpl = vi.fn<FetchFn>(
+      async () =>
+        new Response(JSON.stringify({ status: 'skipped', reason: 'paid' }), { status: 200 }),
+    );
+    const outcome = await new HttpSpendPing({
+      spendUrl: SPEND_URL,
+      token: TOKEN,
+      fetchImpl,
+      rosterStore: writtenStore({
+        comment: 'thanks',
+        recipients: [{ address: ADDRESS, amountUsd: 2 }],
+      }),
+    }).pingOnDay(ADDRESS, MESSAGE_ID, '2026-09-19');
+    expect(outcome).toEqual({ status: 'skipped', reason: 'paid' });
+    expect(
+      parsedEvents(warn).some(
+        (e) =>
+          e['event'] === 'spend.ping.skipped' && e['address'] === ADDRESS && e['reason'] === 'paid',
+      ),
+    ).toBe(true);
+  });
+
+  it('pingOnDay returns accepted on 202 with an empty body', async () => {
+    const fetchImpl = vi.fn<FetchFn>(async () => new Response(null, { status: 202 }));
+    const outcome = await new HttpSpendPing({
+      spendUrl: SPEND_URL,
+      token: TOKEN,
+      fetchImpl,
+      rosterStore: writtenStore({
+        comment: 'thanks',
+        recipients: [{ address: ADDRESS, amountUsd: 2 }],
+      }),
+    }).pingOnDay(ADDRESS, MESSAGE_ID, '2026-09-19');
+    expect(outcome).toEqual({ status: 'accepted' });
+    expect(
+      parsedEvents(warn).some((e) => e['event'] === 'spend.ping.ok' && e['address'] === ADDRESS),
+    ).toBe(true);
+  });
+
+  it('pingOnDay returns accepted on 200 accepted JSON', async () => {
+    const fetchImpl = vi.fn<FetchFn>(
+      async () => new Response(JSON.stringify({ status: 'accepted' }), { status: 200 }),
+    );
+    const outcome = await new HttpSpendPing({
+      spendUrl: SPEND_URL,
+      token: TOKEN,
+      fetchImpl,
+      rosterStore: writtenStore({
+        comment: 'thanks',
+        recipients: [{ address: ADDRESS, amountUsd: 2 }],
+      }),
+    }).pingOnDay(ADDRESS, MESSAGE_ID, '2026-09-19');
+    expect(outcome).toEqual({ status: 'accepted' });
+    expect(
+      parsedEvents(warn).some((e) => e['event'] === 'spend.ping.ok' && e['address'] === ADDRESS),
+    ).toBe(true);
+  });
+
+  it('pingOnDay returns failed on HTTP 500 and does not throw', async () => {
+    const fetchImpl = vi.fn<FetchFn>(async () => new Response(null, { status: 500 }));
+    await expect(
+      new HttpSpendPing({
+        spendUrl: SPEND_URL,
+        token: TOKEN,
+        fetchImpl,
+        rosterStore: writtenStore({
+          comment: 'thanks',
+          recipients: [{ address: ADDRESS, amountUsd: 2 }],
+        }),
+      }).pingOnDay(ADDRESS, MESSAGE_ID, '2026-09-19'),
+    ).resolves.toEqual({ status: 'failed' });
+    expect(
+      parsedEvents(warn).some(
+        (e) => e['event'] === 'spend.ping.failed' && e['address'] === ADDRESS,
+      ),
+    ).toBe(true);
+  });
+
+  it('pingOnDay returns failed on 201 and does not throw', async () => {
+    const fetchImpl = vi.fn<FetchFn>(async () => new Response(null, { status: 201 }));
+    await expect(
+      new HttpSpendPing({
+        spendUrl: SPEND_URL,
+        token: TOKEN,
+        fetchImpl,
+        rosterStore: writtenStore({
+          comment: 'thanks',
+          recipients: [{ address: ADDRESS, amountUsd: 2 }],
+        }),
+      }).pingOnDay(ADDRESS, MESSAGE_ID, '2026-09-19'),
+    ).resolves.toEqual({ status: 'failed' });
+    expect(
+      parsedEvents(warn).some(
+        (e) => e['event'] === 'spend.ping.failed' && e['address'] === ADDRESS,
+      ),
+    ).toBe(true);
+  });
+
+  it('pingOnDay returns failed when 200 body JSON is null', async () => {
+    const fetchImpl = vi.fn<FetchFn>(async () => new Response('null', { status: 200 }));
+    await expect(
+      new HttpSpendPing({
+        spendUrl: SPEND_URL,
+        token: TOKEN,
+        fetchImpl,
+        rosterStore: writtenStore({
+          comment: 'thanks',
+          recipients: [{ address: ADDRESS, amountUsd: 2 }],
+        }),
+      }).pingOnDay(ADDRESS, MESSAGE_ID, '2026-09-19'),
+    ).resolves.toEqual({ status: 'failed' });
+    expect(parsedEvents(warn).some((e) => e['event'] === 'spend.ping.failed')).toBe(true);
+  });
+
+  it('pingOnDay returns failed when 200 body JSON is an array', async () => {
+    const fetchImpl = vi.fn<FetchFn>(async () => new Response('[]', { status: 200 }));
+    await expect(
+      new HttpSpendPing({
+        spendUrl: SPEND_URL,
+        token: TOKEN,
+        fetchImpl,
+        rosterStore: writtenStore({
+          comment: 'thanks',
+          recipients: [{ address: ADDRESS, amountUsd: 2 }],
+        }),
+      }).pingOnDay(ADDRESS, MESSAGE_ID, '2026-09-19'),
+    ).resolves.toEqual({ status: 'failed' });
+    expect(parsedEvents(warn).some((e) => e['event'] === 'spend.ping.failed')).toBe(true);
+  });
+
+  it('pingOnDay returns failed when 200 body JSON is a string', async () => {
+    const fetchImpl = vi.fn<FetchFn>(async () => new Response('"nope"', { status: 200 }));
+    await expect(
+      new HttpSpendPing({
+        spendUrl: SPEND_URL,
+        token: TOKEN,
+        fetchImpl,
+        rosterStore: writtenStore({
+          comment: 'thanks',
+          recipients: [{ address: ADDRESS, amountUsd: 2 }],
+        }),
+      }).pingOnDay(ADDRESS, MESSAGE_ID, '2026-09-19'),
+    ).resolves.toEqual({ status: 'failed' });
+    expect(parsedEvents(warn).some((e) => e['event'] === 'spend.ping.failed')).toBe(true);
+  });
+
+  it('pingOnDay returns failed when 200 skipped JSON has no reason', async () => {
+    const fetchImpl = vi.fn<FetchFn>(
+      async () => new Response(JSON.stringify({ status: 'skipped' }), { status: 200 }),
+    );
+    await expect(
+      new HttpSpendPing({
+        spendUrl: SPEND_URL,
+        token: TOKEN,
+        fetchImpl,
+        rosterStore: writtenStore({
+          comment: 'thanks',
+          recipients: [{ address: ADDRESS, amountUsd: 2 }],
+        }),
+      }).pingOnDay(ADDRESS, MESSAGE_ID, '2026-09-19'),
+    ).resolves.toEqual({ status: 'failed' });
+    expect(parsedEvents(warn).some((e) => e['event'] === 'spend.ping.failed')).toBe(true);
+  });
+
+  it('pingOnDay returns failed when 200 skipped JSON has an empty reason', async () => {
+    const fetchImpl = vi.fn<FetchFn>(
+      async () => new Response(JSON.stringify({ status: 'skipped', reason: '' }), { status: 200 }),
+    );
+    await expect(
+      new HttpSpendPing({
+        spendUrl: SPEND_URL,
+        token: TOKEN,
+        fetchImpl,
+        rosterStore: writtenStore({
+          comment: 'thanks',
+          recipients: [{ address: ADDRESS, amountUsd: 2 }],
+        }),
+      }).pingOnDay(ADDRESS, MESSAGE_ID, '2026-09-19'),
+    ).resolves.toEqual({ status: 'failed' });
+    expect(parsedEvents(warn).some((e) => e['event'] === 'spend.ping.failed')).toBe(true);
+  });
+
+  it('pingOnDay returns failed when 200 JSON has another status', async () => {
+    const fetchImpl = vi.fn<FetchFn>(
+      async () => new Response(JSON.stringify({ status: 'other' }), { status: 200 }),
+    );
+    await expect(
+      new HttpSpendPing({
+        spendUrl: SPEND_URL,
+        token: TOKEN,
+        fetchImpl,
+        rosterStore: writtenStore({
+          comment: 'thanks',
+          recipients: [{ address: ADDRESS, amountUsd: 2 }],
+        }),
+      }).pingOnDay(ADDRESS, MESSAGE_ID, '2026-09-19'),
+    ).resolves.toEqual({ status: 'failed' });
+    expect(parsedEvents(warn).some((e) => e['event'] === 'spend.ping.failed')).toBe(true);
+  });
+
+  it('pingOnDay returns failed when 200 body is not JSON', async () => {
+    const fetchImpl = vi.fn<FetchFn>(async () => new Response('{', { status: 200 }));
+    await expect(
+      new HttpSpendPing({
+        spendUrl: SPEND_URL,
+        token: TOKEN,
+        fetchImpl,
+        rosterStore: writtenStore({
+          comment: 'thanks',
+          recipients: [{ address: ADDRESS, amountUsd: 2 }],
+        }),
+      }).pingOnDay(ADDRESS, MESSAGE_ID, '2026-09-19'),
+    ).resolves.toEqual({ status: 'failed' });
+    expect(parsedEvents(warn).some((e) => e['event'] === 'spend.ping.failed')).toBe(true);
+  });
+
+  it('pingOnDay returns failed when fetch throws and does not throw', async () => {
+    const fetchImpl = vi.fn<FetchFn>(async () => {
+      throw new Error('network down');
+    });
+    await expect(
+      new HttpSpendPing({
+        spendUrl: SPEND_URL,
+        token: TOKEN,
+        fetchImpl,
+        rosterStore: writtenStore({
+          comment: 'thanks',
+          recipients: [{ address: ADDRESS, amountUsd: 2 }],
+        }),
+      }).pingOnDay(ADDRESS, MESSAGE_ID, '2026-09-19'),
+    ).resolves.toEqual({ status: 'failed' });
+    expect(parsedEvents(warn).some((e) => e['event'] === 'spend.ping.failed')).toBe(true);
+  });
+
+  it('pingOnDay returns failed when hasBeenWritten rejects and does not POST', async () => {
+    const fetchImpl = vi.fn<FetchFn>(pingFetch());
+    const rosterStore = new InMemoryDailyRosterStore();
+    vi.spyOn(rosterStore, 'hasBeenWritten').mockRejectedValue(new Error('store down'));
+    await expect(
+      new HttpSpendPing({ spendUrl: SPEND_URL, token: TOKEN, fetchImpl, rosterStore }).pingOnDay(
+        ADDRESS,
+        MESSAGE_ID,
+        '2026-09-19',
+      ),
+    ).resolves.toEqual({ status: 'failed' });
+    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(
+      parsedEvents(warn).some(
+        (e) => e['event'] === 'spend.ping.failed' && e['address'] === ADDRESS,
+      ),
+    ).toBe(true);
+  });
+
+  it('pingOnDay returns failed when listOutbound rejects and does not POST', async () => {
+    const fetchImpl = vi.fn<FetchFn>(pingFetch());
+    const gifts = {
+      listOutbound: async () => {
+        throw new Error('ledger down');
+      },
+    };
+    await expect(
+      new HttpSpendPing({
+        spendUrl: SPEND_URL,
+        token: TOKEN,
+        fetchImpl,
+        rosterStore: writtenStore({
+          comment: 'thanks',
+          recipients: [{ address: ADDRESS, amountUsd: 2 }],
+        }),
+        gifts,
+      }).pingOnDay(ADDRESS, MESSAGE_ID, '2026-09-19'),
+    ).resolves.toEqual({ status: 'failed' });
+    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(
+      parsedEvents(warn).some(
+        (e) => e['event'] === 'spend.ping.failed' && e['address'] === ADDRESS,
+      ),
+    ).toBe(true);
+  });
 });

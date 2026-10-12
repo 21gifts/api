@@ -57,6 +57,11 @@
       "workflow": ".github/workflows/a38-guard.yml",
       "job": "guard",
       "reason": "This job is the A38 guard itself, which audits the author report rather than being part of it."
+    },
+    {
+      "workflow": ".github/workflows/loan-e2e.yml",
+      "job": "screens",
+      "reason": "Manual live loan through the app screens. It pays real Spark invoices, can run for hours, and is not a pull-request check, so the author does not run it as a local test."
     }
   ]
 }
