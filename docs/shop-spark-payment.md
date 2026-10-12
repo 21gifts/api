@@ -130,7 +130,7 @@ the pay link as the amount this payer just entered.
 
 **Response** `200` `{ "payment": "<uuid>" }`. The page does not display
 this body. It fetches the decoded LNURL again and displays that
-response. The invoice button stays `lightning:` plus the BOLT11. The
+response. The invoice button is `lightning:` plus the BOLT11. The
 OpenCryptoPay deeplink is `lightning:` plus that same LNURL. It does
 not add a payment query, and it does not replace the invoice button.
 
@@ -296,6 +296,9 @@ open till charge fixes the amount when one exists. It is not required.
 
 ## Payment page
 
+This repository does not serve this page. The controls below are specified
+and are not implemented.
+
 The payment page is the payer's path. An empty till is not an error, and
 this page is not the wallet's HTTP call.
 
@@ -325,17 +328,17 @@ amount due is still the amount of that chain and that asset.
 The page shows the quote's expiry. When a quote lapses before it is
 accepted, the page requests the next quote for the same sats.
 
-The page keeps the Lightning invoice QR it already shows. That QR is
-the BOLT11 for these sats. It is the invoice Orchestra pays. The page
-does not mint a second one. It is mounted only when the invoice exists and
-the visitor is not a smartphone. A smartphone is an iPhone, an iPod, or
-an Android user agent that also contains `Mobile`. A tablet is not a
+The page shows the Lightning invoice QR for this BOLT11. No file in this
+repository defines that QR or the `lightning:` button. That QR is the
+BOLT11 for these sats. It is the invoice Orchestra pays. The page does
+not mint a second one. It is mounted only when the invoice exists and the
+visitor is not a smartphone. A smartphone is an iPhone, an iPod, or an
+Android user agent that also contains `Mobile`. A tablet is not a
 smartphone. The window width does not decide it. On a smartphone the page
 shows the `lightning:` button and no invoice QR. That button opens
-`lightning:` plus the BOLT11, as it does today. That QR is not a second
-shop address, and it is not the stablecoin deeplink. `displayQr` false
-does not remove it. Tether Wallet for Android 1.11.0 (134) does not read
-`displayQr`.
+`lightning:` plus the BOLT11. That QR is not a second shop address, and
+it is not the stablecoin deeplink. `displayQr` false does not remove it.
+Tether Wallet for Android 1.11.0 (134) does not read `displayQr`.
 
 The page opens an OpenCryptoPay wallet by a separate deeplink. That
 deeplink is `lightning:` plus the same LNURL the page decoded. It is not
@@ -386,7 +389,7 @@ For a known amount the pay request contains:
 | `callback`                   | `<PUBLIC_BASE_URL>/lnurlp/cb/<username>`             |
 | `minSendable`, `maxSendable` | both that sat amount in millisats                    |
 | metadata                     | unchanged                                            |
-| `displayName`                | the shop name the payment page already shows         |
+| `displayName`                | the name `GET /pay/:username` returns                |
 | `recipient.name`             | the same shop name                                   |
 | `standard`                   | `OpenCryptoPay`                                      |
 | `displayQr`                  | `false`                                              |
