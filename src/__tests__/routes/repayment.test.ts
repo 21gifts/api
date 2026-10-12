@@ -783,6 +783,33 @@ describe('DELETE /messages/:id on a credit', () => {
     expect((await del(app, CREDIT)).status).toBe(409);
   });
 
+  it('refuses a repaid credit when a receipt is assigned to a giver between the reads', async () => {
+    const { app, messages } = await staffCredit();
+    await messages.markRepaymentPaid({
+      messageId: CREDIT,
+      dayIndex: 0,
+      recipientAccountId: GIVER,
+      dueSats: 21,
+      paidAt: new Date(now()),
+    });
+    await messages.recordZapReceipt('r-late', CREDIT, 5, null);
+    let assigned = false;
+    const assignAfterFirstRead = async <T>(read: Promise<T>): Promise<T> => {
+      const value = await read;
+      if (!assigned) {
+        assigned = true;
+        await messages.updateZapReceiptGift('r-late', { payerAccountId: 'acc' });
+      }
+      return value;
+    };
+    const listCreditPayers = messages.listCreditPayers.bind(messages);
+    const sumUnassignedCreditSats = messages.sumUnassignedCreditSats.bind(messages);
+    messages.listCreditPayers = (id) => assignAfterFirstRead(listCreditPayers(id));
+    messages.sumUnassignedCreditSats = (id) => assignAfterFirstRead(sumUnassignedCreditSats(id));
+    expect((await del(app, CREDIT)).status).toBe(409);
+    expect(assigned).toBe(true);
+  });
+
   it('refuses a funded credit whose plan has no payable share', async () => {
     const { app } = await staffCredit({ goalCurrency: 'USD', goalAmount: '0.00' });
     expect((await del(app, CREDIT)).status).toBe(409);

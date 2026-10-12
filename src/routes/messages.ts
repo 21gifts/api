@@ -353,15 +353,13 @@ async function creditStillOpen(store: MessageStore, row: MessageRow): Promise<bo
   if (!(row.goalFundedAt instanceof Date) || typeof row.goalTermDays !== 'number') {
     return true;
   }
-  const payers = await store.listCreditPayers(row.id);
-  const unassignedSats = await store.sumUnassignedCreditSats(row.id);
-  if (unassignedSats > 0) {
+  // Unassigned sats first: a receipt assigned to a giver after this read is
+  // then either still counted here or already listed as a payer below.
+  if ((await store.sumUnassignedCreditSats(row.id)) > 0) {
     return true;
   }
-  const owed = payerDebtUnits(row.goalCurrency, row.goalAmount, [
-    ...payers,
-    { accountId: '', sats: unassignedSats },
-  ]);
+  const payers = await store.listCreditPayers(row.id);
+  const owed = payerDebtUnits(row.goalCurrency, row.goalAmount, payers);
   if (owed === 'unavailable') {
     return true;
   }
