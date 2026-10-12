@@ -28,8 +28,12 @@ export function setDiagnosticSink(next: DiagnosticSink | null): void {
 
 /** Printed in place of an email-shaped value, and of `address` when no key is set. */
 const ADDRESS_MARKER = '[address]';
-/** `local@domain.tld` anywhere in a value. Bounded repeats keep the scan linear. */
-const EMAIL_SHAPED = /[A-Za-z0-9._%+-]{1,64}@[A-Za-z0-9.-]{1,253}\.[A-Za-z]{2,}/g;
+/**
+ * `local@domain.tld` anywhere in a value, with the `@` literal or
+ * percent-encoded (`%40`). Bounded repeats keep the scan linear; 255 is the
+ * longest address `normalizeLightningAddress` accepts.
+ */
+const EMAIL_SHAPED = /[A-Za-z0-9._%+-]{1,255}(?:@|%40)[A-Za-z0-9.-]{1,253}\.[A-Za-z]{2,}/g;
 /** Hex characters of the HMAC kept as `addressRef`. */
 const ADDRESS_REF_LENGTH = 12;
 
@@ -62,7 +66,10 @@ function consoleFields(fields: LogFields): LogFields {
     if (typeof value !== 'string') {
       out[key] = value;
     } else if (key !== 'address') {
-      out[key] = value.includes('@') ? value.replace(EMAIL_SHAPED, ADDRESS_MARKER) : value;
+      out[key] =
+        value.includes('@') || value.includes('%40')
+          ? value.replace(EMAIL_SHAPED, ADDRESS_MARKER)
+          : value;
     } else if (addressRefKey === null) {
       out[key] = ADDRESS_MARKER;
     } else {
