@@ -78,8 +78,10 @@ When no amount is known, `callback` and metadata stay on the linked
 Wallet of Satoshi address, as `GET /.well-known/lnurlp/:username` already
 does. This service does not rewrite them.
 
-When an amount is known and stablecoin rows are served, `callback` is
-`<PUBLIC_BASE_URL>/lnurlp/cb/<username>`. The proof URL replaces `/cb`
+Stablecoin rows are served only when `PUBLIC_BASE_URL` is an absolute
+`http` or `https` URL. Otherwise the pay link stays the Wallet of
+Satoshi pay request. When an amount is known and those rows are served,
+`callback` is `<PUBLIC_BASE_URL>/lnurlp/cb/<username>`. The proof URL replaces `/cb`
 with `/tx` in that callback, which is
 `<PUBLIC_BASE_URL>/lnurlp/tx/<username>`. The username stays. It is the
 path id of the pay link. `quote.payment` stays in the JSON. It is not a
@@ -108,9 +110,11 @@ The call writes a row only when the Orchestra key is configured, this
 service can obtain or reuse the BOLT11 `POST /pay/:username/invoice`
 already returns for this sat count on the shop's linked Wallet of Satoshi
 address, and Orchestra's exact-out quote commits to that sat count on
-that invoice. A missing Orchestra key is **503**
+that invoice. A missing Orchestra key, or a `PUBLIC_BASE_URL` that is
+missing, blank, or not an absolute `http` or `https` URL, is **503**
 `{ "error": "Stablecoin payment is unavailable" }`, writes nothing, and
-does not fetch an invoice. When the key is set, a resolve or store
+does not fetch an invoice. The pay link stays the Wallet of Satoshi pay
+request. When the key is set, a resolve or store
 failure, an empty or non-safe-integer window, a failed invoice fetch, or
 a BOLT11 that is missing, not a safe integer amount, or not the requested
 amount, is **502** `{ "error": "Lightning Address could not be resolved" }`
@@ -173,7 +177,13 @@ references `shop_payment`. `expires_at` is `quote.expiration`.
 `transfer_amounts` is the JSON array that quote served, so a later price
 cannot rewrite it. `provider_ref` is the reference Orchestra returned for
 that quote. It is stored as text, it is not parsed, and it is not shown
-to the wallet. `created_at` is set.
+to the wallet. The first callback that returns a detail for a method
+stores that asset and that detail on this quote. The stored detail is
+not part of `transfer_amounts`. A repeat of the same asset returns the
+stored detail. A different asset is **400**
+`{ "error": "That payment is not offered" }` and does not replace it.
+The first stored detail for that quote and method wins. `created_at` is
+set.
 
 `open` serves the current quote. A fetch while that quote has not lapsed
 returns it unchanged and does not mint another. A lapsed quote is
@@ -236,12 +246,15 @@ quote, and its BOLT11. Unlinking or replacing the address does not make
 those calls **404**.
 
 On `GET /lnurlp/tx/:username`, and on `GET /lnurlp/cb/:username` when
-`method` is set, an unknown quote, a quote for another username, or an
-expired quote is **400** `{ "error": "No such quote" }`. It is not served
-as another quote. Expiry is that error only while the payment is not yet
-`accepted` and the proof was not stored while the quote was valid. After
-`accepted` or `paid`, a matching proof stays **200**
-even when `quote.expiration` is in the past.
+`method` is set, an unknown quote or a quote for another username is
+**400** `{ "error": "No such quote" }`. It is not served as another
+quote. An expired quote is that same **400**. On the callback, expiry
+is that error even after the payment is `accepted`. On the proof, expiry
+is that error only while the payment is not yet `accepted` and the proof
+was not stored while the quote was valid. After `accepted` or `paid`, a
+matching proof stays **200** even when `quote.expiration` is in the past.
+The callback does not return the transaction detail after the quote has
+lapsed.
 
 A callback with no `method` does not check `quote`. It is the Lightning
 path below.
@@ -458,10 +471,11 @@ Wallet.
 
 The same detail is returned by one GET that sets `method` and `asset` on
 the pay link while its payment is still open. The detail belongs to the
-current quote. When the method lists both assets, the first detail stored
-for this quote and method keeps that asset. A later callback for the
-other asset is **400** `{ "error": "That payment is not offered" }` and
-does not replace it. An unknown pair or a quote that has expired is an
+current quote. When the method lists both assets, the call returns the asset and the
+detail stored on the quote for this method. A repeat of that asset
+returns the stored detail. A later callback for the other asset is
+**400** `{ "error": "That payment is not offered" }` and does not
+replace it. An unknown pair or a quote that has expired is an
 error and creates no payment. It is not served as another quote.
 
 ### Proof
@@ -492,8 +506,8 @@ amount, and a quote that was still valid. Before it asks Orchestra, it
 stores that proof: the quote, the method, the asset, and the proof
 parameter. The proof query does not carry `asset`. The asset is the one
 that method lists. When the method lists both, the asset is the one
-stored with the first detail this quote and method returned. If it lists
-both and no such callback was served, the proof is **400**
+stored on the quote for that method. If it lists both and no such detail
+is stored, the proof is **400**
 `{ "error": "That payment is not offered" }` and nothing is stored. A payment that is `ended`, and that has no such stored proof,
 is not moved to `accepted` by a later proof. While a stored proof has
 no result, that proof is not refused for quote expiry. A retry of it
