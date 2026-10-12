@@ -894,6 +894,37 @@ describe('GET /funding/applications/:accountId', () => {
     }
   });
 
+  it('keeps a missing-file video credit that the store refuses to delete', async () => {
+    const { authStore, fundingStore } = await staffed();
+    await fundingStore.upsert(grant({ accountId: VERIFIED, status: 'pending' }));
+    const creditId = '6d6162e4-becb-45fa-b075-ace1ef2df1a0';
+    const messageStore = new InMemoryMessageStore([
+      {
+        id: creditId,
+        accountId: VERIFIED,
+        name: 'Ada',
+        text: 'credit clip gone',
+        createdAt: new Date(now()),
+        ...unsignedNostrDefaults(),
+        hasPhoto: false,
+        hasVideo: true,
+        videoContentType: 'video/mp4',
+        sats: 5,
+        goalSats: 10,
+        goalRepayable: true,
+      },
+    ]);
+    const res = await get(
+      mount(authStore, fundingStore, messageStore),
+      `/funding/applications/${VERIFIED}`,
+      'founder',
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { messages: Array<{ id: string }> };
+    expect(body.messages.map((row) => row.id)).toEqual([creditId]);
+    expect(await messageStore.getById(creditId)).toBeDefined();
+  });
+
   it('returns 503 when the store throws', async () => {
     const { authStore } = await staffed();
     const res = await get(

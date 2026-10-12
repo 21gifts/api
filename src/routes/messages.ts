@@ -7,6 +7,7 @@ import { roleAtLeast } from '@/lib/auth/roles';
 import { staffTagOf, type Account, type AccountRole, type AuthStore } from '@/lib/auth/store';
 import { inspectBolt11, isNip57Invoice } from '@/lib/bolt11';
 import { GIFT_INVOICE_MAX_MSAT } from '@/lib/config';
+import { payerDebtUnits, repaymentSchedule } from '@/lib/credit-repayment';
 import {
   canonicalGoalAmount,
   fiatToSats,
@@ -100,7 +101,8 @@ import { stat } from 'node:fs/promises';
  *
  * @param store - Message store.
  * @param row - Store row.
- * @returns The row, or `null` when it was deleted.
+ * @returns The row, or `null` when it was deleted. A row the store keeps, such as a
+ *   credit with sats, is returned unchanged.
  */
 async function dropMissingVideoRow(
   store: MessageStore,
@@ -117,7 +119,9 @@ async function dropMissingVideoRow(
   if (present) {
     return row;
   }
-  await store.deleteById(row.id);
+  if (!(await store.deleteById(row.id))) {
+    return row;
+  }
   logEvent('messages.video.dropped');
   return null;
 }
@@ -328,6 +332,38 @@ export interface MessagesRouteDeps {
 
 const defaultPostLimiter = new PostRateLimiter();
 const defaultInvoiceLimiter = new InvoiceRateLimiter();
+
+/**
+ * Whether a credit note still has money out. Once any sats arrived, the note
+ * stays open until every share of its repayment plan is paid. A credit that
+ * never filled, or whose debt cannot be priced, is open.
+ *
+ * @param store - Message store.
+ * @param row - Store row.
+ * @returns True when the note must not be hidden.
+ */
+async function creditStillOpen(store: MessageStore, row: MessageRow): Promise<boolean> {
+  if (row.goalRepayable !== true || row.sats <= 0) {
+    return false;
+  }
+  if (!(row.goalFundedAt instanceof Date) || typeof row.goalTermDays !== 'number') {
+    return true;
+  }
+  const payers = await store.listCreditPayers(row.id);
+  const unassignedSats = await store.sumUnassignedCreditSats(row.id);
+  const owed = payerDebtUnits(row.goalCurrency, row.goalAmount, [
+    ...payers,
+    { accountId: '', sats: unassignedSats },
+  ]);
+  if (owed === 'unavailable') {
+    return true;
+  }
+  const slices = repaymentSchedule(row.goalTermDays, owed);
+  const paid = new Set(
+    (await store.listRepayments(row.id)).map((item) => `${item.dayIndex}:${item.recipientAccountId}`),
+  );
+  return slices.length === 0 || slices.some((slice) => !paid.has(`${slice.dayIndex}:${slice.accountId}`));
+}
 
 /** Resolve the account behind a request's bearer session, or `null`. */
 async function authedAccount(
@@ -2025,6 +2061,10 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
         const target = await deps.store.getById(id);
         if (target === undefined) {
           return c.json({ error: 'Not found' }, 404);
+        }
+        if (await creditStillOpen(deps.store, target)) {
+          logEvent('messages.delete.open_credit', { messageId: id, accountId: account.id });
+          return c.json({ error: 'An open credit cannot be deleted' }, 409);
         }
         const at = new Date(deps.now());
         const tagged = await deps.store.markDeleted(id, at, account.id);

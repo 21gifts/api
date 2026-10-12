@@ -1,12 +1,17 @@
 import { SQL } from 'bun';
 import { describe, expect, test } from 'bun:test';
-import { migrateAuthSchema } from '@/lib/auth/postgres-store';
+import { migrateAuthSchema, PostgresAuthStore } from '@/lib/auth/postgres-store';
 import { sqlState, type SqlClient } from '@/lib/auth/sql';
 import { migrateDailyRosterSchema, PostgresDailyRosterStore } from '@/lib/daily-roster-store';
 import type { FundingGrant } from '@/lib/funding';
 import { migrateFundingSchema, PostgresFundingStore } from '@/lib/funding-store';
 import { migrateMemberHabitSchema, PostgresMemberHabitStore } from '@/lib/member-habit-store';
 import { postgresTextArrayLiteral } from '@/lib/postgres-text-array';
+import { migrateBtcUsdSchema } from '@/lib/btc-usd-store';
+import { migrateFiatSchema } from '@/lib/usd-fiat-store';
+import { migrateGiftSchema } from '@/lib/gift-store';
+import { unsignedNostrDefaults } from '@/lib/message';
+import { migrateMessageSchema, PostgresMessageStore } from '@/lib/message-store';
 
 const databaseUrl = process.env['DATABASE_URL'];
 if (databaseUrl === undefined || databaseUrl === '') {
@@ -323,6 +328,58 @@ describe('PostgresDailyRosterStore importDocument', () => {
     } finally {
       await client.execute('DELETE FROM daily_roster_entry');
       await client.execute('DELETE FROM daily_roster');
+      await closeIfPossible(sql);
+    }
+  });
+});
+
+describe('PostgresMessageStore deleteById on a credit', () => {
+  test('a credit with sats survives a hard delete and a plain note does not', async () => {
+    const { client, sql } = createBunSqlClient(databaseUrl);
+    const accountId = crypto.randomUUID();
+    const creditId = crypto.randomUUID();
+    const plainId = crypto.randomUUID();
+    let ready = false;
+    try {
+      await migrateAuthSchema(client);
+      await migrateBtcUsdSchema(client);
+      await migrateFiatSchema(client);
+      await migrateGiftSchema(client);
+      await migrateMessageSchema(client);
+      ready = true;
+      await new PostgresAuthStore(client).createAccount({
+        id: accountId,
+        linkingKey: `02${accountId.replaceAll('-', '').padEnd(64, '0')}`,
+        role: 'verified',
+        name: 'Ada',
+        lightningAddress: null,
+        lightningAddressVerified: false,
+        forumLawsDismissed: false,
+        location: null,
+        viewKey: accountId.replaceAll('-', '').padEnd(64, 'a'),
+        createdAt: 1,
+        rulesAgreedAt: null,
+      });
+      const store = new PostgresMessageStore(client);
+      const base = {
+        accountId,
+        name: 'Ada',
+        createdAt: new Date(),
+        hasPhoto: false,
+        ...unsignedNostrDefaults(),
+      };
+      await store.create({ ...base, id: creditId, text: 'credit', goalSats: 10, goalRepayable: true });
+      await store.create({ ...base, id: plainId, text: 'plain' });
+      await client.execute('UPDATE message SET sats = 5 WHERE id = $1', [creditId]);
+      expect(await store.deleteById(creditId)).toBe(false);
+      expect((await store.getById(creditId))?.sats).toBe(5);
+      expect(await store.deleteById(plainId)).toBe(true);
+      expect(await store.getById(plainId)).toBeUndefined();
+    } finally {
+      if (ready) {
+        await client.execute('DELETE FROM message WHERE account_id = $1', [accountId]);
+        await client.execute('DELETE FROM account WHERE id = $1', [accountId]);
+      }
       await closeIfPossible(sql);
     }
   });

@@ -1043,6 +1043,17 @@ describe('InMemoryMessageStore', () => {
     expect((await store.listLatest(10)).map((row) => row.id)).toEqual(['b']);
   });
 
+  it('deleteById keeps a credit with sats and removes one without sats', async () => {
+    const store = new InMemoryMessageStore([
+      { ...EARLY, sats: 5, goalSats: 10, goalRepayable: true },
+      { ...LATE, sats: 0, goalSats: 10, goalRepayable: true },
+    ]);
+    expect(await store.deleteById('a')).toBe(false);
+    expect(await store.getById('a')).toBeDefined();
+    expect(await store.deleteById('b')).toBe(true);
+    expect(await store.getById('b')).toBeUndefined();
+  });
+
   it('markDeleted returns false when missing and tags the row plus direct replies', async () => {
     const store = new InMemoryMessageStore();
     await store.create({ ...EARLY, id: 'p-hide', text: 'parent' }, JPEG);
@@ -7199,6 +7210,7 @@ describe('PostgresMessageStore', () => {
     expect(text).toMatch(/DELETE FROM message/);
     expect(text).not.toMatch(/nostr_zap_payment/);
     expect(text).toMatch(/parent_id = \$1/);
+    expect(text).toMatch(/goal_repayable IS TRUE AND sats > 0/);
     expect(sql.queries[0]?.params).toEqual(['m1']);
   });
 

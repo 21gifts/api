@@ -666,10 +666,10 @@ export interface MessageStore {
 
   /**
    * Delete a note, its direct replies, invoice attempts, zap receipts, photos,
-   * and on-disk videos.
+   * and on-disk videos. A credit note that has received sats is never removed.
    *
    * @param id - Message id.
-   * @returns True when a row was removed.
+   * @returns True when a row was removed. False when it is missing or a credit with sats.
    */
   deleteById(id: string): Promise<boolean>;
 
@@ -4028,7 +4028,7 @@ export class InMemoryMessageStore implements MessageStore {
 
   async deleteById(id: string): Promise<boolean> {
     const row = this.#rows.find((item) => item.id === id);
-    if (row === undefined) {
+    if (row === undefined || (row.goalRepayable === true && row.sats > 0)) {
       return false;
     }
     const childIds = this.#rows.filter((item) => item.parentId === id).map((item) => item.id);
@@ -5428,7 +5428,11 @@ export class PostgresMessageStore implements MessageStore {
          targets AS (
            SELECT id, video_content_type
            FROM message
-           WHERE id = $1 OR parent_id = $1
+           WHERE (id = $1 OR parent_id = $1)
+             AND NOT EXISTS (
+               SELECT 1 FROM message
+               WHERE id = $1 AND goal_repayable IS TRUE AND sats > 0
+             )
          ),
          del_receipts AS (
            DELETE FROM nostr_zap_receipt

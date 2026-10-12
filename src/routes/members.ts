@@ -64,7 +64,8 @@ type MemberLoad = { ok: true; account: Account } | { ok: false; response: Respon
  *
  * @param store - Message store.
  * @param row - Store row.
- * @returns The row, or `null` when it was deleted.
+ * @returns The row, or `null` when it was deleted. A row the store keeps, such as a
+ *   credit with sats, is returned unchanged.
  */
 async function dropMissingVideoRow(
   store: MessageStore,
@@ -81,7 +82,9 @@ async function dropMissingVideoRow(
   if (present) {
     return row;
   }
-  await store.deleteById(row.id);
+  if (!(await store.deleteById(row.id))) {
+    return row;
+  }
   logEvent('messages.video.dropped');
   return null;
 }

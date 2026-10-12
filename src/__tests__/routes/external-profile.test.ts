@@ -1262,6 +1262,32 @@ describe('GET /messages/:id/external-posts', () => {
     );
   });
 
+  it('keeps a missing-video post when the store refuses to delete it', async () => {
+    const pubkey = 'ab'.repeat(32);
+    const clipId = '1e1e1e1e-1e1e-41e1-81e1-1e1e1e1e1e1e';
+    const good = row({ id: NOTE, authorPubkey: pubkey, name: 'Ada' });
+    const clip = row({
+      id: clipId,
+      authorPubkey: pubkey,
+      name: 'Ada',
+      text: 'clip',
+      hasVideo: true,
+      videoContentType: 'video/mp4',
+    });
+    const store = {
+      getById: () => Promise.resolve(good),
+      listPostsByPubkey: () => Promise.resolve([clip, good]),
+      deleteById: () => Promise.resolve(false),
+    } as unknown as MessageStore;
+    const res = await mount(store).request(`/messages/${NOTE}/external-posts`);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { messages: Array<{ id: string }> };
+    expect(body.messages.map((message) => message.id)).toEqual([clipId, NOTE]);
+    expect(parsedEvents(warn)).not.toContainEqual(
+      expect.objectContaining({ event: 'messages.video.dropped' }),
+    );
+  });
+
   it('skips a post that cannot be serialized and still returns the other note', async () => {
     const pubkey = 'ab'.repeat(32);
     const good = row({ id: NOTE, authorPubkey: pubkey, name: 'Ada' });

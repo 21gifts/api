@@ -807,6 +807,35 @@ describe('GET /members/:accountId/posts', () => {
     expect(await messageStore.getById(goneId)).toBeUndefined();
   });
 
+  it('keeps a missing-file video credit that the store refuses to delete', async () => {
+    const authStore = await seededCaller();
+    await addAccount(authStore, ACCOUNT_ID, 'b'.repeat(64));
+    const creditId = '5c5051d3-adba-44f9-a964-9bd0df1ce0a0';
+    const messageStore = new InMemoryMessageStore([
+      {
+        id: creditId,
+        accountId: ACCOUNT_ID,
+        name: 'Ada',
+        text: 'credit clip gone',
+        createdAt: new Date(now()),
+        ...unsignedNostrDefaults(),
+        hasPhoto: false,
+        hasVideo: true,
+        videoContentType: 'video/mp4',
+        sats: 5,
+        goalSats: 10,
+        goalRepayable: true,
+      },
+    ]);
+    const res = await mount(authStore, messageStore).request(`/members/${ACCOUNT_ID}/posts`, {
+      headers: AUTH,
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { messages: Array<{ id: string }> };
+    expect(body.messages.map((row) => row.id)).toEqual([creditId]);
+    expect(await messageStore.getById(creditId)).toBeDefined();
+  });
+
   it('subtracts dropped missing-file video replies from replyCount', async () => {
     const parentId = '5c5051d3-adba-44f9-a964-9bd0df1ce091';
     const goneChildId = '5c5051d3-adba-44f9-a964-9bd0df1ce092';

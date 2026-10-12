@@ -739,3 +739,100 @@ describe('credit repayment', () => {
     }
   });
 });
+
+describe('DELETE /messages/:id on a credit', () => {
+  const OTHER = '66666666-6666-4666-8666-666666666666';
+
+  async function staffCredit(
+    options?: Parameters<typeof readyCredit>[0],
+  ): Promise<Awaited<ReturnType<typeof readyCredit>>> {
+    const ready = await readyCredit(options);
+    const account = await ready.auth.getAccount('acc');
+    if (account === undefined) {
+      throw new Error('expected account');
+    }
+    await ready.auth.updateAccount({ ...account, role: 'founder' });
+    return ready;
+  }
+
+  async function del(app: Hono, id: string): Promise<Response> {
+    return app.request(`/messages/${id}`, {
+      method: 'DELETE',
+      headers: { authorization: 'Bearer acc' },
+    });
+  }
+
+  it('refuses a funded credit with an unpaid share, even for the founder', async () => {
+    const { app, messages } = await staffCredit();
+    const res = await del(app, CREDIT);
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({ error: 'An open credit cannot be deleted' });
+    expect((await messages.getById(CREDIT))?.deletedAt).toBeNull();
+  });
+
+  it('hides a credit once every share is repaid', async () => {
+    const { app, messages } = await staffCredit();
+    await messages.markRepaymentPaid({
+      messageId: CREDIT,
+      dayIndex: 0,
+      recipientAccountId: GIVER,
+      dueSats: 21,
+      paidAt: new Date(now()),
+    });
+    expect((await del(app, CREDIT)).status).toBe(204);
+    expect((await messages.getById(CREDIT))?.deletedAt).toBeInstanceOf(Date);
+  });
+
+  it('refuses a credit that received sats but never filled', async () => {
+    const { app } = await staffCredit({ fundedAt: null });
+    expect((await del(app, CREDIT)).status).toBe(409);
+  });
+
+  it('refuses a funded credit without a term', async () => {
+    const { app } = await staffCredit({ termDays: null });
+    expect((await del(app, CREDIT)).status).toBe(409);
+  });
+
+  it('refuses a funded credit whose debt cannot be priced', async () => {
+    const { app } = await staffCredit({ goalCurrency: 'USD', goalAmount: null });
+    expect((await del(app, CREDIT)).status).toBe(409);
+  });
+
+  it('refuses a funded credit paid only by zaps without an account', async () => {
+    const { app, messages } = await staffCredit();
+    await messages.create({
+      id: OTHER,
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'external only',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+      sats: 21,
+      goalSats: 21,
+      goalRepayable: true,
+      goalTermDays: 1,
+      goalFundedAt: new Date(Date.UTC(2026, 8, 26, 12)),
+    });
+    await messages.recordZapReceipt('r-ext', OTHER, 21, null);
+    expect((await del(app, OTHER)).status).toBe(409);
+  });
+
+  it('hides a credit that never received sats', async () => {
+    const { app, messages } = await staffCredit();
+    await messages.create({
+      id: OTHER,
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'empty ask',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+      sats: 0,
+      goalSats: 1000,
+      goalRepayable: true,
+      goalTermDays: 10,
+    });
+    expect((await del(app, OTHER)).status).toBe(204);
+  });
+});
