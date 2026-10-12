@@ -48,9 +48,11 @@ same shape as `pos_charge.id`. The stored form is lowercase hexadecimal,
 eight-four-four-four-twelve. Neither id has a prefix. `quote.payment` is
 not an amount. `quote.expiration` is UTC, millisecond precision, with a
 `Z` suffix, the same form `GET /pay/:username` uses for `expiresAt`. It
-is the earlier of the expiry Orchestra returns for that quote and the
-expiry of the BOLT11 that quote names. A quote for an open till charge
-also ends when the charge ends, if that is sooner.
+is the earlier of the expiry Orchestra returns for that quote, the
+expiry of the BOLT11 that quote names, and the instant that payment
+leaves `open`. When that instant is sooner, `shop_quote.expires_at`
+moves to it. A quote for an open till charge also ends when the charge
+ends, if that is sooner.
 
 The `quote` parameter uses that same form. A value that is not that form,
 compared case-insensitively, is an unknown quote.
@@ -462,11 +464,14 @@ Tether Wallet for Android 1.11.0 (134) builds its proof request from
 request the check sends is `GET /lnurlp/tx/:username`. A different URL
 fails the check. This service does not add a second proof path.
 
-For a proof, the api returns success only when the transfer matches the
-quote and Orchestra has accepted it: the offered chain, the offered
-asset, the quoted amount, and a quote that was still valid. From that
-moment the sats stay due. The response does not wait for delivery, and
-a wallet is not told to pay again because the bitcoin has not arrived.
+For a proof, the api returns success the first time only when the
+payment is still `open`, the transfer matches the quote, and Orchestra
+has accepted it: the offered chain, the offered asset, the quoted
+amount, and a quote that was still valid. A payment that is `ended` is
+not moved to `accepted` by a later proof. A repeat of a proof already
+stored for `accepted` or `paid` stays 200. From that moment the sats
+stay due. The response does not wait for delivery, and a wallet is not
+told to pay again because the bitcoin has not arrived.
 
 Any other transfer is an error. Nothing is due, and the shop is not paid.
 
@@ -587,16 +592,24 @@ the same sats.
 The charge is paid when the BOLT11 for those sats is settled. Orchestra
 pays that BOLT11. One charge is paid once. This path does not settle on
 Spark, and today's `GET /pos` has no paid status. The change that builds
-this records the charge paid, shows it from `GET /pos` for 60 seconds,
-and a paid charge no longer pins the pay link. A page payment with no
-charge is paid when the invoice this payment named is settled. It is not
-left open after that. No zap, gift, or message is written for a till
-payment.
+this records the charge paid. `GET /pos` keeps `{ charge, history }`.
+`history` stays the newest 20 rows of any status. `charge` uses the
+fields `id`, `amountSats`, `status`, `createdAt`, and `expiresAt`.
+While fewer than 60 seconds have passed since the charge was recorded
+paid, and no pending charge is open, `charge` is that paid row and
+`status` is `paid`. Once 60 seconds have elapsed, or while a pending
+charge is open, `charge` is not that paid row. The paid row stays in
+`history` while it is one of the newest 20. No new field is added. A
+paid charge does not pin the pay link. A page payment with no charge is
+paid when the invoice this payment named is settled. It is not left open
+after that. No zap, gift, or message is written for a till payment.
 
 Sats that arrive after the five minutes still pay that charge when the
-transfer was accepted against a quote that was valid for it. A transfer
-sent after the charge has ended, with no such quote, does not pay it.
-The sticker then takes a new amount from the next payer.
+transfer was accepted against a quote that was valid for it. That later
+arrival is the invoice settlement of a transfer already accepted. It is
+not a new proof. A transfer sent after the charge has ended, with no
+such quote, does not pay it. The sticker then takes a new amount from
+the next payer.
 
 ## Tether Wallet
 
