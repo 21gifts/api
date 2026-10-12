@@ -427,9 +427,21 @@ describe('PostgresMessageStore deleteById on a credit', () => {
         hasPhoto: false,
         ...unsignedNostrDefaults(),
       };
-      await store.create({ ...base, id: creditId, text: 'credit', goalSats: 10, goalRepayable: true });
+      await store.create({
+        ...base,
+        id: creditId,
+        text: 'credit',
+        goalSats: 10,
+        goalRepayable: true,
+      });
       await store.create({ ...base, id: replyId, parentId: creditId, text: 'reply' });
-      await store.create({ ...base, id: otherId, text: 'other', goalSats: 10, goalRepayable: true });
+      await store.create({
+        ...base,
+        id: otherId,
+        text: 'other',
+        goalSats: 10,
+        goalRepayable: true,
+      });
 
       const payer = await sql.reserve();
       try {

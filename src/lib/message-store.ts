@@ -4067,20 +4067,12 @@ export class InMemoryMessageStore implements MessageStore {
     return true;
   }
 
-  markDeleted(
-    id: string,
-    at: Date,
-    byAccountId: string,
-    expectedSats?: number,
-  ): Promise<boolean> {
+  markDeleted(id: string, at: Date, byAccountId: string, expectedSats?: number): Promise<boolean> {
     const target = this.#rows.find((item) => item.id === id);
     if (target === undefined) {
       return Promise.resolve(false);
     }
-    if (
-      expectedSats !== undefined &&
-      (target.deletedAt !== null || target.sats !== expectedSats)
-    ) {
+    if (expectedSats !== undefined && (target.deletedAt !== null || target.sats !== expectedSats)) {
       return Promise.resolve(false);
     }
     if (target.deletedAt === null) {

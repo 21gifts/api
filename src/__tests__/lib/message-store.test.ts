@@ -6713,7 +6713,7 @@ describe('PostgresMessageStore', () => {
     expect(sql.queries[0]?.text).toMatch(/WITH/);
     expect(sql.queries[0]?.text).toMatch(/targets AS/);
     expect(sql.queries[0]?.text).toMatch(/DELETE FROM message/);
-    expect(sql.queries[0]?.text).toMatch(/id = \$1 OR parent_id = \$1/);
+    expect(sql.queries[0]?.text).toMatch(/OR parent_id IN \(SELECT id FROM root\)/);
   });
 
   it('getPhoto maps a bytea row', async () => {
@@ -7225,7 +7225,7 @@ describe('PostgresMessageStore', () => {
     expect(text).toMatch(/DELETE FROM message_invoice/);
     expect(text).toMatch(/DELETE FROM message/);
     expect(text).not.toMatch(/nostr_zap_payment/);
-    expect(text).toMatch(/parent_id = \$1/);
+    expect(text).toMatch(/OR parent_id IN \(SELECT id FROM root\)/);
     expect(text).toMatch(/goal_repayable IS TRUE AND sats > 0/);
     expect(text).toMatch(/FOR UPDATE/);
     expect(sql.queries[0]?.params).toEqual(['m1']);
