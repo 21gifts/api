@@ -1317,6 +1317,22 @@ describe('repayment from the in-app wallet', () => {
     ]);
   });
 
+  it('answers 503 when the rate loader fails while a due fiat share needs a price', async () => {
+    const rates = async (): Promise<GoalRateDay> => {
+      throw new Error('fx.rate.missing');
+    };
+    const { app } = await loanSetup({ goalCurrency: 'USD', rates });
+    const due = await post(app, `/messages/${CREDIT}/repayment/due`);
+    expect(due.status).toBe(503);
+    expect(await due.json()).toEqual({ error: 'Ask amount is unavailable' });
+    const single = await post(app, `/messages/${CREDIT}/repayment`);
+    expect(single.status).toBe(503);
+    expect(await single.json()).toEqual({ error: 'Ask amount is unavailable' });
+    const ledger = await app.request(`/messages/${CREDIT}/repayment`);
+    expect(ledger.status).toBe(503);
+    expect(await ledger.json()).toEqual({ error: 'Ask amount is unavailable' });
+  });
+
   it('skips a giver who cannot receive and bills the next share', async () => {
     await withNip57(async () => {
       const { app, messages } = await loanSetup();

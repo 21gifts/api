@@ -631,7 +631,11 @@ export async function repaymentDueBills(deps: RepaymentDeps, c: Context): Promis
   if (plan.due.length === 0) {
     return c.json({ bills: [], waiting: [] }, 200);
   }
-  const price = await sharePricer(deps, opened.row);
+  // A rate loader that fails is the same 503 as a missing rate.
+  const price = await sharePricer(deps, opened.row).catch(() => null);
+  if (price === null) {
+    return c.json({ error: 'Ask amount is unavailable' }, 503);
+  }
   const fiat = isFiatCredit(opened.row);
   // One limiter hit per call, taken by the first bill that has to be minted.
   let minted: boolean | undefined;
@@ -731,7 +735,8 @@ async function openCredit(
 /**
  * The oldest due, unpaid share whose giver can receive. Shares of a giver who
  * cannot receive are skipped; `waiting` says some were. A due share that
- * cannot be priced (a fiat loan with no rate) is 503, whoever its giver is.
+ * cannot be priced (a fiat loan with no rate, or a rate loader that fails) is
+ * 503, whoever its giver is.
  */
 async function nextShare(
   deps: RepaymentDeps,
@@ -760,9 +765,10 @@ async function nextShare(
   if (plan.due.length === 0) {
     return { daysDue, daysPaid, share: null, waiting: false, error: null, status: 400 };
   }
-  // Every due share needs a price, whether or not its giver can receive.
-  const price = await sharePricer(deps, row);
-  if (plan.due.some((share) => price(share.units) === null)) {
+  // Every due share needs a price, whether or not its giver can receive. A rate
+  // loader that fails is the same 503 as a missing rate.
+  const price = await sharePricer(deps, row).catch(() => null);
+  if (price === null || plan.due.some((share) => price(share.units) === null)) {
     return {
       daysDue,
       daysPaid,
