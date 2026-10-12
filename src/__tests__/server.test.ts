@@ -588,6 +588,9 @@ describe('createApp', () => {
     const wallet = await app.request('/me/wallet/report', { method: 'POST' });
     expect(wallet.status).toBe(401);
     expect(await wallet.json()).toEqual({ error: 'Unauthorized' });
+    const hearts = await app.request('/me/wallet/hearts', { method: 'POST' });
+    expect(hearts.status).toBe(401);
+    expect(await hearts.json()).toEqual({ error: 'Unauthorized' });
     const events = await app.request('/me/events', { method: 'POST' });
     expect(events.status).toBe(401);
     expect(await events.json()).toEqual({ error: 'Unauthorized' });

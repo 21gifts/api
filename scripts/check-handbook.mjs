@@ -140,6 +140,7 @@ function extractEndpoints() {
     'push.ts': '',
     'member-events.ts': '',
     'wallet-report.ts': '',
+    'wallet-hearts.ts': '',
     'repayment.ts': '',
     'debug.ts': '/debug/accounts',
     'debug-contacts.ts': '/debug/contacts',
