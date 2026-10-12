@@ -5124,7 +5124,7 @@ Success → **Response** `200`:
 
 `currency` is `BTC`, `USD`, `CHF`, `EUR`, or `PHP`. `fundedAt` is ISO-8601 or null until collected sats first reach the ask. `startsOn` is the first repayment day as `YYYY-MM-DD` UTC (the `dueOn` of `dayIndex` 0), or null until then; it is the day after `fundedAt`, never before 2026-11-01. `dueOn` is `YYYY-MM-DD` UTC, or null until then. `givenAmount` and `amount` are two-decimal strings in the ask currency, or null for bitcoin. For a fiat ask, `sats` on a repayment is the paid share or null until it is paid. `status` is `paid`, `due`, or `scheduled`. `unassignedSats` is bitcoin with no 21.gifts payer and is not in the plan. `next` is the next unpaid share once the credit has filled, else null. A 1-sat or 1-cent gift is its own row.
 
-Fiat amount or gift-day rate missing → **503** `{ "error": "Ask amount is unavailable" }`. This holds whenever a fiat share is due, also when every due share waits for a giver who cannot receive.
+Fiat amount or gift-day rate missing, or the rate cannot be read → **503** `{ "error": "Ask amount is unavailable" }`. This holds whenever a fiat share is due, also when every due share waits for a giver who cannot receive.
 
 ### `POST /messages/:id/repayment`
 
@@ -5162,7 +5162,7 @@ Other payment start failure → **400** `{ "error": "Could not start the Bitcoin
 Author missing forum pay → **409** `{ "error": "missing_requirements", "missing": ["rules"] }`.
 Device `Time-Zone` in Sunday → **403** `{ "error": "SUNDAY_REST" }`. A missing, blank, or invalid zone does not refuse.
 Over-limit → **429** `{ "error": "Too many payments" }`.
-Fiat share cannot be priced → **503** `{ "error": "Ask amount is unavailable" }`. Any due share is priced first, so a fiat loan without a rate answers this 503 before the `cannot_receive` 400.
+Fiat share cannot be priced, including when the rate cannot be read → **503** `{ "error": "Ask amount is unavailable" }`. Any due share is priced first, so a fiat loan without a rate answers this 503 before the `cannot_receive` 400.
 Signing keys missing or the invoice attempt cannot be stored → **503** `{ "error": "Messages are unavailable" }`.
 
 ### `POST /messages/:id/repayment/due`
@@ -5209,7 +5209,7 @@ Unknown id, a non-UUID after a valid session, a note that is not a live repayabl
 Author missing forum pay → **409** `{ "error": "missing_requirements", "missing": ["rules"] }`.
 Device `Time-Zone` in Sunday → **403** `{ "error": "SUNDAY_REST" }`. A missing, blank, or invalid zone does not refuse.
 Over-limit → **429** `{ "error": "Too many payments" }` (`Retry-After: 10`).
-Debt or a fiat share cannot be priced → **503** `{ "error": "Ask amount is unavailable" }`.
+Debt or a fiat share cannot be priced, including when the rate cannot be read → **503** `{ "error": "Ask amount is unavailable" }`.
 Any other error of `POST /messages/:id/repayment` while making a bill (`This message cannot be paid yet`, a giver without a Nostr key, `A payment for this share is still open`, `Could not start the Bitcoin payment`, `Messages are unavailable`) answers the whole call with that status and body. Bills minted before it stay stored and are returned again on the next call.
 
 ### `GET /messages/:id/photo`
