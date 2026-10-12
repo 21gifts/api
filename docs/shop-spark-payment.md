@@ -108,8 +108,15 @@ The call writes a row only when the Orchestra key is configured, this
 service can obtain or reuse the BOLT11 `POST /pay/:username/invoice`
 already returns for this sat count on the shop's linked Wallet of Satoshi
 address, and Orchestra's exact-out quote commits to that sat count on
-that invoice. Otherwise it writes nothing and returns
-**503** `{ "error": "Stablecoin payment is unavailable" }`.
+that invoice. A missing Orchestra key is **503**
+`{ "error": "Stablecoin payment is unavailable" }`, writes nothing, and
+does not fetch an invoice. When the key is set, a resolve or store
+failure, an empty or non-safe-integer window, a failed invoice fetch, or
+a BOLT11 that is missing, not a safe integer amount, or not the requested
+amount, is **502** `{ "error": "Lightning Address could not be resolved" }`
+and writes nothing. When that invoice is obtained and the quote does not
+commit to that sat count, the call is **503**
+`{ "error": "Stablecoin payment is unavailable" }` and writes nothing.
 
 One pay link has one open amount. While a till charge is pending, the
 amount is that charge. The call returns the one payment for it, creating
@@ -451,8 +458,11 @@ Wallet.
 
 The same detail is returned by one GET that sets `method` and `asset` on
 the pay link while its payment is still open. The detail belongs to the
-current quote. An unknown pair or a quote that has expired is an error
-and creates no payment. It is not served as another quote.
+current quote. When the method lists both assets, the first detail stored
+for this quote and method keeps that asset. A later callback for the
+other asset is **400** `{ "error": "That payment is not offered" }` and
+does not replace it. An unknown pair or a quote that has expired is an
+error and creates no payment. It is not served as another quote.
 
 ### Proof
 
@@ -481,9 +491,9 @@ has accepted it: the offered chain, the offered asset, the quoted
 amount, and a quote that was still valid. Before it asks Orchestra, it
 stores that proof: the quote, the method, the asset, and the proof
 parameter. The proof query does not carry `asset`. The asset is the one
-that method lists. When the method lists both, the asset is the one the
-callback for this quote and method already returned. If it lists both
-and no such callback was served, the proof is **400**
+that method lists. When the method lists both, the asset is the one
+stored with the first detail this quote and method returned. If it lists
+both and no such callback was served, the proof is **400**
 `{ "error": "That payment is not offered" }` and nothing is stored. A payment that is `ended`, and that has no such stored proof,
 is not moved to `accepted` by a later proof. While a stored proof has
 no result, that proof is not refused for quote expiry. A retry of it
