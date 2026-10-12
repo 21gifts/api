@@ -1452,7 +1452,7 @@ describe('debugPaymentsRoutes', () => {
       body: JSON.stringify({ messageId }),
     });
     expect(res.status).toBe(409);
-    expect(await res.json()).toEqual({ error: 'Message day is in the future' });
+    expect(await res.json()).toEqual({ error: 'Message is not from today' });
     expect(spendPing.ping).not.toHaveBeenCalled();
     expect(spendPing.pingOnDay).not.toHaveBeenCalled();
   });

@@ -273,7 +273,7 @@ export function debugPaymentsRoutes(deps: DebugPaymentsRouteDeps): Hono {
       }
       const day = utcDayKey(message.createdAt.getTime());
       if (day > utcDayKey(deps.now())) {
-        return c.json({ error: 'Message day is in the future' }, 409);
+        return c.json({ error: 'Message is not from today' }, 409);
       }
       const pingOnDay = deps.spendPing.pingOnDay;
       if (pingOnDay === undefined) {
