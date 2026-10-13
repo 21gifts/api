@@ -575,10 +575,10 @@ Tether Wallet for Android 1.11.0 (134) builds its proof request from
 request the check sends is `GET /lnurlp/tx/:username`. A different URL
 fails the check. This service does not add a second proof path.
 
-For a proof, the api returns success the first time only when the
-payment is still `open`, the transfer matches the quote, and Orchestra
-has accepted it: the offered chain, the offered asset, the quoted
-amount, and a quote that was still valid. Before it asks Orchestra, it stores that proof as one `shop_proof` row
+For a proof that is not yet stored, the api returns success the first
+time only when the payment is still `open`, the transfer matches the
+quote, and Orchestra has accepted it: the offered chain, the offered
+asset, the quoted amount, and a quote that was still valid. Before it asks Orchestra, it stores that proof as one `shop_proof` row
 for that offer, method, asset, and proof parameter. At most one stored
 proof of this payment has been sent and still has no result. While that
 row has no result, a different proof is stored and is not sent. The
@@ -602,22 +602,25 @@ no result, that sent proof is not refused for quote expiry. A retry
 asks Orchestra again for that same sent proof and does not send a
 different proof of this payment. Orchestra unreachable is **503**
 `{ "error": "Stablecoin payment is unavailable" }`. The stored proof
-stays unresolved and the payment stays `open`. A missing answer does
+stays unresolved. An `open` payment stays `open`. A `paid` payment
+stays `paid`. A missing answer does
 not record the proof `refused`, does not move the payment to `ended`,
-and is not **400** `{ "error": "Payment was not accepted" }`. When Orchestra accepts, and the payment is still `open` and has no
-`accepted` proof, it stores `accepted` and the `txId` Orchestra
-returned, and the payment becomes `accepted` in that same step. A
-stored proof of this payment that was not sent is recorded `refused`
-in that same step, stores no `txId`, and is not sent. The
-row is not `accepted` before that answer. The response is **200**
-`{ "txId": "<id>" }`, including when the quote has lapsed since the
-proof was stored. That includes when the separate Spark invoice has
+and is not **400** `{ "error": "Payment was not accepted" }`. When Orchestra accepts a stored proof that has no result, and this
+payment has no `accepted` proof, it stores `accepted` and the `txId`
+Orchestra returned. The row is not `accepted` before that answer. When
+the payment is still `open`, it becomes `accepted` in that same step.
+When the payment is already `paid`, it stays `paid`. A stored proof of
+this payment that was not sent is recorded `refused` in that same step,
+stores no `txId`, and is not sent. The response is **200**
+`{ "txId": "<id>" }` in both cases, including when the quote has
+lapsed since the proof was stored. That includes when the separate Spark invoice has
 already marked the charge `paid`. The charge stays `paid`. From that
 accept, the payment is watched on the BOLT11 it stored, the same
 accepted-payment watch stated for the till. A payment that is already
 `paid` stays `paid`. When Orchestra does not accept, that stored proof
 is `refused` and stores no `txId`. The response is **400**
-`{ "error": "Payment was not accepted" }`. The payment stays `open`.
+`{ "error": "Payment was not accepted" }`. An `open` payment stays
+`open`. A `paid` payment stays `paid`.
 A refused proof does not move it to `ended`. A different proof of the
 same quote may be stored, and it is sent only when no sent proof of
 this payment is still unresolved. A `paid` payment stays `paid`.
@@ -628,7 +631,7 @@ still `open` and no stored proof is unresolved, the five-minute read
 may end it again. A repeat answers from that stored result, not from the
 payment status. Only `accepted` with its stored `txId` is **200**. A
 proof that was sent and has no result is asked of Orchestra again for that same stored proof, even when the BOLT11
-has been paid directly. A different proof that has not been sent is not asked while that result is absent. A missing answer does not record it `refused` and does not return **400** `{ "error": "Payment was not accepted" }`. A `refused` proof stays **400**, including
+has been paid directly and the payment is already `paid`. When that answer carries `orderId`, the stored proof is `accepted` and the response is **200** `{ "txId": "<id>" }`. A `paid` payment stays `paid`. A different proof that has not been sent is not asked while that result is absent. A missing answer does not record it `refused` and does not return **400** `{ "error": "Payment was not accepted" }`. A `refused` proof stays **400**, including
 when that BOLT11 has since been paid. That direct payment does not
 invent a `txId`. From the moment Orchestra has accepted, the sats stay
 due until that invoice settles. The response does not wait for
