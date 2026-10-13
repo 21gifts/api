@@ -358,24 +358,33 @@ payment of that link. An open page payment does not make this link
 return a quote, and `method` and `asset` on this link do not select a
 page offer.
 
-When no till payment is open, the pay link returns the Lightning pay
-request it already serves. Not **404**. `method` and `asset` on that
-call do not select a stablecoin.
+The link returns a fixed amount only while the till charge is
+`pending`. That is `SPEC.md:325` and `SPEC.md:545`. `shop_payment.status`
+does not pin it. A charge that is `paid`, `expired`, or `cancelled`
+makes the next fetch the Lightning pay request, even when the shop
+payment for that charge is still `open` or `accepted`. The longer
+BOLT11 watch does not pin the sticker. Not **404**.
 
-While a till payment is `open`, a fetch returns its current quote. A
-quote that has not lapsed is not replaced. A lapsed quote is replaced
-for the same sats, except while a stored proof has no result. The URL
-does not change.
+While the charge is `pending` and no shop payment exists, the response
+is the Lightning pay request that route already serves, with both
+bounds at that sat count. `method` and `asset` do not select a
+stablecoin.
 
-While a till payment is `accepted`, and until it is `paid`, the response
-is still a pay request for those sats. Every `available` value is false.
-It does not mint a new quote. It is not the Lightning pay request with
-a minimum and a maximum. `method` and `asset` on that call are **400**
-`{ "error": "That payment is not offered" }`.
+While the charge is `pending` and the shop payment is `open`, a fetch
+returns its current quote. A quote that has not lapsed is not replaced.
+A lapsed quote is replaced for the same sats, except while a stored
+proof has no result. The URL does not change.
 
-When the till payment is `paid` or `ended`, the pay link is free. The
-next fetch, with no new amount, is the Lightning pay request. A page
-payment that is still open does not keep the link pinned.
+While the charge is `pending` and the shop payment is `accepted`, the
+response is still a pay request for those sats. Every `available` value
+is false. It does not mint a new quote. It is not the Lightning pay
+request with a minimum and a maximum. `method` and `asset` on that call
+are **400** `{ "error": "That payment is not offered" }`.
+
+When the charge is `paid`, `expired`, or `cancelled`, the pay link is
+free. The next fetch, with no new pending charge, is the Lightning pay
+request. A shop payment that is still `open` or `accepted`, and a page
+payment that is still open, do not keep the link pinned.
 
 ### Errors on callback and proof
 
@@ -1162,8 +1171,10 @@ not mark the shop payment `paid`. It does not stop at ten minutes.
 That longer watch is not mounted. The same tick also includes a shop
 payment that became `accepted` after the charge was already `paid`.
 The worker does not stay stopped for that BOLT11. It does not mark the
-charge `paid` again and it does not reopen a cancelled charge. A paid
-charge does not pin the pay link. A page payment with no charge is paid
+charge `paid` again and it does not reopen a cancelled charge. That
+watch does not pin the pay link. Once the charge is `paid`, `expired`,
+or `cancelled`, the next fetch of the shared link is the Lightning pay
+request, even while this payment is `open` or `accepted`. A page payment with no charge is paid
 when the invoice this payment named is settled. It is not left open
 after that. No zap, gift, or message is written for a till payment.
 
