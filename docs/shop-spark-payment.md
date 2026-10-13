@@ -416,21 +416,21 @@ the Lightning pay request above.
 
 For a known amount the pay request contains:
 
-| Field                        | Value                                                |
-| ---------------------------- | ---------------------------------------------------- |
-| `tag`                        | `payRequest`                                         |
-| `callback`                   | `<PUBLIC_BASE_URL>/lnurlp/cb/<username>`             |
-| `minSendable`, `maxSendable` | both that sat amount in millisats                    |
-| metadata                     | unchanged                                            |
-| `displayName`                | the name `GET /pay/:username` returns                |
-| `recipient.name`             | the same shop name                                   |
-| `standard`                   | `OpenCryptoPay`                                      |
-| `displayQr`                  | `false`                                              |
-| `quote.id`                   | UUID of this quote                                   |
-| `quote.expiration`           | expiry, UTC, as named above                          |
-| `quote.payment`              | UUID of the payment this quote belongs to            |
-| `requestedAmount`            | asset `BTC`; `amount` is the JSON number named above |
-| `transferAmounts`            | one entry per method, Lightning first                |
+| Field                        | Value                                                            |
+| ---------------------------- | ---------------------------------------------------------------- |
+| `tag`                        | `payRequest`                                                     |
+| `callback`                   | origin from `resolvePublicApiBase`, plus `/lnurlp/cb/<username>` |
+| `minSendable`, `maxSendable` | both that sat amount in millisats                                |
+| metadata                     | unchanged                                                        |
+| `displayName`                | the name `GET /pay/:username` returns                            |
+| `recipient.name`             | the same shop name                                               |
+| `standard`                   | `OpenCryptoPay`                                                  |
+| `displayQr`                  | `false`                                                          |
+| `quote.id`                   | UUID of this quote                                               |
+| `quote.expiration`           | expiry, UTC, as named above                                      |
+| `quote.payment`              | UUID of the payment this quote belongs to                        |
+| `requestedAmount`            | asset `BTC`; `amount` is the JSON number named above             |
+| `transferAmounts`            | one entry per method, Lightning first                            |
 
 A `transferAmounts` entry has `method`, `minFee`, `assets`, and
 `available`. `assets` holds `{ "asset", "amount" }`. Lightning's amount
@@ -656,8 +656,9 @@ sendable bounds become that sat amount in millisats. Metadata stays on
 the pay request the verified wallet already returns. When the Orchestra
 key is configured and Orchestra commits to those sats on the invoice for
 this charge, the stablecoin amounts for those same sats are added beside
-that pin, and `callback` is `/lnurlp/cb/<username>`. Otherwise callback
-and metadata stay on that pay request.
+that pin, and `callback` is the origin `resolvePublicApiBase` already
+returns for `PUBLIC_BASE_URL`, plus `/lnurlp/cb/<username>`. Otherwise
+callback and metadata stay on that pay request.
 
 A lapsed quote is replaced only while the charge is open, only for the
 same sats, and only when no stored proof is unresolved.
