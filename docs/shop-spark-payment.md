@@ -605,10 +605,17 @@ and only while the payment is still `open`, it stores that proof as one `shop_pr
 for that offer, method, asset, and proof parameter. At most one stored
 proof of this payment has been sent and still has no result. While that
 row has no result and the payment is still `open` and under that cap, a
-different proof is stored and is not sent. The
+different proof is stored and is not sent. That request, and a repeat
+of that unsent proof while the sent proof still has no result, is
+**503** `{ "error": "Stablecoin payment is unavailable" }`. It is not
+**200** and not **400**. The
 sent proof is retried with its own idempotency key until a definitive
-result. Only after that result is `refused` is the oldest stored proof
-that has not been sent asked, with its own idempotency key. A proof already stored for another quote of this payment stays
+result. Only after that result is `refused` does a later
+`GET /lnurlp/tx/:username` for this payment ask the oldest stored proof
+that has not been sent, with that proof's own idempotency key, before
+it answers. A repeat of the refused proof is that later request when
+it arrives, and it does not ask the refused row again. When no unsent
+proof remains, that repeat stays **400**. A proof already stored for another quote of this payment stays
 that row. A repeat of the same quote, method, asset, and proof
 parameter reads the stored row and does not insert another. Once this
 payment has an `accepted` proof, a different proof is not stored and
@@ -657,7 +664,7 @@ still `open` and no stored proof is unresolved, the five-minute read
 may end it again. A repeat answers from that stored result, not from the
 payment status. Only `accepted` with its stored `txId` is **200**. A
 proof that was sent and has no result is asked of Orchestra again for that same stored proof, even when the BOLT11
-has been paid directly and the payment is already `paid`. When that answer carries `orderId`, the stored proof is `accepted` and the response is **200** `{ "txId": "<id>" }`. A `paid` payment stays `paid`. A different proof that has not been sent is not asked while that result is absent. A missing answer does not record it `refused` and does not return **400** `{ "error": "Payment was not accepted" }`. A `refused` proof stays **400**, including
+has been paid directly and the payment is already `paid`. When that answer carries `orderId`, the stored proof is `accepted` and the response is **200** `{ "txId": "<id>" }`. A `paid` payment stays `paid`. A different proof that has not been sent is not asked while that result is absent. A missing answer, an HTTP 409 `idempotency_in_progress`, or an HTTP 200 without `orderId` does not record it `refused`. The response is **503** `{ "error": "Stablecoin payment is unavailable" }`, not **400**. A `refused` proof stays **400**, including
 when that BOLT11 has since been paid. That direct payment does not
 invent a `txId`. From the moment Orchestra has accepted, the sats stay
 due until that invoice settles. The response does not wait for
@@ -718,13 +725,26 @@ new key for each pair. This service does not call
 Asking Orchestra about a stored proof is
 `POST {ORCHESTRA_BASE_URL}/v1/orchestration/submit` for that proof's
 offer. The quote sent is that offer's `provider_ref`, the Orchestra
-`quoteId`. The call uses that proof's idempotency key. The body sets `txHash` to
-the proof parameter, except Bitcoin, which sets `bitcoinTxid` to that
-parameter and does not send `bitcoinVout`. The body sends no source
-address. HTTP 200 with `orderId` is accepted. The stored `txId` is
-that `orderId`. It is not the payer's transaction hash. HTTP 409
-whose `error.code` is `idempotency_in_progress` stays unresolved. A
-200 without `orderId` stays unresolved. Any other HTTP 4xx is
+`quoteId`. The call uses that proof's idempotency key. Orchestra's submit body has no field for a raw transaction. An unknown
+field is ignored, so the stored `hex` is not sent. Before that call,
+this service broadcasts the stored raw transaction on the chain the
+offer named. A broadcast that does not complete leaves the proof
+unresolved, does not record it `refused`, and the response is **503**
+`{ "error": "Stablecoin payment is unavailable" }`. The body then sends
+the derived identifier, not the raw bytes. For an EVM `hex`, `txHash`
+is `0x` plus the 64 lowercase hexadecimal characters of the Keccak-256
+hash of the signed transaction bytes. For Bitcoin, `bitcoinTxid` is the
+64 lowercase hexadecimal characters of the transaction id, the double
+SHA-256 of those bytes reversed, and the body does not send `txHash`
+or `bitcoinVout`. For Firo, `txHash` is that same Bitcoin-style
+transaction id. For `tx`, `txHash` is the stored parameter unchanged.
+The body sends no source address. HTTP 200 with `orderId` is accepted.
+The stored `txId` is that `orderId`. It is not the payer's transaction
+hash and it is not the raw `hex`. HTTP 409 whose `error.code` is
+`idempotency_in_progress` stays unresolved. A 200 without `orderId`
+stays unresolved. Either unresolved submit answer is **503**
+`{ "error": "Stablecoin payment is unavailable" }`. It is not **400**
+and it does not record the proof `refused`. Any other HTTP 4xx is
 `refused` and stores no `txId`. The payment moves from `open` to
 `accepted` only after this accept, and only while that payment has no
 `accepted` proof.
