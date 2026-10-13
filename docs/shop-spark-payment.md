@@ -104,8 +104,9 @@ When an amount is known and those rows are served,
 with `/tx` in that callback. The username stays. It is the
 path id of the pay link. `quote.payment` stays in the JSON. It is not a
 path segment and not a query on the pay link. A refreshed quote keeps
-the same callback. The callback has no query string. A wallet appends
-its query itself. Neither URL is `…/lnurlp/<username>/invoice`.
+the same callback. The till callback has no query string. A page
+payment's callback adds `pay`, as Page capability states. A wallet
+appends its query itself. Neither URL is `…/lnurlp/<username>/invoice`.
 The mounted forward is `GET /lnurlp/:username/invoice` (`SPEC.md:514`,
 `src/routes/lnurl-server.ts:331`). The only same strings are
 `GET /lnurlp/cb/invoice` and `GET /lnurlp/tx/invoice`. The shop routes
@@ -412,8 +413,11 @@ The callback does not return a new transaction detail after the quote
 has lapsed. A repeat of the stored detail, while that offer's claim has
 not expired, is the exception above.
 
-A callback with no `method` does not check `quote`. It is the Lightning
-path below. `GET /lnurlp/cb/invoice` is not that path. It is the
+A callback with no `method` is the Lightning path below. It does not
+mint an invoice. A `pay` query selects that one page payment. With no
+`pay` query the call is the one open till payment and does not return
+a page payment. It does not choose among page payments by amount.
+`GET /lnurlp/cb/invoice` is not that path. It is the
 invoice forward for username `cb` on every query, including `amount`
 with no `method`, and it does not return a shop BOLT11.
 
@@ -446,12 +450,22 @@ the username is not `invoice`. Username `invoice` is not served this
 payment, so this call is never `GET /lnurlp/cb/invoice`. That path is
 the invoice forward for username `cb` on every query, including
 `amount` alone, and it does not return a shop BOLT11. This call sends
-`amount` in millisats. When that amount is the fixed sat count
-times 1000, the response is `{ "pr": "<bolt11>" }` for those sats. A
-missing or different amount is **400**
-`{ "error": "Enter a whole number of sats" }` and returns no invoice.
-Variable invoices stay on the invoice callback that pay request already
-names, `<PUBLIC_BASE_URL>/lnurlp/<username>/invoice`.
+`amount` in millisats and does not mint an invoice. A `pay` query is
+that page payment's `pay_token`. It selects that one row and no other.
+When `amount` is that row's sat count times 1000, the response is
+`{ "pr": "<bolt11>" }` for the BOLT11 stored on that row. A `pay`
+value that is not a `pay_token`, or that matches no page payment, is
+**404** `{ "error": "Not found" }`. A missing or different amount is
+**400** `{ "error": "Enter a whole number of sats" }` and returns no
+invoice. It does not return another payment of the same amount. With
+no `pay` query, the call is the one open till payment of that username.
+When `amount` is that charge's sat count times 1000, the response is
+`{ "pr": "<bolt11>" }` for the BOLT11 stored on that till row. It does
+not return a page payment. No open till payment, or a different amount,
+is that same **400** and returns no invoice. `quote` is not read on
+this path. Variable invoices stay on the invoice callback that pay
+request already names,
+`<PUBLIC_BASE_URL>/lnurlp/<username>/invoice`.
 
 ## Standard and settlement
 
@@ -664,13 +678,14 @@ The token is that payment's `pay_token`. The route is the two segments
 account whose username is `pay` stays that one-segment route. A token
 that is not the form above, or that matches no page payment, is **404**
 `{ "error": "Not found" }`. The response is the known-amount pay request
-for this payment only, with the same fields. `callback` stays the origin
-from `resolvePublicApiBase` plus `/lnurlp/cb/<username>`. Username
+for this payment only, with the same fields. `callback` is the origin
+from `resolvePublicApiBase` plus `/lnurlp/cb/<username>?pay=<token>`.
+The token is that payment's `pay_token`. Username
 `invoice` is not served, so that callback is never
 `/lnurlp/cb/invoice` and the proof is never `/lnurlp/tx/invoice`.
-The proof URL stays `GET /lnurlp/tx/:username`. The token is not a query on either
-path and is not a path segment of either. A different proof path fails
-the Tether Wallet check.
+The proof URL replaces `/cb` with `/tx` and keeps the `pay` query.
+The path stays `GET /lnurlp/tx/:username`. The token is not a path
+segment. A different path fails the Tether Wallet check.
 
 While this payment is `open`, a fetch returns its current quote. A quote
 that has not lapsed is returned unchanged. While it is `accepted`, and
@@ -725,7 +740,8 @@ detail while that offer's claim has not expired is not that error.
 
 The wallet pays the instruction. Where the standard requires a proof for
 that method, the wallet sends a GET to the proof URL, built by replacing
-`/cb` with `/tx` in `callback`. The username stays. The query carries
+`/cb` with `/tx` in `callback`. The username stays. A `pay` query on
+that callback stays. The wallet's query also carries
 `quote` (the quote UUID), `method`, and the proof parameter the standard
 defines for that method: `hex` for EVM, Bitcoin, and Firo; `tx` for
 Monero, Zano, Solana, Tron, and Cardano. Spark, Internet Computer, and
@@ -737,17 +753,20 @@ and the username is not `invoice`. They are not
 and `tx`, on every query. They are not this callback and not this
 proof, and they do not return a shop BOLT11. Lightning sends no proof.
 A Lightning wallet that calls a callback this document issued, with
-the fixed amount, still receives the BOLT11 invoice in `pr`. That
-callback is never `/lnurlp/cb/invoice`. That call does not create an
-Orchestra quote. The invoice it returns is the BOLT11 stored on the
-payment that quote belongs to. It is not a call to
-`POST /pay/:username/invoice`, and it does not choose among page
-payments by amount. The page's invoice QR is that same `pr`.
+the fixed amount, receives the BOLT11 stored on the one payment that
+callback names. A page callback names its payment with `pay`. A till
+callback names the one open till payment and does not name a page
+payment. That call does not choose by amount among page payments and
+does not mint. That callback is never `/lnurlp/cb/invoice`. That call
+does not create an Orchestra quote. It is not a call to
+`POST /pay/:username/invoice`. The page's invoice QR is that same `pr`.
 
 Tether Wallet for Android 1.11.0 (134) builds its proof request from
 `callback`. Those two paths are not stored as strings in that build. The
-request the check sends is `GET /lnurlp/tx/:username`. A different URL
-fails the check. This service does not add a second proof path.
+path the check sends is `GET /lnurlp/tx/:username`. A page payment keeps
+the `pay` query from that callback. A till payment has no `pay` query.
+A different path fails the check. This service does not add a second
+proof path.
 
 The proof parameter is checked before a row is stored. `hex`, for EVM,
 Bitcoin, and Firo, is the raw signed transaction: one query value, an
@@ -903,11 +922,12 @@ BOLT11, and `includeCalldata` true. The body does not send
 That call's `quoteId` is the `provider_ref` on the `shop_offer` for
 that method and asset. The expiry this document reads is that call's
 `expiresAt`, stored on that offer. An EVM `transaction` is `chainId`,
-`to`, `data`, and `value`. Any other status, a timeout, or a 200 that
-does not commit means that pair is not offered and is not retried. A
-timeout, an HTTP 429, or an HTTP 5xx is retried with the same key at
-most twice more before this call answers. The third unfinished attempt
-means that pair is not offered and is not stored. `expiresAt` is read
+`to`, `data`, and `value`. A 200 that does not commit, or any status
+other than a transport timeout, HTTP 429, or HTTP 5xx, means that pair
+is not offered and is not retried. A transport timeout, an HTTP 429,
+or an HTTP 5xx is retried with the same key at most twice more before
+this call answers. The third unfinished attempt means that pair is not
+offered and is not stored. `expiresAt` is read
 only from a committed quote and is the lifetime of that stored offer,
 not a deadline for this call. When no pair commits, `POST /pay/:username/payment` is **503**
 `{ "error": "Stablecoin payment is unavailable" }`, writes nothing, and
@@ -1266,8 +1286,10 @@ input. With no pending till charge, a request to the sticker is the
 no-amount case below, including while a page payment is open.
 
 For one open amount, the routine reaches settled for each stablecoin method the pay link offers, and only for the asset stored on the quote for that method. Lightning is offered and is not in that loop. A second asset on the same method does not have to reach settled. `requestedAmount` is asset `BTC`. That does
-not remove the stablecoin rows. The proof request is
-`GET /lnurlp/tx/:username`. A different URL fails the check. A repeat of
+not remove the stablecoin rows. The proof request for a till payment is
+`GET /lnurlp/tx/:username` with no `pay` query. For a page payment it
+is that same path with the `pay` query the callback carried. A
+different path fails the check. A repeat of
 that same proof is **200** and does not create a second payment. The
 success body is exactly `{ "txId": "<id>" }`. A body without `txId`
 fails the check.
