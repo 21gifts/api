@@ -7,9 +7,10 @@ and `SPEC.md` does not list them. Nothing here changes runtime behaviour.
 
 A payer may settle a shop payment in USDT or USDC. Orchestra pays the
 BOLT11 `POST /pay/:username/invoice` already returns for those sats on
-the shop's linked Wallet of Satoshi address. This service does not mint
-that invoice. The shop does not hold either stablecoin. The member sees an
-ordinary bitcoin payment. Gifts, the till, and loans stay in satoshis.
+the shop's verified in-app wallet. That route already returns it. This
+document does not add a second mint. The shop does not hold either
+stablecoin. The member sees an ordinary bitcoin payment. Gifts, the till,
+and loans stay in satoshis.
 
 ## Terms
 
@@ -33,8 +34,10 @@ OpenCryptoPay payment succeeded.
 **Paid** means the payment has settled once. That is the BOLT11 for
 these sats settled. Orchestra pays that BOLT11. A direct Lightning
 payment of the same invoice is the same confirmation. The first
-confirmation records paid. Acceptance does not record paid. This path
-does not settle on Spark.
+confirmation records paid. Acceptance does not record paid. The till's
+existing Spark invoice is a separate payment of the same charge. This
+document does not change that payment, and it does not settle the
+stablecoin transfer on Spark.
 
 ## Names
 
@@ -74,13 +77,13 @@ not a 404.
 
 ### Callback and proof
 
-When no amount is known, `callback` and metadata stay on the linked
-Wallet of Satoshi address, as `GET /.well-known/lnurlp/:username` already
-does. This service does not rewrite them.
+When no amount is known, `callback` and metadata stay on the pay request
+`GET /.well-known/lnurlp/:username` already returns for the verified
+wallet. This service does not rewrite them.
 
 Stablecoin rows are served only when `PUBLIC_BASE_URL` is an absolute
-`http` or `https` URL. Otherwise the pay link stays the Wallet of
-Satoshi pay request. When an amount is known and those rows are served,
+`http` or `https` URL. Otherwise the pay link stays the pay request it
+already returns. When an amount is known and those rows are served,
 `callback` is the origin `resolvePublicApiBase` already returns for `PUBLIC_BASE_URL`, plus `/lnurlp/cb/<username>`.
 `https://21.gifts` becomes `https://api.21.gifts`, `https://dev.21.gifts` becomes `https://dev-api.21.gifts`, and `https://staging.21.gifts` becomes `https://staging-api.21.gifts`. One trailing slash is removed first. Any other absolute value is used as given. The proof URL replaces `/cb`
 with `/tx` in that callback. The username stays. It is the
@@ -88,7 +91,8 @@ path id of the pay link. `quote.payment` stays in the JSON. It is not a
 path segment and not a query on the pay link. A refreshed quote keeps
 the same callback. The callback has no query string. A wallet appends
 its query itself. Neither URL is `…/lnurlp/<username>/invoice`.
-This service has no `GET /lnurlp/:username/invoice`.
+That path stays the invoice forward it already is. It is not this
+callback and not this proof.
 
 `GET /.well-known/lnurlp/:username`, `GET /lnurlp/cb/:username`, and
 `GET /lnurlp/tx/:username` take no session. They use the headers the pay
@@ -102,19 +106,20 @@ link already sends: `Access-Control-Allow-Origin: *`,
 The body is `{ "amountSats": <integer> }`. The amount uses the same
 window as `POST /pay/:username/invoice`. An amount the page would already
 refuse is **400** `{ "error": "Enter a whole number of sats" }`. An
-unknown username or a shop with no linked Wallet of Satoshi address is **404**
-`{ "error": "Not found" }`. CORS is the page's existing origin list, the
-same as `POST /pay/:username/invoice`, not `*`.
+invalid username, an unknown account, or a shop with no verified wallet
+is **404** `{ "error": "Not found" }`. The LNURL server not being
+configured is that same **404**. CORS is the page's existing origin list,
+the same as `POST /pay/:username/invoice`, not `*`.
 
 The call writes a row only when the Orchestra key is configured, this
 service can obtain or reuse the BOLT11 `POST /pay/:username/invoice`
-already returns for this sat count on the shop's linked Wallet of Satoshi
-address, and Orchestra's exact-out quote commits to that sat count on
-that invoice. A missing Orchestra key, or a `PUBLIC_BASE_URL` that is
+already returns for this sat count on the shop's verified in-app wallet,
+and Orchestra's exact-out quote commits to that sat count on that
+invoice. A missing Orchestra key, or a `PUBLIC_BASE_URL` that is
 missing, blank, or not an absolute `http` or `https` URL, is **503**
 `{ "error": "Stablecoin payment is unavailable" }`, writes nothing, and
-does not fetch an invoice. The pay link stays the Wallet of Satoshi pay
-request. When the key is set, a resolve or store
+does not fetch an invoice. The pay link stays the pay request it already
+returns. When the key is set, a resolve or store
 failure, an empty or non-safe-integer window, a failed invoice fetch, or
 a BOLT11 that is missing, not a safe integer amount, or not the requested
 amount, is **502** `{ "error": "Lightning Address could not be resolved" }`
@@ -240,10 +245,10 @@ fetch, with no new amount, is the Lightning pay request.
 ### Errors on callback and proof
 
 An unknown username is **404** `{ "error": "Not found" }`. A shop with no
-linked Wallet of Satoshi address is that same **404** when no payment is
-stored. Callback and proof of a stored payment use that payment, its
-quote, and its BOLT11. Unlinking or replacing the address does not make
-those calls **404**.
+verified wallet is that same **404** when no payment is stored. Callback
+and proof of a stored payment use that payment, its quote, and its
+BOLT11. A later missing verified wallet does not make those calls
+**404**.
 
 On `GET /lnurlp/tx/:username`, and on `GET /lnurlp/cb/:username` when
 `method` is set, an unknown quote or a quote for another username is
@@ -270,21 +275,20 @@ is not yet `accepted`. The error does not ask for a second payment.
 None of these bodies is the 404 a different provider returns when no fiat
 amount is waiting.
 
-A proof Orchestra has accepted is **200** `{ "txId": "<id>" }`. `txId` is
-the reference Orchestra accepted. It is not the payer's transaction hash.
+A proof Orchestra has accepted is **200** `{ "txId": "<id>" }`. The body
+is exactly that object and no other transaction-id field. `txId` is the
+reference Orchestra accepted. It is not the payer's transaction hash.
 The call does not wait for bitcoin to arrive. A repeat after acceptance
-is **200** and does not create a second payment. Tether Wallet for
-Android 1.11.0 (134) does not treat that success as a payment when the
-body carries no transaction id it can read. The id it reads is named in
-the Tether Wallet section.
+is **200** and does not create a second payment. The check treats that
+success as a payment only when the body carries `txId`.
 
 A Lightning call on `GET /lnurlp/cb/:username` has no `method`.
 It sends `amount` in millisats. When that amount is the fixed sat count
 times 1000, the response is `{ "pr": "<bolt11>" }` for those sats. A
 missing or different amount is **400**
 `{ "error": "Enter a whole number of sats" }` and returns no invoice.
-Variable invoices stay on the Wallet of Satoshi callback that
-`GET /.well-known/lnurlp/:username` already passes through.
+Variable invoices stay on the invoice callback that pay request already
+names, `<PUBLIC_BASE_URL>/lnurlp/<username>/invoice`.
 
 ## Standard and settlement
 
@@ -302,12 +306,13 @@ providers can both follow it and settle differently. The provider in the
 published examples holds the payer's coin, settles its merchant in fiat,
 and answers 404 when no amount is waiting. 21.gifts does not. Here the
 stablecoin is paid to Orchestra (Flashnet), and Orchestra pays the BOLT11
-`POST /pay/:username/invoice` already returned for those sats. This
-service does not mint it.
+`POST /pay/:username/invoice` already returned for those sats. That route
+already returns it. This document does not add a second mint.
 
 Spark, in those examples, is a way for the payer to send bitcoin. That
-method is not offered. This service does not deliver bitcoin to a Spark
-address.
+method is not offered on this pay link. This payment does not deliver
+the stablecoin to a Spark address. The till's existing `sparkInvoice` is
+a separate payment of the same charge and is unchanged.
 
 ## Sticker
 
@@ -388,7 +393,7 @@ fetches it. The rules below are that call.
 
 When no amount is known, the response is the Lightning pay request the
 pay link already serves: a minimum, a maximum, the metadata it already
-returns, and its callback on the linked Wallet of Satoshi address. There is no
+returns, and its callback on the verified wallet. There is no
 stablecoin amount. The response is not an error and does not wait. The
 payment page is where the payer names the amount. A wallet that scans
 the sticker fetches this same URL.
@@ -399,8 +404,8 @@ One open amount on the pay link is a known amount. It is the pending
 till charge when one exists, and otherwise the amount the page
 submitted. When stablecoin rows are served, the response is the pay
 request below. The URL is unchanged. Otherwise the pay link keeps
-today's pinned Lightning request, and its callback stays on the linked
-Wallet of Satoshi address.
+today's pinned Lightning request, and its callback stays on the verified
+wallet.
 
 A later fetch while the payment is `open` returns the current quote for
 the same sats. A quote that has not lapsed is returned unchanged.
@@ -532,7 +537,8 @@ phone does not. The 12 words are not read.
 
 The quote is for the fixed sat amount. The BOLT11 is the one
 `POST /pay/:username/invoice` already returns for those sats on the
-shop's linked Wallet of Satoshi address. This service does not mint it.
+shop's verified in-app wallet. That route already returns it. This
+document does not add a second mint.
 Orchestra's destination is
 that invoice. The invoice amount is that sat count. The quote is
 exact-out. The amount sent to Orchestra is the integer string of that
@@ -551,13 +557,19 @@ invoice for these sats. An invoice that is already paid is not named on a quote.
 
 The stablecoin for the named chain and asset is paid to Orchestra.
 21.gifts does not receive it and does not hold it. Orchestra pays the
-invoice. The shop receives the bitcoin on its linked Wallet of Satoshi
-address when that invoice is confirmed. 21.gifts does not hold that bitcoin
-before it arrives. This service does not deliver to a Spark address, and
-it does not publish a USDT or USDC address of its own.
+invoice. The shop receives the bitcoin on its verified in-app wallet
+when that invoice is confirmed. 21.gifts does not hold that bitcoin
+before it arrives. This service does not deliver the stablecoin payment
+to a Spark address, and it does not publish a USDT or USDC address of
+its own.
 
 The api learns that the invoice was paid from settlement of that
-BOLT11, not from a phone. This branch does not watch that invoice yet.
+BOLT11, not from a phone. For a pending till charge,
+`POST /pay/:username/invoice` already records that BOLT11, and the paid
+watcher already marks the charge paid when it settles. This document
+does not add a second watch. A page payment with no charge is not that
+watch. The build that comes later is what records that page payment
+paid. Nothing here is mounted.
 
 A stablecoin row is served only when that exact-out quote commits to
 this sat count on that invoice. Exact-out onto a Spark address is not
@@ -626,40 +638,46 @@ A charge is not required for the payment above. Creating one and its five
 minutes stay as they are.
 
 `POST /pos` still takes a whole sat amount of at least 1, inside the
-linked address's minimum and maximum, for an account with a username and
-a linked Wallet of Satoshi address. One unexpired pending charge. Five
-minutes. While a `shop_payment` for that account is `accepted`, or `open` with a
-stored proof whose result is absent, the call is **409**
-`{ "error": "A payment is already open" }` and writes nothing. While a
-page payment is `open`, no till charge is pending, and no proof is stored
-or the stored proof is `refused`, the call marks that payment `ended` and
-then creates the charge. A refused proof is a result, not an in-flight
-payment. `DELETE /pos` is that same **409** and cancels nothing while the
-pending charge belongs to a payment whose stored proof has no result. The pay link is one public URL and carries no payment id, so
-that open payment pins the URL until this call or the five minutes. While it is pending, both Lightning sendable bounds become that
-sat amount in millisats. Metadata stays on Wallet of Satoshi. When the
-Orchestra key is configured and Orchestra commits to those sats on the
-invoice for this charge, the stablecoin amounts for those same sats are
-added beside that pin, and `callback` is `/lnurlp/cb/<username>`.
-Otherwise callback and metadata stay on Wallet of Satoshi.
+verified wallet's minimum and maximum, for an account with a username
+and a verified wallet. No verified wallet is **400**
+`{ "error": "Set up your wallet first", "code": "wallet_required" }`.
+One unexpired pending charge. Five minutes. While a `shop_payment` for
+that account is `accepted`, or `open` with a stored proof whose result
+is absent, the call is **409** `{ "error": "A payment is already open" }`
+and writes nothing. While a page payment is `open`, no till charge is
+pending, and no proof is stored or the stored proof is `refused`, the
+call marks that payment `ended` and then creates the charge. A refused
+proof is a result, not an in-flight payment. `DELETE /pos` is that same
+**409** and cancels nothing while the pending charge belongs to a
+payment whose stored proof has no result. The pay link is one public
+URL and carries no payment id, so that open payment pins the URL until
+this call or the five minutes. While it is pending, both Lightning
+sendable bounds become that sat amount in millisats. Metadata stays on
+the pay request the verified wallet already returns. When the Orchestra
+key is configured and Orchestra commits to those sats on the invoice for
+this charge, the stablecoin amounts for those same sats are added beside
+that pin, and `callback` is `/lnurlp/cb/<username>`. Otherwise callback
+and metadata stay on that pay request.
 
 A lapsed quote is replaced only while the charge is open, only for the
 same sats, and only when no stored proof is unresolved.
 
 The charge is paid when the BOLT11 for those sats is settled. Orchestra
-pays that BOLT11. One charge is paid once. This path does not settle on
-Spark, and today's `GET /pos` has no paid status. The change that builds
-this records the charge paid. `GET /pos` keeps `{ charge, history }`.
-`history` stays the newest 20 rows of any status. `charge` uses the
-fields `id`, `amountSats`, `status`, `createdAt`, and `expiresAt`.
-While fewer than 60 seconds have passed since the charge was recorded
-paid, and no pending charge is open, `charge` is that paid row and
-`status` is `paid`. Once 60 seconds have elapsed, or while a pending
-charge is open, `charge` is not that paid row. The paid row stays in
-`history` while it is one of the newest 20. No new field is added. A
-paid charge does not pin the pay link. A page payment with no charge is
-paid when the invoice this payment named is settled. It is not left open
-after that. No zap, gift, or message is written for a till payment.
+pays that BOLT11. One charge is paid once. While that charge is pending
+and free in-app payments are on, the same invoice route also returns
+`sparkInvoice`, a `spark1…` invoice for exactly those sats to the shop's
+verified wallet key, memo `pos:<chargeId>`. A 21.gifts in-app wallet
+pays that invoice without a fee. This document does not change that
+payment and does not settle the stablecoin transfer on Spark.
+`GET /pos` already returns `{ charge, history }`. Status is `pending`,
+`paid`, `cancelled`, or `expired`, and every row carries `paidAt`. The
+paid watcher already marks the charge `paid` once the Spark invoice or a
+BOLT11 the api handed out settles, and `charge` stays that paid row for
+60 seconds when no pending charge is open. `history` stays the newest
+20 rows. This document does not change that response. A paid charge
+does not pin the pay link. A page payment with no charge is paid when
+the invoice this payment named is settled. It is not left open after
+that. No zap, gift, or message is written for a till payment.
 
 Sats that arrive after the five minutes still pay that charge when the
 transfer was accepted against a quote that was valid for it. That later
@@ -693,10 +711,9 @@ Pay it from the home screen instead.
 
 A success it cannot read a transaction id from is not a payment. The
 words are `getOpenCryptoPayPayment succeeded but returned no transaction ID`.
-This service returns `txId`. `txId` is the reference Orchestra accepted.
-It is not the payer's transaction hash. If the client does not read
-`txId`, the success body also carries the field the client reads. That
-field is named by the check. It is not guessed here.
+This service returns `txId` and no other transaction-id field. `txId` is
+the reference Orchestra accepted. It is not the payer's transaction
+hash. The check requires `txId`.
 
 For a Lightning invoice it can no longer pay, it says `This invoice can
 no longer be paid. It may have expired or already been paid.`
@@ -764,7 +781,9 @@ routine decodes that LNURL and requests the decoded URL.
 For one open amount, the routine reaches settled for each stablecoin method the pay link offers, and only for the asset stored on the quote for that method. Lightning is offered and is not in that loop. A second asset on the same method does not have to reach settled. `requestedAmount` is asset `BTC`. That does
 not remove the stablecoin rows. The proof request is
 `GET /lnurlp/tx/:username`. A different URL fails the check. A repeat of
-that same proof is **200** and does not create a second payment.
+that same proof is **200** and does not create a second payment. The
+success body is exactly `{ "txId": "<id>" }`. A body without `txId`
+fails the check.
 
 With no open amount, the routine receives the Lightning pay request.
 The check requires `LNURL_AMOUNT_RANGE`. `OPEN_CRYPTO_PAY_NO_PENDING_PAYMENT`
@@ -781,11 +800,10 @@ The balance, spend limit, and ramp results above do not fail the check.
 The test does not record paid. Paid stays confirmation of the invoice
 for those sats.
 
-Three facts stay in the routine, and this document does not copy them
+Two facts stay in the routine, and this document does not copy them
 out:
 
 - when it returns `OPEN_CRYPTO_PAY_AMOUNT_CHANGED`
-- which field it reads as the transaction id
 - which method names are rails
 
 The test is written from the routine. A client written from the
@@ -799,11 +817,10 @@ then the test names 1.11.0 (134).
 
 ## Unchanged
 
-A payer who pays the BOLT11 pays the shop's linked Wallet of Satoshi
-address directly. That payment does not pass through Orchestra. The pay
-link still resolves to that address.
+A payer who pays the BOLT11 pays the shop's verified in-app wallet
+directly. That payment does not pass through Orchestra. The pay link
+still resolves to that wallet.
 
-A gift is still sats to that same Lightning address. Loans are
-unchanged.
+A gift is still sats to that same wallet. Loans are unchanged.
 
 The 12 words stay on the phone. This service does not hold USDT or USDC.
