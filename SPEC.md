@@ -3012,6 +3012,18 @@ at **200**. `source` is `server` or `client`. `fields` holds allowlisted
 scalars only. The same values excluded from `POST /diagnostics` are never
 stored. Rows are kept with no TTL and no DELETE.
 
+A `server` row holds the fields as the code passed them, including the
+recipient `address` of `spend.ping.ok`, `spend.ping.skipped`,
+`spend.ping.failed`, the `invoice.*` events of `POST /invoices`,
+`lightning_address.resolved`, and `lightning_address.resolve_failed`. The
+JSON line the process prints for the same event does not carry the address.
+There `address` is replaced by `addressRef`: the first 12 lower-case hex
+characters of HMAC-SHA256 over the lower-cased address, keyed with the
+trimmed `SPEND_API_TOKEN`. While `SPEND_API_TOKEN` is unset or blank the line
+prints `"address": "[address]"` and no `addressRef`. In every other string
+field of the printed line, an email-shaped part (`local@domain.tld`, the `@` literal or written `%40`) is
+replaced by `[address]`. The request client fields are printed unchanged.
+
 `DEBUG_TOKEN` unset or blank → **Response** `503`:
 
 ```json

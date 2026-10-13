@@ -169,6 +169,24 @@ test('Function: logEvent — GET /info succeeds through middleware', async ({ re
   expect(res.status()).toBe(200);
 });
 
+test('Function: setAddressRefKey — default boot has no key and the diagnostic row keeps the address', async ({
+  request,
+}) => {
+  const address = 'addressref-e2e@host.invalid';
+  const res = await request.get('/lightning-address?address=' + encodeURIComponent(address));
+  expect(res.status()).toBe(502);
+  const list = await request.get('/debug/diagnostics', { headers: DEBUG });
+  expect(list.status()).toBe(200);
+  const body = (await list.json()) as {
+    logs: { event: string; fields: Record<string, unknown> }[];
+  };
+  const row = body.logs.find(
+    (log) => log.event === 'lightning_address.resolve_failed' && log.fields['address'] === address,
+  );
+  expect(row).toBeDefined();
+  expect(row?.fields['addressRef']).toBeUndefined();
+});
+
 test('Function: errorLogFields — GET /healthz is ok while the worker logs no tick failure', async ({
   request,
 }) => {

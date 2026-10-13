@@ -3,6 +3,7 @@ import { LN_ADDRESS_CACHE_TTL_MS } from '@/lib/config';
 import { InMemoryLnAddressCache } from '@/lib/ln-address-cache';
 import type { FetchFn } from '@/lib/lnurlp';
 import { InMemoryAuthStore } from '@/lib/auth/store';
+import { InMemoryDiagnosticStore } from '@/lib/diagnostic-log';
 import { createApp } from '@/server';
 import {
   BOLT11,
@@ -10,8 +11,11 @@ import {
   createWalletAccount,
   walletLnurlFetch,
 } from '@/__tests__/helpers/wallet-lnurl';
+import { expectedAddressRef } from '@/__tests__/helpers/address-ref';
 
 const ADDRESS = 'alice@example.com';
+const TOKEN = 'spend-secret-token';
+const ADDRESS_REF = expectedAddressRef(ADDRESS, TOKEN);
 const MAX_SENDABLE = 100_000_000_000;
 const CALLBACK = 'https://example.com/lnurlp/callback';
 
@@ -54,7 +58,38 @@ describe('GET /lightning-address', () => {
   });
 
   afterEach(() => {
+    expect(warn.mock.calls.flat().join('\n')).not.toContain(ADDRESS);
     warn.mockRestore();
+    vi.unstubAllEnvs();
+  });
+
+  it('prints resolve_failed with addressRef and no address, and the sink keeps the address', async () => {
+    const diagnosticStore = new InMemoryDiagnosticStore();
+    const fetchImpl: FetchFn = async () => jsonResponse({}, 404);
+    const res = await createApp({ fetchImpl, diagnosticStore, spendApiToken: TOKEN }).request(
+      `/lightning-address?address=${encodeURIComponent(ADDRESS)}`,
+    );
+    expect(res.status).toBe(502);
+    const line = parsedEvents(warn).find((e) => e['event'] === 'lightning_address.resolve_failed');
+    expect(line?.['addressRef']).toBe(ADDRESS_REF);
+    expect('address' in (line ?? {})).toBe(false);
+    const stored = (await diagnosticStore.listLatest(50)).find(
+      (row) => row.event === 'lightning_address.resolve_failed',
+    );
+    expect(stored?.fields['address']).toBe(ADDRESS);
+  });
+
+  it('prints the marker for the address when no spend token is configured', async () => {
+    vi.stubEnv('SPEND_API_TOKEN', '');
+    const fetchImpl: FetchFn = async () => jsonResponse(happyMetadata());
+    const res = await createApp({ fetchImpl }).request(
+      `/lightning-address?address=${encodeURIComponent(ADDRESS)}`,
+    );
+    expect(res.status).toBe(200);
+    const line = parsedEvents(warn).find((e) => e['event'] === 'lightning_address.resolved');
+    expect(line?.['address']).toBe('[address]');
+    expect('addressRef' in (line ?? {})).toBe(false);
+    expect(line?.['cached']).toBe(false);
   });
 
   it('returns 400 when the address query is missing', async () => {
@@ -104,7 +139,7 @@ describe('GET /lightning-address', () => {
     const fetchImpl: FetchFn = async () => {
       throw new Error('network down');
     };
-    const res = await createApp({ fetchImpl }).request(
+    const res = await createApp({ fetchImpl, spendApiToken: TOKEN }).request(
       `/lightning-address?address=${encodeURIComponent(ADDRESS)}`,
     );
     expect(res.status).toBe(502);
@@ -113,14 +148,14 @@ describe('GET /lightning-address', () => {
     });
     expect(
       parsedEvents(warn).some(
-        (e) => e['event'] === 'lightning_address.resolve_failed' && e['address'] === ADDRESS,
+        (e) => e['event'] === 'lightning_address.resolve_failed' && e['addressRef'] === ADDRESS_REF,
       ),
     ).toBe(true);
   });
 
   it('returns 502 when metadata is unreachable', async () => {
     const fetchImpl: FetchFn = async () => jsonResponse({}, 404);
-    const res = await createApp({ fetchImpl }).request(
+    const res = await createApp({ fetchImpl, spendApiToken: TOKEN }).request(
       `/lightning-address?address=${encodeURIComponent(ADDRESS)}`,
     );
     expect(res.status).toBe(502);
@@ -129,7 +164,7 @@ describe('GET /lightning-address', () => {
     });
     expect(
       parsedEvents(warn).some(
-        (e) => e['event'] === 'lightning_address.resolve_failed' && e['address'] === ADDRESS,
+        (e) => e['event'] === 'lightning_address.resolve_failed' && e['addressRef'] === ADDRESS_REF,
       ),
     ).toBe(true);
   });
@@ -163,7 +198,7 @@ describe('GET /lightning-address', () => {
 
   it('returns 200 with the normalised payload on success', async () => {
     const fetchImpl: FetchFn = async () => jsonResponse(happyMetadata(255));
-    const res = await createApp({ fetchImpl }).request(
+    const res = await createApp({ fetchImpl, spendApiToken: TOKEN }).request(
       `/lightning-address?address=${encodeURIComponent(ADDRESS)}`,
     );
     expect(res.status).toBe(200);
@@ -178,7 +213,7 @@ describe('GET /lightning-address', () => {
       parsedEvents(warn).some(
         (e) =>
           e['event'] === 'lightning_address.resolved' &&
-          e['address'] === ADDRESS &&
+          e['addressRef'] === ADDRESS_REF &&
           e['cached'] === false,
       ),
     ).toBe(true);
@@ -186,7 +221,7 @@ describe('GET /lightning-address', () => {
 
   it('omits commentAllowed when the provider omitted it', async () => {
     const fetchImpl: FetchFn = async () => jsonResponse(happyMetadata());
-    const res = await createApp({ fetchImpl }).request(
+    const res = await createApp({ fetchImpl, spendApiToken: TOKEN }).request(
       `/lightning-address?address=${encodeURIComponent(ADDRESS)}`,
     );
     expect(res.status).toBe(200);
@@ -256,7 +291,7 @@ describe('GET /lightning-address', () => {
 
   it('reflects CORS origin for a guest GET from the app surface', async () => {
     const fetchImpl: FetchFn = async () => jsonResponse(happyMetadata(255));
-    const res = await createApp({ fetchImpl }).request(
+    const res = await createApp({ fetchImpl, spendApiToken: TOKEN }).request(
       `/lightning-address?address=${encodeURIComponent(ADDRESS)}`,
       { headers: { origin: 'https://app.21.gifts' } },
     );

@@ -1041,7 +1041,7 @@
 
 - **Purpose:** Read the daily roster from `DailyRosterStore`, then POST `{spendUrl}/ping` with Bearer `SPEND_API_TOKEN`. For a daily ping, a configured gift ledger is read after that store read and before the decision; `welcomeGiftPaidOnUtcDay` sets the same-UTC-day flag. A list throw logs `spend.ping.failed` and does not POST. Omitted gifts leave the flag unset. A decided daily body is `{ address, messageId, amountUsd, comment }` (no `kind` key); welcome is `{ address, messageId, kind: "welcome", amountUsd, comment }`; moderator is `{ address, kind: "moderator", groupMessageId, amountUsd, comment }` (no `messageId` key). Skipped reasons `payments_disabled`, `not_listed`, `undecided`, and `welcome_paid` log `spend.ping.skipped` and do not POST. 2xx logs `spend.ping.ok`. Network, abort, non-2xx, a store read throw, a live GET failure, and a gift-ledger throw log `spend.ping.failed` and resolve. Never throws. Never logs the token. When `rosterStore.hasBeenWritten()` is false, GET `{spendUrl}/daily-roster` with the Bearer token, decide from that JSON object, and do not import it. A non-2xx response, a throw, null, an array, or any other non-object logs `spend.ping.failed` and does not POST. When the store has been written, read only the store and do not GET.
 - **Inputs:** Constructor `{ spendUrl, token, fetchImpl, rosterStore, timeoutMs?, gifts?, now? }` (already-trimmed base URL, no trailing slash; default timeout 5000 ms; `now` defaults to `Date.now`). `ping(address, messageId, kind?: 'daily' | 'moderator' | 'welcome', grantStatus?: SpendGrantStatus)`. The optional fourth argument `grantStatus` is passed into `decideSpendInstruction` only when the resolved kind is daily (kind omitted or `'daily'`). Welcome and moderator do not pass it. The welcome flag is passed only when the ledger read returned a boolean.
-- **Returns / side effects:** `Promise<void>`. Unwritten store: GET `{spendUrl}/daily-roster`, then maybe POST. Written store: store read, then maybe POST. Logs `spend.ping.ok`, `spend.ping.skipped`, or `spend.ping.failed`.
+- **Returns / side effects:** `Promise<void>`. Unwritten store: GET `{spendUrl}/daily-roster`, then maybe POST. Written store: store read, then maybe POST. Logs `spend.ping.ok`, `spend.ping.skipped`, or `spend.ping.failed`. Each passes `address` to `logEvent`; the console line carries `addressRef` instead, the diagnostic row keeps `address`.
 - **Used by:** `resolveSpendPing`.
 
 ## Function: NoopSpendPing
@@ -1225,10 +1225,17 @@
 
 ## Function: logEvent
 
-- **Purpose:** One JSON line on `console.warn` (`ts` + `event` + fields). During a request, validated client fields from `readClientRequestMeta` are merged underneath the explicit fields, and explicit fields win. Absent client fields are omitted. Outside a request, only the explicit fields are written. Never log secrets.
-- **Inputs:** `event` string, optional `LogFields`.
-- **Returns / side effects:** void.
+- **Purpose:** One JSON line on `console.warn` (`ts` + `event` + fields). During a request, validated client fields from `readClientRequestMeta` are merged underneath the explicit fields, and explicit fields win. Absent client fields are omitted. Outside a request, only the explicit fields are written. Never log secrets. The console line never carries a Lightning Address: an explicit string field named `address` is printed as `addressRef` (the reference `setAddressRefKey` describes) and the `address` key is left out; with no key installed it is printed as `address: "[address]"`. In every other explicit string field, each email-shaped part (`local@domain.tld`, the `@` literal or written `%40`) is printed as `[address]`. Numbers, booleans, and the request client fields are printed unchanged.
+- **Inputs:** `event` string, optional `LogFields`. Call sites pass the recipient as `address` (`spend.ping.ok`, `spend.ping.skipped`, `spend.ping.failed`, the `invoice.*` events of `POST /invoices`, `lightning_address.resolved`, `lightning_address.resolve_failed`).
+- **Returns / side effects:** void. The diagnostic sink runs after the console line and receives the fields exactly as passed, including `address`; only the console line differs.
 - **Used by:** Auth, me, lightning-address, requestLog.
+
+## Function: setAddressRefKey
+
+- **Purpose:** Install or clear the process-wide key `logEvent` uses to print `addressRef` in place of `address` on the console line. `addressRef` is the first 12 lower-case hex characters of HMAC-SHA256 over the lower-cased address (UTF-8), keyed with the trimmed key (UTF-8). The reference is stable for one address and one key and cannot be turned back into the address without the key. The key is `SPEND_API_TOKEN`, the Bearer the spend process shares, so the same derivation there gives the same reference.
+- **Inputs:** `string | null | undefined`. The value is trimmed. `undefined`, `null`, and a blank value clear the key.
+- **Returns / side effects:** void. Replaces the module-level key only. With no key, `logEvent` prints the fixed marker `[address]` for `address` and never an unkeyed hash. The key is never logged.
+- **Used by:** `createApp` (with `deps.spendApiToken`, default `process.env.SPEND_API_TOKEN`).
 
 ## Function: setDiagnosticSink
 

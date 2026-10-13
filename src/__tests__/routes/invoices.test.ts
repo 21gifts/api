@@ -3,6 +3,7 @@ import { Hono } from 'hono';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { GIFT_INVOICE_MAX_MSAT } from '@/lib/config';
 import { InMemoryAuthStore } from '@/lib/auth/store';
+import { InMemoryDiagnosticStore } from '@/lib/diagnostic-log';
 import { InMemoryConversationStore, type ConversationStore } from '@/lib/conversation-store';
 import { InMemoryInvoiceStore, type GiftInvoice } from '@/lib/invoice-store';
 import { unsignedNostrDefaults, type ForumPhoto } from '@/lib/message';
@@ -18,6 +19,7 @@ import { InMemoryGiftStore } from '@/lib/gift-store';
 import type { GiftRecord } from '@/lib/gift-recorder';
 import { InMemoryFiatStore } from '@/lib/usd-fiat-store';
 import { decodeBolt11 } from '@/lib/bolt11';
+import { expectedAddressRef } from '@/__tests__/helpers/address-ref';
 import { fetchBtcUsdSpot } from '@/lib/btc-usd-spot';
 import type { FetchFn } from '@/lib/lnurlp';
 import {
@@ -76,6 +78,7 @@ const NOW_MS = Date.parse('2026-09-20T12:00:00.000Z');
 const GATE_MS = Date.parse(`${FUNDING_REQUIRED_FROM_UTC}T12:00:00.000Z`);
 const TOKEN = 'spend-secret-token';
 const ADDRESS = 'alice@example.test';
+const ADDRESS_REF = expectedAddressRef(ADDRESS, TOKEN);
 const PR = 'lnbc1issued';
 const HASH = 'aa'.repeat(32);
 const PREIMAGE = '11'.repeat(32);
@@ -1014,6 +1017,7 @@ describe('POST /invoices', () => {
   });
 
   afterEach(() => {
+    expect(warn.mock.calls.flat().join('\n')).not.toContain(ADDRESS);
     warn.mockRestore();
   });
 
@@ -1252,6 +1256,32 @@ describe('POST /invoices', () => {
     expect(body.amountMsat).toBe(1000);
     expect(body.id).toMatch(/^[0-9a-f]{32}$/);
     expect(parsedEvents(warn).some((e) => e['event'] === 'invoice.issued')).toBe(true);
+  });
+
+  it('prints invoice.issued with addressRef and no address, and the sink keeps the address', async () => {
+    const authStore = new InMemoryAuthStore();
+    await seedPasskeyAccount(authStore);
+    const diagnosticStore = new InMemoryDiagnosticStore();
+    const res = await createApp({
+      spendApiToken: TOKEN,
+      authStore,
+      diagnosticStore,
+      messageStore: livePostStore(),
+      fetchImpl: happyFetch(),
+    }).request(
+      '/invoices',
+      auth({ method: 'POST', body: JSON.stringify({ address: ADDRESS, amountMsat: 1000 }) }),
+    );
+    expect(res.status).toBe(200);
+    const line = parsedEvents(warn).find((e) => e['event'] === 'invoice.issued');
+    expect(line?.['addressRef']).toBe(ADDRESS_REF);
+    expect(line?.['amountMsat']).toBe(1000);
+    expect('address' in (line ?? {})).toBe(false);
+    const stored = (await diagnosticStore.listLatest(50)).find(
+      (row) => row.event === 'invoice.issued',
+    );
+    expect(stored?.fields['address']).toBe(ADDRESS);
+    expect('addressRef' in (stored?.fields ?? {})).toBe(false);
   });
 
   it('stores messageId and comment when issuing against a UUID post', async () => {
@@ -2319,7 +2349,7 @@ describe('POST /invoices', () => {
     expect(invoiceStore.get(body.id)?.groupMessageId).toBeUndefined();
     expect(
       parsedEvents(warn).some(
-        (e) => e['event'] === 'invoice.group_message_ignored' && e['address'] === ADDRESS,
+        (e) => e['event'] === 'invoice.group_message_ignored' && e['addressRef'] === ADDRESS_REF,
       ),
     ).toBe(true);
   });
@@ -2368,7 +2398,7 @@ describe('POST /invoices', () => {
     expect(invoiceStore.get(body.id)?.groupMessageId).toBeUndefined();
     expect(
       parsedEvents(warn).some(
-        (e) => e['event'] === 'invoice.group_message_ignored' && e['address'] === ADDRESS,
+        (e) => e['event'] === 'invoice.group_message_ignored' && e['addressRef'] === ADDRESS_REF,
       ),
     ).toBe(true);
   });
@@ -2403,7 +2433,7 @@ describe('POST /invoices', () => {
     expect(invoiceStore.get(body.id)?.groupMessageId).toBeUndefined();
     expect(
       parsedEvents(warn).some(
-        (e) => e['event'] === 'invoice.group_message_ignored' && e['address'] === ADDRESS,
+        (e) => e['event'] === 'invoice.group_message_ignored' && e['addressRef'] === ADDRESS_REF,
       ),
     ).toBe(true);
   });
@@ -2442,7 +2472,7 @@ describe('POST /invoices', () => {
     expect(invoiceStore.get(body.id)?.groupMessageId).toBeUndefined();
     expect(
       parsedEvents(warn).some(
-        (e) => e['event'] === 'invoice.group_message_ignored' && e['address'] === ADDRESS,
+        (e) => e['event'] === 'invoice.group_message_ignored' && e['addressRef'] === ADDRESS_REF,
       ),
     ).toBe(true);
   });
@@ -2490,7 +2520,7 @@ describe('POST /invoices', () => {
     expect(invoiceStore.get(body.id)?.groupMessageId).toBeUndefined();
     expect(
       parsedEvents(warn).some(
-        (e) => e['event'] === 'invoice.group_message_ignored' && e['address'] === ADDRESS,
+        (e) => e['event'] === 'invoice.group_message_ignored' && e['addressRef'] === ADDRESS_REF,
       ),
     ).toBe(true);
   });
@@ -2525,7 +2555,7 @@ describe('POST /invoices', () => {
     expect(invoiceStore.get(body.id)?.groupMessageId).toBeUndefined();
     expect(
       parsedEvents(warn).some(
-        (e) => e['event'] === 'invoice.group_message_ignored' && e['address'] === ADDRESS,
+        (e) => e['event'] === 'invoice.group_message_ignored' && e['addressRef'] === ADDRESS_REF,
       ),
     ).toBe(true);
   });
@@ -2587,7 +2617,7 @@ describe('POST /invoices', () => {
     expect(fetchImpl).not.toHaveBeenCalled();
     expect(
       parsedEvents(warn).some(
-        (e) => e['event'] === 'invoice.welcome_paid' && e['address'] === ADDRESS,
+        (e) => e['event'] === 'invoice.welcome_paid' && e['addressRef'] === ADDRESS_REF,
       ),
     ).toBe(true);
   });
@@ -2776,7 +2806,7 @@ describe('POST /invoices', () => {
     expect(fetchImpl).not.toHaveBeenCalled();
     expect(
       parsedEvents(warn).some(
-        (e) => e['event'] === 'invoice.welcome_paid' && e['address'] === ADDRESS,
+        (e) => e['event'] === 'invoice.welcome_paid' && e['addressRef'] === ADDRESS_REF,
       ),
     ).toBe(true);
   });
@@ -2859,6 +2889,7 @@ describe('POST /invoices/proof', () => {
   });
 
   afterEach(() => {
+    expect(warn.mock.calls.flat().join('\n')).not.toContain(ADDRESS);
     warn.mockRestore();
   });
 
@@ -4143,6 +4174,7 @@ describe('POST /invoices/proof payment fiat', () => {
   });
 
   afterEach(() => {
+    expect(warn.mock.calls.flat().join('\n')).not.toContain(ADDRESS);
     warn.mockRestore();
   });
 
@@ -4406,6 +4438,7 @@ describe('spend lookups by wallet address', () => {
   });
 
   afterEach(() => {
+    expect(warn.mock.calls.flat().join('\n')).not.toContain(ADDRESS);
     warn.mockRestore();
   });
 
