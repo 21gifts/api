@@ -274,19 +274,23 @@ export function membersRoutes(deps: MembersRouteDeps): Hono {
               dropped += 1;
             }
           }
+          const author =
+            kept.accountId === null ? undefined : await deps.authStore.getAccount(kept.accountId);
           const payable =
             kept.eventId !== null &&
             kept.eventId !== '' &&
-            receivingAddress(account, deps.lnurlServer) !== null;
+            author !== undefined &&
+            receivingAddress(author, deps.lnurlServer) !== null;
+          const role = kept.accountId === null ? undefined : (author?.role ?? 'basis');
           messages.push(
             serializeMessage(
               kept,
               payable,
-              account.role,
+              role,
               Math.max(0, row.replyCount - dropped),
               true,
               undefined,
-              staffTagOf(account.staffTag),
+              staffTagOf(author?.staffTag),
             ),
           );
         }

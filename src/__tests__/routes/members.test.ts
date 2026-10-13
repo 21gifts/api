@@ -1082,17 +1082,96 @@ describe('GET /members/:accountId/shops', () => {
         replyCount?: number;
         payable: boolean;
         parentId?: string;
+        role?: string;
       }>;
     };
     expect(body.messages.map((item) => item.id)).toEqual([newer, older]);
     expect(body.messages[0]?.accountId).toBe(OTHER_ID);
     expect(body.messages[0]?.replyCount).toBe(1);
-    expect(body.messages[0]?.payable).toBe(true);
+    expect(body.messages[0]?.payable).toBe(false);
+    expect(body.messages[0]?.role).toBe('basis');
     expect(body.messages[0]).not.toHaveProperty('parentId');
     expect(body.messages[1]?.accountId).toBe(ACCOUNT_ID);
     expect(body.messages[1]?.replyCount).toBe(0);
     expect(body.messages[1]?.payable).toBe(false);
     expect(body.messages[1]).not.toHaveProperty('parentId');
+  });
+
+  it('lists the member own shop as payable with verified role when the author has a wallet', async () => {
+    const authStore = await seededCaller();
+    await addAccount(authStore, ACCOUNT_ID, 'b'.repeat(64), { wallet: true });
+    const messageStore = new InMemoryMessageStore();
+    const id = '4d4d4d4d-4d4d-44d4-84d4-4d4d4d4d4d4d';
+    await messageStore.create({
+      id,
+      accountId: ACCOUNT_ID,
+      name: 'Ada',
+      text: '#21GiftsShop',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+      eventId: 'ee'.repeat(32),
+    });
+    const res = await mount(authStore, messageStore).request(`/members/${ACCOUNT_ID}/shops`, {
+      headers: AUTH,
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      messages: Array<{ id: string; payable: boolean; role?: string }>;
+    };
+    expect(body.messages).toHaveLength(1);
+    expect(body.messages[0]?.id).toBe(id);
+    expect(body.messages[0]?.payable).toBe(true);
+    expect(body.messages[0]?.role).toBe('verified');
+  });
+
+  it('uses the author not the profile owner for an assigned shop', async () => {
+    const authStore = await seededCaller();
+    await addAccount(authStore, ACCOUNT_ID, 'b'.repeat(64), { wallet: true });
+    await authStore.createAccount({
+      id: OTHER_ID,
+      linkingKey: null,
+      role: 'verified',
+      name: 'Bob',
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: 'c'.repeat(64),
+      createdAt: 1_700_000_000_000,
+      rulesAgreedAt: now(),
+      staffTag: 'software_developer',
+    });
+    const messageStore = new InMemoryMessageStore();
+    const id = '4e4e4e4e-4e4e-44e4-84e4-4e4e4e4e4e4e';
+    await messageStore.create({
+      id,
+      accountId: OTHER_ID,
+      name: 'Bob',
+      text: '#21GiftsShop',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+      eventId: 'ee'.repeat(32),
+      shopAccount: { id: ACCOUNT_ID, username: 'ada', name: 'Ada' },
+    });
+    const res = await mount(authStore, messageStore).request(`/members/${ACCOUNT_ID}/shops`, {
+      headers: AUTH,
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      messages: Array<{
+        id: string;
+        accountId?: string;
+        payable: boolean;
+        role?: string;
+        staffTag?: string;
+      }>;
+    };
+    expect(body.messages).toHaveLength(1);
+    expect(body.messages[0]?.id).toBe(id);
+    expect(body.messages[0]?.accountId).toBe(OTHER_ID);
+    expect(body.messages[0]?.payable).toBe(false);
+    expect(body.messages[0]?.role).toBe('verified');
+    expect(body.messages[0]?.staffTag).toBe('software_developer');
   });
 
   it('lists a shop as not payable when the member has no verified wallet', async () => {
@@ -1248,6 +1327,42 @@ describe('GET /members/:accountId/shops', () => {
     } finally {
       warn.mockRestore();
     }
+  });
+
+  it('lists an assigned external shop as not payable and without a role', async () => {
+    const authStore = await seededCaller();
+    await addAccount(authStore, ACCOUNT_ID, 'b'.repeat(64), { wallet: true });
+    const messageStore = new InMemoryMessageStore();
+    await messageStore.create({
+      id: '4f4f4f4f-4f4f-44f4-84f4-4f4f4f4f4f4f',
+      accountId: null,
+      name: '',
+      text: '#21GiftsShop',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+      eventId: 'ee'.repeat(32),
+      authorPubkey: 'ab'.repeat(32),
+      shopAccount: { id: ACCOUNT_ID, username: 'ada', name: 'Ada' },
+    });
+    const res = await mount(authStore, messageStore).request(`/members/${ACCOUNT_ID}/shops`, {
+      headers: AUTH,
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      messages: Array<{
+        id: string;
+        payable: boolean;
+        via?: string;
+        role?: string;
+        accountId?: string;
+      }>;
+    };
+    expect(body.messages).toHaveLength(1);
+    expect(body.messages[0]?.payable).toBe(false);
+    expect(body.messages[0]).not.toHaveProperty('role');
+    expect(body.messages[0]).not.toHaveProperty('accountId');
+    expect(body.messages[0]?.via).toBe('nostr');
   });
 });
 
