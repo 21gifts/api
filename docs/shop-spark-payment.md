@@ -55,7 +55,7 @@ is the earlier of the expiry Orchestra returns for that quote, the
 expiry of the BOLT11 that quote names, and the instant that payment
 leaves `open`. When that instant is sooner, `shop_quote.expires_at`
 moves to it. A quote for an open till charge also ends when the charge
-ends, if that is sooner, unless a stored proof has no result.
+ends, if that is sooner, unless a stored proof has no result and was stored less than ten minutes ago.
 
 The `quote` parameter uses that same form. A value that is not that form,
 compared case-insensitively, is an unknown quote.
@@ -140,7 +140,11 @@ is marked `ended` on the next read, before that read continues. Those
 five minutes are the pending-charge window. Replacing the quote does
 not move that time. The read then has no open amount, and a new amount
 may be opened. An `accepted` payment is not ended by this clock. A stored
-proof that has no result is not ended by this clock either.
+proof that has no result is not ended by this clock for ten minutes
+after that proof was stored. When those ten minutes pass with no
+answer, the next read records the proof `refused` with no `txId` and
+moves an `open` payment to `ended` before it continues. This document
+does not claim Orchestra sent that refusal.
 
 On **409** the page shows that error. It does not treat a later fetch of
 the pay link as the amount this payer just entered.
@@ -167,9 +171,9 @@ invoice's payment hash. Both are set when the row is created. A
 replacement quote reuses them while the invoice is unpaid and unexpired.
 When that invoice has expired unpaid, both are replaced by a new invoice
 for the same sats. They are not replaced while a stored proof has no
-result. That proof keeps its quote, this BOLT11, and this payment hash. `created_at` is set. One proof may be stored. It holds the quote, the
+result and was stored less than ten minutes ago. That proof keeps its quote, this BOLT11, and this payment hash. `created_at` is set. One proof may be stored. It holds the quote, the
 method, the asset, and the proof parameter. Its result is absent until
-Orchestra answers, then `refused` or `accepted`. An `accepted` result stores the `txId` Orchestra returned. A `refused` result stores none. Absent is unresolved.
+Orchestra answers or those ten minutes pass with no answer, then `refused` or `accepted`. An `accepted` result stores the `txId` Orchestra returned. A `refused` result stores none. Absent is unresolved.
 `accepted_at` is set only for `accepted` and `paid`. `paid_at` is set
 only for `paid`. `ended_at` is set only for `ended`. A payment moves
 from `accepted` to `ended` only when Orchestra reports that order
@@ -193,14 +197,14 @@ set.
 `open` serves the current quote. A fetch while that quote has not lapsed
 returns it unchanged and does not mint another. A lapsed quote is
 replaced by a new `shop_quote` for the same sats, except while a stored
-proof has no result. The payment id does
+proof has no result and was stored less than ten minutes ago. The payment id does
 not change. A page payment stays `open` across those refreshes until it
 is accepted, or until five minutes after it was created, whichever is
 first. Replacing the quote does not extend those five minutes. When
 they pass while it is still `open`, the next read marks it `ended`
-before the read continues, unless a stored proof has no result. That
+before the read continues, unless a stored proof has no result and was stored less than ten minutes ago. That
 proof does not end the payment and does not replace the quote. A till payment moves to `ended` when its charge expires
-unpaid while the payment is still `open`, unless a stored proof has no result. That proof does not end the payment and does not replace the quote. `DELETE /pos`, while the pending charge it would cancel belongs to a payment that is `accepted`, or whose stored proof has no result, is **409** `{ "error": "A payment is already open" }` and cancels nothing. That charge stays `pending` or `expired` until the existing watcher confirms the BOLT11. Otherwise, when it cancels that pending charge, an `open` payment moves to `ended`. When that charge is paid, the payment is `paid`. Once that proof is refused, a till payment whose charge has already expired moves to `ended`.
+unpaid while the payment is still `open`, unless a stored proof has no result and was stored less than ten minutes ago. That proof does not end the payment and does not replace the quote. `DELETE /pos`, while the pending charge it would cancel belongs to a payment that is `accepted`, or whose stored proof has no result and was stored less than ten minutes ago, is **409** `{ "error": "A payment is already open" }` and cancels nothing. An `accepted` payment's charge stays `pending` or `expired` until the existing watcher confirms that payment's BOLT11. A charge held only by an unanswered proof stays that way until those ten minutes pass. The next `DELETE /pos` after that records the proof `refused` with no `txId` and moves an `open` payment to `ended` before it continues. It does not claim Orchestra sent that refusal. Otherwise, when it cancels that pending charge, an `open` payment moves to `ended`. When the BOLT11 this payment stored is settled, the payment is `paid`. The charge becoming `paid` from its separate Spark invoice does not. While the payment is still `open`, that Spark payment moves it to `ended`. While it is `accepted`, it stays `accepted` until that BOLT11 settles or Orchestra reports the order refunded or failed. Once that proof is refused, a till payment whose charge has already expired moves to `ended`.
 
 The implementing change adds these tables. This document does not migrate
 them.
@@ -231,7 +235,7 @@ select a stablecoin.
 
 While a payment is `open`, a fetch returns its current quote. A quote
 that has not lapsed is not replaced. A lapsed quote is replaced for the
-same sats, except while a stored proof has no result. The URL does not change.
+same sats, except while a stored proof has no result and was stored less than ten minutes ago. The URL does not change.
 
 While a payment is `accepted`, and until it is `paid`, the response is
 still a pay request for those sats. Every `available` value is false.
@@ -515,10 +519,15 @@ stored on the quote for that method. If it lists both and no such detail
 is stored, the proof is **400**
 `{ "error": "That payment is not offered" }` and nothing is stored. A payment that is `ended`, and that has no such stored proof,
 is not moved to `accepted` by a later proof. While a stored proof has
-no result, that proof is not refused for quote expiry. A retry of it
+no result and was stored less than ten minutes ago, that proof is not refused for quote expiry. A retry in that time
 asks Orchestra again. Orchestra unreachable is **503**
 `{ "error": "Stablecoin payment is unavailable" }`. The stored proof
-stays unresolved and the payment stays `open`. When Orchestra accepts, it stores `accepted` and the `txId` Orchestra
+stays unresolved and the payment stays `open` for ten minutes after
+the proof was stored. A retry in that time asks Orchestra again. When
+those ten minutes pass with no answer, the next read, `POST /pos`, or
+`DELETE /pos` records the proof `refused` with no `txId` and moves an
+`open` payment to `ended` before it continues. It does not claim
+Orchestra sent that refusal. When Orchestra accepts, it stores `accepted` and the `txId` Orchestra
 returned. The response is **200** `{ "txId": "<id>" }`, including when
 the quote has lapsed since the proof was stored. A payment that is
 still `open` becomes `accepted`. A payment that is already `paid`
@@ -528,8 +537,8 @@ stays `paid`. When Orchestra does not accept, the stored proof is
 `paid`. While the payment is still `open`, the five-minute read may
 end it again. A repeat answers from that stored result, not from the
 payment status. Only `accepted` with its stored `txId` is **200**. A
-proof with no result is asked of Orchestra again, even when the BOLT11
-has been paid directly. A `refused` proof stays **400**, including
+proof with no result that was stored less than ten minutes ago is asked of Orchestra again, even when the BOLT11
+has been paid directly. A proof request after those ten minutes, while the result is still absent, records the proof `refused` with no `txId`, moves an `open` payment to `ended`, and returns **400** `{ "error": "Payment was not accepted" }`. It does not ask Orchestra again, and it does not claim Orchestra sent that refusal. A `refused` proof stays **400**, including
 when that BOLT11 has since been paid. That direct payment does not
 invent a `txId`. From the moment Orchestra has accepted, the sats stay
 due until that invoice settles. The response does not wait for
@@ -599,10 +608,10 @@ a quote whose invoice is already paid is not a second sale. This service
 does not take it back.
 
 A quote that lapses before acceptance is replaced by a quote for the
-same sats, and only while the payment is still `open`, except while a stored proof has no result. No replacement
+same sats, and only while the payment is still `open`, except while a stored proof has no result and was stored less than ten minutes ago. No replacement
 is made after the payment has ended. An unexpired quote is returned as
 stored. A later fetch does not mint a second one. A quote for an open till charge also ends when
-the charge ends, if that is sooner, unless a stored proof has no result. That proof keeps the quote and the sticker. Otherwise, after the charge has ended, the sticker takes
+the charge ends, if that is sooner, unless a stored proof has no result and was stored less than ten minutes ago. That proof keeps the quote and the sticker. Otherwise, after the charge has ended, the sticker takes
 a new amount from the next payer and does not keep the charge's quote.
 The sats of the replacement do not change. The Tether Wallet check fails
 if it reports `OPEN_CRYPTO_PAY_AMOUNT_CHANGED` for that replacement.
@@ -610,7 +619,7 @@ if it reports `OPEN_CRYPTO_PAY_AMOUNT_CHANGED` for that replacement.
 An amount entered on the page is the one open amount of that pay link.
 A later fetch of the same URL returns it until the payment is accepted
 or ended. While it is still `open`, it ends five minutes after it was
-created, unless a stored proof has no result. A pending till charge is
+created, unless a stored proof has no result and was stored less than ten minutes ago. A pending till charge is
 that open amount. The page does not replace it, and a page amount does
 not replace a pending charge.
 
@@ -651,15 +660,15 @@ and a verified wallet. No verified wallet is **400**
 `{ "error": "Set up your wallet first", "code": "wallet_required" }`.
 One unexpired pending charge. Five minutes. While a `shop_payment` for
 that account is `accepted`, or `open` with a stored proof whose result
-is absent, the call is **409** `{ "error": "A payment is already open" }`
-and writes nothing. While a page payment is `open`, no till charge is
+is absent and that was stored less than ten minutes ago, the call is **409** `{ "error": "A payment is already open" }`
+and writes nothing. When that proof was stored at least ten minutes ago and still has no result, the call records it `refused` with no `txId` and moves that `open` payment to `ended` before it continues. It does not claim Orchestra sent that refusal. While a page payment is `open`, no till charge is
 pending, and no proof is stored or the stored proof is `refused`, the
 call marks that payment `ended` and then creates the charge. A refused
 proof is a result, not an in-flight payment. `DELETE /pos` is that same
 **409** and cancels nothing while the pending charge belongs to a
-payment that is `accepted`, or whose stored proof has no result. That
+payment that is `accepted`, or whose stored proof has no result and was stored less than ten minutes ago. An `accepted` payment's
 charge stays `pending` or `expired` until the existing watcher confirms
-the BOLT11. The pay link is one public
+that payment's BOLT11. A charge held only by an unanswered proof stays that way until those ten minutes pass. The next `DELETE /pos` after that records the proof `refused` with no `txId` and moves an `open` payment to `ended` before it continues. It does not claim Orchestra sent that refusal. The pay link is one public
 URL and carries no payment id, so that open payment pins the URL until
 this call or the five minutes. While it is pending, both Lightning
 sendable bounds become that sat amount in millisats. Metadata stays on
@@ -670,8 +679,9 @@ that pin, and `callback` is the origin `resolvePublicApiBase` already
 returns for `PUBLIC_BASE_URL`, plus `/lnurlp/cb/<username>`. Otherwise
 callback and metadata stay on that pay request.
 
-A lapsed quote is replaced only while the charge is open, only for the
-same sats, and only when no stored proof is unresolved.
+A lapsed quote is replaced only while the charge is open and only for the
+same sats. It is not replaced while a stored proof has no result and was
+stored less than ten minutes ago.
 
 The charge is paid when the BOLT11 for those sats is settled. Orchestra
 pays that BOLT11. One charge is paid once. While that charge is pending
@@ -689,9 +699,11 @@ BOLT11 the api handed out settles, and `charge` stays that paid row for
 the charge is paid or cancelled. `SPEC.md:504`. `history` stays the
 newest 20 rows. This document does not change that response. While a
 `shop_payment` for that charge is `accepted`, this specification keeps
-that same worker watching the charge until the BOLT11 settles or
-Orchestra reports the order refunded or failed. It does not stop at
-ten minutes for that charge. That longer watch is not mounted. A paid
+that same worker watching that payment's BOLT11 until it settles or
+Orchestra reports the order refunded or failed. A Spark invoice that
+has already marked the charge `paid` does not stop that watch and does
+not mark the shop payment `paid`. It does not stop at ten minutes.
+That longer watch is not mounted. A paid
 charge does not pin the pay link. A page payment with no charge is paid
 when the invoice this payment named is settled. It is not left open
 after that. No zap, gift, or message is written for a till payment.
