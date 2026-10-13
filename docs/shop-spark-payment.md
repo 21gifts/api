@@ -578,10 +578,15 @@ fails the check. This service does not add a second proof path.
 For a proof that is not yet stored, the api returns success the first
 time only when the payment is still `open`, the transfer matches the
 quote, and Orchestra has accepted it: the offered chain, the offered
-asset, the quoted amount, and a quote that was still valid. Before it asks Orchestra, it stores that proof as one `shop_proof` row
+asset, the quoted amount, and a quote that was still valid. When the
+payment is already `paid` or `ended`, that proof is not stored and is
+not sent. The response is **400**
+`{ "error": "Payment was not accepted" }`. Before it asks Orchestra,
+and only while the payment is still `open`, it stores that proof as one `shop_proof` row
 for that offer, method, asset, and proof parameter. At most one stored
 proof of this payment has been sent and still has no result. While that
-row has no result, a different proof is stored and is not sent. The
+row has no result and the payment is still `open`, a different proof
+is stored and is not sent. The
 sent proof is retried with its own idempotency key until a definitive
 result. Only after that result is `refused` is the oldest stored proof
 that has not been sent asked, with its own idempotency key. A proof already stored for another quote of this payment stays
@@ -609,7 +614,8 @@ and is not **400** `{ "error": "Payment was not accepted" }`. When Orchestra acc
 payment has no `accepted` proof, it stores `accepted` and the `txId`
 Orchestra returned. The row is not `accepted` before that answer. When
 the payment is still `open`, it becomes `accepted` in that same step.
-When the payment is already `paid`, it stays `paid`. A stored proof of
+When the payment is already `paid`, it stays `paid`. That result is
+only for a proof stored while the payment was still `open`. A stored proof of
 this payment that was not sent is recorded `refused` in that same step,
 stores no `txId`, and is not sent. The response is **200**
 `{ "txId": "<id>" }` in both cases, including when the quote has
@@ -622,8 +628,9 @@ is `refused` and stores no `txId`. The response is **400**
 `{ "error": "Payment was not accepted" }`. An `open` payment stays
 `open`. A `paid` payment stays `paid`.
 A refused proof does not move it to `ended`. A different proof of the
-same quote may be stored, and it is sent only when no sent proof of
-this payment is still unresolved. A `paid` payment stays `paid`.
+same quote may be stored while the payment is still `open`, and it is
+sent only when no sent proof of this payment is still unresolved. A
+`paid` payment stays `paid`.
 While the payment is still `open` and no stored proof is unresolved,
 the read that sees the charge already `paid` from that separate Spark
 invoice moves the payment to `ended`. Otherwise, while the payment is
