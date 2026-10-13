@@ -234,8 +234,10 @@ payment UUID. Guessing that UUID does not select this payment. A token
 that is not this form is unknown. `bolt11` is the invoice this payment names. `payment_hash` is that
 invoice's payment hash. Both are set when the row is created. A page
 payment's invoice is the one stored on that row, read back by its token
-or its quote. A till payment's invoice is the one stored under its
-`pos_charge_id`. The public invoice route does not choose the row. A
+or its quote. A till payment's invoice is the `bolt11` on the
+`shop_payment` row with that `pos_charge_id`. It is not read from
+`pos_charge_invoice`, which stores only the payment hash
+(`docs/schema/pos_charge.sql:34`). The public invoice route does not choose the row. A
 replacement quote reuses them while the invoice is unpaid and unexpired.
 When that invoice has expired unpaid, both are replaced by a new invoice
 for the same sats. They are not replaced while a stored proof has no
@@ -584,19 +586,27 @@ the route already returns.
 
 The first fetch while a charge is pending and no `shop_payment` has that
 `pos_charge_id` creates that one payment, its BOLT11, and its offers in
-the same step. The BOLT11 is the one already recorded against the charge
-when that invoice is unpaid and unexpired. Otherwise this fetch mints one
-by the same mint `POST /pay/:username/invoice` uses, and that record
-against the charge is the one that route already writes. It does not mint
-a second invoice while that one is unpaid and unexpired. The insert is
+the same step. This fetch mints one new BOLT11 by the same mint
+`POST /pay/:username/invoice` uses, for this sat count on the shop's
+verified in-app wallet, and stores that string and its payment hash on
+the new row. `pos_charge_invoice` stores only `payment_hash`
+(`docs/schema/pos_charge.sql:34`). It does not store the BOLT11 string,
+and this fetch does not read one from that table. Hashes already
+recorded for the charge keep paying the charge. They are not this
+payment's invoice. Minting through that same mint, while the charge is
+pending, records the new payment hash against the charge as that route
+already does (`SPEC.md:673`, `src/routes/pay.ts:182`). The existing
+watcher can then mark the charge paid when this invoice settles. This
+fetch does not mint a second invoice for this payment while that one is
+unpaid and unexpired. The insert is
 one row for that `pos_charge_id`. A concurrent fetch that loses the insert
 reads the row that won. It does not create a second payment and does not
 mint another invoice. If the Orchestra key is missing, the mint fails, or
 no pair commits, the step leaves no `shop_payment`, no `shop_quote`, and
-no `shop_offer`. The charge keeps the invoice the existing route already
-recorded. The response stays the Lightning pay request. A later fetch may
-try again. A fetch that finds the row returns that payment. It does not
-start another one for the same charge.
+no `shop_offer`. The charge keeps the payment hashes the existing route
+already recorded. The response stays the Lightning pay request. A later
+fetch may try again. A fetch that finds the row returns that payment. It
+does not start another one for the same charge.
 
 A later fetch while the payment is `open` returns the current quote for
 the same sats. A quote that has not lapsed is returned unchanged.
