@@ -105,20 +105,23 @@ with `/tx` in that callback. The username stays. It is the
 path id of the pay link. `quote.payment` stays in the JSON. It is not a
 path segment and not a query on the pay link. A refreshed quote keeps
 the same callback. The callback has no query string. A wallet appends
-its query itself. Neither URL is `…/lnurlp/<username>/invoice`,
-except the two paths that are the same string as that forward. The
-mounted forward is `GET /lnurlp/:username/invoice` (`SPEC.md:514`,
-`src/routes/lnurl-server.ts:331`). `GET /lnurlp/cb/invoice` is that
-forward for username `cb` and this callback for username `invoice`.
-`GET /lnurlp/tx/invoice` is that forward for username `tx` and this
-proof for username `invoice`. `normalizeUsername` allows `cb`, `tx`,
-and `invoice` (`src/lib/username.ts:18`). This document does not refuse
-those usernames and does not change that function. On those two paths,
-a query that has `quote` or `method` is this callback or this proof,
-and the username is `invoice`. A query that has neither is the invoice
-forward for `cb` or `tx`, including when it has `amount` and no
-`method`. No other path is both. Username `pay` stays the one-segment
-pay-link exception and is not this rule.
+its query itself. Neither URL is `…/lnurlp/<username>/invoice`.
+The mounted forward is `GET /lnurlp/:username/invoice` (`SPEC.md:514`,
+`src/routes/lnurl-server.ts:331`). The only same strings are
+`GET /lnurlp/cb/invoice` and `GET /lnurlp/tx/invoice`. The shop routes
+do not handle those two paths. They stay that forward, for usernames
+`cb` and `tx`, on every query. `amount` with no `method` is that
+forward. A query with `quote` or `method` is not read as this callback
+or this proof. Those paths never return a shop BOLT11. Username
+`invoice` is not served this payment, so no pay request names them.
+`normalizeUsername` still allows `invoice`, `cb`, and `tx`
+(`src/lib/username.ts:18`). This document does not change that
+function. An existing account named `invoice` keeps
+`GET /lnurlp/invoice/invoice`. Usernames `cb` and `tx` are served.
+Their paths are `GET /lnurlp/cb/cb`, `GET /lnurlp/tx/cb`,
+`GET /lnurlp/cb/tx`, and `GET /lnurlp/tx/tx`. None of those is the
+forward. Username `pay` stays the one-segment pay-link exception and
+is not this rule.
 
 `GET /.well-known/lnurlp/:username`,
 `GET /.well-known/lnurlp/pay/:token`, `GET /lnurlp/cb/:username`, and
@@ -133,10 +136,12 @@ link already sends: `Access-Control-Allow-Origin: *`,
 The body is `{ "amountSats": <integer> }`. The amount uses the same
 window as `POST /pay/:username/invoice`. An amount the page would already
 refuse is **400** `{ "error": "Enter a whole number of sats" }`. Checks
-then run in this order. An invalid username, an unknown account, a shop
-with no verified wallet, or an `LNURL_SERVER_URL` that is missing, blank,
-or not an absolute `http` or `https` URL, is **404**
-`{ "error": "Not found" }`. That **404** does not include
+then run in this order. An invalid username, username `invoice`, an
+unknown account, a shop with no verified wallet, or an
+`LNURL_SERVER_URL` that is missing, blank, or not an absolute `http`
+or `https` URL, is **404** `{ "error": "Not found" }`. Username
+`invoice` is that **404** before a row is written: nothing is written
+and no invoice is minted. That **404** does not include
 `PUBLIC_BASE_URL`. `GET /.well-known/lnurlp/:username` is unchanged.
 There, the LNURL server is configured only when `LNURL_SERVER_URL` and
 `PUBLIC_BASE_URL` both resolve, and the server not being configured stays
@@ -371,7 +376,12 @@ payment that is still open does not keep the link pinned.
 
 ### Errors on callback and proof
 
-An unknown username is **404** `{ "error": "Not found" }`. A shop with no
+An unknown username is **404** `{ "error": "Not found" }`. Username
+`invoice` is not served this payment. `GET /lnurlp/cb/invoice` and
+`GET /lnurlp/tx/invoice` are not this **404** and are not these routes.
+They stay the invoice forward for usernames `cb` and `tx` on every
+query, including `amount` with no `method`, and they do not return a
+shop BOLT11. A shop with no
 verified wallet is that same **404** when no payment is stored. Callback
 and proof of a stored payment use that payment, its quote, and its
 BOLT11. A later missing verified wallet does not make those calls
@@ -401,7 +411,9 @@ has lapsed. A repeat of the stored detail, while that offer's claim has
 not expired, is the exception above.
 
 A callback with no `method` does not check `quote`. It is the Lightning
-path below.
+path below. `GET /lnurlp/cb/invoice` is not that path. It is the
+invoice forward for username `cb` on every query, including `amount`
+with no `method`, and it does not return a shop BOLT11.
 
 A `method` and `asset` pair the quote does not offer is **400**
 `{ "error": "That payment is not offered" }`.
@@ -427,8 +439,12 @@ The call does not wait for bitcoin to arrive. A repeat of that stored
 `refused` proof and a proof with no result are not that repeat. The
 check treats that success as a payment only when the body carries `txId`.
 
-A Lightning call on `GET /lnurlp/cb/:username` has no `method`.
-It sends `amount` in millisats. When that amount is the fixed sat count
+A Lightning call on `GET /lnurlp/cb/:username` has no `method`, and
+the username is not `invoice`. Username `invoice` is not served this
+payment, so this call is never `GET /lnurlp/cb/invoice`. That path is
+the invoice forward for username `cb` on every query, including
+`amount` alone, and it does not return a shop BOLT11. This call sends
+`amount` in millisats. When that amount is the fixed sat count
 times 1000, the response is `{ "pr": "<bolt11>" }` for those sats. A
 missing or different amount is **400**
 `{ "error": "Enter a whole number of sats" }` and returns no invoice.
@@ -561,6 +577,11 @@ are served for the till charge, the response is the pay request below.
 The shared URL is unchanged. Otherwise the pay link keeps today's pinned
 Lightning request, and its callback stays on the verified wallet.
 
+Username `invoice` is not served this payment. This fetch does not
+create a shop payment for it, does not mint one for it, and does not
+name `/lnurlp/cb/invoice`. The response stays the Lightning pay request
+the route already returns.
+
 The first fetch while a charge is pending and no `shop_payment` has that
 `pos_charge_id` creates that one payment, its BOLT11, and its offers in
 the same step. The BOLT11 is the one already recorded against the charge
@@ -634,8 +655,10 @@ account whose username is `pay` stays that one-segment route. A token
 that is not the form above, or that matches no page payment, is **404**
 `{ "error": "Not found" }`. The response is the known-amount pay request
 for this payment only, with the same fields. `callback` stays the origin
-from `resolvePublicApiBase` plus `/lnurlp/cb/<username>`. The proof URL
-stays `GET /lnurlp/tx/:username`. The token is not a query on either
+from `resolvePublicApiBase` plus `/lnurlp/cb/<username>`. Username
+`invoice` is not served, so that callback is never
+`/lnurlp/cb/invoice` and the proof is never `/lnurlp/tx/invoice`.
+The proof URL stays `GET /lnurlp/tx/:username`. The token is not a query on either
 path and is not a path segment of either. A different proof path fails
 the Tether Wallet check.
 
@@ -697,12 +720,15 @@ that method, the wallet sends a GET to the proof URL, built by replacing
 defines for that method: `hex` for EVM, Bitcoin, and Firo; `tx` for
 Monero, Zano, Solana, Tron, and Cardano. Spark, Internet Computer, and
 BinancePay are not offered, and their parameters are not accepted. The
-paths are `GET /lnurlp/cb/:username` and `GET /lnurlp/tx/:username`. They
-are not `…/lnurlp/<username>/invoice`, except `GET /lnurlp/cb/invoice`
-and `GET /lnurlp/tx/invoice`, which dispatch by query as the pay-link
-section states. Lightning sends no proof. A
-Lightning wallet that calls `callback` with the fixed amount still
-receives the BOLT11 invoice in `pr`. That call does not create an
+paths are `GET /lnurlp/cb/:username` and `GET /lnurlp/tx/:username`,
+and the username is not `invoice`. They are not
+`…/lnurlp/<username>/invoice`. `GET /lnurlp/cb/invoice` and
+`GET /lnurlp/tx/invoice` stay the invoice forward for usernames `cb`
+and `tx`, on every query. They are not this callback and not this
+proof, and they do not return a shop BOLT11. Lightning sends no proof.
+A Lightning wallet that calls a callback this document issued, with
+the fixed amount, still receives the BOLT11 invoice in `pr`. That
+callback is never `/lnurlp/cb/invoice`. That call does not create an
 Orchestra quote. The invoice it returns is the BOLT11 stored on the
 payment that quote belongs to. It is not a call to
 `POST /pay/:username/invoice`, and it does not choose among page
@@ -1066,10 +1092,12 @@ pins that URL. A page payment does not. The capability is a different
 URL and is not the sticker. While it is pending, both Lightning
 sendable bounds become that sat amount in millisats. Metadata stays on
 the pay request the verified wallet already returns. When the Orchestra
-key is configured and Orchestra commits to those sats on the invoice for
-this charge, the stablecoin amounts for those same sats are added beside
-that pin, and `callback` is the origin `resolvePublicApiBase` already
-returns for `PUBLIC_BASE_URL`, plus `/lnurlp/cb/<username>`. Otherwise
+key is configured, the username is not `invoice`, and Orchestra commits
+to those sats on the invoice for this charge, the stablecoin amounts
+for those same sats are added beside that pin, and `callback` is the
+origin `resolvePublicApiBase` already returns for `PUBLIC_BASE_URL`,
+plus `/lnurlp/cb/<username>`. That callback is never
+`/lnurlp/cb/invoice`. Otherwise
 callback and metadata stay on that pay request. That commit is the first
 fetch of the shared pay link. It creates the one `shop_payment` for this
 charge, as A known amount states. This section does not create a second
