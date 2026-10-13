@@ -169,7 +169,7 @@ When that invoice has expired unpaid, both are replaced by a new invoice
 for the same sats. They are not replaced while a stored proof has no
 result. That proof keeps its quote, this BOLT11, and this payment hash. `created_at` is set. One proof may be stored. It holds the quote, the
 method, the asset, and the proof parameter. Its result is absent until
-Orchestra answers, then `refused` or `accepted`. Absent is unresolved.
+Orchestra answers, then `refused` or `accepted`. An `accepted` result stores the `txId` Orchestra returned. A `refused` result stores none. Absent is unresolved.
 `accepted_at` is set only for `accepted` and `paid`. `paid_at` is set
 only for `paid`. `ended_at` is set only for `ended`. A payment moves
 from `accepted` to `ended` only when Orchestra reports that order
@@ -518,15 +518,23 @@ is not moved to `accepted` by a later proof. While a stored proof has
 no result, that proof is not refused for quote expiry. A retry of it
 asks Orchestra again. Orchestra unreachable is **503**
 `{ "error": "Stablecoin payment is unavailable" }`. The stored proof
-stays unresolved and the payment stays `open`. When Orchestra accepts,
-the payment is `accepted` and the response is **200**, including when
-the quote has lapsed since the proof was stored. When Orchestra does
-not accept, the stored proof is refused, the response is **400**
-`{ "error": "Payment was not accepted" }`, and the five-minute read may
-end the payment again. A repeat of a proof already stored for
-`accepted` or `paid` stays 200. From that moment the sats stay due. The
-response does not wait for delivery, and a wallet is not told to pay
-again because the bitcoin has not arrived.
+stays unresolved and the payment stays `open`. When Orchestra accepts, it stores `accepted` and the `txId` Orchestra
+returned. The response is **200** `{ "txId": "<id>" }`, including when
+the quote has lapsed since the proof was stored. A payment that is
+still `open` becomes `accepted`. A payment that is already `paid`
+stays `paid`. When Orchestra does not accept, the stored proof is
+`refused` and stores no `txId`. The response is **400**
+`{ "error": "Payment was not accepted" }`. A `paid` payment stays
+`paid`. While the payment is still `open`, the five-minute read may
+end it again. A repeat answers from that stored result, not from the
+payment status. Only `accepted` with its stored `txId` is **200**. A
+proof with no result is asked of Orchestra again, even when the BOLT11
+has been paid directly. A `refused` proof stays **400**, including
+when that BOLT11 has since been paid. That direct payment does not
+invent a `txId`. From the moment Orchestra has accepted, the sats stay
+due until that invoice settles. The response does not wait for
+delivery, and a wallet is not told to pay again because the bitcoin
+has not arrived.
 
 Any other transfer is an error. Nothing is due, and the shop is not paid.
 
@@ -676,18 +684,25 @@ payment and does not settle the stablecoin transfer on Spark.
 `paid`, `cancelled`, or `expired`, and every row carries `paidAt`. The
 paid watcher already marks the charge `paid` once the Spark invoice or a
 BOLT11 the api handed out settles, and `charge` stays that paid row for
-60 seconds when no pending charge is open. `history` stays the newest
-20 rows. This document does not change that response. A paid charge
-does not pin the pay link. A page payment with no charge is paid when
-the invoice this payment named is settled. It is not left open after
-that. No zap, gift, or message is written for a till payment.
+60 seconds when no pending charge is open. It watches a charge that is
+`pending`, or `expired` less than ten minutes ago, and it stops once
+the charge is paid or cancelled. `SPEC.md:504`. `history` stays the
+newest 20 rows. This document does not change that response. While a
+`shop_payment` for that charge is `accepted`, this specification keeps
+that same worker watching the charge until the BOLT11 settles or
+Orchestra reports the order refunded or failed. It does not stop at
+ten minutes for that charge. That longer watch is not mounted. A paid
+charge does not pin the pay link. A page payment with no charge is paid
+when the invoice this payment named is settled. It is not left open
+after that. No zap, gift, or message is written for a till payment.
 
 Sats that arrive after the five minutes still pay that charge when the
-transfer was accepted against a quote that was valid for it. That later
-arrival is the invoice settlement of a transfer already accepted. It is
-not a new proof. A transfer sent after the charge has ended, with no
-such quote, does not pay it. The sticker then takes a new amount from
-the next payer.
+transfer was accepted against a quote that was valid for it and that
+continued watch still includes the charge. That later arrival is the
+invoice settlement of a transfer already accepted. It is not a new
+proof. A transfer sent after the charge has ended, with no such quote,
+does not pay it. The sticker then takes a new amount from the next
+payer.
 
 ## Tether Wallet
 
