@@ -6,11 +6,13 @@ The names in this document are the contract. The routes are not mounted,
 and `SPEC.md` does not list them. Nothing here changes runtime behaviour.
 
 A payer may settle a shop payment in USDT or USDC. Orchestra pays the
-BOLT11 `POST /pay/:username/invoice` already returns for those sats on
-the shop's verified in-app wallet. That route already returns it. This
-document does not add a second mint. The shop does not hold either
-stablecoin. The member sees an ordinary bitcoin payment. Gifts, the till,
-and loans stay in satoshis.
+BOLT11 that payment stored. The invoice is minted once by the same mint
+`POST /pay/:username/invoice` already uses, on the shop's verified
+in-app wallet. This document does not add a second mint. The public
+invoice route takes a username and an amount. It does not select one
+page payment when several are open for the same amount. The shop does
+not hold either stablecoin. The member sees an ordinary bitcoin payment.
+Gifts, the till, and loans stay in satoshis.
 
 ## Terms
 
@@ -140,10 +142,15 @@ requested. An absent client address is allowed and is not counted, the
 same as that limiter.
 
 The call writes a row only when the Orchestra key is configured, as
-Orchestra defines that key, this service can obtain or reuse the BOLT11
-`POST /pay/:username/invoice` already returns for this sat count on the
-shop's verified in-app wallet, and at least one Orchestra exact-out
-quote commits to that sat count on that invoice. After the **404** checks, a `PUBLIC_BASE_URL` that is missing,
+Orchestra defines that key, this call mints one BOLT11 by the same mint
+`POST /pay/:username/invoice` uses, for this sat count on the shop's
+verified in-app wallet, and at least one Orchestra exact-out quote
+commits to that sat count on that invoice. The minted invoice and its
+payment hash are stored on the new row. The public invoice route is not
+called again to find that invoice. Its body has no payment id and no
+token, so it cannot name this row. Two page payments with the same
+amount keep two invoices. Settlement of one does not mark the other
+paid. After the **404** checks, a `PUBLIC_BASE_URL` that is missing,
 blank, or not an absolute `http` or `https` URL is **503**
 `{ "error": "Stablecoin payment is unavailable" }`, writes nothing, and
 does not fetch an invoice. It is not that **404**.
@@ -209,7 +216,10 @@ base64url with no padding: 43 characters from `A-Z`, `a-z`, `0-9`, `-`,
 and `_`. It is unique. It is null on a till payment. It is not the
 payment UUID. Guessing that UUID does not select this payment. A token
 that is not this form is unknown. `bolt11` is the invoice this payment names. `payment_hash` is that
-invoice's payment hash. Both are set when the row is created. A
+invoice's payment hash. Both are set when the row is created. A page
+payment's invoice is the one stored on that row, read back by its token
+or its quote. A till payment's invoice is the one stored under its
+`pos_charge_id`. The public invoice route does not choose the row. A
 replacement quote reuses them while the invoice is unpaid and unexpired.
 When that invoice has expired unpaid, both are replaced by a new invoice
 for the same sats. They are not replaced while a stored proof has no
@@ -430,8 +440,9 @@ providers can both follow it and settle differently. The provider in the
 published examples holds the payer's coin, settles its merchant in fiat,
 and answers 404 when no amount is waiting. 21.gifts does not. Here the
 stablecoin is paid to Orchestra (Flashnet), and Orchestra pays the BOLT11
-`POST /pay/:username/invoice` already returned for those sats. That route
-already returns it. This document does not add a second mint.
+stored on that payment. The invoice was minted once by the same mint
+`POST /pay/:username/invoice` uses. This document does not add a second
+mint. The public route does not look the invoice up again.
 
 Spark, in those examples, is a way for the payer to send bitcoin. That
 method is not offered on this pay link. This payment does not deliver
@@ -538,6 +549,22 @@ amount. The page amount is the capability below. When stablecoin rows
 are served for the till charge, the response is the pay request below.
 The shared URL is unchanged. Otherwise the pay link keeps today's pinned
 Lightning request, and its callback stays on the verified wallet.
+
+The first fetch while a charge is pending and no `shop_payment` has that
+`pos_charge_id` creates that one payment, its BOLT11, and its offers in
+the same step. The BOLT11 is the one already recorded against the charge
+when that invoice is unpaid and unexpired. Otherwise this fetch mints one
+by the same mint `POST /pay/:username/invoice` uses, and that record
+against the charge is the one that route already writes. It does not mint
+a second invoice while that one is unpaid and unexpired. The insert is
+one row for that `pos_charge_id`. A concurrent fetch that loses the insert
+reads the row that won. It does not create a second payment and does not
+mint another invoice. If the Orchestra key is missing, the mint fails, or
+no pair commits, the step leaves no `shop_payment`, no `shop_quote`, and
+no `shop_offer`. The charge keeps the invoice the existing route already
+recorded. The response stays the Lightning pay request. A later fetch may
+try again. A fetch that finds the row returns that payment. It does not
+start another one for the same charge.
 
 A later fetch while the payment is `open` returns the current quote for
 the same sats. A quote that has not lapsed is returned unchanged.
@@ -663,8 +690,10 @@ paths are `GET /lnurlp/cb/:username` and `GET /lnurlp/tx/:username`. They
 are not `…/lnurlp/<username>/invoice`. Lightning sends no proof. A
 Lightning wallet that calls `callback` with the fixed amount still
 receives the BOLT11 invoice in `pr`. That call does not create an
-Orchestra quote. The invoice it returns is the one the stablecoin quote
-names.
+Orchestra quote. The invoice it returns is the BOLT11 stored on the
+payment that quote belongs to. It is not a call to
+`POST /pay/:username/invoice`, and it does not choose among page
+payments by amount. The page's invoice QR is that same `pr`.
 
 Tether Wallet for Android 1.11.0 (134) builds its proof request from
 `callback`. Those two paths are not stored as strings in that build. The
@@ -825,9 +854,10 @@ timeout, an HTTP 429, or an HTTP 5xx is retried with the same key at
 most twice more before this call answers. The third unfinished attempt
 means that pair is not offered and is not stored. `expiresAt` is read
 only from a committed quote and is the lifetime of that stored offer,
-not a deadline for this call. When no pair commits, the payment call is **503**
+not a deadline for this call. When no pair commits, `POST /pay/:username/payment` is **503**
 `{ "error": "Stablecoin payment is unavailable" }`, writes nothing, and
-does not serve the quote. After it has answered, the next open uses a
+does not serve the quote. The shared pay link does not answer **503**
+for that miss. It leaves no shop row and stays the Lightning pay request. After it has answered, the next open uses a
 new key for each pair. This service does not call
 `GET /v1/orchestration/estimate`.
 
@@ -835,10 +865,18 @@ Asking Orchestra about a stored proof is
 `POST {ORCHESTRA_BASE_URL}/v1/orchestration/submit` for that proof's
 offer. The quote sent is that offer's `provider_ref`, the Orchestra
 `quoteId`. The call uses that proof's idempotency key. Orchestra's submit body has no field for a raw transaction. An unknown
-field is ignored, so the stored `hex` is not sent. Before that call,
-this service broadcasts the stored raw transaction on the chain the
-offer named. A broadcast that does not complete leaves the proof
-unresolved, does not record it `refused`, and the response is **503**
+field is ignored, so the stored `hex` is not sent. This service
+broadcasts only a stored `hex`. That value is the raw signed
+transaction, with an optional leading `0x` removed before the bytes are
+published. EVM, Bitcoin, and Firo are the only chains this service
+broadcasts. A `tx` proof is not broadcast. It is the identifier of a
+transaction the wallet already published, and this service does not
+rebuild a transaction from it. For `hex`, before the submit call, this
+service publishes those stored bytes on the chain the offer named. This
+document does not add a chain RPC URL. A missing transport, a transport
+error, or a result that is not the derived identifier below does not
+complete the broadcast. The proof stays unresolved, it is not recorded
+`refused`, and the response is **503**
 `{ "error": "Stablecoin payment is unavailable" }`. The body then sends
 the derived identifier, not the raw bytes. For an EVM `hex`, `txHash`
 is `0x` plus the 64 lowercase hexadecimal characters of the Keccak-256
@@ -846,7 +884,8 @@ hash of the signed transaction bytes. For Bitcoin, `bitcoinTxid` is the
 64 lowercase hexadecimal characters of the transaction id, the double
 SHA-256 of those bytes reversed, and the body does not send `txHash`
 or `bitcoinVout`. For Firo, `txHash` is that same Bitcoin-style
-transaction id. For `tx`, `txHash` is the stored parameter unchanged.
+transaction id. For `tx`, `txHash` is the stored parameter unchanged,
+and no broadcast is attempted.
 The body sends no source address. HTTP 200 with `orderId` is accepted.
 The stored `txId` is that `orderId`. It is not the payer's transaction
 hash and it is not the raw `hex`. HTTP 409 whose `error.code` is
@@ -871,10 +910,11 @@ and does not register a webhook.
 The api creates the quote. The cashier's phone does not, and the member's
 phone does not. The 12 words are not read.
 
-The quote is for the fixed sat amount. The BOLT11 is the one
-`POST /pay/:username/invoice` already returns for those sats on the
-shop's verified in-app wallet. That route already returns it. This
-document does not add a second mint.
+The quote is for the fixed sat amount. The BOLT11 is the one stored on
+this payment, minted once by the same mint
+`POST /pay/:username/invoice` uses, on the shop's verified in-app
+wallet. This document does not add a second mint. The public invoice
+route does not return this invoice by amount.
 Orchestra's destination is
 that invoice. The invoice amount is that sat count. The quote is
 exact-out. The amount sent to Orchestra is the integer string of that
@@ -883,11 +923,15 @@ cannot move. The quote commits only when `targetAmountOut` is that same
 count. The stablecoin figure is `requiredAmountIn` for that chain and
 asset.
 
-The page's invoice QR is this invoice. `POST /pay/:username/invoice`,
-while this payment is open for these sats, returns this invoice and does
-not request another while it is unpaid and unexpired. A replacement quote
-reuses that invoice. When it has expired unpaid, this service requests a
-new invoice for the same sats and the new quote names that invoice.
+The page's invoice QR is the `pr` from the callback for this quote. That
+call returns the stored invoice and does not request another while it is
+unpaid and unexpired. It does not call `POST /pay/:username/invoice`.
+A replacement quote reuses that invoice. When it has expired unpaid, this
+service mints a new invoice for the same sats by that same mint and the
+new quote names that invoice. The public invoice route still takes only
+a username and an amount. While a till charge is pending it records the
+payment hash against that charge, as it already does, and it does not
+select a page payment.
 After Orchestra has accepted, this service does not request another
 invoice for these sats. An invoice that is already paid is not named on a quote.
 
@@ -899,10 +943,12 @@ before it arrives. This service does not deliver the stablecoin payment
 to a Spark address, and it does not publish a USDT or USDC address of
 its own.
 
-The api learns that the invoice was paid from settlement of that
-BOLT11, not from a phone. For a pending till charge,
-`POST /pay/:username/invoice` already records that BOLT11, and the paid
-watcher already marks the charge paid when it settles. This document
+The api learns that the invoice was paid from settlement of the BOLT11
+stored on that payment, not from a phone. For a pending till charge,
+the paid watcher already marks the charge paid when an invoice recorded
+against that charge settles. The shop payment is paid when the BOLT11
+it stored settles. Another invoice the public route handed out for the
+same amount does not mark a different page payment paid. This document
 does not add a second watch. A page payment with no charge is not that
 watch. The build that comes later is what records that page payment
 paid. Nothing here is mounted.
@@ -949,7 +995,7 @@ amount. Lightning is unchanged.
 
 ## Paid
 
-Paid is recorded once, when the BOLT11 already returned for these sats
+Paid is recorded once, when the BOLT11 stored on that payment
 is settled. Orchestra paying that BOLT11 is that confirmation. A direct
 Lightning payment of the same invoice is the same confirmation. A success
 response, a proof, and the payment page do not record it. Acceptance
@@ -1005,7 +1051,10 @@ key is configured and Orchestra commits to those sats on the invoice for
 this charge, the stablecoin amounts for those same sats are added beside
 that pin, and `callback` is the origin `resolvePublicApiBase` already
 returns for `PUBLIC_BASE_URL`, plus `/lnurlp/cb/<username>`. Otherwise
-callback and metadata stay on that pay request.
+callback and metadata stay on that pay request. That commit is the first
+fetch of the shared pay link. It creates the one `shop_payment` for this
+charge, as A known amount states. This section does not create a second
+one. If no pair commits, no shop row is written.
 
 A lapsed quote is replaced only while the charge is open and only for the
 same sats. It is not replaced while a stored proof has no result.
@@ -1059,7 +1108,12 @@ payer.
 The wallet this payment must satisfy is Tether Wallet for Android,
 version 1.11.0, build 134. A later build is not this check until it has
 been read the same way. The Wallet Development Kit signs a transaction
-and broadcasts it. It is not the OpenCryptoPay client. The client is
+and broadcasts it. It is not the OpenCryptoPay client. That broadcast
+is not this proof. An OpenCryptoPay `hex` proof is the raw signed
+transaction, and that client does not broadcast it. An OpenCryptoPay
+`tx` proof is sent only after that client has published the transaction.
+This service broadcasts only the stored `hex`, as the submit call
+states. The client is
 the app module `services/opencryptopay/`. That module has a route and a
 pending-proof store. An EVM payment instruction is an EIP-681 URI.
 
