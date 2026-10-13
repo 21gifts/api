@@ -51,10 +51,11 @@ same shape as `pos_charge.id`. The stored form is lowercase hexadecimal,
 eight-four-four-four-twelve. Neither id has a prefix. `quote.payment` is
 not an amount. `quote.expiration` is UTC, millisecond precision, with a
 `Z` suffix, the same form `GET /pay/:username` uses for `expiresAt`. It
-is the earlier of the expiry Orchestra returns for that quote, the
-expiry of the BOLT11 that quote names, and the instant that payment
-leaves `open`. When that instant is sooner, `shop_quote.expires_at`
-moves to it. A quote for an open till charge also ends when the charge
+is the earliest `expiresAt` stored on that quote's offers, the expiry
+of the BOLT11 that quote names, and the instant that payment leaves
+`open`. When that instant is sooner, `shop_quote.expires_at` moves to
+it. An offer's own `expires_at` does not move. A quote for an open till
+charge also ends when the charge
 ends, if that is sooner, unless a stored proof has no result.
 
 The `quote` parameter uses that same form. A value that is not that form,
@@ -87,7 +88,7 @@ request `GET /.well-known/lnurlp/:username` returns. A missing, blank, or
 non-absolute `PUBLIC_BASE_URL` leaves that route **404**. The LNURL
 server is not configured, and this document does not turn that **404**
 into a pay request. When both values resolve and an amount is known, but
-the Orchestra key is missing or the quote does not commit, no stablecoin
+the Orchestra key is missing or no offered pair commits, no stablecoin
 row is added and the pay link stays the pay request it already returns.
 When an amount is known and those rows are served,
 `callback` is the origin `resolvePublicApiBase` already returns for `PUBLIC_BASE_URL`, plus `/lnurlp/cb/<username>`.
@@ -125,8 +126,8 @@ There, the LNURL server is configured only when `LNURL_SERVER_URL` and
 The call writes a row only when the Orchestra key is configured, as
 Orchestra defines that key, this service can obtain or reuse the BOLT11
 `POST /pay/:username/invoice` already returns for this sat count on the
-shop's verified in-app wallet, and Orchestra's exact-out quote commits
-to that sat count on that invoice. After the **404** checks, a `PUBLIC_BASE_URL` that is missing,
+shop's verified in-app wallet, and at least one Orchestra exact-out
+quote commits to that sat count on that invoice. After the **404** checks, a `PUBLIC_BASE_URL` that is missing,
 blank, or not an absolute `http` or `https` URL is **503**
 `{ "error": "Stablecoin payment is unavailable" }`, writes nothing, and
 does not fetch an invoice. It is not that **404**.
@@ -138,8 +139,8 @@ key is set, a resolve or store
 failure, an empty or non-safe-integer window, a failed invoice fetch, or
 a BOLT11 that is missing, not a safe integer amount, or not the requested
 amount, is **502** `{ "error": "Lightning Address could not be resolved" }`
-and writes nothing. When that invoice is obtained and the quote does not
-commit to that sat count, the call is **503**
+and writes nothing. When that invoice is obtained and no offered pair commits to that sat
+count, the call is **503**
 `{ "error": "Stablecoin payment is unavailable" }` and writes nothing.
 
 One pay link has one open amount. While a till charge is pending, the
@@ -193,33 +194,56 @@ refunded or failed. A lapsed quote does not end an `accepted` or
 `paid` payment. A page payment that is still `open` ends as stated
 below.
 
-`shop_quote` stores one quote. `id` is `quote.id`. `payment_id`
+`shop_quote` stores one public quote. `id` is `quote.id`. `payment_id`
 references `shop_payment`. `expires_at` is `quote.expiration`.
 `transfer_amounts` is the JSON array that quote served, so a later price
-cannot rewrite it. `provider_ref` is the reference Orchestra returned for
-that quote. It is stored as text, it is not parsed, and it is not shown
-to the wallet. The first callback that returns a detail for a method
-stores that asset and that detail on this quote. The stored detail is
-not part of `transfer_amounts`. A repeat of the same asset returns the
-stored detail. A different asset is **400**
-`{ "error": "That payment is not offered" }` and does not replace it.
-The first stored detail for that quote and method wins. `created_at` is
-set.
+cannot rewrite it. This row does not store an Orchestra `quoteId`. The
+first callback for a method names the asset that method will submit.
+The quote records that asset for that method. It is not an Orchestra
+id, and it is not shown as one. A repeat of that asset returns the
+detail of that offer. A different asset of the same method is **400**
+`{ "error": "That payment is not offered" }` and does not replace that
+asset. The offer that was not selected stays stored and is not
+submitted. `created_at` is set.
 
-`shop_proof` stores one proof attempt. `quote_id` references
-`shop_quote`. The row holds that quote, the method, the asset, the
-proof parameter, and the idempotency key of that attempt. The same
-quote, method, asset, and proof parameter are one row. A different
-proof parameter of the same quote is another row. A refused row, and a
-row that is still unresolved, do not block that other row. A later
-quote of the same payment gets its own rows and does not overwrite an
-earlier proof. A quote has at most one `accepted` proof. A payment has
-at most one `accepted` proof. A result is absent until Orchestra
-answers that row, then `refused` or `accepted`. An `accepted` result
-stores the `txId` Orchestra returned. A `refused` result stores none.
-Absent is unresolved. Storing a row does not move the payment from
-`open` to `accepted`. A repeat of that same row answers from it and
-does not insert another. `created_at` is set.
+`shop_offer` stores one Orchestra quote for one method and one asset of
+that public quote. `quote_id` references `shop_quote`. One quote,
+method, and asset are one row. `method` is the chain. `asset` is
+`USDT` or `USDC`. `provider_ref` is that call's `quoteId`. It is stored
+as text, it is not parsed, and it is not shown to the wallet.
+`expires_at` is that call's `expiresAt`. `amount` is that call's
+`requiredAmountIn`. The detail is the EVM `transaction` (`chainId`,
+`to`, `data`, and `value`). The `uri` is the one this service builds
+from those fields. A source that returns no instruction this service
+can express as that `uri` is absent and is not stored. A pair that does
+not commit is not stored, and that pair is absent. The row stores the
+idempotency key of that quote call. `created_at` is set.
+
+`shop_proof` stores one proof attempt. `offer_id` references the
+`shop_offer` the quote selected for that method. The row holds that
+offer, the method, the asset, the proof parameter, and the idempotency
+key of that attempt. The same quote, method, asset, and proof parameter
+are one row. A different proof parameter of the same quote is another
+row. It is stored before it is asked. At most one stored proof of a
+payment has been sent and still has no result. That one is the
+unresolved row stored first. While that sent proof has no result,
+another row is not sent. That sent proof is retried with its own
+idempotency key until Orchestra returns a definitive result. Only after that result is `refused` is the
+oldest stored proof that has not been sent asked, with its own
+idempotency key. A `refused` row does not keep a later different proof
+from being stored or sent. An unresolved row delays that send. It does
+not discard the other row, and the clock does not record it `refused`.
+When one proof of this payment becomes `accepted`, a stored proof that
+was not sent is not asked. That row is recorded `refused`, it stores no
+`txId`, and it was not sent to Orchestra. A later quote of the same
+payment gets its own rows and does not overwrite an earlier proof. A
+quote has at most one `accepted` proof. A payment has at most one
+`accepted` proof. A sent row stays unresolved until Orchestra answers
+it, then `refused` or `accepted`. An `accepted` result stores the
+`txId` Orchestra returned. A `refused` result stores none. Absent is
+unresolved. Storing a row does not move the payment from `open` to
+`accepted`. A repeat of that same row answers from it and does not
+insert another. `created_at` is set.
 
 `open` serves the current quote. A fetch while that quote has not lapsed
 returns it unchanged and does not mint another. A lapsed quote is
@@ -233,7 +257,7 @@ first. Replacing the quote does not extend those five minutes. When
 they pass while it is still `open`, the next read marks it `ended`
 before the read continues, unless a stored proof has no result. That
 proof does not end the payment and does not replace the quote. A till payment moves to `ended` when its charge expires
-unpaid while the payment is still `open`, unless a stored proof has no result. That proof does not end the payment and does not replace the quote. `DELETE /pos`, while the pending charge it would cancel belongs to a payment that is `accepted`, or whose stored proof has no result, is **409** `{ "error": "A payment is already open" }` and cancels nothing. The charge status stays with the existing watcher. The Spark invoice or a BOLT11 the api handed out can already mark that charge `paid`, and this document does not change that. A charge held only by an unanswered proof is not cancelled by this call. This call does not record that proof `refused` and does not move the payment to `ended`. The proof stays unresolved until Orchestra answers. Otherwise, when it cancels that pending charge, an `open` payment moves to `ended`. When the BOLT11 this payment stored is settled, the payment is `paid`. The charge becoming `paid` from its separate Spark invoice does not. While the payment is still `open` and a stored proof has no result, that Spark payment marks only the charge `paid`. It does not move the payment to `ended` and does not record the proof `refused`. The proof stays unresolved until Orchestra answers. Otherwise, while the payment is still `open`, that Spark payment moves it to `ended`. While it is `accepted`, it stays `accepted` until that BOLT11 settles or Orchestra reports the order refunded or failed. A refused proof does not move the payment to `ended`, and it does not block a different proof of the same quote. A different proof can be stored while the payment is still `open`. The read that ends an `open` payment whose charge has expired, or whose charge is already `paid` from that separate Spark invoice, still does so when no stored proof is unresolved.
+unpaid while the payment is still `open`, unless a stored proof has no result. That proof does not end the payment and does not replace the quote. `DELETE /pos`, while the pending charge it would cancel belongs to a payment that is `accepted`, or whose stored proof has no result, is **409** `{ "error": "A payment is already open" }` and cancels nothing. The charge status stays with the existing watcher. The Spark invoice or a BOLT11 the api handed out can already mark that charge `paid`, and this document does not change that. A charge held only by an unanswered proof is not cancelled by this call. This call does not record that proof `refused` and does not move the payment to `ended`. The proof stays unresolved until Orchestra answers. Otherwise, when it cancels that pending charge, an `open` payment moves to `ended`. When the BOLT11 this payment stored is settled, the payment is `paid`. The charge becoming `paid` from its separate Spark invoice does not. While the payment is still `open` and a stored proof has no result, that Spark payment marks only the charge `paid`. It does not move the payment to `ended` and does not record the proof `refused`. The proof stays unresolved until Orchestra answers. Otherwise, while the payment is still `open`, that Spark payment moves it to `ended`. While it is `accepted`, it stays `accepted` until that BOLT11 settles or Orchestra reports the order refunded or failed. A refused proof does not move the payment to `ended`. A different proof of the same quote can be stored while the payment is still `open`, and it is sent only when no sent proof of this payment is still unresolved. The read that ends an `open` payment whose charge has expired, or whose charge is already `paid` from that separate Spark invoice, still does so when no stored proof is unresolved.
 
 The implementing change adds these tables. This document does not migrate
 them.
@@ -294,9 +318,11 @@ payment status. Only a stored `accepted` result with its `txId` is
 **200**, including when the payment is `paid` and `quote.expiration` is
 in the past. A stored `refused` result stays **400**
 `{ "error": "Payment was not accepted" }`, including when the payment is
-`paid`. A stored proof with no result is asked of Orchestra again for
-that same proof, including when the payment is `paid` or the BOLT11 was
-paid directly. A missing answer is not **200** and is not that **400**.
+`paid`. A stored proof that was sent and has no result is asked of
+Orchestra again for that same proof, including when the payment is
+`paid` or the BOLT11 was paid directly. A different proof that has not
+been sent is not asked while that result is absent. A missing answer
+is not **200** and is not that **400**.
 The callback does not return the transaction detail after the quote has
 lapsed.
 
@@ -308,10 +334,11 @@ A `method` and `asset` pair the quote does not offer is **400**
 
 A proof the quote does not accept, or a transfer Orchestra has not
 accepted, is **400** `{ "error": "Payment was not accepted" }`. That
-proof may be sent again while the quote is still valid and the payment
-is not yet `accepted`. A different proof parameter of the same quote
-may be stored while the payment is still `open`, including when this
-proof is `refused` or still unresolved. The error does not ask for a
+sent proof is asked again with the same idempotency key while it has
+no result. A different proof parameter of the same quote may be stored
+while the payment is still `open`, including when this proof is
+`refused` or still unresolved. While a sent proof of this payment has
+no result, that other proof is not sent. The error does not ask for a
 second payment.
 
 None of these bodies is the 404 a different provider returns when no fiat
@@ -519,9 +546,10 @@ Wallet.
 
 The same detail is returned by one GET that sets `method` and `asset` on
 the pay link while its payment is still open. The detail belongs to the
-current quote. When the method lists both assets, the call returns the asset and the
-detail stored on the quote for this method. A repeat of that asset
-returns the stored detail. A later callback for the other asset is
+current quote. When the method lists both assets, the first callback
+selects the named asset and returns that offer's detail. A repeat of
+that asset returns the stored detail. A later callback for the other
+asset is
 **400** `{ "error": "That payment is not offered" }` and does not
 replace it. An unknown pair or a quote that has expired is an
 error and creates no payment. It is not served as another quote.
@@ -551,11 +579,12 @@ For a proof, the api returns success the first time only when the
 payment is still `open`, the transfer matches the quote, and Orchestra
 has accepted it: the offered chain, the offered asset, the quoted
 amount, and a quote that was still valid. Before it asks Orchestra, it stores that proof as one `shop_proof` row
-for that quote, method, asset, and proof parameter. A refused row of
-the same quote, and a row of the same quote that is still unresolved,
-do not block a different proof parameter. That different proof is its
-own row, stored before it is asked, and asked with its own idempotency
-key. A proof already stored for another quote of this payment stays
+for that offer, method, asset, and proof parameter. At most one stored
+proof of this payment has been sent and still has no result. While that
+row has no result, a different proof is stored and is not sent. The
+sent proof is retried with its own idempotency key until a definitive
+result. Only after that result is `refused` is the oldest stored proof
+that has not been sent asked, with its own idempotency key. A proof already stored for another quote of this payment stays
 that row. A repeat of the same quote, method, asset, and proof
 parameter reads the stored row and does not insert another. Once this
 payment has an `accepted` proof, a different proof is not stored and
@@ -564,18 +593,22 @@ is not asked. The response is **400**
 stored `txId`. A repeat of the `accepted` proof is the **200** below. The proof
 query does not carry `asset`. The asset is the one
 that method lists. When the method lists both, the asset is the one
-stored on the quote for that method. If it lists both and no such detail
-is stored, the proof is **400**
+the quote recorded for that method. The proof references that offer
+and submits that offer's `provider_ref`. If it lists both and no asset
+is recorded for that method, the proof is **400**
 `{ "error": "That payment is not offered" }` and nothing is stored. A payment that is `ended`, and that has no such stored proof,
 is not moved to `accepted` by a later proof. While a stored proof has
-no result, that proof is not refused for quote expiry. A retry
-asks Orchestra again for that same stored proof. Orchestra unreachable is **503**
+no result, that sent proof is not refused for quote expiry. A retry
+asks Orchestra again for that same sent proof and does not send a
+different proof of this payment. Orchestra unreachable is **503**
 `{ "error": "Stablecoin payment is unavailable" }`. The stored proof
 stays unresolved and the payment stays `open`. A missing answer does
 not record the proof `refused`, does not move the payment to `ended`,
 and is not **400** `{ "error": "Payment was not accepted" }`. When Orchestra accepts, and the payment is still `open` and has no
 `accepted` proof, it stores `accepted` and the `txId` Orchestra
-returned, and the payment becomes `accepted` in that same step. The
+returned, and the payment becomes `accepted` in that same step. A
+stored proof of this payment that was not sent is recorded `refused`
+in that same step, stores no `txId`, and is not sent. The
 row is not `accepted` before that answer. The response is **200**
 `{ "txId": "<id>" }`, including when the quote has lapsed since the
 proof was stored. That includes when the separate Spark invoice has
@@ -585,16 +618,17 @@ accepted-payment watch stated for the till. A payment that is already
 `paid` stays `paid`. When Orchestra does not accept, that stored proof
 is `refused` and stores no `txId`. The response is **400**
 `{ "error": "Payment was not accepted" }`. The payment stays `open`.
-A refused proof does not move it to `ended` and does not block a
-different proof of the same quote. A `paid` payment stays `paid`.
+A refused proof does not move it to `ended`. A different proof of the
+same quote may be stored, and it is sent only when no sent proof of
+this payment is still unresolved. A `paid` payment stays `paid`.
 While the payment is still `open` and no stored proof is unresolved,
 the read that sees the charge already `paid` from that separate Spark
 invoice moves the payment to `ended`. Otherwise, while the payment is
 still `open` and no stored proof is unresolved, the five-minute read
 may end it again. A repeat answers from that stored result, not from the
 payment status. Only `accepted` with its stored `txId` is **200**. A
-proof with no result is asked of Orchestra again for that same stored proof, even when the BOLT11
-has been paid directly. A missing answer does not record it `refused` and does not return **400** `{ "error": "Payment was not accepted" }`. A `refused` proof stays **400**, including
+proof that was sent and has no result is asked of Orchestra again for that same stored proof, even when the BOLT11
+has been paid directly. A different proof that has not been sent is not asked while that result is absent. A missing answer does not record it `refused` and does not return **400** `{ "error": "Payment was not accepted" }`. A `refused` proof stays **400**, including
 when that BOLT11 has since been paid. That direct payment does not
 invent a `txId`. From the moment Orchestra has accepted, the sats stay
 due until that invoice settles. The response does not wait for
@@ -616,8 +650,10 @@ returned.
 Every call that sends a body uses `Content-Type: application/json`,
 `Authorization: Bearer` plus the server key, and `X-Idempotency-Key` of
 1 to 255 printable ASCII characters. A retry of the same unfinished
-call uses the same key and the same body. A new quote, and a different
-proof, use a new key. A transport timeout, HTTP 429, or HTTP 5xx leaves
+call uses the same key and the same body. Each offered pair is its own
+quote call and uses its own key. A different proof uses its own key
+when it is sent, and not while another sent proof of the payment has
+no result. A transport timeout, HTTP 429, or HTTP 5xx leaves
 that call unresolved and is retried with the same key. This service
 does not invent a deadline shorter than the quote's `expiresAt`. An
 error body is `{ "error": { "code", "message" } }`. The wallet is not
@@ -629,26 +665,31 @@ destination is not in that asset's `route.exactOutTo` is not offered.
 `/routes` in this document is this call. The quote response's `route`
 labels are not the decimal source.
 
-`POST {ORCHESTRA_BASE_URL}/v1/orchestration/quote` creates the quote.
-The body is `sourceChain` the chain, `sourceAsset` `USDT` or `USDC`,
-`destinationChain` `lightning`, `destinationAsset` `BTC`, `amount` the
-sat count as an integer string, `amountMode` `exact_out`,
-`slippageBps` 0, `recipientAddress` the BOLT11, and
-`includeCalldata` true. The body does not send `refundAddress`. The
-call commits only on HTTP 200 when `targetAmountOut` is that sat count
-and `requiredAmountIn` is present. `provider_ref` is `quoteId`. The
-expiry this document reads is `expiresAt`. An EVM `transaction` is
-`chainId`, `to`, `data`, and `value`. Any other status, a timeout, or
-a 200 that does not commit is a quote that does not commit. The
-payment call is then **503** `{ "error": "Stablecoin payment is unavailable" }`,
-writes nothing, and does not serve the quote. A timeout, an HTTP
-429, or an HTTP 5xx is retried with the same key before this call
-answers. After it has answered, the next open uses a new key. This
-service does not call `GET /v1/orchestration/estimate`.
+`POST {ORCHESTRA_BASE_URL}/v1/orchestration/quote` creates one Orchestra
+quote for one chain and one asset. One public quote asks once per chain
+and asset it can offer. The body is `sourceChain` the chain,
+`sourceAsset` `USDT` or `USDC`, `destinationChain` `lightning`,
+`destinationAsset` `BTC`, `amount` the sat count as an integer string,
+`amountMode` `exact_out`, `slippageBps` 0, `recipientAddress` the
+BOLT11, and `includeCalldata` true. The body does not send
+`refundAddress`. The call commits only on HTTP 200 when
+`targetAmountOut` is that sat count and `requiredAmountIn` is present.
+That call's `quoteId` is the `provider_ref` on the `shop_offer` for
+that method and asset. The expiry this document reads is that call's
+`expiresAt`, stored on that offer. An EVM `transaction` is `chainId`,
+`to`, `data`, and `value`. Any other status, a timeout, or a 200 that
+does not commit means that pair is not offered. A timeout, an HTTP
+429, or an HTTP 5xx of that call is retried with the same key before
+this call answers. When no pair commits, the payment call is **503**
+`{ "error": "Stablecoin payment is unavailable" }`, writes nothing, and
+does not serve the quote. After it has answered, the next open uses a
+new key for each pair. This service does not call
+`GET /v1/orchestration/estimate`.
 
 Asking Orchestra about a stored proof is
-`POST {ORCHESTRA_BASE_URL}/v1/orchestration/submit` for that row's
-`quoteId`, with that row's idempotency key. The body sets `txHash` to
+`POST {ORCHESTRA_BASE_URL}/v1/orchestration/submit` for that proof's
+offer. The quote sent is that offer's `provider_ref`, the Orchestra
+`quoteId`. The call uses that proof's idempotency key. The body sets `txHash` to
 the proof parameter, except Bitcoin, which sets `bitcoinTxid` to that
 parameter and does not send `bitcoinVout`. The body sends no source
 address. HTTP 200 with `orderId` is accepted. The stored `txId` is
@@ -663,7 +704,9 @@ After accept, `GET {ORCHESTRA_BASE_URL}/v1/orchestration/status?id=`
 the order id, with the server key. `order.status` `refunded` or
 `failed` moves that payment from `accepted` to `ended`. Any other
 status does not. A timeout or an HTTP 5xx leaves it `accepted`. The
-watch polls every 3 seconds. This service does not register a webhook.
+status check runs on the existing paid watcher, `startPosPaidWorker`,
+every 2 s (`SPEC.md:502`). This service does not add a second clock
+and does not register a webhook.
 
 ## Quote
 
@@ -783,7 +826,8 @@ and writes nothing. An unanswered proof does not let this call record it `refuse
 pending, and no proof is stored or every stored proof is `refused`, the
 call marks that payment `ended` and then creates the charge. A refused
 proof is a result, not an in-flight payment. A refused proof on an
-earlier quote does not block a proof of the quote that replaced it. `DELETE /pos` is that same
+earlier quote does not keep a proof of the quote that replaced it from
+being stored or sent. `DELETE /pos` is that same
 **409** and cancels nothing while the pending charge belongs to a
 payment that is `accepted`, or whose stored proof has no result. The charge status stays with the existing watcher. The Spark invoice or a BOLT11 the api handed out can already mark that charge `paid`, and this document does not change that. A charge held only by an unanswered proof is not cancelled by this call. This call does not record that proof `refused` and does not move the payment to `ended`. The proof stays unresolved until Orchestra answers. The pay link is one public
 URL and carries no payment id, so that open payment pins the URL until
@@ -817,7 +861,9 @@ the charge is paid or cancelled. `SPEC.md:504`. `history` stays the
 newest 20 rows. This document does not change that response. While a
 `shop_payment` for that charge is `accepted`, this specification keeps
 that same worker watching that payment's BOLT11 until it settles or
-Orchestra reports the order refunded or failed. A Spark invoice that
+Orchestra reports the order refunded or failed. The Orchestra status
+read is that same tick, every 2 s (`SPEC.md:502`), not a second clock.
+A Spark invoice that
 has already marked the charge `paid` does not stop that watch and does
 not mark the shop payment `paid`. It does not stop at ten minutes.
 That longer watch is not mounted. A paid
