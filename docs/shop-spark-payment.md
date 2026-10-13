@@ -81,9 +81,15 @@ When no amount is known, `callback` and metadata stay on the pay request
 `GET /.well-known/lnurlp/:username` already returns for the verified
 wallet. This service does not rewrite them.
 
-Stablecoin rows are served only when `PUBLIC_BASE_URL` is an absolute
-`http` or `https` URL. Otherwise the pay link stays the pay request it
-already returns. When an amount is known and those rows are served,
+Stablecoin rows are served only when `LNURL_SERVER_URL` and
+`PUBLIC_BASE_URL` both resolve, so the pay link is already the pay
+request `GET /.well-known/lnurlp/:username` returns. A missing, blank, or
+non-absolute `PUBLIC_BASE_URL` leaves that route **404**. The LNURL
+server is not configured, and this document does not turn that **404**
+into a pay request. When both values resolve and an amount is known, but
+the Orchestra key is missing or the quote does not commit, no stablecoin
+row is added and the pay link stays the pay request it already returns.
+When an amount is known and those rows are served,
 `callback` is the origin `resolvePublicApiBase` already returns for `PUBLIC_BASE_URL`, plus `/lnurlp/cb/<username>`.
 `https://21.gifts` becomes `https://api.21.gifts`, `https://dev.21.gifts` becomes `https://dev-api.21.gifts`, and `https://staging.21.gifts` becomes `https://staging-api.21.gifts`. One trailing slash is removed first. Any other absolute value is used as given. The proof URL replaces `/cb`
 with `/tx` in that callback. The username stays. It is the
@@ -120,12 +126,15 @@ The call writes a row only when the Orchestra key is configured, this
 service can obtain or reuse the BOLT11 `POST /pay/:username/invoice`
 already returns for this sat count on the shop's verified in-app wallet,
 and Orchestra's exact-out quote commits to that sat count on that
-invoice. After the **404** checks, a missing Orchestra key, or a
-`PUBLIC_BASE_URL` that is missing, blank, or not an absolute `http` or
-`https` URL, is **503**
+invoice. After the **404** checks, a `PUBLIC_BASE_URL` that is missing,
+blank, or not an absolute `http` or `https` URL is **503**
 `{ "error": "Stablecoin payment is unavailable" }`, writes nothing, and
-does not fetch an invoice. It is not that **404**. The pay link stays
-the pay request it already returns. When the key is set, a resolve or store
+does not fetch an invoice. It is not that **404**.
+`GET /.well-known/lnurlp/:username` stays **404** in that case and is not
+a pay request. A missing Orchestra key, once both of those URLs resolve,
+is that same **503**, writes nothing, and does not fetch an invoice. Only
+then does the pay link stay the pay request it already returns. When the
+key is set, a resolve or store
 failure, an empty or non-safe-integer window, a failed invoice fetch, or
 a BOLT11 that is missing, not a safe integer amount, or not the requested
 amount, is **502** `{ "error": "Lightning Address could not be resolved" }`
@@ -176,9 +185,7 @@ invoice's payment hash. Both are set when the row is created. A
 replacement quote reuses them while the invoice is unpaid and unexpired.
 When that invoice has expired unpaid, both are replaced by a new invoice
 for the same sats. They are not replaced while a stored proof has no
-result. That proof keeps its quote, this BOLT11, and this payment hash. `created_at` is set. One proof may be stored. It holds the quote, the
-method, the asset, and the proof parameter. Its result is absent until
-Orchestra answers, then `refused` or `accepted`. An `accepted` result stores the `txId` Orchestra returned. A `refused` result stores none. Absent is unresolved.
+result. That proof keeps its quote, this BOLT11, and this payment hash. `created_at` is set. The payment row does not store a proof.
 `accepted_at` is set only for `accepted` and `paid`. `paid_at` is set
 only for `paid`. `ended_at` is set only for `ended`. A payment moves
 from `accepted` to `ended` only when Orchestra reports that order
@@ -199,10 +206,22 @@ stored detail. A different asset is **400**
 The first stored detail for that quote and method wins. `created_at` is
 set.
 
+`shop_proof` stores one proof of one quote. `quote_id` references
+`shop_quote`. The row holds that quote, the method, the asset, and the
+proof parameter. The same quote and the same proof parameter are one
+row. A later quote of the same payment gets its own row and does not
+overwrite an earlier proof. A quote has at most one stored proof. Its
+result is absent until Orchestra answers, then `refused` or `accepted`.
+An `accepted` result stores the `txId` Orchestra returned. A `refused`
+result stores none. Absent is unresolved. A repeat of that quote and
+that proof answers from that row. `created_at` is set.
+
 `open` serves the current quote. A fetch while that quote has not lapsed
 returns it unchanged and does not mint another. A lapsed quote is
 replaced by a new `shop_quote` for the same sats, except while a stored
-proof has no result. The payment id does
+proof has no result. The new quote can store its own proof. A refused
+proof of the quote it replaced stays on that quote and stays **400**
+for that same proof. The payment id does
 not change. A page payment stays `open` across those refreshes until it
 is accepted, or until five minutes after it was created, whichever is
 first. Replacing the quote does not extend those five minutes. When
@@ -524,8 +543,11 @@ For a proof, the api returns success the first time only when the
 payment is still `open`, the transfer matches the quote, and Orchestra
 has accepted it: the offered chain, the offered asset, the quoted
 amount, and a quote that was still valid. Before it asks Orchestra, it
-stores that proof: the quote, the method, the asset, and the proof
-parameter. The proof query does not carry `asset`. The asset is the one
+stores that proof on that quote as one `shop_proof` row: the quote, the
+method, the asset, and the proof parameter. A proof already stored for
+another quote of this payment stays that row. A repeat of the same quote
+and proof reads the stored row and does not insert another. The proof
+query does not carry `asset`. The asset is the one
 that method lists. When the method lists both, the asset is the one
 stored on the quote for that method. If it lists both and no such detail
 is stored, the proof is **400**
@@ -676,9 +698,10 @@ One unexpired pending charge. Five minutes. While a `shop_payment` for
 that account is `accepted`, or `open` with a stored proof whose result
 is absent, the call is **409** `{ "error": "A payment is already open" }`
 and writes nothing. An unanswered proof does not let this call record it `refused` or move that payment to `ended`. While a page payment is `open`, no till charge is
-pending, and no proof is stored or the stored proof is `refused`, the
+pending, and no proof is stored or every stored proof is `refused`, the
 call marks that payment `ended` and then creates the charge. A refused
-proof is a result, not an in-flight payment. `DELETE /pos` is that same
+proof is a result, not an in-flight payment. A refused proof on an
+earlier quote does not block a proof of the quote that replaced it. `DELETE /pos` is that same
 **409** and cancels nothing while the pending charge belongs to a
 payment that is `accepted`, or whose stored proof has no result. The charge status stays with the existing watcher. The Spark invoice or a BOLT11 the api handed out can already mark that charge `paid`, and this document does not change that. A charge held only by an unanswered proof is not cancelled by this call. This call does not record that proof `refused` and does not move the payment to `ended`. The proof stays unresolved until Orchestra answers. The pay link is one public
 URL and carries no payment id, so that open payment pins the URL until
