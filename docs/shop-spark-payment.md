@@ -744,14 +744,19 @@ when the invoice this payment named is settled. It is not left open
 after that. No zap, gift, or message is written for a till payment.
 
 Sats that arrive after the five minutes still pay that charge when it is
-not yet `paid`, the transfer was accepted against a quote that was valid
-for it, and that continued watch still includes the charge. If the Spark
-invoice has already marked the charge `paid`, that later BOLT11
-settlement does not change the charge. It marks the shop payment `paid`
-when it is the BOLT11 this payment stored. That later arrival is the
-invoice settlement of a transfer already accepted. It is not a new
-proof. A transfer sent after the charge has ended, with no such quote,
-does not pay it. The sticker then takes a new amount from the next
+not yet `paid` and the existing watcher still includes it. That watcher
+is every BOLT11 the api handed out for those sats while the charge was
+pending, and the Spark invoice. A Lightning payment with no Orchestra
+proof is one of those. This document does not add an acceptance check
+to that watcher. If the Spark invoice has already marked the charge
+`paid`, a later BOLT11 does not change the charge. When that BOLT11 is
+the one this payment stored, and Orchestra has accepted that transfer,
+it marks the shop payment `paid`. That later arrival is the settlement
+of an invoice already handed out. It is not a new proof. The watch past
+ten minutes applies only while the shop payment is `accepted`, and only
+to the BOLT11 that payment stored. A transfer sent after the charge has
+ended, with no invoice handed out while the charge was pending, does
+not pay the charge. The sticker then takes a new amount from the next
 payer.
 
 ## Tether Wallet
