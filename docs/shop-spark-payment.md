@@ -204,7 +204,7 @@ first. Replacing the quote does not extend those five minutes. When
 they pass while it is still `open`, the next read marks it `ended`
 before the read continues, unless a stored proof has no result and was stored less than ten minutes ago. That
 proof does not end the payment and does not replace the quote. A till payment moves to `ended` when its charge expires
-unpaid while the payment is still `open`, unless a stored proof has no result and was stored less than ten minutes ago. That proof does not end the payment and does not replace the quote. `DELETE /pos`, while the pending charge it would cancel belongs to a payment that is `accepted`, or whose stored proof has no result and was stored less than ten minutes ago, is **409** `{ "error": "A payment is already open" }` and cancels nothing. An `accepted` payment's charge stays `pending` or `expired` until the existing watcher confirms that payment's BOLT11. A charge held only by an unanswered proof stays that way until those ten minutes pass. The next `DELETE /pos` after that records the proof `refused` with no `txId` and moves an `open` payment to `ended` before it continues. It does not claim Orchestra sent that refusal. Otherwise, when it cancels that pending charge, an `open` payment moves to `ended`. When the BOLT11 this payment stored is settled, the payment is `paid`. The charge becoming `paid` from its separate Spark invoice does not. While the payment is still `open`, that Spark payment moves it to `ended`. While it is `accepted`, it stays `accepted` until that BOLT11 settles or Orchestra reports the order refunded or failed. Once that proof is refused, a till payment whose charge has already expired moves to `ended`.
+unpaid while the payment is still `open`, unless a stored proof has no result and was stored less than ten minutes ago. That proof does not end the payment and does not replace the quote. `DELETE /pos`, while the pending charge it would cancel belongs to a payment that is `accepted`, or whose stored proof has no result and was stored less than ten minutes ago, is **409** `{ "error": "A payment is already open" }` and cancels nothing. The charge status stays with the existing watcher. The Spark invoice or a BOLT11 the api handed out can already mark that charge `paid`, and this document does not change that. A charge held only by an unanswered proof is not cancelled by this call until those ten minutes pass. The next `DELETE /pos` after that records the proof `refused` with no `txId` and moves an `open` payment to `ended` before it continues. It does not claim Orchestra sent that refusal. Otherwise, when it cancels that pending charge, an `open` payment moves to `ended`. When the BOLT11 this payment stored is settled, the payment is `paid`. The charge becoming `paid` from its separate Spark invoice does not. While the payment is still `open`, that Spark payment moves it to `ended`. While it is `accepted`, it stays `accepted` until that BOLT11 settles or Orchestra reports the order refunded or failed. Once that proof is refused, a till payment whose charge has already expired moves to `ended`.
 
 The implementing change adds these tables. This document does not migrate
 them.
@@ -666,9 +666,7 @@ pending, and no proof is stored or the stored proof is `refused`, the
 call marks that payment `ended` and then creates the charge. A refused
 proof is a result, not an in-flight payment. `DELETE /pos` is that same
 **409** and cancels nothing while the pending charge belongs to a
-payment that is `accepted`, or whose stored proof has no result and was stored less than ten minutes ago. An `accepted` payment's
-charge stays `pending` or `expired` until the existing watcher confirms
-that payment's BOLT11. A charge held only by an unanswered proof stays that way until those ten minutes pass. The next `DELETE /pos` after that records the proof `refused` with no `txId` and moves an `open` payment to `ended` before it continues. It does not claim Orchestra sent that refusal. The pay link is one public
+payment that is `accepted`, or whose stored proof has no result and was stored less than ten minutes ago. The charge status stays with the existing watcher. The Spark invoice or a BOLT11 the api handed out can already mark that charge `paid`, and this document does not change that. A charge held only by an unanswered proof is not cancelled by this call until those ten minutes pass. The next `DELETE /pos` after that records the proof `refused` with no `txId` and moves an `open` payment to `ended` before it continues. It does not claim Orchestra sent that refusal. The pay link is one public
 URL and carries no payment id, so that open payment pins the URL until
 this call or the five minutes. While it is pending, both Lightning
 sendable bounds become that sat amount in millisats. Metadata stays on
@@ -683,8 +681,9 @@ A lapsed quote is replaced only while the charge is open and only for the
 same sats. It is not replaced while a stored proof has no result and was
 stored less than ten minutes ago.
 
-The charge is paid when the BOLT11 for those sats is settled. Orchestra
-pays that BOLT11. One charge is paid once. While that charge is pending
+The existing watcher pays the charge once, when the Spark invoice or a
+BOLT11 the api handed out for those sats settles. Orchestra paying that
+BOLT11 is one of those confirmations, not the only one. While that charge is pending
 and free in-app payments are on, the same invoice route also returns
 `sparkInvoice`, a `spark1…` invoice for exactly those sats to the shop's
 verified wallet key, memo `pos:<chargeId>`. A 21.gifts in-app wallet
@@ -708,9 +707,12 @@ charge does not pin the pay link. A page payment with no charge is paid
 when the invoice this payment named is settled. It is not left open
 after that. No zap, gift, or message is written for a till payment.
 
-Sats that arrive after the five minutes still pay that charge when the
-transfer was accepted against a quote that was valid for it and that
-continued watch still includes the charge. That later arrival is the
+Sats that arrive after the five minutes still pay that charge when it is
+not yet `paid`, the transfer was accepted against a quote that was valid
+for it, and that continued watch still includes the charge. If the Spark
+invoice has already marked the charge `paid`, that later BOLT11
+settlement does not change the charge. It marks the shop payment `paid`
+when it is the BOLT11 this payment stored. That later arrival is the
 invoice settlement of a transfer already accepted. It is not a new
 proof. A transfer sent after the charge has ended, with no such quote,
 does not pay it. The sticker then takes a new amount from the next
