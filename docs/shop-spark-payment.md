@@ -224,7 +224,7 @@ idempotency key of that quote call. `created_at` is set.
 offer, the method, the asset, the proof parameter, and the idempotency
 key of that attempt. The same quote, method, asset, and proof parameter
 are one row. A different proof parameter of the same quote is another
-row. It is stored before it is asked. At most one stored proof of a
+row only when Proof accepts it and the payment is under its cap. It is stored before it is asked. At most one stored proof of a
 payment has been sent and still has no result. That one is the
 unresolved row stored first. While that sent proof has no result,
 another row is not sent. That sent proof is retried with its own
@@ -336,8 +336,8 @@ A proof the quote does not accept, or a transfer Orchestra has not
 accepted, is **400** `{ "error": "Payment was not accepted" }`. That
 sent proof is asked again with the same idempotency key while it has
 no result. A different proof parameter of the same quote may be stored
-while the payment is still `open`, including when this proof is
-`refused` or still unresolved. While a sent proof of this payment has
+while the payment is still `open` and under the cap in Proof, including
+when this proof is `refused` or still unresolved. While a sent proof of this payment has
 no result, that other proof is not sent. The error does not ask for a
 second payment.
 
@@ -575,6 +575,25 @@ Tether Wallet for Android 1.11.0 (134) builds its proof request from
 request the check sends is `GET /lnurlp/tx/:username`. A different URL
 fails the check. This service does not add a second proof path.
 
+The proof parameter is checked before a row is stored. `hex`, for EVM,
+Bitcoin, and Firo, is the raw signed transaction: one query value, an
+optional leading `0x`, then an even run of hexadecimal characters, at
+least 100 and at most 200000. The stored value has no `0x`. `tx`, for
+Monero, Zano, Tron, and Cardano, is one query value of exactly 64
+hexadecimal characters and no prefix. Solana `tx` is one query value
+of 87 or 88 base58 characters and no prefix. Any other parameter, a
+repeated key, or a value outside that form is **400**
+`{ "error": "Payment was not accepted" }`, stores nothing, and is not
+sent. `GET /lnurlp/tx/:username` counts its own 120 requests per minute
+per client address, the same window as
+`GET /.well-known/lnurlp/:username` (`SPEC.md:323`). Over that limit
+the response is **429** `{ "error": "Too many requests" }`, nothing is
+stored, and Orchestra is not called. That answer is given before a
+repeat is read. A payment stores at most 8 `shop_proof` rows. A new
+parameter past that cap is the same **400**, stores nothing, and is
+not sent. A repeat of a stored parameter still reads that row when the
+request is under the limit.
+
 For a proof that is not yet stored, the api returns success the first
 time only when the payment is still `open`, the transfer matches the
 quote, and Orchestra has accepted it: the offered chain, the offered
@@ -585,8 +604,8 @@ not sent. The response is **400**
 and only while the payment is still `open`, it stores that proof as one `shop_proof` row
 for that offer, method, asset, and proof parameter. At most one stored
 proof of this payment has been sent and still has no result. While that
-row has no result and the payment is still `open`, a different proof
-is stored and is not sent. The
+row has no result and the payment is still `open` and under that cap, a
+different proof is stored and is not sent. The
 sent proof is retried with its own idempotency key until a definitive
 result. Only after that result is `refused` is the oldest stored proof
 that has not been sent asked, with its own idempotency key. A proof already stored for another quote of this payment stays
