@@ -1610,6 +1610,7 @@ describe('GET /messages/:id/external-shops', () => {
       getById: () => Promise.resolve(good),
       listShopsByPubkey: () => Promise.resolve([clip, good]),
       deleteById: () => Promise.resolve(true),
+      heartStats: () => Promise.resolve(new Map()),
     } as unknown as MessageStore;
     const res = await mount(store).request(`/messages/${NOTE}/external-shops`);
     expect(res.status).toBe(200);
@@ -1637,6 +1638,7 @@ describe('GET /messages/:id/external-shops', () => {
     const store = {
       getById: () => Promise.resolve(good),
       listShopsByPubkey: () => Promise.resolve([bad, good]),
+      heartStats: () => Promise.resolve(new Map()),
     } as unknown as MessageStore;
     const res = await mount(store).request(`/messages/${NOTE}/external-shops`);
     expect(res.status).toBe(200);
@@ -1669,6 +1671,40 @@ describe('GET /messages/:id/external-shops', () => {
       event: 'messages.external_shops.failed',
     });
     expect(JSON.stringify(line)).not.toContain(pubkey);
+  });
+
+  it('passes the signed-in viewer id to heartStats', async () => {
+    const pubkey = 'ab'.repeat(32);
+    const good = row({ id: NOTE, authorPubkey: pubkey, name: 'Ada', text: '#21GiftsShop' });
+    const heartStats = vi.fn((ids: readonly string[], viewer: string | null) => {
+      void ids;
+      void viewer;
+      return Promise.resolve(new Map());
+    });
+    const store = {
+      getById: () => Promise.resolve(good),
+      listShopsByPubkey: () => Promise.resolve([good]),
+      heartStats,
+    } as unknown as MessageStore;
+    const auth = new InMemoryAuthStore();
+    await auth.createAccount({
+      id: 'acc',
+      linkingKey: 'ab'.repeat(32),
+      role: 'basis',
+      name: null,
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: 'a'.repeat(64),
+      createdAt: 1_000_000,
+      rulesAgreedAt: null,
+      walletRequired: true,
+    });
+    await auth.createSession({ token: 'tok', accountId: 'acc', createdAt: NOW });
+    const res = await mount(store, auth).request(`/messages/${NOTE}/external-shops`, {
+      headers: { authorization: 'Bearer tok' },
+    });
+    expect(res.status).toBe(200);
+    expect(heartStats).toHaveBeenCalledWith([NOTE], 'acc');
   });
 });
 
@@ -1832,6 +1868,7 @@ describe('GET /messages/:id/external-credits', () => {
       getById: () => Promise.resolve(good),
       listCreditsByPubkey: () => Promise.resolve([clip, good]),
       deleteById: () => Promise.resolve(true),
+      heartStats: () => Promise.resolve(new Map()),
     } as unknown as MessageStore;
     const res = await mount(store).request(`/messages/${NOTE}/external-credits`);
     expect(res.status).toBe(200);
@@ -1859,6 +1896,7 @@ describe('GET /messages/:id/external-credits', () => {
     const store = {
       getById: () => Promise.resolve(good),
       listCreditsByPubkey: () => Promise.resolve([bad, good]),
+      heartStats: () => Promise.resolve(new Map()),
     } as unknown as MessageStore;
     const res = await mount(store).request(`/messages/${NOTE}/external-credits`);
     expect(res.status).toBe(200);
@@ -1891,6 +1929,40 @@ describe('GET /messages/:id/external-credits', () => {
       event: 'messages.external_credits.failed',
     });
     expect(JSON.stringify(line)).not.toContain(pubkey);
+  });
+
+  it('passes the signed-in viewer id to heartStats', async () => {
+    const pubkey = 'ab'.repeat(32);
+    const good = row({ id: NOTE, authorPubkey: pubkey, name: 'Ada', goalRepayable: true });
+    const heartStats = vi.fn((ids: readonly string[], viewer: string | null) => {
+      void ids;
+      void viewer;
+      return Promise.resolve(new Map());
+    });
+    const store = {
+      getById: () => Promise.resolve(good),
+      listCreditsByPubkey: () => Promise.resolve([good]),
+      heartStats,
+    } as unknown as MessageStore;
+    const auth = new InMemoryAuthStore();
+    await auth.createAccount({
+      id: 'acc',
+      linkingKey: 'ab'.repeat(32),
+      role: 'basis',
+      name: null,
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: 'a'.repeat(64),
+      createdAt: 1_000_000,
+      rulesAgreedAt: null,
+      walletRequired: true,
+    });
+    await auth.createSession({ token: 'tok', accountId: 'acc', createdAt: NOW });
+    const res = await mount(store, auth).request(`/messages/${NOTE}/external-credits`, {
+      headers: { authorization: 'Bearer tok' },
+    });
+    expect(res.status).toBe(200);
+    expect(heartStats).toHaveBeenCalledWith([NOTE], 'acc');
   });
 });
 

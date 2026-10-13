@@ -257,6 +257,7 @@ export function membersRoutes(deps: MembersRouteDeps): Hono {
         if (!member.ok) {
           return member.response;
         }
+        const viewerAccountId = auth.account.id;
         const account = member.account;
         const rows = await deps.messageStore.listShopsByAccount(account.id, MESSAGE_LIST_LIMIT);
         const messages = [];
@@ -276,8 +277,7 @@ export function membersRoutes(deps: MembersRouteDeps): Hono {
           const payable =
             kept.eventId !== null &&
             kept.eventId !== '' &&
-            account.lightningAddress !== null &&
-            account.lightningAddress.trim() !== '';
+            receivingAddress(account, deps.lnurlServer) !== null;
           messages.push(
             serializeMessage(
               kept,
@@ -290,7 +290,16 @@ export function membersRoutes(deps: MembersRouteDeps): Hono {
             ),
           );
         }
-        return c.json({ messages }, 200);
+        return c.json(
+          {
+            messages: await attachHeartStats(
+              (ids, viewer) => deps.messageStore.heartStats(ids, viewer),
+              viewerAccountId,
+              messages,
+            ),
+          },
+          200,
+        );
       } catch {
         logEvent('members.shops.failed');
         return c.json({ error: 'Messages are unavailable' }, 503);
@@ -306,6 +315,7 @@ export function membersRoutes(deps: MembersRouteDeps): Hono {
         if (!member.ok) {
           return member.response;
         }
+        const viewerAccountId = auth.account.id;
         const account = member.account;
         const rows = await deps.messageStore.listCreditsByAccount(account.id, MESSAGE_LIST_LIMIT);
         const messages = [];
@@ -325,8 +335,7 @@ export function membersRoutes(deps: MembersRouteDeps): Hono {
           const payable =
             kept.eventId !== null &&
             kept.eventId !== '' &&
-            account.lightningAddress !== null &&
-            account.lightningAddress.trim() !== '';
+            receivingAddress(account, deps.lnurlServer) !== null;
           messages.push(
             serializeMessage(
               kept,
@@ -339,7 +348,16 @@ export function membersRoutes(deps: MembersRouteDeps): Hono {
             ),
           );
         }
-        return c.json({ messages }, 200);
+        return c.json(
+          {
+            messages: await attachHeartStats(
+              (ids, viewer) => deps.messageStore.heartStats(ids, viewer),
+              viewerAccountId,
+              messages,
+            ),
+          },
+          200,
+        );
       } catch {
         logEvent('members.credits.failed');
         return c.json({ error: 'Messages are unavailable' }, 503);

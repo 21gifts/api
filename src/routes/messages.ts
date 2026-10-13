@@ -2140,6 +2140,7 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
         return c.json({ error: 'Messages are unavailable' }, 503);
       }
       try {
+        const viewer = await authedAccount(deps, c.req.header('authorization'));
         const messages = [];
         for (const row of result.messages) {
           const kept = await dropMissingVideoRow(deps.store, row);
@@ -2152,7 +2153,16 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
             continue;
           }
         }
-        return c.json({ messages }, 200);
+        return c.json(
+          {
+            messages: await attachHeartStats(
+              (ids, viewerId) => deps.store.heartStats(ids, viewerId),
+              viewer === null ? null : viewer.id,
+              messages,
+            ),
+          },
+          200,
+        );
       } catch {
         logEvent('messages.external_shops.failed');
         return c.json({ error: 'Messages are unavailable' }, 503);
@@ -2167,6 +2177,7 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
         return c.json({ error: 'Messages are unavailable' }, 503);
       }
       try {
+        const viewer = await authedAccount(deps, c.req.header('authorization'));
         const messages = [];
         for (const row of result.messages) {
           const kept = await dropMissingVideoRow(deps.store, row);
@@ -2179,7 +2190,16 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
             continue;
           }
         }
-        return c.json({ messages }, 200);
+        return c.json(
+          {
+            messages: await attachHeartStats(
+              (ids, viewerId) => deps.store.heartStats(ids, viewerId),
+              viewer === null ? null : viewer.id,
+              messages,
+            ),
+          },
+          200,
+        );
       } catch {
         logEvent('messages.external_credits.failed');
         return c.json({ error: 'Messages are unavailable' }, 503);

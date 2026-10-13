@@ -1027,9 +1027,7 @@ describe('GET /members/:accountId/shops', () => {
 
   it('lists only the member shops newest-first with the posts serialization', async () => {
     const authStore = await seededCaller();
-    await addAccount(authStore, ACCOUNT_ID, 'b'.repeat(64), {
-      lightningAddress: 'ada@walletofsatoshi.com',
-    });
+    await addAccount(authStore, ACCOUNT_ID, 'b'.repeat(64), { wallet: true });
     const messageStore = new InMemoryMessageStore();
     const older = '33333333-3333-4333-8333-333333333333';
     const newer = '34343434-3434-4434-8434-343434343434';
@@ -1095,6 +1093,31 @@ describe('GET /members/:accountId/shops', () => {
     expect(body.messages[1]?.replyCount).toBe(0);
     expect(body.messages[1]?.payable).toBe(false);
     expect(body.messages[1]).not.toHaveProperty('parentId');
+  });
+
+  it('lists a shop as not payable when the member has no verified wallet', async () => {
+    const authStore = await seededCaller();
+    await addAccount(authStore, ACCOUNT_ID, 'b'.repeat(64));
+    const messageStore = new InMemoryMessageStore();
+    const id = '3c3c3c3c-3c3c-43c3-83c3-3c3c3c3c3c3c';
+    await messageStore.create({
+      id,
+      accountId: ACCOUNT_ID,
+      name: 'Ada',
+      text: '#21GiftsShop',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+      eventId: 'ee'.repeat(32),
+    });
+    const res = await mount(authStore, messageStore).request(`/members/${ACCOUNT_ID}/shops`, {
+      headers: AUTH,
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { messages: Array<{ id: string; payable: boolean }> };
+    expect(body.messages).toHaveLength(1);
+    expect(body.messages[0]?.id).toBe(id);
+    expect(body.messages[0]?.payable).toBe(false);
   });
 
   it('keeps a shop whose video file is present', async () => {
@@ -1295,9 +1318,7 @@ describe('GET /members/:accountId/credits', () => {
 
   it('lists only the member credits newest-first with the posts serialization', async () => {
     const authStore = await seededCaller();
-    await addAccount(authStore, ACCOUNT_ID, 'b'.repeat(64), {
-      lightningAddress: 'ada@walletofsatoshi.com',
-    });
+    await addAccount(authStore, ACCOUNT_ID, 'b'.repeat(64), { wallet: true });
     const messageStore = new InMemoryMessageStore();
     const older = '53535353-5353-4353-8353-535353535353';
     const newer = '54545454-5454-4454-8454-545454545454';
@@ -1378,6 +1399,32 @@ describe('GET /members/:accountId/credits', () => {
     expect(body.messages[1]?.replyCount).toBe(0);
     expect(body.messages[1]?.payable).toBe(false);
     expect(body.messages[1]).not.toHaveProperty('parentId');
+  });
+
+  it('lists a credit as not payable when the member has no verified wallet', async () => {
+    const authStore = await seededCaller();
+    await addAccount(authStore, ACCOUNT_ID, 'b'.repeat(64));
+    const messageStore = new InMemoryMessageStore();
+    const id = '59595959-5959-4959-8959-595959595959';
+    await messageStore.create({
+      id,
+      accountId: ACCOUNT_ID,
+      name: 'Ada',
+      text: 'A credit',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+      eventId: 'ee'.repeat(32),
+      goalRepayable: true,
+    });
+    const res = await mount(authStore, messageStore).request(`/members/${ACCOUNT_ID}/credits`, {
+      headers: AUTH,
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { messages: Array<{ id: string; payable: boolean }> };
+    expect(body.messages).toHaveLength(1);
+    expect(body.messages[0]?.id).toBe(id);
+    expect(body.messages[0]?.payable).toBe(false);
   });
 
   it('keeps a credit whose video file is present', async () => {
