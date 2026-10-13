@@ -200,7 +200,7 @@ first. Replacing the quote does not extend those five minutes. When
 they pass while it is still `open`, the next read marks it `ended`
 before the read continues, unless a stored proof has no result. That
 proof does not end the payment and does not replace the quote. A till payment moves to `ended` when its charge expires
-unpaid while the payment is still `open`, unless a stored proof has no result. That proof does not end the payment and does not replace the quote. `DELETE /pos`, while the pending charge it would cancel belongs to a payment whose stored proof has no result, is **409** `{ "error": "A payment is already open" }` and cancels nothing. Otherwise, when it cancels that pending charge, an `open` payment moves to `ended`. It does not change an `accepted` payment. When that charge is paid, the payment is `paid`. Once that proof is refused, a till payment whose charge has already expired moves to `ended`.
+unpaid while the payment is still `open`, unless a stored proof has no result. That proof does not end the payment and does not replace the quote. `DELETE /pos`, while the pending charge it would cancel belongs to a payment that is `accepted`, or whose stored proof has no result, is **409** `{ "error": "A payment is already open" }` and cancels nothing. That charge stays `pending` or `expired` until the existing watcher confirms the BOLT11. Otherwise, when it cancels that pending charge, an `open` payment moves to `ended`. When that charge is paid, the payment is `paid`. Once that proof is refused, a till payment whose charge has already expired moves to `ended`.
 
 The implementing change adds these tables. This document does not migrate
 them.
@@ -649,7 +649,9 @@ pending, and no proof is stored or the stored proof is `refused`, the
 call marks that payment `ended` and then creates the charge. A refused
 proof is a result, not an in-flight payment. `DELETE /pos` is that same
 **409** and cancels nothing while the pending charge belongs to a
-payment whose stored proof has no result. The pay link is one public
+payment that is `accepted`, or whose stored proof has no result. That
+charge stays `pending` or `expired` until the existing watcher confirms
+the BOLT11. The pay link is one public
 URL and carries no payment id, so that open payment pins the URL until
 this call or the five minutes. While it is pending, both Lightning
 sendable bounds become that sat amount in millisats. Metadata stays on
