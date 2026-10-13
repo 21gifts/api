@@ -105,21 +105,27 @@ link already sends: `Access-Control-Allow-Origin: *`,
 `POST /pay/:username/payment` opens a payment for the page. No session.
 The body is `{ "amountSats": <integer> }`. The amount uses the same
 window as `POST /pay/:username/invoice`. An amount the page would already
-refuse is **400** `{ "error": "Enter a whole number of sats" }`. An
-invalid username, an unknown account, or a shop with no verified wallet
-is **404** `{ "error": "Not found" }`. The LNURL server not being
-configured is that same **404**. CORS is the page's existing origin list,
-the same as `POST /pay/:username/invoice`, not `*`.
+refuse is **400** `{ "error": "Enter a whole number of sats" }`. Checks
+then run in this order. An invalid username, an unknown account, a shop
+with no verified wallet, or an `LNURL_SERVER_URL` that is missing, blank,
+or not an absolute `http` or `https` URL, is **404**
+`{ "error": "Not found" }`. That **404** does not include
+`PUBLIC_BASE_URL`. `GET /.well-known/lnurlp/:username` is unchanged.
+There, the LNURL server is configured only when `LNURL_SERVER_URL` and
+`PUBLIC_BASE_URL` both resolve, and the server not being configured stays
+**404**. CORS is the page's existing origin list, the same as
+`POST /pay/:username/invoice`, not `*`.
 
 The call writes a row only when the Orchestra key is configured, this
 service can obtain or reuse the BOLT11 `POST /pay/:username/invoice`
 already returns for this sat count on the shop's verified in-app wallet,
 and Orchestra's exact-out quote commits to that sat count on that
-invoice. A missing Orchestra key, or a `PUBLIC_BASE_URL` that is
-missing, blank, or not an absolute `http` or `https` URL, is **503**
+invoice. After the **404** checks, a missing Orchestra key, or a
+`PUBLIC_BASE_URL` that is missing, blank, or not an absolute `http` or
+`https` URL, is **503**
 `{ "error": "Stablecoin payment is unavailable" }`, writes nothing, and
-does not fetch an invoice. The pay link stays the pay request it already
-returns. When the key is set, a resolve or store
+does not fetch an invoice. It is not that **404**. The pay link stays
+the pay request it already returns. When the key is set, a resolve or store
 failure, an empty or non-safe-integer window, a failed invoice fetch, or
 a BOLT11 that is missing, not a safe integer amount, or not the requested
 amount, is **502** `{ "error": "Lightning Address could not be resolved" }`
@@ -203,7 +209,7 @@ first. Replacing the quote does not extend those five minutes. When
 they pass while it is still `open`, the next read marks it `ended`
 before the read continues, unless a stored proof has no result. That
 proof does not end the payment and does not replace the quote. A till payment moves to `ended` when its charge expires
-unpaid while the payment is still `open`, unless a stored proof has no result. That proof does not end the payment and does not replace the quote. `DELETE /pos`, while the pending charge it would cancel belongs to a payment that is `accepted`, or whose stored proof has no result, is **409** `{ "error": "A payment is already open" }` and cancels nothing. The charge status stays with the existing watcher. The Spark invoice or a BOLT11 the api handed out can already mark that charge `paid`, and this document does not change that. A charge held only by an unanswered proof is not cancelled by this call. This call does not record that proof `refused` and does not move the payment to `ended`. The proof stays unresolved until Orchestra answers. Otherwise, when it cancels that pending charge, an `open` payment moves to `ended`. When the BOLT11 this payment stored is settled, the payment is `paid`. The charge becoming `paid` from its separate Spark invoice does not. While the payment is still `open`, that Spark payment moves it to `ended`. While it is `accepted`, it stays `accepted` until that BOLT11 settles or Orchestra reports the order refunded or failed. Once that proof is refused, a till payment whose charge has already expired moves to `ended`.
+unpaid while the payment is still `open`, unless a stored proof has no result. That proof does not end the payment and does not replace the quote. `DELETE /pos`, while the pending charge it would cancel belongs to a payment that is `accepted`, or whose stored proof has no result, is **409** `{ "error": "A payment is already open" }` and cancels nothing. The charge status stays with the existing watcher. The Spark invoice or a BOLT11 the api handed out can already mark that charge `paid`, and this document does not change that. A charge held only by an unanswered proof is not cancelled by this call. This call does not record that proof `refused` and does not move the payment to `ended`. The proof stays unresolved until Orchestra answers. Otherwise, when it cancels that pending charge, an `open` payment moves to `ended`. When the BOLT11 this payment stored is settled, the payment is `paid`. The charge becoming `paid` from its separate Spark invoice does not. While the payment is still `open` and a stored proof has no result, that Spark payment marks only the charge `paid`. It does not move the payment to `ended` and does not record the proof `refused`. The proof stays unresolved until Orchestra answers. Otherwise, while the payment is still `open`, that Spark payment moves it to `ended`. While it is `accepted`, it stays `accepted` until that BOLT11 settles or Orchestra reports the order refunded or failed. Once that proof is refused, a till payment whose charge has already expired, or whose charge is already `paid` from that separate Spark invoice, moves to `ended`.
 
 The implementing change adds these tables. This document does not migrate
 them.
@@ -258,9 +264,15 @@ On `GET /lnurlp/tx/:username`, and on `GET /lnurlp/cb/:username` when
 **400** `{ "error": "No such quote" }`. It is not served as another
 quote. An expired quote is that same **400**. On the callback, expiry
 is that error even after the payment is `accepted`. On the proof, expiry
-is that error only while the payment is not yet `accepted` and the proof
-was not stored while the quote was valid. After `accepted` or `paid`, a
-matching proof stays **200** even when `quote.expiration` is in the past.
+is that error only when the proof was not stored while the quote was
+valid. A stored proof is answered from its stored result, not from the
+payment status. Only a stored `accepted` result with its `txId` is
+**200**, including when the payment is `paid` and `quote.expiration` is
+in the past. A stored `refused` result stays **400**
+`{ "error": "Payment was not accepted" }`, including when the payment is
+`paid`. A stored proof with no result is asked of Orchestra again for
+that same proof, including when the payment is `paid` or the BOLT11 was
+paid directly. A missing answer is not **200** and is not that **400**.
 The callback does not return the transaction detail after the quote has
 lapsed.
 
@@ -281,9 +293,10 @@ amount is waiting.
 A proof Orchestra has accepted is **200** `{ "txId": "<id>" }`. The body
 is exactly that object and no other transaction-id field. `txId` is the
 reference Orchestra accepted. It is not the payer's transaction hash.
-The call does not wait for bitcoin to arrive. A repeat after acceptance
-is **200** and does not create a second payment. The check treats that
-success as a payment only when the body carries `txId`.
+The call does not wait for bitcoin to arrive. A repeat of that stored
+`accepted` proof is **200** and does not create a second payment. A
+`refused` proof and a proof with no result are not that repeat. The
+check treats that success as a payment only when the body carries `txId`.
 
 A Lightning call on `GET /lnurlp/cb/:username` has no `method`.
 It sends `amount` in millisats. When that amount is the fixed sat count
@@ -526,11 +539,16 @@ not record the proof `refused`, does not move the payment to `ended`,
 and is not **400** `{ "error": "Payment was not accepted" }`. When Orchestra accepts, it stores `accepted` and the `txId` Orchestra
 returned. The response is **200** `{ "txId": "<id>" }`, including when
 the quote has lapsed since the proof was stored. A payment that is
-still `open` becomes `accepted`. A payment that is already `paid`
-stays `paid`. When Orchestra does not accept, the stored proof is
-`refused` and stores no `txId`. The response is **400**
+still `open` becomes `accepted`, including when the separate Spark
+invoice has already marked the charge `paid`. The charge stays `paid`.
+From that accept, the payment is watched on the BOLT11 it stored, the
+same accepted-payment watch stated for the till. A payment that is
+already `paid` stays `paid`. When Orchestra does not accept, the stored
+proof is `refused` and stores no `txId`. The response is **400**
 `{ "error": "Payment was not accepted" }`. A `paid` payment stays
-`paid`. While the payment is still `open`, the five-minute read may
+`paid`. While the payment is still `open` and the charge is already
+`paid` from that separate Spark invoice, the payment moves to `ended`.
+Otherwise, while the payment is still `open`, the five-minute read may
 end it again. A repeat answers from that stored result, not from the
 payment status. Only `accepted` with its stored `txId` is **200**. A
 proof with no result is asked of Orchestra again for that same stored proof, even when the BOLT11
