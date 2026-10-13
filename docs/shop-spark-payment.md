@@ -197,14 +197,20 @@ below.
 `shop_quote` stores one public quote. `id` is `quote.id`. `payment_id`
 references `shop_payment`. `expires_at` is `quote.expiration`.
 `transfer_amounts` is the JSON array that quote served, so a later price
-cannot rewrite it. This row does not store an Orchestra `quoteId`. The
-first callback for a method names the asset that method will submit.
-The quote records that asset for that method. It is not an Orchestra
-id, and it is not shown as one. A repeat of that asset returns the
-detail of that offer. A different asset of the same method is **400**
+cannot rewrite it. This row does not store an Orchestra `quoteId`, and it does not record
+the asset a method will submit. `created_at` is set.
+
+`shop_selection` stores the offer one public quote chose for one method.
+`quote_id` references `shop_quote`. `method` is the chain. `offer_id`
+references the `shop_offer` of that quote and method whose asset is the
+one the first callback named. Unique `(quote_id, method)`. The first
+callback inserts this row in that same step. The insert does not
+replace an existing row. The callback and the proof both read this row,
+including after a restart. It is not an Orchestra id, and it is not
+shown as one. A repeat of that asset returns the detail of that offer.
+A different asset of the same method is **400**
 `{ "error": "That payment is not offered" }` and does not replace that
-asset. The offer that was not selected stays stored and is not
-submitted. `created_at` is set.
+row. The offer that was not selected stays stored and is not submitted.
 
 `shop_offer` stores one Orchestra quote for one method and one asset of
 that public quote. `quote_id` references `shop_quote`. One quote,
@@ -624,9 +630,9 @@ is not asked. The response is **400**
 stored `txId`. A repeat of the `accepted` proof is the **200** below. The proof
 query does not carry `asset`. The asset is the one
 that method lists. When the method lists both, the asset is the one
-the quote recorded for that method. The proof references that offer
-and submits that offer's `provider_ref`. If it lists both and no asset
-is recorded for that method, the proof is **400**
+`shop_selection` stores for that method. The proof references that offer
+and submits that offer's `provider_ref`. If it lists both and no
+`shop_selection` row exists for that method, the proof is **400**
 `{ "error": "That payment is not offered" }` and nothing is stored. A payment that is `ended`, and that has no such stored proof,
 is not moved to `accepted` by a later proof. While a stored proof has
 no result, that sent proof is not refused for quote expiry. A retry
@@ -690,8 +696,10 @@ call uses the same key and the same body. Each offered pair is its own
 quote call and uses its own key. A different proof uses its own key
 when it is sent, and not while another sent proof of the payment has
 no result. A transport timeout, HTTP 429, or HTTP 5xx leaves
-that call unresolved and is retried with the same key. This service
-does not invent a deadline shorter than the quote's `expiresAt`. An
+that call unresolved and is retried with the same key. A quote call
+stops after the budget below. A submit or status call does not invent
+a deadline shorter than the stored offer's `expiresAt`. A quote call
+has no `expiresAt` until it commits. An
 error body is `{ "error": { "code", "message" } }`. The wallet is not
 shown `message`.
 
@@ -714,9 +722,12 @@ That call's `quoteId` is the `provider_ref` on the `shop_offer` for
 that method and asset. The expiry this document reads is that call's
 `expiresAt`, stored on that offer. An EVM `transaction` is `chainId`,
 `to`, `data`, and `value`. Any other status, a timeout, or a 200 that
-does not commit means that pair is not offered. A timeout, an HTTP
-429, or an HTTP 5xx of that call is retried with the same key before
-this call answers. When no pair commits, the payment call is **503**
+does not commit means that pair is not offered and is not retried. A
+timeout, an HTTP 429, or an HTTP 5xx is retried with the same key at
+most twice more before this call answers. The third unfinished attempt
+means that pair is not offered and is not stored. `expiresAt` is read
+only from a committed quote and is the lifetime of that stored offer,
+not a deadline for this call. When no pair commits, the payment call is **503**
 `{ "error": "Stablecoin payment is unavailable" }`, writes nothing, and
 does not serve the quote. After it has answered, the next open uses a
 new key for each pair. This service does not call
