@@ -235,11 +235,11 @@ null is allowed. At most one open till payment exists per account: the
 row whose charge is pending. A page payment has `pos_charge_id` null and
 `pay_token` set. Several page payments of one account may be `open` at
 once. None of them is the amount the shared pay link returns.
-`pay_token` is 32 bytes from a cryptographic random source, encoded as
-base64url with no padding: 43 characters from `A-Z`, `a-z`, `0-9`, `-`,
-and `_`. It is unique. It is null on a till payment. It is not the
+`pay_token` stores only the SHA-256 hash of a 32-byte cryptographic random token, as hex, 64 characters. The raw token is base64url with no padding: 43 characters from `A-Z`, `a-z`, `0-9`, `-`,
+and `_`. The row does not store that raw token. The hash is unique. It is null on a till payment. It is not the
 payment UUID. Guessing that UUID does not select this payment. A token
-that is not this form is unknown. `bolt11` and `payment_hash` are the
+that is not this form is unknown, and its hash is not looked up.
+`bolt11` and `payment_hash` are the
 current quote's invoice. Both are set when the row is created. A page
 payment's open fetch reads that row by its token. A till payment's
 open fetch reads the row with that `pos_charge_id`. It is not read
@@ -488,10 +488,10 @@ payment, so this call is never `GET /lnurlp/cb/invoice`. That path is
 the invoice forward for username `cb` on every query, including
 `amount` alone, and it does not return a shop BOLT11. This call sends
 `amount` in millisats and does not mint an invoice. A `pay` query is
-that page payment's `pay_token`. It selects that one row and no other.
+the raw token. The call hashes it with SHA-256 and matches `pay_token`. It selects that one row and no other.
 When `amount` is that row's sat count times 1000, the response is
 `{ "pr": "<bolt11>" }` for the BOLT11 stored on that row. A `pay`
-value that is not a `pay_token`, or that matches no page payment, is
+value that is not the raw-token form, or whose hash matches no page payment, is
 **404** `{ "error": "Not found" }`. A missing or different amount is
 **400** `{ "error": "Enter a whole number of sats" }` and returns no
 invoice. It does not return another payment of the same amount. With
@@ -718,14 +718,14 @@ pay link's path does not change.
 ### Page capability
 
 `GET /.well-known/lnurlp/pay/:token` is one page payment. No session.
-The token is that payment's `pay_token`. The route is the two segments
+The path carries the raw token. The route hashes it with SHA-256 and matches `pay_token`. `requestLogPath` replaces `/.well-known/lnurlp/pay/<token>` with `/.well-known/lnurlp/pay/:payToken` before `http.request` and `api_log` store the path (`src/lib/log.ts:169`, `src/lib/log.ts:208`). `db_change_redact` lists `pay_token` with `token` (`src/lib/db-change.ts:39`). Those logs do not store the raw token. The route is the two segments
 `pay` and the token. It is not `GET /.well-known/lnurlp/:username`. An
 account whose username is `pay` stays that one-segment route. A token
-that is not the form above, or that matches no page payment, is **404**
+that is not the form above, or whose hash matches no page payment, is **404**
 `{ "error": "Not found" }`. The response is the known-amount pay request
 for this payment only, with the same fields. `callback` is the origin
 from `resolvePublicApiBase` plus `/lnurlp/cb/<username>?pay=<token>`.
-The token is that payment's `pay_token`. Username
+The query carries the raw token. The server hashes it and matches `pay_token`. Username
 `invoice` is not served, so that callback is never
 `/lnurlp/cb/invoice` and the proof is never `/lnurlp/tx/invoice`.
 The proof URL replaces `/cb` with `/tx` and keeps the `pay` query.
