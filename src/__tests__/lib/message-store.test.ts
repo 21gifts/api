@@ -871,6 +871,247 @@ describe('InMemoryMessageStore', () => {
     expect(listed[0]?.replyCount).toBe(2);
   });
 
+  it('assigns a member shop to the assignee and not to its author', async () => {
+    const assigned = {
+      ...EARLY,
+      id: 'shop-assigned',
+      accountId: 'author',
+      text: 'Visit #21GiftsShop',
+      shopAccount: { id: 'assignee', username: 'ada', name: 'Ada' },
+    };
+    const store = new InMemoryMessageStore([assigned]);
+    expect(await store.countShopsByAccount('assignee')).toBe(1);
+    expect(await store.countShopsByAccount('author')).toBe(0);
+    expect((await store.listShopsByAccount('assignee', 10)).map((row) => row.id)).toEqual([
+      'shop-assigned',
+    ]);
+    expect(await store.listShopsByAccount('author', 10)).toEqual([]);
+  });
+
+  it('assigns null and omitted shop accounts to the author only', async () => {
+    const store = new InMemoryMessageStore([
+      { ...LATE, id: 'shop-null', accountId: 'author', text: '#21GiftsShop!', shopAccount: null },
+      { ...TIE_LOW, id: 'shop-omitted', accountId: 'author', text: '#21giftsshop' },
+    ]);
+    expect(await store.countShopsByAccount('author')).toBe(2);
+    expect(await store.countShopsByAccount('assignee')).toBe(0);
+    expect((await store.listShopsByAccount('author', 10)).map((row) => row.id)).toEqual([
+      'shop-omitted',
+      'shop-null',
+    ]);
+    expect(await store.listShopsByAccount('assignee', 10)).toEqual([]);
+  });
+
+  it('member shops enforce live top-level hashtag-token matching', async () => {
+    const store = new InMemoryMessageStore([
+      { ...EARLY, id: 'shop-end', text: 'Open #21GiftsShop' },
+      { ...LATE, id: 'shop-punctuation', text: '#21GiftsShop.' },
+      { ...TIE_LOW, id: 'shop-case', text: '#21giftsshop' },
+      {
+        ...TIE_HIGH,
+        id: 'shop-deleted',
+        text: '#21GiftsShop',
+        deletedAt: new Date('2026-09-01T00:00:00.000Z'),
+        deletedBy: 'staff',
+      },
+      { ...TIE_HIGH, id: 'shop-reply', text: '#21GiftsShop', parentId: 'shop-end' },
+      { ...TIE_HIGH, id: 'shop-prefix', text: '#21GiftsShopper' },
+      { ...TIE_HIGH, id: 'shop-no-hash', text: '21GiftsShop' },
+    ]);
+    expect(await store.countShopsByAccount('acc')).toBe(3);
+    expect((await store.listShopsByAccount('acc', 10)).map((row) => row.id)).toEqual([
+      'shop-case',
+      'shop-punctuation',
+      'shop-end',
+    ]);
+  });
+
+  it('lists member shops newest-first with an id tie, limit, and attributed replyCount', async () => {
+    const zapper = 'ab'.repeat(32);
+    const store = new InMemoryMessageStore([
+      { ...EARLY, id: 'shop-early', text: '#21GiftsShop' },
+      { ...LATE, id: 'shop-late', text: '#21GiftsShop' },
+      { ...TIE_LOW, id: 'shop-m', text: '#21GiftsShop' },
+      { ...TIE_HIGH, id: 'shop-z', text: '#21GiftsShop' },
+      { ...LATE, id: 'reply-member', parentId: 'shop-z', text: 'member child' },
+      {
+        ...LATE,
+        id: 'reply-zapper',
+        parentId: 'shop-z',
+        accountId: null,
+        authorPubkey: zapper.toUpperCase(),
+        text: 'zapper child',
+      },
+      {
+        ...LATE,
+        id: 'reply-external',
+        parentId: 'shop-z',
+        accountId: null,
+        authorPubkey: 'cd'.repeat(32),
+        text: 'external child',
+      },
+      {
+        ...LATE,
+        id: 'reply-orphan',
+        parentId: 'shop-z',
+        accountId: null,
+        authorPubkey: null,
+        text: 'orphan child',
+      },
+      {
+        ...LATE,
+        id: 'reply-deleted',
+        parentId: 'shop-z',
+        text: 'deleted child',
+        deletedAt: new Date('2026-09-01T00:00:00.000Z'),
+        deletedBy: 'staff',
+      },
+    ]);
+    await store.recordZapper(zapper, 'receipt-shop', new Date('2026-09-18T10:00:00Z'));
+    const listed = await store.listShopsByAccount('acc', 10);
+    expect(listed.map((row) => row.id)).toEqual(['shop-z', 'shop-m', 'shop-late', 'shop-early']);
+    expect(listed[0]?.replyCount).toBe(2);
+    expect((await store.listShopsByAccount('acc', 1)).map((row) => row.id)).toEqual(['shop-z']);
+  });
+
+  it('counts member credits only for the author and ignores non-exact repayable flags', async () => {
+    const store = new InMemoryMessageStore([
+      { ...EARLY, id: 'credit-own', goalRepayable: true },
+      {
+        ...LATE,
+        id: 'credit-other',
+        accountId: 'other',
+        goalRepayable: true,
+        shopAccount: { id: 'acc', username: 'ada', name: 'Ada' },
+      },
+      {
+        ...TIE_LOW,
+        id: 'credit-assigned',
+        goalRepayable: true,
+        shopAccount: { id: 'assignee', username: 'bob', name: 'Bob' },
+      },
+      { ...TIE_HIGH, id: 'ask-not-repayable', goalSats: 100 },
+      {
+        ...TIE_HIGH,
+        id: 'ask-string-true',
+        goalSats: 50,
+        goalRepayable: 'true' as unknown as true,
+      },
+    ]);
+    expect(await store.countCreditsByAccount('acc')).toBe(2);
+    expect(await store.countCreditsByAccount('other')).toBe(1);
+    expect((await store.listCreditsByAccount('acc', 10)).map((row) => row.id)).toEqual([
+      'credit-assigned',
+      'credit-own',
+    ]);
+    expect(await store.listCreditsByAccount('assignee', 10)).toEqual([]);
+  });
+
+  it('member credits exclude deleted notes and replies even when repayable', async () => {
+    const store = new InMemoryMessageStore([
+      { ...EARLY, id: 'credit-live', goalRepayable: true },
+      {
+        ...LATE,
+        id: 'credit-deleted',
+        goalRepayable: true,
+        deletedAt: new Date('2026-09-01T00:00:00.000Z'),
+        deletedBy: 'staff',
+      },
+      { ...TIE_HIGH, id: 'credit-reply', parentId: 'credit-live', goalRepayable: true },
+    ]);
+    expect(await store.countCreditsByAccount('acc')).toBe(1);
+    expect((await store.listCreditsByAccount('acc', 10)).map((row) => row.id)).toEqual([
+      'credit-live',
+    ]);
+  });
+
+  it('member credits include unfunded and still-live repaid notes', async () => {
+    const store = new InMemoryMessageStore([
+      {
+        ...EARLY,
+        id: 'credit-unfunded',
+        goalRepayable: true,
+        goalSats: 100,
+        sats: 0,
+        goalFundedAt: null,
+      },
+      {
+        ...LATE,
+        id: 'credit-repaid-funded-at',
+        goalRepayable: true,
+        goalSats: 100,
+        sats: 40,
+        goalFundedAt: new Date('2026-09-01T00:00:00.000Z'),
+      },
+      {
+        ...TIE_LOW,
+        id: 'credit-repaid-sats',
+        goalRepayable: true,
+        goalSats: 50,
+        sats: 50,
+      },
+    ]);
+    expect(await store.countCreditsByAccount('acc')).toBe(3);
+    expect((await store.listCreditsByAccount('acc', 10)).map((row) => row.id)).toEqual([
+      'credit-repaid-sats',
+      'credit-repaid-funded-at',
+      'credit-unfunded',
+    ]);
+  });
+
+  it('lists member credits newest-first with an id tie, limit, and attributed replyCount', async () => {
+    const zapper = 'ab'.repeat(32);
+    const store = new InMemoryMessageStore([
+      { ...EARLY, id: 'credit-early', goalRepayable: true },
+      { ...LATE, id: 'credit-late', goalRepayable: true },
+      { ...TIE_LOW, id: 'credit-m', goalRepayable: true },
+      { ...TIE_HIGH, id: 'credit-z', goalRepayable: true },
+      { ...LATE, id: 'reply-member', parentId: 'credit-z', text: 'member child' },
+      {
+        ...LATE,
+        id: 'reply-zapper',
+        parentId: 'credit-z',
+        accountId: null,
+        authorPubkey: zapper.toUpperCase(),
+        text: 'zapper child',
+      },
+      {
+        ...LATE,
+        id: 'reply-external',
+        parentId: 'credit-z',
+        accountId: null,
+        authorPubkey: 'cd'.repeat(32),
+        text: 'external child',
+      },
+      {
+        ...LATE,
+        id: 'reply-orphan',
+        parentId: 'credit-z',
+        accountId: null,
+        authorPubkey: null,
+        text: 'orphan child',
+      },
+      {
+        ...LATE,
+        id: 'reply-deleted',
+        parentId: 'credit-z',
+        text: 'deleted child',
+        deletedAt: new Date('2026-09-01T00:00:00.000Z'),
+        deletedBy: 'staff',
+      },
+    ]);
+    await store.recordZapper(zapper, 'receipt-credit', new Date('2026-09-18T10:00:00Z'));
+    const listed = await store.listCreditsByAccount('acc', 10);
+    expect(listed.map((row) => row.id)).toEqual([
+      'credit-z',
+      'credit-m',
+      'credit-late',
+      'credit-early',
+    ]);
+    expect(listed[0]?.replyCount).toBe(2);
+    expect((await store.listCreditsByAccount('acc', 1)).map((row) => row.id)).toEqual(['credit-z']);
+  });
+
   it('listPostsByPubkey is case-insensitive and excludes account and deleted rows', async () => {
     const pubkey = 'aa'.repeat(32);
     const store = new InMemoryMessageStore();
@@ -997,6 +1238,240 @@ describe('InMemoryMessageStore', () => {
     const listed = await store.listPostsByPubkey(pubkey, 10);
     expect(listed).toHaveLength(1);
     expect(listed[0]?.replyCount).toBe(2);
+  });
+
+  it('counts and lists only unassigned external shops for a case-insensitive pubkey', async () => {
+    const pubkey = 'aa'.repeat(32);
+    const zapper = 'bb'.repeat(32);
+    const store = new InMemoryMessageStore([
+      {
+        ...EARLY,
+        id: 'external-shop-early',
+        accountId: null,
+        authorPubkey: pubkey.toUpperCase(),
+        text: '#21GiftsShop',
+      },
+      {
+        ...LATE,
+        id: 'external-shop-late',
+        accountId: null,
+        authorPubkey: pubkey,
+        text: '#21giftsshop!',
+        shopAccount: null,
+      },
+      {
+        ...TIE_LOW,
+        id: 'external-shop-m',
+        accountId: null,
+        authorPubkey: pubkey,
+        text: '#21GiftsShop',
+      },
+      {
+        ...TIE_HIGH,
+        id: 'external-shop-z',
+        accountId: null,
+        authorPubkey: pubkey,
+        text: '#21GiftsShop',
+      },
+      { ...LATE, id: 'member-shop', authorPubkey: pubkey, text: '#21GiftsShop' },
+      {
+        ...LATE,
+        id: 'assigned-shop',
+        accountId: null,
+        authorPubkey: pubkey,
+        text: '#21GiftsShop',
+        shopAccount: { id: 'acc', username: 'ada', name: 'Ada' },
+      },
+      {
+        ...LATE,
+        id: 'null-pubkey-shop',
+        accountId: null,
+        authorPubkey: null,
+        text: '#21GiftsShop',
+      },
+      {
+        ...LATE,
+        id: 'deleted-external-shop',
+        accountId: null,
+        authorPubkey: pubkey,
+        text: '#21GiftsShop',
+        deletedAt: new Date('2026-09-01T00:00:00.000Z'),
+        deletedBy: 'staff',
+      },
+      {
+        ...LATE,
+        id: 'external-shop-reply',
+        accountId: null,
+        authorPubkey: pubkey,
+        text: '#21GiftsShop',
+        parentId: 'external-shop-early',
+      },
+      {
+        ...LATE,
+        id: 'external-shop-prefix',
+        accountId: null,
+        authorPubkey: pubkey,
+        text: '#21GiftsShopper',
+      },
+      {
+        ...LATE,
+        id: 'other-pubkey-shop',
+        accountId: null,
+        authorPubkey: 'dd'.repeat(32),
+        text: '#21GiftsShop',
+      },
+      { ...LATE, id: 'member-child', parentId: 'external-shop-z', text: 'member child' },
+      {
+        ...LATE,
+        id: 'zapper-child',
+        parentId: 'external-shop-z',
+        accountId: null,
+        authorPubkey: zapper.toUpperCase(),
+        text: 'zapper child',
+      },
+      {
+        ...LATE,
+        id: 'external-child',
+        parentId: 'external-shop-z',
+        accountId: null,
+        authorPubkey: 'cc'.repeat(32),
+        text: 'external child',
+      },
+      {
+        ...LATE,
+        id: 'deleted-child',
+        parentId: 'external-shop-z',
+        text: 'deleted child',
+        deletedAt: new Date('2026-09-01T00:00:00.000Z'),
+        deletedBy: 'staff',
+      },
+    ]);
+    await store.recordZapper(zapper, 'receipt-external-shop', new Date('2026-09-18T10:00:00Z'));
+    expect(await store.countShopsByPubkey(pubkey.toUpperCase())).toBe(4);
+    const listed = await store.listShopsByPubkey(pubkey.toUpperCase(), 10);
+    expect(listed.map((item) => item.id)).toEqual([
+      'external-shop-z',
+      'external-shop-m',
+      'external-shop-late',
+      'external-shop-early',
+    ]);
+    expect(listed[0]?.replyCount).toBe(2);
+    expect((await store.listShopsByPubkey(pubkey, 1)).map((item) => item.id)).toEqual([
+      'external-shop-z',
+    ]);
+  });
+
+  it('counts and lists external credits for a case-insensitive pubkey without shop assignment', async () => {
+    const pubkey = 'aa'.repeat(32);
+    const zapper = 'bb'.repeat(32);
+    const store = new InMemoryMessageStore([
+      {
+        ...EARLY,
+        id: 'external-credit-early',
+        accountId: null,
+        authorPubkey: pubkey.toUpperCase(),
+        goalRepayable: true,
+      },
+      {
+        ...LATE,
+        id: 'external-credit-late',
+        accountId: null,
+        authorPubkey: pubkey,
+        goalRepayable: true,
+        shopAccount: { id: 'acc', username: 'ada', name: 'Ada' },
+      },
+      {
+        ...TIE_LOW,
+        id: 'external-credit-m',
+        accountId: null,
+        authorPubkey: pubkey,
+        goalRepayable: true,
+      },
+      {
+        ...TIE_HIGH,
+        id: 'external-credit-z',
+        accountId: null,
+        authorPubkey: pubkey,
+        goalRepayable: true,
+      },
+      { ...LATE, id: 'member-credit', authorPubkey: pubkey, goalRepayable: true },
+      {
+        ...LATE,
+        id: 'null-pubkey-credit',
+        accountId: null,
+        authorPubkey: null,
+        goalRepayable: true,
+      },
+      {
+        ...LATE,
+        id: 'deleted-external-credit',
+        accountId: null,
+        authorPubkey: pubkey,
+        goalRepayable: true,
+        deletedAt: new Date('2026-09-01T00:00:00.000Z'),
+        deletedBy: 'staff',
+      },
+      {
+        ...LATE,
+        id: 'external-credit-reply',
+        accountId: null,
+        authorPubkey: pubkey,
+        goalRepayable: true,
+        parentId: 'external-credit-early',
+      },
+      {
+        ...LATE,
+        id: 'external-ask',
+        accountId: null,
+        authorPubkey: pubkey,
+        goalSats: 100,
+      },
+      {
+        ...LATE,
+        id: 'other-pubkey-credit',
+        accountId: null,
+        authorPubkey: 'dd'.repeat(32),
+        goalRepayable: true,
+      },
+      { ...LATE, id: 'member-child', parentId: 'external-credit-z', text: 'member child' },
+      {
+        ...LATE,
+        id: 'zapper-child',
+        parentId: 'external-credit-z',
+        accountId: null,
+        authorPubkey: zapper.toUpperCase(),
+        text: 'zapper child',
+      },
+      {
+        ...LATE,
+        id: 'external-child',
+        parentId: 'external-credit-z',
+        accountId: null,
+        authorPubkey: 'cc'.repeat(32),
+        text: 'external child',
+      },
+      {
+        ...LATE,
+        id: 'deleted-child',
+        parentId: 'external-credit-z',
+        text: 'deleted child',
+        deletedAt: new Date('2026-09-01T00:00:00.000Z'),
+        deletedBy: 'staff',
+      },
+    ]);
+    await store.recordZapper(zapper, 'receipt-external-credit', new Date('2026-09-18T10:00:00Z'));
+    expect(await store.countCreditsByPubkey(pubkey.toUpperCase())).toBe(4);
+    const listed = await store.listCreditsByPubkey(pubkey.toUpperCase(), 10);
+    expect(listed.map((item) => item.id)).toEqual([
+      'external-credit-z',
+      'external-credit-m',
+      'external-credit-late',
+      'external-credit-early',
+    ]);
+    expect(listed[0]?.replyCount).toBe(2);
+    expect((await store.listCreditsByPubkey(pubkey, 1)).map((item) => item.id)).toEqual([
+      'external-credit-z',
+    ]);
   });
 
   it('listRepliesByPubkey is empty until the pubkey is a recorded zapper', async () => {
@@ -5538,6 +6013,127 @@ describe('PostgresMessageStore', () => {
     expect(listedNull[0]?.replyCount).toBe(0);
   });
 
+  it('countShopsByAccount selects live owned hashtag-token notes and maps empty counts', async () => {
+    const sql = new MockSql();
+    const store = new PostgresMessageStore(sql);
+    expect(await store.countShopsByAccount('acc')).toBe(0);
+    expect(sql.queries[0]?.text).toMatch(/parent_id IS NULL/);
+    expect(sql.queries[0]?.text).toMatch(/deleted_at IS NULL/);
+    expect(sql.queries[0]?.text).toMatch(/text ~\* \$2/);
+    expect(sql.queries[0]?.text).toMatch(
+      /shop_account_id = \$1 OR \(shop_account_id IS NULL AND account_id = \$1\)/,
+    );
+    expect(sql.queries[0]?.params).toEqual(['acc', '#21giftsshop([^a-z0-9_]|$)']);
+    sql.nextRows = [{ shop_count: null }];
+    expect(await store.countShopsByAccount('acc')).toBe(0);
+    sql.nextRows = [{}];
+    expect(await store.countShopsByAccount('acc')).toBe(0);
+    sql.nextRows = [{ shop_count: '3' }];
+    expect(await store.countShopsByAccount('acc')).toBe(3);
+  });
+
+  it('listShopsByAccount selects live owned hashtag-token notes with replyCount', async () => {
+    const sql = new MockSql();
+    sql.nextRows = [
+      {
+        id: 'shop-1',
+        account_id: 'acc',
+        name: 'Ada',
+        text: '#21GiftsShop',
+        created_at: new Date('2026-08-28T12:00:00.000Z'),
+        has_photo: false,
+        reply_count: '2',
+      },
+    ];
+    const store = new PostgresMessageStore(sql);
+    const listed = await store.listShopsByAccount('acc', 50);
+    expect(sql.queries[0]?.text).toMatch(/parent_id IS NULL/);
+    expect(sql.queries[0]?.text).toMatch(/deleted_at IS NULL/);
+    expect(sql.queries[0]?.text).toMatch(/text ~\* \$2/);
+    expect(sql.queries[0]?.text).toMatch(
+      /shop_account_id = \$1 OR \(shop_account_id IS NULL AND account_id = \$1\)/,
+    );
+    expect(sql.queries[0]?.text).toMatch(
+      /child\.account_id IS NOT NULL\s+OR \(child\.author_pubkey IS NOT NULL\s+AND EXISTS \(\s+SELECT 1 FROM nostr_zapper z\s+WHERE z\.pubkey = lower\(child\.author_pubkey\)/,
+    );
+    expect(sql.queries[0]?.text).toMatch(/ORDER BY created_at DESC, id DESC/);
+    expect(sql.queries[0]?.text).toMatch(/LIMIT \$3/);
+    expect(sql.queries[0]?.params).toEqual(['acc', '#21giftsshop([^a-z0-9_]|$)', 50]);
+    expect(listed[0]?.replyCount).toBe(2);
+    sql.nextRows = [
+      {
+        id: 'shop-2',
+        account_id: 'acc',
+        name: 'Ada',
+        text: '#21GiftsShop',
+        created_at: new Date('2026-08-28T12:00:00.000Z'),
+        has_photo: false,
+      },
+    ];
+    expect((await store.listShopsByAccount('acc', 10))[0]?.replyCount).toBe(0);
+  });
+
+  it('countCreditsByAccount selects live authored repayable notes and maps empty counts', async () => {
+    const sql = new MockSql();
+    const store = new PostgresMessageStore(sql);
+    expect(await store.countCreditsByAccount('acc')).toBe(0);
+    expect(sql.queries[0]?.text).toMatch(/parent_id IS NULL/);
+    expect(sql.queries[0]?.text).toMatch(/deleted_at IS NULL/);
+    expect(sql.queries[0]?.text).toMatch(/goal_repayable IS TRUE/);
+    expect(sql.queries[0]?.text).toMatch(/account_id = \$1/);
+    expect(sql.queries[0]?.text).not.toMatch(/shop_account_id/);
+    expect(sql.queries[0]?.text).not.toMatch(/text ~\*/);
+    expect(sql.queries[0]?.params).toEqual(['acc']);
+    sql.nextRows = [{ credit_count: null }];
+    expect(await store.countCreditsByAccount('acc')).toBe(0);
+    sql.nextRows = [{}];
+    expect(await store.countCreditsByAccount('acc')).toBe(0);
+    sql.nextRows = [{ credit_count: '3' }];
+    expect(await store.countCreditsByAccount('acc')).toBe(3);
+  });
+
+  it('listCreditsByAccount selects live authored repayable notes with replyCount', async () => {
+    const sql = new MockSql();
+    sql.nextRows = [
+      {
+        id: 'credit-1',
+        account_id: 'acc',
+        name: 'Ada',
+        text: 'loan',
+        created_at: new Date('2026-08-28T12:00:00.000Z'),
+        has_photo: false,
+        reply_count: '2',
+      },
+    ];
+    const store = new PostgresMessageStore(sql);
+    const listed = await store.listCreditsByAccount('acc', 50);
+    expect(sql.queries[0]?.text).toMatch(/parent_id IS NULL/);
+    expect(sql.queries[0]?.text).toMatch(/deleted_at IS NULL/);
+    expect(sql.queries[0]?.text).toMatch(/goal_repayable IS TRUE/);
+    expect(sql.queries[0]?.text).toMatch(/account_id = \$1/);
+    const creditWhere = sql.queries[0]?.text.split(/FROM message\s+WHERE/)[1] ?? '';
+    expect(creditWhere).not.toMatch(/shop_account_id/);
+    expect(sql.queries[0]?.text).not.toMatch(/text ~\*/);
+    expect(sql.queries[0]?.text).toMatch(
+      /child\.account_id IS NOT NULL\s+OR \(child\.author_pubkey IS NOT NULL\s+AND EXISTS \(\s+SELECT 1 FROM nostr_zapper z\s+WHERE z\.pubkey = lower\(child\.author_pubkey\)/,
+    );
+    expect(sql.queries[0]?.text).toMatch(/ORDER BY created_at DESC, id DESC/);
+    expect(sql.queries[0]?.text).toMatch(/LIMIT \$2/);
+    expect(sql.queries[0]?.params).toEqual(['acc', 50]);
+    expect(listed[0]?.replyCount).toBe(2);
+    sql.nextRows = [
+      {
+        id: 'credit-2',
+        account_id: 'acc',
+        name: 'Ada',
+        text: 'loan',
+        created_at: new Date('2026-08-28T12:00:00.000Z'),
+        has_photo: false,
+      },
+    ];
+    expect((await store.listCreditsByAccount('acc', 10))[0]?.replyCount).toBe(0);
+  });
+
   it('listRepliesByAccount selects live replies for the account newest-first', async () => {
     const sql = new MockSql();
     sql.nextRows = [
@@ -5630,6 +6226,137 @@ describe('PostgresMessageStore', () => {
     ];
     const listedNull = await store.listPostsByPubkey(pubkey, 10);
     expect(listedNull[0]?.replyCount).toBe(0);
+  });
+
+  it('countShopsByPubkey selects live unassigned external hashtag-token notes and maps empty counts', async () => {
+    const sql = new MockSql();
+    const store = new PostgresMessageStore(sql);
+    const pubkey = 'aa'.repeat(32);
+    expect(await store.countShopsByPubkey(pubkey.toUpperCase())).toBe(0);
+    expect(sql.queries[0]?.text).toMatch(/parent_id IS NULL/);
+    expect(sql.queries[0]?.text).toMatch(/deleted_at IS NULL/);
+    expect(sql.queries[0]?.text).toMatch(/account_id IS NULL/);
+    expect(sql.queries[0]?.text).toMatch(/shop_account_id IS NULL/);
+    expect(sql.queries[0]?.text).toMatch(/author_pubkey IS NOT NULL/);
+    expect(sql.queries[0]?.text).toMatch(/lower\(author_pubkey\) = \$1/);
+    expect(sql.queries[0]?.text).toMatch(/text ~\* \$2/);
+    expect(sql.queries[0]?.params).toEqual([pubkey, '#21giftsshop([^a-z0-9_]|$)']);
+    sql.nextRows = [{ shop_count: null }];
+    expect(await store.countShopsByPubkey(pubkey)).toBe(0);
+    sql.nextRows = [{}];
+    expect(await store.countShopsByPubkey(pubkey)).toBe(0);
+    sql.nextRows = [{ shop_count: '3' }];
+    expect(await store.countShopsByPubkey(pubkey)).toBe(3);
+  });
+
+  it('listShopsByPubkey selects live unassigned external hashtag-token notes with replyCount', async () => {
+    const sql = new MockSql();
+    const pubkey = 'aa'.repeat(32);
+    sql.nextRows = [
+      {
+        id: 'shop-1',
+        account_id: null,
+        name: 'Ada',
+        text: '#21GiftsShop',
+        created_at: new Date('2026-08-28T12:00:00.000Z'),
+        has_photo: false,
+        reply_count: '2',
+      },
+    ];
+    const store = new PostgresMessageStore(sql);
+    const listed = await store.listShopsByPubkey(pubkey.toUpperCase(), 50);
+    expect(sql.queries[0]?.text).toMatch(/parent_id IS NULL/);
+    expect(sql.queries[0]?.text).toMatch(/deleted_at IS NULL/);
+    expect(sql.queries[0]?.text).toMatch(/account_id IS NULL/);
+    expect(sql.queries[0]?.text).toMatch(/shop_account_id IS NULL/);
+    expect(sql.queries[0]?.text).toMatch(/author_pubkey IS NOT NULL/);
+    expect(sql.queries[0]?.text).toMatch(/lower\(author_pubkey\) = \$1/);
+    expect(sql.queries[0]?.text).toMatch(/text ~\* \$2/);
+    expect(sql.queries[0]?.text).toMatch(
+      /child\.account_id IS NOT NULL\s+OR \(child\.author_pubkey IS NOT NULL\s+AND EXISTS \(\s+SELECT 1 FROM nostr_zapper z\s+WHERE z\.pubkey = lower\(child\.author_pubkey\)/,
+    );
+    expect(sql.queries[0]?.text).toMatch(/ORDER BY created_at DESC, id DESC/);
+    expect(sql.queries[0]?.text).toMatch(/LIMIT \$3/);
+    expect(sql.queries[0]?.params).toEqual([pubkey, '#21giftsshop([^a-z0-9_]|$)', 50]);
+    expect(listed[0]?.replyCount).toBe(2);
+    sql.nextRows = [
+      {
+        id: 'shop-2',
+        account_id: null,
+        name: 'Ada',
+        text: '#21GiftsShop',
+        created_at: new Date('2026-08-28T12:00:00.000Z'),
+        has_photo: false,
+      },
+    ];
+    expect((await store.listShopsByPubkey(pubkey, 10))[0]?.replyCount).toBe(0);
+  });
+
+  it('countCreditsByPubkey selects live external repayable notes and maps empty counts', async () => {
+    const sql = new MockSql();
+    const store = new PostgresMessageStore(sql);
+    const pubkey = 'aa'.repeat(32);
+    expect(await store.countCreditsByPubkey(pubkey.toUpperCase())).toBe(0);
+    expect(sql.queries[0]?.text).toMatch(/parent_id IS NULL/);
+    expect(sql.queries[0]?.text).toMatch(/deleted_at IS NULL/);
+    expect(sql.queries[0]?.text).toMatch(/goal_repayable IS TRUE/);
+    expect(sql.queries[0]?.text).toMatch(/account_id IS NULL/);
+    expect(sql.queries[0]?.text).toMatch(/author_pubkey IS NOT NULL/);
+    expect(sql.queries[0]?.text).toMatch(/lower\(author_pubkey\) = \$1/);
+    expect(sql.queries[0]?.text).not.toMatch(/shop_account_id/);
+    expect(sql.queries[0]?.text).not.toMatch(/text ~\*/);
+    expect(sql.queries[0]?.params).toEqual([pubkey]);
+    sql.nextRows = [{ credit_count: null }];
+    expect(await store.countCreditsByPubkey(pubkey)).toBe(0);
+    sql.nextRows = [{}];
+    expect(await store.countCreditsByPubkey(pubkey)).toBe(0);
+    sql.nextRows = [{ credit_count: '3' }];
+    expect(await store.countCreditsByPubkey(pubkey)).toBe(3);
+  });
+
+  it('listCreditsByPubkey selects live external repayable notes with replyCount', async () => {
+    const sql = new MockSql();
+    const pubkey = 'aa'.repeat(32);
+    sql.nextRows = [
+      {
+        id: 'credit-1',
+        account_id: null,
+        name: 'Ada',
+        text: 'loan',
+        created_at: new Date('2026-08-28T12:00:00.000Z'),
+        has_photo: false,
+        reply_count: '2',
+      },
+    ];
+    const store = new PostgresMessageStore(sql);
+    const listed = await store.listCreditsByPubkey(pubkey.toUpperCase(), 50);
+    expect(sql.queries[0]?.text).toMatch(/parent_id IS NULL/);
+    expect(sql.queries[0]?.text).toMatch(/deleted_at IS NULL/);
+    expect(sql.queries[0]?.text).toMatch(/goal_repayable IS TRUE/);
+    expect(sql.queries[0]?.text).toMatch(/account_id IS NULL/);
+    expect(sql.queries[0]?.text).toMatch(/author_pubkey IS NOT NULL/);
+    expect(sql.queries[0]?.text).toMatch(/lower\(author_pubkey\) = \$1/);
+    const creditWhere = sql.queries[0]?.text.split(/FROM message\s+WHERE/)[1] ?? '';
+    expect(creditWhere).not.toMatch(/shop_account_id/);
+    expect(sql.queries[0]?.text).not.toMatch(/text ~\*/);
+    expect(sql.queries[0]?.text).toMatch(
+      /child\.account_id IS NOT NULL\s+OR \(child\.author_pubkey IS NOT NULL\s+AND EXISTS \(\s+SELECT 1 FROM nostr_zapper z\s+WHERE z\.pubkey = lower\(child\.author_pubkey\)/,
+    );
+    expect(sql.queries[0]?.text).toMatch(/ORDER BY created_at DESC, id DESC/);
+    expect(sql.queries[0]?.text).toMatch(/LIMIT \$2/);
+    expect(sql.queries[0]?.params).toEqual([pubkey, 50]);
+    expect(listed[0]?.replyCount).toBe(2);
+    sql.nextRows = [
+      {
+        id: 'credit-2',
+        account_id: null,
+        name: 'Ada',
+        text: 'loan',
+        created_at: new Date('2026-08-28T12:00:00.000Z'),
+        has_photo: false,
+      },
+    ];
+    expect((await store.listCreditsByPubkey(pubkey, 10))[0]?.replyCount).toBe(0);
   });
 
   it('listRepliesByPubkey selects live zapper replies for the pubkey newest-first', async () => {
