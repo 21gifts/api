@@ -8,7 +8,7 @@ import { parseNostrKek } from '@/lib/nostr/kek';
 import { InvoiceRateLimiter, PostRateLimiter } from '@/lib/nostr/rate-limit';
 import { messagesRoutes } from '@/routes/messages';
 
-const now = (): number => Date.UTC(2026, 8, 28, 12);
+const now = (): number => Date.UTC(2026, 10, 4, 12);
 const CREDIT = '55555555-5555-4555-8555-555555555555';
 const GIVER = '11111111-1111-4111-8111-111111111111';
 
@@ -90,7 +90,7 @@ async function readyCredit(options?: {
     goalRepayable: true,
     goalTermDays: options?.termDays === undefined ? 1 : options.termDays,
     goalFundedAt:
-      options?.fundedAt === undefined ? new Date(Date.UTC(2026, 8, 26, 12)) : options.fundedAt,
+      options?.fundedAt === undefined ? new Date(Date.UTC(2026, 10, 2, 12)) : options.fundedAt,
     ...(options?.goalCurrency === undefined
       ? {}
       : {
@@ -152,17 +152,19 @@ describe('credit repayment', () => {
     expect(res.status).toBe(200);
     const body = (await res.json()) as {
       currency: string;
+      startsOn: string | null;
       unassignedSats: number;
       givers: { name: string; givenSats: number }[];
       repayments: { dueOn: string; sats: number; status: string; via: string }[];
     };
     expect(body.currency).toBe('BTC');
+    expect(body.startsOn).toBe('2026-11-03');
     expect(body.unassignedSats).toBe(5);
     expect(body.givers).toEqual([
       { accountId: GIVER, name: 'Bea', username: 'bea', givenSats: 21, givenAmount: null },
     ]);
     expect(body.repayments[0]).toMatchObject({
-      dueOn: '2026-09-27',
+      dueOn: '2026-11-03',
       sats: 21,
       status: 'due',
       via: 'lightning',
@@ -181,6 +183,18 @@ describe('credit repayment', () => {
       headers: { authorization: 'Bearer acc' },
     });
     expect(badId.status).toBe(404);
+  });
+
+  it('starts a credit filled before November 2026 on 2026-11-01', async () => {
+    const { app } = await readyCredit({ fundedAt: new Date(Date.UTC(2026, 9, 9, 6)) });
+    const res = await app.request(`/messages/${CREDIT}/repayment`);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      startsOn: string | null;
+      repayments: { dueOn: string | null }[];
+    };
+    expect(body.startsOn).toBe('2026-11-01');
+    expect(body.repayments[0]?.dueOn).toBe('2026-11-01');
   });
 
   it('shows the due share and invoices the giver Wallet of Satoshi address', async () => {
@@ -603,6 +617,7 @@ describe('credit repayment', () => {
     expect(open.status).toBe(200);
     expect((await open.json()) as { fundedAt: null; next: null }).toMatchObject({
       fundedAt: null,
+      startsOn: null,
       next: null,
       repayments: [{ dueOn: null, status: 'scheduled', sats: 21 }],
     });

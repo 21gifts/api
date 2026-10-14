@@ -42,15 +42,20 @@ export function parseRepaymentDescription(
   return { dayIndex: Number(day), recipientAccountId: accountId };
 }
 
+/** No repayment day is before 2026-11-01 UTC, however early the credit filled. */
+const REPAYMENT_EARLIEST_START_MS = Date.UTC(2026, 10, 1);
+
 /**
- * UTC midnight of the day after the credit became fully paid.
+ * UTC midnight of the first repayment day: the day after the credit became
+ * fully paid, but never before 2026-11-01.
  *
  * @param fundedAtMs - When collected sats first reached the goal.
- * @returns Epoch milliseconds of that next UTC midnight.
+ * @returns Epoch milliseconds of that UTC midnight.
  */
 export function repaymentStartMs(fundedAtMs: number): number {
   const funded = new Date(fundedAtMs);
-  return Date.UTC(funded.getUTCFullYear(), funded.getUTCMonth(), funded.getUTCDate() + 1);
+  const nextDay = Date.UTC(funded.getUTCFullYear(), funded.getUTCMonth(), funded.getUTCDate() + 1);
+  return Math.max(nextDay, REPAYMENT_EARLIEST_START_MS);
 }
 
 /**
@@ -316,7 +321,8 @@ export interface RepaymentLedgerLine {
 }
 
 /**
- * UTC date of one repayment day. Day 0 is the UTC day after the credit filled.
+ * UTC date of one repayment day. Day 0 is `repaymentStartMs`: the UTC day after the
+ * credit filled, never before 2026-11-01.
  *
  * @param fundedAtMs - When collected sats first reached the goal.
  * @param dayIndex - Zero-based day in the term.
